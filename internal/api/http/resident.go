@@ -118,6 +118,7 @@ type residentChild struct {
 	cancel        context.CancelCauseFunc // direct fallback if the registry entry is gone
 	idleTTL       time.Duration
 	maxTurn       time.Duration // the turn ceiling: a turn running longer is reaped
+	notCaptured   bool          // its agent never captures content: its turns are marked when handed back
 
 	mu         sync.Mutex
 	buf        strings.Builder // assistant text accumulated for the CURRENT turn
@@ -302,12 +303,15 @@ type residentEnding struct {
 	reapReason string
 	ended      bool
 	capped     *builtin.ChildCappedError
+	// notCaptured: no span may capture what the child hands back (its agent
+	// never captures content, or that is not known here).
+	notCaptured bool
 }
 
 func (rc *residentChild) ending() residentEnding {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
-	return residentEnding{reapReason: rc.reapReason, ended: rc.done, capped: rc.capped}
+	return residentEnding{reapReason: rc.reapReason, ended: rc.done, capped: rc.capped, notCaptured: rc.notCaptured}
 }
 
 // noteCancelled records how the child's run was ended for it, from the cause
@@ -340,6 +344,7 @@ func (rc *residentChild) tombstone(now time.Time) residentTombstone {
 		tenantID: rc.tenantID, userID: rc.userID, agentName: rc.agentName,
 		reason: rc.reapReason, closedBy: rc.closedBy,
 		state: rc.state, output: rc.buf.String(), capped: rc.capped, at: now,
+		notCaptured: rc.notCaptured,
 	}
 }
 
@@ -415,6 +420,8 @@ type residentTombstone struct {
 	output    string // its last turn's output
 	capped    *builtin.ChildCappedError
 	at        time.Time
+	// notCaptured: see residentEnding.notCaptured.
+	notCaptured bool
 }
 
 // residentOwnedBy reports whether caller may address a child opened in this
@@ -631,6 +638,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	rc.tenantID = prep.TenantID
 	rc.userID = prep.UserID
 	rc.cancel = prep.CancelFn
+	rc.notCaptured = neverCapturesContent(prep.LoopCtx)
 
 	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(prep.SteerCtx, prep.RunID, prep.AgentID, prep.SessionID, prep.UserID, prep.Emit)
 	prep.Opts.Interactive = true
@@ -693,6 +701,11 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 // status failed for the hooks. A child whose run has ended and left the
 // registry hands back its kept ending the same way (handBackEnding).
 func (s *Server) residentHandBack(ctx context.Context, runID, agentName string, e residentEnding, out, state string, err error) (string, error) {
+	if e.notCaptured {
+		// Every turn a never child hands back is its content: the calling
+		// tool call records a marker for it, as a spawned child's answer.
+		tools.MarkContentNotCaptured(ctx)
+	}
 	if e.reapReason != "" && err == nil {
 		err = residentReapedErr(runID, e.reapReason)
 	}
@@ -847,7 +860,7 @@ func (s *Server) handBackEnding(ctx context.Context, childRunID string, t reside
 	if err := t.endedForItErr(childRunID); err != nil {
 		return "", "", err
 	}
-	out, err := s.residentHandBack(ctx, childRunID, t.agentName, residentEnding{ended: true, capped: t.capped}, t.output, t.state, nil)
+	out, err := s.residentHandBack(ctx, childRunID, t.agentName, residentEnding{ended: true, capped: t.capped, notCaptured: t.notCaptured}, t.output, t.state, nil)
 	return out, t.state, err
 }
 

@@ -1,5 +1,5 @@
-// Package tenanttelemetry lets a tenant export its own traces to an OTLP
-// collector of its own. It owns the per-tenant policy (where, with which
+// Package tenanttelemetry lets a tenant export its own traces, and its own
+// series of the runtime's metrics, to an OTLP collector of its own. It owns the per-tenant policy (where, with which
 // header credential, which signals): it checks a write against the operator's
 // rules, keeps the tracer's TenantRouter in step with the stored rows on every
 // replica, and answers the status and the test.
@@ -37,6 +37,11 @@ type Config struct {
 	// MaxPipelines is LOOMCYCLE_TENANT_TELEMETRY_MAX_PIPELINES, the tenant
 	// pipelines open at once (default 256).
 	MaxPipelines int
+	// ContentCapture is LOOMCYCLE_TENANT_CONTENT_CAPTURE: a tenant may turn
+	// content capture on (its runs' prompts, answers and tool calls on the
+	// spans it receives). Off, a policy asking for it is refused, and one
+	// stored with it on captures nothing.
+	ContentCapture bool
 }
 
 // maxQueueSize and maxPipelinesCap bound the operator's own settings: each
@@ -58,6 +63,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	cfg.Enabled = true
 	if cfg.AllowHTTP, err = envBool(get, "LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP"); err != nil {
+		return Config{}, err
+	}
+	if cfg.ContentCapture, err = envBool(get, "LOOMCYCLE_TENANT_CONTENT_CAPTURE"); err != nil {
 		return Config{}, err
 	}
 	for _, h := range strings.Split(get("LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS"), ",") {

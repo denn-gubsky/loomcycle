@@ -336,7 +336,9 @@ func TestTenantRouter_BlackHoleCollectorBlocksNeitherSpanEndNorOtherTenants(t *t
 	// The other tenant's span is exported while the hole still hangs.
 	_, s := tr.Start(context.Background(), "work", trace.WithAttributes(attribute.String(AttrTenant, "ok")))
 	s.End()
-	waitFor(t, "the other tenant's span", func() bool { return len(ok.got()) == 1 })
+	// The collector holds the span before the exporter has its answer: wait
+	// for the status too.
+	waitFor(t, "the other tenant's span", func() bool { return len(ok.got()) == 1 && r.Status("ok").Exported == 1 })
 	if st := r.Status("hole"); st.Dropped < n-64-1 {
 		t.Errorf("hole status = %+v, want at least %d dropped from a full queue", st, n-64-1)
 	}

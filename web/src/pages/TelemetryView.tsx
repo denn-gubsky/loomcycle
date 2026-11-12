@@ -15,13 +15,14 @@ import { usePrincipal } from "../components/Layout";
 import ErrorNotice from "../components/ErrorNotice";
 import TenantCombobox from "../components/TenantCombobox";
 
-// TelemetryView — a tenant's own trace export: where the tenant's spans go beside
-// the operator's. An admin manages any tenant (picked like the Limits page's
+// TelemetryView — a tenant's own telemetry export: where the tenant's spans and
+// its own metric series go beside the operator's. An admin manages any tenant (picked like the Limits page's
 // focus); a tenant operator its own. The server holds every rule — the page only
 // catches an empty endpoint and an out-of-range ratio, so the rule and its
 // wording stay in one place and a refusal shows the server's own sentence.
 
 const PROTOCOLS = ["http/protobuf", "grpc"] as const;
+const SIGNALS = ["traces", "metrics"] as const;
 
 // isTelemetryDisabled is the operator's gate being off: every route answers
 // 404 feature_disabled then, which is a state of the deployment, not an error.
@@ -36,6 +37,15 @@ export function parseRatio(text: string): number | undefined | null {
   if (t === "") return undefined;
   const n = Number(t);
   return Number.isFinite(n) && n >= 0 && n <= 1 ? n : null;
+}
+
+// parseMaxChars reads the content length box: "" means the server's default, a
+// whole number from 256 to 65536 is sent, anything else is refused.
+export function parseMaxChars(text: string): number | undefined | null {
+  const t = text.trim();
+  if (t === "") return undefined;
+  const n = Number(t);
+  return Number.isInteger(n) && n >= 256 && n <= 65536 ? n : null;
 }
 
 export default function TelemetryView() {
@@ -93,9 +103,10 @@ export default function TelemetryView() {
     <div className="settings-panel telemetry-view">
       <h2>Telemetry</h2>
       <p className="settings-help">
-        Send this tenant&rsquo;s own traces to an OpenTelemetry collector of yours, beside the
-        operator&rsquo;s. Only the tenant&rsquo;s spans are sent, with a minimal resource and no
-        error text; runs that keep no trace are never sent.
+        Send this tenant&rsquo;s own traces and metrics to an OpenTelemetry collector of yours,
+        beside the operator&rsquo;s. Only the tenant&rsquo;s spans are sent, with a minimal resource
+        and no error text; runs that keep no trace are never sent. Metrics are the tenant&rsquo;s own
+        series, pushed every minute.
       </p>
 
       <div className="telemetry-tenant">
@@ -183,6 +194,13 @@ export function TelemetryForm({
   const [protocol, setProtocol] = useState(policy?.protocol || PROTOCOLS[0]);
   const [credential, setCredential] = useState(policy?.headers_credential ?? "");
   const [ratio, setRatio] = useState(policy ? String(policy.sampler_ratio) : "");
+  // A stored policy names its signals; a new one starts at the server's
+  // default, traces.
+  const [signals, setSignals] = useState<string[]>(policy?.signals?.length ? policy.signals : ["traces"]);
+  const [capture, setCapture] = useState(policy?.content_capture === "on");
+  const [maxChars, setMaxChars] = useState(
+    policy?.content_capture === "on" && policy.content_max_chars ? String(policy.content_max_chars) : "",
+  );
   const [err, setErr] = useState("");
 
   const submit = (e: FormEvent) => {
@@ -196,10 +214,26 @@ export function TelemetryForm({
       setErr("sampler ratio must be a number from 0 to 1");
       return;
     }
+    // None ticked would reach the server as its default, traces: not what the
+    // boxes said.
+    const picked = SIGNALS.filter((s) => signals.includes(s));
+    if (picked.length === 0) {
+      setErr("pick traces, metrics or both");
+      return;
+    }
+    const m = capture ? parseMaxChars(maxChars) : undefined;
+    if (m === null) {
+      setErr("content length must be a whole number from 256 to 65536");
+      return;
+    }
     setErr("");
-    const input: TelemetryPolicyInput = { endpoint: endpoint.trim(), protocol, signals: ["traces"] };
+    const input: TelemetryPolicyInput = { endpoint: endpoint.trim(), protocol, signals: picked };
     if (credential.trim()) input.headers_credential = credential.trim();
     if (r !== undefined) input.sampler_ratio = r;
+    if (capture) {
+      input.content_capture = "on";
+      if (m !== undefined) input.content_max_chars = m;
+    }
     void onSave(input);
   };
 
@@ -268,21 +302,70 @@ export function TelemetryForm({
       </label>
       <fieldset className="telemetry-signals">
         <legend>signals</legend>
-        <label>
-          <input type="checkbox" checked disabled readOnly /> traces
-        </label>
-        <span className="settings-muted">Only traces are exported for now.</span>
+        {SIGNALS.map((s) => (
+          <label key={s}>
+            <input
+              type="checkbox"
+              name={`signal_${s}`}
+              checked={signals.includes(s)}
+              onChange={(e) =>
+                setSignals((cur) => (e.target.checked ? [...cur.filter((x) => x !== s), s] : cur.filter((x) => x !== s)))
+              }
+            />{" "}
+            {s}
+          </label>
+        ))}
+        <span className="settings-muted">
+          Metrics are this tenant&rsquo;s own series (runs, tokens, model and tool calls), pushed every
+          minute.
+        </span>
       </fieldset>
-      <p className="settings-muted">
-        Content capture is not available: it is always off for a tenant&rsquo;s export.
-      </p>
+      <fieldset className="telemetry-content">
+        <legend>content</legend>
+        <label>
+          <input
+            name="content_capture"
+            type="checkbox"
+            checked={capture}
+            onChange={(e) => setCapture(e.target.checked)}
+          />{" "}
+          capture content
+        </label>
+        <span className="settings-muted">
+          Also send what each run&rsquo;s model was given and answered, and what its tools were called with and
+          returned, with secrets masked. Only where the operator allows it; agents that opt out and runs that keep no
+          trace never send it.
+        </span>
+        {capture && (
+          <>
+            <label>
+              content length
+              <input
+                name="content_max_chars"
+                type="number"
+                min={256}
+                max={65536}
+                step={1}
+                value={maxChars}
+                placeholder="4096"
+                onChange={(e) => setMaxChars(e.target.value)}
+              />
+              <span className="settings-muted">Each captured field is cut to this many characters. Empty means 4096.</span>
+            </label>
+            <div className="settings-warning" role="note">
+              Content sent to your collector is outside loomcycle&rsquo;s erasure: erasing a person here cannot remove
+              what was already sent there. An erasure report names the time span in which content was sent.
+            </div>
+          </>
+        )}
+      </fieldset>
       {err && <div className="settings-error">{err}</div>}
       <div className="settings-row-actions">
         <button type="submit" disabled={busy}>
           save
         </button>
         <button type="button" className="ghost-btn" onClick={() => void onTest()} disabled={busy || !policy}>
-          send test span
+          send test
         </button>
         <button type="button" className="ghost-btn" onClick={onRemove} disabled={busy || !policy}>
           remove
@@ -304,11 +387,11 @@ export function TelemetryForm({
 export function TelemetryTestOutcome({ test }: { test: TelemetryTest }) {
   return test.ok ? (
     <div className="settings-flash" role="status">
-      test span delivered in {test.duration_ms} ms
+      test delivered in {test.duration_ms} ms
     </div>
   ) : (
     <div className="settings-error" role="alert">
-      test span failed after {test.duration_ms} ms: {test.error || "no reason given"}
+      test failed after {test.duration_ms} ms: {test.error || "no reason given"}
     </div>
   );
 }

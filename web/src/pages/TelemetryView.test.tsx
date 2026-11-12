@@ -4,7 +4,7 @@ import { type Root, createRoot } from "react-dom/client";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Principal } from "../api";
-import TelemetryView, { parseRatio } from "./TelemetryView";
+import TelemetryView, { parseMaxChars, parseRatio } from "./TelemetryView";
 
 // The page is mounted for real (effects run, buttons clicked) because what it
 // shows is decided by the GET it makes on mount: the operator's gate, the stored
@@ -133,29 +133,64 @@ describe("TelemetryView", () => {
     expect((el.querySelector("select[name=protocol]") as HTMLSelectElement).value).toBe("grpc");
     expect((el.querySelector("input[name=headers_credential]") as HTMLInputElement).value).toBe("otel-headers");
     expect((el.querySelector("input[name=sampler_ratio]") as HTMLInputElement).value).toBe("0.25");
-    const traces = el.querySelector(".telemetry-signals input[type=checkbox]") as HTMLInputElement;
-    expect(traces.checked && traces.disabled).toBe(true);
+    expect((el.querySelector("input[name=signal_traces]") as HTMLInputElement).checked).toBe(true);
+    expect((el.querySelector("input[name=signal_metrics]") as HTMLInputElement).checked).toBe(false);
     const text = el.textContent ?? "";
     for (const want of ["replica-7", "1234", "export failures", "2026-11-11T08:00:00Z", "collector answered 503", "2026-11-11T07:00:00Z"]) {
       expect(text).toContain(want);
     }
-    expect(text).toContain("Content capture is not available");
+    // Capture is off in the stored policy: unchecked, and no erasure warning.
+    const capture = el.querySelector("input[name=content_capture]") as HTMLInputElement;
+    expect(capture.checked).toBe(false);
+    expect(el.querySelector(".settings-warning")).toBeNull();
+    expect(el.querySelector("input[name=content_max_chars]")).toBeNull();
   });
 
-  it("shows a failed test span's error text verbatim, and a delivered one's time", async () => {
+  it("turns content capture on with its length, warning that sent content is outside erasure", async () => {
+    const calls = stubServer({
+      "GET /v1/_telemetry": json(200, stored),
+      "PUT /v1/_telemetry?tenant=acme": json(200, stored),
+    });
+    mounted = await mount(operator);
+    const el = mounted.el;
+    const capture = el.querySelector("input[name=content_capture]") as HTMLInputElement;
+    await click(capture);
+    expect(el.querySelector(".settings-warning")?.textContent).toContain("outside loomcycle\u2019s erasure");
+    const length = el.querySelector("input[name=content_max_chars]") as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(length, "2048");
+      length.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button(el, "save"));
+    const put = calls.find((c) => c.method === "PUT")!;
+    expect(JSON.parse(put.body!)).toMatchObject({ content_capture: "on", content_max_chars: 2048 });
+  });
+
+  it("starts from a stored policy that captures content", async () => {
+    stubServer({
+      "GET /v1/_telemetry": json(200, { ...stored, policy: { ...stored.policy, content_capture: "on", content_max_chars: 1024 } }),
+    });
+    mounted = await mount(operator);
+    const el = mounted.el;
+    expect((el.querySelector("input[name=content_capture]") as HTMLInputElement).checked).toBe(true);
+    expect((el.querySelector("input[name=content_max_chars]") as HTMLInputElement).value).toBe("1024");
+    expect(el.querySelector(".settings-warning")).not.toBeNull();
+  });
+
+  it("shows a failed test's error text verbatim, and a delivered one's time", async () => {
     let answer = { ok: false, error: "collector answered 401 Unauthorized", duration_ms: 42 };
     const calls = stubServer({
       "GET /v1/_telemetry": json(200, stored),
       "POST /v1/_telemetry:test?tenant=acme": () => new Response(JSON.stringify({ ...stored, test: answer }), { status: 200 }),
     });
     mounted = await mount(operator);
-    await click(button(mounted.el, "send test span"));
+    await click(button(mounted.el, "send test"));
     expect(calls.at(-1)).toMatchObject({ method: "POST", url: "/v1/_telemetry:test?tenant=acme" });
-    expect(mounted.el.textContent).toContain("test span failed after 42 ms: collector answered 401 Unauthorized");
+    expect(mounted.el.textContent).toContain("test failed after 42 ms: collector answered 401 Unauthorized");
 
     answer = { ok: true, error: "", duration_ms: 17 } as typeof answer;
-    await click(button(mounted.el, "send test span"));
-    expect(mounted.el.textContent).toContain("test span delivered in 17 ms");
+    await click(button(mounted.el, "send test"));
+    expect(mounted.el.textContent).toContain("test delivered in 17 ms");
     expect(mounted.el.textContent).not.toContain("401 Unauthorized");
   });
 
@@ -180,6 +215,27 @@ describe("TelemetryView", () => {
     const err = mounted.el.querySelector(".settings-error")?.textContent ?? "";
     expect(err).toContain("restrict its allowed_urls to the endpoint");
     expect(err).not.toContain("400");
+  });
+
+  it("saves the ticked signals, metrics included, and refuses none", async () => {
+    const calls = stubServer({
+      "GET /v1/_telemetry": json(200, stored),
+      "PUT /v1/_telemetry?tenant=acme": json(200, { ...stored, policy: { ...stored.policy, signals: ["metrics", "traces"] } }),
+    });
+    mounted = await mount(operator);
+    const box = (s: string) => mounted!.el.querySelector(`input[name=signal_${s}]`) as HTMLInputElement;
+    await click(box("metrics"));
+    await click(button(mounted.el, "save"));
+    const put = calls.find((c) => c.method === "PUT")!;
+    expect(JSON.parse(put.body!).signals).toEqual(["traces", "metrics"]);
+
+    // Both unticked is refused here: the server would read it as traces.
+    await click(box("metrics"));
+    await click(box("traces"));
+    const puts = calls.filter((c) => c.method === "PUT").length;
+    await click(button(mounted.el, "save"));
+    expect(calls.filter((c) => c.method === "PUT").length).toBe(puts);
+    expect(mounted.el.querySelector(".settings-error")?.textContent).toContain("pick traces, metrics or both");
   });
 
   it("removes the policy only after the operator confirms", async () => {
@@ -220,6 +276,18 @@ describe("TelemetryView", () => {
     await click(button(mounted.el, "load"));
     expect(calls.at(-1)).toMatchObject({ method: "GET", url: "/v1/_telemetry?tenant=acme" });
     expect((mounted.el.querySelector("input[name=endpoint]") as HTMLInputElement).value).toBe("https://otel.acme.example:4317");
+  });
+});
+
+describe("parseMaxChars", () => {
+  it("reads empty as the default, a whole number in [256, 65536] as itself, and anything else as refused", () => {
+    expect(parseMaxChars("")).toBeUndefined();
+    expect(parseMaxChars(" 256 ")).toBe(256);
+    expect(parseMaxChars("65536")).toBe(65536);
+    expect(parseMaxChars("255")).toBeNull();
+    expect(parseMaxChars("65537")).toBeNull();
+    expect(parseMaxChars("1000.5")).toBeNull();
+    expect(parseMaxChars("lots")).toBeNull();
   });
 });
 

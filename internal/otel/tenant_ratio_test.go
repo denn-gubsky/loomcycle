@@ -263,6 +263,38 @@ func TestTenantExport_RatioChangeAtRuntimeTakesEffect(t *testing.T) {
 	}
 }
 
+// A destination exporting metrics only receives no spans, so its ratio raises
+// none: the operator's sampler alone decides, and the trace is not routed.
+// Adding traces to the same destination raises them from the next span on.
+func TestTenantExport_MetricsOnlyDestinationRaisesNoSpans(t *testing.T) {
+	d := newTwoDestinations(t, "always_off", 0, nil, 1)
+	metricsOnly := dest(d.acme, nil)
+	metricsOnly.Ratio, metricsOnly.Signals = 1, []string{SignalMetrics}
+	d.r.SetDestination("acme", metricsOnly)
+	if r, ok := d.r.exportRatio("acme"); ok {
+		t.Errorf("a metrics-only destination published ratio %v", r)
+	}
+	tr := d.tp.Tracer("t")
+	acme := trace.WithAttributes(attribute.String(AttrTenant, "acme"))
+	_, root := tr.Start(context.Background(), "root", acme)
+	root.End()
+	if root.SpanContext().IsSampled() {
+		t.Error("a metrics-only destination raised a trace the operator's sampler drops")
+	}
+
+	both := metricsOnly
+	both.Signals = []string{SignalTraces, SignalMetrics}
+	d.r.SetDestination("acme", both)
+	if r, ok := d.r.exportRatio("acme"); !ok || r != 1 {
+		t.Errorf("a destination with traces published ratio %v, %v; want 1, true", r, ok)
+	}
+	_, root = tr.Start(context.Background(), "root", acme)
+	root.End()
+	if !root.SpanContext().IsSampled() {
+		t.Error("adding traces to the destination raised no trace")
+	}
+}
+
 // A caller's trace state cannot carry the marker in and so hide its trace
 // from the operator's collector.
 func TestTenantExport_ACallersMarkerCannotHideItsTraceFromTheOperator(t *testing.T) {

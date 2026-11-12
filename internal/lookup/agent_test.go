@@ -346,6 +346,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"tool_hooks":        true, // each tool's own pre/post hooks; content-identifying
 		"transcription":     true, // per-agent OCR / speech-to-text block; content-identifying
 		"speech":            true, // per-agent text-to-speech block; content-identifying
+		"telemetry":         true, // per-agent content-capture opt-out (RFC GG P3); content-identifying
 		// v1.34.0 — the capability gates that were missing from the overlay
 		// entirely, so any fork of an agent using them was born default-deny
 		// (same class as the F40 gap above). sql_scopes / sql_quota_bytes /

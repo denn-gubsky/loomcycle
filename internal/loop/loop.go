@@ -4052,6 +4052,9 @@ type ModelCall struct {
 	ownTimer bool
 	// noTrace: a failure is recorded by class only.
 	noTrace bool
+	// output collects the answer while the run captures content (nil
+	// otherwise, so a run without capture does no work for it).
+	output *capturedOutput
 }
 
 func (s *runState) startModelCall(runCtx, turnCtx context.Context, req providers.Request, timer *providers.CallTimer) *ModelCall {
@@ -4112,8 +4115,13 @@ func startModelCallNoTrace(runCtx, turnCtx context.Context, purpose string, prov
 		MaxTokens:    req.MaxTokens,
 		FallbackFrom: fallbackFrom,
 	})
-	return &ModelCall{ctx: mctx, span: span, runCtx: runCtx, turnCtx: turnCtx, timer: timer,
+	mc := &ModelCall{ctx: mctx, span: span, runCtx: runCtx, turnCtx: turnCtx, timer: timer,
 		provider: provider.ID(), model: req.Model, price: price, noTrace: noTrace}
+	if !noTrace && span.IsRecording() && lcotel.ContentCaptureFrom(mctx) != nil {
+		lcotel.SetModelInputContent(mctx, span, capturedParts(req.System), capturedMessages(req.Messages))
+		mc.output = &capturedOutput{}
+	}
+	return mc
 }
 
 // Observe ends the span at the stream's first terminal event.
@@ -4123,6 +4131,9 @@ func (m *ModelCall) Observe(ev providers.Event) {
 	}
 	if m.ended {
 		return
+	}
+	if m.output != nil {
+		m.output.observe(ev)
 	}
 	switch ev.Type {
 	case providers.EventDone:
@@ -4188,6 +4199,10 @@ func (m *ModelCall) End(msg string) {
 
 func (m *ModelCall) finish(r lcotel.ModelCallResult) {
 	m.ended = true
+	if m.output != nil {
+		// What streamed before a failure or a cancel is recorded too.
+		lcotel.SetModelOutputContent(m.ctx, m.span, m.output.message(r.FinishReason))
+	}
 	lcotel.SetModelCallResult(m.span, r)
 	m.span.End()
 }
@@ -5257,6 +5272,9 @@ func executePendingTools(
 		// notRetained: the result carries a no-trace run's content, so the
 		// transcript stores a marker for it (tools.ContentMark).
 		notRetained bool
+		// notCaptured: no span may capture the result (content capture
+		// records a marker in its place).
+		notCaptured bool
 	}
 
 	resCh := make(chan result, len(pending))
@@ -5302,7 +5320,7 @@ func executePendingTools(
 			})
 			endWork()
 			answered = true
-			resCh <- result{idx: i, tu: tu, res: r, notRetained: mark.NotRetained()}
+			resCh <- result{idx: i, tu: tu, res: r, notRetained: mark.NotRetained(), notCaptured: mark.NotCaptured()}
 		})
 	}
 	safego.Go(ctx, "loop.tool_results_close", func() {
@@ -5328,6 +5346,7 @@ func executePendingTools(
 			IsError: r.res.IsError,
 
 			ContentNotRetained: r.notRetained,
+			ContentNotCaptured: r.notCaptured,
 		}
 		// The failure's structure as a field too, so an SSE or gRPC consumer
 		// reads the category and the correct call format without parsing the
@@ -5351,6 +5370,7 @@ func executePendingTools(
 			IsError:   r.res.IsError,
 
 			NotRetained: r.notRetained,
+			NotCaptured: r.notCaptured,
 		}
 	}
 	return results

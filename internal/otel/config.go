@@ -57,9 +57,18 @@ type Config struct {
 	// Enabled: an OTLP endpoint is set and nothing turned tracing off.
 	Enabled  bool
 	Protocol Protocol
-	// SamplerName / SamplerArg are OTEL_TRACES_SAMPLER and its argument.
+	// SamplerName / SamplerArg are OTEL_TRACES_SAMPLER and its argument,
+	// read with tracing off too: the routing-only provider tenant export
+	// installs samples with them.
 	SamplerName string
 	SamplerArg  float64
+	// samplerErr is what is wrong with the sampler variables when tracing is
+	// off. Off, they may belong to other programs, so ResolveConfig does not
+	// fail; the routing-only provider, which would sample with them, does.
+	samplerErr error
+	// SDKDisabled is OTEL_SDK_DISABLED=true: no span is recorded, for the
+	// operator or for a tenant's destination.
+	SDKDisabled bool
 	// HeadersFile is LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE: collector
 	// headers kept out of the process environment. Headers holds what it
 	// says when the caller read it already (to register the values with its
@@ -153,15 +162,26 @@ func ResolveConfig(getenv func(string) string) (Config, error) {
 
 	exporterOn, warns := tracesExporter(get("OTEL_TRACES_EXPORTER"))
 	endpointSet := get("OTEL_EXPORTER_OTLP_ENDPOINT") != "" || get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") != ""
-	cfg.Enabled = endpointSet && exporterOn && !strings.EqualFold(get("OTEL_SDK_DISABLED"), "true")
+	cfg.SDKDisabled = strings.EqualFold(get("OTEL_SDK_DISABLED"), "true")
+	cfg.Enabled = endpointSet && exporterOn && !cfg.SDKDisabled
 	props, pwarns := parsePropagators(get("OTEL_PROPAGATORS"))
 	cfg.Propagators = props
+	name, arg, samplerErr := resolveSampler(get)
+	if samplerErr == nil {
+		cfg.SamplerName, cfg.SamplerArg = name, arg
+	}
 	if !cfg.Enabled {
-		// Nothing exports, so nothing below is read. The propagators still
-		// carry a caller's context, so they take effect either way; their
-		// warnings are about what loomcycle ignores, not an error.
+		// Nothing the operator exports, so nothing below is read. The
+		// propagators still carry a caller's context, so they take effect
+		// either way; their warnings are about what loomcycle ignores, not an
+		// error. The sampler is kept for tenant export, and so is its error:
+		// Init refuses it only if a tenant router would sample with it.
 		cfg.Warnings = append(warns, pwarns...)
+		cfg.samplerErr = samplerErr
 		return cfg, nil
+	}
+	if samplerErr != nil {
+		return Config{}, samplerErr
 	}
 	cfg.Warnings = append(warns, pwarns...)
 
@@ -182,20 +202,6 @@ func ResolveConfig(getenv func(string) string) (Config, error) {
 		cfg.Protocol = ProtocolGRPC
 	default:
 		return Config{}, fmt.Errorf("%s=%q: loomcycle supports http/protobuf or grpc", protoVar, proto)
-	}
-
-	if v := get("OTEL_TRACES_SAMPLER"); v != "" {
-		cfg.SamplerName = v
-	}
-	if arg := get("OTEL_TRACES_SAMPLER_ARG"); arg != "" {
-		f, err := strconv.ParseFloat(arg, 64)
-		if err != nil || f < 0 || f > 1 {
-			return Config{}, fmt.Errorf("OTEL_TRACES_SAMPLER_ARG=%q: want a number from 0 to 1", arg)
-		}
-		cfg.SamplerArg = f
-	}
-	if _, err := Sampler(cfg.SamplerName, cfg.SamplerArg); err != nil {
-		return Config{}, err
 	}
 
 	for _, k := range []string{"OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"} {
@@ -229,6 +235,26 @@ func ResolveConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// resolveSampler reads OTEL_TRACES_SAMPLER and OTEL_TRACES_SAMPLER_ARG over
+// the parentbased_always_on default, and checks that Sampler can build them.
+func resolveSampler(get func(string) string) (name string, arg float64, err error) {
+	name, arg = "parentbased_always_on", 1
+	if v := get("OTEL_TRACES_SAMPLER"); v != "" {
+		name = v
+	}
+	if v := get("OTEL_TRACES_SAMPLER_ARG"); v != "" {
+		f, perr := strconv.ParseFloat(v, 64)
+		if perr != nil || f < 0 || f > 1 {
+			return "", 0, fmt.Errorf("OTEL_TRACES_SAMPLER_ARG=%q: want a number from 0 to 1", v)
+		}
+		arg = f
+	}
+	if _, err := Sampler(name, arg); err != nil {
+		return "", 0, err
+	}
+	return name, arg, nil
 }
 
 // tracesExporter reads OTEL_TRACES_EXPORTER, a comma-separated list: unset or

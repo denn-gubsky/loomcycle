@@ -402,11 +402,15 @@ type mcpTool struct {
 	toolName   string
 	descriptor ToolDescriptor
 	pool       *Pool
+	// operatorStatic is whether the operator's config declares server; only
+	// such a server's name becomes a metric label (MetricLabel).
+	operatorStatic bool
 }
 
 // NewTool wraps a single MCP tool descriptor as a tools.Tool. Operators
 // that want per-server tools filtering can call this directly with
-// the subset of descriptors they want to expose.
+// the subset of descriptors they want to expose. Its server is taken as
+// runtime-defined; NewStaticTool is the operator's own server's tool.
 func NewTool(pool *Pool, server string, descriptor ToolDescriptor) tools.Tool {
 	return &mcpTool{
 		server:     server,
@@ -414,6 +418,20 @@ func NewTool(pool *Pool, server string, descriptor ToolDescriptor) tools.Tool {
 		descriptor: descriptor,
 		pool:       pool,
 	}
+}
+
+// NewStaticTool is NewTool for a server the operator's config declares
+// (yaml mcp_servers:), the one kind whose name labels the tool metrics.
+func NewStaticTool(pool *Pool, server string, descriptor ToolDescriptor) tools.Tool {
+	t := NewTool(pool, server, descriptor).(*mcpTool)
+	t.operatorStatic = true
+	return t
+}
+
+// MetricLabel is the tool's label on the tool metrics: mcp:<server> for the
+// operator's own server, "mcp" for one a definition made.
+func (t *mcpTool) MetricLabel() string {
+	return lcotel.MCPToolMetricName(sanitiseServerName(t.server), t.operatorStatic)
 }
 
 // setMCPSpanError marks an MCP span failed. A server's error can quote the

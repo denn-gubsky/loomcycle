@@ -240,7 +240,7 @@ func (a *runAdmission) wireRun() error {
 	// run. Loop iterations + provider calls + tool dispatch nest
 	// under it via context propagation. Span name + attribute set
 	// stable across the run-creation sites (RunOnce, runSubAgent).
-	a.runCtx, a.runSpan = lcotel.RecordRunStart(a.runCtx, lcotel.RunStartAttrs{
+	a.runCtx, a.runSpan = s.startRunSpan(a.runCtx, a.agentDef, lcotel.RunStartAttrs{
 		RunID:     a.runID,
 		AgentID:   a.agentID,
 		AgentName: a.effectiveAgentName,

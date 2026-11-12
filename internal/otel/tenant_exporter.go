@@ -43,38 +43,28 @@ func TracesURL(endpoint string, protocol Protocol) string {
 // read it — the operator's headers and client certificate sent to a tenant's
 // collector. release closes what the exporter's Shutdown does not.
 func newTenantExporter(ctx context.Context, d TenantDestination, timeout time.Duration) (exp sdktrace.SpanExporter, release func(), err error) {
-	if d.Dial == nil {
-		return nil, nil, errors.New("tenant export: no dialer")
-	}
-	u, err := url.Parse(d.Endpoint)
-	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
-		return nil, nil, fmt.Errorf("tenant export: endpoint is not an http(s) URL")
-	}
-	// A non-nil, possibly empty map: nil would leave the exporter reading
-	// OTEL_EXPORTER_OTLP_HEADERS, the operator's collector credentials.
-	headers := make(map[string]string, len(d.Headers))
-	for k, v := range d.Headers {
-		headers[k] = v
+	u, headers, err := tenantEndpoint(d)
+	if err != nil {
+		return nil, nil, err
 	}
 	if d.Protocol == ProtocolGRPC {
-		return newTenantGRPCExporter(ctx, u, d, headers, timeout)
+		conn, err := tenantGRPCConn(u, d)
+		if err != nil {
+			return nil, nil, err
+		}
+		exp, err := otlptracegrpc.New(ctx,
+			otlptracegrpc.WithGRPCConn(conn),
+			otlptracegrpc.WithHeaders(headers),
+			otlptracegrpc.WithTimeout(timeout),
+			otlptracegrpc.WithRetry(otlptracegrpc.RetryConfig{Enabled: false}),
+		)
+		if err != nil {
+			_ = conn.Close()
+			return nil, nil, err
+		}
+		return exp, func() { _ = conn.Close() }, nil
 	}
-	tr := &http.Transport{
-		DialContext:           d.Dial,
-		TLSClientConfig:       d.TLSConfig,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConnsPerHost:   2,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   timeout,
-		ResponseHeaderTimeout: timeout,
-		// Proxy stays nil: a proxy from the environment would be dialled in
-		// place of the collector, outside the destination the guard judges.
-	}
-	client := &http.Client{
-		Transport:     statusRecorder{next: tr},
-		Timeout:       timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return errTenantRedirect },
-	}
+	client, tr := tenantHTTPClient(d, timeout)
 	exp, err = otlptracehttp.New(ctx,
 		otlptracehttp.WithEndpointURL(TracesURL(d.Endpoint, ProtocolHTTPProtobuf)),
 		otlptracehttp.WithHTTPClient(client),
@@ -90,7 +80,49 @@ func newTenantExporter(ctx context.Context, d TenantDestination, timeout time.Du
 	return exp, tr.CloseIdleConnections, nil
 }
 
-func newTenantGRPCExporter(ctx context.Context, u *url.URL, d TenantDestination, headers map[string]string, timeout time.Duration) (sdktrace.SpanExporter, func(), error) {
+// tenantEndpoint checks d's endpoint and copies its headers. The copy is a
+// non-nil, possibly empty map: nil would leave an exporter reading
+// OTEL_EXPORTER_OTLP_HEADERS, the operator's collector credentials.
+func tenantEndpoint(d TenantDestination) (*url.URL, map[string]string, error) {
+	if d.Dial == nil {
+		return nil, nil, errors.New("tenant export: no dialer")
+	}
+	u, err := url.Parse(d.Endpoint)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return nil, nil, fmt.Errorf("tenant export: endpoint is not an http(s) URL")
+	}
+	headers := make(map[string]string, len(d.Headers))
+	for k, v := range d.Headers {
+		headers[k] = v
+	}
+	return u, headers, nil
+}
+
+// tenantHTTPClient is the client an http/protobuf export to d is sent with:
+// d's dialer (the guard), d's TLS, no proxy and no redirect. The transport is
+// returned for its idle connections to be closed with the exporter.
+func tenantHTTPClient(d TenantDestination, timeout time.Duration) (*http.Client, *http.Transport) {
+	tr := &http.Transport{
+		DialContext:           d.Dial,
+		TLSClientConfig:       d.TLSConfig,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+		// Proxy stays nil: a proxy from the environment would be dialled in
+		// place of the collector, outside the destination the guard judges.
+	}
+	return &http.Client{
+		Transport:     statusRecorder{next: tr},
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return errTenantRedirect },
+	}, tr
+}
+
+// tenantGRPCConn is the connection a gRPC export to d is sent over, dialled
+// through d's dialer (the guard).
+func tenantGRPCConn(u *url.URL, d TenantDestination) (*grpc.ClientConn, error) {
 	hostport := u.Host
 	if u.Port() == "" {
 		port := "443"
@@ -106,24 +138,10 @@ func newTenantGRPCExporter(ctx context.Context, u *url.URL, d TenantDestination,
 	dial := d.Dial
 	// passthrough: the guard resolves and judges the name the tenant gave;
 	// gRPC's own resolver would hand it an address instead.
-	conn, err := grpc.NewClient("passthrough:///"+hostport,
+	return grpc.NewClient("passthrough:///"+hostport,
 		grpc.WithTransportCredentials(creds),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) { return dial(ctx, "tcp", addr) }),
 	)
-	if err != nil {
-		return nil, nil, err
-	}
-	exp, err := otlptracegrpc.New(ctx,
-		otlptracegrpc.WithGRPCConn(conn),
-		otlptracegrpc.WithHeaders(headers),
-		otlptracegrpc.WithTimeout(timeout),
-		otlptracegrpc.WithRetry(otlptracegrpc.RetryConfig{Enabled: false}),
-	)
-	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
-	}
-	return exp, func() { _ = conn.Close() }, nil
 }
 
 // TestTenantExport sends one synthetic span (loomcycle.telemetry.test) to d,
@@ -157,7 +175,7 @@ func TestTenantExport(ctx context.Context, tenant string, d TenantDestination, s
 	copies := make([]sdktrace.ReadOnlySpan, len(ended))
 	res := tenantResource(tenant, serviceVersion)
 	for i, s := range ended {
-		copies[i] = newTenantSpan(s, res)
+		copies[i] = newTenantSpan(s, res, false)
 	}
 	if err := exp.ExportSpans(ctx, copies); err != nil {
 		if _, partial := partialRejected(err); partial {

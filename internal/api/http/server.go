@@ -5291,10 +5291,11 @@ func replayTranscript(events []store.Event) []providers.Message {
 			var pe providers.Event
 			if err := json.Unmarshal(ev.Payload, &pe); err == nil && pe.ToolUse != nil {
 				pendingToolResults = append(pendingToolResults, providers.ContentBlock{
-					Type:      "tool_result",
-					ToolUseID: pe.ToolUse.ID,
-					Text:      pe.Text,
-					IsError:   pe.IsError,
+					Type:        "tool_result",
+					ToolUseID:   pe.ToolUse.ID,
+					Text:        pe.Text,
+					IsError:     pe.IsError,
+					NotCaptured: storedNotCaptured(ev.Payload),
 				})
 			}
 			// Don't flush pendingToolResults yet — multiple tools at the
@@ -5874,6 +5875,10 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 		// already, and the live stream gets it below.
 		if err == nil && ev.ContentNotRetained {
 			payload = eventMarker(string(ev.Type), payload)
+		} else if err == nil && ev.ContentNotCaptured {
+			// Stored as it is, with the mark beside it: a run rebuilt from
+			// its transcript (replayTranscript) must not capture it either.
+			payload = withNotCapturedMark(payload)
 		}
 		if err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
@@ -7189,7 +7194,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// tool's Execute runs inside an iteration span; spawning a sub-run
 	// passes that ctx through to runSubAgent → here). Operators see
 	// the full multi-level run tree in Jaeger.
-	subRunCtx, subRunSpan := lcotel.RecordRunStart(subRunCtx, lcotel.RunStartAttrs{
+	subRunCtx, subRunSpan := s.startRunSpan(subRunCtx, def, lcotel.RunStartAttrs{
 		RunID:         subRunID,
 		AgentID:       subAgentID,
 		AgentName:     name,

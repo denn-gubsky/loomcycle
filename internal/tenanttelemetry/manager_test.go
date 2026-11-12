@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,19 +40,26 @@ type collector struct {
 	spans   int
 	headers []http.Header
 	refuse  bool
+	// paths counts the requests by URL path (/v1/traces, /v1/metrics).
+	paths map[string]int
 }
 
 func newCollector(t *testing.T) *collector {
 	t.Helper()
-	c := &collector{}
+	c := &collector{paths: map[string]int{}}
 	c.srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.headers = append(c.headers, r.Header.Clone())
+		c.paths[r.URL.Path]++
 		if c.refuse {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = io.WriteString(w, "denied "+r.Header.Get("Authorization"))
+			return
+		}
+		if r.URL.Path != "/v1/traces" {
+			w.Header().Set("Content-Type", "application/x-protobuf")
 			return
 		}
 		var req coltracepb.ExportTraceServiceRequest
@@ -84,6 +92,13 @@ func (c *collector) count() int {
 	return c.spans
 }
 
+// requests counts the requests to path.
+func (c *collector) requests(path string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paths[path]
+}
+
 type fixture struct {
 	st     *sqlite.Store
 	engine *credential.Engine
@@ -110,7 +125,8 @@ func newFixture(t *testing.T, cfg Config, tlsFrom *collector) *fixture {
 		t.Fatal(err)
 	}
 	f := &fixture{st: st, engine: credential.NewEngine(st, sealer), now: time.Now().UTC()}
-	f.router = lcotel.NewTenantRouter(lcotel.TenantRouterConfig{ScheduleDelay: 20 * time.Millisecond, ExportTimeout: 2 * time.Second})
+	f.router = lcotel.NewTenantRouter(lcotel.TenantRouterConfig{ScheduleDelay: 20 * time.Millisecond, ExportTimeout: 2 * time.Second,
+		MetricInterval: 20 * time.Millisecond})
 	t.Cleanup(func() { _ = f.router.Shutdown(context.Background()) })
 	if tlsFrom != nil {
 		f.tls = tlsFrom.srv.Client().Transport.(*http.Transport).TLSClientConfig
@@ -166,6 +182,7 @@ func TestManagerPut_RefusesWhatTheOperatorOrTheCredentialDoesNotAllow(t *testing
 	credentialtest.Expire(t, f.st, credential.Identity{TenantID: "acme", Scope: "tenant", Name: "old"}, time.Now().Add(-time.Hour))
 	f.cred(t, "acme", "tenant", "", "framing", "host=evil.example", []string{ep}, nil)
 	f.cred(t, "acme", "tenant", "", "notheaders", "just a token", []string{ep}, nil)
+	f.cred(t, "acme", "tenant", "", "tracesonly", "authorization=Bearer abcdefgh", []string{ep + "/v1/traces"}, nil)
 
 	cases := map[string]PolicyInput{
 		"http without the lab override":      {Endpoint: strings.Replace(ep, "https://", "http://", 1)},
@@ -176,9 +193,10 @@ func TestManagerPut_RefusesWhatTheOperatorOrTheCredentialDoesNotAllow(t *testing
 		"no endpoint":                        {},
 		"unknown protocol":                   {Endpoint: ep, Protocol: "zipkin"},
 		"grpc with a path":                   {Endpoint: ep + "/v1", Protocol: "grpc"},
-		"metrics signal":                     {Endpoint: ep, Signals: []string{"traces", "metrics"}},
+		"credential bound to traces only":    {Endpoint: ep, HeadersCredential: "tracesonly", Signals: []string{"traces", "metrics"}},
 		"unknown signal":                     {Endpoint: ep, Signals: []string{"logs"}},
-		"content capture on":                 {Endpoint: ep, ContentCapture: "on"},
+		"content capture on, operator off":   {Endpoint: ep, ContentCapture: "on"},
+		"content capture always":             {Endpoint: ep, ContentCapture: "always"},
 		"ratio over one":                     {Endpoint: ep, SamplerRatio: ratio(1.5)},
 		"ratio below zero":                   {Endpoint: ep, SamplerRatio: ratio(-0.1)},
 		"ratio above the operator cap":       {Endpoint: ep, SamplerRatio: ratio(0.75)},
@@ -413,10 +431,9 @@ func TestManagerPut_EmptySignalsMeanTraces(t *testing.T) {
 	}
 }
 
-func TestManagerRefresh_ARowWithoutTracesExportsNothing(t *testing.T) {
+func TestManagerRefresh_AMetricsOnlyRowRoutesNoSpans(t *testing.T) {
 	c := newCollector(t)
 	f := newFixture(t, Config{}, c)
-	// A row a later build may store (metrics only): this one exports no traces.
 	if err := f.st.TenantTelemetryPolicyPut(context.Background(), store.TenantTelemetryPolicyRow{
 		TenantID: "acme", Endpoint: c.srv.URL, Protocol: "http/protobuf", Signals: []string{"metrics"}, SamplerRatio: 1,
 	}); err != nil {
@@ -425,8 +442,100 @@ func TestManagerRefresh_ARowWithoutTracesExportsNothing(t *testing.T) {
 	if err := f.m.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if got := f.router.Tenants(); len(got) != 1 {
+		t.Fatalf("destinations = %v, want acme's", got)
+	}
+	if err := endOneSpan(f.router, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if n := c.requests("/v1/traces"); n != 0 {
+		t.Errorf("a metrics-only row exported %d span batches", n)
+	}
+}
+
+func TestManagerRefresh_ARowWithNoSignalExportsNothing(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	if err := f.st.TenantTelemetryPolicyPut(context.Background(), store.TenantTelemetryPolicyRow{
+		TenantID: "acme", Endpoint: c.srv.URL, Protocol: "http/protobuf", Signals: []string{}, SamplerRatio: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if got := f.router.Tenants(); len(got) != 0 {
-		t.Errorf("a row without traces exports: %v", got)
+		t.Errorf("a row with no signal exports: %v", got)
+	}
+}
+
+// withTenantSeries installs in-process metrics holding a series of tenant.
+func withTenantSeries(t *testing.T, tenants ...string) {
+	t.Helper()
+	restore, err := lcotel.SetMetricsForTest(false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restore)
+	for _, tenant := range tenants {
+		lcotel.RecordUsage(context.Background(), lcotel.UsageRecord{Tenant: tenant, Provider: "p", Model: "m", Key: "tenant", Input: 1})
+	}
+}
+
+func TestManager_AMetricsPolicyPushesWithItsHeadersUntilDeleted(t *testing.T) {
+	withTenantSeries(t, "acme")
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	ctx := context.Background()
+	ep := c.srv.URL
+	f.cred(t, "acme", "tenant", "", "tracesonly", "authorization=Bearer t-only-value", []string{ep + "/v1/traces"}, nil)
+	f.cred(t, "acme", "tenant", "", "both", "authorization=Bearer both-value", []string{ep}, nil)
+	// Bound to the traces path, the credential serves traces only.
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: ep, HeadersCredential: "tracesonly"}, "ops"); err != nil {
+		t.Fatalf("traces with a traces-bound credential: %v", err)
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: ep, HeadersCredential: "tracesonly", Signals: []string{SignalMetrics}}, "ops"); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "/v1/metrics") {
+		t.Fatalf("metrics with a traces-bound credential: err = %v, want refused naming the metrics URL", err)
+	}
+	row, err := f.put(ctx, "acme", PolicyInput{Endpoint: ep, HeadersCredential: "both", Signals: []string{SignalMetrics, SignalTraces}}, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(row.Signals, ",") != "metrics,traces" {
+		t.Errorf("stored signals %v", row.Signals)
+	}
+	// The collector holds the push before the exporter has its answer: wait
+	// for the status too.
+	waitFor(t, func() bool { return c.requests("/v1/metrics") >= 1 && !f.m.Status("acme").LastSuccessAt.IsZero() })
+	if got := c.lastAuth(); got != "Bearer both-value" {
+		t.Errorf("the push carried authorization %q, want the tenant's", got)
+	}
+	if st := f.m.Status("acme"); st.LastError != "" {
+		t.Errorf("status = %+v", st)
+	}
+	if _, err := f.m.Delete(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond) // an interval that read the policy ends
+	n := c.requests("/v1/metrics")
+	time.Sleep(150 * time.Millisecond)
+	if got := c.requests("/v1/metrics"); got != n {
+		t.Errorf("%d pushes after the policy was deleted", got-n)
+	}
+}
+
+func TestManager_DialGuardRefusesAPrivateAddressForAMetricPush(t *testing.T) {
+	withTenantSeries(t, "acme")
+	f := newFixture(t, Config{AllowHTTP: true}, nil)
+	f.m.dial = netguard.GuardedDialContext(false, nil)
+	if _, err := f.put(context.Background(), "acme", PolicyInput{Endpoint: "http://127.0.0.1:4318", Signals: []string{SignalMetrics}}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	// The interval's push is refused at the dial ...
+	waitFor(t, func() bool { return f.m.Status("acme").LastError == "metrics: blocked" })
+	// ... and so is the test.
+	if err := f.m.Test(context.Background(), "acme"); err == nil || err.Error() != "metrics: blocked" {
+		t.Errorf("test = %v, want metrics: blocked", err)
 	}
 }
 
@@ -741,6 +850,355 @@ func TestManagerRefresh_RetriesAPolicyATransientFaultLeftOff(t *testing.T) {
 	}
 	if got := f.router.Tenants(); len(got) != 1 {
 		t.Errorf("the next refresh left the export off after a transient fault: %v (status %+v)", got, f.m.Status("acme"))
+	}
+}
+
+func maxChars(n int) *int { return &n }
+
+func TestManagerPut_ContentCaptureNeedsTheOperatorGate(t *testing.T) {
+	c := newCollector(t)
+	ctx := context.Background()
+	off := newFixture(t, Config{}, c)
+	_, err := off.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "operator has not turned it on") {
+		t.Fatalf("gate off: err = %v, want a refusal naming the operator's gate", err)
+	}
+
+	on := newFixture(t, Config{ContentCapture: true}, c)
+	for _, bad := range []int{lcotel.MinContentMaxChars - 1, lcotel.MaxContentMaxChars + 1, -5} {
+		if _, err := on.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on", ContentMaxChars: maxChars(bad)}, "ops"); !errors.Is(err, ErrInvalid) {
+			t.Errorf("content_max_chars %d: err = %v, want ErrInvalid", bad, err)
+		}
+	}
+	row, err := on.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops")
+	if err != nil || row.ContentCapture != ContentCaptureOn || row.ContentMaxChars != lcotel.DefaultContentMaxChars {
+		t.Fatalf("gate on: row = %+v err = %v, want capture on at the default length", row, err)
+	}
+	row, err = on.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops")
+	if err != nil || row.ContentCapture != ContentCaptureOff {
+		t.Fatalf("no capture asked: row = %+v err = %v, want off", row, err)
+	}
+}
+
+func TestManagerContentCaptureFor_OnlyWhileExportedWithCaptureOnAndOnRecord(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	ctx := context.Background()
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Fatal("no policy: captures")
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on", ContentMaxChars: maxChars(2048)}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	start := f.now
+	n, ok := f.m.ContentCaptureFor(ctx, "acme")
+	if !ok || n != 2048 {
+		t.Fatalf("capture on: (%d, %v), want (2048, true)", n, ok)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "beta"); ok {
+		t.Error("another tenant captures")
+	}
+	rec, err := f.st.TenantTelemetryContentExportGet(ctx, "acme")
+	if err != nil || !rec.FirstAt.Equal(start) || !rec.LastAt.Equal(start) {
+		t.Fatalf("record = %+v err = %v, want first = last = %v", rec, err, start)
+	}
+	// Within the interval nothing is written; past it the record moves, in
+	// the background once a first write is on record.
+	f.now = start.Add(ContentMarkInterval / 2)
+	f.m.ContentCaptureFor(ctx, "acme")
+	if rec, _ := f.st.TenantTelemetryContentExportGet(ctx, "acme"); !rec.LastAt.Equal(start) {
+		t.Errorf("a capture within the interval moved the record to %v", rec.LastAt)
+	}
+	f.now = start.Add(2 * ContentMarkInterval)
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); !ok {
+		t.Fatal("past the interval: the run does not capture")
+	}
+	waitRecord(t, f, "acme", start, f.now)
+
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Error("capture turned off: still captures")
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.Delete(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Error("policy deleted: still captures")
+	}
+}
+
+// A run asks on each recording whether its tenant still captures: a policy
+// put without capture (or deleted) stops a run that started capturing. While
+// it captures, the record's last time keeps up with a long run, in the
+// background.
+func TestManagerContentCaptureActive_FollowsThePolicyAndKeepsTheRecordCurrent(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	ctx := context.Background()
+	if f.m.ContentCaptureActive("acme") {
+		t.Fatal("no policy: active")
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	start := f.now
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); !ok {
+		t.Fatal("capture on: the run does not capture")
+	}
+	if !f.m.ContentCaptureActive("acme") {
+		t.Fatal("capture on: not active")
+	}
+	f.now = start.Add(3 * ContentMarkInterval)
+	if !f.m.ContentCaptureActive("acme") {
+		t.Fatal("capture on: not active later in the run")
+	}
+	waitRecord(t, f, "acme", start, f.now)
+
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if f.m.ContentCaptureActive("acme") {
+		t.Error("capture turned off: a running capture is still active")
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.Delete(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if f.m.ContentCaptureActive("acme") {
+		t.Error("policy deleted: a running capture is still active")
+	}
+}
+
+func TestManagerContentCaptureFor_StoredOnUnderAClosedGateExportsTracesWithoutContent(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	ctx := context.Background()
+	if err := f.st.TenantTelemetryPolicyPut(ctx, store.TenantTelemetryPolicyRow{TenantID: "acme", Endpoint: c.srv.URL,
+		Protocol: "http/protobuf", Signals: []string{SignalTraces}, SamplerRatio: 1, ContentCapture: "on", ContentMaxChars: 2048}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.router.Tenants(); len(got) != 1 {
+		t.Fatalf("destinations = %v: the stored policy's traces should still export", got)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Error("the operator's gate is off, yet the stored policy captures content")
+	}
+	if _, err := f.st.TenantTelemetryContentExportGet(ctx, "acme"); err == nil {
+		t.Error("a capture was recorded with the gate off")
+	}
+}
+
+// Content rides on spans: capture is refused for a policy without traces,
+// and a stored metrics-only row with capture on exports without it.
+func TestManagerPut_ContentCaptureNeedsTheTracesSignal(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	ctx := context.Background()
+	_, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, Signals: []string{SignalMetrics}, ContentCapture: "on"}, "ops")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "traces signal") {
+		t.Fatalf("metrics only with capture on: err = %v, want a refusal naming the traces signal", err)
+	}
+	row, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, Signals: []string{SignalTraces, SignalMetrics}, ContentCapture: "on"}, "ops")
+	if err != nil || row.ContentCapture != ContentCaptureOn {
+		t.Fatalf("traces and metrics with capture on: row = %+v err = %v, want capture on", row, err)
+	}
+
+	if err := f.st.TenantTelemetryPolicyPut(ctx, store.TenantTelemetryPolicyRow{TenantID: "beta", Endpoint: c.srv.URL,
+		Protocol: "http/protobuf", Signals: []string{SignalMetrics}, SamplerRatio: 1, ContentCapture: "on", ContentMaxChars: 2048}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "beta"); ok {
+		t.Error("a stored metrics-only policy captures content")
+	}
+	if _, err := f.st.TenantTelemetryContentExportGet(ctx, "beta"); err == nil {
+		t.Error("a capture was recorded for a policy that exports no spans")
+	}
+}
+
+// waitRecord waits for tenant's capture record to read first .. last.
+func waitRecord(t *testing.T, f *fixture, tenant string, first, last time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec, err := f.st.TenantTelemetryContentExportGet(context.Background(), tenant)
+		if err == nil && rec.LastAt.Equal(last) && rec.FirstAt.Equal(first) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("record = %+v err = %v, want first %v last %v", rec, err, first, last)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// markCountingStore counts the writes of the capture record; each waits for
+// release (when set) and fails while fail is set.
+type markCountingStore struct {
+	*sqlite.Store
+	calls   atomic.Int32
+	release chan struct{}
+	fail    atomic.Bool
+}
+
+func (s *markCountingStore) TenantTelemetryContentExportMark(ctx context.Context, tenant string, at time.Time) error {
+	s.calls.Add(1)
+	if s.release != nil {
+		<-s.release
+	}
+	if s.fail.Load() {
+		return errors.New("store down")
+	}
+	return s.Store.TenantTelemetryContentExportMark(ctx, tenant, at)
+}
+
+// countingManager is a Manager over st whose acme policy captures content.
+func countingManager(t *testing.T, st *markCountingStore, c *collector, f *fixture, now func() time.Time) *Manager {
+	t.Helper()
+	m, err := New(Deps{Config: Config{Enabled: true, MaxRatio: 1, ContentCapture: true}, Store: st,
+		Router: f.router, Dial: loopbackDial, TLSConfig: f.tls, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	row, err := m.Check(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Store(ctx, row, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// Run starts that need the record at once share one write of it: a slow store
+// is waited on once, not by every run start in a queue of its own.
+func TestManagerContentCaptureFor_ConcurrentRunStartsShareOneRecordWrite(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	st := &markCountingStore{Store: f.st, release: make(chan struct{})}
+	m := countingManager(t, st, c, f, nil)
+	const runs = 20
+	var wg sync.WaitGroup
+	var captured atomic.Int32
+	for i := 0; i < runs; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, ok := m.ContentCaptureFor(context.Background(), "acme"); ok {
+				captured.Add(1)
+			}
+		}()
+	}
+	waitUntil(t, func() bool { return st.calls.Load() >= 1 })
+	time.Sleep(50 * time.Millisecond) // a write of each run start's own would be under way by now
+	close(st.release)
+	wg.Wait()
+	if n := st.calls.Load(); n != 1 {
+		t.Errorf("%d record writes for %d concurrent run starts, want 1", n, runs)
+	}
+	if n := captured.Load(); n != runs {
+		t.Errorf("%d of %d run starts capture, want every one once the record is written", n, runs)
+	}
+}
+
+// A record that cannot be written is not retried by every run start: for a
+// while after the failure the tenant's runs start without capture, and the
+// write is tried again after it.
+func TestManagerContentCaptureFor_BacksOffAfterARecordWriteFails(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	st := &markCountingStore{Store: f.st}
+	st.fail.Store(true)
+	now := time.Now().UTC()
+	m := countingManager(t, st, c, f, func() time.Time { return now })
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		if _, ok := m.ContentCaptureFor(ctx, "acme"); ok {
+			t.Fatal("content captured though its export could not be put on record")
+		}
+	}
+	if n := st.calls.Load(); n != 1 {
+		t.Errorf("%d record writes in the back-off, want 1", n)
+	}
+	now = now.Add(ContentMarkRetryAfter)
+	st.fail.Store(false)
+	if _, ok := m.ContentCaptureFor(ctx, "acme"); !ok {
+		t.Error("past the back-off with the store back: the run does not capture")
+	}
+	if n := st.calls.Load(); n != 2 {
+		t.Errorf("%d record writes, want a second once the back-off ran out", n)
+	}
+}
+
+func waitUntil(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// markFailingStore refuses to record a content capture.
+type markFailingStore struct{ *sqlite.Store }
+
+func (markFailingStore) TenantTelemetryContentExportMark(context.Context, string, time.Time) error {
+	return errors.New("store down")
+}
+
+func TestManagerContentCaptureFor_ACaptureThatCannotBeRecordedIsRefused(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	m, err := New(Deps{Config: Config{Enabled: true, MaxRatio: 1, ContentCapture: true}, Store: markFailingStore{f.st},
+		Router: f.router, Dial: loopbackDial, TLSConfig: f.tls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	row, err := m.Check(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Store(ctx, row, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Error("content captured though its export could not be put on record")
+	}
+}
+
+func TestConfigFromEnv_ContentCaptureIsItsOwnGateUnderTheExportGate(t *testing.T) {
+	env := map[string]string{"LOOMCYCLE_TENANT_CONTENT_CAPTURE": "1"}
+	get := func(k string) string { return env[k] }
+	if cfg, err := ConfigFromEnv(get); err != nil || cfg.ContentCapture {
+		t.Fatalf("export gate off: cfg=%+v err=%v, want no capture", cfg, err)
+	}
+	env["LOOMCYCLE_TENANT_TELEMETRY"] = "1"
+	if cfg, err := ConfigFromEnv(get); err != nil || !cfg.ContentCapture {
+		t.Fatalf("both gates on: cfg=%+v err=%v", cfg, err)
+	}
+	delete(env, "LOOMCYCLE_TENANT_CONTENT_CAPTURE")
+	if cfg, err := ConfigFromEnv(get); err != nil || cfg.ContentCapture {
+		t.Fatalf("capture gate unset: cfg=%+v err=%v, want off by default", cfg, err)
+	}
+	env["LOOMCYCLE_TENANT_CONTENT_CAPTURE"] = "maybe"
+	if _, err := ConfigFromEnv(get); err == nil {
+		t.Error("a bad capture gate value passed")
 	}
 }
 

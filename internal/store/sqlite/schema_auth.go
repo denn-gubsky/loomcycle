@@ -255,8 +255,17 @@ func authSection() schemaPlan {
 			headers_credential TEXT    NOT NULL DEFAULT '',
 			signals            TEXT    NOT NULL,
 			sampler_ratio      REAL    NOT NULL,
+			content_capture    TEXT    NOT NULL DEFAULT 'off',
+			content_max_chars  INTEGER NOT NULL DEFAULT 0,
 			updated_at         INTEGER NOT NULL,
 			updated_by         TEXT    NOT NULL DEFAULT ''
+		)`,
+		// When each tenant's captured content was exported (RFC GG P3), for
+		// the erasure report. Mirrors postgres migration 0134; unix nanos.
+		`CREATE TABLE IF NOT EXISTS tenant_telemetry_content_exports (
+			tenant_id TEXT    PRIMARY KEY,
+			first_at  INTEGER NOT NULL,
+			last_at   INTEGER NOT NULL
 		)`,
 	}}
 }

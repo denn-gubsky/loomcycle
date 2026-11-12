@@ -89,6 +89,22 @@ type Manager struct {
 	locks map[string]*sync.Mutex
 	// lastTest is when each tenant last ran the test here.
 	lastTest map[string]time.Time
+	// contentMarked is when this replica last recorded, in the store, that a
+	// tenant's content is being captured (ContentCaptureFor).
+	contentMarked map[string]time.Time
+	// contentMarking is each tenant's record write under way: one per tenant
+	// at a time, which every run start that needs it waits on.
+	contentMarking map[string]*contentMarkCall
+	// contentRetryAt is when a tenant's record may be written again after a
+	// write failed; until then its runs start without capture.
+	contentRetryAt map[string]time.Time
+}
+
+// contentMarkCall is one write of a tenant's capture record; err is set
+// before done is closed.
+type contentMarkCall struct {
+	done chan struct{}
+	err  error
 }
 
 // applied is what this replica last made of one tenant's policy.
@@ -104,6 +120,9 @@ type applied struct {
 	// transient: err is a fault (a store or decryption failure), not a
 	// refusal, so the next refresh tries again though nothing changed.
 	transient bool
+	// contentMaxChars is the cut of each captured field while the tenant's
+	// spans are exported with content capture on; 0 when they are not.
+	contentMaxChars int
 }
 
 // New builds a Manager. It sets no destination until Refresh (or Reload).
@@ -119,6 +138,8 @@ func New(d Deps) (*Manager, error) {
 		cfg: d.Config, st: d.Store, creds: d.Credentials, router: d.Router, dial: d.Dial,
 		registerSecret: d.RegisterSecret, version: d.ServiceVersion, now: now, tlsConfig: d.TLSConfig,
 		applied: map[string]applied{}, locks: map[string]*sync.Mutex{}, lastTest: map[string]time.Time{},
+		contentMarked: map[string]time.Time{}, contentMarking: map[string]*contentMarkCall{},
+		contentRetryAt: map[string]time.Time{},
 	}, nil
 }
 
@@ -163,7 +184,7 @@ func (m *Manager) Status(tenant string) Status {
 // header credential for the endpoint, and returns the row Store would write.
 // A policy that could not export is refused here, before anything is stored.
 func (m *Manager) Check(ctx context.Context, tenant string, in PolicyInput) (store.TenantTelemetryPolicyRow, error) {
-	row, err := m.normalize(tenant, in)
+	row, err := m.normalize(tenant, in, false)
 	if err != nil {
 		return store.TenantTelemetryPolicyRow{}, err
 	}
@@ -202,9 +223,10 @@ func (m *Manager) Applied(ctx context.Context, tenant string) {
 	m.publish(ctx, tenant)
 }
 
-// Test sends one synthetic span to tenant's stored destination, through the
-// same credential resolution, address guard and exporter its spans take, and
-// returns nil or why it failed (scrubbed of any header value).
+// Test sends one synthetic span (with traces) and one synthetic metric (with
+// metrics) to tenant's stored destination, through the same credential
+// resolution, address guard and exporters its exports take, and returns nil
+// or why it failed (scrubbed of any header value).
 func (m *Manager) Test(ctx context.Context, tenant string) error {
 	row, err := m.Get(ctx, tenant)
 	if err != nil {
@@ -225,6 +247,122 @@ func (m *Manager) Test(ctx context.Context, tenant string) error {
 		return err
 	}
 	return m.router.Test(ctx, tenant, d, lcotel.DefaultTenantExportTimeout)
+}
+
+// ContentMarkInterval is how often, at most, each replica records in the
+// store that a tenant's content is being captured. The erasure report's
+// window is that record, so its last time lags by up to this much.
+const ContentMarkInterval = time.Minute
+
+// contentMarkTimeout bounds one write of the record.
+const contentMarkTimeout = 5 * time.Second
+
+// ContentMarkRetryAfter is how long a tenant's runs start without capture
+// after its record could not be written, before the write is tried again.
+// Without it, a store that fails or hangs would make every run start of every
+// capturing tenant wait on a write of its own.
+const ContentMarkRetryAfter = 30 * time.Second
+
+// ContentCaptureFor reports whether a run of tenant starting now captures
+// content, and the length each captured field is cut to. It does while the
+// tenant's policy is exported here with content capture on (and the operator
+// allows it: ValidStored). The run's own checks — its agent's opt-out, a
+// no-trace run — are the caller's.
+//
+// A yes is first recorded in the store, so the erasure report can say when
+// content left for the tenant's backend: content is never exported unless the
+// export is on record. The first run start on this replica waits for that
+// write, shared by every run start meanwhile; once a write has succeeded, the
+// record's last time is moved (at most every ContentMarkInterval) in the
+// background. A write that fails is a no, and so is every run start for
+// ContentMarkRetryAfter after it.
+func (m *Manager) ContentCaptureFor(ctx context.Context, tenant string) (int, bool) {
+	if tenant == "" {
+		return 0, false
+	}
+	now := m.now()
+	m.mu.Lock()
+	a := m.applied[tenant]
+	if a.contentMaxChars <= 0 || a.err != "" || now.Before(m.contentRetryAt[tenant]) {
+		m.mu.Unlock()
+		return 0, false
+	}
+	if last := m.contentMarked[tenant]; !last.IsZero() {
+		if now.Sub(last) >= ContentMarkInterval {
+			m.startContentMarkLocked(tenant, now)
+		}
+		m.mu.Unlock()
+		return a.contentMaxChars, true
+	}
+	c := m.startContentMarkLocked(tenant, now)
+	m.mu.Unlock()
+	select {
+	case <-c.done:
+	case <-ctx.Done():
+		return 0, false
+	}
+	if c.err != nil {
+		return 0, false
+	}
+	return a.contentMaxChars, true
+}
+
+// startContentMarkLocked starts writing tenant's record at now, unless a
+// write is under way, and returns the write. Called with m.mu held.
+func (m *Manager) startContentMarkLocked(tenant string, now time.Time) *contentMarkCall {
+	if c := m.contentMarking[tenant]; c != nil {
+		return c
+	}
+	c := &contentMarkCall{done: make(chan struct{})}
+	m.contentMarking[tenant] = c
+	safego.Go(context.Background(), "tenanttelemetry.content_mark", func() { m.markContent(tenant, now, c) })
+	return c
+}
+
+// ContentCaptureActive reports whether tenant's destination captures content
+// now: asked on each recording of a run that started capturing, so a tenant
+// that turns capture off (or replaces its destination with one that does not
+// capture) stops it mid-run. A yes also keeps the capture record's last time
+// current through a long run: at most every ContentMarkInterval, in the
+// background, it is moved, and the recording never waits on the store. The
+// first time is on record already: the run's start (ContentCaptureFor) wrote
+// it before any content was recorded.
+func (m *Manager) ContentCaptureActive(tenant string) bool {
+	if !m.router.CapturesContent(tenant) {
+		return false
+	}
+	now := m.now()
+	m.mu.Lock()
+	if now.Sub(m.contentMarked[tenant]) >= ContentMarkInterval && !now.Before(m.contentRetryAt[tenant]) {
+		m.startContentMarkLocked(tenant, now)
+	}
+	m.mu.Unlock()
+	return true
+}
+
+// markContent writes tenant's capture record at now, detached from any run:
+// a run that stops waiting does not cut the write short for the others.
+func (m *Manager) markContent(tenant string, now time.Time, c *contentMarkCall) {
+	ctx, cancel := context.WithTimeout(context.Background(), contentMarkTimeout)
+	defer cancel()
+	err := m.st.TenantTelemetryContentExportMark(ctx, tenant, now.UTC())
+	m.mu.Lock()
+	delete(m.contentMarking, tenant)
+	if err == nil {
+		if now.After(m.contentMarked[tenant]) {
+			m.contentMarked[tenant] = now
+		}
+		delete(m.contentRetryAt, tenant)
+	} else {
+		m.contentRetryAt[tenant] = now.Add(ContentMarkRetryAfter)
+	}
+	c.err = err
+	m.mu.Unlock()
+	close(c.done)
+	if err != nil {
+		slog.Warn("tenant telemetry: could not record a content capture; runs start without capture for a while", "tenant", tenant,
+			"retry_after", ContentMarkRetryAfter, "err", err)
+	}
 }
 
 // TestInterval is how often each tenant may run the test on one replica: a
@@ -254,9 +392,10 @@ func (m *Manager) mayTest(tenant string) bool {
 // snapshot restore. The header credential's binding to the endpoint is
 // checked where the credential is resolved, each time.
 func (m *Manager) ValidStored(row store.TenantTelemetryPolicyRow) (store.TenantTelemetryPolicyRow, error) {
-	ratio := row.SamplerRatio
+	ratio, maxChars := row.SamplerRatio, row.ContentMaxChars
 	valid, err := m.normalize(row.TenantID, PolicyInput{Endpoint: row.Endpoint, Protocol: row.Protocol,
-		HeadersCredential: row.HeadersCredential, Signals: row.Signals, SamplerRatio: &ratio})
+		HeadersCredential: row.HeadersCredential, Signals: row.Signals, SamplerRatio: &ratio,
+		ContentCapture: row.ContentCapture, ContentMaxChars: &maxChars}, true)
 	if err != nil {
 		return store.TenantTelemetryPolicyRow{}, fmt.Errorf("%w: policy no longer valid: %s", ErrInvalid, PublicError(row.TenantID, err))
 	}
@@ -277,7 +416,8 @@ func (m *Manager) destination(ctx context.Context, row store.TenantTelemetryPoli
 	}
 	return lcotel.TenantDestination{
 		Endpoint: row.Endpoint, Protocol: lcotel.Protocol(row.Protocol), Headers: headers, Dial: m.dial,
-		TLSConfig: m.tlsConfig, Ratio: row.SamplerRatio,
+		TLSConfig: m.tlsConfig, Signals: append([]string(nil), row.Signals...),
+		Ratio: row.SamplerRatio, ContentCapture: row.ContentCapture == ContentCaptureOn,
 	}, nil
 }
 
@@ -393,7 +533,7 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 	// rules allow it now.
 	valid, ruleErr := m.ValidStored(row)
 	switch {
-	case !containsString(row.Signals, SignalTraces):
+	case !containsString(row.Signals, SignalTraces) && !containsString(row.Signals, SignalMetrics):
 		m.router.RemoveDestination(row.TenantID)
 	case ruleErr != nil:
 		m.router.RemoveDestination(row.TenantID)
@@ -409,6 +549,10 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 			break
 		}
 		m.router.SetDestination(row.TenantID, d)
+		// ValidStored turned capture off if the operator no longer allows it.
+		if valid.ContentCapture == ContentCaptureOn {
+			next.contentMaxChars = valid.ContentMaxChars
+		}
 	}
 	m.mu.Lock()
 	m.applied[row.TenantID] = next

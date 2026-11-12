@@ -264,6 +264,12 @@ type Speech struct {
 	MaxCharsPerRun int   `json:"max_chars_per_run,omitempty"`
 }
 
+// Telemetry mirrors config.AgentTelemetry locally (the agents package stays
+// config-free). json: tags are LOAD-BEARING for content_sha256.
+type Telemetry struct {
+	ContentCapture string `json:"content_capture,omitempty"`
+}
+
 // Compaction mirrors config.Compaction locally (the agents package stays
 // config-free). json: tags mirror the persisted snake_case and are LOAD-BEARING
 // for content_sha256. Pointers so an unset field omits.

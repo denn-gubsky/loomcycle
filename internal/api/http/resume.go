@@ -858,7 +858,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	if rootErr != nil {
 		slog.Warn("resume: the run resumes as the root of its own tree", "run_id", run.ID, "err", rootErr)
 	}
-	runCtx, runSpan := lcotel.RecordRunStart(runCtx, lcotel.RunStartAttrs{
+	runCtx, runSpan := s.startRunSpan(s.withResumedNeverAncestry(runCtx, run), agentDef, lcotel.RunStartAttrs{
 		RunID:         run.ID,
 		AgentID:       run.AgentID,
 		AgentName:     run.Agent,
@@ -2313,18 +2313,25 @@ func (s *Server) reconcileFanoutParent(ctx context.Context, run store.Run, runEv
 	// Persist the synthesized tool_result to the parent's transcript so a
 	// re-attaching operator AND any future re-snapshot see a complete cycle.
 	// makeRecordingEmit stores it under the parent's run id (mutex-guarded).
+	//
+	// The envelope is marked not captured: whether a child's agent never
+	// captures content was known on the parent's lost goroutine only, so a
+	// resumed envelope is held to the stricter rule rather than risk handing
+	// a never child's answer to the parent's captured input.
 	emit(providers.Event{
-		Type:    providers.EventToolResult,
-		ToolUse: &providers.ToolUse{ID: fanout.toolUseID},
-		Text:    string(body),
+		Type:               providers.EventToolResult,
+		ToolUse:            &providers.ToolUse{ID: fanout.toolUseID},
+		Text:               string(body),
+		ContentNotCaptured: true,
 	})
 
 	return providers.Message{
 		Role: "user",
 		Content: []providers.ContentBlock{{
-			Type:      "tool_result",
-			ToolUseID: fanout.toolUseID,
-			Text:      string(body),
+			Type:        "tool_result",
+			ToolUseID:   fanout.toolUseID,
+			Text:        string(body),
+			NotCaptured: true,
 		}},
 	}, nil
 }

@@ -32,6 +32,13 @@ type Tool interface {
 	Execute(ctx context.Context, input json.RawMessage) (Result, error)
 }
 
+// MetricLabeler is a tool that names its own label on the tool metrics in
+// place of the one its name would get: an MCP tool knows whether the
+// operator configured its server, which its name does not say.
+type MetricLabeler interface {
+	MetricLabel() string
+}
+
 // ErrorCategory and ErrorInfo are ALIASES for the errkind vocabulary, not
 // copies. They live there because internal/providers has to carry a category
 // on a run event and cannot import this package (tools imports providers), and
@@ -1259,10 +1266,18 @@ func ChildOutcomeSink(ctx context.Context) *ChildOutcome {
 // calling run's model still reads that result; what the run STORES of the
 // call is a marker, as a no-trace run stores its own: the child's answer is
 // stored nowhere, its parent's transcript included.
-type ContentMark struct{ notRetained atomic.Bool }
+type ContentMark struct{ notRetained, notCaptured atomic.Bool }
 
 // NotRetained reports whether the call's result must not be stored. Nil-safe.
 func (m *ContentMark) NotRetained() bool { return m != nil && m.notRetained.Load() }
+
+// NotCaptured reports whether the call's result must not be captured on a
+// span (a tenant's content capture): it carries a no-trace run's content, or
+// the answer of a run whose agent never captures. Stored it may still be.
+// Nil-safe.
+func (m *ContentMark) NotCaptured() bool {
+	return m != nil && (m.notRetained.Load() || m.notCaptured.Load())
+}
 
 type ctxKeyContentMark struct{}
 
@@ -1272,6 +1287,31 @@ type ctxKeyContentMark struct{}
 func WithContentMark(ctx context.Context) (context.Context, *ContentMark) {
 	m := &ContentMark{}
 	return context.WithValue(ctx, ctxKeyContentMark{}, m), m
+}
+
+// contentNotRetained reports whether the tool call ctx belongs to was marked:
+// its result carries a no-trace run's content.
+func contentNotRetained(ctx context.Context) bool {
+	m, _ := ctx.Value(ctxKeyContentMark{}).(*ContentMark)
+	return m.NotRetained()
+}
+
+// contentNotCaptured reports whether the tool call ctx belongs to hands back
+// content no span may capture (ContentMark.NotCaptured).
+func contentNotCaptured(ctx context.Context) bool {
+	m, _ := ctx.Value(ctxKeyContentMark{}).(*ContentMark)
+	return m.NotCaptured()
+}
+
+// MarkContentNotCaptured flags the tool call ctx belongs to: what it hands
+// back is the answer of a run whose agent never captures content
+// (telemetry.content_capture: never), so the caller's spans must not capture
+// it either. Unlike MarkContentNotRetained it changes nothing stored. A no-op
+// off a tool call.
+func MarkContentNotCaptured(ctx context.Context) {
+	if m, _ := ctx.Value(ctxKeyContentMark{}).(*ContentMark); m != nil {
+		m.notCaptured.Store(true)
+	}
 }
 
 // MarkContentNotRetained flags the tool call ctx belongs to: what it hands
@@ -1867,6 +1907,18 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 		outcome = lcotel.ToolOutcomeIsError
 	}
 	lcotel.RecordToolCallMetric(ctx, d.toolMetricName(name), outcome, time.Since(start))
+	// Only when the run captures content for its tenant (RFC GG P3). A
+	// result carrying a no-trace run's content is recorded as a marker.
+	if lcotel.ContentCaptureFrom(ctx) != nil {
+		result := res.Text
+		switch {
+		case contentNotRetained(ctx):
+			result = "[content not retained]"
+		case contentNotCaptured(ctx):
+			result = "[content not captured]"
+		}
+		lcotel.SetToolCallContent(ctx, span, name, input, result)
+	}
 	// An error result — a refusal, a policy or hook denial, a tool answering
 	// "no" — is the model's to read and act on, the loop working as designed,
 	// so it is an attribute, not the span's error status: a backend keeping
@@ -1895,16 +1947,20 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 }
 
 // toolMetricName is name's label on the tool metrics. A tool this run was
-// given is named (an MCP tool by its server, a client tool as "client"); an
+// given is named (an MCP tool by its server when the operator configured it,
+// else "mcp"; a client tool as "client"); an
 // MCP name the fallback may still resolve is "mcp", since until it resolves
 // the server in it is the model's text; any other name is "unknown". A label
 // is never text the model chose.
 func (d *Dispatcher) toolMetricName(name string) string {
-	if _, ok := d.tools[name]; ok {
+	if t, ok := d.tools[name]; ok {
+		if l, ok := t.(MetricLabeler); ok {
+			return l.MetricLabel()
+		}
 		return lcotel.ToolMetricName(name, true)
 	}
 	if server, _ := lcotel.ParseMCPToolName(name); server != "" && d.fallback != nil {
-		return "mcp"
+		return lcotel.ToolLabelMCP
 	}
 	return lcotel.ToolMetricName(name, false)
 }

@@ -1869,6 +1869,13 @@ type AgentDef struct {
 	// Content-identifying. Not per-run overridable, like Transcription.
 	Speech *AgentSpeech `yaml:"speech,omitempty"`
 
+	// Telemetry is the per-agent `telemetry:` block (RFC GG P3):
+	// `content_capture: never` keeps the agent's runs' content off every span
+	// whatever its tenant's capture policy. It only ever takes capture away.
+	// Content-identifying. Not per-run overridable: no run-request field
+	// carries it (a run could only narrow it, and none needs to yet).
+	Telemetry *AgentTelemetry `yaml:"telemetry,omitempty"`
+
 	// Volumes is the RFC AH Phase 1 filesystem-volume binding list — the
 	// names of top-level `volumes:` entries the agent's file/exec tools
 	// (Read/Write/Edit/Glob/Grep/Bash/NotebookEdit) may resolve paths
@@ -6787,6 +6794,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if !override.Speech.IsZero() {
 		out.Speech = MergeAgentSpeech(out.Speech, override.Speech)
+	}
+	if !override.Telemetry.IsZero() {
+		out.Telemetry = MergeAgentTelemetry(out.Telemetry, override.Telemetry)
 	}
 	if override.Providers != nil {
 		out.Providers = override.Providers

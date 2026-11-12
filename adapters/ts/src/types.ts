@@ -3084,8 +3084,8 @@ export interface RetentionOverride {
   created_at?: string;
 }
 
-/** A tenant's own trace export as written: where the tenant's run spans go.
- *  The operator's export is untouched by it. */
+/** A tenant's own telemetry export as written: where the tenant's run spans
+ *  and its own metric series go. The operator's export is untouched by it. */
 export interface TenantTelemetryPolicyInput {
   /** OTLP base URL of the tenant's collector (https). */
   endpoint: string;
@@ -3094,13 +3094,22 @@ export interface TenantTelemetryPolicyInput {
   /** The NAME of a tenant credential, restricted to the endpoint, whose
    *  value is the header block (`name=value,name=value`). Never the value. */
   headers_credential?: string;
-  /** What is exported; empty or absent is `["traces"]`, the only signal. */
+  /** What is exported: `"traces"`, `"metrics"` (the tenant's own series,
+   *  pushed every minute) or both; empty or absent is `["traces"]`. */
   signals?: string[];
   /** Share of the tenant's traces sent, 0..1, at most the operator's cap.
    *  Absent is 1 (or the cap below it); `0` is sent as 0, not as absent. */
   sampler_ratio?: number;
-  /** Only `off` is accepted: span content is never exported. */
-  content_capture?: "off";
+  /** `on` records the tenant's runs' prompts, answers and tool calls —
+   *  redacted, and each field cut to `content_max_chars` — on the spans its
+   *  collector receives, and never on the operator's. Accepted only where the
+   *  operator allows it (`LOOMCYCLE_TENANT_CONTENT_CAPTURE`) and only with
+   *  `"traces"` in `signals`. Content sent to the collector is outside
+   *  loomcycle's erasure. Default `off`. */
+  content_capture?: "off" | "on";
+  /** The length each captured field is cut to, 256..65536. Absent or `0` is
+   *  4096. */
+  content_max_chars?: number;
 }
 
 /** A stored tenant trace-export policy. */
@@ -3114,21 +3123,28 @@ export interface TenantTelemetryPolicy {
   updated_at?: string;
   /** Principal subject that last wrote it. */
   updated_by?: string;
+  /** Whether content is captured. A stored `on` captures nothing while the
+   *  operator does not allow it. */
+  content_capture: "off" | "on";
+  /** The length each captured field is cut to. */
+  content_max_chars: number;
 }
 
 /** The tenant's export on the replica that answered, since it started.
  *  `last_error` never holds a header value. */
 export interface TenantTelemetryStatus {
   replica?: string;
-  /** This replica is sending the tenant's spans. */
+  /** This replica is sending the tenant's spans or metrics. */
   exporting: boolean;
   exported_spans: number;
   dropped_spans: number;
+  /** Failed exports: span batches and metric pushes alike. */
   export_failures: number;
   /** RFC 3339. */
   last_success_at?: string;
-  /** The last export failure, or why the stored policy is not being exported
-   *  (an expired header credential). */
+  /** The last export failure (a metric push's reads `metrics: <category>`),
+   *  or why the stored policy is not being exported (an expired header
+   *  credential). */
   last_error?: string;
   /** RFC 3339. */
   last_error_at?: string;
@@ -6142,6 +6158,13 @@ export interface AgentSpeech {
   max_chars_per_run?: number;
 }
 
+/** An agent's telemetry settings. `content_capture: "never"` keeps the
+ *  agent's runs' content off every span, whatever its tenant's capture
+ *  policy; it only ever takes capture away, and a fork cannot remove it. */
+export interface AgentTelemetry {
+  content_capture?: "never";
+}
+
 /** The `context` block of an {@link AgentDefOverlay}: {@link ContextOptions}
  *  in its wire spelling — see there for what each field does. A fork merges it
  *  per field, and the spawn tree inherits it. */
@@ -6354,6 +6377,8 @@ export interface AgentDefOverlay {
   transcription?: AgentTranscription;
   /** Text-to-speech settings, merged per field. */
   speech?: AgentSpeech;
+  /** Telemetry settings: opt the agent out of content capture. */
+  telemetry?: AgentTelemetry;
   /** How history is distilled, merged per field. */
   context?: AgentContext;
   /** Volumes the file and exec tools may resolve paths against. None declared

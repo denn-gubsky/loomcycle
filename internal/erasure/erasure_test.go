@@ -472,3 +472,53 @@ func TestService_ErasureDeletesTheSubjectsCarriedUsage(t *testing.T) {
 		}
 	}
 }
+
+// TestService_TelemetryContentExportIsNamedAsResidue: content a tenant's
+// capture sent to its own collector is outside the erasure, and both the
+// report and the erasure say when it left; a tenant whose content never left
+// gets no such line.
+func TestService_TelemetryContentExportIsNamedAsResidue(t *testing.T) {
+	s := newSvc(t)
+	seed(t, s, "acme", "alice")
+	seed(t, s, "beta", "bob")
+	ctx := context.Background()
+	first := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	for _, at := range []time.Time{first, first.Add(90 * time.Minute)} {
+		if err := s.Store.TenantTelemetryContentExportMark(ctx, "acme", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "content exported to the tenant telemetry destination between 2026-11-11T09:00:00Z and 2026-11-11T10:30:00Z"
+
+	rep, err := s.Report(ctx, "acme", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPrefix(rep.Notes, want) {
+		t.Errorf("report notes = %q, want a line starting %q", rep.Notes, want)
+	}
+	res, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Retained["tenant_telemetry_content"]; len(got) < len(want) || got[:len(want)] != want {
+		t.Errorf("retained = %q, want a line starting %q", got, want)
+	}
+
+	rep, err = s.Report(ctx, "beta", "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsPrefix(rep.Notes, "content exported to the tenant telemetry destination") {
+		t.Errorf("a tenant whose content never left is told it did: %q", rep.Notes)
+	}
+}
+
+func containsPrefix(lines []string, p string) bool {
+	for _, l := range lines {
+		if len(l) >= len(p) && l[:len(p)] == p {
+			return true
+		}
+	}
+	return false
+}

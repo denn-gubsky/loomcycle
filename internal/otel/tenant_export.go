@@ -47,11 +47,22 @@ type TenantDestination struct {
 	// TLSConfig is the client TLS configuration for an https endpoint; nil
 	// for the system roots. Tests set it to trust their own collector.
 	TLSConfig *tls.Config
+	// Signals are what is exported: SignalTraces, SignalMetrics. Empty is
+	// traces only.
+	Signals []string
 	// Ratio is the share of the tenant's traces, by trace id, it receives:
 	// 0 none, 1 all. A root span of the tenant is sampled for it at this
 	// ratio even where the operator's sampler would drop it (the operator
 	// still exports none of those). Changing it never rebuilds the pipeline.
+	// Unused when Signals has no traces.
 	Ratio float64
+	// ContentCapture: the tenant's policy captures content for this
+	// destination. Its copy of a span carries the content keys only while
+	// this is so, for the destination as it is when the batch leaves: a run
+	// that started capturing stops reaching the collector with its content
+	// once the tenant turns capture off. Like Ratio, changing it never
+	// rebuilds the pipeline.
+	ContentCapture bool
 }
 
 // fingerprint identifies the destination's settings: a pipeline built for an
@@ -70,6 +81,12 @@ func (d TenantDestination) fingerprint() string {
 		write(k)
 		write(d.Headers[k])
 	}
+	write("signals")
+	signals := append([]string(nil), d.Signals...)
+	sort.Strings(signals)
+	for _, s := range signals {
+		write(s)
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -84,10 +101,19 @@ type TenantRouterConfig struct {
 	IdleTimeout time.Duration
 	// MaxConcurrentExports caps export calls in flight across all tenants.
 	MaxConcurrentExports int
+	// MaxExportsPerTenant caps the export calls one tenant may have in flight
+	// (span batches, metric pushes and tests together), so a few tenants
+	// whose collectors never answer cannot hold every shared slot.
+	MaxExportsPerTenant int
+	// ExportSlotWait bounds how long an export waits for a slot before it
+	// fails as busy.
+	ExportSlotWait time.Duration
 	// ExportTimeout bounds one export call.
 	ExportTimeout time.Duration
 	// ScheduleDelay is how long a pipeline waits to fill a batch.
 	ScheduleDelay time.Duration
+	// MetricInterval is how often a tenant's metric series are pushed.
+	MetricInterval time.Duration
 	// ServiceVersion is service.version on every tenant resource.
 	ServiceVersion string
 	// Log receives the router's own warnings (never a header value).
@@ -100,6 +126,8 @@ const (
 	DefaultTenantMaxPipelines         = 256
 	DefaultTenantIdleTimeout          = 10 * time.Minute
 	DefaultTenantMaxConcurrentExports = 16
+	DefaultTenantMaxExportsPerTenant  = 2
+	DefaultTenantExportSlotWait       = time.Second
 	DefaultTenantExportTimeout        = 10 * time.Second
 	defaultTenantScheduleDelay        = 5 * time.Second
 	tenantReapInterval                = time.Minute
@@ -118,11 +146,20 @@ func (c TenantRouterConfig) withDefaults() TenantRouterConfig {
 	if c.MaxConcurrentExports <= 0 {
 		c.MaxConcurrentExports = DefaultTenantMaxConcurrentExports
 	}
+	if c.MaxExportsPerTenant <= 0 {
+		c.MaxExportsPerTenant = DefaultTenantMaxExportsPerTenant
+	}
+	if c.ExportSlotWait <= 0 {
+		c.ExportSlotWait = DefaultTenantExportSlotWait
+	}
 	if c.ExportTimeout <= 0 {
 		c.ExportTimeout = DefaultTenantExportTimeout
 	}
 	if c.ScheduleDelay <= 0 {
 		c.ScheduleDelay = defaultTenantScheduleDelay
+	}
+	if c.MetricInterval <= 0 {
+		c.MetricInterval = DefaultTenantMetricInterval
 	}
 	if c.Log == nil {
 		c.Log = slog.Default()
@@ -140,12 +177,15 @@ type TenantExportStatus struct {
 	// Dropped: spans that will never reach it (queue full, carried by a failed
 	// export, or rejected by the collector).
 	Dropped uint64
-	// ExportFailures: export calls that failed.
+	// ExportFailures: export calls that failed, span batches and metric
+	// pushes alike.
 	ExportFailures uint64
 	LastSuccessAt  time.Time
 	// LastError is the last failure, scrubbed of header values, URL
 	// credentials and query values, and cut short; "" when none since the
-	// last success.
+	// last success. A metric push's failure reads "metrics: <category>" and
+	// is cleared by a metric push's success only, a span export's by a span
+	// export's.
 	LastError   string
 	LastErrorAt time.Time
 }
@@ -159,6 +199,9 @@ type tenantStats struct {
 	lastSuccess time.Time
 	lastErr     string
 	lastErrAt   time.Time
+	// metricErr is the last metric push failure (tenant_metrics.go).
+	metricErr   string
+	metricErrAt time.Time
 }
 
 func (st *tenantStats) succeeded(at time.Time) {
@@ -177,6 +220,8 @@ type tenantEntry struct {
 	dest  TenantDestination
 	fp    string
 	stats *tenantStats
+	// traces: dest exports spans (a destination may export metrics only).
+	traces bool
 }
 
 // TenantRouter routes ended spans to their tenant's pipeline. Create it with
@@ -184,8 +229,8 @@ type tenantEntry struct {
 // processor of the global tracer provider until that shuts down.
 type TenantRouter struct {
 	cfg TenantRouterConfig
-	// slots caps exports in flight across every tenant.
-	slots chan struct{}
+	// slots caps exports in flight, across every tenant and per tenant.
+	slots *exportSlots
 
 	mu      sync.RWMutex
 	entries map[string]*tenantEntry
@@ -195,12 +240,18 @@ type TenantRouter struct {
 	// destination changes: the root sampler reads it on every span start,
 	// without a lock.
 	ratios atomic.Pointer[map[string]float64]
+	// contents names the tenants whose destination captures content,
+	// replaced with ratios; read on every content recording (CapturesContent).
+	contents atomic.Pointer[map[string]bool]
 	// flushing names the tenants with a replaced pipeline still flushing.
 	// One flush per tenant at a time: a flush waits on the tenant's
 	// collector inside a shared export slot, and a tenant flapping its
 	// destination between collectors that never answer would otherwise hold
 	// one slot per flap.
 	flushing map[string]bool
+
+	// metrics pushes each tenant's own metric series (tenant_metrics.go).
+	metrics *tenantMetrics
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -214,14 +265,16 @@ func NewTenantRouter(cfg TenantRouterConfig) *TenantRouter {
 	cfg = cfg.withDefaults()
 	r := &TenantRouter{
 		cfg:      cfg,
-		slots:    make(chan struct{}, cfg.MaxConcurrentExports),
+		slots:    newExportSlots(cfg.MaxConcurrentExports, cfg.MaxExportsPerTenant, cfg.ExportSlotWait),
 		entries:  map[string]*tenantEntry{},
 		pipes:    map[string]*tenantPipeline{},
 		flushing: map[string]bool{},
+		metrics:  newTenantMetrics(),
 		stop:     make(chan struct{}),
 	}
 	r.closing.Add(1)
 	go r.reapLoop()
+	r.startMetrics()
 	return r
 }
 
@@ -242,10 +295,17 @@ func (r *TenantRouter) SetDestination(tenant string, d TenantDestination) {
 		e = &tenantEntry{stats: &tenantStats{}}
 		r.entries[tenant] = e
 	}
-	e.dest, e.fp = d, fp
+	if e.fp != fp {
+		r.forgetMetrics(tenant)
+	}
+	e.dest, e.fp, e.traces = d, fp, d.exports(SignalTraces)
 	r.publishRatiosLocked()
-	if p := r.pipes[tenant]; p != nil && p.fp != fp {
-		r.dropPipelineLocked(tenant, p)
+	if p := r.pipes[tenant]; p != nil {
+		if p.fp != fp {
+			r.dropPipelineLocked(tenant, p)
+		} else {
+			p.content.Store(d.ContentCapture)
+		}
 	}
 }
 
@@ -255,6 +315,7 @@ func (r *TenantRouter) RemoveDestination(tenant string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.entries, tenant)
+	r.forgetMetrics(tenant)
 	r.publishRatiosLocked()
 	if p := r.pipes[tenant]; p != nil {
 		r.dropPipelineLocked(tenant, p)
@@ -263,13 +324,33 @@ func (r *TenantRouter) RemoveDestination(tenant string) {
 
 // publishRatiosLocked replaces the ratios the sampler reads with the
 // destinations' as they are now. A copy per destination change, which is rare
-// (a policy write or a refresh that found one changed); never per span.
+// (a policy write or a refresh that found one changed); never per span. Only
+// a destination that exports traces has a ratio: a metrics-only destination
+// receives no spans, so raising spans for it would only cost.
 func (r *TenantRouter) publishRatiosLocked() {
 	m := make(map[string]float64, len(r.entries))
+	c := map[string]bool{}
 	for t, e := range r.entries {
-		m[t] = e.dest.Ratio
+		if e.traces {
+			m[t] = e.dest.Ratio
+			if e.dest.ContentCapture {
+				c[t] = true
+			}
+		}
 	}
 	r.ratios.Store(&m)
+	r.contents.Store(&c)
+}
+
+// CapturesContent reports whether tenant's destination, as it is now, exports
+// traces with content capture on. Lock-free: it is asked on every recording of
+// a run's content.
+func (r *TenantRouter) CapturesContent(tenant string) bool {
+	if r == nil {
+		return false
+	}
+	m := r.contents.Load()
+	return m != nil && (*m)[tenant]
 }
 
 // exportRatio is tenant's Ratio when it has a destination.
@@ -305,14 +386,18 @@ func (r *TenantRouter) Status(tenant string) TenantExportStatus {
 	st := e.stats
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	lastErr, lastErrAt := st.lastErr, st.lastErrAt
+	if st.metricErr != "" && (lastErr == "" || st.metricErrAt.After(lastErrAt)) {
+		lastErr, lastErrAt = st.metricErr, st.metricErrAt
+	}
 	return TenantExportStatus{
 		Configured:     true,
 		Exported:       st.exported.Load(),
 		Dropped:        st.dropped.Load(),
 		ExportFailures: st.failures.Load(),
 		LastSuccessAt:  st.lastSuccess,
-		LastError:      st.lastErr,
-		LastErrorAt:    st.lastErrAt,
+		LastError:      lastErr,
+		LastErrorAt:    lastErrAt,
 	}
 }
 
@@ -340,14 +425,15 @@ func (r *TenantRouter) OnEnd(s sdktrace.ReadOnlySpan) {
 	e := r.entries[tenant]
 	p := r.pipes[tenant]
 	var (
-		fp    string
-		ratio float64
+		fp     string
+		traces bool
+		ratio  float64
 	)
 	if e != nil {
-		fp, ratio = e.fp, e.dest.Ratio
+		fp, traces, ratio = e.fp, e.traces, e.dest.Ratio
 	}
 	r.mu.RUnlock()
-	if e == nil {
+	if e == nil || !traces {
 		return
 	}
 	// Thinned to the tenant's ratio by trace id, so it receives whole traces:
@@ -491,10 +577,11 @@ func (r *TenantRouter) reapIdle(now time.Time) {
 	}
 }
 
-// Test sends one test span to d, as TestTenantExport does, inside the cap on
-// exports in flight every tenant shares: with every slot held until timeout it
-// answers busy rather than add an export beyond the cap. It touches no
-// tenant's status.
+// Test sends one test span to d when it exports traces (TestTenantExport) and
+// one test metric when it exports metrics (TestTenantMetricExport), inside the
+// caps on exports in flight (exportSlots): with no slot free in time it
+// answers busy rather than add an export beyond them. The first failure is
+// the answer. It touches no tenant's status.
 func (r *TenantRouter) Test(ctx context.Context, tenant string, d TenantDestination, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = r.cfg.ExportTimeout
@@ -502,17 +589,27 @@ func (r *TenantRouter) Test(ctx context.Context, tenant string, d TenantDestinat
 	start := time.Now()
 	wait, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	select {
-	case r.slots <- struct{}{}:
-	case <-wait.Done():
+	release, ok := r.slots.acquire(wait, tenant)
+	if !ok {
 		return &TenantExportError{msg: CategoryBusy}
 	}
-	defer func() { <-r.slots }()
-	left := timeout - time.Since(start)
-	if left <= 0 {
+	defer release()
+	left := func() time.Duration { return timeout - time.Since(start) }
+	if left() <= 0 {
 		return &TenantExportError{msg: CategoryBusy}
 	}
-	return TestTenantExport(ctx, tenant, d, r.cfg.ServiceVersion, left)
+	if d.exports(SignalTraces) {
+		if err := TestTenantExport(ctx, tenant, d, r.cfg.ServiceVersion, left()); err != nil {
+			return err
+		}
+	}
+	if d.exports(SignalMetrics) {
+		if left() <= 0 {
+			return &TenantExportError{msg: "metrics: " + CategoryTimeout}
+		}
+		return TestTenantMetricExport(ctx, tenant, d, r.cfg.ServiceVersion, left())
+	}
+	return nil
 }
 
 // ForceFlush flushes every open pipeline.
@@ -530,10 +627,11 @@ func (r *TenantRouter) ForceFlush(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Shutdown flushes and closes every pipeline and stops the reaper. The router
-// routes nothing afterwards.
+// Shutdown makes each tenant's last metric push, flushes and closes every
+// pipeline and stops the reaper. The router routes nothing afterwards.
 func (r *TenantRouter) Shutdown(ctx context.Context) error {
 	r.stopOnce.Do(func() { close(r.stop) })
+	r.shutdownMetrics(ctx)
 	r.mu.Lock()
 	r.closed = true
 	for t, p := range r.pipes {
@@ -574,9 +672,13 @@ type tenantPipeline struct {
 	// ctx is cancelled when the pipeline is discarded, ending its exports.
 	ctx    context.Context
 	cancel context.CancelFunc
+	// content: the pipeline's destination captures content now
+	// (TenantDestination.ContentCapture); without it the content keys are
+	// dropped from each copy.
+	content atomic.Bool
 }
 
-func newTenantPipeline(tenant string, e *tenantEntry, cfg TenantRouterConfig, slots chan struct{}) (*tenantPipeline, error) {
+func newTenantPipeline(tenant string, e *tenantEntry, cfg TenantRouterConfig, slots *exportSlots) (*tenantPipeline, error) {
 	exp, release, err := newTenantExporter(context.Background(), e.dest, cfg.ExportTimeout)
 	if err != nil {
 		return nil, err
@@ -584,6 +686,7 @@ func newTenantPipeline(tenant string, e *tenantEntry, cfg TenantRouterConfig, sl
 	p := &tenantPipeline{fp: e.fp, stats: e.stats, queue: int64(cfg.QueueSize), tenant: tenant, release: release}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.lastUsed.Store(time.Now().UnixNano())
+	p.content.Store(e.dest.ContentCapture)
 	te := &tenantSpanExporter{
 		tenant: tenant, next: exp, res: tenantResource(tenant, cfg.ServiceVersion),
 		slots: slots, p: p, headers: e.dest.Headers, log: cfg.Log,
@@ -634,7 +737,7 @@ type tenantSpanExporter struct {
 	tenant  string
 	next    sdktrace.SpanExporter
 	res     *sdkresource.Resource
-	slots   chan struct{}
+	slots   *exportSlots
 	p       *tenantPipeline
 	headers map[string]string
 	log     *slog.Logger
@@ -650,9 +753,8 @@ func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer context.AfterFunc(e.p.ctx, cancel)()
-	select {
-	case e.slots <- struct{}{}:
-	case <-ctx.Done():
+	release, ok := e.slots.acquire(ctx, e.tenant)
+	if !ok {
 		if e.p.discard.Load() {
 			e.discarded(n)
 			return nil
@@ -660,10 +762,10 @@ func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 		e.fail(uint64(n), CategoryBusy)
 		return nil
 	}
-	defer func() { <-e.slots }()
+	defer release()
 	copies := make([]sdktrace.ReadOnlySpan, n)
 	for i, s := range spans {
-		copies[i] = newTenantSpan(s, e.res)
+		copies[i] = newTenantSpan(s, e.res, e.p.content.Load())
 	}
 	ctx, code := withStatusHolder(ctx)
 	err := e.next.ExportSpans(ctx, copies)

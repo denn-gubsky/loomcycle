@@ -29,9 +29,11 @@
 //   - loomcycle.mcp.call     — one per MCP tools/call (nested under
 //     the outer tool.call).
 //
-// What spans do NOT carry: transcript bodies, tool inputs, tool
-// results, system prompts, user prompts, or (unless the operator opts in)
-// a raw user id. Only shape (tenant, run/agent IDs, a keyed user hash,
+// What the operator's spans do NOT carry: transcript bodies, tool inputs,
+// tool results, system prompts, user prompts, or (unless the operator opts
+// in) a raw user id. A tenant that turned content capture on receives its own
+// runs' content on its own destination (content.go); the operator's exporter
+// strips it. Only shape (tenant, run/agent IDs, a keyed user hash,
 // provider, model, tool name), cost (tokens, priced cost), and latency.
 // Secrets stay out of telemetry by design.
 package otel
@@ -112,6 +114,12 @@ func doInit(cfg Config) (func(context.Context) error, error) {
 	// Before any exporter is built: building one parses the header
 	// environment, and the SDK's default logger would print what it rejects.
 	otel.SetLogger(newSDKLogger(slog.Default()))
+	if cfg.SDKDisabled && cfg.TenantRouter != nil {
+		// OTEL_SDK_DISABLED turns the SDK off for every span this process
+		// would record, a tenant's too: the router is left uninstalled.
+		slog.Warn("otel: tenant trace export is inactive because OTEL_SDK_DISABLED is set")
+		cfg.TenantRouter = nil
+	}
 	if !cfg.Enabled && cfg.TenantRouter == nil {
 		return noopShutdown, nil
 	}
@@ -149,6 +157,9 @@ var routingOnly atomic.Bool
 // attributed, ended) for every run, a tenant with a destination or not, where
 // the no-op provider recorded none.
 func newRoutingOnlyProvider(cfg Config) (*sdktrace.TracerProvider, error) {
+	if cfg.samplerErr != nil {
+		return nil, cfg.samplerErr
+	}
 	sampler, err := Sampler(cfg.SamplerName, cfg.SamplerArg)
 	if err != nil {
 		return nil, err
@@ -197,7 +208,9 @@ func newTracerProvider(ctx context.Context, cfg Config, st *pipelineStats, errs 
 	if err != nil {
 		return nil, err
 	}
-	bsp := sdktrace.NewBatchSpanProcessor(&countingExporter{next: exp, st: st, errs: errs},
+	// Content a tenant captured for its own destination (content.go) is on the
+	// shared span; the operator's export never carries it.
+	bsp := sdktrace.NewBatchSpanProcessor(&countingExporter{next: &contentStripExporter{next: exp}, st: st, errs: errs},
 		sdktrace.WithMaxQueueSize(cfg.MaxQueueSize),
 		sdktrace.WithMaxExportBatchSize(cfg.MaxExportBatchSize),
 		sdktrace.WithExportTimeout(cfg.ExportTimeout),

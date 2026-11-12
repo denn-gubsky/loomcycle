@@ -246,7 +246,7 @@ func TestToolMetricName_CollapsesUnboundedNames(t *testing.T) {
 		want  string
 	}{
 		{"Read", true, "Read"},
-		{"mcp__github__create_issue", true, "mcp:github"},
+		{"mcp__github__create_issue", true, "mcp"},
 		{"client__open_file", true, "client"},
 		{"Read", false, "unknown"},
 		{"mcp__made_up__x", false, "unknown"},

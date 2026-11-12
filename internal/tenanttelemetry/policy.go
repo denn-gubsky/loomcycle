@@ -24,13 +24,14 @@ func invalid(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, a...))
 }
 
-// The signals a policy may name, and the ones this build exports.
+// The signals a policy may name: the tenant's spans, and its own series of
+// the runtime's metrics, pushed every minute.
 const (
-	SignalTraces  = "traces"
-	SignalMetrics = "metrics"
+	SignalTraces  = lcotel.SignalTraces
+	SignalMetrics = lcotel.SignalMetrics
 )
 
-// Content capture modes. Only "off" exists in this build.
+// Content capture modes.
 const (
 	ContentCaptureOff = "off"
 	ContentCaptureOn  = "on"
@@ -45,8 +46,12 @@ type PolicyInput struct {
 	Signals []string
 	// SamplerRatio nil means the default: 1, or the operator's cap below it.
 	SamplerRatio *float64
-	// ContentCapture is "" or "off"; "on" is refused until it ships.
+	// ContentCapture is "" (off), "off" or "on"; "on" only while the
+	// operator allows it (LOOMCYCLE_TENANT_CONTENT_CAPTURE).
 	ContentCapture string
+	// ContentMaxChars is the length each captured field is cut to; nil or 0
+	// is lcotel.DefaultContentMaxChars.
+	ContentMaxChars *int
 }
 
 const maxEndpointLen = 2048
@@ -106,8 +111,11 @@ func (m *Manager) endpointCheck(raw, protocol string) (string, error) {
 }
 
 // normalize checks in against the operator's rules (not yet the credential)
-// and returns the row it would store for tenant.
-func (m *Manager) normalize(tenant string, in PolicyInput) (store.TenantTelemetryPolicyRow, error) {
+// and returns the row it would store for tenant. stored is a row already
+// stored, held to the rules as they are now: content capture the operator no
+// longer allows is then turned off rather than refused, so the tenant's traces
+// keep flowing without it.
+func (m *Manager) normalize(tenant string, in PolicyInput, stored bool) (store.TenantTelemetryPolicyRow, error) {
 	if tenant == "" {
 		return store.TenantTelemetryPolicyRow{}, invalid("a telemetry policy belongs to a tenant: name one")
 	}
@@ -131,11 +139,9 @@ func (m *Manager) normalize(tenant string, in PolicyInput) (store.TenantTelemetr
 	}
 	for _, s := range signals {
 		switch s {
-		case SignalTraces:
-		case SignalMetrics:
-			return store.TenantTelemetryPolicyRow{}, invalid("metrics export is not available yet; ask for traces")
+		case SignalTraces, SignalMetrics:
 		default:
-			return store.TenantTelemetryPolicyRow{}, invalid("signals may name traces only (got %q)", s)
+			return store.TenantTelemetryPolicyRow{}, invalid("signals may name traces and metrics only (got %q)", s)
 		}
 	}
 	signals, err = store.NormalizeTelemetrySignals(signals)
@@ -152,12 +158,36 @@ func (m *Manager) normalize(tenant string, in PolicyInput) (store.TenantTelemetr
 			return store.TenantTelemetryPolicyRow{}, invalid("sampler_ratio may be at most %g on this deployment", m.cfg.MaxRatio)
 		}
 	}
+	capture := ContentCaptureOff
 	switch strings.TrimSpace(in.ContentCapture) {
 	case "", ContentCaptureOff:
 	case ContentCaptureOn:
-		return store.TenantTelemetryPolicyRow{}, invalid("content capture is not available yet")
+		switch {
+		case m.cfg.ContentCapture:
+			capture = ContentCaptureOn
+		case !stored:
+			return store.TenantTelemetryPolicyRow{}, invalid("content capture is not allowed on this deployment: the operator has not turned it on")
+		}
 	default:
-		return store.TenantTelemetryPolicyRow{}, invalid("content_capture must be off")
+		return store.TenantTelemetryPolicyRow{}, invalid("content_capture must be off or on")
+	}
+	// Content is recorded on spans, so a destination without traces would
+	// receive none of it while runs still paid to capture it. A stored row
+	// (restored, or written before this rule) exports without capture, as
+	// under a closed operator gate.
+	if capture == ContentCaptureOn && !containsString(signals, SignalTraces) {
+		if !stored {
+			return store.TenantTelemetryPolicyRow{}, invalid("content_capture on needs the traces signal: content is sent on spans")
+		}
+		capture = ContentCaptureOff
+	}
+	maxChars := lcotel.DefaultContentMaxChars
+	if in.ContentMaxChars != nil && *in.ContentMaxChars != 0 {
+		maxChars = *in.ContentMaxChars
+		if maxChars < lcotel.MinContentMaxChars || maxChars > lcotel.MaxContentMaxChars {
+			return store.TenantTelemetryPolicyRow{}, invalid("content_max_chars must be between %d and %d",
+				lcotel.MinContentMaxChars, lcotel.MaxContentMaxChars)
+		}
 	}
 	cred := strings.TrimSpace(in.HeadersCredential)
 	if cred != "" && !credentialNameRe.MatchString(cred) {
@@ -165,15 +195,30 @@ func (m *Manager) normalize(tenant string, in PolicyInput) (store.TenantTelemetr
 	}
 	return store.TenantTelemetryPolicyRow{
 		TenantID: tenant, Endpoint: endpoint, Protocol: protocol, HeadersCredential: cred,
-		Signals: signals, SamplerRatio: ratio,
+		Signals: signals, SamplerRatio: ratio, ContentCapture: capture, ContentMaxChars: maxChars,
 	}, nil
 }
 
-// headersFor resolves row's header credential for the URL the export is sent
-// to, and parses it. The credential must be the tenant's own (tenant scope),
-// restricted by its allowed_urls to that URL: a value that may go anywhere is
-// refused, so a credential stored for something else cannot be pointed at a
-// collector. No credential named is no headers.
+// exportURLs are the URLs row's exports are sent to: the traces URL, the
+// metrics URL, or both, by its signals (none is traces, as normalize reads it).
+func exportURLs(row store.TenantTelemetryPolicyRow) []string {
+	p := lcotel.Protocol(row.Protocol)
+	var out []string
+	if len(row.Signals) == 0 || containsString(row.Signals, SignalTraces) {
+		out = append(out, lcotel.TracesURL(row.Endpoint, p))
+	}
+	if containsString(row.Signals, SignalMetrics) {
+		out = append(out, lcotel.MetricsURL(row.Endpoint, p))
+	}
+	return out
+}
+
+// headersFor resolves row's header credential for every URL the export is
+// sent to, and parses it. The credential must be the tenant's own (tenant
+// scope), restricted by its allowed_urls to each of those URLs: a value that
+// may go anywhere is refused, so a credential stored for something else
+// cannot be pointed at a collector, and one bound to the traces path is not
+// sent to the metrics path. No credential named is no headers.
 func (m *Manager) headersFor(ctx context.Context, row store.TenantTelemetryPolicyRow) (map[string]string, error) {
 	if row.HeadersCredential == "" {
 		return map[string]string{}, nil
@@ -181,25 +226,15 @@ func (m *Manager) headersFor(ctx context.Context, row store.TenantTelemetryPolic
 	if m.creds == nil {
 		return nil, invalid("credentials are not configured on this deployment (LOOMCYCLE_SECRET_KEY), so no header credential can be used")
 	}
-	target := lcotel.TracesURL(row.Endpoint, lcotel.Protocol(row.Protocol))
-	// Pinnable: a restricted credential refuses to resolve for a request that
-	// could be redirected. The export never follows a redirect.
-	res, found, err := m.creds.ResolveFor(netguard.WithPinnable(ctx), row.TenantID, "", "", row.HeadersCredential, target)
-	switch {
-	case errors.Is(err, credential.ErrURLNotAllowed):
-		return nil, invalid("headers_credential %q is not allowed to be sent to %s: add the endpoint to its allowed_urls", row.HeadersCredential, row.Endpoint)
-	case errors.Is(err, credential.ErrExpired):
-		return nil, invalid("headers_credential %q has expired", row.HeadersCredential)
-	case err != nil:
-		return nil, fmt.Errorf("tenant telemetry: resolve headers_credential %q: %w", row.HeadersCredential, err)
-	case !found:
-		return nil, invalid("headers_credential %q is not a credential of this tenant", row.HeadersCredential)
-	case res.Scope != "tenant":
-		return nil, invalid("headers_credential %q must be a tenant credential", row.HeadersCredential)
-	case res.AllowedURLs == nil:
-		return nil, invalid("headers_credential %q may be sent anywhere: restrict its allowed_urls to the endpoint %s", row.HeadersCredential, row.Endpoint)
+	var value string
+	for _, target := range exportURLs(row) {
+		v, err := m.headerValueFor(ctx, row, target)
+		if err != nil {
+			return nil, err
+		}
+		value = v
 	}
-	headers, err := lcotel.ParseTenantHeaders(res.Value)
+	headers, err := lcotel.ParseTenantHeaders(value)
 	if err != nil {
 		return nil, invalid("headers_credential %q is not a header block (name=value,name=value): %v", row.HeadersCredential, err)
 	}
@@ -207,6 +242,28 @@ func (m *Manager) headersFor(ctx context.Context, row store.TenantTelemetryPolic
 		return nil, err
 	}
 	return headers, nil
+}
+
+// headerValueFor resolves row's header credential for one target URL.
+func (m *Manager) headerValueFor(ctx context.Context, row store.TenantTelemetryPolicyRow, target string) (string, error) {
+	// Pinnable: a restricted credential refuses to resolve for a request that
+	// could be redirected. The export never follows a redirect.
+	res, found, err := m.creds.ResolveFor(netguard.WithPinnable(ctx), row.TenantID, "", "", row.HeadersCredential, target)
+	switch {
+	case errors.Is(err, credential.ErrURLNotAllowed):
+		return "", invalid("headers_credential %q is not allowed to be sent to %s: add the endpoint to its allowed_urls", row.HeadersCredential, target)
+	case errors.Is(err, credential.ErrExpired):
+		return "", invalid("headers_credential %q has expired", row.HeadersCredential)
+	case err != nil:
+		return "", fmt.Errorf("tenant telemetry: resolve headers_credential %q: %w", row.HeadersCredential, err)
+	case !found:
+		return "", invalid("headers_credential %q is not a credential of this tenant", row.HeadersCredential)
+	case res.Scope != "tenant":
+		return "", invalid("headers_credential %q must be a tenant credential", row.HeadersCredential)
+	case res.AllowedURLs == nil:
+		return "", invalid("headers_credential %q may be sent anywhere: restrict its allowed_urls to the endpoint %s", row.HeadersCredential, row.Endpoint)
+	}
+	return res.Value, nil
 }
 
 func checkHeaders(h map[string]string) error {

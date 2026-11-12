@@ -13,13 +13,14 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/snapshot"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tenanttelemetry"
 )
 
-// A tenant's own telemetry export: where the tenant's traces go beside the
-// operator's export. GET/PUT/DELETE /v1/_telemetry and POST
+// A tenant's own telemetry export: where the tenant's traces and its own
+// metric series go beside the operator's export. GET/PUT/DELETE /v1/_telemetry and POST
 // /v1/_telemetry:test, the gRPC TenantTelemetry RPC and the MCP telemetry
 // tool all call TenantTelemetry below, which holds who may, the rules (in
 // internal/tenanttelemetry) and the audit.
@@ -115,7 +116,7 @@ func (s *Server) TenantTelemetry(ctx context.Context, req connector.TenantTeleme
 		if had {
 			// A reduction: written whatever the audit log says, and recorded
 			// when it can be.
-			s.recordTenantTelemetryAudit(ctx, "tenant_telemetry_delete", tenant, "")
+			s.recordTenantTelemetryAudit(ctx, "tenant_telemetry_delete", tenant, "", "")
 			slog.Info("telemetry: tenant export policy deleted", "by", principalSubject(ctx), "tenant", tenant)
 		}
 		return connector.TenantTelemetryResult{Tenant: tenant, Deleted: had, Status: s.tenantTelemetryStatus(m, tenant)}, nil
@@ -133,13 +134,14 @@ func (s *Server) tenantTelemetrySet(ctx context.Context, m *tenanttelemetry.Mana
 	row, err := m.Check(ctx, tenant, tenanttelemetry.PolicyInput{
 		Endpoint: in.Endpoint, Protocol: in.Protocol, HeadersCredential: in.HeadersCredential,
 		Signals: in.Signals, SamplerRatio: in.SamplerRatio, ContentCapture: in.ContentCapture,
+		ContentMaxChars: in.ContentMaxChars,
 	})
 	if err != nil {
 		return none, tenantTelemetryErr(err)
 	}
 	// Audited before it takes effect, and refused if it cannot be: a new
 	// place a tenant's traces are sent to is what an audit log is for.
-	if !s.recordTenantTelemetryAudit(ctx, "tenant_telemetry_set", tenant, row.Endpoint) {
+	if !s.recordTenantTelemetryAudit(ctx, "tenant_telemetry_set", tenant, row.Endpoint, row.ContentCapture) {
 		return none, connector.WithMessage(connector.ErrTenantTelemetryAuditUnavailable,
 			"the policy was not set: its audit record could not be written")
 	}
@@ -147,7 +149,8 @@ func (s *Server) tenantTelemetrySet(ctx context.Context, m *tenanttelemetry.Mana
 	if err != nil {
 		return none, err
 	}
-	slog.Info("telemetry: tenant export policy set", "by", row.UpdatedBy, "tenant", tenant, "endpoint", row.Endpoint, "protocol", row.Protocol)
+	slog.Info("telemetry: tenant export policy set", "by", row.UpdatedBy, "tenant", tenant, "endpoint", row.Endpoint, "protocol", row.Protocol,
+		"content_capture", row.ContentCapture)
 	return connector.TenantTelemetryResult{Tenant: tenant, Policy: tenantTelemetryPolicyView(&row), Status: s.tenantTelemetryStatus(m, tenant)}, nil
 }
 
@@ -188,6 +191,10 @@ func tenantTelemetryPolicyView(row *store.TenantTelemetryPolicyRow) *connector.T
 	out := &connector.TenantTelemetryPolicy{
 		Endpoint: row.Endpoint, Protocol: row.Protocol, HeadersCredential: row.HeadersCredential,
 		Signals: append([]string{}, row.Signals...), SamplerRatio: row.SamplerRatio, UpdatedBy: row.UpdatedBy,
+		ContentCapture: store.StoredContentCapture(row.ContentCapture), ContentMaxChars: row.ContentMaxChars,
+	}
+	if out.ContentMaxChars == 0 {
+		out.ContentMaxChars = lcotel.DefaultContentMaxChars
 	}
 	if !row.UpdatedAt.IsZero() {
 		out.UpdatedAt = row.UpdatedAt.UTC().Format(time.RFC3339)
@@ -227,13 +234,14 @@ func tenantTelemetryErr(err error) error {
 // recordTenantTelemetryAudit writes the audit record of a policy set or
 // deleted, and reports whether it was written. With no audit log configured
 // there is nothing to write, and the process log line is the record.
-func (s *Server) recordTenantTelemetryAudit(ctx context.Context, action, tenant, endpoint string) bool {
+func (s *Server) recordTenantTelemetryAudit(ctx context.Context, action, tenant, endpoint, contentCapture string) bool {
 	if s.tokenAudit == nil {
 		return true
 	}
 	ev := audit.Event{
 		Action: action, TargetTenant: tenant, TargetName: endpoint,
 		ActorTenant: tenantFromCtx(ctx), ActorSubject: principalSubject(ctx),
+		TelemetryContentCapture: contentCapture,
 	}
 	if err := s.tokenAudit.Record(ev); err != nil {
 		slog.Error("telemetry: tenant export audit write failed", "err", err)
@@ -257,7 +265,7 @@ func (s *Server) restoredTenantTelemetryValidator(body json.RawMessage) error {
 	}
 	_, err := m.ValidStored(store.TenantTelemetryPolicyRow{
 		TenantID: e.TenantID, Endpoint: e.Endpoint, Protocol: e.Protocol, HeadersCredential: e.HeadersCredential,
-		Signals: e.Signals, SamplerRatio: e.SamplerRatio,
+		Signals: e.Signals, SamplerRatio: e.SamplerRatio, ContentCapture: e.ContentCapture, ContentMaxChars: e.ContentMaxChars,
 	})
 	if err != nil {
 		return errors.New(tenanttelemetry.PublicError(e.TenantID, err))

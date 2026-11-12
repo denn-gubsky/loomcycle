@@ -1193,6 +1193,9 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	if err := ov.Speech.Validate(); err != nil {
 		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
+	if err := ov.Telemetry.Validate(); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
 	// Only the overlay is judged: on a fork, applyOverlay lets a pin
 	// replace the parent's tier and a tier replace the parent's pin, so
 	// the one ambiguous request is naming both at once.
@@ -1420,6 +1423,11 @@ type mergedDef struct {
 	// content-identifying treatment as Transcription; its cap may only lower
 	// the operator's (judged at create/fork by CheckAgentSpeech).
 	Speech *config.AgentSpeech `json:"speech,omitempty"`
+	// Telemetry: the per-agent `telemetry:` block (RFC GG P3). Same PER-FIELD
+	// overlay + content-identifying treatment as Speech; its one value,
+	// content_capture: never, only takes capture away, so a fork may add it
+	// and no overlay can remove it.
+	Telemetry *config.AgentTelemetry `json:"telemetry,omitempty"`
 	// Context: per-agent layered-context / retention block (RFC CR). Same
 	// PER-FIELD overlay + content-identifying treatment as Compaction; also
 	// inherited down the spawn tree.
@@ -1641,6 +1649,10 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// Speech merges PER FIELD, same as Transcription.
 	if !ov.Speech.IsZero() {
 		d.Speech = config.MergeAgentSpeech(d.Speech, ov.Speech)
+	}
+	// Telemetry merges PER FIELD, same as Speech.
+	if !ov.Telemetry.IsZero() {
+		d.Telemetry = config.MergeAgentTelemetry(d.Telemetry, ov.Telemetry)
 	}
 	// Context merges PER FIELD, same as Compaction.
 	if !ov.Context.IsZero() {
@@ -1929,6 +1941,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Compaction:            s.Compaction.Clone(),
 		Transcription:         s.Transcription.Clone(),
 		Speech:                s.Speech.Clone(),
+		Telemetry:             s.Telemetry.Clone(),
 		Context:               s.Context.Clone(),
 		MaxTokens:             s.MaxTokens,
 		MaxContextTokens:      s.MaxContextTokens,
@@ -2184,6 +2197,10 @@ func signFromMergedDef(name string, def mergedDef) string {
 			v := *sp.Enabled
 			c.Speech.Enabled = &v
 		}
+	}
+	// Telemetry is content-identifying, same as Speech (RFC GG P3).
+	if tl := def.Telemetry; !tl.IsZero() {
+		c.Telemetry = &agents.Telemetry{ContentCapture: tl.ContentCapture}
 	}
 	// Context is content-identifying, same as Compaction (RFC CR).
 	if cx := def.Context; !cx.IsZero() {

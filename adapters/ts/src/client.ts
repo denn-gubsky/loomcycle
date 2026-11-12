@@ -1664,9 +1664,9 @@ export class LoomcycleClient {
     return jsonFetch<TenantTelemetryResult>(this.ctx, `/v1/_telemetry${q}`, opts);
   }
 
-  /** Store the tenant's trace-export policy, replacing the last. Headers are
-   *  named by a tenant credential, never sent here. Audited. Mirrors
-   *  `PUT /v1/_telemetry`. */
+  /** Store the tenant's telemetry export policy (traces, metrics or both),
+   *  replacing the last. Headers are named by a tenant credential, never sent
+   *  here. Audited. Mirrors `PUT /v1/_telemetry`. */
   async setTelemetry(
     policy: TenantTelemetryPolicyInput,
     opts?: {
@@ -1684,6 +1684,7 @@ export class LoomcycleClient {
     if (policy.signals !== undefined) wire.signals = policy.signals;
     if (policy.sampler_ratio !== undefined) wire.sampler_ratio = policy.sampler_ratio;
     if (policy.content_capture !== undefined) wire.content_capture = policy.content_capture;
+    if (policy.content_max_chars !== undefined) wire.content_max_chars = policy.content_max_chars;
     if (opts?.tenant) wire.tenant = opts.tenant;
     return putJSON<TenantTelemetryResult>(this.ctx, "/v1/_telemetry", wire, signalOpts(opts));
   }
