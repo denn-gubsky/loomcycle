@@ -52,12 +52,10 @@ type allowed struct {
 var allowlist = map[string]allowed{
 	"internal/api/http/resume.go Server.resumePausedRun":                  {729, "logic", "P2"},
 	"internal/store/storetest/contract.go Run":                            {743, "table", "D3"},
-	"internal/tools/builtin/teamdef.go TeamDef.execRun":                   {722, "logic", "P5"},
 	"internal/api/http/server.go Server.prepareSubRunValues":              {722, "logic", "P5"},
 	"internal/api/http/server.go Server.routes":                           {708, "table", "D3"},
 	"internal/api/mcp/tools.go baseToolDescriptors":                       {705, "table", "D3"},
 	"internal/loop/stateful.go runStateful":                               {631, "logic", "P5"},
-	"cmd/loomcycle/boot_tools.go boot.buildTools":                         {468, "logic", "P5"},
 	"internal/api/http/auth_principal.go requiredScopeFor":                {465, "table", "D3"},
 	"internal/tools/builtin/document_editions.go Document.reimportMD":     {463, "logic", "P5"},
 	"internal/tools/builtin/document_ontology.go Document.ontologyForKey": {419, "logic", "P5"},
@@ -65,7 +63,6 @@ var allowlist = map[string]allowed{
 	"internal/tools/builtin/memory.go Memory.execRecall":                  {344, "logic", "P5"},
 	"internal/authz/surfaces.go HTTPSurface":                              {341, "table", "D3"},
 	"internal/loop/loop.go runLoop":                                       {335, "logic", "P5"},
-	"cmd/loomcycle/boot_background.go boot.startStoreSweepers":            {328, "logic", "P5"},
 	"internal/memory/eval/extraction_fixtures.go ExtractionFixture":       {311, "fixture", "D3"},
 }
 
