@@ -77,7 +77,7 @@ func (s *Server) runBlockingObserved(ctx context.Context, in runner.RunInput, pa
 	var (
 		regAgentID, regRunID, regSessionID string
 		finalText                          loop.AnswerText
-		finalUsage                         *providers.Usage
+		runUsage                           connector.RunUsage
 		finalStopReason                    string
 		lastErrorMsg                       string
 		limitCrossings                     []providers.LimitInfo
@@ -91,12 +91,8 @@ func (s *Server) runBlockingObserved(ctx context.Context, in runner.RunInput, pa
 		},
 		OnEvent: func(ev providers.Event) {
 			finalText.Observe(ev)
+			runUsage.Observe(ev)
 			switch ev.Type {
-			case providers.EventUsage:
-				if ev.Usage != nil {
-					u := *ev.Usage
-					finalUsage = &u
-				}
 			case providers.EventLimit:
 				// RFC AW: surface any token-budget crossing on the BLOCKING
 				// spawn result too — this path serves the non-streaming caller
@@ -107,10 +103,6 @@ func (s *Server) runBlockingObserved(ctx context.Context, in runner.RunInput, pa
 				}
 			case providers.EventDone:
 				finalStopReason = ev.StopReason
-				if ev.Usage != nil && finalUsage == nil {
-					u := *ev.Usage
-					finalUsage = &u
-				}
 			case providers.EventError:
 				if ev.Error != "" {
 					lastErrorMsg = ev.Error
@@ -132,7 +124,7 @@ func (s *Server) runBlockingObserved(ctx context.Context, in runner.RunInput, pa
 		Status:        string(terminalStatusOf(nil, loop.RunResult{StopReason: finalStopReason}, nil)),
 		StopReason:    finalStopReason,
 		FinalText:     finalText.String(),
-		Usage:         finalUsage,
+		Usage:         runUsage.Usage(),
 		Limits:        limitCrossings, // RFC AW: budget crossings, omitempty
 		ParentContext: parentContext,  // v0.12.x: echo the lineage back to the caller
 	}
