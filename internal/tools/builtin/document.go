@@ -239,6 +239,8 @@ const documentInputSchema = `{
 		"decay":       {"type": "number", "description": "graph_recall with budget_chars: each hop may spend at most decay^hop of the budget, so far hops cannot crowd out near ones. 0 < decay <= 1; default 0.7 for a declared walk, else 1 (no decay). Refused without budget_chars."},
 		"include_hierarchy": {"type": "string", "enum": ["up","down","both","none"], "description": "graph_recall: also step along the document tree — up to a chunk's parent (part_of), down to its children (has_part). Default none."},
 		"expand":      {"type": "object", "description": "search: after ranking, add the chunks the top hits are related to — one hop, within a budget — each marked expanded_via {kind, from_chunk_id, quote}. Use it when a passage depends on what it cites or defines. The search's filter arguments apply to the added chunks too.", "properties": {"kinds": {"type": "array", "items": {"type": "string"}}, "hops": {"type": "integer", "enum": [1]}, "budget_chars": {"type": "integer"}}},
+		"facets":      {"type": "array", "items": {"type": "string", "enum": ["type","folder","concept"]}, "description": "search: also count, beside the hits, how many DOCUMENTS among the best matches have each value: type (the document's class), folder (the folder of each Path name it is filed under), concept (a concept of the tenant ontology it is about). The matches counted are the documents of the facet_window chunks nearest the query plus the returned hits, after every filter, and only documents you may read. Returns facets {type, folder, concept: [{value, count}] most first, at most 50 each; truncated (the facets that were cut); facet_window; chunks_counted (fewer than facet_window means every matching chunk was counted); documents_counted}. Use it to see how wide the material on a topic is before reading it."},
+		"facet_window": {"type": "integer", "description": "search with facets: how many of the chunks nearest the query the counts cover (default 100, at most 500)."},
 		"with_projection": {"type": "boolean", "description": "search: also return query_xyz, the query placed on the scope's 3D map of chunks by meaning (the coordinates graph_snapshot's projection block serves). Absent when the server keeps no map for this scope."},
 		"related_to":  {"type": "string", "description": "related: a chunk id whose neighbours BY RELATION (citations, definitions, …) to return as linked, beside — or, without id, instead of — the neighbours by meaning. Needs no embedder. The filter arguments (under_path, type, …) narrow it too."},
 		"reimport":    {"type": "boolean", "description": "import_md: the markdown is a NEW EDITION of the document named by document_id or work_key. Parts are matched by their text, then their heading path: unchanged parts keep their ids and links, a part whose text moved under another heading keeps them too, changed ones are superseded (the old one closes at edition_date), removed ones close, new ones open at edition_date. Nothing is deleted."},
@@ -597,6 +599,9 @@ type docInput struct {
 	SQL                string   `json:"sql"`
 	Limit              int      `json:"limit"`
 	Name               string   `json:"name"`
+	// Facets / FacetWindow: search's facet counts (document_search_facets.go).
+	Facets      []string `json:"facets"`
+	FacetWindow int      `json:"facet_window"`
 	// TTLMs is the lease op's hold duration in milliseconds (0 = default).
 	TTLMs int `json:"ttl_ms"`
 	// IncludeMetadata gates export_md's round-trip comments (default true when
@@ -4477,6 +4482,10 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if err := validateExpand(in.Expand); err != nil {
 		return errValidation("search: "+err.Error(), ""), nil
 	}
+	facets, refusal := normaliseFacets(in)
+	if refusal != nil {
+		return *refusal, nil
+	}
 	if d.Embedder == nil {
 		return errBusiness("search: requires a configured embedder / vector memory", "Semantic search is not available on this server; filter with op=query_chunks instead."), nil
 	}
@@ -4519,7 +4528,11 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 		// Nothing matched: answer without embedding the query or touching the
 		// store, so an unresolvable path costs nothing and bumps no access count.
 		if set.echo.MatchedChunks == 0 {
-			return jsonResult(map[string]any{"chunks": []map[string]any{}, "filter": set.echo})
+			empty := map[string]any{"chunks": []map[string]any{}, "filter": set.echo}
+			if facets != nil {
+				empty["facets"] = facets.empty()
+			}
+			return jsonResult(empty)
 		}
 		filter = set
 	}
@@ -4535,7 +4548,11 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 		// Nothing readable: answer as a filter that matched nothing does, without
 		// embedding the query.
 		if list != nil && list.none {
-			return jsonResult(map[string]any{"chunks": []map[string]any{}})
+			empty := map[string]any{"chunks": []map[string]any{}}
+			if facets != nil {
+				empty["facets"] = facets.empty()
+			}
+			return jsonResult(empty)
 		}
 		aclList = list
 	}
@@ -4650,6 +4667,17 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	renderRerank(result, rerank, res.Rerank)
 	if filter != nil {
 		result["filter"] = filter.echo
+	}
+	if facets != nil {
+		var asOf *int64
+		if filter != nil {
+			asOf = filter.echo.Applied.AsOf
+		}
+		counts, err := d.searchFacets(ctx, key, mscope, facets, sq, res.QueryVector, ids, asOf)
+		if err != nil {
+			return errFrom("search: facets: "+err.Error(), err), nil
+		}
+		result["facets"] = counts
 	}
 	if in.WithProjection {
 		// The query embedding search already made: no new provider call. A backend
