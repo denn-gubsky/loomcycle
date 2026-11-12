@@ -127,11 +127,32 @@ func TestEvidence_UntrustedInputOfAContinuationAndOfAResume(t *testing.T) {
 	if !strings.Contains(contReq, "alpha") || !strings.Contains(contReq, "<web_content>") {
 		t.Errorf("continuation: the earlier page is not in the replayed conversation, fenced:\n%s", contReq)
 	}
-	if !strings.Contains(resReq, "alpha") || !strings.Contains(resReq, "first") {
-		t.Errorf("resume: the session's earlier turns are not in the resumed conversation:\n%s", resReq)
+	if !fencedIn(resReq, "web_content", "alpha") || !strings.Contains(resReq, "first") {
+		t.Errorf("resume: the session's earlier turns are not in the resumed conversation, the earlier page fenced:\n%s", resReq)
 	}
 	if !strings.Contains(resReq, "<web_content>") {
 		t.Errorf("resume: the run's own page is not fenced as untrusted:\n%s", resReq)
+	}
+}
+
+// fencedIn reports whether want appears inside a <kind>…</kind> fence of text,
+// not merely somewhere beside one.
+func fencedIn(text, kind, want string) bool {
+	open, closing := "<"+kind+">", "</"+kind+">"
+	for rest := text; ; {
+		i := strings.Index(rest, open)
+		if i < 0 {
+			return false
+		}
+		rest = rest[i+len(open):]
+		j := strings.Index(rest, closing)
+		if j < 0 {
+			return false
+		}
+		if strings.Contains(rest[:j], want) {
+			return true
+		}
+		rest = rest[j+len(closing):]
 	}
 }
 

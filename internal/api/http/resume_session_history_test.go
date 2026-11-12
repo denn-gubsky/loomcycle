@@ -191,3 +191,60 @@ func TestResume_StatefulContinuationResumesFromTheSessionsState(t *testing.T) {
 		t.Errorf("the resumed continuation was not fed its own message:\n%v", prov.fed)
 	}
 }
+
+// The session's last Σ was recorded by an earlier run that ended mid-action
+// (cancelled after its action returned, no answer after it). The resumed
+// continuation is fed that Σ and its OWN message, as RunOnce starts it
+// (statefulContinuationSeed passes the message as fresh). Read from the
+// session history with no fresh message, the seed took the earlier run's
+// action result as the observation and dropped the continuation's message.
+func TestResume_StatefulContinuationAfterAnEarlierRunEndedMidActionKeepsItsMessage(t *testing.T) {
+	mode := config.ContextModeStateful
+	cfg := makeBaseConfig()
+	cfg.Agents = map[string]config.AgentDef{
+		"statefulchat": {Model: "stub-model", Tools: []string{}, SystemPrompt: "you chat",
+			Context: &config.Context{Mode: &mode}},
+	}
+	prov := &sigmaFedProvider{}
+	srv, _ := makeServer(t, prov, cfg)
+	ctx := context.Background()
+	sess, err := srv.store.CreateSession(ctx, "", "statefulchat", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_sf_mid_first", UserID: "alice", Model: "stub-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []store.Event{
+		userInputEv(t, "explain DDRAM"),
+		markerEv(t, map[string]any{"goal": "explain DDRAM", "found": "capacitors"}, "Echo"),
+		callEv(t, "es-act-0", "Echo"),
+		resultEv(t, "es-act-0", "Echo", "a capacitor per bit", false),
+	} {
+		if err := srv.store.AppendEvent(ctx, first.ID, ev.Type, ev.Payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := srv.store.FinishRun(ctx, first.ID, store.RunCancelled, "cancelled", store.Usage{}, ""); err != nil {
+		t.Fatal(err)
+	}
+	run, err := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_sf_mid_second", UserID: "alice", Model: "stub-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := userInputEv(t, "and what about refresh?")
+	if err := srv.store.AppendEvent(ctx, run.ID, ev.Type, ev.Payload); err != nil {
+		t.Fatal(err)
+	}
+	pauseRun(t, srv, run)
+	resumeOne(t, srv)
+	waitRunStatus(t, srv.store, run.ID, store.RunCompleted)
+
+	if !prov.sawFed(`"found":"capacitors"`) {
+		t.Errorf("the resumed continuation was not fed the session's Σ:\n%v", prov.fed)
+	}
+	if !prov.sawFed("and what about refresh?") {
+		t.Errorf("the resumed continuation lost its own message:\n%v", prov.fed)
+	}
+}
