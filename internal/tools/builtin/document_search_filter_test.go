@@ -66,8 +66,9 @@ func goldenFixture(t *testing.T) ([]string, func(string) string) {
 }
 
 // goldenNoFilterSearch was recorded from `main` at acfb1d88, before search took
-// any filter. A filter-free call must keep producing exactly these bytes.
-const goldenNoFilterSearch = `{"chunks":[{"chunk_id":"<idA>","document_id":"<idB>","rank_score":0.03333333333333333,"score":1.0000000000000002,"title":"One"},{"chunk_id":"<idC>","document_id":"<idB>","rank_score":0.03278688524590164,"score":0.8164965809277261,"title":"Two"},{"chunk_id":"<idD>","document_id":"<idB>","rank_score":0.016129032258064516,"score":0.5000000000000001,"title":"Three"}]}`
+// any filter. A filter-free call must keep producing exactly these bytes. The
+// only change since is each hit's `path` (RFC GK D4), on every hit, filter or no.
+const goldenNoFilterSearch = `{"chunks":[{"chunk_id":"<idA>","document_id":"<idB>","path":"/gold/doc","rank_score":0.03333333333333333,"score":1.0000000000000002,"title":"One"},{"chunk_id":"<idC>","document_id":"<idB>","path":"/gold/doc","rank_score":0.03278688524590164,"score":0.8164965809277261,"title":"Two"},{"chunk_id":"<idD>","document_id":"<idB>","path":"/gold/doc","rank_score":0.016129032258064516,"score":0.5000000000000001,"title":"Three"}]}`
 
 // TestDocumentSearch_NoFilterIsByteIdentical — a search that names no filter is
 // the search it was before filters existed: same pool, same order, same bytes,
@@ -80,8 +81,9 @@ func TestDocumentSearch_NoFilterIsByteIdentical(t *testing.T) {
 	}
 }
 
-// goldenNoFilterRelated: the same recording for op=related from the chunk "One".
-const goldenNoFilterRelated = `{"related":[{"chunk_id":"<idA>","document_id":"<idB>","score":0.8164965809277261,"title":"Two"},{"chunk_id":"<idC>","document_id":"<idB>","score":0.5000000000000001,"title":"Three"}]}`
+// goldenNoFilterRelated: the same recording for op=related from the chunk "One",
+// with each hit's `path` (RFC GK D4).
+const goldenNoFilterRelated = `{"related":[{"chunk_id":"<idA>","document_id":"<idB>","path":"/gold/doc","score":0.8164965809277261,"title":"Two"},{"chunk_id":"<idC>","document_id":"<idB>","path":"/gold/doc","score":0.5000000000000001,"title":"Three"}]}`
 
 func TestDocumentRelated_NoFilterIsByteIdentical(t *testing.T) {
 	ids, exec := goldenFixture(t)

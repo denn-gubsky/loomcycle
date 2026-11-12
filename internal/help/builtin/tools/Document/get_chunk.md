@@ -21,6 +21,12 @@ right before `update_chunk` so the revision you pass is current.
 `parent_id`, `type`, `status`, `fields`, `tags`, and `asset: {media_type,
 size}` for an image chunk (the bytes are served separately).
 
+A chunk whose own body is empty and that has children — a section whose text
+is all in its sub-sections — also returns `children: [{id, title}]`: its
+children one level down, in document order, at most 50, with
+`children_truncated: true` when there are more. Read the one you need with
+`get_chunk`.
+
 `definitional: true` marks a chunk in a definitions passage: its document's
 class (in a confirmed ontology) declares `@definitions`, and the chunk's title
 or an ancestor's below the root matches it. Absent otherwise, and never on the

@@ -907,7 +907,8 @@ func (d *Document) executeGated(ctx context.Context, in docInput, raw json.RawMe
 	res = d.finishClassRules(ctx, key, in, classRules, res)
 	// Annotations go on after the access-control filter, so only on rows the
 	// caller is shown (document_annotation_summary.go).
-	return d.attachAnnotations(ctx, key, mscope, in, acl.filterListing(ctx, in.Op, res)), nil
+	res = d.attachHitNavigation(ctx, key, mscope, acl, in.Op, acl.filterListing(ctx, in.Op, res))
+	return d.attachAnnotations(ctx, key, mscope, in, res), nil
 }
 
 // dispatch runs one op; Execute has resolved the scope and asked the gates.
@@ -3252,6 +3253,20 @@ func (d *Document) getChunk(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 				if _, set := resp[k]; !set {
 					resp[k] = nil
 				}
+			}
+		}
+	}
+	// RFC GK D3: a section whose text is all in its children answers with them,
+	// one level, so a reader is not left with an empty body.
+	if in.Op == "get_chunk" && strings.TrimSpace(cb.Body) == "" {
+		kids, truncated, oerr := d.chunkOutline(ctx, key, in.ID)
+		if oerr != nil {
+			return errFrom("get_chunk: children: "+oerr.Error(), oerr), nil
+		}
+		if len(kids) > 0 {
+			resp["children"] = kids
+			if truncated {
+				resp["children_truncated"] = true
 			}
 		}
 	}
