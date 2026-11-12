@@ -27,9 +27,52 @@ import (
 // sets and the embedder they share. Tools that need the store, the
 // credential engine or the server get those later, from the phases that
 // build them.
+//
+// The steps run in this order. Each appends its tools to b.allTools, so the
+// order is the agent-available catalog's order (what Context's tool listing
+// and an agent's tool list show); keep it unless the catalog should change.
+// Beyond that, a step reads what an earlier one built:
+//   - http before core and files: WebFetch and File go out through the HTTP
+//     tool;
+//   - skills_help before core, defs and introspection: SkillTool and SkillDef
+//     share the skill set, Context serves the help set;
+//   - memory before document: the Document tool shares the embedder, and
+//     Memory resolves its document filters through Document;
+//   - channels before document and interruption: both take the bus;
+//   - files before document: Document is wired into Crypto, File and Memory
+//     there, and Git into Crypto;
+//   - defs before interruption: the escalation is wired onto TeamDef, which
+//     takes AgentDef and SkillDef;
+//   - document and interruption before the TeamDef board and escalation are
+//     wired (interruption): the board is the Document tool, the escalation
+//     asks through the Interruption tool.
 func (b *boot) buildTools() {
+	httpTool := b.buildToolsHTTP()
+	b.buildToolsSkillsAndHelp()
+	b.logAgentsAndUserTiers()
+	b.buildToolsCore(httpTool)
+	b.buildToolsMemory()
+	b.buildToolsChannels()
+	b.buildToolsDefs()
+	b.buildToolsFiles(httpTool)
+	b.buildToolsDocument()
+	b.buildToolsHistory()
+	b.buildToolsEvaluation()
+	b.buildToolsInterruption()
+	b.buildToolsIntrospection()
+}
+
+// toolStep reports that a buildTools step starts (toolStepHook).
+func (b *boot) toolStep(name string) {
+	if b.toolStepHook != nil {
+		b.toolStepHook(name)
+	}
+}
+
+// buildToolsHTTP builds the HTTP tool on the operator's static host list.
+func (b *boot) buildToolsHTTP() *builtin.HTTP {
+	b.toolStep("http")
 	cfg := b.cfg
-	pr := b.pr
 
 	// All built-in tools are SANDBOXED: each refuses every call until the
 	// operator explicitly enables it via env. We register every tool and
@@ -55,6 +98,15 @@ func (b *boot) buildTools() {
 		HostAllowlist:        staticHosts,
 		PrivateHostAllowlist: cfg.Env.HTTPPrivateHostAllowlist,
 	}
+	b.staticHosts = staticHosts
+	return httpTool
+}
+
+// buildToolsSkillsAndHelp loads the skill and help sets.
+func (b *boot) buildToolsSkillsAndHelp() {
+	b.toolStep("skills_help")
+	cfg := b.cfg
+
 	// Skill tool reuses the same name→body registry that the static
 	// bundling path (Approach A in internal/config) uses. Loading once
 	// at boot keeps the in-memory map authoritative — SIGHUP-style
@@ -89,6 +141,16 @@ func (b *boot) buildTools() {
 	} else {
 		slog.Info(fmt.Sprintf("help: loaded %d bundled topics (no LOOMCYCLE_HELP_ROOT overlay)", len(helpSet.Names())), "topics", len(helpSet.Names()))
 	}
+	b.skillSet = skillSet
+	b.helpSet = helpSet
+}
+
+// logAgentsAndUserTiers logs the agents discovered from the agents root and
+// the configured user tiers.
+func (b *boot) logAgentsAndUserTiers() {
+	b.toolStep("catalog_logs")
+	cfg := b.cfg
+
 	if cfg.Env.AgentsRoot != "" {
 		// Agents-from-MD discovery happened inside config.Load (must run
 		// before resolveSystemPromptFiles so the merged map flows through
@@ -115,6 +177,14 @@ func (b *boot) buildTools() {
 		// Message kept verbatim: docs/PLAN.md quotes it.
 		slog.Info(fmt.Sprintf("user_tiers: configured %d — %s", len(names), strings.Join(names, " / ")), "user_tiers", len(names))
 	}
+}
+
+// buildToolsCore builds the file, web and exec tools and the Skill tool, the
+// head of the catalog.
+func (b *boot) buildToolsCore(httpTool *builtin.HTTP) {
+	b.toolStep("core")
+	cfg := b.cfg
+	skillSet := b.skillSet
 
 	// RFC BB: build the search-provider registry + resolver + operator host-key
 	// map for the WebSearch fallback circuit. Nil (no providers configured, and
@@ -168,6 +238,20 @@ func (b *boot) buildTools() {
 	}
 	skillTool := &builtin.SkillTool{Set: skillSet}
 	b.allTools = append(b.allTools, skillTool)
+	b.searchRegistry = searchRegistry
+	b.searchResolver = searchResolver
+	b.searchHostKeys = searchHostKeys
+	b.bashboxTool = bashboxTool
+	b.bashTool = bashTool
+	b.skillTool = skillTool
+}
+
+// buildToolsMemory builds the embedder and the Memory and Recall tools.
+func (b *boot) buildToolsMemory() {
+	b.toolStep("memory")
+	cfg := b.cfg
+	pr := b.pr
+
 	// Memory tool — wired post-store so it can grab the live Store
 	// reference. Registered unconditionally; access is gated per-agent
 	// via memory_scopes yaml + the Memory.Store==nil branch when the
@@ -222,6 +306,15 @@ func (b *boot) buildTools() {
 	// free-text search is useful for any agent that grants the tool.
 	recallTool := &builtin.Recall{Memory: memoryTool}
 	b.allTools = append(b.allTools, recallTool)
+	b.embedder = embedder
+	b.memoryTool = memoryTool
+}
+
+// buildToolsChannels builds the channel bus, its scheduler and the Channel
+// tool.
+func (b *boot) buildToolsChannels() {
+	b.toolStep("channels")
+	cfg := b.cfg
 
 	// Channel tool (v0.8.4) — persistent inter-agent message bus.
 	// One Bus instance per process so in-process subscribers waiting
@@ -242,6 +335,17 @@ func (b *boot) buildTools() {
 		LongPollCapMS: cfg.Env.ChannelsLongPollCapMS,
 	}
 	b.allTools = append(b.allTools, channelTool)
+	b.channelBus = channelBus
+	b.channelScheduler = channelScheduler
+	b.channelTool = channelTool
+}
+
+// buildToolsDefs builds the definition tools: AgentDef, SkillDef, TeamDef and
+// VolumeDef.
+func (b *boot) buildToolsDefs() {
+	b.toolStep("defs")
+	cfg := b.cfg
+	skillSet := b.skillSet
 
 	// AgentDef tool (v0.8.5). Per-agent default-deny via
 	// agent_def_scopes yaml; the tool itself is registered globally
@@ -293,6 +397,16 @@ func (b *boot) buildTools() {
 		MaxNameLen: 64,
 	}
 	b.allTools = append(b.allTools, volumeDefTool)
+	b.agentDefTool = agentDefTool
+	b.skillDefTool = skillDefTool
+	b.teamDefTool = teamDefTool
+	b.volumeDefTool = volumeDefTool
+}
+
+// buildToolsFiles builds the File, Git, CredentialDef, Crypto and Path tools.
+func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
+	b.toolStep("files")
+	cfg := b.cfg
 
 	// RFC FF — the File tool: the files a run's tools returned, kept in the
 	// run tree's inbox volume, inspected and copied out without their bytes
@@ -339,6 +453,24 @@ func (b *boot) buildTools() {
 	// late-bound below alongside the other substrate tools.
 	pathTool := &builtin.Path{}
 	b.allTools = append(b.allTools, pathTool)
+	b.gitTool = gitTool
+	b.credentialDefTool = credentialDefTool
+	b.cryptoTool = cryptoTool
+	b.pathTool = pathTool
+	b.fileTool = fileTool
+}
+
+// buildToolsDocument builds the Document tool and wires it into the Crypto,
+// File and Memory tools, and Crypto into Git.
+func (b *boot) buildToolsDocument() {
+	b.toolStep("document")
+	cfg := b.cfg
+	channelBus := b.channelBus
+	embedder := b.embedder
+	memoryTool := b.memoryTool
+	cryptoTool := b.cryptoTool
+	fileTool := b.fileTool
+	gitTool := b.gitTool
 
 	// RFC AK — the Document tool (chunked-graph documents). Store late-bound
 	// below; SqlMem bound in the SQL Memory block (Document requires it); Bus
@@ -371,6 +503,13 @@ func (b *boot) buildTools() {
 	// tool, within the run's crypto_scopes, counted and audited as a
 	// Crypto op.
 	gitTool.Crypto = cryptoTool
+	b.documentTool = documentTool
+}
+
+// buildToolsHistory builds the History tool.
+func (b *boot) buildToolsHistory() {
+	b.toolStep("history")
+	cfg := b.cfg
 
 	// RFC BE — the History tool (browse/search/annotate past chats). Store
 	// late-bound below; the per-agent history_scope policy gates every op.
@@ -378,6 +517,13 @@ func (b *boot) buildTools() {
 	// runtime's own maintenance sessions stay out of the chat listing.
 	historyTool := &builtin.History{Cfg: cfg}
 	b.allTools = append(b.allTools, historyTool)
+	b.historyTool = historyTool
+}
+
+// buildToolsEvaluation builds the Evaluation tool.
+func (b *boot) buildToolsEvaluation() {
+	b.toolStep("evaluation")
+	cfg := b.cfg
 
 	// MCPServerDef tool construction is deferred until after the pool
 	// + dynamic registry are built (operator-admin-only — NOT appended
@@ -392,6 +538,17 @@ func (b *boot) buildTools() {
 		MaxRationaleBytes: cfg.Env.EvaluationMaxRationaleBytes,
 	}
 	b.allTools = append(b.allTools, evaluationTool)
+	b.evaluationTool = evaluationTool
+}
+
+// buildToolsInterruption builds the Interruption tool and wires the TeamDef
+// board (the Document tool) and cap escalation (an Interruption ask).
+func (b *boot) buildToolsInterruption() {
+	b.toolStep("interruption")
+	cfg := b.cfg
+	channelBus := b.channelBus
+	teamDefTool := b.teamDefTool
+	documentTool := b.documentTool
 
 	// Interruption tool (v0.8.16) — human-in-the-loop primitive. Three
 	// ops (ask / notify / cancel) gated by per-agent
@@ -439,6 +596,15 @@ func (b *boot) buildTools() {
 		_ = json.Unmarshal([]byte(res.Text), &parsed)
 		return parsed.Answer, nil
 	}
+	b.interruptionTool = interruptionTool
+}
+
+// buildToolsIntrospection builds the Context and Identity tools, the tail of
+// the catalog.
+func (b *boot) buildToolsIntrospection() {
+	b.toolStep("introspection")
+	cfg := b.cfg
+	helpSet := b.helpSet
 
 	// Context tool (v0.8.7). Read-only runtime introspection. The Tools
 	// field is back-filled with the FULL allTools slice after every
@@ -464,36 +630,8 @@ func (b *boot) buildTools() {
 	// resolver and the audit sink are late-bound below.
 	identityTool := &builtin.Identity{}
 	b.allTools = append(b.allTools, identityTool)
-
-	b.searchRegistry = searchRegistry
-	b.searchResolver = searchResolver
-	b.searchHostKeys = searchHostKeys
-	b.skillSet = skillSet
-	b.helpSet = helpSet
-	b.embedder = embedder
-	b.bashboxTool = bashboxTool
-	b.bashTool = bashTool
-	b.skillTool = skillTool
-	b.memoryTool = memoryTool
-	b.channelBus = channelBus
-	b.channelScheduler = channelScheduler
-	b.channelTool = channelTool
-	b.agentDefTool = agentDefTool
-	b.skillDefTool = skillDefTool
-	b.teamDefTool = teamDefTool
-	b.volumeDefTool = volumeDefTool
-	b.gitTool = gitTool
-	b.credentialDefTool = credentialDefTool
-	b.cryptoTool = cryptoTool
-	b.pathTool = pathTool
-	b.documentTool = documentTool
-	b.fileTool = fileTool
-	b.historyTool = historyTool
-	b.evaluationTool = evaluationTool
-	b.interruptionTool = interruptionTool
 	b.contextTool = contextTool
 	b.identityTool = identityTool
-	b.staticHosts = staticHosts
 }
 
 // addLocalAPITools registers one tool per operation of the local_api
