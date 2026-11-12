@@ -8,6 +8,47 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.152.0
+
+*Fixes from the knowledge-base walker measurement (RFC GK). Section and document summaries no longer name their document by another document's code: every annotation request carries its document's code, and `set_annotation` repairs a wrong one and a folder brief that only repeats the folder's name. Every annotation is rewritten once. Search and related hits say where their document is, and an empty section lists its sub-sections. A spawned run reports its whole usage instead of its last model call's, a full queue says how full it is, and a long `spawn_runs` join sends progress so a client does not give up on it. The binaries are built with go1.26.11 for the `net/http` fix GO-2026-6859.*
+
+The v1.152 line: #2599 to #2608.
+- `@loomcycle/client` 1.152.0: `DocumentSearchHit` and related rows gain optional `path` and `has_body`; `SpawnRunResult` gains optional `queue_capacity` and `queued_now`. The Python adapter is 1.152.0 for version lockstep only.
+- No schema migration.
+
+### Upgrade notes
+
+- **Every annotation goes stale once (#2605).** The annotation prompt version moves to 2 and what an annotation is written from now includes its document's identity, so the next scheduled `kb/annotator` pass rewrites every annotation: about one model call per annotated part. Run it with `write: "report"` first to see the count.
+- **Re-fork `kb/annotator` and `kb/annotate` (#2605)** on a tenant that forked them: a fork keeps the old code and prompt (`prompt_version: 1`) until it is re-forked from the bundle. The runtime repair applies either way.
+- **A spawned run's `usage` is now the run's total (#2606)** on `spawn_run`, `spawn_runs`, `POST /v1/runs:batch` and gRPC `SpawnRunBatch`, the same figures `get_run` returns. It held the last model call's, so a caller that summed batch results under-reported spend two to five times. Anything that compensated for that will now over-count.
+- **A `spawn_runs` call carrying a progress token gets an SSE answer (#2607)** on the MCP HTTP transport, so the progress notifications can come before the result. Without a token it is plain JSON, as before.
+- **Go toolchain (#2602).** The modules declare `toolchain go1.26.11`, so a build with an older Go downloads 1.26.11. The release binaries and the images built from them carry the fix; an image built from source with the repo's `Dockerfile` uses its digest-pinned Go image until that digest is bumped.
+
+### Annotations (RFC GK P2, #2605)
+
+- The cause of the wrong codes, checked: a class description that quotes an example code (an `Rfc` class meaning naming "RFC FT", say) is shown on every request for that class, and a section whose own text names no code had nothing else to name its document by.
+- Every request now carries the document's identity (its natural key, identity-like root fields and the class's `@identity` fields, from the title by `@identifier_pattern` when the root carries none), and a section's request names its document. Both are in the inputs hash. The prompt allows a code only where the request carries it.
+- `set_annotation` repairs two mistakes and reports each as `repaired: [{field, from, to, reason}]`, logged at Info without the text: a token of the class's identifier shape that is not the document's own and does not occur in the source text gets the document's own value (`identity_mismatch`; a real citation of another document is kept), and a folder brief that equals the folder's name or is under 20 characters is replaced by the abstract's first sentence (`brief_repeats_folder_name`, `brief_too_short`). Manual annotations are never repaired.
+
+### Documents (RFC GK P1, #2603)
+
+- Every `search` and `related` hit carries `path`, its document's first Path name in sort order (the name `list_statements` groups by), from one lookup per page. A document with no name gets no field.
+- A hit on a section whose own body is empty and whose text is in its sub-sections carries `has_body: false`, and `get_chunk` on such a section adds `children: [{id, title}]`, one level, at most 50, with `children_truncated`.
+
+### Runs (RFC GK P0 and P3, #2606, #2607)
+
+- A run's usage comes from the loop's closing total; a run that ends without one reports the sum of its completed calls, as its row does.
+- A queue-full refusal (the user's share, the whole queue, or the user's waiting runs under `admission: wait`) carries `queue_capacity` and `queued_now`: on the HTTP 429 body, on each `SpawnRunResult`, and in gRPC `ErrorInfo` metadata. The `admission` tool text states the per-user bound (`max_queued_runs_per_user`, 16 by default) and says to re-send only the refused children.
+- While a `spawn_runs` join is open and the call carried a progress token, the MCP server sends `notifications/progress` when it opens, as each child settles and at least every 60 seconds. The result is unchanged.
+
+### Cloud example (#2608)
+
+- `ollama-local` runs one chat call and one decision call at a time. Long annotation prompts at a 65536-token window faulted the shared GPU host with four parallel calls, and the CUDA-fault retry cannot help when every retry faults the same way.
+
+### Internal
+
+- Large functions split into named steps, behaviour unchanged (RFC GH): `runStateful` (#2599), `prepareSubRunValues` (#2600), `resumePausedRun` (#2604).
+
 ## What's in v1.151.0
 
 *A tenant can send its own telemetry to its own OpenTelemetry collector (RFC GG): its traces, its metrics, at its own sampling ratio, and, when the operator allows it, the redacted content of its runs. All of it is off unless the operator turns it on. A paused run now resumes the way a run starts: it replays its session's earlier turns, applies its access rules before resolving, and records a failure once. A transient CUDA fault on an Ollama host is retried instead of ending the run. For the knowledge base, a new Document op `effective_policy` reports what a document's file-plan concepts declare, and the explorer opens the names filed under a document.*
