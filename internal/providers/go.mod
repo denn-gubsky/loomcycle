@@ -2,6 +2,8 @@ module github.com/denn-gubsky/loomcycle/internal/providers
 
 go 1.26.2
 
+toolchain go1.26.11
+
 require (
 	github.com/denn-gubsky/loomcycle/internal/errkind v0.0.0
 	github.com/denn-gubsky/loomcycle/internal/otel v0.0.0

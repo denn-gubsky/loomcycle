@@ -2,6 +2,8 @@ module github.com/denn-gubsky/loomcycle
 
 go 1.26.2
 
+toolchain go1.26.11
+
 require (
 	github.com/a2aproject/a2a-go/v2 v2.6.0
 	github.com/aws/aws-sdk-go-v2 v1.47.8

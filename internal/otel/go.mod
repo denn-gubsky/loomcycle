@@ -2,6 +2,8 @@ module github.com/denn-gubsky/loomcycle/internal/otel
 
 go 1.26.2
 
+toolchain go1.26.11
+
 require (
 	github.com/go-logr/logr v1.4.4
 	go.opentelemetry.io/otel v1.47.0
