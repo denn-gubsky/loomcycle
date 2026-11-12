@@ -571,9 +571,14 @@ type emitStateCall struct {
 }
 
 // callForEmitState makes one provider call and returns the emit_state tool input
-// plus whatever else the model produced. NO OnEvent hook is set — the returned
-// channel is the event source (mirrors summarizeWith); the tool call is what
-// matters, but the text is no longer thrown away.
+// plus whatever else the model produced. The returned channel is the event
+// source (mirrors summarizeWith); the tool call is what matters, but the text
+// is no longer thrown away.
+//
+// The reasoning trace is forwarded live to req.OnEvent (the run's emit), as the
+// append loop forwards it, so a client can show a step thinking. The text is
+// not: a step's prose is not an answer, and a re-prompted step's prose is
+// discarded; the turn's answer is emitted once, at the end of the turn.
 //
 // now is the clock the call's timing is taken with (nil = time.Now); the timing
 // rides the returned usage.
@@ -604,6 +609,9 @@ func callForEmitState(ctx context.Context, provider providers.Provider, req prov
 			text.WriteString(ev.Text)
 		case providers.EventThinking:
 			thinking.WriteString(ev.Text)
+			if req.OnEvent != nil {
+				req.OnEvent(ev)
+			}
 		case providers.EventDone:
 			// A copy, for the same reason as the append loop's: the timing
 			// is stamped onto it, and the provider's value may be shared.
@@ -719,6 +727,9 @@ func recoverStatefulCall(ctx context.Context, opts *RunOptions, rec *statefulRec
 		}
 		return statefulCallRetry
 	}
+	// Only the run ctx is asked, not a turn ctx as in the append loop: this
+	// mode has no turn cancel, so it has no turn ctx.
+	//
 	// Resolver feedback, decided exactly as Run's is (reportCallFault). A
 	// restricted run's refusal to use the operator key (ErrOperatorKeyForbidden)
 	// is a per-run policy decision, not an outage, and must not touch the matrix.

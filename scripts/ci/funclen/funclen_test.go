@@ -59,7 +59,6 @@ var allowlist = map[string]allowed{
 	"internal/tools/builtin/context.go Context.execSelf":                  {419, "logic", "P5"},
 	"internal/tools/builtin/memory.go Memory.execRecall":                  {344, "logic", "P5"},
 	"internal/authz/surfaces.go HTTPSurface":                              {341, "table", "D3"},
-	"internal/loop/loop.go runLoop":                                       {335, "logic", "P5"},
 	"internal/memory/eval/extraction_fixtures.go ExtractionFixture":       {311, "fixture", "D3"},
 }
 

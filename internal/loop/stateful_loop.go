@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"strings"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/statepatch"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -42,7 +44,11 @@ type statefulLoop struct {
 	lastWindow         int
 	footprintMeasured  bool
 	seenExhaustedState map[int]bool
-	holder             *tools.ExecStateHolder
+	// lastDistill is the run's last eviction decline, for Context op=self:
+	// Σ eviction is this mode's distillation, so its decline is what an
+	// append run's lastDistill holds for a recap or compaction.
+	lastDistill tools.LastDistillValue
+	holder      *tools.ExecStateHolder
 	// dispatchCtx is the run ctx carrying the live Σ holder, made once at the
 	// start as the local was; the action's ctx derives from it.
 	dispatchCtx context.Context
@@ -85,6 +91,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		}
 	}
 
+	// Always max_iterations with Iterations = the cap, unlike the append
+	// loop's finish: this mode has no tool_use stop or structured answer to
+	// read at the cap.
 	r.finish("max_iterations")
 	return RunResult{StopReason: "max_iterations", Iterations: r.maxIter, Usage: r.total, State: r.sigma, ProposedSchema: r.lastProposed}, nil
 }
@@ -108,10 +117,21 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 //  9. action — otherwise the named action runs and its output is the next
 //     observation.
 //
+// There is no per-turn cancel (the append loop's armTurn): turn cancel is a
+// feature this mode does not have yet (see stateful.go's header).
+//
+// The step runs under its own loomcycle.iteration span, as an append
+// iteration does, so its model call and its action nest under it. Ended by
+// defer: unlike the append loop, no exit here does work after the span ends.
+//
 // It returns loopNext to go on to the next iteration and loopReturn to end the
 // run with the exit's result.
-func (r *statefulLoop) step(ctx context.Context, iter int) loopExit {
+func (r *statefulLoop) step(runCtx context.Context, iter int) loopExit {
+	ctx, iterSpan := lcotel.RecordIteration(runCtx, iter)
+	defer iterSpan.End()
 	r.stepStarts("gates")
+	// The gates run on the step's ctx, so a pause park sits inside the
+	// iteration span, as the append loop's does.
 	if ex := r.gates(ctx, iter); ex.ctl != loopProceed {
 		return ex
 	}
@@ -279,24 +299,18 @@ func (r *statefulLoop) gates(ctx context.Context, iter int) loopExit {
 	if err := ctx.Err(); err != nil {
 		return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, err)
 	}
-	// Same per-iteration pulse the append loop sends; Run's lifetime ticker
-	// covers a step that blocks longer than one interval.
-	if r.opts.OnHeartbeat != nil {
-		r.opts.OnHeartbeat()
-	}
-	// Cooperative pause (RFC X / F41), at the same boundary the append loop
-	// parks at: before a model call, never between an action and its
-	// result. ⚠️ THIS LOOP NEVER CHECKED IT, so a runtime pause did not
-	// quiesce a stateful run — it kept calling the provider while the
-	// runtime reported itself paused, Pause() waited out its whole timeout,
-	// and the row never reached pause_state='paused', which is the only
-	// state resume re-dispatches. Here Σ is persisted (the last
-	// context_state) and so is the pending observation (a tool_result or
-	// the operator's user_input), which is what a resume rebuilds from.
-	if r.opts.PauseGate != nil && r.opts.PauseGate.PauseRequested() {
-		if err := r.opts.PauseGate.Park(ctx); err != nil {
-			return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, ctx.Err())
-		}
+	// The same per-iteration pulse and cooperative pause the append loop
+	// takes (heartbeatAndPause). ⚠️ THIS LOOP NEVER CHECKED THE PAUSE, so a
+	// runtime pause did not quiesce a stateful run — it kept calling the
+	// provider while the runtime reported itself paused, Pause() waited out
+	// its whole timeout, and the row never reached pause_state='paused',
+	// which is the only state resume re-dispatches. Here Σ is persisted (the
+	// last context_state) and so is the pending observation (a tool_result
+	// or the operator's user_input), which is what a resume rebuilds from.
+	// The cancel result carries Iterations and Σ, unlike the append loop's:
+	// each loop keeps its own result fields.
+	if err := heartbeatAndPause(ctx, &r.opts); err != nil {
+		return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, ctx.Err())
 	}
 	return loopExit{}
 }
@@ -322,13 +336,12 @@ func (r *statefulLoop) takeSteer(ctx context.Context) {
 	}
 }
 
-// queueMove is the queue-aware routing after the start, as in Run: one move at
-// a step boundary when the next call would wait too long where the run is.
+// queueMove is the queue-aware routing after the start (queueMoveAt): one move
+// at a step boundary when the next call would wait too long where the run is.
+// After steer, unlike the append loop's: the move weighs the step's rebuilt
+// conversation, which only exists once steer has joined the task.
 func (r *statefulLoop) queueMove(ctx context.Context, iter int) {
-	if iter > 0 && !r.movedForQueue && r.opts.MoveForQueue != nil &&
-		!(r.opts.FallbackPolicy.PinAfterSuccess && r.rec.firstStepSucceeded) {
-		r.movedForQueue = moveForQueue(ctx, &r.opts, r.msgs, r.emit)
-	}
+	r.movedForQueue = queueMoveAt(ctx, &r.opts, iter, r.movedForQueue, r.rec.firstStepSucceeded, r.msgs, r.emit)
 }
 
 // callUntilAccepted calls the model until it returns an emit_state the run can
@@ -386,6 +399,12 @@ func (r *statefulLoop) callUntilAccepted(ctx context.Context, iter int) (*emitSt
 // copy, the forced emit_state call, the sampling, and the run's first request
 // recorded once.
 func (r *statefulLoop) request(ctx context.Context, iter int) (providers.Request, loopExit) {
+	// The emit_state choice is forced and nothing else: tool_choice and
+	// output_format are inert in this mode (reportStatefulInert), and the
+	// action catalog is fixed in the system prompt, so there is no per-call
+	// liveToolSchema as in the append loop; the dispatcher refuses a
+	// withdrawn tool instead.
+	//
 	// RFC DG: say on the WIRE what the system prompt has only ever
 	// asked for. Narrowing `tools` to emit_state was never enough —
 	// the run that produced this RFC had exactly one tool offered and
@@ -401,14 +420,9 @@ func (r *statefulLoop) request(ctx context.Context, iter int) (providers.Request
 	// go out untransformed, so the `redact` plugin never saw a stateful
 	// run — and Σ and the observation are where tool output, and any
 	// secret in it, lands.
-	reqSystem, reqMsgs := r.statefulSystem, r.msgs
-	if len(r.opts.ContextPlugins) > 0 && r.opts.Provider.ID() != codeJSProviderID {
-		cs, cm, perr := contextplugin.Apply(ctx, r.opts.ContextPlugins, r.statefulSystem, r.msgs)
-		if perr != nil {
-			r.emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
-			return providers.Request{}, exitReturn(RunResult{StopReason: "error", Iterations: iter, Usage: r.total, State: r.sigma}, perr)
-		}
-		reqSystem, reqMsgs = cs, cm
+	reqSystem, reqMsgs, perr := transformOutbound(ctx, &r.opts, r.statefulSystem, r.msgs, r.emit)
+	if perr != nil {
+		return providers.Request{}, exitReturn(r.failed(iter), perr)
 	}
 	req := providers.Request{Model: r.opts.Model, System: reqSystem, Messages: reqMsgs, Tools: r.emitTool,
 		MaxTokens:        r.opts.MaxTokens,
@@ -438,7 +452,7 @@ func (r *statefulLoop) callModel(ctx context.Context, req providers.Request) (em
 		// The provider's own count of the whole request, which is what
 		// the eviction threshold must measure against — the same
 		// numerator the append/recap gate uses.
-		if in := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens; in > 0 {
+		if in := promptFootprint(usage); in > 0 {
 			r.lastIn = in
 			r.footprintMeasured = true
 		}
@@ -474,6 +488,13 @@ func (r *statefulLoop) callModel(ctx context.Context, req providers.Request) (em
 	return call, err
 }
 
+// failed is the run's failure result (failedResult) with its Σ.
+func (r *statefulLoop) failed(iter int) RunResult {
+	res := failedResult(iter, r.total)
+	res.State = r.sigma
+	return res
+}
+
 // callFault answers a transport or provider fault: loopNext sends the same
 // step again (not counted as an attempt), loopReturn ends the run. A call that
 // came back clears the pair's retry count and stall, and proceeds.
@@ -484,18 +505,36 @@ func (r *statefulLoop) callFault(ctx context.Context, iter int, err error) loopE
 		// to have none: one 429 or "overloaded" killed a stateful run that
 		// an append run on the same agent would ride out. Neither retry
 		// consumes a max_patch_retries attempt — that budget is for the
-		// model's mistakes, and this was not one.
+		// model's mistakes, and this was not one — nor an iteration, unlike
+		// the append loop, whose retry re-runs the whole iteration.
+		//
+		// The run's ctx ended while the call was out: the run ends cancelled
+		// with the error event an append run emits for the same cancel
+		// (endedMidTurnEvent), so the transcript reads alike. Each loop keeps
+		// its own result fields.
+		if ctx.Err() != nil {
+			r.emit(endedMidTurnEvent(ctx))
+			return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, ctx.Err())
+		}
 		switch recoverStatefulCall(ctx, &r.opts, &r.rec, err, r.emit, r.msgs) {
 		case statefulCallRetry:
 			return loopExit{ctl: loopNext}
 		case statefulCallCancelled:
+			// Cancelled while a retry waited: the same end as a cancel while
+			// the call was out.
+			r.emit(endedMidTurnEvent(ctx))
 			return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, ctx.Err())
 		}
-		r.emit(providers.Event{Type: providers.EventError, Error: "stateful step failed: " + err.Error()})
-		return exitReturn(RunResult{StopReason: "error", Iterations: iter, Usage: r.total, State: r.sigma}, err)
+		// The provider's own text, as the append loop emits it; the
+		// "stateful step failed" lead is kept only for the model's own
+		// failure to call emit_state (proseAsAnswer).
+		r.emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+		return exitReturn(r.failed(iter), err)
 	}
 	// The call reached the provider and came back: the pair is healthy
-	// enough to answer, whatever the model then did with the answer.
+	// enough to answer, whatever the model then did with the answer. Reset
+	// here, after a call with no fault, and not on every opened stream as
+	// the append loop does: each loop keeps its own retry counting.
 	r.rec.sameProviderRetries = 0
 	if r.opts.ClearStall != nil {
 		r.opts.ClearStall(r.opts.Provider.ID(), r.opts.Model)
@@ -688,14 +727,19 @@ func (r *statefulLoop) evict(ctx context.Context, sigmaBefore int) []string {
 			// Nothing evictable and still over: every key is core, or the
 			// preamble alone is the problem. Either way the run is heading
 			// for the provider's limit and must say so.
+			verdict := providers.ContextTierVerdict{
+				Mode:   "stateful",
+				Reason: providers.DistillDeclineSplitDeclined,
+				Message: "stateful state cannot be reduced: every key is retention " +
+					"core (the default) — declare x-retention: scratch or derived on " +
+					"the state_schema properties that are safe to drop",
+			}
+			// Kept for op=self before the report dedups, as the append
+			// loop keeps every decline: the condition persists after the
+			// one report.
+			r.lastDistill = tools.LastDistillValue{Mode: verdict.Mode, Reason: verdict.Reason, Message: verdict.Message}
 			reportExhausted(r.emit, r.seenExhaustedState, r.opts.Compaction, r.lastIn, r.lastWindow,
-				[]providers.ContextTierVerdict{{
-					Mode:   "stateful",
-					Reason: providers.DistillDeclineSplitDeclined,
-					Message: "stateful state cannot be reduced: every key is retention " +
-						"core (the default) — declare x-retention: scratch or derived on " +
-						"the state_schema properties that are safe to drop",
-				}})
+				[]providers.ContextTierVerdict{verdict})
 		}
 	}
 	return evicted
@@ -738,7 +782,9 @@ func (r *statefulLoop) record(ctx context.Context, iter int, es *emitStateOut, e
 // when the step named an action; otherwise it parks or takes a late message
 // (loopNext) or ends the run (loopReturn).
 func (r *statefulLoop) endTurn(ctx context.Context, iter int, es *emitStateOut) loopExit {
-	// Turn boundary: done flag, or no action named.
+	// Turn boundary: done flag, or no action named. No agent_stop hooks,
+	// review hold or children wait here, unlike the append loop's
+	// finishAnswer: reportStatefulInert reports them inert on this mode.
 	if endsTurn(es) {
 		final := es.Final
 		if final == "" {
@@ -856,25 +902,27 @@ func (r *statefulLoop) dispatchAction(ctx context.Context, iter int, tid string,
 	// tool-use id the parallel_spawn ledger keys on, and the RFC DA
 	// classification of a failure. It also emits the tool_result.
 	hookIdent := HookIdentity(ctx, r.opts.AgentName, iter)
-	// What the append loop stamps per iteration, so Context op=self in a
-	// stateful action reports the provider/model it is actually running
-	// on (after any fallback), its sampling, and how full the window is.
-	// Stamped here rather than at the top of the step because a fallback
-	// during this step's call can change the first two.
-	actCtx := tools.WithResolvedProvider(r.dispatchCtx, r.opts.Provider.ID())
-	actCtx = tools.WithResolvedModel(actCtx, r.opts.Model)
-	actCtx = tools.WithResolvedSampling(actCtx, r.opts.Sampling)
-	actCtx = tools.WithMaxContextTokens(actCtx, r.opts.MaxContextTokens)
-	actCtx = tools.WithContextUsage(actCtx, r.lastIn, r.lastWindow)
-	actCtx = tools.WithEffectiveContextWindow(actCtx, r.lastWindow)
+	// What the append loop stamps per iteration (stampIteration), so
+	// Context op=self in a stateful action reports the provider/model it is
+	// actually running on (after any fallback), its sampling, its iteration,
+	// how full the window is, and the last eviction decline. Stamped here
+	// rather than at the top of the step because a fallback during this
+	// step's call can change the first two.
+	//
+	// dispatchCtx carries the live Σ holder; the step's iteration span is
+	// put on it so the action's tool span nests under the step, as an append
+	// tool call nests under its iteration.
+	//
 	// Run lifted the cap to the hard ceiling exactly when the run is
 	// iteration-unbounded, so the ceiling identifies that case here.
-	actCtx = tools.WithIterationBudget(actCtx, iter+1, r.maxIter, r.maxIter >= maxIterationsHardCeiling)
+	actCtx := stampIteration(trace.ContextWithSpan(r.dispatchCtx, trace.SpanFromContext(ctx)), &r.opts, iter, r.maxIter, r.maxIter >= maxIterationsHardCeiling)
+	actCtx = tools.WithContextUsage(actCtx, r.lastIn, r.lastWindow)
+	actCtx = tools.WithEffectiveContextWindow(actCtx, r.lastWindow)
+	actCtx = tools.WithLastDistill(actCtx, r.lastDistill)
 	// A shutdown interrupts the action as it does the append loop's
-	// tools, so the run parks at its next step (RFC ES F1).
-	actCtx, stopInterrupt := interruptibleTools(actCtx, r.opts.PauseGate)
-	blocks := executePendingTools(actCtx, r.opts.Dispatcher, []providers.ToolUse{tu}, 1, r.opts.Hooks, hookIdent, r.emit)
-	stopInterrupt()
+	// tools, so the run parks at its next step (RFC ES F1). One action, at
+	// parallelism 1: one action per step is this mode's contract.
+	blocks := dispatchInterruptible(actCtx, &r.opts, []providers.ToolUse{tu}, 1, hookIdent, r.emit)
 	// A failure is already the structured error object, isError and all.
 	r.obs = blocks[0].Text
 	r.notRetainedObs = ""
@@ -889,10 +937,8 @@ func (r *statefulLoop) dispatchAction(ctx context.Context, iter int, tid string,
 	default:
 		r.memo.addWork(tu.Name, tu.Input, r.obs, blocks[0].IsError)
 	}
-	if why, stop := r.opts.Dispatcher.RepeatedFailure(); stop {
-		msg := "run stopped: " + why + " after being told it cannot succeed as sent"
-		r.emit(providers.Event{Type: providers.EventError, Error: msg})
-		return exitReturn(RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: r.total, State: r.sigma}, errors.New(msg))
+	if err := repeatedFailureStop(&r.opts, r.emit); err != nil {
+		return exitReturn(RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: r.total, State: r.sigma}, err)
 	}
 	return loopExit{ctl: loopNext}
 }
