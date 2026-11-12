@@ -279,6 +279,7 @@ func (m *Manager) destination(ctx context.Context, row store.TenantTelemetryPoli
 	return lcotel.TenantDestination{
 		Endpoint: row.Endpoint, Protocol: lcotel.Protocol(row.Protocol), Headers: headers, Dial: m.dial,
 		TLSConfig: m.tlsConfig, Signals: append([]string(nil), row.Signals...),
+		Ratio: row.SamplerRatio,
 	}, nil
 }
 

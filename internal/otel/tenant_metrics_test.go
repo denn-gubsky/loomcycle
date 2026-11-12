@@ -145,7 +145,7 @@ func (c *metricCollector) spanExports() int {
 }
 
 func metricDest(c *metricCollector, headers map[string]string, signals ...string) TenantDestination {
-	return TenantDestination{Endpoint: c.srv.URL, Protocol: ProtocolHTTPProtobuf, Headers: headers, Dial: plainDial, Signals: signals}
+	return TenantDestination{Endpoint: c.srv.URL, Protocol: ProtocolHTTPProtobuf, Headers: headers, Dial: plainDial, Signals: signals, Ratio: 1}
 }
 
 // metricRouter is a router whose interval never fires on its own: a test

@@ -153,7 +153,16 @@ func newRoutingOnlyProvider(cfg Config) (*sdktrace.TracerProvider, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sdktrace.NewTracerProvider(sdktrace.WithSampler(NewTenantSampler(sampler, cfg.TenantSamplerRatios))), nil
+	return sdktrace.NewTracerProvider(sdktrace.WithSampler(withTenantExport(NewTenantSampler(sampler, cfg.TenantSamplerRatios), cfg.TenantRouter))), nil
+}
+
+// withTenantExport lays the tenants' export ratios over op, the operator's
+// sampler, when tenant export is on; off, op itself.
+func withTenantExport(op sdktrace.Sampler, r *TenantRouter) sdktrace.Sampler {
+	if r == nil {
+		return op
+	}
+	return newTenantExportSampler(op, r)
 }
 
 // installTenantRouter makes r a processor of tp, beside the operator's batch
@@ -173,7 +182,7 @@ func newTracerProvider(ctx context.Context, cfg Config, st *pipelineStats, errs 
 	if err != nil {
 		return nil, err
 	}
-	sampler = NewTenantSampler(sampler, cfg.TenantSamplerRatios)
+	sampler = withTenantExport(NewTenantSampler(sampler, cfg.TenantSamplerRatios), cfg.TenantRouter)
 	res, err := newResource(ctx, cfg)
 	if err != nil {
 		return nil, err
@@ -195,7 +204,8 @@ func newTracerProvider(ctx context.Context, cfg Config, st *pipelineStats, errs 
 		sdktrace.WithBatchTimeout(cfg.ScheduleDelay),
 	)
 	return sdktrace.NewTracerProvider(
-		sdktrace.WithSpanProcessor(&gateProcessor{next: bsp, st: st, maxInFlight: int64(cfg.MaxQueueSize)}),
+		sdktrace.WithSpanProcessor(&gateProcessor{next: bsp, st: st, maxInFlight: int64(cfg.MaxQueueSize),
+			dropTenantOnly: cfg.TenantRouter != nil}),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sampler),
 	), nil

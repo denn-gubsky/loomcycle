@@ -60,7 +60,7 @@ func TestDispatcherCall_ANoTraceTokensSpansAreNeverSentToTheTenant(t *testing.T)
 		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, network, addr)
-		}})
+		}, Ratio: 1})
 	t.Cleanup(lcotel.SetTenantRouterForTest(r))
 
 	d := tools.NewDispatcher([]tools.Tool{memoryTool{}})

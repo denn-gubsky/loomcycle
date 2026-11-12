@@ -3,6 +3,7 @@ package otel
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -32,6 +33,8 @@ type collectedSpan struct {
 	attrs    map[string]string
 	events   []map[string]string
 	status   string // description
+	// Hex ids and the W3C trace state, for the sampling tests.
+	traceID, spanID, parentID, traceState string
 }
 
 // fakeCollector is an OTLP/HTTP collector that records what it is sent.
@@ -86,7 +89,9 @@ func (c *fakeCollector) serve(w http.ResponseWriter, r *http.Request) {
 		res := kvMap(rs.GetResource().GetAttributes())
 		for _, ss := range rs.GetScopeSpans() {
 			for _, s := range ss.GetSpans() {
-				cs := collectedSpan{name: s.GetName(), resource: res, attrs: kvMap(s.GetAttributes()), status: s.GetStatus().GetMessage()}
+				cs := collectedSpan{name: s.GetName(), resource: res, attrs: kvMap(s.GetAttributes()), status: s.GetStatus().GetMessage(),
+					traceID: hex.EncodeToString(s.GetTraceId()), spanID: hex.EncodeToString(s.GetSpanId()),
+					parentID: hex.EncodeToString(s.GetParentSpanId()), traceState: s.GetTraceState()}
 				for _, e := range s.GetEvents() {
 					cs.events = append(cs.events, kvMap(e.GetAttributes()))
 				}
@@ -118,7 +123,7 @@ func plainDial(ctx context.Context, network, addr string) (net.Conn, error) {
 }
 
 func dest(c *fakeCollector, headers map[string]string) TenantDestination {
-	return TenantDestination{Endpoint: c.srv.URL, Protocol: ProtocolHTTPProtobuf, Headers: headers, Dial: plainDial}
+	return TenantDestination{Endpoint: c.srv.URL, Protocol: ProtocolHTTPProtobuf, Headers: headers, Dial: plainDial, Ratio: 1}
 }
 
 // routedProvider is a tracer provider whose only processor is the router,
@@ -715,7 +720,7 @@ func TestTenantRouter_GRPCDestinationReceivesSpansWithTheTenantsHeaders(t *testi
 	}
 	r := fastRouter(TenantRouterConfig{})
 	r.SetDestination("acme", TenantDestination{Endpoint: "http://" + lis.Addr().String(), Protocol: ProtocolGRPC,
-		Headers: map[string]string{"x-scope-orgid": "acme"}, Dial: dial})
+		Headers: map[string]string{"x-scope-orgid": "acme"}, Dial: dial, Ratio: 1})
 	tp := routedProvider(t, r)
 	_, s := tp.Tracer("t").Start(context.Background(), "work", trace.WithAttributes(attribute.String(AttrTenant, "acme")))
 	s.End()

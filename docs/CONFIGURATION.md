@@ -3831,11 +3831,34 @@ tool, `getTelemetry` / `setTelemetry` / `deleteTelemetry` / `testTelemetry`
 in the TypeScript client, their Python twins, and Settings → Telemetry in the
 Web UI. `protocol` is `http/protobuf` (spans posted to `<endpoint>/v1/traces`)
 or `grpc`; `signals` is `traces` (the default), `metrics` or both;
-`sampler_ratio` (0–1, at most `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO`) is
-recorded with the policy but does not yet thin what is sent: a tenant receives
-the spans the deployment's own sampler keeps. A set is written to the audit log
+`sampler_ratio` (0–1, at most `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO`, default
+1 or the cap) is the share of the tenant's traces it receives (see "Sampling
+for two destinations" below; a destination without `traces` has no ratio and
+raises no spans). A set is written to the audit log
 (`tenant_telemetry_set`) before it takes effect and is refused when the record
 cannot be written; a delete is recorded as `tenant_telemetry_delete`.
+
+**Sampling for two destinations.** A trace is sampled once, when it starts,
+and each destination then keeps its own share by trace id. A span that starts
+a trace of a tenant with a destination is sampled when the operator's sampler
+(`OTEL_TRACES_SAMPLER`, or the tenant's ratio in "Sampling per tenant") keeps
+it, or when its trace id falls under the tenant's `sampler_ratio`. The
+operator's collector receives exactly the spans its own sampler keeps: a trace
+sampled only because of the tenant's ratio is marked as such and never
+exported to the operator, nor counted in its export statistics, nor linked
+from a run (no trace id is recorded) or propagated to an MCP server. The
+tenant's collector receives a span only when its trace id falls under the
+tenant's ratio, by the same test `traceidratio` uses. Both tests depend on the
+trace id alone, so each destination receives whole traces, never fragments
+(where the operator's sampler is not parent-based, a child span it would drop
+is still kept for the tenant). The operator's volume does not change when a
+tenant raises its ratio; what grows is the number of spans recorded in the
+process, bounded by `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO`. Spans under a
+caller's trace (`traceparent`) follow the operator's decision and are only
+thinned, never raised; a no-trace run is never raised. A new ratio applies to
+traces that start after it reaches the replica; one in progress keeps its
+start-time decision, and may be cut short on the tenant's side if the tenant
+lowered its ratio meanwhile.
 
 A failed export, in the test's answer and in the status's `last_error`
 alike, is reported as a category only — `blocked` (the address guard refused
