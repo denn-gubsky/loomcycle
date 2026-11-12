@@ -173,7 +173,7 @@ document. It carries titles and metadata, never bodies.
 - **Paging.** Documents in id order, `page_documents` (default 200, at most
   1000 — lowered, never refused) per page, always whole documents. Pass
   `page.next_cursor` back as `after` until it is absent. If the SQL Memory
-  row cap (`LOOMCYCLE_SQLMEM_MAX_ROWS`) cuts the chunk read, the page keeps the
+  row cap (`storage.sqlmem_max_rows`) cuts the chunk read, the page keeps the
   documents it read whole and reports `page.clamped_to`; a single document
   larger than the cap is refused.
 - **Cost.** A page reads its own documents' Path names through a reverse

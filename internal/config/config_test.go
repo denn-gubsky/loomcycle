@@ -609,9 +609,9 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 	}
 }
 
-// TestSqlMem_MaxResultBytesHasNoOff: the env and yaml set the result byte
-// budget, and a zero or negative value takes the default rather than turning
-// the cap off.
+// TestSqlMem_MaxResultBytesHasNoOff: the yaml sets the result byte budget,
+// and a zero or negative value takes the default rather than turning the cap
+// off.
 func TestSqlMem_MaxResultBytesHasNoOff(t *testing.T) {
 	load := func(t *testing.T, yamlExtra string) int {
 		t.Helper()
@@ -631,13 +631,8 @@ func TestSqlMem_MaxResultBytesHasNoOff(t *testing.T) {
 	if got := load(t, "storage: { sqlmem_max_result_bytes: -1 }\n"); got != 8<<20 {
 		t.Errorf("yaml -1: got %d, want the 8 MiB default", got)
 	}
-	t.Setenv("LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES", "0")
-	if got := load(t, ""); got != 8<<20 {
-		t.Errorf("env 0: got %d, want the 8 MiB default", got)
-	}
-	t.Setenv("LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES", "2097152")
-	if got := load(t, ""); got != 2<<20 {
-		t.Errorf("env 2 MiB: got %d", got)
+	if got := load(t, "storage: { sqlmem_max_result_bytes: 0 }\n"); got != 8<<20 {
+		t.Errorf("yaml 0: got %d, want the 8 MiB default", got)
 	}
 }
 

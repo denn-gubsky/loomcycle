@@ -582,75 +582,15 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_SQLMEM_ROOT
-            label: LOOMCYCLE_SQLMEM_ROOT
-            description: 'Where the per-scope sqlite files live (default <DataDir>/sqlmem). Postgres tier: set the DSN in .env.local (LOOMCYCLE_SQLMEM_PG_DSN — it carries a password, so it is a SECRET, not config). (example: ./data/sqlmem)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_ROWS
-            label: LOOMCYCLE_SQLMEM_MAX_ROWS
-            description: 'Guardrails (defense-in-depth; the Go statement validator blocks ATTACH/PRAGMA/load_extension regardless): (example: 10000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES
-            label: LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES
-            description: '(example: 8388608)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS
-            label: LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS
-            description: '(example: 5000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS
-            label: LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS
-            description: '(example: 30000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS
-            label: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS
-            description: '(example: 64)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT
-            label: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT
-            description: '(example: 16)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH
-            label: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH
-            description: '(example: 8)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_SQLMEM_QUOTA_BYTES
             label: LOOMCYCLE_SQLMEM_QUOTA_BYTES
-            description: '(example: 52428800)'
+            description: 'The query guardrails (row and byte caps, statement and transaction timeouts, open-transaction caps, savepoint depth) have fixed defaults; a deployment that needs another value sets the yaml `storage: sqlmem_*` key. (example: 52428800)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES
             label: LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES
             description: '(example: 0)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES
-            label: LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES
-            description: '(example: 0)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_GC_INTERVAL_MS
-            label: LOOMCYCLE_SQLMEM_GC_INTERVAL_MS
-            description: '(example: 900000)'
             schema:
               type: string
               default: ""
@@ -1153,48 +1093,6 @@ questions:
           - variable: LOOMCYCLE_GIT_SOURCE_HOSTS
             label: LOOMCYCLE_GIT_SOURCE_HOSTS
             description: 'Off unless hosts are listed. `VolumeDef op=create ephemeral:true source:{git:…}` then fetches the commit inside the runtime, so no agent holds the token. The agent needs "source:git" in volume_def_scopes, and a credential it names must be restricted (allowed_urls) to a URL covering the repository. (example: github.com,gitea.example.com)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_BYTES
-            label: LOOMCYCLE_GIT_SOURCE_MAX_BYTES
-            description: '(example: 268435456)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES
-            label: LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES
-            description: '(example: 67108864)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES
-            label: LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES
-            description: '(example: 5242880)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_FILES
-            label: LOOMCYCLE_GIT_SOURCE_MAX_FILES
-            description: '(example: 100000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS
-            label: LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS
-            description: '(example: 120)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT
-            label: LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT
-            description: '(example: 1)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_HISTORY
-            label: LOOMCYCLE_GIT_SOURCE_MAX_HISTORY
-            description: '(example: 500)'
             schema:
               type: string
               default: ""

@@ -58,7 +58,7 @@ By design, these are not cluster-wide:
   - **dynamic root on storage every replica mounts at the same path:** the volume is used as if it were local;
   - **a dynamic root of its own per replica:** the tool call fails, saying the volume was created on another server and its files are not on this one. The runtime does not copy or clone again on its own.
 
-  `set_mode` to read-only works from any replica either way, since it changes the record every replica reads before it writes. The path is always derived from the replica's own dynamic root and the name, never taken from the record. `LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT` (clones at once) is per replica, as is the memory a clone uses.
+  `set_mode` to read-only works from any replica either way, since it changes the record every replica reads before it writes. The path is always derived from the replica's own dynamic root and the name, never taken from the record. The one-clone-at-a-time limit is per replica, as is the memory a clone uses.
 
 ## Deployment checklist
 

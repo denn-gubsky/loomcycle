@@ -5521,27 +5521,9 @@ func applyEnvSQLMem(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_ENABLED"); v == "1" {
 		cfg.Storage.SqlMemEnabled = true
 	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_ROOT"); v != "" {
-		cfg.Storage.SqlMemRoot = v
-	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_QUOTA_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Storage.SqlMemQuotaBytes = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemStatementTimeoutMS = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_ROWS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemMaxRows = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Storage.SqlMemMaxResultBytes = n
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_AUDIT_MODE"); v != "" {
@@ -5550,44 +5532,14 @@ func applyEnvSQLMem(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_PG_DSN"); v != "" {
 		cfg.Storage.SqlMemPgDSN = v
 	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemTxnTimeoutMS = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemMaxOpenTxns = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemMaxOpenTxnsPerTenant = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemMaxTxnDepth = n
-		}
-	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_SCOPE_TTL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Storage.SqlMemScopeTTLMS = n
 		}
 	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_GC_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemGCIntervalMS = n
-		}
-	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
 			cfg.Storage.SqlMemTotalMaxBytes = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
-			cfg.Storage.SqlMemSnapshotMaxScopeBytes = n
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_SHARED_SCHEMAS"); v != "" {
@@ -5619,7 +5571,7 @@ func applyEnvSQLMem(cfg *Config) {
 	// Explicit-transaction bounds (Phase 3a). A txn TTL ensures a held scope
 	// connection is reclaimed if an agent abandons a transaction; the
 	// MaxOpenTxns cap bounds total pinned connections. Both apply only when the
-	// agent uses sql_begin. A negative env (unparseable) leaves the default.
+	// agent uses sql_begin.
 	if cfg.Storage.SqlMemTxnTimeoutMS == 0 {
 		cfg.Storage.SqlMemTxnTimeoutMS = 30000
 	}

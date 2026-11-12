@@ -59,6 +59,23 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS":           "providers are re-probed every 15 minutes",
 	"LOOMCYCLE_SSE_KEEPALIVE_MS":                    "a run stream sends a keepalive every 20s",
 	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": "chats of internal agents are deleted after 3 days when chat retention is on",
+	"LOOMCYCLE_SQLMEM_ROOT":                         "set storage.sqlmem_root in the yaml",
+	"LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS":         "set storage.sqlmem_statement_timeout_ms in the yaml",
+	"LOOMCYCLE_SQLMEM_MAX_ROWS":                     "set storage.sqlmem_max_rows in the yaml",
+	"LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES":             "set storage.sqlmem_max_result_bytes in the yaml",
+	"LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS":               "set storage.sqlmem_txn_timeout_ms in the yaml",
+	"LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS":                "set storage.sqlmem_max_open_txns in the yaml",
+	"LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT":     "set storage.sqlmem_max_open_txns_per_tenant in the yaml",
+	"LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH":                "set storage.sqlmem_max_txn_depth in the yaml",
+	"LOOMCYCLE_SQLMEM_GC_INTERVAL_MS":               "set storage.sqlmem_gc_interval_ms in the yaml",
+	"LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES":     "set storage.sqlmem_snapshot_max_scope_bytes in the yaml",
+	"LOOMCYCLE_GIT_SOURCE_MAX_BYTES":                "a clone's byte limit is fixed at 256 MiB",
+	"LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES":         "a clone's object limit is fixed at 64 MiB",
+	"LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES":           "a clone's per-file limit is fixed at 5 MiB",
+	"LOOMCYCLE_GIT_SOURCE_MAX_FILES":                "a clone's file-count limit is fixed at 100000",
+	"LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS":          "a clone's time limit is fixed at 120s",
+	"LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT":           "one clone runs at a time per replica",
+	"LOOMCYCLE_GIT_SOURCE_MAX_HISTORY":              "a clone's history limit is fixed at 500 commits",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

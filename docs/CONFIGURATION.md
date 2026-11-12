@@ -2500,17 +2500,22 @@ Off unless the operator lists the hosts a repository may be fetched from.
 | Setting | Default | Meaning |
 |---|---|---|
 | `LOOMCYCLE_GIT_SOURCE_HOSTS` | unset: the feature is off | hosts, comma-separated, as `host` or `host:port` |
-| `LOOMCYCLE_GIT_SOURCE_MAX_BYTES` | 256 MiB | bytes fetched, and bytes written, per clone. A request's `max_bytes` may lower it |
-| `LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES` | 64 MiB | the largest single object once inflated. **This is what bounds memory**: a pack is compressed, so the bytes fetched do not. A larger object fails the clone |
-| `LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES` | 5 MiB | the largest file written. A larger one is left out and listed |
-| `LOOMCYCLE_GIT_SOURCE_MAX_FILES` | 100000 | files, links and submodule directories per clone |
-| `LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS` | 120 | time for one clone, waiting for a slot included |
-| `LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT` | 1 | clones running at once, per replica |
-| `LOOMCYCLE_GIT_SOURCE_MAX_HISTORY` | 500 | commits deep a clone looks for its commit, a diff base, or a merge base |
+
+The limits of one clone are fixed:
+
+| Limit | Value | Meaning |
+|---|---|---|
+| Bytes | 256 MiB | bytes fetched, and bytes written, per clone. A request's `max_bytes` may lower it |
+| Object | 64 MiB | the largest single object once inflated. **This is what bounds memory**: a pack is compressed, so the bytes fetched do not. A larger object fails the clone |
+| File | 5 MiB | the largest file written. A larger one is left out and listed |
+| Files | 100000 | files, links and submodule directories per clone |
+| Time | 120 s | time for one clone, waiting for a slot included |
+| Concurrency | 1 | clones running at once, per replica |
+| History | 500 | commits deep a clone looks for its commit, a diff base, or a merge base |
 
 **Who may ask.** An agent needs `VolumeDef` in its tools, the usual grant for the volume's name, and `source:git` in `volume_def_scopes`. `any` does not include `source:git`.
 
-**The Git tool shares these hosts and limits.** Its `clone`, `fetch`, `pull` and `ls_remote` reach only `LOOMCYCLE_GIT_SOURCE_HOSTS`, under the same byte, object, time and concurrency limits; an agent needs `git_remote: [fetch]`. `LOOMCYCLE_GIT_SOURCE_MAX_FILES` also bounds how many entries a checkout, merge, pull or reset may write (with a 1 GiB byte bound); `MAX_FILE_BYTES` does not apply to the Git tool. Push and commit identity have their own settings:
+**The Git tool shares these hosts and limits.** Its `clone`, `fetch`, `pull` and `ls_remote` reach only `LOOMCYCLE_GIT_SOURCE_HOSTS`, under the same byte, object, time and concurrency limits; an agent needs `git_remote: [fetch]`. The file-count limit also bounds how many entries a checkout, merge, pull or reset may write (with a 1 GiB byte bound); the per-file limit does not apply to the Git tool. Push and commit identity have their own settings:
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -2535,13 +2540,13 @@ Every commit also carries a `Loomcycle-Run: <run id>` trailer. See `docs/TOOLS.m
 - `_meta/omitted.json` lists what was left out and why: `symlink`, `submodule`, `too_large`, `unsafe_path`, `collision`.
 - No `.git`.
 
-**A diff.** With `"diff_base": "merge-base:default"` (the merge base of the commit and the repository's default branch, as its HEAD names it) or a 40-digit sha, the volume also holds `_meta/diff.patch` and `_meta/numstat.json`, or the names `outputs` gives under `_meta/`. The merge base is found by deepening both histories from 64 commits, doubling, up to `LOOMCYCLE_GIT_SOURCE_MAX_HISTORY`; not found within it, the clone fails with `merge_base_not_found`. The patch describes the tree the volume holds: a change to a path left out of the tree is listed in `numstat.json` with the reason and has no body. Renames are a deletion and an addition. The patch applies with `git apply`; its text is not byte for byte what `git diff` prints. The patch counts against `LOOMCYCLE_GIT_SOURCE_MAX_BYTES` together with the tree.
+**A diff.** With `"diff_base": "merge-base:default"` (the merge base of the commit and the repository's default branch, as its HEAD names it) or a 40-digit sha, the volume also holds `_meta/diff.patch` and `_meta/numstat.json`, or the names `outputs` gives under `_meta/`. The merge base is found by deepening both histories from 64 commits, doubling, up to the history limit (500); not found within it, the clone fails with `merge_base_not_found`. The patch describes the tree the volume holds: a change to a path left out of the tree is listed in `numstat.json` with the reason and has no body. Renames are a deletion and an addition. The patch applies with `git apply`; its text is not byte for byte what `git diff` prints. The patch counts against the byte limit together with the tree.
 
 **The answer** names the commit and gives counts. It carries no file content, and a failure is one word from a closed list; the remote's own text goes to the operator's log, with the repository's path removed.
 
 **All or nothing.** A clone that fails, or passes a limit, leaves no directory, no object store and no row, and the name can be used again.
 
-**Memory.** A clone holds its pack on disk and at most a few objects in memory, each no larger than the object limit. Budget a small multiple of `LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES` per clone running at once.
+**Memory.** A clone holds its pack on disk and at most a few objects in memory, each no larger than the object limit. Budget a small multiple of the object limit (64 MiB) per replica: one clone runs at a time.
 
 ### 9d.2.3 The run inbox (files tools return)
 
@@ -3457,25 +3462,15 @@ Background work runs on fixed cadences, and none of it can be switched off:
 
 ### SQL Memory
 
-Overrides of the `storage:` SQL Memory settings; see [SQL_MEMORY.md](SQL_MEMORY.md).
+Overrides of the `storage:` SQL Memory settings; see [SQL_MEMORY.md](SQL_MEMORY.md). The directory of the sqlite files, the query guardrails (row and byte caps, statement and transaction timeouts, open-transaction caps, savepoint depth), the collection cadence and the snapshot scope cap have no variable: each is a `storage: sqlmem_*` yaml key with a default.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_SQLMEM_ROOT` | `<data dir>/sqlmem` | Directory of the per-scope sqlite files. |
 | `LOOMCYCLE_SQLMEM_PG_DSN` | — | Separate database DSN for the Postgres tier (required with a Postgres store). A secret: never interpolated into config. |
 | `LOOMCYCLE_SQLMEM_QUOTA_BYTES` | `0` | Size cap of one scope file; an agent's `sql_quota_bytes` overrides it. `0` = none. |
-| `LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS` | `30000` | Timeout of one statement. |
-| `LOOMCYCLE_SQLMEM_MAX_ROWS` | `10000` | Rows a query returns before it is truncated. |
-| `LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES` | 8 MiB | Bytes an agent's own SQL returns before the result is truncated; there is no unlimited. |
 | `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `full` | `full` records the redacted statement in the audit; `metadata` records only op, scope and row counts. |
-| `LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS` | `30000` | How long an explicit transaction may stay open before it is rolled back; `0` disables the reaper. |
-| `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` | `64` | Open explicit transactions server-wide; `0` = unbounded. |
-| `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT` | a quarter of `LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS` (`16`) | Open explicit transactions one tenant may hold, so one tenant cannot take every slot; a begin past it gets the same "too many open transactions" error. The default tenant (the one a single-tenant install runs in) is exempt and keeps the server-wide cap. Set it to the server-wide cap to turn the share off. |
-| `LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH` | `16` | Savepoint nesting in one transaction; `0` = unbounded. |
-| `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `0` | Drops agent and user scopes idle this long. Off by default: it deletes data. |
+| `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `0` | Drops agent and user scopes idle this long (checked hourly). Off by default: it deletes data. |
 | `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES` | `0` | When all durable scopes together exceed this, the largest idle ones are dropped. Off by default: it deletes data. |
-| `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | 1 h | How often those two collections run. |
-| `LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES` | `0` | A scope larger than this is left out of a runtime snapshot (and recorded as left out); `0` = no cap. |
 | `LOOMCYCLE_SQLMEM_SHARED_SCHEMAS` | — | Postgres tier: comma-separated read-only schemas added to every scope's `search_path`. Visible to every tenant. |
 
 ### Retention and usage
