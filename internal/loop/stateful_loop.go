@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
-	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/statepatch"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -279,24 +278,18 @@ func (r *statefulLoop) gates(ctx context.Context, iter int) loopExit {
 	if err := ctx.Err(); err != nil {
 		return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, err)
 	}
-	// Same per-iteration pulse the append loop sends; Run's lifetime ticker
-	// covers a step that blocks longer than one interval.
-	if r.opts.OnHeartbeat != nil {
-		r.opts.OnHeartbeat()
-	}
-	// Cooperative pause (RFC X / F41), at the same boundary the append loop
-	// parks at: before a model call, never between an action and its
-	// result. ⚠️ THIS LOOP NEVER CHECKED IT, so a runtime pause did not
-	// quiesce a stateful run — it kept calling the provider while the
-	// runtime reported itself paused, Pause() waited out its whole timeout,
-	// and the row never reached pause_state='paused', which is the only
-	// state resume re-dispatches. Here Σ is persisted (the last
-	// context_state) and so is the pending observation (a tool_result or
-	// the operator's user_input), which is what a resume rebuilds from.
-	if r.opts.PauseGate != nil && r.opts.PauseGate.PauseRequested() {
-		if err := r.opts.PauseGate.Park(ctx); err != nil {
-			return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, ctx.Err())
-		}
+	// The same per-iteration pulse and cooperative pause the append loop
+	// takes (heartbeatAndPause). ⚠️ THIS LOOP NEVER CHECKED THE PAUSE, so a
+	// runtime pause did not quiesce a stateful run — it kept calling the
+	// provider while the runtime reported itself paused, Pause() waited out
+	// its whole timeout, and the row never reached pause_state='paused',
+	// which is the only state resume re-dispatches. Here Σ is persisted (the
+	// last context_state) and so is the pending observation (a tool_result
+	// or the operator's user_input), which is what a resume rebuilds from.
+	// The cancel result carries Iterations and Σ, unlike the append loop's:
+	// each loop keeps its own result fields.
+	if err := heartbeatAndPause(ctx, &r.opts); err != nil {
+		return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, ctx.Err())
 	}
 	return loopExit{}
 }
@@ -322,13 +315,12 @@ func (r *statefulLoop) takeSteer(ctx context.Context) {
 	}
 }
 
-// queueMove is the queue-aware routing after the start, as in Run: one move at
-// a step boundary when the next call would wait too long where the run is.
+// queueMove is the queue-aware routing after the start (queueMoveAt): one move
+// at a step boundary when the next call would wait too long where the run is.
+// After steer, unlike the append loop's: the move weighs the step's rebuilt
+// conversation, which only exists once steer has joined the task.
 func (r *statefulLoop) queueMove(ctx context.Context, iter int) {
-	if iter > 0 && !r.movedForQueue && r.opts.MoveForQueue != nil &&
-		!(r.opts.FallbackPolicy.PinAfterSuccess && r.rec.firstStepSucceeded) {
-		r.movedForQueue = moveForQueue(ctx, &r.opts, r.msgs, r.emit)
-	}
+	r.movedForQueue = queueMoveAt(ctx, &r.opts, iter, r.movedForQueue, r.rec.firstStepSucceeded, r.msgs, r.emit)
 }
 
 // callUntilAccepted calls the model until it returns an emit_state the run can
@@ -401,14 +393,9 @@ func (r *statefulLoop) request(ctx context.Context, iter int) (providers.Request
 	// go out untransformed, so the `redact` plugin never saw a stateful
 	// run — and Σ and the observation are where tool output, and any
 	// secret in it, lands.
-	reqSystem, reqMsgs := r.statefulSystem, r.msgs
-	if len(r.opts.ContextPlugins) > 0 && r.opts.Provider.ID() != codeJSProviderID {
-		cs, cm, perr := contextplugin.Apply(ctx, r.opts.ContextPlugins, r.statefulSystem, r.msgs)
-		if perr != nil {
-			r.emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
-			return providers.Request{}, exitReturn(RunResult{StopReason: "error", Iterations: iter, Usage: r.total, State: r.sigma}, perr)
-		}
-		reqSystem, reqMsgs = cs, cm
+	reqSystem, reqMsgs, perr := transformOutbound(ctx, &r.opts, r.statefulSystem, r.msgs, r.emit)
+	if perr != nil {
+		return providers.Request{}, exitReturn(RunResult{StopReason: "error", Iterations: iter, Usage: r.total, State: r.sigma}, perr)
 	}
 	req := providers.Request{Model: r.opts.Model, System: reqSystem, Messages: reqMsgs, Tools: r.emitTool,
 		MaxTokens:        r.opts.MaxTokens,
@@ -438,7 +425,7 @@ func (r *statefulLoop) callModel(ctx context.Context, req providers.Request) (em
 		// The provider's own count of the whole request, which is what
 		// the eviction threshold must measure against — the same
 		// numerator the append/recap gate uses.
-		if in := usage.InputTokens + usage.CacheReadTokens + usage.CacheCreationTokens; in > 0 {
+		if in := promptFootprint(usage); in > 0 {
 			r.lastIn = in
 			r.footprintMeasured = true
 		}
@@ -861,9 +848,7 @@ func (r *statefulLoop) dispatchAction(ctx context.Context, iter int, tid string,
 	// on (after any fallback), its sampling, and how full the window is.
 	// Stamped here rather than at the top of the step because a fallback
 	// during this step's call can change the first two.
-	actCtx := tools.WithResolvedProvider(r.dispatchCtx, r.opts.Provider.ID())
-	actCtx = tools.WithResolvedModel(actCtx, r.opts.Model)
-	actCtx = tools.WithResolvedSampling(actCtx, r.opts.Sampling)
+	actCtx := stampResolvedRoute(r.dispatchCtx, &r.opts)
 	actCtx = tools.WithMaxContextTokens(actCtx, r.opts.MaxContextTokens)
 	actCtx = tools.WithContextUsage(actCtx, r.lastIn, r.lastWindow)
 	actCtx = tools.WithEffectiveContextWindow(actCtx, r.lastWindow)
@@ -871,10 +856,9 @@ func (r *statefulLoop) dispatchAction(ctx context.Context, iter int, tid string,
 	// iteration-unbounded, so the ceiling identifies that case here.
 	actCtx = tools.WithIterationBudget(actCtx, iter+1, r.maxIter, r.maxIter >= maxIterationsHardCeiling)
 	// A shutdown interrupts the action as it does the append loop's
-	// tools, so the run parks at its next step (RFC ES F1).
-	actCtx, stopInterrupt := interruptibleTools(actCtx, r.opts.PauseGate)
-	blocks := executePendingTools(actCtx, r.opts.Dispatcher, []providers.ToolUse{tu}, 1, r.opts.Hooks, hookIdent, r.emit)
-	stopInterrupt()
+	// tools, so the run parks at its next step (RFC ES F1). One action, at
+	// parallelism 1: one action per step is this mode's contract.
+	blocks := dispatchInterruptible(actCtx, &r.opts, []providers.ToolUse{tu}, 1, hookIdent, r.emit)
 	// A failure is already the structured error object, isError and all.
 	r.obs = blocks[0].Text
 	r.notRetainedObs = ""
@@ -889,10 +873,8 @@ func (r *statefulLoop) dispatchAction(ctx context.Context, iter int, tid string,
 	default:
 		r.memo.addWork(tu.Name, tu.Input, r.obs, blocks[0].IsError)
 	}
-	if why, stop := r.opts.Dispatcher.RepeatedFailure(); stop {
-		msg := "run stopped: " + why + " after being told it cannot succeed as sent"
-		r.emit(providers.Event{Type: providers.EventError, Error: msg})
-		return exitReturn(RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: r.total, State: r.sigma}, errors.New(msg))
+	if err := repeatedFailureStop(&r.opts, r.emit); err != nil {
+		return exitReturn(RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: r.total, State: r.sigma}, err)
 	}
 	return loopExit{ctl: loopNext}
 }

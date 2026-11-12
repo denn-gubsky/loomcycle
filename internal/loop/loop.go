@@ -3875,17 +3875,10 @@ func (s *runState) finish() (RunResult, error) {
 // a queue-aware move, the per-iteration ctx stamps (returned), the heartbeat,
 // and the pause and budget gates, either of which can end the run here.
 func (s *runState) beginIteration(ctx, iterCtx context.Context, iterSpan trace.Span, iter int) (context.Context, loopExit) {
-	// Queue-aware routing after the start: the first call's provider was
-	// chosen when the run started; at each later call boundary, a run with
-	// no slot held for it (its lease was preempted or expired, or the lane
-	// keeps none) may move once to a provider where it would not wait so
-	// long. Never after the first success when the operator pinned runs to
-	// their provider (PinAfterSuccess) — the reason that pin exists applies
-	// to a move as much as to a fallback.
-	if iter > 0 && !s.movedForQueue && s.opts.MoveForQueue != nil &&
-		!(s.opts.FallbackPolicy.PinAfterSuccess && s.firstTurnSucceeded) {
-		s.movedForQueue = moveForQueue(ctx, s.opts, s.messages, s.emit)
-	}
+	// Queue-aware routing after the start (queueMoveAt). First here, before
+	// steer: the stateful loop moves after its steer instead, because its
+	// move needs the step's rebuilt conversation.
+	s.movedForQueue = queueMoveAt(ctx, s.opts, iter, s.movedForQueue, s.firstTurnSucceeded, s.messages, s.emit)
 
 	// Stamp the CURRENTLY-resolved provider/model onto the per-iteration
 	// ctx so the Context tool's op=self can report them to the agent
@@ -3894,9 +3887,7 @@ func (s *runState) beginIteration(ctx, iterCtx context.Context, iterSpan trace.S
 	// — this keeps op=self truthful about what the agent is actually
 	// running on after a fallback. Tools dispatched this iteration receive
 	// iterCtx, so the value reaches them without per-tool wiring.
-	iterCtx = tools.WithResolvedProvider(iterCtx, s.opts.Provider.ID())
-	iterCtx = tools.WithResolvedModel(iterCtx, s.opts.Model)
-	iterCtx = tools.WithResolvedSampling(iterCtx, s.opts.Sampling)
+	iterCtx = stampResolvedRoute(iterCtx, s.opts)
 	iterCtx = withIteration(iterCtx, iter)
 	iterCtx = tools.WithIterationBudget(iterCtx, iter+1, s.iterCap, s.unboundedIters) // op=self: iterations used / left
 	iterCtx = tools.WithMaxContextTokens(iterCtx, s.opts.MaxContextTokens)            // RFC CJ — configured cap for op=self
@@ -3904,35 +3895,23 @@ func (s *runState) beginIteration(ctx, iterCtx context.Context, iterSpan trace.S
 	// LOWER — after drainSteer + auto/self compaction — so a same-turn
 	// op=self never reports a stale pre-compaction footprint.
 
-	// Heartbeat fires at the top of each iteration. Cheap path —
-	// implementations are expected to be ~one UPDATE. Failures
-	// should NOT propagate (a sweeper in the future is the
-	// authoritative path; a missed heartbeat just means we have
-	// to wait for the sweeper to catch up).
-	if s.opts.OnHeartbeat != nil {
-		s.opts.OnHeartbeat()
-	}
-
-	// Cooperative pause/quiesce (RFC X / F41): if a runtime pause is in
-	// effect, park HERE — a clean iteration boundary, never mid-turn /
-	// between a tool_use and its tool_results. Park persists
-	// pause_state='paused', blocks until resume, then restores 'running'.
-	// On ctx cancel while parked it returns an error and we exit the run.
-	if s.opts.PauseGate != nil && s.opts.PauseGate.PauseRequested() {
-		if err := s.opts.PauseGate.Park(iterCtx); err != nil {
-			iterSpan.End()
-			return iterCtx, exitReturn(RunResult{StopReason: "cancelled", Usage: s.totalUsage}, ctx.Err())
-		}
+	// Heartbeat and cooperative pause at the top of each iteration
+	// (heartbeatAndPause). The cancel result carries no Iterations, unlike
+	// the stateful loop's, which also carries Σ: each loop keeps its own
+	// result fields.
+	if err := heartbeatAndPause(iterCtx, s.opts); err != nil {
+		iterSpan.End()
+		return iterCtx, exitReturn(RunResult{StopReason: "cancelled", Usage: s.totalUsage}, ctx.Err())
 	}
 	// After the park, so a run resumed into a spent budget stops here too.
-	if s.opts.BudgetGate != nil {
-		if err := s.opts.BudgetGate(); err != nil {
-			iterSpan.End()
-			// Emitted as well as returned: the event is what the transcript
-			// keeps and what a stream that is not HTTP's ends on.
-			s.emit(providers.Event{Type: providers.EventError, Error: err.Error()})
-			return iterCtx, exitReturn(RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: s.totalUsage}, err)
-		}
+	// Asked before every model call (overBudget, emitted as well as returned:
+	// the event is what the transcript keeps and what a stream that is not
+	// HTTP's ends on). This loop makes one model call per iteration — a
+	// retry or a fallback starts a new iteration — so once per iteration is
+	// before every call; the stateful loop asks before each re-prompt too.
+	if err := overBudget(*s.opts, s.emit); err != nil {
+		iterSpan.End()
+		return iterCtx, exitReturn(RunResult{StopReason: StopReasonTokenLimit, Iterations: iter, Usage: s.totalUsage}, err)
 	}
 
 	return iterCtx, loopExit{}
@@ -4049,14 +4028,9 @@ func (s *runState) distillAtBoundary(iterCtx context.Context, iter int) {
 // outboundContext is the system prompt and conversation this turn sends:
 // the canonical ones, or a copy the context-transform plugins rewrote.
 func (s *runState) outboundContext(iterCtx context.Context, iter int) ([]providers.ContentBlock, []providers.Message, loopExit) {
-	reqSystem, reqMessages := s.system, s.messages
-	if len(s.opts.ContextPlugins) > 0 && s.opts.Provider.ID() != codeJSProviderID {
-		cs, cm, perr := contextplugin.Apply(iterCtx, s.opts.ContextPlugins, s.system, s.messages)
-		if perr != nil {
-			s.emit(providers.Event{Type: providers.EventError, Error: "context transform: " + perr.Error()})
-			return nil, nil, exitReturn(RunResult{Iterations: iter}, perr)
-		}
-		reqSystem, reqMessages = cs, cm
+	reqSystem, reqMessages, perr := transformOutbound(iterCtx, s.opts, s.system, s.messages, s.emit)
+	if perr != nil {
+		return nil, nil, exitReturn(RunResult{Iterations: iter}, perr)
 	}
 	return reqSystem, reqMessages, loopExit{}
 }
@@ -4790,17 +4764,15 @@ func (s *runState) dispatchTools(ctx, turnCtx context.Context, iterSpan trace.Sp
 	// (Ollama's actually-loaded context) rather than the static seed, and a
 	// mid-turn fallback's window rather than the replaced provider's.
 	toolCtx := tools.WithEffectiveContextWindow(turnCtx, s.lastWindow)
-	toolCtx, stopInterrupt := interruptibleTools(toolCtx, s.opts.PauseGate)
-	toolResults := executePendingTools(toolCtx, s.opts.Dispatcher, pendingTools, s.opts.ToolParallelism, s.opts.Hooks, hookIdent, s.emit)
-	stopInterrupt()
+	// All pending tools at ToolParallelism; the stateful loop runs its one
+	// action at parallelism 1 (one action per step is that mode's contract).
+	toolResults := dispatchInterruptible(toolCtx, s.opts, pendingTools, s.opts.ToolParallelism, hookIdent, s.emit)
 	s.messages = append(s.messages, providers.Message{Role: "user", Content: toolResults})
-	if why, stop := s.opts.Dispatcher.RepeatedFailure(); stop {
-		msg := "run stopped: " + why + " after being told it cannot succeed as sent"
-		s.emit(providers.Event{Type: providers.EventError, Error: msg})
+	if err := repeatedFailureStop(s.opts, s.emit); err != nil {
 		s.disarmTurn()
 		s.turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)
 		iterSpan.End()
-		return exitReturn(RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: s.totalUsage}, errors.New(msg))
+		return exitReturn(RunResult{StopReason: StopReasonRepeatedFailedCall, Iterations: iter + 1, Usage: s.totalUsage}, err)
 	}
 
 	// RFC BH turn-cancel (mid-tool-dispatch): the operator stopped this turn
@@ -4899,7 +4871,7 @@ func (s *runState) recordTurn(t turnOutput, callTimer *providers.CallTimer) {
 		// only grows) + the window ceiling, so the NEXT iteration's
 		// top-of-loop auto-compact check sees the live utilization. After a
 		// compaction the next request shrinks, so this self-debounces.
-		s.lastCtxTokens = t.iterUsage.InputTokens + t.iterUsage.CacheReadTokens + t.iterUsage.CacheCreationTokens
+		s.lastCtxTokens = promptFootprint(t.iterUsage)
 		s.lastWindow = t.iterUsage.MaxContextTokens
 		// Set BESIDE the values it qualifies, not derived from a separate
 		// flag: the question the reports ask is "did a provider report
