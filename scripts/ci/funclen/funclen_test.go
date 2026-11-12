@@ -53,7 +53,6 @@ var allowlist = map[string]allowed{
 	"internal/config/config.go validate":                                  {1008, "logic", "P4"},
 	"internal/api/http/resume.go Server.resumePausedRun":                  {729, "logic", "P2"},
 	"internal/store/storetest/contract.go Run":                            {743, "table", "D3"},
-	"internal/tools/builtin/teamdef.go TeamDef.execRun":                   {722, "logic", "P5"},
 	"internal/api/http/server.go Server.prepareSubRunValues":              {722, "logic", "P5"},
 	"internal/api/http/server.go Server.routes":                           {708, "table", "D3"},
 	"internal/api/mcp/tools.go baseToolDescriptors":                       {705, "table", "D3"},
