@@ -289,6 +289,12 @@ export const agentDefRegistry: DefRegistry = {
     { key: "retention", label: "Retention", group: "Capabilities", type: "enum", options: ["none", "default"],
       hint: "none: runs of this agent store no content. What they say is delivered to the caller; the server keeps a marker for each event and nothing else. Such a run cannot be interactive, continued or retuned.",
       unsetMeans: "everything is stored" },
+    { key: "telemetry", label: "Telemetry", group: "Capabilities", type: "object",
+      hint: "Can only take content capture away: never means this agent's runs record no prompt, answer or tool call on any span, even when the tenant captures content for other agents.",
+      unsetMeans: "follows the tenant's telemetry policy",
+      fields: [
+        { key: "content_capture", label: "Content capture", group: "Capabilities", type: "text", placeholder: "never", hint: "The only value is never: this agent's runs never send content to the tenant's collector." },
+      ] },
     { key: "ephemeral_volumes", label: "Ephemeral volumes", group: "Capabilities", type: "text", placeholder: "ro",
       hint: "The only value is ro: the agent reads its run's scratch volumes and cannot write to them, whatever mode they were created with. The agents it spawns get the same. A fork cannot clear it.",
       unsetMeans: "each volume's own mode" },
