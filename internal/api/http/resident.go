@@ -638,7 +638,7 @@ func (s *Server) openResidentChild(ctx context.Context, name, prompt, defID stri
 	rc.tenantID = prep.TenantID
 	rc.userID = prep.UserID
 	rc.cancel = prep.CancelFn
-	rc.notCaptured = prep.NotCaptured
+	rc.notCaptured = neverCapturesContent(prep.LoopCtx)
 
 	steerQ, onSteer, closeSteer, deregSteer := s.makeSteer(prep.SteerCtx, prep.RunID, prep.AgentID, prep.SessionID, prep.UserID, prep.Emit)
 	prep.Opts.Interactive = true

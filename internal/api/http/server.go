@@ -6587,10 +6587,7 @@ type subRunPrep struct {
 	Meta      runStateMeta
 	Emit      func(providers.Event) // the recording emit (also set as Opts.OnEvent)
 	Opts      loop.RunOptions       // fully built; interactive fields (SteerQueue/OnSteer/Interactive/ArmTurnCancel) left ZERO for the caller to set
-	// NotCaptured: the child's agent never captures content, so whatever it
-	// hands its parent later (a resident child's turns) is marked so too.
-	NotCaptured bool
-	cleanup     func()
+	cleanup   func()
 }
 
 // composeCallerText resolves a caller's segments and THEN fills their data
@@ -6874,11 +6871,6 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// The child's answer comes back as the result of the calling tool
 		// call: that call's stored copy is a marker (makeRecordingEmit).
 		tools.MarkContentNotRetained(ctx)
-	}
-	if def.Telemetry.NeverCapturesContent() {
-		// The child's answer is its content too: the calling tool call's
-		// span, and the parent's next model call, record a marker for it.
-		tools.MarkContentNotCaptured(ctx)
 	}
 	// A parent's per-spawn override is an override like a caller's: a child
 	// that runs on its definition only refuses it. Checked on the definition
@@ -7489,8 +7481,6 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		Emit:      subEmit,
 		Opts:      opts,
 		cleanup:   cleanup,
-
-		NotCaptured: def.Telemetry.NeverCapturesContent(),
 	}, nil
 }
 

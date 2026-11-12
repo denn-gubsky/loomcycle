@@ -62,8 +62,8 @@ func TestPrepareSubRun_ANeverChildMarksItsAnswerNotCaptured(t *testing.T) {
 		if mark.NotCaptured() != never {
 			t.Errorf("never=%v: the spawning call is marked not captured = %v", never, mark.NotCaptured())
 		}
-		if prep.NotCaptured != never {
-			t.Errorf("never=%v: the prepared child says not captured = %v (a resident child marks its turns by it)", never, prep.NotCaptured)
+		if got := neverCapturesContent(prep.LoopCtx); got != never {
+			t.Errorf("never=%v: the prepared child's run says never = %v (a resident child marks its turns by it)", never, got)
 		}
 		if mark.NotRetained() {
 			t.Errorf("never=%v: the child's answer is marked not retained: its parent would store nothing of it", never)

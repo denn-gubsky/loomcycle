@@ -7,6 +7,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -41,6 +42,10 @@ func (s *Server) withContentCapture(ctx context.Context, tenant string, def conf
 	never := def.Telemetry.NeverCapturesContent() || neverCapturesContent(ctx)
 	if never {
 		ctx = context.WithValue(ctx, ctxKeyNeverCaptureContent{}, true)
+		// Its answer is its content too. A sub-run starts under the tool
+		// call that spawned it (ctx still holds that call's mark): the call's
+		// span, and its parent's later model input, record a marker for it.
+		tools.MarkContentNotCaptured(ctx)
 	}
 	// With redaction switched off (LOOMCYCLE_REDACT_SECRETS=0) there is no
 	// way to keep a secret out of what leaves, so nothing is captured.

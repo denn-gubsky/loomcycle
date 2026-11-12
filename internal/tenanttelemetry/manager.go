@@ -315,7 +315,7 @@ func (m *Manager) startContentMarkLocked(tenant string, now time.Time) *contentM
 	}
 	c := &contentMarkCall{done: make(chan struct{})}
 	m.contentMarking[tenant] = c
-	go m.markContent(tenant, now, c)
+	safego.Go(context.Background(), "tenanttelemetry.content_mark", func() { m.markContent(tenant, now, c) })
 	return c
 }
 
