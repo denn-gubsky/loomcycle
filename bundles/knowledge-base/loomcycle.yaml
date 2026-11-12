@@ -5736,10 +5736,11 @@ agents:
       - Reply with ONE JSON object and nothing else:
         {"brief": "...", "abstract": "...", "language": "<two-letter code>"}
 
-  # ANSWERING FROM THE KNOWLEDGE BASE (RFC GL, stage S0). Three agents: kb/ask
-  # routes one question to kb/search (flat search with summaries, the cheap
-  # path) or kb/walker (walks the tree by its summaries, the only path that
-  # answers an overview question completely). Measured on 40 questions; see the
+  # ANSWERING FROM THE KNOWLEDGE BASE (RFC GL, stage S0). Four agents: kb/ask
+  # classifies one question (a Decision call, then kb/classify when unsure) and
+  # routes it to kb/search (flat search with summaries, the cheap path) or
+  # kb/walker (walks the tree by its summaries, the only path that answers an
+  # overview question with any completeness). Measured on 40 questions; see the
   # RFC's sections 1 to 4 for the evidence and the open re-measurement.
   kb/ask:
     provider: code-js
