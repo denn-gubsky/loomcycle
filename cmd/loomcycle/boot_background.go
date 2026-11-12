@@ -573,11 +573,61 @@ const authGateLinkRetention = 7 * 24 * time.Hour
 // startStoreSweepers starts the periodic store sweepers: expired tokens,
 // memory TTL, drained queue rows, the change feed and its push engine,
 // dead-link GC, channels and interrupts.
+//
+// The steps run in this order, each starting its own goroutine (if its
+// settings enable it) before the next step runs:
+//
+//	expired_token > ui_session > auth_gate > auth_lifecycle > memory >
+//	memory_pending > memory_changes > change_subscriptions > deadlink >
+//	document_boot_pass > projection > channels > interrupts
+//
+// The steps share no in-memory state, and each periodic sweeper takes its
+// own advisory lock key, so one replica per cluster runs a tick. Their
+// first tick fires one interval after the start (runAdvisoryGatedSweeper),
+// so the order sets the boot log's order, not which tick runs first. One
+// position is still kept on purpose: document_boot_pass is the one step that
+// works at once (the sqlite document-plane split, then the ontology identity
+// pass); it starts after the dead-link GC goroutine, whose first tick waits
+// a full LOOMCYCLE_DEADLINK_GC_MS interval. The whole function runs after
+// buildServer: auth_lifecycle checks b.srv when it starts.
 func (b *boot) startStoreSweepers() {
-	cfg := b.cfg
+	b.runStoreSweeperSteps(nil)
+}
+
+// runStoreSweeperSteps starts the store sweepers in the order above.
+// sweeperStepHook, when set, is told each step's name as it starts: a test
+// seam only (TestStartStoreSweepers_StepsRunInOrder); production passes nil.
+func (b *boot) runStoreSweeperSteps(sweeperStepHook func(step string)) {
+	steps := []struct {
+		name  string
+		start func()
+	}{
+		{"expired_token", b.startExpiredTokenSweeper},
+		{"ui_session", b.startUISessionSweeper},
+		{"auth_gate", b.startAuthGateSweeper},
+		{"auth_lifecycle", b.startAuthLifecycleSweeper},
+		{"memory", b.startMemorySweeper},
+		{"memory_pending", b.startMemoryPendingSweeper},
+		{"memory_changes", b.startMemoryChangesSweeper},
+		{"change_subscriptions", b.startChangeSubscriptionPush},
+		{"deadlink", b.startDeadLinkGC},
+		{"document_boot_pass", b.startDocumentBootPass},
+		{"projection", b.startDocumentProjectionSweeper},
+		{"channels", b.startChannelsSweeper},
+		{"interrupts", b.startInterruptsSweeper},
+	}
+	for _, s := range steps {
+		if sweeperStepHook != nil {
+			sweeperStepHook(s.name)
+		}
+		s.start()
+	}
+}
+
+// startExpiredTokenSweeper starts the expired operator-token sweeper.
+func (b *boot) startExpiredTokenSweeper() {
 	storeIface := b.storeIface
 	expiredTokenRetention := b.expiredTokenRetention
-	sqlMemMgr := b.sqlMemMgr
 	bgCtx := b.bgCtx
 	advisoryLock := b.advisoryLock
 
@@ -596,6 +646,14 @@ func (b *boot) startStoreSweepers() {
 				}
 			})
 	}
+}
+
+// startUISessionSweeper starts the Web UI session sweeper (sessions, login
+// states, passkey ceremonies, app sign-ins).
+func (b *boot) startUISessionSweeper() {
+	storeIface := b.storeIface
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// Web UI session sweeper (RFC FA §5): a revoked or expired session can no
 	// longer authenticate, so its row only takes space. Hourly, one replica
@@ -643,6 +701,14 @@ func (b *boot) startStoreSweepers() {
 				}
 			})
 	}
+}
+
+// startAuthGateSweeper starts the password gate sweeper (invites, resets,
+// throttle counters, device logins).
+func (b *boot) startAuthGateSweeper() {
+	storeIface := b.storeIface
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// Password gate sweeper (RFC FA P2): invites and resets that can no
 	// longer be used, kept a week for the audit trail's sake, and throttle
@@ -678,6 +744,13 @@ func (b *boot) startStoreSweepers() {
 				}
 			})
 	}
+}
+
+// startAuthLifecycleSweeper starts the user removal policy sweeper.
+func (b *boot) startAuthLifecycleSweeper() {
+	storeIface := b.storeIface
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// User removal policy (RFC FA §3.7c): disables users dormant past
 	// auth.lifecycle.dormant_after and advances each removal by one stage
@@ -687,6 +760,14 @@ func (b *boot) startStoreSweepers() {
 		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyAuthLifecycleSweeper, "auth-lifecycle",
 			func(ctx context.Context) { b.srv.AuthLifecycleSweep(ctx, time.Now()) })
 	}
+}
+
+// startMemorySweeper starts the Memory tool TTL sweeper.
+func (b *boot) startMemorySweeper() {
+	cfg := b.cfg
+	storeIface := b.storeIface
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// Memory tool TTL sweeper. Cheap periodic DELETE of expired rows.
 	// The store also filters expired entries at read time, so this
@@ -709,6 +790,14 @@ func (b *boot) startStoreSweepers() {
 	} else {
 		slog.Warn("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
 	}
+}
+
+// startMemoryPendingSweeper starts the drained consolidation-queue prune.
+func (b *boot) startMemoryPendingSweeper() {
+	cfg := b.cfg
+	storeIface := b.storeIface
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// Drained consolidation-queue rows. An ack only stamps drained_at, so
 	// without this the queue keeps every row ever enqueued, raw chat payload
@@ -728,6 +817,13 @@ func (b *boot) startStoreSweepers() {
 	} else if storeIface != nil {
 		slog.Warn("memory: drained-queue prune disabled (LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS=0)")
 	}
+}
+
+// startMemoryChangesSweeper starts the change-feed retention prune.
+func (b *boot) startMemoryChangesSweeper() {
+	storeIface := b.storeIface
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// RFC CD Part C — prune the change-feed table so the opt-in feed stays
 	// bounded. Only when the feed is enabled; the DELETE is idempotent and
@@ -747,6 +843,14 @@ func (b *boot) startStoreSweepers() {
 			})
 		slog.Info("memory: change-feed retention sweeper enabled", "interval", time.Hour, "window", window)
 	}
+}
+
+// startChangeSubscriptionPush starts the change-subscription push engine.
+func (b *boot) startChangeSubscriptionPush() {
+	cfg := b.cfg
+	storeIface := b.storeIface
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// RFC CD Part C (push) — deliver change events to operator-declared HTTP
 	// callbacks. Only when the feed is enabled AND subscriptions are declared;
@@ -763,6 +867,15 @@ func (b *boot) startStoreSweepers() {
 			slog.Info("memory: change-subscription push engine enabled", "subscriptions", len(subs), "interval", interval)
 		}
 	}
+}
+
+// startDeadLinkGC starts the dead-link reconciliation sweeper.
+func (b *boot) startDeadLinkGC() {
+	cfg := b.cfg
+	storeIface := b.storeIface
+	sqlMemMgr := b.sqlMemMgr
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// Dead-link reconciliation: the only layer that actually COLLECTS chunk
 	// references nothing can reach.
@@ -813,6 +926,16 @@ func (b *boot) startStoreSweepers() {
 	} else {
 		slog.Warn("deadlink gc: disabled (LOOMCYCLE_DEADLINK_GC_MS=0 or no Store)")
 	}
+}
+
+// startDocumentBootPass starts the one-shot document boot pass (the sqlite
+// document-plane split, then the tenant ontology identity pass).
+func (b *boot) startDocumentBootPass() {
+	cfg := b.cfg
+	storeIface := b.storeIface
+	sqlMemMgr := b.sqlMemMgr
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// The tenant ontology's recorded identity (RFC FY Part C, D3): one pass at boot
 	// records the id of every tenant ontology that is still known only by its name, so
@@ -849,9 +972,27 @@ func (b *boot) startStoreSweepers() {
 			_ = record(bgCtx)
 		})
 	}
+}
+
+// startDocumentProjectionSweeper starts the document projection sweeper.
+func (b *boot) startDocumentProjectionSweeper() {
+	cfg := b.cfg
+	storeIface := b.storeIface
+	sqlMemMgr := b.sqlMemMgr
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// The document projection (RFC FQ P2): off unless memory.projection asks.
 	startProjectionSweeper(bgCtx, cfg, storeIface, sqlMemMgr, b.embedder, advisoryLock)
+}
+
+// startChannelsSweeper starts the Channel tool TTL sweeper (and the idle
+// document-feed purge).
+func (b *boot) startChannelsSweeper() {
+	cfg := b.cfg
+	storeIface := b.storeIface
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// Channel tool TTL sweeper (v0.8.4). Same shape as MemorySweeper.
 	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
@@ -883,6 +1024,14 @@ func (b *boot) startStoreSweepers() {
 	} else if storeIface != nil {
 		slog.Warn("channels: sweeper disabled (LOOMCYCLE_CHANNELS_SWEEP_MS=0)")
 	}
+}
+
+// startInterruptsSweeper starts the Interruption tool TTL sweeper.
+func (b *boot) startInterruptsSweeper() {
+	cfg := b.cfg
+	storeIface := b.storeIface
+	bgCtx := b.bgCtx
+	advisoryLock := b.advisoryLock
 
 	// v0.8.16 Interruption tool TTL sweeper. Marks pending rows
 	// whose expires_at < now as timed_out.

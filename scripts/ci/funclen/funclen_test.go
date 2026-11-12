@@ -65,7 +65,6 @@ var allowlist = map[string]allowed{
 	"internal/tools/builtin/memory.go Memory.execRecall":                  {344, "logic", "P5"},
 	"internal/authz/surfaces.go HTTPSurface":                              {341, "table", "D3"},
 	"internal/loop/loop.go runLoop":                                       {335, "logic", "P5"},
-	"cmd/loomcycle/boot_background.go boot.startStoreSweepers":            {328, "logic", "P5"},
 	"internal/memory/eval/extraction_fixtures.go ExtractionFixture":       {311, "fixture", "D3"},
 }
 
