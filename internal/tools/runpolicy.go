@@ -43,6 +43,12 @@ type RunPolicy struct {
 	// ToolPatterns is the agent's RAW tool declaration, globs preserved, for
 	// the Skill tool's subset check (a resolved list can never cover a glob).
 	ToolPatterns []string
+	// ToolModes is the agent's tool_modes (config.AgentDef.ToolModes): a
+	// granted tool narrowed to its read operations. The run's dispatcher
+	// enforces it (SetToolModes); this copy is what the AgentDef ceiling holds
+	// a new definition to and what Context op=self reports. nil: every tool
+	// whole. Each run's own, as Tools is.
+	ToolModes map[string]string
 
 	// Hosts is the caller's HTTP host narrowing (see HostPolicyValue).
 	Hosts HostPolicyValue
@@ -218,6 +224,7 @@ const (
 var inheritRules = map[string]inheritRule{
 	"Tools":              ruleOwn,     // the child's tool ceiling is its definition's
 	"ToolPatterns":       ruleOwn,     //
+	"ToolModes":          ruleOwn,     // like Tools: a child is held to its own definition's modes
 	"Hosts":              ruleInherit, // the caller's narrowing holds for the whole tree; narrow-only is sticky
 	"Volumes":            ruleNarrow,  // child-declared ∩ parent; undeclared works within the parent's
 	"EphemeralWritable":  ruleNarrow,  // writable only if both are
@@ -275,6 +282,7 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 	return RunPolicy{
 		Tools:             own.Tools,
 		ToolPatterns:      own.ToolPatterns,
+		ToolModes:         own.ToolModes,
 		Hosts:             hosts,
 		Volumes:           ChildVolumes(p.Volumes, own.Volumes, c.DeclaresVolumes),
 		EphemeralWritable: p.EphemeralWritable && own.EphemeralWritable,

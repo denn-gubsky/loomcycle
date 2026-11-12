@@ -157,6 +157,9 @@ type Dispatcher struct {
 	classify func(error) (ErrorInfo, bool)
 	// panics counts the calls recovered from a panic (SetPanicCounter).
 	panics *PanicCounter
+	// modes narrows tools to some of their operations (SetToolModes,
+	// toolmode.go). nil: every tool is held whole.
+	modes map[string]string
 }
 
 // SetErrorClassifier sets how a Go error returned by a tool is classified, so
@@ -1991,6 +1994,14 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 	// an earlier turn. Counted like any failure, so a run that keeps calling
 	// it is stopped by the repeat guard.
 	if r, refused := liveToolRefusal(ctx, name); refused {
+		d.noteResult(name, input, r)
+		return r, nil
+	}
+	// tool_modes (RFC GL): a write to a tool this run holds in read mode is
+	// refused here, before the tool or the fallback runs, so nothing changes.
+	// Here and not in the loop, so it holds for every caller of the run's
+	// dispatcher: the model, a code-js agent's calls, a hook's, a tool's.
+	if r, refused := d.refuseToolMode(name, input); refused {
 		d.noteResult(name, input, r)
 		return r, nil
 	}
