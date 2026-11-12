@@ -5272,6 +5272,9 @@ func executePendingTools(
 		// notRetained: the result carries a no-trace run's content, so the
 		// transcript stores a marker for it (tools.ContentMark).
 		notRetained bool
+		// notCaptured: no span may capture the result (content capture
+		// records a marker in its place).
+		notCaptured bool
 	}
 
 	resCh := make(chan result, len(pending))
@@ -5317,7 +5320,7 @@ func executePendingTools(
 			})
 			endWork()
 			answered = true
-			resCh <- result{idx: i, tu: tu, res: r, notRetained: mark.NotRetained()}
+			resCh <- result{idx: i, tu: tu, res: r, notRetained: mark.NotRetained(), notCaptured: mark.NotCaptured()}
 		})
 	}
 	safego.Go(ctx, "loop.tool_results_close", func() {
@@ -5366,6 +5369,7 @@ func executePendingTools(
 			IsError:   r.res.IsError,
 
 			NotRetained: r.notRetained,
+			NotCaptured: r.notCaptured,
 		}
 	}
 	return results

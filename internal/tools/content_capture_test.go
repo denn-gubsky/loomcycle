@@ -76,3 +76,40 @@ func TestToolSpan_ANoTraceRunsContentIsAMarker(t *testing.T) {
 		t.Errorf("result = %q (recorded %v), want the not-retained marker", result, ok)
 	}
 }
+
+// neverTool hands back a never child's answer, marked as the Agent tool marks
+// it.
+type neverTool struct{ echoTool }
+
+func (n neverTool) Execute(ctx context.Context, in json.RawMessage) (Result, error) {
+	MarkContentNotCaptured(ctx)
+	return n.echoTool.Execute(ctx, in)
+}
+
+func TestToolSpan_ANeverRunsAnswerIsAMarker(t *testing.T) {
+	restoreRouter := lcotel.SetTenantRouterForTest(lcotel.NewTenantRouter(lcotel.TenantRouterConfig{}))
+	defer restoreRouter()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	restore := lcotel.SetTracerProviderForTest(tp)
+	defer func() { restore(); _ = tp.Shutdown(context.Background()) }()
+	ctx := WithRunIdentity(context.Background(), RunIdentityValue{TenantID: "acme"})
+	ctx = lcotel.WithContentCapture(ctx, &lcotel.ContentCapture{Tenant: "acme", MaxChars: 4096,
+		Redact: func(s string) string { return s }, RedactArgs: func(_ string, b []byte) []byte { return b }})
+	ctx, mark := WithContentMark(ctx)
+	_, _ = NewDispatcher([]Tool{neverTool{}}).Call(ctx, "Echo", json.RawMessage(`{"q":"x"}`))
+	var result string
+	for _, s := range exp.GetSpans() {
+		for _, kv := range s.Attributes {
+			if string(kv.Key) == "gen_ai.tool.call.result" {
+				result = kv.Value.AsString()
+			}
+		}
+	}
+	if result != "[content not captured]" {
+		t.Errorf("result = %q, want the not-captured marker", result)
+	}
+	if mark.NotRetained() {
+		t.Error("a never run's answer is marked not retained: it would not be stored")
+	}
+}

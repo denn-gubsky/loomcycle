@@ -6867,6 +6867,11 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		// call: that call's stored copy is a marker (makeRecordingEmit).
 		tools.MarkContentNotRetained(ctx)
 	}
+	if def.Telemetry.NeverCapturesContent() {
+		// The child's answer is its content too: the calling tool call's
+		// span, and the parent's next model call, record a marker for it.
+		tools.MarkContentNotCaptured(ctx)
+	}
 	// A parent's per-spawn override is an override like a caller's: a child
 	// that runs on its definition only refuses it. Checked on the definition
 	// the child will run — after a def_id pin, so the pinned version's own

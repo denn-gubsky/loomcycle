@@ -444,6 +444,10 @@ type ContentBlock struct {
 	// (Event.ContentNotRetained): the model reads it, and nothing the run
 	// keeps — its transcript, a harvest into memory — holds it. Never sent.
 	NotRetained bool `json:"-"`
+	// NotCaptured marks a tool_result whose text no span may capture: a
+	// no-trace run's content, or the answer of a run whose agent never
+	// captures content. Stored as it is; never sent.
+	NotCaptured bool `json:"-"`
 
 	// Dialogue marks a text block that is something said in the conversation:
 	// the caller's trusted text, an operator's turn, or the model's reply. It

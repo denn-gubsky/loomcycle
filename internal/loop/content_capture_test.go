@@ -1,11 +1,17 @@
 package loop
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 func TestCapturedPart_BinaryIsADescriptorAndNotRetainedIsAMarker(t *testing.T) {
@@ -41,5 +47,72 @@ func TestCapturedOutput_KeepsTextAndToolCallsInStreamOrder(t *testing.T) {
 	p := msgs[0].Parts
 	if len(p) != 3 || p[0].Text != "let me look" || p[1].Name != "Read" || p[2].Text != "done" {
 		t.Errorf("parts = %+v, want text, the tool call, text — and no reasoning", p)
+	}
+}
+
+// notCapturedTool hands back the answer of a run whose agent never captures
+// content, marked as the Agent tool marks it.
+type notCapturedTool struct{ reply string }
+
+func (n *notCapturedTool) Name() string                 { return "Echo" }
+func (n *notCapturedTool) Description() string          { return "hands back a never run's answer" }
+func (n *notCapturedTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (n *notCapturedTool) Execute(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
+	tools.MarkContentNotCaptured(ctx)
+	return tools.Result{Text: n.reply}, nil
+}
+
+// A never child's answer reaches its capturing parent as a tool result. The
+// parent's model reads it, and the transcript keeps it, but the parent's next
+// model call records a marker in its place on the captured input.
+func TestRun_ANeverChildsAnswerIsAMarkerInTheParentsCapturedInput(t *testing.T) {
+	const secret = "NEVER-CHILD-ANSWER-7c21"
+	restoreRouter := lcotel.SetTenantRouterForTest(lcotel.NewTenantRouter(lcotel.TenantRouterConfig{}))
+	defer restoreRouter()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	restore := lcotel.SetTracerProviderForTest(tp)
+	defer func() { restore(); _ = tp.Shutdown(context.Background()) }()
+
+	ctx := lcotel.WithTenant(context.Background(), "acme")
+	ctx = lcotel.WithContentCapture(ctx, &lcotel.ContentCapture{Tenant: "acme", MaxChars: lcotel.MaxContentMaxChars,
+		Redact: func(s string) string { return s }, RedactArgs: func(_ string, b []byte) []byte { return b }})
+	tool := &notCapturedTool{reply: secret}
+	var stored []providers.Event
+	if _, err := Run(ctx, RunOptions{
+		Provider: &toolThenEndProvider{tool: "Echo"}, Model: "x",
+		Tools: []tools.Tool{tool}, Dispatcher: tools.NewDispatcher([]tools.Tool{tool}),
+		Segments: userSeg("go"),
+		OnEvent:  func(ev providers.Event) { stored = append(stored, ev) },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var inputs []string
+	for _, s := range exp.GetSpans() {
+		for _, kv := range s.Attributes {
+			if string(kv.Key) == "gen_ai.input.messages" {
+				inputs = append(inputs, kv.Value.AsString())
+			}
+		}
+	}
+	if len(inputs) < 2 {
+		t.Fatalf("captured inputs = %d, want the two model calls'", len(inputs))
+	}
+	for _, in := range inputs {
+		if strings.Contains(in, secret) {
+			t.Errorf("a captured input carries the never child's answer: %s", in)
+		}
+	}
+	if !strings.Contains(strings.Join(inputs, "\n"), notCapturedContent) {
+		t.Errorf("no captured input names the marker: %v", inputs)
+	}
+	kept := false
+	for _, ev := range stored {
+		if ev.Type == providers.EventToolResult && strings.Contains(ev.Text, secret) && !ev.ContentNotRetained {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Error("the never child's answer is not kept in the parent's transcript")
 	}
 }

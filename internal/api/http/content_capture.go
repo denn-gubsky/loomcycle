@@ -24,19 +24,27 @@ func (s *Server) startRunSpan(ctx context.Context, def config.AgentDef, a lcotel
 // content for its tenant's own telemetry destination (RFC GG P3), and sets
 // ctx to match: on only when the tenant's policy captures content on this
 // replica (the operator's gate and the tenant's choice, ContentCaptureFor),
-// the agent has not opted out (telemetry.content_capture: never), the run is
-// not no-trace, and the server has a redactor to pass every value through.
-// Otherwise it CLEARS any capture on ctx: a sub-run decides for its own agent
-// and tenant, and must not inherit its parent's.
+// the agent has not opted out (telemetry.content_capture: never), nor has any
+// run it was spawned under, the run is not no-trace, and the server has a
+// redactor to pass every value through. Otherwise it CLEARS any capture on
+// ctx: a sub-run decides for its own agent and tenant, and must not inherit
+// its parent's capture (only its parent's never).
 //
 // A run decides at its start whether it may capture; while it runs, each
 // recording also asks whether the tenant still captures (Active), so a tenant
 // that turns capture off stops it for a run already running too.
 func (s *Server) withContentCapture(ctx context.Context, tenant string, def config.AgentDef, noTrace bool) context.Context {
 	m, r := s.tenantTelemetry, s.redactor
+	// An agent that never captures takes its whole spawn tree with it: a
+	// sub-run's input is the spawning run's text, so a child that captured
+	// would record what its never parent wrote.
+	never := def.Telemetry.NeverCapturesContent() || neverCapturesContent(ctx)
+	if never {
+		ctx = context.WithValue(ctx, ctxKeyNeverCaptureContent{}, true)
+	}
 	// With redaction switched off (LOOMCYCLE_REDACT_SECRETS=0) there is no
 	// way to keep a secret out of what leaves, so nothing is captured.
-	if m == nil || r == nil || tenant == "" || noTrace || def.Telemetry.NeverCapturesContent() {
+	if m == nil || r == nil || tenant == "" || noTrace || never {
 		return lcotel.WithContentCapture(ctx, nil)
 	}
 	n, ok := m.ContentCaptureFor(ctx, tenant)
@@ -50,6 +58,17 @@ func (s *Server) withContentCapture(ctx context.Context, tenant string, def conf
 		RedactArgs: func(tool string, args []byte) []byte { return redactToolArgs(r, tool, args) },
 		Active:     func() bool { return m.ContentCaptureActive(tenant) },
 	})
+}
+
+// ctxKeyNeverCaptureContent marks a run, and with it every run spawned under
+// it, whose agent (or an ancestor's) says telemetry.content_capture: never.
+type ctxKeyNeverCaptureContent struct{}
+
+// neverCapturesContent reports whether ctx belongs to a run under an agent
+// that never captures content.
+func neverCapturesContent(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyNeverCaptureContent{}).(bool)
+	return v
 }
 
 // redactToolArgs masks a tool call's arguments as the stored transcript masks

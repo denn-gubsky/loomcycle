@@ -108,6 +108,10 @@ type ChildResult struct {
 	// NotRetained is set for a no-trace child: a poll that hands its result
 	// back is stored as a marker (ContentMark).
 	NotRetained bool
+	// NotCaptured is set for a child whose result no span may capture (a
+	// no-trace child, or one whose agent never captures content): a poll
+	// that hands it back is not captured either.
+	NotCaptured bool
 }
 
 // ChildView is a snapshot of one child.

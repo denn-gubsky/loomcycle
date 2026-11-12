@@ -1266,10 +1266,18 @@ func ChildOutcomeSink(ctx context.Context) *ChildOutcome {
 // calling run's model still reads that result; what the run STORES of the
 // call is a marker, as a no-trace run stores its own: the child's answer is
 // stored nowhere, its parent's transcript included.
-type ContentMark struct{ notRetained atomic.Bool }
+type ContentMark struct{ notRetained, notCaptured atomic.Bool }
 
 // NotRetained reports whether the call's result must not be stored. Nil-safe.
 func (m *ContentMark) NotRetained() bool { return m != nil && m.notRetained.Load() }
+
+// NotCaptured reports whether the call's result must not be captured on a
+// span (a tenant's content capture): it carries a no-trace run's content, or
+// the answer of a run whose agent never captures. Stored it may still be.
+// Nil-safe.
+func (m *ContentMark) NotCaptured() bool {
+	return m != nil && (m.notRetained.Load() || m.notCaptured.Load())
+}
 
 type ctxKeyContentMark struct{}
 
@@ -1286,6 +1294,24 @@ func WithContentMark(ctx context.Context) (context.Context, *ContentMark) {
 func contentNotRetained(ctx context.Context) bool {
 	m, _ := ctx.Value(ctxKeyContentMark{}).(*ContentMark)
 	return m.NotRetained()
+}
+
+// contentNotCaptured reports whether the tool call ctx belongs to hands back
+// content no span may capture (ContentMark.NotCaptured).
+func contentNotCaptured(ctx context.Context) bool {
+	m, _ := ctx.Value(ctxKeyContentMark{}).(*ContentMark)
+	return m.NotCaptured()
+}
+
+// MarkContentNotCaptured flags the tool call ctx belongs to: what it hands
+// back is the answer of a run whose agent never captures content
+// (telemetry.content_capture: never), so the caller's spans must not capture
+// it either. Unlike MarkContentNotRetained it changes nothing stored. A no-op
+// off a tool call.
+func MarkContentNotCaptured(ctx context.Context) {
+	if m, _ := ctx.Value(ctxKeyContentMark{}).(*ContentMark); m != nil {
+		m.notCaptured.Store(true)
+	}
 }
 
 // MarkContentNotRetained flags the tool call ctx belongs to: what it hands
@@ -1885,8 +1911,11 @@ func (d *Dispatcher) Call(ctx context.Context, name string, input json.RawMessag
 	// result carrying a no-trace run's content is recorded as a marker.
 	if lcotel.ContentCaptureFrom(ctx) != nil {
 		result := res.Text
-		if contentNotRetained(ctx) {
+		switch {
+		case contentNotRetained(ctx):
 			result = "[content not retained]"
+		case contentNotCaptured(ctx):
+			result = "[content not captured]"
 		}
 		lcotel.SetToolCallContent(ctx, span, name, input, result)
 	}

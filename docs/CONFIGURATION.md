@@ -3928,7 +3928,11 @@ were called with and returned, as the GenAI semantic conventions (release
   `[content not retained]`). An agent whose definition says
   `telemetry: { content_capture: never }` never captures, whatever its
   tenant's policy; a fork cannot take that away, and no run request can
-  change it. A sub-run decides for its own agent.
+  change it. It takes its spawn tree with it: a sub-run of a never run (at any
+  depth) captures nothing whatever its own agent says, and a never sub-run's
+  answer is recorded as `[content not captured]` on its parent's tool span and
+  in the parent's later captured model input (the parent still reads and
+  stores it). Otherwise a sub-run decides for its own agent.
 - **Stops when the tenant turns it off.** Whether a run may capture is decided
   when it starts, and every recording then asks again whether the tenant still
   captures: turning capture off (or deleting the policy) stops it at once for

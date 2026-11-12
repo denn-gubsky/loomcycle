@@ -212,7 +212,7 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	// poll hands its result back stores a marker in place of that result.
 	var mark *tools.ContentMark
 	finish := func(state string, res tools.ChildResult) {
-		res.NotRetained = mark.NotRetained()
+		res.NotRetained, res.NotCaptured = mark.NotRetained(), mark.NotCaptured()
 		release()
 		bg.Finish(runID, state, res)
 	}
@@ -374,6 +374,9 @@ func (a *AgentTool) pollChildren(ctx context.Context, in agentInput) (tools.Resu
 				read = append(read, v.RunID)
 				if v.Result.NotRetained {
 					tools.MarkContentNotRetained(ctx)
+				}
+				if v.Result.NotCaptured {
+					tools.MarkContentNotCaptured(ctx)
 				}
 			}
 		}

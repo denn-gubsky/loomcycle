@@ -17,6 +17,10 @@ import (
 // model reads it, nothing the run keeps holds it, a span included.
 const notRetainedContent = "[content not retained]"
 
+// notCapturedContent stands in for the answer of a run whose agent never
+// captures content: the run keeps it, no span records it.
+const notCapturedContent = "[content not captured]"
+
 func capturedParts(blocks []providers.ContentBlock) []lcotel.ContentPart {
 	out := make([]lcotel.ContentPart, 0, len(blocks))
 	for _, b := range blocks {
@@ -37,8 +41,11 @@ func capturedPart(b providers.ContentBlock) lcotel.ContentPart {
 		return lcotel.ContentPart{Type: lcotel.ContentPartToolCall, ID: b.ToolUseID, Name: b.ToolName, Arguments: b.ToolInput}
 	case b.Type == "tool_result":
 		text := b.Text
-		if b.NotRetained {
+		switch {
+		case b.NotRetained:
 			text = notRetainedContent
+		case b.NotCaptured:
+			text = notCapturedContent
 		}
 		return lcotel.ContentPart{Type: lcotel.ContentPartToolCallResponse, ID: b.ToolUseID, Response: text}
 	case b.NotRetained:
