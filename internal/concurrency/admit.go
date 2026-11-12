@@ -111,13 +111,19 @@ func (s *Semaphore) admitUserLocal(ctx context.Context, key userKey, cap int, r 
 		s.mu.Unlock()
 		return false, nil
 	}
-	if r.Reject || len(s.userWait[key]) >= s.maxQueuedPerUser {
+	if r.Reject {
 		s.mu.Unlock()
 		return false, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 	}
-	if s.queued+s.lent >= s.maxQueue {
+	if n, bound := len(s.userWait[key]), s.maxQueuedPerUser; n >= bound {
 		s.mu.Unlock()
-		return false, &BackpressureError{msg: "queue full"}
+		return false, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap,
+			QueueCapacity: bound, QueuedNow: n}
+	}
+	if s.queued+s.lent >= s.maxQueue {
+		refusal := queueFull("queue full", s.maxQueue, s.queued+s.lent)
+		s.mu.Unlock()
+		return false, refusal
 	}
 	w := &semWaiter{ch: make(chan struct{}, 1), key: key, ticket: r.Ticket, reason: QueueReasonUserCap}
 	if s.userWait == nil {
@@ -209,13 +215,15 @@ func (s *Semaphore) admitUserShared(ctx context.Context, qs userQuotaGate, key u
 		return false, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
 	}
 	s.mu.Lock()
-	if s.userPolling[key] >= s.maxQueuedPerUser {
+	if n, bound := s.userPolling[key], s.maxQueuedPerUser; n >= bound {
 		s.mu.Unlock()
-		return false, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap}
+		return false, &ErrPerUserQuotaExhausted{TenantID: key.tenant, UserID: key.user, Cap: cap,
+			QueueCapacity: bound, QueuedNow: n}
 	}
 	if s.queued+s.lent >= s.maxQueue {
+		refusal := queueFull("queue full", s.maxQueue, s.queued+s.lent)
 		s.mu.Unlock()
-		return false, &BackpressureError{msg: "queue full"}
+		return false, refusal
 	}
 	if s.userPolling == nil {
 		s.userPolling = map[userKey]int{}
@@ -286,13 +294,13 @@ func (s *Semaphore) admitGlobal(ctx context.Context, key, acct userKey, acctQS u
 		return s.runRelease(acct, acctQS, r.Slot), nil
 	}
 	if !holdsPlace && (r.Reject || s.queued+s.lent >= s.maxQueue) {
-		msg := "queue full"
-		if r.Reject {
-			msg = "no free slot"
+		refusal := &BackpressureError{msg: "no free slot"}
+		if !r.Reject {
+			refusal = queueFull("queue full", s.maxQueue, s.queued+s.lent)
 		}
 		s.giveBackUserLocked(acct, acctQS)
 		s.mu.Unlock()
-		return nil, &BackpressureError{msg: msg}
+		return nil, refusal
 	}
 	// A run not counted against a per-user cap (the cap is off, the default,
 	// or the run names no user) has nothing else bounding its key's share of
@@ -302,8 +310,9 @@ func (s *Semaphore) admitGlobal(ctx context.Context, key, acct userKey, acctQS u
 	// are already at most its per-user cap.
 	if acct.user == "" && s.maxQueuedPerUser > 0 {
 		if b := s.queue.buckets[key]; b != nil && len(b.waiters) >= s.maxQueuedPerUser {
+			refusal := queueFull("queue full for this user", s.maxQueuedPerUser, len(b.waiters))
 			s.mu.Unlock()
-			return nil, &BackpressureError{msg: "queue full for this user"}
+			return nil, refusal
 		}
 	}
 	w := &semWaiter{ch: make(chan struct{}, 1), key: key, ticket: r.Ticket, reason: QueueReasonGlobalCap}

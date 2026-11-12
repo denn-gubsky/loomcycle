@@ -246,6 +246,11 @@ type SpawnRunResult struct {
 	// handler sees it there is nothing left to match on but a string.
 	// Nil when the failure is not one the runtime knows how to categorise.
 	ErrorInfo *tools.ErrorInfo `json:"-"`
+	// QueueCapacity / QueuedNow: a run refused because an admission queue was
+	// at its bound names the bound and how many runs held it (RFC GK D6), so a
+	// caller can size the next batch. Omitted on every other outcome.
+	QueueCapacity int `json:"queue_capacity,omitempty"`
+	QueuedNow     int `json:"queued_now,omitempty"`
 	// Limits carries any RFC AW per-scope token-budget crossings observed
 	// during the run (soft warnings), so an MCP spawn_run caller sees the
 	// budget banner in the tool result itself — not only on the streamed

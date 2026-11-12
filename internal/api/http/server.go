@@ -1837,11 +1837,13 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 	if errors.As(err, &pue) {
 		w.Header().Set("Retry-After", "5")
 		writeJSONErrorBody(w, http.StatusTooManyRequests, struct {
-			Code   string `json:"code"`
-			Error  string `json:"error"`
-			UserID string `json:"user_id"`
-			Cap    int    `json:"cap"`
-		}{"per_user_quota_exhausted", pue.Error(), pue.UserID, pue.Cap})
+			Code          string `json:"code"`
+			Error         string `json:"error"`
+			UserID        string `json:"user_id"`
+			Cap           int    `json:"cap"`
+			QueueCapacity int    `json:"queue_capacity,omitempty"`
+			QueuedNow     int    `json:"queued_now,omitempty"`
+		}{"per_user_quota_exhausted", pue.Error(), pue.UserID, pue.Cap, pue.QueueCapacity, pue.QueuedNow})
 		return
 	}
 	var pce *concurrency.ErrProviderConcurrencyExhausted
@@ -1859,7 +1861,16 @@ func writeQuotaError(w http.ResponseWriter, err error) {
 		return
 	}
 	if concurrency.IsBackpressure(err) {
-		writeJSONError(w, http.StatusTooManyRequests, "backpressure", err.Error())
+		// RFC GK D6: a full queue says how big it is, so the caller can size
+		// its next batch instead of guessing. Absent on a refusal that is not
+		// about a queue (admission "reject").
+		capacity, queuedNow, _ := concurrency.QueueBound(err)
+		writeJSONErrorBody(w, http.StatusTooManyRequests, struct {
+			Code          string `json:"code"`
+			Error         string `json:"error"`
+			QueueCapacity int    `json:"queue_capacity,omitempty"`
+			QueuedNow     int    `json:"queued_now,omitempty"`
+		}{"backpressure", err.Error(), capacity, queuedNow})
 		return
 	}
 	http.Error(w, err.Error(), http.StatusInternalServerError)

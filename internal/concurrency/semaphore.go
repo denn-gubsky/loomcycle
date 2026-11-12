@@ -26,9 +26,31 @@ import (
 )
 
 // BackpressureError signals the queue is full; the caller should HTTP 429.
-type BackpressureError struct{ msg string }
+//
+// QueueCapacity and QueuedNow are set when the refusal is a full queue: the
+// bound that was reached and how many runs held it, so a caller can size its
+// next batch (RFC GK D6). Both 0 on a refusal that is not about a queue
+// ("no free slot", "queue timeout").
+type BackpressureError struct {
+	msg                      string
+	QueueCapacity, QueuedNow int
+}
 
-func (e *BackpressureError) Error() string { return e.msg }
+func (e *BackpressureError) Error() string { return e.msg + queueSuffix(e.QueueCapacity, e.QueuedNow) }
+
+// queueFull is the refusal of a run that found a queue at its bound.
+func queueFull(msg string, capacity, queuedNow int) *BackpressureError {
+	return &BackpressureError{msg: msg, QueueCapacity: capacity, QueuedNow: queuedNow}
+}
+
+// queueSuffix names a full queue's figures in a refusal's text, which is all
+// a transport with no structured field for them (a gRPC batch child) carries.
+func queueSuffix(capacity, queuedNow int) string {
+	if capacity <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (queue_capacity=%d, queued_now=%d)", capacity, queuedNow)
+}
 
 // Code is the typed identifier used in the HTTP error envelope so
 // adapter consumers can branch retry strategies on the wire shape.
@@ -44,13 +66,18 @@ type ErrPerUserQuotaExhausted struct {
 	TenantID string
 	UserID   string
 	Cap      int
+	// QueueCapacity / QueuedNow: set when a run that would have waited was
+	// refused because the user's waiting runs are at their bound, as on
+	// BackpressureError. 0 when the run asked not to wait.
+	QueueCapacity, QueuedNow int
 }
 
 func (e *ErrPerUserQuotaExhausted) Error() string {
+	q := queueSuffix(e.QueueCapacity, e.QueuedNow)
 	if e.TenantID == "" {
-		return fmt.Sprintf("per-user quota exhausted: user=%s cap=%d", e.UserID, e.Cap)
+		return fmt.Sprintf("per-user quota exhausted: user=%s cap=%d", e.UserID, e.Cap) + q
 	}
-	return fmt.Sprintf("per-user quota exhausted: tenant=%s user=%s cap=%d", e.TenantID, e.UserID, e.Cap)
+	return fmt.Sprintf("per-user quota exhausted: tenant=%s user=%s cap=%d", e.TenantID, e.UserID, e.Cap) + q
 }
 
 // Code is the typed identifier used in the HTTP error envelope.
@@ -319,12 +346,13 @@ func (s *Semaphore) AcquireForUser(ctx context.Context, tenantID, userID string)
 		return s.releaseFn(key, qs), nil
 	}
 	if s.queued+s.lent >= s.maxQueue {
+		refusal := queueFull("queue full", s.maxQueue, s.queued+s.lent) // read under s.mu
 		s.mu.Unlock()
 		// Cluster mode: compensate-Release the DB slot we just took.
 		if perUserActive && qs != nil {
 			releaseInBackground(qs, key)
 		}
-		return nil, &BackpressureError{msg: "queue full"}
+		return nil, refusal
 	}
 	w := &semWaiter{ch: make(chan struct{}, 1), key: key}
 	s.queue.push(w)
@@ -766,6 +794,21 @@ func fairnessDisplayKey(tenantID, userID string) string {
 func IsBackpressure(err error) bool {
 	var b *BackpressureError
 	return errors.As(err, &b)
+}
+
+// QueueBound reports the bound and the number of runs holding it when err is
+// a refusal for a full queue (a *BackpressureError or *ErrPerUserQuotaExhausted
+// carrying them); ok is false otherwise.
+func QueueBound(err error) (capacity, queuedNow int, ok bool) {
+	var b *BackpressureError
+	if errors.As(err, &b) && b.QueueCapacity > 0 {
+		return b.QueueCapacity, b.QueuedNow, true
+	}
+	var p *ErrPerUserQuotaExhausted
+	if errors.As(err, &p) && p.QueueCapacity > 0 {
+		return p.QueueCapacity, p.QueuedNow, true
+	}
+	return 0, 0, false
 }
 
 // IsPerUserQuotaExhausted reports whether err is an

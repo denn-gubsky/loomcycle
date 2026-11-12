@@ -535,6 +535,7 @@ func spawnRunStreaming(ctx context.Context, env *handlerEnv, req connector.Spawn
 		if info, ok := errclassify.CategoryOf(runErr); ok {
 			result.ErrorInfo = &info
 		}
+		result.NoteQueueBound(runErr)
 	}
 	// The run's own record has the last word on how it ended, as on the
 	// connector's blocking path: a run ended from outside — cancel_run, or

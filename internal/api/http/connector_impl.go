@@ -139,6 +139,7 @@ func (s *Server) runBlockingObserved(ctx context.Context, in runner.RunInput, pa
 		if info, ok := errclassify.CategoryOf(runErr); ok {
 			result.ErrorInfo = &info
 		}
+		result.NoteQueueBound(runErr)
 		result.Status = string(store.RunFailed)
 		result.Error = runErr.Error()
 	case lastErrorMsg != "" && loop.EndsRejected(finalStopReason):
@@ -363,6 +364,9 @@ func batchChildResult(res connector.SpawnRunResult, err error) connector.SpawnRu
 		if info, ok := errclassify.CategoryOf(err); ok {
 			res.ErrorInfo = &info
 		}
+	}
+	if res.QueueCapacity == 0 {
+		res.NoteQueueBound(err)
 	}
 	return res
 }
