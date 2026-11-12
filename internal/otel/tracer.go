@@ -114,6 +114,12 @@ func doInit(cfg Config) (func(context.Context) error, error) {
 	// Before any exporter is built: building one parses the header
 	// environment, and the SDK's default logger would print what it rejects.
 	otel.SetLogger(newSDKLogger(slog.Default()))
+	if cfg.SDKDisabled && cfg.TenantRouter != nil {
+		// OTEL_SDK_DISABLED turns the SDK off for every span this process
+		// would record, a tenant's too: the router is left uninstalled.
+		slog.Warn("otel: tenant trace export is inactive because OTEL_SDK_DISABLED is set")
+		cfg.TenantRouter = nil
+	}
 	if !cfg.Enabled && cfg.TenantRouter == nil {
 		return noopShutdown, nil
 	}
@@ -151,6 +157,9 @@ var routingOnly atomic.Bool
 // attributed, ended) for every run, a tenant with a destination or not, where
 // the no-op provider recorded none.
 func newRoutingOnlyProvider(cfg Config) (*sdktrace.TracerProvider, error) {
+	if cfg.samplerErr != nil {
+		return nil, cfg.samplerErr
+	}
 	sampler, err := Sampler(cfg.SamplerName, cfg.SamplerArg)
 	if err != nil {
 		return nil, err

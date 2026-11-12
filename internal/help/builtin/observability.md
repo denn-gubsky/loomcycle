@@ -552,7 +552,7 @@ itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | empty | Collector auth as `key=value,...`. A secret. |
 | `OTEL_TRACES_EXPORTER` | `otlp` | A list; without `otlp` (e.g. `none`) tracing is off. |
-| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off, a tenant's own trace export included. |
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | Also `always_on`, `always_off`, `traceidratio`, `parentbased_always_off`, `parentbased_traceidratio`. |
 | `OTEL_TRACES_SAMPLER_ARG` | `1` | The ratio for the two ratio samplers, 0 to 1. |
 | `OTEL_SERVICE_NAME` | `loomcycle` | `service.name` resource attribute. |

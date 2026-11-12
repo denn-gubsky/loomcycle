@@ -3515,7 +3515,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. `http/json` is refused at startup. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Collector headers as `key=value,key2=value2`. A secret: never interpolated into config, never nameable as a definition's secret source. |
 | `OTEL_TRACES_EXPORTER` | `otlp` | A comma-separated list: naming `otlp` exports over OTLP; `none`, or only exporters loomcycle does not ship (`console`, `zipkin`), turns tracing off. Unsupported names are logged and ignored. |
-| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off. |
+| `OTEL_SDK_DISABLED` | `false` | `true` turns tracing off, a tenant's own trace export included. |
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` | `always_on`, `always_off`, `traceidratio`, `parentbased_always_on`, `parentbased_always_off` or `parentbased_traceidratio`. |
 | `OTEL_TRACES_SAMPLER_ARG` | `1` | The ratio for the two ratio samplers, 0–1; anything else stops the startup. |
 | `OTEL_SERVICE_NAME` | `loomcycle` | Service name on the spans. |
@@ -3777,7 +3777,11 @@ tenant export on installs a recording tracer where there was none: every span
 the sampler keeps is built and ended for every run, whether or not its tenant
 has a destination, a small CPU and allocation cost per span. Those spans go to
 tenants only: runs record no trace id (there is no operator trace to link
-to) and no `traceparent` is sent to MCP servers.
+to) and no `traceparent` is sent to MCP servers. That tracer samples with the
+operator's `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG`, read and checked
+as they are with tracing on (a bad value stops the startup).
+`OTEL_SDK_DISABLED=true` turns off tenant trace export as well: no span is
+recorded for anyone, and the startup logs a warning saying so.
 
 Each tenant has its own bounded queue; a slow or unreachable collector drops
 that tenant's spans (counted) and holds up nobody else's, and no run ever waits
