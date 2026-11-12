@@ -25,7 +25,6 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
-	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	"github.com/denn-gubsky/loomcycle/internal/fence"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -4733,12 +4732,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 // when the run's own wall limit cut it, which records the run failed.
 func (s *runState) runEndedMidTurn(ctx context.Context, iterSpan trace.Span, iter int, partial string) loopExit {
 	err := ctx.Err()
-	ev := providers.Event{Type: providers.EventError, Error: err.Error()}
-	if !errors.Is(context.Cause(ctx), errWallLimit) {
-		ev.ErrorInfo = &errkind.Info{Category: errkind.CategoryCancelled,
-			Description: "The run was stopped before the model finished its turn; nothing failed. Continue the session or start a new run to carry on."}
-	}
-	s.emit(ev)
+	s.emit(endedMidTurnEvent(ctx))
 	lcotel.SetSpanError(iterSpan, err)
 	iterSpan.End()
 	s.turnCancelFn(nil) // release this turn's cancel ctx before terminating (no leak)

@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
+	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -317,5 +318,56 @@ func TestRunStateful_ForwardsThinkingLive(t *testing.T) {
 	}
 	if len(texts) != 1 || texts[0] != "count is 1" {
 		t.Errorf("text events = %q, want only the turn's answer", texts)
+	}
+}
+
+// heldStatefulProvider holds its stream open until the call's ctx ends,
+// then closes it unfinished; started is closed once the call is out.
+type heldStatefulProvider struct {
+	statefulScriptProvider
+	started chan struct{}
+}
+
+func (p *heldStatefulProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	ch := make(chan providers.Event)
+	go func() {
+		close(p.started)
+		<-ctx.Done()
+		close(ch)
+	}()
+	return ch, nil
+}
+
+// A stateful run cancelled while its model call is out ends with the same
+// "cancelled, nothing failed" error event an append run emits, so the two
+// read alike in the transcript.
+func TestRunStateful_CancelMidCallEmitsTheCancelledEvent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	prov := &heldStatefulProvider{started: make(chan struct{})}
+	go func() { <-prov.started; cancel() }()
+	var errs []providers.Event
+	var mu sync.Mutex
+	res, err := Run(ctx, RunOptions{
+		Provider: prov, Model: "x", Dispatcher: tools.NewDispatcher(nil),
+		Segments: statefulTaskSegs(), Context: statefulCtx(nil),
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventError {
+				mu.Lock()
+				errs = append(errs, ev)
+				mu.Unlock()
+			}
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if res.StopReason != "cancelled" {
+		t.Errorf("stop reason = %q, want cancelled", res.StopReason)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errs) != 1 || errs[0].ErrorInfo == nil || errs[0].ErrorInfo.Category != errkind.CategoryCancelled {
+		t.Fatalf("error events = %+v, want one classified cancelled", errs)
 	}
 }

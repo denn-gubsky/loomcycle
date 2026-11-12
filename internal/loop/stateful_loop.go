@@ -494,6 +494,15 @@ func (r *statefulLoop) callFault(ctx context.Context, iter int, err error) loopE
 		// an append run on the same agent would ride out. Neither retry
 		// consumes a max_patch_retries attempt — that budget is for the
 		// model's mistakes, and this was not one.
+		//
+		// The run's ctx ended while the call was out: the run ends cancelled
+		// with the error event an append run emits for the same cancel
+		// (endedMidTurnEvent), so the transcript reads alike. Each loop keeps
+		// its own result fields.
+		if ctx.Err() != nil {
+			r.emit(endedMidTurnEvent(ctx))
+			return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, ctx.Err())
+		}
 		switch recoverStatefulCall(ctx, &r.opts, &r.rec, err, r.emit, r.msgs) {
 		case statefulCallRetry:
 			return loopExit{ctl: loopNext}

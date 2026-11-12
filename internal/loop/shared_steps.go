@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
+	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -98,6 +99,19 @@ func transformOutbound(ctx context.Context, opts *RunOptions, system []providers
 // the error's own text.
 func failedResult(iter int, usage providers.Usage) RunResult {
 	return RunResult{StopReason: "error", Iterations: iter, Usage: usage}
+}
+
+// endedMidTurnEvent is the error event of a run whose ctx ended while its model
+// call was out, the same in both loops. It is classified cancelled, so a
+// reader can tell a stopped run from a failed one — except when the run's own
+// wall limit cut it, which records the run failed.
+func endedMidTurnEvent(ctx context.Context) providers.Event {
+	ev := providers.Event{Type: providers.EventError, Error: ctx.Err().Error()}
+	if !errors.Is(context.Cause(ctx), errWallLimit) {
+		ev.ErrorInfo = &errkind.Info{Category: errkind.CategoryCancelled,
+			Description: "The run was stopped before the model finished its turn; nothing failed. Continue the session or start a new run to carry on."}
+	}
+	return ev
 }
 
 // dispatchInterruptible runs the turn's tool calls through executePendingTools
