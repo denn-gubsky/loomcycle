@@ -425,7 +425,7 @@ func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
 	// lists hosts) and gated per agent by git_remote.
 	gitTool := &builtin.Git{
 		PushHosts:    cfg.Env.GitPushHosts,
-		PushMaxBytes: cfg.Env.GitPushMaxBytes,
+		PushMaxBytes: builtin.GitPushMaxBytes,
 		AuthorName:   cfg.Env.GitAuthorName,
 		AuthorEmail:  cfg.Env.GitAuthorEmail,
 	}
@@ -442,10 +442,7 @@ func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
 	// RFC EP — the Crypto tool: encrypt / sign / MAC / TOTP with keys the
 	// runtime holds. Engine late-bound with CredentialDef's; an agent uses keys
 	// only from the scopes its crypto_scopes grants (RunPolicy.Crypto).
-	cryptoTool := &builtin.Crypto{
-		MaxBytes:     cfg.Env.CryptoMaxBytes,
-		MaxOpsPerRun: cfg.Env.CryptoMaxOpsPerRun,
-	}
+	cryptoTool := &builtin.Crypto{}
 	b.allTools = append(b.allTools, cryptoTool)
 
 	// RFC AL — the Path tool (Unix-like VFS over the dirents substrate). Store
@@ -473,17 +470,15 @@ func (b *boot) buildToolsDocument() {
 
 	// RFC AK — the Document tool (chunked-graph documents). Store late-bound
 	// below; SqlMem bound in the SQL Memory block (Document requires it); Bus
-	// for change events. MaxAssetBytes (RFC BO) caps a stored image's decoded
-	// size (0 → the tool's built-in default).
+	// for change events.
 	// Embedder (RFC BU phase 1) makes chunk BODIES semantically searchable via
 	// `memory op=search` with prefix "doc.chunk:". Nil when the operator declared
 	// no embedder block — bodies are then written exactly as before, unsearchable
 	// but never lost, so authoring never depends on an embedder being reachable.
 	documentTool := &builtin.Document{
-		Bus:           channelBus,
-		MaxAssetBytes: int(cfg.Env.MaxDocumentAssetBytes),
-		Embedder:      embedder,
-		Cfg:           cfg, // RFC CE: resolve document_sources: for set_remote / sync
+		Bus:      channelBus,
+		Embedder: embedder,
+		Cfg:      cfg, // RFC CE: resolve document_sources: for set_remote / sync
 	}
 	b.allTools = append(b.allTools, documentTool)
 	// RFC EP P2 — a Crypto `from` / `to` reference reads and writes Memory and

@@ -2520,7 +2520,6 @@ The limits of one clone are fixed:
 | Setting | Default | Meaning |
 |---|---|---|
 | `LOOMCYCLE_GIT_PUSH_HOSTS` | unset: no push | hosts a push may reach, comma-separated, as `host` or `host:port`. An agent also needs `git_remote: [fetch, push]` |
-| `LOOMCYCLE_GIT_PUSH_MAX_BYTES` | 100 MiB | bytes one push may send. A malformed or non-positive value refuses the boot |
 | `LOOMCYCLE_GIT_AUTHOR_NAME` | the agent's name | author and committer name of every commit the Git tool makes |
 | `LOOMCYCLE_GIT_AUTHOR_EMAIL` | `<agent>@loomcycle.invalid` | their email |
 
@@ -2563,7 +2562,6 @@ The runtime makes one ephemeral volume of its own per run tree: **`inbox`**, at 
 | `LOOMCYCLE_FILE_MAX_BYTES` | 64 MiB | one kept or downloaded file |
 | `LOOMCYCLE_FILE_INBOX_MAX_BYTES` | 1 GiB | the tree's whole inbox (a resumed tree counts what it already holds) |
 | `LOOMCYCLE_MCP_MAX_FRAME_BYTES` | 16 MiB | one MCP response: a stdio JSON-RPC line, or an MCP HTTP body |
-| `LOOMCYCLE_FILE_BASE64_MIN_BYTES` | 4096 | the shortest base64 string a `binary_results: capture` server's text is searched for |
 | `LOOMCYCLE_EXTRACT_CONCURRENCY` | GOMAXPROCS | `File` extractions the process runs at once: `extract`, `import` and the PDF page cuts OCR makes. The rest wait for a slot (at most 60 s, then a busy answer the model may retry) and a caller that goes away stops waiting. Zero or negative takes the default; a value that is not a whole number refuses the boot. Read at boot: a change takes a restart. `/metrics` reports `loomcycle_extractions_limit`, `_inflight` and `_waiting`. One extraction can take up to about 700 MiB (an Office file at every cap at once; an HTML page about 280 MiB), so size the container's memory at 1 GiB plus about 750 MiB per slot, or lower this |
 
 Since RFC FF, `/loomcycle/rfcs/files-by-reference`.
@@ -3364,8 +3362,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS` | `60000` | Client-tool host (`/v1/client-tools`): how long one delegated tool call may take. |
 | `LOOMCYCLE_CLIENT_TOOL_MAX_BYTES` | 1 MiB | Client-tool host: largest single frame. |
 | `LOOMCYCLE_CLIENT_TOOL_MAX_CONNS` | `8` | Client-tool host: concurrent connections per principal. |
-| `LOOMCYCLE_CRYPTO_MAX_BYTES` | 1 MiB | Crypto tool: largest data argument of one call. |
-| `LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN` | `100` | Crypto tool: calls one run may make. |
 | `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` accepts a plain `http://` Vault address for Vault Transit keys (a dev server). Off because the Vault token travels in a header. |
 | `LOOMCYCLE_WEBSEARCH_PROVENANCE` | off | `1` appends a `(via <provider>)` footer to WebSearch results, naming the search provider that answered and any fallover. |
 | `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. |
@@ -3410,6 +3406,12 @@ These are constants of the runtime; no setting changes them.
 | Skill description | 8 KiB | A `SkillDef` description. |
 | Evaluation judgement | 32 KiB | The structured judgement JSON on `Evaluation.submit`. |
 | Evaluation rationale | 8 KiB | The rationale on `Evaluation.submit`. |
+| Git push | 100 MiB | The pack one Git tool push may send. |
+| Crypto data argument | 1 MiB | Each data argument of one Crypto call. |
+| Crypto calls | 100 | Crypto tool calls one run may make. |
+| Document image | 8 MiB | A stored document image, and the `POST /v1/_document` body. |
+| Search filter | 50,000 ids | The chunk-id list a filtered Document search binds; a wider filter is refused (`filter_too_wide`). |
+| Captured base64 | 4 KiB | The shortest base64 string a `binary_results: capture` server's text is searched for. |
 
 Background work runs on fixed cadences, and none of it can be switched off:
 
@@ -3448,9 +3450,7 @@ Background work runs on fixed cadences, and none of it can be switched off:
 | `LOOMCYCLE_DEADLINK_GC_MS` | `3600000` | How often unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk) are collected; on by default, `0` disables. |
 | `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | off | `1` makes that collection count and log without deleting. |
 | `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` | `4` | Concurrent `GET /v1/_document/feed` streams one principal may hold per replica; `0` = unlimited. |
-| `LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS` | `50000` | Largest chunk-id list a filtered Document search binds; a wider filter is refused (`filter_too_wide`). |
 | `LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE` | `32` | Supporting quotes kept on one knowledge-base relation. |
-| `LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES` | 8 MiB | Caps the `POST /v1/_document` body and a stored document image. |
 | `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` | 64 KiB | Largest channel message. *0 disables*. |
 | `LOOMCYCLE_CHANNELS_SWEEP_MS` | `900000` | How often expired channel messages are deleted; `0` stops the sweep (reads skip expired messages either way). |
 | `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |

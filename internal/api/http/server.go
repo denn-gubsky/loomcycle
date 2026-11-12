@@ -765,18 +765,11 @@ func (s *Server) maxRequestBytes() int64 {
 	return defaultMaxRequestBytes
 }
 
-// defaultMaxDocumentBytes bounds a POST /v1/_document body (set_asset base64
-// image payloads + large import_md docs). RFC BO.
-const defaultMaxDocumentBytes = 8 << 20
-
-// maxDocumentBytes returns the configured Document-route body cap, falling back
-// to defaultMaxDocumentBytes when unset (<=0).
-func (s *Server) maxDocumentBytes() int64 {
-	if n := s.cfg().Env.MaxDocumentAssetBytes; n > 0 {
-		return n
-	}
-	return defaultMaxDocumentBytes
-}
+// maxDocumentBytes bounds a POST /v1/_document body (set_asset base64 image
+// payloads + large import_md docs). RFC BO. The Document tool caps the decoded
+// image at the same 8 MiB, so the base64 body (1.33x) is the binding bound on
+// an upload.
+const maxDocumentBytes = 8 << 20
 
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
 	s := &Server{

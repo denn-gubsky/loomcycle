@@ -1366,6 +1366,11 @@ func (oauthUnavailable) Substitute(_ context.Context, _, _, _, s, _ string, _ fu
 	return s, credential.OAuthRefNames(s), nil
 }
 
+// mcpBase64MinBytes is the shortest base64 string in an MCP text block that
+// capture considers a file: short enough for a small scan, long enough that
+// an ordinary id or hash is never a candidate.
+const mcpBase64MinBytes = 4 << 10
+
 // mcpResultPolicy resolves a server's binary_results (RFC FF) the way
 // mcpPoolBuild resolves the server it dials, so the setting a call renders
 // with belongs to the server that answered it: a static stdio server from the
@@ -1380,7 +1385,7 @@ func mcpResultPolicy(cfg *config.Config, mcpDynView mcpLookupView) func(tenant, 
 		}
 		return mcp.ResultPolicy{
 			CaptureBase64:  mode == config.BinaryResultsCapture,
-			Base64MinBytes: cfg.Env.FileBase64MinBytes,
+			Base64MinBytes: mcpBase64MinBytes,
 		}
 	}
 }

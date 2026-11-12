@@ -49,6 +49,11 @@ import (
 //     carry the token anywhere its owner did not allow.
 //   - A failure reaches the model as a class, never a server's text.
 
+// GitPushMaxBytes is the cap the server puts on the pack one push may upload.
+// 100 MiB: above a large source repository's whole history, below what a run
+// could use to move a disk's worth of data out in one call.
+const GitPushMaxBytes = 100 << 20
+
 // Git is the tool. Source is nil when the operator lists no git hosts: local
 // repository work still runs; the network is off.
 type Git struct {
@@ -60,7 +65,8 @@ type Git struct {
 	// Empty: no push. Push is the direction data leaves in, so it has its own
 	// list.
 	PushHosts []string
-	// PushMaxBytes bounds the bytes one push may send.
+	// PushMaxBytes bounds the bytes one push may send (the server sets
+	// GitPushMaxBytes).
 	PushMaxBytes int64
 	// PushCredential resolves a push's credential; "$ghapp:" mints a token
 	// that may write. Kept apart from Source.Credential so no read path can

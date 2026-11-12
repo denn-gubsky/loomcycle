@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
-	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // A filter-free op=search withholds the chunks of documents the caller may not
@@ -230,9 +229,8 @@ func TestDocumentSearch_UnrestrictedCallerAnswerUnchanged(t *testing.T) {
 func TestDocumentSearch_HiddenSetOverTheCapStillAnswers(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	c := newSearchACLCorpus(t, d, base)
-	d.Cfg = &config.Config{}
 	// The hidden documents hold six chunks: their roots and four ranked ones.
-	d.Cfg.Env.DocumentSearchFilterMaxIDs = 5
+	d.SearchFilterMaxIDs = 5
 	ids, text := c.search(t, hiddenByDeny(t, base), `{"op":"search","scope":"tenant","query":"norm clause","limit":3}`)
 	for _, id := range []string{c.rank[0], c.rank[2], c.rank[4], c.rank[6]} {
 		if strings.Contains(text, id) {
@@ -242,7 +240,7 @@ func TestDocumentSearch_HiddenSetOverTheCapStillAnswers(t *testing.T) {
 	if strings.Join(ids, ",") != c.rank[1] {
 		t.Errorf("hits %v, want the visible hit among the top three, %s", ids, c.rank[1])
 	}
-	d.Cfg.Env.DocumentSearchFilterMaxIDs = 6
+	d.SearchFilterMaxIDs = 6
 	if ids, _ := c.search(t, hiddenByDeny(t, base), `{"op":"search","scope":"tenant","query":"norm clause","limit":3}`); strings.Join(ids, ",") != strings.Join(c.visible()[:3], ",") {
 		t.Errorf("at the cap: hits %v, want %v", ids, c.visible()[:3])
 	}

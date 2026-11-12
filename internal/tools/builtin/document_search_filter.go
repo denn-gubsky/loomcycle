@@ -30,8 +30,9 @@ import (
 // second copy of the structure to keep in step.
 
 const (
-	// searchFilterMaxIDsDefault caps the id list sent to the store when the
-	// operator sets nothing (LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS).
+	// searchFilterMaxIDsDefault caps the id list sent to the store: 50,000
+	// ids bind in a few batches on both engines, and a filter wider than that
+	// is cheaper to run unfiltered.
 	searchFilterMaxIDsDefault = 50000
 	// searchFilterBatch bounds one IN list of document ids. sqlite allows 32,766
 	// bound variables and Postgres 65,535 per statement; one batch size keeps a
@@ -177,10 +178,10 @@ func normaliseSearchFilter(op string, in docInput) (searchFilterApplied, *tools.
 	return ap, nil
 }
 
-// searchFilterMaxIDs is the operator's cap on the id list, or the default.
+// searchFilterMaxIDs is the cap on the id list.
 func (d *Document) searchFilterMaxIDs() int {
-	if d.Cfg != nil && d.Cfg.Env.DocumentSearchFilterMaxIDs > 0 {
-		return d.Cfg.Env.DocumentSearchFilterMaxIDs
+	if d.SearchFilterMaxIDs > 0 {
+		return d.SearchFilterMaxIDs
 	}
 	return searchFilterMaxIDsDefault
 }

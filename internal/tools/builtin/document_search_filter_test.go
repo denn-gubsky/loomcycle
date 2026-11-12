@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
-	"github.com/denn-gubsky/loomcycle/internal/config"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/memory/backends/inprocess"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -664,8 +663,7 @@ func TestDocumentSearch_WideFilterInvertsToADenylist(t *testing.T) {
 
 func TestDocumentSearch_FilterOverTheCapIsRefused(t *testing.T) {
 	c, _, _ := normsCorpus(t)
-	c.d.Cfg = &config.Config{}
-	c.d.Cfg.Env.DocumentSearchFilterMaxIDs = 5
+	c.d.SearchFilterMaxIDs = 5
 	before := c.emb.n.Load()
 	b, _ := json.Marshal(map[string]any{"op": "search", "query": "norm clause", "under_path": "/qg/norms"})
 	res, err := c.d.Execute(c.ctx, b)
@@ -681,7 +679,7 @@ func TestDocumentSearch_FilterOverTheCapIsRefused(t *testing.T) {
 		t.Error("a refused filter still embedded the query")
 	}
 	// Under the cap the same call runs.
-	c.d.Cfg.Env.DocumentSearchFilterMaxIDs = 6
+	c.d.SearchFilterMaxIDs = 6
 	if ids, _ := c.call(map[string]any{"op": "search", "query": "norm clause", "under_path": "/qg/norms"}); len(ids) != 5 {
 		t.Errorf("at the cap the search returned %v", ids)
 	}
@@ -903,9 +901,8 @@ func TestDocumentSearch_ACLDeniedDocumentsDoNotMoveTheCounts(t *testing.T) {
 	const in = `{"op":"search","scope":"tenant","query":"savepoint nesting","under_path":"/kb"}`
 	observe := func(cap int) (string, bool) {
 		t.Helper()
-		d.Cfg = &config.Config{}
-		d.Cfg.Env.DocumentSearchFilterMaxIDs = cap
-		defer func() { d.Cfg = nil }()
+		d.SearchFilterMaxIDs = cap
+		defer func() { d.SearchFilterMaxIDs = 0 }()
 		res, err := d.Execute(ctx, json.RawMessage(in))
 		if err != nil {
 			t.Fatal(err)

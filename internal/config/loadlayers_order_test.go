@@ -21,7 +21,6 @@ func TestLoadLayers_EnvRefusalsReportInLoadOrder(t *testing.T) {
 		{env: "LOOMCYCLE_READ_ROOT", value: "/tmp", want: "LOOMCYCLE_READ_ROOT retired"},
 		{env: "LOOMCYCLE_AUDIT_STORE", value: "yes", want: "LOOMCYCLE_AUDIT_STORE:"},
 		{env: "LOOMCYCLE_AUDIT_RETENTION_DAYS", value: "-1", want: "LOOMCYCLE_AUDIT_RETENTION_DAYS:"},
-		{env: "LOOMCYCLE_GIT_PUSH_MAX_BYTES", value: "lots", want: "LOOMCYCLE_GIT_PUSH_MAX_BYTES:"},
 		{env: "LOOMCYCLE_FILE_MAX_BYTES", value: "0", want: "LOOMCYCLE_FILE_MAX_BYTES:"},
 		{env: "LOOMCYCLE_MCP_MAX_FRAME_BYTES", value: "-3", want: "LOOMCYCLE_MCP_MAX_FRAME_BYTES:"},
 		{env: "LOOMCYCLE_EXTRACT_CONCURRENCY", value: "many", want: "LOOMCYCLE_EXTRACT_CONCURRENCY:"},

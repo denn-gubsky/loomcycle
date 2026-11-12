@@ -530,10 +530,11 @@ curl -s -X POST "$LOOMCYCLE/v1/_crypto" -H "Authorization: Bearer $TOKEN" \
 # → {"ciphertext":"lcx1:kt:invoice-fields:3:…","key_version":3}
 ```
 
+Each data argument of a Crypto call is capped at 1 MiB, and a run may make
+100 Crypto calls (the operator API is not counted).
+
 | Env var | Default | Meaning |
 |---|---|---|
-| `LOOMCYCLE_CRYPTO_MAX_BYTES` | 1048576 | cap on each data argument of a Crypto call |
-| `LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN` | 100 | Crypto calls one run may make (not the operator API) |
 | `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` admits a plain-http Vault address (a dev server) |
 
 `/metrics` reports `loomcycle_crypto_ops_total{op, outcome}`. The tool's own help (`Context op=help topic=Crypto`) documents each operation.

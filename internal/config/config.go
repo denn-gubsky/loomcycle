@@ -4151,28 +4151,10 @@ type Env struct {
 	// LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT (<=0 or malformed keeps the default).
 	SpeechMaxInflight        int
 	TranscriptionMaxInflight int
-	// CryptoMaxBytes caps each data argument of a Crypto tool call (RFC EP).
-	// Default 1 MiB. LOOMCYCLE_CRYPTO_MAX_BYTES (bytes; <=0 ignored).
-	CryptoMaxBytes int
-	// CryptoMaxOpsPerRun caps the Crypto tool calls one run may make (RFC EP).
-	// Default 100. LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN (<=0 ignored).
-	CryptoMaxOpsPerRun int
 	// KMSVaultAllowHTTP admits a plain http:// Vault address for a crypto
 	// key held in Vault Transit (a dev server). Off by default: the Vault
 	// token travels in a header. LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1.
 	KMSVaultAllowHTTP bool
-	// MaxDocumentAssetBytes caps BOTH the POST /v1/_document request body (so a
-	// set_asset base64 image payload fits) and the decoded image size the
-	// Document tool stores (RFC BO). Default 8 MiB. A base64 payload is ~1.33× the
-	// decoded bytes, so the request cap is the binding one on upload.
-	// LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES (bytes; <=0 ignored, default kept).
-	MaxDocumentAssetBytes int64
-	// DocumentSearchFilterMaxIDs caps the chunk-id list a filtered Document
-	// search or related call binds into each store leg — the allow list, or its
-	// complement when that is smaller. Over it the call is refused
-	// (filter_too_wide) rather than silently post-filtered. Default 50000.
-	// LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS (<=0 ignored, default kept).
-	DocumentSearchFilterMaxIDs int
 	// UILoginOrigins (LOOMCYCLE_UI_LOGIN_ORIGINS, comma-separated) are the
 	// first-party origins the Web UI's postMessage login receiver may accept a
 	// bearer handoff FROM — e.g. "https://loomcycle.cloud" for the landing that
@@ -4468,9 +4450,6 @@ type Env struct {
 	// LOOMCYCLE_GIT_AUTHOR_NAME and LOOMCYCLE_GIT_AUTHOR_EMAIL.
 	GitAuthorName  string
 	GitAuthorEmail string
-	// GitPushMaxBytes caps the pack one Git push may upload (RFC FB). Sourced
-	// from LOOMCYCLE_GIT_PUSH_MAX_BYTES; default GitPushMaxBytesDefault.
-	GitPushMaxBytes int64
 	// FileMaxBytes caps one file a tool returns that the runtime keeps in the
 	// run's inbox (RFC FF); FileInboxMaxBytes caps the run tree's inbox.
 	// Sourced from LOOMCYCLE_FILE_MAX_BYTES (default 64 MiB) and
@@ -4482,10 +4461,6 @@ type Env struct {
 	// Part B). Sourced from LOOMCYCLE_EXTRACT_CONCURRENCY; unset, zero or
 	// negative takes GOMAXPROCS, resolved at load.
 	ExtractConcurrency int
-	// FileBase64MinBytes is the shortest string the base64-in-text capture
-	// of an MCP server with binary_results: capture considers a file.
-	// Sourced from LOOMCYCLE_FILE_BASE64_MIN_BYTES (default 4 KiB).
-	FileBase64MinBytes int64
 	// MCPMaxFrameBytes caps one MCP response: a stdio JSON-RPC line and an
 	// HTTP response body alike. Sourced from LOOMCYCLE_MCP_MAX_FRAME_BYTES;
 	// default MCPMaxFrameBytesDefault.
@@ -6737,18 +6712,10 @@ const DefaultShutdownPauseTimeoutMs = 7000
 // in-memory files cost about 2-2.6x the bytes written in heap.
 const BashboxOverlayMaxBytesDefault = 64 << 20
 
-// GitPushMaxBytesDefault is the cap on one Git push's upload when
-// LOOMCYCLE_GIT_PUSH_MAX_BYTES is unset (RFC FB).
-const GitPushMaxBytesDefault = 100 << 20
-
 // The inbox caps (RFC FF): one kept file, and a run tree's whole inbox.
 const (
 	FileMaxBytesDefault      = 64 << 20
 	FileInboxMaxBytesDefault = 1 << 30
-	// FileBase64MinBytesDefault is the shortest base64 string in an MCP text
-	// block that capture considers a file: short enough for a small scan,
-	// long enough that an ordinary id or hash is never a candidate.
-	FileBase64MinBytesDefault = 4 << 10
 )
 
 // MCPMaxFrameBytesDefault caps one MCP response. 16 MiB was the stdio line

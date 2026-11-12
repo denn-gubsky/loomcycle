@@ -498,18 +498,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_CRYPTO_MAX_BYTES
-            label: LOOMCYCLE_CRYPTO_MAX_BYTES
-            description: 'The Crypto tool encrypts, signs, MACs and makes one-time codes with keys the runtime holds (crypto keys stored with CredentialDef, which need LOOMCYCLE_SECRET_KEY). An agent uses keys only from the scopes its crypto_scopes grants. These cap each data argument (bytes) and the calls one run may make. Defaults: 1048576 and 100. (example: 1048576)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN
-            label: LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN
-            description: '(example: 100)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_KMS_VAULT_ALLOW_HTTP
             label: LOOMCYCLE_KMS_VAULT_ALLOW_HTTP
             description: 'A crypto key can instead be held in Vault Transit, AWS KMS or Google Cloud KMS (CredentialDef create with backend + external). A Vault address must be on LOOMCYCLE_HTTP_HOST_ALLOWLIST or LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST, and https unless this is set (a dev Vault on plain http; the Vault token travels in a header). (example: 1)'
@@ -608,12 +596,6 @@ questions:
               default: ""
           - variable: LOOMCYCLE_SQLMEM_SHARED_SCHEMAS
             label: LOOMCYCLE_SQLMEM_SHARED_SCHEMAS
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS
-            label: LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS
-            description: 'Document op=search / op=related filters (under_path, type, status, tag, as_of …) are resolved to a chunk-id list sent into every search leg. This caps that list; a filter that needs more is refused (filter_too_wide) rather than post-filtered. (example: 50000)'
             schema:
               type: string
               default: ""
@@ -1102,12 +1084,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_GIT_PUSH_MAX_BYTES
-            label: LOOMCYCLE_GIT_PUSH_MAX_BYTES
-            description: '(example: 104857600)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_GIT_AUTHOR_NAME
             label: LOOMCYCLE_GIT_AUTHOR_NAME
             description: '(example: loomcycle-bot)'
@@ -1129,12 +1105,6 @@ questions:
           - variable: LOOMCYCLE_FILE_INBOX_MAX_BYTES
             label: LOOMCYCLE_FILE_INBOX_MAX_BYTES
             description: '(example: 1073741824)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_FILE_BASE64_MIN_BYTES
-            label: LOOMCYCLE_FILE_BASE64_MIN_BYTES
-            description: '(example: 4096)'
             schema:
               type: string
               default: ""

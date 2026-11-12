@@ -52,6 +52,10 @@ type Document struct {
 	// Audit records each move_documents (RFC FT §5): who moved which documents
 	// from which scope to which. nil: the process log line is the record.
 	Audit audit.Sink
+	// SearchFilterMaxIDs caps the chunk-id list a filtered search binds into
+	// each store leg; 0 = searchFilterMaxIDsDefault. Over it the call is
+	// refused rather than cut.
+	SearchFilterMaxIDs int
 	// MaxAssetBytes caps the DECODED size of an image asset (set_asset); 0 = a
 	// conservative built-in default. The wire (base64) payload is bounded
 	// separately by the /v1/_document request-body cap. RFC BO.

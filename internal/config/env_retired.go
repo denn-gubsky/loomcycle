@@ -76,6 +76,12 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS":          "a clone's time limit is fixed at 120s",
 	"LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT":           "one clone runs at a time per replica",
 	"LOOMCYCLE_GIT_SOURCE_MAX_HISTORY":              "a clone's history limit is fixed at 500 commits",
+	"LOOMCYCLE_GIT_PUSH_MAX_BYTES":                  "one Git push may send at most 100 MiB",
+	"LOOMCYCLE_FILE_BASE64_MIN_BYTES":               "a base64 string of 4 KiB or more is captured as a file",
+	"LOOMCYCLE_CRYPTO_MAX_BYTES":                    "a Crypto data argument is capped at 1 MiB",
+	"LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN":              "a run may make 100 Crypto calls",
+	"LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES":            "a document image and the /v1/_document body are capped at 8 MiB",
+	"LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS":      "a filtered document search binds at most 50000 chunk ids",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

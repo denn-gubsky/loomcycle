@@ -97,20 +97,9 @@ func applyEnvToolLimits(cfg *Config) error {
 			cfg.Env.BashboxOverlayMaxBytes = max(n, 1<<20)
 		}
 	}
-	// Git push upload cap (RFC FB). Refused rather than defaulted when it
-	// does not parse: a cap the operator meant to lower, read as the default,
-	// would let a push send more than they allowed.
-	cfg.Env.GitPushMaxBytes = GitPushMaxBytesDefault
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_PUSH_MAX_BYTES")); v != "" {
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || n <= 0 {
-			return fmt.Errorf("LOOMCYCLE_GIT_PUSH_MAX_BYTES: %q is not a positive number of bytes", v)
-		}
-		cfg.Env.GitPushMaxBytes = n
-	}
 	// Inbox and MCP frame caps (RFC FF). Refused rather than defaulted when
-	// they do not parse, as the push cap is: a cap meant to be lowered and
-	// read as the default would keep more than the operator allowed.
+	// they do not parse: a cap meant to be lowered and read as the default
+	// would keep more than the operator allowed.
 	for _, c := range []struct {
 		env string
 		dst *int64
@@ -118,7 +107,6 @@ func applyEnvToolLimits(cfg *Config) error {
 	}{
 		{"LOOMCYCLE_FILE_MAX_BYTES", &cfg.Env.FileMaxBytes, FileMaxBytesDefault},
 		{"LOOMCYCLE_FILE_INBOX_MAX_BYTES", &cfg.Env.FileInboxMaxBytes, FileInboxMaxBytesDefault},
-		{"LOOMCYCLE_FILE_BASE64_MIN_BYTES", &cfg.Env.FileBase64MinBytes, FileBase64MinBytesDefault},
 		{"LOOMCYCLE_MCP_MAX_FRAME_BYTES", &cfg.Env.MCPMaxFrameBytes, MCPMaxFrameBytesDefault},
 	} {
 		*c.dst = c.def
@@ -144,33 +132,7 @@ func applyEnvToolLimits(cfg *Config) error {
 			cfg.Env.ExtractConcurrency = n
 		}
 	}
-	// Crypto tool limits (RFC EP): a positive override tunes each; a
-	// non-positive or malformed value keeps the default.
-	cfg.Env.CryptoMaxBytes = 1 << 20
-	if v := os.Getenv("LOOMCYCLE_CRYPTO_MAX_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.CryptoMaxBytes = n
-		}
-	}
-	cfg.Env.CryptoMaxOpsPerRun = 100
-	if v := os.Getenv("LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.CryptoMaxOpsPerRun = n
-		}
-	}
 	cfg.Env.KMSVaultAllowHTTP = os.Getenv("LOOMCYCLE_KMS_VAULT_ALLOW_HTTP") == "1"
-	cfg.Env.MaxDocumentAssetBytes = 8 << 20 // RFC BO
-	if v := os.Getenv("LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.MaxDocumentAssetBytes = n
-		}
-	}
-	cfg.Env.DocumentSearchFilterMaxIDs = 50000
-	if v := os.Getenv("LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.DocumentSearchFilterMaxIDs = n
-		}
-	}
 	return nil
 }
 

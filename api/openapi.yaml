@@ -375,7 +375,7 @@ paths:
 
         **Limits.** Each call takes one from the token's run rate, when the
         token has one (`429` with `Retry-After`). Each data argument is capped
-        (`LOOMCYCLE_CRYPTO_MAX_BYTES`).
+        at 1 MiB.
       operationId: cryptoOp
       requestBody:
         required: true

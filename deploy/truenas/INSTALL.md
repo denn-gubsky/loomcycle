@@ -244,7 +244,6 @@ services:
       # Defaults shown; uncomment to change.
       # LOOMCYCLE_FILE_MAX_BYTES: "67108864"          # one kept file (64 MiB)
       # LOOMCYCLE_FILE_INBOX_MAX_BYTES: "1073741824"  # a run tree's whole inbox (1 GiB)
-      # LOOMCYCLE_FILE_BASE64_MIN_BYTES: "4096"       # shortest base64 kept as a file (binary_results: capture)
       # LOOMCYCLE_MCP_MAX_FRAME_BYTES: "16777216"     # one MCP response (stdio line / HTTP body)
     volumes:
       - /mnt/APPS2/loomcycle/data:/data
