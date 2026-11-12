@@ -3872,9 +3872,18 @@ func (s *runState) finish() (RunResult, error) {
 }
 
 // beginIteration is an iteration's boundary work before it takes any input:
-// a queue-aware move, the per-iteration ctx stamps (returned), the heartbeat,
+// the cancellation check, a queue-aware move, the per-iteration ctx stamps (returned), the heartbeat,
 // and the pause and budget gates, either of which can end the run here.
 func (s *runState) beginIteration(ctx, iterCtx context.Context, iterSpan trace.Span, iter int) (context.Context, loopExit) {
+	// A cancelled run stops here, at the top of its iteration, as a stateful
+	// run stops at the top of its step: before the queue move, the
+	// heartbeat, the pause park and the request. Without it the cancel was
+	// found only by the model call or a park, after a heartbeat and a pause
+	// check spent on a run that had already ended.
+	if err := ctx.Err(); err != nil {
+		iterSpan.End()
+		return iterCtx, exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: s.totalUsage}, err)
+	}
 	// Queue-aware routing after the start (queueMoveAt). First here, before
 	// steer: the stateful loop moves after its steer instead, because its
 	// move needs the step's rebuilt conversation.
