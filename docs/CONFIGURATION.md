@@ -3633,7 +3633,17 @@ always one the registry resolved.
 bounded agent catalogue. Every instrument holds at most
 `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` series (default 2000); past it, new
 label sets are counted in one series labelled `otel_metric_overflow="true"`,
-so totals stay right while the breakdown stops growing. Each series also
+so totals stay right while the breakdown stops growing. The limit is
+permanent for the process: series are cumulative and none expire until a
+restart, so once an instrument is full every label set that appears later
+lands in the overflow series, a tenant's included. With many active tenants
+(roughly the limit divided by the series one tenant adds to an instrument:
+for `loomcycle_tokens_total`, one per provider, model, `type` and `key`), the
+tenants seen last are counted only in that overflow series, which carries no
+`tenant` label: a scrape confined to such a tenant, and its own metric push
+(see "Tenant telemetry export"), show nothing for it. Raise
+`LOOMCYCLE_METRICS_CARDINALITY_LIMIT` for a deployment with that many
+tenants, at the cost of the memory each series holds. Each series also
 carries `replica_id` when `LOOMCYCLE_REPLICA_ID` is set, like the substrate
 series.
 
@@ -3863,7 +3873,13 @@ is still kept for the tenant). The operator's volume does not change when a
 tenant raises its ratio; what grows is the number of spans recorded in the
 process, bounded by `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO`. Spans under a
 caller's trace (`traceparent`) follow the operator's decision and are only
-thinned, never raised; a no-trace run is never raised. A new ratio applies to
+thinned, never raised; a no-trace run is never raised. A trace is decided at
+its root, so a run whose span has a parent the operator's sampler dropped
+gets no raise either: a run a webhook starts (its parent is the
+`webhook.receive` span, which names no `loomcycle.tenant` and so is sampled
+by the operator's sampler alone), and a run under a caller's unsampled
+`traceparent`. The tenant's ratio applies to those runs only as far as the
+operator's sampler kept their trace. A new ratio applies to
 traces that start after it reaches the replica; one in progress keeps its
 start-time decision, and may be cut short on the tenant's side if the tenant
 lowered its ratio meanwhile.
