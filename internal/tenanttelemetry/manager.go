@@ -92,6 +92,9 @@ type Manager struct {
 	// contentMarked is when this replica last recorded, in the store, that a
 	// tenant's content is being captured (ContentCaptureFor).
 	contentMarked map[string]time.Time
+	// contentMarking names the tenants whose record a recording is moving in
+	// the background (ContentCaptureActive): one write per tenant at a time.
+	contentMarking map[string]bool
 }
 
 // applied is what this replica last made of one tenant's policy.
@@ -125,7 +128,7 @@ func New(d Deps) (*Manager, error) {
 		cfg: d.Config, st: d.Store, creds: d.Credentials, router: d.Router, dial: d.Dial,
 		registerSecret: d.RegisterSecret, version: d.ServiceVersion, now: now, tlsConfig: d.TLSConfig,
 		applied: map[string]applied{}, locks: map[string]*sync.Mutex{}, lastTest: map[string]time.Time{},
-		contentMarked: map[string]time.Time{},
+		contentMarked: map[string]time.Time{}, contentMarking: map[string]bool{},
 	}, nil
 }
 
@@ -280,6 +283,47 @@ func (m *Manager) ContentCaptureFor(ctx context.Context, tenant string) (int, bo
 	return a.contentMaxChars, true
 }
 
+// ContentCaptureActive reports whether tenant's destination captures content
+// now: asked on each recording of a run that started capturing, so a tenant
+// that turns capture off (or replaces its destination with one that does not
+// capture) stops it mid-run. A yes also keeps the capture record's last time
+// current through a long run: at most every ContentMarkInterval, in the
+// background, it is moved, and the recording never waits on the store. The
+// first time is on record already: the run's start (ContentCaptureFor) wrote
+// it before any content was recorded.
+func (m *Manager) ContentCaptureActive(tenant string) bool {
+	if !m.router.CapturesContent(tenant) {
+		return false
+	}
+	now := m.now()
+	m.mu.Lock()
+	due := !m.contentMarking[tenant] && now.Sub(m.contentMarked[tenant]) >= ContentMarkInterval
+	if due {
+		m.contentMarking[tenant] = true
+	}
+	m.mu.Unlock()
+	if due {
+		go m.markContent(tenant, now)
+	}
+	return true
+}
+
+// markContent moves tenant's capture record to now, in the background.
+func (m *Manager) markContent(tenant string, now time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), contentMarkTimeout)
+	defer cancel()
+	err := m.st.TenantTelemetryContentExportMark(ctx, tenant, now.UTC())
+	m.mu.Lock()
+	delete(m.contentMarking, tenant)
+	if err == nil && now.After(m.contentMarked[tenant]) {
+		m.contentMarked[tenant] = now
+	}
+	m.mu.Unlock()
+	if err != nil {
+		slog.Warn("tenant telemetry: could not move the content capture record", "tenant", tenant, "err", err)
+	}
+}
+
 // TestInterval is how often each tenant may run the test on one replica: a
 // test is an outbound request a tenant triggers at will.
 const TestInterval = 10 * time.Second
@@ -332,7 +376,7 @@ func (m *Manager) destination(ctx context.Context, row store.TenantTelemetryPoli
 	return lcotel.TenantDestination{
 		Endpoint: row.Endpoint, Protocol: lcotel.Protocol(row.Protocol), Headers: headers, Dial: m.dial,
 		TLSConfig: m.tlsConfig, Signals: append([]string(nil), row.Signals...),
-		Ratio: row.SamplerRatio,
+		Ratio: row.SamplerRatio, ContentCapture: row.ContentCapture == ContentCaptureOn,
 	}, nil
 }
 

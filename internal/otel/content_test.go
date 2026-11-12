@@ -56,7 +56,9 @@ func TestContentCapture_ReachesTenantPipelineButNeverOperatorExporter(t *testing
 		stats.enabled.Store(false)
 	})
 	r := fastRouter(TenantRouterConfig{})
-	r.SetDestination("acme", dest(tenant, nil))
+	d := dest(tenant, nil)
+	d.ContentCapture = true
+	r.SetDestination("acme", d)
 	shutdown, err := doInit(Config{
 		Enabled: true, Protocol: ProtocolHTTPProtobuf, Propagators: []string{"tracecontext"},
 		SamplerName: "parentbased_always_on", SamplerArg: 1,
@@ -342,4 +344,62 @@ func TestContentStripExporter_StripsEventsAndLeavesTheSharedSpanWhole(t *testing
 	if !hasContentKey(ro.Attributes()) || !hasContentKey(ro.Events()[0].Attributes) {
 		t.Error("stripping modified the span the tenant's pipeline shares")
 	}
+}
+
+// A run decides to capture at its start, but its content reaches the tenant's
+// collector only while the destination, as it is when each batch leaves,
+// captures: a tenant that turns capture off stops a run already capturing,
+// and content never reaches a destination set without capture.
+func TestTenantRouter_ContentLeavesOnlyWhileTheDestinationCaptures(t *testing.T) {
+	clearOTELEnv(t)
+	tenant := newFakeCollector(t)
+	r := fastRouter(TenantRouterConfig{})
+	on := dest(tenant, nil)
+	on.ContentCapture = true
+	r.SetDestination("acme", on)
+	routedProvider(t, r)
+	c := testCapture(DefaultContentMaxChars)
+
+	recordCapturedRun(context.Background(), "acme", c)
+	waitFor(t, "the spans with capture on", func() bool { return len(tenant.got()) == 3 })
+	if !anyContent(tenant.got()) {
+		t.Fatal("capture on: no span carries content")
+	}
+
+	off := on
+	off.ContentCapture = false
+	r.SetDestination("acme", off) // same endpoint: the pipeline is kept
+	recordCapturedRun(context.Background(), "acme", c)
+	waitFor(t, "the spans with capture off", func() bool { return len(tenant.got()) == 6 })
+	if after := tenant.got()[3:]; anyContent(after) {
+		t.Errorf("capture turned off: content still reached the collector: %+v", after)
+	}
+}
+
+// Each recording asks the capture whether the tenant still captures.
+func TestContentCaptureFrom_NothingOnceTheTenantStopsCapturing(t *testing.T) {
+	r := fastRouter(TenantRouterConfig{})
+	t.Cleanup(SetTenantRouterForTest(r))
+	active := true
+	c := testCapture(DefaultContentMaxChars)
+	c.Active = func() bool { return active }
+	ctx := WithContentCapture(WithTenant(context.Background(), "acme"), c)
+	if ContentCaptureFrom(ctx) == nil {
+		t.Fatal("active capture: nothing")
+	}
+	active = false
+	if ContentCaptureFrom(ctx) != nil {
+		t.Error("the tenant stopped capturing, yet content would still be recorded")
+	}
+}
+
+func anyContent(spans []collectedSpan) bool {
+	for _, s := range spans {
+		for _, k := range ContentAttributeKeys {
+			if _, ok := s.attrs[string(k)]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }

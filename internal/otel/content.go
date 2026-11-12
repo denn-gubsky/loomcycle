@@ -71,6 +71,11 @@ type ContentCapture struct {
 	// (some tools' arguments are secrets by field, whatever their value).
 	// It returns JSON, or text when the arguments were not JSON.
 	RedactArgs func(tool string, args []byte) []byte
+	// Active, when set, is asked before each recording: whether the tenant
+	// still captures content. A run decides to capture at its start; a tenant
+	// that turns capture off mid-run stops it at the next recording. It must
+	// be cheap and must not block.
+	Active func() bool
 }
 
 func (c *ContentCapture) usable() bool {
@@ -99,6 +104,9 @@ func WithContentCapture(ctx context.Context, c *ContentCapture) context.Context 
 func ContentCaptureFrom(ctx context.Context) *ContentCapture {
 	c, _ := ctx.Value(contentCaptureKey{}).(*ContentCapture)
 	if !c.usable() || NoTraceFromContext(ctx) || !tenantRouting.Load() || TenantFromContext(ctx) != c.Tenant {
+		return nil
+	}
+	if c.Active != nil && !c.Active() {
 		return nil
 	}
 	return c

@@ -3929,12 +3929,18 @@ were called with and returned, as the GenAI semantic conventions (release
   `telemetry: { content_capture: never }` never captures, whatever its
   tenant's policy; a fork cannot take that away, and no run request can
   change it. A sub-run decides for its own agent.
-- **Decided when a run starts.** Turning capture off stops it for runs that
-  start afterwards; a run already going keeps capturing until it ends.
+- **Stops when the tenant turns it off.** Whether a run may capture is decided
+  when it starts, and every recording then asks again whether the tenant still
+  captures: turning capture off (or deleting the policy) stops it at once for
+  runs already going too. A span batch leaving for the collector carries
+  content only while the destination, as it is then, captures; a destination
+  set without capture never receives any, even from a run that started under
+  the old one.
 - **Outside erasure.** Content in the tenant's backend is beyond loomcycle's
   reach, as content in the operator's is. Each replica records, at most once a
   minute per tenant, that capture was used (a run that cannot be recorded
-  captures nothing), and a subject erasure's report and result name the window:
+  captures nothing; a long run moves the record's last time while it records,
+  in the background), and a subject erasure's report and result name the window:
   "content exported to the tenant telemetry destination between <first> and
   <last>". The Web UI says so where capture is turned on.
 - **Audited.** A set's audit record carries its `telemetry_content_capture`.

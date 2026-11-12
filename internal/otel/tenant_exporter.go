@@ -175,7 +175,7 @@ func TestTenantExport(ctx context.Context, tenant string, d TenantDestination, s
 	copies := make([]sdktrace.ReadOnlySpan, len(ended))
 	res := tenantResource(tenant, serviceVersion)
 	for i, s := range ended {
-		copies[i] = newTenantSpan(s, res)
+		copies[i] = newTenantSpan(s, res, false)
 	}
 	if err := exp.ExportSpans(ctx, copies); err != nil {
 		if _, partial := partialRejected(err); partial {

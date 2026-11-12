@@ -121,7 +121,7 @@ var tenantAttrPolicy = map[string]bool{
 	string(genai.GenAIToolCallIDKey):                    true,
 	// Captured content (content.go): on a span only when the tenant turned
 	// capture on, and stripped from the operator's copy. The tenant's copy
-	// admits exactly ContentAttributeKeys.
+	// admits exactly ContentAttributeKeys, while its destination captures.
 	string(genai.GenAISystemInstructionsKey): true,
 	string(genai.GenAIInputMessagesKey):      true,
 	string(genai.GenAIOutputMessagesKey):     true,
@@ -147,10 +147,12 @@ var tenantAttrPolicy = map[string]bool{
 }
 
 // tenantKeep returns the attributes of kvs the tenant may see, nil when none.
-func tenantKeep(kvs []attribute.KeyValue) []attribute.KeyValue {
+// The content keys are kept only when content is true: the destination
+// captures content now.
+func tenantKeep(kvs []attribute.KeyValue, content bool) []attribute.KeyValue {
 	var out []attribute.KeyValue
 	for _, kv := range kvs {
-		if tenantAttrPolicy[string(kv.Key)] {
+		if tenantAttrPolicy[string(kv.Key)] && (content || !isContentKey(kv.Key)) {
 			out = append(out, kv)
 		}
 	}
@@ -201,10 +203,10 @@ type tenantSpan struct {
 	status sdktrace.Status
 }
 
-func newTenantSpan(s sdktrace.ReadOnlySpan, res *sdkresource.Resource) tenantSpan {
-	t := tenantSpan{ReadOnlySpan: s, res: res, attrs: tenantKeep(s.Attributes())}
+func newTenantSpan(s sdktrace.ReadOnlySpan, res *sdkresource.Resource, content bool) tenantSpan {
+	t := tenantSpan{ReadOnlySpan: s, res: res, attrs: tenantKeep(s.Attributes(), content)}
 	for _, e := range s.Events() {
-		e.Attributes = tenantKeep(e.Attributes)
+		e.Attributes = tenantKeep(e.Attributes, content)
 		t.events = append(t.events, e)
 	}
 	// A link's span context is kept, so the tenant's trace still points where

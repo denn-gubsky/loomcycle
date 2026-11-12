@@ -29,8 +29,9 @@ func (s *Server) startRunSpan(ctx context.Context, def config.AgentDef, a lcotel
 // Otherwise it CLEARS any capture on ctx: a sub-run decides for its own agent
 // and tenant, and must not inherit its parent's.
 //
-// A run decides once, at its start: a tenant that turns capture off stops it
-// for runs that start afterwards, not for one already running.
+// A run decides at its start whether it may capture; while it runs, each
+// recording also asks whether the tenant still captures (Active), so a tenant
+// that turns capture off stops it for a run already running too.
 func (s *Server) withContentCapture(ctx context.Context, tenant string, def config.AgentDef, noTrace bool) context.Context {
 	m, r := s.tenantTelemetry, s.redactor
 	// With redaction switched off (LOOMCYCLE_REDACT_SECRETS=0) there is no
@@ -47,6 +48,7 @@ func (s *Server) withContentCapture(ctx context.Context, tenant string, def conf
 		MaxChars:   n,
 		Redact:     r.String,
 		RedactArgs: func(tool string, args []byte) []byte { return redactToolArgs(r, tool, args) },
+		Active:     func() bool { return m.ContentCaptureActive(tenant) },
 	})
 }
 

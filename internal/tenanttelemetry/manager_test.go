@@ -930,6 +930,60 @@ func TestManagerContentCaptureFor_OnlyWhileExportedWithCaptureOnAndOnRecord(t *t
 	}
 }
 
+// A run asks on each recording whether its tenant still captures: a policy
+// put without capture (or deleted) stops a run that started capturing. While
+// it captures, the record's last time keeps up with a long run, in the
+// background.
+func TestManagerContentCaptureActive_FollowsThePolicyAndKeepsTheRecordCurrent(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	ctx := context.Background()
+	if f.m.ContentCaptureActive("acme") {
+		t.Fatal("no policy: active")
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	start := f.now
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); !ok {
+		t.Fatal("capture on: the run does not capture")
+	}
+	if !f.m.ContentCaptureActive("acme") {
+		t.Fatal("capture on: not active")
+	}
+	f.now = start.Add(3 * ContentMarkInterval)
+	if !f.m.ContentCaptureActive("acme") {
+		t.Fatal("capture on: not active later in the run")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec, err := f.st.TenantTelemetryContentExportGet(ctx, "acme")
+		if err == nil && rec.LastAt.Equal(f.now) && rec.FirstAt.Equal(start) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("record = %+v err = %v, want first %v last %v", rec, err, start, f.now)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if f.m.ContentCaptureActive("acme") {
+		t.Error("capture turned off: a running capture is still active")
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.Delete(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if f.m.ContentCaptureActive("acme") {
+		t.Error("policy deleted: a running capture is still active")
+	}
+}
+
 func TestManagerContentCaptureFor_StoredOnUnderAClosedGateExportsTracesWithoutContent(t *testing.T) {
 	c := newCollector(t)
 	f := newFixture(t, Config{}, c)

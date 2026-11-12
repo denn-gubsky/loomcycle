@@ -56,6 +56,13 @@ type TenantDestination struct {
 	// still exports none of those). Changing it never rebuilds the pipeline.
 	// Unused when Signals has no traces.
 	Ratio float64
+	// ContentCapture: the tenant's policy captures content for this
+	// destination. Its copy of a span carries the content keys only while
+	// this is so, for the destination as it is when the batch leaves: a run
+	// that started capturing stops reaching the collector with its content
+	// once the tenant turns capture off. Like Ratio, changing it never
+	// rebuilds the pipeline.
+	ContentCapture bool
 }
 
 // fingerprint identifies the destination's settings: a pipeline built for an
@@ -233,6 +240,9 @@ type TenantRouter struct {
 	// destination changes: the root sampler reads it on every span start,
 	// without a lock.
 	ratios atomic.Pointer[map[string]float64]
+	// contents names the tenants whose destination captures content,
+	// replaced with ratios; read on every content recording (CapturesContent).
+	contents atomic.Pointer[map[string]bool]
 	// flushing names the tenants with a replaced pipeline still flushing.
 	// One flush per tenant at a time: a flush waits on the tenant's
 	// collector inside a shared export slot, and a tenant flapping its
@@ -290,8 +300,12 @@ func (r *TenantRouter) SetDestination(tenant string, d TenantDestination) {
 	}
 	e.dest, e.fp, e.traces = d, fp, d.exports(SignalTraces)
 	r.publishRatiosLocked()
-	if p := r.pipes[tenant]; p != nil && p.fp != fp {
-		r.dropPipelineLocked(tenant, p)
+	if p := r.pipes[tenant]; p != nil {
+		if p.fp != fp {
+			r.dropPipelineLocked(tenant, p)
+		} else {
+			p.content.Store(d.ContentCapture)
+		}
 	}
 }
 
@@ -315,12 +329,28 @@ func (r *TenantRouter) RemoveDestination(tenant string) {
 // receives no spans, so raising spans for it would only cost.
 func (r *TenantRouter) publishRatiosLocked() {
 	m := make(map[string]float64, len(r.entries))
+	c := map[string]bool{}
 	for t, e := range r.entries {
 		if e.traces {
 			m[t] = e.dest.Ratio
+			if e.dest.ContentCapture {
+				c[t] = true
+			}
 		}
 	}
 	r.ratios.Store(&m)
+	r.contents.Store(&c)
+}
+
+// CapturesContent reports whether tenant's destination, as it is now, exports
+// traces with content capture on. Lock-free: it is asked on every recording of
+// a run's content.
+func (r *TenantRouter) CapturesContent(tenant string) bool {
+	if r == nil {
+		return false
+	}
+	m := r.contents.Load()
+	return m != nil && (*m)[tenant]
 }
 
 // exportRatio is tenant's Ratio when it has a destination.
@@ -642,6 +672,10 @@ type tenantPipeline struct {
 	// ctx is cancelled when the pipeline is discarded, ending its exports.
 	ctx    context.Context
 	cancel context.CancelFunc
+	// content: the pipeline's destination captures content now
+	// (TenantDestination.ContentCapture); without it the content keys are
+	// dropped from each copy.
+	content atomic.Bool
 }
 
 func newTenantPipeline(tenant string, e *tenantEntry, cfg TenantRouterConfig, slots *exportSlots) (*tenantPipeline, error) {
@@ -652,6 +686,7 @@ func newTenantPipeline(tenant string, e *tenantEntry, cfg TenantRouterConfig, sl
 	p := &tenantPipeline{fp: e.fp, stats: e.stats, queue: int64(cfg.QueueSize), tenant: tenant, release: release}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.lastUsed.Store(time.Now().UnixNano())
+	p.content.Store(e.dest.ContentCapture)
 	te := &tenantSpanExporter{
 		tenant: tenant, next: exp, res: tenantResource(tenant, cfg.ServiceVersion),
 		slots: slots, p: p, headers: e.dest.Headers, log: cfg.Log,
@@ -730,7 +765,7 @@ func (e *tenantSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.R
 	defer release()
 	copies := make([]sdktrace.ReadOnlySpan, n)
 	for i, s := range spans {
-		copies[i] = newTenantSpan(s, e.res)
+		copies[i] = newTenantSpan(s, e.res, e.p.content.Load())
 	}
 	ctx, code := withStatusHolder(ctx)
 	err := e.next.ExportSpans(ctx, copies)
