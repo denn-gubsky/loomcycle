@@ -10,6 +10,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -183,4 +184,92 @@ func TestRunStateful_ActionCtxCarriesIterationAndLastDistill(t *testing.T) {
 	if d := probe.distill[0]; d.Mode != "stateful" || d.Reason != providers.DistillDeclineSplitDeclined {
 		t.Errorf("action of step 0 read last distill %+v, want the stateful eviction decline", d)
 	}
+}
+
+// failSecondPlugin passes the first request and fails every later one.
+type failSecondPlugin struct{ n atomic.Int32 }
+
+func (p *failSecondPlugin) Name() string { return "fail-second" }
+func (p *failSecondPlugin) Transform(_ context.Context, sys []providers.ContentBlock, msgs []providers.Message) ([]providers.ContentBlock, []providers.Message, error) {
+	if p.n.Add(1) > 1 {
+		return nil, nil, errors.New("transform refused")
+	}
+	return sys, msgs, nil
+}
+
+// readThenFail is a first turn that calls FakeRead and reports 7 input tokens.
+func readThenFail() []providers.Event {
+	return []providers.Event{
+		{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "t1", Name: "FakeRead", Input: json.RawMessage(`{}`)}},
+		{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{InputTokens: 7, OutputTokens: 1}},
+	}
+}
+
+// A run that fails on a context transform or a fatal provider error ends in
+// one shape in both loops: stop reason "error", the usage spent so far kept,
+// and the error event carrying the error's own text.
+func TestRun_FailureEndsInTheErrorShape(t *testing.T) {
+	cases := []struct {
+		name    string
+		second  [][]providers.Event // the provider's responses after the tool turn
+		plugins []contextplugin.Plugin
+		wantMsg string
+	}{
+		{name: "context transform", second: [][]providers.Event{{{Type: providers.EventDone, StopReason: "end_turn"}}},
+			plugins: []contextplugin.Plugin{&failSecondPlugin{}}, wantMsg: "context transform: context plugin \"fail-second\": transform refused"},
+		{name: "provider call", wantMsg: "no scripted response"},
+		{name: "provider stream", second: [][]providers.Event{{{Type: providers.EventError, Error: "provider exploded"}}},
+			wantMsg: "provider exploded"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ft := &fakeTool{}
+			prov := &fakeProvider{responses: append([][]providers.Event{readThenFail()}, tc.second...)}
+			var lastErr string
+			res, err := Run(context.Background(), RunOptions{
+				Provider: prov, Model: "fake-model", Tools: []tools.Tool{ft},
+				Dispatcher: tools.NewDispatcher([]tools.Tool{ft}), Segments: userSeg("go"),
+				ContextPlugins: tc.plugins,
+				OnEvent: func(ev providers.Event) {
+					if ev.Type == providers.EventError {
+						lastErr = ev.Error
+					}
+				},
+			})
+			if err == nil {
+				t.Fatalf("Run: nil error, want the failure")
+			}
+			if res.StopReason != "error" {
+				t.Errorf("stop reason = %q, want error", res.StopReason)
+			}
+			if res.Usage.InputTokens != 7 {
+				t.Errorf("usage input = %d, want the 7 spent before the failure", res.Usage.InputTokens)
+			}
+			if lastErr != tc.wantMsg {
+				t.Errorf("error event = %q, want %q", lastErr, tc.wantMsg)
+			}
+		})
+	}
+
+	t.Run("stateful provider call", func(t *testing.T) {
+		var lastErr string
+		res, err := Run(context.Background(), RunOptions{
+			Provider: &fakeProvider{}, Model: "x", Dispatcher: tools.NewDispatcher(nil),
+			Segments: statefulTaskSegs(), Context: statefulCtx(nil),
+			OnEvent: func(ev providers.Event) {
+				if ev.Type == providers.EventError {
+					lastErr = ev.Error
+				}
+			},
+		})
+		if err == nil {
+			t.Fatalf("Run: nil error, want the failure")
+		}
+		if res.StopReason != "error" {
+			t.Errorf("stop reason = %q, want error", res.StopReason)
+		}
+		if lastErr != "no scripted response" {
+			t.Errorf("error event = %q, want the provider's own text", lastErr)
+		}
+	})
 }

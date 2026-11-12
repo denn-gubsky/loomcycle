@@ -92,6 +92,14 @@ func transformOutbound(ctx context.Context, opts *RunOptions, system []providers
 	return system, msgs, nil
 }
 
+// failedResult is the one shape a run ends in, in both loops, when a context
+// transform fails or the provider fails for good: stop reason "error" and the
+// usage spent so far. The stateful loop adds its Σ. The error event carries
+// the error's own text.
+func failedResult(iter int, usage providers.Usage) RunResult {
+	return RunResult{StopReason: "error", Iterations: iter, Usage: usage}
+}
+
 // dispatchInterruptible runs the turn's tool calls through executePendingTools
 // — hooks, the parallel_spawn ledger key, failure classification and the
 // tool_result events — under a ctx a shutdown interrupts (RFC ES F1), so the

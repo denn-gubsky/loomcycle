@@ -4036,7 +4036,7 @@ func (s *runState) distillAtBoundary(iterCtx context.Context, iter int) {
 func (s *runState) outboundContext(iterCtx context.Context, iter int) ([]providers.ContentBlock, []providers.Message, loopExit) {
 	reqSystem, reqMessages, perr := transformOutbound(iterCtx, s.opts, s.system, s.messages, s.emit)
 	if perr != nil {
-		return nil, nil, exitReturn(RunResult{Iterations: iter}, perr)
+		return nil, nil, exitReturn(failedResult(iter, s.totalUsage), perr)
 	}
 	return reqSystem, reqMessages, loopExit{}
 }
@@ -4476,7 +4476,7 @@ func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span,
 	}
 	iterSpan.End()
 	s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-	return exitReturn(RunResult{Iterations: iter}, err)
+	return exitReturn(failedResult(iter, s.totalUsage), err)
 }
 
 // turnOutput is what one model call streamed back: the assistant turn's
@@ -4669,7 +4669,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 			}
 			iterSpan.End()
 			s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-			return turnOutput{}, exitReturn(RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", ev.Error))
+			return turnOutput{}, exitReturn(failedResult(iter, s.totalUsage), fmt.Errorf("provider error: %s", ev.Error))
 		}
 	}
 
@@ -4688,7 +4688,7 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 		lcotel.SetSpanErrorMessage(iterSpan, msg)
 		iterSpan.End()
 		s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-		return turnOutput{}, exitReturn(RunResult{Iterations: iter}, fmt.Errorf("provider error: %s", msg))
+		return turnOutput{}, exitReturn(failedResult(iter, s.totalUsage), fmt.Errorf("provider error: %s", msg))
 	}
 	// The run's own ctx ended while the model was generating, so the stream
 	// closed unfinished. Taken as a turn it is an empty end_turn, which ended

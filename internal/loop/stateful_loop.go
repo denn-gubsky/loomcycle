@@ -410,7 +410,7 @@ func (r *statefulLoop) request(ctx context.Context, iter int) (providers.Request
 	// secret in it, lands.
 	reqSystem, reqMsgs, perr := transformOutbound(ctx, &r.opts, r.statefulSystem, r.msgs, r.emit)
 	if perr != nil {
-		return providers.Request{}, exitReturn(RunResult{StopReason: "error", Iterations: iter, Usage: r.total, State: r.sigma}, perr)
+		return providers.Request{}, exitReturn(r.failed(iter), perr)
 	}
 	req := providers.Request{Model: r.opts.Model, System: reqSystem, Messages: reqMsgs, Tools: r.emitTool,
 		MaxTokens:        r.opts.MaxTokens,
@@ -476,6 +476,13 @@ func (r *statefulLoop) callModel(ctx context.Context, req providers.Request) (em
 	return call, err
 }
 
+// failed is the run's failure result (failedResult) with its Σ.
+func (r *statefulLoop) failed(iter int) RunResult {
+	res := failedResult(iter, r.total)
+	res.State = r.sigma
+	return res
+}
+
 // callFault answers a transport or provider fault: loopNext sends the same
 // step again (not counted as an attempt), loopReturn ends the run. A call that
 // came back clears the pair's retry count and stall, and proceeds.
@@ -493,8 +500,11 @@ func (r *statefulLoop) callFault(ctx context.Context, iter int, err error) loopE
 		case statefulCallCancelled:
 			return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, ctx.Err())
 		}
-		r.emit(providers.Event{Type: providers.EventError, Error: "stateful step failed: " + err.Error()})
-		return exitReturn(RunResult{StopReason: "error", Iterations: iter, Usage: r.total, State: r.sigma}, err)
+		// The provider's own text, as the append loop emits it; the
+		// "stateful step failed" lead is kept only for the model's own
+		// failure to call emit_state (proseAsAnswer).
+		r.emit(providers.Event{Type: providers.EventError, Error: err.Error()})
+		return exitReturn(r.failed(iter), err)
 	}
 	// The call reached the provider and came back: the pair is healthy
 	// enough to answer, whatever the model then did with the answer.
