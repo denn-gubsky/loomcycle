@@ -4431,7 +4431,9 @@ export type DocumentToolInput = {
     // Remote document sources (RFC CE).
     | "set_remote"
     | "sync"
-    | "diff_remote";
+    | "diff_remote"
+    // A chunk's sections, document and folders, each with its brief (RFC GL P2).
+    | "lineage";
   scope?: "agent" | "user" | "tenant";
   /** Document id (get/delete_document) or chunk id (get/update/delete/move_chunk). */
   id?: string;

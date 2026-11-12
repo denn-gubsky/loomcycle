@@ -2649,6 +2649,7 @@ components:
             - propose_subject
             - upsert_chunk
             - get_chunk
+            - lineage
             - update_chunk
             - delete_chunk
             - supersede_chunk

@@ -100,6 +100,7 @@ and examples, as `Document/<op>` — for example
 |---|---|---|
 | `create_chunk` | add a chunk to a document | `document_id`, `title` |
 | `get_chunk` | one chunk with its body, fields, tags and current `revision` | `id` |
+| `lineage` | where a chunk sits: its enclosing sections, its document and the folders above it, each with its brief | `id` |
 | `update_chunk` | change a chunk's title/type/status/body/fields/tags/dates | `id`, `revision` |
 | `delete_chunk` | delete a chunk and everything under it | `id` |
 | `move_chunk` | give a chunk a new parent and/or position | `id` |
