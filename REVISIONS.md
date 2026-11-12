@@ -8,6 +8,54 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.151.0
+
+*A tenant can send its own telemetry to its own OpenTelemetry collector (RFC GG): its traces, its metrics, at its own sampling ratio, and, when the operator allows it, the redacted content of its runs. All of it is off unless the operator turns it on. A paused run now resumes the way a run starts: it replays its session's earlier turns, applies its access rules before resolving, and records a failure once. A transient CUDA fault on an Ollama host is retried instead of ending the run. For the knowledge base, a new Document op `effective_policy` reports what a document's file-plan concepts declare, and the explorer opens the names filed under a document.*
+
+The v1.151 line: #2576 to #2598.
+- `@loomcycle/client` 1.151.0: `getTelemetry` / `setTelemetry` / `deleteTelemetry` / `testTelemetry`, and `effective_policy` in the Document op union. The Python adapter 1.151.0: `get_telemetry` / `set_telemetry` / `delete_telemetry` / `test_telemetry`.
+- Postgres migrations 0133 (`tenant_telemetry_policies`) and 0134 (`tenant_telemetry_content_exports`), with the SQLite schema to match.
+- gRPC: a new `TenantTelemetry` RPC.
+
+### Upgrade notes
+
+- **Tenant telemetry is off by default (#2582).** With `LOOMCYCLE_TENANT_TELEMETRY` unset, `/v1/_telemetry` answers 404 `feature_disabled`, the MCP `telemetry` tool and the Web UI page are hidden, and no span processor is installed. Content capture needs a second operator gate, `LOOMCYCLE_TENANT_CONTENT_CAPTURE=1`; without it a policy asking for content is refused with 400.
+- **A resumed run carries its session's earlier turns (#2592).** A second turn that paused and resumed used to continue with only its own events, so the model had lost the first turn. It now gets the same history the run started with.
+- **A runtime resume leaves unheld paused rows paused (#2589).** On a single replica, `/v1/_resume` used to mark every paused row running, including a restored row no loop held, which then looked running with nothing running it. It now flips only the rows this process holds and re-dispatches the rest through the resume pass.
+- **Access rules apply on resume before anything resolves (#2587).** A `deny` conditioned on the run's agent that was bound while the run was paused used to be skipped on resume. A resumed run now takes the same admission steps as a run start: the toolset order, provider routing over its history, queue re-pick, start warnings and the system prompt record.
+
+### Tenant telemetry (RFC GG: #2582, #2591, #2596)
+
+- **A per-tenant policy:** an OTLP endpoint (https, unless the lab override is set), the protocol, a header credential bound by `allowed_urls` to the exact URLs dialled, the signals (`traces`, `metrics`), a sampling ratio and content capture. HTTP `GET/PUT/DELETE /v1/_telemetry` and `POST /v1/_telemetry:test`, the gRPC `TenantTelemetry` RPC, the MCP `telemetry` tool, the TS and Python clients and a Web UI Telemetry page. A tenant operator manages its own tenant; an admin any tenant. A new ACL area, `runtime:telemetry`.
+- **Traces:** a span with a tenant is copied to that tenant's pipeline with a minimal resource and allow-listed attributes. Egress goes through the SSRF-guarded dialer, with no redirects, no proxy, and none of the operator's OTLP headers. Each tenant has its own queue, and exports are bounded across tenants, so a black-hole collector delays nobody else. No-trace runs are never routed.
+- **Sampling (P1):** a root span is kept if the operator's sampler keeps it or the tenant's ratio does. Spans kept only for a tenant are marked and dropped before the operator's exporter, so the operator's volume does not change when a tenant raises its ratio. A caller-supplied marker is stripped.
+- **Metrics (P2):** every 60 s the existing metrics are split by tenant and pushed, with the same filter the confined tenant scrape uses.
+- **Content capture (P3):** model-call messages and tool arguments and results, redacted by the at-rest redactor and truncated (`content_max_chars`, default 4096). The operator's exporter strips every content key. An agent opts out with `telemetry.content_capture: never`. Each tenant that received content is recorded for erasure.
+- Status shows the last success and a coarse error category; raw errors go to the operator's log only.
+
+### Resume (#2587, #2589, #2590, #2592)
+
+- A failed resumed run records one error event, as a failed run start does, not two.
+
+### Documents and Path
+
+- **`effective_policy` (FO D10 P1, #2581).** A Document op that reports the retention and groups a document's file-plan concepts declare, with the concept each comes from and any issues. `describe_ontology` shows each concept's effective retention and groups and a `policy` block. It enforces nothing yet: `enforced: false`.
+- **A document with children (RFC GC P1+P2, #2580).** `@loomcycle/explorer` 0.18.0 gives a document that has names under it a caret that lists them; the Web UI has it in this release. Path `mv`, Document `set_path`, `create_document`, `import_md` and File `import` succeed with a `parent_is_document` warning when the new name's parent is a document.
+- **The ontology authoring syntax (#2578)** is documented in `docs/DOCUMENTS.md`: every section and directive, what reads it, and what a mistake produces.
+
+### Providers
+
+- **Ollama (#2585):** an HTTP 500 reporting a CUDA error while running the model is retried as a runner death (after 2 s and 5 s) on chat, decision and embed calls. A fault that persists still fails and marks the model stalled.
+
+### Bridges (#2576, #2577)
+
+- `@loomcycle/bridge-core` 0.6.0 and the four bridges at 0.5.1 (published from their own tags): a spoken reply sends no language, so the runtime picks the voice from the reply's own script, and the platform's UI locale is no longer a transcription hint.
+
+### Internal
+
+- Large functions split into ordered steps, behaviour unchanged (RFC GH): `RunOnce` (#2579), `LoadLayers` (#2586), config `validate` (#2588), `TeamDef.execRun` (#2595), `buildTools` (#2597), `startStoreSweepers` (#2598).
+- Tests stop detached runs before their store closes, which removes a TempDir cleanup flake (#2583). CI installs protoc and psql without the runner's apt mirrors (#2584).
+
 ## What's in v1.150.0
 
 *`loomcycle-media` becomes the image for a deployment that wants voice and a browser together: it carries the PinchTab MCP client beside ffmpeg and poppler, and patch releases now publish it too. The cloud example moves to it and lets its Telegram gate use speech, so a voice note can be transcribed and answered with one. A long recording transcribed by Qwen3-ASR no longer shows the engine's `language …<asr_text>` header in mid-text, and a run started with a narrowed `tools` list keeps it after a pause, a snapshot restore or a boot recovery.*
