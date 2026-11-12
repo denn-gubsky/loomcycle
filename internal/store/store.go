@@ -3572,6 +3572,17 @@ type MemoryVectorStore interface {
 	// matching vector for an expired row MUST NOT appear in results.
 	MemoryEmbedSearch(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, filter MemorySearchFilter, query []float32, topK int) ([]MemorySearchEntry, error)
 
+	// MemoryEmbedSearchKeys is MemoryEmbedSearch reduced to the matching keys, in
+	// the same order (closest first), under the same filter, expiry and dimension
+	// rules, with a wider cap: limit <= 0 is treated as 10 and a limit above
+	// MemoryEmbedKeysMax is clamped to it.
+	//
+	// Keys only, because its use is a COUNT over a ranked window (the Document
+	// tool's search facets), not a result: the rows MemoryEmbedSearch returns carry
+	// the value and the stored vector, which over a window of hundreds is megabytes
+	// read to be thrown away. Empty results return (nil, nil).
+	MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, filter MemorySearchFilter, query []float32, limit int) ([]string, error)
+
 	// MemoryFullTextSearch runs the keyword (lexical) retrieval leg of RFC
 	// BL hybrid retrieval: a Top-K full-text match over the same embedded
 	// entry population MemoryEmbedSearch ranks (memory_embeddings.embed_text
@@ -5131,6 +5142,11 @@ func ChannelReadTenants(tenantID string, scope MemoryScope) (string, string) {
 func ChannelCursorFallback(tenantID string, scope MemoryScope) bool {
 	return scope == MemoryScopeGlobal && tenantID != ChannelOperatorTenant
 }
+
+// MemoryEmbedKeysMax caps MemoryEmbedSearchKeys. It bounds a window a caller
+// counts over, not a page anyone reads: 500 keys is one short indexed query
+// either way, and the Document tool's facet_window takes it as its maximum.
+const MemoryEmbedKeysMax = 500
 
 // MemorySearchFilter narrows which memory rows a vector or full-text search may
 // return. It replaces the bare keyPrefix argument both search methods used to take

@@ -479,6 +479,64 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	return out, nil
 }
 
+// MemoryEmbedSearchKeys is MemoryEmbedSearch's statement selecting the key alone:
+// the same conditions and order, without the value and the vector text each row
+// would otherwise carry (see the interface for why).
+func (s *Store) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, limit int) ([]string, error) {
+	if !s.pgvectorEnabled {
+		return nil, store.ErrVectorUnsupported
+	}
+	if len(query) == 0 {
+		return nil, errors.New("MemoryEmbedSearchKeys: query vector is empty")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > store.MemoryEmbedKeysMax {
+		limit = store.MemoryEmbedKeysMax
+	}
+	if ok, err := s.embedSearchDimensionCheck(ctx, tenantID, scope, scopeID, query); err != nil || !ok {
+		return nil, err
+	}
+	args := []any{tenantID, string(scope), scopeID, encodePgvector(query), limit, len(query)}
+	cond, hasIDs, args := embedSearchConditions(filter, args)
+	sql := `SELECT me.key
+	         FROM memory_embeddings me
+	         JOIN memory m
+	            ON me.tenant_id = m.tenant_id
+	           AND me.scope    = m.scope
+	           AND me.scope_id = m.scope_id
+	           AND me.key      = m.key
+	         WHERE me.tenant_id = $1
+	           AND me.scope = $2
+	           AND me.scope_id = $3
+	           AND (m.expires_at IS NULL OR m.expires_at > now())
+	           AND m.superseded_at IS NULL
+	           AND me.dimension = $6` + cond + `
+	         ORDER BY me.embedding <=> $4::vector
+	         LIMIT $5`
+	if hasIDs {
+		args = planPerExecution(args)
+	}
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("MemoryEmbedSearchKeys query: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("MemoryEmbedSearchKeys scan: %w", err)
+		}
+		out = append(out, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("MemoryEmbedSearchKeys iter: %w", err)
+	}
+	return out, nil
+}
+
 // embedSearchDimensionCheck is the nearest-neighbour searches' pre-check: false
 // with no error when the scope holds no vectors at all (an empty result, not a
 // failure), the typed dimension refusal when none is at the query's dimension.
