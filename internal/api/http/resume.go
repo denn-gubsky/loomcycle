@@ -658,7 +658,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	stateful := loop.StatefulMode(runCfg.Context, provider.Capabilities().Local, run.Interactive)
 	var seed statefulSeed
 	if stateful {
-		seed = resumedStatefulSeed(history, runEvents, run.Interactive)
+		seed = resumedStatefulSeed(history, runEvents, runCfg.Context, provider.Capabilities().Local, run.Interactive)
 	}
 	// The poll-mode children the run started, as its ledger records them. A
 	// stateful run has no background table, so it has none.
@@ -1210,15 +1210,37 @@ func sessionThroughRun(events []store.Event, runID string) (history, own []store
 	return history, own
 }
 
-// resumedStatefulSeed is a resumed stateful run's seed. It is read from the
-// session's history, as a continuation's is (statefulContinuationSeed), so a
-// run that paused before recording a Σ of its own starts from the session's.
-// A session with no Σ at all seeds from the run's own events, as before.
-func resumedStatefulSeed(history, own []store.Event, interactive bool) statefulSeed {
-	if seed := statefulSeedFromEvents(history, nil, interactive); seed.HasState {
+// resumedStatefulSeed is a resumed stateful run's seed. A run that recorded a
+// Σ of its own resumes from it. One that paused before its first Σ is seeded
+// as RunOnce seeded it at its start (statefulContinuationSeed): from the
+// session before the run, with the run's own messages as the fresh input —
+// read as one history instead, a Σ an earlier run left mid-action took that
+// action's result as the observation and lost the run's message. A session
+// with no Σ either seeds from the run's own events, as before.
+func resumedStatefulSeed(history, own []store.Event, cx *config.Context, local, interactive bool) statefulSeed {
+	if seed := statefulSeedFromEvents(own, nil, interactive); seed.HasState {
+		return seed
+	}
+	before := history[:len(history)-len(own)]
+	if seed, ok := statefulContinuationSeed(before, cx, local, interactive, userInputSegments(own)); ok {
 		return seed
 	}
 	return statefulSeedFromEvents(own, nil, interactive)
+}
+
+// userInputSegments is the prompt segments of a run's user_input events.
+func userInputSegments(events []store.Event) []loop.PromptSegment {
+	var segs []loop.PromptSegment
+	for _, ev := range events {
+		if ev.Type != "user_input" {
+			continue
+		}
+		var s []loop.PromptSegment
+		if err := json.Unmarshal(ev.Payload, &s); err == nil {
+			segs = append(segs, s...)
+		}
+	}
+	return segs
 }
 
 // runResumed runs a resumed run's loop, on its own goroutine: it reconciles a
