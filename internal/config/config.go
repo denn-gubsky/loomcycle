@@ -416,24 +416,23 @@ type StorageConfig struct {
 	// LOOMCYCLE_SQLMEM_ENABLED=1.
 	SqlMemEnabled bool `yaml:"sqlmem_enabled"`
 	// SqlMemRoot is the parent dir for per-scope .db files. Empty defaults
-	// to <DataDir>/sqlmem. Env: LOOMCYCLE_SQLMEM_ROOT.
+	// to <DataDir>/sqlmem.
 	SqlMemRoot string `yaml:"sqlmem_root"`
 	// SqlMemQuotaBytes caps a single scope file's on-disk size (checked
 	// before each write). 0 = no quota. Per-agent sql_quota_bytes overrides
 	// this. Env: LOOMCYCLE_SQLMEM_QUOTA_BYTES.
 	SqlMemQuotaBytes int `yaml:"sqlmem_quota_bytes"`
 	// SqlMemStatementTimeoutMS bounds a single sql_query/sql_exec. Default
-	// 30000. Env: LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS.
+	// 30000.
 	SqlMemStatementTimeoutMS int `yaml:"sqlmem_statement_timeout_ms"`
 	// SqlMemMaxRows caps the rows a sql_query returns (the rest is dropped
-	// and the result is flagged truncated). Default 10000. Env:
-	// LOOMCYCLE_SQLMEM_MAX_ROWS.
+	// and the result is flagged truncated). Default 10000.
 	SqlMemMaxRows int `yaml:"sqlmem_max_rows"`
 	// SqlMemMaxResultBytes caps the size of what an agent's own SQL returns
 	// (Memory sql_query, Document query_chunks sql): rows stop before the
 	// budget and the result is flagged truncated; a single row over it is
 	// refused. Default 8 MiB; zero or negative takes the default — there is no
-	// "unlimited". Env: LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES.
+	// "unlimited".
 	SqlMemMaxResultBytes int `yaml:"sqlmem_max_result_bytes"`
 	// SqlMemAuditMode controls how much of an audited statement is recorded:
 	// "full" (the default) records the redacted statement text; "metadata"
@@ -448,22 +447,20 @@ type StorageConfig struct {
 	// SqlMemTxnTimeoutMS bounds how long an explicit transaction (Phase 3a
 	// sql_begin) may stay open before the reaper rolls it back — a held scope
 	// connection must never leak past a stuck agent. Default 30000. 0 disables
-	// the reaper. Env: LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS.
+	// the reaper.
 	SqlMemTxnTimeoutMS int `yaml:"sqlmem_txn_timeout_ms"`
 	// SqlMemMaxOpenTxns caps concurrent open explicit transactions process-wide
-	// (each pins a scope connection). Default 64. 0 = unbounded. Env:
-	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS.
+	// (each pins a scope connection). Default 64. 0 = unbounded.
 	SqlMemMaxOpenTxns int `yaml:"sqlmem_max_open_txns"`
 	// SqlMemMaxOpenTxnsPerTenant caps how many of those open transactions one
 	// tenant may hold, so one tenant cannot take every slot. 0 = a quarter of
 	// SqlMemMaxOpenTxns (at least 1), resolved by sqlmem. The default ("")
-	// tenant is exempt and keeps the full cap. Env:
-	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT.
+	// tenant is exempt and keeps the full cap.
 	SqlMemMaxOpenTxnsPerTenant int `yaml:"sqlmem_max_open_txns_per_tenant"`
 	// SqlMemMaxTxnDepth caps the SAVEPOINT nesting depth of one explicit
 	// transaction (Phase 3b): a nested sql_begin past this errors, bounding the
 	// in-memory savepoint stack a looping agent can grow. Default 16. 0 =
-	// unbounded. Env: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH.
+	// unbounded.
 	SqlMemMaxTxnDepth int `yaml:"sqlmem_max_txn_depth"`
 	// SqlMemScopeTTLMS turns on durable-scope GC (Phase 3d): a durable
 	// (agent/user) scope idle longer than this is dropped by the sweeper. 0 =
@@ -472,7 +469,7 @@ type StorageConfig struct {
 	SqlMemScopeTTLMS int `yaml:"sqlmem_scope_ttl_ms"`
 	// SqlMemGCIntervalMS is how often the durable-scope GC sweeper runs. 0 → a
 	// sensible default (one hour); meaningful when SqlMemScopeTTLMS > 0 OR
-	// SqlMemTotalMaxBytes > 0. Env: LOOMCYCLE_SQLMEM_GC_INTERVAL_MS.
+	// SqlMemTotalMaxBytes > 0.
 	SqlMemGCIntervalMS int `yaml:"sqlmem_gc_interval_ms"`
 	// SqlMemTotalMaxBytes turns on size-based GC (Phase 3f.3): when the AGGREGATE
 	// on-disk size of all durable (agent/user) scopes exceeds this, the sweeper
@@ -485,7 +482,7 @@ type StorageConfig struct {
 	// dump in a runtime snapshot (Phase 3f.2). A scope over the cap is EXCLUDED
 	// from the snapshot and recorded in the section (so one runaway scope can't
 	// sink the whole capture or blow the 512 MB envelope cap); it is not
-	// restored. 0 = no per-scope cap. Env: LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES.
+	// restored. 0 = no per-scope cap.
 	SqlMemSnapshotMaxScopeBytes int64 `yaml:"sqlmem_snapshot_max_scope_bytes"`
 	// SqlMemSharedSchemas lists operator-curated READ-ONLY shared schemas (Phase
 	// 3g, postgres tier only). Each is baked onto every scope role's search_path so
