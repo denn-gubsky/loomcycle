@@ -743,3 +743,38 @@ func TestManagerRefresh_RetriesAPolicyATransientFaultLeftOff(t *testing.T) {
 		t.Errorf("the next refresh left the export off after a transient fault: %v (status %+v)", got, f.m.Status("acme"))
 	}
 }
+
+// A policy's sampler_ratio thins what its tenant receives, by trace id, and a
+// new ratio applies to the spans that end after it is stored.
+func TestManagerPut_SamplerRatioThinsWhatTheTenantReceives(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	ctx := context.Background()
+	batch := func() {
+		t.Helper()
+		for i := 0; i < 20; i++ {
+			if err := endOneSpan(f.router, "acme"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, SamplerRatio: ratio(0)}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	batch()
+	if n := c.count(); n != 0 {
+		t.Fatalf("ratio 0: the collector got %d spans", n)
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, SamplerRatio: ratio(1)}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	batch()
+	waitFor(t, func() bool { return c.count() == 20 })
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, SamplerRatio: ratio(0)}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	batch()
+	if n := c.count(); n != 20 {
+		t.Errorf("back to ratio 0: the collector has %d spans, want the 20 sent at ratio 1", n)
+	}
+}

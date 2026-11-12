@@ -74,6 +74,10 @@ type gateProcessor struct {
 	next        sdktrace.SpanProcessor
 	st          *pipelineStats
 	maxInFlight int64
+	// dropTenantOnly: tenant export is on, and a span of a trace sampled
+	// only for a tenant's export is none of the operator's — neither
+	// exported nor counted, as if its sampler had dropped it.
+	dropTenantOnly bool
 }
 
 func (g *gateProcessor) OnStart(ctx context.Context, s sdktrace.ReadWriteSpan) {
@@ -83,7 +87,7 @@ func (g *gateProcessor) OnStart(ctx context.Context, s sdktrace.ReadWriteSpan) {
 func (g *gateProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 	// The batch processor exports sampled spans only; an unsampled one is
 	// neither counted nor queued.
-	if !s.SpanContext().IsSampled() {
+	if !s.SpanContext().IsSampled() || (g.dropTenantOnly && tenantOnly(s.SpanContext())) {
 		return
 	}
 	g.st.ended.Add(1)
