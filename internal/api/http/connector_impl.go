@@ -307,6 +307,9 @@ func (s *Server) SpawnRunBatch(ctx context.Context, req connector.BatchSpawnRequ
 					results[i] = connector.SpawnRunResult{Status: string(store.RunFailed),
 						ParentContext: req.Spawns[i].ParentContext, Error: errRunGoroutinePanicked.Error()}
 				}
+				if req.OnChildSettled != nil { // before wg.Done: never after the call returns
+					req.OnChildSettled(i, results[i])
+				}
 			}()
 			spawn := req.Spawns[i]
 			// Batch children are always fresh runs — a per-spawn session_id
