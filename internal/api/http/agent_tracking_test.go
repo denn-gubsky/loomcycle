@@ -68,7 +68,31 @@ func makeServer(t *testing.T, prov providers.Provider, cfg *config.Config) (*Ser
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	srv := New(cfg, &stubResolver{p: prov}, []tools.Tool{}, concurrency.New(8, 8, time.Second), st)
+	stopDetachedOnCleanup(t, srv)
 	return srv, dbPath
+}
+
+// stopDetachedOnCleanup ends the goroutines srv started that outlive a call —
+// detached runs (interactive, held for review, or re-dispatched by a restore
+// or resume) and a restore's rule report — before
+// the test's store closes and its TempDir is removed. Registered after both,
+// it runs before them (cleanups run last-in, first-out). Left running, such a
+// goroutine wrote to the closed store and had sqlite create its -wal/-shm
+// files while RemoveAll emptied the directory ("directory not empty").
+// A run parked for input or a slot never ends on its own, so every run in the
+// cancel registry is cancelled first.
+func stopDetachedOnCleanup(t *testing.T, srv *Server) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, e := range srv.cancelReg.ListAll() {
+			srv.cancelReg.CancelLocal(e.AgentID, "test cleanup")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.WaitDetached(ctx); err != nil {
+			t.Errorf("detached goroutines still running at cleanup: %v", err)
+		}
+	})
 }
 
 func makeBaseConfig() *config.Config {

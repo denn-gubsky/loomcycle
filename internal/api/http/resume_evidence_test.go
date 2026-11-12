@@ -150,11 +150,11 @@ func errorEventsOf(t *testing.T, st store.Store, run store.Run) []string {
 
 // #34. A run whose model call fails. Started through RunOnce, the loop records
 // its own error event and RunOnce hands the error to the caller (OnRunError),
-// which is not recorded: one error event. Resumed, the loop records its own
-// and the resume records runErrorEvent too: the same failure twice. A detached
-// RunOnce run (startDetachedLoop) records the second copy only when it says
-// something the loop's did not (lastErrorEvent).
-func TestEvidence_ErrorEventsOfAFailedRunAndOfAFailedResume(t *testing.T) {
+// which is not recorded: one error event. Resumed, it records one too: the
+// resume adds runErrorEvent only when it says something the loop's did not
+// (lastErrorEvent), as a detached RunOnce run (startDetachedLoop) does. It
+// recorded the same failure twice before.
+func TestResume_FailedResumeRecordsOneErrorEvent(t *testing.T) {
 	prov := &failingProvider{err: errors.New("boom")}
 	srv := resumeAlignServer(t, prov)
 
@@ -175,9 +175,9 @@ func TestEvidence_ErrorEventsOfAFailedRunAndOfAFailedResume(t *testing.T) {
 	t.Logf("RunOnce: %q", started)
 	t.Logf("resume:  %q", resumed)
 	if len(started) != 1 {
-		t.Errorf("RunOnce recorded %d error events, want 1 (the loop's own)", len(started))
+		t.Fatalf("RunOnce recorded %d error events, want 1 (the loop's own)", len(started))
 	}
-	if len(resumed) != 2 || resumed[0] != resumed[1] {
-		t.Errorf("resume recorded %q, want the loop's error event and the same text again", resumed)
+	if len(resumed) != 1 || resumed[0] != started[0] {
+		t.Errorf("resume recorded %q, want one error event, as RunOnce's %q", resumed, started)
 	}
 }

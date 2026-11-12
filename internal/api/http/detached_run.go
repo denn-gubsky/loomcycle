@@ -37,7 +37,9 @@ type detachedLoop struct {
 // cancel func, reached through the cancel registry, does.
 func (s *Server) startDetachedLoop(d detachedLoop) <-chan struct{} {
 	done := make(chan struct{})
+	s.detached.Add(1)
 	go func() {
+		defer s.detached.Done()
 		defer close(done)
 		// Teardown is DEFERRED + panic-guarded: a panic in loop.Run must
 		// not (a) crash the process (this goroutine has no other recover —

@@ -91,6 +91,7 @@ func newVersionFixture(t *testing.T, cfg *config.Config, scripts ...[]providers.
 	}
 	f.srv = New(cfg, &stubResolver{p: f.prov}, []tools.Tool{&ranTool{name: "Narrow"}, f.wider},
 		concurrency.New(8, 8, 5*time.Second), f.st)
+	stopDetachedOnCleanup(t, f.srv)
 	f.ts = httptest.NewServer(f.srv.Mux())
 	t.Cleanup(f.ts.Close)
 	return f

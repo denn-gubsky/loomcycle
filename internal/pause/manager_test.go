@@ -204,9 +204,10 @@ func TestManager_SnapshotReflectsPausedCount(t *testing.T) {
 	}
 }
 
-// TestManager_ResumeFlipsPausedRunsToRunning — Resume calls
-// SetRunPauseState(running) on every previously-paused run.
-func TestManager_ResumeFlipsPausedRunsToRunning(t *testing.T) {
+// TestManager_ResumeFlipsHeldPausedRunsAndLeavesUnheldOnesPaused — Resume
+// flips a paused row back to running only when a loop here holds it; a row
+// nothing holds stays paused for the resume pass.
+func TestManager_ResumeFlipsHeldPausedRunsAndLeavesUnheldOnesPaused(t *testing.T) {
 	m, s, cleanup := newTestManager(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -216,24 +217,24 @@ func TestManager_ResumeFlipsPausedRunsToRunning(t *testing.T) {
 	r2, _ := s.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "r2"})
 	_ = s.SetRunPauseState(ctx, r1.ID, store.PauseStatePaused)
 	_ = s.SetRunPauseState(ctx, r2.ID, store.PauseStatePaused)
-	// Manager doesn't know about these (they were paused outside
-	// its lifecycle in this test). Force state to paused so Resume
-	// proceeds.
+	// r1's loop is held here; r2 was paused outside this manager's
+	// lifecycle (restored data). Force state to paused so Resume proceeds.
+	m.RegisterRun(r1.ID)
+	defer m.DeregisterRun(r1.ID)
 	_, _ = m.Pause(ctx, 50*time.Millisecond)
 
 	res, err := m.Resume(ctx)
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}
-	if res.ResumedRunsCount != 2 {
-		t.Errorf("ResumedRunsCount = %d, want 2", res.ResumedRunsCount)
+	if res.ResumedRunsCount != 1 {
+		t.Errorf("ResumedRunsCount = %d, want 1", res.ResumedRunsCount)
 	}
 
-	// Confirm both rows back to running.
-	for _, agentID := range []string{"r1", "r2"} {
+	for agentID, want := range map[string]string{"r1": store.PauseStateRunning, "r2": store.PauseStatePaused} {
 		got, _ := s.GetRunByAgentID(ctx, agentID)
-		if got.PauseState != store.PauseStateRunning {
-			t.Errorf("%s.PauseState = %q, want running", agentID, got.PauseState)
+		if got.PauseState != want {
+			t.Errorf("%s.PauseState = %q, want %q", agentID, got.PauseState, want)
 		}
 	}
 }
