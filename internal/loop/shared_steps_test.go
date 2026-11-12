@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
 	"github.com/denn-gubsky/loomcycle/internal/errkind"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
@@ -369,5 +371,52 @@ func TestRunStateful_CancelMidCallEmitsTheCancelledEvent(t *testing.T) {
 	defer mu.Unlock()
 	if len(errs) != 1 || errs[0].ErrorInfo == nil || errs[0].ErrorInfo.Category != errkind.CategoryCancelled {
 		t.Fatalf("error events = %+v, want one classified cancelled", errs)
+	}
+}
+
+// bigPeekTool answers with a result far larger than the window.
+type bigPeekTool struct{}
+
+func (bigPeekTool) Name() string                 { return "peek" }
+func (bigPeekTool) Description() string          { return "returns a large result" }
+func (bigPeekTool) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (bigPeekTool) Execute(context.Context, json.RawMessage) (tools.Result, error) {
+	return tools.Result{Text: strings.Repeat("observation filler ", 8000)}, nil
+}
+
+// A reply that reports zero input tokens has not measured the footprint, in
+// either loop: the append loop reports a decline or an exhaustion only once a
+// reply has given a real count, as the stateful loop does. Here every reply
+// reports zero input while the tool results alone push the estimate over the
+// threshold, so the gate opens and declines, and nothing may be reported.
+func TestRun_ZeroInputUsageDoesNotArmTheContextReports(t *testing.T) {
+	prov := &preambleHeavyProvider{toolTurns: 4, in: 0, maxCtx: 20000}
+	m := config.ContextModeRecap
+	var mu sync.Mutex
+	var reports []providers.EventType
+	_, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x",
+		Tools:      []tools.Tool{bigPeekTool{}},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{bigPeekTool{}}),
+		Segments:   userSeg("hi"),
+		// keep_last_n 99 pins the whole conversation → every tier declines.
+		Context:       &config.Context{Mode: &m, KeepLastN: cptr(99), AutoRecapAtPct: cptr(50)},
+		MaxIterations: 6,
+		OnEvent: func(ev providers.Event) {
+			switch ev.Type {
+			case providers.EventContextDistillDeclined, providers.EventContextExhausted:
+				mu.Lock()
+				reports = append(reports, ev.Type)
+				mu.Unlock()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reports) != 0 {
+		t.Errorf("context reports %v on a run whose replies never reported input tokens", reports)
 	}
 }

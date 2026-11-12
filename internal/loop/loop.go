@@ -4876,8 +4876,12 @@ func (s *runState) recordTurn(t turnOutput, callTimer *providers.CallTimer) {
 		// Set BESIDE the values it qualifies, not derived from a separate
 		// flag: the question the reports ask is "did a provider report
 		// this footprint", and the only honest answer is at the assignment
-		// that made it so.
-		s.footprintMeasured = true
+		// that made it so. A reply that reports zero input tokens has not
+		// reported the footprint (a driver that fills usage with zeros), so
+		// it does not count, in this loop as in the stateful one.
+		if s.lastCtxTokens > 0 {
+			s.footprintMeasured = true
+		}
 	}
 
 	s.stopReason = t.iterStop
