@@ -26,8 +26,8 @@
 package help
 
 import (
-	"embed"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -35,6 +35,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/denn-gubsky/loomcycle/internal/help/builtin"
 )
 
 // Topic is one parsed help topic — either a bundled default or
@@ -237,9 +239,6 @@ func (s *Set) Has(name string) bool {
 //	tools/<Tool>/<op>.md  → topic "<Tool>/<op>"  (operation article)
 const toolsDir = "tools"
 
-//go:embed builtin/*.md builtin/tools
-var bundledFS embed.FS
-
 // LoadSet builds the topic registry. First loads bundled defaults
 // from the embedded FS; then, if root != "", walks the operator's
 // directory and overrides matching names. An empty root is the
@@ -266,7 +265,8 @@ func LoadSet(root string) (*Set, error) {
 	set := &Set{topics: map[string]*Topic{}}
 
 	// Load bundled defaults first.
-	entries, err := bundledFS.ReadDir("builtin")
+	bundled := builtin.FS()
+	entries, err := fs.ReadDir(bundled, ".")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded help/builtin: %w", err)
 	}
@@ -274,7 +274,7 @@ func LoadSet(root string) (*Set, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
-		data, err := bundledFS.ReadFile("builtin/" + e.Name())
+		data, err := fs.ReadFile(bundled, e.Name())
 		if err != nil {
 			return nil, fmt.Errorf("read bundled %s: %w", e.Name(), err)
 		}
@@ -286,7 +286,7 @@ func LoadSet(root string) (*Set, error) {
 		t.Source = "bundled"
 		set.topics[t.Name] = t
 	}
-	if err := loadToolArticles(bundledDirFS{bundledFS, "builtin/" + toolsDir}, "", func(t *Topic) {
+	if err := loadToolArticles(bundledDirFS{bundled, toolsDir}, "", func(t *Topic) {
 		t.Source = "bundled"
 		set.topics[t.Name] = t
 	}, func(path string, err error) error {
@@ -393,16 +393,16 @@ type dirFS interface {
 }
 
 type bundledDirFS struct {
-	fs   embed.FS
+	fs   fs.FS
 	base string
 }
 
 func (b bundledDirFS) ReadDir(rel string) ([]os.DirEntry, error) {
-	return b.fs.ReadDir(joinRel(b.base, rel))
+	return fs.ReadDir(b.fs, joinRel(b.base, rel))
 }
 
 func (b bundledDirFS) ReadFile(rel string) ([]byte, error) {
-	return b.fs.ReadFile(joinRel(b.base, rel))
+	return fs.ReadFile(b.fs, joinRel(b.base, rel))
 }
 
 type osDirFS struct{ base string }
@@ -502,31 +502,9 @@ func loadToolArticles(fsys dirFS, pathPrefix string, add func(*Topic), onErr fun
 // errors for missing/malformed frontmatter, name mismatch, or
 // empty body.
 func parseTopic(data []byte, nameFromFile, path string) (*Topic, error) {
-	src := string(data)
-	if !strings.HasPrefix(src, "---\n") && !strings.HasPrefix(src, "---\r\n") {
-		return nil, fmt.Errorf("missing opening frontmatter `---`")
-	}
-	// Strip leading delimiter.
-	src = strings.TrimPrefix(src, "---\n")
-	src = strings.TrimPrefix(src, "---\r\n")
-	// Find closing delimiter at start of a line.
-	closeIdx := strings.Index(src, "\n---\n")
-	if closeIdx < 0 {
-		closeIdx = strings.Index(src, "\n---\r\n")
-	}
-	if closeIdx < 0 {
-		return nil, fmt.Errorf("missing closing frontmatter `---`")
-	}
-	fmText := src[:closeIdx]
-	body := src[closeIdx:]
-	// Skip past the closing delimiter line.
-	body = strings.TrimPrefix(body, "\n---\n")
-	body = strings.TrimPrefix(body, "\n---\r\n")
-	// Body may be empty — operators can ship description-only
-	// placeholder topics, but we reject it as a likely typo.
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return nil, fmt.Errorf("empty topic body (frontmatter parsed; nothing after closing `---`)")
+	fmText, body, err := builtin.SplitFrontmatter(data)
+	if err != nil {
+		return nil, err
 	}
 
 	var fm struct {
