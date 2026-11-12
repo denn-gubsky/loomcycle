@@ -258,6 +258,10 @@ type TeamDef struct {
 	// block — the Agent poll cap (LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS). 0 =
 	// DefaultPollWaitCapMs.
 	PollWaitCapMs int
+
+	// runStepHook is told the name of each op=run step as it starts. nil in
+	// production; a test sets it to pin the order execRun runs its steps in.
+	runStepHook func(step string)
 }
 
 // teamWalkLabel prefixes the label a walk's run is filed under (team:<name>),
@@ -1348,6 +1352,23 @@ func (t *TeamDef) execRenderDiagram(ctx context.Context, in teamDefInput) (tools
 //     Interruption machinery (continue / reroute:<state> / abort) instead of
 //     returning the iteration_cap outcome. An unanswered/declined ask aborts, so
 //     the termination guarantee holds.
+//
+// The steps run in this order, and the order is the contract:
+//
+//  1. the runner check, then the idempotency_key lookup — before the team is
+//     read, so a retry is answered even for a team since retired;
+//  2. runResolveTeam: the board wiring, the def row, its body and every check
+//     on it (local refs, foreign-tenant agents and triggers, start vars);
+//  3. runAdmit: poll mode, admission, the team scope, the mode, the board's
+//     resume point and the input form — all before any row exists, so a
+//     refused request costs neither a row nor a model call;
+//  4. runOpenWalk: the poll-mode child, then the walk's run row — after
+//     admission, so a refused request never mints one;
+//  5. runWalkOptions: the task and the walk options (board, decisions, cap);
+//  6. runBuildRunner: breakpoints, the runner and its options, and the walk's
+//     triggers, armed last once nothing can refuse the walk; a refusal from
+//     here on closes the run already open;
+//  7. the walk itself: in the background for mode poll or detach, else here.
 func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, error) {
 	if t.Spawn == nil {
 		return errResult("run: this TeamDef tool is not configured for execution (no runner wired)"), nil
@@ -1358,6 +1379,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// is answered with the walk it started even if the team has since been
 	// retired or re-promoted.
 	if in.IdempotencyKey != "" {
+		t.runStep("idempotency_key")
 		if dup, refusal := t.walkHoldingKey(ctx, in, false); refusal != nil || dup != nil {
 			if refusal != nil {
 				return *refusal, nil
@@ -1366,11 +1388,94 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		}
 	}
 
+	w := &teamWalk{}
+	if stop, r, err := t.runResolveTeam(ctx, in, w); stop {
+		return r, err
+	}
+	if stop, r, err := t.runAdmit(ctx, in, w); stop {
+		return r, err
+	}
+	if stop, r, err := t.runOpenWalk(ctx, in, w); stop {
+		return r, err
+	}
+	t.runWalkOptions(in, w)
+	if stop, r, err := t.runBuildRunner(in, w); stop {
+		return r, err
+	}
+
+	t.runStep("walk")
+	if w.pm.poll {
+		return runStartPoll(ctx, in, w)
+	}
+
+	if w.detach {
+		return runStartDetached(w)
+	}
+
+	endWait := providers.BeginWait(ctx) // the caller's run is parked while the team works
+	defer endWait()                     // idempotent; closes the wait on every exit
+	trace, walkErr := w.walk()
+	endWait()
+
+	out, failed := w.answer(in, trace, walkErr)
+	if failed != nil {
+		return errResult(fmt.Sprintf("run: %s", failed)), nil
+	}
+	return okJSON(out)
+}
+
+// runStep reports that an op=run step starts (runStepHook).
+func (t *TeamDef) runStep(name string) {
+	if t.runStepHook != nil {
+		t.runStepHook(name)
+	}
+}
+
+// teamWalk carries op=run's state from one step of execRun to the next: these
+// were execRun's locals. The closures a walk hands out (the cap and breakpoint
+// askers) and the walk itself read and write the fields as they once captured
+// the locals, so each sees the value current when it runs — walkCtx and
+// finishRun are replaced after some of them are built.
+type teamWalk struct {
+	boardBound bool
+	boardScope string
+	row        store.TeamDefRow
+	def        teamgraph.Definition
+
+	pm          pollMode
+	bg          *tools.Background
+	walkCtx     context.Context
+	detach      bool
+	resumedFrom string
+
+	pollRunID   string
+	releaseLive func()
+	withdraw    func()
+	held        func(bool)
+	runID       string
+	finishRun   func(WalkEnd)
+
+	task          *teamrun.Task
+	opts          []teamrun.Option
+	interruptions int
+	lastDecision  string
+
+	breaks             int
+	lastBreak          string
+	releaseBreakpoints func()
+	runner             teamrun.Runner
+	walkCancelled      bool
+}
+
+// runResolveTeam reads the team op=run walks and checks it: the board wiring,
+// the def row, its body, and what the body may ask of this server and caller.
+func (t *TeamDef) runResolveTeam(ctx context.Context, in teamDefInput, w *teamWalk) (bool, tools.Result, error) {
+	t.runStep("resolve_team")
 	// Board binding is opt-in; if requested it MUST be wired (a SQL-Memory-backed
 	// Document tool), else fail loud rather than silently dropping durability.
 	boardBound := in.BoardChunkID != ""
 	if boardBound && t.Board == nil {
-		return errResult("run: board_chunk_id set but this TeamDef tool has no Document board wired (requires SQL Memory)"), nil
+		return true, errResult("run: board_chunk_id set but this TeamDef tool has no Document board wired (requires SQL Memory)"), nil
 	}
 	boardScope := in.BoardScope
 	if boardScope == "" {
@@ -1383,27 +1488,27 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	case in.DefID != "":
 		row, err = t.Store.TeamDefGet(ctx, in.DefID)
 		if err == nil && !defRowReadable(ctx, row.TenantID) {
-			return errResult(fmt.Sprintf("run: def_id %q not found", in.DefID)), nil
+			return true, errResult(fmt.Sprintf("run: def_id %q not found", in.DefID)), nil
 		}
 	case in.Name != "":
 		row, err = t.Store.TeamDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
 	default:
-		return errResult("run: provide `name` (active version) or `def_id`"), nil
+		return true, errResult("run: provide `name` (active version) or `def_id`"), nil
 	}
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
-			return errResult("run: team not found"), nil
+			return true, errResult("run: team not found"), nil
 		}
-		return errResult(fmt.Sprintf("run: %s", err)), nil
+		return true, errResult(fmt.Sprintf("run: %s", err)), nil
 	}
 	if row.Retired {
-		return errResult(fmt.Sprintf("run: team %q is retired", row.Name)), nil
+		return true, errResult(fmt.Sprintf("run: team %q is retired", row.Name)), nil
 	}
 
 	def, err := teamgraph.Parse(row.Definition)
 	if err != nil {
-		return errResult(fmt.Sprintf("run: %s", err)), nil
+		return true, errResult(fmt.Sprintf("run: %s", err)), nil
 	}
 
 	// A stored body may not have been through create/fork (a restore, a row
@@ -1411,10 +1516,10 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// qualified below it is an ordinary name, and would run a GLOBAL agent
 	// called "<team>/x" if one existed — an agent the author never named.
 	if err := teamgraph.CheckLocalRefs(def); err != nil {
-		return errResult(fmt.Sprintf("run: %s", err)), nil
+		return true, errResult(fmt.Sprintf("run: %s", err)), nil
 	}
 	if err := teamgraph.CheckLocalRunNames(def, row.Name); err != nil {
-		return errResult(fmt.Sprintf("run: %s", err)), nil
+		return true, errResult(fmt.Sprintf("run: %s", err)), nil
 	}
 	// A team's own agents are its tenant's. An admin may run another tenant's
 	// team by def_id, and the walk then runs in the ADMIN's tenant — where
@@ -1422,7 +1527,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// only when the team is its own tenant's). Said here rather than at the
 	// first state that needs one.
 	if len(def.LocalAgentNames()) > 0 && row.TenantID != tools.RunIdentity(ctx).TenantID {
-		return errResult(fmt.Sprintf("run: team %q declares agents of its own and belongs to another tenant; "+
+		return true, errResult(fmt.Sprintf("run: team %q declares agents of its own and belongs to another tenant; "+
 			"a team's own agents run only in the team's tenant — run it as that tenant", row.Name)), nil
 	}
 	// A team's own schedules and webhooks publish into its own channels, which
@@ -1437,10 +1542,10 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			continue
 		}
 		if t.ArmWalkTriggers == nil {
-			return errResult(fmt.Sprintf("run: team %q declares %s of its own, and this server cannot run them", row.Name, kind.what)), nil
+			return true, errResult(fmt.Sprintf("run: team %q declares %s of its own, and this server cannot run them", row.Name, kind.what)), nil
 		}
 		if row.TenantID != tools.RunIdentity(ctx).TenantID {
-			return errResult(fmt.Sprintf("run: team %q declares %s of its own and belongs to another tenant; "+
+			return true, errResult(fmt.Sprintf("run: team %q declares %s of its own and belongs to another tenant; "+
 				"a team's own %s run only in the team's tenant — run it as that tenant", row.Name, kind.what, kind.what)), nil
 		}
 	}
@@ -1451,10 +1556,19 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// model call. Supplied values are untrusted text and take the path every
 	// other variable does from here — the task's map, then prompt assembly.
 	if err := teamgraph.CheckStartVars(def, in.Vars); err != nil {
-		return errValidation(fmt.Sprintf("run: %s", err),
+		return true, errValidation(fmt.Sprintf("run: %s", err),
 			"send `vars` naming only variables the team's definition declares in its own `vars`, with literal text values, and run again"), nil
 	}
+	w.boardBound, w.boardScope, w.row, w.def = boardBound, boardScope, row, def
+	return false, tools.Result{}, nil
+}
 
+// runAdmit settles what may be refused before the walk's run row exists:
+// poll mode, admission, the mode, the board's resume point and the input.
+func (t *TeamDef) runAdmit(ctx context.Context, in teamDefInput, w *teamWalk) (bool, tools.Result, error) {
+	t.runStep("admit")
+	row, def := w.row, w.def
+	boardBound, boardScope := w.boardBound, w.boardScope
 	// mode "poll" makes the walk a background child of the calling run, so it
 	// needs that run's table, and the iteration to collect it in, before
 	// anything is admitted. notify and on_parent_end are poll mode's only.
@@ -1464,15 +1578,15 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	}
 	pm, r, ok := pollModeOf(agentInput{Mode: pollArg, Notify: in.Notify, OnParentEnd: in.OnParentEnd})
 	if !ok {
-		return r, nil
+		return true, r, nil
 	}
 	var bg *tools.Background
 	if pm.poll {
 		if bg, r, ok = backgroundFor(ctx, teamPollNoTable, teamPollLastIteration); !ok {
-			return r, nil
+			return true, r, nil
 		}
 		if t.WalkRun == nil {
-			return errResult("run: mode=poll requires run tracking, which is not wired on this server"), nil
+			return true, errResult("run: mode=poll requires run tracking, which is not wired on this server"), nil
 		}
 	}
 
@@ -1480,11 +1594,12 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// operator-key restriction + agent-depth bound, and walk under the enriched
 	// ctx so every spawned agent inherits them. A refusal (over budget / too
 	// deep) aborts before any agent is spawned.
+	var err error
 	walkCtx := ctx
 	if t.Admit != nil {
 		walkCtx, err = t.Admit(ctx)
 		if err != nil {
-			return errResult(fmt.Sprintf("run: %s", err)), nil
+			return true, errResult(fmt.Sprintf("run: %s", err)), nil
 		}
 	}
 	// Everything this walk starts — its members, their sub-agents, and theirs
@@ -1495,7 +1610,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 
 	detach := in.Mode == "detach"
 	if in.Mode != "" && !detach && !pm.poll {
-		return errResult(fmt.Sprintf("run: unknown mode %q (expected \"detach\" or \"poll\")", in.Mode)), nil
+		return true, errResult(fmt.Sprintf("run: unknown mode %q (expected \"detach\" or \"poll\")", in.Mode)), nil
 	}
 	// Where a board-bound walk resumes is read BEFORE its run exists: the run
 	// records it when the row is created, and a board that cannot be read
@@ -1507,7 +1622,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	if boardBound {
 		status, ok, gerr := t.Board.GetChunkStatus(walkCtx, boardScope, in.BoardChunkID)
 		if gerr != nil {
-			return errResult(fmt.Sprintf("run: board: %s", gerr)), nil
+			return true, errResult(fmt.Sprintf("run: board: %s", gerr)), nil
 		}
 		if ok && status != "" {
 			if _, known := teamgraph.StateByID(def, status); known {
@@ -1522,10 +1637,22 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	// later state, which the entry's form does not describe.
 	if resumedFrom == "" || resumedFrom == def.Entry {
 		if err := teamgraph.CheckInput(def, in.Input); err != nil {
-			return errValidation(fmt.Sprintf("run: %s", err),
+			return true, errValidation(fmt.Sprintf("run: %s", err),
 				"send an input that matches the team's input form (the `schema` on its entry state) and run again"), nil
 		}
 	}
+	w.pm, w.bg, w.walkCtx, w.detach, w.resumedFrom = pm, bg, walkCtx, detach, resumedFrom
+	return false, tools.Result{}, nil
+}
+
+// runOpenWalk files a poll-mode walk in the calling run's table and opens the
+// walk's own run row.
+func (t *TeamDef) runOpenWalk(ctx context.Context, in teamDefInput, w *teamWalk) (bool, tools.Result, error) {
+	t.runStep("open_walk")
+	row, def := w.row, w.def
+	boardBound, boardScope := w.boardBound, w.boardScope
+	pm, bg, detach, resumedFrom := w.pm, w.bg, w.detach, w.resumedFrom
+	walkCtx := w.walkCtx
 	// A poll-mode walk is a background child of the calling run: admitted
 	// against the run's live children, filed in its table under an id minted
 	// now — the caller is handed it before the walk's run row exists — and run
@@ -1538,7 +1665,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	if pm.poll {
 		live, lerr := t.LiveChildren.Admit(tools.RunID(ctx), 1)
 		if lerr != nil {
-			return liveLimitResult(lerr), nil
+			return true, liveLimitResult(lerr), nil
 		}
 		releaseLive = live[0]
 		pollRunID = store.NewRunID()
@@ -1548,7 +1675,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		})
 		if serr != nil {
 			releaseLive()
-			return errBusiness(serr.Error(), ""), nil
+			return true, errBusiness(serr.Error(), ""), nil
 		}
 		bg.SetState(pollRunID, tools.ChildRunning)
 		walkCtx = cctx
@@ -1624,15 +1751,16 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			dup, refusal := t.walkHoldingKey(ctx, in, true)
 			switch {
 			case refusal != nil:
-				return *refusal, nil
+				return true, *refusal, nil
 			case dup != nil:
-				return okJSON(dup)
+				r, err := okJSON(dup)
+				return true, r, err
 			}
-			return errResult("run: idempotency_key is held by a walk that could not be read; send the request again"), nil
+			return true, errResult("run: idempotency_key is held by a walk that could not be read; send the request again"), nil
 		}
 		if werr != nil {
 			withdraw()
-			return errResult(fmt.Sprintf("run: %s", werr)), nil
+			return true, errResult(fmt.Sprintf("run: %s", werr)), nil
 		}
 		// Fail closed: a poll-mode walk the caller would read under one id
 		// while its run lives under another could be neither polled nor
@@ -1640,14 +1768,26 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		if pm.poll && runID != pollRunID {
 			finishRun(WalkEnd{Err: errors.New("the walk's run was not created under the id it was handed")})
 			withdraw()
-			return errResult("run: internal: the walk's run was not created under the id it was handed"), nil
+			return true, errResult("run: internal: the walk's run was not created under the id it was handed"), nil
 		}
 	} else if detach {
 		// Refused, not silently run inline: a caller that asked for a handle
 		// and got a completed walk instead has no way to notice.
-		return errResult("run: mode=detach requires run tracking, which is not wired on this server"), nil
+		return true, errResult("run: mode=detach requires run tracking, which is not wired on this server"), nil
 	}
+	w.walkCtx, w.pollRunID, w.releaseLive, w.withdraw = walkCtx, pollRunID, releaseLive, withdraw
+	w.held, w.runID, w.finishRun = held, runID, finishRun
+	return false, tools.Result{}, nil
+}
 
+// runWalkOptions builds the walk's task and its options: the board, the
+// decision record and the iteration-cap question.
+func (t *TeamDef) runWalkOptions(in teamDefInput, w *teamWalk) {
+	t.runStep("walk_options")
+	row, def := w.row, w.def
+	boardBound, boardScope, resumedFrom := w.boardBound, w.boardScope, w.resumedFrom
+	runID, held := w.runID, w.held
+	walkCtx := w.walkCtx
 	task := &teamrun.Task{Input: in.Input}
 	// ONE HANDLE FOR THE WHOLE WALK. teamrun mints a walk id only when the task
 	// does not carry one, so the walk's own run id becomes the correlation key
@@ -1696,11 +1836,11 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		}))
 	}
 
-	interruptions := 0
-	lastDecision := ""
+	w.interruptions = 0
+	w.lastDecision = ""
 	if in.InterruptOnCap && t.AskHuman != nil {
 		opts = append(opts, teamrun.OnCap(func(c context.Context, capErr *teamrun.ErrIterationCap) (teamrun.CapDecision, error) {
-			interruptions++
+			w.interruptions++
 			q := fmt.Sprintf(
 				"Team %q: state %q hit its iteration cap (%d entries > max %d). "+
 					"Reply `continue` to grant another %d-iteration window, `reroute:<state>` to jump to another state, or `abort` to stop.",
@@ -1712,7 +1852,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 				// Interruption unavailable / timed out / cancelled / declined →
 				// abort. Preserves the termination guarantee (a failed escalation
 				// never loops).
-				lastDecision = "abort"
+				w.lastDecision = "abort"
 				return teamrun.CapDecision{Action: teamrun.CapAbort}, nil
 			}
 			dec := parseCapAnswer(answer)
@@ -1720,21 +1860,39 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			// human typo can't send the walk into a non-existent state.
 			if dec.Action == teamrun.CapReroute {
 				if _, known := teamgraph.StateByID(def, dec.Reroute); !known {
-					lastDecision = "abort"
+					w.lastDecision = "abort"
 					return teamrun.CapDecision{Action: teamrun.CapAbort}, nil
 				}
 			}
-			lastDecision = capActionLabel(dec)
+			w.lastDecision = capActionLabel(dec)
 			return dec, nil
 		}))
 	}
+	w.walkCtx, w.task, w.opts = walkCtx, task, opts
+}
 
+// refuse closes a walk refused once its run is open: a refused walk otherwise
+// stayed running, its heartbeat beating, until the stale sweeper failed it.
+func (w *teamWalk) refuse(msg string) (bool, tools.Result, error) {
+	w.finishRun(WalkEnd{Err: errors.New(msg)})
+	w.withdraw()
+	return true, errResult(msg), nil
+}
+
+// runBuildRunner arms the walk's breakpoints and builds the runner that starts
+// its members, then arms the walk's own triggers. The walk's run is already
+// open, so every refusal here goes through refuse.
+func (t *TeamDef) runBuildRunner(in teamDefInput, w *teamWalk) (bool, tools.Result, error) {
+	t.runStep("build_runner")
+	row, def, pm := w.row, w.def, w.pm
+	held := w.held
+	walkCtx := w.walkCtx
 	// Breakpoints are a RUN argument, deliberately: a `debug: true` in a
 	// definition would change its content hash, so turning the debugger on would
 	// fork the workflow — and the thing being debugged would not be the thing
 	// that runs in production.
-	breaks := 0
-	lastBreak := ""
+	w.breaks = 0
+	w.lastBreak = ""
 	var runnerOpts []teamrun.RunnerOption
 	// review is sugar for "<state>:review" in the same armed set, so arming it
 	// at start and arming it live are one mechanism with one reader.
@@ -1750,27 +1908,21 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 			needsAsk = true
 		}
 	}
-	// The walk's run is already open, so a refusal from here on closes it: a
-	// refused walk otherwise stayed running, its heartbeat beating, until the
-	// stale sweeper failed it.
-	refuse := func(msg string) (tools.Result, error) {
-		finishRun(WalkEnd{Err: errors.New(msg)})
-		withdraw()
-		return errResult(msg), nil
-	}
+	// The walk's run is already open, so a refusal from here on closes it
+	// (refuse).
 	if len(seed) > 0 {
 		if err := teamrun.ValidateBreakpoints(seed); err != nil {
-			return refuse(fmt.Sprintf("run: %s", err))
+			return w.refuse(fmt.Sprintf("run: %s", err))
 		}
 		if err := teamrun.CheckBreakpointTargets(def, row.Name, seed); err != nil {
-			return refuse(fmt.Sprintf("run: %s", err))
+			return w.refuse(fmt.Sprintf("run: %s", err))
 		}
 		// REFUSED rather than degraded. interrupt_on_cap may silently fall back
 		// to aborting because the fallback is still safe; a breakpoint's whole
 		// job is to hold work back, so running at full speed because nobody can
 		// be asked is the opposite of what the caller requested.
 		if needsAsk && t.AskHuman == nil {
-			return refuse("run: breakpoints require the Interruption machinery, which is not wired on this server")
+			return w.refuse("run: breakpoints require the Interruption machinery, which is not wired on this server")
 		}
 	}
 	// The armed set is opened for EVERY run that could be asked, not only one
@@ -1795,7 +1947,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		reviewTTL := time.Duration(in.ReviewTTL) * time.Second
 		src, release, serr := t.openBreakpoints(walkCtx, seed, reviewTTL, targets)
 		if serr != nil {
-			return refuse(fmt.Sprintf("run: %s", serr))
+			return w.refuse(fmt.Sprintf("run: %s", serr))
 		}
 		armedSet = src
 		// NOT a defer: a detached walk outlives this function, and releasing
@@ -1807,18 +1959,18 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 	if armedSet != nil && t.AskHuman != nil {
 		runnerOpts = append(runnerOpts, teamrun.WithBreakpoints(armedSet,
 			func(c context.Context, bp teamrun.Breakpoint) (teamrun.BreakDecision, error) {
-				breaks++
+				w.breaks++
 				held(true)
 				answer, aerr := t.AskHuman(c, formatBreakpoint(row.Name, bp))
 				held(false)
 				if aerr != nil {
 					// Unavailable / timed out / cancelled / declined → abort.
 					// A debugger nobody can answer must not release the wave.
-					lastBreak = "abort"
+					w.lastBreak = "abort"
 					return teamrun.BreakDecision{Action: teamrun.BreakAbort}, nil
 				}
 				dec := parseBreakAnswer(answer)
-				lastBreak = breakActionLabel(dec)
+				w.lastBreak = breakActionLabel(dec)
 				return dec, nil
 			}))
 	}
@@ -1867,7 +2019,7 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		}
 		return t.Spawn(ctx, agent, p, defID)
 	}
-	runner := teamrun.NewAgentRunner(spawn, runnerOpts...)
+	w.runner = teamrun.NewAgentRunner(spawn, runnerOpts...)
 	// Armed last, once nothing can refuse the walk, and on the walk's own ctx.
 	// The disarm runs first in finishRun, so it covers every way a walk ends —
 	// completed, failed, cancelled — and nothing a trigger does lands after the
@@ -1876,199 +2028,203 @@ func (t *TeamDef) execRun(ctx context.Context, in teamDefInput) (tools.Result, e
 		disarm, aerr := t.ArmWalkTriggers(walkCtx, def)
 		if aerr != nil {
 			releaseBreakpoints()
-			return refuse(fmt.Sprintf("run: %s", aerr))
+			return w.refuse(fmt.Sprintf("run: %s", aerr))
 		}
-		closeRun := finishRun
-		finishRun = func(end WalkEnd) {
+		closeRun := w.finishRun
+		w.finishRun = func(end WalkEnd) {
 			disarm()
 			closeRun(end)
 		}
 	}
-	// walkCancelled is whether the walk's ctx had been cancelled when it
-	// ended, read before finishRun releases that ctx.
-	walkCancelled := false
-	walk := func() ([]teamrun.StepRecord, error) {
-		defer releaseBreakpoints()
-		// A walk that panicked still closes its run, failed: left open, its
-		// row stays running and its heartbeat pulses on forever.
-		closed := false
-		defer func() {
-			if !closed {
-				finishRun(WalkEnd{Err: errors.New("the walk ended on an internal error")})
-			}
-		}()
-		// The walk runs on the definition with each "./name" written out as the
-		// name that agent runs under, so every member it starts, and every
-		// step, envelope and sink message that names one, carries it.
-		trace, werr := teamrun.Walk(walkCtx, teamgraph.QualifyLocalRefs(def, row.Name), task, runner, opts...)
-		end := WalkEnd{FinalText: walkFinalOutput(trace), Err: werr}
-		if werr == nil {
-			end.Terminal = walkTerminal(def, task)
-		} else if pm.poll {
-			// The calling run's cancel stops the walk's members before the
-			// walk's ctx hears of it; this passes it on first, so the walk's
-			// run is recorded cancelled, not failed by its member's cancel.
-			_ = bg.Interrupted(pollRunID)
+	w.releaseBreakpoints = releaseBreakpoints
+	return false, tools.Result{}, nil
+}
+
+// walk runs the team's graph to its end and closes the walk's run. It reads
+// walkCtx when it is called: a poll-mode or detached walk replaces it first.
+// walkCancelled records whether the walk's ctx had been cancelled when it
+// ended, read before finishRun releases that ctx.
+func (w *teamWalk) walk() ([]teamrun.StepRecord, error) {
+	defer w.releaseBreakpoints()
+	// A walk that panicked still closes its run, failed: left open, its
+	// row stays running and its heartbeat pulses on forever.
+	closed := false
+	defer func() {
+		if !closed {
+			w.finishRun(WalkEnd{Err: errors.New("the walk ended on an internal error")})
 		}
-		walkCancelled = walkCtx.Err() != nil
-		closed = true
-		finishRun(end)
-		return trace, werr
+	}()
+	// The walk runs on the definition with each "./name" written out as the
+	// name that agent runs under, so every member it starts, and every
+	// step, envelope and sink message that names one, carries it.
+	trace, werr := teamrun.Walk(w.walkCtx, teamgraph.QualifyLocalRefs(w.def, w.row.Name), w.task, w.runner, w.opts...)
+	end := WalkEnd{FinalText: walkFinalOutput(trace), Err: werr}
+	if werr == nil {
+		end.Terminal = walkTerminal(w.def, w.task)
+	} else if w.pm.poll {
+		// The calling run's cancel stops the walk's members before the
+		// walk's ctx hears of it; this passes it on first, so the walk's
+		// run is recorded cancelled, not failed by its member's cancel.
+		_ = w.bg.Interrupted(w.pollRunID)
+	}
+	w.walkCancelled = w.walkCtx.Err() != nil
+	closed = true
+	w.finishRun(end)
+	return trace, werr
+}
+
+// answer is what op=run answers once the walk is over: the trace and the
+// end state for a walk that completed or stopped at an iteration cap (a
+// first-class outcome, not a tool fault), or the error that failed it.
+// Shared so a poll-mode walk is answered exactly as a waited-for one.
+func (w *teamWalk) answer(in teamDefInput, trace []teamrun.StepRecord, walkErr error) (map[string]any, error) {
+	row, task := w.row, w.task
+	steps := make([]map[string]any, 0, len(trace))
+	for _, s := range trace {
+		step := map[string]any{
+			"state":  s.State,
+			"agent":  s.Agent,
+			"edge":   s.Edge,
+			"next":   s.Next,
+			"output": s.Output,
+		}
+		// A decision state's answer, as the object the model gave: beside
+		// `output`, which stays what the state handed on.
+		if s.Answer != "" {
+			step["answer"] = json.RawMessage(s.Answer)
+		}
+		steps = append(steps, step)
 	}
 
-	// answer is what op=run answers once the walk is over: the trace and the
-	// end state for a walk that completed or stopped at an iteration cap (a
-	// first-class outcome, not a tool fault), or the error that failed it.
-	// Built here so a poll-mode walk is answered exactly as a waited-for one.
-	answer := func(trace []teamrun.StepRecord, walkErr error) (map[string]any, error) {
-		steps := make([]map[string]any, 0, len(trace))
-		for _, s := range trace {
-			step := map[string]any{
-				"state":  s.State,
-				"agent":  s.Agent,
-				"edge":   s.Edge,
-				"next":   s.Next,
-				"output": s.Output,
-			}
-			// A decision state's answer, as the object the model gave: beside
-			// `output`, which stays what the state handed on.
-			if s.Answer != "" {
-				step["answer"] = json.RawMessage(s.Answer)
-			}
-			steps = append(steps, step)
+	// annotate adds the opt-in board/interruption fields to a response ONLY when
+	// the relevant feature was used, keeping the default ephemeral response shape
+	// byte-identical for existing callers.
+	annotate := func(m map[string]any) map[string]any {
+		if w.runID != "" {
+			// Reported on the synchronous path as well: a caller holding a
+			// second connection can still arm this walk while it runs, and the
+			// id is what every run surface keys on afterwards.
+			m["run_id"] = w.runID
 		}
-
-		// annotate adds the opt-in board/interruption fields to a response ONLY when
-		// the relevant feature was used, keeping the default ephemeral response shape
-		// byte-identical for existing callers.
-		annotate := func(m map[string]any) map[string]any {
-			if runID != "" {
-				// Reported on the synchronous path as well: a caller holding a
-				// second connection can still arm this walk while it runs, and the
-				// id is what every run surface keys on afterwards.
-				m["run_id"] = runID
+		if w.boardBound {
+			m["board_chunk_id"] = in.BoardChunkID
+			m["board_scope"] = w.boardScope
+			if w.resumedFrom != "" {
+				m["resumed_from"] = w.resumedFrom
 			}
-			if boardBound {
-				m["board_chunk_id"] = in.BoardChunkID
-				m["board_scope"] = boardScope
-				if resumedFrom != "" {
-					m["resumed_from"] = resumedFrom
-				}
-			}
-			if in.InterruptOnCap {
-				m["interruptions"] = interruptions
-				if lastDecision != "" {
-					m["cap_decision"] = lastDecision
-				}
-			}
-			// Reported when the walk actually paused — not when `breakpoints` was
-			// passed. A walk armed mid-run passed nothing and still paused, and a
-			// walk that was armed but never reached the state paused nothing.
-			if breaks > 0 {
-				m["breakpoints_hit"] = breaks
-				if lastBreak != "" {
-					m["break_decision"] = lastBreak
-				}
-			}
-			return m
 		}
-
-		if walkErr != nil {
-			var capErr *teamrun.ErrIterationCap
-			if errors.As(walkErr, &capErr) {
-				// Cap overflow is a first-class outcome, not a tool fault — report it
-				// with the trace so the caller sees how far the walk got. (When
-				// interrupt_on_cap escalated, this is the human's abort / a failed
-				// escalation; continue/reroute keep the walk going and don't land here.)
-				return annotate(map[string]any{
-					"name":            row.Name,
-					"def_id":          row.DefID,
-					"status":          "iteration_cap",
-					"capped_state":    capErr.State,
-					"max_iterations":  capErr.Max,
-					"iteration_count": capErr.Count,
-					"steps":           steps,
-				}), nil
+		if in.InterruptOnCap {
+			m["interruptions"] = w.interruptions
+			if w.lastDecision != "" {
+				m["cap_decision"] = w.lastDecision
 			}
-			return nil, walkErr
 		}
-
-		return annotate(map[string]any{
-			"name":         row.Name,
-			"def_id":       row.DefID,
-			"status":       "completed",
-			"final_state":  task.State,
-			"final_output": task.Input, // Walk threads the last handler's output here
-			"steps":        steps,
-		}), nil
+		// Reported when the walk actually paused — not when `breakpoints` was
+		// passed. A walk armed mid-run passed nothing and still paused, and a
+		// walk that was armed but never reached the state paused nothing.
+		if w.breaks > 0 {
+			m["breakpoints_hit"] = w.breaks
+			if w.lastBreak != "" {
+				m["break_decision"] = w.lastBreak
+			}
+		}
+		return m
 	}
 
-	if pm.poll {
-		// The caller gets the walk's id NOW and goes on working. The walk is a
-		// child of the caller's run (see above): its end is filed in the run's
-		// table with the answer a waited-for walk returns, and the run is told.
-		// Like a detached walk it no longer holds the caller up, so whatever it
-		// waits on must not pause the caller's clock.
-		walkCtx = providers.WithRunClock(walkCtx, nil)
-		// The spawn ledger, as Agent poll mode records a child: on the
-		// caller's transcript, so a later resume can rebuild its handles.
-		// Recorded here, once nothing can withdraw the walk.
-		if toolUseID := tools.ToolUseID(ctx); toolUseID != "" && tools.HasEventEmitter(ctx) {
-			tools.EventEmitter(ctx)(providers.Event{Type: providers.EventSpawnChildStarted, SpawnChild: &providers.SpawnChildEventInfo{
-				ToolUseID: toolUseID, RunID: pollRunID, Agent: teamWalkLabel + row.Name, Mode: "poll",
-				Kind: tools.ChildKindTeam, Team: row.Name, DefID: row.DefID,
-				NoNotify: !pm.notify, CancelOnParentEnd: pm.cancelOnEnd,
-			}})
+	if walkErr != nil {
+		var capErr *teamrun.ErrIterationCap
+		if errors.As(walkErr, &capErr) {
+			// Cap overflow is a first-class outcome, not a tool fault — report it
+			// with the trace so the caller sees how far the walk got. (When
+			// interrupt_on_cap escalated, this is the human's abort / a failed
+			// escalation; continue/reroute keep the walk going and don't land here.)
+			return annotate(map[string]any{
+				"name":            row.Name,
+				"def_id":          row.DefID,
+				"status":          "iteration_cap",
+				"capped_state":    capErr.State,
+				"max_iterations":  capErr.Max,
+				"iteration_count": capErr.Count,
+				"steps":           steps,
+			}), nil
 		}
-		safego.Go(walkCtx, "teamdef.poll_walk", func() {
-			finishPollWalk(bg, pollRunID, releaseLive, func() walkEnding {
-				trace, werr := walk()
-				return pollWalkResult(answer, trace, werr, walkCancelled, context.Cause(walkCtx))
-			})
+		return nil, walkErr
+	}
+
+	return annotate(map[string]any{
+		"name":         row.Name,
+		"def_id":       row.DefID,
+		"status":       "completed",
+		"final_state":  task.State,
+		"final_output": task.Input, // Walk threads the last handler's output here
+		"steps":        steps,
+	}), nil
+}
+
+// runStartPoll starts a poll-mode walk in the background and hands the caller
+// its id.
+func runStartPoll(ctx context.Context, in teamDefInput, w *teamWalk) (tools.Result, error) {
+	row, pm, bg, pollRunID, runID := w.row, w.pm, w.bg, w.pollRunID, w.runID
+	// The caller gets the walk's id NOW and goes on working. The walk is a
+	// child of the caller's run (see above): its end is filed in the run's
+	// table with the answer a waited-for walk returns, and the run is told.
+	// Like a detached walk it no longer holds the caller up, so whatever it
+	// waits on must not pause the caller's clock.
+	w.walkCtx = providers.WithRunClock(w.walkCtx, nil)
+	// The spawn ledger, as Agent poll mode records a child: on the
+	// caller's transcript, so a later resume can rebuild its handles.
+	// Recorded here, once nothing can withdraw the walk.
+	if toolUseID := tools.ToolUseID(ctx); toolUseID != "" && tools.HasEventEmitter(ctx) {
+		tools.EventEmitter(ctx)(providers.Event{Type: providers.EventSpawnChildStarted, SpawnChild: &providers.SpawnChildEventInfo{
+			ToolUseID: toolUseID, RunID: pollRunID, Agent: teamWalkLabel + row.Name, Mode: "poll",
+			Kind: tools.ChildKindTeam, Team: row.Name, DefID: row.DefID,
+			NoNotify: !pm.notify, CancelOnParentEnd: pm.cancelOnEnd,
+		}})
+	}
+	safego.Go(w.walkCtx, "teamdef.poll_walk", func() {
+		finishPollWalk(bg, pollRunID, w.releaseLive, func() walkEnding {
+			trace, werr := w.walk()
+			answer := func(trace []teamrun.StepRecord, walkErr error) (map[string]any, error) {
+				return w.answer(in, trace, walkErr)
+			}
+			return pollWalkResult(answer, trace, werr, w.walkCancelled, context.Cause(w.walkCtx))
 		})
-		return okJSON(map[string]any{
-			"name":   row.Name,
-			"def_id": row.DefID,
-			"run_id": runID,
-			"state":  tools.ChildRunning,
-		})
-	}
+	})
+	return okJSON(map[string]any{
+		"name":   row.Name,
+		"def_id": row.DefID,
+		"run_id": runID,
+		"state":  tools.ChildRunning,
+	})
+}
 
-	if detach {
-		// The caller gets its handle NOW and the walk continues behind it. This
-		// is the whole point of the mode: a synchronous op=run tells the caller
-		// nothing until it is over, so there is no moment at which it can arm a
-		// breakpoint, read a pause, or watch progress.
-		//
-		// walkCtx is already detached from the request by WalkRun, so the walk
-		// survives this handler returning; only cancel stops it.
-		//
-		// A detached walk no longer holds the caller up, so whatever it waits
-		// on must not pause the caller's clock.
-		walkCtx = providers.WithRunClock(walkCtx, nil)
-		safego.Go(walkCtx, "teamdef.detached_walk", func() {
-			if _, werr := walk(); werr != nil {
-				slog.Warn("teamdef: detached walk failed", "team", row.Name, "run_id", runID, "err", werr)
-			}
-		})
-		return okJSON(map[string]any{
-			"name":   row.Name,
-			"def_id": row.DefID,
-			"run_id": runID,
-			"status": "running",
-		})
-	}
-
-	endWait := providers.BeginWait(ctx) // the caller's run is parked while the team works
-	defer endWait()                     // idempotent; closes the wait on every exit
-	trace, walkErr := walk()
-	endWait()
-
-	out, failed := answer(trace, walkErr)
-	if failed != nil {
-		return errResult(fmt.Sprintf("run: %s", failed)), nil
-	}
-	return okJSON(out)
+// runStartDetached starts a detached walk and hands the caller its run id.
+func runStartDetached(w *teamWalk) (tools.Result, error) {
+	row, runID := w.row, w.runID
+	// The caller gets its handle NOW and the walk continues behind it. This
+	// is the whole point of the mode: a synchronous op=run tells the caller
+	// nothing until it is over, so there is no moment at which it can arm a
+	// breakpoint, read a pause, or watch progress.
+	//
+	// walkCtx is already detached from the request by WalkRun, so the walk
+	// survives this handler returning; only cancel stops it.
+	//
+	// A detached walk no longer holds the caller up, so whatever it waits
+	// on must not pause the caller's clock.
+	w.walkCtx = providers.WithRunClock(w.walkCtx, nil)
+	safego.Go(w.walkCtx, "teamdef.detached_walk", func() {
+		if _, werr := w.walk(); werr != nil {
+			// No error text: it can carry provider configuration, and
+			// walk() has already recorded it on the run.
+			slog.Warn("teamdef: detached walk failed", "team", row.Name, "run_id", runID)
+		}
+	})
+	return okJSON(map[string]any{
+		"name":   row.Name,
+		"def_id": row.DefID,
+		"run_id": runID,
+		"status": "running",
+	})
 }
 
 // walkHoldingKey resolves op=run's idempotency_key: a refusal for a key that
