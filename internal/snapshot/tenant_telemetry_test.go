@@ -27,7 +27,8 @@ func TestSnapshotTenantTelemetry_RoundTripsAndTheLiveRowStands(t *testing.T) {
 
 	at := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
 	acme := store.TenantTelemetryPolicyRow{TenantID: "acme", Endpoint: "https://otel.acme.example", Protocol: "http/protobuf",
-		HeadersCredential: "otel", Signals: []string{"traces"}, SamplerRatio: 0.5, UpdatedAt: at, UpdatedBy: "ops"}
+		HeadersCredential: "otel", Signals: []string{"traces"}, SamplerRatio: 0.5, ContentCapture: "on", ContentMaxChars: 2048,
+		UpdatedAt: at, UpdatedBy: "ops"}
 	beta := store.TenantTelemetryPolicyRow{TenantID: "beta", Endpoint: "https://otel.beta.example:4317", Protocol: "grpc",
 		Signals: []string{"traces"}, SamplerRatio: 1, UpdatedAt: at, UpdatedBy: "admin"}
 	for _, r := range []store.TenantTelemetryPolicyRow{acme, beta} {

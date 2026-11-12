@@ -3539,6 +3539,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO` | `1` | The highest `sampler_ratio` a tenant may set, 0–1. |
 | `LOOMCYCLE_TENANT_TELEMETRY_QUEUE` | `512` | Spans each tenant's pipeline holds waiting for export; past it they are dropped and counted, never waited on. |
 | `LOOMCYCLE_TENANT_TELEMETRY_MAX_PIPELINES` | `256` | Tenant pipelines open at once on a replica; past it the least recently used is flushed and closed. |
+| `LOOMCYCLE_TENANT_CONTENT_CAPTURE` | off | `1` lets a tenant turn on content capture: its runs' prompts, answers and tool calls, redacted and cut, on the spans its own collector receives (never the operator's). Read only with `LOOMCYCLE_TENANT_TELEMETRY` on. Off, a policy asking for `content_capture: on` is refused, and one stored with it on exports its traces without content. See "Tenant content capture". |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
 
 #### Tracing configuration
@@ -3887,6 +3888,53 @@ restored policy that names a header credential exports once the tenant stores
 that credential again on the target. The status is per replica; each replica
 re-reads the policies and their credentials every minute, so a rotated or
 expired header credential is picked up within a minute.
+
+#### Tenant content capture
+
+Off by default, behind two gates: the operator sets
+`LOOMCYCLE_TENANT_CONTENT_CAPTURE=1`, and the tenant sets
+`"content_capture": "on"` on its policy (optionally `"content_max_chars"`,
+256–65536, default 4096). Content travels on spans, so the policy's `signals`
+must include `traces`: a metrics-only policy asking for capture is refused, and
+one stored that way exports its metrics without content. A run of that tenant then records, on the spans its
+collector receives, what the model was given and answered and what its tools
+were called with and returned, as the GenAI semantic conventions (release
+1.41.0) name them: `gen_ai.system_instructions`, `gen_ai.input.messages` and
+`gen_ai.output.messages` on `loomcycle.model.call`, and
+`gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` on
+`loomcycle.tool.call`.
+
+- **Only the tenant's collector gets it.** The operator's exporter strips every
+  one of those keys before export, whatever the tenant's policy; the operator's
+  copy of a span is what it was without capture.
+- **Redacted, then cut.** Each value passes the same redactor the stored
+  transcript does (the operator's secret env values, credentials resolved for
+  the tenant's runs, secrets a run observed, the secret-shaped patterns, signed
+  URL parameters; a `credentialdef` value and a `crypto` plaintext by field)
+  before it is serialised, and each attribute is then cut to
+  `content_max_chars` characters with a `…[truncated N chars]` marker (a cut
+  value is no longer valid JSON). Images and other binary attachments are
+  recorded as `{"type", "media_type", "bytes"}`, never their data. With
+  `LOOMCYCLE_REDACT_SECRETS=0` nothing is captured.
+- **Not for every run.** A no-trace run captures nothing and sends nothing, and
+  neither does content a no-trace sub-run handed its parent (recorded as
+  `[content not retained]`). An agent whose definition says
+  `telemetry: { content_capture: never }` never captures, whatever its
+  tenant's policy; a fork cannot take that away, and no run request can
+  change it. A sub-run decides for its own agent.
+- **Decided when a run starts.** Turning capture off stops it for runs that
+  start afterwards; a run already going keeps capturing until it ends.
+- **Outside erasure.** Content in the tenant's backend is beyond loomcycle's
+  reach, as content in the operator's is. Each replica records, at most once a
+  minute per tenant, that capture was used (a run that cannot be recorded
+  captures nothing), and a subject erasure's report and result name the window:
+  "content exported to the tenant telemetry destination between <first> and
+  <last>". The Web UI says so where capture is turned on.
+- **Audited.** A set's audit record carries its `telemetry_content_capture`.
+
+Capture costs CPU in proportion to what each model call is shown: every
+message of the conversation is redacted and serialised on every call, before
+the field is cut.
 
 ## 10. Cross-references
 

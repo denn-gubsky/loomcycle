@@ -30,8 +30,15 @@ type TenantTelemetryPolicyRow struct {
 	Signals []string
 	// SamplerRatio is the share of the tenant's traces sent, 0..1.
 	SamplerRatio float64
-	UpdatedAt    time.Time
-	UpdatedBy    string
+	// ContentCapture is "off" or "on": whether the tenant's runs' prompts,
+	// answers and tool calls are recorded on the spans it receives. "" is
+	// stored as "off".
+	ContentCapture string
+	// ContentMaxChars is the length each captured field is cut to; 0 for the
+	// runtime's default.
+	ContentMaxChars int
+	UpdatedAt       time.Time
+	UpdatedBy       string
 }
 
 // TenantTelemetryPolicyStore persists the per-tenant telemetry destinations.
@@ -47,6 +54,26 @@ type TenantTelemetryPolicyStore interface {
 	// TenantTelemetryPolicyDelete removes the tenant's policy and reports
 	// whether there was one.
 	TenantTelemetryPolicyDelete(ctx context.Context, tenantID string) (bool, error)
+
+	// TenantTelemetryContentExportMark records that the tenant's captured
+	// content was exported at at: the first mark sets FirstAt, every mark
+	// moves LastAt forward (never back). A policy delete leaves the record:
+	// what was exported stays in the tenant's backend.
+	TenantTelemetryContentExportMark(ctx context.Context, tenantID string, at time.Time) error
+	// TenantTelemetryContentExportGet returns the tenant's record.
+	// *ErrNotFound{Kind:"tenant_telemetry_content_export"} when its content
+	// was never exported.
+	TenantTelemetryContentExportGet(ctx context.Context, tenantID string) (TenantTelemetryContentExport, error)
+}
+
+// TenantTelemetryContentExport is when a tenant's captured content was
+// exported to its own telemetry destination, to within the runtime's mark
+// interval: the record an erasure report cites, since loomcycle cannot erase
+// what a tenant's own backend holds.
+type TenantTelemetryContentExport struct {
+	TenantID string
+	FirstAt  time.Time
+	LastAt   time.Time
 }
 
 // NormalizeTelemetrySignals returns signals sorted and de-duplicated, never
@@ -81,6 +108,19 @@ func CheckTenantTelemetryPolicyRow(row TenantTelemetryPolicyRow) error {
 		return fmt.Errorf("tenant_telemetry_policy: protocol required")
 	case !(row.SamplerRatio >= 0 && row.SamplerRatio <= 1):
 		return fmt.Errorf("tenant_telemetry_policy: sampler_ratio must be between 0 and 1")
+	case row.ContentCapture != "" && row.ContentCapture != "off" && row.ContentCapture != "on":
+		return fmt.Errorf("tenant_telemetry_policy: content_capture must be off or on")
+	case row.ContentMaxChars < 0:
+		return fmt.Errorf("tenant_telemetry_policy: content_max_chars must not be negative")
 	}
 	return nil
+}
+
+// StoredContentCapture is the content_capture value both backends store for
+// v: "" is "off".
+func StoredContentCapture(v string) string {
+	if v == "" {
+		return "off"
+	}
+	return v
 }

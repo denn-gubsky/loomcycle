@@ -53,7 +53,8 @@ describe("tenant telemetry", () => {
         headers_credential: "otel-headers",
         signals: ["traces"],
         sampler_ratio: 0,
-        content_capture: "off",
+        content_capture: "on",
+        content_max_chars: 2048,
       },
       { tenant: "globex" },
     );
@@ -63,7 +64,8 @@ describe("tenant telemetry", () => {
       headers_credential: "otel-headers",
       signals: ["traces"],
       sampler_ratio: 0,
-      content_capture: "off",
+      content_capture: "on",
+      content_max_chars: 2048,
       tenant: "globex",
     });
   });

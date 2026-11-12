@@ -287,7 +287,14 @@ type AgentContent struct {
 	SqlQuotaBytes int      `json:"sql_quota_bytes,omitempty"`
 	SqlScopes     []string `json:"sql_scopes,omitempty"`
 	SystemPrompt  string   `json:"system_prompt,omitempty"`
-	Tier          string   `json:"tier,omitempty"`
+	// Telemetry is the per-agent telemetry block (mirrors
+	// config.AgentTelemetry; RFC GG P3). Content-identifying: an agent that
+	// opts out of content capture keeps its runs' content off every span.
+	// Pointer + omitempty + normalize-collapse so an agent without it hashes
+	// byte-identical to pre-feature rows. Tag "telemetry" sorts between
+	// system_prompt and tier.
+	Telemetry *Telemetry `json:"telemetry,omitempty"`
+	Tier      string     `json:"tier,omitempty"`
 	// ToolChoice (RFC DI) is content-identifying, like Sampling: a fork that
 	// only changes which tool the model must call must mint a distinct
 	// content_sha256. Pointer + omitempty so an agent without one hashes
@@ -417,6 +424,10 @@ func normalize(c *AgentContent) {
 	// Same for an empty speech block.
 	if c.Speech != nil && *c.Speech == (Speech{}) {
 		c.Speech = nil
+	}
+	// And for an empty telemetry block.
+	if c.Telemetry != nil && *c.Telemetry == (Telemetry{}) {
+		c.Telemetry = nil
 	}
 	// Same all-nil collapse for compaction (a substrate read of a no-compaction
 	// def yields `"compaction":{}`) → hashes identically to a pre-feature row.

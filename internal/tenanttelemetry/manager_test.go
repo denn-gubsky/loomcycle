@@ -194,7 +194,8 @@ func TestManagerPut_RefusesWhatTheOperatorOrTheCredentialDoesNotAllow(t *testing
 		"grpc with a path":                   {Endpoint: ep + "/v1", Protocol: "grpc"},
 		"credential bound to traces only":    {Endpoint: ep, HeadersCredential: "tracesonly", Signals: []string{"traces", "metrics"}},
 		"unknown signal":                     {Endpoint: ep, Signals: []string{"logs"}},
-		"content capture on":                 {Endpoint: ep, ContentCapture: "on"},
+		"content capture on, operator off":   {Endpoint: ep, ContentCapture: "on"},
+		"content capture always":             {Endpoint: ep, ContentCapture: "always"},
 		"ratio over one":                     {Endpoint: ep, SamplerRatio: ratio(1.5)},
 		"ratio below zero":                   {Endpoint: ep, SamplerRatio: ratio(-0.1)},
 		"ratio above the operator cap":       {Endpoint: ep, SamplerRatio: ratio(0.75)},
@@ -848,6 +849,184 @@ func TestManagerRefresh_RetriesAPolicyATransientFaultLeftOff(t *testing.T) {
 	}
 	if got := f.router.Tenants(); len(got) != 1 {
 		t.Errorf("the next refresh left the export off after a transient fault: %v (status %+v)", got, f.m.Status("acme"))
+	}
+}
+
+func maxChars(n int) *int { return &n }
+
+func TestManagerPut_ContentCaptureNeedsTheOperatorGate(t *testing.T) {
+	c := newCollector(t)
+	ctx := context.Background()
+	off := newFixture(t, Config{}, c)
+	_, err := off.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "operator has not turned it on") {
+		t.Fatalf("gate off: err = %v, want a refusal naming the operator's gate", err)
+	}
+
+	on := newFixture(t, Config{ContentCapture: true}, c)
+	for _, bad := range []int{lcotel.MinContentMaxChars - 1, lcotel.MaxContentMaxChars + 1, -5} {
+		if _, err := on.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on", ContentMaxChars: maxChars(bad)}, "ops"); !errors.Is(err, ErrInvalid) {
+			t.Errorf("content_max_chars %d: err = %v, want ErrInvalid", bad, err)
+		}
+	}
+	row, err := on.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops")
+	if err != nil || row.ContentCapture != ContentCaptureOn || row.ContentMaxChars != lcotel.DefaultContentMaxChars {
+		t.Fatalf("gate on: row = %+v err = %v, want capture on at the default length", row, err)
+	}
+	row, err = on.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops")
+	if err != nil || row.ContentCapture != ContentCaptureOff {
+		t.Fatalf("no capture asked: row = %+v err = %v, want off", row, err)
+	}
+}
+
+func TestManagerContentCaptureFor_OnlyWhileExportedWithCaptureOnAndOnRecord(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	ctx := context.Background()
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Fatal("no policy: captures")
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on", ContentMaxChars: maxChars(2048)}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	start := f.now
+	n, ok := f.m.ContentCaptureFor(ctx, "acme")
+	if !ok || n != 2048 {
+		t.Fatalf("capture on: (%d, %v), want (2048, true)", n, ok)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "beta"); ok {
+		t.Error("another tenant captures")
+	}
+	rec, err := f.st.TenantTelemetryContentExportGet(ctx, "acme")
+	if err != nil || !rec.FirstAt.Equal(start) || !rec.LastAt.Equal(start) {
+		t.Fatalf("record = %+v err = %v, want first = last = %v", rec, err, start)
+	}
+	// Within the interval nothing is written; past it the record moves.
+	f.now = start.Add(ContentMarkInterval / 2)
+	f.m.ContentCaptureFor(ctx, "acme")
+	if rec, _ := f.st.TenantTelemetryContentExportGet(ctx, "acme"); !rec.LastAt.Equal(start) {
+		t.Errorf("a capture within the interval moved the record to %v", rec.LastAt)
+	}
+	f.now = start.Add(2 * ContentMarkInterval)
+	f.m.ContentCaptureFor(ctx, "acme")
+	if rec, _ := f.st.TenantTelemetryContentExportGet(ctx, "acme"); !rec.LastAt.Equal(f.now) || !rec.FirstAt.Equal(start) {
+		t.Errorf("record = %+v, want first %v last %v", rec, start, f.now)
+	}
+
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Error("capture turned off: still captures")
+	}
+	if _, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"}, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.Delete(ctx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Error("policy deleted: still captures")
+	}
+}
+
+func TestManagerContentCaptureFor_StoredOnUnderAClosedGateExportsTracesWithoutContent(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{}, c)
+	ctx := context.Background()
+	if err := f.st.TenantTelemetryPolicyPut(ctx, store.TenantTelemetryPolicyRow{TenantID: "acme", Endpoint: c.srv.URL,
+		Protocol: "http/protobuf", Signals: []string{SignalTraces}, SamplerRatio: 1, ContentCapture: "on", ContentMaxChars: 2048}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.router.Tenants(); len(got) != 1 {
+		t.Fatalf("destinations = %v: the stored policy's traces should still export", got)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Error("the operator's gate is off, yet the stored policy captures content")
+	}
+	if _, err := f.st.TenantTelemetryContentExportGet(ctx, "acme"); err == nil {
+		t.Error("a capture was recorded with the gate off")
+	}
+}
+
+// Content rides on spans: capture is refused for a policy without traces,
+// and a stored metrics-only row with capture on exports without it.
+func TestManagerPut_ContentCaptureNeedsTheTracesSignal(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	ctx := context.Background()
+	_, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, Signals: []string{SignalMetrics}, ContentCapture: "on"}, "ops")
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "traces signal") {
+		t.Fatalf("metrics only with capture on: err = %v, want a refusal naming the traces signal", err)
+	}
+	row, err := f.put(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, Signals: []string{SignalTraces, SignalMetrics}, ContentCapture: "on"}, "ops")
+	if err != nil || row.ContentCapture != ContentCaptureOn {
+		t.Fatalf("traces and metrics with capture on: row = %+v err = %v, want capture on", row, err)
+	}
+
+	if err := f.st.TenantTelemetryPolicyPut(ctx, store.TenantTelemetryPolicyRow{TenantID: "beta", Endpoint: c.srv.URL,
+		Protocol: "http/protobuf", Signals: []string{SignalMetrics}, SamplerRatio: 1, ContentCapture: "on", ContentMaxChars: 2048}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.m.ContentCaptureFor(ctx, "beta"); ok {
+		t.Error("a stored metrics-only policy captures content")
+	}
+	if _, err := f.st.TenantTelemetryContentExportGet(ctx, "beta"); err == nil {
+		t.Error("a capture was recorded for a policy that exports no spans")
+	}
+}
+
+// markFailingStore refuses to record a content capture.
+type markFailingStore struct{ *sqlite.Store }
+
+func (markFailingStore) TenantTelemetryContentExportMark(context.Context, string, time.Time) error {
+	return errors.New("store down")
+}
+
+func TestManagerContentCaptureFor_ACaptureThatCannotBeRecordedIsRefused(t *testing.T) {
+	c := newCollector(t)
+	f := newFixture(t, Config{ContentCapture: true}, c)
+	m, err := New(Deps{Config: Config{Enabled: true, MaxRatio: 1, ContentCapture: true}, Store: markFailingStore{f.st},
+		Router: f.router, Dial: loopbackDial, TLSConfig: f.tls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	row, err := m.Check(ctx, "acme", PolicyInput{Endpoint: c.srv.URL, ContentCapture: "on"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Store(ctx, row, "ops"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.ContentCaptureFor(ctx, "acme"); ok {
+		t.Error("content captured though its export could not be put on record")
+	}
+}
+
+func TestConfigFromEnv_ContentCaptureIsItsOwnGateUnderTheExportGate(t *testing.T) {
+	env := map[string]string{"LOOMCYCLE_TENANT_CONTENT_CAPTURE": "1"}
+	get := func(k string) string { return env[k] }
+	if cfg, err := ConfigFromEnv(get); err != nil || cfg.ContentCapture {
+		t.Fatalf("export gate off: cfg=%+v err=%v, want no capture", cfg, err)
+	}
+	env["LOOMCYCLE_TENANT_TELEMETRY"] = "1"
+	if cfg, err := ConfigFromEnv(get); err != nil || !cfg.ContentCapture {
+		t.Fatalf("both gates on: cfg=%+v err=%v", cfg, err)
+	}
+	delete(env, "LOOMCYCLE_TENANT_CONTENT_CAPTURE")
+	if cfg, err := ConfigFromEnv(get); err != nil || cfg.ContentCapture {
+		t.Fatalf("capture gate unset: cfg=%+v err=%v, want off by default", cfg, err)
+	}
+	env["LOOMCYCLE_TENANT_CONTENT_CAPTURE"] = "maybe"
+	if _, err := ConfigFromEnv(get); err == nil {
+		t.Error("a bad capture gate value passed")
 	}
 }
 

@@ -26,6 +26,10 @@ func (s *Server) TenantTelemetry(ctx context.Context, req *loomcyclepb.TenantTel
 			Endpoint: p.GetEndpoint(), Protocol: p.GetProtocol(), HeadersCredential: p.GetHeadersCredential(),
 			Signals: p.GetSignals(), SamplerRatio: p.SamplerRatio, ContentCapture: p.GetContentCapture(),
 		}
+		if p.ContentMaxChars != nil {
+			n := int(p.GetContentMaxChars())
+			in.Policy.ContentMaxChars = &n
+		}
 	}
 	res, err := s.connector.TenantTelemetry(ctx, in)
 	if err != nil {
@@ -36,6 +40,7 @@ func (s *Server) TenantTelemetry(ctx context.Context, req *loomcyclepb.TenantTel
 		out.Policy = &loomcyclepb.TenantTelemetryPolicy{
 			Endpoint: p.Endpoint, Protocol: p.Protocol, HeadersCredential: p.HeadersCredential,
 			Signals: p.Signals, SamplerRatio: p.SamplerRatio, UpdatedAt: p.UpdatedAt, UpdatedBy: p.UpdatedBy,
+			ContentCapture: p.ContentCapture, ContentMaxChars: int32(p.ContentMaxChars),
 		}
 	}
 	if st := res.Status; st != nil {

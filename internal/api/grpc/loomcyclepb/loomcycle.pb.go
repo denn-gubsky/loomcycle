@@ -9340,10 +9340,15 @@ type TenantTelemetryPolicyInput struct {
 	Signals           []string `protobuf:"bytes,4,rep,name=signals,proto3" json:"signals,omitempty"` // empty = ["traces"]
 	// Share of the tenant's traces sent, 0..1, at most the operator's cap.
 	// Unset is 1 (or the cap below it).
-	SamplerRatio   *float64 `protobuf:"fixed64,5,opt,name=sampler_ratio,json=samplerRatio,proto3,oneof" json:"sampler_ratio,omitempty"`
-	ContentCapture string   `protobuf:"bytes,6,opt,name=content_capture,json=contentCapture,proto3" json:"content_capture,omitempty"` // "off" or empty
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	SamplerRatio *float64 `protobuf:"fixed64,5,opt,name=sampler_ratio,json=samplerRatio,proto3,oneof" json:"sampler_ratio,omitempty"`
+	// "off" (or empty) or "on": the tenant's runs' prompts, answers and tool
+	// calls, redacted and cut, on the spans its collector receives. "on" only
+	// where the operator allows it (LOOMCYCLE_TENANT_CONTENT_CAPTURE).
+	ContentCapture string `protobuf:"bytes,6,opt,name=content_capture,json=contentCapture,proto3" json:"content_capture,omitempty"`
+	// The length each captured field is cut to, 256..65536; unset or 0 is 4096.
+	ContentMaxChars *int32 `protobuf:"varint,7,opt,name=content_max_chars,json=contentMaxChars,proto3,oneof" json:"content_max_chars,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *TenantTelemetryPolicyInput) Reset() {
@@ -9418,6 +9423,13 @@ func (x *TenantTelemetryPolicyInput) GetContentCapture() string {
 	return ""
 }
 
+func (x *TenantTelemetryPolicyInput) GetContentMaxChars() int32 {
+	if x != nil && x.ContentMaxChars != nil {
+		return *x.ContentMaxChars
+	}
+	return 0
+}
+
 // TenantTelemetryPolicy is a stored policy.
 type TenantTelemetryPolicy struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
@@ -9426,8 +9438,10 @@ type TenantTelemetryPolicy struct {
 	HeadersCredential string                 `protobuf:"bytes,3,opt,name=headers_credential,json=headersCredential,proto3" json:"headers_credential,omitempty"`
 	Signals           []string               `protobuf:"bytes,4,rep,name=signals,proto3" json:"signals,omitempty"`
 	SamplerRatio      float64                `protobuf:"fixed64,5,opt,name=sampler_ratio,json=samplerRatio,proto3" json:"sampler_ratio,omitempty"`
-	UpdatedAt         string                 `protobuf:"bytes,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"` // RFC 3339
-	UpdatedBy         string                 `protobuf:"bytes,7,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"` // principal subject that last wrote it
+	UpdatedAt         string                 `protobuf:"bytes,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`                      // RFC 3339
+	UpdatedBy         string                 `protobuf:"bytes,7,opt,name=updated_by,json=updatedBy,proto3" json:"updated_by,omitempty"`                      // principal subject that last wrote it
+	ContentCapture    string                 `protobuf:"bytes,8,opt,name=content_capture,json=contentCapture,proto3" json:"content_capture,omitempty"`       // "off" | "on"
+	ContentMaxChars   int32                  `protobuf:"varint,9,opt,name=content_max_chars,json=contentMaxChars,proto3" json:"content_max_chars,omitempty"` // the cut of each captured field
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -9509,6 +9523,20 @@ func (x *TenantTelemetryPolicy) GetUpdatedBy() string {
 		return x.UpdatedBy
 	}
 	return ""
+}
+
+func (x *TenantTelemetryPolicy) GetContentCapture() string {
+	if x != nil {
+		return x.ContentCapture
+	}
+	return ""
+}
+
+func (x *TenantTelemetryPolicy) GetContentMaxChars() int32 {
+	if x != nil {
+		return x.ContentMaxChars
+	}
+	return 0
 }
 
 // TenantTelemetryStatus is the tenant's export on the replica that answered,
@@ -17534,15 +17562,17 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x16TenantTelemetryRequest\x12\x0e\n" +
 	"\x02op\x18\x01 \x01(\tR\x02op\x12\x16\n" +
 	"\x06tenant\x18\x02 \x01(\tR\x06tenant\x12@\n" +
-	"\x06policy\x18\x03 \x01(\v2(.loomcycle.v1.TenantTelemetryPolicyInputR\x06policy\"\x82\x02\n" +
+	"\x06policy\x18\x03 \x01(\v2(.loomcycle.v1.TenantTelemetryPolicyInputR\x06policy\"\xc9\x02\n" +
 	"\x1aTenantTelemetryPolicyInput\x12\x1a\n" +
 	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12-\n" +
 	"\x12headers_credential\x18\x03 \x01(\tR\x11headersCredential\x12\x18\n" +
 	"\asignals\x18\x04 \x03(\tR\asignals\x12(\n" +
 	"\rsampler_ratio\x18\x05 \x01(\x01H\x00R\fsamplerRatio\x88\x01\x01\x12'\n" +
-	"\x0fcontent_capture\x18\x06 \x01(\tR\x0econtentCaptureB\x10\n" +
-	"\x0e_sampler_ratio\"\xfb\x01\n" +
+	"\x0fcontent_capture\x18\x06 \x01(\tR\x0econtentCapture\x12/\n" +
+	"\x11content_max_chars\x18\a \x01(\x05H\x01R\x0fcontentMaxChars\x88\x01\x01B\x10\n" +
+	"\x0e_sampler_ratioB\x14\n" +
+	"\x12_content_max_chars\"\xd0\x02\n" +
 	"\x15TenantTelemetryPolicy\x12\x1a\n" +
 	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12\x1a\n" +
 	"\bprotocol\x18\x02 \x01(\tR\bprotocol\x12-\n" +
@@ -17552,7 +17582,9 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\n" +
 	"updated_at\x18\x06 \x01(\tR\tupdatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_by\x18\a \x01(\tR\tupdatedBy\"\xaf\x02\n" +
+	"updated_by\x18\a \x01(\tR\tupdatedBy\x12'\n" +
+	"\x0fcontent_capture\x18\b \x01(\tR\x0econtentCapture\x12*\n" +
+	"\x11content_max_chars\x18\t \x01(\x05R\x0fcontentMaxChars\"\xaf\x02\n" +
 	"\x15TenantTelemetryStatus\x12\x18\n" +
 	"\areplica\x18\x01 \x01(\tR\areplica\x12\x1c\n" +
 	"\texporting\x18\x02 \x01(\bR\texporting\x12%\n" +

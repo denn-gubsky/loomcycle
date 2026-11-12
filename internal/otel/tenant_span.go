@@ -119,6 +119,14 @@ var tenantAttrPolicy = map[string]bool{
 	string(genai.GenAIConversationIDKey):                true,
 	string(genai.GenAIToolNameKey):                      true,
 	string(genai.GenAIToolCallIDKey):                    true,
+	// Captured content (content.go): on a span only when the tenant turned
+	// capture on, and stripped from the operator's copy. The tenant's copy
+	// admits exactly ContentAttributeKeys.
+	string(genai.GenAISystemInstructionsKey): true,
+	string(genai.GenAIInputMessagesKey):      true,
+	string(genai.GenAIOutputMessagesKey):     true,
+	string(genai.GenAIToolCallArgumentsKey):  true,
+	string(genai.GenAIToolCallResultKey):     true,
 
 	// Never on a tenant's span, listed so the census sees them decided: the
 	// help reconcile is substrate work, a webhook's receive span names the

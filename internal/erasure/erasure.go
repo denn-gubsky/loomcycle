@@ -635,6 +635,11 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 		"counts are live rows: expired and superseded rows are excluded, because they are invisible to every read and counting them would overstate what is held.",
 	}
 	rep.Notes = append(rep.Notes, aclNotes...)
+	if line, err := s.telemetryContentResidue(ctx, tenant); err != nil {
+		fail("tenant_telemetry_content", err)
+	} else if line != "" {
+		rep.Notes = append(rep.Notes, line)
+	}
 	if n := s.declaredPrincipalNote(tenant, subject); n != "" {
 		rep.Notes = append(rep.Notes, n)
 	}
@@ -958,6 +963,11 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 
 	res.Retained["usage_ledger"] = retainedUsageLedger
 	res.Retained["audit_chain"] = retainedAuditChain
+	if line, err := s.telemetryContentResidue(ctx, tenant); err != nil {
+		fail("tenant_telemetry_content", err)
+	} else if line != "" {
+		res.Retained["tenant_telemetry_content"] = line
+	}
 	if res.Residue.Rows > 0 {
 		res.Retained["tier3_residue"] = fmt.Sprintf(
 			"%d fact(s) about this subject live in scope(s) they do not own (%s). They are not "+
@@ -1104,6 +1114,28 @@ func (s *Service) subjectSessions(ctx context.Context, tenant, subject string) (
 			return out, nil
 		}
 	}
+}
+
+// telemetryContentResidue is the line an erasure gives about the tenant's
+// telemetry content capture (RFC GG P3): when the tenant's runs' prompts,
+// answers and tool calls were exported to the tenant's own collector, which
+// no erasure here reaches. "" when the tenant's content was never exported.
+// The record is per tenant, not per subject: the subject's runs are among
+// those whose content left, and nothing finer is kept.
+func (s *Service) telemetryContentResidue(ctx context.Context, tenant string) (string, error) {
+	rec, err := s.Store.TenantTelemetryContentExportGet(ctx, tenant)
+	var nf *store.ErrNotFound
+	if errors.As(err, &nf) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("content exported to the tenant telemetry destination between %s and %s: "+
+		"the prompts, answers and tool calls of this tenant's runs (secrets masked) were sent to the "+
+		"tenant's own trace collector, which this erasure cannot reach — erase them there. The times "+
+		"are run starts recorded to within a minute; a run still going after the last one sent content later.",
+		rec.FirstAt.UTC().Format(time.RFC3339), rec.LastAt.UTC().Format(time.RFC3339)), nil
 }
 
 // residueFor walks the subject's chats to facts derived from them.

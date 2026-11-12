@@ -39,6 +39,15 @@ export function parseRatio(text: string): number | undefined | null {
   return Number.isFinite(n) && n >= 0 && n <= 1 ? n : null;
 }
 
+// parseMaxChars reads the content length box: "" means the server's default, a
+// whole number from 256 to 65536 is sent, anything else is refused.
+export function parseMaxChars(text: string): number | undefined | null {
+  const t = text.trim();
+  if (t === "") return undefined;
+  const n = Number(t);
+  return Number.isInteger(n) && n >= 256 && n <= 65536 ? n : null;
+}
+
 export default function TelemetryView() {
   const principal = usePrincipal();
   // A null principal is open mode, which is admin-equivalent.
@@ -188,6 +197,10 @@ export function TelemetryForm({
   // A stored policy names its signals; a new one starts at the server's
   // default, traces.
   const [signals, setSignals] = useState<string[]>(policy?.signals?.length ? policy.signals : ["traces"]);
+  const [capture, setCapture] = useState(policy?.content_capture === "on");
+  const [maxChars, setMaxChars] = useState(
+    policy?.content_capture === "on" && policy.content_max_chars ? String(policy.content_max_chars) : "",
+  );
   const [err, setErr] = useState("");
 
   const submit = (e: FormEvent) => {
@@ -208,10 +221,19 @@ export function TelemetryForm({
       setErr("pick traces, metrics or both");
       return;
     }
+    const m = capture ? parseMaxChars(maxChars) : undefined;
+    if (m === null) {
+      setErr("content length must be a whole number from 256 to 65536");
+      return;
+    }
     setErr("");
     const input: TelemetryPolicyInput = { endpoint: endpoint.trim(), protocol, signals: picked };
     if (credential.trim()) input.headers_credential = credential.trim();
     if (r !== undefined) input.sampler_ratio = r;
+    if (capture) {
+      input.content_capture = "on";
+      if (m !== undefined) input.content_max_chars = m;
+    }
     void onSave(input);
   };
 
@@ -298,9 +320,45 @@ export function TelemetryForm({
           minute.
         </span>
       </fieldset>
-      <p className="settings-muted">
-        Content capture is not available: it is always off for a tenant&rsquo;s export.
-      </p>
+      <fieldset className="telemetry-content">
+        <legend>content</legend>
+        <label>
+          <input
+            name="content_capture"
+            type="checkbox"
+            checked={capture}
+            onChange={(e) => setCapture(e.target.checked)}
+          />{" "}
+          capture content
+        </label>
+        <span className="settings-muted">
+          Also send what each run&rsquo;s model was given and answered, and what its tools were called with and
+          returned, with secrets masked. Only where the operator allows it; agents that opt out and runs that keep no
+          trace never send it.
+        </span>
+        {capture && (
+          <>
+            <label>
+              content length
+              <input
+                name="content_max_chars"
+                type="number"
+                min={256}
+                max={65536}
+                step={1}
+                value={maxChars}
+                placeholder="4096"
+                onChange={(e) => setMaxChars(e.target.value)}
+              />
+              <span className="settings-muted">Each captured field is cut to this many characters. Empty means 4096.</span>
+            </label>
+            <div className="settings-warning" role="note">
+              Content sent to your collector is outside loomcycle&rsquo;s erasure: erasing a person here cannot remove
+              what was already sent there. An erasure report names the time span in which content was sent.
+            </div>
+          </>
+        )}
+      </fieldset>
       {err && <div className="settings-error">{err}</div>}
       <div className="settings-row-actions">
         <button type="submit" disabled={busy}>

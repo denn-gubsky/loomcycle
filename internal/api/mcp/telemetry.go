@@ -22,6 +22,7 @@ func handleTelemetry(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		Signals           []string `json:"signals"`
 		SamplerRatio      *float64 `json:"sampler_ratio"`
 		ContentCapture    string   `json:"content_capture"`
+		ContentMaxChars   *int     `json:"content_max_chars"`
 	}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &p); err != nil {
@@ -36,6 +37,7 @@ func handleTelemetry(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		req.Policy = &connector.TenantTelemetryPolicyInput{
 			Endpoint: p.Endpoint, Protocol: p.Protocol, HeadersCredential: p.HeadersCredential,
 			Signals: p.Signals, SamplerRatio: p.SamplerRatio, ContentCapture: p.ContentCapture,
+			ContentMaxChars: p.ContentMaxChars,
 		}
 	}
 	res, err := env.connector.TenantTelemetry(ctx, req)
@@ -57,9 +59,9 @@ func telemetryToolDescriptor() loommcp.ToolDescriptor {
 // telemetryToolDescription is the `telemetry` tool's description.
 const telemetryToolDescription = "Send this tenant's own traces, and its own series of the deployment's metrics, to an OpenTelemetry (OTLP) collector of the tenant's, beside the deployment's own telemetry. " +
 	"op=get (default) returns the tenant's export policy and this server's export status (spans exported and dropped, failed exports, the last success, the last error). " +
-	"op=set stores the policy: endpoint (the collector's OTLP base URL, https), protocol (http/protobuf, the default, or grpc), headers_credential (the name of a tenant credential whose value is the header block, name=value,name=value, for example authorization=Basic ...,x-scope-orgid=...; the credential must be restricted by its allowed_urls to the endpoint), signals (traces, metrics or both; traces by default), sampler_ratio (0 to 1). A set replaces the whole policy. " +
+	"op=set stores the policy: endpoint (the collector's OTLP base URL, https), protocol (http/protobuf, the default, or grpc), headers_credential (the name of a tenant credential whose value is the header block, name=value,name=value, for example authorization=Basic ...,x-scope-orgid=...; the credential must be restricted by its allowed_urls to the endpoint), signals (traces, metrics or both; traces by default), sampler_ratio (0 to 1), content_capture (off by default; on also sends the prompts, answers and tool calls of this tenant's runs, secrets masked and each field cut to content_max_chars, only where the deployment's operator allows it and only with traces in signals; content sent to the collector cannot be erased by this server). A set replaces the whole policy. " +
 	"op=test sends one test span (and, with metrics, one test metric) to the stored endpoint and answers whether it arrived, with the collector's error when not. op=delete stops the export. " +
-	"Only spans of this tenant's own work are sent, without the deployment's own resource attributes or error text; spans of no-trace runs are never sent. Metrics are this tenant's own series only, pushed every minute. " +
+	"Only spans of this tenant's own work are sent, without the deployment's own resource attributes or error text; spans of no-trace runs are never sent, and an agent defined with telemetry content_capture: never sends no content. Metrics are this tenant's own series only, pushed every minute. " +
 	"For an admin or a tenant operator only. The tenant is your own unless you are an admin and pass another. Off unless the deployment's operator turned tenant export on (the call then fails with feature_disabled). " +
 	"Do NOT put a token or password in endpoint, and do NOT pass header values here: store them as a tenant credential (credentialdef) and name it in headers_credential. " +
 	"Do NOT use it to read run transcripts or the deployment's own traces."
@@ -74,6 +76,7 @@ const telemetryToolSchema = `{
 		"headers_credential": {"type": "string", "description": "set: the name of a tenant credential holding the header block (name=value,name=value), restricted by its allowed_urls to the endpoint. Omit for a collector that takes no headers."},
 		"signals":            {"type": "array", "items": {"type": "string", "enum": ["traces", "metrics"]}, "description": "set: what to send: traces, metrics (this tenant's own series, pushed every minute) or both; traces by default."},
 		"sampler_ratio":      {"type": "number", "minimum": 0, "maximum": 1, "description": "set: the share of traces to send, 0 to 1 (at most the deployment's cap); 1 by default."},
-		"content_capture":    {"type": "string", "enum": ["off"], "description": "set: off. Prompt and response content is never sent."}
+		"content_capture":    {"type": "string", "enum": ["off", "on"], "description": "set: off (the default) or on. On sends the prompts, answers and tool calls of this tenant's runs with secrets masked, each field cut to content_max_chars; needs traces in signals, and is refused unless the deployment's operator allows it. Content sent to the collector is outside this server's erasure."},
+		"content_max_chars":  {"type": "integer", "minimum": 256, "maximum": 65536, "description": "set: the length each captured field is cut to; 4096 by default."}
 	}
 }`

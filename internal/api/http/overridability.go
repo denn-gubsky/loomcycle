@@ -175,6 +175,14 @@ var agentDefOverridability = map[string]overridability{
 	// runMayNarrow.
 	"Speech": notOverridable,
 
+	// Whether the agent's runs may capture content for its tenant's own
+	// telemetry destination (RFC GG P3): its one value, never, only takes
+	// capture away. RFC GG D12 lets a run narrow it and never widen it, but no
+	// run-request field carries it on any transport yet, so no run may set it;
+	// when one lands it is runMayNarrow (a run may say never, never undo it).
+	// A sub-run decides for its own agent.
+	"Telemetry": notOverridable,
+
 	// --- authoring authority: what the agent may CREATE. Already excluded
 	// from content_sha256 as "authority, not content". ---
 	"AgentDefScopes":         notOverridable,

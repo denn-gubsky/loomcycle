@@ -591,6 +591,7 @@ export type {
   AgentCompaction,
   AgentTranscription,
   AgentSpeech,
+  AgentTelemetry,
   AgentContext,
   TierCandidate,
   CoreBlock,

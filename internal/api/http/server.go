@@ -7181,7 +7181,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	// tool's Execute runs inside an iteration span; spawning a sub-run
 	// passes that ctx through to runSubAgent → here). Operators see
 	// the full multi-level run tree in Jaeger.
-	subRunCtx, subRunSpan := lcotel.RecordRunStart(subRunCtx, lcotel.RunStartAttrs{
+	subRunCtx, subRunSpan := s.startRunSpan(subRunCtx, def, lcotel.RunStartAttrs{
 		RunID:         subRunID,
 		AgentID:       subAgentID,
 		AgentName:     name,

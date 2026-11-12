@@ -89,6 +89,9 @@ type Manager struct {
 	locks map[string]*sync.Mutex
 	// lastTest is when each tenant last ran the test here.
 	lastTest map[string]time.Time
+	// contentMarked is when this replica last recorded, in the store, that a
+	// tenant's content is being captured (ContentCaptureFor).
+	contentMarked map[string]time.Time
 }
 
 // applied is what this replica last made of one tenant's policy.
@@ -104,6 +107,9 @@ type applied struct {
 	// transient: err is a fault (a store or decryption failure), not a
 	// refusal, so the next refresh tries again though nothing changed.
 	transient bool
+	// contentMaxChars is the cut of each captured field while the tenant's
+	// spans are exported with content capture on; 0 when they are not.
+	contentMaxChars int
 }
 
 // New builds a Manager. It sets no destination until Refresh (or Reload).
@@ -119,6 +125,7 @@ func New(d Deps) (*Manager, error) {
 		cfg: d.Config, st: d.Store, creds: d.Credentials, router: d.Router, dial: d.Dial,
 		registerSecret: d.RegisterSecret, version: d.ServiceVersion, now: now, tlsConfig: d.TLSConfig,
 		applied: map[string]applied{}, locks: map[string]*sync.Mutex{}, lastTest: map[string]time.Time{},
+		contentMarked: map[string]time.Time{},
 	}, nil
 }
 
@@ -163,7 +170,7 @@ func (m *Manager) Status(tenant string) Status {
 // header credential for the endpoint, and returns the row Store would write.
 // A policy that could not export is refused here, before anything is stored.
 func (m *Manager) Check(ctx context.Context, tenant string, in PolicyInput) (store.TenantTelemetryPolicyRow, error) {
-	row, err := m.normalize(tenant, in)
+	row, err := m.normalize(tenant, in, false)
 	if err != nil {
 		return store.TenantTelemetryPolicyRow{}, err
 	}
@@ -228,6 +235,51 @@ func (m *Manager) Test(ctx context.Context, tenant string) error {
 	return m.router.Test(ctx, tenant, d, lcotel.DefaultTenantExportTimeout)
 }
 
+// ContentMarkInterval is how often, at most, each replica records in the
+// store that a tenant's content is being captured. The erasure report's
+// window is that record, so its last time lags by up to this much.
+const ContentMarkInterval = time.Minute
+
+// contentMarkTimeout bounds the record's write on the run's start.
+const contentMarkTimeout = 5 * time.Second
+
+// ContentCaptureFor reports whether a run of tenant starting now captures
+// content, and the length each captured field is cut to. It does while the
+// tenant's policy is exported here with content capture on (and the operator
+// allows it: ValidStored). The run's own checks — its agent's opt-out, a
+// no-trace run — are the caller's.
+//
+// A yes is first recorded in the store (at most every ContentMarkInterval),
+// so the erasure report can say when content left for the tenant's backend.
+// A record that cannot be written is a no: content is never exported unless
+// the export is on record.
+func (m *Manager) ContentCaptureFor(ctx context.Context, tenant string) (int, bool) {
+	if tenant == "" {
+		return 0, false
+	}
+	m.mu.Lock()
+	a := m.applied[tenant]
+	last := m.contentMarked[tenant]
+	m.mu.Unlock()
+	if a.contentMaxChars <= 0 || a.err != "" {
+		return 0, false
+	}
+	now := m.now()
+	if !last.IsZero() && now.Sub(last) < ContentMarkInterval {
+		return a.contentMaxChars, true
+	}
+	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contentMarkTimeout)
+	defer cancel()
+	if err := m.st.TenantTelemetryContentExportMark(mctx, tenant, now.UTC()); err != nil {
+		slog.Warn("tenant telemetry: could not record a content capture; this run captures no content", "tenant", tenant, "err", err)
+		return 0, false
+	}
+	m.mu.Lock()
+	m.contentMarked[tenant] = now
+	m.mu.Unlock()
+	return a.contentMaxChars, true
+}
+
 // TestInterval is how often each tenant may run the test on one replica: a
 // test is an outbound request a tenant triggers at will.
 const TestInterval = 10 * time.Second
@@ -255,9 +307,10 @@ func (m *Manager) mayTest(tenant string) bool {
 // snapshot restore. The header credential's binding to the endpoint is
 // checked where the credential is resolved, each time.
 func (m *Manager) ValidStored(row store.TenantTelemetryPolicyRow) (store.TenantTelemetryPolicyRow, error) {
-	ratio := row.SamplerRatio
+	ratio, maxChars := row.SamplerRatio, row.ContentMaxChars
 	valid, err := m.normalize(row.TenantID, PolicyInput{Endpoint: row.Endpoint, Protocol: row.Protocol,
-		HeadersCredential: row.HeadersCredential, Signals: row.Signals, SamplerRatio: &ratio})
+		HeadersCredential: row.HeadersCredential, Signals: row.Signals, SamplerRatio: &ratio,
+		ContentCapture: row.ContentCapture, ContentMaxChars: &maxChars}, true)
 	if err != nil {
 		return store.TenantTelemetryPolicyRow{}, fmt.Errorf("%w: policy no longer valid: %s", ErrInvalid, PublicError(row.TenantID, err))
 	}
@@ -411,6 +464,10 @@ func (m *Manager) apply(ctx context.Context, row store.TenantTelemetryPolicyRow,
 			break
 		}
 		m.router.SetDestination(row.TenantID, d)
+		// ValidStored turned capture off if the operator no longer allows it.
+		if valid.ContentCapture == ContentCaptureOn {
+			next.contentMaxChars = valid.ContentMaxChars
+		}
 	}
 	m.mu.Lock()
 	m.applied[row.TenantID] = next

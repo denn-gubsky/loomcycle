@@ -184,6 +184,11 @@ var tableCoverageMap = map[string]tableCoverage{
 	// exports.
 	"tenant_telemetry_policies": {Kind: coverSection, Section: "tenant_telemetry", Secrets: "none", Backends: onBoth,
 		Cache: "tenanttelemetry.Manager (reloaded after a restore and every minute)"},
+	// When a tenant's captured content was exported to its own collector.
+	// The record is this deployment's account of what IT sent; a target
+	// deployment sent nothing, so its erasure report must not claim it did.
+	"tenant_telemetry_content_exports": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "RFC GG P3: when this deployment exported a tenant's captured content, for its own erasure report; a target exported nothing"},
 	"tenant_auth_policies": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "RFC FA P5: per-tenant gate policies name the source config's gates; not yet carried, re-declare in auth.tenant_policies or re-apply after a restore"},
 	// A volume's stored path is a filesystem grant lookup trusts, so it never

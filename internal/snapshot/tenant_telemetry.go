@@ -37,6 +37,13 @@ type TenantTelemetryEntry struct {
 	SamplerRatio      float64   `json:"sampler_ratio"`
 	UpdatedAt         time.Time `json:"updated_at"`
 	UpdatedBy         string    `json:"updated_by,omitempty"`
+
+	// ContentCapture is "on" when the tenant captured content; absent for
+	// off, so a policy without capture is carried as it was before the
+	// field existed. The target's operator gate still decides whether a
+	// restored "on" captures anything there.
+	ContentCapture  string `json:"content_capture,omitempty"`
+	ContentMaxChars int    `json:"content_max_chars,omitempty"`
 }
 
 // captureTenantTelemetry reads every policy. out stays nil when there are
@@ -56,8 +63,11 @@ func captureTenantTelemetry(ctx context.Context, s store.Store, out **TenantTele
 		sec.Entries = append(sec.Entries, TenantTelemetryEntry{
 			TenantID: r.TenantID, Endpoint: r.Endpoint, Protocol: r.Protocol, HeadersCredential: r.HeadersCredential,
 			Signals: append([]string{}, r.Signals...), SamplerRatio: r.SamplerRatio,
-			UpdatedAt: r.UpdatedAt.UTC(), UpdatedBy: r.UpdatedBy,
+			ContentMaxChars: r.ContentMaxChars, UpdatedAt: r.UpdatedAt.UTC(), UpdatedBy: r.UpdatedBy,
 		})
+		if r.ContentCapture == "on" {
+			sec.Entries[len(sec.Entries)-1].ContentCapture = r.ContentCapture
+		}
 	}
 	*out = sec
 	return nil
@@ -97,7 +107,8 @@ func restoreTenantTelemetry(ctx context.Context, s store.Store, sec *TenantTelem
 		}
 		if err := s.TenantTelemetryPolicyPut(ctx, store.TenantTelemetryPolicyRow{
 			TenantID: e.TenantID, Endpoint: e.Endpoint, Protocol: e.Protocol, HeadersCredential: e.HeadersCredential,
-			Signals: e.Signals, SamplerRatio: e.SamplerRatio, UpdatedAt: e.UpdatedAt, UpdatedBy: e.UpdatedBy,
+			Signals: e.Signals, SamplerRatio: e.SamplerRatio, ContentCapture: e.ContentCapture,
+			ContentMaxChars: e.ContentMaxChars, UpdatedAt: e.UpdatedAt, UpdatedBy: e.UpdatedBy,
 		}); err != nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("%s: skipped: %v", where, err))
 			continue

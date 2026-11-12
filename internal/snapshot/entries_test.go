@@ -157,8 +157,10 @@ var pinnedEntryKeys = map[string][]string{
 	// A tenant's trace export: the endpoint and the NAME of its header
 	// credential. Never a header value.
 	"TenantTelemetrySection": {"version", "entries"},
+	// content_capture / content_max_chars: settings, not content; the target's
+	// operator gate still decides whether a restored "on" captures anything.
 	"TenantTelemetryEntry": {"tenant_id", "endpoint", "protocol", "headers_credential", "signals", "sampler_ratio",
-		"updated_at", "updated_by"},
+		"updated_at", "updated_by", "content_capture", "content_max_chars"},
 	"OAuthCredentialsSection": {"version", "entries"},
 	"OAuthCredentialEntry":    {"tenant_id", "scope", "scope_id", "name", "config", "allowed_urls", "had_grant"},
 	"OAuthConfigEntry":        {"resource", "issuer", "client", "scopes"},

@@ -4,7 +4,7 @@ import { type Root, createRoot } from "react-dom/client";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Principal } from "../api";
-import TelemetryView, { parseRatio } from "./TelemetryView";
+import TelemetryView, { parseMaxChars, parseRatio } from "./TelemetryView";
 
 // The page is mounted for real (effects run, buttons clicked) because what it
 // shows is decided by the GET it makes on mount: the operator's gate, the stored
@@ -139,7 +139,42 @@ describe("TelemetryView", () => {
     for (const want of ["replica-7", "1234", "export failures", "2026-11-11T08:00:00Z", "collector answered 503", "2026-11-11T07:00:00Z"]) {
       expect(text).toContain(want);
     }
-    expect(text).toContain("Content capture is not available");
+    // Capture is off in the stored policy: unchecked, and no erasure warning.
+    const capture = el.querySelector("input[name=content_capture]") as HTMLInputElement;
+    expect(capture.checked).toBe(false);
+    expect(el.querySelector(".settings-warning")).toBeNull();
+    expect(el.querySelector("input[name=content_max_chars]")).toBeNull();
+  });
+
+  it("turns content capture on with its length, warning that sent content is outside erasure", async () => {
+    const calls = stubServer({
+      "GET /v1/_telemetry": json(200, stored),
+      "PUT /v1/_telemetry?tenant=acme": json(200, stored),
+    });
+    mounted = await mount(operator);
+    const el = mounted.el;
+    const capture = el.querySelector("input[name=content_capture]") as HTMLInputElement;
+    await click(capture);
+    expect(el.querySelector(".settings-warning")?.textContent).toContain("outside loomcycle\u2019s erasure");
+    const length = el.querySelector("input[name=content_max_chars]") as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(length, "2048");
+      length.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click(button(el, "save"));
+    const put = calls.find((c) => c.method === "PUT")!;
+    expect(JSON.parse(put.body!)).toMatchObject({ content_capture: "on", content_max_chars: 2048 });
+  });
+
+  it("starts from a stored policy that captures content", async () => {
+    stubServer({
+      "GET /v1/_telemetry": json(200, { ...stored, policy: { ...stored.policy, content_capture: "on", content_max_chars: 1024 } }),
+    });
+    mounted = await mount(operator);
+    const el = mounted.el;
+    expect((el.querySelector("input[name=content_capture]") as HTMLInputElement).checked).toBe(true);
+    expect((el.querySelector("input[name=content_max_chars]") as HTMLInputElement).value).toBe("1024");
+    expect(el.querySelector(".settings-warning")).not.toBeNull();
   });
 
   it("shows a failed test's error text verbatim, and a delivered one's time", async () => {
@@ -241,6 +276,18 @@ describe("TelemetryView", () => {
     await click(button(mounted.el, "load"));
     expect(calls.at(-1)).toMatchObject({ method: "GET", url: "/v1/_telemetry?tenant=acme" });
     expect((mounted.el.querySelector("input[name=endpoint]") as HTMLInputElement).value).toBe("https://otel.acme.example:4317");
+  });
+});
+
+describe("parseMaxChars", () => {
+  it("reads empty as the default, a whole number in [256, 65536] as itself, and anything else as refused", () => {
+    expect(parseMaxChars("")).toBeUndefined();
+    expect(parseMaxChars(" 256 ")).toBe(256);
+    expect(parseMaxChars("65536")).toBe(65536);
+    expect(parseMaxChars("255")).toBeNull();
+    expect(parseMaxChars("65537")).toBeNull();
+    expect(parseMaxChars("1000.5")).toBeNull();
+    expect(parseMaxChars("lots")).toBeNull();
   });
 });
 

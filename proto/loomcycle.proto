@@ -2451,7 +2451,12 @@ message TenantTelemetryPolicyInput {
   // Share of the tenant's traces sent, 0..1, at most the operator's cap.
   // Unset is 1 (or the cap below it).
   optional double sampler_ratio = 5;
-  string content_capture = 6;     // "off" or empty
+  // "off" (or empty) or "on": the tenant's runs' prompts, answers and tool
+  // calls, redacted and cut, on the spans its collector receives. "on" only
+  // where the operator allows it (LOOMCYCLE_TENANT_CONTENT_CAPTURE).
+  string content_capture = 6;
+  // The length each captured field is cut to, 256..65536; unset or 0 is 4096.
+  optional int32 content_max_chars = 7;
 }
 
 // TenantTelemetryPolicy is a stored policy.
@@ -2463,6 +2468,8 @@ message TenantTelemetryPolicy {
   double sampler_ratio = 5;
   string updated_at = 6;  // RFC 3339
   string updated_by = 7;  // principal subject that last wrote it
+  string content_capture = 8;    // "off" | "on"
+  int32 content_max_chars = 9;   // the cut of each captured field
 }
 
 // TenantTelemetryStatus is the tenant's export on the replica that answered,
