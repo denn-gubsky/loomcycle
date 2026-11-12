@@ -56,6 +56,24 @@
 #                 annotate. Tenant scope only.
 #   kb/annotate — a tool-less LLM agent at tier `middle`: "given one part and
 #                 its parts' annotations, write {brief, abstract, language}".
+#   kb/ask      — a DETERMINISTIC code-js agent, the single entry point for a
+#                 question about the tenant knowledge base (RFC GL). It classifies
+#                 the question with a cascade, the shape of the memory classifier:
+#                 a Decision call first (score >= 0.5 overview, <= 0.1 not), and
+#                 kb/classify between those bounds or when the call fails (run
+#                 metadata `classifier: agent` asks kb/classify only). An overview
+#                 runs kb/walker, anything else kb/search; a search that ends
+#                 `COVERAGE: partial` goes on to kb/walker with the ids it found,
+#                 unless the decision score was <= 0.1. Returns the answer and a
+#                 `ROUTE: … | SCORE: … | CLASSIFIER: … | RUNS: …` line.
+#   kb/classify — a tool-less LLM agent at tier `low`: one question in, YES or
+#                 NO out (is it asking for an overview); unsure means YES.
+#   kb/search   — an LLM agent at tier `middle`, Document only, tenant scope:
+#                 flat search with summaries; ends with a COVERAGE line.
+#   kb/walker   — an LLM agent at tier `middle`, Document and Path, tenant scope:
+#                 walks the document tree by its summaries; the path for
+#                 overview questions. Both answering agents are told to only
+#                 read; the runtime does not enforce it yet.
 #
 # OPERATIONAL DOCUMENTS. A document whose root type is SourceStub (a sync's
 # stand-in for an item it could not import as text) or SyncReport (a sync's run
@@ -5725,9 +5743,10 @@ agents:
   # RFC's sections 1 to 4 for the evidence and the open re-measurement.
   kb/ask:
     provider: code-js
-    # The tool ceiling, and the whole of it: Decision asks the one classifier
-    # question, Agent runs kb/search or kb/walker. It reads no document itself:
-    # each child opens the hits under the caller's own access rules.
+    # The tool ceiling, and the whole of it: Decision asks the classifier
+    # question, Agent runs kb/classify, kb/search or kb/walker. It reads no
+    # document itself: each child opens the hits under the caller's own access
+    # rules.
     tools: [Decision, Agent]
     # Deny-all skills and no Context, or the runtime auto-adds both.
     skills: [-*]
@@ -5735,52 +5754,70 @@ agents:
     # Its session holds an answer built from tenant documents; as an ordinary
     # chat it would become consolidation input.
     internal: true
-    # Spans the classifier call and up to two child runs (a flat search, then a
-    # walk). A decision model on a busy local host can take minutes.
+    # Spans the classifier calls and up to two answering runs (a flat search,
+    # then a walk). A decision model on a busy local host can take minutes.
     run_timeout_seconds: 900
     code: |
       // kb/ask — one question in, one answer out, from the tenant knowledge base.
       //
-      // 1. classify(question): how likely the question asks for an overview (a list
-      //    of everything held on a subject, over several documents), 0..1.
-      // 2. At or above THRESHOLD the question goes to kb/walker; below it, or with no
-      //    score at all, to kb/search, the cheaper path.
-      // 3. When kb/search ends with "COVERAGE: partial" and the score is not clearly
-      //    low (at or above LOW, or unknown), the question goes on to kb/walker with
-      //    the ids the search already found, so the walk does not repeat it.
+      // 1. classify(question): is it asking for an overview (a list of everything
+      //    held on a subject, over several documents)? A cascade: the decision model
+      //    first; when its score falls between LOW and HIGH, or the call fails, the
+      //    small chat agent kb/classify answers YES or NO. With run metadata
+      //    classifier "agent" only kb/classify is asked.
+      // 2. An overview goes to kb/walker; anything else to kb/search, the cheaper path.
+      // 3. When kb/search ends with "COVERAGE: partial", the question goes on to
+      //    kb/walker with the ids the search already found, so the walk does not
+      //    repeat it, unless the decision model was sure it is not an overview
+      //    (score at or below LOW).
       // 4. The answer is the chosen agent's, unchanged, followed by one line:
-      //    ROUTE: <route> | SCORE: <score or none (<code>)> | RUNS: <run:status, ...>
+      //    ROUTE: <route> | SCORE: <score or none> | CLASSIFIER: <source> | RUNS: <run:status, ...>
       //
-      // A failed or slow classifier never makes a question a walk: a walk is the
-      // expensive path, and a missing decision model must not make every question one.
+      // When in doubt the cascade says overview: sending a question to the walker
+      // costs a little, sending an overview to flat search loses the answer.
 
-      // Both bounds are under re-measurement (one question per classifier call
-      // scores differently from a batched call).
-      var THRESHOLD = 0.3; // at or above: the walker
-      var LOW = 0.1;       // below: a partial flat answer is not walked
+      // Both bounds are provisional until the decision model is re-measured with
+      // one question per call (a batched call scored differently).
+      var HIGH = 0.5;      // at or above: an overview, no second opinion
+      var LOW = 0.1;       // at or below: not an overview, no second opinion
       var MAX_IDS = 40;    // ids handed to the walker, at most
       var ASK = "Is the question asking for an overview: a list of everything a knowledge base holds on a subject, spread over several documents?";
 
-      // classify is the one place the question is scored, so another classifier
-      // can replace it without touching the routing. It never throws.
-      // Returns {score: 0..1 or null, source, error: null or a code}.
-      function classify(question) {
+      // runs records every child this run started, classifier included.
+      var runs = [];
+
+      // classify is the one place the question is judged, so the cascade can
+      // change without touching the routing. It never throws.
+      // Returns {overview, score: 0..1 or null, source: decision|agent|agent-unreadable,
+      // error: null or the decision model's failure code}.
+      function classify(question, metadata) {
+        if (metadata && metadata.classifier === "agent") {
+          return askAgent(question, null, null);
+        }
+        var d = decide(question);
+        if (d.score !== null && d.score >= HIGH) { return { overview: true, score: d.score, source: "decision", error: null }; }
+        if (d.score !== null && d.score <= LOW) { return { overview: false, score: d.score, source: "decision", error: null }; }
+        return askAgent(question, d.score, d.error);
+      }
+
+      // decide asks the decision model. Returns {score: 0..1 or null, error}.
+      function decide(question) {
         var d;
         try {
           d = Decision({ state: { question: question }, questions: { overview: { type: "noul", instructions: ASK } } });
         } catch (e) {
-          return { score: null, source: "decision", error: decisionErrorCode(e) };
+          return { score: null, error: decisionErrorCode(e) };
         }
         try {
           if (typeof d === "string") { d = JSON.parse(d); }
         } catch (e) {
-          return { score: null, source: "decision", error: "bad_answer" };
+          return { score: null, error: "bad_answer" };
         }
         var s = d && d.answers && d.answers.overview ? d.answers.overview.noul : undefined;
         if (typeof s !== "number" || !isFinite(s) || s < 0 || s > 1) {
-          return { score: null, source: "decision", error: "bad_answer" };
+          return { score: null, error: "bad_answer" };
         }
-        return { score: s, source: "decision", error: null };
+        return { score: s, error: null };
       }
 
       // decisionErrorCode reads the code from the tool's failure text,
@@ -5791,8 +5828,14 @@ agents:
         return m ? m[1] : "call_failed";
       }
 
-      function routeFor(c) {
-        return (c.score !== null && c.score >= THRESHOLD) ? "walker" : "search";
+      // askAgent asks kb/classify. The first YES or NO in its answer decides; no
+      // readable word, or a run that gave no answer, counts as an overview.
+      function askAgent(question, score, error) {
+        var r = call("kb/classify", question);
+        runs.push(r.run_id + ":" + r.status);
+        var m = /\b(yes|no)\b/i.exec(String(r.final_text || ""));
+        if (!m) { return { overview: true, score: score, source: "agent-unreadable", error: error }; }
+        return { overview: m[1].toLowerCase() === "yes", score: score, source: "agent", error: error };
       }
 
       // call runs one child and never throws: a child that could not start is
@@ -5829,21 +5872,21 @@ agents:
       }
 
       function scoreText(c) {
-        if (c.score === null) { return "none (" + c.error + ")"; }
-        return String(Math.round(c.score * 1000) / 1000);
+        if (c.score !== null) { return String(Math.round(c.score * 1000) / 1000); }
+        return c.error ? "none (" + c.error + ")" : "none";
       }
 
       function run(input) {
         var q = String(input && input.prompt ? input.prompt : "").replace(/^\s+|\s+$/g, "");
         if (!q) { return { final_text: "No question given." }; }
-        var c = classify(q);
-        var route = routeFor(c);
-        var runs = [], fallback = false;
+        var c = classify(q, input.metadata);
+        var route = c.overview ? "walker" : "search";
+        var fallback = false;
         var res = call(route === "walker" ? "kb/walker" : "kb/search", q);
         runs.push(res.run_id + ":" + res.status);
         var text = res.final_text || ("The " + route + " agent gave no answer: " + (res.error || res.status));
-        var notLow = c.score === null || c.score >= LOW;
-        if (route === "search" && res.final_text && notLow && coverage(res.final_text) === "partial") {
+        var sureNot = c.source === "decision" && c.score !== null && c.score <= LOW;
+        if (route === "search" && res.final_text && !sureNot && coverage(res.final_text) === "partial") {
           var found = ids(res.final_text), p = q;
           if (found.length) {
             p += "\n\nA first search already found these. Start from them and do not repeat that search:\n" + found.join("\n");
@@ -5853,9 +5896,35 @@ agents:
           if (w.final_text) { text = w.final_text; fallback = true; }
         }
         var tail = "ROUTE: " + route + (fallback ? " -> walker (partial coverage)" : "") +
-          " | SCORE: " + scoreText(c) + " | RUNS: " + runs.join(", ");
+          " | SCORE: " + scoreText(c) + " | CLASSIFIER: " + c.source + " | RUNS: " + runs.join(", ");
         return { final_text: text + "\n\n" + tail };
       }
+
+  kb/classify:
+    # The second opinion of kb/ask's classifier: one question in, YES or NO out.
+    # NO TOOLS AT ALL (tools: [], skills: [-*], disable_context: true) and no
+    # memory grants: the question is caller text, and the reply is only DATA
+    # kb/ask reads for its first YES or NO.
+    tools: []
+    skills: [-*]
+    disable_context: true
+    internal: true
+    # A one-word judgement: the operator's `low` tier, like kb/verdict. Retune in
+    # the tier policy, never by pinning a provider or model here.
+    tier: low
+    effort: low
+    max_iterations: 1
+    max_tokens: 1024
+    sampling:
+      temperature: 0
+    system_prompt: |
+      You classify one question that a user asks a knowledge base of documents. You do not answer it.
+
+      Is the question asking for an overview: a list of everything a knowledge base holds on a subject, spread over several documents?
+
+      If you are unsure, answer YES.
+
+      Reply with exactly one word: YES or NO.
 
   kb/search:
     # Flat search with summaries: the cheap path, and as accurate as the walker on

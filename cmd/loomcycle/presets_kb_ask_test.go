@@ -80,8 +80,37 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 		t.Error("kb/search must end its answer with the COVERAGE line kb/ask reads")
 	}
 
+	// kb/classify: a one-word judgement with nothing to act with, its prompt the
+	// owner's wording verbatim.
+	cl, ok := cfg.Agents["kb/classify"]
+	if !ok {
+		t.Fatalf("kb/classify not registered (agents: %v)", agentNames(cfg))
+	}
+	if len(cl.Tools) != 0 || !containsString(cl.Skills, "-*") || !cl.DisableContext {
+		t.Errorf("kb/classify must have no tools at all (tools=%v skills=%v disable_context=%v)", cl.Tools, cl.Skills, cl.DisableContext)
+	}
+	if len(cl.MemoryScopes) > 0 || len(cl.SqlScopes) > 0 {
+		t.Errorf("kb/classify declares scopes (memory=%v sql=%v) — it reads only the question", cl.MemoryScopes, cl.SqlScopes)
+	}
+	if cl.Provider != "" || cl.Model != "" || cl.Tier != "low" {
+		t.Errorf("kb/classify provider=%q model=%q tier=%q, want the operator's low tier and no pin", cl.Provider, cl.Model, cl.Tier)
+	}
+	if cl.MaxIterations != 1 || cl.MaxTokens != 1024 {
+		t.Errorf("kb/classify max_iterations=%d max_tokens=%d, want 1 and 1024", cl.MaxIterations, cl.MaxTokens)
+	}
+	if cl.Sampling == nil || cl.Sampling.Temperature == nil || *cl.Sampling.Temperature != 0 {
+		t.Errorf("kb/classify sampling = %+v, want temperature 0 set", cl.Sampling)
+	}
+	const classifyPrompt = "You classify one question that a user asks a knowledge base of documents. You do not answer it.\n\n" +
+		"Is the question asking for an overview: a list of everything a knowledge base holds on a subject, spread over several documents?\n\n" +
+		"If you are unsure, answer YES.\n\n" +
+		"Reply with exactly one word: YES or NO.\n"
+	if cl.SystemPrompt != classifyPrompt {
+		t.Errorf("kb/classify prompt = %q, want %q", cl.SystemPrompt, classifyPrompt)
+	}
+
 	// Model-visible text must not cite design documents.
-	for _, name := range []string{"kb/ask", "kb/search", "kb/walker"} {
+	for _, name := range []string{"kb/ask", "kb/classify", "kb/search", "kb/walker"} {
 		a := cfg.Agents[name]
 		for where, text := range map[string]string{"system_prompt": a.SystemPrompt, "code": a.Code} {
 			for _, line := range strings.Split(text, "\n") {
@@ -93,13 +122,13 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 	}
 }
 
-// askFake stands in for the Decision tool and the two answering agents.
+// askFake stands in for the Decision tool and the agents kb/ask spawns.
 type askFake struct {
 	mu       sync.Mutex
 	score    float64
-	decErr   string // a Decision failure text; "" answers with score
-	answers  map[string]string
-	spawns   []string // "name\nprompt" per spawn, in order
+	decErr   string            // a Decision failure text; "" answers with score
+	answers  map[string]string // final_text per agent name
+	spawns   []string          // "name\nprompt" per spawn, in order
 	decCalls int
 }
 
@@ -149,7 +178,16 @@ func (a *askFakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools.Re
 	return okResult(map[string]any{"agent_id": "x", "run_id": fmt.Sprintf("r%d", n), "status": "completed", "final_text": answer})
 }
 
-func runAsk(t *testing.T, f *askFake, question string) string {
+// spawned lists the agent names spawned, in order.
+func (f *askFake) spawned() []string {
+	var out []string
+	for _, s := range f.spawns {
+		out = append(out, strings.SplitN(s, "\n", 2)[0])
+	}
+	return out
+}
+
+func runAsk(t *testing.T, f *askFake, question string, metadata map[string]any) string {
 	t.Helper()
 	agent := knowledgeBaseConfig(t).Agents["kb/ask"]
 	set := []tools.Tool{&askFakeDecision{f: f}, &askFakeAgent{f: f}}
@@ -161,6 +199,7 @@ func runAsk(t *testing.T, f *askFake, question string) string {
 		CodeBody:   agent.Code,
 		Tools:      set,
 		Dispatcher: tools.NewDispatcher(set),
+		Metadata:   metadata,
 		Segments:   []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: question}}}},
 	})
 	if err != nil {
@@ -176,6 +215,7 @@ func lastLine(s string) string {
 }
 
 const (
+	askQuestion     = "What do we hold on speech and voice?"
 	askWalkerAnswer = "Five documents cover it: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\nMOVES: search, down\nMISSING: none"
 	askHitDoc       = "loom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	askHitChunk     = "loom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -185,46 +225,77 @@ func askSearchAnswer(cov string) string {
 	return "It is set in [Guide](" + askHitDoc + "?scope=tenant), see [step](" + askHitChunk + "?scope=tenant).\nCOVERAGE: " + cov
 }
 
-func TestKbAsk_OverviewScoreRoutesToWalker(t *testing.T) {
-	f := &askFake{score: 0.62, answers: map[string]string{"kb/walker": askWalkerAnswer, "kb/search": askSearchAnswer("complete")}}
-	out := runAsk(t, f, "What do we hold on speech and voice?")
-	if len(f.spawns) != 1 || !strings.HasPrefix(f.spawns[0], "kb/walker\nWhat do we hold on speech and voice?") {
-		t.Fatalf("spawns = %q, want one kb/walker run with the question", f.spawns)
+// askAnswers is every agent kb/ask may spawn, with kb/classify answering classify.
+func askAnswers(classify, coverage string) map[string]string {
+	return map[string]string{"kb/classify": classify, "kb/search": askSearchAnswer(coverage), "kb/walker": askWalkerAnswer}
+}
+
+func wantSpawns(t *testing.T, f *askFake, want ...string) {
+	t.Helper()
+	if got := strings.Join(f.spawned(), ","); got != strings.Join(want, ",") {
+		t.Fatalf("spawned %q, want %q", f.spawned(), want)
+	}
+}
+
+func wantRouteLine(t *testing.T, out, want string) {
+	t.Helper()
+	if got := lastLine(out); got != want {
+		t.Errorf("route line = %q, want %q", got, want)
+	}
+}
+
+func TestKbAsk_HighDecisionScoreRoutesToWalkerWithoutAskingTheAgent(t *testing.T) {
+	f := &askFake{score: 0.62, answers: askAnswers("NO", "complete")}
+	out := runAsk(t, f, askQuestion, nil)
+	wantSpawns(t, f, "kb/walker")
+	if !strings.HasPrefix(f.spawns[0], "kb/walker\n"+askQuestion) {
+		t.Errorf("the walker got %q, want the question", f.spawns[0])
 	}
 	if !strings.HasPrefix(out, askWalkerAnswer) {
 		t.Errorf("the walker's answer must come back unchanged; got %q", out)
 	}
-	if got, want := lastLine(out), "ROUTE: walker | SCORE: 0.62 | RUNS: r1:completed"; got != want {
-		t.Errorf("route line = %q, want %q", got, want)
+	wantRouteLine(t, out, "ROUTE: walker | SCORE: 0.62 | CLASSIFIER: decision | RUNS: r1:completed")
+}
+
+func TestKbAsk_LowDecisionScoreRoutesToSearchWithoutAskingTheAgent(t *testing.T) {
+	f := &askFake{score: 0.07, answers: askAnswers("YES", "complete")}
+	out := runAsk(t, f, "What is the default echo setting?", nil)
+	wantSpawns(t, f, "kb/search")
+	wantRouteLine(t, out, "ROUTE: search | SCORE: 0.07 | CLASSIFIER: decision | RUNS: r1:completed")
+}
+
+// A partial answer to a question the decision model was sure is not an overview
+// is not walked.
+func TestKbAsk_PartialCoverageAtOrBelowLowScoreStaysWithSearch(t *testing.T) {
+	f := &askFake{score: 0.1, answers: askAnswers("YES", "partial")}
+	out := runAsk(t, f, "Find the release guide.", nil)
+	wantSpawns(t, f, "kb/search")
+	wantRouteLine(t, out, "ROUTE: search | SCORE: 0.1 | CLASSIFIER: decision | RUNS: r1:completed")
+}
+
+func TestKbAsk_MiddleBandScoreAsksTheClassifyAgent(t *testing.T) {
+	for _, tc := range []struct {
+		reply, route string
+		spawns       []string
+	}{
+		{"YES", "walker", []string{"kb/classify", "kb/walker"}},
+		{"no.", "search", []string{"kb/classify", "kb/search"}},
+	} {
+		t.Run(tc.reply, func(t *testing.T) {
+			f := &askFake{score: 0.3, answers: askAnswers(tc.reply, "complete")}
+			out := runAsk(t, f, askQuestion, nil)
+			wantSpawns(t, f, tc.spawns...)
+			if f.spawns[0] != "kb/classify\n"+askQuestion {
+				t.Errorf("kb/classify got %q, want the question alone", f.spawns[0])
+			}
+			wantRouteLine(t, out, "ROUTE: "+tc.route+" | SCORE: 0.3 | CLASSIFIER: agent | RUNS: r1:completed, r2:completed")
+		})
 	}
 }
 
-func TestKbAsk_LowScoreRoutesToSearch(t *testing.T) {
-	f := &askFake{score: 0.07, answers: map[string]string{"kb/search": askSearchAnswer("complete")}}
-	out := runAsk(t, f, "What is the default echo setting?")
-	if len(f.spawns) != 1 || !strings.HasPrefix(f.spawns[0], "kb/search\n") {
-		t.Fatalf("spawns = %q, want one kb/search run", f.spawns)
-	}
-	if got, want := lastLine(out), "ROUTE: search | SCORE: 0.07 | RUNS: r1:completed"; got != want {
-		t.Errorf("route line = %q, want %q", got, want)
-	}
-}
-
-// A partial answer to a clearly low-scored question is not walked: the walk is
-// the expensive path, kept for questions the classifier did not rule out.
-func TestKbAsk_PartialCoverageBelowLowBoundStaysWithSearch(t *testing.T) {
-	f := &askFake{score: 0.05, answers: map[string]string{"kb/search": askSearchAnswer("partial"), "kb/walker": askWalkerAnswer}}
-	out := runAsk(t, f, "Find the release guide.")
-	if len(f.spawns) != 1 {
-		t.Fatalf("spawns = %q, want kb/search only", f.spawns)
-	}
-	if !strings.HasPrefix(lastLine(out), "ROUTE: search | SCORE: 0.05 |") {
-		t.Errorf("route line = %q", lastLine(out))
-	}
-}
-
-// A slow or missing decision model must not make every question a walk.
-func TestKbAsk_DecisionErrorRoutesToSearchAndReportsTheCode(t *testing.T) {
+// A slow or missing decision model hands the question to kb/classify rather
+// than making it a walk or a flat search by default.
+func TestKbAsk_DecisionErrorAsksTheClassifyAgentAndReportsTheCode(t *testing.T) {
 	for _, tc := range []struct{ text, code string }{
 		{"Decision: timeout: the decision model did not answer in time", "timeout"},
 		{"Decision: decision_not_configured: this deployment declares no decision models", "decision_not_configured"},
@@ -232,39 +303,55 @@ func TestKbAsk_DecisionErrorRoutesToSearchAndReportsTheCode(t *testing.T) {
 		{"Decision: model_not_found: gone", "model_not_found"},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
-			f := &askFake{decErr: tc.text, answers: map[string]string{"kb/search": askSearchAnswer("complete"), "kb/walker": askWalkerAnswer}}
-			out := runAsk(t, f, "What do we hold on speech and voice?")
-			if f.decCalls != 1 || len(f.spawns) != 1 || !strings.HasPrefix(f.spawns[0], "kb/search\n") {
-				t.Fatalf("decision calls %d, spawns %q, want one Decision call and one kb/search run", f.decCalls, f.spawns)
+			f := &askFake{decErr: tc.text, answers: askAnswers("NO", "complete")}
+			out := runAsk(t, f, askQuestion, nil)
+			if f.decCalls != 1 {
+				t.Errorf("decision calls = %d, want 1", f.decCalls)
 			}
-			if got, want := lastLine(out), "ROUTE: search | SCORE: none ("+tc.code+") | RUNS: r1:completed"; got != want {
-				t.Errorf("route line = %q, want %q", got, want)
-			}
+			wantSpawns(t, f, "kb/classify", "kb/search")
+			wantRouteLine(t, out, "ROUTE: search | SCORE: none ("+tc.code+") | CLASSIFIER: agent | RUNS: r1:completed, r2:completed")
 		})
 	}
 }
 
-// With no score the question is not clearly low, so a partial flat answer still
-// goes on to the walker.
-func TestKbAsk_DecisionErrorWithPartialCoverageFallsBackToWalker(t *testing.T) {
-	f := &askFake{decErr: "Decision: timeout: slow", answers: map[string]string{"kb/search": askSearchAnswer("partial"), "kb/walker": askWalkerAnswer}}
-	out := runAsk(t, f, "What do we hold on speech and voice?")
-	if len(f.spawns) != 2 || !strings.HasPrefix(f.spawns[1], "kb/walker\n") {
-		t.Fatalf("spawns = %q, want kb/search then kb/walker", f.spawns)
-	}
-	if got, want := lastLine(out), "ROUTE: search -> walker (partial coverage) | SCORE: none (timeout) | RUNS: r1:completed, r2:completed"; got != want {
-		t.Errorf("route line = %q, want %q", got, want)
-	}
+// A wrong walk costs less than a lost overview: an answer with no YES or NO in
+// it counts as an overview.
+func TestKbAsk_UnreadableClassifyAnswerRoutesToWalker(t *testing.T) {
+	f := &askFake{score: 0.3, answers: askAnswers("It depends on the corpus.", "complete")}
+	out := runAsk(t, f, askQuestion, nil)
+	wantSpawns(t, f, "kb/classify", "kb/walker")
+	wantRouteLine(t, out, "ROUTE: walker | SCORE: 0.3 | CLASSIFIER: agent-unreadable | RUNS: r1:completed, r2:completed")
 }
 
-func TestKbAsk_PartialCoverageAtMiddleScoreFallsBackToWalkerWithHitIDs(t *testing.T) {
-	f := &askFake{score: 0.2, answers: map[string]string{"kb/search": askSearchAnswer("partial"), "kb/walker": askWalkerAnswer}}
-	q := "Which tools can a code agent call?"
-	out := runAsk(t, f, q)
-	if len(f.spawns) != 2 || !strings.HasPrefix(f.spawns[0], "kb/search\n") || !strings.HasPrefix(f.spawns[1], "kb/walker\n"+q) {
-		t.Fatalf("spawns = %q, want kb/search then kb/walker with the question", f.spawns)
+// A classify run that never started is unreadable too.
+func TestKbAsk_FailedClassifySpawnRoutesToWalker(t *testing.T) {
+	f := &askFake{score: 0.3, answers: map[string]string{"kb/search": askSearchAnswer("complete"), "kb/walker": askWalkerAnswer}}
+	out := runAsk(t, f, askQuestion, nil)
+	wantSpawns(t, f, "kb/classify", "kb/walker")
+	wantRouteLine(t, out, "ROUTE: walker | SCORE: 0.3 | CLASSIFIER: agent-unreadable | RUNS: -:not_started, r2:completed")
+}
+
+// The measurement's switch: run metadata classifier=agent asks kb/classify only.
+func TestKbAsk_AgentClassifierMetadataSkipsTheDecisionCall(t *testing.T) {
+	f := &askFake{score: 0.9, answers: askAnswers("NO", "complete")}
+	out := runAsk(t, f, askQuestion, map[string]any{"classifier": "agent"})
+	if f.decCalls != 0 {
+		t.Errorf("decision calls = %d, want 0 with classifier=agent", f.decCalls)
 	}
-	walk := f.spawns[1]
+	wantSpawns(t, f, "kb/classify", "kb/search")
+	wantRouteLine(t, out, "ROUTE: search | SCORE: none | CLASSIFIER: agent | RUNS: r1:completed, r2:completed")
+}
+
+// An agent NO is not a sure NO: a partial flat answer still goes to the walker,
+// with the ids the search found.
+func TestKbAsk_PartialCoverageAfterAgentNoFallsBackToWalkerWithHitIDs(t *testing.T) {
+	f := &askFake{score: 0.2, answers: askAnswers("NO", "partial")}
+	out := runAsk(t, f, askQuestion, nil)
+	wantSpawns(t, f, "kb/classify", "kb/search", "kb/walker")
+	walk := f.spawns[2]
+	if !strings.HasPrefix(walk, "kb/walker\n"+askQuestion) {
+		t.Errorf("the walker's prompt must start with the question:\n%s", walk)
+	}
 	for _, id := range []string{askHitDoc, askHitChunk} {
 		if !strings.Contains(walk, id) {
 			t.Errorf("the walker's prompt is missing the hit %s:\n%s", id, walk)
@@ -273,7 +360,5 @@ func TestKbAsk_PartialCoverageAtMiddleScoreFallsBackToWalkerWithHitIDs(t *testin
 	if !strings.HasPrefix(out, askWalkerAnswer) {
 		t.Errorf("the walker's answer must replace the partial one; got %q", out)
 	}
-	if got, want := lastLine(out), "ROUTE: search -> walker (partial coverage) | SCORE: 0.2 | RUNS: r1:completed, r2:completed"; got != want {
-		t.Errorf("route line = %q, want %q", got, want)
-	}
+	wantRouteLine(t, out, "ROUTE: search -> walker (partial coverage) | SCORE: 0.2 | CLASSIFIER: agent | RUNS: r1:completed, r2:completed, r3:completed")
 }
