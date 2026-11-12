@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -18,7 +17,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
@@ -29,12 +27,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/hooks"
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
-	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
-	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
-	"github.com/denn-gubsky/loomcycle/internal/search"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
-	"github.com/denn-gubsky/loomcycle/internal/teamspec"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
@@ -8161,7 +8155,123 @@ func validateTierCandidate(cand TierCandidate, models map[string]ModelRef, known
 	return nil
 }
 
+// validate checks the blocks in this order and returns the first error it
+// meets; callers show only that one, so the order is what an operator fixing a
+// config sees (TestValidate_ReportsTheFirstBrokenBlockInCheckOrder). Beyond
+// that, the order is load-bearing where a check reads what an earlier one
+// built:
+//   - known (the provider floor plus the declared providers) and the enabled
+//     search set are built before the aliases, tiers and agents checked
+//     against them;
+//   - validateAccess resolves the principals and auth, and validateAudioCaps
+//     the operator audio caps, before the agents loop judges each agent
+//     against them;
+//   - each agent is checked routing, then memory, then grants
+//     (TestValidate_ReportsAnAgentsFirstBrokenFieldInCheckOrder);
+//   - the orphan-add advisory runs last, over the fully checked agents and
+//     schedules.
 func validate(c *Config) error {
+	if err := validateRuntimeBounds(c); err != nil {
+		return err
+	}
+	if err := validateEnvPolicy(c); err != nil {
+		return err
+	}
+	if err := validateInlineSkills(c); err != nil {
+		return err
+	}
+	// known = the built-in floor UNION the declared `providers:` keys (RFC BF P2a).
+	// Every provider reference below (priority lists, tier candidates, agent pins,
+	// model aliases) validates against this so a config-declared 3rd-party provider
+	// is accepted while every built-in stays valid.
+	known := c.knownProviderIDs()
+	if err := validateProviderPriority(c, known); err != nil {
+		return err
+	}
+	enabledSearch, err := validateSearchProviders(c)
+	if err != nil {
+		return err
+	}
+	if err := validateProviderRegistry(c); err != nil {
+		return err
+	}
+	if err := validateModelAliases(c, known); err != nil {
+		return err
+	}
+	if err := validateTiers(c, known); err != nil {
+		return err
+	}
+	if err := validateMemoryBackends(c); err != nil {
+		return err
+	}
+	if err := validateChangeSubscriptions(c); err != nil {
+		return err
+	}
+	if err := validateDocumentSources(c); err != nil {
+		return err
+	}
+	if err := validateStaticWebhooks(c); err != nil {
+		return err
+	}
+	if err := validateAccess(c); err != nil {
+		return err
+	}
+	if err := validateAudioCaps(c); err != nil {
+		return err
+	}
+	for name, agent := range c.Agents {
+		if err := validateAgentRouting(c, name, agent, known, enabledSearch); err != nil {
+			return err
+		}
+		if err := validateAgentMemory(c, name, agent); err != nil {
+			return err
+		}
+		if err := validateAgentGrants(c, name, agent); err != nil {
+			return err
+		}
+	}
+	if err := validateChannels(c); err != nil {
+		return err
+	}
+	if err := validateMCPServers(c); err != nil {
+		return err
+	}
+	if err := validateScheduledRuns(c); err != nil {
+		return err
+	}
+	if err := validateEmbedder(c); err != nil {
+		return err
+	}
+	if err := validateReranker(c); err != nil {
+		return err
+	}
+	if err := c.Memory.UnitGenerator.validate(c); err != nil {
+		return err
+	}
+	if err := c.Memory.Classifier.validate(c); err != nil {
+		return err
+	}
+	if err := c.Memory.FullText.validate(); err != nil {
+		return err
+	}
+	if _, err := c.Memory.Projection.resolve(c.Env.DocumentProjectionInterval); err != nil {
+		return err
+	}
+	if err := c.Decision.validate(c); err != nil {
+		return err
+	}
+	if err := validateConsolidationBands(c); err != nil {
+		return err
+	}
+	// Non-fatal: memory scopes that can enqueue but have no consolidator to
+	// drain them. Runs last so it sees the fully-validated agents + schedules.
+	c.Warnings = append(c.Warnings, orphanAddWarnings(c.Agents, c.ScheduledRuns)...)
+	return nil
+}
+
+// validateRuntimeBounds checks the concurrency bounds, the timeout scaling
+// and tracing blocks, and the context-plugin chain. Part of validate.
+func validateRuntimeBounds(c *Config) error {
 	if c.Concurrency.MaxConcurrentRuns < 1 {
 		return fmt.Errorf("concurrency.max_concurrent_runs must be >= 1")
 	}
@@ -8191,6 +8301,12 @@ func validate(c *Config) error {
 	if c.Concurrency.MaxQueueDepth < 0 {
 		return fmt.Errorf("concurrency.max_queue_depth must be >= 0")
 	}
+	return nil
+}
+
+// validateEnvPolicy checks the private-host allowlists against the network
+// policy, the helper wrapper and the Web UI bundle source. Part of validate.
+func validateEnvPolicy(c *Config) error {
 	// The private-host allowlists accept CIDR entries (a whole tailnet in one
 	// line). A malformed range would never match — fail-closed but invisible — so
 	// refuse it here where the operator sees it.
@@ -8220,6 +8336,11 @@ func validate(c *Config) error {
 	if err := validateWebUIBundleSource(c.Env); err != nil {
 		return err
 	}
+	return nil
+}
+
+// validateInlineSkills checks the inline skill names. Part of validate.
+func validateInlineSkills(c *Config) error {
 	// RFC BA: inline skill names (top-level `skills:` map keys) share the
 	// `/`-grouped grammar with SkillsRoot dir names + SkillDef create/fork
 	// targets. Validate here so a malformed inline key (glob char, `..`,
@@ -8229,278 +8350,12 @@ func validate(c *Config) error {
 			return fmt.Errorf("skills: inline skill %q: %w", name, err)
 		}
 	}
-	// known = the built-in floor UNION the declared `providers:` keys (RFC BF P2a).
-	// Every provider reference below (priority lists, tier candidates, agent pins,
-	// model aliases) validates against this so a config-declared 3rd-party provider
-	// is accepted while every built-in stays valid.
-	known := c.knownProviderIDs()
-	knownList := make([]string, 0, len(known))
-	for id := range known {
-		knownList = append(knownList, id)
-	}
-	sort.Strings(knownList)
-	// Library-level provider priority — validate every entry is a
-	// known provider name. Empty list is fine (resolver falls back
-	// to its hardcoded default order).
-	for i, p := range c.ProviderPriority {
-		if !known[p] {
-			return fmt.Errorf("provider_priority[%d]: unknown provider %q (known: %v)", i, p, knownList)
-		}
-	}
-	// Search providers (RFC BB): validate the enabled set against the known
-	// drivers + SearXNG's required base_url, then the global priority. The
-	// enabled set is reused below to validate each agent's search_providers.
-	knownSearch := map[string]bool{}
-	for _, id := range search.KnownProviderIDs() {
-		knownSearch[id] = true
-	}
-	enabledSearch := map[string]bool{}
-	for id, spc := range c.SearchProviders {
-		if !knownSearch[id] {
-			return fmt.Errorf("search_providers: unknown provider %q (want one of %v)", id, search.KnownProviderIDs())
-		}
-		if id == "searxng" && strings.TrimSpace(spc.BaseURL) == "" {
-			return fmt.Errorf("search_providers.searxng: base_url is required for the self-hosted SearXNG provider")
-		}
-		enabledSearch[id] = true
-	}
-	for i, id := range c.SearchPriority {
-		if !enabledSearch[id] {
-			return fmt.Errorf("search_priority[%d]: %q is not an enabled search_providers entry", i, id)
-		}
-	}
-	// RFC BF provider registry (P2a): structural + registry-aware validation. Each
-	// declared entry needs a driver compiled into the binary (∈ RegisteredDrivers),
-	// a dialect the driver speaks (when set), and a non-negative concurrency cap.
-	// The driver registry is populated by the driver packages' init() — present in
-	// the server binary (blank imports in cmd/loomcycle) and the config test binary
-	// (blank imports in drivers_registry_test.go). An absent `providers:` block
-	// skips the loop, so a config that declares none validates unchanged.
-	for id, pc := range c.Providers {
-		if strings.TrimSpace(pc.Driver) == "" {
-			return fmt.Errorf("providers.%s: driver is required", id)
-		}
-		if pc.MaxConcurrent < 0 {
-			return fmt.Errorf("providers.%s: max_concurrent must be >= 0", id)
-		}
-		if err := pc.validateLanes(id, c.Models); err != nil {
-			return err
-		}
-		if err := pc.validateAuth(id); err != nil {
-			return err
-		}
-		dialects, ok := providers.DriverDialects(pc.Driver)
-		if !ok {
-			return fmt.Errorf("providers.%s: unknown driver %q (compiled-in: %v)", id, pc.Driver, providers.RegisteredDrivers())
-		}
-		if pc.Dialect != "" {
-			supported := false
-			for _, d := range dialects {
-				if d == pc.Dialect {
-					supported = true
-					break
-				}
-			}
-			if !supported {
-				return fmt.Errorf("providers.%s: driver %q does not speak dialect %q (supported: %v)", id, pc.Driver, pc.Dialect, dialects)
-			}
-		}
-	}
-	if err := validateAWSSecretAllowlists(c); err != nil {
-		return err
-	}
-	if err := validateBashboxFallbackCreds(c); err != nil {
-		return err
-	}
-	// Model aliases (top-level models:) — a non-empty provider on an alias must be a
-	// known provider (RFC BF P2a; an empty provider defers to the pin/candidate that
-	// names the alias, so it is left unvalidated here). Built-ins always pass via the
-	// floor, so this only newly rejects a typo'd or undeclared 3rd-party provider.
-	for name, ref := range c.Models {
-		// RFC BG: exactly one of model / model_pattern. Both or neither is a
-		// config error — a pattern alias has no concrete model, a concrete alias
-		// has no glob, and an empty alias resolves to nothing.
-		hasModel := ref.Model != ""
-		hasPattern := ref.ModelPattern != ""
-		if hasModel == hasPattern {
-			return fmt.Errorf("models.%s: exactly one of model or model_pattern is required (got model=%q model_pattern=%q)", name, ref.Model, ref.ModelPattern)
-		}
-		if hasPattern {
-			// A pattern is scoped to one provider's catalog, so the provider can't
-			// be deferred to the referencing candidate the way a concrete alias can.
-			if ref.Provider == "" {
-				return fmt.Errorf("models.%s: model_pattern requires an explicit provider", name)
-			}
-			// Reject a malformed glob at load, not at first resolve. path.Match's
-			// only error is ErrBadPattern; the empty name still forces a full scan
-			// of the pattern's syntax (e.g. an unterminated character class).
-			if _, perr := path.Match(ref.ModelPattern, ""); perr != nil {
-				return fmt.Errorf("models.%s: invalid model_pattern %q: %v", name, ref.ModelPattern, perr)
-			}
-		}
-		if ref.Provider != "" && !known[ref.Provider] {
-			return fmt.Errorf("models.%s: unknown provider %q", name, ref.Provider)
-		}
-		switch ref.Kind {
-		case "", ModelKindChat, ModelKindDecision, ModelKindEmbedder, ModelKindTranscriber, ModelKindSynthesizer:
-		default:
-			return fmt.Errorf("models.%s: kind %q is not one of chat, decision, embedder, transcriber, synthesizer", name, ref.Kind)
-		}
-		switch ref.License {
-		case "", ModelLicenseCommercial, ModelLicenseNoncommercial:
-		default:
-			return fmt.Errorf("models.%s: license %q is not one of commercial, noncommercial", name, ref.License)
-		}
-	}
-	// Library-level tier definitions.
-	for tierName, candidates := range c.Tiers {
-		if !validTierNames[tierName] {
-			return fmt.Errorf("tiers.%s: unknown tier (want one of low/middle/high)", tierName)
-		}
-		for i, cand := range candidates {
-			if err := validateTierCandidate(cand, c.Models, known); err != nil {
-				return fmt.Errorf("tiers.%s[%d]: %v", tierName, i, err)
-			}
-		}
-	}
-	// User-tier definitions (v0.8.2). When the map is populated, a
-	// "default" entry is required so requests without a user_tier
-	// field have a defined policy to fall through to. Each tier's
-	// internal shape is validated with the same rules as the library
-	// ProviderPriority + Tiers above — duplication is intentional so
-	// the errors point at the offending user_tiers.<name> path rather
-	// than a generic message.
-	if len(c.UserTiers) > 0 {
-		if _, ok := c.UserTiers["default"]; !ok {
-			return fmt.Errorf(`user_tiers: a "default" entry is required when the user_tiers block is populated (covers requests without user_tier and back-compat with v0.7.x clients)`)
-		}
-		for tierName, ut := range c.UserTiers {
-			if tierName == "" {
-				return fmt.Errorf("user_tiers: empty tier name")
-			}
-			for i, p := range ut.ProviderPriority {
-				if !known[p] {
-					return fmt.Errorf("user_tiers.%s.provider_priority[%d]: unknown provider %q", tierName, i, p)
-				}
-			}
-			for taskTier, candidates := range ut.Tiers {
-				if !validTierNames[taskTier] {
-					return fmt.Errorf("user_tiers.%s.tiers.%s: unknown tier (want one of low/middle/high)", tierName, taskTier)
-				}
-				for i, cand := range candidates {
-					if err := validateTierCandidate(cand, c.Models, known); err != nil {
-						return fmt.Errorf("user_tiers.%s.tiers.%s[%d]: %v", tierName, taskTier, i, err)
-					}
-				}
-			}
-			if ut.MaxFallbackAttempts < 0 {
-				return fmt.Errorf("user_tiers.%s.max_fallback_attempts: must be >= 0 (0 = use default of 3)", tierName)
-			}
-			if ut.RateLimitCooldownMs < 0 {
-				return fmt.Errorf("user_tiers.%s.rate_limit_cooldown_ms: must be >= 0 (0 = use resolver default of 30000ms)", tierName)
-			}
-		}
-	}
-	// Static memory_backends entries skip the MemoryBackendDef tool's
-	// validateWebhookDef-equivalent, so structurally validate them at load.
-	// Most important: a shared_key_with_prefix backend MUST carry a
-	// {tenant_id} token in its prefix_pattern — an empty/token-less prefix
-	// resolves to an empty key prefix and collapses every tenant into one
-	// keyspace (cross-tenant read+write leak). resolveTenancy is the runtime
-	// backstop, but failing loudly at boot is the better operator signal.
-	for bname, mb := range c.MemoryBackends {
-		if mb.TenancyStrategy.Kind == "shared_key_with_prefix" &&
-			!strings.Contains(mb.TenancyStrategy.PrefixPattern, "{tenant_id}") {
-			return fmt.Errorf("memory_backends.%s: tenancy_strategy.prefix_pattern %q must contain {tenant_id} for shared_key_with_prefix (an empty or token-less prefix collapses all tenants into one keyspace)", bname, mb.TenancyStrategy.PrefixPattern)
-		}
-		// RFC CD Part B: a static kind:remote backend is dialed at runtime, so
-		// fail fast at load on a missing base_url or the unsupported tenancy
-		// (the api_key_env allowlist is enforced at resolve time).
-		if mb.Kind == "remote" {
-			if mb.Config.BaseURL == "" {
-				return fmt.Errorf("memory_backends.%s: kind=remote requires config.base_url", bname)
-			}
-			if mb.TenancyStrategy.Kind == "shared_key_with_prefix" {
-				return fmt.Errorf("memory_backends.%s: kind=remote does not support tenancy_strategy=shared_key_with_prefix (use key_per_tenant)", bname)
-			}
-		}
-	}
-	// Static change subscriptions (RFC CD Part C push): a misconfigured callback
-	// can never deliver, so fail fast at load.
-	changeKindValid := map[string]bool{
-		"memory": true, "document": true,
-		"memory.set": true, "memory.delete": true, "memory.scope_deleted": true,
-		"document.chunk.updated": true, "document.chunk.deleted": true,
-	}
-	for sname, sub := range c.ChangeSubscriptions {
-		if sub.Disabled {
-			continue
-		}
-		if sub.CallbackURL == "" {
-			return fmt.Errorf("change_subscriptions.%s: callback_url is required", sname)
-		}
-		if u, uerr := url.Parse(sub.CallbackURL); uerr != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			return fmt.Errorf("change_subscriptions.%s: callback_url %q must be an http(s) URL", sname, sub.CallbackURL)
-		}
-		if sub.SecretEnv != "" && !EnvNameCredentialSafe(sub.SecretEnv) {
-			return fmt.Errorf("change_subscriptions.%s: secret_env %q is not an allowed credential env var "+
-				"(must be LOOMCYCLE_-prefixed or a known third-party key, and not an infra secret)", sname, sub.SecretEnv)
-		}
-		switch sub.Scope {
-		case "", "agent", "user", "tenant":
-		default:
-			return fmt.Errorf("change_subscriptions.%s: scope %q must be agent, user, or tenant", sname, sub.Scope)
-		}
-		for _, k := range sub.Kinds {
-			if !changeKindValid[k] {
-				return fmt.Errorf("change_subscriptions.%s: unknown kind %q (want a change type or the family \"memory\"/\"document\")", sname, k)
-			}
-		}
-	}
-	// Static document sources (RFC CE): a misconfigured peer can never sync, so
-	// fail fast at load. base_url is dialed and api_key_env is SENT to it.
-	for dname, ds := range c.DocumentSources {
-		if ds.Config.BaseURL == "" {
-			return fmt.Errorf("document_sources.%s: config.base_url is required", dname)
-		}
-		// Require scheme AND host — an empty host (e.g. "http:///v1") is a
-		// non-dialable URL. This matches the DocumentSourceDef overlay validator
-		// (requireHTTPURL), so a value accepted at boot is also accepted for a
-		// runtime fork and vice-versa.
-		if u, uerr := url.Parse(ds.Config.BaseURL); uerr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("document_sources.%s: config.base_url %q must be an http(s) URL with a host", dname, ds.Config.BaseURL)
-		}
-		if ds.Config.APIKeyEnv != "" && !EnvNameCredentialSafe(ds.Config.APIKeyEnv) {
-			return fmt.Errorf("document_sources.%s: config.api_key_env %q is not an allowed credential env var "+
-				"(must be LOOMCYCLE_-prefixed or a known third-party key, and not an infra secret)", dname, ds.Config.APIKeyEnv)
-		}
-		switch ds.TenancyStrategy.Kind {
-		case "":
-		case "key_per_tenant":
-			if ds.TenancyStrategy.EnvPattern != "" && !strings.Contains(ds.TenancyStrategy.EnvPattern, "{tenant_id}") {
-				return fmt.Errorf("document_sources.%s: tenancy_strategy.env_pattern %q must contain {tenant_id}", dname, ds.TenancyStrategy.EnvPattern)
-			}
-		default:
-			return fmt.Errorf("document_sources.%s: tenancy_strategy.kind %q must be \"\" or key_per_tenant", dname, ds.TenancyStrategy.Kind)
-		}
-		if !ValidDocumentSourceTrust(ds.Trust) {
-			return fmt.Errorf("document_sources.%s: trust %q must be proposed (the default) or asserted", dname, ds.Trust)
-		}
-	}
-	// Static webhooks: a misconfigured delivery target can never fire (F24).
-	for wname, wh := range c.Webhooks {
-		if err := validateStaticWebhook(wname, wh); err != nil {
-			return err
-		}
-		// user_tier is Def-pinned (webhooks.<name>.user_tier). A payload_mapping
-		// targeting "user_tier" is now silently ineffective (the payload can't
-		// select the cost tier) — warn so the operator moves it to the def.
-		if _, mapped := wh.PayloadMapping["user_tier"]; mapped {
-			c.Warnings = append(c.Warnings, fmt.Sprintf(
-				"webhooks.%s: payload_mapping targets \"user_tier\", but user_tier is pinned from the def (set webhooks.%s.user_tier) and the payload value is IGNORED",
-				wname, wname))
-		}
-	}
+	return nil
+}
+
+// validateAccess checks the volumes, resolves the principals, auth and ACL
+// blocks, and checks the audit stream settings. Part of validate.
+func validateAccess(c *Config) error {
 	// RFC AH: validate the top-level `volumes:` map. Each path must
 	// already exist + be a directory (static volumes map existing
 	// infrastructure; the runtime never creates them — a missing/non-dir
@@ -8534,6 +8389,12 @@ func validate(c *Config) error {
 	if err := ResolveACLConfig(c); err != nil {
 		return err
 	}
+	return nil
+}
+
+// validateAudioCaps resolves the operator transcription and speech caps the
+// agents are judged against. Part of validate.
+func validateAudioCaps(c *Config) error {
 	// Before the agents loop: each agent's transcription and speech caps are
 	// judged against the resolved operator caps.
 	if err := resolveTranscription(c); err != nil {
@@ -8542,631 +8403,6 @@ func validate(c *Config) error {
 	if err := resolveSpeech(c); err != nil {
 		return err
 	}
-	for name, agent := range c.Agents {
-		// Agent names share the RFC BA `/`-grouped grammar with skill names
-		// (segments of [A-Za-z0-9_-] joined by `/`; no glob/`..`/leading slash),
-		// so a bundled/preset agent like `doc/manager` is valid but a malformed
-		// key (glob char, `..`) fails loud at load rather than at first spawn.
-		if err := agents.ValidateName(name); err != nil {
-			return fmt.Errorf("agents: %w", err)
-		}
-		// Tier-based resolution and explicit pin are mutually
-		// exclusive — pinning a model and asking for a tier is
-		// ambiguous, and silently picking one would surprise the
-		// next reader of the yaml.
-		hasPin := agent.Provider != "" || agent.Model != ""
-		hasTier := agent.Tier != ""
-		if err := ValidateRoutingMode(agent.Provider, agent.Model, agent.Tier); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := ValidateAgentRouting(agent.Routing, agent.Provider, agent.Model); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := c.CheckModelKind(agent.Model, ModelKindChat); err != nil {
-			return fmt.Errorf("agent %q: model: %w", name, err)
-		}
-		if !hasPin && !hasTier {
-			// Back-compat path: agents without either fall back
-			// to defaults.model — same as v0.5.x behaviour.
-			if c.Defaults.Model == "" {
-				// An agent that declares ONLY capability grants is almost
-				// never a new agent — it is an operator overlay meant to
-				// widen a bundled one, layered onto a stack that does not
-				// contain the bundle. Merging then produces this half-built
-				// agent, and the bare size/model complaint sends the reader
-				// looking at their overlay instead of at LOOMCYCLE_PRESETS.
-				if looksLikeAnOverrideOnly(agent) {
-					return fmt.Errorf("agent %q: no model, no tier, and no defaults.model — this declares only capability grants, "+
-						"so it reads as an override of an agent that no earlier config layer defines. Check that the bundle providing "+
-						"%q is in LOOMCYCLE_PRESETS / LOOMCYCLE_CONFIG_DIR, and that the layer carrying the override comes after it", name, name)
-				}
-				return fmt.Errorf("agent %q: no model, no tier, and no defaults.model", name)
-			}
-		}
-		if !validEffortLevels[agent.Effort] {
-			return fmt.Errorf("agent %q: invalid effort %q (want one of low/medium/high or empty)", name, agent.Effort)
-		}
-		if err := agent.Sampling.Validate(); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := agent.MemoryRerank.Validate(); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := c.CheckAgentDecision(agent.Decision); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := agent.ToolChoice.Validate(); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := agent.OutputFormat.Validate(); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := agent.Compaction.Validate(); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := c.CheckAgentTranscription(agent.Transcription); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := c.CheckAgentSpeech(agent.Speech); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := agent.Context.Validate(); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if hasTier && !validTierNames[agent.Tier] {
-			return fmt.Errorf("agent %q: invalid tier %q (want one of low/middle/high)", name, agent.Tier)
-		}
-		// Per-agent provider override.
-		for i, p := range agent.Providers {
-			if !known[p] {
-				return fmt.Errorf("agent %q: providers[%d]: unknown provider %q", name, i, p)
-			}
-		}
-		// Per-agent web-search fallback list (RFC BB) — every entry must be an
-		// enabled top-level search_providers key.
-		for i, id := range agent.SearchProviders {
-			if !enabledSearch[id] {
-				return fmt.Errorf("agent %q: search_providers[%d]: %q is not an enabled search_providers entry", name, i, id)
-			}
-		}
-		// Per-agent tier-candidate override.
-		for tierName, candidates := range agent.Models {
-			if !validTierNames[tierName] {
-				return fmt.Errorf("agent %q: models.%s: unknown tier", name, tierName)
-			}
-			for i, cand := range candidates {
-				if err := validateTierCandidate(cand, c.Models, known); err != nil {
-					return fmt.Errorf("agent %q: models.%s[%d]: %v", name, tierName, i, err)
-				}
-			}
-		}
-		// Memory tool: validate memory_scopes are known scope strings. An
-		// unset list is not an error: it resolves at policy time to the
-		// caller's own data (tools.EffectiveMemoryScopes). Non-empty must be a
-		// subset of validMemoryScopes; the message is generated from that set.
-		for i, sc := range agent.MemoryScopes {
-			if !validMemoryScopes[sc] {
-				return fmt.Errorf("agent %q: memory_scopes[%d]: unknown scope %q (want one of: %s)", name, i, sc, memoryScopeNames())
-			}
-		}
-		// RFC BL P1: validate core_blocks. Each block backs a Memory key
-		// `core/<label>`, so the label must be a clean single segment and the
-		// scope must be known. Duplicate (scope,label) pairs are rejected — two
-		// blocks fighting over one key is always a config bug.
-		seenBlock := make(map[string]bool, len(agent.CoreBlocks))
-		for i, b := range agent.CoreBlocks {
-			label := strings.TrimSpace(b.Label)
-			if label == "" {
-				return fmt.Errorf("agent %q: core_blocks[%d]: label is required", name, i)
-			}
-			if strings.ContainsAny(label, "/ \t\n") {
-				return fmt.Errorf("agent %q: core_blocks[%d]: label %q must be a single segment (no slashes or whitespace)", name, i, b.Label)
-			}
-			if b.Scope == "" || !validCoreBlockScopes[b.Scope] {
-				return fmt.Errorf("agent %q: core_blocks[%d]: scope %q invalid (want one of: agent, user, tenant)", name, i, b.Scope)
-			}
-			if b.LimitBytes < 0 {
-				return fmt.Errorf("agent %q: core_blocks[%d]: limit_bytes must be >= 0", name, i)
-			}
-			key := b.Scope + "/" + label
-			if seenBlock[key] {
-				return fmt.Errorf("agent %q: core_blocks: duplicate (scope=%s, label=%s)", name, b.Scope, label)
-			}
-			seenBlock[key] = true
-		}
-		if agent.MemoryInjectMaxTokens < 0 {
-			return fmt.Errorf("agent %q: memory_inject_max_tokens must be >= 0", name)
-		}
-		if agent.MaxContextTokens < 0 {
-			return fmt.Errorf("agent %q: max_context_tokens must be >= 0", name)
-		}
-		if agent.MemoryIndexMaxBytes < 0 {
-			return fmt.Errorf("agent %q: memory_index_max_bytes must be >= 0", name)
-		}
-		switch agent.MemoryRoots {
-		case "", "lazy", "force", "suppress":
-		default:
-			return fmt.Errorf("agent %q: memory_roots must be one of lazy|force|suppress (got %q)", name, agent.MemoryRoots)
-		}
-		// RFC BL P1: a {{memory:<variant>}} placeholder in the system prompt must
-		// reference a recognised variant — a typo is caught here, at boot, rather
-		// than silently rendering nothing at run time.
-		if unknown := promptinject.UnknownVariants(agent.SystemPrompt); len(unknown) > 0 {
-			return fmt.Errorf("agent %q: unknown {{memory:%s}} placeholder in system prompt (recognised: %s)",
-				name, unknown[0], strings.Join(promptinject.AllVariants(), ", "))
-		}
-		// A {{tool:<Tool>.<op>}} placeholder must name a ref on the read-only
-		// ALLOWLIST. Rejecting here is the whole reason the allowlist is safe to
-		// state as a bound: an operator who writes {{tool:Bash}} is told at boot
-		// that it is not callable, instead of shipping a prompt that silently
-		// expands to nothing (or, in a design without the allowlist, one that runs
-		// a mutating tool on every run-entry, sub-agent spawn and resume).
-		if unknown := promptinject.UnknownToolRefs(agent.SystemPrompt); len(unknown) > 0 {
-			return fmt.Errorf("agent %q: {{tool:%s}} in system prompt is not an allowlisted read-only tool call (allowed: %s)",
-				name, unknown[0], strings.Join(promptinject.AllToolRefs(), ", "))
-		}
-		// The ARGUMENT form — {{tool:<Tool>:<argument>}} — has its own, smaller
-		// set, because it is the one family that can reach the network. Same
-		// reason to reject at boot, one step sharper: {{tool:Bash:rm -rf /}}
-		// matches the family's pattern on purpose so it is REFUSED here rather
-		// than sitting in a prompt that looks wired and is not.
-		if unknown := promptinject.UnknownToolCalls(agent.SystemPrompt); len(unknown) > 0 {
-			return fmt.Errorf("agent %q: {{tool:%s:...}} in system prompt is not a tool the argument form may name (allowed: %s)",
-				name, unknown[0], strings.Join(promptinject.AllToolCalls(), ", "))
-		}
-		// Same posture for a document ref: the placeholder pattern matches
-		// loosely on purpose, so a ref with no path is REFUSED loudly here rather
-		// than left silently literal in a prompt the operator believes is wired.
-		// Whether the document EXISTS is deliberately not checked — it can be
-		// created, moved or removed after config load, so a boot-time check would
-		// be a false guarantee; a missing document renders nothing at run time.
-		if bad := promptinject.MalformedDocRefs(agent.SystemPrompt); len(bad) > 0 {
-			return fmt.Errorf("agent %q: {{document:%s}} in system prompt is not a usable reference "+
-				"(want a path or id, optionally #heading — e.g. {{document:/specs/launch#Risks}})", name, bad[0])
-		}
-		// RFC AA SQL Memory: validate sql_scopes are known scope strings.
-		// Empty = no SQL access (default-deny, enforced at runtime, not here).
-		// Non-empty must be a subset of validSqlScopes. Keep the message
-		// generated FROM that set: it read "agent, user, run" long after
-		// `tenant` was added, so a correct config looked rejected.
-		for i, sc := range agent.SqlScopes {
-			if !validSqlScopes[sc] {
-				return fmt.Errorf("agent %q: sql_scopes[%d]: unknown scope %q (want one of: %s)", name, i, sc, sqlScopeNames())
-			}
-		}
-		// RFC AH Phase 1: a per-agent `volumes` binding must reference a
-		// declared top-level `volumes:` entry (mirrors how tools
-		// validates against registered tools — operator-yaml is the floor,
-		// the model can never enlarge its own filesystem access). An agent
-		// that declares NO volumes is implicitly bound to [default] and so
-		// needs no validation here.
-		for i, vn := range agent.Volumes {
-			if _, ok := c.Volumes[vn]; !ok {
-				return fmt.Errorf("agent %q: volumes[%d]: unknown volume %q (declare it in the top-level volumes: map)", name, i, vn)
-			}
-		}
-		// Non-fatal: "tool in tools but its capability gate is unset"
-		// advisories (Memory/memory_scopes, Evaluation/evaluation_scopes,
-		// Channel/channels, Interruption/interruption.enabled). Accumulated and
-		// logged once at boot, never fatal — an operator may legitimately list a
-		// tool they haven't gated yet.
-		c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
-		c.Warnings = append(c.Warnings, shellCredentialWarnings(name, agent, c.Env)...)
-		c.Warnings = append(c.Warnings, gitRemoteWarnings(name, agent, c.Env)...)
-		if !c.Decision.Configured() {
-			for _, tool := range agent.Tools {
-				if tool == "Decision" {
-					c.Warnings = append(c.Warnings, fmt.Sprintf("agent %q: tools includes Decision but no decision: block is declared, so the tool is not offered to the agent; declare decision: (default, and optionally models), or drop the tool", name))
-				}
-			}
-		}
-		c.Warnings = append(c.Warnings, sqlMemConfigWarnings(name, agent, c.Storage.SqlMemEnabled)...)
-		// Context/compaction settings that cannot take effect for this agent's
-		// mode. The failure they catch is the one this advisory channel exists
-		// for: a knob that is set, looks right, and is never read.
-		c.Warnings = append(c.Warnings, contextCompactionWarnings(name, agent)...)
-		if agent.MemoryQuotaBytes < 0 {
-			return fmt.Errorf("agent %q: memory_quota_bytes must be >= 0", name)
-		}
-		if agent.SqlQuotaBytes < 0 {
-			return fmt.Errorf("agent %q: sql_quota_bytes must be >= 0", name)
-		}
-		// Memory backend routing (RFC I MR-3b): a static agent that names
-		// a memory_backend must reference a declared memory_backends key
-		// OR the built-in "inprocess"/"default" literals. We only validate
-		// static-yaml→static-yaml references: an agent may legitimately
-		// name a backend that exists only as a dynamic MemoryBackendDef
-		// (created at runtime, absent at config load), so an unresolved
-		// name is NOT a load error — the Memory tool degrades to the
-		// operator-default backend at runtime (see memory.go backend()).
-		if agent.MemoryBackend != "" &&
-			agent.MemoryBackend != "inprocess" &&
-			agent.MemoryBackend != "default" {
-			if _, ok := c.MemoryBackends[agent.MemoryBackend]; !ok {
-				// Lenient: only fail when the static map is non-empty and
-				// the name is clearly a typo against it. When the operator
-				// declares no static backends at all, assume the name
-				// targets a dynamic Def and let the runtime fallback cover
-				// a miss.
-				if len(c.MemoryBackends) > 0 {
-					return fmt.Errorf("agent %q: memory_backend %q is not a declared memory_backends entry (or \"inprocess\"/\"default\")", name, agent.MemoryBackend)
-				}
-			}
-		}
-		if agent.RetryAttempts != nil && *agent.RetryAttempts < 0 {
-			return fmt.Errorf("agent %q: retry_attempts must be >= 0 (0 = explicitly disable retries; omit to use user_tier default)", name)
-		}
-		// Channel tool (v0.8.4): every entry in publish/subscribe must
-		// reference a declared channel (exact match) OR be a "<prefix>/*"
-		// wildcard whose prefix matches at least one declared channel.
-		// Wildcard with no matches at config-load is rejected so an
-		// operator typo doesn't silently disable an ACL.
-		for i, ch := range agent.Channels.Publish {
-			if err := validateAgentChannelEntry(c.Channels, ch); err != nil {
-				return fmt.Errorf("agent %q: channels.publish[%d]: %w", name, i, err)
-			}
-		}
-		for i, ch := range agent.Channels.Subscribe {
-			if err := validateAgentChannelEntry(c.Channels, ch); err != nil {
-				return fmt.Errorf("agent %q: channels.subscribe[%d]: %w", name, i, err)
-			}
-		}
-		// AgentDef tool (v0.8.5): validate agent_def_scopes entries.
-		// Closed set: "self" / "named:<name>" / "any".
-		for i, sc := range agent.AgentDefScopes {
-			if err := validateAgentDefScope(sc); err != nil {
-				return fmt.Errorf("agent %q: agent_def_scopes[%d]: %w", name, i, err)
-			}
-		}
-		// The other families' gates take the same vocabulary; only the value
-		// that granted more than it said is refused here, so a gate that loads
-		// today keeps loading.
-		for _, g := range []struct {
-			field  string
-			scopes []string
-		}{
-			{"schedule_def_scopes", agent.ScheduleDefScopes},
-			{"a2a_server_card_def_scopes", agent.A2AServerCardDefScopes},
-			{"a2a_agent_def_scopes", agent.A2AAgentDefScopes},
-		} {
-			for i, sc := range g.scopes {
-				if sc == "descendants" {
-					return fmt.Errorf("agent %q: %s[%d]: %s", name, g.field, i, DescendantsUnsupported)
-				}
-			}
-		}
-		// RFC BA: `skill_def_scopes` is REMOVED — skill authoring is now
-		// governed by the unified `skills:` pattern allowlist. Reject a stale
-		// key loudly rather than silently ignoring an operator's intended gate.
-		if len(agent.SkillDefScopes) > 0 {
-			return fmt.Errorf("agent %q: `skill_def_scopes` was removed (RFC BA) — express skill-authoring limits as `skills:` patterns instead (e.g. skills: [doc/*] to allow authoring only doc/* skills, skills: [-*] to forbid all)", name)
-		}
-		// RFC BA: validate the `skills:` pattern allowlist (globs + optional
-		// +/- sign). A malformed entry (bad char, `..`, empty) fails loud at
-		// load rather than silently mis-gating skill access at runtime.
-		for i, sc := range agent.Skills {
-			if err := skillmatch.ValidatePattern(sc); err != nil {
-				return fmt.Errorf("agent %q: skills[%d]: %w", name, i, err)
-			}
-		}
-		if err := ValidateAgentHooks(agent); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if _, err := retentionmode.Parse(agent.Retention); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := ValidateEphemeralVolumes(agent.EphemeralVolumes); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		// VolumeDef tool (RFC AH Phase 2a): validate volume_def_scopes
-		// entries. Closed set: "named:<volume-name>" / "any".
-		for i, sc := range agent.VolumeDefScopes {
-			if err := validateVolumeDefScope(sc); err != nil {
-				return fmt.Errorf("agent %q: volume_def_scopes[%d]: %w", name, i, err)
-			}
-		}
-		// Evaluation tool (v0.8.5): validate evaluation_scopes entries.
-		// Closed set as documented on AgentDef.EvaluationScopes.
-		for i, sc := range agent.EvaluationScopes {
-			if !validEvaluationScopes[sc] {
-				return fmt.Errorf("agent %q: evaluation_scopes[%d]: unknown scope %q (want one of: submit_self, submit_siblings, submit_descendants, submit_any, read_any)", name, i, sc)
-			}
-		}
-		// Crypto tool: crypto_scopes is a closed set, and an unknown value is
-		// refused here rather than dropped at run time, where it would grant
-		// nothing while the operator believed it granted something.
-		if err := ValidateCryptoScopes(agent.CryptoScopes); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := ValidateShellCredentials(agent.ShellCredentials); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := ValidateGitRemote(agent.GitRemote); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		if err := ValidateStatementMethods(agent.Provider, agent.StatementMethods); err != nil {
-			return fmt.Errorf("agent %q: %w", name, err)
-		}
-		// History tool (RFC BE): validate history_scope entries against the
-		// owner-scope vocabulary. "any" is accepted (legacy alias for
-		// "global"); the retired "siblings"/"descendants"/"named:<n>" values
-		// are rejected with a message pointing at the new vocabulary.
-		for i, sc := range agent.HistoryScope {
-			if validHistoryScopes[sc] {
-				continue
-			}
-			return fmt.Errorf("agent %q: history_scope[%d]: unknown scope %q (want one of: self, user, tenant, global)", name, i, sc)
-		}
-	}
-	// Channel tool: validate the top-level `channels:` block.
-	for name, ch := range c.Channels {
-		if name == "" {
-			return fmt.Errorf("channels: empty channel name")
-		}
-		// A team's own channels are stored under this prefix; one declared
-		// here would read and write a team's messages from outside it.
-		if teamspec.IsChannelName(name) {
-			return fmt.Errorf("channels.%s: the %q prefix is reserved for a team's own channels, which a team declares in its definition under local.channels", name, teamspec.ChannelPrefix)
-		}
-		if !validChannelScopes[ch.Scope] {
-			return fmt.Errorf("channels.%s: unknown scope %q (want one of: agent, user, tenant, global)", name, ch.Scope)
-		}
-		if ch.DefaultTTL < 0 {
-			return fmt.Errorf("channels.%s: default_ttl must be >= 0", name)
-		}
-		if ch.MaxMessages < 0 {
-			return fmt.Errorf("channels.%s: max_messages must be >= 0", name)
-		}
-		if ch.Semantic != "" && !validChannelSemantics[ch.Semantic] {
-			return fmt.Errorf("channels.%s: unknown semantic %q (want one of: queue, broadcast)", name, ch.Semantic)
-		}
-		// v0.8.6 system-channels validation.
-		if ch.Publisher != "" && ch.Publisher != "system" {
-			return fmt.Errorf("channels.%s: unknown publisher %q (want: \"\" or \"system\")", name, ch.Publisher)
-		}
-		periodDur, err := ch.PeriodDuration()
-		if err != nil {
-			return fmt.Errorf("channels.%s: invalid period %q: %w", name, ch.Period, err)
-		}
-		if ch.Period != "" && ch.Publisher != "system" {
-			return fmt.Errorf("channels.%s: period is only valid on `publisher: system` channels", name)
-		}
-		if ch.Publisher == "system" && periodDur == 0 && !eventDrivenSystemChannels[name] {
-			return fmt.Errorf("channels.%s: publisher: system requires a `period:` (cadence) or the channel name must be in the event-driven set (%v)", name, eventDrivenSystemChannelNames())
-		}
-		if err := ValidateChannelHooks(name, ch.Publisher, ch.Hooks); err != nil {
-			return fmt.Errorf("channels.%s: %w", name, err)
-		}
-		// `_system/` prefix is reserved — channels with this prefix
-		// can only be operator-declared (we're inside the iteration
-		// over the operator yaml, so any channel here IS declared);
-		// agents still cannot publish to them regardless of Publisher
-		// (enforced at tool layer).
-	}
-	for name, srv := range c.MCPServers {
-		switch srv.Transport {
-		case "stdio":
-			if srv.Command == "" {
-				return fmt.Errorf("mcp_servers.%s: stdio transport requires command", name)
-			}
-		case "http":
-			if srv.URL == "" {
-				return fmt.Errorf("mcp_servers.%s: http transport requires url", name)
-			}
-		default:
-			return fmt.Errorf("mcp_servers.%s: unknown transport %q", name, srv.Transport)
-		}
-		if err := ValidateBinaryResults(srv.BinaryResults); err != nil {
-			return fmt.Errorf("mcp_servers.%s: %w", name, err)
-		}
-	}
-	// v1.x RFC E scheduled_runs validation. Cron syntax parses,
-	// agent name resolves (statically — substrate-active checks are
-	// deferred to runtime because the substrate isn't loaded at
-	// config-load time), on_complete kinds in closed set, env-allowlist
-	// for from_env references.
-	for name, sr := range c.ScheduledRuns {
-		if name == "" {
-			return fmt.Errorf("scheduled_runs: empty schedule name")
-		}
-		if err := validateScheduleDelivery(name, sr); err != nil {
-			return err
-		}
-		if sr.Agent != "" {
-			if _, ok := c.Agents[sr.Agent]; !ok {
-				return fmt.Errorf("scheduled_runs.%s: agent %q not declared in cfg.Agents (substrate-only agents are resolved at runtime; declare a yaml stub if you want compile-time validation)", name, sr.Agent)
-			}
-		}
-		// Mutual exclusion: standalone-schedule vs template-with-tier-defaults.
-		if sr.Schedule != "" && len(sr.UserTierSchedules) > 0 {
-			return fmt.Errorf("scheduled_runs.%s: cannot set both schedule: and user_tier_schedules: (pick one — schedule for standalone, user_tier_schedules for template)", name)
-		}
-		// Validate cron expressions where present. robfig/cron/v3
-		// ParseStandard is the canonical 5-field parser the sweeper
-		// uses; we validate against the same.
-		if sr.Schedule != "" {
-			if _, err := cron.ParseStandard(sr.Schedule); err != nil {
-				return fmt.Errorf("scheduled_runs.%s: invalid cron expression %q: %w", name, sr.Schedule, err)
-			}
-		}
-		for tier, cronExpr := range sr.UserTierSchedules {
-			if _, err := cron.ParseStandard(cronExpr); err != nil {
-				return fmt.Errorf("scheduled_runs.%s: user_tier_schedules.%s: invalid cron expression %q: %w", name, tier, cronExpr, err)
-			}
-		}
-		if sr.CatchUpMax < 0 || sr.CatchUpMax > MaxScheduleCatchUp {
-			return fmt.Errorf("scheduled_runs.%s: catch_up_max must be between 0 and %d", name, MaxScheduleCatchUp)
-		}
-		if err := CheckScheduleConcurrencyPolicy(sr.ConcurrencyPolicy, sr.Delivery); err != nil {
-			return fmt.Errorf("scheduled_runs.%s: %w", name, err)
-		}
-		// Validate on_complete kinds.
-		for i, hook := range sr.OnComplete {
-			switch hook.Kind {
-			case "channel.publish":
-				if hook.Channel == "" {
-					return fmt.Errorf("scheduled_runs.%s.on_complete[%d]: channel required for channel.publish", name, i)
-				}
-			case "mcp.call":
-				if hook.Server == "" || hook.Tool == "" {
-					return fmt.Errorf("scheduled_runs.%s.on_complete[%d]: server + tool required for mcp.call", name, i)
-				}
-			case "memory.set":
-				if hook.Scope == "" || hook.Key == "" {
-					return fmt.Errorf("scheduled_runs.%s.on_complete[%d]: scope + key required for memory.set", name, i)
-				}
-			default:
-				return fmt.Errorf("scheduled_runs.%s.on_complete[%d]: unknown kind %q (want: channel.publish | mcp.call | memory.set)", name, i, hook.Kind)
-			}
-		}
-	}
-	// v0.9.0 Vector Memory: validate the memory.embedder block when
-	// set. Empty block = vector ops refuse with embedder_not_configured
-	// at the tool layer (caught at first use, not boot). Set block
-	// must have a known provider AND a model.
-	if c.Memory.Embedder.Provider != "" || c.Memory.Embedder.Model != "" ||
-		c.Memory.Embedder.BaseURL != "" || c.Memory.Embedder.APIKeyEnv != "" ||
-		c.Memory.Embedder.Dimensions != 0 || c.Memory.Embedder.API != "" {
-		if err := c.requireModelKind("memory.embedder.model", c.Memory.Embedder.Model, ModelKindEmbedder); err != nil {
-			return err
-		}
-		provider, model, err := c.ExpandServiceModel("memory.embedder", c.Memory.Embedder.Provider, c.Memory.Embedder.Model)
-		if err != nil {
-			return err
-		}
-		if provider == "" {
-			return fmt.Errorf("memory.embedder: provider is required when embedder block is set (or name a models: alias that carries one)")
-		}
-		if model == "" {
-			return fmt.Errorf("memory.embedder: model is required when embedder block is set")
-		}
-		key, err := c.EmbedderKey(provider)
-		if err != nil {
-			return err
-		}
-		if err := providers.ValidateEmbedder(key, model, c.Memory.Embedder.Dimensions); err != nil {
-			return fmt.Errorf("memory.embedder: %w", err)
-		}
-		if c.Memory.Embedder.TimeoutMs < 0 {
-			return fmt.Errorf("memory.embedder.timeout_ms must be >= 0")
-		}
-		if c.Memory.Embedder.BatchSize < 0 {
-			return fmt.Errorf("memory.embedder.batch_size must be >= 0")
-		}
-		if c.Memory.Embedder.Dimensions < 0 {
-			return fmt.Errorf("memory.embedder.dimensions must be >= 0")
-		}
-		if c.Memory.Embedder.BaseURL != "" {
-			if err := requireHTTPBaseURL("memory.embedder.base_url", c.Memory.Embedder.BaseURL); err != nil {
-				return err
-			}
-		}
-	}
-	// memory.reranker: structural checks here; whether the provider exists is
-	// decided when it is built, against the fully-layered providers map, and a
-	// provider that does not exist fails boot there.
-	if rr := c.Memory.Reranker; rr.isSet() {
-		// The kind of model follows the kind of rerank; an unknown rerank kind is
-		// refused below, under its own name.
-		wantKind := ModelKindChat
-		if rr.EffectiveKind() == RerankerKindDecision {
-			wantKind = ModelKindDecision
-		}
-		if err := c.requireModelKind("memory.reranker.model", rr.Model, wantKind); err != nil {
-			return err
-		}
-		provider, model, err := c.ExpandServiceModel("memory.reranker", rr.Provider, rr.Model)
-		if err != nil {
-			return err
-		}
-		if provider == "" {
-			return fmt.Errorf("memory.reranker: provider is required when the reranker block is set (or name a models: alias that carries one)")
-		}
-		if model == "" {
-			return fmt.Errorf("memory.reranker: model is required when the reranker block is set")
-		}
-		if rr.TimeoutMs < 0 {
-			return fmt.Errorf("memory.reranker.timeout_ms must be >= 0")
-		}
-		if rr.ContextTokens < 0 {
-			return fmt.Errorf("memory.reranker.context_tokens must be >= 0")
-		}
-		for _, src := range rr.Sources {
-			known := false
-			for _, n := range RerankerSourceNames {
-				known = known || src == n
-			}
-			if !known {
-				return fmt.Errorf("memory.reranker.sources: %q is not one of documents, facts, notes, traces", src)
-			}
-		}
-		switch rr.EffectiveKind() {
-		case RerankerKindListwise:
-		case RerankerKindDecision:
-			// A decision call has no reasoning to switch off and no context window to
-			// request. A copied listwise block must not look configured while these
-			// are silently ignored.
-			if rr.Effort != "" {
-				return fmt.Errorf("memory.reranker.effort does not apply to kind: decision (remove it)")
-			}
-			if rr.ContextTokens != 0 {
-				return fmt.Errorf("memory.reranker.context_tokens does not apply to kind: decision (remove it)")
-			}
-		default:
-			return fmt.Errorf("memory.reranker.kind: %q is not one of listwise, decision", rr.Kind)
-		}
-		switch rr.Effort {
-		case "", "low", "medium", "high":
-		default:
-			return fmt.Errorf("memory.reranker.effort: %q is not one of low, medium, high", rr.Effort)
-		}
-		if rr.BaseURL != "" {
-			if err := requireHTTPBaseURL("memory.reranker.base_url", rr.BaseURL); err != nil {
-				return err
-			}
-		}
-	}
-	if err := c.Memory.UnitGenerator.validate(c); err != nil {
-		return err
-	}
-	if err := c.Memory.Classifier.validate(c); err != nil {
-		return err
-	}
-	if err := c.Memory.FullText.validate(); err != nil {
-		return err
-	}
-	if _, err := c.Memory.Projection.resolve(c.Env.DocumentProjectionInterval); err != nil {
-		return err
-	}
-	if err := c.Decision.validate(c); err != nil {
-		return err
-	}
-	// Consolidation similarity bands. Validated on the EFFECTIVE values so
-	// setting only one of the pair is still checked against the other's
-	// default — an operator who lowers merge_threshold to 0.80 and leaves
-	// related_threshold at 0.85 has inverted the bands and must hear about it
-	// at boot, not by watching the pass mis-classify every fact.
-	if cm := c.Memory.Consolidation; cm.MergeThreshold != 0 || cm.RelatedThreshold != 0 {
-		merge, related := cm.EffectiveMergeThreshold(), cm.EffectiveRelatedThreshold()
-		// Phrased as a NEGATED in-range test, not as an out-of-range test, so a
-		// NaN fails it. yaml.v3 resolves `.nan` into a float64 NaN, and every
-		// IEEE-754 comparison against NaN is false — so `merge <= 0 || merge > 1`
-		// waves it through, config loads clean, and the consolidator's system
-		// prompt ends up reading "similarity >= NaN". Inverting puts NaN in the
-		// error branch for free. (`.inf` compares normally and was always caught.)
-		if !(merge > 0 && merge <= 1) {
-			return fmt.Errorf("memory.consolidation.merge_threshold must be > 0 and <= 1 (got %v)", merge)
-		}
-		if !(related > 0 && related <= 1) {
-			return fmt.Errorf("memory.consolidation.related_threshold must be > 0 and <= 1 (got %v)", related)
-		}
-		if !(related < merge) {
-			return fmt.Errorf("memory.consolidation: related_threshold (%v) must be < merge_threshold (%v)", related, merge)
-		}
-	}
-	// Non-fatal: memory scopes that can enqueue but have no consolidator to
-	// drain them. Runs last so it sees the fully-validated agents + schedules.
-	c.Warnings = append(c.Warnings, orphanAddWarnings(c.Agents, c.ScheduledRuns)...)
 	return nil
 }
 
