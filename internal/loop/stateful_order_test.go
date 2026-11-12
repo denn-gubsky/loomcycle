@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -63,5 +64,50 @@ func TestRunStateful_StepsRunInTheirOrder(t *testing.T) {
 	defer mu.Unlock()
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("step order:\n got  %v\n want %v", got, want)
+	}
+}
+
+// Merge and evict emit no event of their own, so the order pin above cannot
+// see their CALLS swapped under unchanged labels. This pins their effect: the
+// step whose patch fills the window evicts that very key in the same step,
+// which holds only when the patch is merged before eviction weighs Σ.
+func TestRunStateful_MergeRunsBeforeEvict(t *testing.T) {
+	m := config.ContextModeStateful
+	schema := map[string]any{"type": "object", "properties": map[string]any{
+		"spine": map[string]any{"type": "string", retentionKeyword: RetentionCore},
+		"note":  map[string]any{"type": "string", retentionKeyword: RetentionScratch},
+	}}
+	var mu sync.Mutex
+	var states []providers.ContextStateEventInfo
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: &oneBigWriteProvider{}, Model: "x",
+		Tools:      []tools.Tool{noopTool{}},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{noopTool{}}),
+		Segments:   steerSegs(),
+		Context:    &config.Context{Mode: &m, StateSchema: schema},
+		OnEvent: func(ev providers.Event) {
+			if ev.Type == providers.EventContextState && ev.ContextState != nil {
+				mu.Lock()
+				states = append(states, *ev.ContextState)
+				mu.Unlock()
+			}
+		},
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(states) != 2 {
+		t.Fatalf("got %d context_state events, want 2", len(states))
+	}
+	first := states[0]
+	if len(first.Evicted) != 1 || first.Evicted[0] != "note" {
+		t.Errorf("step 0 evicted %v, want [note]: eviction did not weigh the patch merged in the same step", first.Evicted)
+	}
+	if _, ok := first.State["note"]; ok {
+		t.Error("step 0 state still holds the evicted note")
+	}
+	if _, ok := first.State["spine"]; !ok {
+		t.Error("step 0 state lost its core key: the patch was not merged before the step was recorded")
 	}
 }
