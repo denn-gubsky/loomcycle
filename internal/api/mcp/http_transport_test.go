@@ -50,8 +50,16 @@ func (m *httpMockConnector) SpawnRun(ctx context.Context, _ connector.SpawnRunRe
 		AgentID: "a_http", RunID: "r_http", SessionID: "s_http", Status: "completed",
 	}, nil
 }
-func (m *httpMockConnector) SpawnRunBatch(context.Context, connector.BatchSpawnRequest) (connector.BatchSpawnResult, error) {
-	return connector.BatchSpawnResult{}, nil
+func (m *httpMockConnector) SpawnRunBatch(_ context.Context, r connector.BatchSpawnRequest) (connector.BatchSpawnResult, error) {
+	res := connector.BatchSpawnResult{Spawned: len(r.Spawns)}
+	for i := range r.Spawns {
+		child := connector.SpawnRunResult{Status: "completed"}
+		res.Results = append(res.Results, child)
+		if r.OnChildSettled != nil {
+			r.OnChildSettled(i, child)
+		}
+	}
+	return res, nil
 }
 func (m *httpMockConnector) CancelRun(_ context.Context, _, _ string) (connector.CancelRunResult, error) {
 	m.cancelCalls.Add(1)

@@ -426,7 +426,9 @@ func handleSpawnRuns(ctx context.Context, env *handlerEnv, args json.RawMessage)
 		// so a forged tenant_id in any child spec can't cross the tenant boundary.
 		applyPrincipalToSpawn(ctx, sp)
 	}
+	stopProgress := startJoinProgress(ctx, env, &req)
 	res, err := env.connector.SpawnRunBatch(ctx, req)
+	stopProgress()
 	if err != nil {
 		// Malformed batch (over-cap / unsupported mode) — a tool error.
 		return toolErrFrom("spawn_runs", err), nil

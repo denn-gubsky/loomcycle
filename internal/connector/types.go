@@ -293,6 +293,13 @@ type BatchSpawnRequest struct {
 	// in-envelope. 0 = no batch-level deadline (a child's own timeout, if any,
 	// still applies). Refused with mode "detach", which has no join to bound.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
+
+	// OnChildSettled, when set, is called once per child as its slot in the
+	// envelope is filled, with the child's index and result, so a transport
+	// can report progress while a join is open (RFC GK D7). It is called from
+	// the children's goroutines, concurrently, and never after SpawnRunBatch
+	// returns. Not wire state.
+	OnChildSettled func(index int, result SpawnRunResult) `json:"-"`
 }
 
 // BatchSpawnResult is the combined outcome of a SpawnRunBatch. Results is

@@ -113,12 +113,14 @@ func (h *HTTPHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	// (a) whether this is an initialize that needs a fresh session,
 	// (b) whether we should reply with SSE (spawn_run + runEvents).
 	var probe struct {
-		Method string `json:"method"`
-		Params struct {
-			Name string `json:"name"`
-		} `json:"params"`
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+	}
+	var probeParams struct {
+		Name string `json:"name"`
 	}
 	_ = json.Unmarshal(body, &probe) // probe is best-effort; bad JSON falls through to handleFrame which emits -32700
+	_ = json.Unmarshal(probe.Params, &probeParams)
 
 	sessionID := r.Header.Get("Mcp-Session-Id")
 	var sess *Session
@@ -169,9 +171,13 @@ func (h *HTTPHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	// Everything else (cancel_run, list_runs, register_agent, builtin
 	// wrappers, pause/snapshot, even spawn_run without runEvents) is
 	// single-shot application/json.
+	//
+	// spawn_runs with a progress token is the other case: its join sends
+	// notifications/progress while it is open (RFC GK D7), and a JSON body
+	// cannot carry a notification ahead of the result.
 	useSSE := probe.Method == "tools/call" &&
-		probe.Params.Name == "spawn_run" &&
-		sess.RunEventsEnabled()
+		((probeParams.Name == "spawn_run" && sess.RunEventsEnabled()) ||
+			(probeParams.Name == "spawn_runs" && progressTokenOf(probe.Params) != nil))
 
 	var responseWriter io.Writer
 	if useSSE {

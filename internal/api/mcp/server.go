@@ -32,6 +32,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -485,6 +486,7 @@ func (s *Server) handleToolsCall(ctx context.Context, stdout io.Writer, req loom
 		notify:            s.makeNotifier(stdout, req.ID),
 		logger:            s.cfg.Logger,
 		spawnRunTimeoutMS: s.cfg.SpawnRunTimeoutMS,
+		progressToken:     progressTokenOf(req.Params),
 	}, params.Arguments)
 	if err != nil {
 		// Handler returned a Go error (internal failure, not a
@@ -566,4 +568,11 @@ type handlerEnv struct {
 	// spawnRunTimeoutMS is the operator-default transport timeout for
 	// spawn_run (Config.SpawnRunTimeoutMS); 0 = disabled.
 	spawnRunTimeoutMS int
+	// progressToken is the call's params._meta.progressToken (a string or
+	// a number, kept raw to echo back exactly); nil when the client sent
+	// none, and then no notifications/progress is sent for the call.
+	progressToken json.RawMessage
+	// progressEvery is the longest a long call goes without a progress
+	// notification; 0 = joinProgressEvery. A test shortens it.
+	progressEvery time.Duration
 }
