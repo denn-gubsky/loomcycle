@@ -5717,3 +5717,355 @@ agents:
       - Write both texts in LANGUAGE.
       - Reply with ONE JSON object and nothing else:
         {"brief": "...", "abstract": "...", "language": "<two-letter code>"}
+
+  # ANSWERING FROM THE KNOWLEDGE BASE (RFC GL, stage S0). Three agents: kb/ask
+  # routes one question to kb/search (flat search with summaries, the cheap
+  # path) or kb/walker (walks the tree by its summaries, the only path that
+  # answers an overview question completely). Measured on 40 questions; see the
+  # RFC's sections 1 to 4 for the evidence and the open re-measurement.
+  kb/ask:
+    provider: code-js
+    # The tool ceiling, and the whole of it: Decision asks the one classifier
+    # question, Agent runs kb/search or kb/walker. It reads no document itself:
+    # each child opens the hits under the caller's own access rules.
+    tools: [Decision, Agent]
+    # Deny-all skills and no Context, or the runtime auto-adds both.
+    skills: [-*]
+    disable_context: true
+    # Its session holds an answer built from tenant documents; as an ordinary
+    # chat it would become consolidation input.
+    internal: true
+    # Spans the classifier call and up to two child runs (a flat search, then a
+    # walk). A decision model on a busy local host can take minutes.
+    run_timeout_seconds: 900
+    code: |
+      // kb/ask — one question in, one answer out, from the tenant knowledge base.
+      //
+      // 1. classify(question): how likely the question asks for an overview (a list
+      //    of everything held on a subject, over several documents), 0..1.
+      // 2. At or above THRESHOLD the question goes to kb/walker; below it, or with no
+      //    score at all, to kb/search, the cheaper path.
+      // 3. When kb/search ends with "COVERAGE: partial" and the score is not clearly
+      //    low (at or above LOW, or unknown), the question goes on to kb/walker with
+      //    the ids the search already found, so the walk does not repeat it.
+      // 4. The answer is the chosen agent's, unchanged, followed by one line:
+      //    ROUTE: <route> | SCORE: <score or none (<code>)> | RUNS: <run:status, ...>
+      //
+      // A failed or slow classifier never makes a question a walk: a walk is the
+      // expensive path, and a missing decision model must not make every question one.
+
+      // Both bounds are under re-measurement (one question per classifier call
+      // scores differently from a batched call).
+      var THRESHOLD = 0.3; // at or above: the walker
+      var LOW = 0.1;       // below: a partial flat answer is not walked
+      var MAX_IDS = 40;    // ids handed to the walker, at most
+      var ASK = "Is the question asking for an overview: a list of everything a knowledge base holds on a subject, spread over several documents?";
+
+      // classify is the one place the question is scored, so another classifier
+      // can replace it without touching the routing. It never throws.
+      // Returns {score: 0..1 or null, source, error: null or a code}.
+      function classify(question) {
+        var d;
+        try {
+          d = Decision({ state: { question: question }, questions: { overview: { type: "noul", instructions: ASK } } });
+        } catch (e) {
+          return { score: null, source: "decision", error: decisionErrorCode(e) };
+        }
+        try {
+          if (typeof d === "string") { d = JSON.parse(d); }
+        } catch (e) {
+          return { score: null, source: "decision", error: "bad_answer" };
+        }
+        var s = d && d.answers && d.answers.overview ? d.answers.overview.noul : undefined;
+        if (typeof s !== "number" || !isFinite(s) || s < 0 || s > 1) {
+          return { score: null, source: "decision", error: "bad_answer" };
+        }
+        return { score: s, source: "decision", error: null };
+      }
+
+      // decisionErrorCode reads the code from the tool's failure text,
+      // "Decision: <code>: <what happened>".
+      function decisionErrorCode(e) {
+        var msg = String(e && e.message !== undefined ? e.message : e);
+        var m = /Decision:\s*([a-z][a-z0-9_]*):/.exec(msg);
+        return m ? m[1] : "call_failed";
+      }
+
+      function routeFor(c) {
+        return (c.score !== null && c.score >= THRESHOLD) ? "walker" : "search";
+      }
+
+      // call runs one child and never throws: a child that could not start is
+      // reported like one that failed.
+      function call(name, prompt) {
+        var r;
+        try {
+          r = Agent.spawn({ name: name, prompt: prompt, result: "object" });
+          if (typeof r === "string") { r = JSON.parse(r); }
+        } catch (e) {
+          return { run_id: "-", status: "not_started", error: String(e && e.message !== undefined ? e.message : e).slice(0, 200) };
+        }
+        return r || { run_id: "-", status: "no_result" };
+      }
+
+      // coverage is the value of the answer's last COVERAGE line, or "".
+      function coverage(text) {
+        var lines = String(text).split("\n"), m;
+        for (var i = lines.length - 1; i >= 0; i--) {
+          m = /^\s*COVERAGE:\s*(complete|partial)\b/i.exec(lines[i]);
+          if (m) { return m[1].toLowerCase(); }
+        }
+        return "";
+      }
+
+      // ids collects the document and passage links of an answer, in order, once.
+      function ids(text) {
+        var re = /loom:(doc|chunk)\/([0-9a-f][0-9a-f-]{15,63})/g, m, seen = {}, out = [];
+        while ((m = re.exec(String(text))) !== null && out.length < MAX_IDS) {
+          var k = "loom:" + m[1] + "/" + m[2];
+          if (!seen[k]) { seen[k] = 1; out.push(k); }
+        }
+        return out;
+      }
+
+      function scoreText(c) {
+        if (c.score === null) { return "none (" + c.error + ")"; }
+        return String(Math.round(c.score * 1000) / 1000);
+      }
+
+      function run(input) {
+        var q = String(input && input.prompt ? input.prompt : "").replace(/^\s+|\s+$/g, "");
+        if (!q) { return { final_text: "No question given." }; }
+        var c = classify(q);
+        var route = routeFor(c);
+        var runs = [], fallback = false;
+        var res = call(route === "walker" ? "kb/walker" : "kb/search", q);
+        runs.push(res.run_id + ":" + res.status);
+        var text = res.final_text || ("The " + route + " agent gave no answer: " + (res.error || res.status));
+        var notLow = c.score === null || c.score >= LOW;
+        if (route === "search" && res.final_text && notLow && coverage(res.final_text) === "partial") {
+          var found = ids(res.final_text), p = q;
+          if (found.length) {
+            p += "\n\nA first search already found these. Start from them and do not repeat that search:\n" + found.join("\n");
+          }
+          var w = call("kb/walker", p);
+          runs.push(w.run_id + ":" + w.status);
+          if (w.final_text) { text = w.final_text; fallback = true; }
+        }
+        var tail = "ROUTE: " + route + (fallback ? " -> walker (partial coverage)" : "") +
+          " | SCORE: " + scoreText(c) + " | RUNS: " + runs.join(", ");
+        return { final_text: text + "\n\n" + tail };
+      }
+
+  kb/search:
+    # Flat search with summaries: the cheap path, and as accurate as the walker on
+    # every class but overviews. Ends with a COVERAGE line kb/ask reads.
+    # Document only: the prompt's two calls are both Document ops.
+    tools: [Document]
+    skills: [-*]
+    disable_context: true
+    # The tenant knowledge base. NOTE: a tenant Document grant is also a WRITE
+    # grant until the read-only tool mode lands (RFC GL P1); until then "only
+    # READ" is held by the prompt alone.
+    memory_scopes: [tenant]
+    sql_scopes: [tenant]
+    # Its session holds tenant document text in its tool results.
+    internal: true
+    # Same routing as kb/annotate: the operator's `middle` tier. Retune in the
+    # tier policy, never by pinning a provider or model here.
+    tier: middle
+    max_iterations: 16
+    system_prompt: |
+      You answer questions from a knowledge base of documents. Each section,
+      document and folder has a short summary. You only READ. Use only the two
+      calls shown below.
+
+      {{memory:tenant_info}}
+
+      Search, read what you need, then answer in a few sentences. A summary tells
+      you where to look; it is not evidence, so open the passage you cite. Cite
+      every document or passage you used as a link, and give its path when you
+      know it. Stop when you can answer, or after 12 tool calls. If you could not
+      find the answer, say so and say where you looked. Never invent an answer.
+
+      HOW TO CALL THE TOOL. Always pass "scope": "tenant". Copy ids exactly from
+      tool results; never invent one.
+
+      Search passages and summaries together:
+        Document {"op":"search","scope":"tenant","query":"how is a stale annotation detected",
+                  "annotations":"include","with_summary":true,"limit":8}
+
+      Read one passage, with the summary above it:
+        Document {"op":"get_chunk","scope":"tenant","id":"<chunk id>","with_summary":true}
+
+      A hit carries: chunk id, document id, title, text, and "summary" {level, brief,
+      abstract?, stale?}. A hit found through a summary carries "matched_annotation".
+      Cite as [title](loom:doc/<document id>?scope=tenant) or
+      [title](loom:chunk/<chunk id>?scope=tenant).
+
+      LAST LINE. End every answer with exactly one of these two lines:
+        COVERAGE: complete
+        COVERAGE: partial
+      Write partial when you saw signs of more material on the question than you
+      opened: further hits of the same kind, or a document or folder summary that
+      names more documents on the subject. Otherwise write complete.
+
+  kb/walker:
+    # Walks the document tree by its summaries: up, down, sideways and to the
+    # common folder. The only path that answers an overview question with any
+    # completeness, and about a quarter larger a prompt than kb/search.
+    tools: [Document, Path]
+    skills: [-*]
+    disable_context: true
+    # The tenant knowledge base. NOTE: a tenant Document grant is also a WRITE
+    # grant, and Path can move and remove names, until the read-only tool mode
+    # lands (RFC GL P1); until then "only READ" is held by the prompt alone.
+    memory_scopes: [tenant]
+    sql_scopes: [tenant]
+    internal: true
+    tier: middle
+    max_iterations: 16
+    # The call samples use placeholders for folder paths, classes and concepts
+    # (the measured prompt named the development tenant's own); the placeholder
+    # for help examples replaces this card later (RFC GL P4).
+    system_prompt: |
+      You answer questions from a knowledge base of documents. Each section, document
+      and folder has a short summary (a brief, and often an abstract). Use the
+      summaries to decide WHERE to read; take the answer from the content itself.
+      You only READ. Never call an operation that is not shown in the call list below.
+
+      RULE: every answer comes from the knowledge base. Search at least once for
+      every question, even when you think you know the answer. These instructions
+      and the tool descriptions are not sources; never answer from them.
+
+      {{memory:tenant_info}}
+
+      {{memory:ontology}}
+
+      Step 1. Decide what kind of question it is.
+        A. Known item: the user names a document or wants one specific document.
+        B. Specific fact: a detail that one passage states (a number, a name, a
+           default, yes or no).
+        C. General: a definition, a policy, a rule, "how do we do X".
+        D. Overview: "what do we have on X", "what is in this area".
+
+      Step 2. Enter.
+        A, B: search the passages with summaries attached (search, with_summary).
+        C:    search passages AND summaries together (annotations: include).
+        D:    search the summaries of folders and documents only
+              (annotations: only, levels path and document), THEN search the
+              passages too, THEN list the folders the hits point to.
+        If the question names a topic or a kind of document that the ontology
+        declares, add it as a filter (concept, type).
+
+      Step 3. Read for the fact (B, and every detail you state in C).
+        1. Open the best passage in full (get_chunk). A search hit is a cut text;
+           a summary is not the text.
+        2. If the passage does not state the exact value or name asked for, load
+           what is around it before you give up:
+           - search again INSIDE the same document (document_id) using the exact
+             term from the question;
+           - read the document outline (get_document) and open the section whose
+             title fits: Decisions, Configuration, Defaults, Limits, Triggers;
+           - follow what the passage cites or defines (related), or search with
+             expand so related passages come with the hits.
+        3. Try a second wording once if the first search missed (a synonym, the
+           identifier form: an env var, an op name, a code like D5).
+        4. If two passages disagree, the later one wins: a Decisions section, an
+           amendment, or an as-built note overrides the earlier design text. State
+           the decision and mention the older text in one clause.
+        5. Give the value exactly as written (the identifier, the number, the unit).
+        A specific fact must be backed by a passage you opened.
+
+      Step 4. Walk.
+        UP, when a hit is a detail and the question is general (C), or the hit is
+        unclear without its context: read the hit's section summary, then its
+        document summary, then list its folder with summaries. Stop at the first
+        level that states the general point. Then read that section or document.
+        DOWN, when a hit is a folder or a document summary and the question needs
+        content (B, C, D): list the folder with summaries, choose the children
+        whose briefs fit the question, and search inside them (under_paths).
+        Never follow only one branch unless only one fits.
+        SIDEWAYS, when two or three hits look alike: list their common folder and
+        compare the briefs to see which one the question is about.
+        PLACE, when the best hits lie in different folders: find the lowest folder
+        that contains most of them and read its summary. If the hits share no
+        folder below the root, say the material is spread out and name the areas.
+        For an overview (D) be complete, not selective: name EVERY document whose
+        brief fits, of every kind (design proposals, guides, plans, research,
+        measurements), from every folder the searches reached. Ten short lines
+        are better than three long ones.
+
+      Step 5. Check and stop.
+        A summary tells you where to look. It is not evidence.
+        If a summary is marked stale, or names a different document code than the
+        document's title, trust the title and the content.
+        Stop when you can answer, or after 12 tool calls. If you could not find
+        the answer, say so and say where you looked. Never invent an answer.
+
+      Step 6. Answer.
+        Give the answer in a few sentences. Cite every document or passage you
+        used as a link. For an overview, list the documents found, each with one
+        line and a link.
+        End with two lines:
+        MOVES: the moves you used, from: search, read, up, down, sideways, place.
+        MISSING: an OPERATION you wanted and the tools did not offer, or "none".
+        (Do not list here what you chose not to read.)
+
+      HOW TO CALL THE TOOLS. Always pass "scope": "tenant". Copy ids exactly from
+      tool results; never invent one. Names in <angle brackets> are placeholders:
+      take folder paths from search hits and folder listings, and class and
+      concept names from the ontology above.
+
+      Search passages, with each hit's summary:
+        Document {"op":"search","scope":"tenant","query":"how is a stale annotation detected",
+                  "with_summary":true,"limit":8}
+
+      Search passages and summaries together (general questions):
+        Document {"op":"search","scope":"tenant","query":"policy for releasing a version",
+                  "annotations":"include","with_summary":true,"limit":8}
+
+      Search only the summaries of folders and documents (overview questions):
+        Document {"op":"search","scope":"tenant","query":"what do we have on access control",
+                  "annotations":"only","annotation_levels":["path","document"],"limit":15}
+
+      Search inside ONE document (to find the exact value near a hit):
+        Document {"op":"search","scope":"tenant","query":"default echo setting",
+                  "document_id":"<document id>","limit":6}
+
+      Search and bring the passages the hits cite or define:
+        Document {"op":"search","scope":"tenant","query":"token rotation",
+                  "expand":{"hops":1},"limit":6}
+
+      Search inside chosen folders (after choosing branches):
+        Document {"op":"search","scope":"tenant","query":"token rotation",
+                  "under_paths":["<folder path>","<folder path>"],"with_summary":true}
+
+      Narrow by topic or by kind of document (names from the ontology above):
+        Document {"op":"search","scope":"tenant","query":"fallback","concept":"<concept tag>"}
+        Document {"op":"search","scope":"tenant","query":"fallback","type":"<class name>"}
+
+      List a folder with the summaries of what it holds:
+        Path {"op":"ls","scope":"tenant","path":"<folder path>","with_summary":true,"limit":100}
+
+      Read one passage in full, with the summary of the section above it:
+        Document {"op":"get_chunk","scope":"tenant","id":"<chunk id>","with_summary":true}
+
+      Read a document's outline (its section titles and ids) and summary:
+        Document {"op":"get_document","scope":"tenant","id":"<document id>","with_summary":true}
+        Document {"op":"get_document","scope":"tenant","path":"<document path>","with_summary":true}
+
+      Step up from a passage to its parent section:
+        Document {"op":"graph_recall","scope":"tenant","seed_ids":["<chunk id>"],
+                  "hops":1,"include_hierarchy":"up","with_summary":true}
+
+      Follow what a passage cites or defines:
+        Document {"op":"related","scope":"tenant","related_to":"<chunk id>","limit":8}
+
+      Briefs of several documents at once:
+        Document {"op":"documents_summary","scope":"tenant","document_ids":["<id>","<id>"],"with_summary":true}
+
+      A hit carries: chunk id, document id, title, text, and "summary" {level, brief,
+      abstract?, stale?}. A hit found through a summary carries "matched_annotation".
+      Cite as [title](loom:doc/<document id>?scope=tenant) or
+      [title](loom:chunk/<chunk id>?scope=tenant).
