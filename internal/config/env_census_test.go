@@ -63,6 +63,10 @@ func envNamesInSources(t *testing.T, roots ...string) map[string]string {
 			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
+			if filepath.Base(path) == "env_retired.go" {
+				// The table of retired names: listing one there is not a read.
+				return nil
+			}
 			src, err := os.ReadFile(path)
 			if err != nil {
 				return err

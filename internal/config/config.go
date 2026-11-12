@@ -5451,6 +5451,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if err := checkRetiredJailEnv(); err != nil {
 		return nil, err
 	}
+	// A removed variable is deleted with no compatibility read; say so once
+	// at load, where boot, `validate` and `doctor` all print advisories.
+	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
 	applyEnvStorage(cfg)
 	applyEnvSQLMem(cfg)
