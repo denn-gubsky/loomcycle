@@ -98,9 +98,18 @@ func annReplyFromTitle(prompt string) string {
 	// gets a different annotation, as it would from a model.
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(prompt))
-	b, _ := json.Marshal(map[string]string{"brief": "Brief of " + title,
+	b, _ := json.Marshal(map[string]string{"brief": annFakeBrief(prompt, title),
 		"abstract": fmt.Sprintf("Abstract of %s, from request %08x.", title, h.Sum32()), "language": "en"})
 	return string(b)
+}
+
+// annFakeBrief is the fake model's brief. A folder's says more than the
+// folder's name: set_annotation replaces a folder brief under 20 characters.
+func annFakeBrief(prompt, title string) string {
+	if strings.Contains(prompt, "LEVEL: a folder of documents") {
+		return "Brief of the folder " + title
+	}
+	return "Brief of " + title
 }
 
 func annRealDocument(t *testing.T) (*builtin.Document, context.Context, context.Context) {
@@ -235,7 +244,10 @@ func TestKBAnnotator_ReportCountsWhatAnnotateThenWrites(t *testing.T) {
 			setupReq = p
 		}
 	}
-	if !strings.Contains(setupReq, "Unpack the widget") || !strings.Contains(setupReq, "PLACE: Widget guide") {
+	// A section's request names its document: the model has the document's own
+	// name to write instead of one it saw elsewhere.
+	if !strings.Contains(setupReq, "Unpack the widget") || !strings.Contains(setupReq, "PLACE: Widget guide") ||
+		!strings.Contains(setupReq, "DOCUMENT: Widget guide") {
 		t.Fatalf("Setup request:\n%s", setupReq)
 	}
 	for _, p := range f.prompts {
@@ -481,7 +493,7 @@ func TestKBAnnotator_FoldersAfterTheirDocuments(t *testing.T) {
 		}
 	}
 	if len(folderReqs) != 3 || !strings.Contains(folderReqs[0], "TITLE: widgets") || !strings.Contains(folderReqs[0], "Brief of Widget guide") ||
-		!strings.Contains(folderReqs[1], "TITLE: kb") || !strings.Contains(folderReqs[1], "widgets/ — brief: Brief of widgets") {
+		!strings.Contains(folderReqs[1], "TITLE: kb") || !strings.Contains(folderReqs[1], "widgets/ — brief: Brief of the folder widgets") {
 		t.Fatalf("folder requests:\n%s", strings.Join(folderReqs, "\n----\n"))
 	}
 	ann := realDoc(t, d, author, `{"op":"get_document","scope":"tenant","path":"/kb/widgets/_annotation"}`)
@@ -510,7 +522,7 @@ func TestKBAnnotator_ForceRewritesTheDocumentNotItsFolders(t *testing.T) {
 				break
 			}
 		}
-		b, _ := json.Marshal(map[string]string{"brief": "Brief of " + title, "abstract": "Abstract of " + title + ".", "language": "en"})
+		b, _ := json.Marshal(map[string]string{"brief": annFakeBrief(p, title), "abstract": "Abstract of " + title + ".", "language": "en"})
 		return string(b)
 	}}
 	runAnnotator(t, d, driver, f, fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate"}`, a.doc))

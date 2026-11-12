@@ -643,6 +643,12 @@ func (d *Document) setFolderAnnotation(ctx context.Context, key sqlmem.ScopeKey,
 		return errBusiness(op+": manual_record: an operator wrote this annotation; it is not overwritten",
 			"Leave it, or ask an operator to delete it first."), nil
 	}
+	var repairs []annotationRepair
+	if !in.Manual {
+		if repaired, r := repairFolderBrief(canonical, brief, abstract); r != nil {
+			brief, repairs = repaired, []annotationRepair{*r}
+		}
+	}
 	language := in.Language
 	if language == "" {
 		language = cur.Language
@@ -688,7 +694,7 @@ func (d *Document) setFolderAnnotation(ctx context.Context, key sqlmem.ScopeKey,
 	d.indexAnnotation(ctx, key, mscope, *rec)
 	notStale := false
 	rec.Stale = &notStale
-	return jsonResult(map[string]any{"annotation": rec})
+	return annotationWriteResult(ctx, *rec, repairs)
 }
 
 // createAnnotationDocument makes the folder's _annotation document and returns

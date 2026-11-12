@@ -6,16 +6,24 @@ The material an annotating driver hands to a model, and the hash
 `set_annotation` checks. The runtime computes both, so every driver hashes
 the same way:
 
-- a section (`branch`): its title, class, language, its own text, and each
-  child's annotation — or, for a child with none, the child's text;
+- a section (`branch`): its title, its document's title and identity, class,
+  language, its own text, and each child's annotation — or, for a child with
+  none, the child's text;
 - a document (`document`): the same over the root chunk and its top-level
-  sections, plus the root's identity fields and the document's asserted
-  relations to other documents, by kind and title;
+  sections, plus the document's asserted relations to other documents, by
+  kind and title;
 - a folder (`path`, with `path` the folder): each direct child's annotation,
   a document's or a sub-folder's, by name (the first 60, the rest grouped by
   class in `children_more`), the classes and topics of the documents it covers,
   and the kinds of relation among them. It also returns `covers`, the ids of
   every document below it.
+
+`identity` says which work the document is: the root's natural key and
+identity-like fields (`letter`, `code`, `work_key` …), and the fields its
+class marks `@identity`, read from the root or, when the root does not carry
+one, from the class's `@identifier_pattern` over the document title. A section
+gets its document's, so a model summarising a section that names no code has
+the document's own to write. Renaming a document makes its sections stale.
 
 A change anywhere below changes the hash only through the children, so a
 section goes stale when one of its parts changed and its sibling sections do

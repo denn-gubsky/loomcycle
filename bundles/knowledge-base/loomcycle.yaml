@@ -4742,7 +4742,9 @@ agents:
         annotate_agent: "kb/annotate",
         // The version of the request templates and of kb/annotate's prompt. It is part
         // of every annotation's hash: raising it makes every annotation stale.
-        prompt_version: 1,
+        // 2: a section's request names its document and the document's identity,
+        // and the prompt allows a code only where the request carries it.
+        prompt_version: 2,
         lease_name: "annotator",
         lease_ttl_ms: 900000,
         lease_renew_every: 10,
@@ -5382,25 +5384,20 @@ agents:
           head.push("TITLE: " + oneLine(in1.document_title || in1.title || "(untitled)", CONFIG.max_title_chars));
           var place = [];
           if (typeof in1.path === "string" && in1.path !== "") { place.push("folder " + oneLine(dirname(in1.path), CONFIG.max_title_chars)); }
-          if (isPlainObject(in1.identity)) {
-            var ids = [];
-            var keys = [];
-            for (var k in in1.identity) { if (hasOwn(in1.identity, k)) { keys.push(k); } }
-            keys.sort();
-            for (var x = 0; x < keys.length; x++) { ids.push(keys[x] + " " + oneLine(in1.identity[keys[x]], 120)); }
-            if (ids.length > 0) { place.push(ids.join("; ")); }
-          }
           head.push("PLACE: " + (place.length > 0 ? place.join("; ") : "(top level)"));
         } else {
           head.push("LEVEL: a section of a document");
           head.push("CLASS: " + cls);
           head.push("SLOTS: " + (slots !== "" ? slots : DEFAULT_SLOTS.branch));
           head.push("TITLE: " + oneLine(in1.title || "(untitled)", CONFIG.max_title_chars));
+          head.push("DOCUMENT: " + oneLine(in1.document_title || "(untitled)", CONFIG.max_title_chars));
           var trail = [];
           var pl = isArray(in1.place) ? in1.place : [];
           for (var p = 0; p < pl.length; p++) { trail.push(oneLine(pl[p], CONFIG.max_title_chars)); }
           head.push("PLACE: " + (trail.length > 0 ? trail.join(" › ") : oneLine(in1.document_title || "", CONFIG.max_title_chars)));
         }
+        var ident = identityText(in1.identity);
+        if (ident !== "") { head.push("IDENTITY: " + ident); }
         head.push("LANGUAGE: " + in1.language);
         head.push("WORDS: " + WORDS[level]);
         blocks.push(head.join("\n"));
@@ -5420,6 +5417,18 @@ agents:
           blocks.push("MATERIAL — what it relates to:\n<<<" + fRel + "\n" + relations.join("\n") + "\n" + fRel + ">>>");
         }
         return blocks.join("\n\n");
+      }
+
+      // identityText renders what says which work a document is (its code, its
+      // key), as "name value; name value" in a fixed order.
+      function identityText(identity) {
+        if (!isPlainObject(identity)) { return ""; }
+        var keys = [];
+        for (var k in identity) { if (hasOwn(identity, k)) { keys.push(k); } }
+        keys.sort();
+        var ids = [];
+        for (var x = 0; x < keys.length; x++) { ids.push(keys[x] + " " + oneLine(identity[keys[x]], 120)); }
+        return ids.join("; ");
       }
 
       // folderRequestText renders a folder's request.
@@ -5668,7 +5677,9 @@ agents:
       Each request names the LEVEL (a section of a document, a whole document, or a
       folder of documents), the CLASS of the thing and the SLOTS such a class is
       expected to state, its TITLE and PLACE (the document and headings above it, or
-      the folder it sits in), the LANGUAGE to write in, and the MATERIAL: the text
+      the folder it sits in), for a section the DOCUMENT it belongs to, the
+      document's IDENTITY when it has one (its code, its key), the LANGUAGE to
+      write in, and the MATERIAL: the text
       itself and, where the part has parts of its own, the brief and abstract already
       written for each of them (or, for a short part, its text). The ABOVE block,
       when there is one, gives the annotation of the level above, so you know what a
@@ -5698,6 +5709,10 @@ agents:
         are together.
       - Keep every proper name, identifier, number, date and term exactly as
         written; do not translate terms.
+      - Write a code or identifier only if it appears in the TITLE, DOCUMENT,
+        IDENTITY, PLACE or MATERIAL of this request. Name the document by its own
+        TITLE or IDENTITY. The CLASS line says what such a thing is; a name or
+        code it quotes is an example of the class, never this document.
       - Name no ids, paths, links or file names.
       - Write both texts in LANGUAGE.
       - Reply with ONE JSON object and nothing else:

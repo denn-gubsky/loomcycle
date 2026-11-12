@@ -86,7 +86,8 @@ const (
 	annotationFallbackLanguage = "en"
 	// annotationCanonVersion is the version of the hashed form itself: a change
 	// to what the hash covers bumps it, which makes every record stale on purpose.
-	annotationCanonVersion = 1
+	// 2: a section's hash covers its document's title and identity.
+	annotationCanonVersion = 2
 
 	defaultListAnnotations = 50
 	maxListAnnotations     = 500
@@ -248,6 +249,7 @@ type annotationCanon struct {
 	V             int      `json:"v"`
 	Level         string   `json:"level"`
 	Title         string   `json:"title"`
+	DocumentTitle string   `json:"document_title,omitempty"`
 	Class         string   `json:"class"`
 	Language      string   `json:"language"`
 	PromptVersion int      `json:"prompt_version"`
@@ -445,6 +447,17 @@ func (s *annotationScope) inputs(ctx context.Context, t annotationTarget, prompt
 	canon := annotationCanon{V: annotationCanonVersion, Level: t.level, Title: t.chunk.Title, Class: t.docType,
 		Language: in.Language, PromptVersion: promptVersion, BodySHA: sha256Hex(own.Body), Children: []string{},
 		ClassMeaning: in.ClassMeaning, Slots: in.Slots}
+	// Which work this is, at every level: a section that carries no code of its
+	// own is otherwise summarised under whatever code the model saw last.
+	if in.Identity, err = s.identity(ctx, t, own); err != nil {
+		return in, err
+	}
+	for _, k := range sortedAnnotationKeys(in.Identity) {
+		canon.Identity = append(canon.Identity, k+"="+in.Identity[k])
+	}
+	if t.level == annotationLevelBranch {
+		canon.DocumentTitle = t.docTitle
+	}
 
 	// The children, in order: each one's own branch record, else its text.
 	cres, err := d.query(ctx, key, `SELECT c.id, c.title, c.type,
@@ -484,10 +497,6 @@ func (s *annotationScope) inputs(ctx context.Context, t annotationTarget, prompt
 
 	switch t.level {
 	case annotationLevelDocument:
-		in.Identity = d.annotationIdentity(ctx, key, t.chunk.ID, own)
-		for _, k := range sortedAnnotationKeys(in.Identity) {
-			canon.Identity = append(canon.Identity, k+"="+in.Identity[k])
-		}
 		if in.Relations, canon.Relations, err = s.relations(ctx, t.chunk.DocumentID, acl); err != nil {
 			return in, err
 		}
@@ -883,6 +892,12 @@ func (d *Document) setAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 		return errBusiness(op+": manual_record: an operator wrote this annotation; it is not overwritten",
 			"Leave it, or ask an operator to delete it first."), nil
 	}
+	var repairs []annotationRepair
+	if !in.Manual {
+		if brief, abstract, repairs, err = s.repairIdentity(ctx, t, cur, brief, abstract); err != nil {
+			return errFrom(op+": "+err.Error(), err), nil
+		}
+	}
 	language := in.Language
 	if language == "" {
 		language = cur.Language
@@ -918,7 +933,7 @@ func (d *Document) setAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 	d.indexAnnotation(ctx, key, mscope, rec)
 	notStale := false
 	rec.Stale = &notStale
-	return jsonResult(map[string]any{"annotation": rec})
+	return annotationWriteResult(ctx, rec, repairs)
 }
 
 func (d *Document) getAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
@@ -1204,4 +1219,16 @@ func (d *Document) folderRecordChunk(ctx context.Context, key sqlmem.ScopeKey, o
 		return "", &r
 	}
 	return t.root, nil
+}
+
+// annotationWriteResult is set_annotation's answer once the record is stored:
+// the record, and what was repaired in it when anything was, each repair also
+// logged.
+func annotationWriteResult(ctx context.Context, rec annotationRecord, repairs []annotationRepair) (tools.Result, error) {
+	out := map[string]any{"annotation": rec}
+	if len(repairs) > 0 {
+		out["repaired"] = repairs
+		logAnnotationRepairs(ctx, rec, repairs)
+	}
+	return jsonResult(out)
 }

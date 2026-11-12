@@ -21,6 +21,24 @@ with `annotation_inputs`, write the annotation from them, and pass back the
 refused and you read again. Once written, the annotation reads `stale: true`
 whenever its inputs change, until it is written again.
 
+Two mistakes a model makes are repaired as the annotation is written, and
+reported in `repaired`; the write succeeds:
+
+- **A code that is not the document's.** When the document's class has an
+  `@identifier_pattern`, a token of that shape in the brief or abstract whose
+  value differs from the document's own is rewritten to the document's own,
+  unless the token occurs in what the annotation was written from (a section
+  that cites another document keeps the citation). Reason
+  `identity_mismatch`.
+- **A folder brief that says nothing.** A `path` brief that, ignoring case and
+  punctuation, is the folder's own name (`brief_repeats_folder_name`), or is
+  shorter than 20 characters (`brief_too_short`), is replaced by the first
+  sentence of the abstract, cut on a word to 240 characters. With no sentence
+  to take, it is stored as it came.
+
+Nothing else in the text is changed, and an operator's `manual` text is never
+repaired.
+
 Only the operator, or a code agent granted `statement_methods: [annotate]`,
 writes annotations, and only in the tenant scope. The operator may write one
 by hand with `manual: true` and no hash; a manual annotation is never
@@ -48,7 +66,9 @@ overwritten by a driver.
 
 `{"annotation": {chunk_id, document_id, level, brief, abstract, language,
 class?, inputs_sha256, prompt_version, model?, manual, written_at, written_by,
-stale}}`.
+stale}, "repaired"?: [{field, from, to, reason}]}`. `repaired` is present only
+when something was repaired: `field` is `brief` or `abstract`, `from` and `to`
+the text replaced and what replaced it.
 
 ## Errors
 
