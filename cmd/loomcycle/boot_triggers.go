@@ -31,21 +31,17 @@ func (b *boot) startPauseAndResume() {
 
 	// v0.8.17 PR 4: pause/resume/state HTTP endpoints. The Manager is
 	// always constructed (cheap; one atomic + one channel) so the
-	// endpoints respond rather than 503. Operator's default timeout
-	// comes from cfg.Env.PauseDefaultTimeoutMs; 0 ⇒ pause.DefaultPauseTimeout.
+	// endpoints respond rather than 503. A pause request names its own
+	// timeout_ms; 0 here leaves the manager's pause.DefaultPauseTimeout for
+	// one that does not.
 	// pauseMgrRef stays nil unless storeIface is non-nil; the scheduler
 	// branch below uses it to gate its tick on runtime state.
 	var pauseMgrRef *pause.Manager
 	if storeIface != nil {
-		pauseDefault := time.Duration(cfg.Env.PauseDefaultTimeoutMs) * time.Millisecond
-		pauseMgr := pause.NewManager(storeIface, pauseDefault)
+		pauseMgr := pause.NewManager(storeIface, 0)
 		pauseMgrRef = pauseMgr
 		srv.SetPauseManager(pauseMgr)
-		if pauseDefault > 0 {
-			slog.Info("pause: manager wired", "default_timeout", pauseDefault)
-		} else {
-			slog.Info("pause: manager wired", "default_timeout", pause.DefaultPauseTimeout)
-		}
+		slog.Info("pause: manager wired", "default_timeout", pause.DefaultPauseTimeout)
 
 		// v0.12.3 Phase 4: cluster-wide pause/resume. The pause
 		// manager's cluster paths read/write a singleton runtime_state
@@ -58,8 +54,10 @@ func (b *boot) startPauseAndResume() {
 				fatal("coord: pause cluster wiring requires Postgres store (REPLICA_ID set + non-Postgres store — should have been caught by openStore)")
 			}
 			rss := coord.NewRuntimeStateStore(pgStoreForPause.Pool())
-			cacheTTL := time.Duration(cfg.Env.PauseCacheTTLMs) * time.Millisecond
-			pauseMgr.SetRuntimeStateStore(rss, cacheTTL)
+			// One second: the worst-case lag between a pause request and
+			// another replica refusing new runs, for one row read a second.
+			const pauseCacheTTL = time.Second
+			pauseMgr.SetRuntimeStateStore(rss, pauseCacheTTL)
 			// Reuse the same Backplane the cluster block constructed.
 			// We can't directly reference `bp` here because it's
 			// scoped to the cluster block above; instead read it via
@@ -77,7 +75,7 @@ func (b *boot) startPauseAndResume() {
 				if err := pauseMgr.SubscribeBackplane(bgCtx, bp); err != nil {
 					fatal("coord: pause backplane subscribe failed", "err", err)
 				}
-				slog.Info("coord: cluster pause/resume wired", "cache_ttl", cacheTTL)
+				slog.Info("coord: cluster pause/resume wired", "cache_ttl", pauseCacheTTL)
 			}
 		}
 	}

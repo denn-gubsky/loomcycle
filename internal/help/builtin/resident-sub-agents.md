@@ -54,8 +54,8 @@ A long-lived agent — an interactive session, or an orchestrator driving many s
 ## Rules & limits
 
 - **You own the lifecycle.** The child stays alive until you `close` it, or the run that opened it ends (completed, failed or cancelled), or the runtime reaps it. The runtime reaps a child for one of two reasons:
-  - **idle** — no turn is running and nothing has used it (`open`, `send`, `poll`, `cancel`, or the end of its last turn) for the idle period (operator-configured, 30 minutes by default; override per child with `open`'s `idle_ttl_seconds`). A child running a turn is never idle, so a long turn you sent with `timeout_ms` is safe while you wait on it.
-  - **turn ceiling** — its current turn has been running longer than the operator's ceiling (`LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS`, 2 hours by default). Polling does not extend it: the clock starts when the turn does. It ends a turn that would never finish on its own — `cancel` a turn you no longer need well before that.
+  - **idle** — no turn is running and nothing has used it (`open`, `send`, `poll`, `cancel`, or the end of its last turn) for the idle period (30 minutes; override per child with `open`'s `idle_ttl_seconds`). A child running a turn is never idle, so a long turn you sent with `timeout_ms` is safe while you wait on it.
+  - **turn ceiling** — its current turn has been running longer than the ceiling (2 hours). Polling does not extend it: the clock starts when the turn does. It ends a turn that would never finish on its own — `cancel` a turn you no longer need well before that.
 
   A reaped child's next `poll` or `send` fails with the reason (`idle timeout` or `turn ceiling`); `open` a new one.
 - **After the end.** A child's last answer is not lost when its run ends — by its iteration limit, a failure, or a close. Afterwards `poll` (by `child_run_id` or `child_run_ids`) still returns how it ended: its final state and last turn's output, or the iteration-limit error with its last answer; a closed or reaped child says so. A `send` to it fails saying it has ended.

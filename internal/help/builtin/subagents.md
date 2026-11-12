@@ -59,9 +59,7 @@ naming the timeout, and a `parallel_spawn` row reports `ok: false`,
 `status: "timeout"` and the child's `run_id`. Time a child is held for review
 does not count, nor does time the runtime is paused — from the operator's
 pause to the resume, whatever the child is doing meanwhile — and a
-`parallel_spawn` child's clock starts when it gets a slot. The operator may
-cap `timeout_ms` (`LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS`); a larger value is
-refused, naming the cap.
+`parallel_spawn` child's clock starts when it gets a slot.
 
 A child that uses every iteration its `max_iterations` allows before it
 finishes is reported as not finished: `spawn` fails, saying it stopped at its

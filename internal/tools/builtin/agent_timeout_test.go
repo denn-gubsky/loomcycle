@@ -132,21 +132,18 @@ func TestAgentSpawn_UnboundedChildClearsAnInheritedHoldObserver(t *testing.T) {
 	}
 }
 
-// A timeout_ms above the operator's ceiling is refused, naming the ceiling,
-// before any child starts — on spawn, on the call and on an entry.
-func TestAgentSpawn_TimeoutAboveTheCeilingIsRefused(t *testing.T) {
+// A negative timeout_ms is refused before any child starts.
+func TestAgentSpawn_NegativeTimeoutIsRefused(t *testing.T) {
 	a := &AgentTool{
-		MaxChildTimeoutMs: 1000,
 		Run: func(context.Context, string, string, string) (string, error) {
 			t.Error("a child started despite the refusal")
 			return "", nil
 		},
 	}
 	for _, in := range []string{
-		`{"name":"c","prompt":"x","timeout_ms":5000}`,
-		`{"op":"parallel_spawn","timeout_ms":5000,"spawns":[{"name":"c","prompt":"x"}]}`,
-		`{"op":"parallel_spawn","spawns":[{"name":"c","prompt":"x","timeout_ms":5000}]}`,
 		`{"name":"c","prompt":"x","timeout_ms":-1}`,
+		`{"op":"parallel_spawn","timeout_ms":-1,"spawns":[{"name":"c","prompt":"x"}]}`,
+		`{"op":"parallel_spawn","spawns":[{"name":"c","prompt":"x","timeout_ms":-1}]}`,
 	} {
 		res, err := a.Execute(context.Background(), json.RawMessage(in))
 		if err != nil {
@@ -154,15 +151,6 @@ func TestAgentSpawn_TimeoutAboveTheCeilingIsRefused(t *testing.T) {
 		}
 		if !res.IsError {
 			t.Errorf("%s: accepted, want a refusal", in)
-			continue
 		}
-		if !strings.Contains(in, "-1") && !strings.Contains(res.Text, "1000") {
-			t.Errorf("%s: refusal %q does not name the ceiling", in, res.Text)
-		}
-	}
-	// At the ceiling is accepted.
-	a.Run = func(context.Context, string, string, string) (string, error) { return "ok", nil }
-	if res, _ := a.Execute(context.Background(), json.RawMessage(`{"name":"c","prompt":"x","timeout_ms":1000}`)); res.IsError {
-		t.Errorf("timeout_ms at the ceiling refused: %s", res.Text)
 	}
 }

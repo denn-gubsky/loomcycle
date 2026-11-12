@@ -456,24 +456,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS
-            label: LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS
-            description: 'The /v1/client-tools WebSocket lets a client (browser extension / desktop app) register + run tools on the USER''S machine; an agent granted `client:<tool>` calls them like any tool. The endpoint is bearer-gated + always available; the knobs below only tune it. See `loomcycle help client-tools`. (example: 60000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CLIENT_TOOL_MAX_BYTES
-            label: LOOMCYCLE_CLIENT_TOOL_MAX_BYTES
-            description: '(example: 1048576)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CLIENT_TOOL_MAX_CONNS
-            label: LOOMCYCLE_CLIENT_TOOL_MAX_CONNS
-            description: '(example: 8)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS
             label: LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS
             description: 'Host-command fallback (RFC AJ §13): an operator allowlist of commands gbash does NOT implement (e.g. git, gh) that may ESCAPE the sandbox to the real host shell. Empty (default) = no fallback; every command stays sandboxed. Only these names reach the host; requires a rw volume. Comma-separated. (example: git,gh)'
@@ -718,12 +700,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS
-            label: LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS
-            description: 'Default wait for in-flight runs to park when POST /v1/_pause omits timeout_ms. Default 0 ⇒ pause.DefaultPauseTimeout (30 s). Clamped at pause.MaxPauseTimeout (5 min) regardless of value — operator typo (300000 vs 30000) won''t leave the runtime in StatePausing for an extended period during which new runs 503. (example: 30000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS
             label: LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS
             description: 'On SIGTERM / SIGINT, pause this replica''s in-flight runs so the next boot resumes them, waiting at most this long. At 3/4 of it, the tool calls of runs not yet parked are interrupted (a Bash command''s process group is killed). 0 = no pause. The default leaves room in Docker''s 10 s stop grace; raise it with stop_grace_period / terminationGracePeriodSeconds. (example: 7000)'
@@ -802,12 +778,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_PAUSE_CACHE_TTL_MS
-            label: LOOMCYCLE_PAUSE_CACHE_TTL_MS
-            description: '(LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS is documented above.) (example: 1000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_REPLICA_ID
             label: LOOMCYCLE_REPLICA_ID
             description: 'Cross-replica cancel + pause + session locks, carried over the Postgres store (LOOMCYCLE_PG_DSN); there is no separate bus to configure. Setting LOOMCYCLE_REPLICA_ID is what turns cluster mode on. (example: replica-a)'
@@ -829,12 +799,6 @@ questions:
           - variable: LOOMCYCLE_HEARTBEAT_STALE_MS
             label: LOOMCYCLE_HEARTBEAT_STALE_MS
             description: '(example: 600000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS
-            label: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS
-            description: '(example: 5000)'
             schema:
               type: string
               default: ""
@@ -1105,30 +1069,6 @@ questions:
           - variable: LOOMCYCLE_MAX_INTERACTIVE_CHILDREN
             label: LOOMCYCLE_MAX_INTERACTIVE_CHILDREN
             description: 'Resident (op=open) children one run holds open at once; op=open past it is refused until one is closed. Default 8. (example: 8)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS
-            label: LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS
-            description: 'Reap a resident child after this long with no send. Default 30 min. (example: 1800000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS
-            label: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS
-            description: 'Reap a resident child whose current turn has run longer than this, however its parent polls it. Default 2h; there is no unlimited setting. (example: 7200)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS
-            label: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS
-            description: 'Ceiling on the timeout_ms an agent may give a spawned child; a larger value is refused, not clamped. 0 = no ceiling (the default). (example: 0)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS
-            label: LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS
-            description: 'Longest one Agent poll with wait any/all may block; a larger wait_ms is cut to it. Default 60 s. (example: 60000)'
             schema:
               type: string
               default: ""

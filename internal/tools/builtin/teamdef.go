@@ -260,7 +260,7 @@ type TeamDef struct {
 	LiveChildren *tools.LiveChildren
 
 	// PollWaitCapMs bounds how long one poll with wait "any" or "all" may
-	// block — the Agent poll cap (LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS). 0 =
+	// block — the Agent poll cap. 0 =
 	// DefaultPollWaitCapMs.
 	PollWaitCapMs int
 

@@ -847,16 +847,13 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		},
 		// RFC BK resident sub-agents: open/send/poll/cancel/close drive a
 		// persistent interactive child (the interactive fork of runSubAgent).
-		OpenChild:   s.openResidentChild,
-		SendChild:   s.sendResidentChild,
-		PollChild:   s.pollResidentChild,
-		CancelChild: s.cancelResidentChildTurn,
-		CloseChild:  s.closeResidentChild,
-		// The ceiling on a spawn's timeout_ms (0 = none).
-		MaxChildTimeoutMs: cfg.Env.AgentChildMaxTimeoutMs,
-		LiveChildren:      s.liveChildren,
-		PollWaitCapMs:     cfg.Env.AgentPollWaitCapMs,
-		HoldRunTree:       s.holdRunTree,
+		OpenChild:    s.openResidentChild,
+		SendChild:    s.sendResidentChild,
+		PollChild:    s.pollResidentChild,
+		CancelChild:  s.cancelResidentChildTurn,
+		CloseChild:   s.closeResidentChild,
+		LiveChildren: s.liveChildren,
+		HoldRunTree:  s.holdRunTree,
 		// v0.11.8 — per-agent max_concurrent_children cap for
 		// Agent.parallel_spawn. Walks the same resolver chain as
 		// sub-run dispatch (yaml > dynamic_agents > AgentDef
@@ -987,8 +984,7 @@ func (s *Server) candidateTools(ctx context.Context, tenantID string, agentAllow
 	// them (filterTools then narrows to the agent's `client:*` grant). Delegating
 	// tools.Tools — Dispatcher.Execute calls their Execute directly, which routes
 	// to the live WebSocket. Empty when nothing is connected.
-	ct := clienttools.Candidates(s.clientTools, s.clientToolKey(ctx, tenantID),
-		time.Duration(s.cfg().Env.ClientToolTimeoutMS)*time.Millisecond)
+	ct := clienttools.Candidates(s.clientTools, s.clientToolKey(ctx, tenantID), clientToolTimeout)
 	if len(dyn) == 0 && len(ct) == 0 {
 		return s.tools
 	}
@@ -1382,10 +1378,6 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 			// A walk run in poll mode is one of its caller's children, counted
 			// against the same per-run limit as the Agent tool's.
 			td.LiveChildren = s.liveChildren
-		}
-		if td.PollWaitCapMs == 0 {
-			// One cap on a poll's wait, whichever tool polls.
-			td.PollWaitCapMs = s.cfg().Env.AgentPollWaitCapMs
 		}
 		if td.WaveContext == nil {
 			td.WaveContext = func(ctx context.Context, walkID, waveID string, index int) context.Context {

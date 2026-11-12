@@ -213,11 +213,6 @@ type AgentTool struct {
 	CancelChild CancelChildRunner
 	CloseChild  CloseChildRunner
 
-	// MaxChildTimeoutMs is the operator's ceiling on the timeout_ms a caller
-	// gives a spawn or parallel_spawn child (LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS).
-	// 0 = no ceiling. A larger timeout_ms is refused with the ceiling named.
-	MaxChildTimeoutMs int
-
 	// PauseSignal is the runtime's pause state: a child's timeout_ms does not
 	// run while the runtime is paused. nil = only review holds stop it. Set by
 	// the HTTP server.
@@ -230,7 +225,7 @@ type AgentTool struct {
 	LiveChildren *tools.LiveChildren
 
 	// PollWaitCapMs bounds how long one poll with wait "any" or "all" may
-	// block (LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS). 0 = DefaultPollWaitCapMs.
+	// block. 0 = DefaultPollWaitCapMs.
 	PollWaitCapMs int
 
 	// HoldRunTree keeps the run tree rooted at root — its ephemeral volumes
@@ -362,17 +357,10 @@ func liveLimitResult(err error) tools.Result {
 	return errBusiness(err.Error(), "Wait for children you started to finish, or close resident children you no longer need, then try again.")
 }
 
-// checkChildTimeout validates a spawn's timeout_ms against the operator
-// ceiling. Refused rather than clamped: a bound shortened behind the caller's
-// back would cut off a child it meant to wait for, and the message names the
-// ceiling so the next call can fit it.
+// checkChildTimeout validates a spawn's timeout_ms: any non-negative value.
 func (a *AgentTool) checkChildTimeout(field string, ms int) (tools.Result, bool) {
 	if ms < 0 {
 		return errValidation(field+" must be >= 0 (0 or absent = wait for the child however long it runs)", ""), false
-	}
-	if a.MaxChildTimeoutMs > 0 && ms > a.MaxChildTimeoutMs {
-		return errValidation(fmt.Sprintf("%s=%d is above this runtime's ceiling of %d ms", field, ms, a.MaxChildTimeoutMs),
-			fmt.Sprintf("Pass a timeout_ms of at most %d.", a.MaxChildTimeoutMs)), false
 	}
 	return tools.Result{}, true
 }

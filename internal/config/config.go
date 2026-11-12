@@ -4338,22 +4338,11 @@ type Env struct {
 	// run, not per tree: a child's children count against the child.
 	// Env: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN.
 	MaxLiveChildrenPerRun int
-	// InteractiveChildIdleTTLMs is the default idle-reap window for a resident
-	// interactive sub-agent — reaped after this long with no send. 0 = the code
-	// default (30 min). Per-open overridable via op=open's idle_ttl_seconds.
-	InteractiveChildIdleTTLMs int
-	// ResidentMaxTurnSeconds is the turn ceiling for a resident interactive
-	// sub-agent: a child whose CURRENT turn has run longer than this is reaped,
-	// whatever its parent does (polling it does not extend the ceiling). It
-	// bounds a turn that never ends, which the idle rule cannot see because a
-	// running turn is never idle. 0 = the code default (2h); there is no
-	// unlimited setting. Env: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS.
-	ResidentMaxTurnSeconds int
 	// InteractiveIdleTimeout ends a top-level interactive run (or a detached
 	// interactive continuation) that has waited parked for its operator this
 	// long: it finishes with stop reason idle_timeout and releases what it
 	// holds, and its session can be continued. Default 1h; 0 waits forever.
-	// Resident sub-agents (InteractiveChildIdleTTLMs) and review holds (their
+	// Resident sub-agents (their own idle rule) and review holds (their
 	// review TTL) have their own bounds. Env: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
 	// (a Go duration).
 	InteractiveIdleTimeout time.Duration
@@ -4363,17 +4352,6 @@ type Env struct {
 	// bound: the join then ends only when its children do or its caller
 	// leaves. Env: LOOMCYCLE_BATCH_JOIN_TIMEOUT (a Go duration).
 	BatchJoinTimeout time.Duration
-	// AgentChildMaxTimeoutMs is the ceiling on the timeout_ms an agent may give
-	// a child it starts with Agent spawn / parallel_spawn. 0 = no ceiling. It is
-	// a ceiling, not a default: a spawn without timeout_ms still waits for its
-	// child as long as the child runs. A larger timeout_ms is refused, not
-	// clamped — a silently shortened bound would cut off a child the caller
-	// meant to wait for. Env: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS.
-	AgentChildMaxTimeoutMs int
-	// AgentPollWaitCapMs bounds how long one Agent poll with wait "any" or
-	// "all" may block; a larger wait_ms is cut to it. 0 = the tool's default
-	// (60 s). Env: LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS.
-	AgentPollWaitCapMs int
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
@@ -4387,15 +4365,6 @@ type Env struct {
 	// WebSearch result naming which search provider answered + any fallover
 	// (RFC BB). Off by default (byte-identical output); LOOMCYCLE_WEBSEARCH_PROVENANCE=1.
 	WebSearchProvenance bool
-	// Client-tool host (RFC BC) — the /v1/client-tools WebSocket over which a
-	// client registers + executes tools on the user's machine.
-	// ClientToolTimeoutMS bounds one delegate-and-block invoke (default 60000);
-	// ClientToolMaxBytes caps a single frame (default 1<<20, mirrors the request
-	// cap); ClientToolMaxConns caps concurrent connections per principal
-	// (default 8). All read from LOOMCYCLE_CLIENT_TOOL_*.
-	ClientToolTimeoutMS int
-	ClientToolMaxBytes  int64
-	ClientToolMaxConns  int
 	// BashEnabled gates the Bash tool. Defaults to false. Even when
 	// true the tool is NOT a true sandbox — it restricts cwd, scrubs
 	// env, bounds output, and times out, but cannot prevent the spawned
@@ -4774,23 +4743,6 @@ type Env struct {
 	// Env: LOOMCYCLE_TRACE_URL_TEMPLATE.
 	TraceURLTemplate string
 
-	// CancelAckTimeoutMs is the v0.12.2 cross-replica cancel ack wait.
-	// On a cluster-mode cancel that broadcasts to the owning replica,
-	// the originator waits this long for a "cancelled" ack on the
-	// backplane before returning {cancelled:false,
-	// reason:"owner_replica_unreachable"}. Default 5000.
-	// Env: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS.
-	CancelAckTimeoutMs int64
-
-	// PauseDefaultTimeoutMs is how long a pause waits for in-flight runs
-	// to park, applied when POST /v1/_pause omits timeout_ms. 0 ⇒ use the
-	// internal default (pause.DefaultPauseTimeout = 30s). Capped at
-	// pause.MaxPauseTimeout (5 min) regardless of operator value to
-	// avoid an operator typo (300000 vs 30000) leaving the runtime
-	// in StatePausing for an extended period. Env:
-	// LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS.
-	PauseDefaultTimeoutMs int64
-
 	// ShutdownPauseTimeoutMs bounds how long a SIGTERM/SIGINT shutdown waits
 	// for this replica's in-flight runs to park before it exits, so the next
 	// boot resumes them (pause.Manager.PauseForShutdown). At three quarters of
@@ -4799,15 +4751,6 @@ type Env struct {
 	// the stale-run sweeper, as before). Capped at pause.MaxPauseTimeout. Env:
 	// LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS.
 	ShutdownPauseTimeoutMs int64
-
-	// PauseCacheTTLMs is the v0.12.3 Phase 4 TTL for the cluster-
-	// mode DB-backed pause-state cache in pause.Manager.State().
-	// Default 1000 (1s). Lower values reduce the maximum latency
-	// between a pause event and a remote replica seeing the state
-	// change; higher values reduce DB load. Only effective when
-	// LOOMCYCLE_REPLICA_ID is set. Env:
-	// LOOMCYCLE_PAUSE_CACHE_TTL_MS.
-	PauseCacheTTLMs int64
 
 	// MCPAllowPrivilegedTools — v0.8.15. When true, dynamically-
 	// registered agents may include Bash/Write/Edit in their
@@ -5381,18 +5324,11 @@ func applyEnvCore(cfg *Config) {
 		TeamSubscriptions:           os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS") == "1",
 		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
 		MaxLiveChildrenPerRun:       getenvInt("LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN", 0),
-		InteractiveChildIdleTTLMs:   getenvInt("LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS", 0),
-		ResidentMaxTurnSeconds:      getenvInt("LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS", 0),
-		AgentChildMaxTimeoutMs:      getenvInt("LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS", 0),
-		AgentPollWaitCapMs:          getenvInt("LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS", 0),
 		BraveAPIKey:                 os.Getenv("BRAVE_API_KEY"),
 		SerperAPIKey:                os.Getenv("SERPER_API_KEY"),
 		ExaAPIKey:                   os.Getenv("EXA_API_KEY"),
 		TavilyAPIKey:                os.Getenv("TAVILY_API_KEY"),
 		WebSearchProvenance:         os.Getenv("LOOMCYCLE_WEBSEARCH_PROVENANCE") == "1",
-		ClientToolTimeoutMS:         getenvInt("LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS", 60000),
-		ClientToolMaxBytes:          int64(getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_BYTES", 1<<20)),
-		ClientToolMaxConns:          getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_CONNS", 8),
 		BashEnabled:                 os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashAllowedCreds:            splitCSV(os.Getenv("LOOMCYCLE_BASH_ALLOWED_CREDS")),
 		BashboxFallbackCommands:     splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),

@@ -39,6 +39,18 @@ func isClientToolsUpgrade(r *http.Request) bool {
 	return false
 }
 
+// Bounds of the client-tool host. Fixed: the endpoint is bearer-gated, and
+// these only keep one connection or one call from holding the server.
+const (
+	// clientToolTimeout is how long a run blocks on one delegated call: long
+	// enough for a tool a person watches run, short enough that a closed
+	// laptop does not hold a run for good.
+	clientToolTimeout = 60 * time.Second
+	// clientToolMaxFrameBytes caps one WebSocket frame; a tool result that
+	// large belongs in a file.
+	clientToolMaxFrameBytes = 1 << 20
+)
+
 // handleClientTools serves GET /v1/client-tools (RFC BC): the client upgrades to
 // a WebSocket, `hello`s the tools it can run on the user's machine, and loomcycle
 // files the connection under the bearer's (tenant, subject) so a matching agent
@@ -82,7 +94,7 @@ func (s *Server) handleClientTools(w http.ResponseWriter, r *http.Request) {
 	}
 	// CloseNow on every exit path; a graceful Close is best-effort below.
 	defer c.CloseNow()
-	c.SetReadLimit(s.cfg().Env.ClientToolMaxBytes)
+	c.SetReadLimit(clientToolMaxFrameBytes)
 
 	ctx := r.Context()
 

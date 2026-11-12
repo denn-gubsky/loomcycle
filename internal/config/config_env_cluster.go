@@ -26,22 +26,6 @@ func applyEnvCluster(cfg *Config) error {
 	if err := validateTraceURLTemplate(cfg.Env.TraceURLTemplate); err != nil {
 		return fmt.Errorf("LOOMCYCLE_TRACE_URL_TEMPLATE: %w", err)
 	}
-	cfg.Env.CancelAckTimeoutMs = 5000
-	if v := os.Getenv("LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.CancelAckTimeoutMs = n
-		}
-	}
-
-	// v0.12.3 Phase 4 pause-state cache TTL. Effective only when
-	// LOOMCYCLE_REPLICA_ID is set (cluster mode); single-replica
-	// pause.Manager skips the DB cache entirely.
-	cfg.Env.PauseCacheTTLMs = 1000 // default 1s
-	if v := os.Getenv("LOOMCYCLE_PAUSE_CACHE_TTL_MS"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.PauseCacheTTLMs = n
-		}
-	}
 
 	// RFC ES F1: the shutdown pause's bound. Unset ⇒ the default; an explicit
 	// 0 turns the pause off, so it is told apart from unset.
@@ -49,15 +33,6 @@ func applyEnvCluster(cfg *Config) error {
 	if v := os.Getenv("LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
 			cfg.Env.ShutdownPauseTimeoutMs = n
-		}
-	}
-
-	// v0.8.17 pause manager default timeout. 0 ⇒ pause package
-	// default (30s). The manager itself clamps at pause.MaxPauseTimeout
-	// regardless of what we set here.
-	if v := os.Getenv("LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
-			cfg.Env.PauseDefaultTimeoutMs = n
 		}
 	}
 	return nil

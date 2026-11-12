@@ -173,9 +173,9 @@ There is no split-brain scenario: Postgres is the single source of truth. If the
 
 5. **Global concurrency cap is per-replica.** `concurrency.max_concurrent_runs: 10` × 2 replicas = 20 cluster-wide. Per-user fairness IS cluster-wide.
 
-6. **Cancel ack timeout is 5 seconds.** A cancel request that doesn't get an ack within 5s returns `{cancelled: false, reason: "owner_replica_unreachable"}` and suggests checking `_health`. Tunable via `LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS`.
+6. **Cancel ack timeout is 5 seconds.** A cancel request that doesn't get an ack within 5s returns `{cancelled: false, reason: "owner_replica_unreachable"}` and suggests checking `_health`.
 
-7. **Pause cache TTL is 1 second.** Worst case 1s lag between a pause request and a remote replica refusing new runs. Tunable via `LOOMCYCLE_PAUSE_CACHE_TTL_MS`.
+7. **Pause cache TTL is 1 second.** Worst case 1s lag between a pause request and a remote replica refusing new runs.
 
 8. **Steering routes to the replica that owns the run.** `POST /v1/runs/{id}/input`, retune and the run-config reads can land on any replica; one that does not own the run forwards the call to the owner over the backplane and waits for its ack, with the same timeout as cancel. If the owner does not answer in time, the message is reported as not delivered and can be sent again. (The cluster-wide hook registry that used to be listed here was removed in v1.97.0; a run fires the hooks on its agent definition, on whichever replica runs it.)
 

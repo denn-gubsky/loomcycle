@@ -2346,10 +2346,8 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 |---|---|---|
 | `LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN` | 32 | Children one run has alive at once, across every `Agent` op that starts one; a spawn past it is refused. |
 | `LOOMCYCLE_MAX_INTERACTIVE_CHILDREN` | 8 | Resident (`op=open`) children one run holds open; `op=open` past it is refused. |
-| `LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS` | 1800000 (30 min) | Idle time (no send) after which a resident child is reaped. |
-| `LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS` | 7200 (2 h) | A resident child whose current turn runs longer is reaped. No unlimited setting. |
-| `LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS` | 0 (no ceiling) | Ceiling on a spawn's `timeout_ms`; a larger value is refused, not clamped. |
-| `LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS` | 60000 (60 s) | Longest one `Agent` poll with `wait` `any`/`all` blocks; a larger `wait_ms` is cut to it. |
+
+Fixed: a resident child is reaped after 30 minutes with no send (an `open` may name its own `idle_ttl_seconds`) or when its current turn has run 2 hours; one `Agent` poll with `wait` `any`/`all` blocks at most 60 s (a larger `wait_ms` is cut to it); a spawn's `timeout_ms` has no ceiling.
 
 **Logging.** Log lines go to stderr. Exact values of secret-named env vars are masked in them, as in the transcript plane above.
 
@@ -3315,9 +3313,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_PG_AUTOMIGRATE` | off | `1` applies pending Postgres schema migrations at boot. Off, boot refuses a database behind the binary's migrations until `loomcycle migrate up` runs. |
 | `LOOMCYCLE_REPLICA_ID` | unset | Turns on cluster mode and names this replica; also labels the Prometheus metrics. See [MULTI-REPLICA.md](MULTI-REPLICA.md). |
 | `LOOMCYCLE_REPLICAS_STALE_AFTER_MS` | `90000` | A replica whose heartbeat is older than this is presumed dead: its in-flight runs fail with `replica_died` and its quota is reclaimed. Keep it well above the 30 s heartbeat. |
-| `LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS` | `5000` | Cluster mode: how long a cancel waits for the owning replica's acknowledgement before answering `owner_replica_unreachable`. |
-| `LOOMCYCLE_PAUSE_CACHE_TTL_MS` | `1000` | Cluster mode: how long a replica caches the shared pause state. Lower sees a pause sooner; higher reads the database less. |
-| `LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS` | `30000` | How long a pause waits for in-flight runs to park when the request names no timeout. Capped at 5 minutes. |
 | `LOOMCYCLE_HEARTBEAT_STALE_MS` | `600000` | A run with no heartbeat for this long is swept. Keep it at least twice a slow iteration (a long tool call). |
 | `LOOMCYCLE_MAX_REQUEST_BYTES` | 16 MiB | Body cap on run requests (large enough for an inline image). A non-positive value keeps the default; over the cap answers 413. |
 | `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` | `16` | How many runs one (tenant, user) may queue behind its per-user concurrency cap; `0` refuses a run over the cap at once. Per replica in cluster mode. |
@@ -3359,9 +3354,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC` | off | `1` seeds `Date.now()` and `Math.random()` in code agents so runs are reproducible. |
 | `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `120` | A code agent's budget of active time (waits on children, channels and interruptions do not count). Floor 1 s. |
 | `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `86400` | How long a code-agent run may live, waits included; past it the run and its children are cancelled. Operator-only: no agent or run field can raise it. |
-| `LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS` | `60000` | Client-tool host (`/v1/client-tools`): how long one delegated tool call may take. |
-| `LOOMCYCLE_CLIENT_TOOL_MAX_BYTES` | 1 MiB | Client-tool host: largest single frame. |
-| `LOOMCYCLE_CLIENT_TOOL_MAX_CONNS` | `8` | Client-tool host: concurrent connections per principal. |
 | `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` accepts a plain `http://` Vault address for Vault Transit keys (a dev server). Off because the Vault token travels in a header. |
 | `LOOMCYCLE_WEBSEARCH_PROVENANCE` | off | `1` appends a `(via <provider>)` footer to WebSearch results, naming the search provider that answered and any fallover. |
 | `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. |
@@ -3416,6 +3408,12 @@ These are constants of the runtime; no setting changes them.
 | Channel-hook worker | 16 messages, 4 per channel | Messages one replica's hook worker decides at once. |
 | Channel-hook wait | 15 min | How long a message waits on fail-closed hooks before it is dropped as "hook unavailable". |
 | Registered agent lifetime | 24 h | An MCP-registered agent whose request names no `ttl_seconds`. |
+| Client-tool call | 60 s | How long one delegated client-tool call may take. |
+| Client-tool frame | 1 MiB | The largest single frame on `/v1/client-tools`. |
+| Client-tool connections | 8 | Concurrent connections per principal. |
+| Pause wait | 30 s | How long a pause waits for in-flight runs to park when the request names no `timeout_ms` (a request may ask for up to 5 min). |
+| Cancel acknowledgement | 5 s | Cluster mode: how long a cancel waits for the owning replica before answering `owner_replica_unreachable`. |
+| Pause-state cache | 1 s | Cluster mode: how long a replica caches the shared pause state. |
 
 Background work runs on fixed cadences, and none of it can be switched off:
 

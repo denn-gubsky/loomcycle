@@ -165,7 +165,10 @@ func (b *boot) startCluster() {
 		// Two long-lived subscribers carry the wire side: one listens
 		// for incoming cancel requests (RunCancelSubscriber), the other
 		// receives acks (RunAckSubscriber).
-		ackTimeout := time.Duration(cfg.Env.CancelAckTimeoutMs) * time.Millisecond
+		// How long a cancel waits for the owning replica's ack before it
+		// answers owner_replica_unreachable: several backplane round trips,
+		// short enough for a caller to wait on.
+		const ackTimeout = 5 * time.Second
 		cancelCoord, err := coord.NewCancelCoordinator(coord.CancelCoordinatorConfig{
 			Backplane:    bp,
 			ReplicaID:    cfg.Env.ReplicaID,

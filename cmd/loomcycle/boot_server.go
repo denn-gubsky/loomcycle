@@ -227,7 +227,7 @@ func (b *boot) buildServer() {
 	// /v1/client-tools handler registers connections here; the dispatch fallback
 	// (composed below) + candidateTools advertising read it. Always on (the
 	// endpoint is bearer-gated; an empty registry just serves no client-tools).
-	clientToolReg := clienttools.NewRegistry(cfg.Env.ClientToolMaxConns)
+	clientToolReg := clienttools.NewRegistry(0) // 0 = the registry's cap of 8 connections per principal
 	srv.SetClientTools(clientToolReg)
 }
 

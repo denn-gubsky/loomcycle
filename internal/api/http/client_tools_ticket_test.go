@@ -30,7 +30,6 @@ var ticketTestSecretKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{
 // enableTickets turns on the client-tool host and the ticket key.
 func enableTickets(s *Server) *clienttools.Registry {
 	s.cfg().Env.SecretKey = ticketTestSecretKey
-	s.cfg().Env.ClientToolMaxBytes = 1 << 20
 	reg := clienttools.NewRegistry(0)
 	s.clientTools = reg
 	return reg

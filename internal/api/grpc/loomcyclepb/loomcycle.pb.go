@@ -12367,7 +12367,7 @@ func (x *HealthResponse) GetUptimeSeconds() int64 {
 type PauseRuntimeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// How long to wait for in-flight runs to park, in milliseconds. 0
-	// falls through to LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS (default 30 s).
+	// falls through to the server's default (30 s).
 	// Clamped server-side at pause.MaxPauseTimeout (5 min). int64
 	// for consistency with every other _ms field in this proto
 	// (duration_ms in PauseRuntimeResponse, wait_ms in Retry) —

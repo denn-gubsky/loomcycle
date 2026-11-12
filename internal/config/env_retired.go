@@ -89,6 +89,16 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL":           "a replica's hook worker decides 4 messages of one channel at once",
 	"LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT":              "a message waits 15 minutes on fail-closed hooks before it is dropped",
 	"LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS":   "a registered agent lives 24h unless its request names ttl_seconds",
+	"LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS":       "a resident child is reaped after 30 minutes idle; open's idle_ttl_seconds overrides it per child",
+	"LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS":           "a resident child's turn is cut at 2h",
+	"LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS":          "a spawn's timeout_ms has no ceiling",
+	"LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS":              "one Agent poll blocks at most 60s",
+	"LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS":              "a client-tool call blocks at most 60s",
+	"LOOMCYCLE_CLIENT_TOOL_MAX_BYTES":               "a client-tool frame is capped at 1 MiB",
+	"LOOMCYCLE_CLIENT_TOOL_MAX_CONNS":               "a principal holds at most 8 client-tool connections",
+	"LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS":               "a cross-replica cancel waits 5s for its acknowledgement",
+	"LOOMCYCLE_PAUSE_CACHE_TTL_MS":                  "the shared pause state is cached for 1s",
+	"LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS":            "a pause waits 30s unless the request names timeout_ms",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in
