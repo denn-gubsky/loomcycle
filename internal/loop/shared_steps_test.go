@@ -420,3 +420,81 @@ func TestRun_ZeroInputUsageDoesNotArmTheContextReports(t *testing.T) {
 		t.Errorf("context reports %v on a run whose replies never reported input tokens", reports)
 	}
 }
+
+// cancelProbeProvider fails or holds every call in one way, so a test can
+// cancel the run while that call is out or while its retry waits.
+type cancelProbeProvider struct {
+	mode    string // "block" | "callErr" | "streamErr"
+	started chan struct{}
+	once    sync.Once
+}
+
+func (p *cancelProbeProvider) ID() string                                   { return "cancel-probe" }
+func (p *cancelProbeProvider) Probe(context.Context) error                  { return nil }
+func (p *cancelProbeProvider) ListModels(context.Context) ([]string, error) { return nil, nil }
+func (p *cancelProbeProvider) Capabilities() providers.Capabilities {
+	return providers.Capabilities{Streaming: true}
+}
+func (p *cancelProbeProvider) Call(ctx context.Context, _ providers.Request) (<-chan providers.Event, error) {
+	switch p.mode {
+	case "block":
+		p.once.Do(func() { close(p.started) })
+		<-ctx.Done()
+		return nil, ctx.Err()
+	case "callErr":
+		return nil, errors.New("fake 429: rate_limited")
+	}
+	ch := make(chan providers.Event, 1)
+	ch <- providers.Event{Type: providers.EventError, Error: "fake 429: rate_limited"}
+	close(ch)
+	return ch, nil
+}
+
+// A run cancelled while its model call is out — blocked in Call, or waiting
+// out a same-provider retry — ends in one shape in both loops: stop reason
+// "cancelled" and one error event classified cancelled.
+func TestRun_CancelMidCallEndsCancelledInBothLoops(t *testing.T) {
+	for _, loopKind := range []string{"append", "stateful"} {
+		for _, mode := range []string{"block", "callErr", "streamErr"} {
+			t.Run(loopKind+"/"+mode, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				prov := &cancelProbeProvider{mode: mode, started: make(chan struct{})}
+				if mode == "block" {
+					go func() { <-prov.started; cancel() }()
+				}
+				var mu sync.Mutex
+				var errs []providers.Event
+				opts := RunOptions{
+					Provider: prov, Model: "x", Dispatcher: tools.NewDispatcher(nil),
+					Segments: statefulTaskSegs(), MaxSameProviderRetries: 1,
+					OnEvent: func(ev providers.Event) {
+						switch ev.Type {
+						case providers.EventRetry:
+							cancel() // the retry's wait is what the cancel lands in
+						case providers.EventError:
+							mu.Lock()
+							errs = append(errs, ev)
+							mu.Unlock()
+						}
+					},
+				}
+				if loopKind == "stateful" {
+					opts.Context = statefulCtx(nil)
+				}
+				res, err := Run(ctx, opts)
+				if !errors.Is(err, context.Canceled) {
+					t.Errorf("err = %v, want context.Canceled", err)
+				}
+				if res.StopReason != "cancelled" {
+					t.Errorf("stop reason = %q, want cancelled", res.StopReason)
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				if len(errs) != 1 || errs[0].ErrorInfo == nil || errs[0].ErrorInfo.Category != errkind.CategoryCancelled {
+					t.Errorf("error events = %+v, want one classified cancelled", errs)
+				}
+			})
+		}
+	}
+}

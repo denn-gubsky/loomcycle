@@ -4373,6 +4373,15 @@ func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span,
 		}
 		return loopExit{ctl: loopNext}
 	}
+	// The run's own ctx ended while the call was out (blocked in a provider's
+	// call lane, or a slow model before its headers), so the call failed with
+	// the cancel. That is not a provider fault: no retry, fallback or
+	// resolver feedback, and the run ends cancelled with the classified
+	// cancelled event, as a cancel mid-stream does and as the stateful loop
+	// ends the same case.
+	if ctx.Err() != nil {
+		return s.runEndedMidTurn(ctx, iterSpan, iter, "")
+	}
 	// v0.12.9 same-provider retry: when the operator opted
 	// into MaxSameProviderRetries > 0, retryable errors
 	// (429, 5xx, network) sleep with exponential backoff and
@@ -4398,10 +4407,9 @@ func (s *runState) callFailed(ctx, turnCtx context.Context, iterSpan trace.Span,
 		})
 		select {
 		case <-ctx.Done():
-			lcotel.SetSpanError(iterSpan, ctx.Err())
-			iterSpan.End()
-			s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-			return exitReturn(RunResult{Iterations: iter}, ctx.Err())
+			// Cancelled while the retry waited: the same "cancelled mid-call"
+			// end as a cancel during the call itself.
+			return s.runEndedMidTurn(ctx, iterSpan, iter, "")
 		case <-time.After(backoff):
 		}
 		lcotel.SetSpanErrorMessage(iterSpan, "provider call failed; same-provider retry scheduled")
@@ -4624,10 +4632,9 @@ func (s *runState) readTurn(ctx, turnCtx context.Context, iterSpan trace.Span, i
 				})
 				select {
 				case <-ctx.Done():
-					lcotel.SetSpanError(iterSpan, ctx.Err())
-					iterSpan.End()
-					s.turnCancelFn(nil) // RFC BH: release this turn's cancel ctx before terminating (no leak)
-					return turnOutput{}, exitReturn(RunResult{Iterations: iter}, ctx.Err())
+					// Cancelled while the retry waited: ends as a cancel
+					// mid-call does (runEndedMidTurn).
+					return turnOutput{}, s.runEndedMidTurn(ctx, iterSpan, iter, iterText)
 				case <-time.After(backoff):
 				}
 				lcotel.SetSpanErrorMessage(iterSpan, "in-stream provider error; same-provider retry scheduled")

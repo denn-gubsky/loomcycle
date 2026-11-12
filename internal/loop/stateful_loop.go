@@ -520,6 +520,9 @@ func (r *statefulLoop) callFault(ctx context.Context, iter int, err error) loopE
 		case statefulCallRetry:
 			return loopExit{ctl: loopNext}
 		case statefulCallCancelled:
+			// Cancelled while a retry waited: the same end as a cancel while
+			// the call was out.
+			r.emit(endedMidTurnEvent(ctx))
 			return exitReturn(RunResult{StopReason: "cancelled", Iterations: iter, Usage: r.total, State: r.sigma}, ctx.Err())
 		}
 		// The provider's own text, as the append loop emits it; the
