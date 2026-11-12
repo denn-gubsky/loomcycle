@@ -727,6 +727,9 @@ func recoverStatefulCall(ctx context.Context, opts *RunOptions, rec *statefulRec
 		}
 		return statefulCallRetry
 	}
+	// Only the run ctx is asked, not a turn ctx as in the append loop: this
+	// mode has no turn cancel, so it has no turn ctx.
+	//
 	// Resolver feedback, decided exactly as Run's is (reportCallFault). A
 	// restricted run's refusal to use the operator key (ErrOperatorKeyForbidden)
 	// is a per-run policy decision, not an outage, and must not touch the matrix.

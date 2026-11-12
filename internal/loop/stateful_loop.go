@@ -91,6 +91,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 		}
 	}
 
+	// Always max_iterations with Iterations = the cap, unlike the append
+	// loop's finish: this mode has no tool_use stop or structured answer to
+	// read at the cap.
 	r.finish("max_iterations")
 	return RunResult{StopReason: "max_iterations", Iterations: r.maxIter, Usage: r.total, State: r.sigma, ProposedSchema: r.lastProposed}, nil
 }
@@ -113,6 +116,9 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 //     message, or end the run.
 //  9. action — otherwise the named action runs and its output is the next
 //     observation.
+//
+// There is no per-turn cancel (the append loop's armTurn): turn cancel is a
+// feature this mode does not have yet (see stateful.go's header).
 //
 // The step runs under its own loomcycle.iteration span, as an append
 // iteration does, so its model call and its action nest under it. Ended by
@@ -393,6 +399,12 @@ func (r *statefulLoop) callUntilAccepted(ctx context.Context, iter int) (*emitSt
 // copy, the forced emit_state call, the sampling, and the run's first request
 // recorded once.
 func (r *statefulLoop) request(ctx context.Context, iter int) (providers.Request, loopExit) {
+	// The emit_state choice is forced and nothing else: tool_choice and
+	// output_format are inert in this mode (reportStatefulInert), and the
+	// action catalog is fixed in the system prompt, so there is no per-call
+	// liveToolSchema as in the append loop; the dispatcher refuses a
+	// withdrawn tool instead.
+	//
 	// RFC DG: say on the WIRE what the system prompt has only ever
 	// asked for. Narrowing `tools` to emit_state was never enough —
 	// the run that produced this RFC had exactly one tool offered and
@@ -493,7 +505,8 @@ func (r *statefulLoop) callFault(ctx context.Context, iter int, err error) loopE
 		// to have none: one 429 or "overloaded" killed a stateful run that
 		// an append run on the same agent would ride out. Neither retry
 		// consumes a max_patch_retries attempt — that budget is for the
-		// model's mistakes, and this was not one.
+		// model's mistakes, and this was not one — nor an iteration, unlike
+		// the append loop, whose retry re-runs the whole iteration.
 		//
 		// The run's ctx ended while the call was out: the run ends cancelled
 		// with the error event an append run emits for the same cancel
@@ -516,7 +529,9 @@ func (r *statefulLoop) callFault(ctx context.Context, iter int, err error) loopE
 		return exitReturn(r.failed(iter), err)
 	}
 	// The call reached the provider and came back: the pair is healthy
-	// enough to answer, whatever the model then did with the answer.
+	// enough to answer, whatever the model then did with the answer. Reset
+	// here, after a call with no fault, and not on every opened stream as
+	// the append loop does: each loop keeps its own retry counting.
 	r.rec.sameProviderRetries = 0
 	if r.opts.ClearStall != nil {
 		r.opts.ClearStall(r.opts.Provider.ID(), r.opts.Model)
@@ -764,7 +779,9 @@ func (r *statefulLoop) record(ctx context.Context, iter int, es *emitStateOut, e
 // when the step named an action; otherwise it parks or takes a late message
 // (loopNext) or ends the run (loopReturn).
 func (r *statefulLoop) endTurn(ctx context.Context, iter int, es *emitStateOut) loopExit {
-	// Turn boundary: done flag, or no action named.
+	// Turn boundary: done flag, or no action named. No agent_stop hooks,
+	// review hold or children wait here, unlike the append loop's
+	// finishAnswer: reportStatefulInert reports them inert on this mode.
 	if endsTurn(es) {
 		final := es.Final
 		if final == "" {
