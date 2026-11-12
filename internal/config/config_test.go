@@ -859,9 +859,6 @@ agents:
 	if cfg.Env.MemoryMaxScopeBytes != 1024*1024 {
 		t.Errorf("MemoryMaxScopeBytes default = %d, want 1048576", cfg.Env.MemoryMaxScopeBytes)
 	}
-	if cfg.Env.MemorySweepInterval == 0 {
-		t.Errorf("MemorySweepInterval default should be non-zero")
-	}
 	if cfg.Env.MemoryPendingDrainedTTL != 7*24*time.Hour {
 		t.Errorf("MemoryPendingDrainedTTL default = %v, want 168h", cfg.Env.MemoryPendingDrainedTTL)
 	}
@@ -876,7 +873,6 @@ agents:
   default: { model: claude-sonnet-4-6 }
 `), 0o600)
 	t.Setenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES", "0")
-	t.Setenv("LOOMCYCLE_MEMORY_SWEEP_MS", "-1")
 	t.Setenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS", "0")
 	cfg, err := Load(yamlPath)
 	if err != nil {
@@ -885,52 +881,8 @@ agents:
 	if cfg.Env.MemoryMaxValueBytes != 0 {
 		t.Errorf("0 should disable; got %d", cfg.Env.MemoryMaxValueBytes)
 	}
-	if cfg.Env.MemorySweepInterval != 0 {
-		t.Errorf("negative should disable; got %v", cfg.Env.MemorySweepInterval)
-	}
 	if cfg.Env.MemoryPendingDrainedTTL != 0 {
 		t.Errorf("0 should disable the drained-queue prune; got %v", cfg.Env.MemoryPendingDrainedTTL)
-	}
-}
-
-// The internal-chat retention age defaults to 3 days and treats an EXPLICIT 0
-// as a real value ("inherit the global chat age"), not as unset. The distinction
-// is the whole point of the knob's n >= 0 parse guard: the sibling
-// LOOMCYCLE_RETENTION_*_MS vars guard on n > 0, and copying that here would
-// silently ignore an operator's opt-out and leave the 3-day default in place.
-func TestRetentionChatsInternalMaxAge_DefaultsAndExplicitZero(t *testing.T) {
-	tmp := t.TempDir()
-	yamlPath := filepath.Join(tmp, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  default: { model: claude-sonnet-4-6 }
-`), 0o600)
-
-	cfg, err := Load(yamlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := 3 * 24 * time.Hour; cfg.Env.RetentionChatsInternalMaxAge != want {
-		t.Errorf("default internal chat age = %v, want %v", cfg.Env.RetentionChatsInternalMaxAge, want)
-	}
-
-	t.Setenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", "0")
-	cfg, err = Load(yamlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Env.RetentionChatsInternalMaxAge != 0 {
-		t.Errorf("explicit 0 = %v, want 0 (0 means inherit the global chat age; it must override the 3-day default, not be discarded as unset)", cfg.Env.RetentionChatsInternalMaxAge)
-	}
-
-	t.Setenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", "7200000")
-	cfg, err = Load(yamlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := 2 * time.Hour; cfg.Env.RetentionChatsInternalMaxAge != want {
-		t.Errorf("override = %v, want %v", cfg.Env.RetentionChatsInternalMaxAge, want)
 	}
 }
 
@@ -2902,40 +2854,6 @@ func TestValidate_ContextPlugins(t *testing.T) {
 	if err := validate(base([]ContextPluginSpec{{Name: ""}})); err == nil || !strings.Contains(err.Error(), "name is required") {
 		t.Errorf("empty name: got %v, want 'name is required' error", err)
 	}
-}
-
-// RFC AH Phase 2b: the ephemeral-volume sweep interval defaults to 60s and is
-// disabled by a non-positive LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS.
-func TestEphemeralVolumeSweepInterval_DefaultAndDisable(t *testing.T) {
-	writeMinimal := func(t *testing.T) string {
-		t.Helper()
-		p := filepath.Join(t.TempDir(), "c.yaml")
-		if err := os.WriteFile(p, []byte("defaults: { provider: anthropic, model: x }\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-
-	t.Run("default 60s", func(t *testing.T) {
-		cfg, err := Load(writeMinimal(t))
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		if cfg.Env.EphemeralVolumeSweepInterval != 60*time.Second {
-			t.Errorf("default = %s, want 60s", cfg.Env.EphemeralVolumeSweepInterval)
-		}
-	})
-
-	t.Run("disable with 0", func(t *testing.T) {
-		t.Setenv("LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS", "0")
-		cfg, err := Load(writeMinimal(t))
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		if cfg.Env.EphemeralVolumeSweepInterval != 0 {
-			t.Errorf("disabled = %s, want 0", cfg.Env.EphemeralVolumeSweepInterval)
-		}
-	})
 }
 
 // TestHooksPrivateHostAllowlistEnvAppends pins the yaml→env wiring for the

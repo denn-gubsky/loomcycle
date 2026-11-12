@@ -122,12 +122,7 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	if emptyDossierMode == "" {
 		emptyDossierMode = "off"
 	}
-	// 0 = inherit the global chat age (never "delete immediately"), resolved the
-	// same way retention.New resolves it.
-	chatsInternalMaxAge := s.cfg().Env.RetentionChatsInternalMaxAge
-	if chatsInternalMaxAge == 0 {
-		chatsInternalMaxAge = s.cfg().Env.RetentionChatsMaxAge
-	}
+	chatsInternalMaxAge := retention.InternalChatsMaxAge
 	resp := retentionReportResponse{
 		Admin:                 admin,
 		Enabled:               s.cfg().Env.RetentionEnabled,
@@ -182,7 +177,7 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 			// The preview splits chats by authoring agent exactly as the sweep
 			// does, so "chats" vs "chats_internal" in the counts below reflect the
 			// two cutoffs an operator actually gets.
-			ChatsInternalMaxAge: s.cfg().Env.RetentionChatsInternalMaxAge,
+			ChatsInternalMaxAge: retention.InternalChatsMaxAge,
 			InternalAgents:      s.cfg().InternalAgentNames(),
 		}
 		// Feed the SQL-Memory manager so the "mem" preview can see which agents

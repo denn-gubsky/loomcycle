@@ -21,7 +21,6 @@ import (
 func clientToolsTestConfig() *config.Config {
 	cfg := &config.Config{}
 	cfg.Env.ClientToolMaxBytes = 1 << 20
-	cfg.Env.SSEKeepaliveInterval = 20 * time.Second
 	return cfg
 }
 

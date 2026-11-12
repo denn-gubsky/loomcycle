@@ -181,7 +181,7 @@ func (s *Server) serveDocumentFeed(w http.ResponseWriter, r *http.Request, p doc
 	// operator feed's embedder health — provider, model and failure counts are
 	// the deployment's infrastructure state, not a member's to read.
 	stream.sendRaw("feed", map[string]any{"enabled": s.changeFeedEnabled()})
-	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	stream.startKeepalive(r.Context(), sseKeepaliveInterval)
 	defer stream.end()
 
 	s.tailDocumentFeed(r, stream, view, open, cursor, deadline, p)

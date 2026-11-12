@@ -165,7 +165,7 @@ func (s *Server) serveExistingRun(w http.ResponseWriter, r *http.Request, dup *r
 		return
 	}
 	stream.start()
-	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	stream.startKeepalive(r.Context(), sseKeepaliveInterval)
 	defer stream.end()
 	stream.send(providers.Event{Type: "session", Text: dup.SessionID})
 	stream.sendRaw("agent", map[string]any{

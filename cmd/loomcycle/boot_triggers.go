@@ -185,7 +185,9 @@ func (b *boot) startTeamSubscriptions() {
 			// whole walk so a second tick cannot start a concurrent one.
 			srv.SetAdvisoryLock(advisoryLock)
 		}
-		tick := time.Duration(cfg.Env.TeamSubscriptionsTickSeconds) * time.Second
+		// The worst-case latency between a message landing on a subscribed
+		// source and its wave starting; an idle sweep is one cheap query.
+		const tick = 15 * time.Second
 		safego.Go(bgCtx, "team_subscriptions.sweeper", func() {
 			t := time.NewTicker(tick)
 			defer t.Stop()
@@ -299,9 +301,9 @@ func (b *boot) startMetrics() {
 		srv.SetMetricsSampler(metricsSampler)
 		slog.Info("metrics: sampler enabled",
 			"interval", cfg.Env.MetricsSampleInterval, "system", cfg.Env.MetricsCollectSystem)
-		if cfg.Env.MetricsSweepInterval > 0 && cfg.Env.MetricsRetentionDays > 0 {
+		if cfg.Env.MetricsRetentionDays > 0 {
 			retentionDays := cfg.Env.MetricsRetentionDays
-			goAdvisoryGatedSweeper(bgCtx, cfg.Env.MetricsSweepInterval, advisoryLock, coord.LockKeyMetricsSweeper, "metrics",
+			goAdvisoryGatedSweeper(bgCtx, metricsSweepInterval, advisoryLock, coord.LockKeyMetricsSweeper, "metrics",
 				func(ctx context.Context) {
 					cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
 					swept, err := storeIface.MetricsSweep(ctx, cutoff)
@@ -314,9 +316,9 @@ func (b *boot) startMetrics() {
 					}
 				})
 			slog.Info("metrics: sweeper enabled",
-				"retention_days", cfg.Env.MetricsRetentionDays, "interval", cfg.Env.MetricsSweepInterval)
+				"retention_days", cfg.Env.MetricsRetentionDays, "interval", metricsSweepInterval)
 		} else {
-			slog.Warn("metrics: sweeper disabled (retention=0 or sweep interval=0)")
+			slog.Warn("metrics: sweeper disabled (retention=0)")
 		}
 	} else if cfg.Env.MetricsEnabled {
 		slog.Warn("metrics: sampler disabled (no Store backend)")
@@ -458,24 +460,27 @@ func (b *boot) logChannelSummary() {
 	}
 }
 
+// Cadences of the background sweeps started below. Each only reclaims rows
+// that reads already ignore (or, for ephemeral volumes, backstops an inline
+// purge), so none is worth an operator setting.
+const (
+	metricsSweepInterval         = 15 * time.Minute
+	dynamicAgentSweepInterval    = 15 * time.Minute
+	ephemeralVolumeSweepInterval = 60 * time.Second
+)
+
 // startSessionGC starts the session-lock map GC and the resident
 // sub-agent sweeper.
 func (b *boot) startSessionGC() {
-	cfg := b.cfg
 	srv := b.srv
 	bgCtx := b.bgCtx
 
-	// Session-lock map GC. Defaults: prune entries idle ≥ 10 min, on
-	// a 5-min tick. Disabled when both interval and max-idle resolve
-	// to zero (operator can opt out by setting both to 0).
-	sessionGCInterval := cfg.Env.SessionLockGCInterval
-	if sessionGCInterval <= 0 {
+	// Session-lock map GC: prune entries idle ≥ 10 min, on a 5-min tick.
+	// Map hygiene only; an idle lock holds a few hundred bytes.
+	const (
 		sessionGCInterval = 5 * time.Minute
-	}
-	sessionGCMaxIdle := cfg.Env.SessionLockMaxIdle
-	if sessionGCMaxIdle <= 0 {
-		sessionGCMaxIdle = 10 * time.Minute
-	}
+		sessionGCMaxIdle  = 10 * time.Minute
+	)
 	goSupervised(bgCtx, "session_locks.gc", func(ctx context.Context) {
 		srv.RunSessionLockGC(ctx, sessionGCInterval, sessionGCMaxIdle)
 	})
@@ -506,8 +511,8 @@ func (b *boot) startVolumeAndAgentSweepers() {
 	// the dynamic_agents table is shared. operators who never use the
 	// `register_agent` MCP tool simply have an empty table the sweeper
 	// passes over with zero rows deleted.
-	if cfg.Env.DynamicAgentSweepInterval > 0 {
-		goAdvisoryGatedSweeper(bgCtx, cfg.Env.DynamicAgentSweepInterval, advisoryLock, coord.LockKeyDynamicAgentSweeper, "dynamic_agents",
+	{
+		goAdvisoryGatedSweeper(bgCtx, dynamicAgentSweepInterval, advisoryLock, coord.LockKeyDynamicAgentSweeper, "dynamic_agents",
 			func(ctx context.Context) {
 				n, err := storeIface.DynamicAgentSweep(ctx)
 				if err != nil {
@@ -518,7 +523,7 @@ func (b *boot) startVolumeAndAgentSweepers() {
 					slog.Info("dynamic_agents sweep: deleted expired rows", "rows", n)
 				}
 			})
-		slog.Info("dynamic_agents: sweeper enabled", "interval", cfg.Env.DynamicAgentSweepInterval)
+		slog.Info("dynamic_agents: sweeper enabled", "interval", dynamicAgentSweepInterval)
 	}
 
 	// RFC AH Phase 2b ephemeral-volume crash-recovery sweeper. The inline
@@ -529,8 +534,8 @@ func (b *boot) startVolumeAndAgentSweepers() {
 	// deletes the rows. Cluster-gated so one replica per tick does the work.
 	// Needs a dynamic_root to have anything to clean (no root → no ephemeral
 	// volumes); skipped otherwise.
-	if dynRoot, hasDynRoot := builtin.DynamicVolumeRoot(cfg); cfg.Env.EphemeralVolumeSweepInterval > 0 && storeIface != nil && hasDynRoot {
-		goAdvisoryGatedSweeper(bgCtx, cfg.Env.EphemeralVolumeSweepInterval, advisoryLock, coord.LockKeyEphemeralVolumeSweeper, "ephemeral_volumes",
+	if dynRoot, hasDynRoot := builtin.DynamicVolumeRoot(cfg); storeIface != nil && hasDynRoot {
+		goAdvisoryGatedSweeper(bgCtx, ephemeralVolumeSweepInterval, advisoryLock, coord.LockKeyEphemeralVolumeSweeper, "ephemeral_volumes",
 			func(ctx context.Context) {
 				cands, err := storeIface.EphemeralVolumeSweepCandidates(ctx)
 				if err != nil {
@@ -556,7 +561,7 @@ func (b *boot) startVolumeAndAgentSweepers() {
 					slog.Info("ephemeral_volumes sweep: purged terminal run trees", "trees", purged)
 				}
 			})
-		slog.Info("ephemeral_volumes: sweeper enabled", "interval", cfg.Env.EphemeralVolumeSweepInterval, "dynamic_root", dynRoot)
+		slog.Info("ephemeral_volumes: sweeper enabled", "interval", ephemeralVolumeSweepInterval, "dynamic_root", dynRoot)
 	}
 }
 

@@ -173,11 +173,7 @@ func (s *Server) handleClientTools(w http.ResponseWriter, r *http.Request) {
 // clientToolHeartbeat pings the client every SSE-keepalive interval; a failed
 // ping means the socket is dead — close it so the read-pump unblocks.
 func (s *Server) clientToolHeartbeat(ctx context.Context, c *websocket.Conn) {
-	interval := s.cfg().Env.SSEKeepaliveInterval
-	if interval <= 0 {
-		interval = 20 * time.Second
-	}
-	t := time.NewTicker(interval)
+	t := time.NewTicker(sseKeepaliveInterval)
 	defer t.Stop()
 	for {
 		select {

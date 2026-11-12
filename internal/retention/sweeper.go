@@ -99,6 +99,12 @@ type SQLMemory interface {
 	Exec(ctx context.Context, key sqlmem.ScopeKey, statement string, args []any, quotaOverride int) (*sqlmem.ExecResult, error)
 }
 
+// InternalChatsMaxAge is the age at which the server deletes the chats of the
+// runtime's own maintenance agents. Three days: long enough to debug a
+// consolidation pass, short enough that the runtime's bookkeeping does not
+// outlive the conversations it was about.
+const InternalChatsMaxAge = 3 * 24 * time.Hour
+
 // Config carries the sweeper's tuning knobs. Zero/missing values fall back to
 // the defaults documented per-field.
 type Config struct {

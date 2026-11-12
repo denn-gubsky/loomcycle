@@ -4344,11 +4344,6 @@ type Env struct {
 	//
 	// LOOMCYCLE_TEAM_SUBSCRIPTIONS=1.
 	TeamSubscriptions bool
-	// TeamSubscriptionsTickSeconds is how often the sweep looks for work.
-	// 0 = the code default (15s). The tick is the worst-case latency between a
-	// message landing on a source and its wave starting; it is not a poll of
-	// every channel, but one peek per subscribed team.
-	TeamSubscriptionsTickSeconds int
 	// MaxInteractiveChildren caps how many resident interactive sub-agents (RFC
 	// BK Agent op=open) one run may hold open at once. 0 = the code default (8).
 	// Exceeding it fails op=open (the parent must close one first).
@@ -4528,17 +4523,6 @@ type Env struct {
 	// loomcycle. Sourced from LOOMCYCLE_HELP_ROOT.
 	HelpRoot string
 
-	// HeartbeatSweeperEnabled controls the v0.5.0 stale-run sweeper.
-	// When true (default), a goroutine periodically marks runs whose
-	// heartbeat hasn't advanced in HeartbeatStaleAfter as failed —
-	// prevents the active-run lists from accumulating dead rows when
-	// the host process crashes mid-loop. Disable with
-	// LOOMCYCLE_HEARTBEAT_SWEEPER=0 (e.g. when an external sweeper
-	// owns this responsibility in a multi-replica deployment).
-	HeartbeatSweeperEnabled bool
-	// HeartbeatSweepInterval is the sweep tick rate. Default 60s.
-	// Env: LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS.
-	HeartbeatSweepInterval time.Duration
 	// HeartbeatStaleAfter is the cutoff: runs with last_heartbeat_at
 	// (or started_at, when no heartbeat ever fired) older than this
 	// are swept. Default 10 minutes. Should be ≥ 2× the loop's
@@ -4555,18 +4539,6 @@ type Env struct {
 	// LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER.
 	MaxConfiguredRunsPerUser int
 
-	// UsageSweeperEnabled controls the RFC AV Phase 2b usage
-	// rollup-and-prune sweeper. When true (default), a goroutine
-	// periodically folds token_usage rows older than
-	// UsageDetailRetention into the day-bucketed usage_archive and
-	// deletes them — bounding the per-call detail table without losing
-	// billing totals (the archive preserves exact per-dimension sums).
-	// Disable with LOOMCYCLE_USAGE_SWEEPER=0 (e.g. when an external job
-	// owns retention in a multi-replica deployment).
-	UsageSweeperEnabled bool
-	// UsageSweepInterval is the sweep tick rate. Default 1h.
-	// Env: LOOMCYCLE_USAGE_SWEEP_INTERVAL_MS.
-	UsageSweepInterval time.Duration
 	// UsageDetailRetention is the cutoff: token_usage rows older than
 	// this are rolled up into usage_archive and pruned. Default 720h
 	// (30 days). Env: LOOMCYCLE_USAGE_DETAIL_RETENTION_MS.
@@ -4623,26 +4595,6 @@ type Env struct {
 	// is exported (per the mode) and cascade-deleted. 0 = no minimum age.
 	// Env: LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS.
 	RetentionChatsMaxAge time.Duration
-	// RetentionChatsInternalMaxAge is the SEPARATE, shorter age cutoff for chats
-	// authored by an agent declared `internal:` — loomcycle's own maintenance
-	// plumbing (see AgentDef.Internal). Default 3 days.
-	//
-	// It exists because a subsystem's own children accumulate at a rate no user
-	// generates: one consolidation pass spawns 13-18 extractor sessions, every
-	// pass, forever. They have real short-term value — diagnosing a bad pass
-	// means reading those transcripts — so the answer is a short lifespan rather
-	// than not recording them.
-	//
-	// ZERO means INHERIT RetentionChatsMaxAge (treat internal chats like any
-	// other chat), NOT "delete immediately" — the sweeper resolves 0 to the
-	// global age before it computes a cutoff. That is the opt-out for an operator
-	// who wants one retention age across the board.
-	//
-	// Only consulted when the chats sweep is enabled at all: retention is opt-in
-	// (LOOMCYCLE_RETENTION_ENABLED) and a deployment that has not enabled it
-	// keeps accumulating internal chats regardless of this value.
-	// Env: LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS.
-	RetentionChatsInternalMaxAge time.Duration
 	// RetentionMemMode is the RFC BM Phase 3 retired-agent memory-reclamation
 	// mode: "off" (default / "") | "prune" | "export+prune". Reclaims a
 	// fully-retired agent's SQL-Memory scope + dirents (per tenant) and its
@@ -4725,15 +4677,6 @@ type Env struct {
 	// drive it down to ~15s so the reap fires in-window.
 	// Env: LOOMCYCLE_REPLICAS_STALE_AFTER_MS.
 	ReplicasStaleAfter time.Duration
-	// SessionLockGCInterval is how often the v0.5.0 session-lock map
-	// GC runs. Default 5 minutes. Env:
-	// LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS.
-	SessionLockGCInterval time.Duration
-	// SessionLockMaxIdle is the cutoff for the GC: a session-lock
-	// entry whose refcount is 0 AND lastAccessed is older than this
-	// is reclaimed. Default 10 minutes. Env:
-	// LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS.
-	SessionLockMaxIdle time.Duration
 
 	// GrpcAddr is the gRPC listener address (e.g. ":8788" or
 	// "127.0.0.1:8788"). Empty disables the gRPC surface; HTTP+SSE
@@ -4749,14 +4692,6 @@ type Env struct {
 	// authenticated /metrics. Empty = no listener. Env:
 	// LOOMCYCLE_METRICS_LISTEN.
 	MetricsListenAddr string
-
-	// ResolveProbeInterval is the cadence at which the resolver
-	// re-probes each provider's /v1/models endpoint (or /api/tags
-	// for Ollama) to refresh the availability matrix. Default 15
-	// minutes; clamped to a 1-hour ceiling so a misconfigured
-	// long interval can't hide a recovered provider for a full
-	// day. Env: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS.
-	ResolveProbeInterval time.Duration
 
 	// FallbackPinAfterSuccess, when true, suppresses provider
 	// fallback on retryable errors AFTER the run has completed at
@@ -4856,12 +4791,6 @@ type Env struct {
 	// loomcycle's own RSS. Linux only; silently ignored on other
 	// platforms. Env: LOOMCYCLE_METRICS_COLLECT_SYSTEM.
 	MetricsCollectSystem bool
-	// MetricsSweepInterval is the sweeper cadence for
-	// process_samples. Default 15 minutes. 0 disables the
-	// sweeper (combine with MetricsRetentionDays=0 if you
-	// want unbounded retention). Env:
-	// LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS.
-	MetricsSweepInterval time.Duration
 
 	// ---- v0.12.0 multi-replica HA (opt-in) ----
 
@@ -4970,25 +4899,6 @@ type Env struct {
 	// LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS.
 	DynamicAgentDefaultTTLSeconds int
 
-	// DynamicAgentSweepInterval — v0.8.15. Cadence for the
-	// dynamic_agents TTL sweeper. Default 15 minutes. 0 disables
-	// the sweeper (expired rows linger; DynamicAgentGet still
-	// filters them out at read time so functional correctness is
-	// preserved, but the table grows unbounded). Env:
-	// LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS.
-	DynamicAgentSweepInterval time.Duration
-
-	// EphemeralVolumeSweepInterval — RFC AH Phase 2b. Cadence for the
-	// crash-recovery sweep of ephemeral (run-tree-scoped) volumes whose
-	// owning run is terminal-and-not-paused: a fenced os.RemoveAll of the
-	// <dynamic_root>/_ephemeral/<root_run_id>/ subtree + its rows. The
-	// inline run-completion purge is the primary path; this backstops a
-	// crashed host (the inline purge never ran). Default 60s. 0 disables
-	// (the inline purge still runs; only crash cleanup lapses). Cluster-gated
-	// by coord.LockKeyEphemeralVolumeSweeper. Env:
-	// LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS.
-	EphemeralVolumeSweepInterval time.Duration
-
 	// ToolParallelism caps how many tool_calls from a single
 	// assistant turn run concurrently. Default 8. Set to 1 to
 	// force serial dispatch (debug / determinism). Field 0
@@ -5004,22 +4914,6 @@ type Env struct {
 	//
 	// Env: LOOMCYCLE_TOOL_PARALLELISM.
 	ToolParallelism int
-
-	// SSEKeepaliveInterval is the cadence at which the SSE writer
-	// emits comment-only frames (`:keepalive`) on long-lived agent
-	// streams. Required-ignored by SSE clients per WHATWG so they
-	// don't surface as events; the point is to keep the underlying
-	// TCP/HTTP path from going idle. Agent runs that fan out to
-	// sub-agents can sit minutes between real events while a child
-	// is mid-WebFetch — networks with idle-connection timeouts
-	// (Tailscale, NAT routers, some reverse proxies) drop silent
-	// streams and the consumer-side undici reports the drop as
-	// `TypeError: terminated` with no diagnostic context.
-	//
-	// Default 20 s — comfortably under the typical 30-120 s idle
-	// timeouts on the affected network paths. Set to 0 to disable.
-	// Env: LOOMCYCLE_SSE_KEEPALIVE_MS.
-	SSEKeepaliveInterval time.Duration
 
 	// MemoryMaxValueBytes caps a single Memory.set / Memory.incr
 	// payload. Default 65536 (64 KB) — generous for a JSON document
@@ -5082,13 +4976,6 @@ type Env struct {
 	//
 	// Env: LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS (default 1).
 	ProvisionIdentityDocs bool
-
-	// MemorySweepInterval is how often the TTL reaper goroutine
-	// runs MemorySweep on the store. Default 15 minutes. Set to 0
-	// to disable (operators with an external reaper, or tests that
-	// don't want background work, can opt out).
-	// Env: LOOMCYCLE_MEMORY_SWEEP_MS.
-	MemorySweepInterval time.Duration
 
 	// MemoryPendingDrainedTTL is how long a consolidation-queue row is kept
 	// after a pass acks it. An hourly prune deletes older drained rows; an
@@ -5584,19 +5471,13 @@ func applyEnvCore(cfg *Config) {
 		SkillsRoot:                  os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
 		AgentsRoot:                  os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
 		HelpRoot:                    os.Getenv("LOOMCYCLE_HELP_ROOT"),
-		// Sweeper / GC defaults — populated above zero only if the
-		// env var below was set. The fallbacks are applied in
-		// cmd/loomcycle/main.go where the goroutines are started.
-		HeartbeatSweeperEnabled:  true,
-		ConfiguredRunTTL:         24 * time.Hour,
-		MaxConfiguredRunsPerUser: 100,
-		UsageSweeperEnabled:      true,
+		ConfiguredRunTTL:            24 * time.Hour,
+		MaxConfiguredRunsPerUser:    100,
 		// RFC BM retention defaults — opt-in (RetentionEnabled zero-false); the
 		// mode defaults off and keep-last-N to 5. The env parse below overrides
 		// these only when the corresponding var is set.
-		RetentionDefsMode:            "off",
-		RetentionDefsKeepLastN:       5,
-		RetentionChatsInternalMaxAge: 3 * 24 * time.Hour,
+		RetentionDefsMode:      "off",
+		RetentionDefsKeepLastN: 5,
 	}
 }
 

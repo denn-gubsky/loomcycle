@@ -564,12 +564,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_MEMORY_SWEEP_MS
-            label: LOOMCYCLE_MEMORY_SWEEP_MS
-            description: 'TTL reaper goroutine cadence — periodic DELETE of expired rows. Default 15 minutes. 0 disables (operators with an external reaper, or dev/test runs that don''t want background work, can opt out). Read paths filter expired entries even when the reaper is off, so agents never see stale values regardless. (example: 900000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS
             label: LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS
             description: 'Drained consolidation-queue rows are deleted once they have been drained longer than this. A queued row keeps the raw chat it was banked from, so this is also how long that text outlives its consolidation. Undrained rows are never pruned. Default 7 days (604800000). 0 disables the prune. (example: 604800000)'
@@ -778,12 +772,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS
-            label: LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS
-            description: 'Sweeper cadence (cleanup goroutine) in milliseconds. Default 15 min. Set 0 to disable. Bounded retention requires BOTH a non-zero retention AND non-zero sweep interval. (example: 900000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS
             label: LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS
             description: 'IMPORTANT: only flip on when the MCP client itself is trusted (operator-launched stdio = trusted; remote HTTP MCP would not be). (example: 1)'
@@ -811,12 +799,6 @@ questions:
           - variable: LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS
             label: LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS
             description: Default TTL for agents registered via mcp__loomcycle__register_agent when the caller omits ttl_seconds. Default 86400 (24 h). Set 0 to require callers to ALWAYS supply an explicit ttl_seconds (no default-TTL registrations accepted). Set -1 from the caller side (NOT here) for "no expiry" — operator must explicitly unregister. Lower this on shared-operator setups where forgotten dynamic agents wo…
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS
-            label: LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS
-            description: 'Cadence for the dynamic_agents TTL sweeper, in milliseconds. Default 15 min (900000). Set 0 to disable the sweeper — expired rows linger in the table but DynamicAgentGet still filters them at read time, so functional correctness is preserved (only storage reclamation is forgone). Disabling makes sense at low registration volume where the table never grows enough to matter. (example: 900000)'
             schema:
               type: string
               default: ""
@@ -946,26 +928,8 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS
-            label: LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS
-            description: '(example: 60000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_HEARTBEAT_STALE_MS
             label: LOOMCYCLE_HEARTBEAT_STALE_MS
-            description: '(example: 600000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS
-            label: LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS
-            description: '(example: 300000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS
-            label: LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS
             description: '(example: 600000)'
             schema:
               type: string
@@ -973,12 +937,6 @@ questions:
           - variable: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS
             label: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS
             description: '(example: 5000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS
-            label: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS
-            description: '(example: 900000)'
             schema:
               type: string
               default: ""
@@ -1177,18 +1135,6 @@ questions:
           - variable: LOOMCYCLE_TOOL_PARALLELISM
             label: LOOMCYCLE_TOOL_PARALLELISM
             description: '(example: 8)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SSE_KEEPALIVE_MS
-            label: LOOMCYCLE_SSE_KEEPALIVE_MS
-            description: '(example: 20000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS
-            label: LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS
-            description: '(example: 60000)'
             schema:
               type: string
               default: ""

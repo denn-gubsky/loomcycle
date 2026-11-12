@@ -47,14 +47,11 @@ func TestParseUsageQuery_ValidatesEveryParameter(t *testing.T) {
 
 func TestUsageDetailSince(t *testing.T) {
 	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
-	if got := UsageDetailSince(now, 0, true); !got.Equal(now.Add(-30 * 24 * time.Hour)) {
+	if got := UsageDetailSince(now, 0); !got.Equal(now.Add(-30 * 24 * time.Hour)) {
 		t.Errorf("default retention = %v", got)
 	}
-	if got := UsageDetailSince(now, 48*time.Hour, true); !got.Equal(now.Add(-48 * time.Hour)) {
+	if got := UsageDetailSince(now, 48*time.Hour); !got.Equal(now.Add(-48 * time.Hour)) {
 		t.Errorf("48h retention = %v", got)
-	}
-	if got := UsageDetailSince(now, 48*time.Hour, false); !got.IsZero() {
-		t.Errorf("sweeper off = %v, want zero", got)
 	}
 }
 

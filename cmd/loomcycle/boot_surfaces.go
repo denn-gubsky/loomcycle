@@ -132,14 +132,11 @@ func (b *boot) startResolveProbe() {
 	// Periodic probe loop: re-runs the resolver's reachability +
 	// model-list probe on the configured cadence so a provider
 	// recovering from an outage shows up in the matrix without a
-	// loomcycle restart. Default 15 minutes; clamped to [60s, 1h] in
-	// the config loader. The first probe already ran inside
-	// buildResolver above (synchronously, before traffic begins) —
-	// this goroutine handles all subsequent rounds.
-	probeInterval := cfg.Env.ResolveProbeInterval
-	if probeInterval <= 0 {
-		probeInterval = 15 * time.Minute
-	}
+	// loomcycle restart. Every 15 minutes: a force-probe (snapshot
+	// restore, the admin endpoint) covers the urgent case. The first
+	// probe already ran inside buildResolver above (synchronously, before
+	// traffic begins) — this goroutine handles all subsequent rounds.
+	const probeInterval = 15 * time.Minute
 	// v0.8.17: register the force-probe callback. The snapshot restore
 	// handler (POST /v1/_snapshots/{id}/restore) calls
 	// resolver.ForceProbe(ctx) to refresh the matrix before the

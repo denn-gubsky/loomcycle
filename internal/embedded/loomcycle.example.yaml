@@ -1042,16 +1042,12 @@ concurrency:
 #      lock map otherwise grows monotonically — every distinct session
 #      ID seen by /v1/sessions/{id}/messages adds an entry.
 #
-# Both default-on with sensible thresholds. Operators in multi-replica
-# deployments can disable the sweeper (LOOMCYCLE_HEARTBEAT_SWEEPER=0) so
-# only one replica owns the cleanup duty.
+# Both always run, on fixed cadences (the sweeper every 60s; the lock GC
+# every 5 min for locks idle 10 min). In cluster mode one replica sweeps
+# per tick.
 #
-# Env knobs (no YAML block — these are runtime tuning, not topology):
-#   LOOMCYCLE_HEARTBEAT_SWEEPER=1                  (default; 0 disables)
-#   LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS=60000    (default 60s)
+# Env knob (no YAML block — runtime tuning, not topology):
 #   LOOMCYCLE_HEARTBEAT_STALE_MS=600000            (default 10 min)
-#   LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS=300000   (default 5 min)
-#   LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS=600000      (default 10 min)
 
 # ─── Context-transform plugins (RFC Z / v0.33.x) ────────────────────
 # A runtime-wide chain of fast, built-in transforms applied to a COPY of the

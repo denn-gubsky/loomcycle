@@ -72,7 +72,6 @@ By design, these are not cluster-wide:
 
 ### Recommended
 
-- [ ] Leave `LOOMCYCLE_HEARTBEAT_SWEEPER` on (the default; `0` disables it) — without it the replicas TTL sweeper still works but stale runs from crashed replicas live longer.
 - [ ] OTEL exporter wired (`OTEL_EXPORTER_OTLP_ENDPOINT`) so the cross-replica trace tree is visible; each replica's spans carry `service.instance.id` = its `LOOMCYCLE_REPLICA_ID`.
 - [ ] `LOOMCYCLE_METRICS_ENABLED=1` for `/v1/_metrics/*` observability.
 

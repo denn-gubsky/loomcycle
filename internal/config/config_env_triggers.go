@@ -108,15 +108,6 @@ func applyEnvScheduler(cfg *Config) {
 			cfg.Env.SchedulerTickSeconds = n
 		}
 	}
-	// RFC CY L5: the armed-subscription sweep. Default 15s — the worst-case
-	// latency between a message landing on a subscribed source and its wave
-	// starting. Only read when TeamSubscriptions is on.
-	cfg.Env.TeamSubscriptionsTickSeconds = 15
-	if v := os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS_TICK_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.TeamSubscriptionsTickSeconds = n
-		}
-	}
 	// RFC BL P2 consolidation fan-out caps. Left at 0 the scheduler applies its
 	// own documented defaults (32 targets, 4 concurrent), so an unset env is not
 	// "unbounded".

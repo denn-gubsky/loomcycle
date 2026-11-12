@@ -1185,7 +1185,7 @@ Shows: which providers are reachable, which models each lists, which models are 
 
 ### At runtime — force an immediate re-probe
 
-The resolver re-probes every provider on a fixed interval (`LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS`, default 15 min). If a transient outage (DNS hiccup, brief upstream blip, the VM losing egress for a few seconds) stalls every provider mid-probe, runs can 503 for up to a full interval until the next tick. `POST /v1/_resolve/probe` triggers an immediate, synchronous re-probe so an operator can unstick the matrix without a restart (a restart drops in-flight runs):
+The resolver re-probes every provider every 15 minutes. If a transient outage (DNS hiccup, brief upstream blip, the VM losing egress for a few seconds) stalls every provider mid-probe, runs can 503 for up to a full interval until the next tick. `POST /v1/_resolve/probe` triggers an immediate, synchronous re-probe so an operator can unstick the matrix without a restart (a restart drops in-flight runs):
 
 ```sh
 curl -s -X POST -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" \
@@ -2491,7 +2491,7 @@ Create one with `ephemeral: true`:
 - **Read-only for one agent — `ephemeral_volumes: ro`.** An agent whose definition says `ephemeral_volumes: ro` gets every ephemeral volume of its run read-only, whatever mode the volume has, and so does every agent it spawns. Other agents of the run are not affected, and the agent's own `volumes:` bindings keep their modes. It is a key of an agent in the config, of a markdown agent's frontmatter and of the `AgentDef` create and fork overlay. The only value is `ro`: a fork that does not send it keeps its parent's, none can clear it, and a setting in the operator's config holds over a tenant's own version of the agent. A child resumed after a pause keeps what it inherited, and a sub-run with no spawn record resumes read-only. Use it for agents that read material others prepared, such as reviewers.
 - **From a git repository — `source`.** `{"op":"create","name":"repo","ephemeral":true,"mode":"ro","source":{"git":{"url":"https://github.com/acme/app","commit":"<40-digit sha>","credential":"$cred:repo-acme-app"}}}` fills the new volume with one commit, fetched inside the runtime. No agent holds the token: an agent that ran `git clone` through a shell tool would, and any text it read could ask it to print it. See §9d.2.1.
 - **Requires an active run.** `ephemeral: true` is refused outside a run (no root run id) and on a static-name or in-run-duplicate collision. Same `volume_def_scopes` gate as the persistent op.
-- **Crash backstop — `LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS`.** A singleton sweeper (default **60s**; `0` disables — the inline purge still runs) periodically purges ephemeral volumes whose owning run is terminal **and not paused/pausing** (a paused run is parked, not crashed — its volumes survive to be reused on resume; a resumed run rehydrates its in-memory set from the persisted rows). Cluster-gated, so one replica per tick does the work. Skipped when no `dynamic_root` is configured.
+- **Crash backstop.** A singleton sweeper (every **60s**; the inline purge runs regardless) purges ephemeral volumes whose owning run is terminal **and not paused/pausing** (a paused run is parked, not crashed — its volumes survive to be reused on resume; a resumed run rehydrates its in-memory set from the persisted rows). Cluster-gated, so one replica per tick does the work. Skipped when no `dynamic_root` is configured.
 
 ### 9d.2.1 A volume from a git source
 
@@ -2939,8 +2939,8 @@ on a subscribed source becomes a wave of agent runs. Arrive at it deliberately.
 - **A failing walk backs off** (exponential, capped at 10 minutes, cleared by a
   success). A failed walk does not ack its source, so without this a poison
   message would drive the same failure every tick.
-- `LOOMCYCLE_TEAM_SUBSCRIPTIONS_TICK_SECONDS` (default 15) is the worst-case
-  latency between a message landing and its wave starting.
+- The sweep runs every 15 seconds: the worst-case latency between a message
+  landing and its wave starting.
 
 **`system-channels` — the runtime's own `_system/*` channels.** Declares the
 five a workflow can actually read, so a Starter can source a clock or an
@@ -3315,12 +3315,7 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS` | `5000` | Cluster mode: how long a cancel waits for the owning replica's acknowledgement before answering `owner_replica_unreachable`. |
 | `LOOMCYCLE_PAUSE_CACHE_TTL_MS` | `1000` | Cluster mode: how long a replica caches the shared pause state. Lower sees a pause sooner; higher reads the database less. |
 | `LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS` | `30000` | How long a pause waits for in-flight runs to park when the request names no timeout. Capped at 5 minutes. |
-| `LOOMCYCLE_HEARTBEAT_SWEEPER` | on | `0` stops the sweeper that fails runs whose heartbeat went stale. |
-| `LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS` | `60000` | How often that sweeper runs. |
 | `LOOMCYCLE_HEARTBEAT_STALE_MS` | `600000` | A run with no heartbeat for this long is swept. Keep it at least twice a slow iteration (a long tool call). |
-| `LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS` | `300000` | How often unused per-session locks are collected. |
-| `LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS` | `600000` | An unheld session lock idle this long is collected. |
-| `LOOMCYCLE_SSE_KEEPALIVE_MS` | `20000` | SSE keepalive cadence; `0` or less disables it. Clamped to 1 s – 5 min. |
 | `LOOMCYCLE_MAX_REQUEST_BYTES` | 16 MiB | Body cap on run requests (large enough for an inline image). A non-positive value keeps the default; over the cap answers 413. |
 | `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` | `16` | How many runs one (tenant, user) may queue behind its per-user concurrency cap; `0` refuses a run over the cap at once. Per replica in cluster mode. |
 | `LOOMCYCLE_CONFIGURED_RUN_TTL_MS` | 24 h | How long a configured (created, not started) run is kept before it and its session are discarded. `0` keeps them. |
@@ -3378,7 +3373,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` | off | `1` lets agents registered through MCP `register_agent` keep Bash, Write and Edit; otherwise those tools are stripped. |
 | `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` | off | `1` lets an `MCPServerDef` created at run time use `transport: stdio`, which runs a local command. Static yaml `mcp_servers:` are unaffected. |
 | `LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS` | `86400` | Lifetime of an MCP-registered agent whose request names no `ttl_seconds`; `0` requires callers to name one. |
-| `LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS` | `900000` | How often expired registered agents are deleted; `0` stops the sweep (expired agents still stop resolving). |
 | `LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS` | `16` | `loomcycle mcp` (stdio): tool calls dispatched at once. |
 | `LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS` | `60000` | `loomcycle mcp --upstream` thin client: time to the upstream's response headers. Long-running tools (`spawn_run`, `spawn_runs`, `compact_run`, `evaluation`) are exempt. |
 | `LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS` | 5 | Thin client: retries after a transport error (immediately, then 0.5 s doubling to 4 s). `0` disables the retry. |
@@ -3412,13 +3406,28 @@ These are constants of the runtime; no setting changes them.
 | Evaluation judgement | 32 KiB | The structured judgement JSON on `Evaluation.submit`. |
 | Evaluation rationale | 8 KiB | The rationale on `Evaluation.submit`. |
 
+Background work runs on fixed cadences, and none of it can be switched off:
+
+| Work | Cadence |
+|---|---|
+| Run heartbeat sweeper (fails a run whose heartbeat went stale) | every 60 s |
+| Usage rollup (old per-call rows into the daily `usage_archive`) | every hour |
+| Session-lock collection | every 5 min, for locks idle 10 min |
+| Expired Memory entries | every 15 min |
+| Expired registered (dynamic) agents | every 15 min |
+| Old process-metrics samples | every 15 min |
+| Ephemeral volumes of ended runs | every 60 s |
+| Provider re-probe | every 15 min |
+| Armed team subscriptions | every 15 s |
+| SSE keepalive comment | every 20 s |
+| Chats of `internal:` agents (the runtime's own maintenance runs), when chat retention is on | deleted after 3 days |
+
 ### Memory, documents and channels
 
 | Variable | Default | Effect |
 |---|---|---|
 | `LOOMCYCLE_MEMORY_MAX_VALUE_BYTES` | 64 KiB | Largest Memory value per write. *0 disables*. |
 | `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | 1 MiB | Memory bytes per scope; an agent's `memory_quota_bytes` overrides it. *0 disables*. |
-| `LOOMCYCLE_MEMORY_SWEEP_MS` | `900000` | How often expired Memory entries are deleted; `0` stops the sweep. |
 | `LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS` | 7 days | How long a consolidation-queue row is kept after a pass consumed it; `0` keeps them (and their chat payloads) forever. |
 | `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS` | on | `0` stops creating the tenant-root and user-root documents when a principal is established (token mint, config principals at boot); they are then created on first use only. |
 | `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE` | `100` | Texts per embedder call (provider limits still apply); `0` sends one text per call. |
@@ -3482,15 +3491,12 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
 | `LOOMCYCLE_RETENTION_CHATS_MODE` | `off` | Deletes aged sessions with their runs and events; pinned sessions are exempt. Inherits the legacy `LOOMCYCLE_USAGE_RUN_RETENTION_*` settings when unset. |
 | `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS` | `0` | A session whose runs all finished longer ago than this is eligible. |
-| `LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS` | 3 days | The shorter age for chats of `internal:` agents (the runtime's own maintenance runs); `0` uses the chats age. |
 | `LOOMCYCLE_RETENTION_MEM_MODE` | `off` | Reclaims the memory of fully retired agents. |
 | `LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS` | `0` | Only agents whose last definition change is older than this. |
 | `LOOMCYCLE_RETENTION_MEM_CONTENT_MODE` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). |
 | `LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS` | — | Only content retired longer ago than this. |
 | `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
 | `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS` | — | Only dossiers untouched longer than this. |
-| `LOOMCYCLE_USAGE_SWEEPER` | on | `0` stops rolling old per-call usage rows into the daily `usage_archive` (for when an external job owns retention). |
-| `LOOMCYCLE_USAGE_SWEEP_INTERVAL_MS` | 1 h | How often that rollup runs. |
 | `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` | 30 days | Per-call usage rows older than this are rolled up and deleted; totals are kept. |
 | `LOOMCYCLE_USAGE_RUN_RETENTION_MS` | `0` | Legacy old-run archiver: completed runs older than this are deleted (off at `0`). Prefer `LOOMCYCLE_RETENTION_CHATS_*`. |
 | `LOOMCYCLE_USAGE_RUN_RETENTION_MODE` | `off` | The legacy archiver's mode. |
@@ -3503,7 +3509,6 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_METRICS_ENABLED` | off | `1` samples process metrics into the store. |
 | `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` | `5000` | Sampling interval; floor 1 s. |
 | `LOOMCYCLE_METRICS_RETENTION_DAYS` | `7` | Days of samples kept; `0` keeps them all. |
-| `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` | `900000` | How often old samples are deleted; `0` stops it. |
 | `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | off | `1` also samples system-wide CPU and memory (Linux only). |
 | `LOOMCYCLE_METRICS_LISTEN` | unset | An address (`127.0.0.1:9464`, or `0.0.0.0:9464` inside a compose network) for a second plain-HTTP listener that serves only `GET`/`HEAD /metrics`, **with no authentication**; nothing else is served there. It omits every series that names a user (today `loomcycle_concurrency_per_user`, whose `user_hash` label the authenticated `/metrics` carries). For a scraper on the same host or a network only it reaches. Boot fails if the address cannot be bound, and warns when it is beyond loopback. The main listener's `/metrics` keeps its token. See [Scraping /metrics](#scraping-metrics). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint, a URL with its scheme (`http://otel-collector:4318`); setting it (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) turns on tracing (per run, iteration, provider and tool call). |

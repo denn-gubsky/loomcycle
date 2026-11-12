@@ -7,7 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // applyEnvCluster reads the replica id, trace link template, cancel ack,
@@ -31,17 +30,6 @@ func applyEnvCluster(cfg *Config) error {
 	if v := os.Getenv("LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.Env.CancelAckTimeoutMs = n
-		}
-	}
-
-	cfg.Env.MetricsSweepInterval = 15 * time.Minute
-	if v := os.Getenv("LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MetricsSweepInterval = 0
-			} else {
-				cfg.Env.MetricsSweepInterval = time.Duration(n) * time.Millisecond
-			}
 		}
 	}
 
@@ -89,29 +77,6 @@ func applyEnvMCP(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.Env.DynamicAgentDefaultTTLSeconds = n
-		}
-	}
-	cfg.Env.DynamicAgentSweepInterval = 15 * time.Minute
-	if v := os.Getenv("LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.DynamicAgentSweepInterval = 0
-			} else {
-				cfg.Env.DynamicAgentSweepInterval = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
-
-	// RFC AH Phase 2b ephemeral-volume crash-recovery sweeper. Default 60s;
-	// 0 disables (the inline run-completion purge still runs).
-	cfg.Env.EphemeralVolumeSweepInterval = 60 * time.Second
-	if v := os.Getenv("LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.EphemeralVolumeSweepInterval = 0
-			} else {
-				cfg.Env.EphemeralVolumeSweepInterval = time.Duration(n) * time.Millisecond
-			}
 		}
 	}
 }

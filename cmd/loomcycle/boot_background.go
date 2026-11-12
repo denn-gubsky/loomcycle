@@ -295,6 +295,10 @@ func (b *boot) startCluster() {
 	b.advisoryLock = advisoryLock
 }
 
+// memorySweepInterval is how often expired Memory entries are deleted. Reads
+// skip expired entries, so the sweep only keeps the table small.
+const memorySweepInterval = 15 * time.Minute
+
 // startRunSweepers starts the sweepers that must see advisoryLock: the
 // heartbeat sweeper, the channel-hook worker, the configured-run sweeper,
 // and the usage and retention sweepers.
@@ -313,9 +317,9 @@ func (b *boot) startRunSweepers() {
 	// pick up the advisoryLock (v0.12.4 Phase 5). In single-replica
 	// mode advisoryLock stays nil and the sweeper's lock-gating branch
 	// is bypassed — behavior identical to v0.11.x.
-	if cfg.Env.HeartbeatSweeperEnabled && storeIface != nil {
+	if storeIface != nil {
+		// Interval is left to the sweeper's own 60s default.
 		hbCfg := heartbeat.Config{
-			Interval:   cfg.Env.HeartbeatSweepInterval,
 			StaleAfter: cfg.Env.HeartbeatStaleAfter,
 		}
 		// Only assign the interface field when we have a non-nil
@@ -330,7 +334,7 @@ func (b *boot) startRunSweepers() {
 		sweeper := heartbeat.New(storeIface, hbCfg)
 		goSupervised(bgCtx, "heartbeat.sweeper", sweeper.Run)
 	} else {
-		slog.Warn("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
+		slog.Warn("heartbeat: sweeper disabled (no Store)")
 	}
 
 	// Channel hooks: the worker that decides the messages of channels that
@@ -372,9 +376,9 @@ func (b *boot) startRunSweepers() {
 	retentionChatsActive := cfg.Env.RetentionChatsMode == "prune" ||
 		(cfg.Env.RetentionChatsMode == "export+prune" && cfg.Env.RetentionExportDir != "")
 	retentionOwnsChats := cfg.Env.RetentionEnabled && retentionChatsActive
-	if cfg.Env.UsageSweeperEnabled && storeIface != nil {
+	if storeIface != nil {
+		// Interval is left to the sweeper's own hourly default.
 		uCfg := usage.Config{
-			Interval:        cfg.Env.UsageSweepInterval,
 			DetailRetention: cfg.Env.UsageDetailRetention,
 			// RFC AV Phase 2b2 old-run archiver (opt-in; default OFF).
 			RunRetention:       cfg.Env.UsageRunRetention,
@@ -392,7 +396,7 @@ func (b *boot) startRunSweepers() {
 		usageSweeper := usage.New(storeIface, uCfg)
 		goSupervised(bgCtx, "usage.sweeper", usageSweeper.Run)
 	} else {
-		slog.Warn("usage: sweeper disabled (LOOMCYCLE_USAGE_SWEEPER=0 or no Store)")
+		slog.Warn("usage: sweeper disabled (no Store)")
 	}
 
 	// RFC BM data-retention sweeper — same placement rationale as the usage
@@ -429,7 +433,7 @@ func (b *boot) startRunSweepers() {
 			// The runtime's own maintenance chats age out faster, and are deleted
 			// rather than exported. Same static-config resolution the consolidator
 			// and History use, so all three agree on what "internal" means.
-			ChatsInternalMaxAge: cfg.Env.RetentionChatsInternalMaxAge,
+			ChatsInternalMaxAge: retention.InternalChatsMaxAge,
 			InternalAgents:      cfg.InternalAgentNames(),
 			// RFC BM Phase 3 retired-agent memory reclamation (opt-in; default OFF).
 			MemMode:   cfg.Env.RetentionMemMode,
@@ -753,7 +757,6 @@ func (b *boot) startAuthLifecycleSweeper() {
 
 // startMemorySweeper starts the Memory tool TTL sweeper.
 func (b *boot) startMemorySweeper() {
-	cfg := b.cfg
 	storeIface := b.storeIface
 	bgCtx := b.bgCtx
 	advisoryLock := b.advisoryLock
@@ -763,8 +766,8 @@ func (b *boot) startMemorySweeper() {
 	// goroutine only matters for keeping the table small over the
 	// long haul. v0.12.4: gated behind advisoryLock so only one
 	// replica per cluster sweeps per tick.
-	if cfg.Env.MemorySweepInterval > 0 && storeIface != nil {
-		goAdvisoryGatedSweeper(bgCtx, cfg.Env.MemorySweepInterval, advisoryLock, coord.LockKeyMemorySweeper, "memory",
+	if storeIface != nil {
+		goAdvisoryGatedSweeper(bgCtx, memorySweepInterval, advisoryLock, coord.LockKeyMemorySweeper, "memory",
 			func(ctx context.Context) {
 				swept, err := storeIface.MemorySweep(ctx)
 				if err != nil {
@@ -775,9 +778,9 @@ func (b *boot) startMemorySweeper() {
 					slog.Info("memory sweep: deleted expired rows", "rows", swept)
 				}
 			})
-		slog.Info("memory: sweeper enabled", "interval", cfg.Env.MemorySweepInterval)
+		slog.Info("memory: sweeper enabled", "interval", memorySweepInterval)
 	} else {
-		slog.Warn("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
+		slog.Warn("memory: sweeper disabled (no Store)")
 	}
 }
 

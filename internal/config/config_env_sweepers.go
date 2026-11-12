@@ -13,14 +13,6 @@ import (
 // applyEnvSweepers reads the heartbeat, configured-run and usage sweeper
 // knobs.
 func applyEnvSweepers(cfg *Config) {
-	// Heartbeat sweeper + session-lock GC env. All optional; defaults
-	// are sensible for a single-replica deployment.
-	cfg.Env.HeartbeatSweeperEnabled = os.Getenv("LOOMCYCLE_HEARTBEAT_SWEEPER") != "0"
-	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.HeartbeatSweepInterval = time.Duration(n) * time.Millisecond
-		}
-	}
 	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_STALE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.HeartbeatStaleAfter = time.Duration(n) * time.Millisecond
@@ -38,14 +30,8 @@ func applyEnvSweepers(cfg *Config) {
 			cfg.Env.MaxConfiguredRunsPerUser = n
 		}
 	}
-	// Usage rollup-and-prune sweeper (RFC AV Phase 2b). Optional; the
-	// New() constructor applies the 1h/720h fallbacks when these stay 0.
-	cfg.Env.UsageSweeperEnabled = os.Getenv("LOOMCYCLE_USAGE_SWEEPER") != "0"
-	if v := os.Getenv("LOOMCYCLE_USAGE_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.UsageSweepInterval = time.Duration(n) * time.Millisecond
-		}
-	}
+	// Usage rollup-and-prune sweeper (RFC AV Phase 2b). The New()
+	// constructor applies the 720h fallback when this stays 0.
 	if v := os.Getenv("LOOMCYCLE_USAGE_DETAIL_RETENTION_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.UsageDetailRetention = time.Duration(n) * time.Millisecond
@@ -117,14 +103,6 @@ func applyEnvRetention(cfg *Config) error {
 			cfg.Env.RetentionChatsMaxAge = time.Duration(n) * time.Millisecond
 		}
 	}
-	// Internal-chat age. Accepts 0 — unlike the knobs above, 0 is a MEANINGFUL
-	// value here ("inherit the global chat age"), not an unset one, so the guard
-	// is n >= 0 and an explicit 0 overrides the 3-day default.
-	if v := os.Getenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Env.RetentionChatsInternalMaxAge = time.Duration(n) * time.Millisecond
-		}
-	}
 	// Back-compat: the RFC AV Phase 2b2 aged-session archiver
 	// (LOOMCYCLE_USAGE_RUN_RETENTION_*) is subsumed by the RFC BM chats sweeper.
 	// When the operator hasn't set an explicit chats mode but HAS configured the
@@ -190,7 +168,7 @@ func applyEnvRetention(cfg *Config) error {
 	return nil
 }
 
-// applyEnvClusterSweeps reads the replica and session-lock sweep cadences.
+// applyEnvClusterSweeps reads the replica sweep cadences.
 func applyEnvClusterSweeps(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -200,16 +178,6 @@ func applyEnvClusterSweeps(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_STALE_AFTER_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.ReplicasStaleAfter = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.SessionLockGCInterval = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.SessionLockMaxIdle = time.Duration(n) * time.Millisecond
 		}
 	}
 }
