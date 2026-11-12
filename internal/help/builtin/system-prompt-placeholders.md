@@ -1,6 +1,6 @@
 ---
 name: system-prompt-placeholders
-description: The system-prompt expansion families — {{memory:<variant>}} and {{memory:key|search:<arg>}} for stored memory, {{tool:<Tool>.<op>}} and {{tool:WebFetch|WebSearch:<arg>}} for the framed result of a tool call, and {{identity}} for the person the run acts for, expanded at run start. Closed sets validated at config load; the argument forms need an operator-written definition; a leading backslash escapes.
+description: The system-prompt expansion families — {{memory:<variant>}} and {{memory:key|search:<arg>}} for stored memory, {{tool:<Tool>.<op>}} and {{tool:WebFetch|WebSearch:<arg>}} for the framed result of a tool call, {{identity}} for the person the run acts for, and {{help:<topic>}} for a help article's call examples, expanded at run start. Closed sets validated at config load; the argument forms need an operator-written definition; a leading backslash escapes.
 ---
 An agent's `system_prompt` may contain **placeholders** that the server expands
 at run start, before the first model call. There are two families, both CLOSED
@@ -197,6 +197,45 @@ This is a snapshot from the start of the run. Ask the Context tool (op=can) for 
   rest); the block is exempt from the memory budget for that reason.
 - Any definition may use it. In a team node's `system` / `input` template it
   renders nothing, like the memory variants.
+
+## `{{help:<topic>}}` — call examples from a help article
+
+Expands to the call examples of one help article, one line per call, in the
+form a prompt's call card uses — the tool name, then the arguments:
+
+```yaml
+agents:
+  searcher:
+    tools: [Document]
+    system_prompt: |
+      Search the tenant's documents. Calls look like this:
+      {{help:Document/search}}
+```
+
+renders as, in place of the placeholder:
+
+```
+Document {"op":"search","query":"how do we roll back a failed database migration"}
+Document {"op":"search","query":"minimum capital requirement","scope":"tenant","under_path":"/qg/norms",...}
+...
+```
+
+- The topic is a name the help index uses: an operation article
+  `<Tool>/<op>` (`Document/search`, `Path/ls`), a tool article (`Decision`),
+  or a topic (`scopes`). Every call example under the article's `## Examples`
+  heading renders; the results shown there and the prose around them do not.
+  To show only some calls, write them by hand instead.
+- The examples are the ones built into the server and checked against each
+  tool's input schema, so the call card follows the tool when it changes. An
+  operator's own help directory does not change what renders.
+- A topic the server does not have, a topic with no call examples, or a
+  malformed placeholder (`{{help:Document search}}`) fails config load, and is
+  refused by AgentDef create and fork, with the placeholder named.
+- It is not framed as data: the lines are meant to be copied into calls.
+- Budget: 8 KiB of examples per prompt in total, counting each placeholder.
+  A prompt over it fails config load.
+- Any definition may use it, and a team node's templates too. It reads no
+  store and calls no tool.
 
 ## Shared rules
 
