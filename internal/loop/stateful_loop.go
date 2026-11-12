@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"strings"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/statepatch"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -107,11 +110,17 @@ func runStateful(ctx context.Context, opts RunOptions, system []providers.Conten
 //  9. action — otherwise the named action runs and its output is the next
 //     observation.
 //
+// The step runs under its own loomcycle.iteration span, as an append
+// iteration does, so its model call and its action nest under it. Ended by
+// defer: unlike the append loop, no exit here does work after the span ends.
+//
 // It returns loopNext to go on to the next iteration and loopReturn to end the
 // run with the exit's result.
-func (r *statefulLoop) step(ctx context.Context, iter int) loopExit {
+func (r *statefulLoop) step(runCtx context.Context, iter int) loopExit {
+	ctx, iterSpan := lcotel.RecordIteration(runCtx, iter)
+	defer iterSpan.End()
 	r.stepStarts("gates")
-	if ex := r.gates(ctx, iter); ex.ctl != loopProceed {
+	if ex := r.gates(runCtx, iter); ex.ctl != loopProceed {
 		return ex
 	}
 	r.stepStarts("steer")
@@ -848,7 +857,11 @@ func (r *statefulLoop) dispatchAction(ctx context.Context, iter int, tid string,
 	// on (after any fallback), its sampling, and how full the window is.
 	// Stamped here rather than at the top of the step because a fallback
 	// during this step's call can change the first two.
-	actCtx := stampResolvedRoute(r.dispatchCtx, &r.opts)
+	//
+	// dispatchCtx carries the live Σ holder; the step's iteration span is
+	// put on it so the action's tool span nests under the step, as an append
+	// tool call nests under its iteration.
+	actCtx := stampResolvedRoute(trace.ContextWithSpan(r.dispatchCtx, trace.SpanFromContext(ctx)), &r.opts)
 	actCtx = tools.WithMaxContextTokens(actCtx, r.opts.MaxContextTokens)
 	actCtx = tools.WithContextUsage(actCtx, r.lastIn, r.lastWindow)
 	actCtx = tools.WithEffectiveContextWindow(actCtx, r.lastWindow)

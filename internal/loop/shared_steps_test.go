@@ -6,6 +6,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go.opentelemetry.io/otel/trace"
+
+	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -46,5 +49,53 @@ func TestRun_CancelledRunStopsBeforeHeartbeatPauseAndRequest(t *testing.T) {
 	}
 	if n := gate.asked.Load(); n != 0 {
 		t.Errorf("pause asked %d time(s) after the cancel, want 0", n)
+	}
+}
+
+// A stateful run records one loomcycle.iteration span per step, as the append
+// loop does per iteration, ended however the step ends; the step's model call
+// and its action's tool call are children of it.
+func TestRunStateful_RecordsAnIterationSpanPerStep(t *testing.T) {
+	exp, _ := traced(t)
+	prov := &statefulScriptProvider{scripts: []string{
+		`{"patch":{"count":1},"action":{"tool":"Echo","input":{}}}`,
+		`{"patch":{"count":2},"done":true,"final":"count is 2"}`,
+	}}
+	echo := &echoTool{reply: "observed"}
+	if _, err := Run(context.Background(), RunOptions{
+		Provider: prov, Model: "x", Tools: []tools.Tool{echo},
+		Dispatcher: tools.NewDispatcher([]tools.Tool{echo}),
+		Segments:   statefulTaskSegs(), Context: statefulCtx(nil),
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	iters := map[trace.SpanID]int64{}
+	for _, sp := range exp.GetSpans() {
+		if sp.Name != lcotel.SpanIteration {
+			continue
+		}
+		for _, a := range sp.Attributes {
+			if string(a.Key) == lcotel.AttrIteration {
+				iters[sp.SpanContext.SpanID()] = a.Value.AsInt64()
+			}
+		}
+	}
+	if len(iters) != 2 {
+		t.Fatalf("ended iteration spans = %d, want 2 (one per step)", len(iters))
+	}
+	for _, name := range []string{lcotel.SpanModelCall, lcotel.SpanToolCall} {
+		var n int
+		for _, sp := range exp.GetSpans() {
+			if sp.Name != name {
+				continue
+			}
+			n++
+			if _, ok := iters[sp.Parent.SpanID()]; !ok {
+				t.Errorf("%s span is not a child of an iteration span", name)
+			}
+		}
+		if n == 0 {
+			t.Errorf("no %s span recorded", name)
+		}
 	}
 }
