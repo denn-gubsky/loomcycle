@@ -834,7 +834,7 @@ func (s *Server) resumePausedRun(run store.Run) error {
 	if rootErr != nil {
 		slog.Warn("resume: the run resumes as the root of its own tree", "run_id", run.ID, "err", rootErr)
 	}
-	runCtx, runSpan := s.startRunSpan(runCtx, agentDef, lcotel.RunStartAttrs{
+	runCtx, runSpan := s.startRunSpan(s.withResumedNeverAncestry(runCtx, run), agentDef, lcotel.RunStartAttrs{
 		RunID:         run.ID,
 		AgentID:       run.AgentID,
 		AgentName:     run.Agent,

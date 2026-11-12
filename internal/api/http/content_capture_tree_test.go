@@ -144,3 +144,50 @@ func TestReplayTranscript_KeepsTheNotCapturedMarkOfAStoredResult(t *testing.T) {
 		t.Errorf("replayed ordinary result = %+v (found %v), want it unmarked", b, ok)
 	}
 }
+
+// A resume starts from a fresh ctx: a paused child of a never parent reads
+// the never back from its ancestors' rows, and captures nothing; a child of a
+// capturing parent captures as it did live.
+func TestResumePausedRuns_AResumedChildOfANeverParentCapturesNothing(t *testing.T) {
+	for _, never := range []bool{true, false} {
+		s, _, st, router, got, _ := contentCaptureFixture(t, true)
+		parentDef := s.cfg().Agents["launcher"]
+		if never {
+			parentDef.Telemetry = &config.AgentTelemetry{ContentCapture: config.AgentContentCaptureNever}
+		}
+		s.cfg().Agents["launcher"] = parentDef
+		ctx := context.Background()
+		file := func(agent string, ident store.RunIdentity) store.Run {
+			sess, err := st.CreateSession(ctx, "acme", agent, "alice")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ident.TenantID, ident.UserID, ident.Model = "acme", "alice", "stub-model"
+			run, err := st.CreateRun(ctx, sess.ID, ident)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return run
+		}
+		parent := file("launcher", store.RunIdentity{AgentID: "a_quiet_parent"})
+		child := file("allowed", store.RunIdentity{AgentID: "a_child", ParentAgentID: "a_quiet_parent", ParentRunID: parent.ID})
+		pauseMidTurn(t, s, child)
+		resumeOne(t, s)
+		waitRunStatus(t, st, child.ID, store.RunCompleted)
+		spans := waitForSpan(t, router, got, lcotel.SpanRun, lcotel.AttrRunID, child.ID)
+		captured := false
+		for _, sp := range spans {
+			for _, k := range lcotel.ContentAttributeKeys {
+				if _, ok := sp.attrs[string(k)]; ok {
+					captured = true
+				}
+			}
+		}
+		if never && captured {
+			t.Error("a resumed child of a never parent captured content")
+		}
+		if !never && !captured {
+			t.Fatal("a resumed child of a capturing parent captured nothing: this test cannot see a leak")
+		}
+	}
+}

@@ -3948,7 +3948,13 @@ were called with and returned, as the GenAI semantic conventions (release
   depth) captures nothing whatever its own agent says, and a never sub-run's
   answer is recorded as `[content not captured]` on its parent's tool span and
   in the parent's later captured model input (the parent still reads and
-  stores it). Otherwise a sub-run decides for its own agent.
+  stores it). Otherwise a sub-run decides for its own agent. A resumed
+  sub-run reads `never` back from its ancestors' runs, and captures nothing
+  when any of them cannot be read. Two places can still carry a never
+  sub-run's answer, reworded, into what its capturing parent captures: a
+  stateful parent's state, which copies what its tools returned, and a
+  compaction summary of the parent's history. An agent whose sub-runs'
+  answers must never leave belongs under a parent that is `never` itself.
 - **Stops when the tenant turns it off.** Whether a run may capture is decided
   when it starts, and every recording then asks again whether the tenant still
   captures: turning capture off (or deleting the policy) stops it at once for

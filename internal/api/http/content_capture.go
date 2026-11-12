@@ -7,6 +7,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -104,6 +105,48 @@ func storedNotCaptured(payload []byte) bool {
 		NotCaptured bool `json:"content_not_captured"`
 	}
 	return json.Unmarshal(payload, &m) == nil && m.NotCaptured
+}
+
+// withResumedNeverAncestry gives a resumed sub-run the never its live run
+// inherited from an ancestor (withContentCapture): a resume starts from a
+// fresh ctx, so the chain is read back from the run rows instead. Whenever
+// it cannot be read to its root — a missing, looping, too-deep or
+// other-tenant ancestor, a definition that cannot be resolved, a sub-run row
+// that names no parent run — the run is held to never too. Read only when
+// content capture could apply at all.
+func (s *Server) withResumedNeverAncestry(ctx context.Context, run store.Run) context.Context {
+	if s.tenantTelemetry == nil || !isSubRun(run) {
+		return ctx
+	}
+	if run.ParentRunID == "" || s.resumedAncestorNeverCaptures(ctx, run) {
+		return context.WithValue(ctx, ctxKeyNeverCaptureContent{}, true)
+	}
+	return ctx
+}
+
+// resumedAncestorNeverCaptures walks run's parents (as resumedRootRunID does)
+// and reports whether any one's agent never captures content, or the walk
+// failed.
+func (s *Server) resumedAncestorNeverCaptures(ctx context.Context, run store.Run) bool {
+	cur, seen := run, map[string]bool{run.ID: true}
+	for hops := 0; cur.ParentRunID != ""; hops++ {
+		id := cur.ParentRunID
+		if hops == maxResumeAncestry || seen[id] {
+			return true
+		}
+		seen[id] = true
+		parent, err := s.store.GetRun(ctx, id)
+		if err != nil || parent.ID != id || parent.TenantID != run.TenantID {
+			return true
+		}
+		rec, _ := decodeRunConfig(parent.RunConfig)
+		def, _, err := s.resumedAgentDef(ctx, parent, rec.AgentVersion)
+		if err != nil || def.Telemetry.NeverCapturesContent() {
+			return true
+		}
+		cur = parent
+	}
+	return false
 }
 
 // redactToolArgs masks a tool call's arguments as the stored transcript masks
