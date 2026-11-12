@@ -123,7 +123,9 @@ func InjectTraceContext(ctx context.Context, h http.Header) {
 	span := trace.SpanFromContext(ctx)
 	// Spans recorded only for tenants' own collectors are no trace of the
 	// operator's for a server it calls to join.
-	if routingOnly.Load() || !span.IsRecording() || !span.SpanContext().IsValid() {
+	// A trace sampled only for a tenant's export is likewise none of the
+	// operator's.
+	if routingOnly.Load() || !span.IsRecording() || !span.SpanContext().IsValid() || tenantOnly(span.SpanContext()) {
 		return
 	}
 	mc := propagation.MapCarrier{}
@@ -145,7 +147,7 @@ func SampledTraceID(ctx context.Context) string {
 	sc := span.SpanContext()
 	// Recorded only for tenants' own collectors: the operator's backend holds
 	// nothing to link a run to.
-	if routingOnly.Load() || !span.IsRecording() || !sc.IsValid() || !sc.IsSampled() {
+	if routingOnly.Load() || !span.IsRecording() || !sc.IsValid() || !sc.IsSampled() || tenantOnly(sc) {
 		return ""
 	}
 	return sc.TraceID().String()

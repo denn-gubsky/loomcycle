@@ -1664,9 +1664,9 @@ export class LoomcycleClient {
     return jsonFetch<TenantTelemetryResult>(this.ctx, `/v1/_telemetry${q}`, opts);
   }
 
-  /** Store the tenant's trace-export policy, replacing the last. Headers are
-   *  named by a tenant credential, never sent here. Audited. Mirrors
-   *  `PUT /v1/_telemetry`. */
+  /** Store the tenant's telemetry export policy (traces, metrics or both),
+   *  replacing the last. Headers are named by a tenant credential, never sent
+   *  here. Audited. Mirrors `PUT /v1/_telemetry`. */
   async setTelemetry(
     policy: TenantTelemetryPolicyInput,
     opts?: {

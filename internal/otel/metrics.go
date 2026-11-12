@@ -141,6 +141,7 @@ type instruments struct {
 	tenantDropped        metric.Int64Counter
 	tenantExportFailures metric.Int64Counter
 	tenantPipelines      metric.Int64UpDownCounter
+	tenantMetricPushes   metric.Int64Counter
 }
 
 // meterState is the process's meter provider and the reader /metrics renders.
@@ -270,6 +271,7 @@ func newInstruments(m, genAI metric.Meter, export bool) (instruments, error) {
 	in.tenantExported = counter("loomcycle.tenant_telemetry.exported", "{span}", "Spans a tenant's own collector accepted, by tenant.")
 	in.tenantDropped = counter("loomcycle.tenant_telemetry.dropped", "{span}", "Spans meant for a tenant's own collector that will never reach it (queue full, failed export, rejected), by tenant.")
 	in.tenantExportFailures = counter("loomcycle.tenant_telemetry.export_failures", "{batch}", "Export calls to a tenant's own collector that failed, by tenant.")
+	in.tenantMetricPushes = counter(tenantMetricPushesName, "{push}", "Pushes of a tenant's own metric series to its own collector, by tenant and outcome (ok or failed).")
 	in.tenantPipelines, err = m.Int64UpDownCounter("loomcycle.tenant_telemetry.pipelines", metric.WithUnit("{pipeline}"), metric.WithDescription("Tenant export pipelines open on this replica."))
 	add(err)
 
@@ -674,6 +676,14 @@ func tenantExportFailed(tenant string, n int64) {
 	}
 	st.inst.tenantExportFailures.Add(context.Background(), 1, metric.WithAttributes(attribute.String(LabelTenant, tenant)))
 	tenantSpansDropped(tenant, n)
+}
+
+// tenantMetricPushed counts one metric push to tenant's collector.
+func tenantMetricPushed(tenant, outcome string) {
+	if st := meters.Load(); st != nil {
+		st.inst.tenantMetricPushes.Add(context.Background(), 1, metric.WithAttributes(
+			attribute.String(LabelTenant, tenant), attribute.String(LabelOutcome, outcome)))
+	}
 }
 
 func tenantPipelinesChanged(delta int64) {

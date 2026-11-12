@@ -3084,8 +3084,8 @@ export interface RetentionOverride {
   created_at?: string;
 }
 
-/** A tenant's own trace export as written: where the tenant's run spans go.
- *  The operator's export is untouched by it. */
+/** A tenant's own telemetry export as written: where the tenant's run spans
+ *  and its own metric series go. The operator's export is untouched by it. */
 export interface TenantTelemetryPolicyInput {
   /** OTLP base URL of the tenant's collector (https). */
   endpoint: string;
@@ -3094,7 +3094,8 @@ export interface TenantTelemetryPolicyInput {
   /** The NAME of a tenant credential, restricted to the endpoint, whose
    *  value is the header block (`name=value,name=value`). Never the value. */
   headers_credential?: string;
-  /** What is exported; empty or absent is `["traces"]`, the only signal. */
+  /** What is exported: `"traces"`, `"metrics"` (the tenant's own series,
+   *  pushed every minute) or both; empty or absent is `["traces"]`. */
   signals?: string[];
   /** Share of the tenant's traces sent, 0..1, at most the operator's cap.
    *  Absent is 1 (or the cap below it); `0` is sent as 0, not as absent. */
@@ -3102,8 +3103,9 @@ export interface TenantTelemetryPolicyInput {
   /** `on` records the tenant's runs' prompts, answers and tool calls —
    *  redacted, and each field cut to `content_max_chars` — on the spans its
    *  collector receives, and never on the operator's. Accepted only where the
-   *  operator allows it (`LOOMCYCLE_TENANT_CONTENT_CAPTURE`). Content sent to
-   *  the collector is outside loomcycle's erasure. Default `off`. */
+   *  operator allows it (`LOOMCYCLE_TENANT_CONTENT_CAPTURE`) and only with
+   *  `"traces"` in `signals`. Content sent to the collector is outside
+   *  loomcycle's erasure. Default `off`. */
   content_capture?: "off" | "on";
   /** The length each captured field is cut to, 256..65536. Absent or `0` is
    *  4096. */
@@ -3132,15 +3134,17 @@ export interface TenantTelemetryPolicy {
  *  `last_error` never holds a header value. */
 export interface TenantTelemetryStatus {
   replica?: string;
-  /** This replica is sending the tenant's spans. */
+  /** This replica is sending the tenant's spans or metrics. */
   exporting: boolean;
   exported_spans: number;
   dropped_spans: number;
+  /** Failed exports: span batches and metric pushes alike. */
   export_failures: number;
   /** RFC 3339. */
   last_success_at?: string;
-  /** The last export failure, or why the stored policy is not being exported
-   *  (an expired header credential). */
+  /** The last export failure (a metric push's reads `metrics: <category>`),
+   *  or why the stored policy is not being exported (an expired header
+   *  credential). */
   last_error?: string;
   /** RFC 3339. */
   last_error_at?: string;

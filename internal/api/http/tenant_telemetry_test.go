@@ -197,12 +197,34 @@ func TestTenantTelemetry_MembersAndRunPlaneTokensAreRefused(t *testing.T) {
 	}
 }
 
+func TestTenantTelemetry_MetricsSignalIsStoredOnlyWithTheGateOn(t *testing.T) {
+	s, ts, st := overrideFixture(t)
+	col, _ := telemetryCollector(t)
+	body := telemetryBody(col.URL, `,"signals":["metrics","traces"]`)
+	if code, resp := bearerCall(t, ts, opsBearer, "PUT", "/v1/_telemetry", body); code != 404 || !strings.Contains(resp, `"feature_disabled"`) {
+		t.Fatalf("gate off: %d %s, want 404 feature_disabled", code, resp)
+	}
+	withTenantTelemetry(t, s, st)
+	code, resp := bearerCall(t, ts, opsBearer, "PUT", "/v1/_telemetry", body)
+	if res := decodeTelemetry(t, resp); code != 200 || res.Policy == nil || strings.Join(res.Policy.Signals, ",") != "metrics,traces" {
+		t.Fatalf("gate on: %d %s", code, resp)
+	}
+	code, resp = bearerCall(t, ts, opsBearer, "GET", "/v1/_telemetry", "")
+	if res := decodeTelemetry(t, resp); code != 200 || res.Policy == nil || strings.Join(res.Policy.Signals, ",") != "metrics,traces" {
+		t.Errorf("read back: %d %s", code, resp)
+	}
+	if code, resp := bearerCall(t, ts, opsBearer, "PUT", "/v1/_telemetry", telemetryBody(col.URL, `,"signals":["metrics"]`)); code != 200 ||
+		strings.Join(decodeTelemetry(t, resp).Policy.Signals, ",") != "metrics" {
+		t.Errorf("metrics only: %d %s", code, resp)
+	}
+}
+
 func TestTenantTelemetry_PolicyRefusalsAreBadRequests(t *testing.T) {
 	s, ts, st := overrideFixture(t)
 	withTenantTelemetry(t, s, st)
 	col, _ := telemetryCollector(t)
 	for name, body := range map[string]string{
-		"metrics":         telemetryBody(col.URL, `,"signals":["traces","metrics"]`),
+		"unknown signal":  telemetryBody(col.URL, `,"signals":["traces","logs"]`),
 		"content capture": telemetryBody(col.URL, `,"content_capture":"on"`),
 		"ratio":           telemetryBody(col.URL, `,"sampler_ratio":2`),
 		"protocol":        telemetryBody(col.URL, `,"protocol":"http/json"`),

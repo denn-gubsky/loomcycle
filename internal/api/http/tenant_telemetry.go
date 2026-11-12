@@ -19,8 +19,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tenanttelemetry"
 )
 
-// A tenant's own telemetry export: where the tenant's traces go beside the
-// operator's export. GET/PUT/DELETE /v1/_telemetry and POST
+// A tenant's own telemetry export: where the tenant's traces and its own
+// metric series go beside the operator's export. GET/PUT/DELETE /v1/_telemetry and POST
 // /v1/_telemetry:test, the gRPC TenantTelemetry RPC and the MCP telemetry
 // tool all call TenantTelemetry below, which holds who may, the rules (in
 // internal/tenanttelemetry) and the audit.

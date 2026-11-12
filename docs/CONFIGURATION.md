@@ -3533,7 +3533,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds an `agent` label (the agent name) to `loomcycle_runs_total` and `loomcycle_tokens_total`. Only for a bounded agent catalogue. See "Metrics". |
 | `OTEL_METRICS_EXPORTER` | `none` | `otlp` also exports the `/metrics` instruments over OTLP (needs `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, or the startup stops). A comma-separated list as the specification allows; a name loomcycle does not support (`prometheus`, `console`) is ignored with a warning. See "Metrics". |
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
-| `LOOMCYCLE_TENANT_TELEMETRY` | off | `1` lets each tenant export its own traces to an OTLP collector of its own, beside the operator's export. Off, the `/v1/_telemetry` routes answer 404 `feature_disabled` and tracing is exactly as without it. See "Tenant telemetry export". |
+| `LOOMCYCLE_TENANT_TELEMETRY` | off | `1` lets each tenant export its own traces, and its own series of the in-process metrics, to an OTLP collector of its own, beside the operator's export. Off, the `/v1/_telemetry` routes answer 404 `feature_disabled` and tracing is exactly as without it. See "Tenant telemetry export". |
 | `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP` | off | `1` accepts an `http://` collector endpoint (a lab without TLS). Off, only `https://`. A header credential can be bound only to an https endpoint, so an http one takes no headers. |
 | `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | — | Comma-separated hosts a tenant's endpoint may name, each exact (`otel.example.com`) or `*.suffix` (`*.grafana.net`, which does not match `grafana.net` itself). Empty allows any host the address guard lets through. |
 | `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO` | `1` | The highest `sampler_ratio` a tenant may set, 0–1. |
@@ -3748,8 +3748,9 @@ setting only one of them leaves tracing off. Rename them:
 
 With `LOOMCYCLE_TENANT_TELEMETRY=1`, a tenant operator (or an admin, for any
 tenant) can point loomcycle at the tenant's own OTLP collector, and that tenant's
-spans are exported there as well as to the operator's collector. Nothing else
-changes: the operator keeps its own export, its sampling and its resource.
+spans (and, with `metrics` in `signals`, its own metric series) are exported
+there as well as to the operator's collector. Nothing else changes: the
+operator keeps its own export, its sampling and its resource.
 
 A tenant's destination receives only spans stamped with its own
 `loomcycle.tenant`; a span with no tenant (substrate work) is never sent to a
@@ -3784,6 +3785,29 @@ on an export. `/metrics` counts the exports per tenant:
 `loomcycle_tenant_telemetry_exported_total`, `…_dropped_total`,
 `…_export_failures_total`, and `loomcycle_tenant_telemetry_pipelines`.
 
+With `metrics` in `signals`, the tenant's own series of the in-process
+instruments (the `loomcycle_*` families of `/metrics`: runs, tokens and cost,
+model and tool calls, its own export counters) are pushed to
+`<endpoint>/v1/metrics` (or over gRPC) every 60 seconds, as cumulative OTLP
+metrics under the same minimal resource as its spans. They are exactly the
+series a tenant's confined `/metrics` scrape shows: a series without a
+`tenant` label (database pools, provider attempts, the overflow series),
+another tenant's, one naming a user, and the GenAI convention histograms are
+never sent, and exemplars are left out. No instrument is added for it: each
+interval reads the instruments once and splits them by tenant. A push goes
+through the same address guard, header credential, export slots and timeout
+as a span export, one in flight per tenant, so a hung collector delays no
+other tenant. A tenant whose series have not changed for 10 minutes stops
+being pushed (the values it last received stand) until they change again; at
+most `LOOMCYCLE_TENANT_TELEMETRY_MAX_PIPELINES` tenants are pushed at once on
+a replica, and the last values are pushed when the process stops. A failed
+push counts in `export_failures` and reads `metrics: <category>` in
+`last_error`, which only a later successful push clears;
+`loomcycle_tenant_telemetry_metric_pushes_total{tenant,outcome}` counts pushes
+on `/metrics`. The header credential's `allowed_urls` must cover the URL of
+every signal sent: a credential bound to `<endpoint>/v1/traces` alone is
+refused for a policy that pushes metrics.
+
 Setting it up, as the tenant operator (an admin adds `"tenant": "<id>"`, or
 `?tenant=` on the other routes):
 
@@ -3794,7 +3818,8 @@ curl -X POST "$LOOMCYCLE/v1/_credentialdef" -H "Authorization: Bearer $TOKEN" \
 # 2. The policy.
 curl -X PUT "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN" \
   -d '{"endpoint":"https://otlp.example.net/otlp","headers_credential":"otel-headers"}'
-# 3. One test span, answered at once: {"test":{"ok":true,...}} or a category of failure.
+# 3. One test span (and, with metrics, one test metric), answered at once:
+#    {"test":{"ok":true,...}} or a category of failure.
 curl -X POST "$LOOMCYCLE/v1/_telemetry:test" -H "Authorization: Bearer $TOKEN"
 # What is set, and this replica's status (exported, dropped, the last error).
 curl "$LOOMCYCLE/v1/_telemetry" -H "Authorization: Bearer $TOKEN"
@@ -3806,12 +3831,35 @@ The same operations are the `TenantTelemetry` gRPC call, the `telemetry` MCP
 tool, `getTelemetry` / `setTelemetry` / `deleteTelemetry` / `testTelemetry`
 in the TypeScript client, their Python twins, and Settings → Telemetry in the
 Web UI. `protocol` is `http/protobuf` (spans posted to `<endpoint>/v1/traces`)
-or `grpc`; `signals` is `traces` (metrics export is not available yet);
-`sampler_ratio` (0–1, at most `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO`) is
-recorded with the policy but does not yet thin what is sent: a tenant receives
-the spans the deployment's own sampler keeps. A set is written to the audit log
+or `grpc`; `signals` is `traces` (the default), `metrics` or both;
+`sampler_ratio` (0–1, at most `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO`, default
+1 or the cap) is the share of the tenant's traces it receives (see "Sampling
+for two destinations" below; a destination without `traces` has no ratio and
+raises no spans). A set is written to the audit log
 (`tenant_telemetry_set`) before it takes effect and is refused when the record
 cannot be written; a delete is recorded as `tenant_telemetry_delete`.
+
+**Sampling for two destinations.** A trace is sampled once, when it starts,
+and each destination then keeps its own share by trace id. A span that starts
+a trace of a tenant with a destination is sampled when the operator's sampler
+(`OTEL_TRACES_SAMPLER`, or the tenant's ratio in "Sampling per tenant") keeps
+it, or when its trace id falls under the tenant's `sampler_ratio`. The
+operator's collector receives exactly the spans its own sampler keeps: a trace
+sampled only because of the tenant's ratio is marked as such and never
+exported to the operator, nor counted in its export statistics, nor linked
+from a run (no trace id is recorded) or propagated to an MCP server. The
+tenant's collector receives a span only when its trace id falls under the
+tenant's ratio, by the same test `traceidratio` uses. Both tests depend on the
+trace id alone, so each destination receives whole traces, never fragments
+(where the operator's sampler is not parent-based, a child span it would drop
+is still kept for the tenant). The operator's volume does not change when a
+tenant raises its ratio; what grows is the number of spans recorded in the
+process, bounded by `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO`. Spans under a
+caller's trace (`traceparent`) follow the operator's decision and are only
+thinned, never raised; a no-trace run is never raised. A new ratio applies to
+traces that start after it reaches the replica; one in progress keeps its
+start-time decision, and may be cut short on the tenant's side if the tenant
+lowered its ratio meanwhile.
 
 A failed export, in the test's answer and in the status's `last_error`
 alike, is reported as a category only — `blocked` (the address guard refused
@@ -3846,7 +3894,9 @@ expired header credential is picked up within a minute.
 Off by default, behind two gates: the operator sets
 `LOOMCYCLE_TENANT_CONTENT_CAPTURE=1`, and the tenant sets
 `"content_capture": "on"` on its policy (optionally `"content_max_chars"`,
-256–65536, default 4096). A run of that tenant then records, on the spans its
+256–65536, default 4096). Content travels on spans, so the policy's `signals`
+must include `traces`: a metrics-only policy asking for capture is refused, and
+one stored that way exports its metrics without content. A run of that tenant then records, on the spans its
 collector receives, what the model was given and answered and what its tools
 were called with and returned, as the GenAI semantic conventions (release
 1.41.0) name them: `gen_ai.system_instructions`, `gen_ai.input.messages` and
