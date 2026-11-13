@@ -51,6 +51,32 @@ func TestRunValidate_TakesSeveralPaths(t *testing.T) {
 	}
 }
 
+// The rule for a retired variable whose setting moved to the yaml asks which
+// keys the loaded yaml names, over all layers. validate reaches the load
+// through the one assembly with several files, so a key named in a file that
+// is not the last one must count, and a key no file names must not. The
+// summary carries both the layer line and the sign-in mode line.
+func TestRunValidate_MovedSettingRuleReadsEveryNamedLayer(t *testing.T) {
+	a, b := twoConfigFiles(t)
+	t.Setenv("LOOMCYCLE_METRICS_ENABLED", "1")
+	var stdout, stderr bytes.Buffer
+	if rc := RunValidate([]string{a, b}, &stdout, &stderr); rc != 2 || !strings.Contains(stderr.String(), "does not name metrics.enabled") {
+		t.Fatalf("no layer names the key: rc=%d, stderr=%q", rc, stderr.String())
+	}
+	// Named in the first file, which the second is layered over.
+	writeYAML(t, a, "defaults: { provider: anthropic, model: claude-sonnet-4-6 }\nmetrics: { enabled: false }\nagents:\n  from-a: { system_prompt: \"a\", tools: [] }\n")
+	stdout.Reset()
+	stderr.Reset()
+	if rc := RunValidate([]string{a, b}, &stdout, &stderr); rc != 0 {
+		t.Fatalf("the first layer names the key: rc=%d, stderr=%q", rc, stderr.String())
+	}
+	for _, want := range []string{"loomcycle config: ", a + " ◁ " + b, "Auth mode        : ", "Agents           : 2"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("validate is missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
 // Every command that reports on the server's config, run through its own
 // flag parsing with two --config files, names the stack the server assembles
 // from the same two files. Comparing the assembly function with a wrapper
