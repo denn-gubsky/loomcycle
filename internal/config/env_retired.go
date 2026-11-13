@@ -113,8 +113,8 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_MEMORY_MAX_VALUE_BYTES":              "a Memory value is capped at 64 KiB",
 	"LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS":           "a principal holds at most 4 document feed streams",
 	"LOOMCYCLE_TOOL_PARALLELISM":                    "8 tool calls of one turn run at once",
-	"LOOMCYCLE_USAGE_RUN_RETENTION_MS":              "the usage archiver is gone: set LOOMCYCLE_RETENTION_CHATS_MODE and LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS",
-	"LOOMCYCLE_USAGE_RUN_RETENTION_MODE":            "the usage archiver is gone: set LOOMCYCLE_RETENTION_CHATS_MODE",
+	"LOOMCYCLE_USAGE_RUN_RETENTION_MS":              "the usage archiver is gone: set LOOMCYCLE_RETENTION_ENABLED=1 with LOOMCYCLE_RETENTION_CHATS_MODE and LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS",
+	"LOOMCYCLE_USAGE_RUN_RETENTION_MODE":            "the usage archiver is gone: set LOOMCYCLE_RETENTION_ENABLED=1 with LOOMCYCLE_RETENTION_CHATS_MODE",
 	"LOOMCYCLE_USAGE_EXPORT_DIR":                    "the usage archiver is gone: set LOOMCYCLE_RETENTION_EXPORT_DIR",
 	"LOOMCYCLE_READ_ROOT":                           "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_WRITE_ROOT":                          "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
@@ -127,7 +127,6 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_CHANNEL_DEBUG":              "set LOOMCYCLE_LOG_LEVEL=debug: each channel publish is logged at debug level",
 	"LOOMCYCLE_OLLAMA_DEBUG_THINK":         "set LOOMCYCLE_LOG_LEVEL=debug: each Ollama request's model, effort and think flag are logged at debug level",
 	"LOOMCYCLE_A2A_ENABLED":                "A2A is on when LOOMCYCLE_A2A_SERVER_CARD names the server card to serve; unset it to turn A2A off",
-	"LOOMCYCLE_RETENTION_ENABLED":          "the retention sweeper runs when a LOOMCYCLE_RETENTION_*_MODE is prune or export+prune; set every mode to off (or unset) to stop it",
 	"LOOMCYCLE_SQLMEM_ENABLED":             "SQL Memory is on with a SQLite store, and with a Postgres store when LOOMCYCLE_SQLMEM_PG_DSN is set; storage.sqlmem_enabled: false in the yaml turns it off",
 	"LOOMCYCLE_STORAGE_BACKEND":            "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise; storage.backend in the yaml still overrides",
 }
@@ -215,11 +214,6 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// for on a Postgres store with no aux DSN, it used to stop the boot and
 	// would now stay off with the agents' SQL and Documents refusing.
 	"LOOMCYCLE_SQLMEM_ENABLED": {sqlMemSwitchDisagrees, "SQL Memory follows the store, which is not what this variable asked for; to keep it off set storage.sqlmem_enabled: false in the yaml, and to have it on with a Postgres store set LOOMCYCLE_SQLMEM_PG_DSN (with storage.sqlmem_enabled unset or true)"},
-
-	// The sweeper used to run only when this said "1", whatever the family
-	// modes said. A deployment that held it off with a mode already set to
-	// prune would have that family's data deleted on the first sweep.
-	"LOOMCYCLE_RETENTION_ENABLED": {retentionWasHeldOff, "the retention sweeper runs whenever a LOOMCYCLE_RETENTION_*_MODE is prune or export+prune, and one is, so data this variable held back would be deleted; to keep retention off, clear every family mode (unset it or set it to off)"},
 
 	// A2A used to be served only when this said "1". With the card named and
 	// the switch off, the A2A endpoints would now be mounted.
@@ -355,30 +349,6 @@ func sqlMemNow(c retiredEnvCtx) bool {
 func sqlMemSwitchDisagrees(value string, c retiredEnvCtx) bool {
 	was := value == "1" || (c.storage.SqlMemEnabled != nil && *c.storage.SqlMemEnabled)
 	return was != sqlMemNow(c)
-}
-
-// retentionModeEnv names each retention family's mode variable. The retention
-// rule is judged before applyEnvRetention reads them, so it reads them here.
-var retentionModeEnv = []string{
-	"LOOMCYCLE_RETENTION_DEFS_MODE",
-	"LOOMCYCLE_RETENTION_CHATS_MODE",
-	"LOOMCYCLE_RETENTION_MEM_MODE",
-	"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE",
-	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE",
-}
-
-// retentionWasHeldOff reports a retired retention switch that kept the sweeper
-// from running (the old read ran it for exactly "1") while a family mode now
-// starts it.
-func retentionWasHeldOff(value string, c retiredEnvCtx) bool {
-	if value == "1" {
-		return false
-	}
-	modes := make([]string, 0, len(retentionModeEnv))
-	for _, name := range retentionModeEnv {
-		modes = append(modes, c.env[name])
-	}
-	return retentionFamilyOn(modes...)
 }
 
 // a2aWasOff reports a retired A2A switch that kept A2A off (the old read

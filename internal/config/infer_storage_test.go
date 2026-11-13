@@ -189,97 +189,44 @@ func requireRetiredAdvisory(t *testing.T, cfg *Config, name string) {
 	t.Errorf("no advisory for %s; warnings = %q", name, cfg.Warnings)
 }
 
-// The retention sweeper is on exactly when a family asks for deletion; a mode
-// the sweeper would ignore does not start it.
-func TestRetentionEnabled_FollowsTheFamilyModes(t *testing.T) {
-	families := []string{
-		"LOOMCYCLE_RETENTION_DEFS_MODE",
-		"LOOMCYCLE_RETENTION_CHATS_MODE",
-		"LOOMCYCLE_RETENTION_MEM_MODE",
-		"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE",
-		"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE",
-	}
-	load := func(t *testing.T, env map[string]string) *Config {
-		t.Helper()
-		for _, f := range families {
-			t.Setenv(f, "")
-		}
-		// Unset, not empty: the retired switch set to the empty string held
-		// the sweeper off, and is refused once a family deletes.
-		t.Setenv("LOOMCYCLE_RETENTION_ENABLED", "")
-		if err := os.Unsetenv("LOOMCYCLE_RETENTION_ENABLED"); err != nil {
-			t.Fatal(err)
-		}
-		for k, v := range env {
-			t.Setenv(k, v)
-		}
-		cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n")
-		if err != nil {
-			t.Fatal(err)
-		}
-		return cfg
-	}
-	if load(t, nil).Env.RetentionEnabled {
-		t.Error("no family mode: retention is on, want off")
-	}
-	for _, f := range families {
-		for mode, want := range map[string]bool{"prune": true, "export+prune": true, "off": false, "delete": false} {
-			if got := load(t, map[string]string{f: mode}).Env.RetentionEnabled; got != want {
-				t.Errorf("%s=%s: retention on = %v, want %v", f, mode, got, want)
-			}
-		}
-	}
-	// The retired switch alone starts nothing, and is reported.
-	cfg := load(t, map[string]string{"LOOMCYCLE_RETENTION_ENABLED": "1"})
-	if cfg.Env.RetentionEnabled {
-		t.Error("LOOMCYCLE_RETENTION_ENABLED=1 with no family mode: retention is on, want off")
-	}
-	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_RETENTION_ENABLED")
-}
-
-// The retired switch held the sweeper off whatever the family modes said.
-// With it set to anything but 1 and a family asking for deletion, the load
-// stops instead of deleting what the operator held back.
-func TestLoadLayers_RefusesARetiredRetentionSwitchThatHeldDeletionBack(t *testing.T) {
-	for _, f := range []string{
-		"LOOMCYCLE_RETENTION_DEFS_MODE", "LOOMCYCLE_RETENTION_MEM_MODE",
-		"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE", "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE",
+// The retention sweeper starts on its switch alone. A family mode staged
+// without the switch deletes nothing: with no age set, a chats mode of prune
+// would take every finished chat on the first sweep.
+func TestRetentionEnabled_NeedsTheSwitchWhateverTheFamilyModes(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		set         bool
+		value, mode string
+		want        bool
+	}{
+		{name: "nothing set"},
+		{name: "a family mode alone", mode: "prune"},
+		{name: "a family mode with the switch off", set: true, value: "0", mode: "export+prune"},
+		{name: "the switch alone", set: true, value: "1", want: true},
+		{name: "the switch and a family mode", set: true, value: "1", mode: "prune", want: true},
+		{name: "a word that is not 1", set: true, value: "true", mode: "prune"},
 	} {
-		t.Setenv(f, "")
-	}
-	t.Setenv("LOOMCYCLE_RETENTION_CHATS_MODE", "prune")
-	t.Setenv("LOOMCYCLE_RETENTION_ENABLED", "0")
-	_, err := loadYAMLString(t, "defaults: {provider: mock}\n")
-	if err == nil {
-		t.Fatal("the load accepted a retired retention switch that held deletion back")
-	}
-	for _, want := range []string{"LOOMCYCLE_RETENTION_ENABLED", "_MODE", "off"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error does not name %q: %s", want, err)
-		}
-	}
-
-	// The modes cleared, as the refusal says: the load goes through, nothing
-	// is deleted, and the dead line is still reported.
-	t.Setenv("LOOMCYCLE_RETENTION_CHATS_MODE", "off")
-	cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Env.RetentionEnabled {
-		t.Error("retention is on with every family mode off")
-	}
-	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_RETENTION_ENABLED")
-
-	// It was on, and a family deletes: nothing changed.
-	t.Setenv("LOOMCYCLE_RETENTION_CHATS_MODE", "prune")
-	t.Setenv("LOOMCYCLE_RETENTION_ENABLED", "1")
-	cfg, err = loadYAMLString(t, "defaults: {provider: mock}\n")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.Env.RetentionEnabled {
-		t.Error("retention is off with a family set to prune")
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_RETENTION_ENABLED", tc.value)
+			if !tc.set {
+				if err := os.Unsetenv("LOOMCYCLE_RETENTION_ENABLED"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("LOOMCYCLE_RETENTION_CHATS_MODE", tc.mode)
+			cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Env.RetentionEnabled != tc.want {
+				t.Errorf("RetentionEnabled = %v, want %v", cfg.Env.RetentionEnabled, tc.want)
+			}
+			for _, w := range cfg.Warnings {
+				if strings.Contains(w, "LOOMCYCLE_RETENTION_ENABLED") {
+					t.Errorf("the switch is reported as retired: %s", w)
+				}
+			}
+		})
 	}
 }
 
