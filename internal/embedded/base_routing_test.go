@@ -222,3 +222,34 @@ func TestShippedConfigs_NoAliasPutsAGlobUnderModel(t *testing.T) {
 		t.Fatalf("read %d aliases; the test is not reading the configs", aliases)
 	}
 }
+
+// base's header says which tiers an install with one provider's key is served
+// in. This is that table; a tier change that makes it untrue fails here, so
+// the header is corrected with it.
+func TestBasePreset_TiersServedPerProviderMatchItsHeader(t *testing.T) {
+	base := unitRouting(t, "base")
+	served := map[string]string{}
+	for _, tier := range []string{"low", "middle", "high"} {
+		seen := map[string]bool{}
+		for _, c := range base.Tiers[tier] {
+			if p, _ := base.Models[c.Value]["provider"].(string); p != "" && !seen[p] {
+				seen[p] = true
+				served[p] += tier + " "
+			}
+		}
+	}
+	want := map[string]string{
+		"openai": "low middle high ", "anthropic": "low middle high ", "gemini": "low middle high ",
+		"deepseek": "low middle ", "ollama-local": "low middle ", "ollama": "high ",
+	}
+	if !reflect.DeepEqual(served, want) {
+		t.Errorf("tiers served per provider = %v, want %v (and base.yaml's header table to match)", served, want)
+	}
+	for _, ut := range []string{"low", "medium", "high"} {
+		for _, p := range base.UserTiers[ut].ProviderPriority {
+			if p == "gemini" {
+				t.Errorf("user_tiers.%s now includes gemini; base.yaml's header says it does not", ut)
+			}
+		}
+	}
+}

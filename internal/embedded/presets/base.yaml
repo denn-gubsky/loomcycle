@@ -8,9 +8,20 @@
 # preset that includes it: `personal`, `server`) and layered as the base of the
 # config stack, under the operator's thin overlay.
 #
-# A provider with no key in the environment is skipped, so this one matrix
-# serves a single-key install and a six-provider one. A deployment restates an
-# alias or a tier here only where it means to differ.
+# A provider with no key in the environment is skipped, so one matrix serves
+# installs with different keys. Not every single-key install is served in
+# every tier, though:
+#   OpenAI, Anthropic or Gemini alone   all three tiers.
+#   DeepSeek alone                      low and middle. `high` has no DeepSeek
+#                                       candidate: a tier-high agent fails,
+#                                       naming the tier.
+#   A local Ollama alone                low and middle here; add the `local`
+#                                       preset for a local `high` candidate.
+#   Hosted Ollama alone                 `high` only.
+# That is for a run on the `default` user tier, which reaches every provider.
+# The `low`, `medium` and `high` user tiers name their own providers and do
+# not include Gemini; `free` is local only. A deployment restates an alias, a
+# tier or a user tier here only where it means to differ.
 #
 # This mirrors the provider half of `loomcycle.example.yaml`; keep them in sync.
 

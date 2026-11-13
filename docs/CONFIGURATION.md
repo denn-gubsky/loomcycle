@@ -48,7 +48,7 @@ The doc presents this as **four cookbook patterns**. Find the pattern matching y
 |---|---|---|---|
 | **Library `provider_priority`** | top-level `provider_priority:` | The walk order across providers when nothing else overrides | Always — every config sets this |
 | **Library `tiers`** | top-level `tiers:` | Per-task-tier (`low`/`middle`/`high`) ordered candidate lists | Always — every agent that uses `tier:` reads this |
-| **`models:` alias map** | top-level `models:` | Aliases like `sonnet → {anthropic, claude-sonnet-4-6}`. Reference by name in tier candidate lists (`- sonnet`), per-agent pins (`model: sonnet`), and per-agent `models[tier]` — define the model once, single-source the id | The recommended way to name models — always; raw `{provider, model}` pairs still work but repeat the id |
+| **`models:` alias map** | top-level `models:` | Aliases like `sonnet → {anthropic, claude-sonnet-5-5}`. Reference by name in tier candidate lists (`- sonnet`), per-agent pins (`model: sonnet`), and per-agent `models[tier]` — define the model once, single-source the id | The recommended way to name models — always; raw `{provider, model}` pairs still work but repeat the id |
 | **`user_tiers:` overlay** | top-level `user_tiers:` | Per-user-class policy (free/low/medium/high). Restricts which providers + models a user's runs may touch | When your app has multiple plan tiers OR multi-tenant cost/privacy boundaries |
 | **Per-agent `providers:`** | agent .md `providers:` | Replaces the priority order for THIS agent only | When one agent must skip certain providers (privacy, capability) |
 | **Per-agent `models[tier]:`** | agent .md `models:` | Replaces the tier candidate list for THIS agent | When one agent needs specific models in its tier slot |
@@ -124,7 +124,7 @@ func ValidateRoutingMode(provider, model, tier string) error {
 }
 ```
 
-If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's frontmatter, loomcycle refuses to start (`agent "<name>": cannot set both explicit provider/model pin and tier (pick one)`). Pick one path.
+If you set both `tier: middle` AND `model: claude-sonnet-5-5` in an agent's frontmatter, loomcycle refuses to start (`agent "<name>": cannot set both explicit provider/model pin and tier (pick one)`). Pick one path.
 
 ---
 
@@ -139,15 +139,15 @@ If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's fron
 # (tier candidates, agent pins). Editing one right-hand side re-points
 # every agent/tier that uses the alias.
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 provider_priority:
   - anthropic
 
 # Tier candidates are bare ALIASES (v0.35.0+) — `- haiku` is the same as
-# `- { provider: anthropic, model: claude-haiku-4-5 }`, single-sourced from
+# `- { provider: anthropic, model: claude-haiku-5-5 }`, single-sourced from
 # the models: map above. A raw {provider, model} pair still works too.
 tiers:
   low:    [haiku]
@@ -159,7 +159,7 @@ tiers:
 # sent to the provider verbatim, not resolved).
 defaults:
   provider: anthropic
-  model:    claude-sonnet-4-6
+  model:    claude-sonnet-5-5
 
 concurrency:
   max_concurrent_runs: 8
@@ -180,7 +180,7 @@ tools: [Read]
 You are an ATS filter...
 ```
 
-→ resolves to `(anthropic, claude-haiku-4-5)` via `tiers.low`.
+→ resolves to `(anthropic, claude-haiku-5-5)` via `tiers.low`.
 
 **Alias pin** — agent specifically wants sonnet:
 
@@ -194,7 +194,7 @@ tools: [Read]
 You rewrite text while preserving voice...
 ```
 
-→ resolves to `(anthropic, claude-sonnet-4-6)` via the `models:` alias.
+→ resolves to `(anthropic, claude-sonnet-5-5)` via the `models:` alias.
 
 **Full pin** — bypass aliases entirely:
 
@@ -202,7 +202,7 @@ You rewrite text while preserving voice...
 ---
 name: cv-rewriter
 provider: anthropic
-model: claude-sonnet-4-6
+model: claude-sonnet-5-5
 tools: [Read]
 ---
 ```
@@ -231,24 +231,24 @@ tiers:
   low:
     - { provider: deepseek,  model: deepseek-flash }      # cost floor
     - { provider: gemini,    model: gemini-2.5-flash-lite }
-    - { provider: anthropic, model: claude-haiku-4-5 }    # baseline
+    - { provider: anthropic, model: claude-haiku-5-5 }    # baseline
   middle:
     - { provider: deepseek,  model: deepseek-v4-pro }
     - { provider: gemini,    model: gemini-2.5-pro }
-    - { provider: anthropic, model: claude-sonnet-4-6 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }
   high:
     # Premium-privacy: anthropic only at high tier.
-    - { provider: anthropic, model: claude-sonnet-4-6 }
-    - { provider: anthropic, model: claude-opus-4-7 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }
+    - { provider: anthropic, model: claude-opus-5-5 }
 
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 defaults:
   provider: anthropic
-  model:    claude-sonnet-4-6
+  model:    claude-sonnet-5-5
 ```
 
 ### Cascade behaviour
@@ -279,7 +279,7 @@ tools: [Read]
 ---
 ```
 
-The resolver now walks `[anthropic]` only, so this agent always resolves to `claude-sonnet-4-6` (the only middle-tier anthropic candidate). It never touches DeepSeek or Gemini.
+The resolver now walks `[anthropic]` only, so this agent always resolves to `claude-sonnet-5-5` (the only middle-tier anthropic candidate). It never touches DeepSeek or Gemini.
 
 ### Agent .md: per-agent `models[tier]:` override
 
@@ -292,8 +292,8 @@ description: Deep analytical reasoning for the high-tier slot.
 tier: high
 models:
   high:
-    - { provider: anthropic, model: claude-opus-4-7 }
-    - { provider: anthropic, model: claude-sonnet-4-6 }   # fallback
+    - { provider: anthropic, model: claude-opus-5-5 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }   # fallback
 tools: [Read, WebFetch]
 ---
 ```
@@ -352,16 +352,16 @@ provider_priority:
 
 tiers:
   low:
-    - { provider: anthropic, model: claude-haiku-4-5 }
+    - { provider: anthropic, model: claude-haiku-5-5 }
   middle:
-    - { provider: anthropic, model: claude-sonnet-4-6 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }
   high:
-    - { provider: anthropic, model: claude-opus-4-7 }
+    - { provider: anthropic, model: claude-opus-5-5 }
 
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 # v0.8.2+: per-user-class policy overlays.
 user_tiers:
@@ -375,31 +375,31 @@ user_tiers:
     provider_priority: [anthropic]
     fallback_on_error: true
     tiers:
-      low:    [{ provider: anthropic, model: claude-haiku-4-5 }]
-      middle: [{ provider: anthropic, model: claude-haiku-4-5 }]   # locked down
-      high:   [{ provider: anthropic, model: claude-haiku-4-5 }]   # locked down
+      low:    [{ provider: anthropic, model: claude-haiku-5-5 }]
+      middle: [{ provider: anthropic, model: claude-haiku-5-5 }]   # locked down
+      high:   [{ provider: anthropic, model: claude-haiku-5-5 }]   # locked down
 
   medium:
     # Medium users get haiku + sonnet (no opus).
     provider_priority: [anthropic]
     fallback_on_error: true
     tiers:
-      low:    [{ provider: anthropic, model: claude-haiku-4-5 }]
-      middle: [{ provider: anthropic, model: claude-sonnet-4-6 }]
-      high:   [{ provider: anthropic, model: claude-sonnet-4-6 }]   # cap at sonnet
+      low:    [{ provider: anthropic, model: claude-haiku-5-5 }]
+      middle: [{ provider: anthropic, model: claude-sonnet-5-5 }]
+      high:   [{ provider: anthropic, model: claude-sonnet-5-5 }]   # cap at sonnet
 
   high:
     # High users get the full menu.
     provider_priority: [anthropic]
     fallback_on_error: true
     tiers:
-      low:    [{ provider: anthropic, model: claude-haiku-4-5 }]
-      middle: [{ provider: anthropic, model: claude-sonnet-4-6 }]
-      high:   [{ provider: anthropic, model: claude-opus-4-7 }]
+      low:    [{ provider: anthropic, model: claude-haiku-5-5 }]
+      middle: [{ provider: anthropic, model: claude-sonnet-5-5 }]
+      high:   [{ provider: anthropic, model: claude-opus-5-5 }]
 
 defaults:
   provider: anthropic
-  model:    claude-sonnet-4-6
+  model:    claude-sonnet-5-5
 ```
 
 ### How the caller picks a user_tier
@@ -416,7 +416,7 @@ POST /v1/runs
 }
 ```
 
-Loomcycle looks up `user_tiers.free` in the operator yaml, applies the overlay, and resolves. With the yaml above, a `tier: middle` agent run on `user_tier: free` resolves to `claude-haiku-4-5`. The same agent on `user_tier: high` resolves to `claude-opus-4-7`. The agent .md file doesn't change; the user's plan controls the model.
+Loomcycle looks up `user_tiers.free` in the operator yaml, applies the overlay, and resolves. With the yaml above, a `tier: middle` agent run on `user_tier: free` resolves to `claude-haiku-5-5`. The same agent on `user_tier: high` resolves to `claude-opus-5-5`. The agent .md file doesn't change; the user's plan controls the model.
 
 ### Required: the `default` user_tier
 
@@ -460,20 +460,20 @@ tiers:
     - { provider: ollama,       model: glm-4.7 }
     - { provider: deepseek,     model: deepseek-flash }
     - { provider: gemini,       model: gemini-2.5-flash-lite }
-    - { provider: anthropic,    model: claude-haiku-4-5 }
+    - { provider: anthropic,    model: claude-haiku-5-5 }
   middle:
     - { provider: ollama,       model: deepseek-v4-pro }   # cloud-ollama subscription path
     - { provider: deepseek,     model: deepseek-v4-pro }   # per-token fallback
     - { provider: gemini,       model: gemini-2.5-pro }
-    - { provider: anthropic,    model: claude-sonnet-4-6 }
+    - { provider: anthropic,    model: claude-sonnet-5-5 }
   high:
     # Premium-privacy: anthropic only at library high.
-    - { provider: anthropic,    model: claude-sonnet-4-6 }
+    - { provider: anthropic,    model: claude-sonnet-5-5 }
 
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 user_tiers:
   default:
@@ -510,16 +510,16 @@ user_tiers:
         - { provider: ollama,       model: glm-4.7 }
         - { provider: deepseek,     model: deepseek-flash }
         - { provider: gemini,       model: gemini-2.5-flash-lite }
-        - { provider: anthropic,    model: claude-haiku-4-5 }
+        - { provider: anthropic,    model: claude-haiku-5-5 }
       middle:
         - { provider: ollama,       model: deepseek-v4-pro }
         - { provider: deepseek,     model: deepseek-v4-pro }
         - { provider: gemini,       model: gemini-2.5-pro }
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
       high:
         - { provider: ollama,       model: deepseek-v4-pro }
         - { provider: deepseek,     model: deepseek-v4-pro }
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
 
   medium:
     # Same cost-floor pattern as low, plus anthropic-premium for high-tier agents.
@@ -531,16 +531,16 @@ user_tiers:
         - { provider: ollama,       model: glm-4.7 }
         - { provider: deepseek,     model: deepseek-flash }
         - { provider: gemini,       model: gemini-2.5-flash-lite }
-        - { provider: anthropic,    model: claude-haiku-4-5 }
+        - { provider: anthropic,    model: claude-haiku-5-5 }
       middle:
         - { provider: ollama,       model: deepseek-v4-pro }
         - { provider: deepseek,     model: deepseek-v4-pro }
         - { provider: gemini,       model: gemini-2.5-pro }
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
       high:
         # Medium tier IS allowed anthropic-premium for the high slot.
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
-        - { provider: anthropic,    model: claude-opus-4-7 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
+        - { provider: anthropic,    model: claude-opus-5-5 }
 
   high:
     # PREMIUM-PRIVACY. NO third-party LLMs touch user data, EVER.
@@ -1036,7 +1036,7 @@ model: sonnet
 ---
 ```
 
-No `tier:` — uses pin path. `model: sonnet` expands via `models:` alias to `(anthropic, claude-sonnet-4-6)`. This agent never falls through to a non-Anthropic provider.
+No `tier:` — uses pin path. `model: sonnet` expands via `models:` alias to `(anthropic, claude-sonnet-5-5)`. This agent never falls through to a non-Anthropic provider.
 
 **Defining skills inline (the top-level `skills:` map)** — instead of a `LOOMCYCLE_SKILLS_ROOT` directory of `SKILL.md` files, you can define skills directly in YAML, at the same level as `agents:` and `models:`:
 
@@ -1161,7 +1161,7 @@ Single reference table:
 | user_tier `tiers[tier]:` set (no agent override) | Replaces library `tiers[tier]` | `candidatesFor` in `internal/resolve/matrix.go` |
 | Discovered .md field AND operator-yaml `agents:` overlay both set | YAML non-zero wins; nil slice keeps .md value | `mergeAgentDef` in `internal/config/config.go` |
 | `model: sonnet` (alias) AND `models:` map has `sonnet` | Alias expands to `{provider, model}` from the map | `ExpandModelAlias` in `internal/config/config.go` |
-| `model: claude-sonnet-4-6` (literal, no alias) | Used as-is as the model ID | `ExpandModelAlias` in `internal/config/config.go` (a non-alias passes through) |
+| `model: claude-sonnet-5-5` (literal, no alias) | Used as-is as the model ID | `ExpandModelAlias` in `internal/config/config.go` (a non-alias passes through) |
 | Probe says provider unreachable | Resolver skips all that provider's candidates | `isAvailableLocked` in `internal/resolve/matrix.go` |
 | Provider has no API key set | Marked excluded, treated like unreachable | `runResolveProbeOnce` in `cmd/loomcycle/main.go` calls `SetExcluded` in `internal/resolve/matrix.go` |
 
