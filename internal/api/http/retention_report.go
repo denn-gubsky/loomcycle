@@ -11,8 +11,8 @@ import (
 )
 
 // retentionReportResponse is the wire shape of GET /v1/_retention (RFC BM). It
-// reports the data-retention sweeper's effective configuration plus — for an
-// admin — a per-def-type count of currently-purgeable retired versions.
+// reports the configuration the data-retention sweeper is running with plus —
+// for an admin — a per-def-type count of currently-purgeable retired versions.
 //
 // The purgeable counts + the export_dir are ADMIN-ONLY: the counts span every
 // tenant (the retention purge is an operator-global function, not tenant-scoped),
@@ -27,10 +27,14 @@ type retentionReportResponse struct {
 	NoTraceOverrides []retentionOverrideResponse `json:"no_trace_overrides"`
 	Admin            bool                        `json:"admin"`
 	Enabled          bool                        `json:"enabled"`
-	IntervalMS       int64                       `json:"interval_ms"`
-	DefsMode         string                      `json:"defs_mode"`
-	DefsMaxAgeMS     int64                       `json:"defs_max_age_ms"`
-	DefsKeepLastN    int                         `json:"defs_keep_last_n"`
+	// PendingRestart is true when the yaml's retention (a config reload) is
+	// not what the sweepers run with: every other field describes the running
+	// sweepers, which change only at a restart. Absent when they agree.
+	PendingRestart bool   `json:"pending_restart,omitempty"`
+	IntervalMS     int64  `json:"interval_ms"`
+	DefsMode       string `json:"defs_mode"`
+	DefsMaxAgeMS   int64  `json:"defs_max_age_ms"`
+	DefsKeepLastN  int    `json:"defs_keep_last_n"`
 	// ChatsMode / ChatsMaxAgeMS are the RFC BM Phase 2 aged-chat archiver knobs
 	// (config only — tenant-readable).
 	ChatsMode     string `json:"chats_mode"`
@@ -95,49 +99,27 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 		admin = auth.HasScope(p.Scopes, auth.ScopeAdmin)
 	}
 
-	// Effective config, applying the same fallbacks retention.New does, so the
-	// report shows what the sweeper actually runs with.
-	interval := s.cfg().Env.RetentionInterval
-	if interval <= 0 {
-		interval = time.Hour
-	}
-	mode := s.cfg().Env.RetentionDefsMode
-	if mode == "" {
-		mode = "off"
-	}
-	chatsMode := s.cfg().Env.RetentionChatsMode
-	if chatsMode == "" {
-		chatsMode = "off"
-	}
-	memMode := s.cfg().Env.RetentionMemMode
-	if memMode == "" {
-		memMode = "off"
-	}
-	memContentMode := s.cfg().Env.RetentionMemContentMode
-	if memContentMode == "" {
-		memContentMode = "off"
-	}
-	emptyDossierMode := s.cfg().Env.RetentionEmptyDossierMode
-	if emptyDossierMode == "" {
-		emptyDossierMode = "off"
-	}
-	chatsInternalMaxAge := retention.InternalChatsMaxAge
+	// What the sweeper was started with, not what the config holder says now:
+	// a reload swaps the holder and starts no sweeper, so the two differ until
+	// a restart, and this report is read to learn what is being deleted.
+	run, pending := s.retentionRunning()
 	resp := retentionReportResponse{
 		Admin:                 admin,
-		Enabled:               s.cfg().Env.RetentionEnabled,
-		IntervalMS:            interval.Milliseconds(),
-		DefsMode:              mode,
-		DefsMaxAgeMS:          s.cfg().Env.RetentionDefsMaxAge.Milliseconds(),
-		DefsKeepLastN:         s.cfg().Env.RetentionDefsKeepLastN,
-		ChatsMode:             chatsMode,
-		ChatsMaxAgeMS:         s.cfg().Env.RetentionChatsMaxAge.Milliseconds(),
-		ChatsInternalMaxAgeMS: chatsInternalMaxAge.Milliseconds(),
-		MemMode:               memMode,
-		MemMaxAgeMS:           s.cfg().Env.RetentionMemMaxAge.Milliseconds(),
-		MemContentMode:        memContentMode,
-		MemContentMaxAgeMS:    s.cfg().Env.RetentionMemContentMaxAge.Milliseconds(),
-		EmptyDossierMode:      emptyDossierMode,
-		EmptyDossierMaxAgeMS:  s.cfg().Env.RetentionEmptyDossierMaxAge.Milliseconds(),
+		Enabled:               run.Enabled,
+		PendingRestart:        pending,
+		IntervalMS:            run.Interval.Milliseconds(),
+		DefsMode:              run.DefsMode,
+		DefsMaxAgeMS:          run.DefsMaxAge.Milliseconds(),
+		DefsKeepLastN:         run.DefsKeepLastN,
+		ChatsMode:             run.ChatsMode,
+		ChatsMaxAgeMS:         run.ChatsMaxAge.Milliseconds(),
+		ChatsInternalMaxAgeMS: retention.InternalChatsMaxAge.Milliseconds(),
+		MemMode:               run.MemMode,
+		MemMaxAgeMS:           run.MemMaxAge.Milliseconds(),
+		MemContentMode:        run.MemContentMode,
+		MemContentMaxAgeMS:    run.MemContentMaxAge.Milliseconds(),
+		EmptyDossierMode:      run.EmptyDossierMode,
+		EmptyDossierMaxAgeMS:  run.EmptyDossierMaxAge.Milliseconds(),
 	}
 
 	// Named only to whoever may list them (GET /v1/_retention/overrides): a
@@ -163,16 +145,16 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	// Admin-only global detail: the export dir (infra path) + the cross-tenant
 	// purgeable counts.
 	if admin {
-		resp.ExportDir = s.cfg().Env.RetentionExportDir
+		resp.ExportDir = run.ExportDir
 		rCfg := retention.Config{
-			DefsMode:      mode,
-			DefsMaxAge:    s.cfg().Env.RetentionDefsMaxAge,
-			DefsKeepLastN: s.cfg().Env.RetentionDefsKeepLastN,
-			ChatsMode:     chatsMode,
-			ChatsMaxAge:   s.cfg().Env.RetentionChatsMaxAge,
-			MemMode:       memMode,
-			MemMaxAge:     s.cfg().Env.RetentionMemMaxAge,
-			ExportDir:     s.cfg().Env.RetentionExportDir,
+			DefsMode:      run.DefsMode,
+			DefsMaxAge:    run.DefsMaxAge,
+			DefsKeepLastN: run.DefsKeepLastN,
+			ChatsMode:     run.ChatsMode,
+			ChatsMaxAge:   run.ChatsMaxAge,
+			MemMode:       run.MemMode,
+			MemMaxAge:     run.MemMaxAge,
+			ExportDir:     run.ExportDir,
 			// The preview splits chats by authoring agent exactly as the sweep
 			// does, so "chats" vs "chats_internal" in the counts below reflect the
 			// two cutoffs an operator actually gets.

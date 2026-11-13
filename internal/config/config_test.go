@@ -3041,8 +3041,8 @@ func TestSecretEnvValues_MasksEachCollectorHeader(t *testing.T) {
 }
 
 // LOOMCYCLE_PG_AUTOMIGRATE wins over storage.pg_automigrate in both
-// directions: 1 turns it on, 0 turns it off. Any other value is not a
-// setting and leaves the yaml's.
+// directions: 1 turns it on, 0 turns it off, spaces around either not
+// counting. Empty leaves the yaml's.
 func TestLoad_PgAutoMigrateEnvWinsOverTheYAML(t *testing.T) {
 	for _, tc := range []struct {
 		yaml, env string
@@ -3053,8 +3053,9 @@ func TestLoad_PgAutoMigrateEnvWinsOverTheYAML(t *testing.T) {
 		{"storage: {pg_automigrate: true}\n", "", true},
 		{"storage: {pg_automigrate: true}\n", "0", false},
 		{"storage: {pg_automigrate: false}\n", "1", true},
-		{"storage: {pg_automigrate: true}\n", "true", true},
-		{"", "true", false},
+		{"storage: {pg_automigrate: true}\n", "0 ", false},
+		{"", " 1", true},
+		{"storage: {pg_automigrate: true}\n", "  ", true},
 	} {
 		t.Setenv("LOOMCYCLE_PG_AUTOMIGRATE", tc.env)
 		cfg, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults: {provider: mock}\n" + tc.yaml)})
@@ -3094,5 +3095,39 @@ func TestLoad_OllamaLocalNumCtxAdvisesWhenTheYAMLDiffers(t *testing.T) {
 	}
 	if advised(local, "") || advised("", "32768") {
 		t.Error("advised although only one plane sets the window")
+	}
+	// A yaml zero used to replace the variable, so nothing was pinned and the
+	// model's own window applied. The variable now pins its value: said, like
+	// any other yaml value that is not the variable's number.
+	for _, opt := range []string{"0", `"32768"`, "-1"} {
+		if !advised("providers: {ollama-local: {driver: ollama, options: {num_ctx: "+opt+"}}}\n", "32768") {
+			t.Errorf("no advisory when the yaml names num_ctx: %s and the variable pins another window", opt)
+		}
+	}
+	if advised("providers: {ollama-local: {driver: ollama, options: {num_gpu: 99}}}\n", "32768") {
+		t.Error("advised although the yaml does not name num_ctx")
+	}
+}
+
+// A boolean word is what an operator writes to turn migration off. Read as
+// "not a setting", it left a yaml `pg_automigrate: true` in force and the
+// schema migrated at boot against their wish, so any value that is not 0 or
+// 1 stops the load, naming the variable and never the value.
+func TestLoad_PgAutoMigrateRefusesAValueThatIsNotZeroOrOne(t *testing.T) {
+	for _, env := range []string{"false", "true", "off", "no", "2", "0x", "zzqq"} {
+		t.Setenv("LOOMCYCLE_PG_AUTOMIGRATE", env)
+		_, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults: {provider: mock}\nstorage: {pg_automigrate: true}\n")})
+		if err == nil {
+			t.Errorf("env=%q: loaded, want an error", env)
+			continue
+		}
+		for _, want := range []string{"LOOMCYCLE_PG_AUTOMIGRATE", "0", "1"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("env=%q: error does not say %q: %s", env, want, err)
+			}
+		}
+		if env == "zzqq" && strings.Contains(err.Error(), env) {
+			t.Errorf("error carries the value: %s", err)
+		}
 	}
 }

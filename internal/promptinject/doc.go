@@ -1,5 +1,5 @@
 // Package promptinject is the system-prompt placeholder language: the closed
-// {{memory:…}}, {{tool:…}}, {{document:…}} and ${var.…} families, the checks
+// {{memory:…}}, {{tool:…}}, {{document:…}}, {{help:…}} and ${var.…} families, the checks
 // that refuse an unknown or malformed placeholder, and the expander that
 // substitutes already-rendered bodies into a prompt.
 //

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +15,8 @@ import (
 // age: a Go duration ("12h", "90m", "1h30m"), optionally led by a whole or
 // fractional number of days ("30d", "1d12h"). "0" is zero. A bare number with
 // no unit is refused: nothing says whether it meant seconds, hours or days.
+// So is an empty string: zero is "any age" to a family that deletes, and only
+// a written zero may mean it.
 type HumanDuration time.Duration
 
 // Duration is d as a time.Duration.
@@ -22,7 +26,11 @@ func (d HumanDuration) Duration() time.Duration { return time.Duration(d) }
 // duration is refused: no setting that takes one has a meaning for it.
 func ParseHumanDuration(s string) (time.Duration, error) {
 	v := strings.TrimSpace(s)
-	if v == "" || v == "0" {
+	if v == "" {
+		// A quoted "${VAR}" whose variable is unset or empty expands to this.
+		return 0, errors.New("the value is empty (a ${VAR} that expanded to nothing reads this way); write a duration such as 30d or 12h, or 0s for zero")
+	}
+	if v == "0" {
 		return 0, nil
 	}
 	rest := v
@@ -30,7 +38,9 @@ func ParseHumanDuration(s string) (time.Duration, error) {
 	// No Go duration unit contains a "d", so the first one ends the days part.
 	if i := strings.IndexByte(v, 'd'); i >= 0 {
 		n, err := strconv.ParseFloat(v[:i], 64)
-		if err != nil {
+		// ParseFloat reads "nan" and "inf" as numbers. NaN passes every range
+		// check below and converts to zero.
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 			return 0, fmt.Errorf("%q is not a duration such as 30d, 12h or 1d12h", s)
 		}
 		days, rest = n, v[i+1:]
@@ -84,8 +94,9 @@ type RetentionConfig struct {
 	// Interval is how often the sweeper runs. Unset = 1h.
 	Interval HumanDuration `yaml:"interval,omitempty"`
 	// ExportDir is where a family in export+prune mode writes what it is
-	// about to delete. A family in that mode with no directory deletes
-	// nothing.
+	// about to delete: definitions, chats, retired agents' memory and empty
+	// dossiers. One of those in that mode with no directory deletes nothing.
+	// The memory-content family has no export and is refused that mode.
 	ExportDir string `yaml:"export_dir,omitempty"`
 	// Defs prunes old versions of substrate definitions.
 	Defs RetentionDefs `yaml:"defs,omitempty"`
@@ -95,7 +106,8 @@ type RetentionConfig struct {
 	// Mem reclaims the memory of fully retired agents.
 	Mem RetentionFamily `yaml:"mem,omitempty"`
 	// MemContent prunes superseded memory content from live scopes;
-	// evidential content is exempt at any age.
+	// evidential content is exempt at any age. Its mode is off or prune: it
+	// has no export.
 	MemContent RetentionFamily `yaml:"mem_content,omitempty"`
 	// EmptyDossier deletes subject documents left with no facts and nothing
 	// pointing at them. Off unless asked for: a dossier usually empties as a
@@ -155,16 +167,19 @@ type retentionFamilyView struct {
 	key    string // the yaml path of the family, e.g. retention.chats
 	mode   string
 	maxAge *HumanDuration
+	// exports is whether the sweeper writes what this family deletes when
+	// its mode is export+prune.
+	exports bool
 }
 
 // families returns every family that has a mode.
 func (r *RetentionConfig) families() []retentionFamilyView {
 	return []retentionFamilyView{
-		{"retention.defs", r.Defs.Mode, r.Defs.MaxAge},
-		{"retention.chats", r.Chats.Mode, r.Chats.MaxAge},
-		{"retention.mem", r.Mem.Mode, r.Mem.MaxAge},
-		{"retention.mem_content", r.MemContent.Mode, r.MemContent.MaxAge},
-		{"retention.empty_dossier", r.EmptyDossier.Mode, r.EmptyDossier.MaxAge},
+		{"retention.defs", r.Defs.Mode, r.Defs.MaxAge, true},
+		{"retention.chats", r.Chats.Mode, r.Chats.MaxAge, true},
+		{"retention.mem", r.Mem.Mode, r.Mem.MaxAge, true},
+		{"retention.mem_content", r.MemContent.Mode, r.MemContent.MaxAge, false},
+		{"retention.empty_dossier", r.EmptyDossier.Mode, r.EmptyDossier.MaxAge, true},
 	}
 }
 
@@ -178,9 +193,11 @@ func age(d *HumanDuration) time.Duration {
 
 // applyRetention copies the `retention:` block into the settings the sweepers
 // read. A mode the sweeper does not know is refused: read as off, it would
-// keep data the operator asked to have deleted. So is a family that deletes
-// with no max_age: "any age" deletes everything eligible on the first sweep,
-// and has to be asked for with an explicit zero.
+// keep data the operator asked to have deleted. So is export+prune on a
+// family the sweeper has no export for: it would delete with no copy written
+// while the mode says one is. So is a family that deletes with no max_age:
+// "any age" deletes everything eligible on the first sweep, and has to be
+// asked for with an explicit zero.
 func applyRetention(cfg *Config) error {
 	r := &cfg.Retention
 	for _, f := range r.families() {
@@ -188,6 +205,9 @@ func applyRetention(cfg *Config) error {
 		case "", RetentionModeOff, RetentionModePrune, RetentionModeExportPrune:
 		default:
 			return fmt.Errorf("%s.mode: %q is not off, prune or export+prune", f.key, f.mode)
+		}
+		if f.mode == RetentionModeExportPrune && !f.exports {
+			return fmt.Errorf("%s.mode: this family has no export: export+prune would delete and write no copy, with or without retention.export_dir; use prune (the same deletion)", f.key)
 		}
 		if !retentionModeDeletes(f.mode) {
 			continue

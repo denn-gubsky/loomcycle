@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/conversion/dispatch"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/help"
@@ -95,11 +96,14 @@ type boot struct {
 	pathTool          *builtin.Path
 	documentTool      *builtin.Document
 	fileTool          *builtin.File
-	historyTool       *builtin.History
-	evaluationTool    *builtin.Evaluation
-	interruptionTool  *builtin.Interruption
-	contextTool       *builtin.Context
-	identityTool      *builtin.Identity
+	// conversion is the conversion worker pool (RFC GO); nil in mode
+	// inprocess, where none is started.
+	conversion       *dispatch.Dispatcher
+	historyTool      *builtin.History
+	evaluationTool   *builtin.Evaluation
+	interruptionTool *builtin.Interruption
+	contextTool      *builtin.Context
+	identityTool     *builtin.Identity
 	// toolStepHook is told the name of each buildTools step as it starts. A
 	// test seam only, nil in production: the order pin
 	// (TestBuildTools_StepsRunInCatalogOrder) records through it.

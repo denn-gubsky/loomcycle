@@ -49,9 +49,9 @@ import (
 func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "explicit path to loomcycle.yaml (default: auto-discover)")
+	cfgPaths := configFlag(fs, "path to a config YAML, as the server is given it (repeatable, layered in the order given; default: the server's auto-discovery)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: loomcycle doctor [--config <path>]")
+		fmt.Fprintln(stderr, "Usage: loomcycle doctor [--config <path> ...]")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Runs 6 health checks against the operator's config + environment.")
 		fmt.Fprintln(stderr, "Prints PASS/WARN/FAIL per check; exits 0 on clean, 1 on any FAIL.")
@@ -68,20 +68,16 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	// The stack the server would assemble: presets, the config dir, the named
 	// file or the auto-discovered one. A deployment with no single
 	// loomcycle.yaml (presets and a config dir) is found here as it is at boot.
-	stack, err := assembleForCLI(*cfgPath)
+	stack, err := assembleForCLI(*cfgPaths...)
 	if err != nil {
 		r.fail("Config found", strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " "))
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, r.summary())
 		return 1
 	}
-	found := "embedded presets only (no config file)"
-	if len(stack.Files) > 0 {
-		found = strings.Join(stack.Files, " ◁ ")
-	}
-	r.pass("Config found", found)
+	r.pass("Config found", describeStack(stack))
 
-	cfg, err := loadConfigForDoctor(*cfgPath)
+	cfg, err := loadConfigForDoctor(*cfgPaths)
 	if err != nil {
 		r.fail("Config parses", err.Error())
 		fmt.Fprintln(stdout)
@@ -286,11 +282,11 @@ func providerEnvVarName(provider string) string {
 	return ""
 }
 
-// loadConfigForDoctor loads the server's stack for the --config value ("" for
-// none). Kept as a seam so tests with a stubbed config implementation can plug
-// in.
-var loadConfigForDoctor = func(path string) (configForDoctor, error) {
-	return loadConfigRealAdapter(path)
+// loadConfigForDoctor loads the server's stack for the --config values (none
+// takes the auto-discovery). Kept as a seam so tests with a stubbed config
+// implementation can plug in.
+var loadConfigForDoctor = func(paths []string) (configForDoctor, error) {
+	return loadConfigRealAdapter(paths)
 }
 
 // configForDoctor is a narrow interface over the bits of config.Config

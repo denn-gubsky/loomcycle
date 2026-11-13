@@ -44,12 +44,13 @@ func TestTimeoutScaling_TheYAMLIsTheOnlySource(t *testing.T) {
 	t.Setenv("LOOMCYCLE_TIMEOUT_SCALING", "off")
 	t.Setenv("LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS", "50")
 	t.Setenv("LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER", "3")
-	cfg, err = loadYAMLString(t, scalingBaseYAML+"timeout_scaling: {max_multiplier: 6}\n")
+	// The yaml names each key, so the variables are only reported.
+	cfg, err = loadYAMLString(t, scalingBaseYAML+"timeout_scaling: {mode: measure, reference: {decode_tps: 100}, max_multiplier: 6}\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ts := cfg.TimeoutScaling; ts.Mode != "measure" || ts.Reference.DecodeTPS != 100 || ts.MaxMultiplier != 6 {
-		t.Fatalf("timeout_scaling = %+v, want the yaml and its defaults (measure, 100, 6): the variables are retired", ts)
+		t.Fatalf("timeout_scaling = %+v, want the yaml's (measure, 100, 6): the variables are retired", ts)
 	}
 	for _, name := range []string{"LOOMCYCLE_TIMEOUT_SCALING", "LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS", "LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER"} {
 		requireRetiredAdvisory(t, cfg, name)
@@ -169,6 +170,8 @@ func TestTimeoutScaling_MeasureModeLeavesEveryOtherSettingUnchanged(t *testing.T
 		t.Fatalf("the block did not load: %+v", with.TimeoutScaling)
 	}
 	with.TimeoutScaling, without.TimeoutScaling = TimeoutScaling{}, TimeoutScaling{}
+	// The record of which keys the yaml names differs by the block's own keys.
+	with.yamlKeys, without.yamlKeys = nil, nil
 	if !reflect.DeepEqual(with.Env, without.Env) {
 		t.Fatal("a timeout_scaling block changed the env-derived settings (every operator timeout lives there)")
 	}

@@ -144,7 +144,7 @@ memory:
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := loadConfigRealAdapter(path)
+	cfg, err := loadConfigRealAdapter([]string{path})
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}

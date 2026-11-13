@@ -227,3 +227,110 @@ func TestAuthLoginOrigins_YAMLList(t *testing.T) {
 		t.Errorf("a retired origin the yaml does not list: err = %v, want a refusal naming the yaml key", err)
 	}
 }
+
+// The retired variable was one comma-separated value; the yaml key is a list.
+// An entry that still carries several origins (or a space) matches no origin
+// a browser reports, so the receiver would be on and never accept: refused,
+// with the key and what to write.
+func TestAuthLoginOrigins_RefusesSeveralOriginsInOneEntry(t *testing.T) {
+	for _, entry := range []string{
+		"https://a.example,https://b.example",
+		"https://a.example, https://b.example",
+		"https://a.example https://b.example",
+		"https://a.example\thttps://b.example",
+	} {
+		_, err := loadYAMLString(t, "auth:\n  login_origins: [\"https://landing.example\", \""+entry+"\"]\n")
+		if err == nil {
+			t.Errorf("%q: loaded, want an error", entry)
+			continue
+		}
+		for _, want := range []string{"auth.login_origins", "entry 2", "one origin per list item"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%q: error does not say %q: %s", entry, want, err)
+			}
+		}
+		if strings.Contains(err.Error(), "b.example") {
+			t.Errorf("%q: error carries the entry: %s", entry, err)
+		}
+	}
+}
+
+// An error raised because the mode is strict names the plane that made it
+// strict. Blaming `auth.mode: strict` in front of a yaml that says token
+// sends the operator to the wrong file.
+func TestResolveAuth_StrictErrorNamesThePlaneThatAskedForIt(t *testing.T) {
+	for _, tc := range []struct {
+		yaml, env string
+		want, not string
+	}{
+		{"strict", "", "auth.mode: strict needs", "LOOMCYCLE_AUTH_MODE"},
+		{"strict", "token", "auth.mode: strict needs", "LOOMCYCLE_AUTH_MODE"},
+		{"strict", "strict", "auth.mode: strict needs", "LOOMCYCLE_AUTH_MODE"},
+		{"token", "strict", "strict mode (from LOOMCYCLE_AUTH_MODE) needs", "auth.mode: strict"},
+		{"", "strict", "strict mode (from LOOMCYCLE_AUTH_MODE) needs", "auth.mode: strict"},
+	} {
+		c := &Config{Env: Env{AuthMode: tc.env}, Auth: AuthConfig{Mode: tc.yaml}}
+		err := resolveAuth(c)
+		if err == nil || !strings.Contains(err.Error(), "interactive gate") {
+			t.Fatalf("yaml=%q env=%q: err = %v, want the lock-out refusal", tc.yaml, tc.env, err)
+		}
+		if !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), tc.not) {
+			t.Errorf("yaml=%q env=%q: err = %v, want %q and not %q", tc.yaml, tc.env, err, tc.want, tc.not)
+		}
+		// The same plane is named where strict mode is the reason the audit
+		// stream is required.
+		wantReason, source := "auth.mode is strict", "auth.mode"
+		if tc.not == "auth.mode: strict" {
+			wantReason, source = "LOOMCYCLE_AUTH_MODE is strict", "LOOMCYCLE_AUTH_MODE"
+		}
+		c.ResolvedAuth = AuthPolicy{Mode: AuthModeStrict, ModeSource: source}
+		if got := c.AuditRequiredReason(0); got != wantReason {
+			t.Errorf("yaml=%q env=%q: audit reason = %q, want %q", tc.yaml, tc.env, got, wantReason)
+		}
+	}
+}
+
+// Two planes that disagree about the mode are reported where every other
+// advisory is, so `validate`, `doctor` and a reload print it too, and once.
+func TestResolveAuth_AdvisesWhenThePlanesDisagree(t *testing.T) {
+	paste := map[string]AuthGateConfig{"paste": {Kind: "token"}}
+	count := func(c *Config) (n int) {
+		for _, w := range c.Warnings {
+			if strings.Contains(w, "auth.mode") && strings.Contains(w, "LOOMCYCLE_AUTH_MODE") {
+				n++
+			}
+		}
+		return n
+	}
+	c := &Config{Env: Env{AuthMode: "strict"}, Auth: AuthConfig{Mode: "token", Gates: paste}}
+	for i := 0; i < 2; i++ { // resolved again: still said once
+		if err := resolveAuth(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count(c) != 1 {
+		t.Fatalf("warnings = %q, want one naming both planes", c.Warnings)
+	}
+	for _, want := range []string{"strict", "token", "decided by LOOMCYCLE_AUTH_MODE"} {
+		if !strings.Contains(strings.Join(c.Warnings, "\n"), want) {
+			t.Errorf("warning does not say %q: %q", want, c.Warnings)
+		}
+	}
+	c = &Config{Env: Env{AuthMode: "token"}, Auth: AuthConfig{Mode: "strict", Gates: paste}}
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	if count(c) != 1 || !strings.Contains(strings.Join(c.Warnings, "\n"), "decided by auth.mode") {
+		t.Errorf("warnings = %q, want one saying auth.mode decided", c.Warnings)
+	}
+	// Agreement, or one plane silent, is nothing to report.
+	for _, pair := range [][2]string{{"strict", "strict"}, {"", "strict"}, {"strict", ""}, {"", ""}} {
+		c := &Config{Env: Env{AuthMode: pair[1]}, Auth: AuthConfig{Mode: pair[0], Gates: paste}}
+		if err := resolveAuth(c); err != nil {
+			t.Fatal(err)
+		}
+		if count(c) != 0 {
+			t.Errorf("yaml=%q env=%q: warnings = %q, want none about the mode", pair[0], pair[1], c.Warnings)
+		}
+	}
+}

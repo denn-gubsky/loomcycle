@@ -1094,6 +1094,19 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err != nil {
 			return mergedDef{}, err
 		}
+		// The closed set of {{help:<topic>}} placeholders static agents are
+		// held to: a prompt being AUTHORED names only a topic this binary
+		// embeds, so an unknown or malformed one is refused rather than stored
+		// to render nothing. Here and not in decodeAgentOverlay, which also
+		// reads stored team-local bodies on every resolve and restore: a topic
+		// a later binary dropped must leave those runnable (the placeholder
+		// renders nothing), not refuse them. Both prompt fields, since a run
+		// renders whichever it is served.
+		for _, f := range [...]struct{ name, text string }{{"system_prompt", ov.SystemPrompt}, {"system_prompt_base", ov.SystemPromptBase}} {
+			if err := config.ValidateHelpPlaceholders(f.text); err != nil {
+				return mergedDef{}, fmt.Errorf("AgentDef tool: %s: %w", f.name, err)
+			}
+		}
 		modesSent = ov.ToolModes != nil
 		// Authoring only: a stored definition carrying it still loads and is
 		// denied by it (descendantsRefusal), so forking it keeps working once
@@ -2284,6 +2297,8 @@ func signFromMergedDef(name string, def mergedDef) string {
 // validateInlineCode gates + validates an inline code-js body (RFC J)
 // on create/fork. No-op when the def carries no Code. When it does:
 //
+//   - PROVIDER: refuse a body where the config declares no code-js
+//     provider to run it.
 //   - SIZE: enforce MaxCodeBytes (a tighter, clearer cap than the
 //     whole-definition MaxDefinitionBytes).
 //   - PARSE: compile via the shared codejs.Validate so a syntax error
@@ -2316,6 +2331,12 @@ func definitionSizeForCap(def mergedDef, defJSON []byte) (int, error) {
 func (a *AgentDef) validateInlineCode(op string, def mergedDef) error {
 	if def.Code == "" {
 		return nil
+	}
+	// Nothing could run it: the provider that executes a code body is
+	// registered only when the config declares it. This is a check on
+	// authoring; a definition already stored is loaded without it.
+	if _, ok := a.Cfg.Providers[config.CodeJSProvider]; !ok {
+		return fmt.Errorf("%s: a code_body cannot run here (no code-js provider is configured)", op)
 	}
 	if a.MaxCodeBytes > 0 && len(def.Code) > a.MaxCodeBytes {
 		return fmt.Errorf("%s: code_body (%d bytes) exceeds max %d", op, len(def.Code), a.MaxCodeBytes)

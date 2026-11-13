@@ -34,12 +34,20 @@ func RunAgents(args []string, stdout, stderr io.Writer) int {
 func runAgentsList(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agents list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "path to config YAML (default: the config the server auto-discovers)")
+	cfgPaths := configFlag(fs, "path to a config YAML, as the server is given it (repeatable, layered in the order given; default: the config the server auto-discovers)")
 	jsonOutput := fs.Bool("json", false, "emit JSON instead of the human-readable table")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := loadLayeredConfig(*cfgPath)
+	stack, err := assembleForCLI(*cfgPaths...)
+	if err != nil {
+		return fail(stderr, "config: %v", err)
+	}
+	// One line on stderr, always: with no --config the stack is whatever the
+	// environment and the auto-discovery came to, and the listing alone does
+	// not show that. stdout, which a script reads, carries the listing only.
+	fmt.Fprintf(stderr, "agents list: config layers: %s\n", describeStack(stack))
+	cfg, err := config.LoadLayers(stack.Layers...)
 	if err != nil {
 		return fail(stderr, "config: %v", err)
 	}

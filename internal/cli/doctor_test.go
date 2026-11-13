@@ -71,7 +71,7 @@ func (s *stubConfig) ListenAddrValue() string { return s.listen }
 // test. Restored on cleanup so other tests see the real loader.
 func withStubLoader(t *testing.T, stub configForDoctor) {
 	orig := loadConfigForDoctor
-	loadConfigForDoctor = func(path string) (configForDoctor, error) {
+	loadConfigForDoctor = func([]string) (configForDoctor, error) {
 		return stub, nil
 	}
 	t.Cleanup(func() { loadConfigForDoctor = orig })
@@ -80,7 +80,7 @@ func withStubLoader(t *testing.T, stub configForDoctor) {
 // withStubLoaderErr installs a loader that always returns err.
 func withStubLoaderErr(t *testing.T, err error) {
 	orig := loadConfigForDoctor
-	loadConfigForDoctor = func(path string) (configForDoctor, error) {
+	loadConfigForDoctor = func([]string) (configForDoctor, error) {
 		return nil, err
 	}
 	t.Cleanup(func() { loadConfigForDoctor = orig })

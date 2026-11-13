@@ -2,11 +2,9 @@ package config
 
 import (
 	"fmt"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // retiredEnv lists LOOMCYCLE_* variables the runtime used to read, or that
@@ -25,7 +23,7 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_INTERRUPTION_DEFAULT_TIMEOUT_MS":    "set interruption.default_timeout_ms in the yaml",
 	"LOOMCYCLE_INTERRUPTION_MAX_TIMEOUT_MS":        "set interruption.max_timeout_ms in the yaml",
 	"LOOMCYCLE_INTERRUPTION_MAX_PENDING_PER_RUN":   "set interruption.max_pending_per_run in the yaml",
-	"LOOMCYCLE_INTERRUPTION_HEARTBEAT_INTERVAL_MS": "the interval is fixed",
+	"LOOMCYCLE_INTERRUPTION_HEARTBEAT_INTERVAL_MS": "set interruption.heartbeat_interval_ms in the yaml",
 	"LOOMCYCLE_SNAPSHOT_MAX_BYTES":                 "pass max_bytes on the snapshot request",
 	"LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT":        "retired: use OTEL_EXPORTER_OTLP_ENDPOINT, with its scheme (http://host:4318)",
 	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS":         "retired: use OTEL_EXPORTER_OTLP_HEADERS or LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE",
@@ -122,6 +120,10 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_WRITE_ROOT":                          "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
 
+	// Two variables became one mode.
+	"LOOMCYCLE_DEADLINK_GC_MS":      "set LOOMCYCLE_DEADLINK_GC=off to stop the dead-link collection; it otherwise runs every hour",
+	"LOOMCYCLE_DEADLINK_GC_DRY_RUN": "set LOOMCYCLE_DEADLINK_GC=dry-run to count unreachable chunk references without deleting them",
+
 	// Inferred from another setting.
 	"LOOMCYCLE_SPEECH_MAX_INFLIGHT":        "set LOOMCYCLE_AUDIO_MAX_INFLIGHT, which sizes the queue of both audio routes",
 	"LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT": "set LOOMCYCLE_AUDIO_MAX_INFLIGHT, which sizes the queue of both audio routes",
@@ -152,8 +154,8 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS":            "set retention.trace.max_age in the yaml, as a duration such as 30d",
 
 	// Moved to each provider's `options:` in the yaml.
-	"LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS":      "set providers.<id>.options.header_timeout_ms in the yaml for each provider that needs another value than 60000",
-	"LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS":        "set providers.<id>.options.idle_timeout_ms in the yaml for each provider that needs another value than 90000",
+	"LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS":      "set providers.<id>.options.header_timeout_ms in the yaml for each provider that needs another value than 60000 (the anthropic-oauth-dev provider has no options: it always waits 60000)",
+	"LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS":        "set providers.<id>.options.idle_timeout_ms in the yaml for each provider that needs another value than 90000 (the anthropic-oauth-dev provider has no options: it always waits 90000)",
 	"LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS":  "set providers.ollama-local.options.header_timeout_ms in the yaml",
 	"LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS":    "set providers.ollama-local.options.idle_timeout_ms in the yaml",
 	"LOOMCYCLE_OLLAMA_NUM_CTX":                  "set providers.ollama.options.num_ctx in the yaml",
@@ -200,6 +202,11 @@ var retiredEnv = map[string]string{
 // rules need no yaml, and the layer assembly applies them before the load.
 var retiredLayerEnv = map[string]bool{"LOOMCYCLE_CONFIG_FILES": true}
 
+// retiredStoreEnv names the retired variables that said which store to open.
+// Their refusal is never relaxed, for any caller: a tool that let it pass
+// would read or write the store the variable did not mean.
+var retiredStoreEnv = map[string]bool{"LOOMCYCLE_STORAGE_BACKEND": true}
+
 // retiredEnvWarnings returns one advisory per retired variable present in
 // environ (the os.Environ form), sorted by name. A variable set to the empty
 // string counts: the line is still dead weight in the operator's file. Values
@@ -242,15 +249,24 @@ type retiredEnvCtx struct {
 }
 
 // retiredRefusal is a retired variable whose value may have asked for
-// something tighter than what the runtime now does, or for data to live
-// somewhere other than where it now goes.
+// something tighter than what the runtime now does, for data to live
+// somewhere other than where it now goes, or for different data to be kept.
 type retiredRefusal struct {
 	// loosens reports whether ignoring value leaves the deployment looser
-	// than the operator set it, or moves its data.
+	// than the operator set it, moves its data, or keeps or deletes data
+	// they had not.
 	loosens func(value string, c retiredEnvCtx) bool
 	// instead replaces the retiredEnv text in the refusal when what to do
 	// about a refused value differs from what to do about a dead line.
 	instead string
+}
+
+// retiredEnvInsteadFor builds the refusal text from the value, for the rules
+// whose "what to do" depends on it: the two hooks lists name the entry the
+// yaml lacks.
+var retiredEnvInsteadFor = map[string]func(value string, c retiredEnvCtx) string{
+	"LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS": hookOwnersInstead,
+	"LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST":   hookPrivateHostsInstead,
 }
 
 // retiredEnvRefuse holds the retired variables that stop the load instead of
@@ -263,6 +279,9 @@ type retiredRefusal struct {
 //
 // A rule is judged on the value: the same variable set to what the runtime
 // now does anyway is advised, not refused.
+//
+// A variable whose setting moved to a yaml key in the same release as the
+// `retention:` block is not here: retiredEnvMoved holds those, under one rule.
 var retiredEnvRefuse = map[string]retiredRefusal{
 	// The seven gates. Each old read was `== "1"`, so any other value of a set
 	// variable, the empty one included, was the operator keeping the feature
@@ -292,106 +311,13 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// yaml turning it on, data they held back would be deleted.
 	"LOOMCYCLE_RETENTION_ENABLED": {retentionSwitchDisagrees, "the retention sweeper runs when retention.enabled is true in the yaml, which is not what this variable asked for; set retention.enabled to match what you want (true to keep retention running, false or absent to keep it off)"},
 
-	// The retention settings moved to the yaml. A family the environment had
-	// deleting that the yaml leaves off keeps data the operator committed to
-	// deleting; the reverse, or a different age, deletes data they meant to
-	// keep. Each is judged against what the yaml gives, so an operator who
-	// has already written the block is not stopped.
-	"LOOMCYCLE_RETENTION_DEFS_MODE":          {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.Defs.Mode })},
-	"LOOMCYCLE_RETENTION_CHATS_MODE":         {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.Chats.Mode })},
-	"LOOMCYCLE_RETENTION_MEM_MODE":           {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.Mem.Mode })},
-	"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE":   {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.MemContent.Mode })},
-	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE": {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.EmptyDossier.Mode })},
-	"LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return age(r.Defs.MaxAge)
-	})},
-	"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return age(r.Chats.MaxAge)
-	})},
-	"LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return age(r.Mem.MaxAge)
-	})},
-	"LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return age(r.MemContent.MaxAge)
-	})},
-	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return age(r.EmptyDossier.MaxAge)
-	})},
-	"LOOMCYCLE_USAGE_DETAIL_RETENTION_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return durationOr(r.UsageDetail.MaxAge.Duration(), retentionAgeDefault)
-	})},
-	"LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return durationOr(r.Trace.MaxAge.Duration(), retentionAgeDefault)
-	})},
-	// The old read took any number from zero up; zero keeps no version.
-	"LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N": {loosens: func(value string, c retiredEnvCtx) bool {
-		now := int64(retentionDefsKeepLastNDefault)
-		if n := c.cfg.Retention.Defs.KeepLastN; n != nil {
-			now = int64(*n)
-		}
-		n, set, ok := retiredInt(value)
-		return set && ok && n >= 0 && n != now
-	}},
-	// The provider stream timeouts moved to each provider's options. One
-	// lowered so a stalled provider fails over sooner would, ignored, leave
-	// every call waiting the default again.
-	"LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS":     {loosens: providerTimeoutLowered("header_timeout_ms", false)},
-	"LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS":       {loosens: providerTimeoutLowered("idle_timeout_ms", false)},
-	"LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS": {loosens: providerTimeoutLowered("header_timeout_ms", true)},
-	"LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS":   {loosens: providerTimeoutLowered("idle_timeout_ms", true)},
-	// The code-agent bounds: a budget or a lifetime lowered so a runaway
-	// script ends sooner.
-	"LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
-		return loweredFrom(value, codeJSOptionOr(c.cfg, "run_timeout_seconds", 120))
-	}},
-	"LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
-		return loweredFrom(value, codeJSOptionOr(c.cfg, "max_wall_seconds", 86400))
-	}},
-	// An embedder call held to a shorter timeout than the yaml now gives.
-	// Zero meant no timeout at all, which no yaml value is looser than.
-	"LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS": {loosens: func(value string, c retiredEnvCtx) bool {
-		return loweredFrom(value, yamlOr(c.cfg.Memory.Embedder.TimeoutMs, EmbedderTimeoutMSDefault))
-	}},
-	// The concurrency bounds moved to the yaml. Each is refused when it held
-	// one user, or the requests outside any run, to less than the yaml allows.
-	// A per-user cap of zero is "no cap" in both planes.
-	"LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER": {loosens: func(value string, c retiredEnvCtx) bool {
-		n, set, ok := retiredInt(value)
-		now := int64(c.cfg.Concurrency.MaxConcurrentRunsPerUser)
-		return set && ok && n > 0 && (now <= 0 || n < now)
-	}},
-	// Zero was a setting here (a run over the cap is refused at once), and the
-	// old read ignored a negative number.
-	"LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER": {loosens: func(value string, c retiredEnvCtx) bool {
-		n, set, ok := retiredInt(value)
-		return set && ok && n >= 0 && n < int64(c.cfg.Concurrency.MaxQueuedRunsPerUser)
-	}},
-	// Zero inherited max_queue_depth, as an absent yaml key does.
-	"LOOMCYCLE_PROVIDER_QUEUE_DEPTH": {loosens: func(value string, c retiredEnvCtx) bool {
-		return loweredFrom(value, int64(c.cfg.Concurrency.ProviderQueueDepthOrDefault()))
-	}},
-	// A tenant's ratio the yaml does not give would leave that tenant on the
-	// global sampler: more spans exported and paid for, or fewer than the
-	// operator promised.
-	"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS": {loosens: samplerRatiosDiffer},
-	// With no list a tenant's collector endpoint may name any host, so a list
-	// the yaml does not carry is a restriction lost. A yaml list of other
-	// hosts is the operator's new list, not this rule's to judge.
-	"LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS": {loosens: func(value string, c retiredEnvCtx) bool {
-		return len(splitCSV(value)) > 0 && len(c.cfg.Observability.TenantTelemetry.AllowedHosts) == 0
-	}},
-	// An origin the yaml does not list can no longer hand the login page a
-	// token: the landing page's sign-in would stop working.
-	"LOOMCYCLE_UI_LOGIN_ORIGINS": {loosens: func(value string, c retiredEnvCtx) bool {
-		// The rules run before the yaml list is normalised, so do it here.
-		listed := splitCommaTrim(strings.Join(c.cfg.Auth.LoginOrigins, ","))
-		for _, o := range splitCommaTrim(value) {
-			if !slices.Contains(listed, o) {
-				return true
-			}
-		}
-		return false
-	}},
+	// The hosted Ollama context window and the local GPU offload are provider
+	// options now. Dropped without the option, requests run in the model's
+	// own window (a truncated prompt) or on whatever Ollama picks (often the
+	// CPU): nothing fails, the answers get worse or slower. A yaml that names
+	// the option always won over the variable, so only its absence refuses.
+	"LOOMCYCLE_OLLAMA_NUM_CTX":       {providerOptionAbsent("ollama", "num_ctx"), "requests to hosted Ollama no longer carry this context window; set providers.ollama.options.num_ctx in the yaml to the same value, then remove this variable"},
+	"LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU": {providerOptionAbsent("ollama-local", "num_gpu"), "requests to local Ollama no longer carry this GPU offload; set providers.ollama-local.options.num_gpu in the yaml to the same value, then remove this variable"},
 	// The files it named would silently not be layered. Judged by the layer
 	// assembly as well (RetiredLayerEnvRefusals), which runs first.
 	"LOOMCYCLE_CONFIG_FILES": {loosens: valueNotEmpty},
@@ -400,12 +326,6 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// private address refused.
 	"LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS": {loosens: hookOwnersNotInYAML},
 	"LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST":   {loosens: hookPrivateHostsNotInYAML},
-	// Without the directory a family in export+prune mode deletes nothing;
-	// with another one its exports land where nobody looks for them.
-	"LOOMCYCLE_RETENTION_EXPORT_DIR": {loosens: func(value string, c retiredEnvCtx) bool {
-		return value != "" && value != c.cfg.Retention.ExportDir
-	}},
-
 	// A2A used to be served only when this said "1". With the card named and
 	// the switch off, the A2A endpoints would now be mounted.
 	"LOOMCYCLE_A2A_ENABLED": {a2aWasOff, "A2A is served whenever LOOMCYCLE_A2A_SERVER_CARD is set, and it is; unset LOOMCYCLE_A2A_SERVER_CARD to keep A2A off"},
@@ -459,7 +379,22 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS":              {loosens: loweredBelow(60_000)},
 	"LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS":       {loosens: loweredBelow(30 * 60 * 1000)},
 	"LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS":           {loosens: loweredBelow(2 * 60 * 60)},
-	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": {loosens: loweredBelow(3 * 24 * 60 * 60 * 1000)},
+	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": {internalChatsAgeDiffers, "chats of internal agents are kept 3 days and then deleted (when chat retention is on); the age can no longer be set, here or by inheriting retention.chats.max_age"},
+
+	// Settings that decided what data is kept or deleted. Here a difference in
+	// either direction stops the boot: rows the operator meant to keep would
+	// be deleted, or rows they meant to be rid of would stay.
+	"LOOMCYCLE_USAGE_SWEEPER":                  {switchWasZero, "the usage rollup always runs: per-call usage rows older than retention.usage_detail.max_age (30 days unless set) are deleted, and their daily totals are kept; to keep per-call rows longer, raise retention.usage_detail.max_age in the yaml"},
+	"LOOMCYCLE_HEARTBEAT_SWEEPER":              {switchWasZero, "the run heartbeat sweeper always runs: a run whose heartbeat went stale is marked failed; this can no longer be turned off"},
+	"LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS": {boolWasOff, "the tenant-root and user-root documents are always created when a principal is established; this can no longer be turned off"},
+
+	// The dead-link collection deletes chunk bodies it finds unreachable. An
+	// operator who had it off, or counting only, must say so again in the
+	// variable that replaced both before anything is deleted; one who had it
+	// run less often than the fixed hour would have rows deleted sooner.
+	"LOOMCYCLE_DEADLINK_GC_MS":      {deadLinkGCWasOffOrRarer, "the dead-link collection runs every hour and deletes unreachable chunk references unless LOOMCYCLE_DEADLINK_GC says otherwise; set LOOMCYCLE_DEADLINK_GC=off to keep it off (or dry-run to count without deleting), and remove this variable: its interval is no longer read"},
+	"LOOMCYCLE_DEADLINK_GC_DRY_RUN": {deadLinkGCWasDryRun, "the dead-link collection deletes unreachable chunk references unless LOOMCYCLE_DEADLINK_GC says otherwise; set LOOMCYCLE_DEADLINK_GC=dry-run to keep counting without deleting (or off), and remove this variable"},
+
 	// The ceiling is gone, so every ceiling was tighter.
 	"LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS": {loosens: loweredBelow(1<<63 - 1)},
 	// Zero here was a setting, not "the default": a registration had to name
@@ -497,7 +432,7 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 // it is there.
 func backendNow(c retiredEnvCtx) string {
 	dsn := c.storage.PgDSN
-	if v := c.env["LOOMCYCLE_PG_DSN"]; v != "" {
+	if v := c.env["LOOMCYCLE_PG_DSN"]; strings.TrimSpace(v) != "" {
 		dsn = v
 	}
 	return inferStorageBackend(c.storage.Backend, dsn)
@@ -540,31 +475,6 @@ func retentionSwitchDisagrees(value string, c retiredEnvCtx) bool {
 	return (value == "1") != c.cfg.Retention.Enabled
 }
 
-// retentionModeDiffers is the rule of a retired family mode. The old read let
-// any non-empty value replace the default, and the sweeper acted on prune and
-// export+prune only, so everything else was off.
-func retentionModeDiffers(yamlMode func(*RetentionConfig) string) func(string, retiredEnvCtx) bool {
-	norm := func(m string) string {
-		if retentionModeDeletes(m) {
-			return m
-		}
-		return RetentionModeOff
-	}
-	return func(value string, c retiredEnvCtx) bool {
-		return value != "" && norm(value) != norm(yamlMode(&c.cfg.Retention))
-	}
-}
-
-// retentionAgeDiffers is the rule of a retired age in milliseconds, judged
-// against the age the yaml gives. The old reads took a positive number and
-// ignored everything else, so only a positive number changed anything.
-func retentionAgeDiffers(yamlAge func(*RetentionConfig) time.Duration) func(string, retiredEnvCtx) bool {
-	return func(value string, c retiredEnvCtx) bool {
-		n, set, ok := retiredInt(value)
-		return set && ok && n > 0 && time.Duration(n)*time.Millisecond != yamlAge(&c.cfg.Retention)
-	}
-}
-
 // Provider stream timeout defaults, in milliseconds: every provider's, and
 // the local Ollama registration's own. providerbuild applies the same ones.
 const (
@@ -590,46 +500,21 @@ func providerOptionInt(pc ProviderConfig, key string) (int64, bool) {
 	return n, n > 0
 }
 
-// providerTimeoutLowered is the rule of a retired stream timeout: a positive
-// value under what a provider it applied to now waits. local selects the
-// ollama-local pair, which applied to that one provider; the global pair
-// applied to every other provider that makes HTTP calls. The old reads
-// ignored a value that was not a positive number.
-func providerTimeoutLowered(option string, local bool) func(string, retiredEnvCtx) bool {
+// providerOptionAbsent is the rule of a retired variable that set one
+// provider's option: a positive number while the yaml does not name the
+// option. A yaml option always replaced the variable's value, whatever it
+// was (a zero included), so beside one the variable changed nothing and its
+// loss changes nothing: that case is reported only. The old reads ignored a
+// value that was not a positive number.
+func providerOptionAbsent(provider, option string) func(string, retiredEnvCtx) bool {
 	return func(value string, c retiredEnvCtx) bool {
 		n, set, ok := retiredInt(value)
 		if !set || !ok || n <= 0 {
 			return false
 		}
-		for id, pc := range c.cfg.Providers {
-			if (id == "ollama-local") != local || pc.Driver == "code-js" || pc.Driver == "mock" {
-				continue
-			}
-			now := int64(ProviderHeaderTimeoutMS)
-			switch {
-			case local:
-				now = OllamaLocalStreamTimeoutMS
-			case option == "idle_timeout_ms":
-				now = ProviderIdleTimeoutMS
-			}
-			if v, ok := providerOptionInt(pc, option); ok {
-				now = v
-			}
-			if n < now {
-				return true
-			}
-		}
-		return false
+		_, named := c.cfg.Providers[provider].Options[option]
+		return !named
 	}
-}
-
-// codeJSOptionOr is a providers.code-js option, or dflt (the driver's own
-// default) when the yaml gives none.
-func codeJSOptionOr(cfg *Config, key string, dflt int64) int64 {
-	if v, ok := providerOptionInt(cfg.Providers["code-js"], key); ok {
-		return v
-	}
-	return dflt
 }
 
 // What memory.embedder.timeout_ms and batch_size are when unset.
@@ -637,35 +522,6 @@ const (
 	EmbedderTimeoutMSDefault = 30_000
 	EmbedderBatchSizeDefault = 100
 )
-
-// samplerRatiosDiffer reports a retired `tenant=ratio,...` list naming a
-// tenant the yaml gives another ratio, or none. A pair that does not parse
-// stopped the boot when the variable was read, and is refused here as well.
-func samplerRatiosDiffer(value string, c retiredEnvCtx) bool {
-	now := c.cfg.Observability.Tracing.TenantSamplerRatios
-	for _, pair := range strings.Split(value, ",") {
-		if pair = strings.TrimSpace(pair); pair == "" {
-			continue
-		}
-		tenant, ratio, ok := strings.Cut(pair, "=")
-		f, err := strconv.ParseFloat(strings.TrimSpace(ratio), 64)
-		if !ok || err != nil {
-			return true
-		}
-		if have, listed := now[strings.TrimSpace(tenant)]; !listed || have != f {
-			return true
-		}
-	}
-	return false
-}
-
-// durationOr is d, or dflt when d is unset.
-func durationOr(d, dflt time.Duration) time.Duration {
-	if d > 0 {
-		return d
-	}
-	return dflt
-}
 
 // a2aWasOff reports a retired A2A switch that kept A2A off (the old read
 // served it for exactly "1") while the server card that now turns it on is
@@ -687,6 +543,75 @@ func audioQueueLowered(value string, c retiredEnvCtx) bool {
 
 func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }
 
+// deadLinkGCNow is the dead-link collection's mode as this version reads it
+// (applyEnvDeadLinkGC, which has not run yet): unset is on. A value that is
+// none of the three fails the load there; here it counts as on, the mode
+// that deletes.
+func deadLinkGCNow(c retiredEnvCtx) string {
+	switch v := strings.TrimSpace(c.env["LOOMCYCLE_DEADLINK_GC"]); v {
+	case DeadLinkGCOff, DeadLinkGCDryRun:
+		return v
+	}
+	return DeadLinkGCOn
+}
+
+// deadLinkGCWasOffOrRarer judges the retired interval. Zero or a negative
+// number turned the collection off, which only the new "off" reproduces. A
+// positive interval longer than the fixed one deleted later than this version
+// would, which matters only while it deletes. A shorter one, and a value the
+// old read could not parse (it kept the hourly default), change nothing that
+// is kept.
+func deadLinkGCWasOffOrRarer(value string, c retiredEnvCtx) bool {
+	n, set, ok := retiredInt(value)
+	if !set || !ok {
+		return false
+	}
+	now := deadLinkGCNow(c)
+	if n <= 0 {
+		return now != DeadLinkGCOff
+	}
+	return n > DeadLinkGCInterval.Milliseconds() && now == DeadLinkGCOn
+}
+
+// deadLinkGCWasDryRun judges the retired dry-run switch: exactly "1" made the
+// collection count without deleting, so this version must not delete.
+func deadLinkGCWasDryRun(value string, c retiredEnvCtx) bool {
+	return value == "1" && deadLinkGCNow(c) == DeadLinkGCOn
+}
+
+// switchWasZero is the rule of a sweeper switch whose old read was `!= "0"`:
+// only that exact value had turned the sweeper off.
+func switchWasZero(value string, _ retiredEnvCtx) bool { return value == "0" }
+
+// boolWasOff is the rule of a default-on switch read as a boolean word: the
+// four "off" spellings turned it off, anything else kept the default.
+func boolWasOff(value string, _ retiredEnvCtx) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "false", "no", "off":
+		return true
+	}
+	return false
+}
+
+// internalChatsAgeDiffers reports an internal-chat age other than the 3 days
+// now fixed. Zero inherited the chat age, whose own zero (or absence) was "no
+// minimum age": internal chats went as soon as they finished. The chat age is
+// retention.chats.max_age now, so that is the age a zero is judged against (a
+// retired LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS with no retention.chats.max_age
+// in the yaml stops the boot under its own rule). A negative number was
+// ignored by the old read, which left the 3-day default.
+func internalChatsAgeDiffers(value string, c retiredEnvCtx) bool {
+	const fixed = 3 * 24 * 60 * 60 * 1000
+	n, set, ok := retiredInt(value)
+	if !set || !ok {
+		return set
+	}
+	if n == 0 {
+		return age(c.cfg.Retention.Chats.MaxAge).Milliseconds() != fixed
+	}
+	return n > 0 && n != fixed
+}
+
 func valueNotEmpty(value string, _ retiredEnvCtx) bool { return value != "" }
 
 // loweredBelow is the rule of a cap now fixed at fixed: a positive value under
@@ -697,15 +622,6 @@ func loweredBelow(fixed int64) func(string, retiredEnvCtx) bool {
 		n, set, ok := retiredInt(value)
 		return set && (!ok || (n > 0 && n < fixed))
 	}
-}
-
-// loweredFrom reports a retired bound that was a positive number under now,
-// the bound the yaml gives. It is the rule of a variable whose old read
-// ignored a value that did not parse or was not positive, leaving the default:
-// ignoring such a value again changes nothing.
-func loweredFrom(value string, now int64) bool {
-	n, set, ok := retiredInt(value)
-	return set && ok && n > 0 && n < now
 }
 
 // loweredBelowYAML is loweredBelow against the bound the yaml gives.
@@ -737,7 +653,9 @@ func archiverWasPruning(mode string, c retiredEnvCtx) bool {
 
 // retiredEnvRefusals returns one "NAME: what to do" entry per retired variable
 // in environ (the os.Environ form) whose value the runtime would loosen by
-// ignoring, sorted by name. Values are never included.
+// ignoring, sorted by name. Values are never included, with one exception: a
+// retired hooks list names the first entry the yaml lacks, when that entry is
+// plainly an owner name, a host or a range (missingEntry).
 func retiredEnvRefusals(environ []string, cfg *Config) []string {
 	c := retiredEnvCtx{env: make(map[string]string, len(environ)), storage: &cfg.Storage, cfg: cfg}
 	for _, kv := range environ {
@@ -747,11 +665,20 @@ func retiredEnvRefusals(environ []string, cfg *Config) []string {
 	}
 	var out []string
 	for name, value := range c.env {
+		if moved, ok := retiredEnvMoved[name]; ok {
+			if what, refused := moved.refusal(name, value, c); refused {
+				out = append(out, name+": "+what)
+			}
+			continue
+		}
 		rule, ok := retiredEnvRefuse[name]
 		if !ok || !rule.loosens(value, c) {
 			continue
 		}
 		instead := rule.instead
+		if build, ok := retiredEnvInsteadFor[name]; ok {
+			instead = build(value, c)
+		}
 		if instead == "" {
 			instead = retiredEnv[name]
 		}

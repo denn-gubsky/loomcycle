@@ -1,0 +1,231 @@
+// The conversion worker protocol (RFC GO §5.3). Internal: not part of the
+// public API, not in the adapters, and served only on the dispatcher's own
+// worker endpoint, never on the public gRPC port.
+//
+// Workers dial the dispatcher; the dispatcher never dials a worker. A worker
+// holds one Attach stream per core (its registration and heartbeats) and one
+// Work stream per idle slot. A Work stream carries exactly one job and then
+// ends; the worker opens a fresh one for its next job.
+//
+// A job is bytes, a media type, a sanitised name and options. It never carries
+// a path, a tenant, a run or a credential.
+syntax = "proto3";
+
+package loomcycle.worker.v1;
+
+option go_package = "github.com/denn-gubsky/loomcycle/internal/conversion/workerpb;workerpb";
+
+service WorkerService {
+  // Attach registers a worker: the first frame is Hello, then heartbeats.
+  // The dispatcher answers Welcome, or ends the stream with a status saying
+  // why it refuses the worker (a protocol version it does not speak).
+  rpc Attach(stream WorkerStatus) returns (stream DispatcherControl);
+  // Work is one idle slot of an attached worker: the first frame is Ready,
+  // and the stream waits until the dispatcher sends a JobStart.
+  rpc Work(stream WorkerFrame) returns (stream JobFrame);
+}
+
+// ---- Attach ----
+
+message WorkerStatus {
+  oneof msg {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+  }
+}
+
+message Hello {
+  string worker_id = 1;
+  uint32 protocol_version = 2;
+  string build_version = 3;
+  // What the worker can do: extract, pdf (P1); render, media, encode,
+  // image as its helpers resolve (P2).
+  repeated string labels = 4;
+  // Jobs the worker runs at once.
+  uint32 slots = 5;
+  // The worker's soft memory limit in bytes (GOMEMLIMIT), 0 when unset.
+  uint64 memory_limit = 6;
+}
+
+message Heartbeat {
+  uint32 in_flight = 1;
+  uint64 rss = 2;
+}
+
+message DispatcherControl {
+  oneof msg {
+    Welcome welcome = 1;
+    Drain drain = 2;
+    Shutdown shutdown = 3;
+  }
+}
+
+message Welcome {
+  string build_version = 1;
+}
+
+// Drain: finish the jobs in hand and take no more.
+message Drain {}
+
+// Shutdown: stop now.
+message Shutdown {}
+
+// ---- Work ----
+
+// What a worker sends on a Work stream.
+message WorkerFrame {
+  oneof msg {
+    Ready ready = 1;
+    Accept accept = 2;
+    Busy busy = 3;
+    Text text = 4;
+    PageStart page_start = 5;
+    ImageBegin image_begin = 6;
+    Chunk image_chunk = 7;
+    ImageEnd image_end = 8;
+    Chunk output_chunk = 9;
+    Done done = 10;
+  }
+}
+
+// Ready opens a Work stream: an idle slot of an attached worker.
+message Ready {
+  string worker_id = 1;
+}
+
+// Accept: the worker took the job and is ready for its input.
+message Accept {}
+
+// Busy: the worker is full (it holds idle streams to several cores); the
+// dispatcher tries another stream. Nothing of the job was read.
+message Busy {}
+
+message Text {
+  string markdown = 1;
+}
+
+message PageStart {
+  int32 page = 1;
+}
+
+// An image found in the document. Its bytes follow as image_chunk frames,
+// then image_end; the worker waits for ImageRef before writing more.
+message ImageBegin {
+  string name = 1;
+  string media_type = 2;
+  string alt = 3;
+  int32 page = 4;
+  int32 slide = 5;
+  int64 size = 6;
+}
+
+message ImageEnd {}
+
+// At most 1 MiB of bytes.
+message Chunk {
+  bytes data = 1;
+}
+
+message Done {
+  Report report = 1;
+  ErrorClass error_class = 2;
+  string message = 3;
+}
+
+enum ErrorClass {
+  ERROR_CLASS_NONE = 0;
+  // The file could not be read as its type.
+  ERROR_CLASS_FAILED = 1;
+  // The extractor refused the file (an archive bomb, a part over its caps);
+  // message is the reason.
+  ERROR_CLASS_REFUSED = 2;
+  // The sink took no more text; report is what was written.
+  ERROR_CLASS_SINK_FULL = 3;
+  // The job ran past its time bound.
+  ERROR_CLASS_DEADLINE = 4;
+  // No extractor reads the type.
+  ERROR_CLASS_UNSUPPORTED = 5;
+  // The dispatcher cancelled the job.
+  ERROR_CLASS_CANCELLED = 6;
+  // The input was over the worker's bound, or not the size announced.
+  ERROR_CLASS_INPUT = 7;
+}
+
+// extract.Report, as the worker wrote it.
+message Report {
+  string format = 1;
+  int64 chars = 2;
+  int32 pages = 3;
+  int32 sheets = 4;
+  int32 slides = 5;
+  int32 tables = 6;
+  int32 images = 7;
+  double yield_chars_per_page = 8;
+  int32 inferred_headings = 9;
+  int32 dropped_decorative_images = 10;
+  repeated string notes = 11;
+  repeated PageYield page_yields = 12;
+}
+
+message PageYield {
+  int32 page = 1;
+  int32 chars = 2;
+  bool unread = 3;
+}
+
+// What the dispatcher sends on a Work stream.
+message JobFrame {
+  oneof msg {
+    JobStart start = 1;
+    Chunk input_chunk = 2;
+    InputEnd input_end = 3;
+    ImageRef image_ref = 4;
+    Cancel cancel = 5;
+  }
+}
+
+enum JobKind {
+  JOB_KIND_UNSPECIFIED = 0;
+  JOB_KIND_EXTRACT = 1;
+  JOB_KIND_PDF_SELECT_PAGES = 2;
+}
+
+message JobStart {
+  string job_id = 1;
+  JobKind kind = 2;
+  int64 input_size = 3;
+  string media_type = 4;
+  // The file's own name, sanitised: a title and an extension, never a path.
+  string name = 5;
+  // The job's time bound, counted from when the worker accepts it.
+  int64 timeout_ms = 6;
+  ExtractOptions extract = 7;
+  // pdf_select_pages: the pages to cut, counted from 1.
+  repeated int32 pages = 8;
+}
+
+message ExtractOptions {
+  bool images = 1;
+  int32 max_rows = 2;
+  bool infer_headings = 3;
+}
+
+message InputEnd {}
+
+// The reference the Markdown embeds for the image just sent; empty when the
+// core did not keep it.
+message ImageRef {
+  string ref = 1;
+}
+
+message Cancel {
+  CancelReason reason = 1;
+}
+
+enum CancelReason {
+  CANCEL_REASON_UNSPECIFIED = 0;
+  // The sink takes no more text: stop and report what was written.
+  CANCEL_REASON_SINK_FULL = 1;
+  // The caller went away or the core gave up on the job.
+  CANCEL_REASON_CALLER = 2;
+}

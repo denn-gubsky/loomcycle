@@ -94,6 +94,11 @@ var layers = []layer{
 			"internal/breakpoints",
 			"internal/cancel",
 			"internal/concurrency",
+			// The conversion seam and its in-process runner (RFC GO): bytes in,
+			// bytes out, over the extractors and the helper runner beside it.
+			// The worker pool and dispatcher that implement it remotely sit
+			// above.
+			"internal/convert",
 			"internal/cryptoops",
 			"internal/decisionq",
 			"internal/dynvol",
@@ -102,6 +107,10 @@ var layers = []layer{
 			"internal/fence",
 			"internal/files/extract",
 			"internal/gitsource",
+			// The help corpus embedded in the binary and its pure parsers (RFC
+			// GL P4): data only, so config can validate {{help:<topic>}}
+			// against the same files package help serves.
+			"internal/help/builtin",
 			"internal/hostenv",
 			"internal/jsonpath",
 			"internal/kms",
@@ -224,6 +233,10 @@ var layers = []layer{
 			"internal/codehook",
 			"internal/connector",
 			"internal/contextplugin",
+			// The conversion worker pool (RFC GO): the dispatcher the core
+			// hands conversions to, the worker that runs them, and the
+			// supervisor of local workers. Above the convert seam it serves.
+			"internal/conversion",
 			"internal/decisionbuild",
 			"internal/errclassify",
 			"internal/help",
@@ -288,6 +301,8 @@ var allowedSideways = []subsystemEdge{
 	// safego (the goroutine panic net) imports nothing in this module, so
 	// any L0 package may start its goroutines through it.
 	{"internal/concurrency", "internal/safego"},
+	{"internal/convert", "internal/files/extract"},
+	{"internal/convert", "internal/transcribe/helper"},
 	{"internal/kms", "internal/awsauth"},
 	{"internal/logging", "internal/redact"},
 	{"internal/projection", "internal/safego"},

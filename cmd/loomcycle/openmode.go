@@ -57,6 +57,11 @@ func strictModeRefusal(authConfigured bool, cfg *config.Config) error {
 	if !cfg.ResolvedAuth.Strict() || authConfigured {
 		return nil
 	}
+	if cfg.ResolvedAuth.StrictFromEnv() {
+		return fmt.Errorf("refusing to start: LOOMCYCLE_AUTH_MODE is strict (the yaml's auth.mode does not say " +
+			"strict) but no credential is configured, so the server would run in open mode. Set " +
+			"LOOMCYCLE_AUTH_TOKEN or declare a principal, or unset LOOMCYCLE_AUTH_MODE to use token mode")
+	}
 	return fmt.Errorf("refusing to start: auth.mode is strict but no credential is configured, so the " +
 		"server would run in open mode. Set LOOMCYCLE_AUTH_TOKEN or declare a principal, or use token mode")
 }

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -265,9 +266,13 @@ type AuthPolicy struct {
 	// "LOOMCYCLE_AUTH_MODE") when both set one and they differ; empty
 	// otherwise. Boot logs it.
 	ModeDecidedBy string
-	Idle          time.Duration
-	Absolute      time.Duration
-	ReauthWindow  time.Duration
+	// ModeSource names the plane Mode came from: "auth.mode" when the yaml
+	// asked for it, "LOOMCYCLE_AUTH_MODE" when only the environment did,
+	// empty for the default. An error raised because of the mode names it.
+	ModeSource   string
+	Idle         time.Duration
+	Absolute     time.Duration
+	ReauthWindow time.Duration
 	// Gates is the configured gates, sorted by name.
 	Gates []AuthGate
 	// TrustedProxies and ClientIPHeader are the validated auth.trusted_proxies
@@ -298,6 +303,22 @@ type AuthPolicy struct {
 
 // Strict reports whether the deployment is in strict mode.
 func (p AuthPolicy) Strict() bool { return p.Mode == AuthModeStrict }
+
+// StrictFromEnv reports strict mode that only LOOMCYCLE_AUTH_MODE asked for:
+// the yaml says token, or nothing. An error about strict mode then points at
+// the variable, not at a yaml key that does not say strict.
+func (p AuthPolicy) StrictFromEnv() bool {
+	return p.Strict() && p.ModeSource == "LOOMCYCLE_AUTH_MODE"
+}
+
+// strictLabel names strict mode at the head of an error, by the plane that
+// asked for it.
+func (p AuthPolicy) strictLabel() string {
+	if p.StrictFromEnv() {
+		return "strict mode (from LOOMCYCLE_AUTH_MODE)"
+	}
+	return "auth.mode: strict"
+}
 
 // ModeName is the mode as reported to clients.
 func (p AuthPolicy) ModeName() string {
@@ -440,6 +461,20 @@ func resolveAuth(c *Config) error {
 		}
 	}
 	p := AuthPolicy{Mode: mode, ModeDecidedBy: decidedBy}
+	switch {
+	case cfgMode == mode:
+		p.ModeSource = "auth.mode"
+	case envMode == mode:
+		p.ModeSource = "LOOMCYCLE_AUTH_MODE"
+	}
+	if decidedBy != "" {
+		// Said with the other advisories, so `validate`, `doctor` and a reload
+		// print it as well as the boot. A config resolved twice says it once.
+		w := fmt.Sprintf("auth.mode (%s) and LOOMCYCLE_AUTH_MODE (%s) differ: the stricter of the two holds, so the sign-in mode is %s (decided by %s)", cfgMode, envMode, mode, decidedBy)
+		if !slices.Contains(c.Warnings, w) {
+			c.Warnings = append(c.Warnings, w)
+		}
+	}
 	if p.Idle, err = parseSessionDuration("auth.session.idle", c.Auth.Session.Idle, DefaultSessionIdle); err != nil {
 		return err
 	}
@@ -686,8 +721,8 @@ func resolveAuth(c *Config) error {
 	// Strict mode with no gate a person can sign in through would lock
 	// everyone out of the Web UI.
 	if p.Strict() && interactive == 0 {
-		return fmt.Errorf("auth.mode: strict needs at least one interactive gate in auth.gates " +
-			"(e.g. `paste: {kind: token}`), or nobody can sign in to the Web UI")
+		return fmt.Errorf("%s needs at least one interactive gate in auth.gates "+
+			"(e.g. `paste: {kind: token}`), or nobody can sign in to the Web UI", p.strictLabel())
 	}
 	if err := resolvePasskeys(c, &p); err != nil {
 		return err
@@ -831,14 +866,25 @@ func proxyPrefixes(c *Config, key string, list []string) ([]netip.Prefix, error)
 	return out, nil
 }
 
-// applyAuthLoginOrigins trims each login origin and drops a trailing slash,
-// the form a browser reports an origin in. An empty entry stops the load.
+// normLoginOrigin is a login origin in the form a browser reports one:
+// trimmed, with no trailing slash.
+func normLoginOrigin(o string) string {
+	return strings.TrimRight(strings.TrimSpace(o), "/")
+}
+
+// applyAuthLoginOrigins normalises each login origin. An empty entry stops
+// the load, and so does one holding a comma or a space: the variable this key
+// replaced was one comma-separated value, and an entry copied from it whole
+// equals no origin, so the receiver would be on and accept nothing.
 func applyAuthLoginOrigins(cfg *Config) error {
 	origins := cfg.Auth.LoginOrigins
 	for i, o := range origins {
-		o = strings.TrimRight(strings.TrimSpace(o), "/")
+		o = normLoginOrigin(o)
 		if o == "" {
 			return fmt.Errorf("auth.login_origins: entry %d is empty; write an origin such as https://landing.example", i+1)
+		}
+		if strings.ContainsAny(o, ", \t\r\n") {
+			return fmt.Errorf("auth.login_origins: entry %d holds a comma or a space; write one origin per list item", i+1)
 		}
 		origins[i] = o
 	}

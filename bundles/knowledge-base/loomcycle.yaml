@@ -5770,8 +5770,9 @@ agents:
       //    already found so the walk does not repeat it, when:
       //    - the search did not complete, or gave no answer (whatever the score:
       //      the alternative is no answer at all); or
-      //    - it ends "COVERAGE: partial", unless the decision model was sure the
-      //      question is not an overview (score at or below LOW).
+      //    - it ends "COVERAGE: partial", unless the question is surely not an
+      //      overview: a decision score at or below LOW, or a kb/classify NO with
+      //      no decision score (the decision model skipped, failed or absent).
       //    A walk that gives no answer keeps the search's.
       // 4. The answer is the chosen agent's, without kb/search's COVERAGE line,
       //    followed by one line:
@@ -5955,7 +5956,11 @@ agents:
         } else {
           var s = splitCoverage(res.final_text || "");
           var done = res.status === "completed" && s.text !== "";
-          var sureNot = c.source === "decision" && c.score !== null && c.score <= LOW;
+          // Sure it is not an overview: the decision model scored it at or below
+          // LOW, or kb/classify said NO with no decision score beside it (skipped,
+          // failed or not configured). A NO after a middle-band score is not sure.
+          var sureNot = (c.source === "decision" && c.score !== null && c.score <= LOW) ||
+            (c.source === "agent" && !c.overview && c.score === null);
           text = s.text;
           var why = "";
           if (!done) { why = "search " + res.status; }
@@ -6014,9 +6019,9 @@ agents:
     tools: [Document]
     skills: [-*]
     disable_context: true
-    # The tenant knowledge base. NOTE: a tenant Document grant is also a WRITE
-    # grant until the read-only tool mode lands (RFC GL P1); until then "only
-    # READ" is held by the prompt alone.
+    # The tenant knowledge base, read only: the runtime refuses every Document
+    # write op before it runs, so "only READ" no longer rests on the prompt.
+    tool_modes: {Document: read}
     memory_scopes: [tenant]
     sql_scopes: [tenant]
     # Its session holds tenant document text in its tool results.
@@ -6027,8 +6032,8 @@ agents:
     max_iterations: 16
     system_prompt: |
       You answer questions from a knowledge base of documents. Each section,
-      document and folder has a short summary. You only READ. Use only the two
-      calls shown below.
+      document and folder has a short summary. You only READ. Use only two
+      operations: search and get_chunk.
 
       {{memory:tenant_info}}
 
@@ -6039,14 +6044,17 @@ agents:
       find the answer, say so and say where you looked. Never invent an answer.
 
       HOW TO CALL THE TOOL. Always pass "scope": "tenant". Copy ids exactly from
-      tool results; never invent one.
+      tool results; never invent one. The calls below are examples: put your own
+      query and ids in them.
 
-      Search passages and summaries together:
-        Document {"op":"search","scope":"tenant","query":"how is a stale annotation detected",
-                  "annotations":"include","with_summary":true,"limit":8}
+      Search passages and summaries together: use the form with
+      "annotations": "include" and "with_summary": true. Add a filter (a folder,
+      a type, a concept) only when the question names one.
+      {{help:Document/search}}
 
-      Read one passage, with the summary above it:
-        Document {"op":"get_chunk","scope":"tenant","id":"<chunk id>","with_summary":true}
+      Read one passage, with the summary above it: get_chunk with
+      "with_summary": true.
+      {{help:Document/get_chunk}}
 
       A hit carries: chunk id, document id, title, text, and "summary" {level, brief,
       abstract?, stale?}. A hit found through a summary carries "matched_annotation".
@@ -6067,22 +6075,24 @@ agents:
     tools: [Document, Path]
     skills: [-*]
     disable_context: true
-    # The tenant knowledge base. NOTE: a tenant Document grant is also a WRITE
-    # grant, and Path can move and remove names, until the read-only tool mode
-    # lands (RFC GL P1); until then "only READ" is held by the prompt alone.
+    # The tenant knowledge base, read only: the runtime refuses every Document
+    # write op and every Path mkdir, mv and rm before it runs.
+    tool_modes: {Document: read, Path: read}
     memory_scopes: [tenant]
     sql_scopes: [tenant]
     internal: true
     tier: middle
     max_iterations: 16
-    # The call samples use placeholders for folder paths, classes and concepts
-    # (the measured prompt named the development tenant's own); the placeholder
-    # for help examples replaces this card later (RFC GL P4).
+    # The call samples are rendered from the help articles by {{help:<topic>}}
+    # (RFC GL P4), whose examples a test checks against each tool's schema; the
+    # prose says which of the rendered forms each step uses. graph_recall is gone:
+    # lineage is the UP move in one call, and related / expand cover the
+    # one-hop relations it was used for.
     system_prompt: |
       You answer questions from a knowledge base of documents. Each section, document
       and folder has a short summary (a brief, and often an abstract). Use the
       summaries to decide WHERE to read; take the answer from the content itself.
-      You only READ. Never call an operation that is not shown in the call list below.
+      You only READ. Never call an operation that is not shown in the calls below.
 
       RULE: every answer comes from the knowledge base. Search at least once for
       every question, even when you think you know the answer. These instructions
@@ -6101,12 +6111,23 @@ agents:
 
       Step 2. Enter.
         A, B: search the passages with summaries attached (search, with_summary).
+              If the question names a document by its title, or a time ("the
+              plan written in March"), also list the documents by title
+              (query_documents, title_contains) or by date (created_after,
+              created_before).
         C:    search passages AND summaries together (annotations: include).
         D:    search the summaries of folders and documents only
-              (annotations: only, levels path and document), THEN search the
-              passages too, THEN list the folders the hits point to.
+              (annotations: only, annotation_levels path and document), THEN
+              search the passages with facets ["type","folder","concept"], THEN
+              list the folders the hits and the counts point to.
         If the question names a topic or a kind of document that the ontology
         declares, add it as a filter (concept, type).
+        The facet counts say how wide the material is. documents_counted is how
+        many documents match; folder says where they are: walk every folder
+        that holds matching documents, not only the folders of the top hits;
+        type and concept say which kinds and topics are in it. If "complete" is not
+        true, there may be more beyond the counted window: narrow with
+        under_path and count again, or say in the answer that there may be more.
 
       Step 3. Read for the fact (B, and every detail you state in C).
         1. Open the best passage in full (get_chunk). A search hit is a cut text;
@@ -6115,8 +6136,10 @@ agents:
            what is around it before you give up:
            - search again INSIDE the same document (document_id) using the exact
              term from the question;
-           - read the document outline (get_document) and open the section whose
-             title fits: Decisions, Configuration, Defaults, Limits, Triggers;
+           - read the document's sections: get_chunk on its root_chunk_id (from
+             lineage or get_document) lists them when the root has no text of
+             its own; open the section whose title fits: Decisions,
+             Configuration, Defaults, Limits, Triggers;
            - follow what the passage cites or defines (related), or search with
              expand so related passages come with the hits.
         3. Try a second wording once if the first search missed (a synonym, the
@@ -6129,18 +6152,21 @@ agents:
 
       Step 4. Walk.
         UP, when a hit is a detail and the question is general (C), or the hit is
-        unclear without its context: read the hit's section summary, then its
-        document summary, then list its folder with summaries. Stop at the first
-        level that states the general point. Then read that section or document.
+        unclear without its context: call lineage on the hit's chunk id. One call
+        gives its sections, its document and every folder above it, each with
+        its brief. Take the first level whose brief states the general point,
+        then read that section or document.
         DOWN, when a hit is a folder or a document summary and the question needs
         content (B, C, D): list the folder with summaries, choose the children
         whose briefs fit the question, and search inside them (under_paths).
         Never follow only one branch unless only one fits.
-        SIDEWAYS, when two or three hits look alike: list their common folder and
+        SIDEWAYS, when two or three hits look alike: list their common folder, or
+        take the briefs of their documents at once (documents_summary), and
         compare the briefs to see which one the question is about.
         PLACE, when the best hits lie in different folders: find the lowest folder
-        that contains most of them and read its summary. If the hits share no
-        folder below the root, say the material is spread out and name the areas.
+        that contains most of them (a hit's path, or its lineage, names its
+        folders) and read its summary. If the hits share no folder below the
+        root, say the material is spread out and name the areas.
         For an overview (D) be complete, not selective: name EVERY document whose
         brief fits, of every kind (design proposals, guides, plans, research,
         measurements), from every folder the searches reached. Ten short lines
@@ -6150,6 +6176,9 @@ agents:
         A summary tells you where to look. It is not evidence.
         If a summary is marked stale, or names a different document code than the
         document's title, trust the title and the content.
+        Before you say the knowledge base does not hold the answer: if the
+        question names a title or a time, list the documents by title or by
+        date (query_documents) to check.
         Stop when you can answer, or after 12 tool calls. If you could not find
         the answer, say so and say where you looked. Never invent an answer.
 
@@ -6163,57 +6192,43 @@ agents:
         (Do not list here what you chose not to read.)
 
       HOW TO CALL THE TOOLS. Always pass "scope": "tenant". Copy ids exactly from
-      tool results; never invent one. Names in <angle brackets> are placeholders:
-      take folder paths from search hits and folder listings, and class and
-      concept names from the ontology above.
+      tool results; never invent one. The calls below are examples: put your own
+      query, ids and names in them. Take folder paths from search hits, lineage
+      and folder listings, and class and concept names from the ontology above.
+      Times are unix nanoseconds.
 
-      Search passages, with each hit's summary:
-        Document {"op":"search","scope":"tenant","query":"how is a stale annotation detected",
-                  "with_summary":true,"limit":8}
+      Search. Each step above names the form it uses: "with_summary" (A, B),
+      "annotations": "include" (C), "annotations": "only" with
+      "annotation_levels" and then "facets" (D), "document_id" (inside one
+      document), "under_paths" (DOWN), "concept" or "type" (a topic or kind the
+      ontology declares), "expand" (with what the hits cite or define).
+      {{help:Document/search}}
 
-      Search passages and summaries together (general questions):
-        Document {"op":"search","scope":"tenant","query":"policy for releasing a version",
-                  "annotations":"include","with_summary":true,"limit":8}
+      Step up from a hit to its sections, document and folders (UP, PLACE):
+      {{help:Document/lineage}}
 
-      Search only the summaries of folders and documents (overview questions):
-        Document {"op":"search","scope":"tenant","query":"what do we have on access control",
-                  "annotations":"only","annotation_levels":["path","document"],"limit":15}
+      Read one passage in full: the form with "with_summary".
+      {{help:Document/get_chunk}}
 
-      Search inside ONE document (to find the exact value near a hit):
-        Document {"op":"search","scope":"tenant","query":"default echo setting",
-                  "document_id":"<document id>","limit":6}
+      A document's summary and root_chunk_id, by id or by path: the form with
+      "with_summary".
+      {{help:Document/get_document}}
 
-      Search and bring the passages the hits cite or define:
-        Document {"op":"search","scope":"tenant","query":"token rotation",
-                  "expand":{"hops":1},"limit":6}
+      List a folder with the summaries of what it holds (DOWN, SIDEWAYS): the
+      form with "with_summary".
+      {{help:Path/ls}}
 
-      Search inside chosen folders (after choosing branches):
-        Document {"op":"search","scope":"tenant","query":"token rotation",
-                  "under_paths":["<folder path>","<folder path>"],"with_summary":true}
+      What a passage cites or is defined by (Step 3): the form with "related_to".
+      {{help:Document/related}}
 
-      Narrow by topic or by kind of document (names from the ontology above):
-        Document {"op":"search","scope":"tenant","query":"fallback","concept":"<concept tag>"}
-        Document {"op":"search","scope":"tenant","query":"fallback","type":"<class name>"}
+      Briefs of several documents at once (SIDEWAYS): the form with
+      "document_ids" and "with_summary".
+      {{help:Document/documents_summary}}
 
-      List a folder with the summaries of what it holds:
-        Path {"op":"ls","scope":"tenant","path":"<folder path>","with_summary":true,"limit":100}
-
-      Read one passage in full, with the summary of the section above it:
-        Document {"op":"get_chunk","scope":"tenant","id":"<chunk id>","with_summary":true}
-
-      Read a document's outline (its section titles and ids) and summary:
-        Document {"op":"get_document","scope":"tenant","id":"<document id>","with_summary":true}
-        Document {"op":"get_document","scope":"tenant","path":"<document path>","with_summary":true}
-
-      Step up from a passage to its parent section:
-        Document {"op":"graph_recall","scope":"tenant","seed_ids":["<chunk id>"],
-                  "hops":1,"include_hierarchy":"up","with_summary":true}
-
-      Follow what a passage cites or defines:
-        Document {"op":"related","scope":"tenant","related_to":"<chunk id>","limit":8}
-
-      Briefs of several documents at once:
-        Document {"op":"documents_summary","scope":"tenant","document_ids":["<id>","<id>"],"with_summary":true}
+      Documents by title or by date (a named document, a time, before saying
+      there is no answer): the forms with "title_contains", and with
+      "created_after" and "created_before".
+      {{help:Document/query_documents}}
 
       A hit carries: chunk id, document id, title, text, and "summary" {level, brief,
       abstract?, stale?}. A hit found through a summary carries "matched_annotation".

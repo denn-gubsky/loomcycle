@@ -30,27 +30,22 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: loomcycle validate [path/to/loomcycle.yaml ...]")
 		fmt.Fprintln(stderr)
-		fmt.Fprintln(stderr, "Loads the config a server started with the same environment and one")
-		fmt.Fprintln(stderr, "--config per named file, in that order, would load (embedded presets,")
-		fmt.Fprintln(stderr, "the config dir, then the named files; with no file named, the one the")
-		fmt.Fprintln(stderr, "server auto-discovers), runs every constructor-time check, and prints a")
+		fmt.Fprintln(stderr, "Loads the config the server would load (embedded presets, the config")
+		fmt.Fprintln(stderr, "dir, then each named file in the order given, as the server layers its")
+		fmt.Fprintln(stderr, "--config flags; with no file named, the one the server auto-discovers),")
+		fmt.Fprintln(stderr, "runs every constructor-time check, and prints a")
 		fmt.Fprintln(stderr, "summary. Exits 0 on a clean config; 2 on any failure (stderr names")
 		fmt.Fprintln(stderr, "the offending agent / yaml line / fix).")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	// No path: the stack the server assembles with no --config. Several: the
-	// server's `--config a --config b`, so a multi-file deployment is checked
-	// as it runs; the last one named is the primary file, as at boot.
-	cfgPath := ""
-	if n := fs.NArg(); n > 0 {
-		cfgPath = fs.Arg(n - 1)
-	}
+	// No path: the stack the server assembles with no --config.
+	cfgPaths := fs.Args()
 
-	stack, err := AssembleConfigStack(nil, fs.Args(), false)
+	stack, err := assembleForCLI(cfgPaths...)
 	if err != nil {
-		if cfgPath == "" {
+		if len(cfgPaths) == 0 {
 			fs.Usage()
 		}
 		return fail(stderr, "config: %v", err)
@@ -61,15 +56,9 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Print the summary table.
-	shown := cfgPath
-	switch {
-	case shown != "":
-	case len(stack.Files) > 0:
-		shown = stack.Files[len(stack.Files)-1]
-	default:
-		shown = "embedded presets only (no config file)"
-	}
-	fmt.Fprintf(stdout, "loomcycle config: %s\n", shown)
+	// Every layer, base first: naming one file of several would read as if
+	// only it had been validated.
+	fmt.Fprintf(stdout, "loomcycle config: %s\n", describeStack(stack))
 	fmt.Fprintln(stdout)
 
 	fmt.Fprintf(stdout, "Storage backend  : %s\n", cfg.Storage.Backend)
@@ -83,6 +72,12 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Listen address   : %s\n", cfg.Env.ListenAddr)
 	fmt.Fprintf(stdout, "Auth token set   : %v\n", cfg.Env.AuthToken != "")
+	// The mode can come from the yaml or the environment; say which.
+	authSource := "default"
+	if src := cfg.ResolvedAuth.ModeSource; src != "" {
+		authSource = "from " + src
+	}
+	fmt.Fprintf(stdout, "Auth mode        : %s (%s)\n", cfg.ResolvedAuth.ModeName(), authSource)
 	fmt.Fprintf(stdout, "Concurrency      : max=%d queue=%d\n",
 		cfg.Concurrency.MaxConcurrentRuns, cfg.Concurrency.MaxQueueDepth)
 	fmt.Fprintln(stdout)

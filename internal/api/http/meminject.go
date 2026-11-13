@@ -122,9 +122,13 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	// is a widened one would take the fast path and leave the placeholder in the
 	// prompt as literal text. Refused and removed is the intended outcome.
 	wantIdentity := promptinject.ReferencesIdentity(promptSrc)
+	// ReferencesHelp, not the topic list, so an escaped or malformed help
+	// placeholder also enters expansion (unescaped, or removed) rather than
+	// staying in the prompt as written.
+	wantHelp := promptinject.ReferencesHelp(promptSrc)
 	if len(blocks) == 0 && !promptinject.References(promptSrc) && len(toolRefs) == 0 &&
 		len(docRefs) == 0 && !promptinject.ReferencesWidened(promptSrc) &&
-		!wantIdentity && !agentDef.MemoryProtocol && !forceRoots {
+		!wantIdentity && !wantHelp && !agentDef.MemoryProtocol && !forceRoots {
 		return agentDef, blocks
 	}
 
@@ -161,8 +165,13 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 			sections[promptinject.VariantTenantInfo] = body
 		}
 	}
-	if body := s.renderSearchRequest(ctx, mi); body != "" {
-		sections[promptinject.VariantSearchRequest] = body
+	// search_request: gated on an actual reference — it costs a full-text search,
+	// and no other family reads its section, so a prompt that reached this path
+	// for another placeholder (a help-only prompt, say) must not pay for it.
+	if promptinject.ReferencesVariant(promptSrc, promptinject.VariantSearchRequest) {
+		if body := s.renderSearchRequest(ctx, mi); body != "" {
+			sections[promptinject.VariantSearchRequest] = body
+		}
 	}
 	// recalled_context: gated on an actual reference, because it costs TWO retrievals
 	// and an embedding of the run's initial input. A prompt that never places the
@@ -202,6 +211,7 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 	expanded, refused := promptinject.ExpandWithRefusals(promptSrc, promptinject.ExpandInput{
 		Identity:      identity,
 		Sections:      sections,
+		HelpExamples:  renderHelpExamples(mi.AgentName, promptinject.ReferencesHelpTopics(promptSrc)),
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
 		Documents:     s.renderDocuments(ctx, mi, docRefs),
 		MemoryRefs:    s.renderMemoryRefs(ctx, mi, memRefs),
@@ -986,13 +996,16 @@ func (s *Server) expandCallerSegments(ctx context.Context, mi memInject, values 
 	// gets it removed, not left as literal text.
 	if len(values) == 0 && len(docRefs) == 0 && len(toolRefs) == 0 &&
 		!promptinject.References(combined) && !promptinject.ReferencesWidened(combined) &&
-		!promptinject.ReferencesIdentity(combined) {
+		!promptinject.ReferencesIdentity(combined) && !promptinject.ReferencesHelp(combined) {
 		return system, user
 	}
 
+	// Help examples are the binary's own text, the same whoever wrote the
+	// segment, so they render under either authorship, as {{tool:…}} does.
 	in := promptinject.ExpandInput{
 		Values:        values,
 		Documents:     s.renderDocuments(ctx, mi, docRefs),
+		HelpExamples:  renderHelpExamples(mi.AgentName, promptinject.ReferencesHelpTopics(combined)),
 		ToolResults:   s.renderToolResults(ctx, mi, toolRefs),
 		MaxTokens:     config.DefaultMemoryInjectMaxTokens,
 		ToolMaxTokens: toolInjectMaxTokens,

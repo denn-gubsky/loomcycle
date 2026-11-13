@@ -119,7 +119,7 @@ row + calls `bus.Notify`; the wait wakes.
 
 A dedicated heartbeat ticker fires
 `Store.UpdateHeartbeat(run_id)` every
-`LOOMCYCLE_INTERRUPTION_HEARTBEAT_INTERVAL_MS` (default 30s)
+`interruption.heartbeat_interval_ms` (a yaml key; default 30s)
 while blocked. Without this, the v0.5.0 sweeper (default
 `StaleAfter` 10 min) would reap long-pending interrupts as
 crashed runs.

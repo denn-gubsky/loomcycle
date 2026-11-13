@@ -2,7 +2,9 @@ package cli
 
 import (
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -159,6 +161,54 @@ func configDirLayers(dir string) ([]string, error) {
 // environment, set-if-unset, so that config.LoadLayers reads the same
 // variables whoever calls it; a repeat call sets nothing.
 func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigStack, error) {
+	return assembleConfigStack(stackOptions{presetFlags: presetFlags, cfgPaths: cfgPaths, verbose: verbose})
+}
+
+// stackOptions are AssembleConfigStack's inputs and the ways a command may
+// ask for less than the server's assembly.
+type stackOptions struct {
+	presetFlags []string
+	cfgPaths    []string
+	verbose     bool
+	// noDiscovery leaves out the auto-discovered loomcycle.yaml (and with it
+	// its section files and auth.env): the stack is the presets, the config
+	// dir and the named files, and nothing the caller did not select. For a
+	// tool that measures the shipped config, which a developer's own file
+	// must not change unasked.
+	noDiscovery bool
+	// offlineTool does not refuse the retired variable that named config
+	// files: the load (config.LoadOptions.OfflineTool) reports it instead.
+	// The files it names are not layered either way.
+	offlineTool bool
+}
+
+// AssembleConfigStackForOfflineTool is AssembleConfigStack for the commands
+// an operator runs against the store while the server is down or will not
+// start (tokens rewrap, audit verify, migrate): the same stack, without the
+// refusal of the retired config-files variable, which their load reports as
+// not enforced. Load its layers with LoadConfigForOfflineTool.
+func AssembleConfigStackForOfflineTool(presetFlags, cfgPaths []string) (ConfigStack, error) {
+	return assembleConfigStack(stackOptions{presetFlags: presetFlags, cfgPaths: cfgPaths, offlineTool: true})
+}
+
+// LoadConfigForOfflineTool loads a stack the way an offline tool may: a
+// retired variable the server refuses, or a bad value in a runtime setting
+// the tool never uses, is printed to stderr as a warning and the tool goes
+// on. A refusal about which store is opened, and every other error, still
+// stops it. Warnings name variables and never carry a value.
+func LoadConfigForOfflineTool(stack ConfigStack, stderr io.Writer) (*config.Config, error) {
+	cfg, err := config.LoadLayersWith(config.LoadOptions{OfflineTool: true}, stack.Layers...)
+	if err != nil {
+		return nil, err
+	}
+	for _, note := range cfg.NotEnforced {
+		fmt.Fprintf(stderr, "loomcycle: warning: %s\n", note)
+	}
+	return cfg, nil
+}
+
+func assembleConfigStack(o stackOptions) (ConfigStack, error) {
+	presetFlags, cfgPaths, verbose := o.presetFlags, o.cfgPaths, o.verbose
 	info := func(msg string, args ...any) {
 		if verbose {
 			slog.Info(msg, args...)
@@ -167,7 +217,7 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 	// The variable that used to name config files is retired. Refused here as
 	// well as in the load: the files it names are not layered, and when they
 	// were the only config the "no config found" below would hide why.
-	if refused := config.RetiredLayerEnvRefusals(os.Environ()); len(refused) > 0 {
+	if refused := config.RetiredLayerEnvRefusals(os.Environ()); len(refused) > 0 && !o.offlineTool {
 		return ConfigStack{}, fmt.Errorf("a retired environment variable names config files that are no longer layered; act on it, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	env := readLayerEnv()
@@ -198,13 +248,18 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 	cfgFiles := append([]string{}, cfgPaths...)
 	if len(cfgFiles) == 0 && len(configDirFiles) == 0 {
 		// No explicit operator config: auto-discovery.
-		resolvedCfg, found := discoverConfigPath()
+		resolvedCfg, found := "", false
+		if !o.noDiscovery {
+			resolvedCfg, found = discoverConfigPath()
+		}
 		switch {
 		case found:
 			cfgFiles = []string{resolvedCfg}
 		case len(selected) > 0:
 			// Presets-only: the embedded base is the config.
 			info("config: no operator config file — running from embedded presets only")
+		case o.noDiscovery:
+			return ConfigStack{}, errors.New("no config selected: this command does not load an auto-discovered loomcycle.yaml. Select the embedded presets with LOOMCYCLE_PRESETS (for example base,memory), set LOOMCYCLE_CONFIG_DIR, or pass --config <path>")
 		default:
 			var b strings.Builder
 			b.WriteString("no config found at any of:\n")
@@ -410,10 +465,10 @@ func unitNames(units []embedded.Unit) string {
 }
 
 // loadLayeredConfig loads the configuration the server would load: the same
-// stack, assembled by the same function. explicitPath is a config file the
-// caller was given ("" for none, which takes the server's auto-discovery).
-func loadLayeredConfig(explicitPath string) (*config.Config, error) {
-	stack, err := assembleForCLI(explicitPath)
+// stack, assembled by the same function. explicitPaths are the config files
+// the caller was given, in order (none takes the server's auto-discovery).
+func loadLayeredConfig(explicitPaths ...string) (*config.Config, error) {
+	stack, err := assembleForCLI(explicitPaths...)
 	if err != nil {
 		return nil, err
 	}
@@ -421,11 +476,59 @@ func loadLayeredConfig(explicitPath string) (*config.Config, error) {
 }
 
 // assembleForCLI is the CLI's call of AssembleConfigStack: no --preset flags,
-// at most one named file, no boot logging.
-func assembleForCLI(explicitPath string) (ConfigStack, error) {
+// the named files in the order given, no boot logging. A blank path is no
+// path.
+func assembleForCLI(explicitPaths ...string) (ConfigStack, error) {
 	var paths []string
-	if p := strings.TrimSpace(explicitPath); p != "" {
-		paths = []string{p}
+	for _, p := range explicitPaths {
+		if p = strings.TrimSpace(p); p != "" {
+			paths = append(paths, p)
+		}
 	}
 	return AssembleConfigStack(nil, paths, false)
+}
+
+// describeStack names every layer of a stack, base first, the way the boot
+// log joins them: what a command prints so the operator sees which config it
+// read. Names only; no layer's contents.
+func describeStack(stack ConfigStack) string {
+	names := make([]string, len(stack.Layers))
+	for i, l := range stack.Layers {
+		names[i] = l.Name
+	}
+	return strings.Join(names, " ◁ ")
+}
+
+// configPaths is a repeatable --config flag: each use adds a file, layered in
+// the order given, as the server's own --config is.
+type configPaths []string
+
+func (p *configPaths) String() string { return strings.Join(*p, ",") }
+
+func (p *configPaths) Set(v string) error {
+	if v = strings.TrimSpace(v); v != "" {
+		*p = append(*p, v)
+	}
+	return nil
+}
+
+// configFlag registers --config on fs.
+func configFlag(fs *flag.FlagSet, usage string) *configPaths {
+	var p configPaths
+	fs.Var(&p, "config", usage)
+	return &p
+}
+
+// loadSelectedConfig loads the config for a tool that measures what ships:
+// the embedded presets, the config dir and the files named with --config,
+// but not an auto-discovered loomcycle.yaml, which could replace the agent
+// or embedder being measured, or supply keys through its auth.env, without
+// the operator asking. It says on stderr which layers it read.
+func loadSelectedConfig(tool string, paths []string, stderr io.Writer) (*config.Config, error) {
+	stack, err := assembleConfigStack(stackOptions{cfgPaths: paths, noDiscovery: true})
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(stderr, "%s: config layers: %s\n", tool, describeStack(stack))
+	return config.LoadLayers(stack.Layers...)
 }

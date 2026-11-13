@@ -172,13 +172,7 @@ func (s *Server) buildConfig(ctx context.Context, view string) configResponse {
 	}
 
 	// --- features (shared probe, so this cannot drift from Context op=capabilities) ---
-	feat := capabilities.Deployment(capabilities.Inputs{
-		Cfg:      s.cfg(),
-		Store:    s.store,
-		Embedder: s.embedder,
-		SQLMem:   s.sqlMem != nil,
-		Admin:    admin,
-	})
+	feat := capabilities.Deployment(s.capabilityInputs(admin))
 	if public {
 		feat = publicFeatures(feat)
 	}

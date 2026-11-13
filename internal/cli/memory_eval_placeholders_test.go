@@ -3,6 +3,7 @@ package cli
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -128,9 +129,13 @@ func TestExpandEvalPlaceholders_LeavesAPlainPromptAlone(t *testing.T) {
 func TestExpandEvalPlaceholders_SeedOnlyPromptStillMatchesTheRecordedBaseline(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PRESETS", "base,memory")
 	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
-	cfg, err := loadLayeredConfig("")
+	// The load the eval itself uses: no auto-discovered loomcycle.yaml. With
+	// discovery, a developer's own config replaced the shipped prompt here,
+	// and the auth.env beside it stayed in the process environment for
+	// every test that ran after this one.
+	cfg, err := loadSelectedConfig("test", nil, io.Discard)
 	if err != nil {
-		t.Fatalf("loadLayeredConfig: %v", err)
+		t.Fatalf("loadSelectedConfig: %v", err)
 	}
 	agent, ok := cfg.Agents[extractorAgentName]
 	if !ok {

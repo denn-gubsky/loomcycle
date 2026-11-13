@@ -37,6 +37,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
@@ -102,7 +103,8 @@ type Server struct {
 	// imageReencoder re-encodes an image a vision model refused (describe_images).
 	// One per server, so its single decode slot bounds the process: concurrent
 	// describe requests queue for it rather than each decoding up to the bound.
-	imageReencoder *vision.Reencoder
+	// Behind the conversion seam (RFC GO), so a worker pool can take it over.
+	imageReencoder vision.ImageReencoder
 
 	// --- RFC CK runtime config reload (POST /v1/_config/reload) ---
 	// reloadLoad re-loads the layered config the same way boot did (config.LoadLayers,
@@ -111,6 +113,10 @@ type Server struct {
 	// reloader's sections + the free holder-live sections (the applied/restart
 	// classifier). All injected by cmd/loomcycle via SetConfigReloader; reloadLoad
 	// nil on a Server built without it (tests / embedded) → the endpoint 503s.
+	// retentionAtBoot is what the retention and usage sweepers were started
+	// with (SetRetentionRunning); nil when this server started none.
+	retentionAtBoot atomic.Pointer[RetentionRunning]
+
 	// reloadMu serializes concurrent reloads.
 	reloadLoad    func() (*config.Config, error)
 	reloaders     []SectionReloader
@@ -497,6 +503,9 @@ type Server struct {
 	// extractionStats reads the File tool's extraction budget (the slots,
 	// those in flight and the calls waiting) for /metrics; nil when not wired.
 	extractionStats func() (limit, inFlight, waiting int)
+	// conversionStats reads the conversion worker pool (RFC GO) for
+	// /metrics; nil in conversion mode inprocess, where there is none.
+	conversionStats func() convert.PoolStats
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -785,7 +794,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		turnCancelReg: turncancel.NewRegistry(),
 		sessionLocks:  runner.NewSessionLockMap(),
 
-		imageReencoder: vision.NewReencoder(),
+		imageReencoder: &convert.InProcess{Images: vision.NewReencoder()},
 
 		// The permit list is frozen at construction — the only way to change
 		// the trust boundary is a restart with new yaml.
@@ -1182,6 +1191,10 @@ func (s *Server) SetCryptoStats(f func() map[string]uint64) { s.cryptoStats = f 
 // SetExtractionStats wires the File tool's extraction budget into /metrics.
 // Boot wiring only.
 func (s *Server) SetExtractionStats(f func() (limit, inFlight, waiting int)) { s.extractionStats = f }
+
+// SetConversionStats wires the conversion worker pool into /metrics (RFC GO
+// §5.10).
+func (s *Server) SetConversionStats(f func() convert.PoolStats) { s.conversionStats = f }
 
 // SetInterruptionBus wires the v0.8.16 in-process notification bus
 // used by the Interruption-resolve HTTP handler to wake the blocked

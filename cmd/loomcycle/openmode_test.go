@@ -204,3 +204,17 @@ func TestInsecureCookiesWarning_OnlyWhenSet(t *testing.T) {
 		t.Errorf("set: %q", w)
 	}
 }
+
+// The refusal names the plane that made the mode strict, and the way out
+// that plane offers.
+func TestStrictModeRefusal_NamesThePlaneThatAskedForStrict(t *testing.T) {
+	fromYAML := &config.Config{ResolvedAuth: config.AuthPolicy{Mode: config.AuthModeStrict, ModeSource: "auth.mode"}}
+	if err := strictModeRefusal(false, fromYAML); err == nil || !strings.Contains(err.Error(), "auth.mode is strict") || strings.Contains(err.Error(), "LOOMCYCLE_AUTH_MODE") {
+		t.Errorf("strict from the yaml: err = %v, want it to blame auth.mode only", err)
+	}
+	fromEnv := &config.Config{ResolvedAuth: config.AuthPolicy{Mode: config.AuthModeStrict, ModeSource: "LOOMCYCLE_AUTH_MODE"}}
+	err := strictModeRefusal(false, fromEnv)
+	if err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_AUTH_MODE is strict") || strings.Contains(err.Error(), "auth.mode is strict") {
+		t.Errorf("strict from the environment: err = %v, want it to blame LOOMCYCLE_AUTH_MODE", err)
+	}
+}

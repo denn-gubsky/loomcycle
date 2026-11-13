@@ -335,6 +335,10 @@ func (b *boot) openSQLMemory() {
 		slog.Info("sqlmem: SQL Memory enabled", "tier", sqlMemTier, "quota_bytes", cfg.Storage.SqlMemQuotaBytes,
 			"max_rows", cfg.Storage.SqlMemMaxRows, "max_result_bytes", cfg.Storage.SqlMemMaxResultBytes, "timeout_ms", cfg.Storage.SqlMemStatementTimeoutMS,
 			"audit", cfg.Storage.SqlMemAuditMode)
+	} else if cfg.Storage.SQLMemOffForMissingDSN() {
+		// Off by omission, not by choice: without this line the first sign is
+		// a Document call failing.
+		slog.Warn("sqlmem: SQL Memory is off because LOOMCYCLE_SQLMEM_PG_DSN is not set; Documents need SQL Memory and are off with it. Set the DSN of a separate database to turn both on, or storage.sqlmem_enabled: false in the yaml to say this is intended")
 	}
 
 	b.sqlMemMgr = sqlMemMgr
@@ -369,6 +373,11 @@ func (b *boot) wireServerCatalog() {
 	srv.SetCryptoStats(cryptoTool.Stats) // RFC EP: loomcycle_crypto_ops_total
 	// RFC FZ Part B: the File tool's extraction budget, loomcycle_extractions_*.
 	srv.SetExtractionStats(b.fileTool.ExtractionStats)
+	if b.conversion != nil {
+		// RFC GO §5.10: the pool feeds the same gauges, and its own.
+		srv.SetExtractionStats(b.conversion.ExtractionStats)
+		srv.SetConversionStats(b.conversion.Stats)
+	}
 	srv.SetMCPPoolInspector(func(name string) json.RawMessage {
 		// Static yaml MCP servers live at the shared "" tenant in the
 		// (tenant, name)-keyed pool. The Library introspection endpoint

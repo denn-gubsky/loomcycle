@@ -76,16 +76,16 @@ func TestConcurrency_TheYAMLIsTheOnlySource(t *testing.T) {
 		t.Errorf("yaml = %+v, want 4, 2 and 7", c)
 	}
 
-	// Looser than the yaml, so reported and not refused.
-	t.Setenv("LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", "0")
+	// The yaml names each key, so the variables are reported and not read.
+	t.Setenv("LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", "9")
 	t.Setenv("LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", "64")
 	t.Setenv("LOOMCYCLE_PROVIDER_QUEUE_DEPTH", "500")
-	cfg, err = loadYAMLString(t, minimalQueueYAML+"concurrency: { max_concurrent_runs_per_user: 4 }\n")
+	cfg, err = loadYAMLString(t, minimalQueueYAML+"concurrency: { max_concurrent_runs_per_user: 4, max_queued_runs_per_user: 16, provider_queue_depth: 32 }\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c := cfg.Concurrency; c.MaxConcurrentRunsPerUser != 4 || c.MaxQueuedRunsPerUser != 16 || c.ProviderQueueDepthOrDefault() != 32 {
-		t.Errorf("with the retired variables set = %+v, want the yaml and its defaults (4, 16, 32)", c)
+		t.Errorf("with the retired variables set = %+v, want the yaml's (4, 16, 32)", c)
 	}
 	for _, name := range []string{"LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", "LOOMCYCLE_PROVIDER_QUEUE_DEPTH"} {
 		requireRetiredAdvisory(t, cfg, name)

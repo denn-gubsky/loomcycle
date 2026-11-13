@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/denn-gubsky/loomcycle/internal/auditchain"
+	"github.com/denn-gubsky/loomcycle/internal/cli"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 )
@@ -96,12 +97,16 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 		return runAuditVerifyExport(*export, *allowPartial, *asJSON, stdout, stderr)
 	}
 
-	layers, err := assembleConfigLayers(presets, cfgPaths, false)
+	// The offline tool's assembly and load: a value the server refuses in a
+	// variable this command never reads is a warning here, so the tool is
+	// still there when the server will not start. Which store is opened is
+	// not relaxed.
+	stack, err := cli.AssembleConfigStackForOfflineTool(presets, cfgPaths)
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle: error: %v\n", err)
 		return 2
 	}
-	cfg, err := config.LoadLayers(layers...)
+	cfg, err := cli.LoadConfigForOfflineTool(stack, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle: error: config: %v\n", err)
 		return 2

@@ -1509,6 +1509,10 @@ export function documentQueryDocuments(
 export interface RetentionReport {
   admin: boolean;
   enabled: boolean;
+  // True when a config reload changed the yaml's retention: the other fields
+  // describe the running sweeper, which changes only at a restart. Absent
+  // when the two agree.
+  pending_restart?: boolean;
   interval_ms: number;
   defs_mode: string;
   defs_max_age_ms: number;
