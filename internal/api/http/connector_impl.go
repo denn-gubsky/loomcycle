@@ -826,7 +826,7 @@ func storeRunToConnector(r store.Run) connector.Run {
 // --- 2. Agent management ---
 
 // RegisterAgent persists a dynamic agent in store.dynamic_agents.
-// Privileged tools (Bash/Write/Edit) are stripped unless the operator
+// Privileged tools (Bash/Bashbox/Write/Edit) are stripped unless the operator
 // has set LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1. Collisions with
 // static agents (from yaml / discovery) are rejected.
 func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentRequest) (connector.AgentDescriptor, error) {
@@ -912,7 +912,7 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	}
 
 	createdAt := time.Now().UTC()
-	expiresAt := computeExpiresAt(createdAt, req.TTLSeconds, s.cfg().Env.DynamicAgentDefaultTTLSeconds)
+	expiresAt := computeExpiresAt(createdAt, req.TTLSeconds, dynamicAgentDefaultTTLSeconds)
 
 	row := store.DynamicAgent{
 		Name:        req.Name,
@@ -1783,9 +1783,12 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 
 // --- Helpers ---
 
-// stripPrivilegedTools removes Bash/Write/Edit from the requested
+// stripPrivilegedTools removes Bash/Bashbox/Write/Edit from the requested
 // tools when the operator hasn't opted into privileged-tool
 // dynamic registration. Default-deny matches v0.8.7 / v0.8.8 pattern.
+// Bashbox is here because it is registered on every server: without this a
+// registered agent would get a shell, and whatever host commands the operator
+// allowlisted for its fallback, by naming it.
 func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	if allowPrivileged {
 		return append([]string(nil), requested...)
@@ -1793,7 +1796,7 @@ func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	out := make([]string, 0, len(requested))
 	for _, t := range requested {
 		switch t {
-		case "Bash", "Write", "Edit":
+		case "Bash", "Bashbox", "Write", "Edit":
 			continue
 		default:
 			out = append(out, t)
@@ -1802,10 +1805,15 @@ func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	return out
 }
 
+// dynamicAgentDefaultTTLSeconds is how long an MCP-registered agent lives
+// when its request names no ttl_seconds. A day: long enough for a working
+// session, short enough that a forgotten registration does not accumulate.
+const dynamicAgentDefaultTTLSeconds = 86400
+
 // computeExpiresAt resolves the effective TTL for a register_agent
 // request. TTLSeconds < 0 means "no expiry" (return zero-value
 // time.Time, which the store treats as 'epoch' = no expiry). 0 falls
-// back to the env default. Positive values are used directly.
+// back to the default. Positive values are used directly.
 func computeExpiresAt(now time.Time, ttlSeconds, defaultTTLSeconds int) time.Time {
 	if ttlSeconds < 0 {
 		return time.Time{}

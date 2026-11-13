@@ -749,8 +749,7 @@ const (
 	// child completes (carries the result). Both carry the parent's
 	// tool_use_id so the resume reconcile matches them to the dangling
 	// parallel_spawn tool_use. replayTranscript ignores both (default case),
-	// so they never pollute the reconstructed conversation. Emitted ONLY when
-	// LOOMCYCLE_RESUME_FANOUT is on.
+	// so they never pollute the reconstructed conversation.
 	EventSpawnChildStarted EventType = "spawn_child_started"
 	EventSpawnChildResult  EventType = "spawn_child_result"
 
@@ -759,8 +758,6 @@ const (
 	// started and result rows say what the child was and how it ended; this one
 	// is what keeps a resumed run from being handed the same result again. Like
 	// the rest of the ledger it is stored, never forwarded, and never replayed.
-	// Poll-mode rows (Mode "poll") are recorded whether or not
-	// LOOMCYCLE_RESUME_FANOUT is on.
 	EventSpawnChildRead EventType = "spawn_child_read"
 
 	// EventPromptSnapshot records the prompt a run's FIRST model call received

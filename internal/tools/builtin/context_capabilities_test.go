@@ -20,16 +20,13 @@ func capabilitiesCfg() *config.Config {
 		Env: config.Env{
 			ListenAddr:                  "0.0.0.0:8787",
 			BashEnabled:                 true,
-			BashboxEnabled:              true,
-			SchedulerEnabled:            true,
-			WebhooksEnabled:             true,
 			RetentionEnabled:            true,
-			CodeAgentsEnabled:           true,
 			BraveAPIKey:                 "brave-secret-key-value",
 			MaxRequestBytes:             16 << 20,
 			MaxConsolidationTargets:     32,
 			MaxConsolidationConcurrency: 4,
 		},
+		Providers: map[string]config.ProviderConfig{config.CodeJSProvider: {}},
 		Storage: config.StorageConfig{
 			Backend: "postgres",
 			PgDSN:   "postgres://loom:hunter2@db.internal:5432/loomcycle",
@@ -82,7 +79,7 @@ func TestContextTool_CapabilitiesReflectsSubsystemState(t *testing.T) {
 		}
 	}
 	// Scheduler/webhooks mirror the boot condition, which also needs a store —
-	// with no store they must report false even though the flag is set.
+	// with no store they must report false.
 	for _, key := range []string{"scheduler", "webhooks"} {
 		if available(t, out, key) {
 			t.Errorf("%s reports available with no store — the boot condition requires one, so an agent would be told its schedule fires when it never will", key)
@@ -98,14 +95,17 @@ func TestContextTool_CapabilitiesReflectsSubsystemState(t *testing.T) {
 	// Flip the subsystems OFF and watch every flag follow.
 	offCfg := capabilitiesCfg()
 	offCfg.Env.BashEnabled = false
-	offCfg.Env.BashboxEnabled = false
 	offCfg.Env.RetentionEnabled = false
-	offCfg.Env.CodeAgentsEnabled = false
+	offCfg.Providers = nil
 	offOut := capabilitiesOut(t, &Context{Cfg: offCfg}, ctx)
-	for _, key := range []string{"bash", "bashbox", "retention", "code_js"} {
+	for _, key := range []string{"bash", "retention", "code_js"} {
 		if available(t, offOut, key) {
 			t.Errorf("%s still reports available after the subsystem was disabled — the flag is not reading real state", key)
 		}
+	}
+	// Bashbox has no switch: it is registered on every configured server.
+	if !available(t, offOut, "bashbox") {
+		t.Error("bashbox reports unavailable on a configured server; it is always registered")
 	}
 
 	// Consolidation: configured + enabled, then staged off. "configured but not

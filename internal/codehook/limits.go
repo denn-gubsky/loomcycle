@@ -11,8 +11,11 @@ import (
 // as "x".repeat(1<<31) allocates GiBs in a single uninterruptible step and can
 // take down the whole server. These caps refuse the one-call allocators up
 // front. They are defence in depth, not a memory bound: a body that grows a
-// string in a loop is still limited only by its time budget, which is why a
-// tenant's code hooks need their own opt-in.
+// string in a loop is still limited only by its time budget. Code hooks are
+// always available, with no operator opt-in, so a hook body a tenant operator
+// writes can use the memory of the whole process, and with it take down every
+// tenant the process serves. Only running tenants in separate processes
+// isolates their memory from each other.
 //
 // The bounds sit far above anything a hook needs — its event and its decision
 // are each at most 1 MiB of JSON — and far below what hurts:

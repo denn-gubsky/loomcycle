@@ -28,6 +28,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// MemoryMaxValueBytes is the cap the server puts on one Memory value. 64 KiB
+// is generous for a JSON document an agent would persist and refuses the
+// obvious abuse of stashing a whole transcript in one row.
+const MemoryMaxValueBytes = 64 << 10
+
 // Memory is the v0.8.0 built-in tool that exposes persistent
 // agent-scoped key/value storage to the model.
 //
@@ -60,8 +65,7 @@ type Memory struct {
 	Store store.Store
 
 	// MaxValueBytes caps a single write's value size (the Set / Incr
-	// payload). 0 = no per-write cap. Sourced from
-	// LOOMCYCLE_MEMORY_MAX_VALUE_BYTES.
+	// payload; the server sets MemoryMaxValueBytes). 0 = no per-write cap.
 	MaxValueBytes int
 
 	// DefaultQuotaBytes is the per-(scope, scope_id) byte cap when
@@ -480,7 +484,7 @@ type memoryInput struct {
 	// Args are positional bind parameters for `?` placeholders in Statement.
 	Args []any `json:"args,omitempty"`
 	// TimeoutMs is a per-call statement timeout request. RESERVED in Phase 1:
-	// the operator-configured LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS is
+	// the operator-configured storage.sqlmem_statement_timeout_ms is
 	// authoritative (a per-call override that could only ever tighten, never
 	// widen, is a Phase-2 refinement). Accepted so the wire shape is stable.
 	TimeoutMs int `json:"timeout_ms,omitempty"`

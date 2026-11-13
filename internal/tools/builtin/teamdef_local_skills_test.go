@@ -66,7 +66,7 @@ func TestTeamDefCreate_LocalSkillPassesEverySkillDefCreateGate(t *testing.T) {
 	}{
 		{"tools ceiling", nil, `{"body":"b","tools":["Bash"]}`, "Tools cannot widen"},
 		{"blank body", nil, `{"body":"  "}`, "overlay.body is required"},
-		{"body size cap", nil, `{"body":"` + strings.Repeat("x", 5000) + `"}`, "LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES"},
+		{"body size cap", nil, `{"body":"` + strings.Repeat("x", 5000) + `"}`, "exceeds the skill body cap"},
 		{"skills allowlist: name outside it",
 			func(c context.Context) context.Context {
 				return tools.UpdateRunPolicy(c, func(rp *tools.RunPolicy) {

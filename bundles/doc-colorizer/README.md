@@ -16,10 +16,6 @@ deterministically and idempotently, offloaded from the caller's context.
 
 ## Requirements
 
-- `LOOMCYCLE_CODE_AGENTS_ENABLED=1` — code agents are **opt-in**. A
-  `provider: code-js` agent selected **without** this flag **fails boot by
-  design** (it is not a silent idle def). Layer this bundle only with the flag
-  set, and never add it to a default preset stack.
 - `LOOMCYCLE_SQLMEM_ENABLED=1` and a `user_id` on the run — Documents require
   SQL Memory and the agent operates at `scope=user`.
 
@@ -31,11 +27,11 @@ Selected as an embedded preset (ships in the binary) or layered as a file.
 
 ```bash
 # embedded preset (ships in the binary):
-LOOMCYCLE_CODE_AGENTS_ENABLED=1 LOOMCYCLE_SQLMEM_ENABLED=1 \
+LOOMCYCLE_SQLMEM_ENABLED=1 \
   LOOMCYCLE_PRESETS=base,doc-colorizer ./bin/loomcycle
 
 # or layered as a file over your own config:
-LOOMCYCLE_CODE_AGENTS_ENABLED=1 LOOMCYCLE_SQLMEM_ENABLED=1 \
+LOOMCYCLE_SQLMEM_ENABLED=1 \
   ./bin/loomcycle --config <your-config>.yaml \
                   --config bundles/doc-colorizer/loomcycle.yaml
 ```

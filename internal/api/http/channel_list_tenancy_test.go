@@ -27,7 +27,7 @@ func findChannel(t *testing.T, resp connector.ListChannelsResponse, name string)
 // the headers, which may carry a token or an expanded secret. The operator
 // sees them whole.
 func TestListChannels_ATenantSeesNoYamlWebhookEndpoint(t *testing.T) {
-	srv, _ := channelHooksFixture(t, true)
+	srv, _ := channelHooksFixture(t)
 	cfg := *srv.cfg()
 	cfg.Channels = map[string]config.Channel{
 		"notify": {Scope: "global", Semantic: "queue", MaxMessages: 10,
@@ -65,7 +65,7 @@ func TestListChannels_ATenantSeesNoYamlWebhookEndpoint(t *testing.T) {
 // their own counts, on the list and on an update, and a tenant is never shown
 // another tenant's undeclared channels.
 func TestListChannels_StatsAreEachTenantsOwn(t *testing.T) {
-	srv, st := channelHooksFixture(t, true)
+	srv, st := channelHooksFixture(t)
 	for tenant, n := range map[string]int{"acme": 1, "globex": 3} {
 		if _, err := srv.CreateChannel(tenantCtx(tenant), connector.ChannelCreateRequest{Name: "inbox", Scope: "tenant"}); err != nil {
 			t.Fatalf("%s create: %v", tenant, err)
@@ -106,7 +106,7 @@ func TestListChannels_StatsAreEachTenantsOwn(t *testing.T) {
 // stray undeclared channel is still an orphan, and documents/ingested is no
 // feed. Agents (MCP) and n8n (gRPC) get the listing without the feeds.
 func TestListChannels_DocumentFeedsAreTaggedNotOrphans(t *testing.T) {
-	srv, st := channelHooksFixture(t, true)
+	srv, st := channelHooksFixture(t)
 	feed := "documents/0101a323877fa6c3c57ab25245bac110/chunks"
 	for _, name := range []string{feed, "stray", "documents/ingested"} {
 		if _, _, err := st.ChannelPublish(context.Background(), store.ChannelMessage{

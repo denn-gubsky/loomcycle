@@ -48,7 +48,7 @@ func TestBashboxEscape_NoProcFilesystem(t *testing.T) {
 	const canary = "proc-canary-7f3a"
 	t.Setenv("LOOMCYCLE_ESCAPE_CANARY", canary)
 	bothModes(t, func(t *testing.T, root string, ctx context.Context) {
-		b := &Bashbox{Enabled: true}
+		b := &Bashbox{}
 		for _, cmd := range []string{
 			"ls /proc",
 			"cat /proc/self/environ",
@@ -74,7 +74,7 @@ func TestBashboxEscape_NoProcFilesystem(t *testing.T) {
 func TestBashboxEscape_DevHoldsOnlyVirtualDevices(t *testing.T) {
 	virtual := []string{"full", "null", "random", "urandom", "zero", "stdin", "stdout", "stderr", "fd"}
 	bothModes(t, func(t *testing.T, root string, ctx context.Context) {
-		b := &Bashbox{Enabled: true}
+		b := &Bashbox{}
 		res := runBashbox(t, b, ctx, "ls /dev")
 		if res.IsError {
 			t.Fatalf("ls /dev: %q", res.Text)
@@ -114,7 +114,7 @@ func TestBashboxEscape_DevTcpOpensNoConnection(t *testing.T) {
 	}()
 	port := ln.Addr().(*net.TCPAddr).Port
 	bothModes(t, func(t *testing.T, root string, ctx context.Context) {
-		b := &Bashbox{Enabled: true}
+		b := &Bashbox{}
 		for _, cmd := range []string{
 			"echo hi > /dev/tcp/127.0.0.1/" + strconv.Itoa(port),
 			"cat < /dev/tcp/127.0.0.1/" + strconv.Itoa(port),
@@ -153,7 +153,7 @@ func TestBashboxEscape_RoOverlayMutationsNeverReachHost(t *testing.T) {
 	}
 	before := hostTree(t, root)
 
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	res := runBashbox(t, b, roCtx(root), strings.Join([]string{
 		"echo changed > keep.txt",
 		"echo more >> keep.txt",
@@ -216,7 +216,7 @@ func TestBashboxEscape_SandboxSymlinkNotFollowedByHostFileTools(t *testing.T) {
 	}
 	ctx := bashCtx(root)
 	sib := filepath.Join("..", filepath.Base(secretDir))
-	res := runBashbox(t, &Bashbox{Enabled: true}, ctx,
+	res := runBashbox(t, &Bashbox{}, ctx,
 		"ln -s "+filepath.Join(sib, "secret.txt")+" rel && ln -s "+sib+" dirlink && ln -s "+secret+" abs")
 	if res.IsError {
 		t.Fatalf("creating the links failed: %q", res.Text)
@@ -262,7 +262,7 @@ func TestBashboxEscape_SandboxSymlinkNotFollowedByHostFileTools(t *testing.T) {
 func TestBashboxEscape_RunawayScriptsHitLimits(t *testing.T) {
 	const heapCeiling = 1 << 30
 	root := realDir(t)
-	b := &Bashbox{Enabled: true}
+	b := &Bashbox{}
 	for _, script := range []string{
 		"while true; do :; done",           // CPU: command count
 		"for i in {1..50000}; do :; done",  // CPU: loop iterations

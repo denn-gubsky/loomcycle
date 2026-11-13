@@ -125,10 +125,10 @@ func (s *Server) serveDocumentFeed(w http.ResponseWriter, r *http.Request, p doc
 		writeJSONError(w, http.StatusBadRequest, "bad_request", builtin.ErrDocumentFeedScope.Error())
 		return
 	}
-	release, ok := s.documentFeeds.acquire(documentFeedOwner(r.Context()), s.cfg().Env.DocumentFeedMaxStreams)
+	release, ok := s.documentFeeds.acquire(documentFeedOwner(r.Context()), documentFeedMaxStreams)
 	if !ok {
 		writeJSONError(w, http.StatusTooManyRequests, "too_many_streams",
-			"this principal already holds the most document feed streams allowed (LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS); close one first")
+			fmt.Sprintf("this principal already holds the most document feed streams allowed (%d); close one first", documentFeedMaxStreams))
 		return
 	}
 	defer release()
@@ -181,7 +181,7 @@ func (s *Server) serveDocumentFeed(w http.ResponseWriter, r *http.Request, p doc
 	// operator feed's embedder health — provider, model and failure counts are
 	// the deployment's infrastructure state, not a member's to read.
 	stream.sendRaw("feed", map[string]any{"enabled": s.changeFeedEnabled()})
-	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	stream.startKeepalive(r.Context(), sseKeepaliveInterval)
 	defer stream.end()
 
 	s.tailDocumentFeed(r, stream, view, open, cursor, deadline, p)
@@ -297,6 +297,11 @@ func documentFeedOwner(ctx context.Context) string {
 	}
 	return p.TenantID + "\x00" + p.Subject
 }
+
+// documentFeedMaxStreams is how many feed streams one principal may hold on a
+// replica. Each stream polls the change table, so the cap bounds what one
+// principal can make the database do; four covers a person's open tabs.
+const documentFeedMaxStreams = 4
 
 // documentFeedStreams counts each principal's open reader streams on this
 // replica. The zero value is ready to use.

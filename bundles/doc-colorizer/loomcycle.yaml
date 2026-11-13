@@ -14,10 +14,6 @@
 # webhook / an operator `spawn_run` can drive it directly.
 #
 # REQUIREMENTS
-#   - LOOMCYCLE_CODE_AGENTS_ENABLED=1  — code agents are opt-in. A `provider:
-#     code-js` agent selected WITHOUT this flag FAILS BOOT by design (it is NOT
-#     a silent idle def). So layer this bundle ONLY with the flag set, and never
-#     add it to a default preset stack.
 #   - LOOMCYCLE_SQLMEM_ENABLED=1 + a user_id on the run — Documents require SQL
 #     Memory, and the tools operate at scope=user.
 #

@@ -40,7 +40,7 @@ func newFixture(t *testing.T) *fixture {
 	t.Cleanup(func() { _ = st.Close() })
 	f := &fixture{t: t, st: st, defs: map[string]Def{}, hdefs: map[string]hooks.Def{}}
 	bus := channels.NewBus()
-	f.writer = &channels.StorePublisher{Store: st, Bus: bus, HooksEnabled: true,
+	f.writer = &channels.StorePublisher{Store: st, Bus: bus,
 		Defs: func(_ context.Context, tenant, ch string) (channels.WriteDef, error) {
 			// The channel is operator yaml ("") unless the tenant declared it.
 			for _, owner := range []string{tenant, ""} {

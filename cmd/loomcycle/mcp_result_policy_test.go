@@ -12,7 +12,6 @@ import (
 // the shared base, the shared registration otherwise.
 func TestMCPResultPolicy_FollowsTheServerThePoolDials(t *testing.T) {
 	cfg := &config.Config{
-		Env: config.Env{FileBase64MinBytes: 8192},
 		MCPServers: map[string]config.MCPServer{
 			"stdio-capture": {Transport: "stdio", Command: "x", BinaryResults: "capture"},
 			"http-plain":    {Transport: "http", URL: "https://a.example/mcp"},
@@ -45,8 +44,8 @@ func TestMCPResultPolicy_FollowsTheServerThePoolDials(t *testing.T) {
 		if got.CaptureBase64 != c.want {
 			t.Errorf("(%q, %q): capture = %v, want %v", c.tenant, c.name, got.CaptureBase64, c.want)
 		}
-		if got.Base64MinBytes != 8192 {
-			t.Errorf("(%q, %q): min = %d, want the configured 8192", c.tenant, c.name, got.Base64MinBytes)
+		if got.Base64MinBytes != mcpBase64MinBytes {
+			t.Errorf("(%q, %q): min = %d, want %d", c.tenant, c.name, got.Base64MinBytes, mcpBase64MinBytes)
 		}
 	}
 }

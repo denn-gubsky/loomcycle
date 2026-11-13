@@ -13,14 +13,6 @@ import (
 // applyEnvSweepers reads the heartbeat, configured-run and usage sweeper
 // knobs.
 func applyEnvSweepers(cfg *Config) {
-	// Heartbeat sweeper + session-lock GC env. All optional; defaults
-	// are sensible for a single-replica deployment.
-	cfg.Env.HeartbeatSweeperEnabled = os.Getenv("LOOMCYCLE_HEARTBEAT_SWEEPER") != "0"
-	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.HeartbeatSweepInterval = time.Duration(n) * time.Millisecond
-		}
-	}
 	if v := os.Getenv("LOOMCYCLE_HEARTBEAT_STALE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.HeartbeatStaleAfter = time.Duration(n) * time.Millisecond
@@ -38,32 +30,16 @@ func applyEnvSweepers(cfg *Config) {
 			cfg.Env.MaxConfiguredRunsPerUser = n
 		}
 	}
-	// Usage rollup-and-prune sweeper (RFC AV Phase 2b). Optional; the
-	// New() constructor applies the 1h/720h fallbacks when these stay 0.
-	cfg.Env.UsageSweeperEnabled = os.Getenv("LOOMCYCLE_USAGE_SWEEPER") != "0"
-	if v := os.Getenv("LOOMCYCLE_USAGE_SWEEP_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.UsageSweepInterval = time.Duration(n) * time.Millisecond
-		}
-	}
+	// Usage rollup-and-prune sweeper (RFC AV Phase 2b). The New()
+	// constructor applies the 720h fallback when this stays 0.
 	if v := os.Getenv("LOOMCYCLE_USAGE_DETAIL_RETENTION_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.UsageDetailRetention = time.Duration(n) * time.Millisecond
 		}
 	}
-	// RFC AV Phase 2b2 old-run archiver (opt-in; default OFF).
-	if v := os.Getenv("LOOMCYCLE_USAGE_RUN_RETENTION_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.UsageRunRetention = time.Duration(n) * time.Millisecond
-		}
-	}
-	cfg.Env.UsageRunRetentionMode = os.Getenv("LOOMCYCLE_USAGE_RUN_RETENTION_MODE")
-	cfg.Env.UsageExportDir = os.Getenv("LOOMCYCLE_USAGE_EXPORT_DIR")
 }
 
-// applyEnvRetention reads the retention sweeper and audit-store knobs. Its
-// back-compat step reads the usage archiver values applyEnvSweepers set, so
-// it runs after it.
+// applyEnvRetention reads the retention sweeper and audit-store knobs.
 func applyEnvRetention(cfg *Config) error {
 	// RFC BM data-retention sweeper (opt-in; default OFF). The New() constructor
 	// applies the 1h interval fallback when RetentionInterval stays 0.
@@ -117,37 +93,6 @@ func applyEnvRetention(cfg *Config) error {
 			cfg.Env.RetentionChatsMaxAge = time.Duration(n) * time.Millisecond
 		}
 	}
-	// Internal-chat age. Accepts 0 — unlike the knobs above, 0 is a MEANINGFUL
-	// value here ("inherit the global chat age"), not an unset one, so the guard
-	// is n >= 0 and an explicit 0 overrides the 3-day default.
-	if v := os.Getenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Env.RetentionChatsInternalMaxAge = time.Duration(n) * time.Millisecond
-		}
-	}
-	// Back-compat: the RFC AV Phase 2b2 aged-session archiver
-	// (LOOMCYCLE_USAGE_RUN_RETENTION_*) is subsumed by the RFC BM chats sweeper.
-	// When the operator hasn't set an explicit chats mode but HAS configured the
-	// legacy archiver, inherit its knobs so their config keeps pruning aged chats
-	// — now via the retention sweeper (which main.go then makes exclusive so the
-	// two never double-run). A positive RunRetention is the intent-to-prune
-	// signal; an empty legacy mode maps to "prune" (the archiver's only enabled
-	// non-export mode) so the inherited config actually takes effect.
-	// Back-compat alias: an operator's legacy usage aged-session archiver config
-	// (LOOMCYCLE_USAGE_RUN_RETENTION_*) drives the new retention chats family when
-	// its own knobs are unset. Inherit ONLY when the legacy archiver was GENUINELY
-	// enabled — RunRetention>0 AND a delete-bearing mode (prune|export+prune) —
-	// exactly matching the legacy runArchivalEnabled() gate. A legacy config with
-	// no/off mode was dormant (never deleted), so it must stay dormant here: never
-	// activate deletion the legacy config didn't do.
-	if cfg.Env.RetentionChatsMode == "" && cfg.Env.UsageRunRetention > 0 &&
-		(cfg.Env.UsageRunRetentionMode == "prune" || cfg.Env.UsageRunRetentionMode == "export+prune") {
-		cfg.Env.RetentionChatsMode = cfg.Env.UsageRunRetentionMode
-		cfg.Env.RetentionChatsMaxAge = cfg.Env.UsageRunRetention
-		if cfg.Env.RetentionExportDir == "" {
-			cfg.Env.RetentionExportDir = cfg.Env.UsageExportDir
-		}
-	}
 	// RFC BM Phase 3 retired-agent memory reclamation (opt-in; default OFF).
 	if v := os.Getenv("LOOMCYCLE_RETENTION_MEM_MODE"); v != "" {
 		cfg.Env.RetentionMemMode = v
@@ -190,7 +135,7 @@ func applyEnvRetention(cfg *Config) error {
 	return nil
 }
 
-// applyEnvClusterSweeps reads the replica and session-lock sweep cadences.
+// applyEnvClusterSweeps reads the replica sweep cadences.
 func applyEnvClusterSweeps(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -200,16 +145,6 @@ func applyEnvClusterSweeps(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_REPLICAS_STALE_AFTER_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.ReplicasStaleAfter = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.SessionLockGCInterval = time.Duration(n) * time.Millisecond
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.SessionLockMaxIdle = time.Duration(n) * time.Millisecond
 		}
 	}
 }

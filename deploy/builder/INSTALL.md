@@ -139,9 +139,6 @@ Add this service alongside `loomcycle` / `loomcycle-migrate`:
       # resource ceilings (per session; agents can ask for less, never more)
       SANDBOX_MAX_MEM_MB: "2048"
       SANDBOX_MAX_CPUS: "2"
-      SANDBOX_MAX_TMPFS_MB: "2048"
-      SANDBOX_SESSION_IDLE_TTL: "15m"
-      SANDBOX_SESSION_MAX_TTL: "1h"
       # SANDBOX_ALLOW_EGRESS: "1"        # allow network:"egress" sessions (default: no network)
       # SANDBOX_RUNTIME: runsc           # only if gVisor is installed on the HOST Docker
     volumes:
@@ -188,11 +185,9 @@ On the **loomcycle** service, two changes:
 
 1. Add the **`sandbox`** bundle (the `mcp_servers.sandbox` wiring + the
    `dev/sandbox-usage` delegation skill) and the **`dev-exec`** bundle (the
-   deterministic code-js `dev/exec` executor agent — needs
-   `LOOMCYCLE_CODE_AGENTS_ENABLED=1`):
+   deterministic code-js `dev/exec` executor agent):
    ```yaml
    LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples,sandbox,dev-exec"
-   LOOMCYCLE_CODE_AGENTS_ENABLED: "1"
    ```
 2. Ensure `SANDBOX_AUTH_TOKEN` is set (Phase 2 added it to
    `loomcycle.secrets.env`, which the loomcycle service already reads via `env_file`).

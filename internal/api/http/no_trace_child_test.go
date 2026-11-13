@@ -118,7 +118,6 @@ func TestNoTrace_ANoTraceChildsAnswerIsStoredNowhereInItsOrdinaryParent(t *testi
 		for _, noTrace := range []bool{true, false} {
 			prov := &childRouter{parent: script}
 			cfg := noTraceConfig()
-			cfg.Env.ResumeFanout = true // the spawn ledger, whose result row is one of the copies
 			srv, dbPath := makeServer(t, prov, cfg)
 			if noTrace {
 				markNoTrace(srv, "child")

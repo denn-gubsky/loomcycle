@@ -466,8 +466,7 @@ the message — and so wakes whatever in the walk reads that channel:
 
 - **Where.** `POST /v1/_teams/{tenant}/{team}/webhooks/{name}` for a team in
   a tenant, `POST /v1/_teams/{team}/webhooks/{name}` for one in the shared
-  tenant. Served when inbound webhooks are enabled
-  (`LOOMCYCLE_WEBHOOKS_ENABLED=1`); not behind the API bearer — the
+  tenant. Not behind the API bearer — the
   webhook's own secret authenticates each delivery.
 - **Alive only while a walk runs.** The endpoint opens when a walk of the
   team starts and closes when it ends, however it ends. With no walk

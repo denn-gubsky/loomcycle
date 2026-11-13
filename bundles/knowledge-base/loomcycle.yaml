@@ -113,9 +113,7 @@
 # prompt-driven pass dropped them one by one. The one model call (L4) answers one
 # bounded question and its reply is DATA the driver validates.
 #
-# ⚠️ REQUIREMENTS — this bundle FAILS BOOT if the first one is missing:
-#   - LOOMCYCLE_CODE_AGENTS_ENABLED=1. A `provider: code-js` agent selected
-#     without the flag is a fatal boot error by design.
+# REQUIREMENTS:
 #   - SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1) — Documents live there.
 #   - A confirmed tenant ontology with a Relations section, for L2, L3 and the
 #     kind check of L6. Without one those layers skip and say why.

@@ -10,29 +10,9 @@ import (
 	"time"
 )
 
-// applyEnvCodeAgents reads the code-js provider, code and channel hooks,
-// interactive idle and batch join knobs.
+// applyEnvCodeAgents reads the code-js provider, interactive idle and batch
+// join knobs.
 func applyEnvCodeAgents(cfg *Config) error {
-	// v0.8.x process-resource metrics sampler. Default OFF; operator
-	// RFC J code-js provider. Default OFF; the provider is registered in
-	// main.go only when enabled. Root defaults to ./agent_code (mirrors
-	// the skills bundling convention). Timeout floored at 1s.
-	cfg.Env.CodeAgentsEnabled = os.Getenv("LOOMCYCLE_CODE_AGENTS_ENABLED") == "1"
-	cfg.Env.CodeHooksEnabled = os.Getenv("LOOMCYCLE_CODE_HOOKS_ENABLED") == "1"
-	cfg.Env.ChannelHooksEnabled = os.Getenv("LOOMCYCLE_CHANNEL_HOOKS") == "1"
-	cfg.Env.ChannelHooksConcurrency, cfg.Env.ChannelHooksPerChannel = 16, 4
-	for name, dst := range map[string]*int{
-		"LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY": &cfg.Env.ChannelHooksConcurrency,
-		"LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL": &cfg.Env.ChannelHooksPerChannel,
-	} {
-		if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
-			*dst = n
-		}
-	}
-	cfg.Env.ChannelHooksMaxWait = 15 * time.Minute
-	if d, err := time.ParseDuration(os.Getenv("LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT")); err == nil && d > 0 {
-		cfg.Env.ChannelHooksMaxWait = d
-	}
 	// Refused rather than defaulted when it does not parse: "60" meant as
 	// minutes, read as the hour default, would end chats nobody expected to.
 	cfg.Env.InteractiveIdleTimeout = time.Hour
@@ -54,6 +34,8 @@ func applyEnvCodeAgents(cfg *Config) error {
 		}
 		cfg.Env.BatchJoinTimeout = d
 	}
+	// Code-js provider: the root defaults to ./agent_code (mirrors the skills
+	// bundling convention); the run timeout is floored at 1s.
 	cfg.Env.CodeAgentsRoot = "./agent_code"
 	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {
 		cfg.Env.CodeAgentsRoot = v
@@ -80,7 +62,7 @@ func applyEnvCodeAgents(cfg *Config) error {
 
 // applyEnvMetrics reads the process-resource metrics sampler knobs.
 func applyEnvMetrics(cfg *Config) {
-	// opts in via LOOMCYCLE_METRICS_ENABLED=1.
+	// Default OFF; the operator opts in via LOOMCYCLE_METRICS_ENABLED=1.
 	cfg.Env.MetricsEnabled = os.Getenv("LOOMCYCLE_METRICS_ENABLED") == "1"
 	cfg.Env.MetricsSampleInterval = 5 * time.Second
 	if v := os.Getenv("LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS"); v != "" {
@@ -107,24 +89,10 @@ func applyEnvMetrics(cfg *Config) {
 // applyEnvScheduler reads the scheduler, team subscription and
 // consolidation fan-out knobs.
 func applyEnvScheduler(cfg *Config) {
-	// v1.x RFC E scheduler runtime. Default OFF; operator opts in via
-	// LOOMCYCLE_SCHEDULER_ENABLED=1. When false the sweeper goroutine
-	// is not started — ScheduleDef tool still works for authoring +
-	// listing, but nothing fires.
-	cfg.Env.SchedulerEnabled = os.Getenv("LOOMCYCLE_SCHEDULER_ENABLED") == "1"
 	cfg.Env.SchedulerTickSeconds = 30
 	if v := os.Getenv("LOOMCYCLE_SCHEDULER_TICK_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.Env.SchedulerTickSeconds = n
-		}
-	}
-	// RFC CY L5: the armed-subscription sweep. Default 15s — the worst-case
-	// latency between a message landing on a subscribed source and its wave
-	// starting. Only read when TeamSubscriptions is on.
-	cfg.Env.TeamSubscriptionsTickSeconds = 15
-	if v := os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS_TICK_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.TeamSubscriptionsTickSeconds = n
 		}
 	}
 	// RFC BL P2 consolidation fan-out caps. Left at 0 the scheduler applies its
@@ -152,11 +120,6 @@ func applyEnvScheduler(cfg *Config) {
 
 // applyEnvWebhooks reads the inbound-webhook receiver knobs.
 func applyEnvWebhooks(cfg *Config) {
-	// v1.x RFC H inbound-webhook receiver. Default OFF; operator opts in
-	// via LOOMCYCLE_WEBHOOKS_ENABLED=1. Mirrors SchedulerEnabled — when
-	// false the receiver route is not mounted; the WebhookDef tool still
-	// works for authoring + listing.
-	cfg.Env.WebhooksEnabled = os.Getenv("LOOMCYCLE_WEBHOOKS_ENABLED") == "1"
 	if v := os.Getenv("LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST"); v != "" {
 		for _, name := range strings.Split(v, ",") {
 			name = strings.TrimSpace(name)

@@ -42,7 +42,7 @@ LB: round-robin or least-connections, any HTTP load balancer. **No sticky sessio
 | **Singleton sweepers** | `pg_try_advisory_lock` wrapping heartbeat/memory/channels/interrupts/metrics/dynamic_agents | **v0.12.4** |
 | **Session-continuation lock** | `pg_try_advisory_lock(hash(session_id))` on a pinned conn | **v0.12.5** |
 | **Cross-replica steering + turn cancel** | `loomcycle.steer` / `loomcycle.turncancel` LISTEN/NOTIFY, routed to the replica that owns the run; same ack timeout as cancel | **v0.26.1**; every steering surface since **v1.100.0** |
-| **Token-limit ceilings** | each replica re-reads the `token_limits` rows every `LOOMCYCLE_LIMITS_RELOAD_INTERVAL` (default `1m`, `0` off), so a budget written on one replica (`PUT /v1/_limits`, a gate's new-user budget) is enforced on all; usage counters stay per replica | **v1.142.0** |
+| **Token-limit ceilings** | each replica re-reads the `token_limits` rows every minute, so a budget written on one replica (`PUT /v1/_limits`, a gate's new-user budget) is enforced on all; usage counters stay per replica | **v1.142.0** |
 | **Audit trail** | `audit_events`: one hash chain per tenant, appended by every replica through the store under a lock on the chain's head, so replicas never fork a chain (`docs/CONFIGURATION.md`, Audit trail) | **v1.142.0** |
 
 ## What stays per-replica
@@ -58,7 +58,7 @@ By design, these are not cluster-wide:
   - **dynamic root on storage every replica mounts at the same path:** the volume is used as if it were local;
   - **a dynamic root of its own per replica:** the tool call fails, saying the volume was created on another server and its files are not on this one. The runtime does not copy or clone again on its own.
 
-  `set_mode` to read-only works from any replica either way, since it changes the record every replica reads before it writes. The path is always derived from the replica's own dynamic root and the name, never taken from the record. `LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT` (clones at once) is per replica, as is the memory a clone uses.
+  `set_mode` to read-only works from any replica either way, since it changes the record every replica reads before it writes. The path is always derived from the replica's own dynamic root and the name, never taken from the record. The one-clone-at-a-time limit is per replica, as is the memory a clone uses.
 
 ## Deployment checklist
 
@@ -72,7 +72,6 @@ By design, these are not cluster-wide:
 
 ### Recommended
 
-- [ ] Leave `LOOMCYCLE_HEARTBEAT_SWEEPER` on (the default; `0` disables it) — without it the replicas TTL sweeper still works but stale runs from crashed replicas live longer.
 - [ ] OTEL exporter wired (`OTEL_EXPORTER_OTLP_ENDPOINT`) so the cross-replica trace tree is visible; each replica's spans carry `service.instance.id` = its `LOOMCYCLE_REPLICA_ID`.
 - [ ] `LOOMCYCLE_METRICS_ENABLED=1` for `/v1/_metrics/*` observability.
 
@@ -174,13 +173,13 @@ There is no split-brain scenario: Postgres is the single source of truth. If the
 
 5. **Global concurrency cap is per-replica.** `concurrency.max_concurrent_runs: 10` × 2 replicas = 20 cluster-wide. Per-user fairness IS cluster-wide.
 
-6. **Cancel ack timeout is 5 seconds.** A cancel request that doesn't get an ack within 5s returns `{cancelled: false, reason: "owner_replica_unreachable"}` and suggests checking `_health`. Tunable via `LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS`.
+6. **Cancel ack timeout is 5 seconds.** A cancel request that doesn't get an ack within 5s returns `{cancelled: false, reason: "owner_replica_unreachable"}` and suggests checking `_health`.
 
-7. **Pause cache TTL is 1 second.** Worst case 1s lag between a pause request and a remote replica refusing new runs. Tunable via `LOOMCYCLE_PAUSE_CACHE_TTL_MS`.
+7. **Pause cache TTL is 1 second.** Worst case 1s lag between a pause request and a remote replica refusing new runs.
 
 8. **Steering routes to the replica that owns the run.** `POST /v1/runs/{id}/input`, retune and the run-config reads can land on any replica; one that does not own the run forwards the call to the owner over the backplane and waits for its ack, with the same timeout as cancel. If the owner does not answer in time, the message is reported as not delivered and can be sent again. (The cluster-wide hook registry that used to be listed here was removed in v1.97.0; a run fires the hooks on its agent definition, on whichever replica runs it.)
 
-9. **The scheduler may run on every replica.** With `LOOMCYCLE_SCHEDULER_ENABLED=1` on several replicas, each lists the same due schedules, and each slot is fired by the one replica that claims it (a compare-and-set on `next_run_at`). The run also carries the claim's idempotency key, so a slot never produces two runs. `schedule_run_state.claimed_by` records which replica took the last slot.
+9. **The scheduler runs on every replica.** Each lists the same due schedules, and each slot is fired by the one replica that claims it (a compare-and-set on `next_run_at`). The run also carries the claim's idempotency key, so a slot never produces two runs. `schedule_run_state.claimed_by` records which replica took the last slot.
    - **Finishing:** a scheduled run is finished — outcome recorded, `on_complete` dispatched once — by the replica that ran it. If that replica dies, any replica's reconcile sweep finishes it once the stale-run sweeper has failed the run, or once it completed (one replica per tick under an advisory lock).
    - **Across replicas:** `concurrency_policy` and `catch_up_max` read what is running from the shared `schedule_active_runs` table, so they hold cluster-wide.
    - **`replace` across replicas:** `concurrency_policy: replace` stops the running run or team walk on whichever replica runs it — the cancel is routed to the owner. If the owner cannot be reached within the cancel ack timeout, the slot is skipped as `forbid` would skip it; nothing starts over a run it could not stop.

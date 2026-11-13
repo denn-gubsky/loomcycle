@@ -34,24 +34,15 @@ func (b *boot) startMCPSurfaces() {
 		}
 	}
 	if mcpMode {
-		// Optional operator override for the stdio dispatch concurrency
-		// cap (RFC O). 0/unset → the package default (16).
-		mcpMaxConcurrentCalls := 0
-		if v := os.Getenv("LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS"); v != "" {
-			if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
-				mcpMaxConcurrentCalls = n
-			}
-		}
 		mcpSrv := lcmcp.New(lcmcp.Config{
-			Connector:          srv, // *http.Server satisfies connector.Connector
-			Runner:             srv, // *http.Server satisfies runner.Runner (streaming)
-			Store:              storeIface,
-			Logger:             slog.Default(), // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
-			ServerName:         "loomcycle",
-			ServerVersion:      buildVersion,
-			MaxConcurrentCalls: mcpMaxConcurrentCalls,
-			SpawnRunTimeoutMS:  mcpSpawnRunTimeoutMS,
-			TenantTelemetry:    b.tenantTelemetry != nil,
+			Connector:         srv, // *http.Server satisfies connector.Connector
+			Runner:            srv, // *http.Server satisfies runner.Runner (streaming)
+			Store:             storeIface,
+			Logger:            slog.Default(), // log goes to stderr; never stdout (stdout is the JSON-RPC wire)
+			ServerName:        "loomcycle",
+			ServerVersion:     buildVersion,
+			SpawnRunTimeoutMS: mcpSpawnRunTimeoutMS,
+			TenantTelemetry:   b.tenantTelemetry != nil,
 		})
 		// Run the MCP stdio loop in a goroutine. When stdin closes
 		// (Claude Code disconnects), Serve returns; we log and let
@@ -132,14 +123,11 @@ func (b *boot) startResolveProbe() {
 	// Periodic probe loop: re-runs the resolver's reachability +
 	// model-list probe on the configured cadence so a provider
 	// recovering from an outage shows up in the matrix without a
-	// loomcycle restart. Default 15 minutes; clamped to [60s, 1h] in
-	// the config loader. The first probe already ran inside
-	// buildResolver above (synchronously, before traffic begins) —
-	// this goroutine handles all subsequent rounds.
-	probeInterval := cfg.Env.ResolveProbeInterval
-	if probeInterval <= 0 {
-		probeInterval = 15 * time.Minute
-	}
+	// loomcycle restart. Every 15 minutes: a force-probe (snapshot
+	// restore, the admin endpoint) covers the urgent case. The first
+	// probe already ran inside buildResolver above (synchronously, before
+	// traffic begins) — this goroutine handles all subsequent rounds.
+	const probeInterval = 15 * time.Minute
 	// v0.8.17: register the force-probe callback. The snapshot restore
 	// handler (POST /v1/_snapshots/{id}/restore) calls
 	// resolver.ForceProbe(ctx) to refresh the matrix before the
@@ -156,7 +144,6 @@ func (b *boot) startResolveProbe() {
 // wireConfigReload registers the runtime config-reload sections and the
 // loader that re-assembles the config stack for POST /v1/_config/reload.
 func (b *boot) wireConfigReload() {
-	cfg := b.cfg
 	pr := b.pr
 	storeIface := b.storeIface
 	srv := b.srv
@@ -185,7 +172,7 @@ func (b *boot) wireConfigReload() {
 			},
 		},
 	}
-	if cfg.Env.SchedulerEnabled {
+	if storeIface != nil {
 		// Static scheduled_runs: re-materialize into the substrate (idempotent
 		// add/change; a yaml-REMOVED schedule keeps its row by design — see
 		// BootstrapStaticSchedules). The sweeper polls the store, so re-bootstrap

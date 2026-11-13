@@ -21,7 +21,7 @@ import (
 // it, resolving each channel's definition from s's runtime rows (the part of
 // Server.ChannelWriteDef a store alone can answer).
 func channelWriter(s store.Store) *channels.StorePublisher {
-	return &channels.StorePublisher{Store: s, HooksEnabled: true,
+	return &channels.StorePublisher{Store: s,
 		Defs: func(ctx context.Context, tenant, ch string) (channels.WriteDef, error) {
 			row, err := s.ChannelGet(ctx, tenant, ch)
 			var nf *store.ErrNotFound

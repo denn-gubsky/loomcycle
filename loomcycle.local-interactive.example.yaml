@@ -28,8 +28,8 @@
 #   LOOMCYCLE_BASH_ENABLED=1   # if the agent runs shell (NOT a true sandbox)
 #
 # Filesystem access (RFC AH Phase 3): declare a `volumes:` block — the legacy
-# LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD jail is retired (setting one now
-# fails startup). To restore the old single shared jail, give the agent a
+# LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD jail is retired (setting one stops
+# the boot). To restore the old single shared jail, give the agent a
 # default volume:
 #   volumes:
 #     default: { path: <dir>, mode: rw, default: true }

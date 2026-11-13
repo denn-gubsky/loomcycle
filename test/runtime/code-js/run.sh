@@ -61,7 +61,6 @@ EOF
 echo "[1/6] build + boot (code-js enabled, code root = $SCRIPT_DIR/agent_code)"
 go build -o bin/loomcycle ./cmd/loomcycle
 LOOMCYCLE_MOCK_ENABLED=1 \
-LOOMCYCLE_CODE_AGENTS_ENABLED=1 \
 LOOMCYCLE_CODE_AGENTS_ROOT="$SCRIPT_DIR/agent_code" \
 LOOMCYCLE_DATA_DIR="$TEST_DIR/data" \
 LOOMCYCLE_LISTEN_ADDR="127.0.0.1:$PORT" \

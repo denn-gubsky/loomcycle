@@ -9,8 +9,6 @@
 #     /metrics
 #   - after a kill -9 with messages still waiting, a restart decides each one
 #     exactly once
-#   - with channel hooks off, the hooked channel's hooks are skipped, and a
-#     message left waiting for them (by a kill -9 mid-ask) is delivered
 #
 # Open mode (no LOOMCYCLE_AUTH_TOKEN), deliberately: the yaml channel's hooks
 # resolve in the operator's own tenant (""), which is where an open-mode
@@ -34,12 +32,9 @@ BASE="http://127.0.0.1:$PORT"
 fail() { echo "FAIL ✗ — $1"; [[ -f "$TEST_DIR/boot.log" ]] && tail -20 "$TEST_DIR/boot.log"; exit 1; }
 api() { curl -sS -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" "$@"; }
 
-boot() { # $1 = LOOMCYCLE_CHANNEL_HOOKS value
+boot() {
   LOOMCYCLE_MOCK_ENABLED=1 \
-  LOOMCYCLE_CODE_AGENTS_ENABLED=1 \
   LOOMCYCLE_CODE_AGENTS_ROOT="$SCRIPT_DIR/agent_code" \
-  LOOMCYCLE_CODE_HOOKS_ENABLED=1 \
-  LOOMCYCLE_CHANNEL_HOOKS="$1" \
   LOOMCYCLE_DATA_DIR="$TEST_DIR/data" \
   LOOMCYCLE_LISTEN_ADDR="127.0.0.1:$PORT" \
     ./bin/loomcycle --config "$SCRIPT_DIR/loomcycle.yaml" >> "$TEST_DIR/boot.log" 2>&1 &
@@ -62,12 +57,12 @@ wait_for_count() { # $1 = expected visible count, $2 = tenths of a second to wai
   fail "inbox has $(peek_inbox | count) visible, want $1"
 }
 
-echo "[1/7] build + boot (channel hooks on)"
+echo "[1/6] build + boot"
 go build -o bin/loomcycle ./cmd/loomcycle
-boot 1
+boot
 grep -q "channel hooks: worker started" "$TEST_DIR/boot.log" || fail "the channel-hook worker did not start"
 
-echo "[2/7] create the screen HookDef (code-js: drop spam, redact secrets)"
+echo "[2/6] create the screen HookDef (code-js: drop spam, redact secrets)"
 python3 - > "$TEST_DIR/hookdef.req" <<'PY'
 import json
 code = """function hook(ev) {
@@ -84,7 +79,7 @@ api -X POST "$BASE/v1/_hookdef" -d '{"op":"create","name":"gate","overlay":{"eve
 grep -q '"def_id"' "$TEST_DIR/gate.json" || fail "gate HookDef create: $(cat "$TEST_DIR/gate.json")"
 grep -q '"def_id"' "$TEST_DIR/hookdef.json" || fail "HookDef create: $(cat "$TEST_DIR/hookdef.json")"
 
-echo "[3/7] publish over HTTP: plain, secret, spam"
+echo "[3/6] publish over HTTP: plain, secret, spam"
 for body in '{"text":"hello"}' '{"text":"my secret"}' '{"text":"buy spam"}'; do
   out=$(publish "$body")
   echo "$out" | grep -q '"awaiting_hooks":true' || fail "publish did not report awaiting_hooks: $out"
@@ -97,7 +92,7 @@ echo "$PEEK" | grep -q 'my secret' && fail "the unredacted body was delivered: $
 echo "$PEEK" | grep -q 'spam' && fail "the spam was delivered: $PEEK"
 echo "      delivered: hello + [redacted]; spam dropped"
 
-echo "[4/7] publish from an agent's Channel tool"
+echo "[4/6] publish from an agent's Channel tool"
 curl -fsS -N -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept: text/event-stream" \
   -d '{"agent":"screened_writer","user_id":"u1","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}' \
   "$BASE/v1/runs" > "$TEST_DIR/run.sse"
@@ -105,7 +100,7 @@ grep -q 'awaiting_hooks' "$TEST_DIR/run.sse" || fail "the agent's publish did no
 wait_for_count 3
 peek_inbox | grep -q 'from the agent, with a \[redacted\]' || fail "the agent's message was not decided by the hook"
 
-echo "[5/7] decisions recorded (read over MCP at tenant scope) and counted"
+echo "[5/6] decisions recorded (read over MCP at tenant scope) and counted"
 MCPH=(-H "Content-Type: application/json" -H "Accept: application/json, text/event-stream")
 MCPSID=$(curl -sS -D - -o /dev/null "${MCPH[@]}" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"suite","version":"1"}}}' \
@@ -156,12 +151,12 @@ api -X POST "$BASE/v1/runs/$RUN/interrupts/$ASK/resolve" -d '{"kind":"question",
 for i in $(seq 1 100); do [[ "$(gated_count)" == "1" ]] && break; sleep 0.1; done
 [[ "$(gated_count)" == "1" ]] || fail "answering release did not deliver the held message"
 
-echo "[6/7] kill -9 with messages waiting; a restart decides each exactly once"
+echo "[6/6] kill -9 with messages waiting; a restart decides each exactly once"
 api -X POST "$BASE/v1/_channels/gated/publish" -d '{"payload":{"text":"second"}}' > /dev/null
 read -r OLD_ASK OLD_RUN <<< "$(pending_ask "$ASK")"
 for i in $(seq 1 20); do publish "{\"text\":\"batch $i\"}" > /dev/null; done
 kill -9 "$PID"; wait "$PID" 2>/dev/null || true; PID=""
-boot 1
+boot
 # A message the killed worker was deciding keeps its lease (60s) before the
 # restarted one may claim it — hence the long wait.
 wait_for_count 23 900
@@ -176,22 +171,4 @@ api -X POST "$BASE/v1/runs/$NEW_RUN/interrupts/$NEW_ASK/resolve" -d '{"kind":"qu
 for i in $(seq 1 100); do [[ "$(gated_count)" == "2" ]] && break; sleep 0.1; done
 [[ "$(gated_count)" == "2" ]] || fail "the re-asked hold did not deliver"
 
-echo "[7/7] with channel hooks off, the channel's hooks are skipped — and what waited for them is delivered"
-# A message still waiting for a person when the replica dies, then restarted
-# with hooks off: nothing but the hooks-off drain would ever deliver it.
-api -X POST "$BASE/v1/_channels/gated/publish" -d '{"payload":{"text":"third"}}' > /dev/null
-read -r OFF_ASK OFF_RUN <<< "$(pending_ask "$NEW_ASK")"
-kill -9 "$PID"; wait "$PID" 2>/dev/null || true; PID=""
-boot 0
-grep -q 'declares hooks, but channel hooks are off' "$TEST_DIR/boot.log" || fail "no boot warning for the hooked channel"
-publish '{"text":"unhooked"}' | grep -q '"awaiting_hooks":true' && fail "a publish waited for hooks that are off"
-wait_for_count 24 20
-peek_inbox | grep -q '"text":"unhooked"' || fail "the unhooked message was not delivered as written"
-# The killed worker's lease (60s) runs out first — hence the long wait.
-for i in $(seq 1 900); do [[ "$(gated_count)" == "3" ]] && break; sleep 0.1; done
-[[ "$(gated_count)" == "3" ]] || fail "the message left awaiting hooks was not delivered with hooks off ($(gated_count) of 3)"
-api "$BASE/v1/_channels/gated/peek?max_messages=10" | grep -q '"text":"third"' || fail "the delivered message is not the one that waited"
-api "$BASE/v1/runs/$OFF_RUN/interrupts?status=all" | grep -q '"resolved_by":"hook_restart"' || fail "the ask it left pending was not cancelled"
-grep -q 'left awaiting hooks, unhooked' "$TEST_DIR/boot.log" || fail "no log of the hooks-off delivery"
-
-echo "PASS ✓ — channel hooks decided every surface's messages, recorded their decisions, survived a kill -9, and are skipped when off"
+echo "PASS ✓ — channel hooks decided every surface's messages, recorded their decisions, and survived a kill -9"

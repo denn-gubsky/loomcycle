@@ -158,10 +158,8 @@ control.
   secret; it never narrows the token.
 - `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` caps a per-user token's
   lifetime; with it set, a mint that asks for none gets the cap.
-- An expired token's row is deleted
-  `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` after it expired (default 7
-  days; `0` keeps them). A token minted without a lifetime is never
-  deleted this way.
+- An expired token's row is deleted 7 days after it expired. A token
+  minted without a lifetime is never deleted this way.
 
 ## Token authority: frozen or inherit
 

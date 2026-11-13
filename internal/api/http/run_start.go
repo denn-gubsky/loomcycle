@@ -90,7 +90,7 @@ func (rs *runStartStream) run(in runner.RunInput, refuse func(error)) {
 			// Keeps the connection warm through long quiet stretches (a parent
 			// waiting on its sub-agents, a run waiting for its slot). Ends with
 			// the request, or with the deferred end above.
-			st.startKeepalive(rs.r.Context(), rs.s.cfg().Env.SSEKeepaliveInterval)
+			st.startKeepalive(rs.r.Context(), sseKeepaliveInterval)
 			rs.stream = st
 			if sessionID != "" {
 				st.send(providers.Event{Type: "session", Text: sessionID})

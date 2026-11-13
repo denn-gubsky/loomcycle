@@ -30,7 +30,6 @@ func libraryFixture(t *testing.T) (*Server, store.Store, func()) {
 	cfg := &config.Config{
 		Env: config.Env{
 			AuthToken:             "test-token",
-			ChannelsMaxValueBytes: 64 * 1024,
 			ChannelsLongPollCapMS: 1000,
 		},
 	}

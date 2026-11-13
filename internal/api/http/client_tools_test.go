@@ -16,14 +16,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
-// clientToolsTestConfig is a minimal config with the client-tool knobs set (a
-// zero ClientToolMaxBytes would make SetReadLimit reject every frame).
-func clientToolsTestConfig() *config.Config {
-	cfg := &config.Config{}
-	cfg.Env.ClientToolMaxBytes = 1 << 20
-	cfg.Env.SSEKeepaliveInterval = 20 * time.Second
-	return cfg
-}
+// clientToolsTestConfig is a minimal config.
+func clientToolsTestConfig() *config.Config { return &config.Config{} }
 
 // clientToolsTestServer stands up just the /v1/client-tools handler over an
 // httptest server, with a principal injected on ctx (open-mode auth) so the

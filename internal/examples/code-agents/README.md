@@ -2,8 +2,7 @@
 
 Reference `code-js` agents. Copy a directory under your
 `$LOOMCYCLE_CODE_AGENTS_ROOT` (default `./agent_code`) as
-`<agent-name>/index.js`, declare the agent with `provider: code-js`, and
-enable code agents with `LOOMCYCLE_CODE_AGENTS_ENABLED=1`.
+`<agent-name>/index.js`, and declare the agent with `provider: code-js`.
 
 See the `code-agents` help topic (`Context.help code-agents`) for the JS-side
 API, the default-deny sandbox, and the honest-determinism scope.

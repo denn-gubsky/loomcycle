@@ -174,7 +174,6 @@ func TestSubAgentCapped_ParallelSpawnRowIsNotOkAndKeepsTheAnswer(t *testing.T) {
 // status, so a parent resumed from a snapshot answers it as it was answered.
 func TestResumeFanout_ACappedChildsResultRowRecordsItsStatus(t *testing.T) {
 	cfg := makeBaseConfig()
-	cfg.Env.ResumeFanout = true
 	cfg.Agents = map[string]config.AgentDef{
 		"parent": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are the parent", MaxConcurrentChildren: 4},
 		"capped": {Model: "stub-model", Tools: []string{"Agent"}, SystemPrompt: "you are capped", MaxIterations: 2},

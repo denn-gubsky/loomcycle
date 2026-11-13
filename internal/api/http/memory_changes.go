@@ -136,7 +136,7 @@ func (s *Server) streamMemoryChanges(w http.ResponseWriter, r *http.Request, doc
 		"embedder": s.embedderHealth(),
 	})
 
-	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	stream.startKeepalive(r.Context(), sseKeepaliveInterval)
 	defer stream.end()
 
 	s.tailMemoryChanges(r.Context(), stream, tenantID, cursor, documents, changeFeedPolling{

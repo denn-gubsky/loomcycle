@@ -21,6 +21,11 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// ChannelMaxValueBytes is the cap the server puts on one channel message, on
+// every surface that publishes. 64 KiB: a message is a notification or a
+// work item, and a larger payload belongs in a document or a file it names.
+const ChannelMaxValueBytes = 64 << 10
+
 // Channel is the v0.8.4 built-in tool — persistent inter-agent
 // message bus. Five operations dispatched off the `op` field:
 //
@@ -63,8 +68,8 @@ type Channel struct {
 	// optimisation).
 	Scheduler *channels.Scheduler
 
-	// MaxValueBytes caps a single publish's payload size. 0 = no
-	// cap. Sourced from LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES.
+	// MaxValueBytes caps a single publish's payload size (the server sets
+	// ChannelMaxValueBytes). 0 = no cap.
 	MaxValueBytes int
 
 	// LongPollCapMS caps the operator-allowed long-poll budget in

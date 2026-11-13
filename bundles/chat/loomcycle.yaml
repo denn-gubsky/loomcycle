@@ -19,7 +19,7 @@
 #     registered-but-idle.
 #   - Document + Memory need LOOMCYCLE_SQLMEM_ENABLED=1 (Document is SQL-backed).
 #   - WebSearch needs BRAVE_API_KEY; WebFetch/WebSearch need LOOMCYCLE_HTTP_HOST_ALLOWLIST.
-#   - Bashbox needs LOOMCYCLE_BASHBOX_ENABLED=1; Bash needs LOOMCYCLE_BASH_ENABLED=1.
+#   - Bash needs LOOMCYCLE_BASH_ENABLED=1 (Bashbox needs no switch).
 #   - chat/local-small's local window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
 #     env (e.g. 131072 for 128K) — it can't be set per-agent in yaml. chat/local
 #     no longer uses it: it is on a cloud tier.

@@ -423,17 +423,16 @@ type StorageConfig struct {
 	// this. Env: LOOMCYCLE_SQLMEM_QUOTA_BYTES.
 	SqlMemQuotaBytes int `yaml:"sqlmem_quota_bytes"`
 	// SqlMemStatementTimeoutMS bounds a single sql_query/sql_exec. Default
-	// 30000. Env: LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS.
+	// 30000.
 	SqlMemStatementTimeoutMS int `yaml:"sqlmem_statement_timeout_ms"`
 	// SqlMemMaxRows caps the rows a sql_query returns (the rest is dropped
-	// and the result is flagged truncated). Default 10000. Env:
-	// LOOMCYCLE_SQLMEM_MAX_ROWS.
+	// and the result is flagged truncated). Default 10000.
 	SqlMemMaxRows int `yaml:"sqlmem_max_rows"`
 	// SqlMemMaxResultBytes caps the size of what an agent's own SQL returns
 	// (Memory sql_query, Document query_chunks sql): rows stop before the
 	// budget and the result is flagged truncated; a single row over it is
 	// refused. Default 8 MiB; zero or negative takes the default — there is no
-	// "unlimited". Env: LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES.
+	// "unlimited".
 	SqlMemMaxResultBytes int `yaml:"sqlmem_max_result_bytes"`
 	// SqlMemAuditMode controls how much of an audited statement is recorded:
 	// "full" (the default) records the redacted statement text; "metadata"
@@ -448,22 +447,20 @@ type StorageConfig struct {
 	// SqlMemTxnTimeoutMS bounds how long an explicit transaction (Phase 3a
 	// sql_begin) may stay open before the reaper rolls it back — a held scope
 	// connection must never leak past a stuck agent. Default 30000. 0 disables
-	// the reaper. Env: LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS.
+	// the reaper.
 	SqlMemTxnTimeoutMS int `yaml:"sqlmem_txn_timeout_ms"`
 	// SqlMemMaxOpenTxns caps concurrent open explicit transactions process-wide
-	// (each pins a scope connection). Default 64. 0 = unbounded. Env:
-	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS.
+	// (each pins a scope connection). Default 64. 0 = unbounded.
 	SqlMemMaxOpenTxns int `yaml:"sqlmem_max_open_txns"`
 	// SqlMemMaxOpenTxnsPerTenant caps how many of those open transactions one
 	// tenant may hold, so one tenant cannot take every slot. 0 = a quarter of
 	// SqlMemMaxOpenTxns (at least 1), resolved by sqlmem. The default ("")
-	// tenant is exempt and keeps the full cap. Env:
-	// LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT.
+	// tenant is exempt and keeps the full cap.
 	SqlMemMaxOpenTxnsPerTenant int `yaml:"sqlmem_max_open_txns_per_tenant"`
 	// SqlMemMaxTxnDepth caps the SAVEPOINT nesting depth of one explicit
 	// transaction (Phase 3b): a nested sql_begin past this errors, bounding the
 	// in-memory savepoint stack a looping agent can grow. Default 16. 0 =
-	// unbounded. Env: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH.
+	// unbounded.
 	SqlMemMaxTxnDepth int `yaml:"sqlmem_max_txn_depth"`
 	// SqlMemScopeTTLMS turns on durable-scope GC (Phase 3d): a durable
 	// (agent/user) scope idle longer than this is dropped by the sweeper. 0 =
@@ -472,7 +469,7 @@ type StorageConfig struct {
 	SqlMemScopeTTLMS int `yaml:"sqlmem_scope_ttl_ms"`
 	// SqlMemGCIntervalMS is how often the durable-scope GC sweeper runs. 0 → a
 	// sensible default (one hour); meaningful when SqlMemScopeTTLMS > 0 OR
-	// SqlMemTotalMaxBytes > 0. Env: LOOMCYCLE_SQLMEM_GC_INTERVAL_MS.
+	// SqlMemTotalMaxBytes > 0.
 	SqlMemGCIntervalMS int `yaml:"sqlmem_gc_interval_ms"`
 	// SqlMemTotalMaxBytes turns on size-based GC (Phase 3f.3): when the AGGREGATE
 	// on-disk size of all durable (agent/user) scopes exceeds this, the sweeper
@@ -485,7 +482,7 @@ type StorageConfig struct {
 	// dump in a runtime snapshot (Phase 3f.2). A scope over the cap is EXCLUDED
 	// from the snapshot and recorded in the section (so one runaway scope can't
 	// sink the whole capture or blow the 512 MB envelope cap); it is not
-	// restored. 0 = no per-scope cap. Env: LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES.
+	// restored. 0 = no per-scope cap.
 	SqlMemSnapshotMaxScopeBytes int64 `yaml:"sqlmem_snapshot_max_scope_bytes"`
 	// SqlMemSharedSchemas lists operator-curated READ-ONLY shared schemas (Phase
 	// 3g, postgres tier only). Each is baked onto every scope role's search_path so
@@ -1697,7 +1694,6 @@ type AgentDef struct {
 	// of reading agent_code/<name>/index.js — the symmetry that lets a
 	// code agent be ingested via AgentDef / yaml with no host filesystem
 	// bind (containers, pure-cloud). Empty = fall back to the filesystem.
-	// Gated by LOOMCYCLE_CODE_AGENTS_ENABLED at create/fork + execution.
 	Code string `yaml:"code"`
 	// SystemPrompt is the agent's system prompt as an inline YAML
 	// string. Mutually exclusive with SystemPromptFile.
@@ -3422,9 +3418,7 @@ type Channel struct {
 	// before any reader sees it: release it (as it is, or rewritten), drop
 	// it, or hold it for a person. `channel_publish` is the only event; its
 	// entries are HookDef names or inline webhooks, run in order. A hold on
-	// the same channel applies to what the hooks release. Needs
-	// LOOMCYCLE_CHANNEL_HOOKS=1: without it the hooks are skipped and the
-	// channel's messages are delivered as if it declared none.
+	// the same channel applies to what the hooks release.
 	Hooks hooks.EventHooks `yaml:"hooks"`
 }
 
@@ -4169,28 +4163,10 @@ type Env struct {
 	// LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT (<=0 or malformed keeps the default).
 	SpeechMaxInflight        int
 	TranscriptionMaxInflight int
-	// CryptoMaxBytes caps each data argument of a Crypto tool call (RFC EP).
-	// Default 1 MiB. LOOMCYCLE_CRYPTO_MAX_BYTES (bytes; <=0 ignored).
-	CryptoMaxBytes int
-	// CryptoMaxOpsPerRun caps the Crypto tool calls one run may make (RFC EP).
-	// Default 100. LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN (<=0 ignored).
-	CryptoMaxOpsPerRun int
 	// KMSVaultAllowHTTP admits a plain http:// Vault address for a crypto
 	// key held in Vault Transit (a dev server). Off by default: the Vault
 	// token travels in a header. LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1.
 	KMSVaultAllowHTTP bool
-	// MaxDocumentAssetBytes caps BOTH the POST /v1/_document request body (so a
-	// set_asset base64 image payload fits) and the decoded image size the
-	// Document tool stores (RFC BO). Default 8 MiB. A base64 payload is ~1.33× the
-	// decoded bytes, so the request cap is the binding one on upload.
-	// LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES (bytes; <=0 ignored, default kept).
-	MaxDocumentAssetBytes int64
-	// DocumentSearchFilterMaxIDs caps the chunk-id list a filtered Document
-	// search or related call binds into each store leg — the allow list, or its
-	// complement when that is smaller. Over it the call is refused
-	// (filter_too_wide) rather than silently post-filtered. Default 50000.
-	// LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS (<=0 ignored, default kept).
-	DocumentSearchFilterMaxIDs int
 	// UILoginOrigins (LOOMCYCLE_UI_LOGIN_ORIGINS, comma-separated) are the
 	// first-party origins the Web UI's postMessage login receiver may accept a
 	// bearer handoff FROM — e.g. "https://loomcycle.cloud" for the landing that
@@ -4349,16 +4325,6 @@ type Env struct {
 	// only narrow operator's list, never widen. Operator opts in once
 	// via LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE=1.
 	HTTPCallerAuthoritative bool
-	// ResumeFanout enables RFC X Phase 3: a fan-out PARENT blocked in
-	// Agent.parallel_spawn cooperatively PARKS on pause (so paused_runs_count
-	// includes it + the warning clears), and a snapshotted mid-fan-out parent
-	// is RESUMABLE on a fresh instance (a spawn ledger is persisted; resume
-	// reconciles the children + synthesizes the parallel_spawn tool_result).
-	// Default OFF: when unset, pause/snapshot/resume behave exactly as before
-	// (no ledger events, no park watcher, no reconcile). Operator opts in via
-	// LOOMCYCLE_RESUME_FANOUT=1; should be on at BOTH the capturing and
-	// restoring instances for a cross-instance hand-off.
-	ResumeFanout bool
 	// TeamSubscriptions enables the armed-subscription sweep: a PROMOTED team
 	// whose entry state is a Starter is driven automatically when its source
 	// channel has work, with no human asking for each run.
@@ -4372,11 +4338,6 @@ type Env struct {
 	//
 	// LOOMCYCLE_TEAM_SUBSCRIPTIONS=1.
 	TeamSubscriptions bool
-	// TeamSubscriptionsTickSeconds is how often the sweep looks for work.
-	// 0 = the code default (15s). The tick is the worst-case latency between a
-	// message landing on a source and its wave starting; it is not a poll of
-	// every channel, but one peek per subscribed team.
-	TeamSubscriptionsTickSeconds int
 	// MaxInteractiveChildren caps how many resident interactive sub-agents (RFC
 	// BK Agent op=open) one run may hold open at once. 0 = the code default (8).
 	// Exceeding it fails op=open (the parent must close one first).
@@ -4389,22 +4350,11 @@ type Env struct {
 	// run, not per tree: a child's children count against the child.
 	// Env: LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN.
 	MaxLiveChildrenPerRun int
-	// InteractiveChildIdleTTLMs is the default idle-reap window for a resident
-	// interactive sub-agent — reaped after this long with no send. 0 = the code
-	// default (30 min). Per-open overridable via op=open's idle_ttl_seconds.
-	InteractiveChildIdleTTLMs int
-	// ResidentMaxTurnSeconds is the turn ceiling for a resident interactive
-	// sub-agent: a child whose CURRENT turn has run longer than this is reaped,
-	// whatever its parent does (polling it does not extend the ceiling). It
-	// bounds a turn that never ends, which the idle rule cannot see because a
-	// running turn is never idle. 0 = the code default (2h); there is no
-	// unlimited setting. Env: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS.
-	ResidentMaxTurnSeconds int
 	// InteractiveIdleTimeout ends a top-level interactive run (or a detached
 	// interactive continuation) that has waited parked for its operator this
 	// long: it finishes with stop reason idle_timeout and releases what it
 	// holds, and its session can be continued. Default 1h; 0 waits forever.
-	// Resident sub-agents (InteractiveChildIdleTTLMs) and review holds (their
+	// Resident sub-agents (their own idle rule) and review holds (their
 	// review TTL) have their own bounds. Env: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
 	// (a Go duration).
 	InteractiveIdleTimeout time.Duration
@@ -4414,17 +4364,6 @@ type Env struct {
 	// bound: the join then ends only when its children do or its caller
 	// leaves. Env: LOOMCYCLE_BATCH_JOIN_TIMEOUT (a Go duration).
 	BatchJoinTimeout time.Duration
-	// AgentChildMaxTimeoutMs is the ceiling on the timeout_ms an agent may give
-	// a child it starts with Agent spawn / parallel_spawn. 0 = no ceiling. It is
-	// a ceiling, not a default: a spawn without timeout_ms still waits for its
-	// child as long as the child runs. A larger timeout_ms is refused, not
-	// clamped — a silently shortened bound would cut off a child the caller
-	// meant to wait for. Env: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS.
-	AgentChildMaxTimeoutMs int
-	// AgentPollWaitCapMs bounds how long one Agent poll with wait "any" or
-	// "all" may block; a larger wait_ms is cut to it. 0 = the tool's default
-	// (60 s). Env: LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS.
-	AgentPollWaitCapMs int
 	// BraveAPIKey enables the WebSearch tool. Empty = WebSearch refuses
 	// every call. Lives at https://api.search.brave.com/.
 	BraveAPIKey string
@@ -4438,15 +4377,6 @@ type Env struct {
 	// WebSearch result naming which search provider answered + any fallover
 	// (RFC BB). Off by default (byte-identical output); LOOMCYCLE_WEBSEARCH_PROVENANCE=1.
 	WebSearchProvenance bool
-	// Client-tool host (RFC BC) — the /v1/client-tools WebSocket over which a
-	// client registers + executes tools on the user's machine.
-	// ClientToolTimeoutMS bounds one delegate-and-block invoke (default 60000);
-	// ClientToolMaxBytes caps a single frame (default 1<<20, mirrors the request
-	// cap); ClientToolMaxConns caps concurrent connections per principal
-	// (default 8). All read from LOOMCYCLE_CLIENT_TOOL_*.
-	ClientToolTimeoutMS int
-	ClientToolMaxBytes  int64
-	ClientToolMaxConns  int
 	// BashEnabled gates the Bash tool. Defaults to false. Even when
 	// true the tool is NOT a true sandbox — it restricts cwd, scrubs
 	// env, bounds output, and times out, but cannot prevent the spawned
@@ -4463,13 +4393,6 @@ type Env struct {
 	// Sourced from LOOMCYCLE_BASH_ALLOWED_CREDS (comma-separated). Requires a KEK
 	// (LOOMCYCLE_SECRET_KEY) for the engine to resolve; empty (default) = none.
 	BashAllowedCreds []string
-	// BashboxEnabled gates the Bashbox tool — a TRUE in-process sandbox
-	// (gbash) that spawns no OS process, roots all paths at the mounted
-	// volume, and has no network. Unlike Bash it HONORS read-only volumes
-	// (writes hit an in-RAM overlay, never the host). Defaults to false;
-	// enable with LOOMCYCLE_BASHBOX_ENABLED=1. gbash is alpha — the per-agent
-	// tools gate is the escape hatch.
-	BashboxEnabled bool
 	// BashboxFallbackCommands is the operator allowlist of host commands that
 	// gbash does NOT implement (e.g. git, gh) and that may ESCAPE the Bashbox
 	// sandbox to run on the real host shell (RFC AJ §13). Empty (default) = no
@@ -4508,9 +4431,6 @@ type Env struct {
 	// LOOMCYCLE_GIT_AUTHOR_NAME and LOOMCYCLE_GIT_AUTHOR_EMAIL.
 	GitAuthorName  string
 	GitAuthorEmail string
-	// GitPushMaxBytes caps the pack one Git push may upload (RFC FB). Sourced
-	// from LOOMCYCLE_GIT_PUSH_MAX_BYTES; default GitPushMaxBytesDefault.
-	GitPushMaxBytes int64
 	// FileMaxBytes caps one file a tool returns that the runtime keeps in the
 	// run's inbox (RFC FF); FileInboxMaxBytes caps the run tree's inbox.
 	// Sourced from LOOMCYCLE_FILE_MAX_BYTES (default 64 MiB) and
@@ -4522,10 +4442,6 @@ type Env struct {
 	// Part B). Sourced from LOOMCYCLE_EXTRACT_CONCURRENCY; unset, zero or
 	// negative takes GOMAXPROCS, resolved at load.
 	ExtractConcurrency int
-	// FileBase64MinBytes is the shortest string the base64-in-text capture
-	// of an MCP server with binary_results: capture considers a file.
-	// Sourced from LOOMCYCLE_FILE_BASE64_MIN_BYTES (default 4 KiB).
-	FileBase64MinBytes int64
 	// MCPMaxFrameBytes caps one MCP response: a stdio JSON-RPC line and an
 	// HTTP response body alike. Sourced from LOOMCYCLE_MCP_MAX_FRAME_BYTES;
 	// default MCPMaxFrameBytesDefault.
@@ -4563,17 +4479,6 @@ type Env struct {
 	// loomcycle. Sourced from LOOMCYCLE_HELP_ROOT.
 	HelpRoot string
 
-	// HeartbeatSweeperEnabled controls the v0.5.0 stale-run sweeper.
-	// When true (default), a goroutine periodically marks runs whose
-	// heartbeat hasn't advanced in HeartbeatStaleAfter as failed —
-	// prevents the active-run lists from accumulating dead rows when
-	// the host process crashes mid-loop. Disable with
-	// LOOMCYCLE_HEARTBEAT_SWEEPER=0 (e.g. when an external sweeper
-	// owns this responsibility in a multi-replica deployment).
-	HeartbeatSweeperEnabled bool
-	// HeartbeatSweepInterval is the sweep tick rate. Default 60s.
-	// Env: LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS.
-	HeartbeatSweepInterval time.Duration
 	// HeartbeatStaleAfter is the cutoff: runs with last_heartbeat_at
 	// (or started_at, when no heartbeat ever fired) older than this
 	// are swept. Default 10 minutes. Should be ≥ 2× the loop's
@@ -4590,33 +4495,10 @@ type Env struct {
 	// LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER.
 	MaxConfiguredRunsPerUser int
 
-	// UsageSweeperEnabled controls the RFC AV Phase 2b usage
-	// rollup-and-prune sweeper. When true (default), a goroutine
-	// periodically folds token_usage rows older than
-	// UsageDetailRetention into the day-bucketed usage_archive and
-	// deletes them — bounding the per-call detail table without losing
-	// billing totals (the archive preserves exact per-dimension sums).
-	// Disable with LOOMCYCLE_USAGE_SWEEPER=0 (e.g. when an external job
-	// owns retention in a multi-replica deployment).
-	UsageSweeperEnabled bool
-	// UsageSweepInterval is the sweep tick rate. Default 1h.
-	// Env: LOOMCYCLE_USAGE_SWEEP_INTERVAL_MS.
-	UsageSweepInterval time.Duration
 	// UsageDetailRetention is the cutoff: token_usage rows older than
 	// this are rolled up into usage_archive and pruned. Default 720h
 	// (30 days). Env: LOOMCYCLE_USAGE_DETAIL_RETENTION_MS.
 	UsageDetailRetention time.Duration
-	// UsageRunRetention is the RFC AV Phase 2b2 old-run archiver cutoff:
-	// completed runs older than this are exported (per the mode) and
-	// deleted. Default 0 = OFF (run deletion is destructive — opt-in,
-	// unlike the lossless usage rollup). Env: LOOMCYCLE_USAGE_RUN_RETENTION_MS.
-	UsageRunRetention time.Duration
-	// UsageRunRetentionMode is "off" (default) | "prune" | "export+prune".
-	// Env: LOOMCYCLE_USAGE_RUN_RETENTION_MODE.
-	UsageRunRetentionMode string
-	// UsageExportDir is where export+prune writes run JSON (per-day subdir,
-	// one file per run). Required for export+prune. Env: LOOMCYCLE_USAGE_EXPORT_DIR.
-	UsageExportDir string
 
 	// --- RFC BM data-retention sweeper (OPT-IN; default OFF). ---
 	// Purges retired-and-old substrate def versions (agent/skill/team/mcp_server/
@@ -4648,36 +4530,12 @@ type Env struct {
 	// "off" (default / "") | "prune" | "export+prune" — deletes aged sessions +
 	// their runs + events (pinned sessions always exempt). Independent of
 	// RetentionDefsMode. Env: LOOMCYCLE_RETENTION_CHATS_MODE.
-	// Back-compat: when unset AND the legacy LOOMCYCLE_USAGE_RUN_RETENTION_*
-	// archiver is configured, it is inherited (see Load) so an existing operator's
-	// config keeps pruning aged chats — now via the retention sweeper, which then
-	// makes the usage archiver exclusive so the two never double-run.
 	RetentionChatsMode string
 	// RetentionChatsMaxAge is the age cutoff for the chats archiver: a session
 	// whose runs are ALL terminal and whose latest completed_at is older than this
 	// is exported (per the mode) and cascade-deleted. 0 = no minimum age.
 	// Env: LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS.
 	RetentionChatsMaxAge time.Duration
-	// RetentionChatsInternalMaxAge is the SEPARATE, shorter age cutoff for chats
-	// authored by an agent declared `internal:` — loomcycle's own maintenance
-	// plumbing (see AgentDef.Internal). Default 3 days.
-	//
-	// It exists because a subsystem's own children accumulate at a rate no user
-	// generates: one consolidation pass spawns 13-18 extractor sessions, every
-	// pass, forever. They have real short-term value — diagnosing a bad pass
-	// means reading those transcripts — so the answer is a short lifespan rather
-	// than not recording them.
-	//
-	// ZERO means INHERIT RetentionChatsMaxAge (treat internal chats like any
-	// other chat), NOT "delete immediately" — the sweeper resolves 0 to the
-	// global age before it computes a cutoff. That is the opt-out for an operator
-	// who wants one retention age across the board.
-	//
-	// Only consulted when the chats sweep is enabled at all: retention is opt-in
-	// (LOOMCYCLE_RETENTION_ENABLED) and a deployment that has not enabled it
-	// keeps accumulating internal chats regardless of this value.
-	// Env: LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS.
-	RetentionChatsInternalMaxAge time.Duration
 	// RetentionMemMode is the RFC BM Phase 3 retired-agent memory-reclamation
 	// mode: "off" (default / "") | "prune" | "export+prune". Reclaims a
 	// fully-retired agent's SQL-Memory scope + dirents (per tenant) and its
@@ -4760,15 +4618,6 @@ type Env struct {
 	// drive it down to ~15s so the reap fires in-window.
 	// Env: LOOMCYCLE_REPLICAS_STALE_AFTER_MS.
 	ReplicasStaleAfter time.Duration
-	// SessionLockGCInterval is how often the v0.5.0 session-lock map
-	// GC runs. Default 5 minutes. Env:
-	// LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS.
-	SessionLockGCInterval time.Duration
-	// SessionLockMaxIdle is the cutoff for the GC: a session-lock
-	// entry whose refcount is 0 AND lastAccessed is older than this
-	// is reclaimed. Default 10 minutes. Env:
-	// LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS.
-	SessionLockMaxIdle time.Duration
 
 	// GrpcAddr is the gRPC listener address (e.g. ":8788" or
 	// "127.0.0.1:8788"). Empty disables the gRPC surface; HTTP+SSE
@@ -4784,14 +4633,6 @@ type Env struct {
 	// authenticated /metrics. Empty = no listener. Env:
 	// LOOMCYCLE_METRICS_LISTEN.
 	MetricsListenAddr string
-
-	// ResolveProbeInterval is the cadence at which the resolver
-	// re-probes each provider's /v1/models endpoint (or /api/tags
-	// for Ollama) to refresh the availability matrix. Default 15
-	// minutes; clamped to a 1-hour ceiling so a misconfigured
-	// long interval can't hide a recovered provider for a full
-	// day. Env: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS.
-	ResolveProbeInterval time.Duration
 
 	// FallbackPinAfterSuccess, when true, suppresses provider
 	// fallback on retryable errors AFTER the run has completed at
@@ -4815,14 +4656,6 @@ type Env struct {
 
 	// ---- RFC J synthetic code-js provider (opt-in) ----
 
-	// CodeAgentsEnabled gates registration of the synthetic code-js
-	// provider (RFC J). Default OFF (operator opts in via
-	// LOOMCYCLE_CODE_AGENTS_ENABLED=1). When false the provider is not
-	// registered at all, so an AgentDef with `provider: code-js` fails
-	// loud at startup with a clear "code agents are disabled" error
-	// rather than silently. Operator-provided JS runs in the operator's
-	// own trust posture (same as the Bash tool) — hence opt-in.
-	CodeAgentsEnabled bool
 	// CodeAgentsRoot is the filesystem root holding
 	// agent_code/<name>/index.js. Default ./agent_code. Env:
 	// LOOMCYCLE_CODE_AGENTS_ROOT.
@@ -4862,29 +4695,6 @@ type Env struct {
 	// an agent author cannot lift it (run_timeout_seconds sets the budget,
 	// not this). Env: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS.
 	CodeAgentsMaxWall time.Duration
-	// CodeHooksEnabled lets a hook's body be code-js (RFC DK) instead of a
-	// webhook. Default OFF, separate from CodeAgentsEnabled: a code hook runs
-	// on every matching tool call of every agent in its scope, which is a
-	// different decision from letting one agent be JavaScript. Env:
-	// LOOMCYCLE_CODE_HOOKS_ENABLED=1.
-	CodeHooksEnabled bool
-
-	// ChannelHooksEnabled runs the channel-hook worker, which decides the
-	// messages of channels that carry hooks. Default OFF; off, a channel's
-	// hooks are skipped (an opt-in feature a deployment has not turned on).
-	// Env: LOOMCYCLE_CHANNEL_HOOKS=1.
-	ChannelHooksEnabled bool
-	// ChannelHooksConcurrency bounds the messages one replica decides at
-	// once (default 16); ChannelHooksPerChannel, those of one channel
-	// (default 4). Env: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY,
-	// LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL.
-	ChannelHooksConcurrency int
-	ChannelHooksPerChannel  int
-	// ChannelHooksMaxWait bounds how long a message waits for hooks that
-	// fail closed before it is dropped as "hook unavailable" (default 15m;
-	// a message's own TTL, less a margin, bounds it too). Env:
-	// LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT (a Go duration).
-	ChannelHooksMaxWait time.Duration
 
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
@@ -4910,12 +4720,6 @@ type Env struct {
 	// loomcycle's own RSS. Linux only; silently ignored on other
 	// platforms. Env: LOOMCYCLE_METRICS_COLLECT_SYSTEM.
 	MetricsCollectSystem bool
-	// MetricsSweepInterval is the sweeper cadence for
-	// process_samples. Default 15 minutes. 0 disables the
-	// sweeper (combine with MetricsRetentionDays=0 if you
-	// want unbounded retention). Env:
-	// LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS.
-	MetricsSweepInterval time.Duration
 
 	// ---- v0.12.0 multi-replica HA (opt-in) ----
 
@@ -4936,23 +4740,6 @@ type Env struct {
 	// Env: LOOMCYCLE_TRACE_URL_TEMPLATE.
 	TraceURLTemplate string
 
-	// CancelAckTimeoutMs is the v0.12.2 cross-replica cancel ack wait.
-	// On a cluster-mode cancel that broadcasts to the owning replica,
-	// the originator waits this long for a "cancelled" ack on the
-	// backplane before returning {cancelled:false,
-	// reason:"owner_replica_unreachable"}. Default 5000.
-	// Env: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS.
-	CancelAckTimeoutMs int64
-
-	// PauseDefaultTimeoutMs is how long a pause waits for in-flight runs
-	// to park, applied when POST /v1/_pause omits timeout_ms. 0 ⇒ use the
-	// internal default (pause.DefaultPauseTimeout = 30s). Capped at
-	// pause.MaxPauseTimeout (5 min) regardless of operator value to
-	// avoid an operator typo (300000 vs 30000) leaving the runtime
-	// in StatePausing for an extended period. Env:
-	// LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS.
-	PauseDefaultTimeoutMs int64
-
 	// ShutdownPauseTimeoutMs bounds how long a SIGTERM/SIGINT shutdown waits
 	// for this replica's in-flight runs to park before it exits, so the next
 	// boot resumes them (pause.Manager.PauseForShutdown). At three quarters of
@@ -4962,18 +4749,9 @@ type Env struct {
 	// LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS.
 	ShutdownPauseTimeoutMs int64
 
-	// PauseCacheTTLMs is the v0.12.3 Phase 4 TTL for the cluster-
-	// mode DB-backed pause-state cache in pause.Manager.State().
-	// Default 1000 (1s). Lower values reduce the maximum latency
-	// between a pause event and a remote replica seeing the state
-	// change; higher values reduce DB load. Only effective when
-	// LOOMCYCLE_REPLICA_ID is set. Env:
-	// LOOMCYCLE_PAUSE_CACHE_TTL_MS.
-	PauseCacheTTLMs int64
-
 	// MCPAllowPrivilegedTools — v0.8.15. When true, dynamically-
-	// registered agents may include Bash/Write/Edit in their
-	// tools. Default false: those three are stripped from
+	// registered agents may include Bash/Bashbox/Write/Edit in their
+	// tools. Default false: those four are stripped from
 	// any register_agent request, matching the v0.8.7/v0.8.8
 	// default-deny pattern for new tool surfaces. Env:
 	// LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS.
@@ -5016,79 +4794,6 @@ type Env struct {
 	// secret). Opt out with LOOMCYCLE_REDACT_SECRETS=0. See internal/redact.
 	RedactSecrets bool
 
-	// DynamicAgentDefaultTTLSeconds — v0.8.15. TTL applied to
-	// dynamic agents registered via mcp__loomcycle__register_agent
-	// when the caller omits ttl_seconds. Default 86400 (24h).
-	// Set to 0 to deny all default-TTL registrations (callers
-	// MUST supply an explicit ttl_seconds). Env:
-	// LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS.
-	DynamicAgentDefaultTTLSeconds int
-
-	// DynamicAgentSweepInterval — v0.8.15. Cadence for the
-	// dynamic_agents TTL sweeper. Default 15 minutes. 0 disables
-	// the sweeper (expired rows linger; DynamicAgentGet still
-	// filters them out at read time so functional correctness is
-	// preserved, but the table grows unbounded). Env:
-	// LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS.
-	DynamicAgentSweepInterval time.Duration
-
-	// EphemeralVolumeSweepInterval — RFC AH Phase 2b. Cadence for the
-	// crash-recovery sweep of ephemeral (run-tree-scoped) volumes whose
-	// owning run is terminal-and-not-paused: a fenced os.RemoveAll of the
-	// <dynamic_root>/_ephemeral/<root_run_id>/ subtree + its rows. The
-	// inline run-completion purge is the primary path; this backstops a
-	// crashed host (the inline purge never ran). Default 60s. 0 disables
-	// (the inline purge still runs; only crash cleanup lapses). Cluster-gated
-	// by coord.LockKeyEphemeralVolumeSweeper. Env:
-	// LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS.
-	EphemeralVolumeSweepInterval time.Duration
-
-	// ToolParallelism caps how many tool_calls from a single
-	// assistant turn run concurrently. Default 8. Set to 1 to
-	// force serial dispatch (debug / determinism). Field 0
-	// (unset) is treated as the default — the loop fills in 8.
-	//
-	// Bumping this matters most for agents that fan out via the
-	// `Agent` built-in tool: each Agent call spawns a sub-agent
-	// run, so a parent that emitted 3 Agent tool_calls would
-	// pre-2026-05-09 see them serialised back-to-back instead of
-	// running concurrently. The HTTP server's MAX_CONCURRENT_RUNS
-	// slot still bounds the run tree, so per-tool parallelism is
-	// an inner-loop knob that doesn't change the global ceiling.
-	//
-	// Env: LOOMCYCLE_TOOL_PARALLELISM.
-	ToolParallelism int
-
-	// SSEKeepaliveInterval is the cadence at which the SSE writer
-	// emits comment-only frames (`:keepalive`) on long-lived agent
-	// streams. Required-ignored by SSE clients per WHATWG so they
-	// don't surface as events; the point is to keep the underlying
-	// TCP/HTTP path from going idle. Agent runs that fan out to
-	// sub-agents can sit minutes between real events while a child
-	// is mid-WebFetch — networks with idle-connection timeouts
-	// (Tailscale, NAT routers, some reverse proxies) drop silent
-	// streams and the consumer-side undici reports the drop as
-	// `TypeError: terminated` with no diagnostic context.
-	//
-	// Default 20 s — comfortably under the typical 30-120 s idle
-	// timeouts on the affected network paths. Set to 0 to disable.
-	// Env: LOOMCYCLE_SSE_KEEPALIVE_MS.
-	SSEKeepaliveInterval time.Duration
-
-	// MemoryMaxValueBytes caps a single Memory.set / Memory.incr
-	// payload. Default 65536 (64 KB) — generous for a JSON document
-	// agents would actually persist; refuses obvious abuse like
-	// "stash an entire transcript here." Set to 0 to disable.
-	// Env: LOOMCYCLE_MEMORY_MAX_VALUE_BYTES.
-	MemoryMaxValueBytes int
-
-	// DocumentFeedMaxStreams caps the concurrent GET /v1/_document/feed streams
-	// one principal may hold on a replica (RFC FV): each stream polls the change
-	// table, so the cap bounds what one principal can make the database do.
-	// Default 4; 0 (or any value ≤ 0) = unlimited.
-	// Env: LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS.
-	DocumentFeedMaxStreams int
-
 	// MemoryMaxScopeBytes is the default per-(scope, scope_id) byte
 	// cap. Per-agent yaml `memory_quota_bytes` overrides this.
 	// Default 1048576 (1 MB). Set to 0 to disable.
@@ -5120,30 +4825,6 @@ type Env struct {
 	// validated by Config.DocumentProjection / validate.
 	DocumentProjectionInterval string
 
-	// ProvisionIdentityDocs creates the tenant-root and user-root Documents when a
-	// principal is ESTABLISHED — at token mint, and at boot for config-declared
-	// principals — instead of only on the first run that references them.
-	//
-	// Default TRUE. Both documents are templates a person fills in, and the user-root
-	// one's Identity section is what lets memory placement tell a fact about the user
-	// from a fact about a colleague. Arriving on first reference is too late to be
-	// filled in beforehand, and a person with no runs yet cannot discover there is
-	// anything to fill.
-	//
-	// Set LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS=0 to keep the older lazy-only
-	// behaviour — an operator who does not want a document per principal appearing
-	// without being asked for.
-	//
-	// Env: LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS (default 1).
-	ProvisionIdentityDocs bool
-
-	// MemorySweepInterval is how often the TTL reaper goroutine
-	// runs MemorySweep on the store. Default 15 minutes. Set to 0
-	// to disable (operators with an external reaper, or tests that
-	// don't want background work, can opt out).
-	// Env: LOOMCYCLE_MEMORY_SWEEP_MS.
-	MemorySweepInterval time.Duration
-
 	// MemoryPendingDrainedTTL is how long a consolidation-queue row is kept
 	// after a pass acks it. An hourly prune deletes older drained rows; an
 	// undrained row is never pruned. Default 7 days. 0 or negative disables the
@@ -5174,19 +4855,6 @@ type Env struct {
 	// Env: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS.
 	MemoryEmbedTimeoutMs int
 
-	// ChannelsMaxValueBytes caps a single Channel.publish payload
-	// (v0.8.4). Default 65536 (64 KB) — mirrors MemoryMaxValueBytes.
-	// 0 disables. Env: LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES.
-	ChannelsMaxValueBytes int
-
-	// ChannelsSweepInterval is the TTL reaper cadence for the
-	// channel_messages table (v0.8.4). Default 15 minutes — same as
-	// MemorySweepInterval. 0 disables. Read paths filter expired
-	// rows regardless of whether the sweeper has run, so this is
-	// purely about keeping the table bounded.
-	// Env: LOOMCYCLE_CHANNELS_SWEEP_MS.
-	ChannelsSweepInterval time.Duration
-
 	// ChannelsLongPollCapMS caps the wait_ms an agent may request
 	// on a Channel.subscribe call (v0.8.4). Default 30000 (30 s) —
 	// long enough for "wake me when there's new work" semantics,
@@ -5194,66 +4862,6 @@ type Env struct {
 	// on agent crash. 0 disables long-poll entirely.
 	// Env: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS.
 	ChannelsLongPollCapMS int
-
-	// ChannelsMaxPendingDeferred caps the v0.8.6 deferred-publish
-	// scheduler's live timer count. Excess publishes still land in
-	// storage; the scheduler silently skips the in-process Bus
-	// notification (subscribers see deferred messages on their next
-	// long-poll wake instead). Default 10000. 0 disables the cap
-	// (unbounded timers).
-	// Env: LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED.
-	ChannelsMaxPendingDeferred int
-
-	// AgentDefMaxDefinitionBytes caps a single AgentDef.create or
-	// AgentDef.fork's serialised definition JSON (v0.8.5). Default
-	// 131072 (128 KB). 0 disables. Mirrors MemoryMaxValueBytes's
-	// negative-as-disable convention.
-	// Env: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES.
-	AgentDefMaxDefinitionBytes int
-
-	// TeamDefMaxDefinitionBytes caps a TeamDef create or fork's serialised
-	// definition JSON. Default 1048576 (1 MiB): a team carries its own agents'
-	// definitions, each still held to the AgentDef caps, so the whole is larger
-	// than any one agent. 0 disables.
-	// Env: LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES.
-	TeamDefMaxDefinitionBytes int
-
-	// AgentDefMaxDescriptionBytes caps the free-text description
-	// field on AgentDef.create / fork (v0.8.5). Default 8192 (8 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES.
-	AgentDefMaxDescriptionBytes int
-
-	// AgentDefMaxCodeBytes caps an inline code-js `code_body` overlay on
-	// AgentDef.create / fork (RFC J). A dedicated cap (vs the whole-
-	// definition AgentDefMaxDefinitionBytes) gives a clearer error and a
-	// tighter default for executable source. Default 262144 (256 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES.
-	AgentDefMaxCodeBytes int
-
-	// SkillDefMaxBodyBytes caps the overlay.body field on
-	// SkillDef.create / fork (v0.8.22). Default 131072 (128 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES.
-	SkillDefMaxBodyBytes int
-
-	// SkillDefMaxDescriptionBytes caps the free-text description
-	// field on SkillDef.create / fork (v0.8.22). Default 8192 (8 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES.
-	SkillDefMaxDescriptionBytes int
-
-	// EvaluationMaxJudgementBytes caps the structured-judgement JSON
-	// on Evaluation.submit (v0.8.5). Default 32768 (32 KB). 0 disables.
-	// Env: LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES.
-	EvaluationMaxJudgementBytes int
-
-	// EvaluationMaxRationaleBytes caps the natural-language rationale
-	// text on Evaluation.submit (v0.8.5). Default 8192 (8 KB).
-	// 0 disables.
-	// Env: LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES.
-	EvaluationMaxRationaleBytes int
 
 	// ProviderHeaderTimeout is the per-attempt cap on time-to-first-
 	// byte for streaming provider HTTP calls (set on each driver's
@@ -5297,14 +4905,6 @@ type Env struct {
 	OllamaLocalHeaderTimeout time.Duration
 	OllamaLocalIdleTimeout   time.Duration
 
-	// SchedulerEnabled enables the v1.x RFC E scheduler runtime
-	// (sweeper goroutine + due-row firing). Default OFF — operator
-	// opts in via LOOMCYCLE_SCHEDULER_ENABLED=1. When false, the
-	// sweeper goroutine is not started and substrate-stored
-	// schedules sit idle (the ScheduleDef tool still works for
-	// authoring + listing, just nothing fires).
-	SchedulerEnabled bool
-
 	// SchedulerTickSeconds is the sweeper poll cadence. Default 30.
 	// Lower values trade DB load for tighter punctuality. Env:
 	// LOOMCYCLE_SCHEDULER_TICK_SECONDS.
@@ -5342,14 +4942,6 @@ type Env struct {
 	// statically-declared secret + a LOOMCYCLE_*-named verify secret resolve
 	// without any allowlist entry. See internal/api/webhook.BuildEnvAllowlist.
 	SchedulerEnvAllowlist []string
-
-	// WebhooksEnabled enables the v1.x RFC H inbound-webhook receiver
-	// (the POST /v1/_webhooks/{name} mount). Default OFF — operator
-	// opts in via LOOMCYCLE_WEBHOOKS_ENABLED=1. When false, no route
-	// is mounted and webhook_defs sit idle (the WebhookDef tool still
-	// works for authoring + listing, just nothing receives). Mirrors
-	// SchedulerEnabled exactly.
-	WebhooksEnabled bool
 
 	// WebhooksEnvAllowlist is the webhook-specific, correctly-named twin of
 	// SchedulerEnvAllowlist (LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST="VAR1,VAR2").
@@ -5440,8 +5032,7 @@ func splitCommaTrim(s string) []string {
 //   - applyEnvCore replaces cfg.Env whole, so every block that sets an Env
 //     field runs after it;
 //   - a block that reads another's result runs after it (applyEnvNetPolicy
-//     reads the allowlist applyEnvCore set; applyEnvRetention's back-compat
-//     step reads the usage archiver values applyEnvSweepers set);
+//     reads the allowlist applyEnvCore set);
 //   - the blocks that refuse a bad value report the first one in this order,
 //     which is what an operator fixing them one boot at a time sees
 //     (TestLoadLayers_EnvRefusalsReportInLoadOrder).
@@ -5459,15 +5050,13 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 
 	applyEnvCore(cfg)
 
-	// RFC AH Phase 3 — the legacy filesystem jail is retired. The three env
-	// vars (LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD) no longer exist.
-	// Fail fast with a migration hint when a stale deploy still sets one,
-	// rather than silently denying every file op (sandbox-by-default).
-	if err := checkRetiredJailEnv(); err != nil {
-		return nil, err
+	// A removed variable is deleted with no compatibility read. One whose
+	// value asked for something tighter than what now applies stops the load;
+	// the rest are said once, where boot, `validate` and `doctor` all print
+	// advisories.
+	if refused := retiredEnvRefusals(os.Environ(), &cfg.Storage); len(refused) > 0 {
+		return nil, fmt.Errorf("retired environment variables are set to something tighter than this version applies, and ignoring them would loosen this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
-	// A removed variable is deleted with no compatibility read; say so once
-	// at load, where boot, `validate` and `doctor` all print advisories.
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
 	applyEnvStorage(cfg)
@@ -5500,7 +5089,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	applyEnvMCP(cfg)
-	applyEnvDefCaps(cfg)
 	applyEnvProviderTimeouts(cfg)
 
 	// RFC DT: the throughput-measurement block's env overrides + defaults.
@@ -5678,27 +5266,17 @@ func applyEnvCore(cfg *Config) {
 		HTTPHostAllowlist:           splitCSV(os.Getenv("LOOMCYCLE_HTTP_HOST_ALLOWLIST")),
 		HTTPPrivateHostAllowlist:    splitCSV(os.Getenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST")),
 		MCPAllowPrivateIPs:          getenvBool("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS", true),
-		ProvisionIdentityDocs:       getenvBool("LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", true),
 		HTTPCallerAuthoritative:     os.Getenv("LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE") == "1",
-		ResumeFanout:                os.Getenv("LOOMCYCLE_RESUME_FANOUT") == "1",
 		TeamSubscriptions:           os.Getenv("LOOMCYCLE_TEAM_SUBSCRIPTIONS") == "1",
 		MaxInteractiveChildren:      getenvInt("LOOMCYCLE_MAX_INTERACTIVE_CHILDREN", 0),
 		MaxLiveChildrenPerRun:       getenvInt("LOOMCYCLE_MAX_LIVE_CHILDREN_PER_RUN", 0),
-		InteractiveChildIdleTTLMs:   getenvInt("LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS", 0),
-		ResidentMaxTurnSeconds:      getenvInt("LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS", 0),
-		AgentChildMaxTimeoutMs:      getenvInt("LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS", 0),
-		AgentPollWaitCapMs:          getenvInt("LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS", 0),
 		BraveAPIKey:                 os.Getenv("BRAVE_API_KEY"),
 		SerperAPIKey:                os.Getenv("SERPER_API_KEY"),
 		ExaAPIKey:                   os.Getenv("EXA_API_KEY"),
 		TavilyAPIKey:                os.Getenv("TAVILY_API_KEY"),
 		WebSearchProvenance:         os.Getenv("LOOMCYCLE_WEBSEARCH_PROVENANCE") == "1",
-		ClientToolTimeoutMS:         getenvInt("LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS", 60000),
-		ClientToolMaxBytes:          int64(getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_BYTES", 1<<20)),
-		ClientToolMaxConns:          getenvInt("LOOMCYCLE_CLIENT_TOOL_MAX_CONNS", 8),
 		BashEnabled:                 os.Getenv("LOOMCYCLE_BASH_ENABLED") == "1",
 		BashAllowedCreds:            splitCSV(os.Getenv("LOOMCYCLE_BASH_ALLOWED_CREDS")),
-		BashboxEnabled:              os.Getenv("LOOMCYCLE_BASHBOX_ENABLED") == "1",
 		BashboxFallbackCommands:     splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS")),
 		BashboxFallbackAllowedEnv:   splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV")),
 		BashboxFallbackAllowedCreds: splitCSV(os.Getenv("LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS")),
@@ -5708,19 +5286,13 @@ func applyEnvCore(cfg *Config) {
 		SkillsRoot:                  os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
 		AgentsRoot:                  os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
 		HelpRoot:                    os.Getenv("LOOMCYCLE_HELP_ROOT"),
-		// Sweeper / GC defaults — populated above zero only if the
-		// env var below was set. The fallbacks are applied in
-		// cmd/loomcycle/main.go where the goroutines are started.
-		HeartbeatSweeperEnabled:  true,
-		ConfiguredRunTTL:         24 * time.Hour,
-		MaxConfiguredRunsPerUser: 100,
-		UsageSweeperEnabled:      true,
+		ConfiguredRunTTL:            24 * time.Hour,
+		MaxConfiguredRunsPerUser:    100,
 		// RFC BM retention defaults — opt-in (RetentionEnabled zero-false); the
 		// mode defaults off and keep-last-N to 5. The env parse below overrides
 		// these only when the corresponding var is set.
-		RetentionDefsMode:            "off",
-		RetentionDefsKeepLastN:       5,
-		RetentionChatsInternalMaxAge: 3 * 24 * time.Hour,
+		RetentionDefsMode:      "off",
+		RetentionDefsKeepLastN: 5,
 	}
 }
 
@@ -5764,6 +5336,8 @@ func applyEnvSQLMem(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_ENABLED"); v == "1" {
 		cfg.Storage.SqlMemEnabled = true
 	}
+	// A path of this host, like the data dir: it stays an env setting so one
+	// yaml serves hosts that keep their scope files in different places.
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_ROOT"); v != "" {
 		cfg.Storage.SqlMemRoot = v
 	}
@@ -5772,65 +5346,20 @@ func applyEnvSQLMem(cfg *Config) {
 			cfg.Storage.SqlMemQuotaBytes = n
 		}
 	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemStatementTimeoutMS = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_ROWS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemMaxRows = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Storage.SqlMemMaxResultBytes = n
-		}
-	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_AUDIT_MODE"); v != "" {
 		cfg.Storage.SqlMemAuditMode = v
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_PG_DSN"); v != "" {
 		cfg.Storage.SqlMemPgDSN = v
 	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemTxnTimeoutMS = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemMaxOpenTxns = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemMaxOpenTxnsPerTenant = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemMaxTxnDepth = n
-		}
-	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_SCOPE_TTL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Storage.SqlMemScopeTTLMS = n
 		}
 	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_GC_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Storage.SqlMemGCIntervalMS = n
-		}
-	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
 			cfg.Storage.SqlMemTotalMaxBytes = n
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
-			cfg.Storage.SqlMemSnapshotMaxScopeBytes = n
 		}
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_SHARED_SCHEMAS"); v != "" {
@@ -5862,7 +5391,7 @@ func applyEnvSQLMem(cfg *Config) {
 	// Explicit-transaction bounds (Phase 3a). A txn TTL ensures a held scope
 	// connection is reclaimed if an agent abandons a transaction; the
 	// MaxOpenTxns cap bounds total pinned connections. Both apply only when the
-	// agent uses sql_begin. A negative env (unparseable) leaves the default.
+	// agent uses sql_begin.
 	if cfg.Storage.SqlMemTxnTimeoutMS == 0 {
 		cfg.Storage.SqlMemTxnTimeoutMS = 30000
 	}
@@ -5911,23 +5440,6 @@ func AddContextToolDefault(def *AgentDef) {
 	// A fresh slice: def.Tools may share its backing array with a stored or
 	// cached definition, which an in-place append would write through.
 	def.Tools = append(append([]string(nil), def.Tools...), "Context")
-}
-
-// checkRetiredJailEnv fails config load when a deploy still sets one of the
-// retired legacy-jail env vars (RFC AH Phase 3). Volumes are now the sole
-// filesystem mechanism; honoring these silently would no-op (an unbound agent
-// is denied all disk access), so we surface a clear migration hint instead.
-func checkRetiredJailEnv() error {
-	var set []string
-	for _, name := range []string{"LOOMCYCLE_READ_ROOT", "LOOMCYCLE_WRITE_ROOT", "LOOMCYCLE_BASH_CWD"} {
-		if os.Getenv(name) != "" {
-			set = append(set, name)
-		}
-	}
-	if len(set) == 0 {
-		return nil
-	}
-	return fmt.Errorf("%s retired in RFC AH Phase 3 — declare a `volumes:` block instead, e.g. `default: {path: …, mode: rw, default: true}` (see docs/CONFIGURATION.md)", strings.Join(set, ", "))
 }
 
 // validateVolumes checks the top-level `volumes:` map (RFC AH Phase 1)
@@ -7032,18 +6544,10 @@ const DefaultShutdownPauseTimeoutMs = 7000
 // in-memory files cost about 2-2.6x the bytes written in heap.
 const BashboxOverlayMaxBytesDefault = 64 << 20
 
-// GitPushMaxBytesDefault is the cap on one Git push's upload when
-// LOOMCYCLE_GIT_PUSH_MAX_BYTES is unset (RFC FB).
-const GitPushMaxBytesDefault = 100 << 20
-
 // The inbox caps (RFC FF): one kept file, and a run tree's whole inbox.
 const (
 	FileMaxBytesDefault      = 64 << 20
 	FileInboxMaxBytesDefault = 1 << 30
-	// FileBase64MinBytesDefault is the shortest base64 string in an MCP text
-	// block that capture considers a file: short enough for a small scan,
-	// long enough that an ordinary id or hash is never a candidate.
-	FileBase64MinBytesDefault = 4 << 10
 )
 
 // MCPMaxFrameBytesDefault caps one MCP response. 16 MiB was the stdio line

@@ -173,7 +173,7 @@ document. It carries titles and metadata, never bodies.
 - **Paging.** Documents in id order, `page_documents` (default 200, at most
   1000 — lowered, never refused) per page, always whole documents. Pass
   `page.next_cursor` back as `after` until it is absent. If the SQL Memory
-  row cap (`LOOMCYCLE_SQLMEM_MAX_ROWS`) cuts the chunk read, the page keeps the
+  row cap (`storage.sqlmem_max_rows`) cuts the chunk read, the page keeps the
   documents it read whole and reports `page.clamped_to`; a single document
   larger than the cap is refused.
 - **Cost.** A page reads its own documents' Path names through a reverse
@@ -507,8 +507,7 @@ GET /v1/_document/feed?scope=user|tenant[&scope_id=…][&tenant=…]
   document that no longer exists is sent only when nothing the caller holds
   restricts reading the scope; otherwise it is dropped and the client
   reconciles on its next reload.
-- **Limits.** At most `LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS` (default 4; `0` =
-  unlimited) concurrent streams per principal on a replica; the next is
+- **Limits.** At most 4 concurrent streams per principal on a replica; the next is
   refused with `429 too_many_streams`.
 - **Transports.** HTTP SSE only. TS: `client.documentFeed({scope, scopeId?,
   tenant?, signal})`, an async iterator of `{kind: "feed" | "change" |
@@ -638,7 +637,7 @@ Kinds combine with AND, values within a list with OR; a singular and its plural 
 **How it works — resolve in SQL Memory, restrict in the main store.** The filter is resolved once per call, in the scope's SQL Memory (`chunks`, `chunk_tags`, `chunk_memory_meta`, the Path tree), to a set of chunk ids. That set travels to the store as `MemorySearchFilter.IDs` (or `ExcludeIDs`), an *id segment* relative to the key prefix: for `doc.chunk:<id>` it is the chunk id and for a derived unit `doc.unit:<id>:<kind>:<n>` the same chunk id, so one list restricts the vector leg, the full-text leg and both unit legs alike. Postgres applies it in the statement (`split_part(...) = ANY($ids)`), before `LIMIT`; fusion, unit resolution, dedup and the rerank then only ever see filtered rows. Resolving at query time against the tables that own the structure means a filter is correct the moment a chunk is moved, retyped, retagged or renamed — there is no denormalised copy to keep in step. An id-filtered statement is planned per execution (sent unnamed), because a cached generic plan cannot hash the bound list and walks it for every row (measured 9 ms → 18.4 s on 20,000 ids).
 
 - **Response.** Only when a filter was given, the response carries `filter: {applied, matched_documents, matched_chunks, type_expanded_to?, inverted}`. A filter-free call is byte-identical to before (no resolver runs). `matched_chunks: 0` returns `{chunks: [], filter}` without embedding the query.
-- **Size.** When the matched set is more than half the scope, its complement is sent as a denylist instead (`inverted: true`); an exclusion-only filter is always a denylist. The list sent is capped by `LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS` (default 50,000); over it the call is refused with a business error `filter_too_wide` carrying `matched_chunks`, `scope_chunks` and the cap — never a silent post-filter. The list's size is recorded on the `loomcycle.memory.search` span as `loomcycle.memory.filter.ids` / `loomcycle.memory.filter.exclude_ids`.
+- **Size.** When the matched set is more than half the scope, its complement is sent as a denylist instead (`inverted: true`); an exclusion-only filter is always a denylist. The list sent is capped at 50,000 ids; over it the call is refused with a business error `filter_too_wide` carrying `matched_chunks`, `scope_chunks` and the cap — never a silent post-filter. The list's size is recorded on the `loomcycle.memory.search` span as `loomcycle.memory.filter.ids` / `loomcycle.memory.filter.exclude_ids`.
 - **Isolation and access control.** Paths resolve in the caller's own tenant + scope tree; a foreign document id resolves to nothing. For a caller whose access-control set can deny it reading part of the scope, the filtered set is narrowed to readable documents before anything is counted or sent, and always travels as an allowlist (never inverted — a denylist would have to name the unreadable chunks): no id of a denied document reaches the store, and no count or refusal moves when a denied document changes. The listing post-filter still runs on the answer. A filter-free search is not narrowed this way; it keeps the plain post-filter.
 - **Tiers.** The id predicate is Postgres-only, which is the only tier with vector and full-text legs; sqlite ignores it.
 
@@ -947,7 +946,7 @@ A later pass treats a `manual` statement as a person's and never undoes it (see 
 The quote must be verbatim. For a chunk or a chat turn the server finds it in the source at write time, records `char_start` / `char_end`, and refuses a quote that does not occur there (`evidence_quote_not_found`). A reference into another scope is kept as written: this scope cannot read that one to check it, so such a row is not ground for a verdict either.
 
 - **A title.** A `{chunk_id, quote}` row may take `part: "title"` to quote the chunk's title rather than its body (`"body"`, the default); the span is then counted in characters of the title. `part` is refused on a chat-turn or cross-scope row. A body quote that is really the title is refused with a hint to pass `part: "title"`. `get_edge`, `get_edges` and `list_statements` return `"part": "title"` on title rows and omit it on body rows. `find_duplicates` quotes both documents' root titles this way, so each `duplicate_of` pair it proposes carries evidence.
-- **Bounds.** A quote is at most 4,000 characters. A statement keeps at most 32 rows (`LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE`); past that, a write reports `evidence_capped: true` and adds no more.
+- **Bounds.** A quote is at most 4,000 characters. A statement keeps at most 32 rows; past that, a write reports `evidence_capped: true` and adds no more.
 - **Readers.** `get_edges`, `backlinks` and `list_statements` carry the first three rows and `evidence_count`; `get_edge` carries every row.
 - **Withheld when unreadable.** A row whose source is a document the caller may not read is left out of every answer, and `evidence_count` counts only what is shown. At write time, citing a chunk the caller may not read answers exactly as a chunk that does not exist, so a quote check cannot reveal text in a document the caller cannot open.
 - **Stale.** `stale: true` marks a quote that no longer occurs in its source. A maintainer can mark a row stale or re-point it (`maintain_statement`); re-pointing keeps a row's `part`.

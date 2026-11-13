@@ -50,8 +50,7 @@ func systemChannelFixture(t *testing.T) (*Server, store.Store, func()) {
 			},
 		},
 		Env: config.Env{
-			AuthToken:             "test-token",
-			ChannelsMaxValueBytes: 64 * 1024,
+			AuthToken: "test-token",
 		},
 	}
 	hookReg := hooks.NewSet()

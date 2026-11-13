@@ -28,7 +28,7 @@ func teamWalkLedgerRow(toolUseID, runID string) store.Event {
 func TestDetectFanoutParent_SkipsAPollModeWalkRow(t *testing.T) {
 	teamCall := mkEvent("tool_call", providers.Event{Type: providers.EventToolCall,
 		ToolUse: &providers.ToolUse{ID: "tu_team", Name: "TeamDef", Input: json.RawMessage(`{"op":"run","name":"rev","mode":"poll"}`)}})
-	if _, ok := detectFanoutParent(true, []store.Event{teamCall, teamWalkLedgerRow("tu_team", "r_walk")}); ok {
+	if _, ok := detectFanoutParent([]store.Event{teamCall, teamWalkLedgerRow("tu_team", "r_walk")}); ok {
 		t.Error("a poll-mode walk's ledger row was taken for a parked fan-out")
 	}
 	fan := []store.Event{
@@ -37,7 +37,7 @@ func TestDetectFanoutParent_SkipsAPollModeWalkRow(t *testing.T) {
 		mkEvent(string(providers.EventSpawnChildStarted), providers.Event{Type: providers.EventSpawnChildStarted,
 			SpawnChild: &providers.SpawnChildEventInfo{ToolUseID: "tu_fan", Index: 0, RunID: "r0", Agent: "s"}}),
 	}
-	got, ok := detectFanoutParent(true, append([]store.Event{teamCall, teamWalkLedgerRow("tu_team", "r_walk")}, fan...))
+	got, ok := detectFanoutParent(append([]store.Event{teamCall, teamWalkLedgerRow("tu_team", "r_walk")}, fan...))
 	if !ok || got.toolUseID != "tu_fan" {
 		t.Errorf("detected %+v %v beside a walk row, want the parked tu_fan", got, ok)
 	}

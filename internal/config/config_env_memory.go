@@ -11,25 +11,8 @@ import (
 // applyEnvMemory reads the memory, document feed, dead-link GC and vector
 // memory knobs, each with its default.
 func applyEnvMemory(cfg *Config) {
-	// Memory tool defaults. Per-write 64 KB, per-scope 1 MB,
-	// 15-minute TTL sweep cadence. Negative values are treated as
-	// "disable" (matches the SSE keepalive convention above).
-	cfg.Env.MemoryMaxValueBytes = 64 * 1024
-	if v := os.Getenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemoryMaxValueBytes = 0
-			} else {
-				cfg.Env.MemoryMaxValueBytes = n
-			}
-		}
-	}
-	cfg.Env.DocumentFeedMaxStreams = 4
-	if v := os.Getenv("LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			cfg.Env.DocumentFeedMaxStreams = max(n, 0)
-		}
-	}
+	// Memory tool defaults: per-scope 1 MB. Negative values are treated as
+	// "disable".
 	cfg.Env.MemoryMaxScopeBytes = 1024 * 1024
 	if v := os.Getenv("LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -52,16 +35,6 @@ func applyEnvMemory(cfg *Config) {
 	}
 	cfg.Env.DeadLinkGCDryRun = os.Getenv("LOOMCYCLE_DEADLINK_GC_DRY_RUN") == "1"
 	cfg.Env.DocumentProjectionInterval = os.Getenv("LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL")
-	cfg.Env.MemorySweepInterval = 15 * time.Minute
-	if v := os.Getenv("LOOMCYCLE_MEMORY_SWEEP_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemorySweepInterval = 0
-			} else {
-				cfg.Env.MemorySweepInterval = time.Duration(n) * time.Millisecond
-			}
-		}
-	}
 	cfg.Env.MemoryPendingDrainedTTL = 7 * 24 * time.Hour
 	if v := os.Getenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {

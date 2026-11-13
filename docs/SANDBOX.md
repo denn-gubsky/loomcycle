@@ -64,8 +64,7 @@ builder-sidecar                    ──►  per-session container
 
 4. **Enable the bundles:** `LOOMCYCLE_PRESETS=base,sandbox,dev-exec`. `sandbox`
    registers the `sandbox` MCP server + the `dev/sandbox-usage` delegation skill;
-   `dev-exec` registers the deterministic code-js **`dev/exec`** agent (needs
-   `LOOMCYCLE_CODE_AGENTS_ENABLED=1`):
+   `dev-exec` registers the deterministic code-js **`dev/exec`** agent:
 
    ```yaml
    mcp_servers:
@@ -237,7 +236,7 @@ agent can:
 To let your own agent delegate, grant it the `Agent` tool (and, optionally, put
 `dev/sandbox-usage` in its `skills:`). To let an agent run the sandbox *itself* rather
 than delegate, grant it the `mcp__sandbox__*` tools directly. (`dev/exec` needs the
-`dev-exec` bundle + `LOOMCYCLE_CODE_AGENTS_ENABLED=1`.)
+`dev-exec` bundle.)
 
 ## Sidecar configuration
 

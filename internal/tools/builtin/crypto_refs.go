@@ -178,7 +178,7 @@ func (r dataRef) hookInput(write bool, via string) json.RawMessage {
 // truncated.
 func (c *Crypto) readRef(ctx context.Context, r dataRef, max int) ([]byte, tools.Result, bool) {
 	tooBig := func() tools.Result {
-		return errValidation(fmt.Sprintf("%s holds more than %d bytes", r.raw, max), "Split the data, or ask the operator to raise LOOMCYCLE_CRYPTO_MAX_BYTES.")
+		return errValidation(fmt.Sprintf("%s holds more than %d bytes", r.raw, max), "Split the data.")
 	}
 	switch r.kind {
 	case refVolume:

@@ -350,7 +350,7 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 	// Operator-authed substrate ops; the cap (default 8 MiB, RFC BO) admits a
 	// set_asset base64 image payload + a large import_md document — the historical
 	// 1 MiB forced large docs to be split.
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxDocumentBytes()))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxDocumentBytes))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "bad_request", "read body: "+err.Error())
 		return

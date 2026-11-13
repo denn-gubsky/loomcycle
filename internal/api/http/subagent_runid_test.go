@@ -81,7 +81,6 @@ func TestResumeFanout_LedgerResultRowKeepsTheChildRunID(t *testing.T) {
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
-	cfg.Env.ResumeFanout = true
 	srv, _ := makeServer(t, &scriptedProvider{}, cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

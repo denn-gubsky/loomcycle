@@ -380,7 +380,7 @@ func (d *Document) mergeStatement(ctx context.Context, key sqlmem.ScopeKey, s *s
 		if err != nil {
 			return err
 		}
-		n, max := len(held.Rows), edgeEvidenceMax()
+		n, max := len(held.Rows), d.edgeEvidenceMax()
 		for _, r := range mine.Rows {
 			k := rowKey(r)
 			switch {

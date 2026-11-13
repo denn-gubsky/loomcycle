@@ -646,7 +646,6 @@ func TestAgentTool_ParallelSpawn_ParksParentOnPause(t *testing.T) {
 	var startedOnce sync.Once
 
 	a := &AgentTool{
-		SpawnLedger: true,
 		RunDetailed: func(_ context.Context, name, _, _ string) (string, map[string]any, string, error) {
 			startedOnce.Do(func() { close(childStarted) })
 			<-childRelease // simulate a long child still running when the pause hits
@@ -716,47 +715,6 @@ func TestAgentTool_ParallelSpawn_ParksParentOnPause(t *testing.T) {
 	}
 	if !sawResult {
 		t.Errorf("expected a spawn_child_result ledger event for tu_fan; got %d events", len(events))
-	}
-}
-
-// TestAgentTool_ParallelSpawn_NoWatcherNoLedgerWhenFlagOff: with SpawnLedger
-// off (the default), parallel_spawn emits NO ledger events and starts NO park
-// watcher even when a gate + emitter are present — proving the Phase-3 capture
-// side is byte-identical to pre-Phase-3 until the operator opts in.
-func TestAgentTool_ParallelSpawn_NoWatcherNoLedgerWhenFlagOff(t *testing.T) {
-	gate := newFanoutFakeGate()
-	a := &AgentTool{
-		// SpawnLedger defaults false.
-		RunDetailed: func(_ context.Context, name, _, _ string) (string, map[string]any, string, error) {
-			return "out-" + name, nil, "run_x", nil
-		},
-	}
-	a.Run = func(ctx context.Context, name, prompt, defID string) (string, error) {
-		out, _, _, err := a.RunDetailed(ctx, name, prompt, defID)
-		return out, err
-	}
-	var emu sync.Mutex
-	var events []providers.Event
-	emit := func(ev providers.Event) { emu.Lock(); events = append(events, ev); emu.Unlock() }
-	ctx := tools.WithPauseGate(context.Background(), gate)
-	ctx = tools.WithToolUseID(ctx, "tu_fan")
-	ctx = tools.WithEventEmitter(ctx, emit)
-
-	res, err := a.Execute(ctx, json.RawMessage(`{"op":"parallel_spawn","spawns":[{"name":"solver","prompt":"p"}]}`))
-	if err != nil || res.IsError {
-		t.Fatalf("Execute failed: err=%v isErr=%v text=%s", err, res.IsError, res.Text)
-	}
-	// Trigger a pause AFTER completion — a watcher (if it had wrongly started)
-	// would call Park; a correctly-disabled one never does.
-	gate.triggerPause()
-	time.Sleep(20 * time.Millisecond)
-	if got := atomic.LoadInt32(&gate.parkCalls); got != 0 {
-		t.Errorf("park called %d times with SpawnLedger off, want 0", got)
-	}
-	emu.Lock()
-	defer emu.Unlock()
-	if len(events) != 0 {
-		t.Errorf("expected no ledger events with SpawnLedger off, got %d", len(events))
 	}
 }
 

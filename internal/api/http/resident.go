@@ -46,8 +46,7 @@ const (
 	// resident child without max_iterations is unbounded) — and such a child
 	// would hold its goroutine, its sandbox and a resident slot forever. Two
 	// hours is far past any turn a parent should wait on (four idle TTLs), yet
-	// finite. LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS overrides it; there is no
-	// unlimited setting.
+	// finite.
 	defaultResidentMaxTurn = 2 * time.Hour
 	// residentTombstoneTTL is how long how a child ended stays answerable
 	// after its teardown removed it: long enough for a parent busy elsewhere
@@ -569,19 +568,12 @@ func (s *Server) maxLiveChildren() int {
 	return defaultMaxLiveChildren
 }
 
-// residentMaxTurn is the turn ceiling (LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS;
-// 0 = the default).
-func (s *Server) residentMaxTurn() time.Duration {
-	if s.cfg() != nil && s.cfg().Env.ResidentMaxTurnSeconds > 0 {
-		return time.Duration(s.cfg().Env.ResidentMaxTurnSeconds) * time.Second
-	}
-	return defaultResidentMaxTurn
-}
+// residentMaxTurn is the turn ceiling of a resident child.
+func (s *Server) residentMaxTurn() time.Duration { return defaultResidentMaxTurn }
 
+// residentChildIdleTTL is how long a resident child may sit idle before it is
+// reaped, when its open names no idle_ttl_seconds.
 func (s *Server) residentChildIdleTTL() time.Duration {
-	if s.cfg() != nil && s.cfg().Env.InteractiveChildIdleTTLMs > 0 {
-		return time.Duration(s.cfg().Env.InteractiveChildIdleTTLMs) * time.Millisecond
-	}
 	return time.Duration(defaultResidentChildIdleTTLMs) * time.Millisecond
 }
 

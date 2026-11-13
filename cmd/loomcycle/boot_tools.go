@@ -194,7 +194,6 @@ func (b *boot) buildToolsCore(httpTool *builtin.HTTP) {
 	// Bashbox is a named var so its CredResolve can be late-bound after the
 	// credential engine is constructed below (RFC BD per-tenant repo token).
 	bashboxTool := &builtin.Bashbox{
-		Enabled:              cfg.Env.BashboxEnabled,
 		FallbackCommands:     cfg.Env.BashboxFallbackCommands,
 		FallbackAllowedEnv:   cfg.Env.BashboxFallbackAllowedEnv,
 		FallbackAllowedCreds: cfg.Env.BashboxFallbackAllowedCreds,
@@ -288,7 +287,7 @@ func (b *boot) buildToolsMemory() {
 	}
 
 	memoryTool := &builtin.Memory{
-		MaxValueBytes:     cfg.Env.MemoryMaxValueBytes,
+		MaxValueBytes:     builtin.MemoryMaxValueBytes,
 		DefaultQuotaBytes: cfg.Env.MemoryMaxScopeBytes,
 		Embedder:          embedder,
 		// RFC I MR-3b: resolves a per-agent memory_backend NAME to its
@@ -325,13 +324,12 @@ func (b *boot) buildToolsChannels() {
 	// block.
 	channelBus := channels.NewBus()
 	// v0.8.6 scheduler — arms time.AfterFunc timers for deferred
-	// publishes so long-poll subscribers wake at visible_at. Bounded
-	// by LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED (default 10000).
-	channelScheduler := channels.NewScheduler(channelBus, cfg.Env.ChannelsMaxPendingDeferred)
+	// publishes so long-poll subscribers wake at visible_at.
+	channelScheduler := channels.NewScheduler(channelBus, channels.MaxPendingDeferred)
 	channelTool := &builtin.Channel{
 		Bus:           channelBus,
 		Scheduler:     channelScheduler,
-		MaxValueBytes: cfg.Env.ChannelsMaxValueBytes,
+		MaxValueBytes: builtin.ChannelMaxValueBytes,
 		LongPollCapMS: cfg.Env.ChannelsLongPollCapMS,
 	}
 	b.allTools = append(b.allTools, channelTool)
@@ -352,9 +350,9 @@ func (b *boot) buildToolsDefs() {
 	// and the policy gate runs inside Execute.
 	agentDefTool := &builtin.AgentDef{
 		Cfg:                 cfg,
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
-		MaxCodeBytes:        cfg.Env.AgentDefMaxCodeBytes,
+		MaxDefinitionBytes:  builtin.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
+		MaxCodeBytes:        builtin.AgentDefMaxCodeBytes,
 	}
 	b.allTools = append(b.allTools, agentDefTool)
 
@@ -365,8 +363,8 @@ func (b *boot) buildToolsDefs() {
 	// same static skills.
 	skillDefTool := &builtin.SkillDef{
 		Set:                 skillSet,
-		MaxBodyBytes:        cfg.Env.SkillDefMaxBodyBytes,
-		MaxDescriptionBytes: cfg.Env.SkillDefMaxDescriptionBytes,
+		MaxBodyBytes:        builtin.SkillDefMaxBodyBytes,
+		MaxDescriptionBytes: builtin.SkillDefMaxDescriptionBytes,
 	}
 	b.allTools = append(b.allTools, skillDefTool)
 
@@ -378,8 +376,8 @@ func (b *boot) buildToolsDefs() {
 	// cap is the team's own (it carries its agents' definitions); the
 	// description cap is AgentDef's.
 	teamDefTool := &builtin.TeamDef{
-		MaxDefinitionBytes:  cfg.Env.TeamDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxDefinitionBytes:  builtin.TeamDefMaxDefinitionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
 		// A team's own agents and skills pass AgentDef and SkillDef create's
 		// gates, on these instances.
 		Agents: agentDefTool,
@@ -426,7 +424,7 @@ func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
 	// lists hosts) and gated per agent by git_remote.
 	gitTool := &builtin.Git{
 		PushHosts:    cfg.Env.GitPushHosts,
-		PushMaxBytes: cfg.Env.GitPushMaxBytes,
+		PushMaxBytes: builtin.GitPushMaxBytes,
 		AuthorName:   cfg.Env.GitAuthorName,
 		AuthorEmail:  cfg.Env.GitAuthorEmail,
 	}
@@ -443,10 +441,7 @@ func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
 	// RFC EP — the Crypto tool: encrypt / sign / MAC / TOTP with keys the
 	// runtime holds. Engine late-bound with CredentialDef's; an agent uses keys
 	// only from the scopes its crypto_scopes grants (RunPolicy.Crypto).
-	cryptoTool := &builtin.Crypto{
-		MaxBytes:     cfg.Env.CryptoMaxBytes,
-		MaxOpsPerRun: cfg.Env.CryptoMaxOpsPerRun,
-	}
+	cryptoTool := &builtin.Crypto{}
 	b.allTools = append(b.allTools, cryptoTool)
 
 	// RFC AL — the Path tool (Unix-like VFS over the dirents substrate). Store
@@ -474,17 +469,15 @@ func (b *boot) buildToolsDocument() {
 
 	// RFC AK — the Document tool (chunked-graph documents). Store late-bound
 	// below; SqlMem bound in the SQL Memory block (Document requires it); Bus
-	// for change events. MaxAssetBytes (RFC BO) caps a stored image's decoded
-	// size (0 → the tool's built-in default).
+	// for change events.
 	// Embedder (RFC BU phase 1) makes chunk BODIES semantically searchable via
 	// `memory op=search` with prefix "doc.chunk:". Nil when the operator declared
 	// no embedder block — bodies are then written exactly as before, unsearchable
 	// but never lost, so authoring never depends on an embedder being reachable.
 	documentTool := &builtin.Document{
-		Bus:           channelBus,
-		MaxAssetBytes: int(cfg.Env.MaxDocumentAssetBytes),
-		Embedder:      embedder,
-		Cfg:           cfg, // RFC CE: resolve document_sources: for set_remote / sync
+		Bus:      channelBus,
+		Embedder: embedder,
+		Cfg:      cfg, // RFC CE: resolve document_sources: for set_remote / sync
 	}
 	b.allTools = append(b.allTools, documentTool)
 	// RFC EP P2 — a Crypto `from` / `to` reference reads and writes Memory and
@@ -523,7 +516,6 @@ func (b *boot) buildToolsHistory() {
 // buildToolsEvaluation builds the Evaluation tool.
 func (b *boot) buildToolsEvaluation() {
 	b.toolStep("evaluation")
-	cfg := b.cfg
 
 	// MCPServerDef tool construction is deferred until after the pool
 	// + dynamic registry are built (operator-admin-only — NOT appended
@@ -534,8 +526,8 @@ func (b *boot) buildToolsEvaluation() {
 	// vs the target run's identity, and per-agent yaml `evaluation_scopes`
 	// gate which roles may submit + whether read ops are allowed.
 	evaluationTool := &builtin.Evaluation{
-		MaxJudgementBytes: cfg.Env.EvaluationMaxJudgementBytes,
-		MaxRationaleBytes: cfg.Env.EvaluationMaxRationaleBytes,
+		MaxJudgementBytes: builtin.EvaluationMaxJudgementBytes,
+		MaxRationaleBytes: builtin.EvaluationMaxRationaleBytes,
 	}
 	b.allTools = append(b.allTools, evaluationTool)
 	b.evaluationTool = evaluationTool
@@ -710,23 +702,19 @@ func (b *boot) logToolPosture() {
 	} else {
 		slog.Info("note: Bash tool is registered but disabled — set LOOMCYCLE_BASH_ENABLED=1 to enable (NOT a true sandbox; see docs)")
 	}
-	if cfg.Env.BashboxEnabled {
-		slog.Info("note: Bashbox tool is enabled (LOOMCYCLE_BASHBOX_ENABLED=1) — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha: gate per agent via tools, and for mutually hostile tenants on one process also run loomcycle in a container.")
-		if len(cfg.Env.BashboxFallbackCommands) > 0 {
-			slog.Warn("Bashbox host-command fallback is enabled (LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS). These commands ESCAPE the sandbox and run on the real host shell (with host filesystem + network) — only allowlist commands you trust, and only enable for trusted prompts. Fallback requires a read-write volume.", "commands", strings.Join(cfg.Env.BashboxFallbackCommands, ","))
-			// RFC ES #9: the variables reach only the host child, but that
-			// child does what the model tells it, including printing them.
-			if len(cfg.Env.BashboxFallbackAllowedEnv) > 0 || len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
-				advice := "pass only values you would hand the model."
-				if len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
-					advice = "pass only credentials you would hand the model, and bind each stored credential to the one command that needs it (cmd:NAME in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS)."
-				}
-				slog.Warn("the model can read every variable and credential given to Bashbox host commands (LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV, LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS): an allowlisted command can be told to print its environment (e.g. git -c alias.x='!env' x). So "+advice,
-					"allowed_env", strings.Join(cfg.Env.BashboxFallbackAllowedEnv, ","), "allowed_creds", strings.Join(cfg.Env.BashboxFallbackAllowedCreds, ","))
+	slog.Info("note: Bashbox tool is registered — a TRUE in-process sandbox (gbash): no OS process, paths rooted at the volume, no network; read-only volumes are honored. gbash is alpha: gate per agent via tools, and for mutually hostile tenants on one process also run loomcycle in a container.")
+	if len(cfg.Env.BashboxFallbackCommands) > 0 {
+		slog.Warn("Bashbox host-command fallback is enabled (LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS). These commands ESCAPE the sandbox and run on the real host shell (with host filesystem + network) — only allowlist commands you trust, and only enable for trusted prompts. Fallback requires a read-write volume.", "commands", strings.Join(cfg.Env.BashboxFallbackCommands, ","))
+		// RFC ES #9: the variables reach only the host child, but that
+		// child does what the model tells it, including printing them.
+		if len(cfg.Env.BashboxFallbackAllowedEnv) > 0 || len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
+			advice := "pass only values you would hand the model."
+			if len(cfg.Env.BashboxFallbackAllowedCreds) > 0 {
+				advice = "pass only credentials you would hand the model, and bind each stored credential to the one command that needs it (cmd:NAME in LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS)."
 			}
+			slog.Warn("the model can read every variable and credential given to Bashbox host commands (LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_ENV, LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS): an allowlisted command can be told to print its environment (e.g. git -c alias.x='!env' x). So "+advice,
+				"allowed_env", strings.Join(cfg.Env.BashboxFallbackAllowedEnv, ","), "allowed_creds", strings.Join(cfg.Env.BashboxFallbackAllowedCreds, ","))
 		}
-	} else {
-		slog.Info("note: Bashbox tool is registered but disabled — set LOOMCYCLE_BASHBOX_ENABLED=1 to enable (in-process sandbox; see docs)")
 	}
 
 	// Per-agent tool policy is default-deny: an agent with no tools

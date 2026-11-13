@@ -48,6 +48,6 @@ providers:
     options:
       stable: true
   code-js:
-    # Synthetic goja provider — gated on LOOMCYCLE_CODE_AGENTS_ENABLED=1;
+    # Synthetic goja provider, registered by this entry;
     # code_root/deterministic/run_timeout flow from the LOOMCYCLE_CODE_AGENTS_* env.
     driver: code-js

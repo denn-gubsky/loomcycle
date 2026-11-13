@@ -183,8 +183,8 @@ func TestLinkChunks_EvidenceIsVerifiedAndAccumulates(t *testing.T) {
 
 // The cap keeps the oldest rows and says so.
 func TestLinkChunks_EvidenceCapKeepsTheOldest(t *testing.T) {
-	t.Setenv("LOOMCYCLE_DOCUMENT_EVIDENCE_MAX_PER_EDGE", "1")
 	d, ctx, _ := documentFixture(t)
+	d.EdgeEvidenceMax = 1
 	_, a, b, _ := stmtDoc(t, d, ctx, "cap")
 	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"user","from_id":%q,"to_id":%q,"kind":"cites",
 		"evidence":[{"chunk_id":%q,"quote":"The licensee"},{"chunk_id":%q,"quote":"Article 12"}]}`, a, b, a, a))

@@ -456,30 +456,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS
-            label: LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS
-            description: 'The /v1/client-tools WebSocket lets a client (browser extension / desktop app) register + run tools on the USER''S machine; an agent granted `client:<tool>` calls them like any tool. The endpoint is bearer-gated + always available; the knobs below only tune it. See `loomcycle help client-tools`. (example: 60000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CLIENT_TOOL_MAX_BYTES
-            label: LOOMCYCLE_CLIENT_TOOL_MAX_BYTES
-            description: '(example: 1048576)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CLIENT_TOOL_MAX_CONNS
-            label: LOOMCYCLE_CLIENT_TOOL_MAX_CONNS
-            description: '(example: 8)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_BASHBOX_ENABLED
-            label: LOOMCYCLE_BASHBOX_ENABLED
-            description: 'An alternative to Bash: a real sandbox (the pure-Go `gbash` engine) that spawns NO OS process, roots every path at the agent''s mounted volume, and has NO network. Unlike Bash it HONORS read-only volumes (writes hit an in-RAM overlay, never the host). Opt-in, then grant per agent via `tools: [Bashbox]`. gbash is alpha — the per-agent gate is the escape hatch. Defaults OFF. (example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS
             label: LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS
             description: 'Host-command fallback (RFC AJ §13): an operator allowlist of commands gbash does NOT implement (e.g. git, gh) that may ESCAPE the sandbox to the real host shell. Empty (default) = no fallback; every command stays sandboxed. Only these names reach the host; requires a rw volume. Comma-separated. (example: git,gh)'
@@ -501,18 +477,6 @@ questions:
           - variable: LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES
             label: LOOMCYCLE_BASHBOX_OVERLAY_MAX_BYTES
             description: 'Bytes one Bashbox call may write into memory: a read-only volume''s writes and the shadowed dynamic root. Past it, writes fail with "no space left on device". Default 64 MiB; under 1 MiB is raised to 1 MiB. (example: 67108864)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CRYPTO_MAX_BYTES
-            label: LOOMCYCLE_CRYPTO_MAX_BYTES
-            description: 'The Crypto tool encrypts, signs, MACs and makes one-time codes with keys the runtime holds (crypto keys stored with CredentialDef, which need LOOMCYCLE_SECRET_KEY). An agent uses keys only from the scopes its crypto_scopes grants. These cap each data argument (bytes) and the calls one run may make. Defaults: 1048576 and 100. (example: 1048576)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN
-            label: LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN
-            description: '(example: 100)'
             schema:
               type: string
               default: ""
@@ -558,21 +522,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_MEMORY_MAX_VALUE_BYTES
-            label: LOOMCYCLE_MEMORY_MAX_VALUE_BYTES
-            description: 'Per-write cap on the value payload (set / incr). Default 64 KB (65536). 0 disables. Refuses obvious abuse like "stash an entire transcript in one row". (example: 65536)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES
             label: LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES
             description: 'Default per-(scope, scope_id) byte cap. Default 1 MB (1048576). 0 disables. Per-agent yaml memory_quota_bytes overrides this. (example: 1048576)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_MEMORY_SWEEP_MS
-            label: LOOMCYCLE_MEMORY_SWEEP_MS
-            description: 'TTL reaper goroutine cadence — periodic DELETE of expired rows. Default 15 minutes. 0 disables (operators with an external reaper, or dev/test runs that don''t want background work, can opt out). Read paths filter expired entries even when the reaper is off, so agents never see stale values regardless. (example: 900000)'
             schema:
               type: string
               default: ""
@@ -600,69 +552,15 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_ROWS
-            label: LOOMCYCLE_SQLMEM_MAX_ROWS
-            description: 'Guardrails (defense-in-depth; the Go statement validator blocks ATTACH/PRAGMA/load_extension regardless): (example: 10000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES
-            label: LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES
-            description: '(example: 8388608)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS
-            label: LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS
-            description: '(example: 5000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS
-            label: LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS
-            description: '(example: 30000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS
-            label: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS
-            description: '(example: 64)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT
-            label: LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT
-            description: '(example: 16)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH
-            label: LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH
-            description: '(example: 8)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_SQLMEM_QUOTA_BYTES
             label: LOOMCYCLE_SQLMEM_QUOTA_BYTES
-            description: '(example: 52428800)'
+            description: 'The query guardrails (row and byte caps, statement and transaction timeouts, open-transaction caps, savepoint depth) have fixed defaults; a deployment that needs another value sets the yaml `storage: sqlmem_*` key. (example: 52428800)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES
             label: LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES
             description: '(example: 0)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES
-            label: LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES
-            description: '(example: 0)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_GC_INTERVAL_MS
-            label: LOOMCYCLE_SQLMEM_GC_INTERVAL_MS
-            description: '(example: 900000)'
             schema:
               type: string
               default: ""
@@ -680,12 +578,6 @@ questions:
               default: ""
           - variable: LOOMCYCLE_SQLMEM_SHARED_SCHEMAS
             label: LOOMCYCLE_SQLMEM_SHARED_SCHEMAS
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS
-            label: LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS
-            description: 'Document op=search / op=related filters (under_path, type, status, tag, as_of …) are resolved to a chunk-id list sent into every search leg. This caps that list; a filter that needs more is refused (filter_too_wide) rather than post-filtered. (example: 50000)'
             schema:
               type: string
               default: ""
@@ -784,12 +676,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS
-            label: LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS
-            description: 'Sweeper cadence (cleanup goroutine) in milliseconds. Default 15 min. Set 0 to disable. Bounded retention requires BOTH a non-zero retention AND non-zero sweep interval. (example: 900000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS
             label: LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS
             description: 'IMPORTANT: only flip on when the MCP client itself is trusted (operator-launched stdio = trusted; remote HTTP MCP would not be). (example: 1)'
@@ -814,33 +700,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS
-            label: LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS
-            description: Default TTL for agents registered via mcp__loomcycle__register_agent when the caller omits ttl_seconds. Default 86400 (24 h). Set 0 to require callers to ALWAYS supply an explicit ttl_seconds (no default-TTL registrations accepted). Set -1 from the caller side (NOT here) for "no expiry" — operator must explicitly unregister. Lower this on shared-operator setups where forgotten dynamic agents wo…
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS
-            label: LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS
-            description: 'Cadence for the dynamic_agents TTL sweeper, in milliseconds. Default 15 min (900000). Set 0 to disable the sweeper — expired rows linger in the table but DynamicAgentGet still filters them at read time, so functional correctness is preserved (only storage reclamation is forgone). Disabling makes sense at low registration volume where the table never grows enough to matter. (example: 900000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS
-            label: LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS
-            description: 'Default wait for in-flight runs to park when POST /v1/_pause omits timeout_ms. Default 0 ⇒ pause.DefaultPauseTimeout (30 s). Clamped at pause.MaxPauseTimeout (5 min) regardless of value — operator typo (300000 vs 30000) won''t leave the runtime in StatePausing for an extended period during which new runs 503. (example: 30000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS
             label: LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS
             description: 'On SIGTERM / SIGINT, pause this replica''s in-flight runs so the next boot resumes them, waiting at most this long. At 3/4 of it, the tool calls of runs not yet parked are interrupted (a Bash command''s process group is killed). 0 = no pause. The default leaves room in Docker''s 10 s stop grace; raise it with stop_grace_period / terminationGracePeriodSeconds. (example: 7000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_WEBHOOKS_ENABLED
-            label: LOOMCYCLE_WEBHOOKS_ENABLED
-            description: '---- RFC H inbound webhooks -------------------------------------------- External systems (GitHub/Gitea/Stripe/Linear/CI/n8n) trigger agent runs or wake parked agents via signed POST /v1/_webhooks/{name}. Off by default; the WebhookDef tool still authors/lists defs while disabled. (example: 1)'
             schema:
               type: string
               default: ""
@@ -880,15 +742,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_SCHEDULER_ENABLED
-            label: LOOMCYCLE_SCHEDULER_ENABLED
-            description: 'Fires ScheduleDef cron/at runs. Off by default; the ScheduleDef tool still authors/lists schedules while disabled. (Trigger-credential allowlist is LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST, above.) (example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_SCHEDULER_TICK_SECONDS
             label: LOOMCYCLE_SCHEDULER_TICK_SECONDS
-            description: '(example: 30)'
+            description: 'Fires ScheduleDef cron/at runs. Always on; with no ScheduleDef nothing fires. (Trigger-credential allowlist is LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST, above.) (example: 30)'
             schema:
               type: string
               default: ""
@@ -916,39 +772,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_CHANNELS_SWEEP_MS
-            label: LOOMCYCLE_CHANNELS_SWEEP_MS
-            description: 'Fan-in/out bus for ensemble coordination. The `channels:` yaml block declares targets; these tune the runtime. (example: 900000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES
-            label: LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES
-            description: '(example: 65536)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS
             label: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS
-            description: '(example: 30000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED
-            label: LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED
-            description: '(example: 10000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_PAUSE_CACHE_TTL_MS
-            label: LOOMCYCLE_PAUSE_CACHE_TTL_MS
-            description: '(LOOMCYCLE_PAUSE_DEFAULT_TIMEOUT_MS is documented above.) (example: 1000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_RESUME_FANOUT
-            label: LOOMCYCLE_RESUME_FANOUT
-            description: 'A snapshot''s size cap is per capture (`max_bytes` on the request), default 512 MB. No env var sets it. RFC X Phase 3 — resume a fan-out PARENT mid-parallel_spawn on restore. Default OFF (pause/snapshot/resume stays byte-identical until opt-in). (example: 1)'
+            description: 'Fan-in/out bus for ensemble coordination. The `channels:` yaml block declares targets. A message is capped at 64 KiB. (example: 30000)'
             schema:
               type: string
               default: ""
@@ -970,39 +796,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS
-            label: LOOMCYCLE_HEARTBEAT_SWEEP_INTERVAL_MS
-            description: '(example: 60000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_HEARTBEAT_STALE_MS
             label: LOOMCYCLE_HEARTBEAT_STALE_MS
             description: '(example: 600000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS
-            label: LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS
-            description: '(example: 300000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS
-            label: LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS
-            description: '(example: 600000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS
-            label: LOOMCYCLE_CANCEL_ACK_TIMEOUT_MS
-            description: '(example: 5000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS
-            label: LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS
-            description: '(example: 900000)'
             schema:
               type: string
               default: ""
@@ -1126,12 +922,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS
-            label: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS
-            description: '(example: 604800)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_LIMITS_ENFORCE
             label: LOOMCYCLE_LIMITS_ENFORCE
             description: '(example: strict)'
@@ -1150,81 +940,15 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS
-            label: LOOMCYCLE_MCP_MAX_CONCURRENT_CALLS
-            description: '(MCP_ALLOW_PRIVILEGED_TOOLS / MCP_ALLOW_DYNAMIC_STDIO are documented above; the upstream bearer LOOMCYCLE_MCP_UPSTREAM_TOKEN is a SECRET → .env.local.) (example: 16)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS
             label: LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS
-            description: '(example: 0)'
+            description: '(MCP_ALLOW_PRIVILEGED_TOOLS / MCP_ALLOW_DYNAMIC_STDIO are documented above; the upstream bearer LOOMCYCLE_MCP_UPSTREAM_TOKEN is a SECRET → .env.local.) (example: 0)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_MCP_RECIPES_ROOT
             label: LOOMCYCLE_MCP_RECIPES_ROOT
             description: '(example: /srv/loomcycle/recipes)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS
-            label: LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS
-            description: 'Thin-client (`loomcycle mcp --upstream`) connection self-recovery. Defaults heal an idle-dropped connection + a server restart transparently; tune only for a slow-to-restart upstream or a flaky link. (example: 60000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS
-            label: LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS
-            description: '(example: 5)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES
-            label: LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES
-            description: '(example: 131072)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES
-            label: LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES
-            description: '(example: 8192)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES
-            label: LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES
-            description: '(example: 262144)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES
-            label: LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES
-            description: '(example: 1048576)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES
-            label: LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES
-            description: '(example: 131072)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES
-            label: LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES
-            description: '(example: 8192)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES
-            label: LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES
-            description: '(example: 32768)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES
-            label: LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES
-            description: '(example: 8192)'
             schema:
               type: string
               default: ""
@@ -1246,24 +970,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_TOOL_PARALLELISM
-            label: LOOMCYCLE_TOOL_PARALLELISM
-            description: '(example: 8)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SSE_KEEPALIVE_MS
-            label: LOOMCYCLE_SSE_KEEPALIVE_MS
-            description: '(example: 20000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS
-            label: LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS
-            description: '(example: 60000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
             label: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
             description: 'A top-level interactive run parked for its operator ends after this long with no message (stop reason idle_timeout). Its session is kept: the next message continues it. A Go duration; 0 waits forever. Default 1h. (example: 1h)'
@@ -1282,57 +988,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_BYTES
-            label: LOOMCYCLE_GIT_SOURCE_MAX_BYTES
-            description: '(example: 268435456)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES
-            label: LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES
-            description: '(example: 67108864)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES
-            label: LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES
-            description: '(example: 5242880)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_FILES
-            label: LOOMCYCLE_GIT_SOURCE_MAX_FILES
-            description: '(example: 100000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS
-            label: LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS
-            description: '(example: 120)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT
-            label: LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT
-            description: '(example: 1)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_SOURCE_MAX_HISTORY
-            label: LOOMCYCLE_GIT_SOURCE_MAX_HISTORY
-            description: '(example: 500)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_GIT_PUSH_HOSTS
             label: LOOMCYCLE_GIT_PUSH_HOSTS
             description: '(example: github.com)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_GIT_PUSH_MAX_BYTES
-            label: LOOMCYCLE_GIT_PUSH_MAX_BYTES
-            description: '(example: 104857600)'
             schema:
               type: string
               default: ""
@@ -1360,12 +1018,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_FILE_BASE64_MIN_BYTES
-            label: LOOMCYCLE_FILE_BASE64_MIN_BYTES
-            description: '(example: 4096)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_MCP_MAX_FRAME_BYTES
             label: LOOMCYCLE_MCP_MAX_FRAME_BYTES
             description: '(example: 16777216)'
@@ -1390,39 +1042,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS
-            label: LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS
-            description: 'Reap a resident child after this long with no send. Default 30 min. (example: 1800000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS
-            label: LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS
-            description: 'Reap a resident child whose current turn has run longer than this, however its parent polls it. Default 2h; there is no unlimited setting. (example: 7200)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS
-            label: LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS
-            description: 'Ceiling on the timeout_ms an agent may give a spawned child; a larger value is refused, not clamped. 0 = no ceiling (the default). (example: 0)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS
-            label: LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS
-            description: 'Longest one Agent poll with wait any/all may block; a larger wait_ms is cut to it. Default 60 s. (example: 60000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CODE_AGENTS_ENABLED
-            label: LOOMCYCLE_CODE_AGENTS_ENABLED
-            description: 'A goja-backed provider for stateless replay agents (load tests, deterministic pipelines). Off by default. (example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_CODE_AGENTS_ROOT
             label: LOOMCYCLE_CODE_AGENTS_ROOT
-            description: '(example: /srv/loomcycle/code-agents)'
+            description: 'A goja-backed provider for stateless replay agents (load tests, deterministic pipelines). Always registered; an agent uses it with `provider: code-js`. (example: /srv/loomcycle/code-agents)'
             schema:
               type: string
               default: ""
@@ -1441,36 +1063,6 @@ questions:
           - variable: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
             label: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
             description: '(example: 86400)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CODE_HOOKS_ENABLED
-            label: LOOMCYCLE_CODE_HOOKS_ENABLED
-            description: 'A hook''s body may be JavaScript (a code hook) instead of a webhook. Separate from the code-agent gate: a code hook runs on every matching tool call. (example: 1)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNEL_HOOKS
-            label: LOOMCYCLE_CHANNEL_HOOKS
-            description: 'Decide each message published to a channel that carries `hooks:` before any reader sees it. Off by default; off, a publish to such a channel is refused. (example: 1)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY
-            label: LOOMCYCLE_CHANNEL_HOOKS_CONCURRENCY
-            description: '(example: 16)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL
-            label: LOOMCYCLE_CHANNEL_HOOKS_PER_CHANNEL
-            description: '(example: 4)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT
-            label: LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT
-            description: '(example: 15m)'
             schema:
               type: string
               default: ""

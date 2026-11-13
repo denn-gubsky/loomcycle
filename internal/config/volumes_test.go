@@ -115,12 +115,10 @@ agents:
 	}
 }
 
-// RFC AH Phase 3: the legacy jail env vars are retired. Setting any of
-// LOOMCYCLE_READ_ROOT / WRITE_ROOT / BASH_CWD must fail Load with a migration
-// hint naming the var(s) + pointing at `volumes:`, rather than silently
-// denying every file op. Fail-before: remove the checkRetiredJailEnv call in
-// Load and Load returns nil error (a stale deploy then silently no-ops).
-func TestLoad_LegacyJailEnvErrors(t *testing.T) {
+// The legacy jail env vars are retired, and setting one stops the load with a
+// pointer at `volumes:`: a deploy that relied on the jail would otherwise come
+// up with its agents' file access decided by something it never wrote.
+func TestLoad_LegacyJailEnvStopsTheLoad(t *testing.T) {
 	yamlPath := writeVolConfig(t, `
 agents:
   a: { model: claude-sonnet-4-6 }
@@ -129,14 +127,8 @@ agents:
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, "/work/sandbox")
 			_, err := Load(yamlPath)
-			if err == nil {
-				t.Fatalf("Load must error when %s is set", name)
-			}
-			if !strings.Contains(err.Error(), name) {
-				t.Errorf("error should name the retired var %s; got %q", name, err)
-			}
-			if !strings.Contains(err.Error(), "volumes:") {
-				t.Errorf("error should point at `volumes:`; got %q", err)
+			if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "volumes:") {
+				t.Fatalf("Load: err = %v, want a refusal naming %s and pointing at `volumes:`", err, name)
 			}
 		})
 	}

@@ -157,7 +157,7 @@ mcp_servers:
 env_allowlist:
   - LOOMCYCLE_GITEA_WEBHOOK_SECRET
 
-# Inbound webhooks (LOOMCYCLE_WEBHOOKS_ENABLED=1 in run.sh). Receiver mounts at
+# Inbound webhooks. Receiver mounts at
 # POST /v1/_webhooks/{name}. Register two Gitea repo hooks (by URL) → these names.
 # payload_mapping goal:"$" delivers the WHOLE signed body to the spawned agent.
 webhooks:

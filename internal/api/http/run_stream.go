@@ -214,7 +214,7 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	stream.start()
-	stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+	stream.startKeepalive(r.Context(), sseKeepaliveInterval)
 	defer stream.end()
 	// Announce the run/session so the re-attached terminal can address steer /
 	// cancel without a separate lookup (parity with the POST /v1/runs stream).

@@ -215,7 +215,7 @@ func TestBash_ResolvedCredValueRedactedFromOutput(t *testing.T) {
 			return &builtin.Bash{Enabled: true, AllowedCreds: []string{"GITHUB_TOKEN"}, CredResolve: b.envVar("bash")}
 		}},
 		{"BashboxFallback", func(b credentialBinding) tools.Tool {
-			return &builtin.Bashbox{Enabled: true, FallbackCommands: []string{"env"}, FallbackAllowedCreds: []string{"env:GITHUB_TOKEN"}, CredResolve: b.envVar("bashbox")}
+			return &builtin.Bashbox{FallbackCommands: []string{"env"}, FallbackAllowedCreds: []string{"env:GITHUB_TOKEN"}, CredResolve: b.envVar("bashbox")}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

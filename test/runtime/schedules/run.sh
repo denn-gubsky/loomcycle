@@ -33,7 +33,6 @@ go build -o bin/loomcycle ./cmd/loomcycle
 
 echo "[2/6] boot (scheduler tick=1s)"
 LOOMCYCLE_MOCK_ENABLED=1 \
-LOOMCYCLE_SCHEDULER_ENABLED=1 \
 LOOMCYCLE_SCHEDULER_TICK_SECONDS=1 \
 LOOMCYCLE_DATA_DIR="$TEST_DIR/data" \
 LOOMCYCLE_AGENTS_ROOT="$SCRIPT_DIR/agents" \

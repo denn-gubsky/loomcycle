@@ -119,8 +119,6 @@ Green run looks like:
   so `LOOMCYCLE_HTTP_HOST_ALLOWLIST` (set by `run.sh`) is the *sole* egress policy — empty
   = every feed fetch refused. If collectors report `FEED_EMPTY`, check this list covers the
   feed host (incl. `www.`).
-- **Scheduler must be enabled** — `run.sh` sets `LOOMCYCLE_SCHEDULER_ENABLED=1`; without it
-  nothing fires.
 - **Long-poll cap ≥ `wait_ms`.** The consolidator awaits up to 120 s; `run.sh` sets the cap
   to 180 s. A lower cap silently clamps the await.
 - **Global channel cursor:** a `scope: global` channel has a single shared cursor and

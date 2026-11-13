@@ -5780,7 +5780,7 @@ var ErrMemoryWrongType = &MemoryError{Code: "wrong_type", Msg: "memory: existing
 var ErrMemoryQuotaExceeded = &MemoryError{Code: "quota_exceeded", Msg: "memory: scope quota exceeded"}
 
 // ErrMemoryValueTooLarge is returned when a single value exceeds the
-// per-write byte cap (LOOMCYCLE_MEMORY_MAX_VALUE_BYTES).
+// per-write byte cap (64 KB).
 var ErrMemoryValueTooLarge = &MemoryError{Code: "value_too_large", Msg: "memory: value exceeds max bytes"}
 
 // ErrVectorUnsupported is returned by every MemoryEmbed* method when
@@ -5966,8 +5966,7 @@ type ChannelStats struct {
 var ErrChannelCursorRegression = &ChannelError{Code: "cursor_regression", Msg: "channel: ack cursor older than committed"}
 
 // ErrChannelValueTooLarge is returned by ChannelPublish when a
-// payload exceeds the per-write byte cap
-// (LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES, default 64 KB). Mirrors
+// payload exceeds the per-write byte cap (64 KB). Mirrors
 // ErrMemoryValueTooLarge — same shape, separate type so tool-layer
 // error mapping is unambiguous.
 var ErrChannelValueTooLarge = &ChannelError{Code: "value_too_large", Msg: "channel: payload exceeds max bytes"}

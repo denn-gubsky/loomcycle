@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 // TestLoadLayers_EnvRefusalsReportInLoadOrder pins which bad environment value
@@ -18,10 +17,8 @@ func TestLoadLayers_EnvRefusalsReportInLoadOrder(t *testing.T) {
 		fixed            string // the value that clears it; "" unsets it
 	}{
 		{env: "LOOMCYCLE_AGENTS_ROOT", value: filepath.Join(t.TempDir(), "absent"), want: "agents discovery:"},
-		{env: "LOOMCYCLE_READ_ROOT", value: "/tmp", want: "LOOMCYCLE_READ_ROOT retired"},
 		{env: "LOOMCYCLE_AUDIT_STORE", value: "yes", want: "LOOMCYCLE_AUDIT_STORE:"},
 		{env: "LOOMCYCLE_AUDIT_RETENTION_DAYS", value: "-1", want: "LOOMCYCLE_AUDIT_RETENTION_DAYS:"},
-		{env: "LOOMCYCLE_GIT_PUSH_MAX_BYTES", value: "lots", want: "LOOMCYCLE_GIT_PUSH_MAX_BYTES:"},
 		{env: "LOOMCYCLE_FILE_MAX_BYTES", value: "0", want: "LOOMCYCLE_FILE_MAX_BYTES:"},
 		{env: "LOOMCYCLE_MCP_MAX_FRAME_BYTES", value: "-3", want: "LOOMCYCLE_MCP_MAX_FRAME_BYTES:"},
 		{env: "LOOMCYCLE_EXTRACT_CONCURRENCY", value: "many", want: "LOOMCYCLE_EXTRACT_CONCURRENCY:"},
@@ -45,24 +42,5 @@ func TestLoadLayers_EnvRefusalsReportInLoadOrder(t *testing.T) {
 	}
 	if _, err := LoadLayers(Layer{Name: "pin", Data: []byte("{}\n")}); err != nil {
 		t.Fatalf("every bad value cleared: err = %v, want nil", err)
-	}
-}
-
-// TestLoadLayers_ChatsRetentionInheritsTheUsageArchiverRead pins the one place
-// an env block reads another's result: the chats-retention back-compat step
-// adopts the legacy usage archiver's mode and age, which the usage sweeper
-// block reads first. Read the other way round, the step sees no archiver and
-// the operator's legacy config silently stops pruning aged chats.
-func TestLoadLayers_ChatsRetentionInheritsTheUsageArchiverRead(t *testing.T) {
-	t.Setenv("LOOMCYCLE_USAGE_RUN_RETENTION_MS", "86400000")
-	t.Setenv("LOOMCYCLE_USAGE_RUN_RETENTION_MODE", "prune")
-	t.Setenv("LOOMCYCLE_RETENTION_CHATS_MODE", "")
-	cfg, err := LoadLayers(Layer{Name: "pin", Data: []byte("{}\n")})
-	if err != nil {
-		t.Fatalf("LoadLayers: %v", err)
-	}
-	if cfg.Env.RetentionChatsMode != "prune" || cfg.Env.RetentionChatsMaxAge != 24*time.Hour {
-		t.Fatalf("chats retention = (%q, %v), want (\"prune\", 24h) inherited from the usage archiver",
-			cfg.Env.RetentionChatsMode, cfg.Env.RetentionChatsMaxAge)
 	}
 }

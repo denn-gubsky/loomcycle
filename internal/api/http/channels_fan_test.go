@@ -35,7 +35,6 @@ func channelFanFixture(t *testing.T) (*Server, func()) {
 		},
 		Env: config.Env{
 			AuthToken:             "test-token",
-			ChannelsMaxValueBytes: 64 * 1024,
 			ChannelsLongPollCapMS: 2000,
 		},
 	}

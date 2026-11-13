@@ -44,25 +44,3 @@ func TestLoad_MCPBinaryResultsUnknownValueRefused(t *testing.T) {
 		t.Fatalf("err = %v, want a load error naming the server and the field", err)
 	}
 }
-
-// LOOMCYCLE_FILE_BASE64_MIN_BYTES defaults to 4 KiB, is read when set, and a
-// malformed value refuses the boot rather than taking the default.
-func TestLoad_FileBase64MinBytes(t *testing.T) {
-	cfg, err := loadYAMLString(t, binaryResultsYAMLHead)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Env.FileBase64MinBytes != 4096 {
-		t.Errorf("default = %d, want 4096", cfg.Env.FileBase64MinBytes)
-	}
-	t.Setenv("LOOMCYCLE_FILE_BASE64_MIN_BYTES", "8192")
-	if cfg, err = loadYAMLString(t, binaryResultsYAMLHead); err != nil || cfg.Env.FileBase64MinBytes != 8192 {
-		t.Errorf("set 8192: got %d, %v", cfg.Env.FileBase64MinBytes, err)
-	}
-	for _, bad := range []string{"4KiB", "0", "-1"} {
-		t.Setenv("LOOMCYCLE_FILE_BASE64_MIN_BYTES", bad)
-		if _, err := loadYAMLString(t, binaryResultsYAMLHead); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_FILE_BASE64_MIN_BYTES") {
-			t.Errorf("%q: err = %v, want a load error naming the variable", bad, err)
-		}
-	}
-}

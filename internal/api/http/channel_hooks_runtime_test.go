@@ -49,7 +49,7 @@ func onChannel(refs ...string) hooks.EventHooks {
 // A runtime channel carries hooks: they are stored with it, shown on its
 // descriptor, replaced by an update and removed by an update with none.
 func TestRuntimeChannel_HooksRoundTrip(t *testing.T) {
-	srv, st := channelHooksFixture(t, true)
+	srv, st := channelHooksFixture(t)
 	putHookDef(t, st, "acme", "screen", codeDef(`function hook(ev){}`))
 	putHookDef(t, st, "acme", "audit", codeDef(`function hook(ev){}`))
 	ctx := tenantCtx("acme")
@@ -82,7 +82,7 @@ func TestRuntimeChannel_HooksRoundTrip(t *testing.T) {
 // that answers another event, or another tenant's. So is any hook while the
 // server runs none.
 func TestRuntimeChannel_RefusesHooksThatCannotRun(t *testing.T) {
-	srv, st := channelHooksFixture(t, true)
+	srv, st := channelHooksFixture(t)
 	putHookDef(t, st, "acme", "gate", hooks.Def{Event: hooks.PhasePre, Body: hooks.DefBody{Kind: hooks.BodyKindCode, Code: `function hook(ev){}`}})
 	putHookDef(t, st, "other", "theirs", codeDef(`function hook(ev){}`))
 	for ref, want := range map[string]string{"missing": "no HookDef", "gate": "answers pre", "theirs": "no HookDef"} {
@@ -93,33 +93,11 @@ func TestRuntimeChannel_RefusesHooksThatCannotRun(t *testing.T) {
 	}
 }
 
-// With channel hooks off, a runtime channel still takes hooks — they are
-// checked and kept, so turning channel hooks on enforces them — but they are
-// skipped meanwhile: a publish is delivered at once.
-func TestRuntimeChannel_HooksAreKeptAndSkippedWhenDisabled(t *testing.T) {
-	off, st := channelHooksFixture(t, false)
-	putHookDef(t, st, "acme", "screen", codeDef(`function hook(ev){}`))
-	if _, err := off.CreateChannel(tenantCtx("acme"), connector.ChannelCreateRequest{Name: "c", Scope: "tenant", Hooks: onChannel("missing")}); !errors.Is(err, connector.ErrChannelHooksInvalid) {
-		t.Fatalf("an unknown HookDef with hooks off: err = %v", err)
-	}
-	desc, err := off.CreateChannel(tenantCtx("acme"), connector.ChannelCreateRequest{Name: "inbox", Scope: "tenant", Hooks: onChannel("screen")})
-	if err != nil || len(desc.Hooks[hooks.PhaseChannelPublish]) != 1 {
-		t.Fatalf("create with hooks off: %+v, %v", desc.Hooks, err)
-	}
-	res, err := off.PublishChannel(tenantCtx("acme"), connector.ChannelPublishRequest{Channel: "inbox", Scope: "tenant", Payload: json.RawMessage(`{}`)})
-	if err != nil || res.AwaitingHooks {
-		t.Fatalf("publish with hooks off: %+v, %v", res, err)
-	}
-	if msgs, _ := st.ChannelPeek(context.Background(), "acme", "inbox", store.MemoryScopeTenant, "", "", 10); len(msgs) != 1 {
-		t.Fatalf("delivered %d, want 1", len(msgs))
-	}
-}
-
 // Two tenants with a channel of the same name: each one's messages are decided
 // by its own hook, never the other's, and each one's decisions are recorded
 // where only it reads them.
 func TestRuntimeChannel_EachTenantsHooksDecideItsOwnMessages(t *testing.T) {
-	srv, st := channelHooksFixture(t, true)
+	srv, st := channelHooksFixture(t)
 	disp := hooks.NewDispatcher(nil, nil)
 	disp.SetCodeRunner(codehook.New(nil))
 	srv.hookDispatcher = disp
@@ -174,7 +152,7 @@ func TestRuntimeChannel_EachTenantsHooksDecideItsOwnMessages(t *testing.T) {
 // tenant's operators may answer its ask, another tenant cannot even see it,
 // and the run's user is the system, never the publisher.
 func TestHookRun_AnswerableInItsOwnerTenantOnly(t *testing.T) {
-	srv, st := channelHooksFixture(t, true)
+	srv, st := channelHooksFixture(t)
 	rctx, runID, err := channelHookRuns{srv}.Open(context.Background(), "acme", "hook:gate", "")
 	if err != nil {
 		t.Fatalf("open: %v", err)

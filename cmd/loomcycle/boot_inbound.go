@@ -80,8 +80,8 @@ func (b *boot) mountWebhooks() {
 	sysPublisher := b.sysPublisher
 	runStateBus := b.runStateBus
 
-	// v1.x RFC H inbound-webhook receiver. Default OFF; operator opts in
-	// via LOOMCYCLE_WEBHOOKS_ENABLED=1. The receiver is the trust boundary:
+	// Inbound-webhook receiver. With no WebhookDef its route matches
+	// nothing. The receiver is the trust boundary:
 	// it authenticates each external POST against the resolved WebhookDef's
 	// own HMAC/bearer secret (gated by the SAME env allowlist the scheduler
 	// uses — the shared RFC F trigger-credential gate), then spawns a run
@@ -90,10 +90,10 @@ func (b *boot) mountWebhooks() {
 	//
 	// Registered BEFORE srv.Mux() below — the SetWebhookMux hook fires
 	// inside Mux(), same ordering constraint as SetExtraMux for A2A.
-	// The receiver, when webhooks are on: its delivery counters are flushed
-	// by a goroutine started once bgCtx exists, below.
+	// The receiver's delivery counters are flushed by a goroutine started
+	// once bgCtx exists, below.
 	var webhookReceiver *webhookapi.Receiver
-	if cfg.Env.WebhooksEnabled && storeIface != nil && srv != nil {
+	if storeIface != nil && srv != nil {
 		// The receiver's secret/credential allowlist is the union of the
 		// explicit operator knobs (LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST +
 		// LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST) and every secret env declared by a
@@ -127,7 +127,7 @@ func (b *boot) mountWebhooks() {
 			rec.MountAdmin(reg, adminAuth)
 		})
 		slog.Info("webhooks: enabled (POST /v1/_webhooks/{name} + a team's own at POST /v1/_teams/{team}/webhooks/{name}; env_allowlist names via LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST + LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST + static-declared secrets; LOOMCYCLE_* verify-secrets auto-allowed)",
-			"env_allowlist_names", len(webhookAllowlist), "unauthenticated_mode", cfg.Env.WebhooksAllowUnauthenticated)
+			"env_allowlist_names", len(webhookAllowlist), "allow_unsigned", cfg.Env.WebhooksAllowUnauthenticated)
 		// Surface every static webhook that will fail every delivery (inert,
 		// or its secret won't resolve) so the operator sees WHY at boot rather
 		// than discovering it via a 503 — the F23/F24 discoverability gap.
@@ -154,10 +154,8 @@ func (b *boot) mountWebhooks() {
 				slog.Warn("webhooks: " + warn)
 			}
 		}
-	} else if cfg.Env.WebhooksEnabled {
-		slog.Warn("webhooks: disabled (no Store backend or no HTTP server)")
 	} else {
-		slog.Info("webhooks: disabled (LOOMCYCLE_WEBHOOKS_ENABLED=0)")
+		slog.Warn("webhooks: disabled (no Store backend or no HTTP server)")
 	}
 
 	b.webhookReceiver = webhookReceiver

@@ -182,7 +182,7 @@ Workload: 100 concurrent agents, each running 1 session + 1 run + 50 events + 1 
 
 Two background goroutines (covered in [PLAN.md v0.5.0 section](PLAN.md)) run alongside the HTTP server regardless of backend:
 
-- **Heartbeat sweeper** — periodic `UPDATE runs SET status='failed' WHERE status='running' AND last_heartbeat_at < cutoff`. Postgres handles concurrent sweepers correctly via the WHERE clause; future multi-replica deployments can have one designated sweeper (`LOOMCYCLE_HEARTBEAT_SWEEPER=0` everywhere else) or let every replica run the sweep harmlessly.
+- **Heartbeat sweeper** — periodic `UPDATE runs SET status='failed' WHERE status='running' AND last_heartbeat_at < cutoff`. Postgres handles concurrent sweepers correctly via the WHERE clause; in cluster mode an advisory lock lets one replica sweep per tick.
 - **Session-lock map GC** — pure in-memory; one map per loomcycle process. Per-replica state, not shared via Postgres.
 
 ## Operational notes

@@ -345,9 +345,8 @@ what it reports on has already happened.
 ## Code hooks
 
 A HookDef's body may be `{"kind": "code-js", "code": ...}`: JavaScript that
-loomcycle runs in-process, with no network round-trip and no tokens. The
-operator enables it with `LOOMCYCLE_CODE_HOOKS_ENABLED=1`; otherwise a code
-body is refused when the HookDef is saved. Tenant operators may write code
+loomcycle runs in-process, with no network round-trip and no tokens. A body
+that does not compile is refused when the HookDef is saved. Tenant operators may write code
 hooks too. (An inline hook in an agent's definition is always a webhook: code
 lives in a HookDef, which is versioned and reviewable.)
 
@@ -423,14 +422,6 @@ channels:
         - { name: audit, url: "https://hooks.example/audit", fail_mode: closed }
 ```
 
-Channel hooks run only when the operator sets `LOOMCYCLE_CHANNEL_HOOKS=1`.
-Without it, a channel's hooks are **skipped**: a publish is delivered as if
-the channel declared none, and the server logs, at boot and at a channel's
-first publish, that its hooks are not enforced. A message stored while hooks
-were on and not yet decided is delivered the same way once the server runs
-with them off: into the channel's hold if it has one, else no earlier than
-its `deliver_at`, with any rewrite an earlier hook made. A message that a
-server with hooks on is still deciding is left to that server.
 A `_system/*` channel, a document's `documents/*` feed and a
 `publisher: system` channel cannot carry hooks.
 
@@ -491,7 +482,7 @@ a lost lease); `message_id` is the same each time.
 
 **Failure.** A hook that fails open lets the message through. One that fails
 closed keeps it waiting and retries with backoff, until its deadline —
-`LOOMCYCLE_CHANNEL_HOOKS_MAX_WAIT` (default 15m) after publishing, and before
+15 minutes after publishing, and before
 its TTL runs out — and then drops it with reason "hook unavailable". A
 HookDef the channel names that no longer exists fails closed whatever its
 `fail_mode` says: a gate must not vanish.

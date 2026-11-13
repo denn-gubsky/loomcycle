@@ -13,9 +13,6 @@
 # stays with the CALLER, where it belongs.
 #
 # REQUIREMENTS
-#   - LOOMCYCLE_CODE_AGENTS_ENABLED=1 — code agents are opt-in; a `provider: code-js`
-#     agent selected WITHOUT this flag FAILS BOOT by design, so layer this bundle
-#     ONLY with the flag set and never add it to a default preset stack.
 #   - the `sandbox` bundle (or your own mcp_servers.sandbox) — this agent drives the
 #     mcp__sandbox__* tools that bundle serves:  LOOMCYCLE_PRESETS=...,sandbox,dev-exec
 #   - (optional) an mcp__browser__* server (e.g. the pinchtab sidecar) — the optional

@@ -23,14 +23,14 @@ type usageReportResponse struct {
 	DetailSince string `json:"detail_since,omitempty"`
 }
 
-// UsageDetailSince is the oldest instant the per-call usage ledger holds:
-// zero when the sweeper is off, since nothing is then folded into the archive.
+// UsageDetailSince is the oldest instant the per-call usage ledger holds;
+// older calls have been folded into the archive.
 func (s *Server) UsageDetailSince() time.Time {
 	cfg := s.cfg()
 	if cfg == nil {
 		return time.Time{}
 	}
-	return store.UsageDetailSince(time.Now(), cfg.Env.UsageDetailRetention, cfg.Env.UsageSweeperEnabled)
+	return store.UsageDetailSince(time.Now(), cfg.Env.UsageDetailRetention)
 }
 
 // handleUsageReport serves GET /v1/_usage — aggregated token usage + cost from

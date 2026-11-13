@@ -119,14 +119,10 @@ services:
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
 
       # ── operability ───────────────────────────────────────────────────────
-      LOOMCYCLE_SCHEDULER_ENABLED: "1"
-      LOOMCYCLE_WEBHOOKS_ENABLED: "1"
       LOOMCYCLE_METRICS_ENABLED: "1"
       LOOMCYCLE_METRICS_COLLECT_SYSTEM: "1"
       LOOMCYCLE_METRICS_RETENTION_DAYS: "7"
       LOOMCYCLE_AUDIT_LOG_PATH: /data/audit.log
-      # dev/exec is a code-js (pure-Go, in-process) agent — works on the distroless image.
-      LOOMCYCLE_CODE_AGENTS_ENABLED: "1"
 
       # ── local models (optional; point at your Ollama) ─────────────────────
       OLLAMA_BASE_URL: "http://OLLAMA_HOST:11434"

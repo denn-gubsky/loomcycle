@@ -120,7 +120,7 @@ func TestStaticVolume_DoesNotReachTheDynamicRoot(t *testing.T) {
 
 		// Bashbox sees an empty directory there: nothing read, nothing kept.
 		// Its own files are still read and written.
-		box := &builtin.Bashbox{Enabled: true}
+		box := &builtin.Bashbox{}
 		res := call(box, c, map[string]any{"volume": "default", "command": "cat notes.txt; cat dynamic/_ephemeral/run-1/work/secret.txt; echo x > dynamic/_ephemeral/run-1/work/x.txt; echo ok > mine2.txt"})
 		if strings.Contains(res.Text, "another") || !strings.Contains(res.Text, "of my own") {
 			t.Errorf("%s: Bashbox = %q, want notes.txt and not the dynamic root", label, res.Text)

@@ -304,7 +304,7 @@ State: `Availability` per provider, `ModelStatus` per model. Three orthogonal fl
 - per-model `Stalled` — runtime feedback from the loop on a 5xx-after-retry or in-stream error. Cleared by the next successful probe.
 
 Lifecycle:
-1. Startup: `cmd/loomcycle/main.go` builds the resolver, runs the first-round probe synchronously (parallel across providers, 5s deadline each), then starts a background goroutine that re-probes every `LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS` (default 15 min, max 1 h).
+1. Startup: `cmd/loomcycle/main.go` builds the resolver, runs the first-round probe synchronously (parallel across providers, 5s deadline each), then starts a background goroutine that re-probes every 15 minutes.
 2. Per-request: HTTP / gRPC server calls `Server.resolveAgent(name)` which routes pin-vs-tier and returns `(provider, model, effort)` for the loop.
 3. On driver error (with `ctx.Err() == nil` guard so user cancels don't pollute the matrix), the loop reports the failure by class (`reportCallFault`): a 429 → `MarkRateLimited` (a short cooldown; the fallback re-resolve does the same); the operator's own key refused (a 401, or a body naming the key: `authentication_error`, `invalid_api_key`, `API_KEY_INVALID`, an AWS unknown/expired token or bad signature) → the server probes that provider in the background (one probe per provider at a time) and marks it unreachable only if the probe is refused the key too, since every model on it shares that key; a model fault (`providers.StallsModel`: a 5xx, a transport error, an in-stream error, a 404 for a missing or retired model) → `MarkStalled(provider, model, reason)`. A request error (400/422), a 403 about one model's access (no permission, no Marketplace subscription), or a tenant's or user's own key refused touches nothing shared: the matrix serves every run, and one caller's bad request or key must not take a model away from the rest.
 
@@ -520,7 +520,7 @@ Built-in process-resource sampler. Periodic background goroutine; idle-gated on 
 **Persistence:**
 
 - Single new table `process_samples` (sqlite + postgres). One row per tick. Time-indexed.
-- Bounded retention: sweeper goroutine deletes rows older than `LOOMCYCLE_METRICS_RETENTION_DAYS` (default 7) at `LOOMCYCLE_METRICS_SWEEP_INTERVAL_MS` cadence.
+- Bounded retention: sweeper goroutine deletes rows older than `LOOMCYCLE_METRICS_RETENTION_DAYS` (default 7) every 15 minutes.
 - Storage at defaults: ~30 MB/day, ~210 MB/week.
 
 **Wire surface (bearer-authed):**
@@ -584,7 +584,7 @@ The companion `loomcycle-mcp.sh` wrapper at the repo root sources `.env.local` b
 
 **Streaming via notifications:** when the client opts in through `initialize.capabilities.loomcycle.runEvents=true`, `spawn_run` drives `runner.RunOnce` directly and emits `notifications/loomcycle/run_event` per provider event before returning the final response. Without opt-in, blocking-only Connector path. Both produce identical final `SpawnRunResult` shape.
 
-**Dynamic agents:** the new `dynamic_agents` table (SQLite + Postgres migration 0010) persists agents registered at runtime via `register_agent`. Periodic TTL sweeper (cadence: `LOOMCYCLE_DYNAMIC_AGENT_SWEEP_INTERVAL_MS`, default 15 min) reclaims expired rows. Privileged builtins (Bash, Write, Edit) are stripped from `tools` unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`. Static yaml-defined agents take precedence on name collision.
+**Dynamic agents:** the new `dynamic_agents` table (SQLite + Postgres migration 0010) persists agents registered at runtime via `register_agent`. A TTL sweeper reclaims expired rows every 15 minutes. Privileged builtins (Bash, Bashbox, Write, Edit) are stripped from `tools` unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`. Static yaml-defined agents take precedence on name collision.
 
 **Operator-policy ctx for MCP-direct builtin calls:** the underlying Memory / Channel / AgentDef / Evaluation / Context tools gate on per-agent policy values that don't exist for MCP-direct callers (no yaml agent definition behind a `tools/call`). `internal/api/mcp/context.go operatorCtx()` synthesises a permissive policy (all scopes allowed, `mcp-operator` synthetic agent name) before each builtin wrapper invocation. `TestOperatorCtx_AttachesAllRequiredPolicies` pins the contract — future tools growing policy gates force an update here.
 
@@ -728,7 +728,7 @@ References: `internal/api/a2a/server.go`, `internal/api/a2a/card.go`, `internal/
 
 ## Input webhooks — WebhookDef (v0.14.0/.1, RFC H)
 
-External systems trigger work via signed `POST /v1/_webhooks/{name}` (`internal/api/webhook/`); off by default, gated by `LOOMCYCLE_WEBHOOKS_ENABLED=1`. A disabled Def is addressable but inert (404, indistinguishable from never-registered). The receiver does its own per-Def auth — it is NOT behind the global bearer middleware.
+External systems trigger work via signed `POST /v1/_webhooks/{name}` (`internal/api/webhook/`); the receiver is always mounted. A disabled Def is addressable but inert (404, indistinguishable from never-registered). The receiver does its own per-Def auth — it is NOT behind the global bearer middleware.
 
 - **Verify-before-parse.** The raw body is read under the Def's size limit, then HMAC-verified over the *raw bytes* (never a re-serialized body) before any JSON parse. Three envelope shapes are supported: Stripe-style `<t>.<rawbody>`, GitHub-style `sha256=<hex>` over the raw body, and bare-hex (Linear and custom sources), all via constant-time `hmac.Equal`.
 - **Strict JSONPath request→run mapping.** A `target → source-jsonpath` map projects request fields into the run; the JSONPath subset is validated up front (dot + array-index segments only — wildcards, filters, recursive descent are rejected).
@@ -753,7 +753,7 @@ References: `internal/memory/backend.go`, `internal/memory/layer.go`, `internal/
 
 ## Synthetic code-js provider (v0.16.0, RFC J)
 
-`provider: code-js` runs operator-authored JavaScript (via the goja interpreter) instead of calling a model — a `providers.Provider` like any other (`internal/providers/codejs/`), so a code-agent shares the loop, OTEL spans, scheduler/webhook/A2A reachability, sub-agent composition, and evaluation surface; only the cost/determinism profile differs. The motivating use case is deterministic glue (ATS scrapes, known-shape SQL, format conversion, routing) at **zero token cost**. Off by default (`LOOMCYCLE_CODE_AGENTS_ENABLED=1`); the agent's JS lives at `agent_code/<name>/index.js`, and a broken/missing file fails **at startup** (`validateCodeAgents` in `cmd/loomcycle/main.go`), not at first fire.
+`provider: code-js` runs operator-authored JavaScript (via the goja interpreter) instead of calling a model — a `providers.Provider` like any other (`internal/providers/codejs/`), so a code-agent shares the loop, OTEL spans, scheduler/webhook/A2A reachability, sub-agent composition, and evaluation surface; only the cost/determinism profile differs. The motivating use case is deterministic glue (ATS scrapes, known-shape SQL, format conversion, routing) at **zero token cost**. Always registered; the agent's JS lives at `agent_code/<name>/index.js`, and a broken/missing file fails **at startup** (`validateCodeAgents` in `cmd/loomcycle/main.go`), not at first fire.
 
 - **Loop-driven dispatch.** code-js streams `EventToolCall` + `StopReason:"tool_use"` exactly as an LLM driver; the **loop** dispatches the tool (its ctx, hooks, OTEL, `${run.credentials}` substitution, WebFetch/HTTP host-allowlist) and re-invokes `Call` with the result. The provider never imports `internal/tools` — the one-way provider→loop→tools layering holds, so the OTEL/hooks/credential symmetry is real by construction. JS references each allowed tool by its **canonical name**: the three multi-op meta-tools (`Memory`/`Channel`/`Agent`) as objects with a method per op (`Memory.get(...)`), every other built-in (`WebFetch`, `Read`, …) and `mcp__<server>__<tool>` as a flat function.
 - **Stateless replay execution.** Each `Call` builds a fresh goja runtime, fast-forwards the tool results already recorded in the transcript (the durable memoization log), and stops at the first un-recorded call (the "frontier") via `Interrupt`; the runtime is discarded within the `Call`. No continuation, no registry, no parked goroutine — so a run is **resumable across restart/replica**, cancel is just the `Call`'s ctx, and the "stateless across calls" Provider contract holds. Ambient non-determinism is hooked (`Math.random` seeded, `Date.now`/`new Date()` anchored to the run start) so replay is deterministic **by construction**; a control-flow divergence on replay fails loud (`code_agent_replay_divergence`).

@@ -511,11 +511,8 @@ func ParseUsageQuery(p UsageParams, detailSince time.Time) (UsageQuery, error) {
 
 // UsageDetailSince is the oldest instant the per-call ledger still holds when
 // the sweeper folds rows older than retention into the archive (0 = its 30-day
-// default); zero when the sweeper is off, since nothing is then folded.
-func UsageDetailSince(now time.Time, retention time.Duration, sweeperEnabled bool) time.Time {
-	if !sweeperEnabled {
-		return time.Time{}
-	}
+// default).
+func UsageDetailSince(now time.Time, retention time.Duration) time.Time {
 	if retention <= 0 {
 		retention = 30 * 24 * time.Hour
 	}

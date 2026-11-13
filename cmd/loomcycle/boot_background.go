@@ -165,7 +165,10 @@ func (b *boot) startCluster() {
 		// Two long-lived subscribers carry the wire side: one listens
 		// for incoming cancel requests (RunCancelSubscriber), the other
 		// receives acks (RunAckSubscriber).
-		ackTimeout := time.Duration(cfg.Env.CancelAckTimeoutMs) * time.Millisecond
+		// How long a cancel waits for the owning replica's ack before it
+		// answers owner_replica_unreachable: several backplane round trips,
+		// short enough for a caller to wait on.
+		const ackTimeout = 5 * time.Second
 		cancelCoord, err := coord.NewCancelCoordinator(coord.CancelCoordinatorConfig{
 			Backplane:    bp,
 			ReplicaID:    cfg.Env.ReplicaID,
@@ -295,6 +298,14 @@ func (b *boot) startCluster() {
 	b.advisoryLock = advisoryLock
 }
 
+// memorySweepInterval is how often expired Memory entries are deleted. Reads
+// skip expired entries, so the sweep only keeps the table small.
+const memorySweepInterval = 15 * time.Minute
+
+// channelsSweepInterval is how often expired channel messages are deleted and
+// expired interruptions timed out. Reads skip both, as for Memory.
+const channelsSweepInterval = 15 * time.Minute
+
 // startRunSweepers starts the sweepers that must see advisoryLock: the
 // heartbeat sweeper, the channel-hook worker, the configured-run sweeper,
 // and the usage and retention sweepers.
@@ -313,9 +324,9 @@ func (b *boot) startRunSweepers() {
 	// pick up the advisoryLock (v0.12.4 Phase 5). In single-replica
 	// mode advisoryLock stays nil and the sweeper's lock-gating branch
 	// is bypassed — behavior identical to v0.11.x.
-	if cfg.Env.HeartbeatSweeperEnabled && storeIface != nil {
+	if storeIface != nil {
+		// Interval is left to the sweeper's own 60s default.
 		hbCfg := heartbeat.Config{
-			Interval:   cfg.Env.HeartbeatSweepInterval,
 			StaleAfter: cfg.Env.HeartbeatStaleAfter,
 		}
 		// Only assign the interface field when we have a non-nil
@@ -330,32 +341,20 @@ func (b *boot) startRunSweepers() {
 		sweeper := heartbeat.New(storeIface, hbCfg)
 		goSupervised(bgCtx, "heartbeat.sweeper", sweeper.Run)
 	} else {
-		slog.Warn("heartbeat: sweeper disabled (LOOMCYCLE_HEARTBEAT_SWEEPER=0 or no Store)")
+		slog.Warn("heartbeat: sweeper disabled (no Store)")
 	}
 
 	// Channel hooks: the worker that decides the messages of channels that
 	// carry hooks. Every replica runs one; per-message leases share the work.
-	// With hooks off it still runs, to deliver unhooked the messages written
-	// while they were on (by this replica before a restart, or by another):
-	// nothing else would ever deliver them.
+	// A channel with no hooks gives it nothing to do.
 	hookOwner := cfg.Env.ReplicaID
 	if hookOwner == "" {
 		host, _ := os.Hostname()
 		hookOwner = fmt.Sprintf("%s-%d", host, os.Getpid())
 	}
-	if cfg.Env.ChannelHooksEnabled && srv != nil && storeIface != nil {
-		slog.Info("channel hooks: worker started", "owner", hookOwner, "concurrency", cfg.Env.ChannelHooksConcurrency,
-			"per_channel", cfg.Env.ChannelHooksPerChannel, "max_wait", cfg.Env.ChannelHooksMaxWait)
+	if srv != nil && storeIface != nil {
+		slog.Info("channel hooks: worker started", "owner", hookOwner)
 		goSupervised(bgCtx, "channelhooks.worker", srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).Run)
-	} else {
-		for name, ch := range cfg.Channels {
-			if ch.HasHooks() {
-				slog.Warn("channel hooks: a channel declares hooks, but channel hooks are off (LOOMCYCLE_CHANNEL_HOOKS=1 turns them on); they are skipped and its messages are delivered unhooked", "channel", name)
-			}
-		}
-		if srv != nil && storeIface != nil {
-			goSupervised(bgCtx, "channelhooks.unhooked", srv.NewChannelHookWorker(hookOwner, channelScheduler, interruptionTool).RunUnhooked)
-		}
 	}
 
 	// RFC DI D5: discard configured runs (drafts) older than their TTL. Each
@@ -371,27 +370,10 @@ func (b *boot) startRunSweepers() {
 	// advisoryLock stays nil and the sweeper's lock-gating branch is
 	// bypassed. Pruning is a compaction to daily usage_archive buckets,
 	// not data loss — billing totals are preserved.
-	// RFC BM Phase 2 reconciliation: when the retention sweeper is enabled AND its
-	// effective (post-alias) chats mode is a delete-bearing one, the retention
-	// sweeper owns aged-chat pruning — suppress the usage sweeper's legacy
-	// aged-session archiver so a session is never cascade-deleted by both. The
-	// usage-detail rollup is unaffected.
-	// Only suppress the legacy usage archiver when the retention chats sweep will
-	// ACTUALLY run — mirror retention's chatsPruneEnabled gate (export+prune needs
-	// an ExportDir). Otherwise a misconfigured export+prune-without-dir would
-	// disable BOTH paths, silently leaving aged chats unpruned.
-	retentionChatsActive := cfg.Env.RetentionChatsMode == "prune" ||
-		(cfg.Env.RetentionChatsMode == "export+prune" && cfg.Env.RetentionExportDir != "")
-	retentionOwnsChats := cfg.Env.RetentionEnabled && retentionChatsActive
-	if cfg.Env.UsageSweeperEnabled && storeIface != nil {
+	if storeIface != nil {
+		// Interval is left to the sweeper's own hourly default.
 		uCfg := usage.Config{
-			Interval:        cfg.Env.UsageSweepInterval,
 			DetailRetention: cfg.Env.UsageDetailRetention,
-			// RFC AV Phase 2b2 old-run archiver (opt-in; default OFF).
-			RunRetention:       cfg.Env.UsageRunRetention,
-			RunRetentionMode:   cfg.Env.UsageRunRetentionMode,
-			ExportDir:          cfg.Env.UsageExportDir,
-			DisableRunArchiver: retentionOwnsChats,
 		}
 		// Same typed-nil guard as the heartbeat block: only assign the
 		// interface field from a non-nil pointer, or the sweeper's
@@ -403,7 +385,7 @@ func (b *boot) startRunSweepers() {
 		usageSweeper := usage.New(storeIface, uCfg)
 		goSupervised(bgCtx, "usage.sweeper", usageSweeper.Run)
 	} else {
-		slog.Warn("usage: sweeper disabled (LOOMCYCLE_USAGE_SWEEPER=0 or no Store)")
+		slog.Warn("usage: sweeper disabled (no Store)")
 	}
 
 	// RFC BM data-retention sweeper — same placement rationale as the usage
@@ -433,14 +415,13 @@ func (b *boot) startRunSweepers() {
 			DefsMode:      cfg.Env.RetentionDefsMode,
 			DefsMaxAge:    cfg.Env.RetentionDefsMaxAge,
 			DefsKeepLastN: cfg.Env.RetentionDefsKeepLastN,
-			// RFC BM Phase 2 aged-chat archiver (opt-in; default OFF, or inherited
-			// from the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* config in cfg.Load).
+			// RFC BM Phase 2 aged-chat archiver (opt-in; default OFF).
 			ChatsMode:   cfg.Env.RetentionChatsMode,
 			ChatsMaxAge: cfg.Env.RetentionChatsMaxAge,
 			// The runtime's own maintenance chats age out faster, and are deleted
 			// rather than exported. Same static-config resolution the consolidator
 			// and History use, so all three agree on what "internal" means.
-			ChatsInternalMaxAge: cfg.Env.RetentionChatsInternalMaxAge,
+			ChatsInternalMaxAge: retention.InternalChatsMaxAge,
 			InternalAgents:      cfg.InternalAgentNames(),
 			// RFC BM Phase 3 retired-agent memory reclamation (opt-in; default OFF).
 			MemMode:   cfg.Env.RetentionMemMode,
@@ -515,17 +496,10 @@ func (b *boot) seedServerState() {
 	// Each replica caches the limit rows it read at boot and those it wrote
 	// itself, so a limit written on another replica (PUT /v1/_limits, or the
 	// budget a gate writes for a user it provisions) is enforced here only
-	// once the cache is re-read. A misspelt interval stops boot: a deployment
-	// that set one expects its limits to travel.
-	reload, err := limitsReloadInterval(os.Getenv("LOOMCYCLE_LIMITS_RELOAD_INTERVAL"))
-	if err != nil {
-		fatal("limits: LOOMCYCLE_LIMITS_RELOAD_INTERVAL is not a duration of at least 1s, or 0", "value", os.Getenv("LOOMCYCLE_LIMITS_RELOAD_INTERVAL"))
-	}
-	if reload > 0 {
-		goSupervised(bgCtx, "limits.reloader", func(ctx context.Context) {
-			limits.RunLimitsReloader(ctx, tracker, reload)
-		})
-	}
+	// once the cache is re-read.
+	goSupervised(bgCtx, "limits.reloader", func(ctx context.Context) {
+		limits.RunLimitsReloader(ctx, tracker, limitsReloadInterval)
+	})
 	// RFC DT: seed the per-model throughput estimate from the ledger's latest
 	// timed calls. Non-fatal — an empty estimate learns again from live calls,
 	// and nothing depends on it yet (measure-only).
@@ -542,29 +516,10 @@ func (b *boot) seedServerState() {
 	safego.Go(bgCtx, "principals.provision_docs", func() { srv.ProvisionDeclaredPrincipalDocs(bgCtx) })
 }
 
-// defaultLimitsReloadInterval is how often a replica re-reads the token limit
-// rows when LOOMCYCLE_LIMITS_RELOAD_INTERVAL is unset.
-const defaultLimitsReloadInterval = time.Minute
-
-// limitsReloadInterval reads LOOMCYCLE_LIMITS_RELOAD_INTERVAL: unset is the
-// default, "0" turns the reload off, and anything else must be a Go duration
-// of at least a second (a tighter loop would re-read every row for nothing).
-func limitsReloadInterval(v string) (time.Duration, error) {
-	switch v {
-	case "":
-		return defaultLimitsReloadInterval, nil
-	case "0":
-		return 0, nil
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return 0, err
-	}
-	if d < time.Second {
-		return 0, fmt.Errorf("limits reload interval %s is under 1s", d)
-	}
-	return d, nil
-}
+// limitsReloadInterval is how often a replica re-reads the token limit rows:
+// the longest a budget written on another replica goes unenforced here. A
+// minute is a handful of rows read, harmless on one node.
+const limitsReloadInterval = time.Minute
 
 // authGateLinkRetention is how long a used, revoked or expired invite or
 // reset row is kept before the sweeper deletes it.
@@ -627,13 +582,17 @@ func (b *boot) runStoreSweeperSteps(sweeperStepHook func(step string)) {
 // startExpiredTokenSweeper starts the expired operator-token sweeper.
 func (b *boot) startExpiredTokenSweeper() {
 	storeIface := b.storeIface
-	expiredTokenRetention := b.expiredTokenRetention
 	bgCtx := b.bgCtx
 	advisoryLock := b.advisoryLock
 
-	// Expired-token sweeper (the retention was resolved with the auth wiring
-	// above). One replica per cluster per tick; the delete is idempotent.
-	if expiredTokenRetention > 0 && storeIface != nil {
+	// Expired token rows are removed once they have been dead a week, as a
+	// used invite or reset row is. A deployment minting short-lived tokens
+	// daily would otherwise keep every one of them. Only rows that carry an
+	// expiry are ever removed; a token minted without one stays until an
+	// operator retires it, and stays after. One replica per cluster per
+	// tick; the delete is idempotent.
+	const expiredTokenRetention = authGateLinkRetention
+	if storeIface != nil {
 		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyExpiredTokenSweeper, "expired-token",
 			func(ctx context.Context) {
 				n, err := storeIface.OperatorTokenDefDeleteExpired(ctx, time.Now().Add(-expiredTokenRetention))
@@ -764,7 +723,6 @@ func (b *boot) startAuthLifecycleSweeper() {
 
 // startMemorySweeper starts the Memory tool TTL sweeper.
 func (b *boot) startMemorySweeper() {
-	cfg := b.cfg
 	storeIface := b.storeIface
 	bgCtx := b.bgCtx
 	advisoryLock := b.advisoryLock
@@ -774,8 +732,8 @@ func (b *boot) startMemorySweeper() {
 	// goroutine only matters for keeping the table small over the
 	// long haul. v0.12.4: gated behind advisoryLock so only one
 	// replica per cluster sweeps per tick.
-	if cfg.Env.MemorySweepInterval > 0 && storeIface != nil {
-		goAdvisoryGatedSweeper(bgCtx, cfg.Env.MemorySweepInterval, advisoryLock, coord.LockKeyMemorySweeper, "memory",
+	if storeIface != nil {
+		goAdvisoryGatedSweeper(bgCtx, memorySweepInterval, advisoryLock, coord.LockKeyMemorySweeper, "memory",
 			func(ctx context.Context) {
 				swept, err := storeIface.MemorySweep(ctx)
 				if err != nil {
@@ -786,9 +744,9 @@ func (b *boot) startMemorySweeper() {
 					slog.Info("memory sweep: deleted expired rows", "rows", swept)
 				}
 			})
-		slog.Info("memory: sweeper enabled", "interval", cfg.Env.MemorySweepInterval)
+		slog.Info("memory: sweeper enabled", "interval", memorySweepInterval)
 	} else {
-		slog.Warn("memory: sweeper disabled (LOOMCYCLE_MEMORY_SWEEP_MS=0 or no Store)")
+		slog.Warn("memory: sweeper disabled (no Store)")
 	}
 }
 
@@ -829,7 +787,7 @@ func (b *boot) startMemoryChangesSweeper() {
 	// bounded. Only when the feed is enabled; the DELETE is idempotent and
 	// advisory-gated so one replica prunes per tick.
 	if memoryChangesEnabled() && storeIface != nil {
-		window := memoryChangesRetention()
+		const window = memoryChangesRetention
 		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyMemoryChangesSweeper, "memory_changes",
 			func(ctx context.Context) {
 				pruned, err := storeIface.PruneMemoryChanges(ctx, time.Now().Add(-window))
@@ -861,7 +819,7 @@ func (b *boot) startChangeSubscriptionPush() {
 		subs := resolveChangeSubscriptions(cfg)
 		if len(subs) > 0 {
 			deliverer := changesub.New(storeIface, resolveChangeSubSecret, slog.Default())
-			interval := changeSubDeliveryInterval()
+			const interval = changeSubDeliveryInterval
 			goAdvisoryGatedSweeper(bgCtx, interval, advisoryLock, coord.LockKeyChangeSubDelivery, "change_subscriptions",
 				func(ctx context.Context) { deliverer.RunOnce(ctx, subs) })
 			slog.Info("memory: change-subscription push engine enabled", "subscriptions", len(subs), "interval", interval)
@@ -989,18 +947,17 @@ func (b *boot) startDocumentProjectionSweeper() {
 // startChannelsSweeper starts the Channel tool TTL sweeper (and the idle
 // document-feed purge).
 func (b *boot) startChannelsSweeper() {
-	cfg := b.cfg
 	storeIface := b.storeIface
 	bgCtx := b.bgCtx
 	advisoryLock := b.advisoryLock
 
 	// Channel tool TTL sweeper (v0.8.4). Same shape as MemorySweeper.
-	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
+	if storeIface != nil {
 		// Idle document change feeds are swept on the same singleton, at most
 		// hourly: the sweep reads every channel's stats, and a feed lives a
 		// day, so a minute's resolution buys nothing.
 		var lastFeedSweep time.Time
-		goAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
+		goAdvisoryGatedSweeper(bgCtx, channelsSweepInterval, advisoryLock, coord.LockKeyChannelsSweeper, "channels",
 			func(ctx context.Context) {
 				swept, err := storeIface.ChannelSweepExpired(ctx)
 				if err != nil {
@@ -1020,23 +977,20 @@ func (b *boot) startChannelsSweeper() {
 					}
 				}
 			})
-		slog.Info("channels: sweeper enabled", "interval", cfg.Env.ChannelsSweepInterval)
-	} else if storeIface != nil {
-		slog.Warn("channels: sweeper disabled (LOOMCYCLE_CHANNELS_SWEEP_MS=0)")
+		slog.Info("channels: sweeper enabled", "interval", channelsSweepInterval)
 	}
 }
 
 // startInterruptsSweeper starts the Interruption tool TTL sweeper.
 func (b *boot) startInterruptsSweeper() {
-	cfg := b.cfg
 	storeIface := b.storeIface
 	bgCtx := b.bgCtx
 	advisoryLock := b.advisoryLock
 
 	// v0.8.16 Interruption tool TTL sweeper. Marks pending rows
 	// whose expires_at < now as timed_out.
-	if cfg.Env.ChannelsSweepInterval > 0 && storeIface != nil {
-		goAdvisoryGatedSweeper(bgCtx, cfg.Env.ChannelsSweepInterval, advisoryLock, coord.LockKeyInterruptsSweeper, "interrupts",
+	if storeIface != nil {
+		goAdvisoryGatedSweeper(bgCtx, channelsSweepInterval, advisoryLock, coord.LockKeyInterruptsSweeper, "interrupts",
 			func(ctx context.Context) {
 				swept, err := storeIface.InterruptSweepExpired(ctx)
 				if err != nil {
@@ -1047,7 +1001,7 @@ func (b *boot) startInterruptsSweeper() {
 					slog.Info("interrupts sweep: timed out expired rows", "rows", swept)
 				}
 			})
-		slog.Info("interrupts: sweeper enabled", "interval", cfg.Env.ChannelsSweepInterval)
+		slog.Info("interrupts: sweeper enabled", "interval", channelsSweepInterval)
 	}
 }
 

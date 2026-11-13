@@ -174,6 +174,11 @@ func (s *sse) sendOpenAIDone() {
 // stops on ctx (client disconnect) or on end(), which also waits for it
 // to exit: the request ctx alone is cancelled only after the handler has
 // returned, too late to keep a tick off a finished response.
+// sseKeepaliveInterval is how often a run stream sends a comment frame. 20s
+// sits under the idle timeout of every common proxy and NAT (30s and up), so
+// a quiet stream is not cut.
+const sseKeepaliveInterval = 20 * time.Second
+
 func (s *sse) startKeepalive(ctx context.Context, interval time.Duration) {
 	if s.flusher == nil || interval <= 0 {
 		return

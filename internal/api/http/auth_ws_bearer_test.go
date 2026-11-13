@@ -62,7 +62,6 @@ func TestExtractBearer_SubprotocolIgnoredOutsideWebSocketUpgrade(t *testing.T) {
 func TestExtractBearer_SubprotocolAcceptedOnClientToolsUpgrade(t *testing.T) {
 	s, st := tokenAuthServer(t, "legacy-secret")
 	seedToken(t, st, "lct_ws", "acme", "alice", []string{auth.ScopeRunsCreate, auth.ScopeRunsRead}, time.Time{})
-	s.cfg().Env.ClientToolMaxBytes = 1 << 20
 	reg := clienttools.NewRegistry(0)
 	s.clientTools = reg
 

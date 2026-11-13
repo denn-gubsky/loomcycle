@@ -96,12 +96,7 @@ Claude Code (and MCP hosts generally) **never auto-reconnect a stdio server** �
 - **an upstream restart** — a connection refused/reset during the restart window is retried with bounded backoff, and the invalidated session is re-handshaked (replay `initialize` → fresh `Mcp-Session-Id`) then the frame is retried. All single-flighted; the client never sees it.
 - **a stalled upstream** — a `ResponseHeaderTimeout` bounds the wait for response *headers* (a streaming `spawn_run` still holds its body open for the whole run) so a hung upstream can't wedge a frame forever.
 
-Tunable via env (sensible defaults; unset = default):
-
-| Env var | Default | Effect |
-|---|---|---|
-| `LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS` | `60000` | Max wait for the upstream's response headers before treating the frame as a transport error. |
-| `LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS` | `5` | Number of reconnect attempts after a transport error (immediate, then 500ms → 1s → 2s → 4s backoff). `0` disables retry. |
+The bounds are fixed: 60 s for the upstream's response headers before the frame is treated as a transport error, and 5 reconnect attempts after one (immediate, then 500ms → 1s → 2s → 4s backoff).
 
 `loomcycle doctor` WARNs (it doesn't FAIL) when the configured listen address is already in use — that usually means a runtime already owns this state; add an MCP surface with `--upstream`, don't start a second runtime.
 

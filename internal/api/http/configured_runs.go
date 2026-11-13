@@ -605,7 +605,7 @@ func (s *Server) handleStartConfiguredRun(w http.ResponseWriter, r *http.Request
 			}
 			stream = st
 			stream.start()
-			stream.startKeepalive(r.Context(), s.cfg().Env.SSEKeepaliveInterval)
+			stream.startKeepalive(r.Context(), sseKeepaliveInterval)
 			stream.send(providers.Event{Type: "session", Text: sessionID})
 			stream.sendRaw("agent", map[string]any{
 				"agent_id": agentID, "run_id": runID, "session_id": sessionID,

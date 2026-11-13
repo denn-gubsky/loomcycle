@@ -202,21 +202,19 @@ func TestDetectFanoutParent(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		enabled bool
-		events  []store.Event
-		want    bool
-		wantTU  string
+		name   string
+		events []store.Event
+		want   bool
+		wantTU string
 	}{
-		{"flag off ⇒ never (even with ledger)", false, dangling, false, ""},
-		{"dangling + ledger ⇒ detected", true, dangling, true, "tu_fan"},
-		{"answered tool_use ⇒ not detected", true, answered, false, ""},
-		{"no ledger ⇒ not detected", true, noLedger, false, ""},
-		{"poll-mode ledger ⇒ not detected", true, pollMode, false, ""},
+		{"dangling + ledger ⇒ detected", dangling, true, "tu_fan"},
+		{"answered tool_use ⇒ not detected", answered, false, ""},
+		{"no ledger ⇒ not detected", noLedger, false, ""},
+		{"poll-mode ledger ⇒ not detected", pollMode, false, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fanout, ok := detectFanoutParent(tc.enabled, tc.events)
+			fanout, ok := detectFanoutParent(tc.events)
 			if ok != tc.want {
 				t.Fatalf("detected = %v, want %v", ok, tc.want)
 			}
@@ -284,7 +282,6 @@ func TestResumePausedRuns_ReconcilesFanoutParent(t *testing.T) {
 		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 	}
 	cfg.Env.AuthToken = ""
-	cfg.Env.ResumeFanout = true // Phase-3 opt-in
 	prov := &scriptedProvider{
 		defaultS: []providers.Event{
 			{Type: providers.EventText, Text: "done"},
@@ -381,53 +378,6 @@ func TestResumePausedRuns_ReconcilesFanoutParent(t *testing.T) {
 	}
 }
 
-// TestResumePausedRuns_FanoutFlagOff_NotReconciled: with LOOMCYCLE_RESUME_FANOUT
-// off, a dangling-parallel_spawn parent is NOT detected as a fan-out — it takes
-// the pre-Phase-3 path (ends on an assistant turn ⇒ flagged unresumable), proving
-// the feature is byte-identically dormant until opt-in.
-func TestResumePausedRuns_FanoutFlagOff_NotReconciled(t *testing.T) {
-	cfg := &config.Config{
-		Defaults: config.Defaults{Provider: "scripted", Model: "stub-model"},
-		Agents: map[string]config.AgentDef{
-			"breeder": {Provider: "scripted", Model: "stub-model", SystemPrompt: "breed", Tools: []string{"Agent"}},
-		},
-		Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
-	}
-	cfg.Env.AuthToken = ""
-	cfg.Env.ResumeFanout = false // dormant
-	srv, _ := makeServer(t, &scriptedProvider{}, cfg)
-	ctx := context.Background()
-
-	sess, _ := srv.store.CreateSession(ctx, "", "breeder", "alice")
-	run, _ := srv.store.CreateRun(ctx, sess.ID, store.RunIdentity{AgentID: "a_parent", UserID: "alice", Model: "stub-model"})
-	appendResumeEvent(t, srv, run.ID, "user_input", []loop.PromptSegment{
-		{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: "breed"}}},
-	})
-	appendResumeEvent(t, srv, run.ID, "tool_call", providers.Event{
-		Type:    providers.EventToolCall,
-		ToolUse: &providers.ToolUse{ID: "tu_fan", Name: "Agent", Input: json.RawMessage(`{"op":"parallel_spawn","spawns":[{"name":"solver","prompt":"x"}]}`)},
-	})
-	appendResumeEvent(t, srv, run.ID, string(providers.EventSpawnChildStarted), providers.Event{
-		Type:       providers.EventSpawnChildStarted,
-		SpawnChild: &providers.SpawnChildEventInfo{ToolUseID: "tu_fan", Index: 0, RunID: "r_orphan", Agent: "solver"},
-	})
-	if err := srv.store.SetRunPauseState(ctx, run.ID, store.PauseStatePaused); err != nil {
-		t.Fatal(err)
-	}
-
-	n, warnings := srv.ResumePausedRuns(ctx)
-	if n != 0 {
-		t.Errorf("re-dispatched %d, want 0 (flag off ⇒ treated as idle, not a fan-out)", n)
-	}
-	if len(warnings) != 1 {
-		t.Errorf("warnings = %v, want exactly 1", warnings)
-	}
-	got, _ := srv.store.GetRun(ctx, run.ID)
-	if got.Status != store.RunFailed {
-		t.Errorf("status = %q, want failed (flagged unresumable, not reconciled)", got.Status)
-	}
-}
-
 // A child still running when its fan-out parent was snapshotted finishes after
 // the resume, and its result reaches the parent through the parent's
 // subagent_stop hooks, as it would have live: context is added, a refusal
@@ -461,7 +411,6 @@ func TestResumePausedRuns_AResumedChildGoesThroughTheParentsStopHook(t *testing.
 				Concurrency: config.Concurrency{MaxConcurrentRuns: 8, MaxQueueDepth: 8},
 			}
 			cfg.Env.AuthToken = ""
-			cfg.Env.ResumeFanout = true
 			cfg.Hooks.PrivateHostAllowlist = []string{"127.0.0.1"} // the recorder is on loopback
 			prov := &scriptedProvider{defaultS: []providers.Event{
 				{Type: providers.EventText, Text: "done"},

@@ -153,7 +153,7 @@ func TestRestoreSnapshot_MCPServerDefOffTheTargetsAllowlistIsNotRestored(t *test
 }
 
 // The hook, channel, agent and team defs go through their authoring rules on
-// the target: a forbidden header, a code body on a host without code hooks, a
+// the target: a forbidden header, a code body on a host with no code-hook runner, a
 // channel whose hook names a HookDef that is not here, an inline hook header
 // with a line break. What passes lands.
 func TestRestoreSnapshot_HookChannelAgentAndTeamDefsAreRevalidated(t *testing.T) {
@@ -227,7 +227,7 @@ func TestRestoreSnapshot_HookChannelAgentAndTeamDefsAreRevalidated(t *testing.T)
 	}
 	for _, want := range [][]string{
 		{"hook_def acme/hosty", "is set by the call itself"},
-		{"hook_def acme/coder", "code hooks are not enabled"},
+		{"hook_def acme/coder", "no code-hook runner"},
 		{"channel_def acme/ghostly", "not restored", "ghost"},
 		{"agent_def acme/smuggler", "line break"},
 		{"team_def acme/crew", "http:// or https://"},

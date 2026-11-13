@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
-	"github.com/denn-gubsky/loomcycle/internal/config"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -283,8 +282,7 @@ func TestDocumentSearchFacets_CountOnlyReadableDocuments(t *testing.T) {
 			authz.Rule{Effect: authz.Allow, Actions: []string{"read"}, Resources: []string{"document:tenant:/visible/v", "document:tenant:/visible/w"}})), authz.ModeEnforce)
 		for _, maxIDs := range []int{0, 1} {
 			if maxIDs > 0 {
-				d.Cfg = &config.Config{}
-				d.Cfg.Env.DocumentSearchFilterMaxIDs = maxIDs
+				d.SearchFilterMaxIDs = maxIDs
 			}
 			for name, reader := range map[string]context.Context{"deny": deny, "allow": allow} {
 				what := fmt.Sprintf("%s reader, max ids %d", name, maxIDs)

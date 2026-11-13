@@ -511,7 +511,7 @@ type Server struct {
 
 	// webhookMux is the optional v1.x RFC H hook for registering the
 	// inbound-webhook receiver route. Set via SetWebhookMux; nil when
-	// LOOMCYCLE_WEBHOOKS_ENABLED is unset. Unlike extraMux it is NOT
+	// the server has no store. Unlike extraMux it is NOT
 	// handed the admin-auth wrapper: the receiver authenticates each
 	// request against the resolved WebhookDef's own secret (HMAC /
 	// bearer), so wrapping it in the global LOOMCYCLE_AUTH_TOKEN bearer
@@ -664,7 +664,7 @@ type Server struct {
 	// every gate on the scope answer alone.
 	aclResolver *aclres.Resolver
 	// documentFeeds counts each principal's open GET /v1/_document/feed
-	// streams (RFC FV, LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS).
+	// streams (RFC FV, capped at documentFeedMaxStreams).
 	documentFeeds documentFeedStreams
 	// tokenCache is the RFC L per-replica auth-token resolution cache.
 	// Nil = disabled (direct lookup per request). Wired via
@@ -765,18 +765,11 @@ func (s *Server) maxRequestBytes() int64 {
 	return defaultMaxRequestBytes
 }
 
-// defaultMaxDocumentBytes bounds a POST /v1/_document body (set_asset base64
-// image payloads + large import_md docs). RFC BO.
-const defaultMaxDocumentBytes = 8 << 20
-
-// maxDocumentBytes returns the configured Document-route body cap, falling back
-// to defaultMaxDocumentBytes when unset (<=0).
-func (s *Server) maxDocumentBytes() int64 {
-	if n := s.cfg().Env.MaxDocumentAssetBytes; n > 0 {
-		return n
-	}
-	return defaultMaxDocumentBytes
-}
+// maxDocumentBytes bounds a POST /v1/_document body (set_asset base64 image
+// payloads + large import_md docs). RFC BO. The Document tool caps the decoded
+// image at the same 8 MiB, so the base64 body (1.33x) is the binding bound on
+// an upload.
+const maxDocumentBytes = 8 << 20
 
 func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem *concurrency.Semaphore, st store.Store) *Server {
 	s := &Server{
@@ -854,17 +847,13 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		},
 		// RFC BK resident sub-agents: open/send/poll/cancel/close drive a
 		// persistent interactive child (the interactive fork of runSubAgent).
-		OpenChild:   s.openResidentChild,
-		SendChild:   s.sendResidentChild,
-		PollChild:   s.pollResidentChild,
-		CancelChild: s.cancelResidentChildTurn,
-		CloseChild:  s.closeResidentChild,
-		SpawnLedger: cfg.Env.ResumeFanout, // RFC X Phase 3: record the spawn ledger (default off)
-		// The ceiling on a spawn's timeout_ms (0 = none).
-		MaxChildTimeoutMs: cfg.Env.AgentChildMaxTimeoutMs,
-		LiveChildren:      s.liveChildren,
-		PollWaitCapMs:     cfg.Env.AgentPollWaitCapMs,
-		HoldRunTree:       s.holdRunTree,
+		OpenChild:    s.openResidentChild,
+		SendChild:    s.sendResidentChild,
+		PollChild:    s.pollResidentChild,
+		CancelChild:  s.cancelResidentChildTurn,
+		CloseChild:   s.closeResidentChild,
+		LiveChildren: s.liveChildren,
+		HoldRunTree:  s.holdRunTree,
 		// v0.11.8 — per-agent max_concurrent_children cap for
 		// Agent.parallel_spawn. Walks the same resolver chain as
 		// sub-run dispatch (yaml > dynamic_agents > AgentDef
@@ -995,8 +984,7 @@ func (s *Server) candidateTools(ctx context.Context, tenantID string, agentAllow
 	// them (filterTools then narrows to the agent's `client:*` grant). Delegating
 	// tools.Tools — Dispatcher.Execute calls their Execute directly, which routes
 	// to the live WebSocket. Empty when nothing is connected.
-	ct := clienttools.Candidates(s.clientTools, s.clientToolKey(ctx, tenantID),
-		time.Duration(s.cfg().Env.ClientToolTimeoutMS)*time.Millisecond)
+	ct := clienttools.Candidates(s.clientTools, s.clientToolKey(ctx, tenantID), clientToolTimeout)
 	if len(dyn) == 0 && len(ct) == 0 {
 		return s.tools
 	}
@@ -1390,10 +1378,6 @@ func (s *Server) SetTeamDefTool(t tools.Tool) {
 			// A walk run in poll mode is one of its caller's children, counted
 			// against the same per-run limit as the Agent tool's.
 			td.LiveChildren = s.liveChildren
-		}
-		if td.PollWaitCapMs == 0 {
-			// One cap on a poll's wait, whichever tool polls.
-			td.PollWaitCapMs = s.cfg().Env.AgentPollWaitCapMs
 		}
 		if td.WaveContext == nil {
 			td.WaveContext = func(ctx context.Context, walkID, waveID string, index int) context.Context {
@@ -4443,7 +4427,7 @@ func (s *Server) handleSystemChannelPublish(w http.ResponseWriter, r *http.Reque
 		writeJSONError(w, http.StatusBadRequest, "invalid_payload", "payload is not valid JSON")
 		return
 	}
-	if cap := s.cfg().Env.ChannelsMaxValueBytes; cap > 0 && len(body.Payload) > cap {
+	if cap := builtin.ChannelMaxValueBytes; len(body.Payload) > cap {
 		writeJSONError(w, http.StatusRequestEntityTooLarge, "payload_too_large", fmt.Sprintf("payload (%d bytes) exceeds max %d", len(body.Payload), cap))
 		return
 	}
@@ -7081,7 +7065,6 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 		ObserveCall:         s.callObserver(subRunID),
 		MarkRateLimited:     s.markRateLimitedFn(parentTier),
 		ClearStall:          s.clearStallFn(providerID, model),
-		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           name,
 		CodeBody:            def.Code, // inline code-js body (RFC J); "" → FS fallback
 		// A code-js sub-agent's wall-clock budget is its OWN per-agent

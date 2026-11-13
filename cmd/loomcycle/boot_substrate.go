@@ -46,34 +46,31 @@ func (b *boot) wireSubstrateTools() {
 	srv.SetScheduleDefTool(&builtin.ScheduleDef{
 		Store:               storeIface,
 		Cfg:                 cfg,
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxDefinitionBytes:  builtin.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
 		Credentials:         credEngine, // user_bearer: a stored credential the author holds
 	})
 	// RFC AP Phase 2 — wire the TeamDef substrate tool (team-workflow graphs).
 	// Tenant-confined at the route (ScopeTenant), but the same dedicated-slot
 	// wiring as ScheduleDef; reached via Connector.TeamDef + POST /v1/_teamdef +
-	// the LoomCycle MCP meta-tool `teamdef`. Its definition cap is
-	// LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES.
+	// the LoomCycle MCP meta-tool `teamdef`.
 	// Same instance that's agent-available in allTools — SetTeamDefTool injects
 	// Spawn + Admit (op=run) into it, and keeps the HTTP /v1/_teamdef + MCP
 	// `teamdef` + Connector surfaces pointing at it.
 	srv.SetTeamDefTool(teamDefTool)
-	// RFC DK — code-js hook bodies, opt-in. A body's only tool is the same
+	// RFC DK — code-js hook bodies. A body's only tool is the same
 	// Interruption instance agents use, run under the hook's own grant.
 	// The HookDef substrate compiles a code-js body when it is saved, with the
-	// same runner that will run it; without code hooks a code body is refused.
+	// same runner that will run it.
 	hookDefTool := &builtin.HookDef{
 		Cfg:                 cfg, // the static agents, for the no-trace gate
 		Credentials:         peerCreds,
 		Store:               storeIface,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
 	}
-	if cfg.Env.CodeHooksEnabled {
-		runner := codehook.New(interruptionTool)
-		srv.SetCodeHookRunner(runner)
-		hookDefTool.CompileCode = runner.Compile
-	}
+	codeHookRunner := codehook.New(interruptionTool)
+	srv.SetCodeHookRunner(codeHookRunner)
+	hookDefTool.CompileCode = codeHookRunner.Compile
 	srv.SetHookDefTool(hookDefTool)
 	// A hook's webhook headers bind credentials the same way an MCP server's do:
 	// resolved per call from the run's identity, the value never stored in the
@@ -89,14 +86,14 @@ func (b *boot) wireSubstrateTools() {
 	srv.SetA2AServerCardDefTool(&builtin.A2AServerCardDef{
 		Store:               storeIface,
 		Cfg:                 cfg,
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxDefinitionBytes:  builtin.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
 	})
 	srv.SetA2AAgentDefTool(&builtin.A2AAgentDef{
 		Store:               storeIface,
 		Cfg:                 cfg,
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxDefinitionBytes:  builtin.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
 	})
 	// v1.x RFC H — wire the WebhookDef substrate tool. Same operator-
 	// admin-only posture as the A2A substrate tools; reached via
@@ -105,8 +102,8 @@ func (b *boot) wireSubstrateTools() {
 	srv.SetWebhookDefTool(&builtin.WebhookDef{
 		Store:               storeIface,
 		Cfg:                 cfg,
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxDefinitionBytes:  builtin.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
 		Credentials:         credEngine,
 	})
 	// RFC I MR-3a — wire the MemoryBackendDef substrate tool. Same
@@ -119,8 +116,8 @@ func (b *boot) wireSubstrateTools() {
 		Store:               storeIface,
 		Cfg:                 cfg,
 		PeerCredentials:     peerCreds,
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxDefinitionBytes:  builtin.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
 	})
 	// RFC CE — wire the DocumentSourceDef substrate tool (runtime-authored peer
 	// document sources). Same operator-admin-only posture as MemoryBackendDef;
@@ -131,8 +128,8 @@ func (b *boot) wireSubstrateTools() {
 		Store:               storeIface,
 		Cfg:                 cfg,
 		PeerCredentials:     peerCreds,
-		MaxDefinitionBytes:  cfg.Env.AgentDefMaxDefinitionBytes,
-		MaxDescriptionBytes: cfg.Env.AgentDefMaxDescriptionBytes,
+		MaxDefinitionBytes:  builtin.AgentDefMaxDefinitionBytes,
+		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
 	})
 
 	b.hookDefTool = hookDefTool
@@ -324,18 +321,4 @@ func (b *boot) wireAuth() {
 	default:
 		fatal("limits: LOOMCYCLE_LIMITS_ENFORCE is not a known value (strict, or unset)", "value", v)
 	}
-	// Expired token rows are removed once they have been dead for a while. A
-	// deployment minting short-lived tokens daily would otherwise keep every
-	// one of them. Only rows that carry an expiry are ever removed; a token
-	// minted without one stays until an operator retires it, and stays after.
-	expiredTokenRetention := 7 * 24 * time.Hour
-	if v := os.Getenv("LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS"); v != "" {
-		if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n >= 0 {
-			expiredTokenRetention = time.Duration(n) * time.Second
-		} else {
-			fatal("auth: LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS is not a number of seconds (0 keeps expired rows)", "value", v)
-		}
-	}
-
-	b.expiredTokenRetention = expiredTokenRetention
 }

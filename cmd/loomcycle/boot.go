@@ -155,17 +155,16 @@ type boot struct {
 	auditRetentionKeys *auditchain.ChainKeys
 
 	// The rest of the server build.
-	hookDefTool           *builtin.HookDef
-	expiredTokenRetention time.Duration
-	sqlMemMgr             *sqlmem.Manager // nil when SQL Memory is off
-	sysPublisher          *channels.StorePublisher
-	runStateBus           *runstate.Bus
-	heartbeatSpecs        []channels.HeartbeatSpec
-	heartbeatRunner       *channels.HeartbeatRunner // nil when no heartbeat channel is declared
-	resolver              *resolve.Resolver
-	a2aServer             *a2aapi.Server       // nil when A2A is off
-	webhookReceiver       *webhookapi.Receiver // nil when webhooks are off
-	httpServer            *http.Server
+	hookDefTool     *builtin.HookDef
+	sqlMemMgr       *sqlmem.Manager // nil when SQL Memory is off
+	sysPublisher    *channels.StorePublisher
+	runStateBus     *runstate.Bus
+	heartbeatSpecs  []channels.HeartbeatSpec
+	heartbeatRunner *channels.HeartbeatRunner // nil when no heartbeat channel is declared
+	resolver        *resolve.Resolver
+	a2aServer       *a2aapi.Server       // nil when A2A is off
+	webhookReceiver *webhookapi.Receiver // nil when webhooks are off
+	httpServer      *http.Server
 
 	// Background work. bgCtx is the context every background goroutine runs
 	// under; the shutdown cancels it first. countFlusherDone closes when the

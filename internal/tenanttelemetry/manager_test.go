@@ -607,9 +607,8 @@ func TestConfigFromEnv_GateOffReadsNothingElse(t *testing.T) {
 	}
 	env["LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO"] = "0.25"
 	env["LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS"] = "Grafana.NET, *.otel.example ,"
-	env["LOOMCYCLE_TENANT_TELEMETRY_QUEUE"] = "128"
 	cfg, err = ConfigFromEnv(func(k string) string { return env[k] })
-	if err != nil || !cfg.Enabled || cfg.MaxRatio != 0.25 || cfg.QueueSize != 128 || cfg.MaxPipelines != lcotel.DefaultTenantMaxPipelines ||
+	if err != nil || !cfg.Enabled || cfg.MaxRatio != 0.25 || cfg.QueueSize != lcotel.DefaultTenantQueueSize || cfg.MaxPipelines != lcotel.DefaultTenantMaxPipelines ||
 		len(cfg.AllowedHosts) != 2 || cfg.AllowedHosts[0] != "grafana.net" {
 		t.Fatalf("cfg=%+v err=%v", cfg, err)
 	}

@@ -23,8 +23,8 @@ import (
 
 // channelHooksFixture is a server with one yaml channel that carries a hook,
 // wired as main.go wires it (the writer resolving definitions through the
-// server, hooks enabled).
-func channelHooksFixture(t *testing.T, enabled bool) (*Server, store.Store) {
+// server).
+func channelHooksFixture(t *testing.T) (*Server, store.Store) {
 	t.Helper()
 	s, err := sqlite.Open(":memory:")
 	if err != nil {
@@ -36,7 +36,7 @@ func channelHooksFixture(t *testing.T, enabled bool) (*Server, store.Store) {
 			"screened": {Scope: "global", Semantic: "queue", MaxMessages: 100,
 				Hooks: hooks.EventHooks{hooks.PhaseChannelPublish: {{Ref: "screen"}}}},
 		},
-		Env: config.Env{AuthToken: "test-token", ChannelsMaxValueBytes: 64 * 1024, ChannelsLongPollCapMS: 1000, ChannelHooksEnabled: enabled},
+		Env: config.Env{AuthToken: "test-token", ChannelsLongPollCapMS: 1000},
 	}
 	bus := channels.NewBus()
 	srv := &Server{
@@ -48,7 +48,7 @@ func channelHooksFixture(t *testing.T, enabled bool) (*Server, store.Store) {
 		sem:            concurrency.New(8, 16, 30000),
 	}
 	srv.SetSystemPublisher(&channels.StorePublisher{Store: s, Bus: bus, Scheduler: channels.NewScheduler(bus, 100),
-		Defs: srv.ChannelWriteDef, HooksEnabled: enabled})
+		Defs: srv.ChannelWriteDef})
 	srv.SetChannelBus(bus)
 	return srv, s
 }
@@ -109,7 +109,7 @@ func TestChannelHookCensus_EverySurfaceIsIntercepted(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			srv, st := channelHooksFixture(t, true)
+			srv, st := channelHooksFixture(t)
 			tc.write(t, srv, st)
 			if msgs, err := st.ChannelPeek(ctx, "", "screened", store.MemoryScopeGlobal, "", "", 10); err != nil || len(msgs) != 0 {
 				t.Fatalf("delivered %d message(s) past the channel's hooks (err %v)", len(msgs), err)
@@ -122,53 +122,5 @@ func TestChannelHookCensus_EverySurfaceIsIntercepted(t *testing.T) {
 				t.Fatalf("origin %q hook_tenant %q; want origin %q, the operator's tenant", m.Origin, m.HookTenant, tc.origin)
 			}
 		})
-	}
-}
-
-// With channel hooks off, a hooked channel's hooks are skipped: a publish is
-// delivered at once, as if the channel declared none, and nothing waits for a
-// worker that is not running.
-func TestChannelHooks_HooksAreSkippedWhenDisabled(t *testing.T) {
-	srv, st := channelHooksFixture(t, false)
-	rec := postJSON(t, srv, "/v1/_channels/screened/publish", `{"payload":{}}`)
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"awaiting_hooks":true`) {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	if msgs, _ := st.ChannelPeek(context.Background(), "", "screened", store.MemoryScopeGlobal, "", "", 10); len(msgs) != 1 {
-		t.Fatalf("delivered %d message(s), want the 1 published", len(msgs))
-	}
-	if items, _ := st.ChannelHookClaim(context.Background(), "w", time.Now(), time.Now().Add(time.Minute), 10); len(items) != 0 {
-		t.Fatalf("%d message(s) wait for hooks that will never run", len(items))
-	}
-}
-
-// A message written while channel hooks were on is delivered once the server
-// runs with them off, as main.go wires a replica with hooks off: without
-// that, nothing would ever move it off the hook instant.
-func TestChannelHooks_OffDeliversMessagesLeftAwaitingHooks(t *testing.T) {
-	srv, st := channelHooksFixture(t, true)
-	rec := postJSON(t, srv, "/v1/_channels/screened/publish", `{"payload":{"text":"waited"}}`)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"awaiting_hooks":true`) {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	// Restarted with hooks off: the writer skips them, and the worker runs
-	// unhooked.
-	srv.cfg().Env.ChannelHooksEnabled = false
-	srv.SetSystemPublisher(&channels.StorePublisher{Store: st, Bus: srv.channelBus, Defs: srv.ChannelWriteDef})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { srv.NewChannelHookWorker("w2", nil, nil).RunUnhooked(ctx); close(done) }()
-	defer func() { cancel(); <-done }()
-	var msgs []store.ChannelMessage
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if msgs, _ = st.ChannelPeek(context.Background(), "", "screened", store.MemoryScopeGlobal, "", "", 10); len(msgs) > 0 {
-			break
-		}
-	}
-	if len(msgs) != 1 || string(msgs[0].Payload) != `{"text":"waited"}` {
-		t.Fatalf("delivered %+v, want the message as written", msgs)
-	}
-	if items, _ := st.ChannelHookClaim(context.Background(), "w", time.Now(), time.Now().Add(time.Minute), 10); len(items) != 0 {
-		t.Fatalf("%d message(s) still wait for hooks that will never run", len(items))
 	}
 }

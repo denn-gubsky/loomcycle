@@ -65,7 +65,6 @@ echo "[1/4] build + boot (code-js, a git host list that does not include the ask
 go build -o bin/loomcycle ./cmd/loomcycle
 env -i PATH="$PATH" HOME="$TEST_DIR/home" \
 LOOMCYCLE_MOCK_ENABLED=1 \
-LOOMCYCLE_CODE_AGENTS_ENABLED=1 \
 LOOMCYCLE_CODE_AGENTS_ROOT="$SCRIPT_DIR/agent_code" \
 LOOMCYCLE_DATA_DIR="$TEST_DIR/data" \
 LOOMCYCLE_LISTEN_ADDR="127.0.0.1:$PORT" \

@@ -25,7 +25,7 @@ it runs, whatever a stored document tells the model to do.
 
 ## What it needs
 
-- `LOOMCYCLE_CODE_AGENTS_ENABLED=1` and SQL Memory.
+- SQL Memory.
 - The `statement_methods: [rule, extractor]` grant, which the bundle declares.
   It lets the linker stamp `rule:*` and `extractor:*` methods on its
   statements and hold the linker lease. Without it, a `propose` run fails at
@@ -397,7 +397,7 @@ scheduled_runs:
 ## Use
 
 ```bash
-LOOMCYCLE_CODE_AGENTS_ENABLED=1 LOOMCYCLE_SQLMEM_ENABLED=1 \
+LOOMCYCLE_SQLMEM_ENABLED=1 \
   LOOMCYCLE_PRESETS=base,knowledge-base ./bin/loomcycle
 ```
 

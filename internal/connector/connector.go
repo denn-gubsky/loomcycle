@@ -327,7 +327,7 @@ type Connector interface {
 	// RegisterAgent adds a dynamic agent that survives until its TTL
 	// expires (or until UnregisterAgent is called). Returns the
 	// effective AgentDescriptor — note tools may have been
-	// stripped if Bash/Write/Edit were requested without the
+	// stripped if Bash/Bashbox/Write/Edit were requested without the
 	// LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS opt-in.
 	RegisterAgent(ctx context.Context, req RegisterAgentRequest) (AgentDescriptor, error)
 

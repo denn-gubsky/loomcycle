@@ -40,7 +40,6 @@ func channelHoldFixture(t *testing.T) (*Server, store.Store, func()) {
 		},
 		Env: config.Env{
 			AuthToken:             "test-token",
-			ChannelsMaxValueBytes: 64 * 1024,
 			ChannelsLongPollCapMS: 1000,
 		},
 	}

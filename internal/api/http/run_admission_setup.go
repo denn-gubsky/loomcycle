@@ -495,7 +495,7 @@ func (a *runAdmission) buildLoopCtx() {
 		}
 	})
 	// RFC X Phase 3: expose the gate to the Agent tool so a parallel_spawn
-	// fan-out parent can park mid-tool-call (no-op unless LOOMCYCLE_RESUME_FANOUT).
+	// fan-out parent can park mid-tool-call.
 	a.loopCtx = tools.WithPauseGate(a.loopCtx, a.gate)
 }
 
@@ -535,7 +535,6 @@ func (a *runAdmission) buildOptions() {
 		ObserveCall:         s.callObserver(a.runID),
 		MarkRateLimited:     s.markRateLimitedFn(a.in.UserTier),
 		ClearStall:          s.clearStallFn(a.providerID, a.model),
-		ToolParallelism:     s.cfg().Env.ToolParallelism,
 		AgentName:           a.effectiveAgentName,
 		CodeBody:            a.agentDef.Code, // inline code-js body (RFC J); "" → FS fallback
 		Metadata:            a.in.Metadata,

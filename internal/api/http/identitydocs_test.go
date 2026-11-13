@@ -15,14 +15,12 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
-// identityDocsFixture is the ontology fixture plus a config holder, since provisioning
-// reads the operator's setting and a Server with no config deliberately does nothing.
-func identityDocsFixture(t *testing.T, enabled bool) (*Server, memInject) {
+// identityDocsFixture is the ontology fixture plus a config holder, since a
+// Server with no config deliberately does nothing.
+func identityDocsFixture(t *testing.T) (*Server, memInject) {
 	t.Helper()
 	s, mi := ontologyFixture(t)
-	cfg := &config.Config{}
-	cfg.Env.ProvisionIdentityDocs = enabled
-	s.cfgHolder = config.NewHolder(cfg)
+	s.cfgHolder = config.NewHolder(&config.Config{})
 	return s, mi
 }
 
@@ -44,7 +42,7 @@ func (s *Server) docExistsAt(t *testing.T, mi memInject, scope, path string) boo
 }
 
 func TestProvisionIdentityDocs_CreatesBothForAPrincipal(t *testing.T) {
-	s, mi := identityDocsFixture(t, true)
+	s, mi := identityDocsFixture(t)
 	if s.docExistsAt(t, mi, "user", meminject.UserRootPath) {
 		t.Fatal("fixture: the user-root document should not exist yet")
 	}
@@ -63,7 +61,7 @@ func TestProvisionIdentityDocs_CreatesBothForAPrincipal(t *testing.T) {
 // document has to arrive with the template in it — including the Identity section that
 // memory placement depends on.
 func TestProvisionIdentityDocs_TheUserDocArrivesWithTheIdentityTemplate(t *testing.T) {
-	s, mi := identityDocsFixture(t, true)
+	s, mi := identityDocsFixture(t)
 	s.ProvisionIdentityDocs(context.Background(), mi.Tenant, mi.UserID)
 
 	md := s.readUserRootMarkdown(context.Background(), mi)
@@ -83,7 +81,7 @@ func TestProvisionIdentityDocs_TheUserDocArrivesWithTheIdentityTemplate(t *testi
 // An empty subject establishes a tenant but no person, so only the tenant document is
 // created — a user-root document keyed on nobody would be unreachable litter.
 func TestProvisionIdentityDocs_EmptySubjectProvisionsOnlyTheTenantDoc(t *testing.T) {
-	s, mi := identityDocsFixture(t, true)
+	s, mi := identityDocsFixture(t)
 	s.ProvisionIdentityDocs(context.Background(), mi.Tenant, "")
 
 	if !s.docExistsAt(t, mi, "tenant", meminject.TenantRootPath) {
@@ -91,17 +89,6 @@ func TestProvisionIdentityDocs_EmptySubjectProvisionsOnlyTheTenantDoc(t *testing
 	}
 	if s.docExistsAt(t, mi, "user", meminject.UserRootPath) {
 		t.Error("a user-root document was created for an empty subject")
-	}
-}
-
-func TestProvisionIdentityDocs_DisabledCreatesNothing(t *testing.T) {
-	s, mi := identityDocsFixture(t, false)
-	s.ProvisionIdentityDocs(context.Background(), mi.Tenant, mi.UserID)
-	if s.docExistsAt(t, mi, "user", meminject.UserRootPath) {
-		t.Error("provisioning is disabled but the user-root document was created")
-	}
-	if s.docExistsAt(t, mi, "tenant", meminject.TenantRootPath) {
-		t.Error("provisioning is disabled but the tenant-root document was created")
 	}
 }
 
@@ -117,7 +104,7 @@ func TestProvisionIdentityDocs_NoConfigDoesNothingAndDoesNotPanic(t *testing.T) 
 // Twice is once. The provisioners are idempotent, and this asserts it through the eager
 // path — a second mint for the same principal must not leave a duplicate document.
 func TestProvisionIdentityDocs_IsIdempotent(t *testing.T) {
-	s, mi := identityDocsFixture(t, true)
+	s, mi := identityDocsFixture(t)
 	s.ProvisionIdentityDocs(context.Background(), mi.Tenant, mi.UserID)
 	first := s.readUserRootMarkdown(context.Background(), mi)
 	s.ProvisionIdentityDocs(context.Background(), mi.Tenant, mi.UserID)
@@ -128,7 +115,7 @@ func TestProvisionIdentityDocs_IsIdempotent(t *testing.T) {
 }
 
 func TestProvisionDeclaredPrincipalDocs_ProvisionsEachOnceAtBoot(t *testing.T) {
-	s, _ := identityDocsFixture(t, true)
+	s, _ := identityDocsFixture(t)
 	cfg := s.cfg()
 	cfg.ResolvedPrincipals = []auth.DeclaredPrincipal{
 		{Principal: auth.Principal{TenantID: "acme", Subject: "alice"}},
@@ -201,7 +188,7 @@ func TestCreatedTokenPrincipal_ReadsTheResolvedSubjectFromTheResponse(t *testing
 // above are each tested, but nothing asserted that a real mint actually reaches them.
 // The composition is three lines and exactly the kind that is silently wrong.
 func TestOperatorTokenDef_MintProvisionsTheIdentityDocs(t *testing.T) {
-	s, _ := identityDocsFixture(t, true)
+	s, _ := identityDocsFixture(t)
 	s.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{Store: s.store})
 
 	mi := memInject{Tenant: "acme", UserID: "alice"}
@@ -233,7 +220,7 @@ func TestOperatorTokenDef_MintProvisionsTheIdentityDocs(t *testing.T) {
 // id — so it must still get a profile. Taking the subject from the REQUEST would provision
 // nothing here, which is why it is read off the response.
 func TestOperatorTokenDef_MintWithoutAnExplicitSubjectStillProvisions(t *testing.T) {
-	s, _ := identityDocsFixture(t, true)
+	s, _ := identityDocsFixture(t)
 	s.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{Store: s.store})
 
 	req, _ := json.Marshal(map[string]any{
@@ -261,7 +248,7 @@ func TestOperatorTokenDef_MintWithoutAnExplicitSubjectStillProvisions(t *testing
 // Retiring a principal must not provision anything. A document appearing as a token is
 // taken away would be the opposite of the intent.
 func TestOperatorTokenDef_RetireProvisionsNothing(t *testing.T) {
-	s, _ := identityDocsFixture(t, true)
+	s, _ := identityDocsFixture(t)
 	s.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{Store: s.store})
 
 	mk, _ := json.Marshal(map[string]any{
@@ -350,7 +337,7 @@ func TestProvisionIdentityDocs_EveryUserCreationPathProvisions(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s, _ := identityDocsFixture(t, true)
+			s, _ := identityDocsFixture(t)
 			tc.run(t, s, tc.subject)
 
 			mi := memInject{Tenant: identityDocsTenant, UserID: tc.subject}
@@ -383,7 +370,7 @@ func identityDocsReq(method, path, body string) *http.Request {
 // subject.
 func TestOperatorTokenDef_AMachineCredentialMintProvisionsNoProfile(t *testing.T) {
 	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeSCIMProvision, auth.ScopeAuthManage} {
-		s, _ := identityDocsFixture(t, true)
+		s, _ := identityDocsFixture(t)
 		s.SetOperatorTokenDefTool(&builtin.OperatorTokenDef{Store: s.store})
 		req, _ := json.Marshal(map[string]any{
 			"op": "create", "name": "machine", "tenant_id": "acme", "subject": "machine",

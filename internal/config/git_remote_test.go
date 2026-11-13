@@ -133,22 +133,19 @@ func TestMergeAgentDef_GitRemote(t *testing.T) {
 	}
 }
 
-// LOOMCYCLE_GIT_PUSH_HOSTS, LOOMCYCLE_GIT_AUTHOR_NAME/EMAIL and
-// LOOMCYCLE_GIT_PUSH_MAX_BYTES are read; the cap defaults to 100 MiB, and a
-// malformed cap is a load error rather than the default.
+// LOOMCYCLE_GIT_PUSH_HOSTS and LOOMCYCLE_GIT_AUTHOR_NAME/EMAIL are read.
 func TestLoad_GitEnvKnobs(t *testing.T) {
 	cfg, err := loadYAMLString(t, gitRemoteYAMLHead)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Env.GitPushMaxBytes != 100<<20 || len(cfg.Env.GitPushHosts) != 0 {
-		t.Errorf("defaults: push max %d, hosts %v", cfg.Env.GitPushMaxBytes, cfg.Env.GitPushHosts)
+	if len(cfg.Env.GitPushHosts) != 0 {
+		t.Errorf("defaults: hosts %v", cfg.Env.GitPushHosts)
 	}
 
 	t.Setenv("LOOMCYCLE_GIT_PUSH_HOSTS", " github.com , git.example.com ,")
 	t.Setenv("LOOMCYCLE_GIT_AUTHOR_NAME", "Loom Bot")
 	t.Setenv("LOOMCYCLE_GIT_AUTHOR_EMAIL", "bot@example.com")
-	t.Setenv("LOOMCYCLE_GIT_PUSH_MAX_BYTES", "1048576")
 	cfg, err = loadYAMLString(t, gitRemoteYAMLHead)
 	if err != nil {
 		t.Fatal(err)
@@ -158,15 +155,5 @@ func TestLoad_GitEnvKnobs(t *testing.T) {
 	}
 	if cfg.Env.GitAuthorName != "Loom Bot" || cfg.Env.GitAuthorEmail != "bot@example.com" {
 		t.Errorf("author = %q <%q>", cfg.Env.GitAuthorName, cfg.Env.GitAuthorEmail)
-	}
-	if cfg.Env.GitPushMaxBytes != 1<<20 {
-		t.Errorf("GitPushMaxBytes = %d", cfg.Env.GitPushMaxBytes)
-	}
-
-	for _, bad := range []string{"100MiB", "0", "-5"} {
-		t.Setenv("LOOMCYCLE_GIT_PUSH_MAX_BYTES", bad)
-		if _, err := loadYAMLString(t, gitRemoteYAMLHead); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_GIT_PUSH_MAX_BYTES") {
-			t.Errorf("LOOMCYCLE_GIT_PUSH_MAX_BYTES=%q: err = %v, want a load error naming the variable", bad, err)
-		}
 	}
 }

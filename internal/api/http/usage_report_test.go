@@ -200,7 +200,6 @@ func usageReportServer(t *testing.T, rows []store.TokenUsageRow) (*httptest.Serv
 	cfg := makeBaseConfig()
 	cfg.Env.AuthToken = "legacy-admin"
 	cfg.Env.OperatorTokenPepper = testTokenPepper
-	cfg.Env.UsageSweeperEnabled = true // older rows are archived, so detail_since is set
 	srv, _ := makeServer(t, &scriptedProvider{}, cfg)
 	seedToken(t, srv.store, "tok-acme-op", "acme", "ops", []string{auth.ScopeTenant}, time.Time{})
 	for _, r := range rows {

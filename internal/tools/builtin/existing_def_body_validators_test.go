@@ -72,7 +72,7 @@ func TestExistingDefBodyValidators_RefuseWhatAuthoringRefuses(t *testing.T) {
 		{"hook header sets Host", hookNoCode, `{"event":"pre","body":{"kind":"http","url":"https://hooks.example.com/g","headers":{"Host":"x"}}}`, "set by the call itself"},
 		{"hook unknown field", hookNoCode, `{"event":"pre","body":{"kind":"http","url":"https://h.example.com/"},"extra":1}`, "does not decode"},
 		{"hook unknown kind", hookNoCode, `{"event":"pre","body":{"kind":"shell"}}`, "is not code-js or http"},
-		{"hook code, code hooks off", hookNoCode, `{"event":"pre","body":{"kind":"code-js","code":"function hook(){}"}}`, "code hooks are not enabled"},
+		{"hook code, no code-hook runner", hookNoCode, `{"event":"pre","body":{"kind":"code-js","code":"function hook(){}"}}`, "no code-hook runner"},
 		{"hook code compiles", hookCode, `{"event":"pre","body":{"kind":"code-js","code":"function hook(){}"}}`, ""},
 		{"hook code does not compile", hookCode, `{"event":"pre","body":{"kind":"code-js","code":"syntax error"}}`, "body.code"},
 	}

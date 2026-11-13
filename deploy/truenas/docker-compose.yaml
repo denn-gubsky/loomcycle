@@ -85,14 +85,10 @@ services:
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
 
       # ── operability ───────────────────────────────────────────────────────
-      LOOMCYCLE_SCHEDULER_ENABLED: "1"
-      LOOMCYCLE_WEBHOOKS_ENABLED: "1"
       LOOMCYCLE_METRICS_ENABLED: "1"
       LOOMCYCLE_METRICS_COLLECT_SYSTEM: "1"
       LOOMCYCLE_METRICS_RETENTION_DAYS: "7"
       LOOMCYCLE_AUDIT_LOG_PATH: /data/audit.log   # a FILE, not the /data dir
-      # The code-js synthetic provider (pure-Go JS agents; works on any image).
-      LOOMCYCLE_CODE_AGENTS_ENABLED: "1"
 
       # ── local models (optional; point at your Ollama) ─────────────────────
       OLLAMA_BASE_URL: "http://OLLAMA_HOST:11434"
@@ -103,7 +99,6 @@ services:
       # DELETE this whole block on the distroless image. Grant Bash/Bashbox to an
       # agent via its tools:. Bashbox is the in-process sandbox (rooted at the
       # agent's rw volume, no network); Bash is the unsandboxed escape hatch.
-      LOOMCYCLE_BASHBOX_ENABLED: "1"
       LOOMCYCLE_BASH_ENABLED: "1"
       # Host commands that ESCAPE the gbash sandbox to the real toolchain. Only list
       # what gbash LACKS — do NOT add jq/awk (native to Bashbox) or bash/sh/env
@@ -141,7 +136,6 @@ services:
       # Defaults shown; uncomment to change.
       # LOOMCYCLE_FILE_MAX_BYTES: "67108864"          # one kept file (64 MiB)
       # LOOMCYCLE_FILE_INBOX_MAX_BYTES: "1073741824"  # a run tree's whole inbox (1 GiB)
-      # LOOMCYCLE_FILE_BASE64_MIN_BYTES: "4096"       # shortest base64 kept as a file (binary_results: capture)
       # LOOMCYCLE_MCP_MAX_FRAME_BYTES: "16777216"     # one MCP response (stdio line / HTTP body)
     volumes:
       - /mnt/tank/loomcycle/data:/data

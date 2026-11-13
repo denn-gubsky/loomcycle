@@ -2920,9 +2920,8 @@ export class LoomcycleClient {
    *  the JS no longer has to exist at `agent_code/<name>/index.js` on the
    *  sidecar's disk.
    *
-   *  Requires `LOOMCYCLE_CODE_AGENTS_ENABLED=1` on the sidecar — the same
-   *  switch that registers the code-js provider. Without it the create is
-   *  refused (raises {@link SubstrateToolRefusedError}). Keep `${run.*}` /
+   *  A body that does not compile, or is over the size cap, is refused
+   *  (raises {@link SubstrateToolRefusedError}). Keep `${run.*}` /
    *  `${LOOMCYCLE_*}` placeholders in the body LITERAL so the content stays
    *  stable and dedup engages on re-register. */
   async ensureCodeAgent(
@@ -5332,8 +5331,7 @@ export class LoomcycleClient {
    *  - The server re-authenticates the stream every 30 s: a revoked grant
    *    stops that document's changes, and a revoked token ends the stream,
    *    within that window; a token's expiry ends it on time.
-   *  - At most a few streams per principal (`LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS`,
-   *    default 4); one more is refused with a 429 — a `BackpressureError` with
+   *  - At most 4 streams per principal; one more is refused with a 429 — a `BackpressureError` with
    *    code `too_many_streams`, not retryable until you close a stream.
    *  - Iteration ends when the server closes the stream, or throws an
    *    `AbortError` when `signal` aborts. */

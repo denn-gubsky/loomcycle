@@ -333,7 +333,7 @@ func (c *Crypto) checkSizes(in cryptoInput) (tools.Result, bool) {
 	} {
 		if len(f.v) > f.max {
 			return errValidation(fmt.Sprintf("%s is %d bytes, over its %d-byte limit", f.name, len(f.v), f.max),
-				"Split the data, or ask the operator to raise LOOMCYCLE_CRYPTO_MAX_BYTES."), false
+				"Split the data."), false
 		}
 	}
 	return tools.Result{}, true
@@ -360,7 +360,7 @@ func (c *Crypto) spend(ctx context.Context) (tools.Result, bool) {
 	}
 	if !c.budget.take(runID, limit) {
 		return errBusiness(fmt.Sprintf("this run has used its %d Crypto operations", limit),
-			"Finish with what you have; a later run gets a new budget, or the operator can raise LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN."), false
+			"Finish with what you have; a later run gets a new budget."), false
 	}
 	return tools.Result{}, true
 }

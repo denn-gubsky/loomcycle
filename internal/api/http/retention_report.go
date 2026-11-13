@@ -32,8 +32,7 @@ type retentionReportResponse struct {
 	DefsMaxAgeMS     int64                       `json:"defs_max_age_ms"`
 	DefsKeepLastN    int                         `json:"defs_keep_last_n"`
 	// ChatsMode / ChatsMaxAgeMS are the RFC BM Phase 2 aged-chat archiver knobs
-	// (config only — tenant-readable). ChatsMode reflects the effective value
-	// after the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* alias in config.Load.
+	// (config only — tenant-readable).
 	ChatsMode     string `json:"chats_mode"`
 	ChatsMaxAgeMS int64  `json:"chats_max_age_ms"`
 	// ChatsInternalMaxAgeMS is the shorter age applied to chats authored by an
@@ -122,12 +121,7 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 	if emptyDossierMode == "" {
 		emptyDossierMode = "off"
 	}
-	// 0 = inherit the global chat age (never "delete immediately"), resolved the
-	// same way retention.New resolves it.
-	chatsInternalMaxAge := s.cfg().Env.RetentionChatsInternalMaxAge
-	if chatsInternalMaxAge == 0 {
-		chatsInternalMaxAge = s.cfg().Env.RetentionChatsMaxAge
-	}
+	chatsInternalMaxAge := retention.InternalChatsMaxAge
 	resp := retentionReportResponse{
 		Admin:                 admin,
 		Enabled:               s.cfg().Env.RetentionEnabled,
@@ -182,7 +176,7 @@ func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {
 			// The preview splits chats by authoring agent exactly as the sweep
 			// does, so "chats" vs "chats_internal" in the counts below reflect the
 			// two cutoffs an operator actually gets.
-			ChatsInternalMaxAge: s.cfg().Env.RetentionChatsInternalMaxAge,
+			ChatsInternalMaxAge: retention.InternalChatsMaxAge,
 			InternalAgents:      s.cfg().InternalAgentNames(),
 		}
 		// Feed the SQL-Memory manager so the "mem" preview can see which agents

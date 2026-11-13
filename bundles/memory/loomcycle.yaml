@@ -46,13 +46,7 @@
 # The old prompt stays recoverable in git; the agent it drove was 0 for 5, so
 # there is nothing working to preserve.
 #
-# ⚠️ REQUIREMENTS — this bundle now FAILS BOOT if the first one is missing:
-#   - LOOMCYCLE_CODE_AGENTS_ENABLED=1. Code agents are opt-in, and a
-#     `provider: code-js` agent selected WITHOUT the flag is a fatal boot error
-#     by design (never a silent idle def). Selecting this bundle without it will
-#     stop the server. This is the operational cost of the rewrite and it is
-#     deliberate: a consolidator that cannot run should say so at boot.
-#   - LOOMCYCLE_SCHEDULER_ENABLED=1 (the schedule below is what triggers a pass).
+# REQUIREMENTS (the schedule below is what triggers a pass):
 #   - An embedder + a vector-capable store for `Memory recall` (sqlite-vec or
 #     pgvector). Without it recall refuses, the pass degrades to "write every
 #     durable fact, skip the similarity merge" — still correct, just less tidy —

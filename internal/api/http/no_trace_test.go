@@ -688,7 +688,7 @@ func TestNoTrace_TheSpanCarriesTheErrorClassOnly(t *testing.T) {
 }
 
 // A no-trace run's configuration record stays at its mode whatever a later
-// writer adds, and the chats the legacy archiver ages out are never exported.
+// writer adds.
 func TestNoTrace_ALaterWriteToTheRunsRecordStoresNoSettings(t *testing.T) {
 	srv, _ := makeServer(t, completingProvider(), noTraceConfig())
 	sess, _ := srv.store.CreateSession(context.Background(), "", "parent", "alice")

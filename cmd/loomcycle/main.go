@@ -27,7 +27,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -124,16 +123,9 @@ func memoryChangesEnabled() bool {
 }
 
 // memoryChangesRetention is how long change-feed rows are kept before the
-// retention sweeper prunes them. Default 24h; override with
-// LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS.
-func memoryChangesRetention() time.Duration {
-	if h := os.Getenv("LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS"); h != "" {
-		if n, err := strconv.Atoi(h); err == nil && n > 0 {
-			return time.Duration(n) * time.Hour
-		}
-	}
-	return 24 * time.Hour
-}
+// retention sweeper prunes them: a day covers a subscriber's outage without
+// the feed growing with the corpus.
+const memoryChangesRetention = 24 * time.Hour
 
 // changeSubDeliveryTimeout bounds each outbound change-subscription POST.
 const changeSubDeliveryTimeout = 30 * time.Second
@@ -154,15 +146,8 @@ func resolveChangeSubSecret(name string) (string, error) {
 }
 
 // changeSubDeliveryInterval is how often the RFC CD Part C push engine tails the
-// feed. Default 5s; override with LOOMCYCLE_CHANGE_SUB_INTERVAL_MS.
-func changeSubDeliveryInterval() time.Duration {
-	if s := os.Getenv("LOOMCYCLE_CHANGE_SUB_INTERVAL_MS"); s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n > 0 {
-			return time.Duration(n) * time.Millisecond
-		}
-	}
-	return 5 * time.Second
-}
+// feed: the delay a subscriber sees between a write and its callback.
+const changeSubDeliveryInterval = 5 * time.Second
 
 // resolveChangeSubscriptions turns the static change_subscriptions config into
 // deliverable subscriptions, each with its OWN SSRF-guarded client — the
@@ -322,47 +307,6 @@ func stripPseudoVersionSuffix(v string) string {
 func printVersion() {
 	fmt.Printf("loomcycle version=%s commit=%s built=%s go=%s\n",
 		buildVersion, buildCommit, buildTime, runtime.Version())
-}
-
-// mcpProxyHeaderTimeout reads LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS (the
-// thin-client's time-to-response-headers bound; a stalled upstream must not
-// hang a frame forever, and Claude Code's tool-idle timeout doesn't cover stdio
-// servers). Unset / invalid → 0, letting NewProxyClient apply its default.
-func mcpProxyHeaderTimeout() time.Duration {
-	v := os.Getenv("LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS")
-	if v == "" {
-		return 0
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
-		return 0
-	}
-	return time.Duration(n) * time.Millisecond
-}
-
-// mcpProxyReconnectDelays reads LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS and
-// builds the thin-client's transport-error backoff schedule: an immediate first
-// retry, then geometric waits (500ms doubling) capped at 4s. Unset → nil, so
-// NewProxyClient applies its default schedule; 0 → an empty schedule (retry
-// disabled — one attempt only).
-func mcpProxyReconnectDelays() []time.Duration {
-	v := os.Getenv("LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS")
-	if v == "" {
-		return nil
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
-		return nil
-	}
-	delays := make([]time.Duration, n)
-	for i := 1; i < n; i++ {
-		d := 500 * time.Millisecond * (1 << (i - 1))
-		if d > 4*time.Second {
-			d = 4 * time.Second
-		}
-		delays[i] = d
-	}
-	return delays
 }
 
 // selectPresetNames resolves the RFC AQ embedded-preset selection: --preset
@@ -785,8 +729,8 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 
 // providerEnabled reproduces the exact pre-P2a env gates: a keyed provider needs
 // its api_key_env set; ollama-local needs a base URL that isn't the "disabled"
-// opt-out; mock/mock-stable need LOOMCYCLE_MOCK_ENABLED=1; code-js needs
-// CodeAgentsEnabled. anthropic-oauth-dev is intentionally NOT handled here — it is
+// opt-out; mock/mock-stable need LOOMCYCLE_MOCK_ENABLED=1; code-js is always
+// registered. anthropic-oauth-dev is intentionally NOT handled here — it is
 // the residual hardcoded path in newProviderResolver.
 func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bool {
 	switch id {
@@ -805,7 +749,7 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 	case "mock", "mock-stable":
 		return os.Getenv("LOOMCYCLE_MOCK_ENABLED") == "1"
 	case "code-js":
-		return cfg.Env.CodeAgentsEnabled
+		return true
 	default:
 		// Keyed provider (anthropic/openai/deepseek/gemini/ollama + any declared
 		// 3rd-party naming an api_key_env): enabled iff that env var is set — the
@@ -889,7 +833,7 @@ func notConfiguredError(id string, cfg *config.Config) error {
 	case "mock-stable":
 		return fmt.Errorf("mock-stable provider not configured (set LOOMCYCLE_MOCK_ENABLED=1)")
 	case "code-js":
-		return fmt.Errorf("code-js provider not configured: code agents are disabled (set LOOMCYCLE_CODE_AGENTS_ENABLED=1)")
+		return fmt.Errorf("code-js provider not configured (the config declares no `providers: code-js` entry)")
 	case "anthropic-oauth-dev":
 		return fmt.Errorf("anthropic-oauth-dev not registered (set LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1 + run `loomcycle anthropic login`)")
 	default:
@@ -936,8 +880,8 @@ func logProviderSummary(pr *providerResolver, cfg *config.Config) {
 // Dynamic AgentDefs (created at runtime via the AgentDef tool) are not seen
 // here; their JS validates on first Call and surfaces as an EventError.
 func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
-	// nil interface → (nil,false): cp stays nil when code-js is disabled, matching
-	// the pre-P2a pr.codeJS==nil path.
+	// nil interface → (nil,false): cp stays nil when the config declares no
+	// code-js provider (a yaml that drops the default providers layer).
 	cp, _ := providers.As[*codejs.Provider](pr.byID["code-js"])
 	var broken []string
 	for name, def := range cfg.Agents {
@@ -945,7 +889,7 @@ func validateCodeAgents(cfg *config.Config, pr *providerResolver) {
 			continue
 		}
 		if cp == nil {
-			fatal("agent uses `provider: code-js` but code agents are disabled — set LOOMCYCLE_CODE_AGENTS_ENABLED=1", "agent", name)
+			fatal("agent uses `provider: code-js` but the config declares no `providers: code-js` entry", "agent", name)
 		}
 		// An inline `code:` body has no filesystem file — validate the body
 		// itself (mirrors the run-time provider, which prefers the inline body
@@ -1366,6 +1310,11 @@ func (oauthUnavailable) Substitute(_ context.Context, _, _, _, s, _ string, _ fu
 	return s, credential.OAuthRefNames(s), nil
 }
 
+// mcpBase64MinBytes is the shortest base64 string in an MCP text block that
+// capture considers a file: short enough for a small scan, long enough that
+// an ordinary id or hash is never a candidate.
+const mcpBase64MinBytes = 4 << 10
+
 // mcpResultPolicy resolves a server's binary_results (RFC FF) the way
 // mcpPoolBuild resolves the server it dials, so the setting a call renders
 // with belongs to the server that answered it: a static stdio server from the
@@ -1380,7 +1329,7 @@ func mcpResultPolicy(cfg *config.Config, mcpDynView mcpLookupView) func(tenant, 
 		}
 		return mcp.ResultPolicy{
 			CaptureBase64:  mode == config.BinaryResultsCapture,
-			Base64MinBytes: cfg.Env.FileBase64MinBytes,
+			Base64MinBytes: mcpBase64MinBytes,
 		}
 	}
 }

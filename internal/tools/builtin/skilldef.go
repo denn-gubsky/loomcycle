@@ -15,6 +15,14 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
+// The size caps the server puts on a runtime-authored skill. Fixed: a skill
+// body is loaded whole into a prompt, so 128 KiB is already past what a model
+// should be handed at once.
+const (
+	SkillDefMaxBodyBytes        = 128 << 10
+	SkillDefMaxDescriptionBytes = 8 << 10
+)
+
 // SkillDef is the v0.8.22 built-in tool that lets agents author,
 // fork, promote, retire, and inspect SKILL definitions at runtime.
 // Mirror of the AgentDef tool — same six operations, same lineage
@@ -68,12 +76,12 @@ type SkillDef struct {
 	// bootstrap source.
 	Set *skills.Set
 
-	// MaxBodyBytes caps the overlay.body field
-	// (LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES). 0 = no cap.
+	// MaxBodyBytes caps the overlay.body field (the server sets
+	// SkillDefMaxBodyBytes). 0 = no cap.
 	MaxBodyBytes int
 
-	// MaxDescriptionBytes caps the description field
-	// (LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES). 0 = no cap.
+	// MaxDescriptionBytes caps the description field (the server sets
+	// SkillDefMaxDescriptionBytes). 0 = no cap.
 	MaxDescriptionBytes int
 }
 
@@ -652,10 +660,10 @@ func (s *SkillDef) validateBody(body string) error {
 
 func (s *SkillDef) checkSizeCaps(defJSON []byte, body, description string) error {
 	if s.MaxBodyBytes > 0 && len(body) > s.MaxBodyBytes {
-		return fmt.Errorf("body (%d bytes) exceeds LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES (%d)", len(body), s.MaxBodyBytes)
+		return fmt.Errorf("body (%d bytes) exceeds the skill body cap (%d bytes)", len(body), s.MaxBodyBytes)
 	}
 	if s.MaxDescriptionBytes > 0 && len(description) > s.MaxDescriptionBytes {
-		return fmt.Errorf("description (%d bytes) exceeds LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES (%d)", len(description), s.MaxDescriptionBytes)
+		return fmt.Errorf("description (%d bytes) exceeds the skill description cap (%d bytes)", len(description), s.MaxDescriptionBytes)
 	}
 	return nil
 }

@@ -40,12 +40,12 @@ not already wrapped in a container/VM. Use `Bash` only when you genuinely need
 a host binary or host process semantics that gbash doesn't provide (and accept
 that `Bash` is not a sandbox).
 
-## Enabling it
+## Granting it
 
-Opt-in, exactly like `Bash`:
-
-1. **Per deployment:** `LOOMCYCLE_BASHBOX_ENABLED=1`.
-2. **Per agent:** add `Bashbox` to the agent's `tools`.
+Bashbox is always registered. An agent gets it by having `Bashbox` in its
+`tools`. An agent registered through MCP `register_agent` is the exception:
+`Bashbox` is stripped from its tools, with `Bash`, `Write` and `Edit`, unless
+the operator set `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`.
 
 An agent still needs a bound `volumes:` volume (sandbox-by-default applies —
 no volume, no filesystem). Unlike `Bash`, the bound volume may be `ro`.

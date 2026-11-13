@@ -87,7 +87,6 @@ services:
       SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:latest
       SANDBOX_MAX_MEM_MB: "2048"
       SANDBOX_MAX_CPUS: "2"
-      SANDBOX_SESSION_IDLE_TTL: "15m"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock        # socket model only
     # No ports: — in-network only.
@@ -120,18 +119,22 @@ secret — forwarding it would 401).
 | `SANDBOX_ALLOW_ANON` | `0` | `1` = run unauthenticated (LOCAL DEV ONLY). |
 | `SANDBOX_IMAGE` | — (required) | The session toolchain image. |
 | `SANDBOX_RUNTIME` | `""` | OCI runtime: `""`\|`runc`\|`crun`\|`runsc`\|`kata`. |
-| `SANDBOX_CONTAINER_USER` | `1000:1000` | In-container user (never root). |
 | `SANDBOX_ALLOW_EGRESS` | `0` | `1` permits `network:"egress"` sessions. |
 | `SANDBOX_EXPOSE_NETWORK` | (unset) | A **dedicated** Docker network name enabling **session exposure** — a session opened with `expose:<alias>` attaches to this network with a `--network-alias`, so a dev server it runs is reachable at `http://<alias>:<port>` (e.g. from the PinchTab browser sidecar) for in-browser testing. Unset = exposure refused. ⚠️ Must be a network that holds ONLY the browser + exposed sessions — never the app network (an exposed session may run untrusted code and must not reach loomcycle/Postgres/the sidecar). |
 | `SANDBOX_ALLOW_ENV_INJECTION` | `0` | `1` permits **env injection** — `X-Loom-Sandbox-Env-<Name>` request headers (value resolved by loomcycle from `$cred:`/`$ghapp:`, so a secret never reaches the model) are injected as `--env` into the session container, e.g. a GitHub token for authenticated `git`/`gh`. Off = the headers are ignored. |
-| `SANDBOX_MAX_ENV_VARS` / `SANDBOX_MAX_ENV_VALUE_BYTES` | `32` / `65536` | Caps on injected env: max var count per open + max value bytes. |
 | `SANDBOX_WORKSPACE_ROOT` | (unset) | Absolute host dir enabling **durable workspaces** — a session opened with `workspace:<name>` bind-mounts `<root>/<principal>/<name>` at `/work` instead of tmpfs (see below). Unset = tmpfs-only. |
-| `SANDBOX_DEFAULT_TMPFS_MB` / `SANDBOX_MAX_TMPFS_MB` | `512` / `2048` | Workspace tmpfs size + ceiling. |
-| `SANDBOX_MAX_CPUS` / `SANDBOX_MAX_MEM_MB` / `SANDBOX_MAX_PIDS` | `2` / `2048` / `512` | Per-session resource ceilings. |
-| `SANDBOX_SESSION_IDLE_TTL` / `SANDBOX_SESSION_MAX_TTL` | `15m` / `1h` | Idle + absolute session TTL. |
-| `SANDBOX_GC_INTERVAL` | `1m` | GC tick. |
+| `SANDBOX_MAX_CPUS` / `SANDBOX_MAX_MEM_MB` | `2` / `2048` | Per-session resource ceilings. |
 | `SANDBOX_MAX_SESSIONS` | `32` | Concurrent session cap. |
-| `SANDBOX_MAX_OUTPUT_BYTES` | `1048576` | Per-exec output cap. |
+
+Fixed, with no variable: sessions run as `1000:1000`, the reference image's
+user; 512 PIDs per session; workspace tmpfs 512 MB by default and 2048 MB at most; at most 32
+injected env vars of 64 KiB each; 1 MiB of output per exec; a session is
+reaped after 15 minutes idle or 1 hour in all, checked every minute. The
+sidecar refuses to start while a variable that used to set one of these
+(`SANDBOX_CONTAINER_USER`, `SANDBOX_MAX_ENV_VARS`, `SANDBOX_MAX_ENV_VALUE_BYTES`,
+`SANDBOX_DEFAULT_TMPFS_MB`, `SANDBOX_MAX_TMPFS_MB`, `SANDBOX_MAX_PIDS`,
+`SANDBOX_MAX_OUTPUT_BYTES`, `SANDBOX_SESSION_IDLE_TTL`, `SANDBOX_SESSION_MAX_TTL`,
+`SANDBOX_GC_INTERVAL`) is still set: remove it.
 
 ## Env injection (credentials into a session)
 
@@ -178,7 +181,7 @@ and the build cache (`GOCACHE`/`CARGO_HOME`/`npm` cache all redirect onto `/work
   `-v /mnt/tank/loomcycle/workspaces:/mnt/tank/loomcycle/workspaces`) and set
   `SANDBOX_WORKSPACE_ROOT` to it, so the dir the sidecar creates is the dir the
   host engine mounts.
-- **Ownership.** The session runs as `SANDBOX_CONTAINER_USER` (uid 1000); the
+- **Ownership.** The session runs as uid 1000; the
   sidecar `chown`s each workspace to it (works in the socket model, where the
   sidecar runs as root). On a rootless nested sidecar, pre-`chown` the root to
   `1000:1000`.

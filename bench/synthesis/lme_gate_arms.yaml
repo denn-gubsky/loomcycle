@@ -4,7 +4,7 @@
 #
 #   LOOMCYCLE_PRESETS=base,memory \
 #   OLLAMA_BASE_URL=http://100.112.7.68:11434 \
-#   LOOMCYCLE_MEMORY_TRACE_INDEX=1 LOOMCYCLE_CODE_AGENTS_ENABLED=1 \
+#   LOOMCYCLE_MEMORY_TRACE_INDEX=1 \
 #   ./bin/loomcycle --config bench/synthesis/ingest.yaml \
 #                   --config bench/synthesis/lme_gate_arms.yaml
 #

@@ -273,7 +273,7 @@ func (d *Document) graphSnapshot(ctx context.Context, key sqlmem.ScopeKey, mscop
 			}
 			if k == 0 {
 				return errBusiness(fmt.Sprintf("%s: document %s has more chunks than one SQL Memory query may return", op, last),
-					"Raise LOOMCYCLE_SQLMEM_MAX_ROWS, or read that document with export_md."), nil
+					"Read that document with export_md, or have the operator raise the SQL Memory row cap."), nil
 			}
 			docs, more, clampedTo = docs[:k], true, k
 			kept := chunks[:0]

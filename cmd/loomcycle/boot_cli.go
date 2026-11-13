@@ -13,6 +13,7 @@ import (
 
 	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/cli"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // resolveBuildIdentity fills buildVersion / buildCommit / buildTime.
@@ -267,15 +268,16 @@ func (b *boot) parseFlags() (string, bool) {
 func runThinClient(upstream string) {
 	proxyCtx, stopProxy := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopProxy()
+	// The thin client loads no config, so nothing else would say that a
+	// variable in the plugin's environment is no longer read. To stderr, as
+	// every log here: stdout is the JSON-RPC wire.
+	for _, warn := range config.RetiredEnvAdvisories(os.Environ()) {
+		slog.Warn("config: warning", "detail", warn)
+	}
 	pc := lcmcp.NewProxyClient(lcmcp.ProxyConfig{
 		Upstream: upstream,
 		Token:    thinClientToken(proxyCtx, upstream),
 		Logger:   slog.Default(), // stderr; never stdout (stdout is the JSON-RPC wire)
-		// Self-recovery knobs (defaults applied by NewProxyClient when unset).
-		// The thin client boots with NO config load, so these are read straight
-		// from the environment.
-		ResponseHeaderTimeout: mcpProxyHeaderTimeout(),
-		ReconnectDelays:       mcpProxyReconnectDelays(),
 	})
 	slog.Info("mcp: thin-client mode → upstream (no local runtime)", "url", upstream)
 	err := pc.Serve(proxyCtx, os.Stdin, os.Stdout)

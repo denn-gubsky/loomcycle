@@ -22,6 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // channelFanCap bounds the fan-in (await) / fan-out (broadcast) width on
@@ -130,7 +131,7 @@ func (s *Server) PublishChannel(ctx context.Context, req connector.ChannelPublis
 	if !json.Valid(req.Payload) {
 		return connector.ChannelPublishResult{}, fmt.Errorf("publish: payload is not valid JSON")
 	}
-	if cap := s.cfg().Env.ChannelsMaxValueBytes; cap > 0 && len(req.Payload) > cap {
+	if cap := builtin.ChannelMaxValueBytes; len(req.Payload) > cap {
 		return connector.ChannelPublishResult{}, fmt.Errorf("publish: payload (%d bytes) exceeds max %d", len(req.Payload), cap)
 	}
 
@@ -505,7 +506,7 @@ func (s *Server) BroadcastChannels(ctx context.Context, req connector.ChannelBro
 	if !json.Valid(req.Payload) {
 		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: payload is not valid JSON")
 	}
-	if cap := s.cfg().Env.ChannelsMaxValueBytes; cap > 0 && len(req.Payload) > cap {
+	if cap := builtin.ChannelMaxValueBytes; len(req.Payload) > cap {
 		return connector.ChannelBroadcastResult{}, fmt.Errorf("broadcast: payload (%d bytes) exceeds max %d", len(req.Payload), cap)
 	}
 	scope, scopeID, err := resolveChannelScope(ctx, req.Scope, req.ScopeID)

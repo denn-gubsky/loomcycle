@@ -362,7 +362,7 @@ func TestEmbedded_NoShippedAliasIsUsedUntagged(t *testing.T) {
 // on top of base. Post-refactor it carries NO agent (the LLM dev/sandbox was retired
 // for the deterministic code-js dev/exec, shipped in the dev-exec bundle) — it ships
 // the sandbox MCP wiring + the caller-facing dev/sandbox-usage delegation skill, so
-// it stays flag-independent (usable without LOOMCYCLE_CODE_AGENTS_ENABLED). An ACL
+// it has no code agent to compile. An ACL
 // grant without a matching declaration would fail validate() fatally, so this guards
 // the bundle in isolation.
 func TestEmbedded_SandboxBundleValidates(t *testing.T) {
@@ -409,10 +409,8 @@ func TestEmbedded_SandboxBundleValidates(t *testing.T) {
 
 // TestEmbedded_DevExecBundleValidates: the opt-in dev-exec bundle loads + validates
 // on top of base+sandbox, registering the deterministic code-js dev/exec agent with
-// the mcp__sandbox__* ceiling + an inline code body. It is NOT in the default stack
-// (it needs LOOMCYCLE_CODE_AGENTS_ENABLED, boot-fatal when disabled) — but, like
-// doc-colorizer, config load/validate does NOT require the flag (the gate is a
-// server-boot provider-registration check), so this validates in CI unchanged.
+// the mcp__sandbox__* ceiling + an inline code body. It is NOT in the default stack,
+// so it gets its own guard here.
 func TestEmbedded_DevExecBundleValidates(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
 	cfg, err := config.LoadLayers(layersFor(t, "base", "sandbox", "dev-exec")...)
@@ -440,10 +438,7 @@ func TestEmbedded_DevExecBundleValidates(t *testing.T) {
 // TestEmbedded_DocColorizerBundleValidates: the opt-in doc-colorizer bundle loads
 // + validates on top of base, registering the doc/colorizer code-js agent with
 // the [Path, Document] tool ceiling and user memory/sql scopes. It is NOT in the
-// default stack (it needs LOOMCYCLE_CODE_AGENTS_ENABLED, and a code-js agent is
-// boot-fatal when disabled), so it gets its own guard here — like sandbox. Note:
-// config load/validate does NOT require code agents enabled (the enable gate is a
-// server-boot provider-registration check), so this validates in CI unchanged.
+// default stack, so it gets its own guard here — like sandbox.
 func TestEmbedded_DocColorizerBundleValidates(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
 	cfg, err := config.LoadLayers(layersFor(t, "base", "doc-colorizer")...)

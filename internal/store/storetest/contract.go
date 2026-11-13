@@ -2854,7 +2854,7 @@ func testSessionArchiver(t *testing.T, s store.Store) {
 // regression: a PINNED session, even when all its runs are terminal + old, must
 // NEVER be returned by PrunableAgedSessions — pinning is the operator's explicit
 // "keep this" and exempts the chat from ALL automated retention (the chats
-// sweeper AND the legacy usage archiver both consume this list). An identical
+// sweeper consumes this list). An identical
 // UNpinned session in the same state IS returned. Fails on the pre-fix query
 // (no pinned exclusion) — the pinned session would appear in the prunable set.
 func testPrunableAgedSessionsExcludesPinned(t *testing.T, s store.Store) {

@@ -609,9 +609,28 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 	}
 }
 
-// TestSqlMem_MaxResultBytesHasNoOff: the env and yaml set the result byte
-// budget, and a zero or negative value takes the default rather than turning
-// the cap off.
+// The scope files' directory is a path of the host, so the environment sets
+// it over the yaml. Ignoring it would open an empty directory and make a
+// sqlite-tier deployment look as if its SQL Memory and Documents were gone.
+func TestSqlMem_RootEnvOverridesTheYAML(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SQLMEM_ROOT", "/srv/scopes")
+	cfg, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults:\n  provider: mock\nstorage:\n  sqlmem_root: /from/yaml\n")})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if cfg.Storage.SqlMemRoot != "/srv/scopes" {
+		t.Errorf("SqlMemRoot = %q, want the environment's /srv/scopes", cfg.Storage.SqlMemRoot)
+	}
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "LOOMCYCLE_SQLMEM_ROOT") {
+			t.Errorf("a variable that is read is reported as retired: %q", w)
+		}
+	}
+}
+
+// TestSqlMem_MaxResultBytesHasNoOff: the yaml sets the result byte budget,
+// and a zero or negative value takes the default rather than turning the cap
+// off.
 func TestSqlMem_MaxResultBytesHasNoOff(t *testing.T) {
 	load := func(t *testing.T, yamlExtra string) int {
 		t.Helper()
@@ -631,13 +650,8 @@ func TestSqlMem_MaxResultBytesHasNoOff(t *testing.T) {
 	if got := load(t, "storage: { sqlmem_max_result_bytes: -1 }\n"); got != 8<<20 {
 		t.Errorf("yaml -1: got %d, want the 8 MiB default", got)
 	}
-	t.Setenv("LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES", "0")
-	if got := load(t, ""); got != 8<<20 {
-		t.Errorf("env 0: got %d, want the 8 MiB default", got)
-	}
-	t.Setenv("LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES", "2097152")
-	if got := load(t, ""); got != 2<<20 {
-		t.Errorf("env 2 MiB: got %d", got)
+	if got := load(t, "storage: { sqlmem_max_result_bytes: 0 }\n"); got != 8<<20 {
+		t.Errorf("yaml 0: got %d, want the 8 MiB default", got)
 	}
 }
 
@@ -853,14 +867,8 @@ agents:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Env.MemoryMaxValueBytes != 64*1024 {
-		t.Errorf("MemoryMaxValueBytes default = %d, want 65536", cfg.Env.MemoryMaxValueBytes)
-	}
 	if cfg.Env.MemoryMaxScopeBytes != 1024*1024 {
 		t.Errorf("MemoryMaxScopeBytes default = %d, want 1048576", cfg.Env.MemoryMaxScopeBytes)
-	}
-	if cfg.Env.MemorySweepInterval == 0 {
-		t.Errorf("MemorySweepInterval default should be non-zero")
 	}
 	if cfg.Env.MemoryPendingDrainedTTL != 7*24*time.Hour {
 		t.Errorf("MemoryPendingDrainedTTL default = %v, want 168h", cfg.Env.MemoryPendingDrainedTTL)
@@ -875,62 +883,13 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   default: { model: claude-sonnet-4-6 }
 `), 0o600)
-	t.Setenv("LOOMCYCLE_MEMORY_MAX_VALUE_BYTES", "0")
-	t.Setenv("LOOMCYCLE_MEMORY_SWEEP_MS", "-1")
 	t.Setenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS", "0")
 	cfg, err := Load(yamlPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Env.MemoryMaxValueBytes != 0 {
-		t.Errorf("0 should disable; got %d", cfg.Env.MemoryMaxValueBytes)
-	}
-	if cfg.Env.MemorySweepInterval != 0 {
-		t.Errorf("negative should disable; got %v", cfg.Env.MemorySweepInterval)
-	}
 	if cfg.Env.MemoryPendingDrainedTTL != 0 {
 		t.Errorf("0 should disable the drained-queue prune; got %v", cfg.Env.MemoryPendingDrainedTTL)
-	}
-}
-
-// The internal-chat retention age defaults to 3 days and treats an EXPLICIT 0
-// as a real value ("inherit the global chat age"), not as unset. The distinction
-// is the whole point of the knob's n >= 0 parse guard: the sibling
-// LOOMCYCLE_RETENTION_*_MS vars guard on n > 0, and copying that here would
-// silently ignore an operator's opt-out and leave the 3-day default in place.
-func TestRetentionChatsInternalMaxAge_DefaultsAndExplicitZero(t *testing.T) {
-	tmp := t.TempDir()
-	yamlPath := filepath.Join(tmp, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  default: { model: claude-sonnet-4-6 }
-`), 0o600)
-
-	cfg, err := Load(yamlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := 3 * 24 * time.Hour; cfg.Env.RetentionChatsInternalMaxAge != want {
-		t.Errorf("default internal chat age = %v, want %v", cfg.Env.RetentionChatsInternalMaxAge, want)
-	}
-
-	t.Setenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", "0")
-	cfg, err = Load(yamlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Env.RetentionChatsInternalMaxAge != 0 {
-		t.Errorf("explicit 0 = %v, want 0 (0 means inherit the global chat age; it must override the 3-day default, not be discarded as unset)", cfg.Env.RetentionChatsInternalMaxAge)
-	}
-
-	t.Setenv("LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", "7200000")
-	cfg, err = Load(yamlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := 2 * time.Hour; cfg.Env.RetentionChatsInternalMaxAge != want {
-		t.Errorf("override = %v, want %v", cfg.Env.RetentionChatsInternalMaxAge, want)
 	}
 }
 
@@ -2902,40 +2861,6 @@ func TestValidate_ContextPlugins(t *testing.T) {
 	if err := validate(base([]ContextPluginSpec{{Name: ""}})); err == nil || !strings.Contains(err.Error(), "name is required") {
 		t.Errorf("empty name: got %v, want 'name is required' error", err)
 	}
-}
-
-// RFC AH Phase 2b: the ephemeral-volume sweep interval defaults to 60s and is
-// disabled by a non-positive LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS.
-func TestEphemeralVolumeSweepInterval_DefaultAndDisable(t *testing.T) {
-	writeMinimal := func(t *testing.T) string {
-		t.Helper()
-		p := filepath.Join(t.TempDir(), "c.yaml")
-		if err := os.WriteFile(p, []byte("defaults: { provider: anthropic, model: x }\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-
-	t.Run("default 60s", func(t *testing.T) {
-		cfg, err := Load(writeMinimal(t))
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		if cfg.Env.EphemeralVolumeSweepInterval != 60*time.Second {
-			t.Errorf("default = %s, want 60s", cfg.Env.EphemeralVolumeSweepInterval)
-		}
-	})
-
-	t.Run("disable with 0", func(t *testing.T) {
-		t.Setenv("LOOMCYCLE_EPHEMERAL_VOLUME_SWEEP_MS", "0")
-		cfg, err := Load(writeMinimal(t))
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		if cfg.Env.EphemeralVolumeSweepInterval != 0 {
-			t.Errorf("disabled = %s, want 0", cfg.Env.EphemeralVolumeSweepInterval)
-		}
-	})
 }
 
 // TestHooksPrivateHostAllowlistEnvAppends pins the yaml→env wiring for the
