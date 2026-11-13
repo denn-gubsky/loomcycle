@@ -215,8 +215,7 @@ type PreHookCall struct {
 //   - AllowHosts non-empty: hostnames the hook approves for THIS tool
 //     call (per-call scope, no server-side cache, not inherited by
 //     sub-agents). Only takes effect when the hook's owner is listed
-//     in the operator yaml's hooks.permit_host_widen.owners (or the
-//     LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS env). Un-permitted
+//     in the operator yaml's hooks.permit_host_widen.owners. Un-permitted
 //     entries are dropped at the dispatcher with a WARN log + metric.
 //     Matching semantics for each entry: a literal hostname (no
 //     leading dot) is EXACT-match only ("acme.com" does not match

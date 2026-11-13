@@ -187,6 +187,10 @@ var retiredEnv = map[string]string{
 
 	"LOOMCYCLE_UI_LOGIN_ORIGINS": "set auth.login_origins in the yaml, as a list",
 
+	// The hooks lists are yaml-only.
+	"LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS": "list each [tenant:]owner under hooks.permit_host_widen.owners in the yaml",
+	"LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST":   "list each host or CIDR range under hooks.private_host_allowlist in the yaml",
+
 	// The process metrics sampler moved to the yaml `metrics:` block.
 	"LOOMCYCLE_METRICS_ENABLED":            "set metrics.enabled: true in the yaml",
 	"LOOMCYCLE_METRICS_COLLECT_SYSTEM":     "set metrics.collect_system: true in the yaml",
@@ -336,10 +340,10 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// The hosted Ollama context window and the local GPU offload are provider
 	// options now. Dropped without the option, requests run in the model's
 	// own window (a truncated prompt) or on whatever Ollama picks (often the
-	// CPU): nothing fails, the answers get worse or slower. The yaml must
-	// carry the same number.
-	"LOOMCYCLE_OLLAMA_NUM_CTX":       {providerOptionDiffers("ollama", "num_ctx"), "requests to hosted Ollama no longer carry this context window; set providers.ollama.options.num_ctx in the yaml to the same value, then remove this variable"},
-	"LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU": {providerOptionDiffers("ollama-local", "num_gpu"), "requests to local Ollama no longer carry this GPU offload; set providers.ollama-local.options.num_gpu in the yaml to the same value, then remove this variable"},
+	// CPU): nothing fails, the answers get worse or slower. A yaml that names
+	// the option always won over the variable, so only its absence refuses.
+	"LOOMCYCLE_OLLAMA_NUM_CTX":       {providerOptionAbsent("ollama", "num_ctx"), "requests to hosted Ollama no longer carry this context window; set providers.ollama.options.num_ctx in the yaml to the same value, then remove this variable"},
+	"LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU": {providerOptionAbsent("ollama-local", "num_gpu"), "requests to local Ollama no longer carry this GPU offload; set providers.ollama-local.options.num_gpu in the yaml to the same value, then remove this variable"},
 	// The code-agent bounds: a budget or a lifetime lowered so a runaway
 	// script ends sooner.
 	"LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
@@ -393,6 +397,11 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 		}
 		return false
 	}},
+	// The variables added to the yaml lists. An entry the yaml lacks is a
+	// hook that stops working: its allow_hosts dropped, or its callback to a
+	// private address refused.
+	"LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS": {loosens: hookOwnersNotInYAML},
+	"LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST":   {loosens: hookPrivateHostsNotInYAML},
 	// Without the directory a family in export+prune mode deletes nothing;
 	// with another one its exports land where nobody looks for them.
 	"LOOMCYCLE_RETENTION_EXPORT_DIR": {loosens: func(value string, c retiredEnvCtx) bool {
@@ -631,17 +640,20 @@ func providerTimeoutLowered(option string, local bool) func(string, retiredEnvCt
 	}
 }
 
-// providerOptionDiffers is the rule of a retired variable that set one
-// provider's option: a positive number the yaml option does not repeat. The
-// old reads ignored a value that was not a positive number.
-func providerOptionDiffers(provider, option string) func(string, retiredEnvCtx) bool {
+// providerOptionAbsent is the rule of a retired variable that set one
+// provider's option: a positive number while the yaml does not name the
+// option. A yaml option always replaced the variable's value, whatever it
+// was (a zero included), so beside one the variable changed nothing and its
+// loss changes nothing: that case is reported only. The old reads ignored a
+// value that was not a positive number.
+func providerOptionAbsent(provider, option string) func(string, retiredEnvCtx) bool {
 	return func(value string, c retiredEnvCtx) bool {
 		n, set, ok := retiredInt(value)
 		if !set || !ok || n <= 0 {
 			return false
 		}
-		now, has := providerOptionInt(c.cfg.Providers[provider], option)
-		return !has || now != n
+		_, named := c.cfg.Providers[provider].Options[option]
+		return !named
 	}
 }
 

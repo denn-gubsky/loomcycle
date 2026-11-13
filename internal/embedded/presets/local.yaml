@@ -10,20 +10,21 @@
 #                                    cloud providers stay declared, but no tier
 #                                    reaches them; only an agent that pins one does.
 #
-# CONFIG HOME (RFC CK). Local-provider settings live in YAML rather than in
-# environment variables. Precedence, highest first:
-#   loomcycle.yaml  >  this preset  >  the LOOMCYCLE_OLLAMA_* env vars (legacy).
-# So your own loomcycle.yaml overrides this preset, and a value set in YAML
-# overrides the matching env var. Ollama's endpoint defaults to the
-# OLLAMA_BASE_URL env (http://localhost:11434). NO secrets here.
+# CONFIG HOME (RFC CK). Local-provider settings live in YAML: your own
+# loomcycle.yaml overrides this preset. Two of them also have an environment
+# variable. LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX sizes the local context window and
+# wins over options.num_ctx when both are set. OLLAMA_BASE_URL (default
+# http://localhost:11434) is Ollama's endpoint unless a yaml base_url names
+# another. The other options have no variable. NO secrets here.
 
 # PROVIDERS. This preset declares none of its own: ollama-local is already
 # declared (keyless) in the built-in providers, driven by OLLAMA_BASE_URL and
 # LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX. The blocks below are
 # examples to COPY INTO YOUR OWN loomcycle.yaml (a preset is embedded in the
 # binary and cannot be edited in place) — the `providers:` line included. They
-# merge over the built-in entry field by field; base_url and num_ctx override
-# those two variables, and the other options have no variable.
+# merge over the built-in entry field by field; base_url replaces
+# OLLAMA_BASE_URL, num_ctx applies when LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX is
+# unset, and the other options have no variable.
 #
 # The whole block is commented out ON PURPOSE, key and all. A bare `providers:`
 # with nothing under it is not "no change": it is an empty value, and it REPLACES
@@ -40,7 +41,7 @@
 #                                 # (required under LOOMCYCLE_NO_DEFAULT_PROVIDERS=1)
 #     base_url: http://truenas.local:11434   # else OLLAMA_BASE_URL (default localhost)
 #     options:
-#       num_ctx: 32768            # else LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX (unset → Ollama's 4096 floor)
+#       num_ctx: 32768            # LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX wins when set (neither → Ollama's 4096 floor)
 #       num_gpu: 999              # force full GPU offload; unset → Ollama decides
 #       header_timeout_ms: 600000 # first-token budget for a cold model load (the default)
 #       idle_timeout_ms: 600000   # longest silence inside a stream (the default)

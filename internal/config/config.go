@@ -581,8 +581,7 @@ type HooksConfig struct {
 	// (CLAUDE.md rule #8): the runtime caller and the model both
 	// cannot enable widening.
 	//
-	// Env-var equivalent: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS
-	// (comma-separated, same `[tenant:]owner` syntax). Env appends to yaml.
+	// The yaml is the only source of this list.
 	PermitHostWiden HostWidenPermitConfig `yaml:"permit_host_widen"`
 
 	// PrivateHostAllowlist names hosts (suffix-matched, or CIDR ranges, like
@@ -592,10 +591,7 @@ type HooksConfig struct {
 	// dials through the SSRF guard; only an inline webhook in the operator's
 	// static config (a yaml agent's or channel's) is not guarded. Under
 	// LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE=cidr_only every entry must
-	// be a CIDR range.
-	//
-	// Env-var equivalent: LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST
-	// (comma-separated). Env appends to yaml.
+	// be a CIDR range. The yaml is the only source of this list.
 	PrivateHostAllowlist []string `yaml:"private_host_allowlist"`
 }
 
@@ -4123,7 +4119,8 @@ type Env struct {
 	// 4096 tokens with no error — a long input produces a partial
 	// completion that doesn't reach end_turn. See
 	// internal/providers/ollama/driver.go Driver.WithNumCtx for the
-	// full incident context. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX.
+	// full incident context. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX; it wins
+	// over providers.ollama-local.options.num_ctx.
 	OllamaLocalNumCtx int
 	// DeepSeekBaseURL overrides the public DeepSeek endpoint
 	// (https://api.deepseek.com/v1) for self-hosted OpenAI-
@@ -4171,8 +4168,9 @@ type Env struct {
 	// key held in Vault Transit (a dev server). Off by default: the Vault
 	// token travels in a header. LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1.
 	KMSVaultAllowHTTP bool
-	// AuthMode (LOOMCYCLE_AUTH_MODE: token | strict) is the fleet default for
-	// `auth.mode` (RFC FA §4); a config may raise it, never lower it.
+	// AuthMode (LOOMCYCLE_AUTH_MODE: token | strict) is the fleet's sign-in
+	// mode (RFC FA §4). The effective mode is the stricter of this and the
+	// yaml's `auth.mode`: neither lowers the other.
 	AuthMode string
 	// UIInsecureCookies (LOOMCYCLE_UI_INSECURE_COOKIES=1) lets strict mode
 	// create Web UI sessions over plain HTTP, with a cookie that is not
@@ -4954,7 +4952,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 
 	applyEnvStorage(cfg)
 	applyEnvSQLMem(cfg)
-	applyEnvHooks(cfg)
 	applyEnvNetPolicy(cfg)
 	applyEnvListeners(cfg)
 	applyEnvSweepers(cfg)
@@ -5259,8 +5256,13 @@ func applyEnvStorage(cfg *Config) {
 			cfg.Storage.PgMinIdleConns = int32(n)
 		}
 	}
-	if v := os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE"); v == "1" {
+	// 1 and 0 are the two settings; anything else was never read as one and
+	// leaves the yaml's.
+	switch os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE") {
+	case "1":
 		cfg.Storage.PgAutoMigrate = true
+	case "0":
+		cfg.Storage.PgAutoMigrate = false
 	}
 	cfg.Storage.BackendInferred = cfg.Storage.Backend == ""
 	cfg.Storage.Backend = inferStorageBackend(cfg.Storage.Backend, cfg.Storage.PgDSN)
@@ -7825,7 +7827,7 @@ func validateEnvPolicy(c *Config) error {
 	// (netguard.Policy.VouchEntryForHost).
 	netPolicy := c.Env.NetPolicy()
 	if err := netPolicy.ValidateAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
-		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
+		return fmt.Errorf("hooks.private_host_allowlist: %w", err)
 	}
 	if netPolicy.CIDROnly() && c.Env.MCPAllowPrivateIPs {
 		return fmt.Errorf("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=1 lets the operator's MCP servers reach any private address their name resolves to, which %s refuses; unset it and list the servers' addresses as CIDR ranges in LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", netguard.PrivateHostAllowlistModeCIDROnly)

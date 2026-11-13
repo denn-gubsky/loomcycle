@@ -67,7 +67,8 @@ func Provider(cfg *config.Config, id string) (providers.Provider, error) {
 // OLLAMA_*_BASE_URL / DEEPSEEK_BASE_URL / GEMINI_BASE_URL defaults). APIKey +
 // KeyEnvName come from api_key_env (RFC AR per-tenant override). StreamOpts +
 // Options carry the per-provider timeouts and options; the only option still
-// taken from the environment is the local Ollama context window.
+// taken from the environment is the local Ollama context window, which wins
+// over the yaml's.
 func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) providers.DriverOptions {
 	baseURL := resolveBaseURL(id, pc, cfg)
 	stream := streamhttp.Options{
@@ -85,9 +86,6 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 		stream = streamhttp.Options{
 			HeaderTimeout: config.OllamaLocalStreamTimeoutMS * time.Millisecond,
 			IdleTimeout:   config.OllamaLocalStreamTimeoutMS * time.Millisecond,
-		}
-		if cfg.Env.OllamaLocalNumCtx > 0 {
-			opts["num_ctx"] = cfg.Env.OllamaLocalNumCtx
 		}
 	case "code-js":
 		// RFC BF P2a regression fix (b8d3f42d line): the code-js driver factory
@@ -107,6 +105,11 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 	// `stable: true`, or a per-provider num_ctx).
 	for k, v := range pc.Options {
 		opts[k] = v
+	}
+	// The local context window is the one option the environment also sets
+	// (the install form's only way to size it), and the environment wins.
+	if id == "ollama-local" && cfg.Env.OllamaLocalNumCtx > 0 {
+		opts["num_ctx"] = cfg.Env.OllamaLocalNumCtx
 	}
 	// RFC CK: per-provider stream timeouts are settable via `options:`
 	// (header_timeout_ms / idle_timeout_ms) so a `local` preset/bundle can tune a

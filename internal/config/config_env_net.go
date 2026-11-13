@@ -7,23 +7,6 @@ import (
 	"strings"
 )
 
-// applyEnvHooks appends the hooks block's env lists to the yaml's.
-func applyEnvHooks(cfg *Config) {
-	// Hooks block (v0.8.17). The env-var override APPENDS to whatever
-	// yaml already declared rather than replacing, so an operator can
-	// keep their static list in yaml and add an ops-only entry via env
-	// without rewriting the config file. Duplicates are tolerated — the
-	// registry's IsHostWidenPermitted() does set membership.
-	if v := os.Getenv("LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS"); v != "" {
-		for _, owner := range splitCSV(v) {
-			cfg.Hooks.PermitHostWiden.Owners = append(cfg.Hooks.PermitHostWiden.Owners, owner)
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST"); v != "" {
-		cfg.Hooks.PrivateHostAllowlist = append(cfg.Hooks.PrivateHostAllowlist, splitCSV(v)...)
-	}
-}
-
 // applyEnvNetPolicy reads the private-host allowlist mode; under cidr_only
 // the MCP private-IP default flips. Reads cfg.Env, so it runs after
 // applyEnvCore.

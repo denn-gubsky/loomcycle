@@ -356,7 +356,7 @@ questions:
       attrs:
           - variable: OLLAMA_BASE_URL
             label: OLLAMA_BASE_URL
-            description: '`ollama` provider       = hosted ollama.com, Bearer auth via OLLAMA_API_KEY. `ollama-local` provider = local-network Ollama, no auth, default http://localhost:11434. Driven by OLLAMA_BASE_URL. YAML alternative (RFC CK): these ollama-local knobs — base_url, num_ctx, num_gpu, and the timeouts below — can instead live in the `local` preset (or your loomcycle.yaml) as `providers.ollama-local.{bas…'
+            description: '`ollama` provider       = hosted ollama.com, Bearer auth via OLLAMA_API_KEY. `ollama-local` provider = local-network Ollama, no auth, default http://localhost:11434. Driven by OLLAMA_BASE_URL. The other ollama-local settings (num_gpu, the stream timeouts) are set in your loomcycle.yaml as `providers.ollama-local.options`, which is also where the vllm-local / llamacpp-local providers are declared;…'
             schema:
               type: string
               default: ""
@@ -386,7 +386,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_AUTH_MODE
             label: LOOMCYCLE_AUTH_MODE
-            description: 'Web UI sign-in mode: token (default; paste a token) or strict (only the gates in the yaml `auth.gates` block). A config may raise it, never lower it. (example: token)'
+            description: 'Web UI sign-in mode: token (default; paste a token) or strict (only the gates in the yaml `auth.gates` block). The stricter of this and the yaml''s `auth.mode` holds: neither lowers the other. (example: token)'
             schema:
               type: string
               default: ""
@@ -428,7 +428,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE
             label: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE
-            description: 'Private-host allowlist mode. any (the default): host-name and CIDR entries. cidr_only: CIDR entries only, so no private address is admitted on the say-so of a DNS answer; a host-name entry (or an IP written as a host entry) fails startup, as does any other value. cidr_only covers LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST too, stops vouching for a yaml remote peer by its host name, and puts the opera…'
+            description: 'Private-host allowlist mode. any (the default): host-name and CIDR entries. cidr_only: CIDR entries only, so no private address is admitted on the say-so of a DNS answer; a host-name entry (or an IP written as a host entry) fails startup, as does any other value. cidr_only covers the yaml''s hooks.private_host_allowlist too, stops vouching for a yaml remote peer by its host name, and puts the oper…'
             schema:
               type: string
               default: ""
@@ -955,12 +955,6 @@ questions:
           - variable: LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT
             label: LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT
             description: '(example: 8788)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS
-            label: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS
-            description: 'Tenant owners permitted to widen the host allowlist from a tool-use hook. (example: tenant-a,tenant-b)'
             schema:
               type: string
               default: ""

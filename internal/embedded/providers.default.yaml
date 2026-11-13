@@ -35,8 +35,8 @@ providers:
   ollama-local:
     # Local-network Ollama — keyless; reachability + base URL from OLLAMA_BASE_URL
     # (default http://localhost:11434; OLLAMA_BASE_URL=disabled opts out). num_ctx
-    # flows in from LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX unless options.num_ctx sets
-    # it; options.num_gpu and the stream timeouts are options only.
+    # is LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX when that is set, else options.num_ctx;
+    # options.num_gpu and the stream timeouts are options only.
     driver: ollama
     options: {}
   mock:

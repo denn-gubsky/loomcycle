@@ -123,7 +123,7 @@ tiers:
 #
 # Provider options. Each is set here and nowhere else (the one exception:
 # ollama-local's num_ctx also comes from LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, and
-# the yaml wins).
+# the variable wins when both are set).
 # providers:
 #   openai:
 #     options:
@@ -580,9 +580,8 @@ interruption:
 # cannot enable widening — only this yaml can. See docs/TOOLS.md
 # "Per-call host widening" for the wire shape, audit event, limitations.
 #
-# Env equivalent (APPENDS to whatever yaml has, not replaces; same
-# `[tenant:]name` syntax):
-#   LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=jobember:url-gate
+# The yaml is the only source of this list; there is no environment
+# variable for it.
 #
 # SECURITY: the named app is trusted to make ad-hoc per-call URL
 # decisions. The hook receives the URL the model wants to fetch +
@@ -595,6 +594,11 @@ hooks:
   permit_host_widen:
     # bare name = this yaml's own agents; "tenant:name" = that tenant's definitions.
     owners: []                    # e.g. ["jobember:url-gate"] — empty default-denies for all
+  # Hosts (suffix-matched) or CIDR ranges that a tenant's hook callback may
+  # reach although they resolve to a private address. Set here only; under
+  # LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE=cidr_only every entry must be
+  # a CIDR range.
+  private_host_allowlist: []      # e.g. ["hooks.internal", "10.0.0.0/8"]
 
 # ─── Memory backends (RFC CD Part B) ──────────────────────────────────
 # Named memory backends an agent selects with `memory_backend: <name>`. With no

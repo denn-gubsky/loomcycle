@@ -338,6 +338,7 @@ Rules:
 - `storage.sqlmem_enabled` has three states. Unset: on with SQLite; on with Postgres when the SQL Memory connection string is set. `false`: off on either store. `true` on Postgres with no SQL Memory connection string stops the boot.
 - With a Postgres store and no `LOOMCYCLE_SQLMEM_PG_DSN`, SQL Memory is off and the server starts. The boot log carries a `WARN` line: `sqlmem: SQL Memory is off because LOOMCYCLE_SQLMEM_PG_DSN is not set; Documents need SQL Memory and are off with it. Set the DSN of a separate database to turn both on, or storage.sqlmem_enabled: false in the yaml to say this is intended`. With `storage.sqlmem_enabled: false` the line is not logged.
 - `LOOMCYCLE_SQLMEM_ROOT`, `LOOMCYCLE_SQLMEM_QUOTA_BYTES`, `LOOMCYCLE_SQLMEM_AUDIT_MODE`, `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS`, `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES` and `LOOMCYCLE_SQLMEM_SHARED_SCHEMAS` are still read from the environment. Do not move them.
+- `LOOMCYCLE_PG_AUTOMIGRATE` is read in both directions: `1` turns schema migration at boot on and `0` turns it off, whatever `storage.pg_automigrate` says. Before, only `1` was read, so a host that carried `LOOMCYCLE_PG_AUTOMIGRATE=0` beside a yaml `pg_automigrate: true` migrated at boot; now it does not, and the schema moves only when you run `loomcycle migrate up`. Any other value, or none, leaves the yaml's value.
 - Set `storage.backend: postgres` on every Postgres deployment, and `storage.backend: sqlite` on every SQLite deployment that has a connection string anywhere in its environment. It costs one line, and the store no longer depends on what the environment happens to carry.
 
 ### 5.2 Retention
@@ -451,8 +452,9 @@ Rules:
 - A `providers:` entry merges over the built-in provider field by field. You do not restate the driver or the key variable.
 - **There is no global timeout key.** The two global variables applied to every provider. Each provider that needs another value than the default sets its own options.
 - **A lowered global timeout is refused until every provider has it.** If `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` or `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` is a positive value below what any declared provider now waits, the boot is refused. The check covers every provider the config declares except `ollama-local`, `code-js` and the mock provider, and the default providers layer declares the built-in ones whether you use them or not. Either set the option on each of them or remove the variable and accept the defaults.
-- `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is still read from the environment, and a yaml `providers.ollama-local.options.num_ctx` wins over it. `OLLAMA_BASE_URL` and `LOOMCYCLE_CODE_AGENTS_ROOT` also stay in the environment.
-- **`LOOMCYCLE_OLLAMA_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` are refused until the yaml carries the same number.** Set to a positive number, each stops the boot unless `providers.ollama.options.num_ctx` or `providers.ollama-local.options.num_gpu` is that number. Dropped silently, hosted requests would run in the model's own window and local models on whatever Ollama picks, often the CPU. Write the option, then remove the variable.
+- **`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is still a variable, and it now wins over the yaml.** Set to a positive number, it is the local context window even when `providers.ollama-local.options.num_ctx` is set, in your own file or in a preset. Before this release the yaml option won. When both are set and differ, the boot log carries a `config: warning` line that says so (`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX and providers.ollama-local.options.num_ctx are both set and differ: the environment's value is the one used; remove one of them`). Keep the one you mean. It is the only Ollama setting left in the environment besides the endpoint: the hosted window (`providers.ollama.options.num_ctx`), the GPU offload and the stream timeouts are yaml only.
+- `OLLAMA_BASE_URL` and `LOOMCYCLE_CODE_AGENTS_ROOT` also stay in the environment.
+- **`LOOMCYCLE_OLLAMA_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` are refused while the yaml does not name the option.** Set to a positive number, each stops the boot unless the yaml has `providers.ollama.options.num_ctx` or `providers.ollama-local.options.num_gpu`. Dropped silently, hosted requests would run in the model's own window and local models on whatever Ollama picks, often the CPU. Write the option with the variable's number, then remove the variable. When the yaml already names the option, with any value, the variable is only advised: a yaml option always replaced the variable, so that value was the one in use before the upgrade too.
 
 ### 5.4 Timeout scaling
 
@@ -595,7 +597,7 @@ These variables are only advised. A `sample_interval` under `1s` stops the load;
 
 ### 5.10 Hooks lists
 
-In the same release, `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` and `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` are removed. Both used to append to the yaml list.
+`LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` and `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` are removed. Both used to append to the yaml list; the yaml list is now the whole list.
 
 Before:
 
@@ -615,7 +617,12 @@ hooks:
     - 10.20.0.0/16
 ```
 
-A variable that names an entry the yaml list lacks refuses the boot. Copy every entry into the yaml, then remove the variable.
+A variable that names an entry the yaml list lacks refuses the boot: without the entry, that hook's `allow_hosts` would stop being honoured, or its callback to a private address would be refused. Copy every entry into the yaml, then remove the variable. A variable whose entries are all in the yaml is only advised.
+
+How entries are compared:
+
+- An owner entry is `[tenant:]name`. An entry with no tenant is the shared tenant, and spaces around either part do not count.
+- A host entry matches whatever its case and with or without a trailing dot. It is compared as written: a yaml entry for a shorter suffix or a wider range does not stand in for it, so copy the entry itself.
 
 ### 5.11 Dead-link collection
 
@@ -714,7 +721,15 @@ These remain: `SANDBOX_LISTEN_ADDR`, `SANDBOX_AUTH_TOKEN`, `SANDBOX_ALLOW_ANON`,
 
 ### 5.15 Sign-in mode
 
-In the same release, `auth.mode` in the yaml and `LOOMCYCLE_AUTH_MODE` in the environment no longer conflict. The effective mode is the stricter of the two (`strict` over `token`). Before, a yaml value below the environment value stopped the load. There is nothing to migrate; if you relied on that error to catch a config file that lowers the mode, know that the file is now overruled instead of refused.
+`auth.mode` in the yaml and `LOOMCYCLE_AUTH_MODE` in the environment no longer conflict. The effective mode is the stricter of the two (`strict` over `token`; `token` when neither is set), so neither plane lowers the other. Before, a yaml value below the environment value stopped the load. There is nothing to migrate; if you relied on that error to catch a config file that lowers the mode, know that the file is now overruled instead of refused.
+
+When both are set and differ, the boot log says which one decided:
+
+```
+auth: auth.mode and LOOMCYCLE_AUTH_MODE differ; the stricter of the two holds mode=strict decided_by=LOOMCYCLE_AUTH_MODE
+```
+
+This is the one setting where the environment does not simply win. A yaml written for `token` that comes up `strict` because of the environment must still satisfy strict mode, which needs at least one gate a person can sign in through in `auth.gates`; without one the load fails and says so.
 
 ## 6. Profiles
 
@@ -959,13 +974,13 @@ Provider options (`providers.<id>.options`).
 | `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | `providers.<id>.options.idle_timeout_ms`, on each provider | Milliseconds; `90000` | As above |
 | `LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS` | `providers.ollama-local.options.header_timeout_ms` | Milliseconds; `600000` | Set to a positive number below what `ollama-local` now waits |
 | `LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS` | `providers.ollama-local.options.idle_timeout_ms` | Milliseconds; `600000` | As above |
-| `LOOMCYCLE_OLLAMA_NUM_CTX` | `providers.ollama.options.num_ctx` | Tokens; unset = the model's own window | Set to a positive number while the yaml option is absent or another number |
+| `LOOMCYCLE_OLLAMA_NUM_CTX` | `providers.ollama.options.num_ctx` | Tokens; unset = the model's own window | Set to a positive number while the yaml does not name the option |
 | `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` | `providers.ollama-local.options.num_gpu` | Layers; unset = Ollama decides | As above |
 | `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC` | `providers.code-js.options.deterministic` | `true` or `false`; `false` | Never |
 | `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `providers.code-js.options.run_timeout_seconds` | Seconds; `120` | Lower (valid), compared with the yaml option or the default |
 | `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `providers.code-js.options.max_wall_seconds` | Seconds; `86400` | Lower (valid), compared with the yaml option or the default |
 
-Timeout scaling, memory, concurrency, observability, sign-in, metrics.
+Timeout scaling, memory, concurrency, observability, sign-in, hooks, metrics.
 
 | Variable | Yaml key | Format and default | Stops the boot when |
 |---|---|---|---|
@@ -981,18 +996,18 @@ Timeout scaling, memory, concurrency, observability, sign-in, metrics.
 | `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | `observability.tracing.tenant_sampler_ratios` | Map of tenant to a ratio from 0 to 1; none | It names a tenant to which the yaml gives another ratio or none, or a pair does not parse |
 | `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | `observability.tenant_telemetry.allowed_hosts` | List of hosts, each exact or a quoted `"*.suffix"`; none = any public host | It lists at least one host while the yaml list is empty |
 | `LOOMCYCLE_UI_LOGIN_ORIGINS` | `auth.login_origins` | List of origins; none = the receiver is off | It names an origin the yaml list does not contain |
+| `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` | `hooks.permit_host_widen.owners` | List of `[tenant:]name`; empty | It names an entry the yaml list lacks |
+| `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` | `hooks.private_host_allowlist` | List of hosts and CIDR ranges; empty | It names an entry the yaml list lacks |
 | `LOOMCYCLE_METRICS_ENABLED` | `metrics.enabled` | `true` or `false`; `false` | Never |
 | `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | `metrics.collect_system` | `true` or `false`; `false` | Never |
 | `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` | `metrics.sample_interval` | Duration; `5s`; at least `1s` | Never |
 
-#### Pending rows for table A
+#### Pending row for table A
 
-These land with the same release and are not yet in the runtime's table of removed variables.
+This lands with the same release and is not yet in the runtime's table of removed variables.
 
 | Variable | Yaml key | Format and default | Stops the boot when |
 |---|---|---|---|
-| `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` | `hooks.permit_host_widen.owners` | List of `[tenant:]name`; empty | It names an entry the yaml list lacks |
-| `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` | `hooks.private_host_allowlist` | List; empty | It names an entry the yaml list lacks |
 | `LOOMCYCLE_CONFIG_FILES` | None: pass each file as `--config`, or place it in `LOOMCYCLE_CONFIG_DIR` | — | Set and non-empty |
 
 ### B. Variables that became fixed values
@@ -1197,7 +1212,8 @@ Each refusal entry has the form `NAME: what to do`. The most common ones:
 | `LOOMCYCLE_A2A_ENABLED: A2A is served whenever LOOMCYCLE_A2A_SERVER_CARD is set, and it is …` | The switch is off while the card is named. | Unset `LOOMCYCLE_A2A_SERVER_CARD` to keep A2A off, or remove the switch to serve it. |
 | `LOOMCYCLE_SPEECH_MAX_INFLIGHT: both audio queues are sized by LOOMCYCLE_AUDIO_MAX_INFLIGHT …` | The route was held to fewer requests than the shared size. | Set `LOOMCYCLE_AUDIO_MAX_INFLIGHT` to the size you want, then remove the variable. |
 | `LOOMCYCLE_UI_LOGIN_ORIGINS: set auth.login_origins in the yaml, as a list` | The variable names an origin the yaml lacks. | Add the origin to `auth.login_origins`. |
-| `LOOMCYCLE_OLLAMA_NUM_CTX: requests to hosted Ollama no longer carry this context window …` (and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: requests to local Ollama no longer carry this GPU offload …`) | The variable is a positive number and the yaml option is absent or another number. | Set `providers.ollama.options.num_ctx` (or `providers.ollama-local.options.num_gpu`) to the same number, then remove the variable. |
+| `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS: list each [tenant:]owner under hooks.permit_host_widen.owners in the yaml` (and `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST: list each host or CIDR range under hooks.private_host_allowlist in the yaml`) | The variable names an entry the yaml list lacks. | Copy every entry into the yaml list ([5.10](#510-hooks-lists)), then remove the variable. |
+| `LOOMCYCLE_OLLAMA_NUM_CTX: requests to hosted Ollama no longer carry this context window …` (and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: requests to local Ollama no longer carry this GPU offload …`) | The variable is a positive number and the yaml does not name the option. | Set `providers.ollama.options.num_ctx` (or `providers.ollama-local.options.num_gpu`) to the same number, then remove the variable. |
 | `LOOMCYCLE_DEADLINK_GC_MS: the dead-link collection runs every hour and deletes unreachable chunk references unless LOOMCYCLE_DEADLINK_GC says otherwise …` (and `LOOMCYCLE_DEADLINK_GC_DRY_RUN: …`) | You had the collection off, counting only, or running less often than hourly, and `LOOMCYCLE_DEADLINK_GC` does not say so. | Set `LOOMCYCLE_DEADLINK_GC` to `off` or `dry-run` ([5.11](#511-dead-link-collection)), then remove the old variable. |
 | `LOOMCYCLE_USAGE_SWEEPER: the usage rollup always runs …`, `LOOMCYCLE_HEARTBEAT_SWEEPER: the run heartbeat sweeper always runs …`, `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS: the tenant-root and user-root documents are always created …`, `LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS: chats of internal agents are kept 3 days and then deleted …` | The variable switched the work off, or set another age ([4.11](#411-a-limit-you-raised-removed-or-switched-off-returns-to-its-default)). | Nothing brings the old behaviour back. Decide whether the fixed behaviour is acceptable, then remove the variable. |
 | `LOOMCYCLE_READ_ROOT: the filesystem jail is gone …` | A deployment that predates volumes. | Declare a `volumes:` block and bind agents to it, then remove the variable. |
@@ -1235,9 +1251,9 @@ Documents are backed by SQL Memory.
 
 ### My local model's context got small
 
-- **Hosted Ollama (`ollama` provider).** `LOOMCYCLE_OLLAMA_NUM_CTX` is no longer read. A positive value stops the boot until `providers.ollama.options.num_ctx` carries it, so a server that started either has the option or never had the variable; without the option requests carry no context window and the model uses its own.
-- **Local Ollama (`ollama-local` provider).** `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is still read, but a yaml `providers.ollama-local.options.num_ctx` wins over it, in your own file or in a preset. Look for the key in every loaded layer.
-- **The model became slow as well.** `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` is no longer read (a positive value stops the boot until the yaml carries it). If the variable was removed without writing the option, Ollama may have fallen back to the CPU. Set `providers.ollama-local.options.num_gpu`.
+- **Hosted Ollama (`ollama` provider).** `LOOMCYCLE_OLLAMA_NUM_CTX` is no longer read. A positive value stops the boot while the yaml does not name `providers.ollama.options.num_ctx`, so a server that started either has the option or never had the variable; without the option requests carry no context window and the model uses its own. The option's value is the window, whatever the variable said.
+- **Local Ollama (`ollama-local` provider).** `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is still read, and it wins over a yaml `providers.ollama-local.options.num_ctx`. If the yaml asks for a larger window, look for the variable in the environment of the process (an environment file, the compose, the app wizard); the boot log has a `config: warning` line when the two differ. With the variable unset, the yaml option is the window; look for the key in every loaded layer.
+- **The model became slow as well.** `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` is no longer read (a positive value stops the boot while the yaml does not name the option). If the variable was removed without writing the option, Ollama may have fallen back to the CPU. Set `providers.ollama-local.options.num_gpu`.
 
 Set `LOOMCYCLE_LOG_LEVEL=debug` to see each Ollama request's model, effort and think flag.
 
@@ -1249,13 +1265,11 @@ In the same release, a malformed value in an environment variable that is still 
 
 This guide was checked against the code of the development branch of the release. The items below were approved for the same release and are **not in the code yet**. A maintainer should check each against the code before the release and correct the sections named.
 
-1. **Hooks lists.** `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` and `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` removed in favour of the yaml lists. Pending; both are still read and appended today. Section 5.10, table A.
-2. **Sign-in mode.** The effective mode is the stricter of `auth.mode` and `LOOMCYCLE_AUTH_MODE`. Pending; today a yaml value below the environment value stops the load. Section 5.15.
-3. **`LOOMCYCLE_CONFIG_FILES`** removed. Pending; it is still read today. Section 5.13, table A.
-4. **Malformed environment values** fail the start and name the variable. Pending as a general policy; today it holds for some variables only (`LOOMCYCLE_DEADLINK_GC` is one). Section 8.
-5. **Presets `personal` and `server`, and the `include:` key.** Pending. Check their contents against section 6 and replace the preset lists in 6.1 and 6.2 with the single preset name.
+1. **`LOOMCYCLE_CONFIG_FILES`** removed. Pending; it is still read today. Section 5.13, table A.
+2. **Malformed environment values** fail the start and name the variable. Pending as a general policy; today it holds for some variables only (`LOOMCYCLE_DEADLINK_GC` is one). Section 8.
+3. **Presets `personal` and `server`, and the `include:` key.** Pending. Check their contents against section 6 and replace the preset lists in 6.1 and 6.2 with the single preset name.
 
 Also to re-check:
 
-- **Tables A to E** must contain exactly the names in the runtime's table of removed variables, and every "stops the boot" cell must match a refusal rule. The comparison was re-run after the last change; re-run it after the pending items land, and move the pending rows of table A into the main table.
+- **Tables A to E** must contain exactly the names in the runtime's table of removed variables, and every "stops the boot" cell must match a refusal rule. The comparison was re-run after the last change; re-run it after the pending items land, and move the pending row of table A into the main table.
 - **The count** of environment variables before the release (about 318) and after.

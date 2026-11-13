@@ -795,12 +795,11 @@ agents:
 	}
 }
 
-// TestHooksPermitHostWidenEnvTenantOwner pins the env→config→registry wiring for
-// the RFC AF `[tenant:]owner` host-widen permit syntax: the env var appends to
-// the yaml list, the comma split preserves the `tenant:owner` colons, and the
-// resulting list, fed to the registry, honours the (tenant, owner) pairs while
-// denying a bare/wrong-tenant lookup.
-func TestHooksPermitHostWidenEnvTenantOwner(t *testing.T) {
+// TestHooksPermitHostWiden_YAMLTenantOwnerPairsReachTheRegistry pins the
+// yaml→config→registry wiring for the RFC AF `[tenant:]owner` host-widen permit
+// syntax: the yaml list, fed to the registry, honours the (tenant, owner) pairs
+// while denying a bare/wrong-tenant lookup.
+func TestHooksPermitHostWiden_YAMLTenantOwnerPairsReachTheRegistry(t *testing.T) {
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")
 	os.WriteFile(yamlPath, []byte(`
@@ -809,19 +808,16 @@ agents:
   default: { model: claude-sonnet-4-6 }
 hooks:
   permit_host_widen:
-    owners: ["yamltenant:yamlowner"]
+    owners: ["yamltenant:yamlowner", "jobember:jobs-search-web", "acme:scraper"]
 `), 0o600)
-	// Env appends two tenant:owner entries to the yaml's one.
-	t.Setenv("LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS", "jobember:jobs-search-web,acme:scraper")
 
 	cfg, err := Load(yamlPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// yaml entry + env appends (colons preserved through the comma split).
 	want := []string{"yamltenant:yamlowner", "jobember:jobs-search-web", "acme:scraper"}
 	if got := cfg.Hooks.PermitHostWiden.Owners; !equalStrings(got, want) {
-		t.Fatalf("PermitHostWiden.Owners = %v, want %v (env should append, colons preserved)", got, want)
+		t.Fatalf("PermitHostWiden.Owners = %v, want %v", got, want)
 	}
 
 	// End-to-end: the list the runtime feeds to the registry honours each
@@ -2809,46 +2805,27 @@ func TestValidate_ContextPlugins(t *testing.T) {
 	}
 }
 
-// TestHooksPrivateHostAllowlistEnvAppends pins the yaml→env wiring for the
-// operator's vouch list a TENANT hook's callback needs to reach a private host.
-func TestHooksPrivateHostAllowlistEnvAppends(t *testing.T) {
-	tmp := t.TempDir()
-	yamlPath := filepath.Join(tmp, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  default: { model: claude-sonnet-4-6 }
-hooks:
-  private_host_allowlist: ["hooks.internal"]
-`), 0o600)
-	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "sidecar.local, gate.svc")
-
-	cfg, err := Load(yamlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"hooks.internal", "sidecar.local", "gate.svc"}
-	if got := cfg.Hooks.PrivateHostAllowlist; !equalStrings(got, want) {
-		t.Fatalf("PrivateHostAllowlist = %v, want %v (env should append to yaml)", got, want)
-	}
-}
-
 // TestLoad_PrivateHostAllowlistRefusesMalformedCIDR: both private-host vouch
 // lists take CIDR entries, and a malformed range fails the load loudly instead
 // of silently never matching at dial time.
 func TestLoad_PrivateHostAllowlistRefusesMalformedCIDR(t *testing.T) {
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")
-	if err := os.WriteFile(yamlPath, []byte(`
+	write := func(hooksEntry string) {
+		t.Helper()
+		if err := os.WriteFile(yamlPath, []byte(`
 defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   default: { model: claude-sonnet-4-6 }
+hooks:
+  private_host_allowlist: ["`+hooksEntry+`"]
 `), 0o600); err != nil {
-		t.Fatal(err)
+			t.Fatal(err)
+		}
 	}
 
+	write("fd7a:115c:a1e0::/48")
 	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "localhost,100.64.0.0/10,100.101.102.103/32")
-	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "fd7a:115c:a1e0::/48")
 	if _, err := Load(yamlPath); err != nil {
 		t.Fatalf("valid CIDR entries refused: %v", err)
 	}
@@ -2859,8 +2836,8 @@ agents:
 	}
 
 	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", "")
-	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "10.0.0/8")
-	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "private_host_allowlist") {
+	write("10.0.0/8")
+	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "hooks.private_host_allowlist") {
 		t.Fatalf("malformed hooks private CIDR: err = %v, want a load error", err)
 	}
 }
@@ -2905,19 +2882,24 @@ agents:
 func TestLoad_CIDROnlyCoversEveryPrivateHostPolicy(t *testing.T) {
 	tmp := t.TempDir()
 	yamlPath := filepath.Join(tmp, "c.yaml")
-	if err := os.WriteFile(yamlPath, []byte(`
+	write := func(hooksList string) {
+		t.Helper()
+		if err := os.WriteFile(yamlPath, []byte(`
 defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 agents:
   default: { model: claude-sonnet-4-6 }
+hooks:
+  private_host_allowlist: `+hooksList+`
 `), 0o600); err != nil {
-		t.Fatal(err)
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE", "cidr_only")
-	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "10.0.0.0/8,hooks.internal")
-	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST") || !strings.Contains(err.Error(), "hooks.internal") {
+	write(`["10.0.0.0/8", "hooks.internal"]`)
+	if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), "hooks.private_host_allowlist") || !strings.Contains(err.Error(), "hooks.internal") {
 		t.Fatalf("cidr_only with a hooks name entry: err = %v, want a load error naming the list and the entry", err)
 	}
-	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "10.0.0.0/8")
+	write(`["10.0.0.0/8"]`)
 	cfg, err := Load(yamlPath)
 	if err != nil {
 		t.Fatalf("cidr_only with CIDR hooks entries refused: %v", err)
@@ -3055,5 +3037,62 @@ func TestSecretEnvValues_MasksEachCollectorHeader(t *testing.T) {
 	}
 	if IsSecretEnvName("CORS_ALLOW_HEADERS") {
 		t.Error("an ordinary *_HEADERS setting is classified as a secret")
+	}
+}
+
+// LOOMCYCLE_PG_AUTOMIGRATE wins over storage.pg_automigrate in both
+// directions: 1 turns it on, 0 turns it off. Any other value is not a
+// setting and leaves the yaml's.
+func TestLoad_PgAutoMigrateEnvWinsOverTheYAML(t *testing.T) {
+	for _, tc := range []struct {
+		yaml, env string
+		want      bool
+	}{
+		{"", "", false},
+		{"", "1", true},
+		{"storage: {pg_automigrate: true}\n", "", true},
+		{"storage: {pg_automigrate: true}\n", "0", false},
+		{"storage: {pg_automigrate: false}\n", "1", true},
+		{"storage: {pg_automigrate: true}\n", "true", true},
+		{"", "true", false},
+	} {
+		t.Setenv("LOOMCYCLE_PG_AUTOMIGRATE", tc.env)
+		cfg, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults: {provider: mock}\n" + tc.yaml)})
+		if err != nil {
+			t.Fatalf("yaml=%q env=%q: %v", tc.yaml, tc.env, err)
+		}
+		if cfg.Storage.PgAutoMigrate != tc.want {
+			t.Errorf("yaml=%q env=%q: PgAutoMigrate = %v, want %v", tc.yaml, tc.env, cfg.Storage.PgAutoMigrate, tc.want)
+		}
+	}
+}
+
+// The local context window is set in both planes and the environment wins.
+// When the two differ the load says so, because the yaml's value, which
+// used to win, is no longer the one in effect.
+func TestLoad_OllamaLocalNumCtxAdvisesWhenTheYAMLDiffers(t *testing.T) {
+	advised := func(yaml, env string) bool {
+		t.Helper()
+		t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX", env)
+		cfg, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults: {provider: mock}\n" + yaml)})
+		if err != nil {
+			t.Fatalf("yaml=%q env=%q: %v", yaml, env, err)
+		}
+		for _, w := range cfg.Warnings {
+			if strings.Contains(w, "LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX") && strings.Contains(w, "providers.ollama-local.options.num_ctx") {
+				return true
+			}
+		}
+		return false
+	}
+	local := "providers: {ollama-local: {driver: ollama, options: {num_ctx: 65536}}}\n"
+	if !advised(local, "32768") {
+		t.Error("no advisory when the variable and the yaml option differ")
+	}
+	if advised(local, "65536") {
+		t.Error("advised although both planes give the same window")
+	}
+	if advised(local, "") || advised("", "32768") {
+		t.Error("advised although only one plane sets the window")
 	}
 }
