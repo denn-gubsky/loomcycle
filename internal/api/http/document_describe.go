@@ -260,7 +260,7 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 			// The model refused THIS image as input. Its own decoder can reject a
 			// file Go reads fine, and a plain re-encode of the same picture is then
 			// accepted, so retry once with that before giving up on it.
-			sent, sentType, rerr := reenc.Reencode(ctx, raw)
+			sent, sentType, rerr := reenc.ReencodeImage(ctx, raw)
 			if rerr == nil {
 				desc, err = s.describeOneImage(ctx, providerID, prov, model, sentType, sent, a.Caption)
 				if err == nil {

@@ -37,6 +37,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/contextplugin"
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	"github.com/denn-gubsky/loomcycle/internal/errclassify"
@@ -102,7 +103,8 @@ type Server struct {
 	// imageReencoder re-encodes an image a vision model refused (describe_images).
 	// One per server, so its single decode slot bounds the process: concurrent
 	// describe requests queue for it rather than each decoding up to the bound.
-	imageReencoder *vision.Reencoder
+	// Behind the conversion seam (RFC GO), so a worker pool can take it over.
+	imageReencoder vision.ImageReencoder
 
 	// --- RFC CK runtime config reload (POST /v1/_config/reload) ---
 	// reloadLoad re-loads the layered config the same way boot did (config.LoadLayers,
@@ -785,7 +787,7 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		turnCancelReg: turncancel.NewRegistry(),
 		sessionLocks:  runner.NewSessionLockMap(),
 
-		imageReencoder: vision.NewReencoder(),
+		imageReencoder: &convert.InProcess{Images: vision.NewReencoder()},
 
 		// The permit list is frozen at construction — the only way to change
 		// the trust boundary is a restart with new yaml.

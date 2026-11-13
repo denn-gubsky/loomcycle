@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
@@ -67,6 +68,10 @@ type File struct {
 	// slotWait overrides how long a call waits for an extraction slot, for
 	// tests; zero is fileSlotWait.
 	slotWait time.Duration
+	// Convert, when set, runs the conversions (extraction, page cuts, page
+	// rendering) instead of this process (RFC GO). nil runs them here, under
+	// Extractions and the operator's OCR rasteriser.
+	Convert convert.Client
 }
 
 func (f *File) Name() string { return FileToolName }

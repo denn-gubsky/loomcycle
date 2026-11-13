@@ -3,15 +3,11 @@ package builtin
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -19,12 +15,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe"
-	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
 // File op=extract with OCR (RFC FG): a scanned page or an image has its text
@@ -48,8 +44,6 @@ type FileOCR struct {
 const (
 	// ocrRasterizeTimeout bounds rendering one page.
 	ocrRasterizeTimeout = 2 * time.Minute
-	// ocrMaxPageImage caps the image a rasteriser may hand back for one page.
-	ocrMaxPageImage = 64 << 20
 	// The dry-run estimate: a page sent as an image or a PDF page reads as
 	// about 1 600 input tokens on Claude (pixels / 750 at the 1568-pixel
 	// edge), each call adds its instruction, and a page of dense text writes
@@ -409,12 +403,10 @@ func (f *File) ocrUnitFor(ctx context.Context, plan transcribe.Plan, fh io.Reade
 	}
 	// Cutting pages reads the whole PDF again: extraction work, under a slot
 	// of the same budget, given back before the engine is called.
-	release, err := f.extractSlot(ctx)
-	if err != nil {
+	cut, err := f.converter().SelectPages(ctx, fh, size, chunk)
+	if errors.Is(err, convert.ErrBusy) {
 		return ocrUnit{}, nil, fmt.Errorf("waiting to cut page %s out of the PDF: %w", pageListText(chunk), err)
 	}
-	cut, err := extract.SelectPages(ctx, fh, size, chunk)
-	release()
 	if err != nil {
 		return ocrUnit{}, nil, fmt.Errorf("cutting page %s out of the PDF: %w", pageListText(chunk), err)
 	}
@@ -436,127 +428,15 @@ func (f *File) ocrUnitFor(ctx context.Context, plan transcribe.Plan, fh io.Reade
 }
 
 // rasterize renders a one-page PDF to PNG with the operator's rasterize
-// helper. The helper runs without a shell, in a scratch folder of the inbox
-// that is removed afterwards; only the paths the runtime made reach its
+// helper. In this process the helper runs without a shell, in a scratch folder
+// of the inbox removed afterwards; only the paths the runtime made reach its
 // command line.
-//
-// Every file operation goes through an os.Root (the inbox's, then one held on
-// the scratch folder from the moment it is made), never through a joined path
-// string the kernel walks again: a folder swapped for a symlink while the
-// helper runs cannot carry the page write, the PNG read or the removal out of
-// the inbox. The absolute paths exist only for the helper's command line and
-// working directory, which helper.Run fences itself.
 func (f *File) rasterize(ctx context.Context, onePage []byte, language string) ([]byte, error) {
-	op := f.ocrConfig()
-	if op == nil || op.Rasterize == nil {
+	img, err := f.converter().RenderPage(ctx, onePage, language)
+	if errors.Is(err, convert.ErrNotConfigured) {
 		return nil, errors.New("set transcription.ocr.rasterize.command to render PDF pages for this model")
 	}
-	root, _, err := effectiveRoot(ctx, inbox.Name, false)
-	if err != nil {
-		return nil, err
-	}
-	// Only the operator's root is resolved; everything below it is derived.
-	real, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return nil, fmt.Errorf("inbox root: %w", err)
-	}
-	inboxFS, err := os.OpenRoot(real)
-	if err != nil {
-		return nil, fmt.Errorf("inbox root: %w", err)
-	}
-	defer inboxFS.Close()
-	name, err := ocrScratchName()
-	if err != nil {
-		return nil, err
-	}
-	if err := inboxFS.Mkdir(name, 0o700); err != nil {
-		return nil, err
-	}
-	defer inboxFS.RemoveAll(name)
-	scratch, err := inboxFS.OpenRoot(name)
-	if err != nil {
-		return nil, err
-	}
-	defer scratch.Close()
-	if err := writeNew(scratch, "page.pdf", onePage); err != nil {
-		return nil, err
-	}
-	tmp := filepath.Join(root, name)
-	prefix := filepath.Join(tmp, "page")
-	if _, err := helper.Run(ctx, helper.Spec{
-		Key:      "transcription.ocr.rasterize",
-		Template: op.Rasterize.Command,
-		Wrapper:  op.Rasterize.Wrapper,
-		Vars:     map[string]string{"in": filepath.Join(tmp, "page.pdf"), "out_prefix": prefix, "out": prefix + ".png", "lang": language},
-		Root:     root,
-		Dir:      tmp,
-		Timeout:  ocrRasterizeTimeout,
-	}); err != nil {
-		return nil, err
-	}
-	return readRenderedPage(scratch)
-}
-
-// ocrScratchName is a fresh scratch folder name; Mkdir refuses one that
-// exists, so a planted entry is an error, never reused.
-func ocrScratchName() (string, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return ".ocr-" + hex.EncodeToString(b[:]), nil
-}
-
-// readRenderedPage returns the first regular page*.png the helper wrote in
-// the scratch folder ({out_prefix}*.png, or {out}), read through the folder's
-// own handle and bounded by ocrMaxPageImage.
-func readRenderedPage(scratch *os.Root) ([]byte, error) {
-	dh, err := scratch.Open(".")
-	if err != nil {
-		return nil, err
-	}
-	names, err := dh.Readdirnames(-1)
-	dh.Close()
-	if err != nil {
-		return nil, err
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		if !strings.HasPrefix(n, "page") || !strings.HasSuffix(n, ".png") {
-			continue
-		}
-		fi, err := scratch.Lstat(n)
-		if err != nil || !fi.Mode().IsRegular() {
-			continue
-		}
-		fh, err := scratch.Open(n)
-		if err != nil {
-			return nil, err
-		}
-		data, err := io.ReadAll(io.LimitReader(fh, ocrMaxPageImage+1))
-		fh.Close()
-		if err != nil {
-			return nil, err
-		}
-		if int64(len(data)) > ocrMaxPageImage {
-			return nil, fmt.Errorf("the rendered page is over %d bytes", ocrMaxPageImage)
-		}
-		return data, nil
-	}
-	return nil, errors.New("the rasterize helper wrote no PNG (expected {out_prefix}*.png or {out})")
-}
-
-// writeNew writes data to a file of dir that must not exist yet.
-func writeNew(dir *os.Root, name string, data []byte) error {
-	fh, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := fh.Write(data); err != nil {
-		fh.Close()
-		return err
-	}
-	return fh.Close()
+	return img, err
 }
 
 func pageListText(pages []int) string {
