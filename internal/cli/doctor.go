@@ -131,7 +131,13 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 
 	providers := providerListFromConfig(cfg)
 	if len(providers) == 0 {
-		r.warn("Providers", "none configured in provider_priority or per-agent providers")
+		msg := "none configured in provider_priority or per-agent providers"
+		// The config `init` writes holds no routing of its own: it relies on
+		// a preset, and the preset is selected in the environment.
+		if len(SelectPresetNames(nil, readLayerEnv().Presets)) == 0 {
+			msg += "; no preset is selected: set LOOMCYCLE_PRESETS (personal, server, or your own list) to layer the model routing and the agents"
+		}
+		r.warn("Providers", msg)
 	}
 	awsProviders := cfg.AWSAuthProviders()
 	for _, p := range providers {

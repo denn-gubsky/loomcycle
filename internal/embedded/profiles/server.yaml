@@ -1,0 +1,122 @@
+# loomcycle — server profile. Mounted read-only at /config (LOOMCYCLE_CONFIG_DIR).
+#
+# The agents, the model routing and the metrics sampler come from the `server`
+# preset, which is selected in the environment, not here:
+#
+#     LOOMCYCLE_PRESETS=server
+#
+# `loomcycle presets show server` prints what it layers. This file holds what
+# no preset can: where agents may write, and who gets in. Anything you write
+# here is merged over the preset, key by key.
+#
+# No secret belongs in this file. A key that needs one names the environment
+# variable that holds it.
+
+# ─── Volumes ───────────────────────────────────────────────────────────
+# The dynamic root: the one directory under which the runtime makes a volume
+# per tenant, per run, and for the files tools return. The compose file mounts
+# it. The path must exist and be writable by the runtime's user.
+volumes:
+  dynamic:
+    path: /mnt/dynamic
+    mode: rw
+    dynamic_root: true
+  # A fixed directory every agent may use, if you want one. Mount it first.
+  # work:
+  #   path: /mnt/work
+  #   mode: rw
+  #   default: true
+
+# ─── Sign-in ───────────────────────────────────────────────────────────
+auth:
+  gates:
+    # Paste a loomcycle token. This is how the operator signs in with
+    # LOOMCYCLE_AUTH_TOKEN, and how a person signs in with a minted token.
+    token: { kind: token, label: "Access token" }
+
+    # ONE gate for people. Pick password or OIDC and uncomment it.
+    #
+    # Accounts loomcycle keeps: you invite people by link, they choose a
+    # password on loomcycle's own page. Needs LOOMCYCLE_SECRET_KEY and
+    # LOOMCYCLE_PUBLIC_URL.
+    # people:
+    #   kind: password
+    #   label: "Sign in"
+    #   require_mfa: true
+    #
+    # Your identity provider. Register <LOOMCYCLE_PUBLIC_URL>/v1/_auth/complete/sso
+    # there as the redirect URI. Presets: google, entra, okta, keycloak,
+    # cognito, identity-center, auth0, generic.
+    # sso:
+    #   kind: oidc
+    #   preset: google
+    #   label: "Sign in with Google"
+    #   client_id: 1234.apps.googleusercontent.com
+    #   client_secret_env: LOOMCYCLE_GATE_SSO_SECRET   # the NAME of a variable
+    #   allowed_domains: [example.com]
+    #   identity_map:
+    #     tenant: example            # the tenant these people belong to
+    #     provision: known           # never | known | auto
+
+    # A bridge (a chat bot, a website) that already knows who it is talking
+    # to. It signs that with its own key; it holds no loomcycle token. The
+    # bridge is its own service with its own settings: see
+    # packages/bridge-telegram/README.md.
+    # chat-bridge:
+    #   kind: external
+    #   public_key: { kty: OKP, crv: Ed25519, x: "<the bridge key's public x>" }
+    #   issued_token: { ttl: 12h, agents: [chat/medium], rate: { per_minute: 6, burst: 10 } }
+    #   identity_map: { tenant: example, provision: auto, new_user: { status: pending } }
+
+  # Behind a reverse proxy: which peers may say who the client is. Sign-in
+  # throttling counts per client address, so without this every person shares
+  # the proxy's.
+  # trusted_proxies: ["10.0.0.2/32"]
+
+# ─── Tenants ───────────────────────────────────────────────────────────
+# A tenant is a name carried by a token; there is nothing to create first.
+# Mint one token per person or service, with the operator's token:
+#
+#     loomcycle operator-token create --name alice --tenant example \
+#       --subject alice --scopes substrate:tenant,runs:create,runs:read
+#
+# The token is shown once. Its holder sees that tenant's agents, runs,
+# documents and memory and no other tenant's. (Do not mint substrate:admin
+# unless you mean to replace LOOMCYCLE_AUTH_TOKEN: the first admin token
+# retires it.)
+#
+# A service that needs a fixed token can be declared here instead. The yaml
+# names the variable; the value goes in the secrets file.
+# principals:
+#   reporting:
+#     tenant: example
+#     subject: reporting
+#     scopes: [runs:create, runs:read]
+#     token_env: LOOMCYCLE_TOKEN_REPORTING
+
+# ─── Retention ─────────────────────────────────────────────────────────
+# Off. The runtime deletes nothing with age until you turn this on AND name a
+# family; a family that deletes must say how old. This is the explicit opt-in:
+# retention:
+#   enabled: true
+#   interval: 24h
+#   chats:
+#     mode: prune          # or export+prune, with retention.export_dir
+#     max_age: 90d
+
+# ─── Models ────────────────────────────────────────────────────────────
+# The preset wires every provider; one with no key in the environment is
+# skipped. Local models join when OLLAMA_BASE_URL reaches an Ollama, and are
+# tried first. On a shared GPU, cap them and size the context window:
+# providers:
+#   ollama-local:
+#     max_concurrent: 1
+#     options:
+#       num_ctx: 32768
+
+# ─── Memory ────────────────────────────────────────────────────────────
+# The consolidation schedule ships disabled: it runs hourly and calls a model
+# for every user with new chats.
+# scheduled_runs:
+#   memory-consolidation:
+#     enabled: true
