@@ -402,8 +402,9 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// private address refused.
 	"LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS": {loosens: hookOwnersNotInYAML},
 	"LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST":   {loosens: hookPrivateHostsNotInYAML},
-	// Without the directory a family in export+prune mode deletes nothing;
-	// with another one its exports land where nobody looks for them.
+	// Without the directory a family in export+prune mode that has an export
+	// (every one but memory content) deletes nothing; with another one its
+	// exports land where nobody looks for them.
 	"LOOMCYCLE_RETENTION_EXPORT_DIR": {loosens: func(value string, c retiredEnvCtx) bool {
 		return value != "" && value != c.cfg.Retention.ExportDir
 	}},

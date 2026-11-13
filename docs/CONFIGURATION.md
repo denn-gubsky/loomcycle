@@ -4013,13 +4013,13 @@ retention:
 
 `retention.enabled: true` starts the retention sweeper; a family's `mode` says what it deletes. Neither does anything alone: a mode with `enabled` not true deletes nothing (the load says so in an advisory), and `enabled` with every family off runs a sweeper with nothing to do.
 
-Each family's `mode` is `off` (the default), `prune` or `export+prune`; any other value stops the load. `export+prune` writes what it is about to delete under `export_dir`, and a family in that mode with no `export_dir` deletes nothing. A family whose mode deletes must set `max_age`, or the load stops: with no minimum age the first sweep deletes everything eligible (every finished unpinned chat, for `chats`), so that has to be written as an explicit `max_age: 0s`.
+Each family's `mode` is `off` (the default), `prune` or `export+prune`; any other value stops the load. `export+prune` writes what it is about to delete under `export_dir` and then deletes it. That holds for `defs` (each version as JSON), `chats` (each session with its runs and events; chats of `internal:` agents and sessions marked no-trace are deleted without a copy), `mem` (each facet of the retired agent's memory) and `empty_dossier` (the dossier's record). One of those four in that mode with no `export_dir` deletes nothing. `mem_content` has no export: its mode is `off` or `prune`, and `export+prune` stops the load, because it would delete and write no copy. A family whose mode deletes must set `max_age`, or the load stops: with no minimum age the first sweep deletes everything eligible (every finished unpinned chat, for `chats`), so that has to be written as an explicit `max_age: 0s`.
 
 | Key | Default | Effect |
 |---|---|---|
 | `retention.enabled` | `false` | Starts the retention sweeper. |
 | `retention.interval` | `1h` | How often the retention sweeper runs. |
-| `retention.export_dir` | none | Where `export+prune` writes what it deletes. |
+| `retention.export_dir` | none | Where `export+prune` writes what `defs`, `chats`, `mem` and `empty_dossier` delete. |
 | `retention.defs.mode` | `off` | Prunes old versions of substrate definitions. |
 | `retention.defs.max_age` | required when the mode deletes | Only versions older than this are eligible; `0s` = any age. |
 | `retention.defs.keep_last_n` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
@@ -4027,7 +4027,7 @@ Each family's `mode` is `off` (the default), `prune` or `export+prune`; any othe
 | `retention.chats.max_age` | required when the mode deletes | A session whose runs all finished longer ago than this is eligible; `0s` = every finished unpinned session. |
 | `retention.mem.mode` | `off` | Reclaims the memory of fully retired agents. |
 | `retention.mem.max_age` | required when the mode deletes | Only agents whose last definition change is older than this. |
-| `retention.mem_content.mode` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). |
+| `retention.mem_content.mode` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). `off` or `prune` only: this family has no export. |
 | `retention.mem_content.max_age` | required when the mode deletes | Only content retired longer ago than this. |
 | `retention.empty_dossier.mode` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
 | `retention.empty_dossier.max_age` | required when the mode deletes | Only dossiers untouched longer than this. |

@@ -377,7 +377,7 @@ retention:
   mem:                          # memory of fully retired agents
     mode: off
     max_age: 30d
-  mem_content:                  # superseded memory content in live scopes
+  mem_content:                  # superseded memory content in live scopes; off or prune only (no export)
     mode: off
     max_age: 30d
   empty_dossier:                # subject documents with no facts and no references
@@ -395,7 +395,8 @@ Rules:
 - **Modes.** `off` (the default), `prune`, `export+prune`. Any other value stops the load. The old variables accepted any text and treated it as off.
 - **`max_age` is required when a mode deletes.** A family whose mode is `prune` or `export+prune` with no `max_age` stops the load. To delete everything eligible whatever its age, write `max_age: 0s`. Before, a missing age meant exactly that, without saying so.
 - **Durations.** `30d`, `12h`, `1d12h`, `90m`. A bare number other than `0` is refused, because nothing says which unit it meant. To convert: 86400000 ms is `1d`, 2592000000 ms is `30d`, 7776000000 ms is `90d`.
-- **Export directory.** A family in `export+prune` mode with no `export_dir` deletes nothing.
+- **Export directory.** `export+prune` writes each item under `export_dir` and then deletes it, for `defs`, `chats`, `mem` and `empty_dossier`. One of those four in that mode with no `export_dir` deletes nothing. Under `chats`, the chats of the runtime's own maintenance agents and sessions marked no-trace are deleted without a copy.
+- **`mem_content` has no export.** Its mode is `off` or `prune`. `retention.mem_content.mode: export+prune` stops the load: the sweeper would delete and write no copy, with or without `export_dir`. `LOOMCYCLE_RETENTION_MEM_CONTENT_MODE=export+prune` was accepted and did exactly what `prune` does, so write `prune`.
 - **Internal chats.** Chats of the runtime's own maintenance agents are deleted after 3 days whenever the chats family is on. This age is fixed.
 - **Not part of the block.** The audit stream's retention stays in the environment (`LOOMCYCLE_AUDIT_RETENTION_DAYS`), and so does the process metrics retention (`LOOMCYCLE_METRICS_RETENTION_DAYS`).
 
@@ -1238,7 +1239,7 @@ Nothing is deleted unless `retention.enabled: true` is in the yaml and a family 
 1. The `retention:` block exists in a yaml file that is actually loaded (see 5.13).
 2. `enabled: true` is set. A mode without it produces the advisory `retention.<family>.mode is … but retention.enabled is not true`.
 3. The family's `mode` is `prune` or `export+prune`.
-4. For `export+prune`, `export_dir` is set and writable. Without it that mode deletes nothing.
+4. For `export+prune` on `defs`, `chats`, `mem` or `empty_dossier`, `export_dir` is set and writable. Without it a family in that mode deletes nothing. (`mem_content` takes `off` or `prune` only.)
 5. You did not rely on the removed usage archiver (4.9).
 
 ### Documents say SQL Memory is not enabled

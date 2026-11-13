@@ -207,6 +207,9 @@ func TestRetentionEnabled_IsTheYAMLSwitch(t *testing.T) {
 	}
 	for _, f := range []string{"defs", "chats", "mem", "mem_content", "empty_dossier"} {
 		for _, mode := range []string{"prune", "export+prune", "off"} {
+			if f == "mem_content" && mode == "export+prune" {
+				continue // refused at load: the family has no export
+			}
 			family := f + ": {mode: " + mode + ", max_age: 30d}"
 			cfg := load(t, "retention: {"+family+"}\n")
 			if cfg.Env.RetentionEnabled {

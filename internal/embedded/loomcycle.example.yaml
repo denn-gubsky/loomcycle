@@ -1104,7 +1104,9 @@ concurrency:
 #   enabled: true                 # start the retention sweeper (default false)
 #   interval: 1h                  # how often the sweeper runs (default 1h)
 #   export_dir: /data/retention-exports   # where export+prune writes what it
-#                                 # deletes; without it that mode deletes nothing
+#                                 # deletes (chats, defs, mem, empty_dossier);
+#                                 # without it a family in that mode deletes
+#                                 # nothing
 #   chats:                        # aged sessions with their runs and events;
 #     mode: export+prune          # a pinned session is exempt
 #     max_age: 90d                # required when the mode deletes
@@ -1116,7 +1118,8 @@ concurrency:
 #     mode: off
 #     max_age: 30d
 #   mem_content:                  # superseded memory content in live scopes
-#     mode: off
+#     mode: off                   # off or prune: this family has no export,
+#                                 # so export+prune is refused
 #     max_age: 30d
 #   empty_dossier:                # subject documents with no facts and no
 #     mode: off                   # references; off on purpose, since one user's

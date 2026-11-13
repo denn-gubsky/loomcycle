@@ -79,7 +79,7 @@ retention:
   defs: {mode: prune, max_age: 30d, keep_last_n: 0}
   chats: {mode: export+prune, max_age: 90d}
   mem: {mode: prune, max_age: 7d}
-  mem_content: {mode: export+prune, max_age: 1d12h}
+  mem_content: {mode: prune, max_age: 1d12h}
   empty_dossier: {mode: prune, max_age: 12h}
   usage_detail: {max_age: 60d}
   trace: {max_age: 14d}
@@ -104,7 +104,7 @@ retention:
 	if e.RetentionMemMode != "prune" || e.RetentionMemMaxAge != 7*day {
 		t.Errorf("mem = %q %v", e.RetentionMemMode, e.RetentionMemMaxAge)
 	}
-	if e.RetentionMemContentMode != "export+prune" || e.RetentionMemContentMaxAge != 36*time.Hour {
+	if e.RetentionMemContentMode != "prune" || e.RetentionMemContentMaxAge != 36*time.Hour {
 		t.Errorf("mem_content = %q %v", e.RetentionMemContentMode, e.RetentionMemContentMaxAge)
 	}
 	if e.RetentionEmptyDossierMode != "prune" || e.RetentionEmptyDossierMaxAge != 12*time.Hour {
@@ -228,6 +228,36 @@ func TestHumanDurationKeys_ListsEveryDurationOfTheConfig(t *testing.T) {
 	} {
 		if !got[want] {
 			t.Errorf("humanDurationKeys() lacks %s (has %v)", want, got)
+		}
+	}
+}
+
+// The memory-content family has no export: the sweeper prunes under
+// export+prune and writes nothing, with or without an export directory. The
+// mode is refused so that nobody reads it as "a copy is kept".
+func TestRetention_RefusesExportPruneOnTheFamilyWithNoExport(t *testing.T) {
+	for _, block := range []string{
+		"retention: {mem_content: {mode: export+prune, max_age: 30d}}",
+		"retention: {enabled: true, export_dir: /data/exports, mem_content: {mode: export+prune, max_age: 30d}}",
+	} {
+		_, err := loadYAMLString(t, "defaults: {provider: mock}\n"+block+"\n")
+		if err == nil {
+			t.Errorf("%s: loaded, want an error", block)
+			continue
+		}
+		for _, want := range []string{"retention.mem_content.mode", "no export", "prune"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: error does not say %q: %s", block, want, err)
+			}
+		}
+	}
+	// The other families export, and this one still prunes.
+	for _, block := range []string{
+		"retention: {export_dir: /data/exports, chats: {mode: export+prune, max_age: 30d}, defs: {mode: export+prune, max_age: 30d}, mem: {mode: export+prune, max_age: 30d}, empty_dossier: {mode: export+prune, max_age: 30d}}",
+		"retention: {mem_content: {mode: prune, max_age: 30d}}",
+	} {
+		if _, err := loadYAMLString(t, "defaults: {provider: mock}\n"+block+"\n"); err != nil {
+			t.Errorf("%s: %v", block, err)
 		}
 	}
 }
