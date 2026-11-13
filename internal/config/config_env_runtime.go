@@ -28,7 +28,8 @@ func applyEnvRuntime(cfg *Config) error {
 	if e.MCPSpawnRunTimeoutMS, err = envWhole("LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS", 0, 0); err != nil {
 		return err
 	}
-	// How long a rotated operator token keeps working. 0 or unset: not at all.
+	// How long a rotated operator token keeps working. 0 or unset: the 24h
+	// default (OperatorTokenDef.grace); there is no setting for none.
 	if e.OperatorTokenRotationGraceSeconds, err = envWhole("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS", 0, 0); err != nil {
 		return err
 	}

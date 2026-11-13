@@ -1278,11 +1278,11 @@ The settings the boot code used to read for itself are now read with the rest of
 | Variable | Accepted | Error |
 |---|---|---|
 | `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS` | A whole number, `0` or more; `0` or unset = no transport timeout | `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS: not a whole number`, or `… must be 0 or more` |
-| `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | A whole number, `0` or more; `0` or unset = no grace | As above |
+| `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | A whole number, `0` or more; `0` or unset = the 24h default. There is no setting for no grace | As above |
 | `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` | A whole number, `0` or more; unset = `30`; `0` turns the cache off | As above |
 | `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | A whole number, `1` or more; unset = no cap. `0` is refused, so a cap written as zero is not read as none | `… not a whole number`, or `… must be 1 or more` |
-| `LOOMCYCLE_RUN_RATE_PER_MINUTE` | A whole number, `1` or more; unset = no default rate | As above |
-| `LOOMCYCLE_RUN_RATE_BURST` | A whole number, `0` or more. Read only when the rate is set; alone it configures nothing and is not checked | `… not a whole number`, `… must be 0 or more`, or `LOOMCYCLE_RUN_RATE_PER_MINUTE / LOOMCYCLE_RUN_RATE_BURST: …` when the pair is not a valid limit |
+| `LOOMCYCLE_RUN_RATE_PER_MINUTE` | A whole number from `1` to `60000`; unset = no default rate. Operators are never bound by it | As above |
+| `LOOMCYCLE_RUN_RATE_BURST` | A whole number from `0` to `60000`; `0` or unset = the same number as the rate. Read only when the rate is set; alone it configures nothing and is not checked | `… not a whole number`, `… must be 0 or more`, or `LOOMCYCLE_RUN_RATE_PER_MINUTE / LOOMCYCLE_RUN_RATE_BURST: …` when the pair is not a valid limit |
 | `LOOMCYCLE_LIMITS_ENFORCE` | `strict`, or unset | `LOOMCYCLE_LIMITS_ENFORCE: not a known value (strict, or unset)` |
 | `LOOMCYCLE_GIT_SOURCE_HOSTS` | A comma-separated list of host names; unset = git-sourced volumes are off | `LOOMCYCLE_GIT_SOURCE_HOSTS: an entry is not a host name (write github.com, not a URL)` |
 | `LOOMCYCLE_DEADLINK_GC` | `off`, `dry-run` or `on`; unset = `on` | `LOOMCYCLE_DEADLINK_GC must be off, dry-run or on (unset is on)` |

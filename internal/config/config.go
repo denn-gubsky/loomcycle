@@ -4683,7 +4683,7 @@ type Env struct {
 	MCPSpawnRunTimeoutMS int
 	// OperatorTokenRotationGraceSeconds
 	// (LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS) is how long a
-	// rotated operator token keeps working. 0 = unset.
+	// rotated operator token keeps working. 0 = unset, which is 24h.
 	OperatorTokenRotationGraceSeconds int
 	// AuthCacheTTLSeconds (LOOMCYCLE_AUTH_CACHE_TTL_SECONDS) is the
 	// per-replica token-resolution cache TTL. Default 30; 0 turns the cache
