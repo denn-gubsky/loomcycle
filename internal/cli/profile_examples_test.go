@@ -133,8 +133,21 @@ func TestProfileExamples_ALooseningVariableIsOnlyACommentedOptIn(t *testing.T) {
 			if m[1] == "" {
 				t.Errorf("%s: %s is set; a profile may show it only commented out", profile, m[2])
 			}
-			if i == 0 || !strings.Contains(lines[i-1], "opt-in;") {
-				t.Errorf("%s: %s has no `opt-in; …` line above it saying what it loosens", profile, m[2])
+			// The explanation is the comment paragraph directly above the
+			// line; it opens with `opt-in;`.
+			explained := false
+			for j := i - 1; j >= 0; j-- {
+				text := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[j]), "#"))
+				if text == "" || !strings.HasPrefix(strings.TrimSpace(lines[j]), "#") {
+					break
+				}
+				if strings.HasPrefix(text, "opt-in;") {
+					explained = true
+					break
+				}
+			}
+			if !explained {
+				t.Errorf("%s: %s has no `opt-in; …` paragraph above it saying what it loosens", profile, m[2])
 			}
 		}
 	}
@@ -235,6 +248,10 @@ func TestProfileExamples_ServerComposeMatchesItsYAMLAndEnv(t *testing.T) {
 		"${LOOMCYCLE_PG_DSN:?",
 		"${LOOMCYCLE_SQLMEM_PG_DSN:?",
 		"${POSTGRES_PASSWORD:?",
+		"${LOOMCYCLE_DB_PASSWORD:?",
+		"${LOOMCYCLE_VERSION:?",
+		"POSTGRES_USER: postgres", // the superuser initialises; the runtime is not it
+		"./postgres-init.sh:/docker-entrypoint-initdb.d/",
 	} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("docker-compose.yaml lacks %q", want)
@@ -248,5 +265,49 @@ func TestProfileExamples_ServerComposeMatchesItsYAMLAndEnv(t *testing.T) {
 	}
 	if env["LOOMCYCLE_CONFIG_DIR"] != "/config" || env["LOOMCYCLE_DATA_DIR"] != "/data" {
 		t.Errorf("env.insecure.example config/data dirs = %q, %q; the compose file mounts /config and /data", env["LOOMCYCLE_CONFIG_DIR"], env["LOOMCYCLE_DATA_DIR"])
+	}
+}
+
+// The server example's runtime does not connect as the Postgres superuser:
+// the init script creates a role that may create roles and nothing more, and
+// the example's database URLs name that role.
+func TestProfileExamples_ServerRuntimeRoleIsNotTheSuperuser(t *testing.T) {
+	init := exampleFile(t, "server", "postgres-init.sh")
+	if !strings.Contains(init, "CREATE ROLE loomcycle LOGIN PASSWORD :'pw' CREATEROLE;") {
+		t.Error("postgres-init.sh does not create the loomcycle role with CREATEROLE alone")
+	}
+	for _, bad := range []string{"SUPERUSER", "CREATEDB", "REPLICATION", "BYPASSRLS", "pg_read_server_files", "pg_write_server_files", "pg_execute_server_program"} {
+		if strings.Contains(init, bad) {
+			t.Errorf("postgres-init.sh grants %s", bad)
+		}
+	}
+	secrets := exampleFile(t, "server", "env.local.example")
+	for _, want := range []string{
+		"postgres://loomcycle:<LOOMCYCLE_DB_PASSWORD>@postgres:5432/loomcycle?",
+		"postgres://loomcycle:<LOOMCYCLE_DB_PASSWORD>@postgres:5432/loomcycle_sqlmem?",
+	} {
+		if !strings.Contains(secrets, want) {
+			t.Errorf("env.local.example does not show the database URL %s…", want)
+		}
+	}
+	if strings.Contains(secrets, "<POSTGRES_PASSWORD>@") {
+		t.Error("env.local.example puts the superuser's password in a database URL")
+	}
+}
+
+// The server example ships with tracing off: an active endpoint pointing at a
+// placeholder host sends every span, in plaintext, to whoever owns that name.
+func TestProfileExamples_ServerShipsNoActiveTelemetryEndpoint(t *testing.T) {
+	seen := false
+	for _, l := range readEnvExample(t, "server", "env.insecure.example") {
+		if strings.HasPrefix(l.name, "OTEL_") {
+			seen = true
+			if l.active {
+				t.Errorf("%s is set in the server env template; ship it commented", l.name)
+			}
+		}
+	}
+	if !seen {
+		t.Error("the server env template no longer shows the OTEL variables at all")
 	}
 }
