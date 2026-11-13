@@ -775,8 +775,8 @@ Two pieces of operator config gate vector ops:
        base_url: ""         # optional; self-hosted / alternative endpoint
        api_key_env: ""      # optional; env-var NAME holding the credential
        dimensions: 0        # optional; 0 = the model's native vector width
-       timeout_ms: 30000    # optional; env fallback LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS
-       batch_size: 100      # optional; env fallback LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE
+       timeout_ms: 30000    # optional; one embedder call's timeout (default 30000)
+       batch_size: 100      # optional; texts per embedder call (default 100)
    ```
 
 When `memory.embedder:` is unset, the `search` op and `embed: true` on `set` refuse with `embedder_not_configured`. The k/v ops are unaffected — operators not wanting semantic search don't have to configure anything.
@@ -965,8 +965,6 @@ The Web UI's `/ui/memory` page exposes both as a model-distribution badge + a "r
 |---|---|---|
 | `LOOMCYCLE_PGVECTOR_ENABLED` | `0` | Opt in to vector support on Postgres. Boot-time `pg_extension` probe; refuses to start when missing. |
 | `LOOMCYCLE_SQLITE_VEC_PATH` | (unset) | **Reserved for v0.9.1.** Path to the sqlite-vec shared library. Currently parsed but unused; SQLite vector ops always refuse in v0.9.0. |
-| `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE` | `100` | Default batch size for embedder calls. Provider hard caps still apply on top. |
-| `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS` | `30000` | Per-call embedder HTTP timeout. 0 = rely on outer ctx. |
 
 #### Snapshot integration
 

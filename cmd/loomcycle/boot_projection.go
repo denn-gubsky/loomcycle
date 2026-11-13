@@ -17,8 +17,8 @@ import (
 // 3D map where due and places the chunks still missing from it. It reports whether
 // it started one.
 //
-// OFF BY DEFAULT: memory.projection must be enabled with a positive interval (or
-// LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL set). Otherwise no goroutine starts and no
+// OFF BY DEFAULT: memory.projection must be enabled with a positive interval.
+// Otherwise no goroutine starts and no
 // lock is taken. The pass makes no model call — it reads stored vectors — so it is
 // bounded by its own place limit, not by provider lanes.
 func startProjectionSweeper(ctx context.Context, cfg *config.Config, st store.Store, mgr *sqlmem.Manager,

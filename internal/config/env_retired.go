@@ -165,6 +165,11 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_TIMEOUT_SCALING":                "set timeout_scaling.mode in the yaml",
 	"LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS":  "set timeout_scaling.reference.decode_tps in the yaml",
 	"LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER": "set timeout_scaling.max_multiplier in the yaml",
+
+	// Moved to the yaml `memory:` block.
+	"LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE":      "set memory.embedder.batch_size in the yaml (1 sends one text per call)",
+	"LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS":      "set memory.embedder.timeout_ms in the yaml",
+	"LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL": "set memory.projection.interval in the yaml, with memory.projection.enabled: true",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in
@@ -308,10 +313,15 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// The code-agent bounds: a budget or a lifetime lowered so a runaway
 	// script ends sooner.
 	"LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
-		return loweredBelow(codeJSOptionOr(c.cfg, "run_timeout_seconds", 120))(value, c)
+		return loweredFrom(value, codeJSOptionOr(c.cfg, "run_timeout_seconds", 120))
 	}},
 	"LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
-		return loweredBelow(codeJSOptionOr(c.cfg, "max_wall_seconds", 86400))(value, c)
+		return loweredFrom(value, codeJSOptionOr(c.cfg, "max_wall_seconds", 86400))
+	}},
+	// An embedder call held to a shorter timeout than the yaml now gives.
+	// Zero meant no timeout at all, which no yaml value is looser than.
+	"LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS": {loosens: func(value string, c retiredEnvCtx) bool {
+		return loweredFrom(value, yamlOr(c.cfg.Memory.Embedder.TimeoutMs, EmbedderTimeoutMSDefault))
 	}},
 	// Without the directory a family in export+prune mode deletes nothing;
 	// with another one its exports land where nobody looks for them.
@@ -546,6 +556,12 @@ func codeJSOptionOr(cfg *Config, key string, dflt int64) int64 {
 	return dflt
 }
 
+// What memory.embedder.timeout_ms and batch_size are when unset.
+const (
+	EmbedderTimeoutMSDefault = 30_000
+	EmbedderBatchSizeDefault = 100
+)
+
 // durationOr is d, or dflt when d is unset.
 func durationOr(d, dflt time.Duration) time.Duration {
 	if d > 0 {
@@ -584,6 +600,15 @@ func loweredBelow(fixed int64) func(string, retiredEnvCtx) bool {
 		n, set, ok := retiredInt(value)
 		return set && (!ok || (n > 0 && n < fixed))
 	}
+}
+
+// loweredFrom reports a retired bound that was a positive number under now,
+// the bound the yaml gives. It is the rule of a variable whose old read
+// ignored a value that did not parse or was not positive, leaving the default:
+// ignoring such a value again changes nothing.
+func loweredFrom(value string, now int64) bool {
+	n, set, ok := retiredInt(value)
+	return set && ok && n > 0 && n < now
 }
 
 // loweredBelowYAML is loweredBelow against the bound the yaml gives.

@@ -99,7 +99,7 @@ type EmbedderOptions struct {
 	Model string
 
 	// Timeout caps a single HTTP call. Zero = no per-call timeout;
-	// rely on outer ctx. Matches LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS.
+	// rely on outer ctx. Set from memory.embedder.timeout_ms.
 	Timeout time.Duration
 
 	// Dimensions asks the provider for a specific output vector width
@@ -121,7 +121,7 @@ type EmbedderOptions struct {
 	// BatchSize is the max number of texts per single API call.
 	// Provider-specific caps still apply on top. Zero = batch
 	// everything in one call (provider's hard cap will surface).
-	// Matches LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE.
+	// Set from memory.embedder.batch_size.
 	BatchSize int
 
 	// HTTPClient is optional; nil falls back to a fresh

@@ -3300,9 +3300,9 @@ under the configured method refits it back.
 - **Off by default.** Off, `graph_snapshot` returns the empty block, `search`
   leaves `query_xyz` out, the sweeper does not start and
   `POST /v1/_document/project` answers 409.
-- **`LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL`** (a Go duration, e.g. `1h`)
-  overrides `interval`; a positive value also turns the projection on, so the
-  env alone is enough. `0` keeps it on with no sweeper.
+- **`interval`** (a Go duration, e.g. `1h`) is how often the sweeper runs;
+  unset or `0` keeps the projection on with no sweeper. The block is the only
+  source: `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` is no longer read.
 - **Needs** SQL Memory, a vector index (Postgres with pgvector) and
   `memory.embedder`. On plain sqlite there are no vectors to place: the block
   stays empty and the operator pass reports `unsupported`.
@@ -3459,12 +3459,12 @@ Background work runs on fixed cadences, and none of it can be switched off:
 
 ### Memory, documents and channels
 
+The embedder's batch size and call timeout are `memory.embedder.batch_size` (default `100`; provider limits still apply) and `memory.embedder.timeout_ms` (default `30000`) in the yaml. The document projection's cadence is `memory.projection.interval` ([9k](#9k-document-projection--the-3d-chunk-map-memoryprojection)).
+
 | Variable | Default | Effect |
 |---|---|---|
 | `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | 1 MiB | Memory bytes per scope; an agent's `memory_quota_bytes` overrides it. *0 disables*. |
 | `LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS` | 7 days | How long a consolidation-queue row is kept after a pass consumed it; `0` keeps them (and their chat payloads) forever. |
-| `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE` | `100` | Texts per embedder call (provider limits still apply); `0` sends one text per call. |
-| `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS` | `30000` | Timeout of one embedder call; `0` relies on the caller's deadline. |
 | `LOOMCYCLE_PGVECTOR_ENABLED` | off | `1` enables vector Memory on Postgres; boot fails if the `vector` extension is missing. |
 | `LOOMCYCLE_SQLITE_VEC_PATH` | unset | Path to the sqlite-vec extension library. Required by a binary built with the `sqlite_vec` tag; ignored otherwise. |
 | `LOOMCYCLE_MEMORY_TRACE_INDEX` | off | `1` (or `true`) stores and embeds each user turn so past conversations are searchable by what was said. Copies personal data into a second place, so it is opt-in. How long a turn stays searchable is `retention.trace.max_age` in the yaml (30 days). |

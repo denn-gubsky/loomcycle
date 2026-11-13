@@ -897,11 +897,11 @@ type EmbedderConfig struct {
 	// stored `dimension` column first and refuses with
 	// dimension_mismatch until POST /v1/_memory/reembed migrates them.
 	Dimensions int `yaml:"dimensions"`
-	// TimeoutMs overrides LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS for
-	// this specific embedder. 0 = inherit env (30000 default).
+	// TimeoutMs caps one embedder HTTP call. 0 or unset = 30000.
 	TimeoutMs int `yaml:"timeout_ms"`
-	// BatchSize overrides LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE.
-	// 0 = inherit env (100 default).
+	// BatchSize is how many texts go into one embedder call; the provider's
+	// own cap still applies on top. 0 or unset = 100; 1 sends one text per
+	// call.
 	BatchSize int `yaml:"batch_size"`
 }
 
@@ -4773,12 +4773,6 @@ type Env struct {
 	// Env: LOOMCYCLE_DEADLINK_GC_DRY_RUN=1.
 	DeadLinkGCDryRun bool
 
-	// DocumentProjectionInterval is LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL, raw:
-	// a Go duration that overrides memory.projection.interval ("0" stops the
-	// sweeper; a positive value also enables the projection). Resolved and
-	// validated by Config.DocumentProjection / validate.
-	DocumentProjectionInterval string
-
 	// MemoryPendingDrainedTTL is how long a consolidation-queue row is kept
 	// after a pass acks it. An hourly prune deletes older drained rows; an
 	// undrained row is never pruned. Default 7 days. 0 or negative disables the
@@ -4794,20 +4788,6 @@ type Env struct {
 	// SQLite is unaffected — sqlite-vec ships in v0.9.1.
 	// Env: LOOMCYCLE_PGVECTOR_ENABLED.
 	PgvectorEnabled bool
-
-	// MemoryEmbedBatchSize is the default batch size embedder
-	// drivers use when grouping texts into one provider call.
-	// Provider-specific caps (OpenAI's 2048-item limit etc.) still
-	// apply on top. Default 100. 0 disables batching (one call per
-	// text — useful for debugging cost surprises).
-	// Env: LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE.
-	MemoryEmbedBatchSize int
-
-	// MemoryEmbedTimeoutMs caps a single embedder HTTP call. Default
-	// 30000 (30 s). 0 disables (rely on outer context). Negative
-	// treated as 0 (matches MemoryMaxValueBytes convention).
-	// Env: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS.
-	MemoryEmbedTimeoutMs int
 
 	// ChannelsLongPollCapMS caps the wait_ms an agent may request
 	// on a Channel.subscribe call (v0.8.4). Default 30000 (30 s) —
@@ -7724,7 +7704,7 @@ func validate(c *Config) error {
 	if err := c.Memory.FullText.validate(); err != nil {
 		return err
 	}
-	if _, err := c.Memory.Projection.resolve(c.Env.DocumentProjectionInterval); err != nil {
+	if _, err := c.Memory.Projection.resolve(); err != nil {
 		return err
 	}
 	if err := c.Decision.validate(c); err != nil {

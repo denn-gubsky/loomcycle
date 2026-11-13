@@ -53,7 +53,7 @@ func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 	cfg := s.cfg()
 	if !cfg.DocumentProjection().Enabled {
 		writeJSONError(w, http.StatusConflict, "projection_disabled",
-			"the document projection is off: set memory.projection.enabled (or LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL)")
+			"the document projection is off: set memory.projection.enabled")
 		return
 	}
 	q := r.URL.Query()

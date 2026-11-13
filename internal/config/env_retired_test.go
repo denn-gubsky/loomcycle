@@ -79,6 +79,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		yaml        StorageConfig
 		retention   RetentionConfig // the yaml's retention block
 		providers   map[string]ProviderConfig
+		memory      MemoryConfig
 		refused     bool
 	}{
 		// Gates: the old read turned the feature on for exactly "1".
@@ -333,7 +334,8 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "30", providers: map[string]ProviderConfig{"code-js": {Driver: "code-js", Options: map[string]any{"run_timeout_seconds": 60}}}, refused: true},
 		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "120"},
 		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "600"},
-		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "0"}, // was ignored
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "0"},    // was ignored
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "5min"}, // was ignored
 		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "3600", refused: true},
 		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "3600", providers: map[string]ProviderConfig{"code-js": {Driver: "code-js", Options: map[string]any{"max_wall_seconds": 3600}}}},
 		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "86400"},
@@ -350,6 +352,20 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS", value: "50"},
 		{name: "LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER", value: "2"},
 
+		// The embedder call timeout moved to memory.embedder.timeout_ms
+		// (30000 unset). Refused when lowered below what the yaml gives; zero
+		// meant "no timeout", which was looser.
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "5000", refused: true},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "5000", memory: MemoryConfig{Embedder: EmbedderConfig{TimeoutMs: 5000}}},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "5000", memory: MemoryConfig{Embedder: EmbedderConfig{TimeoutMs: 20000}}, refused: true},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "30000"},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "120000"},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "0"},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "5s"}, // was ignored
+		// The batch size and the projection cadence tightened nothing.
+		{name: "LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE", value: "8"},
+		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: "1h"},
+
 		// The debug flags only added log lines.
 		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
 		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
@@ -361,7 +377,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			environ := append([]string{tc.name + "=" + tc.value}, tc.also...)
-			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers})
+			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory})
 			if refused := len(got) > 0; refused != tc.refused {
 				t.Fatalf("refused = %v (%q), want %v", refused, got, tc.refused)
 			}

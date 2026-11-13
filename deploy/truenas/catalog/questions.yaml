@@ -516,12 +516,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL
-            label: LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL
-            description: 'Document projection sweeper cadence (a Go duration, e.g. 1h): places each document chunk on its scope''s 3D map by meaning (memory.projection). A positive value also turns the projection on; 0 keeps it on with no sweeper. Default unset = memory.projection decides (off unless enabled). (example: 1h)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_SQLMEM_ROOT
             label: LOOMCYCLE_SQLMEM_ROOT
             description: 'Where the per-scope sqlite files live (default <DataDir>/sqlmem). Postgres tier: set the DSN in .env.local (LOOMCYCLE_SQLMEM_PG_DSN — it carries a password, so it is a SECRET, not config). (example: ./data/sqlmem)'
@@ -565,18 +559,6 @@ questions:
               default: ""
           - variable: LOOMCYCLE_SQLITE_VEC_PATH
             label: LOOMCYCLE_SQLITE_VEC_PATH
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE
-            label: LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE
-            description: '(example: 100)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS
-            label: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS
-            description: '(example: 30000)'
             schema:
               type: string
               default: ""

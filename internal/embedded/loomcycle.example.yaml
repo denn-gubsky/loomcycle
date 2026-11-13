@@ -402,10 +402,8 @@ channels:
 #   - SQLite vector backend ships in v0.9.1 (sqlite-vec via build-tag
 #     swap to cgosqlite). v0.9.0 SQLite always refuses vector ops.
 #
-# Env vars that ride alongside:
+# Env var that rides alongside:
 #   LOOMCYCLE_PGVECTOR_ENABLED=1                     # opt in on Postgres
-#   LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE=100            # per-call batch cap
-#   LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS=30000          # per-call HTTP timeout
 #
 # Anthropic note (v0.10.2+): `provider: anthropic` is now a working
 # Voyage AI proxy — Anthropic has no native embedding API and
@@ -426,8 +424,14 @@ channels:
 #     provider: openai                       # openai | gemini | anthropic (Voyage AI)
 #     model: text-embedding-3-large          # voyage-3 / voyage-4 for anthropic — or a models: alias
 #                                            # (e.g. local-embedding), which also supplies the provider
-#     timeout_ms: 30000                      # optional; overrides env
-#     batch_size: 100                        # optional; overrides env (Voyage caps voyage-3 at 128)
+#     timeout_ms: 30000                      # one embedder call's timeout (default 30000)
+#     batch_size: 100                        # texts per call (default 100; Voyage caps voyage-3 at 128)
+#
+#   # The 3D chunk map: places each document chunk on its scope's map by
+#   # meaning. Off by default; the background sweeper also needs an interval.
+#   projection:
+#     enabled: true
+#     interval: 1h                           # how often the sweeper runs; unset or "0" = no sweeper
 #
 #   # The model that reranks the document searches of agents whose definition
 #   # sets `memory_rerank: {enabled: true}` — one call per search, reordering
