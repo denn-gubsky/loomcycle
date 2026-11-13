@@ -786,7 +786,7 @@ func (b *boot) startMemoryChangesSweeper() {
 	// RFC CD Part C — prune the change-feed table so the opt-in feed stays
 	// bounded. Only when the feed is enabled; the DELETE is idempotent and
 	// advisory-gated so one replica prunes per tick.
-	if memoryChangesEnabled() && storeIface != nil {
+	if b.cfg.Env.MemoryChangesEnabled && storeIface != nil {
 		const window = memoryChangesRetention
 		goAdvisoryGatedSweeper(bgCtx, time.Hour, advisoryLock, coord.LockKeyMemoryChangesSweeper, "memory_changes",
 			func(ctx context.Context) {
@@ -815,7 +815,7 @@ func (b *boot) startChangeSubscriptionPush() {
 	// advisory-gated so ONE replica delivers per tick (the persisted cursor is
 	// shared). Each subscription's callback is dialed through its own
 	// SSRF-guarded client (private hosts blocked unless allow_private_host).
-	if memoryChangesEnabled() && storeIface != nil && len(cfg.ChangeSubscriptions) > 0 {
+	if b.cfg.Env.MemoryChangesEnabled && storeIface != nil && len(cfg.ChangeSubscriptions) > 0 {
 		subs := resolveChangeSubscriptions(cfg)
 		if len(subs) > 0 {
 			deliverer := changesub.New(storeIface, resolveChangeSubSecret, slog.Default())

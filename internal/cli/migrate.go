@@ -64,7 +64,7 @@ func loadPgDSN(cfgPath, explicitDSN string) (string, error) {
 		}
 		return cfg.Storage.PgDSN, nil
 	}
-	if v := getenvDefault("LOOMCYCLE_PG_DSN", ""); v != "" {
+	if v := config.PgDSNFromEnv(); v != "" {
 		return v, nil
 	}
 	return "", fmt.Errorf("no DSN: pass --dsn, --config <yaml>, or set LOOMCYCLE_PG_DSN")

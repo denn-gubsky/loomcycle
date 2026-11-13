@@ -3339,7 +3339,7 @@ The operator pass and the response: [DOCUMENTS.md, "Projection — the 3D map"](
 
 The sections above document each feature's variables where the feature is explained. This section lists the rest: the variables the runtime reads that no other section names. A test (`TestEnvCensus_EveryReadNameIsDocumented` in `internal/config`) fails when the code reads a `LOOMCYCLE_*` name this guide does not mention, so a new knob lands with its row.
 
-Conventions unless a row says otherwise: `1` turns a flag on and anything else leaves it off; a duration ending in `_MS` is milliseconds; a value that does not parse keeps the default. For the byte caps marked *0 disables*, a value of `0` or less removes the cap.
+Conventions unless a row says otherwise: `1` turns a flag on and anything else leaves it off; a duration ending in `_MS` is milliseconds; a value that does not parse keeps the default. These stop the load instead, with an error that names the variable and not its value, when set to something that is not a whole number in range (or, for the last two, not a known value or a host name): `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS`, `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS`, `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS`, `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS`, `LOOMCYCLE_RUN_RATE_PER_MINUTE` (and `LOOMCYCLE_RUN_RATE_BURST` beside it), `LOOMCYCLE_LIMITS_ENFORCE`, `LOOMCYCLE_GIT_SOURCE_HOSTS`. `loomcycle validate` and `doctor` report the same error. For the byte caps marked *0 disables*, a value of `0` or less removes the cap.
 
 ### Server, storage and cluster
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strconv"
 	"time"
 
 	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
@@ -27,12 +26,7 @@ func (b *boot) startMCPSurfaces() {
 	// Read outside the mcpMode block: the HTTP MCP transport below is
 	// always wired (both server and mcp modes) and the RFC R thin client
 	// (`mcp --upstream`) proxies to it, so it needs the same bound.
-	mcpSpawnRunTimeoutMS := 0
-	if v := os.Getenv("LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS"); v != "" {
-		if n, perr := strconv.Atoi(v); perr == nil && n > 0 {
-			mcpSpawnRunTimeoutMS = n
-		}
-	}
+	mcpSpawnRunTimeoutMS := b.cfg.Env.MCPSpawnRunTimeoutMS
 	if mcpMode {
 		mcpSrv := lcmcp.New(lcmcp.Config{
 			Connector:         srv, // *http.Server satisfies connector.Connector

@@ -38,7 +38,7 @@ func (b *boot) openAndMigrateStore() {
 	// store so every memory/document write emits a value-free change row. Off by
 	// default → the store is unwrapped and the path is byte-identical. Cluster
 	// coord below unwraps via asPostgresStore to reach the concrete backend.
-	if memoryChangesEnabled() && storeIface != nil {
+	if b.cfg.Env.MemoryChangesEnabled && storeIface != nil {
 		storeIface = cdc.Wrap(storeIface, slog.Default())
 		slog.Info("memory: change-data-capture feed ENABLED (LOOMCYCLE_MEMORY_CHANGES_ENABLED=1)")
 	}
