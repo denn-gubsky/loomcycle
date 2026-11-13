@@ -506,13 +506,13 @@ questions:
               default: ""
           - variable: LOOMCYCLE_SKILLS_ROOT
             label: LOOMCYCLE_SKILLS_ROOT
-            description: 'Skill bodies count as operator-authored content and are trusted — they''re loaded with the same trust as inline `system_prompt:`. Do not point this at a directory writable by untrusted users. (example: /srv/loomcycle/skills)'
+            description: 'Skill bodies count as operator-authored content and are trusted — they''re loaded with the same trust as inline `system_prompt:`. Do not point this (or the config dir) at a directory writable by untrusted users. (example: /srv/loomcycle/skills)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_AGENTS_ROOT
             label: LOOMCYCLE_AGENTS_ROOT
-            description: '(example: /srv/loomcycle/agents)'
+            description: 'Unset, the root is <LOOMCYCLE_CONFIG_DIR>/agents when that directory exists. Set it to the empty string to discover no agent files. (example: /srv/loomcycle/agents)'
             schema:
               type: string
               default: ""

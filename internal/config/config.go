@@ -4439,7 +4439,8 @@ type Env struct {
 	// shape `<name>/SKILL.md`. When unset, agents may not list skills
 	// (resolveSkills errors loudly to surface the misconfiguration —
 	// silently dropping skill bodies would defeat the prompts that
-	// reference them). Sourced from LOOMCYCLE_SKILLS_ROOT.
+	// reference them). Sourced from LOOMCYCLE_SKILLS_ROOT; unset, it is
+	// <LOOMCYCLE_CONFIG_DIR>/skills when that directory exists (contentRoot).
 	SkillsRoot string
 
 	// AgentsRoot points at a directory of flat `<name>.md` files.
@@ -4456,7 +4457,8 @@ type Env struct {
 	// branch divergence breaks loomcycle on the deploy box). The
 	// directory becomes the single source of truth in normal
 	// operation; yaml entries shrink to per-environment overrides.
-	// Sourced from LOOMCYCLE_AGENTS_ROOT.
+	// Sourced from LOOMCYCLE_AGENTS_ROOT; unset, it is
+	// <LOOMCYCLE_CONFIG_DIR>/agents when that directory exists.
 	AgentsRoot string
 
 	// HelpRoot points at a directory of flat `<name>.md` files holding
@@ -4465,7 +4467,8 @@ type Env struct {
 	// name). When unset, only bundled topics are available. Operators
 	// use this to publish deployment-specific guidance (e.g. local
 	// policy docs, internal MCP server walkthroughs) without rebuilding
-	// loomcycle. Sourced from LOOMCYCLE_HELP_ROOT.
+	// loomcycle. Sourced from LOOMCYCLE_HELP_ROOT; unset, it is
+	// <LOOMCYCLE_CONFIG_DIR>/help when that directory exists.
 	HelpRoot string
 
 	// HeartbeatStaleAfter is the cutoff: runs with last_heartbeat_at
@@ -5194,7 +5197,7 @@ func loadAgentFiles(cfg *Config, primaryPath string) error {
 	// MDs-as-sole-source-of-truth deployment works (operator sets
 	// LOOMCYCLE_AGENTS_ROOT and omits the yaml entirely; cfg.Agents
 	// is populated purely from MDs).
-	if root := os.Getenv("LOOMCYCLE_AGENTS_ROOT"); root != "" {
+	if root := contentRoot("LOOMCYCLE_AGENTS_ROOT", "agents"); root != "" {
 		if err := discoverAgents(cfg, root); err != nil {
 			return err
 		}
@@ -5267,9 +5270,9 @@ func applyEnvCore(cfg *Config) {
 		GitPushHosts:                splitCSV(os.Getenv("LOOMCYCLE_GIT_PUSH_HOSTS")),
 		GitAuthorName:               strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_NAME")),
 		GitAuthorEmail:              strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_EMAIL")),
-		SkillsRoot:                  os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
-		AgentsRoot:                  os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
-		HelpRoot:                    os.Getenv("LOOMCYCLE_HELP_ROOT"),
+		SkillsRoot:                  contentRoot("LOOMCYCLE_SKILLS_ROOT", "skills"),
+		AgentsRoot:                  contentRoot("LOOMCYCLE_AGENTS_ROOT", "agents"),
+		HelpRoot:                    contentRoot("LOOMCYCLE_HELP_ROOT", "help"),
 		ConfiguredRunTTL:            24 * time.Hour,
 		MaxConfiguredRunsPerUser:    100,
 		// RFC BM retention defaults — opt-in (every family's mode is off); the
@@ -5278,6 +5281,28 @@ func applyEnvCore(cfg *Config) {
 		RetentionDefsMode:      "off",
 		RetentionDefsKeepLastN: 5,
 	}
+}
+
+// contentRoot resolves one content directory (skills, agents, help topics).
+// The variable wins whenever it is set, including set to the empty string,
+// which means "no root" and is how an operator declines the default. Unset,
+// the root is <LOOMCYCLE_CONFIG_DIR>/<sub> when that directory exists, so a
+// deployment that keeps its content beside its yaml needs no second path.
+// Anything else (no config dir, no such subdirectory, a stat error) is no
+// root, as before the default existed.
+func contentRoot(envName, sub string) string {
+	if v, ok := os.LookupEnv(envName); ok {
+		return v
+	}
+	dir := strings.TrimSpace(os.Getenv("LOOMCYCLE_CONFIG_DIR"))
+	if dir == "" {
+		return ""
+	}
+	p := filepath.Join(dir, sub)
+	if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+		return p
+	}
+	return ""
 }
 
 // applyEnvStorage reads the storage block's env overrides and defaults the

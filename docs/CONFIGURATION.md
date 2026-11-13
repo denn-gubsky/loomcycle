@@ -895,7 +895,7 @@ Full field reference (dialect, `options`, capability overrides) + the concurrenc
 
 ## 7. Agent `.md` frontmatter reference
 
-Agent files live under `LOOMCYCLE_AGENTS_ROOT` (set in the env file). Each `<name>.md` has YAML frontmatter between `---` delimiters; the body is the system prompt.
+Agent files live under `LOOMCYCLE_AGENTS_ROOT` (set in the env file; unset, `<LOOMCYCLE_CONFIG_DIR>/agents` when that directory exists). Each `<name>.md` has YAML frontmatter between `---` delimiters; the body is the system prompt.
 
 ### Frontmatter fields
 
@@ -3009,6 +3009,13 @@ layer as a group in lexical filename order (so prefix them `10-`, `20-`, …) �
 handy for a mounted overlay dir or an image-baked drop-in set. A set-but-missing
 dir is a fatal error; an empty dir is fine.
 
+The directory is also where content is looked for by default: its `skills/`,
+`agents/` and `help/` subdirectories, when they exist, are the skills root, the
+agent-file root and the help-topic overlay. `LOOMCYCLE_SKILLS_ROOT`,
+`LOOMCYCLE_AGENTS_ROOT` and `LOOMCYCLE_HELP_ROOT` override them, and setting one
+to the empty string declines the default. Only top-level `*.yaml` files are
+layers, so nothing in a subdirectory is read as config.
+
 So `base` supplies the provider matrix, `document-agent` registers `doc/manager`
 with its skills, and your `--config` wins on anything it sets (e.g. retarget the
 agent's tier, narrow its `tools` — you can't *widen* it past the def's
@@ -3352,7 +3359,7 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `86400` | How long a code-agent run may live, waits included; past it the run and its children are cancelled. Operator-only: no agent or run field can raise it. |
 | `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` accepts a plain `http://` Vault address for Vault Transit keys (a dev server). Off because the Vault token travels in a header. |
 | `LOOMCYCLE_WEBSEARCH_PROVENANCE` | off | `1` appends a `(via <provider>)` footer to WebSearch results, naming the search provider that answered and any fallover. |
-| `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. |
+| `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. Unset, `<LOOMCYCLE_CONFIG_DIR>/help` when that directory exists; set to the empty string for bundled topics only. |
 | `LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT` | `2` | Engine requests `/v1/audio/transcriptions` keeps in flight server-wide; more wait for a slot (sibling of `LOOMCYCLE_SPEECH_MAX_INFLIGHT`). |
 
 ### MCP
