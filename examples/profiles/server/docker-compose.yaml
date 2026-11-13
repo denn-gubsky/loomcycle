@@ -1,0 +1,85 @@
+# loomcycle — server profile: the runtime and its Postgres.
+#
+#   cp env.insecure.example env.insecure
+#   cp env.local.example env.local && chmod 600 env.local     # fill it in
+#   mkdir -p config data dynamic && cp loomcycle.yaml config/
+#   sudo chown -R 65532:65532 data dynamic                    # the runtime's user
+#   LOOMCYCLE_VERSION=<release> docker compose --env-file env.local up -d
+#
+# env.insecure is passed to the container as it is. env.local is read by
+# compose itself (--env-file): each secret below is taken from it by name, and
+# a required one that is empty stops `up` with the message beside it.
+#
+# LOOMCYCLE_VERSION is the release tag to run (the image tag, without a `v`),
+# the same for both loomcycle services. It must be a release that has the
+# `server` preset: `docker run --rm denngubsky/loomcycle:<release> presets`
+# lists it.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18@sha256:c29f30688a9ad961691bdf0ec1650717cc132a5814619d80f80463d6e4c42e47
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: loomcycle
+      POSTGRES_DB: loomcycle
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in env.local}
+    volumes:
+      # Postgres 18 keeps its data in a version subdirectory and refuses a
+      # mount at /var/lib/postgresql/data: mount the parent.
+      - ./pgdata:/var/lib/postgresql
+      # Creates the second database, once, on an empty data directory.
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loomcycle -d loomcycle"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  # Applies the main database's schema, then exits. The runtime does not
+  # migrate on start (LOOMCYCLE_PG_AUTOMIGRATE is off), so an upgrade is this
+  # service running first.
+  loomcycle-migrate:
+    image: denngubsky/loomcycle:${LOOMCYCLE_VERSION:?set LOOMCYCLE_VERSION to the release to run}
+    command: ["migrate", "up"]
+    restart: "no"
+    environment:
+      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN in env.local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  loomcycle:
+    image: denngubsky/loomcycle:${LOOMCYCLE_VERSION:?set LOOMCYCLE_VERSION to the release to run}
+    restart: unless-stopped
+    depends_on:
+      loomcycle-migrate:
+        condition: service_completed_successfully
+    ports:
+      # Loopback only: put your reverse proxy or tunnel in front of it, and
+      # set LOOMCYCLE_PUBLIC_URL to the address that gives.
+      - "127.0.0.1:8787:8787"
+    env_file:
+      - ./env.insecure
+    environment:
+      # Secrets, by name, from env.local. Never write a value here.
+      LOOMCYCLE_AUTH_TOKEN: ${LOOMCYCLE_AUTH_TOKEN:?set LOOMCYCLE_AUTH_TOKEN in env.local (openssl rand -hex 32)}
+      LOOMCYCLE_SECRET_KEY: ${LOOMCYCLE_SECRET_KEY:?set LOOMCYCLE_SECRET_KEY in env.local (openssl rand -base64 32)}
+      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN in env.local}
+      LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:?set LOOMCYCLE_SQLMEM_PG_DSN in env.local}
+      # Provider keys: a provider with no key is skipped.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Only if your yaml or collector needs them.
+      LOOMCYCLE_GATE_SSO_SECRET: ${LOOMCYCLE_GATE_SSO_SECRET:-}
+      LOOMCYCLE_TOKEN_REPORTING: ${LOOMCYCLE_TOKEN_REPORTING:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+    volumes:
+      # Your yaml, read-only: every *.yaml in it is layered over the preset.
+      - ./config:/config:ro
+      # The runtime's own state.
+      - ./data:/data
+      # The dynamic root named in loomcycle.yaml (volumes.dynamic).
+      - ./dynamic:/mnt/dynamic

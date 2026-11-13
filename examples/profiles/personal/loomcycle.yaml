@@ -1,0 +1,35 @@
+# loomcycle — personal profile.
+#
+# The agents, the model routing and the defaults all come from the `personal`
+# preset, which is selected in the environment, not here:
+#
+#     LOOMCYCLE_PRESETS=personal
+#
+# `loomcycle presets show personal` prints what it layers. This file holds only
+# what is yours. Anything you write here is merged over the preset, key by key,
+# so you restate a setting only to change it.
+#
+# Already the default, so not written: SQLite under the data directory, SQL
+# Memory on it (Documents), 127.0.0.1:8787.
+
+# A directory the file tools (Read, Write, Edit, Grep, Glob, Bashbox) may use.
+# Without one those tools are registered and idle. The path must exist.
+# volumes:
+#   work:
+#     path: /absolute/path/to/a/work/directory
+#     mode: rw
+#     default: true
+
+# Your local models, if the defaults do not fit your machine. The context
+# window is the setting that matters: Ollama's own default is 4096 tokens.
+# providers:
+#   ollama-local:
+#     options:
+#       num_ctx: 32768
+
+# Turn what the chat agents are told into durable memory. Needs the `memory`
+# bundle as well: LOOMCYCLE_PRESETS=personal,memory. It runs hourly and calls
+# a model for every chat with something new in it.
+# scheduled_runs:
+#   memory-consolidation:
+#     enabled: true
