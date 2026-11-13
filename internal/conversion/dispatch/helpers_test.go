@@ -125,10 +125,10 @@ func TestPool_HelperJobsMatchInProcess(t *testing.T) {
 	}
 }
 
-// A helper job no attached worker can run is refused at once as not
-// configured, naming the helper, rather than waiting for a slot or calling
-// the pool down: the workers are up and lack the program.
-func TestPool_AHelperNoWorkerHasIsNotConfigured(t *testing.T) {
+// A helper job no attached worker can run is refused at once as a program
+// missing where the workers run, naming the helper, rather than waiting for a
+// slot, calling the pool down, or asking for a setting that is made.
+func TestPool_AHelperNoWorkerHasIsRefusedAsMissing(t *testing.T) {
 	d, target := pool(t, dispatch.Options{QueueWait: time.Minute})
 	helperWorker(t, target, "w1", worker.Options{
 		// Configured, but the program is not on this host.
@@ -137,12 +137,12 @@ func TestPool_AHelperNoWorkerHasIsNotConfigured(t *testing.T) {
 	waitIdle(t, d, 1)
 	start := time.Now()
 	_, err := d.Client().RenderPage(context.Background(), []byte("%PDF-1.4"), "en")
-	if !errors.Is(err, convert.ErrNotConfigured) || !strings.Contains(err.Error(), "render") {
-		t.Errorf("RenderPage with no rasteriser: %v, want ErrNotConfigured naming render", err)
+	if !errors.Is(err, convert.ErrNoHelper) || errors.Is(err, convert.ErrNotConfigured) || !strings.Contains(err.Error(), "render") {
+		t.Errorf("RenderPage with no rasteriser: %v, want ErrNoHelper naming render", err)
 	}
 	_, err = d.Client().ConvertMedia(context.Background(), bytes.NewReader([]byte("x")), 1, "audio/mpeg", "")
-	if !errors.Is(err, convert.ErrNotConfigured) {
-		t.Errorf("ConvertMedia with a converter that is not installed: %v, want ErrNotConfigured", err)
+	if !errors.Is(err, convert.ErrNoHelper) {
+		t.Errorf("ConvertMedia with a converter that is not installed: %v, want ErrNoHelper", err)
 	}
 	if time.Since(start) > 10*time.Second {
 		t.Errorf("the refusals waited %v; they must not queue", time.Since(start))

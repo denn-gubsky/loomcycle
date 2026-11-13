@@ -398,9 +398,9 @@ func (d *Dispatcher) acquire(ctx context.Context, label string) (*slot, error) {
 		attached := len(d.workers) > 0
 		d.mu.Unlock()
 		if attached && wire.HelperLabel(label) {
-			// Workers are up, and none has this helper's program: a setting
-			// to fix on the workers, not a pool that is down.
-			return nil, fmt.Errorf("%w: no attached conversion worker has the %s helper", convert.ErrNotConfigured, label)
+			// Workers are up, and none has this helper's program: an install
+			// to fix where the workers run, not a pool that is down.
+			return nil, fmt.Errorf("%w (%s): install it where the workers run (the loomcycle-worker image carries ffmpeg and pdftoppm)", convert.ErrNoHelper, label)
 		}
 		return nil, convert.ErrNoWorkers
 	}
