@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"reflect"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,17 +18,23 @@ const (
 	// and sends extraction to them, so a file that exhausts memory kills a
 	// worker rather than the runtime.
 	ConversionLocal = "local"
+	// ConversionRemote listens for workers that run as their own containers
+	// on conversion.listen, and sends every conversion to them.
+	ConversionRemote = "remote"
+	// ConversionLocalRemote is both: children of the runtime and workers of
+	// their own, in one pool.
+	ConversionLocalRemote = "local+remote"
 )
-
-// conversionModesNotYet are the modes RFC GO P3 adds.
-var conversionModesNotYet = map[string]bool{"remote": true, "local+remote": true}
 
 // ConversionConfig is the `conversion:` block: where file conversions run
 // (RFC GO). Policy and tuning, so yaml only (RFC GN). Resolved fills its
 // defaults.
 type ConversionConfig struct {
-	// Mode is inprocess (default) or local.
+	// Mode is inprocess (default), local, remote or local+remote.
 	Mode string `yaml:"mode,omitempty"`
+	// Listen is the host:port the worker endpoint listens on for workers
+	// of their own (modes remote and local+remote). Never the public port.
+	Listen string `yaml:"listen,omitempty"`
 	// QueueWaitS is how long a conversion waits for a free worker before the
 	// call is answered as a busy server. Default 60.
 	QueueWaitS int `yaml:"queue_wait_s,omitempty"`
@@ -76,17 +84,47 @@ func (c ConversionConfig) Resolved() ConversionConfig {
 	return c
 }
 
-// validateConversion refuses a mode it does not know or does not have yet,
-// and values out of range. Part of validate.
+// LocalWorkers reports whether the mode starts workers as children of the runtime.
+func (c ConversionConfig) LocalWorkers() bool {
+	return c.Mode == ConversionLocal || c.Mode == ConversionLocalRemote
+}
+
+// RemoteWorkers reports whether the mode listens for workers of their own.
+func (c ConversionConfig) RemoteWorkers() bool {
+	return c.Mode == ConversionRemote || c.Mode == ConversionLocalRemote
+}
+
+// validateConversion refuses a mode it does not know, a remote mode with no
+// worker endpoint or one on the runtime's own ports, and values out of range.
+// Part of validate.
 func validateConversion(c *Config) error {
 	cv := c.Conversion
 	switch cv.Mode {
-	case "", ConversionInProcess, ConversionLocal:
+	case "", ConversionInProcess, ConversionLocal, ConversionRemote, ConversionLocalRemote:
 	default:
-		if conversionModesNotYet[cv.Mode] {
-			return fmt.Errorf("conversion.mode: %q is not available yet; use %s or %s", cv.Mode, ConversionInProcess, ConversionLocal)
+		return fmt.Errorf("conversion.mode: unknown mode %q (want %s, %s, %s or %s)", cv.Mode,
+			ConversionInProcess, ConversionLocal, ConversionRemote, ConversionLocalRemote)
+	}
+	if cv.RemoteWorkers() {
+		if cv.Listen == "" {
+			return fmt.Errorf("conversion.listen: mode %s needs the host:port workers attach to", cv.Mode)
 		}
-		return fmt.Errorf("conversion.mode: unknown mode %q (want %s or %s)", cv.Mode, ConversionInProcess, ConversionLocal)
+		host, port, err := net.SplitHostPort(cv.Listen)
+		if n, perr := strconv.Atoi(port); err != nil || perr != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("conversion.listen: %q is not a host:port", cv.Listen)
+		}
+		for _, own := range []struct{ name, addr string }{
+			{"LOOMCYCLE_LISTEN_ADDR", c.Env.ListenAddr}, {"LOOMCYCLE_GRPC_ADDR", c.Env.GrpcAddr}, {"the metrics listener", c.Env.MetricsListenAddr},
+		} {
+			if own.addr == "" {
+				continue
+			}
+			if _, p, err := net.SplitHostPort(own.addr); err == nil && p == port && (host == "" || sameHost(host, own.addr)) {
+				return fmt.Errorf("conversion.listen: %s is the port of %s; the worker endpoint is never a public port", cv.Listen, own.name)
+			}
+		}
+	} else if cv.Listen != "" {
+		return fmt.Errorf("conversion.listen: set only in mode %s or %s", ConversionRemote, ConversionLocalRemote)
 	}
 	if cv.QueueWaitS < 0 || cv.QuarantineTTLS < 0 {
 		return fmt.Errorf("conversion: queue_wait_s and quarantine_ttl_s may not be negative")
@@ -98,6 +136,14 @@ func validateConversion(c *Config) error {
 		return fmt.Errorf("conversion.local.memory_limit_mb: %d is under the %d MiB a worker needs", m, minConversionLocalMemoryMB)
 	}
 	return nil
+}
+
+// sameHost reports whether host is addr's host or either listens on every
+// interface, so the two could collide on one port.
+func sameHost(host, addr string) bool {
+	h, _, _ := net.SplitHostPort(addr)
+	wild := func(x string) bool { return x == "" || x == "0.0.0.0" || x == "::" }
+	return wild(host) || wild(h) || h == host
 }
 
 func (c *ConversionConfig) UnmarshalYAML(n *yaml.Node) error {

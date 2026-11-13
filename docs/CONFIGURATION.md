@@ -4073,7 +4073,8 @@ File conversion is the one kind of work whose memory is set by what someone put 
 
 ```yaml
 conversion:
-  mode: local              # inprocess (default) | local
+  mode: local              # inprocess (default) | local | remote | local+remote
+  listen: ""               # remote modes: host:port of the worker endpoint, never the API port
   queue_wait_s: 60         # how long a conversion waits for a free worker before a busy answer
   quarantine_ttl_s: 3600   # how long a file that killed a worker is refused
   local:
@@ -4090,13 +4091,16 @@ What `local` does:
 - A worker that dies mid-job fails that one call, and the file is quarantined for `quarantine_ttl_s`: it is refused with "crashed the file converter" instead of being sent to the next worker. A dead child is started again with backoff (1 s, doubling to 30 s). With every worker busy, a call waits `queue_wait_s` and is then answered as a busy server the model may retry. With no worker attached at all, the call is refused. The runtime never falls back to converting in its own process.
 - `LOOMCYCLE_EXTRACT_CONCURRENCY` still bounds `op=import`; extraction is bounded by the workers. The `loomcycle_extractions_*` gauges then report the pool.
 
+`remote` listens on `listen` for workers that run as their own containers (the `loomcycle-worker` image) and sends every conversion to them; `local+remote` runs both kinds in one pool. A network endpoint needs `LOOMCYCLE_WORKER_TOKEN` of at least 32 characters in the runtime's environment, or the runtime refuses to start; local children then present the same token. The endpoint is plain gRPC: keep it on a network only the runtime and its workers share. [WORKERS.md](WORKERS.md) is the guide to running remote workers.
+
 `/metrics` adds `loomcycle_conversion_workers`, `_slots`, `_idle_slots`, `_inflight`, `_waiting`, `_quarantined_files`, and the counters `loomcycle_conversion_jobs_total{kind,outcome}`, `loomcycle_conversion_worker_deaths_total` and `loomcycle_conversion_worker_respawns_total`.
 
 The worker reads these variables. In `local` mode the runtime sets them for its children; they are listed for an operator who runs `loomcycle worker` by hand:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LOOMCYCLE_WORKER_TOKEN` | — | The secret a worker presents to the dispatcher, compared in constant time. In `local` mode the runtime makes a new one at each start and passes it to its children only. |
+| `LOOMCYCLE_WORKER_TOKEN` | — | The secret a worker presents to the dispatcher, compared in constant time. In `local` mode the runtime makes a new one at each start and passes it to its children only. In `remote` and `local+remote` the runtime reads it too, and refuses to start without one of at least 32 characters. |
+| `LOOMCYCLE_WORKER_DISPATCHER` | — | The runtimes a worker attaches to when `--dispatcher` is not given: comma-separated `host:port`, `unix:///path`, or `dns:///name:port` for every address of a name, looked up again every 30 seconds. |
 | `LOOMCYCLE_WORKER_SLOTS` | 1 | Conversions one worker runs at once, 1–64. One means a worker that dies takes exactly the job that killed it. |
 | `LOOMCYCLE_WORKER_SCRATCH` | the system temp directory | Where a worker spools each job's input and runs its helpers. Never shared with the runtime. |
 | `LOOMCYCLE_WORKER_RASTERIZE_COMMAND` | — | The OCR page rasteriser this worker runs, written as `transcription.ocr.rasterize.command`. Unset: the worker takes no page rendering. |

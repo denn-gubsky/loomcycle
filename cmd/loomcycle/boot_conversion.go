@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -14,31 +17,29 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
+// minWorkerToken is the shortest LOOMCYCLE_WORKER_TOKEN a worker endpoint on
+// the network accepts: a token that can be guessed lets anyone who reaches
+// the port read every file sent for conversion.
+const minWorkerToken = 32
+
 // startConversion starts the conversion worker pool when conversion.mode asks
-// for one (RFC GO) and returns the client the File tool converts through; nil
-// in mode inprocess, where nothing is started and the File tool converts in
-// this process as before.
+// for one (RFC GO) and returns the dispatcher every conversion goes through;
+// nil in mode inprocess, where nothing is started and every conversion runs
+// in this process as before.
 //
-// Mode local: a dispatcher on a Unix socket in a private directory, and
-// conversion.local.workers children of this binary that attach to it with a
-// token made for this boot. The children are stopped, and the socket removed,
-// at shutdown.
+// Mode local: a Unix socket in a private directory, and conversion.local.workers
+// children of this binary that attach to it. Mode remote: a TCP endpoint on
+// conversion.listen that workers of their own attach to with
+// LOOMCYCLE_WORKER_TOKEN. local+remote: both, one pool. The children are
+// stopped, and the listeners closed, at shutdown.
 func (b *boot) startConversion() *dispatch.Dispatcher {
 	cv := b.cfg.Conversion.Resolved()
-	if cv.Mode != config.ConversionLocal {
+	if !cv.LocalWorkers() && !cv.RemoteWorkers() {
 		return nil
 	}
-	bin, err := os.Executable()
+	token, err := conversionToken(cv)
 	if err != nil {
-		fatal("conversion: cannot find this binary to start workers from", "err", err)
-	}
-	token, err := local.NewToken()
-	if err != nil {
-		fatal("conversion: cannot make a worker token", "err", err)
-	}
-	l, socket, closeSocket, err := local.Listen()
-	if err != nil {
-		fatal("conversion: cannot open the worker socket", "err", err)
+		fatal("conversion: "+err.Error(), "mode", cv.Mode)
 	}
 	h := conversionHelpers(b.cfg)
 	d := dispatch.New(dispatch.Options{
@@ -49,24 +50,72 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 		KindTimeouts:  h.timeouts,
 		Logger:        slog.Default(),
 	})
-	safego.Go(context.Background(), "conversion.dispatcher", func() {
-		if err := d.Serve(l); err != nil {
-			slog.Warn("conversion dispatcher stopped", "err", err)
+	serve := func(l net.Listener) {
+		safego.Go(context.Background(), "conversion.dispatcher", func() {
+			if err := d.Serve(l); err != nil {
+				slog.Warn("conversion dispatcher stopped", "err", err, "addr", l.Addr().String())
+			}
+		})
+	}
+	// closers end the listeners after the dispatcher stops; stopChildren
+	// runs before it, so no child is mid-job when its streams end.
+	var (
+		closers      []func()
+		stopChildren = func() {}
+	)
+	if cv.RemoteWorkers() {
+		l, err := net.Listen("tcp", cv.Listen)
+		if err != nil {
+			fatal("conversion: cannot open the worker endpoint", "listen", cv.Listen, "err", err)
+		}
+		serve(l)
+		closers = append(closers, func() { l.Close() })
+		slog.Info("conversion worker endpoint listening", "listen", cv.Listen)
+	}
+	if cv.LocalWorkers() {
+		bin, err := os.Executable()
+		if err != nil {
+			fatal("conversion: cannot find this binary to start workers from", "err", err)
+		}
+		l, socket, closeSocket, err := local.Listen()
+		if err != nil {
+			fatal("conversion: cannot open the worker socket", "err", err)
+		}
+		serve(l)
+		sup := local.Start(local.Options{
+			Binary: bin, Socket: socket, Token: token,
+			Workers: cv.Local.Workers, MemoryLimitMB: cv.Local.MemoryLimitMB,
+			Rasterize: h.rasterize, Media: h.media, Encode: h.encode, Wrapper: b.cfg.Env.HelperWrapper,
+			OnRespawn: d.AddRespawn, Logger: slog.Default(),
+		})
+		stopChildren = sup.Stop
+		closers = append(closers, closeSocket)
+		slog.Info("conversion workers started", "workers", cv.Local.Workers, "memory_limit_mb", cv.Local.MemoryLimitMB)
+	}
+	b.addCleanup(func() {
+		stopChildren()
+		d.Stop()
+		for _, c := range closers {
+			c()
 		}
 	})
-	sup := local.Start(local.Options{
-		Binary: bin, Socket: socket, Token: token,
-		Workers: cv.Local.Workers, MemoryLimitMB: cv.Local.MemoryLimitMB,
-		Rasterize: h.rasterize, Media: h.media, Encode: h.encode, Wrapper: b.cfg.Env.HelperWrapper,
-		OnRespawn: d.AddRespawn, Logger: slog.Default(),
-	})
-	b.addCleanup(func() {
-		sup.Stop()
-		d.Stop()
-		closeSocket()
-	})
-	slog.Info("conversion workers started", "mode", cv.Mode, "workers", cv.Local.Workers, "memory_limit_mb", cv.Local.MemoryLimitMB)
+	slog.Info("conversion pool started", "mode", cv.Mode)
 	return d
+}
+
+// conversionToken is the token workers present. A worker endpoint on the
+// network takes the operator's LOOMCYCLE_WORKER_TOKEN and refuses to start
+// without one of at least minWorkerToken characters (RFC GO §5.9); the local
+// children then present it too. Local alone makes one for this boot.
+func conversionToken(cv config.ConversionConfig) (string, error) {
+	if !cv.RemoteWorkers() {
+		return local.NewToken()
+	}
+	token := strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TOKEN"))
+	if len(token) < minWorkerToken {
+		return "", fmt.Errorf("mode %s listens on the network and needs LOOMCYCLE_WORKER_TOKEN of at least %d characters (for example: openssl rand -hex 32)", cv.Mode, minWorkerToken)
+	}
+	return token, nil
 }
 
 // helperSettings are the operator's helper command lines a local worker runs

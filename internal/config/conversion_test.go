@@ -40,7 +40,10 @@ func TestConversionConfig_LocalKeepsWhatIsWritten(t *testing.T) {
 // mistyped key are refused at load rather than read as the default.
 func TestConversionConfig_RefusesWhatItCannotDo(t *testing.T) {
 	for _, c := range []struct{ block, want string }{
-		{"conversion:\n  mode: remote\n", "not available yet"},
+		{"conversion:\n  mode: remote\n", "needs the host:port"},
+		{"conversion:\n  mode: remote\n  listen: nowhere\n", "not a host:port"},
+		{"conversion:\n  mode: local\n  listen: 127.0.0.1:7788\n", "set only in mode"},
+		{"conversion:\n  mode: local+remote\n  listen: 0.0.0.0:8787\n", "never a public port"},
 		{"conversion:\n  mode: sideways\n", "unknown mode"},
 		{"conversion:\n  mode: local\n  local:\n    workers: 65\n", "outside 1..64"},
 		{"conversion:\n  mode: local\n  local:\n    memory_limit_mb: 64\n", "under the 128 MiB"},
@@ -51,5 +54,17 @@ func TestConversionConfig_RefusesWhatItCannotDo(t *testing.T) {
 		if _, err := loadConversion(t, c.block); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%q: err = %v, want one saying %q", c.block, err, c.want)
 		}
+	}
+}
+
+// A remote mode keeps the worker endpoint it is given.
+func TestConversionConfig_RemoteKeepsItsEndpoint(t *testing.T) {
+	cfg, err := loadConversion(t, "conversion:\n  mode: local+remote\n  listen: 0.0.0.0:7788\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.Conversion.Resolved()
+	if got.Listen != "0.0.0.0:7788" || !got.LocalWorkers() || !got.RemoteWorkers() {
+		t.Fatalf("resolved = %+v", got)
 	}
 }
