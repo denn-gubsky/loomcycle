@@ -5328,6 +5328,7 @@ func contentRoot(envName, sub string) (root string, defaulted bool) {
 		return "", false
 	}
 	p := filepath.Join(dir, sub)
+	// #nosec G703 -- the operator's own LOOMCYCLE_CONFIG_DIR joined with one of three constant subdirectory names; no request or model input reaches it
 	if fi, err := os.Stat(p); err == nil && fi.IsDir() {
 		return p, true
 	}
