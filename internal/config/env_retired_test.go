@@ -379,12 +379,15 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 
 		// The hosted Ollama context window and the local GPU offload moved to
 		// provider options. Refused when the variable was a positive number
-		// the yaml option does not repeat: the window would shrink to the
-		// model's own, or the offload fall back to the CPU, with nothing but
-		// slower or truncated answers to show for it.
+		// and the yaml does not name the option: the window would shrink to
+		// the model's own, or the offload fall back to the CPU, with nothing
+		// but slower or truncated answers to show for it.
 		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", refused: true},
 		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama"}}, refused: true},
-		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama", Options: map[string]any{"num_ctx": 8192}}}, refused: true},
+		// A yaml option always won over the variable, so the variable beside
+		// another yaml value changed nothing before and changes nothing now. A yaml zero won too.
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama", Options: map[string]any{"num_ctx": 8192}}}},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama", Options: map[string]any{"num_ctx": 0}}}},
 		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_ctx": 32768}}}, refused: true}, // the other provider's option
 		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama", Options: map[string]any{"num_ctx": 32768}}}},
 		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "0"},   // was ignored
@@ -393,7 +396,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: ""},
 		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", refused: true},
 		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_ctx": 32768}}}, refused: true},
-		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_gpu": 20}}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_gpu": 20}}}},
 		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_gpu": 99}}}},
 		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "0"},   // was ignored: Ollama decided
 		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "all"}, // was ignored
