@@ -482,12 +482,12 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 // MemoryEmbedSearchKeys is MemoryEmbedSearch's statement selecting the key alone:
 // the same conditions and order, without the value and the vector text each row
 // would otherwise carry (see the interface for why).
-func (s *Store) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, limit int) ([]string, error) {
+func (s *Store) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, limit int) (store.MemoryKeyWindow, error) {
 	if !s.pgvectorEnabled {
-		return nil, store.ErrVectorUnsupported
+		return store.MemoryKeyWindow{}, store.ErrVectorUnsupported
 	}
 	if len(query) == 0 {
-		return nil, errors.New("MemoryEmbedSearchKeys: query vector is empty")
+		return store.MemoryKeyWindow{}, errors.New("MemoryEmbedSearchKeys: query vector is empty")
 	}
 	if limit <= 0 {
 		limit = 10
@@ -496,7 +496,11 @@ func (s *Store) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scop
 		limit = store.MemoryEmbedKeysMax
 	}
 	if ok, err := s.embedSearchDimensionCheck(ctx, tenantID, scope, scopeID, query); err != nil || !ok {
-		return nil, err
+		return store.MemoryKeyWindow{Exact: err == nil}, err
+	}
+	hnsw, approximate, err := s.annIndexes(ctx)
+	if err != nil {
+		return store.MemoryKeyWindow{}, err
 	}
 	args := []any{tenantID, string(scope), scopeID, encodePgvector(query), limit, len(query)}
 	cond, hasIDs, args := embedSearchConditions(filter, args)
@@ -518,23 +522,73 @@ func (s *Store) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scop
 	if hasIDs {
 		args = planPerExecution(args)
 	}
-	rows, err := s.pool.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, fmt.Errorf("MemoryEmbedSearchKeys query: %w", err)
+	out := store.MemoryKeyWindow{Exact: !approximate}
+	err = s.keysQuery(ctx, hnsw, limit, sql, args, func(key string) { out.Keys = append(out.Keys, key) })
+	return out, err
+}
+
+// keysQuery runs the window statement. With an HNSW index it runs inside a
+// transaction that raises hnsw.ef_search to the limit for this statement only:
+// the index hands back at most ef_search candidates (pgvector's default is 40),
+// so a window of 100 would otherwise come back with 40 keys and no error.
+func (s *Store) keysQuery(ctx context.Context, hnsw bool, limit int, sql string, args []any, fn func(string)) error {
+	if !hnsw {
+		rows, err := s.pool.Query(ctx, sql, args...)
+		if err != nil {
+			return fmt.Errorf("MemoryEmbedSearchKeys query: %w", err)
+		}
+		return scanKeys(rows, fn)
 	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("MemoryEmbedSearchKeys begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// SET LOCAL takes no bind parameter; limit is an int the caller clamped to
+	// MemoryEmbedKeysMax, within pgvector's ef_search range (1..1000).
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL hnsw.ef_search = %d", max(limit, 40))); err != nil {
+		return fmt.Errorf("MemoryEmbedSearchKeys ef_search: %w", err)
+	}
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return fmt.Errorf("MemoryEmbedSearchKeys query: %w", err)
+	}
+	if err := scanKeys(rows, fn); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func scanKeys(rows pgx.Rows, fn func(string)) error {
 	defer rows.Close()
-	var out []string
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("MemoryEmbedSearchKeys scan: %w", err)
+			return fmt.Errorf("MemoryEmbedSearchKeys scan: %w", err)
 		}
-		out = append(out, key)
+		fn(key)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("MemoryEmbedSearchKeys iter: %w", err)
+		return fmt.Errorf("MemoryEmbedSearchKeys iter: %w", err)
 	}
-	return out, nil
+	return nil
+}
+
+// annIndexes reports the approximate indexes an operator has put on
+// memory_embeddings (migration 0017 creates none and invites HNSW): whether
+// one is HNSW, and whether any is approximate at all (HNSW or IVFFlat).
+func (s *Store) annIndexes(ctx context.Context) (hnsw, approximate bool, err error) {
+	err = s.pool.QueryRow(ctx,
+		`SELECT coalesce(bool_or(a.amname = 'hnsw'), false),
+		        coalesce(bool_or(a.amname IN ('hnsw', 'ivfflat')), false)
+		   FROM pg_index i
+		   JOIN pg_class c ON c.oid = i.indexrelid
+		   JOIN pg_am a ON a.oid = c.relam
+		  WHERE i.indrelid = to_regclass('memory_embeddings')`).Scan(&hnsw, &approximate)
+	if err != nil {
+		return false, false, fmt.Errorf("MemoryEmbedSearchKeys index probe: %w", err)
+	}
+	return hnsw, approximate, nil
 }
 
 // embedSearchDimensionCheck is the nearest-neighbour searches' pre-check: false

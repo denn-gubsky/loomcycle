@@ -156,12 +156,12 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 	if limited && len(sq.IDs) == 0 && len(sq.ExcludeIDs) == 0 {
 		fetch = store.MemoryEmbedKeysMax
 	}
-	keys, err := d.Store.MemoryEmbedSearchKeys(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), sf, queryVec, fetch)
+	win, err := d.Store.MemoryEmbedSearchKeys(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), sf, queryVec, fetch)
 	if err != nil {
 		return nil, err
 	}
 	var candidates []string
-	for _, k := range keys {
+	for _, k := range win.Keys {
 		candidates = append(candidates, ChunkIDFromBodyKey(k))
 	}
 	docOf, err := d.documentsOfChunks(ctx, key, append(append([]string{}, candidates...), hitIDs...))

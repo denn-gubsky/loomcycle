@@ -48,8 +48,8 @@ func (s *Store) MemoryEmbedSearch(ctx context.Context, tenantID string, scope st
 	return nil, store.ErrVectorUnsupported
 }
 
-func (s *Store) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, limit int) ([]string, error) {
-	return nil, store.ErrVectorUnsupported
+func (s *Store) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, limit int) (store.MemoryKeyWindow, error) {
+	return store.MemoryKeyWindow{}, store.ErrVectorUnsupported
 }
 
 func (s *Store) MemoryEmbedListByModel(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID, currentProvider, currentModel string, limit int) ([]store.MemoryEntry, error) {

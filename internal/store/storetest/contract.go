@@ -300,6 +300,7 @@ func Run(t *testing.T, factory Factory) {
 		{"MemoryEmbedSearchMixedDimensions", testMemoryEmbedSearchMixedDimensions},
 		{"MemoryEmbedSearchEmptyScope", testMemoryEmbedSearchEmptyScope},
 		{"MemoryEmbedSearchReturnsVectors", testMemoryEmbedSearchReturnsVectors},
+		{"MemoryEmbedSearchKeys", testMemoryEmbedSearchKeys},
 		{"MemoryDeleteCascadesEmbedding", testMemoryDeleteCascadesEmbedding},
 		{"MemoryEmbedListByModelFiltersCurrent", testMemoryEmbedListByModelFiltersCurrent},
 		{"MemoryEmbedListByModelReturnsTemporalColumns", testMemoryEmbedListByModelReturnsTemporalColumns},
@@ -7725,6 +7726,54 @@ func testMemoryEmbedSearchReturnsVectors(t *testing.T, s store.Store) {
 		if !reflect.DeepEqual(r.Vector, w) {
 			t.Errorf("key %q: Vector = %v, want %v (search must return the stored vector for dedup)", r.Key, r.Vector, w)
 		}
+	}
+}
+
+// testMemoryEmbedSearchKeys pins the keys-only window: the refusal on a backend
+// without vectors; otherwise MemoryEmbedSearch's order, its scope confinement,
+// the limit, and Exact on a store with no approximate index (the contract
+// schema creates none).
+func testMemoryEmbedSearchKeys(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	if !s.SupportsVectors() {
+		if _, err := s.MemoryEmbedSearchKeys(ctx, "", store.MemoryScopeAgent, "qa", store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 5); !errors.Is(err, store.ErrVectorUnsupported) {
+			t.Errorf("MemoryEmbedSearchKeys on backend without vectors: got %v, want ErrVectorUnsupported", err)
+		}
+		return
+	}
+	seed := func(scopeID, key string, vec []float32) {
+		t.Helper()
+		if err := s.MemorySet(ctx, "", store.MemoryScopeAgent, scopeID, key, json.RawMessage(`"x"`), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MemoryEmbedSet(ctx, "", store.MemoryScopeAgent, scopeID, key, store.MemoryEmbedding{
+			Provider: "openai", Model: "text-embedding-3-small", Dimension: 4,
+			Vector: vec, EmbedText: key, CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed("keys", "row1", floats32(1, 0, 0, 0))
+	seed("keys", "row2", floats32(0.7071, 0.7071, 0, 0))
+	seed("keys", "row3", floats32(0, 1, 0, 0))
+	seed("other", "elsewhere", floats32(1, 0, 0, 0))
+
+	win, err := s.MemoryEmbedSearchKeys(ctx, "", store.MemoryScopeAgent, "keys", store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(win.Keys, []string{"row1", "row2", "row3"}) {
+		t.Errorf("keys = %v, want [row1 row2 row3], closest first and only this scope", win.Keys)
+	}
+	if !win.Exact {
+		t.Error("a store with no approximate index reported an inexact window")
+	}
+	win, err = s.MemoryEmbedSearchKeys(ctx, "", store.MemoryScopeAgent, "keys", store.MemorySearchFilter{}, floats32(1, 0, 0, 0), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(win.Keys, []string{"row1", "row2"}) {
+		t.Errorf("limit 2: keys = %v, want [row1 row2]", win.Keys)
 	}
 }
 

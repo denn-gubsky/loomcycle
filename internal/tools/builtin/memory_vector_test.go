@@ -38,6 +38,9 @@ type vectorStore struct {
 	enabled bool
 	// keyLimits: each MemoryEmbedSearchKeys call's limit, in order.
 	keyLimits []int
+	// approximate makes MemoryEmbedSearchKeys report an inexact window, as a
+	// store serving it from an HNSW index does.
+	approximate bool
 }
 
 func newVectorStore(s store.Store) *vectorStore {
@@ -150,9 +153,9 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 // MemoryEmbedSearchKeys is the fake's keys-only window, capped as postgres caps
 // it. keyLimits records each limit asked, so a test can tell the window query ran
 // (and with what bound) or did not run at all.
-func (v *vectorStore) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, limit int) ([]string, error) {
+func (v *vectorStore) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, limit int) (store.MemoryKeyWindow, error) {
 	if !v.enabled {
-		return nil, store.ErrVectorUnsupported
+		return store.MemoryKeyWindow{}, store.ErrVectorUnsupported
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -165,13 +168,13 @@ func (v *vectorStore) MemoryEmbedSearchKeys(ctx context.Context, tenantID string
 	}
 	rows, err := v.nearest(ctx, tenantID, scope, scopeID, filter, query, limit)
 	if err != nil {
-		return nil, err
+		return store.MemoryKeyWindow{}, err
 	}
-	var keys []string
+	win := store.MemoryKeyWindow{Exact: !v.approximate}
 	for _, r := range rows {
-		keys = append(keys, r.key)
+		win.Keys = append(win.Keys, r.key)
 	}
-	return keys, nil
+	return win, nil
 }
 
 // fakeHit is one row of the fake's cosine ranking.

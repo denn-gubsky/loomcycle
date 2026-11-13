@@ -3580,8 +3580,8 @@ type MemoryVectorStore interface {
 	// Keys only, because its use is a COUNT over a ranked window (the Document
 	// tool's search facets), not a result: the rows MemoryEmbedSearch returns carry
 	// the value and the stored vector, which over a window of hundreds is megabytes
-	// read to be thrown away. Empty results return (nil, nil).
-	MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, filter MemorySearchFilter, query []float32, limit int) ([]string, error)
+	// read to be thrown away. An empty scope returns an empty window, Exact.
+	MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope MemoryScope, scopeID string, filter MemorySearchFilter, query []float32, limit int) (MemoryKeyWindow, error)
 
 	// MemoryFullTextSearch runs the keyword (lexical) retrieval leg of RFC
 	// BL hybrid retrieval: a Top-K full-text match over the same embedded
@@ -5147,6 +5147,18 @@ func ChannelCursorFallback(tenantID string, scope MemoryScope) bool {
 // counts over, not a page anyone reads: 500 keys is one short indexed query
 // either way, and the Document tool's facet_window takes it as its maximum.
 const MemoryEmbedKeysMax = 500
+
+// MemoryKeyWindow is MemoryEmbedSearchKeys's answer: the keys, closest first,
+// and whether the ranking was exact.
+type MemoryKeyWindow struct {
+	Keys []string
+	// Exact reports an exhaustive ranking: every row the filter admits was
+	// compared, so fewer keys than the limit means no further row matches. False
+	// when an approximate index (an operator's HNSW or IVFFlat) served the query:
+	// such an index hands the filter a bounded candidate list, and rows the filter
+	// then drops are not replaced, so a short window proves nothing.
+	Exact bool
+}
 
 // MemorySearchFilter narrows which memory rows a vector or full-text search may
 // return. It replaces the bare keyPrefix argument both search methods used to take
