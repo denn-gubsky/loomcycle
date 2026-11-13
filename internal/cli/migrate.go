@@ -44,31 +44,74 @@ func RunMigrate(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// loadPgDSN resolves the operator-visible Postgres DSN: --dsn flag
-// wins, then env LOOMCYCLE_PG_DSN, then yaml storage.pg_dsn. The CLI
-// migrate verbs accept --config OR --dsn; --dsn is the lower-friction
-// path for one-off ops without a yaml in CWD.
-func loadPgDSN(cfgPaths []string, explicitDSN string) (string, error) {
+// loadPgDSN resolves the Postgres DSN a migrate verb acts on: the --dsn flag
+// wins, then (with --config) what the server's own config stack gives, then
+// env LOOMCYCLE_PG_DSN alone. The verbs accept --config OR --dsn; --dsn is the
+// lower-friction path for one-off ops without a yaml in CWD.
+//
+// With --config the stack is the server's: presets, the config dir, each
+// named file with its section files, and the auth.env beside the last file.
+// The DSN can therefore come from a place the named file does not show, so
+// before the caller acts this prints, to stderr, the layers read and where
+// the DSN was taken from. It never prints the DSN or any part of it.
+func loadPgDSN(cfgPaths []string, explicitDSN string, stderr io.Writer) (string, error) {
+	const from = "migrate: Postgres DSN taken from: %s\n"
 	if explicitDSN != "" {
+		fmt.Fprintf(stderr, from, "--dsn")
 		return explicitDSN, nil
 	}
 	if len(cfgPaths) > 0 {
-		cfg, err := loadLayeredConfig(cfgPaths...)
+		// Read before the assembly: it loads auth.env into the environment.
+		envHadDSN := strings.TrimSpace(config.PgDSNFromEnv()) != ""
+		stack, err := assembleForCLI(cfgPaths...)
+		if err != nil {
+			return "", fmt.Errorf("config: %w", err)
+		}
+		layers := describeStack(stack)
+		fmt.Fprintf(stderr, "migrate: config layers: %s\n", layers)
+		cfg, err := config.LoadLayers(stack.Layers...)
 		if err != nil {
 			return "", fmt.Errorf("config: %w", err)
 		}
 		if cfg.Storage.Backend != "postgres" {
-			return "", fmt.Errorf("storage.backend is %q (want \"postgres\") in %s", cfg.Storage.Backend, strings.Join(cfgPaths, ", "))
+			return "", fmt.Errorf("storage.backend is %q (want \"postgres\") in the config layers read (%s)", cfg.Storage.Backend, layers)
 		}
 		if cfg.Storage.PgDSN == "" {
-			return "", fmt.Errorf("storage.pg_dsn is empty in %s and LOOMCYCLE_PG_DSN is unset", strings.Join(cfgPaths, ", "))
+			return "", fmt.Errorf("no layer read (%s) gives a storage.pg_dsn and LOOMCYCLE_PG_DSN is unset", layers)
 		}
+		source, err := pgDSNSource(stack, envHadDSN)
+		if err != nil {
+			return "", fmt.Errorf("config: %w", err)
+		}
+		fmt.Fprintf(stderr, from, source)
 		return cfg.Storage.PgDSN, nil
 	}
 	if v := config.PgDSNFromEnv(); v != "" {
+		fmt.Fprintf(stderr, from, "the environment (LOOMCYCLE_PG_DSN)")
 		return v, nil
 	}
 	return "", fmt.Errorf("no DSN: pass --dsn, --config <yaml>, or set LOOMCYCLE_PG_DSN")
+}
+
+// pgDSNSource says where a loaded config's DSN came from, in the loader's
+// order: LOOMCYCLE_PG_DSN wins when it is set, and it is either the process
+// environment's or the auth.env's (which only sets what the environment
+// lacked); otherwise the last yaml layer that names storage.pg_dsn.
+func pgDSNSource(stack ConfigStack, envHadDSN bool) (string, error) {
+	if strings.TrimSpace(config.PgDSNFromEnv()) != "" {
+		if envHadDSN || stack.AuthEnvPath == "" {
+			return "the environment (LOOMCYCLE_PG_DSN)", nil
+		}
+		return "auth.env (" + stack.AuthEnvPath + ")", nil
+	}
+	layer, err := config.PgDSNLayer(stack.Layers)
+	if err != nil {
+		return "", err
+	}
+	if layer == "" {
+		return "a source this command cannot name", nil
+	}
+	return "storage.pg_dsn in " + layer, nil
 }
 
 func runMigrateUp(args []string, stdout, stderr io.Writer) int {
@@ -79,7 +122,7 @@ func runMigrateUp(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	resolvedDSN, err := loadPgDSN(*cfgPaths, *dsn)
+	resolvedDSN, err := loadPgDSN(*cfgPaths, *dsn, stderr)
 	if err != nil {
 		return fail(stderr, "%v", err)
 	}
@@ -129,7 +172,7 @@ func runMigrateDown(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "migrate down rolls every applied migration back — pass --yes to confirm.")
 		return 2
 	}
-	resolvedDSN, err := loadPgDSN(*cfgPaths, *dsn)
+	resolvedDSN, err := loadPgDSN(*cfgPaths, *dsn, stderr)
 	if err != nil {
 		return fail(stderr, "%v", err)
 	}
@@ -149,7 +192,7 @@ func runMigrateStatus(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	resolvedDSN, err := loadPgDSN(*cfgPaths, *dsn)
+	resolvedDSN, err := loadPgDSN(*cfgPaths, *dsn, stderr)
 	if err != nil {
 		return fail(stderr, "%v", err)
 	}
