@@ -14,7 +14,7 @@
 #
 #   createdb loomcycle_db2 && psql -d loomcycle_db2 -c 'CREATE EXTENSION vector'
 #   LOOMCYCLE_PRESETS=base,memory \
-#   LOOMCYCLE_STORAGE_BACKEND=postgres LOOMCYCLE_PG_AUTOMIGRATE=1 \
+#   LOOMCYCLE_PG_AUTOMIGRATE=1 \
 #   LOOMCYCLE_PGVECTOR_ENABLED=1 LOOMCYCLE_PG_DSN=... \
 #   ./bin/loomcycle --config bench/synthesis/ingest.yaml
 

@@ -3306,7 +3306,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_STORAGE_BACKEND` | `sqlite` | `sqlite` or `postgres`; overrides `storage.backend`. |
 | `LOOMCYCLE_PG_MAX_OPEN_CONNS` | `32` | Postgres pool size. |
 | `LOOMCYCLE_PG_MIN_IDLE_CONNS` | `4` | Warm idle connections kept in the Postgres pool. |
 | `LOOMCYCLE_PG_AUTOMIGRATE` | off | `1` applies pending Postgres schema migrations at boot. Off, boot refuses a database behind the binary's migrations until `loomcycle migrate up` runs. |

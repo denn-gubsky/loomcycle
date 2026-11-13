@@ -125,7 +125,7 @@ generate the `trains/` output, and point TrueNAS at the catalog.
 
 ## Postgres & migrations
 
-- `LOOMCYCLE_STORAGE_BACKEND=postgres`, `LOOMCYCLE_PG_DSN=…` (store),
+- `LOOMCYCLE_PG_DSN=…` (store; a set DSN selects Postgres),
   `LOOMCYCLE_SQLMEM_PG_DSN=…` (SQL Memory, only if `LOOMCYCLE_SQLMEM_ENABLED=1`).
 - **Migrations are decoupled from the image deploy.** Route A runs them in a one-shot
   `loomcycle-migrate` init service (`LOOMCYCLE_PG_AUTOMIGRATE=0` on the runtime).

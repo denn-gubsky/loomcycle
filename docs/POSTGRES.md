@@ -33,12 +33,11 @@ storage:
 **Env (good for prod — keeps secrets out of the repo):**
 
 ```sh
-export LOOMCYCLE_STORAGE_BACKEND=postgres
 export LOOMCYCLE_PG_DSN="postgres://loomcycle:$(cat /run/secrets/pg_password)@db.internal:5432/loomcycle?sslmode=require"
 export LOOMCYCLE_PG_AUTOMIGRATE=0
 ```
 
-Env wins over yaml when both are set. Defaults (omit to use these):
+A configured DSN selects Postgres: `storage.backend` may be left out, and is only needed to say otherwise (`backend: sqlite` keeps SQLite even with a DSN set). Env wins over yaml when both are set. Defaults (omit to use these):
 
 | Setting | Default |
 |---|---|
@@ -141,8 +140,8 @@ loomcycle migrate sqlite-to-postgres \
   --src /var/lib/loomcycle/loomcycle.db.copy \
   --dst "postgres://loomcycle:secret@db:5432/loomcycle?sslmode=require"
 
-# 5. Flip the operator yaml's storage.backend to postgres (or set
-#    LOOMCYCLE_STORAGE_BACKEND=postgres). Restart loomcycle.
+# 5. Set LOOMCYCLE_PG_DSN (or the yaml's storage.pg_dsn): a configured
+#    DSN selects Postgres. Restart loomcycle.
 systemctl start loomcycle
 ```
 

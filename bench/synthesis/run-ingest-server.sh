@@ -7,7 +7,6 @@ root=$(cd "$here/../.." && pwd)
 cd "$root"
 set -a; [ -f .env.local ] && . ./.env.local; set +a
 export LOOMCYCLE_PRESETS=base,memory
-export LOOMCYCLE_STORAGE_BACKEND=postgres
 export LOOMCYCLE_PG_AUTOMIGRATE=1
 export LOOMCYCLE_PGVECTOR_ENABLED=1
 # The consolidator writes the chunk/graph tier through SQL Memory. Without this

@@ -628,7 +628,7 @@ Architecture decision: DeepSeek is a separate `provider: deepseek` rather than `
 
 **What's in v0.5.0 (vs v0.4.0):**
 
-- **Postgres `Store` adapter** (`internal/store/postgres/`) — full implementation over `pgx/v5` + `pgxpool`, embedded migrations via `golang-migrate/migrate v4`. Operator opts in via `storage.backend: postgres` (yaml) or `LOOMCYCLE_STORAGE_BACKEND=postgres` (env). Postgres ≥ 14 required.
+- **Postgres `Store` adapter** (`internal/store/postgres/`) — full implementation over `pgx/v5` + `pgxpool`, embedded migrations via `golang-migrate/migrate v4`. Operator opts in via `storage.backend: postgres` (yaml) or by setting the Postgres DSN (env). Postgres ≥ 14 required.
 - **SQLite stays first-class.** Default backend; both adapters validated against a shared behavioural contract suite (17 sub-tests) so they cannot drift silently.
 - **Heartbeat sweeper** — periodic background goroutine marks runs whose process crashed mid-loop as `failed`. Default-on; `LOOMCYCLE_HEARTBEAT_*` env knobs control cadence + cutoff.
 - **Session-lock map GC** — refcounted + idle-pruned; closes the v0.3.2 leak where the per-session continuation mutex map grew monotonically.

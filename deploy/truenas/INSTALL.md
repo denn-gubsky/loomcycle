@@ -176,8 +176,6 @@ services:
     command: ["migrate", "up"]
     env_file:
       - /mnt/APPS2/loomcycle/config/loomcycle.secrets.env   # PG DSNs come from here
-    environment:
-      LOOMCYCLE_STORAGE_BACKEND: postgres
   loomcycle:
     image: denngubsky/loomcycle-toolbox:1.147.0
     user: "65532:65532"
@@ -195,7 +193,6 @@ services:
       LOOMCYCLE_PUBLIC_URL: "http://TRUENAS_SCALE_HOST:8787"   # externally-reachable base URL (your tunnel/proxy host, or this for direct LAN); agents read it via `Context op=self` (≥ v1.6.7)
       LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples"   # matrix + built-in agents
       LOOMCYCLE_CONFIG_DIR: /config
-      LOOMCYCLE_STORAGE_BACKEND: postgres
       LOOMCYCLE_SQLMEM_ENABLED: "1"              # document-agent needs it
       LOOMCYCLE_PG_AUTOMIGRATE: "0"              # the init service handles migrations
       LOOMCYCLE_DATA_DIR: /data

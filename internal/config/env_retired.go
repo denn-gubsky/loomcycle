@@ -119,6 +119,9 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_READ_ROOT":                           "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_WRITE_ROOT":                          "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
+
+	// Inferred from another setting.
+	"LOOMCYCLE_STORAGE_BACKEND": "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise; storage.backend in the yaml still overrides",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

@@ -382,12 +382,14 @@ type InterruptionConfig struct {
 // that pre-date this block. SQLite uses Env.DataDir for its on-disk
 // path; Postgres uses the PgDSN below (or LOOMCYCLE_PG_DSN env).
 //
-// Env precedence: every field below has a corresponding LOOMCYCLE_*
-// env var. Env wins over YAML when both are set, so production
-// deploys can keep secrets (PG_DSN) out of the version-controlled YAML.
+// Env precedence: where a field names a LOOMCYCLE_* env var, env wins over
+// YAML when both are set, so production deploys can keep secrets (PG_DSN)
+// out of the version-controlled YAML.
 type StorageConfig struct {
-	// Backend selects the adapter: "sqlite" (default) or "postgres".
-	// Env: LOOMCYCLE_STORAGE_BACKEND.
+	// Backend selects the adapter: "sqlite" or "postgres". Left unset it is
+	// inferred: "postgres" when a DSN is configured (PgDSN below or
+	// LOOMCYCLE_PG_DSN), "sqlite" otherwise. An explicit value always wins,
+	// so `backend: sqlite` keeps SQLite even with a DSN present.
 	Backend string `yaml:"backend"`
 	// PgDSN is the Postgres connection string (libpq URL form).
 	// Required when Backend="postgres". Env: LOOMCYCLE_PG_DSN.
@@ -5282,9 +5284,6 @@ func applyEnvStorage(cfg *Config) {
 	// Env-overrides for the storage block. Env wins over YAML so prod
 	// deploys can keep PG_DSN out of version-controlled config files.
 	// Empty env values fall through to whatever YAML provided.
-	if v := os.Getenv("LOOMCYCLE_STORAGE_BACKEND"); v != "" {
-		cfg.Storage.Backend = v
-	}
 	if v := os.Getenv("LOOMCYCLE_PG_DSN"); v != "" {
 		cfg.Storage.PgDSN = v
 	}
@@ -5303,10 +5302,25 @@ func applyEnvStorage(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE"); v == "1" {
 		cfg.Storage.PgAutoMigrate = true
 	}
-	// Default backend is sqlite (back-compat with pre-Storage configs).
-	if cfg.Storage.Backend == "" {
-		cfg.Storage.Backend = "sqlite"
+	cfg.Storage.Backend = inferStorageBackend(cfg.Storage.Backend, cfg.Storage.PgDSN)
+}
+
+// inferStorageBackend resolves the backend the operator did not name: a
+// configured DSN means Postgres, none means SQLite. An explicit yaml value is
+// returned untouched (an unknown one is refused when the store is opened), so
+// a config that says sqlite stays on SQLite whatever DSN the environment
+// carries.
+func inferStorageBackend(explicit, pgDSN string) string {
+	if explicit != "" {
+		return explicit
 	}
+	// A yaml pg_dsn that is still a ${NAME} reference is not a DSN: the
+	// loader never interpolates the store's own DSN, so the text is left as
+	// written when the environment does not carry the variable.
+	if pgDSN != "" && !strings.HasPrefix(pgDSN, "${") {
+		return "postgres"
+	}
+	return "sqlite"
 }
 
 // applyEnvSQLMem reads the SQL Memory env overrides, then defaults every

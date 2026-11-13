@@ -422,7 +422,7 @@ func main() {
 }
 
 // openStore resolves the operator's storage choice (sqlite default;
-// postgres opt-in via storage.backend or LOOMCYCLE_STORAGE_BACKEND) and
+// postgres when a DSN is configured or storage.backend says so) and
 // returns a ready Store + a Close-and-log closer.
 //
 // Errors propagate up to a fatal boot error; they cover both

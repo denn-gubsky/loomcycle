@@ -181,7 +181,6 @@ cat <<YAML
     environment:
       LOOMCYCLE_REPLICA_ID: replica-${i}
       LOOMCYCLE_AUTH_TOKEN: "$LOOMCYCLE_AUTH_TOKEN"
-      LOOMCYCLE_STORAGE_BACKEND: postgres
       LOOMCYCLE_PG_DSN: postgres://postgres:${PG_PASSWORD}@postgres:5432/loomcycle?sslmode=disable
       LOOMCYCLE_PG_AUTOMIGRATE: "1"
       LOOMCYCLE_PG_MAX_OPEN_CONNS: "$POOL"

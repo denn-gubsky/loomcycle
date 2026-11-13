@@ -967,7 +967,6 @@ mcp_servers: {}
 #
 # Env equivalents (env wins over YAML so prod can keep the DSN out of
 # version-controlled config):
-#   LOOMCYCLE_STORAGE_BACKEND=postgres
 #   LOOMCYCLE_PG_DSN=postgres://user:pass@host:5432/loomcycle?sslmode=require
 #   LOOMCYCLE_PG_AUTOMIGRATE=1   # off by default — operator runs
 #                                  `loomcycle migrate up` explicitly

@@ -2,8 +2,8 @@
 #
 # Cluster variant of test/load/circuit-stress/loomcycle.mock-fallback.yaml.
 # Same 3-agent pipeline, same [mock, mock-stable] retry+fallback tier, but
-# storage is driven ENTIRELY from env (LOOMCYCLE_STORAGE_BACKEND=postgres +
-# LOOMCYCLE_PG_DSN + LOOMCYCLE_PG_MAX_OPEN_CONNS) so every replica reads the
+# storage is driven ENTIRELY from env (LOOMCYCLE_PG_DSN, which selects
+# Postgres, + LOOMCYCLE_PG_MAX_OPEN_CONNS) so every replica reads the
 # same yaml and differs only by LOOMCYCLE_REPLICA_ID. run-cluster-mock.sh
 # generates the per-circuit channels into the marked block, exactly like
 # run-mock-fallback.sh does for the single-replica config.
