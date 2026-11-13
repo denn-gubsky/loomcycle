@@ -15,7 +15,6 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
-	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
 )
 
 const (
@@ -68,9 +67,16 @@ type InProcess struct {
 	// folder in; the helper is fenced to it. Asked only when a helper runs.
 	Scratch func(ctx context.Context) (string, error)
 
-	// Images re-encodes images (ReencodeImage); nil builds one per call,
-	// which admits its own decode and so does not bound decodes process-wide.
-	Images *vision.Reencoder
+	// Images re-encodes images (ReencodeImage); nil makes ReencodeImage
+	// return ErrNotConfigured. The caller passes vision.NewReencoder(): this
+	// package stays below the transcription engines that import it.
+	Images ImageReencoder
+}
+
+// ImageReencoder decodes an image and encodes it again, scaled to fit the
+// vision models' edge (vision.Reencoder).
+type ImageReencoder interface {
+	Reencode(ctx context.Context, data []byte) ([]byte, string, error)
 }
 
 var _ Client = (*InProcess)(nil)
@@ -219,14 +225,12 @@ func (p *InProcess) EncodeAudio(ctx context.Context, wav []byte, format string) 
 	return io.ReadAll(fh)
 }
 
-// ReencodeImage decodes and encodes the image again, scaled to fit
-// vision.MaxImageEdge, under vision's decode bound.
+// ReencodeImage decodes and encodes the image again with Images.
 func (p *InProcess) ReencodeImage(ctx context.Context, data []byte) ([]byte, string, error) {
-	re := p.Images
-	if re == nil {
-		re = vision.NewReencoder()
+	if p.Images == nil {
+		return nil, "", ErrNotConfigured
 	}
-	return re.Reencode(ctx, data)
+	return p.Images.Reencode(ctx, data)
 }
 
 // ---- scratch ----

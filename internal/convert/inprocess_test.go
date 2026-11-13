@@ -72,6 +72,9 @@ func TestInProcess_UnsetHelpersAreNotConfigured(t *testing.T) {
 	if _, err := p.EncodeAudio(ctx, []byte("RIFF"), "mp3"); !errors.Is(err, ErrNotConfigured) {
 		t.Errorf("EncodeAudio: %v", err)
 	}
+	if _, _, err := p.ReencodeImage(ctx, []byte("\x89PNG")); !errors.Is(err, ErrNotConfigured) {
+		t.Errorf("ReencodeImage: %v", err)
+	}
 }
 
 // A helper job runs in a scratch folder of its own and leaves nothing behind;
