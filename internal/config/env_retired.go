@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // retiredEnv lists LOOMCYCLE_* variables the runtime used to read, or that
@@ -113,9 +114,9 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_MEMORY_MAX_VALUE_BYTES":              "a Memory value is capped at 64 KiB",
 	"LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS":           "a principal holds at most 4 document feed streams",
 	"LOOMCYCLE_TOOL_PARALLELISM":                    "8 tool calls of one turn run at once",
-	"LOOMCYCLE_USAGE_RUN_RETENTION_MS":              "the usage archiver is gone: set LOOMCYCLE_RETENTION_CHATS_MODE and LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS",
-	"LOOMCYCLE_USAGE_RUN_RETENTION_MODE":            "the usage archiver is gone: set LOOMCYCLE_RETENTION_CHATS_MODE",
-	"LOOMCYCLE_USAGE_EXPORT_DIR":                    "the usage archiver is gone: set LOOMCYCLE_RETENTION_EXPORT_DIR",
+	"LOOMCYCLE_USAGE_RUN_RETENTION_MS":              "the usage archiver is gone: set retention.chats.mode and retention.chats.max_age in the yaml",
+	"LOOMCYCLE_USAGE_RUN_RETENTION_MODE":            "the usage archiver is gone: set retention.chats.mode in the yaml",
+	"LOOMCYCLE_USAGE_EXPORT_DIR":                    "the usage archiver is gone: set retention.export_dir in the yaml",
 	"LOOMCYCLE_READ_ROOT":                           "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_WRITE_ROOT":                          "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
@@ -127,9 +128,27 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_CHANNEL_DEBUG":              "set LOOMCYCLE_LOG_LEVEL=debug: each channel publish is logged at debug level",
 	"LOOMCYCLE_OLLAMA_DEBUG_THINK":         "set LOOMCYCLE_LOG_LEVEL=debug: each Ollama request's model, effort and think flag are logged at debug level",
 	"LOOMCYCLE_A2A_ENABLED":                "A2A is on when LOOMCYCLE_A2A_SERVER_CARD names the server card to serve; unset it to turn A2A off",
-	"LOOMCYCLE_RETENTION_ENABLED":          "the retention sweeper runs when a LOOMCYCLE_RETENTION_*_MODE is prune or export+prune; set every mode to off (or unset) to stop it",
+	"LOOMCYCLE_RETENTION_ENABLED":          "the retention sweeper runs when a family's mode under `retention:` in the yaml is prune or export+prune; leave every mode off (or unset) to stop it",
 	"LOOMCYCLE_SQLMEM_ENABLED":             "SQL Memory is on with a SQLite store, and with a Postgres store when LOOMCYCLE_SQLMEM_PG_DSN is set; storage.sqlmem_enabled: false in the yaml turns it off",
 	"LOOMCYCLE_STORAGE_BACKEND":            "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise; storage.backend in the yaml still overrides",
+
+	// Moved to the yaml `retention:` block. Ages are durations there (30d,
+	// 12h), not milliseconds.
+	"LOOMCYCLE_RETENTION_INTERVAL_MS":              "set retention.interval in the yaml, as a duration such as 1h",
+	"LOOMCYCLE_RETENTION_EXPORT_DIR":               "set retention.export_dir in the yaml",
+	"LOOMCYCLE_RETENTION_DEFS_MODE":                "set retention.defs.mode in the yaml",
+	"LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS":          "set retention.defs.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N":         "set retention.defs.keep_last_n in the yaml",
+	"LOOMCYCLE_RETENTION_CHATS_MODE":               "set retention.chats.mode in the yaml",
+	"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS":         "set retention.chats.max_age in the yaml, as a duration such as 90d",
+	"LOOMCYCLE_RETENTION_MEM_MODE":                 "set retention.mem.mode in the yaml",
+	"LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS":           "set retention.mem.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE":         "set retention.mem_content.mode in the yaml",
+	"LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS":   "set retention.mem_content.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE":       "set retention.empty_dossier.mode in the yaml",
+	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS": "set retention.empty_dossier.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_USAGE_DETAIL_RETENTION_MS":          "set retention.usage_detail.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS":            "set retention.trace.max_age in the yaml, as a duration such as 30d",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in
@@ -168,6 +187,9 @@ type retiredEnvCtx struct {
 	// storage is the yaml's storage block before any env override, for the
 	// settings that moved to a yaml key.
 	storage *StorageConfig
+	// cfg is the whole yaml before any env override, for the settings that
+	// moved to a block other than storage.
+	cfg *Config
 }
 
 // retiredRefusal is a retired variable whose value may have asked for
@@ -218,7 +240,53 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// The sweeper used to run only when this said "1", whatever the family
 	// modes said. A deployment that held it off with a mode already set to
 	// prune would have that family's data deleted on the first sweep.
-	"LOOMCYCLE_RETENTION_ENABLED": {retentionWasHeldOff, "the retention sweeper runs whenever a LOOMCYCLE_RETENTION_*_MODE is prune or export+prune, and one is, so data this variable held back would be deleted; to keep retention off, clear every family mode (unset it or set it to off)"},
+	"LOOMCYCLE_RETENTION_ENABLED": {retentionWasHeldOff, "the retention sweeper runs whenever a family's mode under `retention:` in the yaml is prune or export+prune, and one is, so data this variable held back would be deleted; to keep retention off, clear every family mode (remove it or set it to off)"},
+
+	// The retention settings moved to the yaml. A family the environment had
+	// deleting that the yaml leaves off keeps data the operator committed to
+	// deleting; the reverse, or a different age, deletes data they meant to
+	// keep. Each is judged against what the yaml gives, so an operator who
+	// has already written the block is not stopped.
+	"LOOMCYCLE_RETENTION_DEFS_MODE":          {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.Defs.Mode })},
+	"LOOMCYCLE_RETENTION_CHATS_MODE":         {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.Chats.Mode })},
+	"LOOMCYCLE_RETENTION_MEM_MODE":           {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.Mem.Mode })},
+	"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE":   {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.MemContent.Mode })},
+	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE": {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.EmptyDossier.Mode })},
+	"LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return r.Defs.MaxAge.Duration()
+	})},
+	"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return r.Chats.MaxAge.Duration()
+	})},
+	"LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return r.Mem.MaxAge.Duration()
+	})},
+	"LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return r.MemContent.MaxAge.Duration()
+	})},
+	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return r.EmptyDossier.MaxAge.Duration()
+	})},
+	"LOOMCYCLE_USAGE_DETAIL_RETENTION_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return durationOr(r.UsageDetail.MaxAge.Duration(), retentionAgeDefault)
+	})},
+	"LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return durationOr(r.Trace.MaxAge.Duration(), retentionAgeDefault)
+	})},
+	// The old read took any number from zero up; zero keeps no version.
+	"LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N": {loosens: func(value string, c retiredEnvCtx) bool {
+		now := int64(retentionDefsKeepLastNDefault)
+		if n := c.cfg.Retention.Defs.KeepLastN; n != nil {
+			now = int64(*n)
+		}
+		n, set, ok := retiredInt(value)
+		return set && ok && n >= 0 && n != now
+	}},
+	// Without the directory a family in export+prune mode deletes nothing;
+	// with another one its exports land where nobody looks for them.
+	"LOOMCYCLE_RETENTION_EXPORT_DIR": {loosens: func(value string, c retiredEnvCtx) bool {
+		return value != "" && value != c.cfg.Retention.ExportDir
+	}},
 
 	// A2A used to be served only when this said "1". With the card named and
 	// the switch off, the A2A endpoints would now be mounted.
@@ -348,28 +416,44 @@ func sqlMemSwitchDisagrees(value string, c retiredEnvCtx) bool {
 	return was != sqlMemNow(c)
 }
 
-// retentionModeEnv names each retention family's mode variable. The retention
-// rule is judged before applyEnvRetention reads them, so it reads them here.
-var retentionModeEnv = []string{
-	"LOOMCYCLE_RETENTION_DEFS_MODE",
-	"LOOMCYCLE_RETENTION_CHATS_MODE",
-	"LOOMCYCLE_RETENTION_MEM_MODE",
-	"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE",
-	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE",
+// retentionWasHeldOff reports a retired retention switch that kept the sweeper
+// from running (the old read ran it for exactly "1") while a family mode in
+// the yaml now starts it.
+func retentionWasHeldOff(value string, c retiredEnvCtx) bool {
+	return value != "1" && c.cfg.Retention.deletes()
 }
 
-// retentionWasHeldOff reports a retired retention switch that kept the sweeper
-// from running (the old read ran it for exactly "1") while a family mode now
-// starts it.
-func retentionWasHeldOff(value string, c retiredEnvCtx) bool {
-	if value == "1" {
-		return false
+// retentionModeDiffers is the rule of a retired family mode. The old read let
+// any non-empty value replace the default, and the sweeper acted on prune and
+// export+prune only, so everything else was off.
+func retentionModeDiffers(yamlMode func(*RetentionConfig) string) func(string, retiredEnvCtx) bool {
+	norm := func(m string) string {
+		if retentionModeDeletes(m) {
+			return m
+		}
+		return RetentionModeOff
 	}
-	modes := make([]string, 0, len(retentionModeEnv))
-	for _, name := range retentionModeEnv {
-		modes = append(modes, c.env[name])
+	return func(value string, c retiredEnvCtx) bool {
+		return value != "" && norm(value) != norm(yamlMode(&c.cfg.Retention))
 	}
-	return retentionFamilyOn(modes...)
+}
+
+// retentionAgeDiffers is the rule of a retired age in milliseconds, judged
+// against the age the yaml gives. The old reads took a positive number and
+// ignored everything else, so only a positive number changed anything.
+func retentionAgeDiffers(yamlAge func(*RetentionConfig) time.Duration) func(string, retiredEnvCtx) bool {
+	return func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		return set && ok && n > 0 && time.Duration(n)*time.Millisecond != yamlAge(&c.cfg.Retention)
+	}
+}
+
+// durationOr is d, or dflt when d is unset.
+func durationOr(d, dflt time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return dflt
 }
 
 // a2aWasOff reports a retired A2A switch that kept A2A off (the old read
@@ -428,14 +512,14 @@ func archiverWasPruning(mode string, c retiredEnvCtx) bool {
 		return false
 	}
 	age, set, ok := retiredInt(c.env["LOOMCYCLE_USAGE_RUN_RETENTION_MS"])
-	return set && ok && age > 0 && c.env["LOOMCYCLE_RETENTION_CHATS_MODE"] == ""
+	return set && ok && age > 0 && c.cfg.Retention.Chats.Mode == ""
 }
 
 // retiredEnvRefusals returns one "NAME: what to do" entry per retired variable
 // in environ (the os.Environ form) whose value the runtime would loosen by
 // ignoring, sorted by name. Values are never included.
-func retiredEnvRefusals(environ []string, storage *StorageConfig) []string {
-	c := retiredEnvCtx{env: make(map[string]string, len(environ)), storage: storage}
+func retiredEnvRefusals(environ []string, cfg *Config) []string {
+	c := retiredEnvCtx{env: make(map[string]string, len(environ)), storage: &cfg.Storage, cfg: cfg}
 	for _, kv := range environ {
 		if name, value, ok := strings.Cut(kv, "="); ok {
 			c.env[name] = value

@@ -103,6 +103,10 @@ type Config struct {
 	// reference machine (RFC DT). Defaults applied at load; see TimeoutScaling.
 	TimeoutScaling TimeoutScaling `yaml:"timeout_scaling,omitempty"`
 
+	// Retention is what the runtime deletes with age, and when. Every family
+	// is off by default; see RetentionConfig.
+	Retention RetentionConfig `yaml:"retention,omitempty"`
+
 	// SearchPriority is the global default fallback order the WebSearch tool
 	// walks when an agent declares no per-agent `search_providers:` list.
 	// Every entry must be an enabled SearchProviders key. Empty = the enabled
@@ -4498,7 +4502,7 @@ type Env struct {
 
 	// UsageDetailRetention is the cutoff: token_usage rows older than
 	// this are rolled up into usage_archive and pruned. Default 720h
-	// (30 days). Env: LOOMCYCLE_USAGE_DETAIL_RETENTION_MS.
+	// (30 days). Yaml: retention.usage_detail.max_age.
 	UsageDetailRetention time.Duration
 
 	// --- RFC BM data-retention sweeper (OPT-IN; default OFF). ---
@@ -4510,46 +4514,46 @@ type Env struct {
 	// when at least one family's mode below is "prune" or "export+prune".
 	RetentionEnabled bool
 	// RetentionInterval is the sweep tick rate. Default 1h.
-	// Env: LOOMCYCLE_RETENTION_INTERVAL_MS.
+	// Yaml: retention.interval.
 	RetentionInterval time.Duration
 	// RetentionExportDir is where export+prune writes def JSON (per-day/per-def-type
 	// subdir, one file per version). Required for the export+prune mode.
-	// Env: LOOMCYCLE_RETENTION_EXPORT_DIR.
+	// Yaml: retention.export_dir.
 	RetentionExportDir string
 	// RetentionDefsMode is "off" (default) | "prune" | "export+prune".
-	// Env: LOOMCYCLE_RETENTION_DEFS_MODE.
+	// Yaml: retention.defs.mode.
 	RetentionDefsMode string
 	// RetentionDefsMaxAge is the age cutoff: only versions created before
 	// now-RetentionDefsMaxAge are eligible. 0 = no minimum age.
-	// Env: LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS.
+	// Yaml: retention.defs.max_age.
 	RetentionDefsMaxAge time.Duration
 	// RetentionDefsKeepLastN keeps the N most-recent purgeable versions per
 	// (tenant, name) as lineage history. Default 5. 0 = purge all.
-	// Env: LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N.
+	// Yaml: retention.defs.keep_last_n.
 	RetentionDefsKeepLastN int
 	// RetentionChatsMode is the RFC BM Phase 2 aged-chat archiver mode:
 	// "off" (default / "") | "prune" | "export+prune" — deletes aged sessions +
 	// their runs + events (pinned sessions always exempt). Independent of
-	// RetentionDefsMode. Env: LOOMCYCLE_RETENTION_CHATS_MODE.
+	// RetentionDefsMode. Yaml: retention.chats.mode.
 	RetentionChatsMode string
 	// RetentionChatsMaxAge is the age cutoff for the chats archiver: a session
 	// whose runs are ALL terminal and whose latest completed_at is older than this
 	// is exported (per the mode) and cascade-deleted. 0 = no minimum age.
-	// Env: LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS.
+	// Yaml: retention.chats.max_age.
 	RetentionChatsMaxAge time.Duration
 	// RetentionMemMode is the RFC BM Phase 3 retired-agent memory-reclamation
 	// mode: "off" (default / "") | "prune" | "export+prune". Reclaims a
 	// fully-retired agent's SQL-Memory scope + dirents (per tenant) and its
 	// base-memory k/v (only when the name is retired in every tenant). Independent
-	// of RetentionDefsMode/RetentionChatsMode. Env: LOOMCYCLE_RETENTION_MEM_MODE.
+	// of RetentionDefsMode/RetentionChatsMode. Yaml: retention.mem.mode.
 	RetentionMemMode string
 	// RetentionMemMaxAge is the age cutoff for memory reclamation: an agent whose
 	// latest def version was updated before now-this is eligible. 0 = no minimum
-	// age. Env: LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS.
+	// age. Yaml: retention.mem.max_age.
 	RetentionMemMaxAge time.Duration
 	// RetentionMemContentMode is the RFC BL P4d class-aware memory-CONTENT prune
 	// mode: "off" (default), "prune", or "export+prune". Independent of every other
-	// retention family. Env: LOOMCYCLE_RETENTION_MEM_CONTENT_MODE.
+	// retention family. Yaml: retention.mem_content.mode.
 	//
 	// Prunes retired entity-tier content out of LIVE scopes, which is what
 	// supersede-not-delete makes necessary: a corrected fact is kept so questions
@@ -4557,8 +4561,8 @@ type Env struct {
 	// forever unless something reaps them. `evidential` content is exempt at any age.
 	RetentionMemContentMode string
 	// RetentionMemContentMaxAge is the age cutoff for the content prune: content
-	// retired before Now()-this is eligible. Env:
-	// LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS.
+	// retired before Now()-this is eligible. Yaml:
+	// retention.mem_content.max_age.
 	RetentionMemContentMaxAge time.Duration
 	// MemoryTraceIndexEnabled turns on the RFC CI trace index: each USER turn is
 	// stored and embedded so conversations are searchable by what was said, not only
@@ -4580,8 +4584,8 @@ type Env struct {
 	// COMPLETION, where a turn boundary exists; assistant text is persisted one row per
 	// streamed delta, so anything reading raw rows would index fragments.
 	MemoryTraceAssistantTurns bool
-	// MemoryTraceMaxAge is how long an indexed turn stays searchable. Env:
-	// LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS. Zero uses the 30-day default.
+	// MemoryTraceMaxAge is how long an indexed turn stays searchable. Yaml:
+	// retention.trace.max_age. Zero uses the 30-day default.
 	//
 	// Implemented as the row's TTL rather than as a retention family, so the window is
 	// enforced at READ (an expired row is missing before any sweeper runs), swept by
@@ -4590,8 +4594,8 @@ type Env struct {
 	MemoryTraceMaxAge time.Duration
 	// RetentionEmptyDossierMode sweeps subject documents left with no facts and
 	// nothing pointing at them: "off" (default), "prune", or "export+prune".
-	// Independent of every other retention family. Env:
-	// LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE.
+	// Independent of every other retention family. Yaml:
+	// retention.empty_dossier.mode.
 	//
 	// Off by default as a DECISION, not a habit. An empty dossier records that an
 	// entity was once known, and it usually becomes empty as a side effect of
@@ -4599,8 +4603,8 @@ type Env struct {
 	// erasure silently delete a record another user could see.
 	RetentionEmptyDossierMode string
 	// RetentionEmptyDossierMaxAge is the age cutoff, read against the document's
-	// updated_at: only a dossier untouched for longer is eligible. Env:
-	// LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS.
+	// updated_at: only a dossier untouched for longer is eligible. Yaml:
+	// retention.empty_dossier.max_age.
 	//
 	// "Empty" is a state a dossier passes THROUGH — mid-consolidation, or between an
 	// erasure and a re-derivation — so without an age gate a sweep landing in that
@@ -5056,8 +5060,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// live elsewhere, stops the load;
 	// the rest are said once, where boot, `validate` and `doctor` all print
 	// advisories.
-	if refused := retiredEnvRefusals(os.Environ(), &cfg.Storage); len(refused) > 0 {
-		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, or another store), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
+	if refused := retiredEnvRefusals(os.Environ(), cfg); len(refused) > 0 {
+		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
@@ -5067,7 +5071,11 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	applyEnvNetPolicy(cfg)
 	applyEnvListeners(cfg)
 	applyEnvSweepers(cfg)
-	if err := applyEnvRetention(cfg); err != nil {
+	if err := applyEnvAudit(cfg); err != nil {
+		return nil, err
+	}
+	applyEnvTraceIndex(cfg)
+	if err := applyRetention(cfg); err != nil {
 		return nil, err
 	}
 	applyEnvClusterSweeps(cfg)
@@ -5289,11 +5297,11 @@ func applyEnvCore(cfg *Config) {
 		HelpRoot:                    contentRoot("LOOMCYCLE_HELP_ROOT", "help"),
 		ConfiguredRunTTL:            24 * time.Hour,
 		MaxConfiguredRunsPerUser:    100,
-		// RFC BM retention defaults — opt-in (every family's mode is off); the
-		// mode defaults off and keep-last-N to 5. The env parse below overrides
-		// these only when the corresponding var is set.
+		// Retention defaults: every family's mode is off, and the definitions
+		// family keeps 5 versions. applyRetention overrides these from the
+		// yaml `retention:` block.
 		RetentionDefsMode:      "off",
-		RetentionDefsKeepLastN: 5,
+		RetentionDefsKeepLastN: retentionDefsKeepLastNDefault,
 	}
 }
 

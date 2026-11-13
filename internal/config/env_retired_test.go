@@ -1,11 +1,11 @@
 package config
 
 import (
-	"os"
 	"path/filepath"
-	"regexp"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRetiredEnvWarnings_NamesEachRetiredVariableSetAndNoOther(t *testing.T) {
@@ -77,6 +77,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		name, value string
 		also        []string // other variables of the same environment
 		yaml        StorageConfig
+		retention   RetentionConfig // the yaml's retention block
 		refused     bool
 	}{
 		// Gates: the old read turned the feature on for exactly "1".
@@ -154,7 +155,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		// replaces it.
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "prune", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}, refused: true},
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "export+prune", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}, refused: true},
-		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "prune", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000", "LOOMCYCLE_RETENTION_CHATS_MODE=prune"}},
+		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "prune", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}, retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}},
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "prune"},                                                            // no age: it never ran
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "off", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}}, // dormant
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MS", value: "86400000"},                                                           // no mode: dormant
@@ -196,16 +197,77 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 
 		// The retention switch: the old read ran the sweeper for exactly "1".
 		// Refused when it was held off and a family mode would now delete.
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MODE=prune"}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "", also: []string{"LOOMCYCLE_RETENTION_DEFS_MODE=export+prune"}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "false", also: []string{"LOOMCYCLE_RETENTION_MEM_MODE=prune"}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE=prune"}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE=prune"}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MODE=off"}},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MODE=delete"}}, // not a mode the sweeper acts on
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "", retention: RetentionConfig{Defs: RetentionDefs{Mode: "export+prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "false", retention: RetentionConfig{Mem: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{MemContent: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{EmptyDossier: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{Chats: RetentionFamily{Mode: "off"}}},
 		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0"},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", also: []string{"LOOMCYCLE_RETENTION_CHATS_MODE=prune"}}, // deleting then, deleting now
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1"},                                                         // ran with nothing to do
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}}, // deleting then, deleting now
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1"},                                                                    // ran with nothing to do
+
+		// A family mode that moved to the yaml: refused when the family would
+		// delete under one and not the other, or export under one only.
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "prune", refused: true}, // the yaml leaves it off: chats would be kept
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "export+prune", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "off", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "prune", retention: RetentionConfig{Defs: RetentionDefs{Mode: "prune"}}, refused: true}, // another family
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "prune", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "off"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "delete"}, // never a mode the sweeper acted on
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}},
+		{name: "LOOMCYCLE_RETENTION_DEFS_MODE", value: "prune", refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_MODE", value: "prune", retention: RetentionConfig{Defs: RetentionDefs{Mode: "prune"}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_MODE", value: "export+prune", refused: true},
+		{name: "LOOMCYCLE_RETENTION_MEM_MODE", value: "export+prune", retention: RetentionConfig{Mem: RetentionFamily{Mode: "export+prune"}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MODE", value: "prune", refused: true},
+		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MODE", value: "prune", retention: RetentionConfig{MemContent: RetentionFamily{Mode: "prune"}}},
+		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE", value: "prune", refused: true},
+		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE", value: "prune", retention: RetentionConfig{EmptyDossier: RetentionFamily{Mode: "prune"}}},
+
+		// An age that moved to the yaml: refused when it was a positive number
+		// the yaml does not give. The old reads ignored anything else.
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: HumanDuration(30 * 24 * time.Hour)}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: HumanDuration(90 * 24 * time.Hour)}}},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "0"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "-5"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "90d"}, // was ignored
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: ""},
+		{name: "LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Defs: RetentionDefs{MaxAge: HumanDuration(24 * time.Hour)}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Mem: RetentionFamily{MaxAge: HumanDuration(24 * time.Hour)}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{MemContent: RetentionFamily{MaxAge: HumanDuration(24 * time.Hour)}}},
+		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{EmptyDossier: RetentionFamily{MaxAge: HumanDuration(24 * time.Hour)}}},
+		// These two default to 30 days.
+		{name: "LOOMCYCLE_USAGE_DETAIL_RETENTION_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_USAGE_DETAIL_RETENTION_MS", value: "2592000000"},
+		{name: "LOOMCYCLE_USAGE_DETAIL_RETENTION_MS", value: "86400000", retention: RetentionConfig{UsageDetail: RetentionAge{MaxAge: HumanDuration(24 * time.Hour)}}},
+		{name: "LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS", value: "2592000000"},
+		{name: "LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Trace: RetentionAge{MaxAge: HumanDuration(24 * time.Hour)}}},
+
+		// Versions kept: any number from zero up was a setting; the default is 5.
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "0", refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "20", refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "5"},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "0", retention: RetentionConfig{Defs: RetentionDefs{KeepLastN: intPtr(0)}}},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "5", retention: RetentionConfig{Defs: RetentionDefs{KeepLastN: intPtr(0)}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "-1"}, // was ignored
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "many"},
+
+		// The export directory: refused unless the yaml names the same one.
+		{name: "LOOMCYCLE_RETENTION_EXPORT_DIR", value: "/data/exports", refused: true},
+		{name: "LOOMCYCLE_RETENTION_EXPORT_DIR", value: "/data/exports", retention: RetentionConfig{ExportDir: "/srv/other"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_EXPORT_DIR", value: "/data/exports", retention: RetentionConfig{ExportDir: "/data/exports"}},
+		{name: "LOOMCYCLE_RETENTION_EXPORT_DIR", value: ""},
+
+		// The sweep cadence deletes nothing sooner or later than the ages say.
+		{name: "LOOMCYCLE_RETENTION_INTERVAL_MS", value: "1000"},
 
 		// The A2A switch: the old read served A2A for exactly "1". Refused
 		// when it was off and the server card that now turns A2A on is named.
@@ -243,7 +305,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			environ := append([]string{tc.name + "=" + tc.value}, tc.also...)
-			got := retiredEnvRefusals(environ, &tc.yaml)
+			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention})
 			if refused := len(got) > 0; refused != tc.refused {
 				t.Fatalf("refused = %v (%q), want %v", refused, got, tc.refused)
 			}
@@ -325,31 +387,25 @@ func TestRetiredEnvAdvisories_NamesTheThinClientsRetiredVariables(t *testing.T) 
 	}
 }
 
-// The retention rule keeps its own list of the family mode variables, because
-// it is judged before applyEnvRetention reads them. A family added there and
-// not here would be deleted from with the retired switch still set to off.
-func TestRetentionModeEnv_ListsEveryFamilyModeTheLoaderReads(t *testing.T) {
-	src, err := os.ReadFile("config_env_sweepers.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	read := map[string]bool{}
-	for _, name := range regexp.MustCompile(`LOOMCYCLE_RETENTION_[A-Z_]+_MODE`).FindAllString(string(src), -1) {
-		read[name] = true
-	}
-	if len(read) == 0 {
-		t.Fatal("found no family mode variable in config_env_sweepers.go")
-	}
-	listed := map[string]bool{}
-	for _, name := range retentionModeEnv {
-		listed[name] = true
-		if !read[name] {
-			t.Errorf("%s is in retentionModeEnv but the loader does not read it", name)
+// One list of family modes decides both whether the sweeper runs and whether
+// the retired switch is refused. A family added to the block and not to that
+// list would delete with neither noticing.
+func TestRetentionModes_ListsEveryFamilyOfTheBlock(t *testing.T) {
+	rt := reflect.TypeOf(RetentionConfig{})
+	want := 0
+	for i := 0; i < rt.NumField(); i++ {
+		ft := rt.Field(i).Type
+		if ft.Kind() != reflect.Struct {
+			continue
+		}
+		if _, ok := ft.FieldByName("Mode"); ok {
+			want++
 		}
 	}
-	for name := range read {
-		if !listed[name] {
-			t.Errorf("the loader reads %s but retentionModeEnv does not list it", name)
-		}
+	if want == 0 {
+		t.Fatal("found no family with a mode in RetentionConfig")
+	}
+	if got := len((&RetentionConfig{}).modes()); got != want {
+		t.Errorf("modes() lists %d families, RetentionConfig has %d with a mode", got, want)
 	}
 }

@@ -682,13 +682,13 @@ func (s *Sweeper) Run(ctx context.Context) {
 		"internal_agents", len(s.internalAgents), "mem_mode", s.memMode, "mem_max_age", s.memMaxAge,
 		"sqlmem", s.sqlMem != nil, "audit_max_age", s.auditMaxAge, "dry_run", s.dryRun)
 	if s.defsMode == "export+prune" && s.exportDir == "" {
-		s.logger.Warn("retention: defs purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
+		s.logger.Warn("retention: defs purge DISABLED — mode=export+prune requires retention.export_dir")
 	}
 	if s.chatsMode == "export+prune" && s.exportDir == "" {
-		s.logger.Warn("retention: chats purge DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
+		s.logger.Warn("retention: chats purge DISABLED — mode=export+prune requires retention.export_dir")
 	}
 	if s.memMode == "export+prune" && s.exportDir == "" {
-		s.logger.Warn("retention: mem reclaim DISABLED — mode=export+prune requires LOOMCYCLE_RETENTION_EXPORT_DIR")
+		s.logger.Warn("retention: mem reclaim DISABLED — mode=export+prune requires retention.export_dir")
 	}
 	t := time.NewTicker(s.interval)
 	defer t.Stop()

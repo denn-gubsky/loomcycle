@@ -1005,6 +1005,39 @@ concurrency:
   # max_concurrent_runs_per_user: 4
   # max_queued_runs_per_user: 16   # default; 0 refuses at once over the cap
 
+# ─── Retention ────────────────────────────────────────────────────────
+# What the runtime deletes with age, and when. Everything here is off until
+# a family's `mode` is prune or export+prune; setting one is what starts the
+# retention sweeper, so a family deletes data as soon as its mode is set.
+# Ages are durations: 30d, 12h, 1d12h (a bare number is refused).
+#
+# retention:
+#   interval: 1h                  # how often the sweeper runs (default 1h)
+#   export_dir: /data/retention-exports   # where export+prune writes what it
+#                                 # deletes; without it that mode deletes nothing
+#   chats:                        # aged sessions with their runs and events;
+#     mode: export+prune          # a pinned session is exempt
+#     max_age: 90d                # unset = every finished session is eligible
+#   defs:                         # old versions of substrate definitions
+#     mode: prune
+#     max_age: 30d
+#     keep_last_n: 5              # newest versions always kept (default 5)
+#   mem:                          # memory of fully retired agents
+#     mode: off
+#     max_age: 30d
+#   mem_content:                  # superseded memory content in live scopes
+#     mode: off
+#     max_age: 30d
+#   empty_dossier:                # subject documents with no facts and no
+#     mode: off                   # references; off on purpose, since one user's
+#     max_age: 30d                # erasure could delete a record others see
+#   usage_detail:
+#     max_age: 30d                # per-call usage rows are rolled up into
+#                                 # totals after this (always runs; default 30d)
+#   trace:
+#     max_age: 30d                # how long an indexed conversation turn stays
+#                                 # searchable (default 30d)
+
 # ─── gRPC server (v0.5.5) ─────────────────────────────────────────────
 # Optional second wire surface alongside HTTP+SSE. Mirrors the
 # /v1/* surface 1:1 via proto/loomcycle.proto. Disabled by default;

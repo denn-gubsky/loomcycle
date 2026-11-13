@@ -223,6 +223,23 @@ concurrency:
   max_concurrent_runs: 8
   max_queue_depth: 32
 
+# ─── Retention ────────────────────────────────────────────────────────
+# What is deleted with age. A family runs once its mode is set; export+prune
+# writes what it deletes under export_dir first.
+retention:
+  interval: 24h
+  export_dir: /data/retention-exports
+  chats:
+    mode: export+prune
+    max_age: 90d
+  # Sweeps subject documents left with no facts and nothing pointing at them.
+  # Off on purpose: an empty dossier records that the entity was once known,
+  # and it usually becomes empty as a side effect of another user's erasure.
+  # Enable only if a clean entity directory matters more than that record.
+  # empty_dossier:
+  #   mode: export+prune
+  #   max_age: 30d
+
 # ─── Volumes ──────────────────────────────────────────────────────────
 # The dynamic root: the runtime makes volumes under it — each run's `inbox`
 # (a file an MCP server, HTTP or WebFetch returns is kept there and the model

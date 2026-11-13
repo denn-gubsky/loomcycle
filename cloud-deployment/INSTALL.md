@@ -144,7 +144,7 @@ Edit **`.env.insecure`** (non-secret):
 - `OLLAMA_BASE_URL` → the Ollama tailnet **IP** (Phase 3).
 - `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` → from the Access app (Phase 4).
 - `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud` + `LANDING_ORIGIN=https://loomcycle.cloud`.
-- Adjust presets / retention to taste. The Ollama context size and GPU offload
+- Adjust presets to taste. Retention, the Ollama context size and GPU offload
   are in `config/loomcycle.yaml`, not here.
 
 Create **`.env.secure`** (there is no committed template — repo policy forbids a

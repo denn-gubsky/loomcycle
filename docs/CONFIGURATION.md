@@ -3450,9 +3450,8 @@ Background work runs on fixed cadences, and none of it can be switched off:
 | `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS` | `30000` | Timeout of one embedder call; `0` relies on the caller's deadline. |
 | `LOOMCYCLE_PGVECTOR_ENABLED` | off | `1` enables vector Memory on Postgres; boot fails if the `vector` extension is missing. |
 | `LOOMCYCLE_SQLITE_VEC_PATH` | unset | Path to the sqlite-vec extension library. Required by a binary built with the `sqlite_vec` tag; ignored otherwise. |
-| `LOOMCYCLE_MEMORY_TRACE_INDEX` | off | `1` (or `true`) stores and embeds each user turn so past conversations are searchable by what was said. Copies personal data into a second place, so it is opt-in. |
+| `LOOMCYCLE_MEMORY_TRACE_INDEX` | off | `1` (or `true`) stores and embeds each user turn so past conversations are searchable by what was said. Copies personal data into a second place, so it is opt-in. How long a turn stays searchable is `retention.trace.max_age` in the yaml (30 days). |
 | `LOOMCYCLE_MEMORY_TRACE_ASSISTANT` | off | `1` also indexes assistant turns (at run completion). |
-| `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` | 30 days | How long an indexed turn stays searchable. |
 | `LOOMCYCLE_MEMORY_CHANGES_ENABLED` | off | `1` records a memory change feed (change-data capture) that change subscriptions deliver from. Off, the store is not wrapped and pays nothing. |
 | `LOOMCYCLE_DEADLINK_GC_MS` | `3600000` | How often unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk) are collected; on by default, `0` disables. |
 | `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | off | `1` makes that collection count and log without deleting. |
@@ -3474,24 +3473,7 @@ Overrides of the `storage:` SQL Memory settings; see [SQL_MEMORY.md](SQL_MEMORY.
 
 ### Retention and usage
 
-Each `LOOMCYCLE_RETENTION_*_MODE` is `off` (default), `prune` or `export+prune`; `export+prune` needs an export directory. Setting a mode to `prune` or `export+prune` is what starts the retention sweeper: there is no separate switch, so a family deletes data as soon as its mode is set.
-
-| Variable | Default | Effect |
-|---|---|---|
-| `LOOMCYCLE_RETENTION_INTERVAL_MS` | 1 h | How often the retention sweeper runs. |
-| `LOOMCYCLE_RETENTION_EXPORT_DIR` | — | Where `export+prune` writes what it deletes. |
-| `LOOMCYCLE_RETENTION_DEFS_MODE` | `off` | Prunes old versions of substrate definitions. |
-| `LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS` | `0` | Only versions older than this are eligible; `0` = any age. |
-| `LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
-| `LOOMCYCLE_RETENTION_CHATS_MODE` | `off` | Deletes aged sessions with their runs and events; pinned sessions are exempt. Nothing is inherited from the removed usage archiver: a deployment that pruned chats with `LOOMCYCLE_USAGE_RUN_RETENTION_MODE` and a positive `LOOMCYCLE_USAGE_RUN_RETENTION_MS` does not start until this is set (with `LOOMCYCLE_RETENTION_ENABLED=1` and `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS`). |
-| `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS` | `0` | A session whose runs all finished longer ago than this is eligible. |
-| `LOOMCYCLE_RETENTION_MEM_MODE` | `off` | Reclaims the memory of fully retired agents. |
-| `LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS` | `0` | Only agents whose last definition change is older than this. |
-| `LOOMCYCLE_RETENTION_MEM_CONTENT_MODE` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). |
-| `LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS` | — | Only content retired longer ago than this. |
-| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
-| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS` | — | Only dossiers untouched longer than this. |
-| `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` | 30 days | Per-call usage rows older than this are rolled up and deleted; totals are kept. |
+What the runtime deletes with age is set in the yaml `retention:` block, not in the environment: see [9m](#9m-retention--what-is-deleted-with-age-retention). The `LOOMCYCLE_RETENTION_*` variables, `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` and `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` are no longer read. One that is still set is reported at boot, and stops the boot when the yaml does not give the same mode, age, kept-version count or export directory, because the deployment would otherwise keep or delete data differently from before.
 
 ### Observability
 
@@ -3964,6 +3946,47 @@ were called with and returned, as the GenAI semantic conventions (release
 Capture costs CPU in proportion to what each model call is shown: every
 message of the conversation is redacted and serialised on every call, before
 the field is cut.
+
+## 9m. Retention — what is deleted with age (`retention:`)
+
+Why a yaml block and not environment variables: retention is policy that is the same on every replica of a deployment, and a block can be reviewed, layered and carried by a preset. Ages are durations (`30d`, `12h`, `1d12h`), not milliseconds; a bare number is refused because nothing says which unit it meant.
+
+```yaml
+retention:
+  interval: 24h                 # how often the sweeper runs; default 1h
+  export_dir: /data/retention-exports
+  chats:
+    mode: export+prune
+    max_age: 90d
+  defs:
+    mode: prune
+    max_age: 30d
+    keep_last_n: 5
+  usage_detail:
+    max_age: 30d
+```
+
+Each family's `mode` is `off` (the default), `prune` or `export+prune`; any other value stops the load. `export+prune` writes what it is about to delete under `export_dir`, and a family in that mode with no `export_dir` deletes nothing. A family set to `prune` or `export+prune` is what starts the retention sweeper: there is no separate switch, so a family deletes data as soon as its mode is set.
+
+| Key | Default | Effect |
+|---|---|---|
+| `retention.interval` | `1h` | How often the retention sweeper runs. |
+| `retention.export_dir` | none | Where `export+prune` writes what it deletes. |
+| `retention.defs.mode` | `off` | Prunes old versions of substrate definitions. |
+| `retention.defs.max_age` | `0` | Only versions older than this are eligible; `0` = any age. |
+| `retention.defs.keep_last_n` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
+| `retention.chats.mode` | `off` | Deletes aged sessions with their runs and events; pinned sessions are exempt. Chats of `internal:` agents are deleted after 3 days whenever this family is on. Nothing is inherited from the removed usage archiver. |
+| `retention.chats.max_age` | `0` | A session whose runs all finished longer ago than this is eligible. With the mode on and no age, every finished unpinned session is eligible. |
+| `retention.mem.mode` | `off` | Reclaims the memory of fully retired agents. |
+| `retention.mem.max_age` | `0` | Only agents whose last definition change is older than this. |
+| `retention.mem_content.mode` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). |
+| `retention.mem_content.max_age` | `0` | Only content retired longer ago than this. |
+| `retention.empty_dossier.mode` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
+| `retention.empty_dossier.max_age` | `0` | Only dossiers untouched longer than this. |
+| `retention.usage_detail.max_age` | `30d` | Per-call usage rows older than this are rolled up and deleted; totals are kept. This rollup always runs and has no mode. |
+| `retention.trace.max_age` | `30d` | How long an indexed conversation turn stays searchable (the trace index itself is `LOOMCYCLE_MEMORY_TRACE_INDEX`). |
+
+The audit stream's retention is separate and stays in the environment (`LOOMCYCLE_AUDIT_RETENTION_DAYS`), with the rest of the audit posture.
 
 ## 10. Cross-references
 
