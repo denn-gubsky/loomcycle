@@ -53,7 +53,7 @@ Local Ollama (`ollama-local` provider) needs no key — it reads `OLLAMA_BASE_UR
 |---|---|---|
 | `LOOMCYCLE_DATA_DIR` | `~/.local/share/loomcycle` | Where sqlite + transient state live |
 | `LOOMCYCLE_PG_DSN` | (empty) | Postgres DSN. Set, the store is Postgres; empty, SQLite under the data dir |
-| `LOOMCYCLE_PG_AUTOMIGRATE` | `false` | Auto-run schema migrations on boot |
+| `LOOMCYCLE_PG_AUTOMIGRATE` | `0` | `1` runs schema migrations on boot; `0` does not. Any other value stops the load |
 | `LOOMCYCLE_PGVECTOR_ENABLED` | `false` | Enable pgvector for Vector Memory (Postgres only) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (empty) | OTLP endpoint URL for distributed traces (standard `OTEL_*` set); empty = tracing off |
 | `LOOMCYCLE_BASH_ENABLED` | `false` | Enable the Bash tool (NOT a sandbox — see `help bashbox` for the sandboxed alternative) |

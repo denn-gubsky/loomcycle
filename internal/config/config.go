@@ -4956,7 +4956,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
-	applyEnvStorage(cfg)
+	if err := applyEnvStorage(cfg); err != nil {
+		return nil, err
+	}
 	applyEnvSQLMem(cfg)
 	applyEnvNetPolicy(cfg)
 	applyEnvListeners(cfg)
@@ -5258,7 +5260,7 @@ func defaultedRoot(cfg *Config, envName, sub string) string {
 
 // applyEnvStorage reads the storage block's env overrides and defaults the
 // backend. Part of LoadLayers.
-func applyEnvStorage(cfg *Config) {
+func applyEnvStorage(cfg *Config) error {
 	// Env-overrides for the storage block. Env wins over YAML so prod
 	// deploys can keep PG_DSN out of version-controlled config files.
 	// Empty env values fall through to whatever YAML provided.
@@ -5278,16 +5280,21 @@ func applyEnvStorage(cfg *Config) {
 			cfg.Storage.PgMinIdleConns = int32(n)
 		}
 	}
-	// 1 and 0 are the two settings; anything else was never read as one and
-	// leaves the yaml's.
-	switch os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE") {
+	// 1 and 0 are the two settings. Anything else stops the load: read as
+	// "not a setting", a `false` written to keep migration off left a yaml
+	// `pg_automigrate: true` in force and the schema migrated at boot.
+	switch strings.TrimSpace(os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE")) {
+	case "":
 	case "1":
 		cfg.Storage.PgAutoMigrate = true
 	case "0":
 		cfg.Storage.PgAutoMigrate = false
+	default:
+		return errors.New("LOOMCYCLE_PG_AUTOMIGRATE: the value is not 1 (migrate the schema at boot) or 0 (do not)")
 	}
 	cfg.Storage.BackendInferred = cfg.Storage.Backend == ""
 	cfg.Storage.Backend = inferStorageBackend(cfg.Storage.Backend, cfg.Storage.PgDSN)
+	return nil
 }
 
 // SQLMemOn reports whether SQL Memory is on: the yaml's explicit choice, else
