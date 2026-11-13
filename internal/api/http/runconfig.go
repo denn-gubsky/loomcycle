@@ -638,6 +638,10 @@ type spawnRecord struct {
 	// narrows again against it (resumedCryptoPolicy); absent means the parent
 	// held none, so a sub-run recorded before this field resumes with none.
 	CryptoScopes []string `json:"crypto_scopes,omitempty"`
+	// ToolModes is the parent run's tool modes at spawn (RFC GL): every read
+	// mode the child was held to beyond its own definition's. A resume adds
+	// them again (resumedToolModes); absent means the parent held none.
+	ToolModes map[string]string `json:"tool_modes,omitempty"`
 	// ShellCredentials is the parent run's shell-credential narrowing at spawn
 	// (RFC EW): the names the child's own shell_credentials were narrowed to.
 	// A resume narrows again against it. nil: the parent narrowed nothing,

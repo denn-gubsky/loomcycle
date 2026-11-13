@@ -219,6 +219,21 @@ var narrowAtMost = map[string]struct {
 		widerChild:    RunPolicy{FanoutCap: 8},
 		widerOfParent: RunPolicy{FanoutCap: 2},
 	},
+	"ToolModes": {
+		// Fewer read modes is wider: every read mode the parent holds is
+		// held by the child too. No modes on the own grant is the widest.
+		atMost: func(c, p RunPolicy) bool {
+			for tool, mode := range p.ToolModes {
+				if mode == config.ToolModeRead && c.ToolModes[tool] != config.ToolModeRead {
+					return false
+				}
+			}
+			return true
+		},
+		wideOwn:       RunPolicy{},
+		widerChild:    RunPolicy{},
+		widerOfParent: RunPolicy{ToolModes: map[string]string{"Document": config.ToolModeRead}},
+	},
 }
 
 // Each comparator rejects a wider child, so the generic narrow check above can

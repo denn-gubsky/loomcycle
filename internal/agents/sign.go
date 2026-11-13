@@ -40,6 +40,11 @@
 // with the *_def_scopes gates: authority over keys, not authored behaviour, and
 // a fork that only changes it must not look like new content.
 //
+// tool_modes (RFC GL: a granted tool narrowed to its read operations) is
+// excluded for the same reason: it narrows authority over the store a tool
+// reaches, it does not change what the agent was written to do, and keeping
+// it out leaves every existing definition's hash byte-stable.
+//
 // These are operator-yaml-only declarations resolved at boot; the in-DB
 // agent_defs row never stores them, so hashing them would make a
 // YAML-loaded agent and the same agent pushed via the substrate diverge.

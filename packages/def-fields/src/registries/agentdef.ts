@@ -302,6 +302,11 @@ export const agentDefRegistry: DefRegistry = {
     { key: "crypto_scopes", label: "Crypto keys", group: "Capabilities", type: "string-list",
       hint: "Which key scopes (agent, user, tenant, run) the Crypto tool's signing, encryption and decryption may use. A sub-agent holds only what its parent also holds.",
       placeholder: "agent", unsetMeans: "no key scope — keyless crypto ops only" },
+    // JSON, as a map of tool name to mode: only Document and Path take one,
+    // and the only mode is read.
+    { key: "tool_modes", label: "Tool modes", group: "Capabilities", type: "json",
+      hint: "Narrows a granted tool to its read operations, as a JSON map, e.g. {\"Document\": \"read\", \"Path\": \"read\"}: a write op is refused before it runs. Only Document and Path take a mode, and each must be in tools. A fork can add a read mode and cannot remove one.",
+      placeholder: '{"Document": "read"}', unsetMeans: "every tool whole" },
     // A JSON control, not a string list: the string-list control clears to
     // unset when its last entry is removed, and unset here means EVERY
     // credential, the opposite of what clearing the list would intend.
