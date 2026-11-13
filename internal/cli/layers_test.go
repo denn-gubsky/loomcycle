@@ -665,3 +665,55 @@ func TestAssembleConfigStack_AUnitWrittenBeforeItsIncluderRoutesLikeTheIncluderA
 		t.Errorf("no advisory that local was moved; warnings: %v", both.Warnings)
 	}
 }
+
+// presets: is read from the raw text, with no ${VAR} expansion. The key is
+// read before the load's own scan that refuses to interpolate a declared
+// principal's bearer, so an expansion here would put that bearer into the
+// unknown-preset error, the advisory, doctor and the reload response.
+func TestAssembleConfigStack_PresetsKeyNeverInterpolatesAVariable(t *testing.T) {
+	const sentinel = "sentinel-bearer-value-0123456789"
+	body := "principals:\n  svc: {tenant: t, subject: s, scopes: [runs:create], token_env: LOOMCYCLE_TOKEN_R4}\n" +
+		"presets: [\"${LOOMCYCLE_TOKEN_R4}\"]\n"
+	for name, envPresets := range map[string]string{"the key selects": "", "the environment selects": "base"} {
+		t.Run(name, func(t *testing.T) {
+			_, cwd := isolateLayerEnv(t)
+			t.Setenv("LOOMCYCLE_TOKEN_R4", sentinel)
+			t.Setenv("LOOMCYCLE_PRESETS", envPresets)
+			path := writeYAML(t, filepath.Join(cwd, "top.yaml"), body)
+			stack, err := AssembleConfigStack(nil, []string{path}, false)
+			if err == nil {
+				t.Fatal("assembled; want the entry refused")
+			}
+			said := err.Error()
+			for _, l := range stack.Layers {
+				said += strings.Join(l.Warnings, " ")
+			}
+			if strings.Contains(said, sentinel) {
+				t.Fatalf("the variable's value is in the output: %s", said)
+			}
+			for _, want := range []string{"presets:", path, "${"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %v, want it to mention %q", err, want)
+				}
+			}
+			if strings.Contains(err.Error(), "LOOMCYCLE_TOKEN_R4") {
+				t.Errorf("err names the entry; it should name only the key and the file: %v", err)
+			}
+		})
+	}
+}
+
+// A primary file whose presets: is visible only after ${VAR} expansion is not
+// read by the pre-parse. It is refused, not loaded with no preset.
+func TestAssembleConfigStack_PresetsKeyHiddenUntilExpansionIsRefused(t *testing.T) {
+	_, cwd := isolateLayerEnv(t)
+	t.Setenv("LOOMCYCLE_R4_KEY", "presets")
+	path := writeYAML(t, filepath.Join(cwd, "top.yaml"), "${LOOMCYCLE_R4_KEY}: [base]\n")
+	stack, err := AssembleConfigStack(nil, []string{path}, false)
+	if err == nil {
+		_, err = config.LoadLayers(stack.Layers...)
+	}
+	if err == nil || !strings.Contains(err.Error(), "presets:") {
+		t.Fatalf("err = %v, want the key refused", err)
+	}
+}

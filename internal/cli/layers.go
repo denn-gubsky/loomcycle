@@ -240,7 +240,7 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 			}
 		}
 	}
-	presetLayers, err := selectPresetLayers(selected, selectedBy, primary, info)
+	presetLayers, keyRead, err := selectPresetLayers(selected, selectedBy, primary, info)
 	if err != nil {
 		return ConfigStack{}, err
 	}
@@ -296,7 +296,10 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 	}
 	for _, f := range stack.Files {
 		l := config.Layer{Name: f}
-		if f == primary {
+		// Marked only when the key was read: a `presets:` the pre-parse did
+		// not see (the file parses only after ${VAR} expansion) is then
+		// refused by the merge, not dropped with nothing layered.
+		if f == primary && keyRead {
 			l.Primary = true
 		}
 		stack.Layers = append(stack.Layers, l)
@@ -313,12 +316,11 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 // returned layers says which is in force. With selected empty the file's key selects. A
 // preset named in the file is trusted as the file is: it adds only what a
 // unit built into the binary carries, and no unit can set a security gate.
-func selectPresetLayers(selected []string, selectedBy, primary string, info func(string, ...any)) (layers []config.Layer, err error) {
+func selectPresetLayers(selected []string, selectedBy, primary string, info func(string, ...any)) (layers []config.Layer, inFile bool, err error) {
 	var fromFile []string
-	inFile := false
 	if primary != "" {
 		if fromFile, inFile, err = config.ReadPresetsKey(primary); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	var fileUnits []embedded.Unit
@@ -327,13 +329,13 @@ func selectPresetLayers(selected []string, selectedBy, primary string, info func
 		// Resolved even when the environment wins: a name the binary does not
 		// carry is a mistake in the file whichever selection is in force.
 		if fileUnits, fileNotes, err = embedded.ExpandSelection(fromFile); err != nil {
-			return nil, fmt.Errorf("presets: in %s: %w", primary, err)
+			return nil, false, fmt.Errorf("presets: in %s: %w", primary, err)
 		}
 	}
 	units, warnings, by := fileUnits, fileNotes, "presets: in "+primary
 	if len(selected) > 0 {
 		if units, warnings, err = embedded.ExpandSelection(selected); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		by = selectedBy
 		if inFile && unitNames(units) != unitNames(fileUnits) {
@@ -343,7 +345,7 @@ func selectPresetLayers(selected []string, selectedBy, primary string, info func
 		}
 	}
 	if len(units) == 0 {
-		return nil, nil
+		return nil, inFile, nil
 	}
 	// The names after every `include:` is expanded, so the line below says
 	// what is layered, not only what was written.
@@ -358,7 +360,7 @@ func selectPresetLayers(selected []string, selectedBy, primary string, info func
 	presets := unitNames(units)
 	info(fmt.Sprintf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(units), presets),
 		"presets", presets, "selected_by", by)
-	return layers, nil
+	return layers, inFile, nil
 }
 
 // selectedByWins names what overrode the file's list: the flag is not the

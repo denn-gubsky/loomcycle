@@ -50,22 +50,29 @@ type Layer struct {
 const presetsKey = "presets"
 
 func errPresetsKeyElsewhere(layer string) error {
-	return fmt.Errorf("%s: a top-level `presets:` is read only from the primary config file (the last --config, else the discovered loomcycle.yaml, else loomcycle.yaml in LOOMCYCLE_CONFIG_DIR); move the key there, or select with LOOMCYCLE_PRESETS", layer)
+	return fmt.Errorf("%s: a top-level `presets:` is read only from the primary config file (the last --config, else the discovered loomcycle.yaml, else loomcycle.yaml in LOOMCYCLE_CONFIG_DIR); move the key there, or select with LOOMCYCLE_PRESETS. (If this is that file, the key was not readable before ${VAR} expansion: write `presets:` as a plain top-level list)", layer)
 }
 
 // ReadPresetsKey returns the preset names a config file's top-level
 // `presets:` lists, and whether the key is there at all. The layer assembly
 // calls it on the primary file before it builds the stack. A file that does
 // not read or parse is reported absent: the load fails on it as it always
-// has, with its own message.
+// has, with its own message. A file that parses only once its ${VAR}s are
+// expanded is read as absent here; the assembly then does not mark it
+// primary, and the merge refuses the key instead of dropping it.
 func ReadPresetsKey(path string) (names []string, present bool, err error) {
 	// #nosec G304 -- path is the operator's own primary config file, chosen by the layer assembly from --config, the discovery paths or LOOMCYCLE_CONFIG_DIR
 	raw, rerr := os.ReadFile(path)
 	if rerr != nil {
 		return nil, false, nil
 	}
+	// The raw text, with no ${VAR} expansion. This runs before the load, and
+	// so before the load's scan that refuses to interpolate a declared
+	// principal's bearer (denyDeclaredPrincipalBearers): expanding here would
+	// carry such a value into the unknown-preset error and the advisories. A
+	// preset name is a fixed word, so there is nothing to interpolate.
 	var doc yaml.Node
-	if yaml.Unmarshal([]byte(expandEnv(string(raw))), &doc) != nil || len(doc.Content) == 0 {
+	if yaml.Unmarshal(raw, &doc) != nil || len(doc.Content) == 0 {
 		return nil, false, nil
 	}
 	root := doc.Content[0]
@@ -87,6 +94,10 @@ func ReadPresetsKey(path string) (names []string, present bool, err error) {
 		name := strings.TrimSpace(item.Value)
 		if item.Kind != yaml.ScalarNode || name == "" {
 			return nil, true, fmt.Errorf("presets: in %s: must be a list of preset/bundle names; it has an empty or non-text entry", path)
+		}
+		// The entry is not quoted back: it may name a secret's variable.
+		if strings.Contains(name, "${") {
+			return nil, true, fmt.Errorf("presets: in %s: an entry uses ${...}; preset names are written out, they are not read from the environment", path)
 		}
 		names = append(names, name)
 	}
