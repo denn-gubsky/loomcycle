@@ -30,6 +30,7 @@ var documentReadOnlyOps = map[string]func(documentReadOnlyCall) bool{
 	"query_documents":    nil,
 	"graph_snapshot":     nil,
 	"get_chunk":          nil,
+	"lineage":            nil,
 	"graph_recall":       nil,
 	"verbatim_answer":    nil,
 	"verification_stats": nil,

@@ -4435,7 +4435,9 @@ export type DocumentToolInput = {
     // Remote document sources (RFC CE).
     | "set_remote"
     | "sync"
-    | "diff_remote";
+    | "diff_remote"
+    // A chunk's sections, document and folders, each with its brief (RFC GL P2).
+    | "lineage";
   scope?: "agent" | "user" | "tenant";
   /** Document id (get/delete_document) or chunk id (get/update/delete/move_chunk). */
   id?: string;
@@ -4582,6 +4584,16 @@ export type DocumentToolInput = {
    *  its limit, so the best matches come from that part of the tree.
    *  list_statements: relations with either end in a document named there. */
   under_path?: string;
+  /** query_documents: only documents whose title contains this text, ignoring
+   *  case (on a SQLite store only for A-Z; the exact text always matches);
+   *  `%` and `_` match themselves. */
+  title_contains?: string;
+  /** query_documents / list_statements: only documents (statements) created
+   *  after / before this instant, in unix nanoseconds (exclusive). A JS number holds such a value to within a
+   *  few hundred nanoseconds, so a bound copied from a `created_at` read may
+   *  include or exclude that same document. */
+  created_after?: number;
+  created_before?: number;
   /** search / related: chunks of documents named at or under ANY of these paths
    *  (with `under_path`, the union of both). */
   under_paths?: string[];
