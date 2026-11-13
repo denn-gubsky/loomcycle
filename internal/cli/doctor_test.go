@@ -93,6 +93,9 @@ func withTempHome(t *testing.T) string {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("XDG_CONFIG_HOME", "") // force the ~/.config fallback
+	// Doctor assembles the server's stack; keep this machine's own out of it.
+	t.Setenv("LOOMCYCLE_PRESETS", "")
+	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
 	return tmp
 }
 
@@ -587,5 +590,28 @@ func TestCheckTokenPepper_ReportsTheSourceAndWarnsOnNoneWithAuth(t *testing.T) {
 		if !strings.Contains(out.String(), tc.wantLine) {
 			t.Errorf("%s: output %q lacks %q", tc.name, out.String(), tc.wantLine)
 		}
+	}
+}
+
+// A deployment with no single loomcycle.yaml (embedded presets and a config
+// dir) is found by doctor as the server finds it at boot; it used to report
+// "no config" for it.
+func TestDoctor_FindsAPresetsAndConfigDirStack(t *testing.T) {
+	_, cwd := isolateLayerEnv(t)
+	t.Setenv("LOOMCYCLE_PRESETS", "base")
+	dir := filepath.Join(cwd, "conf")
+	site := writeYAML(t, filepath.Join(dir, "site.yaml"), "agents:\n  probe: { model: deepseek-pro }\n")
+	t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+	t.Setenv("LOOMCYCLE_DATA_DIR", filepath.Join(cwd, "data"))
+	t.Setenv("LOOMCYCLE_LISTEN_ADDR", freePort(t))
+
+	var stdout, stderr bytes.Buffer
+	_ = RunDoctor(nil, &stdout, &stderr)
+	out := stdout.String()
+	if !strings.Contains(out, "[PASS]  Config found") || !strings.Contains(out, site) {
+		t.Errorf("doctor did not find the stack's file:\n%s", out)
+	}
+	if !strings.Contains(out, "[PASS]  Config parses") {
+		t.Errorf("doctor did not load the stack:\n%s", out)
 	}
 }

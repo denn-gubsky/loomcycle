@@ -65,16 +65,23 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 
 	r := &doctorRun{stdout: stdout}
 
-	resolvedPath, found := resolveConfigForDoctor(*cfgPath)
-	if !found {
-		r.fail("Config found", fmt.Sprintf("no config at %s; run `loomcycle init`", strings.Join(configSearchPaths(), " or ")))
+	// The stack the server would assemble: presets, the config dir, the named
+	// file or the auto-discovered one. A deployment with no single
+	// loomcycle.yaml (presets and a config dir) is found here as it is at boot.
+	stack, err := assembleForCLI(*cfgPath)
+	if err != nil {
+		r.fail("Config found", strings.ReplaceAll(strings.TrimSpace(err.Error()), "\n", " "))
 		fmt.Fprintln(stdout)
 		fmt.Fprintln(stdout, r.summary())
 		return 1
 	}
-	r.pass("Config found", resolvedPath)
+	found := "embedded presets only (no config file)"
+	if len(stack.Files) > 0 {
+		found = strings.Join(stack.Files, " ◁ ")
+	}
+	r.pass("Config found", found)
 
-	cfg, err := loadConfigForDoctor(resolvedPath)
+	cfg, err := loadConfigForDoctor(*cfgPath)
 	if err != nil {
 		r.fail("Config parses", err.Error())
 		fmt.Fprintln(stdout)
@@ -83,15 +90,10 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	r.pass("Config parses", "")
 
-	// Mirror the server: auto-load <configdir>/auth.env (set-if-unset)
-	// BEFORE the token check, so doctor's verdict matches what `loomcycle`
-	// will actually see. Without this, `init --with-token` followed by
-	// `doctor` would falsely warn "unauthenticated" while the server runs
-	// authed off the persisted token.
-	tokenFromFile := false
-	if _, n, lerr := LoadAuthEnv(resolvedPath); lerr == nil && n > 0 && os.Getenv("LOOMCYCLE_AUTH_TOKEN") != "" {
-		tokenFromFile = true
-	}
+	// The assembly loaded <configdir>/auth.env (set-if-unset) as the server
+	// does, so the token check below sees what `loomcycle` will see: after
+	// `init --with-token` the server runs authed off the persisted token.
+	tokenFromFile := stack.AuthEnvVars > 0 && os.Getenv("LOOMCYCLE_AUTH_TOKEN") != ""
 
 	// Declared principals turn auth on as the legacy secret does, inert ones
 	// included (the server's own rule, config.DeclaresPrincipals).
@@ -278,41 +280,9 @@ func providerEnvVarName(provider string) string {
 	return ""
 }
 
-// resolveConfigForDoctor mirrors the binary's auto-discovery logic.
-// When path is non-empty, returns it as-is (caller passed --config).
-// Otherwise walks the standard XDG paths and returns the first hit.
-func resolveConfigForDoctor(path string) (resolved string, found bool) {
-	if path != "" {
-		if _, err := os.Stat(path); err == nil {
-			return path, true
-		}
-		return path, false
-	}
-	for _, p := range configSearchPaths() {
-		if _, err := os.Stat(p); err == nil {
-			return p, true
-		}
-	}
-	return "", false
-}
-
-// configSearchPaths returns the in-order paths the binary checks
-// when --config is left at the default. Public-ish so init / doctor
-// share the same list.
-func configSearchPaths() []string {
-	paths := []string{"./loomcycle.yaml"}
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		paths = append(paths, filepath.Join(xdg, "loomcycle", "loomcycle.yaml"))
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".config", "loomcycle", "loomcycle.yaml"))
-	}
-	return paths
-}
-
-// loadConfigForDoctor delegates to config.Load. Kept as a seam so
-// tests with a stubbed config implementation can plug in (though v1
-// just uses the real loader).
+// loadConfigForDoctor loads the server's stack for the --config value ("" for
+// none). Kept as a seam so tests with a stubbed config implementation can plug
+// in.
 var loadConfigForDoctor = func(path string) (configForDoctor, error) {
 	return loadConfigRealAdapter(path)
 }

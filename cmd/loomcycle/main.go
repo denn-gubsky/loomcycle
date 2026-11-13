@@ -291,23 +291,6 @@ func printVersion() {
 		buildVersion, buildCommit, buildTime, runtime.Version())
 }
 
-// selectPresetNames resolves the RFC AQ embedded-preset selection: --preset
-// flags, if any, override LOOMCYCLE_PRESETS (comma-separated, ordered). Empty /
-// unset → no presets (opt-in default — exactly today's behaviour). Order is
-// preserved; it becomes the base layer order of the config stack.
-func selectPresetNames(flags []string, env string) []string {
-	if len(flags) > 0 {
-		return flags
-	}
-	var out []string
-	for _, n := range strings.Split(env, ",") {
-		if n = strings.TrimSpace(n); n != "" {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
 // processStartedAt is when this process began. A run row older than it was
 // started by an earlier process.
 var processStartedAt = time.Now()

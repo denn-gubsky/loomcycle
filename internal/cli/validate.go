@@ -6,6 +6,8 @@ import (
 	"io"
 	"regexp"
 	"sort"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
 )
 
 // RunValidate loads a YAML config and reports on its health. Returns:
@@ -26,28 +28,46 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: loomcycle validate <path/to/loomcycle.yaml>")
+		fmt.Fprintln(stderr, "Usage: loomcycle validate [path/to/loomcycle.yaml]")
 		fmt.Fprintln(stderr)
-		fmt.Fprintln(stderr, "Loads the YAML, runs every constructor-time check, and prints a")
+		fmt.Fprintln(stderr, "Loads the config the server would load (embedded presets, the config")
+		fmt.Fprintln(stderr, "dir, then the named file; with no file named, the one the server")
+		fmt.Fprintln(stderr, "auto-discovers), runs every constructor-time check, and prints a")
 		fmt.Fprintln(stderr, "summary. Exits 0 on a clean config; 2 on any failure (stderr names")
 		fmt.Fprintln(stderr, "the offending agent / yaml line / fix).")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() < 1 {
+	if fs.NArg() > 1 {
 		fs.Usage()
 		return 2
 	}
+	// No path: the stack the server assembles with no --config.
 	cfgPath := fs.Arg(0)
 
-	cfg, err := loadLayeredConfig(cfgPath)
+	stack, err := assembleForCLI(cfgPath)
+	if err != nil {
+		if cfgPath == "" {
+			fs.Usage()
+		}
+		return fail(stderr, "config: %v", err)
+	}
+	cfg, err := config.LoadLayers(stack.Layers...)
 	if err != nil {
 		return fail(stderr, "config: %v", err)
 	}
 
 	// Print the summary table.
-	fmt.Fprintf(stdout, "loomcycle config: %s\n", cfgPath)
+	shown := cfgPath
+	switch {
+	case shown != "":
+	case len(stack.Files) > 0:
+		shown = stack.Files[len(stack.Files)-1]
+	default:
+		shown = "embedded presets only (no config file)"
+	}
+	fmt.Fprintf(stdout, "loomcycle config: %s\n", shown)
 	fmt.Fprintln(stdout)
 
 	fmt.Fprintf(stdout, "Storage backend  : %s\n", cfg.Storage.Backend)

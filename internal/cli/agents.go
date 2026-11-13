@@ -34,7 +34,7 @@ func RunAgents(args []string, stdout, stderr io.Writer) int {
 func runAgentsList(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agents list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "loomcycle.yaml", "path to config YAML")
+	cfgPath := fs.String("config", "", "path to config YAML (default: the config the server auto-discovers)")
 	jsonOutput := fs.Bool("json", false, "emit JSON instead of the human-readable table")
 	if err := fs.Parse(args); err != nil {
 		return 2

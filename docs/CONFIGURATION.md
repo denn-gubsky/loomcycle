@@ -2652,6 +2652,14 @@ auto-discovery, by `--config loomcycle.yaml`, or in `LOOMCYCLE_CONFIG_FILES` —
 server runs (no lockstep drift). `LOOMCYCLE_CONFIG_DIR` is unaffected: it already
 layers every `*.yaml` in the directory.
 
+**The CLI loads what the server loads.** `loomcycle validate`, `doctor`,
+`agents list`, `migrate --config`, `tokens` and `audit` assemble their stack with
+the same function the server boots and reloads with: presets, the config dir, a
+named file, section files and the `auth.env` beside the last file. With no file
+named (`loomcycle validate`, `loomcycle doctor`) they load what a bare
+`loomcycle` would: the auto-discovered file, or the presets and config dir alone.
+A file named explicitly must exist, as at boot.
+
 This pairs with runtime reload: edit a section file present at boot and
 `POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
 boot is also picked up on reload — the reload re-globs the `loomcycle.*.yaml`
