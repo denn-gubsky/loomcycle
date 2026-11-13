@@ -158,7 +158,12 @@ func (w *worker) attach(ctx context.Context, target, serverName string) error {
 	}
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
 	if err != nil {
-		return fmt.Errorf("worker: %s: %w", target, err)
+		// A target that cannot even be set up will not come right by
+		// retrying: count it as a refusal, so a worker left with nothing to
+		// serve stops and says why.
+		err = fmt.Errorf("%w: %s: %v", ErrRefused, target, err)
+		log.Error("cannot dial the dispatcher", "err", err)
+		return err
 	}
 	defer conn.Close()
 	client := workerpb.NewWorkerServiceClient(conn)
@@ -196,6 +201,33 @@ type worker struct {
 	mu    sync.Mutex
 	used  int
 	freed chan struct{} // closed and replaced each time a slot frees
+	// idle are the open streams waiting for a job, by a key of their own.
+	// When the last slot is taken they are withdrawn: a full worker offers
+	// no dispatcher an idle stream, so a dispatcher's job waits in its queue
+	// for a free worker rather than spending its retries on Busy answers.
+	idle    map[int]context.CancelFunc
+	idleKey int
+}
+
+// offer records an idle stream; drop forgets it once a job (or its end)
+// arrived. withdrawn reports whether a full worker cancelled it meanwhile.
+func (w *worker) offer(cancel context.CancelFunc) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.idle == nil {
+		w.idle = map[int]context.CancelFunc{}
+	}
+	w.idleKey++
+	w.idle[w.idleKey] = cancel
+	return w.idleKey
+}
+
+func (w *worker) drop(key int) (withdrawn bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, open := w.idle[key]
+	delete(w.idle, key)
+	return !open
 }
 
 // take claims a slot for a job; false when every slot is in use.
@@ -206,6 +238,12 @@ func (w *worker) take() bool {
 		return false
 	}
 	w.used++
+	if w.used == w.opt.Slots {
+		for k, cancel := range w.idle {
+			cancel()
+			delete(w.idle, k)
+		}
+	}
 	return true
 }
 
@@ -384,11 +422,19 @@ func (w *worker) work(ctx context.Context, client workerpb.WorkerServiceClient) 
 	if err != nil {
 		return err
 	}
+	key := w.offer(cancel)
 	if err := stream.Send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_Ready{Ready: &workerpb.Ready{WorkerId: w.opt.ID}}}); err != nil {
+		w.drop(key)
 		return err
 	}
 	f, err := stream.Recv()
+	withdrawn := w.drop(key)
 	if err != nil {
+		if withdrawn && ctx.Err() == nil {
+			// Withdrawn because every slot filled; offered again once one
+			// frees (waitFree).
+			return nil
+		}
 		return err
 	}
 	start := f.GetStart()
