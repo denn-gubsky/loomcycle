@@ -483,7 +483,8 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		// projection on); none, or zero, is the default.
 		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: "1h", refused: true},
 		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: "hourly", refused: true}, // stopped the boot before, too
-		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: "1h", named: []string{"memory.projection.interval"}},
+		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: "1h", named: []string{"memory.projection.interval", "memory.projection.enabled"}},
+		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: "1h", named: []string{"memory.projection.interval"}, refused: true, says: "memory.projection.enabled"}, // a cadence for a projection left off
 		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: "0"},
 		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: " "},
 
@@ -656,9 +657,12 @@ func TestRetiredEnvMoved_EveryMovedVariableHasOneRule(t *testing.T) {
 			t.Errorf("%s moved to the yaml (%q) and has no rule: set to something other than the default it would be dropped with only an advisory", name, instead)
 		}
 	}
+	// The advisory and the refusal name the same key.
 	for name, m := range retiredEnvMoved {
-		if !strings.Contains(retiredEnv[name], strings.ReplaceAll(m.key, "<id>", "")) && !strings.Contains(retiredEnv[name], m.key) {
-			t.Errorf("%s: the advisory %q does not name the rule's key %s", name, retiredEnv[name], m.key)
+		for _, key := range strings.Split(m.key, " and ") {
+			if !strings.Contains(retiredEnv[name], key) {
+				t.Errorf("%s: the advisory %q does not name the rule's key %s", name, retiredEnv[name], key)
+			}
 		}
 	}
 }

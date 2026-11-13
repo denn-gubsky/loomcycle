@@ -52,7 +52,8 @@ func TestDocumentProjection_TheYAMLIsTheOnlySource(t *testing.T) {
 	}
 
 	t.Setenv("LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", "2h")
-	cfg, err = loadYAMLString(t, "memory:\n  projection:\n    interval: 30m\n")
+	// The yaml names both keys the variable stood for, so it is only reported.
+	cfg, err = loadYAMLString(t, "memory:\n  projection:\n    enabled: false\n    interval: 30m\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +65,13 @@ func TestDocumentProjection_TheYAMLIsTheOnlySource(t *testing.T) {
 	// Beside a yaml that names the key, a value the variable could not have
 	// meant is not read and stops nothing.
 	t.Setenv("LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", "hourly")
-	if _, err = loadYAMLString(t, "memory:\n  projection:\n    interval: 30m\n"); err != nil {
+	if _, err = loadYAMLString(t, "memory:\n  projection:\n    enabled: false\n    interval: 30m\n"); err != nil {
 		t.Fatalf("a retired variable's value stopped the load: %v", err)
+	}
+	// The interval alone would be a cadence for a projection the variable
+	// used to turn on and the yaml leaves off.
+	if _, err = loadYAMLString(t, "memory:\n  projection:\n    interval: 30m\n"); err == nil || !strings.Contains(err.Error(), "memory.projection.enabled") {
+		t.Fatalf("err = %v, want a refusal naming memory.projection.enabled", err)
 	}
 }
 

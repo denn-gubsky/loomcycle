@@ -144,12 +144,21 @@ var retiredEnvMoved = map[string]movedSetting{
 	// meant one text per call, and no timeout.
 	"LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE": {key: "memory.embedder.batch_size", differs: intOtherThan(EmbedderBatchSizeDefault)},
 	"LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS": {key: "memory.embedder.timeout_ms", differs: intOtherThan(EmbedderTimeoutMSDefault)},
-	// A positive interval started the projection sweeper, and one that did
-	// not parse stopped the boot. None, or zero, starts no sweeper.
-	"LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL": {key: "memory.projection.interval", differs: func(value string, _ retiredEnvCtx) bool {
-		d, err := parseProjectionDuration("", value)
-		return err != nil || d > 0
-	}},
+	// A positive interval started the projection sweeper and turned the
+	// projection on, and one that did not parse stopped the boot. None, or
+	// zero, starts no sweeper. The yaml says the same in two keys, and the
+	// interval alone would name a cadence for a projection that is off, so
+	// both must be named.
+	"LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL": {
+		key: "memory.projection.interval and memory.projection.enabled",
+		differs: func(value string, _ retiredEnvCtx) bool {
+			d, err := parseProjectionDuration("", value)
+			return err != nil || d > 0
+		},
+		named: func(c retiredEnvCtx) bool {
+			return c.names("memory.projection.interval") && c.names("memory.projection.enabled")
+		},
+	},
 
 	// Concurrency. A per-user cap of zero or below is "no cap"; the queue
 	// bound's zero is "refuse at once", and the old read ignored a negative
