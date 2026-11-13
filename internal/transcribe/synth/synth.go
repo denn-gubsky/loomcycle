@@ -14,24 +14,19 @@ package synth
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"time"
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/speech"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe"
-	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
 // DefaultMaxBytes bounds the joined (and the encoded) audio when Deps sets no
@@ -78,6 +73,9 @@ type Deps struct {
 	Slot func(ctx context.Context) (release func(), err error)
 	// MaxBytes bounds the joined and the encoded audio; 0 is DefaultMaxBytes.
 	MaxBytes int64
+	// Convert, when set, encodes instead of the encoder run in this process
+	// (RFC GO); Config.Encode and Scratch then go unused.
+	Convert convert.Client
 }
 
 func (d Deps) maxBytes() int64 {
@@ -400,81 +398,28 @@ func chargeOne(ctx context.Context, ledger transcribe.Ledger, res *Result, a pro
 	}
 }
 
-// encode has the operator's encoder turn the joined WAV into format, in a
-// scratch folder under the caller's scratch directory. The encoder gets the
-// WAV's path and the path to write, never the text; it runs without a shell,
-// with a scrubbed environment, under speech.timeout_s. Every file operation
-// goes through an os.Root, and the folder is removed afterwards.
+// encode has the audio encoded into format. The encoder is handed the WAV's
+// bytes, never the text; in this process it gets them in a scratch folder
+// under the caller's scratch directory and runs without a shell, with a
+// scrubbed environment, under speech.timeout_s.
 func encode(ctx context.Context, d Deps, wav []byte, format string) ([]byte, error) {
-	if d.Config.Encode == nil {
+	out, err := d.converter().EncodeAudio(ctx, wav, format)
+	if errors.Is(err, convert.ErrNotConfigured) {
 		return nil, fmt.Errorf("%w: %s", ErrEncodeNotConfigured, format)
 	}
-	if d.Scratch == nil {
-		return nil, errors.New("there is no scratch directory to encode the audio in")
-	}
-	root, err := d.Scratch(ctx)
-	if err != nil {
-		return nil, err
-	}
-	real, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return nil, fmt.Errorf("scratch root: %w", err)
-	}
-	rootFS, err := os.OpenRoot(real)
-	if err != nil {
-		return nil, fmt.Errorf("scratch root: %w", err)
-	}
-	defer rootFS.Close()
-	name, err := scratchName()
-	if err != nil {
-		return nil, err
-	}
-	if err := rootFS.Mkdir(name, 0o700); err != nil {
-		return nil, err
-	}
-	defer func() { _ = rootFS.RemoveAll(name) }()
-	scratch, err := rootFS.OpenRoot(name)
-	if err != nil {
-		return nil, err
-	}
-	defer scratch.Close()
-	if err := scratch.WriteFile("speech.wav", wav, 0o600); err != nil {
-		return nil, fmt.Errorf("writing the audio for the encoder: %w", err)
-	}
-	outName := "speech." + format
-	tmp := filepath.Join(root, name)
-	timeout := time.Duration(d.Config.TimeoutSeconds) * time.Second
-	if _, err := helper.Run(ctx, helper.Spec{
-		Key:      "speech.encode",
-		Template: d.Config.Encode.Command,
-		Wrapper:  d.Config.Encode.Wrapper,
-		Vars:     map[string]string{"in": filepath.Join(tmp, "speech.wav"), "out": filepath.Join(tmp, outName)},
-		Root:     root,
-		Dir:      tmp,
-		Timeout:  timeout,
-	}); err != nil {
-		return nil, err
-	}
-	fi, err := scratch.Lstat(outName)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
-		return nil, errors.New("speech.encode: the encoder wrote no file at {out}")
-	}
-	if fi.Size() > d.maxBytes() {
-		return nil, fmt.Errorf("speech.encode: the encoded audio is %d bytes, over the %d limit", fi.Size(), d.maxBytes())
-	}
-	fh, err := scratch.Open(outName)
-	if err != nil {
-		return nil, err
-	}
-	defer fh.Close()
-	return io.ReadAll(io.LimitReader(fh, d.maxBytes()))
+	return out, err
 }
 
-// scratchName is a fresh scratch folder name.
-func scratchName() (string, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
+// converter is the client an encode runs on: the one the caller gave, or the
+// operator's encoder run in this process.
+func (d Deps) converter() convert.Client {
+	if d.Convert != nil {
+		return d.Convert
 	}
-	return ".tts-" + hex.EncodeToString(b[:]), nil
+	p := &convert.InProcess{Scratch: d.Scratch, MaxEncodedBytes: d.maxBytes()}
+	if d.Config != nil && d.Config.Encode != nil {
+		p.Encode = &convert.Helper{Key: "speech.encode", Command: d.Config.Encode.Command, Wrapper: d.Config.Encode.Wrapper,
+			Timeout: time.Duration(d.Config.TimeoutSeconds) * time.Second}
+	}
+	return p
 }

@@ -208,6 +208,9 @@ func (e *Engine) prepareImage(ctx context.Context, data []byte, mediaType string
 	if sendable[mediaType] && max(cfg.Width, cfg.Height) <= MaxImageEdge {
 		return data, mediaType, nil
 	}
+	if e.images != nil {
+		return e.images.ReencodeImage(ctx, data)
+	}
 	return reencode(ctx, data, format, cfg, e.decode, e.decodeSlot)
 }
 

@@ -94,6 +94,11 @@ var layers = []layer{
 			"internal/breakpoints",
 			"internal/cancel",
 			"internal/concurrency",
+			// The conversion seam and its in-process runner (RFC GO): bytes in,
+			// bytes out, over the extractors and the helper runner beside it.
+			// The worker pool and dispatcher that implement it remotely sit
+			// above.
+			"internal/convert",
 			"internal/cryptoops",
 			"internal/decisionq",
 			"internal/dynvol",
@@ -292,6 +297,8 @@ var allowedSideways = []subsystemEdge{
 	// safego (the goroutine panic net) imports nothing in this module, so
 	// any L0 package may start its goroutines through it.
 	{"internal/concurrency", "internal/safego"},
+	{"internal/convert", "internal/files/extract"},
+	{"internal/convert", "internal/transcribe/helper"},
 	{"internal/kms", "internal/awsauth"},
 	{"internal/logging", "internal/redact"},
 	{"internal/projection", "internal/safego"},

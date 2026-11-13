@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/fence"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -119,6 +120,24 @@ func (f *File) extractSlot(ctx context.Context) (release func(), err error) {
 	return f.Extractions.Acquire(wctx)
 }
 
+// converter is the client this tool's conversions run on: the one boot gave
+// it, or this process, under the extraction slots and the operator's OCR
+// rasteriser, rendering pages in a scratch folder of the run's inbox.
+func (f *File) converter() convert.Client {
+	if f.Convert != nil {
+		return f.Convert
+	}
+	p := &convert.InProcess{Extractions: f.Extractions, SlotWait: f.slotWait, ExtractTimeout: fileExtractTimeout,
+		Scratch: func(ctx context.Context) (string, error) {
+			root, _, err := effectiveRoot(ctx, inbox.Name, false)
+			return root, err
+		}}
+	if op := f.ocrConfig(); op != nil && op.Rasterize != nil {
+		p.Rasterize = &convert.Helper{Key: "transcription.ocr.rasterize", Command: op.Rasterize.Command, Wrapper: op.Rasterize.Wrapper, Timeout: ocrRasterizeTimeout}
+	}
+	return p
+}
+
 // slotBusy answers a call that got no extraction slot: the caller's own
 // context ending is returned as that error, a wait that ran out as a busy
 // server the model may try again.
@@ -182,8 +201,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 		}
 		return f.transcribeFile(ctx, call, r, rel, fh, info.Size(), mt)
 	}
-	ex, ok := extract.Default().For(mt, name)
-	if !ok {
+	if _, ok := extract.Default().For(mt, name); !ok {
 		return errValidation(fmt.Sprintf("extract: cannot extract text from %s (%s)", r.raw, mt),
 			"Extract reads DOCX, ODT, XLSX, PPTX, PDF, HTML, CSV and TSV, text, Markdown, VTT and SRT captions, and images; op=transcribe reads audio and video."), nil
 	}
@@ -205,24 +223,19 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	if slug == "" {
 		slug = "document"
 	}
-	// The extraction's own time bound starts once it holds a slot: time spent
-	// queued behind other files is not this file's.
-	release, err := f.extractSlot(ctx)
-	if err != nil {
-		return slotBusy(ctx, "extract", f.slotWait)
-	}
-	defer release()
-	xctx, cancel := context.WithTimeout(ctx, fileExtractTimeout)
-	defer cancel()
-	sink := &extractSink{ctx: xctx, dir: path.Join(inbox.DirExtracted, slug), origin: origin}
+	// The converter holds an extraction slot for the parse alone, and the
+	// extraction's own time bound starts once it holds it: time spent queued
+	// behind other files is not this file's. The OCR pass below calls a model
+	// and cuts pages under slots of its own.
+	sink := &extractSink{ctx: ctx, dir: path.Join(inbox.DirExtracted, slug), origin: origin}
 	// A dry run writes nothing, so it keeps no pictures either.
 	images := (in.Images == nil || *in.Images) && !in.DryRun
 	infer := in.Structure != nil && in.Structure.InferHeadings
-	rep, err := ex.Extract(xctx, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows, InferHeadings: infer})
-	// The OCR pass below calls a model and cuts pages under slots of its own.
-	release()
+	rep, err := f.converter().Extract(ctx, mt, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows, InferHeadings: infer})
 	cut := false
 	switch {
+	case errors.Is(err, convert.ErrBusy):
+		return slotBusy(ctx, "extract", f.slotWait)
 	case err == nil:
 	case errors.Is(err, extract.ErrSinkFull):
 		cut = true

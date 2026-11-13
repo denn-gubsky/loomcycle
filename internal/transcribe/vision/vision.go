@@ -50,6 +50,15 @@ type Options struct {
 	// provider registry.
 	Resolve  Resolver
 	Provider func(id string) (providers.Provider, error)
+	// Images, when set, re-encodes an image that must be scaled instead of
+	// this engine's own decoder (RFC GO: a convert.Client satisfies it).
+	Images ImageReencoder
+}
+
+// ImageReencoder decodes an image and encodes it again, scaled to fit
+// MaxImageEdge.
+type ImageReencoder interface {
+	ReencodeImage(ctx context.Context, data []byte) ([]byte, string, error)
 }
 
 // Engine is the vision OCR engine.
@@ -63,6 +72,8 @@ type Engine struct {
 	// not a package variable: the server builds one engine, so this bounds
 	// the process, and a test's engine has its own.
 	decodeSlot chan struct{}
+	// images is Options.Images; nil re-encodes with decode and decodeSlot.
+	images ImageReencoder
 }
 
 // New builds the engine.
@@ -74,7 +85,7 @@ func New(o Options) (*Engine, error) {
 		return nil, fmt.Errorf("vision OCR: transcription.ocr.engine is %q, not %s", o.Config.Engine, config.OCREngineVision)
 	}
 	return &Engine{cfg: o.Config, resolve: o.Resolve, provider: o.Provider,
-		decode: image.Decode, decodeSlot: make(chan struct{}, 1)}, nil
+		decode: image.Decode, decodeSlot: make(chan struct{}, 1), images: o.Images}, nil
 }
 
 func (e *Engine) Name() string { return config.OCREngineVision }
