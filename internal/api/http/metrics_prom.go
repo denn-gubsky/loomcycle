@@ -721,7 +721,7 @@ func writeAudioQueueGauges(w io.Writer, replicaLabels string, s *Server) {
 		direction string
 		q         *engineQueue
 	}{{"speech", speechQ}, {"transcription", transQ}}
-	fmt.Fprintln(w, "# HELP loomcycle_audio_engine_inflight Engine requests the audio routes have in flight (LOOMCYCLE_SPEECH_MAX_INFLIGHT / LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT bound them).")
+	fmt.Fprintln(w, "# HELP loomcycle_audio_engine_inflight Engine requests the audio routes have in flight (LOOMCYCLE_AUDIO_MAX_INFLIGHT bounds each route).")
 	fmt.Fprintln(w, "# TYPE loomcycle_audio_engine_inflight gauge")
 	for _, e := range queues {
 		fmt.Fprintf(w, "loomcycle_audio_engine_inflight%s %d\n", mergeLabels(replicaLabels, map[string]string{"direction": e.direction}), e.q.inflight())

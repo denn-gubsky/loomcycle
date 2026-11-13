@@ -4140,18 +4140,16 @@ type Env struct {
 	// operators tune it down to shrink the per-request memory ceiling.
 	// LOOMCYCLE_MAX_REQUEST_BYTES (bytes; <=0 ignored, default kept).
 	MaxRequestBytes int64
-	// SpeechMaxInflight and TranscriptionMaxInflight bound how many engine
-	// requests the audio routes (POST /v1/audio/speech and
-	// /v1/audio/transcriptions) have in flight at once, server-wide, per
-	// direction. A request over the bound waits for a slot while its caller
+	// AudioMaxInflight bounds how many engine requests each audio route
+	// (POST /v1/audio/speech and /v1/audio/transcriptions) has in flight at
+	// once, server-wide: each direction has its own queue of this size. A request over the bound waits for a slot while its caller
 	// stays connected rather than being refused: a self-hosted speech engine
 	// serves a few requests at a time, and a client is better served by a slow
 	// answer than by a retry loop. A slot is held for one engine request, so a
 	// long text or recording cut into pieces takes turns with shorter ones.
-	// Default 2 each. LOOMCYCLE_SPEECH_MAX_INFLIGHT,
-	// LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT (<=0 or malformed keeps the default).
-	SpeechMaxInflight        int
-	TranscriptionMaxInflight int
+	// Default 2. LOOMCYCLE_AUDIO_MAX_INFLIGHT (<=0 or malformed keeps the
+	// default).
+	AudioMaxInflight int
 	// KMSVaultAllowHTTP admits a plain http:// Vault address for a crypto
 	// key held in Vault Transit (a dev server). Off by default: the Vault
 	// token travels in a header. LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1.

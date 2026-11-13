@@ -61,15 +61,9 @@ func applyEnvToolLimits(cfg *Config) error {
 	}
 	// The audio routes' engine queues. A non-positive value is ignored: zero
 	// slots would park every request for good.
-	cfg.Env.SpeechMaxInflight = AudioMaxInflightDefault
-	cfg.Env.TranscriptionMaxInflight = AudioMaxInflightDefault
-	for name, dst := range map[string]*int{
-		"LOOMCYCLE_SPEECH_MAX_INFLIGHT":        &cfg.Env.SpeechMaxInflight,
-		"LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT": &cfg.Env.TranscriptionMaxInflight,
-	} {
-		if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
-			*dst = n
-		}
+	cfg.Env.AudioMaxInflight = AudioMaxInflightDefault
+	if n, err := strconv.Atoi(os.Getenv("LOOMCYCLE_AUDIO_MAX_INFLIGHT")); err == nil && n > 0 {
+		cfg.Env.AudioMaxInflight = n
 	}
 	// Bashbox in-memory write cap (RFC ES follow-up): a positive override
 	// tunes it; a non-positive or malformed value keeps the default, since

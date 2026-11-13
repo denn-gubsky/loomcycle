@@ -3207,7 +3207,7 @@ speech:
 - `loomcycle validate` fails on an unknown key (in the block, a voice entry or `encode`), a missing `engine`, `openai-speech` with no voices or no `default_language` (or one with no voices entry), an unknown language code, the same language twice, a voice model of another kind or untagged, with no provider, a pattern, or off the `openai` driver, an empty voice id or one with spaces at its ends or control characters, a repeated alternate, an unknown `format`, an `encode` command without `{in}` and `{out}`, a negative number, `max_chars_per_call` above 4096 or above `max_chars_per_run`.
 - **Licences.** A `models:` alias may carry `license: commercial` or `license: noncommercial` (anything else fails load). Nothing refuses a noncommercial model; a speech voice using one adds a load warning naming it, and the Settings panel will show it. The Phonon 40m voices and its multilingual model are CC BY-NC: keep them off a hosted, paid deployment.
 - **Pricing.** A speech engine priced per character uses `pricing.models."<provider>/<model>": { per_million_chars: 15 }` (OpenAI `tts-1`); one priced by output time uses `per_minute`, as speech-to-text does. A self-hosted engine is free unless you set a price. A pair absent from the table is unpriced, which is not the same as free.
-- **Outside a run.** `POST /v1/audio/speech` reads this block as it is: one request may carry `max_chars_per_run` characters and `max_seconds_per_run` of estimated audio, and engine requests wait in a server-wide queue of `LOOMCYCLE_SPEECH_MAX_INFLIGHT` (default 2). The per-agent block below does not apply to it.
+- **Outside a run.** `POST /v1/audio/speech` reads this block as it is: one request may carry `max_chars_per_run` characters and `max_seconds_per_run` of estimated audio, and engine requests wait in a server-wide queue of `LOOMCYCLE_AUDIO_MAX_INFLIGHT` (default 2). The per-agent block below does not apply to it.
 
 **Per agent.** An agent can switch speech off for itself and lower the per-run character cap:
 
@@ -3358,7 +3358,7 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` accepts a plain `http://` Vault address for Vault Transit keys (a dev server). Off because the Vault token travels in a header. |
 | `LOOMCYCLE_WEBSEARCH_PROVENANCE` | off | `1` appends a `(via <provider>)` footer to WebSearch results, naming the search provider that answered and any fallover. |
 | `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. Unset, `<LOOMCYCLE_CONFIG_DIR>/help` when that directory exists; set to the empty string for bundled topics only. |
-| `LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT` | `2` | Engine requests `/v1/audio/transcriptions` keeps in flight server-wide; more wait for a slot (sibling of `LOOMCYCLE_SPEECH_MAX_INFLIGHT`). |
+| `LOOMCYCLE_AUDIO_MAX_INFLIGHT` | `2` | Engine requests each audio route (`/v1/audio/speech`, `/v1/audio/transcriptions`) keeps in flight server-wide; more wait for a slot. One value sizes both routes' queues. |
 
 ### MCP
 

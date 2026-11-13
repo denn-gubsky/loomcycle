@@ -54,9 +54,10 @@ func (q *engineQueue) releaser() func() {
 func (q *engineQueue) inflight() int { return len(q.slots) }
 func (q *engineQueue) queued() int64 { return q.waiting.Load() }
 
-// audioQueues are the two routes' queues, sized from the environment the
-// first time either is needed: a change of LOOMCYCLE_SPEECH_MAX_INFLIGHT or
-// LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT takes a restart.
+// audioQueues are the two routes' queues, both sized from the one setting
+// the first time either is needed: a change of LOOMCYCLE_AUDIO_MAX_INFLIGHT
+// takes a restart. They stay two queues so a long transcription cannot hold
+// up a read-aloud.
 type audioQueues struct {
 	once          sync.Once
 	speech, trans *engineQueue
@@ -65,8 +66,8 @@ type audioQueues struct {
 func (s *Server) audioQueues() (speech, transcription *engineQueue) {
 	s.audioQ.once.Do(func() {
 		env := s.cfg().Env
-		s.audioQ.speech = newEngineQueue(env.SpeechMaxInflight)
-		s.audioQ.trans = newEngineQueue(env.TranscriptionMaxInflight)
+		s.audioQ.speech = newEngineQueue(env.AudioMaxInflight)
+		s.audioQ.trans = newEngineQueue(env.AudioMaxInflight)
 	})
 	return s.audioQ.speech, s.audioQ.trans
 }

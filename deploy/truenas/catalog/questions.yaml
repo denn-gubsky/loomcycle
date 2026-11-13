@@ -486,15 +486,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_SPEECH_MAX_INFLIGHT
-            label: LOOMCYCLE_SPEECH_MAX_INFLIGHT
-            description: 'POST /v1/audio/speech and POST /v1/audio/transcriptions put each engine request through a server-wide queue per direction: a self-hosted speech engine serves only a few requests at a time. A request over the bound WAITS for a slot while its caller stays connected; it is not refused. A long text or recording cut into pieces takes a slot per piece, so it takes turns with shorter requests. Default 2…'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT
-            label: LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT
-            description: '(example: 2)'
+          - variable: LOOMCYCLE_AUDIO_MAX_INFLIGHT
+            label: LOOMCYCLE_AUDIO_MAX_INFLIGHT
+            description: 'POST /v1/audio/speech and POST /v1/audio/transcriptions put each engine request through a server-wide queue per direction: a self-hosted speech engine serves only a few requests at a time. A request over the bound WAITS for a slot while its caller stays connected; it is not refused. A long text or recording cut into pieces takes a slot per piece, so it takes turns with shorter requests. One setti…'
             schema:
               type: string
               default: ""

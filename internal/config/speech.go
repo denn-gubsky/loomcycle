@@ -365,6 +365,5 @@ func (s *SpeechConfig) UnmarshalYAML(n *yaml.Node) error {
 }
 
 // AudioMaxInflightDefault is how many engine requests each audio route has in
-// flight at once when LOOMCYCLE_SPEECH_MAX_INFLIGHT /
-// LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT is unset.
+// flight at once when LOOMCYCLE_AUDIO_MAX_INFLIGHT is unset.
 const AudioMaxInflightDefault = 2

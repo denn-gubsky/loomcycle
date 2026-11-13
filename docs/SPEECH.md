@@ -63,7 +63,7 @@ The per-run caps are the per-request caps here: a request is the unit of work. A
 
 ### Under load: requests wait
 
-Engine requests take turns in a server-wide queue per direction, sized by `LOOMCYCLE_SPEECH_MAX_INFLIGHT` and `LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT` (default 2 each). A request that finds the queue full **waits** for a slot while its caller stays connected; it is not refused with a 503. A slot is held for one engine request, so a long text or recording cut into pieces takes turns with shorter requests rather than holding the engine throughout. A caller who hangs up leaves the queue.
+Engine requests take turns in a server-wide queue per direction, each sized by `LOOMCYCLE_AUDIO_MAX_INFLIGHT` (default 2). A request that finds the queue full **waits** for a slot while its caller stays connected; it is not refused with a 503. A slot is held for one engine request, so a long text or recording cut into pieces takes turns with shorter requests rather than holding the engine throughout. A caller who hangs up leaves the queue.
 
 `/metrics` reports `loomcycle_audio_engine_inflight` and `loomcycle_audio_engine_queued`, per `direction`. A queue that keeps growing says the speech host needs more capacity, or the bound is set lower than it can serve.
 
