@@ -20,7 +20,9 @@ package builtin
 //
 // The annotation reads reuse what with_summary uses (annotationRecordsFor,
 // folderTargetOf/folderRecord, annotationScope.stale); nothing here reads an
-// annotation another way.
+// annotation another way. Sections and the document carry a stale mark (within
+// the with_summary check budget); folders carry only their brief, see
+// folderEntry.
 
 import (
 	"context"
@@ -69,12 +71,15 @@ func (d *Document) lineage(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	docID, rootID := asStr(dr[0]), asStr(dr[2])
 
 	// The sections, nearest first: the chunk itself (unless it is the root) and
-	// each parent below the root.
+	// each parent below the root. A broken tree — a parent that is missing, in
+	// another document, or already visited — ends the walk there, reported as
+	// sections_truncated (the chain is incomplete); another document's chunk is
+	// never reported as a section of this one.
 	var sections []chunkRow
 	sectionsTruncated := false
 	seen := map[string]bool{}
-	for cur := row; cur.ID != "" && cur.ID != rootID && !seen[cur.ID]; {
-		if len(sections) == maxLineageSections {
+	for cur := row; cur.ID != rootID; {
+		if len(sections) == maxLineageSections || seen[cur.ID] {
 			sectionsTruncated = true
 			break
 		}
@@ -87,7 +92,8 @@ func (d *Document) lineage(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
-		if !ok {
+		if !ok || next.DocumentID != row.DocumentID {
+			sectionsTruncated = true
 			break
 		}
 		cur = next
@@ -105,10 +111,13 @@ func (d *Document) lineage(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	}
 
 	// Annotations: one probe first, so a scope with none costs no record reads.
-	annotated := false
-	if probe, err := d.query(ctx, key, `SELECT 1 FROM chunk_annotations LIMIT 1`); err == nil && len(probe.Rows) > 0 {
-		annotated = true
+	// Only a missing table means "none"; any other fault is reported, not taken
+	// for an unannotated scope (which would silently drop every brief).
+	probe, err := d.query(ctx, key, `SELECT 1 FROM chunk_annotations LIMIT 1`)
+	if err != nil && !schemaMissing(err) {
+		return errFrom(op+": annotations: "+err.Error(), err), nil
 	}
+	annotated := err == nil && len(probe.Rows) > 0
 	var recs map[string]map[string]annotationRecord
 	if annotated {
 		ids := []string{rootID}
@@ -182,8 +191,12 @@ func (d *Document) lineage(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 		if err != nil {
 			return nil, err
 		}
+		// The brief only, never a stale mark: judging a folder's record rebuilds
+		// its inputs from its whole subtree (folderInputsFor), a scope-wide read
+		// per walker step for a brief on "/", and the answer would also reflect
+		// documents the caller may not read.
 		if ok {
-			mark(m, *rec)
+			m["brief"] = rec.Brief
 		}
 		return m, nil
 	}

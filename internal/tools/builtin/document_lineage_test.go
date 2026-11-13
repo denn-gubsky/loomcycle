@@ -194,24 +194,7 @@ func TestDocumentLineage_EachPathNameHasItsChainUpToTheBound(t *testing.T) {
 func TestDocumentLineage_SectionDepthIsBounded(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	ctx := annOperator(base)
-	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Deep","path":"/deep/doc"}`)
-	if r.IsError {
-		t.Fatal(r.Text)
-	}
-	doc := out["document_id"].(string)
-	parent, leaf := "", ""
-	for i := 0; i < maxLineageSections+2; i++ {
-		p := ""
-		if parent != "" {
-			p = fmt.Sprintf(`,"parent_id":%q`, parent)
-		}
-		o, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q%s,"title":"Level %d"}`, doc, p, i))
-		if r.IsError {
-			t.Fatal(r.Text)
-		}
-		parent = o["id"].(string)
-		leaf = parent
-	}
+	doc, leaf := deepDocument(t, d, ctx, maxLineageSections+2)
 	got := lineageOf(t, d, ctx, leaf)
 	secs := got["sections"].([]any)
 	if len(secs) != maxLineageSections || got["sections_truncated"] != true {
@@ -221,6 +204,154 @@ func TestDocumentLineage_SectionDepthIsBounded(t *testing.T) {
 		t.Fatalf("nearest section = %v, want the chunk itself", first)
 	}
 	if got["document"].(map[string]any)["document_id"] != doc {
+		t.Fatalf("document = %v", got["document"])
+	}
+}
+
+// deepDocument makes a document whose chunks nest n deep below the root and
+// returns it and the deepest chunk.
+func deepDocument(t *testing.T, d *Document, ctx context.Context, n int) (doc, leaf string) {
+	t.Helper()
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Deep","path":"/deep/doc"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	doc = out["document_id"].(string)
+	for i := 0; i < n; i++ {
+		p := ""
+		if leaf != "" {
+			p = fmt.Sprintf(`,"parent_id":%q`, leaf)
+		}
+		o, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q%s,"title":"Level %d"}`, doc, p, i))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		leaf = o["id"].(string)
+	}
+	return doc, leaf
+}
+
+// Exactly the bound is the whole chain, not a cut one.
+func TestDocumentLineage_ExactlyTheBoundIsNotTruncated(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := annOperator(base)
+	_, leaf := deepDocument(t, d, ctx, maxLineageSections)
+	got := lineageOf(t, d, ctx, leaf)
+	if n := len(got["sections"].([]any)); n != maxLineageSections {
+		t.Fatalf("sections = %d, want %d", n, maxLineageSections)
+	}
+	if _, ok := got["sections_truncated"]; ok {
+		t.Fatalf("a chain of exactly %d sections reported truncated", maxLineageSections)
+	}
+}
+
+// A section and a document whose text changed since their briefs were written
+// carry stale; a folder never does, because judging it means rebuilding its
+// inputs from its whole subtree on every step.
+func TestDocumentLineage_StaleMarksSectionsAndDocumentNotFolders(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := annOperator(base)
+	c := seedAnnCorpus(t, d, ctx)
+	annWrite(t, d, ctx, `"id":"`+c.setup+`"`, "How to set the widget up")
+	annWrite(t, d, ctx, `"document_id":"`+c.doc+`"`, "A guide to the widget")
+	folderWrite(t, d, ctx, "/kb/widgets", "Everything about widgets")
+	// The document's brief rewritten after the folder's: the folder is stale by
+	// get_annotation's measure.
+	annWrite(t, d, ctx, `"document_id":"`+c.doc+`"`, "A guide to the widget, again")
+	if got := annStale(t, d, ctx, `"level":"path","path":"/kb/widgets"`); !got["path"] {
+		t.Fatalf("fixture: the folder is not stale by get_annotation (%v)", got)
+	}
+	// Step one's text changed after Setup's brief was written, and Notes (which
+	// has no brief of its own, so the document's is written from its text) after
+	// the document's.
+	for _, id := range []string{c.step1, c.notes} {
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"body":"Changed text.","revision":1}`, id)); r.IsError {
+			t.Fatalf("update_chunk: %s", r.Text)
+		}
+	}
+	got := lineageOf(t, d, ctx, c.step1)
+	setup := got["sections"].([]any)[1].(map[string]any)
+	if setup["id"] != c.setup || setup["stale"] != true {
+		t.Fatalf("Setup = %v, want stale after Step one changed", setup)
+	}
+	if doc := got["document"].(map[string]any); doc["brief"] != "A guide to the widget, again" || doc["stale"] != true {
+		t.Fatalf("document = %v, want its brief marked stale", doc)
+	}
+	folder := got["paths"].([]any)[0].(map[string]any)["folders"].([]any)[0].(map[string]any)
+	if folder["path"] != "/kb/widgets" || folder["brief"] != "Everything about widgets" {
+		t.Fatalf("folder = %v", folder)
+	}
+	if _, ok := folder["stale"]; ok {
+		t.Fatalf("folder entry carries stale: %v", folder)
+	}
+}
+
+// A parent row in another document (a broken tree) ends the walk: the other
+// document's chunks are never reported as sections of this one, and the answer
+// says the chain is incomplete.
+func TestDocumentLineage_ParentInAnotherDocumentStopsTheWalk(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := annOperator(base)
+	c := seedAnnCorpus(t, d, ctx)
+	other, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Other","path":"/kb/other"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	o, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"title":"Foreign"}`, other["document_id"]))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	foreign := o["id"].(string)
+	key, _, err := d.resolveScope(ctx, "tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.exec(ctx, key, `UPDATE chunks SET parent_id = ? WHERE id = ?`, foreign, c.setup); err != nil {
+		t.Fatal(err)
+	}
+	got := lineageOf(t, d, ctx, c.step1)
+	secs := got["sections"].([]any)
+	if len(secs) != 2 || secs[1].(map[string]any)["id"] != c.setup {
+		t.Fatalf("sections = %v, want Step one and Setup only", secs)
+	}
+	if raw, _ := json.Marshal(got); strings.Contains(string(raw), foreign) {
+		t.Fatalf("the other document's chunk is in the lineage: %s", raw)
+	}
+	if got["sections_truncated"] != true {
+		t.Fatalf("a walk cut by a broken parent must say the chain is incomplete: %v", got)
+	}
+	if got["document"].(map[string]any)["document_id"] != c.doc {
+		t.Fatalf("document = %v", got["document"])
+	}
+}
+
+// In the user scope the access questions carry the scope's owner; a folder the
+// caller's rules deny is left out and the rest of the chain is kept.
+func TestDocumentLineage_UserScope(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Notes","path":"/a/b/notes"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	o, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"title":"Monday"}`, out["document_id"]))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	lin := func(ctx context.Context) map[string]any {
+		got, r := docExec(t, d, ctx, `{"op":"lineage","scope":"user","id":"`+o["id"].(string)+`"}`)
+		if r.IsError {
+			t.Fatalf("lineage: %s", r.Text)
+		}
+		return got
+	}
+	if f := folderPaths(t, lin(ctx)["paths"].([]any)[0]); strings.Join(f, "|") != "/a/b=|/a=|/=" {
+		t.Fatalf("user-scope folders = %v", f)
+	}
+	got := lin(withACL(ctx, aclSet(t, denyRule("read", "document:user:/a"))))
+	if f := folderPaths(t, got["paths"].([]any)[0]); strings.Join(f, "|") != "/a/b=|/=" {
+		t.Fatalf("user-scope folders under a deny on /a = %v", f)
+	}
+	if got["document"].(map[string]any)["title"] != "Notes" {
 		t.Fatalf("document = %v", got["document"])
 	}
 }
