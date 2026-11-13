@@ -3518,7 +3518,6 @@ What the runtime deletes with age is set in the yaml `retention:` block, not in 
 | `OTEL_BSP_SCHEDULE_DELAY` | `5000` | Milliseconds between exports. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | — | A file holding the collector headers (`key=value`, comma- or newline-separated, `#` comments, values URL-decoded), read once at startup so the secret stays out of the process environment. Setting it beside `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, or an unreadable file, stops the startup. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What an authenticated caller's `traceparent` does: `parent` joins the run to the caller's trace, `link` starts a new trace linked to it (the caller cannot steer sampling), `ignore` reads nothing. |
-| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | — | Per-tenant sampling ratio for runs that start a trace, as `tenant=ratio,...` (e.g. `acme=1,beta=0.1`); overrides `observability.tracing.tenant_sampler_ratios` tenant by tenant. See "Sampling per tenant". A bad tenant id or a ratio outside 0–1 stops the startup. |
 | `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` also puts the raw `loomcycle.user_id` on spans, beside `loomcycle.user_hash`. See "Users on spans". |
 | `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` | `2000` | Series one `/metrics` instrument may hold; past it new label sets fold into one series labelled `otel_metric_overflow="true"`. A value that is not a positive integer stops the startup. See "Metrics". |
 | `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds an `agent` label (the agent name) to `loomcycle_runs_total` and `loomcycle_tokens_total`. Only for a bounded agent catalogue. See "Metrics". |
@@ -3526,7 +3525,7 @@ What the runtime deletes with age is set in the yaml `retention:` block, not in 
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TENANT_TELEMETRY` | off | `1` lets each tenant export its own traces, and its own series of the in-process metrics, to an OTLP collector of its own, beside the operator's export. Off, the `/v1/_telemetry` routes answer 404 `feature_disabled` and tracing is exactly as without it. See "Tenant telemetry export". |
 | `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP` | off | `1` accepts an `http://` collector endpoint (a lab without TLS). Off, only `https://`. A header credential can be bound only to an https endpoint, so an http one takes no headers. |
-| `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | — | Comma-separated hosts a tenant's endpoint may name, each exact (`otel.example.com`) or `*.suffix` (`*.grafana.net`, which does not match `grafana.net` itself). Empty allows any host the address guard lets through. |
+| yaml `observability.tenant_telemetry.allowed_hosts` | — | Not a variable: a yaml list of the hosts a tenant's endpoint may name, each exact (`otel.example.com`) or `"*.suffix"` (`"*.grafana.net"`, quoted, which does not match `grafana.net` itself). Empty allows any host the address guard lets through. An entry of any other shape stops the load. |
 | `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO` | `1` | The highest `sampler_ratio` a tenant may set, 0–1. |
 | `LOOMCYCLE_TENANT_CONTENT_CAPTURE` | off | `1` lets a tenant turn on content capture: its runs' prompts, answers and tool calls, redacted and cut, on the spans its own collector receives (never the operator's). Read only with `LOOMCYCLE_TENANT_TELEMETRY` on. Off, a policy asking for `content_capture: on` is refused, and one stored with it on exports its traces without content. See "Tenant content capture". |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
@@ -3688,8 +3687,8 @@ observability:
       beta: 0.1    # one beta run in ten
 ```
 
-or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1`, which wins over
-the yaml for each tenant it names. The ratio applies to every span that
+The yaml is the only source (a bad tenant id or a ratio outside 0–1 stops the
+load). The ratio applies to every span that
 starts a trace and names its tenant (`loomcycle.tenant`): a run's span, a
 memory consolidation pass, a tool call made outside a run (the MCP, HTTP and
 gRPC tool surfaces), and a model gateway call (`/v1/_llm/chat`,
@@ -3761,7 +3760,7 @@ tenant's (run, agent, model, token and tool attributes and the `gen_ai.*` ones,
 not the operator's lane waits or code hashes), and error text is left out.
 
 The endpoint must be `https://` (unless `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP`)
-and, when `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` is set, one of those hosts.
+and, when `observability.tenant_telemetry.allowed_hosts` is set in the yaml, one of those hosts.
 The collector's headers live in a tenant credential (`headers_credential`)
 whose value is the header block (`authorization=Basic …,x-scope-orgid=…`),
 restricted by its `allowed_urls` to the endpoint; a credential that may be
@@ -3891,7 +3890,7 @@ Telemetry page and the MCP server does not list the `telemetry` tool.
 
 A stored policy is held to the operator's rules every time it is used, not
 only when it was set: after the operator removes a host from
-`LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS`, takes the http override away or
+`observability.tenant_telemetry.allowed_hosts`, takes the http override away or
 lowers the ratio cap, a policy that no longer passes stops exporting and its
 status says `policy no longer valid: <reason>`. A snapshot carries the policies
 (never the header credential, which stays behind like every sealed

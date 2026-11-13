@@ -365,19 +365,3 @@ func TestTenantSampler_ASampledParentWins(t *testing.T) {
 		t.Error("a sampled caller's trace was dropped by the tenant's ratio 0")
 	}
 }
-
-func TestParseTenantSamplerRatios_ValidatesTenantsAndRatios(t *testing.T) {
-	got, err := lcotel.ParseTenantSamplerRatios(" acme=1, beta=0.1 ")
-	if err != nil || len(got) != 2 || got["acme"] != 1 || got["beta"] != 0.1 {
-		t.Fatalf("parse = %v, %v", got, err)
-	}
-	for _, bad := range []string{"acme", "acme=x", "acme=1.5", "acme=-0.1", "ac/me=1", "acme=1,acme=0", "=1", "acme=NaN"} {
-		if _, err := lcotel.ParseTenantSamplerRatios(bad); err == nil {
-			t.Errorf("%q parsed without an error", bad)
-		}
-	}
-	merged := lcotel.MergeTenantSamplerRatios(map[string]float64{"acme": 0.5, "beta": 1}, map[string]float64{"acme": 0})
-	if merged["acme"] != 0 || merged["beta"] != 1 {
-		t.Errorf("merge = %v, want the environment's acme=0 over the yaml, beta kept", merged)
-	}
-}

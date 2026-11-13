@@ -301,8 +301,7 @@ observability:
       beta: 0.1
 ```
 
-or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1` (wins per
-tenant). It decides every span that starts a trace and names its tenant —
+It decides every span that starts a trace and names its tenant —
 a run, a memory consolidation pass, a tool call made outside a run, a
 gateway call. A run that joins a caller's trace, a sub-agent's run, and
 everything under a run follow the trace's existing decision; a tenant not
@@ -561,7 +560,6 @@ itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
 | `OTEL_BSP_MAX_QUEUE_SIZE` / `_MAX_EXPORT_BATCH_SIZE` / `_EXPORT_TIMEOUT` / `_SCHEDULE_DELAY` | 2048 / 512 / 10000 ms / 5000 ms | Export queue bounds. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | empty | A file holding the collector headers instead of the env. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What a caller's trace context does: `parent`, `link` or `ignore`. |
-| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | empty | Per-tenant ratio for runs that start a trace, `tenant=ratio,...`. |
 | `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` adds the raw `loomcycle.user_id` beside `loomcycle.user_hash`. |
 | `LOOMCYCLE_ENVIRONMENT` | empty | `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | empty | Web UI "Open trace" link; must contain `{trace_id}`. |

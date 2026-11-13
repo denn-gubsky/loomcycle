@@ -4961,6 +4961,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if err := applyRetention(cfg); err != nil {
 		return nil, err
 	}
+	if err := applyTenantTelemetry(cfg); err != nil {
+		return nil, err
+	}
 	applyEnvClusterSweeps(cfg)
 	applyEnvLoopTuning(cfg)
 	applyEnvMemory(cfg)

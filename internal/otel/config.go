@@ -90,9 +90,8 @@ type Config struct {
 	// loomcycle.user_id beside loomcycle.user_hash.
 	RawUserID bool
 	// TenantSamplerRatios is the per-tenant ratio for a run that starts a
-	// trace. ResolveConfig fills it from LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS;
-	// the binary lays it over the yaml's observability.tracing
-	// tenant_sampler_ratios (MergeTenantSamplerRatios) before Init.
+	// trace: the yaml's observability.tracing.tenant_sampler_ratios, set by
+	// the caller before Init.
 	TenantSamplerRatios map[string]float64
 
 	// The batch span processor's bounds (OTEL_BSP_* or the defaults above).
@@ -151,13 +150,6 @@ func ResolveConfig(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("LOOMCYCLE_OTEL_RAW_USER_ID=%q: want 1 or 0", v)
 		}
 		cfg.RawUserID = raw
-	}
-	if v := get("LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS"); v != "" {
-		ratios, err := ParseTenantSamplerRatios(v)
-		if err != nil {
-			return Config{}, err
-		}
-		cfg.TenantSamplerRatios = ratios
 	}
 
 	exporterOn, warns := tracesExporter(get("OTEL_TRACES_EXPORTER"))

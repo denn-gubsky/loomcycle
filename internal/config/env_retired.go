@@ -175,6 +175,10 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER": "set concurrency.max_concurrent_runs_per_user in the yaml",
 	"LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER":     "set concurrency.max_queued_runs_per_user in the yaml",
 	"LOOMCYCLE_PROVIDER_QUEUE_DEPTH":         "set concurrency.provider_queue_depth in the yaml",
+
+	// Lists and maps moved to the yaml `observability:` block.
+	"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS":     "set observability.tracing.tenant_sampler_ratios in the yaml, as a map of tenant to ratio",
+	"LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS": "set observability.tenant_telemetry.allowed_hosts in the yaml, as a list",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in
@@ -346,6 +350,16 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// Zero inherited max_queue_depth, as an absent yaml key does.
 	"LOOMCYCLE_PROVIDER_QUEUE_DEPTH": {loosens: func(value string, c retiredEnvCtx) bool {
 		return loweredFrom(value, int64(c.cfg.Concurrency.ProviderQueueDepthOrDefault()))
+	}},
+	// A tenant's ratio the yaml does not give would leave that tenant on the
+	// global sampler: more spans exported and paid for, or fewer than the
+	// operator promised.
+	"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS": {loosens: samplerRatiosDiffer},
+	// With no list a tenant's collector endpoint may name any host, so a list
+	// the yaml does not carry is a restriction lost. A yaml list of other
+	// hosts is the operator's new list, not this rule's to judge.
+	"LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS": {loosens: func(value string, c retiredEnvCtx) bool {
+		return len(splitCSV(value)) > 0 && len(c.cfg.Observability.TenantTelemetry.AllowedHosts) == 0
 	}},
 	// Without the directory a family in export+prune mode deletes nothing;
 	// with another one its exports land where nobody looks for them.
@@ -584,6 +598,27 @@ const (
 	EmbedderTimeoutMSDefault = 30_000
 	EmbedderBatchSizeDefault = 100
 )
+
+// samplerRatiosDiffer reports a retired `tenant=ratio,...` list naming a
+// tenant the yaml gives another ratio, or none. A pair that does not parse
+// stopped the boot when the variable was read, and is refused here as well.
+func samplerRatiosDiffer(value string, c retiredEnvCtx) bool {
+	now := c.cfg.Observability.Tracing.TenantSamplerRatios
+	for _, pair := range strings.Split(value, ",") {
+		if pair = strings.TrimSpace(pair); pair == "" {
+			continue
+		}
+		tenant, ratio, ok := strings.Cut(pair, "=")
+		f, err := strconv.ParseFloat(strings.TrimSpace(ratio), 64)
+		if !ok || err != nil {
+			return true
+		}
+		if have, listed := now[strings.TrimSpace(tenant)]; !listed || have != f {
+			return true
+		}
+	}
+	return false
+}
 
 // durationOr is d, or dflt when d is unset.
 func durationOr(d, dflt time.Duration) time.Duration {

@@ -1053,6 +1053,20 @@ concurrency:
   # max_queue_depth; past it the request is refused instead of queueing.
   # provider_queue_depth: 32
 
+# ─── Observability ────────────────────────────────────────────────────
+# Tracing itself is configured by the standard OTEL_* environment. These are
+# the per-tenant parts.
+#
+# observability:
+#   tracing:
+#     tenant_sampler_ratios:      # a trace a tenant's work starts is sampled at
+#       acme: 1                   # its ratio (0 to 1) instead of the global one
+#       beta: 0.1
+#   tenant_telemetry:             # tenant trace export (LOOMCYCLE_TENANT_TELEMETRY=1)
+#     allowed_hosts:              # the only hosts a tenant's collector endpoint
+#       - otel.example.com        # may name; none listed = any public host
+#       - "*.grafana.net"         # a suffix entry must be quoted
+
 # ─── Retention ────────────────────────────────────────────────────────
 # What the runtime deletes with age, and when. Nothing is deleted unless
 # `enabled` is true AND a family's `mode` is prune or export+prune: `enabled`

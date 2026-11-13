@@ -74,14 +74,15 @@ var retiredNameKeptOnPurpose = map[string]bool{
 // applies stops the load; any other value of it is only advised.
 func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing.T) {
 	for _, tc := range []struct {
-		name, value string
-		also        []string // other variables of the same environment
-		yaml        StorageConfig
-		retention   RetentionConfig // the yaml's retention block
-		providers   map[string]ProviderConfig
-		memory      MemoryConfig
-		concurrency Concurrency
-		refused     bool
+		name, value   string
+		also          []string // other variables of the same environment
+		yaml          StorageConfig
+		retention     RetentionConfig // the yaml's retention block
+		providers     map[string]ProviderConfig
+		memory        MemoryConfig
+		concurrency   Concurrency
+		observability ObservabilityConfig
+		refused       bool
 	}{
 		// Gates: the old read turned the feature on for exactly "1".
 		{name: "LOOMCYCLE_SCHEDULER_ENABLED", value: "1"},
@@ -390,6 +391,22 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "0", concurrency: Concurrency{MaxQueueDepth: 32}},
 		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "32", concurrency: Concurrency{MaxQueueDepth: 32}},
 
+		// The per-tenant sampler ratios: refused unless the yaml gives every
+		// tenant the variable named the same ratio.
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: "acme=1,beta=0.1", refused: true},
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: "acme=1,beta=0.1", observability: ObservabilityConfig{Tracing: TracingConfig{TenantSamplerRatios: map[string]float64{"acme": 1}}}, refused: true},
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: "acme=1,beta=0.1", observability: ObservabilityConfig{Tracing: TracingConfig{TenantSamplerRatios: map[string]float64{"acme": 1, "beta": 0.5}}}, refused: true},
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: " acme=1, beta=0.1 ,", observability: ObservabilityConfig{Tracing: TracingConfig{TenantSamplerRatios: map[string]float64{"acme": 1, "beta": 0.1, "gamma": 0}}}},
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: "acme", refused: true}, // stopped the boot before, too
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: ""},
+		// The tenant telemetry host list: with none, a tenant may name any
+		// host, so a list the yaml does not carry is refused.
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: "otel.example.com", refused: true},
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: "otel.example.com", observability: ObservabilityConfig{TenantTelemetry: TenantTelemetryConfig{AllowedHosts: []string{"otel.example.com"}}}},
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: "otel.example.com", observability: ObservabilityConfig{TenantTelemetry: TenantTelemetryConfig{AllowedHosts: []string{"*.grafana.net"}}}}, // the operator wrote a list
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: " , "},                                                                                                                                   // named no host
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: ""},
+
 		// The debug flags only added log lines.
 		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
 		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
@@ -401,7 +418,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			environ := append([]string{tc.name + "=" + tc.value}, tc.also...)
-			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory, Concurrency: tc.concurrency})
+			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory, Concurrency: tc.concurrency, Observability: tc.observability})
 			if refused := len(got) > 0; refused != tc.refused {
 				t.Fatalf("refused = %v (%q), want %v", refused, got, tc.refused)
 			}
