@@ -25,11 +25,11 @@ func TestLoadLayers_EnvRefusalsReportInLoadOrder(t *testing.T) {
 		{env: "LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT", value: "60", want: "LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT:"},
 		{env: "LOOMCYCLE_BATCH_JOIN_TIMEOUT", value: "60", want: "LOOMCYCLE_BATCH_JOIN_TIMEOUT:"},
 		{env: "LOOMCYCLE_A2A_TENANCY_ROUTING", value: "query", want: "LOOMCYCLE_A2A_TENANCY_ROUTING:"},
-		{env: "LOOMCYCLE_A2A_SERVER_CARD", value: "", want: "requires LOOMCYCLE_A2A_SERVER_CARD", fixed: "card"},
 		{env: "LOOMCYCLE_REPLICA_ID", value: "bad id!", want: "LOOMCYCLE_REPLICA_ID:"},
 		{env: "LOOMCYCLE_TRACE_URL_TEMPLATE", value: "https://trace.example/", want: "LOOMCYCLE_TRACE_URL_TEMPLATE:"},
 	}
-	t.Setenv("LOOMCYCLE_A2A_ENABLED", "1")
+	// The A2A routing mode is only read when a server card turns A2A on.
+	t.Setenv("LOOMCYCLE_A2A_SERVER_CARD", "card")
 	for _, b := range bad {
 		t.Setenv(b.env, b.value)
 	}

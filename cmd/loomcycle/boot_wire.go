@@ -363,8 +363,8 @@ func (b *boot) addA2ATools() {
 	// expected_skill) pair, mirroring the static MCP registration above.
 	// They land in allTools and are filtered per-agent by `tools`
 	// exactly like `mcp__<server>__<tool>` tools. Gated behind the same
-	// LOOMCYCLE_A2A_ENABLED master switch as the server surface: with A2A
-	// disabled, no outbound tools are registered. The per-call resolver is
+	// condition as the server surface (a server card is named): with A2A
+	// off, no outbound tools are registered. The per-call resolver is
 	// lookup.A2AAgent (yaml > active substrate def) so a substrate fork of
 	// a registered peer is picked up without a restart.
 	if cfg.Env.A2AServerEnabled {

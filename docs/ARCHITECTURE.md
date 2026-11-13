@@ -716,7 +716,7 @@ References: `internal/coord/backplane.go`, `internal/coord/postgres_backplane.go
 
 ## A2A interoperability (v0.13.0, RFC G)
 
-loomcycle speaks the Agent-to-Agent protocol on both sides; off by default, gated by `LOOMCYCLE_A2A_ENABLED=1`.
+loomcycle speaks the Agent-to-Agent protocol on both sides; off by default, turned on by naming the server card (`LOOMCYCLE_A2A_SERVER_CARD`).
 
 **As an A2A server** (`internal/api/a2a/`): serves a well-known AgentCard at `/.well-known/agent-card.json` plus three protocol-binding mounts — REST (`/a2a/v1`, `TransportProtocolHTTPJSON`), JSON-RPC, and gRPC. REST + JSON-RPC are always served; the **gRPC binding is dropped under multi-tenant host/path routing** because the tenant cannot be derived from the gRPC transport (`Server.grpcEnabled`). A `principalInterceptor` authenticates every binding request uniformly. Cards are optionally signed (JWS over JCS-canonicalised JSON via `internal/a2a/sign`); card serving never 500s on a signing failure — it serves unsigned and traces.
 

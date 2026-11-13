@@ -131,14 +131,15 @@ func applyEnvWebhooks(cfg *Config) {
 	cfg.Env.WebhooksAllowUnauthenticated = os.Getenv("LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED") == "1"
 }
 
-// applyEnvA2A reads the A2A server knobs and refuses an incomplete one.
+// applyEnvA2A reads the A2A server knobs and refuses a bad routing mode.
 func applyEnvA2A(cfg *Config) error {
-	// v1.x RFC G A2A server surface. Default OFF; operator opts in via
-	// LOOMCYCLE_A2A_ENABLED=1 + names the active card to serve. Tenancy
-	// routing is host/path-authoritative (trust boundary), never from a
-	// request body.
-	cfg.Env.A2AServerEnabled = os.Getenv("LOOMCYCLE_A2A_ENABLED") == "1"
+	// v1.x RFC G A2A server surface. Default OFF; the operator opts in by
+	// naming the active card to serve, which the surface cannot run without.
+	// Declaring cards in the yaml does not opt in: it does not say which one
+	// is served. Tenancy routing is host/path-authoritative (trust boundary),
+	// never from a request body.
 	cfg.Env.A2AServerCardName = strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_SERVER_CARD"))
+	cfg.Env.A2AServerEnabled = cfg.Env.A2AServerCardName != ""
 	cfg.Env.A2ATenancyRouting = strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_TENANCY_ROUTING"))
 	cfg.Env.A2APublicBaseURL = strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_A2A_PUBLIC_BASE_URL")), "/")
 	if cfg.Env.A2AServerEnabled {
@@ -146,9 +147,6 @@ func applyEnvA2A(cfg *Config) error {
 		case "", "none", "host", "path":
 		default:
 			return fmt.Errorf("LOOMCYCLE_A2A_TENANCY_ROUTING: must be one of none|host|path, got %q", cfg.Env.A2ATenancyRouting)
-		}
-		if cfg.Env.A2AServerCardName == "" {
-			return fmt.Errorf("LOOMCYCLE_A2A_ENABLED=1 requires LOOMCYCLE_A2A_SERVER_CARD to name the active server card")
 		}
 	}
 	return nil

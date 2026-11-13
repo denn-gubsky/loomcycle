@@ -3369,8 +3369,7 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 |---|---|---|
 | `LOOMCYCLE_SCHEDULER_TICK_SECONDS` | `30` | How often the scheduler checks for due schedules. |
 | `LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED` | off | `1` lets a webhook with `auth.kind: none` run without a signature. Only for receivers reachable solely over an authenticated network; off, such a webhook answers 503. |
-| `LOOMCYCLE_A2A_ENABLED` | off | `1` serves the A2A server surface. Requires `LOOMCYCLE_A2A_SERVER_CARD`. |
-| `LOOMCYCLE_A2A_SERVER_CARD` | — | Name of the `A2AServerCardDef` to serve. |
+| `LOOMCYCLE_A2A_SERVER_CARD` | — | Name of the `A2AServerCardDef` to serve. Setting it turns A2A on: the server surface is mounted and the outbound `a2a__*` tools are registered. A name with no such card stops the boot. |
 | `LOOMCYCLE_A2A_TENANCY_ROUTING` | `none` | How an A2A request picks its tenant: `none`, `host` or `path`; never from the request body. |
 | `LOOMCYCLE_A2A_PUBLIC_BASE_URL` | unset | Externally reachable base URL advertised in the agent card; unset advertises a relative path. |
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | `32` | Memory consolidation: targets one fan-out tick dispatches; the rest wait for the next tick. |

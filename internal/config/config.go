@@ -4951,15 +4951,15 @@ type Env struct {
 
 	// A2AServerEnabled enables the v1.x RFC G A2A server HTTP surface
 	// (the well-known AgentCard URI + the three protocol-binding mounts
-	// on the existing mux). Default OFF — operator opts in via
-	// LOOMCYCLE_A2A_ENABLED=1. When false, the A2AServerCardDef tool
-	// still works for authoring; nothing is mounted and no card is
-	// served.
+	// on the existing mux) and registers the outbound a2a__* tools. Default
+	// OFF. Derived at load: true when A2AServerCardName is set. When false,
+	// the A2AServerCardDef tool still works for authoring; nothing is
+	// mounted and no card is served.
 	A2AServerEnabled bool
 
 	// A2AServerCardName names the active A2AServerCardDef whose card the
 	// server serves and whose exposed_agents drive skill→agent routing.
-	// Env: LOOMCYCLE_A2A_SERVER_CARD. Required when A2AServerEnabled.
+	// Env: LOOMCYCLE_A2A_SERVER_CARD. Setting it turns the A2A surface on.
 	A2AServerCardName string
 
 	// A2ATenancyRouting selects how the inbound tenant is derived for

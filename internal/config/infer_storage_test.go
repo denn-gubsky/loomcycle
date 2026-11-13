@@ -152,3 +152,39 @@ func TestRetentionEnabled_FollowsTheFamilyModes(t *testing.T) {
 	}
 	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_RETENTION_ENABLED")
 }
+
+// A2A is on exactly when the active server card is named. Declaring cards in
+// the yaml does not turn it on, and neither does the retired switch.
+func TestA2AEnabled_FollowsTheServerCardName(t *testing.T) {
+	const yamlCard = "a2a_server_cards:\n  public:\n    name: Public\n"
+	for _, tc := range []struct {
+		name          string
+		yaml          string
+		card, retired string
+		want          bool
+	}{
+		{"no card", "", "", "", false},
+		{"card named", "", "public", "", true},
+		{"cards declared in yaml but none named", yamlCard, "", "", false},
+		{"cards declared in yaml and one named", yamlCard, "public", "", true},
+		{"retired switch without a card", "", "", "1", false},
+		{"retired switch off with a card", "", "public", "0", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_A2A_SERVER_CARD", tc.card)
+			if tc.retired != "" {
+				t.Setenv("LOOMCYCLE_A2A_ENABLED", tc.retired)
+			}
+			cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n"+tc.yaml)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Env.A2AServerEnabled != tc.want {
+				t.Errorf("A2AServerEnabled = %v, want %v", cfg.Env.A2AServerEnabled, tc.want)
+			}
+			if tc.retired != "" {
+				requireRetiredAdvisory(t, cfg, "LOOMCYCLE_A2A_ENABLED")
+			}
+		})
+	}
+}

@@ -736,21 +736,15 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_A2A_ENABLED
-            label: LOOMCYCLE_A2A_ENABLED
-            description: 'Inbound A2A server + outbound client. Off by default. (example: 1)'
+          - variable: LOOMCYCLE_A2A_SERVER_CARD
+            label: LOOMCYCLE_A2A_SERVER_CARD
+            description: 'Inbound A2A server + outbound client. Off by default; naming the server card turns both on. (example: public)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_A2A_PUBLIC_BASE_URL
             label: LOOMCYCLE_A2A_PUBLIC_BASE_URL
             description: '(example: https://agents.example.com)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_A2A_SERVER_CARD
-            label: LOOMCYCLE_A2A_SERVER_CARD
-            description: '(example: public)'
             schema:
               type: string
               default: ""
