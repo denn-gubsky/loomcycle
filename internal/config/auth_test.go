@@ -227,3 +227,30 @@ func TestAuthLoginOrigins_YAMLList(t *testing.T) {
 		t.Errorf("a retired origin the yaml does not list: err = %v, want a refusal naming the yaml key", err)
 	}
 }
+
+// The retired variable was one comma-separated value; the yaml key is a list.
+// An entry that still carries several origins (or a space) matches no origin
+// a browser reports, so the receiver would be on and never accept: refused,
+// with the key and what to write.
+func TestAuthLoginOrigins_RefusesSeveralOriginsInOneEntry(t *testing.T) {
+	for _, entry := range []string{
+		"https://a.example,https://b.example",
+		"https://a.example, https://b.example",
+		"https://a.example https://b.example",
+		"https://a.example\thttps://b.example",
+	} {
+		_, err := loadYAMLString(t, "auth:\n  login_origins: [\"https://landing.example\", \""+entry+"\"]\n")
+		if err == nil {
+			t.Errorf("%q: loaded, want an error", entry)
+			continue
+		}
+		for _, want := range []string{"auth.login_origins", "entry 2", "one origin per list item"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%q: error does not say %q: %s", entry, want, err)
+			}
+		}
+		if strings.Contains(err.Error(), "b.example") {
+			t.Errorf("%q: error carries the entry: %s", entry, err)
+		}
+	}
+}

@@ -831,14 +831,25 @@ func proxyPrefixes(c *Config, key string, list []string) ([]netip.Prefix, error)
 	return out, nil
 }
 
-// applyAuthLoginOrigins trims each login origin and drops a trailing slash,
-// the form a browser reports an origin in. An empty entry stops the load.
+// normLoginOrigin is a login origin in the form a browser reports one:
+// trimmed, with no trailing slash.
+func normLoginOrigin(o string) string {
+	return strings.TrimRight(strings.TrimSpace(o), "/")
+}
+
+// applyAuthLoginOrigins normalises each login origin. An empty entry stops
+// the load, and so does one holding a comma or a space: the variable this key
+// replaced was one comma-separated value, and an entry copied from it whole
+// equals no origin, so the receiver would be on and accept nothing.
 func applyAuthLoginOrigins(cfg *Config) error {
 	origins := cfg.Auth.LoginOrigins
 	for i, o := range origins {
-		o = strings.TrimRight(strings.TrimSpace(o), "/")
+		o = normLoginOrigin(o)
 		if o == "" {
 			return fmt.Errorf("auth.login_origins: entry %d is empty; write an origin such as https://landing.example", i+1)
+		}
+		if strings.ContainsAny(o, ", \t\r\n") {
+			return fmt.Errorf("auth.login_origins: entry %d holds a comma or a space; write one origin per list item", i+1)
 		}
 		origins[i] = o
 	}

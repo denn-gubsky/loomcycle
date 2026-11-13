@@ -467,6 +467,9 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example", refused: true},
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example, https://b.example/", auth: AuthConfig{LoginOrigins: []string{"https://landing.example"}}, refused: true},
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example/, ", auth: AuthConfig{LoginOrigins: []string{"https://b.example", " https://landing.example/ "}}},
+		// The yaml list is read one origin per item: an item that carries two
+		// lists neither.
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://a.example,https://b.example", auth: AuthConfig{LoginOrigins: []string{"https://a.example,https://b.example"}}, refused: true},
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: " , "},
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: ""},
 

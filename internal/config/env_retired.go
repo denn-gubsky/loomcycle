@@ -388,8 +388,12 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// An origin the yaml does not list can no longer hand the login page a
 	// token: the landing page's sign-in would stop working.
 	"LOOMCYCLE_UI_LOGIN_ORIGINS": {loosens: func(value string, c retiredEnvCtx) bool {
-		// The rules run before the yaml list is normalised, so do it here.
-		listed := splitCommaTrim(strings.Join(c.cfg.Auth.LoginOrigins, ","))
+		// The rules run before the yaml list is normalised, so do it here,
+		// the way the loader does: one origin per item.
+		listed := make([]string, 0, len(c.cfg.Auth.LoginOrigins))
+		for _, o := range c.cfg.Auth.LoginOrigins {
+			listed = append(listed, normLoginOrigin(o))
+		}
 		for _, o := range splitCommaTrim(value) {
 			if !slices.Contains(listed, o) {
 				return true
