@@ -127,8 +127,38 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS", value: "600"},
 		{name: "LOOMCYCLE_CLIENT_TOOL_MAX_CONNS", value: "1", refused: true},
 		{name: "LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS", value: "60", refused: true},
+
+		// The internal-chat age is fixed at 3 days: any other age changes when
+		// those chats are deleted, in either direction. Zero inherited the
+		// chat age (retention.chats.max_age now), and an unset chat age was
+		// "no minimum".
 		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "3600000", refused: true},
-		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "604800000"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "604800000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "259200000"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "-1"}, // was ignored: the 3-day default applied
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "soon", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(7 * 24 * time.Hour))}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(time.Hour))}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(0))}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(3 * 24 * time.Hour))}}},
+
+		// Switches of work that changes what is kept: the old "off" is refused,
+		// every other value left the work running.
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: "0", refused: true},
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: "1"},
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: "off"}, // the old read turned it off for exactly "0"
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: ""},
+		{name: "LOOMCYCLE_HEARTBEAT_SWEEPER", value: "0", refused: true},
+		{name: "LOOMCYCLE_HEARTBEAT_SWEEPER", value: "1"},
+		{name: "LOOMCYCLE_HEARTBEAT_SWEEPER", value: "false"},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "0", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "false", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: " No ", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "OFF", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "1"},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "maybe"}, // was ignored: the default (on) applied
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: ""},
 
 		// The ceiling is gone, so any ceiling was tighter.
 		{name: "LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS", value: "60000", refused: true},
@@ -344,10 +374,29 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "86400"},
 		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "604800"},
 
-		// Provider options whose loss tightens nothing: reported only.
+		// A provider option whose loss tightens nothing: reported only.
 		{name: "LOOMCYCLE_CODE_AGENTS_DETERMINISTIC", value: "1"},
-		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768"},
-		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99"},
+
+		// The hosted Ollama context window and the local GPU offload moved to
+		// provider options. Refused when the variable was a positive number
+		// the yaml option does not repeat: the window would shrink to the
+		// model's own, or the offload fall back to the CPU, with nothing but
+		// slower or truncated answers to show for it.
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", refused: true},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama"}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama", Options: map[string]any{"num_ctx": 8192}}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_ctx": 32768}}}, refused: true}, // the other provider's option
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama", Options: map[string]any{"num_ctx": 32768}}}},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "0"},   // was ignored
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "-1"},  // was ignored
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32k"}, // was ignored
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: ""},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_ctx": 32768}}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_gpu": 20}}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_gpu": 99}}}},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "0"},   // was ignored: Ollama decided
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "all"}, // was ignored
 
 		// Timeout scaling measures and changes no timeout, so no value of its
 		// variables tightened anything.
@@ -430,6 +479,31 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
 		{name: "LOOMCYCLE_OLLAMA_DEBUG_THINK", value: "1"},
 
+		// The dead-link collection deletes data. Its old "off" and "dry run"
+		// are refused unless the variable that replaced both says the same or
+		// less; an interval longer than the fixed hour is refused while the
+		// collection deletes, a shorter one never.
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "-1", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC=dry-run"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC=on"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC=off"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC= off "}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "3600000"},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "600000"},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", also: []string{"LOOMCYCLE_DEADLINK_GC=on"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", also: []string{"LOOMCYCLE_DEADLINK_GC=off"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", also: []string{"LOOMCYCLE_DEADLINK_GC=dry-run"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "hourly"}, // was ignored: the default hour applied
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: ""},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", also: []string{"LOOMCYCLE_DEADLINK_GC=on"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", also: []string{"LOOMCYCLE_DEADLINK_GC=dry-run"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", also: []string{"LOOMCYCLE_DEADLINK_GC=off"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "0"},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "true"}, // the old read was a dry run for exactly "1"
+
 		// Retired, and no value of it was a tightening.
 		{name: "LOOMCYCLE_SSE_KEEPALIVE_MS", value: "0"},
 		{name: "LOOMCYCLE_SNAPSHOT_MAX_BYTES", value: "1"},
@@ -442,6 +516,9 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 			}
 			if tc.refused && !strings.HasPrefix(got[0], tc.name+": ") {
 				t.Errorf("refusal does not lead with the variable: %q", got[0])
+			}
+			if tc.refused && tc.name == "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS" && !strings.Contains(got[0], "kept 3 days") {
+				t.Errorf("refusal does not say how long internal chats are kept: %q", got[0])
 			}
 			if adv := retiredEnvWarnings(environ); len(adv) == 0 {
 				t.Errorf("no advisory for %s", tc.name)
@@ -542,3 +619,18 @@ func TestRetentionFamilies_ListsEveryFamilyOfTheBlock(t *testing.T) {
 }
 
 func agePtr(d HumanDuration) *HumanDuration { return &d }
+
+// The refusal's leading sentence lists what a refused variable can stand
+// for. A variable that decided which data is kept is refused for that
+// reason, and an operator reading only the lead must find it there.
+func TestLoadLayers_RefusalLeadNamesDataKeptOrDeletedDifferently(t *testing.T) {
+	t.Setenv("LOOMCYCLE_USAGE_SWEEPER", "0")
+	_, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults:\n  provider: mock\n")})
+	if err == nil {
+		t.Fatal("LoadLayers accepted a retired switch that kept per-call usage rows")
+	}
+	lead, _, _ := strings.Cut(err.Error(), "LOOMCYCLE_USAGE_SWEEPER")
+	if !strings.Contains(lead, "data kept or deleted differently") {
+		t.Errorf("the lead does not name the data case: %q", lead)
+	}
+}

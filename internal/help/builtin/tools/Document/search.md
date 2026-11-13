@@ -286,6 +286,53 @@ The same question against the tenant's shared documents:
 {"op": "search", "query": "how do we roll back a failed database migration", "scope": "tenant", "limit": 5}
 ```
 
+The same, each hit with the summary of the section, document or folder it sits
+in, so you can tell what a passage belongs to before you open it:
+
+```json
+{"op": "search", "query": "how do we roll back a failed database migration", "scope": "tenant", "with_summary": true, "limit": 8}
+```
+
+A general question — a policy, a rule, how something is done — matched against
+the passages and the summaries together:
+
+```json
+{"op": "search", "query": "what is our policy for releasing a version", "scope": "tenant", "annotations": "include", "with_summary": true, "limit": 8}
+```
+
+A question about the material as a whole, matched against the summaries of
+folders and documents only. To count what lies behind it, run a passage search
+with `facets` (below); `facets` is not taken here:
+
+```json
+{"op": "search", "query": "what do we have on access control", "scope": "tenant", "annotations": "only", "annotation_levels": ["path", "document"], "limit": 15}
+```
+
+Inside one document, to find the exact value near a hit you already have:
+
+```json
+{"op": "search", "query": "default retry limit", "scope": "tenant", "document_id": "b4407b522dc11495d3de371311db17f0", "limit": 6}
+```
+
+Inside the folders you chose from their summaries:
+
+```json
+{"op": "search", "query": "rotating access tokens", "scope": "tenant", "under_paths": ["/kb/security", "/kb/operations"], "with_summary": true, "limit": 8}
+```
+
+Only guides about one concept of the tenant ontology:
+
+```json
+{"op": "search", "query": "rotating access tokens", "scope": "tenant", "concept": "topics/security", "type": "guide"}
+```
+
+With the passages the best hits cite or are defined by, along the tenant's walk
+kinds:
+
+```json
+{"op": "search", "query": "rotating access tokens", "scope": "tenant", "expand": {"hops": 1}, "limit": 6}
+```
+
 A question whose answer depends on what the best clauses cite or implement:
 the norms in force on 1 January 2026, about one concept, with the provisions
 they rely on added after the ranked hits:

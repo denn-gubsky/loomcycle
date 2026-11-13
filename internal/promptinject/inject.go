@@ -151,7 +151,17 @@ var placeholderRe = regexp.MustCompile(`(?i)` + memoryPlaceholderPattern)
 // after the ref and the argument form requires a second colon — but the
 // ordering means a later widening of either charset degrades into a longer
 // match rather than a truncated one.
-var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `|` + memoryPlaceholderPattern + `|` + toolArgFormPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern + `|` + identityPlaceholderPattern)
+var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + strings.Join(placeholderFamilyPatterns, `|`))
+
+// placeholderFamilyPatterns is every {{…}} family the expander recognises, in
+// alternation order (see combinedPlaceholderRe for why the order matters). The
+// combined regexes are built from this list and nothing else, so
+// TestPlaceholderFamilies_ExactlySet, which reads the families from it, pins
+// exactly what the expander matches.
+var placeholderFamilyPatterns = []string{
+	memorySubFormPattern, memoryPlaceholderPattern, toolArgFormPattern, toolPlaceholderPattern,
+	documentPlaceholderPattern, identityPlaceholderPattern, helpPlaceholderPattern,
+}
 
 // combinedWithVarsRe is combinedPlaceholderRe plus the ${var.*} family. It is a
 // SEPARATE regex, used only when the caller supplies Values, so a prompt with no
@@ -163,7 +173,7 @@ var combinedPlaceholderRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `
 // variable cannot become a placeholder and a placeholder body cannot become a
 // variable. Ordering stops existing, and with it the injection path that
 // ordering created.
-var combinedWithVarsRe = regexp.MustCompile(`(?i)` + memorySubFormPattern + `|` + memoryPlaceholderPattern + `|` + toolArgFormPattern + `|` + toolPlaceholderPattern + `|` + documentPlaceholderPattern + `|` + identityPlaceholderPattern + `|` + varPlaceholderPattern)
+var combinedWithVarsRe = regexp.MustCompile(`(?i)` + strings.Join(placeholderFamilyPatterns, `|`) + `|` + varPlaceholderPattern)
 
 // References reports whether s contains any {{memory:...}} placeholder
 // (escaped or not). A cheap gate so the caller can skip the whole injection
@@ -269,6 +279,10 @@ type ExpandInput struct {
 	// one line in a prompt would change what the agent remembers. They are
 	// independent kinds of content and get independent ceilings.
 	ToolMaxTokens int
+	// HelpExamples holds the rendered call examples for each {{help:TOPIC}},
+	// keyed by topic name. The caller renders them from the help corpus
+	// embedded in the binary; they draw on their own budget, HelpMaxBytes.
+	HelpExamples map[string]string
 	// Identity is the person the run acts for, rendered at {{identity}}. nil
 	// renders nothing: the run acts for nobody, or access control is off.
 	// Exempt from both budgets — the block is bounded by construction (see
@@ -317,6 +331,7 @@ func ExpandWithRefusals(prompt string, in ExpandInput) (string, []string) {
 	if in.ToolMaxTokens > 0 {
 		toolRemaining = in.ToolMaxTokens * 4
 	}
+	helpRemaining := HelpMaxBytes
 	sawCoreBlocks := false
 
 	re := combinedPlaceholderRe
@@ -352,6 +367,11 @@ func ExpandWithRefusals(prompt string, in ExpandInput) (string, []string) {
 		// neither budget (see ExpandInput.Identity).
 		if identityPlaceholderRe.MatchString(match) {
 			return expandIdentityPlaceholder(match, in.Identity)
+		}
+		// {{help:…}} is disjoint by its keyword and draws on its own budget
+		// (see HelpMaxBytes).
+		if helpPlaceholderRe.MatchString(match) {
+			return expandHelpPlaceholder(match, in.HelpExamples, &helpRemaining)
 		}
 		sub := placeholderRe.FindStringSubmatch(match)
 		if sub == nil {

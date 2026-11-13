@@ -168,6 +168,7 @@ func issueMaps(issues []teamIssue) []map[string]any {
 func (t *TeamDef) authoringIssues(ctx context.Context, op, team string, defJSON []byte, def teamgraph.Definition, parent *teamgraph.Definition, description string) []teamIssue {
 	var issues []teamIssue
 	issues = append(issues, graphIssues(teamgraph.ValidateAll(def))...)
+	issues = append(issues, helpPlaceholderIssues(def)...)
 	issues = append(issues, localChannelIssues(team, def)...)
 	issues = append(issues, teamChannelAuthorityIssues(ctx, def)...)
 	issues = append(issues, t.decisionAuthorityIssues(ctx, def)...)
