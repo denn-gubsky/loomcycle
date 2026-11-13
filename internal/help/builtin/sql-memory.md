@@ -25,8 +25,9 @@ One statement per call. `ATTACH`, `PRAGMA`, `load_extension`, `COPY`, `SET`,
 raw `BEGIN`/`COMMIT`/`SAVEPOINT`, and multiple statements are refused.
 
 ## Capability gate (default-deny)
-SQL is OFF unless **both** hold: the operator enabled the subsystem
-(`sqlmem_enabled`) AND the agent declares `sql_scopes` — having `Memory` in
+SQL is OFF unless **both** hold: the subsystem is on (it is unless the
+operator turned it off, or a Postgres store has no SQL Memory database
+configured) AND the agent declares `sql_scopes` — having `Memory` in
 `tools` is NOT enough. SQL is a distinct capability of the tool, gated
 separately:
 ```yaml

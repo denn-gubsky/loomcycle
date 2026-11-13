@@ -60,7 +60,9 @@ speculatively now.
 
 ## Capability gate — default-deny `sql_scopes`
 
-SQL Memory is **off** unless the operator enables the subsystem; with it on, the
+SQL Memory is on with a SQLite store, and with a Postgres store once its aux
+DSN (`LOOMCYCLE_SQLMEM_PG_DSN` / `storage.sqlmem_pg_dsn`) is set;
+`storage.sqlmem_enabled: false` turns it off. With it on, the
 agent's `sql_scopes` decides which scopes it may touch (the RFC W
 capability-gate pattern). Since v1.83 an agent that holds `Memory` and declares
 no `sql_scopes` resolves to `[user]` — the caller's own database, and only when
@@ -70,7 +72,8 @@ list explicitly to widen or narrow, or `[-*]` to grant none:
 ```yaml
 # loomcycle.yaml
 storage:
-  sqlmem_enabled: true            # or LOOMCYCLE_SQLMEM_ENABLED=1
+  sqlmem_enabled: true            # optional: already on with SQLite, and on
+                                  # Postgres when sqlmem_pg_dsn is set
 
 agents:
   research-bot:
@@ -278,7 +281,7 @@ in one transaction.
 
 | Env | yaml (`storage:`) | Meaning |
 |---|---|---|
-| `LOOMCYCLE_SQLMEM_ENABLED=1` | `sqlmem_enabled` | turn the subsystem on (off by default) |
+| — | `sqlmem_enabled` | unset: on with a SQLite store, and with a Postgres store when the aux DSN is set. `false` turns it off; `true` on Postgres without the aux DSN stops the boot |
 | — | `sqlmem_root` | sqlite tier: parent dir for `.db` files (default `<DataDir>/sqlmem`) |
 | `LOOMCYCLE_SQLMEM_PG_DSN` | `sqlmem_pg_dsn` | **postgres tier: the SEPARATE aux-DB DSN (required on the postgres backend)** |
 | `LOOMCYCLE_SQLMEM_QUOTA_BYTES` | `sqlmem_quota_bytes` | per-scope size cap (0 = none); per-agent `sql_quota_bytes` overrides |

@@ -111,7 +111,6 @@ services:
 
       # ── storage — your external Postgres (DSNs live in the secrets env file) ──
       LOOMCYCLE_PG_AUTOMIGRATE: "0"
-      LOOMCYCLE_SQLMEM_ENABLED: "1"
       LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
 

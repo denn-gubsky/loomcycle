@@ -60,7 +60,7 @@ type DocumentFeedView struct {
 // ctx is the off-run browse ctx the POST /v1/_document route builds.
 func (d *Document) OpenDocumentFeedView(ctx context.Context, scope string) (*DocumentFeedView, error) {
 	if d == nil || d.Store == nil || d.SqlMem == nil {
-		return nil, errors.New("the document feed requires SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1)")
+		return nil, errors.New("the document feed requires SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 	}
 	if scope != "user" && scope != "tenant" {
 		return nil, ErrDocumentFeedScope

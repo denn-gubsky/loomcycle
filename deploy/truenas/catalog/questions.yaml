@@ -540,12 +540,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_SQLMEM_ENABLED
-            label: LOOMCYCLE_SQLMEM_ENABLED
-            description: 'A per-scope SQL database the runtime hosts as a third Memory facet (agents query arbitrary SQL via the Memory tool''s sql_* ops). It also BACKS the Document primitive (RFC AK) — the chunk-structure tables live here, so **Documents and the Web UI Document viewer/assistant require this enabled.** Default OFF. (example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_SQLMEM_QUOTA_BYTES
             label: LOOMCYCLE_SQLMEM_QUOTA_BYTES
             description: 'The query guardrails (row and byte caps, statement and transaction timeouts, open-transaction caps, savepoint depth) have fixed defaults; a deployment that needs another value sets the yaml `storage: sqlmem_*` key. (example: 52428800)'

@@ -3018,7 +3018,7 @@ case). An unknown unit name is a **fatal** error listing the available names.
 
 **Opt-in.** With `LOOMCYCLE_PRESETS` unset and no `--preset`, boot is exactly as
 before (no presets) — embedded presets are a deliberate opt-in, not a silent new
-base. `document-agent` needs SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`) + a
+base. `document-agent` needs SQL Memory + a
 `middle` tier to actually run; absent those it's a registered-but-idle def.
 
 ---

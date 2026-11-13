@@ -121,6 +121,7 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
 
 	// Inferred from another setting.
+	"LOOMCYCLE_SQLMEM_ENABLED":  "SQL Memory is on with a SQLite store, and with a Postgres store when LOOMCYCLE_SQLMEM_PG_DSN is set; storage.sqlmem_enabled: false in the yaml turns it off",
 	"LOOMCYCLE_STORAGE_BACKEND": "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise; storage.backend in the yaml still overrides",
 }
 

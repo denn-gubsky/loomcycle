@@ -410,13 +410,15 @@ type StorageConfig struct {
 
 	// --- RFC AA SQL Memory (Phase 1, sqlite-only) ---
 	//
-	// SQL Memory is OFF by default: even an agent with sql_scopes set sees
-	// its SQL ops refuse until the operator enables the subsystem here. The
-	// per-scope databases are a SEPARATE store from the main loomcycle DB.
+	// The per-scope databases are a SEPARATE store from the main loomcycle
+	// DB. An agent still needs sql_scopes to run SQL in one.
 
-	// SqlMemEnabled turns the SQL Memory subsystem on. Env:
-	// LOOMCYCLE_SQLMEM_ENABLED=1.
-	SqlMemEnabled bool `yaml:"sqlmem_enabled"`
+	// SqlMemEnabled is the operator's explicit choice, nil when the yaml does
+	// not make one. Unset, SQL Memory is on with a SQLite store (it needs
+	// nothing beyond the data directory) and, with a Postgres store, on when
+	// SqlMemPgDSN is configured. `sqlmem_enabled: false` turns it off either
+	// way. Read the resolved answer with SQLMemOn.
+	SqlMemEnabled *bool `yaml:"sqlmem_enabled"`
 	// SqlMemRoot is the parent dir for per-scope .db files. Empty defaults
 	// to <DataDir>/sqlmem.
 	SqlMemRoot string `yaml:"sqlmem_root"`
@@ -5305,6 +5307,26 @@ func applyEnvStorage(cfg *Config) {
 	cfg.Storage.Backend = inferStorageBackend(cfg.Storage.Backend, cfg.Storage.PgDSN)
 }
 
+// SQLMemOn reports whether SQL Memory is on: the yaml's explicit choice, else
+// what LoadLayers inferred from the store.
+func (s StorageConfig) SQLMemOn() bool {
+	return s.SqlMemEnabled != nil && *s.SqlMemEnabled
+}
+
+// inferSQLMemEnabled answers for a yaml that does not say. backend is the
+// resolved store backend. SQLite hosts the scopes as files under the data
+// directory, so nothing more is needed. Postgres hosts them in a separate
+// database, so the aux DSN is the operator's opt-in: without one SQL Memory
+// stays off rather than stopping the boot. An unexpanded ${NAME} reference is
+// not a DSN (see inferStorageBackend).
+func inferSQLMemEnabled(backend, sqlMemPgDSN string) bool {
+	if backend != "postgres" {
+		return true
+	}
+	dsn := strings.TrimSpace(sqlMemPgDSN)
+	return dsn != "" && !strings.HasPrefix(dsn, "${")
+}
+
 // inferStorageBackend resolves the backend the operator did not name: a
 // configured DSN means Postgres, none means SQLite. An explicit yaml value is
 // returned untouched (an unknown one is refused when the store is opened), so
@@ -5326,10 +5348,6 @@ func inferStorageBackend(explicit, pgDSN string) string {
 // applyEnvSQLMem reads the SQL Memory env overrides, then defaults every
 // bound the operator left unset. Part of LoadLayers.
 func applyEnvSQLMem(cfg *Config) {
-	// RFC AA SQL Memory (Phase 1). Off by default; env overrides yaml.
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_ENABLED"); v == "1" {
-		cfg.Storage.SqlMemEnabled = true
-	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_QUOTA_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Storage.SqlMemQuotaBytes = n
@@ -5340,6 +5358,10 @@ func applyEnvSQLMem(cfg *Config) {
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_PG_DSN"); v != "" {
 		cfg.Storage.SqlMemPgDSN = v
+	}
+	if cfg.Storage.SqlMemEnabled == nil {
+		on := inferSQLMemEnabled(cfg.Storage.Backend, cfg.Storage.SqlMemPgDSN)
+		cfg.Storage.SqlMemEnabled = &on
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_SCOPE_TTL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
@@ -7400,7 +7422,7 @@ func sqlMemConfigWarnings(name string, a AgentDef, sqlMemEnabled bool) []string 
 		return false
 	}
 	if has("Memory") && len(a.SqlScopes) > 0 && !sqlMemEnabled {
-		return []string{fmt.Sprintf("agent %q: sql_scopes is set but storage.sqlmem_enabled is false — every sql_query/sql_exec will refuse; set LOOMCYCLE_SQLMEM_ENABLED=1 (or storage.sqlmem_enabled: true)", name)}
+		return []string{fmt.Sprintf("agent %q: sql_scopes is set but SQL Memory is off — every sql_query/sql_exec will refuse; on a Postgres store set LOOMCYCLE_SQLMEM_PG_DSN, and remove storage.sqlmem_enabled: false if the yaml sets it", name)}
 	}
 	return nil
 }

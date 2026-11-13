@@ -34,6 +34,57 @@ func TestStorageBackend_InferredFromDSNUnlessYAMLNamesOne(t *testing.T) {
 	}
 }
 
+// SQL Memory follows the store when the yaml does not say: on with SQLite, on
+// with Postgres only when its own DSN is set. An explicit yaml value wins in
+// both directions.
+func TestSQLMem_InferredFromStoreUnlessYAMLSays(t *testing.T) {
+	const pg = "postgres://u@h/db"
+	const aux = "postgres://u@h/aux"
+	for _, tc := range []struct {
+		name          string
+		yaml          string
+		pgDSN, auxDSN string
+		want          bool
+	}{
+		{"sqlite store", "", "", "", true},
+		{"sqlite store ignores a missing aux DSN", "storage:\n  backend: sqlite\n", pg, "", true},
+		{"postgres store without the aux DSN", "", pg, "", false},
+		{"postgres store with the aux DSN in env", "", pg, aux, true},
+		{"postgres store with the aux DSN in yaml", "storage:\n  sqlmem_pg_dsn: " + aux + "\n", pg, "", true},
+		{"postgres store with an unexpanded aux reference", "storage:\n  sqlmem_pg_dsn: ${LOOMCYCLE_SQLMEM_PG_DSN}\n", pg, "", false},
+		{"yaml false turns it off on sqlite", "storage:\n  sqlmem_enabled: false\n", "", "", false},
+		{"yaml false turns it off on postgres with the aux DSN", "storage:\n  sqlmem_enabled: false\n", pg, aux, false},
+		{"yaml true on postgres without the aux DSN stays on", "storage:\n  sqlmem_enabled: true\n", pg, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_PG_DSN", tc.pgDSN)
+			t.Setenv("LOOMCYCLE_SQLMEM_PG_DSN", tc.auxDSN)
+			cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n"+tc.yaml)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Storage.SQLMemOn(); got != tc.want {
+				t.Errorf("SQLMemOn = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The retired switch is not read: =0 does not turn SQL Memory off on SQLite
+// (the yaml key does), and the operator is told.
+func TestSQLMem_RetiredVariableIsNotRead(t *testing.T) {
+	t.Setenv("LOOMCYCLE_PG_DSN", "")
+	t.Setenv("LOOMCYCLE_SQLMEM_ENABLED", "0")
+	cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Storage.SQLMemOn() {
+		t.Error("SQLMemOn = false, want true")
+	}
+	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_SQLMEM_ENABLED")
+}
+
 // The retired variable no longer selects the backend: with no DSN the store
 // stays SQLite, and the operator is told the line does nothing.
 func TestStorageBackend_RetiredVariableIsNotRead(t *testing.T) {

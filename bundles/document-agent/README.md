@@ -31,7 +31,6 @@ path* below). Two ways:
 
 **Run the bundle directly (demo):**
 ```sh
-export LOOMCYCLE_SQLMEM_ENABLED=1                       # Documents require SQL Memory
 export LOOMCYCLE_SKILLS_ROOT=bundles/document-agent/skills
 loomcycle --config bundles/document-agent/loomcycle.yaml
 ```
@@ -48,7 +47,7 @@ loomcycle --config bundles/document-agent/loomcycle.yaml
 2. Point `LOOMCYCLE_SKILLS_ROOT` at this bundle's `skills/` (or copy them into
    your skills root) so the four `doc/*` skills resolve (nested dirs → the
    `doc/` name group; `doc/manager` is scoped to `skills: [doc/*]`).
-3. Ensure `LOOMCYCLE_SQLMEM_ENABLED=1`.
+3. Documents require SQL Memory: on with SQLite; on a Postgres store it needs LOOMCYCLE_SQLMEM_PG_DSN.
 4. The agent only needs a `middle` tier to resolve — when layered, it uses your
    config's routing (last wins).
 
@@ -58,7 +57,7 @@ providers (deepseek/gemini/anthropic/openai) as the fallback cascade. Opt into
 the OAuth path (`LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1` + `loomcycle anthropic
 login`; see `docs/PROVIDERS.md`) and run it instead:
 ```sh
-export LOOMCYCLE_SQLMEM_ENABLED=1 LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1
+export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1
 export LOOMCYCLE_SKILLS_ROOT=bundles/document-agent/skills
 loomcycle anthropic login
 loomcycle --config bundles/document-agent/loomcycle_oauth.yaml

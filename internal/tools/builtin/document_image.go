@@ -158,7 +158,7 @@ type UndescribedAsset struct {
 // a reshuffled queue.
 func (d *Document) ListUndescribedAssets(ctx context.Context, scope string, limit int) ([]UndescribedAsset, error) {
 	if d.Store == nil || d.SqlMem == nil {
-		return nil, fmt.Errorf("Document assets: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+		return nil, fmt.Errorf("Document assets: requires SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 	}
 	key, mscope, err := d.resolveScope(ctx, scope)
 	if err != nil {
@@ -209,7 +209,7 @@ func (d *Document) ListUndescribedAssets(ctx context.Context, scope string, limi
 // check.
 func (d *Document) SetAssetDescription(ctx context.Context, scope, chunkID, description string) error {
 	if d.Store == nil || d.SqlMem == nil {
-		return fmt.Errorf("Document assets: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+		return fmt.Errorf("Document assets: requires SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 	}
 	key, mscope, err := d.resolveScope(ctx, scope)
 	if err != nil {

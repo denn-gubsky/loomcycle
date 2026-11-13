@@ -40,8 +40,8 @@ import (
 // Documents are deferred (SQL Memory has no tenant scope). Tenant ISOLATION for
 // agent/user docs comes free via the SQL Memory ScopeKey.Tenant axis.
 //
-// Gated by tools:[Document]. Requires SQL Memory enabled
-// (LOOMCYCLE_SQLMEM_ENABLED=1) — the structure tables live there.
+// Gated by tools:[Document]. Requires SQL Memory — the structure tables live
+// there.
 type Document struct {
 	Store  store.Store
 	SqlMem *sqlmem.Manager
@@ -799,7 +799,7 @@ func newDocID() string {
 
 func (d *Document) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if d.Store == nil || d.SqlMem == nil {
-		return errBusiness("Document tool: not configured — requires the Store backend and SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)", "An operator must enable SQL Memory on this server; until then the Document tool cannot run."), nil
+		return errBusiness("Document tool: not configured — requires the Store backend and SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)", "An operator must enable SQL Memory on this server; until then the Document tool cannot run."), nil
 	}
 	var in docInput
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -849,7 +849,7 @@ func hintOmittedScope(ctx context.Context, in docInput, res tools.Result) tools.
 // executeGated runs every gate, then the op.
 func (d *Document) executeGated(ctx context.Context, in docInput, raw json.RawMessage) (tools.Result, error) {
 	if d.Store == nil || d.SqlMem == nil {
-		return errBusiness("Document tool: not configured — requires the Store backend and SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)", "An operator must enable SQL Memory on this server; until then the Document tool cannot run."), nil
+		return errBusiness("Document tool: not configured — requires the Store backend and SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)", "An operator must enable SQL Memory on this server; until then the Document tool cannot run."), nil
 	}
 	// Before any lookup: a cut id is refused on its syntax alone.
 	if r, cut := refuseCutIDs(in); cut {
@@ -2202,7 +2202,7 @@ func (d *Document) getChunkRow(ctx context.Context, key sqlmem.ScopeKey, id stri
 // scope (so a caller can distinguish "no such chunk" from "status is empty").
 func (d *Document) GetChunkStatus(ctx context.Context, scope, chunkID string) (status string, ok bool, err error) {
 	if d.Store == nil || d.SqlMem == nil {
-		return "", false, fmt.Errorf("Document board: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+		return "", false, fmt.Errorf("Document board: requires SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 	}
 	key, _, err := d.resolveScope(ctx, scope)
 	if err != nil {
@@ -2231,7 +2231,7 @@ func (d *Document) GetChunkStatus(ctx context.Context, scope, chunkID string) (s
 // event lets the Web UI board follow along live.
 func (d *Document) SetChunkStatus(ctx context.Context, scope, chunkID, status string) error {
 	if d.Store == nil || d.SqlMem == nil {
-		return fmt.Errorf("Document board: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+		return fmt.Errorf("Document board: requires SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 	}
 	key, mscope, err := d.resolveScope(ctx, scope)
 	if err != nil {
@@ -3515,7 +3515,7 @@ func (d *Document) readAssetRow(ctx context.Context, key sqlmem.ScopeKey, chunkI
 // so the asset route cannot tell an unreadable image from an absent one.
 func (d *Document) ReadAsset(ctx context.Context, scope, chunkID string) (mediaType string, data []byte, ok bool, err error) {
 	if d.Store == nil || d.SqlMem == nil {
-		return "", nil, false, fmt.Errorf("Document asset: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+		return "", nil, false, fmt.Errorf("Document asset: requires SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 	}
 	key, _, err := d.resolveScope(ctx, scope)
 	if err != nil {

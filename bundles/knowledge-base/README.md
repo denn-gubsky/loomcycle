@@ -389,8 +389,7 @@ scheduled_runs:
 ## Use
 
 ```bash
-LOOMCYCLE_SQLMEM_ENABLED=1 \
-  LOOMCYCLE_PRESETS=base,knowledge-base ./bin/loomcycle
+LOOMCYCLE_PRESETS=base,knowledge-base ./bin/loomcycle
 ```
 
 ```bash

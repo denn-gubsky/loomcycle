@@ -95,7 +95,7 @@
 # bounded question and its reply is DATA the driver validates.
 #
 # REQUIREMENTS:
-#   - SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1) — Documents live there.
+#   - SQL Memory — Documents live there.
 #   - A confirmed tenant ontology with a Relations section, for L2, L3 and the
 #     kind check of L6. Without one those layers skip and say why.
 #   - For L4 only: an embedder and the Postgres vector tier (`related` is a

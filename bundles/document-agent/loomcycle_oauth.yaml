@@ -7,7 +7,6 @@
 # quota/availability error over to the next candidate.
 #
 # Run it with:
-#     export LOOMCYCLE_SQLMEM_ENABLED=1                       # Documents need SQL Memory
 #     export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1          # opt into the OAuth path
 #     export LOOMCYCLE_SKILLS_ROOT=bundles/document-agent/skills
 #     loomcycle anthropic login                               # one-time browser login

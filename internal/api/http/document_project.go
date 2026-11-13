@@ -47,7 +47,7 @@ func operatorPlanePrincipal(ctx context.Context) bool {
 func (s *Server) handleDocumentProject(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",
-			"projecting documents requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+			"projecting documents requires SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 		return
 	}
 	cfg := s.cfg()

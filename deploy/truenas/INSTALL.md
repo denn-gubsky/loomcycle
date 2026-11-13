@@ -193,7 +193,6 @@ services:
       LOOMCYCLE_PUBLIC_URL: "http://TRUENAS_SCALE_HOST:8787"   # externally-reachable base URL (your tunnel/proxy host, or this for direct LAN); agents read it via `Context op=self` (≥ v1.6.7)
       LOOMCYCLE_PRESETS: "base,document-agent,chat,agent-teams,team-examples"   # matrix + built-in agents
       LOOMCYCLE_CONFIG_DIR: /config
-      LOOMCYCLE_SQLMEM_ENABLED: "1"              # document-agent needs it
       LOOMCYCLE_PG_AUTOMIGRATE: "0"              # the init service handles migrations
       LOOMCYCLE_DATA_DIR: /data
 
@@ -472,7 +471,7 @@ Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup 
 | Crash-loop ending `sqlmem audit: ... open /data: is a directory` | `LOOMCYCLE_AUDIT_LOG_PATH` must be a **file**, not the `/data` mount — set `/data/audit.log` (or remove the line; the audit log is optional). |
 | Documents fail with `sqlmem: provision scope: ... permission denied to create role` | The SQL-Memory DSN's role lacks `CREATEROLE` (it provisions a per-scope login role). Grant it: `ALTER ROLE loomcycle CREATEROLE;` (Phase 1 now creates the role with it). |
 | Documents fail with `permission denied for database "loomcycle_sqlmem"` (SQLSTATE 42501) | `PUBLIC` lacks `CONNECT` on the SQL-Memory database (a shared Postgres revoked it); the per-scope roles connect through it. Run `GRANT CONNECT ON DATABASE loomcycle_sqlmem TO PUBLIC;` |
-| `doc/manager` idle | Needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the `loomcycle_sqlmem` DSN + a `middle` tier (base provides one). |
+| `doc/manager` idle | Needs the `loomcycle_sqlmem` DSN (`LOOMCYCLE_SQLMEM_PG_DSN`, which turns SQL Memory on) + a `middle` tier (base provides one). |
 | An agent has no file access | Its bound volume isn't mapped — check the overlay `volumes:` `path` equals the in-container mount path (Phase 3 ↔ Phase 5). |
 | Crash-loop ending `config: load failed err="volumes.dynamic: path \"/mnt/dynamic\" must already exist …"` | The overlay declares the `dynamic` volume but the app has no mount at `/mnt/dynamic` (an install made from a compose before v1.122.0). Create the dataset owned by 65532 (Phase 2) and add the mount (Phase 5: `…/dynamic:/mnt/dynamic`, or *Additional storage* in the wizard). To boot first, comment out the `dynamic:` block. |
 | File downloads / kept tool results fail with `file not kept: mkdir "/mnt/dynamic/_ephemeral/r_…": permission denied` (the boot log also says the dynamic_root volume is not writable) | The `dynamic` dataset is not owned by the runtime uid. `chown -R 65532:65532 /mnt/APPS2/loomcycle/dynamic`. |

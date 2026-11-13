@@ -123,7 +123,7 @@ func (s *Server) handleDescribeImages(w http.ResponseWriter, r *http.Request) {
 	r = sweepRequest(r)
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",
-			"image descriptions require SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+			"image descriptions require SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 		return
 	}
 	// RFC AX (fail-closed), for the same reason the LLM gateway refuses here: this

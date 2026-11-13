@@ -28,10 +28,10 @@
 
 {# ── Storage (Postgres) ── #}
 {% do c1.environment.add_env("LOOMCYCLE_PG_DSN", values.pg_dsn) %}
-{% if values.sqlmem_pg_dsn %}
+{# The DSN is what turns SQL Memory on, so it is passed only when the toggle is. #}
+{% if values.sqlmem_enabled and values.sqlmem_pg_dsn %}
 {% do c1.environment.add_env("LOOMCYCLE_SQLMEM_PG_DSN", values.sqlmem_pg_dsn) %}
 {% endif %}
-{% do c1.environment.add_env("LOOMCYCLE_SQLMEM_ENABLED", "1" if values.sqlmem_enabled else "0") %}
 {% do c1.environment.add_env("LOOMCYCLE_PG_AUTOMIGRATE", "1" if values.automigrate else "0") %}
 
 {# ── Secrets ── #}

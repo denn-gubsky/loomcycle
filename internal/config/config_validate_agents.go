@@ -246,7 +246,7 @@ func validateAgentGrants(c *Config, name string, agent AgentDef) error {
 			}
 		}
 	}
-	c.Warnings = append(c.Warnings, sqlMemConfigWarnings(name, agent, c.Storage.SqlMemEnabled)...)
+	c.Warnings = append(c.Warnings, sqlMemConfigWarnings(name, agent, c.Storage.SQLMemOn())...)
 	// Context/compaction settings that cannot take effect for this agent's
 	// mode. The failure they catch is the one this advisory channel exists
 	// for: a knob that is set, looks right, and is never read.

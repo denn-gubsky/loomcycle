@@ -14,7 +14,6 @@ export LOOMCYCLE_PGVECTOR_ENABLED=1
 # which is exactly the structure the traversal arm is supposed to walk.
 # NOTE: the Postgres tier creates a per-scope LOGIN role, so the DSN role needs
 # CREATEROLE or Documents fail with "permission denied to create role".
-export LOOMCYCLE_SQLMEM_ENABLED=1
 # SQL Memory on a Postgres main store demands a SEPARATE database, not a schema,
 # and the aux DSN must carry a PASSWORD -- the admin password keys the per-scope
 # role credentials. So the DSN is a secret and lives outside the repo.

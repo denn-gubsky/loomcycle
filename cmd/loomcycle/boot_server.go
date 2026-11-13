@@ -240,15 +240,16 @@ func (b *boot) openSQLMemory() {
 	contextTool := b.contextTool
 	srv := b.srv
 
-	// RFC AA SQL Memory (Phase 1). Off by default; constructed only when the
-	// operator enables it. The manager hosts per-scope sqlite databases that
+	// RFC AA SQL Memory. Constructed unless it is off (Storage.SQLMemOn: on
+	// with SQLite, on with Postgres when the aux DSN is set, off when the
+	// yaml says so). The manager hosts per-scope sqlite databases that
 	// SEPARATE from the main store — an agent's arbitrary SQL can only ever
 	// reach its own scope file. Wired into the Memory tool (sql_query/sql_exec)
 	// and the server (run-scope drop at top-level run completion).
 	// Declared here (not inside the block) so the RFC BM retention sweeper below
 	// can reclaim a retired agent's SQL-Memory scope; nil when SQL Memory is off.
 	var sqlMemMgr *sqlmem.Manager
-	if cfg.Storage.SqlMemEnabled {
+	if cfg.Storage.SQLMemOn() {
 		sqlMemRoot := cfg.Storage.SqlMemRoot
 		if sqlMemRoot == "" {
 			sqlMemRoot = filepath.Join(cfg.Env.DataDir, "sqlmem")

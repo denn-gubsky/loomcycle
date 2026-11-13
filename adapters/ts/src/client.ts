@@ -4209,7 +4209,7 @@ export class LoomcycleClient {
    *  set_path, edges, query_chunks, type defs, export_md/import_md). Scope
    *  agent/user (tenant deferred); resolved server-side from the principal.
    *
-   *  Requires SQL Memory enabled on the sidecar (`LOOMCYCLE_SQLMEM_ENABLED=1`)
+   *  Requires SQL Memory enabled on the sidecar
    *  — the chunk-structure tables live there. Without it the call is refused
    *  ({@link SubstrateToolRefusedError}).
    *

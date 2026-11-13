@@ -20,10 +20,6 @@ export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED="${LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED:-1}"
 # Bash is required by both agents (coder: python3 stdio; validator: inline trial-division)
 export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
-# RFC AA — SQL memory subsystem. The YAML also sets storage.sqlmem_enabled: true;
-# this env var provides a belt-and-suspenders enable for CI / one-liner runs.
-export LOOMCYCLE_SQLMEM_ENABLED="${LOOMCYCLE_SQLMEM_ENABLED:-1}"
-
 mkdir -p "$HERE/data" "$HERE/work"
 LOOMCYCLE_BIN="${LOOMCYCLE_BIN:-loomcycle}"
 command -v "$LOOMCYCLE_BIN" >/dev/null 2>&1 || \

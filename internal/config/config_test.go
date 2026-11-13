@@ -592,8 +592,8 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Storage.SqlMemEnabled {
-		t.Error("SqlMemEnabled should default to false")
+	if !cfg.Storage.SQLMemOn() {
+		t.Error("SQL Memory should default to on with a SQLite store")
 	}
 	if cfg.Storage.SqlMemStatementTimeoutMS != 30000 {
 		t.Errorf("SqlMemStatementTimeoutMS = %d, want 30000", cfg.Storage.SqlMemStatementTimeoutMS)

@@ -41,7 +41,7 @@ Bash, Document, Memory, Path, Skill` (plus `Context`, auto-added).
   operator's **default** volume — define one with `default: true, mode: rw` (or
   bind one per agent in your overlay). Without it, the file/shell tools are
   registered-but-idle.
-- **`LOOMCYCLE_SQLMEM_ENABLED=1`** — Document (and SQL-backed Memory) need it.
+- **SQL Memory** — Document (and SQL-backed Memory) need it. On with SQLite; on a Postgres store it needs LOOMCYCLE_SQLMEM_PG_DSN.
 - **`BRAVE_API_KEY`** + **`LOOMCYCLE_HTTP_HOST_ALLOWLIST`** — for WebSearch/WebFetch.
 - **`LOOMCYCLE_BASH_ENABLED=1`** for raw Bash (Bashbox needs no switch).
 - **`chat/local` context window** is the GLOBAL `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX`
