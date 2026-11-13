@@ -1094,6 +1094,19 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if err != nil {
 			return mergedDef{}, err
 		}
+		// The closed set of {{help:<topic>}} placeholders static agents are
+		// held to: a prompt being AUTHORED names only a topic this binary
+		// embeds, so an unknown or malformed one is refused rather than stored
+		// to render nothing. Here and not in decodeAgentOverlay, which also
+		// reads stored team-local bodies on every resolve and restore: a topic
+		// a later binary dropped must leave those runnable (the placeholder
+		// renders nothing), not refuse them. Both prompt fields, since a run
+		// renders whichever it is served.
+		for _, f := range [...]struct{ name, text string }{{"system_prompt", ov.SystemPrompt}, {"system_prompt_base", ov.SystemPromptBase}} {
+			if err := config.ValidateHelpPlaceholders(f.text); err != nil {
+				return mergedDef{}, fmt.Errorf("AgentDef tool: %s: %w", f.name, err)
+			}
+		}
 		modesSent = ov.ToolModes != nil
 		// Authoring only: a stored definition carrying it still loads and is
 		// denied by it (descendantsRefusal), so forking it keeps working once

@@ -4,100 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/help/builtin"
 )
 
-// Example is one call example in a help topic: the ARGUMENTS object a model
-// would pass to Tool. Examples are written as the argument object alone —
-// never a {name, arguments} envelope or a tagged block — because an envelope
-// is exactly the shape a small model copies into its reply as text instead of
-// making the call.
-type Example struct {
-	// Tool is the tool the example calls: the fence's `tool=` attribute, else
-	// the article's own tool.
-	Tool string
-	// Input is the argument object, verbatim.
-	Input json.RawMessage
-	// Line is the 1-based line of the opening fence within the topic body, for
-	// error messages.
-	Line int
-}
+// Example is one call example in a help topic. The parser lives with the
+// embedded corpus (internal/help/builtin) so the config layer, which validates
+// a {{help:<topic>}} placeholder at load, reads examples through the same code.
+type Example = builtin.Example
 
-// Examples returns the call examples in t. A call example is a fenced block
-// whose info string starts with `json`, inside a `## Examples` section (the
-// heading may carry a suffix: "## Examples — tenant scope"). Within that
-// section a fence tagged `json result` shows what came back and is not a call.
-// A fence may name its tool (```json tool=Memory), which is how a topic that
-// is not a tool article — the scopes primer — carries checked examples.
-//
-// A malformed example is reported as an error rather than skipped: an example
-// that does not parse teaches nothing and should not reach a model.
+// Examples returns the call examples in t — see builtin.ParseExamples for the
+// grammar: ```json fences under a `## Examples` heading, `json result` fences
+// excluded, an optional tool= attribute.
 func (t *Topic) Examples() ([]Example, error) {
 	if t == nil {
 		return nil, nil
 	}
-	var (
-		out       []Example
-		inSection bool
-		inFence   bool
-		isCall    bool
-		fenceTool string
-		fenceLine int
-		body      []string
-	)
-	for i, ln := range strings.Split(t.Content, "\n") {
-		trimmed := strings.TrimSpace(ln)
-		if strings.HasPrefix(trimmed, "```") {
-			if !inFence {
-				inFence = true
-				fenceLine = i + 1
-				body = body[:0]
-				isCall, fenceTool = false, ""
-				info := strings.Fields(strings.TrimPrefix(trimmed, "```"))
-				if inSection && len(info) > 0 && info[0] == "json" {
-					isCall = true
-					for _, attr := range info[1:] {
-						switch {
-						case attr == "result":
-							isCall = false
-						case strings.HasPrefix(attr, "tool="):
-							fenceTool = strings.TrimPrefix(attr, "tool=")
-						}
-					}
-				}
-				continue
-			}
-			inFence = false
-			if !isCall {
-				continue
-			}
-			raw := strings.Join(body, "\n")
-			var obj map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(raw), &obj); err != nil {
-				return nil, fmt.Errorf("%s: example at line %d is not a JSON object: %w", t.Name, fenceLine, err)
-			}
-			tool := fenceTool
-			if tool == "" {
-				tool = t.Tool
-			}
-			if tool == "" {
-				return nil, fmt.Errorf("%s: example at line %d names no tool (add tool=<Name> to the fence)", t.Name, fenceLine)
-			}
-			out = append(out, Example{Tool: tool, Input: json.RawMessage(raw), Line: fenceLine})
-			continue
-		}
-		if inFence {
-			body = append(body, ln)
-			continue
-		}
-		if strings.HasPrefix(ln, "## ") {
-			inSection = strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(ln, "## ")), "Examples")
-		}
-	}
-	if inFence {
-		return nil, fmt.Errorf("%s: unclosed code fence opened at line %d", t.Name, fenceLine)
-	}
-	return out, nil
+	return builtin.ParseExamples(t.Name, t.Content, t.Tool)
 }
 
 // designDocCite matches an internal design-document citation ("RFC DL",
