@@ -142,6 +142,13 @@ func retiredEnvWarnings(environ []string) []string {
 	return out
 }
 
+// RetiredEnvAdvisories is retiredEnvWarnings for a command that loads no
+// config and so never sees Config.Warnings: the MCP thin client, whose
+// environment is a plugin's and may still carry the names it used to read.
+func RetiredEnvAdvisories(environ []string) []string {
+	return retiredEnvWarnings(environ)
+}
+
 // retiredEnvCtx is what a refusal rule may look at besides its own value.
 type retiredEnvCtx struct {
 	// env is the whole environment, for a rule that depends on a second

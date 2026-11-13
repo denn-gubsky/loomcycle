@@ -223,3 +223,24 @@ func TestLoadLayers_RefusesARetiredVariableThatAskedForSomethingTighter(t *testi
 		t.Error("the retired variables are no longer advised")
 	}
 }
+
+// The thin client's own retired variables reach a command that loads no
+// config, by name and without their values.
+func TestRetiredEnvAdvisories_NamesTheThinClientsRetiredVariables(t *testing.T) {
+	got := RetiredEnvAdvisories([]string{
+		"LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS=31337",
+		"LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS=9",
+		"LOOMCYCLE_MCP_UPSTREAM_TOKEN=hunter2", // read today
+		"LOOMCYCLE_MCP_UPSTREAM=https://runtime.example",
+	})
+	if len(got) != 2 ||
+		!strings.HasPrefix(got[0], "LOOMCYCLE_MCP_UPSTREAM_HEADER_TIMEOUT_MS is set but no longer read: ") ||
+		!strings.HasPrefix(got[1], "LOOMCYCLE_MCP_UPSTREAM_RECONNECT_ATTEMPTS is set but no longer read: ") {
+		t.Fatalf("advisories = %q, want one for each retired thin-client variable", got)
+	}
+	for _, w := range got {
+		if strings.Contains(w, "31337") || strings.Contains(w, "hunter2") {
+			t.Errorf("an advisory carries a variable's value: %q", w)
+		}
+	}
+}
