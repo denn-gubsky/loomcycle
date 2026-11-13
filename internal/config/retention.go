@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -13,6 +15,8 @@ import (
 // age: a Go duration ("12h", "90m", "1h30m"), optionally led by a whole or
 // fractional number of days ("30d", "1d12h"). "0" is zero. A bare number with
 // no unit is refused: nothing says whether it meant seconds, hours or days.
+// So is an empty string: zero is "any age" to a family that deletes, and only
+// a written zero may mean it.
 type HumanDuration time.Duration
 
 // Duration is d as a time.Duration.
@@ -22,7 +26,11 @@ func (d HumanDuration) Duration() time.Duration { return time.Duration(d) }
 // duration is refused: no setting that takes one has a meaning for it.
 func ParseHumanDuration(s string) (time.Duration, error) {
 	v := strings.TrimSpace(s)
-	if v == "" || v == "0" {
+	if v == "" {
+		// A quoted "${VAR}" whose variable is unset or empty expands to this.
+		return 0, errors.New("the value is empty (a ${VAR} that expanded to nothing reads this way); write a duration such as 30d or 12h, or 0s for zero")
+	}
+	if v == "0" {
 		return 0, nil
 	}
 	rest := v
@@ -30,7 +38,9 @@ func ParseHumanDuration(s string) (time.Duration, error) {
 	// No Go duration unit contains a "d", so the first one ends the days part.
 	if i := strings.IndexByte(v, 'd'); i >= 0 {
 		n, err := strconv.ParseFloat(v[:i], 64)
-		if err != nil {
+		// ParseFloat reads "nan" and "inf" as numbers. NaN passes every range
+		// check below and converts to zero.
+		if err != nil || math.IsNaN(n) || math.IsInf(n, 0) {
 			return 0, fmt.Errorf("%q is not a duration such as 30d, 12h or 1d12h", s)
 		}
 		days, rest = n, v[i+1:]

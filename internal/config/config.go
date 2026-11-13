@@ -5063,6 +5063,15 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 			return nil, "", fmt.Errorf("read %s: %w", src[0].Name, err)
 		}
 		expanded := expandEnv(string(raw))
+		var doc yaml.Node
+		if err := yaml.Unmarshal([]byte(expanded), &doc); err != nil {
+			return nil, "", fmt.Errorf("parse %s: %w", src[0].Name, err)
+		}
+		if len(doc.Content) > 0 {
+			if err := checkDurationKeys(yamlKeyNodes(doc.Content[0])); err != nil {
+				return nil, "", err
+			}
+		}
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
 			return nil, "", fmt.Errorf("parse %s: %w", src[0].Name, err)
 		}
@@ -5083,6 +5092,9 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 			for _, o := range overrides {
 				cfg.Warnings = append(cfg.Warnings, "config layer override: "+o)
 			}
+		}
+		if err := checkDurationKeys(yamlKeyNodes(merged)); err != nil {
+			return nil, "", err
 		}
 		out, err := yaml.Marshal(merged)
 		if err != nil {
