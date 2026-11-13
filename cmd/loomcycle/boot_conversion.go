@@ -68,9 +68,16 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 		if err != nil {
 			fatal("conversion: cannot open the worker endpoint", "listen", cv.Listen, "err", err)
 		}
+		if cv.TLS.Enabled() {
+			tc, err := dispatch.ServerTLS(cv.TLS.CertFile, cv.TLS.KeyFile, cv.TLS.ClientCAFile)
+			if err != nil {
+				fatal("conversion.tls: "+err.Error(), "listen", cv.Listen)
+			}
+			l = dispatch.TLSListener(l, tc)
+		}
 		serve(l)
 		closers = append(closers, func() { l.Close() })
-		slog.Info("conversion worker endpoint listening", "listen", cv.Listen)
+		slog.Info("conversion worker endpoint listening", "listen", cv.Listen, "tls", cv.TLS.Enabled(), "client_certs", cv.TLS.ClientCAFile != "")
 	}
 	if cv.LocalWorkers() {
 		bin, err := os.Executable()

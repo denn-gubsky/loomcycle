@@ -76,7 +76,7 @@ func (w *worker) serveTargets(ctx context.Context, targets []target) error {
 		safego.Go(ctx, "conversion.worker.target", func() {
 			defer wg.Done()
 			if t.dnsHost == "" {
-				done(w.attach(ctx, t.addr))
+				done(w.attach(ctx, t.addr, ""))
 				return
 			}
 			done(w.followDNS(ctx, t))
@@ -142,7 +142,7 @@ func (w *worker) followDNS(ctx context.Context, t target) error {
 				actx, acancel := context.WithCancel(ctx)
 				a := &attached{cancel: acancel, done: make(chan error, 1)}
 				live[addr] = a
-				safego.Go(actx, "conversion.worker.dns-target", func() { a.done <- w.attach(actx, addr) })
+				safego.Go(actx, "conversion.worker.dns-target", func() { a.done <- w.attach(actx, addr, t.dnsHost) })
 			}
 		}
 		select {

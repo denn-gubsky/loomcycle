@@ -7,6 +7,7 @@ package worker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,12 +18,14 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -61,6 +64,13 @@ type Options struct {
 	// ResolveEvery is how often a dns:/// name is looked up again; zero is
 	// 30 seconds.
 	ResolveEvery time.Duration
+	// TLS, when set, is used to dial every dispatcher that is not a Unix
+	// socket (ClientTLS).
+	TLS *tls.Config
+	// Insecure allows dialling a dispatcher off this host without TLS. Off,
+	// such a dispatcher is refused: the worker would send the token, and
+	// receive every file, in the clear.
+	Insecure bool
 	// Token is LOOMCYCLE_WORKER_TOKEN.
 	Token string
 	// Slots is the jobs run at once (LOOMCYCLE_WORKER_SLOTS); default 1.
@@ -128,9 +138,25 @@ func Run(ctx context.Context, opt Options) error {
 
 // attach serves one dispatcher until ctx ends, reconnecting with backoff. It
 // returns ErrRefused when the dispatcher refuses this worker for good.
-func (w *worker) attach(ctx context.Context, target string) error {
+// serverName is the name a TLS certificate is checked against when the
+// target is an address found by name.
+func (w *worker) attach(ctx context.Context, target, serverName string) error {
 	log := w.log.With("dispatcher", target)
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds := insecure.NewCredentials()
+	switch {
+	case strings.HasPrefix(target, "unix:"):
+	case w.opt.TLS != nil:
+		c := w.opt.TLS.Clone()
+		if c.ServerName == "" {
+			c.ServerName = serverName
+		}
+		creds = credentials.NewTLS(c)
+	case !w.opt.Insecure && !plaintextAllowed(target):
+		err := fmt.Errorf("%w: %s is off this host and no TLS is configured (set LOOMCYCLE_WORKER_TLS_CA, or LOOMCYCLE_WORKER_INSECURE=1 on a network only the runtime and its workers share)", ErrRefused, target)
+		log.Error("refusing to dial a dispatcher in the clear", "err", err)
+		return err
+	}
+	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return fmt.Errorf("worker: %s: %w", target, err)
 	}

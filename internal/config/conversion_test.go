@@ -44,6 +44,11 @@ func TestConversionConfig_RefusesWhatItCannotDo(t *testing.T) {
 		{"conversion:\n  mode: remote\n  listen: nowhere\n", "not a host:port"},
 		{"conversion:\n  mode: local\n  listen: 127.0.0.1:7788\n", "set only in mode"},
 		{"conversion:\n  mode: local+remote\n  listen: 0.0.0.0:8787\n", "never a public port"},
+		{"conversion:\n  mode: remote\n  listen: 0.0.0.0:7788\n", "set conversion.tls"},
+		{"conversion:\n  mode: remote\n  listen: 10.0.0.5:7788\n  tls:\n    cert_file: /c/e.crt\n", "set together"},
+		{"conversion:\n  mode: remote\n  listen: 127.0.0.1:7788\n  tls:\n    client_ca_file: /c/ca.crt\n", "needs cert_file"},
+		{"conversion:\n  mode: local\n  insecure: true\n", "set only in mode"},
+		{"conversion:\n  mode: remote\n  listen: 127.0.0.1:7788\n  tls:\n    cert: x\n", `unknown key "cert"`},
 		{"conversion:\n  mode: sideways\n", "unknown mode"},
 		{"conversion:\n  mode: local\n  local:\n    workers: 65\n", "outside 1..64"},
 		{"conversion:\n  mode: local\n  local:\n    memory_limit_mb: 64\n", "under the 128 MiB"},
@@ -59,12 +64,25 @@ func TestConversionConfig_RefusesWhatItCannotDo(t *testing.T) {
 
 // A remote mode keeps the worker endpoint it is given.
 func TestConversionConfig_RemoteKeepsItsEndpoint(t *testing.T) {
-	cfg, err := loadConversion(t, "conversion:\n  mode: local+remote\n  listen: 0.0.0.0:7788\n")
+	cfg, err := loadConversion(t, "conversion:\n  mode: local+remote\n  listen: 0.0.0.0:7788\n  tls:\n    cert_file: /c/e.crt\n    key_file: /c/e.key\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := cfg.Conversion.Resolved()
-	if got.Listen != "0.0.0.0:7788" || !got.LocalWorkers() || !got.RemoteWorkers() {
+	if got.Listen != "0.0.0.0:7788" || !got.LocalWorkers() || !got.RemoteWorkers() || got.TLS.CertFile != "/c/e.crt" {
 		t.Fatalf("resolved = %+v", got)
+	}
+}
+
+// Plaintext is accepted on the loopback, and off it only when the operator
+// says the network is private.
+func TestConversionConfig_PlaintextNeedsLoopbackOrAnInsecureFlag(t *testing.T) {
+	for _, block := range []string{
+		"conversion:\n  mode: remote\n  listen: 127.0.0.1:7788\n",
+		"conversion:\n  mode: remote\n  listen: 0.0.0.0:7788\n  insecure: true\n",
+	} {
+		if _, err := loadConversion(t, block); err != nil {
+			t.Errorf("%q: %v", block, err)
+		}
 	}
 }

@@ -6,6 +6,10 @@
 #   conversion:
 #     mode: remote          # or local+remote to keep children as well
 #     listen: 0.0.0.0:7788  # the worker endpoint, on the workers' network only
+#     insecure: true        # plain gRPC: the workers' network below is internal
+#
+# (or conversion.tls with a certificate, and LOOMCYCLE_WORKER_TLS_CA on the
+# workers in place of LOOMCYCLE_WORKER_INSECURE; see docs/WORKERS.md)
 #
 # and .env.local needs LOOMCYCLE_WORKER_TOKEN, at least 32 characters
 # (openssl rand -hex 32). The workers present the same token.
@@ -37,6 +41,7 @@ services:
     image: denngubsky/loomcycle-worker:1.153.0
     environment:
       LOOMCYCLE_WORKER_DISPATCHER: loomcycle:7788
+      LOOMCYCLE_WORKER_INSECURE: "1"
       LOOMCYCLE_WORKER_TOKEN: ${LOOMCYCLE_WORKER_TOKEN:?set it in the shell or an .env file next to this one}
     deploy:
       replicas: 2

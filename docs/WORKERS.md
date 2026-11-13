@@ -34,7 +34,12 @@ A worker is handed bytes and returns bytes. It is never handed a path, a tenant,
    conversion:
      mode: remote
      listen: 0.0.0.0:7788   # never the API port; reachable from the workers only
+     tls:
+       cert_file: /config/worker-endpoint.crt
+       key_file: /config/worker-endpoint.key
    ```
+
+   See [Encryption](#encryption) for the choice between TLS and a private network.
 
 3. Start workers from `denngubsky/loomcycle-worker` (or `ghcr.io/denn-gubsky/loomcycle-worker`), the same release as the runtime:
 
@@ -44,6 +49,7 @@ A worker is handed bytes and returns bytes. It is never handed a path, a tenant,
      --cap-drop ALL --security-opt no-new-privileges \
      -e LOOMCYCLE_WORKER_DISPATCHER=loomcycle:7788 \
      -e LOOMCYCLE_WORKER_TOKEN \
+     -e LOOMCYCLE_WORKER_TLS_CA=/certs/ca.crt -v ./certs:/certs:ro \
      denngubsky/loomcycle-worker:<release>
    ```
 
@@ -74,9 +80,14 @@ A worker reads its commands from its own environment, never from the runtime: a 
 
 The helpers run as they do in the runtime: no shell, a scrubbed environment, a timeout, in the worker's scratch directory. `LOOMCYCLE_HELPER_WRAPPER` confines them further, as it does in the runtime.
 
-## The endpoint is not encrypted
+## Encryption
 
-The worker endpoint speaks gRPC without TLS. The token keeps strangers from attaching, but anyone who can read the traffic sees the files sent for conversion. Keep the endpoint on a network only the runtime and its workers share: a Docker internal network, a Kubernetes namespace with a NetworkPolicy, a WireGuard or Tailscale link between hosts. Never publish its port.
+Everything a worker converts crosses the worker endpoint, and so does the token. The runtime refuses a `listen` address off its own loopback unless one of these is set:
+
+- **`conversion.tls`**: the endpoint's certificate and key. Workers set `LOOMCYCLE_WORKER_TLS_CA` to the CA that signed it (or `system`). Add `client_ca_file` to make every worker also present a client certificate (`LOOMCYCLE_WORKER_TLS_CERT`, `LOOMCYCLE_WORKER_TLS_KEY`), so a leaked token alone does not attach. For `dns:///` targets the certificate is checked against the name, so issue it for the service name.
+- **`conversion.insecure: true`**: plain gRPC. Use it only where no one else can read the traffic: a Docker network marked `internal`, a Kubernetes namespace with a NetworkPolicy, a WireGuard or Tailscale link. Workers then need `LOOMCYCLE_WORKER_INSECURE=1`, because a worker on its own refuses to send its token in the clear to another host.
+
+In both cases, never publish the endpoint's port.
 
 ## Watching the pool
 

@@ -35,6 +35,14 @@ type ConversionConfig struct {
 	// Listen is the host:port the worker endpoint listens on for workers
 	// of their own (modes remote and local+remote). Never the public port.
 	Listen string `yaml:"listen,omitempty"`
+	// TLS is the endpoint's certificate, and optionally the CA its workers'
+	// client certificates must be signed by. Required for a listen address
+	// off this host's loopback unless Insecure is set.
+	TLS ConversionTLSConfig `yaml:"tls,omitempty"`
+	// Insecure serves a listen address off the loopback without TLS: only
+	// for a network the runtime and its workers share and nothing else can
+	// read (a container-internal network, a WireGuard link).
+	Insecure bool `yaml:"insecure,omitempty"`
 	// QueueWaitS is how long a conversion waits for a free worker before the
 	// call is answered as a busy server. Default 60.
 	QueueWaitS int `yaml:"queue_wait_s,omitempty"`
@@ -44,6 +52,18 @@ type ConversionConfig struct {
 	// Local tunes mode local.
 	Local ConversionLocalConfig `yaml:"local,omitempty"`
 }
+
+// ConversionTLSConfig is `conversion.tls`.
+type ConversionTLSConfig struct {
+	CertFile string `yaml:"cert_file,omitempty"`
+	KeyFile  string `yaml:"key_file,omitempty"`
+	// ClientCAFile, when set, makes every worker present a client
+	// certificate signed by it (mutual TLS), on top of the token.
+	ClientCAFile string `yaml:"client_ca_file,omitempty"`
+}
+
+// Enabled reports whether a certificate is configured.
+func (t ConversionTLSConfig) Enabled() bool { return t.CertFile != "" || t.KeyFile != "" }
 
 // ConversionLocalConfig is `conversion.local`.
 type ConversionLocalConfig struct {
@@ -123,8 +143,17 @@ func validateConversion(c *Config) error {
 				return fmt.Errorf("conversion.listen: %s is the port of %s; the worker endpoint is never a public port", cv.Listen, own.name)
 			}
 		}
-	} else if cv.Listen != "" {
-		return fmt.Errorf("conversion.listen: set only in mode %s or %s", ConversionRemote, ConversionLocalRemote)
+		if cv.TLS.Enabled() && (cv.TLS.CertFile == "" || cv.TLS.KeyFile == "") {
+			return fmt.Errorf("conversion.tls: cert_file and key_file are set together")
+		}
+		if cv.TLS.ClientCAFile != "" && !cv.TLS.Enabled() {
+			return fmt.Errorf("conversion.tls.client_ca_file needs cert_file and key_file")
+		}
+		if !cv.TLS.Enabled() && !cv.Insecure && !loopbackHost(host) {
+			return fmt.Errorf("conversion.listen: %s is reachable off this host, and the endpoint carries every file sent for conversion: set conversion.tls (cert_file, key_file), or conversion.insecure: true on a network only the runtime and its workers share", cv.Listen)
+		}
+	} else if cv.Listen != "" || cv.TLS.Enabled() || cv.TLS.ClientCAFile != "" || cv.Insecure {
+		return fmt.Errorf("conversion.listen, tls and insecure: set only in mode %s or %s", ConversionRemote, ConversionLocalRemote)
 	}
 	if cv.QueueWaitS < 0 || cv.QuarantineTTLS < 0 {
 		return fmt.Errorf("conversion: queue_wait_s and quarantine_ttl_s may not be negative")
@@ -136,6 +165,15 @@ func validateConversion(c *Config) error {
 		return fmt.Errorf("conversion.local.memory_limit_mb: %d is under the %d MiB a worker needs", m, minConversionLocalMemoryMB)
 	}
 	return nil
+}
+
+// loopbackHost reports whether host is this machine's loopback only.
+func loopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // sameHost reports whether host is addr's host or either listens on every
@@ -151,6 +189,9 @@ func (c *ConversionConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "local"), "conversion.local", nil, reflect.TypeOf(ConversionLocalConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "tls"), "conversion.tls", nil, reflect.TypeOf(ConversionTLSConfig{})); err != nil {
 		return err
 	}
 	type plain ConversionConfig

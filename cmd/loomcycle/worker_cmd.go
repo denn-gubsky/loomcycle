@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -59,9 +60,14 @@ func runWorker(args []string, stderr io.Writer) int {
 		}
 		return nil
 	}
+	tlsCfg, err := workerTLS()
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
+		return 2
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err := worker.Run(ctx, worker.Options{
+	err = worker.Run(ctx, worker.Options{
 		Target:       *dispatcher,
 		Token:        os.Getenv("LOOMCYCLE_WORKER_TOKEN"),
 		Slots:        slots,
@@ -73,6 +79,8 @@ func runWorker(args []string, stderr io.Writer) int {
 		Media:        helperFrom("LOOMCYCLE_WORKER_MEDIA_COMMAND", "transcription.stt.media"),
 		Encode:       helperFrom("LOOMCYCLE_WORKER_ENCODE_COMMAND", "speech.encode"),
 		Images:       vision.NewReencoder(),
+		TLS:          tlsCfg,
+		Insecure:     os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1",
 	})
 	switch {
 	case err == nil:
@@ -83,4 +91,26 @@ func runWorker(args []string, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 	return 1
+}
+
+// workerTLS is the TLS a worker dials network dispatchers with, from its
+// environment: LOOMCYCLE_WORKER_TLS_CA turns it on (a CA file, or "system"
+// for the system roots), LOOMCYCLE_WORKER_TLS_CERT and _KEY are a client
+// certificate for an endpoint that requires one, and _SERVER_NAME overrides
+// the name the dispatcher's certificate is checked against. nil when unset.
+func workerTLS() (*tls.Config, error) {
+	ca := strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TLS_CA"))
+	cert := strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TLS_CERT"))
+	key := strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TLS_KEY"))
+	name := strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TLS_SERVER_NAME"))
+	if ca == "" {
+		if cert != "" || key != "" || name != "" {
+			return nil, fmt.Errorf("LOOMCYCLE_WORKER_TLS_CA turns TLS on; set it (a CA file, or \"system\") with the other LOOMCYCLE_WORKER_TLS_* settings")
+		}
+		return nil, nil
+	}
+	if ca == "system" {
+		ca = ""
+	}
+	return worker.ClientTLS(ca, cert, key, name)
 }
