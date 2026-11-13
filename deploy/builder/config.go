@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -12,7 +13,7 @@ import (
 // per-call value an agent supplies is clamped to the ceilings here — the model
 // can ask for less isolation headroom but never more than the operator allows.
 type Config struct {
-	ListenAddr string // :9000; the container port mapping is the knob
+	ListenAddr string // SANDBOX_LISTEN_ADDR (default :9000)
 
 	// AuthToken is the shared bearer every MCP request must present
 	// (Authorization: Bearer <token>). Required unless AllowAnon — a sandbox
@@ -88,8 +89,20 @@ type Config struct {
 // environment; the rest is fixed, tied to the reference image or to bounds no
 // deployment has needed to move.
 func LoadConfig() (*Config, error) {
+	// The sidecar has nowhere to print an advisory an operator would see, and
+	// several of these were limits a deployment may have lowered; starting
+	// with the fixed value in place of a tighter one must not pass silently.
+	var retired []string
+	for _, name := range retiredEnv {
+		if os.Getenv(name) != "" {
+			retired = append(retired, name)
+		}
+	}
+	if len(retired) > 0 {
+		return nil, fmt.Errorf("%s: no longer read, the value is fixed (see \"Fixed, with no variable\" in deploy/builder/README.md); remove each to start", strings.Join(retired, ", "))
+	}
 	c := &Config{
-		ListenAddr:        ":9000",
+		ListenAddr:        envStr("SANDBOX_LISTEN_ADDR", ":9000"),
 		AuthToken:         os.Getenv("SANDBOX_AUTH_TOKEN"),
 		AllowAnon:         os.Getenv("SANDBOX_ALLOW_ANON") == "1",
 		PodmanBin:         envStr("SANDBOX_PODMAN_BIN", "podman"),
@@ -134,6 +147,21 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("SANDBOX_WORKSPACE_ROOT must be an absolute path (got %q)", c.WorkspaceRoot)
 	}
 	return c, nil
+}
+
+// retiredEnv lists the variables the sidecar used to read. Setting one stops
+// the start (see LoadConfig).
+var retiredEnv = []string{
+	"SANDBOX_CONTAINER_USER",
+	"SANDBOX_MAX_ENV_VARS",
+	"SANDBOX_MAX_ENV_VALUE_BYTES",
+	"SANDBOX_DEFAULT_TMPFS_MB",
+	"SANDBOX_MAX_TMPFS_MB",
+	"SANDBOX_MAX_PIDS",
+	"SANDBOX_MAX_OUTPUT_BYTES",
+	"SANDBOX_SESSION_IDLE_TTL",
+	"SANDBOX_SESSION_MAX_TTL",
+	"SANDBOX_GC_INTERVAL",
 }
 
 func envStr(name, def string) string {

@@ -114,6 +114,7 @@ secret — forwarding it would 401).
 
 | Var | Default | Purpose |
 |---|---|---|
+| `SANDBOX_LISTEN_ADDR` | `:9000` | Listen address. |
 | `SANDBOX_AUTH_TOKEN` | — (required) | Shared bearer every MCP request must present. |
 | `SANDBOX_ALLOW_ANON` | `0` | `1` = run unauthenticated (LOCAL DEV ONLY). |
 | `SANDBOX_IMAGE` | — (required) | The session toolchain image. |
@@ -125,11 +126,15 @@ secret — forwarding it would 401).
 | `SANDBOX_MAX_CPUS` / `SANDBOX_MAX_MEM_MB` | `2` / `2048` | Per-session resource ceilings. |
 | `SANDBOX_MAX_SESSIONS` | `32` | Concurrent session cap. |
 
-Fixed, with no variable: listens on `:9000` (map the container port to move
-it); sessions run as `1000:1000`, the reference image's user; 512 PIDs per
-session; workspace tmpfs 512 MB by default and 2048 MB at most; at most 32
+Fixed, with no variable: sessions run as `1000:1000`, the reference image's
+user; 512 PIDs per session; workspace tmpfs 512 MB by default and 2048 MB at most; at most 32
 injected env vars of 64 KiB each; 1 MiB of output per exec; a session is
-reaped after 15 minutes idle or 1 hour in all, checked every minute.
+reaped after 15 minutes idle or 1 hour in all, checked every minute. The
+sidecar refuses to start while a variable that used to set one of these
+(`SANDBOX_CONTAINER_USER`, `SANDBOX_MAX_ENV_VARS`, `SANDBOX_MAX_ENV_VALUE_BYTES`,
+`SANDBOX_DEFAULT_TMPFS_MB`, `SANDBOX_MAX_TMPFS_MB`, `SANDBOX_MAX_PIDS`,
+`SANDBOX_MAX_OUTPUT_BYTES`, `SANDBOX_SESSION_IDLE_TTL`, `SANDBOX_SESSION_MAX_TTL`,
+`SANDBOX_GC_INTERVAL`) is still set: remove it.
 
 ## Env injection (credentials into a session)
 
