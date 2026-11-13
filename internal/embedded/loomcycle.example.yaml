@@ -1053,16 +1053,6 @@ concurrency:
 #   LOOMCYCLE_SESSION_LOCK_GC_INTERVAL_MS=300000   (default 5 min)
 #   LOOMCYCLE_SESSION_LOCK_MAX_IDLE_MS=600000      (default 10 min)
 
-# ─── Cache ────────────────────────────────────────────────────────────
-# Two layers: the response_kv (loomcycle's own normalised-request KV)
-# and native (provider-side cache_control on Anthropic system blocks).
-cache:
-  response_kv:
-    backend: memory            # "memory" | "redis" (redis adapter v0.4)
-    ttl: 5m
-  native:
-    enabled: true              # honour Anthropic cache_control hints
-
 # ─── Context-transform plugins (RFC Z / v0.33.x) ────────────────────
 # A runtime-wide chain of fast, built-in transforms applied to a COPY of the
 # OUTBOUND LLM request on every turn, in declared order. The only built-in

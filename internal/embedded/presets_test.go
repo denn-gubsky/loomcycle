@@ -1,6 +1,9 @@
 package embedded
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -289,5 +292,21 @@ func TestEnvTemplate_NonEmpty(t *testing.T) {
 	}
 	if !strings.Contains(string(EnvTemplate()), "LOOMCYCLE_") {
 		t.Errorf("env template should mention LOOMCYCLE_ vars")
+	}
+}
+
+// TestEnvTemplate_MatchesRepoRootCopy: the embedded catalogue (what
+// `loomcycle env-template` and the TrueNAS form serve) and the repo-root
+// .env.insecure.example (what an operator copies) are one file kept in two
+// places, because go:embed cannot reach above this package. They drifted by
+// 140 lines before this test existed.
+func TestEnvTemplate_MatchesRepoRootCopy(t *testing.T) {
+	root, err := os.ReadFile(filepath.Join("..", "..", ".env.insecure.example"))
+	if err != nil {
+		t.Fatalf("read repo-root .env.insecure.example: %v", err)
+	}
+	if !bytes.Equal(root, EnvTemplate()) {
+		t.Fatal(".env.insecure.example and internal/embedded/env.insecure.example differ; " +
+			"edit the repo-root file, then: cp .env.insecure.example internal/embedded/env.insecure.example")
 	}
 }

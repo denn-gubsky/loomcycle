@@ -75,7 +75,6 @@ func applyEnvMemory(cfg *Config) {
 
 	// v0.9.0 Vector Memory env vars.
 	cfg.Env.PgvectorEnabled = os.Getenv("LOOMCYCLE_PGVECTOR_ENABLED") == "1"
-	cfg.Env.SqliteVecPath = os.Getenv("LOOMCYCLE_SQLITE_VEC_PATH")
 	cfg.Env.MemoryEmbedBatchSize = 100
 	if v := os.Getenv("LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {

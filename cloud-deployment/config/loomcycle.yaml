@@ -223,13 +223,6 @@ concurrency:
   max_concurrent_runs: 8
   max_queue_depth: 32
 
-cache:
-  response_kv:
-    backend: memory
-    ttl: 5m
-  native:
-    enabled: true                 # honour Anthropic cache_control hints
-
 # ─── Volumes ──────────────────────────────────────────────────────────
 # The dynamic root: the runtime makes volumes under it — each run's `inbox`
 # (a file an MCP server, HTTP or WebFetch returns is kept there and the model
