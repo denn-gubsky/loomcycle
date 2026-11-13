@@ -272,6 +272,12 @@ volumes:
 # not load. INSTALL.md "Upgrading to Web UI sessions" has the host steps.
 auth:
   mode: token
+  # Web UI URL-free sign-in: the first-party origins /ui may accept a bearer
+  # handoff from over postMessage (the landing that mints tenant tokens), so
+  # "Sign in" hands the token to /ui without a ?token= URL. Empty: the receiver
+  # stays disabled. Keep it equal to LANDING_ORIGIN in .env.insecure.
+  login_origins:
+    - https://loomcycle.cloud
   gates:
     token: { kind: token, label: "Access token" }
     cloud:

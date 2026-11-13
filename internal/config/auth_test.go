@@ -132,3 +132,38 @@ func TestAuthModeLowered_OnlyStrictToTokenLowers(t *testing.T) {
 		t.Error("AuthModeLowered disagrees with strict > token")
 	}
 }
+
+// auth.login_origins lists the origins the login page may take a bearer from
+// over postMessage. None by default; entries are trimmed and lose a trailing
+// slash, so they compare equal to what a browser reports as an origin.
+func TestAuthLoginOrigins_YAMLList(t *testing.T) {
+	cfg, err := loadYAMLString(t, "agents: {}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Auth.LoginOrigins) != 0 {
+		t.Errorf("no block: login origins = %q, want none", cfg.Auth.LoginOrigins)
+	}
+	cfg, err = loadYAMLString(t, "auth:\n  login_origins: [\" https://landing.example/ \", \"https://other.example\"]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Auth.LoginOrigins; len(got) != 2 || got[0] != "https://landing.example" || got[1] != "https://other.example" {
+		t.Errorf("login origins = %q", got)
+	}
+	if _, err := loadYAMLString(t, "auth:\n  login_origins: [\"https://landing.example\", \"\"]\n"); err == nil || !strings.Contains(err.Error(), "auth.login_origins") {
+		t.Errorf("an empty entry: err = %v, want a refusal naming the key", err)
+	}
+
+	// The variable is retired: reported when the yaml lists its origins,
+	// refused when it does not.
+	t.Setenv("LOOMCYCLE_UI_LOGIN_ORIGINS", "https://landing.example/")
+	cfg, err = loadYAMLString(t, "auth:\n  login_origins: [\"https://landing.example\"]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_UI_LOGIN_ORIGINS")
+	if _, err := loadYAMLString(t, "agents: {}\n"); err == nil || !strings.Contains(err.Error(), "auth.login_origins") {
+		t.Errorf("a retired origin the yaml does not list: err = %v, want a refusal naming the yaml key", err)
+	}
+}

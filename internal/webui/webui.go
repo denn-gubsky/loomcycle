@@ -123,7 +123,7 @@ func Handler(prefix string, login func(*http.Request) LoginConfig, opts ...Optio
 
 	// GET <prefix>/login-config.json — what the login page needs before anyone
 	// signs in: the mode, the gate names and labels, and the origins the
-	// postMessage handoff may accept a bearer from (LOOMCYCLE_UI_LOGIN_ORIGINS;
+	// postMessage handoff may accept a bearer from (auth.login_origins;
 	// empty ⇒ the receiver stays disabled). Never secret; served
 	// unauthenticated.
 	mux.HandleFunc(fmt.Sprintf("GET %s/login-config.json", prefix), func(w http.ResponseWriter, r *http.Request) {

@@ -82,6 +82,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		memory        MemoryConfig
 		concurrency   Concurrency
 		observability ObservabilityConfig
+		auth          AuthConfig
 		refused       bool
 	}{
 		// Gates: the old read turned the feature on for exactly "1".
@@ -407,6 +408,15 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: " , "},                                                                                                                                   // named no host
 		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: ""},
 
+		// The login page's handoff origins moved to auth.login_origins. Refused
+		// when the yaml does not list an origin the variable did: the landing
+		// page's sign-in would stop working.
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example", refused: true},
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example, https://b.example/", auth: AuthConfig{LoginOrigins: []string{"https://landing.example"}}, refused: true},
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example/, ", auth: AuthConfig{LoginOrigins: []string{"https://b.example", " https://landing.example/ "}}},
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: " , "},
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: ""},
+
 		// The debug flags only added log lines.
 		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
 		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
@@ -418,7 +428,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			environ := append([]string{tc.name + "=" + tc.value}, tc.also...)
-			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory, Concurrency: tc.concurrency, Observability: tc.observability})
+			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory, Concurrency: tc.concurrency, Observability: tc.observability, Auth: tc.auth})
 			if refused := len(got) > 0; refused != tc.refused {
 				t.Fatalf("refused = %v (%q), want %v", refused, got, tc.refused)
 			}

@@ -4154,13 +4154,6 @@ type Env struct {
 	// key held in Vault Transit (a dev server). Off by default: the Vault
 	// token travels in a header. LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1.
 	KMSVaultAllowHTTP bool
-	// UILoginOrigins (LOOMCYCLE_UI_LOGIN_ORIGINS, comma-separated) are the
-	// first-party origins the Web UI's postMessage login receiver may accept a
-	// bearer handoff FROM — e.g. "https://loomcycle.cloud" for the landing that
-	// mints tenant tokens. Empty ⇒ the receiver stays disabled (no cross-origin
-	// handoff), so a deployment without a configured landing can't be handed a
-	// token by any page. Non-secret.
-	UILoginOrigins []string
 	// AuthMode (LOOMCYCLE_AUTH_MODE: token | strict) is the fleet default for
 	// `auth.mode` (RFC FA §4); a config may raise it, never lower it.
 	AuthMode string
@@ -4964,6 +4957,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if err := applyTenantTelemetry(cfg); err != nil {
 		return nil, err
 	}
+	if err := applyAuthLoginOrigins(cfg); err != nil {
+		return nil, err
+	}
 	applyEnvClusterSweeps(cfg)
 	applyEnvLoopTuning(cfg)
 	applyEnvMemory(cfg)
@@ -5137,7 +5133,6 @@ func applyEnvCore(cfg *Config) {
 		GeminiBaseURL:               os.Getenv("GEMINI_BASE_URL"),
 		ListenAddr:                  getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		PublicURL:                   strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
-		UILoginOrigins:              splitCommaTrim(os.Getenv("LOOMCYCLE_UI_LOGIN_ORIGINS")),
 		AuthMode:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_AUTH_MODE")),
 		UIInsecureCookies:           os.Getenv("LOOMCYCLE_UI_INSECURE_COOKIES") == "1",
 		WebUIDir:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_DIR")),

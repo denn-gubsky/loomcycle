@@ -282,7 +282,7 @@ func (s *Server) loginConfig(r *http.Request) webui.LoginConfig {
 	// mode does not offer it (RFC FA §4: only configured gates sign a person
 	// in), even when a token gate is listed for the paste box.
 	if !policy.Strict() {
-		lc.Origins = cfg.Env.UILoginOrigins
+		lc.Origins = cfg.Auth.LoginOrigins
 	}
 	if s.sessionRefusal(r) != "" {
 		lc.SessionRefused = "insecure_transport"

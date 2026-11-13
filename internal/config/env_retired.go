@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -179,6 +180,8 @@ var retiredEnv = map[string]string{
 	// Lists and maps moved to the yaml `observability:` block.
 	"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS":     "set observability.tracing.tenant_sampler_ratios in the yaml, as a map of tenant to ratio",
 	"LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS": "set observability.tenant_telemetry.allowed_hosts in the yaml, as a list",
+
+	"LOOMCYCLE_UI_LOGIN_ORIGINS": "set auth.login_origins in the yaml, as a list",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in
@@ -360,6 +363,18 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// hosts is the operator's new list, not this rule's to judge.
 	"LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS": {loosens: func(value string, c retiredEnvCtx) bool {
 		return len(splitCSV(value)) > 0 && len(c.cfg.Observability.TenantTelemetry.AllowedHosts) == 0
+	}},
+	// An origin the yaml does not list can no longer hand the login page a
+	// token: the landing page's sign-in would stop working.
+	"LOOMCYCLE_UI_LOGIN_ORIGINS": {loosens: func(value string, c retiredEnvCtx) bool {
+		// The rules run before the yaml list is normalised, so do it here.
+		listed := splitCommaTrim(strings.Join(c.cfg.Auth.LoginOrigins, ","))
+		for _, o := range splitCommaTrim(value) {
+			if !slices.Contains(listed, o) {
+				return true
+			}
+		}
+		return false
 	}},
 	// Without the directory a family in export+prune mode deletes nothing;
 	// with another one its exports land where nobody looks for them.

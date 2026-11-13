@@ -1053,6 +1053,16 @@ concurrency:
   # max_queue_depth; past it the request is refused instead of queueing.
   # provider_queue_depth: 32
 
+# ─── Web UI sign-in ───────────────────────────────────────────────────
+# The `auth:` block (mode, gates, sessions, trusted proxies) is documented in
+# docs/CONFIGURATION.md, "Web UI sign-in". One key of it:
+#
+# auth:
+#   login_origins:                # first-party origins the login page may take
+#     - https://landing.example   # a bearer from over postMessage (a landing
+#                                 # page that mints tokens). None = the
+#                                 # receiver stays off. Token mode only.
+
 # ─── Observability ────────────────────────────────────────────────────
 # Tracing itself is configured by the standard OTEL_* environment. These are
 # the per-tenant parts.
