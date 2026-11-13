@@ -68,6 +68,11 @@ var (
 	// ErrNoWorkers refuses a job when no conversion worker that can run it is
 	// attached. The core never falls back to converting in its own process.
 	ErrNoWorkers = errors.New("convert: no conversion worker is attached")
+	// ErrNoHelper refuses a helper job when workers are attached and none
+	// can run its helper: the setting is made, and the program is not
+	// installed where the workers run. Distinct from ErrNotConfigured, which
+	// callers word as a setting to make.
+	ErrNoHelper = errors.New("convert: no attached conversion worker has this helper's program installed")
 )
 
 // PoolStats is a worker pool's state, for /metrics.

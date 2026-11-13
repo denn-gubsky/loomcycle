@@ -420,8 +420,8 @@ func (d *Dispatcher) run(ctx context.Context, j *job) (result, error) {
 			switch {
 			case errors.Is(err, convert.ErrNoWorkers):
 				d.count(kind, "no_worker", false)
-			case errors.Is(err, convert.ErrNotConfigured):
-				d.count(kind, "not_configured", false)
+			case errors.Is(err, convert.ErrNoHelper):
+				d.count(kind, "no_helper", false)
 			case ctx.Err() == nil:
 				d.count(kind, "busy", false)
 			}
