@@ -1213,7 +1213,7 @@ The same operation is available through every transport that consumes the Connec
 
 ### At runtime — reload changed config (`POST /v1/_config/reload`)
 
-Edited a config file and want it live without a restart (which drops in-flight runs)? `POST /v1/_config/reload` **re-assembles** the layered stack the server booted with (presets → `LOOMCYCLE_CONFIG_DIR` → `LOOMCYCLE_CONFIG_FILES` → `--config`), re-globbing the `loomcycle.*.yaml` section siblings and re-reading `LOOMCYCLE_CONFIG_DIR` fresh — so a config or section file **added or removed** since boot is picked up too — validates it, and applies the sections it can apply live — reporting the rest.
+Edited a config file and want it live without a restart (which drops in-flight runs)? `POST /v1/_config/reload` **re-assembles** the layered stack the server booted with (presets → `LOOMCYCLE_CONFIG_DIR` → `--config`), re-globbing the `loomcycle.*.yaml` section siblings and re-reading `LOOMCYCLE_CONFIG_DIR` fresh — so a config or section file **added or removed** since boot is picked up too — validates it, and applies the sections it can apply live — reporting the rest.
 
 ```sh
 # Preview the diff without applying:
@@ -2628,10 +2628,11 @@ loomcycle --config bundles/document-agent/loomcycle.yaml \
 Put your authoritative file **LAST**: the bundle contributes its `agents:` (e.g.
 `doc/manager`), and your file wins on `provider_priority` / `tiers` / `volumes` /
 `defaults` — so the bundle's agent runs on *your* routing and reads *your*
-`default` Volume. Containers/systemd can use the env form instead:
-`LOOMCYCLE_CONFIG_FILES=base.yaml:override.yaml` (`:`-separated). When both are
-set, `LOOMCYCLE_CONFIG_FILES` files layer as the **base** and explicit `--config`
-flags layer **after** them (an explicit flag always wins).
+`default` Volume. Containers/systemd that cannot pass flags mount the files into
+`LOOMCYCLE_CONFIG_DIR` instead (layered in lexical order, before any `--config`).
+The `LOOMCYCLE_CONFIG_FILES` variable that used to list files is no longer read:
+set to a file list it stops the boot, since those files would silently not load.
+Pass each file as `--config`, in the same order, or place them in the config dir.
 
 **Section-per-file (`loomcycle.*.yaml`).** For a large config, split it by section
 into sibling files next to `loomcycle.yaml` and they auto-layer with **no flags or
@@ -2650,10 +2651,18 @@ Because it's the same deep-merge, a section file simply *owns* its section (put
 `providers:` in `loomcycle.providers.yaml` and leave it out of `loomcycle.yaml`).
 
 **A `loomcycle.yaml` base brings its siblings however it's reached** — by
-auto-discovery, by `--config loomcycle.yaml`, or in `LOOMCYCLE_CONFIG_FILES` — so
+auto-discovery or by `--config loomcycle.yaml` — so
 `loomcycle validate loomcycle.yaml` / `doctor` see the *same* split config the
 server runs (no lockstep drift). `LOOMCYCLE_CONFIG_DIR` is unaffected: it already
 layers every `*.yaml` in the directory.
+
+**The CLI loads what the server loads.** `loomcycle validate`, `doctor`,
+`agents list`, `migrate --config`, `tokens` and `audit` assemble their stack with
+the same function the server boots and reloads with: presets, the config dir, a
+named file, section files and the `auth.env` beside the last file. With no file
+named (`loomcycle validate`, `loomcycle doctor`) they load what a bare
+`loomcycle` would: the auto-discovered file, or the presets and config dir alone.
+A file named explicitly must exist, as at boot.
 
 This pairs with runtime reload: edit a section file present at boot and
 `POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
@@ -3035,7 +3044,6 @@ The **full precedence chain** (base → top, last wins, RFC AN merge):
 ```
 embedded presets (LOOMCYCLE_PRESETS, in order)
   → LOOMCYCLE_CONFIG_DIR/*.yaml   (a dir of layers, lexical order)
-  → LOOMCYCLE_CONFIG_FILES        (':'-separated)
   → --config flags                (your authoritative overlay, wins)
 ```
 
@@ -3350,7 +3358,7 @@ The operator pass and the response: [DOCUMENTS.md, "Projection — the 3D map"](
 
 The sections above document each feature's variables where the feature is explained. This section lists the rest: the variables the runtime reads that no other section names. A test (`TestEnvCensus_EveryReadNameIsDocumented` in `internal/config`) fails when the code reads a `LOOMCYCLE_*` name this guide does not mention, so a new knob lands with its row.
 
-Conventions unless a row says otherwise: `1` turns a flag on and anything else leaves it off; a duration ending in `_MS` is milliseconds; a value that does not parse keeps the default. For the byte caps marked *0 disables*, a value of `0` or less removes the cap.
+Conventions unless a row says otherwise: `1` turns a flag on and anything else leaves it off; a duration ending in `_MS` is milliseconds; a value that does not parse keeps the default. These stop the load instead, with an error that names the variable and not its value, when set to something that is not a whole number in range (or, for the last two, not a known value or a host name): `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS`, `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS`, `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS`, `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS`, `LOOMCYCLE_RUN_RATE_PER_MINUTE` (and `LOOMCYCLE_RUN_RATE_BURST` beside it), `LOOMCYCLE_LIMITS_ENFORCE`, `LOOMCYCLE_GIT_SOURCE_HOSTS`. `loomcycle validate` and `doctor` report the same error. For the byte caps marked *0 disables*, a value of `0` or less removes the cap.
 
 ### Server, storage and cluster
 

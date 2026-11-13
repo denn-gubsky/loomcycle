@@ -93,3 +93,18 @@ func hookPrivateHostsInstead(value string, c retiredEnvCtx) string {
 	return "list each host or CIDR range under hooks.private_host_allowlist in the yaml; " + missingEntry(entry) +
 		". Entries are compared as written: a wider range or a shorter suffix in the yaml does not count for it. If the yaml already allows every address your hooks call, remove the variable"
 }
+
+// RetiredLayerEnvRefusals is retiredEnvRefusals for the one retired variable
+// that named config layers, for the layer assembly: it runs before any yaml
+// is read, and when that variable named the only config, "no config found"
+// would otherwise hide the reason. Entries are "NAME: what to do"; values are
+// never included.
+func RetiredLayerEnvRefusals(environ []string) []string {
+	var out []string
+	for _, r := range retiredEnvRefusals(environ, &Config{}) {
+		if name, _, _ := strings.Cut(r, ": "); retiredLayerEnv[name] {
+			out = append(out, r)
+		}
+	}
+	return out
+}

@@ -52,7 +52,7 @@ func loadPgDSN(cfgPath, explicitDSN string) (string, error) {
 		return explicitDSN, nil
 	}
 	if cfgPath != "" {
-		cfg, err := config.Load(cfgPath)
+		cfg, err := loadLayeredConfig(cfgPath)
 		if err != nil {
 			return "", fmt.Errorf("config: %w", err)
 		}
@@ -64,7 +64,7 @@ func loadPgDSN(cfgPath, explicitDSN string) (string, error) {
 		}
 		return cfg.Storage.PgDSN, nil
 	}
-	if v := getenvDefault("LOOMCYCLE_PG_DSN", ""); v != "" {
+	if v := config.PgDSNFromEnv(); v != "" {
 		return v, nil
 	}
 	return "", fmt.Errorf("no DSN: pass --dsn, --config <yaml>, or set LOOMCYCLE_PG_DSN")
@@ -90,7 +90,7 @@ func runMigrateUp(args []string, stdout, stderr io.Writer) int {
 	// same role. Only with --config: --dsn alone carries no setting, and
 	// applying the default would undo the server's.
 	if *cfgPath != "" {
-		cfg, err := config.Load(*cfgPath)
+		cfg, err := loadLayeredConfig(*cfgPath)
 		if err != nil {
 			return fail(stderr, "config: %v", err)
 		}

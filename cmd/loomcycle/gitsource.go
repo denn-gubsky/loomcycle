@@ -1,9 +1,7 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/netguard"
@@ -25,21 +23,12 @@ const (
 	gitSourceMaxHistory     = 500
 )
 
-// gitSourceConfigFromEnv reads the operator's settings for git sources. It
-// returns nil when LOOMCYCLE_GIT_SOURCE_HOSTS is unset: the feature is off
-// and a request for it is refused.
-func gitSourceConfigFromEnv(getenv func(string) string, privateHostAllowlist []string) (*builtin.GitSourceConfig, error) {
-	var hosts []string
-	for _, h := range strings.Split(getenv("LOOMCYCLE_GIT_SOURCE_HOSTS"), ",") {
-		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
-			if strings.ContainsAny(h, "/@ ") || strings.Contains(h, "://") {
-				return nil, fmt.Errorf("LOOMCYCLE_GIT_SOURCE_HOSTS: %q is not a host name (write github.com, not a URL)", h)
-			}
-			hosts = append(hosts, h)
-		}
-	}
+// gitSourceConfig builds the git-source settings from the hosts config load
+// read from LOOMCYCLE_GIT_SOURCE_HOSTS. It returns nil when there are none:
+// the feature is off and a request for it is refused.
+func gitSourceConfig(hosts, privateHostAllowlist []string) *builtin.GitSourceConfig {
 	if len(hosts) == 0 {
-		return nil, nil
+		return nil
 	}
 	cfg := &builtin.GitSourceConfig{
 		Hosts:          hosts,
@@ -61,5 +50,5 @@ func gitSourceConfigFromEnv(getenv func(string) string, privateHostAllowlist []s
 		MaxIdleConns:          4,
 		IdleConnTimeout:       30 * time.Second,
 	}
-	return cfg, nil
+	return cfg
 }

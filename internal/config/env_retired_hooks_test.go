@@ -159,3 +159,33 @@ hooks:
 		}
 	}
 }
+
+// The variable that named extra config layers is gone. Set to anything, the
+// files it names are no longer layered, so it is refused; set and empty, it
+// named none.
+func TestRetiredEnvRefusals_ConfigFilesRefusedWhenItNamesAFile(t *testing.T) {
+	for value, refused := range map[string]bool{"/etc/zz-a.yaml:/etc/zz-b.yaml": true, "zz.yaml": true, "": false} {
+		environ := []string{"LOOMCYCLE_CONFIG_FILES=" + value}
+		got := retiredEnvRefusals(environ, &Config{})
+		if (len(got) > 0) != refused {
+			t.Errorf("value %q: refused = %v (%q), want %v", value, len(got) > 0, got, refused)
+		}
+		if layer := RetiredLayerEnvRefusals(environ); (len(layer) > 0) != refused {
+			t.Errorf("value %q: the assembly's refusal = %q, want refused = %v", value, layer, refused)
+		}
+		for _, msg := range got {
+			if !strings.HasPrefix(msg, "LOOMCYCLE_CONFIG_FILES: ") || !strings.Contains(msg, "--config") ||
+				!strings.Contains(msg, "LOOMCYCLE_CONFIG_DIR") || strings.Contains(msg, "zz") {
+				t.Errorf("refusal %q does not name the variable and what to do, or carries the value", msg)
+			}
+		}
+		if adv := retiredEnvWarnings(environ); len(adv) != 1 {
+			t.Errorf("value %q: advisories = %q, want one", value, adv)
+		}
+	}
+	// The assembly's check is for this variable alone: a rule that needs the
+	// yaml is judged by the load, with the yaml.
+	if got := RetiredLayerEnvRefusals([]string{"LOOMCYCLE_SCHEDULER_ENABLED=0"}); len(got) != 0 {
+		t.Errorf("the assembly refused a variable that does not name config layers: %q", got)
+	}
+}

@@ -68,11 +68,13 @@ loomcycle validate /path/to/loomcycle.yaml
 loomcycle doctor --config /path/to/loomcycle.yaml
 ```
 
+Both commands assemble their config the way the server does: the presets, the config directory, the named file with its section files, and the `auth.env` beside the last file. With no file named, `loomcycle validate` and `loomcycle doctor` load what a bare `loomcycle` would load in that environment, so a deployment that has presets and a config directory but no single `loomcycle.yaml` is checked as it boots ([5.13](#513-config-file-locations)).
+
 What they do with the removed variables:
 
 | Command | A removed variable that is only advised | A removed variable that is refused |
 |---|---|---|
-| `loomcycle validate <config>` | Prints an `Advisories : N` block on standard output, one `  - …` line per advisory, then `OK`. Exit code `0`. | Prints `loomcycle: error: config: retired environment variables are set to …` on standard error. Exit code `2`. Nothing else is printed. |
+| `loomcycle validate [<config>]` | Prints an `Advisories : N` block on standard output, one `  - …` line per advisory, then `OK`. Exit code `0`. | Prints `loomcycle: error: config: retired environment variables are set to …` on standard error. Exit code `2`. Nothing else is printed. |
 | `loomcycle doctor [--config <path>]` | Prints one `WARN` check labelled `Config advisory` per advisory. A warning does not change the exit code. | Prints a `FAIL` check labelled `Config parses` that carries the refusal text, then the summary. Exit code `1`. The later checks do not run. |
 
 `validate` only loads the config. `doctor` also checks that the SQLite data directory is writable (or that a Postgres connection string is set) and that the listen address can be bound; an address already in use by your running server is a warning, not a failure. Neither command opens the store, so neither reports a problem that only appears when the store is opened. One of those is the refusal of an inferred Postgres backend beside an existing SQLite store file ([4.5](#45-a-postgres-connection-string-with-no-backend-named-now-opens-postgres)): `validate` prints `OK` and the server start, or any other command that opens the store, stops.
@@ -749,7 +751,13 @@ LOOMCYCLE_AUDIO_MAX_INFLIGHT=1    # default 2; sizes the queue of both routes
 
 Three things decide which yaml files are loaded, in this order, each later one winning: the embedded presets named by `LOOMCYCLE_PRESETS`, every `*.yaml` in `LOOMCYCLE_CONFIG_DIR`, then each `--config` file.
 
-In the same release, `LOOMCYCLE_CONFIG_FILES` is removed. Set and non-empty, it refuses the boot.
+`LOOMCYCLE_CONFIG_FILES`, the third way to name config files, is removed. Set and non-empty, it refuses the boot: the files it names would silently not be loaded. The refusal is raised before any yaml is read, so it is also what you see when that variable named your only config:
+
+```
+a retired environment variable names config files that are no longer layered; act on it, then remove its line: LOOMCYCLE_CONFIG_FILES: pass each file as --config <path> (repeatable, in the same order), or place the files in LOOMCYCLE_CONFIG_DIR
+```
+
+Set to the empty string it is only advised.
 
 Before:
 
@@ -769,7 +777,15 @@ or place the files in one directory and name it:
 LOOMCYCLE_CONFIG_DIR=/etc/loomcycle
 ```
 
-Files in the config directory are loaded in lexical order, so name them so that the file that must win sorts last. Remember that a config directory now also supplies `skills/`, `agents/` and `help/` (4.7).
+Files in the config directory are loaded in lexical order, so name them so that the file that must win sorts last. Remember that a config directory now also supplies `skills/`, `agents/` and `help/` (4.7). The variable's files were the base and `--config` files layered after them; the config directory keeps that order, since its files load before any `--config`.
+
+**The command-line tools load what the server loads.** The server and every command that reads the config (`validate`, `doctor`, `agents list`, `migrate --config`, `tokens`, `audit`, the memory tools) now build the list of layers with one function. What you will notice:
+
+- **`loomcycle validate` with no path** validates the server's stack: the presets, the config directory, and the auto-discovered `loomcycle.yaml` if there is one. Before, a path was required and the usage text was printed. Its first line names the last file of the stack, or `embedded presets only (no config file)`.
+- **`loomcycle doctor` finds a deployment made of presets and a config directory.** Before, it looked for a single `loomcycle.yaml` and failed its `Config found` check on such a deployment. The check now lists the files of the stack.
+- **Every one of these commands loads the `auth.env` beside the last config file**, as the server does, and only for variables the environment does not already set. Before, only the server and `doctor` did. A command run by hand therefore sees the persisted token and settings the server sees.
+- **A file named explicitly must exist.** A path that does not exist is an error in every command, as at boot. Before, the command-line tools skipped a named file that was missing when presets or a config directory supplied other layers.
+- `agents list`, `validate` and `doctor` therefore agree with the running server on which agents exist and which provider each resolves to, provided they run with the server's environment.
 
 ### 5.14 Sandbox builder sidecar
 
@@ -1096,9 +1112,7 @@ Timeout scaling, memory, concurrency, observability, sign-in, hooks, metrics.
 | `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | `metrics.collect_system` | `true` or `false`; `false` | Moved: `1`. Judged only with `LOOMCYCLE_METRICS_ENABLED=1` in the environment. |
 | `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` | `metrics.sample_interval` | Duration; `5s`; at least `1s` | Moved: a positive number other than `5000` (a number under `1000` counted as `1000`). Judged only with `LOOMCYCLE_METRICS_ENABLED=1` in the environment. |
 
-#### Pending row for table A
-
-This lands with the same release and is not yet in the runtime's table of removed variables.
+Config file locations.
 
 | Variable | Yaml key | Format and default | Stops the boot when |
 |---|---|---|---|
@@ -1355,17 +1369,29 @@ Set `LOOMCYCLE_LOG_LEVEL=debug` to see each Ollama request's model, effort and t
 
 ### An environment variable with a bad value now stops the start
 
-In the same release, a malformed value in an environment variable that is still read (a number that does not parse, an unknown mode) fails the start and names the variable. Before, some of these were silently ignored and the default applied. Fix the value or remove the line.
+The settings the boot code used to read for itself are now read with the rest of the environment, under one rule: a value that cannot be honoured fails the load, and the error names the variable and never its value. Before, some of these stopped the boot and some fell back to the default without a word. `loomcycle validate` and `doctor` report the same error.
+
+| Variable | Accepted | Error |
+|---|---|---|
+| `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS` | A whole number, `0` or more; `0` or unset = no transport timeout | `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS: not a whole number`, or `… must be 0 or more` |
+| `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | A whole number, `0` or more; `0` or unset = no grace | As above |
+| `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` | A whole number, `0` or more; unset = `30`; `0` turns the cache off | As above |
+| `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | A whole number, `1` or more; unset = no cap. `0` is refused, so a cap written as zero is not read as none | `… not a whole number`, or `… must be 1 or more` |
+| `LOOMCYCLE_RUN_RATE_PER_MINUTE` | A whole number, `1` or more; unset = no default rate | As above |
+| `LOOMCYCLE_RUN_RATE_BURST` | A whole number, `0` or more. Read only when the rate is set; alone it configures nothing and is not checked | `… not a whole number`, `… must be 0 or more`, or `LOOMCYCLE_RUN_RATE_PER_MINUTE / LOOMCYCLE_RUN_RATE_BURST: …` when the pair is not a valid limit |
+| `LOOMCYCLE_LIMITS_ENFORCE` | `strict`, or unset | `LOOMCYCLE_LIMITS_ENFORCE: not a known value (strict, or unset)` |
+| `LOOMCYCLE_GIT_SOURCE_HOSTS` | A comma-separated list of host names; unset = git-sourced volumes are off | `LOOMCYCLE_GIT_SOURCE_HOSTS: an entry is not a host name (write github.com, not a URL)` |
+| `LOOMCYCLE_DEADLINK_GC` | `off`, `dry-run` or `on`; unset = `on` | `LOOMCYCLE_DEADLINK_GC must be off, dry-run or on (unset is on)` |
+
+At boot the error is the `err` field of an `ERROR` line with the message `config: load failed`, and the process exits. Fix the value or remove the line. Variables not in this table keep the older convention: a value that does not parse leaves the default in place.
 
 ## 9. Status of this guide
 
-This guide was checked against the code of the development branch of the release. The items below were approved for the same release and are **not in the code yet**. A maintainer should check each against the code before the release and correct the sections named.
+This guide was checked against the code of the development branch of the release. The item below was approved for the same release and is **not in the code yet**. A maintainer should check it against the code before the release and correct the sections named.
 
-1. **`LOOMCYCLE_CONFIG_FILES`** removed. Pending; it is still read today. Section 5.13, table A.
-2. **Malformed environment values** fail the start and name the variable. Pending as a general policy; today it holds for some variables only (`LOOMCYCLE_DEADLINK_GC` and `LOOMCYCLE_PG_AUTOMIGRATE` are two). Section 8.
-3. **Presets `personal` and `server`, and the `include:` key.** Pending. Check their contents against section 6 and replace the preset lists in 6.1 and 6.2 with the single preset name.
+1. **Presets `personal` and `server`, and the `include:` key.** Pending. Check their contents against section 6 and replace the preset lists in 6.1 and 6.2 with the single preset name.
 
 Also to re-check:
 
-- **Tables A to E** must contain exactly the names in the runtime's table of removed variables, and every "stops the boot" cell must match a refusal rule. The comparison was re-run after the last change; re-run it after the pending items land, and move the pending row of table A into the main table.
+- **Tables A to E** must contain exactly the names in the runtime's table of removed variables, and every "stops the boot" cell must match a refusal rule. The comparison was re-run after the last change; re-run it after any change to either.
 - **The count** of environment variables before the release (about 318) and after.

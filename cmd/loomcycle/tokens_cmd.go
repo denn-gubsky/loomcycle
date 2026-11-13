@@ -21,7 +21,7 @@ import (
 
 // runTokens is `loomcycle tokens <verb>`. It lives here rather than in
 // internal/cli because it opens the store exactly as the server does: the
-// same config layering (presets, CONFIG_DIR, CONFIG_FILES, --config, the
+// same config layering (presets, CONFIG_DIR, --config, the
 // XDG default, auth.env) and the same openStore. A pepper or a database
 // different from the server's would list the wrong rows, or wrap them under
 // the wrong key.

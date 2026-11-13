@@ -78,8 +78,7 @@ type Driver struct {
 
 // New constructs the driver from LOOMCYCLE_MOCK_* env vars. Invalid
 // values fall back to sensible defaults rather than refusing to
-// start — this is a test tool, not a production hot path; the
-// operator can always check the boot log to see what was applied.
+// start — this is a test tool, not a production hot path.
 func New() *Driver {
 	d := &Driver{
 		latencyBase:   parseDurationMS(os.Getenv("LOOMCYCLE_MOCK_LATENCY_MS"), 50*time.Millisecond),

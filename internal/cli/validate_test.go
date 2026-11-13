@@ -43,15 +43,35 @@ func TestRunValidate_Clean(t *testing.T) {
 	}
 }
 
-// Missing path arg → usage to stderr, rc=2.
-func TestRunValidate_NoArgs(t *testing.T) {
+// No path and nothing the server would discover → the server's "no config
+// found" error and the usage, rc=2.
+func TestRunValidate_NoArgsAndNoConfigToDiscover(t *testing.T) {
+	isolateLayerEnv(t)
 	var stdout, stderr bytes.Buffer
 	rc := RunValidate(nil, &stdout, &stderr)
 	if rc != 2 {
 		t.Errorf("rc=%d, want 2", rc)
 	}
-	if !strings.Contains(stderr.String(), "Usage:") {
-		t.Errorf("stderr missing usage line: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "Usage:") || !strings.Contains(stderr.String(), "no config found") {
+		t.Errorf("stderr missing the usage or the no-config error: %q", stderr.String())
+	}
+}
+
+// No path validates what the server loads with no --config: here a stack of
+// embedded presets and a config dir, which has no single file to name.
+func TestRunValidate_NoArgsValidatesTheServersStack(t *testing.T) {
+	_, cwd := isolateLayerEnv(t)
+	t.Setenv("LOOMCYCLE_PRESETS", "base")
+	dir := filepath.Join(cwd, "conf")
+	writeYAML(t, filepath.Join(dir, "site.yaml"), "agents:\n  probe: { model: deepseek-pro }\n")
+	t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+	var stdout, stderr bytes.Buffer
+	if rc := RunValidate(nil, &stdout, &stderr); rc != 0 {
+		t.Fatalf("rc=%d, stderr=%q", rc, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, filepath.Join(dir, "site.yaml")) || !strings.Contains(out, "probe") {
+		t.Errorf("summary does not show the config dir's file and its agent:\n%s", out)
 	}
 }
 

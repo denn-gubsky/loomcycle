@@ -185,6 +185,9 @@ var retiredEnv = map[string]string{
 
 	"LOOMCYCLE_UI_LOGIN_ORIGINS": "set auth.login_origins in the yaml, as a list",
 
+	// The third way to name config layers; --config and the config dir stay.
+	"LOOMCYCLE_CONFIG_FILES": "pass each file as --config <path> (repeatable, in the same order), or place the files in LOOMCYCLE_CONFIG_DIR",
+
 	// The hooks lists are yaml-only.
 	"LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS": "list each [tenant:]owner under hooks.permit_host_widen.owners in the yaml",
 	"LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST":   "list each host or CIDR range under hooks.private_host_allowlist in the yaml",
@@ -194,6 +197,10 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_METRICS_COLLECT_SYSTEM":     "set metrics.collect_system: true in the yaml",
 	"LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS": "set metrics.sample_interval in the yaml, as a duration such as 5s",
 }
+
+// retiredLayerEnv names the retired variables that chose config layers. Their
+// rules need no yaml, and the layer assembly applies them before the load.
+var retiredLayerEnv = map[string]bool{"LOOMCYCLE_CONFIG_FILES": true}
 
 // retiredEnvWarnings returns one advisory per retired variable present in
 // environ (the os.Environ form), sorted by name. A variable set to the empty
@@ -306,6 +313,9 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// the option always won over the variable, so only its absence refuses.
 	"LOOMCYCLE_OLLAMA_NUM_CTX":       {providerOptionAbsent("ollama", "num_ctx"), "requests to hosted Ollama no longer carry this context window; set providers.ollama.options.num_ctx in the yaml to the same value, then remove this variable"},
 	"LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU": {providerOptionAbsent("ollama-local", "num_gpu"), "requests to local Ollama no longer carry this GPU offload; set providers.ollama-local.options.num_gpu in the yaml to the same value, then remove this variable"},
+	// The files it named would silently not be layered. Judged by the layer
+	// assembly as well (RetiredLayerEnvRefusals), which runs first.
+	"LOOMCYCLE_CONFIG_FILES": {loosens: valueNotEmpty},
 	// The variables added to the yaml lists. An entry the yaml lacks is a
 	// hook that stops working: its allow_hosts dropped, or its callback to a
 	// private address refused.

@@ -12,7 +12,7 @@ ROOT=$PWD
 OLLAMA=${OLLAMA:-http://100.112.7.68:11434}
 PORT=${PORT:-8825}
 BASE="http://127.0.0.1:$PORT"
-LAYERS="bench/synthesis/ingest.yaml:bench/synthesis/lme_gate_arms.yaml:bench/synthesis/locomo_rating.yaml:bench/docs/memory-rerank/measure.yaml"
+LAYERS=(--config bench/synthesis/ingest.yaml --config bench/synthesis/lme_gate_arms.yaml --config bench/synthesis/locomo_rating.yaml --config bench/docs/memory-rerank/measure.yaml)
 mkdir -p "$OUT/data"
 [ -f "$OUT/data/locomo10.json" ] || curl -sSL -o "$OUT/data/locomo10.json" \
   https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json
@@ -20,11 +20,11 @@ mkdir -p "$OUT/data"
 
 if [ ! -s "$OUT/pools20.jsonl" ]; then
   env -i HOME="$HOME" PATH="$PATH" LOOMCYCLE_LISTEN_ADDR=127.0.0.1:$PORT LOOMCYCLE_DATA_DIR="$OUT/data/server" \
-    OLLAMA_BASE_URL="$OLLAMA" LOOMCYCLE_PRESETS=base,memory LOOMCYCLE_CONFIG_FILES="$LAYERS" \
+    OLLAMA_BASE_URL="$OLLAMA" LOOMCYCLE_PRESETS=base,memory \
     LOOMCYCLE_PG_AUTOMIGRATE=1 LOOMCYCLE_PGVECTOR_ENABLED=1 \
     LOOMCYCLE_PG_DSN="$PG_DSN" LOOMCYCLE_SQLMEM_PG_DSN="$SQLMEM_DSN" \
     LOOMCYCLE_MEMORY_TRACE_INDEX=0 \
-    "$ROOT/bin/loomcycle" >> "$OUT/server.log" 2>&1 &
+    "$ROOT/bin/loomcycle" "${LAYERS[@]}" >> "$OUT/server.log" 2>&1 &
   SRV=$!
   trap 'kill $SRV 2>/dev/null' EXIT
   for _ in $(seq 1 90); do curl -s -m 2 "$BASE/healthz" >/dev/null && break; sleep 1; done
