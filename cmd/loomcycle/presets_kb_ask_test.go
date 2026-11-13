@@ -75,6 +75,13 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 		if _, ok := cfg.Tiers[a.Tier]; !ok {
 			t.Errorf("the base preset should supply the %q tier %s declares", a.Tier, name)
 		}
+		// Every modal tool it holds is held read only, so the runtime refuses a
+		// write before it runs and "only READ" does not rest on the prompt.
+		for _, tool := range strings.Split(want, ",") {
+			if a.ToolModes[tool] != "read" {
+				t.Errorf("%s holds %s in mode %q, want read (tool_modes: %v)", name, tool, a.ToolModes[tool], a.ToolModes)
+			}
+		}
 	}
 	if !strings.Contains(cfg.Agents["kb/search"].SystemPrompt, "COVERAGE: partial") {
 		t.Error("kb/search must end its answer with the COVERAGE line kb/ask reads")

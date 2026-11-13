@@ -6021,9 +6021,9 @@ agents:
     tools: [Document]
     skills: [-*]
     disable_context: true
-    # The tenant knowledge base. NOTE: a tenant Document grant is also a WRITE
-    # grant until the read-only tool mode lands (RFC GL P1); until then "only
-    # READ" is held by the prompt alone.
+    # The tenant knowledge base, read only: the runtime refuses every Document
+    # write op before it runs, so "only READ" no longer rests on the prompt.
+    tool_modes: {Document: read}
     memory_scopes: [tenant]
     sql_scopes: [tenant]
     # Its session holds tenant document text in its tool results.
@@ -6074,9 +6074,9 @@ agents:
     tools: [Document, Path]
     skills: [-*]
     disable_context: true
-    # The tenant knowledge base. NOTE: a tenant Document grant is also a WRITE
-    # grant, and Path can move and remove names, until the read-only tool mode
-    # lands (RFC GL P1); until then "only READ" is held by the prompt alone.
+    # The tenant knowledge base, read only: the runtime refuses every Document
+    # write op and every Path mkdir, mv and rm before it runs.
+    tool_modes: {Document: read, Path: read}
     memory_scopes: [tenant]
     sql_scopes: [tenant]
     internal: true

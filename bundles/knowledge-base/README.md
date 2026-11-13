@@ -19,9 +19,9 @@ corpora, those were almost never right, so they are reported and not filed.
 | `kb/search` | your `middle` tier | `Document`; tenant scope | flat search with summaries; ends with `COVERAGE: complete` or `COVERAGE: partial` |
 | `kb/walker` | your `middle` tier | `Document`, `Path`; tenant scope | walks the document tree by its summaries; the path for overview questions |
 
-`kb/search` and `kb/walker` are told to only read. The runtime does not enforce
-that yet: a tenant `Document` grant can write documents, and `Path` can move
-and remove names.
+`kb/search` and `kb/walker` only read: they hold `Document` (and the walker
+`Path`) in read mode (`tool_modes`), so the runtime refuses any write op before
+it runs, whatever a stored document tells the model to do.
 
 ## What it needs
 
