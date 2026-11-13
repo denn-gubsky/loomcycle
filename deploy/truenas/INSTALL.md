@@ -497,6 +497,13 @@ The deltas from the base install:
 
 Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup python3 -m http.server 8080 &","sleep 1"],"browser":[{"op":"navigate","args":{"url":"http://devsrv:8080/"}},{"op":"get_text"}]}` — the reply should carry `reachable at http://devsrv:<port>` and the fetched page text.
 
+## Conversion workers (optional)
+
+File extraction, OCR page rendering, speech conversion and image re-encoding run inside the runtime by default, so one hostile or oversized file can exhaust the app's memory. Two ways to move them out (RFC GO, [docs/WORKERS.md](../../docs/WORKERS.md)):
+
+- **Children of the runtime**: add `conversion: { mode: local }` to the config overlay. Nothing else changes; the runtime starts and restarts the workers itself. The helper programs (ffmpeg, pdftoppm) must still be in the runtime's image.
+- **Worker containers**: add `conversion: { mode: remote, listen: "0.0.0.0:7788" }` to the overlay, put `LOOMCYCLE_WORKER_TOKEN=<openssl rand -hex 32>` in the secure env file, and add `worker` services from [`deploy/workers/docker-compose.yaml`](../workers/docker-compose.yaml) to the app's compose, on a network shared with the runtime only. Each worker gets a memory limit, a read-only root and a tmpfs at `/scratch`, and mounts no dataset. Do not publish port 7788.
+
 ## Troubleshooting
 
 | Symptom | Cause / fix |
