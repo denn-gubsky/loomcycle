@@ -51,9 +51,16 @@ const (
 
 // Options configure a worker.
 type Options struct {
-	// Target is the dispatcher's gRPC target: unix:///path/to/socket, or
-	// host:port.
+	// Target is the dispatchers to attach to, comma-separated: each one
+	// unix:///path/to/socket, host:port, or dns:///name:port for every
+	// address the name resolves to, re-resolved as it changes (one core per
+	// address behind a headless service).
 	Target string
+	// Resolve looks a dns:/// name up; nil is the system resolver.
+	Resolve func(ctx context.Context, host string) ([]string, error)
+	// ResolveEvery is how often a dns:/// name is looked up again; zero is
+	// 30 seconds.
+	ResolveEvery time.Duration
 	// Token is LOOMCYCLE_WORKER_TOKEN.
 	Token string
 	// Slots is the jobs run at once (LOOMCYCLE_WORKER_SLOTS); default 1.
@@ -111,22 +118,33 @@ func Run(ctx context.Context, opt Options) error {
 		safego.Go(ctx, "conversion.worker.parent", func() { watchParent(ctx, opt.ParentPID, cancel) })
 	}
 
-	conn, err := grpc.NewClient(opt.Target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	targets, err := parseTargets(opt.Target)
 	if err != nil {
-		return fmt.Errorf("worker: %w", err)
+		return err
+	}
+	w := &worker{opt: opt, log: log, labels: labels(opt, log), freed: make(chan struct{})}
+	return w.serveTargets(ctx, targets)
+}
+
+// attach serves one dispatcher until ctx ends, reconnecting with backoff. It
+// returns ErrRefused when the dispatcher refuses this worker for good.
+func (w *worker) attach(ctx context.Context, target string) error {
+	log := w.log.With("dispatcher", target)
+	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return fmt.Errorf("worker: %s: %w", target, err)
 	}
 	defer conn.Close()
 	client := workerpb.NewWorkerServiceClient(conn)
-	w := &worker{opt: opt, log: log, client: client, labels: labels(opt, log)}
-
 	backoff := backoffMin
 	for {
 		start := time.Now()
-		err := w.session(ctx)
+		err := w.session(ctx, client, log)
 		if ctx.Err() != nil {
 			return nil
 		}
 		if errors.Is(err, ErrRefused) {
+			log.Error("the dispatcher refused this worker", "err", err)
 			return err
 		}
 		if time.Since(start) > time.Minute {
@@ -143,11 +161,60 @@ func Run(ctx context.Context, opt Options) error {
 }
 
 type worker struct {
-	opt      Options
-	log      *slog.Logger
-	client   workerpb.WorkerServiceClient
-	labels   []string
-	inFlight atomic.Int32
+	opt    Options
+	log    *slog.Logger
+	labels []string
+
+	// The worker's slots are shared by every dispatcher it attaches to: it
+	// holds an idle stream to each, and runs at most Slots jobs in all.
+	mu    sync.Mutex
+	used  int
+	freed chan struct{} // closed and replaced each time a slot frees
+}
+
+// take claims a slot for a job; false when every slot is in use.
+func (w *worker) take() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.used >= w.opt.Slots {
+		return false
+	}
+	w.used++
+	return true
+}
+
+func (w *worker) give() {
+	w.mu.Lock()
+	w.used--
+	close(w.freed)
+	w.freed = make(chan struct{})
+	w.mu.Unlock()
+}
+
+func (w *worker) inFlight() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.used
+}
+
+// waitFree waits until a slot is free. A full worker that answered one
+// dispatcher Busy opens no new stream to it until then, so the dispatcher's
+// job waits in its queue for the slot instead of meeting Busy again.
+func (w *worker) waitFree(ctx context.Context) error {
+	for {
+		w.mu.Lock()
+		if w.used < w.opt.Slots {
+			w.mu.Unlock()
+			return nil
+		}
+		ch := w.freed
+		w.mu.Unlock()
+		select {
+		case <-ch:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // labels are what this worker can run: extraction and page cuts always,
@@ -184,10 +251,10 @@ func (w *worker) outgoing(ctx context.Context) context.Context {
 }
 
 // session is one attachment: Hello, heartbeats, and a loop per slot.
-func (w *worker) session(parent context.Context) error {
+func (w *worker) session(parent context.Context, client workerpb.WorkerServiceClient, log *slog.Logger) error {
 	ctx, cancel := context.WithCancel(w.outgoing(parent))
 	defer cancel()
-	att, err := w.client.Attach(ctx)
+	att, err := client.Attach(ctx)
 	if err != nil {
 		return err
 	}
@@ -210,9 +277,9 @@ func (w *worker) session(parent context.Context) error {
 		return err
 	}
 	if b := ctl.GetWelcome().GetBuildVersion(); b != w.opt.BuildVersion {
-		w.log.Warn("the dispatcher runs another build", "dispatcher_build", b, "build", w.opt.BuildVersion)
+		log.Warn("the dispatcher runs another build", "dispatcher_build", b, "build", w.opt.BuildVersion)
 	}
-	w.log.Info("attached to the dispatcher", "slots", w.opt.Slots, "labels", w.labels)
+	log.Info("attached to the dispatcher", "slots", w.opt.Slots, "labels", w.labels)
 
 	var wg sync.WaitGroup
 	draining := make(chan struct{})
@@ -226,8 +293,8 @@ func (w *worker) session(parent context.Context) error {
 					return
 				default:
 				}
-				if err := w.work(ctx); err != nil && ctx.Err() == nil {
-					w.log.Warn("a work slot ended", "err", err)
+				if err := w.work(ctx, client); err != nil && ctx.Err() == nil {
+					log.Warn("a work slot ended", "err", err)
 					select {
 					case <-ctx.Done():
 					case <-time.After(backoffMin):
@@ -266,7 +333,7 @@ func (w *worker) session(parent context.Context) error {
 			var ms runtime.MemStats
 			runtime.ReadMemStats(&ms)
 			if err := att.Send(&workerpb.WorkerStatus{Msg: &workerpb.WorkerStatus_Heartbeat{Heartbeat: &workerpb.Heartbeat{
-				InFlight: uint32(w.inFlight.Load()), Rss: ms.Sys,
+				InFlight: uint32(w.inFlight()), Rss: ms.Sys,
 			}}}); err != nil {
 				cancel()
 				wg.Wait()
@@ -279,11 +346,15 @@ func (w *worker) session(parent context.Context) error {
 	}
 }
 
-// work holds one idle slot until a job arrives, runs it, and ends the stream.
-func (w *worker) work(ctx context.Context) error {
+// work holds one idle stream until a job arrives, runs it when a slot is
+// free or answers Busy when none is, and ends the stream.
+func (w *worker) work(ctx context.Context, client workerpb.WorkerServiceClient) error {
+	if err := w.waitFree(ctx); err != nil {
+		return err
+	}
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stream, err := w.client.Work(sctx)
+	stream, err := client.Work(sctx)
 	if err != nil {
 		return err
 	}
@@ -298,11 +369,19 @@ func (w *worker) work(ctx context.Context) error {
 	if start == nil {
 		return errors.New("the first job frame was not JobStart")
 	}
-	w.inFlight.Add(1)
-	defer w.inFlight.Add(-1)
-	done, err := w.runJob(sctx, stream, start)
-	if err != nil {
-		return err
+	var done <-chan struct{}
+	if !w.take() {
+		// Every slot is running a job another dispatcher handed over;
+		// nothing of this one has been read, so it runs elsewhere.
+		if err := stream.Send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_Busy{Busy: &workerpb.Busy{}}}); err != nil {
+			return err
+		}
+	} else {
+		done, err = w.runJob(sctx, stream, start)
+		w.give()
+		if err != nil {
+			return err
+		}
 	}
 	// Let Done reach the dispatcher before the stream goes: close our side
 	// and wait for the dispatcher to end it. Only one goroutine receives on

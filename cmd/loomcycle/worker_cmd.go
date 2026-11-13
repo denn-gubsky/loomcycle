@@ -28,7 +28,8 @@ import (
 func runWorker(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	dispatcher := fs.String("dispatcher", "", "the dispatcher's address: unix:///path/to/socket or host:port")
+	dispatcher := fs.String("dispatcher", os.Getenv("LOOMCYCLE_WORKER_DISPATCHER"),
+		"the dispatchers to attach to, comma-separated: unix:///path/to/socket, host:port, or dns:///name:port for every address of a name (default $LOOMCYCLE_WORKER_DISPATCHER)")
 	id := fs.String("id", "", "this worker's name to the dispatcher (default host-pid-random)")
 	parentPID := fs.Int("parent-pid", 0, "exit when this process is no longer the parent (set by the core for its children)")
 	oomAdj := fs.Int("oom-score-adj", 0, "on Linux, raise this process's OOM score to this value (the core sets 1000 for its children)")
