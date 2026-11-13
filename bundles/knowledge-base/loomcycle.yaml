@@ -64,7 +64,8 @@
 #                 metadata `classifier: agent` asks kb/classify only). An overview
 #                 runs kb/walker, anything else kb/search; a search that ends
 #                 `COVERAGE: partial` goes on to kb/walker with the ids it found,
-#                 unless the decision score was <= 0.1. Returns the answer and a
+#                 unless the decision score was <= 0.1; a search that did not
+#                 complete goes on whatever the score. Returns the answer and a
 #                 `ROUTE: … | SCORE: … | CLASSIFIER: … | RUNS: …` line.
 #   kb/classify — a tool-less LLM agent at tier `low`: one question in, YES or
 #                 NO out (is it asking for an overview); unsure means YES.
@@ -5767,15 +5768,26 @@ agents:
       //    small chat agent kb/classify answers YES or NO. With run metadata
       //    classifier "agent" only kb/classify is asked.
       // 2. An overview goes to kb/walker; anything else to kb/search, the cheaper path.
-      // 3. When kb/search ends with "COVERAGE: partial", the question goes on to
-      //    kb/walker with the ids the search already found, so the walk does not
-      //    repeat it, unless the decision model was sure it is not an overview
-      //    (score at or below LOW).
-      // 4. The answer is the chosen agent's, unchanged, followed by one line:
+      // 3. The question goes on from kb/search to kb/walker, with the ids the search
+      //    already found so the walk does not repeat it, when:
+      //    - the search did not complete, or gave no answer (whatever the score:
+      //      the alternative is no answer at all); or
+      //    - it ends "COVERAGE: partial", unless the decision model was sure the
+      //      question is not an overview (score at or below LOW).
+      //    A walk that gives no answer keeps the search's.
+      // 4. The answer is the chosen agent's, without kb/search's COVERAGE line,
+      //    followed by one line:
       //    ROUTE: <route> | SCORE: <score or none> | CLASSIFIER: <source> | RUNS: <run:status, ...>
       //
       // When in doubt the cascade says overview: sending a question to the walker
       // costs a little, sending an overview to flat search loses the answer.
+      //
+      // UNTRUSTED INPUT. A question given as untrusted input is routed on (the
+      // classifiers read it as data), and each child gets it by reference, still
+      // untrusted, under a fixed trusted prompt. Its text is never pasted into a
+      // child's trusted prompt. With untrusted input present, the run's prompt
+      // text is not forwarded at all: it holds the untrusted blocks too, fenced,
+      // and this body cannot reliably take them out.
 
       // Both bounds are provisional until the decision model is re-measured with
       // one question per call (a batched call scored differently).
@@ -5787,22 +5799,56 @@ agents:
       // runs records every child this run started, classifier included.
       var runs = [];
 
+      // Q is the question: its text for the classifiers, and how a child is
+      // given it. Set once by readQuestion.
+      var Q = { text: "", untrusted: false };
+
+      // readQuestion takes the question from the run's input: the untrusted input
+      // when there is any, else the prompt.
+      function readQuestion(input) {
+        var u = input && input.untrusted ? input.untrusted : [];
+        var parts = [];
+        for (var i = 0; i < u.length; i++) {
+          var t = String(u[i] && u[i].text ? u[i].text : "").replace(/^\s+|\s+$/g, "");
+          if (t) { parts.push(t); }
+        }
+        if (parts.length) { return { text: parts.join("\n\n"), untrusted: true }; }
+        return { text: String(input && input.prompt ? input.prompt : "").replace(/^\s+|\s+$/g, ""), untrusted: false };
+      }
+
+      // spawnArgs is how a child is given the question: a trusted question is its
+      // prompt; an untrusted one goes by reference under a fixed trusted prompt.
+      // extra is trusted text kb/ask adds (the ids a search found).
+      function spawnArgs(name, ask, extra) {
+        var a = { name: name, result: "object" };
+        if (Q.untrusted) {
+          a.prompt = ask + (extra ? "\n\n" + extra : "");
+          a.untrusted = [{ ref: "input" }];
+        } else {
+          a.prompt = Q.text + (extra ? "\n\n" + extra : "");
+        }
+        return a;
+      }
+
       // classify is the one place the question is judged, so the cascade can
       // change without touching the routing. It never throws.
       // Returns {overview, score: 0..1 or null, source: decision|agent|agent-unreadable,
       // error: null or the decision model's failure code}.
       function classify(question, metadata) {
         if (metadata && metadata.classifier === "agent") {
-          return askAgent(question, null, null);
+          return askAgent(null, null);
         }
         var d = decide(question);
         if (d.score !== null && d.score >= HIGH) { return { overview: true, score: d.score, source: "decision", error: null }; }
         if (d.score !== null && d.score <= LOW) { return { overview: false, score: d.score, source: "decision", error: null }; }
-        return askAgent(question, d.score, d.error);
+        return askAgent(d.score, d.error);
       }
 
       // decide asks the decision model. Returns {score: 0..1 or null, error}.
       function decide(question) {
+        // A deployment that declares no decision models registers no Decision
+        // tool, so the binding is absent rather than failing.
+        if (typeof Decision === "undefined") { return { score: null, error: "not_configured" }; }
         var d;
         try {
           d = Decision({ state: { question: question }, questions: { overview: { type: "noul", instructions: ASK } } });
@@ -5829,22 +5875,27 @@ agents:
         return m ? m[1] : "call_failed";
       }
 
-      // askAgent asks kb/classify. The first YES or NO in its answer decides; no
-      // readable word, or a run that gave no answer, counts as an overview.
-      function askAgent(question, score, error) {
-        var r = call("kb/classify", question);
+      // askAgent asks kb/classify. Its verdict is its last non-empty line, with
+      // Markdown and punctuation taken out, and it must then be exactly YES or NO.
+      // Anything else, or a run that gave no answer, counts as an overview.
+      function askAgent(score, error) {
+        var r = call(spawnArgs("kb/classify", "Classify the question given as untrusted input.", ""));
         runs.push(r.run_id + ":" + r.status);
-        var m = /\b(yes|no)\b/i.exec(String(r.final_text || ""));
-        if (!m) { return { overview: true, score: score, source: "agent-unreadable", error: error }; }
-        return { overview: m[1].toLowerCase() === "yes", score: score, source: "agent", error: error };
+        var lines = String(r.final_text || "").split("\n"), last = "";
+        for (var i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].replace(/\s+/g, "") !== "") { last = lines[i]; break; }
+        }
+        var word = last.replace(/[^A-Za-z]/g, "").toUpperCase();
+        if (word !== "YES" && word !== "NO") { return { overview: true, score: score, source: "agent-unreadable", error: error }; }
+        return { overview: word === "YES", score: score, source: "agent", error: error };
       }
 
       // call runs one child and never throws: a child that could not start is
       // reported like one that failed.
-      function call(name, prompt) {
+      function call(args) {
         var r;
         try {
-          r = Agent.spawn({ name: name, prompt: prompt, result: "object" });
+          r = Agent.spawn(args);
           if (typeof r === "string") { r = JSON.parse(r); }
         } catch (e) {
           return { run_id: "-", status: "not_started", error: String(e && e.message !== undefined ? e.message : e).slice(0, 200) };
@@ -5852,17 +5903,31 @@ agents:
         return r || { run_id: "-", status: "no_result" };
       }
 
-      // coverage is the value of the answer's last COVERAGE line, or "".
-      function coverage(text) {
-        var lines = String(text).split("\n"), m;
+      // coverageLine reads one line as a COVERAGE line, allowing the Markdown a
+      // model puts around it (bold, italics, a quote or list marker, backticks).
+      // Returns "complete", "partial" or "".
+      function coverageLine(line) {
+        var t = String(line).replace(/[*_`]/g, "").replace(/^[\s>\-+]+/, "").replace(/\s+$/, "");
+        var m = /^COVERAGE:\s*(complete|partial)\.?$/i.exec(t);
+        return m ? m[1].toLowerCase() : "";
+      }
+
+      // splitCoverage takes the answer's last COVERAGE line out of it.
+      // Returns {text, coverage: complete|partial|""}.
+      function splitCoverage(text) {
+        var lines = String(text).split("\n");
         for (var i = lines.length - 1; i >= 0; i--) {
-          m = /^\s*COVERAGE:\s*(complete|partial)\b/i.exec(lines[i]);
-          if (m) { return m[1].toLowerCase(); }
+          var c = coverageLine(lines[i]);
+          if (c) {
+            lines.splice(i, 1);
+            return { text: lines.join("\n").replace(/\s+$/, ""), coverage: c };
+          }
         }
-        return "";
+        return { text: String(text).replace(/\s+$/, ""), coverage: "" };
       }
 
       // ids collects the document and passage links of an answer, in order, once.
+      // Only the ids are kept, never the text around them.
       function ids(text) {
         var re = /loom:(doc|chunk)\/([0-9a-f][0-9a-f-]{15,63})/g, m, seen = {}, out = [];
         while ((m = re.exec(String(text))) !== null && out.length < MAX_IDS) {
@@ -5877,27 +5942,43 @@ agents:
         return c.error ? "none (" + c.error + ")" : "none";
       }
 
+      var ANSWER = "Answer the question given as untrusted input.";
+
       function run(input) {
-        var q = String(input && input.prompt ? input.prompt : "").replace(/^\s+|\s+$/g, "");
-        if (!q) { return { final_text: "No question given." }; }
-        var c = classify(q, input.metadata);
+        Q = readQuestion(input);
+        if (!Q.text) { return { final_text: "No question given." }; }
+        var c = classify(Q.text, input.metadata);
         var route = c.overview ? "walker" : "search";
-        var fallback = false;
-        var res = call(route === "walker" ? "kb/walker" : "kb/search", q);
+        var how = route, text;
+        var res = call(spawnArgs(route === "walker" ? "kb/walker" : "kb/search", ANSWER, ""));
         runs.push(res.run_id + ":" + res.status);
-        var text = res.final_text || ("The " + route + " agent gave no answer: " + (res.error || res.status));
-        var sureNot = c.source === "decision" && c.score !== null && c.score <= LOW;
-        if (route === "search" && res.final_text && !sureNot && coverage(res.final_text) === "partial") {
-          var found = ids(res.final_text), p = q;
-          if (found.length) {
-            p += "\n\nA first search already found these. Start from them and do not repeat that search:\n" + found.join("\n");
+        if (route === "walker") {
+          text = res.final_text || ("The walker agent gave no answer: " + (res.error || res.status));
+        } else {
+          var s = splitCoverage(res.final_text || "");
+          var done = res.status === "completed" && s.text !== "";
+          var sureNot = c.source === "decision" && c.score !== null && c.score <= LOW;
+          text = s.text;
+          var why = "";
+          if (!done) { why = "search " + res.status; }
+          else if (s.coverage === "partial" && !sureNot) { why = "partial coverage"; }
+          if (why) {
+            var found = ids(res.final_text || "");
+            var extra = found.length ? "A first search already found these. Start from them and do not repeat that search:\n" + found.join("\n") : "";
+            var w = call(spawnArgs("kb/walker", ANSWER, extra));
+            runs.push(w.run_id + ":" + w.status);
+            how = "search -> walker (" + why + ")";
+            if (w.final_text) {
+              text = w.final_text;
+            } else if (text) {
+              how += " -> search kept (walker " + w.status + ")";
+            } else {
+              text = "No answer: the search ended " + res.status + " and the walk " + w.status + ".";
+            }
           }
-          var w = call("kb/walker", p);
-          runs.push(w.run_id + ":" + w.status);
-          if (w.final_text) { text = w.final_text; fallback = true; }
+          if (!text) { text = "The search agent gave no answer: " + (res.error || res.status); }
         }
-        var tail = "ROUTE: " + route + (fallback ? " -> walker (partial coverage)" : "") +
-          " | SCORE: " + scoreText(c) + " | CLASSIFIER: " + c.source + " | RUNS: " + runs.join(", ");
+        var tail = "ROUTE: " + how + " | SCORE: " + scoreText(c) + " | CLASSIFIER: " + c.source + " | RUNS: " + runs.join(", ");
         return { final_text: text + "\n\n" + tail };
       }
 
@@ -5905,17 +5986,18 @@ agents:
     # The second opinion of kb/ask's classifier: one question in, YES or NO out.
     # NO TOOLS AT ALL (tools: [], skills: [-*], disable_context: true) and no
     # memory grants: the question is caller text, and the reply is only DATA
-    # kb/ask reads for its first YES or NO.
+    # kb/ask reads for the YES or NO on its last line.
     tools: []
     skills: [-*]
     disable_context: true
     internal: true
     # A one-word judgement: the operator's `low` tier, like kb/verdict. Retune in
-    # the tier policy, never by pinning a provider or model here.
+    # the tier policy, never by pinning a provider or model here. No effort hint:
+    # on some low-tier providers it turns reasoning on, which can spend the
+    # output cap before the one word.
     tier: low
-    effort: low
     max_iterations: 1
-    max_tokens: 1024
+    max_tokens: 4096
     sampling:
       temperature: 0
     system_prompt: |
