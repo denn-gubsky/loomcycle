@@ -71,6 +71,7 @@ var documentOpModes = map[string]opRead{
 	"judge_fact":            writeOp,
 	"upsert_chunk":          writeOp,
 	"get_chunk":             readOp,
+	"lineage":               readOp,
 	"update_chunk":          writeOp,
 	"delete_chunk":          writeOp,
 	"supersede_chunk":       writeOp,

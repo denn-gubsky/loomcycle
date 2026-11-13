@@ -2,23 +2,42 @@ package builtin
 
 import (
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 )
 
 // TestRenderExamples_EmitsEveryCallAndNoResult pins the rendered form against
-// the article it comes from: Document/search has four ```json call fences and
-// three ```json result fences. Every call renders as one `Tool {compact JSON}`
-// line, in article order; nothing from a result fence and nothing from the
-// prose reaches the output.
+// the article it comes from: every ```json call fence of Document/search (all of
+// them sit under its Examples heading) renders as one `Tool {compact JSON}`
+// line, in article order; nothing from a ```json result fence and nothing from
+// the prose reaches the output. The fences are counted from the article's raw
+// lines, not through the parser under test, so a new example does not need
+// this test edited and a dropped one still fails it.
 func TestRenderExamples_EmitsEveryCallAndNoResult(t *testing.T) {
 	got, err := RenderExamples("Document/search")
 	if err != nil {
 		t.Fatalf("RenderExamples: %v", err)
 	}
+	raw, err := fs.ReadFile(corpus, "tools/Document/search.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, results := 0, 0
+	for _, ln := range strings.Split(string(raw), "\n") {
+		switch strings.TrimSpace(ln) {
+		case "```json":
+			calls++
+		case "```json result":
+			results++
+		}
+	}
+	if calls < 2 || results == 0 {
+		t.Fatalf("Document/search has %d call and %d result fences; the test needs both kinds", calls, results)
+	}
 	lines := strings.Split(got, "\n")
-	if len(lines) != 4 {
-		t.Fatalf("got %d lines, want the article's 4 call examples:\n%s", len(lines), got)
+	if len(lines) != calls {
+		t.Fatalf("got %d lines, want the article's %d call examples:\n%s", len(lines), calls, got)
 	}
 	if want := `Document {"op":"search","query":"how do we roll back a failed database migration"}`; lines[0] != want {
 		t.Errorf("line 0 = %q, want %q", lines[0], want)
