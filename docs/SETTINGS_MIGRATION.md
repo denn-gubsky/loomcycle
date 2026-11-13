@@ -343,7 +343,7 @@ Rules:
 
 ### 5.2 Retention
 
-Retention moved from fifteen variables in milliseconds to one yaml block with durations.
+Retention moved from sixteen variables (the switch, the interval, the export directory, five family modes, five family ages, the kept-version count and the usage-detail and trace ages; the ages in milliseconds) to one yaml block of sixteen keys with durations.
 
 Before:
 
