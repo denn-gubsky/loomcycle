@@ -80,6 +80,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		retention   RetentionConfig // the yaml's retention block
 		providers   map[string]ProviderConfig
 		memory      MemoryConfig
+		concurrency Concurrency
 		refused     bool
 	}{
 		// Gates: the old read turned the feature on for exactly "1".
@@ -365,6 +366,30 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE", value: "8"},
 		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: "1h"},
 
+		// The concurrency bounds moved to the yaml `concurrency:` block. Each is
+		// refused when it held a caller to less than the yaml now allows.
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "2", refused: true}, // the yaml has no per-user cap
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "2", concurrency: Concurrency{MaxConcurrentRunsPerUser: 4}, refused: true},
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "2", concurrency: Concurrency{MaxConcurrentRunsPerUser: 2}},
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "8", concurrency: Concurrency{MaxConcurrentRunsPerUser: 2}},
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "0", concurrency: Concurrency{MaxConcurrentRunsPerUser: 2}}, // was "no cap"
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "-3"},                                                       // was "no cap"
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "two"},                                                      // was ignored
+		// The loader seeds max_queued_runs_per_user with 16; zero is "refuse at once".
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "4", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}, refused: true},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "0", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}, refused: true},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "4", concurrency: Concurrency{MaxQueuedRunsPerUser: 4}},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "16", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "64", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "-1", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}}, // was ignored
+		// Zero inherited max_queue_depth, as an absent yaml key does.
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "4", concurrency: Concurrency{MaxQueueDepth: 32}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "4", concurrency: Concurrency{MaxQueueDepth: 32, ProviderQueueDepth: 8}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "4", concurrency: Concurrency{MaxQueueDepth: 32, ProviderQueueDepth: 4}},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "64", concurrency: Concurrency{MaxQueueDepth: 32}},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "0", concurrency: Concurrency{MaxQueueDepth: 32}},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "32", concurrency: Concurrency{MaxQueueDepth: 32}},
+
 		// The debug flags only added log lines.
 		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
 		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
@@ -376,7 +401,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			environ := append([]string{tc.name + "=" + tc.value}, tc.also...)
-			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory})
+			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory, Concurrency: tc.concurrency})
 			if refused := len(got) > 0; refused != tc.refused {
 				t.Fatalf("refused = %v (%q), want %v", refused, got, tc.refused)
 			}

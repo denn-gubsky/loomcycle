@@ -170,6 +170,11 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE":      "set memory.embedder.batch_size in the yaml (1 sends one text per call)",
 	"LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS":      "set memory.embedder.timeout_ms in the yaml",
 	"LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL": "set memory.projection.interval in the yaml, with memory.projection.enabled: true",
+
+	// Moved to the yaml `concurrency:` block.
+	"LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER": "set concurrency.max_concurrent_runs_per_user in the yaml",
+	"LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER":     "set concurrency.max_queued_runs_per_user in the yaml",
+	"LOOMCYCLE_PROVIDER_QUEUE_DEPTH":         "set concurrency.provider_queue_depth in the yaml",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in
@@ -323,6 +328,24 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// Zero meant no timeout at all, which no yaml value is looser than.
 	"LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS": {loosens: func(value string, c retiredEnvCtx) bool {
 		return loweredFrom(value, yamlOr(c.cfg.Memory.Embedder.TimeoutMs, EmbedderTimeoutMSDefault))
+	}},
+	// The concurrency bounds moved to the yaml. Each is refused when it held
+	// one user, or the requests outside any run, to less than the yaml allows.
+	// A per-user cap of zero is "no cap" in both planes.
+	"LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER": {loosens: func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		now := int64(c.cfg.Concurrency.MaxConcurrentRunsPerUser)
+		return set && ok && n > 0 && (now <= 0 || n < now)
+	}},
+	// Zero was a setting here (a run over the cap is refused at once), and the
+	// old read ignored a negative number.
+	"LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER": {loosens: func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		return set && ok && n >= 0 && n < int64(c.cfg.Concurrency.MaxQueuedRunsPerUser)
+	}},
+	// Zero inherited max_queue_depth, as an absent yaml key does.
+	"LOOMCYCLE_PROVIDER_QUEUE_DEPTH": {loosens: func(value string, c retiredEnvCtx) bool {
+		return loweredFrom(value, int64(c.cfg.Concurrency.ProviderQueueDepthOrDefault()))
 	}},
 	// Without the directory a family in export+prune mode deletes nothing;
 	// with another one its exports land where nobody looks for them.

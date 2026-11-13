@@ -1043,12 +1043,15 @@ concurrency:
   # with `admission: "reject"`, gets HTTP 429 + Retry-After: 5 +
   # `code: "per_user_quota_exhausted"`. Anonymous calls (no user_id)
   # bypass the check. Sub-agents share the parent's count.
-  # Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER /
-  # LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER override yaml.
   # See `help fairness` for the JobEmber starvation case + retry
   # strategies + queue-fairness limits.
   # max_concurrent_runs_per_user: 4
   # max_queued_runs_per_user: 16   # default; 0 refuses at once over the cap
+
+  # Requests sent directly, outside any run (the LLM gateway, embeddings,
+  # decide, image describe), that may wait for a capped provider. Default 0 =
+  # max_queue_depth; past it the request is refused instead of queueing.
+  # provider_queue_depth: 32
 
 # ─── Retention ────────────────────────────────────────────────────────
 # What the runtime deletes with age, and when. Nothing is deleted unless

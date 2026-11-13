@@ -131,8 +131,7 @@ concurrency:
   max_queued_runs_per_user: 16        # waiting runs per user over its cap
 ```
 
-Env overrides: `LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER`,
-`LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER`. The caps also change on a config
+The yaml is the only source of these caps; they also change on a config
 reload.
 
 ## Validate fairness from observability

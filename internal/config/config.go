@@ -4036,7 +4036,6 @@ type Concurrency struct {
 	// MaxQueuedRunsPerUser of them — or, sent with `admission: "reject"`, is
 	// refused with HTTP 429 `code: "per_user_quota_exhausted"` +
 	// `Retry-After: 5`.
-	// Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER.
 	MaxConcurrentRunsPerUser int `yaml:"max_concurrent_runs_per_user"`
 	// MaxQueuedRunsPerUser is how many runs one (tenant, user) may have
 	// queued on its MaxConcurrentRunsPerUser cap. Default 16; 0 refuses a run
@@ -4044,7 +4043,6 @@ type Concurrency struct {
 	// bound is per replica. With no per-user cap it bounds instead how many
 	// places one (tenant, user) holds in the queue for a run slot (runs
 	// naming no user share their tenant's), so one caller cannot fill it.
-	// Env: LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER.
 	MaxQueuedRunsPerUser int `yaml:"max_queued_runs_per_user"`
 	// ProviderQueueDepth is how many requests that hold NO run slot may wait
 	// for a capped provider (max_concurrent / lanes) at once. 0 (default) =
@@ -4057,7 +4055,6 @@ type Concurrency struct {
 	// this is it — past the depth the request is refused with
 	// provider_concurrency_exhausted instead of queueing. A wait for a provider
 	// never times out.
-	// Env: LOOMCYCLE_PROVIDER_QUEUE_DEPTH.
 	ProviderQueueDepth int `yaml:"provider_queue_depth"`
 }
 
@@ -4967,7 +4964,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	applyEnvClusterSweeps(cfg)
 	applyEnvLoopTuning(cfg)
 	applyEnvMemory(cfg)
-	applyEnvConcurrency(cfg)
 	if err := applyEnvToolLimits(cfg); err != nil {
 		return nil, err
 	}
