@@ -471,8 +471,31 @@ func TestPasswordGate_ThrottleSeesEachClientBehindATrustedProxy(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
+	start := time.Now()
 	for i := range password.SourceFree + 2 {
 		attempt("198.51.100.1", fmt.Sprintf("guess-%d@example.com", i), "a guessed passphrase here")
+	}
+	// What the handler wrote, read at the start time so a hold that has
+	// already run out still shows: the failures are counted under the
+	// client's address and a hold was set there, and the proxy's own address
+	// has neither.
+	ctx := context.Background()
+	pg := f.srv.pwGates.p.Load()
+	guesser := pg.sourceKey("local", "198.51.100.1")
+	if n, until, err := f.st.AuthThrottleGet(ctx, guesser, start); err != nil || n <= password.SourceFree || until.IsZero() {
+		t.Fatalf("the guessing client's address: %d failures, held until %v, err %v; want more than %d failures and a hold", n, until, err, password.SourceFree)
+	}
+	if n, until, err := f.st.AuthThrottleGet(ctx, pg.sourceKey("local", "127.0.0.1"), start); err != nil || n != 0 || !until.IsZero() {
+		t.Fatalf("the proxy's address: %d failures, held until %v, err %v; want none", n, until, err)
+	}
+	// The hold after the first failure past the free ones is one second, and
+	// a guess refused inside it is not counted, so it does not grow. One slow
+	// password hash on a loaded machine outlasts it, and the request below
+	// then signs in. The hold is lengthened here, on the key the handler
+	// wrote, so the request tests that the handler reads that key and not
+	// how fast this machine hashes.
+	if _, _, err := f.st.AuthThrottleRecordFailure(ctx, guesser, time.Now(), password.SourceWindow, func(int) time.Duration { return time.Hour }); err != nil {
+		t.Fatal(err)
 	}
 	if code := attempt("198.51.100.1", "nora@example.com", goodPassword); code != http.StatusTooManyRequests {
 		t.Fatalf("the guessing client is not held back: %d", code)
