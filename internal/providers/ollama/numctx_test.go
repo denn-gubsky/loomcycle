@@ -282,7 +282,7 @@ func TestNumCtx_HostedProviderNamesItsOwnEnvVar(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "LOOMCYCLE_OLLAMA_NUM_CTX") || strings.Contains(out, "LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX") {
-		t.Errorf("hosted ollama must name LOOMCYCLE_OLLAMA_NUM_CTX, not the local one; got:\n%s", out)
+	if !strings.Contains(out, "providers.ollama.options.num_ctx") || strings.Contains(out, "LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX") {
+		t.Errorf("hosted ollama must name providers.ollama.options.num_ctx, not the local variable; got:\n%s", out)
 	}
 }

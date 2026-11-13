@@ -4111,22 +4111,6 @@ type Env struct {
 	// internal/providers/ollama/driver.go Driver.WithNumCtx for the
 	// full incident context. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX.
 	OllamaLocalNumCtx int
-	// OllamaNumCtx is the hosted-ollama-cloud counterpart. Empty
-	// default lets the cloud apply its own per-model context. Env:
-	// LOOMCYCLE_OLLAMA_NUM_CTX. Separate from OllamaLocalNumCtx
-	// because the relevant model menu (kimi-k2.6, etc.) differs from
-	// what runs on a local box, so the right value almost certainly
-	// differs too.
-	OllamaNumCtx int
-	// OllamaLocalNumGpu sets options.num_gpu on every chat request the
-	// `ollama-local` driver sends — the number of model layers Ollama
-	// offloads to the GPU. Default 0 = omit (Ollama auto-detects). Set
-	// it (e.g. 99 = "all layers") to force GPU offload on a box where
-	// Ollama otherwise falls back to CPU — common on integrated/APU
-	// GPUs that auto-detection underestimates. Global to ollama-local,
-	// like num_ctx: num_gpu is a model-LOAD parameter, not a per-request
-	// knob. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU.
-	OllamaLocalNumGpu int
 	// DeepSeekBaseURL overrides the public DeepSeek endpoint
 	// (https://api.deepseek.com/v1) for self-hosted OpenAI-
 	// compatible mirrors (e.g. an internal vLLM serving a DeepSeek
@@ -4665,41 +4649,6 @@ type Env struct {
 	// agent_code/<name>/index.js. Default ./agent_code. Env:
 	// LOOMCYCLE_CODE_AGENTS_ROOT.
 	CodeAgentsRoot string
-	// CodeAgentsDeterministic seeds Date.now()/Math.random() for
-	// reproducible runs (Decision 13). Default OFF. Env:
-	// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1.
-	CodeAgentsDeterministic bool
-	// CodeAgentsRunTimeout is a code-agent's whole-run budget of ACTIVE time.
-	// It is NOT a ctx deadline: the code-js provider gives each replay turn of
-	// the JavaScript the run's remaining budget and Interrupts the turn when
-	// it runs out; a turn that starts with none left fails at once. A tool
-	// call in flight is not cut short. Default 120s. Env:
-	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
-	//
-	// Time the run spends WAITING does not count: Agent spawn/parallel_spawn
-	// and the resident open/send/poll while they block, a synchronous TeamDef
-	// op=run, Channel await/subscribe long-polls, Interruption ask, and a
-	// runtime pause all stop the run's clock (providers.RunClock). So a
-	// fan-out orchestrator's budget covers its own JavaScript and non-waiting
-	// tool calls, not its children. Raise it per-agent via
-	// AgentDef.RunTimeoutSeconds (yaml run_timeout_seconds) or per-call via the
-	// /v1/runs run_timeout_seconds field. Exceeding the budget surfaces as
-	// code_agent_timeout (not a throw at a JS line). Because waits are free
-	// against it, CodeAgentsMaxWall below is the bound that waits DO count
-	// against.
-	CodeAgentsRunTimeout time.Duration
-	// CodeAgentsMaxWall is how long a code-agent run may LIVE, waits
-	// included — the absolute bound the budget above, which excludes waits,
-	// cannot be: a run that only waits (a loop over Channel await,
-	// Interruption ask or tiny spawns) spends almost none of it. When it is
-	// exceeded the run's ctx is cancelled, so in-flight waits and children
-	// stop too, and the run fails code_agent_wall_limit. Time the runtime is
-	// paused does not count, and a resumed run continues from its recorded
-	// lifetime. Default 24h; there is no "unlimited", only a large value set
-	// on purpose. Operator-only: no per-agent or per-run field reaches it, so
-	// an agent author cannot lift it (run_timeout_seconds sets the budget,
-	// not this). Env: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS.
-	CodeAgentsMaxWall time.Duration
 
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
@@ -4867,48 +4816,6 @@ type Env struct {
 	// on agent crash. 0 disables long-poll entirely.
 	// Env: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS.
 	ChannelsLongPollCapMS int
-
-	// ProviderHeaderTimeout is the per-attempt cap on time-to-first-
-	// byte for streaming provider HTTP calls (set on each driver's
-	// http.Transport.ResponseHeaderTimeout). Default 60s — generous
-	// enough for cold-start cloud endpoints and warming Ollama models
-	// without leaving a stalled pre-stream connection open forever.
-	// Env: LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS.
-	ProviderHeaderTimeout time.Duration
-
-	// ProviderIdleTimeout is the maximum gap allowed between body
-	// bytes during a streaming provider response. The driver wraps
-	// resp.Body with streamhttp.WrapBody and resets a timer on every
-	// Read; if the timer fires (no bytes for this long), the request
-	// context is cancelled. Default 90s — long enough to ride out
-	// reasoning-model thinking pauses, short enough to drop a truly
-	// stalled stream before the agent's heartbeat sweeper notices.
-	//
-	// Why this exists: the previous implementation used
-	// http.Client.Timeout = 5min as a wall-clock cap on the entire
-	// request. For long final-turn responses (e.g. job-searcher
-	// emitting a 25-position ingest payload) the cap fired mid-stream
-	// even when the model was actively producing tokens. The
-	// header-timeout + per-byte idle pair lets long *productive*
-	// streams complete while still killing genuinely stalled ones.
-	// Env: LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS.
-	ProviderIdleTimeout time.Duration
-
-	// OllamaLocalHeaderTimeout / OllamaLocalIdleTimeout override the
-	// ProviderHeaderTimeout / ProviderIdleTimeout pair for the
-	// "ollama-local" registration ONLY. Local generation is inherently
-	// slow on first-token — a cold model load from disk plus prompt
-	// evaluation over a large num_ctx can take minutes on a consumer
-	// GPU/CPU, blowing past the 60s/90s cloud-shaped defaults and
-	// surfacing as a spurious header/idle timeout. These default to a
-	// generous 300s each so a slow local model isn't cut off, while the
-	// cloud providers keep the tighter fast-fail defaults. Hosted
-	// ollama.com (the "ollama" registration) uses the global
-	// Provider*Timeout, like every other cloud driver.
-	// Env: LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS /
-	// LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS.
-	OllamaLocalHeaderTimeout time.Duration
-	OllamaLocalIdleTimeout   time.Duration
 
 	// SchedulerTickSeconds is the sweeper poll cadence. Default 30.
 	// Lower values trade DB load for tighter punctuality. Env:
@@ -5099,7 +5006,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	applyEnvMCP(cfg)
-	applyEnvProviderTimeouts(cfg)
 
 	// RFC DT: the throughput-measurement block's env overrides + defaults.
 	applyTimeoutScaling(cfg)

@@ -32,6 +32,14 @@ volumes:
   #   path: /mnt/reference
   #   mode: ro
 
+# Local models: force GPU offload where Ollama's detection falls back to CPU
+# (99 = all layers). Delete the block to let Ollama decide. The context window
+# is LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX in the compose.
+providers:
+  ollama-local:
+    options:
+      num_gpu: 99
+
 # You can also override anything the presets set (last layer wins) or add agents,
 # e.g. retarget the built-in document-agent's tier, or define your own agent:
 #

@@ -601,7 +601,7 @@ Local models change the economics. A frontier cloud model prefills a 100k-token 
 
 ### The context window (`num_ctx`) — the knob that bites
 
-`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` controls the window for **all** `ollama-local` models (`LOOMCYCLE_OLLAMA_NUM_CTX` does the same for the hosted `ollama` provider). It is sent as `options.num_ctx`, so it both **caps the window the model loads** and **is what the UI context gauge reports**.
+`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` controls the window for **all** `ollama-local` models (`providers.ollama.options.num_ctx` in the yaml does the same for the hosted `ollama` provider, and `providers.ollama-local.options.num_ctx` wins over the variable). It is sent as `options.num_ctx`, so it both **caps the window the model loads** and **is what the UI context gauge reports**.
 
 - **Set** → that value is forced for every local model and reported verbatim. Ollama's `/api/ps` is not consulted at all, so this is also the way to override a window you don't want.
 - **Unset** → the driver asks Ollama what the model is currently loaded with (`/api/ps`) and **sends that back** as `options.num_ctx`, so the window it reports is the window it requested. Echoing the loaded window is a no-op for a model already running at that size.
@@ -635,10 +635,21 @@ Pick a value **every** local model you use can handle (it's global), e.g. `13107
 
 ### Slow models — timeouts + heartbeat
 
-A big prefill can take a long time before the first token. Two budgets (defaults 300s; raise for very large contexts on slow hardware):
+A big prefill can take a long time before the first token. Two budgets, set under `providers.ollama-local.options` in the yaml (defaults 600000 ms each; raise for very large contexts on slow hardware):
 
-- `LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS` — **time to first byte** (the prefill). Exceeding it surfaces as `net/http: timeout awaiting response headers`.
-- `LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS` — max gap **between** streamed tokens.
+- `header_timeout_ms` — **time to first byte** (the prefill). Exceeding it surfaces as `net/http: timeout awaiting response headers`.
+- `idle_timeout_ms` — max gap **between** streamed tokens.
+
+```yaml
+providers:
+  ollama-local:
+    options:
+      header_timeout_ms: 900000
+      idle_timeout_ms: 900000
+      num_gpu: 99        # layers offloaded to the GPU, where Ollama's detection falls back to CPU
+```
+
+Every other provider takes the same two options, with defaults 60000 and 90000. Neither timeout can be disabled, and a value that is not a positive number leaves the default.
 
 A slow-but-alive call no longer trips the stale-run sweeper: the loop pulses the run heartbeat throughout a model call, so a long prefill won't be reaped as `heartbeat_timeout`. The HTTP timeouts above remain the authority on a genuinely stuck call.
 
@@ -3326,12 +3337,21 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 
 ### Providers
 
+Stream timeouts, the Ollama `num_gpu` and hosted `num_ctx`, and the code-agent budgets are provider options in the yaml (`providers.<id>.options`), not variables: see [6b](#6b-local-models-ollama--configuring--slow-model-advice) and the table below.
+
+| Yaml key | Default | Effect |
+|---|---|---|
+| `providers.<id>.options.header_timeout_ms` | `60000` (`ollama-local`: `600000`) | Time to a provider's response headers before the call fails. |
+| `providers.<id>.options.idle_timeout_ms` | `90000` (`ollama-local`: `600000`) | Longest silence inside a provider's stream before the call fails. Neither timeout can be disabled. |
+| `providers.ollama-local.options.num_gpu` | unset | Sends `options.num_gpu` (layers offloaded to the GPU) on every `ollama-local` request, e.g. `99` for all layers. Unset leaves it to Ollama. |
+| `providers.ollama.options.num_ctx` | unset | Context window sent to hosted ollama.com; unset leaves the model's own. |
+| `providers.code-js.options.deterministic` | `false` | `true` seeds `Date.now()` and `Math.random()` in code agents so runs are reproducible. |
+| `providers.code-js.options.run_timeout_seconds` | `120` | A code agent's budget of active time (waits on children, channels and interruptions do not count). |
+| `providers.code-js.options.max_wall_seconds` | `86400` | How long a code-agent run may live, waits included; past it the run and its children are cancelled. Operator-only: no agent or run field can raise it. |
+
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` | `60000` | Time to a provider's response headers before the call fails. |
-| `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | `90000` | Longest silence inside a provider's stream before the call fails. Neither timeout can be disabled. |
 | `LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS` | off | `1`: once a run has one successful turn, it stays on that provider instead of falling over to another mid-conversation (same-provider retries still apply). |
-| `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` | unset | Sends `options.num_gpu` (layers offloaded to the GPU) on every `ollama-local` request, e.g. `99` for all layers, where Ollama's detection falls back to CPU. Unset or `0` leaves it to Ollama. |
 | `LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED` | off | `1` registers the `anthropic-oauth-dev` provider and enables the `loomcycle anthropic` login commands. |
 | `LOOMCYCLE_CLAUDE_CODE_VERSION` | the pinned version | Overrides the Claude Code version that provider presents, without a rebuild. |
 | `LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT` | `53692` | Local port of that provider's OAuth login callback. |
@@ -3353,9 +3373,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE` | off | `1` makes a request's `allowed_hosts` the whole host policy for that run instead of a narrowing of `LOOMCYCLE_HTTP_HOST_ALLOWLIST` (which then applies only to runs that send no list). |
 | `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` | — | Comma-separated hook owners added to `hooks.permit_host_widen.owners` (appended to the yaml list). |
 | `LOOMCYCLE_CODE_AGENTS_ROOT` | `./agent_code` | Where code-js agents live (`<root>/<name>/index.js`). |
-| `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC` | off | `1` seeds `Date.now()` and `Math.random()` in code agents so runs are reproducible. |
-| `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `120` | A code agent's budget of active time (waits on children, channels and interruptions do not count). Floor 1 s. |
-| `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `86400` | How long a code-agent run may live, waits included; past it the run and its children are cancelled. Operator-only: no agent or run field can raise it. |
 | `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` accepts a plain `http://` Vault address for Vault Transit keys (a dev server). Off because the Vault token travels in a header. |
 | `LOOMCYCLE_WEBSEARCH_PROVENANCE` | off | `1` appends a `(via <provider>)` footer to WebSearch results, naming the search provider that answered and any fallover. |
 | `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. Unset, `<LOOMCYCLE_CONFIG_DIR>/help` when that directory exists; set to the empty string for bundled topics only. |

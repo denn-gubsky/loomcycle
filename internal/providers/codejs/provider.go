@@ -27,11 +27,11 @@ const syntheticModel = "loomcycle/code-js"
 // DefaultRunTimeout is a code-js run's budget of ACTIVE time (time spent
 // waiting does not count), enforced by interrupting the replay turn that
 // crosses it, when neither the run, its agent nor the operator
-// (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS) sets one.
+// (providers.code-js.options.run_timeout_seconds) sets one.
 const DefaultRunTimeout = 120 * time.Second
 
 // DefaultMaxWall is how long a code-js run may LIVE, waits included, when the
-// operator sets no LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS. The run budget
+// operator sets no providers.code-js.options.max_wall_seconds. The run budget
 // excludes waits, so without this a run that only waits never ends. A day is
 // far past any legitimate orchestration — a fan-out of model-driven children
 // takes minutes to hours — yet still ends a runaway the same day, freeing its
@@ -39,18 +39,18 @@ const DefaultRunTimeout = 120 * time.Second
 const DefaultMaxWall = 24 * time.Hour
 
 // fixedEpochMs / fixedSeed pin the clock + RNG across ALL runs under
-// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 (cross-run reproducibility for
+// providers.code-js.options.deterministic: true (cross-run reproducibility for
 // testing / snapshot equality). 2023-11-14T22:13:20Z.
 const (
 	fixedEpochMs int64  = 1700000000000
 	fixedSeed    uint32 = 0x9e3779b9
 )
 
-// Config is the provider's construction-time configuration, sourced from the
-// LOOMCYCLE_CODE_AGENTS_* env knobs in cmd/loomcycle/main.go.
+// Config is the provider's construction-time configuration: the code root
+// from LOOMCYCLE_CODE_AGENTS_ROOT, the rest from providers.code-js.options.
 type Config struct {
 	CodeRoot      string // resolved $LOOMCYCLE_CODE_AGENTS_ROOT (default ./agent_code)
-	Deterministic bool   // LOOMCYCLE_CODE_AGENTS_DETERMINISTIC (cross-run reproducibility)
+	Deterministic bool   // providers.code-js.options.deterministic (cross-run reproducibility)
 	RunTimeout    time.Duration
 	MaxWall       time.Duration // a run's lifetime limit, waits included; 0 → DefaultMaxWall
 	Logger        *slog.Logger  // nil → discarded
@@ -187,7 +187,7 @@ func (p *Provider) Call(ctx context.Context, req providers.Request) (<-chan prov
 	//
 	// A per-run / per-agent run_timeout_seconds override (resolved server-side,
 	// carried on RunMeta) wins over the global
-	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS default.
+	// providers.code-js.options.run_timeout_seconds default.
 	total := p.runTimeout
 	if meta.RunTimeoutSeconds > 0 {
 		total = time.Duration(meta.RunTimeoutSeconds) * time.Second
@@ -297,7 +297,7 @@ func (p *Provider) classifyRunErr(state *replayState, ctx context.Context, cause
 	switch {
 	case state.diverged != nil:
 		d := state.diverged
-		return fmt.Sprintf("code_agent_replay_divergence: tool call #%d was %q on a prior turn but %q on replay — non-deterministic control flow or serialization. Common causes: an unhooked clock/RNG source (try LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1), OR serializing an object with non-deterministic key/iteration order into a tool input (loomcycle sorts input.metadata keys, but normalize any OTHER object to a fixed key order before JSON.stringify — DETERMINISTIC=1 does NOT fix key-order divergence)", d.idx, d.expected, d.got)
+		return fmt.Sprintf("code_agent_replay_divergence: tool call #%d was %q on a prior turn but %q on replay — non-deterministic control flow or serialization. Common causes: an unhooked clock/RNG source (try providers.code-js.options.deterministic: true), OR serializing an object with non-deterministic key/iteration order into a tool input (loomcycle sorts input.metadata keys, but normalize any OTHER object to a fixed key order before JSON.stringify — DETERMINISTIC=1 does NOT fix key-order divergence)", d.idx, d.expected, d.got)
 	case cause == causeCancel:
 		// Parent/operator cancellation (the ctx.Done branch of interruptWatch).
 		// ctx.Err() is non-nil here since that branch only fires after ctx.Done.
@@ -324,7 +324,7 @@ func timeoutMessage(total time.Duration, clock *providers.RunClock) string {
 	if clock != nil {
 		waited = fmt.Sprintf("; it also waited %s, which did not count", clock.State().Waited.Round(time.Millisecond))
 	}
-	return fmt.Sprintf("code_agent_timeout: run used up its %s budget of active time (time spent waiting on sub-agents, team runs, channels or answers does not count%s; raise run_timeout_seconds per-agent / per-run, or LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS globally)", total, waited)
+	return fmt.Sprintf("code_agent_timeout: run used up its %s budget of active time (time spent waiting on sub-agents, team runs, channels or answers does not count%s; raise run_timeout_seconds per-agent / per-run, or providers.code-js.options.run_timeout_seconds globally)", total, waited)
 }
 
 // interruptWatch Interrupts the runtime if the turn's ctx is cancelled or the
@@ -426,7 +426,7 @@ func buildInput(req providers.Request, meta providers.RunMeta) map[string]any {
 // JSON.stringify(s) input.metadata into a tool_use input then emitted
 // byte-different bytes turn-1 vs replay → spurious code_agent_replay_divergence
 // (observed in the JobEmber ats-filter-batch orchestrator, 2026-06). Note
-// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 does NOT help — it pins the RNG/clock,
+// providers.code-js.options.deterministic: true does NOT help — it pins the RNG/clock,
 // not Go-map order. Sorting keys here makes input.* byte-stable across turns so
 // no chunk-in-JS agent has to normalize its own serialization. Arrays keep
 // their order (slices are ordered); only maps are reordered. JS objects are

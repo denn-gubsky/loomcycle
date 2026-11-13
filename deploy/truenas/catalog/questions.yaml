@@ -372,18 +372,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_OLLAMA_NUM_CTX
-            label: LOOMCYCLE_OLLAMA_NUM_CTX
-            description: '(example: 32768)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
-            label: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
-            description: 'num_gpu forces how many model layers Ollama offloads to the GPU on every ollama-local request. Leave unset to let Ollama auto-detect; set it (99 = "all layers") when Ollama otherwise runs on CPU — common on integrated/APU GPUs whose VRAM auto-detection is conservative. Global to ollama-local. (example: 99)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_BEDROCK_REGION
             label: LOOMCYCLE_BEDROCK_REGION
             description: 'The region the `bedrock` preset''s providers sign for and call (bedrock-runtime.<region>.amazonaws.com). Required when the preset is selected (LOOMCYCLE_PRESETS=base,bedrock). Credentials are NOT set here: they come from the standard AWS chain — the instance / task / pod role on AWS, or AWS_PROFILE / AWS_ACCESS_KEY_ID elsewhere (keys go in .env.local). (example: eu-central-1)'
@@ -589,30 +577,6 @@ questions:
           - variable: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS
             label: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS
             description: '(example: 30000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS
-            label: LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS
-            description: 'Operators on networks with high TLS handshake latency or aggressive NAT idle timeouts may want to bump HEADER_TIMEOUT to 90 000 ms; the defaults are tuned for direct internet egress. (example: 60000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS
-            label: LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS
-            description: '(example: 90000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS
-            label: LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS
-            description: 'The `ollama-local` provider is the exception: local generation is slow on first-token (cold model load from disk + prompt eval over a large num_ctx can take minutes on a consumer GPU/CPU), so it uses its OWN, more generous default pair — 600 s / 600 s — instead of the cloud-shaped 60/90 above. These override only ollama-local; hosted ollama.com and every other cloud provider keep the global P…'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS
-            label: LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS
-            description: '(example: 600000)'
             schema:
               type: string
               default: ""
@@ -1021,24 +985,6 @@ questions:
           - variable: LOOMCYCLE_CODE_AGENTS_ROOT
             label: LOOMCYCLE_CODE_AGENTS_ROOT
             description: 'A goja-backed provider for stateless replay agents (load tests, deterministic pipelines). Always registered; an agent uses it with `provider: code-js`. (example: /srv/loomcycle/code-agents)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CODE_AGENTS_DETERMINISTIC
-            label: LOOMCYCLE_CODE_AGENTS_DETERMINISTIC
-            description: '(example: 1)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS
-            label: LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS
-            description: '(example: 120)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
-            label: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
-            description: '(example: 86400)'
             schema:
               type: string
               default: ""

@@ -399,14 +399,12 @@ func (d *Driver) warnIfPromptOverWindow(req providers.Request, w ctxWindow) {
 }
 
 // numCtxSetting names the knob that pins this registration's num_ctx, for the
-// diagnostic above. The two built-in ids have env vars; a config-declared
+// diagnostic above. The local registration has an env var; every other
 // ollama-driver provider is pinned through its own providers: entry.
 func (d *Driver) numCtxSetting() string {
 	switch d.providerID {
 	case "ollama-local":
 		return "LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX"
-	case "ollama":
-		return "LOOMCYCLE_OLLAMA_NUM_CTX"
 	default:
 		return "providers." + d.providerID + ".options.num_ctx"
 	}

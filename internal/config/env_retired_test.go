@@ -78,6 +78,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		also        []string // other variables of the same environment
 		yaml        StorageConfig
 		retention   RetentionConfig // the yaml's retention block
+		providers   map[string]ProviderConfig
 		refused     bool
 	}{
 		// Gates: the old read turned the feature on for exactly "1".
@@ -294,6 +295,55 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "1", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=1"}},
 		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "5", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=5"}},
 
+		// The global provider timeouts moved to each provider's options.
+		// Refused when lowered below the default and a provider that makes
+		// HTTP calls would now wait longer than the variable allowed.
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000", providers: map[string]ProviderConfig{
+			"openai": {Driver: "openai", Options: map[string]any{"header_timeout_ms": 5000}},
+			"gemini": {Driver: "gemini"},
+		}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000", providers: map[string]ProviderConfig{
+			"openai": {Driver: "openai", Options: map[string]any{"header_timeout_ms": 5000}},
+			"gemini": {Driver: "gemini", Options: map[string]any{"header_timeout_ms": 3000}},
+			// These never took the global timeout or make no HTTP call.
+			"ollama-local": {Driver: "ollama"}, "code-js": {Driver: "code-js"}, "mock": {Driver: "mock"},
+		}},
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000", providers: map[string]ProviderConfig{"openai": {Driver: "openai", Options: map[string]any{"header_timeout_ms": "5000"}}}, refused: true}, // a string is not applied
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "60000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},                                                                     // the default
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "120000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},                                                                    // raised: nothing waits longer
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "0", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},                                                                         // was ignored
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "fast", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},                                                                      // was ignored
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000"},                                                                                                                                          // no provider to hold to it
+		{name: "LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS", value: "30000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS", value: "30000", providers: map[string]ProviderConfig{"openai": {Driver: "openai", Options: map[string]any{"idle_timeout_ms": 30000}}}},
+		{name: "LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS", value: "90000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},
+		// The local Ollama pair: judged against that one provider, default 600s.
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", value: "300000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama"}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", value: "300000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"header_timeout_ms": 300000}}}},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", value: "900000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama"}}},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", value: "300000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}}, // no local Ollama declared
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS", value: "300000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama"}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS", value: "600000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama"}}},
+
+		// The code-agent bounds moved to providers.code-js.options. Refused
+		// when lowered below what the yaml gives (120s and 24h unset).
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "30", refused: true},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "30", providers: map[string]ProviderConfig{"code-js": {Driver: "code-js", Options: map[string]any{"run_timeout_seconds": 30}}}},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "30", providers: map[string]ProviderConfig{"code-js": {Driver: "code-js", Options: map[string]any{"run_timeout_seconds": 60}}}, refused: true},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "120"},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "600"},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "0"}, // was ignored
+		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "3600", refused: true},
+		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "3600", providers: map[string]ProviderConfig{"code-js": {Driver: "code-js", Options: map[string]any{"max_wall_seconds": 3600}}}},
+		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "86400"},
+		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "604800"},
+
+		// Provider options whose loss tightens nothing: reported only.
+		{name: "LOOMCYCLE_CODE_AGENTS_DETERMINISTIC", value: "1"},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768"},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99"},
+
 		// The debug flags only added log lines.
 		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
 		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
@@ -305,7 +355,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			environ := append([]string{tc.name + "=" + tc.value}, tc.also...)
-			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention})
+			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers})
 			if refused := len(got) > 0; refused != tc.refused {
 				t.Fatalf("refused = %v (%q), want %v", refused, got, tc.refused)
 			}

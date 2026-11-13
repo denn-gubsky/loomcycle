@@ -149,6 +149,17 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS": "set retention.empty_dossier.max_age in the yaml, as a duration such as 30d",
 	"LOOMCYCLE_USAGE_DETAIL_RETENTION_MS":          "set retention.usage_detail.max_age in the yaml, as a duration such as 30d",
 	"LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS":            "set retention.trace.max_age in the yaml, as a duration such as 30d",
+
+	// Moved to each provider's `options:` in the yaml.
+	"LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS":      "set providers.<id>.options.header_timeout_ms in the yaml for each provider that needs another value than 60000",
+	"LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS":        "set providers.<id>.options.idle_timeout_ms in the yaml for each provider that needs another value than 90000",
+	"LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS":  "set providers.ollama-local.options.header_timeout_ms in the yaml",
+	"LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS":    "set providers.ollama-local.options.idle_timeout_ms in the yaml",
+	"LOOMCYCLE_OLLAMA_NUM_CTX":                  "set providers.ollama.options.num_ctx in the yaml",
+	"LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU":            "set providers.ollama-local.options.num_gpu in the yaml",
+	"LOOMCYCLE_CODE_AGENTS_DETERMINISTIC":       "set providers.code-js.options.deterministic in the yaml",
+	"LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS": "set providers.code-js.options.run_timeout_seconds in the yaml",
+	"LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS":    "set providers.code-js.options.max_wall_seconds in the yaml",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in
@@ -281,6 +292,21 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 		}
 		n, set, ok := retiredInt(value)
 		return set && ok && n >= 0 && n != now
+	}},
+	// The provider stream timeouts moved to each provider's options. One
+	// lowered so a stalled provider fails over sooner would, ignored, leave
+	// every call waiting the default again.
+	"LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS":     {loosens: providerTimeoutLowered("header_timeout_ms", false)},
+	"LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS":       {loosens: providerTimeoutLowered("idle_timeout_ms", false)},
+	"LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS": {loosens: providerTimeoutLowered("header_timeout_ms", true)},
+	"LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS":   {loosens: providerTimeoutLowered("idle_timeout_ms", true)},
+	// The code-agent bounds: a budget or a lifetime lowered so a runaway
+	// script ends sooner.
+	"LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
+		return loweredBelow(codeJSOptionOr(c.cfg, "run_timeout_seconds", 120))(value, c)
+	}},
+	"LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
+		return loweredBelow(codeJSOptionOr(c.cfg, "max_wall_seconds", 86400))(value, c)
 	}},
 	// Without the directory a family in export+prune mode deletes nothing;
 	// with another one its exports land where nobody looks for them.
@@ -446,6 +472,73 @@ func retentionAgeDiffers(yamlAge func(*RetentionConfig) time.Duration) func(stri
 		n, set, ok := retiredInt(value)
 		return set && ok && n > 0 && time.Duration(n)*time.Millisecond != yamlAge(&c.cfg.Retention)
 	}
+}
+
+// Provider stream timeout defaults, in milliseconds: every provider's, and
+// the local Ollama registration's own. providerbuild applies the same ones.
+const (
+	ProviderHeaderTimeoutMS    = 60_000
+	ProviderIdleTimeoutMS      = 90_000
+	OllamaLocalStreamTimeoutMS = 600_000
+)
+
+// providerOptionInt is a provider option as the positive whole number the
+// runtime applies, or false when the yaml gives none it would apply.
+func providerOptionInt(pc ProviderConfig, key string) (int64, bool) {
+	var n int64
+	switch v := pc.Options[key].(type) {
+	case int:
+		n = int64(v)
+	case int64:
+		n = v
+	case float64:
+		n = int64(v)
+	default:
+		return 0, false
+	}
+	return n, n > 0
+}
+
+// providerTimeoutLowered is the rule of a retired stream timeout: a positive
+// value under what a provider it applied to now waits. local selects the
+// ollama-local pair, which applied to that one provider; the global pair
+// applied to every other provider that makes HTTP calls. The old reads
+// ignored a value that was not a positive number.
+func providerTimeoutLowered(option string, local bool) func(string, retiredEnvCtx) bool {
+	return func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		if !set || !ok || n <= 0 {
+			return false
+		}
+		for id, pc := range c.cfg.Providers {
+			if (id == "ollama-local") != local || pc.Driver == "code-js" || pc.Driver == "mock" {
+				continue
+			}
+			now := int64(ProviderHeaderTimeoutMS)
+			switch {
+			case local:
+				now = OllamaLocalStreamTimeoutMS
+			case option == "idle_timeout_ms":
+				now = ProviderIdleTimeoutMS
+			}
+			if v, ok := providerOptionInt(pc, option); ok {
+				now = v
+			}
+			if n < now {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// codeJSOptionOr is a providers.code-js option, or dflt (the driver's own
+// default) when the yaml gives none.
+func codeJSOptionOr(cfg *Config, key string, dflt int64) int64 {
+	if v, ok := providerOptionInt(cfg.Providers["code-js"], key); ok {
+		return v
+	}
+	return dflt
 }
 
 // durationOr is d, or dflt when d is unset.

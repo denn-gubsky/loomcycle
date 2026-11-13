@@ -120,6 +120,30 @@ tiers:
 #       embedder: { max_concurrent: 2, background_share: 0.25 }
 #   # Or the chat lane alone:
 #   # ollama-local: { max_concurrent: 2 }
+#
+# Provider options. Each is set here and nowhere else (the one exception:
+# ollama-local's num_ctx also comes from LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, and
+# the yaml wins).
+# providers:
+#   openai:
+#     options:
+#       header_timeout_ms: 60000   # time to the response headers (default 60000)
+#       idle_timeout_ms: 90000     # longest silence inside a stream (default 90000)
+#   ollama-local:
+#     options:
+#       num_ctx: 32768             # context window of every local model
+#       num_gpu: 99                # layers offloaded to the GPU; unset → Ollama decides
+#       header_timeout_ms: 600000  # default 600000: a cold model load sends no headers
+#       idle_timeout_ms: 600000    # default 600000
+#   ollama:
+#     options:
+#       num_ctx: 32768             # hosted ollama.com; unset → the model's own window
+#   code-js:
+#     options:
+#       deterministic: false       # true pins Date.now()/Math.random() for replay
+#       run_timeout_seconds: 120   # a code agent's budget of ACTIVE time (default 120)
+#       max_wall_seconds: 86400    # its lifetime, waits included (default 24h); no
+#                                  # agent or run field can raise it
 
 # ─── User tiers (v0.8.2+)─────────────────────────────────────────────
 # Operator-defined per-user-tier overlay on the resolver matrix above.

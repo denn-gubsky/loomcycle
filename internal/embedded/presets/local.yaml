@@ -18,11 +18,12 @@
 # OLLAMA_BASE_URL env (http://localhost:11434). NO secrets here.
 
 # PROVIDERS. This preset declares none of its own: ollama-local is already
-# declared (keyless) in the built-in providers, driven by OLLAMA_BASE_URL /
-# LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX / _NUM_GPU / _*_TIMEOUT_MS. The blocks below are
+# declared (keyless) in the built-in providers, driven by OLLAMA_BASE_URL and
+# LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX. The blocks below are
 # examples to COPY INTO YOUR OWN loomcycle.yaml (a preset is embedded in the
 # binary and cannot be edited in place) — the `providers:` line included. They
-# override the env vars, and merge over the built-in entry field by field.
+# merge over the built-in entry field by field; base_url and num_ctx override
+# those two variables, and the other options have no variable.
 #
 # The whole block is commented out ON PURPOSE, key and all. A bare `providers:`
 # with nothing under it is not "no change": it is an empty value, and it REPLACES
@@ -40,9 +41,9 @@
 #     base_url: http://truenas.local:11434   # else OLLAMA_BASE_URL (default localhost)
 #     options:
 #       num_ctx: 32768            # else LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX (unset → Ollama's 4096 floor)
-#       num_gpu: 999              # force full GPU offload; else LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
-#       header_timeout_ms: 600000 # first-token budget for a cold model load
-#       idle_timeout_ms: 600000
+#       num_gpu: 999              # force full GPU offload; unset → Ollama decides
+#       header_timeout_ms: 600000 # first-token budget for a cold model load (the default)
+#       idle_timeout_ms: 600000   # longest silence inside a stream (the default)
 #
 #   # vLLM — an OpenAI-compatible local server (default :8000). Keyless by default;
 #   # for a secured endpoint (--api-key) set api_key_env to the env-var NAME holding

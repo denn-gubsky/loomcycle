@@ -123,7 +123,7 @@ services:
       # ── local models (optional; point at your Ollama) ─────────────────────
       OLLAMA_BASE_URL: "http://OLLAMA_HOST:11434"
       LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX: "65535"
-      LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: "99"
+      # GPU offload (num_gpu) is in the config overlay: providers.ollama-local.options.
 
       # ── HTTP / WebFetch host policy ───────────────────────────────────────
       # "*" allows any host — an SSRF surface, fine for a TRUSTED single-tenant box

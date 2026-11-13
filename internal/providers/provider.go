@@ -178,7 +178,7 @@ type Capabilities struct {
 	// the synthetic code-js provider (RFC J): a code-agent's run() may make an
 	// arbitrary number of SEQUENTIAL tool calls, each one a loop turn, and
 	// capping that at 16 is unusable. The provider enforces a run-level
-	// deadline (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS) so disabling the
+	// deadline (providers.code-js.options.run_timeout_seconds) so disabling the
 	// iteration cap cannot produce an unbounded run. The loop keeps a high
 	// hard ceiling as a pure runaway backstop. False for every LLM driver,
 	// where MaxIterations remains the runaway-tool-use guard.
@@ -190,7 +190,7 @@ type Capabilities struct {
 	// Channel.await, Interruption.ask or tiny spawns — spends almost none of
 	// it; this is what still ends such a run. The loop enforces it by
 	// cancelling the run's ctx, which stops in-flight waits and children too.
-	// Set by the code-js provider from LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS.
+	// Set by the code-js provider from providers.code-js.options.max_wall_seconds.
 	RunWallLimit time.Duration
 
 	// MetadataViaInput signals that this provider delivers the run's

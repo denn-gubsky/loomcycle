@@ -38,7 +38,7 @@ import (
 // anchor) — replay cannot diverge. Operators who need a true per-call
 // wall-clock value read it from a tool (recorded), the durable-execution
 // discipline. seed/anchor are per-run by default and fixed across runs only
-// under LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1 (cross-run reproducibility).
+// under providers.code-js.options.deterministic: true (cross-run reproducibility).
 func hardenSandbox(rt *goja.Runtime, seed uint32, anchorMs int64) {
 	g := rt.GlobalObject()
 	_ = g.Delete("eval")

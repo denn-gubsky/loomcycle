@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/denn-gubsky/loomcycle/internal/providerbuild"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/embedded"
@@ -152,10 +153,16 @@ func TestToDriverOptions_PortsEnvBaseURLsAndTimeouts(t *testing.T) {
 	t.Setenv("DEEPSEEK_BASE_URL", "https://ds.mirror")
 	t.Setenv("GEMINI_BASE_URL", "https://vertex.example")
 	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX", "131072")
-	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", "99")
-	t.Setenv("LOOMCYCLE_OLLAMA_NUM_CTX", "8192")
 
-	cfg := loadDefaultProvidersOnly(t)
+	// num_gpu and the hosted context window are yaml options, layered over
+	// the default providers the way an operator's config is.
+	cfg, err := config.LoadLayers(
+		config.Layer{Name: "providers.default", Data: embedded.DefaultProviders()},
+		config.Layer{Name: "site.yaml", Data: []byte("providers:\n  ollama-local: {options: {num_gpu: 99}}\n  ollama: {options: {num_ctx: 8192}}\n")},
+	)
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
 
 	local := providerbuild.DriverOptions("ollama-local", cfg.Providers["ollama-local"], cfg)
 	if local.BaseURL != "http://gpu.local:11434" {
@@ -164,8 +171,8 @@ func TestToDriverOptions_PortsEnvBaseURLsAndTimeouts(t *testing.T) {
 	if local.KeyEnvName != "" {
 		t.Errorf("ollama-local KeyEnvName = %q, want empty (keyless)", local.KeyEnvName)
 	}
-	if local.StreamOpts.HeaderTimeout != cfg.Env.OllamaLocalHeaderTimeout {
-		t.Errorf("ollama-local HeaderTimeout = %v, want the local (600s) timeout %v", local.StreamOpts.HeaderTimeout, cfg.Env.OllamaLocalHeaderTimeout)
+	if local.StreamOpts.HeaderTimeout != 600*time.Second {
+		t.Errorf("ollama-local HeaderTimeout = %v, want the local 600s timeout", local.StreamOpts.HeaderTimeout)
 	}
 	if n, _ := providers.IntOption(local.Options, "num_ctx"); n != 131072 {
 		t.Errorf("ollama-local num_ctx = %d, want 131072", n)
@@ -182,7 +189,7 @@ func TestToDriverOptions_PortsEnvBaseURLsAndTimeouts(t *testing.T) {
 		t.Errorf("ollama KeyEnvName = %q, want OLLAMA_API_KEY", hosted.KeyEnvName)
 	}
 	if n, _ := providers.IntOption(hosted.Options, "num_ctx"); n != 8192 {
-		t.Errorf("ollama num_ctx = %d, want 8192 (LOOMCYCLE_OLLAMA_NUM_CTX)", n)
+		t.Errorf("ollama num_ctx = %d, want 8192 (providers.ollama.options.num_ctx)", n)
 	}
 	if _, ok := providers.IntOption(hosted.Options, "num_gpu"); ok {
 		t.Error("hosted ollama must not carry num_gpu (that is ollama-local only)")
@@ -205,17 +212,21 @@ func TestToDriverOptions_PortsEnvBaseURLsAndTimeouts(t *testing.T) {
 // code_root and built a compiler with an empty root — every static `provider:
 // code-js` agent then failed to load ("no index.js at <name>/index.js", a
 // relative path = the empty-root tell), crash-looping boot (the "Runtime suites
-// (code-js)" CI job). This asserts the three code-js env knobs are ported into
-// the driver options.
+// (code-js)" CI job). This asserts the code root reaches the driver options
+// from the environment and the budgets from the yaml.
 //
 // Fail-before: drop the `case "code-js"` in toDriverOptions and code_root is
 // absent (StringOption ok=false) → this fails.
 func TestToDriverOptions_CodeJSPortsEnvRoot(t *testing.T) {
 	t.Setenv("LOOMCYCLE_CODE_AGENTS_ROOT", "/srv/agent_code")
-	t.Setenv("LOOMCYCLE_CODE_AGENTS_DETERMINISTIC", "1")
-	t.Setenv("LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", "45")
 
-	cfg := loadDefaultProvidersOnly(t)
+	cfg, err := config.LoadLayers(
+		config.Layer{Name: "providers.default", Data: embedded.DefaultProviders()},
+		config.Layer{Name: "site.yaml", Data: []byte("providers:\n  code-js: {options: {deterministic: true, run_timeout_seconds: 45}}\n")},
+	)
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
 	if cfg.Env.CodeAgentsRoot != "/srv/agent_code" {
 		t.Fatalf("cfg.Env.CodeAgentsRoot = %q, want /srv/agent_code (env not parsed?)", cfg.Env.CodeAgentsRoot)
 	}
@@ -225,7 +236,7 @@ func TestToDriverOptions_CodeJSPortsEnvRoot(t *testing.T) {
 		t.Errorf("code-js code_root option = %q (ok=%v), want /srv/agent_code — without it the compiler root is empty and every static code agent fails to load", root, ok)
 	}
 	if det, _ := providers.BoolOption(opts.Options, "deterministic"); !det {
-		t.Errorf("code-js deterministic option = false, want true (LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1)")
+		t.Errorf("code-js deterministic option = false, want true (providers.code-js.options.deterministic)")
 	}
 	if secs, ok := providers.IntOption(opts.Options, "run_timeout_seconds"); !ok || secs != 45 {
 		t.Errorf("code-js run_timeout_seconds = %d (ok=%v), want 45", secs, ok)

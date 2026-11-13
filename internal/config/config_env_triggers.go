@@ -35,27 +35,11 @@ func applyEnvCodeAgents(cfg *Config) error {
 		cfg.Env.BatchJoinTimeout = d
 	}
 	// Code-js provider: the root defaults to ./agent_code (mirrors the skills
-	// bundling convention); the run timeout is floored at 1s.
+	// bundling convention). Its budgets are providers.code-js.options in the
+	// yaml.
 	cfg.Env.CodeAgentsRoot = "./agent_code"
 	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {
 		cfg.Env.CodeAgentsRoot = v
-	}
-	cfg.Env.CodeAgentsDeterministic = os.Getenv("LOOMCYCLE_CODE_AGENTS_DETERMINISTIC") == "1"
-	cfg.Env.CodeAgentsRunTimeout = 120 * time.Second
-	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			d := time.Duration(n) * time.Second
-			if d < time.Second {
-				d = time.Second
-			}
-			cfg.Env.CodeAgentsRunTimeout = d
-		}
-	}
-	cfg.Env.CodeAgentsMaxWall = 24 * time.Hour
-	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.CodeAgentsMaxWall = time.Duration(n) * time.Second
-		}
 	}
 	return nil
 }

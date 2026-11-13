@@ -4614,7 +4614,7 @@ type runRequest struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 	// RunTimeoutSeconds is an optional ad-hoc per-run wall-clock budget for a
 	// code-js agent, overriding the agent's run_timeout_seconds and the global
-	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS (precedence: per-run >
+	// providers.code-js.options.run_timeout_seconds (precedence: per-run >
 	// per-agent > global). 0 = inherit. Ignored by LLM agents.
 	RunTimeoutSeconds int `json:"run_timeout_seconds,omitempty"`
 	// Interactive starts a PERSISTENT run that parks for operator steering at

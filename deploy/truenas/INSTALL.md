@@ -204,7 +204,7 @@ services:
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
       OLLAMA_BASE_URL: http://OLLAMA_HOST:11434
       LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX: "65535"     # pin the local model's context window
-      LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: "99"        # force GPU offload where Ollama falls back to CPU
+      # GPU offload (num_gpu) is in the config overlay: providers.ollama-local.options.
 
       # --- code execution (TOOLBOX IMAGE ONLY; single-tenant/trusted) ---
       # Delete this whole block on the distroless image. Grant Bash/Bashbox to an

@@ -27,16 +27,16 @@ providers:
     api_key_env: DEEPSEEK_API_KEY
   ollama:
     # Hosted ollama.com — Bearer auth via OLLAMA_API_KEY; base URL from
-    # OLLAMA_CLOUD_BASE_URL (default https://ollama.com). num_ctx flows in from
-    # LOOMCYCLE_OLLAMA_NUM_CTX via toDriverOptions.
+    # OLLAMA_CLOUD_BASE_URL (default https://ollama.com). Set its context
+    # window with options.num_ctx.
     driver: ollama
     api_key_env: OLLAMA_API_KEY
     options: {}
   ollama-local:
     # Local-network Ollama — keyless; reachability + base URL from OLLAMA_BASE_URL
     # (default http://localhost:11434; OLLAMA_BASE_URL=disabled opts out). num_ctx
-    # and num_gpu flow in from LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX / _NUM_GPU via
-    # toDriverOptions.
+    # flows in from LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX unless options.num_ctx sets
+    # it; options.num_gpu and the stream timeouts are options only.
     driver: ollama
     options: {}
   mock:
@@ -48,6 +48,7 @@ providers:
     options:
       stable: true
   code-js:
-    # Synthetic goja provider, registered by this entry;
-    # code_root/deterministic/run_timeout flow from the LOOMCYCLE_CODE_AGENTS_* env.
+    # Synthetic goja provider, registered by this entry; code_root flows from
+    # LOOMCYCLE_CODE_AGENTS_ROOT. options: deterministic, run_timeout_seconds,
+    # max_wall_seconds.
     driver: code-js

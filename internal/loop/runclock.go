@@ -122,7 +122,7 @@ func runClocked(ctx context.Context, opts RunOptions) (RunResult, error) {
 	// empty wait as ordinary results, and a quick final turn can finish on them
 	// before it sees the cancel. A run past its limit did not complete its work.
 	if errors.Is(context.Cause(ctx), errWallLimit) {
-		source := "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS"
+		source := "providers.code-js.options.max_wall_seconds"
 		if ownLimit {
 			source = "max_wall_seconds"
 		}

@@ -9,7 +9,7 @@
 // internal/cli.loadLayeredConfig before it.
 //
 // For this harness the drift would not be cosmetic. `ollama-local` takes its
-// context window from LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX via Options["num_ctx"], and
+// context window from its options.num_ctx (or LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX), and
 // Ollama SILENTLY truncates the prompt to 4096 tokens when it is unset. A harness
 // that built its own driver and forgot that knob would score a model on a
 // transcript it never received — the exact class of failure the eval exists to
@@ -66,31 +66,28 @@ func Provider(cfg *config.Config, id string) (providers.Provider, error) {
 // explicit config wins, else the per-id env/driver default (incl. the
 // OLLAMA_*_BASE_URL / DEEPSEEK_BASE_URL / GEMINI_BASE_URL defaults). APIKey +
 // KeyEnvName come from api_key_env (RFC AR per-tenant override). StreamOpts +
-// Options carry the per-provider timeouts and ollama num_ctx/num_gpu.
+// Options carry the per-provider timeouts and options; the only option still
+// taken from the environment is the local Ollama context window.
 func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) providers.DriverOptions {
 	baseURL := resolveBaseURL(id, pc, cfg)
 	stream := streamhttp.Options{
-		HeaderTimeout: cfg.Env.ProviderHeaderTimeout,
-		IdleTimeout:   cfg.Env.ProviderIdleTimeout,
+		HeaderTimeout: config.ProviderHeaderTimeoutMS * time.Millisecond,
+		IdleTimeout:   config.ProviderIdleTimeoutMS * time.Millisecond,
 	}
 	opts := map[string]any{}
 	switch id {
-	case "ollama": // hosted ollama.com
-		if cfg.Env.OllamaNumCtx > 0 {
-			opts["num_ctx"] = cfg.Env.OllamaNumCtx
-		}
 	case "ollama-local":
-		// Local Ollama is slow on first-token (cold model load + large-context
-		// eval), so it gets its own, more generous timeout pair.
+		// Local Ollama sends no response headers until the model is loaded and
+		// generation starts, and a cold load of a large model at a large
+		// context takes minutes, so it gets a far longer pair than the cloud
+		// providers: 10 minutes each, still bounded so a dead server fails
+		// over. options.header_timeout_ms / idle_timeout_ms change it.
 		stream = streamhttp.Options{
-			HeaderTimeout: cfg.Env.OllamaLocalHeaderTimeout,
-			IdleTimeout:   cfg.Env.OllamaLocalIdleTimeout,
+			HeaderTimeout: config.OllamaLocalStreamTimeoutMS * time.Millisecond,
+			IdleTimeout:   config.OllamaLocalStreamTimeoutMS * time.Millisecond,
 		}
 		if cfg.Env.OllamaLocalNumCtx > 0 {
 			opts["num_ctx"] = cfg.Env.OllamaLocalNumCtx
-		}
-		if cfg.Env.OllamaLocalNumGpu > 0 {
-			opts["num_gpu"] = cfg.Env.OllamaLocalNumGpu
 		}
 	case "code-js":
 		// RFC BF P2a regression fix (b8d3f42d line): the code-js driver factory
@@ -102,23 +99,21 @@ func DriverOptions(id string, pc config.ProviderConfig, cfg *config.Config) prov
 		// <name>/index.js" — a relative path, the empty-root tell). CodeAgentsRoot
 		// defaults to ./agent_code (never empty), so this is byte-identical to
 		// pre-P2a; an explicit options entry still wins via the pc.Options merge below.
+		// The run budget and the lifetime limit are options only; unset, the
+		// driver applies its own defaults (120s, 24h).
 		opts["code_root"] = cfg.Env.CodeAgentsRoot
-		opts["deterministic"] = cfg.Env.CodeAgentsDeterministic
-		opts["run_timeout_seconds"] = int(cfg.Env.CodeAgentsRunTimeout / time.Second)
-		opts["max_wall_seconds"] = int(cfg.Env.CodeAgentsMaxWall / time.Second)
 	}
-	// Operator-declared options override the env-derived defaults (e.g. mock-stable's
+	// Operator-declared options override the defaults above (e.g. mock-stable's
 	// `stable: true`, or a per-provider num_ctx).
 	for k, v := range pc.Options {
 		opts[k] = v
 	}
 	// RFC CK: per-provider stream timeouts are settable via `options:`
 	// (header_timeout_ms / idle_timeout_ms) so a `local` preset/bundle can tune a
-	// slow local backend's cold-load window in YAML — previously env-only. These
+	// slow local backend's cold-load window in YAML. These
 	// are CONSUMED here (folded into StreamOpts + deleted) so they never reach the
-	// driver's Options map, which would otherwise WarnUnknownOptions on them. A
-	// YAML value overrides the env/global default; an absent/invalid entry leaves
-	// the env-derived timeout in place.
+	// driver's Options map, which would otherwise WarnUnknownOptions on them. An
+	// absent or invalid entry leaves the default above in place.
 	if ms, ok := optionMillis(opts, "header_timeout_ms"); ok {
 		stream.HeaderTimeout = ms
 		delete(opts, "header_timeout_ms")
