@@ -3096,6 +3096,17 @@ func TestLoad_OllamaLocalNumCtxAdvisesWhenTheYAMLDiffers(t *testing.T) {
 	if advised(local, "") || advised("", "32768") {
 		t.Error("advised although only one plane sets the window")
 	}
+	// A yaml zero used to replace the variable, so nothing was pinned and the
+	// model's own window applied. The variable now pins its value: said, like
+	// any other yaml value that is not the variable's number.
+	for _, opt := range []string{"0", `"32768"`, "-1"} {
+		if !advised("providers: {ollama-local: {driver: ollama, options: {num_ctx: "+opt+"}}}\n", "32768") {
+			t.Errorf("no advisory when the yaml names num_ctx: %s and the variable pins another window", opt)
+		}
+	}
+	if advised("providers: {ollama-local: {driver: ollama, options: {num_gpu: 99}}}\n", "32768") {
+		t.Error("advised although the yaml does not name num_ctx")
+	}
 }
 
 // A boolean word is what an operator writes to turn migration off. Read as
