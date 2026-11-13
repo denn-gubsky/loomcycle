@@ -18,6 +18,15 @@ func yamlKeyNodes(root *yaml.Node) map[string]*yaml.Node {
 	return out
 }
 
+// keySet is the paths of nodes.
+func keySet(nodes map[string]*yaml.Node) map[string]bool {
+	out := make(map[string]bool, len(nodes))
+	for key := range nodes {
+		out[key] = true
+	}
+	return out
+}
+
 func collectYAMLKeys(n *yaml.Node, prefix string, out map[string]*yaml.Node) {
 	for n != nil && n.Kind == yaml.AliasNode {
 		n = n.Alias

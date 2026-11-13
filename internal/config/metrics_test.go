@@ -56,12 +56,13 @@ func TestMetrics_TheYAMLIsTheOnlySource(t *testing.T) {
 	t.Setenv("LOOMCYCLE_METRICS_ENABLED", "1")
 	t.Setenv("LOOMCYCLE_METRICS_COLLECT_SYSTEM", "1")
 	t.Setenv("LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS", "1000")
-	cfg, err := loadYAMLString(t, "agents: {}\n")
+	// The yaml names each key, so the variables are reported and not read.
+	cfg, err := loadYAMLString(t, "metrics: {enabled: false, collect_system: false, sample_interval: 5s}\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if e := cfg.Env; e.MetricsEnabled || e.MetricsCollectSystem || e.MetricsSampleInterval != 5*time.Second {
-		t.Errorf("with the retired variables set = enabled %v, system %v, interval %v; want the yaml's defaults", e.MetricsEnabled, e.MetricsCollectSystem, e.MetricsSampleInterval)
+		t.Errorf("with the retired variables set = enabled %v, system %v, interval %v; want the yaml's", e.MetricsEnabled, e.MetricsCollectSystem, e.MetricsSampleInterval)
 	}
 	for _, name := range []string{"LOOMCYCLE_METRICS_ENABLED", "LOOMCYCLE_METRICS_COLLECT_SYSTEM", "LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS"} {
 		requireRetiredAdvisory(t, cfg, name)

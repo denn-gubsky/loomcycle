@@ -338,6 +338,12 @@ type Config struct {
 	// paths inside the config (system_prompt_file, local_api.spec) can
 	// be resolved against it.
 	configDir string `yaml:"-"`
+
+	// yamlKeys is the dotted path of every key the loaded yaml names, over
+	// all layers ("retention.chats.mode"). A struct field cannot tell an
+	// absent key from one written with the zero value, and the checks on a
+	// retired variable whose setting moved to the yaml need exactly that.
+	yamlKeys map[string]bool `yaml:"-"`
 }
 
 // LocalAPIConfig is the operator-supplied config for the local-api
@@ -5068,9 +5074,11 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 			return nil, "", fmt.Errorf("parse %s: %w", src[0].Name, err)
 		}
 		if len(doc.Content) > 0 {
-			if err := checkDurationKeys(yamlKeyNodes(doc.Content[0])); err != nil {
+			nodes := yamlKeyNodes(doc.Content[0])
+			if err := checkDurationKeys(nodes); err != nil {
 				return nil, "", err
 			}
+			cfg.yamlKeys = keySet(nodes)
 		}
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
 			return nil, "", fmt.Errorf("parse %s: %w", src[0].Name, err)
@@ -5093,9 +5101,11 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 				cfg.Warnings = append(cfg.Warnings, "config layer override: "+o)
 			}
 		}
-		if err := checkDurationKeys(yamlKeyNodes(merged)); err != nil {
+		nodes := yamlKeyNodes(merged)
+		if err := checkDurationKeys(nodes); err != nil {
 			return nil, "", err
 		}
+		cfg.yamlKeys = keySet(nodes)
 		out, err := yaml.Marshal(merged)
 		if err != nil {
 			return nil, "", fmt.Errorf("re-marshal merged config: %w", err)

@@ -61,8 +61,10 @@ func TestDocumentProjection_TheYAMLIsTheOnlySource(t *testing.T) {
 	}
 	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL")
 
+	// Beside a yaml that names the key, a value the variable could not have
+	// meant is not read and stops nothing.
 	t.Setenv("LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", "hourly")
-	if _, err = loadYAMLString(t, "agents: {}\n"); err != nil {
+	if _, err = loadYAMLString(t, "memory:\n  projection:\n    interval: 30m\n"); err != nil {
 		t.Fatalf("a retired variable's value stopped the load: %v", err)
 	}
 }
