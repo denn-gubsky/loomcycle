@@ -254,3 +254,37 @@ func nodeEqual(a, b *yaml.Node) bool {
 	}
 	return true
 }
+
+// PgDSNLayer returns the name of the last layer whose yaml names
+// storage.pg_dsn, which is the layer the merged value comes from, or "" when
+// none does. It is for a command that must say where the store's DSN was
+// taken from; it reads the key's presence only and returns no part of the
+// value.
+func PgDSNLayer(layers []Layer) (string, error) {
+	name := ""
+	for _, l := range layers {
+		raw := l.Data
+		if raw == nil {
+			if l.Name == "" {
+				continue
+			}
+			b, err := os.ReadFile(l.Name)
+			if err != nil {
+				return "", fmt.Errorf("read %s: %w", l.Name, err)
+			}
+			raw = b
+		}
+		var doc struct {
+			Storage struct {
+				PgDSN *string `yaml:"pg_dsn"`
+			} `yaml:"storage"`
+		}
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			return "", fmt.Errorf("parse %s: %w", l.Name, err)
+		}
+		if doc.Storage.PgDSN != nil {
+			name = l.Name
+		}
+	}
+	return name, nil
+}

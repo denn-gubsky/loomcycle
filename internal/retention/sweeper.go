@@ -531,12 +531,11 @@ func (s *Sweeper) memContentEnabled() bool {
 	case "prune":
 		return true
 	case "export+prune":
-		// No separate export arm YET: the retired chunks a prune removes are already
-		// reachable through the document's own export_md until the moment they are
-		// deleted, so an operator wanting a copy exports the document. Treated as
-		// `prune` rather than refused, because refusing a mode the other three
-		// families accept would be a surprising asymmetry — and noted at the call
-		// site so the log does not imply an archive was written.
+		// No export arm: the retired chunks a prune removes are reachable through
+		// the document's own export_md until the moment they are deleted, so an
+		// operator wanting a copy exports the document. The config load refuses
+		// this mode for this family (it reads as "a copy is kept"); a Config
+		// built directly still gets the prune it always got.
 		return true
 	}
 	return false

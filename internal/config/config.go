@@ -334,10 +334,22 @@ type Config struct {
 	// not advisories and nothing else reports them.
 	Notices []string `yaml:"-"`
 
+	// NotEnforced holds what an offline tool's load (LoadOptions.OfflineTool)
+	// let pass where the server's load stops: one entry per refusal it only
+	// reported. Always empty after LoadLayers. The tool prints each; entries
+	// name variables and never carry a value.
+	NotEnforced []string `yaml:"-"`
+
 	// configDir is the directory of the loaded YAML, kept so relative
 	// paths inside the config (system_prompt_file, local_api.spec) can
 	// be resolved against it.
 	configDir string `yaml:"-"`
+
+	// yamlKeys is the dotted path of every key the loaded yaml names, over
+	// all layers ("retention.chats.mode"). A struct field cannot tell an
+	// absent key from one written with the zero value, and the checks on a
+	// retired variable whose setting moved to the yaml need exactly that.
+	yamlKeys map[string]bool `yaml:"-"`
 }
 
 // LocalAPIConfig is the operator-supplied config for the local-api
@@ -4683,7 +4695,7 @@ type Env struct {
 	MCPSpawnRunTimeoutMS int
 	// OperatorTokenRotationGraceSeconds
 	// (LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS) is how long a
-	// rotated operator token keeps working. 0 = unset.
+	// rotated operator token keeps working. 0 = unset, which is 24h.
 	OperatorTokenRotationGraceSeconds int
 	// AuthCacheTTLSeconds (LOOMCYCLE_AUTH_CACHE_TTL_SECONDS) is the
 	// per-replica token-resolution cache TTL. Default 30; 0 turns the cache
@@ -4969,6 +4981,42 @@ func splitCommaTrim(s string) []string {
 // The retired-jail check runs before any env block; the tool defaults and the
 // helper wrapper run after them, and validate last.
 func LoadLayers(layers ...Layer) (*Config, error) {
+	return LoadLayersWith(LoadOptions{}, layers...)
+}
+
+// LoadOptions are the ways a caller may ask for a load other than the
+// server's.
+type LoadOptions struct {
+	// OfflineTool is for the commands an operator runs against the store
+	// while the server is down or will not start (tokens rewrap, audit
+	// verify, migrate). The server's load stops on a retired variable whose
+	// value it would loosen by ignoring (the gates, the bounds, and a
+	// setting that moved to a yaml key the yaml does not name), and on a bad
+	// value in one of the settings applyEnvRuntime reads or in
+	// LOOMCYCLE_DEADLINK_GC; none of those settings is used by such a tool,
+	// and stopping it would leave the operator without the tool that
+	// repairs the deployment. With OfflineTool each of those is recorded in
+	// Config.NotEnforced instead, for the tool to print, and the setting is
+	// left as if unset, or off where unset would start something: the
+	// dead-link sweep.
+	//
+	// LOOMCYCLE_PG_AUTOMIGRATE is the one such setting a tool does use:
+	// tokens and audit open the store with it. A value that is neither 1 nor
+	// 0 is recorded too, and read as 0, never as unset: unset would leave a
+	// yaml `pg_automigrate: true` in force and migrate the schema under a
+	// variable the operator may have written to prevent that. `migrate`
+	// loads the same way; it does not read the setting, and migrates when
+	// its verb says so.
+	//
+	// Nothing about which store is opened is relaxed: a retired variable
+	// that named the store (retiredStoreEnv) still stops the load, and so
+	// does every other error.
+	OfflineTool bool
+}
+
+// LoadLayersWith is LoadLayers with options. The zero LoadOptions is
+// LoadLayers.
+func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 	cfg, primaryPath, err := loadLayerTree(layers)
 	if err != nil {
 		return nil, err
@@ -4984,12 +5032,27 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// live elsewhere, stops the load;
 	// the rest are said once, where boot, `validate` and `doctor` all print
 	// advisories.
-	if refused := retiredEnvRefusals(os.Environ(), cfg); len(refused) > 0 {
+	refused := retiredEnvRefusals(os.Environ(), cfg)
+	if opts.OfflineTool {
+		// Only a refusal about the store itself stops an offline tool.
+		var store []string
+		for _, r := range refused {
+			if name, _, _ := strings.Cut(r, ": "); retiredStoreEnv[name] {
+				store = append(store, r)
+				continue
+			}
+			cfg.NotEnforced = append(cfg.NotEnforced, "the server refuses to start with this retired variable set as it is, and this command ignores it: "+r)
+		}
+		refused = store
+	}
+	if len(refused) > 0 {
 		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, data kept or deleted differently, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
-	applyEnvStorage(cfg)
+	if err := applyEnvStorage(cfg, opts.OfflineTool); err != nil {
+		return nil, err
+	}
 	applyEnvSQLMem(cfg)
 	applyEnvNetPolicy(cfg)
 	applyEnvListeners(cfg)
@@ -5010,7 +5073,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	applyEnvClusterSweeps(cfg)
 	applyEnvLoopTuning(cfg)
 	applyEnvMemory(cfg)
-	if err := applyEnvDeadLinkGC(cfg); err != nil {
+	if err := applyEnvDeadLinkGC(cfg, opts.OfflineTool); err != nil {
 		return nil, err
 	}
 	if err := applyEnvToolLimits(cfg); err != nil {
@@ -5033,7 +5096,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	applyEnvMCP(cfg)
-	if err := applyEnvRuntime(cfg); err != nil {
+	if err := applyEnvRuntime(cfg, opts.OfflineTool); err != nil {
 		return nil, err
 	}
 
@@ -5105,6 +5168,17 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 			return nil, "", fmt.Errorf("read %s: %w", src[0].Name, err)
 		}
 		expanded := expandEnv(string(raw))
+		var doc yaml.Node
+		if err := yaml.Unmarshal([]byte(expanded), &doc); err != nil {
+			return nil, "", fmt.Errorf("parse %s: %w", src[0].Name, err)
+		}
+		if len(doc.Content) > 0 {
+			nodes := yamlKeyNodes(doc.Content[0])
+			if err := checkDurationKeys(nodes); err != nil {
+				return nil, "", err
+			}
+			cfg.yamlKeys = keySet(nodes)
+		}
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
 			return nil, "", fmt.Errorf("parse %s: %w", src[0].Name, err)
 		}
@@ -5126,6 +5200,11 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 				cfg.Warnings = append(cfg.Warnings, "config layer override: "+o)
 			}
 		}
+		nodes := yamlKeyNodes(merged)
+		if err := checkDurationKeys(nodes); err != nil {
+			return nil, "", err
+		}
+		cfg.yamlKeys = keySet(nodes)
 		out, err := yaml.Marshal(merged)
 		if err != nil {
 			return nil, "", fmt.Errorf("re-marshal merged config: %w", err)
@@ -5277,8 +5356,9 @@ func defaultedRoot(cfg *Config, envName, sub string) string {
 }
 
 // applyEnvStorage reads the storage block's env overrides and defaults the
-// backend. Part of LoadLayers.
-func applyEnvStorage(cfg *Config) {
+// backend. Part of LoadLayers. offlineTool (LoadOptions.OfflineTool) records a
+// bad automigrate value in cfg.NotEnforced and reads it as 0.
+func applyEnvStorage(cfg *Config, offlineTool bool) error {
 	// Env-overrides for the storage block. Env wins over YAML so prod
 	// deploys can keep PG_DSN out of version-controlled config files.
 	// Empty env values fall through to whatever YAML provided.
@@ -5298,16 +5378,27 @@ func applyEnvStorage(cfg *Config) {
 			cfg.Storage.PgMinIdleConns = int32(n)
 		}
 	}
-	// 1 and 0 are the two settings; anything else was never read as one and
-	// leaves the yaml's.
-	switch os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE") {
+	// 1 and 0 are the two settings. Anything else stops the load: read as
+	// "not a setting", a `false` written to keep migration off left a yaml
+	// `pg_automigrate: true` in force and the schema migrated at boot.
+	switch strings.TrimSpace(os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE")) {
+	case "":
 	case "1":
 		cfg.Storage.PgAutoMigrate = true
 	case "0":
 		cfg.Storage.PgAutoMigrate = false
+	default:
+		const bad = "LOOMCYCLE_PG_AUTOMIGRATE: the value is not 1 (migrate the schema at boot) or 0 (do not)"
+		if !offlineTool {
+			return errors.New(bad)
+		}
+		// Off, not the yaml's setting: see LoadOptions.OfflineTool.
+		cfg.Storage.PgAutoMigrate = false
+		cfg.NotEnforced = append(cfg.NotEnforced, "the server refuses to start with this value, and this command reads it as 0 (it does not migrate the schema when it opens the store): "+bad)
 	}
 	cfg.Storage.BackendInferred = cfg.Storage.Backend == ""
 	cfg.Storage.Backend = inferStorageBackend(cfg.Storage.Backend, cfg.Storage.PgDSN)
+	return nil
 }
 
 // SQLMemOn reports whether SQL Memory is on: the yaml's explicit choice, else

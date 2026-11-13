@@ -17,6 +17,7 @@ func TestLoadLayers_EnvRefusalsReportInLoadOrder(t *testing.T) {
 		fixed            string // the value that clears it; "" unsets it
 	}{
 		{env: "LOOMCYCLE_AGENTS_ROOT", value: filepath.Join(t.TempDir(), "absent"), want: "agents discovery:"},
+		{env: "LOOMCYCLE_PG_AUTOMIGRATE", value: "false", want: "LOOMCYCLE_PG_AUTOMIGRATE:"},
 		{env: "LOOMCYCLE_AUDIT_STORE", value: "yes", want: "LOOMCYCLE_AUDIT_STORE:"},
 		{env: "LOOMCYCLE_AUDIT_RETENTION_DAYS", value: "-1", want: "LOOMCYCLE_AUDIT_RETENTION_DAYS:"},
 		{env: "LOOMCYCLE_FILE_MAX_BYTES", value: "0", want: "LOOMCYCLE_FILE_MAX_BYTES:"},

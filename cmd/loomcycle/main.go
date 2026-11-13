@@ -758,8 +758,10 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 		// Keyed provider (anthropic/openai/deepseek/gemini/ollama + any declared
 		// 3rd-party naming an api_key_env): enabled iff that env var is set — the
 		// exact pre-RFC-BF gate for the built-ins.
+		// config.ProviderHasKey is this gate; the config load asks it too, to
+		// tell which providers a retired global timeout still applied to.
 		if pc.APIKeyEnv != "" {
-			return os.Getenv(pc.APIKeyEnv) != ""
+			return config.ProviderHasKey(pc, os.Getenv)
 		}
 		// Keyless declared provider — a self-hosted OpenAI-compatible endpoint
 		// with no auth (vLLM/llama.cpp/a second Ollama behind base_url), the RFC BF

@@ -24,13 +24,15 @@ type usageReportResponse struct {
 }
 
 // UsageDetailSince is the oldest instant the per-call usage ledger holds;
-// older calls have been folded into the archive.
+// older calls have been folded into the archive. The age is the one the usage
+// rollup was started with: a reload that edits retention.usage_detail.max_age
+// changes the next start, not the rows this one has kept.
 func (s *Server) UsageDetailSince() time.Time {
-	cfg := s.cfg()
-	if cfg == nil {
+	if s.cfg() == nil {
 		return time.Time{}
 	}
-	return store.UsageDetailSince(time.Now(), cfg.Env.UsageDetailRetention)
+	running, _ := s.retentionRunning()
+	return store.UsageDetailSince(time.Now(), running.UsageDetail)
 }
 
 // handleUsageReport serves GET /v1/_usage — aggregated token usage + cost from

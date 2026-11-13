@@ -17,7 +17,7 @@ func TestParseHumanDuration_ReadsDaysAndGoDurations(t *testing.T) {
 		"1h30m":  90 * time.Minute,
 		"1500ms": 1500 * time.Millisecond,
 		"0":      0,
-		"":       0,
+		"0s":     0,
 		" 7d ":   7 * day,
 		"0d":     0,
 	} {
@@ -26,7 +26,7 @@ func TestParseHumanDuration_ReadsDaysAndGoDurations(t *testing.T) {
 			t.Errorf("ParseHumanDuration(%q) = %v, %v; want %v", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"30", "-1d", "-12h", "d", "1d-2h", "thirty days", "1w", "30d12", "9999999d"} {
+	for _, in := range []string{"30", "-1d", "-12h", "d", "1d-2h", "thirty days", "1w", "30d12", "9999999d", "", "  ", "nand", "NaNd", "nand12h", "infd", "+Infd", "-infd"} {
 		if got, err := ParseHumanDuration(in); err == nil {
 			t.Errorf("ParseHumanDuration(%q) = %v, want an error", in, got)
 		}
@@ -79,7 +79,7 @@ retention:
   defs: {mode: prune, max_age: 30d, keep_last_n: 0}
   chats: {mode: export+prune, max_age: 90d}
   mem: {mode: prune, max_age: 7d}
-  mem_content: {mode: export+prune, max_age: 1d12h}
+  mem_content: {mode: prune, max_age: 1d12h}
   empty_dossier: {mode: prune, max_age: 12h}
   usage_detail: {max_age: 60d}
   trace: {max_age: 14d}
@@ -104,7 +104,7 @@ retention:
 	if e.RetentionMemMode != "prune" || e.RetentionMemMaxAge != 7*day {
 		t.Errorf("mem = %q %v", e.RetentionMemMode, e.RetentionMemMaxAge)
 	}
-	if e.RetentionMemContentMode != "export+prune" || e.RetentionMemContentMaxAge != 36*time.Hour {
+	if e.RetentionMemContentMode != "prune" || e.RetentionMemContentMaxAge != 36*time.Hour {
 		t.Errorf("mem_content = %q %v", e.RetentionMemContentMode, e.RetentionMemContentMaxAge)
 	}
 	if e.RetentionEmptyDossierMode != "prune" || e.RetentionEmptyDossierMaxAge != 12*time.Hour {
@@ -176,5 +176,88 @@ func TestRetention_LayersMergePerKey(t *testing.T) {
 	}
 	if cfg.Env.RetentionChatsMode != "prune" || cfg.Env.RetentionChatsMaxAge != 30*24*time.Hour || cfg.Env.RetentionDefsMode != "prune" {
 		t.Errorf("chats = %q %v, defs = %q", cfg.Env.RetentionChatsMode, cfg.Env.RetentionChatsMaxAge, cfg.Env.RetentionDefsMode)
+	}
+}
+
+// Zero is "any age" for a family that deletes, so only a written zero may
+// mean it. An empty string (a quoted "${VAR}" whose variable is unset expands
+// to one) and a not-a-number day count both used to read as zero.
+func TestRetention_RefusesADurationThatWouldReadAsZero(t *testing.T) {
+	t.Setenv("LOOMCYCLE_TEST_UNSET_AGE", "")
+	for block, key := range map[string]string{
+		`retention: {chats: {mode: prune, max_age: ""}}`:                            "retention.chats.max_age",
+		`retention: {chats: {mode: prune, max_age: "${LOOMCYCLE_TEST_UNSET_AGE}"}}`: "retention.chats.max_age",
+		`retention: {chats: {mode: prune, max_age: nand}}`:                          "retention.chats.max_age",
+		`retention: {enabled: true, defs: {mode: export+prune, max_age: NaNd}}`:     "retention.defs.max_age",
+		`retention: {mem: {mode: prune, max_age: " "}}`:                             "retention.mem.max_age",
+		`retention: {mem_content: {max_age: ""}}`:                                   "retention.mem_content.max_age",
+		`retention: {empty_dossier: {mode: prune, max_age: nand12h}}`:               "retention.empty_dossier.max_age",
+		`retention: {interval: ""}`:                                                 "retention.interval",
+		`retention: {interval: nand}`:                                               "retention.interval",
+		`retention: {usage_detail: {max_age: ""}}`:                                  "retention.usage_detail.max_age",
+		`retention: {trace: {max_age: nand}}`:                                       "retention.trace.max_age",
+		`metrics: {sample_interval: ""}`:                                            "metrics.sample_interval",
+		`metrics: {sample_interval: nand}`:                                          "metrics.sample_interval",
+	} {
+		body := "defaults: {provider: mock}\n" + block + "\n"
+		// One file, and the same file as a layer over another: the two paths
+		// parse the yaml differently.
+		_, one := loadYAMLString(t, body)
+		_, layered := LoadLayers(Layer{Name: "base.yaml", Data: []byte("agents: {}\n")}, Layer{Name: "site.yaml", Data: []byte(body)})
+		for path, err := range map[string]error{"one file": one, "layered": layered} {
+			if err == nil {
+				t.Errorf("%s (%s): loaded, want an error", block, path)
+				continue
+			}
+			if !strings.Contains(err.Error(), key+":") {
+				t.Errorf("%s (%s): error does not name %s: %s", block, path, key, err)
+			}
+		}
+	}
+}
+
+// Every duration key of the config is checked by name before the config is
+// decoded. A HumanDuration field added anywhere under Config is found by its
+// type, so it cannot be left out of the check.
+func TestHumanDurationKeys_ListsEveryDurationOfTheConfig(t *testing.T) {
+	got := humanDurationKeys()
+	for _, want := range []string{
+		"retention.interval", "retention.defs.max_age", "retention.chats.max_age", "retention.mem.max_age",
+		"retention.mem_content.max_age", "retention.empty_dossier.max_age", "retention.usage_detail.max_age",
+		"retention.trace.max_age", "metrics.sample_interval",
+	} {
+		if !got[want] {
+			t.Errorf("humanDurationKeys() lacks %s (has %v)", want, got)
+		}
+	}
+}
+
+// The memory-content family has no export: the sweeper prunes under
+// export+prune and writes nothing, with or without an export directory. The
+// mode is refused so that nobody reads it as "a copy is kept".
+func TestRetention_RefusesExportPruneOnTheFamilyWithNoExport(t *testing.T) {
+	for _, block := range []string{
+		"retention: {mem_content: {mode: export+prune, max_age: 30d}}",
+		"retention: {enabled: true, export_dir: /data/exports, mem_content: {mode: export+prune, max_age: 30d}}",
+	} {
+		_, err := loadYAMLString(t, "defaults: {provider: mock}\n"+block+"\n")
+		if err == nil {
+			t.Errorf("%s: loaded, want an error", block)
+			continue
+		}
+		for _, want := range []string{"retention.mem_content.mode", "no export", "prune"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%s: error does not say %q: %s", block, want, err)
+			}
+		}
+	}
+	// The other families export, and this one still prunes.
+	for _, block := range []string{
+		"retention: {export_dir: /data/exports, chats: {mode: export+prune, max_age: 30d}, defs: {mode: export+prune, max_age: 30d}, mem: {mode: export+prune, max_age: 30d}, empty_dossier: {mode: export+prune, max_age: 30d}}",
+		"retention: {mem_content: {mode: prune, max_age: 30d}}",
+	} {
+		if _, err := loadYAMLString(t, "defaults: {provider: mock}\n"+block+"\n"); err != nil {
+			t.Errorf("%s: %v", block, err)
+		}
 	}
 }

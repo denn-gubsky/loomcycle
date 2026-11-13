@@ -35,7 +35,7 @@ func (c *Config) AuditStoreRequiredWith(storedPrincipals int) bool {
 // stream, counting storedPrincipals live minted tokens besides the
 // configured credentials; "" when it does not.
 func (c *Config) AuditRequiredReason(storedPrincipals int) string {
-	if r := auditPostureReason(len(c.ResolvedAuth.Gates) > 0, c.ResolvedAuth.Strict(), c.Env.ACLMode); r != "" {
+	if r := auditPostureReason(len(c.ResolvedAuth.Gates) > 0, c.ResolvedAuth.Strict(), c.ResolvedAuth.StrictFromEnv(), c.Env.ACLMode); r != "" {
 		return r
 	}
 	if n := c.ConfiguredPrincipals() + storedPrincipals; n > 1 {
@@ -66,13 +66,18 @@ func (c *Config) AuditStoreEnabled() bool {
 func (c *Config) auditStoreOn(gates bool) bool {
 	strict := strings.EqualFold(strings.TrimSpace(c.Auth.Mode), AuthModeStrict) ||
 		strings.EqualFold(strings.TrimSpace(c.Env.AuthMode), AuthModeStrict)
-	return c.Env.AuditStore || auditPostureReason(gates, strict, c.Env.ACLMode) != "" || c.ConfiguredPrincipals() > 1
+	return c.Env.AuditStore || auditPostureReason(gates, strict, false, c.Env.ACLMode) != "" || c.ConfiguredPrincipals() > 1
 }
 
-func auditPostureReason(gates, strict bool, aclMode string) string {
+// auditPostureReason names what requires the audit stream. strictFromEnv
+// is whether strict mode came from the environment alone, so the reason
+// names the plane that says strict.
+func auditPostureReason(gates, strict, strictFromEnv bool, aclMode string) string {
 	switch {
 	case gates:
 		return "a sign-in gate is configured"
+	case strict && strictFromEnv:
+		return "LOOMCYCLE_AUTH_MODE is strict"
 	case strict:
 		return "auth.mode is strict"
 	}

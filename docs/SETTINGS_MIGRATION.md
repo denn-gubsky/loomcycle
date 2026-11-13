@@ -74,8 +74,8 @@ What they do with the removed variables:
 
 | Command | A removed variable that is only advised | A removed variable that is refused |
 |---|---|---|
-| `loomcycle validate [<config>]` | Prints an `Advisories : N` block on standard output, one `  - …` line per advisory, then `OK`. Exit code `0`. | Prints `loomcycle: error: config: retired environment variables are set to …` on standard error. Exit code `2`. Nothing else is printed. |
-| `loomcycle doctor [--config <path>]` | Prints one `WARN` check labelled `Config advisory` per advisory. A warning does not change the exit code. | Prints a `FAIL` check labelled `Config parses` that carries the refusal text, then the summary. Exit code `1`. The later checks do not run. |
+| `loomcycle validate [<config> ...]` | Prints an `Advisories : N` block on standard output, one `  - …` line per advisory, then `OK`. Exit code `0`. | Prints `loomcycle: error: config: retired environment variables are set to …` on standard error. Exit code `2`. Nothing else is printed. |
+| `loomcycle doctor [--config <path> ...]` | Prints one `WARN` check labelled `Config advisory` per advisory. A warning does not change the exit code. | Prints a `FAIL` check labelled `Config parses` that carries the refusal text, then the summary. Exit code `1`. The later checks do not run. |
 
 `validate` only loads the config. `doctor` also checks that the SQLite data directory is writable (or that a Postgres connection string is set) and that the listen address can be bound; an address already in use by your running server is a warning, not a failure. Neither command opens the store, so neither reports a problem that only appears when the store is opened. One of those is the refusal of an inferred Postgres backend beside an existing SQLite store file ([4.5](#45-a-postgres-connection-string-with-no-backend-named-now-opens-postgres)): `validate` prints `OK` and the server start, or any other command that opens the store, stops.
 
@@ -117,7 +117,38 @@ retired environment variables are set to something this version does not apply (
 
 It is followed by one `NAME: what to do` entry per refused variable, sorted by name and separated by ` | `. The server does not start.
 
-A refusal is judged on the value. The same variable set to what the runtime now does anyway is advised, not refused. For a setting that moved to the yaml, the value is compared with what your yaml gives, so once you have written the yaml key the old variable stops refusing and you can remove it at your own pace.
+A refusal is judged on the value. The same variable set to what the runtime now does anyway is advised, not refused.
+
+### The rule for a setting that moved to the yaml
+
+One rule covers every variable whose setting moved to a yaml key in this release (the rows of table A marked **Moved**):
+
+- The boot is **refused** when the variable is set to a value other than the default **and** the yaml does not name the key. The refusal entry names the key.
+- The variable is only **advised** when its value is the default, or when the yaml names the key, with any value.
+
+What this means in practice:
+
+- **It holds in both directions.** A timeout you raised is refused like one you lowered. Either is lost when the variable is ignored, and a raised one fails later, in production, as slow calls that time out.
+- **The two values are not compared.** Naming the key is your answer. If the yaml names the key with another value than the variable had, the yaml's value applies and the variable is only advised. Write the value you want in the yaml; do not expect the runtime to tell you that it differs from the variable.
+- **"The default" is what the runtime did when the variable was unset.** A value the old read ignored counts as the default: text where a number was expected, or zero where only a positive number was read. Table A says, per variable, which values are "other than the default".
+- **A key counts as named in any loaded layer**: your config file, a file in the config directory, or a preset. A key written with an empty value (`max_age:` with nothing after it) is not named.
+- **Removing the variable always clears the refusal.** You then run with the default.
+
+A variable is judged only where it had an effect before the upgrade, so a stray line in a deployment that never used the feature does not stop the boot:
+
+| Variables | Judged only when |
+|---|---|
+| The retention family modes and ages, `LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N`, `LOOMCYCLE_RETENTION_EXPORT_DIR`, `LOOMCYCLE_RETENTION_INTERVAL_MS` | `LOOMCYCLE_RETENTION_ENABLED=1` is also in the environment (the retention sweeper ran). |
+| `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` | `LOOMCYCLE_MEMORY_TRACE_INDEX` is `1` or `true`. |
+| `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | `LOOMCYCLE_TENANT_TELEMETRY` is on. |
+| `LOOMCYCLE_METRICS_COLLECT_SYSTEM`, `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` | `LOOMCYCLE_METRICS_ENABLED=1` is also in the environment (the sampler ran). |
+| The two `LOOMCYCLE_OLLAMA_LOCAL_*_TIMEOUT_MS` variables | The config declares `ollama-local` (the default providers layer does) and `OLLAMA_BASE_URL` is not `disabled`. |
+| The three `LOOMCYCLE_CODE_AGENTS_*` option variables | The config declares a `code-js` provider (the default providers layer does). |
+| `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS`, `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | At least one provider this deployment can use lacks the option; see [5.3](#53-provider-options). |
+
+Outside these conditions the variable is only advised.
+
+Other removed variables keep rules of their own, listed in the tables: the feature switches, the fixed caps, the switches that decided which data is kept, the store and SQL Memory, the SQL Memory limits, the hooks lists, the two Ollama options and `LOOMCYCLE_RETENTION_ENABLED`.
 
 ### Where each appears
 
@@ -135,6 +166,8 @@ The sandbox builder sidecar is a separate program with its own rule: it refuses 
 ### Values are never printed
 
 Advisories and refusals name variables and never include a value. Several removed variables held secrets. You can paste an advisory or a refusal into a ticket.
+
+There is one exception, and it carries no secret: the refusal of a retired hooks list ([5.10](#510-hooks-lists)) quotes the first entry the yaml list lacks, which is an owner name, a host name or an address range. An entry that is anything else, such as a URL pasted with credentials, is not quoted.
 
 ## 4. Behaviour changes with no variable to warn about
 
@@ -248,7 +281,7 @@ Every start logs the choice: an `INFO` line `store: backend chosen` with `backen
 
 **Who is affected.** Every deployment that deletes data with age.
 
-**What happens.** Retention is configured only in the yaml `retention:` block, and the sweeper runs only when `retention.enabled` is `true`. If you remove the old `LOOMCYCLE_RETENTION_*` lines without writing the block, retention stops and nothing says so. If you write a family `mode` and forget `enabled: true`, you get an advisory and nothing is deleted. If you leave the old variables in place, the boot is refused until the yaml gives the same switch, modes, ages, kept-version count and export directory.
+**What happens.** Retention is configured only in the yaml `retention:` block, and the sweeper runs only when `retention.enabled` is `true`. If you remove the old `LOOMCYCLE_RETENTION_*` lines without writing the block, retention stops and nothing says so. If you write a family `mode` and forget `enabled: true`, you get an advisory and nothing is deleted. If you leave the old variables in place beside `LOOMCYCLE_RETENTION_ENABLED=1`, the boot is refused until `retention.enabled` agrees with the switch and the yaml names the key of every variable that is set to something other than its default (a deleting mode, a positive age, a kept-version count other than 5, an export directory, an interval other than one hour).
 
 **What to do.** Write the block first ([5.2](#52-retention)), then remove the variables.
 
@@ -256,18 +289,16 @@ Every start logs the choice: an `INFO` line `store: backend chosen` with `backen
 
 **Who is affected.** A deployment that set a removed variable to something *looser* than the value that now applies.
 
-**What happens.** For a limit, a refusal covers only the tightening direction. A looser value is advised and dropped. (The settings that decide which data is kept are different: they are refused in both directions, see below.) Cases to check in your list of names:
+**What happens.** For a limit that became a fixed value, a refusal covers only the tightening direction. A looser value is advised and dropped. (A setting that moved to the yaml is different: it is refused in both directions until the yaml names its key, see [section 3](#the-rule-for-a-setting-that-moved-to-the-yaml). So are the settings that decide which data is kept, see below.) Cases to check in your list of names:
 
 - **Channel payload cap.** `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` raised above 64 KiB, or set to `0` for "no cap": a channel message over 64 KiB is now refused on every surface that publishes.
 - **Memory value cap.** `LOOMCYCLE_MEMORY_MAX_VALUE_BYTES` raised or `0`: a Memory value over 64 KiB is refused.
-- **Provider stream timeouts raised** for slow models (`LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS`, `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` and the `ollama-local` pair): the defaults apply again and slow calls fail until you set the provider option in the yaml.
 - **Sweeps switched off with `0`** (expired Memory entries, expired channel messages, expired registered agents, old metrics samples): all of them now always run on a fixed cadence.
 - **Expired token rows kept forever** with `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS=0`: an expired token's row is now deleted 7 days after it expired.
 - **Tool calls forced serial** with `LOOMCYCLE_TOOL_PARALLELISM=1`: 8 tool calls of one turn now run at once.
-- **Embedder timeout disabled** with `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS=0`: the yaml has no "no timeout"; the default of 30 s applies.
 - **SSE keepalive disabled** with `LOOMCYCLE_SSE_KEEPALIVE_MS=0`: a run stream sends a keepalive every 20 s.
 
-**What to do.** For a setting that moved to the yaml, set the key. For a fixed value there is nothing to set; check that your workload fits.
+**What to do.** For a fixed value there is nothing to set; check that your workload fits.
 
 **Settings that decided which data is kept stop the boot instead.** Four removed variables changed what is deleted or created, so the old "off" (or another age) is refused, not dropped:
 
@@ -278,17 +309,24 @@ Every start logs the choice: an `INFO` line `store: backend chosen` with `backen
 
 None of the four has a setting that brings the old behaviour back. Any other value of the first three is only advised.
 
-### 4.12 Settings that moved and are only advised
+### 4.12 A moved setting you removed without writing the yaml
 
-**Who is affected.** A deployment that set one of these without the yaml key.
+**Who is affected.** A deployment that deletes a moved variable's line (or refreshes a compose file that no longer passes it) without writing the yaml key. The rule of [section 3](#the-rule-for-a-setting-that-moved-to-the-yaml) protects a variable that is still set; it cannot see one that is gone.
 
-**What happens.** You get an advisory, and the feature or tuning is gone until you write the yaml:
+**What happens.** The default applies and nothing is logged:
 
-- **Process metrics sampler.** `LOOMCYCLE_METRICS_ENABLED=1` no longer starts it. No samples are recorded and the activity page of the Web UI is empty.
-- **Document projection.** A positive `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` used to switch the projection on as well as set its cadence. Now the projection needs `memory.projection.enabled: true`.
-- **Timeout scaling, embedder batch size, SQL Memory collection cadence, retention sweep interval.** The yaml default applies.
+- **Process metrics sampler.** No samples are recorded and the activity page of the Web UI is empty.
+- **Document projection.** A positive `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` used to switch the projection on as well as set its cadence. The projection now needs `memory.projection.enabled: true` beside `memory.projection.interval`. A variable that is still set is refused until the yaml names both keys; one that is gone leaves the projection off.
+- **Provider timeouts, GPU offload, context window.** Slow calls time out at the defaults; local models run where Ollama puts them.
+- **Retention.** See [4.10](#410-retention-needs-retentionenabled).
+- **Everything else in table A.** The yaml default applies.
 
-**What to do.** Set the yaml key from table A.
+Two cases where a variable that is still set is only advised although the setting is gone:
+
+- **`LOOMCYCLE_SQLMEM_GC_INTERVAL_MS`.** The SQL Memory collection runs at the yaml's cadence (`storage.sqlmem_gc_interval_ms`, one hour unset).
+- **A variable outside the conditions of the table in section 3**, for example a retention family variable in an environment without `LOOMCYCLE_RETENTION_ENABLED=1`. It did nothing before.
+
+**What to do.** Write the yaml key from table A before you remove the variable.
 
 ### 4.13 Two audio queue sizes became one
 
@@ -340,12 +378,12 @@ Rules:
 - `storage.sqlmem_enabled` has three states. Unset: on with SQLite; on with Postgres when the SQL Memory connection string is set. `false`: off on either store. `true` on Postgres with no SQL Memory connection string stops the boot.
 - With a Postgres store and no `LOOMCYCLE_SQLMEM_PG_DSN`, SQL Memory is off and the server starts. The boot log carries a `WARN` line: `sqlmem: SQL Memory is off because LOOMCYCLE_SQLMEM_PG_DSN is not set; Documents need SQL Memory and are off with it. Set the DSN of a separate database to turn both on, or storage.sqlmem_enabled: false in the yaml to say this is intended`. With `storage.sqlmem_enabled: false` the line is not logged.
 - `LOOMCYCLE_SQLMEM_ROOT`, `LOOMCYCLE_SQLMEM_QUOTA_BYTES`, `LOOMCYCLE_SQLMEM_AUDIT_MODE`, `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS`, `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES` and `LOOMCYCLE_SQLMEM_SHARED_SCHEMAS` are still read from the environment. Do not move them.
-- `LOOMCYCLE_PG_AUTOMIGRATE` is read in both directions: `1` turns schema migration at boot on and `0` turns it off, whatever `storage.pg_automigrate` says. Before, only `1` was read, so a host that carried `LOOMCYCLE_PG_AUTOMIGRATE=0` beside a yaml `pg_automigrate: true` migrated at boot; now it does not, and the schema moves only when you run `loomcycle migrate up`. Any other value, or none, leaves the yaml's value.
+- `LOOMCYCLE_PG_AUTOMIGRATE` is read in both directions: `1` turns schema migration at boot on and `0` turns it off, whatever `storage.pg_automigrate` says. Before, only `1` was read, so a host that carried `LOOMCYCLE_PG_AUTOMIGRATE=0` beside a yaml `pg_automigrate: true` migrated at boot; now it does not, and the schema moves only when you run `loomcycle migrate up`. The value is `1` or `0`, with spaces around it ignored. Any other non-empty value stops the load (`LOOMCYCLE_PG_AUTOMIGRATE: the value is not 1 (migrate the schema at boot) or 0 (do not)`): a `false` written to keep migration off used to be skipped, which left a yaml `pg_automigrate: true` in force. Empty or unset leaves the yaml's value.
 - Set `storage.backend: postgres` on every Postgres deployment, and `storage.backend: sqlite` on every SQLite deployment that has a connection string anywhere in its environment. It costs one line, and the store no longer depends on what the environment happens to carry.
 
 ### 5.2 Retention
 
-Retention moved from fifteen variables in milliseconds to one yaml block with durations.
+Retention moved from sixteen variables (the switch, the interval, the export directory, five family modes, five family ages, the kept-version count and the usage-detail and trace ages; the ages in milliseconds) to one yaml block of sixteen keys with durations.
 
 Before:
 
@@ -379,7 +417,7 @@ retention:
   mem:                          # memory of fully retired agents
     mode: off
     max_age: 30d
-  mem_content:                  # superseded memory content in live scopes
+  mem_content:                  # superseded memory content in live scopes; off or prune only (no export)
     mode: off
     max_age: 30d
   empty_dossier:                # subject documents with no facts and no references
@@ -397,19 +435,23 @@ Rules:
 - **Modes.** `off` (the default), `prune`, `export+prune`. Any other value stops the load. The old variables accepted any text and treated it as off.
 - **`max_age` is required when a mode deletes.** A family whose mode is `prune` or `export+prune` with no `max_age` stops the load. To delete everything eligible whatever its age, write `max_age: 0s`. Before, a missing age meant exactly that, without saying so.
 - **Durations.** `30d`, `12h`, `1d12h`, `90m`. A bare number other than `0` is refused, because nothing says which unit it meant. To convert: 86400000 ms is `1d`, 2592000000 ms is `30d`, 7776000000 ms is `90d`.
-- **Export directory.** A family in `export+prune` mode with no `export_dir` deletes nothing.
+- **Export directory.** `export+prune` writes each item under `export_dir` and then deletes it, for `defs`, `chats`, `mem` and `empty_dossier`. One of those four in that mode with no `export_dir` deletes nothing. Under `chats`, the chats of the runtime's own maintenance agents and sessions marked no-trace are deleted without a copy.
+- **`mem_content` has no export.** Its mode is `off` or `prune`. `retention.mem_content.mode: export+prune` stops the load: the sweeper would delete and write no copy, with or without `export_dir`. `LOOMCYCLE_RETENTION_MEM_CONTENT_MODE=export+prune` was accepted and did exactly what `prune` does, so write `prune`.
 - **Internal chats.** Chats of the runtime's own maintenance agents are deleted after 3 days whenever the chats family is on. This age is fixed.
 - **Not part of the block.** The audit stream's retention stays in the environment (`LOOMCYCLE_AUDIT_RETENTION_DAYS`), and so does the process metrics retention (`LOOMCYCLE_METRICS_RETENTION_DAYS`).
 
-Order of work: write the block, run `validate`, then remove the variables. While a variable and the yaml disagree, the boot is refused; once they agree, the variable is only advised.
+Order of work: write the block, run `validate`, then remove the variables. With `LOOMCYCLE_RETENTION_ENABLED=1` in the environment, a retention variable set to something other than its default refuses the boot until the yaml names its key; once every such key is named, the variables are only advised. The yaml's values are the ones that apply, whatever the variables say, so check each converted age. A retention variable in an environment without `LOOMCYCLE_RETENTION_ENABLED=1` is only advised: retention was not running.
 
 ### 5.3 Provider options
 
 Stream timeouts, the Ollama options and the code-agent budgets are options of each provider.
 
-Before:
+Before (a deployment with keys for Anthropic, OpenAI and hosted Ollama, and a local Ollama):
 
 ```sh
+ANTHROPIC_API_KEY=           # secret
+OPENAI_API_KEY=              # secret
+OLLAMA_API_KEY=              # secret
 LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS=30000
 LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS=60000
 LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS=900000
@@ -421,7 +463,7 @@ LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS=3600
 LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1
 ```
 
-After:
+After (the three keys stay in the environment):
 
 ```yaml
 providers:
@@ -433,15 +475,17 @@ providers:
     options:
       header_timeout_ms: 30000
       idle_timeout_ms: 60000
+  ollama:
+    options:
+      header_timeout_ms: 30000   # hosted Ollama took the global timeouts too
+      idle_timeout_ms: 60000
+      num_ctx: 32768             # hosted Ollama; unset = the model's own window
   ollama-local:
     options:
       num_ctx: 32768             # context window of every local model
       num_gpu: 99                # layers offloaded to the GPU; unset = Ollama decides
       header_timeout_ms: 900000  # default 600000
       idle_timeout_ms: 900000    # default 600000
-  ollama:
-    options:
-      num_ctx: 32768             # hosted Ollama; unset = the model's own window
   code-js:
     options:
       deterministic: true        # default false
@@ -449,12 +493,27 @@ providers:
       max_wall_seconds: 3600     # lifetime, waits included; default 86400
 ```
 
+With this yaml the "before" environment starts with advisories only, and you can remove the nine lines.
+
 Rules:
 
 - A `providers:` entry merges over the built-in provider field by field. You do not restate the driver or the key variable.
-- **There is no global timeout key.** The two global variables applied to every provider. Each provider that needs another value than the default sets its own options.
-- **A lowered global timeout is refused until every provider has it.** If `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` or `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` is a positive value below what any declared provider now waits, the boot is refused. The check covers every provider the config declares except `ollama-local`, `code-js` and the mock provider, and the default providers layer declares the built-in ones whether you use them or not. Either set the option on each of them or remove the variable and accept the defaults.
-- **`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is still a variable, and it now wins over the yaml.** Set to a positive number, it is the local context window even when `providers.ollama-local.options.num_ctx` is set, in your own file or in a preset. Before this release the yaml option won. When both are set and differ, the boot log carries a `config: warning` line that says so (`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX and providers.ollama-local.options.num_ctx are both set and differ: the environment's value is the one used; remove one of them`). Keep the one you mean. It is the only Ollama setting left in the environment besides the endpoint: the hosted window (`providers.ollama.options.num_ctx`), the GPU offload and the stream timeouts are yaml only.
+- **There is no global timeout key.** The two global variables applied to every provider except `ollama-local`. Each provider that needs another value than the default sets its own options.
+- **A global timeout other than the default is refused until every provider you can use has the option.** This is the rule of [section 3](#the-rule-for-a-setting-that-moved-to-the-yaml), applied per provider: if `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` is a positive number other than `60000`, or `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` a positive number other than `90000`, the boot is refused while a provider this deployment can use has no `header_timeout_ms` (or `idle_timeout_ms`) option. The refusal lists those provider ids:
+
+  ```
+  LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS: set providers.<id>.options.idle_timeout_ms in the yaml for each provider that needs another value than 90000 (the anthropic-oauth-dev provider has no options: it always waits 90000); the variable was set to something other than the default and the option is missing on these providers: anthropic, openai (set it on each, with the value you want that provider to have, or remove the variable to take the default)
+  ```
+
+- **Which providers count.** A provider counts when all three hold:
+  1. The config declares it under `providers:`. The default providers layer declares the built-in ones.
+  2. It is registered: the variable named by its `api_key_env` is set, or it names no key variable (a keyless endpoint you declared yourself). A built-in provider you have no key for is not registered, is never called, and is not counted.
+  3. It took the global timeouts. `ollama-local` had its own pair, and `code-js` and the mock provider make no HTTP call, so they are not counted.
+
+  Set the option on each provider the refusal lists. The option counts when it is a positive number; a quoted number or a zero is skipped where the option is read, so it does not count.
+- **`anthropic-oauth-dev` has fixed timeouts.** That provider is not declared under `providers:` and has no options. It used to take the global variables; it now always waits 60 s for the headers and 90 s inside a stream, and it is not counted by the rule.
+- **The `ollama-local` pair and the code-agent options follow the same rule for one provider.** `LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS` or `LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS` set to a positive number other than `600000` is refused until `providers.ollama-local.options` has the option; `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` other than `120`, `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` other than `86400` and `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` are refused until `providers.code-js.options` has theirs.
+- **`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is still a variable, and it now wins over the yaml.** Set to a positive number, it is the local context window even when `providers.ollama-local.options.num_ctx` is set, in your own file or in a preset. Before this release the yaml option won. When the yaml names the option with anything but the variable's number, the boot log carries a `config: warning` line that says so (`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX and providers.ollama-local.options.num_ctx are both set and differ: the environment's value is the one used; remove one of them`). That includes a yaml `num_ctx: 0`: before this release the zero replaced the variable and the model's own window applied; now the variable's window does. Keep the one you mean. It is the only Ollama setting left in the environment besides the endpoint: the hosted window (`providers.ollama.options.num_ctx`), the GPU offload and the stream timeouts are yaml only.
 - `OLLAMA_BASE_URL` and `LOOMCYCLE_CODE_AGENTS_ROOT` also stay in the environment.
 - **`LOOMCYCLE_OLLAMA_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` are refused while the yaml does not name the option.** Set to a positive number, each stops the boot unless the yaml has `providers.ollama.options.num_ctx` or `providers.ollama-local.options.num_gpu`. Dropped silently, hosted requests would run in the model's own window and local models on whatever Ollama picks, often the CPU. Write the option with the variable's number, then remove the variable. When the yaml already names the option, with any value, the variable is only advised: a yaml option always replaced the variable, so that value was the one in use before the upgrade too.
 
@@ -478,7 +537,7 @@ timeout_scaling:
   max_multiplier: 8        # default 8
 ```
 
-These variables are only advised: the block measures and reports, and no value of it tightened anything.
+Each of the three follows the rule of [section 3](#the-rule-for-a-setting-that-moved-to-the-yaml). `measure` is the default, so `LOOMCYCLE_TIMEOUT_SCALING=off` is refused until the yaml names `timeout_scaling.mode`; the reference speed and the multiplier are refused when they are positive numbers other than `100` and `8` and the yaml does not name their keys.
 
 ### 5.5 Embedder and projection
 
@@ -502,7 +561,7 @@ memory:
     interval: 1h           # unset or "0" = no sweeper
 ```
 
-These keys sit beside the `provider` and `model` you already have under `memory.embedder`. A retired embedder timeout below what the yaml gives is refused. The old `0` values have no yaml form: a batch size of `0` (one text per call) is `batch_size: 1`, and a timeout of `0` (no timeout) cannot be expressed.
+These keys sit beside the `provider` and `model` you already have under `memory.embedder`. Each of the three follows the rule of [section 3](#the-rule-for-a-setting-that-moved-to-the-yaml): a batch size other than `100`, a timeout other than `30000` or a positive interval is refused until the yaml names its key. The old `0` values have no yaml form: a batch size of `0` (one text per call) is `batch_size: 1`, and a timeout of `0` (no timeout) cannot be expressed, so choose a timeout. The projection interval stood for two keys, because a positive value also turned the projection on: it is refused until the yaml names both `memory.projection.interval` and `memory.projection.enabled`.
 
 ### 5.6 Concurrency
 
@@ -525,7 +584,7 @@ concurrency:
   provider_queue_depth: 16          # default 0 = max_queue_depth
 ```
 
-`max_concurrent_runs` and `max_queue_depth` were already yaml-only. A retired variable that held a user, or the requests outside any run, to less than the yaml allows is refused.
+`max_concurrent_runs` and `max_queue_depth` were already yaml-only. Each of the three variables follows the rule of [section 3](#the-rule-for-a-setting-that-moved-to-the-yaml): a per-user cap above zero, a queue bound other than `16`, or a provider queue depth other than `max_queue_depth` is refused until the yaml names its key.
 
 ### 5.7 Telemetry hosts and sampler ratios
 
@@ -554,8 +613,8 @@ observability:
 
 Rules:
 
-- A retired ratio list is refused unless the yaml gives each tenant it names the same ratio. A pair that does not parse is refused too.
-- A retired host list is refused while the yaml list is empty: with no list, a tenant's collector endpoint may name any public host.
+- A retired ratio list with at least one entry is refused until the yaml names `observability.tracing.tenant_sampler_ratios`. The yaml map is then the whole map: the variable no longer adds to it or replaces a tenant's ratio in it, so copy every tenant you need.
+- A retired host list with at least one host is refused until the yaml names `observability.tenant_telemetry.allowed_hosts`, while `LOOMCYCLE_TENANT_TELEMETRY` is on: with no list, a tenant's collector endpoint may name any public host. With tenant telemetry off the list did nothing and is only advised.
 - `LOOMCYCLE_TENANT_TELEMETRY` (the switch), `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP` and `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO` stay in the environment.
 
 ### 5.8 Login origins
@@ -574,7 +633,16 @@ auth:
     - https://landing.example.com
 ```
 
-A retired variable that names an origin the yaml does not list is refused: that page's sign-in would stop working.
+A retired variable that lists at least one origin is refused until the yaml names `auth.login_origins`: without the list, that page's sign-in would stop working. The yaml list is then the whole list, so copy every origin.
+
+The variable was one comma-separated value; the key is a list with **one origin per item**. An item that holds a comma or a space stops the load (`auth.login_origins: entry 2 holds a comma or a space; write one origin per list item`): copied whole from the variable, it would equal no origin a browser reports.
+
+```yaml
+auth:
+  login_origins:                       # not: ["https://a.example.com,https://b.example.com"]
+    - https://a.example.com
+    - https://b.example.com
+```
 
 ### 5.9 Process metrics sampler
 
@@ -595,7 +663,7 @@ metrics:
   sample_interval: 5s      # default 5s; at least 1s
 ```
 
-These variables are only advised. A `sample_interval` under `1s` stops the load; the variable used to raise it to one second silently. This block is not the Prometheus endpoint: `LOOMCYCLE_METRICS_LISTEN` and `LOOMCYCLE_METRICS_RETENTION_DAYS` stay in the environment.
+`LOOMCYCLE_METRICS_ENABLED=1` is refused until the yaml names `metrics.enabled`: ignored, the sampler would stop and the activity page go empty. Beside `LOOMCYCLE_METRICS_ENABLED=1`, `LOOMCYCLE_METRICS_COLLECT_SYSTEM=1` and a sample interval other than `5000` are refused until the yaml names `metrics.collect_system` and `metrics.sample_interval`; without the switch they did nothing and are only advised. A `sample_interval` under `1s` stops the load; the variable used to raise it to one second silently. This block is not the Prometheus endpoint: `LOOMCYCLE_METRICS_LISTEN` and `LOOMCYCLE_METRICS_RETENTION_DAYS` stay in the environment.
 
 ### 5.10 Hooks lists
 
@@ -619,7 +687,18 @@ hooks:
     - 10.20.0.0/16
 ```
 
-A variable that names an entry the yaml list lacks refuses the boot: without the entry, that hook's `allow_hosts` would stop being honoured, or its callback to a private address would be refused. Copy every entry into the yaml, then remove the variable. A variable whose entries are all in the yaml is only advised.
+A variable that names an entry the yaml list lacks refuses the boot: without the entry, that hook's `allow_hosts` would stop being honoured, or its callback to a private address would be refused. A variable whose entries are all in the yaml is only advised.
+
+The refusal quotes the first entry the yaml lacks, so you do not have to compare the two lists by eye:
+
+```
+LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST: list each host or CIDR range under hooks.private_host_allowlist in the yaml; the yaml list lacks "10.20.0.0/16" (the first of this variable's entries it lacks). Entries are compared as written: a wider range or a shorter suffix in the yaml does not count for it. If the yaml already allows every address your hooks call, remove the variable
+```
+
+Two ways to clear it:
+
+- **Copy the entry into the yaml**, start again, and repeat for the next entry the refusal names, until the variable is only advised. Then remove the variable.
+- **Remove the variable**, if the yaml list already grants what your hooks need. This is the case when the yaml has a wider entry than the variable (`10.0.0.0/8` in the yaml, `10.20.0.0/16` in the variable): the rule compares entries as written and cannot tell that the wider one covers it, but the runtime reads only the yaml list, and that list covers the address.
 
 How entries are compared:
 
@@ -700,11 +779,16 @@ LOOMCYCLE_CONFIG_DIR=/etc/loomcycle
 
 Files in the config directory are loaded in lexical order, so name them so that the file that must win sorts last. Remember that a config directory now also supplies `skills/`, `agents/` and `help/` (4.7). The variable's files were the base and `--config` files layered after them; the config directory keeps that order, since its files load before any `--config`.
 
-**The command-line tools load what the server loads.** The server and every command that reads the config (`validate`, `doctor`, `agents list`, `migrate --config`, `tokens`, `audit`, the memory tools) now build the list of layers with one function. What you will notice:
+**The command-line tools load what the server loads.** The server and the commands that read the config (`validate`, `doctor`, `agents list`, `migrate --config`, `tokens`, `audit`, the memory tools) now build the list of layers with one function. One command does not yet: `loomcycle hash agent --config <file>` still reads that single file, with no presets, config directory, section files or `auth.env`. What you will notice:
 
-- **`loomcycle validate` with no path** validates the server's stack: the presets, the config directory, and the auto-discovered `loomcycle.yaml` if there is one. Before, a path was required and the usage text was printed. Its first line names the last file of the stack, or `embedded presets only (no config file)`.
-- **`loomcycle doctor` finds a deployment made of presets and a config directory.** Before, it looked for a single `loomcycle.yaml` and failed its `Config found` check on such a deployment. The check now lists the files of the stack.
-- **Every one of these commands loads the `auth.env` beside the last config file**, as the server does, and only for variables the environment does not already set. Before, only the server and `doctor` did. A command run by hand therefore sees the persisted token and settings the server sees.
+- **`loomcycle validate` with no path** validates the server's stack: the presets, the config directory, and the auto-discovered `loomcycle.yaml` if there is one. Before, a path was required and the usage text was printed. Its first line names every layer of the stack, base first.
+- **`loomcycle doctor` finds a deployment made of presets and a config directory.** Before, it looked for a single `loomcycle.yaml` and failed its `Config found` check on such a deployment. The check now lists the layers of the stack.
+- **Each of these commands loads the `auth.env` beside the last config file**, as the server does, and only for variables the environment does not already set. Before, only the server and `doctor` did. A command run by hand therefore sees the persisted token and settings the server sees. (`hash agent` does not, and the memory tools load it only beside a file you name.)
+- **Several files are named the way the server names them.** `--config` may be repeated in `doctor`, `agents list`, `migrate` and the memory tools, and `validate` takes several paths; the files are layered in the order given, as the server layers its own `--config` flags. A server started with `--config base.yaml --config site.yaml` is checked with `loomcycle validate base.yaml site.yaml` and `loomcycle doctor --config base.yaml --config site.yaml`. `validate` and `doctor` print every layer they loaded, base first.
+- **`loomcycle migrate --config` targets the database the server would open, which may differ from before.** The DSN is whatever the whole stack gives: a later `--config`, a section file's `storage:` block, a file in the config directory, `LOOMCYCLE_PG_DSN` in the environment or in the `auth.env` beside the last file. Before it acts, each of `migrate up`, `down` and `status` prints two lines on standard error, `migrate: config layers: …` and `migrate: Postgres DSN taken from: …` (a yaml layer's file name, `the environment (LOOMCYCLE_PG_DSN)`, `auth.env (<path>)` or `--dsn`). Neither line contains the DSN. Read them before you confirm a `migrate down --yes`.
+- **`agents list` says which layers it loaded.** It reports what the server would run, so it keeps the server's auto-discovery, and prints one line on standard error, `agents list: config layers: …`. Standard output carries the listing only, so a script that reads the JSON is unaffected.
+- **The memory measurement tools load only what you select.** `memory-calibrate`, `memory-eval-live` and `memory-eval-judge` layer the embedded presets, the config directory and the files named with `--config`. They do not load an auto-discovered `loomcycle.yaml` or the `auth.env` beside it: the eval tools score the shipped prompts, and a personal config must not replace the agent or supply keys unasked. Each prints the layers it loaded on standard error. If you ran `memory-calibrate` in a directory with a `loomcycle.yaml` and no `--config`, name the file now: `loomcycle memory-calibrate --config loomcycle.yaml`.
+- **The offline tools still run when the environment is one the server refuses.** `tokens rewrap`, `audit verify --tenant`, `--operator` and `--all`, and `migrate up`, `down` and `status --config` are what you reach for when the server will not start. For those commands only, a removed variable that the server refuses, and a bad value in one of the strict variables of [section 8](#an-environment-variable-with-a-bad-value-now-stops-the-start), is printed on standard error as a `loomcycle: warning: …` line and the command goes on; it reads the variable as unset, with two exceptions that are read as off. A bad `LOOMCYCLE_DEADLINK_GC` is held at `off`: none of these commands runs that sweep. A bad `LOOMCYCLE_PG_AUTOMIGRATE` is read as `0`, not as unset: `tokens rewrap` and `audit verify` open the store with that setting, and unset would let a yaml `pg_automigrate: true` migrate the schema under a line you may have written to prevent it. With it read as `0` they do not migrate, and stop if the database is behind this binary's migrations; run `loomcycle migrate up` first. `migrate` prints the same warning and does what its verb says: it does not read the setting, which governs migration at boot only. The server, `validate`, `doctor` and `agents list` keep failing on the same environment, so the warning is not a sign that the deployment is fine. Nothing about the store is relaxed: `LOOMCYCLE_STORAGE_BACKEND` naming another backend, and a Postgres DSN beside an existing SQLite store with no `storage.backend`, stop these commands as they stop the server.
 - **A file named explicitly must exist.** A path that does not exist is an error in every command, as at boot. Before, the command-line tools skipped a named file that was missing when presets or a config directory supplied other layers.
 - `agents list`, `validate` and `doctor` therefore agree with the running server on which agents exist and which provider each resolves to, provided they run with the server's environment.
 
@@ -739,13 +823,27 @@ These remain: `SANDBOX_LISTEN_ADDR`, `SANDBOX_AUTH_TOKEN`, `SANDBOX_ALLOW_ANON`,
 
 `auth.mode` in the yaml and `LOOMCYCLE_AUTH_MODE` in the environment no longer conflict. The effective mode is the stricter of the two (`strict` over `token`; `token` when neither is set), so neither plane lowers the other. Before, a yaml value below the environment value stopped the load. There is nothing to migrate; if you relied on that error to catch a config file that lowers the mode, know that the file is now overruled instead of refused.
 
-When both are set and differ, the boot log says which one decided:
+When both are set and differ, an advisory says which one decided. It is printed wherever advisories are: the boot log, `validate`, `doctor` and the result of a config reload.
 
 ```
-auth: auth.mode and LOOMCYCLE_AUTH_MODE differ; the stricter of the two holds mode=strict decided_by=LOOMCYCLE_AUTH_MODE
+auth.mode (token) and LOOMCYCLE_AUTH_MODE (strict) differ: the stricter of the two holds, so the sign-in mode is strict (decided by LOOMCYCLE_AUTH_MODE)
 ```
 
-This is the one setting where the environment does not simply win. A yaml written for `token` that comes up `strict` because of the environment must still satisfy strict mode, which needs at least one gate a person can sign in through in `auth.gates`; without one the load fails and says so.
+The boot log also carries the line `auth: auth.mode and LOOMCYCLE_AUTH_MODE differ; the stricter of the two holds mode=strict decided_by=LOOMCYCLE_AUTH_MODE`, and the summary of `loomcycle validate` always prints the mode in force and where it came from:
+
+```
+Auth mode        : strict (from LOOMCYCLE_AUTH_MODE)
+```
+
+The source is `from auth.mode`, `from LOOMCYCLE_AUTH_MODE` (only the environment asked for this mode) or `default` (neither plane set one).
+
+This is the one setting where the environment does not simply win. A yaml written for `token` that comes up `strict` because of the environment must still satisfy strict mode, which needs at least one gate a person can sign in through in `auth.gates`; without one the load fails. An error raised because the mode is strict names the plane that made it strict, so that you look in the right place:
+
+```
+strict mode (from LOOMCYCLE_AUTH_MODE) needs at least one interactive gate in auth.gates (e.g. `paste: {kind: token}`), or nobody can sign in to the Web UI
+```
+
+With `auth.mode: strict` in the yaml the same error begins `auth.mode: strict needs …`.
 
 ## 6. Profiles
 
@@ -929,6 +1027,7 @@ Notes:
   ```
 
   Add a `retention:` block, `memory.projection`, provider timeouts or `storage: sqlmem_*` keys there if you used the corresponding fields.
+- **Existing installs.** The compose and the wizard no longer pass `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`, `LOOMCYCLE_METRICS_ENABLED` or `LOOMCYCLE_METRICS_COLLECT_SYSTEM`. An overlay written for an older release has neither setting, so add the two blocks above to it **before** you start the new image. If you refresh the compose and keep the old overlay, the app starts with the sampler off and no forced GPU offload, and logs nothing about it. If you keep the old compose, the app does not start, and the boot log names the three variables and the yaml key each needs.
 - The local context window stays `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` in the compose or the wizard.
 - If you run the paste compose, or an older version of the catalog app, it may still pass removed variables. Update the compose from the current `deploy/truenas/docker-compose.yaml`, or update the app, before you move to the new image.
 
@@ -940,7 +1039,7 @@ Shorthand used in the last column:
 
 - **Never**: the variable is only advised, whatever its value.
 - **Lower**: the variable is refused when it is set to a positive whole number below the value that now applies, or to a value that is not a whole number. Zero, a negative number and an empty value are only advised.
-- **Lower (valid)**: as Lower, but a value that is not a whole number is only advised.
+- **Moved**: the rule of [section 3](#the-rule-for-a-setting-that-moved-to-the-yaml). The variable is refused when it is set to a value other than the default while the yaml does not name the key in the second column. The cell says which values are other than the default, and under which condition the variable is judged at all. A value outside those, and any value once the yaml names the key, is only advised.
 
 ### A. Variables that moved to the yaml
 
@@ -958,26 +1057,26 @@ SQL Memory limits (`storage:`). "Lower" compares with the yaml value, or with th
 | `LOOMCYCLE_SQLMEM_GC_INTERVAL_MS` | `storage.sqlmem_gc_interval_ms` | Milliseconds; one hour | Never |
 | `LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES` | `storage.sqlmem_snapshot_max_scope_bytes` | Bytes; `0` = no cap | Set to a positive number while the yaml key is absent or larger, or to a value that is not a whole number |
 
-Retention (`retention:`). Ages are durations such as `30d`, not milliseconds.
+Retention (`retention:`). Ages are durations such as `30d`, not milliseconds. An age written as an empty string, or as a day count that is not a number, stops the load and names the key.
 
 | Variable | Yaml key | Format and default | Stops the boot when |
 |---|---|---|---|
 | `LOOMCYCLE_RETENTION_ENABLED` | `retention.enabled` | `true` or `false`; `false` | Set to `1` while the yaml key is not `true`, or set to anything else (the empty value included) while the yaml key is `true` |
-| `LOOMCYCLE_RETENTION_INTERVAL_MS` | `retention.interval` | Duration; `1h` | Never |
-| `LOOMCYCLE_RETENTION_EXPORT_DIR` | `retention.export_dir` | Directory path; none | Set to a non-empty path that differs from the yaml key |
-| `LOOMCYCLE_RETENTION_DEFS_MODE` | `retention.defs.mode` | `off`, `prune`, `export+prune`; `off` | Set to a non-empty value whose effect (`prune`, `export+prune`, or off for anything else) differs from the yaml mode |
-| `LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS` | `retention.defs.max_age` | Duration; required when the mode deletes | Set to a positive number of milliseconds that differs from the yaml age (an absent key counts as zero) |
-| `LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N` | `retention.defs.keep_last_n` | Count; `5`; `0` keeps none | Set to zero or a positive number that differs from the yaml value (or from `5` when the key is absent) |
-| `LOOMCYCLE_RETENTION_CHATS_MODE` | `retention.chats.mode` | As the defs mode | As the defs mode |
-| `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS` | `retention.chats.max_age` | Duration; required when the mode deletes | As the defs age |
-| `LOOMCYCLE_RETENTION_MEM_MODE` | `retention.mem.mode` | As the defs mode | As the defs mode |
-| `LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS` | `retention.mem.max_age` | Duration; required when the mode deletes | As the defs age |
-| `LOOMCYCLE_RETENTION_MEM_CONTENT_MODE` | `retention.mem_content.mode` | As the defs mode | As the defs mode |
-| `LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS` | `retention.mem_content.max_age` | Duration; required when the mode deletes | As the defs age |
-| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE` | `retention.empty_dossier.mode` | As the defs mode | As the defs mode |
-| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS` | `retention.empty_dossier.max_age` | Duration; required when the mode deletes | As the defs age |
-| `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` | `retention.usage_detail.max_age` | Duration; `30d` | Set to a positive number of milliseconds that differs from the yaml age (or from 30 days when the key is absent) |
-| `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` | `retention.trace.max_age` | Duration; `30d` | As the usage detail age |
+| `LOOMCYCLE_RETENTION_INTERVAL_MS` | `retention.interval` | Duration; `1h` | Moved: a positive number other than `3600000` (one hour). Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_EXPORT_DIR` | `retention.export_dir` | Directory path; none | Moved: any non-empty path. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_DEFS_MODE` | `retention.defs.mode` | `off`, `prune`, `export+prune`; `off` | Moved: `prune` or `export+prune` (any other value was off). Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS` | `retention.defs.max_age` | Duration; required when the mode deletes | Moved: a positive number of milliseconds. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N` | `retention.defs.keep_last_n` | Count; `5`; `0` keeps none | Moved: zero or a positive number other than `5`. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_CHATS_MODE` | `retention.chats.mode` | As the defs mode | Moved: `prune` or `export+prune`. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS` | `retention.chats.max_age` | Duration; required when the mode deletes | Moved: a positive number of milliseconds. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_MEM_MODE` | `retention.mem.mode` | As the defs mode | Moved: `prune` or `export+prune`. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS` | `retention.mem.max_age` | Duration; required when the mode deletes | Moved: a positive number of milliseconds. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_MEM_CONTENT_MODE` | `retention.mem_content.mode` | `off` or `prune`; `off`. `export+prune` stops the load: this family has no export | Moved: `prune` or `export+prune` (which did what `prune` does; write `prune`). Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS` | `retention.mem_content.max_age` | Duration; required when the mode deletes | Moved: a positive number of milliseconds. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE` | `retention.empty_dossier.mode` | As the defs mode | Moved: `prune` or `export+prune`. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS` | `retention.empty_dossier.max_age` | Duration; required when the mode deletes | Moved: a positive number of milliseconds. Judged only with `LOOMCYCLE_RETENTION_ENABLED=1` in the environment. |
+| `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` | `retention.usage_detail.max_age` | Duration; `30d` | Moved: a positive number other than `2592000000` (30 days). |
+| `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` | `retention.trace.max_age` | Duration; `30d` | Moved: a positive number other than `2592000000` (30 days). Judged only while `LOOMCYCLE_MEMORY_TRACE_INDEX` is `1` or `true`. |
 | `LOOMCYCLE_USAGE_RUN_RETENTION_MODE` | `retention.chats.mode` (the usage archiver is gone) | As the defs mode | Set to `prune` or `export+prune` while `LOOMCYCLE_USAGE_RUN_RETENTION_MS` is a positive number and the yaml sets no `retention.chats.mode` |
 | `LOOMCYCLE_USAGE_RUN_RETENTION_MS` | `retention.chats.max_age`, with `retention.chats.mode` | Duration | Never by itself; it is part of the rule above |
 | `LOOMCYCLE_USAGE_EXPORT_DIR` | `retention.export_dir` | Directory path | Never |
@@ -986,37 +1085,37 @@ Provider options (`providers.<id>.options`).
 
 | Variable | Yaml key | Format and default | Stops the boot when |
 |---|---|---|---|
-| `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` | `providers.<id>.options.header_timeout_ms`, on each provider | Milliseconds; `60000` | Set to a positive number below what any declared provider now waits (its option, or the default). `ollama-local`, `code-js` and the mock provider are not checked. |
-| `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | `providers.<id>.options.idle_timeout_ms`, on each provider | Milliseconds; `90000` | As above |
-| `LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS` | `providers.ollama-local.options.header_timeout_ms` | Milliseconds; `600000` | Set to a positive number below what `ollama-local` now waits |
-| `LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS` | `providers.ollama-local.options.idle_timeout_ms` | Milliseconds; `600000` | As above |
+| `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` | `providers.<id>.options.header_timeout_ms`, on each provider | Milliseconds; `60000` | Moved, per provider: a positive number other than `60000`, while a provider this deployment can use has no such option (a positive number). The refusal lists those providers; [5.3](#53-provider-options) says which providers count. |
+| `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | `providers.<id>.options.idle_timeout_ms`, on each provider | Milliseconds; `90000` | Moved, per provider: a positive number other than `90000`, while a provider this deployment can use has no such option (a positive number). |
+| `LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS` | `providers.ollama-local.options.header_timeout_ms` | Milliseconds; `600000` | Moved: a positive number other than `600000`. The option counts when it is a positive number. Judged only while the config declares `ollama-local` and `OLLAMA_BASE_URL` is not `disabled`. |
+| `LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS` | `providers.ollama-local.options.idle_timeout_ms` | Milliseconds; `600000` | Moved: a positive number other than `600000`. The option counts when it is a positive number. Judged only while the config declares `ollama-local` and `OLLAMA_BASE_URL` is not `disabled`. |
 | `LOOMCYCLE_OLLAMA_NUM_CTX` | `providers.ollama.options.num_ctx` | Tokens; unset = the model's own window | Set to a positive number while the yaml does not name the option |
 | `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` | `providers.ollama-local.options.num_gpu` | Layers; unset = Ollama decides | As above |
-| `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC` | `providers.code-js.options.deterministic` | `true` or `false`; `false` | Never |
-| `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `providers.code-js.options.run_timeout_seconds` | Seconds; `120` | Lower (valid), compared with the yaml option or the default |
-| `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `providers.code-js.options.max_wall_seconds` | Seconds; `86400` | Lower (valid), compared with the yaml option or the default |
+| `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC` | `providers.code-js.options.deterministic` | `true` or `false`; `false` | Moved: `1`. Judged only while the config declares a `code-js` provider. |
+| `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `providers.code-js.options.run_timeout_seconds` | Seconds; `120` | Moved: a positive number other than `120`. The option counts when it is a positive number. Judged only while the config declares a `code-js` provider. |
+| `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `providers.code-js.options.max_wall_seconds` | Seconds; `86400` | Moved: a positive number other than `86400`. The option counts when it is a positive number. Judged only while the config declares a `code-js` provider. |
 
 Timeout scaling, memory, concurrency, observability, sign-in, hooks, metrics.
 
 | Variable | Yaml key | Format and default | Stops the boot when |
 |---|---|---|---|
-| `LOOMCYCLE_TIMEOUT_SCALING` | `timeout_scaling.mode` | `measure` or `off`; `measure` | Never |
-| `LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS` | `timeout_scaling.reference.decode_tps` | Tokens per second; `100` | Never |
-| `LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER` | `timeout_scaling.max_multiplier` | Number; `8` | Never |
-| `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE` | `memory.embedder.batch_size` | Texts per call; `100`; `1` sends one text per call | Never |
-| `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS` | `memory.embedder.timeout_ms` | Milliseconds; `30000` | Lower (valid), compared with the yaml value or the default |
-| `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` | `memory.projection.interval`, with `memory.projection.enabled: true` | Duration; unset or `0` = no sweeper | Never |
-| `LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER` | `concurrency.max_concurrent_runs_per_user` | Count; `0` = no per-user cap | Set to a positive number while the yaml value is `0` or absent, or larger than the variable |
-| `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` | `concurrency.max_queued_runs_per_user` | Count; `16`; `0` refuses at once over the cap | Set to zero or a positive number below the yaml value (or below `16` when the key is absent) |
-| `LOOMCYCLE_PROVIDER_QUEUE_DEPTH` | `concurrency.provider_queue_depth` | Count; `0` = `max_queue_depth` | Lower (valid), compared with the yaml value, or with `max_queue_depth` when the key is absent or `0` |
-| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | `observability.tracing.tenant_sampler_ratios` | Map of tenant to a ratio from 0 to 1; none | It names a tenant to which the yaml gives another ratio or none, or a pair does not parse |
-| `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | `observability.tenant_telemetry.allowed_hosts` | List of hosts, each exact or a quoted `"*.suffix"`; none = any public host | It lists at least one host while the yaml list is empty |
-| `LOOMCYCLE_UI_LOGIN_ORIGINS` | `auth.login_origins` | List of origins; none = the receiver is off | It names an origin the yaml list does not contain |
+| `LOOMCYCLE_TIMEOUT_SCALING` | `timeout_scaling.mode` | `measure` or `off`; `measure` | Moved: any non-empty value other than `measure`, in any letter case (`off`, or a mode that does not exist). |
+| `LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS` | `timeout_scaling.reference.decode_tps` | Tokens per second; `100` | Moved: a positive number other than `100`. |
+| `LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER` | `timeout_scaling.max_multiplier` | Number; `8` | Moved: a positive number other than `8`. |
+| `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE` | `memory.embedder.batch_size` | Texts per call; `100`; `1` sends one text per call | Moved: any whole number other than `100`, zero and negative numbers included (they meant one text per call). |
+| `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS` | `memory.embedder.timeout_ms` | Milliseconds; `30000` | Moved: any whole number other than `30000`, zero and negative numbers included (they meant no timeout). |
+| `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` | `memory.projection.interval`, with `memory.projection.enabled: true` | Duration; unset or `0` = no sweeper | Moved: a positive duration, or a value that is not a duration. Both keys must be named: the interval alone would be a cadence for a projection left off. |
+| `LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER` | `concurrency.max_concurrent_runs_per_user` | Count; `0` = no per-user cap | Moved: a positive number. |
+| `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` | `concurrency.max_queued_runs_per_user` | Count; `16`; `0` refuses at once over the cap | Moved: zero or a positive number other than `16`. |
+| `LOOMCYCLE_PROVIDER_QUEUE_DEPTH` | `concurrency.provider_queue_depth` | Count; `0` = `max_queue_depth` | Moved: a positive number other than `concurrency.max_queue_depth` (what an absent key inherits). |
+| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | `observability.tracing.tenant_sampler_ratios` | Map of tenant to a ratio from 0 to 1; none | Moved: at least one entry. |
+| `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | `observability.tenant_telemetry.allowed_hosts` | List of hosts, each exact or a quoted `"*.suffix"`; none = any public host | Moved: at least one host. Judged only while `LOOMCYCLE_TENANT_TELEMETRY` is on. |
+| `LOOMCYCLE_UI_LOGIN_ORIGINS` | `auth.login_origins` | List, one origin per item; none = the receiver is off | Moved: at least one origin. |
 | `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` | `hooks.permit_host_widen.owners` | List of `[tenant:]name`; empty | It names an entry the yaml list lacks |
 | `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` | `hooks.private_host_allowlist` | List of hosts and CIDR ranges; empty | It names an entry the yaml list lacks |
-| `LOOMCYCLE_METRICS_ENABLED` | `metrics.enabled` | `true` or `false`; `false` | Never |
-| `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | `metrics.collect_system` | `true` or `false`; `false` | Never |
-| `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` | `metrics.sample_interval` | Duration; `5s`; at least `1s` | Never |
+| `LOOMCYCLE_METRICS_ENABLED` | `metrics.enabled` | `true` or `false`; `false` | Moved: `1`. |
+| `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | `metrics.collect_system` | `true` or `false`; `false` | Moved: `1`. Judged only with `LOOMCYCLE_METRICS_ENABLED=1` in the environment. |
+| `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` | `metrics.sample_interval` | Duration; `5s`; at least `1s` | Moved: a positive number other than `5000` (a number under `1000` counted as `1000`). Judged only with `LOOMCYCLE_METRICS_ENABLED=1` in the environment. |
 
 Config file locations.
 
@@ -1221,12 +1320,13 @@ Each refusal entry has the form `NAME: what to do`. The most common ones:
 | `LOOMCYCLE_STORAGE_BACKEND: the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise, which is not the backend this variable names …` | The variable says `postgres` with no connection string, or `sqlite` with one. | Set `storage.backend` in the yaml to the backend you run, then remove the variable. |
 | `LOOMCYCLE_SQLMEM_ENABLED: SQL Memory follows the store, which is not what this variable asked for …` | You kept SQL Memory off on SQLite, or asked for it on Postgres without the SQL Memory connection string. | To keep it off, set `storage.sqlmem_enabled: false`. To have it on with Postgres, set `LOOMCYCLE_SQLMEM_PG_DSN`. Then remove the variable. |
 | `LOOMCYCLE_RETENTION_ENABLED: the retention sweeper runs when retention.enabled is true in the yaml …` | The variable and `retention.enabled` disagree. | Set `retention.enabled` to what you want, then remove the variable. |
-| `LOOMCYCLE_RETENTION_CHATS_MODE: set retention.chats.mode in the yaml` (and the other retention modes and ages) | The yaml does not give the same mode, age, kept-version count or export directory. | Write the `retention:` block with the same values ([5.2](#52-retention)), then remove the variables. |
-| `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS: set providers.<id>.options.header_timeout_ms in the yaml for each provider …` | The variable is lower than what at least one declared provider now waits. | Set the option on every declared provider, the built-in ones you do not use included, or remove the variable and accept the default. |
+| `LOOMCYCLE_RETENTION_CHATS_MODE: set retention.chats.mode in the yaml; the variable was set to something other than the default and the yaml does not name retention.chats.mode …` (and the other retention modes, ages, the kept-version count, the export directory and the interval) | Retention ran (`LOOMCYCLE_RETENTION_ENABLED=1`), the variable is set to something other than its default, and the yaml does not name the key. | Write the `retention:` block ([5.2](#52-retention)), naming each key the refusal lists, then remove the variables. |
+| Any other entry that ends `… the variable was set to something other than the default and the yaml does not name <key> (name the key, with the value you want, or remove the variable to take the default)` | A setting that moved to the yaml ([section 3](#the-rule-for-a-setting-that-moved-to-the-yaml)): `LOOMCYCLE_METRICS_ENABLED`, the timeout-scaling, embedder, projection, concurrency, sampler-ratio, telemetry-host and login-origin variables, the `ollama-local` timeouts and the code-agent options. | Write the named key in the yaml with the value you want, or remove the variable to run with the default. |
+| `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS: set providers.<id>.options.header_timeout_ms in the yaml for each provider … the option is missing on these providers: …` (and `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS`) | The variable is a positive number other than the default, raised or lowered, and at least one provider you can use has no such option. | Set the option on each provider the entry lists ([5.3](#53-provider-options)), or remove the variable and accept the default. A built-in provider you have no key for is not listed and needs nothing. |
 | `LOOMCYCLE_A2A_ENABLED: A2A is served whenever LOOMCYCLE_A2A_SERVER_CARD is set, and it is …` | The switch is off while the card is named. | Unset `LOOMCYCLE_A2A_SERVER_CARD` to keep A2A off, or remove the switch to serve it. |
 | `LOOMCYCLE_SPEECH_MAX_INFLIGHT: both audio queues are sized by LOOMCYCLE_AUDIO_MAX_INFLIGHT …` | The route was held to fewer requests than the shared size. | Set `LOOMCYCLE_AUDIO_MAX_INFLIGHT` to the size you want, then remove the variable. |
-| `LOOMCYCLE_UI_LOGIN_ORIGINS: set auth.login_origins in the yaml, as a list` | The variable names an origin the yaml lacks. | Add the origin to `auth.login_origins`. |
-| `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS: list each [tenant:]owner under hooks.permit_host_widen.owners in the yaml` (and `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST: list each host or CIDR range under hooks.private_host_allowlist in the yaml`) | The variable names an entry the yaml list lacks. | Copy every entry into the yaml list ([5.10](#510-hooks-lists)), then remove the variable. |
+| `LOOMCYCLE_UI_LOGIN_ORIGINS: set auth.login_origins in the yaml, as a list …` | The variable lists an origin and the yaml has no `auth.login_origins`. | Write `auth.login_origins` with one origin per list item ([5.8](#58-login-origins)). |
+| `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS: list each [tenant:]owner under hooks.permit_host_widen.owners in the yaml; the yaml list lacks "<entry>" …` (and `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST: list each host or CIDR range under hooks.private_host_allowlist in the yaml; the yaml list lacks "<entry>" …`) | The variable names an entry the yaml list lacks; the refusal quotes the first one. Entries are compared as written, so a wider yaml range or the same owner under another tenant does not count. | Copy the quoted entry into the yaml list and start again until no entry is named ([5.10](#510-hooks-lists)), then remove the variable. If the yaml already grants what your hooks need (a wider range, for example), just remove the variable. |
 | `LOOMCYCLE_OLLAMA_NUM_CTX: requests to hosted Ollama no longer carry this context window …` (and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: requests to local Ollama no longer carry this GPU offload …`) | The variable is a positive number and the yaml does not name the option. | Set `providers.ollama.options.num_ctx` (or `providers.ollama-local.options.num_gpu`) to the same number, then remove the variable. |
 | `LOOMCYCLE_DEADLINK_GC_MS: the dead-link collection runs every hour and deletes unreachable chunk references unless LOOMCYCLE_DEADLINK_GC says otherwise …` (and `LOOMCYCLE_DEADLINK_GC_DRY_RUN: …`) | You had the collection off, counting only, or running less often than hourly, and `LOOMCYCLE_DEADLINK_GC` does not say so. | Set `LOOMCYCLE_DEADLINK_GC` to `off` or `dry-run` ([5.11](#511-dead-link-collection)), then remove the old variable. |
 | `LOOMCYCLE_USAGE_SWEEPER: the usage rollup always runs …`, `LOOMCYCLE_HEARTBEAT_SWEEPER: the run heartbeat sweeper always runs …`, `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS: the tenant-root and user-root documents are always created …`, `LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS: chats of internal agents are kept 3 days and then deleted …` | The variable switched the work off, or set another age ([4.11](#411-a-limit-you-raised-removed-or-switched-off-returns-to-its-default)). | Nothing brings the old behaviour back. Decide whether the fixed behaviour is acceptable, then remove the variable. |
@@ -1252,8 +1352,9 @@ Nothing is deleted unless `retention.enabled: true` is in the yaml and a family 
 1. The `retention:` block exists in a yaml file that is actually loaded (see 5.13).
 2. `enabled: true` is set. A mode without it produces the advisory `retention.<family>.mode is … but retention.enabled is not true`.
 3. The family's `mode` is `prune` or `export+prune`.
-4. For `export+prune`, `export_dir` is set and writable. Without it that mode deletes nothing.
+4. For `export+prune` on `defs`, `chats`, `mem` or `empty_dossier`, `export_dir` is set and writable. Without it a family in that mode deletes nothing. (`mem_content` takes `off` or `prune` only.)
 5. You did not rely on the removed usage archiver (4.9).
+6. The server was restarted after the edit. The `retention:` block is read at start; a config reload reports it as `restart_required` and changes no running sweeper. `GET /v1/_retention` describes the sweeper as it runs and carries `"pending_restart": true` while the yaml asks for something else.
 
 ### Documents say SQL Memory is not enabled
 
@@ -1273,21 +1374,22 @@ Set `LOOMCYCLE_LOG_LEVEL=debug` to see each Ollama request's model, effort and t
 
 ### An environment variable with a bad value now stops the start
 
-The settings the boot code used to read for itself are now read with the rest of the environment, under one rule: a value that cannot be honoured fails the load, and the error names the variable and never its value. Before, some of these stopped the boot and some fell back to the default without a word. `loomcycle validate` and `doctor` report the same error.
+The settings the boot code used to read for itself are now read with the rest of the environment, and with the dead-link mode and the automigrate switch they share one rule: a value that cannot be honoured fails the load, and the error names the variable and never its value. Before, some of these stopped the boot and some fell back to the default without a word. `loomcycle validate` and `doctor` report the same error.
 
 | Variable | Accepted | Error |
 |---|---|---|
 | `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS` | A whole number, `0` or more; `0` or unset = no transport timeout | `LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS: not a whole number`, or `… must be 0 or more` |
-| `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | A whole number, `0` or more; `0` or unset = no grace | As above |
+| `LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS` | A whole number, `0` or more; `0` or unset = the 24h default. There is no setting for no grace | As above |
 | `LOOMCYCLE_AUTH_CACHE_TTL_SECONDS` | A whole number, `0` or more; unset = `30`; `0` turns the cache off | As above |
 | `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` | A whole number, `1` or more; unset = no cap. `0` is refused, so a cap written as zero is not read as none | `… not a whole number`, or `… must be 1 or more` |
-| `LOOMCYCLE_RUN_RATE_PER_MINUTE` | A whole number, `1` or more; unset = no default rate | As above |
-| `LOOMCYCLE_RUN_RATE_BURST` | A whole number, `0` or more. Read only when the rate is set; alone it configures nothing and is not checked | `… not a whole number`, `… must be 0 or more`, or `LOOMCYCLE_RUN_RATE_PER_MINUTE / LOOMCYCLE_RUN_RATE_BURST: …` when the pair is not a valid limit |
+| `LOOMCYCLE_RUN_RATE_PER_MINUTE` | A whole number from `1` to `60000`; unset = no default rate. Operators are never bound by it | As above |
+| `LOOMCYCLE_RUN_RATE_BURST` | A whole number from `0` to `60000`; `0` or unset = the same number as the rate. Read only when the rate is set; alone it configures nothing and is not checked | `… not a whole number`, `… must be 0 or more`, or `LOOMCYCLE_RUN_RATE_PER_MINUTE / LOOMCYCLE_RUN_RATE_BURST: …` when the pair is not a valid limit |
 | `LOOMCYCLE_LIMITS_ENFORCE` | `strict`, or unset | `LOOMCYCLE_LIMITS_ENFORCE: not a known value (strict, or unset)` |
 | `LOOMCYCLE_GIT_SOURCE_HOSTS` | A comma-separated list of host names; unset = git-sourced volumes are off | `LOOMCYCLE_GIT_SOURCE_HOSTS: an entry is not a host name (write github.com, not a URL)` |
 | `LOOMCYCLE_DEADLINK_GC` | `off`, `dry-run` or `on`; unset = `on` | `LOOMCYCLE_DEADLINK_GC must be off, dry-run or on (unset is on)` |
+| `LOOMCYCLE_PG_AUTOMIGRATE` | `1` or `0`; unset = the yaml's `storage.pg_automigrate` ([5.1](#51-storage-and-sql-memory)) | `LOOMCYCLE_PG_AUTOMIGRATE: the value is not 1 (migrate the schema at boot) or 0 (do not)` |
 
-At boot the error is the `err` field of an `ERROR` line with the message `config: load failed`, and the process exits. Fix the value or remove the line. Variables not in this table keep the older convention: a value that does not parse leaves the default in place.
+At boot the error is the `err` field of an `ERROR` line with the message `config: load failed`, and the process exits. Fix the value or remove the line. A value that is empty or only whitespace is unset for every row of the table. That is a change for `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` and `LOOMCYCLE_RUN_RATE_PER_MINUTE`, which used to stop the boot on a value of only spaces: such a line now sets no cap and no rate, as an empty one does. Variables not in this table keep the older convention: a value that does not parse leaves the default in place.
 
 ## 9. Status of this guide
 

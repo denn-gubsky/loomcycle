@@ -234,6 +234,28 @@ reference is the `LOOMCYCLE_ACL` row in
 - **Upgrade:** bump the image tag → new binary → refreshed embedded presets
   automatically; your form answers / overlay persist. Run `migrate up` (or leave
   auto-migrate on) if the new version bumped the Postgres schema.
+- **Existing installs, upgrading to the release that moved settings to the yaml:**
+  the compose and the wizard no longer pass `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`,
+  `LOOMCYCLE_METRICS_ENABLED` or `LOOMCYCLE_METRICS_COLLECT_SYSTEM`, and the runtime
+  no longer reads them. An overlay written for an older release has neither
+  setting, so add both to the `loomcycle.yaml` on the config dataset **before** you
+  start the new image:
+
+  ```yaml
+  metrics:
+    enabled: true
+    collect_system: true
+
+  providers:
+    ollama-local:
+      options:
+        num_gpu: 99        # leave the key out to let Ollama decide
+  ```
+
+  With a refreshed compose and the old overlay the app starts with the metrics
+  sampler off and no forced GPU offload, and logs nothing about it. With the old
+  compose the app does not start, and the boot log names the three variables and
+  the yaml key each needs. See [`SETTINGS_MIGRATION.md`](SETTINGS_MIGRATION.md).
 - **Operator tokens minted with no pepper** (by a release before v1.119.0, or
   while `LOOMCYCLE_SECRET_KEY` was unset) are refused until rewrapped. The boot log names
   them; review and rewrap inside the running container, which already has the

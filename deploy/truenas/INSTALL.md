@@ -81,8 +81,9 @@ chown -R 65532:65532 /mnt/APPS2/loomcycle
 
 ## Phase 3 — The config overlay
 
-The presets supply the provider matrix; this overlay supplies only the agent
-Volumes. Create `/mnt/APPS2/loomcycle/config/loomcycle.yaml` (copy
+The presets supply the provider matrix; this overlay supplies the agent
+Volumes, the metrics sampler and the local GPU offload. Create
+`/mnt/APPS2/loomcycle/config/loomcycle.yaml` (copy
 [`loomcycle.overlay.example.yaml`](loomcycle.overlay.example.yaml)):
 
 ```yaml
@@ -95,6 +96,15 @@ volumes:
     path: /mnt/dynamic    # runtime-made volumes, incl. each run's inbox
     mode: rw
     dynamic_root: true
+
+metrics:                  # process metrics sampler (the Web UI's activity page)
+  enabled: true
+  collect_system: true
+
+providers:
+  ollama-local:
+    options:
+      num_gpu: 99         # force GPU offload; leave out to let Ollama decide
 ```
 
 ## Phase 4 — Secrets & the secure env file
@@ -301,6 +311,40 @@ docker exec <loomcycle-container> /usr/local/bin/loomcycle tokens rewrap --def-i
 The container already carries the server's env and config, so the command sees the
 same database and pepper. It is safe while the server runs. A row you never minted
 was written into the database: retire it instead.
+
+**Existing installs, upgrading to the release that moved settings to the yaml:**
+the compose no longer passes `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`,
+`LOOMCYCLE_METRICS_ENABLED` or `LOOMCYCLE_METRICS_COLLECT_SYSTEM`; the runtime
+no longer reads them. Both settings are in the config overlay now, and an
+overlay written for an older release has neither. Add this to
+`/mnt/APPS2/loomcycle/config/loomcycle.yaml`, next to your `volumes:` block,
+**before** you start the new image:
+
+```yaml
+metrics:
+  enabled: true
+  collect_system: true
+
+providers:
+  ollama-local:
+    options:
+      num_gpu: 99        # leave the key out to let Ollama decide
+```
+
+What happens if you skip it depends on the compose:
+
+- **You refreshed the compose and kept your overlay.** The app starts. The
+  metrics sampler is off (the Web UI's activity page stays empty) and local models
+  run on whatever Ollama picks, often the CPU. Nothing is logged, because the
+  variables are gone.
+- **You kept the old compose.** The app does not start. The boot log names
+  `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`, `LOOMCYCLE_METRICS_ENABLED` and
+  `LOOMCYCLE_METRICS_COLLECT_SYSTEM` and the yaml key each one needs. Add the block above,
+  then take the three lines out of the compose (or refresh it from
+  [`docker-compose.yaml`](docker-compose.yaml)).
+
+`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` stays in the compose. The full list of moved
+settings is in [`docs/SETTINGS_MIGRATION.md`](../../docs/SETTINGS_MIGRATION.md).
 
 **Upgrading to v1.122.0 or newer:** migration 0109 adds the access-control tables
 (the `loomcycle-migrate` step applies it). The overlay needs the `dynamic` volume

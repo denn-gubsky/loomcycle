@@ -688,7 +688,7 @@ timeout_scaling:
 
 A model's `decode_tps` / `multiplier` (at most one) is a starting estimate, used only until the model has `min_samples` calls. Its `max_multiplier` is a **bound**, not an estimate: it replaces the global cap for that model at every sample count — both the clip on each sample and the clamp on the multiplier — so a model you know runs ~20× slower than the reference (a few tokens/s on a small box) can be measured as 20× instead of saturating at the global 8. It must be between 1 and 100, the same ceiling as the global `max_multiplier`, so every scaled budget stays bounded; a `multiplier` beside it must not exceed it. The routing view's `throughput` block and `Context op=self` `timeouts` report the cap in effect as `max_multiplier`. (When timeouts are scaled in a later version, the per-purpose clamps — e.g. a tighter one for scheduler fires — still apply on top of this cap.)
 
-The block is the only source: the `LOOMCYCLE_TIMEOUT_SCALING*` variables that used to override it are no longer read (one still set is reported at boot). A change to the block needs a restart (a reload reports it `restart_required`).
+The block is the only source: the `LOOMCYCLE_TIMEOUT_SCALING*` variables that used to override it are no longer read. One still set is reported at boot, and stops the boot when it is set to something other than the default (`off`, a reference speed other than `100`, a multiplier other than `8`) while the yaml does not name its key. A change to the block needs a restart (a reload reports it `restart_required`).
 
 ### Compaction — tune it for the prefill cost
 
@@ -874,7 +874,7 @@ tiers:
 - **Keyless** endpoints omit `api_key_env` — declaring the provider *is* the opt-in.
 - **A vendor's key goes only to that vendor.** On the `openai`, `anthropic`, `gemini`, `deepseek` and `ollama` drivers, a provider that names no `api_key_env` is keyed by the vendor's key name (`OPENAI_API_KEY`, …: a tenant's own stored credential of that name) only while its `base_url` is unset or the vendor's own API host (`api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`, `api.deepseek.com`, `ollama.com`; scheme, host and port must match, the path does not count). At any other host it gets no key name: no tenant credential is looked up and the call carries no key. A proxy or gateway that needs the vendor key (Azure, an OpenAI-compatible gateway, a regional host) names it: `api_key_env: OPENAI_API_KEY`. The built-in ids (`openai`, …) already name theirs, so re-pointing one keeps its key. `vllm` and `llamacpp` keep `VLLM_API_KEY` / `LLAMACPP_API_KEY`, which are those servers' own.
 - Operator entries **deep-merge over** the built-ins, so you can also override a built-in (re-point `ollama-local`'s `base_url`, add a `max_concurrent`) without restating it. `LOOMCYCLE_NO_DEFAULT_PROVIDERS=1` drops the built-ins and declares only your own.
-- **Per-provider stream timeouts in YAML** — `options: { header_timeout_ms: 600000, idle_timeout_ms: 600000 }` on any `providers:` entry tunes that provider's first-token and idle windows (a slow local backend's cold model load can exceed the global 60s/90s default). The timeouts are set here only; the `LOOMCYCLE_OLLAMA_LOCAL_*_TIMEOUT_MS` and `LOOMCYCLE_PROVIDER_*_TIMEOUT_MS` variables are no longer read.
+- **Per-provider stream timeouts in YAML** — `options: { header_timeout_ms: 600000, idle_timeout_ms: 600000 }` on any `providers:` entry tunes that provider's first-token and idle windows (a slow local backend's cold model load can exceed the global 60s/90s default). The timeouts are set here only; the `LOOMCYCLE_OLLAMA_LOCAL_*_TIMEOUT_MS` and `LOOMCYCLE_PROVIDER_*_TIMEOUT_MS` variables are no longer read. One still set to a positive number other than the default (raised or lowered) stops the boot until the option is in the yaml: on `ollama-local` for the local pair, and for the global pair on every declared provider that is registered (its key variable is set, or it names none) other than `ollama-local`, `code-js` and the mock provider; the refusal lists the provider ids that lack it. The `anthropic-oauth-dev` provider has no options and always waits 60 s and 90 s.
 - **Advertise a local model's window.** vLLM (`--max-model-len`) and llama.cpp (`-c`) fix the context window at server launch — there is no per-request `num_ctx` for them. Set `capabilities: { max_context_tokens: <window> }` on the provider entry so loomcycle's compaction budget, the context gauge, and `Context op=self` match the served window (otherwise it advertises the openai default and can over-claim → truncation). The **`local` preset** (`LOOMCYCLE_PRESETS=base,local`) ships `vllm-local` / `llamacpp-local` templates carrying exactly these settings, commented out, to copy into your own config (`providers:` line included) — `loomcycle presets show local`.
 
 **Per-provider concurrency (`max_concurrent`)** caps the model **calls** in flight to one provider, not its runs: a slot is taken just before a call and given back when the response ends, so nothing is held while a run executes a tool, awaits a sub-agent or waits for its operator. Calls over the cap queue inside loomcycle and never time out, and every call is counted — sub-agents, interactive runs, compaction, the LLM gateway. Its point is a **local model on one GPU**: with `ollama-local: { driver: ollama, max_concurrent: 2 }` the host computes two requests at a time and the agents waiting take turns call by call. Leave cloud providers uncapped.
@@ -1869,7 +1869,7 @@ auth:
     paste: { kind: token, label: "Access token" }
 ```
 
-- **`auth.login_origins`** is a list of the first-party origins the login page may take a bearer from over `postMessage` (a landing page that mints tokens: `login_origins: ["https://landing.example"]`). Empty, the default, leaves the receiver off, so no page can hand the login page a token. It is offered in token mode only. The yaml is the only source: `LOOMCYCLE_UI_LOGIN_ORIGINS` is no longer read, and stops the boot if it names an origin the yaml does not list.
+- **`auth.login_origins`** is a list of the first-party origins the login page may take a bearer from over `postMessage` (a landing page that mints tokens: `login_origins: ["https://landing.example"]`). Empty, the default, leaves the receiver off, so no page can hand the login page a token. It is offered in token mode only. One origin per list item: an item holding a comma or a space stops the load. The yaml is the only source: `LOOMCYCLE_UI_LOGIN_ORIGINS` is no longer read, and stops the boot if it lists an origin while the yaml does not name `auth.login_origins`.
 - **`auth.mode: token`** (the upgrade default) is today's behaviour: the login page offers the token paste box (and the `auth.login_origins` postMessage handoff) whether or not gates are listed; listing a gate never switches the mode. A browser still holding the old `loomcycle_session` bearer cookie keeps working **for this release only** (logged); signing in again moves it to a session.
 - **`auth.mode: strict`** offers only the listed gates. The paste box exists only if a `kind: token` gate is listed, the handoff is off, the old bearer cookie and the WebSocket subprotocol bearer are not read, and Web UI sessions need HTTPS (see below). Strict mode with no interactive gate fails the load (nobody could sign in); strict mode with no credential at all refuses to boot. A config reload cannot lower the mode (audited `auth_downgrade_refused`); that takes a restart. API bearers are unaffected.
 - **Gates.** `kind: token` (paste a loomcycle token), `kind: password` (a login and password loomcycle keeps — see [Password gate](#password-gate--kind-password-rfc-fa-p2)), `kind: oidc` (sign in with an identity provider — see [OIDC gate](#oidc-gate--kind-oidc-rfc-fa-p1)), `kind: oauth` (GitHub, GitLab, Gitea or a generic OAuth provider — see [OAuth gate](#oauth-gate--kind-oauth-rfc-fa-p5)), `kind: external` (a separate process, such as a chat bridge, that signs who it is talking to — see [External gate](#external-gate--kind-external-rfc-fa-p4)), `kind: header` (a signed assertion from a proxy in front: Cloudflare Access, an AWS ALB, a forward-auth proxy) `kind: awsiam` (AWS workloads, API tokens only) — see [Header and AWS IAM gates](#header-and-aws-iam-gates--kind-header-kind-awsiam-rfc-fa-p3), `kind: device` (device login for the CLI), `kind: passkey` (a password-less passkey sign-in — see [Passkeys](#passkeys--second-factor-and-kind-passkey-rfc-fa-p6)) and `kind: scim` (an identity provider's SCIM provisioning, never a sign-in — see [SCIM 2.0](#scim-20-provisioning--kind-scim-rfc-fa-p6)). A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
@@ -2349,16 +2349,16 @@ These are the settings that have both forms:
 | Yaml key | Variable | When both are set |
 |---|---|---|
 | `storage.pg_dsn`, `storage.pg_max_open_conns`, `storage.pg_min_idle_conns` | `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_PG_MAX_OPEN_CONNS`, `LOOMCYCLE_PG_MIN_IDLE_CONNS` | the variable |
-| `storage.pg_automigrate` | `LOOMCYCLE_PG_AUTOMIGRATE` | the variable: `1` on, `0` off |
+| `storage.pg_automigrate` | `LOOMCYCLE_PG_AUTOMIGRATE` | the variable: `1` on, `0` off; any other non-empty value stops the load |
 | `storage.sqlmem_root`, `sqlmem_pg_dsn`, `sqlmem_quota_bytes`, `sqlmem_audit_mode`, `sqlmem_scope_ttl_ms`, `sqlmem_total_max_bytes`, `sqlmem_shared_schemas` | the `LOOMCYCLE_SQLMEM_*` variable of the same name | the variable |
 | `providers.ollama-local.options.num_ctx` | `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` | the variable; boot reports it when the two differ |
-| `auth.mode` | `LOOMCYCLE_AUTH_MODE` | the stricter of the two; boot logs which one decided when they differ |
+| `auth.mode` | `LOOMCYCLE_AUTH_MODE` | the stricter of the two; an advisory (boot, `validate`, `doctor`, reload) says which one decided when they differ, and `validate` prints the mode in force with its source |
 
 A variable that is empty is not set. For the numeric ones above, neither is a value that is not a number: the yaml's value (or the default) stays.
 
 One exception remains: a provider's endpoint. A yaml `providers.<id>.base_url` is used in place of that provider's variable (`OLLAMA_BASE_URL`, `OLLAMA_CLOUD_BASE_URL`, `DEEPSEEK_BASE_URL`, `GEMINI_BASE_URL`), which only supplies the endpoint when the yaml names none.
 
-Everything else has one home. The settings that used to have a variable beside a yaml key (retention, provider options, timeout scaling, concurrency, the embedder limits, the two `hooks:` lists) are yaml-only now; a variable for one of them that is still set is reported at boot, and stops the boot when ignoring it would loosen the deployment.
+Everything else has one home. The settings that used to have a variable beside a yaml key (retention, provider options, timeout scaling, concurrency, the embedder limits, the two `hooks:` lists) are yaml-only now; a variable for one of them that is still set is reported at boot, and stops the boot when it is set to something other than the default while the yaml does not name its key (the two `hooks:` lists: when it names an entry the yaml list lacks). [`SETTINGS_MIGRATION.md`](SETTINGS_MIGRATION.md) has the rule and the per-variable table.
 
 **Secrets at rest (F32).** Two mechanisms keep resolved credentials out of the on-disk state:
 
@@ -2658,11 +2658,29 @@ layers every `*.yaml` in the directory.
 
 **The CLI loads what the server loads.** `loomcycle validate`, `doctor`,
 `agents list`, `migrate --config`, `tokens` and `audit` assemble their stack with
-the same function the server boots and reloads with: presets, the config dir, a
-named file, section files and the `auth.env` beside the last file. With no file
-named (`loomcycle validate`, `loomcycle doctor`) they load what a bare
-`loomcycle` would: the auto-discovered file, or the presets and config dir alone.
-A file named explicitly must exist, as at boot.
+the same function the server boots and reloads with: presets, the config dir, the
+named files, section files and the `auth.env` beside the last file. `--config` is
+repeatable in each (and `validate` takes several paths), layered in the order
+given, as the server's own flag is. With no file named (`loomcycle validate`,
+`loomcycle doctor`, `loomcycle agents list`) they load what a bare `loomcycle`
+would: the auto-discovered file, or the presets and config dir alone. A file
+named explicitly must exist, as at boot. Each says which layers it loaded.
+
+Three exceptions:
+
+- `loomcycle hash agent --config <file>` reads that one file, with no presets,
+  config dir, section files or `auth.env`.
+- `memory-calibrate`, `memory-eval-live` and `memory-eval-judge` use the same
+  assembly without the auto-discovery: presets, the config dir and the files
+  named with `--config`. They measure what ships, so a `loomcycle.yaml` that
+  happens to be in the working directory is not loaded unless it is named.
+- `tokens rewrap`, `audit verify` and `migrate` load the same stack, but warn
+  where the server would refuse to start over a retired variable or a bad value
+  in a variable they do not read, so that they still run when the server will
+  not. A `LOOMCYCLE_PG_AUTOMIGRATE` that is neither `1` nor `0` is a warning
+  for them too, and is read as `0`: they do not migrate the schema under a
+  value they cannot read. They stop, as the server does, on anything about
+  which store is opened.
 
 This pairs with runtime reload: edit a section file present at boot and
 `POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
@@ -3339,7 +3357,10 @@ under the configured method refits it back.
   `POST /v1/_document/project` answers 409.
 - **`interval`** (a Go duration, e.g. `1h`) is how often the sweeper runs;
   unset or `0` keeps the projection on with no sweeper. The block is the only
-  source: `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` is no longer read.
+  source: `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` is no longer read, and set to
+  a positive interval it stops the boot until the yaml names both
+  `memory.projection.interval` and `memory.projection.enabled` (the variable
+  also turned the projection on).
 - **Needs** SQL Memory, a vector index (Postgres with pgvector) and
   `memory.embedder`. On plain sqlite there are no vectors to place: the block
   stays empty and the operator pass reports `unsupported`.
@@ -3365,7 +3386,7 @@ The run limits are the yaml `concurrency:` block and have no variables: `max_con
 |---|---|---|
 | `LOOMCYCLE_PG_MAX_OPEN_CONNS` | `32` | Postgres pool size. |
 | `LOOMCYCLE_PG_MIN_IDLE_CONNS` | `4` | Warm idle connections kept in the Postgres pool. |
-| `LOOMCYCLE_PG_AUTOMIGRATE` | off | `1` applies pending Postgres schema migrations at boot. Off, boot refuses a database behind the binary's migrations until `loomcycle migrate up` runs. It wins over the yaml's `storage.pg_automigrate` both ways: `0` keeps it off under `pg_automigrate: true`. |
+| `LOOMCYCLE_PG_AUTOMIGRATE` | off | `1` applies pending Postgres schema migrations at boot. Off, boot refuses a database behind the binary's migrations until `loomcycle migrate up` runs. It wins over the yaml's `storage.pg_automigrate` both ways: `0` keeps it off under `pg_automigrate: true`. The value is `1` or `0` (spaces around it do not count); anything else, `true` and `false` included, stops the load. Empty or unset leaves the yaml's value. |
 | `LOOMCYCLE_REPLICA_ID` | unset | Turns on cluster mode and names this replica; also labels the Prometheus metrics. See [MULTI-REPLICA.md](MULTI-REPLICA.md). |
 | `LOOMCYCLE_REPLICAS_STALE_AFTER_MS` | `90000` | A replica whose heartbeat is older than this is presumed dead: its in-flight runs fail with `replica_died` and its quota is reclaimed. Keep it well above the 30 s heartbeat. |
 | `LOOMCYCLE_HEARTBEAT_STALE_MS` | `600000` | A run with no heartbeat for this long is swept. Keep it at least twice a slow iteration (a long tool call). |
@@ -3526,7 +3547,7 @@ Overrides of the `storage:` SQL Memory settings (the variable wins; see [which o
 
 ### Retention and usage
 
-What the runtime deletes with age is set in the yaml `retention:` block, not in the environment: see [9m](#9m-retention--what-is-deleted-with-age-retention). The `LOOMCYCLE_RETENTION_*` variables, `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` and `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` are no longer read. So is `LOOMCYCLE_RETENTION_ENABLED`: the switch is `retention.enabled`. One that is still set is reported at boot, and stops the boot when the yaml does not give the same switch, mode, age, kept-version count or export directory, because the deployment would otherwise keep or delete data differently from before.
+What the runtime deletes with age is set in the yaml `retention:` block, not in the environment: see [9m](#9m-retention--what-is-deleted-with-age-retention). The `LOOMCYCLE_RETENTION_*` variables, `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` and `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` are no longer read. So is `LOOMCYCLE_RETENTION_ENABLED`: the switch is `retention.enabled`. One that is still set is reported at boot. `LOOMCYCLE_RETENTION_ENABLED` stops the boot when it disagrees with `retention.enabled`. Beside `LOOMCYCLE_RETENTION_ENABLED=1`, a family mode, age, kept-version count, export directory or interval set to something other than its default stops the boot while the yaml does not name its key, because the deployment would otherwise keep or delete data differently from before; without it the sweeper never ran and the variable is only reported. The usage-detail age is judged the same way whatever the switch, and the trace age while `LOOMCYCLE_MEMORY_TRACE_INDEX` is on.
 
 ### Observability
 
@@ -4019,15 +4040,17 @@ retention:
     max_age: 30d
 ```
 
+The `retention:` block is read at start: a config reload reports it as `restart_required` and changes no running sweeper. `GET /v1/_retention` (and the retention entry of `GET /v1/config`) describe the sweeper as it runs, and the report carries `"pending_restart": true` while the yaml asks for something else. The one exception is `retention.trace.max_age`, which the trace index reads at each write, so a reload applies it to the turns indexed from then on.
+
 `retention.enabled: true` starts the retention sweeper; a family's `mode` says what it deletes. Neither does anything alone: a mode with `enabled` not true deletes nothing (the load says so in an advisory), and `enabled` with every family off runs a sweeper with nothing to do.
 
-Each family's `mode` is `off` (the default), `prune` or `export+prune`; any other value stops the load. `export+prune` writes what it is about to delete under `export_dir`, and a family in that mode with no `export_dir` deletes nothing. A family whose mode deletes must set `max_age`, or the load stops: with no minimum age the first sweep deletes everything eligible (every finished unpinned chat, for `chats`), so that has to be written as an explicit `max_age: 0s`.
+Each family's `mode` is `off` (the default), `prune` or `export+prune`; any other value stops the load. `export+prune` writes what it is about to delete under `export_dir` and then deletes it. That holds for `defs` (each version as JSON), `chats` (each session with its runs and events; chats of `internal:` agents and sessions marked no-trace are deleted without a copy), `mem` (each facet of the retired agent's memory) and `empty_dossier` (the dossier's record). One of those four in that mode with no `export_dir` deletes nothing. `mem_content` has no export: its mode is `off` or `prune`, and `export+prune` stops the load, because it would delete and write no copy. A family whose mode deletes must set `max_age`, or the load stops: with no minimum age the first sweep deletes everything eligible (every finished unpinned chat, for `chats`), so that has to be written as an explicit `max_age: 0s`.
 
 | Key | Default | Effect |
 |---|---|---|
 | `retention.enabled` | `false` | Starts the retention sweeper. |
 | `retention.interval` | `1h` | How often the retention sweeper runs. |
-| `retention.export_dir` | none | Where `export+prune` writes what it deletes. |
+| `retention.export_dir` | none | Where `export+prune` writes what `defs`, `chats`, `mem` and `empty_dossier` delete. |
 | `retention.defs.mode` | `off` | Prunes old versions of substrate definitions. |
 | `retention.defs.max_age` | required when the mode deletes | Only versions older than this are eligible; `0s` = any age. |
 | `retention.defs.keep_last_n` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
@@ -4035,7 +4058,7 @@ Each family's `mode` is `off` (the default), `prune` or `export+prune`; any othe
 | `retention.chats.max_age` | required when the mode deletes | A session whose runs all finished longer ago than this is eligible; `0s` = every finished unpinned session. |
 | `retention.mem.mode` | `off` | Reclaims the memory of fully retired agents. |
 | `retention.mem.max_age` | required when the mode deletes | Only agents whose last definition change is older than this. |
-| `retention.mem_content.mode` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). |
+| `retention.mem_content.mode` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). `off` or `prune` only: this family has no export. |
 | `retention.mem_content.max_age` | required when the mode deletes | Only content retired longer ago than this. |
 | `retention.empty_dossier.mode` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
 | `retention.empty_dossier.max_age` | required when the mode deletes | Only dossiers untouched longer than this. |
