@@ -279,7 +279,7 @@ in one transaction.
 | Env | yaml (`storage:`) | Meaning |
 |---|---|---|
 | `LOOMCYCLE_SQLMEM_ENABLED=1` | `sqlmem_enabled` | turn the subsystem on (off by default) |
-| — | `sqlmem_root` | sqlite tier: parent dir for `.db` files (default `<DataDir>/sqlmem`) |
+| `LOOMCYCLE_SQLMEM_ROOT` | `sqlmem_root` | sqlite tier: parent dir for `.db` files (default `<DataDir>/sqlmem`) |
 | `LOOMCYCLE_SQLMEM_PG_DSN` | `sqlmem_pg_dsn` | **postgres tier: the SEPARATE aux-DB DSN (required on the postgres backend)** |
 | `LOOMCYCLE_SQLMEM_QUOTA_BYTES` | `sqlmem_quota_bytes` | per-scope size cap (0 = none); per-agent `sql_quota_bytes` overrides |
 | — | `sqlmem_statement_timeout_ms` | per-statement timeout (default 30000) |

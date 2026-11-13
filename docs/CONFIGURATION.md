@@ -3461,6 +3461,7 @@ Overrides of the `storage:` SQL Memory settings; see [SQL_MEMORY.md](SQL_MEMORY.
 
 | Variable | Default | Effect |
 |---|---|---|
+| `LOOMCYCLE_SQLMEM_ROOT` | `<data dir>/sqlmem` | Directory of the per-scope sqlite files. |
 | `LOOMCYCLE_SQLMEM_PG_DSN` | — | Separate database DSN for the Postgres tier (required with a Postgres store). A secret: never interpolated into config. |
 | `LOOMCYCLE_SQLMEM_QUOTA_BYTES` | `0` | Size cap of one scope file; an agent's `sql_quota_bytes` overrides it. `0` = none. |
 | `LOOMCYCLE_SQLMEM_AUDIT_MODE` | `full` | `full` records the redacted statement in the audit; `metadata` records only op, scope and row counts. |

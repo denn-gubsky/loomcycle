@@ -416,7 +416,7 @@ type StorageConfig struct {
 	// LOOMCYCLE_SQLMEM_ENABLED=1.
 	SqlMemEnabled bool `yaml:"sqlmem_enabled"`
 	// SqlMemRoot is the parent dir for per-scope .db files. Empty defaults
-	// to <DataDir>/sqlmem.
+	// to <DataDir>/sqlmem. Env: LOOMCYCLE_SQLMEM_ROOT.
 	SqlMemRoot string `yaml:"sqlmem_root"`
 	// SqlMemQuotaBytes caps a single scope file's on-disk size (checked
 	// before each write). 0 = no quota. Per-agent sql_quota_bytes overrides
@@ -5320,6 +5320,11 @@ func applyEnvSQLMem(cfg *Config) {
 	// RFC AA SQL Memory (Phase 1). Off by default; env overrides yaml.
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_ENABLED"); v == "1" {
 		cfg.Storage.SqlMemEnabled = true
+	}
+	// A path of this host, like the data dir: it stays an env setting so one
+	// yaml serves hosts that keep their scope files in different places.
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_ROOT"); v != "" {
+		cfg.Storage.SqlMemRoot = v
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_QUOTA_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
