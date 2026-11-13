@@ -23,6 +23,12 @@ import (
 // name, a schedule's included. tools is the list after the
 // privileged-tool strip, which is what is stored.
 func CheckRegisteredAgent(ctx context.Context, cfg *config.Config, st store.Store, req connector.RegisterAgentRequest, toolNames []string) error {
+	// A registered agent's prompt is authored here, so it is held to the
+	// {{help:<topic>}} rule every authored prompt is — on the operator plane
+	// too, since it is a question of what renders, not of authority.
+	if err := config.ValidateHelpPlaceholders(req.SystemPrompt); err != nil {
+		return fmt.Errorf("system_prompt: %w", err)
+	}
 	p, ok := auth.PrincipalFromContext(ctx)
 	ctx = tools.WithCallerTier(ctx, tools.TierForPrincipal(p, ok, p.TenantID))
 	if tools.IsOperatorPlane(ctx) {

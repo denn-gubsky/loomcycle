@@ -1,13 +1,13 @@
 ---
 name: system-prompt-placeholders
-description: The system-prompt expansion families — {{memory:<variant>}} and {{memory:key|search:<arg>}} for stored memory, {{tool:<Tool>.<op>}} and {{tool:WebFetch|WebSearch:<arg>}} for the framed result of a tool call, and {{identity}} for the person the run acts for, expanded at run start. Closed sets validated at config load; the argument forms need an operator-written definition; a leading backslash escapes.
+description: The system-prompt expansion families — {{memory:<variant>}} and {{memory:key|search:<arg>}} for stored memory, {{tool:<Tool>.<op>}} and {{tool:WebFetch|WebSearch:<arg>}} for the framed result of a tool call, {{identity}} for the person the run acts for, and {{help:<topic>}} for a help article's call examples, expanded at run start. Closed sets validated at config load; the argument forms need an operator-written definition; a leading backslash escapes.
 ---
 An agent's `system_prompt` may contain **placeholders** that the server expands
-at run start, before the first model call. There are two families, both CLOSED
-sets — a stray `{{...}}` cannot turn a prompt into an arbitrary code path, and a
-name outside the set fails config load rather than silently rendering nothing.
+at run start, before the first model call. Every family is a CLOSED set — a
+stray `{{...}}` cannot turn a prompt into an arbitrary code path, and a name
+outside the set fails config load rather than silently rendering nothing.
 
-Each family has a no-argument form, which any definition may use, and an
+The `{{memory:…}}` and `{{tool:…}}` families each have a no-argument form, which any definition may use, and an
 ARGUMENT form (a second colon), which only a definition an **operator** wrote
 may use. See "Who may use the argument forms" below.
 
@@ -197,6 +197,54 @@ This is a snapshot from the start of the run. Ask the Context tool (op=can) for 
   rest); the block is exempt from the memory budget for that reason.
 - Any definition may use it. In a team node's `system` / `input` template it
   renders nothing, like the memory variants.
+
+## `{{help:<topic>}}` — call examples from a help article
+
+Expands to the call examples of one help article, one line per call, in the
+form a prompt's call card uses — the tool name, then the arguments:
+
+```yaml
+agents:
+  searcher:
+    tools: [Document]
+    system_prompt: |
+      Search the tenant's documents. Calls look like this:
+      {{help:Document/search}}
+```
+
+renders as, in place of the placeholder:
+
+```
+Document {"op":"search","query":"how do we roll back a failed database migration"}
+Document {"op":"search","query":"minimum capital requirement","scope":"tenant","under_path":"/qg/norms",...}
+...
+```
+
+- The topic is a name the help index uses: an operation article
+  `<Tool>/<op>` (`Document/search`, `Path/ls`), a tool article (`Decision`),
+  or a topic (`scopes`). Any spelling `Context op=help` accepts for a
+  built-in topic works too: another case, an alias, or `.` or a space as the
+  operation separator (`{{help:Document.search}}`). Every call example under
+  the article's `## Examples` heading renders; the results shown there and the
+  prose around them do not. To show only some calls, write them by hand
+  instead.
+- The examples are the ones built into the server and checked against each
+  tool's input schema, so the call card follows the tool when it changes. Only
+  built-in topics can be named: a topic added through the operator's help
+  directory cannot, and overriding a built-in topic there does not change what
+  renders.
+- A topic the server does not have, a topic with no call examples, or a
+  malformed placeholder (`{{help:../x}}`, or a `{{help:` that never closes)
+  is refused where the prompt is written — config load, AgentDef create and
+  fork, register_agent, and a team's `system_prompt` and `input_template` —
+  with the placeholder named. A definition already stored is never refused
+  over it: if a later server drops the topic, the placeholder renders nothing.
+- It is not framed as data: the lines are meant to be copied into calls.
+- Budget: 8 KiB of examples per prompt text, counting each placeholder. The
+  agent's system prompt and each team template are expanded separately, so
+  each has its own 8 KiB. A text over it is refused where it is written.
+- Any definition may use it, and a team node's templates too. It reads no
+  store and calls no tool.
 
 ## Shared rules
 

@@ -53,6 +53,13 @@ What is directly under `/docs` in the tenant-shared tree:
   {"name": "specs", "kind": "directory", "full_path": "/docs/specs"}]}
 ```
 
+The same folder with the summary of each document and sub-folder in it, to
+choose which to open:
+
+```json
+{"op": "ls", "path": "/docs", "scope": "tenant", "with_summary": true, "limit": 100}
+```
+
 Every document anywhere in this agent's tree, 100 at a time:
 
 ```json
