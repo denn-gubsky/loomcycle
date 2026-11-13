@@ -221,7 +221,6 @@ agents:
 // The summary says which sign-in mode is in force and which plane made it
 // so: the yaml and the environment can each ask for one.
 func TestRunValidate_PrintsTheEffectiveAuthMode(t *testing.T) {
-	path := writeTempConfig(t, minimalConfigYAML)
 	for env, want := range map[string]string{
 		"":       "Auth mode        : token (default)",
 		"strict": "Auth mode        : strict (from LOOMCYCLE_AUTH_MODE)",
@@ -231,11 +230,13 @@ func TestRunValidate_PrintsTheEffectiveAuthMode(t *testing.T) {
 		t.Setenv("LOOMCYCLE_SECRET_KEY", "c2NyYXRjaC1ub3QtYS1zZWNyZXQtMDEyMzQ1Njc4OWFi")
 		var stdout, stderr bytes.Buffer
 		// Strict with no gate is refused; the summary matters where it loads.
+		// Each case writes its own file: a map is walked in no fixed order,
+		// and the strict case's yaml names auth.mode.
 		body := minimalConfigYAML
 		if env == "strict" {
 			body += "\nauth:\n  mode: token\n  gates:\n    paste: {kind: token}\n"
-			path = writeTempConfig(t, body)
 		}
+		path := writeTempConfig(t, body)
 		if rc := RunValidate([]string{path}, &stdout, &stderr); rc != 0 {
 			t.Fatalf("env=%q: rc=%d stderr=%q", env, rc, stderr.String())
 		}
