@@ -327,3 +327,29 @@ func TestVision_JunkPrefixedProgressiveJPEGRefusedBeforeDecoding(t *testing.T) {
 		t.Fatalf("err = %v, decoded %d times; want a refusal before decoding", err, d.calls.Load())
 	}
 }
+
+// fakeImages records the images handed to an injected re-encoder.
+type fakeImages struct{ calls atomic.Int32 }
+
+func (f *fakeImages) ReencodeImage(_ context.Context, data []byte) ([]byte, string, error) {
+	f.calls.Add(1)
+	return data, "image/png", nil
+}
+
+// An injected re-encoder (a conversion worker pool, RFC GO) gets every image
+// that must be scaled, and the engine's own decoder none; an image sent as it
+// is reaches neither.
+func TestVision_InjectedReencoderTakesTheScaling(t *testing.T) {
+	d := &countingDecoder{}
+	e, plan := countingEngine(t, d)
+	f := &fakeImages{}
+	e.images = f
+	for _, side := range []int{800, MaxImageEdge + 200} {
+		if _, err := e.OCR(context.Background(), plan, imageUnit(t, pngOf(t, side, 100), "image/png"), transcribe.OCROptions{Prompt: "x", MaxTokens: 10}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.calls.Load() != 1 || d.calls.Load() != 0 {
+		t.Fatalf("injected re-encoder called %d times, own decoder %d; want 1 and 0", f.calls.Load(), d.calls.Load())
+	}
+}

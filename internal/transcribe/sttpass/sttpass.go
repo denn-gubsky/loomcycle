@@ -15,20 +15,16 @@ package sttpass
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe"
-	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/media"
 )
 
@@ -63,6 +59,9 @@ type Deps struct {
 	// folder in; the converter is fenced to it. It is asked only when a
 	// recording is converted.
 	Scratch func(ctx context.Context) (string, error)
+	// Convert, when set, converts recordings instead of the media helper run
+	// in this process (RFC GO); Config.Media and Scratch then go unused.
+	Convert convert.Client
 	// Slot, when set, is taken before each engine request and released after
 	// it, so a caller can bound how many requests reach the engine at once.
 	// An error (the caller gave up waiting) stops the pass like a failed
@@ -258,7 +257,7 @@ func Run(ctx context.Context, d Deps, plan Plan, src io.ReaderAt, opts transcrib
 			pass.CapErr = err
 			return pass
 		}
-		conv, cleanup, err := convert(ctx, d, src, plan.size, plan.MediaType, opts.Language)
+		conv, cleanup, err := convertRecording(ctx, d, src, plan.size, plan.MediaType, opts.Language)
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -497,132 +496,45 @@ func roundMin(d time.Duration) string {
 // ---- conversion ----
 
 type converted struct {
-	file *os.File
+	file convert.Spool
 	info media.Info
 }
 
-// convert has the operator's media helper write the recording as a WAV in a
-// scratch folder under the caller's scratch directory, and opens that WAV.
-// The helper gets a copy of the recording in the scratch folder, never the
-// original's path; it runs without a shell, with a scrubbed environment,
-// under transcription.stt.timeout_s. Every file operation goes through an
-// os.Root. cleanup closes the WAV and removes the folder.
-func convert(ctx context.Context, d Deps, src io.ReaderAt, size int64, mt, language string) (converted, func(), error) {
-	op := d.Config
-	if op == nil || op.Media == nil {
-		return converted{}, nil, errors.New("set transcription.stt.media.command to convert recordings")
+// converter is the client a conversion runs on: the one the caller gave, or
+// the operator's media helper run in this process, in a scratch folder under
+// the caller's scratch directory.
+func (d Deps) converter() convert.Client {
+	if d.Convert != nil {
+		return d.Convert
 	}
+	p := &convert.InProcess{Scratch: d.Scratch}
+	if d.Config != nil && d.Config.Media != nil {
+		p.Media = &convert.Helper{Key: "transcription.stt.media", Command: d.Config.Media.Command, Wrapper: d.Config.Media.Wrapper,
+			Timeout: time.Duration(d.Config.TimeoutSeconds) * time.Second}
+	}
+	return p
+}
+
+// convertRecording has the recording converted to a WAV and checks what came back is
+// one. The converter is handed the recording's bytes, never its path; in this
+// process it gets a copy in a scratch folder and runs without a shell, with a
+// scrubbed environment, under transcription.stt.timeout_s. cleanup closes the
+// WAV and removes what holds it.
+func convertRecording(ctx context.Context, d Deps, src io.ReaderAt, size int64, mt, language string) (converted, func(), error) {
 	if size > MaxSource {
 		return converted{}, nil, fmt.Errorf("the recording is over %d bytes", int64(MaxSource))
 	}
-	if d.Scratch == nil {
-		return converted{}, nil, errors.New("there is no scratch directory to convert the recording in")
-	}
-	root, err := d.Scratch(ctx)
-	if err != nil {
+	out, err := d.converter().ConvertMedia(ctx, src, size, mt, language)
+	switch {
+	case errors.Is(err, convert.ErrNotConfigured):
+		return converted{}, nil, errors.New("set transcription.stt.media.command to convert recordings")
+	case err != nil:
 		return converted{}, nil, err
 	}
-	real, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return converted{}, nil, fmt.Errorf("scratch root: %w", err)
-	}
-	rootFS, err := os.OpenRoot(real)
-	if err != nil {
-		return converted{}, nil, fmt.Errorf("scratch root: %w", err)
-	}
-	name, err := scratchName()
-	if err != nil {
-		rootFS.Close()
-		return converted{}, nil, err
-	}
-	if err := rootFS.Mkdir(name, 0o700); err != nil {
-		rootFS.Close()
-		return converted{}, nil, err
-	}
-	var out *os.File
-	cleanup := func() {
-		if out != nil {
-			out.Close()
-		}
-		_ = rootFS.RemoveAll(name)
-		rootFS.Close()
-	}
-	scratch, err := rootFS.OpenRoot(name)
-	if err != nil {
-		return converted{}, cleanup, err
-	}
-	defer scratch.Close()
-	inName := "input" + recordingExt(mt)
-	if err := copyNew(scratch, inName, io.NewSectionReader(src, 0, size)); err != nil {
-		return converted{}, cleanup, fmt.Errorf("copying the recording for the converter: %w", err)
-	}
-	tmp := filepath.Join(root, name)
-	timeout := time.Duration(op.TimeoutSeconds) * time.Second
-	if _, err := helper.Run(ctx, helper.Spec{
-		Key:      "transcription.stt.media",
-		Template: op.Media.Command,
-		Wrapper:  op.Media.Wrapper,
-		Vars:     map[string]string{"in": filepath.Join(tmp, inName), "out": filepath.Join(tmp, "audio.wav"), "lang": language},
-		Root:     root,
-		Dir:      tmp,
-		Timeout:  timeout,
-	}); err != nil {
-		return converted{}, cleanup, err
-	}
-	fi, err := scratch.Lstat("audio.wav")
-	if err != nil || !fi.Mode().IsRegular() {
-		return converted{}, cleanup, errors.New("transcription.stt.media: the converter wrote no WAV at {out}")
-	}
-	if out, err = scratch.Open("audio.wav"); err != nil {
-		return converted{}, cleanup, err
-	}
-	info, err := media.Probe(out, fi.Size())
+	cleanup := func() { _ = out.Close() }
+	info, err := media.Probe(out, out.Size())
 	if err != nil || info.WAV == nil {
 		return converted{}, cleanup, errors.New("transcription.stt.media: the converter's output is not a PCM WAV; it must write WAV to {out} (e.g. -f wav)")
 	}
 	return converted{file: out, info: info}, cleanup, nil
-}
-
-// recordingExt is the extension the converter's input copy gets, so a tool
-// that reads the format from the name is not misled.
-func recordingExt(mt string) string {
-	switch mt {
-	case "audio/mpeg":
-		return ".mp3"
-	case "audio/mp4":
-		return ".m4a"
-	case "video/mp4":
-		return ".mp4"
-	case "audio/flac":
-		return ".flac"
-	case "audio/ogg", "application/ogg":
-		return ".ogg"
-	case "video/webm", "audio/webm":
-		return ".webm"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return ".wav"
-	}
-	return ".bin"
-}
-
-// scratchName is a fresh scratch folder name, as for OCR's.
-func scratchName() (string, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return ".stt-" + hex.EncodeToString(b[:]), nil
-}
-
-// copyNew copies r into a new file of dir.
-func copyNew(dir *os.Root, name string, r io.Reader) error {
-	fh, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(fh, r); err != nil {
-		fh.Close()
-		return err
-	}
-	return fh.Close()
 }
