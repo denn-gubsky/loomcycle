@@ -320,6 +320,12 @@ type Config struct {
 	// (e.g. Memory without memory_scopes — F21). Not in YAML.
 	Warnings []string `yaml:"-"`
 
+	// Notices holds things the load did that an operator should be able to
+	// see but need not act on (a directory adopted by default, a file left
+	// out of it). The boot logs each once at Info; unlike Warnings they are
+	// not advisories and nothing else reports them.
+	Notices []string `yaml:"-"`
+
 	// configDir is the directory of the loaded YAML, kept so relative
 	// paths inside the config (system_prompt_file, local_api.spec) can
 	// be resolved against it.
@@ -5219,8 +5225,8 @@ func loadAgentFiles(cfg *Config, primaryPath string) error {
 	// MDs-as-sole-source-of-truth deployment works (operator sets
 	// LOOMCYCLE_AGENTS_ROOT and omits the yaml entirely; cfg.Agents
 	// is populated purely from MDs).
-	if root := contentRoot("LOOMCYCLE_AGENTS_ROOT", "agents"); root != "" {
-		if err := discoverAgents(cfg, root); err != nil {
+	if root, defaulted := contentRoot("LOOMCYCLE_AGENTS_ROOT", "agents"); root != "" {
+		if err := discoverAgents(cfg, root, defaulted); err != nil {
 			return err
 		}
 	}
@@ -5291,9 +5297,9 @@ func applyEnvCore(cfg *Config) {
 		GitPushHosts:                splitCSV(os.Getenv("LOOMCYCLE_GIT_PUSH_HOSTS")),
 		GitAuthorName:               strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_NAME")),
 		GitAuthorEmail:              strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_EMAIL")),
-		SkillsRoot:                  contentRoot("LOOMCYCLE_SKILLS_ROOT", "skills"),
-		AgentsRoot:                  contentRoot("LOOMCYCLE_AGENTS_ROOT", "agents"),
-		HelpRoot:                    contentRoot("LOOMCYCLE_HELP_ROOT", "help"),
+		SkillsRoot:                  defaultedRoot(cfg, "LOOMCYCLE_SKILLS_ROOT", "skills"),
+		AgentsRoot:                  defaultedRoot(cfg, "LOOMCYCLE_AGENTS_ROOT", "agents"),
+		HelpRoot:                    defaultedRoot(cfg, "LOOMCYCLE_HELP_ROOT", "help"),
 		ConfiguredRunTTL:            24 * time.Hour,
 		MaxConfiguredRunsPerUser:    100,
 		// RFC BM retention defaults — opt-in (RetentionEnabled zero-false); the
@@ -5311,19 +5317,32 @@ func applyEnvCore(cfg *Config) {
 // deployment that keeps its content beside its yaml needs no second path.
 // Anything else (no config dir, no such subdirectory, a stat error) is no
 // root, as before the default existed.
-func contentRoot(envName, sub string) string {
+//
+// defaulted is true only when the returned root is that adopted subdirectory.
+func contentRoot(envName, sub string) (root string, defaulted bool) {
 	if v, ok := os.LookupEnv(envName); ok {
-		return v
+		return v, false
 	}
 	dir := strings.TrimSpace(os.Getenv("LOOMCYCLE_CONFIG_DIR"))
 	if dir == "" {
-		return ""
+		return "", false
 	}
 	p := filepath.Join(dir, sub)
 	if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-		return p
+		return p, true
 	}
-	return ""
+	return "", false
+}
+
+// defaultedRoot is contentRoot for the Env block: it also records, for the
+// boot to log, a root that was adopted by default. An operator who did not set
+// the variable should be able to see that a directory is being read.
+func defaultedRoot(cfg *Config, envName, sub string) string {
+	root, defaulted := contentRoot(envName, sub)
+	if defaulted {
+		cfg.Notices = append(cfg.Notices, envName+" is not set: using "+root+", found under LOOMCYCLE_CONFIG_DIR")
+	}
+	return root
 }
 
 // applyEnvStorage reads the storage block's env overrides and defaults the
@@ -6158,10 +6177,27 @@ func getenvInt(name string, dflt int) int {
 // over the merged set, so a merge that produces both Pin and Tier
 // (e.g. MD `model: haiku` + yaml override `tier: low`) gets caught by
 // the existing post-load check.
-func discoverAgents(cfg *Config, root string) error {
-	set, err := agents.LoadSet(root)
+//
+// defaulted says the root was adopted because it sits under the config dir,
+// not named by LOOMCYCLE_AGENTS_ROOT. There a file with no frontmatter is left
+// out and reported in cfg.Notices: an existing agents/ directory may hold
+// prompt bodies and READMEs that nobody meant to register as agents.
+func discoverAgents(cfg *Config, root string, defaulted bool) error {
+	var (
+		set     *agents.Set
+		skipped []string
+		err     error
+	)
+	if defaulted {
+		set, skipped, err = agents.LoadSetFrontmatterOnly(root)
+	} else {
+		set, err = agents.LoadSet(root)
+	}
 	if err != nil {
 		return fmt.Errorf("agents discovery: %w", err)
+	}
+	for _, path := range skipped {
+		cfg.Notices = append(cfg.Notices, "agents: skipped "+path+": it has no frontmatter, and a file without one in a defaulted agents directory is not read as an agent (set LOOMCYCLE_AGENTS_ROOT to this directory to load every .md file)")
 	}
 	if cfg.Agents == nil {
 		cfg.Agents = make(map[string]AgentDef)

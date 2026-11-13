@@ -3014,8 +3014,13 @@ The directory is also where content is looked for by default: its `skills/`,
 `agents/` and `help/` subdirectories, when they exist, are the skills root, the
 agent-file root and the help-topic overlay. `LOOMCYCLE_SKILLS_ROOT`,
 `LOOMCYCLE_AGENTS_ROOT` and `LOOMCYCLE_HELP_ROOT` override them, and setting one
-to the empty string declines the default. Only top-level `*.yaml` files are
-layers, so nothing in a subdirectory is read as config.
+to the empty string declines the default (where a blank value cannot be
+entered, such as an install wizard, point it at an empty directory). The boot
+logs each root it adopted this way. In an adopted `agents/` directory a `.md`
+file with no frontmatter is skipped, and logged: such a file is a prompt body
+or a README, not an agent definition. A directory named by
+`LOOMCYCLE_AGENTS_ROOT` loads every `.md` file, as before. Only top-level
+`*.yaml` files are layers, so nothing in a subdirectory is read as config.
 
 So `base` supplies the provider matrix, `document-agent` registers `doc/manager`
 with its skills, and your `--config` wins on anything it sets (e.g. retarget the

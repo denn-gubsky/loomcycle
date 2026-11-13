@@ -37,6 +37,11 @@ func (b *boot) loadConfig() {
 	for _, warn := range cfg.Warnings {
 		slog.Warn("config: warning", "detail", warn)
 	}
+	// What the load did on its own: a content directory adopted by default,
+	// a file it left out of one. Boot only; a reload repeats neither.
+	for _, notice := range cfg.Notices {
+		slog.Info("config: notice", "detail", notice)
+	}
 	b.cfg = cfg
 }
 

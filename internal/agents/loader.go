@@ -35,6 +35,7 @@
 package agents
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -377,20 +378,36 @@ func (s *Set) Names() []string {
 // stage alongside the MDs). Files not ending in `.md` are also
 // skipped silently for the same reason.
 func LoadSet(root string) (*Set, error) {
+	set, _, err := loadSet(root, false)
+	return set, err
+}
+
+// LoadSetFrontmatterOnly is LoadSet for a directory nobody named: one adopted
+// by default because it sits beside the config. There a `.md` file with no
+// frontmatter is far more likely a README or a prompt body than an agent, and
+// loading it would register an agent the operator never wrote. Such files are
+// left out and returned in skipped (full paths, in directory order) for the
+// caller to report.
+func LoadSetFrontmatterOnly(root string) (set *Set, skipped []string, err error) {
+	return loadSet(root, true)
+}
+
+func loadSet(root string, frontmatterOnly bool) (*Set, []string, error) {
 	set := &Set{agents: map[string]*Agent{}}
+	var skipped []string
 	if root == "" {
-		return set, nil
+		return set, nil, nil
 	}
 	st, err := os.Stat(root)
 	if err != nil {
-		return nil, fmt.Errorf("agents root %s: %w", root, err)
+		return nil, nil, fmt.Errorf("agents root %s: %w", root, err)
 	}
 	if !st.IsDir() {
-		return nil, fmt.Errorf("agents root %s: not a directory", root)
+		return nil, nil, fmt.Errorf("agents root %s: not a directory", root)
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil, fmt.Errorf("read agents root %s: %w", root, err)
+		return nil, nil, fmt.Errorf("read agents root %s: %w", root, err)
 	}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -406,17 +423,21 @@ func LoadSet(root string) (*Set, error) {
 		// return entries with "/" in the name, but nothing stops a
 		// creative filename, so we sanity-check.
 		if strings.ContainsAny(name, "/\\") || name == "" || name == "." || name == ".." {
-			return nil, fmt.Errorf("invalid agent file name %q under %s", fileName, root)
+			return nil, nil, fmt.Errorf("invalid agent file name %q under %s", fileName, root)
 		}
 		path := filepath.Join(root, fileName)
 		// #nosec G304 -- an agent file found by listing the operator's agents directory; the name is checked above
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", path, err)
+			return nil, nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		if frontmatterOnly && !hasFrontmatter(raw) {
+			skipped = append(skipped, path)
+			continue
 		}
 		a, err := parseAgent(raw)
 		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
+			return nil, nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 		a.Path = path
 		// The filename (sans .md) is the canonical address. If the
@@ -424,12 +445,18 @@ func LoadSet(root string) (*Set, error) {
 		// operator should notice and fix; refusing to load is loud
 		// and unambiguous (mirrors the skills loader's check).
 		if a.Name != "" && a.Name != name {
-			return nil, fmt.Errorf("agent %s: frontmatter name %q != filename %q", path, a.Name, name)
+			return nil, nil, fmt.Errorf("agent %s: frontmatter name %q != filename %q", path, a.Name, name)
 		}
 		a.Name = name
 		set.agents[name] = a
 	}
-	return set, nil
+	return set, skipped, nil
+}
+
+// hasFrontmatter reports whether raw opens with the frontmatter delimiter
+// parseAgent looks for (CRLF or LF).
+func hasFrontmatter(raw []byte) bool {
+	return bytes.HasPrefix(raw, []byte("---\n")) || bytes.HasPrefix(raw, []byte("---\r\n"))
 }
 
 // frontmatter is the strict-ish set of YAML keys we read from an MD.
