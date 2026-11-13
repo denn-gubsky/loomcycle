@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -465,6 +466,14 @@ func resolveAuth(c *Config) error {
 		p.ModeSource = "auth.mode"
 	case envMode == mode:
 		p.ModeSource = "LOOMCYCLE_AUTH_MODE"
+	}
+	if decidedBy != "" {
+		// Said with the other advisories, so `validate`, `doctor` and a reload
+		// print it as well as the boot. A config resolved twice says it once.
+		w := fmt.Sprintf("auth.mode (%s) and LOOMCYCLE_AUTH_MODE (%s) differ: the stricter of the two holds, so the sign-in mode is %s (decided by %s)", cfgMode, envMode, mode, decidedBy)
+		if !slices.Contains(c.Warnings, w) {
+			c.Warnings = append(c.Warnings, w)
+		}
 	}
 	if p.Idle, err = parseSessionDuration("auth.session.idle", c.Auth.Session.Idle, DefaultSessionIdle); err != nil {
 		return err

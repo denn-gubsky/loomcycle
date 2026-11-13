@@ -289,3 +289,48 @@ func TestResolveAuth_StrictErrorNamesThePlaneThatAskedForIt(t *testing.T) {
 		}
 	}
 }
+
+// Two planes that disagree about the mode are reported where every other
+// advisory is, so `validate`, `doctor` and a reload print it too, and once.
+func TestResolveAuth_AdvisesWhenThePlanesDisagree(t *testing.T) {
+	paste := map[string]AuthGateConfig{"paste": {Kind: "token"}}
+	count := func(c *Config) (n int) {
+		for _, w := range c.Warnings {
+			if strings.Contains(w, "auth.mode") && strings.Contains(w, "LOOMCYCLE_AUTH_MODE") {
+				n++
+			}
+		}
+		return n
+	}
+	c := &Config{Env: Env{AuthMode: "strict"}, Auth: AuthConfig{Mode: "token", Gates: paste}}
+	for i := 0; i < 2; i++ { // resolved again: still said once
+		if err := resolveAuth(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count(c) != 1 {
+		t.Fatalf("warnings = %q, want one naming both planes", c.Warnings)
+	}
+	for _, want := range []string{"strict", "token", "decided by LOOMCYCLE_AUTH_MODE"} {
+		if !strings.Contains(strings.Join(c.Warnings, "\n"), want) {
+			t.Errorf("warning does not say %q: %q", want, c.Warnings)
+		}
+	}
+	c = &Config{Env: Env{AuthMode: "token"}, Auth: AuthConfig{Mode: "strict", Gates: paste}}
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	if count(c) != 1 || !strings.Contains(strings.Join(c.Warnings, "\n"), "decided by auth.mode") {
+		t.Errorf("warnings = %q, want one saying auth.mode decided", c.Warnings)
+	}
+	// Agreement, or one plane silent, is nothing to report.
+	for _, pair := range [][2]string{{"strict", "strict"}, {"", "strict"}, {"strict", ""}, {"", ""}} {
+		c := &Config{Env: Env{AuthMode: pair[1]}, Auth: AuthConfig{Mode: pair[0], Gates: paste}}
+		if err := resolveAuth(c); err != nil {
+			t.Fatal(err)
+		}
+		if count(c) != 0 {
+			t.Errorf("yaml=%q env=%q: warnings = %q, want none about the mode", pair[0], pair[1], c.Warnings)
+		}
+	}
+}

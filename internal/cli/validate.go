@@ -61,6 +61,12 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Listen address   : %s\n", cfg.Env.ListenAddr)
 	fmt.Fprintf(stdout, "Auth token set   : %v\n", cfg.Env.AuthToken != "")
+	// The mode can come from the yaml or the environment; say which.
+	authSource := "default"
+	if src := cfg.ResolvedAuth.ModeSource; src != "" {
+		authSource = "from " + src
+	}
+	fmt.Fprintf(stdout, "Auth mode        : %s (%s)\n", cfg.ResolvedAuth.ModeName(), authSource)
 	fmt.Fprintf(stdout, "Concurrency      : max=%d queue=%d\n",
 		cfg.Concurrency.MaxConcurrentRuns, cfg.Concurrency.MaxQueueDepth)
 	fmt.Fprintln(stdout)
