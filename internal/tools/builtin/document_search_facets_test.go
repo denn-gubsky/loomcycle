@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // Facet counts on op=search (RFC GL P3). Every corpus here is small enough that
@@ -299,6 +302,12 @@ func TestDocumentSearchFacets_CountOnlyReadableDocuments(t *testing.T) {
 				if strings.Contains(text, "secret") || strings.Contains(text, "/hidden") {
 					t.Errorf("%s: the answer names a hidden document: %s", what, text)
 				}
+				// Narrowed in the query, the window reached the end of what the
+				// reader may read; unnarrowed, whether it did would depend on the
+				// hidden chunks it met, so it is never claimed.
+				if got, want := facetComplete(t, out), maxIDs == 0; got != want {
+					t.Errorf("%s: complete = %v, want %v: %s", what, got, want, text)
+				}
 
 				// The hidden chunks rank first. A window of 2 must still be two
 				// chunks the reader may read, not two hidden places that leave the
@@ -369,5 +378,219 @@ func assertConceptFacets(t *testing.T, d *Document, base context.Context) {
 	for _, scope := range []string{"tenant", "user"} {
 		got, text := facets(f.unreader, scope)
 		wantFacet(t, scope+" concepts for a caller who may not read the ontology ("+text+")", got, map[string]int{})
+	}
+}
+
+func facetComplete(t *testing.T, out map[string]any) bool {
+	t.Helper()
+	block, _ := out["facets"].(map[string]any)
+	v, ok := block["complete"].(bool)
+	if !ok {
+		t.Fatalf("facets.complete missing: %v", block)
+	}
+	return v
+}
+
+// TestDocumentSearchFacets_CompleteOnlyWhenTheWindowReachedTheEnd: complete is
+// true only when the window provably held every matching chunk — the store
+// ranked exhaustively and returned fewer keys than asked, and every key was a
+// document's chunk. A window smaller than the matches, an approximate index, or
+// a chunk body with no structure row (dropped, so chunks_counted alone would
+// still read as "less than the window") each make it false.
+func TestDocumentSearchFacets_CompleteOnlyWhenTheWindowReachedTheEnd(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	c := newCountCorpus(t, d, ctx, "user")
+	for i := 1; i <= 3; i++ {
+		c.chunk(c.doc(fmt.Sprintf("/f%d/doc", i), "rfc"), i-1)
+	}
+	out, text := c.search(ctx, map[string]any{"facets": []string{"type"}})
+	if !facetComplete(t, out) {
+		t.Errorf("3 matches in a window of 100: complete = false: %s", text)
+	}
+	out, text = c.search(ctx, map[string]any{"facets": []string{"type"}, "facet_window": 2})
+	if facetComplete(t, out) {
+		t.Errorf("3 matches in a window of 2: complete = true: %s", text)
+	}
+
+	c.vs.approximate = true
+	out, text = c.search(ctx, map[string]any{"facets": []string{"type"}})
+	if facetComplete(t, out) {
+		t.Errorf("an approximate index's window reported complete: %s", text)
+	}
+	c.vs.approximate = false
+
+	// A chunk body whose structure row is gone, nearest of all to the query.
+	const orphan = "doc.chunk:00000000000000000000000000000000"
+	if err := d.Store.MemorySet(ctx, direntTenant(ctx), store.MemoryScopeUser, "u1", orphan, json.RawMessage(`{"body":"alpha"}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	vec, _ := d.Embedder.Embed(ctx, []string{"alpha"})
+	if err := c.vs.MemoryEmbedSet(ctx, direntTenant(ctx), store.MemoryScopeUser, "u1", orphan, store.MemoryEmbedding{
+		Provider: "fake", Model: "m1", Dimension: len(vec[0]), Vector: vec[0], EmbedText: "alpha",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, text = c.search(ctx, map[string]any{"facets": []string{"type"}})
+	if n := facetNumber(t, out, "chunks_counted"); n != 3 {
+		t.Fatalf("precondition: chunks_counted = %d, want the 3 real chunks (the orphan is not one): %s", n, text)
+	}
+	if facetComplete(t, out) {
+		t.Errorf("a window that dropped a chunk with no structure row reported complete: %s", text)
+	}
+}
+
+// TestDocumentSearchFacets_RefusedWithAnnotationsOnly: an annotations-only search
+// ranks no passage, so facets (which count passages) are refused with it rather
+// than answered over a set the response does not show.
+func TestDocumentSearchFacets_RefusedWithAnnotationsOnly(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	c := newCountCorpus(t, d, ctx, "user")
+	c.chunk(c.doc("/kb/a", "rfc"), 0)
+	_, r := docExec(t, d, ctx, `{"op":"search","query":"alpha","annotations":"only","facets":["type"]}`)
+	if !r.IsError || !strings.Contains(r.Text, `not taken with annotations "only"`) {
+		t.Errorf("facets with annotations only = %s, want a refusal", r.Text)
+	}
+	if out, text := c.search(ctx, map[string]any{"annotations": "include", "facets": []string{"type"}}); len(facetOf(t, out, "type")) == 0 {
+		t.Errorf("facets with annotations include counted nothing: %s", text)
+	}
+}
+
+// TestDocumentSearchFacets_ALimitedReaderWithNothingHiddenFetchesTheWindow: a
+// reader whose access set names part of the scope but hides nothing in it gets a
+// narrowed (no-op) search, so its window is facet_window, not the maximum the
+// over-cap case needs.
+func TestDocumentSearchFacets_ALimitedReaderWithNothingHiddenFetchesTheWindow(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	open := tenantDocCtx(base, nil)
+	c := newCountCorpus(t, d, open, "tenant")
+	c.chunk(c.doc("/kb/a", "rfc"), 0)
+	reader := tenantDocCtx(base, aclSet(t,
+		authz.Rule{Effect: authz.Allow, Actions: []string{"read"}, Resources: []string{"document:tenant"}},
+		authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/nothing/here"}}))
+	c.vs.keyLimits = nil
+	out, text := c.search(reader, map[string]any{"facets": []string{"type"}})
+	if got := c.vs.keyLimits; !reflect.DeepEqual(got, []int{facetWindowDefault}) {
+		t.Errorf("window queries = %v, want one of %d", got, facetWindowDefault)
+	}
+	if !facetComplete(t, out) {
+		t.Errorf("nothing hidden, 1 match in a window of 100: complete = false: %s", text)
+	}
+}
+
+// failingOntologyStore fails the lookup of the ontology's Path name when armed,
+// the first read the tenant ontology makes.
+type failingOntologyStore struct {
+	store.Store
+	armed bool
+}
+
+func (f *failingOntologyStore) DirentGet(ctx context.Context, tenantID, scope, scopeID, parentPath, name string) (store.DirentRow, error) {
+	if f.armed && parentPath+name == memrank.OntologyPath {
+		return store.DirentRow{}, errors.New("injected: ontology name lookup failed")
+	}
+	return f.Store.DirentGet(ctx, tenantID, scope, scopeID, parentPath, name)
+}
+
+// TestDocumentSearchFacets_AnOntologyFaultLeavesOutOnlyTheConcepts: a fault
+// reading the ontology keeps the search and the other facets, and reports why
+// the concept counts are missing.
+func TestDocumentSearchFacets_AnOntologyFaultLeavesOutOnlyTheConcepts(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	c := newCountCorpus(t, d, ctx, "user")
+	c.chunk(c.doc("/kb/a", "rfc"), 0)
+	fs := &failingOntologyStore{Store: d.Store}
+	d.Store = fs
+	fs.armed = true
+	out, text := c.search(ctx, map[string]any{"facets": []string{"type", "concept"}})
+	if len(out["chunks"].([]any)) == 0 {
+		t.Fatalf("the search lost its hits: %s", text)
+	}
+	wantFacet(t, "type beside an ontology fault", facetOf(t, out, "type"), map[string]int{"rfc": 1})
+	block := out["facets"].(map[string]any)
+	if _, ok := block["concept"]; ok {
+		t.Errorf("concept counts present despite the fault: %s", text)
+	}
+	if reason, _ := block["concept_error"].(string); reason == "" {
+		t.Errorf("no concept_error: %s", text)
+	}
+}
+
+// TestDocumentSearchFacets_ConceptsCountOnlyLiveStatementsOnLiveChunks: a
+// rejected, refuted or retired statement does not make a document about a
+// concept; a statement counts at an as_of inside its dates and not outside; a
+// chunk closed by its own validity no longer speaks for its document, except at
+// an as_of inside its life.
+func TestDocumentSearchFacets_ConceptsCountOnlyLiveStatementsOnLiveChunks(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) {
+		d, ctx, _ := documentFixture(t)
+		assertLiveConceptFacets(t, d, ctx)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		d, ctx := pgDocumentOrSkip(t)
+		assertLiveConceptFacets(t, d, ctx)
+	})
+}
+
+func assertLiveConceptFacets(t *testing.T, d *Document, base context.Context) {
+	f := newConceptFixture(t, d, base)
+	rm := f.concepts["topics/risk-management"]
+	op := operatorCtx(f.operator)
+	statement := func(path, kind string) string {
+		t.Helper()
+		return f.link(kind, f.chunk("tenant", f.doc("tenant", path)), rm, "subject")
+	}
+	statement("/kb/live", "link_chunks")
+	rejected := statement("/kb/rejected", "propose_statement")
+	if _, r := docExec(t, d, op, fmt.Sprintf(`{"op":"reject_statement","scope":"tenant","id":%q,"reason":"wrong"}`, rejected)); r.IsError {
+		t.Fatalf("reject_statement: %s", r.Text)
+	}
+	refuted := statement("/kb/refuted", "link_chunks")
+	if _, r := docExec(t, d, op, fmt.Sprintf(`{"op":"judge_fact","scope":"tenant","id":%q,"verdict":"unsupported","reason":"not about it"}`, refuted)); r.IsError {
+		t.Fatalf("judge_fact: %s", r.Text)
+	}
+	// Retired as maintain_statement's expire leaves a rule-made statement (a
+	// manual one cannot be expired, so the row is written directly).
+	retired := statement("/kb/retired", "link_chunks")
+	tkey, _, err := d.resolveScope(f.reader, "tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.exec(f.reader, tkey, `UPDATE chunk_edges SET expired_at = ? WHERE id = ?`, int64(500), retired); err != nil {
+		t.Fatalf("retire: %v", err)
+	}
+	closed := f.chunk("tenant", f.doc("tenant", "/kb/closed"))
+	f.link("link_chunks", closed, rm, "subject")
+	f.c.exec(map[string]any{"op": "update_chunk", "scope": "tenant", "id": closed, "valid_at": 1000, "invalid_at": 2000,
+		"revision": f.c.exec(map[string]any{"op": "get_chunk", "scope": "tenant", "id": closed})["revision"]})
+
+	count := func(v map[string]any) int {
+		t.Helper()
+		v["scope"], v["under_path"], v["facets"] = "tenant", "/kb", []string{"concept"}
+		_, text := f.search(f.reader, v)
+		var out map[string]any
+		if err := json.Unmarshal([]byte(text), &out); err != nil || out["facets"] == nil {
+			t.Fatalf("search %v: %s", v, text)
+		}
+		return facetOf(t, out, "concept")["topics/risk-management"]
+	}
+	// Now: only /kb/live. The closed chunk's life ended at 2000; the rejected,
+	// refuted and retired statements never count.
+	if n := count(map[string]any{}); n != 1 {
+		t.Errorf("concept count now = %d, want 1 (the live statement only)", n)
+	}
+
+	// A statement dated 1000..2000. Without as_of its dates are not consulted, as
+	// in the concept filter's rule; with as_of it counts only inside them.
+	dated := f.chunk("tenant", f.doc("tenant", "/kb/dated"))
+	f.c.exec(map[string]any{"op": "link_chunks", "scope": "tenant", "from_id": dated, "to_id": rm, "kind": "subject", "valid_at": 1000, "invalid_at": 2000})
+	if n := count(map[string]any{}); n != 2 {
+		t.Errorf("concept count now, with the dated statement = %d, want 2 (live, dated)", n)
+	}
+	// At 1500 the dated statement and the closed chunk were both in force.
+	if n := count(map[string]any{"as_of": 1500}); n != 3 {
+		t.Errorf("concept count at as_of 1500 = %d, want 3 (live, dated, closed)", n)
+	}
+	if n := count(map[string]any{"as_of": 3000}); n != 1 {
+		t.Errorf("concept count at as_of 3000 = %d, want 1", n)
 	}
 }

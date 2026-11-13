@@ -3,8 +3,10 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
@@ -20,8 +22,10 @@ import (
 // WHAT COUNTS AS A MATCH. A search ranks everything, so "matching" has to be a
 // bounded window: the facet_window chunks nearest the query by meaning, under the
 // same filter and access narrowing the search itself ran with, together with the
-// passages the search returned (a passage found by its words alone may sit
-// outside the nearest-by-meaning window). Counts are DISTINCT DOCUMENTS of those
+// ranked passage hits (a passage found by its words alone may sit outside the
+// nearest-by-meaning window). Rows `expand` adds and annotation rows are not
+// matches of the query and are not counted; an annotations-only search ranks no
+// passage, so facets are refused with it. Counts are DISTINCT DOCUMENTS of those
 // chunks, never chunks, and only documents the caller may read.
 //
 // WHY A SECOND, KEYS-ONLY QUERY. The search's own candidate pool is capped at 51
@@ -108,21 +112,33 @@ func normaliseFacets(in docInput) (*facetRequest, *tools.Result) {
 // empty is the facets block of a search that matched nothing: every asked facet
 // with no values. Nothing is looked up.
 func (fr *facetRequest) empty() map[string]any {
-	out := map[string]any{"facet_window": fr.window, "chunks_counted": 0, "documents_counted": 0}
+	out := map[string]any{"facet_window": fr.window, "chunks_counted": 0, "documents_counted": 0, "complete": true}
 	for _, k := range fr.kinds {
 		out[k] = []facetValue{}
 	}
 	return out
 }
 
-// searchFacets counts the facets over the window. sq is the query the search ran
-// (its prefix, id lists and exclusions are the window's filter); queryVec is the
-// embedding it made, nil when the backend embeds out of process or the passage
-// search did not run; hitIDs are the passages it returned; asOf is the filter's
-// instant, which a concept's statement must be in force at.
-func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, fr *facetRequest, sq memrank.SearchQuery, queryVec []float32, hitIDs []string, asOf *int64) (map[string]any, error) {
+// facetSource is what the search hands its facets: the query it ran (its prefix,
+// id lists and exclusions are the window's filter); the embedding it made, nil
+// when the backend embeds out of process; the passages it ranked; the filter's
+// as_of; the caller's access set for the scope, already loaded by the search;
+// and whether that set could not be sent with the query (over the operator's
+// cap), so the window holds chunks the caller may not read.
+type facetSource struct {
+	sq         memrank.SearchQuery
+	queryVec   []float32
+	hitIDs     []string
+	asOf       *int64
+	acl        *docACL
+	unnarrowed bool
+}
+
+// searchFacets counts the facets over the window.
+func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, fr *facetRequest, src facetSource) (map[string]any, error) {
+	queryVec := src.queryVec
 	if len(queryVec) == 0 {
-		vecs, err := providers.EmbedQuery(ctx, d.Embedder, []string{sq.QueryText})
+		vecs, err := providers.EmbedQuery(ctx, d.Embedder, []string{src.sq.QueryText})
 		if err != nil {
 			return nil, fmt.Errorf("embed query: %w", err)
 		}
@@ -131,29 +147,31 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 		}
 		queryVec = vecs[0]
 	}
-	sf, err := sq.Filter()
+	sf, err := src.sq.Filter()
 	if err != nil {
 		return nil, err
 	}
 	// ACCESS CONTROL. Every number in the answer — each count, chunks_counted,
-	// documents_counted, a truncated flag — is taken over chunks of documents the
-	// caller may read, and nothing else: a count that moved with a hidden document
-	// would tell the caller it exists, how big it is and what it is about.
+	// documents_counted, complete, a truncated flag — is taken over chunks of
+	// documents the caller may read, and nothing else: a number that moved with a
+	// hidden document would tell the caller it exists, how big it is and what it
+	// is about.
 	//
-	// The id lists in sq already keep a confined reader's hidden chunks out of the
-	// window when they fit under the operator's cap. When they do not, the search
-	// ran unnarrowed and hidden chunks would take window places, so the window is
+	// The search's id lists keep a confined reader's hidden chunks out of the
+	// window when they fit under the operator's cap. When they do not
+	// (src.unnarrowed), hidden chunks would take window places, so the window is
 	// fetched at the maximum and filled with the first facet_window READABLE
-	// chunks. Hidden chunks crowding out more than the maximum still leave the
-	// window short: the bound the search's own page has in that case
-	// (resolveSearchACL), accepted for the same reason.
-	acl := d.newDocACL(ctx, key)
+	// chunks. Hidden chunks crowding out more than the maximum still leave it
+	// short: the bound the search's own page has there (resolveSearchACL). Such a
+	// window is never reported complete, since whether it reached the end would
+	// depend on how many hidden chunks it met.
+	acl := src.acl
 	limited, err := acl.limitsReading(ctx)
 	if err != nil {
 		return nil, err
 	}
 	fetch := fr.window
-	if limited && len(sq.IDs) == 0 && len(sq.ExcludeIDs) == 0 {
+	if src.unnarrowed {
 		fetch = store.MemoryEmbedKeysMax
 	}
 	win, err := d.Store.MemoryEmbedSearchKeys(ctx, direntTenant(ctx), mscope, docMemScopeID(mscope, key), sf, queryVec, fetch)
@@ -164,7 +182,7 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 	for _, k := range win.Keys {
 		candidates = append(candidates, ChunkIDFromBodyKey(k))
 	}
-	docOf, err := d.documentsOfChunks(ctx, key, append(append([]string{}, candidates...), hitIDs...))
+	docOf, err := d.documentsOfChunks(ctx, key, append(append([]string{}, candidates...), src.hitIDs...))
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +194,7 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 	take := func(cid string) error {
 		doc := docOf[cid]
 		if doc == "" || counted[cid] {
-			return nil // a body whose structure row is gone is not a document
+			return nil
 		}
 		ok, asked := readable[doc]
 		if !asked {
@@ -197,21 +215,31 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 		}
 		return nil
 	}
+	orphans := 0
 	for _, cid := range candidates {
 		if len(counted) == fr.window {
 			break
+		}
+		if docOf[cid] == "" {
+			orphans++ // a body whose structure row is gone: not a document
+			continue
 		}
 		if err := take(cid); err != nil {
 			return nil, err
 		}
 	}
-	for _, id := range hitIDs {
+	for _, id := range src.hitIDs {
 		if err := take(id); err != nil {
 			return nil, err
 		}
 	}
 	sort.Strings(docs)
-	out := map[string]any{"facet_window": fr.window, "chunks_counted": len(counted), "documents_counted": len(docs)}
+	// complete: the window reached the end of what matches, so the counts cover
+	// every matching passage. Only provable when the store ranked exhaustively,
+	// returned fewer keys than it was asked for, every key was a document's chunk
+	// and the window was narrowed to readable chunks in the query.
+	complete := win.Exact && len(win.Keys) < fetch && orphans == 0 && !src.unnarrowed
+	out := map[string]any{"facet_window": fr.window, "chunks_counted": len(counted), "documents_counted": len(docs), "complete": complete}
 
 	var truncated []string
 	for _, kind := range fr.kinds {
@@ -223,7 +251,15 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 		case "folder":
 			byDoc, err = d.facetFolders(ctx, key, acl, docs)
 		case "concept":
-			byDoc, capped, err = d.facetConcepts(ctx, key, docs, asOf)
+			// A fault reading the ontology leaves the concept counts out, with the
+			// reason, and keeps the search and the other facets.
+			schemes, serr := d.readableSchemes(ctx)
+			if serr != nil {
+				slog.WarnContext(ctx, "document: search facets: ontology read failed", "err", serr)
+				out["concept_error"] = "the tenant ontology could not be read, so concepts were not counted"
+				continue
+			}
+			byDoc, capped, err = d.facetConcepts(ctx, key, schemes, docs, src.asOf)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", kind, err)
@@ -333,17 +369,25 @@ func (d *Document) facetFolders(ctx context.Context, key sqlmem.ScopeKey, acl *d
 }
 
 // facetConcepts is the concepts each document is about, by the concept filter's
-// own rule (resolveConceptFilters): in the tenant scope a live `subject` statement
-// (or a narrower kind) from any of its chunks to a concept, in a user or agent
-// scope a tag on any of its chunks at or under a concept's tag. Reported by the
-// concept's tag, the most specific concept a tag lies under. A caller who may not
-// read the ontology document resolves no concept, so the facet is empty.
-func (d *Document) facetConcepts(ctx context.Context, key sqlmem.ScopeKey, docs []string, asOf *int64) (map[string][]string, bool, error) {
-	schemes, err := d.readableSchemes(ctx)
-	if err != nil || len(schemes) == 0 || len(docs) == 0 {
-		return map[string][]string{}, false, err
+// matching rule (conceptPredicate) applied to the document's chunks in force at
+// as_of, or now: in the tenant scope a live `subject` statement (or a narrower
+// kind) from such a chunk to a concept — never proposed, rejected, refuted or
+// retired, and in force at as_of when given; in a user or agent scope a tag on
+// such a chunk at or under a concept's tag. Reported by the concept's tag, the
+// most specific concept a tag lies under. A caller who may not read the ontology
+// document resolves no concept (schemes is empty), so the facet is empty.
+func (d *Document) facetConcepts(ctx context.Context, key sqlmem.ScopeKey, schemes []memrank.OntologyScheme, docs []string, asOf *int64) (map[string][]string, bool, error) {
+	if len(schemes) == 0 || len(docs) == 0 {
+		return map[string][]string{}, false, nil
 	}
 	out := map[string][]string{}
+	// Only chunks in force at as_of, or now: a chunk an edition closed, or a fact
+	// a later one superseded, no longer says what its document is about.
+	at := time.Now().UnixNano()
+	if asOf != nil {
+		at = *asOf
+	}
+	chunkLive, cargs := asOfClause(at)
 	if key.Scope == "tenant" {
 		tagOf := map[string]string{}
 		for _, s := range schemes {
@@ -355,8 +399,9 @@ func (d *Document) facetConcepts(ctx context.Context, key sqlmem.ScopeKey, docs 
 		kph, kargs := inPlaceholders(kinds)
 		live, largs := statementVisibility{asOf: asOf}.clause()
 		stmt := `SELECT DISTINCT c.document_id, e.to_id FROM chunk_edges e JOIN chunks c ON c.id = e.from_id
-		          WHERE e.kind IN (` + kph + `) AND c.document_id IN (%s) AND ` + live
-		capped, err := d.eachFacetBatch(ctx, key, docs, stmt, kargs, largs, func(r []any) {
+		          LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
+		          WHERE e.kind IN (` + kph + `) AND c.document_id IN (%s) AND ` + live + ` AND ` + chunkLive
+		capped, err := d.eachFacetBatch(ctx, key, docs, stmt, kargs, append(largs, cargs...), func(r []any) {
 			if tag := tagOf[asStr(r[1])]; tag != "" {
 				out[asStr(r[0])] = append(out[asStr(r[0])], tag)
 			}
@@ -370,8 +415,9 @@ func (d *Document) facetConcepts(ctx context.Context, key sqlmem.ScopeKey, docs 
 		}
 	}
 	capped, err := d.eachFacetBatch(ctx, key, docs,
-		`SELECT DISTINCT c.document_id, t.tag FROM chunk_tags t JOIN chunks c ON c.id = t.chunk_id WHERE c.document_id IN (%s)`,
-		nil, nil, func(r []any) {
+		`SELECT DISTINCT c.document_id, t.tag FROM chunk_tags t JOIN chunks c ON c.id = t.chunk_id
+		  LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id WHERE c.document_id IN (%s) AND `+chunkLive,
+		nil, cargs, func(r []any) {
 			if tag := deepestConceptTag(tags, asStr(r[1])); tag != "" {
 				out[asStr(r[0])] = append(out[asStr(r[0])], tag)
 			}

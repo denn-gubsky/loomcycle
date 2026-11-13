@@ -4513,6 +4513,12 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	default:
 		return errValidation(`search: annotations must be "none", "include" or "only"`, ""), nil
 	}
+	// Facets count the passages that match; an "only" search ranks no passage,
+	// so its answer and the counts would describe two different sets.
+	if facets != nil && annMode == "only" {
+		return errValidation(`search: facets count passages and are not taken with annotations "only"`,
+			`Drop facets, or search with annotations "include".`), nil
+	}
 	// A structural filter is resolved to chunk ids BEFORE the search, so every
 	// leg's LIMIT sees only the wanted corpus (document_search_filter.go). Only
 	// when one was named: a filter-free call stays on exactly the old path.
@@ -4540,8 +4546,9 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 	// the search itself, before it cuts at topK (resolveSearchACL); a filter's
 	// own allowlist already holds only readable chunks.
 	var aclList *searchACLList
+	searchACL := d.newDocACL(ctx, key)
 	if filter == nil {
-		list, err := d.resolveSearchACL(ctx, key)
+		list, err := d.resolveSearchACL(ctx, searchACL)
 		if err != nil {
 			return docFail("search: access control: ", err), nil
 		}
@@ -4673,7 +4680,12 @@ func (d *Document) searchChunks(ctx context.Context, key sqlmem.ScopeKey, mscope
 		if filter != nil {
 			asOf = filter.echo.Applied.AsOf
 		}
-		counts, err := d.searchFacets(ctx, key, mscope, facets, sq, res.QueryVector, ids, asOf)
+		// The window could not be narrowed in the query when the reader's access
+		// list was over the operator's cap.
+		unnarrowed := aclList != nil && aclList.overCap
+		counts, err := d.searchFacets(ctx, key, mscope, facets, facetSource{
+			sq: sq, queryVec: res.QueryVector, hitIDs: ids, asOf: asOf, acl: searchACL, unnarrowed: unnarrowed,
+		})
 		if err != nil {
 			return errFrom("search: facets: "+err.Error(), err), nil
 		}
