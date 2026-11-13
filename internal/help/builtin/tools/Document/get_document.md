@@ -64,3 +64,10 @@ the same subject:
 ```json
 {"op": "get_document", "path": "/facts/ada-lovelace", "scope": "tenant", "across_scopes": true}
 ```
+
+A tenant document with its summary, to judge whether to read it; its text
+starts at `root_chunk_id` (read it with `get_chunk`):
+
+```json
+{"op": "get_document", "id": "b4407b522dc11495d3de371311db17f0", "scope": "tenant", "with_summary": true}
+```

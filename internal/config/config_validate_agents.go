@@ -203,6 +203,12 @@ func validateAgentMemory(c *Config, name string, agent AgentDef) error {
 		return fmt.Errorf("agent %q: {{document:%s}} in system prompt is not a usable reference "+
 			"(want a path or id, optionally #heading — e.g. {{document:/specs/launch#Risks}})", name, bad[0])
 	}
+	// A {{help:<topic>}} placeholder must name a topic built into this binary
+	// that has call examples, and the prompt's examples must fit the budget,
+	// so the call cards it promises are the ones every run start renders.
+	if err := ValidateHelpPlaceholders(agent.SystemPrompt); err != nil {
+		return fmt.Errorf("agent %q: system_prompt: %w", name, err)
+	}
 	// RFC AA SQL Memory: validate sql_scopes are known scope strings.
 	// Empty = no SQL access (default-deny, enforced at runtime, not here).
 	// Non-empty must be a subset of validSqlScopes. Keep the message

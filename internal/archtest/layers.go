@@ -102,6 +102,10 @@ var layers = []layer{
 			"internal/fence",
 			"internal/files/extract",
 			"internal/gitsource",
+			// The help corpus embedded in the binary and its pure parsers (RFC
+			// GL P4): data only, so config can validate {{help:<topic>}}
+			// against the same files package help serves.
+			"internal/help/builtin",
 			"internal/hostenv",
 			"internal/jsonpath",
 			"internal/kms",

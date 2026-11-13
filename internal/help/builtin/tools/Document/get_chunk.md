@@ -72,3 +72,10 @@ Read a fact in the tenant store, with its `entity` block:
 ```json
 {"op": "get_chunk", "id": "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "scope": "tenant"}
 ```
+
+Read a search hit in full, with the summary of the section above it and of its
+document:
+
+```json
+{"op": "get_chunk", "id": "c7d2e4f6a8b04c1d9e3f5a7b9c1d3e5f", "scope": "tenant", "with_summary": true}
+```
