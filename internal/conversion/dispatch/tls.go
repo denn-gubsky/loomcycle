@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 )
 
 // ServerTLS is the TLS a worker endpoint on the network serves: the
@@ -42,7 +43,8 @@ func ServerTLS(certFile, keyFile, clientCAFile string) (*tls.Config, error) {
 func TLSListener(l net.Listener, cfg *tls.Config) net.Listener { return tls.NewListener(l, cfg) }
 
 func certPool(file string) (*x509.CertPool, error) {
-	pem, err := os.ReadFile(file)
+	// The operator's conversion.tls.client_ca_file, never a path from a run.
+	pem, err := os.ReadFile(filepath.Clean(file))
 	if err != nil {
 		return nil, err
 	}
