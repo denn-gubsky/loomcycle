@@ -66,7 +66,7 @@ loomcycle            # starts on 127.0.0.1:8787
 
 Without `--with-token` in step 1 there is no token and no secrets file: the server accepts every caller, which it allows only on a loopback address.
 
-The profile turns on nothing that reaches outside the runtime. Each of these is one setting you add yourself:
+The profile turns on nothing that reaches outside the runtime. Each of these is something you add yourself:
 
 | To add | Set | Details |
 |---|---|---|
@@ -75,7 +75,7 @@ The profile turns on nothing that reaches outside the runtime. Each of these is 
 | A shell | Nothing more than the volume for `Bashbox`, a sandbox confined to that volume. `LOOMCYCLE_BASH_ENABLED=1` adds `Bash`, which is not a sandbox | [`SANDBOX.md`](SANDBOX.md) |
 | A larger local context window | `providers.ollama-local.options.num_ctx` in `loomcycle.yaml` | [6b](#6b-local-models-ollama--configuring--slow-model-advice) |
 | Durable memory | `presets: [personal, memory]`, and `scheduled_runs.memory-consolidation.enabled: true` | [`MEMORY-ARCHITECTURE.md`](MEMORY-ARCHITECTURE.md) |
-| Postgres instead of SQLite | `LOOMCYCLE_PG_DSN` in the secrets file | [`POSTGRES.md`](POSTGRES.md) |
+| Postgres instead of SQLite | Three things. `LOOMCYCLE_PG_DSN` in the secrets file selects Postgres. `LOOMCYCLE_SQLMEM_PG_DSN`, the connection string of a second database, keeps SQL Memory and Documents on; without it they are off on Postgres. The schema is not applied at start, and the server stops on an empty database: run `loomcycle migrate up --config ~/.config/loomcycle/loomcycle.yaml` once (with `--config` the command reads the secrets file beside that yaml; without it, it reads the connection string from the environment only), or set `LOOMCYCLE_PG_AUTOMIGRATE=1` | [`POSTGRES.md`](POSTGRES.md) |
 
 [`examples/profiles/personal/`](../examples/profiles/personal/) has the same configuration as three files to copy, for running from a directory of your own with `--config`.
 
@@ -85,7 +85,7 @@ For a shared installation: Postgres, tokens and sign-in gates, one tenant per te
 
 [`examples/profiles/server/`](../examples/profiles/server/) has every file named here, and a compose file that runs the runtime, the schema migration and Postgres. Its README is the same procedure with the compose commands. The steps below name what has to be set, with or without compose.
 
-**1. Postgres.** The runtime needs two databases, one for the store and one for SQL Memory (which Documents use), and a role that owns both and may create roles. The example's `postgres-init.sh` creates them in the bundled Postgres. On a Postgres of your own, run the SQL in that file as a superuser. [`POSTGRES.md`](POSTGRES.md) has the details.
+**1. Postgres.** The runtime needs two databases, one for the store and one for SQL Memory (which Documents use), and a role that owns both and may create roles. The example's `postgres-init.sh` creates them in the bundled Postgres. On a Postgres of your own, do as a superuser what that file does. It is a `psql` script, not plain SQL: it takes the role's password as a `psql` variable and switches database with `\connect`. Its two `CREATE EXTENSION vector` statements fail on a server that has no pgvector, which is optional. [`POSTGRES.md`](POSTGRES.md) has the details.
 
 **2. The secrets file** (`env.local` in the example; give it mode `0600`). The minimum is five lines:
 
@@ -97,17 +97,18 @@ LOOMCYCLE_SQLMEM_PG_DSN=       # postgres://loomcycle:<password>@<host>:5432/loo
 ANTHROPIC_API_KEY=             # at least one provider key, unless every model is local
 ```
 
-A connection string in `LOOMCYCLE_PG_DSN` is what selects Postgres, and one in `LOOMCYCLE_SQLMEM_PG_DSN` is what turns SQL Memory on. The example's compose file reads three more values from the same file: `POSTGRES_PASSWORD`, `LOOMCYCLE_DB_PASSWORD` and `LOOMCYCLE_VERSION` (the image tag to run).
+A connection string in `LOOMCYCLE_PG_DSN` is what selects Postgres, and one in `LOOMCYCLE_SQLMEM_PG_DSN` is what turns SQL Memory on. The example's compose file requires three more values in the same file, and stops while one is empty: `POSTGRES_PASSWORD`, `LOOMCYCLE_DB_PASSWORD` and `LOOMCYCLE_VERSION` (the image tag to run).
 
-**3. The non-secret environment file** (`env.insecure` in the example). The minimum is five lines:
+**3. The non-secret environment file** (`env.insecure` in the example). The minimum is four lines:
 
 ```sh
 LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787                    # inside a container; the compose file publishes it on 127.0.0.1
 LOOMCYCLE_PUBLIC_URL=https://loomcycle.example.com    # the address people reach it at
 LOOMCYCLE_CONFIG_DIR=/config                          # the directory that holds loomcycle.yaml
 LOOMCYCLE_DATA_DIR=/data
-LOOMCYCLE_AUDIT_LOG_PATH=/data/audit.log              # without an audit sink, subject erasure is off
 ```
+
+The gate declared in step 4 turns the store-backed audit stream on, so the audit trail needs no setting here. The example also sets `LOOMCYCLE_AUDIT_LOG_PATH`, which adds a copy of it as a file.
 
 **4. The yaml** (`loomcycle.yaml` in the config directory). The minimum names the preset, the directory under which the runtime makes volumes, and the gate the operator signs in through:
 
@@ -149,11 +150,13 @@ What the server profile leaves for you to decide:
 | Who signs in | One interactive gate under `auth.gates`: `password` or `oidc` | [Web UI sign-in](#web-ui-sign-in--sessions-authmode-and-gates-rfc-fa) |
 | Tenants | A tenant is a name carried by a token. Mint one token per person or service with `loomcycle operator-token create`, or declare a fixed one under `principals:` | [9b](#9b-multi-tenant-authentication-rfc-l) |
 | Chat bridges | One `kind: external` gate per bridge; each bridge is a service of its own with its own settings | [External gate](#external-gate--kind-external-rfc-fa-p4), [`packages/bridge-telegram`](../packages/bridge-telegram/) |
-| Models | A key in the secrets file for each cloud provider; `OLLAMA_BASE_URL` for local models, which are then tried first | [`PROVIDERS.md`](PROVIDERS.md), [6b](#6b-local-models-ollama--configuring--slow-model-advice) |
+| Models | A key in the secrets file for each cloud provider; `OLLAMA_BASE_URL` for local models, which are then tried first in the low and middle tiers (the high tier has no local candidate) | [`PROVIDERS.md`](PROVIDERS.md), [6b](#6b-local-models-ollama--configuring--slow-model-advice) |
 | Traces | `OTEL_EXPORTER_OTLP_ENDPOINT` in the non-secret environment file; collector credentials in `OTEL_EXPORTER_OTLP_HEADERS` in the secrets file | [Observability](#observability) |
 | Metrics | Nothing for the Web UI's metrics page (the preset turns the sampler on). `/metrics` serves Prometheus with the token; `LOOMCYCLE_METRICS_LISTEN` adds an unauthenticated scrape listener | [Scraping /metrics](#scraping-metrics) |
-| What is deleted with age | A `retention:` block in the yaml. Nothing is deleted until it says `enabled: true` and names a family with its `max_age` | [9m](#9m-retention--what-is-deleted-with-age-retention) |
+| What is deleted with age | A `retention:` block in the yaml. Chats, old definition versions and memory are kept until it says `enabled: true` and names a family with its `max_age`. Four things are deleted whatever the block says: per-call usage rows are rolled up into daily totals after 30 days, consumed consolidation-queue rows after 7 days, process metrics samples after 7 days (the preset turns the sampler on), and unreachable chunk references hourly (`LOOMCYCLE_DEADLINK_GC`, on by default) | [9m](#9m-retention--what-is-deleted-with-age-retention) |
 | Durable memory | `scheduled_runs.memory-consolidation.enabled: true` in the yaml. The agents are loaded; their hourly schedule is off | [`MEMORY-ARCHITECTURE.md`](MEMORY-ARCHITECTURE.md) |
+| Whose provider keys a tenant's runs spend | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1` confines a tenant to the keys it supplied itself. It is off by default, so every tenant's runs use your provider keys | [`CREDENTIALS.md`](CREDENTIALS.md) |
+| A reverse proxy in front | `auth.trusted_proxies` in the yaml. Sign-in throttling counts per client address, and without this every person has the proxy's address | [Web UI sign-in](#web-ui-sign-in--sessions-authmode-and-gates-rfc-fa) |
 | Access-control rules | `LOOMCYCLE_ACL=shadow`, then `enforce` once the log is quiet | [Config-declared access control](#config-declared-access-control-rfc-ey) |
 | What the agents' tools may reach | `LOOMCYCLE_HTTP_HOST_ALLOWLIST` for web access. Leave `LOOMCYCLE_BASH_ENABLED` unset on a server with more than one tenant | [`SANDBOX.md`](SANDBOX.md), [`TOOLS.md`](TOOLS.md) |
 | More than one replica | `LOOMCYCLE_REPLICA_ID` on each process | [`MULTI-REPLICA.md`](MULTI-REPLICA.md) |
@@ -162,8 +165,8 @@ What the server profile leaves for you to decide:
 
 Each setting has one plane. The rule:
 
-- **The environment** holds secrets (keys, tokens, database connection strings), what identifies this process on this host (listen addresses, directories, public URLs, the replica id), and security gates. A security gate is a switch that opens something dangerous and is off unless you set it. It has no yaml form, so no config file and no preset can open one.
-- **The yaml config** holds policy and tuning: routing, agents, retention, concurrency, provider options, timeouts. Policy is the same on every replica, can be reviewed, and can be carried by a preset.
+- **The environment** holds secrets (keys, tokens, database connection strings), what identifies this process on this host (listen addresses, directories, public URLs, the replica id), and security gates. A security gate is a switch that decides what the runtime may do or whom it admits, and that only the environment can set: it has no yaml form, so no config file and no preset can change one. Most gates open something and are off unless you set them; some tighten (`LOOMCYCLE_AUTH_MODE`, `LOOMCYCLE_ACL`, `LOOMCYCLE_OPERATOR_KEY_RESTRICTION`, `LOOMCYCLE_LIMITS_ENFORCE`). The table says so where a default is on.
+- **The yaml config** holds policy and tuning: routing, agents, retention, concurrency, provider options, timeouts. Policy is the same on every replica, can be reviewed, and can be carried by a preset. A few tuning values are still variables with no yaml key, for example `LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT`, `LOOMCYCLE_BATCH_JOIN_TIMEOUT` and `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS`; [9l](#9l-environment-variable-reference--knobs-not-covered-above) lists them.
 - **Nothing** holds a value that no deployment needed to change. It is a constant of the runtime, listed under [Fixed limits](#fixed-limits).
 
 Some settings are **inferred**: the runtime decides them from another setting, and there is nothing to switch on.
@@ -172,24 +175,24 @@ The table says, for each area, what is set in which plane and what is inferred. 
 
 | Area | Environment | Yaml | Inferred |
 |---|---|---|---|
-| Config files and presets ([9e](#9e-config-layering--stacking-multiple-config-files-rfc-an), [9f](#9f-embedded-presets--bundles-rfc-aq)) | `LOOMCYCLE_CONFIG_DIR`, `LOOMCYCLE_PRESETS`, `LOOMCYCLE_CONFIG_STRICT`, `LOOMCYCLE_NO_DEFAULT_PROVIDERS`; the `--config` and `--preset` flags | `presets:`, in the primary config file only | `loomcycle.yaml` is found in the working directory, then in `~/.config/loomcycle/`, when no `--config` is given |
+| Config files and presets ([9e](#9e-config-layering--stacking-multiple-config-files-rfc-an), [9f](#9f-embedded-presets--bundles-rfc-aq)) | `LOOMCYCLE_CONFIG_DIR`, `LOOMCYCLE_PRESETS`, `LOOMCYCLE_CONFIG_STRICT`, `LOOMCYCLE_NO_DEFAULT_PROVIDERS`; the `--config` and `--preset` flags | `presets:`, in the primary config file only | With no `--config` and no yaml file in `LOOMCYCLE_CONFIG_DIR`, `loomcycle.yaml` is looked for in the working directory, then in `$XDG_CONFIG_HOME/loomcycle/`, then in `~/.config/loomcycle/` |
 | Listeners and addresses | `LOOMCYCLE_LISTEN_ADDR`, `LOOMCYCLE_GRPC_ADDR`, `LOOMCYCLE_METRICS_LISTEN`, `LOOMCYCLE_PUBLIC_URL` | none | none |
 | Authentication ([9b](#9b-multi-tenant-authentication-rfc-l)) | `LOOMCYCLE_AUTH_TOKEN`, `LOOMCYCLE_SECRET_KEY`, the variables that `token_env` and `client_secret_env` keys name; gates: `LOOMCYCLE_AUTH_MODE`, `LOOMCYCLE_ALLOW_OPEN_MODE` | `auth:` (`mode`, `gates`, `clients`, `login_origins`, `trusted_proxies`), `principals:` | Open mode (every caller accepted) when no token, principal or admin token exists; allowed on a loopback address only |
 | Access control | Gates: `LOOMCYCLE_ACL`, `LOOMCYCLE_OPERATOR_KEY_RESTRICTION`, `LOOMCYCLE_LIMITS_ENFORCE` | `acls:`, `groups:`, `acl_bindings:` | none |
 | Providers and routing (sections [1](#1-the-four-resolution-axes-overview) to [8](#8-conflict-resolution--what-wins-when), [`PROVIDERS.md`](PROVIDERS.md)) | Provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_KEY`); endpoints (`OLLAMA_BASE_URL`); `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` | `providers:` (with each provider's `options`), `models:`, `tiers:`, `provider_priority:`, `user_tiers:`, `timeout_scaling:`, `pricing:`, `decision:` | A provider whose key is not set is skipped |
-| Agents, skills and help topics ([7](#7-agent-md-frontmatter-reference)) | Directories: `LOOMCYCLE_AGENTS_ROOT`, `LOOMCYCLE_SKILLS_ROOT`, `LOOMCYCLE_HELP_ROOT`, `LOOMCYCLE_CODE_AGENTS_ROOT` | `agents:`, `skills:`, `defaults:` | The `agents/`, `skills/` and `help/` subdirectories of the config directory are used when the variable is unset |
+| Agents, skills and help topics ([7](#7-agent-md-frontmatter-reference)) | Directories: `LOOMCYCLE_AGENTS_ROOT`, `LOOMCYCLE_SKILLS_ROOT`, `LOOMCYCLE_HELP_ROOT`, `LOOMCYCLE_CODE_AGENTS_ROOT` | `agents:`, `skills:`, `defaults:` | When `LOOMCYCLE_CONFIG_DIR` is set, its `agents/`, `skills/` and `help/` subdirectories are used where they exist and the variable is unset. A variable set to the empty string declines that. A `loomcycle.yaml` found by discovery brings no such directories |
 | Storage ([`POSTGRES.md`](POSTGRES.md)) | `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_DATA_DIR`, `LOOMCYCLE_PG_AUTOMIGRATE`, the Postgres pool sizes | `storage:` (`backend` pins the store) | The store is Postgres when a connection string is set, SQLite otherwise |
-| SQL Memory and Documents ([`SQL_MEMORY.md`](SQL_MEMORY.md)) | `LOOMCYCLE_SQLMEM_PG_DSN`, `LOOMCYCLE_SQLMEM_ROOT`; data-keeping gates such as `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` | `storage.sqlmem_*` (query limits; `sqlmem_enabled: false` turns it off) | On with a SQLite store; on with a Postgres store when the SQL Memory connection string is set |
-| Memory ([`MEMORY-ARCHITECTURE.md`](MEMORY-ARCHITECTURE.md)) | Gates: `LOOMCYCLE_MEMORY_TRACE_INDEX`, `LOOMCYCLE_MEMORY_CHANGES_ENABLED`, `LOOMCYCLE_PGVECTOR_ENABLED`, `LOOMCYCLE_DEADLINK_GC` | `memory:` (`embedder`, `projection`, `fulltext`), `memory_backends:`, `change_subscriptions:`, `document_sources:` | none |
-| Retention ([9m](#9m-retention--what-is-deleted-with-age-retention)) | `LOOMCYCLE_AUDIT_RETENTION_DAYS` and `LOOMCYCLE_METRICS_RETENTION_DAYS` only | `retention:` | Nothing is deleted with age until `retention.enabled` is `true` |
+| SQL Memory and Documents ([`SQL_MEMORY.md`](SQL_MEMORY.md)) | `LOOMCYCLE_SQLMEM_PG_DSN`, `LOOMCYCLE_SQLMEM_ROOT`; data-keeping settings such as `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` (off by default; each also has a `storage.sqlmem_*` key) | `storage.sqlmem_*` (query limits; `sqlmem_enabled: false` turns it off) | On with a SQLite store; on with a Postgres store when the SQL Memory connection string is set |
+| Memory ([`MEMORY-ARCHITECTURE.md`](MEMORY-ARCHITECTURE.md)) | Gates: `LOOMCYCLE_MEMORY_TRACE_INDEX`, `LOOMCYCLE_MEMORY_CHANGES_ENABLED`, `LOOMCYCLE_PGVECTOR_ENABLED`. Not a gate: `LOOMCYCLE_DEADLINK_GC`, the collection of unreachable chunk references, which is `on` by default | `memory:` (`embedder`, `projection`, `fulltext`), `memory_backends:`, `change_subscriptions:`, `document_sources:` | none |
+| Retention ([9m](#9m-retention--what-is-deleted-with-age-retention)) | `LOOMCYCLE_AUDIT_RETENTION_DAYS` and `LOOMCYCLE_METRICS_RETENTION_DAYS` only | `retention:` | The retention sweeper deletes nothing until `retention.enabled` is `true`. The usage rollup (`retention.usage_detail.max_age`, 30 days) and the fixed housekeeping of [9l](#9l-environment-variable-reference--knobs-not-covered-above) run whatever it says |
 | Concurrency and run limits | Sizes that follow the host: `LOOMCYCLE_MAX_REQUEST_BYTES`, `LOOMCYCLE_AUDIO_MAX_INFLIGHT`; the default run rate, `LOOMCYCLE_RUN_RATE_PER_MINUTE` | `concurrency:` | none |
 | Traces and logs ([Observability](#observability)) | The standard `OTEL_*` variables, `LOOMCYCLE_LOG_LEVEL`, `LOOMCYCLE_LOG_FORMAT`, `LOOMCYCLE_ENVIRONMENT`; gate: `LOOMCYCLE_TENANT_TELEMETRY` | `observability:` (per-tenant sampler ratios, the hosts a tenant's collector may name) | Tracing is on when `OTEL_EXPORTER_OTLP_ENDPOINT` is set |
 | Process metrics | `LOOMCYCLE_METRICS_LISTEN`, `LOOMCYCLE_METRICS_RETENTION_DAYS` | `metrics:` (`enabled`, `collect_system`, `sample_interval`) | none |
-| Audit ([Audit trail](#audit-trail)) | `LOOMCYCLE_AUDIT_LOG_PATH`, `LOOMCYCLE_AUDIT_RETENTION_DAYS` | none | The store-backed audit stream is on when a sign-in gate, strict mode, a `LOOMCYCLE_ACL` other than `compat`, or more than one principal is configured |
+| Audit ([Audit trail](#audit-trail)) | `LOOMCYCLE_AUDIT_STORE`, `LOOMCYCLE_AUDIT_LOG_PATH`, `LOOMCYCLE_AUDIT_RETENTION_DAYS` | none | The store-backed audit stream is on when a sign-in gate, strict mode, a `LOOMCYCLE_ACL` other than `compat`, or more than one principal is configured |
 | Triggers: schedules, webhooks, A2A | `LOOMCYCLE_SCHEDULER_TICK_SECONDS`, `LOOMCYCLE_A2A_SERVER_CARD`; gates: `LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED`, `LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST`, `LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST` | `scheduled_runs:`, `webhooks:`, `channels:`, `a2a_server_cards:`, `a2a_agents:` | The scheduler and the webhook receiver always run. A2A is served when `LOOMCYCLE_A2A_SERVER_CARD` names a card |
 | Sandbox and files ([9d](#9d-filesystem-volumes--per-agent-rorw-scopes-rfc-ah), [`SANDBOX.md`](SANDBOX.md)) | Gates: `LOOMCYCLE_BASH_ENABLED`, `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS`, `LOOMCYCLE_GIT_SOURCE_HOSTS`, `LOOMCYCLE_GIT_PUSH_HOSTS` | `volumes:` | `Bashbox` is always registered. An agent with no volume has no disk access |
 | Outbound network ([`TOOLS.md`](TOOLS.md)) | Gates: `LOOMCYCLE_HTTP_HOST_ALLOWLIST`, `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE`; search keys such as `BRAVE_API_KEY` | `search_providers:`, `search_priority:`, `hooks.private_host_allowlist` | With no allowlist the HTTP tools reach no host |
-| MCP servers ([`MCP_INTEGRATION.md`](MCP_INTEGRATION.md)) | Gates: `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS`, `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO`, `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS` | `mcp_servers:`, `local_api:` | none |
+| MCP servers ([`MCP_INTEGRATION.md`](MCP_INTEGRATION.md)) | Gates: `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS`, `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` (both off by default), `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS` (on by default) | `mcp_servers:`, `local_api:` | none |
 | Hooks, interruptions and context plugins | none | `hooks:`, `interruption:`, `context_plugins:` | none |
 | Speech, transcription and conversion ([9h](#9h-transcription--ocr-and-speech-to-text), [9i](#9i-speech--text-to-speech), [9n](#9n-conversion-workers-conversion)) | `LOOMCYCLE_AUDIO_MAX_INFLIGHT` | `transcription:`, `speech:`, `conversion:` | none |
 | Cluster ([`MULTI-REPLICA.md`](MULTI-REPLICA.md)) | `LOOMCYCLE_REPLICA_ID`, `LOOMCYCLE_REPLICAS_STALE_AFTER_MS`, `LOOMCYCLE_HEARTBEAT_STALE_MS` | none | Cluster mode is on when `LOOMCYCLE_REPLICA_ID` is set |
@@ -198,7 +201,7 @@ A row with entries in both planes does not mean a setting is given twice: the tw
 
 ### When a setting is in both the environment and the yaml
 
-**The environment wins.** A variable that is set replaces the yaml's value, so one yaml can serve several hosts and a secret can stay out of it. A variable that is empty is not set.
+**The environment wins.** A variable that is set replaces the yaml's value, so one yaml can serve several hosts and a secret can stay out of it. A variable that is empty is not set. (The three content-root variables of the table above have no yaml form and differ here: set to the empty string, one declines the default directory.)
 
 There are two exceptions:
 
@@ -225,7 +228,7 @@ Inside the yaml plane, files are layered and a later layer wins: the presets fir
 
 ## The secrets file
 
-The secrets file is an environment file: lines of `NAME=value`, given to the loomcycle process as environment variables. It holds what must not be in a file that is reviewed, shared or committed: provider keys, `LOOMCYCLE_AUTH_TOKEN`, `LOOMCYCLE_SECRET_KEY`, database connection strings, collector credentials, and the values of the variables that your yaml names in keys such as `token_env`. Keep it readable by its owner only (mode `0600`) and out of version control. The yaml never holds a secret: a key that needs one names the variable.
+The secrets file is an environment file: lines of `NAME=value`, given to the loomcycle process as environment variables. It holds what must not be in a file that is reviewed, shared or committed: provider keys, `LOOMCYCLE_AUTH_TOKEN`, `LOOMCYCLE_SECRET_KEY`, database connection strings, collector credentials, and the values of the variables that your yaml names in keys such as `token_env`. Keep it readable by its owner only (mode `0600`) and out of version control. The yaml should never hold a secret: a key that needs one names the variable. Two keys do accept a literal connection string, `storage.pg_dsn` and `storage.sqlmem_pg_dsn`; use `LOOMCYCLE_PG_DSN` and `LOOMCYCLE_SQLMEM_PG_DSN` instead.
 
 The file has a different name in each install path, for historical reasons. The content and the rule are the same in all of them.
 
