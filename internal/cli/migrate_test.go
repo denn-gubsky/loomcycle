@@ -60,7 +60,7 @@ func TestRunMigrate_DownRequiresYes(t *testing.T) {
 func TestLoadPgDSN_Precedence(t *testing.T) {
 	// 1) explicit DSN beats env.
 	t.Setenv("LOOMCYCLE_PG_DSN", "from-env")
-	got, err := loadPgDSN("", "from-flag")
+	got, err := loadPgDSN(nil, "from-flag")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestLoadPgDSN_Precedence(t *testing.T) {
 	}
 
 	// 2) env beats yaml.
-	got, err = loadPgDSN("", "")
+	got, err = loadPgDSN(nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ storage:
   backend: postgres
   pg_dsn: from-yaml
 `)
-	got, err = loadPgDSN(yamlPath, "")
+	got, err = loadPgDSN([]string{yamlPath}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ agents:
     system_prompt: "x"
     tools: []
 `)
-	_, err = loadPgDSN(yamlPath2, "")
+	_, err = loadPgDSN([]string{yamlPath2}, "")
 	if err == nil {
 		t.Fatal("expected error for sqlite-backend yaml; got nil")
 	}

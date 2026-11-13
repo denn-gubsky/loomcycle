@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -277,10 +278,10 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 }
 
 // loadLayeredConfig loads the configuration the server would load: the same
-// stack, assembled by the same function. explicitPath is a config file the
-// caller was given ("" for none, which takes the server's auto-discovery).
-func loadLayeredConfig(explicitPath string) (*config.Config, error) {
-	stack, err := assembleForCLI(explicitPath)
+// stack, assembled by the same function. explicitPaths are the config files
+// the caller was given, in order (none takes the server's auto-discovery).
+func loadLayeredConfig(explicitPaths ...string) (*config.Config, error) {
+	stack, err := assembleForCLI(explicitPaths...)
 	if err != nil {
 		return nil, err
 	}
@@ -288,11 +289,45 @@ func loadLayeredConfig(explicitPath string) (*config.Config, error) {
 }
 
 // assembleForCLI is the CLI's call of AssembleConfigStack: no --preset flags,
-// at most one named file, no boot logging.
-func assembleForCLI(explicitPath string) (ConfigStack, error) {
+// the named files in the order given, no boot logging. A blank path is no
+// path.
+func assembleForCLI(explicitPaths ...string) (ConfigStack, error) {
 	var paths []string
-	if p := strings.TrimSpace(explicitPath); p != "" {
-		paths = []string{p}
+	for _, p := range explicitPaths {
+		if p = strings.TrimSpace(p); p != "" {
+			paths = append(paths, p)
+		}
 	}
 	return AssembleConfigStack(nil, paths, false)
+}
+
+// describeStack names every layer of a stack, base first, the way the boot
+// log joins them: what a command prints so the operator sees which config it
+// read. Names only; no layer's contents.
+func describeStack(stack ConfigStack) string {
+	names := make([]string, len(stack.Layers))
+	for i, l := range stack.Layers {
+		names[i] = l.Name
+	}
+	return strings.Join(names, " ◁ ")
+}
+
+// configPaths is a repeatable --config flag: each use adds a file, layered in
+// the order given, as the server's own --config is.
+type configPaths []string
+
+func (p *configPaths) String() string { return strings.Join(*p, ",") }
+
+func (p *configPaths) Set(v string) error {
+	if v = strings.TrimSpace(v); v != "" {
+		*p = append(*p, v)
+	}
+	return nil
+}
+
+// configFlag registers --config on fs.
+func configFlag(fs *flag.FlagSet, usage string) *configPaths {
+	var p configPaths
+	fs.Var(&p, "config", usage)
+	return &p
 }

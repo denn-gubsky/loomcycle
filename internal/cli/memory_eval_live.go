@@ -61,7 +61,7 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	providerID := fs.String("provider", "", "provider id to score (must be declared in the config)")
 	model := fs.String("model", "", "wire model name to score")
 	effort := fs.String("effort", "", "reasoning effort hint (default: the extractor agent's configured effort)")
-	cfgPath := fs.String("config", "", "optional extra config layer")
+	cfgPaths := configFlag(fs, "optional extra config layer (repeatable, layered in the order given)")
 	baseline := fs.String("baseline", "", "compare against this baseline file and gate on regressions")
 	updateBaseline := fs.String("update-baseline", "", "write this run's scores into this baseline file")
 	output := fs.String("output", "", "write the JSON report here (default: human-readable to stdout)")
@@ -88,7 +88,7 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 			"meaningful against a named (provider, model, effort) triple")
 	}
 
-	cfg, err := loadLayeredConfig(*cfgPath)
+	cfg, err := loadLayeredConfig(*cfgPaths...)
 	if err != nil {
 		return fail(stderr, "memory-eval-live: %v", err)
 	}

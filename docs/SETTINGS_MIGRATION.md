@@ -74,8 +74,8 @@ What they do with the removed variables:
 
 | Command | A removed variable that is only advised | A removed variable that is refused |
 |---|---|---|
-| `loomcycle validate [<config>]` | Prints an `Advisories : N` block on standard output, one `  - …` line per advisory, then `OK`. Exit code `0`. | Prints `loomcycle: error: config: retired environment variables are set to …` on standard error. Exit code `2`. Nothing else is printed. |
-| `loomcycle doctor [--config <path>]` | Prints one `WARN` check labelled `Config advisory` per advisory. A warning does not change the exit code. | Prints a `FAIL` check labelled `Config parses` that carries the refusal text, then the summary. Exit code `1`. The later checks do not run. |
+| `loomcycle validate [<config> ...]` | Prints an `Advisories : N` block on standard output, one `  - …` line per advisory, then `OK`. Exit code `0`. | Prints `loomcycle: error: config: retired environment variables are set to …` on standard error. Exit code `2`. Nothing else is printed. |
+| `loomcycle doctor [--config <path> ...]` | Prints one `WARN` check labelled `Config advisory` per advisory. A warning does not change the exit code. | Prints a `FAIL` check labelled `Config parses` that carries the refusal text, then the summary. Exit code `1`. The later checks do not run. |
 
 `validate` only loads the config. `doctor` also checks that the SQLite data directory is writable (or that a Postgres connection string is set) and that the listen address can be bound; an address already in use by your running server is a warning, not a failure. Neither command opens the store, so neither reports a problem that only appears when the store is opened. One of those is the refusal of an inferred Postgres backend beside an existing SQLite store file ([4.5](#45-a-postgres-connection-string-with-no-backend-named-now-opens-postgres)): `validate` prints `OK` and the server start, or any other command that opens the store, stops.
 
@@ -702,9 +702,10 @@ Files in the config directory are loaded in lexical order, so name them so that 
 
 **The command-line tools load what the server loads.** The server and every command that reads the config (`validate`, `doctor`, `agents list`, `migrate --config`, `tokens`, `audit`, the memory tools) now build the list of layers with one function. What you will notice:
 
-- **`loomcycle validate` with no path** validates the server's stack: the presets, the config directory, and the auto-discovered `loomcycle.yaml` if there is one. Before, a path was required and the usage text was printed. Its first line names the last file of the stack, or `embedded presets only (no config file)`.
-- **`loomcycle doctor` finds a deployment made of presets and a config directory.** Before, it looked for a single `loomcycle.yaml` and failed its `Config found` check on such a deployment. The check now lists the files of the stack.
+- **`loomcycle validate` with no path** validates the server's stack: the presets, the config directory, and the auto-discovered `loomcycle.yaml` if there is one. Before, a path was required and the usage text was printed. Its first line names every layer of the stack, base first.
+- **`loomcycle doctor` finds a deployment made of presets and a config directory.** Before, it looked for a single `loomcycle.yaml` and failed its `Config found` check on such a deployment. The check now lists the layers of the stack.
 - **Every one of these commands loads the `auth.env` beside the last config file**, as the server does, and only for variables the environment does not already set. Before, only the server and `doctor` did. A command run by hand therefore sees the persisted token and settings the server sees.
+- **Several files are named the way the server names them.** `--config` may be repeated in `doctor`, `agents list`, `migrate` and the memory tools, and `validate` takes several paths; the files are layered in the order given, as the server layers its own `--config` flags. A server started with `--config base.yaml --config site.yaml` is checked with `loomcycle validate base.yaml site.yaml` and `loomcycle doctor --config base.yaml --config site.yaml`. `validate` and `doctor` print every layer they loaded, base first.
 - **A file named explicitly must exist.** A path that does not exist is an error in every command, as at boot. Before, the command-line tools skipped a named file that was missing when presets or a config directory supplied other layers.
 - `agents list`, `validate` and `doctor` therefore agree with the running server on which agents exist and which provider each resolves to, provided they run with the server's environment.
 

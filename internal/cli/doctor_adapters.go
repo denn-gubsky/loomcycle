@@ -107,8 +107,8 @@ func (r *realConfig) LoginPrincipals() int    { return len(r.cfg.ResolvedPrincip
 
 // loadConfigRealAdapter is the production seam for loadConfigForDoctor.
 // Tests override the package-level var to plug in a stub.
-func loadConfigRealAdapter(path string) (configForDoctor, error) {
-	cfg, err := loadLayeredConfig(path)
+func loadConfigRealAdapter(paths []string) (configForDoctor, error) {
+	cfg, err := loadLayeredConfig(paths...)
 	if err != nil {
 		return nil, err
 	}

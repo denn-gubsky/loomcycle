@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	storepostgres "github.com/denn-gubsky/loomcycle/internal/store/postgres"
@@ -47,20 +48,20 @@ func RunMigrate(args []string, stdout, stderr io.Writer) int {
 // wins, then env LOOMCYCLE_PG_DSN, then yaml storage.pg_dsn. The CLI
 // migrate verbs accept --config OR --dsn; --dsn is the lower-friction
 // path for one-off ops without a yaml in CWD.
-func loadPgDSN(cfgPath, explicitDSN string) (string, error) {
+func loadPgDSN(cfgPaths []string, explicitDSN string) (string, error) {
 	if explicitDSN != "" {
 		return explicitDSN, nil
 	}
-	if cfgPath != "" {
-		cfg, err := loadLayeredConfig(cfgPath)
+	if len(cfgPaths) > 0 {
+		cfg, err := loadLayeredConfig(cfgPaths...)
 		if err != nil {
 			return "", fmt.Errorf("config: %w", err)
 		}
 		if cfg.Storage.Backend != "postgres" {
-			return "", fmt.Errorf("storage.backend is %q (want \"postgres\") in %s", cfg.Storage.Backend, cfgPath)
+			return "", fmt.Errorf("storage.backend is %q (want \"postgres\") in %s", cfg.Storage.Backend, strings.Join(cfgPaths, ", "))
 		}
 		if cfg.Storage.PgDSN == "" {
-			return "", fmt.Errorf("storage.pg_dsn is empty in %s and LOOMCYCLE_PG_DSN is unset", cfgPath)
+			return "", fmt.Errorf("storage.pg_dsn is empty in %s and LOOMCYCLE_PG_DSN is unset", strings.Join(cfgPaths, ", "))
 		}
 		return cfg.Storage.PgDSN, nil
 	}
@@ -73,12 +74,12 @@ func loadPgDSN(cfgPath, explicitDSN string) (string, error) {
 func runMigrateUp(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate up", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "path to config YAML (alternative to --dsn)")
+	cfgPaths := configFlag(fs, "path to a config YAML, as the server is given it (repeatable, layered in the order given; alternative to --dsn)")
 	dsn := fs.String("dsn", "", "Postgres DSN (overrides yaml/env)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	resolvedDSN, err := loadPgDSN(*cfgPath, *dsn)
+	resolvedDSN, err := loadPgDSN(*cfgPaths, *dsn)
 	if err != nil {
 		return fail(stderr, "%v", err)
 	}
@@ -89,8 +90,8 @@ func runMigrateUp(args []string, stdout, stderr io.Writer) int {
 	// memory.fulltext rebuilds a column the migrations own, so it may need the
 	// same role. Only with --config: --dsn alone carries no setting, and
 	// applying the default would undo the server's.
-	if *cfgPath != "" {
-		cfg, err := loadLayeredConfig(*cfgPath)
+	if len(*cfgPaths) > 0 {
+		cfg, err := loadLayeredConfig(*cfgPaths...)
 		if err != nil {
 			return fail(stderr, "config: %v", err)
 		}
@@ -118,7 +119,7 @@ func runMigrateUp(args []string, stdout, stderr io.Writer) int {
 func runMigrateDown(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate down", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "path to config YAML (alternative to --dsn)")
+	cfgPaths := configFlag(fs, "path to a config YAML, as the server is given it (repeatable, layered in the order given; alternative to --dsn)")
 	dsn := fs.String("dsn", "", "Postgres DSN (overrides yaml/env)")
 	confirm := fs.Bool("yes", false, "confirm the destructive operation (down rolls every migration back)")
 	if err := fs.Parse(args); err != nil {
@@ -128,7 +129,7 @@ func runMigrateDown(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "migrate down rolls every applied migration back — pass --yes to confirm.")
 		return 2
 	}
-	resolvedDSN, err := loadPgDSN(*cfgPath, *dsn)
+	resolvedDSN, err := loadPgDSN(*cfgPaths, *dsn)
 	if err != nil {
 		return fail(stderr, "%v", err)
 	}
@@ -143,12 +144,12 @@ func runMigrateDown(args []string, stdout, stderr io.Writer) int {
 func runMigrateStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "path to config YAML (alternative to --dsn)")
+	cfgPaths := configFlag(fs, "path to a config YAML, as the server is given it (repeatable, layered in the order given; alternative to --dsn)")
 	dsn := fs.String("dsn", "", "Postgres DSN (overrides yaml/env)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	resolvedDSN, err := loadPgDSN(*cfgPath, *dsn)
+	resolvedDSN, err := loadPgDSN(*cfgPaths, *dsn)
 	if err != nil {
 		return fail(stderr, "%v", err)
 	}

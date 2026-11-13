@@ -47,7 +47,7 @@ import (
 func RunMemoryCalibrate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("memory-calibrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "path to config YAML (default: the config the server auto-discovers)")
+	cfgPaths := configFlag(fs, "path to a config YAML, as the server is given it (repeatable, layered in the order given; default: the config the server auto-discovers)")
 	dataset := fs.String("dataset", "builtin", "labelled corpus: 'builtin', 'cluster' (one dense topic — the region 'builtin' does not sample), or a path to a .json file")
 	embedderKind := fs.String("embedder", "auto", "'auto' (the configured embedder) or 'stub' (deterministic, plumbing check only)")
 	check := fs.Bool("check", false, "also fail when the CONFIGURED thresholds classify badly on this corpus")
@@ -66,7 +66,7 @@ func RunMemoryCalibrate(args []string, stdout, stderr io.Writer) int {
 	// --config), so the embedder and the bands reported here
 	// are the ones the running server would use. Reading a single file would
 	// reintroduce the bug loadLayeredConfig exists to fix.
-	cfg, err := loadLayeredConfig(*cfgPath)
+	cfg, err := loadLayeredConfig(*cfgPaths...)
 	if err != nil {
 		return fail(stderr, "memory-calibrate: config: %v", err)
 	}
