@@ -4735,8 +4735,8 @@ type Env struct {
 	ShutdownPauseTimeoutMs int64
 
 	// MCPAllowPrivilegedTools — v0.8.15. When true, dynamically-
-	// registered agents may include Bash/Write/Edit in their
-	// tools. Default false: those three are stripped from
+	// registered agents may include Bash/Bashbox/Write/Edit in their
+	// tools. Default false: those four are stripped from
 	// any register_agent request, matching the v0.8.7/v0.8.8
 	// default-deny pattern for new tool surfaces. Env:
 	// LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS.

@@ -3360,7 +3360,7 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` | off | `1` lets agents registered through MCP `register_agent` keep Bash, Write and Edit; otherwise those tools are stripped. |
+| `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` | off | `1` lets agents registered through MCP `register_agent` keep Bash, Bashbox, Write and Edit; otherwise those tools are stripped. |
 | `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` | off | `1` lets an `MCPServerDef` created at run time use `transport: stdio`, which runs a local command. Static yaml `mcp_servers:` are unaffected. |
 | `LOOMCYCLE_MCP_RECIPES_ROOT` | unset | Directory overlay of MCP server recipes for the `loomcycle mcp-registry` and `loomcycle import --emit-recipes` commands. |
 
