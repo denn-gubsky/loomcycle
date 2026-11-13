@@ -207,6 +207,15 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", also: []string{"LOOMCYCLE_RETENTION_CHATS_MODE=prune"}}, // deleting then, deleting now
 		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1"},                                                         // ran with nothing to do
 
+		// The A2A switch: the old read served A2A for exactly "1". Refused
+		// when it was off and the server card that now turns A2A on is named.
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "0", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=public"}, refused: true},
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=public"}, refused: true},
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "0"},
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "0", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=  "}}, // a blank card names nothing
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "1", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=public"}},
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "1"}, // was on with no card to serve; now off
+
 		// Retired, and no value of it was a tightening.
 		{name: "LOOMCYCLE_SSE_KEEPALIVE_MS", value: "0"},
 		{name: "LOOMCYCLE_SNAPSHOT_MAX_BYTES", value: "1"},

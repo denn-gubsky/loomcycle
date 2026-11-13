@@ -283,6 +283,22 @@ func TestLoadLayers_RefusesARetiredRetentionSwitchThatHeldDeletionBack(t *testin
 	}
 }
 
+// The retired switch kept A2A off whatever card was named. Set to anything
+// but 1 with a card named, the load stops instead of serving A2A.
+func TestLoadLayers_RefusesARetiredA2ASwitchThatKeptA2AOff(t *testing.T) {
+	t.Setenv("LOOMCYCLE_A2A_SERVER_CARD", "public")
+	t.Setenv("LOOMCYCLE_A2A_ENABLED", "0")
+	_, err := loadYAMLString(t, "defaults: {provider: mock}\n")
+	if err == nil {
+		t.Fatal("the load accepted a retired A2A switch that kept A2A off")
+	}
+	for _, want := range []string{"LOOMCYCLE_A2A_ENABLED", "unset LOOMCYCLE_A2A_SERVER_CARD"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %q: %s", want, err)
+		}
+	}
+}
+
 // A2A is on exactly when the active server card is named. Declaring cards in
 // the yaml does not turn it on, and neither does the retired switch.
 func TestA2AEnabled_FollowsTheServerCardName(t *testing.T) {
@@ -298,7 +314,7 @@ func TestA2AEnabled_FollowsTheServerCardName(t *testing.T) {
 		{"cards declared in yaml but none named", yamlCard, "", "", false},
 		{"cards declared in yaml and one named", yamlCard, "public", "", true},
 		{"retired switch without a card", "", "", "1", false},
-		{"retired switch off with a card", "", "public", "0", true},
+		{"retired switch on with a card", "", "public", "1", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("LOOMCYCLE_A2A_SERVER_CARD", tc.card)

@@ -220,6 +220,10 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// prune would have that family's data deleted on the first sweep.
 	"LOOMCYCLE_RETENTION_ENABLED": {retentionWasHeldOff, "the retention sweeper runs whenever a LOOMCYCLE_RETENTION_*_MODE is prune or export+prune, and one is, so data this variable held back would be deleted; to keep retention off, clear every family mode (unset it or set it to off)"},
 
+	// A2A used to be served only when this said "1". With the card named and
+	// the switch off, the A2A endpoints would now be mounted.
+	"LOOMCYCLE_A2A_ENABLED": {a2aWasOff, "A2A is served whenever LOOMCYCLE_A2A_SERVER_CARD is set, and it is; unset LOOMCYCLE_A2A_SERVER_CARD to keep A2A off"},
+
 	// The filesystem jail stopped the boot before it was retired and still
 	// does: a deploy that relied on it must be moved to volumes by a person.
 	"LOOMCYCLE_READ_ROOT":  {loosens: valueNotEmpty},
@@ -360,6 +364,13 @@ func retentionWasHeldOff(value string, c retiredEnvCtx) bool {
 		modes = append(modes, c.env[name])
 	}
 	return retentionFamilyOn(modes...)
+}
+
+// a2aWasOff reports a retired A2A switch that kept A2A off (the old read
+// served it for exactly "1") while the server card that now turns it on is
+// named.
+func a2aWasOff(value string, c retiredEnvCtx) bool {
+	return value != "1" && strings.TrimSpace(c.env["LOOMCYCLE_A2A_SERVER_CARD"]) != ""
 }
 
 func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }
