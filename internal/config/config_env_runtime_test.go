@@ -111,6 +111,18 @@ func TestLoadLayers_RuntimeEnvReadsEachSetting(t *testing.T) {
 	if e = load(t); e.RunRatePerMinute != 0 || e.RunRateBurst != 0 {
 		t.Errorf("burst alone: rate = %d/%d, want none", e.RunRatePerMinute, e.RunRateBurst)
 	}
+	// A value of only whitespace is an empty value, and an empty value is
+	// unset, as for every other variable of the environment. The two that
+	// stopped the boot on it before the reads moved here no longer do: a
+	// blank line in an env file is not a cap or a rate anyone asked for.
+	for _, n := range names {
+		t.Setenv(n, "")
+	}
+	t.Setenv("LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS", "  ")
+	t.Setenv("LOOMCYCLE_RUN_RATE_PER_MINUTE", " \t")
+	if e = load(t); e.UserTokenMaxTTLSeconds != 0 || e.RunRatePerMinute != 0 {
+		t.Errorf("whitespace only: cap = %d, rate = %d, want both unset", e.UserTokenMaxTTLSeconds, e.RunRatePerMinute)
+	}
 	// A switch is on for exactly 1.
 	t.Setenv("LOOMCYCLE_MOCK_ENABLED", "true")
 	if e = load(t); e.MockEnabled {

@@ -1292,7 +1292,7 @@ The settings the boot code used to read for itself are now read with the rest of
 | `LOOMCYCLE_GIT_SOURCE_HOSTS` | A comma-separated list of host names; unset = git-sourced volumes are off | `LOOMCYCLE_GIT_SOURCE_HOSTS: an entry is not a host name (write github.com, not a URL)` |
 | `LOOMCYCLE_DEADLINK_GC` | `off`, `dry-run` or `on`; unset = `on` | `LOOMCYCLE_DEADLINK_GC must be off, dry-run or on (unset is on)` |
 
-At boot the error is the `err` field of an `ERROR` line with the message `config: load failed`, and the process exits. Fix the value or remove the line. Variables not in this table keep the older convention: a value that does not parse leaves the default in place.
+At boot the error is the `err` field of an `ERROR` line with the message `config: load failed`, and the process exits. Fix the value or remove the line. A value that is empty or only whitespace is unset for every row of the table. That is a change for `LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS` and `LOOMCYCLE_RUN_RATE_PER_MINUTE`, which used to stop the boot on a value of only spaces: such a line now sets no cap and no rate, as an empty one does. Variables not in this table keep the older convention: a value that does not parse leaves the default in place.
 
 ## 9. Status of this guide
 

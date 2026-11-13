@@ -2,7 +2,7 @@
 //
 //	loomcycle init [--path <dir>] [--interactive]   — create default config (v0.11.1)
 //	loomcycle doctor [--config <yaml>]              — health-check setup (v0.11.1)
-//	loomcycle validate <yaml>                       — sanity-check a config
+//	loomcycle validate [<yaml> ...]                 — sanity-check a config
 //	loomcycle agents list [--config <yaml>]         — describe registered agents
 //	loomcycle health [--target <url>]               — ping a running instance
 //	loomcycle migrate up|down|status [--config Y]   — run Postgres schema migrations
@@ -52,7 +52,7 @@ func PrintHelp(w io.Writer, metaToolCount int) {
 	fmt.Fprintln(w, "  doctor [--config <yaml>]         health-check config, env, providers, storage")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "SUBCOMMANDS")
-	fmt.Fprintln(w, "  validate <yaml>                  load + validate a config; report issues")
+	fmt.Fprintln(w, "  validate [<yaml> ...]            load + validate the server's config (or the named files); report issues")
 	fmt.Fprintln(w, "  agents list [--config <yaml>]    describe each registered agent")
 	fmt.Fprintln(w, "  presets                          list embedded config presets + bundles (RFC AQ)")
 	fmt.Fprintln(w, "  presets show <name>              print one embedded preset/bundle's YAML")
