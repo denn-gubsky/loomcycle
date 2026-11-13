@@ -42,6 +42,7 @@ docker run -d --name loomcycle \
   -e LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32) \
   -e ANTHROPIC_API_KEY=$YOUR_KEY \
   -e LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787 \
+  -e LOOMCYCLE_DATA_DIR=/home/nonroot/.local/share/loomcycle \
   denngubsky/loomcycle:latest
 ```
 

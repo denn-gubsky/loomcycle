@@ -60,7 +60,7 @@ After `init`, set at least:
 Optional but commonly set:
 
 - `LOOMCYCLE_DATA_DIR` — where the sqlite store lives (defaults to
-  `~/.local/share/loomcycle`).
+  `./data`, relative to the directory you start `loomcycle` in).
 - `OTEL_EXPORTER_OTLP_ENDPOINT` — enables distributed traces, with
   the rest of the standard `OTEL_*` set (see `help observability`).
 
