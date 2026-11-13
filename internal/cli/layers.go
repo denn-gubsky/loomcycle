@@ -328,8 +328,8 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 // The environment wins: with selected non-empty the file's `presets:` is not
 // layered, and when the two would give different stacks a warning on the
 // returned layers says which is in force. With selected empty the file's key selects. A
-// preset named in the file is trusted as the file is: it adds only what a
-// unit built into the binary carries, and no unit can set a security gate.
+// preset named in the file is trusted as the file is: it is yaml, and adds
+// whatever the named unit carries (see config's presetsKey).
 func selectPresetLayers(selected []string, selectedBy, primary string, info func(string, ...any)) (layers []config.Layer, inFile bool, err error) {
 	var fromFile []string
 	if primary != "" {

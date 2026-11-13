@@ -2769,9 +2769,10 @@ base — and built-in agents — **without a source checkout**. Two kinds:
 
   Neither sets a volume, a sign-in gate, retention, a listen address or a
   secret: those are a host path, a decision about who gets in or what is
-  deleted, or a credential, and stay yours. No preset can turn on a tool that
-  reaches outside the runtime (the shell, the HTTP allowlist): those have no
-  yaml form. [`examples/profiles/`](../examples/profiles/) has a complete
+  deleted, or a credential, and stay yours. Their agents list tools such as
+  `Bash`, `HTTP` and `WebFetch`, which stay idle: the switches that enable
+  them (`LOOMCYCLE_BASH_ENABLED`, `LOOMCYCLE_HTTP_HOST_ALLOWLIST`) exist only
+  in the environment, so no preset can set them. [`examples/profiles/`](../examples/profiles/) has a complete
   configuration for each, and `loomcycle init [--profile server]` writes its
   yaml, which names the preset with `presets:` (below).
 - **Bundles** — a preset that *also* defines an agent and its skills **inline**
@@ -3076,10 +3077,19 @@ presets: [personal]
   the two would give different stacks, an advisory at boot, in `loomcycle
   validate` and in `loomcycle doctor` names both.
 - **Read at every load.** A config reload re-reads the key.
-- **Trust.** A preset named in the file is trusted exactly as the file is. It
-  adds only what a unit built into the binary carries, and no unit can set a
-  security gate: no gate has a yaml form. A name the binary does not carry
-  stops the load, naming the key and the file.
+- **Trust.** A preset named in the file is trusted exactly as the file is,
+  because a preset is yaml and yaml carries things that matter: agents and
+  their tools, MCP servers, sign-in clients. What a preset cannot do is turn
+  on one of the switches that exist only in the environment: Bash, dynamic
+  stdio MCP servers, privileged tools for MCP-registered agents, the HTTP
+  tools' host allowlist, the operator-key restriction, the access-control
+  mode, open mode. None has a yaml form, so no layer of yaml can set one. The
+  units built into the binary are further held, by a test, to a closed list
+  of keys: none sets `volumes`, `principals`, `retention`, `storage`, `hooks`,
+  access-control lists, or anything under `auth` except `auth.clients` (the
+  `loomboard` preset registers its desktop app as a sign-in client; that
+  admits no one without a gate). A name the binary does not carry stops the
+  load, naming the key and the file.
 - The key selects layers; it is not a setting. It does not appear in the
   merged config and does not count as an override under
   `LOOMCYCLE_CONFIG_STRICT`.

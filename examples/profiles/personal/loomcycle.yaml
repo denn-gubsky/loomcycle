@@ -10,8 +10,9 @@
 # Memory on it (Documents), 127.0.0.1:8787.
 
 # Which presets this config sits on. LOOMCYCLE_PRESETS (or --preset), when
-# set, is used instead. A preset named here is trusted as this file is; none
-# can turn on a tool that reaches outside the runtime.
+# set, is used instead. A preset named here is trusted as this file is: it is
+# yaml, and can carry agents or MCP servers. None can enable Bash or web
+# access: those are switches in the environment.
 presets: [personal]
 
 # A directory the file tools (Read, Write, Edit, Grep, Glob, Bashbox) may use.

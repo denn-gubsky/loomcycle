@@ -10,7 +10,7 @@ This file ships next to `loomcycle.yaml` whenever you run `loomcycle init`. It's
 presets: [personal]     # `loomcycle init --profile server` writes [server]
 ```
 
-Everything else in the file is yours (a volume, a local-model setting) and starts commented out. The line is read from this file only, your primary config; in any other config file it is an error. `LOOMCYCLE_PRESETS` (or `--preset`), when set, selects instead, and the server says so at start if the two differ. A preset named here is trusted as this file is; none can turn on a tool that reaches outside the runtime. Without a preset the server starts with no agents, and `loomcycle doctor` says one is missing.
+Everything else in the file is yours (a volume, a local-model setting) and starts commented out. The line is read from this file only, your primary config; in any other config file it is an error. `LOOMCYCLE_PRESETS` (or `--preset`), when set, selects instead, and the server says so at start if the two differ. A preset named here is trusted as this file is: it is yaml, and can carry agents, MCP servers or sign-in clients. It cannot enable Bash, web access or any other switch that exists only in the environment. Without a preset the server starts with no agents, and `loomcycle doctor` says one is missing.
 
 | Preset | Stands for | Use |
 |---|---|---|

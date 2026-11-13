@@ -45,8 +45,12 @@ type Layer struct {
 // preset at all.
 //
 // Trust: a preset named here is trusted exactly as the file that names it.
-// It can add only what a unit built into the binary carries, and no unit can
-// set a security gate, because no gate has a yaml form.
+// A preset is yaml, and yaml carries agents, MCP servers and sign-in clients.
+// What no yaml layer can do is turn on a switch that exists only in the
+// environment (Bash, dynamic stdio MCP, privileged MCP tools, the HTTP host
+// allowlist, the operator-key restriction, the access-control mode, open
+// mode). The shipped units are held to a closed list of keys by
+// internal/embedded's TestUnits_EveryUnitSetsOnlyKeysAPresetMayCarry.
 const presetsKey = "presets"
 
 func errPresetsKeyElsewhere(layer string) error {

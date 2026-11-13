@@ -12,7 +12,9 @@
 # Which presets this config sits on. It is read from this file only
 # (loomcycle.yaml in the config directory), never from another file beside it.
 # LOOMCYCLE_PRESETS, when set, is used instead. A preset named here is trusted
-# as this file is; none can set a gate, a volume or a secret.
+# as this file is: it is yaml, and can carry agents, MCP servers or sign-in
+# clients. `server` and what it includes set no gate, volume or principal, and
+# no preset can enable Bash or web access: those are environment switches.
 presets: [server]
 
 # ─── Volumes ───────────────────────────────────────────────────────────

@@ -31,10 +31,11 @@
 #                fails without one; the other agents route by tier.
 # `loomcycle doctor` reports which providers are usable before you start.
 #
-# WHAT THIS PRESET CANNOT DO. No preset turns on a tool that reaches outside
-# the runtime or loosens who may call it: those have no yaml form. Shell tools,
-# the HTTP host allowlist and the like stay lines in your environment file,
-# each one a deliberate opt-in. The file tools also need a volume, which names
+# WHAT THIS PRESET CANNOT DO. Its agents list Bash, HTTP and WebFetch, and
+# those stay idle: the switches that enable them (LOOMCYCLE_BASH_ENABLED,
+# LOOMCYCLE_HTTP_HOST_ALLOWLIST) exist only in the environment, so no preset
+# can set them. They stay lines in your environment file, each one a
+# deliberate opt-in. The file tools also need a volume, which names
 # a directory on your machine: add a `volumes:` entry to your own loomcycle.yaml.
 #
 # No agent here drains the memory queue: add the `memory` bundle
