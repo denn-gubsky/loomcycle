@@ -1,8 +1,10 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -145,11 +147,44 @@ func (d *Document) CallIsRead(raw json.RawMessage) (string, bool) {
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return "", false
 	}
+	return in.Op, documentInputIsRead(in)
+}
+
+// documentInputIsRead classifies a decoded Document call by the table.
+func documentInputIsRead(in docInput) bool {
 	m, ok := documentOpModes[in.Op]
-	if !ok || !m.read || (m.writes != nil && m.writes(in)) {
-		return in.Op, false
+	return ok && m.read && (m.writes == nil || !m.writes(in))
+}
+
+// documentModeRefusal is the Document tool's own read-mode check, for a call
+// that does not come through the run's dispatcher: another tool calling it
+// in-process (File import, Crypto writing a chunk, a resolved reference) on
+// the run's ctx. It reads the run policy's modes, which are the dispatcher's
+// too. The runtime's own provisioning of a reserved document is exempt: it is
+// not the agent's write.
+func documentModeRefusal(ctx context.Context, in docInput) *tools.Result {
+	mode := tools.PolicyOf(ctx).ToolModes["Document"]
+	if mode == "" || ctx.Value(reservedProvisionKey{}) != nil {
+		return nil
 	}
-	return in.Op, true
+	if mode == config.ToolModeRead && documentInputIsRead(in) {
+		return nil
+	}
+	r := tools.ToolModeRefusal("Document", mode, in.Op)
+	return &r
+}
+
+// pathModeRefusal is the Path tool's own read-mode check, for the same reason.
+func pathModeRefusal(ctx context.Context, op string) *tools.Result {
+	mode := tools.PolicyOf(ctx).ToolModes["Path"]
+	if mode == "" {
+		return nil
+	}
+	if m, ok := pathOpModes[op]; ok && m.read && mode == config.ToolModeRead {
+		return nil
+	}
+	r := tools.ToolModeRefusal("Path", mode, op)
+	return &r
 }
 
 // CallIsRead implements tools.ModalTool for the Path tool, on Execute's decode.

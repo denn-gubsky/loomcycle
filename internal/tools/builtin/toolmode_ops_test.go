@@ -87,6 +87,19 @@ func TestToolModes_ConfigToolsAreTheModalTools(t *testing.T) {
 	}
 }
 
+// config.ToolDeclared restates the runtime's tool-grant rule because config may
+// not import the policy package; it must give the same answer, or the loader
+// would refuse (or accept) a mode on a tool the run would (or would not) hold.
+func TestToolModes_ConfigToolDeclaredAgreesWithTheGrantRule(t *testing.T) {
+	for _, declared := range [][]string{nil, {"Document"}, {"Doc*"}, {"*"}, {"Path", "mcp__x__*"}, {"Documents"}, {"Document*"}} {
+		for _, tool := range []string{"Document", "Path", "Doc", "mcp__x__y"} {
+			if got, want := config.ToolDeclared(tool, declared), grantsTool(declared, tool); got != want {
+				t.Errorf("ToolDeclared(%q, %v) = %v, the runtime grant rule says %v", tool, declared, got, want)
+			}
+		}
+	}
+}
+
 func TestToolModes_CallIsReadJudgesTheArguments(t *testing.T) {
 	d, p := &Document{}, &Path{}
 	for _, tc := range []struct {

@@ -47,6 +47,13 @@ func (d *Dispatcher) refuseToolMode(name string, input json.RawMessage) (Result,
 	if read && mode == config.ToolModeRead {
 		return Result{}, false
 	}
+	return ToolModeRefusal(name, mode, op), true
+}
+
+// ToolModeRefusal is the refusal of a call a tool's mode does not allow. The
+// dispatcher and the modal tools themselves (for a call another tool makes
+// in-process) give the same one.
+func ToolModeRefusal(name, mode, op string) Result {
 	what := "op " + op
 	if op == "" {
 		what = "a call with no recognised op"
@@ -58,7 +65,7 @@ func (d *Dispatcher) refuseToolMode(name string, input json.RawMessage) (Result,
 		IsError: true,
 		Error: &ErrorInfo{Category: CategoryPermission, Retryable: false,
 			Description: "Use a read operation of " + name + " instead, or ask an operator for an agent that may write."},
-	}, true
+	}
 }
 
 // NarrowToolModes is a spawned child's tool modes: its own definition's, with
