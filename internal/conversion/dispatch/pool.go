@@ -262,7 +262,11 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 			case *workerpb.WorkerFrame_OutputChunk:
 				data := m.OutputChunk.GetData()
 				if outSize+int64(len(data)) > maxOut {
-					return broke("output over its bound")
+					// The file's output is too large, which is no crash: end
+					// the job as its failure, without quarantining the file.
+					cancel(workerpb.CancelReason_CANCEL_REASON_CALLER)
+					return result{err: fmt.Errorf("convert: the %s output is over its %d-byte bound", wire.KindName(j.kind), maxOut),
+						accepted: true, delivered: res.delivered}
 				}
 				if j.outFile != nil {
 					if _, err := j.outFile.WriteAt(data, outSize); err != nil {
@@ -422,6 +426,8 @@ func (d *Dispatcher) run(ctx context.Context, j *job) (result, error) {
 				d.count(kind, "no_worker", false)
 			case errors.Is(err, convert.ErrNoHelper):
 				d.count(kind, "no_helper", false)
+			case errors.Is(err, convert.ErrNotConfigured):
+				d.count(kind, "not_configured", false)
 			case ctx.Err() == nil:
 				d.count(kind, "busy", false)
 			}

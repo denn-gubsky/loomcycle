@@ -39,13 +39,23 @@ import (
 )
 
 const (
-	// DefaultMaxInput bounds one job's input. The core's inputs are bounded
-	// already (64 MiB an inbox file by default, 256 MiB a PDF); this is the
-	// worker's own floor under them.
-	DefaultMaxInput = 1 << 30
-	heartbeatEvery  = 5 * time.Second
-	backoffMin      = time.Second
-	backoffMax      = 30 * time.Second
+	// DefaultMaxInput bounds one job's input, spooled to scratch. It is the
+	// core's own largest bound, a recording for speech-to-text (4 GiB,
+	// sttpass.MaxSource), so nothing the core converts in process is refused
+	// here.
+	DefaultMaxInput = 4 << 30
+	// helperGrace is how long past a helper's own bound its job may run, so
+	// the helper's timeout, which names it, ends the job rather than the
+	// job's context, which would read as a bare deadline.
+	helperGrace = 5 * time.Second
+	// maxEncoded and maxWAV are the core's bounds on an encode's output and
+	// a converted recording; a worker refuses past them itself, so an output
+	// over its bound is the file's failure, never a protocol break.
+	maxEncoded     = 256 << 20
+	maxWAV         = 4 << 30
+	heartbeatEvery = 5 * time.Second
+	backoffMin     = time.Second
+	backoffMax     = 30 * time.Second
 	// endWait bounds how long a finished job's stream may take to close.
 	endWait = 10 * time.Second
 	// maxSlots is the dispatcher's own bound on a worker's slots.
@@ -507,7 +517,7 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 	if timeout <= 0 {
 		timeout = time.Minute
 	}
-	jctx, cancel := context.WithTimeout(ctx, timeout)
+	jctx, cancel := context.WithTimeout(ctx, timeout+helperGrace)
 	defer cancel()
 
 	// After the input, the dispatcher sends only ImageRef and Cancel.
@@ -595,7 +605,9 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 	}()
 	if spool != nil {
 		defer spool.Close()
-		if err := sendSpool(send, spool); err != nil {
+		if spool.Size() > maxWAV {
+			jerr = fmt.Errorf("transcription.stt.media: the converted recording is %d bytes, over the %d limit", spool.Size(), int64(maxWAV))
+		} else if err := sendSpool(send, spool); err != nil {
 			return received, err
 		}
 	}
@@ -627,8 +639,9 @@ func (w *worker) converter(timeout time.Duration) *convert.InProcess {
 	}
 	return &convert.InProcess{
 		Rasterize: bound(w.opt.Rasterize), Media: bound(w.opt.Media), Encode: bound(w.opt.Encode),
-		Images:  w.opt.Images,
-		Scratch: func(context.Context) (string, error) { return w.opt.Scratch, nil },
+		Images:          w.opt.Images,
+		MaxEncodedBytes: maxEncoded,
+		Scratch:         func(context.Context) (string, error) { return w.opt.Scratch, nil },
 	}
 }
 
