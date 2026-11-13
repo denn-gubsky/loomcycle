@@ -18,7 +18,7 @@ import (
 // loadConfig is boot phase 1: assemble the layered config stack and load it.
 func (b *boot) loadConfig() {
 	// Assemble the ordered config-layer stack (embedded presets → CONFIG_DIR →
-	// CONFIG_FILES/--config + loomcycle.*.yaml section siblings). Factored into a
+	// --config + loomcycle.*.yaml section siblings). Factored into a
 	// shared, error-returning helper (autodiscover.go) so the RFC CK runtime
 	// reload can RE-run the same assembly — re-globbing siblings and re-reading
 	// CONFIG_DIR — and thus pick up added/removed config files without a restart.

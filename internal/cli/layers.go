@@ -35,9 +35,6 @@ type layerEnv struct {
 	// NoDefaultProviders is LOOMCYCLE_NO_DEFAULT_PROVIDERS=1: leave out the
 	// embedded default-providers layer.
 	NoDefaultProviders bool
-	// ConfigFiles is LOOMCYCLE_CONFIG_FILES: colon-separated files layered
-	// before the --config ones.
-	ConfigFiles string
 	// XDGConfigHome is XDG_CONFIG_HOME, the root of the auto-discovery path.
 	XDGConfigHome string
 }
@@ -47,7 +44,6 @@ func readLayerEnv() layerEnv {
 		Presets:            os.Getenv("LOOMCYCLE_PRESETS"),
 		ConfigDir:          strings.TrimSpace(os.Getenv("LOOMCYCLE_CONFIG_DIR")),
 		NoDefaultProviders: os.Getenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS") == "1",
-		ConfigFiles:        os.Getenv("LOOMCYCLE_CONFIG_FILES"),
 		XDGConfigHome:      os.Getenv("XDG_CONFIG_HOME"),
 	}
 }
@@ -136,8 +132,7 @@ func configDirLayers(dir string) ([]string, error) {
 // last wins:
 //
 //	providers.default → embedded presets → LOOMCYCLE_CONFIG_DIR/*.yaml
-//	→ LOOMCYCLE_CONFIG_FILES → --config, in the order given
-//	(+ each loomcycle.yaml's loomcycle.*.yaml siblings)
+//	→ --config, in the order given (+ each loomcycle.yaml's loomcycle.*.yaml siblings)
 //
 // presetFlags are the --preset values (empty: LOOMCYCLE_PRESETS decides);
 // cfgPaths are the config files named explicitly, each of which must exist.
@@ -159,6 +154,12 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 		if verbose {
 			slog.Info(msg, args...)
 		}
+	}
+	// The variable that used to name config files is retired. Refused here as
+	// well as in the load: the files it names are not layered, and when they
+	// were the only config the "no config found" below would hide why.
+	if refused := config.RetiredLayerEnvRefusals(os.Environ()); len(refused) > 0 {
+		return ConfigStack{}, fmt.Errorf("a retired environment variable names config files that are no longer layered; act on it, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	env := readLayerEnv()
 
@@ -193,13 +194,7 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 		}
 	}
 
-	var cfgFiles []string
-	for _, f := range strings.Split(env.ConfigFiles, ":") {
-		if f = strings.TrimSpace(f); f != "" {
-			cfgFiles = append(cfgFiles, f)
-		}
-	}
-	cfgFiles = append(cfgFiles, cfgPaths...)
+	cfgFiles := append([]string{}, cfgPaths...)
 	if len(cfgFiles) == 0 && len(configDirFiles) == 0 {
 		// No explicit operator config: auto-discovery.
 		resolvedCfg, found := discoverConfigPath()

@@ -42,7 +42,6 @@ func TestLoadLayeredConfig_PresetAliasResolvesInOverlayAgent(t *testing.T) {
 func TestLoadLayeredConfig_NoPresetsUnchanged(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PRESETS", "")
 	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
-	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
 	dir := t.TempDir()
 	overlay := filepath.Join(dir, "overlay.yaml")
 	// A self-contained agent (explicit provider+model) so the load succeeds;
@@ -66,7 +65,6 @@ func TestLoadLayeredConfig_NoPresetsUnchanged(t *testing.T) {
 func TestLoadLayeredConfig_OperatorLanesMergeOverBuiltinProvider(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PRESETS", "")
 	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
-	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
 	t.Setenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS", "")
 	overlay := filepath.Join(t.TempDir(), "overlay.yaml")
 	src := "providers:\n" +

@@ -128,7 +128,6 @@ func TestExpandEvalPlaceholders_LeavesAPlainPromptAlone(t *testing.T) {
 func TestExpandEvalPlaceholders_SeedOnlyPromptStillMatchesTheRecordedBaseline(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PRESETS", "base,memory")
 	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
-	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
 	cfg, err := loadLayeredConfig("")
 	if err != nil {
 		t.Fatalf("loadLayeredConfig: %v", err)

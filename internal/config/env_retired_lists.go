@@ -48,3 +48,18 @@ func hookPrivateHostsNotInYAML(value string, c retiredEnvCtx) bool {
 	}
 	return false
 }
+
+// RetiredLayerEnvRefusals is retiredEnvRefusals for the one retired variable
+// that named config layers, for the layer assembly: it runs before any yaml
+// is read, and when that variable named the only config, "no config found"
+// would otherwise hide the reason. Entries are "NAME: what to do"; values are
+// never included.
+func RetiredLayerEnvRefusals(environ []string) []string {
+	var out []string
+	for _, r := range retiredEnvRefusals(environ, &Config{}) {
+		if name, _, _ := strings.Cut(r, ": "); retiredLayerEnv[name] {
+			out = append(out, r)
+		}
+	}
+	return out
+}

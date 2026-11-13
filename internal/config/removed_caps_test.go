@@ -80,7 +80,7 @@ concurrency:
 }
 
 // TestLoadLayers_ARemovedConcurrencyKeyFailsInAnyLayer — a layered config
-// (presets → CONFIG_DIR → CONFIG_FILES → --config) is merged before it is
+// (presets → CONFIG_DIR → --config) is merged before it is
 // decoded, so the old key fails wherever it sits: in a base layer the
 // operator's file does not mention, in the operator's file over a clean base,
 // and in a file read from disk as well as an in-memory layer. A later layer

@@ -39,7 +39,6 @@ func TestAssembleConfigLayers_ReGlobsSectionSiblings(t *testing.T) {
 	}
 	t.Setenv("LOOMCYCLE_PRESETS", "")
 	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
-	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
 	t.Setenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS", "1")
 
 	sib := filepath.Join(dir, "loomcycle.memory.yaml")
@@ -86,7 +85,6 @@ func TestAssembleConfigLayers_ReGlobsSectionSiblings(t *testing.T) {
 func TestAssembleConfigLayers_MissingExplicitFile(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PRESETS", "")
 	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
-	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
 	if _, err := assembleConfigLayers(nil, []string{filepath.Join(t.TempDir(), "nope.yaml")}, false); err == nil {
 		t.Fatal("expected an error for a missing explicit config file, got nil")
 	}

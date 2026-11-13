@@ -1210,7 +1210,7 @@ The same operation is available through every transport that consumes the Connec
 
 ### At runtime — reload changed config (`POST /v1/_config/reload`)
 
-Edited a config file and want it live without a restart (which drops in-flight runs)? `POST /v1/_config/reload` **re-assembles** the layered stack the server booted with (presets → `LOOMCYCLE_CONFIG_DIR` → `LOOMCYCLE_CONFIG_FILES` → `--config`), re-globbing the `loomcycle.*.yaml` section siblings and re-reading `LOOMCYCLE_CONFIG_DIR` fresh — so a config or section file **added or removed** since boot is picked up too — validates it, and applies the sections it can apply live — reporting the rest.
+Edited a config file and want it live without a restart (which drops in-flight runs)? `POST /v1/_config/reload` **re-assembles** the layered stack the server booted with (presets → `LOOMCYCLE_CONFIG_DIR` → `--config`), re-globbing the `loomcycle.*.yaml` section siblings and re-reading `LOOMCYCLE_CONFIG_DIR` fresh — so a config or section file **added or removed** since boot is picked up too — validates it, and applies the sections it can apply live — reporting the rest.
 
 ```sh
 # Preview the diff without applying:
@@ -2625,10 +2625,11 @@ loomcycle --config bundles/document-agent/loomcycle.yaml \
 Put your authoritative file **LAST**: the bundle contributes its `agents:` (e.g.
 `doc/manager`), and your file wins on `provider_priority` / `tiers` / `volumes` /
 `defaults` — so the bundle's agent runs on *your* routing and reads *your*
-`default` Volume. Containers/systemd can use the env form instead:
-`LOOMCYCLE_CONFIG_FILES=base.yaml:override.yaml` (`:`-separated). When both are
-set, `LOOMCYCLE_CONFIG_FILES` files layer as the **base** and explicit `--config`
-flags layer **after** them (an explicit flag always wins).
+`default` Volume. Containers/systemd that cannot pass flags mount the files into
+`LOOMCYCLE_CONFIG_DIR` instead (layered in lexical order, before any `--config`).
+The `LOOMCYCLE_CONFIG_FILES` variable that used to list files is no longer read:
+set to a file list it stops the boot, since those files would silently not load.
+Pass each file as `--config`, in the same order, or place them in the config dir.
 
 **Section-per-file (`loomcycle.*.yaml`).** For a large config, split it by section
 into sibling files next to `loomcycle.yaml` and they auto-layer with **no flags or
@@ -2647,7 +2648,7 @@ Because it's the same deep-merge, a section file simply *owns* its section (put
 `providers:` in `loomcycle.providers.yaml` and leave it out of `loomcycle.yaml`).
 
 **A `loomcycle.yaml` base brings its siblings however it's reached** — by
-auto-discovery, by `--config loomcycle.yaml`, or in `LOOMCYCLE_CONFIG_FILES` — so
+auto-discovery or by `--config loomcycle.yaml` — so
 `loomcycle validate loomcycle.yaml` / `doctor` see the *same* split config the
 server runs (no lockstep drift). `LOOMCYCLE_CONFIG_DIR` is unaffected: it already
 layers every `*.yaml` in the directory.
@@ -3040,7 +3041,6 @@ The **full precedence chain** (base → top, last wins, RFC AN merge):
 ```
 embedded presets (LOOMCYCLE_PRESETS, in order)
   → LOOMCYCLE_CONFIG_DIR/*.yaml   (a dir of layers, lexical order)
-  → LOOMCYCLE_CONFIG_FILES        (':'-separated)
   → --config flags                (your authoritative overlay, wins)
 ```
 

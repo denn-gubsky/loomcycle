@@ -22,7 +22,7 @@ func runEvalLive(t *testing.T, args ...string) (int, string, string) {
 // path is reachable without a deployment.
 func noPresetsConfig(t *testing.T) string {
 	t.Helper()
-	for _, k := range []string{"LOOMCYCLE_PRESETS", "LOOMCYCLE_CONFIG_DIR", "LOOMCYCLE_CONFIG_FILES"} {
+	for _, k := range []string{"LOOMCYCLE_PRESETS", "LOOMCYCLE_CONFIG_DIR"} {
 		t.Setenv(k, "")
 	}
 	path := filepath.Join(t.TempDir(), "loomcycle.yaml")
@@ -68,7 +68,7 @@ func TestMemoryEvalLive_RefusesWithoutTheMemoryBundle(t *testing.T) {
 // the likeliest invocation error, and the fix is knowing what IS declared.
 func TestMemoryEvalLive_UnknownProviderNamesTheDeclaredOnes(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PRESETS", "base,memory")
-	for _, k := range []string{"LOOMCYCLE_CONFIG_DIR", "LOOMCYCLE_CONFIG_FILES"} {
+	for _, k := range []string{"LOOMCYCLE_CONFIG_DIR"} {
 		t.Setenv(k, "")
 	}
 	rc, _, stderr := runEvalLive(t, "--provider", "no-such-provider", "--model", "m")

@@ -192,7 +192,7 @@ func (b *boot) wireConfigReload() {
 		Reload:   func(newCfg *config.Config) error { srv.ReloadConcurrency(newCfg); return nil },
 	})
 	// The reload LOADER re-runs the full boot assembly (re-glob siblings, re-read
-	// CONFIG_DIR/CONFIG_FILES) rather than replaying the captured boot `layers`, so
+	// CONFIG_DIR) rather than replaying the captured boot `layers`, so
 	// a config or section file added/removed since boot takes effect on reload
 	// without a restart. verbose=false: don't re-log the layering on every reload.
 	srv.SetConfigReloader(func() (*config.Config, error) {

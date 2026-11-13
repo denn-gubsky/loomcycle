@@ -22,7 +22,7 @@ import (
 )
 
 // benchStacks are the config stacks this harness is driven with, each layered as
-// the server layers LOOMCYCLE_CONFIG_FILES (left to right, last wins) over the
+// the server layers repeated --config flags (left to right, last wins) over the
 // presets the drivers select.
 var benchStacks = map[string][]string{
 	"rating":        {"bench/synthesis/ingest.yaml", "bench/synthesis/lme_gate_arms.yaml", "bench/synthesis/locomo_rating.yaml"},

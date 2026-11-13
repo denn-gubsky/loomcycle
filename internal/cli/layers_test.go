@@ -13,7 +13,7 @@ import (
 // auto-discovery at an empty home and working directory.
 func isolateLayerEnv(t *testing.T) (home, cwd string) {
 	t.Helper()
-	for _, k := range []string{"LOOMCYCLE_PRESETS", "LOOMCYCLE_CONFIG_DIR", "LOOMCYCLE_CONFIG_FILES", "LOOMCYCLE_NO_DEFAULT_PROVIDERS", "XDG_CONFIG_HOME"} {
+	for _, k := range []string{"LOOMCYCLE_PRESETS", "LOOMCYCLE_CONFIG_DIR", "LOOMCYCLE_NO_DEFAULT_PROVIDERS", "XDG_CONFIG_HOME"} {
 		t.Setenv(k, "")
 	}
 	home, cwd = t.TempDir(), t.TempDir()
@@ -280,5 +280,30 @@ func TestSelectPresetNames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The retired variable that named config files stops the assembly, naming
+// itself and what to do, before a "no config found" could hide the cause.
+func TestAssembleConfigStack_RefusesTheRetiredConfigFilesVariable(t *testing.T) {
+	_, cwd := isolateLayerEnv(t)
+	t.Setenv("LOOMCYCLE_CONFIG_FILES", filepath.Join(cwd, "zz-layer.yaml"))
+	_, err := AssembleConfigStack(nil, nil, false)
+	if err == nil {
+		t.Fatal("assembled with the retired variable naming a file")
+	}
+	for _, want := range []string{"LOOMCYCLE_CONFIG_FILES", "--config", "LOOMCYCLE_CONFIG_DIR"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %q: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "zz-layer") {
+		t.Errorf("error carries the variable's value: %v", err)
+	}
+	// Set and empty, it named nothing: only advised, by the load.
+	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
+	t.Setenv("LOOMCYCLE_PRESETS", "base")
+	if _, err := AssembleConfigStack(nil, nil, false); err != nil {
+		t.Fatalf("the empty retired variable refused: %v", err)
 	}
 }

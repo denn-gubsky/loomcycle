@@ -58,7 +58,7 @@ func SectionSiblings(basePath string) []string {
 // after it). Non-base files pass through unchanged. The result preserves order
 // and is deduped, so a base listed twice — or two bases sharing a directory —
 // never double-layers a sibling. Applied wherever loomcycle.yaml files are
-// layered explicitly (LOOMCYCLE_CONFIG_FILES / --config) or by auto-discovery;
+// layered explicitly (--config) or by auto-discovery;
 // NOT to LOOMCYCLE_CONFIG_DIR, which already globs every *.yaml in the dir.
 func WithSectionSiblings(files []string) []string {
 	seen := map[string]bool{}
