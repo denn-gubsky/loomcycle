@@ -235,6 +235,12 @@ func TestRunMigrate_RunsUnderAnEnvironmentTheServerRefuses(t *testing.T) {
 		t.Setenv("LOOMCYCLE_LIMITS_ENFORCE", "zz-strictt")
 		t.Setenv("LOOMCYCLE_SCHEDULER_ENABLED", "0")
 		t.Setenv("LOOMCYCLE_CONFIG_FILES", "/zz-nowhere.yaml")
+		// A setting that moved to a yaml key the yaml does not name, a
+		// dead-link mode that is not one, and an automigrate value that is
+		// neither 1 nor 0: migrate reads none of them.
+		t.Setenv("LOOMCYCLE_METRICS_ENABLED", "1")
+		t.Setenv("LOOMCYCLE_DEADLINK_GC", "zz-disabled")
+		t.Setenv("LOOMCYCLE_PG_AUTOMIGRATE", "zz-false")
 		return writeYAML(t, filepath.Join(cwd, "a.yaml"),
 			"defaults: { provider: anthropic, model: claude-sonnet-4-6 }\nstorage:\n  backend: postgres\n  pg_dsn: postgres://u@127.0.0.1:1/x?connect_timeout=2\n")
 	}
@@ -247,7 +253,8 @@ func TestRunMigrate_RunsUnderAnEnvironmentTheServerRefuses(t *testing.T) {
 				t.Fatalf("rc=%d, want 1 (it reached the unreachable database); stderr=%q", rc, stderr.String())
 			}
 			out := stderr.String()
-			for _, name := range []string{"LOOMCYCLE_LIMITS_ENFORCE", "LOOMCYCLE_SCHEDULER_ENABLED", "LOOMCYCLE_CONFIG_FILES"} {
+			for _, name := range []string{"LOOMCYCLE_LIMITS_ENFORCE", "LOOMCYCLE_SCHEDULER_ENABLED", "LOOMCYCLE_CONFIG_FILES",
+				"LOOMCYCLE_METRICS_ENABLED", "LOOMCYCLE_DEADLINK_GC", "LOOMCYCLE_PG_AUTOMIGRATE"} {
 				if !strings.Contains(out, "loomcycle: warning: ") || !strings.Contains(out, name) {
 					t.Errorf("stderr does not warn about %s:\n%s", name, out)
 				}

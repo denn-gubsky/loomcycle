@@ -4990,12 +4990,23 @@ type LoadOptions struct {
 	// OfflineTool is for the commands an operator runs against the store
 	// while the server is down or will not start (tokens rewrap, audit
 	// verify, migrate). The server's load stops on a retired variable whose
-	// value it would loosen by ignoring, and on a bad value in one of the
-	// settings applyEnvRuntime reads; none of those settings is used by such
-	// a tool, and stopping it would leave the operator without the tool
-	// that repairs the deployment. With OfflineTool each of those is
-	// recorded in Config.NotEnforced instead, for the tool to print, and the
-	// setting is left as if unset.
+	// value it would loosen by ignoring (the gates, the bounds, and a
+	// setting that moved to a yaml key the yaml does not name), and on a bad
+	// value in one of the settings applyEnvRuntime reads or in
+	// LOOMCYCLE_DEADLINK_GC; none of those settings is used by such a tool,
+	// and stopping it would leave the operator without the tool that
+	// repairs the deployment. With OfflineTool each of those is recorded in
+	// Config.NotEnforced instead, for the tool to print, and the setting is
+	// left as if unset, or off where unset would start something: the
+	// dead-link sweep.
+	//
+	// LOOMCYCLE_PG_AUTOMIGRATE is the one such setting a tool does use:
+	// tokens and audit open the store with it. A value that is neither 1 nor
+	// 0 is recorded too, and read as 0, never as unset: unset would leave a
+	// yaml `pg_automigrate: true` in force and migrate the schema under a
+	// variable the operator may have written to prevent that. `migrate`
+	// loads the same way; it does not read the setting, and migrates when
+	// its verb says so.
 	//
 	// Nothing about which store is opened is relaxed: a retired variable
 	// that named the store (retiredStoreEnv) still stops the load, and so
@@ -5039,7 +5050,7 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
-	if err := applyEnvStorage(cfg); err != nil {
+	if err := applyEnvStorage(cfg, opts.OfflineTool); err != nil {
 		return nil, err
 	}
 	applyEnvSQLMem(cfg)
@@ -5062,7 +5073,7 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 	applyEnvClusterSweeps(cfg)
 	applyEnvLoopTuning(cfg)
 	applyEnvMemory(cfg)
-	if err := applyEnvDeadLinkGC(cfg); err != nil {
+	if err := applyEnvDeadLinkGC(cfg, opts.OfflineTool); err != nil {
 		return nil, err
 	}
 	if err := applyEnvToolLimits(cfg); err != nil {
@@ -5345,8 +5356,9 @@ func defaultedRoot(cfg *Config, envName, sub string) string {
 }
 
 // applyEnvStorage reads the storage block's env overrides and defaults the
-// backend. Part of LoadLayers.
-func applyEnvStorage(cfg *Config) error {
+// backend. Part of LoadLayers. offlineTool (LoadOptions.OfflineTool) records a
+// bad automigrate value in cfg.NotEnforced and reads it as 0.
+func applyEnvStorage(cfg *Config, offlineTool bool) error {
 	// Env-overrides for the storage block. Env wins over YAML so prod
 	// deploys can keep PG_DSN out of version-controlled config files.
 	// Empty env values fall through to whatever YAML provided.
@@ -5376,7 +5388,13 @@ func applyEnvStorage(cfg *Config) error {
 	case "0":
 		cfg.Storage.PgAutoMigrate = false
 	default:
-		return errors.New("LOOMCYCLE_PG_AUTOMIGRATE: the value is not 1 (migrate the schema at boot) or 0 (do not)")
+		const bad = "LOOMCYCLE_PG_AUTOMIGRATE: the value is not 1 (migrate the schema at boot) or 0 (do not)"
+		if !offlineTool {
+			return errors.New(bad)
+		}
+		// Off, not the yaml's setting: see LoadOptions.OfflineTool.
+		cfg.Storage.PgAutoMigrate = false
+		cfg.NotEnforced = append(cfg.NotEnforced, "the server refuses to start with this value, and this command reads it as 0 (it does not migrate the schema when it opens the store): "+bad)
 	}
 	cfg.Storage.BackendInferred = cfg.Storage.Backend == ""
 	cfg.Storage.Backend = inferStorageBackend(cfg.Storage.Backend, cfg.Storage.PgDSN)

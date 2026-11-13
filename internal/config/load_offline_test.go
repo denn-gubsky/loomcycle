@@ -95,3 +95,78 @@ func TestLoadLayersWith_OfflineToolIsTheSameLoadOtherwise(t *testing.T) {
 		t.Errorf("valid values were not applied: %d %d", offline.Env.AuthCacheTTLSeconds, offline.Env.RunRatePerMinute)
 	}
 }
+
+// The rule for a setting that moved to the yaml is a retired-variable
+// refusal like the gates, so the offline load reports it the same way.
+func TestLoadLayersWith_OfflineToolWarnsAboutAMovedSettingTheYAMLLacks(t *testing.T) {
+	layer := Layer{Name: "t.yaml", Data: []byte("defaults: {provider: mock}\n")}
+	t.Setenv("LOOMCYCLE_METRICS_ENABLED", "1")
+	t.Setenv("LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", "7")
+	if _, err := LoadLayers(layer); err == nil || !strings.Contains(err.Error(), "does not name metrics.enabled") {
+		t.Fatalf("the server's load: err = %v, want the moved-setting refusal", err)
+	}
+	cfg, err := LoadLayersWith(LoadOptions{OfflineTool: true}, layer)
+	if err != nil {
+		t.Fatalf("the offline tool's load failed: %v", err)
+	}
+	notes := strings.Join(cfg.NotEnforced, "\n")
+	for _, want := range []string{"LOOMCYCLE_METRICS_ENABLED", "metrics.enabled", "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER"} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("NotEnforced does not name %s:\n%s", want, notes)
+		}
+	}
+	if cfg.Metrics.Enabled || cfg.Concurrency.MaxConcurrentRunsPerUser != 0 {
+		t.Errorf("a retired variable was applied: metrics %v, per-user cap %d", cfg.Metrics.Enabled, cfg.Concurrency.MaxConcurrentRunsPerUser)
+	}
+}
+
+// A dead-link mode that is not one stops the server, which would otherwise
+// run a sweep the operator may have meant to turn off. No offline tool runs
+// that sweep: it warns, and holds the mode at off.
+func TestLoadLayersWith_OfflineToolWarnsAboutABadDeadLinkMode(t *testing.T) {
+	layer := Layer{Name: "t.yaml", Data: []byte("defaults: {provider: mock}\n")}
+	t.Setenv("LOOMCYCLE_DEADLINK_GC", "zz-disabled")
+	if _, err := LoadLayers(layer); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_DEADLINK_GC") {
+		t.Fatalf("the server's load: err = %v, want the refusal", err)
+	}
+	cfg, err := LoadLayersWith(LoadOptions{OfflineTool: true}, layer)
+	if err != nil {
+		t.Fatalf("the offline tool's load failed: %v", err)
+	}
+	notes := strings.Join(cfg.NotEnforced, "\n")
+	if !strings.Contains(notes, "LOOMCYCLE_DEADLINK_GC") || strings.Contains(notes, "zz-") {
+		t.Errorf("NotEnforced = %q, want the variable named without its value", notes)
+	}
+	if cfg.Env.DeadLinkGC != DeadLinkGCOff {
+		t.Errorf("DeadLinkGC = %q, want off: an unreadable mode must not read as on", cfg.Env.DeadLinkGC)
+	}
+}
+
+// An automigrate value that is neither 1 nor 0 stops the server: read as
+// unset it left a yaml `pg_automigrate: true` in force. tokens and audit open
+// the store with that setting, so their load must not read it as unset
+// either: it warns, and does not migrate.
+func TestLoadLayersWith_OfflineToolReadsABadAutomigrateAsOff(t *testing.T) {
+	layer := Layer{Name: "t.yaml", Data: []byte("defaults: {provider: mock}\nstorage: {backend: postgres, pg_dsn: \"postgres://u@127.0.0.1:1/x\", pg_automigrate: true}\n")}
+	t.Setenv("LOOMCYCLE_PG_DSN", "")
+	t.Setenv("LOOMCYCLE_PG_AUTOMIGRATE", "zz-false")
+	if _, err := LoadLayers(layer); err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_PG_AUTOMIGRATE") {
+		t.Fatalf("the server's load: err = %v, want the refusal", err)
+	}
+	cfg, err := LoadLayersWith(LoadOptions{OfflineTool: true}, layer)
+	if err != nil {
+		t.Fatalf("the offline tool's load failed: %v", err)
+	}
+	notes := strings.Join(cfg.NotEnforced, "\n")
+	if !strings.Contains(notes, "LOOMCYCLE_PG_AUTOMIGRATE") || strings.Contains(notes, "zz-") {
+		t.Errorf("NotEnforced = %q, want the variable named without its value", notes)
+	}
+	if cfg.Storage.PgAutoMigrate {
+		t.Error("PgAutoMigrate is on: the yaml's true stood under a variable that could not be read")
+	}
+	// The rest of the storage block is still read: the backend is what the
+	// tool opens.
+	if cfg.Storage.Backend != "postgres" || cfg.Storage.BackendInferred {
+		t.Errorf("backend = %q inferred=%v, want the yaml's postgres", cfg.Storage.Backend, cfg.Storage.BackendInferred)
+	}
+}

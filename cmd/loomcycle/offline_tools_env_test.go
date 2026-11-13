@@ -7,15 +7,21 @@ import (
 	"testing"
 )
 
-// badUnrelatedEnv sets, in variables neither command uses, three things the
-// server refuses to start with: a runtime setting that does not parse, a
-// retired gate kept off, and the retired config-files variable.
+// badUnrelatedEnv sets what the server refuses to start with and neither
+// command needs: a runtime setting that does not parse, a retired gate kept
+// off, the retired config-files variable, a setting that moved to a yaml key
+// the yaml does not name, a dead-link mode that is not one, and an
+// automigrate value that is neither 1 nor 0 (read as 0 by both).
 func badUnrelatedEnv(t *testing.T) []string {
 	t.Helper()
 	t.Setenv("LOOMCYCLE_AUTH_CACHE_TTL_SECONDS", "zz-soon")
 	t.Setenv("LOOMCYCLE_SCHEDULER_ENABLED", "0")
 	t.Setenv("LOOMCYCLE_CONFIG_FILES", "/zz-nowhere.yaml")
-	return []string{"LOOMCYCLE_AUTH_CACHE_TTL_SECONDS", "LOOMCYCLE_SCHEDULER_ENABLED", "LOOMCYCLE_CONFIG_FILES"}
+	t.Setenv("LOOMCYCLE_METRICS_ENABLED", "1")
+	t.Setenv("LOOMCYCLE_DEADLINK_GC", "zz-disabled")
+	t.Setenv("LOOMCYCLE_PG_AUTOMIGRATE", "zz-false")
+	return []string{"LOOMCYCLE_AUTH_CACHE_TTL_SECONDS", "LOOMCYCLE_SCHEDULER_ENABLED", "LOOMCYCLE_CONFIG_FILES",
+		"LOOMCYCLE_METRICS_ENABLED", "LOOMCYCLE_DEADLINK_GC", "LOOMCYCLE_PG_AUTOMIGRATE"}
 }
 
 func wantWarnedNotValue(t *testing.T, stderr string, names []string) {
