@@ -179,8 +179,19 @@ deploy_loomcycle() { # have want sidecar
   fi
 
   write_versions "$2" "$3" "$(board_version)" || return 1
+  # A compose file that does not load with this host's env files (a release
+  # that needs a new setting, such as LOOMCYCLE_WORKER_TOKEN) has started
+  # nothing and moved no schema: put the files back and say what to add,
+  # without the rollback below, which would stop a runtime that never left.
+  if ! cfgerr="$(compose config -q 2>&1)"; then
+    echo "FAILED: v$2's compose file does not load with this host's env files; nothing was started"
+    echo "$cfgerr"
+    echo "add what it names to .env.secure or .env.insecure (see the release's INSTALL.md); restoring the files of $1"
+    restore_files "$bk"
+    return 1
+  fi
   ok=0
-  if compose config -q && compose pull --quiet loomcycle loomcycle-migrate builder-sidecar \
+  if compose pull --quiet loomcycle loomcycle-migrate builder-sidecar conversion-worker \
      && docker pull --quiet "$hub/loomcycle-sandbox-session:$3" >/dev/null \
      && compose up -d --build; then
     i=0
@@ -211,6 +222,9 @@ deploy_loomcycle() { # have want sidecar
     else
       echo "the database schema did not change (${schema0:-unknown}): the database is left as it is"
     fi
+    # Services $2 added and $1 does not know (the conversion workers) would
+    # be left running by an up on $1's compose file: stop them first.
+    compose rm -sf conversion-worker >/dev/null 2>&1 || true
     restore_files "$bk"
     compose up -d
     i=0

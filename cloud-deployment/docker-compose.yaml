@@ -85,7 +85,7 @@ services:
   loomcycle-migrate:
     # Same image and tag as the runtime below, so one bump moves both and a patch
     # release's migrations are applied (a patch tag publishes this image for amd64).
-    image: denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION:-1.150.0}
+    image: denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION:-1.153.0}
     command: ["migrate", "up"]
     restart: "no"
     user: "65532:65532"
@@ -175,7 +175,7 @@ services:
     # Opus) goes to the conversion-worker containers below (RFC GO,
     # config conversion: mode remote). Published on every release tag, patch
     # tags included (amd64; a minor also has arm64).
-    image: denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION:-1.150.0}
+    image: denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION:-1.153.0}
     restart: unless-stopped
     user: "65532:65532"
     network_mode: "service:tailscale"   # → reachable at http://tailscale:8787
@@ -266,7 +266,7 @@ services:
   # that a worker can reach what the runtime can; its memory and processes stay
   # its own. No volume is mounted: a file reaches a worker only as bytes.
   conversion-worker:
-    image: denngubsky/loomcycle-worker:${LOOMCYCLE_VERSION:-1.150.0}
+    image: denngubsky/loomcycle-worker:${LOOMCYCLE_VERSION:-1.153.0}
     restart: unless-stopped
     network_mode: "service:tailscale"
     environment:

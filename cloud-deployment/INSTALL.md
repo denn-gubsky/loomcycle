@@ -716,6 +716,24 @@ when it exists. Then `make pull && make up`. If the new version bumped the schem
 Read the release's notes in `REVISIONS.md` first; a jump across several minors
 needs the steps in the section above.
 
+## Upgrading to conversion workers (RFC GO)
+
+The first release with conversion workers changes the stack: the runtime and the
+migration run `loomcycle-browser`, two `conversion-worker` containers
+(`loomcycle-worker`) do every file conversion, and `loomcycle-media` is no longer
+published. Before that release is deployed, on the host:
+
+1. Add `LOOMCYCLE_WORKER_TOKEN=$(openssl rand -hex 32)` to `.env.secure`. Without
+   it the new compose file does not load, and the deploy script stops and says so
+   without touching the running stack.
+2. Install the new deploy script (step 2 of the automatic-deploy setup below:
+   `install -m 755 deploy/loomcycle-cloud-deploy …/bin/`). The copy on the host
+   waits for a `loomcycle-media` image of the new version, which never appears, so
+   it would answer "not published yet" on every run and never deploy.
+
+A rollback to an older release removes the worker containers before it starts the
+old stack.
+
 ## Automatic deploys
 
 `deploy/loomcycle-cloud-deploy` deploys one release and checks the result. A

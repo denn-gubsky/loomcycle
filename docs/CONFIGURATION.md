@@ -4071,7 +4071,7 @@ The audit stream's retention is separate and stays in the environment (`LOOMCYCL
 
 File conversion is the one kind of work whose memory is set by what someone put in a file. One Office document at every extraction cap can take about 700 MiB. Inside the runtime's own process, a file that exhausts memory takes every run on the replica with it. `conversion.mode: local` moves every conversion into **conversion workers**: child processes of the same binary that the runtime starts, supervises and restarts (RFC GO).
 
-**The default is `local` on Linux and `inprocess` everywhere else.** On Linux a child's raised OOM score makes the kernel kill a worker before the runtime; elsewhere nothing steers that choice. Write `mode: inprocess` to keep conversions in the runtime on Linux. A runtime image without ffmpeg or pdftoppm (the distroless one) has none for its children either: recordings, encoded speech and OCR page rendering then need `remote` workers from the `loomcycle-worker` image.
+**The default is `local` on Linux and `inprocess` everywhere else.** On Linux a child's raised OOM score makes the kernel kill a worker before the runtime; elsewhere nothing steers that choice. Write `mode: inprocess` to keep conversions in the runtime on Linux. When the default cannot start its children (no writable temp directory for the socket, for one), the runtime logs a warning and converts in process; a mode written in the config that cannot start stops the boot instead. A runtime image without ffmpeg or pdftoppm (the distroless one) has none for its children either: recordings, encoded speech and OCR page rendering then need `remote` workers from the `loomcycle-worker` image.
 
 ```yaml
 conversion:
