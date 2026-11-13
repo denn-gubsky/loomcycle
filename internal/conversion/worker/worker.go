@@ -42,6 +42,8 @@ const (
 	backoffMax      = 30 * time.Second
 	// endWait bounds how long a finished job's stream may take to close.
 	endWait = 10 * time.Second
+	// maxSlots is the dispatcher's own bound on a worker's slots.
+	maxSlots = 64
 )
 
 // Options configure a worker.
@@ -78,7 +80,7 @@ func Run(ctx context.Context, opt Options) error {
 	if opt.Target == "" {
 		return errors.New("worker: no dispatcher address (--dispatcher)")
 	}
-	opt.Slots = max(opt.Slots, 1)
+	opt.Slots = min(max(opt.Slots, 1), maxSlots)
 	if opt.Scratch == "" {
 		opt.Scratch = os.TempDir()
 	}
@@ -459,12 +461,12 @@ func (s *remoteSink) Text(md string) error {
 }
 
 func (s *remoteSink) StartPage(n int) {
-	_ = s.send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_PageStart{PageStart: &workerpb.PageStart{Page: int32(n)}}})
+	_ = s.send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_PageStart{PageStart: &workerpb.PageStart{Page: wire.I32(n)}}})
 }
 
 func (s *remoteSink) Image(img extract.Image) (string, error) {
 	if err := s.send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_ImageBegin{ImageBegin: &workerpb.ImageBegin{
-		Name: img.Name, MediaType: img.MediaType, Alt: img.Alt, Page: int32(img.Page), Slide: int32(img.Slide), Size: int64(len(img.Data)),
+		Name: img.Name, MediaType: img.MediaType, Alt: img.Alt, Page: wire.I32(img.Page), Slide: wire.I32(img.Slide), Size: int64(len(img.Data)),
 	}}}); err != nil {
 		return "", err
 	}

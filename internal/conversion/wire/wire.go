@@ -7,6 +7,7 @@ package wire
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
@@ -65,13 +66,13 @@ const (
 // ReportToWire is the report a worker sends.
 func ReportToWire(r extract.Report) *workerpb.Report {
 	w := &workerpb.Report{
-		Format: r.Format, Chars: int64(r.Chars), Pages: int32(r.Pages), Sheets: int32(r.Sheets),
-		Slides: int32(r.Slides), Tables: int32(r.Tables), Images: int32(r.Images),
-		YieldCharsPerPage: r.YieldCharsPerPage, InferredHeadings: int32(r.InferredHeadings),
-		DroppedDecorativeImages: int32(r.DroppedDecorativeImages), Notes: r.Notes,
+		Format: r.Format, Chars: int64(r.Chars), Pages: I32(r.Pages), Sheets: I32(r.Sheets),
+		Slides: I32(r.Slides), Tables: I32(r.Tables), Images: I32(r.Images),
+		YieldCharsPerPage: r.YieldCharsPerPage, InferredHeadings: I32(r.InferredHeadings),
+		DroppedDecorativeImages: I32(r.DroppedDecorativeImages), Notes: r.Notes,
 	}
 	for _, y := range r.PageYields {
-		w.PageYields = append(w.PageYields, &workerpb.PageYield{Page: int32(y.Page), Chars: int32(y.Chars), Unread: y.Unread})
+		w.PageYields = append(w.PageYields, &workerpb.PageYield{Page: I32(y.Page), Chars: I32(y.Chars), Unread: y.Unread})
 	}
 	return w
 }
@@ -165,3 +166,10 @@ func clip(s string, n int) string {
 }
 
 func nonNeg(n int) int { return max(n, 0) }
+
+// I32 is n as an int32, saturated at the type's bounds: a count or page
+// number past them is clamped on the wire, never wrapped into a different
+// (or negative) one.
+func I32(n int) int32 {
+	return int32(min(max(n, math.MinInt32), math.MaxInt32))
+}

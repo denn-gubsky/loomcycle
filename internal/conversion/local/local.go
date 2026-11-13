@@ -68,12 +68,10 @@ func Listen() (l net.Listener, socket string, cleanup func(), err error) {
 	if len(filepath.Join(base, "lc-w-0123456789", "d.sock")) > maxSocketPath && runtime.GOOS != "windows" {
 		base = "/tmp"
 	}
+	// MkdirTemp makes the directory 0700 (the umask can only take bits
+	// away): only this user reaches the socket inside it.
 	dir, err := os.MkdirTemp(base, "lc-w-")
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("conversion: worker socket directory: %w", err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		os.RemoveAll(dir)
 		return nil, "", nil, fmt.Errorf("conversion: worker socket directory: %w", err)
 	}
 	socket = filepath.Join(dir, "d.sock")
@@ -159,6 +157,7 @@ func (s *Supervisor) supervise(ctx context.Context, opt Options, n int, log *slo
 // runChild starts one child and waits for it to exit, or stops it when ctx
 // ends.
 func (s *Supervisor) runChild(ctx context.Context, opt Options, n int) error {
+	// #nosec G204 -- Binary is this process's own executable (os.Executable at boot), and every argument is made here: the socket path of a directory this process created, its own pid and a fixed id; nothing comes from a run, a file or a caller
 	cmd := exec.Command(opt.Binary, "worker",
 		"--dispatcher", "unix://"+opt.Socket,
 		"--parent-pid", strconv.Itoa(os.Getpid()),

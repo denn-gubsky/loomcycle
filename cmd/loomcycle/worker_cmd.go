@@ -43,7 +43,7 @@ func runWorker(args []string, stderr io.Writer) int {
 	if *oomAdj != 0 && runtime.GOOS == "linux" {
 		// Raising one's own score needs no privilege; a failure only means
 		// the kernel weighs this worker like any other process.
-		if err := os.WriteFile("/proc/self/oom_score_adj", []byte(strconv.Itoa(*oomAdj)), 0o644); err != nil {
+		if err := os.WriteFile("/proc/self/oom_score_adj", []byte(strconv.Itoa(*oomAdj)), 0o600); err != nil {
 			slog.Warn("conversion worker could not raise its OOM score", "err", err)
 		}
 	}

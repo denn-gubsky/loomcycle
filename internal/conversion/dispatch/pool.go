@@ -74,10 +74,10 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 	start := &workerpb.JobStart{JobId: j.id, Kind: j.kind, InputSize: j.size, MediaType: j.mediaType, Name: j.name,
 		TimeoutMs: d.opt.JobTimeout.Milliseconds()}
 	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT {
-		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: int32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings}
+		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: wire.I32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings}
 	}
 	for _, p := range j.pages {
-		start.Pages = append(start.Pages, int32(p))
+		start.Pages = append(start.Pages, wire.I32(p))
 	}
 	if err := stream.Send(&workerpb.JobFrame{Msg: &workerpb.JobFrame_Start{Start: start}}); err != nil {
 		return result{retry: true}
