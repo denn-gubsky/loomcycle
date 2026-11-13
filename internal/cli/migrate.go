@@ -63,13 +63,15 @@ func loadPgDSN(cfgPaths []string, explicitDSN string, stderr io.Writer) (string,
 	if len(cfgPaths) > 0 {
 		// Read before the assembly: it loads auth.env into the environment.
 		envHadDSN := strings.TrimSpace(config.PgDSNFromEnv()) != ""
-		stack, err := assembleForCLI(cfgPaths...)
+		stack, err := AssembleConfigStackForOfflineTool(nil, cfgPaths)
 		if err != nil {
 			return "", fmt.Errorf("config: %w", err)
 		}
 		layers := describeStack(stack)
 		fmt.Fprintf(stderr, "migrate: config layers: %s\n", layers)
-		cfg, err := config.LoadLayers(stack.Layers...)
+		// The offline tool's load: a bad value in a variable migrate never
+		// reads is a warning, a disagreement about the store is not.
+		cfg, err := LoadConfigForOfflineTool(stack, stderr)
 		if err != nil {
 			return "", fmt.Errorf("config: %w", err)
 		}
@@ -134,7 +136,13 @@ func runMigrateUp(args []string, stdout, stderr io.Writer) int {
 	// same role. Only with --config: --dsn alone carries no setting, and
 	// applying the default would undo the server's.
 	if len(*cfgPaths) > 0 {
-		cfg, err := loadLayeredConfig(*cfgPaths...)
+		// Loaded a second time, for memory.fulltext; its warnings were
+		// printed by the first load.
+		stack, err := AssembleConfigStackForOfflineTool(nil, *cfgPaths)
+		if err != nil {
+			return fail(stderr, "config: %v", err)
+		}
+		cfg, err := LoadConfigForOfflineTool(stack, io.Discard)
 		if err != nil {
 			return fail(stderr, "config: %v", err)
 		}

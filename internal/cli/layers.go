@@ -167,6 +167,35 @@ type stackOptions struct {
 	// tool that measures the shipped config, which a developer's own file
 	// must not change unasked.
 	noDiscovery bool
+	// offlineTool does not refuse the retired variable that named config
+	// files: the load (config.LoadOptions.OfflineTool) reports it instead.
+	// The files it names are not layered either way.
+	offlineTool bool
+}
+
+// AssembleConfigStackForOfflineTool is AssembleConfigStack for the commands
+// an operator runs against the store while the server is down or will not
+// start (tokens rewrap, audit verify, migrate): the same stack, without the
+// refusal of the retired config-files variable, which their load reports as
+// not enforced. Load its layers with LoadConfigForOfflineTool.
+func AssembleConfigStackForOfflineTool(presetFlags, cfgPaths []string) (ConfigStack, error) {
+	return assembleConfigStack(stackOptions{presetFlags: presetFlags, cfgPaths: cfgPaths, offlineTool: true})
+}
+
+// LoadConfigForOfflineTool loads a stack the way an offline tool may: a
+// retired variable the server refuses, or a bad value in a runtime setting
+// the tool never uses, is printed to stderr as a warning and the tool goes
+// on. A refusal about which store is opened, and every other error, still
+// stops it. Warnings name variables and never carry a value.
+func LoadConfigForOfflineTool(stack ConfigStack, stderr io.Writer) (*config.Config, error) {
+	cfg, err := config.LoadLayersWith(config.LoadOptions{OfflineTool: true}, stack.Layers...)
+	if err != nil {
+		return nil, err
+	}
+	for _, note := range cfg.NotEnforced {
+		fmt.Fprintf(stderr, "loomcycle: warning: %s\n", note)
+	}
+	return cfg, nil
 }
 
 func assembleConfigStack(o stackOptions) (ConfigStack, error) {
@@ -179,7 +208,7 @@ func assembleConfigStack(o stackOptions) (ConfigStack, error) {
 	// The variable that used to name config files is retired. Refused here as
 	// well as in the load: the files it names are not layered, and when they
 	// were the only config the "no config found" below would hide why.
-	if refused := config.RetiredLayerEnvRefusals(os.Environ()); len(refused) > 0 {
+	if refused := config.RetiredLayerEnvRefusals(os.Environ()); len(refused) > 0 && !o.offlineTool {
 		return ConfigStack{}, fmt.Errorf("a retired environment variable names config files that are no longer layered; act on it, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	env := readLayerEnv()

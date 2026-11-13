@@ -204,6 +204,11 @@ var retiredEnv = map[string]string{
 // rules need no yaml, and the layer assembly applies them before the load.
 var retiredLayerEnv = map[string]bool{"LOOMCYCLE_CONFIG_FILES": true}
 
+// retiredStoreEnv names the retired variables that said which store to open.
+// Their refusal is never relaxed, for any caller: a tool that let it pass
+// would read or write the store the variable did not mean.
+var retiredStoreEnv = map[string]bool{"LOOMCYCLE_STORAGE_BACKEND": true}
+
 // retiredEnvWarnings returns one advisory per retired variable present in
 // environ (the os.Environ form), sorted by name. A variable set to the empty
 // string counts: the line is still dead weight in the operator's file. Values

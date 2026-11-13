@@ -334,6 +334,12 @@ type Config struct {
 	// not advisories and nothing else reports them.
 	Notices []string `yaml:"-"`
 
+	// NotEnforced holds what an offline tool's load (LoadOptions.OfflineTool)
+	// let pass where the server's load stops: one entry per refusal it only
+	// reported. Always empty after LoadLayers. The tool prints each; entries
+	// name variables and never carry a value.
+	NotEnforced []string `yaml:"-"`
+
 	// configDir is the directory of the loaded YAML, kept so relative
 	// paths inside the config (system_prompt_file, local_api.spec) can
 	// be resolved against it.
@@ -4969,6 +4975,31 @@ func splitCommaTrim(s string) []string {
 // The retired-jail check runs before any env block; the tool defaults and the
 // helper wrapper run after them, and validate last.
 func LoadLayers(layers ...Layer) (*Config, error) {
+	return LoadLayersWith(LoadOptions{}, layers...)
+}
+
+// LoadOptions are the ways a caller may ask for a load other than the
+// server's.
+type LoadOptions struct {
+	// OfflineTool is for the commands an operator runs against the store
+	// while the server is down or will not start (tokens rewrap, audit
+	// verify, migrate). The server's load stops on a retired variable whose
+	// value it would loosen by ignoring, and on a bad value in one of the
+	// settings applyEnvRuntime reads; none of those settings is used by such
+	// a tool, and stopping it would leave the operator without the tool
+	// that repairs the deployment. With OfflineTool each of those is
+	// recorded in Config.NotEnforced instead, for the tool to print, and the
+	// setting is left as if unset.
+	//
+	// Nothing about which store is opened is relaxed: a retired variable
+	// that named the store (retiredStoreEnv) still stops the load, and so
+	// does every other error.
+	OfflineTool bool
+}
+
+// LoadLayersWith is LoadLayers with options. The zero LoadOptions is
+// LoadLayers.
+func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 	cfg, primaryPath, err := loadLayerTree(layers)
 	if err != nil {
 		return nil, err
@@ -4984,7 +5015,20 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// live elsewhere, stops the load;
 	// the rest are said once, where boot, `validate` and `doctor` all print
 	// advisories.
-	if refused := retiredEnvRefusals(os.Environ(), cfg); len(refused) > 0 {
+	refused := retiredEnvRefusals(os.Environ(), cfg)
+	if opts.OfflineTool {
+		// Only a refusal about the store itself stops an offline tool.
+		var store []string
+		for _, r := range refused {
+			if name, _, _ := strings.Cut(r, ": "); retiredStoreEnv[name] {
+				store = append(store, r)
+				continue
+			}
+			cfg.NotEnforced = append(cfg.NotEnforced, "the server refuses to start with this retired variable set as it is, and this command ignores it: "+r)
+		}
+		refused = store
+	}
+	if len(refused) > 0 {
 		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, data kept or deleted differently, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
@@ -5033,7 +5077,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	applyEnvMCP(cfg)
-	if err := applyEnvRuntime(cfg); err != nil {
+	if err := applyEnvRuntime(cfg, opts.OfflineTool); err != nil {
 		return nil, err
 	}
 

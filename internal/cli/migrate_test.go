@@ -223,3 +223,56 @@ func TestRunMigrate_PrintsTheTargetBeforeActing(t *testing.T) {
 		})
 	}
 }
+
+// migrate is what an operator runs when the schema is the problem. A value
+// the server refuses, in a variable migrate never reads, is a warning here:
+// the verb goes on to the database. The commands that describe the server
+// (validate, agents list) keep failing on the same environment.
+func TestRunMigrate_RunsUnderAnEnvironmentTheServerRefuses(t *testing.T) {
+	setup := func(t *testing.T) string {
+		_, cwd := isolateLayerEnv(t)
+		t.Setenv("LOOMCYCLE_PG_DSN", "")
+		t.Setenv("LOOMCYCLE_LIMITS_ENFORCE", "zz-strictt")
+		t.Setenv("LOOMCYCLE_SCHEDULER_ENABLED", "0")
+		t.Setenv("LOOMCYCLE_CONFIG_FILES", "/zz-nowhere.yaml")
+		return writeYAML(t, filepath.Join(cwd, "a.yaml"),
+			"defaults: { provider: anthropic, model: claude-sonnet-4-6 }\nstorage:\n  backend: postgres\n  pg_dsn: postgres://u@127.0.0.1:1/x?connect_timeout=2\n")
+	}
+	for _, verb := range [][]string{{"status"}, {"up"}, {"down", "--yes"}} {
+		t.Run(verb[0], func(t *testing.T) {
+			p := setup(t)
+			var stdout, stderr bytes.Buffer
+			rc := RunMigrate(append(append([]string{}, verb...), "--config", p), &stdout, &stderr)
+			if rc != 1 {
+				t.Fatalf("rc=%d, want 1 (it reached the unreachable database); stderr=%q", rc, stderr.String())
+			}
+			out := stderr.String()
+			for _, name := range []string{"LOOMCYCLE_LIMITS_ENFORCE", "LOOMCYCLE_SCHEDULER_ENABLED", "LOOMCYCLE_CONFIG_FILES"} {
+				if !strings.Contains(out, "loomcycle: warning: ") || !strings.Contains(out, name) {
+					t.Errorf("stderr does not warn about %s:\n%s", name, out)
+				}
+			}
+			if strings.Contains(out, "zz-") {
+				t.Errorf("stderr carries a value:\n%s", out)
+			}
+		})
+	}
+	t.Run("a store disagreement still stops it", func(t *testing.T) {
+		p := setup(t)
+		t.Setenv("LOOMCYCLE_STORAGE_BACKEND", "sqlite")
+		var stdout, stderr bytes.Buffer
+		if rc := RunMigrate([]string{"status", "--config", p}, &stdout, &stderr); rc != 2 || !strings.Contains(stderr.String(), "LOOMCYCLE_STORAGE_BACKEND") {
+			t.Errorf("rc=%d, stderr=%q", rc, stderr.String())
+		}
+	})
+	t.Run("validate and agents list still fail", func(t *testing.T) {
+		p := setup(t)
+		var stdout, stderr bytes.Buffer
+		if rc := RunValidate([]string{p}, &stdout, &stderr); rc != 2 {
+			t.Errorf("validate rc=%d, want 2", rc)
+		}
+		if rc := RunAgents([]string{"list", "--config", p}, &stdout, &stderr); rc != 2 {
+			t.Errorf("agents list rc=%d, want 2", rc)
+		}
+	})
+}
