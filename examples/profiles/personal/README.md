@@ -29,7 +29,7 @@ With both, local models are tried first and the cloud is the fallback.
 
 ```sh
 set -a; . ./env.insecure; . ./env.local; set +a
-loomcycle doctor --config ./loomcycle.yaml     # which providers are usable
+loomcycle doctor --config ./loomcycle.yaml     # config, storage, port, and which provider keys are set
 loomcycle --config ./loomcycle.yaml
 ```
 

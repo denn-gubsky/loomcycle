@@ -220,7 +220,7 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		fmt.Fprintln(stdout)
 		fmt.Fprintf(stdout, "Then read %s and run `loomcycle doctor` to verify.\n", docPath)
 		printServerNeeds(stdout, preset)
-		printUIURL(stdout, listenAddr, authEnvPersisted)
+		printUIURL(stdout, listenAddr, authEnvPersisted, preset)
 	} else {
 		fmt.Fprintln(stdout, "Next steps:")
 		fmt.Fprintf(stdout, "  1. Read %s for the env-var reference.\n", docPath)
@@ -238,7 +238,7 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		fmt.Fprintln(stdout, "  3. Run `loomcycle doctor` to verify your setup.")
 		fmt.Fprintln(stdout, "  4. Run `loomcycle` to start the server.")
 		printServerNeeds(stdout, preset)
-		printUIURL(stdout, listenAddr, authEnvPersisted)
+		printUIURL(stdout, listenAddr, authEnvPersisted, preset)
 	}
 	return 0
 }
@@ -272,7 +272,7 @@ func mintAuthToken() (string, error) {
 // fronting proxy's access log. We print the bare /ui URL (which lands on the
 // login prompt) and point at the 0600 file the operator pastes from — the
 // secret never travels in a URL we emit, nor through stdout.
-func printUIURL(stdout io.Writer, listenAddr, authEnvPersisted string) {
+func printUIURL(stdout io.Writer, listenAddr, authEnvPersisted, preset string) {
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:8787"
 	}
@@ -280,6 +280,10 @@ func printUIURL(stdout io.Writer, listenAddr, authEnvPersisted string) {
 	fmt.Fprintf(stdout, "Open the Web UI: http://%s/ui\n", listenAddr)
 	if authEnvPersisted != "" {
 		fmt.Fprintf(stdout, "    → at the login prompt, paste the token from %s\n", authEnvPersisted)
+	} else if preset == "server" {
+		// No open mode on a server: a non-loopback address with nothing to
+		// authenticate against is refused at boot.
+		fmt.Fprintln(stdout, "    → at the login prompt, paste your LOOMCYCLE_AUTH_TOKEN")
 	} else {
 		fmt.Fprintln(stdout, "    → at the login prompt, paste your LOOMCYCLE_AUTH_TOKEN (open mode needs no token)")
 	}

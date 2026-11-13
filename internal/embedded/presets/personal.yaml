@@ -29,7 +29,9 @@
 #                DEEPSEEK_API_KEY, GEMINI_API_KEY). An unreachable Ollama is
 #                skipped. chat/local-small is pinned to a local model and
 #                fails without one; the other agents route by tier.
-# `loomcycle doctor` reports which providers are usable before you start.
+# `loomcycle doctor` reports which provider keys are set before you start. It
+# does not contact Ollama: the server's own start log says whether it reached
+# it and which models it lists.
 #
 # WHAT THIS PRESET CANNOT DO. Its agents list Bash, HTTP and WebFetch, and
 # those stay idle: the switches that enable them (LOOMCYCLE_BASH_ENABLED,

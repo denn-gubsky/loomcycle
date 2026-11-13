@@ -357,6 +357,11 @@ func TestInit_ProfileServer_WritesTheServerConfigAndSaysWhatItNeeds(t *testing.T
 		t.Error("the written yaml does not name the server preset")
 	}
 	out := stdout.String()
+	// A server does not run in open mode: a non-loopback address with no
+	// token is refused at boot.
+	if strings.Contains(out, "open mode") {
+		t.Errorf("the server profile's next steps mention open mode:\n%s", out)
+	}
 	for _, want := range []string{"LOOMCYCLE_PUBLIC_URL", "LOOMCYCLE_SQLMEM_PG_DSN", "examples/profiles/server"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout missing %q; got:\n%s", want, out)
