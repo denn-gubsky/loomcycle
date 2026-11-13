@@ -127,7 +127,7 @@ func (b *boot) mountWebhooks() {
 			rec.MountAdmin(reg, adminAuth)
 		})
 		slog.Info("webhooks: enabled (POST /v1/_webhooks/{name} + a team's own at POST /v1/_teams/{team}/webhooks/{name}; env_allowlist names via LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST + LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST + static-declared secrets; LOOMCYCLE_* verify-secrets auto-allowed)",
-			"env_allowlist_names", len(webhookAllowlist), "unauthenticated_mode", cfg.Env.WebhooksAllowUnauthenticated)
+			"env_allowlist_names", len(webhookAllowlist), "allow_unsigned", cfg.Env.WebhooksAllowUnauthenticated)
 		// Surface every static webhook that will fail every delivery (inert,
 		// or its secret won't resolve) so the operator sees WHY at boot rather
 		// than discovering it via a 503 — the F23/F24 discoverability gap.

@@ -509,20 +509,18 @@ func (b *boot) startVolumeAndAgentSweepers() {
 	// the dynamic_agents table is shared. operators who never use the
 	// `register_agent` MCP tool simply have an empty table the sweeper
 	// passes over with zero rows deleted.
-	{
-		goAdvisoryGatedSweeper(bgCtx, dynamicAgentSweepInterval, advisoryLock, coord.LockKeyDynamicAgentSweeper, "dynamic_agents",
-			func(ctx context.Context) {
-				n, err := storeIface.DynamicAgentSweep(ctx)
-				if err != nil {
-					slog.Error("dynamic_agents sweep: failed", "err", err)
-					return
-				}
-				if n > 0 {
-					slog.Info("dynamic_agents sweep: deleted expired rows", "rows", n)
-				}
-			})
-		slog.Info("dynamic_agents: sweeper enabled", "interval", dynamicAgentSweepInterval)
-	}
+	goAdvisoryGatedSweeper(bgCtx, dynamicAgentSweepInterval, advisoryLock, coord.LockKeyDynamicAgentSweeper, "dynamic_agents",
+		func(ctx context.Context) {
+			n, err := storeIface.DynamicAgentSweep(ctx)
+			if err != nil {
+				slog.Error("dynamic_agents sweep: failed", "err", err)
+				return
+			}
+			if n > 0 {
+				slog.Info("dynamic_agents sweep: deleted expired rows", "rows", n)
+			}
+		})
+	slog.Info("dynamic_agents: sweeper enabled", "interval", dynamicAgentSweepInterval)
 
 	// RFC AH Phase 2b ephemeral-volume crash-recovery sweeper. The inline
 	// run-completion purge is the primary path; this backstops a host that

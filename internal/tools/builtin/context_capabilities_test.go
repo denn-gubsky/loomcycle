@@ -98,10 +98,14 @@ func TestContextTool_CapabilitiesReflectsSubsystemState(t *testing.T) {
 	offCfg.Env.RetentionEnabled = false
 	offCfg.Providers = nil
 	offOut := capabilitiesOut(t, &Context{Cfg: offCfg}, ctx)
-	for _, key := range []string{"bash", "bashbox", "retention", "code_js"} {
+	for _, key := range []string{"bash", "retention", "code_js"} {
 		if available(t, offOut, key) {
 			t.Errorf("%s still reports available after the subsystem was disabled — the flag is not reading real state", key)
 		}
+	}
+	// Bashbox has no switch: it is registered on every configured server.
+	if !available(t, offOut, "bashbox") {
+		t.Error("bashbox reports unavailable on a configured server; it is always registered")
 	}
 
 	// Consolidation: configured + enabled, then staged off. "configured but not
