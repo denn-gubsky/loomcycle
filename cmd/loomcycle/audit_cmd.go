@@ -186,12 +186,13 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 // and no store, only the file and, when set, the chain key from the
 // environment.
 func runAuditVerifyExport(path string, allowPartial, asJSON bool, stdout, stderr io.Writer) int {
-	cur, err := credential.DeriveAuditChainKey(os.Getenv("LOOMCYCLE_SECRET_KEY"))
+	curKey, prevKey := config.SecretKeysFromEnv()
+	cur, err := credential.DeriveAuditChainKey(curKey)
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle: error: LOOMCYCLE_SECRET_KEY: %v\n", err)
 		return 2
 	}
-	prev, err := credential.DeriveAuditChainKey(os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"))
+	prev, err := credential.DeriveAuditChainKey(prevKey)
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle: error: LOOMCYCLE_SECRET_KEY_PREVIOUS: %v\n", err)
 		return 2

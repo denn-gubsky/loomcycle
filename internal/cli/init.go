@@ -303,7 +303,7 @@ func defaultEnvVarFor(provider string) string {
 }
 
 func defaultConfigDir() (string, error) {
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
+	if v := readLayerEnv().XDGConfigHome; v != "" {
 		return filepath.Join(v, "loomcycle"), nil
 	}
 	home, err := os.UserHomeDir()

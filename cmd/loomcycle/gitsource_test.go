@@ -9,24 +9,18 @@ import (
 	"time"
 )
 
-func envOf(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
-
-func TestGitSourceConfigFromEnv_OffUnlessHostsAreListed(t *testing.T) {
-	for _, env := range []map[string]string{
-		{},
-		{"LOOMCYCLE_GIT_SOURCE_HOSTS": "  , "},
-	} {
-		cfg, err := gitSourceConfigFromEnv(envOf(env), nil)
-		if cfg != nil || err != nil {
-			t.Errorf("%v: cfg=%v err=%v, want the feature off", env, cfg, err)
-		}
+// The hosts are read and checked by config load (Env.GitSourceHosts); with
+// none the feature is off.
+func TestGitSourceConfig_OffUnlessHostsAreListed(t *testing.T) {
+	if cfg := gitSourceConfig(nil, nil); cfg != nil {
+		t.Errorf("cfg=%v, want the feature off", cfg)
 	}
 }
 
-func TestGitSourceConfigFromEnv_HostsAndFixedLimits(t *testing.T) {
-	cfg, err := gitSourceConfigFromEnv(envOf(map[string]string{"LOOMCYCLE_GIT_SOURCE_HOSTS": "GitHub.com, gitea.example:3000"}), nil)
-	if err != nil || cfg == nil {
-		t.Fatalf("cfg=%v err=%v", cfg, err)
+func TestGitSourceConfig_HostsAndFixedLimits(t *testing.T) {
+	cfg := gitSourceConfig([]string{"github.com", "gitea.example:3000"}, nil)
+	if cfg == nil {
+		t.Fatal("no config for a host list")
 	}
 	if got := strings.Join(cfg.Hosts, "|"); got != "github.com|gitea.example:3000" {
 		t.Errorf("hosts = %q", got)
@@ -38,20 +32,6 @@ func TestGitSourceConfigFromEnv_HostsAndFixedLimits(t *testing.T) {
 	if cfg.Transport == nil {
 		t.Error("no transport: a clone would have nothing that enforces the network rules")
 	}
-
-}
-
-// A host written as a URL stops the start: an operator who wrote a host list
-// meant one.
-func TestGitSourceConfigFromEnv_RefusesWhatItCannotRead(t *testing.T) {
-	for name, env := range map[string]map[string]string{
-		"a URL for a host":  {"LOOMCYCLE_GIT_SOURCE_HOSTS": "https://github.com"},
-		"a path for a host": {"LOOMCYCLE_GIT_SOURCE_HOSTS": "github.com/acme"},
-	} {
-		if cfg, err := gitSourceConfigFromEnv(envOf(env), nil); err == nil {
-			t.Errorf("%s: accepted as %+v", name, cfg)
-		}
-	}
 }
 
 // The transport a clone uses dials through the network guard: a host on a
@@ -60,16 +40,16 @@ func TestGitSourceConfigFromEnv_RefusesWhatItCannotRead(t *testing.T) {
 // The two cases differ in that list alone. Every other git source test hands
 // in its own transport, so this is the one place the guard on the clone path
 // is exercised.
-func TestGitSourceConfigFromEnv_TheTransportRefusesAPrivateAddress(t *testing.T) {
+func TestGitSourceConfig_TheTransportRefusesAPrivateAddress(t *testing.T) {
 	var hits atomic.Int64
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1) }))
 	defer srv.Close()
-	env := envOf(map[string]string{"LOOMCYCLE_GIT_SOURCE_HOSTS": strings.TrimPrefix(srv.URL, "https://")})
+	hosts := []string{strings.TrimPrefix(srv.URL, "https://")}
 	get := func(allowlist []string) error {
 		t.Helper()
-		cfg, err := gitSourceConfigFromEnv(env, allowlist)
-		if err != nil || cfg == nil {
-			t.Fatalf("cfg=%v err=%v", cfg, err)
+		cfg := gitSourceConfig(hosts, allowlist)
+		if cfg == nil {
+			t.Fatal("no config for a host list")
 		}
 		tr, ok := cfg.Transport.(*http.Transport)
 		if !ok {

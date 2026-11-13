@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/credential"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 )
@@ -20,7 +20,8 @@ func runOtel(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "loomcycle: error: "+otelUsage)
 		return 2
 	}
-	key, err := credential.DeriveOTelUserKey(os.Getenv("LOOMCYCLE_SECRET_KEY"))
+	secretKey, _ := config.SecretKeysFromEnv()
+	key, err := credential.DeriveOTelUserKey(secretKey)
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle: error: LOOMCYCLE_SECRET_KEY: %v\n", err)
 		return 2

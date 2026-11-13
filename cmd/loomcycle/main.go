@@ -104,13 +104,6 @@ var (
 // corresponding info wasn't available (binary built without VCS — e.g.
 // `go test` by default does not embed VCS info, but `go build` and
 // `go install` do).
-// memoryChangesEnabled reports whether the RFC CD Part C change-data-capture
-// feed is on. Default off — when off the store is NOT wrapped by the CDC
-// decorator, so the default deployment is byte-identical and pays nothing.
-func memoryChangesEnabled() bool {
-	return os.Getenv("LOOMCYCLE_MEMORY_CHANGES_ENABLED") == "1"
-}
-
 // memoryChangesRetention is how long change-feed rows are kept before the
 // retention sweeper prunes them: a day covers a subscriber's outage without
 // the feed growing with the corpus.
@@ -296,23 +289,6 @@ func stripPseudoVersionSuffix(v string) string {
 func printVersion() {
 	fmt.Printf("loomcycle version=%s commit=%s built=%s go=%s\n",
 		buildVersion, buildCommit, buildTime, runtime.Version())
-}
-
-// selectPresetNames resolves the RFC AQ embedded-preset selection: --preset
-// flags, if any, override LOOMCYCLE_PRESETS (comma-separated, ordered). Empty /
-// unset → no presets (opt-in default — exactly today's behaviour). Order is
-// preserved; it becomes the base layer order of the config stack.
-func selectPresetNames(flags []string, env string) []string {
-	if len(flags) > 0 {
-		return flags
-	}
-	var out []string
-	for _, n := range strings.Split(env, ",") {
-		if n = strings.TrimSpace(n); n != "" {
-			out = append(out, n)
-		}
-	}
-	return out
 }
 
 // processStartedAt is when this process began. A run row older than it was
@@ -704,11 +680,9 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 	// resolution logic) — kept id-keyed so the boot log is unchanged from pre-P2a
 	// for the mock/code-js paths. anthropic-oauth-dev logs its own below.
 	if _, ok := pr.byID["mock"]; ok {
-		slog.Info("mock provider: enabled",
-			"latency_ms", os.Getenv("LOOMCYCLE_MOCK_LATENCY_MS"),
-			"latency_jitter_ms", os.Getenv("LOOMCYCLE_MOCK_LATENCY_JITTER_MS"),
-			"rate_429", os.Getenv("LOOMCYCLE_MOCK_429_RATE"),
-			"rate_500", os.Getenv("LOOMCYCLE_MOCK_500_RATE"))
+		// The driver reads its own LOOMCYCLE_MOCK_* latency and failure
+		// rates; they are not echoed here from a second read.
+		slog.Info("mock provider: enabled")
 	}
 	if _, ok := pr.byID["mock-stable"]; ok {
 		slog.Info("mock-stable provider: enabled (failure injection always off; fallback target for [mock, mock-stable] tier policies)")
@@ -725,7 +699,7 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 	// Refresher lifecycle; not a registry driver). Two gates: env var + tokens on
 	// disk. The provider (when live) joins byID like any other; the refresher
 	// handle is kept for shutdown teardown.
-	if os.Getenv(anthropic_oauth_dev.EnvEnabled) == "1" {
+	if cfg.Env.AnthropicOAuthDevEnabled {
 		streamOpts := streamhttp.Options{
 			HeaderTimeout: config.ProviderHeaderTimeoutMS * time.Millisecond,
 			IdleTimeout:   config.ProviderIdleTimeoutMS * time.Millisecond,
@@ -777,7 +751,7 @@ func providerEnabled(id string, pc config.ProviderConfig, cfg *config.Config) bo
 		}
 		return cfg.Env.OllamaBaseURL != "" || pc.BaseURL != ""
 	case "mock", "mock-stable":
-		return os.Getenv("LOOMCYCLE_MOCK_ENABLED") == "1"
+		return cfg.Env.MockEnabled
 	case "code-js":
 		return true
 	default:

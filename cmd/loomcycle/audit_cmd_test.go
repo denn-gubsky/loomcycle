@@ -24,7 +24,7 @@ func auditCmdEnv(t *testing.T) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	for _, k := range []string{
-		"LOOMCYCLE_PRESETS", "LOOMCYCLE_CONFIG_DIR", "LOOMCYCLE_CONFIG_FILES",
+		"LOOMCYCLE_PRESETS", "LOOMCYCLE_CONFIG_DIR",
 		"LOOMCYCLE_PG_DSN", "LOOMCYCLE_REPLICA_ID",
 		"LOOMCYCLE_SECRET_KEY_PREVIOUS", "XDG_CONFIG_HOME", "LOOMCYCLE_ACL", "LOOMCYCLE_AUDIT_STORE",
 	} {

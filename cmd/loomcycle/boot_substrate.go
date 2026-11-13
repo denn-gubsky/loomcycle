@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"os"
-	"strconv"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/aclres"
@@ -193,12 +191,7 @@ func (b *boot) wireAuth() {
 		// Each move of documents between scopes (RFC FT).
 		b.documentTool.Audit = auditSink
 	}
-	graceSecs := 0
-	if v := os.Getenv("LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS"); v != "" {
-		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 {
-			graceSecs = n
-		}
-	}
+	graceSecs := cfg.Env.OperatorTokenRotationGraceSeconds
 	// A config principal whose tenant differs only by case from a minted token's
 	// tenant would share its volume directory on a case-insensitive filesystem.
 	// Config load already compared principals with each other; the token side
@@ -243,13 +236,7 @@ func (b *boot) wireAuth() {
 	// 30s TTL; LOOMCYCLE_AUTH_CACHE_TTL_SECONDS=0 disables it (direct
 	// lookup per request — immediate revocation). A token mutation
 	// flushes it locally + (in cluster mode) broadcasts a flush.
-	authCacheTTL := 30
-	if v := os.Getenv("LOOMCYCLE_AUTH_CACHE_TTL_SECONDS"); v != "" {
-		if n, perr := strconv.Atoi(v); perr == nil && n >= 0 {
-			authCacheTTL = n
-		}
-	}
-	srv.EnableTokenCache(time.Duration(authCacheTTL) * time.Second)
+	srv.EnableTokenCache(time.Duration(cfg.Env.AuthCacheTTLSeconds) * time.Second)
 	// RFC EY: groups + ACL rule lists. The resolver is always wired; the
 	// mode decides what a decision means (compat by default: the scope
 	// gates decide and an explicit deny is honoured on top).
@@ -279,46 +266,25 @@ func (b *boot) wireAuth() {
 	srv.SetAuditStreamRunning(b.auditStream != nil)
 	// A cap on how long a delegated user token may live. Unset = no cap; with
 	// a cap, a mint that asks for no lifetime gets the cap.
-	if v := os.Getenv("LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS"); v != "" {
-		if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
-			srv.SetUserTokenMaxTTL(time.Duration(n) * time.Second)
-			slog.Info("auth: user tokens have a maximum lifetime", "max_ttl_seconds", n)
-		} else {
-			fatal("auth: LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS is not a positive number of seconds", "value", v)
-		}
+	if n := cfg.Env.UserTokenMaxTTLSeconds; n > 0 {
+		srv.SetUserTokenMaxTTL(time.Duration(n) * time.Second)
+		slog.Info("auth: user tokens have a maximum lifetime", "max_ttl_seconds", n)
 	}
 	// A default rate for run starts, for a caller whose token carries none.
 	// Unset = no default. Operators (admin, tenant operator, the legacy token)
 	// are never bound by the default.
-	if v := os.Getenv("LOOMCYCLE_RUN_RATE_PER_MINUTE"); v != "" {
-		rate := auth.RateLimit{}
-		n, perr := strconv.Atoi(v)
-		if perr != nil {
-			fatal("auth: LOOMCYCLE_RUN_RATE_PER_MINUTE is not a number", "value", v)
-		}
-		rate.PerMinute = n
-		if b := os.Getenv("LOOMCYCLE_RUN_RATE_BURST"); b != "" {
-			if rate.Burst, perr = strconv.Atoi(b); perr != nil {
-				fatal("auth: LOOMCYCLE_RUN_RATE_BURST is not a number", "value", b)
-			}
-		}
-		if err := rate.Validate(); err != nil {
-			fatal("auth: LOOMCYCLE_RUN_RATE_PER_MINUTE / _BURST is invalid", "err", err)
-		}
+	// Config load validated the pair.
+	if cfg.Env.RunRatePerMinute > 0 {
+		rate := auth.RateLimit{PerMinute: cfg.Env.RunRatePerMinute, Burst: cfg.Env.RunRateBurst}
 		srv.SetDefaultRunRate(rate)
 		slog.Info("auth: default run rate", "per_minute", rate.PerMinute, "burst", rate.EffectiveBurst())
 	}
 	// Strict token budgets: also check a hard budget before each model call
 	// and each sub-agent start, so a run in flight stops when the budget is
-	// gone. Unset keeps the check at run admission only. Any other value is a
-	// mistake worth stopping for: a deployment that asked for enforcement and
-	// misspelled it must not run without it.
-	switch v := os.Getenv("LOOMCYCLE_LIMITS_ENFORCE"); v {
-	case "":
-	case "strict":
+	// gone. Unset keeps the check at run admission only; config load refuses
+	// any other value.
+	if cfg.Env.LimitsEnforceStrict {
 		srv.SetStrictLimits(true)
 		slog.Info("limits: strict enforcement (a hard budget stops runs in flight and refuses sub-agents)")
-	default:
-		fatal("limits: LOOMCYCLE_LIMITS_ENFORCE is not a known value (strict, or unset)", "value", v)
 	}
 }
