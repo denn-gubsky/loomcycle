@@ -23,8 +23,9 @@
 #                                          #   localhost). NOT a model name — the
 #                                          #   model comes from the aliases below.
 #   LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX=131072  # pin the context window (see note).
-#   LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS=300000  # time-to-FIRST-token budget.
-#   LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS=300000    # inter-token idle budget.
+#   The time-to-first-token and inter-token budgets are 10 minutes each;
+#   change them in this file with
+#     providers: { ollama-local: { options: { header_timeout_ms: 900000, idle_timeout_ms: 900000 } } }
 #   LOOMCYCLE_BASH_ENABLED=1   # if the agent runs shell (NOT a true sandbox)
 #
 # Filesystem access (RFC AH Phase 3): declare a `volumes:` block — the legacy

@@ -2,9 +2,7 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -17,13 +15,12 @@ import (
 // estimate off entirely. Applying the multiplier comes in a later version, so
 // `on` is refused rather than accepted and silently ignored.
 type TimeoutScaling struct {
-	// Mode is off | measure. Env LOOMCYCLE_TIMEOUT_SCALING wins when set.
+	// Mode is off | measure.
 	Mode string `yaml:"mode,omitempty"`
 	// Reference is the machine a slowdown of 1 means.
 	Reference TimeoutScalingReference `yaml:"reference,omitempty"`
 	// MaxMultiplier caps the multiplier and clips each sample's slowdown, so one
-	// pathological call cannot swing the estimate. Env
-	// LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER wins when set.
+	// pathological call cannot swing the estimate.
 	MaxMultiplier float64 `yaml:"max_multiplier,omitempty"`
 	// MinSamples is how many measured calls a model needs before its own
 	// estimate is trusted; below it the multiplier comes from an override, the
@@ -43,8 +40,7 @@ type TimeoutScaling struct {
 // TimeoutScalingReference is the reference machine. A call's expected time is
 // ttft_ms + uncached_input / prefill_tps + output / decode_tps.
 type TimeoutScalingReference struct {
-	// DecodeTPS is output tokens per second. Env
-	// LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS wins when set.
+	// DecodeTPS is output tokens per second.
 	DecodeTPS  float64 `yaml:"decode_tps,omitempty"`
 	PrefillTPS float64 `yaml:"prefill_tps,omitempty"`
 	TTFTMs     int     `yaml:"ttft_ms,omitempty"`
@@ -134,29 +130,10 @@ func (c *Config) ResolveModelKey(key string) (provider, model string, ok bool) {
 	return provider, model, true
 }
 
-// applyTimeoutScaling applies the env overrides, then the defaults. An env value
-// that does not parse is reported as a warning and ignored, like the other
-// numeric env knobs; an unknown mode is left for validate to refuse.
+// applyTimeoutScaling fills the block's defaults; an unknown mode is left for
+// validate to refuse.
 func applyTimeoutScaling(cfg *Config) {
-	ts := &cfg.TimeoutScaling
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_TIMEOUT_SCALING")); v != "" {
-		ts.Mode = strings.ToLower(v)
-	}
-	if v := os.Getenv("LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS"); v != "" {
-		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && f > 0 {
-			ts.Reference.DecodeTPS = f
-		} else {
-			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS=%q is not a positive number; ignored", v))
-		}
-	}
-	if v := os.Getenv("LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER"); v != "" {
-		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil && f > 0 {
-			ts.MaxMultiplier = f
-		} else {
-			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER=%q is not a positive number; ignored", v))
-		}
-	}
-	*ts = ts.WithDefaults()
+	cfg.TimeoutScaling = cfg.TimeoutScaling.WithDefaults()
 }
 
 // validateTimeoutScaling refuses a block that would measure nonsense. Unset

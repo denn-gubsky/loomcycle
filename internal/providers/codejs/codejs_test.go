@@ -390,7 +390,7 @@ func TestCodeJS_CPUBoundLoop_KilledByInterrupt(t *testing.T) {
 	}
 }
 
-// Cross-run reproducibility (LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1) pins
+// Cross-run reproducibility (providers.code-js.options.deterministic: true) pins
 // Date.now() to the fixed epoch.
 func TestCodeJS_DeterministicMode(t *testing.T) {
 	root := writeAgent(t, "det", `function run(){ return {final_text: Date.now() + "|" + (typeof Math.random())}; }`)

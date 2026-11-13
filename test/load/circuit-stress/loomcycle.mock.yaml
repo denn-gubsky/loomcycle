@@ -16,6 +16,10 @@
 #     smoke. For that, run loomcycle.template.yaml against
 #     anthropic-oauth-dev.
 
+# The process metrics sampler, so /v1/_metrics/* has samples to report.
+metrics:
+  enabled: true
+
 provider_priority:
   - mock
 

@@ -20,9 +20,7 @@ type ProjectionConfig struct {
 	Enabled bool `yaml:"enabled"`
 	// Interval is how often the background sweeper walks every scope with
 	// document vectors (a Go duration, e.g. "1h"). Empty or "0" starts no
-	// sweeper; the operator pass still works. Env
-	// LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL overrides it, and a positive value
-	// there also turns the projection on.
+	// sweeper; the operator pass still works.
 	Interval string `yaml:"interval"`
 	// RefitAfter is the age past which a basis is refitted, once RefitMinNew
 	// chunks were placed since it was fitted. Default 168h (7 days).
@@ -86,21 +84,13 @@ func parseProjectionDuration(field, v string) (time.Duration, error) {
 	return d, nil
 }
 
-// resolve applies the env interval and the defaults. An invalid duration is an
-// error here and a boot failure through validate.
-func (p ProjectionConfig) resolve(envInterval string) (ProjectionSettings, error) {
+// resolve applies the defaults. An invalid duration is an error here and a
+// boot failure through validate.
+func (p ProjectionConfig) resolve() (ProjectionSettings, error) {
 	s := ProjectionSettings{Enabled: p.Enabled}
 	var err error
 	if s.Interval, err = parseProjectionDuration("memory.projection.interval", p.Interval); err != nil {
 		return s, err
-	}
-	if strings.TrimSpace(envInterval) != "" {
-		if s.Interval, err = parseProjectionDuration("LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", envInterval); err != nil {
-			return s, err
-		}
-		if s.Interval > 0 {
-			s.Enabled = true
-		}
 	}
 	if s.RefitAfter, err = parseProjectionDuration("memory.projection.refit_after", p.RefitAfter); err != nil {
 		return s, err
@@ -146,7 +136,7 @@ func (c *Config) DocumentProjection() ProjectionSettings {
 	if c == nil {
 		return ProjectionSettings{}
 	}
-	s, err := c.Memory.Projection.resolve(c.Env.DocumentProjectionInterval)
+	s, err := c.Memory.Projection.resolve()
 	if err != nil {
 		return ProjectionSettings{}
 	}

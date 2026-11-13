@@ -670,3 +670,20 @@ func TestWhoami_ReportsHowTheCallerSignedIn(t *testing.T) {
 		t.Errorf("open mode reported as %q", got.Mode)
 	}
 }
+
+// The login page is told the handoff origins from auth.login_origins, in token
+// mode only: strict mode signs people in through gates and takes no handoff.
+func TestLoginConfig_HandoffOriginsComeFromAuthLoginOrigins(t *testing.T) {
+	s, _, _ := sessionTestServer(t, "legacy-secret")
+	if lc := s.loginConfig(loginReq("")); len(lc.Origins) != 0 {
+		t.Errorf("no auth.login_origins: origins = %q, want none", lc.Origins)
+	}
+	s.cfg().Auth.LoginOrigins = []string{"https://landing.example"}
+	if lc := s.loginConfig(loginReq("")); len(lc.Origins) != 1 || lc.Origins[0] != "https://landing.example" {
+		t.Errorf("token mode: origins = %q, want the yaml's", lc.Origins)
+	}
+	s.cfg().ResolvedAuth = strictPolicy()
+	if lc := s.loginConfig(loginReq("")); len(lc.Origins) != 0 {
+		t.Errorf("strict mode: origins = %q, want none", lc.Origins)
+	}
+}

@@ -75,7 +75,7 @@ export default function ActivityToolbar({
         title={
           systemAvailable
             ? "show host CPU + memory overlay"
-            : "set LOOMCYCLE_METRICS_COLLECT_SYSTEM=1 on the server to enable"
+            : "set metrics.collect_system: true in the server yaml to enable"
         }
       >
         system overlay

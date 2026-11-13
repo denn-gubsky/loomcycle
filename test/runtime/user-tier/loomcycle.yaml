@@ -26,6 +26,15 @@
 # means auth is never tried) AND GEMINI_API_KEY. run.sh exits
 # cleanly with a clear message if either is missing.
 
+# A short header timeout so the unreachable deepseek call fails quickly.
+providers:
+  deepseek:
+    options:
+      header_timeout_ms: 5000
+  gemini:
+    options:
+      header_timeout_ms: 5000
+
 # Both providers configured so the resolver can dispatch to either.
 provider_priority: [deepseek, gemini]
 

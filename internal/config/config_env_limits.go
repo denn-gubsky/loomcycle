@@ -10,43 +10,6 @@ import (
 	"strings"
 )
 
-// applyEnvConcurrency reads the per-user and provider queue overrides of the
-// yaml concurrency block.
-func applyEnvConcurrency(cfg *Config) {
-	// v0.10.1 per-tenant fairness env var. Yaml is the canonical source
-	// (cfg.Concurrency.MaxConcurrentRunsPerUser); the env override lets
-	// containerized operators set it without editing the mounted yaml.
-	// Negative values clamp to 0 (= disabled, back-compat).
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n < 0 {
-				cfg.Concurrency.MaxConcurrentRunsPerUser = 0
-			} else {
-				cfg.Concurrency.MaxConcurrentRunsPerUser = n
-			}
-		}
-	}
-
-	// How many runs one (tenant, user) may have queued on its per-user cap.
-	// Negative values are ignored (keep the default).
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Concurrency.MaxQueuedRunsPerUser = n
-		}
-	}
-
-	// How many requests that hold no run slot may wait for a capped provider.
-	// Defaults to the global max_queue_depth (see ProviderQueueDepthOrDefault);
-	// this env override lets a containerized operator tune it without editing
-	// mounted yaml.
-	// Negative values are ignored (keep the inherit-0).
-	if v := strings.TrimSpace(os.Getenv("LOOMCYCLE_PROVIDER_QUEUE_DEPTH")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			cfg.Concurrency.ProviderQueueDepth = n
-		}
-	}
-}
-
 // applyEnvToolLimits reads the payload caps of the tools and the run
 // ingest, refusing a cap that does not parse where a default would widen it.
 func applyEnvToolLimits(cfg *Config) error {

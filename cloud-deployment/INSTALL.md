@@ -144,7 +144,7 @@ Edit **`.env.insecure`** (non-secret):
 - `OLLAMA_BASE_URL` → the Ollama tailnet **IP** (Phase 3).
 - `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` → from the Access app (Phase 4).
 - `LOOMCYCLE_PUBLIC_URL=https://app.loomcycle.cloud` + `LANDING_ORIGIN=https://loomcycle.cloud`.
-- Adjust presets / retention to taste. The Ollama context size and GPU offload
+- Adjust presets to taste. Retention, the Ollama context size and GPU offload
   are in `config/loomcycle.yaml`, not here.
 
 Create **`.env.secure`** (there is no committed template — repo policy forbids a
@@ -493,7 +493,8 @@ the order; the notes after it are what changed underneath you.
    `config/loomcycle.yaml`. Keep your own `OLLAMA_BASE_URL`, hostnames and Access
    settings. In `.env.insecure`:
    - remove `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`
-     (the YAML sets them now, and the YAML wins);
+     (the YAML sets them now; the first loses to the YAML and the second is no
+     longer read);
    - remove `LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS` if present (no longer read);
    - set `SANDBOX_IMAGE` to the `1.108.0` tag (the compose file sets the value the
      sidecar uses; this line only keeps the env file in step).

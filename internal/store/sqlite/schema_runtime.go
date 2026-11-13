@@ -34,7 +34,7 @@ func runtimeSection() schemaPlan {
 		// v0.8.x Process-resource metrics sampler. process_samples
 		// is a time-series table: one row per sample tick while
 		// at least one agent run is active. NULLable system_* fields
-		// are populated only when LOOMCYCLE_METRICS_COLLECT_SYSTEM=1.
+		// are populated only when metrics.collect_system is true.
 		// See internal/metrics/sampler.go for the write path and
 		// the API endpoints under /v1/_metrics/* for read paths.
 		`CREATE TABLE IF NOT EXISTS process_samples (

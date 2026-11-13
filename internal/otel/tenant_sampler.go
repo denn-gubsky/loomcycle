@@ -5,8 +5,6 @@ import (
 	"maps"
 	"regexp"
 	"slices"
-	"strconv"
-	"strings"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -29,47 +27,6 @@ func ValidateTenantSamplerRatios(what string, ratios map[string]float64) error {
 		}
 	}
 	return nil
-}
-
-// ParseTenantSamplerRatios parses LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS:
-// `tenant=ratio` pairs separated by commas, e.g. `acme=1,beta=0.1`.
-func ParseTenantSamplerRatios(v string) (map[string]float64, error) {
-	const name = "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS"
-	out := map[string]float64{}
-	for _, pair := range strings.Split(v, ",") {
-		if pair = strings.TrimSpace(pair); pair == "" {
-			continue
-		}
-		t, r, ok := strings.Cut(pair, "=")
-		t = strings.TrimSpace(t)
-		f, err := strconv.ParseFloat(strings.TrimSpace(r), 64)
-		if !ok || err != nil {
-			return nil, fmt.Errorf("%s: %q: want tenant=ratio", name, pair)
-		}
-		if _, dup := out[t]; dup {
-			return nil, fmt.Errorf("%s: tenant %q is listed twice", name, t)
-		}
-		out[t] = f
-	}
-	if err := ValidateTenantSamplerRatios(name, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// MergeTenantSamplerRatios returns yaml's ratios with env's laid over them,
-// tenant by tenant: the environment wins for a tenant both name, as it does
-// for every other setting it overrides.
-func MergeTenantSamplerRatios(yaml, env map[string]float64) map[string]float64 {
-	if len(yaml)+len(env) == 0 {
-		return nil
-	}
-	out := maps.Clone(yaml)
-	if out == nil {
-		out = map[string]float64{}
-	}
-	maps.Copy(out, env)
-	return out
 }
 
 // NewTenantSampler wraps base with per-tenant ratios for root spans. A span

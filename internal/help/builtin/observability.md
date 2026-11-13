@@ -301,8 +301,7 @@ observability:
       beta: 0.1
 ```
 
-or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1` (wins per
-tenant). It decides every span that starts a trace and names its tenant —
+It decides every span that starts a trace and names its tenant —
 a run, a memory consolidation pass, a tool call made outside a run, a
 gateway call. A run that joins a caller's trace, a sub-agent's run, and
 everything under a run follow the trace's existing decision; a tenant not
@@ -512,11 +511,11 @@ optionally, **system-wide CPU + memory** — to a `process_samples` table, expos
 at `GET /v1/_metrics/*` (bearer-authed). This is the surface for capacity planning
 and for diagnosing "the box got slow" incidents.
 
-- **Off by default.** Enable with `LOOMCYCLE_METRICS_ENABLED=1` (cadence
-  `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS`, default 5 s; sleeps when no run is
+- **Off by default.** Enable with `metrics: {enabled: true}` in the yaml (cadence
+  `metrics.sample_interval`, default 5 s; sleeps when no run is
   active — no DB writes / `/proc` reads while idle).
 - **System-wide CPU% + memory stay OFF even when metrics are on.** Set
-  `LOOMCYCLE_METRICS_COLLECT_SYSTEM=1` to also read `/proc/stat` + `/proc/meminfo`
+  `metrics.collect_system: true` to also read `/proc/stat` + `/proc/meminfo`
   (Linux only; silently ignored on macOS/Windows). Without it the
   `system_cpu_pct_x100` / `system_mem_*_mb` columns stay NULL — so a runaway
   driven by *co-tenant* host pressure (a hypervisor balloon / ZFS ARC eating RAM
@@ -561,7 +560,6 @@ itself (and their `_TRACES_` forms): `_ENDPOINT`, `_HEADERS`,
 | `OTEL_BSP_MAX_QUEUE_SIZE` / `_MAX_EXPORT_BATCH_SIZE` / `_EXPORT_TIMEOUT` / `_SCHEDULE_DELAY` | 2048 / 512 / 10000 ms / 5000 ms | Export queue bounds. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | empty | A file holding the collector headers instead of the env. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What a caller's trace context does: `parent`, `link` or `ignore`. |
-| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | empty | Per-tenant ratio for runs that start a trace, `tenant=ratio,...`. |
 | `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` adds the raw `loomcycle.user_id` beside `loomcycle.user_hash`. |
 | `LOOMCYCLE_ENVIRONMENT` | empty | `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | empty | Web UI "Open trace" link; must contain `{trace_id}`. |

@@ -8,6 +8,10 @@
 # Simpler tier (Anthropic only) + low concurrency cap = clean test
 # of the substrate without provider-side variability.
 
+# The process metrics sampler, so /v1/_metrics/* has samples to report.
+metrics:
+  enabled: true
+
 provider_priority:
   - anthropic-oauth-dev
 

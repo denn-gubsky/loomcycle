@@ -47,7 +47,7 @@ Bash, Document, Memory, Path, Skill` (plus `Context`, auto-added).
 - **`chat/local` context window** is the GLOBAL `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX`
   env (e.g. `131072` for 128K) — it is not a per-agent yaml field. To force GPU
   offload on a box where Ollama falls back to CPU, set
-  `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU=99`.
+  `providers.ollama-local.options.num_gpu: 99` in the yaml.
 
 ## Overriding
 

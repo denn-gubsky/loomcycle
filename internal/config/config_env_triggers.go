@@ -35,55 +35,24 @@ func applyEnvCodeAgents(cfg *Config) error {
 		cfg.Env.BatchJoinTimeout = d
 	}
 	// Code-js provider: the root defaults to ./agent_code (mirrors the skills
-	// bundling convention); the run timeout is floored at 1s.
+	// bundling convention). Its budgets are providers.code-js.options in the
+	// yaml.
 	cfg.Env.CodeAgentsRoot = "./agent_code"
 	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_ROOT"); v != "" {
 		cfg.Env.CodeAgentsRoot = v
 	}
-	cfg.Env.CodeAgentsDeterministic = os.Getenv("LOOMCYCLE_CODE_AGENTS_DETERMINISTIC") == "1"
-	cfg.Env.CodeAgentsRunTimeout = 120 * time.Second
-	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			d := time.Duration(n) * time.Second
-			if d < time.Second {
-				d = time.Second
-			}
-			cfg.Env.CodeAgentsRunTimeout = d
-		}
-	}
-	cfg.Env.CodeAgentsMaxWall = 24 * time.Hour
-	if v := os.Getenv("LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			cfg.Env.CodeAgentsMaxWall = time.Duration(n) * time.Second
-		}
-	}
 	return nil
 }
 
-// applyEnvMetrics reads the process-resource metrics sampler knobs.
+// applyEnvMetrics reads how long the process metrics samples are kept. The
+// sampler itself is the yaml `metrics:` block.
 func applyEnvMetrics(cfg *Config) {
-	// Default OFF; the operator opts in via LOOMCYCLE_METRICS_ENABLED=1.
-	cfg.Env.MetricsEnabled = os.Getenv("LOOMCYCLE_METRICS_ENABLED") == "1"
-	cfg.Env.MetricsSampleInterval = 5 * time.Second
-	if v := os.Getenv("LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			d := time.Duration(n) * time.Millisecond
-			// Floor 1s to prevent accidental write-storms from a
-			// typo'd value like 50 (interpreted as 50ms not 5s).
-			const minInterval = 1 * time.Second
-			if d < minInterval {
-				d = minInterval
-			}
-			cfg.Env.MetricsSampleInterval = d
-		}
-	}
 	cfg.Env.MetricsRetentionDays = 7
 	if v := os.Getenv("LOOMCYCLE_METRICS_RETENTION_DAYS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Env.MetricsRetentionDays = n
 		}
 	}
-	cfg.Env.MetricsCollectSystem = os.Getenv("LOOMCYCLE_METRICS_COLLECT_SYSTEM") == "1"
 }
 
 // applyEnvScheduler reads the scheduler, team subscription and

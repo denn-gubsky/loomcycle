@@ -397,7 +397,7 @@ func (b *boot) startRunSweepers() {
 	// The audit stream's retention (RFC FZ Part E) is its own knob and runs on
 	// this sweeper even when the RFC BM families are off; it then gets a
 	// config holding only the audit fields, so no other family's env setting
-	// is picked up behind LOOMCYCLE_RETENTION_ENABLED's back.
+	// is picked up behind retention.enabled's back.
 	auditKeys := b.auditRetentionKeys
 	if !cfg.Env.RetentionEnabled && auditKeys != nil && storeIface != nil {
 		rCfg := retention.Config{
@@ -463,7 +463,7 @@ func (b *boot) startRunSweepers() {
 		retentionSweeper := retention.New(storeIface, rCfg)
 		goSupervised(bgCtx, "retention.sweeper", retentionSweeper.Run)
 	} else {
-		slog.Info("retention: sweeper disabled (LOOMCYCLE_RETENTION_ENABLED != 1 or no Store)")
+		slog.Info("retention: sweeper disabled (retention.enabled is not true in the yaml, or no Store)")
 	}
 }
 

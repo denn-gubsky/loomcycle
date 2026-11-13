@@ -27,7 +27,7 @@ func writeMetricsDisabled(w http.ResponseWriter) {
 		Code       string `json:"code"`
 		Error      string `json:"error"`
 		EnableHint string `json:"enable_hint"`
-	}{"metrics_disabled", "metrics sampler not enabled", "set LOOMCYCLE_METRICS_ENABLED=1 and restart loomcycle"})
+	}{"metrics_disabled", "metrics sampler not enabled", "set metrics.enabled: true in the yaml and restart loomcycle"})
 }
 
 // handleMetricsSamples implements `GET /v1/_metrics/samples` —

@@ -16,7 +16,7 @@ import (
 // the tracer provider. Off, it returns nil and tracing is exactly as without
 // the feature.
 func (b *boot) tenantTelemetryRouter() *lcotel.TenantRouter {
-	cfg, err := tenanttelemetry.ConfigFromEnv(os.Getenv)
+	cfg, err := tenanttelemetry.ConfigFromEnv(os.Getenv, b.cfg.Observability.TenantTelemetry.AllowedHosts)
 	if err != nil {
 		fatal("telemetry: invalid tenant telemetry configuration", "err", err)
 	}

@@ -70,6 +70,12 @@ type AuthConfig struct {
 	// Clients are the apps that sign people in through loomcycle's gates
 	// (RFC FL): OAuth 2.0 clients of the authorization server at /v1/_oauth.
 	Clients map[string]AuthClientConfig `yaml:"clients,omitempty"`
+	// LoginOrigins are the first-party origins the Web UI's login page may
+	// accept a bearer handoff from over postMessage (a landing page that mints
+	// tokens, e.g. "https://landing.example"). Empty: the receiver stays
+	// disabled, so no page can hand the login page a token. Not offered in
+	// strict mode.
+	LoginOrigins []string `yaml:"login_origins,omitempty"`
 	// Lifecycle is the deployment's defaults for users a gate creates.
 	Lifecycle AuthLifecycleConfig `yaml:"lifecycle,omitempty"`
 	// TrustedProxies are the CIDRs of the reverse proxies in front of the
@@ -816,4 +822,18 @@ func proxyPrefixes(c *Config, key string, list []string) ([]netip.Prefix, error)
 		return nil, fmt.Errorf("%s: %v together trusts every address of a family — list the proxy's own addresses or subnet", key, list)
 	}
 	return out, nil
+}
+
+// applyAuthLoginOrigins trims each login origin and drops a trailing slash,
+// the form a browser reports an origin in. An empty entry stops the load.
+func applyAuthLoginOrigins(cfg *Config) error {
+	origins := cfg.Auth.LoginOrigins
+	for i, o := range origins {
+		o = strings.TrimRight(strings.TrimSpace(o), "/")
+		if o == "" {
+			return fmt.Errorf("auth.login_origins: entry %d is empty; write an origin such as https://landing.example", i+1)
+		}
+		origins[i] = o
+	}
+	return nil
 }

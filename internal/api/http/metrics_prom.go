@@ -5,7 +5,7 @@
 // Unlike /v1/_metrics/* (which reads pre-aggregated DB samples), this
 // endpoint is a LIVE read against the runtime, so each scrape returns
 // the current shape without a DB hop. Works even when the DB-backed
-// sampler is disabled (LOOMCYCLE_METRICS_ENABLED=0).
+// sampler is disabled (metrics.enabled not true).
 //
 // Two parts. The substrate series below are hand-rendered from live state
 // (runtime.MemStats, the semaphore, provider lanes, model throughput).

@@ -3731,7 +3731,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("DELETE /v1/_channels/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDeleteChannel))))
 	// v0.8.x process-resource metrics sampler endpoints. All
 	// bearer-authed. Return 503 when metricsSampler is nil
-	// (LOOMCYCLE_METRICS_ENABLED=0 deployment).
+	// (metrics.enabled not true).
 	mux.Handle("GET /v1/_metrics/samples", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSamples))))
 	mux.Handle("GET /v1/_metrics/runs/{run_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsRunSummary))))
 	mux.Handle("GET /v1/_metrics/summary", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMetricsSummary))))
@@ -4265,7 +4265,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 //
 // v0.8.21 also adds `metrics_enabled` so the Web UI's Activity
 // Monitor can render its "metrics are off, set
-// LOOMCYCLE_METRICS_ENABLED=1" empty state without first probing
+// metrics.enabled: true" empty state without first probing
 // /v1/_metrics and getting a 503. metricsSampler is constructed in
 // main.go only when cfg.Env.MetricsEnabled is true, so its nil-ness
 // is the single source of truth — no separate field on Server.
@@ -4614,7 +4614,7 @@ type runRequest struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 	// RunTimeoutSeconds is an optional ad-hoc per-run wall-clock budget for a
 	// code-js agent, overriding the agent's run_timeout_seconds and the global
-	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS (precedence: per-run >
+	// providers.code-js.options.run_timeout_seconds (precedence: per-run >
 	// per-agent > global). 0 = inherit. Ignored by LLM agents.
 	RunTimeoutSeconds int `json:"run_timeout_seconds,omitempty"`
 	// Interactive starts a PERSISTENT run that parks for operator steering at

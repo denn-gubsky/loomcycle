@@ -2,6 +2,11 @@
 # runtime suite. The mock provider makes every fired run deterministic +
 # free, so the test exercises the SCHEDULER (def lifecycle + cron fire +
 # run creation), not LLM output.
+
+# The process metrics sampler, so /v1/_metrics/* has samples to report.
+metrics:
+  enabled: true
+
 provider_priority: [mock]
 tiers:
   middle:

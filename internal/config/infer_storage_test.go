@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -189,45 +188,81 @@ func requireRetiredAdvisory(t *testing.T, cfg *Config, name string) {
 	t.Errorf("no advisory for %s; warnings = %q", name, cfg.Warnings)
 }
 
-// The retention sweeper starts on its switch alone. A family mode staged
-// without the switch deletes nothing: with no age set, a chats mode of prune
-// would take every finished chat on the first sweep.
-func TestRetentionEnabled_NeedsTheSwitchWhateverTheFamilyModes(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		set         bool
-		value, mode string
-		want        bool
-	}{
-		{name: "nothing set"},
-		{name: "a family mode alone", mode: "prune"},
-		{name: "a family mode with the switch off", set: true, value: "0", mode: "export+prune"},
-		{name: "the switch alone", set: true, value: "1", want: true},
-		{name: "the switch and a family mode", set: true, value: "1", mode: "prune", want: true},
-		{name: "a word that is not 1", set: true, value: "true", mode: "prune"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("LOOMCYCLE_RETENTION_ENABLED", tc.value)
-			if !tc.set {
-				if err := os.Unsetenv("LOOMCYCLE_RETENTION_ENABLED"); err != nil {
-					t.Fatal(err)
-				}
-			}
-			t.Setenv("LOOMCYCLE_RETENTION_CHATS_MODE", tc.mode)
-			cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if cfg.Env.RetentionEnabled != tc.want {
-				t.Errorf("RetentionEnabled = %v, want %v", cfg.Env.RetentionEnabled, tc.want)
-			}
-			for _, w := range cfg.Warnings {
-				if strings.Contains(w, "LOOMCYCLE_RETENTION_ENABLED") {
-					t.Errorf("the switch is reported as retired: %s", w)
-				}
-			}
-		})
+// The retention sweeper runs exactly when retention.enabled says so. A family
+// mode configures what it deletes and never starts it.
+func TestRetentionEnabled_IsTheYAMLSwitch(t *testing.T) {
+	load := func(t *testing.T, retention string) *Config {
+		t.Helper()
+		cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n"+retention)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
 	}
+	if load(t, "").Env.RetentionEnabled {
+		t.Error("no retention block: retention is on, want off")
+	}
+	if !load(t, "retention: {enabled: true}\n").Env.RetentionEnabled {
+		t.Error("retention.enabled: true: retention is off")
+	}
+	for _, f := range []string{"defs", "chats", "mem", "mem_content", "empty_dossier"} {
+		for _, mode := range []string{"prune", "export+prune", "off"} {
+			family := f + ": {mode: " + mode + ", max_age: 30d}"
+			cfg := load(t, "retention: {"+family+"}\n")
+			if cfg.Env.RetentionEnabled {
+				t.Errorf("retention.%s.mode=%s alone turned retention on", f, mode)
+			}
+			// A family that would delete with the switch off is said, not silent.
+			warned := strings.Contains(strings.Join(cfg.Warnings, "\n"), "retention."+f+".mode")
+			if want := mode != "off"; warned != want {
+				t.Errorf("retention.%s.mode=%s with the switch off: warned = %v, want %v (%q)", f, mode, warned, want, cfg.Warnings)
+			}
+			if !load(t, "retention: {enabled: true, "+family+"}\n").Env.RetentionEnabled {
+				t.Errorf("retention.enabled with %s.mode=%s: retention is off", f, mode)
+			}
+		}
+	}
+}
+
+// The retired switch is refused when the yaml says the opposite of what it
+// did: set to 1 with retention.enabled not true, retention the operator
+// committed to would stop; set to anything else with retention.enabled true,
+// data they held back would be deleted.
+func TestLoadLayers_RefusesARetiredRetentionSwitchTheYAMLContradicts(t *testing.T) {
+	const pruning = "defaults: {provider: mock}\nretention: {chats: {mode: prune, max_age: 90d}}\n"
+	const pruningOn = "defaults: {provider: mock}\nretention: {enabled: true, chats: {mode: prune, max_age: 90d}}\n"
+
+	t.Setenv("LOOMCYCLE_RETENTION_ENABLED", "1")
+	_, err := loadYAMLString(t, pruning)
+	if err == nil {
+		t.Fatal("the load accepted a retired retention switch set to 1 with retention.enabled not true")
+	}
+	for _, want := range []string{"LOOMCYCLE_RETENTION_ENABLED", "retention.enabled"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %q: %s", want, err)
+		}
+	}
+	cfg, err := loadYAMLString(t, pruningOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Env.RetentionEnabled {
+		t.Error("retention is off with retention.enabled: true")
+	}
+	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_RETENTION_ENABLED")
+
+	t.Setenv("LOOMCYCLE_RETENTION_ENABLED", "0")
+	if _, err = loadYAMLString(t, pruningOn); err == nil {
+		t.Fatal("the load accepted a retired retention switch that held deletion back with retention.enabled: true")
+	}
+	cfg, err = loadYAMLString(t, pruning)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Env.RetentionEnabled {
+		t.Error("retention is on with retention.enabled unset")
+	}
+	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_RETENTION_ENABLED")
 }
 
 // The retired switch kept A2A off whatever card was named. Set to anything
@@ -308,7 +343,7 @@ func TestStorageBackend_AWhitespaceDSNCountsAsUnset(t *testing.T) {
 		})
 	}
 	// The old variable said sqlite and a blank DSN still gives SQLite.
-	if got := retiredEnvRefusals([]string{"LOOMCYCLE_STORAGE_BACKEND=sqlite", "LOOMCYCLE_PG_DSN=   "}, &StorageConfig{}); len(got) != 0 {
+	if got := retiredEnvRefusals([]string{"LOOMCYCLE_STORAGE_BACKEND=sqlite", "LOOMCYCLE_PG_DSN=   "}, &Config{}); len(got) != 0 {
 		t.Errorf("a blank DSN was taken for a Postgres store: %q", got)
 	}
 }

@@ -168,14 +168,7 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, string, error) {
 		}
 	}
 
-	timeoutMs := cfg.Memory.Embedder.TimeoutMs
-	if timeoutMs == 0 {
-		timeoutMs = cfg.Env.MemoryEmbedTimeoutMs
-	}
-	batchSize := cfg.Memory.Embedder.BatchSize
-	if batchSize == 0 {
-		batchSize = cfg.Env.MemoryEmbedBatchSize
-	}
+	timeoutMs, batchSize := embedderLimits(cfg)
 
 	e, err := providers.NewEmbedder(key, providers.EmbedderOptions{
 		APIKey:     apiKey,
@@ -187,4 +180,18 @@ func buildEmbedder(cfg *config.Config) (providers.Embedder, string, error) {
 		Auth:       auth,
 	})
 	return e, provider, err
+}
+
+// embedderLimits is the timeout of one embedder call, in milliseconds, and the
+// number of texts per call: memory.embedder's, or the defaults when unset.
+func embedderLimits(cfg *config.Config) (timeoutMs, batchSize int) {
+	timeoutMs = cfg.Memory.Embedder.TimeoutMs
+	if timeoutMs == 0 {
+		timeoutMs = config.EmbedderTimeoutMSDefault
+	}
+	batchSize = cfg.Memory.Embedder.BatchSize
+	if batchSize == 0 {
+		batchSize = config.EmbedderBatchSizeDefault
+	}
+	return timeoutMs, batchSize
 }

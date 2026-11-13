@@ -10,6 +10,12 @@
 #   - concurrent runs of the same code-agent → per-run goja isolation +
 #     atomic Memory.incr → no lost updates on a shared agent-scope counter
 provider_priority: [mock]
+
+# A short run budget, so the runaway agent below is cut within seconds.
+providers:
+  code-js:
+    options:
+      run_timeout_seconds: 5
 tiers:
   middle:
     - { provider: mock, model: mock-generic }
@@ -35,7 +41,7 @@ agents:
     tools: [Memory]
 
   # runaway loops tool calls forever — only the run-level timeout stops it.
-  # The suite sets a short LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS and
+  # The providers block above sets a short run_timeout_seconds and the suite
   # asserts the run terminates (not end_turn) shortly after.
   runaway:
     provider: code-js

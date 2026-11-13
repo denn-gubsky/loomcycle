@@ -597,26 +597,19 @@ func TestManager_AWriteOnOneReplicaReachesAnotherOverTheBackplane(t *testing.T) 
 
 func TestConfigFromEnv_GateOffReadsNothingElse(t *testing.T) {
 	env := map[string]string{"LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO": "nonsense"}
-	cfg, err := ConfigFromEnv(func(k string) string { return env[k] })
+	cfg, err := ConfigFromEnv(func(k string) string { return env[k] }, nil)
 	if err != nil || cfg.Enabled {
 		t.Fatalf("gate off: cfg=%+v err=%v", cfg, err)
 	}
 	env["LOOMCYCLE_TENANT_TELEMETRY"] = "1"
-	if _, err := ConfigFromEnv(func(k string) string { return env[k] }); err == nil {
+	if _, err := ConfigFromEnv(func(k string) string { return env[k] }, nil); err == nil {
 		t.Error("gate on: a bad ratio passed")
 	}
 	env["LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO"] = "0.25"
-	env["LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS"] = "Grafana.NET, *.otel.example ,"
-	cfg, err = ConfigFromEnv(func(k string) string { return env[k] })
+	cfg, err = ConfigFromEnv(func(k string) string { return env[k] }, []string{"grafana.net", "*.otel.example"})
 	if err != nil || !cfg.Enabled || cfg.MaxRatio != 0.25 || cfg.QueueSize != lcotel.DefaultTenantQueueSize || cfg.MaxPipelines != lcotel.DefaultTenantMaxPipelines ||
 		len(cfg.AllowedHosts) != 2 || cfg.AllowedHosts[0] != "grafana.net" {
 		t.Fatalf("cfg=%+v err=%v", cfg, err)
-	}
-	for _, bad := range []string{"a*.b", "*", "*.a.*"} {
-		env["LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS"] = bad
-		if _, err := ConfigFromEnv(func(k string) string { return env[k] }); err == nil {
-			t.Errorf("allowed host %q accepted", bad)
-		}
 	}
 }
 
@@ -1184,19 +1177,19 @@ func TestManagerContentCaptureFor_ACaptureThatCannotBeRecordedIsRefused(t *testi
 func TestConfigFromEnv_ContentCaptureIsItsOwnGateUnderTheExportGate(t *testing.T) {
 	env := map[string]string{"LOOMCYCLE_TENANT_CONTENT_CAPTURE": "1"}
 	get := func(k string) string { return env[k] }
-	if cfg, err := ConfigFromEnv(get); err != nil || cfg.ContentCapture {
+	if cfg, err := ConfigFromEnv(get, nil); err != nil || cfg.ContentCapture {
 		t.Fatalf("export gate off: cfg=%+v err=%v, want no capture", cfg, err)
 	}
 	env["LOOMCYCLE_TENANT_TELEMETRY"] = "1"
-	if cfg, err := ConfigFromEnv(get); err != nil || !cfg.ContentCapture {
+	if cfg, err := ConfigFromEnv(get, nil); err != nil || !cfg.ContentCapture {
 		t.Fatalf("both gates on: cfg=%+v err=%v", cfg, err)
 	}
 	delete(env, "LOOMCYCLE_TENANT_CONTENT_CAPTURE")
-	if cfg, err := ConfigFromEnv(get); err != nil || cfg.ContentCapture {
+	if cfg, err := ConfigFromEnv(get, nil); err != nil || cfg.ContentCapture {
 		t.Fatalf("capture gate unset: cfg=%+v err=%v, want off by default", cfg, err)
 	}
 	env["LOOMCYCLE_TENANT_CONTENT_CAPTURE"] = "maybe"
-	if _, err := ConfigFromEnv(get); err == nil {
+	if _, err := ConfigFromEnv(get, nil); err == nil {
 		t.Error("a bad capture gate value passed")
 	}
 }

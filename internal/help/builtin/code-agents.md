@@ -32,9 +32,17 @@ boot, or at its first run when it was created at runtime. Its settings:
 
 ```
 LOOMCYCLE_CODE_AGENTS_ROOT=./agent_code              # default; where index.js lives
-LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS=120        # whole-run budget of active time (waits don't count)
-LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS=86400         # lifetime limit, waits included (default 24h)
-LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=0                # seed Date.now/Math.random
+```
+
+and, in the yaml, the provider's options:
+
+```yaml
+providers:
+  code-js:
+    options:
+      run_timeout_seconds: 120   # whole-run budget of active time (waits don't count)
+      max_wall_seconds: 86400    # lifetime limit, waits included (default 24h)
+      deterministic: false       # true seeds Date.now/Math.random
 ```
 
 The JS lives next to your yaml at `agent_code/<agent-name>/index.js`
@@ -246,14 +254,14 @@ input on resume. That no longer corrupts silently: the replay divergence guard
 compares each replayed call's input against the recorded one and fails loud
 with `code_agent_replay_divergence` rather than feeding a stale result into the
 JS. For code-agents that must resume deterministically across processes, set
-`LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` (it pins the seed + anchor to fixed
+`providers.code-js.options.deterministic: true` (it pins the seed + anchor to fixed
 constants for **all** runs, so the continuation re-derives identical values),
 or keep clock/RNG values out of tool inputs (read a real per-call value from a
 tool — it is recorded — rather than from `Date.now()`).
 
 This is reproducible *replay*, not "the world stopped": tool / MCP results are
 recorded and replayed identically, but the upstream service that produced them
-is still whatever it is. `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` additionally
+is still whatever it is. `providers.code-js.options.deterministic: true` additionally
 freezes the clock + seed across **all** runs — cross-run reproducibility for
 tests and snapshot equality.
 
@@ -272,7 +280,7 @@ tests and snapshot equality.
   restart, replica handoff) resumes correctly from the transcript — there is
   no parked continuation to lose. (One caveat for cross-*process* resume: a
   code-agent that derives a tool input from `Math.random()`/`Date.now()` needs
-  `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1` to re-derive identical inputs — see
+  `providers.code-js.options.deterministic: true` to re-derive identical inputs — see
   **Determinism** above.) The cost is that the pure-JS portion
   re-executes each turn (≈O(N²) for N sequential tool calls), which is fine
   for the glue-logic design center; heavy compute belongs in an MCP server.
@@ -284,7 +292,7 @@ tests and snapshot equality.
   `MaxIterations` soft-cap (default 16) would be unusable here — it would stop
   `run()` after 16 sequential calls. Code-agents are therefore **exempt** from
   `MaxIterations`; `run()` may make as many sequential tool calls as it needs.
-  The bound is `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`, a **whole-run**
+  The bound is `providers.code-js.options.run_timeout_seconds`, a **whole-run**
   budget of **active time**. It is enforced by interrupting the JavaScript:
   each turn of `run()` is interrupted when the budget runs out (the per-turn
   allowance is the run's remaining budget, not a fresh timeout each turn), and
@@ -336,7 +344,7 @@ tests and snapshot equality.
   budget, a run that does little but wait — a loop over `Channel.await`,
   `Interruption.ask` or tiny spawns — would otherwise live for ever. So a code
   agent also has a **wall limit**: how long the run may live in all, waits
-  included. It is the operator's `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS`
+  included. It is the operator's `providers.code-js.options.max_wall_seconds`
   (default 24 hours; there is no "unlimited", only a large value set on
   purpose), and nothing an agent or a caller sets reaches it —
   `run_timeout_seconds` sets the budget, not this. Past it the run is

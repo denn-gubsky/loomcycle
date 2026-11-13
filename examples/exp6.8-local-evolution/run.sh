@@ -19,9 +19,8 @@ export OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://localhost:11434}"
 # Global context window for ollama-local (no per-model override exists). 16K is ample for the
 # short (<=120-word) solver answers and keeps prefill cheap on a slow box.
 export LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX="${LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX:-16384}"
-# Generous local time-to-first-byte / inter-token timeouts (cold model load + slow generation).
-export LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS="${LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS:-300000}"
-export LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS="${LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS:-300000}"
+# The local time-to-first-byte / inter-token timeouts (300s each) are in loomcycle.yaml
+# (providers.ollama-local.options).
 
 mkdir -p "$HERE/data"
 LOOMCYCLE_BIN="${LOOMCYCLE_BIN:-loomcycle}"

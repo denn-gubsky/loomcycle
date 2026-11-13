@@ -24,3 +24,24 @@ func TestEmbedder_ResolvesAModelsAlias(t *testing.T) {
 		t.Errorf("embedder = %s/%s, want ollama/bge-m3:latest", e.Provider(), e.Model())
 	}
 }
+
+// The embedder's call timeout and batch size come from memory.embedder: unset
+// they are 30s and 100 texts, and nothing else supplies them.
+func TestEmbedderLimits_ComeFromTheYAML(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		embedder           config.EmbedderConfig
+		timeoutMs, batchSz int
+	}{
+		{"default", config.EmbedderConfig{}, 30000, 100},
+		{"set", config.EmbedderConfig{TimeoutMs: 5000, BatchSize: 8}, 5000, 8},
+		{"one set", config.EmbedderConfig{BatchSize: 1}, 30000, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			timeoutMs, batchSize := embedderLimits(&config.Config{Memory: config.MemoryConfig{Embedder: tc.embedder}})
+			if timeoutMs != tc.timeoutMs || batchSize != tc.batchSz {
+				t.Errorf("limits = %d ms, %d texts; want %d, %d", timeoutMs, batchSize, tc.timeoutMs, tc.batchSz)
+			}
+		})
+	}
+}

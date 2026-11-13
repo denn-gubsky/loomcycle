@@ -25,7 +25,6 @@ func (projEmbedder) Dimension() int                                       { retu
 // starts; enabling without an interval, or without a store, embedder or vector
 // index, starts nothing either. Only the full set starts the sweeper.
 func TestProjectionSweeper_OffByDefault(t *testing.T) {
-	t.Setenv("LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", "")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	base, err := sqlite.Open(":memory:")

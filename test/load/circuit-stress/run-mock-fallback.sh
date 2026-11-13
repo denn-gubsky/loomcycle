@@ -119,7 +119,6 @@ export LOOMCYCLE_MOCK_500_RATE="${LOOMCYCLE_MOCK_500_RATE:-0}"
 # Substrate env (identical to run.sh; the harness is provider-
 # agnostic once the yaml swaps).
 export LOOMCYCLE_PG_AUTOMIGRATE=1
-export LOOMCYCLE_METRICS_ENABLED=1
 export LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS=120000
 export LOOMCYCLE_LISTEN_ADDR="127.0.0.1:$LC_PORT"
 

@@ -3,6 +3,10 @@
 # by environment variables in compose.yaml so this file stays
 # operator-readable.
 
+# The process metrics sampler, so /v1/_metrics/* has samples to report.
+metrics:
+  enabled: true
+
 defaults:
   provider: anthropic
   model: claude-haiku-4-5

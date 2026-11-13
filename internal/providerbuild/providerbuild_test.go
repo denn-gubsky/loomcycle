@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/providers/streamhttp"
 )
 
 // TestDriverOptions_TimeoutOptionsFoldIntoStreamOpts is the RFC CK regression:
@@ -42,16 +43,80 @@ func TestDriverOptions_TimeoutOptionsFoldIntoStreamOpts(t *testing.T) {
 	}
 }
 
-// TestDriverOptions_NoTimeoutOptionsKeepsEnvDefault confirms the fallback: with
-// no timeout options the env/global StreamOpts stand (a zero/absent entry must
-// never install a zero — i.e. immediate-timeout — client).
-func TestDriverOptions_NoTimeoutOptionsKeepsEnvDefault(t *testing.T) {
+// The stream timeouts come from the provider's options and nowhere else: the
+// defaults are 60s/90s, 10 minutes each for the local Ollama registration, and
+// an option that is not a positive number leaves the default (it must never
+// install a zero, i.e. immediate-timeout, client).
+func TestDriverOptions_StreamTimeoutsComeFromOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		id           string
+		options      map[string]any
+		header, idle time.Duration
+	}{
+		{"default", "vllm-local", nil, 60 * time.Second, 90 * time.Second},
+		{"set", "vllm-local", map[string]any{"header_timeout_ms": 5000, "idle_timeout_ms": 30000}, 5 * time.Second, 30 * time.Second},
+		{"one set", "openai", map[string]any{"idle_timeout_ms": 240000}, 60 * time.Second, 240 * time.Second},
+		{"invalid", "vllm-local", map[string]any{"header_timeout_ms": "5000", "idle_timeout_ms": -1}, 60 * time.Second, 90 * time.Second},
+		{"local ollama default", "ollama-local", nil, 600 * time.Second, 600 * time.Second},
+		{"local ollama set", "ollama-local", map[string]any{"header_timeout_ms": 900000, "idle_timeout_ms": 450000}, 900 * time.Second, 450 * time.Second},
+		{"local ollama invalid", "ollama-local", map[string]any{"header_timeout_ms": 0}, 600 * time.Second, 600 * time.Second},
+		{"hosted ollama", "ollama", nil, 60 * time.Second, 90 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := DriverOptions(tc.id, config.ProviderConfig{Driver: "x", Options: tc.options}, &config.Config{})
+			if o.StreamOpts.HeaderTimeout != tc.header || o.StreamOpts.IdleTimeout != tc.idle {
+				t.Errorf("StreamOpts = %+v, want %v / %v", o.StreamOpts, tc.header, tc.idle)
+			}
+		})
+	}
+	// The defaults config judges a retired variable against are the ones
+	// applied here and in streamhttp.
+	if config.ProviderHeaderTimeoutMS*time.Millisecond != streamhttp.DefaultHeaderTimeout ||
+		config.ProviderIdleTimeoutMS*time.Millisecond != streamhttp.DefaultIdleTimeout {
+		t.Error("config's provider timeout defaults differ from streamhttp's")
+	}
+}
+
+// The Ollama options reach the driver from the yaml; the environment supplies
+// only the local context window, and the yaml wins over it.
+func TestDriverOptions_OllamaOptionsComeFromTheYAML(t *testing.T) {
 	cfg := &config.Config{}
-	cfg.Env.ProviderHeaderTimeout = 45 * time.Second
-	cfg.Env.ProviderIdleTimeout = 90 * time.Second
-	o := DriverOptions("vllm-local", config.ProviderConfig{Driver: "vllm", BaseURL: "http://box:8000/v1"}, cfg)
-	if o.StreamOpts.HeaderTimeout != 45*time.Second || o.StreamOpts.IdleTimeout != 90*time.Second {
-		t.Errorf("StreamOpts = %+v, want env defaults (45s/90s)", o.StreamOpts)
+	if o := DriverOptions("ollama", config.ProviderConfig{Driver: "ollama"}, cfg); len(o.Options) != 0 {
+		t.Errorf("hosted ollama with no options carries %v", o.Options)
+	}
+	if o := DriverOptions("ollama-local", config.ProviderConfig{Driver: "ollama"}, cfg); len(o.Options) != 0 {
+		t.Errorf("local ollama with no options carries %v", o.Options)
+	}
+	o := DriverOptions("ollama", config.ProviderConfig{Driver: "ollama", Options: map[string]any{"num_ctx": 8192}}, cfg)
+	if o.Options["num_ctx"] != 8192 {
+		t.Errorf("hosted ollama num_ctx = %v, want 8192", o.Options["num_ctx"])
+	}
+	cfg.Env.OllamaLocalNumCtx = 32768
+	o = DriverOptions("ollama-local", config.ProviderConfig{Driver: "ollama", Options: map[string]any{"num_gpu": 99}}, cfg)
+	if o.Options["num_ctx"] != 32768 || o.Options["num_gpu"] != 99 {
+		t.Errorf("local ollama options = %v, want num_ctx 32768 (environment) and num_gpu 99 (yaml)", o.Options)
+	}
+	o = DriverOptions("ollama-local", config.ProviderConfig{Driver: "ollama", Options: map[string]any{"num_ctx": 65536}}, cfg)
+	if o.Options["num_ctx"] != 65536 {
+		t.Errorf("local ollama num_ctx = %v, want the yaml's 65536", o.Options["num_ctx"])
+	}
+}
+
+// The code-js budgets are options only. Unset, none is passed, so the driver
+// applies its own defaults (deterministic off, 120s, 24h).
+func TestDriverOptions_CodeJSBudgetsComeFromOptions(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Env.CodeAgentsRoot = "/srv/agent_code"
+	o := DriverOptions("code-js", config.ProviderConfig{Driver: "code-js"}, cfg)
+	if len(o.Options) != 1 || o.Options["code_root"] != "/srv/agent_code" {
+		t.Errorf("options = %v, want only code_root", o.Options)
+	}
+	o = DriverOptions("code-js", config.ProviderConfig{Driver: "code-js", Options: map[string]any{
+		"deterministic": true, "run_timeout_seconds": 45, "max_wall_seconds": 3600,
+	}}, cfg)
+	if o.Options["deterministic"] != true || o.Options["run_timeout_seconds"] != 45 || o.Options["max_wall_seconds"] != 3600 {
+		t.Errorf("options = %v, want the yaml's three", o.Options)
 	}
 }
 

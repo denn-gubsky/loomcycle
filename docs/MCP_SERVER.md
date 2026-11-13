@@ -60,7 +60,7 @@ Children that finish inside the bound are reported as before. The reason for an 
 
 **No-trace runs: `retention`.** `spawn_run`, each `spawn_runs` child, each `POST /v1/runs:batch` child, `POST /v1/runs` and the gRPC `Run` and `SpawnRunBatch` requests take an optional `retention`. `"none"` makes the run a no-trace run: what it says is returned to the caller and stored nowhere. The agent's definition or the caller's token can also make a run no-trace, and the strictest wins. Such a run cannot be interactive, continued, compacted or retuned (`retention_none_unsupported`). See `docs/CONFIGURATION.md`, "No-trace runs".
 
-A code-js run's `run_timeout_seconds` is a different bound: active time only, waits excluded. A code-js run that outlives the operator's `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` still ends `failed` with `code_agent_wall_limit`; only the per-run `max_wall_seconds` ends a run `cancelled` / `wall_limit`.
+A code-js run's `run_timeout_seconds` is a different bound: active time only, waits excluded. A code-js run that outlives the operator's `providers.code-js.options.max_wall_seconds` still ends `failed` with `code_agent_wall_limit`; only the per-run `max_wall_seconds` ends a run `cancelled` / `wall_limit`.
 
 A blocking spawn now reports how its run really ended. A run cancelled from outside (`cancel_run`, or its own `max_wall_seconds`) was reported `completed` by `spawn_run` and by a joined batch; it is reported `cancelled`, as its row says.
 

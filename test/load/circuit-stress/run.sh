@@ -82,7 +82,6 @@ go build -o "$LC_BIN" ./cmd/loomcycle/
 # Env that the test yaml + OAuth-dev driver depend on.
 export LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1
 export LOOMCYCLE_PG_AUTOMIGRATE=1
-export LOOMCYCLE_METRICS_ENABLED=1
 export LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS=120000
 export LOOMCYCLE_LISTEN_ADDR="127.0.0.1:$LC_PORT"
 

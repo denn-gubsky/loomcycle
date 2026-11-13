@@ -5999,7 +5999,7 @@ func MintSampleID(t time.Time) string {
 // sampler's build-tag-split readers handle the gating.
 //
 // System-wide fields are pointer-typed because they may be NULL —
-// they're only populated when LOOMCYCLE_METRICS_COLLECT_SYSTEM=1
+// they're only populated when metrics.collect_system is true
 // AND the platform is Linux.
 type ProcessSample struct {
 	SampleID             string    `json:"sample_id"`  // "smp_<16hex><8hex>"

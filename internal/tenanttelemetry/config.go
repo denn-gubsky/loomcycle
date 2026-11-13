@@ -24,7 +24,7 @@ type Config struct {
 	// AllowHTTP is LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP: an http:// endpoint
 	// is accepted (a lab without TLS). Off, only https://.
 	AllowHTTP bool
-	// AllowedHosts is LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS: when set, an
+	// AllowedHosts is observability.tenant_telemetry.allowed_hosts: when set, an
 	// endpoint's host must be one of them, exactly or under a "*.suffix"
 	// entry. Empty allows any host the dial-time guard lets through.
 	AllowedHosts []string
@@ -44,10 +44,11 @@ type Config struct {
 	ContentCapture bool
 }
 
-// ConfigFromEnv reads the operator's settings through getenv. With the gate
-// off nothing else is read, so a stray value cannot stop a boot that does not
-// use it.
-func ConfigFromEnv(getenv func(string) string) (Config, error) {
+// ConfigFromEnv reads the operator's settings through getenv; allowedHosts is
+// the yaml's observability.tenant_telemetry.allowed_hosts, checked and
+// lower-cased by the config load. With the gate off nothing else is read, so
+// a stray value cannot stop a boot that does not use it.
+func ConfigFromEnv(getenv func(string) string, allowedHosts []string) (Config, error) {
 	get := func(k string) string { return strings.TrimSpace(getenv(k)) }
 	cfg := Config{MaxRatio: 1, QueueSize: lcotel.DefaultTenantQueueSize, MaxPipelines: lcotel.DefaultTenantMaxPipelines}
 	on, err := envBool(get, "LOOMCYCLE_TENANT_TELEMETRY")
@@ -61,16 +62,7 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if cfg.ContentCapture, err = envBool(get, "LOOMCYCLE_TENANT_CONTENT_CAPTURE"); err != nil {
 		return Config{}, err
 	}
-	for _, h := range strings.Split(get("LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS"), ",") {
-		h = strings.ToLower(strings.TrimSpace(h))
-		if h == "" {
-			continue
-		}
-		if strings.Contains(h, "*") && (!strings.HasPrefix(h, "*.") || strings.Count(h, "*") > 1 || len(h) < 3) {
-			return Config{}, fmt.Errorf("LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS: %q: an entry is a host name or *.suffix", h)
-		}
-		cfg.AllowedHosts = append(cfg.AllowedHosts, h)
-	}
+	cfg.AllowedHosts = allowedHosts
 	if v := get("LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO"); v != "" {
 		r, err := strconv.ParseFloat(v, 64)
 		if err != nil || !(r >= 0 && r <= 1) {

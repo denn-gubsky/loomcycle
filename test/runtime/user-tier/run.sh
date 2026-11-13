@@ -89,10 +89,9 @@ export LOOMCYCLE_AUTH_TOKEN="test-token-$(date +%s)"
 # fallback fires.
 export DEEPSEEK_BASE_URL="http://127.0.0.1:1"
 
-# Shorten the per-stream header timeout so the deepseek call fails
+# loomcycle.yaml shortens deepseek's header timeout so the call fails
 # quickly (the connect attempt itself is sub-millisecond on the
 # loopback, but make sure we don't sit idle).
-export LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS=5000
 
 mkdir -p "$TEST_DIR/data"
 BOOT_LOG="$TEST_DIR/boot.log"

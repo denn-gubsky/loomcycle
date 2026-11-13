@@ -62,8 +62,7 @@ func (b *boot) initTelemetry() {
 	// The replica id /metrics labels its series with, so a trace and a
 	// scrape from one instance carry the same name.
 	otelCfg.InstanceID = b.cfg.Env.ReplicaID
-	otelCfg.TenantSamplerRatios = lcotel.MergeTenantSamplerRatios(
-		b.cfg.Observability.Tracing.TenantSamplerRatios, otelCfg.TenantSamplerRatios)
+	otelCfg.TenantSamplerRatios = b.cfg.Observability.Tracing.TenantSamplerRatios
 	otelCfg.UserHashKey, err = credential.DeriveOTelUserKey(b.cfg.Env.SecretKey)
 	if err != nil {
 		fatal("otel: LOOMCYCLE_SECRET_KEY cannot key the span user hash", "err", err)

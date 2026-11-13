@@ -30,10 +30,17 @@
 # reliability, NOT the loomcycle substrate (which performed flawlessly). See this folder's README.
 #
 # ENV (set by run.sh from .env.local, NOT here): OLLAMA_BASE_URL=<your ollama host:11434>, global 16K
-# window (LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX=16384 — no per-model override exists), 300s local header/idle
-# timeouts. Needs loomcycle >= v0.37.0 (the heartbeat ticker + compaction tail-cap keep long local
+# window (LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX=16384 — no per-model override exists). The 300s local
+# header/idle timeouts are the providers block below. Needs loomcycle >= v0.37.0 (the heartbeat ticker + compaction tail-cap keep long local
 # runs alive). The meta-agents use the OAuth sonnet provider — enable it or swap to an `anthropic`
 # API-key alias (see the README); a LOCAL model as the breeder does NOT work (the finding above).
+
+# Local time-to-first-byte / inter-token timeouts (cold model load + slow generation).
+providers:
+  ollama-local:
+    options:
+      header_timeout_ms: 300000
+      idle_timeout_ms: 300000
 
 provider_priority:
   - ollama-local          # LAN ollama — the EVOLVING roles (solver population + advisor judge)

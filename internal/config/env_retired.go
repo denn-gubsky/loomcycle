@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // retiredEnv lists LOOMCYCLE_* variables the runtime used to read, or that
@@ -23,7 +25,7 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_INTERRUPTION_DEFAULT_TIMEOUT_MS":    "set interruption.default_timeout_ms in the yaml",
 	"LOOMCYCLE_INTERRUPTION_MAX_TIMEOUT_MS":        "set interruption.max_timeout_ms in the yaml",
 	"LOOMCYCLE_INTERRUPTION_MAX_PENDING_PER_RUN":   "set interruption.max_pending_per_run in the yaml",
-	"LOOMCYCLE_INTERRUPTION_HEARTBEAT_INTERVAL_MS": "the interval is fixed",
+	"LOOMCYCLE_INTERRUPTION_HEARTBEAT_INTERVAL_MS": "set interruption.heartbeat_interval_ms in the yaml",
 	"LOOMCYCLE_SNAPSHOT_MAX_BYTES":                 "pass max_bytes on the snapshot request",
 	"LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT":        "retired: use OTEL_EXPORTER_OTLP_ENDPOINT, with its scheme (http://host:4318)",
 	"LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS":         "retired: use OTEL_EXPORTER_OTLP_HEADERS or LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE",
@@ -113,9 +115,9 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_MEMORY_MAX_VALUE_BYTES":              "a Memory value is capped at 64 KiB",
 	"LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS":           "a principal holds at most 4 document feed streams",
 	"LOOMCYCLE_TOOL_PARALLELISM":                    "8 tool calls of one turn run at once",
-	"LOOMCYCLE_USAGE_RUN_RETENTION_MS":              "the usage archiver is gone: set LOOMCYCLE_RETENTION_ENABLED=1 with LOOMCYCLE_RETENTION_CHATS_MODE and LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS",
-	"LOOMCYCLE_USAGE_RUN_RETENTION_MODE":            "the usage archiver is gone: set LOOMCYCLE_RETENTION_ENABLED=1 with LOOMCYCLE_RETENTION_CHATS_MODE",
-	"LOOMCYCLE_USAGE_EXPORT_DIR":                    "the usage archiver is gone: set LOOMCYCLE_RETENTION_EXPORT_DIR",
+	"LOOMCYCLE_USAGE_RUN_RETENTION_MS":              "the usage archiver is gone: set retention.chats.mode and retention.chats.max_age in the yaml",
+	"LOOMCYCLE_USAGE_RUN_RETENTION_MODE":            "the usage archiver is gone: set retention.chats.mode in the yaml",
+	"LOOMCYCLE_USAGE_EXPORT_DIR":                    "the usage archiver is gone: set retention.export_dir in the yaml",
 	"LOOMCYCLE_READ_ROOT":                           "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_WRITE_ROOT":                          "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
@@ -131,8 +133,64 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_CHANNEL_DEBUG":              "set LOOMCYCLE_LOG_LEVEL=debug: each channel publish is logged at debug level",
 	"LOOMCYCLE_OLLAMA_DEBUG_THINK":         "set LOOMCYCLE_LOG_LEVEL=debug: each Ollama request's model, effort and think flag are logged at debug level",
 	"LOOMCYCLE_A2A_ENABLED":                "A2A is on when LOOMCYCLE_A2A_SERVER_CARD names the server card to serve; unset it to turn A2A off",
+	"LOOMCYCLE_RETENTION_ENABLED":          "set retention.enabled in the yaml",
 	"LOOMCYCLE_SQLMEM_ENABLED":             "SQL Memory is on with a SQLite store, and with a Postgres store when LOOMCYCLE_SQLMEM_PG_DSN is set; storage.sqlmem_enabled: false in the yaml turns it off",
 	"LOOMCYCLE_STORAGE_BACKEND":            "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise; storage.backend in the yaml still overrides",
+
+	// Moved to the yaml `retention:` block. Ages are durations there (30d,
+	// 12h), not milliseconds.
+	"LOOMCYCLE_RETENTION_INTERVAL_MS":              "set retention.interval in the yaml, as a duration such as 1h",
+	"LOOMCYCLE_RETENTION_EXPORT_DIR":               "set retention.export_dir in the yaml",
+	"LOOMCYCLE_RETENTION_DEFS_MODE":                "set retention.defs.mode in the yaml",
+	"LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS":          "set retention.defs.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N":         "set retention.defs.keep_last_n in the yaml",
+	"LOOMCYCLE_RETENTION_CHATS_MODE":               "set retention.chats.mode in the yaml",
+	"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS":         "set retention.chats.max_age in the yaml, as a duration such as 90d",
+	"LOOMCYCLE_RETENTION_MEM_MODE":                 "set retention.mem.mode in the yaml",
+	"LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS":           "set retention.mem.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE":         "set retention.mem_content.mode in the yaml",
+	"LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS":   "set retention.mem_content.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE":       "set retention.empty_dossier.mode in the yaml",
+	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS": "set retention.empty_dossier.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_USAGE_DETAIL_RETENTION_MS":          "set retention.usage_detail.max_age in the yaml, as a duration such as 30d",
+	"LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS":            "set retention.trace.max_age in the yaml, as a duration such as 30d",
+
+	// Moved to each provider's `options:` in the yaml.
+	"LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS":      "set providers.<id>.options.header_timeout_ms in the yaml for each provider that needs another value than 60000",
+	"LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS":        "set providers.<id>.options.idle_timeout_ms in the yaml for each provider that needs another value than 90000",
+	"LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS":  "set providers.ollama-local.options.header_timeout_ms in the yaml",
+	"LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS":    "set providers.ollama-local.options.idle_timeout_ms in the yaml",
+	"LOOMCYCLE_OLLAMA_NUM_CTX":                  "set providers.ollama.options.num_ctx in the yaml",
+	"LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU":            "set providers.ollama-local.options.num_gpu in the yaml",
+	"LOOMCYCLE_CODE_AGENTS_DETERMINISTIC":       "set providers.code-js.options.deterministic in the yaml",
+	"LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS": "set providers.code-js.options.run_timeout_seconds in the yaml",
+	"LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS":    "set providers.code-js.options.max_wall_seconds in the yaml",
+
+	// Moved to the yaml `timeout_scaling:` block.
+	"LOOMCYCLE_TIMEOUT_SCALING":                "set timeout_scaling.mode in the yaml",
+	"LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS":  "set timeout_scaling.reference.decode_tps in the yaml",
+	"LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER": "set timeout_scaling.max_multiplier in the yaml",
+
+	// Moved to the yaml `memory:` block.
+	"LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE":      "set memory.embedder.batch_size in the yaml (1 sends one text per call)",
+	"LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS":      "set memory.embedder.timeout_ms in the yaml",
+	"LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL": "set memory.projection.interval in the yaml, with memory.projection.enabled: true",
+
+	// Moved to the yaml `concurrency:` block.
+	"LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER": "set concurrency.max_concurrent_runs_per_user in the yaml",
+	"LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER":     "set concurrency.max_queued_runs_per_user in the yaml",
+	"LOOMCYCLE_PROVIDER_QUEUE_DEPTH":         "set concurrency.provider_queue_depth in the yaml",
+
+	// Lists and maps moved to the yaml `observability:` block.
+	"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS":     "set observability.tracing.tenant_sampler_ratios in the yaml, as a map of tenant to ratio",
+	"LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS": "set observability.tenant_telemetry.allowed_hosts in the yaml, as a list",
+
+	"LOOMCYCLE_UI_LOGIN_ORIGINS": "set auth.login_origins in the yaml, as a list",
+
+	// The process metrics sampler moved to the yaml `metrics:` block.
+	"LOOMCYCLE_METRICS_ENABLED":            "set metrics.enabled: true in the yaml",
+	"LOOMCYCLE_METRICS_COLLECT_SYSTEM":     "set metrics.collect_system: true in the yaml",
+	"LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS": "set metrics.sample_interval in the yaml, as a duration such as 5s",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in
@@ -171,6 +229,9 @@ type retiredEnvCtx struct {
 	// storage is the yaml's storage block before any env override, for the
 	// settings that moved to a yaml key.
 	storage *StorageConfig
+	// cfg is the whole yaml before any env override, for the settings that
+	// moved to a block other than storage.
+	cfg *Config
 }
 
 // retiredRefusal is a retired variable whose value may have asked for
@@ -218,6 +279,125 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// for on a Postgres store with no aux DSN, it used to stop the boot and
 	// would now stay off with the agents' SQL and Documents refusing.
 	"LOOMCYCLE_SQLMEM_ENABLED": {sqlMemSwitchDisagrees, "SQL Memory follows the store, which is not what this variable asked for; to keep it off set storage.sqlmem_enabled: false in the yaml, and to have it on with a Postgres store set LOOMCYCLE_SQLMEM_PG_DSN (with storage.sqlmem_enabled unset or true)"},
+
+	// The sweeper ran only when this said "1"; retention.enabled in the yaml
+	// is that switch now. Set to 1 with the yaml not turning it on, retention
+	// the operator committed to would stop; set to anything else with the
+	// yaml turning it on, data they held back would be deleted.
+	"LOOMCYCLE_RETENTION_ENABLED": {retentionSwitchDisagrees, "the retention sweeper runs when retention.enabled is true in the yaml, which is not what this variable asked for; set retention.enabled to match what you want (true to keep retention running, false or absent to keep it off)"},
+
+	// The retention settings moved to the yaml. A family the environment had
+	// deleting that the yaml leaves off keeps data the operator committed to
+	// deleting; the reverse, or a different age, deletes data they meant to
+	// keep. Each is judged against what the yaml gives, so an operator who
+	// has already written the block is not stopped.
+	"LOOMCYCLE_RETENTION_DEFS_MODE":          {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.Defs.Mode })},
+	"LOOMCYCLE_RETENTION_CHATS_MODE":         {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.Chats.Mode })},
+	"LOOMCYCLE_RETENTION_MEM_MODE":           {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.Mem.Mode })},
+	"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE":   {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.MemContent.Mode })},
+	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE": {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.EmptyDossier.Mode })},
+	"LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return age(r.Defs.MaxAge)
+	})},
+	"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return age(r.Chats.MaxAge)
+	})},
+	"LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return age(r.Mem.MaxAge)
+	})},
+	"LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return age(r.MemContent.MaxAge)
+	})},
+	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return age(r.EmptyDossier.MaxAge)
+	})},
+	"LOOMCYCLE_USAGE_DETAIL_RETENTION_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return durationOr(r.UsageDetail.MaxAge.Duration(), retentionAgeDefault)
+	})},
+	"LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
+		return durationOr(r.Trace.MaxAge.Duration(), retentionAgeDefault)
+	})},
+	// The old read took any number from zero up; zero keeps no version.
+	"LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N": {loosens: func(value string, c retiredEnvCtx) bool {
+		now := int64(retentionDefsKeepLastNDefault)
+		if n := c.cfg.Retention.Defs.KeepLastN; n != nil {
+			now = int64(*n)
+		}
+		n, set, ok := retiredInt(value)
+		return set && ok && n >= 0 && n != now
+	}},
+	// The provider stream timeouts moved to each provider's options. One
+	// lowered so a stalled provider fails over sooner would, ignored, leave
+	// every call waiting the default again.
+	"LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS":     {loosens: providerTimeoutLowered("header_timeout_ms", false)},
+	"LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS":       {loosens: providerTimeoutLowered("idle_timeout_ms", false)},
+	"LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS": {loosens: providerTimeoutLowered("header_timeout_ms", true)},
+	"LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS":   {loosens: providerTimeoutLowered("idle_timeout_ms", true)},
+	// The hosted Ollama context window and the local GPU offload are provider
+	// options now. Dropped without the option, requests run in the model's
+	// own window (a truncated prompt) or on whatever Ollama picks (often the
+	// CPU): nothing fails, the answers get worse or slower. The yaml must
+	// carry the same number.
+	"LOOMCYCLE_OLLAMA_NUM_CTX":       {providerOptionDiffers("ollama", "num_ctx"), "requests to hosted Ollama no longer carry this context window; set providers.ollama.options.num_ctx in the yaml to the same value, then remove this variable"},
+	"LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU": {providerOptionDiffers("ollama-local", "num_gpu"), "requests to local Ollama no longer carry this GPU offload; set providers.ollama-local.options.num_gpu in the yaml to the same value, then remove this variable"},
+	// The code-agent bounds: a budget or a lifetime lowered so a runaway
+	// script ends sooner.
+	"LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
+		return loweredFrom(value, codeJSOptionOr(c.cfg, "run_timeout_seconds", 120))
+	}},
+	"LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
+		return loweredFrom(value, codeJSOptionOr(c.cfg, "max_wall_seconds", 86400))
+	}},
+	// An embedder call held to a shorter timeout than the yaml now gives.
+	// Zero meant no timeout at all, which no yaml value is looser than.
+	"LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS": {loosens: func(value string, c retiredEnvCtx) bool {
+		return loweredFrom(value, yamlOr(c.cfg.Memory.Embedder.TimeoutMs, EmbedderTimeoutMSDefault))
+	}},
+	// The concurrency bounds moved to the yaml. Each is refused when it held
+	// one user, or the requests outside any run, to less than the yaml allows.
+	// A per-user cap of zero is "no cap" in both planes.
+	"LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER": {loosens: func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		now := int64(c.cfg.Concurrency.MaxConcurrentRunsPerUser)
+		return set && ok && n > 0 && (now <= 0 || n < now)
+	}},
+	// Zero was a setting here (a run over the cap is refused at once), and the
+	// old read ignored a negative number.
+	"LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER": {loosens: func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		return set && ok && n >= 0 && n < int64(c.cfg.Concurrency.MaxQueuedRunsPerUser)
+	}},
+	// Zero inherited max_queue_depth, as an absent yaml key does.
+	"LOOMCYCLE_PROVIDER_QUEUE_DEPTH": {loosens: func(value string, c retiredEnvCtx) bool {
+		return loweredFrom(value, int64(c.cfg.Concurrency.ProviderQueueDepthOrDefault()))
+	}},
+	// A tenant's ratio the yaml does not give would leave that tenant on the
+	// global sampler: more spans exported and paid for, or fewer than the
+	// operator promised.
+	"LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS": {loosens: samplerRatiosDiffer},
+	// With no list a tenant's collector endpoint may name any host, so a list
+	// the yaml does not carry is a restriction lost. A yaml list of other
+	// hosts is the operator's new list, not this rule's to judge.
+	"LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS": {loosens: func(value string, c retiredEnvCtx) bool {
+		return len(splitCSV(value)) > 0 && len(c.cfg.Observability.TenantTelemetry.AllowedHosts) == 0
+	}},
+	// An origin the yaml does not list can no longer hand the login page a
+	// token: the landing page's sign-in would stop working.
+	"LOOMCYCLE_UI_LOGIN_ORIGINS": {loosens: func(value string, c retiredEnvCtx) bool {
+		// The rules run before the yaml list is normalised, so do it here.
+		listed := splitCommaTrim(strings.Join(c.cfg.Auth.LoginOrigins, ","))
+		for _, o := range splitCommaTrim(value) {
+			if !slices.Contains(listed, o) {
+				return true
+			}
+		}
+		return false
+	}},
+	// Without the directory a family in export+prune mode deletes nothing;
+	// with another one its exports land where nobody looks for them.
+	"LOOMCYCLE_RETENTION_EXPORT_DIR": {loosens: func(value string, c retiredEnvCtx) bool {
+		return value != "" && value != c.cfg.Retention.ExportDir
+	}},
 
 	// A2A used to be served only when this said "1". With the card named and
 	// the switch off, the A2A endpoints would now be mounted.
@@ -272,12 +452,12 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS":              {loosens: loweredBelow(60_000)},
 	"LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS":       {loosens: loweredBelow(30 * 60 * 1000)},
 	"LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS":           {loosens: loweredBelow(2 * 60 * 60)},
-	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": {internalChatsAgeDiffers, "chats of internal agents are kept 3 days and then deleted (when chat retention is on); the age can no longer be set, here or by inheriting LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS"},
+	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": {internalChatsAgeDiffers, "chats of internal agents are kept 3 days and then deleted (when chat retention is on); the age can no longer be set, here or by inheriting retention.chats.max_age"},
 
 	// Settings that decided what data is kept or deleted. Here a difference in
 	// either direction stops the boot: rows the operator meant to keep would
 	// be deleted, or rows they meant to be rid of would stay.
-	"LOOMCYCLE_USAGE_SWEEPER":                  {switchWasZero, "the usage rollup always runs: per-call usage rows older than LOOMCYCLE_USAGE_DETAIL_RETENTION_MS (30 days unless set) are deleted, and their daily totals are kept; to keep per-call rows longer, raise LOOMCYCLE_USAGE_DETAIL_RETENTION_MS"},
+	"LOOMCYCLE_USAGE_SWEEPER":                  {switchWasZero, "the usage rollup always runs: per-call usage rows older than retention.usage_detail.max_age (30 days unless set) are deleted, and their daily totals are kept; to keep per-call rows longer, raise retention.usage_detail.max_age in the yaml"},
 	"LOOMCYCLE_HEARTBEAT_SWEEPER":              {switchWasZero, "the run heartbeat sweeper always runs: a run whose heartbeat went stale is marked failed; this can no longer be turned off"},
 	"LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS": {boolWasOff, "the tenant-root and user-root documents are always created when a principal is established; this can no longer be turned off"},
 
@@ -362,6 +542,153 @@ func sqlMemSwitchDisagrees(value string, c retiredEnvCtx) bool {
 	return was != sqlMemNow(c)
 }
 
+// retentionSwitchDisagrees reports a retired retention switch whose old effect
+// (the sweeper ran for exactly "1") is not what retention.enabled gives.
+func retentionSwitchDisagrees(value string, c retiredEnvCtx) bool {
+	return (value == "1") != c.cfg.Retention.Enabled
+}
+
+// retentionModeDiffers is the rule of a retired family mode. The old read let
+// any non-empty value replace the default, and the sweeper acted on prune and
+// export+prune only, so everything else was off.
+func retentionModeDiffers(yamlMode func(*RetentionConfig) string) func(string, retiredEnvCtx) bool {
+	norm := func(m string) string {
+		if retentionModeDeletes(m) {
+			return m
+		}
+		return RetentionModeOff
+	}
+	return func(value string, c retiredEnvCtx) bool {
+		return value != "" && norm(value) != norm(yamlMode(&c.cfg.Retention))
+	}
+}
+
+// retentionAgeDiffers is the rule of a retired age in milliseconds, judged
+// against the age the yaml gives. The old reads took a positive number and
+// ignored everything else, so only a positive number changed anything.
+func retentionAgeDiffers(yamlAge func(*RetentionConfig) time.Duration) func(string, retiredEnvCtx) bool {
+	return func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		return set && ok && n > 0 && time.Duration(n)*time.Millisecond != yamlAge(&c.cfg.Retention)
+	}
+}
+
+// Provider stream timeout defaults, in milliseconds: every provider's, and
+// the local Ollama registration's own. providerbuild applies the same ones.
+const (
+	ProviderHeaderTimeoutMS    = 60_000
+	ProviderIdleTimeoutMS      = 90_000
+	OllamaLocalStreamTimeoutMS = 600_000
+)
+
+// providerOptionInt is a provider option as the positive whole number the
+// runtime applies, or false when the yaml gives none it would apply.
+func providerOptionInt(pc ProviderConfig, key string) (int64, bool) {
+	var n int64
+	switch v := pc.Options[key].(type) {
+	case int:
+		n = int64(v)
+	case int64:
+		n = v
+	case float64:
+		n = int64(v)
+	default:
+		return 0, false
+	}
+	return n, n > 0
+}
+
+// providerTimeoutLowered is the rule of a retired stream timeout: a positive
+// value under what a provider it applied to now waits. local selects the
+// ollama-local pair, which applied to that one provider; the global pair
+// applied to every other provider that makes HTTP calls. The old reads
+// ignored a value that was not a positive number.
+func providerTimeoutLowered(option string, local bool) func(string, retiredEnvCtx) bool {
+	return func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		if !set || !ok || n <= 0 {
+			return false
+		}
+		for id, pc := range c.cfg.Providers {
+			if (id == "ollama-local") != local || pc.Driver == "code-js" || pc.Driver == "mock" {
+				continue
+			}
+			now := int64(ProviderHeaderTimeoutMS)
+			switch {
+			case local:
+				now = OllamaLocalStreamTimeoutMS
+			case option == "idle_timeout_ms":
+				now = ProviderIdleTimeoutMS
+			}
+			if v, ok := providerOptionInt(pc, option); ok {
+				now = v
+			}
+			if n < now {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// providerOptionDiffers is the rule of a retired variable that set one
+// provider's option: a positive number the yaml option does not repeat. The
+// old reads ignored a value that was not a positive number.
+func providerOptionDiffers(provider, option string) func(string, retiredEnvCtx) bool {
+	return func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		if !set || !ok || n <= 0 {
+			return false
+		}
+		now, has := providerOptionInt(c.cfg.Providers[provider], option)
+		return !has || now != n
+	}
+}
+
+// codeJSOptionOr is a providers.code-js option, or dflt (the driver's own
+// default) when the yaml gives none.
+func codeJSOptionOr(cfg *Config, key string, dflt int64) int64 {
+	if v, ok := providerOptionInt(cfg.Providers["code-js"], key); ok {
+		return v
+	}
+	return dflt
+}
+
+// What memory.embedder.timeout_ms and batch_size are when unset.
+const (
+	EmbedderTimeoutMSDefault = 30_000
+	EmbedderBatchSizeDefault = 100
+)
+
+// samplerRatiosDiffer reports a retired `tenant=ratio,...` list naming a
+// tenant the yaml gives another ratio, or none. A pair that does not parse
+// stopped the boot when the variable was read, and is refused here as well.
+func samplerRatiosDiffer(value string, c retiredEnvCtx) bool {
+	now := c.cfg.Observability.Tracing.TenantSamplerRatios
+	for _, pair := range strings.Split(value, ",") {
+		if pair = strings.TrimSpace(pair); pair == "" {
+			continue
+		}
+		tenant, ratio, ok := strings.Cut(pair, "=")
+		f, err := strconv.ParseFloat(strings.TrimSpace(ratio), 64)
+		if !ok || err != nil {
+			return true
+		}
+		if have, listed := now[strings.TrimSpace(tenant)]; !listed || have != f {
+			return true
+		}
+	}
+	return false
+}
+
+// durationOr is d, or dflt when d is unset.
+func durationOr(d, dflt time.Duration) time.Duration {
+	if d > 0 {
+		return d
+	}
+	return dflt
+}
+
 // a2aWasOff reports a retired A2A switch that kept A2A off (the old read
 // served it for exactly "1") while the server card that now turns it on is
 // named.
@@ -434,8 +761,11 @@ func boolWasOff(value string, _ retiredEnvCtx) bool {
 
 // internalChatsAgeDiffers reports an internal-chat age other than the 3 days
 // now fixed. Zero inherited the chat age, whose own zero (or absence) was "no
-// minimum age": internal chats went as soon as they finished. A negative
-// number was ignored by the old read, which left the 3-day default.
+// minimum age": internal chats went as soon as they finished. The chat age is
+// retention.chats.max_age now, so that is the age a zero is judged against (a
+// retired LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS the yaml does not repeat stops
+// the boot under its own rule). A negative number was ignored by the old
+// read, which left the 3-day default.
 func internalChatsAgeDiffers(value string, c retiredEnvCtx) bool {
 	const fixed = 3 * 24 * 60 * 60 * 1000
 	n, set, ok := retiredInt(value)
@@ -443,11 +773,7 @@ func internalChatsAgeDiffers(value string, c retiredEnvCtx) bool {
 		return set
 	}
 	if n == 0 {
-		// The chat age's read ignored anything but a positive integer.
-		if inherited, _, ok := retiredInt(c.env["LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS"]); ok && inherited > 0 {
-			n = inherited
-		}
-		return n != fixed
+		return age(c.cfg.Retention.Chats.MaxAge).Milliseconds() != fixed
 	}
 	return n > 0 && n != fixed
 }
@@ -462,6 +788,15 @@ func loweredBelow(fixed int64) func(string, retiredEnvCtx) bool {
 		n, set, ok := retiredInt(value)
 		return set && (!ok || (n > 0 && n < fixed))
 	}
+}
+
+// loweredFrom reports a retired bound that was a positive number under now,
+// the bound the yaml gives. It is the rule of a variable whose old read
+// ignored a value that did not parse or was not positive, leaving the default:
+// ignoring such a value again changes nothing.
+func loweredFrom(value string, now int64) bool {
+	n, set, ok := retiredInt(value)
+	return set && ok && n > 0 && n < now
 }
 
 // loweredBelowYAML is loweredBelow against the bound the yaml gives.
@@ -488,14 +823,14 @@ func archiverWasPruning(mode string, c retiredEnvCtx) bool {
 		return false
 	}
 	age, set, ok := retiredInt(c.env["LOOMCYCLE_USAGE_RUN_RETENTION_MS"])
-	return set && ok && age > 0 && c.env["LOOMCYCLE_RETENTION_CHATS_MODE"] == ""
+	return set && ok && age > 0 && c.cfg.Retention.Chats.Mode == ""
 }
 
 // retiredEnvRefusals returns one "NAME: what to do" entry per retired variable
 // in environ (the os.Environ form) whose value the runtime would loosen by
 // ignoring, sorted by name. Values are never included.
-func retiredEnvRefusals(environ []string, storage *StorageConfig) []string {
-	c := retiredEnvCtx{env: make(map[string]string, len(environ)), storage: storage}
+func retiredEnvRefusals(environ []string, cfg *Config) []string {
+	c := retiredEnvCtx{env: make(map[string]string, len(environ)), storage: &cfg.Storage, cfg: cfg}
 	for _, kv := range environ {
 		if name, value, ok := strings.Cut(kv, "="); ok {
 			c.env[name] = value

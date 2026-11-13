@@ -103,6 +103,14 @@ type Config struct {
 	// reference machine (RFC DT). Defaults applied at load; see TimeoutScaling.
 	TimeoutScaling TimeoutScaling `yaml:"timeout_scaling,omitempty"`
 
+	// Metrics is the process metrics sampler; off by default. See
+	// MetricsConfig.
+	Metrics MetricsConfig `yaml:"metrics,omitempty"`
+
+	// Retention is what the runtime deletes with age, and when. Every family
+	// is off by default; see RetentionConfig.
+	Retention RetentionConfig `yaml:"retention,omitempty"`
+
 	// SearchPriority is the global default fallback order the WebSearch tool
 	// walks when an agent declares no per-agent `search_providers:` list.
 	// Every entry must be an enabled SearchProviders key. Empty = the enabled
@@ -906,11 +914,11 @@ type EmbedderConfig struct {
 	// stored `dimension` column first and refuses with
 	// dimension_mismatch until POST /v1/_memory/reembed migrates them.
 	Dimensions int `yaml:"dimensions"`
-	// TimeoutMs overrides LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS for
-	// this specific embedder. 0 = inherit env (30000 default).
+	// TimeoutMs caps one embedder HTTP call. 0 or unset = 30000.
 	TimeoutMs int `yaml:"timeout_ms"`
-	// BatchSize overrides LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE.
-	// 0 = inherit env (100 default).
+	// BatchSize is how many texts go into one embedder call; the provider's
+	// own cap still applies on top. 0 or unset = 100; 1 sends one text per
+	// call.
 	BatchSize int `yaml:"batch_size"`
 }
 
@@ -4045,7 +4053,6 @@ type Concurrency struct {
 	// MaxQueuedRunsPerUser of them — or, sent with `admission: "reject"`, is
 	// refused with HTTP 429 `code: "per_user_quota_exhausted"` +
 	// `Retry-After: 5`.
-	// Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER.
 	MaxConcurrentRunsPerUser int `yaml:"max_concurrent_runs_per_user"`
 	// MaxQueuedRunsPerUser is how many runs one (tenant, user) may have
 	// queued on its MaxConcurrentRunsPerUser cap. Default 16; 0 refuses a run
@@ -4053,7 +4060,6 @@ type Concurrency struct {
 	// bound is per replica. With no per-user cap it bounds instead how many
 	// places one (tenant, user) holds in the queue for a run slot (runs
 	// naming no user share their tenant's), so one caller cannot fill it.
-	// Env: LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER.
 	MaxQueuedRunsPerUser int `yaml:"max_queued_runs_per_user"`
 	// ProviderQueueDepth is how many requests that hold NO run slot may wait
 	// for a capped provider (max_concurrent / lanes) at once. 0 (default) =
@@ -4066,7 +4072,6 @@ type Concurrency struct {
 	// this is it — past the depth the request is refused with
 	// provider_concurrency_exhausted instead of queueing. A wait for a provider
 	// never times out.
-	// Env: LOOMCYCLE_PROVIDER_QUEUE_DEPTH.
 	ProviderQueueDepth int `yaml:"provider_queue_depth"`
 }
 
@@ -4120,22 +4125,6 @@ type Env struct {
 	// internal/providers/ollama/driver.go Driver.WithNumCtx for the
 	// full incident context. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX.
 	OllamaLocalNumCtx int
-	// OllamaNumCtx is the hosted-ollama-cloud counterpart. Empty
-	// default lets the cloud apply its own per-model context. Env:
-	// LOOMCYCLE_OLLAMA_NUM_CTX. Separate from OllamaLocalNumCtx
-	// because the relevant model menu (kimi-k2.6, etc.) differs from
-	// what runs on a local box, so the right value almost certainly
-	// differs too.
-	OllamaNumCtx int
-	// OllamaLocalNumGpu sets options.num_gpu on every chat request the
-	// `ollama-local` driver sends — the number of model layers Ollama
-	// offloads to the GPU. Default 0 = omit (Ollama auto-detects). Set
-	// it (e.g. 99 = "all layers") to force GPU offload on a box where
-	// Ollama otherwise falls back to CPU — common on integrated/APU
-	// GPUs that auto-detection underestimates. Global to ollama-local,
-	// like num_ctx: num_gpu is a model-LOAD parameter, not a per-request
-	// knob. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU.
-	OllamaLocalNumGpu int
 	// DeepSeekBaseURL overrides the public DeepSeek endpoint
 	// (https://api.deepseek.com/v1) for self-hosted OpenAI-
 	// compatible mirrors (e.g. an internal vLLM serving a DeepSeek
@@ -4182,13 +4171,6 @@ type Env struct {
 	// key held in Vault Transit (a dev server). Off by default: the Vault
 	// token travels in a header. LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1.
 	KMSVaultAllowHTTP bool
-	// UILoginOrigins (LOOMCYCLE_UI_LOGIN_ORIGINS, comma-separated) are the
-	// first-party origins the Web UI's postMessage login receiver may accept a
-	// bearer handoff FROM — e.g. "https://loomcycle.cloud" for the landing that
-	// mints tenant tokens. Empty ⇒ the receiver stays disabled (no cross-origin
-	// handoff), so a deployment without a configured landing can't be handed a
-	// token by any page. Non-secret.
-	UILoginOrigins []string
 	// AuthMode (LOOMCYCLE_AUTH_MODE: token | strict) is the fleet default for
 	// `auth.mode` (RFC FA §4); a config may raise it, never lower it.
 	AuthMode string
@@ -4511,7 +4493,7 @@ type Env struct {
 
 	// UsageDetailRetention is the cutoff: token_usage rows older than
 	// this are rolled up into usage_archive and pruned. Default 720h
-	// (30 days). Env: LOOMCYCLE_USAGE_DETAIL_RETENTION_MS.
+	// (30 days). Yaml: retention.usage_detail.max_age.
 	UsageDetailRetention time.Duration
 
 	// --- RFC BM data-retention sweeper (OPT-IN; default OFF). ---
@@ -4519,50 +4501,49 @@ type Env struct {
 	// schedule/a2a/webhook/memory_backend). Unlike the lossless usage rollup this
 	// DELETES data, so it defaults off and its DefsMode defaults to "off".
 
-	// RetentionEnabled turns the sweeper goroutine on. Default false.
-	// Env: LOOMCYCLE_RETENTION_ENABLED=1.
+	// RetentionEnabled turns the sweeper goroutine on. Yaml: retention.enabled.
 	RetentionEnabled bool
 	// RetentionInterval is the sweep tick rate. Default 1h.
-	// Env: LOOMCYCLE_RETENTION_INTERVAL_MS.
+	// Yaml: retention.interval.
 	RetentionInterval time.Duration
 	// RetentionExportDir is where export+prune writes def JSON (per-day/per-def-type
 	// subdir, one file per version). Required for the export+prune mode.
-	// Env: LOOMCYCLE_RETENTION_EXPORT_DIR.
+	// Yaml: retention.export_dir.
 	RetentionExportDir string
 	// RetentionDefsMode is "off" (default) | "prune" | "export+prune".
-	// Env: LOOMCYCLE_RETENTION_DEFS_MODE.
+	// Yaml: retention.defs.mode.
 	RetentionDefsMode string
 	// RetentionDefsMaxAge is the age cutoff: only versions created before
 	// now-RetentionDefsMaxAge are eligible. 0 = no minimum age.
-	// Env: LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS.
+	// Yaml: retention.defs.max_age.
 	RetentionDefsMaxAge time.Duration
 	// RetentionDefsKeepLastN keeps the N most-recent purgeable versions per
 	// (tenant, name) as lineage history. Default 5. 0 = purge all.
-	// Env: LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N.
+	// Yaml: retention.defs.keep_last_n.
 	RetentionDefsKeepLastN int
 	// RetentionChatsMode is the RFC BM Phase 2 aged-chat archiver mode:
 	// "off" (default / "") | "prune" | "export+prune" — deletes aged sessions +
 	// their runs + events (pinned sessions always exempt). Independent of
-	// RetentionDefsMode. Env: LOOMCYCLE_RETENTION_CHATS_MODE.
+	// RetentionDefsMode. Yaml: retention.chats.mode.
 	RetentionChatsMode string
 	// RetentionChatsMaxAge is the age cutoff for the chats archiver: a session
 	// whose runs are ALL terminal and whose latest completed_at is older than this
 	// is exported (per the mode) and cascade-deleted. 0 = no minimum age.
-	// Env: LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS.
+	// Yaml: retention.chats.max_age.
 	RetentionChatsMaxAge time.Duration
 	// RetentionMemMode is the RFC BM Phase 3 retired-agent memory-reclamation
 	// mode: "off" (default / "") | "prune" | "export+prune". Reclaims a
 	// fully-retired agent's SQL-Memory scope + dirents (per tenant) and its
 	// base-memory k/v (only when the name is retired in every tenant). Independent
-	// of RetentionDefsMode/RetentionChatsMode. Env: LOOMCYCLE_RETENTION_MEM_MODE.
+	// of RetentionDefsMode/RetentionChatsMode. Yaml: retention.mem.mode.
 	RetentionMemMode string
 	// RetentionMemMaxAge is the age cutoff for memory reclamation: an agent whose
 	// latest def version was updated before now-this is eligible. 0 = no minimum
-	// age. Env: LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS.
+	// age. Yaml: retention.mem.max_age.
 	RetentionMemMaxAge time.Duration
 	// RetentionMemContentMode is the RFC BL P4d class-aware memory-CONTENT prune
 	// mode: "off" (default), "prune", or "export+prune". Independent of every other
-	// retention family. Env: LOOMCYCLE_RETENTION_MEM_CONTENT_MODE.
+	// retention family. Yaml: retention.mem_content.mode.
 	//
 	// Prunes retired entity-tier content out of LIVE scopes, which is what
 	// supersede-not-delete makes necessary: a corrected fact is kept so questions
@@ -4570,8 +4551,8 @@ type Env struct {
 	// forever unless something reaps them. `evidential` content is exempt at any age.
 	RetentionMemContentMode string
 	// RetentionMemContentMaxAge is the age cutoff for the content prune: content
-	// retired before Now()-this is eligible. Env:
-	// LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS.
+	// retired before Now()-this is eligible. Yaml:
+	// retention.mem_content.max_age.
 	RetentionMemContentMaxAge time.Duration
 	// MemoryTraceIndexEnabled turns on the RFC CI trace index: each USER turn is
 	// stored and embedded so conversations are searchable by what was said, not only
@@ -4593,8 +4574,8 @@ type Env struct {
 	// COMPLETION, where a turn boundary exists; assistant text is persisted one row per
 	// streamed delta, so anything reading raw rows would index fragments.
 	MemoryTraceAssistantTurns bool
-	// MemoryTraceMaxAge is how long an indexed turn stays searchable. Env:
-	// LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS. Zero uses the 30-day default.
+	// MemoryTraceMaxAge is how long an indexed turn stays searchable. Yaml:
+	// retention.trace.max_age. Zero uses the 30-day default.
 	//
 	// Implemented as the row's TTL rather than as a retention family, so the window is
 	// enforced at READ (an expired row is missing before any sweeper runs), swept by
@@ -4603,8 +4584,8 @@ type Env struct {
 	MemoryTraceMaxAge time.Duration
 	// RetentionEmptyDossierMode sweeps subject documents left with no facts and
 	// nothing pointing at them: "off" (default), "prune", or "export+prune".
-	// Independent of every other retention family. Env:
-	// LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE.
+	// Independent of every other retention family. Yaml:
+	// retention.empty_dossier.mode.
 	//
 	// Off by default as a DECISION, not a habit. An empty dossier records that an
 	// entity was once known, and it usually becomes empty as a side effect of
@@ -4612,8 +4593,8 @@ type Env struct {
 	// erasure silently delete a record another user could see.
 	RetentionEmptyDossierMode string
 	// RetentionEmptyDossierMaxAge is the age cutoff, read against the document's
-	// updated_at: only a dossier untouched for longer is eligible. Env:
-	// LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS.
+	// updated_at: only a dossier untouched for longer is eligible. Yaml:
+	// retention.empty_dossier.max_age.
 	//
 	// "Empty" is a state a dossier passes THROUGH — mid-consolidation, or between an
 	// erasure and a re-derivation — so without an age gate a sweep landing in that
@@ -4674,54 +4655,16 @@ type Env struct {
 	// agent_code/<name>/index.js. Default ./agent_code. Env:
 	// LOOMCYCLE_CODE_AGENTS_ROOT.
 	CodeAgentsRoot string
-	// CodeAgentsDeterministic seeds Date.now()/Math.random() for
-	// reproducible runs (Decision 13). Default OFF. Env:
-	// LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1.
-	CodeAgentsDeterministic bool
-	// CodeAgentsRunTimeout is a code-agent's whole-run budget of ACTIVE time.
-	// It is NOT a ctx deadline: the code-js provider gives each replay turn of
-	// the JavaScript the run's remaining budget and Interrupts the turn when
-	// it runs out; a turn that starts with none left fails at once. A tool
-	// call in flight is not cut short. Default 120s. Env:
-	// LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS.
-	//
-	// Time the run spends WAITING does not count: Agent spawn/parallel_spawn
-	// and the resident open/send/poll while they block, a synchronous TeamDef
-	// op=run, Channel await/subscribe long-polls, Interruption ask, and a
-	// runtime pause all stop the run's clock (providers.RunClock). So a
-	// fan-out orchestrator's budget covers its own JavaScript and non-waiting
-	// tool calls, not its children. Raise it per-agent via
-	// AgentDef.RunTimeoutSeconds (yaml run_timeout_seconds) or per-call via the
-	// /v1/runs run_timeout_seconds field. Exceeding the budget surfaces as
-	// code_agent_timeout (not a throw at a JS line). Because waits are free
-	// against it, CodeAgentsMaxWall below is the bound that waits DO count
-	// against.
-	CodeAgentsRunTimeout time.Duration
-	// CodeAgentsMaxWall is how long a code-agent run may LIVE, waits
-	// included — the absolute bound the budget above, which excludes waits,
-	// cannot be: a run that only waits (a loop over Channel await,
-	// Interruption ask or tiny spawns) spends almost none of it. When it is
-	// exceeded the run's ctx is cancelled, so in-flight waits and children
-	// stop too, and the run fails code_agent_wall_limit. Time the runtime is
-	// paused does not count, and a resumed run continues from its recorded
-	// lifetime. Default 24h; there is no "unlimited", only a large value set
-	// on purpose. Operator-only: no per-agent or per-run field reaches it, so
-	// an agent author cannot lift it (run_timeout_seconds sets the budget,
-	// not this). Env: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS.
-	CodeAgentsMaxWall time.Duration
 
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
 	// MetricsEnabled enables the periodic process_samples
-	// recorder. Default OFF in v0.8.x (operator opts in via
-	// LOOMCYCLE_METRICS_ENABLED=1). Flip to default-on in v0.9.x
-	// once production-validated. When false, the sampler goroutine
+	// recorder. Default OFF; yaml metrics.enabled. When false, the sampler goroutine
 	// is not started at all — zero runtime overhead.
 	MetricsEnabled bool
 	// MetricsSampleInterval is the tick rate. Default 5s.
 	// Values below 1s are rejected at config-load (preventing
-	// accidental write-storms). Env:
-	// LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS.
+	// accidental write-storms). Yaml: metrics.sample_interval.
 	MetricsSampleInterval time.Duration
 	// MetricsRetentionDays is how many days of process_samples
 	// rows the periodic sweeper keeps. Default 7. Cleared rows
@@ -4732,7 +4675,7 @@ type Env struct {
 	// MetricsCollectSystem enables /proc/stat + /proc/meminfo
 	// reads for system-wide CPU% + memory usage in addition to
 	// loomcycle's own RSS. Linux only; silently ignored on other
-	// platforms. Env: LOOMCYCLE_METRICS_COLLECT_SYSTEM.
+	// platforms. Yaml: metrics.collect_system.
 	MetricsCollectSystem bool
 
 	// ---- v0.12.0 multi-replica HA (opt-in) ----
@@ -4830,12 +4773,6 @@ type Env struct {
 	// Env: LOOMCYCLE_DEADLINK_GC (off | dry-run | on).
 	DeadLinkGC string
 
-	// DocumentProjectionInterval is LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL, raw:
-	// a Go duration that overrides memory.projection.interval ("0" stops the
-	// sweeper; a positive value also enables the projection). Resolved and
-	// validated by Config.DocumentProjection / validate.
-	DocumentProjectionInterval string
-
 	// MemoryPendingDrainedTTL is how long a consolidation-queue row is kept
 	// after a pass acks it. An hourly prune deletes older drained rows; an
 	// undrained row is never pruned. Default 7 days. 0 or negative disables the
@@ -4852,20 +4789,6 @@ type Env struct {
 	// Env: LOOMCYCLE_PGVECTOR_ENABLED.
 	PgvectorEnabled bool
 
-	// MemoryEmbedBatchSize is the default batch size embedder
-	// drivers use when grouping texts into one provider call.
-	// Provider-specific caps (OpenAI's 2048-item limit etc.) still
-	// apply on top. Default 100. 0 disables batching (one call per
-	// text — useful for debugging cost surprises).
-	// Env: LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE.
-	MemoryEmbedBatchSize int
-
-	// MemoryEmbedTimeoutMs caps a single embedder HTTP call. Default
-	// 30000 (30 s). 0 disables (rely on outer context). Negative
-	// treated as 0 (matches MemoryMaxValueBytes convention).
-	// Env: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS.
-	MemoryEmbedTimeoutMs int
-
 	// ChannelsLongPollCapMS caps the wait_ms an agent may request
 	// on a Channel.subscribe call (v0.8.4). Default 30000 (30 s) —
 	// long enough for "wake me when there's new work" semantics,
@@ -4873,48 +4796,6 @@ type Env struct {
 	// on agent crash. 0 disables long-poll entirely.
 	// Env: LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS.
 	ChannelsLongPollCapMS int
-
-	// ProviderHeaderTimeout is the per-attempt cap on time-to-first-
-	// byte for streaming provider HTTP calls (set on each driver's
-	// http.Transport.ResponseHeaderTimeout). Default 60s — generous
-	// enough for cold-start cloud endpoints and warming Ollama models
-	// without leaving a stalled pre-stream connection open forever.
-	// Env: LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS.
-	ProviderHeaderTimeout time.Duration
-
-	// ProviderIdleTimeout is the maximum gap allowed between body
-	// bytes during a streaming provider response. The driver wraps
-	// resp.Body with streamhttp.WrapBody and resets a timer on every
-	// Read; if the timer fires (no bytes for this long), the request
-	// context is cancelled. Default 90s — long enough to ride out
-	// reasoning-model thinking pauses, short enough to drop a truly
-	// stalled stream before the agent's heartbeat sweeper notices.
-	//
-	// Why this exists: the previous implementation used
-	// http.Client.Timeout = 5min as a wall-clock cap on the entire
-	// request. For long final-turn responses (e.g. job-searcher
-	// emitting a 25-position ingest payload) the cap fired mid-stream
-	// even when the model was actively producing tokens. The
-	// header-timeout + per-byte idle pair lets long *productive*
-	// streams complete while still killing genuinely stalled ones.
-	// Env: LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS.
-	ProviderIdleTimeout time.Duration
-
-	// OllamaLocalHeaderTimeout / OllamaLocalIdleTimeout override the
-	// ProviderHeaderTimeout / ProviderIdleTimeout pair for the
-	// "ollama-local" registration ONLY. Local generation is inherently
-	// slow on first-token — a cold model load from disk plus prompt
-	// evaluation over a large num_ctx can take minutes on a consumer
-	// GPU/CPU, blowing past the 60s/90s cloud-shaped defaults and
-	// surfacing as a spurious header/idle timeout. These default to a
-	// generous 300s each so a slow local model isn't cut off, while the
-	// cloud providers keep the tighter fast-fail defaults. Hosted
-	// ollama.com (the "ollama" registration) uses the global
-	// Provider*Timeout, like every other cloud driver.
-	// Env: LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS /
-	// LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS.
-	OllamaLocalHeaderTimeout time.Duration
-	OllamaLocalIdleTimeout   time.Duration
 
 	// SchedulerTickSeconds is the sweeper poll cadence. Default 30.
 	// Lower values trade DB load for tighter punctuality. Env:
@@ -5066,8 +4947,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// live elsewhere, stops the load;
 	// the rest are said once, where boot, `validate` and `doctor` all print
 	// advisories.
-	if refused := retiredEnvRefusals(os.Environ(), &cfg.Storage); len(refused) > 0 {
-		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, or another store), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
+	if refused := retiredEnvRefusals(os.Environ(), cfg); len(refused) > 0 {
+		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, data kept or deleted differently, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
@@ -5077,7 +4958,17 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	applyEnvNetPolicy(cfg)
 	applyEnvListeners(cfg)
 	applyEnvSweepers(cfg)
-	if err := applyEnvRetention(cfg); err != nil {
+	if err := applyEnvAudit(cfg); err != nil {
+		return nil, err
+	}
+	applyEnvTraceIndex(cfg)
+	if err := applyRetention(cfg); err != nil {
+		return nil, err
+	}
+	if err := applyTenantTelemetry(cfg); err != nil {
+		return nil, err
+	}
+	if err := applyAuthLoginOrigins(cfg); err != nil {
 		return nil, err
 	}
 	applyEnvClusterSweeps(cfg)
@@ -5086,7 +4977,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	if err := applyEnvDeadLinkGC(cfg); err != nil {
 		return nil, err
 	}
-	applyEnvConcurrency(cfg)
 	if err := applyEnvToolLimits(cfg); err != nil {
 		return nil, err
 	}
@@ -5095,6 +4985,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	applyEnvMetrics(cfg)
+	if err := applyMetrics(cfg); err != nil {
+		return nil, err
+	}
 	applyEnvScheduler(cfg)
 	applyEnvWebhooks(cfg)
 	if err := applyEnvA2A(cfg); err != nil {
@@ -5104,9 +4997,8 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	applyEnvMCP(cfg)
-	applyEnvProviderTimeouts(cfg)
 
-	// RFC DT: the throughput-measurement block's env overrides + defaults.
+	// The throughput-measurement block's defaults.
 	applyTimeoutScaling(cfg)
 
 	// RFC BA: skills are on-demand (loaded via the Skill tool), not bundled
@@ -5258,7 +5150,6 @@ func applyEnvCore(cfg *Config) {
 		GeminiBaseURL:               os.Getenv("GEMINI_BASE_URL"),
 		ListenAddr:                  getenvDefault("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:8787"),
 		PublicURL:                   strings.TrimRight(strings.TrimSpace(os.Getenv("LOOMCYCLE_PUBLIC_URL")), "/"),
-		UILoginOrigins:              splitCommaTrim(os.Getenv("LOOMCYCLE_UI_LOGIN_ORIGINS")),
 		AuthMode:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_AUTH_MODE")),
 		UIInsecureCookies:           os.Getenv("LOOMCYCLE_UI_INSECURE_COOKIES") == "1",
 		WebUIDir:                    strings.TrimSpace(os.Getenv("LOOMCYCLE_WEBUI_DIR")),
@@ -5302,11 +5193,11 @@ func applyEnvCore(cfg *Config) {
 		HelpRoot:                    defaultedRoot(cfg, "LOOMCYCLE_HELP_ROOT", "help"),
 		ConfiguredRunTTL:            24 * time.Hour,
 		MaxConfiguredRunsPerUser:    100,
-		// RFC BM retention defaults — opt-in (RetentionEnabled zero-false); the
-		// mode defaults off and keep-last-N to 5. The env parse below overrides
-		// these only when the corresponding var is set.
+		// Retention defaults: every family's mode is off, and the definitions
+		// family keeps 5 versions. applyRetention overrides these from the
+		// yaml `retention:` block.
 		RetentionDefsMode:      "off",
-		RetentionDefsKeepLastN: 5,
+		RetentionDefsKeepLastN: retentionDefsKeepLastNDefault,
 	}
 }
 
@@ -7865,7 +7756,7 @@ func validate(c *Config) error {
 	if err := c.Memory.FullText.validate(); err != nil {
 		return err
 	}
-	if _, err := c.Memory.Projection.resolve(c.Env.DocumentProjectionInterval); err != nil {
+	if _, err := c.Memory.Projection.resolve(); err != nil {
 		return err
 	}
 	if err := c.Decision.validate(c); err != nil {

@@ -196,15 +196,14 @@ services:
       LOOMCYCLE_PG_AUTOMIGRATE: "0"              # the init service handles migrations
       LOOMCYCLE_DATA_DIR: /data
 
-      LOOMCYCLE_METRICS_ENABLED: "1"
-      LOOMCYCLE_METRICS_COLLECT_SYSTEM: "1"
+      # The metrics sampler is switched on in the config overlay (`metrics:`).
       LOOMCYCLE_METRICS_RETENTION_DAYS: "7"
       LOOMCYCLE_AUDIT_LOG_PATH: /data/audit.log   # a FILE, not the /data dir
       LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
       OLLAMA_BASE_URL: http://OLLAMA_HOST:11434
       LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX: "65535"     # pin the local model's context window
-      LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: "99"        # force GPU offload where Ollama falls back to CPU
+      # GPU offload (num_gpu) is in the config overlay: providers.ollama-local.options.
 
       # --- code execution (TOOLBOX IMAGE ONLY; single-tenant/trusted) ---
       # Delete this whole block on the distroless image. Grant Bash/Bashbox to an

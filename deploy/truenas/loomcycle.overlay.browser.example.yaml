@@ -17,6 +17,21 @@ volumes:
     mode: rw
     default: true
 
+# Process metrics sampler: CPU and memory samples while runs are active
+# (GET /v1/_metrics/*, the Web UI's activity page), with the host's own CPU
+# and memory beside them. Delete the block to turn it off.
+metrics:
+  enabled: true
+  collect_system: true
+
+# Local models: force GPU offload where Ollama's detection falls back to CPU
+# (99 = all layers). Delete the block to let Ollama decide. The context window
+# is LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX in the compose.
+providers:
+  ollama-local:
+    options:
+      num_gpu: 99
+
 # ── Headless browser (PinchTab) for the dev/exec agent ────────────────────────
 # PinchTab's MCP is stdio-only, so loomcycle spawns the pinchtab client (present in the
 # loomcycle-browser image) as a stdio MCP bridge to the `pinchtab` server sidecar. The

@@ -2,8 +2,10 @@ package config
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRetiredEnvWarnings_NamesEachRetiredVariableSetAndNoOther(t *testing.T) {
@@ -72,10 +74,17 @@ var retiredNameKeptOnPurpose = map[string]bool{
 // applies stops the load; any other value of it is only advised.
 func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing.T) {
 	for _, tc := range []struct {
-		name, value string
-		also        []string // other variables of the same environment
-		yaml        StorageConfig
-		refused     bool
+		name, value   string
+		also          []string // other variables of the same environment
+		yaml          StorageConfig
+		retention     RetentionConfig // the yaml's retention block
+		providers     map[string]ProviderConfig
+		memory        MemoryConfig
+		concurrency   Concurrency
+		observability ObservabilityConfig
+		auth          AuthConfig
+		metrics       MetricsConfig
+		refused       bool
 	}{
 		// Gates: the old read turned the feature on for exactly "1".
 		{name: "LOOMCYCLE_SCHEDULER_ENABLED", value: "1"},
@@ -121,17 +130,18 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 
 		// The internal-chat age is fixed at 3 days: any other age changes when
 		// those chats are deleted, in either direction. Zero inherited the
-		// chat age, and an unset chat age was "no minimum".
+		// chat age (retention.chats.max_age now), and an unset chat age was
+		// "no minimum".
 		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "3600000", refused: true},
 		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "604800000", refused: true},
 		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "259200000"},
 		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "-1"}, // was ignored: the 3-day default applied
 		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "soon", refused: true},
 		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", refused: true},
-		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=604800000"}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=3600000"}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=0"}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=259200000"}},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(7 * 24 * time.Hour))}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(time.Hour))}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(0))}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(3 * 24 * time.Hour))}}},
 
 		// Switches of work that changes what is kept: the old "off" is refused,
 		// every other value left the work running.
@@ -181,7 +191,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		// replaces it.
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "prune", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}, refused: true},
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "export+prune", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}, refused: true},
-		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "prune", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000", "LOOMCYCLE_RETENTION_CHATS_MODE=prune"}},
+		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "prune", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}, retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}},
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "prune"},                                                            // no age: it never ran
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "off", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}}, // dormant
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MS", value: "86400000"},                                                           // no mode: dormant
@@ -221,6 +231,79 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		// SQL Memory is opened, as it did; that is not this rule's to refuse.
 		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", yaml: StorageConfig{PgDSN: "postgres://u@h/db", SqlMemEnabled: boolPtr(true)}},
 
+		// The retention switch moved to retention.enabled. The old read ran the
+		// sweeper for exactly "1"; refused when the yaml says the opposite.
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", refused: true}, // the yaml does not turn it on: retention would stop
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", retention: RetentionConfig{Enabled: true}},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{Enabled: true}, refused: true}, // held off, and the yaml starts it
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "", retention: RetentionConfig{Enabled: true}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "true", retention: RetentionConfig{Enabled: true}, refused: true}, // was not "1": it stayed off
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0"},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}}, // off then, off now
+
+		// A family mode that moved to the yaml: refused when the family would
+		// delete under one and not the other, or export under one only.
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "prune", refused: true}, // the yaml leaves it off: chats would be kept
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "export+prune", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "off", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "prune", retention: RetentionConfig{Defs: RetentionDefs{Mode: "prune"}}, refused: true}, // another family
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "prune", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "off"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "delete"}, // never a mode the sweeper acted on
+		{name: "LOOMCYCLE_RETENTION_CHATS_MODE", value: "", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}},
+		{name: "LOOMCYCLE_RETENTION_DEFS_MODE", value: "prune", refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_MODE", value: "prune", retention: RetentionConfig{Defs: RetentionDefs{Mode: "prune"}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_MODE", value: "export+prune", refused: true},
+		{name: "LOOMCYCLE_RETENTION_MEM_MODE", value: "export+prune", retention: RetentionConfig{Mem: RetentionFamily{Mode: "export+prune"}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MODE", value: "prune", refused: true},
+		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MODE", value: "prune", retention: RetentionConfig{MemContent: RetentionFamily{Mode: "prune"}}},
+		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE", value: "prune", refused: true},
+		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE", value: "prune", retention: RetentionConfig{EmptyDossier: RetentionFamily{Mode: "prune"}}},
+
+		// An age that moved to the yaml: refused when it was a positive number
+		// the yaml does not give. The old reads ignored anything else.
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(30 * 24 * time.Hour))}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(90 * 24 * time.Hour))}}},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "0"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "-5"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "90d"}, // was ignored
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: ""},
+		{name: "LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Defs: RetentionDefs{MaxAge: agePtr(HumanDuration(24 * time.Hour))}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Mem: RetentionFamily{MaxAge: agePtr(HumanDuration(24 * time.Hour))}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{MemContent: RetentionFamily{MaxAge: agePtr(HumanDuration(24 * time.Hour))}}},
+		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{EmptyDossier: RetentionFamily{MaxAge: agePtr(HumanDuration(24 * time.Hour))}}},
+		// These two default to 30 days.
+		{name: "LOOMCYCLE_USAGE_DETAIL_RETENTION_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_USAGE_DETAIL_RETENTION_MS", value: "2592000000"},
+		{name: "LOOMCYCLE_USAGE_DETAIL_RETENTION_MS", value: "86400000", retention: RetentionConfig{UsageDetail: RetentionAge{MaxAge: HumanDuration(24 * time.Hour)}}},
+		{name: "LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS", value: "86400000", refused: true},
+		{name: "LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS", value: "2592000000"},
+		{name: "LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Trace: RetentionAge{MaxAge: HumanDuration(24 * time.Hour)}}},
+
+		// Versions kept: any number from zero up was a setting; the default is 5.
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "0", refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "20", refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "5"},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "0", retention: RetentionConfig{Defs: RetentionDefs{KeepLastN: intPtr(0)}}},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "5", retention: RetentionConfig{Defs: RetentionDefs{KeepLastN: intPtr(0)}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "-1"}, // was ignored
+		{name: "LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N", value: "many"},
+
+		// The export directory: refused unless the yaml names the same one.
+		{name: "LOOMCYCLE_RETENTION_EXPORT_DIR", value: "/data/exports", refused: true},
+		{name: "LOOMCYCLE_RETENTION_EXPORT_DIR", value: "/data/exports", retention: RetentionConfig{ExportDir: "/srv/other"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_EXPORT_DIR", value: "/data/exports", retention: RetentionConfig{ExportDir: "/data/exports"}},
+		{name: "LOOMCYCLE_RETENTION_EXPORT_DIR", value: ""},
+
+		// The sweep cadence deletes nothing sooner or later than the ages say.
+		{name: "LOOMCYCLE_RETENTION_INTERVAL_MS", value: "1000"},
+
 		// The A2A switch: the old read served A2A for exactly "1". Refused
 		// when it was off and the server card that now turns A2A on is named.
 		{name: "LOOMCYCLE_A2A_ENABLED", value: "0", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=public"}, refused: true},
@@ -245,6 +328,151 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: ""},
 		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "1", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=1"}},
 		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "5", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=5"}},
+
+		// The global provider timeouts moved to each provider's options.
+		// Refused when lowered below the default and a provider that makes
+		// HTTP calls would now wait longer than the variable allowed.
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000", providers: map[string]ProviderConfig{
+			"openai": {Driver: "openai", Options: map[string]any{"header_timeout_ms": 5000}},
+			"gemini": {Driver: "gemini"},
+		}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000", providers: map[string]ProviderConfig{
+			"openai": {Driver: "openai", Options: map[string]any{"header_timeout_ms": 5000}},
+			"gemini": {Driver: "gemini", Options: map[string]any{"header_timeout_ms": 3000}},
+			// These never took the global timeout or make no HTTP call.
+			"ollama-local": {Driver: "ollama"}, "code-js": {Driver: "code-js"}, "mock": {Driver: "mock"},
+		}},
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000", providers: map[string]ProviderConfig{"openai": {Driver: "openai", Options: map[string]any{"header_timeout_ms": "5000"}}}, refused: true}, // a string is not applied
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "60000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},                                                                     // the default
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "120000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},                                                                    // raised: nothing waits longer
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "0", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},                                                                         // was ignored
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "fast", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},                                                                      // was ignored
+		{name: "LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS", value: "5000"},                                                                                                                                          // no provider to hold to it
+		{name: "LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS", value: "30000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS", value: "30000", providers: map[string]ProviderConfig{"openai": {Driver: "openai", Options: map[string]any{"idle_timeout_ms": 30000}}}},
+		{name: "LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS", value: "90000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}},
+		// The local Ollama pair: judged against that one provider, default 600s.
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", value: "300000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama"}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", value: "300000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"header_timeout_ms": 300000}}}},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", value: "900000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama"}}},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", value: "300000", providers: map[string]ProviderConfig{"openai": {Driver: "openai"}}}, // no local Ollama declared
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS", value: "300000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama"}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS", value: "600000", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama"}}},
+
+		// The code-agent bounds moved to providers.code-js.options. Refused
+		// when lowered below what the yaml gives (120s and 24h unset).
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "30", refused: true},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "30", providers: map[string]ProviderConfig{"code-js": {Driver: "code-js", Options: map[string]any{"run_timeout_seconds": 30}}}},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "30", providers: map[string]ProviderConfig{"code-js": {Driver: "code-js", Options: map[string]any{"run_timeout_seconds": 60}}}, refused: true},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "120"},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "600"},
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "0"},    // was ignored
+		{name: "LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS", value: "5min"}, // was ignored
+		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "3600", refused: true},
+		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "3600", providers: map[string]ProviderConfig{"code-js": {Driver: "code-js", Options: map[string]any{"max_wall_seconds": 3600}}}},
+		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "86400"},
+		{name: "LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS", value: "604800"},
+
+		// A provider option whose loss tightens nothing: reported only.
+		{name: "LOOMCYCLE_CODE_AGENTS_DETERMINISTIC", value: "1"},
+
+		// The hosted Ollama context window and the local GPU offload moved to
+		// provider options. Refused when the variable was a positive number
+		// the yaml option does not repeat: the window would shrink to the
+		// model's own, or the offload fall back to the CPU, with nothing but
+		// slower or truncated answers to show for it.
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", refused: true},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama"}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama", Options: map[string]any{"num_ctx": 8192}}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_ctx": 32768}}}, refused: true}, // the other provider's option
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768", providers: map[string]ProviderConfig{"ollama": {Driver: "ollama", Options: map[string]any{"num_ctx": 32768}}}},
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "0"},   // was ignored
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "-1"},  // was ignored
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32k"}, // was ignored
+		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: ""},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_ctx": 32768}}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_gpu": 20}}}, refused: true},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99", providers: map[string]ProviderConfig{"ollama-local": {Driver: "ollama", Options: map[string]any{"num_gpu": 99}}}},
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "0"},   // was ignored: Ollama decided
+		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "all"}, // was ignored
+
+		// Timeout scaling measures and changes no timeout, so no value of its
+		// variables tightened anything.
+		{name: "LOOMCYCLE_TIMEOUT_SCALING", value: "off"},
+		{name: "LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS", value: "50"},
+		{name: "LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER", value: "2"},
+
+		// The embedder call timeout moved to memory.embedder.timeout_ms
+		// (30000 unset). Refused when lowered below what the yaml gives; zero
+		// meant "no timeout", which was looser.
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "5000", refused: true},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "5000", memory: MemoryConfig{Embedder: EmbedderConfig{TimeoutMs: 5000}}},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "5000", memory: MemoryConfig{Embedder: EmbedderConfig{TimeoutMs: 20000}}, refused: true},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "30000"},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "120000"},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "0"},
+		{name: "LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS", value: "5s"}, // was ignored
+		// The batch size and the projection cadence tightened nothing.
+		{name: "LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE", value: "8"},
+		{name: "LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL", value: "1h"},
+
+		// The concurrency bounds moved to the yaml `concurrency:` block. Each is
+		// refused when it held a caller to less than the yaml now allows.
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "2", refused: true}, // the yaml has no per-user cap
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "2", concurrency: Concurrency{MaxConcurrentRunsPerUser: 4}, refused: true},
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "2", concurrency: Concurrency{MaxConcurrentRunsPerUser: 2}},
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "8", concurrency: Concurrency{MaxConcurrentRunsPerUser: 2}},
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "0", concurrency: Concurrency{MaxConcurrentRunsPerUser: 2}}, // was "no cap"
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "-3"},                                                       // was "no cap"
+		{name: "LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER", value: "two"},                                                      // was ignored
+		// The loader seeds max_queued_runs_per_user with 16; zero is "refuse at once".
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "4", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}, refused: true},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "0", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}, refused: true},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "4", concurrency: Concurrency{MaxQueuedRunsPerUser: 4}},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "16", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "64", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}},
+		{name: "LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER", value: "-1", concurrency: Concurrency{MaxQueuedRunsPerUser: 16}}, // was ignored
+		// Zero inherited max_queue_depth, as an absent yaml key does.
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "4", concurrency: Concurrency{MaxQueueDepth: 32}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "4", concurrency: Concurrency{MaxQueueDepth: 32, ProviderQueueDepth: 8}, refused: true},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "4", concurrency: Concurrency{MaxQueueDepth: 32, ProviderQueueDepth: 4}},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "64", concurrency: Concurrency{MaxQueueDepth: 32}},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "0", concurrency: Concurrency{MaxQueueDepth: 32}},
+		{name: "LOOMCYCLE_PROVIDER_QUEUE_DEPTH", value: "32", concurrency: Concurrency{MaxQueueDepth: 32}},
+
+		// The per-tenant sampler ratios: refused unless the yaml gives every
+		// tenant the variable named the same ratio.
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: "acme=1,beta=0.1", refused: true},
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: "acme=1,beta=0.1", observability: ObservabilityConfig{Tracing: TracingConfig{TenantSamplerRatios: map[string]float64{"acme": 1}}}, refused: true},
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: "acme=1,beta=0.1", observability: ObservabilityConfig{Tracing: TracingConfig{TenantSamplerRatios: map[string]float64{"acme": 1, "beta": 0.5}}}, refused: true},
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: " acme=1, beta=0.1 ,", observability: ObservabilityConfig{Tracing: TracingConfig{TenantSamplerRatios: map[string]float64{"acme": 1, "beta": 0.1, "gamma": 0}}}},
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: "acme", refused: true}, // stopped the boot before, too
+		{name: "LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS", value: ""},
+		// The tenant telemetry host list: with none, a tenant may name any
+		// host, so a list the yaml does not carry is refused.
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: "otel.example.com", refused: true},
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: "otel.example.com", observability: ObservabilityConfig{TenantTelemetry: TenantTelemetryConfig{AllowedHosts: []string{"otel.example.com"}}}},
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: "otel.example.com", observability: ObservabilityConfig{TenantTelemetry: TenantTelemetryConfig{AllowedHosts: []string{"*.grafana.net"}}}}, // the operator wrote a list
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: " , "},                                                                                                                                   // named no host
+		{name: "LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS", value: ""},
+
+		// The login page's handoff origins moved to auth.login_origins. Refused
+		// when the yaml does not list an origin the variable did: the landing
+		// page's sign-in would stop working.
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example", refused: true},
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example, https://b.example/", auth: AuthConfig{LoginOrigins: []string{"https://landing.example"}}, refused: true},
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example/, ", auth: AuthConfig{LoginOrigins: []string{"https://b.example", " https://landing.example/ "}}},
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: " , "},
+		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: ""},
+
+		// The metrics sampler moved to the yaml `metrics:` block. Losing it
+		// stops samples being recorded and tightens nothing.
+		{name: "LOOMCYCLE_METRICS_ENABLED", value: "1"},
+		{name: "LOOMCYCLE_METRICS_ENABLED", value: "0", metrics: MetricsConfig{Enabled: true}},
+		{name: "LOOMCYCLE_METRICS_COLLECT_SYSTEM", value: "1"},
+		{name: "LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS", value: "1000"},
 
 		// The debug flags only added log lines.
 		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
@@ -282,7 +510,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			environ := append([]string{tc.name + "=" + tc.value}, tc.also...)
-			got := retiredEnvRefusals(environ, &tc.yaml)
+			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory, Concurrency: tc.concurrency, Observability: tc.observability, Auth: tc.auth, Metrics: tc.metrics})
 			if refused := len(got) > 0; refused != tc.refused {
 				t.Fatalf("refused = %v (%q), want %v", refused, got, tc.refused)
 			}
@@ -364,5 +592,45 @@ func TestRetiredEnvAdvisories_NamesTheThinClientsRetiredVariables(t *testing.T) 
 		if strings.Contains(w, "31337") || strings.Contains(w, "hunter2") {
 			t.Errorf("an advisory carries a variable's value: %q", w)
 		}
+	}
+}
+
+// The load checks every family's mode and age from one list. A family added
+// to the block and not to that list would take any mode, and prune with no
+// age, unchecked.
+func TestRetentionFamilies_ListsEveryFamilyOfTheBlock(t *testing.T) {
+	rt := reflect.TypeOf(RetentionConfig{})
+	want := 0
+	for i := 0; i < rt.NumField(); i++ {
+		ft := rt.Field(i).Type
+		if ft.Kind() != reflect.Struct {
+			continue
+		}
+		if _, ok := ft.FieldByName("Mode"); ok {
+			want++
+		}
+	}
+	if want == 0 {
+		t.Fatal("found no family with a mode in RetentionConfig")
+	}
+	if got := len((&RetentionConfig{}).families()); got != want {
+		t.Errorf("families() lists %d families, RetentionConfig has %d with a mode", got, want)
+	}
+}
+
+func agePtr(d HumanDuration) *HumanDuration { return &d }
+
+// The refusal's leading sentence lists what a refused variable can stand
+// for. A variable that decided which data is kept is refused for that
+// reason, and an operator reading only the lead must find it there.
+func TestLoadLayers_RefusalLeadNamesDataKeptOrDeletedDifferently(t *testing.T) {
+	t.Setenv("LOOMCYCLE_USAGE_SWEEPER", "0")
+	_, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults:\n  provider: mock\n")})
+	if err == nil {
+		t.Fatal("LoadLayers accepted a retired switch that kept per-call usage rows")
+	}
+	lead, _, _ := strings.Cut(err.Error(), "LOOMCYCLE_USAGE_SWEEPER")
+	if !strings.Contains(lead, "data kept or deleted differently") {
+		t.Errorf("the lead does not name the data case: %q", lead)
 	}
 }

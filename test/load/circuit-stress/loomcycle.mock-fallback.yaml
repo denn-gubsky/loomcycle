@@ -26,6 +26,10 @@
 #   - Success rate target: ≥99% (versus 18.5% for single-provider
 #     baseline x1000-429-rate-0.10)
 
+# The process metrics sampler, so /v1/_metrics/* has samples to report.
+metrics:
+  enabled: true
+
 provider_priority:
   - mock
   - mock-stable

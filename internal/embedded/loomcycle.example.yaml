@@ -120,6 +120,47 @@ tiers:
 #       embedder: { max_concurrent: 2, background_share: 0.25 }
 #   # Or the chat lane alone:
 #   # ollama-local: { max_concurrent: 2 }
+#
+# Provider options. Each is set here and nowhere else (the one exception:
+# ollama-local's num_ctx also comes from LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, and
+# the yaml wins).
+# providers:
+#   openai:
+#     options:
+#       header_timeout_ms: 60000   # time to the response headers (default 60000)
+#       idle_timeout_ms: 90000     # longest silence inside a stream (default 90000)
+#   ollama-local:
+#     options:
+#       num_ctx: 32768             # context window of every local model
+#       num_gpu: 99                # layers offloaded to the GPU; unset → Ollama decides
+#       header_timeout_ms: 600000  # default 600000: a cold model load sends no headers
+#       idle_timeout_ms: 600000    # default 600000
+#   ollama:
+#     options:
+#       num_ctx: 32768             # hosted ollama.com; unset → the model's own window
+#   code-js:
+#     options:
+#       deterministic: false       # true pins Date.now()/Math.random() for replay
+#       run_timeout_seconds: 120   # a code agent's budget of ACTIVE time (default 120)
+#       max_wall_seconds: 86400    # its lifetime, waits included (default 24h); no
+#                                  # agent or run field can raise it
+
+# ─── Model throughput measurement ─────────────────────────────────────
+# loomcycle times every model call and keeps, per (provider, model), how much
+# slower than a reference machine the model runs, and reports it (with the
+# timeout multiplier it implies) on GET /v1/_routing, /metrics and
+# Context op=self. `measure` records and reports only: no timeout changes.
+# timeout_scaling:
+#   mode: measure            # measure (default) | off; `on` is not available yet
+#   reference:
+#     decode_tps: 100        # output tokens/s that count as slowdown 1
+#     prefill_tps: 2000      # prompt tokens/s
+#     ttft_ms: 1000          # fixed first-token cost
+#   max_multiplier: 8        # ceiling on the multiplier; also clips each sample
+#   min_samples: 5           # a model's own estimate is used from this many calls
+#   local_prior: 4           # assumed multiplier for a local provider before that
+#   models:                  # per model, keyed provider/model or by a `models:` alias
+#     ollama-local/qwen3.6:latest: { decode_tps: 20 }
 
 # ─── User tiers (v0.8.2+)─────────────────────────────────────────────
 # Operator-defined per-user-tier overlay on the resolver matrix above.
@@ -361,10 +402,8 @@ channels:
 #   - SQLite vector backend ships in v0.9.1 (sqlite-vec via build-tag
 #     swap to cgosqlite). v0.9.0 SQLite always refuses vector ops.
 #
-# Env vars that ride alongside:
+# Env var that rides alongside:
 #   LOOMCYCLE_PGVECTOR_ENABLED=1                     # opt in on Postgres
-#   LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE=100            # per-call batch cap
-#   LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS=30000          # per-call HTTP timeout
 #
 # Anthropic note (v0.10.2+): `provider: anthropic` is now a working
 # Voyage AI proxy — Anthropic has no native embedding API and
@@ -385,8 +424,14 @@ channels:
 #     provider: openai                       # openai | gemini | anthropic (Voyage AI)
 #     model: text-embedding-3-large          # voyage-3 / voyage-4 for anthropic — or a models: alias
 #                                            # (e.g. local-embedding), which also supplies the provider
-#     timeout_ms: 30000                      # optional; overrides env
-#     batch_size: 100                        # optional; overrides env (Voyage caps voyage-3 at 128)
+#     timeout_ms: 30000                      # one embedder call's timeout (default 30000)
+#     batch_size: 100                        # texts per call (default 100; Voyage caps voyage-3 at 128)
+#
+#   # The 3D chunk map: places each document chunk on its scope's map by
+#   # meaning. Off by default; the background sweeper also needs an interval.
+#   projection:
+#     enabled: true
+#     interval: 1h                           # how often the sweeper runs; unset or "0" = no sweeper
 #
 #   # The model that reranks the document searches of agents whose definition
 #   # sets `memory_rerank: {enabled: true}` — one call per search, reordering
@@ -998,12 +1043,86 @@ concurrency:
   # with `admission: "reject"`, gets HTTP 429 + Retry-After: 5 +
   # `code: "per_user_quota_exhausted"`. Anonymous calls (no user_id)
   # bypass the check. Sub-agents share the parent's count.
-  # Env: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER /
-  # LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER override yaml.
   # See `help fairness` for the JobEmber starvation case + retry
   # strategies + queue-fairness limits.
   # max_concurrent_runs_per_user: 4
   # max_queued_runs_per_user: 16   # default; 0 refuses at once over the cap
+
+  # Requests sent directly, outside any run (the LLM gateway, embeddings,
+  # decide, image describe), that may wait for a capped provider. Default 0 =
+  # max_queue_depth; past it the request is refused instead of queueing.
+  # provider_queue_depth: 32
+
+# ─── Web UI sign-in ───────────────────────────────────────────────────
+# The `auth:` block (mode, gates, sessions, trusted proxies) is documented in
+# docs/CONFIGURATION.md, "Web UI sign-in". One key of it:
+#
+# auth:
+#   login_origins:                # first-party origins the login page may take
+#     - https://landing.example   # a bearer from over postMessage (a landing
+#                                 # page that mints tokens). None = the
+#                                 # receiver stays off. Token mode only.
+
+# ─── Observability ────────────────────────────────────────────────────
+# Tracing itself is configured by the standard OTEL_* environment. These are
+# the per-tenant parts.
+#
+# observability:
+#   tracing:
+#     tenant_sampler_ratios:      # a trace a tenant's work starts is sampled at
+#       acme: 1                   # its ratio (0 to 1) instead of the global one
+#       beta: 0.1
+#   tenant_telemetry:             # tenant trace export (LOOMCYCLE_TENANT_TELEMETRY=1)
+#     allowed_hosts:              # the only hosts a tenant's collector endpoint
+#       - otel.example.com        # may name; none listed = any public host
+#       - "*.grafana.net"         # a suffix entry must be quoted
+
+# ─── Process metrics sampler ──────────────────────────────────────────
+# Records loomcycle's CPU, memory and goroutines into the store while at
+# least one run is active, for capacity planning: GET /v1/_metrics/* and the
+# Web UI's activity page. Off by default. Not the Prometheus /metrics
+# endpoint, which is configured in the environment.
+#
+# metrics:
+#   enabled: true
+#   sample_interval: 5s           # default 5s; at least 1s
+#   collect_system: true          # also sample system-wide CPU and memory
+#                                 # (Linux only)
+
+# ─── Retention ────────────────────────────────────────────────────────
+# What the runtime deletes with age, and when. Nothing is deleted unless
+# `enabled` is true AND a family's `mode` is prune or export+prune: `enabled`
+# starts the sweeper, a mode says what it deletes. A family that deletes must
+# name its `max_age` (0s = any age: everything eligible goes on the first sweep).
+# Ages are durations: 30d, 12h, 1d12h (a bare number other than 0 is refused).
+#
+# retention:
+#   enabled: true                 # start the retention sweeper (default false)
+#   interval: 1h                  # how often the sweeper runs (default 1h)
+#   export_dir: /data/retention-exports   # where export+prune writes what it
+#                                 # deletes; without it that mode deletes nothing
+#   chats:                        # aged sessions with their runs and events;
+#     mode: export+prune          # a pinned session is exempt
+#     max_age: 90d                # required when the mode deletes
+#   defs:                         # old versions of substrate definitions
+#     mode: prune
+#     max_age: 30d
+#     keep_last_n: 5              # newest versions always kept (default 5)
+#   mem:                          # memory of fully retired agents
+#     mode: off
+#     max_age: 30d
+#   mem_content:                  # superseded memory content in live scopes
+#     mode: off
+#     max_age: 30d
+#   empty_dossier:                # subject documents with no facts and no
+#     mode: off                   # references; off on purpose, since one user's
+#     max_age: 30d                # erasure could delete a record others see
+#   usage_detail:
+#     max_age: 30d                # per-call usage rows are rolled up into
+#                                 # totals after this (always runs; default 30d)
+#   trace:
+#     max_age: 30d                # how long an indexed conversation turn stays
+#                                 # searchable (default 30d)
 
 # ─── gRPC server (v0.5.5) ─────────────────────────────────────────────
 # Optional second wire surface alongside HTTP+SSE. Mirrors the

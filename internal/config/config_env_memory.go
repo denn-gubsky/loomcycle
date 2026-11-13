@@ -56,7 +56,6 @@ func applyEnvMemory(cfg *Config) {
 			}
 		}
 	}
-	cfg.Env.DocumentProjectionInterval = os.Getenv("LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL")
 	cfg.Env.MemoryPendingDrainedTTL = 7 * 24 * time.Hour
 	if v := os.Getenv("LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
@@ -70,24 +69,4 @@ func applyEnvMemory(cfg *Config) {
 
 	// v0.9.0 Vector Memory env vars.
 	cfg.Env.PgvectorEnabled = os.Getenv("LOOMCYCLE_PGVECTOR_ENABLED") == "1"
-	cfg.Env.MemoryEmbedBatchSize = 100
-	if v := os.Getenv("LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemoryEmbedBatchSize = 0
-			} else {
-				cfg.Env.MemoryEmbedBatchSize = n
-			}
-		}
-	}
-	cfg.Env.MemoryEmbedTimeoutMs = 30000
-	if v := os.Getenv("LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				cfg.Env.MemoryEmbedTimeoutMs = 0
-			} else {
-				cfg.Env.MemoryEmbedTimeoutMs = n
-			}
-		}
-	}
 }

@@ -223,6 +223,31 @@ concurrency:
   max_concurrent_runs: 8
   max_queue_depth: 32
 
+# ─── Process metrics sampler ──────────────────────────────────────────
+# CPU and memory samples while runs are active (GET /v1/_metrics/*, the Web
+# UI's activity page), with the host's own CPU and memory beside them.
+metrics:
+  enabled: true
+  collect_system: true
+
+# ─── Retention ────────────────────────────────────────────────────────
+# What is deleted with age. `enabled` starts the sweeper; a family's mode says
+# what it deletes; export+prune writes what it deletes under export_dir first.
+retention:
+  enabled: true
+  interval: 24h
+  export_dir: /data/retention-exports
+  chats:
+    mode: export+prune
+    max_age: 90d
+  # Sweeps subject documents left with no facts and nothing pointing at them.
+  # Off on purpose: an empty dossier records that the entity was once known,
+  # and it usually becomes empty as a side effect of another user's erasure.
+  # Enable only if a clean entity directory matters more than that record.
+  # empty_dossier:
+  #   mode: export+prune
+  #   max_age: 30d
+
 # ─── Volumes ──────────────────────────────────────────────────────────
 # The dynamic root: the runtime makes volumes under it — each run's `inbox`
 # (a file an MCP server, HTTP or WebFetch returns is kept there and the model
@@ -254,6 +279,12 @@ volumes:
 # not load. INSTALL.md "Upgrading to Web UI sessions" has the host steps.
 auth:
   mode: token
+  # Web UI URL-free sign-in: the first-party origins /ui may accept a bearer
+  # handoff from over postMessage (the landing that mints tenant tokens), so
+  # "Sign in" hands the token to /ui without a ?token= URL. Empty: the receiver
+  # stays disabled. Keep it equal to LANDING_ORIGIN in .env.insecure.
+  login_origins:
+    - https://loomcycle.cloud
   gates:
     token: { kind: token, label: "Access token" }
     cloud:

@@ -714,9 +714,11 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 		slog.Info("mock-stable provider: enabled (failure injection always off; fallback target for [mock, mock-stable] tier policies)")
 	}
 	if _, ok := pr.byID["code-js"]; ok {
+		// options is the yaml's providers.code-js.options: deterministic,
+		// run_timeout_seconds, max_wall_seconds. An absent key is the
+		// driver's default (off, 120s, 24h).
 		slog.Info("code-js provider: enabled",
-			"dir", cfg.Env.CodeAgentsRoot, "deterministic", cfg.Env.CodeAgentsDeterministic,
-			"run_timeout", cfg.Env.CodeAgentsRunTimeout, "max_wall", cfg.Env.CodeAgentsMaxWall, "abi", codejs.ABIVersion)
+			"dir", cfg.Env.CodeAgentsRoot, "options", cfg.Providers["code-js"].Options, "abi", codejs.ABIVersion)
 	}
 
 	// v0.11.9 — anthropic-oauth-dev stays a residual hardcoded path (main-owned
@@ -725,8 +727,8 @@ func newProviderResolver(cfg *config.Config) (*providerResolver, error) {
 	// handle is kept for shutdown teardown.
 	if os.Getenv(anthropic_oauth_dev.EnvEnabled) == "1" {
 		streamOpts := streamhttp.Options{
-			HeaderTimeout: cfg.Env.ProviderHeaderTimeout,
-			IdleTimeout:   cfg.Env.ProviderIdleTimeout,
+			HeaderTimeout: config.ProviderHeaderTimeoutMS * time.Millisecond,
+			IdleTimeout:   config.ProviderIdleTimeoutMS * time.Millisecond,
 		}
 		storePath, pathErr := anthropic_oauth_dev.DefaultTokenStorePath()
 		switch {

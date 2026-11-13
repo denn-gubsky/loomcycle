@@ -36,7 +36,7 @@ import {
 // which hands the app its code (lib/appSignIn.ts).
 //
 // The postMessage handoff: a configured first-party origin
-// (LOOMCYCLE_UI_LOGIN_ORIGINS — e.g. the loomcycle.cloud landing that mints
+// (auth.login_origins in the yaml — e.g. the loomcycle.cloud landing that mints
 // tenant tokens) may hand a bearer over an origin-pinned message; the receiver
 // exchanges it for a session the same way. The server lists origins only in
 // token mode, so in strict mode the receiver stays off.

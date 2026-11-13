@@ -4,6 +4,8 @@ This guide is for operators wiring loomcycle for the first time, or developers t
 
 Scope: the **model-routing axis** of `loomcycle.yaml` — providers, tier candidate lists, the `models:` alias map, the `user_tiers:` overlay — plus the agent `.md` frontmatter fields that control per-agent routing. MCP-server configuration lives in [`docs/MCP_INTEGRATION.md`](MCP_INTEGRATION.md); storage in [`docs/POSTGRES.md`](POSTGRES.md); concurrency/cache/hooks are not covered here.
 
+Upgrading from a release that read more environment variables? See [`SETTINGS_MIGRATION.md`](SETTINGS_MIGRATION.md) for what moved to the yaml, what became fixed, and what a removed variable does at boot.
+
 ---
 
 ## 0. Why this doc exists
@@ -601,7 +603,7 @@ Local models change the economics. A frontier cloud model prefills a 100k-token 
 
 ### The context window (`num_ctx`) — the knob that bites
 
-`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` controls the window for **all** `ollama-local` models (`LOOMCYCLE_OLLAMA_NUM_CTX` does the same for the hosted `ollama` provider). It is sent as `options.num_ctx`, so it both **caps the window the model loads** and **is what the UI context gauge reports**.
+`LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` controls the window for **all** `ollama-local` models (`providers.ollama.options.num_ctx` in the yaml does the same for the hosted `ollama` provider, and `providers.ollama-local.options.num_ctx` wins over the variable). It is sent as `options.num_ctx`, so it both **caps the window the model loads** and **is what the UI context gauge reports**.
 
 - **Set** → that value is forced for every local model and reported verbatim. Ollama's `/api/ps` is not consulted at all, so this is also the way to override a window you don't want.
 - **Unset** → the driver asks Ollama what the model is currently loaded with (`/api/ps`) and **sends that back** as `options.num_ctx`, so the window it reports is the window it requested. Echoing the loaded window is a no-op for a model already running at that size.
@@ -635,10 +637,21 @@ Pick a value **every** local model you use can handle (it's global), e.g. `13107
 
 ### Slow models — timeouts + heartbeat
 
-A big prefill can take a long time before the first token. Two budgets (defaults 300s; raise for very large contexts on slow hardware):
+A big prefill can take a long time before the first token. Two budgets, set under `providers.ollama-local.options` in the yaml (defaults 600000 ms each; raise for very large contexts on slow hardware):
 
-- `LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS` — **time to first byte** (the prefill). Exceeding it surfaces as `net/http: timeout awaiting response headers`.
-- `LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS` — max gap **between** streamed tokens.
+- `header_timeout_ms` — **time to first byte** (the prefill). Exceeding it surfaces as `net/http: timeout awaiting response headers`.
+- `idle_timeout_ms` — max gap **between** streamed tokens.
+
+```yaml
+providers:
+  ollama-local:
+    options:
+      header_timeout_ms: 900000
+      idle_timeout_ms: 900000
+      num_gpu: 99        # layers offloaded to the GPU, where Ollama's detection falls back to CPU
+```
+
+Every other provider takes the same two options, with defaults 60000 and 90000. Neither timeout can be disabled, and a value that is not a positive number leaves the default.
 
 A slow-but-alive call no longer trips the stale-run sweeper: the loop pulses the run heartbeat throughout a model call, so a long prefill won't be reaped as `heartbeat_timeout`. The HTTP timeouts above remain the authority on a genuinely stuck call.
 
@@ -675,7 +688,7 @@ timeout_scaling:
 
 A model's `decode_tps` / `multiplier` (at most one) is a starting estimate, used only until the model has `min_samples` calls. Its `max_multiplier` is a **bound**, not an estimate: it replaces the global cap for that model at every sample count — both the clip on each sample and the clamp on the multiplier — so a model you know runs ~20× slower than the reference (a few tokens/s on a small box) can be measured as 20× instead of saturating at the global 8. It must be between 1 and 100, the same ceiling as the global `max_multiplier`, so every scaled budget stays bounded; a `multiplier` beside it must not exceed it. The routing view's `throughput` block and `Context op=self` `timeouts` report the cap in effect as `max_multiplier`. (When timeouts are scaled in a later version, the per-purpose clamps — e.g. a tighter one for scheduler fires — still apply on top of this cap.)
 
-Env overrides (they win over the yaml): `LOOMCYCLE_TIMEOUT_SCALING` (mode), `LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS` (`reference.decode_tps`), `LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER`. A change to the block needs a restart (a reload reports it `restart_required`).
+The block is the only source: the `LOOMCYCLE_TIMEOUT_SCALING*` variables that used to override it are no longer read (one still set is reported at boot). A change to the block needs a restart (a reload reports it `restart_required`).
 
 ### Compaction — tune it for the prefill cost
 
@@ -887,7 +900,7 @@ providers:
 - **Every model call takes a lane**: a run's calls, the listwise reranker and the unit generator the `chat` lane; the `decision:` block and a `kind: decision` reranker the `decision` lane; the embedder the `embedder` lane. Consolidation passes and the operator-run sweeps (re-index, backfill, re-embed, derived units, image descriptions) queue as background work ([details](PROVIDERS.md#lanes-a-queue-per-kind-of-model)).
 - **`decision.max_concurrent` and `memory.reranker.max_concurrent` are removed.** A config that still sets either fails to load and names the lane that replaces it. Their built-in bound stays as a floor: while a provider has no lane for them, decisions to it and reranks are each held to 4 in flight. A lane you configure (`max_concurrent` / `lanes` on that provider) replaces the floor, higher or lower.
 - **`max_models_in_flight`** stops several models computing at once on a host that cannot take it. For Ollama a model at two different `num_ctx` sizes counts as two. **`models_in_flight_exempt_kinds: [embedder]`** leaves embeddings out of that count, so they do not wait for the chat model; their lane still caps them.
-- **`concurrency.provider_queue_depth`** (`LOOMCYCLE_PROVIDER_QUEUE_DEPTH`, default: the global `max_queue_depth`) bounds only requests sent directly, outside any run — the LLM gateway (including the OpenAI-compatible routes), `POST /v1/embeddings`, `POST /v1/_decide` and the image-describe route — which are refused (`provider_concurrency_exhausted`; HTTP 429 on the gateway and `/v1/embeddings`) once that many calls wait on the provider. A run's calls always wait.
+- **`concurrency.provider_queue_depth`** (default: the global `max_queue_depth`) bounds only requests sent directly, outside any run — the LLM gateway (including the OpenAI-compatible routes), `POST /v1/embeddings`, `POST /v1/_decide` and the image-describe route — which are refused (`provider_concurrency_exhausted`; HTTP 429 on the gateway and `/v1/embeddings`) once that many calls wait on the provider. A run's calls always wait.
 
 Full field reference (dialect, `options`, capability overrides) + the concurrency internals: [`docs/PROVIDERS.md`](PROVIDERS.md#config-driven-providers-providers-map).
 
@@ -1440,7 +1453,7 @@ Every audit record — token mints and revocations, sign-ins and gate management
 
 **Shutdown.** The two queues drain at shutdown after the runs are paused, for at most 5 s; a drop summary the store will not take then is written to the JSONL mirror when there is one. Give the process a stop grace of about 30 s (`stop_grace_period: 30s` in Docker Compose, `terminationGracePeriodSeconds: 30` in Kubernetes) instead of Docker's default 10 s.
 
-**Retention.** `LOOMCYCLE_AUDIT_RETENTION_DAYS` prunes each chain's older rows on the retention sweeper's tick (it runs even with `LOOMCYCLE_RETENTION_ENABLED` off) and leaves a signed anchor, so the rest still verifies. Rows are numbered in commit order but timed by each replica's clock, so a prune can take a few rows slightly newer than the cutoff. Each prune checks, inside its transaction, the anchor it extends, the head, and every row it removes, and refuses (logged at error, rows left) when any does not verify or contradicts the operator chain's checkpoints, so it never re-signs tampering; it does not walk the rest of the chain, so its cost is bounded by what it removes. Full verification is `loomcycle audit verify`. Each chain gets its own one-minute budget per tick. The operator chain's anchor carries every checkpoint of a tenant chain that lies at or above that tenant's own retention anchor (about one per 100 rows, or one per 5 minutes of activity): it grows with each tenant chain's unpruned length, so keep the tenant chains under the same `LOOMCYCLE_AUDIT_RETENTION_DAYS` (the sweeper prunes every chain) rather than pruning the operator chain alone.
+**Retention.** `LOOMCYCLE_AUDIT_RETENTION_DAYS` prunes each chain's older rows on the retention sweeper's tick (it runs even with `retention.enabled` off) and leaves a signed anchor, so the rest still verifies. Rows are numbered in commit order but timed by each replica's clock, so a prune can take a few rows slightly newer than the cutoff. Each prune checks, inside its transaction, the anchor it extends, the head, and every row it removes, and refuses (logged at error, rows left) when any does not verify or contradicts the operator chain's checkpoints, so it never re-signs tampering; it does not walk the rest of the chain, so its cost is bounded by what it removes. Full verification is `loomcycle audit verify`. Each chain gets its own one-minute budget per tick. The operator chain's anchor carries every checkpoint of a tenant chain that lies at or above that tenant's own retention anchor (about one per 100 rows, or one per 5 minutes of activity): it grows with each tenant chain's unpruned length, so keep the tenant chains under the same `LOOMCYCLE_AUDIT_RETENTION_DAYS` (the sweeper prunes every chain) rather than pruning the operator chain alone.
 
 ### Token pepper
 
@@ -1844,7 +1857,7 @@ Rules worth knowing:
 
 ### Web UI sign-in — sessions, `auth.mode` and gates (RFC FA)
 
-**Browser security headers.** Every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`, plus `Strict-Transport-Security: max-age=31536000` when `LOOMCYCLE_PUBLIC_URL` is `https` (no `includeSubDomains`). The Web UI (`/ui`, its assets, and the sign-in, invite, reset and pending pages) is served under `Content-Security-Policy: default-src 'self'; script-src 'self' <hash of each inline script in the shell>; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'` (the hashes are taken from the `index.html` being served, so a UI bundle loaded from disk gets its own). Images from other origins are refused, so a rendered document cannot make the browser call out. `/v1/docs` has its own policy of the same shape; every other route answers with `default-src 'none'; frame-ancestors 'none'`. Nothing may frame loomcycle: a console that signs people in hands the token to a window it opened (`LOOMCYCLE_UI_LOGIN_ORIGINS`), not to a frame.
+**Browser security headers.** Every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`, plus `Strict-Transport-Security: max-age=31536000` when `LOOMCYCLE_PUBLIC_URL` is `https` (no `includeSubDomains`). The Web UI (`/ui`, its assets, and the sign-in, invite, reset and pending pages) is served under `Content-Security-Policy: default-src 'self'; script-src 'self' <hash of each inline script in the shell>; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'` (the hashes are taken from the `index.html` being served, so a UI bundle loaded from disk gets its own). Images from other origins are refused, so a rendered document cannot make the browser call out. `/v1/docs` has its own policy of the same shape; every other route answers with `default-src 'none'; frame-ancestors 'none'`. Nothing may frame loomcycle: a console that signs people in hands the token to a window it opened (`auth.login_origins`), not to a frame.
 
 **Why sessions, not the token in a cookie.** The Web UI used to keep the pasted bearer in its cookie: the browser held the API credential itself, nothing proved who pasted it, and logging out ended nothing on the server. Now a sign-in creates a **server-side session**. The browser holds an opaque, HttpOnly session cookie and never the token; the server stores only the SHA-256 of the session id, so a database read yields no cookie that works. Signing out ends the session on every replica.
 
@@ -1856,7 +1869,8 @@ auth:
     paste: { kind: token, label: "Access token" }
 ```
 
-- **`auth.mode: token`** (the upgrade default) is today's behaviour: the login page offers the token paste box (and the `LOOMCYCLE_UI_LOGIN_ORIGINS` postMessage handoff) whether or not gates are listed; listing a gate never switches the mode. A browser still holding the old `loomcycle_session` bearer cookie keeps working **for this release only** (logged); signing in again moves it to a session.
+- **`auth.login_origins`** is a list of the first-party origins the login page may take a bearer from over `postMessage` (a landing page that mints tokens: `login_origins: ["https://landing.example"]`). Empty, the default, leaves the receiver off, so no page can hand the login page a token. It is offered in token mode only. The yaml is the only source: `LOOMCYCLE_UI_LOGIN_ORIGINS` is no longer read, and stops the boot if it names an origin the yaml does not list.
+- **`auth.mode: token`** (the upgrade default) is today's behaviour: the login page offers the token paste box (and the `auth.login_origins` postMessage handoff) whether or not gates are listed; listing a gate never switches the mode. A browser still holding the old `loomcycle_session` bearer cookie keeps working **for this release only** (logged); signing in again moves it to a session.
 - **`auth.mode: strict`** offers only the listed gates. The paste box exists only if a `kind: token` gate is listed, the handoff is off, the old bearer cookie and the WebSocket subprotocol bearer are not read, and Web UI sessions need HTTPS (see below). Strict mode with no interactive gate fails the load (nobody could sign in); strict mode with no credential at all refuses to boot. A config reload cannot lower the mode (audited `auth_downgrade_refused`); that takes a restart. API bearers are unaffected.
 - **Gates.** `kind: token` (paste a loomcycle token), `kind: password` (a login and password loomcycle keeps — see [Password gate](#password-gate--kind-password-rfc-fa-p2)), `kind: oidc` (sign in with an identity provider — see [OIDC gate](#oidc-gate--kind-oidc-rfc-fa-p1)), `kind: oauth` (GitHub, GitLab, Gitea or a generic OAuth provider — see [OAuth gate](#oauth-gate--kind-oauth-rfc-fa-p5)), `kind: external` (a separate process, such as a chat bridge, that signs who it is talking to — see [External gate](#external-gate--kind-external-rfc-fa-p4)), `kind: header` (a signed assertion from a proxy in front: Cloudflare Access, an AWS ALB, a forward-auth proxy) `kind: awsiam` (AWS workloads, API tokens only) — see [Header and AWS IAM gates](#header-and-aws-iam-gates--kind-header-kind-awsiam-rfc-fa-p3), `kind: device` (device login for the CLI), `kind: passkey` (a password-less passkey sign-in — see [Passkeys](#passkeys--second-factor-and-kind-passkey-rfc-fa-p6)) and `kind: scim` (an identity provider's SCIM provisioning, never a sign-in — see [SCIM 2.0](#scim-20-provisioning--kind-scim-rfc-fa-p6)). A gate name is lowercase letters, digits, `-` and `_` (at most 32); at most one `kind: token` gate.
 - **`auth.session`.** `idle` (default 8h) ends a session after that long without a request; `absolute` (default 7 days) caps it whatever the activity. Shortening either applies to sessions already issued. `reauth_window` (default 15m) is validated now and used once sensitive actions ask for a recent sign-in.
@@ -2380,7 +2394,7 @@ What an interrupt does to a run that is waiting rather than working:
 
 - **A fan-out parent** (an `Agent` `parallel_spawn` still collecting its children) keeps its children: the parent is parked where it waits, the interrupt leaves it alone, and the resume reconciles the children's results.
 - **A blocking tool call** — an `Interruption` waiting for a person's answer, a `Channel` await, an `Agent` wait or poll — is interrupted like any other call and fails. The resumed run may ask again, so a person can see the same interruption twice: the first one, from before the shutdown, is no longer waited on.
-- **A run a background sweep started** — a memory-consolidation fan-out pass, a team subscription's walk — is cancelled once the pause is over, even if it parked (the shutdown log counts it among the paused): the sweep holds a cluster lock, a pinned database connection, until the run returns, and a run left parked would hold the shutdown until the container is killed. The next tick or sweep does the work again. A consolidation pass can still come back through a resume — the process was killed before that cancel was stored, or a snapshot taken during an operator pause was restored — and then runs outside the sweep that started it; the next tick leaves its target alone while that pass's run has not ended — for at most 4 hours while it sits parked waiting for a resume, after which a warning names the stuck run and the target is consolidated again. The hold is by consolidator agent and user: two schedules running the same consolidator agent for one user hold each other off. In a cluster, a parked run keeps the `LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER` slot its admission took until its resume gives it back; a run admitted with that cap off took none, and its resume gives nothing back ([MULTI-REPLICA.md](MULTI-REPLICA.md) item 10). On slow models, raise the bound **together with** the platform's grace period, leaving a few seconds over it: `stop_grace_period: 40s` in Docker Compose, `terminationGracePeriodSeconds: 40` in Kubernetes, `TimeoutStopSec=40` in systemd, with `LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS=30000`.
+- **A run a background sweep started** — a memory-consolidation fan-out pass, a team subscription's walk — is cancelled once the pause is over, even if it parked (the shutdown log counts it among the paused): the sweep holds a cluster lock, a pinned database connection, until the run returns, and a run left parked would hold the shutdown until the container is killed. The next tick or sweep does the work again. A consolidation pass can still come back through a resume — the process was killed before that cancel was stored, or a snapshot taken during an operator pause was restored — and then runs outside the sweep that started it; the next tick leaves its target alone while that pass's run has not ended — for at most 4 hours while it sits parked waiting for a resume, after which a warning names the stuck run and the target is consolidated again. The hold is by consolidator agent and user: two schedules running the same consolidator agent for one user hold each other off. In a cluster, a parked run keeps the `concurrency.max_concurrent_runs_per_user` slot its admission took until its resume gives it back; a run admitted with that cap off took none, and its resume gives nothing back ([MULTI-REPLICA.md](MULTI-REPLICA.md) item 10). On slow models, raise the bound **together with** the platform's grace period, leaving a few seconds over it: `stop_grace_period: 40s` in Docker Compose, `terminationGracePeriodSeconds: 40` in Kubernetes, `TimeoutStopSec=40` in systemd, with `LOOMCYCLE_SHUTDOWN_PAUSE_TIMEOUT_MS=30000`.
 
 ---
 
@@ -3295,9 +3309,9 @@ under the configured method refits it back.
 - **Off by default.** Off, `graph_snapshot` returns the empty block, `search`
   leaves `query_xyz` out, the sweeper does not start and
   `POST /v1/_document/project` answers 409.
-- **`LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL`** (a Go duration, e.g. `1h`)
-  overrides `interval`; a positive value also turns the projection on, so the
-  env alone is enough. `0` keeps it on with no sweeper.
+- **`interval`** (a Go duration, e.g. `1h`) is how often the sweeper runs;
+  unset or `0` keeps the projection on with no sweeper. The block is the only
+  source: `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` is no longer read.
 - **Needs** SQL Memory, a vector index (Postgres with pgvector) and
   `memory.embedder`. On plain sqlite there are no vectors to place: the block
   stays empty and the operator pass reports `unsupported`.
@@ -3317,6 +3331,8 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 
 ### Server, storage and cluster
 
+The run limits are the yaml `concurrency:` block and have no variables: `max_concurrent_runs` (8), `max_queue_depth` (32), `max_concurrent_runs_per_user` (0 = no per-user cap), `max_queued_runs_per_user` (16: how many runs one (tenant, user) may queue behind its per-user cap; `0` refuses a run over the cap at once; per replica in cluster mode) and `provider_queue_depth` (0 = `max_queue_depth`).
+
 | Variable | Default | Effect |
 |---|---|---|
 | `LOOMCYCLE_PG_MAX_OPEN_CONNS` | `32` | Postgres pool size. |
@@ -3326,18 +3342,26 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_REPLICAS_STALE_AFTER_MS` | `90000` | A replica whose heartbeat is older than this is presumed dead: its in-flight runs fail with `replica_died` and its quota is reclaimed. Keep it well above the 30 s heartbeat. |
 | `LOOMCYCLE_HEARTBEAT_STALE_MS` | `600000` | A run with no heartbeat for this long is swept. Keep it at least twice a slow iteration (a long tool call). |
 | `LOOMCYCLE_MAX_REQUEST_BYTES` | 16 MiB | Body cap on run requests (large enough for an inline image). A non-positive value keeps the default; over the cap answers 413. |
-| `LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER` | `16` | How many runs one (tenant, user) may queue behind its per-user concurrency cap; `0` refuses a run over the cap at once. Per replica in cluster mode. |
 | `LOOMCYCLE_CONFIGURED_RUN_TTL_MS` | 24 h | How long a configured (created, not started) run is kept before it and its session are discarded. `0` keeps them. |
 | `LOOMCYCLE_MAX_CONFIGURED_RUNS_PER_USER` | `100` | How many configured runs one (tenant, user) may hold; `0` = no cap. |
 
 ### Providers
 
+Stream timeouts, the Ollama `num_gpu` and hosted `num_ctx`, and the code-agent budgets are provider options in the yaml (`providers.<id>.options`), not variables: see [6b](#6b-local-models-ollama--configuring--slow-model-advice) and the table below. `LOOMCYCLE_OLLAMA_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` are no longer read, and one still set to a positive number stops the boot until `providers.ollama.options.num_ctx` or `providers.ollama-local.options.num_gpu` carries the same number: dropped silently, the context window would shrink to the model's own or the offload fall back to the CPU.
+
+| Yaml key | Default | Effect |
+|---|---|---|
+| `providers.<id>.options.header_timeout_ms` | `60000` (`ollama-local`: `600000`) | Time to a provider's response headers before the call fails. |
+| `providers.<id>.options.idle_timeout_ms` | `90000` (`ollama-local`: `600000`) | Longest silence inside a provider's stream before the call fails. Neither timeout can be disabled. |
+| `providers.ollama-local.options.num_gpu` | unset | Sends `options.num_gpu` (layers offloaded to the GPU) on every `ollama-local` request, e.g. `99` for all layers. Unset leaves it to Ollama. |
+| `providers.ollama.options.num_ctx` | unset | Context window sent to hosted ollama.com; unset leaves the model's own. |
+| `providers.code-js.options.deterministic` | `false` | `true` seeds `Date.now()` and `Math.random()` in code agents so runs are reproducible. |
+| `providers.code-js.options.run_timeout_seconds` | `120` | A code agent's budget of active time (waits on children, channels and interruptions do not count). |
+| `providers.code-js.options.max_wall_seconds` | `86400` | How long a code-agent run may live, waits included; past it the run and its children are cancelled. Operator-only: no agent or run field can raise it. |
+
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` | `60000` | Time to a provider's response headers before the call fails. |
-| `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | `90000` | Longest silence inside a provider's stream before the call fails. Neither timeout can be disabled. |
 | `LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS` | off | `1`: once a run has one successful turn, it stays on that provider instead of falling over to another mid-conversation (same-provider retries still apply). |
-| `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` | unset | Sends `options.num_gpu` (layers offloaded to the GPU) on every `ollama-local` request, e.g. `99` for all layers, where Ollama's detection falls back to CPU. Unset or `0` leaves it to Ollama. |
 | `LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED` | off | `1` registers the `anthropic-oauth-dev` provider and enables the `loomcycle anthropic` login commands. |
 | `LOOMCYCLE_CLAUDE_CODE_VERSION` | the pinned version | Overrides the Claude Code version that provider presents, without a rebuild. |
 | `LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT` | `53692` | Local port of that provider's OAuth login callback. |
@@ -3359,9 +3383,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE` | off | `1` makes a request's `allowed_hosts` the whole host policy for that run instead of a narrowing of `LOOMCYCLE_HTTP_HOST_ALLOWLIST` (which then applies only to runs that send no list). |
 | `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` | — | Comma-separated hook owners added to `hooks.permit_host_widen.owners` (appended to the yaml list). |
 | `LOOMCYCLE_CODE_AGENTS_ROOT` | `./agent_code` | Where code-js agents live (`<root>/<name>/index.js`). |
-| `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC` | off | `1` seeds `Date.now()` and `Math.random()` in code agents so runs are reproducible. |
-| `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `120` | A code agent's budget of active time (waits on children, channels and interruptions do not count). Floor 1 s. |
-| `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `86400` | How long a code-agent run may live, waits included; past it the run and its children are cancelled. Operator-only: no agent or run field can raise it. |
 | `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` accepts a plain `http://` Vault address for Vault Transit keys (a dev server). Off because the Vault token travels in a header. |
 | `LOOMCYCLE_WEBSEARCH_PROVENANCE` | off | `1` appends a `(via <provider>)` footer to WebSearch results, naming the search provider that answered and any fallover. |
 | `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. Unset, `<LOOMCYCLE_CONFIG_DIR>/help` when that directory exists; set to the empty string for bundled topics only. |
@@ -3448,17 +3469,16 @@ Background work runs on fixed cadences, and none of it can be switched off:
 
 ### Memory, documents and channels
 
+The embedder's batch size and call timeout are `memory.embedder.batch_size` (default `100`; provider limits still apply) and `memory.embedder.timeout_ms` (default `30000`) in the yaml. The document projection's cadence is `memory.projection.interval` ([9k](#9k-document-projection--the-3d-chunk-map-memoryprojection)).
+
 | Variable | Default | Effect |
 |---|---|---|
 | `LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES` | 1 MiB | Memory bytes per scope; an agent's `memory_quota_bytes` overrides it. *0 disables*. |
 | `LOOMCYCLE_MEMORY_PENDING_DRAINED_TTL_MS` | 7 days | How long a consolidation-queue row is kept after a pass consumed it; `0` keeps them (and their chat payloads) forever. |
-| `LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE` | `100` | Texts per embedder call (provider limits still apply); `0` sends one text per call. |
-| `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS` | `30000` | Timeout of one embedder call; `0` relies on the caller's deadline. |
 | `LOOMCYCLE_PGVECTOR_ENABLED` | off | `1` enables vector Memory on Postgres; boot fails if the `vector` extension is missing. |
 | `LOOMCYCLE_SQLITE_VEC_PATH` | unset | Path to the sqlite-vec extension library. Required by a binary built with the `sqlite_vec` tag; ignored otherwise. |
-| `LOOMCYCLE_MEMORY_TRACE_INDEX` | off | `1` (or `true`) stores and embeds each user turn so past conversations are searchable by what was said. Copies personal data into a second place, so it is opt-in. |
+| `LOOMCYCLE_MEMORY_TRACE_INDEX` | off | `1` (or `true`) stores and embeds each user turn so past conversations are searchable by what was said. Copies personal data into a second place, so it is opt-in. How long a turn stays searchable is `retention.trace.max_age` in the yaml (30 days). |
 | `LOOMCYCLE_MEMORY_TRACE_ASSISTANT` | off | `1` also indexes assistant turns (at run completion). |
-| `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` | 30 days | How long an indexed turn stays searchable. |
 | `LOOMCYCLE_MEMORY_CHANGES_ENABLED` | off | `1` records a memory change feed (change-data capture) that change subscriptions deliver from. Off, the store is not wrapped and pays nothing. |
 | `LOOMCYCLE_DEADLINK_GC` | `on` | The collection of unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk), which runs every hour. `on` collects and deletes them; `dry-run` counts and logs what it would collect without deleting; `off` does not run it. Any other value stops the boot. Replaces `LOOMCYCLE_DEADLINK_GC_MS` and `LOOMCYCLE_DEADLINK_GC_DRY_RUN`: a boot that still sets one of those to off, to a dry run, or to an interval longer than an hour stops until this variable says the same. |
 | `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |
@@ -3479,33 +3499,16 @@ Overrides of the `storage:` SQL Memory settings; see [SQL_MEMORY.md](SQL_MEMORY.
 
 ### Retention and usage
 
-The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=1`. Each `*_MODE` is `off` (default), `prune` or `export+prune`; `export+prune` needs an export directory.
-
-| Variable | Default | Effect |
-|---|---|---|
-| `LOOMCYCLE_RETENTION_INTERVAL_MS` | 1 h | How often the retention sweeper runs. |
-| `LOOMCYCLE_RETENTION_EXPORT_DIR` | — | Where `export+prune` writes what it deletes. |
-| `LOOMCYCLE_RETENTION_DEFS_MODE` | `off` | Prunes old versions of substrate definitions. |
-| `LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS` | `0` | Only versions older than this are eligible; `0` = any age. |
-| `LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
-| `LOOMCYCLE_RETENTION_CHATS_MODE` | `off` | Deletes aged sessions with their runs and events; pinned sessions are exempt. Nothing is inherited from the removed usage archiver: a deployment that pruned chats with `LOOMCYCLE_USAGE_RUN_RETENTION_MODE` and a positive `LOOMCYCLE_USAGE_RUN_RETENTION_MS` does not start until this is set (with `LOOMCYCLE_RETENTION_ENABLED=1` and `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS`). |
-| `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS` | `0` | A session whose runs all finished longer ago than this is eligible. |
-| `LOOMCYCLE_RETENTION_MEM_MODE` | `off` | Reclaims the memory of fully retired agents. |
-| `LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS` | `0` | Only agents whose last definition change is older than this. |
-| `LOOMCYCLE_RETENTION_MEM_CONTENT_MODE` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). |
-| `LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS` | — | Only content retired longer ago than this. |
-| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
-| `LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS` | — | Only dossiers untouched longer than this. |
-| `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` | 30 days | Per-call usage rows older than this are rolled up and deleted; totals are kept. |
+What the runtime deletes with age is set in the yaml `retention:` block, not in the environment: see [9m](#9m-retention--what-is-deleted-with-age-retention). The `LOOMCYCLE_RETENTION_*` variables, `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` and `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` are no longer read. So is `LOOMCYCLE_RETENTION_ENABLED`: the switch is `retention.enabled`. One that is still set is reported at boot, and stops the boot when the yaml does not give the same switch, mode, age, kept-version count or export directory, because the deployment would otherwise keep or delete data differently from before.
 
 ### Observability
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_METRICS_ENABLED` | off | `1` samples process metrics into the store. |
-| `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` | `5000` | Sampling interval; floor 1 s. |
+| yaml `metrics.enabled` | `false` | Not a variable: `true` samples process metrics (CPU, memory, goroutines, active runs) into the store while a run is active, served at `/v1/_metrics/*`. |
+| yaml `metrics.sample_interval` | `5s` | Sampling interval, a duration; under `1s` stops the load. |
+| yaml `metrics.collect_system` | `false` | `true` also samples system-wide CPU and memory (Linux only). |
 | `LOOMCYCLE_METRICS_RETENTION_DAYS` | `7` | Days of samples kept; `0` keeps them all. |
-| `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | off | `1` also samples system-wide CPU and memory (Linux only). |
 | `LOOMCYCLE_METRICS_LISTEN` | unset | An address (`127.0.0.1:9464`, or `0.0.0.0:9464` inside a compose network) for a second plain-HTTP listener that serves only `GET`/`HEAD /metrics`, **with no authentication**; nothing else is served there. It omits every series that names a user (today `loomcycle_concurrency_per_user`, whose `user_hash` label the authenticated `/metrics` carries). For a scraper on the same host or a network only it reaches. Boot fails if the address cannot be bound, and warns when it is beyond loopback. The main listener's `/metrics` keeps its token. See [Scraping /metrics](#scraping-metrics). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint, a URL with its scheme (`http://otel-collector:4318`); setting it (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) turns on tracing (per run, iteration, provider and tool call). |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. `http/json` is refused at startup. |
@@ -3523,7 +3526,6 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `OTEL_BSP_SCHEDULE_DELAY` | `5000` | Milliseconds between exports. |
 | `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE` | — | A file holding the collector headers (`key=value`, comma- or newline-separated, `#` comments, values URL-decoded), read once at startup so the secret stays out of the process environment. Setting it beside `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, or an unreadable file, stops the startup. |
 | `LOOMCYCLE_OTEL_INBOUND_CONTEXT` | `parent` | What an authenticated caller's `traceparent` does: `parent` joins the run to the caller's trace, `link` starts a new trace linked to it (the caller cannot steer sampling), `ignore` reads nothing. |
-| `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | — | Per-tenant sampling ratio for runs that start a trace, as `tenant=ratio,...` (e.g. `acme=1,beta=0.1`); overrides `observability.tracing.tenant_sampler_ratios` tenant by tenant. See "Sampling per tenant". A bad tenant id or a ratio outside 0–1 stops the startup. |
 | `LOOMCYCLE_OTEL_RAW_USER_ID` | off | `1` also puts the raw `loomcycle.user_id` on spans, beside `loomcycle.user_hash`. See "Users on spans". |
 | `LOOMCYCLE_METRICS_CARDINALITY_LIMIT` | `2000` | Series one `/metrics` instrument may hold; past it new label sets fold into one series labelled `otel_metric_overflow="true"`. A value that is not a positive integer stops the startup. See "Metrics". |
 | `LOOMCYCLE_METRICS_AGENT_LABEL` | off | `1` adds an `agent` label (the agent name) to `loomcycle_runs_total` and `loomcycle_tokens_total`. Only for a bounded agent catalogue. See "Metrics". |
@@ -3531,7 +3533,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_ENVIRONMENT` | — | The `deployment.environment.name` resource attribute. |
 | `LOOMCYCLE_TENANT_TELEMETRY` | off | `1` lets each tenant export its own traces, and its own series of the in-process metrics, to an OTLP collector of its own, beside the operator's export. Off, the `/v1/_telemetry` routes answer 404 `feature_disabled` and tracing is exactly as without it. See "Tenant telemetry export". |
 | `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP` | off | `1` accepts an `http://` collector endpoint (a lab without TLS). Off, only `https://`. A header credential can be bound only to an https endpoint, so an http one takes no headers. |
-| `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | — | Comma-separated hosts a tenant's endpoint may name, each exact (`otel.example.com`) or `*.suffix` (`*.grafana.net`, which does not match `grafana.net` itself). Empty allows any host the address guard lets through. |
+| yaml `observability.tenant_telemetry.allowed_hosts` | — | Not a variable: a yaml list of the hosts a tenant's endpoint may name, each exact (`otel.example.com`) or `"*.suffix"` (`"*.grafana.net"`, quoted, which does not match `grafana.net` itself). Empty allows any host the address guard lets through. An entry of any other shape stops the load. |
 | `LOOMCYCLE_TENANT_TELEMETRY_MAX_RATIO` | `1` | The highest `sampler_ratio` a tenant may set, 0–1. |
 | `LOOMCYCLE_TENANT_CONTENT_CAPTURE` | off | `1` lets a tenant turn on content capture: its runs' prompts, answers and tool calls, redacted and cut, on the spans its own collector receives (never the operator's). Read only with `LOOMCYCLE_TENANT_TELEMETRY` on. Off, a policy asking for `content_capture: on` is refused, and one stored with it on exports its traces without content. See "Tenant content capture". |
 | `LOOMCYCLE_TRACE_URL_TEMPLATE` | — | An http(s) URL containing `{trace_id}`, e.g. `https://grafana.example/explore?traceId={trace_id}`: the Web UI's run view links each traced run there. Shown to every signed-in user who can see the run. Anything else stops the startup. |
@@ -3693,8 +3695,8 @@ observability:
       beta: 0.1    # one beta run in ten
 ```
 
-or `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS=acme=1,beta=0.1`, which wins over
-the yaml for each tenant it names. The ratio applies to every span that
+The yaml is the only source (a bad tenant id or a ratio outside 0–1 stops the
+load). The ratio applies to every span that
 starts a trace and names its tenant (`loomcycle.tenant`): a run's span, a
 memory consolidation pass, a tool call made outside a run (the MCP, HTTP and
 gRPC tool surfaces), and a model gateway call (`/v1/_llm/chat`,
@@ -3766,7 +3768,7 @@ tenant's (run, agent, model, token and tool attributes and the `gen_ai.*` ones,
 not the operator's lane waits or code hashes), and error text is left out.
 
 The endpoint must be `https://` (unless `LOOMCYCLE_TENANT_TELEMETRY_ALLOW_HTTP`)
-and, when `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` is set, one of those hosts.
+and, when `observability.tenant_telemetry.allowed_hosts` is set in the yaml, one of those hosts.
 The collector's headers live in a tenant credential (`headers_credential`)
 whose value is the header block (`authorization=Basic …,x-scope-orgid=…`),
 restricted by its `allowed_urls` to the endpoint; a credential that may be
@@ -3896,7 +3898,7 @@ Telemetry page and the MCP server does not list the `telemetry` tool.
 
 A stored policy is held to the operator's rules every time it is used, not
 only when it was set: after the operator removes a host from
-`LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS`, takes the http override away or
+`observability.tenant_telemetry.allowed_hosts`, takes the http override away or
 lowers the ratio cap, a policy that no longer passes stops exporting and its
 status says `policy no longer valid: <reason>`. A snapshot carries the policies
 (never the header credential, which stays behind like every sealed
@@ -3969,6 +3971,51 @@ were called with and returned, as the GenAI semantic conventions (release
 Capture costs CPU in proportion to what each model call is shown: every
 message of the conversation is redacted and serialised on every call, before
 the field is cut.
+
+## 9m. Retention — what is deleted with age (`retention:`)
+
+Why a yaml block and not environment variables: retention is policy that is the same on every replica of a deployment, and a block can be reviewed, layered and carried by a preset. Ages are durations (`30d`, `12h`, `1d12h`), not milliseconds; a bare number is refused because nothing says which unit it meant.
+
+```yaml
+retention:
+  enabled: true                 # starts the sweeper; default false
+  interval: 24h                 # how often the sweeper runs; default 1h
+  export_dir: /data/retention-exports
+  chats:
+    mode: export+prune
+    max_age: 90d
+  defs:
+    mode: prune
+    max_age: 30d
+    keep_last_n: 5
+  usage_detail:
+    max_age: 30d
+```
+
+`retention.enabled: true` starts the retention sweeper; a family's `mode` says what it deletes. Neither does anything alone: a mode with `enabled` not true deletes nothing (the load says so in an advisory), and `enabled` with every family off runs a sweeper with nothing to do.
+
+Each family's `mode` is `off` (the default), `prune` or `export+prune`; any other value stops the load. `export+prune` writes what it is about to delete under `export_dir`, and a family in that mode with no `export_dir` deletes nothing. A family whose mode deletes must set `max_age`, or the load stops: with no minimum age the first sweep deletes everything eligible (every finished unpinned chat, for `chats`), so that has to be written as an explicit `max_age: 0s`.
+
+| Key | Default | Effect |
+|---|---|---|
+| `retention.enabled` | `false` | Starts the retention sweeper. |
+| `retention.interval` | `1h` | How often the retention sweeper runs. |
+| `retention.export_dir` | none | Where `export+prune` writes what it deletes. |
+| `retention.defs.mode` | `off` | Prunes old versions of substrate definitions. |
+| `retention.defs.max_age` | required when the mode deletes | Only versions older than this are eligible; `0s` = any age. |
+| `retention.defs.keep_last_n` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
+| `retention.chats.mode` | `off` | Deletes aged sessions with their runs and events; pinned sessions are exempt. Chats of `internal:` agents are deleted after 3 days whenever this family is on. Nothing is inherited from the removed usage archiver. |
+| `retention.chats.max_age` | required when the mode deletes | A session whose runs all finished longer ago than this is eligible; `0s` = every finished unpinned session. |
+| `retention.mem.mode` | `off` | Reclaims the memory of fully retired agents. |
+| `retention.mem.max_age` | required when the mode deletes | Only agents whose last definition change is older than this. |
+| `retention.mem_content.mode` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). |
+| `retention.mem_content.max_age` | required when the mode deletes | Only content retired longer ago than this. |
+| `retention.empty_dossier.mode` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
+| `retention.empty_dossier.max_age` | required when the mode deletes | Only dossiers untouched longer than this. |
+| `retention.usage_detail.max_age` | `30d` | Per-call usage rows older than this are rolled up and deleted; totals are kept. This rollup always runs and has no mode. |
+| `retention.trace.max_age` | `30d` | How long an indexed conversation turn stays searchable (the trace index itself is `LOOMCYCLE_MEMORY_TRACE_INDEX`). |
+
+The audit stream's retention is separate and stays in the environment (`LOOMCYCLE_AUDIT_RETENTION_DAYS`), with the rest of the audit posture.
 
 ## 10. Cross-references
 

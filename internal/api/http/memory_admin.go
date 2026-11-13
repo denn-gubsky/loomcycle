@@ -166,7 +166,7 @@ func (s *Server) handleMemoryEmbedStats(w http.ResponseWriter, r *http.Request) 
 // document bodies, so one request can carry a lot of tokens. 64 is two orders of
 // magnitude fewer round trips than per-row while keeping a failure's blast radius
 // small. The driver chunks again by its own EmbedderOptions.BatchSize
-// (LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE), so an operator can still tune the wire size
+// (memory.embedder.batch_size), so an operator can still tune the wire size
 // underneath this.
 const reembedEmbedBatch = 64
 

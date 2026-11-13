@@ -3212,7 +3212,7 @@ func iterationCap(opts *RunOptions, interactiveUnbounded bool) (bool, int) {
 	// one run (code-js — Capabilities().UnboundedIterations) is exempt from the
 	// MaxIterations soft-cap: capping a code-agent's sequential tool calls at 16
 	// is unusable, and the provider bounds the whole run by its own wall-clock
-	// timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS, enforced as a run-level
+	// timeout (providers.code-js.options.run_timeout_seconds, enforced as a run-level
 	// deadline). A high hard ceiling stays as a pure runaway backstop. For every
 	// LLM driver MaxIterations is unchanged (the runaway-tool-use guard).
 	// code-js providers are unbounded by capability; an LLM agent opts in
@@ -3839,7 +3839,7 @@ func (s *runState) finish() (RunResult, error) {
 		// That's a non-terminating tool-call loop (a code-agent bug), not a too-
 		// small cap; name it accordingly. (Capability-driven, not ID-coupled.)
 		if s.unboundedIters {
-			slog.Warn("code agent hit the runaway call ceiling without returning — a code-agent is bounded by its run timeout (LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS), not by iteration count; this indicates a tool-call loop that never terminates",
+			slog.Warn("code agent hit the runaway call ceiling without returning — a code-agent is bounded by its run timeout (providers.code-js.options.run_timeout_seconds), not by iteration count; this indicates a tool-call loop that never terminates",
 				"agent", s.opts.AgentName, "ceiling", s.iterCap)
 		}
 	}

@@ -372,18 +372,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_OLLAMA_NUM_CTX
-            label: LOOMCYCLE_OLLAMA_NUM_CTX
-            description: '(example: 32768)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
-            label: LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU
-            description: 'num_gpu forces how many model layers Ollama offloads to the GPU on every ollama-local request. Leave unset to let Ollama auto-detect; set it (99 = "all layers") when Ollama otherwise runs on CPU — common on integrated/APU GPUs whose VRAM auto-detection is conservative. Global to ollama-local. (example: 99)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_BEDROCK_REGION
             label: LOOMCYCLE_BEDROCK_REGION
             description: 'The region the `bedrock` preset''s providers sign for and call (bedrock-runtime.<region>.amazonaws.com). Required when the preset is selected (LOOMCYCLE_PRESETS=base,bedrock). Credentials are NOT set here: they come from the standard AWS chain — the instance / task / pod role on AWS, or AWS_PROFILE / AWS_ACCESS_KEY_ID elsewhere (keys go in .env.local). (example: eu-central-1)'
@@ -528,12 +516,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL
-            label: LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL
-            description: 'Document projection sweeper cadence (a Go duration, e.g. 1h): places each document chunk on its scope''s 3D map by meaning (memory.projection). A positive value also turns the projection on; 0 keeps it on with no sweeper. Default unset = memory.projection decides (off unless enabled). (example: 1h)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_SQLMEM_ROOT
             label: LOOMCYCLE_SQLMEM_ROOT
             description: 'Where the per-scope sqlite files live (default <DataDir>/sqlmem). Postgres tier: set the DSN in .env.local (LOOMCYCLE_SQLMEM_PG_DSN — it carries a password, so it is a SECRET, not config). (example: ./data/sqlmem)'
@@ -580,87 +562,15 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE
-            label: LOOMCYCLE_MEMORY_EMBED_BATCH_SIZE
-            description: '(example: 100)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS
-            label: LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS
-            description: '(example: 30000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS
-            label: LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS
-            description: 'Operators on networks with high TLS handshake latency or aggressive NAT idle timeouts may want to bump HEADER_TIMEOUT to 90 000 ms; the defaults are tuned for direct internet egress. (example: 60000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS
-            label: LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS
-            description: '(example: 90000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS
-            label: LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS
-            description: 'The `ollama-local` provider is the exception: local generation is slow on first-token (cold model load from disk + prompt eval over a large num_ctx can take minutes on a consumer GPU/CPU), so it uses its OWN, more generous default pair — 600 s / 600 s — instead of the cloud-shaped 60/90 above. These override only ollama-local; hosted ollama.com and every other cloud provider keep the global P…'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS
-            label: LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS
-            description: '(example: 600000)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_TIMEOUT_SCALING
-            label: LOOMCYCLE_TIMEOUT_SCALING
-            description: loomcycle times every model call and keeps, per (provider, model), how much slower than a reference machine the model runs (100 output tok/s, 2000 prompt tok/s, 1 s to first token). It reports that slowdown on GET /v1/_routing, /metrics and Context op=self, with the timeout multiplier it implies. `measure` (the default) records and reports only — NO timeout changes. `off` stops measuring. (`on`…
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS
-            label: LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS
-            description: '(example: 100)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER
-            label: LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER
-            description: '(example: 8)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS
             label: LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS
             description: 'Default OFF. Recommended for any deployment running runs with thinking-mode providers (DeepSeek reasoner family, gemini-2.5-flash with effort hint). (example: 1)'
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_METRICS_ENABLED
-            label: LOOMCYCLE_METRICS_ENABLED
-            description: 'Default OFF — set =1 to enable. (example: 1)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS
-            label: LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS
-            description: 'Sample cadence in milliseconds. Default 5 s (5000). Values below 1 s are clamped up to 1 s — prevents accidental write-storms from a typo''d 50 vs 5000. Storage estimate at defaults: ~210 MB/week for a continuously-active deployment (5 s × 86 400 × 7 ≈ 121 K rows × ~250 bytes each). (example: 5000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_METRICS_RETENTION_DAYS
             label: LOOMCYCLE_METRICS_RETENTION_DAYS
             description: 'Retention in days. Default 7. Set 0 to disable automatic cleanup (table grows unbounded). Lower this on slow disks or storage-constrained deployments. (example: 7)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_METRICS_COLLECT_SYSTEM
-            label: LOOMCYCLE_METRICS_COLLECT_SYSTEM
-            description: 'Optional: also read /proc/stat + /proc/meminfo for SYSTEM-wide CPU% + memory (not just loomcycle''s process). Linux only; silently ignored on macOS/Windows. Useful when correlating loomcycle''s behaviour with host pressure (e.g. ZFS ARC eating RAM in a TrueNAS-hosted VM). (example: 1)'
             schema:
               type: string
               default: ""
@@ -928,27 +838,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER
-            label: LOOMCYCLE_MAX_CONCURRENT_RUNS_PER_USER
-            description: '(Cluster-wide limits also live in the yaml `concurrency:` block.) (example: 0)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER
-            label: LOOMCYCLE_MAX_QUEUED_RUNS_PER_USER
-            description: '(example: 16)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_PROVIDER_QUEUE_DEPTH
-            label: LOOMCYCLE_PROVIDER_QUEUE_DEPTH
-            description: '(example: 0)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
             label: LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT
-            description: 'A top-level interactive run parked for its operator ends after this long with no message (stop reason idle_timeout). Its session is kept: the next message continues it. A Go duration; 0 waits forever. Default 1h. (example: 1h)'
+            description: '(The run, per-user and provider-queue limits are the yaml `concurrency:` block: max_concurrent_runs_per_user, max_queued_runs_per_user, provider_queue_depth.) A top-level interactive run parked for its operator ends after this long with no message (stop reason idle_timeout). Its session is kept: the next message continues it. A Go duration; 0 waits forever. Default 1h. (example: 1h)'
             schema:
               type: string
               default: ""
@@ -1021,24 +913,6 @@ questions:
           - variable: LOOMCYCLE_CODE_AGENTS_ROOT
             label: LOOMCYCLE_CODE_AGENTS_ROOT
             description: 'A goja-backed provider for stateless replay agents (load tests, deterministic pipelines). Always registered; an agent uses it with `provider: code-js`. (example: /srv/loomcycle/code-agents)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CODE_AGENTS_DETERMINISTIC
-            label: LOOMCYCLE_CODE_AGENTS_DETERMINISTIC
-            description: '(example: 1)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS
-            label: LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS
-            description: '(example: 120)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
-            label: LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS
-            description: '(example: 86400)'
             schema:
               type: string
               default: ""

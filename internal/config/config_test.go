@@ -893,51 +893,6 @@ agents:
 	}
 }
 
-// ollama-local gets a generous 600s/600s default timeout pair (cold local
-// model load + large-context eval is slow — a 128K-ctx model can exceed 5 min
-// just to load), distinct from the cloud-shaped 60s/90s global default; the
-// LOOMCYCLE_OLLAMA_LOCAL_* env vars override it and the global Provider*Timeout
-// is untouched.
-func TestOllamaLocalTimeouts_DefaultsAndOverrides(t *testing.T) {
-	tmp := t.TempDir()
-	yamlPath := filepath.Join(tmp, "c.yaml")
-	os.WriteFile(yamlPath, []byte(`
-defaults: { provider: anthropic, model: claude-sonnet-4-6 }
-agents:
-  default: { model: claude-sonnet-4-6 }
-`), 0o600)
-
-	cfg, err := Load(yamlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Env.OllamaLocalHeaderTimeout != 600*time.Second {
-		t.Errorf("default header = %v, want 600s (raised from 300s — cold 128K-ctx local models exceed 5 min to load)", cfg.Env.OllamaLocalHeaderTimeout)
-	}
-	if cfg.Env.OllamaLocalIdleTimeout != 600*time.Second {
-		t.Errorf("default idle = %v, want 600s", cfg.Env.OllamaLocalIdleTimeout)
-	}
-	// The local timeouts must NOT perturb the global cloud defaults.
-	if cfg.Env.ProviderHeaderTimeout != 60*time.Second {
-		t.Errorf("global header default perturbed: %v, want 60s", cfg.Env.ProviderHeaderTimeout)
-	}
-
-	// Override with values distinct from the 600s default so the test proves
-	// the env actually takes effect (a slow box raising past the default).
-	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS", "900000")
-	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS", "450000")
-	cfg, err = Load(yamlPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Env.OllamaLocalHeaderTimeout != 900*time.Second {
-		t.Errorf("override header = %v, want 900s", cfg.Env.OllamaLocalHeaderTimeout)
-	}
-	if cfg.Env.OllamaLocalIdleTimeout != 450*time.Second {
-		t.Errorf("override idle = %v, want 450s", cfg.Env.OllamaLocalIdleTimeout)
-	}
-}
-
 // Absolute path bypasses configDir resolution. Used when the operator
 // stages prompts somewhere outside the YAML's directory.
 func TestSystemPromptFileAbsolutePath(t *testing.T) {
@@ -1853,8 +1808,7 @@ func TestExpandEnv_NestedRunInsideStaticEnv(t *testing.T) {
 }
 
 // TestEnv_OllamaNumCtxLoading pins that LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX
-// and LOOMCYCLE_OLLAMA_NUM_CTX env vars populate the matching Env
-// fields. Defends against typos in the loader's strconv.Atoi block
+// populates the matching Env field. Defends against typos in the loader's strconv.Atoi block
 // (the kind that silently leaves the value at 0 → Ollama falls back
 // to the 4096-token cliff). The 2026-05-15 employer-profiler
 // truncation incident was caused by this same class of "value present
@@ -1870,7 +1824,6 @@ agents:
 		t.Fatal(err)
 	}
 	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX", "32768")
-	t.Setenv("LOOMCYCLE_OLLAMA_NUM_CTX", "65536")
 
 	cfg, err := Load(yamlPath)
 	if err != nil {
@@ -1878,9 +1831,6 @@ agents:
 	}
 	if cfg.Env.OllamaLocalNumCtx != 32768 {
 		t.Errorf("OllamaLocalNumCtx = %d, want 32768", cfg.Env.OllamaLocalNumCtx)
-	}
-	if cfg.Env.OllamaNumCtx != 65536 {
-		t.Errorf("OllamaNumCtx = %d, want 65536", cfg.Env.OllamaNumCtx)
 	}
 }
 
@@ -1898,7 +1848,6 @@ agents:
 		t.Fatal(err)
 	}
 	t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX", "huge")
-	t.Setenv("LOOMCYCLE_OLLAMA_NUM_CTX", "-1")
 
 	cfg, err := Load(yamlPath)
 	if err != nil {
@@ -1906,9 +1855,6 @@ agents:
 	}
 	if cfg.Env.OllamaLocalNumCtx != 0 {
 		t.Errorf("garbage value parsed to %d, want 0", cfg.Env.OllamaLocalNumCtx)
-	}
-	if cfg.Env.OllamaNumCtx != 0 {
-		t.Errorf("negative value parsed to %d, want 0", cfg.Env.OllamaNumCtx)
 	}
 }
 

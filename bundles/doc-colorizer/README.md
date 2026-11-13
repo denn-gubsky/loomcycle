@@ -87,7 +87,7 @@ with one revision retry). Point `subtree` at wherever new documents live.
 
 - **Scope of a run.** Each document costs ~3 store round-trips (`get_document` +
   `get_chunk` + `update_chunk`), all inside one run's wall-clock deadline
-  (`LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS`, default 120s). For a large
+  (`providers.code-js.options.run_timeout_seconds`, default 120s). For a large
   subtree, raise that knob; it bounds how many documents one spawn can cover.
 - **Root chunk only.** It sets document-level fields on the root chunk (the
   `doc.*` keys). Per-chunk status coloring (`chunk.*`) is carried in the same
@@ -99,7 +99,7 @@ with one revision retry). Point `subtree` at wherever new documents live.
   is coloured by its status from the `doc.*.<status>` keys.
 - **Determinism.** No `Math.random()` / `Date.now()` feeds a tool input, so the
   run resumes cleanly across restart/replica without
-  `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC=1`.
+  `providers.code-js.options.deterministic: true`.
 
 ## Where it lives
 
