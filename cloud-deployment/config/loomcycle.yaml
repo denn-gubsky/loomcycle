@@ -33,7 +33,7 @@ providers:
 #
 # The cloud aliases (haiku, sonnet, opus, gpt-mini, gpt, gpt-max,
 # deepseek-flash, deepseek-pro, gemini-lite, gemini-flash, gemini-pro,
-# cloud-kimi) come from the `base` preset and are not restated here; print them
+# gemini-pro-preview, cloud-kimi) come from the `base` preset and are not restated here; print them
 # with `loomcycle presets show base`. They were restated until `base` caught up
 # with this file, so this file needs a binary whose `base` names the same ids:
 # an older one resolves haiku, sonnet, opus and cloud-kimi to earlier models and
@@ -62,7 +62,7 @@ timeout_scaling:
 tiers:
   low:    [local-small,  deepseek-flash, gemini-lite,  haiku,  gpt-mini]
   middle: [local-medium, deepseek-flash, gemini-flash, sonnet, gpt]
-  high:   [local-high,   deepseek-pro,   gemini-pro,   opus]
+  high:   [local-high,   deepseek-pro,   gemini-pro, gemini-pro-preview, opus]
 
 # A run's `user_tier` picks one of these; `default` is required. An unknown
 # user_tier is refused. fallback_on_error has no default: omitted = false.

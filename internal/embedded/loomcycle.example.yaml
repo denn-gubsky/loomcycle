@@ -39,9 +39,12 @@ models:
   deepseek-flash: { provider: deepseek, model: deepseek-flash }
   deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
   # — Gemini (GEMINI_API_KEY) — globs over the provider's model list —
-  gemini-lite:  { provider: gemini, model_pattern: "gemini-*-flash-lite" }
-  gemini-flash: { provider: gemini, model_pattern: "gemini-*-flash" }
-  gemini-pro:   { provider: gemini, model_pattern: "gemini-*-pro*" }
+  # Each pattern ends where the model name ends: a trailing `*` would also
+  # match the image and speech models Gemini lists under the same names.
+  gemini-lite:        { provider: gemini, model_pattern: "gemini-*-flash-lite" }
+  gemini-flash:       { provider: gemini, model_pattern: "gemini-*-flash" }
+  gemini-pro:         { provider: gemini, model_pattern: "gemini-*-pro" }
+  gemini-pro-preview: { provider: gemini, model_pattern: "gemini-*-pro-preview" }
   # — Hosted Ollama cloud (OLLAMA_API_KEY) — for models too big to run locally —
   cloud-kimi: { provider: ollama, model: kimi-k3 }
   # — Local Ollama on your workstation / LAN (OLLAMA_BASE_URL; no key) —
@@ -107,6 +110,7 @@ tiers:
     # (hosted Ollama) covers that case for operators with a paid quota.
     - cloud-kimi
     - gemini-pro
+    - gemini-pro-preview
     - gpt-max
     - opus
 

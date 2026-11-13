@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -48,8 +49,8 @@ func TestBasePreset_GeminiIsWiredLikeTheOtherProviders(t *testing.T) {
 		p, _ := m["provider"].(string)
 		byProvider[p] = append(byProvider[p], alias)
 	}
-	if len(byProvider["gemini"]) != 3 {
-		t.Fatalf("base has gemini aliases %v, want three (lite, flash, pro)", byProvider["gemini"])
+	if len(byProvider["gemini"]) != 4 {
+		t.Fatalf("base has gemini aliases %v, want four (lite, flash, pro, pro-preview)", byProvider["gemini"])
 	}
 	inPriority := func(list []string) bool {
 		for _, p := range list {
@@ -141,4 +142,58 @@ func TestCloudOverlay_RestatesNothingBaseSuppliesIdentically(t *testing.T) {
 	if len(cloud.ProviderPriority) > 0 && reflect.DeepEqual(cloud.ProviderPriority, base.ProviderPriority) {
 		t.Error("provider_priority is identical to base's; delete it from the overlay")
 	}
+}
+
+// A Gemini alias pattern matches chat models only. The matcher is a plain
+// glob with no exclusion, and the provider lists image, speech, audio and
+// embedding models under the same family names; `gemini-*-pro*` matched
+// gemini-3-pro-image-preview, and the newest match wins, so a tier candidate
+// could resolve to a model that cannot hold a conversation.
+func TestBasePreset_GeminiPatternsMatchChatModelsOnly(t *testing.T) {
+	notChat := []string{
+		"gemini-3-pro-image-preview", "gemini-2.5-flash-image", "gemini-2.5-flash-image-preview",
+		"gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts",
+		"gemini-2.5-flash-native-audio-preview-09-2025", "gemini-2.5-flash-preview-native-audio-dialog",
+		"gemini-live-2.5-flash-preview", "gemini-embedding-001", "gemini-embedding-exp-03-07",
+		"gemini-2.5-pro-audio", "gemini-4-pro-image",
+	}
+	chat := map[string]string{ // model -> the alias that must match it
+		"gemini-2.5-pro":         "gemini-pro",
+		"gemini-3.1-pro-preview": "gemini-pro-preview",
+		"gemini-2.5-flash":       "gemini-flash",
+		"gemini-2.5-flash-lite":  "gemini-lite",
+	}
+	for name, data := range map[string][]byte{"base": mustShow(t, "base"), "loomcycle.example.yaml": ExampleYAML()} {
+		doc := routingOf(t, name, data)
+		patterns := map[string]string{}
+		for alias, m := range doc.Models {
+			if p, _ := m["provider"].(string); p == "gemini" {
+				patterns[alias], _ = m["model_pattern"].(string)
+			}
+		}
+		if len(patterns) < 3 {
+			t.Fatalf("%s: gemini patterns %v; the test is not reading them", name, patterns)
+		}
+		for alias, pattern := range patterns {
+			for _, model := range notChat {
+				if ok, _ := path.Match(pattern, model); ok {
+					t.Errorf("%s: %s (%q) matches %s, which is not a chat model", name, alias, pattern, model)
+				}
+			}
+		}
+		for model, alias := range chat {
+			if ok, _ := path.Match(patterns[alias], model); !ok {
+				t.Errorf("%s: %s (%q) does not match %s", name, alias, patterns[alias], model)
+			}
+		}
+	}
+}
+
+func mustShow(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := Show(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

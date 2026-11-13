@@ -28,9 +28,14 @@ models:
   deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
   # — Gemini (GEMINI_API_KEY) — globs over the provider's model list, so a new
   # generation is picked up without an edit here (the newest listed match wins).
-  gemini-lite:  { provider: gemini, model_pattern: "gemini-*-flash-lite" }
-  gemini-flash: { provider: gemini, model_pattern: "gemini-*-flash" }
-  gemini-pro:   { provider: gemini, model_pattern: "gemini-*-pro*" }
+  # Each pattern ends where the model name ends. A glob has no "but not", and
+  # Gemini lists image, speech and audio models under the same family names
+  # (…-pro-image-preview, …-pro-preview-tts): a trailing `*` matches those,
+  # and the newest match wins. So a preview model has its own alias.
+  gemini-lite:        { provider: gemini, model_pattern: "gemini-*-flash-lite" }
+  gemini-flash:       { provider: gemini, model_pattern: "gemini-*-flash" }
+  gemini-pro:         { provider: gemini, model_pattern: "gemini-*-pro" }
+  gemini-pro-preview: { provider: gemini, model_pattern: "gemini-*-pro-preview" }
   # — Hosted Ollama cloud (OLLAMA_API_KEY) — for models too big to run locally —
   cloud-kimi: { provider: ollama, model: kimi-k3 }
   # — Local Ollama on your workstation / LAN (OLLAMA_BASE_URL; no key) —
@@ -81,7 +86,8 @@ tiers:
     - sonnet
   high:
     - cloud-kimi
-    - gemini-pro
+    - gemini-pro           # the released model first
+    - gemini-pro-preview   # a preview only when no released pro is listed
     - gpt-max
     - opus
 
