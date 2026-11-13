@@ -518,6 +518,9 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err := a.admitNoTraceChange(ctx, "create", tenantID, in.Name, def); err != nil {
 		return errResult(err.Error()), nil
 	}
+	if err := a.admitToolModesChange(ctx, "create", tenantID, in.Name, def); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
@@ -726,6 +729,9 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err := a.admitNoTraceChange(ctx, "fork", tenantID, in.Name, def); err != nil {
 		return errResult(err.Error()), nil
 	}
+	if err := a.admitToolModesChange(ctx, "fork", tenantID, in.Name, def); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
@@ -892,6 +898,9 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 		return errResult(fmt.Sprintf("promote: parse definition: %s", err)), nil
 	}
 	if err := a.admitNoTraceChange(ctx, "promote", ident.TenantID, row.Name, target); err != nil {
+		return errResult(err.Error()), nil
+	}
+	if err := a.admitToolModesChange(ctx, "promote", ident.TenantID, row.Name, target); err != nil {
 		return errResult(err.Error()), nil
 	}
 	if err := a.memberActivationGuard(ctx, "promote", ident.TenantID, row.Name); err != nil {

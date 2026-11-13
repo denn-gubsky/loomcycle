@@ -17,8 +17,11 @@ import (
 // version is not a lineage of the agent, and a walk refuses a no-trace member.
 // The eighth is a member making its version active over an operator's agent
 // (memberActivationGuard): it is about the name's active pointer, which a
-// team's local agent does not have.
-const execCreateRefusals = 8
+// team's local agent does not have. The ninth is dropping a read mode the
+// name's lineage holds (admitToolModesChange): like the no-trace check, it is
+// about the name's stored version history, which a team's local agent does
+// not have.
+const execCreateRefusals = 9
 
 // A team's local agents pass gateNewDef and nothing else of AgentDef create.
 // So a gate added to execCreate directly is one a local agent does not pass —

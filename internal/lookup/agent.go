@@ -152,6 +152,20 @@ func keepStaticOverrideLock(cfg *config.Config, name string, def *config.AgentDe
 	if static.Retention == retentionmode.None {
 		def.Retention = retentionmode.None
 	}
+	// The operator's read modes (tool_modes) hold over the tenant's version
+	// too, a read mode winning: a version forked before the operator added
+	// one would otherwise hold the tool whole.
+	for tool, mode := range static.ToolModes {
+		if mode != config.ToolModeRead || def.ToolModes[tool] == config.ToolModeRead {
+			continue
+		}
+		modes := make(map[string]string, len(def.ToolModes)+1)
+		for k, v := range def.ToolModes {
+			modes[k] = v
+		}
+		modes[tool] = mode
+		def.ToolModes = modes
+	}
 }
 
 // AgentChecked is Agent for a caller that must tell "no such agent" from "could
