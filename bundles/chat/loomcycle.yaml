@@ -93,21 +93,15 @@ agents:
       # runtime floor fixes.
       recap_max_chars: 2048
       autorecap_at_pct: 80
-      # Bank what recap evicts onto the consolidation queue. In a distilling
-      # mode this is the setting that does it: compaction.memory_flush (below)
-      # covers the append path only, and without this line it banked nothing
-      # here.
-      harvest_to_memory: true
     compaction:
       enabled: true
-      # RFC BL P3: bank the turns each compaction discards onto the
-      # consolidation queue. These agents are exactly the case the bridge
-      # exists for — they compact repeatedly and park at end_turn rather than
-      # terminating, so consolidation's all-runs-terminal predicate never
-      # selects their sessions and nothing would ever be learned from them.
-      # Requires `user` in memory_scopes (above): consolidation drains user
-      # scopes only.
-      memory_flush: true
+      # What this agent discards is NOT banked to memory. In a distilling
+      # context mode (auto, above) the evicted span is banked by
+      # context.harvest_to_memory, and `compaction.memory_flush` covers the
+      # append path only: set here it did nothing, and every load said so. To
+      # have this agent's evicted turns queued for consolidation, set
+      # `context.harvest_to_memory: true` in your own config; it needs `user`
+      # in memory_scopes (above) and a consolidator to drain the queue.
       autocompact_at_pct: 80
     system_prompt: |
       You are CHAT, a helpful, direct general-purpose assistant for an operator
@@ -233,7 +227,7 @@ agents:
       # The BACKSTOP threshold, live in every mode now rather than append only.
       # In stateful it triggers Σ EVICTION rather than summarisation.
       enabled: true
-      memory_flush: true                    # RFC BL P3 — see chat/medium above
+      memory_flush: true                    # the append path; harvest_to_memory (above) banks in this mode
       autocompact_at_pct: 70
     system_prompt: |
       You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT.
@@ -337,10 +331,9 @@ agents:
       # Lower than chat/medium's 80: a local window is smaller and fills sooner,
       # matching this agent's compaction trigger below.
       autorecap_at_pct: 70
-      harvest_to_memory: true               # see chat/medium above
     compaction:
       enabled: true
-      memory_flush: true                    # RFC BL P3 — see chat/medium above
+      # Not banked to memory: see chat/medium above.
       autocompact_at_pct: 70
     system_prompt: |
       You are CHAT-LOCAL, the same helpful general-purpose assistant as CHAT, but

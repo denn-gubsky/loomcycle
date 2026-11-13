@@ -561,50 +561,51 @@ func agentNames(cfg *config.Config) []string {
 	return out
 }
 
-// TestEmbedded_ChatAgentsOptIntoMemoryFlush pins the RFC BL P3 bundle wiring, and
-// pins the PRECONDITION with it.
+// TestEmbedded_ChatAgentsSetNoInertMemorySetting pins what is true of the chat
+// bundle's memory settings: none is set where it does nothing, and an agent
+// that does bank what it discards can have it consolidated.
 //
-// memory_flush is inert without `user` in memory_scopes: consolidation fans out
-// over user scopes only, so a span banked anywhere else is enqueued and then never
-// drained by anything. That combination — flag on, user scope missing — is a silent
-// no-op at the bundle level, so the two are asserted together rather than apart.
+// It used to require compaction.memory_flush on every chat agent. Two of the
+// three run in a distilling context mode, where that key banks nothing (the
+// evicted span is banked by context.harvest_to_memory), so the requirement
+// was met on paper and printed an advisory at every load. Those two no longer
+// set it. Whether they should harvest to memory is a separate decision; this
+// test takes no side, and holds whichever is chosen to actually work.
 //
-// The chat agents are the case the bridge exists for: they auto-compact and park
-// at end_turn instead of terminating, so consolidation's all-runs-terminal
-// predicate never selects their sessions.
-func TestEmbedded_ChatAgentsOptIntoMemoryFlush(t *testing.T) {
+// The precondition stays: banking is useless without `user` in memory_scopes,
+// because consolidation fans out over user scopes only, so a span banked
+// anywhere else is enqueued and never drained.
+func TestEmbedded_ChatAgentsSetNoInertMemorySetting(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
 	cfg, err := config.LoadLayers(layersFor(t, "base", "chat")...)
 	if err != nil {
 		t.Fatalf("base+chat must load: %v", err)
 	}
 
-	var checked int
+	var checked, banking int
 	for name, def := range cfg.Agents {
 		if !strings.HasPrefix(name, "chat/") {
 			continue
 		}
 		checked++
-		if def.Compaction == nil || def.Compaction.Enabled == nil || !*def.Compaction.Enabled {
-			// Not a bridge candidate — nothing to bank if it never compacts.
-			continue
-		}
-		if def.Compaction.MemoryFlush == nil || !*def.Compaction.MemoryFlush {
-			t.Errorf("agent %q auto-compacts but does not set compaction.memory_flush, so everything it discards is lost to memory", name)
-			continue
-		}
-		if !slicesContains(def.MemoryScopes, "user") {
-			t.Errorf("agent %q sets memory_flush but has no `user` in memory_scopes %v — consolidation drains user scopes only, so banked spans would never be consolidated",
-				name, def.MemoryScopes)
-		}
-		// The flag has to take effect in the mode the agent runs in. In a
-		// distilling mode (auto, recap, stateful) the span that is evicted is
-		// banked by context.harvest_to_memory, not by memory_flush; two of the
-		// three agents set only the latter and banked nothing, with an
-		// advisory at every boot saying so.
 		for _, inert := range config.InertContextSettings(def) {
 			t.Errorf("agent %q: %s is set but does nothing (%s)", name, inert.Setting, inert.Reason)
 		}
+		banks := config.HarvestToMemoryEnabled(def.Context) ||
+			(def.Compaction != nil && def.Compaction.MemoryFlush != nil && *def.Compaction.MemoryFlush)
+		if !banks {
+			continue
+		}
+		banking++
+		if !slicesContains(def.MemoryScopes, "user") {
+			t.Errorf("agent %q banks what it discards but has no `user` in memory_scopes %v — consolidation drains user scopes only, so banked spans would never be consolidated",
+				name, def.MemoryScopes)
+		}
+	}
+	// chat/local harvests (it runs stateful, the most lossy mode). If no chat
+	// agent banks any more, the precondition above is checked on nothing.
+	if banking == 0 {
+		t.Error("no chat agent banks what it discards; the memory_scopes precondition is asserted on nothing")
 	}
 	if checked == 0 {
 		t.Fatal("no chat/* agents found in the base+chat stack; this test asserts nothing")
