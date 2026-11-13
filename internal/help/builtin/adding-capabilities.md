@@ -69,8 +69,14 @@ create and fork agents — but **you still can't escalate**:
 - `tool_modes` narrows a tool to its read operations
   (`{"Document": "read", "Path": "read"}`; only those two tools take a
   mode, and each must be in `tools`). If you hold a tool in read mode, an
-  agent you create may hold it only in read mode too. A fork may add a
-  read mode and may never remove one.
+  agent you create or fork may hold it only in read mode too. A fork may
+  add a read mode; no create, fork or promote may drop one the agent
+  already holds (only an operator may). A read mode also stops writes
+  other tools make through that tool (File import, Crypto writing to a
+  document, a team run bound to a board chunk). It does not stop writes a
+  tool makes by its own means: Memory set with a path adds a Path-tree
+  name, Document held whole adds its own Path-tree names, and Write,
+  Edit, Bash or Git change files.
 - `statement_methods` (`rule`, `extractor`, `judge` and `annotate` for a
   `provider: code-js` agent; `link` and `remember` for any agent) is stricter:
   a new agent may list only what you may stamp, and a fork only what
