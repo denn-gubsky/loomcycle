@@ -18,14 +18,14 @@ providers:
       # 32768 window crashes with "CUDA error: an illegal memory access" on
       # prompts of about 1,100 tokens, every time. 49152, 65536 and 131072 pass.
       idle_timeout_ms: 600000
-    # One call at a time. On Ollama 0.40.3 the Spark faults ("CUDA error: an
-    # illegal memory access") on long annotation prompts when 4 chat calls ran
-    # in parallel at the 65536 window; tiny prompts pass. 2026-11-12.
-    max_concurrent: 1           # chat calls in flight (shorthand for lanes.chat)
+    # Was 1 on 2026-11-12 while the Spark faulted ("CUDA error: an illegal
+    # memory access") on Ollama 0.40.3; back to 4 on 2026-11-13 once the host
+    # ran annotation calls clean again.
+    max_concurrent: 4           # chat calls in flight (shorthand for lanes.chat)
     # Decision calls — the decision: block's and the memory reranker's — share
     # this lane. It replaces the two blocks' own max_concurrent, which are gone.
     lanes:
-      decision: { max_concurrent: 1 }
+      decision: { max_concurrent: 2 }
 
 # ─── Models: name each model once, reference it by alias everywhere ───
 # kind: chat (default) | decision | embedder. A tagged alias used in the
