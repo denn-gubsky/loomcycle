@@ -4,6 +4,8 @@ This guide is for operators wiring loomcycle for the first time, or developers t
 
 Scope: the **model-routing axis** of `loomcycle.yaml` — providers, tier candidate lists, the `models:` alias map, the `user_tiers:` overlay — plus the agent `.md` frontmatter fields that control per-agent routing. MCP-server configuration lives in [`docs/MCP_INTEGRATION.md`](MCP_INTEGRATION.md); storage in [`docs/POSTGRES.md`](POSTGRES.md); concurrency/cache/hooks are not covered here.
 
+Upgrading from a release that read more environment variables? See [`SETTINGS_MIGRATION.md`](SETTINGS_MIGRATION.md) for what moved to the yaml, what became fixed, and what a removed variable does at boot.
+
 ---
 
 ## 0. Why this doc exists
