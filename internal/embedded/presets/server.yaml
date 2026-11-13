@@ -1,0 +1,49 @@
+# embedded preset: server
+#
+# A shared installation: the provider matrix, the chat, document and memory agents, and process metrics.
+#
+# Select it with LOOMCYCLE_PRESETS=server. It layers the presets and bundles
+# below, in this order, then its own keys. `loomcycle presets show <name>`
+# prints any of them.
+#
+#   base            the provider and tier matrix (every provider wired; one
+#                   without a key in the environment is skipped). Local models
+#                   are used when OLLAMA_BASE_URL reaches an Ollama.
+#   chat            chat/medium, chat/local, chat/local-small
+#   document-agent  doc/manager and its skills
+#   memory          the consolidation agents. Their schedule ships disabled:
+#                   it spends tokens hourly for every user with new chats.
+#                   Enable it in your own config once the tier suits you:
+#                     scheduled_runs: { memory-consolidation: { enabled: true } }
+#
+# WHAT A SERVER MUST STILL SUPPLY. None of these can come from a preset: they
+# are yours, or they are secrets, or they decide who gets in.
+#   Environment   LOOMCYCLE_LISTEN_ADDR (the default is loopback only) and
+#                 LOOMCYCLE_PUBLIC_URL (the address users and links see).
+#   Secrets       LOOMCYCLE_AUTH_TOKEN, LOOMCYCLE_SECRET_KEY, the store's
+#                 LOOMCYCLE_PG_DSN and LOOMCYCLE_SQLMEM_PG_DSN, and the provider
+#                 keys. In the environment only, never in a yaml file.
+#   Your yaml     `volumes:` (the directories agents may use, and a
+#                 dynamic_root for per-run files) and `auth:` (the sign-in
+#                 gates: a token gate, and a password or OIDC gate for people).
+# A non-loopback listen address with no auth token is refused at boot.
+#
+# WHAT THIS PRESET DOES NOT SET, on purpose.
+#   Retention     Deleting old data is an explicit choice: `retention:` stays
+#                 off until your own config turns it on and names a family.
+#   Gates         Shell tools, the HTTP host allowlist, the access-control
+#                 mode and the operator-key restriction have no yaml form.
+#                 They stay lines in your environment file.
+#   Pool sizes    They depend on your Postgres and on how many replicas share
+#                 it: `storage.pg_max_open_conns` in your own config.
+
+include: [base, chat, document-agent, memory]
+
+# The process metrics sampler: memory, CPU and run counts over time, shown on
+# the Web UI's metrics page. A server is watched by someone other than the
+# person using it; samples are kept seven days (LOOMCYCLE_METRICS_RETENTION_DAYS).
+# collect_system adds host-wide CPU and memory, read from /proc on Linux and
+# left empty elsewhere.
+metrics:
+  enabled: true
+  collect_system: true

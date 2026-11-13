@@ -80,6 +80,16 @@ func TestAssembleConfigStack_ServerAndCLIPathsGiveTheSameLayers(t *testing.T) {
 			},
 		},
 		{
+			name: "the server preset, and one of its bundles again",
+			setup: func(t *testing.T, _, _ string) string {
+				t.Setenv("LOOMCYCLE_PRESETS", "server,chat")
+				return ""
+			},
+			want: func(_, _, _ string) []string {
+				return []string{"providers.default", "base", "chat", "document-agent", "memory", "server"}
+			},
+		},
+		{
 			name: "presets and a config dir",
 			setup: func(t *testing.T, _, cwd string) string {
 				t.Setenv("LOOMCYCLE_PRESETS", "base")
@@ -348,6 +358,53 @@ func TestAssembleConfigStack_PersonalProfileLoadsWithNothingElseSet(t *testing.T
 	}
 	if cfg.Env.MetricsEnabled {
 		t.Error("the personal profile turned the metrics sampler on")
+	}
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "config layer override") {
+			t.Errorf("the profile's own layers conflict: %s", w)
+		}
+	}
+}
+
+// The server profile turns on what a server is watched by and nothing that
+// decides who gets in, where data lives or when it is deleted: those are the
+// operator's, and a profile is selected by one word.
+func TestAssembleConfigStack_ServerProfileSetsMetricsAndLeavesTheRestToTheOperator(t *testing.T) {
+	isolateLayerEnv(t)
+	t.Setenv("LOOMCYCLE_PRESETS", "server")
+	for _, k := range []string{"LOOMCYCLE_PG_DSN", "LOOMCYCLE_LISTEN_ADDR", "LOOMCYCLE_AUTH_TOKEN", "LOOMCYCLE_AUTH_MODE"} {
+		t.Setenv(k, "") // a developer's own environment must not decide this
+	}
+	stack, err := AssembleConfigStack(nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadLayers(stack.Layers...)
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if !cfg.Env.MetricsEnabled || !cfg.Env.MetricsCollectSystem {
+		t.Errorf("metrics enabled=%v collect_system=%v, want both on", cfg.Env.MetricsEnabled, cfg.Env.MetricsCollectSystem)
+	}
+	for _, agent := range []string{"chat/medium", "doc/manager", "memory/consolidator", "memory/extractor"} {
+		if _, ok := cfg.Agents[agent]; !ok {
+			t.Errorf("agent %q missing from the server profile", agent)
+		}
+	}
+
+	if cfg.Retention.Enabled {
+		t.Error("the server profile turned retention on: it deletes data, and stays the operator's explicit choice")
+	}
+	if sr, ok := cfg.ScheduledRuns["memory-consolidation"]; !ok {
+		t.Error("the memory bundle's schedule is missing")
+	} else if sr.Enabled {
+		t.Error("the server profile enabled the consolidation schedule: it spends tokens hourly, and ships off")
+	}
+	if len(cfg.Volumes) != 0 {
+		t.Errorf("the server profile declares volumes %v: a host path is the operator's", cfg.Volumes)
+	}
+	if len(cfg.Auth.Gates) != 0 || cfg.Auth.Mode != "" || len(cfg.Principals) != 0 {
+		t.Errorf("the server profile configures sign-in (mode %q, %d gates, %d principals)", cfg.Auth.Mode, len(cfg.Auth.Gates), len(cfg.Principals))
 	}
 	for _, w := range cfg.Warnings {
 		if strings.Contains(w, "config layer override") {

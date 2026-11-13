@@ -25,6 +25,7 @@ func TestUnits_RegistryShape(t *testing.T) {
 		"bedrock":        "preset",
 		"loomboard":      "preset",
 		"personal":       "preset",
+		"server":         "preset",
 		"document-agent": "bundle",
 		"agent-teams":    "bundle",
 		"team-examples":  "bundle",

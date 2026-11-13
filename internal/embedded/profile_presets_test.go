@@ -22,6 +22,7 @@ var profilePresets = map[string]struct {
 	ownKeys []string
 }{
 	"personal": {stack: "base,local,chat,document-agent,personal"},
+	"server":   {stack: "base,chat,document-agent,memory,server", ownKeys: []string{"metrics"}},
 }
 
 func TestProfilePresets_ExpandToTheirDocumentedStack(t *testing.T) {
