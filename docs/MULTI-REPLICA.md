@@ -73,7 +73,7 @@ By design, these are not cluster-wide:
 ### Recommended
 
 - [ ] OTEL exporter wired (`OTEL_EXPORTER_OTLP_ENDPOINT`) so the cross-replica trace tree is visible; each replica's spans carry `service.instance.id` = its `LOOMCYCLE_REPLICA_ID`.
-- [ ] `LOOMCYCLE_METRICS_ENABLED=1` for `/v1/_metrics/*` observability.
+- [ ] `metrics: {enabled: true}` in the yaml for `/v1/_metrics/*` observability.
 
 ### Cluster verification
 

@@ -182,6 +182,11 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS": "set observability.tenant_telemetry.allowed_hosts in the yaml, as a list",
 
 	"LOOMCYCLE_UI_LOGIN_ORIGINS": "set auth.login_origins in the yaml, as a list",
+
+	// The process metrics sampler moved to the yaml `metrics:` block.
+	"LOOMCYCLE_METRICS_ENABLED":            "set metrics.enabled: true in the yaml",
+	"LOOMCYCLE_METRICS_COLLECT_SYSTEM":     "set metrics.collect_system: true in the yaml",
+	"LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS": "set metrics.sample_interval in the yaml, as a duration such as 5s",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

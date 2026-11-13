@@ -17,6 +17,12 @@
 # replicas means the per-replica pool is sized by the run script from N to
 # stay under the container's max_connections (N × pool ≤ ~160).
 
+# The process metrics sampler, so /v1/_metrics/* has samples to report.
+metrics:
+  enabled: true
+  sample_interval: 1s
+  collect_system: true
+
 provider_priority:
   - mock
   - mock-stable

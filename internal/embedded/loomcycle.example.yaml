@@ -1077,6 +1077,18 @@ concurrency:
 #       - otel.example.com        # may name; none listed = any public host
 #       - "*.grafana.net"         # a suffix entry must be quoted
 
+# ─── Process metrics sampler ──────────────────────────────────────────
+# Records loomcycle's CPU, memory and goroutines into the store while at
+# least one run is active, for capacity planning: GET /v1/_metrics/* and the
+# Web UI's activity page. Off by default. Not the Prometheus /metrics
+# endpoint, which is configured in the environment.
+#
+# metrics:
+#   enabled: true
+#   sample_interval: 5s           # default 5s; at least 1s
+#   collect_system: true          # also sample system-wide CPU and memory
+#                                 # (Linux only)
+
 # ─── Retention ────────────────────────────────────────────────────────
 # What the runtime deletes with age, and when. Nothing is deleted unless
 # `enabled` is true AND a family's `mode` is prune or export+prune: `enabled`

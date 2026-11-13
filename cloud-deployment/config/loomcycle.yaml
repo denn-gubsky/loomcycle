@@ -223,6 +223,13 @@ concurrency:
   max_concurrent_runs: 8
   max_queue_depth: 32
 
+# ─── Process metrics sampler ──────────────────────────────────────────
+# CPU and memory samples while runs are active (GET /v1/_metrics/*, the Web
+# UI's activity page), with the host's own CPU and memory beside them.
+metrics:
+  enabled: true
+  collect_system: true
+
 # ─── Retention ────────────────────────────────────────────────────────
 # What is deleted with age. `enabled` starts the sweeper; a family's mode says
 # what it deletes; export+prune writes what it deletes under export_dir first.

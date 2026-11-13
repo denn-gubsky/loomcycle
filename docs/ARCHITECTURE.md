@@ -515,7 +515,7 @@ Built-in process-resource sampler. Periodic background goroutine; idle-gated on 
 - `loomcycle_num_goroutines` — `runtime.NumGoroutine()`
 - `loomcycle_cpu_pct_x100` — delta CPU% computed from `/proc/self/stat utime + stime` between successive ticks (Linux only; ×100 for integer storage, so 1250 means 12.5%)
 - `active_runs` + `queued_runs` — from the concurrency semaphore at sample time
-- Optional system-wide fields (when `LOOMCYCLE_METRICS_COLLECT_SYSTEM=1`): `system_cpu_pct_x100`, `system_mem_used_mb`, `system_mem_available_mb` read from `/proc/stat` + `/proc/meminfo`
+- Optional system-wide fields (when `metrics.collect_system: true`): `system_cpu_pct_x100`, `system_mem_used_mb`, `system_mem_available_mb` read from `/proc/stat` + `/proc/meminfo`
 
 **Persistence:**
 
@@ -540,7 +540,7 @@ GET /v1/_metrics/summary?period=1h|24h|7d
       computed in-Go from a single MetricsSampleWindow fetch.
 ```
 
-All three endpoints return 503 with `enable_hint` when `LOOMCYCLE_METRICS_ENABLED=0` (the default — opt-in for v0.8.x; default-on planned for v0.9.x).
+All three endpoints return 503 with `enable_hint` when the sampler is off (the default; `metrics.enabled: true` in the yaml turns it on).
 
 **Design decisions worth flagging:**
 

@@ -3498,10 +3498,10 @@ What the runtime deletes with age is set in the yaml `retention:` block, not in 
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_METRICS_ENABLED` | off | `1` samples process metrics into the store. |
-| `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS` | `5000` | Sampling interval; floor 1 s. |
+| yaml `metrics.enabled` | `false` | Not a variable: `true` samples process metrics (CPU, memory, goroutines, active runs) into the store while a run is active, served at `/v1/_metrics/*`. |
+| yaml `metrics.sample_interval` | `5s` | Sampling interval, a duration; under `1s` stops the load. |
+| yaml `metrics.collect_system` | `false` | `true` also samples system-wide CPU and memory (Linux only). |
 | `LOOMCYCLE_METRICS_RETENTION_DAYS` | `7` | Days of samples kept; `0` keeps them all. |
-| `LOOMCYCLE_METRICS_COLLECT_SYSTEM` | off | `1` also samples system-wide CPU and memory (Linux only). |
 | `LOOMCYCLE_METRICS_LISTEN` | unset | An address (`127.0.0.1:9464`, or `0.0.0.0:9464` inside a compose network) for a second plain-HTTP listener that serves only `GET`/`HEAD /metrics`, **with no authentication**; nothing else is served there. It omits every series that names a user (today `loomcycle_concurrency_per_user`, whose `user_hash` label the authenticated `/metrics` carries). For a scraper on the same host or a network only it reaches. Boot fails if the address cannot be bound, and warns when it is beyond loopback. The main listener's `/metrics` keeps its token. See [Scraping /metrics](#scraping-metrics). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | OTLP endpoint, a URL with its scheme (`http://otel-collector:4318`); setting it (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) turns on tracing (per run, iteration, provider and tool call). |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` | Or `grpc`. `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` wins when set. `http/json` is refused at startup. |

@@ -83,6 +83,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		concurrency   Concurrency
 		observability ObservabilityConfig
 		auth          AuthConfig
+		metrics       MetricsConfig
 		refused       bool
 	}{
 		// Gates: the old read turned the feature on for exactly "1".
@@ -417,6 +418,13 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: " , "},
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: ""},
 
+		// The metrics sampler moved to the yaml `metrics:` block. Losing it
+		// stops samples being recorded and tightens nothing.
+		{name: "LOOMCYCLE_METRICS_ENABLED", value: "1"},
+		{name: "LOOMCYCLE_METRICS_ENABLED", value: "0", metrics: MetricsConfig{Enabled: true}},
+		{name: "LOOMCYCLE_METRICS_COLLECT_SYSTEM", value: "1"},
+		{name: "LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS", value: "1000"},
+
 		// The debug flags only added log lines.
 		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
 		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
@@ -428,7 +436,7 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 	} {
 		t.Run(tc.name+"="+tc.value, func(t *testing.T) {
 			environ := append([]string{tc.name + "=" + tc.value}, tc.also...)
-			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory, Concurrency: tc.concurrency, Observability: tc.observability, Auth: tc.auth})
+			got := retiredEnvRefusals(environ, &Config{Storage: tc.yaml, Retention: tc.retention, Providers: tc.providers, Memory: tc.memory, Concurrency: tc.concurrency, Observability: tc.observability, Auth: tc.auth, Metrics: tc.metrics})
 			if refused := len(got) > 0; refused != tc.refused {
 				t.Fatalf("refused = %v (%q), want %v", refused, got, tc.refused)
 			}

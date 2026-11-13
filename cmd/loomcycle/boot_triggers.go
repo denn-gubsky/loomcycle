@@ -284,7 +284,7 @@ func (b *boot) startMetrics() {
 	advisoryLock := b.advisoryLock
 
 	// v0.8.x process-resource metrics sampler. Default OFF;
-	// operator opts in via LOOMCYCLE_METRICS_ENABLED=1. When
+	// operator opts in with metrics.enabled in the yaml. When
 	// enabled, samples loomcycle's CPU + memory usage at
 	// cfg.Env.MetricsSampleInterval cadence while at least one
 	// agent run is active (the semaphore's Stats() is the idle
@@ -321,7 +321,7 @@ func (b *boot) startMetrics() {
 	} else if cfg.Env.MetricsEnabled {
 		slog.Warn("metrics: sampler disabled (no Store backend)")
 	} else {
-		slog.Info("metrics: sampler disabled (LOOMCYCLE_METRICS_ENABLED=0)")
+		slog.Info("metrics: sampler disabled (metrics.enabled is not true)")
 	}
 }
 

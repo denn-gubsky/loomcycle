@@ -671,7 +671,7 @@ export function getWhoami(): Promise<Principal> {
 // the status codes in `allow` — instead it returns a discriminated
 // {ok:false, status, body} so the caller can branch. Used by the
 // metrics helpers: the /v1/_metrics/* endpoints return 503 when the
-// server-side sampler is off (LOOMCYCLE_METRICS_ENABLED unset), and
+// server-side sampler is off (metrics.enabled not true in the yaml), and
 // the Activity Monitor wants to render an instructional empty
 // state instead of surfacing the 503 as a thrown error.
 async function jsonFetchAllowing<T>(
@@ -1705,7 +1705,7 @@ export async function resolveInterrupt(
 // --- v0.8.21 Process-resource metrics ---
 //
 // ProcessSample mirrors the server's ProcessSample row. Optional
-// system_* fields are populated only when LOOMCYCLE_METRICS_COLLECT_SYSTEM=1
+// system_* fields are populated only when metrics.collect_system is true
 // — null/undefined on installs where the operator didn't opt in.
 // The UI detects system-availability by inspecting the first
 // non-null row.
@@ -1754,7 +1754,7 @@ export type MetricsResult<T> =
   | { disabled: true; enableHint: string };
 
 const DEFAULT_METRICS_DISABLED_HINT =
-  "set LOOMCYCLE_METRICS_ENABLED=1 and restart loomcycle";
+  "set metrics.enabled: true in the yaml and restart loomcycle";
 
 function asMetricsResult<T>(
   r: { ok: true; data: T } | { ok: false; status: number; body: any },

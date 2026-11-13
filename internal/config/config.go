@@ -103,6 +103,10 @@ type Config struct {
 	// reference machine (RFC DT). Defaults applied at load; see TimeoutScaling.
 	TimeoutScaling TimeoutScaling `yaml:"timeout_scaling,omitempty"`
 
+	// Metrics is the process metrics sampler; off by default. See
+	// MetricsConfig.
+	Metrics MetricsConfig `yaml:"metrics,omitempty"`
+
 	// Retention is what the runtime deletes with age, and when. Every family
 	// is off by default; see RetentionConfig.
 	Retention RetentionConfig `yaml:"retention,omitempty"`
@@ -4642,15 +4646,12 @@ type Env struct {
 	// ---- v0.8.x process-resource metrics sampler (opt-in) ----
 
 	// MetricsEnabled enables the periodic process_samples
-	// recorder. Default OFF in v0.8.x (operator opts in via
-	// LOOMCYCLE_METRICS_ENABLED=1). Flip to default-on in v0.9.x
-	// once production-validated. When false, the sampler goroutine
+	// recorder. Default OFF; yaml metrics.enabled. When false, the sampler goroutine
 	// is not started at all — zero runtime overhead.
 	MetricsEnabled bool
 	// MetricsSampleInterval is the tick rate. Default 5s.
 	// Values below 1s are rejected at config-load (preventing
-	// accidental write-storms). Env:
-	// LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS.
+	// accidental write-storms). Yaml: metrics.sample_interval.
 	MetricsSampleInterval time.Duration
 	// MetricsRetentionDays is how many days of process_samples
 	// rows the periodic sweeper keeps. Default 7. Cleared rows
@@ -4661,7 +4662,7 @@ type Env struct {
 	// MetricsCollectSystem enables /proc/stat + /proc/meminfo
 	// reads for system-wide CPU% + memory usage in addition to
 	// loomcycle's own RSS. Linux only; silently ignored on other
-	// platforms. Env: LOOMCYCLE_METRICS_COLLECT_SYSTEM.
+	// platforms. Yaml: metrics.collect_system.
 	MetricsCollectSystem bool
 
 	// ---- v0.12.0 multi-replica HA (opt-in) ----
@@ -4971,6 +4972,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	applyEnvMetrics(cfg)
+	if err := applyMetrics(cfg); err != nil {
+		return nil, err
+	}
 	applyEnvScheduler(cfg)
 	applyEnvWebhooks(cfg)
 	if err := applyEnvA2A(cfg); err != nil {

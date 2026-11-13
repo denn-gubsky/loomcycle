@@ -511,11 +511,11 @@ optionally, **system-wide CPU + memory** — to a `process_samples` table, expos
 at `GET /v1/_metrics/*` (bearer-authed). This is the surface for capacity planning
 and for diagnosing "the box got slow" incidents.
 
-- **Off by default.** Enable with `LOOMCYCLE_METRICS_ENABLED=1` (cadence
-  `LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS`, default 5 s; sleeps when no run is
+- **Off by default.** Enable with `metrics: {enabled: true}` in the yaml (cadence
+  `metrics.sample_interval`, default 5 s; sleeps when no run is
   active — no DB writes / `/proc` reads while idle).
 - **System-wide CPU% + memory stay OFF even when metrics are on.** Set
-  `LOOMCYCLE_METRICS_COLLECT_SYSTEM=1` to also read `/proc/stat` + `/proc/meminfo`
+  `metrics.collect_system: true` to also read `/proc/stat` + `/proc/meminfo`
   (Linux only; silently ignored on macOS/Windows). Without it the
   `system_cpu_pct_x100` / `system_mem_*_mb` columns stay NULL — so a runaway
   driven by *co-tenant* host pressure (a hypervisor balloon / ZFS ARC eating RAM

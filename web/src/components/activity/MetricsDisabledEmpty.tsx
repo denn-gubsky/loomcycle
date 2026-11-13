@@ -19,7 +19,7 @@ export default function MetricsDisabledEmpty({ enableHint }: MetricsDisabledEmpt
       <p className="metrics-disabled-body">
         For host-wide CPU + memory (the dashed second line on the CPU chart,
         and the system-memory card), also set{" "}
-        <code>LOOMCYCLE_METRICS_COLLECT_SYSTEM=1</code>.
+        <code>metrics.collect_system: true</code>.
       </p>
     </div>
   );

@@ -196,8 +196,7 @@ services:
       LOOMCYCLE_PG_AUTOMIGRATE: "0"              # the init service handles migrations
       LOOMCYCLE_DATA_DIR: /data
 
-      LOOMCYCLE_METRICS_ENABLED: "1"
-      LOOMCYCLE_METRICS_COLLECT_SYSTEM: "1"
+      # The metrics sampler is switched on in the config overlay (`metrics:`).
       LOOMCYCLE_METRICS_RETENTION_DAYS: "7"
       LOOMCYCLE_AUDIT_LOG_PATH: /data/audit.log   # a FILE, not the /data dir
       LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"

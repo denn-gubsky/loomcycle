@@ -330,7 +330,7 @@ func TestMetricsEndpoints_DisabledKeepsEnableHint(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.EnableHint != "set LOOMCYCLE_METRICS_ENABLED=1 and restart loomcycle" {
+	if body.EnableHint != "set metrics.enabled: true in the yaml and restart loomcycle" {
 		t.Errorf("enable_hint = %q", body.EnableHint)
 	}
 }

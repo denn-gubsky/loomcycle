@@ -568,27 +568,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_METRICS_ENABLED
-            label: LOOMCYCLE_METRICS_ENABLED
-            description: 'Default OFF — set =1 to enable. (example: 1)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS
-            label: LOOMCYCLE_METRICS_SAMPLE_INTERVAL_MS
-            description: 'Sample cadence in milliseconds. Default 5 s (5000). Values below 1 s are clamped up to 1 s — prevents accidental write-storms from a typo''d 50 vs 5000. Storage estimate at defaults: ~210 MB/week for a continuously-active deployment (5 s × 86 400 × 7 ≈ 121 K rows × ~250 bytes each). (example: 5000)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_METRICS_RETENTION_DAYS
             label: LOOMCYCLE_METRICS_RETENTION_DAYS
             description: 'Retention in days. Default 7. Set 0 to disable automatic cleanup (table grows unbounded). Lower this on slow disks or storage-constrained deployments. (example: 7)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_METRICS_COLLECT_SYSTEM
-            label: LOOMCYCLE_METRICS_COLLECT_SYSTEM
-            description: 'Optional: also read /proc/stat + /proc/meminfo for SYSTEM-wide CPU% + memory (not just loomcycle''s process). Linux only; silently ignored on macOS/Windows. Useful when correlating loomcycle''s behaviour with host pressure (e.g. ZFS ARC eating RAM in a TrueNAS-hosted VM). (example: 1)'
             schema:
               type: string
               default: ""

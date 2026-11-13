@@ -92,7 +92,7 @@ export default function ActivityMonitor() {
       .then((h) => {
         if (cancelled) return;
         if (h.metrics_enabled === false) {
-          setDisabled("set LOOMCYCLE_METRICS_ENABLED=1 and restart loomcycle");
+          setDisabled("set metrics.enabled: true in the yaml and restart loomcycle");
         }
       })
       .catch(() => {
