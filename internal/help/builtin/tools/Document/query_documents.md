@@ -16,7 +16,9 @@ id. It returns documents, not chunks: to search inside them, use `search` or
 - `tag` — only documents carrying exactly this tag (a document tag, not a chunk
   tag).
 - `title_contains` — only documents whose title contains this text, ignoring
-  case. `%` and `_` match themselves; there are no wildcards. Use it to find a
+  case. Letters outside A–Z may have to be given in the title's own case on
+  some stores (`École`, not `école`); the exact text always matches. `%` and
+  `_` match themselves; there are no wildcards. Use it to find a
   document you know by name; to find one by what it says, use `search`.
 - `created_after` — only documents created after this instant (unix
   nanoseconds, as `created_at` reads; the instant itself is excluded).

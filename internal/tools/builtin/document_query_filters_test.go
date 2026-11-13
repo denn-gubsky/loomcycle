@@ -145,3 +145,29 @@ func TestQueryDocuments_NewFiltersApplyUnderAnAccessControlSet(t *testing.T) {
 		t.Fatalf("member created_before = %v", got)
 	}
 }
+
+// A title with a non-ASCII capital is found by its exact text on every tier.
+// Postgres folds all of Unicode; SQLite's LOWER folds ASCII only, so there a
+// non-ASCII letter matches in the case given while the ASCII letters still fold.
+func TestQueryDocuments_TitleContainsFindsNonASCIITitles(t *testing.T) {
+	type tc struct{ q, want string }
+	run := func(t *testing.T, d *Document, ctx context.Context, cases []tc) {
+		mkDoc(t, d, ctx, "user", "Отчёт за год", "/n/report", "Note")
+		mkDoc(t, d, ctx, "user", "École guide", "/n/ecole", "Note")
+		for _, c := range cases {
+			body := fmt.Sprintf(`{"op":"query_documents","title_contains":%q,"under_path":"/n"}`, c.q)
+			if got := queryTitles(t, d, ctx, body); strings.Join(got, "|") != c.want {
+				t.Errorf("title_contains %q = %v, want [%s]", c.q, got, c.want)
+			}
+		}
+	}
+	exact := []tc{{"Отчёт за год", "Отчёт за год"}, {"Отчёт", "Отчёт за год"}, {"École guide", "École guide"}, {"École", "École guide"}}
+	t.Run("sqlite", func(t *testing.T) {
+		d, ctx, _ := documentFixture(t)
+		run(t, d, ctx, append(exact, tc{"ÉCOLE GUIDE", "École guide"}))
+	})
+	t.Run("postgres", func(t *testing.T) {
+		d, ctx := pgDocumentOrSkip(t)
+		run(t, d, ctx, append(exact, tc{"отчёт", "Отчёт за год"}, tc{"ОТЧЁТ", "Отчёт за год"}, tc{"école", "École guide"}, tc{"ÉCOLE", "École guide"}))
+	})
+}

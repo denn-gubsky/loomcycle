@@ -226,7 +226,7 @@ const documentInputSchema = `{
 		"min_confidence":   {"type": "number", "description": "list_statements: only statements whose writer's own confidence is at least this (0..1); one with no confidence is left out."},
 		"created_before":   {"type": "integer", "description": "list_statements / query_documents: only statements (list_statements) or documents (query_documents) created before this instant (unix nanoseconds, as created_at reads)."},
 		"created_after":    {"type": "integer", "description": "list_statements / query_documents: only statements (list_statements) or documents (query_documents) created after this instant (unix nanoseconds)."},
-		"title_contains":   {"type": "string", "description": "query_documents: only documents whose title contains this text, ignoring case. % and _ match themselves, not as wildcards."},
+		"title_contains":   {"type": "string", "description": "query_documents: only documents whose title contains this text, ignoring case (letters outside A-Z may need the title's own case on some stores; the exact text always matches). % and _ match themselves, not as wildcards."},
 		"has_judge_verdict": {"type": "boolean", "description": "list_statements: true keeps only statements a judge recorded a verdict on (attributes.judge), false only those with none."},
 		"judge_verdict":    {"type": "string", "description": "list_statements: only statements whose recorded judge verdict (attributes.judge.verdict) is exactly this, e.g. accept, reject or unsure."},
 		"summarize":        {"type": "boolean", "description": "list_statements: instead of the statements, return counts grouped by kind, method, the FROM document's path prefix (its first two segments) and judge verdict, plus the total. The filters apply; after, limit and order are ignored."},
@@ -6714,13 +6714,16 @@ func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in d
 		where += " AND id IN (SELECT document_id FROM document_tags WHERE tag = ?)"
 		args = append(args, in.Tag)
 	}
-	// RFC GL P2: title and creation-time filters. LOWER on both sides rather than
-	// ILIKE (postgres-only); SQLite's LOWER folds ASCII only, so on that tier a
-	// non-ASCII letter matches only in the case given. '!' escapes the caller's
-	// own % and _ so they match literally.
+	// RFC GL P2: title and creation-time filters. The SQL engine folds BOTH sides
+	// (LOWER, not the postgres-only ILIKE), so title and pattern are folded by the
+	// same rule: Postgres folds every letter, SQLite's LOWER folds ASCII only, so
+	// there a non-ASCII letter matches in the case given. Folding the pattern in
+	// Go instead lowered letters SQLite leaves alone, and a title like "École"
+	// was not found even by its exact text. '!' escapes the caller's own % and _
+	// so they match literally.
 	if in.TitleContains != "" {
-		where += " AND LOWER(title) LIKE ? ESCAPE '!'"
-		args = append(args, "%"+escapeLike(strings.ToLower(in.TitleContains), '!')+"%")
+		where += " AND LOWER(title) LIKE LOWER(?) ESCAPE '!'"
+		args = append(args, "%"+escapeLike(in.TitleContains, '!')+"%")
 	}
 	if in.CreatedAfter != nil {
 		where += " AND created_at > ?"

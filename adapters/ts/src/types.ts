@@ -4581,7 +4581,8 @@ export type DocumentToolInput = {
    *  list_statements: relations with either end in a document named there. */
   under_path?: string;
   /** query_documents: only documents whose title contains this text, ignoring
-   *  case; `%` and `_` match themselves. */
+   *  case (on a SQLite store only for A-Z; the exact text always matches);
+   *  `%` and `_` match themselves. */
   title_contains?: string;
   /** query_documents / list_statements: only documents (statements) created
    *  after / before this instant, in unix nanoseconds (exclusive). A JS number holds such a value to within a
