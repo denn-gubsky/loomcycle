@@ -494,7 +494,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_AGENTS_ROOT
             label: LOOMCYCLE_AGENTS_ROOT
-            description: 'Unset, the root is <LOOMCYCLE_CONFIG_DIR>/agents when that directory exists. Set it to the empty string to discover no agent files. (example: /srv/loomcycle/agents)'
+            description: 'Unset, the root is <LOOMCYCLE_CONFIG_DIR>/agents when that directory exists; in that defaulted directory a .md file with no frontmatter is skipped (it is a prompt body or a README, not an agent) and the boot logs each one. To discover no agent files, point it at an empty directory. (example: /srv/loomcycle/agents)'
             schema:
               type: string
               default: ""

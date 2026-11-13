@@ -1114,6 +1114,7 @@ A `system_prompt` may contain placeholders the server expands at run start, befo
 | `{{memory:search_request}}` | an LLM-free retrieval against the run's initial user input |
 | `{{memory:consolidation_bands}}` | the deployment's duplicate-detection similarity bands |
 | `{{identity}}` | the person the run acts for, from its access-control set: display name and status (from their user record in the run's tenant), group names, and the tools their access rules withheld — a snapshot at run start, framed as data, with a runtime line after it when the account is `pending`. Renders nothing when the run acts for nobody (open mode, a trigger with no owner) and in a team node's templates. Values are folded onto one line and bounded (16 groups / 16 tools, then a count), and the block is exempt from `memory_inject_max_tokens` |
+| `{{help:<topic>}}` | the call examples of that help article (`Document/search`, `Path/ls`, `scopes`, …), one `<Tool> <arguments JSON>` line per call, results and prose left out — the examples built into the server, checked against each tool's schema, so a prompt's call card does not drift from the tool. Any spelling `Context op=help` accepts for a built-in topic works (case, alias, `.` or space as separator); topics from `LOOMCYCLE_HELP_ROOT` cannot be named. Unframed; 8 KiB per prompt text (the agent's system prompt and each team template are expanded, and budgeted, separately). An unknown topic, a topic with no call examples or a malformed placeholder is refused where the prompt is written (config load, AgentDef create/fork, register_agent, team templates); a stored definition is never refused over it — a dropped topic renders nothing |
 | `{{tool:WebFetch:<url>}}` | the framed body of that page, fetched once at run start — **operator-written definitions only**, host must be on `http_host_allowlist` |
 | `{{tool:WebSearch:<query>}}` | the framed results of that search — **operator-written definitions only** |
 | `{{memory:key:<key>}}` | one stored memory entry, under the run's own scope — **operator-written definitions only** |
@@ -1452,7 +1453,7 @@ Every audit record — token mints and revocations, sign-ins and gate management
 
 **Shutdown.** The two queues drain at shutdown after the runs are paused, for at most 5 s; a drop summary the store will not take then is written to the JSONL mirror when there is one. Give the process a stop grace of about 30 s (`stop_grace_period: 30s` in Docker Compose, `terminationGracePeriodSeconds: 30` in Kubernetes) instead of Docker's default 10 s.
 
-**Retention.** `LOOMCYCLE_AUDIT_RETENTION_DAYS` prunes each chain's older rows on the retention sweeper's tick (it runs even with every retention family off) and leaves a signed anchor, so the rest still verifies. Rows are numbered in commit order but timed by each replica's clock, so a prune can take a few rows slightly newer than the cutoff. Each prune checks, inside its transaction, the anchor it extends, the head, and every row it removes, and refuses (logged at error, rows left) when any does not verify or contradicts the operator chain's checkpoints, so it never re-signs tampering; it does not walk the rest of the chain, so its cost is bounded by what it removes. Full verification is `loomcycle audit verify`. Each chain gets its own one-minute budget per tick. The operator chain's anchor carries every checkpoint of a tenant chain that lies at or above that tenant's own retention anchor (about one per 100 rows, or one per 5 minutes of activity): it grows with each tenant chain's unpruned length, so keep the tenant chains under the same `LOOMCYCLE_AUDIT_RETENTION_DAYS` (the sweeper prunes every chain) rather than pruning the operator chain alone.
+**Retention.** `LOOMCYCLE_AUDIT_RETENTION_DAYS` prunes each chain's older rows on the retention sweeper's tick (it runs even with `retention.enabled` off) and leaves a signed anchor, so the rest still verifies. Rows are numbered in commit order but timed by each replica's clock, so a prune can take a few rows slightly newer than the cutoff. Each prune checks, inside its transaction, the anchor it extends, the head, and every row it removes, and refuses (logged at error, rows left) when any does not verify or contradicts the operator chain's checkpoints, so it never re-signs tampering; it does not walk the rest of the chain, so its cost is bounded by what it removes. Full verification is `loomcycle audit verify`. Each chain gets its own one-minute budget per tick. The operator chain's anchor carries every checkpoint of a tenant chain that lies at or above that tenant's own retention anchor (about one per 100 rows, or one per 5 minutes of activity): it grows with each tenant chain's unpruned length, so keep the tenant chains under the same `LOOMCYCLE_AUDIT_RETENTION_DAYS` (the sweeper prunes every chain) rather than pruning the operator chain alone.
 
 ### Token pepper
 
@@ -3027,8 +3028,13 @@ The directory is also where content is looked for by default: its `skills/`,
 `agents/` and `help/` subdirectories, when they exist, are the skills root, the
 agent-file root and the help-topic overlay. `LOOMCYCLE_SKILLS_ROOT`,
 `LOOMCYCLE_AGENTS_ROOT` and `LOOMCYCLE_HELP_ROOT` override them, and setting one
-to the empty string declines the default. Only top-level `*.yaml` files are
-layers, so nothing in a subdirectory is read as config.
+to the empty string declines the default (where a blank value cannot be
+entered, such as an install wizard, point it at an empty directory). The boot
+logs each root it adopted this way. In an adopted `agents/` directory a `.md`
+file with no frontmatter is skipped, and logged: such a file is a prompt body
+or a README, not an agent definition. A directory named by
+`LOOMCYCLE_AGENTS_ROOT` loads every `.md` file, as before. Only top-level
+`*.yaml` files are layers, so nothing in a subdirectory is read as config.
 
 So `base` supplies the provider matrix, `document-agent` registers `doc/manager`
 with its skills, and your `--config` wins on anything it sets (e.g. retarget the
@@ -3474,8 +3480,7 @@ The embedder's batch size and call timeout are `memory.embedder.batch_size` (def
 | `LOOMCYCLE_MEMORY_TRACE_INDEX` | off | `1` (or `true`) stores and embeds each user turn so past conversations are searchable by what was said. Copies personal data into a second place, so it is opt-in. How long a turn stays searchable is `retention.trace.max_age` in the yaml (30 days). |
 | `LOOMCYCLE_MEMORY_TRACE_ASSISTANT` | off | `1` also indexes assistant turns (at run completion). |
 | `LOOMCYCLE_MEMORY_CHANGES_ENABLED` | off | `1` records a memory change feed (change-data capture) that change subscriptions deliver from. Off, the store is not wrapped and pays nothing. |
-| `LOOMCYCLE_DEADLINK_GC_MS` | `3600000` | How often unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk) are collected; on by default, `0` disables. |
-| `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | off | `1` makes that collection count and log without deleting. |
+| `LOOMCYCLE_DEADLINK_GC` | `on` | The collection of unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk), which runs every hour. `on` collects and deletes them; `dry-run` counts and logs what it would collect without deleting; `off` does not run it. Any other value stops the boot. Replaces `LOOMCYCLE_DEADLINK_GC_MS` and `LOOMCYCLE_DEADLINK_GC_DRY_RUN`: a boot that still sets one of those to off, to a dry run, or to an interval longer than an hour stops until this variable says the same. |
 | `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |
 
 ### SQL Memory

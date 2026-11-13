@@ -95,7 +95,7 @@ services:
     env_file:
       - ./.env.insecure
     environment:
-      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN}
+      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN in .env.secure}
     depends_on:
       postgres:
         condition: service_healthy
@@ -196,8 +196,11 @@ services:
       # The config does not load without it, whether or not the bridge runs,
       # so a deploy without it stops here instead of crash-looping the runtime.
       LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X: ${LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X:?set LOOMCYCLE_TELEGRAM_GATE_PUBLIC_X in .env.insecure (INSTALL.md, Telegram bridge)}
-      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN}
-      LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN}
+      # Required: with no DSN the runtime would infer SQLite and come up on an
+      # empty store, and without the second one SQL Memory and Documents would
+      # be off. A deploy missing either stops here.
+      LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN in .env.secure}
+      LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:?set LOOMCYCLE_SQLMEM_PG_DSN in .env.secure}
       SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,8 +57,12 @@ func TestContentRoot_DefaultsUnderTheConfigDirUnlessTheVariableIsSet(t *testing.
 			} else {
 				t.Setenv(name, *tc.value)
 			}
-			if got := contentRoot(name, "skills"); got != tc.want {
+			got, defaulted := contentRoot(name, "skills")
+			if got != tc.want {
 				t.Errorf("contentRoot = %q, want %q", got, tc.want)
+			}
+			if want := tc.value == nil && tc.want != ""; defaulted != want {
+				t.Errorf("defaulted = %v, want %v", defaulted, want)
 			}
 		})
 	}
@@ -92,5 +97,75 @@ func TestLoad_ContentRootsDefaultToTheConfigDirSubdirectories(t *testing.T) {
 	}
 	if _, ok := cfg.Agents["helper"]; !ok {
 		t.Errorf("agents = %v, want helper discovered from %s/agents", len(cfg.Agents), dir)
+	}
+}
+
+// In an agents directory that was only defaulted, a .md file with no
+// frontmatter (a README, a prompt body) is not an agent: it is left out and
+// the boot is told. The same directory named by its variable loads every file,
+// as it always has. Each adopted default is reported once.
+func TestLoad_ADefaultedAgentsRootSkipsFilesWithoutFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"helper.md": "---\ntools: []\n---\nYou help.\n",
+		"README.md": "# Agents\n\nNotes.\n",
+	} {
+		if err := os.WriteFile(filepath.Join(agentsDir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+	for _, name := range []string{"LOOMCYCLE_SKILLS_ROOT", "LOOMCYCLE_AGENTS_ROOT", "LOOMCYCLE_HELP_ROOT"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notices := func(cfg *Config, want string) int {
+		n := 0
+		for _, line := range cfg.Notices {
+			if strings.Contains(line, want) {
+				n++
+			}
+		}
+		return n
+	}
+
+	cfg, err := loadYAMLString(t, "defaults: {provider: mock, model: m}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Agents["helper"]; !ok {
+		t.Error("helper.md was not discovered in the defaulted agents directory")
+	}
+	if _, ok := cfg.Agents["README"]; ok {
+		t.Error("README.md, which has no frontmatter, was loaded as an agent from a defaulted directory")
+	}
+	if notices(cfg, filepath.Join(agentsDir, "README.md")) != 1 {
+		t.Errorf("the skipped file is not reported once: %q", cfg.Notices)
+	}
+	if notices(cfg, "LOOMCYCLE_AGENTS_ROOT is not set: using "+agentsDir+",") != 1 {
+		t.Errorf("the adopted default is not reported once: %q", cfg.Notices)
+	}
+	if notices(cfg, "LOOMCYCLE_SKILLS_ROOT is not set") != 0 {
+		t.Errorf("a root that was not defaulted is reported: %q", cfg.Notices)
+	}
+
+	// Named by its variable, the directory is the operator's statement that
+	// its files are agents.
+	t.Setenv("LOOMCYCLE_AGENTS_ROOT", agentsDir)
+	cfg, err = loadYAMLString(t, "defaults: {provider: mock, model: m}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Agents["README"]; !ok {
+		t.Error("README.md was skipped in a directory the operator named")
+	}
+	if len(cfg.Notices) != 0 {
+		t.Errorf("notices for an explicit root: %q", cfg.Notices)
 	}
 }
