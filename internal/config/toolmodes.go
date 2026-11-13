@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	"github.com/denn-gubsky/loomcycle/internal/tools/policy"
 )
 
 // ToolModeRead is the one tool mode: the tool runs only its read operations.
@@ -33,10 +31,6 @@ func ValidateToolModes(modes map[string]string, tools []string) error {
 	if len(modes) == 0 {
 		return nil
 	}
-	granted := make(map[string]bool, len(tools))
-	for _, t := range tools {
-		granted[t] = true
-	}
 	names := make([]string, 0, len(modes))
 	for name := range modes {
 		names = append(names, name)
@@ -46,7 +40,7 @@ func ValidateToolModes(modes map[string]string, tools []string) error {
 	}
 	sort.Strings(names) // a stable first error across runs
 	for _, name := range names {
-		if !policy.Matches(name, granted) {
+		if !ToolDeclared(name, tools) {
 			return fmt.Errorf("tool_modes.%s: %s is not in tools, so the mode narrows nothing; add %s to tools or drop the mode", name, name, name)
 		}
 	}
@@ -83,4 +77,18 @@ func ValidateToolModeNames(modes map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// ToolDeclared reports whether a raw tools declaration grants tool: an exact
+// entry, or a trailing-* prefix glob. It is the rule the runtime grants tools
+// by (internal/tools/policy.Matches), restated here because config sits below
+// that package in the layers and may not import it; a test in the builtin
+// package holds the two to the same answers.
+func ToolDeclared(tool string, declared []string) bool {
+	for _, d := range declared {
+		if d == tool || (strings.HasSuffix(d, "*") && strings.HasPrefix(tool, d[:len(d)-1])) {
+			return true
+		}
+	}
+	return false
 }
