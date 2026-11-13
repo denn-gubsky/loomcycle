@@ -423,6 +423,9 @@ type StorageConfig struct {
 	// SqlMemPgDSN is configured. `sqlmem_enabled: false` turns it off either
 	// way. Read the resolved answer with SQLMemOn.
 	SqlMemEnabled *bool `yaml:"sqlmem_enabled"`
+	// SqlMemInferred is set by LoadLayers: true when the yaml made no choice
+	// and SqlMemEnabled above is what the store gave.
+	SqlMemInferred bool `yaml:"-"`
 	// SqlMemRoot is the parent dir for per-scope .db files. Empty defaults
 	// to <DataDir>/sqlmem. Env: LOOMCYCLE_SQLMEM_ROOT.
 	SqlMemRoot string `yaml:"sqlmem_root"`
@@ -5358,6 +5361,13 @@ func (s StorageConfig) SQLMemOn() bool {
 	return s.SqlMemEnabled != nil && *s.SqlMemEnabled
 }
 
+// SQLMemOffForMissingDSN reports SQL Memory left off only because a Postgres
+// store has no aux DSN, for the boot to warn about. It is false when the yaml
+// turned SQL Memory off: that is a choice, not an omission.
+func (s StorageConfig) SQLMemOffForMissingDSN() bool {
+	return s.SqlMemInferred && s.Backend == "postgres" && !s.SQLMemOn()
+}
+
 // inferSQLMemEnabled answers for a yaml that does not say. backend is the
 // resolved store backend. SQLite hosts the scopes as files under the data
 // directory, so nothing more is needed. Postgres hosts them in a separate
@@ -5413,6 +5423,7 @@ func applyEnvSQLMem(cfg *Config) {
 	if cfg.Storage.SqlMemEnabled == nil {
 		on := inferSQLMemEnabled(cfg.Storage.Backend, cfg.Storage.SqlMemPgDSN)
 		cfg.Storage.SqlMemEnabled = &on
+		cfg.Storage.SqlMemInferred = true
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_SCOPE_TTL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {

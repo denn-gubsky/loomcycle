@@ -339,3 +339,36 @@ func TestStorageBackend_RecordsWhetherItWasInferred(t *testing.T) {
 		})
 	}
 }
+
+// On a Postgres store with no aux DSN SQL Memory is off by inference, and the
+// boot warns: Documents need it. Nothing is said when the yaml turned it off,
+// when it is on, or on SQLite.
+func TestSQLMem_ReportsBeingOffForAMissingAuxDSN(t *testing.T) {
+	const pg = "postgres://u@h/db"
+	const aux = "postgres://u@h/aux"
+	for _, tc := range []struct {
+		name, yaml    string
+		pgDSN, auxDSN string
+		want          bool
+	}{
+		{"postgres without the aux DSN", "", pg, "", true},
+		{"postgres with a blank aux DSN", "", pg, "   ", true},
+		{"postgres named in yaml, no aux DSN", "storage:\n  backend: postgres\n", pg, "", true},
+		{"postgres with the aux DSN", "", pg, aux, false},
+		{"postgres, turned off in yaml", "storage:\n  sqlmem_enabled: false\n", pg, "", false},
+		{"sqlite", "", "", "", false},
+		{"sqlite, turned off in yaml", "storage:\n  sqlmem_enabled: false\n", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_PG_DSN", tc.pgDSN)
+			t.Setenv("LOOMCYCLE_SQLMEM_PG_DSN", tc.auxDSN)
+			cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n"+tc.yaml)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Storage.SQLMemOffForMissingDSN(); got != tc.want {
+				t.Errorf("SQLMemOffForMissingDSN = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
