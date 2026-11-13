@@ -207,7 +207,7 @@ func validateAgentMemory(c *Config, name string, agent AgentDef) error {
 	// that has call examples, and the prompt's examples must fit the budget,
 	// so the call cards it promises are the ones every run start renders.
 	if err := ValidateHelpPlaceholders(agent.SystemPrompt); err != nil {
-		return fmt.Errorf("agent %q: %w", name, err)
+		return fmt.Errorf("agent %q: system_prompt: %w", name, err)
 	}
 	// RFC AA SQL Memory: validate sql_scopes are known scope strings.
 	// Empty = no SQL access (default-deny, enforced at runtime, not here).

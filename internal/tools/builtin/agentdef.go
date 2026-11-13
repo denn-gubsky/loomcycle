@@ -1077,9 +1077,9 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		// a later binary dropped must leave those runnable (the placeholder
 		// renders nothing), not refuse them. Both prompt fields, since a run
 		// renders whichever it is served.
-		for _, p := range []string{ov.SystemPrompt, ov.SystemPromptBase} {
-			if err := config.ValidateHelpPlaceholders(p); err != nil {
-				return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+		for _, f := range [...]struct{ name, text string }{{"system_prompt", ov.SystemPrompt}, {"system_prompt_base", ov.SystemPromptBase}} {
+			if err := config.ValidateHelpPlaceholders(f.text); err != nil {
+				return mergedDef{}, fmt.Errorf("AgentDef tool: %s: %w", f.name, err)
 			}
 		}
 		// Authoring only: a stored definition carrying it still loads and is

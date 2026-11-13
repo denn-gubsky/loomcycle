@@ -14,7 +14,7 @@ import (
 // A pure read of embedded bytes: no store, no tool, no network, so it is the
 // same at every run start, spawn and resume.
 //
-// Config load and AgentDef create/fork refuse a topic that does not render, so
+// Every authoring surface refuses a topic that does not render, so
 // a miss here means a stored definition outlived its topic across a binary
 // upgrade. The placeholder then renders nothing, as a {{tool:…}} ref with no
 // body does — a run must not fail on prompt assembly — and the miss is logged

@@ -12,10 +12,11 @@ import (
 func TestHelpPlaceholder_UnusableTopicIsBootError(t *testing.T) {
 	for _, tc := range []struct{ prompt, want string }{
 		{`"{{help:Document/no_such_op}}"`, "{{help:Document/no_such_op}}"},
-		{`"{{help:no-such-topic}}"`, "names no help topic"},
+		{`"{{help:no-such-topic}}"`, "LOOMCYCLE_HELP_ROOT"},
 		{`"{{help:loomcycle}}"`, "no call examples"},
-		{`"{{help:Document search}}"`, "{{help:Document search}}"},
-		{`"{{help:Document.search}}"`, "not a help topic name"},
+		{`"{{help:Document/search/extra}}"`, "{{help:Document/search/extra}}"},
+		{`"{{help:../loader}}"`, "not a help topic name"},
+		{`"{{help:{{identity}}"`, "not a help topic name"},
 		{`"{{help:}}"`, "not a help topic name"},
 	} {
 		_, err := Load(writeAgentPrompt(t, tc.prompt))
@@ -32,6 +33,9 @@ func TestHelpPlaceholder_UnusableTopicIsBootError(t *testing.T) {
 func TestHelpPlaceholder_KnownTopicAndEscapedLoad(t *testing.T) {
 	for _, prompt := range []string{
 		`"{{help:Document/search}}"`,
+		// What Context op=help resolves: another case, `.` or a space as the
+		// separator, an alias.
+		`"{{help:document.SEARCH}} {{help:Document search}}"`,
 		`"{{help:Path/ls}} and {{help:scopes}}"`,
 		`"docs say \\{{help:no-such-topic}} is a literal"`,
 	} {

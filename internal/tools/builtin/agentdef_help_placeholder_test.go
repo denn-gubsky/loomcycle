@@ -1,10 +1,15 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -53,6 +58,34 @@ func TestStoredLocalAgentBody_StaleHelpPlaceholderStillResolves(t *testing.T) {
 		if err := ValidateTeamDefBody(json.RawMessage(localTeam(string(body)))); err != nil {
 			t.Errorf("%s: ValidateTeamDefBody refused a stored team: %v", what, err)
 		}
+	}
+}
+
+// The remaining authoring surfaces hold a prompt to the same rule: a
+// register_agent system prompt (on the operator plane too), and a team node's
+// system_prompt and input_template.
+func TestHelpPlaceholder_RefusedOnRegisterAgentAndTeamTemplates(t *testing.T) {
+	st, err := sqlite.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	operator := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	req := connector.RegisterAgentRequest{Name: "carder", SystemPrompt: "{{help:Document/no_such_op}}", Tools: []string{"Read"}}
+	if err := CheckRegisteredAgent(operator, &config.Config{}, st, req, req.Tools); err == nil || !strings.Contains(err.Error(), "Document/no_such_op") {
+		t.Errorf("register_agent with an unknown help topic: err = %v, want a refusal naming it", err)
+	}
+	req.SystemPrompt = "{{help:Document/search}}"
+	if err := CheckRegisteredAgent(operator, &config.Config{}, st, req, req.Tools); err != nil {
+		t.Errorf("register_agent with a known help topic: %v", err)
+	}
+
+	tool, ctx := localTeamFixture(t)
+	for _, field := range []string{"system_prompt", "input_template"} {
+		team := `{"entry":"review","states":[{"state":"review","handler":{"kind":"agent","agent":"static-one","` + field +
+			`":"{{help:Document/no_such_op}}"}},{"state":"done","handler":{"kind":"terminal"}}],` +
+			`"transitions":[{"from":"review","to":"done","on":"success"}]}`
+		wantRefused(t, teamOp(t, tool, ctx, "create", "t-"+strings.ReplaceAll(field, "_", "-"), team), "team "+field, field, "Document/no_such_op")
 	}
 }
 
