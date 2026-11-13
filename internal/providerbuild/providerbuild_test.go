@@ -78,8 +78,8 @@ func TestDriverOptions_StreamTimeoutsComeFromOptions(t *testing.T) {
 	}
 }
 
-// The Ollama options reach the driver from the yaml; the environment supplies
-// only the local context window, and the yaml wins over it.
+// The Ollama options reach the driver from the yaml. The local context window
+// is the one option the environment also sets, and there the environment wins.
 func TestDriverOptions_OllamaOptionsComeFromTheYAML(t *testing.T) {
 	cfg := &config.Config{}
 	if o := DriverOptions("ollama", config.ProviderConfig{Driver: "ollama"}, cfg); len(o.Options) != 0 {
@@ -97,9 +97,18 @@ func TestDriverOptions_OllamaOptionsComeFromTheYAML(t *testing.T) {
 	if o.Options["num_ctx"] != 32768 || o.Options["num_gpu"] != 99 {
 		t.Errorf("local ollama options = %v, want num_ctx 32768 (environment) and num_gpu 99 (yaml)", o.Options)
 	}
-	o = DriverOptions("ollama-local", config.ProviderConfig{Driver: "ollama", Options: map[string]any{"num_ctx": 65536}}, cfg)
-	if o.Options["num_ctx"] != 65536 {
-		t.Errorf("local ollama num_ctx = %v, want the yaml's 65536", o.Options["num_ctx"])
+	local := config.ProviderConfig{Driver: "ollama", Options: map[string]any{"num_ctx": 65536}}
+	if o = DriverOptions("ollama-local", local, cfg); o.Options["num_ctx"] != 32768 {
+		t.Errorf("local ollama num_ctx = %v, want the environment's 32768 over the yaml's", o.Options["num_ctx"])
+	}
+	cfg.Env.OllamaLocalNumCtx = 0
+	if o = DriverOptions("ollama-local", local, cfg); o.Options["num_ctx"] != 65536 {
+		t.Errorf("local ollama num_ctx = %v, want the yaml's 65536 with the variable unset", o.Options["num_ctx"])
+	}
+	// The variable sizes the local registration only.
+	cfg.Env.OllamaLocalNumCtx = 32768
+	if o = DriverOptions("ollama", local, cfg); o.Options["num_ctx"] != 65536 {
+		t.Errorf("hosted ollama num_ctx = %v, want its own yaml value", o.Options["num_ctx"])
 	}
 }
 

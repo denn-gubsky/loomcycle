@@ -356,7 +356,7 @@ questions:
       attrs:
           - variable: OLLAMA_BASE_URL
             label: OLLAMA_BASE_URL
-            description: '`ollama` provider       = hosted ollama.com, Bearer auth via OLLAMA_API_KEY. `ollama-local` provider = local-network Ollama, no auth, default http://localhost:11434. Driven by OLLAMA_BASE_URL. YAML alternative (RFC CK): these ollama-local knobs — base_url, num_ctx, num_gpu, and the timeouts below — can instead live in the `local` preset (or your loomcycle.yaml) as `providers.ollama-local.{bas…'
+            description: '`ollama` provider       = hosted ollama.com, Bearer auth via OLLAMA_API_KEY. `ollama-local` provider = local-network Ollama, no auth, default http://localhost:11434. Driven by OLLAMA_BASE_URL. The other ollama-local settings (num_gpu, the stream timeouts) are set in your loomcycle.yaml as `providers.ollama-local.options`, which is also where the vllm-local / llamacpp-local providers are declared;…'
             schema:
               type: string
               default: ""

@@ -123,7 +123,7 @@ tiers:
 #
 # Provider options. Each is set here and nowhere else (the one exception:
 # ollama-local's num_ctx also comes from LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX, and
-# the yaml wins).
+# the variable wins when both are set).
 # providers:
 #   openai:
 #     options:

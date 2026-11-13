@@ -3066,3 +3066,33 @@ func TestLoad_PgAutoMigrateEnvWinsOverTheYAML(t *testing.T) {
 		}
 	}
 }
+
+// The local context window is set in both planes and the environment wins.
+// When the two differ the load says so, because the yaml's value, which
+// used to win, is no longer the one in effect.
+func TestLoad_OllamaLocalNumCtxAdvisesWhenTheYAMLDiffers(t *testing.T) {
+	advised := func(yaml, env string) bool {
+		t.Helper()
+		t.Setenv("LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX", env)
+		cfg, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults: {provider: mock}\n" + yaml)})
+		if err != nil {
+			t.Fatalf("yaml=%q env=%q: %v", yaml, env, err)
+		}
+		for _, w := range cfg.Warnings {
+			if strings.Contains(w, "LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX") && strings.Contains(w, "providers.ollama-local.options.num_ctx") {
+				return true
+			}
+		}
+		return false
+	}
+	local := "providers: {ollama-local: {driver: ollama, options: {num_ctx: 65536}}}\n"
+	if !advised(local, "32768") {
+		t.Error("no advisory when the variable and the yaml option differ")
+	}
+	if advised(local, "65536") {
+		t.Error("advised although both planes give the same window")
+	}
+	if advised(local, "") || advised("", "32768") {
+		t.Error("advised although only one plane sets the window")
+	}
+}

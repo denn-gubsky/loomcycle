@@ -493,8 +493,8 @@ the order; the notes after it are what changed underneath you.
    `config/loomcycle.yaml`. Keep your own `OLLAMA_BASE_URL`, hostnames and Access
    settings. In `.env.insecure`:
    - remove `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`
-     (the YAML sets them now; the first loses to the YAML and the second is no
-     longer read);
+     (the YAML sets them now; the first, left set, would win over the YAML's
+     `num_ctx`, and the second is no longer read);
    - remove `LOOMCYCLE_SCHEDULER_FIRE_TIMEOUT_SECONDS` if present (no longer read);
    - set `SANDBOX_IMAGE` to the `1.108.0` tag (the compose file sets the value the
      sidecar uses; this line only keeps the env file in step).

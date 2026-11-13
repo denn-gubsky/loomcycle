@@ -4106,7 +4106,8 @@ type Env struct {
 	// 4096 tokens with no error — a long input produces a partial
 	// completion that doesn't reach end_turn. See
 	// internal/providers/ollama/driver.go Driver.WithNumCtx for the
-	// full incident context. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX.
+	// full incident context. Env: LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX; it wins
+	// over providers.ollama-local.options.num_ctx.
 	OllamaLocalNumCtx int
 	// DeepSeekBaseURL overrides the public DeepSeek endpoint
 	// (https://api.deepseek.com/v1) for self-hosted OpenAI-
