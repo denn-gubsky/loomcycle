@@ -609,6 +609,25 @@ defaults: { provider: anthropic, model: claude-sonnet-4-6 }
 	}
 }
 
+// The scope files' directory is a path of the host, so the environment sets
+// it over the yaml. Ignoring it would open an empty directory and make a
+// sqlite-tier deployment look as if its SQL Memory and Documents were gone.
+func TestSqlMem_RootEnvOverridesTheYAML(t *testing.T) {
+	t.Setenv("LOOMCYCLE_SQLMEM_ROOT", "/srv/scopes")
+	cfg, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults:\n  provider: mock\nstorage:\n  sqlmem_root: /from/yaml\n")})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if cfg.Storage.SqlMemRoot != "/srv/scopes" {
+		t.Errorf("SqlMemRoot = %q, want the environment's /srv/scopes", cfg.Storage.SqlMemRoot)
+	}
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "LOOMCYCLE_SQLMEM_ROOT") {
+			t.Errorf("a variable that is read is reported as retired: %q", w)
+		}
+	}
+}
+
 // TestSqlMem_MaxResultBytesHasNoOff: the yaml sets the result byte budget,
 // and a zero or negative value takes the default rather than turning the cap
 // off.

@@ -337,7 +337,9 @@ func (r *resumeAttempt) buildToolset() {
 		// the mode is now: it was a locked caller's.
 		return builtin.NarrowHosts(in, runCfg.callerHosts(), hostPolicy.WebSearchFilter, callerAuthoritative && !hostPolicy.NarrowOnly)
 	})
-	dispatcher := s.newDispatcher(allowedTools)
+	// The modes the run held live: a sub-run's include its parent's read
+	// modes from the spawn record (resumedToolModes), as its policy does.
+	dispatcher := s.newDispatcher(allowedTools, resumedToolModes(run, runCfg.Spawn, agentDef))
 	r.allowedTools, r.aclRemovedTools, r.dispatcher = allowedTools, aclRemovedTools, dispatcher
 }
 

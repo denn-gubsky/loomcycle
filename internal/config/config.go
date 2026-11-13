@@ -420,7 +420,7 @@ type StorageConfig struct {
 	// way. Read the resolved answer with SQLMemOn.
 	SqlMemEnabled *bool `yaml:"sqlmem_enabled"`
 	// SqlMemRoot is the parent dir for per-scope .db files. Empty defaults
-	// to <DataDir>/sqlmem.
+	// to <DataDir>/sqlmem. Env: LOOMCYCLE_SQLMEM_ROOT.
 	SqlMemRoot string `yaml:"sqlmem_root"`
 	// SqlMemQuotaBytes caps a single scope file's on-disk size (checked
 	// before each write). 0 = no quota. Per-agent sql_quota_bytes overrides
@@ -2250,6 +2250,21 @@ type AgentDef struct {
 	// per-run overridable. Authority, not content: like the *_def_scopes gates
 	// it is not part of content_sha256.
 	CryptoScopes []string `yaml:"crypto_scopes"`
+
+	// ToolModes narrows a granted tool to some of its operations (RFC GL D6):
+	// a map from tool name to mode, e.g. {Document: read, Path: read}. A tool
+	// in read mode runs only its read operations; a write operation is refused
+	// at dispatch, before the tool runs, whoever made the call (the model, a
+	// code-js agent, a hook, a sub-agent's own run). Absent: every listed tool
+	// is granted whole, as before the field existed.
+	//
+	// Closed sets, refused at load: the mode is "read", the tool is one of
+	// ToolModeTools, and the tool must be granted by `tools`. Sticky down the
+	// spawn tree: a sub-agent holds its own modes plus every read mode of the
+	// run that spawned it, so a read-mode run cannot write through a child that
+	// holds the tool whole. Not per-run overridable. Authority, not content: not
+	// part of content_sha256, like crypto_scopes.
+	ToolModes map[string]string `yaml:"tool_modes"`
 
 	// ShellCredentials narrows which credentials the Bash tool and the Bashbox
 	// host-command fallback inject into this agent's commands (RFC EW). The
@@ -4736,8 +4751,8 @@ type Env struct {
 	ShutdownPauseTimeoutMs int64
 
 	// MCPAllowPrivilegedTools — v0.8.15. When true, dynamically-
-	// registered agents may include Bash/Write/Edit in their
-	// tools. Default false: those three are stripped from
+	// registered agents may include Bash/Bashbox/Write/Edit in their
+	// tools. Default false: those four are stripped from
 	// any register_agent request, matching the v0.8.7/v0.8.8
 	// default-deny pattern for new tool surfaces. Env:
 	// LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS.
@@ -5036,8 +5051,13 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 
 	applyEnvCore(cfg)
 
-	// A removed variable is deleted with no compatibility read; say so once
-	// at load, where boot, `validate` and `doctor` all print advisories.
+	// A removed variable is deleted with no compatibility read. One whose
+	// value asked for something tighter than what now applies stops the load;
+	// the rest are said once, where boot, `validate` and `doctor` all print
+	// advisories.
+	if refused := retiredEnvRefusals(os.Environ(), &cfg.Storage); len(refused) > 0 {
+		return nil, fmt.Errorf("retired environment variables are set to something tighter than this version applies, and ignoring them would loosen this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
+	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
 	applyEnvStorage(cfg)
@@ -5366,6 +5386,11 @@ func inferStorageBackend(explicit, pgDSN string) string {
 // applyEnvSQLMem reads the SQL Memory env overrides, then defaults every
 // bound the operator left unset. Part of LoadLayers.
 func applyEnvSQLMem(cfg *Config) {
+	// A path of this host, like the data dir: it stays an env setting so one
+	// yaml serves hosts that keep their scope files in different places.
+	if v := os.Getenv("LOOMCYCLE_SQLMEM_ROOT"); v != "" {
+		cfg.Storage.SqlMemRoot = v
+	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_QUOTA_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.Storage.SqlMemQuotaBytes = n
@@ -6185,6 +6210,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		Retention:        d.Retention,
 		EvaluationScopes: d.EvaluationScopes,
 		CryptoScopes:     d.CryptoScopes,
+		ToolModes:        d.ToolModes,
 		ShellCredentials: (*CredentialNames)(d.ShellCredentials),
 		GitRemote:        d.GitRemote,
 		StatementMethods: d.StatementMethods,
@@ -6418,6 +6444,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.CryptoScopes != nil {
 		out.CryptoScopes = override.CryptoScopes
+	}
+	if override.ToolModes != nil {
+		out.ToolModes = override.ToolModes
 	}
 	if override.ShellCredentials != nil {
 		out.ShellCredentials = override.ShellCredentials

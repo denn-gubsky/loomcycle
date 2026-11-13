@@ -56,6 +56,11 @@ type runPolicySource struct {
 	// Interruption is the run's own interruption block (its record's), which
 	// narrows the definition's.
 	Interruption *config.AgentInterruptionACL
+	// ToolModes is read modes beyond the definition's own (RFC GL): a resumed
+	// sub-run's parent modes (resumedToolModes). Added to the definition's,
+	// never in place of them, so a caller that leaves it unset loses no
+	// narrowing the definition holds.
+	ToolModes map[string]string
 }
 
 // agentRunPolicy builds a run's whole policy from its resolved definition and
@@ -84,6 +89,7 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 	return tools.RunPolicy{
 		Tools:             toolNames(src.Tools),
 		ToolPatterns:      def.Tools, // raw globs for the Skill subset check
+		ToolModes:         tools.NarrowToolModes(src.ToolModes, def.ToolModes),
 		Hosts:             src.Hosts,
 		Volumes:           tools.NarrowVolumesByACL(ctx, acl, src.Volumes),
 		EphemeralWritable: !src.EphemeralReadOnly && def.EphemeralVolumes != config.EphemeralVolumesReadOnly,

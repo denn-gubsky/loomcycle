@@ -534,6 +534,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_SQLMEM_ROOT
+            label: LOOMCYCLE_SQLMEM_ROOT
+            description: 'Where the per-scope sqlite files live (default <DataDir>/sqlmem). Postgres tier: set the DSN in .env.local (LOOMCYCLE_SQLMEM_PG_DSN — it carries a password, so it is a SECRET, not config). (example: ./data/sqlmem)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_SQLMEM_QUOTA_BYTES
             label: LOOMCYCLE_SQLMEM_QUOTA_BYTES
             description: 'The query guardrails (row and byte caps, statement and transaction timeouts, open-transaction caps, savepoint depth) have fixed defaults; a deployment that needs another value sets the yaml `storage: sqlmem_*` key. (example: 52428800)'

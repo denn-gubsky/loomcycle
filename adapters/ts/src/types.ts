@@ -1874,6 +1874,10 @@ export interface RunSpec {
      *  own `crypto_scopes` were narrowed to, and are narrowed to again on
      *  resume. Absent: the parent held none. */
     crypto_scopes?: string[];
+    /** The parent run's tool modes at spawn (e.g. `{ Document: "read" }`):
+     *  read modes the child holds on top of its own `tool_modes`, and holds
+     *  again on resume. Absent: the parent held none. */
+    tool_modes?: Record<string, string>;
     /** The parent run's shell-credential narrowing at spawn (RFC EW): the
      *  names the child's own `shell_credentials` were narrowed to, and are
      *  narrowed to again on resume. Absent: the parent narrowed nothing. `[]`:
@@ -4431,7 +4435,9 @@ export type DocumentToolInput = {
     // Remote document sources (RFC CE).
     | "set_remote"
     | "sync"
-    | "diff_remote";
+    | "diff_remote"
+    // A chunk's sections, document and folders, each with its brief (RFC GL P2).
+    | "lineage";
   scope?: "agent" | "user" | "tenant";
   /** Document id (get/delete_document) or chunk id (get/update/delete/move_chunk). */
   id?: string;
@@ -4548,6 +4554,15 @@ export type DocumentToolInput = {
   /** search: also return `query_xyz`, the query placed on the scope's 3D map
    *  (the axes of graph_snapshot's `projection` block). Absent without a map. */
   with_projection?: boolean;
+  /** search: also count, beside the hits, how many DOCUMENTS among the best
+   *  matches have each value — the documents of the `facet_window` chunks
+   *  nearest the query plus the ranked hits (not `expand` or annotation rows),
+   *  after every filter, only those the caller may read. Refused with
+   *  `annotations: "only"`. See {@link DocumentSearchFacets}. */
+  facets?: Array<"type" | "folder" | "concept">;
+  /** search with `facets`: how many of the nearest chunks the counts cover
+   *  (default 100, at most 500). */
+  facet_window?: number;
   /** related: a chunk whose neighbours BY RELATION to return as `linked`. */
   related_to?: string;
   /** import_md: the markdown is a new edition of document_id / work_key. */
@@ -4578,6 +4593,16 @@ export type DocumentToolInput = {
    *  its limit, so the best matches come from that part of the tree.
    *  list_statements: relations with either end in a document named there. */
   under_path?: string;
+  /** query_documents: only documents whose title contains this text, ignoring
+   *  case (on a SQLite store only for A-Z; the exact text always matches);
+   *  `%` and `_` match themselves. */
+  title_contains?: string;
+  /** query_documents / list_statements: only documents (statements) created
+   *  after / before this instant, in unix nanoseconds (exclusive). A JS number holds such a value to within a
+   *  few hundred nanoseconds, so a bound copied from a `created_at` read may
+   *  include or exclude that same document. */
+  created_after?: number;
+  created_before?: number;
   /** search / related: chunks of documents named at or under ANY of these paths
    *  (with `under_path`, the union of both). */
   under_paths?: string[];
@@ -4962,11 +4987,45 @@ export type DocumentSearchHit = {
   matched_unit?: { kind: string; text: string };
 };
 
+/** One value of a search facet and how many documents in the window have it. */
+export type DocumentSearchFacetValue = { value: string; count: number };
+
+/** The `facets` block of `document({op:"search", facets})` — present ONLY when
+ *  `facets` was passed, with a list for each facet asked. Counts are distinct
+ *  documents the caller may read, over the documents of the `facet_window`
+ *  chunks nearest the query plus the ranked hits, after every filter. Each
+ *  list is most documents first, then by value, at most 50 values. */
+export type DocumentSearchFacets = {
+  /** The document's type (its root chunk's class); an untyped one has none. */
+  type?: DocumentSearchFacetValue[];
+  /** The folder of each Path name the document is filed under; a document
+   *  with two names counts in both, one filed nowhere in none. */
+  folder?: DocumentSearchFacetValue[];
+  /** The concepts the document is about, by tag, read from its chunks in force
+   *  at `as_of` (or now): tenant scope by a live `subject` relation (or a
+   *  narrower kind), user / agent scope by a chunk's tag. Empty when the caller
+   *  may not read the tenant ontology; absent with `concept_error`. */
+  concept?: DocumentSearchFacetValue[];
+  /** Present when the ontology could not be read: why `concept` is missing. */
+  concept_error?: string;
+  /** The facets whose list was cut (at 50 values, or by the server's row cap). */
+  truncated?: Array<"type" | "folder" | "concept">;
+  facet_window: number;
+  /** Chunks the counts cover, all readable by the caller. */
+  chunks_counted: number;
+  documents_counted: number;
+  /** True when the counts cover every matching chunk; false when more may lie
+   *  beyond the window (or the server's index is approximate). */
+  complete: boolean;
+};
+
 /** Response of `document({op:"search"})` — narrow a {@link DocumentToolResponse}
  *  to it. */
 export type DocumentSearchResult = {
   chunks: DocumentSearchHit[];
   filter?: DocumentSearchFilter;
+  /** With `facets`: the counts. */
+  facets?: DocumentSearchFacets;
   reranked?: boolean;
   rerank_reason?: string;
   /** With `with_projection` and a map for the scope: the query's place on it
@@ -6329,6 +6388,12 @@ export interface AgentDefOverlay {
    *  only. Held to the author's own grant; a sub-agent holds only what its
    *  parent run also holds. */
   crypto_scopes?: string[];
+  /** Narrows a granted tool to its read operations, e.g.
+   *  `{ Document: "read", Path: "read" }`: a write op is refused before it
+   *  runs. Only `Document` and `Path` take a mode, and each must be in
+   *  `tools`. Unset = every tool whole. A fork may add a read mode and may not
+   *  remove one. */
+  tool_modes?: Record<string, "read">;
   /** Which operator-listed credentials the agent's `Bash` and Bashbox host
    *  commands receive (RFC EW): only these names of
    *  `LOOMCYCLE_BASH_ALLOWED_CREDS` / `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS`.

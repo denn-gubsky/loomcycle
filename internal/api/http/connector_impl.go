@@ -826,7 +826,7 @@ func storeRunToConnector(r store.Run) connector.Run {
 // --- 2. Agent management ---
 
 // RegisterAgent persists a dynamic agent in store.dynamic_agents.
-// Privileged tools (Bash/Write/Edit) are stripped unless the operator
+// Privileged tools (Bash/Bashbox/Write/Edit) are stripped unless the operator
 // has set LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1. Collisions with
 // static agents (from yaml / discovery) are rejected.
 func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentRequest) (connector.AgentDescriptor, error) {
@@ -877,6 +877,10 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	}
 
 	allowedTools := stripPrivilegedTools(req.Tools, s.cfg().Env.MCPAllowPrivilegedTools)
+	// Judged against the tools the agent is actually registered with.
+	if err := config.ValidateToolModes(req.ToolModes, allowedTools); err != nil {
+		return connector.AgentDescriptor{}, err
+	}
 	// RFC FY Part B: what an AgentDef create is held to, for a non-operator
 	// caller — the member ceiling, and no name a definition holds.
 	if err := builtin.CheckRegisteredAgent(ctx, s.cfg(), s.store, req, allowedTools); err != nil {
@@ -897,6 +901,7 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		EvaluationScopes: req.EvaluationScopes,
 		Interruption:     req.Interruption,
 		CryptoScopes:     req.CryptoScopes,
+		ToolModes:        req.ToolModes,
 		ShellCredentials: req.ShellCredentials,
 		GitRemote:        req.GitRemote,
 		StatementMethods: req.StatementMethods,
@@ -1778,9 +1783,12 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 
 // --- Helpers ---
 
-// stripPrivilegedTools removes Bash/Write/Edit from the requested
+// stripPrivilegedTools removes Bash/Bashbox/Write/Edit from the requested
 // tools when the operator hasn't opted into privileged-tool
 // dynamic registration. Default-deny matches v0.8.7 / v0.8.8 pattern.
+// Bashbox is here because it is registered on every server: without this a
+// registered agent would get a shell, and whatever host commands the operator
+// allowlisted for its fallback, by naming it.
 func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	if allowPrivileged {
 		return append([]string(nil), requested...)
@@ -1788,7 +1796,7 @@ func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	out := make([]string, 0, len(requested))
 	for _, t := range requested {
 		switch t {
-		case "Bash", "Write", "Edit":
+		case "Bash", "Bashbox", "Write", "Edit":
 			continue
 		default:
 			out = append(out, t)

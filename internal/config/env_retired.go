@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -32,7 +33,7 @@ var retiredEnv = map[string]string{
 	// Feature gates removed: the feature is always on.
 	"LOOMCYCLE_SCHEDULER_ENABLED":                   "the scheduler is always on; a schedule fires unless its definition is disabled",
 	"LOOMCYCLE_WEBHOOKS_ENABLED":                    "the inbound webhook receiver is always mounted",
-	"LOOMCYCLE_CODE_AGENTS_ENABLED":                 "the code-js provider is always registered",
+	"LOOMCYCLE_CODE_AGENTS_ENABLED":                 "the code-js provider is registered whenever the config declares it (the default providers layer does)",
 	"LOOMCYCLE_CODE_HOOKS_ENABLED":                  "a hook body may always be code-js",
 	"LOOMCYCLE_CHANNEL_HOOKS":                       "the channel-hook worker always runs; a channel's hooks are always applied",
 	"LOOMCYCLE_BASHBOX_ENABLED":                     "Bashbox is always registered; an agent gets it through its tools list",
@@ -59,7 +60,6 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_RESOLVE_PROBE_INTERVAL_MS":           "providers are re-probed every 15 minutes",
 	"LOOMCYCLE_SSE_KEEPALIVE_MS":                    "a run stream sends a keepalive every 20s",
 	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": "chats of internal agents are deleted after 3 days when chat retention is on",
-	"LOOMCYCLE_SQLMEM_ROOT":                         "set storage.sqlmem_root in the yaml",
 	"LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS":         "set storage.sqlmem_statement_timeout_ms in the yaml",
 	"LOOMCYCLE_SQLMEM_MAX_ROWS":                     "set storage.sqlmem_max_rows in the yaml",
 	"LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES":             "set storage.sqlmem_max_result_bytes in the yaml",
@@ -151,4 +151,205 @@ func retiredEnvWarnings(environ []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// RetiredEnvAdvisories is retiredEnvWarnings for a command that loads no
+// config and so never sees Config.Warnings: the MCP thin client, whose
+// environment is a plugin's and may still carry the names it used to read.
+func RetiredEnvAdvisories(environ []string) []string {
+	return retiredEnvWarnings(environ)
+}
+
+// retiredEnvCtx is what a refusal rule may look at besides its own value.
+type retiredEnvCtx struct {
+	// env is the whole environment, for a rule that depends on a second
+	// variable.
+	env map[string]string
+	// storage is the yaml's storage block before any env override, for the
+	// settings that moved to a yaml key.
+	storage *StorageConfig
+}
+
+// retiredRefusal is a retired variable whose value may have asked for
+// something tighter than what the runtime now does.
+type retiredRefusal struct {
+	// loosens reports whether ignoring value leaves the deployment looser
+	// than the operator set it.
+	loosens func(value string, c retiredEnvCtx) bool
+	// instead replaces the retiredEnv text in the refusal when what to do
+	// about a refused value differs from what to do about a dead line.
+	instead string
+}
+
+// retiredEnvRefuse holds the retired variables that stop the load instead of
+// only being advised. An advisory is enough when ignoring the variable changes
+// a cadence or raises nothing; it is not enough when the operator had turned a
+// feature off or lowered a bound, because the deployment would come up looser
+// than they configured it with one more line in a log to show for it.
+//
+// A rule is judged on the value: the same variable set to what the runtime
+// now does anyway is advised, not refused.
+var retiredEnvRefuse = map[string]retiredRefusal{
+	// The seven gates. Each old read was `== "1"`, so any other value of a set
+	// variable, the empty one included, was the operator keeping the feature
+	// off.
+	"LOOMCYCLE_SCHEDULER_ENABLED":   {gateWasOff, "the scheduler is always on; to keep it unused, keep no schedule definitions (or disable each one)"},
+	"LOOMCYCLE_WEBHOOKS_ENABLED":    {gateWasOff, "the inbound webhook receiver is always mounted; to keep it unused, keep no webhook definitions"},
+	"LOOMCYCLE_CODE_AGENTS_ENABLED": {gateWasOff, "the code-js provider is registered whenever the config declares it; to keep code agents unused, run without the default providers layer (LOOMCYCLE_NO_DEFAULT_PROVIDERS=1) and declare your own `providers:` with no code-js entry"},
+	"LOOMCYCLE_CODE_HOOKS_ENABLED":  {gateWasOff, "a hook body may always be code-js; to keep code hooks unused, keep hook definitions out of the hands of anyone who should not run JavaScript in this process"},
+	"LOOMCYCLE_CHANNEL_HOOKS":       {gateWasOff, "the channel-hook worker always runs; to keep it unused, declare no `hooks:` on any channel"},
+	"LOOMCYCLE_BASHBOX_ENABLED":     {gateWasOff, "Bashbox is always registered; to keep it unused, do not name Bashbox in any agent's `tools`"},
+	"LOOMCYCLE_RESUME_FANOUT":       {gateWasOff, "a fan-out parent always parks on pause and is resumed with its children; this can no longer be turned off"},
+
+	// The filesystem jail stopped the boot before it was retired and still
+	// does: a deploy that relied on it must be moved to volumes by a person.
+	"LOOMCYCLE_READ_ROOT":  {loosens: valueNotEmpty},
+	"LOOMCYCLE_WRITE_ROOT": {loosens: valueNotEmpty},
+	"LOOMCYCLE_BASH_CWD":   {loosens: valueNotEmpty},
+
+	// The usage archiver deleted aged chats. Its replacement only does so when
+	// it is configured, so a deployment that relied on the archiver would keep
+	// chats it had committed to deleting.
+	"LOOMCYCLE_USAGE_RUN_RETENTION_MODE": {loosens: archiverWasPruning},
+
+	// Caps that are now fixed. The number is the fixed value; the old reads
+	// took zero or a negative number as "the default" or as "no cap", never
+	// as something tighter.
+	"LOOMCYCLE_AGENT_DEF_MAX_DEFINITION_BYTES":      {loosens: loweredBelow(128 << 10)},
+	"LOOMCYCLE_AGENT_DEF_MAX_DESCRIPTION_BYTES":     {loosens: loweredBelow(8 << 10)},
+	"LOOMCYCLE_AGENT_DEF_MAX_CODE_BYTES":            {loosens: loweredBelow(256 << 10)},
+	"LOOMCYCLE_TEAM_DEF_MAX_DEFINITION_BYTES":       {loosens: loweredBelow(1 << 20)},
+	"LOOMCYCLE_SKILL_DEF_MAX_BODY_BYTES":            {loosens: loweredBelow(128 << 10)},
+	"LOOMCYCLE_SKILL_DEF_MAX_DESCRIPTION_BYTES":     {loosens: loweredBelow(8 << 10)},
+	"LOOMCYCLE_EVALUATION_MAX_JUDGEMENT_BYTES":      {loosens: loweredBelow(32 << 10)},
+	"LOOMCYCLE_EVALUATION_MAX_RATIONALE_BYTES":      {loosens: loweredBelow(8 << 10)},
+	"LOOMCYCLE_GIT_PUSH_MAX_BYTES":                  {loosens: loweredBelow(100 << 20)},
+	"LOOMCYCLE_GIT_SOURCE_MAX_BYTES":                {loosens: loweredBelow(256 << 20)},
+	"LOOMCYCLE_GIT_SOURCE_MAX_OBJECT_BYTES":         {loosens: loweredBelow(64 << 20)},
+	"LOOMCYCLE_GIT_SOURCE_MAX_FILE_BYTES":           {loosens: loweredBelow(5 << 20)},
+	"LOOMCYCLE_GIT_SOURCE_MAX_FILES":                {loosens: loweredBelow(100_000)},
+	"LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS":          {loosens: loweredBelow(120)},
+	"LOOMCYCLE_GIT_SOURCE_MAX_HISTORY":              {loosens: loweredBelow(500)},
+	"LOOMCYCLE_CRYPTO_MAX_BYTES":                    {loosens: loweredBelow(1 << 20)},
+	"LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN":              {loosens: loweredBelow(100)},
+	"LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES":            {loosens: loweredBelow(8 << 20)},
+	"LOOMCYCLE_DOCUMENT_SEARCH_FILTER_MAX_IDS":      {loosens: loweredBelow(50_000)},
+	"LOOMCYCLE_DOCUMENT_FEED_MAX_STREAMS":           {loosens: loweredBelow(4)},
+	"LOOMCYCLE_MEMORY_MAX_VALUE_BYTES":              {loosens: loweredBelow(64 << 10)},
+	"LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES":            {loosens: loweredBelow(64 << 10)},
+	"LOOMCYCLE_CHANNELS_MAX_PENDING_DEFERRED":       {loosens: loweredBelow(10_000)},
+	"LOOMCYCLE_CLIENT_TOOL_TIMEOUT_MS":              {loosens: loweredBelow(60_000)},
+	"LOOMCYCLE_CLIENT_TOOL_MAX_BYTES":               {loosens: loweredBelow(1 << 20)},
+	"LOOMCYCLE_CLIENT_TOOL_MAX_CONNS":               {loosens: loweredBelow(8)},
+	"LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS":              {loosens: loweredBelow(60_000)},
+	"LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS":       {loosens: loweredBelow(30 * 60 * 1000)},
+	"LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS":           {loosens: loweredBelow(2 * 60 * 60)},
+	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": {loosens: loweredBelow(3 * 24 * 60 * 60 * 1000)},
+	// The ceiling is gone, so every ceiling was tighter.
+	"LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS": {loosens: loweredBelow(1<<63 - 1)},
+	// Zero here was a setting, not "the default": a registration had to name
+	// its own ttl.
+	"LOOMCYCLE_DYNAMIC_AGENT_DEFAULT_TTL_SECONDS": {loosens: func(value string, _ retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		return set && (!ok || n < 86400)
+	}},
+
+	// SQL Memory bounds moved to the yaml: judged against what the yaml gives
+	// (its own default when the key is absent), so an operator who has already
+	// copied the bound into the yaml is not stopped.
+	"LOOMCYCLE_SQLMEM_STATEMENT_TIMEOUT_MS": {loosens: loweredBelowYAML(func(s *StorageConfig) int64 { return yamlOr(s.SqlMemStatementTimeoutMS, 30000) })},
+	"LOOMCYCLE_SQLMEM_MAX_ROWS":             {loosens: loweredBelowYAML(func(s *StorageConfig) int64 { return yamlOr(s.SqlMemMaxRows, 10000) })},
+	"LOOMCYCLE_SQLMEM_MAX_RESULT_BYTES":     {loosens: loweredBelowYAML(func(s *StorageConfig) int64 { return yamlOr(s.SqlMemMaxResultBytes, 8<<20) })},
+	"LOOMCYCLE_SQLMEM_TXN_TIMEOUT_MS":       {loosens: loweredBelowYAML(func(s *StorageConfig) int64 { return yamlOr(s.SqlMemTxnTimeoutMS, 30000) })},
+	"LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS":        {loosens: loweredBelowYAML(func(s *StorageConfig) int64 { return yamlOr(s.SqlMemMaxOpenTxns, 64) })},
+	"LOOMCYCLE_SQLMEM_MAX_OPEN_TXNS_PER_TENANT": {loosens: loweredBelowYAML(func(s *StorageConfig) int64 {
+		// Unset, sqlmem gives a tenant a quarter of the process cap, at least 1.
+		return yamlOr(s.SqlMemMaxOpenTxnsPerTenant, int(max(yamlOr(s.SqlMemMaxOpenTxns, 64)/4, 1)))
+	})},
+	"LOOMCYCLE_SQLMEM_MAX_TXN_DEPTH": {loosens: loweredBelowYAML(func(s *StorageConfig) int64 { return yamlOr(s.SqlMemMaxTxnDepth, 16) })},
+	// No yaml value is "no cap", so any cap was tighter than that.
+	"LOOMCYCLE_SQLMEM_SNAPSHOT_MAX_SCOPE_BYTES": {loosens: loweredBelowYAML(func(s *StorageConfig) int64 {
+		if s.SqlMemSnapshotMaxScopeBytes > 0 {
+			return s.SqlMemSnapshotMaxScopeBytes
+		}
+		return 1<<63 - 1
+	})},
+}
+
+func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }
+
+func valueNotEmpty(value string, _ retiredEnvCtx) bool { return value != "" }
+
+// loweredBelow is the rule of a cap now fixed at fixed: a positive value under
+// it was a tightening, and so, for all the boot can tell, was a value that
+// does not parse.
+func loweredBelow(fixed int64) func(string, retiredEnvCtx) bool {
+	return func(value string, _ retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		return set && (!ok || (n > 0 && n < fixed))
+	}
+}
+
+// loweredBelowYAML is loweredBelow against the bound the yaml gives.
+func loweredBelowYAML(effective func(*StorageConfig) int64) func(string, retiredEnvCtx) bool {
+	return func(value string, c retiredEnvCtx) bool {
+		return loweredBelow(effective(c.storage))(value, c)
+	}
+}
+
+// yamlOr is a yaml bound, or its default when the key is absent: for these
+// keys zero (and a negative number) takes the default.
+func yamlOr[T int | int64](v T, dflt int) int64 {
+	if v > 0 {
+		return int64(v)
+	}
+	return int64(dflt)
+}
+
+// archiverWasPruning reports the legacy archiver configured to delete chats
+// (a delete-bearing mode with a positive age, the condition it ran under)
+// while nothing configures the retention sweep that replaced it.
+func archiverWasPruning(mode string, c retiredEnvCtx) bool {
+	if mode != "prune" && mode != "export+prune" {
+		return false
+	}
+	age, set, ok := retiredInt(c.env["LOOMCYCLE_USAGE_RUN_RETENTION_MS"])
+	return set && ok && age > 0 && c.env["LOOMCYCLE_RETENTION_CHATS_MODE"] == ""
+}
+
+// retiredEnvRefusals returns one "NAME: what to do" entry per retired variable
+// in environ (the os.Environ form) whose value the runtime would loosen by
+// ignoring, sorted by name. Values are never included.
+func retiredEnvRefusals(environ []string, storage *StorageConfig) []string {
+	c := retiredEnvCtx{env: make(map[string]string, len(environ)), storage: storage}
+	for _, kv := range environ {
+		if name, value, ok := strings.Cut(kv, "="); ok {
+			c.env[name] = value
+		}
+	}
+	var out []string
+	for name, value := range c.env {
+		rule, ok := retiredEnvRefuse[name]
+		if !ok || !rule.loosens(value, c) {
+			continue
+		}
+		instead := rule.instead
+		if instead == "" {
+			instead = retiredEnv[name]
+		}
+		out = append(out, name+": "+instead)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// retiredInt parses a retired variable's value. set is false for an empty
+// value, which every old read treated as unset.
+func retiredInt(value string) (n int64, set, ok bool) {
+	v := strings.TrimSpace(value)
+	if v == "" {
+		return 0, false, true
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	return n, true, err == nil
 }

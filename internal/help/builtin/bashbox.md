@@ -43,7 +43,9 @@ that `Bash` is not a sandbox).
 ## Granting it
 
 Bashbox is always registered. An agent gets it by having `Bashbox` in its
-`tools`.
+`tools`. An agent registered through MCP `register_agent` is the exception:
+`Bashbox` is stripped from its tools, with `Bash`, `Write` and `Edit`, unless
+the operator set `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`.
 
 An agent still needs a bound `volumes:` volume (sandbox-by-default applies —
 no volume, no filesystem). Unlike `Bash`, the bound volume may be `ro`.

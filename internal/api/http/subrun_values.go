@@ -214,6 +214,7 @@ func recordInheritedPolicy(ctx context.Context, subRunCfg *runConfigRecord, pare
 	// a resume narrows against the first two again and restores the third.
 	subRunCfg.Spawn = spawnRecordOf(parentPolicy.Volumes, childPolicy.FanoutCap)
 	subRunCfg.Spawn.CryptoScopes = parentPolicy.Crypto.Scopes
+	subRunCfg.Spawn.ToolModes = parentPolicy.ToolModes
 	subRunCfg.Spawn.ShellCredentials = shellCredsRecordOf(parentPolicy.ShellCreds)
 	subRunCfg.Spawn.GitRemote = parentPolicy.GitRemote.Ops()
 	// The offer the child passes on to its own children is its parent's
@@ -466,7 +467,7 @@ func (s *Server) buildSubRunPrompt(ctx context.Context, def config.AgentDef, nam
 // builds the child's dispatcher over the narrowed set. The two are one step so
 // the dispatcher cannot be built ahead of the narrowing: it is what executes
 // the child's calls.
-func (s *Server) narrowSubRunHosts(subTools []tools.Tool, childPolicy tools.RunPolicy) ([]tools.Tool, *tools.Dispatcher) {
+func (s *Server) narrowSubRunHosts(subTools []tools.Tool, childPolicy tools.RunPolicy, toolModes map[string]string) ([]tools.Tool, *tools.Dispatcher) {
 	s.runPhase("subrun.hosts")
 	// Inherit the parent's caller-authoritative host policy. Without
 	// this, sub-agents fall back to the operator's static
@@ -483,7 +484,7 @@ func (s *Server) narrowSubRunHosts(subTools []tools.Tool, childPolicy tools.RunP
 	if hp := childPolicy.Hosts; hp.HasList || s.cfg().Env.HTTPCallerAuthoritative {
 		subTools = builtin.NarrowHosts(subTools, hp.AllowedHosts, hp.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !hp.NarrowOnly)
 	}
-	subDispatcher := s.newDispatcher(subTools)
+	subDispatcher := s.newDispatcher(subTools, toolModes)
 	return subTools, subDispatcher
 }
 

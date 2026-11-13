@@ -115,11 +115,10 @@ agents:
 	}
 }
 
-// The legacy jail env vars are retired: setting one no longer stops the load,
-// and the operator is told the line does nothing and what replaces it. (An
-// agent with no volume binding has no filesystem access, so an ignored jail
-// variable never widens anything.)
-func TestLoad_LegacyJailEnvIsReportedAsRetired(t *testing.T) {
+// The legacy jail env vars are retired, and setting one stops the load with a
+// pointer at `volumes:`: a deploy that relied on the jail would otherwise come
+// up with its agents' file access decided by something it never wrote.
+func TestLoad_LegacyJailEnvStopsTheLoad(t *testing.T) {
 	yamlPath := writeVolConfig(t, `
 agents:
   a: { model: claude-sonnet-4-6 }
@@ -127,16 +126,10 @@ agents:
 	for _, name := range []string{"LOOMCYCLE_READ_ROOT", "LOOMCYCLE_WRITE_ROOT", "LOOMCYCLE_BASH_CWD"} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, "/work/sandbox")
-			cfg, err := Load(yamlPath)
-			if err != nil {
-				t.Fatalf("Load: %v", err)
+			_, err := Load(yamlPath)
+			if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "volumes:") {
+				t.Fatalf("Load: err = %v, want a refusal naming %s and pointing at `volumes:`", err, name)
 			}
-			for _, w := range cfg.Warnings {
-				if strings.HasPrefix(w, name+" is set but no longer read") && strings.Contains(w, "volumes:") {
-					return
-				}
-			}
-			t.Errorf("no advisory naming %s and pointing at `volumes:`; warnings = %q", name, cfg.Warnings)
 		})
 	}
 }

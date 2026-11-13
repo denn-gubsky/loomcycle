@@ -38,6 +38,10 @@ import (
 //	ceilHistory              rules: read history:<scope>, within the plane's grant
 //	ceilCrypto               rules: use crypto:<scope>, for user and agent only;
 //	                         tenant and run keys are the operator's
+//	ceilToolModes            the tools row: a member's grant of a tool is its
+//	                         invoke rule, and a read mode only narrows it, so a
+//	                         member may set one freely (no plane stamps a
+//	                         member's own modes)
 //	ceilChannels             the plane's grant; each publish/subscribe is asked
 //	                         of the runner's rules in the run
 //	ceilSkills               the plane's grant; the runner's rules narrow skills
@@ -72,6 +76,7 @@ var memberCeilingClass = map[string]string{
 	"ceilSQL":                 "rules: write sqlmem",
 	"ceilHistory":             "rules: read history",
 	"ceilCrypto":              "rules: use crypto (user, agent)",
+	"ceilToolModes":           "tools (narrowing only)",
 	"ceilChannels":            "plane",
 	"ceilSkills":              "plane",
 	"ceilEvaluation":          "token",

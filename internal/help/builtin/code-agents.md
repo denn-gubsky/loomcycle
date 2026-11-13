@@ -24,7 +24,11 @@ the loop, no tokens, no hallucination class of bug.
 
 ## Settings
 
-The code-js provider is always registered. Its settings:
+The code-js provider is registered when the config has a `code-js` entry
+under `providers:`. The default providers layer has one, so it is there unless
+a deployment runs without that layer (`LOOMCYCLE_NO_DEFAULT_PROVIDERS=1`) and
+declares none of its own; an agent with `provider: code-js` then fails at
+boot, or at its first run when it was created at runtime. Its settings:
 
 ```
 LOOMCYCLE_CODE_AGENTS_ROOT=./agent_code              # default; where index.js lives

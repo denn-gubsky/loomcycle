@@ -87,7 +87,7 @@ and examples, as `Document/<op>` — for example
 | `create_document` | new document with an empty root chunk, named in the Path tree | `title` |
 | `get_document` | a document's metadata: title, root chunk, type, status, tags | `id` or `path` |
 | `documents_summary` | title/type/status/colour for many documents in one call | `document_ids` or `under_path` |
-| `query_documents` | list documents filtered by path, type, status or tag | — |
+| `query_documents` | list documents filtered by path, type, status, tag, words in the title or creation time | — |
 | `graph_snapshot` | a whole scope's documents, chunk trees, relations and Path names as columns, paged by whole documents | — |
 | `delete_document` | delete a document, every chunk in it, and its path | `id` or `path` |
 | `set_path` | give an existing document a (further) Path-tree name | `id`, `path` |
@@ -100,6 +100,7 @@ and examples, as `Document/<op>` — for example
 |---|---|---|
 | `create_chunk` | add a chunk to a document | `document_id`, `title` |
 | `get_chunk` | one chunk with its body, fields, tags and current `revision` | `id` |
+| `lineage` | where a chunk sits: its enclosing sections, its document and the folders above it, each with its brief | `id` |
 | `update_chunk` | change a chunk's title/type/status/body/fields/tags/dates | `id`, `revision` |
 | `delete_chunk` | delete a chunk and everything under it | `id` |
 | `move_chunk` | give a chunk a new parent and/or position | `id` |

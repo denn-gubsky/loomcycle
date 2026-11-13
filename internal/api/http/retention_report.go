@@ -32,8 +32,7 @@ type retentionReportResponse struct {
 	DefsMaxAgeMS     int64                       `json:"defs_max_age_ms"`
 	DefsKeepLastN    int                         `json:"defs_keep_last_n"`
 	// ChatsMode / ChatsMaxAgeMS are the RFC BM Phase 2 aged-chat archiver knobs
-	// (config only — tenant-readable). ChatsMode reflects the effective value
-	// after the legacy LOOMCYCLE_USAGE_RUN_RETENTION_* alias in config.Load.
+	// (config only — tenant-readable).
 	ChatsMode     string `json:"chats_mode"`
 	ChatsMaxAgeMS int64  `json:"chats_max_age_ms"`
 	// ChatsInternalMaxAgeMS is the shorter age applied to chats authored by an

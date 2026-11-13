@@ -14,6 +14,14 @@ corpora, those were almost never right, so they are reported and not filed.
 | `kb/judge-verdict` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one verdict per proposal: accept, reject or unsure, a confidence and one sentence |
 | `kb/annotator` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested`, read only); `statement_methods: [annotate]` | writes the annotations of the tenant knowledge base (see [Annotations](#annotations)) |
 | `kb/annotate` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one part in, `{brief, abstract, language}` out |
+| `kb/ask` | `code-js` | `Decision`, `Agent` | the entry point for a question about the tenant knowledge base. It asks whether the question wants an overview: a Decision call first (0.5 or more: yes; 0.1 or less: no), then `kb/classify` for a score in between or a failed call (run metadata `classifier: agent` asks `kb/classify` only). An overview runs `kb/walker`, anything else `kb/search`; a `COVERAGE: partial` search goes on to `kb/walker` with the ids found, unless the Decision score was 0.1 or less, and so does a search that did not complete. A question given as untrusted input is passed to each child by reference, still untrusted. Ends with `ROUTE: … \| SCORE: … \| CLASSIFIER: … \| RUNS: …` |
+| `kb/classify` | your `low` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one question in, `YES` or `NO` out; an unreadable answer counts as an overview |
+| `kb/search` | your `middle` tier | `Document`; tenant scope | flat search with summaries; ends with `COVERAGE: complete` or `COVERAGE: partial` |
+| `kb/walker` | your `middle` tier | `Document`, `Path`; tenant scope | walks the document tree by its summaries; the path for overview questions |
+
+`kb/search` and `kb/walker` are told to only read. The runtime does not enforce
+that yet: a tenant `Document` grant can write documents, and `Path` can move
+and remove names.
 
 ## What it needs
 
