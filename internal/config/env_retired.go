@@ -33,7 +33,7 @@ var retiredEnv = map[string]string{
 	// Feature gates removed: the feature is always on.
 	"LOOMCYCLE_SCHEDULER_ENABLED":                   "the scheduler is always on; a schedule fires unless its definition is disabled",
 	"LOOMCYCLE_WEBHOOKS_ENABLED":                    "the inbound webhook receiver is always mounted",
-	"LOOMCYCLE_CODE_AGENTS_ENABLED":                 "the code-js provider is always registered",
+	"LOOMCYCLE_CODE_AGENTS_ENABLED":                 "the code-js provider is registered whenever the config declares it (the default providers layer does)",
 	"LOOMCYCLE_CODE_HOOKS_ENABLED":                  "a hook body may always be code-js",
 	"LOOMCYCLE_CHANNEL_HOOKS":                       "the channel-hook worker always runs; a channel's hooks are always applied",
 	"LOOMCYCLE_BASHBOX_ENABLED":                     "Bashbox is always registered; an agent gets it through its tools list",
@@ -184,7 +184,7 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// off.
 	"LOOMCYCLE_SCHEDULER_ENABLED":   {gateWasOff, "the scheduler is always on; to keep it unused, keep no schedule definitions (or disable each one)"},
 	"LOOMCYCLE_WEBHOOKS_ENABLED":    {gateWasOff, "the inbound webhook receiver is always mounted; to keep it unused, keep no webhook definitions"},
-	"LOOMCYCLE_CODE_AGENTS_ENABLED": {gateWasOff, "the code-js provider is registered whenever the yaml declares it; to keep code agents unused, declare no `providers:` entry of type code-js"},
+	"LOOMCYCLE_CODE_AGENTS_ENABLED": {gateWasOff, "the code-js provider is registered whenever the config declares it; to keep code agents unused, run without the default providers layer (LOOMCYCLE_NO_DEFAULT_PROVIDERS=1) and declare your own `providers:` with no code-js entry"},
 	"LOOMCYCLE_CODE_HOOKS_ENABLED":  {gateWasOff, "a hook body may always be code-js; to keep code hooks unused, keep hook definitions out of the hands of anyone who should not run JavaScript in this process"},
 	"LOOMCYCLE_CHANNEL_HOOKS":       {gateWasOff, "the channel-hook worker always runs; to keep it unused, declare no `hooks:` on any channel"},
 	"LOOMCYCLE_BASHBOX_ENABLED":     {gateWasOff, "Bashbox is always registered; to keep it unused, do not name Bashbox in any agent's `tools`"},

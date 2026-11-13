@@ -3480,7 +3480,7 @@ The `LOOMCYCLE_RETENTION_*` families run only when `LOOMCYCLE_RETENTION_ENABLED=
 | `LOOMCYCLE_RETENTION_DEFS_MODE` | `off` | Prunes old versions of substrate definitions. |
 | `LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS` | `0` | Only versions older than this are eligible; `0` = any age. |
 | `LOOMCYCLE_RETENTION_DEFS_KEEP_LAST_N` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
-| `LOOMCYCLE_RETENTION_CHATS_MODE` | `off` | Deletes aged sessions with their runs and events; pinned sessions are exempt. Inherits the legacy `LOOMCYCLE_USAGE_RUN_RETENTION_*` settings when unset. |
+| `LOOMCYCLE_RETENTION_CHATS_MODE` | `off` | Deletes aged sessions with their runs and events; pinned sessions are exempt. Nothing is inherited from the removed usage archiver: a deployment that pruned chats with `LOOMCYCLE_USAGE_RUN_RETENTION_MODE` and a positive `LOOMCYCLE_USAGE_RUN_RETENTION_MS` does not start until this is set (with `LOOMCYCLE_RETENTION_ENABLED=1` and `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS`). |
 | `LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS` | `0` | A session whose runs all finished longer ago than this is eligible. |
 | `LOOMCYCLE_RETENTION_MEM_MODE` | `off` | Reclaims the memory of fully retired agents. |
 | `LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS` | `0` | Only agents whose last definition change is older than this. |
