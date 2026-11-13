@@ -391,6 +391,10 @@ type StorageConfig struct {
 	// LOOMCYCLE_PG_DSN), "sqlite" otherwise. An explicit value always wins,
 	// so `backend: sqlite` keeps SQLite even with a DSN present.
 	Backend string `yaml:"backend"`
+	// BackendInferred is set by LoadLayers: true when the yaml named no
+	// backend and Backend above is what the DSN gave. The boot reports it and
+	// refuses an inferred Postgres over an existing SQLite store.
+	BackendInferred bool `yaml:"-"`
 	// PgDSN is the Postgres connection string (libpq URL form).
 	// Required when Backend="postgres". Env: LOOMCYCLE_PG_DSN.
 	// Example: postgres://user:pass@host:5432/loomcycle?sslmode=require
@@ -5325,7 +5329,8 @@ func applyEnvStorage(cfg *Config) {
 	// Env-overrides for the storage block. Env wins over YAML so prod
 	// deploys can keep PG_DSN out of version-controlled config files.
 	// Empty env values fall through to whatever YAML provided.
-	if v := os.Getenv("LOOMCYCLE_PG_DSN"); v != "" {
+	// A value of only whitespace is no DSN (see inferStorageBackend).
+	if v := os.Getenv("LOOMCYCLE_PG_DSN"); strings.TrimSpace(v) != "" {
 		cfg.Storage.PgDSN = v
 	}
 	// The pool sizes are int32: parse at that width so an out-of-range value
@@ -5343,6 +5348,7 @@ func applyEnvStorage(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE"); v == "1" {
 		cfg.Storage.PgAutoMigrate = true
 	}
+	cfg.Storage.BackendInferred = cfg.Storage.Backend == ""
 	cfg.Storage.Backend = inferStorageBackend(cfg.Storage.Backend, cfg.Storage.PgDSN)
 }
 
@@ -5377,8 +5383,9 @@ func inferStorageBackend(explicit, pgDSN string) string {
 	}
 	// A yaml pg_dsn that is still a ${NAME} reference is not a DSN: the
 	// loader never interpolates the store's own DSN, so the text is left as
-	// written when the environment does not carry the variable.
-	if pgDSN != "" && !strings.HasPrefix(pgDSN, "${") {
+	// written when the environment does not carry the variable. Neither is
+	// one of only whitespace, which an env file leaves behind a blanked line.
+	if dsn := strings.TrimSpace(pgDSN); dsn != "" && !strings.HasPrefix(dsn, "${") {
 		return "postgres"
 	}
 	return "sqlite"

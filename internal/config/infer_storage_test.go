@@ -281,3 +281,61 @@ func TestA2AEnabled_FollowsTheServerCardName(t *testing.T) {
 		})
 	}
 }
+
+// A DSN that is only whitespace is no DSN: it neither selects Postgres nor
+// replaces the yaml's DSN, and the retired backend variable is judged the
+// same way.
+func TestStorageBackend_AWhitespaceDSNCountsAsUnset(t *testing.T) {
+	const dsn = "postgres://u@h/db"
+	for _, tc := range []struct {
+		name, yaml, envDSN string
+		wantBackend        string
+		wantDSN            string
+	}{
+		{"blank env DSN", "", "  \t", "sqlite", ""},
+		{"blank yaml DSN", "storage:\n  pg_dsn: \"   \"\n", "", "sqlite", "   "},
+		{"blank env DSN leaves the yaml DSN", "storage:\n  pg_dsn: " + dsn + "\n", "   ", "postgres", dsn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_PG_DSN", tc.envDSN)
+			cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n"+tc.yaml)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Storage.Backend != tc.wantBackend || cfg.Storage.PgDSN != tc.wantDSN {
+				t.Errorf("backend = %q with DSN %q, want %q with %q", cfg.Storage.Backend, cfg.Storage.PgDSN, tc.wantBackend, tc.wantDSN)
+			}
+		})
+	}
+	// The old variable said sqlite and a blank DSN still gives SQLite.
+	if got := retiredEnvRefusals([]string{"LOOMCYCLE_STORAGE_BACKEND=sqlite", "LOOMCYCLE_PG_DSN=   "}, &StorageConfig{}); len(got) != 0 {
+		t.Errorf("a blank DSN was taken for a Postgres store: %q", got)
+	}
+}
+
+// The config records whether the backend was named in the yaml or inferred,
+// so the boot can say which and can refuse an inference that would leave an
+// existing store behind.
+func TestStorageBackend_RecordsWhetherItWasInferred(t *testing.T) {
+	const dsn = "postgres://u@h/db"
+	for _, tc := range []struct {
+		name, yaml, envDSN string
+		want               bool
+	}{
+		{"nothing named, no DSN", "", "", true},
+		{"nothing named, a DSN", "", dsn, true},
+		{"yaml names sqlite", "storage:\n  backend: sqlite\n", dsn, false},
+		{"yaml names postgres", "storage:\n  backend: postgres\n", dsn, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_PG_DSN", tc.envDSN)
+			cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n"+tc.yaml)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Storage.BackendInferred != tc.want {
+				t.Errorf("BackendInferred = %v, want %v", cfg.Storage.BackendInferred, tc.want)
+			}
+		})
+	}
+}

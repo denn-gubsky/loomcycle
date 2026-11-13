@@ -314,7 +314,7 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 // it is there.
 func backendNow(c retiredEnvCtx) string {
 	dsn := c.storage.PgDSN
-	if v := c.env["LOOMCYCLE_PG_DSN"]; v != "" {
+	if v := c.env["LOOMCYCLE_PG_DSN"]; strings.TrimSpace(v) != "" {
 		dsn = v
 	}
 	return inferStorageBackend(c.storage.Backend, dsn)
