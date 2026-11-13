@@ -70,3 +70,15 @@ Tenant runbooks tagged for the support team:
 ```json
 {"op": "query_documents", "scope": "tenant", "under_path": "/runbooks", "tag": "ops/support", "limit": 20}
 ```
+
+A document the question names, found by its title, with its brief:
+
+```json
+{"op": "query_documents", "scope": "tenant", "title_contains": "rollback plan", "with_summary": true}
+```
+
+Documents created after 1 March 2026 and before 1 April 2026, with their briefs:
+
+```json
+{"op": "query_documents", "scope": "tenant", "created_after": 1772323200000000000, "created_before": 1775001600000000000, "with_summary": true}
+```

@@ -50,3 +50,10 @@ Summarise a page of ids you got from a directory listing:
 ```json
 {"op": "documents_summary", "document_ids": ["b4407b522dc11495d3de371311db17f0", "3f2a9c1e7d6b4a5f8e0d1c2b3a4f5e6d"], "scope": "tenant"}
 ```
+
+The briefs of the documents several search hits came from, to choose which to
+read:
+
+```json
+{"op": "documents_summary", "document_ids": ["b4407b522dc11495d3de371311db17f0", "a1b2c3d4e5f60718293a4b5c6d7e8f90"], "scope": "tenant", "with_summary": true}
+```

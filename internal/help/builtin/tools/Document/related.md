@@ -150,3 +150,10 @@ answer and the embedding's in one call, both limited to the norms:
  "linked": [{"chunk_id": "9c8b7a6f5e4d43c2b1a0f9e8d7c6b5a4", "via_kind": "implements", "via_quote": "pursuant to Article 41 of the Law", "title": "Article 41", "type": "law.article", "document_id": "0c1d2e3f4a5b4c6d8e9f0a1b2c3d4e5f"}],
  "filter": {"applied": {"under_paths": ["/norms"]}, "matched_documents": 6, "matched_chunks": 140, "inverted": false}}
 ```
+
+Only what a passage cites or is defined by, along the tenant's walk kinds (no
+embedder needed):
+
+```json
+{"op": "related", "related_to": "c7d2e4f6a8b04c1d9e3f5a7b9c1d3e5f", "scope": "tenant", "limit": 8}
+```

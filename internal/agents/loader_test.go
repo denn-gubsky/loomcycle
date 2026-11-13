@@ -418,3 +418,38 @@ func TestParseAgent_ReadsRetention(t *testing.T) {
 		t.Errorf("retention = %q (err %v), want none", a.Retention, err)
 	}
 }
+
+// LoadSetFrontmatterOnly leaves out a file with no frontmatter (a prompt body
+// or a README kept beside the agent files) and names it; LoadSet still loads
+// the same file as an agent.
+func TestLoadSetFrontmatterOnly_SkipsAFileWithoutFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"helper.md": "---\ntools: []\n---\nYou help.\n",
+		"crlf.md":   "---\r\ntools: []\r\n---\r\nYou help.\r\n",
+		"README.md": "# Agents\n\nNotes for whoever edits this directory.\n",
+		"prompt.md": "You are a reviewer.\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set, skipped, err := LoadSetFrontmatterOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(set.Names(), ","); got != "crlf,helper" {
+		t.Errorf("loaded %q, want crlf,helper", got)
+	}
+	if got := strings.Join(skipped, ","); got != filepath.Join(root, "README.md")+","+filepath.Join(root, "prompt.md") {
+		t.Errorf("skipped %q, want README.md and prompt.md", got)
+	}
+
+	all, err := LoadSet(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Names()) != 4 {
+		t.Errorf("LoadSet loaded %v, want all four files", all.Names())
+	}
+}
