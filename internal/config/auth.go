@@ -265,9 +265,9 @@ type AuthPolicy struct {
 	// "LOOMCYCLE_AUTH_MODE") when both set one and they differ; empty
 	// otherwise. Boot logs it.
 	ModeDecidedBy string
-	Idle         time.Duration
-	Absolute     time.Duration
-	ReauthWindow time.Duration
+	Idle          time.Duration
+	Absolute      time.Duration
+	ReauthWindow  time.Duration
 	// Gates is the configured gates, sorted by name.
 	Gates []AuthGate
 	// TrustedProxies and ClientIPHeader are the validated auth.trusted_proxies
