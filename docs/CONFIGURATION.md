@@ -2743,6 +2743,22 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   authenticate with AWS credentials for `LOOMCYCLE_BEDROCK_REGION`, and routes
   nothing to them on its own (see "Amazon Bedrock with AWS credentials" in
   [PROVIDERS.md](PROVIDERS.md)).
+- **Profile presets** — `personal` and `server` each stand for a whole stack,
+  so a deployment selects one name instead of a list. A preset may list other
+  presets and bundles under a top-level `include:` key; these two do:
+
+  | Preset | Includes | Sets itself |
+  |---|---|---|
+  | `personal` | `base`, `local`, `chat`, `document-agent` | nothing: SQLite, SQL Memory on it and the loopback address are already the defaults |
+  | `server` | `base`, `chat`, `document-agent`, `memory` | `metrics: {enabled: true, collect_system: true}` |
+
+  Neither sets a volume, a sign-in gate, retention, a listen address or a
+  secret: those are a host path, a decision about who gets in or what is
+  deleted, or a credential, and stay yours. No preset can turn on a tool that
+  reaches outside the runtime (the shell, the HTTP allowlist): those have no
+  yaml form. [`examples/profiles/`](../examples/profiles/) has a complete
+  configuration for each, and `loomcycle init [--profile server]` writes its
+  yaml.
 - **Bundles** — a preset that *also* defines an agent and its skills **inline**
   (the top-level `skills:` map, §7). `document-agent` ships the `doc/manager`
   Document Assistant agent + its four skills — no skills directory, no
@@ -3015,8 +3031,9 @@ reserved; wire a publisher before wiring a consumer.
 List + read them (works on any install, no source tree):
 
 ```sh
-loomcycle presets                  # name / kind / description table
+loomcycle presets                  # name / kind / includes / description table
 loomcycle presets show base        # print a unit's YAML (read or fork it)
+loomcycle presets show server      # the same, led by the stack it expands to
 loomcycle env-template             # print the embedded .env.insecure.example
 ```
 
@@ -3035,6 +3052,21 @@ LOOMCYCLE_PRESETS=base,oauth,document-agent loomcycle --config ~/.config/loomcyc
 
 Because `oauth` / `local` `!prepend` (§9e), `base,oauth` resolves to OAuth on top
 with base's providers retained as fallback — no restatement of the matrix.
+
+**`include:`.** A preset that lists others is expanded where it is selected:
+its includes are layered first, depth-first and in the order written, then the
+preset itself, so its own keys win over what it includes. Each unit is layered
+once, at its first position: `LOOMCYCLE_PRESETS=server,chat` gives one `chat`
+layer, under `server`, because `server` already includes it; to override a
+bundle a profile includes, do it in your own config file, which is layered
+over every preset. An include cycle or an unknown name stops the load and
+names the chain. The boot log line `config: layering N embedded
+preset(s)/bundle(s) as base: …` names the layers after expansion.
+
+`include:` works only inside a preset built into the binary. In your own
+config file it is refused with an error that says so: the schema ignores an
+unknown top-level key, so an `include: [base]` there would load nothing and
+say nothing. Compose your own stack with `LOOMCYCLE_PRESETS` and `--config`.
 
 The **full precedence chain** (base → top, last wins, RFC AN merge):
 

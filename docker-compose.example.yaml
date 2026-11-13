@@ -8,7 +8,8 @@
 # mounted config directory + the default SQLite store. The Postgres
 # upgrade path is documented below — uncomment the postgres service
 # + storage env vars when you need multi-replica HA
-# or just want a more robust storage backend.
+# or just want a more robust storage backend. For a shared installation
+# on Postgres from the start, examples/profiles/server is a complete set.
 #
 # First-run flow (do this once before `up`):
 #   mkdir -p ./config
@@ -41,6 +42,9 @@ services:
       # only surfaces in production Linux deployments.
       - ./data:/home/nonroot/.local/share/loomcycle
     environment:
+      # The agents and the model routing the config `init` wrote relies on.
+      # Remove it if you wrote the full reference config (`init --full`).
+      LOOMCYCLE_PRESETS: "personal"
       # Bearer for every /v1/* endpoint. Set in your .env file.
       LOOMCYCLE_AUTH_TOKEN: ${LOOMCYCLE_AUTH_TOKEN:?LOOMCYCLE_AUTH_TOKEN required}
       # Provider keys — set whichever you route to in your yaml.

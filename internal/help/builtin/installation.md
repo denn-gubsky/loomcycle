@@ -11,6 +11,7 @@ static binary plus the v0.11.1 `init` / `doctor` first-run flow.
 ```sh
 brew install denn-gubsky/loomcycle/loomcycle
 loomcycle init       # bootstrap ~/.config/loomcycle/loomcycle.yaml
+export LOOMCYCLE_PRESETS=personal   # the agents and model routing that config relies on
 loomcycle doctor     # verify env + provider keys + storage
 loomcycle            # start the server on 127.0.0.1:8787
 ```
@@ -39,6 +40,7 @@ docker run -d --name loomcycle \
   -p 127.0.0.1:8787:8787 \
   -v $(pwd)/config:/home/nonroot/.config/loomcycle:ro \
   -v $(pwd)/data:/home/nonroot/.local/share/loomcycle \
+  -e LOOMCYCLE_PRESETS=personal \
   -e LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32) \
   -e ANTHROPIC_API_KEY=$YOUR_KEY \
   -e LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787 \
@@ -52,8 +54,9 @@ throwaway test only.
 
 For a more declarative setup, see `docker-compose.example.yaml` in
 the repo — copy it to `docker-compose.yaml` and `docker compose up
--d`. The compose file documents the Postgres upgrade path (commented
-out by default).
+-d`. For a shared installation with Postgres, `examples/profiles/server`
+in the repo is a complete set: env templates, the yaml, and a compose
+file.
 
 **Image security posture:** based on `gcr.io/distroless/static:nonroot`
 — ~6 MB total, no shell, no package manager, runs as uid 65532 (the

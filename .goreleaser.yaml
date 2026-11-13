@@ -173,8 +173,10 @@ brews:
       Quick start (v0.11.1+):
 
         loomcycle init       # bootstrap ~/.config/loomcycle/loomcycle.yaml
+        export LOOMCYCLE_PRESETS=personal   # the agents and model routing
         # set $LOOMCYCLE_AUTH_TOKEN and at least one provider key
-        # (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY)
+        # (ANTHROPIC_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY), or
+        # run Ollama locally
         loomcycle doctor     # verify your setup
         loomcycle            # start the server on 127.0.0.1:8787
 

@@ -33,6 +33,7 @@ docker run -d --name loomcycle \
   -p 127.0.0.1:8787:8787 \
   -v $(pwd)/config:/home/nonroot/.config/loomcycle:ro \
   -v $(pwd)/data:/home/nonroot/.local/share/loomcycle \
+  -e LOOMCYCLE_PRESETS=personal \
   -e LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32) \
   -e ANTHROPIC_API_KEY=your-key-here \
   -e LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787 \
@@ -139,7 +140,8 @@ The v0.11.1 `init` + `doctor` commands make setup straightforward:
 
 ```bash
 # Inside the running container — or use the host docker run pattern above
-loomcycle init       # bootstrap loomcycle.yaml + README.md in ~/.config/loomcycle/
+loomcycle init       # bootstrap a short loomcycle.yaml + README.md in ~/.config/loomcycle/
+export LOOMCYCLE_PRESETS=personal   # the agents and model routing that config relies on
 loomcycle doctor     # verify config + env vars + providers + storage + listen
 loomcycle            # start the server (default behaviour with no args)
 ```
