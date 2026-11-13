@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/dispatch"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/local"
+	"github.com/denn-gubsky/loomcycle/internal/conversion/wire"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
@@ -43,6 +45,8 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 	}
 	h := conversionHelpers(b.cfg)
 	d := dispatch.New(dispatch.Options{
+		Scratch:       conversionSpoolDir(b.cfg),
+		Configured:    h.configured(),
 		Token:         token,
 		BuildVersion:  buildVersion,
 		QueueWait:     time.Duration(cv.QueueWaitS) * time.Second,
@@ -160,4 +164,29 @@ func conversionHelpers(cfg *config.Config) helperSettings {
 		}
 	}
 	return h
+}
+
+// configured are the helper labels whose command the core sets.
+func (h helperSettings) configured() map[string]bool {
+	return map[string]bool{
+		wire.LabelRender: h.rasterize != "",
+		wire.LabelMedia:  h.media != "",
+		wire.LabelEncode: h.encode != "",
+	}
+}
+
+// conversionSpoolDir is where the core spools a converted recording from a
+// worker: a directory of the data dir, on disk, rather than the system temp
+// directory, which a container often keeps in memory. Empty (the system temp
+// directory) when there is no data dir or it cannot be made.
+func conversionSpoolDir(cfg *config.Config) string {
+	if cfg.Env.DataDir == "" {
+		return ""
+	}
+	dir := filepath.Join(cfg.Env.DataDir, "conversion-spool")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		slog.Warn("conversion: cannot make the spool directory; using the system temp directory", "dir", dir, "err", err)
+		return ""
+	}
+	return dir
 }

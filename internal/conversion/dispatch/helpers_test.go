@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/conversion/dispatch"
+	"github.com/denn-gubsky/loomcycle/internal/conversion/wire"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/worker"
+	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
 )
@@ -129,7 +131,9 @@ func TestPool_HelperJobsMatchInProcess(t *testing.T) {
 // missing where the workers run, naming the helper, rather than waiting for a
 // slot, calling the pool down, or asking for a setting that is made.
 func TestPool_AHelperNoWorkerHasIsRefusedAsMissing(t *testing.T) {
-	d, target := pool(t, dispatch.Options{QueueWait: time.Minute})
+	// The core sets both helpers; the workers lack the programs.
+	d, target := pool(t, dispatch.Options{QueueWait: time.Minute,
+		Configured: map[string]bool{wire.LabelRender: true, wire.LabelMedia: true}})
 	helperWorker(t, target, "w1", worker.Options{
 		// Configured, but the program is not on this host.
 		Media: &convert.Helper{Key: "transcription.stt.media", Command: "loomcycle-no-such-program-x {in} {out}"},
@@ -177,5 +181,35 @@ func TestPool_AnEncodeFormatMustBeAName(t *testing.T) {
 	}
 	if _, serr := os.Stat(filepath.Join(filepath.Dir(scratch), "escape")); serr == nil {
 		t.Error("the encoder wrote outside its scratch folder")
+	}
+}
+
+// A helper the core's own configuration does not set is refused as a setting
+// to make, as it is in process: telling the operator to install a program
+// would be the wrong fix.
+func TestPool_AnUnsetHelperIsNotConfigured(t *testing.T) {
+	d, target := pool(t, dispatch.Options{Configured: map[string]bool{}})
+	helperWorker(t, target, "w1", worker.Options{})
+	waitIdle(t, d, 1)
+	_, err := d.Client().RenderPage(context.Background(), []byte("%PDF-1.4"), "en")
+	if !errors.Is(err, convert.ErrNotConfigured) || errors.Is(err, convert.ErrNoHelper) {
+		t.Errorf("RenderPage with no rasteriser set: %v, want ErrNotConfigured", err)
+	}
+}
+
+// A helper that runs past its bound on a worker fails with the helper's own
+// timeout, which names it, not a bare deadline the caller would read as its
+// own context ending.
+func TestPool_AHelperTimeoutNamesTheHelper(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "slow")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 5\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	d, target := pool(t, dispatch.Options{KindTimeouts: map[workerpb.JobKind]time.Duration{workerpb.JobKind_JOB_KIND_AUDIO_ENCODE: time.Second}})
+	helperWorker(t, target, "w1", worker.Options{Encode: &convert.Helper{Key: "speech.encode", Command: script + " {in} {out}"}})
+	waitIdle(t, d, 1)
+	_, err := d.Client().EncodeAudio(context.Background(), []byte("RIFF"), "mp3")
+	if err == nil || !strings.Contains(err.Error(), "speech.encode") || errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("an encoder past its bound: %v, want the helper's own timeout naming speech.encode", err)
 	}
 }

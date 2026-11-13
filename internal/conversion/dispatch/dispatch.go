@@ -69,6 +69,12 @@ type Options struct {
 	// Scratch is the directory a converted recording is spooled to in the
 	// core; empty is the system temp directory.
 	Scratch string
+	// Configured are the helper labels (render, media, encode) whose command
+	// the core's own configuration sets. A helper job no worker can run is
+	// refused as not configured when its label is absent here (the operator
+	// has a setting to make), and as a program missing on the workers when
+	// it is present. nil treats every helper as configured.
+	Configured map[string]bool
 	// HeartbeatTimeout drops a worker that has sent nothing for this long
 	// (three missed heartbeats).
 	HeartbeatTimeout time.Duration
@@ -397,6 +403,9 @@ func (d *Dispatcher) acquire(ctx context.Context, label string) (*slot, error) {
 	if !d.canRunLocked(label) {
 		attached := len(d.workers) > 0
 		d.mu.Unlock()
+		if attached && wire.HelperLabel(label) && d.opt.Configured != nil && !d.opt.Configured[label] {
+			return nil, convert.ErrNotConfigured
+		}
 		if attached && wire.HelperLabel(label) {
 			// Workers are up, and none has this helper's program: an install
 			// to fix where the workers run, not a pool that is down.
