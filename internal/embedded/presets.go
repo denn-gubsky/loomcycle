@@ -136,21 +136,38 @@ func Show(name string) ([]byte, error) {
 }
 
 // ResolveUnits maps an ordered selection of names to the units to layer, base
-// first. A unit that lists others under `include:` is expanded depth-first:
-// its includes come before it, in the order written, so its own keys are
-// applied last and can override what it includes. Each unit appears once, at
-// its first position: `server,chat` where server already includes chat gives
-// one chat layer, under server.
+// first. It is ExpandSelection without the notes.
+func ResolveUnits(names []string) ([]Unit, error) {
+	out, _, err := expandSelection(units, names)
+	return out, err
+}
+
+// ExpandSelection maps an ordered selection of names to the units to layer,
+// base first. A unit that lists others under `include:` is expanded
+// depth-first: its includes come before it, in the order written, so its own
+// keys are applied last and can override what it includes. Each unit appears
+// once.
+//
+// Where it appears: an includer defines the order of what it stands for. A
+// unit selected by name that a unit selected AFTER it also includes is
+// layered where that includer places it, not where it was written, and a note
+// says so. Without this, `local,personal` put `local` under `base`, and
+// base's plain tier lists replaced what local prepended: the selection looked
+// like "personal, plus local" and routed like "personal without local". A
+// name no later unit includes keeps its written position; one an EARLIER unit
+// already brought in is simply not layered again.
 //
 // An unknown name and an include cycle are errors naming the chain that led
 // there (typo protection; a cycle has no order to apply).
-func ResolveUnits(names []string) ([]Unit, error) {
-	return expandUnits(units, names)
+func ExpandSelection(names []string) (stack []Unit, notes []string, err error) {
+	return expandSelection(units, names)
 }
 
-// expandUnits is ResolveUnits over an explicit registry (the tests' seam).
-func expandUnits(reg map[string]Unit, names []string) ([]Unit, error) {
+// expandSelection is ExpandSelection over an explicit registry (the tests'
+// seam).
+func expandSelection(reg map[string]Unit, names []string) ([]Unit, []string, error) {
 	out := make([]Unit, 0, len(names))
+	var notes []string
 	done := map[string]bool{}
 	var visit func(name string, chain []string) error
 	visit = func(name string, chain []string) error {
@@ -186,12 +203,54 @@ func expandUnits(reg map[string]Unit, names []string) ([]Unit, error) {
 		out = append(out, u)
 		return nil
 	}
-	for _, n := range names {
+	for i, n := range names {
+		if done[n] {
+			continue
+		}
+		// Left for a later selected unit that includes it, which places it.
+		if includer := laterIncluder(reg, n, names[i+1:]); includer != "" {
+			notes = append(notes, fmt.Sprintf("`%s` is included by `%s`; it is layered where `%s` places it, not where it was written", n, includer, includer))
+			continue
+		}
 		if err := visit(n, nil); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return out, nil
+	return out, notes, nil
+}
+
+// laterIncluder returns the first of later whose includes, at any depth,
+// contain name; "" for none. It reports nothing about a broken include (an
+// unknown name, a cycle): the expansion itself does, with the chain.
+func laterIncluder(reg map[string]Unit, name string, later []string) string {
+	for _, cand := range later {
+		if cand == name {
+			continue
+		}
+		seen := map[string]bool{}
+		var reaches func(n string) bool
+		reaches = func(n string) bool {
+			if seen[n] {
+				return false
+			}
+			seen[n] = true
+			u, ok := reg[n]
+			if !ok {
+				return false
+			}
+			includes, _ := includesOf(u.Data)
+			for _, inc := range includes {
+				if inc == name || reaches(inc) {
+					return true
+				}
+			}
+			return false
+		}
+		if reaches(cand) {
+			return cand
+		}
+	}
+	return ""
 }
 
 // includesOf reads a unit's top-level `include:` list. The key is this

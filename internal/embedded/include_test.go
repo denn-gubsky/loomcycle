@@ -32,7 +32,7 @@ func TestExpandUnits_IncludesComeFirstInWrittenOrderThenTheUnitItself(t *testing
 		"c":   "x: 3\n",
 		"top": "include: [b, a]\nx: 4\n",
 	})
-	got, err := expandUnits(reg, []string{"top"})
+	got, _, err := expandSelection(reg, []string{"top"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,12 +52,12 @@ func TestExpandUnits_AUnitReachedTwiceIsLayeredOnceAtItsFirstPosition(t *testing
 	})
 	for selection, want := range map[string]string{
 		"server,chat":       "base,chat,server",
-		"chat,server":       "chat,base,server",
+		"chat,server":       "base,chat,server", // chat goes where server places it
 		"server,other":      "base,chat,server,other",
 		"base,server,base":  "base,chat,server",
 		"server,chat,other": "base,chat,server,other",
 	} {
-		got, err := expandUnits(reg, strings.Split(selection, ","))
+		got, _, err := expandSelection(reg, strings.Split(selection, ","))
 		if err != nil {
 			t.Fatalf("%s: %v", selection, err)
 		}
@@ -78,7 +78,7 @@ func TestExpandUnits_ACycleIsRefusedNamingTheChain(t *testing.T) {
 		"two":      {map[string]string{"a": "include: [b]\n", "b": "include: [a]\n"}, "a -> b -> a"},
 		"indirect": {map[string]string{"a": "include: [b]\n", "b": "include: [c]\n", "c": "include: [b]\n"}, "a -> b -> c -> b"},
 	} {
-		_, err := expandUnits(registry(tc.reg), []string{"a"})
+		_, _, err := expandSelection(registry(tc.reg), []string{"a"})
 		if err == nil || !strings.Contains(err.Error(), "cycle") || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v, want an include cycle naming %q", name, err, tc.want)
 		}
@@ -93,7 +93,7 @@ func TestExpandUnits_ADiamondIsNotACycle(t *testing.T) {
 		"r":   "include: [d]\n",
 		"top": "include: [l, r]\n",
 	})
-	got, err := expandUnits(reg, []string{"top"})
+	got, _, err := expandSelection(reg, []string{"top"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +107,11 @@ func TestExpandUnits_ADiamondIsNotACycle(t *testing.T) {
 func TestExpandUnits_AnUnknownNameIsRefusedNamingTheChain(t *testing.T) {
 	reg := registry(map[string]string{"a": "include: [b]\n", "b": "include: [nope]\n"})
 
-	_, err := expandUnits(reg, []string{"nope"})
+	_, _, err := expandSelection(reg, []string{"nope"})
 	if err == nil || !strings.Contains(err.Error(), `unknown preset/bundle "nope"`) || !strings.Contains(err.Error(), "available: a, b") {
 		t.Errorf("selected unknown: err = %v", err)
 	}
-	_, err = expandUnits(reg, []string{"a"})
+	_, _, err = expandSelection(reg, []string{"a"})
 	if err == nil || !strings.Contains(err.Error(), `"nope"`) || !strings.Contains(err.Error(), "a -> b -> nope") {
 		t.Errorf("included unknown: err = %v, want the chain a -> b -> nope", err)
 	}
@@ -125,7 +125,7 @@ func TestExpandUnits_AMalformedIncludeIsAnError(t *testing.T) {
 		"mapping": "include: {base: true}\n",
 		"empty":   "include: [\"\"]\n",
 	} {
-		_, err := expandUnits(registry(map[string]string{"a": body, "base": "x: 1\n"}), []string{"a"})
+		_, _, err := expandSelection(registry(map[string]string{"a": body, "base": "x: 1\n"}), []string{"a"})
 		if err == nil || !strings.Contains(err.Error(), `"a"`) || !strings.Contains(err.Error(), "include:") {
 			t.Errorf("%s: err = %v, want an include: error naming the unit", name, err)
 		}
@@ -141,6 +141,44 @@ func TestUnits_EveryShippedIncludeResolves(t *testing.T) {
 		}
 		if _, err := ResolveUnits([]string{u.Name}); err != nil {
 			t.Errorf("ResolveUnits(%s): %v", u.Name, err)
+		}
+	}
+}
+
+// A unit selected by name and also included by a unit selected after it is
+// layered where the includer places it. The includer defines the order of
+// what it stands for: `local` prepends to lists `base` sets, so `local`
+// written before a profile that includes both must still land after `base`,
+// or base's plain lists replace what local prepended.
+func TestExpandSelection_ASelectedUnitALaterOneIncludesGoesWhereTheIncluderPlacesIt(t *testing.T) {
+	reg := registry(map[string]string{
+		"base":     "x: 1\n",
+		"local":    "y: 1\n",
+		"chat":     "z: 1\n",
+		"personal": "include: [base, local, chat]\n",
+		"extra":    "w: 1\n",
+		"deep":     "include: [personal]\n",
+	})
+	for selection, want := range map[string]struct{ stack, note string }{
+		"local,personal":       {"base,local,chat,personal", "`local` is included by `personal`"},
+		"personal,local":       {"base,local,chat,personal", ""},
+		"extra,local,personal": {"extra,base,local,chat,personal", "`local` is included by `personal`"},
+		"local,extra":          {"local,extra", ""},
+		"chat,deep":            {"base,local,chat,personal,deep", "`chat` is included by `deep`"},
+	} {
+		got, notes, err := expandSelection(reg, strings.Split(selection, ","))
+		if err != nil {
+			t.Fatalf("%s: %v", selection, err)
+		}
+		if names(got) != want.stack {
+			t.Errorf("%s: stack = %s, want %s", selection, names(got), want.stack)
+		}
+		joined := strings.Join(notes, " | ")
+		if want.note == "" && joined != "" {
+			t.Errorf("%s: unexpected note %q", selection, joined)
+		}
+		if want.note != "" && !strings.Contains(joined, want.note) {
+			t.Errorf("%s: notes %q lack %q", selection, joined, want.note)
 		}
 	}
 }

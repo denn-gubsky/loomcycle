@@ -240,7 +240,7 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 			}
 		}
 	}
-	presetLayers, primaryWarnings, err := selectPresetLayers(selected, selectedBy, primary, info)
+	presetLayers, err := selectPresetLayers(selected, selectedBy, primary, info)
 	if err != nil {
 		return ConfigStack{}, err
 	}
@@ -297,7 +297,7 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 	for _, f := range stack.Files {
 		l := config.Layer{Name: f}
 		if f == primary {
-			l.Primary, l.Warnings = true, primaryWarnings
+			l.Primary = true
 		}
 		stack.Layers = append(stack.Layers, l)
 	}
@@ -309,51 +309,65 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 // selectedBy); primary is the operator's primary config file, "" for none.
 //
 // The environment wins: with selected non-empty the file's `presets:` is not
-// layered, and when the two would give different stacks the returned warning
-// says which is in force. With selected empty the file's key selects. A
+// layered, and when the two would give different stacks a warning on the
+// returned layers says which is in force. With selected empty the file's key selects. A
 // preset named in the file is trusted as the file is: it adds only what a
 // unit built into the binary carries, and no unit can set a security gate.
-func selectPresetLayers(selected []string, selectedBy, primary string, info func(string, ...any)) (layers []config.Layer, warnings []string, err error) {
+func selectPresetLayers(selected []string, selectedBy, primary string, info func(string, ...any)) (layers []config.Layer, err error) {
 	var fromFile []string
 	inFile := false
 	if primary != "" {
 		if fromFile, inFile, err = config.ReadPresetsKey(primary); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
 	var fileUnits []embedded.Unit
+	var fileNotes []string
 	if inFile {
 		// Resolved even when the environment wins: a name the binary does not
 		// carry is a mistake in the file whichever selection is in force.
-		if fileUnits, err = embedded.ResolveUnits(fromFile); err != nil {
-			return nil, nil, fmt.Errorf("presets: in %s: %w", primary, err)
+		if fileUnits, fileNotes, err = embedded.ExpandSelection(fromFile); err != nil {
+			return nil, fmt.Errorf("presets: in %s: %w", primary, err)
 		}
 	}
-	units, by := fileUnits, "presets: in "+primary
+	units, warnings, by := fileUnits, fileNotes, "presets: in "+primary
 	if len(selected) > 0 {
-		if units, err = embedded.ResolveUnits(selected); err != nil {
-			return nil, nil, err
+		if units, warnings, err = embedded.ExpandSelection(selected); err != nil {
+			return nil, err
 		}
 		by = selectedBy
 		if inFile && unitNames(units) != unitNames(fileUnits) {
 			warnings = append(warnings, fmt.Sprintf(
-				"presets: in %s names [%s], but %s selects [%s]: the environment wins and the file's list is not layered. Remove one of the two",
-				primary, strings.Join(fromFile, ", "), selectedBy, strings.Join(selected, ", ")))
+				"presets: in %s names [%s], but %s selects [%s]: %s wins and the file's list is not layered. Remove one of the two",
+				primary, strings.Join(fromFile, ", "), selectedBy, strings.Join(selected, ", "), selectedByWins(selectedBy)))
 		}
 	}
 	if len(units) == 0 {
-		return nil, warnings, nil
+		return nil, nil
 	}
 	// The names after every `include:` is expanded, so the line below says
 	// what is layered, not only what was written.
 	for _, u := range units {
 		layers = append(layers, config.Layer{Name: u.Name, Data: u.Data, Embedded: true})
 	}
+	// What the selection had to be told goes out with the load's own
+	// advisories. It rides on the last preset layer: a stack made of presets
+	// alone has no file to carry it.
+	layers[len(layers)-1].Warnings = warnings
 	// The TrueNAS install guide quotes this line's text; keep it.
 	presets := unitNames(units)
 	info(fmt.Sprintf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(units), presets),
 		"presets", presets, "selected_by", by)
-	return layers, warnings, nil
+	return layers, nil
+}
+
+// selectedByWins names what overrode the file's list: the flag is not the
+// environment.
+func selectedByWins(selectedBy string) string {
+	if selectedBy == "--preset" {
+		return "the flag"
+	}
+	return "the environment"
 }
 
 // unitNames joins unit names in layer order.

@@ -3,6 +3,7 @@ package cli
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -617,5 +618,50 @@ func TestAssembleConfigStack_ReassemblyRereadsThePresetsKey(t *testing.T) {
 	}
 	if a, b := strings.Join(layerNames(first.Layers), "|"), strings.Join(layerNames(second.Layers), "|"); a == b || !strings.Contains(b, "|chat|") {
 		t.Errorf("layers before %s, after %s: the second assembly did not pick up chat", a, b)
+	}
+}
+
+// Writing `local` before a profile that includes it must not change the
+// routing. With `local` layered before `base`, base's plain tier lists
+// replaced what local prepended: the high tier lost its local candidate and a
+// tier-high agent ran on a paid provider, with nothing said.
+func TestAssembleConfigStack_AUnitWrittenBeforeItsIncluderRoutesLikeTheIncluderAlone(t *testing.T) {
+	load := func(t *testing.T, presets string) (*config.Config, ConfigStack) {
+		t.Helper()
+		isolateLayerEnv(t)
+		t.Setenv("LOOMCYCLE_PG_DSN", "")
+		t.Setenv("LOOMCYCLE_PRESETS", presets)
+		stack, err := AssembleConfigStack(nil, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.LoadLayers(stack.Layers...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg, stack
+	}
+	alone, _ := load(t, "personal")
+	both, stack := load(t, "local,personal")
+	if got := strings.Join(stack.Presets, ","); got != "base,local,chat,document-agent,personal" {
+		t.Fatalf("presets layered = %s, want local where personal places it", got)
+	}
+	if !reflect.DeepEqual(alone.Tiers, both.Tiers) {
+		t.Errorf("tiers differ:\n personal:       %+v\n local,personal: %+v", alone.Tiers, both.Tiers)
+	}
+	if !reflect.DeepEqual(alone.ProviderPriority, both.ProviderPriority) {
+		t.Errorf("provider_priority differs: %v vs %v", alone.ProviderPriority, both.ProviderPriority)
+	}
+	if high := both.Tiers["high"]; len(high) == 0 || high[0].Model != "local-coder" {
+		t.Errorf("tiers.high = %+v, want the local candidate first", high)
+	}
+	said := false
+	for _, w := range both.Warnings {
+		if strings.Contains(w, "`local` is included by `personal`") {
+			said = true
+		}
+	}
+	if !said {
+		t.Errorf("no advisory that local was moved; warnings: %v", both.Warnings)
 	}
 }

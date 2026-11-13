@@ -3081,10 +3081,16 @@ with base's providers retained as fallback — no restatement of the matrix.
 **`include:`.** A preset that lists others is expanded where it is selected:
 its includes are layered first, depth-first and in the order written, then the
 preset itself, so its own keys win over what it includes. Each unit is layered
-once, at its first position: `LOOMCYCLE_PRESETS=server,chat` gives one `chat`
-layer, under `server`, because `server` already includes it; to override a
-bundle a profile includes, do it in your own config file, which is layered
-over every preset. An include cycle or an unknown name stops the load and
+once, and a preset decides the order of what it stands for: a unit you select
+by name that a preset selected after it also includes is layered where that
+preset places it, and an advisory says so. `LOOMCYCLE_PRESETS=local,personal`
+therefore layers `base, local, chat, document-agent, personal`, the same as
+`personal` alone (were `local` layered first, `base`'s plain tier lists would
+replace what `local` prepends). A unit a preset selected earlier already
+brought in is not layered again: `server,chat` gives one `chat` layer, under
+`server`. A unit no selected preset includes keeps its written position. To
+override a bundle a profile includes, do it in your own config file, which is
+layered over every preset. An include cycle or an unknown name stops the load and
 names the chain. The boot log line `config: layering N embedded
 preset(s)/bundle(s) as base: …` names the layers after expansion.
 
