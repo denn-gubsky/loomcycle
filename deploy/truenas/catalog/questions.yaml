@@ -386,7 +386,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_AUTH_MODE
             label: LOOMCYCLE_AUTH_MODE
-            description: 'Web UI sign-in mode: token (default; paste a token) or strict (only the gates in the yaml `auth.gates` block). A config may raise it, never lower it. (example: token)'
+            description: 'Web UI sign-in mode: token (default; paste a token) or strict (only the gates in the yaml `auth.gates` block). The stricter of this and the yaml''s `auth.mode` holds: neither lowers the other. (example: token)'
             schema:
               type: string
               default: ""

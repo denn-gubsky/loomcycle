@@ -91,6 +91,10 @@ func (b *boot) buildServer() {
 		fatal(fmt.Sprintf("auth: %v", err))
 	}
 	slog.Info("auth: Web UI sign-in", "mode", cfg.ResolvedAuth.ModeName(), "gates", len(cfg.ResolvedAuth.LoginGates()))
+	if by := cfg.ResolvedAuth.ModeDecidedBy; by != "" {
+		slog.Info("auth: auth.mode and LOOMCYCLE_AUTH_MODE differ; the stricter of the two holds",
+			"mode", cfg.ResolvedAuth.ModeName(), "decided_by", by)
+	}
 	if w := insecureCookiesWarning(&cfg.Env); w != "" {
 		slog.Warn(w)
 	}

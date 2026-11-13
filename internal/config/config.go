@@ -4154,8 +4154,9 @@ type Env struct {
 	// key held in Vault Transit (a dev server). Off by default: the Vault
 	// token travels in a header. LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1.
 	KMSVaultAllowHTTP bool
-	// AuthMode (LOOMCYCLE_AUTH_MODE: token | strict) is the fleet default for
-	// `auth.mode` (RFC FA §4); a config may raise it, never lower it.
+	// AuthMode (LOOMCYCLE_AUTH_MODE: token | strict) is the fleet's sign-in
+	// mode (RFC FA §4). The effective mode is the stricter of this and the
+	// yaml's `auth.mode`: neither lowers the other.
 	AuthMode string
 	// UIInsecureCookies (LOOMCYCLE_UI_INSECURE_COOKIES=1) lets strict mode
 	// create Web UI sessions over plain HTTP, with a cookie that is not

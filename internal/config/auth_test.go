@@ -68,19 +68,79 @@ func TestResolveAuth_ConfiguringAGateNeverFlipsTheMode(t *testing.T) {
 	}
 }
 
-func TestResolveAuth_EnvIsTheDefaultAndConfigMayNotLowerIt(t *testing.T) {
+// The effective mode is the stricter of auth.mode and LOOMCYCLE_AUTH_MODE:
+// neither plane lowers the other, and no pair is refused for disagreeing. A
+// value that is not a mode still fails the load, whichever plane holds it.
+func TestResolveAuth_ModeIsTheStricterOfYAMLAndEnv(t *testing.T) {
 	gates := map[string]AuthGateConfig{"paste": {Kind: "token"}}
-	c := &Config{Env: Env{AuthMode: "strict"}, Auth: AuthConfig{Gates: gates}}
-	if err := resolveAuth(c); err != nil || !c.ResolvedAuth.Strict() {
-		t.Fatalf("env strict as default: err=%v policy=%+v", err, c.ResolvedAuth)
+	values := []string{"", "token", "strict", " Strict ", "TOKEN", "lax", "open"}
+	// valid is the mode a value names ("" for unset), or false when it names none.
+	valid := func(v string) (string, bool) {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "":
+			return "", true
+		case "token":
+			return AuthModeToken, true
+		case "strict":
+			return AuthModeStrict, true
+		}
+		return "", false
 	}
-	c = &Config{Env: Env{AuthMode: "strict"}, Auth: AuthConfig{Mode: "token", Gates: gates}}
-	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "lower") {
-		t.Errorf("config token under env strict: err = %v, want a refusal", err)
+	for _, yaml := range values {
+		for _, env := range values {
+			c := &Config{Env: Env{AuthMode: env}, Auth: AuthConfig{Mode: yaml, Gates: gates}}
+			err := resolveAuth(c)
+			yamlMode, yamlOK := valid(yaml)
+			envMode, envOK := valid(env)
+			if !yamlOK || !envOK {
+				if err == nil {
+					t.Errorf("yaml=%q env=%q: loaded with a value that is not a mode", yaml, env)
+					continue
+				}
+				bad := "LOOMCYCLE_AUTH_MODE"
+				if envOK {
+					bad = "auth.mode"
+				}
+				if !strings.Contains(err.Error(), bad) {
+					t.Errorf("yaml=%q env=%q: err = %v, want it to name %s", yaml, env, err, bad)
+				}
+				continue
+			}
+			if err != nil {
+				t.Errorf("yaml=%q env=%q: refused: %v", yaml, env, err)
+				continue
+			}
+			got := c.ResolvedAuth.ModeName()
+			want := max(authModeRank(yamlMode), authModeRank(envMode))
+			if authModeRank(got) != want {
+				t.Errorf("yaml=%q env=%q: mode = %s, want the stricter of the two", yaml, env, got)
+			}
+			for plane, in := range map[string]string{"yaml": yamlMode, "env": envMode} {
+				if authModeRank(got) < authModeRank(in) {
+					t.Errorf("yaml=%q env=%q: mode %s is weaker than the %s asked for", yaml, env, got, plane)
+				}
+			}
+			// The plane that decided is named only when the two disagree.
+			wantBy := ""
+			if yamlMode != "" && envMode != "" && yamlMode != envMode {
+				wantBy = "auth.mode"
+				if authModeRank(envMode) > authModeRank(yamlMode) {
+					wantBy = "LOOMCYCLE_AUTH_MODE"
+				}
+			}
+			if c.ResolvedAuth.ModeDecidedBy != wantBy {
+				t.Errorf("yaml=%q env=%q: ModeDecidedBy = %q, want %q", yaml, env, c.ResolvedAuth.ModeDecidedBy, wantBy)
+			}
+		}
 	}
-	c = &Config{Env: Env{AuthMode: "token"}, Auth: AuthConfig{Mode: "strict", Gates: gates}}
-	if err := resolveAuth(c); err != nil || !c.ResolvedAuth.Strict() {
-		t.Errorf("config may raise the env default: err=%v policy=%+v", err, c.ResolvedAuth)
+}
+
+// The stricter mode holds its own requirement whichever plane asked for it:
+// strict from the environment over a yaml token still needs a gate.
+func TestResolveAuth_StrictFromEitherPlaneNeedsAGate(t *testing.T) {
+	c := &Config{Env: Env{AuthMode: "strict"}, Auth: AuthConfig{Mode: "token"}}
+	if err := resolveAuth(c); err == nil || !strings.Contains(err.Error(), "interactive gate") {
+		t.Fatalf("err = %v, want the lock-out refusal", err)
 	}
 }
 

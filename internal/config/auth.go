@@ -15,7 +15,7 @@ import (
 // RFC FA: how people sign in to the Web UI.
 //
 //	auth:
-//	  mode: strict                 # token (default) | strict; env LOOMCYCLE_AUTH_MODE
+//	  mode: strict                 # token (default) | strict; the stricter of this and LOOMCYCLE_AUTH_MODE holds
 //	  session: { idle: 8h, absolute: 168h, reauth_window: 15m }
 //	  gates:
 //	    paste: { kind: token, label: "Access token" }
@@ -260,7 +260,11 @@ type AuthPasswordGate struct {
 // the default lifetimes, so a Config built without validate (tests) behaves
 // like an upgrade with no `auth:` block.
 type AuthPolicy struct {
-	Mode         string
+	Mode string
+	// ModeDecidedBy names the plane whose value Mode is ("auth.mode" or
+	// "LOOMCYCLE_AUTH_MODE") when both set one and they differ; empty
+	// otherwise. Boot logs it.
+	ModeDecidedBy string
 	Idle         time.Duration
 	Absolute     time.Duration
 	ReauthWindow time.Duration
@@ -408,10 +412,11 @@ func parseSessionDuration(where, v string, def time.Duration) (time.Duration, er
 
 // resolveAuth validates c.Auth and fills c.ResolvedAuth.
 //
-// The mode is the yaml value when set, else LOOMCYCLE_AUTH_MODE, else token.
-// A yaml value below the env value is refused rather than silently winning: an
-// operator who sets the fleet to strict should not be undone by one config
-// file, and a config that wants less has to say so where the fleet is set.
+// The mode is the stricter of auth.mode and LOOMCYCLE_AUTH_MODE (token when
+// neither is set). Neither plane lowers the other: an operator who sets the
+// fleet to strict in the environment is not undone by one config file, and a
+// config that asks for strict is not undone by an environment left at token.
+// Two values that disagree are not an error; the stricter one holds.
 func resolveAuth(c *Config) error {
 	envMode, err := parseAuthMode("LOOMCYCLE_AUTH_MODE", c.Env.AuthMode)
 	if err != nil {
@@ -421,18 +426,20 @@ func resolveAuth(c *Config) error {
 	if err != nil {
 		return err
 	}
-	mode := cfgMode
-	if mode == "" {
+	mode, decidedBy := AuthModeToken, ""
+	if authModeRank(cfgMode) > authModeRank(mode) {
+		mode = cfgMode
+	}
+	if authModeRank(envMode) > authModeRank(mode) {
 		mode = envMode
 	}
-	if mode == "" {
-		mode = AuthModeToken
+	if cfgMode != "" && envMode != "" && cfgMode != envMode {
+		decidedBy = "auth.mode"
+		if mode == envMode {
+			decidedBy = "LOOMCYCLE_AUTH_MODE"
+		}
 	}
-	if cfgMode != "" && envMode != "" && authModeRank(cfgMode) < authModeRank(envMode) {
-		return fmt.Errorf("auth.mode: %s would lower LOOMCYCLE_AUTH_MODE=%s; unset LOOMCYCLE_AUTH_MODE "+
-			"or set the same mode in both", cfgMode, envMode)
-	}
-	p := AuthPolicy{Mode: mode}
+	p := AuthPolicy{Mode: mode, ModeDecidedBy: decidedBy}
 	if p.Idle, err = parseSessionDuration("auth.session.idle", c.Auth.Session.Idle, DefaultSessionIdle); err != nil {
 		return err
 	}
