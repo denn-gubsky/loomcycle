@@ -2,36 +2,46 @@ package promptinject
 
 import (
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
 )
 
-// TestPlaceholderFamilies_ExactlySet pins the set of {{<keyword>:…}} families
+// TestPlaceholderFamilies_ExactlySet pins the set of {{<keyword>…}} families
 // the single-pass expander recognises. Each family is a reach a system prompt
 // gains at every run start, spawn and resume, so adding one must fail this
 // test and be argued for, as widening the tool allowlist must.
+//
+// The families are read from placeholderFamilyPatterns, the list the combined
+// regexes are built from, so a family added to the expander cannot escape the
+// pin: each pattern must open with `{{` and one keyword, and the set of
+// keywords must be exactly the one below. The ${var.…} family is apart: it is
+// joined only into combinedWithVarsRe, and only when a caller supplies values.
 func TestPlaceholderFamilies_ExactlySet(t *testing.T) {
-	candidates := []string{
-		"memory", "tool", "document", "identity", "help",
-		"file", "url", "env", "exec", "skill", "agent", "var", "include", "secret",
+	keyword := regexp.MustCompile(`^\(\\\\\?\)\\\{\\\{\\s\*([a-z]+)`)
+	set := map[string]bool{}
+	for i, p := range placeholderFamilyPatterns {
+		m := keyword.FindStringSubmatch(p)
+		if m == nil {
+			t.Fatalf("family pattern %d does not open with an escapable {{<keyword>: %s", i, p)
+		}
+		set[m[1]] = true
 	}
 	var got []string
-	for _, kw := range candidates {
-		// Each family's simplest accepted shape: a bare keyword ({{identity}})
-		// or keyword:argument.
-		if combinedPlaceholderRe.MatchString("{{"+kw+"}}") ||
-			combinedPlaceholderRe.MatchString("{{"+kw+":core_blocks}}") ||
-			combinedPlaceholderRe.MatchString("{{"+kw+":Context.tools}}") ||
-			combinedPlaceholderRe.MatchString("{{"+kw+":/a/b}}") ||
-			combinedPlaceholderRe.MatchString("{{"+kw+":Document/search}}") {
-			got = append(got, kw)
-		}
+	for k := range set {
+		got = append(got, k)
 	}
 	sort.Strings(got)
 	want := []string{"document", "help", "identity", "memory", "tool"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("placeholder families changed: got %v, want %v", got, want)
+	}
+	if want := "(?i)" + strings.Join(placeholderFamilyPatterns, "|"); combinedPlaceholderRe.String() != want {
+		t.Fatalf("combinedPlaceholderRe is not built from placeholderFamilyPatterns alone")
+	}
+	if want := "(?i)" + strings.Join(placeholderFamilyPatterns, "|") + "|" + varPlaceholderPattern; combinedWithVarsRe.String() != want {
+		t.Fatalf("combinedWithVarsRe is not placeholderFamilyPatterns plus the variable family")
 	}
 }
 
@@ -63,7 +73,7 @@ func TestExpand_HelpMissingBodyRendersNothing(t *testing.T) {
 		t.Fatalf("got %q, want the placeholder removed", got)
 	}
 	// A malformed one that got past validation is removed the same way.
-	if got := Expand("a{{help:Document search}}b", ExpandInput{}); got != "ab" {
+	if got := Expand("a{{help:a/b/c}}b", ExpandInput{}); got != "ab" {
 		t.Fatalf("got %q, want the malformed placeholder removed", got)
 	}
 }
@@ -95,15 +105,53 @@ func TestExpand_PlaceholderInsideHelpBodyIsNotExpanded(t *testing.T) {
 
 func TestHelpTopics_MalformedAndEscaped(t *testing.T) {
 	s := `{{help:Document/search}} {{ HELP : scopes }} \{{help:Memory/recall}} ` +
-		`{{help:}} {{help:Document search}} {{help:Document.search}} {{help:${var.t}}} {{help:../x}} {{help:Document/search}}`
-	if got, want := HelpTopics(s), []string{"Document/search", "scopes", "Document/search"}; !reflect.DeepEqual(got, want) {
+		`{{help:}} {{help:Document search}} {{help:Document.search}} {{help:${var.t}}} {{help:../x}} {{help:a/b/c}} {{help:Document/search}}`
+	if got, want := HelpTopics(s), []string{"Document/search", "scopes", "Document/search", "Document/search", "Document/search"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("HelpTopics = %v, want %v", got, want)
 	}
 	if got, want := ReferencesHelpTopics(s), []string{"Document/search", "scopes"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("ReferencesHelpTopics = %v, want %v", got, want)
 	}
-	if got, want := MalformedHelpRefs(s), []string{"", "Document search", "Document.search", "${var.t", "../x"}; !reflect.DeepEqual(got, want) {
+	if got, want := MalformedHelpRefs(s), []string{"", "${var.t", "../x", "a/b/c"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("MalformedHelpRefs = %v, want %v", got, want)
+	}
+}
+
+// TestHelpPlaceholder_NeverSwallowsAnotherPlaceholder: a help opener with no
+// close of its own must not match up to the close of the NEXT placeholder.
+// With a topic pattern that admitted `{`, each of these matched as one help
+// placeholder: the inner {{identity}} / {{tool:…}} / {{memory:…}} vanished
+// with it at render, and validation saw only a "malformed help topic". Now the
+// inner placeholder expands as its own family and validation names the
+// unclosed help opener.
+func TestHelpPlaceholder_NeverSwallowsAnotherPlaceholder(t *testing.T) {
+	in := ExpandInput{
+		Identity:     &IdentityFacts{DisplayName: "Alice"},
+		ToolResults:  map[ToolRef]string{contextTools: "TOOL-INVENTORY"},
+		Sections:     map[Variant]string{VariantUserInfo: "PROFILE"},
+		HelpExamples: map[string]string{"Document/search": searchCard},
+	}
+	for prompt, want := range map[string]string{
+		"{{help:{{identity}}":           "Alice",
+		"{{help:{{tool:Context.tools}}": "TOOL-INVENTORY",
+		"{{help:{{memory:user_info}}":   "PROFILE",
+	} {
+		got := Expand(prompt, in)
+		if !strings.Contains(got, want) {
+			t.Errorf("%s: the inner placeholder was swallowed; got %q", prompt, got)
+		}
+		// The unclosed opener is literal text, not part of another match: a
+		// help match that reached into {{identity}} was dispatched to the
+		// identity family and ate the opener with it.
+		if !strings.HasPrefix(got, "{{help:") {
+			t.Errorf("%s: the help opener was consumed with the inner placeholder; got %q", prompt, got)
+		}
+		if len(HelpTopics(prompt)) != 0 {
+			t.Errorf("%s: HelpTopics = %v, want none", prompt, HelpTopics(prompt))
+		}
+		if bad := MalformedHelpRefs(prompt); len(bad) != 1 {
+			t.Errorf("%s: MalformedHelpRefs = %v, want the unclosed opener named", prompt, bad)
+		}
 	}
 }
 

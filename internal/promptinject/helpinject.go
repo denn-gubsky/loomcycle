@@ -26,9 +26,11 @@
 //     ReplaceAllStringFunc pass of ExpandWithRefusals, which never rescans its
 //     own output, so `{{…}}` or `${…}` text inside an example stays literal.
 //   - Closed set. Only a topic the embedded corpus holds, and that has call
-//     examples, is accepted; config load and AgentDef create/fork refuse any
+//     examples, is accepted; every surface where a prompt is authored (config
+//     load, AgentDef create/fork, register_agent, team templates) refuses any
 //     other (and a malformed placeholder) with a message naming it, so a typo
-//     cannot sit in a prompt that looks wired and renders nothing.
+//     cannot sit in a prompt that looks wired and renders nothing. A stored
+//     definition is never refused over it when read.
 //
 // The body is rendered UNFRAMED, like the trusted memory variants: it is
 // loomcycle's own text, and its point is to be copied — framing it "reference
@@ -55,8 +57,9 @@ import (
 // order, and sharing would let a large memory section above the call card
 // truncate the samples the agent needs to make its calls.
 //
-// Config load and AgentDef create/fork refuse a prompt whose examples exceed
-// it, so at run time the budget only bites when an article grew between the
+// The budget is per expanded text: the agent's system prompt, and separately
+// each team template, since each is a separate pass. Every authoring surface
+// refuses a text whose examples exceed it, so at run time the budget only bites when an article grew between the
 // binary that accepted a stored definition and the one rendering it; then
 // whole lines are dropped (a cut JSON object would teach a broken call) and a
 // marker says so.
@@ -68,26 +71,49 @@ const helpTruncMarker = "…[help examples truncated]"
 // helpPlaceholderPattern matches an OPTIONAL leading backslash (the escape)
 // followed by {{help:TOPIC}}.
 //
-// The topic is matched LOOSELY — anything up to the first `}` — and validated
-// in Go, for the reason the tool family gives: `{{help:Document search}}` or
-// `{{help:${var.t}}}` must MATCH the family so MalformedHelpRefs refuses it,
-// rather than sitting in the prompt as literal text the operator believes is
-// wired. Excluding `}` keeps two placeholders on one line two matches.
-const helpPlaceholderPattern = `(\\?)\{\{\s*help\s*:([^}]*)\}\}`
+// The topic is matched loosely — any run of characters other than a brace —
+// and validated in Go, for the reason the tool family gives: `{{help:../x}}`
+// must MATCH the family so MalformedHelpRefs refuses it, rather than sitting in
+// the prompt as literal text the operator believes is wired.
+//
+// Braces are excluded in BOTH directions. Excluding `}` keeps two placeholders
+// on one line two matches. Excluding `{` means a help match can never contain
+// the opener of another placeholder: with `[^}]*`, `{{help:{{identity}}`
+// matched as one help placeholder and swallowed the {{identity}} inside it. An
+// opener with no well-formed close (`{{help:${var.t}}}`) therefore does not
+// match here; MalformedHelpRefs finds it through helpOpenerRe instead.
+const helpPlaceholderPattern = `(\\?)\{\{\s*help\s*:([^{}]*)\}\}`
 
 var helpPlaceholderRe = regexp.MustCompile(`(?i)` + helpPlaceholderPattern)
 
-// helpTopicRe is the shape of a topic name: `<topic>`, `<Tool>` or
-// `<Tool>/<op>`, as the help index names them. Case-sensitive, as the index
-// is: the placeholder names one article exactly.
-var helpTopicRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*(?:/[A-Za-z][A-Za-z0-9_-]*)?$`)
+// helpOpenerRe finds every `{{help:` opener, so validation can refuse one that
+// does not close as a placeholder (it would otherwise stay in the prompt as
+// literal text, or have a variable substituted into it).
+var helpOpenerRe = regexp.MustCompile(`(?i)(\\?)\{\{\s*help\s*:`)
 
-// ParseHelpTopic trims a raw topic token and reports whether it has the shape
-// of a topic name. Whether the topic EXISTS is the caller's check: this
-// package does not hold the corpus.
+// helpAtStartRe is helpPlaceholderRe anchored, to ask whether an opener
+// begins a whole placeholder.
+var helpAtStartRe = regexp.MustCompile(`(?i)^` + helpPlaceholderPattern)
+
+// helpTopicRe is the shape of a topic name: `<topic>`, `<Tool>` or
+// `<Tool>/<op>`. The separator may also be written `.` or a space, the way a
+// model writes the call it is about to make; ParseHelpTopic folds it to `/`.
+// Case is left as written: which article it names (case-insensitively, or
+// through an alias) is the corpus's answer, not this grammar's.
+var helpTopicRe = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_-]*)(?:(?:\s*[/.]\s*|\s+)([A-Za-z][A-Za-z0-9_-]*))?$`)
+
+// ParseHelpTopic trims a raw topic token, folds its separator to `/`, and
+// reports whether it has the shape of a topic name. Whether the topic EXISTS
+// is the caller's check: this package does not hold the corpus.
 func ParseHelpTopic(raw string) (string, bool) {
-	t := strings.TrimSpace(raw)
-	return t, helpTopicRe.MatchString(t)
+	m := helpTopicRe.FindStringSubmatch(strings.TrimSpace(raw))
+	if m == nil {
+		return strings.TrimSpace(raw), false
+	}
+	if m[2] == "" {
+		return m[1], true
+	}
+	return m[1] + "/" + m[2], true
 }
 
 // ReferencesHelp reports whether s contains any {{help:…}} placeholder,
@@ -127,23 +153,41 @@ func ReferencesHelpTopics(s string) []string {
 	return out
 }
 
-// MalformedHelpRefs returns the distinct raw tokens of unescaped {{help:…}}
-// placeholders whose topic is not shaped like a topic name (empty, spaces, a
-// `.` separator, a variable). Validation refuses them; an escaped placeholder
-// is a literal and is ignored.
+// MalformedHelpRefs returns the distinct raw tokens of unescaped `{{help:`
+// openers that do not form a usable placeholder: a topic not shaped like a
+// topic name (empty, a path, a third segment), or an opener that never closes
+// as a placeholder (`{{help:${var.t}}}`, `{{help:{{identity}}`). Validation
+// refuses them; an escaped opener is a literal and is ignored.
 func MalformedHelpRefs(s string) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, m := range helpPlaceholderRe.FindAllStringSubmatch(s, -1) {
-		if m[1] == `\` {
+	add := func(raw string) {
+		if !seen[raw] {
+			seen[raw] = true
+			out = append(out, raw)
+		}
+	}
+	for _, loc := range helpOpenerRe.FindAllStringSubmatchIndex(s, -1) {
+		if loc[3] > loc[2] {
+			continue // escaped → literal
+		}
+		rest := s[loc[0]:]
+		if m := helpAtStartRe.FindStringSubmatch(rest); m != nil {
+			if _, ok := ParseHelpTopic(m[2]); !ok {
+				add(strings.TrimSpace(m[2]))
+			}
 			continue
 		}
-		raw := strings.TrimSpace(m[2])
-		if _, ok := ParseHelpTopic(raw); ok || seen[raw] {
-			continue
+		// No well-formed close: name what follows the colon, up to the first
+		// `}}` or a short cut, so the message points at the text.
+		after := s[loc[1]:]
+		if i := strings.Index(after, "}}"); i >= 0 {
+			after = after[:i]
 		}
-		seen[raw] = true
-		out = append(out, raw)
+		if len(after) > 40 {
+			after = after[:40]
+		}
+		add(strings.TrimSpace(after))
 	}
 	return out
 }
