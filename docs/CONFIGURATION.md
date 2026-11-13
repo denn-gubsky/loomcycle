@@ -4036,6 +4036,38 @@ Each family's `mode` is `off` (the default), `prune` or `export+prune`; any othe
 
 The audit stream's retention is separate and stays in the environment (`LOOMCYCLE_AUDIT_RETENTION_DAYS`), with the rest of the audit posture.
 
+## 9n. Conversion workers (`conversion:`)
+
+File conversion is the one kind of work whose memory is set by what someone put in a file. One Office document at every extraction cap can take about 700 MiB. By default it runs inside the runtime's own process, so a file that exhausts memory takes every run on the replica with it. `conversion.mode: local` moves extraction into **conversion workers**: child processes of the same binary that the runtime starts, supervises and restarts (RFC GO).
+
+```yaml
+conversion:
+  mode: local              # inprocess (default) | local
+  queue_wait_s: 60         # how long a conversion waits for a free worker before a busy answer
+  quarantine_ttl_s: 3600   # how long a file that killed a worker is refused
+  local:
+    workers: 2             # children kept running (1–64)
+    memory_limit_mb: 1024  # each child's GOMEMLIMIT (at least 128)
+```
+
+What `local` does:
+
+- The runtime listens on a Unix socket in a private directory (mode 0700) and starts `local.workers` copies of itself as `loomcycle worker`. Each child has `GOMEMLIMIT` set from `local.memory_limit_mb`, and on Linux raises its own `oom_score_adj` to 1000, so that in a shared cgroup the kernel kills a worker before the runtime. A child exits when the runtime does.
+- A child gets a minimal environment: `PATH`, `HOME`, the temp-directory and locale variables, its token and its memory limit. It holds no provider key, no store connection and no setting of the runtime's, and it is never given a path. The runtime keeps every grant, fence and inbox write, and sends the worker only the file's bytes, which it spools to its own temp directory.
+- `File op=extract` and the PDF page cuts of an OCR pass run on the workers. Page rendering, media conversion, speech encoding and image re-encoding still run in the runtime in this release.
+- A worker that dies mid-job fails that one call, and the file is quarantined for `quarantine_ttl_s`: it is refused with "crashed the file converter" instead of being sent to the next worker. A dead child is started again with backoff (1 s, doubling to 30 s). With every worker busy, a call waits `queue_wait_s` and is then answered as a busy server the model may retry. With no worker attached at all, the call is refused. The runtime never falls back to converting in its own process.
+- `LOOMCYCLE_EXTRACT_CONCURRENCY` still bounds `op=import`; extraction is bounded by the workers. The `loomcycle_extractions_*` gauges then report the pool.
+
+`/metrics` adds `loomcycle_conversion_workers`, `_slots`, `_idle_slots`, `_inflight`, `_waiting`, `_quarantined_files`, and the counters `loomcycle_conversion_jobs_total{kind,outcome}`, `loomcycle_conversion_worker_deaths_total` and `loomcycle_conversion_worker_respawns_total`.
+
+The worker reads these variables. In `local` mode the runtime sets them for its children; they are listed for an operator who runs `loomcycle worker` by hand:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LOOMCYCLE_WORKER_TOKEN` | — | The secret a worker presents to the dispatcher, compared in constant time. In `local` mode the runtime makes a new one at each start and passes it to its children only. |
+| `LOOMCYCLE_WORKER_SLOTS` | 1 | Conversions one worker runs at once, 1–64. One means a worker that dies takes exactly the job that killed it. |
+| `LOOMCYCLE_WORKER_SCRATCH` | the system temp directory | Where a worker spools each job's input while it converts it. Never shared with the runtime. |
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.
