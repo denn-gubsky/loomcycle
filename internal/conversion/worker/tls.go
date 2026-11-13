@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -18,7 +19,8 @@ import (
 func ClientTLS(caFile, certFile, keyFile, serverName string) (*tls.Config, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName}
 	if caFile != "" {
-		pem, err := os.ReadFile(caFile)
+		// The operator's LOOMCYCLE_WORKER_TLS_CA, never a path from a job.
+		pem, err := os.ReadFile(filepath.Clean(caFile))
 		if err != nil {
 			return nil, fmt.Errorf("the dispatcher CA: %w", err)
 		}
