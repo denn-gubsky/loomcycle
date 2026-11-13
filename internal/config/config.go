@@ -5035,8 +5035,13 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 
 	applyEnvCore(cfg)
 
-	// A removed variable is deleted with no compatibility read; say so once
-	// at load, where boot, `validate` and `doctor` all print advisories.
+	// A removed variable is deleted with no compatibility read. One whose
+	// value asked for something tighter than what now applies stops the load;
+	// the rest are said once, where boot, `validate` and `doctor` all print
+	// advisories.
+	if refused := retiredEnvRefusals(os.Environ(), &cfg.Storage); len(refused) > 0 {
+		return nil, fmt.Errorf("retired environment variables are set to something tighter than this version applies, and ignoring them would loosen this deployment; act on each, then remove its line:\n  %s", strings.Join(refused, "\n  "))
+	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
 	applyEnvStorage(cfg)
