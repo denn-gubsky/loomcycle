@@ -30,20 +30,29 @@ func TestTimeoutScaling_DefaultsToMeasureWithTheReferenceMachine(t *testing.T) {
 	}
 }
 
-func TestTimeoutScaling_EnvOverridesTheYAML(t *testing.T) {
-	t.Setenv("LOOMCYCLE_TIMEOUT_SCALING", "OFF")
-	t.Setenv("LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS", "50")
-	t.Setenv("LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER", "nope")
-	cfg, err := loadYAMLString(t, scalingBaseYAML+"timeout_scaling: {mode: measure, max_multiplier: 6}\n")
+// The block is the only source: the three variables that used to override it
+// are not read, and each is reported.
+func TestTimeoutScaling_TheYAMLIsTheOnlySource(t *testing.T) {
+	cfg, err := loadYAMLString(t, scalingBaseYAML+"timeout_scaling: {mode: off, reference: {decode_tps: 50}, max_multiplier: 6}\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ts := cfg.TimeoutScaling
-	if ts.Mode != "off" || ts.Reference.DecodeTPS != 50 || ts.MaxMultiplier != 6 {
-		t.Fatalf("timeout_scaling = %+v, want mode off, decode 50 (env), max 6 (yaml; the bad env value ignored)", ts)
+	if ts := cfg.TimeoutScaling; ts.Mode != "off" || ts.Reference.DecodeTPS != 50 || ts.MaxMultiplier != 6 {
+		t.Fatalf("timeout_scaling = %+v, want mode off, decode 50, max 6", ts)
 	}
-	if !strings.Contains(strings.Join(cfg.Warnings, "\n"), "LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER") {
-		t.Errorf("an unparseable env value was ignored silently; warnings: %v", cfg.Warnings)
+
+	t.Setenv("LOOMCYCLE_TIMEOUT_SCALING", "off")
+	t.Setenv("LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS", "50")
+	t.Setenv("LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER", "3")
+	cfg, err = loadYAMLString(t, scalingBaseYAML+"timeout_scaling: {max_multiplier: 6}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ts := cfg.TimeoutScaling; ts.Mode != "measure" || ts.Reference.DecodeTPS != 100 || ts.MaxMultiplier != 6 {
+		t.Fatalf("timeout_scaling = %+v, want the yaml and its defaults (measure, 100, 6): the variables are retired", ts)
+	}
+	for _, name := range []string{"LOOMCYCLE_TIMEOUT_SCALING", "LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS", "LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER"} {
+		requireRetiredAdvisory(t, cfg, name)
 	}
 }
 

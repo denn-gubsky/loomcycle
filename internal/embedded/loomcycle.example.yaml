@@ -145,6 +145,23 @@ tiers:
 #       max_wall_seconds: 86400    # its lifetime, waits included (default 24h); no
 #                                  # agent or run field can raise it
 
+# ─── Model throughput measurement ─────────────────────────────────────
+# loomcycle times every model call and keeps, per (provider, model), how much
+# slower than a reference machine the model runs, and reports it (with the
+# timeout multiplier it implies) on GET /v1/_routing, /metrics and
+# Context op=self. `measure` records and reports only: no timeout changes.
+# timeout_scaling:
+#   mode: measure            # measure (default) | off; `on` is not available yet
+#   reference:
+#     decode_tps: 100        # output tokens/s that count as slowdown 1
+#     prefill_tps: 2000      # prompt tokens/s
+#     ttft_ms: 1000          # fixed first-token cost
+#   max_multiplier: 8        # ceiling on the multiplier; also clips each sample
+#   min_samples: 5           # a model's own estimate is used from this many calls
+#   local_prior: 4           # assumed multiplier for a local provider before that
+#   models:                  # per model, keyed provider/model or by a `models:` alias
+#     ollama-local/qwen3.6:latest: { decode_tps: 20 }
+
 # ─── User tiers (v0.8.2+)─────────────────────────────────────────────
 # Operator-defined per-user-tier overlay on the resolver matrix above.
 # Each named tier scopes WHICH providers are eligible for runs belonging

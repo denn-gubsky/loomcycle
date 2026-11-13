@@ -160,6 +160,11 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_CODE_AGENTS_DETERMINISTIC":       "set providers.code-js.options.deterministic in the yaml",
 	"LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS": "set providers.code-js.options.run_timeout_seconds in the yaml",
 	"LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS":    "set providers.code-js.options.max_wall_seconds in the yaml",
+
+	// Moved to the yaml `timeout_scaling:` block.
+	"LOOMCYCLE_TIMEOUT_SCALING":                "set timeout_scaling.mode in the yaml",
+	"LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS":  "set timeout_scaling.reference.decode_tps in the yaml",
+	"LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER": "set timeout_scaling.max_multiplier in the yaml",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

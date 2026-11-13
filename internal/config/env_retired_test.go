@@ -344,6 +344,12 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_OLLAMA_NUM_CTX", value: "32768"},
 		{name: "LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU", value: "99"},
 
+		// Timeout scaling measures and changes no timeout, so no value of its
+		// variables tightened anything.
+		{name: "LOOMCYCLE_TIMEOUT_SCALING", value: "off"},
+		{name: "LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS", value: "50"},
+		{name: "LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER", value: "2"},
+
 		// The debug flags only added log lines.
 		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
 		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},

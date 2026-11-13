@@ -5007,7 +5007,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	}
 	applyEnvMCP(cfg)
 
-	// RFC DT: the throughput-measurement block's env overrides + defaults.
+	// The throughput-measurement block's defaults.
 	applyTimeoutScaling(cfg)
 
 	// RFC BA: skills are on-demand (loaded via the Skill tool), not bundled

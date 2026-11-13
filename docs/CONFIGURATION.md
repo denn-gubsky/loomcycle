@@ -686,7 +686,7 @@ timeout_scaling:
 
 A model's `decode_tps` / `multiplier` (at most one) is a starting estimate, used only until the model has `min_samples` calls. Its `max_multiplier` is a **bound**, not an estimate: it replaces the global cap for that model at every sample count — both the clip on each sample and the clamp on the multiplier — so a model you know runs ~20× slower than the reference (a few tokens/s on a small box) can be measured as 20× instead of saturating at the global 8. It must be between 1 and 100, the same ceiling as the global `max_multiplier`, so every scaled budget stays bounded; a `multiplier` beside it must not exceed it. The routing view's `throughput` block and `Context op=self` `timeouts` report the cap in effect as `max_multiplier`. (When timeouts are scaled in a later version, the per-purpose clamps — e.g. a tighter one for scheduler fires — still apply on top of this cap.)
 
-Env overrides (they win over the yaml): `LOOMCYCLE_TIMEOUT_SCALING` (mode), `LOOMCYCLE_TIMEOUT_SCALING_REFERENCE_TPS` (`reference.decode_tps`), `LOOMCYCLE_TIMEOUT_SCALING_MAX_MULTIPLIER`. A change to the block needs a restart (a reload reports it `restart_required`).
+The block is the only source: the `LOOMCYCLE_TIMEOUT_SCALING*` variables that used to override it are no longer read (one still set is reported at boot). A change to the block needs a restart (a reload reports it `restart_required`).
 
 ### Compaction — tune it for the prefill cost
 
