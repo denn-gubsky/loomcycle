@@ -173,6 +173,25 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "sqlite", yaml: StorageConfig{Backend: "sqlite"}, also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}},
 		{name: "LOOMCYCLE_STORAGE_BACKEND", value: ""}, // was ignored
 
+		// The SQL Memory switch: the old read turned it on for exactly "1" and
+		// otherwise left the yaml's answer. Refused when that differs from
+		// what this version infers from the store.
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", refused: true}, // SQLite: now on
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "", refused: true},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "true", refused: true}, // was not "1": it stayed off
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db", "LOOMCYCLE_SQLMEM_PG_DSN=postgres://u@h/aux"}, refused: true},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}, refused: true},                                       // Postgres, no aux DSN: now off
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", yaml: StorageConfig{PgDSN: "postgres://u@h/db", SqlMemPgDSN: "${LOOMCYCLE_SQLMEM_PG_DSN}"}, refused: true}, // a reference is not a DSN
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", yaml: StorageConfig{SqlMemEnabled: boolPtr(false)}, refused: true},                                         // the variable used to win over the yaml
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1"},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db", "LOOMCYCLE_SQLMEM_PG_DSN=postgres://u@h/aux"}},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}}, // off then, off now
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", yaml: StorageConfig{SqlMemEnabled: boolPtr(false)}},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", yaml: StorageConfig{SqlMemEnabled: boolPtr(true)}}, // the yaml turned it on then too
+		// On Postgres with no aux DSN an explicit yaml true stops the boot when
+		// SQL Memory is opened, as it did; that is not this rule's to refuse.
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", yaml: StorageConfig{PgDSN: "postgres://u@h/db", SqlMemEnabled: boolPtr(true)}},
+
 		// Retired, and no value of it was a tightening.
 		{name: "LOOMCYCLE_SSE_KEEPALIVE_MS", value: "0"},
 		{name: "LOOMCYCLE_SNAPSHOT_MAX_BYTES", value: "1"},

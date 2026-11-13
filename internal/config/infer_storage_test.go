@@ -73,19 +73,57 @@ func TestSQLMem_InferredFromStoreUnlessYAMLSays(t *testing.T) {
 	}
 }
 
-// The retired switch is not read: =0 does not turn SQL Memory off on SQLite
-// (the yaml key does), and the operator is told.
-func TestSQLMem_RetiredVariableIsNotRead(t *testing.T) {
-	t.Setenv("LOOMCYCLE_PG_DSN", "")
-	t.Setenv("LOOMCYCLE_SQLMEM_ENABLED", "0")
-	cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n")
-	if err != nil {
-		t.Fatal(err)
+// The retired switch is not read. A value that kept SQL Memory off where it
+// is now on, or asked for it where it now stays off, stops the load; a value
+// that agrees with what the store gives is only advised.
+func TestLoadLayers_RefusesARetiredSQLMemSwitchThatDisagreesWithTheStore(t *testing.T) {
+	const pg = "postgres://u:hunter2@h/db"
+	for _, tc := range []struct {
+		name, value, pgDSN, want string
+	}{
+		{"off on sqlite", "0", "", "storage.sqlmem_enabled: false"},
+		{"on with postgres and no aux DSN", "1", pg, "LOOMCYCLE_SQLMEM_PG_DSN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_PG_DSN", tc.pgDSN)
+			t.Setenv("LOOMCYCLE_SQLMEM_PG_DSN", "")
+			t.Setenv("LOOMCYCLE_SQLMEM_ENABLED", tc.value)
+			_, err := loadYAMLString(t, "defaults: {provider: mock}\n")
+			if err == nil {
+				t.Fatal("the load accepted a retired SQL Memory switch that disagrees with the store")
+			}
+			msg := err.Error()
+			for _, want := range []string{"LOOMCYCLE_SQLMEM_ENABLED", tc.want} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error does not name %q: %s", want, msg)
+				}
+			}
+			if strings.Contains(msg, "hunter2") || strings.Contains(msg, "@h/db") {
+				t.Errorf("error carries the DSN: %s", msg)
+			}
+		})
 	}
-	if !cfg.Storage.SQLMemOn() {
-		t.Error("SQLMemOn = false, want true")
+
+	for _, tc := range []struct {
+		name, value, yaml string
+		want              bool
+	}{
+		{"on on sqlite", "1", "", true},
+		{"off with the yaml turning it off", "0", "storage:\n  sqlmem_enabled: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_PG_DSN", "")
+			t.Setenv("LOOMCYCLE_SQLMEM_ENABLED", tc.value)
+			cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n"+tc.yaml)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Storage.SQLMemOn(); got != tc.want {
+				t.Errorf("SQLMemOn = %v, want %v", got, tc.want)
+			}
+			requireRetiredAdvisory(t, cfg, "LOOMCYCLE_SQLMEM_ENABLED")
+		})
 	}
-	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_SQLMEM_ENABLED")
 }
 
 // The retired variable no longer selects the backend. Naming another backend

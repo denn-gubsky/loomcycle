@@ -209,6 +209,12 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// operator's Postgres was expected, or the reverse.
 	"LOOMCYCLE_STORAGE_BACKEND": {backendNamedAnotherStore, "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise, which is not the backend this variable names; set storage.backend in the yaml to pin the backend"},
 
+	// SQL Memory used to be off unless this said "1". Kept off, it would now
+	// come up on a SQLite store and start hosting per-scope databases; asked
+	// for on a Postgres store with no aux DSN, it used to stop the boot and
+	// would now stay off with the agents' SQL and Documents refusing.
+	"LOOMCYCLE_SQLMEM_ENABLED": {sqlMemSwitchDisagrees, "SQL Memory follows the store, which is not what this variable asked for; to keep it off set storage.sqlmem_enabled: false in the yaml, and to have it on with a Postgres store set LOOMCYCLE_SQLMEM_PG_DSN (with storage.sqlmem_enabled unset or true)"},
+
 	// The filesystem jail stopped the boot before it was retired and still
 	// does: a deploy that relied on it must be moved to volumes by a person.
 	"LOOMCYCLE_READ_ROOT":  {loosens: valueNotEmpty},
@@ -302,6 +308,29 @@ func backendNow(c retiredEnvCtx) string {
 // was opened.
 func backendNamedAnotherStore(value string, c retiredEnvCtx) bool {
 	return value != "" && value != backendNow(c)
+}
+
+// sqlMemNow is whether this version turns SQL Memory on: the yaml's explicit
+// choice, else what the store gives. Like backendNow it applies the env DSN
+// itself, applyEnvSQLMem not having run yet.
+func sqlMemNow(c retiredEnvCtx) bool {
+	if c.storage.SqlMemEnabled != nil {
+		return *c.storage.SqlMemEnabled
+	}
+	dsn := c.storage.SqlMemPgDSN
+	if v := c.env["LOOMCYCLE_SQLMEM_PG_DSN"]; v != "" {
+		dsn = v
+	}
+	return inferSQLMemEnabled(backendNow(c), dsn)
+}
+
+// sqlMemSwitchDisagrees reports a retired SQL Memory switch whose old effect
+// is not what this version does. The old read turned SQL Memory on for exactly
+// "1", over the yaml; any other value left the yaml's answer, off unless it
+// said true.
+func sqlMemSwitchDisagrees(value string, c retiredEnvCtx) bool {
+	was := value == "1" || (c.storage.SqlMemEnabled != nil && *c.storage.SqlMemEnabled)
+	return was != sqlMemNow(c)
 }
 
 func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }
