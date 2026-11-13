@@ -171,11 +171,12 @@ type retiredEnvCtx struct {
 }
 
 // retiredRefusal is a retired variable whose value may have asked for
-// something tighter than what the runtime now does, or for data to live
-// somewhere other than where it now goes.
+// something tighter than what the runtime now does, for data to live
+// somewhere other than where it now goes, or for different data to be kept.
 type retiredRefusal struct {
 	// loosens reports whether ignoring value leaves the deployment looser
-	// than the operator set it, or moves its data.
+	// than the operator set it, moves its data, or keeps or deletes data
+	// they had not.
 	loosens func(value string, c retiredEnvCtx) bool
 	// instead replaces the retiredEnv text in the refusal when what to do
 	// about a refused value differs from what to do about a dead line.
@@ -273,7 +274,15 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS":              {loosens: loweredBelow(60_000)},
 	"LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS":       {loosens: loweredBelow(30 * 60 * 1000)},
 	"LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS":           {loosens: loweredBelow(2 * 60 * 60)},
-	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": {loosens: loweredBelow(3 * 24 * 60 * 60 * 1000)},
+	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": {internalChatsAgeDiffers, "chats of internal agents are kept 3 days and then deleted (when chat retention is on); the age can no longer be set, here or by inheriting LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS"},
+
+	// Settings that decided what data is kept or deleted. Here a difference in
+	// either direction stops the boot: rows the operator meant to keep would
+	// be deleted, or rows they meant to be rid of would stay.
+	"LOOMCYCLE_USAGE_SWEEPER":                  {switchWasZero, "the usage rollup always runs: per-call usage rows older than LOOMCYCLE_USAGE_DETAIL_RETENTION_MS (30 days unless set) are deleted, and their daily totals are kept; to keep per-call rows longer, raise LOOMCYCLE_USAGE_DETAIL_RETENTION_MS"},
+	"LOOMCYCLE_HEARTBEAT_SWEEPER":              {switchWasZero, "the run heartbeat sweeper always runs: a run whose heartbeat went stale is marked failed; this can no longer be turned off"},
+	"LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS": {boolWasOff, "the tenant-root and user-root documents are always created when a principal is established; this can no longer be turned off"},
+
 	// The ceiling is gone, so every ceiling was tighter.
 	"LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS": {loosens: loweredBelow(1<<63 - 1)},
 	// Zero here was a setting, not "the default": a registration had to name
@@ -391,6 +400,40 @@ func audioQueueLowered(value string, c retiredEnvCtx) bool {
 }
 
 func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }
+
+// switchWasZero is the rule of a sweeper switch whose old read was `!= "0"`:
+// only that exact value had turned the sweeper off.
+func switchWasZero(value string, _ retiredEnvCtx) bool { return value == "0" }
+
+// boolWasOff is the rule of a default-on switch read as a boolean word: the
+// four "off" spellings turned it off, anything else kept the default.
+func boolWasOff(value string, _ retiredEnvCtx) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "false", "no", "off":
+		return true
+	}
+	return false
+}
+
+// internalChatsAgeDiffers reports an internal-chat age other than the 3 days
+// now fixed. Zero inherited the chat age, whose own zero (or absence) was "no
+// minimum age": internal chats went as soon as they finished. A negative
+// number was ignored by the old read, which left the 3-day default.
+func internalChatsAgeDiffers(value string, c retiredEnvCtx) bool {
+	const fixed = 3 * 24 * 60 * 60 * 1000
+	n, set, ok := retiredInt(value)
+	if !set || !ok {
+		return set
+	}
+	if n == 0 {
+		// The chat age's read ignored anything but a positive integer.
+		if inherited, _, ok := retiredInt(c.env["LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS"]); ok && inherited > 0 {
+			n = inherited
+		}
+		return n != fixed
+	}
+	return n > 0 && n != fixed
+}
 
 func valueNotEmpty(value string, _ retiredEnvCtx) bool { return value != "" }
 

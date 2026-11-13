@@ -25,6 +25,8 @@ func agentDefFixture(t *testing.T) (*AgentDef, context.Context, func()) {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	cfg := &config.Config{
+		// Declared so the fixture can author inline code bodies.
+		Providers: map[string]config.ProviderConfig{config.CodeJSProvider: {}},
 		Agents: map[string]config.AgentDef{
 			"researcher": {
 				Provider:     "anthropic",
@@ -391,6 +393,30 @@ func TestAgentDefTool_InlineCodeRejectsOversize(t *testing.T) {
 	}
 	if !strings.Contains(res.Text, "exceeds max") {
 		t.Errorf("refusal should mention the byte cap; got %s", res.Text)
+	}
+}
+
+// A code body is refused where nothing could run it: the config declares no
+// code-js provider. With the provider declared the same create is accepted.
+func TestAgentDefTool_InlineCodeRefusedWithoutACodeJSProvider(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	tool.Cfg.Providers = nil
+	create := json.RawMessage(`{"op":"create","name":"codebot","overlay":{"provider":"code-js","code_body":"` + validInlineBody + `"}}`)
+
+	res, _ := tool.Execute(ctx, create)
+	if !res.IsError || !strings.Contains(res.Text, "no code-js provider") {
+		t.Fatalf("create with code_body and no code-js provider: IsError=%v, %s", res.IsError, res.Text)
+	}
+	// A fork that would carry a code body is authoring one too.
+	res, _ = tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"researcher","overlay":{"provider":"code-js","code_body":"`+validInlineBody+`"}}`))
+	if !res.IsError || !strings.Contains(res.Text, "no code-js provider") {
+		t.Fatalf("fork with code_body and no code-js provider: IsError=%v, %s", res.IsError, res.Text)
+	}
+
+	tool.Cfg.Providers = map[string]config.ProviderConfig{config.CodeJSProvider: {}}
+	if res, _ = tool.Execute(ctx, create); res.IsError {
+		t.Fatalf("create with the code-js provider declared: %s", res.Text)
 	}
 }
 

@@ -120,8 +120,37 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS", value: "600"},
 		{name: "LOOMCYCLE_CLIENT_TOOL_MAX_CONNS", value: "1", refused: true},
 		{name: "LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS", value: "60", refused: true},
+
+		// The internal-chat age is fixed at 3 days: any other age changes when
+		// those chats are deleted, in either direction. Zero inherited the
+		// chat age, and an unset chat age was "no minimum".
 		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "3600000", refused: true},
-		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "604800000"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "604800000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "259200000"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "-1"}, // was ignored: the 3-day default applied
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "soon", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=604800000"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=3600000"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=0"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=259200000"}},
+
+		// Switches of work that changes what is kept: the old "off" is refused,
+		// every other value left the work running.
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: "0", refused: true},
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: "1"},
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: "off"}, // the old read turned it off for exactly "0"
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: ""},
+		{name: "LOOMCYCLE_HEARTBEAT_SWEEPER", value: "0", refused: true},
+		{name: "LOOMCYCLE_HEARTBEAT_SWEEPER", value: "1"},
+		{name: "LOOMCYCLE_HEARTBEAT_SWEEPER", value: "false"},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "0", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "false", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: " No ", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "OFF", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "1"},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "maybe"}, // was ignored: the default (on) applied
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: ""},
 
 		// The ceiling is gone, so any ceiling was tighter.
 		{name: "LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS", value: "60000", refused: true},
@@ -249,6 +278,9 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 			}
 			if tc.refused && !strings.HasPrefix(got[0], tc.name+": ") {
 				t.Errorf("refusal does not lead with the variable: %q", got[0])
+			}
+			if tc.refused && tc.name == "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS" && !strings.Contains(got[0], "kept 3 days") {
+				t.Errorf("refusal does not say how long internal chats are kept: %q", got[0])
 			}
 			if adv := retiredEnvWarnings(environ); len(adv) == 0 {
 				t.Errorf("no advisory for %s", tc.name)

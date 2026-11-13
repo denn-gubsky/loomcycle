@@ -25,10 +25,13 @@ func localTeamFixture(t *testing.T) (*TeamDef, context.Context) {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	cfg := &config.Config{Agents: map[string]config.AgentDef{
-		"static-one":  {Tier: "middle"},
-		"sdlc/static": {Tier: "middle"},
-	}}
+	cfg := &config.Config{
+		Providers: map[string]config.ProviderConfig{config.CodeJSProvider: {}},
+		Agents: map[string]config.AgentDef{
+			"static-one":  {Tier: "middle"},
+			"sdlc/static": {Tier: "middle"},
+		},
+	}
 	agents := &AgentDef{Store: s, Cfg: cfg, MaxDefinitionBytes: 131072, MaxDescriptionBytes: 8192, MaxCodeBytes: 262144}
 	tool := &TeamDef{Store: s, MaxDefinitionBytes: 1 << 20, MaxDescriptionBytes: 8192, Agents: agents}
 	return tool, localAuthorCtx("", []string{"any"}, []string{"Read", "Grep", "Agent"})
