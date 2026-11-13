@@ -67,6 +67,21 @@ func TestHelpInject_ExamplesReachTheAssembledPrompt(t *testing.T) {
 	}
 }
 
+// TestHelpInject_NonCanonicalSpellingRendersTheTopic: a name Context op=help
+// resolves (another case, `.` as the separator) renders that topic's
+// examples, not nothing.
+func TestHelpInject_NonCanonicalSpellingRendersTheTopic(t *testing.T) {
+	s := &Server{}
+	got, _ := s.applyMemoryInjection(context.Background(), config.AgentDef{SystemPrompt: "{{help:document.Search}}"}, memInject{AgentName: "a"})
+	want, err := builtin.RenderExamples("Document/search")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SystemPrompt != want {
+		t.Fatalf("got %q, want the Document/search examples", got.SystemPrompt)
+	}
+}
+
 // TestHelpInject_EscapedPlaceholderIsUnescapedOnTheFastPath: a prompt whose
 // only placeholder is an escaped help one still enters expansion, so the
 // backslash is stripped as for every family.

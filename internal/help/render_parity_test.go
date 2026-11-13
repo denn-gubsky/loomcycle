@@ -48,6 +48,19 @@ func TestRenderExamples_AgreesWithLoadedTopics(t *testing.T) {
 		}
 		rendered++
 	}
+	// Name resolution agrees too: every canonical name and alias Get resolves
+	// for a bundled topic resolves to the same topic in the corpus index.
+	for _, topic := range set.All() {
+		for _, name := range append([]string{topic.Name, strings.ToLower(topic.Name)}, topic.Aliases...) {
+			want, ok := set.Get(name)
+			if !ok {
+				continue
+			}
+			if got, ok := builtin.Resolve(name); !ok || got != want.Name {
+				t.Errorf("Resolve(%q) = %q, %v; Context op=help resolves it to %q", name, got, ok, want.Name)
+			}
+		}
+	}
 	if rendered < 100 {
 		t.Fatalf("only %d topics rendered examples; the corpus walk is not reaching the articles", rendered)
 	}

@@ -74,6 +74,33 @@ func TestRenderExamples_RefusesUnknownTopic(t *testing.T) {
 	}
 }
 
+// TestResolve_AcceptsWhatContextHelpResolves: the names a model or operator
+// writes for a bundled topic — another case, an alias, `.` or a space as the
+// operation separator — resolve to the canonical name, and render the same
+// examples as the canonical name.
+func TestResolve_AcceptsWhatContextHelpResolves(t *testing.T) {
+	for in, want := range map[string]string{
+		"Document/search": "Document/search",
+		"document/SEARCH": "Document/search",
+		"Document.search": "Document/search",
+		"Document search": "Document/search",
+		"teams":           "agent-teams", // a frontmatter alias
+		"SCOPES":          "scopes",
+	} {
+		got, ok := Resolve(in)
+		if !ok || got != want {
+			t.Errorf("Resolve(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	canon, err := RenderExamples("Document/search")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := RenderExamples("document.Search"); err != nil || got != canon {
+		t.Errorf("a non-canonical spelling rendered %q, %v; want the canonical examples", got, err)
+	}
+}
+
 func TestRenderExamples_RefusesTopicWithoutExamples(t *testing.T) {
 	// The loomcycle overview topic is narrative, with no `## Examples` section.
 	if _, err := RenderExamples("loomcycle"); !errors.Is(err, ErrNoExamples) {
