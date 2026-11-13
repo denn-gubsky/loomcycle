@@ -333,6 +333,13 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS":       {loosens: providerTimeoutLowered("idle_timeout_ms", false)},
 	"LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS": {loosens: providerTimeoutLowered("header_timeout_ms", true)},
 	"LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS":   {loosens: providerTimeoutLowered("idle_timeout_ms", true)},
+	// The hosted Ollama context window and the local GPU offload are provider
+	// options now. Dropped without the option, requests run in the model's
+	// own window (a truncated prompt) or on whatever Ollama picks (often the
+	// CPU): nothing fails, the answers get worse or slower. The yaml must
+	// carry the same number.
+	"LOOMCYCLE_OLLAMA_NUM_CTX":       {providerOptionDiffers("ollama", "num_ctx"), "requests to hosted Ollama no longer carry this context window; set providers.ollama.options.num_ctx in the yaml to the same value, then remove this variable"},
+	"LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU": {providerOptionDiffers("ollama-local", "num_gpu"), "requests to local Ollama no longer carry this GPU offload; set providers.ollama-local.options.num_gpu in the yaml to the same value, then remove this variable"},
 	// The code-agent bounds: a budget or a lifetime lowered so a runaway
 	// script ends sooner.
 	"LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS": {loosens: func(value string, c retiredEnvCtx) bool {
@@ -621,6 +628,20 @@ func providerTimeoutLowered(option string, local bool) func(string, retiredEnvCt
 			}
 		}
 		return false
+	}
+}
+
+// providerOptionDiffers is the rule of a retired variable that set one
+// provider's option: a positive number the yaml option does not repeat. The
+// old reads ignored a value that was not a positive number.
+func providerOptionDiffers(provider, option string) func(string, retiredEnvCtx) bool {
+	return func(value string, c retiredEnvCtx) bool {
+		n, set, ok := retiredInt(value)
+		if !set || !ok || n <= 0 {
+			return false
+		}
+		now, has := providerOptionInt(c.cfg.Providers[provider], option)
+		return !has || now != n
 	}
 }
 

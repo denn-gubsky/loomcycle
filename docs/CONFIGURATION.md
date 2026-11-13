@@ -3347,7 +3347,7 @@ The run limits are the yaml `concurrency:` block and have no variables: `max_con
 
 ### Providers
 
-Stream timeouts, the Ollama `num_gpu` and hosted `num_ctx`, and the code-agent budgets are provider options in the yaml (`providers.<id>.options`), not variables: see [6b](#6b-local-models-ollama--configuring--slow-model-advice) and the table below.
+Stream timeouts, the Ollama `num_gpu` and hosted `num_ctx`, and the code-agent budgets are provider options in the yaml (`providers.<id>.options`), not variables: see [6b](#6b-local-models-ollama--configuring--slow-model-advice) and the table below. `LOOMCYCLE_OLLAMA_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` are no longer read, and one still set to a positive number stops the boot until `providers.ollama.options.num_ctx` or `providers.ollama-local.options.num_gpu` carries the same number: dropped silently, the context window would shrink to the model's own or the offload fall back to the CPU.
 
 | Yaml key | Default | Effect |
 |---|---|---|
