@@ -120,6 +120,10 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_WRITE_ROOT":                          "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
 
+	// Two variables became one mode.
+	"LOOMCYCLE_DEADLINK_GC_MS":      "set LOOMCYCLE_DEADLINK_GC=off to stop the dead-link collection; it otherwise runs every hour",
+	"LOOMCYCLE_DEADLINK_GC_DRY_RUN": "set LOOMCYCLE_DEADLINK_GC=dry-run to count unreachable chunk references without deleting them",
+
 	// Inferred from another setting.
 	"LOOMCYCLE_SPEECH_MAX_INFLIGHT":        "set LOOMCYCLE_AUDIO_MAX_INFLIGHT, which sizes the queue of both audio routes",
 	"LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT": "set LOOMCYCLE_AUDIO_MAX_INFLIGHT, which sizes the queue of both audio routes",
@@ -277,6 +281,13 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_HEARTBEAT_SWEEPER":              {switchWasZero, "the run heartbeat sweeper always runs: a run whose heartbeat went stale is marked failed; this can no longer be turned off"},
 	"LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS": {boolWasOff, "the tenant-root and user-root documents are always created when a principal is established; this can no longer be turned off"},
 
+	// The dead-link collection deletes chunk bodies it finds unreachable. An
+	// operator who had it off, or counting only, must say so again in the
+	// variable that replaced both before anything is deleted; one who had it
+	// run less often than the fixed hour would have rows deleted sooner.
+	"LOOMCYCLE_DEADLINK_GC_MS":      {deadLinkGCWasOffOrRarer, "the dead-link collection runs every hour and deletes unreachable chunk references unless LOOMCYCLE_DEADLINK_GC says otherwise; set LOOMCYCLE_DEADLINK_GC=off to keep it off (or dry-run to count without deleting), and remove this variable: its interval is no longer read"},
+	"LOOMCYCLE_DEADLINK_GC_DRY_RUN": {deadLinkGCWasDryRun, "the dead-link collection deletes unreachable chunk references unless LOOMCYCLE_DEADLINK_GC says otherwise; set LOOMCYCLE_DEADLINK_GC=dry-run to keep counting without deleting (or off), and remove this variable"},
+
 	// The ceiling is gone, so every ceiling was tighter.
 	"LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS": {loosens: loweredBelow(1<<63 - 1)},
 	// Zero here was a setting, not "the default": a registration had to name
@@ -370,6 +381,42 @@ func audioQueueLowered(value string, c retiredEnvCtx) bool {
 }
 
 func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }
+
+// deadLinkGCNow is the dead-link collection's mode as this version reads it
+// (applyEnvDeadLinkGC, which has not run yet): unset is on. A value that is
+// none of the three fails the load there; here it counts as on, the mode
+// that deletes.
+func deadLinkGCNow(c retiredEnvCtx) string {
+	switch v := strings.TrimSpace(c.env["LOOMCYCLE_DEADLINK_GC"]); v {
+	case DeadLinkGCOff, DeadLinkGCDryRun:
+		return v
+	}
+	return DeadLinkGCOn
+}
+
+// deadLinkGCWasOffOrRarer judges the retired interval. Zero or a negative
+// number turned the collection off, which only the new "off" reproduces. A
+// positive interval longer than the fixed one deleted later than this version
+// would, which matters only while it deletes. A shorter one, and a value the
+// old read could not parse (it kept the hourly default), change nothing that
+// is kept.
+func deadLinkGCWasOffOrRarer(value string, c retiredEnvCtx) bool {
+	n, set, ok := retiredInt(value)
+	if !set || !ok {
+		return false
+	}
+	now := deadLinkGCNow(c)
+	if n <= 0 {
+		return now != DeadLinkGCOff
+	}
+	return n > DeadLinkGCInterval.Milliseconds() && now == DeadLinkGCOn
+}
+
+// deadLinkGCWasDryRun judges the retired dry-run switch: exactly "1" made the
+// collection count without deleting, so this version must not delete.
+func deadLinkGCWasDryRun(value string, c retiredEnvCtx) bool {
+	return value == "1" && deadLinkGCNow(c) == DeadLinkGCOn
+}
 
 // switchWasZero is the rule of a sweeper switch whose old read was `!= "0"`:
 // only that exact value had turned the sweeper off.

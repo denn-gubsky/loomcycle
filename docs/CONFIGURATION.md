@@ -3460,8 +3460,7 @@ Background work runs on fixed cadences, and none of it can be switched off:
 | `LOOMCYCLE_MEMORY_TRACE_ASSISTANT` | off | `1` also indexes assistant turns (at run completion). |
 | `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` | 30 days | How long an indexed turn stays searchable. |
 | `LOOMCYCLE_MEMORY_CHANGES_ENABLED` | off | `1` records a memory change feed (change-data capture) that change subscriptions deliver from. Off, the store is not wrapped and pays nothing. |
-| `LOOMCYCLE_DEADLINK_GC_MS` | `3600000` | How often unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk) are collected; on by default, `0` disables. |
-| `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | off | `1` makes that collection count and log without deleting. |
+| `LOOMCYCLE_DEADLINK_GC` | `on` | The collection of unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk), which runs every hour. `on` collects and deletes them; `dry-run` counts and logs what it would collect without deleting; `off` does not run it. Any other value stops the boot. Replaces `LOOMCYCLE_DEADLINK_GC_MS` and `LOOMCYCLE_DEADLINK_GC_DRY_RUN`: a boot that still sets one of those to off, to a dry run, or to an interval longer than an hour stops until this variable says the same. |
 | `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |
 
 ### SQL Memory

@@ -9,6 +9,7 @@ import (
 
 	webhookapi "github.com/denn-gubsky/loomcycle/internal/api/webhook"
 	"github.com/denn-gubsky/loomcycle/internal/changesub"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/heartbeat"
 	"github.com/denn-gubsky/loomcycle/internal/limits"
@@ -543,7 +544,7 @@ const authGateLinkRetention = 7 * 24 * time.Hour
 // position is still kept on purpose: document_boot_pass is the one step that
 // works at once (the sqlite document-plane split, then the ontology identity
 // pass); it starts after the dead-link GC goroutine, whose first tick waits
-// a full LOOMCYCLE_DEADLINK_GC_MS interval. The whole function runs after
+// a full interval (config.DeadLinkGCInterval). The whole function runs after
 // buildServer: auth_lifecycle checks b.srv when it starts.
 func (b *boot) startStoreSweepers() {
 	b.runStoreSweeperSteps(nil)
@@ -827,6 +828,15 @@ func (b *boot) startChangeSubscriptionPush() {
 	}
 }
 
+// deadLinkGCRun turns the configured mode into what the sweeper does: whether
+// it starts, and whether a tick only counts. The collection deletes chunk
+// bodies, so both answers fail safe: it starts for the two modes that name
+// it and nothing else (an empty mode is a Config that did not come from the
+// loader), and it deletes for "on" alone.
+func deadLinkGCRun(mode string) (start, dryRun bool) {
+	return mode == config.DeadLinkGCOn || mode == config.DeadLinkGCDryRun, mode != config.DeadLinkGCOn
+}
+
 // startDeadLinkGC starts the dead-link reconciliation sweeper.
 func (b *boot) startDeadLinkGC() {
 	cfg := b.cfg
@@ -846,9 +856,10 @@ func (b *boot) startDeadLinkGC() {
 	//
 	// On by default, unlike retention, because everything it removes is unreachable:
 	// it restores an invariant rather than enacting a policy.
-	if cfg.Env.DeadLinkGCInterval > 0 && storeIface != nil && sqlMemMgr != nil {
+	start, dryRun := deadLinkGCRun(cfg.Env.DeadLinkGC)
+	if start && storeIface != nil && sqlMemMgr != nil {
 		docTool := &builtin.Document{Store: storeIface, SqlMem: sqlMemMgr, Cfg: cfg}
-		goAdvisoryGatedSweeper(bgCtx, cfg.Env.DeadLinkGCInterval, advisoryLock, coord.LockKeyDeadLinkGC, "deadlink",
+		goAdvisoryGatedSweeper(bgCtx, config.DeadLinkGCInterval, advisoryLock, coord.LockKeyDeadLinkGC, "deadlink",
 			func(ctx context.Context) {
 				scopes, err := sqlMemMgr.ListScopes(ctx)
 				if err != nil {
@@ -863,7 +874,7 @@ func (b *boot) startDeadLinkGC() {
 					if !ok {
 						continue
 					}
-					rep, err := docTool.ReconcileDeadLinks(ctx, sk, ms, cfg.Env.DeadLinkGCDryRun)
+					rep, err := docTool.ReconcileDeadLinks(ctx, sk, ms, dryRun)
 					if err != nil {
 						// Per-scope: one unreadable scope must not stop the sweep.
 						slog.Error("deadlink gc: scope reconcile failed", "tenant", sk.Tenant, "scope", sk.Scope, "scope_id", sk.ScopeID, "err", err)
@@ -871,18 +882,18 @@ func (b *boot) startDeadLinkGC() {
 					}
 					if !rep.Empty() {
 						verb := "collected"
-						if cfg.Env.DeadLinkGCDryRun {
+						if dryRun {
 							verb = "would collect"
 						}
 						slog.Info("deadlink gc: "+verb, "report", rep)
 					}
 				}
 			})
-		slog.Info("deadlink gc: enabled", "interval", cfg.Env.DeadLinkGCInterval, "dry_run", cfg.Env.DeadLinkGCDryRun)
+		slog.Info("deadlink gc: enabled", "interval", config.DeadLinkGCInterval, "dry_run", dryRun)
 	} else if storeIface != nil && sqlMemMgr == nil {
 		slog.Info("deadlink gc: disabled (no SQL Memory — no chunk tables to reconcile)")
 	} else {
-		slog.Warn("deadlink gc: disabled (LOOMCYCLE_DEADLINK_GC_MS=0 or no Store)")
+		slog.Warn("deadlink gc: disabled (LOOMCYCLE_DEADLINK_GC=off or no Store)")
 	}
 }
 

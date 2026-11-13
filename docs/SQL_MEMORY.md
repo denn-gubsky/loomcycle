@@ -195,9 +195,11 @@ it:
 
 So to go back, restore the backup of the sqlmem root (and the main store) taken
 before the upgrade, or a runtime snapshot taken by the older release. If a
-rollback without that backup cannot be avoided, set `LOOMCYCLE_DEADLINK_GC_MS=0`
-on the older release **before it starts**. On the next upgrade, what the older
-release wrote is quarantined (below), not merged.
+rollback without that backup cannot be avoided, set `LOOMCYCLE_DEADLINK_GC=off`
+on the older release **before it starts**, and set `LOOMCYCLE_DEADLINK_GC_MS=0`
+beside it: a release from before `LOOMCYCLE_DEADLINK_GC` existed reads only
+the second, and one that reads the first accepts the pair. On the next
+upgrade, what the older release wrote is quarantined (below), not merged.
 
 **Quarantine files.** Once a scope's documents have moved, its `<scope>.db` is
 the file Memory SQL writes, so the runtime never copies rows from it into the

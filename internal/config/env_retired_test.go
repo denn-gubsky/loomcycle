@@ -251,6 +251,31 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
 		{name: "LOOMCYCLE_OLLAMA_DEBUG_THINK", value: "1"},
 
+		// The dead-link collection deletes data. Its old "off" and "dry run"
+		// are refused unless the variable that replaced both says the same or
+		// less; an interval longer than the fixed hour is refused while the
+		// collection deletes, a shorter one never.
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "-1", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC=dry-run"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC=on"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC=off"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC= off "}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "3600000"},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "600000"},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", also: []string{"LOOMCYCLE_DEADLINK_GC=on"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", also: []string{"LOOMCYCLE_DEADLINK_GC=off"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", also: []string{"LOOMCYCLE_DEADLINK_GC=dry-run"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "hourly"}, // was ignored: the default hour applied
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: ""},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", also: []string{"LOOMCYCLE_DEADLINK_GC=on"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", also: []string{"LOOMCYCLE_DEADLINK_GC=dry-run"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", also: []string{"LOOMCYCLE_DEADLINK_GC=off"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "0"},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "true"}, // the old read was a dry run for exactly "1"
+
 		// Retired, and no value of it was a tightening.
 		{name: "LOOMCYCLE_SSE_KEEPALIVE_MS", value: "0"},
 		{name: "LOOMCYCLE_SNAPSHOT_MAX_BYTES", value: "1"},
