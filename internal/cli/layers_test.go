@@ -68,6 +68,18 @@ func TestAssembleConfigStack_ServerAndCLIPathsGiveTheSameLayers(t *testing.T) {
 			want: func(_, _, _ string) []string { return []string{"providers.default", "base", "chat"} },
 		},
 		{
+			// A preset that includes others is expanded; chat, selected again
+			// after it, is already in the stack and is not layered twice.
+			name: "a preset that includes others, and one of them again",
+			setup: func(t *testing.T, _, _ string) string {
+				t.Setenv("LOOMCYCLE_PRESETS", "personal, chat")
+				return ""
+			},
+			want: func(_, _, _ string) []string {
+				return []string{"providers.default", "base", "local", "chat", "document-agent", "personal"}
+			},
+		},
+		{
 			name: "presets and a config dir",
 			setup: func(t *testing.T, _, cwd string) string {
 				t.Setenv("LOOMCYCLE_PRESETS", "base")
@@ -305,5 +317,41 @@ func TestAssembleConfigStack_RefusesTheRetiredConfigFilesVariable(t *testing.T) 
 	t.Setenv("LOOMCYCLE_PRESETS", "base")
 	if _, err := AssembleConfigStack(nil, nil, false); err != nil {
 		t.Fatalf("the empty retired variable refused: %v", err)
+	}
+}
+
+// The personal profile loads from the preset alone: no file, no key, no
+// variable but the selection. It brings the agents of its bundles and leaves
+// the store, the listen address and auth at their defaults.
+func TestAssembleConfigStack_PersonalProfileLoadsWithNothingElseSet(t *testing.T) {
+	isolateLayerEnv(t)
+	t.Setenv("LOOMCYCLE_PRESETS", "personal")
+	t.Setenv("LOOMCYCLE_PG_DSN", "") // a developer's own DSN would select Postgres
+	stack, err := AssembleConfigStack(nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadLayers(stack.Layers...)
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	for _, agent := range []string{"chat/medium", "chat/local", "chat/local-small", "doc/manager"} {
+		if _, ok := cfg.Agents[agent]; !ok {
+			t.Errorf("agent %q missing from the personal profile", agent)
+		}
+	}
+	if got := cfg.ProviderPriority; len(got) == 0 || got[0] != "ollama-local" {
+		t.Errorf("provider_priority = %v, want ollama-local first (local models before cloud)", got)
+	}
+	if cfg.Storage.Backend != "sqlite" {
+		t.Errorf("storage backend = %q, want sqlite", cfg.Storage.Backend)
+	}
+	if cfg.Env.MetricsEnabled {
+		t.Error("the personal profile turned the metrics sampler on")
+	}
+	for _, w := range cfg.Warnings {
+		if strings.Contains(w, "config layer override") {
+			t.Errorf("the profile's own layers conflict: %s", w)
+		}
 	}
 }
