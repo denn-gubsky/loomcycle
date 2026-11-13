@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -151,6 +152,25 @@ func configDirLayers(dir string) ([]string, error) {
 // environment, set-if-unset, so that config.LoadLayers reads the same
 // variables whoever calls it; a repeat call sets nothing.
 func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigStack, error) {
+	return assembleConfigStack(stackOptions{presetFlags: presetFlags, cfgPaths: cfgPaths, verbose: verbose})
+}
+
+// stackOptions are AssembleConfigStack's inputs and the ways a command may
+// ask for less than the server's assembly.
+type stackOptions struct {
+	presetFlags []string
+	cfgPaths    []string
+	verbose     bool
+	// noDiscovery leaves out the auto-discovered loomcycle.yaml (and with it
+	// its section files and auth.env): the stack is the presets, the config
+	// dir and the named files, and nothing the caller did not select. For a
+	// tool that measures the shipped config, which a developer's own file
+	// must not change unasked.
+	noDiscovery bool
+}
+
+func assembleConfigStack(o stackOptions) (ConfigStack, error) {
+	presetFlags, cfgPaths, verbose := o.presetFlags, o.cfgPaths, o.verbose
 	info := func(msg string, args ...any) {
 		if verbose {
 			slog.Info(msg, args...)
@@ -198,13 +218,18 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 	cfgFiles := append([]string{}, cfgPaths...)
 	if len(cfgFiles) == 0 && len(configDirFiles) == 0 {
 		// No explicit operator config: auto-discovery.
-		resolvedCfg, found := discoverConfigPath()
+		resolvedCfg, found := "", false
+		if !o.noDiscovery {
+			resolvedCfg, found = discoverConfigPath()
+		}
 		switch {
 		case found:
 			cfgFiles = []string{resolvedCfg}
 		case len(presetLayers) > 0:
 			// Presets-only: the embedded base is the config.
 			info("config: no operator config file — running from embedded presets only")
+		case o.noDiscovery:
+			return ConfigStack{}, errors.New("no config selected: this command does not load an auto-discovered loomcycle.yaml. Select the embedded presets with LOOMCYCLE_PRESETS (for example base,memory), set LOOMCYCLE_CONFIG_DIR, or pass --config <path>")
 		default:
 			var b strings.Builder
 			b.WriteString("no config found at any of:\n")
@@ -330,4 +355,18 @@ func configFlag(fs *flag.FlagSet, usage string) *configPaths {
 	var p configPaths
 	fs.Var(&p, "config", usage)
 	return &p
+}
+
+// loadSelectedConfig loads the config for a tool that measures what ships:
+// the embedded presets, the config dir and the files named with --config,
+// but not an auto-discovered loomcycle.yaml, which could replace the agent
+// or embedder being measured, or supply keys through its auth.env, without
+// the operator asking. It says on stderr which layers it read.
+func loadSelectedConfig(tool string, paths []string, stderr io.Writer) (*config.Config, error) {
+	stack, err := assembleConfigStack(stackOptions{cfgPaths: paths, noDiscovery: true})
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(stderr, "%s: config layers: %s\n", tool, describeStack(stack))
+	return config.LoadLayers(stack.Layers...)
 }

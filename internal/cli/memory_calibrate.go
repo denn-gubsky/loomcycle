@@ -47,7 +47,7 @@ import (
 func RunMemoryCalibrate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("memory-calibrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPaths := configFlag(fs, "path to a config YAML, as the server is given it (repeatable, layered in the order given; default: the config the server auto-discovers)")
+	cfgPaths := configFlag(fs, "a config YAML to layer over the embedded presets and the config dir (repeatable, layered in the order given). An auto-discovered loomcycle.yaml is not loaded: name it here to measure it")
 	dataset := fs.String("dataset", "builtin", "labelled corpus: 'builtin', 'cluster' (one dense topic — the region 'builtin' does not sample), or a path to a .json file")
 	embedderKind := fs.String("embedder", "auto", "'auto' (the configured embedder) or 'stub' (deterministic, plumbing check only)")
 	check := fs.Bool("check", false, "also fail when the CONFIGURED thresholds classify badly on this corpus")
@@ -62,11 +62,11 @@ func RunMemoryCalibrate(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "memory-calibrate: %v", err)
 	}
 
-	// The SAME layered stack the server assembles (presets → CONFIG_DIR →
-	// --config), so the embedder and the bands reported here
-	// are the ones the running server would use. Reading a single file would
-	// reintroduce the bug loadLayeredConfig exists to fix.
-	cfg, err := loadLayeredConfig(*cfgPaths...)
+	// The layers the operator selected, assembled the way the server
+	// assembles them (presets → CONFIG_DIR → --config), so the embedder and
+	// the bands reported here are the ones a server given the same selection
+	// would use. An auto-discovered loomcycle.yaml is not part of it.
+	cfg, err := loadSelectedConfig("memory-calibrate", *cfgPaths, stderr)
 	if err != nil {
 		return fail(stderr, "memory-calibrate: config: %v", err)
 	}

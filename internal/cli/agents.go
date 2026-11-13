@@ -39,7 +39,15 @@ func runAgentsList(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	cfg, err := loadLayeredConfig(*cfgPaths...)
+	stack, err := assembleForCLI(*cfgPaths...)
+	if err != nil {
+		return fail(stderr, "config: %v", err)
+	}
+	// One line on stderr, always: with no --config the stack is whatever the
+	// environment and the auto-discovery came to, and the listing alone does
+	// not show that. stdout, which a script reads, carries the listing only.
+	fmt.Fprintf(stderr, "agents list: config layers: %s\n", describeStack(stack))
+	cfg, err := config.LoadLayers(stack.Layers...)
 	if err != nil {
 		return fail(stderr, "config: %v", err)
 	}

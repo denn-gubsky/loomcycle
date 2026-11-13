@@ -61,7 +61,7 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 	providerID := fs.String("provider", "", "provider id to score (must be declared in the config)")
 	model := fs.String("model", "", "wire model name to score")
 	effort := fs.String("effort", "", "reasoning effort hint (default: the extractor agent's configured effort)")
-	cfgPaths := configFlag(fs, "optional extra config layer (repeatable, layered in the order given)")
+	cfgPaths := configFlag(fs, "a config YAML to layer over the embedded presets and the config dir (repeatable, layered in the order given). An auto-discovered loomcycle.yaml is not loaded, so that the shipped prompt is what is scored: name a file here to score it instead")
 	baseline := fs.String("baseline", "", "compare against this baseline file and gate on regressions")
 	updateBaseline := fs.String("update-baseline", "", "write this run's scores into this baseline file")
 	output := fs.String("output", "", "write the JSON report here (default: human-readable to stdout)")
@@ -88,7 +88,7 @@ func RunMemoryEvalLive(args []string, stdout, stderr io.Writer) int {
 			"meaningful against a named (provider, model, effort) triple")
 	}
 
-	cfg, err := loadLayeredConfig(*cfgPaths...)
+	cfg, err := loadSelectedConfig("memory-eval-live", *cfgPaths, stderr)
 	if err != nil {
 		return fail(stderr, "memory-eval-live: %v", err)
 	}
