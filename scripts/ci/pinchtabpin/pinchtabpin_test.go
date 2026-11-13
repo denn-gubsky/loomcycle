@@ -1,9 +1,10 @@
 // Package pinchtabpin holds a test over the images that carry the PinchTab
-// MCP client: loomcycle-browser and loomcycle-media copy the same binary out
-// of the same pinned pinchtab/pinchtab image, and ship its MIT notices from
-// third_party/pinchtab, whose PROVENANCE.md names the version they came from.
-// Dependabot bumps a FROM line per file, so the two can drift apart, and the
-// notices with them.
+// MCP client: loomcycle-browser copies the binary out of a pinned
+// pinchtab/pinchtab image and ships its MIT notices from third_party/pinchtab,
+// whose PROVENANCE.md names the version they came from. Dependabot bumps the
+// FROM line alone, so the notices can drift from it. (loomcycle-media carried
+// the client too until RFC GO retired it; a second image added here is held to
+// the same pin.)
 package pinchtabpin
 
 import (
@@ -20,7 +21,7 @@ var repoRoot = filepath.Join("..", "..", "..")
 var (
 	fromLine    = regexp.MustCompile(`(?m)^FROM pinchtab/pinchtab:(v[0-9][^@\s]*)@(sha256:[0-9a-f]{64}) AS pinchtab$`)
 	provenance  = regexp.MustCompile("\\*\\*Version:\\*\\* `(v[0-9][^`]*)`")
-	dockerfiles = []string{"Dockerfile.browser", "Dockerfile.media"}
+	dockerfiles = []string{"Dockerfile.browser"}
 )
 
 // "Every" in the name puts it in scripts/ci/census-tests.sh, which runs on

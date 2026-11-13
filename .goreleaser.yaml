@@ -383,8 +383,8 @@ dockers:
 
   # loomcycle-worker — the SAME binary as a conversion worker (RFC GO,
   # conversion.mode remote) on a Debian slim base with ffmpeg and
-  # poppler-utils; entrypoint `loomcycle worker`. Minor releases only: a
-  # worker of another build of the same protocol is admitted.
+  # poppler-utils; entrypoint `loomcycle worker`. A patch tag publishes its
+  # amd64 image too (release.yml). It replaces loomcycle-media (RFC GO D6).
   - id: loomcycle-worker-amd64
     ids:
       - loomcycle
@@ -432,62 +432,6 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
     goarch: arm64
 
-  # loomcycle-media — the SAME binary on a Debian slim base with ffmpeg and
-  # poppler-utils, the helper programs transcription and speech run (the media
-  # converter and encoder, the PDF page renderer), plus the PinchTab MCP client
-  # loomcycle-browser carries. Opt-in per deployment; the default image stays
-  # distroless. A patch tag publishes its amd64 image too (release.yml). The arm64 apt layer runs under QEMU on the amd64
-  # runner (slower than a COPY, far lighter than the toolbox's toolchains).
-  - id: loomcycle-media-amd64
-    ids:
-      - loomcycle
-    image_templates:
-      - "denngubsky/loomcycle-media:{{ .Version }}-amd64"
-      - "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}-amd64"
-      - "denngubsky/loomcycle-media:latest-amd64"
-      - "ghcr.io/denn-gubsky/loomcycle-media:latest-amd64"
-    dockerfile: Dockerfile.media
-    extra_files:
-      - LICENSE
-      - NOTICE
-      - third_party/pinchtab/LICENSE
-      - third_party/pinchtab/THIRD_PARTY_LICENSES.md
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - "--label=org.opencontainers.image.title=loomcycle-media"
-      - "--label=org.opencontainers.image.description=loomcycle + ffmpeg, poppler-utils and the PinchTab MCP client: speech conversion and encoding, PDF page rendering, headless-browser agents"
-      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
-      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-    goarch: amd64
-  - id: loomcycle-media-arm64
-    ids:
-      - loomcycle
-    image_templates:
-      - "denngubsky/loomcycle-media:{{ .Version }}-arm64"
-      - "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}-arm64"
-      - "denngubsky/loomcycle-media:latest-arm64"
-      - "ghcr.io/denn-gubsky/loomcycle-media:latest-arm64"
-    dockerfile: Dockerfile.media
-    extra_files:
-      - LICENSE
-      - NOTICE
-      - third_party/pinchtab/LICENSE
-      - third_party/pinchtab/THIRD_PARTY_LICENSES.md
-    use: buildx
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - "--label=org.opencontainers.image.title=loomcycle-media"
-      - "--label=org.opencontainers.image.description=loomcycle + ffmpeg, poppler-utils and the PinchTab MCP client: speech conversion and encoding, PDF page rendering, headless-browser agents"
-      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
-      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
-      - "--label=org.opencontainers.image.version={{ .Version }}"
-      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.licenses=Apache-2.0"
-    goarch: arm64
 
 # docker_manifests joins per-arch images into one multi-arch manifest
 # the operator pulls with `docker pull denngubsky/loomcycle:vX.Y.Z`
@@ -522,14 +466,6 @@ docker_manifests:
     image_templates:
       - "denngubsky/loomcycle-browser:latest-amd64"
       - "denngubsky/loomcycle-browser:latest-arm64"
-  - name_template: "denngubsky/loomcycle-media:{{ .Version }}"
-    image_templates:
-      - "denngubsky/loomcycle-media:{{ .Version }}-amd64"
-      - "denngubsky/loomcycle-media:{{ .Version }}-arm64"
-  - name_template: "denngubsky/loomcycle-media:latest"
-    image_templates:
-      - "denngubsky/loomcycle-media:latest-amd64"
-      - "denngubsky/loomcycle-media:latest-arm64"
 
   - name_template: "denngubsky/loomcycle-worker:{{ .Version }}"
     image_templates:
@@ -565,14 +501,6 @@ docker_manifests:
     image_templates:
       - "ghcr.io/denn-gubsky/loomcycle-browser:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-browser:latest-arm64"
-  - name_template: "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}-amd64"
-      - "ghcr.io/denn-gubsky/loomcycle-media:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/denn-gubsky/loomcycle-media:latest"
-    image_templates:
-      - "ghcr.io/denn-gubsky/loomcycle-media:latest-amd64"
-      - "ghcr.io/denn-gubsky/loomcycle-media:latest-arm64"
   - name_template: "ghcr.io/denn-gubsky/loomcycle-worker:{{ .Version }}"
     image_templates:
       - "ghcr.io/denn-gubsky/loomcycle-worker:{{ .Version }}-amd64"

@@ -403,7 +403,7 @@ search_priority: [searxng, brave]
 
 # ─── Headless browser (PinchTab) for the dev/exec agent ───────────────
 # PinchTab's MCP is stdio-only, so loomcycle spawns the pinchtab client (shipped in
-# the loomcycle-media image) as a stdio MCP bridge to the `pinchtab` sidecar. The
+# the loomcycle-browser image) as a stdio MCP bridge to the `pinchtab` sidecar. The
 # child inherits PINCHTAB_TOKEN from loomcycle's env, so no ${...} interpolation is
 # needed here. The dev/exec agent already grants mcp__browser__* in its tool
 # ceiling, so this overlay only DECLARES the server.
@@ -417,10 +417,20 @@ mcp_servers:
 # File op=extract reads scanned PDF pages and image files with a vision model
 # when an agent allows it (its transcription.ocr: auto | always). The model is
 # pinned to a small OCR-tuned one so OCR does not load or compete with the chat
-# models. No rasterize helper in the image: PDF pages go to OCR only on an engine
-# that takes a PDF, so on this stack OCR reads image files.
+# models. No rasterize helper is configured: PDF pages go to OCR only on an engine
+# that takes a PDF, so on this stack OCR reads image files. (The conversion
+# workers carry pdftoppm; set transcription.ocr.rasterize to render pages.)
 transcription:
   ocr:
     engine: vision
     model: local-ocr
     language: en+ru
+
+# ─── Conversion workers (RFC GO) ──────────────────────────────────────
+# Every file conversion goes to the conversion-worker containers. They share
+# this runtime's network namespace, so the endpoint stays on the loopback (no
+# TLS needed there, and nothing off the host can reach it). The workers present
+# LOOMCYCLE_WORKER_TOKEN from .env.secure.
+conversion:
+  mode: remote
+  listen: 127.0.0.1:7788
