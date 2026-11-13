@@ -2658,11 +2658,26 @@ layers every `*.yaml` in the directory.
 
 **The CLI loads what the server loads.** `loomcycle validate`, `doctor`,
 `agents list`, `migrate --config`, `tokens` and `audit` assemble their stack with
-the same function the server boots and reloads with: presets, the config dir, a
-named file, section files and the `auth.env` beside the last file. With no file
-named (`loomcycle validate`, `loomcycle doctor`) they load what a bare
-`loomcycle` would: the auto-discovered file, or the presets and config dir alone.
-A file named explicitly must exist, as at boot.
+the same function the server boots and reloads with: presets, the config dir, the
+named files, section files and the `auth.env` beside the last file. `--config` is
+repeatable in each (and `validate` takes several paths), layered in the order
+given, as the server's own flag is. With no file named (`loomcycle validate`,
+`loomcycle doctor`, `loomcycle agents list`) they load what a bare `loomcycle`
+would: the auto-discovered file, or the presets and config dir alone. A file
+named explicitly must exist, as at boot. Each says which layers it loaded.
+
+Three exceptions:
+
+- `loomcycle hash agent --config <file>` reads that one file, with no presets,
+  config dir, section files or `auth.env`.
+- `memory-calibrate`, `memory-eval-live` and `memory-eval-judge` use the same
+  assembly without the auto-discovery: presets, the config dir and the files
+  named with `--config`. They measure what ships, so a `loomcycle.yaml` that
+  happens to be in the working directory is not loaded unless it is named.
+- `tokens rewrap`, `audit verify` and `migrate` load the same stack, but warn
+  where the server would refuse to start over a retired variable or a bad value
+  in a variable they do not read, so that they still run when the server will
+  not. They stop, as the server does, on anything about which store is opened.
 
 This pairs with runtime reload: edit a section file present at boot and
 `POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
