@@ -165,8 +165,13 @@ func (s *Server) applyMemoryInjection(ctx context.Context, agentDef config.Agent
 			sections[promptinject.VariantTenantInfo] = body
 		}
 	}
-	if body := s.renderSearchRequest(ctx, mi); body != "" {
-		sections[promptinject.VariantSearchRequest] = body
+	// search_request: gated on an actual reference — it costs a full-text search,
+	// and no other family reads its section, so a prompt that reached this path
+	// for another placeholder (a help-only prompt, say) must not pay for it.
+	if promptinject.ReferencesVariant(promptSrc, promptinject.VariantSearchRequest) {
+		if body := s.renderSearchRequest(ctx, mi); body != "" {
+			sections[promptinject.VariantSearchRequest] = body
+		}
 	}
 	// recalled_context: gated on an actual reference, because it costs TWO retrievals
 	// and an embedding of the run's initial input. A prompt that never places the
