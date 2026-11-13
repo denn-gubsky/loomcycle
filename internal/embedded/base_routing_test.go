@@ -5,6 +5,7 @@ import (
 	"path"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -196,4 +197,28 @@ func mustShow(t *testing.T, name string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// A glob belongs under model_pattern. Under `model:` it is a literal model id,
+// and no provider lists a model called "gpt-oss*": the candidate is skipped,
+// silently, like any model the provider does not have. Two of the `local`
+// preset's three aliases were written that way, so its low and middle tiers
+// had no candidate of their own.
+func TestShippedConfigs_NoAliasPutsAGlobUnderModel(t *testing.T) {
+	sources := map[string][]byte{"loomcycle.example.yaml": ExampleYAML()}
+	for _, u := range Units() {
+		sources[u.Name] = u.Data
+	}
+	aliases := 0
+	for name, data := range sources {
+		for alias, m := range routingOf(t, name, data).Models {
+			aliases++
+			if model, _ := m["model"].(string); strings.ContainsAny(model, "*?[") {
+				t.Errorf("%s: models.%s has `model: %s`; a glob is only read under model_pattern", name, alias, model)
+			}
+		}
+	}
+	if aliases < 20 {
+		t.Fatalf("read %d aliases; the test is not reading the configs", aliases)
+	}
 }

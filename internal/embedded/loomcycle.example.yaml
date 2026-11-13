@@ -51,9 +51,11 @@ models:
   # Slow local models have their own knobs (num_ctx, header/idle timeouts,
   # compaction tuning, unbounded interactive runs). See "Local models" in
   # docs/CONFIGURATION.md and loomcycle.local-interactive.example.yaml.
-  local-small:  { provider: ollama-local, model: gpt-oss* }        # low tier
-  local-medium: { provider: ollama-local, model: qwen3.6* }      # middle tier
-  local-coder:  { provider: ollama-local, model: qwen3.8* } # high tier (coding)
+  # A glob goes under model_pattern (the newest listed match is used); under
+  # `model:` it would be a literal id that no Ollama lists.
+  local-small:  { provider: ollama-local, model_pattern: "gpt-oss*" }  # low tier
+  local-medium: { provider: ollama-local, model_pattern: "qwen3.6*" }  # middle tier
+  local-coder:  { provider: ollama-local, model_pattern: "qwen3.8*" }  # high tier (coding)
   # An alias may say what KIND of model it names: `chat` (the default when
   # omitted), `decision` or `embedder`. The three are served by different
   # endpoints, so a tagged alias written where another kind is needed fails
