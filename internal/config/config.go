@@ -4494,8 +4494,7 @@ type Env struct {
 	// schedule/a2a/webhook/memory_backend). Unlike the lossless usage rollup this
 	// DELETES data, so it defaults off and its DefsMode defaults to "off".
 
-	// RetentionEnabled turns the sweeper goroutine on. Derived at load: true
-	// when at least one family's mode below is "prune" or "export+prune".
+	// RetentionEnabled turns the sweeper goroutine on. Yaml: retention.enabled.
 	RetentionEnabled bool
 	// RetentionInterval is the sweep tick rate. Default 1h.
 	// Yaml: retention.interval.

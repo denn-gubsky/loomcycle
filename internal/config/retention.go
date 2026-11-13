@@ -76,9 +76,11 @@ func (d HumanDuration) MarshalYAML() (any, error) {
 }
 
 // RetentionConfig is the `retention:` block: what the runtime deletes with
-// age, and when. Every family is off until its mode says otherwise, and the
-// sweeper runs only when a family's mode is prune or export+prune.
+// age, and when. The sweeper runs only when Enabled is true; each family is
+// off until its mode says otherwise, and a mode alone starts nothing.
 type RetentionConfig struct {
+	// Enabled starts the retention sweeper. Off by default: it deletes data.
+	Enabled bool `yaml:"enabled,omitempty"`
 	// Interval is how often the sweeper runs. Unset = 1h.
 	Interval HumanDuration `yaml:"interval,omitempty"`
 	// ExportDir is where a family in export+prune mode writes what it is
@@ -112,15 +114,17 @@ type RetentionConfig struct {
 type RetentionFamily struct {
 	// Mode is off (the default), prune, or export+prune.
 	Mode string `yaml:"mode,omitempty"`
-	// MaxAge is the age past which an item is eligible. Unset or 0 = any age.
-	MaxAge HumanDuration `yaml:"max_age,omitempty"`
+	// MaxAge is the age past which an item is eligible; 0 = any age. A family
+	// whose mode deletes must set it, even to 0: with no minimum age the first
+	// sweep deletes everything eligible, which has to be written down.
+	MaxAge *HumanDuration `yaml:"max_age,omitempty"`
 }
 
 // RetentionDefs is the definitions family, which also keeps a number of
 // versions whatever their age.
 type RetentionDefs struct {
-	Mode   string        `yaml:"mode,omitempty"`
-	MaxAge HumanDuration `yaml:"max_age,omitempty"`
+	Mode   string         `yaml:"mode,omitempty"`
+	MaxAge *HumanDuration `yaml:"max_age,omitempty"`
 	// KeepLastN is how many of the newest prunable versions of each
 	// (tenant, name) are kept. Unset = 5; 0 keeps none.
 	KeepLastN *int `yaml:"keep_last_n,omitempty"`
@@ -146,28 +150,53 @@ const (
 	RetentionModeExportPrune = "export+prune"
 )
 
-// modes returns each family's mode with the yaml key that set it.
-func (r *RetentionConfig) modes() []struct{ key, mode string } {
-	return []struct{ key, mode string }{
-		{"retention.defs.mode", r.Defs.Mode},
-		{"retention.chats.mode", r.Chats.Mode},
-		{"retention.mem.mode", r.Mem.Mode},
-		{"retention.mem_content.mode", r.MemContent.Mode},
-		{"retention.empty_dossier.mode", r.EmptyDossier.Mode},
+// retentionFamilyView is one family as the load checks see it.
+type retentionFamilyView struct {
+	key    string // the yaml path of the family, e.g. retention.chats
+	mode   string
+	maxAge *HumanDuration
+}
+
+// families returns every family that has a mode.
+func (r *RetentionConfig) families() []retentionFamilyView {
+	return []retentionFamilyView{
+		{"retention.defs", r.Defs.Mode, r.Defs.MaxAge},
+		{"retention.chats", r.Chats.Mode, r.Chats.MaxAge},
+		{"retention.mem", r.Mem.Mode, r.Mem.MaxAge},
+		{"retention.mem_content", r.MemContent.Mode, r.MemContent.MaxAge},
+		{"retention.empty_dossier", r.EmptyDossier.Mode, r.EmptyDossier.MaxAge},
 	}
 }
 
+// age is a family's max_age, zero when the key is absent.
+func age(d *HumanDuration) time.Duration {
+	if d == nil {
+		return 0
+	}
+	return d.Duration()
+}
+
 // applyRetention copies the `retention:` block into the settings the sweepers
-// read, and turns the retention sweeper on when a family deletes. A mode the
-// sweeper does not know is refused: read as off, it would keep data the
-// operator asked to have deleted.
+// read. A mode the sweeper does not know is refused: read as off, it would
+// keep data the operator asked to have deleted. So is a family that deletes
+// with no max_age: "any age" deletes everything eligible on the first sweep,
+// and has to be asked for with an explicit zero.
 func applyRetention(cfg *Config) error {
 	r := &cfg.Retention
-	for _, m := range r.modes() {
-		switch m.mode {
+	for _, f := range r.families() {
+		switch f.mode {
 		case "", RetentionModeOff, RetentionModePrune, RetentionModeExportPrune:
 		default:
-			return fmt.Errorf("%s: %q is not off, prune or export+prune", m.key, m.mode)
+			return fmt.Errorf("%s.mode: %q is not off, prune or export+prune", f.key, f.mode)
+		}
+		if !retentionModeDeletes(f.mode) {
+			continue
+		}
+		if f.maxAge == nil {
+			return fmt.Errorf("%s.max_age: mode %s needs a max_age; with none, everything eligible is deleted on the first sweep (write max_age: 0s to mean exactly that)", f.key, f.mode)
+		}
+		if !r.Enabled {
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("%s.mode is %s but retention.enabled is not true: the retention sweeper does not run and nothing is deleted", f.key, f.mode))
 		}
 	}
 	if r.Defs.KeepLastN != nil && *r.Defs.KeepLastN < 0 {
@@ -181,33 +210,22 @@ func applyRetention(cfg *Config) error {
 	if r.Defs.Mode != "" {
 		e.RetentionDefsMode = r.Defs.Mode
 	}
-	e.RetentionDefsMaxAge = r.Defs.MaxAge.Duration()
+	e.RetentionDefsMaxAge = age(r.Defs.MaxAge)
 	if r.Defs.KeepLastN != nil {
 		e.RetentionDefsKeepLastN = *r.Defs.KeepLastN
 	}
 	e.RetentionChatsMode = r.Chats.Mode
-	e.RetentionChatsMaxAge = r.Chats.MaxAge.Duration()
+	e.RetentionChatsMaxAge = age(r.Chats.MaxAge)
 	e.RetentionMemMode = r.Mem.Mode
-	e.RetentionMemMaxAge = r.Mem.MaxAge.Duration()
+	e.RetentionMemMaxAge = age(r.Mem.MaxAge)
 	e.RetentionMemContentMode = r.MemContent.Mode
-	e.RetentionMemContentMaxAge = r.MemContent.MaxAge.Duration()
+	e.RetentionMemContentMaxAge = age(r.MemContent.MaxAge)
 	e.RetentionEmptyDossierMode = r.EmptyDossier.Mode
-	e.RetentionEmptyDossierMaxAge = r.EmptyDossier.MaxAge.Duration()
+	e.RetentionEmptyDossierMaxAge = age(r.EmptyDossier.MaxAge)
 	e.UsageDetailRetention = r.UsageDetail.MaxAge.Duration()
 	e.MemoryTraceMaxAge = r.Trace.MaxAge.Duration()
-	e.RetentionEnabled = r.deletes()
+	e.RetentionEnabled = r.Enabled
 	return nil
-}
-
-// deletes reports whether any family's mode asks for deletion, which is what
-// starts the sweeper.
-func (r *RetentionConfig) deletes() bool {
-	for _, m := range r.modes() {
-		if retentionModeDeletes(m.mode) {
-			return true
-		}
-	}
-	return false
 }
 
 func retentionModeDeletes(mode string) bool {

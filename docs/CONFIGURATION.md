@@ -3490,7 +3490,7 @@ Overrides of the `storage:` SQL Memory settings; see [SQL_MEMORY.md](SQL_MEMORY.
 
 ### Retention and usage
 
-What the runtime deletes with age is set in the yaml `retention:` block, not in the environment: see [9m](#9m-retention--what-is-deleted-with-age-retention). The `LOOMCYCLE_RETENTION_*` variables, `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` and `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` are no longer read. One that is still set is reported at boot, and stops the boot when the yaml does not give the same mode, age, kept-version count or export directory, because the deployment would otherwise keep or delete data differently from before.
+What the runtime deletes with age is set in the yaml `retention:` block, not in the environment: see [9m](#9m-retention--what-is-deleted-with-age-retention). The `LOOMCYCLE_RETENTION_*` variables, `LOOMCYCLE_USAGE_DETAIL_RETENTION_MS` and `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` are no longer read. So is `LOOMCYCLE_RETENTION_ENABLED`: the switch is `retention.enabled`. One that is still set is reported at boot, and stops the boot when the yaml does not give the same switch, mode, age, kept-version count or export directory, because the deployment would otherwise keep or delete data differently from before.
 
 ### Observability
 
@@ -3970,6 +3970,7 @@ Why a yaml block and not environment variables: retention is policy that is the 
 
 ```yaml
 retention:
+  enabled: true                 # starts the sweeper; default false
   interval: 24h                 # how often the sweeper runs; default 1h
   export_dir: /data/retention-exports
   chats:
@@ -3983,23 +3984,26 @@ retention:
     max_age: 30d
 ```
 
-Each family's `mode` is `off` (the default), `prune` or `export+prune`; any other value stops the load. `export+prune` writes what it is about to delete under `export_dir`, and a family in that mode with no `export_dir` deletes nothing. A family set to `prune` or `export+prune` is what starts the retention sweeper: there is no separate switch, so a family deletes data as soon as its mode is set.
+`retention.enabled: true` starts the retention sweeper; a family's `mode` says what it deletes. Neither does anything alone: a mode with `enabled` not true deletes nothing (the load says so in an advisory), and `enabled` with every family off runs a sweeper with nothing to do.
+
+Each family's `mode` is `off` (the default), `prune` or `export+prune`; any other value stops the load. `export+prune` writes what it is about to delete under `export_dir`, and a family in that mode with no `export_dir` deletes nothing. A family whose mode deletes must set `max_age`, or the load stops: with no minimum age the first sweep deletes everything eligible (every finished unpinned chat, for `chats`), so that has to be written as an explicit `max_age: 0s`.
 
 | Key | Default | Effect |
 |---|---|---|
+| `retention.enabled` | `false` | Starts the retention sweeper. |
 | `retention.interval` | `1h` | How often the retention sweeper runs. |
 | `retention.export_dir` | none | Where `export+prune` writes what it deletes. |
 | `retention.defs.mode` | `off` | Prunes old versions of substrate definitions. |
-| `retention.defs.max_age` | `0` | Only versions older than this are eligible; `0` = any age. |
+| `retention.defs.max_age` | required when the mode deletes | Only versions older than this are eligible; `0s` = any age. |
 | `retention.defs.keep_last_n` | `5` | Versions kept per (tenant, name) regardless; `0` keeps none. |
 | `retention.chats.mode` | `off` | Deletes aged sessions with their runs and events; pinned sessions are exempt. Chats of `internal:` agents are deleted after 3 days whenever this family is on. Nothing is inherited from the removed usage archiver. |
-| `retention.chats.max_age` | `0` | A session whose runs all finished longer ago than this is eligible. With the mode on and no age, every finished unpinned session is eligible. |
+| `retention.chats.max_age` | required when the mode deletes | A session whose runs all finished longer ago than this is eligible; `0s` = every finished unpinned session. |
 | `retention.mem.mode` | `off` | Reclaims the memory of fully retired agents. |
-| `retention.mem.max_age` | `0` | Only agents whose last definition change is older than this. |
+| `retention.mem.max_age` | required when the mode deletes | Only agents whose last definition change is older than this. |
 | `retention.mem_content.mode` | `off` | Prunes superseded memory content from live scopes (evidential content is exempt). |
-| `retention.mem_content.max_age` | `0` | Only content retired longer ago than this. |
+| `retention.mem_content.max_age` | required when the mode deletes | Only content retired longer ago than this. |
 | `retention.empty_dossier.mode` | `off` | Deletes subject documents left with no facts and no references. Off by default: one user's erasure could otherwise delete a record others see. |
-| `retention.empty_dossier.max_age` | `0` | Only dossiers untouched longer than this. |
+| `retention.empty_dossier.max_age` | required when the mode deletes | Only dossiers untouched longer than this. |
 | `retention.usage_detail.max_age` | `30d` | Per-call usage rows older than this are rolled up and deleted; totals are kept. This rollup always runs and has no mode. |
 | `retention.trace.max_age` | `30d` | How long an indexed conversation turn stays searchable (the trace index itself is `LOOMCYCLE_MEMORY_TRACE_INDEX`). |
 

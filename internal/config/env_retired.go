@@ -128,7 +128,7 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_CHANNEL_DEBUG":              "set LOOMCYCLE_LOG_LEVEL=debug: each channel publish is logged at debug level",
 	"LOOMCYCLE_OLLAMA_DEBUG_THINK":         "set LOOMCYCLE_LOG_LEVEL=debug: each Ollama request's model, effort and think flag are logged at debug level",
 	"LOOMCYCLE_A2A_ENABLED":                "A2A is on when LOOMCYCLE_A2A_SERVER_CARD names the server card to serve; unset it to turn A2A off",
-	"LOOMCYCLE_RETENTION_ENABLED":          "the retention sweeper runs when a family's mode under `retention:` in the yaml is prune or export+prune; leave every mode off (or unset) to stop it",
+	"LOOMCYCLE_RETENTION_ENABLED":          "set retention.enabled in the yaml",
 	"LOOMCYCLE_SQLMEM_ENABLED":             "SQL Memory is on with a SQLite store, and with a Postgres store when LOOMCYCLE_SQLMEM_PG_DSN is set; storage.sqlmem_enabled: false in the yaml turns it off",
 	"LOOMCYCLE_STORAGE_BACKEND":            "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise; storage.backend in the yaml still overrides",
 
@@ -258,10 +258,11 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// would now stay off with the agents' SQL and Documents refusing.
 	"LOOMCYCLE_SQLMEM_ENABLED": {sqlMemSwitchDisagrees, "SQL Memory follows the store, which is not what this variable asked for; to keep it off set storage.sqlmem_enabled: false in the yaml, and to have it on with a Postgres store set LOOMCYCLE_SQLMEM_PG_DSN (with storage.sqlmem_enabled unset or true)"},
 
-	// The sweeper used to run only when this said "1", whatever the family
-	// modes said. A deployment that held it off with a mode already set to
-	// prune would have that family's data deleted on the first sweep.
-	"LOOMCYCLE_RETENTION_ENABLED": {retentionWasHeldOff, "the retention sweeper runs whenever a family's mode under `retention:` in the yaml is prune or export+prune, and one is, so data this variable held back would be deleted; to keep retention off, clear every family mode (remove it or set it to off)"},
+	// The sweeper ran only when this said "1"; retention.enabled in the yaml
+	// is that switch now. Set to 1 with the yaml not turning it on, retention
+	// the operator committed to would stop; set to anything else with the
+	// yaml turning it on, data they held back would be deleted.
+	"LOOMCYCLE_RETENTION_ENABLED": {retentionSwitchDisagrees, "the retention sweeper runs when retention.enabled is true in the yaml, which is not what this variable asked for; set retention.enabled to match what you want (true to keep retention running, false or absent to keep it off)"},
 
 	// The retention settings moved to the yaml. A family the environment had
 	// deleting that the yaml leaves off keeps data the operator committed to
@@ -274,19 +275,19 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE":   {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.MemContent.Mode })},
 	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE": {loosens: retentionModeDiffers(func(r *RetentionConfig) string { return r.EmptyDossier.Mode })},
 	"LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return r.Defs.MaxAge.Duration()
+		return age(r.Defs.MaxAge)
 	})},
 	"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return r.Chats.MaxAge.Duration()
+		return age(r.Chats.MaxAge)
 	})},
 	"LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return r.Mem.MaxAge.Duration()
+		return age(r.Mem.MaxAge)
 	})},
 	"LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return r.MemContent.MaxAge.Duration()
+		return age(r.MemContent.MaxAge)
 	})},
 	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
-		return r.EmptyDossier.MaxAge.Duration()
+		return age(r.EmptyDossier.MaxAge)
 	})},
 	"LOOMCYCLE_USAGE_DETAIL_RETENTION_MS": {loosens: retentionAgeDiffers(func(r *RetentionConfig) time.Duration {
 		return durationOr(r.UsageDetail.MaxAge.Duration(), retentionAgeDefault)
@@ -457,11 +458,10 @@ func sqlMemSwitchDisagrees(value string, c retiredEnvCtx) bool {
 	return was != sqlMemNow(c)
 }
 
-// retentionWasHeldOff reports a retired retention switch that kept the sweeper
-// from running (the old read ran it for exactly "1") while a family mode in
-// the yaml now starts it.
-func retentionWasHeldOff(value string, c retiredEnvCtx) bool {
-	return value != "1" && c.cfg.Retention.deletes()
+// retentionSwitchDisagrees reports a retired retention switch whose old effect
+// (the sweeper ran for exactly "1") is not what retention.enabled gives.
+func retentionSwitchDisagrees(value string, c retiredEnvCtx) bool {
+	return (value == "1") != c.cfg.Retention.Enabled
 }
 
 // retentionModeDiffers is the rule of a retired family mode. The old read let

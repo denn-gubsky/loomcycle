@@ -224,9 +224,10 @@ concurrency:
   max_queue_depth: 32
 
 # ─── Retention ────────────────────────────────────────────────────────
-# What is deleted with age. A family runs once its mode is set; export+prune
-# writes what it deletes under export_dir first.
+# What is deleted with age. `enabled` starts the sweeper; a family's mode says
+# what it deletes; export+prune writes what it deletes under export_dir first.
 retention:
+  enabled: true
   interval: 24h
   export_dir: /data/retention-exports
   chats:

@@ -73,6 +73,7 @@ func TestRetention_UnsetLeavesEveryFamilyOff(t *testing.T) {
 func TestRetention_BlockSetsEveryFamily(t *testing.T) {
 	cfg, err := loadYAMLString(t, `defaults: {provider: mock}
 retention:
+  enabled: true
   interval: 24h
   export_dir: /data/retention-exports
   defs: {mode: prune, max_age: 30d, keep_last_n: 0}
@@ -124,6 +125,13 @@ func TestRetention_RefusesAValueItCannotApply(t *testing.T) {
 		"retention: {chats: {max_age: -1d}}":      "negative",
 		"retention: {interval: hourly}":           "not a duration",
 		"retention: {trace: {max_age: [1d, 2d]}}": "one value",
+		"retention: {enabled: sometimes}":         "into bool",
+		// A family that prunes says from what age, even when that is "any".
+		"retention: {chats: {mode: prune}}":                        "retention.chats.max_age",
+		"retention: {enabled: true, defs: {mode: export+prune}}":   "retention.defs.max_age",
+		"retention: {mem: {mode: prune}}":                          "retention.mem.max_age",
+		"retention: {mem_content: {mode: prune}}":                  "retention.mem_content.max_age",
+		"retention: {empty_dossier: {mode: prune, max_age: null}}": "retention.empty_dossier.max_age",
 	} {
 		_, err := loadYAMLString(t, "defaults: {provider: mock}\n"+block+"\n")
 		if err == nil {
@@ -136,11 +144,32 @@ func TestRetention_RefusesAValueItCannotApply(t *testing.T) {
 	}
 }
 
+// "No minimum age" is a choice a pruning family has to write down: an explicit
+// zero is taken, and a family that is off needs no age.
+func TestRetention_APruningFamilyTakesAnExplicitZeroAge(t *testing.T) {
+	for _, block := range []string{
+		"retention: {chats: {mode: prune, max_age: 0s}}",
+		"retention: {chats: {mode: prune, max_age: 0}}",
+		"retention: {enabled: true, defs: {mode: prune, max_age: 0d}}",
+		"retention: {chats: {mode: off}}",
+		"retention: {chats: {max_age: 30d}}",
+	} {
+		cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n"+block+"\n")
+		if err != nil {
+			t.Errorf("%s: %v", block, err)
+			continue
+		}
+		if cfg.Env.RetentionChatsMaxAge != 0 && !strings.Contains(block, "30d") {
+			t.Errorf("%s: chats max age = %v, want 0", block, cfg.Env.RetentionChatsMaxAge)
+		}
+	}
+}
+
 // A later layer's family replaces only the keys it names.
 func TestRetention_LayersMergePerKey(t *testing.T) {
 	cfg, err := LoadLayers(
 		Layer{Name: "base.yaml", Data: []byte("defaults: {provider: mock}\nretention: {chats: {mode: prune, max_age: 90d}}\n")},
-		Layer{Name: "site.yaml", Data: []byte("retention: {chats: {max_age: 30d}, defs: {mode: prune}}\n")},
+		Layer{Name: "site.yaml", Data: []byte("retention: {chats: {max_age: 30d}, defs: {mode: prune, max_age: 7d}}\n")},
 	)
 	if err != nil {
 		t.Fatal(err)

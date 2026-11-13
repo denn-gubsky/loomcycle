@@ -1051,18 +1051,20 @@ concurrency:
   # max_queued_runs_per_user: 16   # default; 0 refuses at once over the cap
 
 # ─── Retention ────────────────────────────────────────────────────────
-# What the runtime deletes with age, and when. Everything here is off until
-# a family's `mode` is prune or export+prune; setting one is what starts the
-# retention sweeper, so a family deletes data as soon as its mode is set.
-# Ages are durations: 30d, 12h, 1d12h (a bare number is refused).
+# What the runtime deletes with age, and when. Nothing is deleted unless
+# `enabled` is true AND a family's `mode` is prune or export+prune: `enabled`
+# starts the sweeper, a mode says what it deletes. A family that deletes must
+# name its `max_age` (0s = any age: everything eligible goes on the first sweep).
+# Ages are durations: 30d, 12h, 1d12h (a bare number other than 0 is refused).
 #
 # retention:
+#   enabled: true                 # start the retention sweeper (default false)
 #   interval: 1h                  # how often the sweeper runs (default 1h)
 #   export_dir: /data/retention-exports   # where export+prune writes what it
 #                                 # deletes; without it that mode deletes nothing
 #   chats:                        # aged sessions with their runs and events;
 #     mode: export+prune          # a pinned session is exempt
-#     max_age: 90d                # unset = every finished session is eligible
+#     max_age: 90d                # required when the mode deletes
 #   defs:                         # old versions of substrate definitions
 #     mode: prune
 #     max_age: 30d

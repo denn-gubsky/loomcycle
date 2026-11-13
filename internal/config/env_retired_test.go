@@ -197,17 +197,16 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		// SQL Memory is opened, as it did; that is not this rule's to refuse.
 		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", yaml: StorageConfig{PgDSN: "postgres://u@h/db", SqlMemEnabled: boolPtr(true)}},
 
-		// The retention switch: the old read ran the sweeper for exactly "1".
-		// Refused when it was held off and a family mode would now delete.
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "", retention: RetentionConfig{Defs: RetentionDefs{Mode: "export+prune"}}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "false", retention: RetentionConfig{Mem: RetentionFamily{Mode: "prune"}}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{MemContent: RetentionFamily{Mode: "prune"}}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{EmptyDossier: RetentionFamily{Mode: "prune"}}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{Chats: RetentionFamily{Mode: "off"}}},
+		// The retention switch moved to retention.enabled. The old read ran the
+		// sweeper for exactly "1"; refused when the yaml says the opposite.
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", refused: true}, // the yaml does not turn it on: retention would stop
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", retention: RetentionConfig{Enabled: true}},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{Enabled: true}, refused: true}, // held off, and the yaml starts it
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "", retention: RetentionConfig{Enabled: true}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "true", retention: RetentionConfig{Enabled: true}, refused: true}, // was not "1": it stayed off
 		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0"},
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}}, // deleting then, deleting now
-		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1"},                                                                    // ran with nothing to do
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", retention: RetentionConfig{Chats: RetentionFamily{Mode: "prune"}}}, // off then, off now
 
 		// A family mode that moved to the yaml: refused when the family would
 		// delete under one and not the other, or export under one only.
@@ -231,20 +230,20 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		// An age that moved to the yaml: refused when it was a positive number
 		// the yaml does not give. The old reads ignored anything else.
 		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", refused: true},
-		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: HumanDuration(30 * 24 * time.Hour)}}, refused: true},
-		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: HumanDuration(90 * 24 * time.Hour)}}},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(30 * 24 * time.Hour))}}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "7776000000", retention: RetentionConfig{Chats: RetentionFamily{MaxAge: agePtr(HumanDuration(90 * 24 * time.Hour))}}},
 		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "0"},
 		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "-5"},
 		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: "90d"}, // was ignored
 		{name: "LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS", value: ""},
 		{name: "LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS", value: "86400000", refused: true},
-		{name: "LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Defs: RetentionDefs{MaxAge: HumanDuration(24 * time.Hour)}}},
+		{name: "LOOMCYCLE_RETENTION_DEFS_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Defs: RetentionDefs{MaxAge: agePtr(HumanDuration(24 * time.Hour))}}},
 		{name: "LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS", value: "86400000", refused: true},
-		{name: "LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Mem: RetentionFamily{MaxAge: HumanDuration(24 * time.Hour)}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{Mem: RetentionFamily{MaxAge: agePtr(HumanDuration(24 * time.Hour))}}},
 		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS", value: "86400000", refused: true},
-		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{MemContent: RetentionFamily{MaxAge: HumanDuration(24 * time.Hour)}}},
+		{name: "LOOMCYCLE_RETENTION_MEM_CONTENT_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{MemContent: RetentionFamily{MaxAge: agePtr(HumanDuration(24 * time.Hour))}}},
 		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS", value: "86400000", refused: true},
-		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{EmptyDossier: RetentionFamily{MaxAge: HumanDuration(24 * time.Hour)}}},
+		{name: "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MAX_AGE_MS", value: "86400000", retention: RetentionConfig{EmptyDossier: RetentionFamily{MaxAge: agePtr(HumanDuration(24 * time.Hour))}}},
 		// These two default to 30 days.
 		{name: "LOOMCYCLE_USAGE_DETAIL_RETENTION_MS", value: "86400000", refused: true},
 		{name: "LOOMCYCLE_USAGE_DETAIL_RETENTION_MS", value: "2592000000"},
@@ -459,10 +458,10 @@ func TestRetiredEnvAdvisories_NamesTheThinClientsRetiredVariables(t *testing.T) 
 	}
 }
 
-// One list of family modes decides both whether the sweeper runs and whether
-// the retired switch is refused. A family added to the block and not to that
-// list would delete with neither noticing.
-func TestRetentionModes_ListsEveryFamilyOfTheBlock(t *testing.T) {
+// The load checks every family's mode and age from one list. A family added
+// to the block and not to that list would take any mode, and prune with no
+// age, unchecked.
+func TestRetentionFamilies_ListsEveryFamilyOfTheBlock(t *testing.T) {
 	rt := reflect.TypeOf(RetentionConfig{})
 	want := 0
 	for i := 0; i < rt.NumField(); i++ {
@@ -477,7 +476,9 @@ func TestRetentionModes_ListsEveryFamilyOfTheBlock(t *testing.T) {
 	if want == 0 {
 		t.Fatal("found no family with a mode in RetentionConfig")
 	}
-	if got := len((&RetentionConfig{}).modes()); got != want {
-		t.Errorf("modes() lists %d families, RetentionConfig has %d with a mode", got, want)
+	if got := len((&RetentionConfig{}).families()); got != want {
+		t.Errorf("families() lists %d families, RetentionConfig has %d with a mode", got, want)
 	}
 }
+
+func agePtr(d HumanDuration) *HumanDuration { return &d }
