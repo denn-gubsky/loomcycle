@@ -283,6 +283,11 @@ type Config struct {
 	// (Resolved).
 	Speech *SpeechConfig `yaml:"speech,omitempty"`
 
+	// Conversion is the `conversion:` block: whether file conversions run in
+	// this process or in worker processes it starts (RFC GO, conversion.go).
+	// Absent, they run in process. Defaults are applied at use (Resolved).
+	Conversion ConversionConfig `yaml:"conversion,omitempty"`
+
 	// Observability is the `observability:` block: settings of the trace
 	// export that belong in config rather than the OTEL_* environment
 	// (observability.go). Read at startup.
@@ -7721,6 +7726,9 @@ func validate(c *Config) error {
 		return err
 	}
 	if err := validateAudioCaps(c); err != nil {
+		return err
+	}
+	if err := validateConversion(c); err != nil {
 		return err
 	}
 	for name, agent := range c.Agents {
