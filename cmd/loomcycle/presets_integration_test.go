@@ -597,6 +597,14 @@ func TestEmbedded_ChatAgentsOptIntoMemoryFlush(t *testing.T) {
 			t.Errorf("agent %q sets memory_flush but has no `user` in memory_scopes %v — consolidation drains user scopes only, so banked spans would never be consolidated",
 				name, def.MemoryScopes)
 		}
+		// The flag has to take effect in the mode the agent runs in. In a
+		// distilling mode (auto, recap, stateful) the span that is evicted is
+		// banked by context.harvest_to_memory, not by memory_flush; two of the
+		// three agents set only the latter and banked nothing, with an
+		// advisory at every boot saying so.
+		for _, inert := range config.InertContextSettings(def) {
+			t.Errorf("agent %q: %s is set but does nothing (%s)", name, inert.Setting, inert.Reason)
+		}
 	}
 	if checked == 0 {
 		t.Fatal("no chat/* agents found in the base+chat stack; this test asserts nothing")

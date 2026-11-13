@@ -93,6 +93,11 @@ agents:
       # runtime floor fixes.
       recap_max_chars: 2048
       autorecap_at_pct: 80
+      # Bank what recap evicts onto the consolidation queue. In a distilling
+      # mode this is the setting that does it: compaction.memory_flush (below)
+      # covers the append path only, and without this line it banked nothing
+      # here.
+      harvest_to_memory: true
     compaction:
       enabled: true
       # RFC BL P3: bank the turns each compaction discards onto the
@@ -332,6 +337,7 @@ agents:
       # Lower than chat/medium's 80: a local window is smaller and fills sooner,
       # matching this agent's compaction trigger below.
       autorecap_at_pct: 70
+      harvest_to_memory: true               # see chat/medium above
     compaction:
       enabled: true
       memory_flush: true                    # RFC BL P3 — see chat/medium above
