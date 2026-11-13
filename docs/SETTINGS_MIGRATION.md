@@ -1113,10 +1113,10 @@ The feature is always on, or is decided by another setting.
 | `LOOMCYCLE_AUTH_VERBOSE` | `LOOMCYCLE_LOG_LEVEL=debug`: a rejected credential is logged at debug level. | Never |
 | `LOOMCYCLE_CHANNEL_DEBUG` | `LOOMCYCLE_LOG_LEVEL=debug`: each channel publish is logged at debug level. | Never |
 | `LOOMCYCLE_OLLAMA_DEBUG_THINK` | `LOOMCYCLE_LOG_LEVEL=debug`: each Ollama request's model, effort and think flag are logged at debug level. | Never |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | `OTEL_EXPORTER_OTLP_ENDPOINT`, with its scheme (`http://host:4318`). | Never |
-| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | `OTEL_EXPORTER_OTLP_HEADERS` or `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE`. | Never |
-| `LOOMCYCLE_OTEL_SERVICE_NAME` | `OTEL_SERVICE_NAME`. | Never |
-| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` | `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG`. | Never |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_ENDPOINT` | Retired: use `OTEL_EXPORTER_OTLP_ENDPOINT`, with its scheme (`http://host:4318`). | Never |
+| `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS` | Retired: use `OTEL_EXPORTER_OTLP_HEADERS` or `LOOMCYCLE_OTEL_EXPORTER_OTLP_HEADERS_FILE`. | Never |
+| `LOOMCYCLE_OTEL_SERVICE_NAME` | Retired: use `OTEL_SERVICE_NAME`. | Never |
+| `LOOMCYCLE_OTEL_TRACES_SAMPLER_RATIO` | Retired: use `OTEL_TRACES_SAMPLER=parentbased_traceidratio` with `OTEL_TRACES_SAMPLER_ARG`. | Never |
 
 The four `LOOMCYCLE_OTEL_*` names were already unread before this release. They are listed here because the runtime now reports them.
 
