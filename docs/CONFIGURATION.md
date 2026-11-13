@@ -2677,7 +2677,10 @@ Three exceptions:
 - `tokens rewrap`, `audit verify` and `migrate` load the same stack, but warn
   where the server would refuse to start over a retired variable or a bad value
   in a variable they do not read, so that they still run when the server will
-  not. They stop, as the server does, on anything about which store is opened.
+  not. A `LOOMCYCLE_PG_AUTOMIGRATE` that is neither `1` nor `0` is a warning
+  for them too, and is read as `0`: they do not migrate the schema under a
+  value they cannot read. They stop, as the server does, on anything about
+  which store is opened.
 
 This pairs with runtime reload: edit a section file present at boot and
 `POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
