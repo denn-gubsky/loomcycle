@@ -68,8 +68,10 @@ func runWorker(args []string, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = worker.Run(ctx, worker.Options{
-		Target:       *dispatcher,
-		Token:        os.Getenv("LOOMCYCLE_WORKER_TOKEN"),
+		Target: *dispatcher,
+		// Trimmed as the runtime trims it: a secret file's trailing newline
+		// must not make two equal tokens differ.
+		Token:        strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TOKEN")),
 		Slots:        slots,
 		Scratch:      os.Getenv("LOOMCYCLE_WORKER_SCRATCH"),
 		ID:           *id,

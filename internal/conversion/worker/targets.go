@@ -151,14 +151,25 @@ func (w *worker) followDNS(ctx context.Context, t target) error {
 		case <-tick.C:
 		}
 		// An attachment that ended on its own (refused) is dropped, so the
-		// next lookup can try it again only if the name still lists it.
+		// next lookup can try it again only if the name still lists it. When
+		// every address the name listed refused this worker, the name is
+		// refused: the worker stops and says why rather than idling forever.
+		total, refused := len(live), 0
+		var lastErr error
 		for addr, a := range live {
 			select {
-			case <-a.done:
+			case err := <-a.done:
 				a.cancel()
 				delete(live, addr)
+				if errors.Is(err, ErrRefused) {
+					refused++
+					lastErr = err
+				}
 			default:
 			}
+		}
+		if total > 0 && refused == total {
+			return lastErr
 		}
 	}
 }
