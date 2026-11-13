@@ -2317,7 +2317,7 @@ The access-control management surface (the `LOOMCYCLE_ACL` row above lists its r
 
 ## 9c. Environment files — secrets vs. config (`.env.local` / `.env.insecure`)
 
-loomcycle is configured entirely through environment variables (the `loomcycle.yaml` carries agents + routing; everything operational is an env var). The **recommended** layout splits those vars across **two files** by sensitivity, so the secret-bearing half can be locked down independently of the operational half:
+Secrets, what identifies this process on its host (listen address, data directory, public URL) and the security gates are environment variables; routing, agents, policy and tuning live in `loomcycle.yaml`. The **recommended** layout splits the variables across **two files** by sensitivity, so the secret-bearing half can be locked down independently of the operational half:
 
 | File | Holds | Git posture | Safe to read/diff/share? |
 |---|---|---|---|
@@ -2336,6 +2336,26 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 ```
 
 **How they're loaded.** `loomcycle.sh` and `loomcycle-mcp.sh` source **`.env.insecure` first, then `.env.local`** (config first, secrets last — so a stray config line can never shadow a secret) before exec'ing the binary; either file may be absent. Set `LOOMCYCLE_ENV_FILE=<path>` to collapse the pair back to a single explicit file (the pre-split single-file flow). loomcycle itself reads only process env — it does not parse these files — so any supervisor (systemd `EnvironmentFile=`, Docker `--env-file`, a CI secret store) can substitute for the launcher scripts.
+
+### When a setting is in both the environment and the yaml
+
+Most settings live in one plane only. For a setting that can be given in both, **the environment wins**: a variable that is set replaces the yaml's value, so one yaml can serve several hosts and a secret can stay out of it. One setting differs, on purpose: **`auth.mode` takes the stricter** of the yaml's value and `LOOMCYCLE_AUTH_MODE`, so neither can lower the other.
+
+These are the settings that have both forms:
+
+| Yaml key | Variable | When both are set |
+|---|---|---|
+| `storage.pg_dsn`, `storage.pg_max_open_conns`, `storage.pg_min_idle_conns` | `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_PG_MAX_OPEN_CONNS`, `LOOMCYCLE_PG_MIN_IDLE_CONNS` | the variable |
+| `storage.pg_automigrate` | `LOOMCYCLE_PG_AUTOMIGRATE` | the variable: `1` on, `0` off |
+| `storage.sqlmem_root`, `sqlmem_pg_dsn`, `sqlmem_quota_bytes`, `sqlmem_audit_mode`, `sqlmem_scope_ttl_ms`, `sqlmem_total_max_bytes`, `sqlmem_shared_schemas` | the `LOOMCYCLE_SQLMEM_*` variable of the same name | the variable |
+| `providers.ollama-local.options.num_ctx` | `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` | the variable; boot reports it when the two differ |
+| `auth.mode` | `LOOMCYCLE_AUTH_MODE` | the stricter of the two; boot logs which one decided when they differ |
+
+A variable that is empty is not set. For the numeric ones above, neither is a value that is not a number: the yaml's value (or the default) stays.
+
+One exception remains: a provider's endpoint. A yaml `providers.<id>.base_url` is used in place of that provider's variable (`OLLAMA_BASE_URL`, `OLLAMA_CLOUD_BASE_URL`, `DEEPSEEK_BASE_URL`, `GEMINI_BASE_URL`), which only supplies the endpoint when the yaml names none.
+
+Everything else has one home. The settings that used to have a variable beside a yaml key (retention, provider options, timeout scaling, concurrency, the embedder limits, the two `hooks:` lists) are yaml-only now; a variable for one of them that is still set is reported at boot, and stops the boot when ignoring it would loosen the deployment.
 
 **Secrets at rest (F32).** Two mechanisms keep resolved credentials out of the on-disk state:
 
@@ -3477,7 +3497,7 @@ The embedder's batch size and call timeout are `memory.embedder.batch_size` (def
 
 ### SQL Memory
 
-Overrides of the `storage:` SQL Memory settings; see [SQL_MEMORY.md](SQL_MEMORY.md). The directory of the sqlite files, the query guardrails (row and byte caps, statement and transaction timeouts, open-transaction caps, savepoint depth), the collection cadence and the snapshot scope cap have no variable: each is a `storage: sqlmem_*` yaml key with a default.
+Overrides of the `storage:` SQL Memory settings (the variable wins; see [which one wins](#when-a-setting-is-in-both-the-environment-and-the-yaml)); see [SQL_MEMORY.md](SQL_MEMORY.md). The directory of the sqlite files, the query guardrails (row and byte caps, statement and transaction timeouts, open-transaction caps, savepoint depth), the collection cadence and the snapshot scope cap have no variable: each is a `storage: sqlmem_*` yaml key with a default.
 
 | Variable | Default | Effect |
 |---|---|---|

@@ -37,7 +37,7 @@ export LOOMCYCLE_PG_DSN="postgres://loomcycle:$(cat /run/secrets/pg_password)@db
 export LOOMCYCLE_PG_AUTOMIGRATE=0
 ```
 
-A configured DSN selects Postgres: `storage.backend` may be left out, and is only needed to say otherwise (`backend: sqlite` keeps SQLite even with a DSN set). Env wins over yaml when both are set. Defaults (omit to use these):
+A configured DSN selects Postgres: `storage.backend` may be left out, and is only needed to say otherwise (`backend: sqlite` keeps SQLite even with a DSN set). The environment wins over the yaml when both are set ([the rule](CONFIGURATION.md#when-a-setting-is-in-both-the-environment-and-the-yaml)). Defaults (omit to use these):
 
 | Setting | Default |
 |---|---|
