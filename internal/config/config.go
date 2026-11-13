@@ -328,6 +328,18 @@ type Config struct {
 	// (e.g. Memory without memory_scopes — F21). Not in YAML.
 	Warnings []string `yaml:"-"`
 
+	// UndrainedMemory lists the memory scopes agents can enqueue into with
+	// Memory op=add (or by banking evicted context) while no enabled schedule
+	// drains them, each with the advisory to show.
+	//
+	// It is not in Warnings because config alone cannot tell whether it
+	// matters: every agent with the Memory tool "can" enqueue, so the advisory
+	// fired for every deployment that selected a chat agent and had not set up
+	// consolidation, whether or not anything was ever queued. The server asks
+	// the store at boot and shows the advisory for a scope that has rows
+	// waiting. Not in YAML.
+	UndrainedMemory []UndrainedMemoryScope `yaml:"-"`
+
 	// configDir is the directory of the loaded YAML, kept so relative
 	// paths inside the config (system_prompt_file, local_api.spec) can
 	// be resolved against it.
@@ -7761,9 +7773,10 @@ func validate(c *Config) error {
 	if err := validateConsolidationBands(c); err != nil {
 		return err
 	}
-	// Non-fatal: memory scopes that can enqueue but have no consolidator to
-	// drain them. Runs last so it sees the fully-validated agents + schedules.
-	c.Warnings = append(c.Warnings, orphanAddWarnings(c.Agents, c.ScheduledRuns)...)
+	// Memory scopes that can enqueue but have no consolidator to drain them.
+	// Runs last so it sees the fully-validated agents + schedules. Kept apart
+	// from Warnings: see UndrainedMemory.
+	c.UndrainedMemory = orphanAdds(c.Agents, c.ScheduledRuns)
 	return nil
 }
 
@@ -7952,6 +7965,26 @@ func requireHTTPBaseURL(field, raw string) error {
 // memory-capable agents needs one line, not ten. Pure + deterministically
 // ordered so it is unit-testable.
 func orphanAddWarnings(agents map[string]AgentDef, schedules map[string]ScheduledRun) []string {
+	found := orphanAdds(agents, schedules)
+	out := make([]string, 0, len(found))
+	for _, f := range found {
+		out = append(out, f.Advisory)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// UndrainedMemoryScope is one memory scope that can be enqueued into and is
+// drained by nothing, with the advisory that says so.
+type UndrainedMemoryScope struct {
+	Scope    string
+	Advisory string
+}
+
+// orphanAdds is orphanAddWarnings with each advisory's scope.
+func orphanAdds(agents map[string]AgentDef, schedules map[string]ScheduledRun) []UndrainedMemoryScope {
 	hasMemoryTool := func(a AgentDef) bool {
 		for _, t := range a.Tools {
 			if t == "Memory" {
@@ -8006,21 +8039,21 @@ func orphanAddWarnings(agents map[string]AgentDef, schedules map[string]Schedule
 	}
 	sort.Strings(uncovered)
 
-	var out []string
+	var out []UndrainedMemoryScope
 	for _, scope := range uncovered {
 		names := append([]string(nil), enqueuers[scope]...)
 		sort.Strings(names)
 		if staged := stagedOff[scope]; len(staged) > 0 {
 			staged = append([]string(nil), staged...)
 			sort.Strings(staged)
-			out = append(out, fmt.Sprintf(
+			out = append(out, UndrainedMemoryScope{Scope: scope, Advisory: fmt.Sprintf(
 				"memory scope %q: %d agent(s) can enqueue with Memory op=add (%s) and a consolidator schedule exists but is disabled — enable %s to drain scope %q. Until then queued items never become durable memory, so a later op=recall finds nothing.",
-				scope, len(names), strings.Join(names, ", "), strings.Join(staged, ", "), scope))
+				scope, len(names), strings.Join(names, ", "), strings.Join(staged, ", "), scope)})
 			continue
 		}
-		out = append(out, fmt.Sprintf(
+		out = append(out, UndrainedMemoryScope{Scope: scope, Advisory: fmt.Sprintf(
 			"memory scope %q: %d agent(s) can enqueue with Memory op=add (%s) but no enabled scheduled run drains it — queued items never become durable memory, so a later op=recall finds nothing. Add a scheduled run for an agent with memory_consolidation: true covering scope %q (the bundled `memory` preset ships one).",
-			scope, len(names), strings.Join(names, ", "), scope))
+			scope, len(names), strings.Join(names, ", "), scope)})
 	}
 	return out
 }
