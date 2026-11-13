@@ -75,7 +75,7 @@ What they do with the removed variables:
 | `loomcycle validate <config>` | Prints an `Advisories : N` block on standard output, one `  - …` line per advisory, then `OK`. Exit code `0`. | Prints `loomcycle: error: config: retired environment variables are set to …` on standard error. Exit code `2`. Nothing else is printed. |
 | `loomcycle doctor [--config <path>]` | Prints one `WARN` check labelled `Config advisory` per advisory. A warning does not change the exit code. | Prints a `FAIL` check labelled `Config parses` that carries the refusal text, then the summary. Exit code `1`. The later checks do not run. |
 
-`validate` only loads the config. `doctor` also checks that the SQLite data directory is writable (or that a Postgres connection string is set) and that the listen address can be bound; an address already in use by your running server is a warning, not a failure. Neither command connects to the store, so neither can report a problem that only appears when the store is opened; see [Status of this guide](#9-status-of-this-guide).
+`validate` only loads the config. `doctor` also checks that the SQLite data directory is writable (or that a Postgres connection string is set) and that the listen address can be bound; an address already in use by your running server is a warning, not a failure. Neither command opens the store, so neither reports a problem that only appears when the store is opened. One of those is the refusal of an inferred Postgres backend beside an existing SQLite store file ([4.5](#45-a-postgres-connection-string-with-no-backend-named-now-opens-postgres)): `validate` prints `OK` and the server start, or any other command that opens the store, stops.
 
 In a container deployment, run the same commands in the new image with the deployment's environment and config mount, for example by overriding the service's command for one run. Adapt this to your compose file:
 
@@ -150,7 +150,7 @@ Seven features lost their switch and run on every server: the scheduler, the inb
 - A webhook definition now answers on its inbound route.
 - A channel that declares `hooks:` now has them applied to every message. Before, the hooks were skipped.
 - A hook definition whose body is `code-js` now runs.
-- An agent definition with a `code_body` now runs, provided the config declares a `code-js` provider (the default providers layer does).
+- An agent definition with a `code_body` now runs, provided the config declares a `code-js` provider (the default providers layer does). Without one, creating or forking an agent definition that carries a `code_body` is refused with `a code_body cannot run here (no code-js provider is configured)`. A definition already stored is still loaded.
 - An agent that names `Bashbox` in its `tools` now gets the Bashbox sandbox.
 - A fan-out parent (an agent blocked in a parallel spawn) is now parked on pause and resumed with its children.
 
@@ -200,7 +200,15 @@ storage:
   backend: sqlite
 ```
 
-In the same release, when Postgres is inferred and an existing SQLite store file is found in the data directory, the server refuses to start until `storage.backend` is set in the yaml. Do not rely on that as your only protection: set the key.
+When Postgres is inferred and the data directory already holds a SQLite store file (`loomcycle.db`), the store is not opened. The server, and every other command that opens the store, stops with:
+
+```
+an existing SQLite store was found at <data dir>/loomcycle.db, and a Postgres DSN is configured with no storage.backend in the yaml, so the Postgres store would now be used and the SQLite data left behind. Set storage.backend in the yaml to say which: `sqlite` to keep using the existing store, or `postgres` to use the DSN (`loomcycle migrate sqlite-to-postgres` copies the data across first)
+```
+
+`validate` and `doctor` do not open the store and do not report this. Do not rely on the refusal as your only protection: it looks for the file in the data directory this start uses, so a start with another data directory finds nothing. Set the key.
+
+Every start logs the choice: an `INFO` line `store: backend chosen` with `backend` and `source`, where `source` is `yaml` when `storage.backend` named it and `inferred` otherwise.
 
 ### 4.6 A2A is served when a server card is named
 
@@ -214,9 +222,9 @@ In the same release, when Postgres is inferred and an existing SQLite store file
 
 **Who is affected.** A deployment that sets `LOOMCYCLE_CONFIG_DIR`, whose config directory contains a `skills/`, `agents/` or `help/` subdirectory, and that leaves `LOOMCYCLE_SKILLS_ROOT`, `LOOMCYCLE_AGENTS_ROOT` or `LOOMCYCLE_HELP_ROOT` unset.
 
-**What happens.** Each unset variable now resolves to that subdirectory when it exists. Skills, agent files and help topics found there are loaded. Skill bodies and agent files are trusted as operator-authored content.
+**What happens.** Each unset variable now resolves to that subdirectory when it exists. Skills, agent files and help topics found there are loaded, and the boot logs each directory it adopted this way. Skill bodies and agent files are trusted as operator-authored content. In an adopted `agents/` directory a `.md` file with no frontmatter is skipped and logged, because such a file is a prompt body or a README, not an agent definition; a directory named by `LOOMCYCLE_AGENTS_ROOT` loads every `.md` file, as before.
 
-**What to do.** Check what those directories contain and who can write to them. To decline the default, set the variable to the empty string (for example `LOOMCYCLE_AGENTS_ROOT=`).
+**What to do.** Check what those directories contain and who can write to them. To decline the default, set the variable to the empty string (for example `LOOMCYCLE_AGENTS_ROOT=`), or point it at an empty directory where an empty value cannot be entered.
 
 ### 4.8 Debug flags are folded into the log level
 
@@ -246,18 +254,27 @@ In the same release, when Postgres is inferred and an existing SQLite store file
 
 **Who is affected.** A deployment that set a removed variable to something *looser* than the value that now applies.
 
-**What happens.** A refusal covers only the tightening direction. A looser value is advised and dropped. Cases to check in your list of names:
+**What happens.** For a limit, a refusal covers only the tightening direction. A looser value is advised and dropped. (The settings that decide which data is kept are different: they are refused in both directions, see below.) Cases to check in your list of names:
 
 - **Channel payload cap.** `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES` raised above 64 KiB, or set to `0` for "no cap": a channel message over 64 KiB is now refused on every surface that publishes.
 - **Memory value cap.** `LOOMCYCLE_MEMORY_MAX_VALUE_BYTES` raised or `0`: a Memory value over 64 KiB is refused.
 - **Provider stream timeouts raised** for slow models (`LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS`, `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` and the `ollama-local` pair): the defaults apply again and slow calls fail until you set the provider option in the yaml.
-- **Sweeps switched off with `0`** (expired Memory entries, expired channel messages, expired registered agents, old metrics samples), the run heartbeat sweeper and the usage rollup: all of them now always run on a fixed cadence.
+- **Sweeps switched off with `0`** (expired Memory entries, expired channel messages, expired registered agents, old metrics samples): all of them now always run on a fixed cadence.
 - **Expired token rows kept forever** with `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS=0`: an expired token's row is now deleted 7 days after it expired.
 - **Tool calls forced serial** with `LOOMCYCLE_TOOL_PARALLELISM=1`: 8 tool calls of one turn now run at once.
 - **Embedder timeout disabled** with `LOOMCYCLE_MEMORY_EMBED_TIMEOUT_MS=0`: the yaml has no "no timeout"; the default of 30 s applies.
 - **SSE keepalive disabled** with `LOOMCYCLE_SSE_KEEPALIVE_MS=0`: a run stream sends a keepalive every 20 s.
 
 **What to do.** For a setting that moved to the yaml, set the key. For a fixed value there is nothing to set; check that your workload fits.
+
+**Settings that decided which data is kept stop the boot instead.** Four removed variables changed what is deleted or created, so the old "off" (or another age) is refused, not dropped:
+
+- `LOOMCYCLE_USAGE_SWEEPER=0`: the usage rollup always runs. Per-call usage rows older than `retention.usage_detail.max_age` (30 days unless set) are deleted and their daily totals are kept. To keep per-call rows longer, raise that key.
+- `LOOMCYCLE_HEARTBEAT_SWEEPER=0`: the run heartbeat sweeper always runs, and a run whose heartbeat went stale is marked failed.
+- `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS` set to `0`, `false`, `no` or `off`: the tenant-root and user-root documents are always created when a principal is established.
+- `LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS` set to any age other than 3 days (`259200000`), shorter or longer: chats of internal agents are kept 3 days and then deleted, when chat retention is on. A value of `0` used to inherit the chat age, so it is refused unless `retention.chats.max_age` is `3d`. A value that is not a whole number is refused; a negative number was always ignored and is only advised.
+
+None of the four has a setting that brings the old behaviour back. Any other value of the first three is only advised.
 
 ### 4.12 Settings that moved and are only advised
 
@@ -267,7 +284,6 @@ In the same release, when Postgres is inferred and an existing SQLite store file
 
 - **Process metrics sampler.** `LOOMCYCLE_METRICS_ENABLED=1` no longer starts it. No samples are recorded and the activity page of the Web UI is empty.
 - **Document projection.** A positive `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` used to switch the projection on as well as set its cadence. Now the projection needs `memory.projection.enabled: true`.
-- **Ollama context window and GPU offload.** `LOOMCYCLE_OLLAMA_NUM_CTX` (hosted Ollama) and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` are no longer read: the hosted model runs with its own window, and Ollama decides the offload, which on some hosts means the CPU.
 - **Timeout scaling, embedder batch size, SQL Memory collection cadence, retention sweep interval.** The yaml default applies.
 
 **What to do.** Set the yaml key from table A.
@@ -317,9 +333,10 @@ storage:
 
 Rules:
 
-- With no `storage.backend`, the store is Postgres when `LOOMCYCLE_PG_DSN` or `storage.pg_dsn` is set, and SQLite otherwise. An explicit `storage.backend` always wins. A yaml `pg_dsn` that is still an unexpanded `${NAME}` reference does not count as a connection string.
+- With no `storage.backend`, the store is Postgres when `LOOMCYCLE_PG_DSN` or `storage.pg_dsn` is set, and SQLite otherwise. An explicit `storage.backend` always wins. A yaml `pg_dsn` that is still an unexpanded `${NAME}` reference does not count as a connection string, and neither does a `LOOMCYCLE_PG_DSN` that is empty or only whitespace.
+- An inferred Postgres backend is refused when the data directory already holds a SQLite store file; see [4.5](#45-a-postgres-connection-string-with-no-backend-named-now-opens-postgres). The boot log says which backend was chosen and whether the yaml named it.
 - `storage.sqlmem_enabled` has three states. Unset: on with SQLite; on with Postgres when the SQL Memory connection string is set. `false`: off on either store. `true` on Postgres with no SQL Memory connection string stops the boot.
-- With a Postgres store and no `LOOMCYCLE_SQLMEM_PG_DSN`, SQL Memory is off and the server starts. In the same release the boot log carries a warning that says so. Documents need SQL Memory.
+- With a Postgres store and no `LOOMCYCLE_SQLMEM_PG_DSN`, SQL Memory is off and the server starts. The boot log carries a `WARN` line: `sqlmem: SQL Memory is off because LOOMCYCLE_SQLMEM_PG_DSN is not set; Documents need SQL Memory and are off with it. Set the DSN of a separate database to turn both on, or storage.sqlmem_enabled: false in the yaml to say this is intended`. With `storage.sqlmem_enabled: false` the line is not logged.
 - `LOOMCYCLE_SQLMEM_ROOT`, `LOOMCYCLE_SQLMEM_QUOTA_BYTES`, `LOOMCYCLE_SQLMEM_AUDIT_MODE`, `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS`, `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES` and `LOOMCYCLE_SQLMEM_SHARED_SCHEMAS` are still read from the environment. Do not move them.
 - Set `storage.backend: postgres` on every Postgres deployment, and `storage.backend: sqlite` on every SQLite deployment that has a connection string anywhere in its environment. It costs one line, and the store no longer depends on what the environment happens to carry.
 
@@ -435,7 +452,7 @@ Rules:
 - **There is no global timeout key.** The two global variables applied to every provider. Each provider that needs another value than the default sets its own options.
 - **A lowered global timeout is refused until every provider has it.** If `LOOMCYCLE_PROVIDER_HEADER_TIMEOUT_MS` or `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` is a positive value below what any declared provider now waits, the boot is refused. The check covers every provider the config declares except `ollama-local`, `code-js` and the mock provider, and the default providers layer declares the built-in ones whether you use them or not. Either set the option on each of them or remove the variable and accept the defaults.
 - `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is still read from the environment, and a yaml `providers.ollama-local.options.num_ctx` wins over it. `OLLAMA_BASE_URL` and `LOOMCYCLE_CODE_AGENTS_ROOT` also stay in the environment.
-- Move `LOOMCYCLE_OLLAMA_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` to the yaml in any case. Today they are only advised; the release may refuse them when the yaml option is missing.
+- **`LOOMCYCLE_OLLAMA_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` are refused until the yaml carries the same number.** Set to a positive number, each stops the boot unless `providers.ollama.options.num_ctx` or `providers.ollama-local.options.num_gpu` is that number. Dropped silently, hosted requests would run in the model's own window and local models on whatever Ollama picks, often the CPU. Write the option, then remove the variable.
 
 ### 5.4 Timeout scaling
 
@@ -602,7 +619,7 @@ A variable that names an entry the yaml list lacks refuses the boot. Copy every 
 
 ### 5.11 Dead-link collection
 
-In the same release, the two dead-link variables become one.
+The two dead-link variables became one.
 
 Before:
 
@@ -617,7 +634,15 @@ After:
 LOOMCYCLE_DEADLINK_GC=dry-run     # off | dry-run | on
 ```
 
-An old variable that switched the collection off (`LOOMCYCLE_DEADLINK_GC_MS=0`) or made it a dry run refuses the boot unless `LOOMCYCLE_DEADLINK_GC` says the same. This setting stays in the environment because it decides whether data is deleted.
+Rules:
+
+- `LOOMCYCLE_DEADLINK_GC` is `on` when unset: the collection runs and deletes unreachable chunk references. `dry-run` counts and logs what it would collect and deletes nothing. `off` does not run it. Any other value stops the boot.
+- The collection runs every hour. The interval can no longer be set, and an interval in `LOOMCYCLE_DEADLINK_GC_MS` is not read.
+- `LOOMCYCLE_DEADLINK_GC_MS` set to zero or a negative number (the old "off") stops the boot unless `LOOMCYCLE_DEADLINK_GC=off`.
+- `LOOMCYCLE_DEADLINK_GC_MS` set to more than one hour (`3600000`) stops the boot while the collection deletes, that is unless `LOOMCYCLE_DEADLINK_GC` is `off` or `dry-run`: rows would be deleted sooner than you had set. An interval of an hour or less, and a value that is not a whole number, are only advised.
+- `LOOMCYCLE_DEADLINK_GC_DRY_RUN=1` stops the boot unless `LOOMCYCLE_DEADLINK_GC` is `dry-run` or `off`. Any other value of it is only advised.
+
+This setting stays in the environment because it decides whether data is deleted.
 
 ### 5.12 Audio queue
 
@@ -934,8 +959,8 @@ Provider options (`providers.<id>.options`).
 | `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | `providers.<id>.options.idle_timeout_ms`, on each provider | Milliseconds; `90000` | As above |
 | `LOOMCYCLE_OLLAMA_LOCAL_HEADER_TIMEOUT_MS` | `providers.ollama-local.options.header_timeout_ms` | Milliseconds; `600000` | Set to a positive number below what `ollama-local` now waits |
 | `LOOMCYCLE_OLLAMA_LOCAL_IDLE_TIMEOUT_MS` | `providers.ollama-local.options.idle_timeout_ms` | Milliseconds; `600000` | As above |
-| `LOOMCYCLE_OLLAMA_NUM_CTX` | `providers.ollama.options.num_ctx` | Tokens; unset = the model's own window | Never (see [Status of this guide](#9-status-of-this-guide)) |
-| `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` | `providers.ollama-local.options.num_gpu` | Layers; unset = Ollama decides | Never (see [Status of this guide](#9-status-of-this-guide)) |
+| `LOOMCYCLE_OLLAMA_NUM_CTX` | `providers.ollama.options.num_ctx` | Tokens; unset = the model's own window | Set to a positive number while the yaml option is absent or another number |
+| `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` | `providers.ollama-local.options.num_gpu` | Layers; unset = Ollama decides | As above |
 | `LOOMCYCLE_CODE_AGENTS_DETERMINISTIC` | `providers.code-js.options.deterministic` | `true` or `false`; `false` | Never |
 | `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `providers.code-js.options.run_timeout_seconds` | Seconds; `120` | Lower (valid), compared with the yaml option or the default |
 | `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `providers.code-js.options.max_wall_seconds` | Seconds; `86400` | Lower (valid), compared with the yaml option or the default |
@@ -1055,7 +1080,7 @@ Background cadences and kept-for periods.
 | `LOOMCYCLE_CHANGE_SUB_INTERVAL_MS` | Change subscriptions are delivered every 5 s. | Never |
 | `LOOMCYCLE_MEMORY_CHANGES_RETENTION_HOURS` | Change-feed rows are kept 24 h. | Never |
 | `LOOMCYCLE_EXPIRED_TOKEN_RETENTION_SECONDS` | An expired token's row is deleted 7 days after it expired. | Never |
-| `LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS` | Chats of internal agents are deleted after 3 days when chat retention is on. | Lower. In the same release, a value that asked to keep them longer than 3 days is refused as well. |
+| `LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS` | Chats of internal agents are deleted after 3 days when chat retention is on. | Set to a positive number other than `259200000` (3 days), to a value that is not a whole number, or to `0` while `retention.chats.max_age` is not `3d` |
 
 ### C. Feature switches removed
 
@@ -1070,9 +1095,9 @@ The feature is always on, or is decided by another setting.
 | `LOOMCYCLE_CHANNEL_HOOKS` | The channel-hook worker always runs. To keep it unused, declare no `hooks:` on any channel. | As above |
 | `LOOMCYCLE_BASHBOX_ENABLED` | Bashbox is always registered. An agent gets it through its `tools` list. | As above |
 | `LOOMCYCLE_RESUME_FANOUT` | A fan-out parent always parks on pause and is resumed with its children. This cannot be turned off. | As above |
-| `LOOMCYCLE_HEARTBEAT_SWEEPER` | The run heartbeat sweeper always runs. | Never today. In the same release, a value that switched it off is refused. |
-| `LOOMCYCLE_USAGE_SWEEPER` | The usage rollup always runs. | Never today. In the same release, a value that switched it off is refused. |
-| `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS` | The tenant-root and user-root documents are always created when a principal is established. | Never today. In the same release, a value that switched it off is refused. |
+| `LOOMCYCLE_HEARTBEAT_SWEEPER` | The run heartbeat sweeper always runs. | Set to `0` |
+| `LOOMCYCLE_USAGE_SWEEPER` | The usage rollup always runs; `retention.usage_detail.max_age` sets how long per-call rows are kept. | Set to `0` |
+| `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS` | The tenant-root and user-root documents are always created when a principal is established. | Set to `0`, `false`, `no` or `off` |
 | `LOOMCYCLE_A2A_ENABLED` | A2A is on when `LOOMCYCLE_A2A_SERVER_CARD` names the server card to serve. | Set to anything other than `1` while `LOOMCYCLE_A2A_SERVER_CARD` is set |
 | `LOOMCYCLE_SQLMEM_ENABLED` | SQL Memory is on with a SQLite store, and with a Postgres store when `LOOMCYCLE_SQLMEM_PG_DSN` is set. `storage.sqlmem_enabled: false` turns it off. | What the variable used to give (on for exactly `1`, otherwise the yaml's answer, off by default) differs from what this version resolves |
 | `LOOMCYCLE_STORAGE_BACKEND` | The store is Postgres when `LOOMCYCLE_PG_DSN` or `storage.pg_dsn` is set, and SQLite otherwise. `storage.backend` in the yaml pins it. | Set to a non-empty value that names another backend than the one this version opens |
@@ -1083,6 +1108,8 @@ The feature is always on, or is decided by another setting.
 |---|---|---|
 | `LOOMCYCLE_SPEECH_MAX_INFLIGHT` | `LOOMCYCLE_AUDIO_MAX_INFLIGHT`, which sizes the queue of both audio routes (default `2`). | Lower, compared with `LOOMCYCLE_AUDIO_MAX_INFLIGHT` or its default |
 | `LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT` | `LOOMCYCLE_AUDIO_MAX_INFLIGHT`. | As above |
+| `LOOMCYCLE_DEADLINK_GC_MS` | `LOOMCYCLE_DEADLINK_GC` = `off`, `dry-run` or `on` (default `on`). The collection runs every hour; the interval is no longer read. | Set to zero or a negative number unless `LOOMCYCLE_DEADLINK_GC=off`; or set to more than `3600000` unless `LOOMCYCLE_DEADLINK_GC` is `off` or `dry-run` |
+| `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | `LOOMCYCLE_DEADLINK_GC=dry-run`. | Set to `1` unless `LOOMCYCLE_DEADLINK_GC` is `dry-run` or `off` |
 | `LOOMCYCLE_AUTH_VERBOSE` | `LOOMCYCLE_LOG_LEVEL=debug`: a rejected credential is logged at debug level. | Never |
 | `LOOMCYCLE_CHANNEL_DEBUG` | `LOOMCYCLE_LOG_LEVEL=debug`: each channel publish is logged at debug level. | Never |
 | `LOOMCYCLE_OLLAMA_DEBUG_THINK` | `LOOMCYCLE_LOG_LEVEL=debug`: each Ollama request's model, effort and think flag are logged at debug level. | Never |
@@ -1093,13 +1120,6 @@ The feature is always on, or is decided by another setting.
 
 The four `LOOMCYCLE_OTEL_*` names were already unread before this release. They are listed here because the runtime now reports them.
 
-#### Pending rows for table D
-
-| Variable | Use instead | Stops the boot when |
-|---|---|---|
-| `LOOMCYCLE_DEADLINK_GC_MS` | `LOOMCYCLE_DEADLINK_GC` = `off`, `dry-run` or `on`. | Set to `0` (off) unless `LOOMCYCLE_DEADLINK_GC` says the same |
-| `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | `LOOMCYCLE_DEADLINK_GC=dry-run`. | Set to a dry run unless `LOOMCYCLE_DEADLINK_GC` says the same |
-
 ### E. Variables that were already dead
 
 These were not read by the previous release either. The runtime now reports them.
@@ -1109,7 +1129,7 @@ These were not read by the previous release either. The runtime now reports them
 | `LOOMCYCLE_INTERRUPTION_DEFAULT_TIMEOUT_MS` | Set `interruption.default_timeout_ms` in the yaml. | Never |
 | `LOOMCYCLE_INTERRUPTION_MAX_TIMEOUT_MS` | Set `interruption.max_timeout_ms` in the yaml. | Never |
 | `LOOMCYCLE_INTERRUPTION_MAX_PENDING_PER_RUN` | Set `interruption.max_pending_per_run` in the yaml. | Never |
-| `LOOMCYCLE_INTERRUPTION_HEARTBEAT_INTERVAL_MS` | Remove it. The runtime's advisory says the interval is fixed. | Never |
+| `LOOMCYCLE_INTERRUPTION_HEARTBEAT_INTERVAL_MS` | Set `interruption.heartbeat_interval_ms` in the yaml. | Never |
 | `LOOMCYCLE_SNAPSHOT_MAX_BYTES` | Pass `max_bytes` on the snapshot request. | Never |
 | `LOOMCYCLE_READ_ROOT` | The filesystem jail is gone: declare a `volumes:` block and bind agents to it. | Set to any non-empty value |
 | `LOOMCYCLE_WRITE_ROOT` | As above. | Set to any non-empty value |
@@ -1177,6 +1197,9 @@ Each refusal entry has the form `NAME: what to do`. The most common ones:
 | `LOOMCYCLE_A2A_ENABLED: A2A is served whenever LOOMCYCLE_A2A_SERVER_CARD is set, and it is …` | The switch is off while the card is named. | Unset `LOOMCYCLE_A2A_SERVER_CARD` to keep A2A off, or remove the switch to serve it. |
 | `LOOMCYCLE_SPEECH_MAX_INFLIGHT: both audio queues are sized by LOOMCYCLE_AUDIO_MAX_INFLIGHT …` | The route was held to fewer requests than the shared size. | Set `LOOMCYCLE_AUDIO_MAX_INFLIGHT` to the size you want, then remove the variable. |
 | `LOOMCYCLE_UI_LOGIN_ORIGINS: set auth.login_origins in the yaml, as a list` | The variable names an origin the yaml lacks. | Add the origin to `auth.login_origins`. |
+| `LOOMCYCLE_OLLAMA_NUM_CTX: requests to hosted Ollama no longer carry this context window …` (and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU: requests to local Ollama no longer carry this GPU offload …`) | The variable is a positive number and the yaml option is absent or another number. | Set `providers.ollama.options.num_ctx` (or `providers.ollama-local.options.num_gpu`) to the same number, then remove the variable. |
+| `LOOMCYCLE_DEADLINK_GC_MS: the dead-link collection runs every hour and deletes unreachable chunk references unless LOOMCYCLE_DEADLINK_GC says otherwise …` (and `LOOMCYCLE_DEADLINK_GC_DRY_RUN: …`) | You had the collection off, counting only, or running less often than hourly, and `LOOMCYCLE_DEADLINK_GC` does not say so. | Set `LOOMCYCLE_DEADLINK_GC` to `off` or `dry-run` ([5.11](#511-dead-link-collection)), then remove the old variable. |
+| `LOOMCYCLE_USAGE_SWEEPER: the usage rollup always runs …`, `LOOMCYCLE_HEARTBEAT_SWEEPER: the run heartbeat sweeper always runs …`, `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS: the tenant-root and user-root documents are always created …`, `LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS: chats of internal agents are kept 3 days and then deleted …` | The variable switched the work off, or set another age ([4.11](#411-a-limit-you-raised-removed-or-switched-off-returns-to-its-default)). | Nothing brings the old behaviour back. Decide whether the fixed behaviour is acceptable, then remove the variable. |
 | `LOOMCYCLE_READ_ROOT: the filesystem jail is gone …` | A deployment that predates volumes. | Declare a `volumes:` block and bind agents to it, then remove the variable. |
 | `LOOMCYCLE_CHANNELS_MAX_VALUE_BYTES: a channel message is capped at 64 KiB` (and other fixed caps) | You had lowered the cap below the fixed value, or the value is not a number. | The cap can no longer be lowered. Decide whether the fixed value is acceptable, then remove the variable. |
 
@@ -1187,10 +1210,10 @@ A refusal for a fixed cap has no setting that brings the old value back. If you 
 The server opened a different store than before. Stop it before anything is written that you would have to merge.
 
 - **It opened SQLite, and you run Postgres.** The connection string did not reach the process: `LOOMCYCLE_PG_DSN` is unset or empty, or the yaml `storage.pg_dsn` is an unexpanded `${NAME}` reference. Before this release `LOOMCYCLE_STORAGE_BACKEND=postgres` with no connection string stopped the boot; if you removed that variable and the connection string is missing, the store is SQLite. Fix the connection string and set `storage.backend: postgres`, which makes a missing connection string an error again.
-- **It opened Postgres, and you run SQLite.** A connection string is present in the environment. Set `storage.backend: sqlite`.
+- **It opened Postgres, and you run SQLite.** A connection string is present in the environment. Set `storage.backend: sqlite`. The start refuses this by itself only when it finds `loomcycle.db` in the data directory it was given.
 - **SQL Memory and Documents look empty on SQLite.** Check that `LOOMCYCLE_SQLMEM_ROOT` still points at your scope files. It is still read from the environment.
 
-Run `loomcycle validate <config>` with the server's environment: its first lines print the storage backend it resolves.
+Run `loomcycle validate <config>` with the server's environment: its first lines print the storage backend it resolves. The server's boot log has the same answer in the `store: backend chosen` line.
 
 ### Retention stopped
 
@@ -1206,15 +1229,15 @@ Nothing is deleted unless `retention.enabled: true` is in the yaml and a family 
 
 Documents are backed by SQL Memory.
 
-- **Postgres store.** SQL Memory is on only when `LOOMCYCLE_SQLMEM_PG_DSN` (or `storage.sqlmem_pg_dsn`) is set. `LOOMCYCLE_SQLMEM_ENABLED=1` no longer does anything, and without the connection string the server starts with SQL Memory off instead of stopping. Set the connection string; its Postgres role needs `CREATEROLE`.
+- **Postgres store.** SQL Memory is on only when `LOOMCYCLE_SQLMEM_PG_DSN` (or `storage.sqlmem_pg_dsn`) is set. `LOOMCYCLE_SQLMEM_ENABLED=1` no longer does anything, and without the connection string the server starts with SQL Memory off instead of stopping, and logs the `WARN` line `sqlmem: SQL Memory is off because LOOMCYCLE_SQLMEM_PG_DSN is not set …`. Set the connection string; its Postgres role needs `CREATEROLE`.
 - **Either store.** Check that the yaml does not say `storage.sqlmem_enabled: false`.
 - **TrueNAS app.** Turn the SQL Memory toggle on and fill in its connection string; the toggle passes the connection string only when it is on.
 
 ### My local model's context got small
 
-- **Hosted Ollama (`ollama` provider).** `LOOMCYCLE_OLLAMA_NUM_CTX` is no longer read, so requests carry no context window and the model uses its own. Set `providers.ollama.options.num_ctx` in the yaml.
+- **Hosted Ollama (`ollama` provider).** `LOOMCYCLE_OLLAMA_NUM_CTX` is no longer read. A positive value stops the boot until `providers.ollama.options.num_ctx` carries it, so a server that started either has the option or never had the variable; without the option requests carry no context window and the model uses its own.
 - **Local Ollama (`ollama-local` provider).** `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` is still read, but a yaml `providers.ollama-local.options.num_ctx` wins over it, in your own file or in a preset. Look for the key in every loaded layer.
-- **The model became slow as well.** `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` is no longer read, and Ollama may have fallen back to the CPU. Set `providers.ollama-local.options.num_gpu`.
+- **The model became slow as well.** `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` is no longer read (a positive value stops the boot until the yaml carries it). If the variable was removed without writing the option, Ollama may have fallen back to the CPU. Set `providers.ollama-local.options.num_gpu`.
 
 Set `LOOMCYCLE_LOG_LEVEL=debug` to see each Ollama request's model, effort and think flag.
 
@@ -1224,24 +1247,15 @@ In the same release, a malformed value in an environment variable that is still 
 
 ## 9. Status of this guide
 
-This guide was written against the development branch of the release. The items below were approved for the same release but were not all in the code when the guide was written. A maintainer should check each against the code before the release and correct the sections named.
+This guide was checked against the code of the development branch of the release. The items below were approved for the same release and are **not in the code yet**. A maintainer should check each against the code before the release and correct the sections named.
 
-1. **Retention switch.** `retention.enabled` (default `false`) is the switch, and a family whose mode deletes must name its `max_age`. Present in the code. Sections 4.10, 5.2, table A.
-2. **Storage backend inference.** Present in the code. Pending: the refusal when Postgres is inferred and an existing SQLite store file is found in the data directory. Check whether `validate` and `doctor` report it or only the server start does. Sections 2.3, 4.5, 5.1, 8.
-3. **Boot warning** when the store is Postgres and SQL Memory is off because `LOOMCYCLE_SQLMEM_PG_DSN` is not set. Pending. Check its exact text. Sections 5.1, 8.
-4. **Dead-link collection.** `LOOMCYCLE_DEADLINK_GC` = `off` | `dry-run` | `on` replacing `LOOMCYCLE_DEADLINK_GC_MS` and `LOOMCYCLE_DEADLINK_GC_DRY_RUN`. Pending; the old pair is still read today. Check the default of the new variable, what happens to an interval set in the old one, and the refusal rule. Section 5.11, table D.
-5. **Four data-keeping variables** refuse the boot when they asked for "off" or "keep longer": `LOOMCYCLE_USAGE_SWEEPER`, `LOOMCYCLE_HEARTBEAT_SWEEPER`, `LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS`, `LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS`. Pending: today the first three are only advised, and the fourth is refused only when lower than 3 days. Section 4.11, tables B and C.
-6. **Bashbox over MCP.** Stripped from MCP-registered agents unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS` is set. Present in the code. Section 4.3.
-7. **An agent definition with a `code_body`** is refused at create when no `code-js` provider is configured. Pending. Add a sentence to 4.1 once the error text is known.
-8. **Hooks lists.** `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` and `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` removed in favour of the yaml lists. Pending; both are still read and appended today. Section 5.10, table A.
-9. **Sign-in mode.** The effective mode is the stricter of `auth.mode` and `LOOMCYCLE_AUTH_MODE`. Pending; today a yaml value below the environment value stops the load. Section 5.15.
-10. **`LOOMCYCLE_CONFIG_FILES`** removed. Pending; it is still read today. Section 5.13, table A.
-11. **Malformed environment values** fail the start and name the variable. Pending. Section 8.
-12. **Presets `personal` and `server`, and the `include:` key.** Pending. Check their contents against section 6 and replace the preset lists in 6.1 and 6.2 with the single preset name.
-13. **`LOOMCYCLE_OLLAMA_NUM_CTX` and `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU`** may refuse the boot when the yaml option is missing. Decision open. Sections 4.12, 5.3, table A.
+1. **Hooks lists.** `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` and `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` removed in favour of the yaml lists. Pending; both are still read and appended today. Section 5.10, table A.
+2. **Sign-in mode.** The effective mode is the stricter of `auth.mode` and `LOOMCYCLE_AUTH_MODE`. Pending; today a yaml value below the environment value stops the load. Section 5.15.
+3. **`LOOMCYCLE_CONFIG_FILES`** removed. Pending; it is still read today. Section 5.13, table A.
+4. **Malformed environment values** fail the start and name the variable. Pending as a general policy; today it holds for some variables only (`LOOMCYCLE_DEADLINK_GC` is one). Section 8.
+5. **Presets `personal` and `server`, and the `include:` key.** Pending. Check their contents against section 6 and replace the preset lists in 6.1 and 6.2 with the single preset name.
 
 Also to re-check:
 
-- **`LOOMCYCLE_INTERRUPTION_HEARTBEAT_INTERVAL_MS`.** The runtime's advisory says the interval is fixed, while the reference yaml still shows `interruption.heartbeat_interval_ms`. Table E repeats the advisory.
-- **Tables A to E** must contain exactly the names in the runtime's table of removed variables. Re-run the comparison after the pending items land, and move the pending rows into the main tables.
+- **Tables A to E** must contain exactly the names in the runtime's table of removed variables, and every "stops the boot" cell must match a refusal rule. The comparison was re-run after the last change; re-run it after the pending items land, and move the pending rows of table A into the main table.
 - **The count** of environment variables before the release (about 318) and after.
