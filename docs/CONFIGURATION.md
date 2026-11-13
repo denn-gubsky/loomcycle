@@ -2662,6 +2662,20 @@ named (`loomcycle validate`, `loomcycle doctor`) they load what a bare
 `loomcycle` would: the auto-discovered file, or the presets and config dir alone.
 A file named explicitly must exist, as at boot.
 
+A command given a file answers for a server started with `--config <that file>`
+under the same environment, not for a server started without it. Two things
+follow. The named file is the primary file, so a `presets:` key in the config
+directory's `loomcycle.yaml` is refused when you name another file, exactly as
+the server refuses it with that `--config`; to check a config-directory
+deployment as it runs, name nothing (`loomcycle validate`). And a server started
+with several `--config` flags is checked by naming the same files in the same
+order: `loomcycle validate a.yaml b.yaml`. `doctor --config` takes one file.
+
+Files are compared by resolved path. The config directory's `loomcycle.yaml`
+named again with `--config` (by a relative path, another spelling or a symlink)
+is one file: it is layered once, at its `--config` position, and stays the file
+`presets:` is read from.
+
 This pairs with runtime reload: edit a section file present at boot and
 `POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
 boot is also picked up on reload — the reload re-globs the `loomcycle.*.yaml`

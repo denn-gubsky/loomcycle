@@ -262,8 +262,22 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 		cfgFiles = expanded
 	}
 
-	// Ordered disk-file layers: the config dir first, then --config.
-	stack := ConfigStack{Files: append(append([]string{}, configDirFiles...), cfgFiles...)}
+	// Ordered disk-file layers: the config dir first, then --config. A file
+	// reached both ways (the config dir's loomcycle.yaml named again with
+	// --config, or its section files) is one file: it is layered once, at
+	// its --config position. Files are compared by resolved path, so another
+	// spelling or a symlink of the same file is recognised.
+	named := make(map[string]bool, len(cfgFiles))
+	for _, f := range cfgFiles {
+		named[canonicalPath(f)] = true
+	}
+	stack := ConfigStack{}
+	for _, f := range configDirFiles {
+		if !named[canonicalPath(f)] {
+			stack.Files = append(stack.Files, f)
+		}
+	}
+	stack.Files = append(stack.Files, cfgFiles...)
 	if len(stack.Files) > 1 {
 		info("config: layering files (last wins)", "files", len(stack.Files), "paths", strings.Join(stack.Files, " ◁ "))
 	}
@@ -361,6 +375,20 @@ func selectPresetLayers(selected []string, selectedBy, primary string, info func
 	info(fmt.Sprintf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(units), presets),
 		"presets", presets, "selected_by", by)
 	return layers, inFile, nil
+}
+
+// canonicalPath is a path as files are compared by: absolute, with symlinks
+// resolved; the cleaned path when it does not resolve (the file is reported
+// missing elsewhere).
+func canonicalPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
 }
 
 // selectedByWins names what overrode the file's list: the flag is not the

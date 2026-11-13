@@ -28,25 +28,27 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: loomcycle validate [path/to/loomcycle.yaml]")
+		fmt.Fprintln(stderr, "Usage: loomcycle validate [path/to/loomcycle.yaml ...]")
 		fmt.Fprintln(stderr)
-		fmt.Fprintln(stderr, "Loads the config the server would load (embedded presets, the config")
-		fmt.Fprintln(stderr, "dir, then the named file; with no file named, the one the server")
-		fmt.Fprintln(stderr, "auto-discovers), runs every constructor-time check, and prints a")
+		fmt.Fprintln(stderr, "Loads the config a server started with the same environment and one")
+		fmt.Fprintln(stderr, "--config per named file, in that order, would load (embedded presets,")
+		fmt.Fprintln(stderr, "the config dir, then the named files; with no file named, the one the")
+		fmt.Fprintln(stderr, "server auto-discovers), runs every constructor-time check, and prints a")
 		fmt.Fprintln(stderr, "summary. Exits 0 on a clean config; 2 on any failure (stderr names")
 		fmt.Fprintln(stderr, "the offending agent / yaml line / fix).")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() > 1 {
-		fs.Usage()
-		return 2
+	// No path: the stack the server assembles with no --config. Several: the
+	// server's `--config a --config b`, so a multi-file deployment is checked
+	// as it runs; the last one named is the primary file, as at boot.
+	cfgPath := ""
+	if n := fs.NArg(); n > 0 {
+		cfgPath = fs.Arg(n - 1)
 	}
-	// No path: the stack the server assembles with no --config.
-	cfgPath := fs.Arg(0)
 
-	stack, err := assembleForCLI(cfgPath)
+	stack, err := AssembleConfigStack(nil, fs.Args(), false)
 	if err != nil {
 		if cfgPath == "" {
 			fs.Usage()

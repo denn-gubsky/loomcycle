@@ -169,6 +169,51 @@ func TestAssembleConfigStack_ServerAndCLIPathsGiveTheSameLayers(t *testing.T) {
 			},
 		},
 		{
+			// The config dir's loomcycle.yaml, named again by another
+			// spelling: one layer, at the named position, and still the
+			// file presets: is read from.
+			name: "the config dir's loomcycle.yaml named by a relative path is layered once and is primary",
+			setup: func(t *testing.T, _, cwd string) string {
+				dir := filepath.Join(cwd, "conf")
+				writeYAML(t, filepath.Join(dir, "loomcycle.yaml"), "presets: [base]\n")
+				writeYAML(t, filepath.Join(dir, "zz-site.yaml"), "provider_priority: !append [mock]\n")
+				t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+				return filepath.Join("conf", "loomcycle.yaml")
+			},
+			want: func(_, cwd, explicit string) []string {
+				return []string{"providers.default", "base", filepath.Join(cwd, "conf", "zz-site.yaml"), explicit}
+			},
+		},
+		{
+			name: "the config dir's loomcycle.yaml named through a symlink is layered once and is primary",
+			setup: func(t *testing.T, _, cwd string) string {
+				dir := filepath.Join(cwd, "conf")
+				writeYAML(t, filepath.Join(dir, "loomcycle.yaml"), "presets: [base]\n")
+				t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+				link := filepath.Join(cwd, "link")
+				if err := os.Symlink(dir, link); err != nil {
+					t.Skipf("no symlinks here: %v", err)
+				}
+				return filepath.Join(link, "loomcycle.yaml")
+			},
+			want: func(_, _, explicit string) []string { return []string{"providers.default", "base", explicit} },
+		},
+		{
+			// A named loomcycle.yaml brings its section files; with the
+			// config dir set to the same directory they are config-dir
+			// files too. Each is layered once.
+			name: "section files that are also config-dir files are layered once",
+			setup: func(t *testing.T, _, cwd string) string {
+				dir := filepath.Join(cwd, "conf")
+				writeYAML(t, filepath.Join(dir, "loomcycle.memory.yaml"), "provider_priority: !append [mock]\n")
+				t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+				return writeYAML(t, filepath.Join(dir, "loomcycle.yaml"), "presets: [base]\n")
+			},
+			want: func(_, cwd, explicit string) []string {
+				return []string{"providers.default", "base", explicit, filepath.Join(cwd, "conf", "loomcycle.memory.yaml")}
+			},
+		},
+		{
 			name: "the environment's selection wins over presets: in the file",
 			setup: func(t *testing.T, _, cwd string) string {
 				t.Setenv("LOOMCYCLE_PRESETS", "base")
@@ -209,6 +254,11 @@ func TestAssembleConfigStack_ServerAndCLIPathsGiveTheSameLayers(t *testing.T) {
 			}
 			if got := layerNames(cli.Layers); strings.Join(got, "|") != strings.Join(want, "|") {
 				t.Fatalf("CLI layers = %v, want the server's %v", got, want)
+			}
+			// Both must also load: a file layered twice, or a primary file
+			// not recognised under another spelling, fails here.
+			if _, err := config.LoadLayers(server.Layers...); err != nil {
+				t.Fatalf("the assembled stack does not load: %v", err)
 			}
 			for i := range server.Layers {
 				if string(server.Layers[i].Data) != string(cli.Layers[i].Data) {
