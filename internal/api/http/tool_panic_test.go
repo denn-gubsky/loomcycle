@@ -30,7 +30,7 @@ func TestServer_APanickingToolIsRecoveredAndCountedOnEveryDispatcher(t *testing.
 	srv := newMetricsPromServer(t, false)
 	srv.toolPanics = tools.NewPanicCounter()
 
-	if r := srv.newDispatcher([]tools.Tool{panickyTool{}}).Execute(context.Background(), "Document", json.RawMessage(`{}`)); !strings.HasPrefix(r.Text, "tool_panicked:") {
+	if r := srv.newDispatcher([]tools.Tool{panickyTool{}}, nil).Execute(context.Background(), "Document", json.RawMessage(`{}`)); !strings.HasPrefix(r.Text, "tool_panicked:") {
 		t.Errorf("run dispatcher: %+v", r)
 	}
 	r, err := srv.execBuiltin(context.Background(), panickyTool{}, json.RawMessage(`{}`))

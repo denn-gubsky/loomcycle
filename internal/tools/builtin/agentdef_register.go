@@ -56,6 +56,7 @@ func CheckRegisteredAgent(ctx context.Context, cfg *config.Config, st store.Stor
 		EvaluationScopes: req.EvaluationScopes,
 		Interruption:     req.Interruption,
 		CryptoScopes:     req.CryptoScopes,
+		ToolModes:        req.ToolModes,
 		ShellCredentials: req.ShellCredentials,
 		GitRemote:        req.GitRemote,
 		StatementMethods: req.StatementMethods,

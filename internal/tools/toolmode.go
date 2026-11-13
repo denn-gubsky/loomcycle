@@ -60,3 +60,25 @@ func (d *Dispatcher) refuseToolMode(name string, input json.RawMessage) (Result,
 			Description: "Use a read operation of " + name + " instead, or ask an operator for an agent that may write."},
 	}, true
 }
+
+// NarrowToolModes is a spawned child's tool modes: its own definition's, with
+// every read mode its parent run holds added (a read mode wins). A read mode
+// is sticky down the spawn tree, so a read-mode run cannot write through a
+// child whose own definition holds the tool whole. A parent mode on a tool the
+// child does not hold is kept too: it narrows nothing there, and keeping it
+// needs no knowledge of the child's tools.
+func NarrowToolModes(parent, child map[string]string) map[string]string {
+	if len(parent) == 0 {
+		return child
+	}
+	out := maps.Clone(child)
+	if out == nil {
+		out = make(map[string]string, len(parent))
+	}
+	for tool, mode := range parent {
+		if mode == config.ToolModeRead || out[tool] == "" {
+			out[tool] = mode
+		}
+	}
+	return out
+}

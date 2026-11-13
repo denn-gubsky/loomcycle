@@ -34,7 +34,7 @@ func (quotaTool) Execute(context.Context, json.RawMessage) (tools.Result, error)
 func TestNewDispatcher_ClassifiesAToolsTypedError(t *testing.T) {
 	srv := New(&config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}},
 		&stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
-	res := srv.newDispatcher([]tools.Tool{quotaTool{}}).Execute(context.Background(), "Memory", json.RawMessage(`{"op":"set"}`))
+	res := srv.newDispatcher([]tools.Tool{quotaTool{}}, nil).Execute(context.Background(), "Memory", json.RawMessage(`{"op":"set"}`))
 	if !res.IsError || res.Error == nil || res.Error.Category != tools.CategoryBusiness || res.Error.Retryable {
 		t.Errorf("result = %+v (error %+v); want the quota error classified as business, not retryable", res, res.Error)
 	}
@@ -99,7 +99,7 @@ func TestRunDispatcher_AShapeFailureCarriesTheSkippedArticle(t *testing.T) {
 	}
 	srv := New(&config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}},
 		&stubResolver{}, nil, concurrency.New(1, 1, time.Second), nil)
-	d := srv.newDispatcher([]tools.Tool{&builtin.Document{}, &builtin.Context{Help: set}})
+	d := srv.newDispatcher([]tools.Tool{&builtin.Document{}, &builtin.Context{Help: set}}, nil)
 	ctx := context.Background()
 
 	res := d.Execute(ctx, "Document", json.RawMessage(`{"op":"create_chunk","document_id":"d1","title":"T","parent":"r"}`))

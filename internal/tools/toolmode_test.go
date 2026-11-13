@@ -95,3 +95,21 @@ func TestDispatcher_SetToolModesKeepsItsOwnCopy(t *testing.T) {
 		t.Fatalf("write = %+v, want still refused", r)
 	}
 }
+
+// A spawned child holds every read mode of its parent on top of its own, so a
+// read-mode run cannot write through a child whose definition holds the tool
+// whole; a parent with no modes leaves the child's own.
+func TestRunPolicy_InheritKeepsTheParentsReadModes(t *testing.T) {
+	parent := RunPolicy{ToolModes: map[string]string{"Document": "read"}}
+	got := parent.Inherit(ChildGrant{Own: RunPolicy{ToolModes: map[string]string{"Path": "read"}}}).ToolModes
+	if got["Document"] != "read" || got["Path"] != "read" || len(got) != 2 {
+		t.Fatalf("child modes = %v, want Document and Path read", got)
+	}
+	if got := parent.Inherit(ChildGrant{}).ToolModes; got["Document"] != "read" {
+		t.Fatalf("a child with no modes of its own = %v, want the parent's Document read", got)
+	}
+	own := map[string]string{"Path": "read"}
+	if got := (RunPolicy{}).Inherit(ChildGrant{Own: RunPolicy{ToolModes: own}}).ToolModes; len(got) != 1 || got["Path"] != "read" {
+		t.Fatalf("child of a parent with no modes = %v, want its own", got)
+	}
+}

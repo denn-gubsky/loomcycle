@@ -936,6 +936,9 @@ func (c *Context) execPermissions(ctx context.Context) (tools.Result, error) {
 		// The key scopes the Crypto tool's key-backed ops may use; empty
 		// means keyless ops only.
 		"crypto_scopes": tools.PolicyOf(ctx).Crypto.Scopes,
+		// Tools held in a narrower mode (tool_modes): {Document: read} means
+		// only Document's read ops run. Absent: every tool whole.
+		"tool_modes": tools.PolicyOf(ctx).ToolModes,
 	}
 	return okJSON(out)
 }

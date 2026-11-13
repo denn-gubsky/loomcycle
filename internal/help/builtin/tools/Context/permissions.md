@@ -27,6 +27,9 @@ None besides `op`.
 - `crypto_scopes` — the key scopes (`agent`, `user`, `tenant`, `run`) your
   Crypto signing, encryption and decryption may use. Empty means keyless
   Crypto operations only.
+- `tool_modes` — tools you hold in a narrower mode, e.g.
+  `{"Document": "read"}`: only that tool's read operations run, and a write
+  operation is refused before it starts. `null` means every tool is held whole.
 - `channels` — `{publish, subscribe}` allowlist patterns.
 - `skills` — the patterns of skills you may load (empty = all).
 
@@ -50,5 +53,5 @@ See every gate on this run:
  "host_policy": {"has_list": true, "allowed_hosts": ["api.github.com"], "web_search_filter": ""},
  "memory": {"allowed_scopes": ["agent", "user"], "quota_bytes": 0, "sql_scopes": null},
  "history_scopes": null, "channels": {"publish": ["findings/*"], "subscribe": ["jobs/cv-requests"]},
- "agent_def_scopes": null, "skills": null, "evaluation_scopes": null, "crypto_scopes": null}
+ "agent_def_scopes": null, "skills": null, "evaluation_scopes": null, "crypto_scopes": null, "tool_modes": null}
 ```

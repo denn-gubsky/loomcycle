@@ -1538,10 +1538,15 @@ func (s *Server) SetSqlMem(m *sqlmem.Manager) {
 func (s *Server) Redactor() *redact.Redactor { return s.redactor }
 
 // newDispatcher centralises Dispatcher construction so the three call
-// sites (handleRuns, handleMessages, runSubAgent) all pick up the
+// sites (a fresh run, a resumed one, a sub-run) all pick up the
 // fallback automatically. With s.mcpFallback nil this is identical
 // to tools.NewDispatcher(allowedTools).
-func (s *Server) newDispatcher(allowedTools []tools.Tool) *tools.Dispatcher {
+//
+// toolModes is the run's definition's tool_modes (RFC GL). A parameter, not a
+// setter each site may forget: every run's dispatcher is built here, so every
+// call the run makes (the model's, a code-js agent's, a hook's, a tool's
+// through the run's dispatcher) is held to the modes.
+func (s *Server) newDispatcher(allowedTools []tools.Tool, toolModes map[string]string) *tools.Dispatcher {
 	var d *tools.Dispatcher
 	if s.mcpFallback == nil {
 		d = tools.NewDispatcher(allowedTools)
@@ -1555,6 +1560,7 @@ func (s *Server) newDispatcher(allowedTools []tools.Tool) *tools.Dispatcher {
 	// Every caller builds a RUN's dispatcher, whose history of help reads and
 	// hints is what gates a help hint on a failed call.
 	d.EnableHelpHints()
+	d.SetToolModes(toolModes)
 	return d
 }
 
@@ -7000,7 +7006,7 @@ func (s *Server) prepareSubRunValues(ctx context.Context, name string, src nameS
 	subMeta := s.publishSubRunStart(ctx, subRunID, subAgentID, name, parentIdentity, subRunSpan, subIdentity)
 	sp := s.buildSubRunPrompt(ctx, def, name, parentIdentity, parentPolicy, values, dataSlots, systemExtra, prompt, systemAuthored, inputAuthored)
 	def, promptProv, subTools, subACLRemoved, coreBlocks, segs := sp.def, sp.promptProv, sp.tools, sp.aclRemoved, sp.coreBlocks, sp.segs
-	subTools, subDispatcher := s.narrowSubRunHosts(subTools, childPolicy)
+	subTools, subDispatcher := s.narrowSubRunHosts(subTools, childPolicy, childPolicy.ToolModes)
 
 	s.persistSubRunInput(ctx, subRunID, segs, def, defID, promptProv)
 
