@@ -171,5 +171,13 @@ func nonNeg(n int) int { return max(n, 0) }
 // number past them is clamped on the wire, never wrapped into a different
 // (or negative) one.
 func I32(n int) int32 {
-	return int32(min(max(n, math.MinInt32), math.MaxInt32))
+	// Explicit comparisons, not min/max: code scanning reads these as the
+	// bound check the conversion needs.
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if n < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(n)
 }
