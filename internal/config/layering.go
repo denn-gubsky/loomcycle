@@ -59,6 +59,7 @@ func errPresetsKeyElsewhere(layer string) error {
 // not read or parse is reported absent: the load fails on it as it always
 // has, with its own message.
 func ReadPresetsKey(path string) (names []string, present bool, err error) {
+	// #nosec G304 -- path is the operator's own primary config file, chosen by the layer assembly from --config, the discovery paths or LOOMCYCLE_CONFIG_DIR
 	raw, rerr := os.ReadFile(path)
 	if rerr != nil {
 		return nil, false, nil
