@@ -83,36 +83,3 @@ type PoolStats struct {
 	// the workers the dispatcher started again.
 	Deaths, Respawns uint64
 }
-
-// Phased sends the jobs the worker pool runs so far (extraction and page
-// cuts, RFC GO P1) to Pool and every other job to Here. P2 moves the helper
-// and image jobs into the workers and removes it.
-type Phased struct {
-	Pool, Here Client
-}
-
-var _ Client = Phased{}
-
-func (p Phased) Extract(ctx context.Context, mediaType string, r io.ReaderAt, size int64, sink extract.Sink, opts extract.Options) (extract.Report, error) {
-	return p.Pool.Extract(ctx, mediaType, r, size, sink, opts)
-}
-
-func (p Phased) SelectPages(ctx context.Context, r io.ReaderAt, size int64, pages []int) ([]byte, error) {
-	return p.Pool.SelectPages(ctx, r, size, pages)
-}
-
-func (p Phased) RenderPage(ctx context.Context, onePagePDF []byte, language string) ([]byte, error) {
-	return p.Here.RenderPage(ctx, onePagePDF, language)
-}
-
-func (p Phased) ConvertMedia(ctx context.Context, r io.ReaderAt, size int64, mediaType, language string) (Spool, error) {
-	return p.Here.ConvertMedia(ctx, r, size, mediaType, language)
-}
-
-func (p Phased) EncodeAudio(ctx context.Context, wav []byte, format string) ([]byte, error) {
-	return p.Here.EncodeAudio(ctx, wav, format)
-}
-
-func (p Phased) ReencodeImage(ctx context.Context, data []byte) ([]byte, string, error) {
-	return p.Here.ReencodeImage(ctx, data)
-}

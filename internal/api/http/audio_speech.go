@@ -124,6 +124,7 @@ func (s *Server) handleAudioSpeech(w http.ResponseWriter, r *http.Request) {
 		Ledger:   transcriptionLedger{s: s},
 		Scratch:  func(context.Context) (string, error) { return scratch, nil },
 		Slot:     queue.take,
+		Convert:  s.converter,
 	}, job, []*speech.Budget{speech.NewBudget(caps)})
 	if err != nil {
 		if r.Context().Err() != nil {

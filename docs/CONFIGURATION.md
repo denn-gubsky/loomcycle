@@ -4069,7 +4069,7 @@ The audit stream's retention is separate and stays in the environment (`LOOMCYCL
 
 ## 9n. Conversion workers (`conversion:`)
 
-File conversion is the one kind of work whose memory is set by what someone put in a file. One Office document at every extraction cap can take about 700 MiB. By default it runs inside the runtime's own process, so a file that exhausts memory takes every run on the replica with it. `conversion.mode: local` moves extraction into **conversion workers**: child processes of the same binary that the runtime starts, supervises and restarts (RFC GO).
+File conversion is the one kind of work whose memory is set by what someone put in a file. One Office document at every extraction cap can take about 700 MiB. By default it runs inside the runtime's own process, so a file that exhausts memory takes every run on the replica with it. `conversion.mode: local` moves every conversion into **conversion workers**: child processes of the same binary that the runtime starts, supervises and restarts (RFC GO).
 
 ```yaml
 conversion:
@@ -4084,8 +4084,9 @@ conversion:
 What `local` does:
 
 - The runtime listens on a Unix socket in a private directory (mode 0700) and starts `local.workers` copies of itself as `loomcycle worker`. Each child has `GOMEMLIMIT` set from `local.memory_limit_mb`, and on Linux raises its own `oom_score_adj` to 1000, so that in a shared cgroup the kernel kills a worker before the runtime. A child exits when the runtime does.
-- A child gets a minimal environment: `PATH`, `HOME`, the temp-directory and locale variables, its token and its memory limit. It holds no provider key, no store connection and no setting of the runtime's, and it is never given a path. The runtime keeps every grant, fence and inbox write, and sends the worker only the file's bytes, which it spools to its own temp directory.
-- `File op=extract` and the PDF page cuts of an OCR pass run on the workers. Page rendering, media conversion, speech encoding and image re-encoding still run in the runtime in this release.
+- A child gets a minimal environment: `PATH`, `HOME`, the temp-directory and locale variables, its token, its memory limit, and the runtime's helper command lines (`transcription.ocr.rasterize.command`, `transcription.stt.media.command`, `speech.encode.command`, and `LOOMCYCLE_HELPER_WRAPPER`). It holds no provider key, no store connection and no setting of the runtime's, and it is never given a path. The runtime keeps every grant, fence and inbox write, and sends the worker only the file's bytes, which it spools to its own temp directory.
+- Everything that parses a file runs on the workers: `File op=extract`, the page cuts and page rendering of an OCR pass, the conversion of a recording for speech-to-text (the `File` tool and `/v1/audio/transcriptions`), the encoding of synthesized speech (`/v1/audio/speech`), and the re-encoding of an image a vision model must have scaled. The runtime still makes the model calls; a worker only converts.
+- A helper runs in the worker's scratch directory (`LOOMCYCLE_WORKER_SCRATCH`), not in the run's inbox, under the time bound the runtime sets for its job (`transcription.stt.timeout_s`, `speech.timeout_s`, two minutes for an OCR page). A `LOOMCYCLE_HELPER_WRAPPER` sandbox must keep that directory writable rather than the inbox root. A worker offers a helper's jobs only when the helper's program is found on its `PATH`; when no worker has it, the call is refused naming the setting, as if it were unset. A change to a helper setting reaches the workers when they next start.
 - A worker that dies mid-job fails that one call, and the file is quarantined for `quarantine_ttl_s`: it is refused with "crashed the file converter" instead of being sent to the next worker. A dead child is started again with backoff (1 s, doubling to 30 s). With every worker busy, a call waits `queue_wait_s` and is then answered as a busy server the model may retry. With no worker attached at all, the call is refused. The runtime never falls back to converting in its own process.
 - `LOOMCYCLE_EXTRACT_CONCURRENCY` still bounds `op=import`; extraction is bounded by the workers. The `loomcycle_extractions_*` gauges then report the pool.
 
@@ -4097,7 +4098,13 @@ The worker reads these variables. In `local` mode the runtime sets them for its 
 |---|---|---|
 | `LOOMCYCLE_WORKER_TOKEN` | — | The secret a worker presents to the dispatcher, compared in constant time. In `local` mode the runtime makes a new one at each start and passes it to its children only. |
 | `LOOMCYCLE_WORKER_SLOTS` | 1 | Conversions one worker runs at once, 1–64. One means a worker that dies takes exactly the job that killed it. |
-| `LOOMCYCLE_WORKER_SCRATCH` | the system temp directory | Where a worker spools each job's input while it converts it. Never shared with the runtime. |
+| `LOOMCYCLE_WORKER_SCRATCH` | the system temp directory | Where a worker spools each job's input and runs its helpers. Never shared with the runtime. |
+| `LOOMCYCLE_WORKER_RASTERIZE_COMMAND` | — | The OCR page rasteriser this worker runs, written as `transcription.ocr.rasterize.command`. Unset: the worker takes no page rendering. |
+| `LOOMCYCLE_WORKER_MEDIA_COMMAND` | — | The recording converter, written as `transcription.stt.media.command`. Unset: no media conversion. |
+| `LOOMCYCLE_WORKER_ENCODE_COMMAND` | — | The speech encoder, written as `speech.encode.command`. Unset: no encoding. |
+| `LOOMCYCLE_HELPER_WRAPPER` | — | The sandbox every helper runs under, as for the runtime (§ transcription). |
+
+A worker reads its helper commands from its own environment and never from the dispatcher: a job says what to convert, never what to run.
 
 ## 10. Cross-references
 

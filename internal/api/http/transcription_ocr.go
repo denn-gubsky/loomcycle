@@ -29,6 +29,7 @@ func (s *Server) FileOCR() (*builtin.FileOCR, error) {
 		Config:   *t.OCR,
 		Resolve:  s.ResolveOCRModel,
 		Provider: func(id string) (providers.Provider, error) { return s.providers.Get(id) },
+		Images:   s.converter,
 	})
 	if err != nil {
 		return nil, err

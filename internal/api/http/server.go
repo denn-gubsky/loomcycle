@@ -105,6 +105,10 @@ type Server struct {
 	// describe requests queue for it rather than each decoding up to the bound.
 	// Behind the conversion seam (RFC GO), so a worker pool can take it over.
 	imageReencoder vision.ImageReencoder
+	// converter, when set, runs the media conversion and encoding of the
+	// /v1/audio routes and OCR's image re-encoding on the worker pool; nil
+	// runs them in this process.
+	converter convert.Client
 
 	// --- RFC CK runtime config reload (POST /v1/_config/reload) ---
 	// reloadLoad re-loads the layered config the same way boot did (config.LoadLayers,
@@ -1195,6 +1199,16 @@ func (s *Server) SetExtractionStats(f func() (limit, inFlight, waiting int)) { s
 // SetConversionStats wires the conversion worker pool into /metrics (RFC GO
 // §5.10).
 func (s *Server) SetConversionStats(f func() convert.PoolStats) { s.conversionStats = f }
+
+// SetConverter sends this server's own conversions (the /v1/audio routes'
+// media conversion and encoding, OCR and describe-images re-encoding) to the
+// worker pool (RFC GO P2). Called once at boot, before FileOCR.
+func (s *Server) SetConverter(c convert.Client) {
+	s.converter = c
+	if c != nil {
+		s.imageReencoder = c
+	}
+}
 
 // SetInterruptionBus wires the v0.8.16 in-process notification bus
 // used by the Interruption-resolve HTTP handler to wake the blocked

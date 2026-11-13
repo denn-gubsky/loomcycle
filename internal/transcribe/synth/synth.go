@@ -407,6 +407,10 @@ func encode(ctx context.Context, d Deps, wav []byte, format string) ([]byte, err
 	if errors.Is(err, convert.ErrNotConfigured) {
 		return nil, fmt.Errorf("%w: %s", ErrEncodeNotConfigured, format)
 	}
+	// Checked here as well as by the encoder: a worker's answer is untrusted.
+	if err == nil && int64(len(out)) > d.maxBytes() {
+		return nil, fmt.Errorf("speech.encode: the encoded audio is %d bytes, over the %d limit", len(out), d.maxBytes())
+	}
 	return out, err
 }
 

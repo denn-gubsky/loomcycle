@@ -119,6 +119,7 @@ func (s *Server) handleAudioTranscriptions(w http.ResponseWriter, r *http.Reques
 		Ledger:  stt.Ledger,
 		Scratch: func(context.Context) (string, error) { return scratch, nil },
 		Slot:    queue.take,
+		Convert: s.converter,
 	}
 	plan, err := sttpass.Prepare(ctx, deps, caps, src, form.size, sniffed)
 	if err != nil {

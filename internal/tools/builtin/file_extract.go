@@ -120,11 +120,14 @@ func (f *File) extractSlot(ctx context.Context) (release func(), err error) {
 	return f.Extractions.Acquire(wctx)
 }
 
-// converter is the client this tool's conversions run on: this process, under
-// the extraction slots and the operator's OCR rasteriser, rendering pages in a
-// scratch folder of the run's inbox; or, when boot gave it a worker pool, the
-// pool for extraction and page cuts (RFC GO P1) and this process for the rest.
+// converter is the client this tool's conversions run on: the worker pool
+// when boot gave it one (RFC GO), else this process, under the extraction
+// slots and the operator's OCR rasteriser, rendering pages in a scratch folder
+// of the run's inbox.
 func (f *File) converter() convert.Client {
+	if f.Convert != nil {
+		return f.Convert
+	}
 	p := &convert.InProcess{Extractions: f.Extractions, SlotWait: f.slotWait, ExtractTimeout: fileExtractTimeout,
 		Scratch: func(ctx context.Context) (string, error) {
 			root, _, err := effectiveRoot(ctx, inbox.Name, false)
@@ -132,9 +135,6 @@ func (f *File) converter() convert.Client {
 		}}
 	if op := f.ocrConfig(); op != nil && op.Rasterize != nil {
 		p.Rasterize = &convert.Helper{Key: "transcription.ocr.rasterize", Command: op.Rasterize.Command, Wrapper: op.Rasterize.Wrapper, Timeout: ocrRasterizeTimeout}
-	}
-	if f.Convert != nil {
-		return convert.Phased{Pool: f.Convert, Here: p}
 	}
 	return p
 }

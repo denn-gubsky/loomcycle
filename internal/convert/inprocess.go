@@ -25,6 +25,9 @@ const (
 	DefaultSlotWait = 60 * time.Second
 	// MaxRenderedPage caps the image a rasteriser may hand back for one page.
 	MaxRenderedPage = 64 << 20
+	// RasterizeTimeout bounds the OCR rasteriser on one page. It is not an
+	// operator setting; a page that takes longer is not a page.
+	RasterizeTimeout = 2 * time.Minute
 )
 
 // Helper is one operator command a job runs: the command line template, the
