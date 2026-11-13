@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -203,7 +204,12 @@ func TestRetentionEnabled_FollowsTheFamilyModes(t *testing.T) {
 		for _, f := range families {
 			t.Setenv(f, "")
 		}
+		// Unset, not empty: the retired switch set to the empty string held
+		// the sweeper off, and is refused once a family deletes.
 		t.Setenv("LOOMCYCLE_RETENTION_ENABLED", "")
+		if err := os.Unsetenv("LOOMCYCLE_RETENTION_ENABLED"); err != nil {
+			t.Fatal(err)
+		}
 		for k, v := range env {
 			t.Setenv(k, v)
 		}
@@ -229,6 +235,52 @@ func TestRetentionEnabled_FollowsTheFamilyModes(t *testing.T) {
 		t.Error("LOOMCYCLE_RETENTION_ENABLED=1 with no family mode: retention is on, want off")
 	}
 	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_RETENTION_ENABLED")
+}
+
+// The retired switch held the sweeper off whatever the family modes said.
+// With it set to anything but 1 and a family asking for deletion, the load
+// stops instead of deleting what the operator held back.
+func TestLoadLayers_RefusesARetiredRetentionSwitchThatHeldDeletionBack(t *testing.T) {
+	for _, f := range []string{
+		"LOOMCYCLE_RETENTION_DEFS_MODE", "LOOMCYCLE_RETENTION_MEM_MODE",
+		"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE", "LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE",
+	} {
+		t.Setenv(f, "")
+	}
+	t.Setenv("LOOMCYCLE_RETENTION_CHATS_MODE", "prune")
+	t.Setenv("LOOMCYCLE_RETENTION_ENABLED", "0")
+	_, err := loadYAMLString(t, "defaults: {provider: mock}\n")
+	if err == nil {
+		t.Fatal("the load accepted a retired retention switch that held deletion back")
+	}
+	for _, want := range []string{"LOOMCYCLE_RETENTION_ENABLED", "_MODE", "off"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not name %q: %s", want, err)
+		}
+	}
+
+	// The modes cleared, as the refusal says: the load goes through, nothing
+	// is deleted, and the dead line is still reported.
+	t.Setenv("LOOMCYCLE_RETENTION_CHATS_MODE", "off")
+	cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Env.RetentionEnabled {
+		t.Error("retention is on with every family mode off")
+	}
+	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_RETENTION_ENABLED")
+
+	// It was on, and a family deletes: nothing changed.
+	t.Setenv("LOOMCYCLE_RETENTION_CHATS_MODE", "prune")
+	t.Setenv("LOOMCYCLE_RETENTION_ENABLED", "1")
+	cfg, err = loadYAMLString(t, "defaults: {provider: mock}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Env.RetentionEnabled {
+		t.Error("retention is off with a family set to prune")
+	}
 }
 
 // A2A is on exactly when the active server card is named. Declaring cards in

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -192,6 +194,19 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		// SQL Memory is opened, as it did; that is not this rule's to refuse.
 		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", yaml: StorageConfig{PgDSN: "postgres://u@h/db", SqlMemEnabled: boolPtr(true)}},
 
+		// The retention switch: the old read ran the sweeper for exactly "1".
+		// Refused when it was held off and a family mode would now delete.
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MODE=prune"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "", also: []string{"LOOMCYCLE_RETENTION_DEFS_MODE=export+prune"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "false", also: []string{"LOOMCYCLE_RETENTION_MEM_MODE=prune"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE=prune"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE=prune"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MODE=off"}},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MODE=delete"}}, // not a mode the sweeper acts on
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "0"},
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1", also: []string{"LOOMCYCLE_RETENTION_CHATS_MODE=prune"}}, // deleting then, deleting now
+		{name: "LOOMCYCLE_RETENTION_ENABLED", value: "1"},                                                         // ran with nothing to do
+
 		// Retired, and no value of it was a tightening.
 		{name: "LOOMCYCLE_SSE_KEEPALIVE_MS", value: "0"},
 		{name: "LOOMCYCLE_SNAPSHOT_MAX_BYTES", value: "1"},
@@ -276,6 +291,35 @@ func TestRetiredEnvAdvisories_NamesTheThinClientsRetiredVariables(t *testing.T) 
 	for _, w := range got {
 		if strings.Contains(w, "31337") || strings.Contains(w, "hunter2") {
 			t.Errorf("an advisory carries a variable's value: %q", w)
+		}
+	}
+}
+
+// The retention rule keeps its own list of the family mode variables, because
+// it is judged before applyEnvRetention reads them. A family added there and
+// not here would be deleted from with the retired switch still set to off.
+func TestRetentionModeEnv_ListsEveryFamilyModeTheLoaderReads(t *testing.T) {
+	src, err := os.ReadFile("config_env_sweepers.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := map[string]bool{}
+	for _, name := range regexp.MustCompile(`LOOMCYCLE_RETENTION_[A-Z_]+_MODE`).FindAllString(string(src), -1) {
+		read[name] = true
+	}
+	if len(read) == 0 {
+		t.Fatal("found no family mode variable in config_env_sweepers.go")
+	}
+	listed := map[string]bool{}
+	for _, name := range retentionModeEnv {
+		listed[name] = true
+		if !read[name] {
+			t.Errorf("%s is in retentionModeEnv but the loader does not read it", name)
+		}
+	}
+	for name := range read {
+		if !listed[name] {
+			t.Errorf("the loader reads %s but retentionModeEnv does not list it", name)
 		}
 	}
 }

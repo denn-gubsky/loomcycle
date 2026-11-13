@@ -215,6 +215,11 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// would now stay off with the agents' SQL and Documents refusing.
 	"LOOMCYCLE_SQLMEM_ENABLED": {sqlMemSwitchDisagrees, "SQL Memory follows the store, which is not what this variable asked for; to keep it off set storage.sqlmem_enabled: false in the yaml, and to have it on with a Postgres store set LOOMCYCLE_SQLMEM_PG_DSN (with storage.sqlmem_enabled unset or true)"},
 
+	// The sweeper used to run only when this said "1", whatever the family
+	// modes said. A deployment that held it off with a mode already set to
+	// prune would have that family's data deleted on the first sweep.
+	"LOOMCYCLE_RETENTION_ENABLED": {retentionWasHeldOff, "the retention sweeper runs whenever a LOOMCYCLE_RETENTION_*_MODE is prune or export+prune, and one is, so data this variable held back would be deleted; to keep retention off, clear every family mode (unset it or set it to off)"},
+
 	// The filesystem jail stopped the boot before it was retired and still
 	// does: a deploy that relied on it must be moved to volumes by a person.
 	"LOOMCYCLE_READ_ROOT":  {loosens: valueNotEmpty},
@@ -331,6 +336,30 @@ func sqlMemNow(c retiredEnvCtx) bool {
 func sqlMemSwitchDisagrees(value string, c retiredEnvCtx) bool {
 	was := value == "1" || (c.storage.SqlMemEnabled != nil && *c.storage.SqlMemEnabled)
 	return was != sqlMemNow(c)
+}
+
+// retentionModeEnv names each retention family's mode variable. The retention
+// rule is judged before applyEnvRetention reads them, so it reads them here.
+var retentionModeEnv = []string{
+	"LOOMCYCLE_RETENTION_DEFS_MODE",
+	"LOOMCYCLE_RETENTION_CHATS_MODE",
+	"LOOMCYCLE_RETENTION_MEM_MODE",
+	"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE",
+	"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE",
+}
+
+// retentionWasHeldOff reports a retired retention switch that kept the sweeper
+// from running (the old read ran it for exactly "1") while a family mode now
+// starts it.
+func retentionWasHeldOff(value string, c retiredEnvCtx) bool {
+	if value == "1" {
+		return false
+	}
+	modes := make([]string, 0, len(retentionModeEnv))
+	for _, name := range retentionModeEnv {
+		modes = append(modes, c.env[name])
+	}
+	return retentionFamilyOn(modes...)
 }
 
 func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }
