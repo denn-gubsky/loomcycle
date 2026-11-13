@@ -224,6 +224,12 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	// the switch off, the A2A endpoints would now be mounted.
 	"LOOMCYCLE_A2A_ENABLED": {a2aWasOff, "A2A is served whenever LOOMCYCLE_A2A_SERVER_CARD is set, and it is; unset LOOMCYCLE_A2A_SERVER_CARD to keep A2A off"},
 
+	// Each audio route had its own queue size; one setting now sizes both. A
+	// route held to fewer engine requests at once (a small GPU host) would be
+	// sent more than the operator allowed.
+	"LOOMCYCLE_SPEECH_MAX_INFLIGHT":        {audioQueueLowered, "both audio queues are sized by LOOMCYCLE_AUDIO_MAX_INFLIGHT, which gives this route more engine requests at once than this variable allowed; set LOOMCYCLE_AUDIO_MAX_INFLIGHT to the size you want"},
+	"LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT": {audioQueueLowered, "both audio queues are sized by LOOMCYCLE_AUDIO_MAX_INFLIGHT, which gives this route more engine requests at once than this variable allowed; set LOOMCYCLE_AUDIO_MAX_INFLIGHT to the size you want"},
+
 	// The filesystem jail stopped the boot before it was retired and still
 	// does: a deploy that relied on it must be moved to volumes by a person.
 	"LOOMCYCLE_READ_ROOT":  {loosens: valueNotEmpty},
@@ -371,6 +377,17 @@ func retentionWasHeldOff(value string, c retiredEnvCtx) bool {
 // named.
 func a2aWasOff(value string, c retiredEnvCtx) bool {
 	return value != "1" && strings.TrimSpace(c.env["LOOMCYCLE_A2A_SERVER_CARD"]) != ""
+}
+
+// audioQueueLowered reports a retired per-route audio queue size under the
+// size both queues now get: LOOMCYCLE_AUDIO_MAX_INFLIGHT, read the way
+// applyEnvToolLimits reads it, or its default.
+func audioQueueLowered(value string, c retiredEnvCtx) bool {
+	now := AudioMaxInflightDefault
+	if n, err := strconv.Atoi(c.env["LOOMCYCLE_AUDIO_MAX_INFLIGHT"]); err == nil && n > 0 {
+		now = n
+	}
+	return loweredBelow(int64(now))(value, c)
 }
 
 func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }

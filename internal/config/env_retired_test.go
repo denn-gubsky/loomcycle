@@ -216,6 +216,27 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_A2A_ENABLED", value: "1", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=public"}},
 		{name: "LOOMCYCLE_A2A_ENABLED", value: "1"}, // was on with no card to serve; now off
 
+		// The two audio queue sizes: refused when positive and under the size
+		// both queues now get, or unreadable. Zero and a negative number took
+		// the default.
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "1", refused: true}, // the default is 2
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "1", refused: true},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "3", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=5"}, refused: true},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "1", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=0"}, refused: true}, // zero keeps the default
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "one", refused: true},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "2"},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "7"},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "0"},
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "-1"},
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: ""},
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "1", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=1"}},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "5", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=5"}},
+
+		// The debug flags only added log lines.
+		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
+		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
+		{name: "LOOMCYCLE_OLLAMA_DEBUG_THINK", value: "1"},
+
 		// Retired, and no value of it was a tightening.
 		{name: "LOOMCYCLE_SSE_KEEPALIVE_MS", value: "0"},
 		{name: "LOOMCYCLE_SNAPSHOT_MAX_BYTES", value: "1"},
