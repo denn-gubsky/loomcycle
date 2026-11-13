@@ -41,9 +41,9 @@ func applyEnvSweepers(cfg *Config) {
 
 // applyEnvRetention reads the retention sweeper and audit-store knobs.
 func applyEnvRetention(cfg *Config) error {
-	// RFC BM data-retention sweeper (opt-in; default OFF). The New() constructor
-	// applies the 1h interval fallback when RetentionInterval stays 0.
-	cfg.Env.RetentionEnabled = os.Getenv("LOOMCYCLE_RETENTION_ENABLED") == "1"
+	// RFC BM data-retention sweeper (opt-in; default OFF: every family's mode
+	// defaults to off). The New() constructor applies the 1h interval fallback
+	// when RetentionInterval stays 0.
 	// RFC FZ Part E: the store-backed audit stream and its retention. A typo
 	// fails the load rather than leaving an audit posture other than the one
 	// asked for.
@@ -132,7 +132,26 @@ func applyEnvRetention(cfg *Config) error {
 			cfg.Env.RetentionEmptyDossierMaxAge = time.Duration(n) * time.Millisecond
 		}
 	}
+	cfg.Env.RetentionEnabled = retentionFamilyOn(
+		cfg.Env.RetentionDefsMode,
+		cfg.Env.RetentionChatsMode,
+		cfg.Env.RetentionMemMode,
+		cfg.Env.RetentionMemContentMode,
+		cfg.Env.RetentionEmptyDossierMode,
+	)
 	return nil
+}
+
+// retentionFamilyOn reports whether any family's mode asks for deletion. The
+// modes are the ones the sweeper acts on; anything else (unset, "off", a typo)
+// is off there too, so it must not start the sweeper here.
+func retentionFamilyOn(modes ...string) bool {
+	for _, m := range modes {
+		if m == "prune" || m == "export+prune" {
+			return true
+		}
+	}
+	return false
 }
 
 // applyEnvClusterSweeps reads the replica sweep cadences.

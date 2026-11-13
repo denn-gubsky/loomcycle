@@ -4494,8 +4494,8 @@ type Env struct {
 	// schedule/a2a/webhook/memory_backend). Unlike the lossless usage rollup this
 	// DELETES data, so it defaults off and its DefsMode defaults to "off".
 
-	// RetentionEnabled turns the sweeper goroutine on. Default false.
-	// Env: LOOMCYCLE_RETENTION_ENABLED=1.
+	// RetentionEnabled turns the sweeper goroutine on. Derived at load: true
+	// when at least one family's mode below is "prune" or "export+prune".
 	RetentionEnabled bool
 	// RetentionInterval is the sweep tick rate. Default 1h.
 	// Env: LOOMCYCLE_RETENTION_INTERVAL_MS.
@@ -5272,7 +5272,7 @@ func applyEnvCore(cfg *Config) {
 		HelpRoot:                    os.Getenv("LOOMCYCLE_HELP_ROOT"),
 		ConfiguredRunTTL:            24 * time.Hour,
 		MaxConfiguredRunsPerUser:    100,
-		// RFC BM retention defaults — opt-in (RetentionEnabled zero-false); the
+		// RFC BM retention defaults — opt-in (every family's mode is off); the
 		// mode defaults off and keep-last-N to 5. The env parse below overrides
 		// these only when the corresponding var is set.
 		RetentionDefsMode:      "off",

@@ -109,3 +109,46 @@ func requireRetiredAdvisory(t *testing.T, cfg *Config, name string) {
 	}
 	t.Errorf("no advisory for %s; warnings = %q", name, cfg.Warnings)
 }
+
+// The retention sweeper is on exactly when a family asks for deletion; a mode
+// the sweeper would ignore does not start it.
+func TestRetentionEnabled_FollowsTheFamilyModes(t *testing.T) {
+	families := []string{
+		"LOOMCYCLE_RETENTION_DEFS_MODE",
+		"LOOMCYCLE_RETENTION_CHATS_MODE",
+		"LOOMCYCLE_RETENTION_MEM_MODE",
+		"LOOMCYCLE_RETENTION_MEM_CONTENT_MODE",
+		"LOOMCYCLE_RETENTION_EMPTY_DOSSIER_MODE",
+	}
+	load := func(t *testing.T, env map[string]string) *Config {
+		t.Helper()
+		for _, f := range families {
+			t.Setenv(f, "")
+		}
+		t.Setenv("LOOMCYCLE_RETENTION_ENABLED", "")
+		for k, v := range env {
+			t.Setenv(k, v)
+		}
+		cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	if load(t, nil).Env.RetentionEnabled {
+		t.Error("no family mode: retention is on, want off")
+	}
+	for _, f := range families {
+		for mode, want := range map[string]bool{"prune": true, "export+prune": true, "off": false, "delete": false} {
+			if got := load(t, map[string]string{f: mode}).Env.RetentionEnabled; got != want {
+				t.Errorf("%s=%s: retention on = %v, want %v", f, mode, got, want)
+			}
+		}
+	}
+	// The retired switch alone starts nothing, and is reported.
+	cfg := load(t, map[string]string{"LOOMCYCLE_RETENTION_ENABLED": "1"})
+	if cfg.Env.RetentionEnabled {
+		t.Error("LOOMCYCLE_RETENTION_ENABLED=1 with no family mode: retention is on, want off")
+	}
+	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_RETENTION_ENABLED")
+}
