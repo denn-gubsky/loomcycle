@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
@@ -191,10 +190,7 @@ func (b *boot) wireCredentials() {
 	// A volume created from a git source (RFC EJ): off unless the operator
 	// lists the hosts. The credential a clone names is resolved for the run,
 	// and only when it is restricted to URLs covering the clone's.
-	gitSource, gerr := gitSourceConfigFromEnv(os.Getenv, cfg.Env.HTTPPrivateHostAllowlist)
-	if gerr != nil {
-		fatal("git source: invalid configuration", "err", gerr)
-	}
+	gitSource := gitSourceConfig(cfg.Env.GitSourceHosts, cfg.Env.HTTPPrivateHostAllowlist)
 	if gitSource != nil {
 		gitSource.Credential = builtin.GitCredentialResolver(credEngine, ghAppMinter.TokenForRepository, registerSecret)
 		volumeDefTool.Git = gitSource

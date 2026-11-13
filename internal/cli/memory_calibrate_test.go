@@ -18,7 +18,7 @@ func minimalConfig(t *testing.T) string {
 	// loadLayeredConfig honours the same env layering the server does, so a
 	// developer with presets exported would otherwise get a different config
 	// than CI — and these tests assert on what the config contains.
-	for _, k := range []string{"LOOMCYCLE_PRESETS", "LOOMCYCLE_CONFIG_DIR", "LOOMCYCLE_CONFIG_FILES"} {
+	for _, k := range []string{"LOOMCYCLE_PRESETS", "LOOMCYCLE_CONFIG_DIR"} {
 		t.Setenv(k, "")
 	}
 	dir := t.TempDir()

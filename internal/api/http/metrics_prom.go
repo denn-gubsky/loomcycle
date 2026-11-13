@@ -31,7 +31,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -108,7 +107,7 @@ func (s *Server) handleMetricsProm(w http.ResponseWriter, r *http.Request) {
 // renderMetricsProm writes the Prometheus text for view.
 func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	replicaLabels := promReplicaLabels()
+	replicaLabels := promReplicaLabels(s.cfg().Env.ReplicaID)
 	if view.isConfined() {
 		writeInstrumentSeries(w, replicaLabels, view)
 		return
@@ -116,7 +115,7 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
-	buildLabels := promBuildLabels()
+	buildLabels := promBuildLabels(s.cfg().Env.ReplicaID)
 
 	// Process-resource gauges.
 	writeGauge(w, "loomcycle_process_rss_bytes",
@@ -530,11 +529,10 @@ func providerLaneSnapshot(s *Server) map[string]concurrency.LaneStats {
 }
 
 // promReplicaLabels returns `{replica_id="..."}` when running in
-// cluster mode (LOOMCYCLE_REPLICA_ID set), otherwise empty string.
-// Empty-string omission keeps single-replica deployments clean —
-// operators never see a label they don't care about.
-func promReplicaLabels() string {
-	id := strings.TrimSpace(os.Getenv("LOOMCYCLE_REPLICA_ID"))
+// cluster mode (id is the config's validated Env.ReplicaID), otherwise
+// empty string. Empty-string omission keeps single-replica deployments
+// clean — operators never see a label they don't care about.
+func promReplicaLabels(id string) string {
 	if id == "" {
 		return ""
 	}
@@ -544,7 +542,7 @@ func promReplicaLabels() string {
 // promBuildLabels reads version metadata via runtime/debug.ReadBuildInfo.
 // Same source main.go consults for --version output. Stable across
 // release styles (ldflags-injected version OR pure VCS-stamped build).
-func promBuildLabels() string {
+func promBuildLabels(replicaID string) string {
 	info, ok := debug.ReadBuildInfo()
 	labels := map[string]string{
 		"version":    "unknown",
@@ -569,8 +567,8 @@ func promBuildLabels() string {
 			}
 		}
 	}
-	if r := strings.TrimSpace(os.Getenv("LOOMCYCLE_REPLICA_ID")); r != "" {
-		labels["replica_id"] = r
+	if replicaID != "" {
+		labels["replica_id"] = replicaID
 	}
 	return labelsToString(labels)
 }

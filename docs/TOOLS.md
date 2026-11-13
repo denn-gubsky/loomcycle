@@ -883,7 +883,7 @@ It prints each class's `n / min / p05 / median / p95 / max`, the two class gaps,
 
 | flag | effect |
 |---|---|
-| `--config <yaml>` | config to read the embedder + configured bands from (layered exactly as the server loads it: presets → `LOOMCYCLE_CONFIG_DIR` → `LOOMCYCLE_CONFIG_FILES` → `--config`). |
+| `--config <yaml>` | config to read the embedder + configured bands from (layered exactly as the server loads it: presets → `LOOMCYCLE_CONFIG_DIR` → `--config`). |
 | `--dataset <file.json>` | your own corpus instead of the bundled one. Same shape as `internal/memory/eval/calibration.json` — copy it and swap in your facts. UNRELATED pairs are derived, never listed. |
 | `--embedder auto\|stub` | `auto` (default) uses the configured embedder. `stub` is a **plumbing check only** — the deterministic stub embedder has no notion of meaning and will always report a model that cannot be calibrated. |
 | `--check` | additionally fail when the **currently configured** bands are inert or destructive on the corpus. This is the regression guard against a silently dead setting. |

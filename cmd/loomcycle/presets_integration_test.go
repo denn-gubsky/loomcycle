@@ -499,35 +499,6 @@ func TestEmbedded_BundleAloneDegradesGracefully(t *testing.T) {
 	}
 }
 
-// TestSelectPresetNames: --preset flags override LOOMCYCLE_PRESETS; an
-// unset/empty env yields no presets (the opt-in default); order is preserved.
-func TestSelectPresetNames(t *testing.T) {
-	cases := []struct {
-		name  string
-		flags []string
-		env   string
-		want  []string
-	}{
-		{"unset is opt-in none", nil, "", nil},
-		{"env comma-split ordered", nil, "base, document-agent", []string{"base", "document-agent"}},
-		{"env trims blanks", nil, " base , , local ", []string{"base", "local"}},
-		{"flags override env", []string{"local"}, "base,document-agent", []string{"local"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := selectPresetNames(tc.flags, tc.env)
-			if len(got) != len(tc.want) {
-				t.Fatalf("selectPresetNames(%v, %q) = %v, want %v", tc.flags, tc.env, got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("[%d] = %q, want %q", i, got[i], tc.want[i])
-				}
-			}
-		})
-	}
-}
-
 // TestEmbedded_OAuthPrependsWithoutRestatement is the RFC AQ §3 headline: the
 // one-provider-per-file oauth preset composes onto base via !prepend — OAuth on
 // top of provider_priority AND each tier, with base's providers retained as

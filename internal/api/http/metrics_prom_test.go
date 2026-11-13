@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -25,7 +26,8 @@ func newMetricsPromServer(t *testing.T, withPerUserCap bool) *Server {
 	}
 	hookReg := hooks.NewSet()
 	return &Server{
-		cfgHolder:      config.NewHolder(&config.Config{}),
+		// The replica id as config load reads it, so a test sets the variable.
+		cfgHolder:      config.NewHolder(&config.Config{Env: config.Env{ReplicaID: os.Getenv("LOOMCYCLE_REPLICA_ID")}}),
 		cancelReg:      cancel.NewRegistry(),
 		sessionLocks:   runner.NewSessionLockMap(),
 		hookDispatcher: hooks.NewDispatcher(hookReg, nil),

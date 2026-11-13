@@ -123,7 +123,6 @@ func TestDoctor_EmbedderThatCannotBuildFails(t *testing.T) {
 func TestDoctorConfig_EmbedderReadsTheBuiltBedrockEmbedder(t *testing.T) {
 	t.Setenv("LOOMCYCLE_PRESETS", "")
 	t.Setenv("LOOMCYCLE_CONFIG_DIR", "")
-	t.Setenv("LOOMCYCLE_CONFIG_FILES", "")
 	// Nothing is fetched while building, but the chain still reads its files:
 	// keep it off this machine's.
 	awsDir := t.TempDir()

@@ -4681,6 +4681,45 @@ type Env struct {
 	// platforms. Yaml: metrics.collect_system.
 	MetricsCollectSystem bool
 
+	// ---- Settings the boot code used to read for itself (applyEnvRuntime) ----
+
+	// MCPSpawnRunTimeoutMS (LOOMCYCLE_MCP_SPAWN_RUN_TIMEOUT_MS) bounds one
+	// spawn_run over the MCP surfaces. 0 = none: the run's own budget decides.
+	MCPSpawnRunTimeoutMS int
+	// OperatorTokenRotationGraceSeconds
+	// (LOOMCYCLE_OPERATOR_TOKEN_ROTATION_GRACE_SECONDS) is how long a
+	// rotated operator token keeps working. 0 = unset.
+	OperatorTokenRotationGraceSeconds int
+	// AuthCacheTTLSeconds (LOOMCYCLE_AUTH_CACHE_TTL_SECONDS) is the
+	// per-replica token-resolution cache TTL. Default 30; 0 turns the cache
+	// off.
+	AuthCacheTTLSeconds int
+	// UserTokenMaxTTLSeconds (LOOMCYCLE_USER_TOKEN_MAX_TTL_SECONDS) caps a
+	// delegated user token's lifetime. 0 = no cap.
+	UserTokenMaxTTLSeconds int
+	// RunRatePerMinute and RunRateBurst (LOOMCYCLE_RUN_RATE_PER_MINUTE,
+	// LOOMCYCLE_RUN_RATE_BURST) are the default run-start rate for a caller
+	// whose token carries none. RunRatePerMinute 0 = no default; the burst is
+	// read only beside a rate.
+	RunRatePerMinute int
+	RunRateBurst     int
+	// LimitsEnforceStrict (LOOMCYCLE_LIMITS_ENFORCE=strict) also checks a
+	// hard token budget before each model call and sub-agent start.
+	LimitsEnforceStrict bool
+	// MemoryChangesEnabled (LOOMCYCLE_MEMORY_CHANGES_ENABLED=1) wraps the
+	// store in the change-data-capture feed.
+	MemoryChangesEnabled bool
+	// MockEnabled (LOOMCYCLE_MOCK_ENABLED=1) registers the mock and
+	// mock-stable providers.
+	MockEnabled bool
+	// AnthropicOAuthDevEnabled (LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED=1)
+	// registers the anthropic-oauth-dev provider.
+	AnthropicOAuthDevEnabled bool
+	// GitSourceHosts (LOOMCYCLE_GIT_SOURCE_HOSTS) are the hosts a git-sourced
+	// volume and the Git tool may fetch from, lower-cased. Empty = the
+	// feature is off.
+	GitSourceHosts []string
+
 	// ---- v0.12.0 multi-replica HA (opt-in) ----
 
 	// ReplicaID activates cluster mode. When unset, loomcycle runs
@@ -4999,6 +5038,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	applyEnvMCP(cfg)
+	if err := applyEnvRuntime(cfg); err != nil {
+		return nil, err
+	}
 
 	// The throughput-measurement block's defaults.
 	applyTimeoutScaling(cfg)
