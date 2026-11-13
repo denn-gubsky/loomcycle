@@ -40,6 +40,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
@@ -188,6 +189,9 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	}
 	writeAudioQueueGauges(w, replicaLabels, s)
 	writeExtractionGauges(w, replicaLabels, s.extractionStats)
+	if s.conversionStats != nil {
+		writeConversionMetrics(w, replicaLabels, s.conversionStats())
+	}
 	writeLaneGauges(w, replicaLabels, s.callSched.Stats())
 
 	// RFC DT per-(provider, model) throughput — only models this replica has
@@ -708,6 +712,47 @@ func writeExtractionGauges(w io.Writer, replicaLabels string, stats func() (limi
 	writeGauge(w, "loomcycle_extractions_waiting",
 		"File extractions on this replica waiting for a slot.",
 		replicaLabels, float64(waiting))
+}
+
+// writeConversionMetrics reports the conversion worker pool (RFC GO §5.10):
+// the workers attached and their slots, the jobs running and waiting, the
+// files refused after crashing a worker, and counters of jobs by kind and
+// outcome, worker deaths and respawns. Written only when a pool runs.
+func writeConversionMetrics(w io.Writer, replicaLabels string, st convert.PoolStats) {
+	for _, g := range []struct {
+		name, help string
+		v          int
+	}{
+		{"loomcycle_conversion_workers", "Conversion workers attached to this replica's dispatcher.", st.Workers},
+		{"loomcycle_conversion_slots", "Conversion jobs the attached workers run at once at most.", st.Slots},
+		{"loomcycle_conversion_idle_slots", "Worker slots waiting for a job.", st.Idle},
+		{"loomcycle_conversion_inflight", "Conversion jobs running on a worker.", st.InFlight},
+		{"loomcycle_conversion_waiting", "Conversion jobs waiting for a free worker slot.", st.Waiting},
+		{"loomcycle_conversion_quarantined_files", "Files refused for now because converting them killed a worker.", st.Quarantined},
+	} {
+		writeGauge(w, g.name, g.help, replicaLabels, float64(g.v))
+	}
+	for _, c := range []struct {
+		name, help string
+		v          uint64
+	}{
+		{"loomcycle_conversion_worker_deaths_total", "Conversion workers lost mid-job or to missed heartbeats.", st.Deaths},
+		{"loomcycle_conversion_worker_respawns_total", "Conversion workers this replica started again after one exited.", st.Respawns},
+	} {
+		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s counter\n%s%s %d\n\n", c.name, c.help, c.name, c.name, replicaLabels, c.v)
+	}
+	keys := make([]string, 0, len(st.Jobs))
+	for k := range st.Jobs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintln(w, "# HELP loomcycle_conversion_jobs_total Conversion jobs on this replica, by kind and outcome (ok, error, busy, no_worker, crashed, quarantined, retried_after_death).")
+	fmt.Fprintln(w, "# TYPE loomcycle_conversion_jobs_total counter")
+	for _, k := range keys {
+		kind, outcome, _ := strings.Cut(k, "/")
+		fmt.Fprintf(w, "loomcycle_conversion_jobs_total%s %d\n", mergeLabels(replicaLabels, map[string]string{"kind": kind, "outcome": outcome}), st.Jobs[k])
+	}
+	fmt.Fprintln(w)
 }
 
 // writeAudioQueueGauges reports the audio routes' engine queues (RFC FK P3):

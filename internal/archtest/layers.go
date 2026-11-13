@@ -233,6 +233,10 @@ var layers = []layer{
 			"internal/codehook",
 			"internal/connector",
 			"internal/contextplugin",
+			// The conversion worker pool (RFC GO): the dispatcher the core
+			// hands conversions to, the worker that runs them, and the
+			// supervisor of local workers. Above the convert seam it serves.
+			"internal/conversion",
 			"internal/decisionbuild",
 			"internal/errclassify",
 			"internal/help",

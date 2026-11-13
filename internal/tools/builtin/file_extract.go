@@ -120,13 +120,11 @@ func (f *File) extractSlot(ctx context.Context) (release func(), err error) {
 	return f.Extractions.Acquire(wctx)
 }
 
-// converter is the client this tool's conversions run on: the one boot gave
-// it, or this process, under the extraction slots and the operator's OCR
-// rasteriser, rendering pages in a scratch folder of the run's inbox.
+// converter is the client this tool's conversions run on: this process, under
+// the extraction slots and the operator's OCR rasteriser, rendering pages in a
+// scratch folder of the run's inbox; or, when boot gave it a worker pool, the
+// pool for extraction and page cuts (RFC GO P1) and this process for the rest.
 func (f *File) converter() convert.Client {
-	if f.Convert != nil {
-		return f.Convert
-	}
 	p := &convert.InProcess{Extractions: f.Extractions, SlotWait: f.slotWait, ExtractTimeout: fileExtractTimeout,
 		Scratch: func(ctx context.Context) (string, error) {
 			root, _, err := effectiveRoot(ctx, inbox.Name, false)
@@ -134,6 +132,9 @@ func (f *File) converter() convert.Client {
 		}}
 	if op := f.ocrConfig(); op != nil && op.Rasterize != nil {
 		p.Rasterize = &convert.Helper{Key: "transcription.ocr.rasterize", Command: op.Rasterize.Command, Wrapper: op.Rasterize.Wrapper, Timeout: ocrRasterizeTimeout}
+	}
+	if f.Convert != nil {
+		return convert.Phased{Pool: f.Convert, Here: p}
 	}
 	return p
 }
@@ -236,6 +237,11 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	switch {
 	case errors.Is(err, convert.ErrBusy):
 		return slotBusy(ctx, "extract", f.slotWait)
+	case errors.Is(err, convert.ErrQuarantined):
+		return errBusiness(fmt.Sprintf("extract: %s crashed the file converter and will not be tried again here for now", r.raw),
+			"The file may be damaged or built to exhaust memory. Try a different copy of it, or ask an operator."), nil
+	case errors.Is(err, convert.ErrNoWorkers):
+		return errTransient("extract: no file conversion worker is running on this server", "Try again in a minute; an operator can check the conversion workers."), nil
 	case err == nil:
 	case errors.Is(err, extract.ErrSinkFull):
 		cut = true

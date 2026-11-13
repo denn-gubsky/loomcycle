@@ -503,6 +503,9 @@ type Server struct {
 	// extractionStats reads the File tool's extraction budget (the slots,
 	// those in flight and the calls waiting) for /metrics; nil when not wired.
 	extractionStats func() (limit, inFlight, waiting int)
+	// conversionStats reads the conversion worker pool (RFC GO) for
+	// /metrics; nil in conversion mode inprocess, where there is none.
+	conversionStats func() convert.PoolStats
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -1188,6 +1191,10 @@ func (s *Server) SetCryptoStats(f func() map[string]uint64) { s.cryptoStats = f 
 // SetExtractionStats wires the File tool's extraction budget into /metrics.
 // Boot wiring only.
 func (s *Server) SetExtractionStats(f func() (limit, inFlight, waiting int)) { s.extractionStats = f }
+
+// SetConversionStats wires the conversion worker pool into /metrics (RFC GO
+// §5.10).
+func (s *Server) SetConversionStats(f func() convert.PoolStats) { s.conversionStats = f }
 
 // SetInterruptionBus wires the v0.8.16 in-process notification bus
 // used by the Interruption-resolve HTTP handler to wake the blocked

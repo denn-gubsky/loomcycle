@@ -153,6 +153,10 @@ func dispatchSubcommand() (mcpMode, done bool) {
 			// Strip "mcp" from os.Args so flag.Parse() below sees
 			// the remaining flags (--config etc.) at index 1+.
 			os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
+		case "worker":
+			// RFC GO — a conversion worker: dials the dispatcher, converts the
+			// bytes it is handed. No config, no store, no provider keys.
+			os.Exit(runWorker(os.Args[2:], os.Stderr))
 		case "init":
 			os.Exit(cli.RunInit(os.Args[2:], os.Stdout, os.Stderr))
 		case "doctor":

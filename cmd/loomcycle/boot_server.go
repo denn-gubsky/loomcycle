@@ -373,6 +373,11 @@ func (b *boot) wireServerCatalog() {
 	srv.SetCryptoStats(cryptoTool.Stats) // RFC EP: loomcycle_crypto_ops_total
 	// RFC FZ Part B: the File tool's extraction budget, loomcycle_extractions_*.
 	srv.SetExtractionStats(b.fileTool.ExtractionStats)
+	if b.conversion != nil {
+		// RFC GO §5.10: the pool feeds the same gauges, and its own.
+		srv.SetExtractionStats(b.conversion.ExtractionStats)
+		srv.SetConversionStats(b.conversion.Stats)
+	}
 	srv.SetMCPPoolInspector(func(name string) json.RawMessage {
 		// Static yaml MCP servers live at the shared "" tenant in the
 		// (tenant, name)-keyed pool. The Library introspection endpoint
