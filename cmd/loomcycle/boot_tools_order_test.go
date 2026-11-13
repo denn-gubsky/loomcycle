@@ -32,7 +32,9 @@ var buildToolsCatalog = []string{
 // Memory; the TeamDef board and escalation into Document and Interruption).
 // A swap of two steps compiles and passes every other test.
 func TestBuildTools_StepsRunInCatalogOrder(t *testing.T) {
-	b := &boot{cfg: &config.Config{}, pr: &providerResolver{}, secrets: &secretSink{}}
+	// inprocess: on Linux the default would start this test binary as
+	// conversion workers.
+	b := &boot{cfg: &config.Config{Conversion: config.ConversionConfig{Mode: config.ConversionInProcess}}, pr: &providerResolver{}, secrets: &secretSink{}}
 	var got []string
 	b.toolStepHook = func(step string) { got = append(got, step) }
 	b.buildTools()
