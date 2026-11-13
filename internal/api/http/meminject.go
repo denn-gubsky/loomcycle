@@ -442,7 +442,19 @@ func truncateAtLineBoundary(s string, maxBytes int) string {
 // user scope to the SAME (tenant, user) the run uses. This reuses the resolved
 // identity — it does NOT introduce a new tenant source — and is needed because
 // WithRunIdentity is not stamped on ctx yet at prompt-assembly time.
+//
+// It also clears tool modes (RFC GL): prompt assembly is the runtime's own
+// work — reading bound documents and first-reference provisioning of the
+// operator's user-root, tenant-root and ontology templates — not a write the
+// agent asked for. A sub-run's ctx here still carries its PARENT's policy, so
+// without this a read-mode parent would stop its child's user root from ever
+// being provisioned.
 func (s *Server) docToolCtx(ctx context.Context, mi memInject) context.Context {
+	// Only when there are modes, so every other run's ctx is left exactly as
+	// it was.
+	if len(tools.PolicyOf(ctx).ToolModes) > 0 {
+		ctx = tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) { p.ToolModes = nil })
+	}
 	return tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: mi.UserID, TenantID: mi.Tenant})
 }
 

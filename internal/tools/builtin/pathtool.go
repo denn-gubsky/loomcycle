@@ -118,6 +118,11 @@ func (p *Path) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, 
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return errValidation("invalid input JSON: "+err.Error(), "Send the input as a JSON object matching the tool schema."), nil
 	}
+	// A read mode holds here too, for a call that does not come through the
+	// run's dispatcher (see documentModeRefusal).
+	if refused := pathModeRefusal(ctx, in.Op); refused != nil {
+		return *refused, nil
+	}
 	tenantID, scope, scopeID, err := p.resolveScope(ctx, in.Scope)
 	if err != nil {
 		return pathScopeFailure(ctx, in.Scope, err), nil

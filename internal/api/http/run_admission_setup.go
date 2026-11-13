@@ -69,7 +69,7 @@ func (a *runAdmission) narrowTools() {
 			}
 			return builtin.NarrowHosts(in, caller, a.in.WebSearchFilter, s.cfg().Env.HTTPCallerAuthoritative && !narrowOnly)
 		})
-	a.dispatcher = s.newDispatcher(a.allowedTools)
+	a.dispatcher = s.newDispatcher(a.allowedTools, a.agentDef.ToolModes)
 }
 
 // runToolset builds a run's toolset in the one order a fresh run and a

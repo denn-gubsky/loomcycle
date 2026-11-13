@@ -518,6 +518,9 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err := a.admitNoTraceChange(ctx, "create", tenantID, in.Name, def); err != nil {
 		return errResult(err.Error()), nil
 	}
+	if err := a.admitToolModesChange(ctx, "create", tenantID, in.Name, def); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
@@ -726,6 +729,9 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err := a.admitNoTraceChange(ctx, "fork", tenantID, in.Name, def); err != nil {
 		return errResult(err.Error()), nil
 	}
+	if err := a.admitToolModesChange(ctx, "fork", tenantID, in.Name, def); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
@@ -892,6 +898,9 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 		return errResult(fmt.Sprintf("promote: parse definition: %s", err)), nil
 	}
 	if err := a.admitNoTraceChange(ctx, "promote", ident.TenantID, row.Name, target); err != nil {
+		return errResult(err.Error()), nil
+	}
+	if err := a.admitToolModesChange(ctx, "promote", ident.TenantID, row.Name, target); err != nil {
 		return errResult(err.Error()), nil
 	}
 	if err := a.memberActivationGuard(ctx, "promote", ident.TenantID, row.Name); err != nil {
@@ -1064,6 +1073,7 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		base = staticToMergedDef(static)
 	}
 
+	modesSent := false
 	if len(overlay) > 0 {
 		ov, err := decodeAgentOverlay(overlay)
 		if err != nil {
@@ -1082,6 +1092,7 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 				return mergedDef{}, fmt.Errorf("AgentDef tool: %s: %w", f.name, err)
 			}
 		}
+		modesSent = ov.ToolModes != nil
 		// Authoring only: a stored definition carrying it still loads and is
 		// denied by it (descendantsRefusal), so forking it keeps working once
 		// the value is replaced.
@@ -1135,7 +1146,14 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		if lockedBase && ov.AllowOverrides != nil && *ov.AllowOverrides {
 			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set allow_overrides to true on %q, whose definition locks its per-run settings (allow_overrides: false); remove the lock in the server config, or create the agent anew", name)
 		}
+		modesBefore := base.ToolModes
+		if static, ok := a.Cfg.Agents[name]; ok && len(static.ToolModes) > 0 {
+			modesBefore = unionToolModes(modesBefore, static.ToolModes)
+		}
 		base.applyOverlay(ov)
+		if err := forkToolModes(name, base, modesBefore); err != nil {
+			return mergedDef{}, err
+		}
 		// A fork that turns on queue-aware routing over a parent that pins a
 		// model: the overlay alone is fine, the result is not.
 		if err := config.ValidateAgentRouting(base.Routing, base.Provider, base.Model); err != nil {
@@ -1145,6 +1163,17 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 	// On the merged result: a fork may move a code-js agent to a model while
 	// its parent's statement_methods ride along unsent.
 	if err := config.ValidateStatementMethods(base.Provider, base.StatementMethods); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
+	// On the merged result too: a mode this overlay sent names a tool the
+	// merged tools grant. A mode it did not send is the parent's, kept even
+	// when this fork drops the tool: the mode is one-way (forkToolModes), and
+	// pruning it would let a later fork that puts the tool back hold it whole.
+	validateModes := config.ValidateToolModeNames
+	if modesSent {
+		validateModes = func(m map[string]string) error { return config.ValidateToolModes(m, base.Tools) }
+	}
+	if err := validateModes(base.ToolModes); err != nil {
 		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
 	return base, nil
@@ -1169,6 +1198,11 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	// The closed set operator yaml is held to: an unknown key scope is refused
 	// here rather than stored to grant nothing at run time.
 	if err := config.ValidateCryptoScopes(ov.CryptoScopes); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
+	// The tool names and the mode alone; that each tool is granted is judged
+	// on the merged definition (buildDefinition), whose tools a fork may keep.
+	if err := config.ValidateToolModeNames(ov.ToolModes); err != nil {
 		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
 	if err := config.ValidateShellCredentials(ov.ShellCredentials); err != nil {
@@ -1545,6 +1579,13 @@ type mergedDef struct {
 	// own grant by ceilCrypto, and a fork that does not send it keeps its
 	// parent's.
 	CryptoScopes []string `json:"crypto_scopes,omitempty"`
+	// ToolModes narrows a granted tool to its read operations
+	// (config.AgentDef.ToolModes, RFC GL). Authority, not content: excluded
+	// from content_sha256 like crypto_scopes, so every existing row's hash is
+	// unchanged. Sent, it replaces the parent's map; a fork that does not send
+	// it keeps its parent's. A fork may add a read mode and may not remove one
+	// (forkToolModes), as with retention: none and the allow_overrides lock.
+	ToolModes map[string]string `json:"tool_modes,omitempty"`
 	// ShellCredentials narrows the credentials the agent's Bash and Bashbox
 	// host commands receive (config.AgentDef.ShellCredentials, RFC EW). A
 	// pointer so "absent" (every credential the operator lists) and `[]`
@@ -1799,6 +1840,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.CryptoScopes != nil {
 		d.CryptoScopes = ov.CryptoScopes
 	}
+	if ov.ToolModes != nil {
+		d.ToolModes = ov.ToolModes
+	}
 	if ov.ShellCredentials != nil {
 		d.ShellCredentials = ov.ShellCredentials
 	}
@@ -1898,6 +1942,7 @@ var unhashedCapabilityTags = []string{
 	"skills",            // the skills: pattern allowlist is authority, not content
 	"statement_methods", // which relation methods a code-js agent may stamp: authority, not content
 	"system_prompt_base",
+	"tool_modes", // RFC GL: a read-only tool grant is authority, not content
 	"volume_def_scopes",
 	"volumes",
 }
@@ -2002,6 +2047,9 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		EvaluationScopes: s.EvaluationScopes,
 		Interruption:     s.Interruption,
 		CryptoScopes:     s.CryptoScopes,
+		// RFC GL: a fork of a static read-only agent stays read-only; without
+		// this copy it came back holding Document and Path whole.
+		ToolModes: s.ToolModes,
 		// RFC EW: a fork of a static agent that narrowed its shell's
 		// credentials keeps the narrowing; without this copy the fork came
 		// back holding every credential the operator lists.

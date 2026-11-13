@@ -2252,6 +2252,21 @@ type AgentDef struct {
 	// it is not part of content_sha256.
 	CryptoScopes []string `yaml:"crypto_scopes"`
 
+	// ToolModes narrows a granted tool to some of its operations (RFC GL D6):
+	// a map from tool name to mode, e.g. {Document: read, Path: read}. A tool
+	// in read mode runs only its read operations; a write operation is refused
+	// at dispatch, before the tool runs, whoever made the call (the model, a
+	// code-js agent, a hook, a sub-agent's own run). Absent: every listed tool
+	// is granted whole, as before the field existed.
+	//
+	// Closed sets, refused at load: the mode is "read", the tool is one of
+	// ToolModeTools, and the tool must be granted by `tools`. Sticky down the
+	// spawn tree: a sub-agent holds its own modes plus every read mode of the
+	// run that spawned it, so a read-mode run cannot write through a child that
+	// holds the tool whole. Not per-run overridable. Authority, not content: not
+	// part of content_sha256, like crypto_scopes.
+	ToolModes map[string]string `yaml:"tool_modes"`
+
 	// ShellCredentials narrows which credentials the Bash tool and the Bashbox
 	// host-command fallback inject into this agent's commands (RFC EW). The
 	// operator's LOOMCYCLE_BASH_ALLOWED_CREDS and
@@ -6661,6 +6676,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		Retention:        d.Retention,
 		EvaluationScopes: d.EvaluationScopes,
 		CryptoScopes:     d.CryptoScopes,
+		ToolModes:        d.ToolModes,
 		ShellCredentials: (*CredentialNames)(d.ShellCredentials),
 		GitRemote:        d.GitRemote,
 		StatementMethods: d.StatementMethods,
@@ -6894,6 +6910,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.CryptoScopes != nil {
 		out.CryptoScopes = override.CryptoScopes
+	}
+	if override.ToolModes != nil {
+		out.ToolModes = override.ToolModes
 	}
 	if override.ShellCredentials != nil {
 		out.ShellCredentials = override.ShellCredentials

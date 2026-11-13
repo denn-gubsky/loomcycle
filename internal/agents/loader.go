@@ -147,6 +147,10 @@ type Agent struct {
 	// config.AgentDef.CryptoScopes). Authority, not content: like
 	// AgentDefScopes it round-trips but is NOT part of content_sha256.
 	CryptoScopes []string
+	// ToolModes narrows a granted tool to its read operations (see
+	// config.AgentDef.ToolModes, RFC GL). Authority, not content: not part of
+	// the content hash, like CryptoScopes.
+	ToolModes map[string]string
 	// ShellCredentials narrows the credentials Bash and the Bashbox fallback
 	// inject (see config.AgentDef.ShellCredentials, RFC EW). nil = absent.
 	// Authority, not content: not part of the content hash.
@@ -475,6 +479,7 @@ type frontmatter struct {
 	Retention             string                     `yaml:"retention"`
 	EvaluationScopes      []string                   `yaml:"evaluation_scopes"`
 	CryptoScopes          []string                   `yaml:"crypto_scopes"`
+	ToolModes             map[string]string          `yaml:"tool_modes"`
 	ShellCredentials      *[]string                  `yaml:"shell_credentials"`
 	GitRemote             []string                   `yaml:"git_remote"`
 	StatementMethods      []string                   `yaml:"statement_methods"`
@@ -565,6 +570,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.Retention = fm.Retention
 	a.EvaluationScopes = fm.EvaluationScopes
 	a.CryptoScopes = fm.CryptoScopes
+	a.ToolModes = fm.ToolModes
 	a.ShellCredentials = fm.ShellCredentials
 	a.GitRemote = fm.GitRemote
 	a.StatementMethods = fm.StatementMethods

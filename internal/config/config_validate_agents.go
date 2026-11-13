@@ -370,6 +370,9 @@ func validateAgentGrants(c *Config, name string, agent AgentDef) error {
 	if err := ValidateCryptoScopes(agent.CryptoScopes); err != nil {
 		return fmt.Errorf("agent %q: %w", name, err)
 	}
+	if err := ValidateToolModes(agent.ToolModes, agent.Tools); err != nil {
+		return fmt.Errorf("agent %q: %w", name, err)
+	}
 	if err := ValidateShellCredentials(agent.ShellCredentials); err != nil {
 		return fmt.Errorf("agent %q: %w", name, err)
 	}

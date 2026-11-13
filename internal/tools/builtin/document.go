@@ -844,6 +844,12 @@ func (d *Document) executeGated(ctx context.Context, in docInput, raw json.RawMe
 	if d.Store == nil || d.SqlMem == nil {
 		return errBusiness("Document tool: not configured — requires the Store backend and SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)", "An operator must enable SQL Memory on this server; until then the Document tool cannot run."), nil
 	}
+	// A read mode (tool_modes) holds here too, not only at the run's
+	// dispatcher: another tool calling this one in-process on the run's ctx
+	// must not write through it. Before any lookup, so nothing is changed.
+	if refused := documentModeRefusal(ctx, in); refused != nil {
+		return *refused, nil
+	}
 	// Before any lookup: a cut id is refused on its syntax alone.
 	if r, cut := refuseCutIDs(in); cut {
 		return r, nil

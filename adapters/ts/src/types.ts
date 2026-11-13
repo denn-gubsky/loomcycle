@@ -1874,6 +1874,10 @@ export interface RunSpec {
      *  own `crypto_scopes` were narrowed to, and are narrowed to again on
      *  resume. Absent: the parent held none. */
     crypto_scopes?: string[];
+    /** The parent run's tool modes at spawn (e.g. `{ Document: "read" }`):
+     *  read modes the child holds on top of its own `tool_modes`, and holds
+     *  again on resume. Absent: the parent held none. */
+    tool_modes?: Record<string, string>;
     /** The parent run's shell-credential narrowing at spawn (RFC EW): the
      *  names the child's own `shell_credentials` were narrowed to, and are
      *  narrowed to again on resume. Absent: the parent narrowed nothing. `[]`:
@@ -6329,6 +6333,12 @@ export interface AgentDefOverlay {
    *  only. Held to the author's own grant; a sub-agent holds only what its
    *  parent run also holds. */
   crypto_scopes?: string[];
+  /** Narrows a granted tool to its read operations, e.g.
+   *  `{ Document: "read", Path: "read" }`: a write op is refused before it
+   *  runs. Only `Document` and `Path` take a mode, and each must be in
+   *  `tools`. Unset = every tool whole. A fork may add a read mode and may not
+   *  remove one. */
+  tool_modes?: Record<string, "read">;
   /** Which operator-listed credentials the agent's `Bash` and Bashbox host
    *  commands receive (RFC EW): only these names of
    *  `LOOMCYCLE_BASH_ALLOWED_CREDS` / `LOOMCYCLE_BASHBOX_FALLBACK_ALLOWED_CREDS`.
