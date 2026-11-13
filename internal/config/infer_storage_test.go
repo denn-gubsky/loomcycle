@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The backend is inferred from the DSN when the yaml does not name one, and an
 // explicit yaml value is never overridden by the inference.
@@ -85,19 +88,56 @@ func TestSQLMem_RetiredVariableIsNotRead(t *testing.T) {
 	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_SQLMEM_ENABLED")
 }
 
-// The retired variable no longer selects the backend: with no DSN the store
-// stays SQLite, and the operator is told the line does nothing.
-func TestStorageBackend_RetiredVariableIsNotRead(t *testing.T) {
-	t.Setenv("LOOMCYCLE_PG_DSN", "")
-	t.Setenv("LOOMCYCLE_STORAGE_BACKEND", "postgres")
-	cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n")
-	if err != nil {
-		t.Fatal(err)
+// The retired variable no longer selects the backend. Naming another backend
+// than the one the DSN gives stops the load instead of opening the wrong
+// store; naming the same one, or pinning it in the yaml, is only advised.
+func TestLoadLayers_RefusesARetiredStorageBackendThatNamesAnotherStore(t *testing.T) {
+	const dsn = "postgres://u:hunter2@h/db"
+	for _, tc := range []struct {
+		name, value, dsn string
+	}{
+		{"postgres with no DSN", "postgres", ""},
+		{"sqlite with a DSN", "sqlite", dsn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_PG_DSN", tc.dsn)
+			t.Setenv("LOOMCYCLE_STORAGE_BACKEND", tc.value)
+			_, err := loadYAMLString(t, "defaults: {provider: mock}\n")
+			if err == nil {
+				t.Fatal("the load accepted a retired backend that names another store")
+			}
+			msg := err.Error()
+			for _, want := range []string{"LOOMCYCLE_STORAGE_BACKEND", "storage.backend"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("error does not name %q: %s", want, msg)
+				}
+			}
+			if strings.Contains(msg, "hunter2") || strings.Contains(msg, "@h/db") {
+				t.Errorf("error carries the DSN: %s", msg)
+			}
+		})
 	}
-	if cfg.Storage.Backend != "sqlite" {
-		t.Errorf("storage.backend = %q, want sqlite", cfg.Storage.Backend)
+
+	for _, tc := range []struct {
+		name, value, dsn, yaml, want string
+	}{
+		{"sqlite with no DSN", "sqlite", "", "", "sqlite"},
+		{"postgres with a DSN", "postgres", dsn, "", "postgres"},
+		{"postgres pinned in the yaml", "postgres", "", "storage:\n  backend: postgres\n", "postgres"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOOMCYCLE_PG_DSN", tc.dsn)
+			t.Setenv("LOOMCYCLE_STORAGE_BACKEND", tc.value)
+			cfg, err := loadYAMLString(t, "defaults: {provider: mock}\n"+tc.yaml)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Storage.Backend != tc.want {
+				t.Errorf("storage.backend = %q, want %q", cfg.Storage.Backend, tc.want)
+			}
+			requireRetiredAdvisory(t, cfg, "LOOMCYCLE_STORAGE_BACKEND")
+		})
 	}
-	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_STORAGE_BACKEND")
 }
 
 func requireRetiredAdvisory(t *testing.T, cfg *Config, name string) {

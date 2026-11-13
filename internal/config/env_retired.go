@@ -171,10 +171,11 @@ type retiredEnvCtx struct {
 }
 
 // retiredRefusal is a retired variable whose value may have asked for
-// something tighter than what the runtime now does.
+// something tighter than what the runtime now does, or for data to live
+// somewhere other than where it now goes.
 type retiredRefusal struct {
 	// loosens reports whether ignoring value leaves the deployment looser
-	// than the operator set it.
+	// than the operator set it, or moves its data.
 	loosens func(value string, c retiredEnvCtx) bool
 	// instead replaces the retiredEnv text in the refusal when what to do
 	// about a refused value differs from what to do about a dead line.
@@ -185,7 +186,9 @@ type retiredRefusal struct {
 // only being advised. An advisory is enough when ignoring the variable changes
 // a cadence or raises nothing; it is not enough when the operator had turned a
 // feature off or lowered a bound, because the deployment would come up looser
-// than they configured it with one more line in a log to show for it.
+// than they configured it with one more line in a log to show for it. The
+// same holds for a variable whose value decided where data lives or whether it
+// is deleted: ignoring it would open another store or start a sweep.
 //
 // A rule is judged on the value: the same variable set to what the runtime
 // now does anyway is advised, not refused.
@@ -200,6 +203,11 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_CHANNEL_HOOKS":       {gateWasOff, "the channel-hook worker always runs; to keep it unused, declare no `hooks:` on any channel"},
 	"LOOMCYCLE_BASHBOX_ENABLED":     {gateWasOff, "Bashbox is always registered; to keep it unused, do not name Bashbox in any agent's `tools`"},
 	"LOOMCYCLE_RESUME_FANOUT":       {gateWasOff, "a fan-out parent always parks on pause and is resumed with its children; this can no longer be turned off"},
+
+	// The store used to be chosen here. Ignoring a value that disagrees with
+	// the DSN would open a different store: an empty SQLite file where the
+	// operator's Postgres was expected, or the reverse.
+	"LOOMCYCLE_STORAGE_BACKEND": {backendNamedAnotherStore, "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise, which is not the backend this variable names; set storage.backend in the yaml to pin the backend"},
 
 	// The filesystem jail stopped the boot before it was retired and still
 	// does: a deploy that relied on it must be moved to volumes by a person.
@@ -274,6 +282,26 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 		}
 		return 1<<63 - 1
 	})},
+}
+
+// backendNow is the store backend this version opens: the yaml's explicit
+// storage.backend, else Postgres when a DSN is configured. The rules are
+// judged before applyEnvStorage runs, so the env DSN is applied here the way
+// it is there.
+func backendNow(c retiredEnvCtx) string {
+	dsn := c.storage.PgDSN
+	if v := c.env["LOOMCYCLE_PG_DSN"]; v != "" {
+		dsn = v
+	}
+	return inferStorageBackend(c.storage.Backend, dsn)
+}
+
+// backendNamedAnotherStore reports a retired backend variable that names a
+// backend other than the one this version opens. The old read let a non-empty
+// value win over the yaml, and an unknown one stopped the boot when the store
+// was opened.
+func backendNamedAnotherStore(value string, c retiredEnvCtx) bool {
+	return value != "" && value != backendNow(c)
 }
 
 func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }

@@ -157,6 +157,22 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "off", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}}, // dormant
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MS", value: "86400000"},                                                           // no mode: dormant
 
+		// The store backend: refused when the variable names another backend
+		// than the one this version opens. The env value used to win over the
+		// yaml, and an unknown one stopped the boot when the store was opened.
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", refused: true}, // no DSN: SQLite would be opened
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "sqlite", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}, refused: true},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "sqlite", yaml: StorageConfig{PgDSN: "postgres://u@h/db"}, refused: true},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", yaml: StorageConfig{PgDSN: "${LOOMCYCLE_PG_DSN}"}, refused: true}, // a reference is not a DSN
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", yaml: StorageConfig{Backend: "sqlite"}, also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}, refused: true},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "Postgres", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}, refused: true},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "sqlite"},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", yaml: StorageConfig{PgDSN: "postgres://u@h/db"}},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", yaml: StorageConfig{Backend: "postgres"}}, // the yaml pins it
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "sqlite", yaml: StorageConfig{Backend: "sqlite"}, also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: ""}, // was ignored
+
 		// Retired, and no value of it was a tightening.
 		{name: "LOOMCYCLE_SSE_KEEPALIVE_MS", value: "0"},
 		{name: "LOOMCYCLE_SNAPSHOT_MAX_BYTES", value: "1"},
