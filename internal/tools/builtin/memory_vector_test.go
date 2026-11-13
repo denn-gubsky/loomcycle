@@ -36,6 +36,11 @@ type vectorStore struct {
 	mu      sync.Mutex
 	embeds  map[string]store.MemoryEmbedding // key = scope|id|key
 	enabled bool
+	// keyLimits: each MemoryEmbedSearchKeys call's limit, in order.
+	keyLimits []int
+	// approximate makes MemoryEmbedSearchKeys report an inexact window, as a
+	// store serving it from an HNSW index does.
+	approximate bool
 }
 
 func newVectorStore(s store.Store) *vectorStore {
@@ -124,6 +129,64 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 	if topK > 51 {
 		topK = 51
 	}
+	rows, err := v.nearest(ctx, tenantID, scope, scopeID, filter, query, topK)
+	if err != nil || rows == nil {
+		return nil, err
+	}
+	out := make([]store.MemorySearchEntry, 0, len(rows))
+	for _, r := range rows {
+		entry, err := v.Store.MemoryGet(ctx, tenantID, scope, scopeID, r.key)
+		if err != nil {
+			continue
+		}
+		se := store.MemorySearchEntry{
+			MemoryEntry: entry,
+			Score:       r.score,
+		}
+		se.EmbeddedWith.Provider = r.emb.Provider
+		se.EmbeddedWith.Model = r.emb.Model
+		out = append(out, se)
+	}
+	return out, nil
+}
+
+// MemoryEmbedSearchKeys is the fake's keys-only window, capped as postgres caps
+// it. keyLimits records each limit asked, so a test can tell the window query ran
+// (and with what bound) or did not run at all.
+func (v *vectorStore) MemoryEmbedSearchKeys(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, limit int) (store.MemoryKeyWindow, error) {
+	if !v.enabled {
+		return store.MemoryKeyWindow{}, store.ErrVectorUnsupported
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.keyLimits = append(v.keyLimits, limit)
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > store.MemoryEmbedKeysMax {
+		limit = store.MemoryEmbedKeysMax
+	}
+	rows, err := v.nearest(ctx, tenantID, scope, scopeID, filter, query, limit)
+	if err != nil {
+		return store.MemoryKeyWindow{}, err
+	}
+	win := store.MemoryKeyWindow{Exact: !v.approximate}
+	for _, r := range rows {
+		win.Keys = append(win.Keys, r.key)
+	}
+	return win, nil
+}
+
+// fakeHit is one row of the fake's cosine ranking.
+type fakeHit struct {
+	key   string
+	score float64
+	emb   store.MemoryEmbedding
+}
+
+// nearest ranks the scope's rows by cosine under filter, closest first, at most
+// topK; nil for an empty scope. The caller holds v.mu.
+func (v *vectorStore) nearest(ctx context.Context, tenantID string, scope store.MemoryScope, scopeID string, filter store.MemorySearchFilter, query []float32, topK int) ([]fakeHit, error) {
 	// Dim mismatch detection — take the first stored vector under (scope, scope_id).
 	prefix := string(scope) + "|" + scopeID + "|"
 	var storedDim int
@@ -143,12 +206,7 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 		}
 	}
 
-	type scored struct {
-		key   string
-		score float64
-		emb   store.MemoryEmbedding
-	}
-	var rows []scored
+	rows := []fakeHit{} // non-nil: nil means an empty scope
 	for k, e := range v.embeds {
 		if !strings.HasPrefix(k, prefix) {
 			continue
@@ -168,28 +226,14 @@ func (v *vectorStore) MemoryEmbedSearch(ctx context.Context, tenantID string, sc
 		if err != nil {
 			continue
 		}
-		rows = append(rows, scored{key: key, score: cosineSim(query, e.Vector), emb: e})
+		rows = append(rows, fakeHit{key: key, score: cosineSim(query, e.Vector), emb: e})
 		_ = entry
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].score > rows[j].score })
 	if len(rows) > topK {
 		rows = rows[:topK]
 	}
-	out := make([]store.MemorySearchEntry, 0, len(rows))
-	for _, r := range rows {
-		entry, err := v.Store.MemoryGet(ctx, tenantID, scope, scopeID, r.key)
-		if err != nil {
-			continue
-		}
-		se := store.MemorySearchEntry{
-			MemoryEntry: entry,
-			Score:       r.score,
-		}
-		se.EmbeddedWith.Provider = r.emb.Provider
-		se.EmbeddedWith.Model = r.emb.Model
-		out = append(out, se)
-	}
-	return out, nil
+	return rows, nil
 }
 
 // idSegmentPasses is the postgres id-segment predicate in Go: the key text after
