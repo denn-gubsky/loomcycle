@@ -19,7 +19,7 @@ func layersFor(t *testing.T, names ...string) []config.Layer {
 	}
 	layers := make([]config.Layer, len(units))
 	for i, u := range units {
-		layers[i] = config.Layer{Name: u.Name, Data: u.Data}
+		layers[i] = config.Layer{Name: u.Name, Data: u.Data, Embedded: true}
 	}
 	return layers
 }

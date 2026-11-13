@@ -16,6 +16,38 @@ import (
 type Layer struct {
 	Name string
 	Data []byte
+	// Embedded marks a preset or bundle compiled into the binary. Only such a
+	// layer may carry a top-level `include:` (the assembler has already
+	// expanded it into the layers before this one); in any other layer the key
+	// is refused. See includeKey.
+	Embedded bool
+}
+
+// includeKey is the top-level key an embedded preset uses to name the presets
+// and bundles layered under it. It is not a config setting: the layer assembly
+// expands it before the merge, and the merge drops it.
+//
+// An operator's own file may not use it. The schema ignores an unknown
+// top-level key without a word, so an `include: [base]` in a loomcycle.yaml
+// would load nothing and say nothing, and the deployment would run without the
+// routing it believed it had selected.
+const includeKey = "include"
+
+func errOperatorInclude(layer string) error {
+	return fmt.Errorf("%s: a top-level `include:` works only inside a preset built into the binary; in your own config, select presets with LOOMCYCLE_PRESETS (or --preset) and add files with --config or LOOMCYCLE_CONFIG_DIR, then remove the key", layer)
+}
+
+// refuseIncludeKey fails when an operator's document sets includeKey. A
+// document that does not parse is left to the caller's own decode to report.
+func refuseIncludeKey(layer, expanded string) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(expanded), &doc); err != nil || len(doc.Content) == 0 {
+		return nil
+	}
+	if root := doc.Content[0]; root.Kind == yaml.MappingNode && mapValueIndex(root, includeKey) >= 0 {
+		return errOperatorInclude(layer)
+	}
+	return nil
 }
 
 // RFC AQ §3 — opt-in sequence-merge tags. A sequence in an overlay tagged
@@ -74,6 +106,12 @@ func mergeLayers(layers []Layer) (*yaml.Node, []string, error) {
 		root := doc.Content[0]
 		if root.Kind != yaml.MappingNode {
 			return nil, nil, fmt.Errorf("parse %s: top-level YAML must be a mapping", l.Name)
+		}
+		if i := mapValueIndex(root, includeKey); i >= 0 {
+			if !l.Embedded {
+				return nil, nil, errOperatorInclude(l.Name)
+			}
+			root.Content = append(root.Content[:i-1], root.Content[i+1:]...)
 		}
 		mergeNodes(merged, root, l.Name, "", &overrides)
 	}

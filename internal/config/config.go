@@ -5092,6 +5092,9 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 			return nil, "", fmt.Errorf("read %s: %w", src[0].Name, err)
 		}
 		expanded := expandEnv(string(raw))
+		if err := refuseIncludeKey(src[0].Name, expanded); err != nil {
+			return nil, "", err
+		}
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
 			return nil, "", fmt.Errorf("parse %s: %w", src[0].Name, err)
 		}

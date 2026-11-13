@@ -63,7 +63,8 @@ type ConfigStack struct {
 
 // SelectPresetNames resolves the embedded-preset selection: --preset flags,
 // if any, override LOOMCYCLE_PRESETS (comma-separated, ordered). Empty or
-// unset selects none. Order is preserved; it becomes the base layer order.
+// unset selects none. Order is preserved; it becomes the base layer order,
+// with each preset's own includes layered under it.
 func SelectPresetNames(flags []string, env string) []string {
 	if len(flags) > 0 {
 		return flags
@@ -171,13 +172,17 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 		if err != nil {
 			return ConfigStack{}, err
 		}
+		// units is the selection with every `include:` expanded, so the line
+		// below names what is layered, not only what was typed.
+		layered := make([]string, 0, len(units))
 		for _, u := range units {
-			presetLayers = append(presetLayers, config.Layer{Name: u.Name, Data: u.Data})
+			presetLayers = append(presetLayers, config.Layer{Name: u.Name, Data: u.Data, Embedded: true})
+			layered = append(layered, u.Name)
 		}
 		// The TrueNAS install guide quotes this line's text; keep it.
-		presets := strings.Join(presetNames, ", ")
-		info(fmt.Sprintf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(presetNames), presets),
-			"presets", presets)
+		presets := strings.Join(layered, ", ")
+		info(fmt.Sprintf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(layered), presets),
+			"presets", presets, "selected", strings.Join(presetNames, ", "))
 	}
 
 	// LOOMCYCLE_CONFIG_DIR: a directory of *.yaml/*.yml layered as a group,
@@ -267,7 +272,7 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 	// counted as a preset above, so a bare run still gets "no config found".
 	stack.Layers = make([]config.Layer, 0, 1+len(presetLayers)+len(stack.Files))
 	if !env.NoDefaultProviders {
-		stack.Layers = append(stack.Layers, config.Layer{Name: "providers.default", Data: embedded.DefaultProviders()})
+		stack.Layers = append(stack.Layers, config.Layer{Name: "providers.default", Data: embedded.DefaultProviders(), Embedded: true})
 	}
 	stack.Layers = append(stack.Layers, presetLayers...)
 	for _, f := range stack.Files {
