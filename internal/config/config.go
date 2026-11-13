@@ -5055,7 +5055,7 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	// the rest are said once, where boot, `validate` and `doctor` all print
 	// advisories.
 	if refused := retiredEnvRefusals(os.Environ(), &cfg.Storage); len(refused) > 0 {
-		return nil, fmt.Errorf("retired environment variables are set to something tighter than this version applies, and ignoring them would loosen this deployment; act on each, then remove its line:\n  %s", strings.Join(refused, "\n  "))
+		return nil, fmt.Errorf("retired environment variables are set to something tighter than this version applies, and ignoring them would loosen this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
