@@ -4213,10 +4213,6 @@ type Env struct {
 	// keeps audit rows; older ones are pruned behind a signed anchor by the
 	// retention sweeper. Zero (the default) keeps them forever.
 	AuditRetention time.Duration
-	// AuthVerbose (LOOMCYCLE_AUTH_VERBOSE=1) logs a server-side reason
-	// when a bearer is rejected. Off by default; the wire 401 stays
-	// opaque regardless (no oracle) — this only affects local logs.
-	AuthVerbose bool
 	// ACLMode (LOOMCYCLE_ACL) is the RFC EY rollout mode: compat (the
 	// default: the scope gates decide, an explicit ACL deny is honoured on
 	// top), shadow (the scope gates decide, the engine's divergences are
@@ -5241,7 +5237,6 @@ func applyEnvCore(cfg *Config) {
 		SecretKey:                   os.Getenv("LOOMCYCLE_SECRET_KEY"),
 		SecretKeyPrevious:           os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"),
 		AuditLogPath:                os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
-		AuthVerbose:                 os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
 		ACLMode:                     os.Getenv("LOOMCYCLE_ACL"),
 		ACLCacheTTLSeconds:          getenvInt("LOOMCYCLE_ACL_CACHE_TTL_SECONDS", 5),

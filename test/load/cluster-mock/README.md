@@ -94,7 +94,7 @@ Postgres budget is the binding admission constraint, not the per-replica
 Failure-injection + sampler env vars (same as `circuit-stress`):
 `LOOMCYCLE_MOCK_429_RATE`, `LOOMCYCLE_MOCK_500_RATE`,
 `LOOMCYCLE_MOCK_LATENCY_MS`, `LOOMCYCLE_MOCK_LATENCY_JITTER_MS`,
-`LOOMCYCLE_CHANNEL_DEBUG=1`.
+`LOOMCYCLE_LOG_LEVEL=debug`.
 
 Replicas-sweeper tuning (defaults match production):
 `LOOMCYCLE_REPLICAS_SWEEP_INTERVAL_MS`, `LOOMCYCLE_REPLICAS_STALE_AFTER_MS`

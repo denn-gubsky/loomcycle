@@ -30,7 +30,7 @@ import (
 // The test asserts `silentMissesAfterDelay == 0` (correctness). It
 // only LOGS missesOnFirstRead so we can characterize the race rate
 // without making the test flaky. The diagnostic log lines from
-// LOOMCYCLE_CHANNEL_DEBUG=1 + the channel.go readWithRetry path
+// LOOMCYCLE_LOG_LEVEL=debug + the channel.go readWithRetry path
 // surface the same data in production; this test is the
 // reproduction harness operators can use locally.
 //

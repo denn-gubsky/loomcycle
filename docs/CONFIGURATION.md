@@ -1294,7 +1294,6 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_AUDIT_LOG_PATH` | A JSONL file of every audit record (token mints, sign-ins, ACL denials and edits, erasures, …; never a token or hash). Per replica, unsigned; beside the store-backed stream it is a mirror. See [Audit trail](#audit-trail). |
 | `LOOMCYCLE_AUDIT_STORE` | `1` turns on the store-backed, hash-chained audit stream where the posture does not already require it; `0` is refused where it does. See [Audit trail](#audit-trail). |
 | `LOOMCYCLE_AUDIT_RETENTION_DAYS` | How long the store-backed audit stream keeps rows (default `0`: forever). Older rows are pruned behind a signed anchor. Needs `LOOMCYCLE_SECRET_KEY`. |
-| `LOOMCYCLE_AUTH_VERBOSE` | `1` logs a server-side reason on a rejected bearer (the wire 401 stays opaque). |
 | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` | **RFC AX** deployment gate (default OFF). When `1`, a run whose principal lacks `providers:operator-key` may not use the operator's host provider key — resolution routes it only to providers the tenant can key itself (an RFC AR CredentialDef) and refuses `403 operator_key_restricted` if none; the LLM-gateway + embeddings shims refuse a restricted principal outright. OFF ⇒ byte-identical for every existing token. |
 | `LOOMCYCLE_PUBLIC_CONFIG` | Deployment gate (default OFF). When `1`, `GET /v1/config` may be read with **no bearer**, returning a narrowed public view — for a hosted instance whose landing page shows which providers and models are live. OFF ⇒ the endpoint requires auth like every other `/v1` read, so upgrading changes nothing. A presented-but-**invalid** bearer still `401`s rather than downgrading to the public view. See [§ GET /v1/config](#get-v1config). |
 | `LOOMCYCLE_ALLOW_OPEN_MODE` | `1` lets the server start in **open mode** on a listener beyond loopback. Open mode is no `LOOMCYCLE_AUTH_TOKEN`, no config `principals:` and no admin operator token, so every route, token minting included, is unauthenticated. Without this, such a boot **exits with an error** when `LOOMCYCLE_LISTEN_ADDR` or `LOOMCYCLE_GRPC_ADDR` binds anything but `127.0.0.0/8`, `::1` or `localhost` (`:8787`, `0.0.0.0` and `::` bind every interface; any other hostname counts as public too). Open mode on loopback needs no opt-in. While open, the server logs a warning every 10 minutes and the Web UI shows an "unauthenticated" banner. Use it only for a throwaway test harness on a private network; anything reachable should set `LOOMCYCLE_AUTH_TOKEN` or declare `principals:`. |
@@ -2353,7 +2352,7 @@ Fixed: a resident child is reaped after 30 minutes with no send (an `open` may n
 | Env var | Default | Values |
 |---|---|---|
 | `LOOMCYCLE_LOG_FORMAT` | `text` | `text`: the familiar `2006/01/02 15:04:05 message` line, with `WARN`/`ERROR`/`DEBUG` before the message and structured fields appended as `key=value`. `json`: one JSON object per line (`time`, `level`, `msg`, fields), plus `run_id`/`tenant`/`agent`/`user` and `trace_id`/`span_id` where the line belongs to a run. An unknown value warns and uses `text`. |
-| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Every runtime line is levelled, so `warn` or `error` also hides the Info lines, "listening on" among them; fatal and startup errors are logged at `ERROR` and show at every level. An unknown value warns and uses `info`. |
+| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Every runtime line is levelled, so `warn` or `error` also hides the Info lines, "listening on" among them; fatal and startup errors are logged at `ERROR` and show at every level. An unknown value warns and uses `info`. `debug` is also where the per-request diagnostics live: the reason for a rejected credential (the 401 stays opaque), each channel publish with its commit time, and each Ollama request's model, effort and `think` flag. |
 
 **Network guard: trust no DNS.** An entry of `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` is a host name (suffix-matched: it vouches for whatever that name's DNS answers) or a CIDR range (it vouches for the addresses inside it, whatever name reached them); `docs/TOOLS.md` has the full rules. A deployment that must not let a DNS answer open a private address states it with the mode, and the load checks the list against it.
 
@@ -3332,7 +3331,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | `90000` | Longest silence inside a provider's stream before the call fails. Neither timeout can be disabled. |
 | `LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS` | off | `1`: once a run has one successful turn, it stays on that provider instead of falling over to another mid-conversation (same-provider retries still apply). |
 | `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` | unset | Sends `options.num_gpu` (layers offloaded to the GPU) on every `ollama-local` request, e.g. `99` for all layers, where Ollama's detection falls back to CPU. Unset or `0` leaves it to Ollama. |
-| `LOOMCYCLE_OLLAMA_DEBUG_THINK` | off | `1` logs each Ollama request's model, effort and whether `think` was set. Diagnostic only. |
 | `LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED` | off | `1` registers the `anthropic-oauth-dev` provider and enables the `loomcycle anthropic` login commands. |
 | `LOOMCYCLE_CLAUDE_CODE_VERSION` | the pinned version | Overrides the Claude Code version that provider presents, without a rebuild. |
 | `LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT` | `53692` | Local port of that provider's OAuth login callback. |
@@ -3458,7 +3456,6 @@ Background work runs on fixed cadences, and none of it can be switched off:
 | `LOOMCYCLE_DEADLINK_GC_MS` | `3600000` | How often unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk) are collected; on by default, `0` disables. |
 | `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | off | `1` makes that collection count and log without deleting. |
 | `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |
-| `LOOMCYCLE_CHANNEL_DEBUG` | off | `1` logs channel publish and subscribe activity. Diagnostic only. |
 
 ### SQL Memory
 

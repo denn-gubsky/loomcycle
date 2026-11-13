@@ -104,17 +104,6 @@ var (
 // corresponding info wasn't available (binary built without VCS — e.g.
 // `go test` by default does not embed VCS info, but `go build` and
 // `go install` do).
-// channelDebugEnabled reports whether the operator opted into the
-// v0.12.7 channel publish/subscribe diagnostic log via the
-// LOOMCYCLE_CHANNEL_DEBUG=1 env var. Read here (not at store package
-// init time) so the env-var coupling stays in main.go where all the
-// other env-var → Config bridging lives. See
-// internal/tools/builtin/channel.go and
-// internal/store/postgres/postgres.go for what gets logged.
-func channelDebugEnabled() bool {
-	return os.Getenv("LOOMCYCLE_CHANNEL_DEBUG") == "1"
-}
-
 // memoryChangesEnabled reports whether the RFC CD Part C change-data-capture
 // feed is on. Default off — when off the store is NOT wrapped by the CDC
 // decorator, so the default deployment is byte-identical and pays nothing.
@@ -518,7 +507,6 @@ func openStore(cfg *config.Config, server bool) (store.Store, func(), error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("sqlite open: %w", err)
 		}
-		st.SetChannelDebug(channelDebugEnabled())
 		slog.Info("store: sqlite", "path", dbPath)
 		warnLegacyTenantMemory(st)
 		sweepTenantDocumentRows(st)
@@ -534,7 +522,6 @@ func openStore(cfg *config.Config, server bool) (store.Store, func(), error) {
 			MinIdleConns:    cfg.Storage.PgMinIdleConns,
 			AutoMigrate:     cfg.Storage.PgAutoMigrate,
 			PgvectorEnabled: cfg.Env.PgvectorEnabled,
-			ChannelDebug:    channelDebugEnabled(),
 			FullText: storepostgres.FullTextConfig{
 				Config:   cfg.Memory.FullText.Config,
 				Unaccent: cfg.Memory.FullText.Unaccent,

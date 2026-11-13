@@ -121,10 +121,13 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
 
 	// Inferred from another setting.
-	"LOOMCYCLE_A2A_ENABLED":       "A2A is on when LOOMCYCLE_A2A_SERVER_CARD names the server card to serve; unset it to turn A2A off",
-	"LOOMCYCLE_RETENTION_ENABLED": "the retention sweeper runs when a LOOMCYCLE_RETENTION_*_MODE is prune or export+prune; set every mode to off (or unset) to stop it",
-	"LOOMCYCLE_SQLMEM_ENABLED":    "SQL Memory is on with a SQLite store, and with a Postgres store when LOOMCYCLE_SQLMEM_PG_DSN is set; storage.sqlmem_enabled: false in the yaml turns it off",
-	"LOOMCYCLE_STORAGE_BACKEND":   "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise; storage.backend in the yaml still overrides",
+	"LOOMCYCLE_AUTH_VERBOSE":       "set LOOMCYCLE_LOG_LEVEL=debug: a rejected credential is logged at debug level",
+	"LOOMCYCLE_CHANNEL_DEBUG":      "set LOOMCYCLE_LOG_LEVEL=debug: each channel publish is logged at debug level",
+	"LOOMCYCLE_OLLAMA_DEBUG_THINK": "set LOOMCYCLE_LOG_LEVEL=debug: each Ollama request's model, effort and think flag are logged at debug level",
+	"LOOMCYCLE_A2A_ENABLED":        "A2A is on when LOOMCYCLE_A2A_SERVER_CARD names the server card to serve; unset it to turn A2A off",
+	"LOOMCYCLE_RETENTION_ENABLED":  "the retention sweeper runs when a LOOMCYCLE_RETENTION_*_MODE is prune or export+prune; set every mode to off (or unset) to stop it",
+	"LOOMCYCLE_SQLMEM_ENABLED":     "SQL Memory is on with a SQLite store, and with a Postgres store when LOOMCYCLE_SQLMEM_PG_DSN is set; storage.sqlmem_enabled: false in the yaml turns it off",
+	"LOOMCYCLE_STORAGE_BACKEND":    "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise; storage.backend in the yaml still overrides",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in

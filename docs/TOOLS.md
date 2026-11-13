@@ -1141,7 +1141,7 @@ Cursor monotonicity is enforced: `ack` with a cursor older than the currently co
 
 ### Diagnostic logging (v0.12.7)
 
-`LOOMCYCLE_CHANNEL_DEBUG=1` enables a structured per-publish log line used, with the per-retry lines below, to characterise the residual subscribe-empty race the v0.8.x bounded-retry workaround mitigates. Default off — the publish line is noisy on a busy install. Operators flip the flag during a load test, capture a window of logs (~20 retry-saved lines), then flip it back. The retry lines are not gated by the flag: they fire whenever the bounded retry runs. The log shapes are:
+`LOOMCYCLE_LOG_LEVEL=debug` enables a structured per-publish log line used, with the per-retry lines below, to characterise the residual subscribe-empty race the v0.8.x bounded-retry workaround mitigates. Default off — the publish line is noisy on a busy install. Operators raise the level during a load test, capture a window of logs (~20 retry-saved lines), then lower it again. The retry lines are not debug-level: they fire whenever the bounded retry runs. The log shapes are:
 
 - `channel publish channel=X id=... commit_us=N pool_total=A pool_acquired=B pool_idle=C` — fires on every successful publish. `commit_us` measures the postgres `tx.Commit` duration in microseconds; the pool fields capture pgxpool state at commit time.
 

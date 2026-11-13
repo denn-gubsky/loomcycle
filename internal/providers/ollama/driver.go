@@ -24,7 +24,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -717,15 +716,12 @@ func (d *Driver) buildRequestBody(req providers.Request, numCtx int) ([]byte, er
 		think := false
 		w.Think = &think
 	}
-	// Opt-in diagnostic (LOOMCYCLE_OLLAMA_DEBUG_THINK=1): log exactly what
-	// reaches the driver, so an operator debugging "no thinking trace" can
-	// confirm whether the effort hint arrived and whether `think` was set on
-	// the wire. Off by default (a per-request log line would otherwise be
-	// noise). Non-secret — model name + effort only.
-	if os.Getenv("LOOMCYCLE_OLLAMA_DEBUG_THINK") == "1" {
-		slog.Info("ollama think-diag",
-			"provider", d.providerID, "model", req.Model, "effort", req.Effort, "think_set", w.Think != nil)
-	}
+	// Debug-level diagnostic: log exactly what reaches the driver, so an
+	// operator debugging "no thinking trace" can confirm whether the effort
+	// hint arrived and whether `think` was set on the wire. A per-request
+	// line is noise at info. Non-secret — model name + effort only.
+	slog.Debug("ollama think-diag",
+		"provider", d.providerID, "model", req.Model, "effort", req.Effort, "think_set", w.Think != nil)
 
 	if req.OutputFormat != nil && d.EnforcesStructuredOutput(req.Model, len(req.Tools) > 0) {
 		w.Format = req.OutputFormat.Schema

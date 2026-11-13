@@ -121,11 +121,11 @@ export LOOMCYCLE_METRICS_ENABLED=1
 export LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS=120000
 export LOOMCYCLE_LISTEN_ADDR="127.0.0.1:$LC_PORT"
 
-# Optional channel-debug logging (v0.12.7). Operators flip this on
-# when running mock at high concurrency to capture
-# subscribe-race-recovered telemetry per the channel-race
-# investigation doc.
-export LOOMCYCLE_CHANNEL_DEBUG="${LOOMCYCLE_CHANNEL_DEBUG:-0}"
+# Optional channel-debug logging (v0.12.7): run with
+# LOOMCYCLE_LOG_LEVEL=debug at high concurrency to capture the per-publish
+# lines beside the subscribe-race-recovered telemetry, per the
+# channel-race investigation doc.
+export LOOMCYCLE_LOG_LEVEL="${LOOMCYCLE_LOG_LEVEL:-info}"
 
 # ─── Generate the scale-sized yaml ──────────────────────────────────
 SCALE=1

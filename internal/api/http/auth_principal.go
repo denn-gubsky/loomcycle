@@ -60,10 +60,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		p, ui, ok := s.authenticateRequest(r)
 		if !ok {
 			// Opaque — never distinguish "unknown" from "expired" from
-			// "wrong" (no oracle). Detail only under LOOMCYCLE_AUTH_VERBOSE.
-			if s.authVerbose() {
-				slog.Info("auth: rejected credential (no matching token or session / expired / wrong secret)")
-			}
+			// "wrong" (no oracle). The server-side line is debug-level: one
+			// per rejected request is noise at info.
+			slog.DebugContext(r.Context(), "auth: rejected credential (no matching token or session / expired / wrong secret)")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -569,16 +568,14 @@ func (s *Server) authConfigured(ctx context.Context) bool {
 }
 
 // logAdminCountErr logs a failed admin-token count that the caller is failing
-// closed on. A store fault is logged; a cancelled request is not (outside
-// LOOMCYCLE_AUTH_VERBOSE), because a client can cancel its own request at will.
+// closed on. A store fault is an error; a cancelled request is only a debug
+// line, because a client can cancel its own request at will.
 func (s *Server) logAdminCountErr(ctx context.Context, err error) {
-	if ctx.Err() == nil || s.authVerbose() {
-		slog.Error("auth: admin-token count failed; failing closed", "err", err)
+	if ctx.Err() != nil {
+		slog.Debug("auth: admin-token count failed on a cancelled request; failing closed", "err", err)
+		return
 	}
-}
-
-func (s *Server) authVerbose() bool {
-	return s.cfg().Env.AuthVerbose
+	slog.Error("auth: admin-token count failed; failing closed", "err", err)
 }
 
 // resolvePrincipal maps a raw bearer to a principal, with a short-TTL
@@ -689,9 +686,7 @@ func (s *Server) liveTokenPrincipal(ctx context.Context, p auth.Principal) (auth
 		return auth.Principal{}, false
 	}
 	if gateOnly {
-		if s.authVerbose() {
-			slog.Info("auth: refused a per-user token no gate issued (auth.strict.user_tokens: gate_only)", "token_def", p.TokenDefID)
-		}
+		slog.DebugContext(ctx, "auth: refused a per-user token no gate issued (auth.strict.user_tokens: gate_only)", "token_def", p.TokenDefID)
 		return auth.Principal{}, false
 	}
 	if u.Status != "active" {
@@ -742,9 +737,9 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 		// store error is a genuine outage: fail closed AND not cacheable (we
 		// do not reach the legacy branch with a usable substrate state).
 		if !isNotFound(err) {
-			if s.authVerbose() {
-				slog.Error("auth: token-substrate lookup error (failing closed)", "err", err)
-			}
+			// Debug-level: one line per request for as long as the store is
+			// down, and the store reports its own outage.
+			slog.DebugContext(ctx, "auth: token-substrate lookup error (failing closed)", "err", err)
 			return auth.Principal{}, false, false, never
 		}
 	}

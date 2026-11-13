@@ -910,12 +910,6 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_AUTH_VERBOSE
-            label: LOOMCYCLE_AUTH_VERBOSE
-            description: '(example: 1)'
-            schema:
-              type: string
-              default: ""
           - variable: LOOMCYCLE_OPERATOR_KEY_RESTRICTION
             label: LOOMCYCLE_OPERATOR_KEY_RESTRICTION
             description: 'RFC AX operator-key restriction (default OFF). When ON, a run whose principal lacks the `providers:operator-key` scope may NOT fall back to the operator''s host provider key — it routes only to providers the tenant can key itself (an RFC AR CredentialDef) and is refused 403 if none. Off ⇒ byte-identical for every existing token. NON-secret feature flag. (example: 1)'

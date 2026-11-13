@@ -502,8 +502,7 @@ func TestClientToolsTicket_NeverLogged(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	f, _, ts, at := strictAppFixture(t)
-	f.s.cfg().Env.AuthVerbose = true
+	_, _, ts, at := strictAppFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ticket := mustTicket(t, ts, at)
