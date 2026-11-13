@@ -17,7 +17,7 @@ Why this, and not a compatibility period in which the old variables keep working
 A deployment that changes nothing gets one of three outcomes when it starts the new binary:
 
 1. **It starts with advisories.** An *advisory* is a warning line that names a variable the runtime no longer reads and says what to do instead. Nothing else changed for that variable.
-2. **It refuses to start.** A *refusal* is a start-up error that names each removed variable whose value asked for something this version does not apply: a tighter limit, a feature kept off, another data store, or a setting that moved to the yaml and is not there. You fix each one and start again.
+2. **It refuses to start.** A *refusal* is a start-up error that names each removed variable whose value asked for something this version does not apply: a tighter limit, a feature kept off, another data store, data kept or deleted differently, or a setting that moved to the yaml and is not there. You fix each one and start again.
 3. **It starts and behaves differently.** This is the dangerous outcome. It happens where the old behaviour depended on a variable you did *not* set, so there is nothing for the runtime to warn about. [Section 4](#4-behaviour-changes-with-no-variable-to-warn-about) lists every such case. Read it before you upgrade.
 
 ## 2. Before you upgrade: a checklist
@@ -110,7 +110,7 @@ The text after the colon says what to do instead. An advisory changes nothing: t
 One error for all refused variables. Its leading sentence is:
 
 ```
-retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line:
+retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, another store, data kept or deleted differently, or a setting that moved to the yaml and is not there), and ignoring them would change this deployment; act on each, then remove its line:
 ```
 
 It is followed by one `NAME: what to do` entry per refused variable, sorted by name and separated by ` | `. The server does not start.

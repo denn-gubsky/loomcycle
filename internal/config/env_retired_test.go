@@ -619,3 +619,18 @@ func TestRetentionFamilies_ListsEveryFamilyOfTheBlock(t *testing.T) {
 }
 
 func agePtr(d HumanDuration) *HumanDuration { return &d }
+
+// The refusal's leading sentence lists what a refused variable can stand
+// for. A variable that decided which data is kept is refused for that
+// reason, and an operator reading only the lead must find it there.
+func TestLoadLayers_RefusalLeadNamesDataKeptOrDeletedDifferently(t *testing.T) {
+	t.Setenv("LOOMCYCLE_USAGE_SWEEPER", "0")
+	_, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults:\n  provider: mock\n")})
+	if err == nil {
+		t.Fatal("LoadLayers accepted a retired switch that kept per-call usage rows")
+	}
+	lead, _, _ := strings.Cut(err.Error(), "LOOMCYCLE_USAGE_SWEEPER")
+	if !strings.Contains(lead, "data kept or deleted differently") {
+		t.Errorf("the lead does not name the data case: %q", lead)
+	}
+}
