@@ -5772,8 +5772,9 @@ agents:
       //    already found so the walk does not repeat it, when:
       //    - the search did not complete, or gave no answer (whatever the score:
       //      the alternative is no answer at all); or
-      //    - it ends "COVERAGE: partial", unless the decision model was sure the
-      //      question is not an overview (score at or below LOW).
+      //    - it ends "COVERAGE: partial", unless the question is surely not an
+      //      overview: a decision score at or below LOW, or a kb/classify NO with
+      //      no decision score (the decision model skipped, failed or absent).
       //    A walk that gives no answer keeps the search's.
       // 4. The answer is the chosen agent's, without kb/search's COVERAGE line,
       //    followed by one line:
@@ -5957,7 +5958,11 @@ agents:
         } else {
           var s = splitCoverage(res.final_text || "");
           var done = res.status === "completed" && s.text !== "";
-          var sureNot = c.source === "decision" && c.score !== null && c.score <= LOW;
+          // Sure it is not an overview: the decision model scored it at or below
+          // LOW, or kb/classify said NO with no decision score beside it (skipped,
+          // failed or not configured). A NO after a middle-band score is not sure.
+          var sureNot = (c.source === "decision" && c.score !== null && c.score <= LOW) ||
+            (c.source === "agent" && !c.overview && c.score === null);
           text = s.text;
           var why = "";
           if (!done) { why = "search " + res.status; }

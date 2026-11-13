@@ -400,6 +400,29 @@ func TestKbAsk_PartialCoverageAfterAgentNoFallsBackToWalkerWithHitIDs(t *testing
 	wantRouteLine(t, out, "ROUTE: search -> walker (partial coverage) | SCORE: 0.2 | CLASSIFIER: agent | RUNS: r1:completed, r2:completed, r3:completed")
 }
 
+// When the agent alone classified the question (the decision model was skipped,
+// failed or is not configured), its NO is the only verdict there is, so a partial
+// flat answer stays with search (owner decision on D4, 2026-11-13). A NO after a
+// middle-band decision score still falls back: two classifiers disagreed.
+func TestKbAsk_PartialCoverageAfterAnAgentOnlyNoStaysWithSearch(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		f        *askFake
+		metadata map[string]any
+		score    string
+	}{
+		{"classifier=agent", &askFake{answers: askAnswers("NO", "partial")}, map[string]any{"classifier": "agent"}, "none"},
+		{"decision failed", &askFake{decErr: "Decision: timeout: the model did not answer", answers: askAnswers("NO", "partial")}, nil, "none (timeout)"},
+		{"no decision model", &askFake{noDecision: true, answers: askAnswers("NO", "partial")}, nil, "none (not_configured)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := runAsk(t, tc.f, askQuestion, tc.metadata)
+			wantSpawns(t, tc.f, "kb/classify", "kb/search")
+			wantRouteLine(t, out, "ROUTE: search | SCORE: "+tc.score+" | CLASSIFIER: agent | RUNS: r1:completed, r2:completed")
+		})
+	}
+}
+
 // A model decorates its last line as Markdown often enough that a strict match
 // would turn the fallback off for those answers.
 func TestKbAsk_DecoratedCoverageLineIsRead(t *testing.T) {
