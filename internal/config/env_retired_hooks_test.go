@@ -56,6 +56,50 @@ func TestRetiredEnvRefusals_HooksListRefusesAnEntryTheYAMLLacks(t *testing.T) {
 	}
 }
 
+// The refusal says which entry is missing, so the operator does not have to
+// diff two lists by eye, that entries are compared as written, and that the
+// variable can go if the yaml already grants what is needed. An entry that
+// does not look like an owner name, a host or a range is not echoed: a URL
+// pasted with its credentials must not reach a log.
+func TestRetiredEnvRefusals_HooksListRefusalNamesTheFirstMissingEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		hooks       HooksConfig
+		says        []string
+		not         []string
+	}{
+		{name: "LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS", value: "shared, acme:url-gate ,beta:gate",
+			hooks: HooksConfig{PermitHostWiden: HostWidenPermitConfig{Owners: []string{"shared"}}},
+			says:  []string{`lacks "acme:url-gate"`, "compared as written", "hooks.permit_host_widen.owners", "remove the variable"},
+			not:   []string{"beta:gate", `"shared"`}},
+		{name: "LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", value: "hooks.internal,10.20.0.0/16,gate.svc",
+			hooks: HooksConfig{PrivateHostAllowlist: []string{"hooks.internal", "10.0.0.0/8"}},
+			says:  []string{`lacks "10.20.0.0/16"`, "compared as written", "wider range", "hooks.private_host_allowlist", "remove the variable"},
+			not:   []string{"gate.svc"}},
+		{name: "LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", value: "https://user:hunter2@hooks.internal/cb",
+			says: []string{"not shown", "hooks.private_host_allowlist"},
+			not:  []string{"hunter2", "user"}},
+		{name: "LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS", value: "acme:" + strings.Repeat("x", 300),
+			says: []string{"not shown"},
+			not:  []string{"xxxxxxxx"}},
+	} {
+		got := retiredEnvRefusals([]string{tc.name + "=" + tc.value}, &Config{Hooks: tc.hooks})
+		if len(got) != 1 {
+			t.Fatalf("%s=%s: refusals = %q, want one", tc.name, tc.value, got)
+		}
+		for _, want := range tc.says {
+			if !strings.Contains(got[0], want) {
+				t.Errorf("%s: refusal does not say %q: %s", tc.name, want, got[0])
+			}
+		}
+		for _, not := range tc.not {
+			if strings.Contains(got[0], not) {
+				t.Errorf("%s: refusal carries %q: %s", tc.name, not, got[0])
+			}
+		}
+	}
+}
+
 // The environment no longer adds to either hooks list: the yaml list is what
 // the registry and the hook dispatcher get, entry for entry.
 func TestLoad_HooksListsComeFromTheYAMLOnly(t *testing.T) {
@@ -92,8 +136,9 @@ hooks:
 		}
 	}
 
-	// An entry the yaml lacks stops the load, naming the variable and the
-	// yaml key, never the entry.
+	// An entry the yaml lacks stops the load, naming the variable, the yaml
+	// key and the entry: an owner name, a host or a range is not a secret,
+	// and it is what the operator has to copy.
 	t.Setenv("LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS", "othertenant:zz-owner")
 	t.Setenv("LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST", "zz-sidecar.local")
 	_, err = Load(yamlPath)
@@ -108,9 +153,9 @@ hooks:
 			t.Errorf("error does not name %q: %v", want, err)
 		}
 	}
-	for _, value := range []string{"zz-owner", "zz-sidecar"} {
-		if strings.Contains(err.Error(), value) {
-			t.Errorf("error carries a variable's value %q: %v", value, err)
+	for _, entry := range []string{`"othertenant:zz-owner"`, `"zz-sidecar.local"`} {
+		if !strings.Contains(err.Error(), entry) {
+			t.Errorf("error does not name the missing entry %s: %v", entry, err)
 		}
 	}
 }

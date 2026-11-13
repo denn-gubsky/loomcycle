@@ -249,6 +249,14 @@ type retiredRefusal struct {
 	instead string
 }
 
+// retiredEnvInsteadFor builds the refusal text from the value, for the rules
+// whose "what to do" depends on it: the two hooks lists name the entry the
+// yaml lacks.
+var retiredEnvInsteadFor = map[string]func(value string, c retiredEnvCtx) string{
+	"LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS": hookOwnersInstead,
+	"LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST":   hookPrivateHostsInstead,
+}
+
 // retiredEnvRefuse holds the retired variables that stop the load instead of
 // only being advised. An advisory is enough when ignoring the variable changes
 // a cadence or raises nothing; it is not enough when the operator had turned a
@@ -630,7 +638,9 @@ func archiverWasPruning(mode string, c retiredEnvCtx) bool {
 
 // retiredEnvRefusals returns one "NAME: what to do" entry per retired variable
 // in environ (the os.Environ form) whose value the runtime would loosen by
-// ignoring, sorted by name. Values are never included.
+// ignoring, sorted by name. Values are never included, with one exception: a
+// retired hooks list names the first entry the yaml lacks, when that entry is
+// plainly an owner name, a host or a range (missingEntry).
 func retiredEnvRefusals(environ []string, cfg *Config) []string {
 	c := retiredEnvCtx{env: make(map[string]string, len(environ)), storage: &cfg.Storage, cfg: cfg}
 	for _, kv := range environ {
@@ -651,6 +661,9 @@ func retiredEnvRefusals(environ []string, cfg *Config) []string {
 			continue
 		}
 		instead := rule.instead
+		if build, ok := retiredEnvInsteadFor[name]; ok {
+			instead = build(value, c)
+		}
 		if instead == "" {
 			instead = retiredEnv[name]
 		}
