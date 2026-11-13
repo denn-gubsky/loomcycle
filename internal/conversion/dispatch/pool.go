@@ -1,12 +1,14 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"time"
 
@@ -22,6 +24,11 @@ import (
 // on top when it is kept.
 const (
 	maxImageBytes = 64 << 20
+	// maxEncodedBytes bounds encoded speech, the synthesis pass's own
+	// default bound (synth.DefaultMaxBytes); the pass checks its own again.
+	maxEncodedBytes = 256 << 20
+	// maxMediaBytes bounds a converted recording: a WAV cannot be larger.
+	maxMediaBytes = 4 << 30
 	// maxFreeRetries bounds the retries that are no one's fault: a Busy, a
 	// slot whose stream ended before the worker accepted the job.
 	maxFreeRetries = 3
@@ -38,15 +45,26 @@ type job struct {
 	name      string
 	opts      extract.Options
 	pages     []int
+	language  string
+	format    string
 	sink      extract.Sink
-	done      chan result // buffered 1
+	// maxOut bounds the output a worker sends; zero is twice the input.
+	maxOut int64
+	// outFile, when set, takes the output instead of memory: a converted
+	// recording can be larger than the core should hold.
+	outFile *os.File
+	done    chan result // buffered 1
 }
 
 // result is how a job ended on its slot.
 type result struct {
 	report extract.Report
 	out    []byte
-	err    error
+	// outSize is what was written to the job's outFile.
+	outSize int64
+	// mediaType is what the worker said the output is (image_reencode).
+	mediaType string
+	err       error
 	// retry: nothing of the job reached the worker (Busy, or the slot went
 	// away first); it may run elsewhere at no cost.
 	retry bool
@@ -71,8 +89,9 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 	}()
 	log := d.log.With("job_id", j.id, "worker_id", s.w.id, "kind", wire.KindName(j.kind))
 
+	timeout := d.timeoutFor(j.kind)
 	start := &workerpb.JobStart{JobId: j.id, Kind: j.kind, InputSize: j.size, MediaType: j.mediaType, Name: j.name,
-		TimeoutMs: d.opt.JobTimeout.Milliseconds()}
+		TimeoutMs: timeout.Milliseconds(), Language: j.language, Format: j.format}
 	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT {
 		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: wire.I32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings}
 	}
@@ -149,7 +168,7 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 	}
 
 	// The output, until Done.
-	deadline := time.NewTimer(d.opt.JobTimeout + deadlineGrace)
+	deadline := time.NewTimer(timeout + deadlineGrace)
 	defer deadline.Stop()
 	var (
 		sinkFull, cancelled bool
@@ -157,8 +176,18 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 		img                 *extract.Image
 		imgSize             int64
 		out                 []byte
+		outSize             int64
 	)
-	maxOut := 2*j.size + wire.ChunkSize
+	maxOut := j.maxOut
+	if maxOut <= 0 {
+		maxOut = 2*j.size + wire.ChunkSize
+	}
+	if j.outFile != nil {
+		// A retry starts the output again.
+		if err := j.outFile.Truncate(0); err != nil {
+			return result{err: fmt.Errorf("conversion output: %w", err), accepted: true}
+		}
+	}
 	cancel := func(reason workerpb.CancelReason) bool {
 		if cancelled {
 			return true
@@ -231,19 +260,29 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 					return result{died: true, accepted: true, delivered: res.delivered}
 				}
 			case *workerpb.WorkerFrame_OutputChunk:
-				if int64(len(out)+len(m.OutputChunk.GetData())) > maxOut {
+				data := m.OutputChunk.GetData()
+				if outSize+int64(len(data)) > maxOut {
 					return broke("output over its bound")
 				}
-				out = append(out, m.OutputChunk.GetData()...)
+				if j.outFile != nil {
+					if _, err := j.outFile.WriteAt(data, outSize); err != nil {
+						cancel(workerpb.CancelReason_CANCEL_REASON_CALLER)
+						return result{err: fmt.Errorf("conversion output: %w", err), accepted: true}
+					}
+				} else {
+					out = append(out, data...)
+				}
+				outSize += int64(len(data))
 			case *workerpb.WorkerFrame_Done:
-				err := wire.ErrorFromWire(m.Done.GetErrorClass(), m.Done.GetMessage())
+				err := wire.ErrorFromWire(j.kind, m.Done.GetErrorClass(), m.Done.GetMessage())
 				switch {
 				case sinkErr != nil:
 					err = sinkErr
 				case sinkFull && (err == nil || errors.Is(err, context.Canceled)):
 					err = extract.ErrSinkFull
 				}
-				return result{report: wire.ReportFromWire(m.Done.GetReport()), out: out, err: err, accepted: true, delivered: res.delivered}
+				return result{report: wire.ReportFromWire(m.Done.GetReport()), out: out, outSize: outSize, mediaType: m.Done.GetMediaType(),
+					err: err, accepted: true, delivered: res.delivered}
 			default:
 				return broke(fmt.Sprintf("unexpected frame %T", m))
 			}
@@ -263,9 +302,7 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 
 // ---- the client ----
 
-// Client is the pool as a convert.Client. It runs extraction and the PDF page
-// cut on the workers; the other jobs arrive with RFC GO P2, and until then a
-// caller routes them elsewhere (convert.Phased).
+// Client is the pool as a convert.Client: every job runs on a worker.
 func (d *Dispatcher) Client() convert.Client { return poolClient{d} }
 
 type poolClient struct{ d *Dispatcher }
@@ -279,7 +316,60 @@ func (p poolClient) Extract(ctx context.Context, mediaType string, r io.ReaderAt
 }
 
 func (p poolClient) SelectPages(ctx context.Context, r io.ReaderAt, size int64, pages []int) ([]byte, error) {
-	res, err := p.d.run(ctx, &job{kind: workerpb.JobKind_JOB_KIND_PDF_SELECT_PAGES, r: r, size: size, mediaType: "application/pdf", pages: pages})
+	return p.bytes(ctx, &job{kind: workerpb.JobKind_JOB_KIND_PDF_SELECT_PAGES, r: r, size: size, mediaType: "application/pdf", pages: pages})
+}
+
+func (p poolClient) RenderPage(ctx context.Context, onePagePDF []byte, language string) ([]byte, error) {
+	return p.bytes(ctx, &job{kind: workerpb.JobKind_JOB_KIND_PDF_RENDER, r: bytesReader(onePagePDF), size: int64(len(onePagePDF)),
+		mediaType: "application/pdf", language: language, maxOut: convert.MaxRenderedPage})
+}
+
+func (p poolClient) EncodeAudio(ctx context.Context, wav []byte, format string) ([]byte, error) {
+	return p.bytes(ctx, &job{kind: workerpb.JobKind_JOB_KIND_AUDIO_ENCODE, r: bytesReader(wav), size: int64(len(wav)),
+		mediaType: "audio/wav", format: format, maxOut: maxEncodedBytes})
+}
+
+func (p poolClient) ReencodeImage(ctx context.Context, data []byte) ([]byte, string, error) {
+	res, err := p.d.run(ctx, &job{kind: workerpb.JobKind_JOB_KIND_IMAGE_REENCODE, r: bytesReader(data), size: int64(len(data)), maxOut: maxImageBytes})
+	if err != nil {
+		return nil, "", err
+	}
+	if res.err != nil {
+		return nil, "", res.err
+	}
+	// What the core embeds must be one of the two types it asked for.
+	if res.mediaType != "image/png" && res.mediaType != "image/jpeg" {
+		return nil, "", fmt.Errorf("convert: the worker re-encoded the image as %q, not PNG or JPEG", res.mediaType)
+	}
+	return res.out, res.mediaType, nil
+}
+
+// ConvertMedia spools the worker's WAV into a file of the core's scratch
+// directory; closing the Spool removes it.
+func (p poolClient) ConvertMedia(ctx context.Context, r io.ReaderAt, size int64, mediaType, language string) (convert.Spool, error) {
+	f, err := os.CreateTemp(p.d.opt.Scratch, "loomcycle-wav-*")
+	if err != nil {
+		return nil, fmt.Errorf("conversion output: %w", err)
+	}
+	discard := func() {
+		f.Close()
+		os.Remove(f.Name())
+	}
+	res, err := p.d.run(ctx, &job{kind: workerpb.JobKind_JOB_KIND_MEDIA_CONVERT, r: r, size: size, mediaType: mediaType,
+		language: language, maxOut: maxMediaBytes, outFile: f})
+	if err == nil {
+		err = res.err
+	}
+	if err != nil {
+		discard()
+		return nil, err
+	}
+	return &fileSpool{File: f, size: res.outSize}, nil
+}
+
+// bytes runs a job whose answer is its output bytes.
+func (p poolClient) bytes(ctx context.Context, j *job) ([]byte, error) {
+	res, err := p.d.run(ctx, j)
 	if err != nil {
 		return nil, err
 	}
@@ -289,20 +379,20 @@ func (p poolClient) SelectPages(ctx context.Context, r io.ReaderAt, size int64, 
 	return res.out, nil
 }
 
-func (poolClient) RenderPage(context.Context, []byte, string) ([]byte, error) {
-	return nil, convert.ErrNotConfigured
+func bytesReader(b []byte) io.ReaderAt { return bytes.NewReader(b) }
+
+// fileSpool is a converted recording in the core's scratch directory.
+type fileSpool struct {
+	*os.File
+	size int64
 }
 
-func (poolClient) ConvertMedia(context.Context, io.ReaderAt, int64, string, string) (convert.Spool, error) {
-	return nil, convert.ErrNotConfigured
-}
+func (f *fileSpool) Size() int64 { return f.size }
 
-func (poolClient) EncodeAudio(context.Context, []byte, string) ([]byte, error) {
-	return nil, convert.ErrNotConfigured
-}
-
-func (poolClient) ReencodeImage(context.Context, []byte) ([]byte, string, error) {
-	return nil, "", convert.ErrNotConfigured
+func (f *fileSpool) Close() error {
+	err := f.File.Close()
+	os.Remove(f.File.Name())
+	return err
 }
 
 // run hands j to a slot and follows it to its end: retried at no cost when
@@ -330,6 +420,8 @@ func (d *Dispatcher) run(ctx context.Context, j *job) (result, error) {
 			switch {
 			case errors.Is(err, convert.ErrNoWorkers):
 				d.count(kind, "no_worker", false)
+			case errors.Is(err, convert.ErrNotConfigured):
+				d.count(kind, "not_configured", false)
 			case ctx.Err() == nil:
 				d.count(kind, "busy", false)
 			}

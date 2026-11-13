@@ -52,6 +52,8 @@ const (
 	ErrorClass_ERROR_CLASS_CANCELLED ErrorClass = 6
 	// The input was over the worker's bound, or not the size announced.
 	ErrorClass_ERROR_CLASS_INPUT ErrorClass = 7
+	// The worker has no helper command for this job.
+	ErrorClass_ERROR_CLASS_NOT_CONFIGURED ErrorClass = 8
 )
 
 // Enum value maps for ErrorClass.
@@ -65,16 +67,18 @@ var (
 		5: "ERROR_CLASS_UNSUPPORTED",
 		6: "ERROR_CLASS_CANCELLED",
 		7: "ERROR_CLASS_INPUT",
+		8: "ERROR_CLASS_NOT_CONFIGURED",
 	}
 	ErrorClass_value = map[string]int32{
-		"ERROR_CLASS_NONE":        0,
-		"ERROR_CLASS_FAILED":      1,
-		"ERROR_CLASS_REFUSED":     2,
-		"ERROR_CLASS_SINK_FULL":   3,
-		"ERROR_CLASS_DEADLINE":    4,
-		"ERROR_CLASS_UNSUPPORTED": 5,
-		"ERROR_CLASS_CANCELLED":   6,
-		"ERROR_CLASS_INPUT":       7,
+		"ERROR_CLASS_NONE":           0,
+		"ERROR_CLASS_FAILED":         1,
+		"ERROR_CLASS_REFUSED":        2,
+		"ERROR_CLASS_SINK_FULL":      3,
+		"ERROR_CLASS_DEADLINE":       4,
+		"ERROR_CLASS_UNSUPPORTED":    5,
+		"ERROR_CLASS_CANCELLED":      6,
+		"ERROR_CLASS_INPUT":          7,
+		"ERROR_CLASS_NOT_CONFIGURED": 8,
 	}
 )
 
@@ -111,6 +115,14 @@ const (
 	JobKind_JOB_KIND_UNSPECIFIED      JobKind = 0
 	JobKind_JOB_KIND_EXTRACT          JobKind = 1
 	JobKind_JOB_KIND_PDF_SELECT_PAGES JobKind = 2
+	// A one-page PDF to a PNG, with the rasterize helper.
+	JobKind_JOB_KIND_PDF_RENDER JobKind = 3
+	// A recording to a PCM WAV, with the media helper.
+	JobKind_JOB_KIND_MEDIA_CONVERT JobKind = 4
+	// A WAV to another audio format, with the encode helper.
+	JobKind_JOB_KIND_AUDIO_ENCODE JobKind = 5
+	// An image decoded and encoded again within the vision models' edge.
+	JobKind_JOB_KIND_IMAGE_REENCODE JobKind = 6
 )
 
 // Enum value maps for JobKind.
@@ -119,11 +131,19 @@ var (
 		0: "JOB_KIND_UNSPECIFIED",
 		1: "JOB_KIND_EXTRACT",
 		2: "JOB_KIND_PDF_SELECT_PAGES",
+		3: "JOB_KIND_PDF_RENDER",
+		4: "JOB_KIND_MEDIA_CONVERT",
+		5: "JOB_KIND_AUDIO_ENCODE",
+		6: "JOB_KIND_IMAGE_REENCODE",
 	}
 	JobKind_value = map[string]int32{
 		"JOB_KIND_UNSPECIFIED":      0,
 		"JOB_KIND_EXTRACT":          1,
 		"JOB_KIND_PDF_SELECT_PAGES": 2,
+		"JOB_KIND_PDF_RENDER":       3,
+		"JOB_KIND_MEDIA_CONVERT":    4,
+		"JOB_KIND_AUDIO_ENCODE":     5,
+		"JOB_KIND_IMAGE_REENCODE":   6,
 	}
 )
 
@@ -292,8 +312,8 @@ type Hello struct {
 	WorkerId        string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	ProtocolVersion uint32                 `protobuf:"varint,2,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	BuildVersion    string                 `protobuf:"bytes,3,opt,name=build_version,json=buildVersion,proto3" json:"build_version,omitempty"`
-	// What the worker can do: extract, pdf (P1); render, media, encode,
-	// image as its helpers resolve (P2).
+	// What the worker can do: extract, pdf and image always; render, media
+	// and encode only when the worker's helper program for each resolves.
 	Labels []string `protobuf:"bytes,4,rep,name=labels,proto3" json:"labels,omitempty"`
 	// Jobs the worker runs at once.
 	Slots uint32 `protobuf:"varint,5,opt,name=slots,proto3" json:"slots,omitempty"`
@@ -1230,10 +1250,12 @@ func (x *Chunk) GetData() []byte {
 }
 
 type Done struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Report        *Report                `protobuf:"bytes,1,opt,name=report,proto3" json:"report,omitempty"`
-	ErrorClass    ErrorClass             `protobuf:"varint,2,opt,name=error_class,json=errorClass,proto3,enum=loomcycle.worker.v1.ErrorClass" json:"error_class,omitempty"`
-	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Report     *Report                `protobuf:"bytes,1,opt,name=report,proto3" json:"report,omitempty"`
+	ErrorClass ErrorClass             `protobuf:"varint,2,opt,name=error_class,json=errorClass,proto3,enum=loomcycle.worker.v1.ErrorClass" json:"error_class,omitempty"`
+	Message    string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	// image_reencode: the media type of the bytes sent as output.
+	MediaType     string `protobuf:"bytes,4,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1285,6 +1307,13 @@ func (x *Done) GetErrorClass() ErrorClass {
 func (x *Done) GetMessage() string {
 	if x != nil {
 		return x.Message
+	}
+	return ""
+}
+
+func (x *Done) GetMediaType() string {
+	if x != nil {
+		return x.MediaType
 	}
 	return ""
 }
@@ -1625,7 +1654,11 @@ type JobStart struct {
 	TimeoutMs int64           `protobuf:"varint,6,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
 	Extract   *ExtractOptions `protobuf:"bytes,7,opt,name=extract,proto3" json:"extract,omitempty"`
 	// pdf_select_pages: the pages to cut, counted from 1.
-	Pages         []int32 `protobuf:"varint,8,rep,packed,name=pages,proto3" json:"pages,omitempty"`
+	Pages []int32 `protobuf:"varint,8,rep,packed,name=pages,proto3" json:"pages,omitempty"`
+	// pdf_render, media_convert: the language hint for the helper's {lang}.
+	Language string `protobuf:"bytes,9,opt,name=language,proto3" json:"language,omitempty"`
+	// audio_encode: the format to encode to (mp3, opus, ...).
+	Format        string `protobuf:"bytes,10,opt,name=format,proto3" json:"format,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1714,6 +1747,20 @@ func (x *JobStart) GetPages() []int32 {
 		return x.Pages
 	}
 	return nil
+}
+
+func (x *JobStart) GetLanguage() string {
+	if x != nil {
+		return x.Language
+	}
+	return ""
+}
+
+func (x *JobStart) GetFormat() string {
+	if x != nil {
+		return x.Format
+	}
+	return ""
 }
 
 type ExtractOptions struct {
@@ -1967,12 +2014,14 @@ const file_worker_proto_rawDesc = "" +
 	"\n" +
 	"\bImageEnd\"\x1b\n" +
 	"\x05Chunk\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data\"\x97\x01\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\"\xb6\x01\n" +
 	"\x04Done\x123\n" +
 	"\x06report\x18\x01 \x01(\v2\x1b.loomcycle.worker.v1.ReportR\x06report\x12@\n" +
 	"\verror_class\x18\x02 \x01(\x0e2\x1f.loomcycle.worker.v1.ErrorClassR\n" +
 	"errorClass\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\x9d\x03\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1d\n" +
+	"\n" +
+	"media_type\x18\x04 \x01(\tR\tmediaType\"\x9d\x03\n" +
 	"\x06Report\x12\x16\n" +
 	"\x06format\x18\x01 \x01(\tR\x06format\x12\x14\n" +
 	"\x05chars\x18\x02 \x01(\x03R\x05chars\x12\x14\n" +
@@ -1999,7 +2048,7 @@ const file_worker_proto_rawDesc = "" +
 	"\tinput_end\x18\x03 \x01(\v2\x1d.loomcycle.worker.v1.InputEndH\x00R\binputEnd\x12<\n" +
 	"\timage_ref\x18\x04 \x01(\v2\x1d.loomcycle.worker.v1.ImageRefH\x00R\bimageRef\x125\n" +
 	"\x06cancel\x18\x05 \x01(\v2\x1b.loomcycle.worker.v1.CancelH\x00R\x06cancelB\x05\n" +
-	"\x03msg\"\x99\x02\n" +
+	"\x03msg\"\xcd\x02\n" +
 	"\bJobStart\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x120\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1c.loomcycle.worker.v1.JobKindR\x04kind\x12\x1d\n" +
@@ -2011,7 +2060,10 @@ const file_worker_proto_rawDesc = "" +
 	"\n" +
 	"timeout_ms\x18\x06 \x01(\x03R\ttimeoutMs\x12=\n" +
 	"\aextract\x18\a \x01(\v2#.loomcycle.worker.v1.ExtractOptionsR\aextract\x12\x14\n" +
-	"\x05pages\x18\b \x03(\x05R\x05pages\"j\n" +
+	"\x05pages\x18\b \x03(\x05R\x05pages\x12\x1a\n" +
+	"\blanguage\x18\t \x01(\tR\blanguage\x12\x16\n" +
+	"\x06format\x18\n" +
+	" \x01(\tR\x06format\"j\n" +
 	"\x0eExtractOptions\x12\x16\n" +
 	"\x06images\x18\x01 \x01(\bR\x06images\x12\x19\n" +
 	"\bmax_rows\x18\x02 \x01(\x05R\amaxRows\x12%\n" +
@@ -2021,7 +2073,7 @@ const file_worker_proto_rawDesc = "" +
 	"\bImageRef\x12\x10\n" +
 	"\x03ref\x18\x01 \x01(\tR\x03ref\"C\n" +
 	"\x06Cancel\x129\n" +
-	"\x06reason\x18\x01 \x01(\x0e2!.loomcycle.worker.v1.CancelReasonR\x06reason*\xd7\x01\n" +
+	"\x06reason\x18\x01 \x01(\x0e2!.loomcycle.worker.v1.CancelReasonR\x06reason*\xf7\x01\n" +
 	"\n" +
 	"ErrorClass\x12\x14\n" +
 	"\x10ERROR_CLASS_NONE\x10\x00\x12\x16\n" +
@@ -2031,11 +2083,16 @@ const file_worker_proto_rawDesc = "" +
 	"\x14ERROR_CLASS_DEADLINE\x10\x04\x12\x1b\n" +
 	"\x17ERROR_CLASS_UNSUPPORTED\x10\x05\x12\x19\n" +
 	"\x15ERROR_CLASS_CANCELLED\x10\x06\x12\x15\n" +
-	"\x11ERROR_CLASS_INPUT\x10\a*X\n" +
+	"\x11ERROR_CLASS_INPUT\x10\a\x12\x1e\n" +
+	"\x1aERROR_CLASS_NOT_CONFIGURED\x10\b*\xc5\x01\n" +
 	"\aJobKind\x12\x18\n" +
 	"\x14JOB_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10JOB_KIND_EXTRACT\x10\x01\x12\x1d\n" +
-	"\x19JOB_KIND_PDF_SELECT_PAGES\x10\x02*d\n" +
+	"\x19JOB_KIND_PDF_SELECT_PAGES\x10\x02\x12\x17\n" +
+	"\x13JOB_KIND_PDF_RENDER\x10\x03\x12\x1a\n" +
+	"\x16JOB_KIND_MEDIA_CONVERT\x10\x04\x12\x19\n" +
+	"\x15JOB_KIND_AUDIO_ENCODE\x10\x05\x12\x1b\n" +
+	"\x17JOB_KIND_IMAGE_REENCODE\x10\x06*d\n" +
 	"\fCancelReason\x12\x1d\n" +
 	"\x19CANCEL_REASON_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17CANCEL_REASON_SINK_FULL\x10\x01\x12\x18\n" +
