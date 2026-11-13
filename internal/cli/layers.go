@@ -135,6 +135,11 @@ func configDirLayers(dir string) ([]string, error) {
 //	providers.default → embedded presets → LOOMCYCLE_CONFIG_DIR/*.yaml
 //	→ --config, in the order given (+ each loomcycle.yaml's loomcycle.*.yaml siblings)
 //
+// Which presets: --preset, else LOOMCYCLE_PRESETS, else the `presets:` key
+// of the primary file (the last --config, else the discovered loomcycle.yaml,
+// else the config dir's loomcycle.yaml). The key is read here, before the
+// stack is built, because the presets go under the file that names them.
+//
 // presetFlags are the --preset values (empty: LOOMCYCLE_PRESETS decides);
 // cfgPaths are the config files named explicitly, each of which must exist.
 // With no file named and none in the config dir, ./loomcycle.yaml and the XDG
@@ -164,25 +169,13 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 	}
 	env := readLayerEnv()
 
-	// Embedded presets: the base of the stack, opt-in.
-	presetNames := SelectPresetNames(presetFlags, env.Presets)
-	var presetLayers []config.Layer
-	if len(presetNames) > 0 {
-		units, err := embedded.ResolveUnits(presetNames)
-		if err != nil {
-			return ConfigStack{}, err
-		}
-		// units is the selection with every `include:` expanded, so the line
-		// below names what is layered, not only what was typed.
-		layered := make([]string, 0, len(units))
-		for _, u := range units {
-			presetLayers = append(presetLayers, config.Layer{Name: u.Name, Data: u.Data, Embedded: true})
-			layered = append(layered, u.Name)
-		}
-		// The TrueNAS install guide quotes this line's text; keep it.
-		presets := strings.Join(layered, ", ")
-		info(fmt.Sprintf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(layered), presets),
-			"presets", presets, "selected", strings.Join(presetNames, ", "))
+	// The selection the flags or the environment make. The primary file's
+	// `presets:` is read further down, once the files are known; this one
+	// wins over it.
+	selected := SelectPresetNames(presetFlags, env.Presets)
+	selectedBy := "LOOMCYCLE_PRESETS"
+	if len(presetFlags) > 0 {
+		selectedBy = "--preset"
 	}
 
 	// LOOMCYCLE_CONFIG_DIR: a directory of *.yaml/*.yml layered as a group,
@@ -206,7 +199,7 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 		switch {
 		case found:
 			cfgFiles = []string{resolvedCfg}
-		case len(presetLayers) > 0:
+		case len(selected) > 0:
 			// Presets-only: the embedded base is the config.
 			info("config: no operator config file — running from embedded presets only")
 		default:
@@ -227,6 +220,26 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 				return ConfigStack{}, fmt.Errorf("config file not found: %s", f)
 			}
 		}
+	}
+
+	// The primary file, the one place a `presets:` key is read from: the last
+	// file named, else the one discovered, else the config dir's
+	// loomcycle.yaml. Decided before the section siblings are added, so a
+	// sibling is never it.
+	primary := ""
+	switch {
+	case len(cfgFiles) > 0:
+		primary = cfgFiles[len(cfgFiles)-1]
+	default:
+		for _, f := range configDirFiles {
+			if filepath.Base(f) == "loomcycle.yaml" {
+				primary = f
+			}
+		}
+	}
+	presetLayers, primaryWarnings, err := selectPresetLayers(selected, selectedBy, primary, info)
+	if err != nil {
+		return ConfigStack{}, err
 	}
 
 	// A loomcycle.yaml base brings its loomcycle.*.yaml section siblings,
@@ -276,9 +289,74 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 	}
 	stack.Layers = append(stack.Layers, presetLayers...)
 	for _, f := range stack.Files {
-		stack.Layers = append(stack.Layers, config.Layer{Name: f})
+		l := config.Layer{Name: f}
+		if f == primary {
+			l.Primary, l.Warnings = true, primaryWarnings
+		}
+		stack.Layers = append(stack.Layers, l)
 	}
 	return stack, nil
+}
+
+// selectPresetLayers resolves which embedded presets and bundles are the base
+// of the stack. selected is what the flags or the environment name (by
+// selectedBy); primary is the operator's primary config file, "" for none.
+//
+// The environment wins: with selected non-empty the file's `presets:` is not
+// layered, and when the two would give different stacks the returned warning
+// says which is in force. With selected empty the file's key selects. A
+// preset named in the file is trusted as the file is: it adds only what a
+// unit built into the binary carries, and no unit can set a security gate.
+func selectPresetLayers(selected []string, selectedBy, primary string, info func(string, ...any)) (layers []config.Layer, warnings []string, err error) {
+	var fromFile []string
+	inFile := false
+	if primary != "" {
+		if fromFile, inFile, err = config.ReadPresetsKey(primary); err != nil {
+			return nil, nil, err
+		}
+	}
+	var fileUnits []embedded.Unit
+	if inFile {
+		// Resolved even when the environment wins: a name the binary does not
+		// carry is a mistake in the file whichever selection is in force.
+		if fileUnits, err = embedded.ResolveUnits(fromFile); err != nil {
+			return nil, nil, fmt.Errorf("presets: in %s: %w", primary, err)
+		}
+	}
+	units, by := fileUnits, "presets: in "+primary
+	if len(selected) > 0 {
+		if units, err = embedded.ResolveUnits(selected); err != nil {
+			return nil, nil, err
+		}
+		by = selectedBy
+		if inFile && unitNames(units) != unitNames(fileUnits) {
+			warnings = append(warnings, fmt.Sprintf(
+				"presets: in %s names [%s], but %s selects [%s]: the environment wins and the file's list is not layered. Remove one of the two",
+				primary, strings.Join(fromFile, ", "), selectedBy, strings.Join(selected, ", ")))
+		}
+	}
+	if len(units) == 0 {
+		return nil, warnings, nil
+	}
+	// The names after every `include:` is expanded, so the line below says
+	// what is layered, not only what was written.
+	for _, u := range units {
+		layers = append(layers, config.Layer{Name: u.Name, Data: u.Data, Embedded: true})
+	}
+	// The TrueNAS install guide quotes this line's text; keep it.
+	presets := unitNames(units)
+	info(fmt.Sprintf("config: layering %d embedded preset(s)/bundle(s) as base: %s", len(units), presets),
+		"presets", presets, "selected_by", by)
+	return layers, warnings, nil
+}
+
+// unitNames joins unit names in layer order.
+func unitNames(units []embedded.Unit) string {
+	names := make([]string, len(units))
+	for i, u := range units {
+		names[i] = u.Name
+	}
+	return strings.Join(names, ", ")
 }
 
 // loadLayeredConfig loads the configuration the server would load: the same

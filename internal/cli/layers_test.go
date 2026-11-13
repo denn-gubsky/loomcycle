@@ -135,6 +135,47 @@ func TestAssembleConfigStack_ServerAndCLIPathsGiveTheSameLayers(t *testing.T) {
 			want: func(_, _, _ string) []string { return []string{"providers.default", "loomcycle.yaml"} },
 		},
 		{
+			name: "presets: in a named file selects the base",
+			setup: func(t *testing.T, _, cwd string) string {
+				return writeYAML(t, filepath.Join(cwd, "top.yaml"), "presets: [personal]\n")
+			},
+			want: func(_, _, explicit string) []string {
+				return []string{"providers.default", "base", "local", "chat", "document-agent", "personal", explicit}
+			},
+		},
+		{
+			name: "presets: in the discovered loomcycle.yaml selects the base",
+			setup: func(t *testing.T, home, _ string) string {
+				writeYAML(t, filepath.Join(home, ".config", "loomcycle", "loomcycle.yaml"), "presets: [base, chat]\n")
+				return ""
+			},
+			want: func(home, _, _ string) []string {
+				return []string{"providers.default", "base", "chat", filepath.Join(home, ".config", "loomcycle", "loomcycle.yaml")}
+			},
+		},
+		{
+			name: "presets: in the config dir's loomcycle.yaml selects the base when no file is named",
+			setup: func(t *testing.T, _, cwd string) string {
+				dir := filepath.Join(cwd, "conf")
+				writeYAML(t, filepath.Join(dir, "loomcycle.yaml"), "presets: [server]\n")
+				writeYAML(t, filepath.Join(dir, "zz-site.yaml"), "provider_priority: !append [mock]\n")
+				t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+				return ""
+			},
+			want: func(_, cwd, _ string) []string {
+				return []string{"providers.default", "base", "chat", "document-agent", "memory", "server",
+					filepath.Join(cwd, "conf", "loomcycle.yaml"), filepath.Join(cwd, "conf", "zz-site.yaml")}
+			},
+		},
+		{
+			name: "the environment's selection wins over presets: in the file",
+			setup: func(t *testing.T, _, cwd string) string {
+				t.Setenv("LOOMCYCLE_PRESETS", "base")
+				return writeYAML(t, filepath.Join(cwd, "top.yaml"), "presets: [personal]\n")
+			},
+			want: func(_, _, explicit string) []string { return []string{"providers.default", "base", explicit} },
+		},
+		{
 			name: "nothing named: the home config, without the default providers",
 			setup: func(t *testing.T, home, _ string) string {
 				t.Setenv("LOOMCYCLE_NO_DEFAULT_PROVIDERS", "1")
@@ -410,5 +451,171 @@ func TestAssembleConfigStack_ServerProfileSetsMetricsAndLeavesTheRestToTheOperat
 		if strings.Contains(w, "config layer override") {
 			t.Errorf("the profile's own layers conflict: %s", w)
 		}
+	}
+}
+
+// presets: in the primary file is read like LOOMCYCLE_PRESETS, and the
+// environment wins. An operator who set both to different things is told, in
+// the advisories every loader prints, which one is in force.
+func TestAssembleConfigStack_PresetsKeyYieldsToTheEnvironmentAndSaysSo(t *testing.T) {
+	warningsOf := func(t *testing.T, flags []string, path string) (string, *config.Config) {
+		t.Helper()
+		stack, err := AssembleConfigStack(flags, []string{path}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := config.LoadLayers(stack.Layers...)
+		if err != nil {
+			t.Fatalf("LoadLayers: %v", err)
+		}
+		var hit []string
+		for _, w := range cfg.Warnings {
+			if strings.Contains(w, "presets:") {
+				hit = append(hit, w)
+			}
+		}
+		return strings.Join(hit, " | "), cfg
+	}
+
+	t.Run("the variable differs: it wins, with an advisory naming both", func(t *testing.T) {
+		_, cwd := isolateLayerEnv(t)
+		t.Setenv("LOOMCYCLE_PRESETS", "base")
+		path := writeYAML(t, filepath.Join(cwd, "top.yaml"), "presets: [personal]\n")
+		adv, cfg := warningsOf(t, nil, path)
+		for _, want := range []string{"LOOMCYCLE_PRESETS", "personal", "base", path} {
+			if !strings.Contains(adv, want) {
+				t.Errorf("advisory %q does not mention %q", adv, want)
+			}
+		}
+		if _, ok := cfg.Agents["chat/medium"]; ok {
+			t.Error("the yaml's personal preset was layered although the environment selected base")
+		}
+	})
+	t.Run("a --preset flag differs: it wins over both", func(t *testing.T) {
+		_, cwd := isolateLayerEnv(t)
+		t.Setenv("LOOMCYCLE_PRESETS", "personal")
+		path := writeYAML(t, filepath.Join(cwd, "top.yaml"), "presets: [personal]\n")
+		adv, cfg := warningsOf(t, []string{"base"}, path)
+		if !strings.Contains(adv, "--preset") {
+			t.Errorf("advisory %q does not name the flag", adv)
+		}
+		if _, ok := cfg.Agents["chat/medium"]; ok {
+			t.Error("personal was layered although --preset selected base")
+		}
+	})
+	t.Run("the variable selects the same stack: no advisory", func(t *testing.T) {
+		_, cwd := isolateLayerEnv(t)
+		t.Setenv("LOOMCYCLE_PRESETS", "server,chat") // expands to what server does
+		path := writeYAML(t, filepath.Join(cwd, "top.yaml"), "presets: [server]\n")
+		if adv, _ := warningsOf(t, nil, path); adv != "" {
+			t.Errorf("advisory for an identical selection: %q", adv)
+		}
+	})
+	t.Run("neither set: the key selects, silently, and passes strict mode", func(t *testing.T) {
+		_, cwd := isolateLayerEnv(t)
+		t.Setenv("LOOMCYCLE_CONFIG_STRICT", "1")
+		path := writeYAML(t, filepath.Join(cwd, "top.yaml"), "presets: [personal]\n")
+		adv, cfg := warningsOf(t, nil, path)
+		if adv != "" {
+			t.Errorf("advisory with nothing to disagree with: %q", adv)
+		}
+		if _, ok := cfg.Agents["chat/medium"]; !ok {
+			t.Error("the yaml's personal preset was not layered")
+		}
+	})
+}
+
+// There is one place presets: is read from. Anywhere else it is refused, so
+// the selection never depends on which layer happened to be last.
+func TestAssembleConfigStack_PresetsKeyOutsideThePrimaryFileIsRefused(t *testing.T) {
+	load := func(paths ...string) error {
+		stack, err := AssembleConfigStack(nil, paths, false)
+		if err != nil {
+			return err
+		}
+		_, err = config.LoadLayers(stack.Layers...)
+		return err
+	}
+	const plain = "provider_priority: [mock]\n"
+	const keyed = "presets: [base]\n"
+	for name, setup := range map[string]func(t *testing.T, cwd string) (paths []string, offender string){
+		"a config-dir file that is not loomcycle.yaml": func(t *testing.T, cwd string) ([]string, string) {
+			dir := filepath.Join(cwd, "conf")
+			writeYAML(t, filepath.Join(dir, "loomcycle.yaml"), plain)
+			bad := writeYAML(t, filepath.Join(dir, "10-extra.yaml"), keyed)
+			t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+			return nil, bad
+		},
+		"the config dir's loomcycle.yaml when a file is named": func(t *testing.T, cwd string) ([]string, string) {
+			dir := filepath.Join(cwd, "conf")
+			bad := writeYAML(t, filepath.Join(dir, "loomcycle.yaml"), keyed)
+			t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+			return []string{writeYAML(t, filepath.Join(cwd, "top.yaml"), plain)}, bad
+		},
+		"an earlier --config": func(t *testing.T, cwd string) ([]string, string) {
+			bad := writeYAML(t, filepath.Join(cwd, "first.yaml"), keyed)
+			return []string{bad, writeYAML(t, filepath.Join(cwd, "last.yaml"), plain)}, bad
+		},
+		"a section sibling": func(t *testing.T, cwd string) ([]string, string) {
+			bad := writeYAML(t, filepath.Join(cwd, "site", "loomcycle.memory.yaml"), keyed)
+			return []string{writeYAML(t, filepath.Join(cwd, "site", "loomcycle.yaml"), plain)}, bad
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, cwd := isolateLayerEnv(t)
+			paths, offender := setup(t, cwd)
+			err := load(paths...)
+			if err == nil {
+				t.Fatal("loaded; want the presets: key refused")
+			}
+			for _, want := range []string{"presets:", offender} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %v, want it to name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// A name the binary does not carry, and a value that is not a list of names,
+// are errors that say which key in which file.
+func TestAssembleConfigStack_BadPresetsKeyNamesTheKeyAndTheFile(t *testing.T) {
+	for name, tc := range map[string]struct{ body, want string }{
+		"unknown name": {"presets: [personal, nope]\n", `"nope"`},
+		"not a list":   {"presets: personal\n", "list"},
+		"empty name":   {"presets: [\"\"]\n", "empty"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, cwd := isolateLayerEnv(t)
+			path := writeYAML(t, filepath.Join(cwd, "top.yaml"), tc.body)
+			_, err := AssembleConfigStack(nil, []string{path}, false)
+			if err == nil {
+				t.Fatal("assembled; want an error")
+			}
+			for _, want := range []string{"presets:", path, tc.want} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("err = %v, want it to mention %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// A config reload assembles again, so an edit to presets: takes effect
+// without a restart.
+func TestAssembleConfigStack_ReassemblyRereadsThePresetsKey(t *testing.T) {
+	_, cwd := isolateLayerEnv(t)
+	path := writeYAML(t, filepath.Join(cwd, "top.yaml"), "presets: [base]\n")
+	first, err := AssembleConfigStack(nil, []string{path}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeYAML(t, path, "presets: [base, chat]\n")
+	second, err := AssembleConfigStack(nil, []string{path}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := strings.Join(layerNames(first.Layers), "|"), strings.Join(layerNames(second.Layers), "|"); a == b || !strings.Contains(b, "|chat|") {
+		t.Errorf("layers before %s, after %s: the second assembly did not pick up chat", a, b)
 	}
 }

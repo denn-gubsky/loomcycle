@@ -5083,6 +5083,10 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 			primaryPath = l.Name
 		}
 	}
+	// What the layer assembly had to say about a layer (see Layer.Warnings).
+	for _, l := range src {
+		cfg.Warnings = append(cfg.Warnings, l.Warnings...)
+	}
 
 	switch {
 	case len(src) == 1 && src[0].Data == nil:
@@ -5092,7 +5096,7 @@ func loadLayerTree(layers []Layer) (*Config, string, error) {
 			return nil, "", fmt.Errorf("read %s: %w", src[0].Name, err)
 		}
 		expanded := expandEnv(string(raw))
-		if err := refuseIncludeKey(src[0].Name, expanded); err != nil {
+		if err := refuseAssemblyKeys(src[0], expanded); err != nil {
 			return nil, "", err
 		}
 		if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
