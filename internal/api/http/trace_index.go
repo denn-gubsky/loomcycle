@@ -131,6 +131,11 @@ func (s *Server) indexUserTurn(ctx context.Context, runID, sessionID, tenantID, 
 	// it, MemorySweep deletes it on its own schedule, and memory_embeddings cascades
 	// on that delete. A fourth retention family could have drifted from the class it
 	// prunes; a TTL cannot.
+	//
+	// Read from the config in force at this write, not from what the server
+	// booted with: nothing holds the age between writes, so a reload that edits
+	// retention.trace.max_age applies to every later turn (rows already written
+	// keep the TTL they were given).
 	ttl := conf.Env.MemoryTraceMaxAge
 	if ttl <= 0 {
 		ttl = defaultTraceMaxAge

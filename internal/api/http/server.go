@@ -111,6 +111,10 @@ type Server struct {
 	// reloader's sections + the free holder-live sections (the applied/restart
 	// classifier). All injected by cmd/loomcycle via SetConfigReloader; reloadLoad
 	// nil on a Server built without it (tests / embedded) → the endpoint 503s.
+	// retentionAtBoot is what the retention and usage sweepers were started
+	// with (SetRetentionRunning); nil when this server started none.
+	retentionAtBoot atomic.Pointer[RetentionRunning]
+
 	// reloadMu serializes concurrent reloads.
 	reloadLoad    func() (*config.Config, error)
 	reloaders     []SectionReloader

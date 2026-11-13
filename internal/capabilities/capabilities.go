@@ -46,6 +46,11 @@ type Inputs struct {
 	// Admin gates the one purely-operator-infrastructure key. A non-admin's
 	// output is therefore always a subset of an admin's.
 	Admin bool
+	// RetentionRunning is whether the retention sweeper was started on. The
+	// sweeper keeps its boot configuration, so a caller whose Cfg can change
+	// under it (a config reload) passes this; nil reads Cfg, which is right
+	// for a caller that holds the boot config.
+	RetentionRunning *bool
 }
 
 // Deployment reports the deployment-level capability map. Every value is derived
@@ -122,7 +127,11 @@ func Deployment(in Inputs) map[string]any {
 	// fire when it never will.
 	out["scheduler"] = map[string]any{"available": in.Store != nil}
 	out["webhooks"] = map[string]any{"available": in.Store != nil}
-	out["retention"] = map[string]any{"available": env.RetentionEnabled}
+	retentionOn := env.RetentionEnabled
+	if in.RetentionRunning != nil {
+		retentionOn = *in.RetentionRunning
+	}
+	out["retention"] = map[string]any{"available": retentionOn}
 	// The code-js provider is registered whenever the config declares it (the
 	// default providers layer does).
 	codeJS := false

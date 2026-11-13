@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	lchttp "github.com/denn-gubsky/loomcycle/internal/api/http"
 	webhookapi "github.com/denn-gubsky/loomcycle/internal/api/webhook"
 	"github.com/denn-gubsky/loomcycle/internal/changesub"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -363,6 +364,12 @@ func (b *boot) startRunSweepers() {
 	// a lock; LOOMCYCLE_CONFIGURED_RUN_TTL_MS=0 turns it off.
 	if srv != nil && storeIface != nil && cfg.Env.ConfiguredRunTTL > 0 {
 		goSupervised(bgCtx, "configured_runs.sweeper", srv.RunConfiguredRunSweeper)
+	}
+
+	// The usage and retention sweepers below keep the settings they are
+	// started with; the server reports those, not a later reload's.
+	if srv != nil {
+		srv.SetRetentionRunning(lchttp.RetentionRunningFrom(cfg.Env))
 	}
 
 	// Usage rollup-and-prune sweeper (RFC AV Phase 2b) — same placement
