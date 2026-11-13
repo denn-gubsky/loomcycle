@@ -9,7 +9,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/help/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
+	"github.com/denn-gubsky/loomcycle/internal/promptinject"
 	"github.com/denn-gubsky/loomcycle/internal/providers/codejs"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -86,6 +89,25 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 	if !strings.Contains(cfg.Agents["kb/search"].SystemPrompt, "COVERAGE: partial") {
 		t.Error("kb/search must end its answer with the COVERAGE line kb/ask reads")
 	}
+	// Their call samples are rendered from the help articles, whose examples a
+	// test checks against each tool's schema; a hand-written sample drifts from
+	// the tool it teaches.
+	for _, name := range []string{"kb/search", "kb/walker"} {
+		p := cfg.Agents[name].SystemPrompt
+		if !strings.Contains(p, "{{help:") {
+			t.Errorf("%s prompt has no {{help:...}} placeholder; its call samples must come from the help articles", name)
+		}
+		for _, line := range strings.Split(p, "\n") {
+			l := strings.TrimSpace(line)
+			if strings.HasPrefix(l, `Document {"op"`) || strings.HasPrefix(l, `Path {"op"`) {
+				t.Errorf("%s prompt carries a hand-written call sample: %q", name, l)
+			}
+		}
+	}
+	// The walker steps UP from a hit in one call.
+	if !strings.Contains(cfg.Agents["kb/walker"].SystemPrompt, "lineage") {
+		t.Error("kb/walker prompt does not name lineage, its one-call UP move")
+	}
 
 	// kb/classify: a one-word judgement with nothing to act with, its prompt the
 	// owner's wording verbatim.
@@ -129,6 +151,101 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 				if strings.Contains(line, "RFC") || strings.Contains(line, "§") {
 					t.Errorf("%s %s cites a design document (%q)", name, where, strings.TrimSpace(line))
 				}
+			}
+		}
+	}
+}
+
+// TestKnowledgeBaseBundle_AnsweringPromptsRenderTheCallFormsTheyName renders the
+// help part of the kb/search and kb/walker prompts the way a run assembles them
+// (the topics a prompt names, each rendered from the embedded help corpus, then
+// expanded under the help budget) and checks that every call form the prose
+// sends the model to is in it. The prose says "search only the summaries of
+// folders and documents"; the line that shows how must be rendered, or the
+// model is told what to do and never shown the call.
+func TestKnowledgeBaseBundle_AnsweringPromptsRenderTheCallFormsTheyName(t *testing.T) {
+	cfg := knowledgeBaseConfig(t)
+	// Each form is the substrings one rendered call line must carry together.
+	type form []string
+	searchForms := []form{
+		{`"op":"search"`, `"scope":"tenant"`, `"with_summary":true`},
+		{`"op":"search"`, `"annotations":"include"`, `"with_summary":true`},
+		{`"op":"get_chunk"`, `"with_summary":true`},
+	}
+	walkerForms := append(append([]form(nil), searchForms...),
+		form{`"op":"search"`, `"annotations":"only"`, `"annotation_levels":["path","document"]`},
+		form{`"op":"search"`, `"facets":["type","folder","concept"]`},
+		form{`"op":"search"`, `"document_id":`},
+		form{`"op":"search"`, `"expand":`},
+		form{`"op":"search"`, `"under_paths":`},
+		form{`"op":"search"`, `"concept":`},
+		form{`"op":"search"`, `"type":`},
+		form{`"op":"lineage"`, `"scope":"tenant"`},
+		form{`"op":"get_document"`, `"with_summary":true`},
+		form{`"op":"ls"`, `"with_summary":true`},
+		form{`"op":"related"`, `"related_to":`},
+		form{`"op":"documents_summary"`, `"with_summary":true`},
+		form{`"op":"query_documents"`, `"title_contains":`},
+		form{`"op":"query_documents"`, `"created_after":`, `"created_before":`},
+	)
+	for name, forms := range map[string][]form{"kb/search": searchForms, "kb/walker": walkerForms} {
+		prompt := cfg.Agents[name].SystemPrompt
+		if err := config.ValidateHelpPlaceholders(prompt); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+		topics := promptinject.ReferencesHelpTopics(prompt)
+		bodies := map[string]string{}
+		for _, topic := range topics {
+			body, err := builtin.RenderExamples(topic)
+			if err != nil {
+				t.Errorf("%s: {{help:%s}}: %v", name, topic, err)
+				continue
+			}
+			bodies[topic] = body
+		}
+		// The help part as a run sees it: the expanded prompt minus the prompt's
+		// own text, i.e. each placeholder's expansion.
+		var help strings.Builder
+		for _, topic := range promptinject.HelpTopics(prompt) {
+			help.WriteString(promptinject.Expand("{{help:"+topic+"}}", promptinject.ExpandInput{HelpExamples: bodies}))
+			help.WriteString("\n")
+		}
+		rendered := promptinject.Expand(prompt, promptinject.ExpandInput{HelpExamples: bodies})
+		size := 0
+		for _, topic := range promptinject.HelpTopics(prompt) {
+			size += len(bodies[topic])
+		}
+		t.Logf("%s: help part %d bytes from %d topics %v (budget %d)", name, size, len(topics), topics, promptinject.HelpMaxBytes)
+		if size == 0 || size > promptinject.HelpMaxBytes {
+			t.Errorf("%s: help part renders %d bytes, want between 1 and %d", name, size, promptinject.HelpMaxBytes)
+		}
+		if strings.Contains(rendered, "help examples truncated") {
+			t.Errorf("%s: the help budget cut the rendered examples", name)
+		}
+		lines := strings.Split(help.String(), "\n")
+		for _, f := range forms {
+			found := false
+			for _, ln := range lines {
+				all := true
+				for _, s := range f {
+					if !strings.Contains(ln, s) {
+						all = false
+						break
+					}
+				}
+				if all {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s: no rendered help example carries %v; the prompt sends the model to a call it is never shown", name, []string(f))
+			}
+		}
+		// The rendered examples are model-visible text too.
+		for _, ln := range lines {
+			if strings.Contains(ln, "RFC") {
+				t.Errorf("%s: a rendered help example cites a design document (%q)", name, ln)
 			}
 		}
 	}
