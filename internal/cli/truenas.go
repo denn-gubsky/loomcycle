@@ -70,7 +70,6 @@ var envSkip = map[string]bool{
 	"LOOMCYCLE_CONFIG_DIR":      true, // fixed /config
 	"LOOMCYCLE_CONFIG_FILES":    true, // the overlay is mounted, not listed
 	"LOOMCYCLE_PRESETS":         true, // the presets multiselect
-	"LOOMCYCLE_STORAGE_BACKEND": true, // fixed postgres
 	"LOOMCYCLE_PG_AUTOMIGRATE":  true, // the auto-migrate toggle
 	"LOOMCYCLE_ALLOW_OPEN_MODE": true, // the app always sets auth_token; never offer open mode
 }

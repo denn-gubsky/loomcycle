@@ -895,7 +895,7 @@ Full field reference (dialect, `options`, capability overrides) + the concurrenc
 
 ## 7. Agent `.md` frontmatter reference
 
-Agent files live under `LOOMCYCLE_AGENTS_ROOT` (set in the env file). Each `<name>.md` has YAML frontmatter between `---` delimiters; the body is the system prompt.
+Agent files live under `LOOMCYCLE_AGENTS_ROOT` (set in the env file; unset, `<LOOMCYCLE_CONFIG_DIR>/agents` when that directory exists). Each `<name>.md` has YAML frontmatter between `---` delimiters; the body is the system prompt.
 
 ### Frontmatter fields
 
@@ -1296,7 +1296,6 @@ Config knobs (full reference: `loomcycle context help operator-tokens` or the `C
 | `LOOMCYCLE_AUDIT_LOG_PATH` | A JSONL file of every audit record (token mints, sign-ins, ACL denials and edits, erasures, …; never a token or hash). Per replica, unsigned; beside the store-backed stream it is a mirror. See [Audit trail](#audit-trail). |
 | `LOOMCYCLE_AUDIT_STORE` | `1` turns on the store-backed, hash-chained audit stream where the posture does not already require it; `0` is refused where it does. See [Audit trail](#audit-trail). |
 | `LOOMCYCLE_AUDIT_RETENTION_DAYS` | How long the store-backed audit stream keeps rows (default `0`: forever). Older rows are pruned behind a signed anchor. Needs `LOOMCYCLE_SECRET_KEY`. |
-| `LOOMCYCLE_AUTH_VERBOSE` | `1` logs a server-side reason on a rejected bearer (the wire 401 stays opaque). |
 | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION` | **RFC AX** deployment gate (default OFF). When `1`, a run whose principal lacks `providers:operator-key` may not use the operator's host provider key — resolution routes it only to providers the tenant can key itself (an RFC AR CredentialDef) and refuses `403 operator_key_restricted` if none; the LLM-gateway + embeddings shims refuse a restricted principal outright. OFF ⇒ byte-identical for every existing token. |
 | `LOOMCYCLE_PUBLIC_CONFIG` | Deployment gate (default OFF). When `1`, `GET /v1/config` may be read with **no bearer**, returning a narrowed public view — for a hosted instance whose landing page shows which providers and models are live. OFF ⇒ the endpoint requires auth like every other `/v1` read, so upgrading changes nothing. A presented-but-**invalid** bearer still `401`s rather than downgrading to the public view. See [§ GET /v1/config](#get-v1config). |
 | `LOOMCYCLE_ALLOW_OPEN_MODE` | `1` lets the server start in **open mode** on a listener beyond loopback. Open mode is no `LOOMCYCLE_AUTH_TOKEN`, no config `principals:` and no admin operator token, so every route, token minting included, is unauthenticated. Without this, such a boot **exits with an error** when `LOOMCYCLE_LISTEN_ADDR` or `LOOMCYCLE_GRPC_ADDR` binds anything but `127.0.0.0/8`, `::1` or `localhost` (`:8787`, `0.0.0.0` and `::` bind every interface; any other hostname counts as public too). Open mode on loopback needs no opt-in. While open, the server logs a warning every 10 minutes and the Web UI shows an "unauthenticated" banner. Use it only for a throwaway test harness on a private network; anything reachable should set `LOOMCYCLE_AUTH_TOKEN` or declare `principals:`. |
@@ -2355,7 +2354,7 @@ Fixed: a resident child is reaped after 30 minutes with no send (an `open` may n
 | Env var | Default | Values |
 |---|---|---|
 | `LOOMCYCLE_LOG_FORMAT` | `text` | `text`: the familiar `2006/01/02 15:04:05 message` line, with `WARN`/`ERROR`/`DEBUG` before the message and structured fields appended as `key=value`. `json`: one JSON object per line (`time`, `level`, `msg`, fields), plus `run_id`/`tenant`/`agent`/`user` and `trace_id`/`span_id` where the line belongs to a run. An unknown value warns and uses `text`. |
-| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Every runtime line is levelled, so `warn` or `error` also hides the Info lines, "listening on" among them; fatal and startup errors are logged at `ERROR` and show at every level. An unknown value warns and uses `info`. |
+| `LOOMCYCLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`; lines below it are dropped. Every runtime line is levelled, so `warn` or `error` also hides the Info lines, "listening on" among them; fatal and startup errors are logged at `ERROR` and show at every level. An unknown value warns and uses `info`. `debug` is also where the per-request diagnostics live: the reason for a rejected credential (the 401 stays opaque), each channel publish with its commit time, and each Ollama request's model, effort and `think` flag. |
 
 **Network guard: trust no DNS.** An entry of `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST` is a host name (suffix-matched: it vouches for whatever that name's DNS answers) or a CIDR range (it vouches for the addresses inside it, whatever name reached them); `docs/TOOLS.md` has the full rules. A deployment that must not let a DNS answer open a private address states it with the mode, and the load checks the list against it.
 
@@ -3011,6 +3010,18 @@ layer as a group in lexical filename order (so prefix them `10-`, `20-`, …) �
 handy for a mounted overlay dir or an image-baked drop-in set. A set-but-missing
 dir is a fatal error; an empty dir is fine.
 
+The directory is also where content is looked for by default: its `skills/`,
+`agents/` and `help/` subdirectories, when they exist, are the skills root, the
+agent-file root and the help-topic overlay. `LOOMCYCLE_SKILLS_ROOT`,
+`LOOMCYCLE_AGENTS_ROOT` and `LOOMCYCLE_HELP_ROOT` override them, and setting one
+to the empty string declines the default (where a blank value cannot be
+entered, such as an install wizard, point it at an empty directory). The boot
+logs each root it adopted this way. In an adopted `agents/` directory a `.md`
+file with no frontmatter is skipped, and logged: such a file is a prompt body
+or a README, not an agent definition. A directory named by
+`LOOMCYCLE_AGENTS_ROOT` loads every `.md` file, as before. Only top-level
+`*.yaml` files are layers, so nothing in a subdirectory is read as config.
+
 So `base` supplies the provider matrix, `document-agent` registers `doc/manager`
 with its skills, and your `--config` wins on anything it sets (e.g. retarget the
 agent's tier, narrow its `tools` — you can't *widen* it past the def's
@@ -3020,7 +3031,7 @@ case). An unknown unit name is a **fatal** error listing the available names.
 
 **Opt-in.** With `LOOMCYCLE_PRESETS` unset and no `--preset`, boot is exactly as
 before (no presets) — embedded presets are a deliberate opt-in, not a silent new
-base. `document-agent` needs SQL Memory (`LOOMCYCLE_SQLMEM_ENABLED=1`) + a
+base. `document-agent` needs SQL Memory + a
 `middle` tier to actually run; absent those it's a registered-but-idle def.
 
 ---
@@ -3203,7 +3214,7 @@ speech:
 - `loomcycle validate` fails on an unknown key (in the block, a voice entry or `encode`), a missing `engine`, `openai-speech` with no voices or no `default_language` (or one with no voices entry), an unknown language code, the same language twice, a voice model of another kind or untagged, with no provider, a pattern, or off the `openai` driver, an empty voice id or one with spaces at its ends or control characters, a repeated alternate, an unknown `format`, an `encode` command without `{in}` and `{out}`, a negative number, `max_chars_per_call` above 4096 or above `max_chars_per_run`.
 - **Licences.** A `models:` alias may carry `license: commercial` or `license: noncommercial` (anything else fails load). Nothing refuses a noncommercial model; a speech voice using one adds a load warning naming it, and the Settings panel will show it. The Phonon 40m voices and its multilingual model are CC BY-NC: keep them off a hosted, paid deployment.
 - **Pricing.** A speech engine priced per character uses `pricing.models."<provider>/<model>": { per_million_chars: 15 }` (OpenAI `tts-1`); one priced by output time uses `per_minute`, as speech-to-text does. A self-hosted engine is free unless you set a price. A pair absent from the table is unpriced, which is not the same as free.
-- **Outside a run.** `POST /v1/audio/speech` reads this block as it is: one request may carry `max_chars_per_run` characters and `max_seconds_per_run` of estimated audio, and engine requests wait in a server-wide queue of `LOOMCYCLE_SPEECH_MAX_INFLIGHT` (default 2). The per-agent block below does not apply to it.
+- **Outside a run.** `POST /v1/audio/speech` reads this block as it is: one request may carry `max_chars_per_run` characters and `max_seconds_per_run` of estimated audio, and engine requests wait in a server-wide queue of `LOOMCYCLE_AUDIO_MAX_INFLIGHT` (default 2). The per-agent block below does not apply to it.
 
 **Per agent.** An agent can switch speech off for itself and lower the per-run character cap:
 
@@ -3308,7 +3319,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 
 | Variable | Default | Effect |
 |---|---|---|
-| `LOOMCYCLE_STORAGE_BACKEND` | `sqlite` | `sqlite` or `postgres`; overrides `storage.backend`. |
 | `LOOMCYCLE_PG_MAX_OPEN_CONNS` | `32` | Postgres pool size. |
 | `LOOMCYCLE_PG_MIN_IDLE_CONNS` | `4` | Warm idle connections kept in the Postgres pool. |
 | `LOOMCYCLE_PG_AUTOMIGRATE` | off | `1` applies pending Postgres schema migrations at boot. Off, boot refuses a database behind the binary's migrations until `loomcycle migrate up` runs. |
@@ -3328,7 +3338,6 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_PROVIDER_IDLE_TIMEOUT_MS` | `90000` | Longest silence inside a provider's stream before the call fails. Neither timeout can be disabled. |
 | `LOOMCYCLE_FALLBACK_PIN_AFTER_SUCCESS` | off | `1`: once a run has one successful turn, it stays on that provider instead of falling over to another mid-conversation (same-provider retries still apply). |
 | `LOOMCYCLE_OLLAMA_LOCAL_NUM_GPU` | unset | Sends `options.num_gpu` (layers offloaded to the GPU) on every `ollama-local` request, e.g. `99` for all layers, where Ollama's detection falls back to CPU. Unset or `0` leaves it to Ollama. |
-| `LOOMCYCLE_OLLAMA_DEBUG_THINK` | off | `1` logs each Ollama request's model, effort and whether `think` was set. Diagnostic only. |
 | `LOOMCYCLE_ANTHROPIC_OAUTH_DEV_ENABLED` | off | `1` registers the `anthropic-oauth-dev` provider and enables the `loomcycle anthropic` login commands. |
 | `LOOMCYCLE_CLAUDE_CODE_VERSION` | the pinned version | Overrides the Claude Code version that provider presents, without a rebuild. |
 | `LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT` | `53692` | Local port of that provider's OAuth login callback. |
@@ -3355,8 +3364,8 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 | `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `86400` | How long a code-agent run may live, waits included; past it the run and its children are cancelled. Operator-only: no agent or run field can raise it. |
 | `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | off | `1` accepts a plain `http://` Vault address for Vault Transit keys (a dev server). Off because the Vault token travels in a header. |
 | `LOOMCYCLE_WEBSEARCH_PROVENANCE` | off | `1` appends a `(via <provider>)` footer to WebSearch results, naming the search provider that answered and any fallover. |
-| `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. |
-| `LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT` | `2` | Engine requests `/v1/audio/transcriptions` keeps in flight server-wide; more wait for a slot (sibling of `LOOMCYCLE_SPEECH_MAX_INFLIGHT`). |
+| `LOOMCYCLE_HELP_ROOT` | unset | Directory of `<name>.md` files that override or add to the bundled `Context op=help` topics. Unset, `<LOOMCYCLE_CONFIG_DIR>/help` when that directory exists; set to the empty string for bundled topics only. |
+| `LOOMCYCLE_AUDIO_MAX_INFLIGHT` | `2` | Engine requests each audio route (`/v1/audio/speech`, `/v1/audio/transcriptions`) keeps in flight server-wide; more wait for a slot. One value sizes both routes' queues. |
 
 ### MCP
 
@@ -3372,8 +3381,7 @@ Conventions unless a row says otherwise: `1` turns a flag on and anything else l
 |---|---|---|
 | `LOOMCYCLE_SCHEDULER_TICK_SECONDS` | `30` | How often the scheduler checks for due schedules. |
 | `LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED` | off | `1` lets a webhook with `auth.kind: none` run without a signature. Only for receivers reachable solely over an authenticated network; off, such a webhook answers 503. |
-| `LOOMCYCLE_A2A_ENABLED` | off | `1` serves the A2A server surface. Requires `LOOMCYCLE_A2A_SERVER_CARD`. |
-| `LOOMCYCLE_A2A_SERVER_CARD` | — | Name of the `A2AServerCardDef` to serve. |
+| `LOOMCYCLE_A2A_SERVER_CARD` | — | Name of the `A2AServerCardDef` to serve. Setting it turns A2A on: the server surface is mounted and the outbound `a2a__*` tools are registered. A name with no such card stops the boot. |
 | `LOOMCYCLE_A2A_TENANCY_ROUTING` | `none` | How an A2A request picks its tenant: `none`, `host` or `path`; never from the request body. |
 | `LOOMCYCLE_A2A_PUBLIC_BASE_URL` | unset | Externally reachable base URL advertised in the agent card; unset advertises a relative path. |
 | `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS` | `32` | Memory consolidation: targets one fan-out tick dispatches; the rest wait for the next tick. |
@@ -3452,10 +3460,8 @@ Background work runs on fixed cadences, and none of it can be switched off:
 | `LOOMCYCLE_MEMORY_TRACE_ASSISTANT` | off | `1` also indexes assistant turns (at run completion). |
 | `LOOMCYCLE_MEMORY_TRACE_MAX_AGE_MS` | 30 days | How long an indexed turn stays searchable. |
 | `LOOMCYCLE_MEMORY_CHANGES_ENABLED` | off | `1` records a memory change feed (change-data capture) that change subscriptions deliver from. Off, the store is not wrapped and pays nothing. |
-| `LOOMCYCLE_DEADLINK_GC_MS` | `3600000` | How often unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk) are collected; on by default, `0` disables. |
-| `LOOMCYCLE_DEADLINK_GC_DRY_RUN` | off | `1` makes that collection count and log without deleting. |
+| `LOOMCYCLE_DEADLINK_GC` | `on` | The collection of unreachable chunk references (a body whose chunk is gone, an edge to a missing chunk), which runs every hour. `on` collects and deletes them; `dry-run` counts and logs what it would collect without deleting; `off` does not run it. Any other value stops the boot. Replaces `LOOMCYCLE_DEADLINK_GC_MS` and `LOOMCYCLE_DEADLINK_GC_DRY_RUN`: a boot that still sets one of those to off, to a dry run, or to an interval longer than an hour stops until this variable says the same. |
 | `LOOMCYCLE_CHANNELS_LONGPOLL_CAP_MS` | `30000` | Longest `wait_ms` a channel subscribe may ask for; `0` disables long-polling. |
-| `LOOMCYCLE_CHANNEL_DEBUG` | off | `1` logs channel publish and subscribe activity. Diagnostic only. |
 
 ### SQL Memory
 

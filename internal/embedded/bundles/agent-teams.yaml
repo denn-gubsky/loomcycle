@@ -441,7 +441,7 @@ skills:
 
       ## Two backends, pick per the task
       1. **In-runtime SQL Memory (RFC AA)** — the team's own per-scope SQL database
-         (needs `LOOMCYCLE_SQLMEM_ENABLED=1` + the agent's `sql_scopes`). Handlers
+         (needs the agent's `sql_scopes`). Handlers
          run `Memory` sql_exec / sql_query against it: create tables, insert rows,
          reconcile, aggregate. The scope (user/tenant) IS the shared workspace —
          every handler you spawn in this run sees the same tables.

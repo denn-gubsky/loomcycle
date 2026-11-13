@@ -320,6 +320,12 @@ type Config struct {
 	// (e.g. Memory without memory_scopes — F21). Not in YAML.
 	Warnings []string `yaml:"-"`
 
+	// Notices holds things the load did that an operator should be able to
+	// see but need not act on (a directory adopted by default, a file left
+	// out of it). The boot logs each once at Info; unlike Warnings they are
+	// not advisories and nothing else reports them.
+	Notices []string `yaml:"-"`
+
 	// configDir is the directory of the loaded YAML, kept so relative
 	// paths inside the config (system_prompt_file, local_api.spec) can
 	// be resolved against it.
@@ -382,13 +388,19 @@ type InterruptionConfig struct {
 // that pre-date this block. SQLite uses Env.DataDir for its on-disk
 // path; Postgres uses the PgDSN below (or LOOMCYCLE_PG_DSN env).
 //
-// Env precedence: every field below has a corresponding LOOMCYCLE_*
-// env var. Env wins over YAML when both are set, so production
-// deploys can keep secrets (PG_DSN) out of the version-controlled YAML.
+// Env precedence: where a field names a LOOMCYCLE_* env var, env wins over
+// YAML when both are set, so production deploys can keep secrets (PG_DSN)
+// out of the version-controlled YAML.
 type StorageConfig struct {
-	// Backend selects the adapter: "sqlite" (default) or "postgres".
-	// Env: LOOMCYCLE_STORAGE_BACKEND.
+	// Backend selects the adapter: "sqlite" or "postgres". Left unset it is
+	// inferred: "postgres" when a DSN is configured (PgDSN below or
+	// LOOMCYCLE_PG_DSN), "sqlite" otherwise. An explicit value always wins,
+	// so `backend: sqlite` keeps SQLite even with a DSN present.
 	Backend string `yaml:"backend"`
+	// BackendInferred is set by LoadLayers: true when the yaml named no
+	// backend and Backend above is what the DSN gave. The boot reports it and
+	// refuses an inferred Postgres over an existing SQLite store.
+	BackendInferred bool `yaml:"-"`
 	// PgDSN is the Postgres connection string (libpq URL form).
 	// Required when Backend="postgres". Env: LOOMCYCLE_PG_DSN.
 	// Example: postgres://user:pass@host:5432/loomcycle?sslmode=require
@@ -408,13 +420,18 @@ type StorageConfig struct {
 
 	// --- RFC AA SQL Memory (Phase 1, sqlite-only) ---
 	//
-	// SQL Memory is OFF by default: even an agent with sql_scopes set sees
-	// its SQL ops refuse until the operator enables the subsystem here. The
-	// per-scope databases are a SEPARATE store from the main loomcycle DB.
+	// The per-scope databases are a SEPARATE store from the main loomcycle
+	// DB. An agent still needs sql_scopes to run SQL in one.
 
-	// SqlMemEnabled turns the SQL Memory subsystem on. Env:
-	// LOOMCYCLE_SQLMEM_ENABLED=1.
-	SqlMemEnabled bool `yaml:"sqlmem_enabled"`
+	// SqlMemEnabled is the operator's explicit choice, nil when the yaml does
+	// not make one. Unset, SQL Memory is on with a SQLite store (it needs
+	// nothing beyond the data directory) and, with a Postgres store, on when
+	// SqlMemPgDSN is configured. `sqlmem_enabled: false` turns it off either
+	// way. Read the resolved answer with SQLMemOn.
+	SqlMemEnabled *bool `yaml:"sqlmem_enabled"`
+	// SqlMemInferred is set by LoadLayers: true when the yaml made no choice
+	// and SqlMemEnabled above is what the store gave.
+	SqlMemInferred bool `yaml:"-"`
 	// SqlMemRoot is the parent dir for per-scope .db files. Empty defaults
 	// to <DataDir>/sqlmem. Env: LOOMCYCLE_SQLMEM_ROOT.
 	SqlMemRoot string `yaml:"sqlmem_root"`
@@ -4151,18 +4168,16 @@ type Env struct {
 	// operators tune it down to shrink the per-request memory ceiling.
 	// LOOMCYCLE_MAX_REQUEST_BYTES (bytes; <=0 ignored, default kept).
 	MaxRequestBytes int64
-	// SpeechMaxInflight and TranscriptionMaxInflight bound how many engine
-	// requests the audio routes (POST /v1/audio/speech and
-	// /v1/audio/transcriptions) have in flight at once, server-wide, per
-	// direction. A request over the bound waits for a slot while its caller
+	// AudioMaxInflight bounds how many engine requests each audio route
+	// (POST /v1/audio/speech and /v1/audio/transcriptions) has in flight at
+	// once, server-wide: each direction has its own queue of this size. A request over the bound waits for a slot while its caller
 	// stays connected rather than being refused: a self-hosted speech engine
 	// serves a few requests at a time, and a client is better served by a slow
 	// answer than by a retry loop. A slot is held for one engine request, so a
 	// long text or recording cut into pieces takes turns with shorter ones.
-	// Default 2 each. LOOMCYCLE_SPEECH_MAX_INFLIGHT,
-	// LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT (<=0 or malformed keeps the default).
-	SpeechMaxInflight        int
-	TranscriptionMaxInflight int
+	// Default 2. LOOMCYCLE_AUDIO_MAX_INFLIGHT (<=0 or malformed keeps the
+	// default).
+	AudioMaxInflight int
 	// KMSVaultAllowHTTP admits a plain http:// Vault address for a crypto
 	// key held in Vault Transit (a dev server). Off by default: the Vault
 	// token travels in a header. LOOMCYCLE_KMS_VAULT_ALLOW_HTTP=1.
@@ -4224,10 +4239,6 @@ type Env struct {
 	// keeps audit rows; older ones are pruned behind a signed anchor by the
 	// retention sweeper. Zero (the default) keeps them forever.
 	AuditRetention time.Duration
-	// AuthVerbose (LOOMCYCLE_AUTH_VERBOSE=1) logs a server-side reason
-	// when a bearer is rejected. Off by default; the wire 401 stays
-	// opaque regardless (no oracle) — this only affects local logs.
-	AuthVerbose bool
 	// ACLMode (LOOMCYCLE_ACL) is the RFC EY rollout mode: compat (the
 	// default: the scope gates decide, an explicit ACL deny is honoured on
 	// top), shadow (the scope gates decide, the engine's divergences are
@@ -4450,7 +4461,8 @@ type Env struct {
 	// shape `<name>/SKILL.md`. When unset, agents may not list skills
 	// (resolveSkills errors loudly to surface the misconfiguration —
 	// silently dropping skill bodies would defeat the prompts that
-	// reference them). Sourced from LOOMCYCLE_SKILLS_ROOT.
+	// reference them). Sourced from LOOMCYCLE_SKILLS_ROOT; unset, it is
+	// <LOOMCYCLE_CONFIG_DIR>/skills when that directory exists (contentRoot).
 	SkillsRoot string
 
 	// AgentsRoot points at a directory of flat `<name>.md` files.
@@ -4467,7 +4479,8 @@ type Env struct {
 	// branch divergence breaks loomcycle on the deploy box). The
 	// directory becomes the single source of truth in normal
 	// operation; yaml entries shrink to per-environment overrides.
-	// Sourced from LOOMCYCLE_AGENTS_ROOT.
+	// Sourced from LOOMCYCLE_AGENTS_ROOT; unset, it is
+	// <LOOMCYCLE_CONFIG_DIR>/agents when that directory exists.
 	AgentsRoot string
 
 	// HelpRoot points at a directory of flat `<name>.md` files holding
@@ -4476,7 +4489,8 @@ type Env struct {
 	// name). When unset, only bundled topics are available. Operators
 	// use this to publish deployment-specific guidance (e.g. local
 	// policy docs, internal MCP server walkthroughs) without rebuilding
-	// loomcycle. Sourced from LOOMCYCLE_HELP_ROOT.
+	// loomcycle. Sourced from LOOMCYCLE_HELP_ROOT; unset, it is
+	// <LOOMCYCLE_CONFIG_DIR>/help when that directory exists.
 	HelpRoot string
 
 	// HeartbeatStaleAfter is the cutoff: runs with last_heartbeat_at
@@ -4800,24 +4814,21 @@ type Env struct {
 	// Env: LOOMCYCLE_MEMORY_MAX_SCOPE_BYTES.
 	MemoryMaxScopeBytes int
 
-	// DeadLinkGCInterval is how often the dead-link reconciliation runs — the layer
-	// that collects chunk references nothing can reach (a body whose chunk is gone,
-	// an edge to a chunk that does not exist).
+	// DeadLinkGC is the mode of the dead-link reconciliation, the layer that
+	// collects chunk references nothing can reach (a body whose chunk is gone,
+	// an edge to a chunk that does not exist): DeadLinkGCOn, DeadLinkGCDryRun
+	// or DeadLinkGCOff.
 	//
 	// ON BY DEFAULT, unlike the retention sweeper, because everything it deletes is
 	// unreachable by definition: it restores an invariant rather than applying a
-	// policy. Hourly rather than every fifteen minutes because an orphan costs
-	// nothing while it sits there — the read-time guard already hides it — so this
-	// is about not accumulating forever, not about latency.
-	// Env: LOOMCYCLE_DEADLINK_GC_MS (0 disables).
-	DeadLinkGCInterval time.Duration
-
-	// DeadLinkGCDryRun makes the reconciliation COUNT without deleting, so an
-	// operator can see what it would collect before letting it. Reported at the same
-	// log level either way, which is the point: a dry run that logged nothing would
-	// be indistinguishable from a clean store.
-	// Env: LOOMCYCLE_DEADLINK_GC_DRY_RUN=1.
-	DeadLinkGCDryRun bool
+	// policy. It runs every DeadLinkGCInterval.
+	//
+	// A dry run COUNTS without deleting, so an operator can see what it would
+	// collect before letting it. Reported at the same log level either way,
+	// which is the point: a dry run that logged nothing would be
+	// indistinguishable from a clean store.
+	// Env: LOOMCYCLE_DEADLINK_GC (off | dry-run | on).
+	DeadLinkGC string
 
 	// DocumentProjectionInterval is LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL, raw:
 	// a Go duration that overrides memory.projection.interval ("0" stops the
@@ -4962,15 +4973,15 @@ type Env struct {
 
 	// A2AServerEnabled enables the v1.x RFC G A2A server HTTP surface
 	// (the well-known AgentCard URI + the three protocol-binding mounts
-	// on the existing mux). Default OFF — operator opts in via
-	// LOOMCYCLE_A2A_ENABLED=1. When false, the A2AServerCardDef tool
-	// still works for authoring; nothing is mounted and no card is
-	// served.
+	// on the existing mux) and registers the outbound a2a__* tools. Default
+	// OFF. Derived at load: true when A2AServerCardName is set. When false,
+	// the A2AServerCardDef tool still works for authoring; nothing is
+	// mounted and no card is served.
 	A2AServerEnabled bool
 
 	// A2AServerCardName names the active A2AServerCardDef whose card the
 	// server serves and whose exposed_agents drive skill→agent routing.
-	// Env: LOOMCYCLE_A2A_SERVER_CARD. Required when A2AServerEnabled.
+	// Env: LOOMCYCLE_A2A_SERVER_CARD. Setting it turns the A2A surface on.
 	A2AServerCardName string
 
 	// A2ATenancyRouting selects how the inbound tenant is derived for
@@ -5051,11 +5062,12 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	applyEnvCore(cfg)
 
 	// A removed variable is deleted with no compatibility read. One whose
-	// value asked for something tighter than what now applies stops the load;
+	// value asked for something tighter than what now applies, or for data to
+	// live elsewhere, stops the load;
 	// the rest are said once, where boot, `validate` and `doctor` all print
 	// advisories.
 	if refused := retiredEnvRefusals(os.Environ(), &cfg.Storage); len(refused) > 0 {
-		return nil, fmt.Errorf("retired environment variables are set to something tighter than this version applies, and ignoring them would loosen this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
+		return nil, fmt.Errorf("retired environment variables are set to something this version does not apply (a tighter bound, a feature kept off, or another store), and ignoring them would change this deployment; act on each, then remove its line: %s", strings.Join(refused, " | "))
 	}
 	cfg.Warnings = append(cfg.Warnings, retiredEnvWarnings(os.Environ())...)
 
@@ -5071,6 +5083,9 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 	applyEnvClusterSweeps(cfg)
 	applyEnvLoopTuning(cfg)
 	applyEnvMemory(cfg)
+	if err := applyEnvDeadLinkGC(cfg); err != nil {
+		return nil, err
+	}
 	applyEnvConcurrency(cfg)
 	if err := applyEnvToolLimits(cfg); err != nil {
 		return nil, err
@@ -5210,8 +5225,8 @@ func loadAgentFiles(cfg *Config, primaryPath string) error {
 	// MDs-as-sole-source-of-truth deployment works (operator sets
 	// LOOMCYCLE_AGENTS_ROOT and omits the yaml entirely; cfg.Agents
 	// is populated purely from MDs).
-	if root := os.Getenv("LOOMCYCLE_AGENTS_ROOT"); root != "" {
-		if err := discoverAgents(cfg, root); err != nil {
+	if root, defaulted := contentRoot("LOOMCYCLE_AGENTS_ROOT", "agents"); root != "" {
+		if err := discoverAgents(cfg, root, defaulted); err != nil {
 			return err
 		}
 	}
@@ -5254,7 +5269,6 @@ func applyEnvCore(cfg *Config) {
 		SecretKey:                   os.Getenv("LOOMCYCLE_SECRET_KEY"),
 		SecretKeyPrevious:           os.Getenv("LOOMCYCLE_SECRET_KEY_PREVIOUS"),
 		AuditLogPath:                os.Getenv("LOOMCYCLE_AUDIT_LOG_PATH"),
-		AuthVerbose:                 os.Getenv("LOOMCYCLE_AUTH_VERBOSE") == "1",
 		OperatorKeyRestriction:      os.Getenv("LOOMCYCLE_OPERATOR_KEY_RESTRICTION") == "1",
 		ACLMode:                     os.Getenv("LOOMCYCLE_ACL"),
 		ACLCacheTTLSeconds:          getenvInt("LOOMCYCLE_ACL_CACHE_TTL_SECONDS", 5),
@@ -5283,9 +5297,9 @@ func applyEnvCore(cfg *Config) {
 		GitPushHosts:                splitCSV(os.Getenv("LOOMCYCLE_GIT_PUSH_HOSTS")),
 		GitAuthorName:               strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_NAME")),
 		GitAuthorEmail:              strings.TrimSpace(os.Getenv("LOOMCYCLE_GIT_AUTHOR_EMAIL")),
-		SkillsRoot:                  os.Getenv("LOOMCYCLE_SKILLS_ROOT"),
-		AgentsRoot:                  os.Getenv("LOOMCYCLE_AGENTS_ROOT"),
-		HelpRoot:                    os.Getenv("LOOMCYCLE_HELP_ROOT"),
+		SkillsRoot:                  defaultedRoot(cfg, "LOOMCYCLE_SKILLS_ROOT", "skills"),
+		AgentsRoot:                  defaultedRoot(cfg, "LOOMCYCLE_AGENTS_ROOT", "agents"),
+		HelpRoot:                    defaultedRoot(cfg, "LOOMCYCLE_HELP_ROOT", "help"),
 		ConfiguredRunTTL:            24 * time.Hour,
 		MaxConfiguredRunsPerUser:    100,
 		// RFC BM retention defaults — opt-in (RetentionEnabled zero-false); the
@@ -5296,16 +5310,50 @@ func applyEnvCore(cfg *Config) {
 	}
 }
 
+// contentRoot resolves one content directory (skills, agents, help topics).
+// The variable wins whenever it is set, including set to the empty string,
+// which means "no root" and is how an operator declines the default. Unset,
+// the root is <LOOMCYCLE_CONFIG_DIR>/<sub> when that directory exists, so a
+// deployment that keeps its content beside its yaml needs no second path.
+// Anything else (no config dir, no such subdirectory, a stat error) is no
+// root, as before the default existed.
+//
+// defaulted is true only when the returned root is that adopted subdirectory.
+func contentRoot(envName, sub string) (root string, defaulted bool) {
+	if v, ok := os.LookupEnv(envName); ok {
+		return v, false
+	}
+	dir := strings.TrimSpace(os.Getenv("LOOMCYCLE_CONFIG_DIR"))
+	if dir == "" {
+		return "", false
+	}
+	p := filepath.Join(dir, sub)
+	// #nosec G703 -- the operator's own LOOMCYCLE_CONFIG_DIR joined with one of three constant subdirectory names; no request or model input reaches it
+	if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+		return p, true
+	}
+	return "", false
+}
+
+// defaultedRoot is contentRoot for the Env block: it also records, for the
+// boot to log, a root that was adopted by default. An operator who did not set
+// the variable should be able to see that a directory is being read.
+func defaultedRoot(cfg *Config, envName, sub string) string {
+	root, defaulted := contentRoot(envName, sub)
+	if defaulted {
+		cfg.Notices = append(cfg.Notices, envName+" is not set: using "+root+", found under LOOMCYCLE_CONFIG_DIR")
+	}
+	return root
+}
+
 // applyEnvStorage reads the storage block's env overrides and defaults the
 // backend. Part of LoadLayers.
 func applyEnvStorage(cfg *Config) {
 	// Env-overrides for the storage block. Env wins over YAML so prod
 	// deploys can keep PG_DSN out of version-controlled config files.
 	// Empty env values fall through to whatever YAML provided.
-	if v := os.Getenv("LOOMCYCLE_STORAGE_BACKEND"); v != "" {
-		cfg.Storage.Backend = v
-	}
-	if v := os.Getenv("LOOMCYCLE_PG_DSN"); v != "" {
+	// A value of only whitespace is no DSN (see inferStorageBackend).
+	if v := os.Getenv("LOOMCYCLE_PG_DSN"); strings.TrimSpace(v) != "" {
 		cfg.Storage.PgDSN = v
 	}
 	// The pool sizes are int32: parse at that width so an out-of-range value
@@ -5323,19 +5371,59 @@ func applyEnvStorage(cfg *Config) {
 	if v := os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE"); v == "1" {
 		cfg.Storage.PgAutoMigrate = true
 	}
-	// Default backend is sqlite (back-compat with pre-Storage configs).
-	if cfg.Storage.Backend == "" {
-		cfg.Storage.Backend = "sqlite"
+	cfg.Storage.BackendInferred = cfg.Storage.Backend == ""
+	cfg.Storage.Backend = inferStorageBackend(cfg.Storage.Backend, cfg.Storage.PgDSN)
+}
+
+// SQLMemOn reports whether SQL Memory is on: the yaml's explicit choice, else
+// what LoadLayers inferred from the store.
+func (s StorageConfig) SQLMemOn() bool {
+	return s.SqlMemEnabled != nil && *s.SqlMemEnabled
+}
+
+// SQLMemOffForMissingDSN reports SQL Memory left off only because a Postgres
+// store has no aux DSN, for the boot to warn about. It is false when the yaml
+// turned SQL Memory off: that is a choice, not an omission.
+func (s StorageConfig) SQLMemOffForMissingDSN() bool {
+	return s.SqlMemInferred && s.Backend == "postgres" && !s.SQLMemOn()
+}
+
+// inferSQLMemEnabled answers for a yaml that does not say. backend is the
+// resolved store backend. SQLite hosts the scopes as files under the data
+// directory, so nothing more is needed. Postgres hosts them in a separate
+// database, so the aux DSN is the operator's opt-in: without one SQL Memory
+// stays off rather than stopping the boot. An unexpanded ${NAME} reference is
+// not a DSN (see inferStorageBackend).
+func inferSQLMemEnabled(backend, sqlMemPgDSN string) bool {
+	if backend != "postgres" {
+		return true
 	}
+	dsn := strings.TrimSpace(sqlMemPgDSN)
+	return dsn != "" && !strings.HasPrefix(dsn, "${")
+}
+
+// inferStorageBackend resolves the backend the operator did not name: a
+// configured DSN means Postgres, none means SQLite. An explicit yaml value is
+// returned untouched (an unknown one is refused when the store is opened), so
+// a config that says sqlite stays on SQLite whatever DSN the environment
+// carries.
+func inferStorageBackend(explicit, pgDSN string) string {
+	if explicit != "" {
+		return explicit
+	}
+	// A yaml pg_dsn that is still a ${NAME} reference is not a DSN: the
+	// loader never interpolates the store's own DSN, so the text is left as
+	// written when the environment does not carry the variable. Neither is
+	// one of only whitespace, which an env file leaves behind a blanked line.
+	if dsn := strings.TrimSpace(pgDSN); dsn != "" && !strings.HasPrefix(dsn, "${") {
+		return "postgres"
+	}
+	return "sqlite"
 }
 
 // applyEnvSQLMem reads the SQL Memory env overrides, then defaults every
 // bound the operator left unset. Part of LoadLayers.
 func applyEnvSQLMem(cfg *Config) {
-	// RFC AA SQL Memory (Phase 1). Off by default; env overrides yaml.
-	if v := os.Getenv("LOOMCYCLE_SQLMEM_ENABLED"); v == "1" {
-		cfg.Storage.SqlMemEnabled = true
-	}
 	// A path of this host, like the data dir: it stays an env setting so one
 	// yaml serves hosts that keep their scope files in different places.
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_ROOT"); v != "" {
@@ -5351,6 +5439,11 @@ func applyEnvSQLMem(cfg *Config) {
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_PG_DSN"); v != "" {
 		cfg.Storage.SqlMemPgDSN = v
+	}
+	if cfg.Storage.SqlMemEnabled == nil {
+		on := inferSQLMemEnabled(cfg.Storage.Backend, cfg.Storage.SqlMemPgDSN)
+		cfg.Storage.SqlMemEnabled = &on
+		cfg.Storage.SqlMemInferred = true
 	}
 	if v := os.Getenv("LOOMCYCLE_SQLMEM_SCOPE_TTL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
@@ -6085,10 +6178,27 @@ func getenvInt(name string, dflt int) int {
 // over the merged set, so a merge that produces both Pin and Tier
 // (e.g. MD `model: haiku` + yaml override `tier: low`) gets caught by
 // the existing post-load check.
-func discoverAgents(cfg *Config, root string) error {
-	set, err := agents.LoadSet(root)
+//
+// defaulted says the root was adopted because it sits under the config dir,
+// not named by LOOMCYCLE_AGENTS_ROOT. There a file with no frontmatter is left
+// out and reported in cfg.Notices: an existing agents/ directory may hold
+// prompt bodies and READMEs that nobody meant to register as agents.
+func discoverAgents(cfg *Config, root string, defaulted bool) error {
+	var (
+		set     *agents.Set
+		skipped []string
+		err     error
+	)
+	if defaulted {
+		set, skipped, err = agents.LoadSetFrontmatterOnly(root)
+	} else {
+		set, err = agents.LoadSet(root)
+	}
 	if err != nil {
 		return fmt.Errorf("agents discovery: %w", err)
+	}
+	for _, path := range skipped {
+		cfg.Notices = append(cfg.Notices, "agents: skipped "+path+": it has no frontmatter, and a file without one in a defaulted agents directory is not read as an agent (set LOOMCYCLE_AGENTS_ROOT to this directory to load every .md file)")
 	}
 	if cfg.Agents == nil {
 		cfg.Agents = make(map[string]AgentDef)
@@ -7415,7 +7525,7 @@ func sqlMemConfigWarnings(name string, a AgentDef, sqlMemEnabled bool) []string 
 		return false
 	}
 	if has("Memory") && len(a.SqlScopes) > 0 && !sqlMemEnabled {
-		return []string{fmt.Sprintf("agent %q: sql_scopes is set but storage.sqlmem_enabled is false — every sql_query/sql_exec will refuse; set LOOMCYCLE_SQLMEM_ENABLED=1 (or storage.sqlmem_enabled: true)", name)}
+		return []string{fmt.Sprintf("agent %q: sql_scopes is set but SQL Memory is off — every sql_query/sql_exec will refuse; on a Postgres store set LOOMCYCLE_SQLMEM_PG_DSN, and remove storage.sqlmem_enabled: false if the yaml sets it", name)}
 	}
 	return nil
 }

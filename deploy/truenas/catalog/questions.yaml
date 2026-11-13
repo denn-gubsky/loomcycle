@@ -486,15 +486,9 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_SPEECH_MAX_INFLIGHT
-            label: LOOMCYCLE_SPEECH_MAX_INFLIGHT
-            description: 'POST /v1/audio/speech and POST /v1/audio/transcriptions put each engine request through a server-wide queue per direction: a self-hosted speech engine serves only a few requests at a time. A request over the bound WAITS for a slot while its caller stays connected; it is not refused. A long text or recording cut into pieces takes a slot per piece, so it takes turns with shorter requests. Default 2…'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT
-            label: LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT
-            description: '(example: 2)'
+          - variable: LOOMCYCLE_AUDIO_MAX_INFLIGHT
+            label: LOOMCYCLE_AUDIO_MAX_INFLIGHT
+            description: 'POST /v1/audio/speech and POST /v1/audio/transcriptions put each engine request through a server-wide queue per direction: a self-hosted speech engine serves only a few requests at a time. A request over the bound WAITS for a slot while its caller stays connected; it is not refused. A long text or recording cut into pieces takes a slot per piece, so it takes turns with shorter requests. One setti…'
             schema:
               type: string
               default: ""
@@ -506,13 +500,13 @@ questions:
               default: ""
           - variable: LOOMCYCLE_SKILLS_ROOT
             label: LOOMCYCLE_SKILLS_ROOT
-            description: 'Skill bodies count as operator-authored content and are trusted — they''re loaded with the same trust as inline `system_prompt:`. Do not point this at a directory writable by untrusted users. (example: /srv/loomcycle/skills)'
+            description: 'Skill bodies count as operator-authored content and are trusted — they''re loaded with the same trust as inline `system_prompt:`. Do not point this (or the config dir) at a directory writable by untrusted users. (example: /srv/loomcycle/skills)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_AGENTS_ROOT
             label: LOOMCYCLE_AGENTS_ROOT
-            description: '(example: /srv/loomcycle/agents)'
+            description: 'Unset, the root is <LOOMCYCLE_CONFIG_DIR>/agents when that directory exists; in that defaulted directory a .md file with no frontmatter is skipped (it is a prompt body or a README, not an agent) and the boot logs each one. To discover no agent files, point it at an empty directory. (example: /srv/loomcycle/agents)'
             schema:
               type: string
               default: ""
@@ -537,12 +531,6 @@ questions:
           - variable: LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL
             label: LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL
             description: 'Document projection sweeper cadence (a Go duration, e.g. 1h): places each document chunk on its scope''s 3D map by meaning (memory.projection). A positive value also turns the projection on; 0 keeps it on with no sweeper. Default unset = memory.projection decides (off unless enabled). (example: 1h)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_SQLMEM_ENABLED
-            label: LOOMCYCLE_SQLMEM_ENABLED
-            description: 'A per-scope SQL database the runtime hosts as a third Memory facet (agents query arbitrary SQL via the Memory tool''s sql_* ops). It also BACKS the Document primitive (RFC AK) — the chunk-structure tables live here, so **Documents and the Web UI Document viewer/assistant require this enabled.** Default OFF. (example: 1)'
             schema:
               type: string
               default: ""
@@ -748,21 +736,15 @@ questions:
             schema:
               type: string
               default: ""
-          - variable: LOOMCYCLE_A2A_ENABLED
-            label: LOOMCYCLE_A2A_ENABLED
-            description: 'Inbound A2A server + outbound client. Off by default. (example: 1)'
+          - variable: LOOMCYCLE_A2A_SERVER_CARD
+            label: LOOMCYCLE_A2A_SERVER_CARD
+            description: 'Inbound A2A server + outbound client. Off by default; naming the server card turns both on. (example: public)'
             schema:
               type: string
               default: ""
           - variable: LOOMCYCLE_A2A_PUBLIC_BASE_URL
             label: LOOMCYCLE_A2A_PUBLIC_BASE_URL
             description: '(example: https://agents.example.com)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_A2A_SERVER_CARD
-            label: LOOMCYCLE_A2A_SERVER_CARD
-            description: '(example: public)'
             schema:
               type: string
               default: ""
@@ -925,12 +907,6 @@ questions:
           - variable: LOOMCYCLE_LIMITS_ENFORCE
             label: LOOMCYCLE_LIMITS_ENFORCE
             description: '(example: strict)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_AUTH_VERBOSE
-            label: LOOMCYCLE_AUTH_VERBOSE
-            description: '(example: 1)'
             schema:
               type: string
               default: ""

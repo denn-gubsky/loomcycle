@@ -33,12 +33,13 @@ storage:
 **Env (good for prod — keeps secrets out of the repo):**
 
 ```sh
-export LOOMCYCLE_STORAGE_BACKEND=postgres
 export LOOMCYCLE_PG_DSN="postgres://loomcycle:$(cat /run/secrets/pg_password)@db.internal:5432/loomcycle?sslmode=require"
 export LOOMCYCLE_PG_AUTOMIGRATE=0
 ```
 
-Env wins over yaml when both are set. Defaults (omit to use these):
+A configured DSN selects Postgres: `storage.backend` may be left out, and is only needed to say otherwise (`backend: sqlite` keeps SQLite even with a DSN set). A DSN of only whitespace counts as not set. Env wins over yaml when both are set. The boot logs which backend it chose and whether the yaml named it or the DSN implied it.
+
+One case needs the yaml to say: when the backend is implied by the DSN and the data directory already holds a SQLite store (`<LOOMCYCLE_DATA_DIR>/loomcycle.db`), loomcycle refuses to start rather than come up on the other database with the SQLite data left behind. Set `storage.backend: sqlite` to keep using that store, or `storage.backend: postgres` to use the DSN (after `loomcycle migrate sqlite-to-postgres`, below, if the data should move). Defaults (omit to use these):
 
 | Setting | Default |
 |---|---|
@@ -141,8 +142,10 @@ loomcycle migrate sqlite-to-postgres \
   --src /var/lib/loomcycle/loomcycle.db.copy \
   --dst "postgres://loomcycle:secret@db:5432/loomcycle?sslmode=require"
 
-# 5. Flip the operator yaml's storage.backend to postgres (or set
-#    LOOMCYCLE_STORAGE_BACKEND=postgres). Restart loomcycle.
+# 5. Set LOOMCYCLE_PG_DSN (or the yaml's storage.pg_dsn) and, because the
+#    old loomcycle.db is still in the data directory, name the backend in
+#    the yaml (storage.backend: postgres): with the file present and no
+#    backend named, loomcycle refuses to start. Restart loomcycle.
 systemctl start loomcycle
 ```
 

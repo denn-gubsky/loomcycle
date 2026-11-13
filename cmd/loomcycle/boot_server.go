@@ -240,15 +240,16 @@ func (b *boot) openSQLMemory() {
 	contextTool := b.contextTool
 	srv := b.srv
 
-	// RFC AA SQL Memory (Phase 1). Off by default; constructed only when the
-	// operator enables it. The manager hosts per-scope sqlite databases that
+	// RFC AA SQL Memory. Constructed unless it is off (Storage.SQLMemOn: on
+	// with SQLite, on with Postgres when the aux DSN is set, off when the
+	// yaml says so). The manager hosts per-scope sqlite databases that
 	// SEPARATE from the main store — an agent's arbitrary SQL can only ever
 	// reach its own scope file. Wired into the Memory tool (sql_query/sql_exec)
 	// and the server (run-scope drop at top-level run completion).
 	// Declared here (not inside the block) so the RFC BM retention sweeper below
 	// can reclaim a retired agent's SQL-Memory scope; nil when SQL Memory is off.
 	var sqlMemMgr *sqlmem.Manager
-	if cfg.Storage.SqlMemEnabled {
+	if cfg.Storage.SQLMemOn() {
 		sqlMemRoot := cfg.Storage.SqlMemRoot
 		if sqlMemRoot == "" {
 			sqlMemRoot = filepath.Join(cfg.Env.DataDir, "sqlmem")
@@ -330,6 +331,10 @@ func (b *boot) openSQLMemory() {
 		slog.Info("sqlmem: SQL Memory enabled", "tier", sqlMemTier, "quota_bytes", cfg.Storage.SqlMemQuotaBytes,
 			"max_rows", cfg.Storage.SqlMemMaxRows, "max_result_bytes", cfg.Storage.SqlMemMaxResultBytes, "timeout_ms", cfg.Storage.SqlMemStatementTimeoutMS,
 			"audit", cfg.Storage.SqlMemAuditMode)
+	} else if cfg.Storage.SQLMemOffForMissingDSN() {
+		// Off by omission, not by choice: without this line the first sign is
+		// a Document call failing.
+		slog.Warn("sqlmem: SQL Memory is off because LOOMCYCLE_SQLMEM_PG_DSN is not set; Documents need SQL Memory and are off with it. Set the DSN of a separate database to turn both on, or storage.sqlmem_enabled: false in the yaml to say this is intended")
 	}
 
 	b.sqlMemMgr = sqlMemMgr

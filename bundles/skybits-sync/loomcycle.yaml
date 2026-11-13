@@ -29,7 +29,7 @@
 # items on their documents; documents are never deleted. Run `plan` first.
 #
 # REQUIREMENTS:
-#   - SQL Memory (LOOMCYCLE_SQLMEM_ENABLED=1): the manifest and the Documents.
+#   - SQL Memory: the manifest and the Documents.
 #   - An MCP server named `skybits` (the deployment's: its URL and credential
 #     are not in this bundle).
 #   - `memory_scopes: [tenant]` and `sql_scopes: [tenant]` on skybits/sync and

@@ -418,8 +418,8 @@ func (s *Server) lookupOlderTokenForm(ctx context.Context, h auth.TokenHasher, b
 		switch {
 		case rerr != nil:
 			slog.Warn("auth: token rehash onto the current pepper failed", "token_def", row.DefID, "err", rerr)
-		case changed && s.authVerbose():
-			slog.Info("auth: token rehashed onto the current pepper", "token_def", row.DefID)
+		case changed:
+			slog.DebugContext(ctx, "auth: token rehashed onto the current pepper", "token_def", row.DefID)
 		}
 		return row, nil
 	}

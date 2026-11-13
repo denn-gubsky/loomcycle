@@ -32,7 +32,7 @@ func (s *Server) handleDeriveUnits(w http.ResponseWriter, r *http.Request) {
 	r = sweepRequest(r)
 	if s.store == nil || s.sqlMem == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "sqlmem_unavailable",
-			"derived units require SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+			"derived units require SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 		return
 	}
 	q := r.URL.Query()

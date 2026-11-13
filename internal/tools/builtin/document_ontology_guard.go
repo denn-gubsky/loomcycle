@@ -475,7 +475,7 @@ func (d *Document) chunkIDForEntity(ctx context.Context, key sqlmem.ScopeKey, do
 // live type.
 func (d *Document) ontologyTenantKey(ctx context.Context) (sqlmem.ScopeKey, store.MemoryScope, error) {
 	if d.Store == nil || d.SqlMem == nil {
-		return sqlmem.ScopeKey{}, "", fmt.Errorf("the ontology needs SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+		return sqlmem.ScopeKey{}, "", fmt.Errorf("the ontology needs SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 	}
 	t := sqlScopeTenant(ctx)
 	return sqlmem.ScopeKey{Tenant: t, Scope: "tenant", ScopeID: t}, store.MemoryScopeTenant, nil

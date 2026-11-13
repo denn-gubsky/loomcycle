@@ -168,10 +168,10 @@ LOOMCYCLE_MOCK_LATENCY_MS=200 LOOMCYCLE_MOCK_LATENCY_JITTER_MS=100 \
   ./test/load/circuit-stress/run-mock.sh --scale 5000
 
 # Channel-race amplification. Pairs with PR #243's diagnostic
-# (LOOMCYCLE_CHANNEL_DEBUG=1) — at high scale the
+# (LOOMCYCLE_LOG_LEVEL=debug) — at high scale the
 # subscribe-race-recovered log lines feed the channel-race
 # investigation doc's hypothesis table.
-LOOMCYCLE_MOCK_LATENCY_MS=10 LOOMCYCLE_CHANNEL_DEBUG=1 \
+LOOMCYCLE_MOCK_LATENCY_MS=10 LOOMCYCLE_LOG_LEVEL=debug \
   ./test/load/circuit-stress/run-mock.sh --scale 10000
 ```
 

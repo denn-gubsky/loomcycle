@@ -24,7 +24,7 @@ func (b *boot) mountA2AServer() {
 	var err error
 	// v1.x RFC G — A2A server surface (well-known AgentCard + REST /
 	// JSON-RPC / gRPC binding mounts + multi-tenant routing). Default
-	// OFF; New returns (nil, nil) when LOOMCYCLE_A2A_ENABLED != 1. The
+	// OFF; New returns (nil, nil) when no server card is named. The
 	// *http.Server (srv) is BOTH the runner.Runner and the
 	// connector.Connector the bridge needs, plus the run-table reader.
 	// Mount must be registered BEFORE srv.Mux() is called below; gRPC

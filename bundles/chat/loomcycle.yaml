@@ -17,7 +17,8 @@
 #     DEFAULT volume — define a `volumes:` entry with `default: true, mode: rw`
 #     (or bind one per agent in your overlay). Without it, those tools are
 #     registered-but-idle.
-#   - Document + Memory need LOOMCYCLE_SQLMEM_ENABLED=1 (Document is SQL-backed).
+#   - Document + Memory need SQL Memory (Document is SQL-backed): on with
+#     SQLite; on a Postgres store it needs LOOMCYCLE_SQLMEM_PG_DSN.
 #   - WebSearch needs BRAVE_API_KEY; WebFetch/WebSearch need LOOMCYCLE_HTTP_HOST_ALLOWLIST.
 #   - Bash needs LOOMCYCLE_BASH_ENABLED=1 (Bashbox needs no switch).
 #   - chat/local-small's local window is the GLOBAL LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX

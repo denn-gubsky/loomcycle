@@ -29,7 +29,6 @@ func TestBoot_ClusterReplicaResumesRunsAStoppedReplicaParked(t *testing.T) {
 	clusterDSN := freshClusterDatabase(t, dsn)
 	cluster := func(replica string) []string {
 		return []string{
-			"LOOMCYCLE_STORAGE_BACKEND=postgres",
 			"LOOMCYCLE_PG_DSN=" + clusterDSN,
 			"LOOMCYCLE_PG_AUTOMIGRATE=1",
 			"LOOMCYCLE_REPLICA_ID=" + replica,

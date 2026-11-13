@@ -355,8 +355,8 @@ re-displayed). Now distribute per-principal tokens at your own pace.
   `compat` (or `LOOMCYCLE_AUDIT_STORE=1`) the same records also go to the store-backed,
   hash-chained audit trail: `loomcycle audit verify` checks it and
   `GET /v1/_audit` exports it.
-- `LOOMCYCLE_AUTH_VERBOSE=1` — log a server-side reason on a rejected
-  bearer (the wire 401 stays opaque regardless).
+- `LOOMCYCLE_LOG_LEVEL=debug` — also logs a server-side line for each
+  rejected bearer (the wire 401 stays opaque regardless).
 
 ## Beyond tokens
 

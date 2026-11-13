@@ -60,7 +60,9 @@ speculatively now.
 
 ## Capability gate — default-deny `sql_scopes`
 
-SQL Memory is **off** unless the operator enables the subsystem; with it on, the
+SQL Memory is on with a SQLite store, and with a Postgres store once its aux
+DSN (`LOOMCYCLE_SQLMEM_PG_DSN` / `storage.sqlmem_pg_dsn`) is set;
+`storage.sqlmem_enabled: false` turns it off. With it on, the
 agent's `sql_scopes` decides which scopes it may touch (the RFC W
 capability-gate pattern). Since v1.83 an agent that holds `Memory` and declares
 no `sql_scopes` resolves to `[user]` — the caller's own database, and only when
@@ -70,7 +72,8 @@ list explicitly to widen or narrow, or `[-*]` to grant none:
 ```yaml
 # loomcycle.yaml
 storage:
-  sqlmem_enabled: true            # or LOOMCYCLE_SQLMEM_ENABLED=1
+  sqlmem_enabled: true            # optional: already on with SQLite, and on
+                                  # Postgres when sqlmem_pg_dsn is set
 
 agents:
   research-bot:
@@ -192,9 +195,11 @@ it:
 
 So to go back, restore the backup of the sqlmem root (and the main store) taken
 before the upgrade, or a runtime snapshot taken by the older release. If a
-rollback without that backup cannot be avoided, set `LOOMCYCLE_DEADLINK_GC_MS=0`
-on the older release **before it starts**. On the next upgrade, what the older
-release wrote is quarantined (below), not merged.
+rollback without that backup cannot be avoided, set `LOOMCYCLE_DEADLINK_GC=off`
+on the older release **before it starts**, and set `LOOMCYCLE_DEADLINK_GC_MS=0`
+beside it: a release from before `LOOMCYCLE_DEADLINK_GC` existed reads only
+the second, and one that reads the first accepts the pair. On the next
+upgrade, what the older release wrote is quarantined (below), not merged.
 
 **Quarantine files.** Once a scope's documents have moved, its `<scope>.db` is
 the file Memory SQL writes, so the runtime never copies rows from it into the
@@ -278,7 +283,7 @@ in one transaction.
 
 | Env | yaml (`storage:`) | Meaning |
 |---|---|---|
-| `LOOMCYCLE_SQLMEM_ENABLED=1` | `sqlmem_enabled` | turn the subsystem on (off by default) |
+| — | `sqlmem_enabled` | unset: on with a SQLite store, and with a Postgres store when the aux DSN is set. `false` turns it off; `true` on Postgres without the aux DSN stops the boot |
 | `LOOMCYCLE_SQLMEM_ROOT` | `sqlmem_root` | sqlite tier: parent dir for `.db` files (default `<DataDir>/sqlmem`) |
 | `LOOMCYCLE_SQLMEM_PG_DSN` | `sqlmem_pg_dsn` | **postgres tier: the SEPARATE aux-DB DSN (required on the postgres backend)** |
 | `LOOMCYCLE_SQLMEM_QUOTA_BYTES` | `sqlmem_quota_bytes` | per-scope size cap (0 = none); per-agent `sql_quota_bytes` overrides |

@@ -28,7 +28,7 @@ something a human reads.
   `/docs/launch` resolves to it (see `docs/PATH.md`).
 
 Because the structure tables live in SQL Memory, **Documents require SQL Memory
-enabled** (`LOOMCYCLE_SQLMEM_ENABLED=1`); without it the tool refuses.
+enabled**; without it the tool refuses.
 
 ## Surface
 
@@ -1619,7 +1619,7 @@ SDK helpers: `getAnnotation` / `listAnnotations` / `annotate` (TS) and `get_anno
 
 ## Caveats
 
-- **SQL Memory required** (`LOOMCYCLE_SQLMEM_ENABLED=1`).
+- **SQL Memory required**.
 - **Tenant scope needs two grants** — `tenant` in both `memory_scopes` and `sql_scopes`.
 - **Orphaned bodies are best-effort on delete** — see the integrity note above
   (invisible dead K/V; the row side is atomic).

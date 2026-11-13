@@ -14,8 +14,9 @@
 # webhook / an operator `spawn_run` can drive it directly.
 #
 # REQUIREMENTS
-#   - LOOMCYCLE_SQLMEM_ENABLED=1 + a user_id on the run — Documents require SQL
-#     Memory, and the tools operate at scope=user.
+#   - SQL Memory + a user_id on the run — Documents require SQL Memory (on
+#     with SQLite; on a Postgres store it needs LOOMCYCLE_SQLMEM_PG_DSN),
+#     and the tools operate at scope=user.
 #
 # This bundle carries NO provider matrix (a code-js agent needs none — it never
 # calls a model). Layer it over your own config:

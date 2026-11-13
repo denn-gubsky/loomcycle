@@ -118,8 +118,37 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_GIT_SOURCE_TIMEOUT_SECONDS", value: "600"},
 		{name: "LOOMCYCLE_CLIENT_TOOL_MAX_CONNS", value: "1", refused: true},
 		{name: "LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS", value: "60", refused: true},
+
+		// The internal-chat age is fixed at 3 days: any other age changes when
+		// those chats are deleted, in either direction. Zero inherited the
+		// chat age, and an unset chat age was "no minimum".
 		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "3600000", refused: true},
-		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "604800000"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "604800000", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "259200000"},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "-1"}, // was ignored: the 3-day default applied
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "soon", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=604800000"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=3600000"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=0"}, refused: true},
+		{name: "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS", value: "0", also: []string{"LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS=259200000"}},
+
+		// Switches of work that changes what is kept: the old "off" is refused,
+		// every other value left the work running.
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: "0", refused: true},
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: "1"},
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: "off"}, // the old read turned it off for exactly "0"
+		{name: "LOOMCYCLE_USAGE_SWEEPER", value: ""},
+		{name: "LOOMCYCLE_HEARTBEAT_SWEEPER", value: "0", refused: true},
+		{name: "LOOMCYCLE_HEARTBEAT_SWEEPER", value: "1"},
+		{name: "LOOMCYCLE_HEARTBEAT_SWEEPER", value: "false"},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "0", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "false", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: " No ", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "OFF", refused: true},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "1"},
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: "maybe"}, // was ignored: the default (on) applied
+		{name: "LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS", value: ""},
 
 		// The ceiling is gone, so any ceiling was tighter.
 		{name: "LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS", value: "60000", refused: true},
@@ -157,6 +186,96 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MODE", value: "off", also: []string{"LOOMCYCLE_USAGE_RUN_RETENTION_MS=86400000"}}, // dormant
 		{name: "LOOMCYCLE_USAGE_RUN_RETENTION_MS", value: "86400000"},                                                           // no mode: dormant
 
+		// The store backend: refused when the variable names another backend
+		// than the one this version opens. The env value used to win over the
+		// yaml, and an unknown one stopped the boot when the store was opened.
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", refused: true}, // no DSN: SQLite would be opened
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "sqlite", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}, refused: true},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "sqlite", yaml: StorageConfig{PgDSN: "postgres://u@h/db"}, refused: true},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", yaml: StorageConfig{PgDSN: "${LOOMCYCLE_PG_DSN}"}, refused: true}, // a reference is not a DSN
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", yaml: StorageConfig{Backend: "sqlite"}, also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}, refused: true},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "Postgres", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}, refused: true},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "sqlite"},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", yaml: StorageConfig{PgDSN: "postgres://u@h/db"}},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "postgres", yaml: StorageConfig{Backend: "postgres"}}, // the yaml pins it
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: "sqlite", yaml: StorageConfig{Backend: "sqlite"}, also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}},
+		{name: "LOOMCYCLE_STORAGE_BACKEND", value: ""}, // was ignored
+
+		// The SQL Memory switch: the old read turned it on for exactly "1" and
+		// otherwise left the yaml's answer. Refused when that differs from
+		// what this version infers from the store.
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", refused: true}, // SQLite: now on
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "", refused: true},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "true", refused: true}, // was not "1": it stayed off
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db", "LOOMCYCLE_SQLMEM_PG_DSN=postgres://u@h/aux"}, refused: true},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}, refused: true},                                       // Postgres, no aux DSN: now off
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", yaml: StorageConfig{PgDSN: "postgres://u@h/db", SqlMemPgDSN: "${LOOMCYCLE_SQLMEM_PG_DSN}"}, refused: true}, // a reference is not a DSN
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", yaml: StorageConfig{SqlMemEnabled: boolPtr(false)}, refused: true},                                         // the variable used to win over the yaml
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1"},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db", "LOOMCYCLE_SQLMEM_PG_DSN=postgres://u@h/aux"}},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", also: []string{"LOOMCYCLE_PG_DSN=postgres://u@h/db"}}, // off then, off now
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", yaml: StorageConfig{SqlMemEnabled: boolPtr(false)}},
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "0", yaml: StorageConfig{SqlMemEnabled: boolPtr(true)}}, // the yaml turned it on then too
+		// On Postgres with no aux DSN an explicit yaml true stops the boot when
+		// SQL Memory is opened, as it did; that is not this rule's to refuse.
+		{name: "LOOMCYCLE_SQLMEM_ENABLED", value: "1", yaml: StorageConfig{PgDSN: "postgres://u@h/db", SqlMemEnabled: boolPtr(true)}},
+
+		// The A2A switch: the old read served A2A for exactly "1". Refused
+		// when it was off and the server card that now turns A2A on is named.
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "0", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=public"}, refused: true},
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=public"}, refused: true},
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "0"},
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "0", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=  "}}, // a blank card names nothing
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "1", also: []string{"LOOMCYCLE_A2A_SERVER_CARD=public"}},
+		{name: "LOOMCYCLE_A2A_ENABLED", value: "1"}, // was on with no card to serve; now off
+
+		// The two audio queue sizes: refused when positive and under the size
+		// both queues now get, or unreadable. Zero and a negative number took
+		// the default.
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "1", refused: true}, // the default is 2
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "1", refused: true},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "3", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=5"}, refused: true},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "1", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=0"}, refused: true}, // zero keeps the default
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "one", refused: true},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "2"},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "7"},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "0"},
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "-1"},
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: ""},
+		{name: "LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT", value: "1", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=1"}},
+		{name: "LOOMCYCLE_SPEECH_MAX_INFLIGHT", value: "5", also: []string{"LOOMCYCLE_AUDIO_MAX_INFLIGHT=5"}},
+
+		// The debug flags only added log lines.
+		{name: "LOOMCYCLE_AUTH_VERBOSE", value: "1"},
+		{name: "LOOMCYCLE_CHANNEL_DEBUG", value: "0"},
+		{name: "LOOMCYCLE_OLLAMA_DEBUG_THINK", value: "1"},
+
+		// The dead-link collection deletes data. Its old "off" and "dry run"
+		// are refused unless the variable that replaced both says the same or
+		// less; an interval longer than the fixed hour is refused while the
+		// collection deletes, a shorter one never.
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "-1", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC=dry-run"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC=on"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC=off"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "0", also: []string{"LOOMCYCLE_DEADLINK_GC= off "}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "3600000"},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "600000"},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", also: []string{"LOOMCYCLE_DEADLINK_GC=on"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", also: []string{"LOOMCYCLE_DEADLINK_GC=off"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "7200000", also: []string{"LOOMCYCLE_DEADLINK_GC=dry-run"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: "hourly"}, // was ignored: the default hour applied
+		{name: "LOOMCYCLE_DEADLINK_GC_MS", value: ""},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", also: []string{"LOOMCYCLE_DEADLINK_GC=on"}, refused: true},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", also: []string{"LOOMCYCLE_DEADLINK_GC=dry-run"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "1", also: []string{"LOOMCYCLE_DEADLINK_GC=off"}},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "0"},
+		{name: "LOOMCYCLE_DEADLINK_GC_DRY_RUN", value: "true"}, // the old read was a dry run for exactly "1"
+
 		// Retired, and no value of it was a tightening.
 		{name: "LOOMCYCLE_SSE_KEEPALIVE_MS", value: "0"},
 		{name: "LOOMCYCLE_SNAPSHOT_MAX_BYTES", value: "1"},
@@ -169,6 +288,9 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 			}
 			if tc.refused && !strings.HasPrefix(got[0], tc.name+": ") {
 				t.Errorf("refusal does not lead with the variable: %q", got[0])
+			}
+			if tc.refused && tc.name == "LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS" && !strings.Contains(got[0], "kept 3 days") {
+				t.Errorf("refusal does not say how long internal chats are kept: %q", got[0])
 			}
 			if adv := retiredEnvWarnings(environ); len(adv) == 0 {
 				t.Errorf("no advisory for %s", tc.name)

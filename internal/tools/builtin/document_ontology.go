@@ -57,7 +57,7 @@ type ontologyChunk struct {
 // rendering, but a caller showing the tree (the Settings panel) wants document order.
 func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string) (OntologyRead, error) {
 	if d.Store == nil || d.SqlMem == nil {
-		return OntologyRead{}, fmt.Errorf("ontology: requires SQL Memory (set LOOMCYCLE_SQLMEM_ENABLED=1)")
+		return OntologyRead{}, fmt.Errorf("ontology: requires SQL Memory (it is off on this server; a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN)")
 	}
 	key, mscope, err := d.resolveScope(ctx, scope)
 	if err != nil {

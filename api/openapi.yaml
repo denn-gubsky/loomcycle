@@ -727,7 +727,7 @@ paths:
         seconds); a caller at a hard token budget is refused (429) first.
 
         Engine requests take turns in a server-wide queue
-        (`LOOMCYCLE_SPEECH_MAX_INFLIGHT`, default 2): a request over the bound
+        (`LOOMCYCLE_AUDIO_MAX_INFLIGHT`, default 2): a request over the bound
         **waits** for a slot while the caller stays connected, rather than
         being refused.
 
@@ -806,7 +806,7 @@ paths:
         to `transcription.stt.max_minutes_per_run`. Each engine request is
         charged to the caller (an `stt` usage row with its seconds). A pass
         that stops part-way returns no transcript. Engine requests take turns
-        in a queue (`LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT`, default 2) and wait
+        in a queue (`LOOMCYCLE_AUDIO_MAX_INFLIGHT`, default 2) and wait
         for a slot rather than being refused.
 
         Requires the `runs:create` scope; access control asks

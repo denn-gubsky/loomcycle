@@ -16,8 +16,9 @@ deterministically and idempotently, offloaded from the caller's context.
 
 ## Requirements
 
-- `LOOMCYCLE_SQLMEM_ENABLED=1` and a `user_id` on the run — Documents require
-  SQL Memory and the agent operates at `scope=user`.
+- SQL Memory and a `user_id` on the run — Documents require SQL Memory (on
+  with SQLite; on a Postgres store it needs LOOMCYCLE_SQLMEM_PG_DSN) and the agent
+  operates at `scope=user`.
 
 The bundle carries **no** provider matrix (a code-agent never calls a model).
 
@@ -27,13 +28,11 @@ Selected as an embedded preset (ships in the binary) or layered as a file.
 
 ```bash
 # embedded preset (ships in the binary):
-LOOMCYCLE_SQLMEM_ENABLED=1 \
-  LOOMCYCLE_PRESETS=base,doc-colorizer ./bin/loomcycle
+LOOMCYCLE_PRESETS=base,doc-colorizer ./bin/loomcycle
 
 # or layered as a file over your own config:
-LOOMCYCLE_SQLMEM_ENABLED=1 \
-  ./bin/loomcycle --config <your-config>.yaml \
-                  --config bundles/doc-colorizer/loomcycle.yaml
+./bin/loomcycle --config <your-config>.yaml \
+                --config bundles/doc-colorizer/loomcycle.yaml
 ```
 
 Then spawn it. With no parameters it colors `/loomcycle/rfcs` (scope `user`)

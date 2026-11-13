@@ -474,7 +474,7 @@ func TestAudioTranscriptions_RefusedCallerUploadIsNotRead(t *testing.T) {
 func TestAudioRoutes_WaitForEngineSlot(t *testing.T) {
 	prov := &speakingProvider{hold: make(chan struct{})}
 	srv, _ := audioServer(t, prov, &hearingEngine{})
-	srv.cfg().Env.SpeechMaxInflight = 1
+	srv.cfg().Env.AudioMaxInflight = 1
 	queue, _ := srv.audioQueues()
 
 	codes := make(chan int, 2)

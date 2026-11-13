@@ -78,8 +78,6 @@ services:
     env_file:
       # PG DSNs come from here (LOOMCYCLE_PG_DSN / LOOMCYCLE_SQLMEM_PG_DSN).
       - /mnt/tank/loomcycle/config/loomcycle.secrets.env
-    environment:
-      LOOMCYCLE_STORAGE_BACKEND: postgres
 
   loomcycle:
     image: denngubsky/loomcycle-browser:1.147.0
@@ -112,9 +110,7 @@ services:
       LOOMCYCLE_DATA_DIR: /data
 
       # ── storage — your external Postgres (DSNs live in the secrets env file) ──
-      LOOMCYCLE_STORAGE_BACKEND: postgres
       LOOMCYCLE_PG_AUTOMIGRATE: "0"
-      LOOMCYCLE_SQLMEM_ENABLED: "1"
       LOOMCYCLE_PG_MAX_OPEN_CONNS: "48"
       LOOMCYCLE_PG_MIN_IDLE_CONNS: "8"
 

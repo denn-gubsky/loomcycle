@@ -11,8 +11,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export LOOMCYCLE_DATA_DIR="${LOOMCYCLE_DATA_DIR:-$HERE/data}"
 export LOOMCYCLE_LISTEN_ADDR="${LOOMCYCLE_LISTEN_ADDR:-127.0.0.1:8787}"
-# SQL memory subsystem (RFC AA)
-export LOOMCYCLE_SQLMEM_ENABLED="${LOOMCYCLE_SQLMEM_ENABLED:-1}"
 # Bash tool — needed by coder to run primes.py
 export LOOMCYCLE_BASH_ENABLED="${LOOMCYCLE_BASH_ENABLED:-1}"
 

@@ -119,6 +119,20 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_READ_ROOT":                           "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_WRITE_ROOT":                          "the filesystem jail is gone: declare a `volumes:` block and bind agents to it",
 	"LOOMCYCLE_BASH_CWD":                            "the filesystem jail is gone: declare a `volumes:` block; Bash runs in the root of the agent's rw volume",
+
+	// Two variables became one mode.
+	"LOOMCYCLE_DEADLINK_GC_MS":      "set LOOMCYCLE_DEADLINK_GC=off to stop the dead-link collection; it otherwise runs every hour",
+	"LOOMCYCLE_DEADLINK_GC_DRY_RUN": "set LOOMCYCLE_DEADLINK_GC=dry-run to count unreachable chunk references without deleting them",
+
+	// Inferred from another setting.
+	"LOOMCYCLE_SPEECH_MAX_INFLIGHT":        "set LOOMCYCLE_AUDIO_MAX_INFLIGHT, which sizes the queue of both audio routes",
+	"LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT": "set LOOMCYCLE_AUDIO_MAX_INFLIGHT, which sizes the queue of both audio routes",
+	"LOOMCYCLE_AUTH_VERBOSE":               "set LOOMCYCLE_LOG_LEVEL=debug: a rejected credential is logged at debug level",
+	"LOOMCYCLE_CHANNEL_DEBUG":              "set LOOMCYCLE_LOG_LEVEL=debug: each channel publish is logged at debug level",
+	"LOOMCYCLE_OLLAMA_DEBUG_THINK":         "set LOOMCYCLE_LOG_LEVEL=debug: each Ollama request's model, effort and think flag are logged at debug level",
+	"LOOMCYCLE_A2A_ENABLED":                "A2A is on when LOOMCYCLE_A2A_SERVER_CARD names the server card to serve; unset it to turn A2A off",
+	"LOOMCYCLE_SQLMEM_ENABLED":             "SQL Memory is on with a SQLite store, and with a Postgres store when LOOMCYCLE_SQLMEM_PG_DSN is set; storage.sqlmem_enabled: false in the yaml turns it off",
+	"LOOMCYCLE_STORAGE_BACKEND":            "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise; storage.backend in the yaml still overrides",
 }
 
 // retiredEnvWarnings returns one advisory per retired variable present in
@@ -160,10 +174,12 @@ type retiredEnvCtx struct {
 }
 
 // retiredRefusal is a retired variable whose value may have asked for
-// something tighter than what the runtime now does.
+// something tighter than what the runtime now does, for data to live
+// somewhere other than where it now goes, or for different data to be kept.
 type retiredRefusal struct {
 	// loosens reports whether ignoring value leaves the deployment looser
-	// than the operator set it.
+	// than the operator set it, moves its data, or keeps or deletes data
+	// they had not.
 	loosens func(value string, c retiredEnvCtx) bool
 	// instead replaces the retiredEnv text in the refusal when what to do
 	// about a refused value differs from what to do about a dead line.
@@ -174,7 +190,9 @@ type retiredRefusal struct {
 // only being advised. An advisory is enough when ignoring the variable changes
 // a cadence or raises nothing; it is not enough when the operator had turned a
 // feature off or lowered a bound, because the deployment would come up looser
-// than they configured it with one more line in a log to show for it.
+// than they configured it with one more line in a log to show for it. The
+// same holds for a variable whose value decided where data lives or whether it
+// is deleted: ignoring it would open another store or start a sweep.
 //
 // A rule is judged on the value: the same variable set to what the runtime
 // now does anyway is advised, not refused.
@@ -189,6 +207,27 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_CHANNEL_HOOKS":       {gateWasOff, "the channel-hook worker always runs; to keep it unused, declare no `hooks:` on any channel"},
 	"LOOMCYCLE_BASHBOX_ENABLED":     {gateWasOff, "Bashbox is always registered; to keep it unused, do not name Bashbox in any agent's `tools`"},
 	"LOOMCYCLE_RESUME_FANOUT":       {gateWasOff, "a fan-out parent always parks on pause and is resumed with its children; this can no longer be turned off"},
+
+	// The store used to be chosen here. Ignoring a value that disagrees with
+	// the DSN would open a different store: an empty SQLite file where the
+	// operator's Postgres was expected, or the reverse.
+	"LOOMCYCLE_STORAGE_BACKEND": {backendNamedAnotherStore, "the store is Postgres when LOOMCYCLE_PG_DSN (or storage.pg_dsn) is set and SQLite otherwise, which is not the backend this variable names; set storage.backend in the yaml to pin the backend"},
+
+	// SQL Memory used to be off unless this said "1". Kept off, it would now
+	// come up on a SQLite store and start hosting per-scope databases; asked
+	// for on a Postgres store with no aux DSN, it used to stop the boot and
+	// would now stay off with the agents' SQL and Documents refusing.
+	"LOOMCYCLE_SQLMEM_ENABLED": {sqlMemSwitchDisagrees, "SQL Memory follows the store, which is not what this variable asked for; to keep it off set storage.sqlmem_enabled: false in the yaml, and to have it on with a Postgres store set LOOMCYCLE_SQLMEM_PG_DSN (with storage.sqlmem_enabled unset or true)"},
+
+	// A2A used to be served only when this said "1". With the card named and
+	// the switch off, the A2A endpoints would now be mounted.
+	"LOOMCYCLE_A2A_ENABLED": {a2aWasOff, "A2A is served whenever LOOMCYCLE_A2A_SERVER_CARD is set, and it is; unset LOOMCYCLE_A2A_SERVER_CARD to keep A2A off"},
+
+	// Each audio route had its own queue size; one setting now sizes both. A
+	// route held to fewer engine requests at once (a small GPU host) would be
+	// sent more than the operator allowed.
+	"LOOMCYCLE_SPEECH_MAX_INFLIGHT":        {audioQueueLowered, "both audio queues are sized by LOOMCYCLE_AUDIO_MAX_INFLIGHT, which gives this route more engine requests at once than this variable allowed; set LOOMCYCLE_AUDIO_MAX_INFLIGHT to the size you want"},
+	"LOOMCYCLE_TRANSCRIPTION_MAX_INFLIGHT": {audioQueueLowered, "both audio queues are sized by LOOMCYCLE_AUDIO_MAX_INFLIGHT, which gives this route more engine requests at once than this variable allowed; set LOOMCYCLE_AUDIO_MAX_INFLIGHT to the size you want"},
 
 	// The filesystem jail stopped the boot before it was retired and still
 	// does: a deploy that relied on it must be moved to volumes by a person.
@@ -233,7 +272,22 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	"LOOMCYCLE_AGENT_POLL_WAIT_CAP_MS":              {loosens: loweredBelow(60_000)},
 	"LOOMCYCLE_INTERACTIVE_CHILD_IDLE_TTL_MS":       {loosens: loweredBelow(30 * 60 * 1000)},
 	"LOOMCYCLE_RESIDENT_MAX_TURN_SECONDS":           {loosens: loweredBelow(2 * 60 * 60)},
-	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": {loosens: loweredBelow(3 * 24 * 60 * 60 * 1000)},
+	"LOOMCYCLE_RETENTION_CHATS_INTERNAL_MAX_AGE_MS": {internalChatsAgeDiffers, "chats of internal agents are kept 3 days and then deleted (when chat retention is on); the age can no longer be set, here or by inheriting LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS"},
+
+	// Settings that decided what data is kept or deleted. Here a difference in
+	// either direction stops the boot: rows the operator meant to keep would
+	// be deleted, or rows they meant to be rid of would stay.
+	"LOOMCYCLE_USAGE_SWEEPER":                  {switchWasZero, "the usage rollup always runs: per-call usage rows older than LOOMCYCLE_USAGE_DETAIL_RETENTION_MS (30 days unless set) are deleted, and their daily totals are kept; to keep per-call rows longer, raise LOOMCYCLE_USAGE_DETAIL_RETENTION_MS"},
+	"LOOMCYCLE_HEARTBEAT_SWEEPER":              {switchWasZero, "the run heartbeat sweeper always runs: a run whose heartbeat went stale is marked failed; this can no longer be turned off"},
+	"LOOMCYCLE_MEMORY_PROVISION_IDENTITY_DOCS": {boolWasOff, "the tenant-root and user-root documents are always created when a principal is established; this can no longer be turned off"},
+
+	// The dead-link collection deletes chunk bodies it finds unreachable. An
+	// operator who had it off, or counting only, must say so again in the
+	// variable that replaced both before anything is deleted; one who had it
+	// run less often than the fixed hour would have rows deleted sooner.
+	"LOOMCYCLE_DEADLINK_GC_MS":      {deadLinkGCWasOffOrRarer, "the dead-link collection runs every hour and deletes unreachable chunk references unless LOOMCYCLE_DEADLINK_GC says otherwise; set LOOMCYCLE_DEADLINK_GC=off to keep it off (or dry-run to count without deleting), and remove this variable: its interval is no longer read"},
+	"LOOMCYCLE_DEADLINK_GC_DRY_RUN": {deadLinkGCWasDryRun, "the dead-link collection deletes unreachable chunk references unless LOOMCYCLE_DEADLINK_GC says otherwise; set LOOMCYCLE_DEADLINK_GC=dry-run to keep counting without deleting (or off), and remove this variable"},
+
 	// The ceiling is gone, so every ceiling was tighter.
 	"LOOMCYCLE_AGENT_CHILD_MAX_TIMEOUT_MS": {loosens: loweredBelow(1<<63 - 1)},
 	// Zero here was a setting, not "the default": a registration had to name
@@ -265,7 +319,138 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 	})},
 }
 
+// backendNow is the store backend this version opens: the yaml's explicit
+// storage.backend, else Postgres when a DSN is configured. The rules are
+// judged before applyEnvStorage runs, so the env DSN is applied here the way
+// it is there.
+func backendNow(c retiredEnvCtx) string {
+	dsn := c.storage.PgDSN
+	if v := c.env["LOOMCYCLE_PG_DSN"]; strings.TrimSpace(v) != "" {
+		dsn = v
+	}
+	return inferStorageBackend(c.storage.Backend, dsn)
+}
+
+// backendNamedAnotherStore reports a retired backend variable that names a
+// backend other than the one this version opens. The old read let a non-empty
+// value win over the yaml, and an unknown one stopped the boot when the store
+// was opened.
+func backendNamedAnotherStore(value string, c retiredEnvCtx) bool {
+	return value != "" && value != backendNow(c)
+}
+
+// sqlMemNow is whether this version turns SQL Memory on: the yaml's explicit
+// choice, else what the store gives. Like backendNow it applies the env DSN
+// itself, applyEnvSQLMem not having run yet.
+func sqlMemNow(c retiredEnvCtx) bool {
+	if c.storage.SqlMemEnabled != nil {
+		return *c.storage.SqlMemEnabled
+	}
+	dsn := c.storage.SqlMemPgDSN
+	if v := c.env["LOOMCYCLE_SQLMEM_PG_DSN"]; v != "" {
+		dsn = v
+	}
+	return inferSQLMemEnabled(backendNow(c), dsn)
+}
+
+// sqlMemSwitchDisagrees reports a retired SQL Memory switch whose old effect
+// is not what this version does. The old read turned SQL Memory on for exactly
+// "1", over the yaml; any other value left the yaml's answer, off unless it
+// said true.
+func sqlMemSwitchDisagrees(value string, c retiredEnvCtx) bool {
+	was := value == "1" || (c.storage.SqlMemEnabled != nil && *c.storage.SqlMemEnabled)
+	return was != sqlMemNow(c)
+}
+
+// a2aWasOff reports a retired A2A switch that kept A2A off (the old read
+// served it for exactly "1") while the server card that now turns it on is
+// named.
+func a2aWasOff(value string, c retiredEnvCtx) bool {
+	return value != "1" && strings.TrimSpace(c.env["LOOMCYCLE_A2A_SERVER_CARD"]) != ""
+}
+
+// audioQueueLowered reports a retired per-route audio queue size under the
+// size both queues now get: LOOMCYCLE_AUDIO_MAX_INFLIGHT, read the way
+// applyEnvToolLimits reads it, or its default.
+func audioQueueLowered(value string, c retiredEnvCtx) bool {
+	now := AudioMaxInflightDefault
+	if n, err := strconv.Atoi(c.env["LOOMCYCLE_AUDIO_MAX_INFLIGHT"]); err == nil && n > 0 {
+		now = n
+	}
+	return loweredBelow(int64(now))(value, c)
+}
+
 func gateWasOff(value string, _ retiredEnvCtx) bool { return value != "1" }
+
+// deadLinkGCNow is the dead-link collection's mode as this version reads it
+// (applyEnvDeadLinkGC, which has not run yet): unset is on. A value that is
+// none of the three fails the load there; here it counts as on, the mode
+// that deletes.
+func deadLinkGCNow(c retiredEnvCtx) string {
+	switch v := strings.TrimSpace(c.env["LOOMCYCLE_DEADLINK_GC"]); v {
+	case DeadLinkGCOff, DeadLinkGCDryRun:
+		return v
+	}
+	return DeadLinkGCOn
+}
+
+// deadLinkGCWasOffOrRarer judges the retired interval. Zero or a negative
+// number turned the collection off, which only the new "off" reproduces. A
+// positive interval longer than the fixed one deleted later than this version
+// would, which matters only while it deletes. A shorter one, and a value the
+// old read could not parse (it kept the hourly default), change nothing that
+// is kept.
+func deadLinkGCWasOffOrRarer(value string, c retiredEnvCtx) bool {
+	n, set, ok := retiredInt(value)
+	if !set || !ok {
+		return false
+	}
+	now := deadLinkGCNow(c)
+	if n <= 0 {
+		return now != DeadLinkGCOff
+	}
+	return n > DeadLinkGCInterval.Milliseconds() && now == DeadLinkGCOn
+}
+
+// deadLinkGCWasDryRun judges the retired dry-run switch: exactly "1" made the
+// collection count without deleting, so this version must not delete.
+func deadLinkGCWasDryRun(value string, c retiredEnvCtx) bool {
+	return value == "1" && deadLinkGCNow(c) == DeadLinkGCOn
+}
+
+// switchWasZero is the rule of a sweeper switch whose old read was `!= "0"`:
+// only that exact value had turned the sweeper off.
+func switchWasZero(value string, _ retiredEnvCtx) bool { return value == "0" }
+
+// boolWasOff is the rule of a default-on switch read as a boolean word: the
+// four "off" spellings turned it off, anything else kept the default.
+func boolWasOff(value string, _ retiredEnvCtx) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "false", "no", "off":
+		return true
+	}
+	return false
+}
+
+// internalChatsAgeDiffers reports an internal-chat age other than the 3 days
+// now fixed. Zero inherited the chat age, whose own zero (or absence) was "no
+// minimum age": internal chats went as soon as they finished. A negative
+// number was ignored by the old read, which left the 3-day default.
+func internalChatsAgeDiffers(value string, c retiredEnvCtx) bool {
+	const fixed = 3 * 24 * 60 * 60 * 1000
+	n, set, ok := retiredInt(value)
+	if !set || !ok {
+		return set
+	}
+	if n == 0 {
+		// The chat age's read ignored anything but a positive integer.
+		if inherited, _, ok := retiredInt(c.env["LOOMCYCLE_RETENTION_CHATS_MAX_AGE_MS"]); ok && inherited > 0 {
+			n = inherited
+		}
+		return n != fixed
+	}
+	return n > 0 && n != fixed
+}
 
 func valueNotEmpty(value string, _ retiredEnvCtx) bool { return value != "" }
 

@@ -104,17 +104,6 @@ var (
 // corresponding info wasn't available (binary built without VCS — e.g.
 // `go test` by default does not embed VCS info, but `go build` and
 // `go install` do).
-// channelDebugEnabled reports whether the operator opted into the
-// v0.12.7 channel publish/subscribe diagnostic log via the
-// LOOMCYCLE_CHANNEL_DEBUG=1 env var. Read here (not at store package
-// init time) so the env-var coupling stays in main.go where all the
-// other env-var → Config bridging lives. See
-// internal/tools/builtin/channel.go and
-// internal/store/postgres/postgres.go for what gets logged.
-func channelDebugEnabled() bool {
-	return os.Getenv("LOOMCYCLE_CHANNEL_DEBUG") == "1"
-}
-
 // memoryChangesEnabled reports whether the RFC CD Part C change-data-capture
 // feed is on. Default off — when off the store is NOT wrapped by the CDC
 // decorator, so the default deployment is byte-identical and pays nothing.
@@ -422,7 +411,7 @@ func main() {
 }
 
 // openStore resolves the operator's storage choice (sqlite default;
-// postgres opt-in via storage.backend or LOOMCYCLE_STORAGE_BACKEND) and
+// postgres when a DSN is configured or storage.backend says so) and
 // returns a ready Store + a Close-and-log closer.
 //
 // Errors propagate up to a fatal boot error; they cover both
@@ -496,11 +485,52 @@ func sweepTenantDocumentRows(st store.Store) {
 	}
 }
 
+// inferredPostgresOverSQLite refuses a Postgres backend that was inferred from
+// a DSN while the data directory already holds a SQLite store. Before the
+// inference such a deployment ran on SQLite whatever DSN its environment
+// carried; opening Postgres instead would bring it up on an empty database
+// with its data left behind in the file. A backend named in the yaml is the
+// operator's decision and is not second-guessed. The DSN is never reported.
+func inferredPostgresOverSQLite(cfg *config.Config) error {
+	if cfg.Storage.Backend != "postgres" || !cfg.Storage.BackendInferred {
+		return nil
+	}
+	dbPath := filepath.Join(cfg.Env.DataDir, "loomcycle.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		// Absent, or unreadable: there is no store here this boot could have
+		// been using.
+		return nil
+	}
+	return fmt.Errorf("an existing SQLite store was found at %s, and a Postgres DSN is configured with no storage.backend in the yaml, so the Postgres store would now be used and the SQLite data left behind. "+
+		"Set storage.backend in the yaml to say which: `sqlite` to keep using the existing store, or `postgres` to use the DSN (`loomcycle migrate sqlite-to-postgres` copies the data across first)", dbPath)
+}
+
+// storeBackendSource says where the backend choice came from, for the boot
+// line.
+func storeBackendSource(cfg *config.Config) string {
+	if cfg.Storage.BackendInferred {
+		return "inferred"
+	}
+	return "yaml"
+}
+
 // openStore opens the store; server is true only for the server boot, which
 // alone applies memory.fulltext to the shared column. Another subcommand
 // opening the store (`loomcycle tokens`, perhaps run with a different config
 // or none) would otherwise rebuild that column under the running servers.
+// It logs, once, which backend was chosen and whether the yaml named it or
+// the DSN implied it; the DSN itself is never logged.
 func openStore(cfg *config.Config, server bool) (store.Store, func(), error) {
+	// Every command that opens the server's store passes here, so a `tokens`
+	// or `audit` run cannot write to the store the server would refuse.
+	if err := inferredPostgresOverSQLite(cfg); err != nil {
+		return nil, nil, err
+	}
+	backend := cfg.Storage.Backend
+	if backend == "" {
+		backend = "sqlite"
+	}
+	slog.Info("store: backend chosen", "backend", backend, "source", storeBackendSource(cfg))
 	switch cfg.Storage.Backend {
 	case "sqlite", "":
 		if cfg.Env.ReplicaID != "" {
@@ -518,7 +548,6 @@ func openStore(cfg *config.Config, server bool) (store.Store, func(), error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("sqlite open: %w", err)
 		}
-		st.SetChannelDebug(channelDebugEnabled())
 		slog.Info("store: sqlite", "path", dbPath)
 		warnLegacyTenantMemory(st)
 		sweepTenantDocumentRows(st)
@@ -534,7 +563,6 @@ func openStore(cfg *config.Config, server bool) (store.Store, func(), error) {
 			MinIdleConns:    cfg.Storage.PgMinIdleConns,
 			AutoMigrate:     cfg.Storage.PgAutoMigrate,
 			PgvectorEnabled: cfg.Env.PgvectorEnabled,
-			ChannelDebug:    channelDebugEnabled(),
 			FullText: storepostgres.FullTextConfig{
 				Config:   cfg.Memory.FullText.Config,
 				Unaccent: cfg.Memory.FullText.Unaccent,

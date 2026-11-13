@@ -24,7 +24,7 @@ func tokensTestEnv(t *testing.T, secretKey, explicitPepper string) (store.Store,
 	dir := t.TempDir()
 	for _, k := range []string{
 		"LOOMCYCLE_PRESETS", "LOOMCYCLE_CONFIG_DIR", "LOOMCYCLE_CONFIG_FILES",
-		"LOOMCYCLE_STORAGE_BACKEND", "LOOMCYCLE_PG_DSN", "LOOMCYCLE_REPLICA_ID",
+		"LOOMCYCLE_PG_DSN", "LOOMCYCLE_REPLICA_ID",
 		"LOOMCYCLE_SECRET_KEY_PREVIOUS", "XDG_CONFIG_HOME",
 	} {
 		t.Setenv(k, "")

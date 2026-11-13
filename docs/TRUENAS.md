@@ -125,8 +125,8 @@ generate the `trains/` output, and point TrueNAS at the catalog.
 
 ## Postgres & migrations
 
-- `LOOMCYCLE_STORAGE_BACKEND=postgres`, `LOOMCYCLE_PG_DSN=…` (store),
-  `LOOMCYCLE_SQLMEM_PG_DSN=…` (SQL Memory, only if `LOOMCYCLE_SQLMEM_ENABLED=1`).
+- `LOOMCYCLE_PG_DSN=…` (store; a set DSN selects Postgres),
+  `LOOMCYCLE_SQLMEM_PG_DSN=…` (SQL Memory; setting it turns SQL Memory on).
 - **Migrations are decoupled from the image deploy.** Route A runs them in a one-shot
   `loomcycle-migrate` init service (`LOOMCYCLE_PG_AUTOMIGRATE=0` on the runtime).
   Route B exposes an **Auto-migrate on boot** toggle (`=1`, default on for a single
@@ -198,7 +198,7 @@ datasets must be `chown`ed to 65532:65532.**
 
 - **Presets** (`LOOMCYCLE_PRESETS`, comma-separated, ordered): `base` for the full
   matrix; add `oauth` or `local` to prepend a provider on top; add `document-agent`
-  to register the Document Assistant (needs `LOOMCYCLE_SQLMEM_ENABLED=1` + a `middle`
+  to register the Document Assistant (needs SQL Memory, so `LOOMCYCLE_SQLMEM_PG_DSN`, + a `middle`
   tier). Browse them with `loomcycle presets` or the Web UI's **Presets** page.
 - **Mint tenant tokens from the Web UI** (no shell needed): sign in with the admin
   (root) token, open **Access → Tokens** in the left menu ([`operator-tokens`](../internal/help/builtin/operator-tokens.md)).

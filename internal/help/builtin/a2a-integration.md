@@ -31,13 +31,12 @@ side is an *agent* that already speaks the protocol.
 ## Enabling the server surface
 
 ```sh
-LOOMCYCLE_A2A_ENABLED=1                       # turns the server surface on
-LOOMCYCLE_A2A_SERVER_CARD=loomcycle-fleet     # the active A2AServerCardDef name (required)
+LOOMCYCLE_A2A_SERVER_CARD=loomcycle-fleet     # the active A2AServerCardDef name; setting it turns A2A on
 LOOMCYCLE_A2A_PUBLIC_BASE_URL=https://agents.example   # externally-reachable origin advertised in the card
 LOOMCYCLE_A2A_TENANCY_ROUTING=none            # none|host|path (default none)
 ```
 
-When `LOOMCYCLE_A2A_ENABLED=1`, loomcycle mounts (additively — none of
+With `LOOMCYCLE_A2A_SERVER_CARD` set, loomcycle mounts (additively — none of
 this touches `/v1/*`, MCP, or `/ui`):
 
 | Path | Binding |
@@ -261,7 +260,6 @@ a2a_server_cards:
 ```
 
 ```sh
-LOOMCYCLE_A2A_ENABLED=1 \
 LOOMCYCLE_A2A_SERVER_CARD=loomcycle-fleet \
 LOOMCYCLE_A2A_PUBLIC_BASE_URL=https://agents.example \
   ./bin/loomcycle --config loomcycle.yaml

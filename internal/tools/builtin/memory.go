@@ -664,7 +664,7 @@ func (m *Memory) InputSchema() json.RawMessage { return json.RawMessage(memoryIn
 // errors as model-readable tool_results.
 func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
 	if m.Store == nil {
-		return errBusiness("Memory tool: not configured (no Store backend — set LOOMCYCLE_STORAGE_BACKEND or remove Memory from the agent's tools)",
+		return errBusiness("Memory tool: not configured (no Store backend — remove Memory from the agent's tools)",
 			"Memory is unavailable on this server; continue without it."), nil
 	}
 	var in memoryInput
@@ -924,7 +924,7 @@ func (m *Memory) execSqlQuery(ctx context.Context, in memoryInput) (tools.Result
 		return memErr(err.Error(), err), nil
 	}
 	if m.SqlMem == nil {
-		return errBusiness("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)",
+		return errBusiness("SQL Memory is not enabled on this server (a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN; storage.sqlmem_enabled: false turns it off)",
 			"Use the key/value ops (get, set, search) instead, or ask an operator to enable SQL Memory."), nil
 	}
 	if strings.TrimSpace(in.Statement) == "" {
@@ -968,7 +968,7 @@ func (m *Memory) execSqlExec(ctx context.Context, in memoryInput) (tools.Result,
 		return memErr(err.Error(), err), nil
 	}
 	if m.SqlMem == nil {
-		return errBusiness("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)",
+		return errBusiness("SQL Memory is not enabled on this server (a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN; storage.sqlmem_enabled: false turns it off)",
 			"Use the key/value ops (get, set, search) instead, or ask an operator to enable SQL Memory."), nil
 	}
 	if strings.TrimSpace(in.Statement) == "" {
@@ -1052,7 +1052,7 @@ func (m *Memory) execSqlBegin(ctx context.Context, in memoryInput) (tools.Result
 		return memErr(err.Error(), err), nil
 	}
 	if m.SqlMem == nil {
-		return errBusiness("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)",
+		return errBusiness("SQL Memory is not enabled on this server (a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN; storage.sqlmem_enabled: false turns it off)",
 			"Use the key/value ops (get, set, search) instead, or ask an operator to enable SQL Memory."), nil
 	}
 	rid := tools.RunIdentity(ctx).RootRunID
@@ -1090,7 +1090,7 @@ func (m *Memory) execSqlTxnFinish(ctx context.Context, in memoryInput, commit bo
 		return memErr(err.Error(), err), nil
 	}
 	if m.SqlMem == nil {
-		return errBusiness("SQL Memory is not enabled on this server (set storage.sqlmem_enabled / LOOMCYCLE_SQLMEM_ENABLED=1)",
+		return errBusiness("SQL Memory is not enabled on this server (a Postgres store needs LOOMCYCLE_SQLMEM_PG_DSN; storage.sqlmem_enabled: false turns it off)",
 			"Use the key/value ops (get, set, search) instead, or ask an operator to enable SQL Memory."), nil
 	}
 	txnID := currentSqlTxnID(ctx, scope, scopeID)

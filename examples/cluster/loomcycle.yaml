@@ -7,7 +7,7 @@
 # loomcycle.yaml.
 #
 # Storage is driven entirely from env vars set in docker-compose.cluster.yaml
-# (LOOMCYCLE_STORAGE_BACKEND=postgres + LOOMCYCLE_PG_DSN). Env wins over
+# (LOOMCYCLE_PG_DSN: a set DSN selects Postgres). Env wins over
 # yaml — no `storage:` block needed here.
 
 # Per-tier model resolution. The cluster demo agent uses `tier: middle`;
