@@ -222,18 +222,27 @@ Document {"op":"search","query":"minimum capital requirement","scope":"tenant","
 
 - The topic is a name the help index uses: an operation article
   `<Tool>/<op>` (`Document/search`, `Path/ls`), a tool article (`Decision`),
-  or a topic (`scopes`). Every call example under the article's `## Examples`
-  heading renders; the results shown there and the prose around them do not.
-  To show only some calls, write them by hand instead.
+  or a topic (`scopes`). Any spelling `Context op=help` accepts for a
+  built-in topic works too: another case, an alias, or `.` or a space as the
+  operation separator (`{{help:Document.search}}`). Every call example under
+  the article's `## Examples` heading renders; the results shown there and the
+  prose around them do not. To show only some calls, write them by hand
+  instead.
 - The examples are the ones built into the server and checked against each
-  tool's input schema, so the call card follows the tool when it changes. An
-  operator's own help directory does not change what renders.
+  tool's input schema, so the call card follows the tool when it changes. Only
+  built-in topics can be named: a topic added through the operator's help
+  directory cannot, and overriding a built-in topic there does not change what
+  renders.
 - A topic the server does not have, a topic with no call examples, or a
-  malformed placeholder (`{{help:Document search}}`) fails config load, and is
-  refused by AgentDef create and fork, with the placeholder named.
+  malformed placeholder (`{{help:../x}}`, or a `{{help:` that never closes)
+  is refused where the prompt is written — config load, AgentDef create and
+  fork, register_agent, and a team's `system_prompt` and `input_template` —
+  with the placeholder named. A definition already stored is never refused
+  over it: if a later server drops the topic, the placeholder renders nothing.
 - It is not framed as data: the lines are meant to be copied into calls.
-- Budget: 8 KiB of examples per prompt in total, counting each placeholder.
-  A prompt over it fails config load.
+- Budget: 8 KiB of examples per prompt text, counting each placeholder. The
+  agent's system prompt and each team template are expanded separately, so
+  each has its own 8 KiB. A text over it is refused where it is written.
 - Any definition may use it, and a team node's templates too. It reads no
   store and calls no tool.
 
