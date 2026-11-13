@@ -3039,3 +3039,30 @@ func TestSecretEnvValues_MasksEachCollectorHeader(t *testing.T) {
 		t.Error("an ordinary *_HEADERS setting is classified as a secret")
 	}
 }
+
+// LOOMCYCLE_PG_AUTOMIGRATE wins over storage.pg_automigrate in both
+// directions: 1 turns it on, 0 turns it off. Any other value is not a
+// setting and leaves the yaml's.
+func TestLoad_PgAutoMigrateEnvWinsOverTheYAML(t *testing.T) {
+	for _, tc := range []struct {
+		yaml, env string
+		want      bool
+	}{
+		{"", "", false},
+		{"", "1", true},
+		{"storage: {pg_automigrate: true}\n", "", true},
+		{"storage: {pg_automigrate: true}\n", "0", false},
+		{"storage: {pg_automigrate: false}\n", "1", true},
+		{"storage: {pg_automigrate: true}\n", "true", true},
+		{"", "true", false},
+	} {
+		t.Setenv("LOOMCYCLE_PG_AUTOMIGRATE", tc.env)
+		cfg, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte("defaults: {provider: mock}\n" + tc.yaml)})
+		if err != nil {
+			t.Fatalf("yaml=%q env=%q: %v", tc.yaml, tc.env, err)
+		}
+		if cfg.Storage.PgAutoMigrate != tc.want {
+			t.Errorf("yaml=%q env=%q: PgAutoMigrate = %v, want %v", tc.yaml, tc.env, cfg.Storage.PgAutoMigrate, tc.want)
+		}
+	}
+}

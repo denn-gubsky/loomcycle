@@ -5227,8 +5227,13 @@ func applyEnvStorage(cfg *Config) {
 			cfg.Storage.PgMinIdleConns = int32(n)
 		}
 	}
-	if v := os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE"); v == "1" {
+	// 1 and 0 are the two settings; anything else was never read as one and
+	// leaves the yaml's.
+	switch os.Getenv("LOOMCYCLE_PG_AUTOMIGRATE") {
+	case "1":
 		cfg.Storage.PgAutoMigrate = true
+	case "0":
+		cfg.Storage.PgAutoMigrate = false
 	}
 	cfg.Storage.Backend = inferStorageBackend(cfg.Storage.Backend, cfg.Storage.PgDSN)
 }

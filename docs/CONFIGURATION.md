@@ -3329,7 +3329,7 @@ The run limits are the yaml `concurrency:` block and have no variables: `max_con
 |---|---|---|
 | `LOOMCYCLE_PG_MAX_OPEN_CONNS` | `32` | Postgres pool size. |
 | `LOOMCYCLE_PG_MIN_IDLE_CONNS` | `4` | Warm idle connections kept in the Postgres pool. |
-| `LOOMCYCLE_PG_AUTOMIGRATE` | off | `1` applies pending Postgres schema migrations at boot. Off, boot refuses a database behind the binary's migrations until `loomcycle migrate up` runs. |
+| `LOOMCYCLE_PG_AUTOMIGRATE` | off | `1` applies pending Postgres schema migrations at boot. Off, boot refuses a database behind the binary's migrations until `loomcycle migrate up` runs. It wins over the yaml's `storage.pg_automigrate` both ways: `0` keeps it off under `pg_automigrate: true`. |
 | `LOOMCYCLE_REPLICA_ID` | unset | Turns on cluster mode and names this replica; also labels the Prometheus metrics. See [MULTI-REPLICA.md](MULTI-REPLICA.md). |
 | `LOOMCYCLE_REPLICAS_STALE_AFTER_MS` | `90000` | A replica whose heartbeat is older than this is presumed dead: its in-flight runs fail with `replica_died` and its quota is reclaimed. Keep it well above the 30 s heartbeat. |
 | `LOOMCYCLE_HEARTBEAT_STALE_MS` | `600000` | A run with no heartbeat for this long is swept. Keep it at least twice a slow iteration (a long tool call). |
