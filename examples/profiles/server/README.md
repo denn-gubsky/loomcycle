@@ -6,15 +6,17 @@ customer.
 
 | File | What it holds |
 |---|---|
-| `env.insecure.example` | Settings that are not secrets: the preset, the addresses, the collector. |
+| `loomcycle.yaml` | `presets: [server]`, the dynamic volume and the sign-in gates. Goes in `config/`. |
+| `env.insecure.example` | Settings that are not secrets: the addresses, the collector. |
 | `env.local.example` | Secret names with empty values. Five are required. |
-| `loomcycle.yaml` | The dynamic volume and the sign-in gates. Goes in `config/`. |
 | `docker-compose.yaml` | The runtime, a one-shot schema migration, and Postgres. |
 | `postgres-init.sql` | Creates the second database, once. |
 
 The `server` preset supplies the rest: the provider matrix, the chat, document
 and memory agents, and the metrics sampler. `loomcycle presets show server`
-prints it.
+prints it. The yaml selects it with `presets: [server]`; that key is read from
+`config/loomcycle.yaml` only, and `LOOMCYCLE_PRESETS`, when set, is used
+instead.
 
 ## Start
 

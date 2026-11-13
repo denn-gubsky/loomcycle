@@ -1,16 +1,19 @@
 # loomcycle — server profile. Mounted read-only at /config (LOOMCYCLE_CONFIG_DIR).
 #
 # The agents, the model routing and the metrics sampler come from the `server`
-# preset, which is selected in the environment, not here:
-#
-#     LOOMCYCLE_PRESETS=server
-#
-# `loomcycle presets show server` prints what it layers. This file holds what
-# no preset can: where agents may write, and who gets in. Anything you write
-# here is merged over the preset, key by key.
+# preset, a stack of config built into the binary. `loomcycle presets show
+# server` prints what it layers. The rest of this file holds what no preset
+# can: where agents may write, and who gets in. Anything you write here is
+# merged over the preset, key by key.
 #
 # No secret belongs in this file. A key that needs one names the environment
 # variable that holds it.
+
+# Which presets this config sits on. It is read from this file only
+# (loomcycle.yaml in the config directory), never from another file beside it.
+# LOOMCYCLE_PRESETS, when set, is used instead. A preset named here is trusted
+# as this file is; none can set a gate, a volume or a secret.
+presets: [server]
 
 # ─── Volumes ───────────────────────────────────────────────────────────
 # The dynamic root: the one directory under which the runtime makes a volume

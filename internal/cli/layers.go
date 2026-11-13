@@ -52,6 +52,9 @@ func readLayerEnv() layerEnv {
 type ConfigStack struct {
 	// Layers is the stack, base first; config.LoadLayers merges it last-wins.
 	Layers []config.Layer
+	// Presets is the embedded presets and bundles among the layers, in layer
+	// order, after every include is expanded. Empty when none is selected.
+	Presets []string
 	// Files is the operator's disk files among the layers, in layer order.
 	// Empty for a stack made of embedded presets alone.
 	Files []string
@@ -288,6 +291,9 @@ func AssembleConfigStack(presetFlags, cfgPaths []string, verbose bool) (ConfigSt
 		stack.Layers = append(stack.Layers, config.Layer{Name: "providers.default", Data: embedded.DefaultProviders(), Embedded: true})
 	}
 	stack.Layers = append(stack.Layers, presetLayers...)
+	for _, l := range presetLayers {
+		stack.Presets = append(stack.Presets, l.Name)
+	}
 	for _, f := range stack.Files {
 		l := config.Layer{Name: f}
 		if f == primary {

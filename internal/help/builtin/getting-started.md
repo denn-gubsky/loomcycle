@@ -3,26 +3,26 @@ name: getting-started
 description: "First-run walkthrough — `loomcycle init` → set env vars → `loomcycle doctor` → run the server."
 ---
 The shortest path from a fresh `loomcycle` install to a working server
-is three commands and one variable:
+is three commands:
 
 ```sh
 loomcycle init       # writes ~/.config/loomcycle/loomcycle.yaml + README.md
-export LOOMCYCLE_PRESETS=personal   # the agents and the model routing
-# plus a provider key, unless Ollama runs locally (see below)
+# then set a provider key, unless Ollama runs locally (see below)
 loomcycle doctor     # verifies config + provider keys + storage + listen address
 loomcycle            # starts the server on 127.0.0.1:8787
 ```
 
-The yaml `init` writes is short: it holds only what is the operator's
-own (a volume, a local-model setting). The agents and the model routing
-come from a preset, a named stack of config built into the binary, and
-the preset is selected in the environment. `personal` is one person on
-one machine; `loomcycle init --profile server` writes the config of a
-shared installation, used with `LOOMCYCLE_PRESETS=server`. `loomcycle
-presets` lists the presets and `loomcycle presets show <name>` prints
-one. `loomcycle init --full` writes the long, fully-commented reference
-config instead, which carries its own routing and agents and needs no
-preset.
+The yaml `init` writes is short. Its first setting, `presets:
+[personal]`, names a preset: a stack of config built into the binary
+that supplies the agents and the model routing. The rest holds only
+what is the operator's own (a volume, a local-model setting). `personal`
+is one person on one machine; `loomcycle init --profile server` writes
+the config of a shared installation, with `presets: [server]`.
+`loomcycle presets` lists the presets and `loomcycle presets show
+<name>` prints one. The `LOOMCYCLE_PRESETS` variable, when set, selects
+instead of the yaml's line. `loomcycle init --full` writes the long,
+fully-commented reference config instead, which carries its own routing
+and agents and names no preset.
 
 ## init
 
@@ -43,7 +43,7 @@ When stdin is a TTY, init auto-enters a minimal 3-question wizard:
 Every other setting stays as a commented section in the generated
 `loomcycle.yaml` — the operator edits them later if needed. The
 wizard's final stdout block prints the env-var lines you need to paste
-into your shell rc, the preset among them; it never writes them to disk.
+into your shell rc; it never writes them to disk.
 
 To skip the wizard in CI / Docker / scripted setups, pass
 `--no-interactive`.
@@ -54,7 +54,6 @@ After `init`, set at least:
 
 | Env var | Why |
 |---|---|
-| `LOOMCYCLE_PRESETS` | The preset the written yaml relies on: `personal`, or `server` after `init --profile server`. Not needed after `init --full`. |
 | `LOOMCYCLE_AUTH_TOKEN` | Bearer token enforced on every `/v1/*` endpoint. Generate with `openssl rand -hex 32`. Optional while the server listens on loopback only. |
 | `<PROVIDER>_API_KEY` | One per provider you'll route to. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `GEMINI_API_KEY`. None is needed when a local Ollama serves the models. |
 

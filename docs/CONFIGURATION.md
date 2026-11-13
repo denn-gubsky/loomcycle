@@ -2655,7 +2655,8 @@ layers every `*.yaml` in the directory.
 
 **The CLI loads what the server loads.** `loomcycle validate`, `doctor`,
 `agents list`, `migrate --config`, `tokens` and `audit` assemble their stack with
-the same function the server boots and reloads with: presets, the config dir, a
+the same function the server boots and reloads with: presets (the primary
+file's `presets:` key included, §9f), the config dir, a
 named file, section files and the `auth.env` beside the last file. With no file
 named (`loomcycle validate`, `loomcycle doctor`) they load what a bare
 `loomcycle` would: the auto-discovered file, or the presets and config dir alone.
@@ -2758,7 +2759,7 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   reaches outside the runtime (the shell, the HTTP allowlist): those have no
   yaml form. [`examples/profiles/`](../examples/profiles/) has a complete
   configuration for each, and `loomcycle init [--profile server]` writes its
-  yaml.
+  yaml, which names the preset with `presets:` (below).
 - **Bundles** — a preset that *also* defines an agent and its skills **inline**
   (the top-level `skills:` map, §7). `document-agent` ships the `doc/manager`
   Document Assistant agent + its four skills — no skills directory, no
@@ -3041,9 +3042,33 @@ On a no-shell deployment the same three are read-only in the **Web UI Settings
 hub** (the top-right gear → **Presets**, admin-only) — backed by
 `GET /v1/_presets`, `/v1/_presets/{name}`, `/v1/_env_template`.
 
-**Selecting them.** `LOOMCYCLE_PRESETS=base,document-agent` (comma-separated,
-ordered) — or the repeatable `--preset` flag (flags override the env list) —
-layers the named units as the **base** of the config stack, under your files:
+**Selecting them.** Three ways, the first that is set wins: the repeatable
+`--preset` flag; `LOOMCYCLE_PRESETS=base,document-agent` (comma-separated,
+ordered); a top-level `presets:` list in your primary config file. Each layers
+the named units as the **base** of the config stack, under your files:
+
+```yaml
+# loomcycle.yaml
+presets: [personal]
+```
+
+- **Which file.** `presets:` is read from one file: the last `--config`, else
+  the auto-discovered `loomcycle.yaml`, else `loomcycle.yaml` in
+  `LOOMCYCLE_CONFIG_DIR`. In any other layer (another file of the config
+  directory, an earlier `--config`, a `loomcycle.*.yaml` section file) it stops
+  the load and names the file, so the selection never depends on layer order.
+- **The environment wins**, as for every setting that has both forms. When
+  `--preset` or `LOOMCYCLE_PRESETS` is set, the file's list is not layered; if
+  the two would give different stacks, an advisory at boot, in `loomcycle
+  validate` and in `loomcycle doctor` names both.
+- **Read at every load.** A config reload re-reads the key.
+- **Trust.** A preset named in the file is trusted exactly as the file is. It
+  adds only what a unit built into the binary carries, and no unit can set a
+  security gate: no gate has a yaml form. A name the binary does not carry
+  stops the load, naming the key and the file.
+- The key selects layers; it is not a setting. It does not appear in the
+  merged config and does not count as an override under
+  `LOOMCYCLE_CONFIG_STRICT`.
 
 ```sh
 # OAuth-first base + the Document Assistant, under your thin overlay:
@@ -3066,12 +3091,13 @@ preset(s)/bundle(s) as base: …` names the layers after expansion.
 `include:` works only inside a preset built into the binary. In your own
 config file it is refused with an error that says so: the schema ignores an
 unknown top-level key, so an `include: [base]` there would load nothing and
-say nothing. Compose your own stack with `LOOMCYCLE_PRESETS` and `--config`.
+say nothing. Compose your own stack with `presets:` (or `LOOMCYCLE_PRESETS`)
+and `--config`.
 
 The **full precedence chain** (base → top, last wins, RFC AN merge):
 
 ```
-embedded presets (LOOMCYCLE_PRESETS, in order)
+embedded presets (--preset, else LOOMCYCLE_PRESETS, else presets: in the primary file; in order)
   → LOOMCYCLE_CONFIG_DIR/*.yaml   (a dir of layers, lexical order)
   → --config flags                (your authoritative overlay, wins)
 ```
@@ -3095,9 +3121,9 @@ ceiling, or swap a skill body by re-declaring its key). Selecting presets with
 **no config file at all** boots from the embedded base alone (the bare-start
 case). An unknown unit name is a **fatal** error listing the available names.
 
-**Opt-in.** With `LOOMCYCLE_PRESETS` unset and no `--preset`, boot is exactly as
-before (no presets) — embedded presets are a deliberate opt-in, not a silent new
-base. `document-agent` needs SQL Memory + a
+**Opt-in.** With `LOOMCYCLE_PRESETS` unset, no `--preset` and no `presets:` in
+the primary file, boot is exactly as before (no presets) — embedded presets are
+a deliberate opt-in, not a silent new base. `document-agent` needs SQL Memory + a
 `middle` tier to actually run; absent those it's a registered-but-idle def.
 
 ---

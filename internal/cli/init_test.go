@@ -12,8 +12,8 @@ import (
 )
 
 // TestInit_NonInteractive_WritesBothFiles — the no-wizard path drops
-// the personal profile's yaml + README.md into the target dir, and says
-// which preset that yaml relies on.
+// the personal profile's yaml + README.md into the target dir. The yaml
+// names its preset, so the next steps ask for no variable to select one.
 func TestInit_NonInteractive_WritesBothFiles(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
@@ -40,8 +40,11 @@ func TestInit_NonInteractive_WritesBothFiles(t *testing.T) {
 	if !bytes.Equal(yamlBytes, want) {
 		t.Errorf("yaml is not the personal profile's config; got:\n%s", tail(string(yamlBytes), 10))
 	}
-	if !strings.Contains(stdout.String(), "export LOOMCYCLE_PRESETS=personal") {
-		t.Errorf("stdout does not say which preset the config relies on; got:\n%s", stdout.String())
+	if !bytes.Contains(yamlBytes, []byte("\npresets: [personal]\n")) {
+		t.Errorf("the written yaml does not name its preset; got:\n%s", tail(string(yamlBytes), 10))
+	}
+	if strings.Contains(stdout.String(), "LOOMCYCLE_PRESETS") {
+		t.Errorf("the next steps still ask for LOOMCYCLE_PRESETS; got:\n%s", stdout.String())
 	}
 	docBytes, _ := os.ReadFile(docPath)
 	if !bytes.Contains(docBytes, []byte("loomcycle — local config quickstart")) {
@@ -314,9 +317,10 @@ func TestInit_Full_WritesTheReferenceConfig(t *testing.T) {
 	}
 }
 
-// The wizard on a profile prints the preset with the other exports, and no
-// advice to pin an agent the profile's yaml does not have.
-func TestInit_Wizard_OnAProfilePrintsThePresetAndNoPin(t *testing.T) {
+// The wizard on a profile prints the key to export, and neither a preset
+// variable (the yaml names it) nor advice to pin an agent the profile's yaml
+// does not have.
+func TestInit_Wizard_OnAProfilePrintsNoPresetVariableAndNoPin(t *testing.T) {
 	dir := t.TempDir()
 	stdin := bytes.NewBufferString("openai\n\n127.0.0.1:8787\n")
 	var stdout, stderr bytes.Buffer
@@ -324,10 +328,11 @@ func TestInit_Wizard_OnAProfilePrintsThePresetAndNoPin(t *testing.T) {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	out := stdout.String()
-	for _, want := range []string{"export LOOMCYCLE_PRESETS=personal", "export OPENAI_API_KEY=<your-key-here>"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("stdout missing %q; got:\n%s", want, out)
-		}
+	if !strings.Contains(out, "export OPENAI_API_KEY=<your-key-here>") {
+		t.Errorf("stdout missing the key to export; got:\n%s", out)
+	}
+	if strings.Contains(out, "LOOMCYCLE_PRESETS") {
+		t.Errorf("stdout still asks for LOOMCYCLE_PRESETS:\n%s", out)
 	}
 	if strings.Contains(out, "agents.default") {
 		t.Errorf("stdout advises pinning agents.default, which a profile's yaml does not have:\n%s", out)
@@ -348,8 +353,11 @@ func TestInit_ProfileServer_WritesTheServerConfigAndSaysWhatItNeeds(t *testing.T
 	if !bytes.Equal(yamlBytes, want) {
 		t.Error("--profile server did not write the server profile's config")
 	}
+	if !bytes.Contains(yamlBytes, []byte("\npresets: [server]\n")) {
+		t.Error("the written yaml does not name the server preset")
+	}
 	out := stdout.String()
-	for _, want := range []string{"export LOOMCYCLE_PRESETS=server", "LOOMCYCLE_PUBLIC_URL", "LOOMCYCLE_SQLMEM_PG_DSN", "examples/profiles/server"} {
+	for _, want := range []string{"LOOMCYCLE_PUBLIC_URL", "LOOMCYCLE_SQLMEM_PG_DSN", "examples/profiles/server"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("stdout missing %q; got:\n%s", want, out)
 		}
@@ -378,9 +386,10 @@ func TestInit_BadProfileSelectionWritesNothing(t *testing.T) {
 	}
 }
 
-// What init writes for the default profile loads and passes doctor once the
-// one line init prints (the preset) is set: no key, no token, no other file.
-func TestInit_DefaultProfileLoadsAndPassesDoctorWithItsPreset(t *testing.T) {
+// What init writes for the default profile loads and passes doctor as it is:
+// no variable selecting a preset, no key, no token, no other file. `init`
+// then `loomcycle` used to start a server with no agents.
+func TestInit_DefaultProfileLoadsAndPassesDoctorWithNothingElseSet(t *testing.T) {
 	home, _ := isolateLayerEnv(t)
 	for _, k := range []string{"LOOMCYCLE_PG_DSN", "LOOMCYCLE_AUTH_TOKEN", "LOOMCYCLE_LISTEN_ADDR", "LOOMCYCLE_DATA_DIR"} {
 		t.Setenv(k, "")
@@ -393,7 +402,6 @@ func TestInit_DefaultProfileLoadsAndPassesDoctorWithItsPreset(t *testing.T) {
 	if code := runInitWithStdin([]string{"--no-interactive"}, &bytes.Buffer{}, &stdout, &stderr); code != 0 {
 		t.Fatalf("init: exit=%d stderr=%s", code, stderr.String())
 	}
-	t.Setenv("LOOMCYCLE_PRESETS", "personal")
 
 	stack, err := AssembleConfigStack(nil, nil, false)
 	if err != nil {
@@ -407,7 +415,10 @@ func TestInit_DefaultProfileLoadsAndPassesDoctorWithItsPreset(t *testing.T) {
 		t.Fatalf("LoadLayers: %v", err)
 	}
 	if _, ok := cfg.Agents["chat/medium"]; !ok {
-		t.Error("chat/medium missing: the preset was not layered under what init wrote")
+		t.Error("chat/medium missing: the preset the written yaml names was not layered under it")
+	}
+	if got := strings.Join(stack.Presets, ","); got != "base,local,chat,document-agent,personal" {
+		t.Errorf("presets layered = %s, want the personal stack", got)
 	}
 
 	stdout.Reset()
@@ -419,22 +430,22 @@ func TestInit_DefaultProfileLoadsAndPassesDoctorWithItsPreset(t *testing.T) {
 	}
 }
 
-// Without the preset, doctor says so instead of passing an empty config in
+// A config with no routing and no preset selected: doctor says a preset is
+// missing and where to name one, instead of passing an empty config in
 // silence.
-func TestDoctor_NoPresetSelectedOverAProfileConfigSaysSo(t *testing.T) {
+func TestDoctor_NoPresetSelectedSaysWhereToNameOne(t *testing.T) {
 	home, _ := isolateLayerEnv(t)
 	for _, k := range []string{"LOOMCYCLE_PG_DSN", "LOOMCYCLE_AUTH_TOKEN"} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("LOOMCYCLE_DATA_DIR", filepath.Join(home, "data"))
 	t.Setenv("LOOMCYCLE_LISTEN_ADDR", "127.0.0.1:0")
+	writeYAML(t, filepath.Join(home, ".config", "loomcycle", "loomcycle.yaml"), "# nothing set\n")
 	var stdout, stderr bytes.Buffer
-	if code := runInitWithStdin([]string{"--no-interactive"}, &bytes.Buffer{}, &stdout, &stderr); code != 0 {
-		t.Fatalf("init: exit=%d stderr=%s", code, stderr.String())
-	}
-	stdout.Reset()
 	RunDoctor(nil, &stdout, &stderr)
-	if !strings.Contains(stdout.String(), "no preset is selected") || !strings.Contains(stdout.String(), "LOOMCYCLE_PRESETS") {
-		t.Errorf("doctor does not say the preset is missing:\n%s", stdout.String())
+	for _, want := range []string{"no preset is selected", "presets: [personal]", "LOOMCYCLE_PRESETS"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("doctor output lacks %q:\n%s", want, stdout.String())
+		}
 	}
 }

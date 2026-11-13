@@ -77,7 +77,8 @@ services:
       LOOMCYCLE_TOKEN_REPORTING: ${LOOMCYCLE_TOKEN_REPORTING:-}
       OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
     volumes:
-      # Your yaml, read-only: every *.yaml in it is layered over the preset.
+      # Your yaml, read-only. loomcycle.yaml in it names the preset; every
+      # other *.yaml beside it is layered over that too.
       - ./config:/config:ro
       # The runtime's own state.
       - ./data:/data

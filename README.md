@@ -116,7 +116,6 @@ curl -L https://github.com/denn-gubsky/loomcycle/releases/latest/download/loomcy
 
 ```sh
 loomcycle init --with-token       # writes a short config + mints a token to ~/.config/loomcycle/auth.env (0600)
-export LOOMCYCLE_PRESETS=personal # the agents and the model routing: local models first, then cloud
 export ANTHROPIC_API_KEY=sk-...   # (or OPENAI_API_KEY / DEEPSEEK_API_KEY / GEMINI_API_KEY); none if you run Ollama
 loomcycle doctor                  # verify env + keys + storage + the just-minted token
 loomcycle                         # starts on 127.0.0.1:8787 (auto-loads auth.env)
@@ -129,7 +128,7 @@ loomcycle                         # starts on 127.0.0.1:8787 (auto-loads auth.en
 | `personal` | One person on one machine: local models, cloud models or both; SQLite. | [`examples/profiles/personal/`](examples/profiles/personal/), or `loomcycle init` |
 | `server` | A shared installation: Postgres, traces to a collector, sign-in gates, tenants. | [`examples/profiles/server/`](examples/profiles/server/) (compose file included), or `loomcycle init --profile server` |
 
-`loomcycle init` writes the profile's short `loomcycle.yaml`, which holds only what is yours; the preset supplies the rest and is selected by `LOOMCYCLE_PRESETS`. `loomcycle init --full` writes the long, fully-commented reference config instead, which needs no preset.
+`loomcycle init` writes the profile's short `loomcycle.yaml`: one line, `presets: [personal]`, names the preset that supplies the agents and the model routing, and the rest holds only what is yours. `LOOMCYCLE_PRESETS`, when set, selects instead of that line. `loomcycle init --full` writes the long, fully-commented reference config instead, which needs no preset.
 
 `init --with-token` prints the Web UI URL (`http://127.0.0.1:8787/ui`). Open it, then paste the token from `~/.config/loomcycle/auth.env` at the login prompt. (The token is kept in the `0600` file and never embedded in a URL. A `?token=` link would leak the bearer into browser history and into any fronting proxy's logs.) `loomcycle` and `loomcycle doctor` both auto-load `auth.env` from the config dir; a real `export LOOMCYCLE_AUTH_TOKEN=…` always overrides it.
 
@@ -156,7 +155,6 @@ One bearer gates everything. `init --with-token` is the easy button (above). Equ
 
 ```sh
 loomcycle init
-export LOOMCYCLE_PRESETS=personal
 export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)   # or: loomcycle init --with-token
 export ANTHROPIC_API_KEY=sk-...
 loomcycle

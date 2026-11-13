@@ -1,16 +1,18 @@
 # loomcycle — personal profile.
 #
 # The agents, the model routing and the defaults all come from the `personal`
-# preset, which is selected in the environment, not here:
-#
-#     LOOMCYCLE_PRESETS=personal
-#
-# `loomcycle presets show personal` prints what it layers. This file holds only
-# what is yours. Anything you write here is merged over the preset, key by key,
-# so you restate a setting only to change it.
+# preset, a stack of config built into the binary. `loomcycle presets show
+# personal` prints what it layers. The rest of this file holds only what is
+# yours: anything you write here is merged over the preset, key by key, so you
+# restate a setting only to change it.
 #
 # Already the default, so not written: SQLite under the data directory, SQL
 # Memory on it (Documents), 127.0.0.1:8787.
+
+# Which presets this config sits on. LOOMCYCLE_PRESETS (or --preset), when
+# set, is used instead. A preset named here is trusted as this file is; none
+# can turn on a tool that reaches outside the runtime.
+presets: [personal]
 
 # A directory the file tools (Read, Write, Edit, Grep, Glob, Bashbox) may use.
 # Without one those tools are registered and idle. The path must exist.
@@ -28,7 +30,7 @@
 #       num_ctx: 32768
 
 # Turn what the chat agents are told into durable memory. Needs the `memory`
-# bundle as well: LOOMCYCLE_PRESETS=personal,memory. It runs hourly and calls
+# bundle as well: `presets: [personal, memory]` above. It runs hourly and calls
 # a model for every chat with something new in it.
 # scheduled_runs:
 #   memory-consolidation:

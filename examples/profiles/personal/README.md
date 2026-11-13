@@ -6,9 +6,9 @@ you have to read.
 
 | File | What it holds |
 |---|---|
-| `env.insecure.example` | Settings that are not secrets. One line selects the `personal` preset. |
+| `loomcycle.yaml` | `presets: [personal]` and your own settings over it, commented out. Enough by itself. |
+| `env.insecure.example` | Settings that are not secrets: where your Ollama is. |
 | `env.local.example` | Secret names with empty values. One provider key, or none. |
-| `loomcycle.yaml` | Your own settings over the preset. Everything in it is commented out. |
 
 ## Start in five minutes
 
@@ -38,6 +38,10 @@ Open <http://127.0.0.1:8787/ui> and start a chat with `chat/medium`.
 `loomcycle init` writes this same `loomcycle.yaml` to `~/.config/loomcycle/`,
 where `loomcycle` finds it without `--config`.
 
+The yaml names its preset (`presets: [personal]`), so no variable is needed to
+select it. `LOOMCYCLE_PRESETS`, when you do set it, is used instead of the
+yaml's list, and the server says so at start if the two differ.
+
 ## When something has no model
 
 - **No key and no Ollama.** The server starts. A run fails with
@@ -64,8 +68,8 @@ a line you add yourself:
   `BRAVE_API_KEY` in `env.local` for search.
 - **A shell.** `Bashbox` (a sandbox confined to the volume) needs only the
   volume. `LOOMCYCLE_BASH_ENABLED=1` adds `Bash`, which is not a sandbox.
-- **Durable memory.** `LOOMCYCLE_PRESETS=personal,memory` and the
-  `scheduled_runs` block in `loomcycle.yaml`.
+- **Durable memory.** `presets: [personal, memory]` and the `scheduled_runs`
+  block, both in `loomcycle.yaml`.
 
 ## Postgres instead of SQLite
 

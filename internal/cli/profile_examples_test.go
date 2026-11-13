@@ -154,25 +154,21 @@ func TestProfileExamples_SecretsTemplatesHaveNoValues(t *testing.T) {
 	}
 }
 
-// Each example yaml loads over the preset its env file selects, with only
-// what the example itself tells the operator to supply.
-func TestProfileExamples_YAMLLoadsOverThePresetItsEnvSelects(t *testing.T) {
+// Each example yaml is enough by itself: it names its preset, its env file
+// selects none, and it loads with only what the example tells the operator to
+// supply.
+func TestProfileExamples_YAMLAloneSelectsItsPresetAndLoads(t *testing.T) {
 	for _, profile := range profileNames {
 		t.Run(profile, func(t *testing.T) {
 			isolateLayerEnv(t)
 			for _, k := range []string{"LOOMCYCLE_PG_DSN", "LOOMCYCLE_SQLMEM_PG_DSN", "LOOMCYCLE_LISTEN_ADDR", "LOOMCYCLE_AUTH_MODE", "LOOMCYCLE_PUBLIC_URL"} {
 				t.Setenv(k, "")
 			}
-			selected := ""
 			for _, l := range readEnvExample(t, profile, "env.insecure.example") {
 				if l.active && l.name == "LOOMCYCLE_PRESETS" {
-					selected = l.value
+					t.Errorf("env.insecure.example sets LOOMCYCLE_PRESETS: it would override the yaml's own presets: key; keep it a commented alternative")
 				}
 			}
-			if selected != profile {
-				t.Fatalf("env.insecure.example selects LOOMCYCLE_PRESETS=%q, want %q", selected, profile)
-			}
-			t.Setenv("LOOMCYCLE_PRESETS", selected)
 
 			// The server yaml names the container's dynamic root; a static
 			// volume's path must exist, so point it at a directory that does.
@@ -187,11 +183,22 @@ func TestProfileExamples_YAMLLoadsOverThePresetItsEnvSelects(t *testing.T) {
 				// needs the key; the compose file requires it too.
 				t.Setenv("LOOMCYCLE_SECRET_KEY", "test-key-not-a-secret-test-key-not-a-secret")
 			}
-			path := writeYAML(t, filepath.Join(t.TempDir(), "loomcycle.yaml"), body)
+			// The server yaml lives in the config directory, with no file
+			// named; the personal one is named or discovered.
+			dir := t.TempDir()
+			path := writeYAML(t, filepath.Join(dir, "loomcycle.yaml"), body)
+			paths := []string{path}
+			if profile == "server" {
+				t.Setenv("LOOMCYCLE_CONFIG_DIR", dir)
+				paths = nil
+			}
 
-			stack, err := AssembleConfigStack(nil, []string{path}, false)
+			stack, err := AssembleConfigStack(nil, paths, false)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if len(stack.Presets) == 0 || stack.Presets[len(stack.Presets)-1] != profile {
+				t.Fatalf("presets layered = %v, want the %s stack, selected by the yaml alone", stack.Presets, profile)
 			}
 			cfg, err := config.LoadLayers(stack.Layers...)
 			if err != nil {

@@ -2,16 +2,15 @@
 
 This file ships next to `loomcycle.yaml` whenever you run `loomcycle init`. It's your **per-machine quickstart**: file layout, required env vars, troubleshooting. Read this first.
 
-## What `init` wrote, and the one variable it needs
+## What `init` wrote
 
-`loomcycle init` writes the short config of a **profile**. It holds only what is yours (a volume, a local-model setting); everything in it starts commented out. The agents and the model routing come from a **preset**, a named stack of config built into the binary, and the preset is selected in the environment:
+`loomcycle init` writes the short config of a **profile**. Its one active line names a **preset**, a stack of config built into the binary that supplies the agents and the model routing:
 
-```sh
-export LOOMCYCLE_PRESETS=personal   # after `loomcycle init`
-export LOOMCYCLE_PRESETS=server     # after `loomcycle init --profile server`
+```yaml
+presets: [personal]     # `loomcycle init --profile server` writes [server]
 ```
 
-Without that line the server starts with no agents, and `loomcycle doctor` says a preset is missing.
+Everything else in the file is yours (a volume, a local-model setting) and starts commented out. The line is read from this file only, your primary config; in any other config file it is an error. `LOOMCYCLE_PRESETS` (or `--preset`), when set, selects instead, and the server says so at start if the two differ. A preset named here is trusted as this file is; none can turn on a tool that reaches outside the runtime. Without a preset the server starts with no agents, and `loomcycle doctor` says one is missing.
 
 | Preset | Stands for | Use |
 |---|---|---|
@@ -20,7 +19,7 @@ Without that line the server starts with no agents, and `loomcycle doctor` says 
 
 `loomcycle presets` lists every preset and bundle, and `loomcycle presets show <name>` prints one with the stack it expands to. Anything you write in `loomcycle.yaml` is merged over the preset, key by key, so you restate a setting only to change it.
 
-`loomcycle init --full` writes the long, fully-commented reference config instead. It carries its own routing and example agents and needs no preset.
+`loomcycle init --full` writes the long, fully-commented reference config instead. It carries its own routing and example agents and names no preset.
 
 For the deeper conceptual story (provider routing matrix, tier overlays, the four-layer resolver), see the repo's [`docs/CONFIGURATION.md`](https://github.com/denn-gubsky/loomcycle/blob/main/docs/CONFIGURATION.md).
 
@@ -53,7 +52,6 @@ The default install (after `loomcycle init`) lays out:
 
 | Env var | Purpose | How to get it |
 |---|---|---|
-| `LOOMCYCLE_PRESETS` | The preset your config relies on (not needed after `init --full`) | `personal` or `server` |
 | `LOOMCYCLE_AUTH_TOKEN` | Bearer token for all `/v1/*` endpoints. Optional while the server listens on loopback only; required anywhere else | `openssl rand -hex 32` |
 
 Plus at least one provider key, unless a local Ollama serves the models. A provider with no key is skipped:

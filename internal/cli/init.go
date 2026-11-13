@@ -20,11 +20,11 @@ import (
 // directory.
 //
 // The yaml is the short config of a profile (--profile personal, the
-// default, or server): what an operator of that profile supplies over the
-// preset of the same name. The agents and the model routing are in the
-// preset, which is selected in the environment (LOOMCYCLE_PRESETS), so the
-// next steps init prints include that line. --full writes the long,
-// fully-commented reference config instead, which needs no preset.
+// default, or server): a `presets:` line naming the preset of the same name,
+// and what an operator of that profile supplies over it. The agents and the
+// model routing are in the preset, so the file is enough by itself. --full
+// writes the long, fully-commented reference config instead, which carries
+// its own routing and names no preset.
 //
 // Two modes:
 //
@@ -65,8 +65,8 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, "                      [--interactive|--no-interactive] [--force] [--with-token]")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Writes loomcycle.yaml + README.md to the operator's config directory.")
-		fmt.Fprintln(stderr, "The yaml is a profile's short config, used with LOOMCYCLE_PRESETS=<profile>;")
-		fmt.Fprintln(stderr, "--full writes the long reference config, which needs no preset.")
+		fmt.Fprintln(stderr, "The yaml is a profile's short config: it names the profile's preset and holds")
+		fmt.Fprintln(stderr, "what is yours. --full writes the long reference config, which names none.")
 		fmt.Fprintln(stderr, "Auto-on wizard when stdin is a TTY. By default writes no secrets;")
 		fmt.Fprintln(stderr, "--with-token is the explicit opt-in that mints + persists an auth token.")
 	}
@@ -187,13 +187,6 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 
 	fmt.Fprintln(stdout)
-	// presetLine is the one setting the profile's yaml cannot carry: which
-	// preset it sits on is decided before any file is read.
-	presetLine := func(indent string) {
-		if preset != "" {
-			fmt.Fprintf(stdout, "%sexport LOOMCYCLE_PRESETS=%s   # the agents and model routing this config relies on\n", indent, preset)
-		}
-	}
 	// The personal profile listens on loopback, where the runtime may run
 	// without a token; say so instead of calling it required.
 	tokenLine := "export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)"
@@ -203,11 +196,9 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	if wizard {
 		if authEnvPersisted == "" {
 			fmt.Fprintln(stdout, "Add these to your shell rc (e.g. ~/.zshrc):")
-			presetLine("    ")
 			fmt.Fprintln(stdout, "    "+tokenLine)
 		} else {
-			fmt.Fprintln(stdout, "Auth token persisted (auto-loaded by `loomcycle`). Add these to your shell rc:")
-			presetLine("    ")
+			fmt.Fprintln(stdout, "Auth token persisted (auto-loaded by `loomcycle`). Add your provider key to your shell rc:")
 		}
 		if provider != "skip" {
 			fmt.Fprintf(stdout, "    export %s=<your-key-here>\n", envVar)
@@ -235,11 +226,9 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		fmt.Fprintf(stdout, "  1. Read %s for the env-var reference.\n", docPath)
 		if authEnvPersisted == "" {
 			fmt.Fprintln(stdout, "  2. Set the required environment variables in your shell rc:")
-			presetLine("       ")
 			fmt.Fprintln(stdout, "       "+tokenLine)
 		} else {
-			fmt.Fprintln(stdout, "  2. Auth token persisted + auto-loaded; set these in your shell rc:")
-			presetLine("       ")
+			fmt.Fprintln(stdout, "  2. Auth token persisted + auto-loaded; just set a provider key in your shell rc:")
 		}
 		if preset != "" {
 			fmt.Fprintln(stdout, "       export ANTHROPIC_API_KEY=<your-key>   # or OPENAI_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY; none if you run Ollama locally")

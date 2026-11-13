@@ -2,7 +2,8 @@
 #
 # A shared installation: the provider matrix, the chat, document and memory agents, and process metrics.
 #
-# Select it with LOOMCYCLE_PRESETS=server. It layers the presets and bundles
+# Select it with `presets: [server]` in your loomcycle.yaml, or with
+# LOOMCYCLE_PRESETS=server. It layers the presets and bundles
 # below, in this order, then its own keys. `loomcycle presets show <name>`
 # prints any of them.
 #
