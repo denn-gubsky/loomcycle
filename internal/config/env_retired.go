@@ -183,6 +183,10 @@ var retiredEnv = map[string]string{
 
 	"LOOMCYCLE_UI_LOGIN_ORIGINS": "set auth.login_origins in the yaml, as a list",
 
+	// The hooks lists are yaml-only.
+	"LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS": "list each [tenant:]owner under hooks.permit_host_widen.owners in the yaml",
+	"LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST":   "list each host or CIDR range under hooks.private_host_allowlist in the yaml",
+
 	// The process metrics sampler moved to the yaml `metrics:` block.
 	"LOOMCYCLE_METRICS_ENABLED":            "set metrics.enabled: true in the yaml",
 	"LOOMCYCLE_METRICS_COLLECT_SYSTEM":     "set metrics.collect_system: true in the yaml",
@@ -381,6 +385,11 @@ var retiredEnvRefuse = map[string]retiredRefusal{
 		}
 		return false
 	}},
+	// The variables added to the yaml lists. An entry the yaml lacks is a
+	// hook that stops working: its allow_hosts dropped, or its callback to a
+	// private address refused.
+	"LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS": {loosens: hookOwnersNotInYAML},
+	"LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST":   {loosens: hookPrivateHostsNotInYAML},
 	// Without the directory a family in export+prune mode deletes nothing;
 	// with another one its exports land where nobody looks for them.
 	"LOOMCYCLE_RETENTION_EXPORT_DIR": {loosens: func(value string, c retiredEnvCtx) bool {

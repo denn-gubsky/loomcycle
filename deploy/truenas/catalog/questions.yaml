@@ -428,7 +428,7 @@ questions:
               default: ""
           - variable: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE
             label: LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE
-            description: 'Private-host allowlist mode. any (the default): host-name and CIDR entries. cidr_only: CIDR entries only, so no private address is admitted on the say-so of a DNS answer; a host-name entry (or an IP written as a host entry) fails startup, as does any other value. cidr_only covers LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST too, stops vouching for a yaml remote peer by its host name, and puts the opera…'
+            description: 'Private-host allowlist mode. any (the default): host-name and CIDR entries. cidr_only: CIDR entries only, so no private address is admitted on the say-so of a DNS answer; a host-name entry (or an IP written as a host entry) fails startup, as does any other value. cidr_only covers the yaml''s hooks.private_host_allowlist too, stops vouching for a yaml remote peer by its host name, and puts the oper…'
             schema:
               type: string
               default: ""
@@ -955,12 +955,6 @@ questions:
           - variable: LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT
             label: LOOMCYCLE_ANTHROPIC_OAUTH_CALLBACK_PORT
             description: '(example: 8788)'
-            schema:
-              type: string
-              default: ""
-          - variable: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS
-            label: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS
-            description: 'Tenant owners permitted to widen the host allowlist from a tool-use hook. (example: tenant-a,tenant-b)'
             schema:
               type: string
               default: ""

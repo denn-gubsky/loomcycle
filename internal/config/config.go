@@ -568,8 +568,7 @@ type HooksConfig struct {
 	// (CLAUDE.md rule #8): the runtime caller and the model both
 	// cannot enable widening.
 	//
-	// Env-var equivalent: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS
-	// (comma-separated, same `[tenant:]owner` syntax). Env appends to yaml.
+	// The yaml is the only source of this list.
 	PermitHostWiden HostWidenPermitConfig `yaml:"permit_host_widen"`
 
 	// PrivateHostAllowlist names hosts (suffix-matched, or CIDR ranges, like
@@ -579,10 +578,7 @@ type HooksConfig struct {
 	// dials through the SSRF guard; only an inline webhook in the operator's
 	// static config (a yaml agent's or channel's) is not guarded. Under
 	// LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST_MODE=cidr_only every entry must
-	// be a CIDR range.
-	//
-	// Env-var equivalent: LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST
-	// (comma-separated). Env appends to yaml.
+	// be a CIDR range. The yaml is the only source of this list.
 	PrivateHostAllowlist []string `yaml:"private_host_allowlist"`
 }
 
@@ -4944,7 +4940,6 @@ func LoadLayers(layers ...Layer) (*Config, error) {
 
 	applyEnvStorage(cfg)
 	applyEnvSQLMem(cfg)
-	applyEnvHooks(cfg)
 	applyEnvNetPolicy(cfg)
 	applyEnvListeners(cfg)
 	applyEnvSweepers(cfg)
@@ -7770,7 +7765,7 @@ func validateEnvPolicy(c *Config) error {
 	// (netguard.Policy.VouchEntryForHost).
 	netPolicy := c.Env.NetPolicy()
 	if err := netPolicy.ValidateAllowlist(c.Hooks.PrivateHostAllowlist); err != nil {
-		return fmt.Errorf("hooks.private_host_allowlist (or LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST): %w", err)
+		return fmt.Errorf("hooks.private_host_allowlist: %w", err)
 	}
 	if netPolicy.CIDROnly() && c.Env.MCPAllowPrivateIPs {
 		return fmt.Errorf("LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS=1 lets the operator's MCP servers reach any private address their name resolves to, which %s refuses; unset it and list the servers' addresses as CIDR ranges in LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST", netguard.PrivateHostAllowlistModeCIDROnly)

@@ -552,7 +552,6 @@ hooks:
     # entries are "[tenant:]name" — the tenant that owns the definition the
     # hook came from, and the hook's name. Exact match on both, no globs.
     owners: [acme:url-gate]
-# or: LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS=acme:url-gate (env appends)
 ```
 
 A bare `name` binds to the shared tenant `""` — the operator's own yaml. And
