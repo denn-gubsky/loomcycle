@@ -1213,11 +1213,14 @@ class LoomcycleClient:
         ``{"value", "count"}`` — how many DOCUMENTS among the matches have each
         document type, Path folder or ontology concept — most first, at most
         50, with ``truncated`` naming any list that was cut, plus
-        ``facet_window``, ``chunks_counted`` and ``documents_counted``. The
-        matches are the documents of the ``facet_window`` chunks nearest the
-        query (default 100, at most 500) and the returned hits, after every
-        filter, and only documents the caller may read. Without ``facets`` the
-        response has no ``facets`` key.
+        ``facet_window``, ``chunks_counted``, ``documents_counted`` and
+        ``complete`` (true when the counts cover every matching chunk), and
+        ``concept_error`` in place of ``concept`` when the ontology could not
+        be read. The matches are the documents of the ``facet_window`` chunks
+        nearest the query (default 100, at most 500) and the ranked hits, after
+        every filter, and only documents the caller may read; ``facets`` is
+        refused with ``annotations="only"``. Without ``facets`` the response
+        has no ``facets`` key.
 
         Any chunk can carry its own validity period: ``valid_at`` /
         ``invalid_at`` (unix nanoseconds, ``invalid_at`` exclusive) on

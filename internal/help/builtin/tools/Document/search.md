@@ -141,30 +141,42 @@ facets: {
   truncated: ["folder"],   the facets whose list was cut (absent when none)
   facet_window: 100,       the window asked for
   chunks_counted: 87,      chunks the counts cover (only ones you may read)
-  documents_counted: 9     documents those chunks belong to
+  documents_counted: 9,    documents those chunks belong to
+  complete: false          true: the counts cover every matching chunk
 }
 ```
 
 What is counted: the documents of the `facet_window` chunks nearest your query
-by meaning, plus the chunks the search returned, after every filter argument,
-and only documents you may read. Counts are of DOCUMENTS: a document with five
-matching chunks counts once. `chunks_counted` below `facet_window` means the
-window held every chunk that can match, so the counts cover all of it; equal to
-it means more may lie beyond the window.
+by meaning, plus the ranked hits, after every filter argument, and only
+documents you may read. Rows that `expand` adds, and rows found through
+annotations, are not counted: they are not matches of your query. `facets` is
+refused with `annotations: "only"`, which ranks no passage. Counts are of
+DOCUMENTS: a document with five matching chunks counts once.
+
+`complete: true` means the window reached the end of what matches, so the
+counts cover all of it. `false` means more may lie beyond the window — raise
+`facet_window` or narrow with a filter. Read `complete`, not `chunks_counted`:
+the two can differ, and on some servers the window is approximate and is never
+reported complete.
 
 - `type` — the document's type (its root chunk's type). An untyped document
   counts in `documents_counted` but has no value.
 - `folder` — the folder of each Path name the document is filed under: the name
   without its last segment, `/` at the top. A document with two names counts in
   both folders; one filed nowhere has no folder.
-- `concept` — the concepts of the tenant ontology the document is about, by the
-  rule the `concept` filter uses: in the `tenant` scope a `subject` relation (or
-  a narrower kind) from any of its chunks, in force at `as_of` when you pass it,
-  never a proposed, rejected, refuted or retired one; in a `user` or `agent`
-  scope a tag on any of its chunks. Each value is a concept's tag, the most
-  specific one: a document about `topics/risk-management/outsourcing` is not
-  counted again under `topics/risk-management`. Empty when the tenant has no
-  ontology or you may not read it.
+- `concept` — the concepts of the tenant ontology the document is about. Only
+  the document's chunks in force at `as_of`, or now when you pass none, are
+  read: a part an edition closed or a later fact replaced no longer counts. In
+  the `tenant` scope such a chunk counts through a `subject` relation (or a
+  narrower kind) to the concept — never a proposed, rejected, refuted or retired
+  one, and with `as_of` only one in force then (without `as_of` its dates are
+  not consulted, as for the `concept` filter). In a `user` or `agent` scope it
+  counts through a tag at or under the concept's tag. Each value is a concept's
+  tag, the most specific one: a document about
+  `topics/risk-management/outsourcing` is not counted again under
+  `topics/risk-management`. Empty when the tenant has no ontology or you may not
+  read it. When the ontology cannot be read, `concept` is left out and
+  `concept_error` says so; the hits and the other facets are still returned.
 
 Each list is most documents first, then by value, at most 50 values. Read the
 spread before the hits: many documents in several folders means the question
@@ -238,6 +250,8 @@ caption (and its description, once one exists).
 - `search: unknown facet "…"` — pass any of `type`, `folder`, `concept`.
 - `search: facet_window must be positive` / `search: facet_window is taken with
   facets` — omit `facet_window` for the default, or add `facets`.
+- `search: facets count passages and are not taken with annotations "only"` —
+  drop `facets`, or use `annotations: "include"`.
 
 ## Examples
 
@@ -307,11 +321,11 @@ which folders, about which concepts:
   "type": [{"value": "norm", "count": 4}, {"value": "board.decision", "count": 3}, {"value": "report", "count": 1}],
   "folder": [{"value": "/norms", "count": 4}, {"value": "/board/2025", "count": 3}, {"value": "/reports", "count": 1}],
   "concept": [{"value": "topics/risk-management/outsourcing", "count": 6}, {"value": "topics/governance", "count": 2}],
-  "facet_window": 100, "chunks_counted": 100, "documents_counted": 8}}
+  "facet_window": 100, "chunks_counted": 100, "documents_counted": 8, "complete": false}}
 ```
 
-Eight documents in three folders, and `chunks_counted` equal to the window, so
-there may be more: an overview of this needs the folders, not the top three
+Eight documents in three folders, and `complete: false`, so there may be more:
+an overview of this needs the folders, not the top three
 hits. Narrow the count to one folder with `under_path` and a larger window:
 
 ```json

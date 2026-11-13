@@ -4550,8 +4550,9 @@ export type DocumentToolInput = {
   with_projection?: boolean;
   /** search: also count, beside the hits, how many DOCUMENTS among the best
    *  matches have each value — the documents of the `facet_window` chunks
-   *  nearest the query plus the returned hits, after every filter, only those
-   *  the caller may read. See {@link DocumentSearchFacets}. */
+   *  nearest the query plus the ranked hits (not `expand` or annotation rows),
+   *  after every filter, only those the caller may read. Refused with
+   *  `annotations: "only"`. See {@link DocumentSearchFacets}. */
   facets?: Array<"type" | "folder" | "concept">;
   /** search with `facets`: how many of the nearest chunks the counts cover
    *  (default 100, at most 500). */
@@ -4976,7 +4977,7 @@ export type DocumentSearchFacetValue = { value: string; count: number };
 /** The `facets` block of `document({op:"search", facets})` — present ONLY when
  *  `facets` was passed, with a list for each facet asked. Counts are distinct
  *  documents the caller may read, over the documents of the `facet_window`
- *  chunks nearest the query plus the returned hits, after every filter. Each
+ *  chunks nearest the query plus the ranked hits, after every filter. Each
  *  list is most documents first, then by value, at most 50 values. */
 export type DocumentSearchFacets = {
   /** The document's type (its root chunk's class); an untyped one has none. */
@@ -4984,17 +4985,22 @@ export type DocumentSearchFacets = {
   /** The folder of each Path name the document is filed under; a document
    *  with two names counts in both, one filed nowhere in none. */
   folder?: DocumentSearchFacetValue[];
-  /** The concepts the document is about, by tag: tenant scope by `subject`
-   *  relation (or a narrower kind), user / agent scope by a chunk's tag. Empty
-   *  when the caller may not read the tenant ontology. */
+  /** The concepts the document is about, by tag, read from its chunks in force
+   *  at `as_of` (or now): tenant scope by a live `subject` relation (or a
+   *  narrower kind), user / agent scope by a chunk's tag. Empty when the caller
+   *  may not read the tenant ontology; absent with `concept_error`. */
   concept?: DocumentSearchFacetValue[];
+  /** Present when the ontology could not be read: why `concept` is missing. */
+  concept_error?: string;
   /** The facets whose list was cut (at 50 values, or by the server's row cap). */
   truncated?: Array<"type" | "folder" | "concept">;
   facet_window: number;
-  /** Chunks the counts cover, all readable by the caller; below
-   *  `facet_window`, every matching chunk. */
+  /** Chunks the counts cover, all readable by the caller. */
   chunks_counted: number;
   documents_counted: number;
+  /** True when the counts cover every matching chunk; false when more may lie
+   *  beyond the window (or the server's index is approximate). */
+  complete: boolean;
 };
 
 /** Response of `document({op:"search"})` — narrow a {@link DocumentToolResponse}
