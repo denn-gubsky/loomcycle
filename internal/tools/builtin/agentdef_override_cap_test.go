@@ -28,6 +28,7 @@ func codeAgentFixture(t *testing.T) (*AgentDef, context.Context, func()) {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	cfg := &config.Config{
+		Providers: map[string]config.ProviderConfig{config.CodeJSProvider: {}},
 		Agents: map[string]config.AgentDef{
 			"memory/consolidator": {
 				Provider:     "code-js",

@@ -2297,6 +2297,8 @@ func signFromMergedDef(name string, def mergedDef) string {
 // validateInlineCode gates + validates an inline code-js body (RFC J)
 // on create/fork. No-op when the def carries no Code. When it does:
 //
+//   - PROVIDER: refuse a body where the config declares no code-js
+//     provider to run it.
 //   - SIZE: enforce MaxCodeBytes (a tighter, clearer cap than the
 //     whole-definition MaxDefinitionBytes).
 //   - PARSE: compile via the shared codejs.Validate so a syntax error
@@ -2329,6 +2331,12 @@ func definitionSizeForCap(def mergedDef, defJSON []byte) (int, error) {
 func (a *AgentDef) validateInlineCode(op string, def mergedDef) error {
 	if def.Code == "" {
 		return nil
+	}
+	// Nothing could run it: the provider that executes a code body is
+	// registered only when the config declares it. This is a check on
+	// authoring; a definition already stored is loaded without it.
+	if _, ok := a.Cfg.Providers[config.CodeJSProvider]; !ok {
+		return fmt.Errorf("%s: a code_body cannot run here (no code-js provider is configured)", op)
 	}
 	if a.MaxCodeBytes > 0 && len(def.Code) > a.MaxCodeBytes {
 		return fmt.Errorf("%s: code_body (%d bytes) exceeds max %d", op, len(def.Code), a.MaxCodeBytes)
