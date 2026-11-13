@@ -254,3 +254,38 @@ func TestAuthLoginOrigins_RefusesSeveralOriginsInOneEntry(t *testing.T) {
 		}
 	}
 }
+
+// An error raised because the mode is strict names the plane that made it
+// strict. Blaming `auth.mode: strict` in front of a yaml that says token
+// sends the operator to the wrong file.
+func TestResolveAuth_StrictErrorNamesThePlaneThatAskedForIt(t *testing.T) {
+	for _, tc := range []struct {
+		yaml, env string
+		want, not string
+	}{
+		{"strict", "", "auth.mode: strict needs", "LOOMCYCLE_AUTH_MODE"},
+		{"strict", "token", "auth.mode: strict needs", "LOOMCYCLE_AUTH_MODE"},
+		{"strict", "strict", "auth.mode: strict needs", "LOOMCYCLE_AUTH_MODE"},
+		{"token", "strict", "strict mode (from LOOMCYCLE_AUTH_MODE) needs", "auth.mode: strict"},
+		{"", "strict", "strict mode (from LOOMCYCLE_AUTH_MODE) needs", "auth.mode: strict"},
+	} {
+		c := &Config{Env: Env{AuthMode: tc.env}, Auth: AuthConfig{Mode: tc.yaml}}
+		err := resolveAuth(c)
+		if err == nil || !strings.Contains(err.Error(), "interactive gate") {
+			t.Fatalf("yaml=%q env=%q: err = %v, want the lock-out refusal", tc.yaml, tc.env, err)
+		}
+		if !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), tc.not) {
+			t.Errorf("yaml=%q env=%q: err = %v, want %q and not %q", tc.yaml, tc.env, err, tc.want, tc.not)
+		}
+		// The same plane is named where strict mode is the reason the audit
+		// stream is required.
+		wantReason, source := "auth.mode is strict", "auth.mode"
+		if tc.not == "auth.mode: strict" {
+			wantReason, source = "LOOMCYCLE_AUTH_MODE is strict", "LOOMCYCLE_AUTH_MODE"
+		}
+		c.ResolvedAuth = AuthPolicy{Mode: AuthModeStrict, ModeSource: source}
+		if got := c.AuditRequiredReason(0); got != wantReason {
+			t.Errorf("yaml=%q env=%q: audit reason = %q, want %q", tc.yaml, tc.env, got, wantReason)
+		}
+	}
+}
