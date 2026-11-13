@@ -96,6 +96,7 @@ var docACLOps = map[string]docACLRule{
 	"propose_subject":    {verb: "write", target: docACLTenantScope},
 	"create_chunk":       {verb: "write", target: docACLCreateChunk},
 	"get_chunk":          {verb: "read", target: docACLChunk},
+	"lineage":            {verb: "read", target: docACLChunk}, // the folders above its names are filtered as Path ls and get_annotation filter them (document_lineage.go)
 	"update_chunk":       {verb: "write", target: docACLChunk},
 	"delete_chunk":       {verb: "delete", target: docACLChunk},
 	"move_chunk":         {verb: "write", target: docACLMoveChunk},

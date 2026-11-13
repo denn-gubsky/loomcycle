@@ -482,6 +482,8 @@ export type {
   DocumentListAnnotationsResult,
   DocumentAnnotateInput,
   DocumentSearchFilter,
+  DocumentSearchFacetValue,
+  DocumentSearchFacets,
   DocumentSearchHit,
   DocumentSearchResult,
   DocumentRelatedResult,

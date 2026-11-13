@@ -1482,6 +1482,13 @@ func (t *TeamDef) runResolveTeam(ctx context.Context, in teamDefInput, w *teamWa
 	if boardBound && t.Board == nil {
 		return true, errResult("run: board_chunk_id set but this TeamDef tool has no Document board wired (requires SQL Memory)"), nil
 	}
+	// A board-bound walk writes the chunk's status on every step. A run that
+	// holds Document in read mode (tool_modes) may not write through it here
+	// either. Asked before anything runs, so nothing is changed.
+	if boardBound && tools.PolicyOf(ctx).ToolModes["Document"] != "" {
+		return true, errPermission("run: board_chunk_id writes the board chunk's status, and this agent holds the Document tool in read mode, which allows only its read operations. Nothing was changed.",
+			"Run the team without board_chunk_id, or ask an operator for an agent that may write."), nil
+	}
 	boardScope := in.BoardScope
 	if boardScope == "" {
 		boardScope = "user"

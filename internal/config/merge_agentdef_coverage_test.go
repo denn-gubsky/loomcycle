@@ -119,6 +119,7 @@ func nonZeroAgentDef() AgentDef {
 		VolumeDefScopes:        []string{"any"},
 		EvaluationScopes:       []string{"read_any"},
 		CryptoScopes:           []string{"user"},
+		ToolModes:              map[string]string{"Document": "read"},
 		HistoryScope:           []string{"user"},
 		DisableContext:         true,
 		Interruption:           AgentInterruptionACL{Enabled: true, Kinds: []string{"question"}, MaxPending: 2},

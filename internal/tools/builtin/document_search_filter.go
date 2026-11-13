@@ -369,6 +369,10 @@ func (d *Document) resolveSearchFilter(ctx context.Context, key sqlmem.ScopeKey,
 type searchACLList struct {
 	ids, excludeIDs []string
 	none            bool
+	// overCap: the reader is denied part of the scope but the list would pass the
+	// operator's cap, so none is sent and the search runs unnarrowed. Only the
+	// search facets read it; the search treats it as no list.
+	overCap bool
 }
 
 // errSearchACLTooWide stops collecting a list that has passed the cap.
@@ -397,8 +401,10 @@ var errSearchACLTooWide = errors.New("search access-control list over the cap")
 // short. That is the bound, accepted rather than refusing a call that names no
 // filter; a filter_too_wide refusal here would be new to a caller who asked for
 // nothing but a search.
-func (d *Document) resolveSearchACL(ctx context.Context, key sqlmem.ScopeKey) (*searchACLList, error) {
-	acl := d.newDocACL(ctx, key)
+//
+// acl is the caller's set for this scope (newDocACL), passed in so the names it
+// loads here serve the search's later questions too.
+func (d *Document) resolveSearchACL(ctx context.Context, acl *docACL) (*searchACLList, error) {
 	limited, err := acl.limitsReading(ctx)
 	if err != nil || !limited {
 		return nil, err
@@ -436,7 +442,7 @@ func (d *Document) resolveSearchACL(ctx context.Context, key sqlmem.ScopeKey) (*
 	sort.Strings(docs)
 	maxIDs := d.searchFilterMaxIDs()
 	var chunks []string
-	err = d.eachChunkOfDocuments(ctx, key, docs, "", nil, func(chunkID, _ string) error {
+	err = d.eachChunkOfDocuments(ctx, acl.key, docs, "", nil, func(chunkID, _ string) error {
 		if len(chunks) == maxIDs {
 			return errSearchACLTooWide
 		}
@@ -444,7 +450,7 @@ func (d *Document) resolveSearchACL(ctx context.Context, key sqlmem.ScopeKey) (*
 		return nil
 	})
 	if errors.Is(err, errSearchACLTooWide) {
-		return nil, nil
+		return &searchACLList{overCap: true}, nil
 	}
 	if err != nil {
 		return nil, err

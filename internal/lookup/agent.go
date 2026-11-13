@@ -152,6 +152,20 @@ func keepStaticOverrideLock(cfg *config.Config, name string, def *config.AgentDe
 	if static.Retention == retentionmode.None {
 		def.Retention = retentionmode.None
 	}
+	// The operator's read modes (tool_modes) hold over the tenant's version
+	// too, a read mode winning: a version forked before the operator added
+	// one would otherwise hold the tool whole.
+	for tool, mode := range static.ToolModes {
+		if mode != config.ToolModeRead || def.ToolModes[tool] == config.ToolModeRead {
+			continue
+		}
+		modes := make(map[string]string, len(def.ToolModes)+1)
+		for k, v := range def.ToolModes {
+			modes[k] = v
+		}
+		modes[tool] = mode
+		def.ToolModes = modes
+	}
 }
 
 // AgentChecked is Agent for a caller that must tell "no such agent" from "could
@@ -426,6 +440,10 @@ type SubstrateAgentDef struct {
 	// builtin.mergedDef: a key-scope grant that did not survive the read would
 	// come back default-deny. Not part of content_sha256 (authority).
 	CryptoScopes []string `json:"crypto_scopes,omitempty"`
+	// ToolModes mirrors config.AgentDef.ToolModes (RFC GL). Kept in sync with
+	// builtin.mergedDef: dropped on the read, a stored read-only agent would
+	// come back holding Document or Path whole. Not part of content_sha256.
+	ToolModes map[string]string `json:"tool_modes,omitempty"`
 	// ShellCredentials mirrors config.AgentDef.ShellCredentials (RFC EW). Kept
 	// in sync with builtin.mergedDef: dropped on the read, a stored agent that
 	// narrowed its shell's credentials would come back with every credential
@@ -544,6 +562,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		Channels:               def.Channels,
 		EvaluationScopes:       def.EvaluationScopes,
 		CryptoScopes:           def.CryptoScopes,
+		ToolModes:              def.ToolModes,
 		ShellCredentials:       def.ShellCredentials,
 		GitRemote:              def.GitRemote,
 		StatementMethods:       def.StatementMethods,
@@ -618,6 +637,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Channels:              s.Channels,
 		EvaluationScopes:      s.EvaluationScopes,
 		CryptoScopes:          s.CryptoScopes,
+		ToolModes:             s.ToolModes,
 		ShellCredentials:      s.ShellCredentials,
 		GitRemote:             s.GitRemote,
 		StatementMethods:      s.StatementMethods,

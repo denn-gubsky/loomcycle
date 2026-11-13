@@ -1259,6 +1259,26 @@ func resumedCryptoPolicy(run store.Run, rec *spawnRecord, def config.AgentDef) t
 	return subAgentCryptoPolicy(tools.CryptoPolicyValue{Scopes: rec.CryptoScopes}, def)
 }
 
+// resumedToolModes is the tool modes a resumed run gets back: a top-level
+// run's are its definition's; a sub-run's are its definition's with the read
+// modes its parent held at spawn added again (tools.NarrowToolModes). A
+// sub-run with no record holds every tool that can take a mode in read mode:
+// its parent's modes are unknown, and its own definition's alone is exactly
+// the widening the sticky rule prevents.
+func resumedToolModes(run store.Run, rec *spawnRecord, def config.AgentDef) map[string]string {
+	if !isSubRun(run) {
+		return def.ToolModes
+	}
+	if rec == nil {
+		all := make(map[string]string, len(config.ToolModeTools))
+		for tool := range config.ToolModeTools {
+			all[tool] = config.ToolModeRead
+		}
+		return tools.NarrowToolModes(all, def.ToolModes)
+	}
+	return tools.NarrowToolModes(rec.ToolModes, def.ToolModes)
+}
+
 // resumedShellCreds is the shell-credential narrowing a resumed run gets back
 // (RFC EW): a top-level run its definition's (nil: agentRunPolicy reads it),
 // and a sub-run its definition's narrowed again to its recorded parent's, as
@@ -2267,6 +2287,9 @@ func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg 
 		Crypto:            resumedCryptoPolicy(run, runCfg.Spawn, agentDef),
 		ShellCreds:        resumedShellCreds(run, runCfg.Spawn, agentDef),
 		GitRemote:         resumedGitRemote(run, runCfg.Spawn, agentDef),
+		// A sub-run's parent read modes again, so it and the children it
+		// spawns are held to them after a resume as they were live.
+		ToolModes: resumedToolModes(run, runCfg.Spawn, agentDef),
 		// Restored from the run's own record, for sub-agent inheritance. The
 		// context policy too: every non-resume run path stamps it, so without
 		// it a resumed run's children inherited a different retention mode

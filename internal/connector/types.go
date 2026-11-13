@@ -517,6 +517,10 @@ type RegisterAgentRequest struct {
 	// CryptoScopes is the Crypto tool's key-scope grant (config.AgentDef.
 	// CryptoScopes): agent / user / tenant / run, or ["-*"]. Unset = none.
 	CryptoScopes []string `json:"crypto_scopes,omitempty"`
+	// ToolModes narrows a granted tool to its read operations
+	// (config.AgentDef.ToolModes, RFC GL): {Document: read, Path: read}.
+	// Absent = every tool whole.
+	ToolModes map[string]string `json:"tool_modes,omitempty"`
 	// ShellCredentials narrows which operator-listed credentials the agent's
 	// Bash and Bashbox host commands receive (config.AgentDef.ShellCredentials,
 	// RFC EW). Absent = every credential the operator lists; [] = none.

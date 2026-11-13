@@ -94,6 +94,7 @@ func (a *AgentDef) checkCapabilityCeiling(ctx context.Context, name string, def 
 		func() error { return ceilInterruption(ctx, def, base, held) },
 		func() error { return ceilEvaluation(ctx, def, base, held) },
 		func() error { return ceilCrypto(ctx, def, base, held) },
+		func() error { return ceilToolModes(ctx, def, base, held) },
 		func() error { return ceilShellCreds(ctx, def, base, held) },
 		func() error { return ceilGitRemote(ctx, def, base, held) },
 		func() error { return ceilStatementMethods(ctx, def, base) },

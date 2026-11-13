@@ -112,6 +112,11 @@ var agentDefOverridability = map[string]overridability{
 	// be harmless, but it needs a run-request field on every transport and
 	// RFC EW D4 left it out; a sub-agent's narrowing is the spawn invariant.
 	"ShellCredentials": notOverridable,
+	// A read-only tool grant (RFC GL). A per-run override could only matter by
+	// removing a read mode, which widens what the run may change, so a caller
+	// may neither set nor clear it per run. The run's dispatcher is built from
+	// the definition's modes.
+	"ToolModes": notOverridable,
 	// Which methods a code-js agent may stamp on its relations: a rule:
 	// stamp can skip review, so a caller may not grant or move it per run.
 	// A sub-agent holds only its own definition's grant.
