@@ -235,3 +235,24 @@ func placeholderList(names []string) string {
 	}
 	return strings.Join(out, ", ")
 }
+
+// Program is the program a helper template runs: its first word, which may
+// hold no placeholder. A conversion worker resolves it to decide whether it
+// can take that helper's jobs.
+func Program(template string) (string, error) {
+	words, err := parseTemplate(template)
+	if err != nil {
+		return "", err
+	}
+	if len(words) == 0 {
+		return "", errors.New("the command is empty")
+	}
+	var b strings.Builder
+	for _, s := range words[0] {
+		if s.placeholder {
+			return "", fmt.Errorf("the program name may not be a placeholder ({%s})", s.text)
+		}
+		b.WriteString(s.text)
+	}
+	return b.String(), nil
+}

@@ -175,6 +175,11 @@ func (b *boot) buildServer() {
 	}
 	// RFC FG: the File tool's OCR, on this server's model resolution and usage
 	// ledger. A configured engine that cannot be built fails boot.
+	if b.conversion != nil {
+		// RFC GO P2: the server's own conversions (the /v1/audio routes,
+		// OCR's image re-encoding) run on the worker pool too.
+		srv.SetConverter(b.conversion.Client())
+	}
 	fileOCR, err := srv.FileOCR()
 	if err != nil {
 		fatal("transcription: building the OCR engine failed", "err", err)

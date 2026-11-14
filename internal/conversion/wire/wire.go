@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 )
 
@@ -27,11 +28,16 @@ const ChunkSize = 1 << 20
 // token in, as a bearer. A Work stream names its worker in its Ready frame.
 const MDAuthorization = "authorization"
 
-// Labels a worker carries: what it can do. P1 workers run extraction and the
-// PDF page cut; the helper and image labels arrive with P2.
+// Labels a worker carries: what it can do. Every worker extracts, cuts PDF
+// pages and re-encodes images; render, media and encode need the worker's
+// helper program for each, so a worker carries them only when it resolves.
 const (
 	LabelExtract = "extract"
 	LabelPDF     = "pdf"
+	LabelImage   = "image"
+	LabelRender  = "render"
+	LabelMedia   = "media"
+	LabelEncode  = "encode"
 )
 
 // LabelFor is the label a job kind needs.
@@ -39,8 +45,22 @@ func LabelFor(k workerpb.JobKind) string {
 	switch k {
 	case workerpb.JobKind_JOB_KIND_PDF_SELECT_PAGES:
 		return LabelPDF
+	case workerpb.JobKind_JOB_KIND_PDF_RENDER:
+		return LabelRender
+	case workerpb.JobKind_JOB_KIND_MEDIA_CONVERT:
+		return LabelMedia
+	case workerpb.JobKind_JOB_KIND_AUDIO_ENCODE:
+		return LabelEncode
+	case workerpb.JobKind_JOB_KIND_IMAGE_REENCODE:
+		return LabelImage
 	}
 	return LabelExtract
+}
+
+// HelperLabel reports whether a label stands for an operator helper program,
+// which a worker may lack while still running other jobs.
+func HelperLabel(label string) bool {
+	return label == LabelRender || label == LabelMedia || label == LabelEncode
 }
 
 // KindName is a job kind's name in metrics and logs.
@@ -50,6 +70,14 @@ func KindName(k workerpb.JobKind) string {
 		return "extract"
 	case workerpb.JobKind_JOB_KIND_PDF_SELECT_PAGES:
 		return "pdf_select_pages"
+	case workerpb.JobKind_JOB_KIND_PDF_RENDER:
+		return "pdf_render"
+	case workerpb.JobKind_JOB_KIND_MEDIA_CONVERT:
+		return "media_convert"
+	case workerpb.JobKind_JOB_KIND_AUDIO_ENCODE:
+		return "audio_encode"
+	case workerpb.JobKind_JOB_KIND_IMAGE_REENCODE:
+		return "image_reencode"
 	}
 	return "unknown"
 }
@@ -113,6 +141,8 @@ func ErrorToWire(err error) (workerpb.ErrorClass, string) {
 		return workerpb.ErrorClass_ERROR_CLASS_SINK_FULL, ""
 	case errors.Is(err, extract.ErrUnsupported):
 		return workerpb.ErrorClass_ERROR_CLASS_UNSUPPORTED, ""
+	case errors.Is(err, convert.ErrNotConfigured):
+		return workerpb.ErrorClass_ERROR_CLASS_NOT_CONFIGURED, ""
 	case errors.Is(err, context.DeadlineExceeded):
 		return workerpb.ErrorClass_ERROR_CLASS_DEADLINE, ""
 	case errors.Is(err, context.Canceled):
@@ -124,9 +154,11 @@ func ErrorToWire(err error) (workerpb.ErrorClass, string) {
 }
 
 // ErrorFromWire is the error the core's caller sees for a Done: the same
-// sentinel or type the in-process extractor would have returned, so the
-// caller's wording does not depend on where the job ran.
-func ErrorFromWire(class workerpb.ErrorClass, msg string) error {
+// sentinel or type the in-process converter would have returned, so the
+// caller's wording does not depend on where the job ran. kind shapes a
+// failure's message: an extraction's reads "extract: ...", a helper's names
+// its helper already.
+func ErrorFromWire(kind workerpb.JobKind, class workerpb.ErrorClass, msg string) error {
 	msg = clip(msg, maxNoteBytes)
 	switch class {
 	case workerpb.ErrorClass_ERROR_CLASS_NONE:
@@ -143,9 +175,14 @@ func ErrorFromWire(class workerpb.ErrorClass, msg string) error {
 		return &extract.RefusedError{Reason: msg}
 	case workerpb.ErrorClass_ERROR_CLASS_INPUT:
 		return errors.New("convert: the worker refused the input: " + msg)
+	case workerpb.ErrorClass_ERROR_CLASS_NOT_CONFIGURED:
+		return convert.ErrNotConfigured
 	}
 	if msg == "" {
 		msg = "the worker gave no reason"
+	}
+	if kind != workerpb.JobKind_JOB_KIND_EXTRACT && kind != workerpb.JobKind_JOB_KIND_PDF_SELECT_PAGES {
+		return errors.New(msg)
 	}
 	// The extractors' own errors read "extract: ..."; keep that shape.
 	if !strings.HasPrefix(msg, "extract: ") {
