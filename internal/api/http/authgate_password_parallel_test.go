@@ -723,7 +723,8 @@ func TestPasswordGate_PlacesAreGivenBackWhenTheStorePanics(t *testing.T) {
 // it are handled: two wrong passwords at once from two addresses get the same
 // answers, the same one of them waits for the other, and each address is
 // charged the same, for an unknown login and for an account in every state a
-// stranger can put one into (untouched, past its free failures, locked).
+// stranger can put one into: untouched, with some of its free failures used,
+// past them, at max_failures, and locked.
 func TestPasswordGate_OverlappingSignInsDoNotShowWhetherTheLoginExists(t *testing.T) {
 	type seen struct {
 		atHold, waited   int
@@ -755,8 +756,15 @@ func TestPasswordGate_OverlappingSignInsDoNotShowWhetherTheLoginExists(t *testin
 	}
 	unknown := run(t, "nobody@example.com", nil)
 	for name, prepare := range map[string]func(f *gateFixture){
-		"untouched":              func(*gateFixture) {},
-		"past its free failures": func(f *gateFixture) { f.pastAccountFailures(t, "local", "known@example.com", 3) },
+		"untouched":                func(*gateFixture) {},
+		"with one failure":         func(f *gateFixture) { f.pastAccountFailures(t, "local", "known@example.com", 1) },
+		"at its last free failure": func(f *gateFixture) { f.pastAccountFailures(t, "local", "known@example.com", 3) },
+		"past its free failures, its lock ended": func(f *gateFixture) {
+			f.pastAccountFailures(t, "local", "known@example.com", 6)
+		},
+		"at max_failures, its lock ended": func(f *gateFixture) {
+			f.pastAccountFailures(t, "local", "known@example.com", f.srv.pwGates.p.Load().byName["local"].Throttle.MaxFailures)
+		},
 		"locked": func(f *gateFixture) {
 			ctx := context.Background()
 			id, err := f.st.UserIdentityGet(ctx, "local", "", "known@example.com")
@@ -781,5 +789,27 @@ func TestPasswordGate_OverlappingSignInsDoNotShowWhetherTheLoginExists(t *testin
 	// waiting its turn, each answered and charged as a wrong password.
 	if want := (seen{atHold: 1, waited: 1, unauth: 2, charged1: 1, charge: 1}); unknown != want {
 		t.Fatalf("two wrong passwords at once for an unknown login: %+v, want %+v", unknown, want)
+	}
+}
+
+// The turns are counted per login as written, so a burst naming many logins
+// nobody has must leave nothing behind: every key is dropped when its last
+// request leaves (finish checks that no place is left).
+func TestPasswordGate_ABurstOfManyLoginsLeavesNoPlaceBehind(t *testing.T) {
+	f := newGateFixture(t)
+	f.redeemed(t, "local", "jack@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
+	b := f.newBurst(t, "identity", "")
+	for i := range 24 {
+		// Three addresses, eight logins nobody has from each.
+		b.signIn(signIn{client: fmt.Sprintf("198.51.100.%d", 100+i%3), login: fmt.Sprintf("nobody-%d@example.com", i), pass: wrongPassword})
+	}
+	for i := range 4 {
+		b.signIn(signIn{client: fmt.Sprintf("198.51.100.%d", 110+i), login: "jack@example.com", pass: wrongPassword})
+	}
+	b.signIn(signIn{client: "198.51.100.120", login: "jack@example.com", pass: goodPassword})
+	b.signIn(signIn{client: "198.51.100.121", login: "not a login", pass: wrongPassword})
+	_, by := b.finish()
+	if n := by[http.StatusUnauthorized] + by[http.StatusNoContent] + by[http.StatusTooManyRequests]; n != b.sent {
+		t.Fatalf("%d sign-ins, answers %v", b.sent, by)
 	}
 }
