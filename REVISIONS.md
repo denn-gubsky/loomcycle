@@ -65,7 +65,7 @@ The guide is [`docs/SETTINGS_MIGRATION.md`](docs/SETTINGS_MIGRATION.md): a check
 
 ### Sign-in (#2635, #2636)
 
-- **Security fix.** Password sign-ins sent together are now paced like ones sent in turn: each check takes a place before the throttle is read, per source, per source and login, and per account. The same holds for second-factor codes posted to a reset or invite link.
+- **Security fix.** Password sign-ins sent together are now paced like ones sent in turn: each check takes a place before the throttle is read, per source, per source and login, and per login. The same holds for second-factor codes posted to a reset or invite link.
 - A guess is charged even when its client disconnects before the answer.
 - Overlapping correct passwords for one account all sign in, in turn. A login nobody has is handled as one somebody has: the same answers, the same waiting, the same charges.
 
