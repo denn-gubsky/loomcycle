@@ -87,7 +87,7 @@ No `vX` or `vX.Y` floating tags during the v0.11.x line — too early for major-
 | Container path | What it's for | Mode |
 |---|---|---|
 | `/home/nonroot/.config/loomcycle` | yaml config + per-machine `README.md` | typically read-only |
-| `/home/nonroot/.local/share/loomcycle` | SQLite store + transient state, when `LOOMCYCLE_DATA_DIR` names this path as in the command above (unset, the store goes to `./data` under the working directory, outside the mount) | writable |
+| `/home/nonroot/.local/share/loomcycle` | SQLite store + transient state. Images after v1.152.0 set `LOOMCYCLE_DATA_DIR` to this path; an older image needs it set as in the command above (unset there, the store goes to `./data` under the working directory, outside the mount) | writable |
 
 On Linux hosts, the writable mount must be owned by uid 65532:
 
