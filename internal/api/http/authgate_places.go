@@ -139,15 +139,28 @@ func (pl *checkPlace) leave() {
 	pl.p.dropIfIdleLocked(pl.key, k)
 }
 
-// stepBack turns a held place that is over its key's allowance into a wait
-// for one. It wakes nobody: the place was never one a check ran in. false,
-// and the place is gone, when the key already has its fill of waiters.
-func (pl *checkPlace) stepBack() bool {
+// stepBack turns a held place that is over its key's allowance (allow, as
+// the caller just read it) into a wait for one; false, and the place is gone,
+// when the key already has its fill of waiters.
+//
+// A place over the allowance still counted while its request read the store,
+// so it may be what put another request over. When stepping back leaves room
+// under the allowance, everyone waiting is woken to count again, this
+// request included (its own wait ends at once): otherwise requests that were
+// only ever over because of each other would all wait on a key nobody holds.
+// With no room left nobody is woken, so waiters do not spin while the key is
+// full.
+func (pl *checkPlace) stepBack(allow int) bool {
 	pl.p.mu.Lock()
 	defer pl.p.mu.Unlock()
 	k := pl.p.keyLocked(pl.key)
 	k.held--
-	if k.waiting >= maxCheckWaiters {
+	if k.held < allow {
+		close(k.freed)
+		k.freed = make(chan struct{})
+	} else if k.waiting >= maxCheckWaiters {
+		// Only a key that is full turns a waiter away: with room, this
+		// request's wait is over as it starts.
 		pl.state = placeOut
 		pl.p.dropIfIdleLocked(pl.key, k)
 		return false
@@ -200,7 +213,7 @@ func (p *checkPlaces) turn(ctx context.Context, key string, patience *checkPatie
 		}
 	}()
 	for place.n > 1 {
-		if !place.stepBack() || !place.rejoin(ctx, patience) {
+		if !place.stepBack(1) || !place.rejoin(ctx, patience) {
 			return nil, false
 		}
 	}
@@ -230,10 +243,11 @@ func (s *Server) reserveCheck(ctx context.Context, key string, blockFor func(int
 		if until.After(time.Now()) {
 			return nil, false
 		}
-		if place.n <= checksAtOnce(failures, blockFor) {
+		allow := checksAtOnce(failures, blockFor)
+		if place.n <= allow {
 			return place, true
 		}
-		if !place.stepBack() || !place.rejoin(ctx, patience) {
+		if !place.stepBack(allow) || !place.rejoin(ctx, patience) {
 			return nil, false
 		}
 	}
