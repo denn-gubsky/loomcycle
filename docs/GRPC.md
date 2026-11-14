@@ -130,7 +130,7 @@ semantics from the HTTP API:
 | present | `["foo.com"]` | Intersection with operator's static allowlist. |
 
 `allowed_hosts` is **caller-authoritative** — a trust boundary, never
-filled in by a model. See [TOOLS.md](TOOLS.md#host-policy) for the
+filled in by a model. See [TOOLS.md](TOOLS.md#per-request-url-allowlist-http--webfetch--websearch) for the
 underlying policy layer.
 
 ## Access-control management RPCs
@@ -286,8 +286,8 @@ clusters:
 Bind loomcycle to loopback (`LOOMCYCLE_GRPC_ADDR=127.0.0.1:8788`) when
 TLS is terminated by a sidecar so external clients can't bypass it.
 
-Native TLS in the loomcycle binary is a v1.0 consideration tracked in
-[`doc-internal/PLAN.md`](../doc-internal/PLAN.md); not a v0.5.x deliverable.
+The loomcycle binary has no native TLS for the gRPC listener; terminate
+it in front of the listener, as above.
 
 ## Adapters
 
