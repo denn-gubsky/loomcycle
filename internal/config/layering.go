@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,6 +17,142 @@ import (
 type Layer struct {
 	Name string
 	Data []byte
+	// Embedded marks a preset or bundle compiled into the binary. Only such a
+	// layer may carry a top-level `include:` (the assembler has already
+	// expanded it into the layers before this one); in any other layer the key
+	// is refused. See includeKey.
+	Embedded bool
+	// Primary marks the one operator file whose top-level `presets:` the layer
+	// assembly has read and acted on. The merge drops the key there and
+	// refuses it in every other layer. See presetsKey.
+	Primary bool
+	// Warnings are advisories the assembler has about this layer (a selection
+	// in it that the environment overrode). The load reports them with its
+	// own, so boot, `validate` and `doctor` all print them.
+	Warnings []string
+}
+
+// presetsKey is the top-level key by which the operator's primary config file
+// selects embedded presets and bundles: the same names, expanded the same
+// way, as LOOMCYCLE_PRESETS, which wins when it is set. Like includeKey it is
+// not a setting: the layer assembly reads it before the merge (the presets go
+// under the file that names them), and the merge drops it.
+//
+// It is read from one file only: the last --config, else the discovered
+// loomcycle.yaml, else LOOMCYCLE_CONFIG_DIR/loomcycle.yaml. In any other layer
+// it is refused, so which presets are layered never depends on layer order,
+// and a file loaded without the assembly cannot drop the key and run with no
+// preset at all.
+//
+// Trust: a preset named here is trusted exactly as the file that names it.
+// A preset is yaml, and yaml carries agents, MCP servers and sign-in clients.
+// What no yaml layer can do is turn on a switch that exists only in the
+// environment (Bash, dynamic stdio MCP, privileged MCP tools, the HTTP host
+// allowlist, the operator-key restriction, the access-control mode, open
+// mode). The shipped units are held to a closed list of keys by
+// internal/embedded's TestUnits_EveryUnitSetsOnlyKeysAPresetMayCarry.
+const presetsKey = "presets"
+
+func errPresetsKeyElsewhere(layer string) error {
+	return fmt.Errorf("%s: a top-level `presets:` is read only from the primary config file (the last --config, else the discovered loomcycle.yaml, else loomcycle.yaml in LOOMCYCLE_CONFIG_DIR); move the key there, or select with LOOMCYCLE_PRESETS. (If this is that file, the key was not readable before ${VAR} expansion: write `presets:` as a plain top-level list)", layer)
+}
+
+// ReadPresetsKey returns the preset names a config file's top-level
+// `presets:` lists, and whether the key is there at all. The layer assembly
+// calls it on the primary file before it builds the stack. A file that does
+// not read or parse is reported absent: the load fails on it as it always
+// has, with its own message. A file that parses only once its ${VAR}s are
+// expanded is read as absent here; the assembly then does not mark it
+// primary, and the merge refuses the key instead of dropping it.
+func ReadPresetsKey(path string) (names []string, present bool, err error) {
+	// #nosec G304 -- path is the operator's own primary config file, chosen by the layer assembly from --config, the discovery paths or LOOMCYCLE_CONFIG_DIR
+	raw, rerr := os.ReadFile(path)
+	if rerr != nil {
+		return nil, false, nil
+	}
+	// The raw text, with no ${VAR} expansion. This runs before the load, and
+	// so before the load's scan that refuses to interpolate a declared
+	// principal's bearer (denyDeclaredPrincipalBearers): expanding here would
+	// carry such a value into the unknown-preset error and the advisories. A
+	// preset name is a fixed word, so there is nothing to interpolate.
+	var doc yaml.Node
+	if yaml.Unmarshal(raw, &doc) != nil || len(doc.Content) == 0 {
+		return nil, false, nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil, false, nil
+	}
+	i := mapValueIndex(root, presetsKey)
+	if i < 0 {
+		return nil, false, nil
+	}
+	v := root.Content[i]
+	if v.Kind == yaml.ScalarNode && v.Tag == "!!null" {
+		return nil, true, nil // `presets:` with nothing under it selects none
+	}
+	if v.Kind != yaml.SequenceNode {
+		return nil, true, fmt.Errorf("presets: in %s: must be a list of preset/bundle names, e.g. `presets: [personal]`", path)
+	}
+	for _, item := range v.Content {
+		name := strings.TrimSpace(item.Value)
+		if item.Kind != yaml.ScalarNode || name == "" {
+			return nil, true, fmt.Errorf("presets: in %s: must be a list of preset/bundle names; it has an empty or non-text entry", path)
+		}
+		// The entry is not quoted back: it may name a secret's variable.
+		if strings.Contains(name, "${") {
+			return nil, true, fmt.Errorf("presets: in %s: an entry uses ${...}; preset names are written out, they are not read from the environment", path)
+		}
+		names = append(names, name)
+	}
+	return names, true, nil
+}
+
+// includeKey is the top-level key an embedded preset uses to name the presets
+// and bundles layered under it. It is not a config setting: the layer assembly
+// expands it before the merge, and the merge drops it.
+//
+// An operator's own file may not use it. The schema ignores an unknown
+// top-level key without a word, so an `include: [base]` in a loomcycle.yaml
+// would load nothing and say nothing, and the deployment would run without the
+// routing it believed it had selected.
+const includeKey = "include"
+
+func errOperatorInclude(layer string) error {
+	return fmt.Errorf("%s: a top-level `include:` works only inside a preset built into the binary; in your own config, select presets with LOOMCYCLE_PRESETS (or --preset) and add files with --config or LOOMCYCLE_CONFIG_DIR, then remove the key", layer)
+}
+
+// takeAssemblyKeys handles the two top-level keys that belong to the layer
+// assembly, not to the config: it refuses each where it may not appear and
+// removes it where it may, so neither reaches the merged tree.
+func takeAssemblyKeys(l Layer, root *yaml.Node) error {
+	if i := mapValueIndex(root, includeKey); i >= 0 {
+		if !l.Embedded {
+			return errOperatorInclude(l.Name)
+		}
+		root.Content = append(root.Content[:i-1], root.Content[i+1:]...)
+	}
+	if i := mapValueIndex(root, presetsKey); i >= 0 {
+		if !l.Primary {
+			return errPresetsKeyElsewhere(l.Name)
+		}
+		root.Content = append(root.Content[:i-1], root.Content[i+1:]...)
+	}
+	return nil
+}
+
+// refuseAssemblyKeys is takeAssemblyKeys for a file decoded straight into the
+// Config, where an unknown key is ignored and so needs no removal. A document
+// that does not parse is left to the caller's own decode to report.
+func refuseAssemblyKeys(l Layer, expanded string) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(expanded), &doc); err != nil || len(doc.Content) == 0 {
+		return nil
+	}
+	if root := doc.Content[0]; root.Kind == yaml.MappingNode {
+		return takeAssemblyKeys(l, root)
+	}
+	return nil
 }
 
 // RFC AQ §3 — opt-in sequence-merge tags. A sequence in an overlay tagged
@@ -74,6 +211,9 @@ func mergeLayers(layers []Layer) (*yaml.Node, []string, error) {
 		root := doc.Content[0]
 		if root.Kind != yaml.MappingNode {
 			return nil, nil, fmt.Errorf("parse %s: top-level YAML must be a mapping", l.Name)
+		}
+		if err := takeAssemblyKeys(l, root); err != nil {
+			return nil, nil, err
 		}
 		mergeNodes(merged, root, l.Name, "", &overrides)
 	}

@@ -139,7 +139,7 @@ The v0.11.1 `init` + `doctor` commands make setup straightforward:
 
 ```bash
 # Inside the running container — or use the host docker run pattern above
-loomcycle init       # bootstrap loomcycle.yaml + README.md in ~/.config/loomcycle/
+loomcycle init       # bootstrap a short loomcycle.yaml + README.md in ~/.config/loomcycle/
 loomcycle doctor     # verify config + env vars + providers + storage + listen
 loomcycle            # start the server (default behaviour with no args)
 ```

@@ -16,15 +16,24 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/embedded"
 )
 
-// RunInit creates a default loomcycle.yaml + README.md in the
-// operator's config directory. Two modes:
+// RunInit creates a loomcycle.yaml + README.md in the operator's config
+// directory.
+//
+// The yaml is the short config of a profile (--profile personal, the
+// default, or server): a `presets:` line naming the preset of the same name,
+// and what an operator of that profile supplies over it. The agents and the
+// model routing are in the preset, so the file is enough by itself. --full
+// writes the long, fully-commented reference config instead, which carries
+// its own routing and names no preset.
+//
+// Two modes:
 //
 //   - Non-interactive (default in CI / when stdin isn't a TTY): writes
-//     the bundled example yaml verbatim. The operator edits it later.
+//     the yaml verbatim. The operator edits it later.
 //   - Interactive (auto-on when stdin is a TTY; --no-interactive forces
 //     non-interactive): a minimal 3-question wizard picks the primary
 //     provider, the env-var name to read its key from, and the HTTP
-//     listen address. Everything else stays as commented sections.
+//     listen address, and prints them as lines to export.
 //
 // Returns:
 //
@@ -46,18 +55,44 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	fs.SetOutput(stderr)
 	pathFlag := fs.String("path", "", "destination directory (default: $XDG_CONFIG_HOME/loomcycle/ or ~/.config/loomcycle/)")
 	interactive := fs.Bool("interactive", false, "force interactive wizard (default: auto-on when stdin is a TTY)")
-	noInteractive := fs.Bool("no-interactive", false, "force non-interactive mode (writes the example yaml verbatim)")
+	noInteractive := fs.Bool("no-interactive", false, "force non-interactive mode (no questions)")
+	profile := fs.String("profile", embedded.DefaultProfile, "which profile's config to write: "+strings.Join(embedded.Profiles(), " or "))
+	full := fs.Bool("full", false, "write the long, fully-commented reference config instead of a profile's short one")
 	force := fs.Bool("force", false, "overwrite existing files (default: refuse with a clear error)")
 	withToken := fs.Bool("with-token", false, "mint a LOOMCYCLE_AUTH_TOKEN, persist it to <configdir>/auth.env (mode 0600, auto-loaded by `loomcycle`), and print the ready-to-open UI URL")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "Usage: loomcycle init [--path <dir>] [--interactive|--no-interactive] [--force] [--with-token]")
+		fmt.Fprintln(stderr, "Usage: loomcycle init [--profile personal|server | --full] [--path <dir>]")
+		fmt.Fprintln(stderr, "                      [--interactive|--no-interactive] [--force] [--with-token]")
 		fmt.Fprintln(stderr)
 		fmt.Fprintln(stderr, "Writes loomcycle.yaml + README.md to the operator's config directory.")
+		fmt.Fprintln(stderr, "The yaml is a profile's short config: it names the profile's preset and holds")
+		fmt.Fprintln(stderr, "what is yours. --full writes the long reference config, which names none.")
 		fmt.Fprintln(stderr, "Auto-on wizard when stdin is a TTY. By default writes no secrets;")
 		fmt.Fprintln(stderr, "--with-token is the explicit opt-in that mints + persists an auth token.")
 	}
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+
+	// Which yaml: a profile's, or the reference. Decided before anything is
+	// written, so a mistyped profile leaves no half-made directory.
+	profileSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "profile" {
+			profileSet = true
+		}
+	})
+	if *full && profileSet {
+		return fail(stderr, "init: --full and --profile are mutually exclusive (--full writes the reference config, which is no profile's)")
+	}
+	yamlBody := embedded.ExampleYAML()
+	preset := ""
+	if !*full {
+		body, err := embedded.ProfileYAML(*profile)
+		if err != nil {
+			return fail(stderr, "init: %v", err)
+		}
+		yamlBody, preset = body, *profile
 	}
 
 	destDir := *pathFlag
@@ -93,7 +128,7 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		return fail(stderr, "init: create dir %s: %v", destDir, err)
 	}
 
-	// The yaml is ALWAYS written verbatim from the bundled example.
+	// The yaml is ALWAYS written verbatim from the bundled text.
 	// The wizard's job is to collect operator intent and print
 	// next-steps; it never rewrites the yaml. An earlier draft did
 	// append a second `agents:` / `env:` block at the bottom, but
@@ -111,7 +146,7 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 
 	// #nosec G306 -- an example config with no secrets (they go in .env.local, written 0600)
-	if err := os.WriteFile(yamlPath, embedded.ExampleYAML(), 0o644); err != nil {
+	if err := os.WriteFile(yamlPath, yamlBody, 0o644); err != nil {
 		return fail(stderr, "init: write %s: %v", yamlPath, err)
 	}
 	// #nosec G306 -- a README
@@ -152,10 +187,16 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	}
 
 	fmt.Fprintln(stdout)
+	// The personal profile listens on loopback, where the runtime may run
+	// without a token; say so instead of calling it required.
+	tokenLine := "export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)"
+	if preset == "personal" {
+		tokenLine += "   # optional while it listens on loopback only"
+	}
 	if wizard {
 		if authEnvPersisted == "" {
 			fmt.Fprintln(stdout, "Add these to your shell rc (e.g. ~/.zshrc):")
-			fmt.Fprintln(stdout, "    export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)")
+			fmt.Fprintln(stdout, "    "+tokenLine)
 		} else {
 			fmt.Fprintln(stdout, "Auth token persisted (auto-loaded by `loomcycle`). Add your provider key to your shell rc:")
 		}
@@ -165,7 +206,10 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		if listenAddr != "127.0.0.1:8787" {
 			fmt.Fprintf(stdout, "    export LOOMCYCLE_LISTEN_ADDR=%s\n", listenAddr)
 		}
-		if provider != "skip" {
+		// Only the reference config has an `agents.default` to pin. A
+		// profile's agents route by tier, and a provider with a key is used
+		// without one being named.
+		if provider != "skip" && preset == "" {
 			fmt.Fprintln(stdout)
 			fmt.Fprintf(stdout, "To pin the default agent to %s, edit your loomcycle.yaml's `agents.default` block:\n", provider)
 			fmt.Fprintln(stdout, "    agents:")
@@ -175,23 +219,41 @@ func runInitWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) 
 		}
 		fmt.Fprintln(stdout)
 		fmt.Fprintf(stdout, "Then read %s and run `loomcycle doctor` to verify.\n", docPath)
-		printUIURL(stdout, listenAddr, authEnvPersisted)
+		printServerNeeds(stdout, preset)
+		printUIURL(stdout, listenAddr, authEnvPersisted, preset)
 	} else {
 		fmt.Fprintln(stdout, "Next steps:")
 		fmt.Fprintf(stdout, "  1. Read %s for the env-var reference.\n", docPath)
 		if authEnvPersisted == "" {
 			fmt.Fprintln(stdout, "  2. Set the required environment variables in your shell rc:")
-			fmt.Fprintln(stdout, "       export LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32)")
-			fmt.Fprintln(stdout, "       export ANTHROPIC_API_KEY=<your-key>   # or OPENAI_API_KEY, DEEPSEEK_API_KEY")
+			fmt.Fprintln(stdout, "       "+tokenLine)
 		} else {
 			fmt.Fprintln(stdout, "  2. Auth token persisted + auto-loaded; just set a provider key in your shell rc:")
+		}
+		if preset != "" {
+			fmt.Fprintln(stdout, "       export ANTHROPIC_API_KEY=<your-key>   # or OPENAI_API_KEY, DEEPSEEK_API_KEY, GEMINI_API_KEY; none if you run Ollama locally")
+		} else {
 			fmt.Fprintln(stdout, "       export ANTHROPIC_API_KEY=<your-key>   # or OPENAI_API_KEY, DEEPSEEK_API_KEY")
 		}
 		fmt.Fprintln(stdout, "  3. Run `loomcycle doctor` to verify your setup.")
 		fmt.Fprintln(stdout, "  4. Run `loomcycle` to start the server.")
-		printUIURL(stdout, listenAddr, authEnvPersisted)
+		printServerNeeds(stdout, preset)
+		printUIURL(stdout, listenAddr, authEnvPersisted, preset)
 	}
 	return 0
+}
+
+// printServerNeeds says what the server profile's yaml does not hold. It
+// names a container path and a token gate, so on its own it does not start.
+func printServerNeeds(stdout io.Writer, preset string) {
+	if preset != "server" {
+		return
+	}
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "The server profile also needs, in its environment: LOOMCYCLE_LISTEN_ADDR,")
+	fmt.Fprintln(stdout, "LOOMCYCLE_PUBLIC_URL, LOOMCYCLE_SECRET_KEY, LOOMCYCLE_PG_DSN and LOOMCYCLE_SQLMEM_PG_DSN;")
+	fmt.Fprintln(stdout, "and the directory named under `volumes:` in the yaml must exist.")
+	fmt.Fprintln(stdout, "examples/profiles/server in the repository has the env files and a compose file.")
 }
 
 // mintAuthToken returns a 256-bit CSPRNG token, hex-encoded — the same
@@ -210,7 +272,7 @@ func mintAuthToken() (string, error) {
 // fronting proxy's access log. We print the bare /ui URL (which lands on the
 // login prompt) and point at the 0600 file the operator pastes from — the
 // secret never travels in a URL we emit, nor through stdout.
-func printUIURL(stdout io.Writer, listenAddr, authEnvPersisted string) {
+func printUIURL(stdout io.Writer, listenAddr, authEnvPersisted, preset string) {
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:8787"
 	}
@@ -218,6 +280,10 @@ func printUIURL(stdout io.Writer, listenAddr, authEnvPersisted string) {
 	fmt.Fprintf(stdout, "Open the Web UI: http://%s/ui\n", listenAddr)
 	if authEnvPersisted != "" {
 		fmt.Fprintf(stdout, "    → at the login prompt, paste the token from %s\n", authEnvPersisted)
+	} else if preset == "server" {
+		// No open mode on a server: a non-loopback address with nothing to
+		// authenticate against is refused at boot.
+		fmt.Fprintln(stdout, "    → at the login prompt, paste your LOOMCYCLE_AUTH_TOKEN")
 	} else {
 		fmt.Fprintln(stdout, "    → at the login prompt, paste your LOOMCYCLE_AUTH_TOKEN (open mode needs no token)")
 	}

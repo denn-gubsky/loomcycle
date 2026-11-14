@@ -351,7 +351,9 @@ Two properties make the pass operationally safe:
 
 **Consolidation is opt-in.** Without a schedule pointing at a consolidator
 agent, `add` still queues durably and nothing drains it; queued items are not
-lost, just not yet distilled. Every consolidated row carries `origin`,
+lost, just not yet distilled. The server says so at start, once such a queue
+holds rows: one advisory per memory scope, naming the schedule to enable when
+a consolidator is installed but disabled. Every consolidated row carries `origin`,
 `class`, and the source chat/run ids, which is what makes a fact traceable to
 the words that produced it — and what makes removing everything derived from a
 person possible. See the `memory-consolidation` `Context.help` topic for the

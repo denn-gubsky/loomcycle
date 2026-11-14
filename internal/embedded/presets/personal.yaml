@@ -1,0 +1,47 @@
+# embedded preset: personal
+#
+# One person on one machine: local models first, cloud models when a key is set, a chat agent and a document agent.
+#
+# Select it with `presets: [personal]` in your loomcycle.yaml, or with
+# LOOMCYCLE_PRESETS=personal. It is a stack, not a setting: it
+# layers the presets and bundles below, in this order, and adds nothing of its
+# own. `loomcycle presets show <name>` prints any of them.
+#
+#   base            the provider and tier matrix (every provider wired; one
+#                   without a key in the environment is skipped)
+#   local           puts your local Ollama first in every tier
+#   chat            chat/medium, chat/local, chat/local-small
+#   document-agent  doc/manager and its skills
+#
+# WHAT IS ALREADY THE DEFAULT, and so is not set here: SQLite under the data
+# directory, SQL Memory on it (Documents need it), listening on 127.0.0.1:8787.
+# With no LOOMCYCLE_AUTH_TOKEN the runtime accepts any caller, which it allows
+# only because the address is loopback.
+#
+# MODELS. Either source is enough; with both, local is tried first.
+#   Local only   Run Ollama (OLLAMA_BASE_URL, default http://localhost:11434)
+#                and pull models matching the patterns in `base` and `local`
+#                (`loomcycle presets show local`). A tier whose patterns match
+#                nothing you pulled has no candidate, and a run on it fails
+#                naming the tier; it does not fall through to a paid provider
+#                you have no key for.
+#   Cloud only   Set one provider key (ANTHROPIC_API_KEY, OPENAI_API_KEY,
+#                DEEPSEEK_API_KEY, GEMINI_API_KEY). An unreachable Ollama is
+#                skipped. chat/local-small is pinned to a local model and
+#                fails without one; the other agents route by tier.
+# `loomcycle doctor` reports which provider keys are set before you start. It
+# does not contact Ollama: the server's own start log says whether it reached
+# it and which models it lists.
+#
+# WHAT THIS PRESET CANNOT DO. Its agents list Bash, HTTP and WebFetch, and
+# those stay idle: the switches that enable them (LOOMCYCLE_BASH_ENABLED,
+# LOOMCYCLE_HTTP_HOST_ALLOWLIST) exist only in the environment, so no preset
+# can set them. They stay lines in your environment file, each one a
+# deliberate opt-in. The file tools also need a volume, which names
+# a directory on your machine: add a `volumes:` entry to your own loomcycle.yaml.
+#
+# No agent here drains the memory queue: add the `memory` bundle
+# (`presets: [personal, memory]`) and enable its schedule if the chat
+# agents should turn what they are told into durable memory.
+
+include: [base, local, chat, document-agent]

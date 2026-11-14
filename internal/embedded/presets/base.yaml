@@ -2,18 +2,34 @@
 #
 # The provider/tier scaffold every deployment starts from — all providers wired
 # as `models:` aliases, a cost-floor `provider_priority`, the three task `tiers`,
-# and the six `user_tiers`. NO agents (those come from an operator config or an
+# and the five `user_tiers`. NO agents (those come from an operator config or an
 # agent bundle) and NO secrets (only provider/model wiring; keys come from the
-# environment per provider). Selected via `LOOMCYCLE_PRESETS=base` and layered as
-# the base of the config stack, under the operator's thin overlay.
+# environment per provider). Selected via `LOOMCYCLE_PRESETS=base` (or through a
+# preset that includes it: `personal`, `server`) and layered as the base of the
+# config stack, under the operator's thin overlay.
+#
+# A provider with no key in the environment is skipped, so one matrix serves
+# installs with different keys. Not every single-key install is served in
+# every tier, though:
+#   OpenAI, Anthropic or Gemini alone   all three tiers.
+#   DeepSeek alone                      low and middle. `high` has no DeepSeek
+#                                       candidate: a tier-high agent fails,
+#                                       naming the tier.
+#   A local Ollama alone                low and middle here; add the `local`
+#                                       preset for a local `high` candidate.
+#   Hosted Ollama alone                 `high` only.
+# That is for a run on the `default` user tier, which reaches every provider.
+# The `low`, `medium` and `high` user tiers name their own providers and do
+# not include Gemini; `free` is local only. A deployment restates an alias, a
+# tier or a user tier here only where it means to differ.
 #
 # This mirrors the provider half of `loomcycle.example.yaml`; keep them in sync.
 
 models:
   # — Anthropic (key: ANTHROPIC_API_KEY) —
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
   # — OpenAI (OPENAI_API_KEY) —
   gpt-mini: { provider: openai, model: gpt-5.4-mini }
   gpt:      { provider: openai, model: gpt-5.4 }
@@ -21,8 +37,18 @@ models:
   # — DeepSeek — the cost floor (DEEPSEEK_API_KEY) —
   deepseek-flash: { provider: deepseek, model: deepseek-flash }
   deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
+  # — Gemini (GEMINI_API_KEY) — globs over the provider's model list, so a new
+  # generation is picked up without an edit here (the newest listed match wins).
+  # Each pattern ends where the model name ends. A glob has no "but not", and
+  # Gemini lists image, speech and audio models under the same family names
+  # (…-pro-image-preview, …-pro-preview-tts): a trailing `*` matches those,
+  # and the newest match wins. So a preview model has its own alias.
+  gemini-lite:        { provider: gemini, model_pattern: "gemini-*-flash-lite" }
+  gemini-flash:       { provider: gemini, model_pattern: "gemini-*-flash" }
+  gemini-pro:         { provider: gemini, model_pattern: "gemini-*-pro" }
+  gemini-pro-preview: { provider: gemini, model_pattern: "gemini-*-pro-preview" }
   # — Hosted Ollama cloud (OLLAMA_API_KEY) — for models too big to run locally —
-  cloud-kimi: { provider: ollama, model: kimi-k2.6 }
+  cloud-kimi: { provider: ollama, model: kimi-k3 }
   # — Local Ollama on your workstation / LAN (OLLAMA_BASE_URL; no key) —
   # Matched as GLOBS against what your Ollama actually serves, not pinned tags.
   # A pinned tag names one specific pull ("qwen3.6:27b"), and a model that the
@@ -41,13 +67,17 @@ models:
   # pulled (`:latest`, `:27b`, a date-stamped build) without you editing this file.
   local-small:  { provider: ollama-local, model_pattern: "gemma4*" }      # low tier
   local-medium: { provider: ollama-local, model_pattern: "qwen3.6*" }     # middle tier
-  local-coder:  { provider: ollama-local, model_pattern: "qwen3-coder*" } # high tier (coding)
+  # No tier below names local-coder: the `local` preset puts it first in `high`.
+  # The pattern is the same in both, so selecting `local` changes the routing
+  # and not what the alias means.
+  local-coder:  { provider: ollama-local, model_pattern: "qwen3.8*" }     # coding / review
 
-# Cost-floor-first: try the workstation GPU, then DeepSeek, then OpenAI, then
-# Anthropic; hosted ollama.com last (opt-in via OLLAMA_API_KEY).
+# Cost-floor-first: try the workstation GPU, then DeepSeek, then Gemini, then
+# OpenAI, then Anthropic; hosted ollama.com last (opt-in via OLLAMA_API_KEY).
 provider_priority:
   - ollama-local
   - deepseek
+  - gemini
   - openai
   - anthropic
   - ollama
@@ -56,22 +86,26 @@ tiers:
   low:
     - deepseek-flash   # cost floor first
     - local-small      # workstation GPU
+    - gemini-lite
     - gpt-mini
     - haiku            # cloud-frontier fallback
   middle:
     - deepseek-pro
     - local-medium
+    - gemini-flash
     - gpt
     - sonnet
   high:
     - cloud-kimi
+    - gemini-pro           # the released model first
+    - gemini-pro-preview   # a preview only when no released pro is listed
     - gpt-max
     - opus
 
 user_tiers:
   # REQUIRED — used when a run's `user_tier:` is unset or unknown.
   default:
-    provider_priority: [ollama-local, deepseek, openai, anthropic, ollama]
+    provider_priority: [ollama-local, deepseek, gemini, openai, anthropic, ollama]
     fallback_on_error: true
     max_fallback_attempts: 3
 

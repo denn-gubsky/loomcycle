@@ -254,11 +254,14 @@ func TestConsolidatorBundle_ComposesWithTheDefaultStack(t *testing.T) {
 // growing. Naming the schedule is the useful third answer.
 func TestConsolidatorBundle_SoftensTheOrphanAddWarning(t *testing.T) {
 	t.Setenv("LOOMCYCLE_SKILLS_ROOT", "")
+	// The advisories are carried apart from cfg.Warnings: the server shows one
+	// at boot for a scope whose queue holds rows (undrainedMemoryWarnings), so
+	// "telling them nothing" applies only while nothing is queued.
 	orphanWarnings := func(cfg *config.Config) []string {
 		var out []string
-		for _, w := range cfg.Warnings {
-			if strings.Contains(w, "can enqueue with Memory op=add") {
-				out = append(out, w)
+		for _, u := range cfg.UndrainedMemory {
+			if strings.Contains(u.Advisory, "can enqueue with Memory op=add") {
+				out = append(out, u.Advisory)
 			}
 		}
 		return out

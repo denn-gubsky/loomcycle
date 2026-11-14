@@ -30,25 +30,18 @@ providers:
 # ─── Models: name each model once, reference it by alias everywhere ───
 # kind: chat (default) | decision | embedder. A tagged alias used in the
 # wrong place fails config load.
+#
+# The cloud aliases (haiku, sonnet, opus, gpt-mini, gpt, gpt-max,
+# deepseek-flash, deepseek-pro, gemini-lite, gemini-flash, gemini-pro,
+# gemini-pro-preview, cloud-kimi) come from the `base` preset and are not restated here; print them
+# with `loomcycle presets show base`. They were restated until `base` caught up
+# with this file, so this file needs a binary whose `base` names the same ids:
+# an older one resolves haiku, sonnet, opus and cloud-kimi to earlier models and
+# has no Gemini aliases.
 models:
-  # Anthropic (ANTHROPIC_API_KEY)
-  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
-  opus:   { provider: anthropic, model: claude-opus-5-5 }
-  # OpenAI (OPENAI_API_KEY)
-  gpt-mini: { provider: openai, model: gpt-5.4-mini }
-  gpt:      { provider: openai, model: gpt-5.4 }
-  gpt-max:  { provider: openai, model: gpt-5.5 }
-  # DeepSeek (DEEPSEEK_API_KEY)
-  deepseek-flash: { provider: deepseek, model: deepseek-flash }
-  deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
-  # Gemini (GEMINI_API_KEY) — patterns resolve to the newest listed match
-  gemini-lite:  { provider: gemini, model_pattern: "gemini-*-flash-lite" }
-  gemini-flash: { provider: gemini, model_pattern: "gemini-*-flash" }
-  gemini-pro:   { provider: gemini, model_pattern: "gemini-*-pro*" }
-  # Hosted Ollama cloud (OLLAMA_API_KEY)
-  cloud-kimi: { provider: ollama, model: kimi-k3 }
-  # Local Ollama over the tailnet (no key)
+  # Local Ollama over the tailnet (no key). Pinned tags, where `base` matches
+  # by pattern: the same tags as the other deployment on this host, so neither
+  # reloads a model the other just used.
   local-small:  { provider: ollama-local, model: gpt-oss:latest }
   local-medium: { provider: ollama-local, model: qwen3.6:latest }
   local-high:   { provider: ollama-local, model: ornith-1.5:35b }
@@ -63,20 +56,17 @@ timeout_scaling:
     local-dense: { max_multiplier: 24 }   # measured as up to 24x, not clipped at the global 8x
 
 # ─── Routing ──────────────────────────────────────────────────────────
-provider_priority: [ollama-local, deepseek, gemini, openai, anthropic, ollama]
-
+# provider_priority and user_tiers.default come from `base`
+# ([ollama-local, deepseek, gemini, openai, anthropic, ollama]; fallback on,
+# three attempts). The tiers and the other user tiers differ from it on purpose.
 tiers:
   low:    [local-small,  deepseek-flash, gemini-lite,  haiku,  gpt-mini]
   middle: [local-medium, deepseek-flash, gemini-flash, sonnet, gpt]
-  high:   [local-high,   deepseek-pro,   gemini-pro,   opus]
+  high:   [local-high,   deepseek-pro,   gemini-pro, gemini-pro-preview, opus]
 
 # A run's `user_tier` picks one of these; `default` is required. An unknown
 # user_tier is refused. fallback_on_error has no default: omitted = false.
 user_tiers:
-  default:
-    provider_priority: [ollama-local, deepseek, gemini, openai, anthropic, ollama]
-    fallback_on_error: true
-    max_fallback_attempts: 3
   free:                       # local only; an outage surfaces to the client
     provider_priority: [ollama-local]
     tiers:

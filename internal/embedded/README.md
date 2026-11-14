@@ -2,7 +2,26 @@
 
 This file ships next to `loomcycle.yaml` whenever you run `loomcycle init`. It's your **per-machine quickstart**: file layout, required env vars, troubleshooting. Read this first.
 
-The yaml itself carries heavily-commented per-section documentation. For the deeper conceptual story (provider routing matrix, tier overlays, the four-layer resolver), see the repo's [`docs/CONFIGURATION.md`](https://github.com/denn-gubsky/loomcycle/blob/main/docs/CONFIGURATION.md).
+## What `init` wrote
+
+`loomcycle init` writes the short config of a **profile**. Its one active line names a **preset**, a stack of config built into the binary that supplies the agents and the model routing:
+
+```yaml
+presets: [personal]     # `loomcycle init --profile server` writes [server]
+```
+
+Everything else in the file is yours (a volume, a local-model setting) and starts commented out. The line is read from this file only, your primary config; in any other config file it is an error. `LOOMCYCLE_PRESETS` (or `--preset`), when set, selects instead, and the server says so at start if the two differ. A preset named here is trusted as this file is: it is yaml, and can carry agents, MCP servers or sign-in clients. It cannot enable Bash, web access or any other switch that exists only in the environment. Without a preset the server starts with no agents, and `loomcycle doctor` says one is missing.
+
+| Preset | Stands for | Use |
+|---|---|---|
+| `personal` | `base`, `local`, `chat`, `document-agent` | One person on one machine: local models first, cloud models when a key is set; SQLite. |
+| `server` | `base`, `chat`, `document-agent`, `memory`, and the metrics sampler | A shared installation. It also needs a listen address, a public URL, secrets, volumes and sign-in gates: the repo's `examples/profiles/server/` has the env files and a compose file. |
+
+`loomcycle presets` lists every preset and bundle, and `loomcycle presets show <name>` prints one with the stack it expands to. Anything you write in `loomcycle.yaml` is merged over the preset, key by key, so you restate a setting only to change it.
+
+`loomcycle init --full` writes the long, fully-commented reference config instead. It carries its own routing and example agents and names no preset.
+
+For the deeper conceptual story (provider routing matrix, tier overlays, the four-layer resolver), see the repo's [`docs/CONFIGURATION.md`](https://github.com/denn-gubsky/loomcycle/blob/main/docs/CONFIGURATION.md).
 
 ## Where loomcycle looks for config
 
@@ -33,15 +52,16 @@ The default install (after `loomcycle init`) lays out:
 
 | Env var | Purpose | How to get it |
 |---|---|---|
-| `LOOMCYCLE_AUTH_TOKEN` | Bearer token for all `/v1/*` endpoints | `openssl rand -hex 32` |
+| `LOOMCYCLE_AUTH_TOKEN` | Bearer token for all `/v1/*` endpoints. Optional while the server listens on loopback only; required anywhere else | `openssl rand -hex 32` |
 
-Plus at least one provider key (whichever provider(s) your yaml routes to):
+Plus at least one provider key, unless a local Ollama serves the models. A provider with no key is skipped:
 
 | Env var | Provider | Where to get it |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Anthropic Claude | console.anthropic.com |
 | `OPENAI_API_KEY` | OpenAI | platform.openai.com |
 | `DEEPSEEK_API_KEY` | DeepSeek | platform.deepseek.com |
+| `GEMINI_API_KEY` | Google Gemini | aistudio.google.com |
 | `VOYAGE_API_KEY` | Voyage AI (embeddings) | dash.voyageai.com |
 | `OLLAMA_API_KEY` | Ollama Cloud (hosted models) | ollama.com |
 
@@ -63,7 +83,7 @@ Local Ollama (`ollama-local` provider) needs no key — it reads `OLLAMA_BASE_UR
 
 ## YAML structure (high level)
 
-The bundled `loomcycle.yaml` walks every section in detail. Quick conceptual map:
+The reference config (`loomcycle init --full`) walks every section in detail; a profile's short config sets a few of these over its preset. Quick conceptual map:
 
 - **`providers:`** — list of provider IDs the resolver may pick from (`anthropic`, `openai`, `deepseek`, `gemini`, `ollama`, `ollama-local`).
 - **`models:`** — per-tier candidate matrix. The resolver picks the first reachable candidate in each tier (`low` / `middle` / `high`).
@@ -117,7 +137,7 @@ Specific symptoms:
 ## Next steps after first install
 
 1. Run `loomcycle doctor` and resolve any FAILs.
-2. Read `loomcycle.yaml` top-to-bottom — every section is commented.
-3. Pick which provider tier to dispatch your default agent to (edit `agents.default.tier:` or `agents.default.model:`).
+2. Read `loomcycle.yaml`: it is short, and each commented block says what uncommenting it gives you.
+3. To let agents use files, uncomment `volumes:` and name a directory.
 4. Run `loomcycle` to start the server on `127.0.0.1:8787`.
 5. Open `http://127.0.0.1:8787/ui` for the Web UI and paste `$LOOMCYCLE_AUTH_TOKEN` on the sign-in page.
