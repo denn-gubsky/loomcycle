@@ -98,6 +98,8 @@ The config mount only has to be readable by uid 65532. A config that `loomcycle 
 
 Docker Desktop on macOS handles this transparently via its file-sharing layer.
 
+Images after v1.152.0 set `LOOMCYCLE_DATA_DIR` to `/home/nonroot/.local/share/loomcycle`, so the store is written to this mount with no variable set, in every variant below. A value you set yourself (`-e LOOMCYCLE_DATA_DIR=/data`) replaces it. With nothing mounted there the server still starts, and the store is lost when the container is removed. The directory exists in the image owned by uid 65532, so a named volume mounted on it is writable from the first start.
+
 ## Docker Compose
 
 A ready-to-use example lives at [`docker-compose.example.yaml`](https://github.com/denn-gubsky/loomcycle/blob/main/docker-compose.example.yaml) in the repo. Copy + customise:
