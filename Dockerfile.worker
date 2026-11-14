@@ -1,0 +1,43 @@
+# Dockerfile.worker — goreleaser variant: the loomcycle binary as a conversion
+# worker (RFC GO, conversion.mode remote), with the helper programs the
+# conversions run: ffmpeg (a recording to a WAV for speech-to-text, speech to
+# Opus or MP3) and poppler's pdftoppm (a PDF page to an image for OCR).
+#
+# A worker holds no provider key, no store connection and no volume: it dials
+# the runtime's worker endpoint (--dispatcher, or LOOMCYCLE_WORKER_DISPATCHER
+# below), receives a file's bytes, converts them in its scratch directory and
+# sends the result back. Run it with a memory limit, a read-only root, a tmpfs
+# at /scratch and no volume mounts; a file that exhausts the limit kills this
+# container, not the runtime, and is not sent to another worker.
+#
+# The helper commands below are the ones docs/WORKERS.md recommends; set the
+# variables to override them. Each is run without a shell, with a scrubbed
+# environment, in /scratch.
+#
+# Debian slim rather than distroless: ffmpeg and poppler bring shared
+# libraries. The same pre-built binary as Dockerfile.release (goreleaser
+# builds every arch; this only COPYs it) and the same nonroot uid 65532.
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates ffmpeg poppler-utils; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    groupadd --gid 65532 nonroot; \
+    useradd --uid 65532 --gid 65532 --no-create-home --home-dir /nonexistent \
+        --shell /usr/sbin/nologin nonroot; \
+    install -d -o 65532 -g 65532 -m 0700 /scratch
+
+COPY loomcycle /usr/local/bin/loomcycle
+COPY LICENSE NOTICE /usr/share/doc/loomcycle/
+
+ENV LOOMCYCLE_WORKER_SCRATCH=/scratch \
+    LOOMCYCLE_WORKER_MEDIA_COMMAND="ffmpeg -nostdin -i {in} -ac 1 -ar 16000 -f wav {out}" \
+    LOOMCYCLE_WORKER_RASTERIZE_COMMAND="pdftoppm -r 150 -png {in} {out_prefix}" \
+    LOOMCYCLE_WORKER_ENCODE_COMMAND="ffmpeg -nostdin -i {in} -c:a libopus -b:a 32k {out}"
+
+USER 65532:65532
+WORKDIR /scratch
+ENTRYPOINT ["/usr/local/bin/loomcycle", "worker"]
