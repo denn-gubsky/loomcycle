@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.152) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.153) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,16 +212,22 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.152.0) fixes what a measurement of knowledge-base
-agents found: summaries that named their document by another document's code,
-search hits that did not say where their document is, a spawned run's usage
-that counted only its last model call, and a long `spawn_runs` join that a
-client could give up on. Every annotation is rewritten once after the upgrade.
+The most recent line (v1.153.0) gives every setting one place. 150 environment
+variables are no longer read: policy and tuning moved to the yaml, limits
+nobody changed became fixed values, and seven feature switches are gone. Two
+presets, `personal` and `server`, stand for a whole installation. It also adds
+a knowledge-base question router with read-only tool grants, conversion
+workers that take file conversion out of the runtime's process (off by
+default), and a fix to the pacing of password sign-ins sent together. This
+release stops the boot for some existing configurations: read its upgrade
+notes in [`REVISIONS.md`](REVISIONS.md) and
+[`docs/SETTINGS_MIGRATION.md`](docs/SETTINGS_MIGRATION.md) first.
 
-Before it, v1.151.0 let a tenant send its own traces and metrics to its own
-OpenTelemetry collector and made a paused run resume the way a run starts.
+Before it, v1.152.0 fixed what a measurement of knowledge-base agents found
+and rewrote every annotation once.
 
-Earlier, v1.150.0 made `loomcycle-media` the image for voice and a browser
+Earlier, v1.151.0 let a tenant send its own traces and metrics to its own
+OpenTelemetry collector, v1.150.0 made `loomcycle-media` the image for voice and a browser
 together, v1.149.0 let a tenant scrape its own metrics and finished the panic
 net for background goroutines, and v1.148.0 added two layers and the operator's view of
 both. Annotations give every section, document and folder of a tenant knowledge
