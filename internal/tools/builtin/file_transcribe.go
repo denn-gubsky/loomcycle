@@ -217,7 +217,7 @@ func sttPrepareRefusal(src string, err error) tools.Result {
 		return errBusiness("transcribe: speech-to-text cannot run: "+pe.Detail, "An operator configures the speech engine (transcription.stt).")
 	}
 	return errBusiness(fmt.Sprintf("transcribe: %s cannot be sent whole: %s, and no media converter is set up to cut it (transcription.stt.media.command)", src, pe.Detail),
-		"An operator sets transcription.stt.media.command (e.g. ffmpeg -i {in} -ac 1 -ar 16000 -f wav {out}); the loomcycle-media image has ffmpeg.")
+		"An operator sets transcription.stt.media.command (e.g. ffmpeg -i {in} -ac 1 -ar 16000 -f wav {out}); the loomcycle-worker image has ffmpeg.")
 }
 
 // ---- the run tree's minute budget ----

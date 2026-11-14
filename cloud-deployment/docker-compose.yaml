@@ -85,7 +85,7 @@ services:
   loomcycle-migrate:
     # Same image and tag as the runtime below, so one bump moves both and a patch
     # release's migrations are applied (a patch tag publishes this image for amd64).
-    image: denngubsky/loomcycle-media:${LOOMCYCLE_VERSION:-1.150.0}
+    image: denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION:-1.153.0}
     command: ["migrate", "up"]
     restart: "no"
     user: "65532:65532"
@@ -136,7 +136,7 @@ services:
   # The sidecar is a SEPARATE image from the runtime, lockstep-versioned with it and
   # published MULTI-ARCH (amd64+arm64) by the `publish-sandbox-images` workflow on each
   # MINOR release tag. A PATCH tag (x.y.1) publishes only loomcycle-browser and
-  # loomcycle-media (amd64): for a
+  # loomcycle-worker (amd64): for a
   # patch, keep the sidecar and the session image on the minor's x.y.0. Never
   # hand-push a single-arch build over a tag (a linux/amd64 host then can't pull it).
   builder-sidecar:
@@ -168,14 +168,14 @@ services:
 
   # ── The loomcycle runtime — shares the tailscale netns (no own DNS name / ports) ──
   loomcycle:
-    # loomcycle-media = the runtime on Debian slim with ffmpeg and poppler, plus the
-    # PinchTab MCP client binary (matching the pinchtab sidecar below), so the
-    # runtime can spawn `pinchtab … mcp` (stdio) against it AND run the speech
-    # helpers: ffmpeg turns a Telegram voice note (OGG/Opus) into the WAV the
-    # speech-to-text engine reads, and encodes spoken replies as Opus
-    # (transcription.stt.media, speech.encode). Published on every release tag,
-    # patch tags included (amd64; a minor also has arm64).
-    image: denngubsky/loomcycle-media:${LOOMCYCLE_VERSION:-1.150.0}
+    # loomcycle-browser = the distroless runtime plus the PinchTab MCP client
+    # binary (matching the pinchtab sidecar below), so the runtime can spawn
+    # `pinchtab … mcp` (stdio) against it. It converts no file itself: every
+    # conversion (extraction, a Telegram voice note to WAV, spoken replies to
+    # Opus) goes to the conversion-worker containers below (RFC GO,
+    # config conversion: mode remote). Published on every release tag, patch
+    # tags included (amd64; a minor also has arm64).
+    image: denngubsky/loomcycle-browser:${LOOMCYCLE_VERSION:-1.153.0}
     restart: unless-stopped
     user: "65532:65532"
     network_mode: "service:tailscale"   # → reachable at http://tailscale:8787
@@ -202,6 +202,9 @@ services:
       LOOMCYCLE_PG_DSN: ${LOOMCYCLE_PG_DSN:?set LOOMCYCLE_PG_DSN in .env.secure}
       LOOMCYCLE_SQLMEM_PG_DSN: ${LOOMCYCLE_SQLMEM_PG_DSN:?set LOOMCYCLE_SQLMEM_PG_DSN in .env.secure}
       SANDBOX_AUTH_TOKEN: ${SANDBOX_AUTH_TOKEN}
+      # The token the conversion workers present (config conversion: mode
+      # remote); the runtime refuses to start the endpoint without it.
+      LOOMCYCLE_WORKER_TOKEN: ${LOOMCYCLE_WORKER_TOKEN:?set LOOMCYCLE_WORKER_TOKEN in .env.secure (openssl rand -hex 32)}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -249,6 +252,38 @@ services:
         condition: service_healthy
 
   # ── SearXNG — in-network search backend (keyless; wired via config/loomcycle.yaml) ──
+  # ── Conversion workers (RFC GO) ──
+  # Every file conversion runs here, not in the runtime: a document or recording
+  # that exhausts memory kills one worker (the runtime answers that call with
+  # "crashed the converter" and refuses the file for an hour) and every run goes
+  # on. The image carries ffmpeg and pdftoppm with the commands the runtime's
+  # voice config names as defaults; the runtime's own transcription.stt.media and
+  # speech.encode settings still decide that a conversion is wanted.
+  #
+  # The workers share the runtime's network namespace (the tailscale sidecar's),
+  # so the worker endpoint listens on 127.0.0.1:7788: off the tailnet and off
+  # every docker network, and plain gRPC is allowed on the loopback. The cost is
+  # that a worker can reach what the runtime can; its memory and processes stay
+  # its own. No volume is mounted: a file reaches a worker only as bytes.
+  conversion-worker:
+    image: denngubsky/loomcycle-worker:${LOOMCYCLE_VERSION:-1.153.0}
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    environment:
+      LOOMCYCLE_WORKER_DISPATCHER: 127.0.0.1:7788
+      LOOMCYCLE_WORKER_TOKEN: ${LOOMCYCLE_WORKER_TOKEN:?set LOOMCYCLE_WORKER_TOKEN in .env.secure (openssl rand -hex 32)}
+    deploy:
+      replicas: 2
+    mem_limit: 1g
+    read_only: true
+    tmpfs:
+      - /scratch:size=1g,mode=0700,uid=65532,gid=65532
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      tailscale:
+        condition: service_healthy
+
   searxng:
     image: searxng/searxng:2026.11.9-57ff753ad@sha256:287af61f1a13e86d02974fcde91a3413a9945788de38b61ffbc491d81a19bcc2
     restart: unless-stopped

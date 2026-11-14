@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"runtime"
 	"strconv"
 
 	"gopkg.in/yaml.v3"
@@ -12,11 +13,12 @@ import (
 // Conversion modes (RFC GO §5.7).
 const (
 	// ConversionInProcess converts files in the runtime's own process, as it
-	// always has. The default.
+	// always has. The default off Linux.
 	ConversionInProcess = "inprocess"
 	// ConversionLocal starts conversion workers as children of the runtime
-	// and sends extraction to them, so a file that exhausts memory kills a
-	// worker rather than the runtime.
+	// and sends every conversion to them, so a file that exhausts memory
+	// kills a worker rather than the runtime. The default on Linux (RFC GO
+	// D2), where the children's OOM score makes the kernel pick them first.
 	ConversionLocal = "local"
 	// ConversionRemote listens for workers that run as their own containers
 	// on conversion.listen, and sends every conversion to them.
@@ -84,10 +86,21 @@ const (
 	minConversionLocalMemoryMB      = 128
 )
 
+// DefaultConversionMode is the mode a config that writes none runs in on
+// goos: local on Linux, where a child's raised OOM score makes the kernel
+// kill a worker before the runtime; inprocess elsewhere, where nothing
+// steers the kernel's choice and a child would only add processes.
+func DefaultConversionMode(goos string) string {
+	if goos == "linux" {
+		return ConversionLocal
+	}
+	return ConversionInProcess
+}
+
 // Resolved is the block with its defaults filled in.
 func (c ConversionConfig) Resolved() ConversionConfig {
 	if c.Mode == "" {
-		c.Mode = ConversionInProcess
+		c.Mode = DefaultConversionMode(runtime.GOOS)
 	}
 	if c.QueueWaitS == 0 {
 		c.QueueWaitS = DefaultConversionQueueWaitS

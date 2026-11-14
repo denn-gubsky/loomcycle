@@ -157,6 +157,7 @@ LOOMCYCLE_OPERATOR_TOKEN_PEPPER=REPLACE_ME   # openssl rand -hex 32
 # LOOMCYCLE_ADMIN_TOKEN=SAME_AS_AUTH_TOKEN   # per-person mode only (LANDING_TENANT empty): the landing mints with it
 LOOMCYCLE_AUTH_MANAGE_TOKEN=REPLACE_ME       # the landing's auth:manage token — see "Enabling accounts" below
 LOOMCYCLE_SECRET_KEY=REPLACE_ME              # required (password gate, audit chain, credentials); openssl rand -base64 32
+LOOMCYCLE_WORKER_TOKEN=REPLACE_ME            # required (the conversion workers' token); openssl rand -hex 32
 # ── Postgres (this password MUST equal the one in the two DSNs) ──
 POSTGRES_PASSWORD=REPLACE_ME_STRONG
 LOOMCYCLE_PG_DSN=postgres://loomcycle:REPLACE_ME_STRONG@postgres:5432/loomcycle?sslmode=disable
@@ -187,8 +188,9 @@ Notes:
 - **Headless browser (dev/exec):** the `pinchtab` sidecar gives the deterministic
   `dev/exec` agent `mcp__browser__*` tools (driven via the envelope's optional
   `browser` steps). PinchTab's MCP is stdio-only, so the runtime uses the published
-  `denngubsky/loomcycle-media` image, which carries the pinchtab MCP client
-  binary (and ffmpeg and poppler for speech and OCR). Nothing is built locally for the runtime any more. The sidecar is internal-only (no published port), and PinchTab keeps
+  `denngubsky/loomcycle-browser` image, which carries the pinchtab MCP client
+  binary. ffmpeg and poppler run in the `conversion-worker` containers
+  (`denngubsky/loomcycle-worker`, RFC GO), which do every file conversion. Nothing is built locally for the runtime any more. The sidecar is internal-only (no published port), and PinchTab keeps
   browsing **local-only** until you widen its domain allowlist (IDPI) — to test
   external sites or your own deployment, follow the pinchtab security guide.
 - **Serve-and-test (browse a server the session runs):** the compose ships a
@@ -441,8 +443,9 @@ order:
    answer "not configured" and the bridge stays on text.
 2. **Speech engines** in a config file of their own beside `loomcycle.yaml`
    (for example `config/voice.yaml`, which a release does not overwrite):
-   `speech:` and `transcription.stt:`, plus the two ffmpeg helpers the
-   `loomcycle-media` image runs. A Telegram voice note is OGG/Opus, and an
+   `speech:` and `transcription.stt:`, plus the two ffmpeg helpers (the
+   `conversion-worker` containers run them; the image's defaults are these
+   same commands). A Telegram voice note is OGG/Opus, and an
    engine that reads WAV only (Qwen3-ASR on Ollama) needs it converted;
    Telegram shows only Opus or MP3 as a voice note, so replies need encoding:
    ```yaml
@@ -697,7 +700,7 @@ The image versions are variables in `docker-compose.yaml`:
 
 | Variable | Sets | Default in the compose file |
 |---|---|---|
-| `LOOMCYCLE_VERSION` | the two `loomcycle-media` tags (runtime and migration) | the release this directory was written for |
+| `LOOMCYCLE_VERSION` | the `loomcycle-browser` tags (runtime and migration) and the `loomcycle-worker` tag | the release this directory was written for |
 | `LOOMCYCLE_SIDECAR_VERSION` | `loomcycle-builder-docker` and the sandbox session image | the last minor release |
 | `LOOMBOARD_VERSION` | the `ghcr.io/denn-gubsky/loomboard` tag of the hosted board (`X.Y.Z`, no `v`) | the loomboard release this directory was written for |
 
@@ -712,6 +715,24 @@ when it exists. Then `make pull && make up`. If the new version bumped the schem
 
 Read the release's notes in `REVISIONS.md` first; a jump across several minors
 needs the steps in the section above.
+
+## Upgrading to conversion workers (RFC GO)
+
+The first release with conversion workers changes the stack: the runtime and the
+migration run `loomcycle-browser`, two `conversion-worker` containers
+(`loomcycle-worker`) do every file conversion, and `loomcycle-media` is no longer
+published. Before that release is deployed, on the host:
+
+1. Add `LOOMCYCLE_WORKER_TOKEN=$(openssl rand -hex 32)` to `.env.secure`. Without
+   it the new compose file does not load, and the deploy script stops and says so
+   without touching the running stack.
+2. Install the new deploy script (step 2 of the automatic-deploy setup below:
+   `install -m 755 deploy/loomcycle-cloud-deploy …/bin/`). The copy on the host
+   waits for a `loomcycle-media` image of the new version, which never appears, so
+   it would answer "not published yet" on every run and never deploy.
+
+A rollback to an older release removes the worker containers before it starts the
+old stack.
 
 ## Automatic deploys
 
@@ -737,9 +758,9 @@ script treats what the caller sends as a request:
   `status`;
 - the tag must exist in the project's GitHub repository;
 - it must not be older than what is deployed;
-- the release's image must be published (for loomcycle `loomcycle-media`, the
-  image the compose file runs, which a patch pushes a few minutes after
-  `loomcycle-browser`; for loomboard `ghcr.io/denn-gubsky/loomboard`); until it
+- the release's images must be published (for loomcycle `loomcycle-worker`,
+  which a patch pushes a few minutes after `loomcycle-browser`, so its presence
+  means both are there; for loomboard `ghcr.io/denn-gubsky/loomboard`); until it
   is, the script answers "not published yet" and the next run tries again.
 
 So the key deploys a published release and nothing else. The deploy account can run
