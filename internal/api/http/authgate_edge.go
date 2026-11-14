@@ -513,3 +513,22 @@ func (f *inFlight) acquire(key string, max int) (release func(), ok bool) {
 		}
 	}, true
 }
+
+// enter counts one more piece of work in progress for key, whatever the count
+// is, and returns the count with this one in it. leave must be called exactly
+// once.
+func (f *inFlight) enter(key string) (n int, leave func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n == nil {
+		f.n = make(map[string]int)
+	}
+	f.n[key]++
+	return f.n[key], func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.n[key]--; f.n[key] <= 0 {
+			delete(f.n, key)
+		}
+	}
+}

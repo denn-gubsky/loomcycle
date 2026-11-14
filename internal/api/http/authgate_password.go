@@ -149,6 +149,48 @@ func (s *Server) sourceBlocked(ctx context.Context, key string) bool {
 	return until.After(time.Now())
 }
 
+// maxSignInsAtOnce bounds signInsAtOnce for a curve that never holds.
+const maxSignInsAtOnce = 64
+
+// signInsAtOnce is how many checks may be in progress together on a key that
+// has failures behind it: as many as could fail one after another with no
+// hold between them, so the last of them is the one whose failure sets a
+// hold. It is one once the key is past its free failures.
+func signInsAtOnce(failures int, blockFor func(int) time.Duration) int {
+	n := 1
+	for n < maxSignInsAtOnce && blockFor(failures+n) <= 0 {
+		n++
+	}
+	return n
+}
+
+// reserveSignIn admits one password check on a throttle key, or refuses it
+// (ok=false): the key is held back, or as many checks are already in progress
+// on it as its failures leave room for. A hold is set only when a failure is
+// recorded, after the password hash; without the reservation every request
+// that arrived before the first failure was recorded would be checked, and
+// the hold would pace bursts rather than guesses.
+//
+// The check is counted BEFORE the store is read: a failure recorded before
+// the read is in the count read, and a check still in progress is in the
+// count of checks, so no check is missed between the two. The count is this
+// replica's; the failures and the hold are the store's, shared by all.
+func (s *Server) reserveSignIn(ctx context.Context, key string, blockFor func(int) time.Duration) (leave func(), ok bool) {
+	n, leave := s.signIns.enter(key)
+	failures, until, err := s.store.AuthThrottleGet(ctx, key, time.Now())
+	if err != nil {
+		// Fail closed: a throttle that cannot be read admits no guess.
+		slog.Warn("authgate: throttle read failed (refusing)", "err", err)
+		leave()
+		return nil, false
+	}
+	if until.After(time.Now()) || n > signInsAtOnce(failures, blockFor) {
+		leave()
+		return nil, false
+	}
+	return leave, true
+}
+
 func (s *Server) recordSourceFailure(ctx context.Context, key string, block func(int) time.Duration) {
 	if _, _, err := s.store.AuthThrottleRecordFailure(ctx, key, time.Now(), password.SourceWindow, block); err != nil {
 		slog.Warn("authgate: recording a failure failed", "err", err)
@@ -177,7 +219,19 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 	src := pw.pg.sourceKey(pw.g.Name, ip)
 	srcLogin := pw.pg.sourceLoginKey(pw.g.Name, ip, loginKey)
 	th := pw.g.Throttle
-	if s.sourceBlocked(ctx, src) || s.sourceBlocked(ctx, srcLogin) {
+	// Both reservations are given back before the refusal's hash, so a
+	// refused request holds no place while it waits for the hasher.
+	leaveSrc, ok := s.reserveSignIn(ctx, src, th.SourceBlockFor)
+	if ok {
+		var leaveLogin func()
+		if leaveLogin, ok = s.reserveSignIn(ctx, srcLogin, th.SourceLoginBlockFor); ok {
+			defer leaveLogin()
+			defer leaveSrc()
+		} else {
+			leaveSrc()
+		}
+	}
+	if !ok {
 		_ = pw.pg.hasher.Dummy(ctx, pass)
 		return store.UserIdentityRow{}, nil, errTooManyAttempts
 	}
@@ -199,6 +253,12 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		}
 		return refuse()
 	}
+	// The account's lock is set by a recorded failure too, so the checks in
+	// progress on the account are counted the same way, from every source,
+	// before its row is read. One over what its failures leave room for is
+	// answered as a locked account is: like a wrong password.
+	atOnce, leaveAccount := s.signIns.enter("account:" + id.TenantID + "\x00" + id.Subject)
+	defer leaveAccount()
 	cred, err := s.store.UserCredentialGet(ctx, id.TenantID, id.Subject, store.CredentialKindPassword)
 	if err != nil {
 		_ = pw.pg.hasher.Dummy(ctx, norm)
@@ -207,7 +267,7 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		}
 		return refuse()
 	}
-	if cred.LockedUntil.After(now) {
+	if cred.LockedUntil.After(now) || atOnce > signInsAtOnce(cred.FailedCount, th.AccountLockFor) {
 		_ = pw.pg.hasher.Dummy(ctx, norm)
 		return refuse()
 	}
