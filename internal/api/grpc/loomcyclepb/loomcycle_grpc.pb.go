@@ -550,8 +550,8 @@ type LoomcycleClient interface {
 	// CreateSnapshot captures running-state into a per-section-semver
 	// JSON envelope (agent_defs, agent_def_active, memory, channels,
 	// evaluations, paused_runs, optional interaction_history). Returns
-	// 413-equivalent when the serialised envelope exceeds the configured
-	// cap (LOOMCYCLE_SNAPSHOT_MAX_BYTES; default 512 MiB).
+	// 413-equivalent when the serialised envelope exceeds the size cap
+	// (the request's max_bytes; 512 MiB when that is 0).
 	//
 	// Mirrors POST /v1/_snapshots.
 	CreateSnapshot(ctx context.Context, in *CreateSnapshotRequest, opts ...grpc.CallOption) (*SnapshotDescriptor, error)
@@ -2205,8 +2205,8 @@ type LoomcycleServer interface {
 	// CreateSnapshot captures running-state into a per-section-semver
 	// JSON envelope (agent_defs, agent_def_active, memory, channels,
 	// evaluations, paused_runs, optional interaction_history). Returns
-	// 413-equivalent when the serialised envelope exceeds the configured
-	// cap (LOOMCYCLE_SNAPSHOT_MAX_BYTES; default 512 MiB).
+	// 413-equivalent when the serialised envelope exceeds the size cap
+	// (the request's max_bytes; 512 MiB when that is 0).
 	//
 	// Mirrors POST /v1/_snapshots.
 	CreateSnapshot(context.Context, *CreateSnapshotRequest) (*SnapshotDescriptor, error)

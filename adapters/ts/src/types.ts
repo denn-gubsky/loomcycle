@@ -3274,7 +3274,7 @@ export interface CreateSnapshotOptions {
   includeHistory?: boolean;
   /** RFC3339 timestamp; only honoured when `includeHistory` is true. */
   includeHistorySince?: string;
-  /** Override the operator's LOOMCYCLE_SNAPSHOT_MAX_BYTES cap. 0 = default. */
+  /** The size cap for this snapshot, in bytes. 0 or unset = the default, 512 MiB. */
   maxBytes?: number;
 }
 
