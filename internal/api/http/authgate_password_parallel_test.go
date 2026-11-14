@@ -25,8 +25,9 @@ import (
 // in force does not depend on how fast this machine hashes.
 type heldStore struct {
 	store.Store
-	// holdAt names the read to hold at: "credential" (the sign-in's read of
-	// the account's password row) or "identity" (its lookup of the login).
+	// holdAt names where to hold: "credential" (the sign-in's read of the
+	// account's password row), "identity" (its lookup of the login), or
+	// "codeFailure" (a link's wrong second factor, about to be recorded).
 	holdAt  string
 	held    chan struct{}
 	release chan struct{}
@@ -36,6 +37,9 @@ type heldStore struct {
 	// accountFailures counts the failures recorded on an account: each is a
 	// wrong password, or a wrong second factor, that was acted on.
 	accountFailures atomic.Int64
+	// codeFailures counts the failures recorded on an invite or reset code:
+	// each is a wrong second-factor code that was checked.
+	codeFailures atomic.Int64
 }
 
 func (h *heldStore) hold(at string) {
@@ -86,6 +90,10 @@ func (h *heldStore) UserCredentialRecordFailure(ctx context.Context, tenantID, s
 }
 
 func (h *heldStore) AuthThrottleRecordFailure(ctx context.Context, key string, now time.Time, window time.Duration, blockFor func(int) time.Duration) (int, time.Time, error) {
+	if strings.HasPrefix(key, "code:") {
+		h.hold("codeFailure")
+		h.codeFailures.Add(1)
+	}
 	return h.Store.AuthThrottleRecordFailure(ctx, key, now, window, hourLong(blockFor))
 }
 

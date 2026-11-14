@@ -766,13 +766,20 @@ func (s *Server) linkInvalid(w http.ResponseWriter, ctx context.Context, pg *Pas
 	writeJSONError(w, http.StatusNotFound, "link_invalid", "this link is not valid; it may have been used or have expired")
 }
 
-// codeBlocked reports whether a code has been hammered with bad submissions.
-func (s *Server) codeBlocked(w http.ResponseWriter, ctx context.Context, codeHash string) bool {
-	if s.sourceBlocked(ctx, "code:"+codeHash) {
+// reserveCode admits one submission against an invite or reset code, or
+// writes the refusal (ok=false): the code has been hammered with bad
+// submissions, or as many are in progress as its failures leave room for. The
+// caller keeps the place until it returns: the second factor is checked, and
+// a wrong one recorded (codeFailure), inside it, so wrong codes posted
+// together are checked no faster than posted in turn.
+func (s *Server) reserveCode(w http.ResponseWriter, ctx context.Context, g PasswordGateSettings, codeHash string) (*checkPlace, bool) {
+	var patience checkPatience
+	place, ok := s.reserveCheck(ctx, "code:"+codeHash, g.Throttle.CodeBlockFor, &patience)
+	if !ok {
 		writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many attempts on this link; wait and try again")
-		return true
+		return nil, false
 	}
-	return false
+	return place, true
 }
 
 func (s *Server) codeFailure(ctx context.Context, g PasswordGateSettings, codeHash string) {
@@ -876,9 +883,11 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		s.linkInvalid(w, ctx, pg, src)
 		return
 	}
-	if s.codeBlocked(w, ctx, inv.CodeHash) {
+	place, ok := s.reserveCode(w, ctx, g, inv.CodeHash)
+	if !ok {
 		return
 	}
+	defer place.leave()
 	login := inv.Login
 	if login == "" {
 		raw := req.Login
@@ -1276,9 +1285,11 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 		s.linkInvalid(w, ctx, pg, src)
 		return
 	}
-	if s.codeBlocked(w, ctx, rs.CodeHash) {
+	place, ok := s.reserveCode(w, ctx, g, rs.CodeHash)
+	if !ok {
 		return
 	}
+	defer place.leave()
 	now := time.Now().UTC()
 	login := ""
 	if ids, err := s.store.UserIdentityListSubject(ctx, rs.TenantID, rs.Subject); err == nil {
