@@ -410,7 +410,6 @@ running `protoc` on a fresh checkout.
 ## Limitations and open work
 
 - **No native TLS in the binary.** Terminate at ingress / sidecar.
-  Native TLS is v1.0.
 - **No reflection service.** `grpcurl` works against the proto file
   directly but won't autodiscover the schema. Reflection is a 3-line
   add when an operator asks for it.
@@ -420,6 +419,7 @@ running `protoc` on a fresh checkout.
 - **TS gRPC adapter not yet shipped.** TS callers stay on HTTP+SSE
   via `@loomcycle/client`. Tracked in [`PLAN.md`](PLAN.md).
 
-For the design history (why gRPC was added, the runner-extraction
-refactor, the synthetic-frame envelope choice), see
-`doc-internal/PLAN.md`.
+For what the first gRPC release added (the wire-agnostic runner seam,
+the synthetic registration frames), see the v0.5.5 section of
+[`PLAN.md`](PLAN.md#v055--earlier). The decision history behind it is
+kept outside this repository.
