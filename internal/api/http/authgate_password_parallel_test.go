@@ -321,8 +321,9 @@ func (f *gateFixture) throttleFailures(t *testing.T, key string) int {
 
 // Sign-ins sent together are paced like sign-ins sent one after another. One
 // client guessing one login gets, in a row, the three free failures and the
-// one that sets the first hold; sent at once, the same four are verified and
-// the rest, which waited for a place, find the hold and are told to wait.
+// one that sets the first hold; sent at once, the same four are verified, one
+// at a time, and the rest, which waited for a place, find the hold and are
+// told to wait.
 func TestPasswordGate_ParallelGuessesAreBoundedLikeSequentialOnes(t *testing.T) {
 	f := newGateFixture(t)
 	f.redeemed(t, "local", "olga@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
@@ -330,8 +331,8 @@ func TestPasswordGate_ParallelGuessesAreBoundedLikeSequentialOnes(t *testing.T) 
 	b := f.newBurst(t, "credential", "")
 	b.signIns(sameGuess(sent, "198.51.100.7", "olga@example.com"))
 	b.settle()
-	if b.atHold != 4 || b.waiting != sent-4 {
-		t.Fatalf("%d guesses sent at once: %d in a place, %d waiting; want 4 and %d", sent, b.atHold, b.waiting, sent-4)
+	if b.atHold != 1 || b.waiting != sent-1 {
+		t.Fatalf("%d guesses sent at once: %d being checked, %d waiting; want 1 and %d", sent, b.atHold, b.waiting, sent-1)
 	}
 	verified, by := b.finish()
 	if verified != 4 || by[http.StatusUnauthorized] != 4 || by[http.StatusTooManyRequests] != sent-4 {
@@ -366,13 +367,15 @@ func TestPasswordGate_ParallelGuessesAfterAHoldEndsAreOneGuess(t *testing.T) {
 
 // The account's own lock bounds guesses from any number of addresses: an
 // account past max_failures admits one guess when its lock ends. Guesses sent
-// together from different addresses are still one guess, and the others are
-// answered exactly as a wrong password is (a locked account never says so).
+// together from different addresses are still one guess: the others wait
+// their turn, find the account locked, and are answered exactly as a wrong
+// password is (a locked account never says so).
 func TestPasswordGate_ParallelGuessesFromManySourcesCannotOutrunTheAccountLock(t *testing.T) {
 	f := newGateFixture(t)
 	f.redeemed(t, "local", "rita@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
 	f.pastAccountFailures(t, "local", "rita@example.com", f.srv.pwGates.p.Load().byName["local"].Throttle.MaxFailures)
-	const sent = 12
+	// One being checked and as many waiting as a login lets wait.
+	const sent = 1 + maxCheckWaiters
 	b := f.newBurst(t, "credential", "")
 	for i := range sent {
 		b.signIn(signIn{client: fmt.Sprintf("198.51.100.%d", 20+i), login: "rita@example.com", pass: wrongPassword})
@@ -380,6 +383,31 @@ func TestPasswordGate_ParallelGuessesFromManySourcesCannotOutrunTheAccountLock(t
 	verified, by := b.finish()
 	if verified != 1 || by[http.StatusUnauthorized] != sent {
 		t.Fatalf("%d guesses sent at once from %d addresses at a locked-out account: %d verified, answers %v; want 1 verified and every answer 401", sent, sent, verified, by)
+	}
+}
+
+// An account with a login at two gates has two turns, one per login. Its lock
+// still admits one guess when it ends, whichever logins the guesses come
+// through.
+func TestPasswordGate_ParallelGuessesThroughTwoLoginsOfOneAccountAreOneGuess(t *testing.T) {
+	f := newGateFixture(t)
+	f.redeemed(t, "local", "ines@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
+	id, err := f.st.UserIdentityGet(context.Background(), "local", "", "ines@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.addLogin(t, id.TenantID, id.Subject, "cloud", "ines.cloud@example.com")
+	f.pastAccountFailures(t, "local", "ines@example.com", f.srv.pwGates.p.Load().byName["local"].Throttle.MaxFailures)
+	b := f.newBurst(t, "credential", "")
+	b.signIn(signIn{client: "198.51.100.30", login: "ines@example.com", pass: wrongPassword})
+	b.signIn(signIn{client: "198.51.100.31", login: "ines.cloud@example.com", pass: wrongPassword, gate: "cloud"})
+	b.settle()
+	if b.atHold != 2 {
+		t.Fatalf("%d at the account's row, want both (each login has its own turn)", b.atHold)
+	}
+	verified, by := b.finish()
+	if verified != 1 || by[http.StatusUnauthorized] != 2 {
+		t.Fatalf("two guesses at once through two logins of a locked-out account: %d verified, answers %v; want 1 verified and both answered 401", verified, by)
 	}
 }
 
@@ -536,10 +564,10 @@ func TestPasswordGate_TheRightPasswordFromTwoTabsAfterTyposSignsInOnBoth(t *test
 	}
 }
 
-// More right passwords for one account at once than its failures leave room
-// for (four on a fresh account), from as many addresses: those over wait for
-// a place, and all sign in with no address charged a failure.
-func TestPasswordGate_RightPasswordsOverTheAccountAllowanceWaitAndSignIn(t *testing.T) {
+// Right passwords for one account at once from several addresses, more than
+// a fresh account's failures leave room for (four): they are checked in turn
+// and all sign in, with no address charged a failure.
+func TestPasswordGate_RightPasswordsForOneAccountFromManyAddressesAllSignIn(t *testing.T) {
 	f := newGateFixture(t)
 	f.redeemed(t, "local", "zoe@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
 	const sent = 6
@@ -582,21 +610,22 @@ func TestPasswordGate_AWaiterIsRefusedOnceTheCheckItWaitedForSetsAHold(t *testin
 	}
 }
 
-// The same on the account, from another address: the waiter's password was
-// hashed while it waited, and is not acted on once the account is locked.
+// The same on the account, from another address: the right password waits
+// its turn behind a guess, and is not acted on once that guess has locked
+// the account.
 func TestPasswordGate_AWaiterOnTheAccountIsRefusedOnceItIsLocked(t *testing.T) {
 	f := newGateFixture(t)
 	f.redeemed(t, "local", "enid@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
 	f.pastAccountFailures(t, "local", "enid@example.com", 3)
 	b := f.newBurst(t, "credential", "")
-	// The guess is sent first and is at the account's row, in the account's
-	// one place, before the right password is sent.
+	// The guess is sent first and is at the account's row before the right
+	// password is sent.
 	b.signIn(signIn{client: "198.51.100.70", login: "enid@example.com", pass: wrongPassword})
 	b.settle()
 	b.signIn(signIn{client: "198.51.100.71", login: "enid@example.com", pass: goodPassword})
 	b.settle()
-	if b.atHold != 2 {
-		t.Fatalf("%d held at the account's row, want both", b.atHold)
+	if b.atHold != 1 || b.waiting != 1 {
+		t.Fatalf("a guess, then a right password from another address: %d being checked, %d waiting; want one of each", b.atHold, b.waiting)
 	}
 	verified, by := b.finish()
 	if verified != 1 || by[http.StatusUnauthorized] != 2 {
@@ -630,6 +659,36 @@ func TestPasswordGate_AWaitForAPlaceEndsAtItsBound(t *testing.T) {
 	}
 }
 
+// A login's turn is waited for within the same bound, and a sign-in that
+// cannot have its turn in time is told to wait — for a login nobody has as
+// for one somebody has.
+func TestPasswordGate_AWaitForALoginsTurnEndsAtItsBound(t *testing.T) {
+	for _, tc := range []struct{ name, login string }{{"an account", "hugo@example.com"}, {"an unknown login", "nobody@example.com"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newGateFixture(t)
+			f.redeemed(t, "local", "hugo@example.com", f.inviteCode(t, bAcmeOp, "local", `{}`))
+			b := f.newBurst(t, "identity", "")
+			b.signIn(signIn{client: "198.51.100.92", login: tc.login, pass: wrongPassword})
+			b.settle()
+			b.signIn(signIn{client: "198.51.100.93", login: tc.login, pass: wrongPassword})
+			b.settle()
+			if b.atHold != 1 || b.waiting != 1 {
+				t.Fatalf("%d being checked, %d waiting; want one of each", b.atHold, b.waiting)
+			}
+			b.endWaits()
+			if code := b.next(); code != http.StatusTooManyRequests {
+				t.Fatalf("the sign-in whose wait for its turn ran out: %d, want 429", code)
+			}
+			if n := f.throttleFailures(t, f.srv.pwGates.p.Load().sourceKey("local", "198.51.100.93")); n != 0 {
+				t.Fatalf("it was charged %d failures for a password nobody checked", n)
+			}
+			if _, by := b.finish(); by[http.StatusUnauthorized] != 1 {
+				t.Fatalf("the sign-in that had the turn: answers %v, want 401", by)
+			}
+		})
+	}
+}
+
 // A store fault that panics inside a check gives the check's places back
 // (the server recovers the panic, so nothing else would): the next sign-in for
 // the same keys is not refused for a place nobody holds.
@@ -657,5 +716,70 @@ func TestPasswordGate_PlacesAreGivenBackWhenTheStorePanics(t *testing.T) {
 				t.Fatalf("the sign-in after the panic: %d, want 204", code)
 			}
 		})
+	}
+}
+
+// Whether a login exists shows in nothing about how overlapping sign-ins for
+// it are handled: two wrong passwords at once from two addresses get the same
+// answers, the same one of them waits for the other, and each address is
+// charged the same, for an unknown login and for an account in every state a
+// stranger can put one into (untouched, past its free failures, locked).
+func TestPasswordGate_OverlappingSignInsDoNotShowWhetherTheLoginExists(t *testing.T) {
+	type seen struct {
+		atHold, waited   int
+		unauth, tooMany  int
+		charged1, charge int
+	}
+	run := func(t *testing.T, login string, prepare func(f *gateFixture)) seen {
+		f := newGateFixture(t)
+		if prepare != nil {
+			f.redeemed(t, "local", login, f.inviteCode(t, bAcmeOp, "local", `{}`))
+			prepare(f)
+		}
+		// Held at the login lookup, which an unknown login reaches too.
+		b := f.newBurst(t, "identity", "")
+		b.signIn(signIn{client: "198.51.100.90", login: login, pass: wrongPassword})
+		b.settle()
+		b.signIn(signIn{client: "198.51.100.91", login: login, pass: wrongPassword})
+		b.settle()
+		out := seen{atHold: b.atHold}
+		_, by := b.finish()
+		// Every request that waited said so once, during the burst or
+		// after the held one was let go.
+		out.waited = b.waiting + len(b.parked)
+		out.unauth, out.tooMany = by[http.StatusUnauthorized], by[http.StatusTooManyRequests]
+		pg := f.srv.pwGates.p.Load()
+		out.charged1 = f.throttleFailures(t, pg.sourceKey("local", "198.51.100.90"))
+		out.charge = f.throttleFailures(t, pg.sourceKey("local", "198.51.100.91"))
+		return out
+	}
+	unknown := run(t, "nobody@example.com", nil)
+	for name, prepare := range map[string]func(f *gateFixture){
+		"untouched":              func(*gateFixture) {},
+		"past its free failures": func(f *gateFixture) { f.pastAccountFailures(t, "local", "known@example.com", 3) },
+		"locked": func(f *gateFixture) {
+			ctx := context.Background()
+			id, err := f.st.UserIdentityGet(ctx, "local", "", "known@example.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			th := f.srv.pwGates.p.Load().byName["local"].Throttle
+			for range th.MaxFailures {
+				if _, _, err := f.st.UserCredentialRecordFailure(ctx, id.TenantID, id.Subject, store.CredentialKindPassword, time.Now(), th.AccountLockFor); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := run(t, "known@example.com", prepare); got != unknown {
+				t.Fatalf("an account %s: %+v; an unknown login: %+v", name, got, unknown)
+			}
+		})
+	}
+	// And what they all do: one check at a time for a login, the other
+	// waiting its turn, each answered and charged as a wrong password.
+	if want := (seen{atHold: 1, waited: 1, unauth: 2, charged1: 1, charge: 1}); unknown != want {
+		t.Fatalf("two wrong passwords at once for an unknown login: %+v, want %+v", unknown, want)
 	}
 }

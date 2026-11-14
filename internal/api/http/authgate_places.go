@@ -14,7 +14,8 @@ import (
 // rather than guesses. Each check therefore takes a place on its key first:
 // a key admits as many checks at once as could fail one after another with no
 // hold between them (checksAtOnce), and a check over that waits, briefly, for
-// a place and then reads the key again.
+// a place and then reads the key again. A login takes one sign-in at a time
+// (turn), which bounds the account's lock the same way.
 //
 // The places are this replica's; the failures and the holds are the store's.
 // N replicas admit up to N times the allowance per hold.
@@ -186,6 +187,24 @@ func (pl *checkPlace) rejoin(ctx context.Context, patience *checkPatience) bool 
 	k.held++
 	pl.state, pl.n, pl.freed = placeHeld, k.held, k.freed
 	return true
+}
+
+// turn admits the request to a key that takes one check at a time, waiting
+// for the checks ahead of it; false, and no place, when its patience or its
+// context ends first or the key has its fill of waiters.
+func (p *checkPlaces) turn(ctx context.Context, key string, patience *checkPatience) (_ *checkPlace, ok bool) {
+	place := p.take(key)
+	defer func() {
+		if !ok {
+			place.leave()
+		}
+	}()
+	for place.n > 1 {
+		if !place.stepBack() || !place.rejoin(ctx, patience) {
+			return nil, false
+		}
+	}
+	return place, true
 }
 
 // reserveCheck admits one check on a throttle key and returns its place, or

@@ -134,6 +134,56 @@ func (pg *PasswordGates) sourceLoginKey(gate, ip, login string) string {
 	return "srclogin:" + gate + ":" + pg.hasher.MAC("throttle-source-login", throttleSourceKey(ip)+"\x00"+login)
 }
 
+// loginTurnKey names the one-at-a-time turn of a gate's login (signInPlaces).
+// It is made from the login as written, normalised, whether or not anyone has
+// that login, and MAC'd like the throttle keys.
+func (pg *PasswordGates) loginTurnKey(gate, login string) string {
+	return "login:" + gate + ":" + pg.hasher.MAC("check-login", login)
+}
+
+// signInPlaces takes the places a password check runs in, waiting for each
+// within one budget (reserveCheck), and returns what gives them back; call
+// leave whatever ok is. The source and the source's count against the login
+// admit what their failures leave room for. The login itself admits one
+// check at a time, from every source, existing or not: a check then sees
+// what the one before it did to the account (a failure counted, a lock set),
+// so sign-ins for one login sent together are checked in turn, and because
+// the turn is the login's and not the account's, a sign-in waits the same
+// way for a login nobody has. A request that cannot have its turn in time is
+// told to wait, as one held back at its source is, and charged nothing.
+func (s *Server) signInPlaces(ctx context.Context, pw *passwordGate, src, srcLogin, turn string) (leave func(), ok bool) {
+	var held []*checkPlace
+	leave = func() {
+		for i := len(held) - 1; i >= 0; i-- {
+			held[i].leave()
+		}
+	}
+	// A panic in the store included.
+	defer func() {
+		if !ok {
+			leave()
+		}
+	}()
+	var patience checkPatience
+	th := pw.g.Throttle
+	for _, k := range []struct {
+		key      string
+		blockFor func(int) time.Duration
+	}{{src, th.SourceBlockFor}, {srcLogin, th.SourceLoginBlockFor}} {
+		place, admitted := s.reserveCheck(ctx, k.key, k.blockFor, &patience)
+		if !admitted {
+			return leave, false
+		}
+		held = append(held, place)
+	}
+	place, admitted := s.checks.turn(ctx, turn, &patience)
+	if !admitted {
+		return leave, false
+	}
+	held = append(held, place)
+	return leave, true
+}
+
 // invalidLoginKey is the login every login that does not normalise is
 // throttled under: garbage shares one bucket rather than getting one each.
 const invalidLoginKey = "\x00invalid-login"
@@ -177,19 +227,9 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 	src := pw.pg.sourceKey(pw.g.Name, ip)
 	srcLogin := pw.pg.sourceLoginKey(pw.g.Name, ip, loginKey)
 	th := pw.g.Throttle
-	// One wait budget for the three keys. A refused request keeps no place
-	// while its hash waits for the hasher.
-	var patience checkPatience
-	srcPlace, ok := s.reserveCheck(ctx, src, th.SourceBlockFor, &patience)
-	if ok {
-		defer srcPlace.leave()
-		var loginPlace *checkPlace
-		if loginPlace, ok = s.reserveCheck(ctx, srcLogin, th.SourceLoginBlockFor, &patience); ok {
-			defer loginPlace.leave()
-		} else {
-			srcPlace.leave()
-		}
-	}
+	// A refused request keeps no place while its hash waits for the hasher.
+	leave, ok := s.signInPlaces(ctx, pw, src, srcLogin, pw.pg.loginTurnKey(pw.g.Name, loginKey))
+	defer leave()
 	if !ok {
 		_ = pw.pg.hasher.Dummy(ctx, pass)
 		return store.UserIdentityRow{}, nil, errTooManyAttempts
@@ -212,9 +252,12 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		}
 		return refuse()
 	}
-	// The account's lock is set by a recorded failure too, so the checks in
-	// progress on the account are counted the same way, from every source,
-	// before its row is read.
+	// An account with more than one login could still be checked through
+	// each at once, so the checks in progress on the account are counted
+	// too, before its row is read. One over what its failures leave room
+	// for is answered as a locked account is, source failures and all:
+	// nothing in the answer, its time or what it charged says the login
+	// exists. Neither refusal keeps the account's place through its hash.
 	acct := s.checks.take("account:" + id.TenantID + "\x00" + id.Subject)
 	defer acct.leave()
 	cred, err := s.store.UserCredentialGet(ctx, id.TenantID, id.Subject, store.CredentialKindPassword)
@@ -226,51 +269,14 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		}
 		return refuse()
 	}
-	if cred.LockedUntil.After(now) {
-		// No place is kept through the hash: it may queue for the hasher.
+	if cred.LockedUntil.After(now) || acct.n > checksAtOnce(cred.FailedCount, th.AccountLockFor) {
 		acct.leave()
 		_ = pw.pg.hasher.Dummy(ctx, norm)
 		return refuse()
 	}
-	var rehash bool
-	if acct.n <= checksAtOnce(cred.FailedCount, th.AccountLockFor) {
-		if ok, rehash, err = pw.pg.hasher.Verify(ctx, norm, cred.PHC, cred.PepperKID); err != nil {
-			return store.UserIdentityRow{}, nil, err
-		}
-	} else {
-		// Over what the account's failures leave room for. The password is
-		// hashed now, in a wait and not in a place, and the result is used
-		// only once a place is had and the account, read again, is not
-		// locked: the request does one hash's work whatever happens, as an
-		// unknown login's does, so waiting adds no time that would tell an
-		// account from none, and a guess is still acted on only in a place.
-		waiting := acct.stepBack()
-		if ok, rehash, err = pw.pg.hasher.Verify(ctx, norm, cred.PHC, cred.PepperKID); err != nil {
-			return store.UserIdentityRow{}, nil, err
-		}
-		admitted := false
-		for waiting && acct.rejoin(ctx, &patience) {
-			fresh, err := s.store.UserCredentialGet(ctx, id.TenantID, id.Subject, store.CredentialKindPassword)
-			if err != nil && !isNotFound(err) {
-				return store.UserIdentityRow{}, nil, err
-			}
-			// A password changed meanwhile was not the one hashed.
-			if err != nil || fresh.LockedUntil.After(time.Now()) || fresh.PHC != cred.PHC || fresh.PepperKID != cred.PepperKID {
-				break
-			}
-			if acct.n <= checksAtOnce(fresh.FailedCount, th.AccountLockFor) {
-				admitted = true
-				break
-			}
-			waiting = acct.stepBack()
-		}
-		if !admitted {
-			// Answered as a locked account is, source failures and all: an
-			// answer that charged nothing would show, in when the source is
-			// next held back, that the login exists.
-			acct.leave()
-			return refuse()
-		}
+	ok, rehash, err := pw.pg.hasher.Verify(ctx, norm, cred.PHC, cred.PepperKID)
+	if err != nil {
+		return store.UserIdentityRow{}, nil, err
 	}
 	if !ok {
 		s.recordAccountFailure(ctx, pw, id)
