@@ -26,7 +26,8 @@ import (
 type heldStore struct {
 	store.Store
 	// holdAt names where to hold: "credential" (the sign-in's read of the
-	// account's password row), "identity" (its lookup of the login), or
+	// account's password row), "identity" (its lookup of the login),
+	// "accountFailure" (a wrong password, hashed, about to be recorded), or
 	// "codeFailure" (a link's wrong second factor, about to be recorded).
 	holdAt  string
 	held    chan struct{}
@@ -40,6 +41,9 @@ type heldStore struct {
 	// codeFailures counts the failures recorded on an invite or reset code:
 	// each is a wrong second-factor code that was checked.
 	codeFailures atomic.Int64
+	// signInCtx is the context of the last sign-in that read a password row:
+	// the request's own.
+	signInCtx atomic.Value
 }
 
 func (h *heldStore) hold(at string) {
@@ -75,6 +79,7 @@ func (h *heldStore) UserIdentityGet(ctx context.Context, gate, issuer, externalS
 
 func (h *heldStore) UserCredentialGet(ctx context.Context, tenantID, subject, kind string) (store.UserCredentialRow, error) {
 	row, err := h.Store.UserCredentialGet(ctx, tenantID, subject, kind)
+	h.signInCtx.Store(&ctx)
 	h.hold("credential")
 	return row, err
 }
@@ -85,6 +90,7 @@ func (h *heldStore) AuthThrottleGet(ctx context.Context, key string, now time.Ti
 }
 
 func (h *heldStore) UserCredentialRecordFailure(ctx context.Context, tenantID, subject, kind string, now time.Time, lockFor func(int) time.Duration) (int, time.Time, error) {
+	h.hold("accountFailure")
 	h.accountFailures.Add(1)
 	return h.Store.UserCredentialRecordFailure(ctx, tenantID, subject, kind, now, hourLong(lockFor))
 }
@@ -155,13 +161,19 @@ func (f *gateFixture) newBurst(t *testing.T, holdAt, panicAt string) *burst {
 // hc carries a session's cookies when the request needs one.
 func (b *burst) post(hc *http.Client, client, path string, body any) {
 	b.t.Helper()
+	b.postCtx(context.Background(), hc, client, path, body)
+}
+
+// postCtx is post for a client that may go away: ctx is the client's.
+func (b *burst) postCtx(ctx context.Context, hc *http.Client, client, path string, body any) {
+	b.t.Helper()
 	b.sent++
 	raw := jsonBody(b.t, body)
 	if hc == nil {
 		hc = http.DefaultClient
 	}
 	go func() {
-		req, err := http.NewRequest("POST", b.ts.URL+path, strings.NewReader(raw))
+		req, err := http.NewRequestWithContext(ctx, "POST", b.ts.URL+path, strings.NewReader(raw))
 		if err != nil {
 			b.answered <- 0
 			return
@@ -811,5 +823,55 @@ func TestPasswordGate_ABurstOfManyLoginsLeavesNoPlaceBehind(t *testing.T) {
 	_, by := b.finish()
 	if n := by[http.StatusUnauthorized] + by[http.StatusNoContent] + by[http.StatusTooManyRequests]; n != b.sent {
 		t.Fatalf("%d sign-ins, answers %v", b.sent, by)
+	}
+}
+
+// A guess is charged even when its client goes away while the password is
+// being hashed: the failure is recorded on the source, on the source's count
+// against the login and on the account, and the lockout it causes is
+// audited, though the request's own context has ended.
+func TestPasswordGate_AGuessWhoseClientGoesAwayIsStillCharged(t *testing.T) {
+	f := newGateFixture(t)
+	f.redeemed(t, "strict3", "kira@example.com", f.inviteCode(t, bAcmeOp, "strict3", `{}`))
+	// One failure short of strict3's lockout.
+	f.pastAccountFailures(t, "strict3", "kira@example.com", 2)
+	b := f.newBurst(t, "accountFailure", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b.postCtx(ctx, nil, "198.51.100.130", "/v1/_auth/complete/strict3", map[string]string{"login": "kira@example.com", "password": wrongPassword})
+	b.settle()
+	if b.atHold != 1 {
+		t.Fatalf("%d guesses hashed and about to be recorded, want 1", b.atHold)
+	}
+	// The client goes away; the server sees it before the failure is
+	// recorded.
+	cancel()
+	select {
+	case <-(*b.hs.signInCtx.Load().(*context.Context)).Done():
+	case <-b.hung:
+		t.Fatal("the request's context did not end when its client went away")
+	}
+	b.finish()
+	pg := f.srv.pwGates.p.Load()
+	if n := f.throttleFailures(t, pg.sourceKey("strict3", "198.51.100.130")); n != 1 {
+		t.Fatalf("the source was charged %d failures, want 1", n)
+	}
+	if n := f.throttleFailures(t, pg.sourceLoginKey("strict3", "198.51.100.130", "kira@example.com")); n != 1 {
+		t.Fatalf("the source was charged %d failures against the login, want 1", n)
+	}
+	ctxb := context.Background()
+	id, err := f.st.UserIdentityGet(ctxb, "strict3", "", "kira@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := f.st.UserCredentialGet(ctxb, id.TenantID, id.Subject, store.CredentialKindPassword)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.FailedCount != 3 || !cred.LockedUntil.After(time.Now()) {
+		t.Fatalf("the account has %d failures, locked until %v; want 3 and a lock", cred.FailedCount, cred.LockedUntil)
+	}
+	if !slices.Contains(f.audit.actions(), "auth_login_locked") {
+		t.Fatalf("the lockout was not audited: %v", f.audit.actions())
 	}
 }

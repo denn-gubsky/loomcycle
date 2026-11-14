@@ -199,7 +199,24 @@ func (s *Server) sourceBlocked(ctx context.Context, key string) bool {
 	return until.After(time.Now())
 }
 
+// failureRecordTimeout bounds one failure record, which no longer ends with
+// its request (recordingContext).
+const failureRecordTimeout = 5 * time.Second
+
+// recordingContext is the context a failure is recorded under: the
+// request's values, not its cancellation. A client that hangs up while its
+// password is being hashed has still had a guess checked; recorded under
+// the request's own context the failure would be dropped (the store call
+// fails on the cancelled context), and the guess, and the turn it held,
+// would have cost nothing. The timeout keeps a store that hangs from
+// keeping the request's goroutine.
+func recordingContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), failureRecordTimeout)
+}
+
 func (s *Server) recordSourceFailure(ctx context.Context, key string, block func(int) time.Duration) {
+	ctx, cancel := recordingContext(ctx)
+	defer cancel()
 	if _, _, err := s.store.AuthThrottleRecordFailure(ctx, key, time.Now(), password.SourceWindow, block); err != nil {
 		slog.Warn("authgate: recording a failure failed", "err", err)
 	}
@@ -218,7 +235,6 @@ type secondFactor struct {
 // which. Only once the password is right does it say a second factor is
 // needed (a *secondFactorChallenge when the account has a passkey) or wrong.
 func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pass string, f secondFactor, ip string) (store.UserIdentityRow, []string, error) {
-	now := time.Now()
 	loginN, lerr := password.NormalizeLogin(login)
 	loginKey := loginN
 	if lerr != nil {
@@ -234,6 +250,9 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		_ = pw.pg.hasher.Dummy(ctx, pass)
 		return store.UserIdentityRow{}, nil, errTooManyAttempts
 	}
+	// Read once the request has its places: a lock that ran out while it
+	// waited for them is not held against it.
+	now := time.Now()
 	refuse := func() (store.UserIdentityRow, []string, error) {
 		s.recordSourceFailure(ctx, src, th.SourceBlockFor)
 		s.recordSourceFailure(ctx, srcLogin, th.SourceLoginBlockFor)
@@ -375,6 +394,8 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 // recordAccountFailure counts a failure on the account and audits the lockout
 // the failure caused.
 func (s *Server) recordAccountFailure(ctx context.Context, pw *passwordGate, id store.UserIdentityRow) {
+	ctx, cancel := recordingContext(ctx)
+	defer cancel()
 	n, _, err := s.store.UserCredentialRecordFailure(ctx, id.TenantID, id.Subject, store.CredentialKindPassword, time.Now(), pw.g.Throttle.AccountLockFor)
 	if err != nil {
 		slog.Warn("authgate: recording a failed login failed", "err", err)
