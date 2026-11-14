@@ -15,12 +15,16 @@ import (
 	"syscall"
 
 	"github.com/denn-gubsky/loomcycle/internal/conversion/worker"
+	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
 )
 
 // runWorker is `loomcycle worker` (RFC GO): a conversion worker that dials
 // the dispatcher and runs the conversions it is handed. It loads no config,
 // opens no store and holds no provider key; the core it serves keeps every
-// file's path and grant to itself and sends only bytes.
+// file's path and grant to itself and sends only bytes. Its helper commands
+// come from its own environment, never from the dispatcher: a job names what
+// to do, not what to run.
 func runWorker(args []string, stderr io.Writer) int {
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -47,6 +51,13 @@ func runWorker(args []string, stderr io.Writer) int {
 			slog.Warn("conversion worker could not raise its OOM score", "err", err)
 		}
 	}
+	wrapper := strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
+	helperFrom := func(env, key string) *convert.Helper {
+		if cmd := strings.TrimSpace(os.Getenv(env)); cmd != "" {
+			return &convert.Helper{Key: key, Command: cmd, Wrapper: wrapper}
+		}
+		return nil
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err := worker.Run(ctx, worker.Options{
@@ -57,6 +68,10 @@ func runWorker(args []string, stderr io.Writer) int {
 		ID:           *id,
 		BuildVersion: buildVersion,
 		ParentPID:    *parentPID,
+		Rasterize:    helperFrom("LOOMCYCLE_WORKER_RASTERIZE_COMMAND", "transcription.ocr.rasterize"),
+		Media:        helperFrom("LOOMCYCLE_WORKER_MEDIA_COMMAND", "transcription.stt.media"),
+		Encode:       helperFrom("LOOMCYCLE_WORKER_ENCODE_COMMAND", "speech.encode"),
+		Images:       vision.NewReencoder(),
 	})
 	switch {
 	case err == nil:

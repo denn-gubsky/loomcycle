@@ -54,6 +54,10 @@ type Options struct {
 	Workers int
 	// MemoryLimitMB is each child's GOMEMLIMIT; 0 sets none.
 	MemoryLimitMB int
+	// Rasterize, Media and Encode are the operator's helper command lines
+	// and Wrapper is LOOMCYCLE_HELPER_WRAPPER: a child runs the helpers the
+	// core is configured with. Empty passes none.
+	Rasterize, Media, Encode, Wrapper string
 	// OnRespawn is called each time a child is started again.
 	OnRespawn func()
 	Logger    *slog.Logger
@@ -204,6 +208,16 @@ func childEnv(opt Options) []string {
 		}
 	}
 	env = append(env, "LOOMCYCLE_WORKER_TOKEN="+opt.Token, "LOOMCYCLE_WORKER_SLOTS=1")
+	for _, kv := range [][2]string{
+		{"LOOMCYCLE_WORKER_RASTERIZE_COMMAND", opt.Rasterize},
+		{"LOOMCYCLE_WORKER_MEDIA_COMMAND", opt.Media},
+		{"LOOMCYCLE_WORKER_ENCODE_COMMAND", opt.Encode},
+		{"LOOMCYCLE_HELPER_WRAPPER", opt.Wrapper},
+	} {
+		if kv[1] != "" {
+			env = append(env, kv[0]+"="+kv[1])
+		}
+	}
 	if opt.MemoryLimitMB > 0 {
 		env = append(env, fmt.Sprintf("GOMEMLIMIT=%dMiB", opt.MemoryLimitMB))
 	}

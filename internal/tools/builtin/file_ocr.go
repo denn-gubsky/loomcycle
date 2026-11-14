@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -43,7 +42,7 @@ type FileOCR struct {
 
 const (
 	// ocrRasterizeTimeout bounds rendering one page.
-	ocrRasterizeTimeout = 2 * time.Minute
+	ocrRasterizeTimeout = convert.RasterizeTimeout
 	// The dry-run estimate: a page sent as an image or a PDF page reads as
 	// about 1 600 input tokens on Claude (pixels / 750 at the 1568-pixel
 	// edge), each call adds its instruction, and a page of dense text writes

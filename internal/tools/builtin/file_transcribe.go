@@ -161,9 +161,10 @@ func (f *File) transcribe(ctx context.Context, in fileInput) (tools.Result, erro
 // scratch root a conversion writes in.
 func (f *File) sttDeps() sttpass.Deps {
 	return sttpass.Deps{
-		Engine: f.STT.Engine,
-		Config: f.sttConfig(),
-		Ledger: f.STT.Ledger,
+		Engine:  f.STT.Engine,
+		Config:  f.sttConfig(),
+		Ledger:  f.STT.Ledger,
+		Convert: f.Convert,
 		Scratch: func(ctx context.Context) (string, error) {
 			root, _, err := effectiveRoot(ctx, inbox.Name, false)
 			return root, err

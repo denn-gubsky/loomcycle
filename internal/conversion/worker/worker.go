@@ -13,6 +13,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -30,16 +32,27 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
+	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
 const (
-	// DefaultMaxInput bounds one job's input. The core's inputs are bounded
-	// already (64 MiB an inbox file by default, 256 MiB a PDF); this is the
-	// worker's own floor under them.
-	DefaultMaxInput = 1 << 30
-	heartbeatEvery  = 5 * time.Second
-	backoffMin      = time.Second
-	backoffMax      = 30 * time.Second
+	// DefaultMaxInput bounds one job's input, spooled to scratch. It is the
+	// core's own largest bound, a recording for speech-to-text (4 GiB,
+	// sttpass.MaxSource), so nothing the core converts in process is refused
+	// here.
+	DefaultMaxInput = 4 << 30
+	// helperGrace is how long past a helper's own bound its job may run, so
+	// the helper's timeout, which names it, ends the job rather than the
+	// job's context, which would read as a bare deadline.
+	helperGrace = 5 * time.Second
+	// maxEncoded and maxWAV are the core's bounds on an encode's output and
+	// a converted recording; a worker refuses past them itself, so an output
+	// over its bound is the file's failure, never a protocol break.
+	maxEncoded     = 256 << 20
+	maxWAV         = 4 << 30
+	heartbeatEvery = 5 * time.Second
+	backoffMin     = time.Second
+	backoffMax     = 30 * time.Second
 	// endWait bounds how long a finished job's stream may take to close.
 	endWait = 10 * time.Second
 	// maxSlots is the dispatcher's own bound on a worker's slots.
@@ -65,7 +78,14 @@ type Options struct {
 	// the dispatcher started must not outlive it.
 	ParentPID int
 	MaxInput  int64
-	Logger    *slog.Logger
+	// Rasterize, Media and Encode are the operator's helper commands; the
+	// worker takes a helper's jobs only when its program resolves here. A
+	// helper's Timeout is ignored: each job carries its own time bound.
+	Rasterize, Media, Encode *convert.Helper
+	// Images re-encodes images (vision.NewReencoder()); nil takes no image
+	// jobs.
+	Images convert.ImageReencoder
+	Logger *slog.Logger
 }
 
 // ErrRefused is a dispatcher refusing this worker for good (another protocol
@@ -107,7 +127,7 @@ func Run(ctx context.Context, opt Options) error {
 	}
 	defer conn.Close()
 	client := workerpb.NewWorkerServiceClient(conn)
-	w := &worker{opt: opt, log: log, client: client}
+	w := &worker{opt: opt, log: log, client: client, labels: labels(opt, log)}
 
 	backoff := backoffMin
 	for {
@@ -136,7 +156,37 @@ type worker struct {
 	opt      Options
 	log      *slog.Logger
 	client   workerpb.WorkerServiceClient
+	labels   []string
 	inFlight atomic.Int32
+}
+
+// labels are what this worker can run: extraction and page cuts always,
+// images when it has a re-encoder, and each helper's jobs when the helper's
+// program resolves on this host (RFC GO §5.3). A helper that does not is
+// logged, not fatal: the worker still serves everything else.
+func labels(opt Options, log *slog.Logger) []string {
+	out := []string{wire.LabelExtract, wire.LabelPDF}
+	if opt.Images != nil {
+		out = append(out, wire.LabelImage)
+	}
+	for _, h := range []struct {
+		label  string
+		helper *convert.Helper
+	}{{wire.LabelRender, opt.Rasterize}, {wire.LabelMedia, opt.Media}, {wire.LabelEncode, opt.Encode}} {
+		if h.helper == nil {
+			continue
+		}
+		prog, err := helper.Program(h.helper.Command)
+		if err == nil {
+			_, err = exec.LookPath(prog)
+		}
+		if err != nil {
+			log.Warn("conversion worker cannot run a helper; it takes none of its jobs", "helper", h.helper.Key, "err", err)
+			continue
+		}
+		out = append(out, h.label)
+	}
+	return out
 }
 
 func (w *worker) outgoing(ctx context.Context) context.Context {
@@ -157,7 +207,7 @@ func (w *worker) session(parent context.Context) error {
 	}
 	if err := att.Send(&workerpb.WorkerStatus{Msg: &workerpb.WorkerStatus_Hello{Hello: &workerpb.Hello{
 		WorkerId: w.opt.ID, ProtocolVersion: wire.ProtocolVersion, BuildVersion: w.opt.BuildVersion,
-		Labels: []string{wire.LabelExtract, wire.LabelPDF}, Slots: uint32(w.opt.Slots), MemoryLimit: limit,
+		Labels: w.labels, Slots: uint32(w.opt.Slots), MemoryLimit: limit,
 	}}}); err != nil {
 		return err
 	}
@@ -172,7 +222,7 @@ func (w *worker) session(parent context.Context) error {
 	if b := ctl.GetWelcome().GetBuildVersion(); b != w.opt.BuildVersion {
 		w.log.Warn("the dispatcher runs another build", "dispatcher_build", b, "build", w.opt.BuildVersion)
 	}
-	w.log.Info("attached to the dispatcher", "slots", w.opt.Slots)
+	w.log.Info("attached to the dispatcher", "slots", w.opt.Slots, "labels", w.labels)
 
 	var wg sync.WaitGroup
 	draining := make(chan struct{})
@@ -309,14 +359,14 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 		return nil, err
 	}
 	if inErr != nil {
-		return nil, sendDone(send, extract.Report{}, workerpb.ErrorClass_ERROR_CLASS_INPUT, inErr.Error())
+		return nil, sendDone(send, extract.Report{}, "", workerpb.ErrorClass_ERROR_CLASS_INPUT, inErr.Error())
 	}
 
 	timeout := time.Duration(start.GetTimeoutMs()) * time.Millisecond
 	if timeout <= 0 {
 		timeout = time.Minute
 	}
-	jctx, cancel := context.WithTimeout(ctx, timeout)
+	jctx, cancel := context.WithTimeout(ctx, timeout+helperGrace)
 	defer cancel()
 
 	// After the input, the dispatcher sends only ImageRef and Cancel.
@@ -348,10 +398,13 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 	})
 
 	var (
-		rep  extract.Report
-		out  []byte
-		jerr error
+		rep       extract.Report
+		out       []byte
+		spool     convert.Spool
+		mediaType string
+		jerr      error
 	)
+	p := w.converter(timeout)
 	func() {
 		// A parser bug is this file's failure, not the worker's: the other
 		// slots keep running.
@@ -361,22 +414,52 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 				jerr = fmt.Errorf("the converter failed on this file (%v)", p)
 			}
 		}()
+		size := start.GetInputSize()
 		switch start.GetKind() {
 		case workerpb.JobKind_JOB_KIND_EXTRACT:
 			o := start.GetExtract()
 			sink := &remoteSink{ctx: jctx, send: send, refs: refs, full: &sinkFull}
-			rep, jerr = (&convert.InProcess{}).Extract(jctx, start.GetMediaType(), in, start.GetInputSize(), sink,
+			rep, jerr = p.Extract(jctx, start.GetMediaType(), in, size, sink,
 				extract.Options{Name: start.GetName(), Images: o.GetImages(), MaxRows: int(o.GetMaxRows()), InferHeadings: o.GetInferHeadings()})
 		case workerpb.JobKind_JOB_KIND_PDF_SELECT_PAGES:
 			pages := make([]int, len(start.GetPages()))
 			for i, p := range start.GetPages() {
 				pages[i] = int(p)
 			}
-			out, jerr = extract.SelectPages(jctx, in, start.GetInputSize(), pages)
+			out, jerr = p.SelectPages(jctx, in, size, pages)
+		case workerpb.JobKind_JOB_KIND_PDF_RENDER:
+			var data []byte
+			if data, jerr = readAll(in, size); jerr == nil {
+				out, jerr = p.RenderPage(jctx, data, start.GetLanguage())
+			}
+		case workerpb.JobKind_JOB_KIND_AUDIO_ENCODE:
+			if !formatName.MatchString(start.GetFormat()) {
+				jerr = fmt.Errorf("%q is not an audio format name", start.GetFormat())
+				break
+			}
+			var data []byte
+			if data, jerr = readAll(in, size); jerr == nil {
+				out, jerr = p.EncodeAudio(jctx, data, start.GetFormat())
+			}
+		case workerpb.JobKind_JOB_KIND_IMAGE_REENCODE:
+			var data []byte
+			if data, jerr = readAll(in, size); jerr == nil {
+				out, mediaType, jerr = p.ReencodeImage(jctx, data)
+			}
+		case workerpb.JobKind_JOB_KIND_MEDIA_CONVERT:
+			spool, jerr = p.ConvertMedia(jctx, in, size, start.GetMediaType(), start.GetLanguage())
 		default:
 			jerr = fmt.Errorf("this worker does not run %s jobs", start.GetKind())
 		}
 	}()
+	if spool != nil {
+		defer spool.Close()
+		if spool.Size() > maxWAV {
+			jerr = fmt.Errorf("transcription.stt.media: the converted recording is %d bytes, over the %d limit", spool.Size(), int64(maxWAV))
+		} else if err := sendSpool(send, spool); err != nil {
+			return received, err
+		}
+	}
 	for len(out) > 0 {
 		n := min(len(out), wire.ChunkSize)
 		if err := send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_OutputChunk{OutputChunk: &workerpb.Chunk{Data: out[:n]}}}); err != nil {
@@ -385,12 +468,66 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 		out = out[n:]
 	}
 	class, msg := wire.ErrorToWire(jerr)
-	return received, sendDone(send, rep, class, msg)
+	return received, sendDone(send, rep, mediaType, class, msg)
 }
 
-func sendDone(send func(*workerpb.WorkerFrame) error, rep extract.Report, class workerpb.ErrorClass, msg string) error {
+// formatName is what an encode's format may be: it names the encoder's
+// output file.
+var formatName = regexp.MustCompile(`^[a-z0-9]{1,16}$`)
+
+// converter runs this worker's jobs in its own process: its helpers under
+// the job's time bound, in scratch folders of its own scratch directory.
+func (w *worker) converter(timeout time.Duration) *convert.InProcess {
+	bound := func(h *convert.Helper) *convert.Helper {
+		if h == nil {
+			return nil
+		}
+		c := *h
+		c.Timeout = timeout
+		return &c
+	}
+	return &convert.InProcess{
+		Rasterize: bound(w.opt.Rasterize), Media: bound(w.opt.Media), Encode: bound(w.opt.Encode),
+		Images:          w.opt.Images,
+		MaxEncodedBytes: maxEncoded,
+		Scratch:         func(context.Context) (string, error) { return w.opt.Scratch, nil },
+	}
+}
+
+// readAll reads a spooled input the job needs whole; it is bounded by
+// MaxInput already.
+func readAll(in io.ReaderAt, size int64) ([]byte, error) {
+	data := make([]byte, size)
+	if _, err := in.ReadAt(data, 0); err != nil && !(errors.Is(err, io.EOF) && size == 0) {
+		return nil, fmt.Errorf("reading the input: %w", err)
+	}
+	return data, nil
+}
+
+// sendSpool sends a converted file as output chunks.
+func sendSpool(send func(*workerpb.WorkerFrame) error, s convert.Spool) error {
+	buf := make([]byte, wire.ChunkSize)
+	for off := int64(0); off < s.Size(); {
+		n, err := s.ReadAt(buf[:min(int64(len(buf)), s.Size()-off)], off)
+		if n > 0 {
+			if serr := send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_OutputChunk{OutputChunk: &workerpb.Chunk{Data: buf[:n]}}}); serr != nil {
+				return serr
+			}
+			off += int64(n)
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if n == 0 {
+			return io.ErrUnexpectedEOF
+		}
+	}
+	return nil
+}
+
+func sendDone(send func(*workerpb.WorkerFrame) error, rep extract.Report, mediaType string, class workerpb.ErrorClass, msg string) error {
 	return send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_Done{Done: &workerpb.Done{
-		Report: wire.ReportToWire(rep), ErrorClass: class, Message: msg,
+		Report: wire.ReportToWire(rep), ErrorClass: class, Message: msg, MediaType: mediaType,
 	}}})
 }
 

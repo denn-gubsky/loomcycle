@@ -88,3 +88,17 @@ func TestFileExtract_ThroughAWorkerWritesWhatInProcessWrites(t *testing.T) {
 		t.Fatalf("the pool ran %v, want one extract", st.Jobs)
 	}
 }
+
+// With a pool, every conversion the File tool makes goes to it: the
+// extraction, the OCR page cuts and renders, and a recording's conversion for
+// speech-to-text. None is left in this process (RFC GO P2).
+func TestFile_EveryConversionGoesToThePool(t *testing.T) {
+	pool := &refusingPool{}
+	f := &File{Convert: pool, STT: &FileSTT{}}
+	if got := f.converter(); got != convert.Client(pool) {
+		t.Errorf("converter() = %T, want the pool", got)
+	}
+	if got := f.sttDeps().Convert; got != convert.Client(pool) {
+		t.Errorf("sttDeps().Convert = %T, want the pool", got)
+	}
+}
