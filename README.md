@@ -130,6 +130,8 @@ loomcycle                         # starts on 127.0.0.1:8787 (auto-loads auth.en
 
 `loomcycle init` writes the profile's short `loomcycle.yaml`: one line, `presets: [personal]`, names the preset that supplies the agents and the model routing, and the rest holds only what is yours. `LOOMCYCLE_PRESETS`, when set, selects instead of that line. `loomcycle init --full` writes the long, fully-commented reference config instead, which needs no preset.
 
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) opens with a start page for each profile (what to set, in order), one table of which settings are environment variables and which are yaml keys, and the names the secrets file has in each install path.
+
 `init --with-token` prints the Web UI URL (`http://127.0.0.1:8787/ui`). Open it, then paste the token from `~/.config/loomcycle/auth.env` at the login prompt. (The token is kept in the `0600` file and never embedded in a URL. A `?token=` link would leak the bearer into browser history and into any fronting proxy's logs.) `loomcycle` and `loomcycle doctor` both auto-load `auth.env` from the config dir; a real `export LOOMCYCLE_AUTH_TOKEN=…` always overrides it.
 
 ## Bootstrap tiers
