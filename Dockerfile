@@ -97,5 +97,13 @@ COPY LICENSE NOTICE /usr/share/doc/loomcycle/
 # hold an MCP server's literal token): chmod it 0644 or run with --user set to
 # the host uid (docs/DOCKER_HUB_OVERVIEW.md, "Volume mounts").
 USER nonroot
+# Data dir: the binary's default is ./data under the working directory, which
+# is not the documented data mount (and under / is not creatable by uid 65532).
+# The WORKDIR line creates the directory owned by the USER above (BuildKit;
+# distroless has no shell for a mkdir), so a named volume mounted on it starts
+# out writable: a path the image lacks is mounted root-owned.
+ENV LOOMCYCLE_DATA_DIR=/home/nonroot/.local/share/loomcycle
+WORKDIR /home/nonroot/.local/share/loomcycle
+WORKDIR /
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/loomcycle"]

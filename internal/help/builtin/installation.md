@@ -51,6 +51,9 @@ server refuses to listen on `0.0.0.0` (open mode would serve every route
 unauthenticated). `LOOMCYCLE_ALLOW_OPEN_MODE=1` overrides that, for a
 throwaway test only.
 
+The image sets `LOOMCYCLE_DATA_DIR` to `/home/nonroot/.local/share/loomcycle`
+(the data mount above); a value you pass with `-e` replaces it.
+
 For a more declarative setup, see `docker-compose.example.yaml` in
 the repo — copy it to `docker-compose.yaml` and `docker compose up
 -d`. For a shared installation with Postgres, `examples/profiles/server`
