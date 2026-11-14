@@ -87,6 +87,8 @@ func (s *Server) deviceThrottled(ctx context.Context, key string) bool {
 }
 
 func (s *Server) deviceCount(ctx context.Context, key string, limit int) {
+	ctx, cancel := recordingContext(ctx)
+	defer cancel()
 	if _, _, err := s.store.AuthThrottleRecordFailure(ctx, key, time.Now(), deviceWindow, deviceThrottleBlock(limit)); err != nil {
 		slog.Warn("auth: recording a device throttle count failed", "err", err)
 	}
