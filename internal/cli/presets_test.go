@@ -42,6 +42,39 @@ func TestRunPresets_Show(t *testing.T) {
 	}
 }
 
+// `presets show` of a preset that includes others names the whole stack, in
+// layer order, before the preset's own YAML; a unit that includes nothing
+// prints its YAML alone, as before.
+func TestRunPresets_ShowNamesTheExpandedStack(t *testing.T) {
+	var out, errb bytes.Buffer
+	if rc := RunPresets([]string{"show", "personal"}, &out, &errb); rc != 0 {
+		t.Fatalf("presets show personal rc=%d, stderr=%s", rc, errb.String())
+	}
+	first := strings.SplitN(out.String(), "\n", 2)[0]
+	if !strings.HasPrefix(first, "#") || !strings.Contains(first, "base, local, chat, document-agent, personal") {
+		t.Errorf("first line = %q, want a comment naming the stack in order", first)
+	}
+	if !strings.Contains(out.String(), "include: [base, local, chat, document-agent]") {
+		t.Errorf("presets show personal should still print the preset's own YAML, got:\n%s", out.String())
+	}
+
+	out.Reset()
+	if rc := RunPresets([]string{"show", "base"}, &out, &errb); rc != 0 {
+		t.Fatalf("presets show base rc=%d", rc)
+	}
+	if strings.Contains(out.String(), "expands to") {
+		t.Errorf("base includes nothing; its output should carry no stack line")
+	}
+
+	out.Reset()
+	if rc := RunPresets(nil, &out, &errb); rc != 0 {
+		t.Fatalf("presets rc=%d", rc)
+	}
+	if !strings.Contains(out.String(), "base,local,chat,document-agent") {
+		t.Errorf("the list should show personal's includes, got:\n%s", out.String())
+	}
+}
+
 // TestRunPresets_BadVerb: an unknown subcommand is a usage error (exit 2).
 func TestRunPresets_BadVerb(t *testing.T) {
 	var out, errb bytes.Buffer

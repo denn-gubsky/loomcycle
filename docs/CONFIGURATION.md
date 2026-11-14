@@ -50,7 +50,7 @@ The doc presents this as **four cookbook patterns**. Find the pattern matching y
 |---|---|---|---|
 | **Library `provider_priority`** | top-level `provider_priority:` | The walk order across providers when nothing else overrides | Always — every config sets this |
 | **Library `tiers`** | top-level `tiers:` | Per-task-tier (`low`/`middle`/`high`) ordered candidate lists | Always — every agent that uses `tier:` reads this |
-| **`models:` alias map** | top-level `models:` | Aliases like `sonnet → {anthropic, claude-sonnet-4-6}`. Reference by name in tier candidate lists (`- sonnet`), per-agent pins (`model: sonnet`), and per-agent `models[tier]` — define the model once, single-source the id | The recommended way to name models — always; raw `{provider, model}` pairs still work but repeat the id |
+| **`models:` alias map** | top-level `models:` | Aliases like `sonnet → {anthropic, claude-sonnet-5-5}`. Reference by name in tier candidate lists (`- sonnet`), per-agent pins (`model: sonnet`), and per-agent `models[tier]` — define the model once, single-source the id | The recommended way to name models — always; raw `{provider, model}` pairs still work but repeat the id |
 | **`user_tiers:` overlay** | top-level `user_tiers:` | Per-user-class policy (free/low/medium/high). Restricts which providers + models a user's runs may touch | When your app has multiple plan tiers OR multi-tenant cost/privacy boundaries |
 | **Per-agent `providers:`** | agent .md `providers:` | Replaces the priority order for THIS agent only | When one agent must skip certain providers (privacy, capability) |
 | **Per-agent `models[tier]:`** | agent .md `models:` | Replaces the tier candidate list for THIS agent | When one agent needs specific models in its tier slot |
@@ -126,7 +126,7 @@ func ValidateRoutingMode(provider, model, tier string) error {
 }
 ```
 
-If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's frontmatter, loomcycle refuses to start (`agent "<name>": cannot set both explicit provider/model pin and tier (pick one)`). Pick one path.
+If you set both `tier: middle` AND `model: claude-sonnet-5-5` in an agent's frontmatter, loomcycle refuses to start (`agent "<name>": cannot set both explicit provider/model pin and tier (pick one)`). Pick one path.
 
 ---
 
@@ -141,15 +141,15 @@ If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's fron
 # (tier candidates, agent pins). Editing one right-hand side re-points
 # every agent/tier that uses the alias.
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 provider_priority:
   - anthropic
 
 # Tier candidates are bare ALIASES (v0.35.0+) — `- haiku` is the same as
-# `- { provider: anthropic, model: claude-haiku-4-5 }`, single-sourced from
+# `- { provider: anthropic, model: claude-haiku-5-5 }`, single-sourced from
 # the models: map above. A raw {provider, model} pair still works too.
 tiers:
   low:    [haiku]
@@ -161,7 +161,7 @@ tiers:
 # sent to the provider verbatim, not resolved).
 defaults:
   provider: anthropic
-  model:    claude-sonnet-4-6
+  model:    claude-sonnet-5-5
 
 concurrency:
   max_concurrent_runs: 8
@@ -182,7 +182,7 @@ tools: [Read]
 You are an ATS filter...
 ```
 
-→ resolves to `(anthropic, claude-haiku-4-5)` via `tiers.low`.
+→ resolves to `(anthropic, claude-haiku-5-5)` via `tiers.low`.
 
 **Alias pin** — agent specifically wants sonnet:
 
@@ -196,7 +196,7 @@ tools: [Read]
 You rewrite text while preserving voice...
 ```
 
-→ resolves to `(anthropic, claude-sonnet-4-6)` via the `models:` alias.
+→ resolves to `(anthropic, claude-sonnet-5-5)` via the `models:` alias.
 
 **Full pin** — bypass aliases entirely:
 
@@ -204,7 +204,7 @@ You rewrite text while preserving voice...
 ---
 name: cv-rewriter
 provider: anthropic
-model: claude-sonnet-4-6
+model: claude-sonnet-5-5
 tools: [Read]
 ---
 ```
@@ -233,24 +233,24 @@ tiers:
   low:
     - { provider: deepseek,  model: deepseek-flash }      # cost floor
     - { provider: gemini,    model: gemini-2.5-flash-lite }
-    - { provider: anthropic, model: claude-haiku-4-5 }    # baseline
+    - { provider: anthropic, model: claude-haiku-5-5 }    # baseline
   middle:
     - { provider: deepseek,  model: deepseek-v4-pro }
     - { provider: gemini,    model: gemini-2.5-pro }
-    - { provider: anthropic, model: claude-sonnet-4-6 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }
   high:
     # Premium-privacy: anthropic only at high tier.
-    - { provider: anthropic, model: claude-sonnet-4-6 }
-    - { provider: anthropic, model: claude-opus-4-7 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }
+    - { provider: anthropic, model: claude-opus-5-5 }
 
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 defaults:
   provider: anthropic
-  model:    claude-sonnet-4-6
+  model:    claude-sonnet-5-5
 ```
 
 ### Cascade behaviour
@@ -281,7 +281,7 @@ tools: [Read]
 ---
 ```
 
-The resolver now walks `[anthropic]` only, so this agent always resolves to `claude-sonnet-4-6` (the only middle-tier anthropic candidate). It never touches DeepSeek or Gemini.
+The resolver now walks `[anthropic]` only, so this agent always resolves to `claude-sonnet-5-5` (the only middle-tier anthropic candidate). It never touches DeepSeek or Gemini.
 
 ### Agent .md: per-agent `models[tier]:` override
 
@@ -294,8 +294,8 @@ description: Deep analytical reasoning for the high-tier slot.
 tier: high
 models:
   high:
-    - { provider: anthropic, model: claude-opus-4-7 }
-    - { provider: anthropic, model: claude-sonnet-4-6 }   # fallback
+    - { provider: anthropic, model: claude-opus-5-5 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }   # fallback
 tools: [Read, WebFetch]
 ---
 ```
@@ -354,16 +354,16 @@ provider_priority:
 
 tiers:
   low:
-    - { provider: anthropic, model: claude-haiku-4-5 }
+    - { provider: anthropic, model: claude-haiku-5-5 }
   middle:
-    - { provider: anthropic, model: claude-sonnet-4-6 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }
   high:
-    - { provider: anthropic, model: claude-opus-4-7 }
+    - { provider: anthropic, model: claude-opus-5-5 }
 
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 # v0.8.2+: per-user-class policy overlays.
 user_tiers:
@@ -377,31 +377,31 @@ user_tiers:
     provider_priority: [anthropic]
     fallback_on_error: true
     tiers:
-      low:    [{ provider: anthropic, model: claude-haiku-4-5 }]
-      middle: [{ provider: anthropic, model: claude-haiku-4-5 }]   # locked down
-      high:   [{ provider: anthropic, model: claude-haiku-4-5 }]   # locked down
+      low:    [{ provider: anthropic, model: claude-haiku-5-5 }]
+      middle: [{ provider: anthropic, model: claude-haiku-5-5 }]   # locked down
+      high:   [{ provider: anthropic, model: claude-haiku-5-5 }]   # locked down
 
   medium:
     # Medium users get haiku + sonnet (no opus).
     provider_priority: [anthropic]
     fallback_on_error: true
     tiers:
-      low:    [{ provider: anthropic, model: claude-haiku-4-5 }]
-      middle: [{ provider: anthropic, model: claude-sonnet-4-6 }]
-      high:   [{ provider: anthropic, model: claude-sonnet-4-6 }]   # cap at sonnet
+      low:    [{ provider: anthropic, model: claude-haiku-5-5 }]
+      middle: [{ provider: anthropic, model: claude-sonnet-5-5 }]
+      high:   [{ provider: anthropic, model: claude-sonnet-5-5 }]   # cap at sonnet
 
   high:
     # High users get the full menu.
     provider_priority: [anthropic]
     fallback_on_error: true
     tiers:
-      low:    [{ provider: anthropic, model: claude-haiku-4-5 }]
-      middle: [{ provider: anthropic, model: claude-sonnet-4-6 }]
-      high:   [{ provider: anthropic, model: claude-opus-4-7 }]
+      low:    [{ provider: anthropic, model: claude-haiku-5-5 }]
+      middle: [{ provider: anthropic, model: claude-sonnet-5-5 }]
+      high:   [{ provider: anthropic, model: claude-opus-5-5 }]
 
 defaults:
   provider: anthropic
-  model:    claude-sonnet-4-6
+  model:    claude-sonnet-5-5
 ```
 
 ### How the caller picks a user_tier
@@ -418,7 +418,7 @@ POST /v1/runs
 }
 ```
 
-Loomcycle looks up `user_tiers.free` in the operator yaml, applies the overlay, and resolves. With the yaml above, a `tier: middle` agent run on `user_tier: free` resolves to `claude-haiku-4-5`. The same agent on `user_tier: high` resolves to `claude-opus-4-7`. The agent .md file doesn't change; the user's plan controls the model.
+Loomcycle looks up `user_tiers.free` in the operator yaml, applies the overlay, and resolves. With the yaml above, a `tier: middle` agent run on `user_tier: free` resolves to `claude-haiku-5-5`. The same agent on `user_tier: high` resolves to `claude-opus-5-5`. The agent .md file doesn't change; the user's plan controls the model.
 
 ### Required: the `default` user_tier
 
@@ -462,20 +462,20 @@ tiers:
     - { provider: ollama,       model: glm-4.7 }
     - { provider: deepseek,     model: deepseek-flash }
     - { provider: gemini,       model: gemini-2.5-flash-lite }
-    - { provider: anthropic,    model: claude-haiku-4-5 }
+    - { provider: anthropic,    model: claude-haiku-5-5 }
   middle:
     - { provider: ollama,       model: deepseek-v4-pro }   # cloud-ollama subscription path
     - { provider: deepseek,     model: deepseek-v4-pro }   # per-token fallback
     - { provider: gemini,       model: gemini-2.5-pro }
-    - { provider: anthropic,    model: claude-sonnet-4-6 }
+    - { provider: anthropic,    model: claude-sonnet-5-5 }
   high:
     # Premium-privacy: anthropic only at library high.
-    - { provider: anthropic,    model: claude-sonnet-4-6 }
+    - { provider: anthropic,    model: claude-sonnet-5-5 }
 
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 user_tiers:
   default:
@@ -512,16 +512,16 @@ user_tiers:
         - { provider: ollama,       model: glm-4.7 }
         - { provider: deepseek,     model: deepseek-flash }
         - { provider: gemini,       model: gemini-2.5-flash-lite }
-        - { provider: anthropic,    model: claude-haiku-4-5 }
+        - { provider: anthropic,    model: claude-haiku-5-5 }
       middle:
         - { provider: ollama,       model: deepseek-v4-pro }
         - { provider: deepseek,     model: deepseek-v4-pro }
         - { provider: gemini,       model: gemini-2.5-pro }
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
       high:
         - { provider: ollama,       model: deepseek-v4-pro }
         - { provider: deepseek,     model: deepseek-v4-pro }
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
 
   medium:
     # Same cost-floor pattern as low, plus anthropic-premium for high-tier agents.
@@ -533,16 +533,16 @@ user_tiers:
         - { provider: ollama,       model: glm-4.7 }
         - { provider: deepseek,     model: deepseek-flash }
         - { provider: gemini,       model: gemini-2.5-flash-lite }
-        - { provider: anthropic,    model: claude-haiku-4-5 }
+        - { provider: anthropic,    model: claude-haiku-5-5 }
       middle:
         - { provider: ollama,       model: deepseek-v4-pro }
         - { provider: deepseek,     model: deepseek-v4-pro }
         - { provider: gemini,       model: gemini-2.5-pro }
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
       high:
         # Medium tier IS allowed anthropic-premium for the high slot.
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
-        - { provider: anthropic,    model: claude-opus-4-7 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
+        - { provider: anthropic,    model: claude-opus-5-5 }
 
   high:
     # PREMIUM-PRIVACY. NO third-party LLMs touch user data, EVER.
@@ -1038,7 +1038,7 @@ model: sonnet
 ---
 ```
 
-No `tier:` — uses pin path. `model: sonnet` expands via `models:` alias to `(anthropic, claude-sonnet-4-6)`. This agent never falls through to a non-Anthropic provider.
+No `tier:` — uses pin path. `model: sonnet` expands via `models:` alias to `(anthropic, claude-sonnet-5-5)`. This agent never falls through to a non-Anthropic provider.
 
 **Defining skills inline (the top-level `skills:` map)** — instead of a `LOOMCYCLE_SKILLS_ROOT` directory of `SKILL.md` files, you can define skills directly in YAML, at the same level as `agents:` and `models:`:
 
@@ -1164,7 +1164,7 @@ Single reference table:
 | user_tier `tiers[tier]:` set (no agent override) | Replaces library `tiers[tier]` | `candidatesFor` in `internal/resolve/matrix.go` |
 | Discovered .md field AND operator-yaml `agents:` overlay both set | YAML non-zero wins; nil slice keeps .md value | `mergeAgentDef` in `internal/config/config.go` |
 | `model: sonnet` (alias) AND `models:` map has `sonnet` | Alias expands to `{provider, model}` from the map | `ExpandModelAlias` in `internal/config/config.go` |
-| `model: claude-sonnet-4-6` (literal, no alias) | Used as-is as the model ID | `ExpandModelAlias` in `internal/config/config.go` (a non-alias passes through) |
+| `model: claude-sonnet-5-5` (literal, no alias) | Used as-is as the model ID | `ExpandModelAlias` in `internal/config/config.go` (a non-alias passes through) |
 | Probe says provider unreachable | Resolver skips all that provider's candidates | `isAvailableLocked` in `internal/resolve/matrix.go` |
 | Provider has no API key set | Marked excluded, treated like unreachable | `runResolveProbeOnce` in `cmd/loomcycle/main.go` calls `SetExcluded` in `internal/resolve/matrix.go` |
 
@@ -2658,7 +2658,8 @@ layers every `*.yaml` in the directory.
 
 **The CLI loads what the server loads.** `loomcycle validate`, `doctor`,
 `agents list`, `migrate --config`, `tokens` and `audit` assemble their stack with
-the same function the server boots and reloads with: presets, the config dir, the
+the same function the server boots and reloads with: presets (the primary
+file's `presets:` key included, §9f), the config dir, the
 named files, section files and the `auth.env` beside the last file. `--config` is
 repeatable in each (and `validate` takes several paths), layered in the order
 given, as the server's own flag is. With no file named (`loomcycle validate`,
@@ -2666,10 +2667,10 @@ given, as the server's own flag is. With no file named (`loomcycle validate`,
 would: the auto-discovered file, or the presets and config dir alone. A file
 named explicitly must exist, as at boot. Each says which layers it loaded.
 
-Three exceptions:
+Two exceptions (`loomcycle hash agent --config <file>` is no longer one: it
+loads that file's whole stack, so an agent that comes from a preset the file
+names with `presets:` is found and hashes as deployed):
 
-- `loomcycle hash agent --config <file>` reads that one file, with no presets,
-  config dir, section files or `auth.env`.
 - `memory-calibrate`, `memory-eval-live` and `memory-eval-judge` use the same
   assembly without the auto-discovery: presets, the config dir and the files
   named with `--config`. They measure what ships, so a `loomcycle.yaml` that
@@ -2681,6 +2682,20 @@ Three exceptions:
   for them too, and is read as `0`: they do not migrate the schema under a
   value they cannot read. They stop, as the server does, on anything about
   which store is opened.
+
+A command given a file answers for a server started with `--config <that file>`
+under the same environment, not for a server started without it. Two things
+follow. The named file is the primary file, so a `presets:` key in the config
+directory's `loomcycle.yaml` is refused when you name another file, exactly as
+the server refuses it with that `--config`; to check a config-directory
+deployment as it runs, name nothing (`loomcycle validate`). And a server started
+with several `--config` flags is checked by naming the same files in the same
+order: `loomcycle validate a.yaml b.yaml`. `doctor --config` takes one file.
+
+Files are compared by resolved path. The config directory's `loomcycle.yaml`
+named again with `--config` (by a relative path, another spelling or a symlink)
+is one file: it is layered once, at its `--config` position, and stays the file
+`presets:` is read from.
 
 This pairs with runtime reload: edit a section file present at boot and
 `POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
@@ -2764,6 +2779,23 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   authenticate with AWS credentials for `LOOMCYCLE_BEDROCK_REGION`, and routes
   nothing to them on its own (see "Amazon Bedrock with AWS credentials" in
   [PROVIDERS.md](PROVIDERS.md)).
+- **Profile presets** — `personal` and `server` each stand for a whole stack,
+  so a deployment selects one name instead of a list. A preset may list other
+  presets and bundles under a top-level `include:` key; these two do:
+
+  | Preset | Includes | Sets itself |
+  |---|---|---|
+  | `personal` | `base`, `local`, `chat`, `document-agent` | nothing: SQLite, SQL Memory on it and the loopback address are already the defaults |
+  | `server` | `base`, `chat`, `document-agent`, `memory` | `metrics: {enabled: true, collect_system: true}` |
+
+  Neither sets a volume, a sign-in gate, retention, a listen address or a
+  secret: those are a host path, a decision about who gets in or what is
+  deleted, or a credential, and stay yours. Their agents list tools such as
+  `Bash`, `HTTP` and `WebFetch`, which stay idle: the switches that enable
+  them (`LOOMCYCLE_BASH_ENABLED`, `LOOMCYCLE_HTTP_HOST_ALLOWLIST`) exist only
+  in the environment, so no preset can set them. [`examples/profiles/`](../examples/profiles/) has a complete
+  configuration for each, and `loomcycle init [--profile server]` writes its
+  yaml, which names the preset with `presets:` (below).
 - **Bundles** — a preset that *also* defines an agent and its skills **inline**
   (the top-level `skills:` map, §7). `document-agent` ships the `doc/manager`
   Document Assistant agent + its four skills — no skills directory, no
@@ -3036,8 +3068,9 @@ reserved; wire a publisher before wiring a consumer.
 List + read them (works on any install, no source tree):
 
 ```sh
-loomcycle presets                  # name / kind / description table
+loomcycle presets                  # name / kind / includes / description table
 loomcycle presets show base        # print a unit's YAML (read or fork it)
+loomcycle presets show server      # the same, led by the stack it expands to
 loomcycle env-template             # print the embedded .env.insecure.example
 ```
 
@@ -3045,9 +3078,42 @@ On a no-shell deployment the same three are read-only in the **Web UI Settings
 hub** (the top-right gear → **Presets**, admin-only) — backed by
 `GET /v1/_presets`, `/v1/_presets/{name}`, `/v1/_env_template`.
 
-**Selecting them.** `LOOMCYCLE_PRESETS=base,document-agent` (comma-separated,
-ordered) — or the repeatable `--preset` flag (flags override the env list) —
-layers the named units as the **base** of the config stack, under your files:
+**Selecting them.** Three ways, the first that is set wins: the repeatable
+`--preset` flag; `LOOMCYCLE_PRESETS=base,document-agent` (comma-separated,
+ordered); a top-level `presets:` list in your primary config file. Each layers
+the named units as the **base** of the config stack, under your files:
+
+```yaml
+# loomcycle.yaml
+presets: [personal]
+```
+
+- **Which file.** `presets:` is read from one file: the last `--config`, else
+  the auto-discovered `loomcycle.yaml`, else `loomcycle.yaml` in
+  `LOOMCYCLE_CONFIG_DIR`. In any other layer (another file of the config
+  directory, an earlier `--config`, a `loomcycle.*.yaml` section file) it stops
+  the load and names the file, so the selection never depends on layer order.
+- **The environment wins**, as for every setting that has both forms. When
+  `--preset` or `LOOMCYCLE_PRESETS` is set, the file's list is not layered; if
+  the two would give different stacks, an advisory at boot, in `loomcycle
+  validate` and in `loomcycle doctor` names both.
+- **Read at every load.** A config reload re-reads the key.
+- **Trust.** A preset named in the file is trusted exactly as the file is,
+  because a preset is yaml and yaml carries things that matter: agents and
+  their tools, MCP servers, sign-in clients. What a preset cannot do is turn
+  on one of the switches that exist only in the environment: Bash, dynamic
+  stdio MCP servers, privileged tools for MCP-registered agents, the HTTP
+  tools' host allowlist, the operator-key restriction, the access-control
+  mode, open mode. None has a yaml form, so no layer of yaml can set one. The
+  units built into the binary are further held, by a test, to a closed list
+  of keys: none sets `volumes`, `principals`, `retention`, `storage`, `hooks`,
+  access-control lists, or anything under `auth` except `auth.clients` (the
+  `loomboard` preset registers its desktop app as a sign-in client; that
+  admits no one without a gate). A name the binary does not carry stops the
+  load, naming the key and the file.
+- The key selects layers; it is not a setting. It does not appear in the
+  merged config and does not count as an override under
+  `LOOMCYCLE_CONFIG_STRICT`.
 
 ```sh
 # OAuth-first base + the Document Assistant, under your thin overlay:
@@ -3057,10 +3123,32 @@ LOOMCYCLE_PRESETS=base,oauth,document-agent loomcycle --config ~/.config/loomcyc
 Because `oauth` / `local` `!prepend` (§9e), `base,oauth` resolves to OAuth on top
 with base's providers retained as fallback — no restatement of the matrix.
 
+**`include:`.** A preset that lists others is expanded where it is selected:
+its includes are layered first, depth-first and in the order written, then the
+preset itself, so its own keys win over what it includes. Each unit is layered
+once, and a preset decides the order of what it stands for: a unit you select
+by name that a preset selected after it also includes is layered where that
+preset places it, and an advisory says so. `LOOMCYCLE_PRESETS=local,personal`
+therefore layers `base, local, chat, document-agent, personal`, the same as
+`personal` alone (were `local` layered first, `base`'s plain tier lists would
+replace what `local` prepends). A unit a preset selected earlier already
+brought in is not layered again: `server,chat` gives one `chat` layer, under
+`server`. A unit no selected preset includes keeps its written position. To
+override a bundle a profile includes, do it in your own config file, which is
+layered over every preset. An include cycle or an unknown name stops the load and
+names the chain. The boot log line `config: layering N embedded
+preset(s)/bundle(s) as base: …` names the layers after expansion.
+
+`include:` works only inside a preset built into the binary. In your own
+config file it is refused with an error that says so: the schema ignores an
+unknown top-level key, so an `include: [base]` there would load nothing and
+say nothing. Compose your own stack with `presets:` (or `LOOMCYCLE_PRESETS`)
+and `--config`.
+
 The **full precedence chain** (base → top, last wins, RFC AN merge):
 
 ```
-embedded presets (LOOMCYCLE_PRESETS, in order)
+embedded presets (--preset, else LOOMCYCLE_PRESETS, else presets: in the primary file; in order)
   → LOOMCYCLE_CONFIG_DIR/*.yaml   (a dir of layers, lexical order)
   → --config flags                (your authoritative overlay, wins)
 ```
@@ -3089,9 +3177,9 @@ ceiling, or swap a skill body by re-declaring its key). Selecting presets with
 **no config file at all** boots from the embedded base alone (the bare-start
 case). An unknown unit name is a **fatal** error listing the available names.
 
-**Opt-in.** With `LOOMCYCLE_PRESETS` unset and no `--preset`, boot is exactly as
-before (no presets) — embedded presets are a deliberate opt-in, not a silent new
-base. `document-agent` needs SQL Memory + a
+**Opt-in.** With `LOOMCYCLE_PRESETS` unset, no `--preset` and no `presets:` in
+the primary file, boot is exactly as before (no presets) — embedded presets are
+a deliberate opt-in, not a silent new base. `document-agent` needs SQL Memory + a
 `middle` tier to actually run; absent those it's a registered-but-idle def.
 
 ---

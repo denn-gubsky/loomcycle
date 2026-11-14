@@ -29,6 +29,14 @@ func (b *boot) openAndMigrateStore() {
 		fatal("store: open failed", "err", err)
 	}
 	b.addCleanup(storeCloser)
+	// The one config advisory that depends on what the store holds.
+	if len(cfg.UndrainedMemory) > 0 && storeIface != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		for _, warn := range undrainedMemoryWarnings(ctx, storeIface, cfg.UndrainedMemory) {
+			slog.Warn("config: warning", "detail", warn)
+		}
+		cancel()
+	}
 	// /metrics reports the store's connection pool from the driver's own
 	// counters; a scrape runs no query.
 	if ps, ok := storeIface.(interface{ PoolStats() store.PoolStats }); ok {

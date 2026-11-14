@@ -660,7 +660,8 @@ no longer uses it.)
 
 Consolidation is **opt-in**: without a schedule pointing at a consolidator
 agent, `add` still queues durably and nothing drains it. Queued items are not
-lost, they are simply not yet distilled.
+lost, they are simply not yet distilled. The server logs an advisory at start
+for each memory scope whose queue holds rows that no enabled schedule drains.
 
 See the `memory-layer` topic for the `add` / `recall` op reference,
 `memory-ranking` for how `recall` orders results, and `scheduled-runs` for
