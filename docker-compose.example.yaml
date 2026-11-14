@@ -59,6 +59,9 @@ services:
       # Bind to all interfaces inside the container so the port
       # mapping above works; the host port binds to 127.0.0.1 only.
       LOOMCYCLE_LISTEN_ADDR: "0.0.0.0:8787"
+      # Where the SQLite store goes: the data mount above. Unset, it is
+      # ./data under the working directory, which is not that mount.
+      LOOMCYCLE_DATA_DIR: /home/nonroot/.local/share/loomcycle
 
   # --- Postgres backend (uncomment for v0.10.x+ Vector Memory / HA) ---
   # Any Postgres ≥ 14 works; 16 here is just a tested default.

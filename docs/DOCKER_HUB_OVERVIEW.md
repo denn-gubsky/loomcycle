@@ -36,6 +36,7 @@ docker run -d --name loomcycle \
   -e LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32) \
   -e ANTHROPIC_API_KEY=your-key-here \
   -e LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787 \
+  -e LOOMCYCLE_DATA_DIR=/home/nonroot/.local/share/loomcycle \
   denngubsky/loomcycle:latest
 
 # LOOMCYCLE_AUTH_TOKEN is required with LOOMCYCLE_LISTEN_ADDR=0.0.0.0: with no
@@ -86,7 +87,7 @@ No `vX` or `vX.Y` floating tags during the v0.11.x line — too early for major-
 | Container path | What it's for | Mode |
 |---|---|---|
 | `/home/nonroot/.config/loomcycle` | yaml config + per-machine `README.md` | typically read-only |
-| `/home/nonroot/.local/share/loomcycle` | SQLite store + transient state | writable |
+| `/home/nonroot/.local/share/loomcycle` | SQLite store + transient state, when `LOOMCYCLE_DATA_DIR` names this path as in the command above (unset, the store goes to `./data` under the working directory, outside the mount) | writable |
 
 On Linux hosts, the writable mount must be owned by uid 65532:
 

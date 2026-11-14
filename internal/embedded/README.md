@@ -42,13 +42,13 @@ The default install (after `loomcycle init`) lays out:
 ├── loomcycle.yaml          ← your config; edit this
 ├── README.md                ← this file (per-machine quickstart)
 └── (you may add)            extra files: agents/, skills/, hooks/
-~/.local/share/loomcycle/
-└── loomcycle.db             ← default sqlite store (override with LOOMCYCLE_DATA_DIR)
+./data/                      ← relative to the directory you start loomcycle in
+└── loomcycle.db             ← default sqlite store (set LOOMCYCLE_DATA_DIR to an absolute path for one fixed place)
 ```
 
 ## Required environment variables
 
-`loomcycle init` does NOT write secrets to disk. Set these in your shell rc (`~/.zshrc` / `~/.bashrc` / etc.):
+`loomcycle init` writes no secret to disk, with one exception: `loomcycle init --with-token` generates `LOOMCYCLE_AUTH_TOKEN` and writes it to `auth.env` (mode `0600`) beside `loomcycle.yaml`, where `loomcycle` loads it. Set the rest in your shell rc (`~/.zshrc` / `~/.bashrc` / etc.), or add them to that file:
 
 | Env var | Purpose | How to get it |
 |---|---|---|
@@ -71,7 +71,7 @@ Local Ollama (`ollama-local` provider) needs no key — it reads `OLLAMA_BASE_UR
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `LOOMCYCLE_DATA_DIR` | `~/.local/share/loomcycle` | Where sqlite + transient state live |
+| `LOOMCYCLE_DATA_DIR` | `./data`, relative to the directory you start `loomcycle` in | Where sqlite + transient state live |
 | `LOOMCYCLE_PG_DSN` | (empty) | Postgres DSN. Set, the store is Postgres; empty, SQLite under the data dir |
 | `LOOMCYCLE_PG_AUTOMIGRATE` | `0` | `1` runs schema migrations on boot; `0` does not. Any other value stops the load |
 | `LOOMCYCLE_PGVECTOR_ENABLED` | `false` | Enable pgvector for Vector Memory (Postgres only) |
