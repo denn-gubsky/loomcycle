@@ -218,6 +218,33 @@ agents:
 	}
 }
 
+// `validate a.yaml b.yaml` checks what a server started with
+// `--config a.yaml --config b.yaml` loads: both files, the last one primary.
+// With one file only, validate could not see a multi-file deployment as it
+// runs.
+func TestRunValidate_SeveralFilesAreTheServersConfigFlagsInOrder(t *testing.T) {
+	_, cwd := isolateLayerEnv(t)
+	t.Setenv("LOOMCYCLE_PG_DSN", "")
+	a := writeYAML(t, filepath.Join(cwd, "a.yaml"), "metrics: {enabled: true}\n")
+	b := writeYAML(t, filepath.Join(cwd, "b.yaml"), "presets: [base, chat]\n")
+
+	var out, errb bytes.Buffer
+	if rc := RunValidate([]string{a, b}, &out, &errb); rc != 0 {
+		t.Fatalf("validate a b: rc=%d stderr=%s", rc, errb.String())
+	}
+	if !strings.Contains(out.String(), "chat/medium") {
+		t.Errorf("the last file's presets were not layered:\n%s", out.String())
+	}
+
+	// The other order makes a.yaml primary; b.yaml's presets: is then in a
+	// non-primary file, which the server refuses too.
+	out.Reset()
+	errb.Reset()
+	if rc := RunValidate([]string{b, a}, &out, &errb); rc == 0 || !strings.Contains(errb.String(), "presets:") || !strings.Contains(errb.String(), b) {
+		t.Errorf("validate b a: rc=%d stderr=%s; want b.yaml's presets: refused", rc, errb.String())
+	}
+}
+
 // The summary says which sign-in mode is in force and which plane made it
 // so: the yaml and the environment can each ask for one.
 func TestRunValidate_PrintsTheEffectiveAuthMode(t *testing.T) {

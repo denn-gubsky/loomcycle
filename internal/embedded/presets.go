@@ -6,6 +6,8 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // RFC AQ — embedded config presets + agent/skill bundles. The binary ships a
@@ -50,6 +52,10 @@ type Unit struct {
 	Kind        string // "preset" or "bundle"
 	Description string // first descriptive comment line, for `loomcycle presets`
 	Data        []byte // the layer's YAML bytes
+	// Includes is the unit's top-level `include:` list: other units layered
+	// under this one. Empty for a unit that includes nothing, and for one whose
+	// list does not parse (ResolveUnits reports that error).
+	Includes []string
 }
 
 // units is the embedded registry, built once at package load from the two
@@ -73,11 +79,13 @@ func loadUnits() map[string]Unit {
 				continue
 			}
 			name := strings.TrimSuffix(e.Name(), ".yaml")
+			includes, _ := includesOf(data)
 			out[name] = Unit{
 				Name:        name,
 				Kind:        kind,
 				Description: descriptionFromYAML(data),
 				Data:        data,
+				Includes:    includes,
 			}
 		}
 	}
@@ -127,19 +135,140 @@ func Show(name string) ([]byte, error) {
 	return u.Data, nil
 }
 
-// ResolveUnits maps an ordered selection of names to their units, preserving
-// order (selection order = layer order). An unknown name is a fatal error
-// (typo protection) listing the available names.
+// ResolveUnits maps an ordered selection of names to the units to layer, base
+// first. It is ExpandSelection without the notes.
 func ResolveUnits(names []string) ([]Unit, error) {
+	out, _, err := expandSelection(units, names)
+	return out, err
+}
+
+// ExpandSelection maps an ordered selection of names to the units to layer,
+// base first. A unit that lists others under `include:` is expanded
+// depth-first: its includes come before it, in the order written, so its own
+// keys are applied last and can override what it includes. Each unit appears
+// once.
+//
+// Where it appears: an includer defines the order of what it stands for. A
+// unit selected by name that a unit selected AFTER it also includes is
+// layered where that includer places it, not where it was written, and a note
+// says so. Without this, `local,personal` put `local` under `base`, and
+// base's plain tier lists replaced what local prepended: the selection looked
+// like "personal, plus local" and routed like "personal without local". A
+// name no later unit includes keeps its written position; one an EARLIER unit
+// already brought in is simply not layered again.
+//
+// An unknown name and an include cycle are errors naming the chain that led
+// there (typo protection; a cycle has no order to apply).
+func ExpandSelection(names []string) (stack []Unit, notes []string, err error) {
+	return expandSelection(units, names)
+}
+
+// expandSelection is ExpandSelection over an explicit registry (the tests'
+// seam).
+func expandSelection(reg map[string]Unit, names []string) ([]Unit, []string, error) {
 	out := make([]Unit, 0, len(names))
-	for _, n := range names {
-		u, ok := units[n]
+	var notes []string
+	done := map[string]bool{}
+	var visit func(name string, chain []string) error
+	visit = func(name string, chain []string) error {
+		u, ok := reg[name]
 		if !ok {
-			return nil, fmt.Errorf("unknown preset/bundle %q (available: %s)", n, strings.Join(unitNames(), ", "))
+			if len(chain) == 0 {
+				return fmt.Errorf("unknown preset/bundle %q (available: %s)", name, strings.Join(registryNames(reg), ", "))
+			}
+			return fmt.Errorf("unknown preset/bundle %q in an include: (chain: %s) (available: %s)",
+				name, strings.Join(append(chain, name), " -> "), strings.Join(registryNames(reg), ", "))
 		}
+		for _, c := range chain {
+			if c == name {
+				return fmt.Errorf("preset include cycle: %s", strings.Join(append(chain, name), " -> "))
+			}
+		}
+		if done[name] {
+			return nil
+		}
+		includes, err := includesOf(u.Data)
+		if err != nil {
+			return fmt.Errorf("preset/bundle %q: %w", name, err)
+		}
+		// A fresh slice per level: append on a shared backing array would let
+		// one branch's chain overwrite a sibling's.
+		next := append(append(make([]string, 0, len(chain)+1), chain...), name)
+		for _, inc := range includes {
+			if err := visit(inc, next); err != nil {
+				return err
+			}
+		}
+		done[name] = true
 		out = append(out, u)
+		return nil
 	}
-	return out, nil
+	for i, n := range names {
+		if done[n] {
+			continue
+		}
+		// Left for a later selected unit that includes it, which places it.
+		if includer := laterIncluder(reg, n, names[i+1:]); includer != "" {
+			notes = append(notes, fmt.Sprintf("`%s` is included by `%s`; it is layered where `%s` places it, not where it was written", n, includer, includer))
+			continue
+		}
+		if err := visit(n, nil); err != nil {
+			return nil, nil, err
+		}
+	}
+	return out, notes, nil
+}
+
+// laterIncluder returns the first of later whose includes, at any depth,
+// contain name; "" for none. It reports nothing about a broken include (an
+// unknown name, a cycle): the expansion itself does, with the chain.
+func laterIncluder(reg map[string]Unit, name string, later []string) string {
+	for _, cand := range later {
+		if cand == name {
+			continue
+		}
+		seen := map[string]bool{}
+		var reaches func(n string) bool
+		reaches = func(n string) bool {
+			if seen[n] {
+				return false
+			}
+			seen[n] = true
+			u, ok := reg[n]
+			if !ok {
+				return false
+			}
+			includes, _ := includesOf(u.Data)
+			for _, inc := range includes {
+				if inc == name || reaches(inc) {
+					return true
+				}
+			}
+			return false
+		}
+		if reaches(cand) {
+			return cand
+		}
+	}
+	return ""
+}
+
+// includesOf reads a unit's top-level `include:` list. The key is this
+// package's alone: the config merge drops it from an embedded layer and
+// refuses it in an operator's file.
+func includesOf(data []byte) ([]string, error) {
+	var head struct {
+		Include []string `yaml:"include"`
+	}
+	if err := yaml.Unmarshal(data, &head); err != nil {
+		return nil, fmt.Errorf("include: must be a list of preset/bundle names: %w", err)
+	}
+	for _, n := range head.Include {
+		if strings.TrimSpace(n) == "" {
+			return nil, fmt.Errorf("include: has an empty name")
+		}
+	}
+	return head.Include, nil
 }
 
 // EnvTemplate returns the embedded env.insecure.example (for `loomcycle
@@ -151,9 +280,11 @@ func EnvTemplate() []byte { return envInsecureExample }
 // config.Layer and prepends it under any opt-in preset.
 func DefaultProviders() []byte { return providersDefault }
 
-func unitNames() []string {
-	out := make([]string, 0, len(units))
-	for n := range units {
+func unitNames() []string { return registryNames(units) }
+
+func registryNames(reg map[string]Unit) []string {
+	out := make([]string, 0, len(reg))
+	for n := range reg {
 		out = append(out, n)
 	}
 	sort.Strings(out)

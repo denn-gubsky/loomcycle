@@ -26,6 +26,15 @@ coverage.txt
 .env.*
 !.env.local.example
 !.env.insecure.example
+# The profile examples name their env files without a leading dot. A filled-in
+# copy made in place holds secrets (env.local) or is the operator's own; the
+# server example's working directories hold data.
+examples/profiles/*/env.local
+examples/profiles/*/env.insecure
+examples/profiles/server/config/
+examples/profiles/server/data/
+examples/profiles/server/dynamic/
+examples/profiles/server/pgdata/
 loomcycle.local.yaml
 
 # Data

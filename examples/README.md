@@ -5,6 +5,16 @@ needed to start it standalone: a `loomcycle.yaml`, a `run.sh` launcher, a
 `.env.local.example` secret template (empty values), and a comprehensive `README.md`
 with reproduction + verification steps.
 
+## Start here: the two profiles
+
+Two complete, minimal configurations to copy, one per way of running loomcycle.
+Each selects one preset and adds only what a preset cannot supply.
+
+| Profile | For | Files |
+|---|---|---|
+| [`profiles/personal/`](profiles/personal/) | One person on one machine: local models, cloud models or both; SQLite. | two env templates, a `loomcycle.yaml`, a README |
+| [`profiles/server/`](profiles/server/) | A shared installation: Postgres, traces to a collector, sign-in gates, tenants. | the same, plus a compose file with Postgres |
+
 ## Experiment examples (exp1–exp6, exp6.8)
 
 These mirror the loomcycle sandbox experiments in **static, self-contained**

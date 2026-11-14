@@ -73,9 +73,11 @@
 #       max_context_tokens: 32768
 
 models:
-  local-fast:  { provider: ollama-local, model: gpt-oss* }        # quick / low-context
-  local-chat:  { provider: ollama-local, model: qwen3.6*   }      # general reasoning
-  local-coder: { provider: ollama-local, model_pattern: "qwen3.8*" } # coding / review
+  # Globs go under model_pattern: under `model:` a `*` is part of a literal id
+  # that no Ollama lists, and the candidate is skipped without a word.
+  local-fast:  { provider: ollama-local, model_pattern: "gpt-oss*" }  # quick / low-context
+  local-chat:  { provider: ollama-local, model_pattern: "qwen3.6*" }  # general reasoning
+  local-coder: { provider: ollama-local, model_pattern: "qwen3.8*" }  # coding / review
   # A small local decision model (answers a typed question fast; not a chat
   # model). Naming it here asks nothing of it — see DECISION MODEL below.
   local-decide: { provider: ollama-local, model: nimble, kind: decision }

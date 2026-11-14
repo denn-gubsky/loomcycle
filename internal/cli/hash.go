@@ -197,7 +197,9 @@ func runHashAgentByName(name, cfgPath string, stdout, stderr io.Writer) int {
 	if name == "" {
 		return fail(stderr, "missing agent name")
 	}
-	cfg, err := config.Load(cfgPath)
+	// The stack the server loads for this file, so an agent that comes from
+	// a preset the file's `presets:` names is found, and hashes as deployed.
+	cfg, err := loadLayeredConfig(cfgPath)
 	if err != nil {
 		return fail(stderr, "parse config %s: %v", cfgPath, err)
 	}

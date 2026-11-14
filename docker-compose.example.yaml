@@ -8,7 +8,8 @@
 # mounted config directory + the default SQLite store. The Postgres
 # upgrade path is documented below — uncomment the postgres service
 # + storage env vars when you need multi-replica HA
-# or just want a more robust storage backend.
+# or just want a more robust storage backend. For a shared installation
+# on Postgres from the start, examples/profiles/server is a complete set.
 #
 # First-run flow (do this once before `up`):
 #   mkdir -p ./config
