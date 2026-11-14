@@ -59,6 +59,7 @@ By design, these are not cluster-wide:
   - **a dynamic root of its own per replica:** the tool call fails, saying the volume was created on another server and its files are not on this one. The runtime does not copy or clone again on its own.
 
   `set_mode` to read-only works from any replica either way, since it changes the record every replica reads before it writes. The path is always derived from the replica's own dynamic root and the name, never taken from the record. The one-clone-at-a-time limit is per replica, as is the memory a clone uses.
+- **Conversion workers.** With `conversion.mode: local`, each replica starts and supervises its own children. With `remote`, one pool of `loomcycle-worker` containers can serve every replica: give each worker every replica's worker endpoint, as a list or as `dns:///name:port` for a name that resolves to each replica (a headless service). A worker runs only its own slots' worth of jobs across all the replicas it serves. The quarantine of a file that killed a worker is per replica, in memory: the same file can kill one more worker through each other replica before every replica refuses it. See [WORKERS.md](WORKERS.md).
 
 ## Deployment checklist
 

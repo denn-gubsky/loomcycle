@@ -382,6 +382,57 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
     goarch: arm64
 
+  # loomcycle-worker — the SAME binary as a conversion worker (RFC GO,
+  # conversion.mode remote) on a Debian slim base with ffmpeg and
+  # poppler-utils; entrypoint `loomcycle worker`. Minor releases only: a
+  # worker of another build of the same protocol is admitted.
+  - id: loomcycle-worker-amd64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-worker:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-worker:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-worker:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-worker:latest-amd64"
+    dockerfile: Dockerfile.worker
+    extra_files:
+      - LICENSE
+      - NOTICE
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=loomcycle-worker"
+      - "--label=org.opencontainers.image.description=loomcycle conversion worker (RFC GO): file extraction, PDF rendering, media conversion and image re-encoding out of the runtime, with ffmpeg and poppler-utils"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: amd64
+  - id: loomcycle-worker-arm64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-worker:{{ .Version }}-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-worker:{{ .Version }}-arm64"
+      - "denngubsky/loomcycle-worker:latest-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-worker:latest-arm64"
+    dockerfile: Dockerfile.worker
+    extra_files:
+      - LICENSE
+      - NOTICE
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=loomcycle-worker"
+      - "--label=org.opencontainers.image.description=loomcycle conversion worker (RFC GO): file extraction, PDF rendering, media conversion and image re-encoding out of the runtime, with ffmpeg and poppler-utils"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: arm64
+
   # loomcycle-media — the SAME binary on a Debian slim base with ffmpeg and
   # poppler-utils, the helper programs transcription and speech run (the media
   # converter and encoder, the PDF page renderer), plus the PinchTab MCP client
@@ -481,6 +532,15 @@ docker_manifests:
       - "denngubsky/loomcycle-media:latest-amd64"
       - "denngubsky/loomcycle-media:latest-arm64"
 
+  - name_template: "denngubsky/loomcycle-worker:{{ .Version }}"
+    image_templates:
+      - "denngubsky/loomcycle-worker:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-worker:{{ .Version }}-arm64"
+  - name_template: "denngubsky/loomcycle-worker:latest"
+    image_templates:
+      - "denngubsky/loomcycle-worker:latest-amd64"
+      - "denngubsky/loomcycle-worker:latest-arm64"
+
   # ── GHCR mirror ──
   - name_template: "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}"
     image_templates:
@@ -514,3 +574,11 @@ docker_manifests:
     image_templates:
       - "ghcr.io/denn-gubsky/loomcycle-media:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-media:latest-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-worker:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-worker:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-worker:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-worker:latest"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-worker:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-worker:latest-arm64"
