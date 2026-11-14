@@ -28,9 +28,9 @@
 # alias-expanded — pin it with a concrete provider+model.
 models:
   # — Anthropic (key: ANTHROPIC_API_KEY) —
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
   # — OpenAI (OPENAI_API_KEY) —
   gpt-mini: { provider: openai, model: gpt-5.4-mini }
   gpt:      { provider: openai, model: gpt-5.4 }
@@ -38,15 +38,24 @@ models:
   # — DeepSeek — the cost floor (DEEPSEEK_API_KEY) —
   deepseek-flash: { provider: deepseek, model: deepseek-flash }
   deepseek-pro:   { provider: deepseek, model: deepseek-v4-pro }
+  # — Gemini (GEMINI_API_KEY) — globs over the provider's model list —
+  # Each pattern ends where the model name ends: a trailing `*` would also
+  # match the image and speech models Gemini lists under the same names.
+  gemini-lite:        { provider: gemini, model_pattern: "gemini-*-flash-lite" }
+  gemini-flash:       { provider: gemini, model_pattern: "gemini-*-flash" }
+  gemini-pro:         { provider: gemini, model_pattern: "gemini-*-pro" }
+  gemini-pro-preview: { provider: gemini, model_pattern: "gemini-*-pro-preview" }
   # — Hosted Ollama cloud (OLLAMA_API_KEY) — for models too big to run locally —
-  cloud-kimi: { provider: ollama, model: kimi-k2.6 }
+  cloud-kimi: { provider: ollama, model: kimi-k3 }
   # — Local Ollama on your workstation / LAN (OLLAMA_BASE_URL; no key) —
   # Slow local models have their own knobs (num_ctx, header/idle timeouts,
   # compaction tuning, unbounded interactive runs). See "Local models" in
   # docs/CONFIGURATION.md and loomcycle.local-interactive.example.yaml.
-  local-small:  { provider: ollama-local, model: gpt-oss* }        # low tier
-  local-medium: { provider: ollama-local, model: qwen3.6* }      # middle tier
-  local-coder:  { provider: ollama-local, model: qwen3.8* } # high tier (coding)
+  # A glob goes under model_pattern (the newest listed match is used); under
+  # `model:` it would be a literal id that no Ollama lists.
+  local-small:  { provider: ollama-local, model_pattern: "gpt-oss*" }  # low tier
+  local-medium: { provider: ollama-local, model_pattern: "qwen3.6*" }  # middle tier
+  local-coder:  { provider: ollama-local, model_pattern: "qwen3.8*" }  # high tier (coding)
   # An alias may say what KIND of model it names: `chat` (the default when
   # omitted), `decision` or `embedder`. The three are served by different
   # endpoints, so a tagged alias written where another kind is needed fails
@@ -63,7 +72,7 @@ models:
 # written as bare ALIASES (defined above) — `- deepseek-pro` is the same
 # as `- { provider: deepseek, model: deepseek-v4-pro }`, just shorter and
 # single-sourced. Cost-floor-first by default — try DeepSeek, fall through
-# to local Ollama, then OpenAI, then Anthropic.
+# to local Ollama, then Gemini, then OpenAI, then Anthropic.
 #
 # Per-agent overrides: an agent may set its own `providers:` list
 # (full replacement of provider_priority) and/or `models:` map (full
@@ -79,6 +88,7 @@ models:
 provider_priority:
   - ollama-local   # workstation GPU — absolute floor when present
   - deepseek
+  - gemini
   - openai
   - anthropic
   - ollama         # hosted ollama.com — opt-in via OLLAMA_API_KEY
@@ -87,18 +97,22 @@ tiers:
   low:
     - deepseek-flash   # cost floor first
     - local-small      # workstation GPU
+    - gemini-lite
     - gpt-mini
     - haiku            # cloud-frontier fallback
   middle:
     - deepseek-pro
     - local-medium
+    - gemini-flash
     - gpt
     - sonnet
   high:
-    # DeepSeek absent — V4 Pro doesn't compete with Opus 4.7 / GPT-5.5.
-    # A local box typically can't host 600B+ kimi-k2.6 either; cloud-kimi
+    # DeepSeek absent — V4 Pro doesn't compete with Opus / GPT-5.5.
+    # A local box typically can't host a 600B+ kimi either; cloud-kimi
     # (hosted Ollama) covers that case for operators with a paid quota.
     - cloud-kimi
+    - gemini-pro
+    - gemini-pro-preview
     - gpt-max
     - opus
 
@@ -195,7 +209,7 @@ user_tiers:
   # Same shape as the library defaults above so v0.7.x clients see no
   # behaviour change.
   default:
-    provider_priority: [ollama-local, deepseek, openai, anthropic, ollama]
+    provider_priority: [ollama-local, deepseek, gemini, openai, anthropic, ollama]
     # Tier-bodies (low/middle/high) omitted = inherit from library
     # `tiers:` above. Override only when this user-tier needs a
     # different candidate list than the library default.
@@ -803,7 +817,7 @@ agents:
     effort: medium
     models:
       high:
-        - opus   # alias → {anthropic, claude-opus-4-7}; locks this sensitive agent to Anthropic
+        - opus   # alias → {anthropic, claude-opus-5-5}; locks this sensitive agent to Anthropic
     system_prompt: "You adapt the user's CV to a target job description."
     tools: [Read, Write]
 
@@ -817,7 +831,7 @@ agents:
 
   # Filesystem-only agent: can read/write/edit files but cannot reach
   # the network. Good for code-review or doc-editing flows where the
-  # operator has staged inputs into LOOMCYCLE_WRITE_ROOT.
+  # operator has staged inputs into the agent's volume (`volumes:`).
   doc/file-editor:
     model: sonnet
     system_prompt: "You edit files in the configured sandbox. Never speculate about files you haven't read."

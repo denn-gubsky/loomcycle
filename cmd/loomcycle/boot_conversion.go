@@ -4,11 +4,15 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/dispatch"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/local"
+	"github.com/denn-gubsky/loomcycle/internal/conversion/wire"
+	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
@@ -38,11 +42,15 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 	if err != nil {
 		fatal("conversion: cannot open the worker socket", "err", err)
 	}
+	h := conversionHelpers(b.cfg)
 	d := dispatch.New(dispatch.Options{
+		Scratch:       conversionSpoolDir(b.cfg),
+		Configured:    h.configured(),
 		Token:         token,
 		BuildVersion:  buildVersion,
 		QueueWait:     time.Duration(cv.QueueWaitS) * time.Second,
 		QuarantineTTL: time.Duration(cv.QuarantineTTLS) * time.Second,
+		KindTimeouts:  h.timeouts,
 		Logger:        slog.Default(),
 	})
 	safego.Go(context.Background(), "conversion.dispatcher", func() {
@@ -53,6 +61,7 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 	sup := local.Start(local.Options{
 		Binary: bin, Socket: socket, Token: token,
 		Workers: cv.Local.Workers, MemoryLimitMB: cv.Local.MemoryLimitMB,
+		Rasterize: h.rasterize, Media: h.media, Encode: h.encode, Wrapper: b.cfg.Env.HelperWrapper,
 		OnRespawn: d.AddRespawn, Logger: slog.Default(),
 	})
 	b.addCleanup(func() {
@@ -62,4 +71,66 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 	})
 	slog.Info("conversion workers started", "mode", cv.Mode, "workers", cv.Local.Workers, "memory_limit_mb", cv.Local.MemoryLimitMB)
 	return d
+}
+
+// helperSettings are the operator's helper command lines a local worker runs
+// and the time bound of each helper's jobs.
+type helperSettings struct {
+	rasterize, media, encode string
+	timeouts                 map[workerpb.JobKind]time.Duration
+}
+
+// conversionHelpers reads the helper settings from the transcription and
+// speech blocks: a job runs under the same bound in a worker as it would in
+// this process.
+func conversionHelpers(cfg *config.Config) helperSettings {
+	h := helperSettings{timeouts: map[workerpb.JobKind]time.Duration{
+		workerpb.JobKind_JOB_KIND_PDF_RENDER: convert.RasterizeTimeout,
+	}}
+	t := cfg.Transcription.Resolved()
+	if t.OCR != nil && t.OCR.Rasterize != nil {
+		h.rasterize = t.OCR.Rasterize.Command
+	}
+	if t.STT != nil {
+		if t.STT.Media != nil {
+			h.media = t.STT.Media.Command
+		}
+		if t.STT.TimeoutSeconds > 0 {
+			h.timeouts[workerpb.JobKind_JOB_KIND_MEDIA_CONVERT] = time.Duration(t.STT.TimeoutSeconds) * time.Second
+		}
+	}
+	if sp := cfg.Speech.Resolved(); sp != nil {
+		if sp.Encode != nil {
+			h.encode = sp.Encode.Command
+		}
+		if sp.TimeoutSeconds > 0 {
+			h.timeouts[workerpb.JobKind_JOB_KIND_AUDIO_ENCODE] = time.Duration(sp.TimeoutSeconds) * time.Second
+		}
+	}
+	return h
+}
+
+// configured are the helper labels whose command the core sets.
+func (h helperSettings) configured() map[string]bool {
+	return map[string]bool{
+		wire.LabelRender: h.rasterize != "",
+		wire.LabelMedia:  h.media != "",
+		wire.LabelEncode: h.encode != "",
+	}
+}
+
+// conversionSpoolDir is where the core spools a converted recording from a
+// worker: a directory of the data dir, on disk, rather than the system temp
+// directory, which a container often keeps in memory. Empty (the system temp
+// directory) when there is no data dir or it cannot be made.
+func conversionSpoolDir(cfg *config.Config) string {
+	if cfg.Env.DataDir == "" {
+		return ""
+	}
+	dir := filepath.Join(cfg.Env.DataDir, "conversion-spool")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		slog.Warn("conversion: cannot make the spool directory; using the system temp directory", "dir", dir, "err", err)
+		return ""
+	}
+	return dir
 }

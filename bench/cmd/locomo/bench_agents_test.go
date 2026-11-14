@@ -52,7 +52,7 @@ func TestBenchAgents_OnlyTheScribeIsAConversation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			layers := []config.Layer{{Name: "providers.default", Data: embedded.DefaultProviders()}}
 			for _, u := range presets {
-				layers = append(layers, config.Layer{Name: u.Name, Data: u.Data})
+				layers = append(layers, config.Layer{Name: u.Name, Data: u.Data, Embedded: true})
 			}
 			for _, f := range files {
 				data, err := os.ReadFile(filepath.Join(root, f))

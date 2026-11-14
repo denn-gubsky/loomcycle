@@ -38,8 +38,8 @@ message Hello {
   string worker_id = 1;
   uint32 protocol_version = 2;
   string build_version = 3;
-  // What the worker can do: extract, pdf (P1); render, media, encode,
-  // image as its helpers resolve (P2).
+  // What the worker can do: extract, pdf and image always; render, media
+  // and encode only when the worker's helper program for each resolves.
   repeated string labels = 4;
   // Jobs the worker runs at once.
   uint32 slots = 5;
@@ -130,6 +130,8 @@ message Done {
   Report report = 1;
   ErrorClass error_class = 2;
   string message = 3;
+  // image_reencode: the media type of the bytes sent as output.
+  string media_type = 4;
 }
 
 enum ErrorClass {
@@ -149,6 +151,8 @@ enum ErrorClass {
   ERROR_CLASS_CANCELLED = 6;
   // The input was over the worker's bound, or not the size announced.
   ERROR_CLASS_INPUT = 7;
+  // The worker has no helper command for this job.
+  ERROR_CLASS_NOT_CONFIGURED = 8;
 }
 
 // extract.Report, as the worker wrote it.
@@ -188,6 +192,14 @@ enum JobKind {
   JOB_KIND_UNSPECIFIED = 0;
   JOB_KIND_EXTRACT = 1;
   JOB_KIND_PDF_SELECT_PAGES = 2;
+  // A one-page PDF to a PNG, with the rasterize helper.
+  JOB_KIND_PDF_RENDER = 3;
+  // A recording to a PCM WAV, with the media helper.
+  JOB_KIND_MEDIA_CONVERT = 4;
+  // A WAV to another audio format, with the encode helper.
+  JOB_KIND_AUDIO_ENCODE = 5;
+  // An image decoded and encoded again within the vision models' edge.
+  JOB_KIND_IMAGE_REENCODE = 6;
 }
 
 message JobStart {
@@ -202,6 +214,10 @@ message JobStart {
   ExtractOptions extract = 7;
   // pdf_select_pages: the pages to cut, counted from 1.
   repeated int32 pages = 8;
+  // pdf_render, media_convert: the language hint for the helper's {lang}.
+  string language = 9;
+  // audio_encode: the format to encode to (mp3, opus, ...).
+  string format = 10;
 }
 
 message ExtractOptions {

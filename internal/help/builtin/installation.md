@@ -42,6 +42,7 @@ docker run -d --name loomcycle \
   -e LOOMCYCLE_AUTH_TOKEN=$(openssl rand -hex 32) \
   -e ANTHROPIC_API_KEY=$YOUR_KEY \
   -e LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787 \
+  -e LOOMCYCLE_DATA_DIR=/home/nonroot/.local/share/loomcycle \
   denngubsky/loomcycle:latest
 ```
 
@@ -55,8 +56,9 @@ The image sets `LOOMCYCLE_DATA_DIR` to `/home/nonroot/.local/share/loomcycle`
 
 For a more declarative setup, see `docker-compose.example.yaml` in
 the repo — copy it to `docker-compose.yaml` and `docker compose up
--d`. The compose file documents the Postgres upgrade path (commented
-out by default).
+-d`. For a shared installation with Postgres, `examples/profiles/server`
+in the repo is a complete set: env templates, the yaml, and a compose
+file.
 
 **Image security posture:** based on `gcr.io/distroless/static:nonroot`
 — ~6 MB total, no shell, no package manager, runs as uid 65532 (the

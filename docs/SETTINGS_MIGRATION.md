@@ -336,6 +336,62 @@ Two cases where a variable that is still set is only advised although the settin
 
 **What to do.** Set `LOOMCYCLE_AUDIO_MAX_INFLIGHT` to the size you want for both.
 
+### 4.14 The `base` preset names newer models and routes to Gemini
+
+**Who is affected.** Every deployment that selects `base`, by name or through `personal` or `server`, and does not restate the alias or tier in its own config.
+
+**What happens.**
+
+| Alias or list | Before | Now |
+|---|---|---|
+| `haiku` | `claude-haiku-4-5` | `claude-haiku-5-5` |
+| `sonnet` | `claude-sonnet-4-6` | `claude-sonnet-5-5` |
+| `opus` | `claude-opus-4-7` | `claude-opus-5-5` |
+| `cloud-kimi` | `kimi-k2.6` | `kimi-k3` |
+| `gemini-lite`, `gemini-flash`, `gemini-pro`, `gemini-pro-preview` | not defined | patterns `gemini-*-flash-lite`, `gemini-*-flash`, `gemini-*-pro`, `gemini-*-pro-preview` |
+| `local-coder` | pattern `qwen3-coder*` | pattern `qwen3.8*`, as the `local` preset has it |
+| `provider_priority`, `user_tiers.default` | no `gemini` | `gemini` after `deepseek` |
+| `tiers.low`, `tiers.middle` | no Gemini candidate | `gemini-lite`, `gemini-flash` after the local candidate |
+| `tiers.high` | no Gemini candidate | `gemini-pro`, then `gemini-pro-preview`, after `cloud-kimi` |
+
+A provider with no key is skipped, so a deployment with no `GEMINI_API_KEY` routes as before apart from the model ids. In the high tier a released Gemini pro model is chosen before a preview. The `low`, `medium`, `high` and `free` user tiers are unchanged.
+
+The `local` preset's `local-fast` and `local-chat` aliases were written as `model: gpt-oss*` and `model: qwen3.6*`. A pattern is read only under `model_pattern`, so both candidates were skipped; they are patterns now. With `local` selected, a pulled `gpt-oss` or `qwen3.6` model becomes the first candidate of the low and middle tiers.
+
+**What to do.** To keep a model, restate its alias in your own config: `models: { sonnet: { provider: anthropic, model: claude-sonnet-4-6 } }`. `GET /v1/_routing` and the Web UI's routing page show what each tier resolves to.
+
+### 4.15 Two chat agents have a new content signature
+
+**Who is affected.** A deployment that verifies bundled agents by content signature (`AgentDef verify`) and selects the `chat` bundle.
+
+**What happens.** `chat/medium` and `chat/local-small` no longer set `compaction.memory_flush`. In their context mode the key did nothing, and every load printed an advisory saying so. What the agents do is unchanged, but the key is part of an agent's signed content, so both signatures change. `chat/local` is unchanged.
+
+**What to do.** Record the new signatures. To have these agents queue what they discard for consolidation, set `context.harvest_to_memory: true` on them in your own config.
+
+### 4.16 The undrained memory queue is reported when it holds rows
+
+**Who is affected.** A deployment with agents that hold the `Memory` tool and no enabled consolidation schedule.
+
+**What happens.** The advisory "agents can enqueue with Memory op=add but no enabled scheduled run drains it" is no longer printed by every load. The server logs it at start, per memory scope, when that scope's queue holds rows. `loomcycle validate`, `loomcycle doctor` and a config reload no longer show it.
+
+**What to do.** Nothing, unless you relied on `validate` to tell you. The start log is where to look.
+
+### 4.17 `include:` and `presets:` are keys of the layer assembly
+
+**Who is affected.** A config file that carries a top-level `include:` or `presets:` key that used to be ignored as unknown.
+
+**What happens.** `include:` works only inside a preset built into the binary; in your own file it stops the load. `presets:` selects embedded presets and is read from one file (section 6); in any other config file it stops the load, naming the file.
+
+**What to do.** Remove a stray `include:`. Keep `presets:` only in the primary file.
+
+### 4.18 `loomcycle init` writes a profile's short config
+
+**Who is affected.** Anyone who runs `loomcycle init` and expects the long, fully-commented config.
+
+**What happens.** `loomcycle init` writes the `personal` profile's config: one active line, `presets: [personal]`, and commented blocks for what is yours. `loomcycle init --profile server` writes the server profile's. Neither carries the routing matrix or example agents; the preset supplies them.
+
+**What to do.** `loomcycle init --full` writes the long reference config, as before.
+
 ## 5. Step by step, by area
 
 Each area shows the old environment lines and what replaces them. Every key name is the real one. Values are examples.
@@ -749,7 +805,7 @@ LOOMCYCLE_AUDIO_MAX_INFLIGHT=1    # default 2; sizes the queue of both routes
 
 ### 5.13 Config file locations
 
-Three things decide which yaml files are loaded, in this order, each later one winning: the embedded presets named by `LOOMCYCLE_PRESETS`, every `*.yaml` in `LOOMCYCLE_CONFIG_DIR`, then each `--config` file.
+Three things decide which yaml files are loaded, in this order, each later one winning: the embedded presets, every `*.yaml` in `LOOMCYCLE_CONFIG_DIR`, then each `--config` file. Which presets: the `--preset` flag, else `LOOMCYCLE_PRESETS`, else the `presets:` key of the primary config file (section 6).
 
 `LOOMCYCLE_CONFIG_FILES`, the third way to name config files, is removed. Set and non-empty, it refuses the boot: the files it names would silently not be loaded. The refusal is raised before any yaml is read, so it is also what you see when that variable named your only config:
 
@@ -849,7 +905,19 @@ With `auth.mode: strict` in the yaml the same error begins `auth.mode: strict ne
 
 Two complete minimal examples. Secrets are shown as names with empty values: fill them in your secret store or secret environment file, never in the yaml.
 
-Once the embedded presets `personal` and `server` are available in your version, they are the recommended starting point: `LOOMCYCLE_PRESETS=personal` or `LOOMCYCLE_PRESETS=server` replaces the preset lists below. A preset can include others through an `include:` key. `personal` stands for `base`, `local`, `chat` and `document-agent` on SQLite and a loopback listener; `server` stands for `base`, `chat`, `document-agent` and `memory` with the metrics sampler on. Run `loomcycle presets` to see what your binary carries.
+The embedded presets `personal` and `server` are the recommended starting point; each replaces a preset list with one name. `personal` layers `base`, `local`, `chat` and `document-agent` and sets nothing itself: SQLite, SQL Memory on it and the loopback listener are already the defaults. `server` layers `base`, `chat`, `document-agent` and `memory` and turns on the metrics sampler (`metrics: {enabled: true, collect_system: true}`). Neither sets a volume, a sign-in gate, retention, a listen address or a secret. No preset can turn on a switch that exists only in the environment (section 7, table F).
+
+Select one in your primary config file:
+
+```yaml
+presets: [personal]
+```
+
+or in the environment with `LOOMCYCLE_PRESETS=personal`, or with `--preset`. The order is `--preset`, then `LOOMCYCLE_PRESETS`, then the yaml key: when a flag or the variable is set, the file's list is not layered, and if the two would give different stacks an advisory at boot, in `loomcycle validate` and in `loomcycle doctor` names both. `presets:` is read from one file only: the last `--config`, else the auto-discovered `loomcycle.yaml`, else `loomcycle.yaml` in `LOOMCYCLE_CONFIG_DIR`. In any other config file it stops the load and names the file. A preset named in the file is trusted exactly as the file is: a preset is yaml, and can carry agents, MCP servers or sign-in clients.
+
+A preset lists the ones it stands for under `include:`. They are layered first, in the order written, each once, and the preset's own keys last. A unit you also select by name before a preset that includes it is layered where the preset places it, so `local,personal` is the same stack as `personal`, and an advisory says so. `include:` works only inside a preset built into the binary. `loomcycle presets` lists what your binary carries and `loomcycle presets show <name>` prints one with the stack it expands to.
+
+[`examples/profiles/`](../examples/profiles/) has a complete, minimal configuration for each profile (the server one with a compose file and Postgres). `loomcycle init` writes the personal profile's yaml and `loomcycle init --profile server` the server's; `loomcycle init --full` writes the long reference config, which names no preset.
 
 ### 6.1 Personal: SQLite, local or cloud models
 
@@ -858,7 +926,6 @@ Non-secret environment:
 ```sh
 LOOMCYCLE_LISTEN_ADDR=127.0.0.1:8787
 LOOMCYCLE_DATA_DIR=./data
-LOOMCYCLE_PRESETS=base,local,chat,document-agent
 OLLAMA_BASE_URL=http://localhost:11434
 ```
 
@@ -873,6 +940,8 @@ OPENAI_API_KEY=
 Yaml:
 
 ```yaml
+presets: [personal]
+
 # The store is SQLite because no Postgres connection string is set.
 # SQL Memory, and with it Documents, is on because the store is SQLite.
 
@@ -905,7 +974,6 @@ LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787
 LOOMCYCLE_PUBLIC_URL=https://loomcycle.example.com
 LOOMCYCLE_DATA_DIR=/data
 LOOMCYCLE_CONFIG_DIR=/config
-LOOMCYCLE_PRESETS=base,chat,document-agent,memory
 LOOMCYCLE_PG_AUTOMIGRATE=1
 
 # Security gates
@@ -939,6 +1007,8 @@ OPENAI_API_KEY=
 Yaml (`/config/loomcycle.yaml`):
 
 ```yaml
+presets: [server]
+
 storage:
   backend: postgres            # pinned; the connection strings stay in the environment
 
@@ -962,9 +1032,7 @@ principals:
     scopes: [substrate:tenant]
     token_env: LOOMCYCLE_TOKEN_ACME
 
-metrics:
-  enabled: true
-  collect_system: true
+# metrics: the `server` preset turns the sampler on (enabled, collect_system).
 
 retention:
   enabled: true
@@ -1306,7 +1374,7 @@ Do **not** move these to the yaml. The rule: the environment keeps what is secre
 | `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS`, `LOOMCYCLE_SQLMEM_TOTAL_MAX_BYTES`, `LOOMCYCLE_SQLMEM_QUOTA_BYTES`, `LOOMCYCLE_SQLMEM_AUDIT_MODE`, `LOOMCYCLE_SQLMEM_SHARED_SCHEMAS` | SQL Memory data keeping and visibility. |
 | `LOOMCYCLE_MOCK_ENABLED`, `LOOMCYCLE_KMS_VAULT_ALLOW_HTTP` | Test and development shortcuts. |
 
-This is not the complete list of variables that are still read. The complete list is the environment variable reference in [`CONFIGURATION.md`](CONFIGURATION.md) and the annotated `.env.insecure.example`. A variable that is in neither tables A to E nor the pending rows is still read and needs no action.
+This is not the complete list of variables that are still read. The complete list is the environment variable reference in [`CONFIGURATION.md`](CONFIGURATION.md) and the annotated `.env.insecure.example`. A variable that is not in tables A to E is still read and needs no action.
 
 ## 8. Troubleshooting
 
@@ -1393,11 +1461,9 @@ At boot the error is the `err` field of an `ERROR` line with the message `config
 
 ## 9. Status of this guide
 
-This guide was checked against the code of the development branch of the release. The item below was approved for the same release and is **not in the code yet**. A maintainer should check it against the code before the release and correct the sections named.
+This guide was checked against the code of the release, the presets `personal` and `server`, the `include:` key and the `presets:` key included: nothing described here is pending.
 
-1. **Presets `personal` and `server`, and the `include:` key.** Pending. Check their contents against section 6 and replace the preset lists in 6.1 and 6.2 with the single preset name.
-
-Also to re-check:
+To re-check after any later change:
 
 - **Tables A to E** must contain exactly the names in the runtime's table of removed variables, and every "stops the boot" cell must match a refusal rule. The comparison was re-run after the last change; re-run it after any change to either.
 - **The count** of environment variables before the release (about 318) and after.

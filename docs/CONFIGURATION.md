@@ -1,10 +1,254 @@
-# Configuration — provider routing, tiers, and agent files
+# Configuration
 
-This guide is for operators wiring loomcycle for the first time, or developers tuning individual agents. It answers: **given my setup, what yaml do I write?**
+This guide has two parts. The opening gets an instance running and says where each setting lives. The reference after it (sections 0 to 11) documents every setting in detail.
 
-Scope: the **model-routing axis** of `loomcycle.yaml` — providers, tier candidate lists, the `models:` alias map, the `user_tiers:` overlay — plus the agent `.md` frontmatter fields that control per-agent routing. MCP-server configuration lives in [`docs/MCP_INTEGRATION.md`](MCP_INTEGRATION.md); storage in [`docs/POSTGRES.md`](POSTGRES.md); concurrency/cache/hooks are not covered here.
+| You want to | Read |
+|---|---|
+| Run loomcycle for yourself, on one machine | [Start: personal profile](#start-personal-profile) |
+| Run a shared installation | [Start: server profile](#start-server-profile) |
+| Know whether a setting is an environment variable or a yaml key | [Where each setting lives](#where-each-setting-lives) |
+| Know which value applies when a setting is given twice | [When a setting is in both the environment and the yaml](#when-a-setting-is-in-both-the-environment-and-the-yaml) |
+| Know which file holds your secrets | [The secrets file](#the-secrets-file) |
+| Upgrade from a release that read more environment variables | [`SETTINGS_MIGRATION.md`](SETTINGS_MIGRATION.md) |
 
-Upgrading from a release that read more environment variables? See [`SETTINGS_MIGRATION.md`](SETTINGS_MIGRATION.md) for what moved to the yaml, what became fixed, and what a removed variable does at boot.
+Four terms are used with one meaning throughout:
+
+- A **preset** is a named stack of yaml config built into the binary. `loomcycle presets` lists the presets, and `loomcycle presets show <name>` prints one.
+- A **profile** is one of the two presets that stand for a whole installation: `personal` and `server`. Each has a start page below and a directory of ready files under [`examples/profiles/`](../examples/profiles/).
+- A **plane** is one of the two places a setting can live: the environment, or the yaml config.
+- **The secrets file** is the environment file that holds your secrets. Its name depends on how you installed loomcycle; [The secrets file](#the-secrets-file) lists the names.
+
+## Start: personal profile
+
+For one person on one machine. The store is SQLite, the server listens on `127.0.0.1:8787`, and the models are local (Ollama), cloud, or both. The `personal` preset supplies the model routing and four agents: `chat/medium`, `chat/local`, `chat/local-small` and `doc/manager` (the document agent).
+
+Do these in order.
+
+**1. Write the config and the secrets file.**
+
+```sh
+loomcycle init --with-token
+```
+
+This writes two files to `~/.config/loomcycle/`: `loomcycle.yaml`, and the secrets file `auth.env` (mode `0600`) with a generated `LOOMCYCLE_AUTH_TOKEN`. loomcycle finds both without a flag. The yaml has one active line, and that line is the whole minimum yaml:
+
+```yaml
+presets: [personal]
+```
+
+Everything else in the file is commented out and is yours to turn on. Anything you write there is merged over the preset, key by key.
+
+**2. Give it a model.** One of these, or both:
+
+- **A cloud key.** Add one line to the secrets file: `ANTHROPIC_API_KEY=…`, or the `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` or `GEMINI_API_KEY` line. A provider with no key is skipped.
+- **Local models.** Run [Ollama](https://ollama.com) on `http://localhost:11434` and pull a model that the preset's patterns match (`loomcycle presets show local` lists the patterns). If your Ollama is at another address, set `OLLAMA_BASE_URL` in your shell profile.
+
+With both, local models are tried first and the cloud is the fallback. The minimum secrets file is therefore two lines:
+
+```sh
+# ~/.config/loomcycle/auth.env
+LOOMCYCLE_AUTH_TOKEN=          # written by init --with-token
+ANTHROPIC_API_KEY=             # or another provider's key; no key line at all with Ollama
+```
+
+**3. Decide where the data goes.** Unless you set `LOOMCYCLE_DATA_DIR`, the SQLite store is created in `./data`, relative to the directory you start `loomcycle` in. To have one store whatever directory you start from, set an absolute path in your shell profile, for example `export LOOMCYCLE_DATA_DIR="$HOME/loomcycle-data"`.
+
+**4. Check, then start.**
+
+```sh
+loomcycle doctor     # config, storage, port, and which provider keys are set
+loomcycle            # starts on 127.0.0.1:8787
+```
+
+`loomcycle doctor` must end with `0 failures`. A provider with no key is a warning, not a failure.
+
+**5. Open the Web UI** at <http://127.0.0.1:8787/ui>, paste the token from the secrets file, and start a chat with `chat/medium`.
+
+Without `--with-token` in step 1 there is no token and no secrets file: the server accepts every caller, which it allows only on a loopback address.
+
+The profile turns on nothing that reaches outside the runtime. Each of these is something you add yourself:
+
+| To add | Set | Details |
+|---|---|---|
+| Files for the agents | A `volumes:` entry in `loomcycle.yaml` that names a directory | [9d](#9d-filesystem-volumes--per-agent-rorw-scopes-rfc-ah) |
+| Web access | `LOOMCYCLE_HTTP_HOST_ALLOWLIST` in the environment, and `BRAVE_API_KEY` in the secrets file for search | [`TOOLS.md`](TOOLS.md), [`SEARCH.md`](SEARCH.md) |
+| A shell | Nothing more than the volume for `Bashbox`, a sandbox confined to that volume. `LOOMCYCLE_BASH_ENABLED=1` adds `Bash`, which is not a sandbox | [`SANDBOX.md`](SANDBOX.md) |
+| A larger local context window | `providers.ollama-local.options.num_ctx` in `loomcycle.yaml` | [6b](#6b-local-models-ollama--configuring--slow-model-advice) |
+| Durable memory | `presets: [personal, memory]`, and `scheduled_runs.memory-consolidation.enabled: true` | [`MEMORY-ARCHITECTURE.md`](MEMORY-ARCHITECTURE.md) |
+| Postgres instead of SQLite | Three things. `LOOMCYCLE_PG_DSN` in the secrets file selects Postgres. `LOOMCYCLE_SQLMEM_PG_DSN`, the connection string of a second database, keeps SQL Memory and Documents on; without it they are off on Postgres. The schema is not applied at start, and the server stops on an empty database: run `loomcycle migrate up --config ~/.config/loomcycle/loomcycle.yaml` once (with `--config` the command reads the secrets file beside that yaml; without it, it reads the connection string from the environment only), or set `LOOMCYCLE_PG_AUTOMIGRATE=1` | [`POSTGRES.md`](POSTGRES.md) |
+
+[`examples/profiles/personal/`](../examples/profiles/personal/) has the same configuration as three files to copy, for running from a directory of your own with `--config`.
+
+## Start: server profile
+
+For a shared installation: Postgres, tokens and sign-in gates, one tenant per team or customer, cloud and local models, traces to an OpenTelemetry collector, and chat bridges. The `server` preset supplies the model routing and the chat, document and memory agents, and turns the process metrics sampler on. It sets no volume, no sign-in gate, no retention and no secret: you set those, in the steps below.
+
+[`examples/profiles/server/`](../examples/profiles/server/) has every file named here, and a compose file that runs the runtime, the schema migration and Postgres. Its README is the same procedure with the compose commands. The steps below name what has to be set, with or without compose.
+
+**1. Postgres.** The runtime needs two databases, one for the store and one for SQL Memory (which Documents use), and a role that owns both and may create roles. The example's `postgres-init.sh` creates them in the bundled Postgres. On a Postgres of your own, do as a superuser what that file does. It is a `psql` script, not plain SQL: it takes the role's password as a `psql` variable and switches database with `\connect`. Its two `CREATE EXTENSION vector` statements fail on a server that has no pgvector, which is optional. [`POSTGRES.md`](POSTGRES.md) has the details.
+
+**2. The secrets file** (`env.local` in the example; give it mode `0600`). The minimum is five lines:
+
+```sh
+LOOMCYCLE_AUTH_TOKEN=          # the operator's bearer: openssl rand -hex 32
+LOOMCYCLE_SECRET_KEY=          # seals stored credentials and sessions: openssl rand -base64 32
+LOOMCYCLE_PG_DSN=              # postgres://loomcycle:<password>@<host>:5432/loomcycle
+LOOMCYCLE_SQLMEM_PG_DSN=       # postgres://loomcycle:<password>@<host>:5432/loomcycle_sqlmem
+ANTHROPIC_API_KEY=             # at least one provider key, unless every model is local
+```
+
+A connection string in `LOOMCYCLE_PG_DSN` is what selects Postgres, and one in `LOOMCYCLE_SQLMEM_PG_DSN` is what turns SQL Memory on. The example's compose file requires three more values in the same file, and stops while one is empty: `POSTGRES_PASSWORD`, `LOOMCYCLE_DB_PASSWORD` and `LOOMCYCLE_VERSION` (the image tag to run).
+
+**3. The non-secret environment file** (`env.insecure` in the example). The minimum is four lines:
+
+```sh
+LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787                    # inside a container; the compose file publishes it on 127.0.0.1
+LOOMCYCLE_PUBLIC_URL=https://loomcycle.example.com    # the address people reach it at
+LOOMCYCLE_CONFIG_DIR=/config                          # the directory that holds loomcycle.yaml
+LOOMCYCLE_DATA_DIR=/data
+```
+
+The gate declared in step 4 turns the store-backed audit stream on, so the audit trail needs no setting here. The example also sets `LOOMCYCLE_AUDIT_LOG_PATH`, which adds a copy of it as a file.
+
+**4. The yaml** (`loomcycle.yaml` in the config directory). The minimum names the preset, the directory under which the runtime makes volumes, and the gate the operator signs in through:
+
+```yaml
+presets: [server]
+
+volumes:
+  dynamic:
+    path: /mnt/dynamic        # must exist and be writable by the runtime's user
+    mode: rw
+    dynamic_root: true
+
+auth:
+  gates:
+    token: { kind: token, label: "Access token" }
+```
+
+**5. Migrate, check, start.** With the example's compose file:
+
+```sh
+docker compose --env-file env.local up -d
+docker compose --env-file env.local exec loomcycle /usr/local/bin/loomcycle doctor
+```
+
+The compose file applies the schema in a service of its own before the runtime starts. Without compose, give the process both environment files and run the same three steps yourself:
+
+```sh
+loomcycle migrate up     # applies the schema of the main database
+loomcycle doctor         # must end with `0 failures`
+loomcycle
+```
+
+**6. Sign in** at `<LOOMCYCLE_PUBLIC_URL>/ui` by pasting `LOOMCYCLE_AUTH_TOKEN`.
+
+What the server profile leaves for you to decide:
+
+| Decision | Set | Details |
+|---|---|---|
+| Who signs in | One interactive gate under `auth.gates`: `password` or `oidc` | [Web UI sign-in](#web-ui-sign-in--sessions-authmode-and-gates-rfc-fa) |
+| Tenants | A tenant is a name carried by a token. Mint one token per person or service with `loomcycle operator-token create`, or declare a fixed one under `principals:` | [9b](#9b-multi-tenant-authentication-rfc-l) |
+| Chat bridges | One `kind: external` gate per bridge; each bridge is a service of its own with its own settings | [External gate](#external-gate--kind-external-rfc-fa-p4), [`packages/bridge-telegram`](../packages/bridge-telegram/) |
+| Models | A key in the secrets file for each cloud provider; `OLLAMA_BASE_URL` for local models, which are then tried first in the low and middle tiers (the high tier has no local candidate) | [`PROVIDERS.md`](PROVIDERS.md), [6b](#6b-local-models-ollama--configuring--slow-model-advice) |
+| Traces | `OTEL_EXPORTER_OTLP_ENDPOINT` in the non-secret environment file; collector credentials in `OTEL_EXPORTER_OTLP_HEADERS` in the secrets file | [Observability](#observability) |
+| Metrics | Nothing for the Web UI's metrics page (the preset turns the sampler on). `/metrics` serves Prometheus with the token; `LOOMCYCLE_METRICS_LISTEN` adds an unauthenticated scrape listener | [Scraping /metrics](#scraping-metrics) |
+| What is deleted with age | A `retention:` block in the yaml. Chats, old definition versions and memory are kept until it says `enabled: true` and names a family with its `max_age`. Four things are deleted whatever the block says: per-call usage rows are rolled up into daily totals after 30 days, consumed consolidation-queue rows after 7 days, process metrics samples after 7 days (the preset turns the sampler on), and unreachable chunk references hourly (`LOOMCYCLE_DEADLINK_GC`, on by default) | [9m](#9m-retention--what-is-deleted-with-age-retention) |
+| Durable memory | `scheduled_runs.memory-consolidation.enabled: true` in the yaml. The agents are loaded; their hourly schedule is off | [`MEMORY-ARCHITECTURE.md`](MEMORY-ARCHITECTURE.md) |
+| Whose provider keys a tenant's runs spend | `LOOMCYCLE_OPERATOR_KEY_RESTRICTION=1` confines a tenant to the keys it supplied itself. It is off by default, so every tenant's runs use your provider keys | [`CREDENTIALS.md`](CREDENTIALS.md) |
+| A reverse proxy in front | `auth.trusted_proxies` in the yaml. Sign-in throttling counts per client address, and without this every person has the proxy's address | [Web UI sign-in](#web-ui-sign-in--sessions-authmode-and-gates-rfc-fa) |
+| Access-control rules | `LOOMCYCLE_ACL=shadow`, then `enforce` once the log is quiet | [Config-declared access control](#config-declared-access-control-rfc-ey) |
+| What the agents' tools may reach | `LOOMCYCLE_HTTP_HOST_ALLOWLIST` for web access. Leave `LOOMCYCLE_BASH_ENABLED` unset on a server with more than one tenant | [`SANDBOX.md`](SANDBOX.md), [`TOOLS.md`](TOOLS.md) |
+| More than one replica | `LOOMCYCLE_REPLICA_ID` on each process | [`MULTI-REPLICA.md`](MULTI-REPLICA.md) |
+
+## Where each setting lives
+
+Each setting has one plane. The rule:
+
+- **The environment** holds secrets (keys, tokens, database connection strings), what identifies this process on this host (listen addresses, directories, public URLs, the replica id), and security gates. A security gate is a switch that decides what the runtime may do or whom it admits, and that only the environment can set: it has no yaml form, so no config file and no preset can change one. Most gates open something and are off unless you set them; some tighten (`LOOMCYCLE_AUTH_MODE`, `LOOMCYCLE_ACL`, `LOOMCYCLE_OPERATOR_KEY_RESTRICTION`, `LOOMCYCLE_LIMITS_ENFORCE`). The table says so where a default is on.
+- **The yaml config** holds policy and tuning: routing, agents, retention, concurrency, provider options, timeouts. Policy is the same on every replica, can be reviewed, and can be carried by a preset. A few tuning values are still variables with no yaml key, for example `LOOMCYCLE_INTERACTIVE_IDLE_TIMEOUT`, `LOOMCYCLE_BATCH_JOIN_TIMEOUT` and `LOOMCYCLE_MAX_CONSOLIDATION_TARGETS`; [9l](#9l-environment-variable-reference--knobs-not-covered-above) lists them.
+- **Nothing** holds a value that no deployment needed to change. It is a constant of the runtime, listed under [Fixed limits](#fixed-limits).
+
+Some settings are **inferred**: the runtime decides them from another setting, and there is nothing to switch on.
+
+The table says, for each area, what is set in which plane and what is inferred. It names the main variables and keys of each area, not every one: the full list of variables is in [9l](#9l-environment-variable-reference--knobs-not-covered-above) and in the annotated `.env.insecure.example`, and the section linked in the first column documents the yaml keys.
+
+| Area | Environment | Yaml | Inferred |
+|---|---|---|---|
+| Config files and presets ([9e](#9e-config-layering--stacking-multiple-config-files-rfc-an), [9f](#9f-embedded-presets--bundles-rfc-aq)) | `LOOMCYCLE_CONFIG_DIR`, `LOOMCYCLE_PRESETS`, `LOOMCYCLE_CONFIG_STRICT`, `LOOMCYCLE_NO_DEFAULT_PROVIDERS`; the `--config` and `--preset` flags | `presets:`, in the primary config file only | With no `--config` and no yaml file in `LOOMCYCLE_CONFIG_DIR`, `loomcycle.yaml` is looked for in the working directory, then in `$XDG_CONFIG_HOME/loomcycle/`, then in `~/.config/loomcycle/` |
+| Listeners and addresses | `LOOMCYCLE_LISTEN_ADDR`, `LOOMCYCLE_GRPC_ADDR`, `LOOMCYCLE_METRICS_LISTEN`, `LOOMCYCLE_PUBLIC_URL` | none | none |
+| Authentication ([9b](#9b-multi-tenant-authentication-rfc-l)) | `LOOMCYCLE_AUTH_TOKEN`, `LOOMCYCLE_SECRET_KEY`, the variables that `token_env` and `client_secret_env` keys name; gates: `LOOMCYCLE_AUTH_MODE`, `LOOMCYCLE_ALLOW_OPEN_MODE` | `auth:` (`mode`, `gates`, `clients`, `login_origins`, `trusted_proxies`), `principals:` | Open mode (every caller accepted) when no token, principal or admin token exists; allowed on a loopback address only |
+| Access control | Gates: `LOOMCYCLE_ACL`, `LOOMCYCLE_OPERATOR_KEY_RESTRICTION`, `LOOMCYCLE_LIMITS_ENFORCE` | `acls:`, `groups:`, `acl_bindings:` | none |
+| Providers and routing (sections [1](#1-the-four-resolution-axes-overview) to [8](#8-conflict-resolution--what-wins-when), [`PROVIDERS.md`](PROVIDERS.md)) | Provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_KEY`); endpoints (`OLLAMA_BASE_URL`); `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` | `providers:` (with each provider's `options`), `models:`, `tiers:`, `provider_priority:`, `user_tiers:`, `timeout_scaling:`, `pricing:`, `decision:` | A provider whose key is not set is skipped |
+| Agents, skills and help topics ([7](#7-agent-md-frontmatter-reference)) | Directories: `LOOMCYCLE_AGENTS_ROOT`, `LOOMCYCLE_SKILLS_ROOT`, `LOOMCYCLE_HELP_ROOT`, `LOOMCYCLE_CODE_AGENTS_ROOT` | `agents:`, `skills:`, `defaults:` | When `LOOMCYCLE_CONFIG_DIR` is set, its `agents/`, `skills/` and `help/` subdirectories are used where they exist and the variable is unset. A variable set to the empty string declines that. A `loomcycle.yaml` found by discovery brings no such directories |
+| Storage ([`POSTGRES.md`](POSTGRES.md)) | `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_DATA_DIR`, `LOOMCYCLE_PG_AUTOMIGRATE`, the Postgres pool sizes | `storage:` (`backend` pins the store) | The store is Postgres when a connection string is set, SQLite otherwise |
+| SQL Memory and Documents ([`SQL_MEMORY.md`](SQL_MEMORY.md)) | `LOOMCYCLE_SQLMEM_PG_DSN`, `LOOMCYCLE_SQLMEM_ROOT`; data-keeping settings such as `LOOMCYCLE_SQLMEM_SCOPE_TTL_MS` (off by default; each also has a `storage.sqlmem_*` key) | `storage.sqlmem_*` (query limits; `sqlmem_enabled: false` turns it off) | On with a SQLite store; on with a Postgres store when the SQL Memory connection string is set |
+| Memory ([`MEMORY-ARCHITECTURE.md`](MEMORY-ARCHITECTURE.md)) | Gates: `LOOMCYCLE_MEMORY_TRACE_INDEX`, `LOOMCYCLE_MEMORY_CHANGES_ENABLED`, `LOOMCYCLE_PGVECTOR_ENABLED`. Not a gate: `LOOMCYCLE_DEADLINK_GC`, the collection of unreachable chunk references, which is `on` by default | `memory:` (`embedder`, `projection`, `fulltext`), `memory_backends:`, `change_subscriptions:`, `document_sources:` | none |
+| Retention ([9m](#9m-retention--what-is-deleted-with-age-retention)) | `LOOMCYCLE_AUDIT_RETENTION_DAYS` and `LOOMCYCLE_METRICS_RETENTION_DAYS` only | `retention:` | The retention sweeper deletes nothing until `retention.enabled` is `true`. The usage rollup (`retention.usage_detail.max_age`, 30 days) and the fixed housekeeping of [9l](#9l-environment-variable-reference--knobs-not-covered-above) run whatever it says |
+| Concurrency and run limits | Sizes that follow the host: `LOOMCYCLE_MAX_REQUEST_BYTES`, `LOOMCYCLE_AUDIO_MAX_INFLIGHT`; the default run rate, `LOOMCYCLE_RUN_RATE_PER_MINUTE` | `concurrency:` | none |
+| Traces and logs ([Observability](#observability)) | The standard `OTEL_*` variables, `LOOMCYCLE_LOG_LEVEL`, `LOOMCYCLE_LOG_FORMAT`, `LOOMCYCLE_ENVIRONMENT`; gate: `LOOMCYCLE_TENANT_TELEMETRY` | `observability:` (per-tenant sampler ratios, the hosts a tenant's collector may name) | Tracing is on when `OTEL_EXPORTER_OTLP_ENDPOINT` is set |
+| Process metrics | `LOOMCYCLE_METRICS_LISTEN`, `LOOMCYCLE_METRICS_RETENTION_DAYS` | `metrics:` (`enabled`, `collect_system`, `sample_interval`) | none |
+| Audit ([Audit trail](#audit-trail)) | `LOOMCYCLE_AUDIT_STORE`, `LOOMCYCLE_AUDIT_LOG_PATH`, `LOOMCYCLE_AUDIT_RETENTION_DAYS` | none | The store-backed audit stream is on when a sign-in gate, strict mode, a `LOOMCYCLE_ACL` other than `compat`, or more than one principal is configured |
+| Triggers: schedules, webhooks, A2A | `LOOMCYCLE_SCHEDULER_TICK_SECONDS`, `LOOMCYCLE_A2A_SERVER_CARD`; gates: `LOOMCYCLE_WEBHOOKS_ALLOW_UNAUTHENTICATED`, `LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST`, `LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST` | `scheduled_runs:`, `webhooks:`, `channels:`, `a2a_server_cards:`, `a2a_agents:` | The scheduler and the webhook receiver always run. A2A is served when `LOOMCYCLE_A2A_SERVER_CARD` names a card |
+| Sandbox and files ([9d](#9d-filesystem-volumes--per-agent-rorw-scopes-rfc-ah), [`SANDBOX.md`](SANDBOX.md)) | Gates: `LOOMCYCLE_BASH_ENABLED`, `LOOMCYCLE_BASHBOX_FALLBACK_COMMANDS`, `LOOMCYCLE_GIT_SOURCE_HOSTS`, `LOOMCYCLE_GIT_PUSH_HOSTS` | `volumes:` | `Bashbox` is always registered. An agent with no volume has no disk access |
+| Outbound network ([`TOOLS.md`](TOOLS.md)) | Gates: `LOOMCYCLE_HTTP_HOST_ALLOWLIST`, `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE`; search keys such as `BRAVE_API_KEY` | `search_providers:`, `search_priority:`, `hooks.private_host_allowlist` | With no allowlist the HTTP tools reach no host |
+| MCP servers ([`MCP_INTEGRATION.md`](MCP_INTEGRATION.md)) | Gates: `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS`, `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` (both off by default), `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS` (on by default) | `mcp_servers:`, `local_api:` | none |
+| Hooks, interruptions and context plugins | none | `hooks:`, `interruption:`, `context_plugins:` | none |
+| Speech, transcription and conversion ([9h](#9h-transcription--ocr-and-speech-to-text), [9i](#9i-speech--text-to-speech), [9n](#9n-conversion-workers-conversion)) | `LOOMCYCLE_AUDIO_MAX_INFLIGHT` | `transcription:`, `speech:`, `conversion:` | none |
+| Cluster ([`MULTI-REPLICA.md`](MULTI-REPLICA.md)) | `LOOMCYCLE_REPLICA_ID`, `LOOMCYCLE_REPLICAS_STALE_AFTER_MS`, `LOOMCYCLE_HEARTBEAT_STALE_MS` | none | Cluster mode is on when `LOOMCYCLE_REPLICA_ID` is set |
+
+A row with entries in both planes does not mean a setting is given twice: the two columns hold different settings of the same area. The few settings that do exist in both planes are listed next.
+
+### When a setting is in both the environment and the yaml
+
+**The environment wins.** A variable that is set replaces the yaml's value, so one yaml can serve several hosts and a secret can stay out of it. A variable that is empty is not set. (The three content-root variables of the table above have no yaml form and differ here: set to the empty string, one declines the default directory.)
+
+There are two exceptions:
+
+1. **`auth.mode` takes the stricter** of the yaml's value and `LOOMCYCLE_AUTH_MODE`, so neither plane can lower the other.
+2. **A provider's endpoint is taken from the yaml.** A yaml `providers.<id>.base_url` is used in place of that provider's variable (`OLLAMA_BASE_URL`, `OLLAMA_CLOUD_BASE_URL`, `DEEPSEEK_BASE_URL`, `GEMINI_BASE_URL`), which supplies the endpoint only when the yaml names none.
+
+These are the settings that have both forms:
+
+| Yaml key | Variable | When both are set |
+|---|---|---|
+| `presets:` | `LOOMCYCLE_PRESETS`, and the `--preset` flag | the flag, else the variable; the yaml's list is then not layered, and an advisory names both when they would give different stacks |
+| `storage.pg_dsn`, `storage.pg_max_open_conns`, `storage.pg_min_idle_conns` | `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_PG_MAX_OPEN_CONNS`, `LOOMCYCLE_PG_MIN_IDLE_CONNS` | the variable |
+| `storage.pg_automigrate` | `LOOMCYCLE_PG_AUTOMIGRATE` | the variable: `1` on, `0` off; any other non-empty value stops the load |
+| `storage.sqlmem_root`, `sqlmem_pg_dsn`, `sqlmem_quota_bytes`, `sqlmem_audit_mode`, `sqlmem_scope_ttl_ms`, `sqlmem_total_max_bytes`, `sqlmem_shared_schemas` | the `LOOMCYCLE_SQLMEM_*` variable of the same name | the variable |
+| `providers.ollama-local.options.num_ctx` | `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` | the variable; boot reports it when the two differ |
+| `auth.mode` | `LOOMCYCLE_AUTH_MODE` | exception 1: the stricter of the two; an advisory (boot, `validate`, `doctor`, reload) says which one decided when they differ, and `validate` prints the mode in force with its source |
+| `providers.<id>.base_url` | the provider's `*_BASE_URL` variable | exception 2: the yaml |
+
+For the numeric variables above, a value that is not a number is not set either: the yaml's value (or the default) stays.
+
+Every other setting has one plane. The settings that used to have a variable beside a yaml key (retention, provider options, timeout scaling, concurrency, the embedder limits, the two `hooks:` lists) are yaml-only now. A variable for one of them that is still set is reported at boot, and stops the boot when it is set to something other than the default while the yaml does not name its key (for the two `hooks:` lists: when it names an entry the yaml list lacks). [`SETTINGS_MIGRATION.md`](SETTINGS_MIGRATION.md) has the rule and the table of variables.
+
+Inside the yaml plane, files are layered and a later layer wins: the presets first, then every `*.yaml` in `LOOMCYCLE_CONFIG_DIR`, then each `--config` file in the order given. [9e](#9e-config-layering--stacking-multiple-config-files-rfc-an) has the merge rule.
+
+## The secrets file
+
+The secrets file is an environment file: lines of `NAME=value`, given to the loomcycle process as environment variables. It holds what must not be in a file that is reviewed, shared or committed: provider keys, `LOOMCYCLE_AUTH_TOKEN`, `LOOMCYCLE_SECRET_KEY`, database connection strings, collector credentials, and the values of the variables that your yaml names in keys such as `token_env`. Keep it readable by its owner only (mode `0600`) and out of version control. The yaml should never hold a secret: a key that needs one names the variable. Two keys do accept a literal connection string, `storage.pg_dsn` and `storage.sqlmem_pg_dsn`; use `LOOMCYCLE_PG_DSN` and `LOOMCYCLE_SQLMEM_PG_DSN` instead.
+
+The file has a different name in each install path, for historical reasons. The content and the rule are the same in all of them.
+
+| Install path | The secrets file | Who reads it | Non-secret environment file beside it |
+|---|---|---|---|
+| `loomcycle init --with-token` (a Homebrew or downloaded binary) | `auth.env`, beside `loomcycle.yaml` | loomcycle itself. The server and the commands that load the config read it at start, and set only the variables the environment does not already set | none; use your shell profile |
+| [`examples/profiles/personal/`](../examples/profiles/personal/) | `env.local` | Your shell, before you start loomcycle: `set -a; . ./env.local; set +a` | `env.insecure` |
+| [`examples/profiles/server/`](../examples/profiles/server/) | `env.local` | Docker Compose, with `--env-file env.local` on every command; the compose file passes each secret to the container by name | `env.insecure` |
+| A source checkout, started with `loomcycle.sh` or `loomcycle-mcp.sh` | `.env.local` | The launcher script, which sources it after `.env.insecure` | `.env.insecure` |
+| `docker-compose.example.yaml`, [`examples/cluster/`](../examples/cluster/) | `.env` | Docker Compose: automatically when the file is beside the compose file, otherwise with `--env-file` | none |
+| The cloud deployment kit, `cloud-deployment/` | `.env.secure` | `make`, which passes it to Docker Compose with `--env-file` | `.env.insecure` |
+| The TrueNAS app, [`deploy/truenas/`](../deploy/truenas/) | `loomcycle.secrets.env` | Docker, through the compose file's `env_file:` entry | the app's own settings |
+
+`auth.env` is the only one of these files that loomcycle reads itself. In every other install path the file is read by a shell, a launcher script or Docker, and loomcycle sees only the resulting environment. Any supervisor that can set environment variables can take that role: a systemd `EnvironmentFile=`, a container secret store, a CI secret store.
+
+[9c](#9c-environment-files--secrets-vs-config-envlocal--envinsecure) describes the two-file layout of a source checkout in detail, and how definitions refer to secrets by name.
+
+---
+
+**The reference starts here.** Sections 0 to 8 cover model routing: providers, tiers, the `models:` alias map, the `user_tiers:` overlay and the agent `.md` frontmatter. Section 9 covers validation and reload, and sections 9b to 9n each cover one area: authentication (9b), environment files (9c), volumes (9d), config layering (9e), presets (9f), then the features with their own yaml block, the environment variable reference (9l) and retention (9m). MCP servers are in [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md) and Postgres in [`POSTGRES.md`](POSTGRES.md).
 
 ---
 
@@ -50,7 +294,7 @@ The doc presents this as **four cookbook patterns**. Find the pattern matching y
 |---|---|---|---|
 | **Library `provider_priority`** | top-level `provider_priority:` | The walk order across providers when nothing else overrides | Always — every config sets this |
 | **Library `tiers`** | top-level `tiers:` | Per-task-tier (`low`/`middle`/`high`) ordered candidate lists | Always — every agent that uses `tier:` reads this |
-| **`models:` alias map** | top-level `models:` | Aliases like `sonnet → {anthropic, claude-sonnet-4-6}`. Reference by name in tier candidate lists (`- sonnet`), per-agent pins (`model: sonnet`), and per-agent `models[tier]` — define the model once, single-source the id | The recommended way to name models — always; raw `{provider, model}` pairs still work but repeat the id |
+| **`models:` alias map** | top-level `models:` | Aliases like `sonnet → {anthropic, claude-sonnet-5-5}`. Reference by name in tier candidate lists (`- sonnet`), per-agent pins (`model: sonnet`), and per-agent `models[tier]` — define the model once, single-source the id | The recommended way to name models — always; raw `{provider, model}` pairs still work but repeat the id |
 | **`user_tiers:` overlay** | top-level `user_tiers:` | Per-user-class policy (free/low/medium/high). Restricts which providers + models a user's runs may touch | When your app has multiple plan tiers OR multi-tenant cost/privacy boundaries |
 | **Per-agent `providers:`** | agent .md `providers:` | Replaces the priority order for THIS agent only | When one agent must skip certain providers (privacy, capability) |
 | **Per-agent `models[tier]:`** | agent .md `models:` | Replaces the tier candidate list for THIS agent | When one agent needs specific models in its tier slot |
@@ -126,7 +370,7 @@ func ValidateRoutingMode(provider, model, tier string) error {
 }
 ```
 
-If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's frontmatter, loomcycle refuses to start (`agent "<name>": cannot set both explicit provider/model pin and tier (pick one)`). Pick one path.
+If you set both `tier: middle` AND `model: claude-sonnet-5-5` in an agent's frontmatter, loomcycle refuses to start (`agent "<name>": cannot set both explicit provider/model pin and tier (pick one)`). Pick one path.
 
 ---
 
@@ -141,15 +385,15 @@ If you set both `tier: middle` AND `model: claude-sonnet-4-6` in an agent's fron
 # (tier candidates, agent pins). Editing one right-hand side re-points
 # every agent/tier that uses the alias.
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 provider_priority:
   - anthropic
 
 # Tier candidates are bare ALIASES (v0.35.0+) — `- haiku` is the same as
-# `- { provider: anthropic, model: claude-haiku-4-5 }`, single-sourced from
+# `- { provider: anthropic, model: claude-haiku-5-5 }`, single-sourced from
 # the models: map above. A raw {provider, model} pair still works too.
 tiers:
   low:    [haiku]
@@ -161,7 +405,7 @@ tiers:
 # sent to the provider verbatim, not resolved).
 defaults:
   provider: anthropic
-  model:    claude-sonnet-4-6
+  model:    claude-sonnet-5-5
 
 concurrency:
   max_concurrent_runs: 8
@@ -182,7 +426,7 @@ tools: [Read]
 You are an ATS filter...
 ```
 
-→ resolves to `(anthropic, claude-haiku-4-5)` via `tiers.low`.
+→ resolves to `(anthropic, claude-haiku-5-5)` via `tiers.low`.
 
 **Alias pin** — agent specifically wants sonnet:
 
@@ -196,7 +440,7 @@ tools: [Read]
 You rewrite text while preserving voice...
 ```
 
-→ resolves to `(anthropic, claude-sonnet-4-6)` via the `models:` alias.
+→ resolves to `(anthropic, claude-sonnet-5-5)` via the `models:` alias.
 
 **Full pin** — bypass aliases entirely:
 
@@ -204,7 +448,7 @@ You rewrite text while preserving voice...
 ---
 name: cv-rewriter
 provider: anthropic
-model: claude-sonnet-4-6
+model: claude-sonnet-5-5
 tools: [Read]
 ---
 ```
@@ -233,24 +477,24 @@ tiers:
   low:
     - { provider: deepseek,  model: deepseek-flash }      # cost floor
     - { provider: gemini,    model: gemini-2.5-flash-lite }
-    - { provider: anthropic, model: claude-haiku-4-5 }    # baseline
+    - { provider: anthropic, model: claude-haiku-5-5 }    # baseline
   middle:
     - { provider: deepseek,  model: deepseek-v4-pro }
     - { provider: gemini,    model: gemini-2.5-pro }
-    - { provider: anthropic, model: claude-sonnet-4-6 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }
   high:
     # Premium-privacy: anthropic only at high tier.
-    - { provider: anthropic, model: claude-sonnet-4-6 }
-    - { provider: anthropic, model: claude-opus-4-7 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }
+    - { provider: anthropic, model: claude-opus-5-5 }
 
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 defaults:
   provider: anthropic
-  model:    claude-sonnet-4-6
+  model:    claude-sonnet-5-5
 ```
 
 ### Cascade behaviour
@@ -281,7 +525,7 @@ tools: [Read]
 ---
 ```
 
-The resolver now walks `[anthropic]` only, so this agent always resolves to `claude-sonnet-4-6` (the only middle-tier anthropic candidate). It never touches DeepSeek or Gemini.
+The resolver now walks `[anthropic]` only, so this agent always resolves to `claude-sonnet-5-5` (the only middle-tier anthropic candidate). It never touches DeepSeek or Gemini.
 
 ### Agent .md: per-agent `models[tier]:` override
 
@@ -294,8 +538,8 @@ description: Deep analytical reasoning for the high-tier slot.
 tier: high
 models:
   high:
-    - { provider: anthropic, model: claude-opus-4-7 }
-    - { provider: anthropic, model: claude-sonnet-4-6 }   # fallback
+    - { provider: anthropic, model: claude-opus-5-5 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }   # fallback
 tools: [Read, WebFetch]
 ---
 ```
@@ -354,16 +598,16 @@ provider_priority:
 
 tiers:
   low:
-    - { provider: anthropic, model: claude-haiku-4-5 }
+    - { provider: anthropic, model: claude-haiku-5-5 }
   middle:
-    - { provider: anthropic, model: claude-sonnet-4-6 }
+    - { provider: anthropic, model: claude-sonnet-5-5 }
   high:
-    - { provider: anthropic, model: claude-opus-4-7 }
+    - { provider: anthropic, model: claude-opus-5-5 }
 
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 # v0.8.2+: per-user-class policy overlays.
 user_tiers:
@@ -377,31 +621,31 @@ user_tiers:
     provider_priority: [anthropic]
     fallback_on_error: true
     tiers:
-      low:    [{ provider: anthropic, model: claude-haiku-4-5 }]
-      middle: [{ provider: anthropic, model: claude-haiku-4-5 }]   # locked down
-      high:   [{ provider: anthropic, model: claude-haiku-4-5 }]   # locked down
+      low:    [{ provider: anthropic, model: claude-haiku-5-5 }]
+      middle: [{ provider: anthropic, model: claude-haiku-5-5 }]   # locked down
+      high:   [{ provider: anthropic, model: claude-haiku-5-5 }]   # locked down
 
   medium:
     # Medium users get haiku + sonnet (no opus).
     provider_priority: [anthropic]
     fallback_on_error: true
     tiers:
-      low:    [{ provider: anthropic, model: claude-haiku-4-5 }]
-      middle: [{ provider: anthropic, model: claude-sonnet-4-6 }]
-      high:   [{ provider: anthropic, model: claude-sonnet-4-6 }]   # cap at sonnet
+      low:    [{ provider: anthropic, model: claude-haiku-5-5 }]
+      middle: [{ provider: anthropic, model: claude-sonnet-5-5 }]
+      high:   [{ provider: anthropic, model: claude-sonnet-5-5 }]   # cap at sonnet
 
   high:
     # High users get the full menu.
     provider_priority: [anthropic]
     fallback_on_error: true
     tiers:
-      low:    [{ provider: anthropic, model: claude-haiku-4-5 }]
-      middle: [{ provider: anthropic, model: claude-sonnet-4-6 }]
-      high:   [{ provider: anthropic, model: claude-opus-4-7 }]
+      low:    [{ provider: anthropic, model: claude-haiku-5-5 }]
+      middle: [{ provider: anthropic, model: claude-sonnet-5-5 }]
+      high:   [{ provider: anthropic, model: claude-opus-5-5 }]
 
 defaults:
   provider: anthropic
-  model:    claude-sonnet-4-6
+  model:    claude-sonnet-5-5
 ```
 
 ### How the caller picks a user_tier
@@ -418,7 +662,7 @@ POST /v1/runs
 }
 ```
 
-Loomcycle looks up `user_tiers.free` in the operator yaml, applies the overlay, and resolves. With the yaml above, a `tier: middle` agent run on `user_tier: free` resolves to `claude-haiku-4-5`. The same agent on `user_tier: high` resolves to `claude-opus-4-7`. The agent .md file doesn't change; the user's plan controls the model.
+Loomcycle looks up `user_tiers.free` in the operator yaml, applies the overlay, and resolves. With the yaml above, a `tier: middle` agent run on `user_tier: free` resolves to `claude-haiku-5-5`. The same agent on `user_tier: high` resolves to `claude-opus-5-5`. The agent .md file doesn't change; the user's plan controls the model.
 
 ### Required: the `default` user_tier
 
@@ -462,20 +706,20 @@ tiers:
     - { provider: ollama,       model: glm-4.7 }
     - { provider: deepseek,     model: deepseek-flash }
     - { provider: gemini,       model: gemini-2.5-flash-lite }
-    - { provider: anthropic,    model: claude-haiku-4-5 }
+    - { provider: anthropic,    model: claude-haiku-5-5 }
   middle:
     - { provider: ollama,       model: deepseek-v4-pro }   # cloud-ollama subscription path
     - { provider: deepseek,     model: deepseek-v4-pro }   # per-token fallback
     - { provider: gemini,       model: gemini-2.5-pro }
-    - { provider: anthropic,    model: claude-sonnet-4-6 }
+    - { provider: anthropic,    model: claude-sonnet-5-5 }
   high:
     # Premium-privacy: anthropic only at library high.
-    - { provider: anthropic,    model: claude-sonnet-4-6 }
+    - { provider: anthropic,    model: claude-sonnet-5-5 }
 
 models:
-  haiku:  { provider: anthropic, model: claude-haiku-4-5 }
-  sonnet: { provider: anthropic, model: claude-sonnet-4-6 }
-  opus:   { provider: anthropic, model: claude-opus-4-7 }
+  haiku:  { provider: anthropic, model: claude-haiku-5-5 }
+  sonnet: { provider: anthropic, model: claude-sonnet-5-5 }
+  opus:   { provider: anthropic, model: claude-opus-5-5 }
 
 user_tiers:
   default:
@@ -512,16 +756,16 @@ user_tiers:
         - { provider: ollama,       model: glm-4.7 }
         - { provider: deepseek,     model: deepseek-flash }
         - { provider: gemini,       model: gemini-2.5-flash-lite }
-        - { provider: anthropic,    model: claude-haiku-4-5 }
+        - { provider: anthropic,    model: claude-haiku-5-5 }
       middle:
         - { provider: ollama,       model: deepseek-v4-pro }
         - { provider: deepseek,     model: deepseek-v4-pro }
         - { provider: gemini,       model: gemini-2.5-pro }
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
       high:
         - { provider: ollama,       model: deepseek-v4-pro }
         - { provider: deepseek,     model: deepseek-v4-pro }
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
 
   medium:
     # Same cost-floor pattern as low, plus anthropic-premium for high-tier agents.
@@ -533,16 +777,16 @@ user_tiers:
         - { provider: ollama,       model: glm-4.7 }
         - { provider: deepseek,     model: deepseek-flash }
         - { provider: gemini,       model: gemini-2.5-flash-lite }
-        - { provider: anthropic,    model: claude-haiku-4-5 }
+        - { provider: anthropic,    model: claude-haiku-5-5 }
       middle:
         - { provider: ollama,       model: deepseek-v4-pro }
         - { provider: deepseek,     model: deepseek-v4-pro }
         - { provider: gemini,       model: gemini-2.5-pro }
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
       high:
         # Medium tier IS allowed anthropic-premium for the high slot.
-        - { provider: anthropic,    model: claude-sonnet-4-6 }
-        - { provider: anthropic,    model: claude-opus-4-7 }
+        - { provider: anthropic,    model: claude-sonnet-5-5 }
+        - { provider: anthropic,    model: claude-opus-5-5 }
 
   high:
     # PREMIUM-PRIVACY. NO third-party LLMs touch user data, EVER.
@@ -1038,7 +1282,7 @@ model: sonnet
 ---
 ```
 
-No `tier:` — uses pin path. `model: sonnet` expands via `models:` alias to `(anthropic, claude-sonnet-4-6)`. This agent never falls through to a non-Anthropic provider.
+No `tier:` — uses pin path. `model: sonnet` expands via `models:` alias to `(anthropic, claude-sonnet-5-5)`. This agent never falls through to a non-Anthropic provider.
 
 **Defining skills inline (the top-level `skills:` map)** — instead of a `LOOMCYCLE_SKILLS_ROOT` directory of `SKILL.md` files, you can define skills directly in YAML, at the same level as `agents:` and `models:`:
 
@@ -1164,7 +1408,7 @@ Single reference table:
 | user_tier `tiers[tier]:` set (no agent override) | Replaces library `tiers[tier]` | `candidatesFor` in `internal/resolve/matrix.go` |
 | Discovered .md field AND operator-yaml `agents:` overlay both set | YAML non-zero wins; nil slice keeps .md value | `mergeAgentDef` in `internal/config/config.go` |
 | `model: sonnet` (alias) AND `models:` map has `sonnet` | Alias expands to `{provider, model}` from the map | `ExpandModelAlias` in `internal/config/config.go` |
-| `model: claude-sonnet-4-6` (literal, no alias) | Used as-is as the model ID | `ExpandModelAlias` in `internal/config/config.go` (a non-alias passes through) |
+| `model: claude-sonnet-5-5` (literal, no alias) | Used as-is as the model ID | `ExpandModelAlias` in `internal/config/config.go` (a non-alias passes through) |
 | Probe says provider unreachable | Resolver skips all that provider's candidates | `isAvailableLocked` in `internal/resolve/matrix.go` |
 | Provider has no API key set | Marked excluded, treated like unreachable | `runResolveProbeOnce` in `cmd/loomcycle/main.go` calls `SetExcluded` in `internal/resolve/matrix.go` |
 
@@ -2320,12 +2564,12 @@ The access-control management surface (the `LOOMCYCLE_ACL` row above lists its r
 
 ## 9c. Environment files — secrets vs. config (`.env.local` / `.env.insecure`)
 
-Secrets, what identifies this process on its host (listen address, data directory, public URL) and the security gates are environment variables; routing, agents, policy and tuning live in `loomcycle.yaml`. The **recommended** layout splits the variables across **two files** by sensitivity, so the secret-bearing half can be locked down independently of the operational half:
+Which settings are environment variables, and which value applies when a setting is in both planes, is in [Where each setting lives](#where-each-setting-lives). The name the secrets file has in each install path is in [The secrets file](#the-secrets-file). This section describes the layout a source checkout uses: the variables are split across **two files** by sensitivity, so that the half with secrets can be locked down independently of the half without:
 
 | File | Holds | Git posture | Safe to read/diff/share? |
 |---|---|---|---|
 | **`.env.local`** | **Secrets** — provider API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …), the sidecar bearer `LOOMCYCLE_AUTH_TOKEN`, `BRAVE_API_KEY`, the operator-token pepper, and the secret **values** behind any trigger-credential env names. | **git-ignored**, never committed | **No** — surfacing it leaks credentials |
-| **`.env.insecure`** | **Non-secret config** — `LOOMCYCLE_LISTEN_ADDR`, `LOOMCYCLE_DATA_DIR`, host allowlists, feature flags (metrics, webhooks, fallback), timeouts, and the trigger-credential allowlist **names** (`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` / `LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`). (Filesystem sandboxing moved to the YAML `volumes:` block — RFC AH Phase 3 retired the `READ_ROOT`/`WRITE_ROOT`/`BASH_CWD` env vars.) | git-ignored in *this* repo; commit it in your own deployment repo if you wish | **Yes** — nothing here is a secret |
+| **`.env.insecure`** | **Non-secret config** — `LOOMCYCLE_LISTEN_ADDR`, `LOOMCYCLE_DATA_DIR`, host allowlists, the security gates (`LOOMCYCLE_BASH_ENABLED`, `LOOMCYCLE_ACL`, …), sizes that follow the host, and the trigger-credential allowlist **names** (`LOOMCYCLE_WEBHOOKS_ENV_ALLOWLIST` / `LOOMCYCLE_SCHEDULER_ENV_ALLOWLIST`). (Filesystem sandboxing moved to the YAML `volumes:` block — RFC AH Phase 3 retired the `READ_ROOT`/`WRITE_ROOT`/`BASH_CWD` env vars.) | git-ignored in *this* repo; commit it in your own deployment repo if you wish | **Yes** — nothing here is a secret |
 
 **Why split.** The two halves have different blast radii. `.env.insecure` is the part you want in code review, in a config-management repo, in a teammate's hands when they ask "what's your sandbox set to?" — none of it is dangerous to expose. `.env.local` is the part one accidental `cat` in a screen-share burns. Keeping them in one file forces the whole thing to the secret tier and makes the operational config needlessly hard to share. The split also matches the security rule in `CLAUDE.md` — agents (and Claude Code) must never open `.env.local`, but `.env.insecure` is freely readable.
 
@@ -2339,26 +2583,6 @@ cp .env.insecure.example  .env.insecure   # then adjust paths/flags
 ```
 
 **How they're loaded.** `loomcycle.sh` and `loomcycle-mcp.sh` source **`.env.insecure` first, then `.env.local`** (config first, secrets last — so a stray config line can never shadow a secret) before exec'ing the binary; either file may be absent. Set `LOOMCYCLE_ENV_FILE=<path>` to collapse the pair back to a single explicit file (the pre-split single-file flow). loomcycle itself reads only process env — it does not parse these files — so any supervisor (systemd `EnvironmentFile=`, Docker `--env-file`, a CI secret store) can substitute for the launcher scripts.
-
-### When a setting is in both the environment and the yaml
-
-Most settings live in one plane only. For a setting that can be given in both, **the environment wins**: a variable that is set replaces the yaml's value, so one yaml can serve several hosts and a secret can stay out of it. One setting differs, on purpose: **`auth.mode` takes the stricter** of the yaml's value and `LOOMCYCLE_AUTH_MODE`, so neither can lower the other.
-
-These are the settings that have both forms:
-
-| Yaml key | Variable | When both are set |
-|---|---|---|
-| `storage.pg_dsn`, `storage.pg_max_open_conns`, `storage.pg_min_idle_conns` | `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_PG_MAX_OPEN_CONNS`, `LOOMCYCLE_PG_MIN_IDLE_CONNS` | the variable |
-| `storage.pg_automigrate` | `LOOMCYCLE_PG_AUTOMIGRATE` | the variable: `1` on, `0` off; any other non-empty value stops the load |
-| `storage.sqlmem_root`, `sqlmem_pg_dsn`, `sqlmem_quota_bytes`, `sqlmem_audit_mode`, `sqlmem_scope_ttl_ms`, `sqlmem_total_max_bytes`, `sqlmem_shared_schemas` | the `LOOMCYCLE_SQLMEM_*` variable of the same name | the variable |
-| `providers.ollama-local.options.num_ctx` | `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` | the variable; boot reports it when the two differ |
-| `auth.mode` | `LOOMCYCLE_AUTH_MODE` | the stricter of the two; an advisory (boot, `validate`, `doctor`, reload) says which one decided when they differ, and `validate` prints the mode in force with its source |
-
-A variable that is empty is not set. For the numeric ones above, neither is a value that is not a number: the yaml's value (or the default) stays.
-
-One exception remains: a provider's endpoint. A yaml `providers.<id>.base_url` is used in place of that provider's variable (`OLLAMA_BASE_URL`, `OLLAMA_CLOUD_BASE_URL`, `DEEPSEEK_BASE_URL`, `GEMINI_BASE_URL`), which only supplies the endpoint when the yaml names none.
-
-Everything else has one home. The settings that used to have a variable beside a yaml key (retention, provider options, timeout scaling, concurrency, the embedder limits, the two `hooks:` lists) are yaml-only now; a variable for one of them that is still set is reported at boot, and stops the boot when it is set to something other than the default while the yaml does not name its key (the two `hooks:` lists: when it names an entry the yaml list lacks). [`SETTINGS_MIGRATION.md`](SETTINGS_MIGRATION.md) has the rule and the per-variable table.
 
 **Secrets at rest (F32).** Two mechanisms keep resolved credentials out of the on-disk state:
 
@@ -2658,7 +2882,8 @@ layers every `*.yaml` in the directory.
 
 **The CLI loads what the server loads.** `loomcycle validate`, `doctor`,
 `agents list`, `migrate --config`, `tokens` and `audit` assemble their stack with
-the same function the server boots and reloads with: presets, the config dir, the
+the same function the server boots and reloads with: presets (the primary
+file's `presets:` key included, §9f), the config dir, the
 named files, section files and the `auth.env` beside the last file. `--config` is
 repeatable in each (and `validate` takes several paths), layered in the order
 given, as the server's own flag is. With no file named (`loomcycle validate`,
@@ -2666,10 +2891,10 @@ given, as the server's own flag is. With no file named (`loomcycle validate`,
 would: the auto-discovered file, or the presets and config dir alone. A file
 named explicitly must exist, as at boot. Each says which layers it loaded.
 
-Three exceptions:
+Two exceptions (`loomcycle hash agent --config <file>` is no longer one: it
+loads that file's whole stack, so an agent that comes from a preset the file
+names with `presets:` is found and hashes as deployed):
 
-- `loomcycle hash agent --config <file>` reads that one file, with no presets,
-  config dir, section files or `auth.env`.
 - `memory-calibrate`, `memory-eval-live` and `memory-eval-judge` use the same
   assembly without the auto-discovery: presets, the config dir and the files
   named with `--config`. They measure what ships, so a `loomcycle.yaml` that
@@ -2681,6 +2906,20 @@ Three exceptions:
   for them too, and is read as `0`: they do not migrate the schema under a
   value they cannot read. They stop, as the server does, on anything about
   which store is opened.
+
+A command given a file answers for a server started with `--config <that file>`
+under the same environment, not for a server started without it. Two things
+follow. The named file is the primary file, so a `presets:` key in the config
+directory's `loomcycle.yaml` is refused when you name another file, exactly as
+the server refuses it with that `--config`; to check a config-directory
+deployment as it runs, name nothing (`loomcycle validate`). And a server started
+with several `--config` flags is checked by naming the same files in the same
+order: `loomcycle validate a.yaml b.yaml`. `doctor --config` takes one file.
+
+Files are compared by resolved path. The config directory's `loomcycle.yaml`
+named again with `--config` (by a relative path, another spelling or a symlink)
+is one file: it is layered once, at its `--config` position, and stays the file
+`presets:` is read from.
 
 This pairs with runtime reload: edit a section file present at boot and
 `POST /v1/_config/reload` picks it up. **Adding or removing** a section file after
@@ -2745,8 +2984,9 @@ single file — layering only *assembles* a config, it can't produce one a singl
 file couldn't. A single `--config` is byte-identical to before. This is orthogonal
 to the `.env.local` / `.env.insecure` split (§9c) — that's env vars; this is YAML.
 Relative `system_prompt_file` paths resolve against the **last** file's directory
-(bundles should inline the prompt or use an absolute path). *(Deferred: an in-YAML
-`include:` directive and `loomcycle config render` — RFC AN Phases 2–3.)*
+(bundles should inline the prompt or use an absolute path). An `include:` key
+works only inside a preset built into the binary (§9f); in your own config file
+it stops the load.
 
 ---
 
@@ -2764,6 +3004,23 @@ base — and built-in agents — **without a source checkout**. Two kinds:
   authenticate with AWS credentials for `LOOMCYCLE_BEDROCK_REGION`, and routes
   nothing to them on its own (see "Amazon Bedrock with AWS credentials" in
   [PROVIDERS.md](PROVIDERS.md)).
+- **Profile presets** — `personal` and `server` each stand for a whole stack,
+  so a deployment selects one name instead of a list. A preset may list other
+  presets and bundles under a top-level `include:` key; these two do:
+
+  | Preset | Includes | Sets itself |
+  |---|---|---|
+  | `personal` | `base`, `local`, `chat`, `document-agent` | nothing: SQLite, SQL Memory on it and the loopback address are already the defaults |
+  | `server` | `base`, `chat`, `document-agent`, `memory` | `metrics: {enabled: true, collect_system: true}` |
+
+  Neither sets a volume, a sign-in gate, retention, a listen address or a
+  secret: those are a host path, a decision about who gets in or what is
+  deleted, or a credential, and stay yours. Their agents list tools such as
+  `Bash`, `HTTP` and `WebFetch`, which stay idle: the switches that enable
+  them (`LOOMCYCLE_BASH_ENABLED`, `LOOMCYCLE_HTTP_HOST_ALLOWLIST`) exist only
+  in the environment, so no preset can set them. [`examples/profiles/`](../examples/profiles/) has a complete
+  configuration for each, and `loomcycle init [--profile server]` writes its
+  yaml, which names the preset with `presets:` (below).
 - **Bundles** — a preset that *also* defines an agent and its skills **inline**
   (the top-level `skills:` map, §7). `document-agent` ships the `doc/manager`
   Document Assistant agent + its four skills — no skills directory, no
@@ -3036,8 +3293,9 @@ reserved; wire a publisher before wiring a consumer.
 List + read them (works on any install, no source tree):
 
 ```sh
-loomcycle presets                  # name / kind / description table
+loomcycle presets                  # name / kind / includes / description table
 loomcycle presets show base        # print a unit's YAML (read or fork it)
+loomcycle presets show server      # the same, led by the stack it expands to
 loomcycle env-template             # print the embedded .env.insecure.example
 ```
 
@@ -3045,9 +3303,42 @@ On a no-shell deployment the same three are read-only in the **Web UI Settings
 hub** (the top-right gear → **Presets**, admin-only) — backed by
 `GET /v1/_presets`, `/v1/_presets/{name}`, `/v1/_env_template`.
 
-**Selecting them.** `LOOMCYCLE_PRESETS=base,document-agent` (comma-separated,
-ordered) — or the repeatable `--preset` flag (flags override the env list) —
-layers the named units as the **base** of the config stack, under your files:
+**Selecting them.** Three ways, the first that is set wins: the repeatable
+`--preset` flag; `LOOMCYCLE_PRESETS=base,document-agent` (comma-separated,
+ordered); a top-level `presets:` list in your primary config file. Each layers
+the named units as the **base** of the config stack, under your files:
+
+```yaml
+# loomcycle.yaml
+presets: [personal]
+```
+
+- **Which file.** `presets:` is read from one file: the last `--config`, else
+  the auto-discovered `loomcycle.yaml`, else `loomcycle.yaml` in
+  `LOOMCYCLE_CONFIG_DIR`. In any other layer (another file of the config
+  directory, an earlier `--config`, a `loomcycle.*.yaml` section file) it stops
+  the load and names the file, so the selection never depends on layer order.
+- **The environment wins**, as for every setting that has both forms. When
+  `--preset` or `LOOMCYCLE_PRESETS` is set, the file's list is not layered; if
+  the two would give different stacks, an advisory at boot, in `loomcycle
+  validate` and in `loomcycle doctor` names both.
+- **Read at every load.** A config reload re-reads the key.
+- **Trust.** A preset named in the file is trusted exactly as the file is,
+  because a preset is yaml and yaml carries things that matter: agents and
+  their tools, MCP servers, sign-in clients. What a preset cannot do is turn
+  on one of the switches that exist only in the environment: Bash, dynamic
+  stdio MCP servers, privileged tools for MCP-registered agents, the HTTP
+  tools' host allowlist, the operator-key restriction, the access-control
+  mode, open mode. None has a yaml form, so no layer of yaml can set one. The
+  units built into the binary are further held, by a test, to a closed list
+  of keys: none sets `volumes`, `principals`, `retention`, `storage`, `hooks`,
+  access-control lists, or anything under `auth` except `auth.clients` (the
+  `loomboard` preset registers its desktop app as a sign-in client; that
+  admits no one without a gate). A name the binary does not carry stops the
+  load, naming the key and the file.
+- The key selects layers; it is not a setting. It does not appear in the
+  merged config and does not count as an override under
+  `LOOMCYCLE_CONFIG_STRICT`.
 
 ```sh
 # OAuth-first base + the Document Assistant, under your thin overlay:
@@ -3057,10 +3348,32 @@ LOOMCYCLE_PRESETS=base,oauth,document-agent loomcycle --config ~/.config/loomcyc
 Because `oauth` / `local` `!prepend` (§9e), `base,oauth` resolves to OAuth on top
 with base's providers retained as fallback — no restatement of the matrix.
 
+**`include:`.** A preset that lists others is expanded where it is selected:
+its includes are layered first, depth-first and in the order written, then the
+preset itself, so its own keys win over what it includes. Each unit is layered
+once, and a preset decides the order of what it stands for: a unit you select
+by name that a preset selected after it also includes is layered where that
+preset places it, and an advisory says so. `LOOMCYCLE_PRESETS=local,personal`
+therefore layers `base, local, chat, document-agent, personal`, the same as
+`personal` alone (were `local` layered first, `base`'s plain tier lists would
+replace what `local` prepends). A unit a preset selected earlier already
+brought in is not layered again: `server,chat` gives one `chat` layer, under
+`server`. A unit no selected preset includes keeps its written position. To
+override a bundle a profile includes, do it in your own config file, which is
+layered over every preset. An include cycle or an unknown name stops the load and
+names the chain. The boot log line `config: layering N embedded
+preset(s)/bundle(s) as base: …` names the layers after expansion.
+
+`include:` works only inside a preset built into the binary. In your own
+config file it is refused with an error that says so: the schema ignores an
+unknown top-level key, so an `include: [base]` there would load nothing and
+say nothing. Compose your own stack with `presets:` (or `LOOMCYCLE_PRESETS`)
+and `--config`.
+
 The **full precedence chain** (base → top, last wins, RFC AN merge):
 
 ```
-embedded presets (LOOMCYCLE_PRESETS, in order)
+embedded presets (--preset, else LOOMCYCLE_PRESETS, else presets: in the primary file; in order)
   → LOOMCYCLE_CONFIG_DIR/*.yaml   (a dir of layers, lexical order)
   → --config flags                (your authoritative overlay, wins)
 ```
@@ -3089,9 +3402,9 @@ ceiling, or swap a skill body by re-declaring its key). Selecting presets with
 **no config file at all** boots from the embedded base alone (the bare-start
 case). An unknown unit name is a **fatal** error listing the available names.
 
-**Opt-in.** With `LOOMCYCLE_PRESETS` unset and no `--preset`, boot is exactly as
-before (no presets) — embedded presets are a deliberate opt-in, not a silent new
-base. `document-agent` needs SQL Memory + a
+**Opt-in.** With `LOOMCYCLE_PRESETS` unset, no `--preset` and no `presets:` in
+the primary file, boot is exactly as before (no presets) — embedded presets are
+a deliberate opt-in, not a silent new base. `document-agent` needs SQL Memory + a
 `middle` tier to actually run; absent those it's a registered-but-idle def.
 
 ---
@@ -4069,7 +4382,7 @@ The audit stream's retention is separate and stays in the environment (`LOOMCYCL
 
 ## 9n. Conversion workers (`conversion:`)
 
-File conversion is the one kind of work whose memory is set by what someone put in a file. One Office document at every extraction cap can take about 700 MiB. By default it runs inside the runtime's own process, so a file that exhausts memory takes every run on the replica with it. `conversion.mode: local` moves extraction into **conversion workers**: child processes of the same binary that the runtime starts, supervises and restarts (RFC GO).
+File conversion is the one kind of work whose memory is set by what someone put in a file. One Office document at every extraction cap can take about 700 MiB. By default it runs inside the runtime's own process, so a file that exhausts memory takes every run on the replica with it. `conversion.mode: local` moves every conversion into **conversion workers**: child processes of the same binary that the runtime starts, supervises and restarts (RFC GO).
 
 ```yaml
 conversion:
@@ -4084,8 +4397,9 @@ conversion:
 What `local` does:
 
 - The runtime listens on a Unix socket in a private directory (mode 0700) and starts `local.workers` copies of itself as `loomcycle worker`. Each child has `GOMEMLIMIT` set from `local.memory_limit_mb`, and on Linux raises its own `oom_score_adj` to 1000, so that in a shared cgroup the kernel kills a worker before the runtime. A child exits when the runtime does.
-- A child gets a minimal environment: `PATH`, `HOME`, the temp-directory and locale variables, its token and its memory limit. It holds no provider key, no store connection and no setting of the runtime's, and it is never given a path. The runtime keeps every grant, fence and inbox write, and sends the worker only the file's bytes, which it spools to its own temp directory.
-- `File op=extract` and the PDF page cuts of an OCR pass run on the workers. Page rendering, media conversion, speech encoding and image re-encoding still run in the runtime in this release.
+- A child gets a minimal environment: `PATH`, `HOME`, the temp-directory and locale variables, its token, its memory limit, and the runtime's helper command lines (`transcription.ocr.rasterize.command`, `transcription.stt.media.command`, `speech.encode.command`, and `LOOMCYCLE_HELPER_WRAPPER`). It holds no provider key, no store connection and no setting of the runtime's, and it is never given a path. The runtime keeps every grant, fence and inbox write, and sends the worker only the file's bytes, which it spools to its own temp directory.
+- Everything that parses a file runs on the workers: `File op=extract`, the page cuts and page rendering of an OCR pass, the conversion of a recording for speech-to-text (the `File` tool and `/v1/audio/transcriptions`), the encoding of synthesized speech (`/v1/audio/speech`), and the re-encoding of an image a vision model must have scaled. The runtime still makes the model calls; a worker only converts.
+- A helper runs in the worker's scratch directory (`LOOMCYCLE_WORKER_SCRATCH`), not in the run's inbox, under the time bound the runtime sets for its job (`transcription.stt.timeout_s`, `speech.timeout_s`, two minutes for an OCR page). A `LOOMCYCLE_HELPER_WRAPPER` sandbox must keep that directory writable rather than the inbox root. A worker offers a helper's jobs only when the helper's program is found on its `PATH`; when no attached worker has it, the call is refused saying the program is not installed where the workers run. A change to a helper setting reaches the workers when they next start.
 - A worker that dies mid-job fails that one call, and the file is quarantined for `quarantine_ttl_s`: it is refused with "crashed the file converter" instead of being sent to the next worker. A dead child is started again with backoff (1 s, doubling to 30 s). With every worker busy, a call waits `queue_wait_s` and is then answered as a busy server the model may retry. With no worker attached at all, the call is refused. The runtime never falls back to converting in its own process.
 - `LOOMCYCLE_EXTRACT_CONCURRENCY` still bounds `op=import`; extraction is bounded by the workers. The `loomcycle_extractions_*` gauges then report the pool.
 
@@ -4097,7 +4411,13 @@ The worker reads these variables. In `local` mode the runtime sets them for its 
 |---|---|---|
 | `LOOMCYCLE_WORKER_TOKEN` | — | The secret a worker presents to the dispatcher, compared in constant time. In `local` mode the runtime makes a new one at each start and passes it to its children only. |
 | `LOOMCYCLE_WORKER_SLOTS` | 1 | Conversions one worker runs at once, 1–64. One means a worker that dies takes exactly the job that killed it. |
-| `LOOMCYCLE_WORKER_SCRATCH` | the system temp directory | Where a worker spools each job's input while it converts it. Never shared with the runtime. |
+| `LOOMCYCLE_WORKER_SCRATCH` | the system temp directory | Where a worker spools each job's input and runs its helpers. Never shared with the runtime. |
+| `LOOMCYCLE_WORKER_RASTERIZE_COMMAND` | — | The OCR page rasteriser this worker runs, written as `transcription.ocr.rasterize.command`. Unset: the worker takes no page rendering. |
+| `LOOMCYCLE_WORKER_MEDIA_COMMAND` | — | The recording converter, written as `transcription.stt.media.command`. Unset: no media conversion. |
+| `LOOMCYCLE_WORKER_ENCODE_COMMAND` | — | The speech encoder, written as `speech.encode.command`. Unset: no encoding. |
+| `LOOMCYCLE_HELPER_WRAPPER` | — | The sandbox every helper runs under, as for the runtime (§ transcription). |
+
+A worker reads its helper commands from its own environment and never from the dispatcher: a job says what to convert, never what to run.
 
 ## 10. Cross-references
 

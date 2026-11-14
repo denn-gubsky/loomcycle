@@ -62,6 +62,19 @@ type Options struct {
 	QuarantineTTL time.Duration
 	// JobTimeout bounds one job, counted from when a worker accepts it.
 	JobTimeout time.Duration
+	// KindTimeouts bound the jobs of a kind in place of JobTimeout: a helper
+	// job runs under its helper's own setting (transcription.stt.timeout_s,
+	// speech.timeout_s), which the worker is told with the job.
+	KindTimeouts map[workerpb.JobKind]time.Duration
+	// Scratch is the directory a converted recording is spooled to in the
+	// core; empty is the system temp directory.
+	Scratch string
+	// Configured are the helper labels (render, media, encode) whose command
+	// the core's own configuration sets. A helper job no worker can run is
+	// refused as not configured when its label is absent here (the operator
+	// has a setting to make), and as a program missing on the workers when
+	// it is present. nil treats every helper as configured.
+	Configured map[string]bool
 	// HeartbeatTimeout drops a worker that has sent nothing for this long
 	// (three missed heartbeats).
 	HeartbeatTimeout time.Duration
@@ -372,6 +385,14 @@ func (d *Dispatcher) dropIdleLocked(s *slot) {
 	}
 }
 
+// timeoutFor is the time bound of a job of kind.
+func (d *Dispatcher) timeoutFor(kind workerpb.JobKind) time.Duration {
+	if t := d.opt.KindTimeouts[kind]; t > 0 {
+		return t
+	}
+	return d.opt.JobTimeout
+}
+
 // errNoSlot is the wait for an idle slot running out.
 var errNoSlot = fmt.Errorf("%w: every conversion worker stayed busy", convert.ErrBusy)
 
@@ -380,7 +401,16 @@ var errNoSlot = fmt.Errorf("%w: every conversion worker stayed busy", convert.Er
 func (d *Dispatcher) acquire(ctx context.Context, label string) (*slot, error) {
 	d.mu.Lock()
 	if !d.canRunLocked(label) {
+		attached := len(d.workers) > 0
 		d.mu.Unlock()
+		if attached && wire.HelperLabel(label) && d.opt.Configured != nil && !d.opt.Configured[label] {
+			return nil, convert.ErrNotConfigured
+		}
+		if attached && wire.HelperLabel(label) {
+			// Workers are up, and none has this helper's program: an install
+			// to fix where the workers run, not a pool that is down.
+			return nil, fmt.Errorf("%w (%s): install it where the workers run (the loomcycle-worker image carries ffmpeg and pdftoppm)", convert.ErrNoHelper, label)
+		}
 		return nil, convert.ErrNoWorkers
 	}
 	for i, s := range d.idle {
