@@ -130,7 +130,7 @@ semantics from the HTTP API:
 | present | `["foo.com"]` | Intersection with operator's static allowlist. |
 
 `allowed_hosts` is **caller-authoritative** — a trust boundary, never
-filled in by a model. See [TOOLS.md](TOOLS.md#host-policy) for the
+filled in by a model. See [TOOLS.md](TOOLS.md#per-request-url-allowlist-http--webfetch--websearch) for the
 underlying policy layer.
 
 ## Access-control management RPCs
@@ -286,8 +286,8 @@ clusters:
 Bind loomcycle to loopback (`LOOMCYCLE_GRPC_ADDR=127.0.0.1:8788`) when
 TLS is terminated by a sidecar so external clients can't bypass it.
 
-Native TLS in the loomcycle binary is a v1.0 consideration tracked in
-[`doc-internal/PLAN.md`](../doc-internal/PLAN.md); not a v0.5.x deliverable.
+The loomcycle binary has no native TLS for the gRPC listener; terminate
+it in front of the listener, as above.
 
 ## Adapters
 
@@ -410,7 +410,6 @@ running `protoc` on a fresh checkout.
 ## Limitations and open work
 
 - **No native TLS in the binary.** Terminate at ingress / sidecar.
-  Native TLS is v1.0.
 - **No reflection service.** `grpcurl` works against the proto file
   directly but won't autodiscover the schema. Reflection is a 3-line
   add when an operator asks for it.
@@ -420,6 +419,7 @@ running `protoc` on a fresh checkout.
 - **TS gRPC adapter not yet shipped.** TS callers stay on HTTP+SSE
   via `@loomcycle/client`. Tracked in [`PLAN.md`](PLAN.md).
 
-For the design history (why gRPC was added, the runner-extraction
-refactor, the synthetic-frame envelope choice), see
-`doc-internal/PLAN.md`.
+For what the first gRPC release added (the wire-agnostic runner seam,
+the synthetic registration frames), see the v0.5.5 section of
+[`PLAN.md`](PLAN.md#v055--earlier). The decision history behind it is
+kept outside this repository.

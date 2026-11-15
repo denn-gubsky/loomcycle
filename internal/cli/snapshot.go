@@ -90,7 +90,7 @@ func RunSnapshot(args []string, stdout, stderr io.Writer) int {
 	description := fs.String("description", "", "free-text label stored on snapshots.label (operator's marker)")
 	includeHistory := fs.Bool("include-history", false, "also capture interaction_history (large; opt-in)")
 	since := fs.String("since", "", "RFC3339 timestamp; only honoured with --include-history")
-	maxBytes := fs.Int64("max-bytes", 0, "override LOOMCYCLE_SNAPSHOT_MAX_BYTES for this call; 0 ⇒ server default")
+	maxBytes := fs.Int64("max-bytes", 0, "size cap for this snapshot in bytes; 0 ⇒ the server default, 512 MiB")
 	httpTimeout := fs.Duration("http-timeout", 5*time.Minute, "client-side HTTP timeout (capture reads every section; large stores need this generous)")
 	if err := fs.Parse(args); err != nil {
 		return 2

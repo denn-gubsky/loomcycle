@@ -625,8 +625,8 @@ type CreateSnapshotRequest struct {
 	IncludeHistory bool       `json:"include_history,omitempty"`
 	SinceTS        *time.Time `json:"since_ts,omitempty"`
 	Description    string     `json:"description,omitempty"`
-	// MaxBytes overrides the operator's LOOMCYCLE_SNAPSHOT_MAX_BYTES
-	// cap for this call. 0 = use the default.
+	// MaxBytes is the size cap for this call, in bytes. 0 = use the
+	// default, 512 MiB.
 	MaxBytes int64 `json:"max_bytes,omitempty"`
 }
 

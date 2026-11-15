@@ -30,7 +30,7 @@ import (
 //   POST   /v1/_snapshots                    — capture a new snapshot
 //     body: {"label?": "...", "include_history?": false, "include_history_since?": "RFC3339"}
 //     → 201 {"id": "snap_...", "byte_size": N, "created_at": "..."}
-//     → 413 if exceeds LOOMCYCLE_SNAPSHOT_MAX_BYTES (or operator-supplied cap)
+//     → 413 if exceeds the size cap (the body's max_bytes; 512 MiB when unset)
 //
 //   GET    /v1/_snapshots?label_contains=&limit=200
 //     → 200 {"entries": [...metadata only, no JSON payload...]}

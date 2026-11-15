@@ -803,8 +803,8 @@ class LoomcycleClient:
         ``get_snapshot`` / ``export_snapshot``.
 
         ``since_ts`` is RFC3339; only honoured when ``include_history``
-        is True. ``max_bytes`` overrides the server's
-        LOOMCYCLE_SNAPSHOT_MAX_BYTES cap for this call.
+        is True. ``max_bytes`` is the size cap for this call, in bytes
+        (0 = the default, 512 MiB).
 
         Raises ``SnapshotTooLargeError`` (ResourceExhausted) when the
         envelope exceeds the cap."""

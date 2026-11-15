@@ -12926,7 +12926,7 @@ type CreateSnapshotRequest struct {
 	IncludeHistory bool                   `protobuf:"varint,1,opt,name=include_history,json=includeHistory,proto3" json:"include_history,omitempty"`
 	SinceTs        *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=since_ts,json=sinceTs,proto3" json:"since_ts,omitempty"`
 	Description    string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
-	// Override LOOMCYCLE_SNAPSHOT_MAX_BYTES for this call. 0 = default.
+	// The size cap for this call, in bytes. 0 = the default, 512 MiB.
 	MaxBytes      int64 `protobuf:"varint,4,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
