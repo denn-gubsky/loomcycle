@@ -8,13 +8,44 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
-## Unreleased (on `main` after v1.153.0)
+## What's in v1.154.0
 
-*Not tagged yet. These lines move into the next release's entry when it is cut.*
+*File conversion leaves the runtime's process by default on Linux (RFC GO P4). With no `conversion.mode`, a Linux runtime sends every extraction, OCR page render, recording conversion, speech encoding and image re-encoding to child worker processes with a memory limit, so a hostile or oversized file kills one worker instead of the runtime. The runtime images are distroless again: `loomcycle-media` is no longer published, and ffmpeg and pdftoppm live in the `loomcycle-worker` image. The cloud example and the TrueNAS app run worker containers. Also here: an agent's override lock, no-trace retention and read-only tool modes now hold across its whole version history; knowledge-base rulings respect relation characteristics; and the `kb/walker` agent widens an overview until the facet counts are covered.*
+
+The v1.154 line: #2638 to #2649.
+- `@loomcycle/client` 1.154.0 and the Python adapter 1.154.0 for version lockstep; neither surface changed.
+- No schema migration.
+- `loomcycle-media` is no longer published; its last tag is 1.153.0. `loomcycle-worker` is published on every release tag, patches included (amd64; a minor also has arm64).
+- Code-js ABI 1.4.0 (additive: `input.trusted_prompt`).
 
 ### Upgrade notes
 
+- **Linux runtimes convert files in worker processes (#2632).** A config with no `conversion.mode` now means `local` on Linux and `inprocess` elsewhere. Each worker is a child of the same binary, with its own memory limit. Set `conversion.mode: inprocess` to keep the old behaviour. The workers need the helper programs where they run: in a distroless image, voice-note conversion, speech encoding and OCR page rendering fail with "the program is not installed where the workers run", as they did before in that image.
+- **`loomcycle-media` is retired (#2632).** A deployment that ran it for ffmpeg and pdftoppm moves the runtime to `loomcycle-browser` (or `loomcycle`) and runs `loomcycle-worker` containers with `conversion.mode: remote`; see [`docs/WORKERS.md`](docs/WORKERS.md). The endpoint needs `LOOMCYCLE_WORKER_TOKEN` (at least 32 characters) on the runtime and the workers.
+- **In remote mode a worker runs its own helper commands (#2649).** `LOOMCYCLE_WORKER_MEDIA_COMMAND`, `LOOMCYCLE_WORKER_ENCODE_COMMAND` and `LOOMCYCLE_WORKER_RASTERIZE_COMMAND` on the worker decide what runs (the image sets plain defaults). The runtime's `transcription.stt.media`, `speech.encode` and `transcription.ocr.rasterize` only switch the conversion on. A hardened command in the runtime's yaml has to be set on the workers as well.
+- **The cloud example (#2632, #2640, #2649).** The runtime and migration run `loomcycle-browser`; two `conversion-worker` containers share the runtime's network namespace and attach on `127.0.0.1:7788`. Add `LOOMCYCLE_WORKER_TOKEN` to `.env.secure` before deploying this release, and reinstall `deploy/loomcycle-cloud-deploy` if you use it, since the old copy waits for a `loomcycle-media` image that never appears ([`cloud-deployment/INSTALL.md`](cloud-deployment/INSTALL.md), "Upgrading to conversion workers"). Its tiers no longer list Claude models and its user tiers no longer list `anthropic`, so the operator's Anthropic key is reached only by an agent pinned to a Claude model.
+- **The TrueNAS app (#2641).** The compose files and overlays run two `conversion-worker` containers on an internal network, with a second env file that holds only the worker token. Bump the runtime, worker and sidecar images together; [`deploy/truenas/INSTALL.md`](deploy/truenas/INSTALL.md) Phase 8 covers moving an existing install.
+- **Removing an agent's override lock is an operator action (#2645, #2647).** A fork, a promote or a new create that would leave a name with `allow_overrides: false` running unlocked is refused unless the caller is the operator plane. A run never qualifies. Each lift is audited as `allow_overrides_lock_removed`, and refused if the audit record cannot be written. Authors who used to drop the lock by creating the agent again now get a refusal.
 - **The `oauth` preset names the models `base` names (#2639).** `oauth-haiku`, `oauth-sonnet` and `oauth-opus` name `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`; they named `claude-haiku-4-5`, `claude-sonnet-4-6` and `claude-opus-4-7`. A deployment that selects `oauth` routes to different models after the upgrade, and a forced `tool_choice` is dropped on the sonnet and opus aliases, as it already is for `base`. To keep a model, restate its alias in your own config. This was not tested against the OAuth endpoint, which needs an interactive `loomcycle anthropic login`; see [`docs/SETTINGS_MIGRATION.md`](docs/SETTINGS_MIGRATION.md) §4.19.
+
+### Conversion workers (RFC GO P4: #2632, #2641, #2649)
+
+- **Default.** `local` on Linux with no `conversion.mode`; other platforms stay in process.
+- **Images.** The runtime images are distroless. The patch-release job builds `loomcycle-worker` in place of `loomcycle-media`, signed and attested, so workers follow every release.
+- **Deployments.** The cloud example and the TrueNAS app run worker containers in remote mode. A worker that crashes is replaced, the call it held fails, and the file that killed it is refused for an hour.
+
+### Agent definitions (#2645, #2647, #2648)
+
+- **The override lock holds across the lineage.** `allow_overrides: false` counts when the static definition, the active version or the newest version sets it, and for a tenant that runs the shared version, the shared lineage too. A stored version that does not parse counts as locked.
+- **No-trace and read-only tool modes follow the same lineage.** A tenant's first version of a shared agent can no longer drop the shared version's `retention: none` or its read `tool_modes`.
+- **Team-local agents.** A TeamDef create, fork or promote keeps a local agent's override lock, `retention: none` and read modes, judged against the team's active and newest versions that declare it. `verify` reports the refusal; the audit record is written only on create, fork and promote.
+
+### Knowledge base (#2642, #2644, #2646)
+
+- **Rulings respect relation characteristics.** Accepting a proposal, by hand, in bulk, by a review policy or by the judge, runs the `@functional` / `@asymmetric` checks `link_chunks` runs, and refuses with `characteristic_violation`.
+- **Accepting a revision retires its original** in the same transaction; a revert of the ruling restores both.
+- **`kb/ask` forwards the caller's trusted framing** ("answer in one paragraph") to `kb/search` and `kb/walker` beside an untrusted question, through the new code-js field `input.trusted_prompt`. The question itself still goes only by reference.
+- **`kb/walker` widens an overview** until the facet counts are covered or its budget ends, answers a fact only from a passage it opened, and ends with a `COVERAGE:` line. Not yet measured.
 
 ### Fixes
 
