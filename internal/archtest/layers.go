@@ -106,6 +106,9 @@ var layers = []layer{
 			"internal/errkind",
 			"internal/fence",
 			"internal/files/extract",
+			// Documents written back into files (RFC GR): the render model and
+			// its writers, pure over a tree the core builds.
+			"internal/files/render",
 			"internal/gitsource",
 			// The help corpus embedded in the binary and its pure parsers (RFC
 			// GL P4): data only, so config can validate {{help:<topic>}}
@@ -302,6 +305,7 @@ var allowedSideways = []subsystemEdge{
 	// any L0 package may start its goroutines through it.
 	{"internal/concurrency", "internal/safego"},
 	{"internal/convert", "internal/files/extract"},
+	{"internal/convert", "internal/files/render"},
 	{"internal/convert", "internal/transcribe/helper"},
 	{"internal/kms", "internal/awsauth"},
 	{"internal/logging", "internal/redact"},
