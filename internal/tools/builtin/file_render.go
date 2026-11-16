@@ -1,0 +1,577 @@
+package builtin
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"path"
+	"path/filepath"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
+)
+
+// File op=render (RFC GR §4.3): a Document — or a Markdown file — written as
+// a file of another format, into the inbox (rendered/<name>.<ext>) or a
+// volume of the run's. The model gets a reference, never the bytes; keep,
+// upload and the inbox download route take the file on from there.
+//
+// The document is read through Document's own dispatch (document_render.go),
+// as the caller, with every gate an export_md passes. The file is written by
+// the conversion workers when the server has them (RFC GO), else here.
+
+// renderInboxDir is the inbox folder renders are written to.
+const renderInboxDir = "rendered"
+
+// renderFormatsLater are formats RFC GR adds in later phases.
+var renderFormatsLater = map[string]string{"docx": "P1", "pdf": "P2"}
+
+func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error) {
+	format := strings.ToLower(strings.TrimSpace(in.Format))
+	switch {
+	case format == "":
+		return errValidation("render: missing required field: format", "Pass format: md or html."), nil
+	case renderFormatsLater[format] != "":
+		return errBusiness("render: "+format+" is not available on this server yet", "Render as html or md for now."), nil
+	case !render.Supported(format):
+		return errValidation(fmt.Sprintf("render: unknown format %q", in.Format), "Pass format: md or html."), nil
+	}
+	sources := 0
+	for _, s := range []string{in.Document, in.DocPath, in.Path} {
+		if strings.TrimSpace(s) != "" {
+			sources++
+		}
+	}
+	if sources != 1 {
+		return errValidation("render: pass exactly one of document, doc_path or path",
+			"document is a document id, doc_path its Path-tree name, path a Markdown file in the inbox or a volume."), nil
+	}
+	if in.Chunk != "" && in.Path != "" {
+		return errValidation("render: chunk names a part of a document, and path is a file", "Drop chunk, or render a document."), nil
+	}
+	switch in.PageSize {
+	case "", "a4", "letter":
+	default:
+		return errValidation("render: page_size must be a4 or letter", ""), nil
+	}
+	dest, res, ok := renderDestination(ctx, in)
+	if !ok {
+		return res, nil
+	}
+	job := &renderJob{f: f, in: in, format: format, dest: dest, date: time.Now().UTC().Format("2006-01-02")}
+	if in.Path != "" {
+		return job.fromFile(ctx)
+	}
+	return job.fromDocument(ctx)
+}
+
+// renderDest is where a render goes: the inbox (to empty) or a volume file.
+type renderDest struct {
+	toVolume bool
+	to       dataRef
+}
+
+func renderDestination(ctx context.Context, in fileInput) (renderDest, tools.Result, bool) {
+	if strings.TrimSpace(in.To) == "" {
+		if !inbox.Available(ctx) {
+			return renderDest{}, errBusiness("render: this run cannot keep files, so there is nowhere to write the file",
+				"Pass to as a file in one of your read-write volumes, or ask an operator to configure the run's inbox."), false
+		}
+		return renderDest{}, tools.Result{}, true
+	}
+	to, err := parseDataRef(strings.TrimSpace(in.To))
+	if err != nil || to.kind != refVolume {
+		return renderDest{}, errValidation("render: to must be a volume reference", "Pass to, e.g. volume:reports:2026/minutes.html, or leave it out to write to the inbox."), false
+	}
+	if to.volume == inbox.Name {
+		return renderDest{}, errValidation("render: to is in the inbox; leave to out to write there", ""), false
+	}
+	return renderDest{toVolume: true, to: to}, tools.Result{}, true
+}
+
+// renderJob is one render call.
+type renderJob struct {
+	f      *File
+	in     fileInput
+	format string
+	dest   renderDest
+	date   string
+}
+
+func (j *renderJob) options() render.Options {
+	return render.Options{TOC: j.in.TOC, TitlePage: j.in.TitlePage, PageSize: j.in.PageSize}
+}
+
+func (j *renderJob) provenance() bool { return j.in.Provenance == nil || *j.in.Provenance }
+
+// fromDocument renders a Document, read as Document op=export_md reads it.
+func (j *renderJob) fromDocument(ctx context.Context) (tools.Result, error) {
+	f, in := j.f, j.in
+	if f.Docs == nil {
+		return errBusiness("render: documents are not available here", "An operator must enable SQL Memory for the Document tool."), nil
+	}
+	scope := in.Scope
+	if scope == "" {
+		scope = "user"
+	}
+	switch scope {
+	case "agent", "user", "tenant":
+	default:
+		return errValidation("render: scope must be agent, user or tenant", ""), nil
+	}
+	call := map[string]any{"op": "export_md", "scope": scope, "include_metadata": false}
+	if in.Document != "" {
+		call["document_id"] = in.Document
+	} else {
+		call["path"] = in.DocPath
+	}
+	if res, ok := fileDocumentReadGrant(ctx, call); !ok {
+		return res, nil
+	}
+	raw, _ := json.Marshal(call)
+	noMeta := false
+	din := docInput{Op: "export_md", Scope: scope, DocumentID: in.Document, Path: in.DocPath, IncludeMetadata: &noMeta,
+		render: &renderRequest{chunkID: in.Chunk, provenance: j.provenance(), language: in.Language, date: j.date, deliver: j.deliver}}
+	res, err := f.Docs.executeInput(ctx, din, raw)
+	if err == nil && res.IsError {
+		res.Text = strings.Replace(res.Text, "export_md: ", "render: ", 1)
+	}
+	return res, err
+}
+
+// fileDocumentReadGrant refuses a render of a document the run could not
+// export itself: without the Document tool, or when Document's pre-hooks
+// deny the equivalent export_md.
+func fileDocumentReadGrant(ctx context.Context, call map[string]any) (tools.Result, bool) {
+	if !slices.Contains(tools.PolicyOf(ctx).Tools, "Document") {
+		return errPermission("render needs the Document tool, which this run does not have", "Ask an operator to grant the tool."), false
+	}
+	call["via"] = FileToolName
+	b, _ := json.Marshal(call)
+	delete(call, "via")
+	if res, ok := tools.HookPreCheck(ctx, "Document", b); !ok {
+		return classified("render: refused by a Document hook: "+res.Text, tools.CategoryPermission, false, "Ask the operator about the hook."), false
+	}
+	return tools.Result{}, true
+}
+
+// fromFile renders a Markdown file: its first heading is the title and the
+// rest its body. An HTML file is extracted to Markdown first (op=extract).
+func (j *renderJob) fromFile(ctx context.Context) (tools.Result, error) {
+	r, err := fileRef(j.in.Path)
+	if err != nil {
+		return errValidation("render: "+err.Error(), "Pass path, e.g. volume:inbox:extracted/report.md."), nil
+	}
+	if ext := strings.ToLower(path.Ext(r.path)); ext == ".html" || ext == ".htm" {
+		return errValidation("render: path is an HTML file", "Turn it into Markdown with op=extract first, then render the Markdown it writes."), nil
+	}
+	vfs, rel, res, ok := openRef(ctx, r, false)
+	if !ok {
+		return res, nil
+	}
+	release, err := j.f.extractSlot(ctx)
+	if err != nil {
+		vfs.Close()
+		return slotBusy(ctx, "render", j.f.slotWait)
+	}
+	defer release()
+	b, res, ok := readMarkdown(vfs, rel, r)
+	vfs.Close()
+	if !ok {
+		res.Text = strings.Replace(res.Text, "import: ", "render: ", 1)
+		return res, nil
+	}
+	title, body := splitMarkdownTitle(string(b), fileTitle(path.Base(filepath.ToSlash(rel))))
+	bld := render.NewBuilder(title)
+	bld.Doc.Date, bld.Doc.Language = j.date, j.in.Language
+	bld.Doc.Blocks = bld.Body(body)
+	doc, rep := bld.Finish()
+	return j.deliver(ctx, doc, rep, renderedSource{}, nil)
+}
+
+// splitMarkdownTitle takes a leading "# " heading off a Markdown text as its
+// title; without one the title is fallback.
+func splitMarkdownTitle(md, fallback string) (string, string) {
+	trimmed := strings.TrimLeft(md, "\ufeff \t\r\n")
+	line, rest, _ := strings.Cut(trimmed, "\n")
+	if t, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "# "); ok && strings.TrimSpace(strings.Trim(t, "#")) != "" {
+		return strings.TrimSpace(strings.TrimRight(strings.TrimSpace(t), "#")), rest
+	}
+	return fallback, md
+}
+
+// deliver writes the render tree as a file, logs it when it came from a
+// document (log non-nil), and answers the op.
+func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Report, src renderedSource, log *renderLog) (tools.Result, error) {
+	rep.Format = j.format
+	opts := j.options()
+	optsJSON := renderOptionsJSON(opts, j.provenance(), j.in.Language, j.in.Chunk)
+	stem := inbox.SanitizeName(doc.Title)
+	if stem == "" {
+		stem = "document"
+	}
+	if j.dest.toVolume {
+		if s := strings.TrimSuffix(path.Base(j.dest.to.path), path.Ext(j.dest.to.path)); !strings.HasSuffix(j.dest.to.path, "/") && s != "" {
+			stem = s
+		}
+	}
+
+	// What the file is made of, less the date and where its pictures land:
+	// the same content and options always hash the same (D16).
+	sourceSHA, err := renderSourceHash(doc, opts)
+	if err != nil {
+		return renderRefusal(err), nil
+	}
+
+	if log != nil && (j.format != render.FormatMarkdown || len(doc.Images) == 0) {
+		if out, ok := j.reuse(ctx, log, sourceSHA, optsJSON, src, rep); ok {
+			return out, nil
+		}
+	}
+
+	// Pictures beside a Markdown file are written first: where they land
+	// decides the links the file holds.
+	var imageRefs []string
+	if j.format == render.FormatMarkdown && len(doc.Images) > 0 {
+		paths, refs, res, ok := j.writeImages(ctx, doc, stem)
+		if !ok {
+			return res, nil
+		}
+		opts.ImagePaths, imageRefs = paths, refs
+	}
+	bundle, err := render.EncodeBundle(doc, opts)
+	if err != nil {
+		return renderRefusal(err), nil
+	}
+	data, err := j.f.converter().Render(ctx, bundle, j.format)
+	if res, done, rerr := renderFailure(ctx, err, j.f.slotWait); done {
+		return res, rerr
+	}
+
+	sum := sha256.Sum256(data)
+	outSHA := hex.EncodeToString(sum[:])
+	var ref, destination string
+	if j.dest.toVolume {
+		var res tools.Result
+		var ok bool
+		ref, res, ok = writeVolumeBytes(ctx, "render", j.dest.to, stem+"."+j.format, data, j.in.Overwrite)
+		if !ok {
+			return res, nil
+		}
+		destination = ref
+	} else {
+		kept := inbox.Capture(ctx, inbox.Item{Name: stem + "." + j.format, MediaType: render.MediaType(j.format),
+			Origin: renderOrigin(src), Dir: renderInboxDir}, data)
+		if !kept.Kept {
+			return errBusiness("render: the file could not be kept: "+kept.Stub, "Free inbox space with op=rm or op=clear, then try again."), nil
+		}
+		ref, destination = kept.Record.Ref, "inbox"
+	}
+
+	out := map[string]any{"ref": ref, "format": j.format, "media_type": render.MediaType(j.format),
+		"size": len(data), "sha256": outSHA, "reused": false, "report": rep}
+	if len(imageRefs) > 0 {
+		out["image_refs"] = imageRefs
+	}
+	if log != nil {
+		row := renderRow{DocumentID: src.DocumentID, RootChunkID: src.RootChunkID, SourceSHA256: sourceSHA, Format: j.format,
+			Options: optsJSON, OutputSHA256: outSHA, Size: int64(len(data)), Destination: destination, Actor: renderActor(ctx)}
+		if err := log.record(ctx, &row); err != nil {
+			// The file is written; a log fault is said, not hidden.
+			out["render_log_error"] = err.Error()
+		} else {
+			out["render_id"] = row.ID
+		}
+		out["document_id"] = src.DocumentID
+	}
+	return okJSON(out)
+}
+
+// reuse answers a render with an earlier one whose output, in a volume, still
+// holds the same bytes: with to, copied there; without, its ref reported.
+func (j *renderJob) reuse(ctx context.Context, log *renderLog, sourceSHA, optsJSON string, src renderedSource, rep render.Report) (tools.Result, bool) {
+	rows, err := log.reusable(ctx, sourceSHA, j.format, optsJSON)
+	if err != nil {
+		return tools.Result{}, false
+	}
+	for _, row := range rows {
+		earlier, err := parseDataRef(row.Destination)
+		if err != nil || earlier.kind != refVolume {
+			continue
+		}
+		data, ok := readVolumeIfDigest(ctx, earlier, row.OutputSHA256, row.Size)
+		if !ok {
+			continue
+		}
+		out := map[string]any{"format": j.format, "media_type": render.MediaType(j.format), "size": row.Size,
+			"sha256": row.OutputSHA256, "reused": true, "report": rep, "document_id": src.DocumentID}
+		if !j.dest.toVolume {
+			out["ref"], out["render_id"] = row.Destination, row.ID
+			res, _ := okJSON(out)
+			return res, true
+		}
+		stem := strings.TrimSuffix(path.Base(earlier.path), path.Ext(earlier.path))
+		ref, res, ok := writeVolumeBytes(ctx, "render", j.dest.to, stem+"."+j.format, data, j.in.Overwrite)
+		if !ok {
+			return res, true
+		}
+		out["ref"] = ref
+		nr := renderRow{DocumentID: src.DocumentID, RootChunkID: src.RootChunkID, SourceSHA256: sourceSHA, Format: j.format,
+			Options: optsJSON, OutputSHA256: row.OutputSHA256, Size: row.Size, Destination: ref, Actor: renderActor(ctx)}
+		if err := log.record(ctx, &nr); err == nil {
+			out["render_id"] = nr.ID
+		}
+		res, _ = okJSON(out)
+		return res, true
+	}
+	return tools.Result{}, false
+}
+
+// readVolumeIfDigest reads a volume file the run may read when it still is
+// size bytes hashing to digest. Anything else — gone, changed, not readable
+// by this run — is no.
+func readVolumeIfDigest(ctx context.Context, r dataRef, digest string, size int64) ([]byte, bool) {
+	if size <= 0 || size > render.MaxOutput {
+		return nil, false
+	}
+	vfs, rel, _, ok := openRef(ctx, r, false)
+	if !ok {
+		return nil, false
+	}
+	defer vfs.Close()
+	fh, err := vfs.open(rel)
+	if err != nil {
+		return nil, false
+	}
+	defer fh.Close()
+	data, err := io.ReadAll(io.LimitReader(fh, size+1))
+	if err != nil || int64(len(data)) != size {
+		return nil, false
+	}
+	sum := sha256.Sum256(data)
+	return data, hex.EncodeToString(sum[:]) == digest
+}
+
+// writeImages writes a Markdown render's pictures beside it, in a folder
+// named after the file, and returns each picture's path relative to the
+// Markdown file and its reference.
+func (j *renderJob) writeImages(ctx context.Context, doc *render.Doc, stem string) (map[string]string, []string, tools.Result, bool) {
+	paths := map[string]string{}
+	var refs []string
+	if !j.dest.toVolume {
+		dir := path.Join(renderInboxDir, stem)
+		for _, im := range doc.Images {
+			kept := inbox.Capture(ctx, inbox.Item{Name: im.Name, MediaType: im.MediaType, Origin: "render", Dir: dir}, im.Data)
+			if !kept.Kept {
+				return nil, nil, errBusiness("render: a picture could not be kept: "+kept.Stub, "Free inbox space with op=rm or op=clear, then try again."), false
+			}
+			rel := strings.TrimPrefix(kept.Record.Path, renderInboxDir+"/")
+			paths[im.Name] = rel
+			refs = append(refs, kept.Record.Ref)
+		}
+		return paths, refs, tools.Result{}, true
+	}
+	// A volume: <folder of to>/<stem>/img-N.<ext>.
+	folder := path.Dir(j.dest.to.path)
+	if strings.HasSuffix(j.dest.to.path, "/") {
+		folder = strings.TrimSuffix(j.dest.to.path, "/")
+	}
+	sub := dataRef{raw: refPrefix(j.dest.to) + path.Join(folder, stem), kind: refVolume, volume: j.dest.to.volume, path: path.Join(folder, stem)}
+	if res, ok := ensureVolumeFolder(ctx, "render", sub); !ok {
+		return nil, nil, res, false
+	}
+	for _, im := range doc.Images {
+		target := dataRef{raw: sub.raw + "/" + im.Name, kind: refVolume, volume: sub.volume, path: sub.path + "/" + im.Name}
+		ref, res, ok := writeVolumeBytes(ctx, "render", target, im.Name, im.Data, j.in.Overwrite)
+		if !ok {
+			return nil, nil, res, false
+		}
+		paths[im.Name] = stem + "/" + im.Name
+		refs = append(refs, ref)
+	}
+	return paths, refs, tools.Result{}, true
+}
+
+// renderSourceHash is the hash of what a render is made of: the tree and the
+// options that change the output, less the date and where pictures land.
+func renderSourceHash(doc *render.Doc, opts render.Options) (string, error) {
+	d := *doc
+	d.Date = ""
+	o := opts
+	o.ImagePaths, o.AssetDir = nil, ""
+	b, err := render.EncodeBundle(&d, o)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func renderOrigin(src renderedSource) string {
+	if src.DocumentID == "" {
+		return "render"
+	}
+	return "render:" + src.Scope + "/" + src.DocumentID
+}
+
+// renderActor is who rendered: the run.
+func renderActor(ctx context.Context) string {
+	if id := tools.RunID(ctx); id != "" {
+		return id
+	}
+	return tools.RunIdentity(ctx).UserID
+}
+
+func renderRefusal(err error) tools.Result {
+	if errors.Is(err, render.ErrTooLarge) {
+		return errValidation("render: "+strings.TrimPrefix(err.Error(), "render: "), "Render a part of the document with chunk.")
+	}
+	return errFrom("render: "+err.Error(), err)
+}
+
+// renderFailure maps a conversion error to the op's answer; done false means
+// the render succeeded.
+func renderFailure(ctx context.Context, err error, wait time.Duration) (tools.Result, bool, error) {
+	switch {
+	case err == nil:
+		return tools.Result{}, false, nil
+	case errors.Is(err, convert.ErrBusy):
+		res, rerr := slotBusy(ctx, "render", wait)
+		return res, true, rerr
+	case errors.Is(err, convert.ErrQuarantined):
+		return errBusiness("render: this document crashed the file converter and will not be tried again here for now",
+			"Render a part of it with chunk, or ask an operator."), true, nil
+	case errors.Is(err, convert.ErrNoWorkers):
+		return errTransient("render: no file conversion worker is running on this server", "Try again in a minute; an operator can check the conversion workers."), true, nil
+	case errors.Is(err, render.ErrTooLarge):
+		return errValidation("render: the file would be larger than "+fmt.Sprint(render.MaxOutput>>20)+" MiB", "Render a part of the document with chunk."), true, nil
+	case errors.Is(err, render.ErrUnsupported):
+		return errBusiness("render: the file converter cannot write this format", "Ask an operator to update the conversion workers."), true, nil
+	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+		return errTransient("render: the render took too long", "Render a part of the document with chunk."), true, nil
+	case ctx.Err() != nil:
+		return tools.Result{}, true, ctx.Err()
+	}
+	return errFrom("render: "+err.Error(), err), true, nil
+}
+
+// writeVolumeBytes writes data to the volume file to names, as keep writes a
+// file: to ending in / (or naming a folder) takes name inside it, the folder
+// must exist, the run's Write grant and hooks judge the final path, and an
+// existing file is replaced only with overwrite.
+func writeVolumeBytes(ctx context.Context, op string, to dataRef, name string, data []byte, overwrite bool) (string, tools.Result, bool) {
+	root, fence, err := effectiveRoot(ctx, to.volume, true)
+	if err != nil {
+		return "", errPermission(op+": "+err.Error(), "Name a read-write volume you are bound to."), false
+	}
+	toPath := to.path
+	if strings.HasSuffix(toPath, "/") {
+		toPath += name
+	}
+	target, err := resolveParentInsideRoot(root, toPath)
+	if err == nil {
+		err = outsideFence(fence, target)
+	}
+	if err != nil {
+		return "", errPermission(op+": "+err.Error(), "Create the folder first, or name one that exists."), false
+	}
+	dst, err := openVolumeFS(root, fence)
+	if err != nil {
+		return "", errPermission(op+": "+err.Error(), ""), false
+	}
+	defer dst.Close()
+	rel, err := dst.rel(target)
+	if err != nil {
+		return "", errPermission(op+": "+err.Error(), ""), false
+	}
+	dir, err := dst.openDir(filepath.Dir(rel))
+	if err != nil {
+		return "", errNotFound(op+": the folder for "+to.raw+" does not exist", "Create it first, or name one that exists."), false
+	}
+	defer dir.Close()
+	base := filepath.Base(rel)
+	if fi, err := dir.Lstat(base); err == nil && fi.IsDir() {
+		sub, err := dst.step(dir, base)
+		if err != nil {
+			return "", errPermission(op+": "+err.Error(), ""), false
+		}
+		defer sub.Close()
+		dir, base, rel = sub, name, filepath.Join(rel, name)
+	}
+	final := dataRef{raw: refPrefix(to) + filepath.ToSlash(rel), kind: refVolume, volume: to.volume, path: filepath.ToSlash(rel)}
+	if res, ok := checkRefGrant(ctx, final, true, FileToolName, "Leave to out to write to the inbox"); !ok {
+		return "", res, false
+	}
+	if fi, err := dir.Lstat(base); err == nil {
+		if !fi.Mode().IsRegular() || !overwrite {
+			return "", errBusiness(fmt.Sprintf("%s: %s already exists", op, final.raw), "Pass overwrite: true to replace it, or choose another name."), false
+		}
+	}
+	tmp, tmpName, err := createTemp(dir, ".loomcycle-"+op+"-")
+	if err != nil {
+		return "", errTransient(op+": "+err.Error(), "Try again."), false
+	}
+	defer dir.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return "", errTransient(op+": writing failed: "+err.Error(), "Try again."), false
+	}
+	if err := tmp.Close(); err != nil {
+		return "", errTransient(op+": writing failed: "+err.Error(), "Try again."), false
+	}
+	if err := dir.Rename(tmpName, base); err != nil {
+		return "", errTransient(op+": "+err.Error(), "Try again."), false
+	}
+	return final.raw, tools.Result{}, true
+}
+
+// ensureVolumeFolder makes the folder r names, inside a folder that exists,
+// unless it is there already.
+func ensureVolumeFolder(ctx context.Context, op string, r dataRef) (tools.Result, bool) {
+	if res, ok := checkRefGrant(ctx, r, true, FileToolName, "Leave to out to write to the inbox"); !ok {
+		return res, false
+	}
+	root, fence, err := effectiveRoot(ctx, r.volume, true)
+	if err != nil {
+		return errPermission(op+": "+err.Error(), "Name a read-write volume you are bound to."), false
+	}
+	target, err := resolveParentInsideRoot(root, r.path)
+	if err == nil {
+		err = outsideFence(fence, target)
+	}
+	if err != nil {
+		return errPermission(op+": "+err.Error(), "Create the folder first, or name one that exists."), false
+	}
+	dst, err := openVolumeFS(root, fence)
+	if err != nil {
+		return errPermission(op+": "+err.Error(), ""), false
+	}
+	defer dst.Close()
+	rel, err := dst.rel(target)
+	if err != nil {
+		return errPermission(op+": "+err.Error(), ""), false
+	}
+	dir, err := dst.openDir(filepath.Dir(rel))
+	if err != nil {
+		return errNotFound(op+": the folder for "+r.raw+" does not exist", "Create it first, or name one that exists."), false
+	}
+	defer dir.Close()
+	base := filepath.Base(rel)
+	if err := dir.Mkdir(base, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+		return errTransient(op+": "+err.Error(), "Try again."), false
+	}
+	if fi, err := dir.Lstat(base); err != nil || !fi.IsDir() {
+		return errBusiness(fmt.Sprintf("%s: %s is not a folder", op, r.raw), "Choose another name for the file."), false
+	}
+	return tools.Result{}, true
+}
