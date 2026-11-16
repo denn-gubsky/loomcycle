@@ -724,6 +724,11 @@ func (d *Document) copyDocumentRows(ctx context.Context, p *copyPlan, doc *copyD
 		{"chunk_annotations", inChunks, "chunk_id, level", map[string]func(any) any{"chunk_id": chunkRemap}},
 		{"chunk_assets", inChunks, "chunk_id", map[string]func(any) any{"chunk_id": chunkRemap, "bytes": func(v any) any { return asBytes(v) }}},
 	}
+	if p.move {
+		// The render log (RFC GR §4.8) moves with its document, which keeps its
+		// ids. A copy is a new document with no renders of its own.
+		tables = append(tables, copyTable{"document_renders", `document_id = ?`, "id", map[string]func(any) any{"document_id": docRemap, "root_chunk_id": chunkRemap}})
+	}
 	// Every read happens before the target transaction opens: a SQLite scope
 	// has one connection, so a read of the target (or, for a same-scope copy,
 	// of the source) inside the transaction would wait on the transaction itself.
