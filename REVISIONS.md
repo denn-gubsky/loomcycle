@@ -8,6 +8,48 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.156.0
+
+*People can now download a Document as a file: the document toolbar's download menu, `GET /v1/_document/export/{id}`, the TS client's `exportDocument` and MCP `file op=render` without a run (RFC GR P3). Teams declared in the yaml are written into the shared tier at boot and can only be changed there (RFC GS P2–P3). An explicit token pepper is now kept for lookups only, so it can be retired. `kb/survey` finds sections inside large guides, and `kb/ask` sends a request for one known item to search.*
+
+The v1.156 line: #2666 to #2673.
+- `@loomcycle/client` 1.156.0: `exportDocument`, and `source?: "config"` on team versions. The Python adapter stays at 1.154.0; no change there.
+- No numbered migration, no new Go dependency.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **An explicit token pepper beside the secret key becomes legacy (#2667).** On an instance that sets both `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` and `LOOMCYCLE_SECRET_KEY`, new tokens are hashed under the pepper derived from the secret key, and the explicit one is kept for lookups only: a token still under it logs in and is moved onto the derived pepper as it is used. Keep both variables set, watch the boot line `auth: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy: …` until it counts no row left, then remove the variable. At the switch every Web UI session ends once and the login throttle counters start from zero; tokens keep working. A rollback after rows have moved logs those tokens out. `loomcycle tokens rewrap` is refused while the legacy pepper is set, and `loomcycle doctor` warns about it. An explicit pepper alone hashes as before, with a warning. See `docs/SETTINGS_MIGRATION.md` §4.20.
+- **Teams in the yaml are written into the store at boot (#2669, #2673).** Each `teams:` entry becomes an ordinary TeamDef version in the shared tier: a new version when it changes, nothing on a restart, retired (never deleted) when it leaves the yaml. A shared team an operator made over the API under the same name is not taken over; the boot logs the conflict at warn and keeps going. While a configured version is active, `create`, `fork`, `promote`, `retire` and `delete` of that name in the shared tier are refused, admins included, with `team "X" comes from the configuration (teams.X); change it there`. A tenant may still fork it into its own tenant. TeamDef rows and `GET /v1/_teamdef/names` mark such a team `source` / `active_source: "config"`, and the Teams page shows it read-only, with Run enabled.
+- **The MCP `file` tool requires only `op` (#2670).** `render` takes no `run_id`; every other op still refuses a call without one. A client that validates against the schema sees `required: ["op"]`.
+- **Downloads are audited and logged (#2670).** Every download through the export route writes a `document_exported` audit record (format, scope, size) and a row in the document's render log with destination `download`. When the audit record cannot be written, the file is not served. A subject erasure now reports the plane `document_render_actors`: the render log rows in the tenant's other scopes that name the subject keep the row and lose the name.
+- **`kb/ask` routes a request for one known item to search (#2672).** A question asking for *the* full picture, overview, guide or introduction of one thing goes to `kb/search` before either classifier runs. `kb/survey` screens on a new, short agent, `kb/screen`. A deployment that loads the `knowledge-base` bundle gets both; a tenant that forked `kb/ask` or `kb/survey` keeps its own version until it forks again.
+
+### Downloading a document (RFC GR P3: #2670, #2671)
+
+- **Web UI.** The document toolbar's `↓ .md` and `↓ .canvas` buttons are one **download** menu: PDF, Word (.docx), HTML, Markdown (.md) and Canvas (.canvas). Markdown and Canvas are the exports they were; the other three are rendered by the server.
+- **`GET /v1/_document/export/{document_id}?format=pdf|docx|html|md`**, with `scope`, `chunk`, `toc`, `title_page`, `page_size`, `language`, `provenance` and the browse parameters `scope_id` and `tenant`. The file is an attachment named after the document's title, Unicode kept; Markdown of a document with pictures is a zip of the `.md` and its pictures. It is gated like the asset route: a document that is missing or not readable to the caller is the same 404. Errors are 400, 404, 413 `too_large`, 422 `tool_refused` and 503 `unavailable` or `busy`. OpenAPI operation `exportDocument`.
+- **TS client:** `exportDocument(documentId, format, opts)` returns `{blob, filename, mediaType, renderId}`.
+- **MCP `file op=render` without a run** writes a document of the caller's own scopes into a read-write dynamic volume of its tenant, under the same rules as `keep`. A member is refused an agent's scope, as the `document` tool refuses it.
+- **Guides:** `docs/DOCUMENTS.md` "Getting a file out", and the File tool's `render` in `docs/TOOLS.md`.
+
+### Teams in the configuration (RFC GS P2–P3: #2669, #2673)
+
+- The boot reconciles the yaml's teams under a cluster lock, before subscriptions and the scheduler start, with the same checks the TeamDef create path applies; a team the API would refuse is not written, and its siblings are.
+- A configured version is created and promoted by `config`, unrestricted, and marked `bootstrapped_from_static`. Its starter subscription is armed and disarmed with the yaml.
+- The Teams page no longer tells a tenant that Run cannot reach a shared team: since #2660 it can, unless the tenant holds a team of the same name.
+
+### Knowledge base (#2666, #2672)
+
+- `kb/survey` screens in rounds of 12 candidates, which stopped the failed rounds measured at 25.
+- A large guide (15 live chunks or more) is searched inside, up to 8 guides and 24 searches, and up to 3 of its heaviest sections become candidates beside the document, with their own cap of 24 next to the 120 documents. A fitting section of a document that fits whole is left out of the answer.
+
+### Fixes (#2668)
+
+- The Web UI retention page lists the `empty_dossier` family.
+- A sign-in start is counted even when the client hangs up after the throttle check, so disconnecting no longer dodges the start limit.
+- `docs/GRPC.md` describes resuming a stream with `StreamRun(run_id, from_seq)`.
+
 ## What's in v1.155.0
 
 *A Document can be rendered back into a file (RFC GR P0–P2): `File op=render` writes Markdown, HTML, Word or PDF, with a render log per document. The knowledge-base bundle gains `kb/survey`, which answers overview questions by gathering candidates in code and having a model sort them. A tenant can run a shared team by name, and a read-mode agent whose call does not parse is told what is wrong with it.*
