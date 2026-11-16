@@ -29,7 +29,7 @@ func tinyBundle(t *testing.T) []byte {
 // format it writes.
 func TestInProcess_RenderWritesWhatTheRenderPackageWrites(t *testing.T) {
 	bundle := tinyBundle(t)
-	for _, format := range []string{render.FormatMarkdown, render.FormatHTML} {
+	for _, format := range []string{render.FormatMarkdown, render.FormatHTML, render.FormatDOCX} {
 		got, err := (&InProcess{Extractions: extract.NewLimiter(1)}).Render(context.Background(), bundle, format)
 		if err != nil {
 			t.Fatalf("%s: %v", format, err)
@@ -38,8 +38,12 @@ func TestInProcess_RenderWritesWhatTheRenderPackageWrites(t *testing.T) {
 		if err := render.RenderBundle(context.Background(), bytes.NewReader(bundle), int64(len(bundle)), format, &want); err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(got, want.Bytes()) || !strings.Contains(string(got), "Field notes") || !strings.Contains(string(got), "world") {
-			t.Errorf("%s: got %q, want %q", format, got, want.Bytes())
+		if !bytes.Equal(got, want.Bytes()) {
+			t.Errorf("%s: the in-process render differs from the render package's (%d vs %d bytes)", format, len(got), want.Len())
+		}
+		// A DOCX is compressed; the text formats show the document as text.
+		if format != render.FormatDOCX && (!strings.Contains(string(got), "Field notes") || !strings.Contains(string(got), "world")) {
+			t.Errorf("%s: the text is not in the file:\n%s", format, got)
 		}
 	}
 }

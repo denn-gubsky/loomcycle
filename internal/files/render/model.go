@@ -30,6 +30,8 @@ func MediaType(format string) string {
 		return "text/markdown"
 	case FormatHTML:
 		return "text/html"
+	case FormatDOCX:
+		return docxMediaType
 	}
 	return ""
 }

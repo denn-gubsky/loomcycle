@@ -235,7 +235,7 @@ func TestPool_DocumentRenderMatchesInProcess(t *testing.T) {
 	realWorker(t, target, "w1")
 	waitIdle(t, d, 1)
 	bundle := renderBundle(t)
-	for _, format := range []string{render.FormatMarkdown, render.FormatHTML} {
+	for _, format := range []string{render.FormatMarkdown, render.FormatHTML, render.FormatDOCX} {
 		want, err := (&convert.InProcess{}).Render(context.Background(), bundle, format)
 		if err != nil {
 			t.Fatal(err)
@@ -245,7 +245,7 @@ func TestPool_DocumentRenderMatchesInProcess(t *testing.T) {
 			t.Errorf("%s: pool %d bytes (%v), in process %d bytes", format, len(got), err, len(want))
 		}
 	}
-	if st := d.Stats(); st.Jobs["document_render/ok"] != 2 {
+	if st := d.Stats(); st.Jobs["document_render/ok"] != 3 {
 		t.Errorf("the pool ran %v, want two document renders", st.Jobs)
 	}
 }

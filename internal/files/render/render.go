@@ -22,6 +22,8 @@ func Write(ctx context.Context, w io.Writer, d *Doc, format string, opts Options
 		return writeMarkdown(ctx, w, d, opts)
 	case FormatHTML:
 		return writeHTML(ctx, w, d, opts)
+	case FormatDOCX:
+		return writeDOCX(ctx, w, d, opts)
 	}
 	return fmt.Errorf("%w: %q", ErrUnsupported, format)
 }

@@ -326,7 +326,7 @@ func TestBuilder_ImagesPastTheCapsAreSkipped(t *testing.T) {
 }
 
 func TestWrite_UnknownFormatIsRefused(t *testing.T) {
-	if err := Write(context.Background(), &bytes.Buffer{}, &Doc{}, "docx", Options{}); !errors.Is(err, ErrUnsupported) {
+	if err := Write(context.Background(), &bytes.Buffer{}, &Doc{}, "rtf", Options{}); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("err = %v", err)
 	}
 }
