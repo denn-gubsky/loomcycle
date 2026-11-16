@@ -16,14 +16,15 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// kb/survey: the overview path. Code gathers the candidate documents, the
-// walker screens their ids in slices, code checks that every candidate was
-// accounted for, one more walker round writes the answer from the ids that
-// fit, and code writes the coverage line.
+// kb/survey: the overview path. Code gathers the candidate documents, kb/screen
+// screens their ids in slices, code checks that every candidate was accounted
+// for, one walker round writes the answer from the ids that fit, and code
+// writes the coverage line.
 
 const surveyQuestion = "What do we hold on speech and voice?"
 
-// surveyFake stands in for the Document tool and the walker kb/survey spawns.
+// surveyFake stands in for the Document tool and the agents kb/survey spawns
+// (kb/screen for a screening round, kb/walker otherwise).
 type surveyFake struct {
 	mu sync.Mutex
 	// rows is what each search returns, by label: P (the passage search with
@@ -208,7 +209,7 @@ func (a *surveyFakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools
 			if err != "" {
 				return tools.Result{IsError: true, Text: err}, nil
 			}
-			rows = append(rows, map[string]any{"index": i, "agent": "kb/walker", "ok": obj["status"] == "completed", "run_id": obj["run_id"], "result": obj})
+			rows = append(rows, map[string]any{"index": i, "agent": en["name"], "ok": obj["status"] == "completed", "run_id": obj["run_id"], "result": obj})
 		}
 		return okResult(map[string]any{"results": rows})
 	}
@@ -219,12 +220,17 @@ func (a *surveyFakeAgent) Execute(_ context.Context, raw json.RawMessage) (tools
 	return okResult(obj)
 }
 
-// child runs one walker: a screening round (its prompt lists Candidates), a
-// writing round (it lists Fitting documents) or a plain walk.
+// child runs one round: a screening round (its prompt lists Candidates), which
+// must be kb/screen, or a writing round (it lists Fitting documents) or a plain
+// walk, which must be kb/walker.
 func (a *surveyFakeAgent) child(in map[string]any) (map[string]any, string) {
 	b, _ := json.Marshal(in)
-	if in["result"] != "object" || in["name"] != "kb/walker" || in["op"] != nil {
-		return nil, "unexpected spawn " + string(b)
+	want := "kb/walker"
+	if strings.Contains(spawnPrompt(in), "\nCandidates (") {
+		want = "kb/screen"
+	}
+	if in["result"] != "object" || in["name"] != want || in["op"] != nil {
+		return nil, "unexpected spawn (want " + want + ") " + string(b)
 	}
 	a.f.mu.Lock()
 	defer a.f.mu.Unlock()
@@ -1174,17 +1180,27 @@ func TestKnowledgeBaseBundle_SurveyHoldsOnlyReadAndSpawn(t *testing.T) {
 	}
 }
 
-// TestKnowledgeBaseBundle_WalkerPromptScreensASliceAndWritesFromFits: the
-// contract kb/survey parses: a screening round replies with the two lines
-// only, a writing round writes from the fitting ids and sorts nothing.
-func TestKnowledgeBaseBundle_WalkerPromptScreensASliceAndWritesFromFits(t *testing.T) {
-	p := knowledgeBaseConfig(t).Agents["kb/walker"].SystemPrompt
+// TestKnowledgeBaseBundle_ScreenPromptScreensASliceAndWalkerComposes: the
+// contract kb/survey parses: a screening round (kb/screen) replies with the two
+// lines only; a composing round (kb/walker) writes from the fitting ids and
+// sorts nothing. The walker no longer carries the screening steps.
+func TestKnowledgeBaseBundle_ScreenPromptScreensASliceAndWalkerComposes(t *testing.T) {
+	cfg := knowledgeBaseConfig(t)
+	sp := cfg.Agents["kb/screen"].SystemPrompt
 	for _, want := range []string{
-		"SCREENING. When the prompt says SCREEN",
+		"The prompt says SCREEN",
 		"ONE documents_summary call",
+		"never one string holding",
 		"Reply with ONLY these two lines",
 		"FITS: <id>, <id>, ...",
 		"SET ASIDE: <id>, <id>, ...",
+	} {
+		if !strings.Contains(sp, want) {
+			t.Errorf("kb/screen prompt lacks %q", want)
+		}
+	}
+	p := cfg.Agents["kb/walker"].SystemPrompt
+	for _, want := range []string{
 		"COMPOSING. When the prompt says COMPOSE",
 		"one line and a link per listed document",
 		"Leave out the FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines.",
@@ -1194,9 +1210,69 @@ func TestKnowledgeBaseBundle_WalkerPromptScreensASliceAndWritesFromFits(t *testi
 			t.Errorf("kb/walker prompt lacks %q", want)
 		}
 	}
-	for _, gone := range []string{"about 25 ids per call", "You may search for more documents"} {
+	for _, gone := range []string{"SCREENING. When the prompt says SCREEN", "about 25 ids per call", "You may search for more documents"} {
 		if strings.Contains(p, gone) {
-			t.Errorf("kb/walker prompt still has the one-reply screening text %q", gone)
+			t.Errorf("kb/walker prompt still has the screening text %q", gone)
 		}
+	}
+}
+
+// TestKnowledgeBaseBundle_ScreenHoldsOnlyReadWithAShortPrompt: a screening
+// round run by kb/walker read the walker's whole prompt (about 29k tokens with
+// its help topics) from cache on both of its turns, about a fifth of the
+// round's cost, ten or more rounds per survey, for steps a screening never
+// takes. kb/screen reads the tenant knowledge base only, and its prompt pulls
+// in no help topic and no memory block (its calls are written out in each
+// round's prompt).
+func TestKnowledgeBaseBundle_ScreenHoldsOnlyReadWithAShortPrompt(t *testing.T) {
+	cfg := knowledgeBaseConfig(t)
+	a, ok := cfg.Agents["kb/screen"]
+	if !ok {
+		t.Fatalf("kb/screen not registered (agents: %v)", agentNames(cfg))
+	}
+	if strings.Join(a.Tools, ",") != "Document" || a.ToolModes["Document"] != "read" {
+		t.Errorf("kb/screen tools = %v modes = %v, want exactly [Document] held read only", a.Tools, a.ToolModes)
+	}
+	if strings.Join(a.MemoryScopes, ",") != "tenant" || strings.Join(a.SqlScopes, ",") != "tenant" {
+		t.Errorf("kb/screen scopes memory=%v sql=%v, want tenant for both", a.MemoryScopes, a.SqlScopes)
+	}
+	if !containsString(a.Skills, "-*") || !a.DisableContext || !a.Internal {
+		t.Errorf("kb/screen skills=%v disable_context=%v internal=%v, want -*, true, true", a.Skills, a.DisableContext, a.Internal)
+	}
+	if a.Provider != "" || a.Model != "" || a.Tier != "middle" {
+		t.Errorf("kb/screen provider=%q model=%q tier=%q, want the operator's middle tier and no pin", a.Provider, a.Model, a.Tier)
+	}
+	if strings.Contains(a.SystemPrompt, "{{") {
+		t.Errorf("kb/screen prompt has a placeholder; it must stay short")
+	}
+	if n := len(a.SystemPrompt); n > 2500 {
+		t.Errorf("kb/screen prompt is %d bytes, want at most 2500", n)
+	}
+}
+
+// TestKbSurvey_ScreeningRoundsRunKbScreenAndComposingRunsKbWalker: every
+// screening round, retries too, is a kb/screen run; the composing round is a
+// kb/walker run.
+func TestKbSurvey_ScreeningRoundsRunKbScreenAndComposingRunsKbWalker(t *testing.T) {
+	a, b := docID(1), docID(2)
+	n := 0
+	f := &surveyFake{
+		rows: map[string][]map[string]any{"P": hits(a, b)},
+		screen: func(ids []string) surveyReply {
+			n++
+			if n == 1 {
+				return surveyReply{status: "failed"}
+			}
+			return fitsOf(a)(ids)
+		},
+	}
+	runSurvey(t, f, surveyQuestion)
+	var names []string
+	for _, sp := range f.spawns {
+		name, _ := sp["name"].(string)
+		names = append(names, name)
+	}
+	if got := strings.Join(names, ","); got != "kb/screen,kb/screen,kb/screen,kb/walker" {
+		t.Errorf("runs = %s, want a screening round and its two halves on kb/screen, then the composing round on kb/walker", got)
 	}
 }
