@@ -39,6 +39,11 @@ type surveyFake struct {
 	facetsMissing bool
 	// edges is what get_edges returns, by document id.
 	edges map[string][]map[string]any
+	// chunkCounts is each document's live chunk count, answered to the size
+	// query (query_chunks); a document not in it has none. countErr makes that
+	// query fail as a tool error.
+	chunkCounts map[string]int
+	countErr    string
 	// searchErr makes every search fail as a tool error.
 	searchErr string
 	// screen answers a screening round, given its candidate ids; nil sorts
@@ -52,6 +57,7 @@ type surveyFake struct {
 	walk []surveyReply
 
 	searches []string         // each search's label, in order
+	countSQL []string         // each query_chunks statement, in order
 	edgeIDs  []string         // each get_edges document id, in order
 	queries  []string         // each search's query text, in order
 	spawns   []map[string]any // each walker run's arguments, in order
@@ -129,6 +135,19 @@ func (d *surveyFakeDocument) Execute(_ context.Context, raw json.RawMessage) (to
 			out["facets"] = fc
 		}
 		return okResult(out)
+	case "query_chunks":
+		q, _ := in["sql"].(string)
+		d.f.countSQL = append(d.f.countSQL, q)
+		if d.f.countErr != "" {
+			return tools.Result{IsError: true, Text: d.f.countErr}, nil
+		}
+		rows := [][]any{}
+		for id, n := range d.f.chunkCounts {
+			if strings.Contains(q, "'"+id+"'") {
+				rows = append(rows, []any{id, n})
+			}
+		}
+		return okResult(map[string]any{"columns": []string{"document_id", "count"}, "rows": rows})
 	case "get_edges":
 		id, _ := in["document_id"].(string)
 		d.f.edgeIDs = append(d.f.edgeIDs, id)
@@ -211,8 +230,8 @@ func (a *surveyFakeAgent) child(in map[string]any) (map[string]any, string) {
 		} else {
 			r = surveyReply{text: accounting(nil, ids)}
 		}
-	case strings.Contains(prompt, "\nFitting documents ("):
-		ids := listIn(prompt, "\nFitting documents (")
+	case isWrite(in):
+		ids := writeIDs(prompt)
 		if a.f.write != nil {
 			r = a.f.write(ids)
 		} else {
@@ -321,7 +340,14 @@ func spawnPrompt(in map[string]any) string { p, _ := in["prompt"].(string); retu
 
 func isScreen(in map[string]any) bool { return strings.Contains(spawnPrompt(in), "\nCandidates (") }
 func isWrite(in map[string]any) bool {
-	return strings.Contains(spawnPrompt(in), "\nFitting documents (")
+	p := spawnPrompt(in)
+	return strings.Contains(p, "\nFitting documents (") || strings.Contains(p, "\nFitting sections (")
+}
+
+// writeIDs is a composing round's fitting ids: its documents, then its
+// sections.
+func writeIDs(prompt string) []string {
+	return append(listIn(prompt, "\nFitting documents ("), listIn(prompt, "\nFitting sections (")...)
 }
 
 // screens is each screening round's candidate ids, in spawn order.
@@ -340,7 +366,7 @@ func (f *surveyFake) writes() [][]string {
 	var out [][]string
 	for _, s := range f.spawns {
 		if isWrite(s) {
-			out = append(out, listIn(spawnPrompt(s), "\nFitting documents ("))
+			out = append(out, writeIDs(spawnPrompt(s)))
 		}
 	}
 	return out
@@ -441,7 +467,7 @@ func TestKbSurvey_GatherRanksByWeightDedupsAndSkipsFolderRows(t *testing.T) {
 	if cov != "COVERAGE: complete" || unc != "" {
 		t.Errorf("coverage = %q %q, want complete with no UNCOVERED line", cov, unc)
 	}
-	if sv != "SURVEY: candidates 4 (cut 0) | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
+	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -495,26 +521,28 @@ func TestKbSurvey_GatherKeepsTheTop120AndCountsTheCut(t *testing.T) {
 	if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120" {
 		t.Errorf("coverage = %q %q, want partial with 30 beyond the cap", cov, unc)
 	}
-	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | slices 5 | failed slices 0 | rounds 6 | RUNS: ") {
+	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 | slices 10 | failed slices 0 | rounds 11 | RUNS: ") {
 		t.Errorf("survey line = %q", sv)
 	}
 }
 
-// TestKbSurvey_ScreensInSlicesOf25EachRoundHoldingOnlyItsOwnIDs: one model
-// reply cannot carry 120 ids, so each screening round gets at most 25, every
-// candidate in exactly one round, and the rounds go out in one parallel spawn.
-func TestKbSurvey_ScreensInSlicesOf25EachRoundHoldingOnlyItsOwnIDs(t *testing.T) {
+// TestKbSurvey_ScreensInSlicesOf12EachRoundHoldingOnlyItsOwnIDs: one model
+// reply cannot carry 120 ids, and a round of 25 ids sent document_ids as one
+// string in about a third of the rounds (rounds of 13 or fewer never did), so
+// each screening round gets at most 12, every candidate in exactly one round,
+// and the rounds go out in one parallel spawn.
+func TestKbSurvey_ScreensInSlicesOf12EachRoundHoldingOnlyItsOwnIDs(t *testing.T) {
 	f, kept := gather120()
 	runSurvey(t, f, surveyQuestion)
 
 	rounds := f.screens()
-	if len(rounds) != 5 {
-		t.Fatalf("screening rounds = %d, want 5 slices for 120 candidates", len(rounds))
+	if len(rounds) != 10 {
+		t.Fatalf("screening rounds = %d, want 10 slices for 120 candidates", len(rounds))
 	}
 	seen := map[string]int{}
 	for i, ids := range rounds {
-		if len(ids) == 0 || len(ids) > 25 {
-			t.Errorf("slice %d holds %d ids, want 1 to 25", i, len(ids))
+		if len(ids) == 0 || len(ids) > 12 {
+			t.Errorf("slice %d holds %d ids, want 1 to 12", i, len(ids))
 		}
 		own := map[string]bool{}
 		for _, id := range ids {
@@ -534,8 +562,8 @@ func TestKbSurvey_ScreensInSlicesOf25EachRoundHoldingOnlyItsOwnIDs(t *testing.T)
 			t.Errorf("candidate %s screened %d times, want once", id, seen[id])
 		}
 	}
-	if len(f.batches) == 0 || f.batches[0] != 5 {
-		t.Errorf("parallel_spawn batches = %v, want the 5 slices in one call", f.batches)
+	if len(f.batches) == 0 || f.batches[0] != 10 {
+		t.Errorf("parallel_spawn batches = %v, want the 10 slices in one call", f.batches)
 	}
 }
 
@@ -564,8 +592,8 @@ func TestKbSurvey_ScreeningRoundCarriesTheExactSummaryCallForItsSlice(t *testing
 			t.Errorf("screening round %d lacks its exact call %q:\n%s", n, call, spawnPrompt(s))
 		}
 	}
-	if n != 5 {
-		t.Fatalf("screening rounds = %d, want 5", n)
+	if n != 10 {
+		t.Fatalf("screening rounds = %d, want 10", n)
 	}
 }
 
@@ -649,11 +677,12 @@ func TestKbSurvey_ComposingRoundAsksForReplyTextNotADocument(t *testing.T) {
 	}
 }
 
-// TestKnowledgeBaseBundle_SurveyRunsEverySliceInOneWave: parallel_spawn runs
-// at most the calling agent's max_concurrent_children at once (default 4), so
-// with a full cap the fifth slice waited for a slot. kb/survey's own cap covers
-// the most slices its cap and slice size can make, read from its code.
-func TestKnowledgeBaseBundle_SurveyRunsEverySliceInOneWave(t *testing.T) {
+// TestKnowledgeBaseBundle_SurveyRunsAFullCapInTwoWaves: parallel_spawn runs
+// at most the calling agent's max_concurrent_children at once (default 4).
+// With slices of 12 a full cap is 10 slices; kb/survey runs them in two waves
+// of 5 (accepted, so the burst on the provider stays where it was), never in
+// more. Read from its code.
+func TestKnowledgeBaseBundle_SurveyRunsAFullCapInTwoWaves(t *testing.T) {
 	s := knowledgeBaseConfig(t).Agents["kb/survey"]
 	num := func(name string) int {
 		m := regexp.MustCompile(`(?m)^var ` + name + ` = (\d+);`).FindStringSubmatch(s.Code)
@@ -664,9 +693,13 @@ func TestKnowledgeBaseBundle_SurveyRunsEverySliceInOneWave(t *testing.T) {
 		return n
 	}
 	capN, slice := num("CAP"), num("SLICE")
+	if slice > 12 {
+		t.Errorf("kb/survey SLICE = %d, want at most 12: longer rounds failed", slice)
+	}
 	most := (capN + slice - 1) / slice
-	if s.MaxConcurrentChildren < most {
-		t.Errorf("kb/survey max_concurrent_children = %d, want at least %d (CAP %d / SLICE %d)", s.MaxConcurrentChildren, most, capN, slice)
+	if s.MaxConcurrentChildren != 5 || (most+s.MaxConcurrentChildren-1)/s.MaxConcurrentChildren > 2 {
+		t.Errorf("kb/survey max_concurrent_children = %d, want 5 running %d slices (CAP %d / SLICE %d) in at most two waves",
+			s.MaxConcurrentChildren, most, capN, slice)
 	}
 }
 
@@ -762,7 +795,7 @@ func TestKbSurvey_UntrustedQuestionGoesToTheWalkerByReferenceOnly(t *testing.T) 
 // lines counts as failed: nothing it said is taken, its slice is retried once
 // as two halves, and a half that fails again is never tried a third time.
 func TestKbSurvey_RoundCutShortFailsAndIsRetriedOnceAsTwoHalves(t *testing.T) {
-	ids := docIDs(1, 25)
+	ids := docIDs(1, 12)
 	for name, bad := range map[string]surveyReply{
 		"max_tokens":       {stopReason: "max_tokens", text: "CUT-MARKER\n" + accounting(ids[:1], ids[1:])},
 		"not completed":    {status: "max_iterations", text: "CUT-MARKER\n" + accounting(ids[:1], ids[1:])},
@@ -789,8 +822,8 @@ func TestKbSurvey_RoundCutShortFailsAndIsRetriedOnceAsTwoHalves(t *testing.T) {
 				t.Fatalf("screening rounds = %d, want the slice and its two halves", len(rounds))
 			}
 			if got := strings.Join(append(append([]string{}, rounds[1]...), rounds[2]...), ","); got != strings.Join(ids, ",") ||
-				len(rounds[1]) != 13 || len(rounds[2]) != 12 {
-				t.Errorf("retry halves = %d + %d ids, want 13 + 12 covering the slice", len(rounds[1]), len(rounds[2]))
+				len(rounds[1]) != 6 || len(rounds[2]) != 6 {
+				t.Errorf("retry halves = %d + %d ids, want 6 + 6 covering the slice", len(rounds[1]), len(rounds[2]))
 			}
 			if strings.Contains(out, "CUT-MARKER") {
 				t.Errorf("a failed round's text reached the answer:\n%s", out)
@@ -822,8 +855,8 @@ func TestKbSurvey_RoundCutShortFailsAndIsRetriedOnceAsTwoHalves(t *testing.T) {
 			t.Errorf("nothing was screened, so no writing round and no round text:\n%s", out)
 		}
 		cov, unc, sv := surveyLines(out)
-		if cov != "COVERAGE: partial" || unc != "UNCOVERED: 25 candidates not screened; 0 beyond the cap of 120" {
-			t.Errorf("coverage = %q %q, want all 25 unscreened", cov, unc)
+		if cov != "COVERAGE: partial" || unc != "UNCOVERED: 12 candidates not screened; 0 beyond the cap of 120" {
+			t.Errorf("coverage = %q %q, want all 12 unscreened", cov, unc)
 		}
 		if !strings.Contains(sv, "| slices 1 | failed slices 3 | rounds 3 |") || !strings.Contains(sv, "w1:completed/max_tokens") {
 			t.Errorf("survey line = %q, want 3 failed rounds and the cut marked", sv)
@@ -835,13 +868,13 @@ func TestKbSurvey_RoundCutShortFailsAndIsRetriedOnceAsTwoHalves(t *testing.T) {
 		f.screen = func(got []string) surveyReply {
 			n++
 			if n == 1 {
-				return surveyReply{text: accounting(ids[:2], ids[2:20])} // 5 ids not named
+				return surveyReply{text: accounting(ids[:2], ids[2:7])} // 5 ids not named
 			}
 			return fitsOf()(got)
 		}
 		out := runSurvey(t, f, surveyQuestion)
 		rounds := f.screens()
-		if len(rounds) != 3 || strings.Join(append(append([]string{}, rounds[1]...), rounds[2]...), ",") != strings.Join(ids[20:], ",") {
+		if len(rounds) != 3 || strings.Join(append(append([]string{}, rounds[1]...), rounds[2]...), ",") != strings.Join(ids[7:], ",") {
 			t.Errorf("retry rounds = %v, want the 5 unnamed ids in two halves", rounds[1:])
 		}
 		if w := f.writes(); len(w) != 1 || strings.Join(w[0], ",") != strings.Join(ids[:2], ",") {
@@ -870,8 +903,8 @@ func TestKbSurvey_AnswerIsWrittenFromTheUnionOfFits(t *testing.T) {
 		},
 	}
 	out := runSurvey(t, f, surveyQuestion)
-	if len(f.screens()) != 2 {
-		t.Fatalf("screening rounds = %d, want 2 slices for 30 candidates", len(f.screens()))
+	if len(f.screens()) != 3 {
+		t.Fatalf("screening rounds = %d, want 3 slices for 30 candidates", len(f.screens()))
 	}
 	w := f.writes()
 	if len(w) != 1 || strings.Join(w[0], ",") != strings.Join([]string{ids[2], ids[26], ids[27]}, ",") {

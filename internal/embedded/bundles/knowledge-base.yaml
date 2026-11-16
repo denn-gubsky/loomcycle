@@ -75,8 +75,9 @@
 #                 scope: the path for overview questions. Code gathers the
 #                 candidate documents (searches of passages, summaries and each
 #                 clause of the question, then one hop of relations), ranks them
-#                 and keeps the top 120; kb/walker screens their IDS ONLY (no
-#                 document text enters its trusted prompt) in slices of 25, in
+#                 and keeps the top 120 (a large document's hit sections are
+#                 candidates beside it); kb/walker screens their IDS ONLY (no
+#                 document text enters its trusted prompt) in slices of 12, in
 #                 parallel, each round replying with only FITS and SET ASIDE
 #                 lines; a round that fails, stops at the output cap or lacks a
 #                 line is retried once as two halves; one more walker round
@@ -6040,11 +6041,10 @@ agents:
     # parallel, then one retry wave) and one composing round.
     run_timeout_seconds: 900
     # parallel_spawn runs at most this many screening rounds at once (default
-    # 4). 5 = CAP / SLICE, so a full candidate list is screened in one wave
-    # instead of four rounds and then a fifth. Retry halves can reach 10, but
-    # they are short (13 ids at most) and few: on the measured set no retry
-    # wave had more than 4, so 5 covers them in one wave too without doubling
-    # the burst on the provider.
+    # 4). A full candidate list is CAP / SLICE = 10 slices, so it is screened
+    # in two waves of 5: accepted, because rounds of 12 ids do not fail the way
+    # rounds of 25 did (below, at SLICE), and 5 keeps the burst on the provider
+    # where it was. Retry halves (6 ids at most) are few and go in one wave.
     max_concurrent_children: 5
     code: |
       // kb/survey — answers an overview question ("what do we hold on X") with
@@ -6058,19 +6058,40 @@ agents:
       //    and a mixed search per clause of the question, and one hop of stored
       //    relations from the highest-weighted candidates. Each search list a
       //    document appears in counts 2, a top-10 hit 1 more, a relation hop 1.
-      //    Folder rows and folder annotation documents are not candidates. The
-      //    CAP highest-weighted are kept (ties by id); the rest are counted.
+      //    Folder rows and folder annotation documents are not candidates.
+      //    SECTIONS OF LARGE GUIDES. A big multi-topic guide answers an overview
+      //    question in one of its sections, while its document brief describes
+      //    the whole guide, so screening by that brief sets it aside. Every
+      //    search asks with_summary, and a hit whose nearest summary is a
+      //    section's (level branch) names that section's chunk id. A document
+      //    with at least GUIDE_CHUNKS live chunks is a large guide (one
+      //    query_chunks count over the kept documents that have such hits); its
+      //    GUIDE_SECTIONS heaviest hit sections become candidates BESIDE it,
+      //    weighted like documents (2 per search list, 1 more in the top 10).
+      //    Chunk count is the size measure because it is the one the store keeps
+      //    for every document whatever its type; GUIDE_CHUNKS = 30 holds every
+      //    guide that was dropped on the measured set (38 chunks the smallest)
+      //    and about one document in eight of that corpus. It does not tell a
+      //    guide from a long single-topic design document: such a document's
+      //    sections are screened too, which costs slots, not answers, since a
+      //    section is dropped from the answer when its whole document fits. A
+      //    count that fails leaves the survey to documents only, as before.
+      //    The CAP highest-weighted documents and sections are kept (ties by
+      //    id); the rest are counted.
       // 2. SCREEN (model). The candidates are cut into slices of SLICE ids, one
       //    kb/walker round each, all in one parallel spawn. A round gets its
-      //    slice's document IDS and nothing else, reads their briefs itself, and
+      //    slice's IDS and nothing else, reads their briefs itself, and
       //    replies with only two lines:
       //      FITS: <id>, ...
       //      SET ASIDE: <id>, ...
       //    One reply cannot carry 120 ids and an answer: a round handed them all
       //    stopped at the output cap before its accounting lines. The round's
-      //    block carries the exact documents_summary call for its slice, built
-      //    here from the ids: a walker composing that call itself sent the id
-      //    list as one string, which the read-only tool refuses.
+      //    block carries the exact read calls for its slice, built here from the
+      //    ids: one documents_summary call for its documents and one
+      //    get_annotation call per section. A walker composing the call itself
+      //    sent the id list as one string, which the read-only tool refuses;
+      //    with 25 ids a third of the rounds did so even with the call given,
+      //    and rounds of 13 ids or fewer never did, hence SLICE = 12.
       // 3. CHECK (code). A round FAILED when it did not complete, stopped at the
       //    output cap (it still reports completed), was cut to fit this run, or
       //    lacks either line; nothing it said is taken. A failed slice, and the
@@ -6078,16 +6099,18 @@ agents:
       //    halves. What is still unnamed then stays unaccounted. Screening texts
       //    are never joined into the answer.
       // 4. ANSWER. One more kb/walker round composes the reply from the ids that
-      //    fit (ids only again); its FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES
+      //    fit (ids only again; a section of a document that fits whole is left
+      //    out, and a section is linked as loom:chunk/<id>); its FITS, SET
+      //    ASIDE, COVERAGE, UNCOVERED, MOVES
       //    and MISSING lines are stripped. It is asked to COMPOSE, never to
       //    write: told to write the overview, a walker took it as writing a
       //    document. Nothing fits: code says so, with no round. The composing
       //    round fails: code lists the fitting ids as links. Then a coverage
       //    line code computes:
       //      COVERAGE: complete  every candidate accounted for, none cut by the
-      //                          cap, and at least as many candidates kept as
-      //                          documents the passage search's facet window
-      //                          counted;
+      //                          cap, and at least as many documents kept
+      //                          (sections not counted) as the passage
+      //                          search's facet window counted;
       //      COVERAGE: partial   otherwise, then
       //      UNCOVERED: <n> candidates not screened; <m> beyond the cap of <CAP>
       //                 [; the passage search counted <c> documents and <k> were kept]
@@ -6096,9 +6119,12 @@ agents:
       //    is not asked: the window is the 500 nearest passages, however far,
       //    so on a corpus larger than that the flag is never true.
       //    and the trailer
-      //      SURVEY: candidates <kept> (cut <m>) | slices <s> | failed slices <f> |
-      //              rounds <walker runs> | RUNS: <run:status[/max_tokens], ...>
-      //    failed slices counts every screening round that failed, retries too.
+      //      SURVEY: candidates <kept> (cut <m>) | sections <k> | slices <s> |
+      //              failed slices <f> | rounds <walker runs> |
+      //              RUNS: <run:status[/max_tokens], ...>
+      //    sections counts the kept candidates that are sections ("sections
+      //    failed (<why>)" when the size count failed); failed slices counts
+      //    every screening round that failed, retries too.
       //    A gather step that throws or finds nothing falls back to a plain walk;
       //    its coverage is partial, and the trailer says why.
       //
@@ -6106,7 +6132,9 @@ agents:
       // path is text from a document; pasted into the walker's trusted prompt it
       // would become instructions. The walker gets ids that match ID_SHAPE, and
       // reads the briefs through its own read-only tool, under its own access
-      // rules. Anything else in a search row is never copied.
+      // rules. Anything else in a search row is never copied: of a hit's summary
+      // code reads only whether its level is "branch" and its chunk id, which
+      // must match ID_SHAPE like every other id.
       //
       // UNTRUSTED INPUT. A question given as untrusted input is search text here
       // (code reads it as data), and the walker gets it by reference, still
@@ -6118,7 +6146,9 @@ agents:
       var EDGE_FROM = 60;    // relations are followed from this many candidates
       var SEARCH_LIMIT = 50; // hits per search, the search's own maximum
       var MAX_CLAUSES = 8;   // clause searches, at most (two searches each)
-      var SLICE = 25;        // candidate ids per screening round
+      var SLICE = 12;        // candidate ids per screening round
+      var GUIDE_CHUNKS = 30; // live chunks that make a document a large guide
+      var GUIDE_SECTIONS = 3; // hit sections of one large guide kept, at most
       // A runtime document id: lowercase hex, dashes allowed (the shape kb/ask
       // reads in loom: links). A row whose id does not match is not a
       // candidate, so nothing but id characters reaches the walker's prompt.
@@ -6126,6 +6156,9 @@ agents:
 
       var runs = [];
       var Q = { text: "", untrusted: false, framing: "" };
+      // SEC: each kept section candidate's chunk id -> its document id. An id
+      // not in it is a document.
+      var SEC = Object.create(null);
 
       // readQuestion, spawnArgs and call are kb/ask's, unchanged.
       function readQuestion(input) {
@@ -6190,28 +6223,72 @@ agents:
 
       function rowsOf(res) { return res.chunks || res.results || res.rows || res.documents || []; }
 
+      // sectionOf is the annotated section a hit lies in: the chunk its
+      // nearest summary was written on when that summary is a section's (level
+      // branch), the hit itself when the summary names no other chunk; "" when
+      // the nearest summary is the document's, or there is none.
+      function sectionOf(r) {
+        var s = r.summary;
+        if (!s || typeof s !== "object" || s.level !== "branch") { return ""; }
+        var id = typeof s.chunk_id === "string" ? s.chunk_id : r.chunk_id;
+        return typeof id === "string" && ID_SHAPE.test(id) ? id : "";
+      }
+
       // addRows adds one search list: 2 per document however many of its
-      // passages the list holds, 1 more for a document in the top 10.
-      function addRows(set, rows) {
-        var seen = newSet();
+      // passages the list holds, 1 more for a document in the top 10; and the
+      // same per section to secs (secs.w: section -> weight, secs.doc: section
+      // -> its document).
+      function addRows(set, rows, secs) {
+        var seen = newSet(), seenSec = newSet();
         for (var i = 0; i < rows.length; i++) {
           var r = rows[i] || {};
           if (r.folder) { continue; }
           if (typeof r.path === "string" && /\/_annotation$/.test(r.path)) { continue; }
           var id = r.document_id;
-          if (typeof id !== "string" || !ID_SHAPE.test(id) || seen[id]) { continue; }
-          seen[id] = 1;
-          set[id] = (set[id] || 0) + 2 + (i < 10 ? 1 : 0);
+          if (typeof id !== "string" || !ID_SHAPE.test(id)) { continue; }
+          var w = 2 + (i < 10 ? 1 : 0);
+          if (!seen[id]) {
+            seen[id] = 1;
+            set[id] = (set[id] || 0) + w;
+          }
+          var sec = sectionOf(r);
+          if (sec && !seenSec[sec]) {
+            seenSec[sec] = 1;
+            secs.w[sec] = (secs.w[sec] || 0) + w;
+            secs.doc[sec] = id;
+          }
         }
       }
 
-      // search adds one search's rows and returns the search's result.
-      function search(set, query, extra) {
-        var a = { op: "search", query: query, limit: SEARCH_LIMIT };
+      // search adds one search's rows and returns the search's result. Every
+      // search asks with_summary for the section ids (sectionOf); a summary_chars
+      // of 1 keeps the abstracts out of the result, which code never reads.
+      function search(set, secs, query, extra) {
+        var a = { op: "search", query: query, limit: SEARCH_LIMIT, with_summary: true, summary_chars: 1 };
         for (var k in extra) { a[k] = extra[k]; }
         var res = doc(a);
-        addRows(set, rowsOf(res));
+        addRows(set, rowsOf(res), secs);
         return res;
+      }
+
+      // largeGuides returns which of ids (kept documents with a hit section)
+      // hold at least GUIDE_CHUNKS live chunks, counted in one query. The ids
+      // match ID_SHAPE (hex digits and dashes), so each is a safe SQL literal.
+      // It throws when the count fails.
+      function largeGuides(ids) {
+        var lits = [];
+        for (var i = 0; i < ids.length; i++) {
+          if (!ID_SHAPE.test(ids[i])) { throw new Error("internal: not an id"); }
+          lits.push("'" + ids[i] + "'");
+        }
+        var res = doc({ op: "query_chunks", sql: "SELECT document_id, COUNT(*) FROM chunks WHERE document_id IN (" +
+          lits.join(", ") + ") AND invalid_at IS NULL GROUP BY document_id" });
+        var rows = res.rows || [], out = newSet();
+        for (i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          if (r && typeof r[0] === "string" && Number(r[1]) >= GUIDE_CHUNKS) { out[r[0]] = 1; }
+        }
+        return out;
       }
 
       // clauses splits a question into its parts, dropping the lead-in.
@@ -6259,24 +6336,51 @@ agents:
 
       // gather returns {ids: the kept candidates, best first, cut: how many
       // more there were, counted: the documents the passage search's facet
-      // window counted, or -1 when it reported no count}. It throws when a
-      // read fails.
+      // window counted, or -1 when it reported no count, sec: each kept
+      // section -> its document, docs and sections: how many of each were
+      // kept, secErr: why the size count failed, or ""}. It throws when a
+      // search or a relation read fails.
       function gather(q) {
         var P = newSet(), S = newSet(), M = newSet(), C = newSet(), E = newSet();
-        var pr = search(P, q, { facets: ["type", "folder"], facet_window: 500 });
-        search(S, q, { annotations: "only", annotation_levels: ["document"] });
-        search(M, q, { annotations: "include" });
+        var secs = { w: newSet(), doc: newSet() };
+        var pr = search(P, secs, q, { facets: ["type", "folder"], facet_window: 500 });
+        search(S, secs, q, { annotations: "only", annotation_levels: ["document"] });
+        search(M, secs, q, { annotations: "include" });
         var cl = clauses(q);
         for (var i = 0; i < cl.length; i++) {
-          search(C, cl[i], {});
-          search(C, cl[i], { annotations: "include" });
+          search(C, secs, cl[i], {});
+          search(C, secs, cl[i], { annotations: "include" });
         }
         var found = union(P, S, M, C);
         edges(E, found);
-        var all = ranked(union(found, E));
+        var pool = union(found, E);
+
+        // Large guides: only documents the cap keeps can have sections kept
+        // (a section never weighs more than its document), so only those with
+        // a hit section are counted.
+        var hasSec = newSet(), probe = [];
+        for (var s in secs.doc) { hasSec[secs.doc[s]] = 1; }
+        var top = ranked(pool).slice(0, CAP);
+        for (i = 0; i < top.length; i++) { if (hasSec[top[i]]) { probe.push(top[i]); } }
+        var large = newSet(), secErr = "";
+        if (probe.length) {
+          try { large = largeGuides(probe); } catch (e) { secErr = errText(e); }
+        }
+        var per = newSet(), secOf = newSet(), byW = ranked(secs.w);
+        for (i = 0; i < byW.length; i++) {
+          var d = secs.doc[byW[i]];
+          if (!large[d] || (per[d] || 0) >= GUIDE_SECTIONS) { continue; }
+          per[d] = (per[d] || 0) + 1;
+          pool[byW[i]] = secs.w[byW[i]];
+          secOf[byW[i]] = d;
+        }
+
+        var all = ranked(pool), ids = all.slice(0, CAP), sec = newSet(), nsec = 0;
+        for (i = 0; i < ids.length; i++) { if (secOf[ids[i]]) { sec[ids[i]] = secOf[ids[i]]; nsec++; } }
         var dc = pr && pr.facets ? pr.facets.documents_counted : undefined;
-        return { ids: all.slice(0, CAP), cut: Math.max(0, all.length - CAP),
-                 counted: typeof dc === "number" && dc >= 0 ? dc : -1 };
+        return { ids: ids, cut: Math.max(0, all.length - CAP),
+                 counted: typeof dc === "number" && dc >= 0 ? dc : -1,
+                 sec: sec, docs: ids.length - nsec, sections: nsec, secErr: secErr };
       }
 
       // ---- 2. screen ----
@@ -6289,20 +6393,50 @@ agents:
         return "Document " + JSON.stringify({ op: "documents_summary", scope: "tenant", document_ids: ids, with_summary: true });
       }
 
+      // annotationCall reads one section's own brief and abstract.
+      function annotationCall(id) {
+        return "Document " + JSON.stringify({ op: "get_annotation", scope: "tenant", id: id, level: "branch" });
+      }
+
+      // split parts ids into documents and sections (SEC), each in order.
+      function split(ids) {
+        var docs = [], secs = [];
+        for (var i = 0; i < ids.length; i++) { (SEC[ids[i]] ? secs : docs).push(ids[i]); }
+        return { docs: docs, secs: secs };
+      }
+
+      // readCalls is the read calls for ids, one per line: one
+      // documents_summary call for the documents, one get_annotation call per
+      // section.
+      function readCalls(p) {
+        var out = p.docs.length ? [summaryCall(p.docs)] : [];
+        for (var i = 0; i < p.secs.length; i++) { out.push(annotationCall(p.secs[i])); }
+        return out.join("\n");
+      }
+
       function screenBlock(ids) {
-        return "SCREEN. These are candidate documents for the question. Sort them as your " +
-          "instructions say for screening. Read their briefs with this ONE call, exactly as " +
-          "written (document_ids is a list of strings, never one string):\n" + summaryCall(ids) +
+        var p = split(ids);
+        return "SCREEN. These are candidates for the question: documents" +
+          (p.secs.length ? ", and sections of large documents" : "") + ". Sort them as your " +
+          "instructions say for screening. Read their briefs with these calls, one per line, exactly as " +
+          "written (document_ids is a list of strings, never one string):\n" + readCalls(p) +
           "\nThen reply with only the FITS and SET ASIDE lines, which together name every id below." +
           "\n\nCandidates (" + ids.length + "):\n" + ids.join("\n");
       }
 
       function composeBlock(ids) {
-        return "COMPOSE. Screening found that the documents below fit the question. " +
-          "Compose your reply: one line and a link per document, as your instructions say for composing. " +
+        var p = split(ids);
+        var t = "COMPOSE. Screening found that the documents" + (p.secs.length ? " and sections" : "") +
+          " below fit the question. " +
+          "Compose your reply: one line and a link per document" + (p.secs.length ? " or section" : "") +
+          ", as your instructions say for composing. " +
+          (p.secs.length ? "Link a section as [title](loom:chunk/<id>?scope=tenant), a document as [title](loom:doc/<id>?scope=tenant). " : "") +
           "The knowledge base is read-only and nothing is to be stored: your reply text is the whole result. " +
           "Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines." +
-          "\n\nFitting documents (" + ids.length + "):\n" + ids.join("\n");
+          " You may read their briefs with these calls, exactly as given:\n" + readCalls(p);
+        if (p.docs.length) { t += "\n\nFitting documents (" + p.docs.length + "):\n" + p.docs.join("\n"); }
+        if (p.secs.length) { t += "\n\nFitting sections (" + p.secs.length + "):\n" + p.secs.join("\n"); }
+        return t;
       }
 
       // slices cuts a list into runs of at most n.
@@ -6453,9 +6587,12 @@ agents:
       // ---- 4. answer ----
 
       function linkList(ids, why) {
+        var p = split(ids);
         var out = ["Note: the overview could not be written (" + why + "), so these are the " + ids.length +
-          " documents that fit, by id."];
-        for (var i = 0; i < ids.length; i++) { out.push("- [" + ids[i] + "](loom:doc/" + ids[i] + "?scope=tenant)"); }
+          (p.secs.length ? " documents and sections" : " documents") + " that fit, by id."];
+        for (var i = 0; i < ids.length; i++) {
+          out.push("- [" + ids[i] + "](loom:" + (SEC[ids[i]] ? "chunk" : "doc") + "/" + ids[i] + "?scope=tenant)");
+        }
         return out.join("\n");
       }
 
@@ -6485,6 +6622,7 @@ agents:
           var t0 = plainWalk("the searches found no candidates");
           return { final_text: t0 + "\nSURVEY: candidates 0 (cut " + g.cut + ") | rounds 1 | RUNS: " + runs.join(", ") };
         }
+        SEC = g.sec;
 
         // Screen: every slice once, then each failed slice (and the ids a
         // good round left out) once more as two halves. Nothing a failed
@@ -6512,34 +6650,39 @@ agents:
           pass = again;
         }
 
+        // A section whose whole document fits is left out of the answer: the
+        // document's line covers it.
         var left = [], fitIDs = [];
         for (i = 0; i < g.ids.length; i++) {
-          if (!accounted[g.ids[i]]) { left.push(g.ids[i]); }
-          if (fits[g.ids[i]]) { fitIDs.push(g.ids[i]); }
+          var id = g.ids[i];
+          if (!accounted[id]) { left.push(id); }
+          if (fits[id] && !(SEC[id] && fits[SEC[id]])) { fitIDs.push(id); }
         }
 
         var body;
         if (fitIDs.length) {
           body = composeAnswer(fitIDs);
         } else if (left.length < g.ids.length) {
-          body = "None of the " + (g.ids.length - left.length) + " candidate documents fits the question.";
+          body = "None of the " + (g.ids.length - left.length) + (g.sections ? " candidates" : " candidate documents") + " fits the question.";
         } else {
           body = "No answer: no screening round could be used.";
         }
 
         // reached: the gather step kept at least as many documents as the
         // passage search's facet window counted. A proxy, not a set check: the
-        // facets give counts, not ids.
-        var reached = g.counted >= 0 && g.ids.length >= g.counted;
+        // facets give counts, not ids. Sections are not documents, so they do
+        // not count toward it.
+        var reached = g.counted >= 0 && g.docs >= g.counted;
         var cov;
         if (!left.length && g.cut === 0 && reached) {
           cov = "COVERAGE: complete";
         } else {
           cov = "COVERAGE: partial\nUNCOVERED: " + left.length + " candidates not screened; " + g.cut + " beyond the cap of " + CAP +
             (reached ? "" : g.counted < 0 ? "; the searches may not have reached every matching document" :
-              "; the passage search counted " + g.counted + " documents and " + g.ids.length + " were kept");
+              "; the passage search counted " + g.counted + " documents and " + g.docs + " were kept");
         }
-        var tail = "SURVEY: candidates " + g.ids.length + " (cut " + g.cut + ") | slices " + sliceCount +
+        var tail = "SURVEY: candidates " + g.ids.length + " (cut " + g.cut + ") | sections " +
+          (g.secErr ? "failed (" + g.secErr.replace(/\s+/g, " ") + ")" : g.sections) + " | slices " + sliceCount +
           " | failed slices " + failed + " | rounds " + runs.length + " | RUNS: " + runs.join(", ");
         return { final_text: body + "\n\n" + cov + "\n" + tail };
       }
@@ -6664,12 +6807,16 @@ agents:
 
       {{memory:ontology}}
 
-      SCREENING. When the prompt says SCREEN and lists candidate document ids,
-      sort them instead of walking:
-        1. Read their briefs with ONE documents_summary call: make the call the
-           prompt gives, exactly as written. "document_ids" is a list of id
-           strings, never one string holding the list.
-        2. Decide for each id whether the document fits the question.
+      SCREENING. When the prompt says SCREEN and lists candidate ids, sort them
+      instead of walking. A candidate is a document, or a section of a large
+      document (a chunk id):
+        1. Read their briefs with the calls the prompt gives, exactly as
+           written: ONE documents_summary call for the documents ("document_ids"
+           is a list of id strings, never one string holding the list), and
+           one get_annotation call per section.
+        2. Decide for each id whether it fits the question: a document by its
+           brief, a section by its own brief (the rest of its document may be
+           about other things).
         3. Reply with ONLY these two lines, which together name every listed id
            (write "none" for an empty list):
              FITS: <id>, <id>, ...
@@ -6677,10 +6824,12 @@ agents:
         No answer, no links, no other line.
 
       COMPOSING. When the prompt says COMPOSE and lists the ids of the
-      documents that fit the question, compose your reply instead of walking:
-        1. You may read their briefs with documents_summary ("document_ids" as
-           a list, "with_summary": true).
-        2. Compose your reply: one line and a link per listed document.
+      documents (and sections) that fit the question, compose your reply
+      instead of walking:
+        1. You may read their briefs with the calls the prompt gives.
+        2. Compose your reply: one line and a link per listed document. A
+           listed section gets its own line, linked as
+           [title](loom:chunk/<id>?scope=tenant).
         3. Add a document that is not listed only if you found it yourself and
            it fits.
         The knowledge base is read-only and nothing is to be stored: your reply text is the whole result.
@@ -6841,6 +6990,10 @@ agents:
       Briefs of several documents at once (SIDEWAYS, SCREENING): the form with
       "document_ids" and "with_summary".
       {{help:Document/documents_summary}}
+
+      One section's brief (SCREENING, COMPOSING): get_annotation with the
+      section's chunk id as "id" and "level": "branch".
+      {{help:Document/get_annotation}}
 
       Documents by title or by date (a named document, a time, before saying
       there is no answer): the forms with "title_contains", and with
