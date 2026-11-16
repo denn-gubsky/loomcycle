@@ -9,10 +9,15 @@ import (
 
 // The render log (RFC GR §4.8) records who rendered a document: a run, or a
 // person who downloaded it (the off-run export). A user's own scope goes
-// whole with the user; what is left are rows in the tenant's shared and
-// agent scopes naming the subject. Those rows are kept — they say a file was
-// made, with hashes and sizes, never content — and the subject's name is
-// cleared from them.
+// whole with the user; what is left are rows naming the subject in the
+// tenant's other scopes — shared, agent, and other users' (an operator who
+// downloads a user's document is recorded in that user's scope). Those rows
+// are kept — they say a file was made, with hashes and sizes, never
+// content — and the subject's name is cleared from them.
+//
+// Known limit: an admin principal with no tenant who downloads from another
+// tenant is recorded in that tenant's scopes, which an erasure scoped to
+// one tenant does not sweep.
 
 // renderActorPlane is the plane key in the report and the result.
 const renderActorPlane = "document_render_actors"
@@ -33,7 +38,7 @@ func (s *Service) renderActorRows(ctx context.Context, tenant, subject string, c
 	want := sqlScopeTenant(tenant)
 	total := 0
 	for _, sk := range scopes {
-		if sk.Tenant != want || (sk.Scope != "tenant" && sk.Scope != "agent") {
+		if sk.Tenant != want || (sk.Scope != "tenant" && sk.Scope != "agent" && sk.Scope != "user") {
 			continue
 		}
 		key := sqlmem.ScopeKey{Tenant: sk.Tenant, Scope: sk.Scope, ScopeID: sk.ScopeID}

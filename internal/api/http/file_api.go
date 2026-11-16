@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
@@ -483,7 +484,18 @@ func (s *Server) fileTwinRender(ctx context.Context, in fileTwinInput) (connecto
 		return fileTwinRefusal(tools.CategoryBusiness, "file: no dynamic_root volume is configured, so there is no volume to write to",
 			"An operator must mark one volume dynamic_root: true."), nil
 	}
-	p, _ := auth.PrincipalFromContext(ctx)
+	p, hasP := auth.PrincipalFromContext(ctx)
+	// The document is read as the MCP document tool reads it: off the
+	// operator plane (a member), an agent's scope is reached only from a run
+	// of that agent, so it is refused here and the session's agent name is
+	// not carried into the read.
+	if !memberpath.OperatorPlane(p, hasP) {
+		if in.Scope == "agent" {
+			return fileTwinRefusal(tools.CategoryValidation, "file: render: not found",
+				"An agent's scope is reached from a run of that agent: pass scope user or tenant."), nil
+		}
+		ctx = tools.WithAgentName(ctx, "")
+	}
 	binding, res, ok := s.fileTwinVolumeTarget(ctx, "render", in.To, dynRoot, p)
 	if !ok {
 		return res, nil

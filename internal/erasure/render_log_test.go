@@ -40,8 +40,12 @@ func TestService_ErasureClearsTheSubjectFromTheRenderLog(t *testing.T) {
 	tenant := sqlmem.ScopeKey{Tenant: "acme", Scope: "tenant", ScopeID: "acme"}
 	agent := sqlmem.ScopeKey{Tenant: "acme", Scope: "agent", ScopeID: "writer"}
 	other := sqlmem.ScopeKey{Tenant: "evil", Scope: "tenant", ScopeID: "evil"}
+	// alice, an operator, downloaded one of bob's documents: she is
+	// recorded in bob's own scope.
+	bobs := sqlmem.ScopeKey{Tenant: "acme", Scope: "user", ScopeID: "bob"}
 	mk(tenant, "alice", "bob", "alice")
 	mk(agent, "alice")
+	mk(bobs, "alice", "bob")
 	mk(other, "alice")
 	// A scope that predates the render log.
 	if _, err := dp.Exec(ctx, sqlmem.ScopeKey{Tenant: "acme", Scope: "agent", ScopeID: "old"}, `CREATE TABLE chunks (id TEXT)`, nil, 0); err != nil {
@@ -53,15 +57,15 @@ func TestService_ErasureClearsTheSubjectFromTheRenderLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dry.Deleted["document_render_actors"] != 3 {
-		t.Errorf("dry run counts %d render rows, want 3 (errors %v)", dry.Deleted["document_render_actors"], dry.Errors)
+	if dry.Deleted["document_render_actors"] != 4 {
+		t.Errorf("dry run counts %d render rows, want 4 (errors %v)", dry.Deleted["document_render_actors"], dry.Errors)
 	}
 	res, err := s.Execute(ctx, erasure.ExecuteRequest{Tenant: "acme", Subject: "alice", Confirm: "alice"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Deleted["document_render_actors"] != 3 || len(res.Errors) != 0 {
-		t.Errorf("erasure cleared %d render rows (errors %v), want 3", res.Deleted["document_render_actors"], res.Errors)
+	if res.Deleted["document_render_actors"] != 4 || len(res.Errors) != 0 {
+		t.Errorf("erasure cleared %d render rows (errors %v), want 4", res.Deleted["document_render_actors"], res.Errors)
 	}
 	count := func(key sqlmem.ScopeKey, actor string) int {
 		r, err := dp.Query(ctx, key, `SELECT COUNT(*) FROM document_renders WHERE actor = ?`, []any{actor})
@@ -71,7 +75,7 @@ func TestService_ErasureClearsTheSubjectFromTheRenderLog(t *testing.T) {
 		n, _ := r.Rows[0][0].(int64)
 		return int(n)
 	}
-	if count(tenant, "alice") != 0 || count(agent, "alice") != 0 || count(tenant, "") != 2 || count(tenant, "bob") != 1 {
+	if count(tenant, "alice") != 0 || count(agent, "alice") != 0 || count(bobs, "alice") != 0 || count(tenant, "") != 2 || count(tenant, "bob") != 1 || count(bobs, "bob") != 1 {
 		t.Error("the subject's name is still in the render log, or the rows were lost")
 	}
 	if count(other, "alice") != 1 {

@@ -758,3 +758,14 @@ func TestFileTwin_RenderWritesADocumentIntoTheCallersVolume(t *testing.T) {
 		t.Error("another tenant wrote into the volume")
 	}
 }
+
+// A member renders as the MCP document tool reads: an agent's scope is
+// reached only from a run of that agent, so render refuses it.
+func TestFileTwin_RenderRefusesAMemberTheAgentScope(t *testing.T) {
+	f := newFileTwinFixture(t)
+	f.mkVolume(t, "acme", "reports", "rw")
+	_, text, isErr := f.call(t, twinOwner, map[string]any{"op": "render", "document": "d1", "scope": "agent", "format": "docx", "to": "volume:reports:x.docx"})
+	if !isErr || !strings.Contains(text, "render: not found") {
+		t.Fatalf("member render of the agent scope = %s", text)
+	}
+}
