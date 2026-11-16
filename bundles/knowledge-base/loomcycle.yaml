@@ -5785,10 +5785,13 @@ agents:
       // kb/ask — one question in, one answer out, from the tenant knowledge base.
       //
       // 1. classify(question): is it asking for an overview (a list of everything
-      //    held on a subject, over several documents)? A cascade: the decision model
-      //    first; when its score falls between LOW and HIGH, or the call fails, the
-      //    small chat agent kb/classify answers YES or NO. With run metadata
-      //    classifier "agent" only kb/classify is asked.
+      //    held on a subject, over several documents)? First a rule in code: a
+      //    question asking for THE overview, guide or full picture of one thing
+      //    (knownItem) is not; it wants the one document that describes it.
+      //    Then a cascade: the decision model first; when its score falls
+      //    between LOW and HIGH, or the call fails, the small chat agent
+      //    kb/classify answers YES or NO. With run metadata classifier "agent"
+      //    only kb/classify is asked.
       // 2. An overview goes to kb/survey, which gathers the candidate documents in
       //    code and has kb/walker screen them; anything else to kb/search, the
       //    cheaper path.
@@ -5797,8 +5800,9 @@ agents:
       //    - the search did not complete, or gave no answer (whatever the score:
       //      the alternative is no answer at all); or
       //    - it ends "COVERAGE: partial", unless the question is surely not an
-      //      overview: a decision score at or below LOW, or a kb/classify NO with
-      //      no decision score (the decision model skipped, failed or absent).
+      //      overview: the known-item rule, a decision score at or below LOW, or
+      //      a kb/classify NO with no decision score (the decision model
+      //      skipped, failed or absent).
       //    A walk that gives no answer keeps the search's.
       // 4. The answer is the chosen agent's, without kb/search's COVERAGE line
       //    (kb/survey's COVERAGE line, computed by its code, stays), followed by
@@ -5824,6 +5828,17 @@ agents:
       var LOW = 0.1;       // at or below: not an overview, no second opinion
       var MAX_IDS = 40;    // ids handed to the walker, at most
       var ASK = "Is the question asking for an overview: a list of everything a knowledge base holds on a subject, spread over several documents?";
+
+      // KNOWN: the question asks for THE overview, guide or full picture of one
+      // thing. Measured: "Give me the full picture of how the runtime is put
+      // together, end to end" (the answer is one architecture note) went to
+      // the survey in 6 runs of 6, and each answer listed the note among 29-56
+      // documents without opening it. BROAD: the question asks for the list
+      // after all ("everything", "all", "documents", "what do we hold"), and
+      // stays with the cascade. The definite article is the signal: "an
+      // overview of X" asks for a summary of what is held, and stays too.
+      var KNOWN = /\bthe\s+(?:(?:full|whole|complete|big|overall|general|main|end[- ]to[- ]end)\s+)?(?:picture|overview|guide|explanation|description|walkthrough|walk-through|introduction|tour|write-?up)\s+(?:of|to|on|for|about)\b/i;
+      var BROAD = /\b(?:everything|anything|all|every|each|list|documents?|docs|guides|notes|papers|rfcs|we\s+(?:hold|have|keep|store)|is\s+(?:held|documented|written|recorded|stored))\b/i;
 
       // runs records every child this run started, classifier included.
       var runs = [];
@@ -5866,9 +5881,11 @@ agents:
 
       // classify is the one place the question is judged, so the cascade can
       // change without touching the routing. It never throws.
-      // Returns {overview, score: 0..1 or null, source: decision|agent|agent-unreadable,
+      // Returns {overview, score: 0..1 or null,
+      // source: known-item|decision|agent|agent-unreadable,
       // error: null or the decision model's failure code}.
       function classify(question, metadata) {
+        if (knownItem(question)) { return { overview: false, score: null, source: "known-item", error: null }; }
         if (metadata && metadata.classifier === "agent") {
           return askAgent(null, null);
         }
@@ -5876,6 +5893,12 @@ agents:
         if (d.score !== null && d.score >= HIGH) { return { overview: true, score: d.score, source: "decision", error: null }; }
         if (d.score !== null && d.score <= LOW) { return { overview: false, score: d.score, source: "decision", error: null }; }
         return askAgent(d.score, d.error);
+      }
+
+      // knownItem reads the question as data: it asks for the one document
+      // that describes a thing, not for everything held on it.
+      function knownItem(question) {
+        return KNOWN.test(question) && !BROAD.test(question);
       }
 
       // decide asks the decision model. Returns {score: 0..1 or null, error}.
@@ -5991,10 +6014,12 @@ agents:
         } else {
           var s = splitCoverage(res.final_text || "");
           var done = res.status === "completed" && s.text !== "";
-          // Sure it is not an overview: the decision model scored it at or below
-          // LOW, or kb/classify said NO with no decision score beside it (skipped,
-          // failed or not configured). A NO after a middle-band score is not sure.
-          var sureNot = (c.source === "decision" && c.score !== null && c.score <= LOW) ||
+          // Sure it is not an overview: the known-item rule, the decision model
+          // scored it at or below LOW, or kb/classify said NO with no decision
+          // score beside it (skipped, failed or not configured). A NO after a
+          // middle-band score is not sure.
+          var sureNot = c.source === "known-item" ||
+            (c.source === "decision" && c.score !== null && c.score <= LOW) ||
             (c.source === "agent" && !c.overview && c.score === null);
           text = s.text;
           var why = "";
