@@ -78,6 +78,9 @@ func validateMCPServers(c *Config) error {
 		if err := ValidateBinaryResults(srv.BinaryResults); err != nil {
 			return fmt.Errorf("mcp_servers.%s: %w", name, err)
 		}
+		if err := ValidateBinaryResultsMinBytes(srv.BinaryResults, srv.BinaryResultsMinBytes); err != nil {
+			return fmt.Errorf("mcp_servers.%s: %w", name, err)
+		}
 	}
 	return nil
 }

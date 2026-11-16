@@ -107,7 +107,7 @@ const mcpServerDefInputSchema = `{
         "headers":   {"type": "object", "additionalProperties": {"type": "string"}},
         "description": {"type": "string"},
         "binary_results": {"type": "string", "enum": ["passthrough","capture"], "description": "passthrough (default) hands the server's text to the model as it came. capture keeps a file the server returns as base64 inside a text block (whole, or as a JSON string field) in the run's inbox and hands the model a one-line reference instead. Opt in only for a server that returns files that way: a long opaque token could otherwise look like one."},
-        "binary_results_min_bytes": {"type": "integer", "description": "Under capture: the shortest base64 string (in characters) considered a file. Default 4096. Lower it for a server that returns small files, such as short text notes, as base64. A candidate is kept only when it decodes to a recognisable file or readable text, so an opaque id is left alone."}
+        "binary_results_min_bytes": {"type": "integer", "minimum": 128, "description": "Under capture: the shortest base64 string (in characters) considered a file. Default 4096. Lower it (at least 128) for a server that returns small files, such as short text notes, as base64; only with binary_results: capture. A candidate is kept only when it decodes to a recognisable file or readable text, so an opaque id is left alone."}
       }
     },
     "description":   {"type": "string"},
@@ -934,6 +934,9 @@ func definitionOperatorAuthored(raw json.RawMessage) bool {
 // store.
 func (m *MCPServerDef) validateOverlay(ov mcpServerOverlay) error {
 	if err := config.ValidateBinaryResults(ov.BinaryResults); err != nil {
+		return err
+	}
+	if err := config.ValidateBinaryResultsMinBytes(ov.BinaryResults, ov.BinaryResultsMinBytes); err != nil {
 		return err
 	}
 	switch ov.Transport {

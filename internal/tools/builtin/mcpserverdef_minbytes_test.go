@@ -4,12 +4,43 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/mcp"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 )
+
+// A minimum under the floor, or one set where capture is off, is refused at
+// create, at fork and at restore, naming the key, as the yaml load refuses it.
+func TestMCPServerDefTool_BinaryResultsMinBytesRefused(t *testing.T) {
+	tool, ctx, cleanup := mcpServerDefFixture(t)
+	defer cleanup()
+	validate := MCPServerDefBodyValidator(tool.Cfg)
+
+	for _, tc := range []struct{ overlay, says string }{
+		{`"binary_results":"capture","binary_results_min_bytes":100`, "128"},
+		{`"binary_results":"capture","binary_results_min_bytes":-5`, "128"},
+		{`"binary_results_min_bytes":256`, "capture"},
+		{`"binary_results":"passthrough","binary_results_min_bytes":256`, "capture"},
+	} {
+		res := execDef(t, tool, ctx, `{"op":"create","name":"files","discover":false,"overlay":{`+brURL+`,`+tc.overlay+`}}`)
+		if !res.IsError || !strings.Contains(res.Text, "binary_results_min_bytes") || !strings.Contains(res.Text, tc.says) {
+			t.Errorf("create %s: %s", tc.overlay, res.Text)
+		}
+		if err := validate(json.RawMessage(`{` + brURL + `,` + tc.overlay + `}`)); err == nil || !strings.Contains(err.Error(), "binary_results_min_bytes") {
+			t.Errorf("restore validator %s: err = %v", tc.overlay, err)
+		}
+	}
+
+	// A fork onto a passthrough def that sets only the minimum does nothing.
+	createDefFor(t, tool, ctx, "plain", `{`+brURL+`}`)
+	res := execDef(t, tool, ctx, `{"op":"fork","name":"plain","promote":true,"discover":false,"overlay":{"binary_results_min_bytes":256}}`)
+	if !res.IsError || !strings.Contains(res.Text, "binary_results_min_bytes") {
+		t.Errorf("fork of a passthrough def with only a minimum: %s", res.Text)
+	}
+}
 
 // The minimum set at create reaches the stored body, the registry the pool's
 // result policy reads, a fresh boot's rehydrated registry and a fork that does

@@ -63,3 +63,29 @@ func TestLoad_MCPBinaryResultsMinBytesReachesTheServer(t *testing.T) {
 		t.Errorf("absent binary_results_min_bytes = %d, want 0", got)
 	}
 }
+
+// A minimum under the floor would make an ordinary id a candidate, and one
+// set without capture does nothing: both refuse the load, naming the server,
+// the key and (for the floor) the floor.
+func TestLoad_MCPBinaryResultsMinBytesRefused(t *testing.T) {
+	for _, tc := range []struct{ yaml, says string }{
+		{"    binary_results: capture\n    binary_results_min_bytes: 100\n", "128"},
+		{"    binary_results: capture\n    binary_results_min_bytes: -1\n", "128"},
+		{"    binary_results_min_bytes: 256\n", "capture"},
+		{"    binary_results: passthrough\n    binary_results_min_bytes: 256\n", "capture"},
+	} {
+		_, err := loadYAMLString(t, binaryResultsYAMLHead+tc.yaml)
+		if err == nil {
+			t.Errorf("%q: loaded", tc.yaml)
+			continue
+		}
+		for _, want := range []string{"mcp_servers.ms365", "binary_results_min_bytes", tc.says} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%q: err = %v, want it to say %q", tc.yaml, err, want)
+			}
+		}
+	}
+	if _, err := loadYAMLString(t, binaryResultsYAMLHead+"    binary_results: capture\n    binary_results_min_bytes: 128\n"); err != nil {
+		t.Errorf("the floor itself: %v", err)
+	}
+}
