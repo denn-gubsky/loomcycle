@@ -142,10 +142,14 @@ func (h *htmlWriter) block(n Node, depth int) {
 	}
 	switch n.Kind {
 	case KindParagraph:
-		h.s("<p>" + h.inlines(n.Children) + "</p>\n")
+		h.s("<p>")
+		h.inlines(n.Children, 0)
+		h.s("</p>\n")
 	case KindHeading:
 		lvl := strconv.Itoa(clampLevel(n.Level))
-		h.s("<h" + lvl + ">" + h.inlines(n.Children) + "</h" + lvl + ">\n")
+		h.s("<h" + lvl + ">")
+		h.inlines(n.Children, 0)
+		h.s("</h" + lvl + ">\n")
 	case KindRule:
 		h.s("<hr>\n")
 	case KindCode:
@@ -157,7 +161,9 @@ func (h *htmlWriter) block(n Node, depth int) {
 	case KindDiagram:
 		h.s(`<figure class="diagram"><pre><code>` + esc(n.Text) + "</code></pre><figcaption>" + esc(oneLine(n.Lang)) + " diagram</figcaption></figure>\n")
 	case KindImage:
-		h.s("<p>" + h.image(n) + "</p>\n")
+		h.s("<p>")
+		h.image(n)
+		h.s("</p>\n")
 	case KindQuote:
 		h.s("<blockquote>\n")
 		h.blocks(n.Children, depth+1)
@@ -176,7 +182,7 @@ func (h *htmlWriter) block(n Node, depth int) {
 			h.s("<li>")
 			// A tight item's single paragraph reads as the item's text.
 			if len(it.Children) == 1 && it.Children[0].Kind == KindParagraph {
-				h.s(h.inlines(it.Children[0].Children))
+				h.inlines(it.Children[0].Children, 0)
 			} else {
 				h.s("\n")
 				h.blocks(it.Children, depth+1)
@@ -204,7 +210,9 @@ func (h *htmlWriter) block(n Node, depth int) {
 						h.s(` style="text-align:` + n.Align[i] + `"`)
 					}
 				}
-				h.s(">" + h.inlines(c.Children) + "</" + tag + ">")
+				h.s(">")
+				h.inlines(c.Children, 0)
+				h.s("</" + tag + ">")
 			}
 			h.s("</tr>\n")
 		}
@@ -212,38 +220,46 @@ func (h *htmlWriter) block(n Node, depth int) {
 	}
 }
 
-func (h *htmlWriter) inlines(ns []Node) string {
-	var b strings.Builder
+// inlines writes inline nodes straight to the capped writer, so a paragraph
+// is never built whole in memory: one that names a picture thousands of
+// times stops at MaxOutput rather than after it was assembled.
+func (h *htmlWriter) inlines(ns []Node, depth int) {
+	if depth > maxDepth {
+		return
+	}
 	for _, n := range ns {
+		if h.w.err != nil {
+			return
+		}
 		switch n.Kind {
 		case KindText:
-			b.WriteString(esc(n.Text))
+			h.s(esc(n.Text))
 		case KindBreak:
-			b.WriteString("<br>\n")
-		case KindEmph:
-			b.WriteString("<em>" + h.inlines(n.Children) + "</em>")
-		case KindStrong:
-			b.WriteString("<strong>" + h.inlines(n.Children) + "</strong>")
-		case KindStrike:
-			b.WriteString("<del>" + h.inlines(n.Children) + "</del>")
+			h.s("<br>\n")
+		case KindEmph, KindStrong, KindStrike:
+			tag := map[string]string{KindEmph: "em", KindStrong: "strong", KindStrike: "del"}[n.Kind]
+			h.s("<" + tag + ">")
+			h.inlines(n.Children, depth+1)
+			h.s("</" + tag + ">")
 		case KindCodeSpan:
-			b.WriteString("<code>" + esc(n.Text) + "</code>")
+			h.s("<code>" + esc(n.Text) + "</code>")
 		case KindLink:
 			href, ok := safeHref(n)
 			if !ok {
-				b.WriteString(h.inlines(n.Children))
+				h.inlines(n.Children, depth+1)
 				continue
 			}
-			b.WriteString(`<a href="` + esc(href) + `"`)
+			h.s(`<a href="` + esc(href) + `"`)
 			if n.Anchor == "" {
-				b.WriteString(` rel="noopener noreferrer"`)
+				h.s(` rel="noopener noreferrer"`)
 			}
-			b.WriteString(">" + h.inlines(n.Children) + "</a>")
+			h.s(">")
+			h.inlines(n.Children, depth+1)
+			h.s("</a>")
 		case KindImage:
-			b.WriteString(h.image(n))
+			h.image(n)
 		}
 	}
-	return b.String()
 }
 
 // safeHref is a link's target, checked again here: the Doc may come from a
@@ -258,12 +274,21 @@ func safeHref(n Node) (string, bool) {
 	return "", false
 }
 
-func (h *htmlWriter) image(n Node) string {
+// image writes a picture as a data URL, base64-encoding it into the capped
+// writer as it goes.
+func (h *htmlWriter) image(n Node) {
 	img, ok := h.d.image(n.Asset)
 	if !ok {
-		return esc("[" + n.Alt + "]")
+		h.s(esc("[" + n.Alt + "]"))
+		return
 	}
-	return `<img src="data:` + img.MediaType + `;base64,` + base64.StdEncoding.EncodeToString(img.Data) + `" alt="` + esc(oneLine(n.Alt)) + `">`
+	h.s(`<img src="data:` + img.MediaType + `;base64,`)
+	if h.w.err == nil {
+		enc := base64.NewEncoder(base64.StdEncoding, h.w)
+		_, _ = enc.Write(img.Data)
+		_ = enc.Close()
+	}
+	h.s(`" alt="` + esc(oneLine(n.Alt)) + `">`)
 }
 
 // image finds a picture by name.

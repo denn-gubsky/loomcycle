@@ -444,3 +444,28 @@ func TestBuilder_PicturesPastTheTotalCapAreSkipped(t *testing.T) {
 		t.Fatalf("kept %d pictures of %d MiB (skipped %d)", kept, MaxImage>>20, b.Report.ImagesSkipped)
 	}
 }
+
+// countingDiscard counts what it is sent and keeps none of it.
+type countingDiscard struct{ n int }
+
+func (c *countingDiscard) Write(p []byte) (int, error) { c.n += len(p); return len(p), nil }
+
+// A paragraph that names one large picture many times stops at the output
+// cap while it is written, never assembling the paragraph first.
+func TestWriteHTML_ARepeatedPictureStopsAtTheOutputCap(t *testing.T) {
+	b := NewBuilder("x")
+	pic := b.Image("image/png", make([]byte, 4<<20), "p")
+	uses := make([]Node, 5000)
+	for i := range uses {
+		uses[i] = pic
+	}
+	d, _ := b.Finish()
+	d.Blocks = []Node{{Kind: KindParagraph, Children: uses}}
+	w := &countingDiscard{}
+	if err := Write(context.Background(), w, d, FormatHTML, Options{}); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+	if w.n > MaxOutput {
+		t.Fatalf("%d bytes written past the %d cap", w.n, MaxOutput)
+	}
+}

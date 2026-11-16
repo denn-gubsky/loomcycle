@@ -394,3 +394,12 @@ func (c *capWriter) WriteString(s string) {
 	c.n += len(s)
 	_, c.err = io.WriteString(c.w, s)
 }
+
+// Write lets an encoder stream into the capped writer.
+func (c *capWriter) Write(p []byte) (int, error) {
+	c.WriteString(string(p))
+	if c.err != nil {
+		return 0, c.err
+	}
+	return len(p), nil
+}
