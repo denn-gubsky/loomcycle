@@ -45,6 +45,12 @@ type relFixture struct {
 func newRelFixture(t *testing.T, md string) relFixture {
 	t.Helper()
 	d, base, _ := documentFixture(t)
+	return newRelFixtureOn(t, d, base, md)
+}
+
+// newRelFixtureOn is newRelFixture on a given store (the postgres tier's, say).
+func newRelFixtureOn(t *testing.T, d *Document, base context.Context, md string) relFixture {
+	t.Helper()
 	ctx := installTenantOntology(t, d, base, md, memrank.OntologyConfirmedStatus)
 	f := relFixture{d: d, ctx: ctx}
 	f.docID, _ = newUserDoc(t, d, ctx)

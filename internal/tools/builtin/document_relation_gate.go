@@ -258,6 +258,33 @@ func classAllowed(v relationView, chunkID, typ string, isEntity bool, allowed []
 	return false
 }
 
+// characteristicProblem is the first declared characteristic accepting statement s
+// would break, or nil: a ruling makes a statement live exactly as link_chunks does,
+// so it answers to the same rules. As in gateRelation, a reserved kind and an
+// inactive vocabulary pass; so does a kind the tenant does not declare, which was
+// annotated when it was proposed and whose acceptance is the reviewer's call.
+//
+// The statement a revision corrects needs no exclusion here: a revision keeps its
+// original's ends, the functional check passes a statement of the same target, and
+// the asymmetric check only reads the opposite direction.
+func (d *Document) characteristicProblem(ctx context.Context, key sqlmem.ScopeKey, s *statementRow) *relationProblem {
+	if memrank.IsReservedRelation(s.Kind) {
+		return nil
+	}
+	v := d.relationView(ctx)
+	if !v.active {
+		return nil
+	}
+	rel, declared := v.byName[s.Kind]
+	if !declared {
+		return nil
+	}
+	if problems := d.checkCharacteristics(ctx, key, rel, s.FromID, s.ToID); len(problems) > 0 {
+		return &problems[0]
+	}
+	return nil
+}
+
 // checkCharacteristics checks the characteristics a single new statement can break.
 //
 // asymmetric and functional look only at statements a reader is shown — asserted, not

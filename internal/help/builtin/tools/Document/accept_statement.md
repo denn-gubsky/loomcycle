@@ -24,6 +24,13 @@ An accepted relation is shown to every reader. If a judge had found it
 unsupported, accepting overrules that verdict and records the operator as the
 one who judged it; a supporting verdict is kept as it was.
 
+Accepting answers to the tenant's relation characteristics as `link_chunks`
+does: a second target of a `@functional` kind, or the reverse of a live
+`@asymmetric` statement, is refused and the proposal stays proposed.
+
+Accepting a correction (a `propose_statement` with `id`, which carries
+`attributes.revision_of`) retires the statement it corrects in the same write.
+
 ## Arguments
 
 - `id` (required) — the statement, from `list_statements`.
@@ -39,8 +46,11 @@ one who judged it; a supporting verdict is kept as it was.
 - Refused with a permission error inside a run.
 - `no such statement` — check the id and the scope.
 - `not_a_proposal` — the relation is already asserted, by anyone but a judge.
-- `statement_changed` — someone ruled on it while you did; reload it and rule
-  again if it still needs it.
+- `statement_changed` — someone ruled on it while you did, or changed the
+  statement it corrects; reload it and rule again if it still needs it.
+- `characteristic_violation` — accepting it would break a `@functional` or
+  `@asymmetric` relation; retire the existing statement first, or correct it
+  with a revision.
 
 ## Examples
 

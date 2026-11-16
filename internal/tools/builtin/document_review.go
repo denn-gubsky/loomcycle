@@ -26,6 +26,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -741,7 +742,7 @@ func (d *Document) ruleOne(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 		return item, false
 	}
 	if err := d.exec(ctx, key, `INSERT INTO statement_ruling_items (ruling_id, edge_id, prior, fingerprint) VALUES (?, ?, ?, '')`,
-		rulingID, c.s.ID, rulingPriorOf(&c.s)); err != nil {
+		rulingID, c.s.ID, rulingPriorOf(&c.s, nil)); err != nil {
 		return fail("failed", "the ruling could not be recorded, so the statement was not ruled: "+err.Error())
 	}
 	res, err := d.applyRuling(ctx, key, mscope, op, c.s.ID, accept, reason, ruledBy, c.s.Status)
@@ -758,7 +759,7 @@ func (d *Document) ruleOne(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	fp, err := d.statementFingerprint(ctx, key, c.s.ID)
 	if err == nil {
 		err = d.exec(ctx, key, `UPDATE statement_ruling_items SET prior = ?, fingerprint = ? WHERE ruling_id = ? AND edge_id = ?`,
-			rulingPriorOf(res.prior), fp, rulingID, c.s.ID)
+			rulingPriorOf(res.prior, res.retired), fp, rulingID, c.s.ID)
 	}
 	if err != nil {
 		// Ruled, but a revert will find no fingerprint and leave it: undo it by
@@ -805,12 +806,16 @@ type rulingPrior struct {
 	// overturn marks (attributes.judge.audited): the revert puts them back.
 	// Absent for any other statement, whose attributes a ruling never writes.
 	Attributes map[string]any `json:"attributes,omitempty"`
+	// Retired is the original an accepted revision expired: the revert makes it
+	// live again together with the revision's own restore. Absent otherwise.
+	Retired *rulingRetired `json:"retired,omitempty"`
 }
 
-func rulingPriorOf(s *statementRow) string {
+func rulingPriorOf(s *statementRow, retired *rulingRetired) string {
 	p := rulingPrior{
 		Status: s.Status, OperatorRuledAt: s.OperatorRuledAt, RuledBy: s.RuledBy, JudgedAt: s.JudgedAt,
 		JudgeReason: s.JudgeReason, JudgedBy: s.JudgedBy, VerdictConfidence: s.VerdictConfidence,
+		Retired: retired,
 	}
 	if judgeAcceptance(s) {
 		p.Attributes = s.Attributes
@@ -1131,15 +1136,57 @@ func (d *Document) revertOne(ctx context.Context, key sqlmem.ScopeKey, mscope st
 		}
 		set, args = set+`, attributes = ?`, append(args, arg)
 	}
-	upd, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET `+set+`
-		WHERE id = ? AND status = ? AND ruled_by = ?`), append(args, id, s.Status, ruledBy), 0)
-	if err != nil {
-		return item, 0, err
-	}
-	if upd.RowsAffected == 0 {
-		return changed("changed while it was reverted")
+	restore := d.docSQL().Rebind(`UPDATE chunk_edges SET ` + set + `
+		WHERE id = ? AND status = ? AND ruled_by = ?`)
+	args = append(args, id, s.Status, ruledBy)
+	var original *statementRow
+	if r := prior.Retired; r != nil {
+		// The accepted revision retired its original. Both come back together or
+		// neither does: the revision proposed again beside an original that stays
+		// expired would leave the relation with nothing live.
+		if original, err = d.statementByID(ctx, key, r.ID); err != nil {
+			return item, 0, err
+		}
+		if original == nil {
+			return changed("the statement it revised was removed since the ruling")
+		}
+		err = d.withSqlTxn(ctx, key, func(tx string) error {
+			upd, err := d.docSQL().ExecTxn(ctx, tx, restore, args, 0)
+			if err != nil {
+				return err
+			}
+			if upd.RowsAffected == 0 {
+				return errRulingChanged
+			}
+			back, err := d.docSQL().ExecTxn(ctx, tx, d.docSQL().Rebind(`UPDATE chunk_edges SET expired_at = NULL
+				WHERE id = ? AND status = ? AND expired_at = ?`), []any{r.ID, r.Status, r.ExpiredAt}, 0)
+			if err != nil {
+				return err
+			}
+			if back.RowsAffected == 0 {
+				return errRulingChanged
+			}
+			return nil
+		})
+		if errors.Is(err, errRulingChanged) {
+			return changed("it, or the statement it revised, changed while it was reverted")
+		}
+		if err != nil {
+			return item, 0, err
+		}
+	} else {
+		upd, err := d.docSQL().Exec(ctx, key, restore, args, 0)
+		if err != nil {
+			return item, 0, err
+		}
+		if upd.RowsAffected == 0 {
+			return changed("changed while it was reverted")
+		}
 	}
 	d.publishEdgeChange(ctx, key, mscope, "revert_ruling", id, s.FromID, s.ToID, s.Kind, prior.Status)
+	if original != nil {
+		d.publishEdgeChange(ctx, key, mscope, "revert_ruling", original.ID, original.FromID, original.ToID, original.Kind, original.Status)
+	}
 	item.Status = prior.Status
 	return item, revertDone, nil
 }

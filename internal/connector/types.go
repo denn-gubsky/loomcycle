@@ -1610,8 +1610,8 @@ type RulingBreakdown struct {
 }
 
 // RulingItem is one statement's outcome: the status it was ruled to, or the
-// refusal's code (not_found, not_a_proposal, statement_changed, failed) and
-// message. Statements the caller may not rule on never appear.
+// refusal's code (not_found, not_a_proposal, statement_changed,
+// characteristic_violation, failed) and message. Statements the caller may not rule on never appear.
 type RulingItem struct {
 	ID      string `json:"id"`
 	Status  string `json:"status,omitempty"`
