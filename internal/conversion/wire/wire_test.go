@@ -84,3 +84,20 @@ func TestErrorFromWire_RenderRefusalsRoundTripToTheRenderSentinels(t *testing.T)
 		t.Errorf("extract unsupported = %v, a render sentinel", err)
 	}
 }
+
+// A PDF render needs the typesetter's label, a helper label; every other
+// document render keeps write, which every worker carries.
+func TestLabelForJob_APDFRenderNeedsTheTypesetter(t *testing.T) {
+	k := workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER
+	if got := LabelForJob(k, "pdf"); got != LabelWritePDF || !HelperLabel(got) {
+		t.Errorf("LabelForJob(document_render, pdf) = %q", got)
+	}
+	for _, f := range []string{"md", "html", "docx", ""} {
+		if got := LabelForJob(k, f); got != LabelWrite {
+			t.Errorf("LabelForJob(document_render, %q) = %q, want write", f, got)
+		}
+	}
+	if got := LabelForJob(workerpb.JobKind_JOB_KIND_EXTRACT, "pdf"); got != LabelExtract {
+		t.Errorf("an extract job's format changed its label: %q", got)
+	}
+}

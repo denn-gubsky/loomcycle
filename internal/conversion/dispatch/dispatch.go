@@ -69,7 +69,7 @@ type Options struct {
 	// Scratch is the directory a converted recording is spooled to in the
 	// core; empty is the system temp directory.
 	Scratch string
-	// Configured are the helper labels (render, media, encode) whose command
+	// Configured are the helper labels (render, media, encode, write_pdf) whose command
 	// the core's own configuration sets. A helper job no worker can run is
 	// refused as not configured when its label is absent here (the operator
 	// has a setting to make), and as a program missing on the workers when
@@ -409,7 +409,7 @@ func (d *Dispatcher) acquire(ctx context.Context, label string) (*slot, error) {
 		if attached && wire.HelperLabel(label) {
 			// Workers are up, and none has this helper's program: an install
 			// to fix where the workers run, not a pool that is down.
-			return nil, fmt.Errorf("%w (%s): install it where the workers run (the loomcycle-worker image carries ffmpeg and pdftoppm)", convert.ErrNoHelper, label)
+			return nil, fmt.Errorf("%w (%s): install it where the workers run (the loomcycle-worker image carries ffmpeg, pdftoppm and typst)", convert.ErrNoHelper, label)
 		}
 		return nil, convert.ErrNoWorkers
 	}

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -73,4 +75,65 @@ func TestInProcess_RenderWaitsForAnExtractionSlot(t *testing.T) {
 	if _, err := p.Render(context.Background(), tinyBundle(t), render.FormatMarkdown); !errors.Is(err, ErrBusy) {
 		t.Errorf("render with every slot taken: %v, want ErrBusy", err)
 	}
+}
+
+// A PDF render with no helper is not configured; with a helper whose program
+// is missing, it is the no-helper answer the File tool words for PDF.
+func TestInProcess_PDFNeedsItsHelper(t *testing.T) {
+	root := t.TempDir()
+	if _, err := (&InProcess{Scratch: scratchIn(root)}).Render(context.Background(), tinyBundle(t), render.FormatPDF); !errors.Is(err, ErrNotConfigured) {
+		t.Errorf("no helper: %v, want ErrNotConfigured", err)
+	}
+	p := &InProcess{Scratch: scratchIn(root), WritePDF: &Helper{Key: PDFHelperKey, Command: "loomcycle-no-such-typesetter {in} {out}"}}
+	if _, err := p.Render(context.Background(), tinyBundle(t), render.FormatPDF); !errors.Is(err, ErrNoHelper) {
+		t.Errorf("missing program: %v, want ErrNoHelper", err)
+	}
+	assertEmpty(t, root)
+}
+
+// What the typesetter hands back is checked: a failure carries its own
+// error line, and a file that is not a PDF is refused, never returned.
+func TestInProcess_PDFOutputIsChecked(t *testing.T) {
+	root := t.TempDir()
+	run := func(cmd string) error {
+		p := &InProcess{Scratch: scratchIn(root), WritePDF: &Helper{Key: PDFHelperKey, Command: cmd, Timeout: 10 * time.Second}}
+		_, err := p.Render(context.Background(), tinyBundle(t), render.FormatPDF)
+		return err
+	}
+	if err := run(`sh -c 'echo "warning: a font" >&2; echo "error: unknown variable" >&2; exit 1' {in}`); err == nil || !strings.Contains(err.Error(), "error: unknown variable") {
+		t.Errorf("a failing typesetter: %v", err)
+	}
+	if err := run("cp {in} {out}"); err == nil || !strings.Contains(err.Error(), "not a readable PDF") {
+		t.Errorf("a typesetter that wrote its source back: %v", err)
+	}
+	if err := run("true {in} {out}"); err == nil || !strings.Contains(err.Error(), "wrote no PDF") {
+		t.Errorf("a typesetter that wrote nothing: %v", err)
+	}
+	assertEmpty(t, root)
+}
+
+// With Typst installed, the default command typesets a bundle into a PDF
+// whose text the extractor reads back. Skipped where typst is missing; the
+// CI job that installs it sets LOOMCYCLE_REQUIRE_TYPST.
+func TestInProcess_PDFTypesetsWithTypst(t *testing.T) {
+	if _, err := exec.LookPath("typst"); err != nil {
+		if os.Getenv("LOOMCYCLE_REQUIRE_TYPST") != "" {
+			t.Fatal("typst is required here and not on PATH")
+		}
+		t.Skip("typst not installed")
+	}
+	root := t.TempDir()
+	p := &InProcess{Scratch: scratchIn(root), WritePDF: &Helper{Key: PDFHelperKey, Command: DefaultPDFCommand, Timeout: time.Minute}}
+	pdf, err := p.Render(context.Background(), tinyBundle(t), render.FormatPDF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sink mdSink
+	if _, err := (extract.PDF{}).Extract(context.Background(), bytes.NewReader(pdf), int64(len(pdf)), &sink, extract.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sink.b.String(), "Field notes") || !strings.Contains(sink.b.String(), "world") {
+		t.Errorf("the PDF's text: %s", sink.b.String())
+	}
+	assertEmpty(t, root)
 }

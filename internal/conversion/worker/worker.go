@@ -100,6 +100,9 @@ type Options struct {
 	// worker takes a helper's jobs only when its program resolves here. A
 	// helper's Timeout is ignored: each job carries its own time bound.
 	Rasterize, Media, Encode *convert.Helper
+	// WritePDF typesets a Document render as a PDF (RFC GR P2): Typst by
+	// default. The worker takes PDF renders only when its program resolves.
+	WritePDF *convert.Helper
 	// Images re-encodes images (vision.NewReencoder()); nil takes no image
 	// jobs.
 	Images convert.ImageReencoder
@@ -294,7 +297,8 @@ func (w *worker) waitFree(ctx context.Context) error {
 
 // labels are what this worker can run: extraction, page cuts and document
 // writes always, images when it has a re-encoder, and each helper's jobs
-// when the helper's program resolves on this host (RFC GO §5.3). A helper
+// (PDF renders among them) when the helper's program resolves on this host
+// (RFC GO §5.3). A helper
 // that does not is logged, not fatal: the worker still serves everything
 // else.
 func labels(opt Options, log *slog.Logger) []string {
@@ -305,7 +309,7 @@ func labels(opt Options, log *slog.Logger) []string {
 	for _, h := range []struct {
 		label  string
 		helper *convert.Helper
-	}{{wire.LabelRender, opt.Rasterize}, {wire.LabelMedia, opt.Media}, {wire.LabelEncode, opt.Encode}} {
+	}{{wire.LabelRender, opt.Rasterize}, {wire.LabelMedia, opt.Media}, {wire.LabelEncode, opt.Encode}, {wire.LabelWritePDF, opt.WritePDF}} {
 		if h.helper == nil {
 			continue
 		}
@@ -652,7 +656,7 @@ func (w *worker) converter(timeout time.Duration) *convert.InProcess {
 		return &c
 	}
 	return &convert.InProcess{
-		Rasterize: bound(w.opt.Rasterize), Media: bound(w.opt.Media), Encode: bound(w.opt.Encode),
+		Rasterize: bound(w.opt.Rasterize), Media: bound(w.opt.Media), Encode: bound(w.opt.Encode), WritePDF: bound(w.opt.WritePDF),
 		Images:          w.opt.Images,
 		MaxEncodedBytes: maxEncoded,
 		Scratch:         func(context.Context) (string, error) { return w.opt.Scratch, nil },

@@ -43,9 +43,10 @@ type Client interface {
 	// vision models' edge, returning the new bytes and their media type.
 	ReencodeImage(ctx context.Context, data []byte) ([]byte, string, error)
 	// Render writes a document bundle (render.EncodeBundle) as a file of
-	// format (md, html), at most render.MaxOutput bytes (RFC GR). Its
-	// refusals errors.Is render.ErrUnsupported, render.ErrBadBundle and
-	// render.ErrTooLarge.
+	// format (md, html, docx, or pdf through the typesetter helper), at most
+	// render.MaxOutput bytes (RFC GR). Its refusals errors.Is
+	// render.ErrUnsupported, render.ErrBadBundle and render.ErrTooLarge; a
+	// PDF with no typesetter is ErrNotConfigured or ErrNoHelper.
 	Render(ctx context.Context, bundle []byte, format string) ([]byte, error)
 }
 

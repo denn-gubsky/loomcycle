@@ -157,8 +157,10 @@ type helperSettings struct {
 // this process.
 func conversionHelpers(cfg *config.Config) helperSettings {
 	h := helperSettings{timeouts: map[workerpb.JobKind]time.Duration{
-		workerpb.JobKind_JOB_KIND_PDF_RENDER:      convert.RasterizeTimeout,
-		workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER: convert.RenderTimeout,
+		workerpb.JobKind_JOB_KIND_PDF_RENDER: convert.RasterizeTimeout,
+		// A PDF render is the slow one; md, html and docx are bound inside
+		// the worker by convert.RenderTimeout.
+		workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER: convert.PDFRenderTimeout,
 	}}
 	t := cfg.Transcription.Resolved()
 	if t.OCR != nil && t.OCR.Rasterize != nil {
@@ -189,6 +191,9 @@ func (h helperSettings) configured() map[string]bool {
 		wire.LabelRender: h.rasterize != "",
 		wire.LabelMedia:  h.media != "",
 		wire.LabelEncode: h.encode != "",
+		// PDF renders have a default helper (Typst) on every worker that
+		// has the program: a worker lacking it is a program to install.
+		wire.LabelWritePDF: true,
 	}
 }
 

@@ -30,10 +30,11 @@ const ChunkSize = 1 << 20
 const MDAuthorization = "authorization"
 
 // Labels a worker carries: what it can do. Every worker extracts, cuts PDF
-// pages, re-encodes images and writes documents; render, media and encode
-// need the worker's helper program for each, so a worker carries them only
-// when it resolves. write (a document rendered to a file, RFC GR) is not
-// render, which is rasterizing a PDF page for OCR.
+// pages, re-encodes images and writes documents; render, media, encode and
+// write_pdf need the worker's helper program for each, so a worker carries
+// them only when it resolves. write (a document rendered to a file, RFC GR)
+// is not render, which is rasterizing a PDF page for OCR; write_pdf is a
+// document written as a PDF, which needs the typesetter.
 const (
 	LabelExtract = "extract"
 	LabelPDF     = "pdf"
@@ -42,6 +43,10 @@ const (
 	LabelMedia   = "media"
 	LabelEncode  = "encode"
 	LabelWrite   = "write"
+	// LabelWritePDF is a document render with format pdf (RFC GR P2). A
+	// worker built before it never carries it, so a PDF job never reaches a
+	// worker that would refuse the format.
+	LabelWritePDF = "write_pdf"
 )
 
 // LabelFor is the label a job kind needs.
@@ -63,10 +68,19 @@ func LabelFor(k workerpb.JobKind) string {
 	return LabelExtract
 }
 
+// LabelForJob is the label a job of kind writing format needs: a PDF
+// render needs the typesetter, every other job its kind's label.
+func LabelForJob(k workerpb.JobKind, format string) string {
+	if k == workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER && format == "pdf" {
+		return LabelWritePDF
+	}
+	return LabelFor(k)
+}
+
 // HelperLabel reports whether a label stands for an operator helper program,
 // which a worker may lack while still running other jobs.
 func HelperLabel(label string) bool {
-	return label == LabelRender || label == LabelMedia || label == LabelEncode
+	return label == LabelRender || label == LabelMedia || label == LabelEncode || label == LabelWritePDF
 }
 
 // KindName is a job kind's name in metrics and logs.

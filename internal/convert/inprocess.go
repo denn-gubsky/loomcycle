@@ -34,6 +34,16 @@ const (
 	// counted from when the render holds its slot. Like RasterizeTimeout it
 	// is not an operator setting.
 	RenderTimeout = 2 * time.Minute
+	// PDFRenderTimeout bounds a PDF render, the typesetter's run included:
+	// Typst is fast, and the bound is for a pathological table (RFC GR §4.6).
+	PDFRenderTimeout = 5 * time.Minute
+	// DefaultPDFCommand is the PDF render helper: Typst, fenced to the job's
+	// folder by --root. LOOMCYCLE_WORKER_WRITE_COMMAND replaces it on a
+	// worker, so an operator may point it at another typesetter that reads
+	// the same source.
+	DefaultPDFCommand = "typst compile --root {dir} {in} {out}"
+	// PDFHelperKey names the PDF render helper in errors and logs.
+	PDFHelperKey = "render.pdf"
 )
 
 // Helper is one operator command a job runs: the command line template, the
@@ -70,6 +80,10 @@ type InProcess struct {
 	// (ConvertMedia) and Encode encodes speech (EncodeAudio). A nil helper
 	// makes its job return ErrNotConfigured.
 	Rasterize, Media, Encode *Helper
+	// WritePDF typesets a Document render's Typst source as a PDF (Render
+	// with format pdf, RFC GR); nil makes a PDF render return
+	// ErrNotConfigured.
+	WritePDF *Helper
 	// MaxEncodedBytes caps what the encoder may hand back; zero is no cap.
 	MaxEncodedBytes int64
 	// Scratch names the operator directory a helper job makes its scratch
@@ -249,6 +263,9 @@ func (p *InProcess) Render(ctx context.Context, bundle []byte, format string) ([
 	if !render.Supported(format) {
 		return nil, fmt.Errorf("%w: %q", render.ErrUnsupported, format)
 	}
+	if format == render.FormatPDF {
+		return p.renderPDF(ctx, bundle)
+	}
 	release, err := p.slot(ctx)
 	if err != nil {
 		return nil, err
@@ -261,6 +278,114 @@ func (p *InProcess) Render(ctx context.Context, bundle []byte, format string) ([
 		return nil, err
 	}
 	return out.Bytes(), nil
+}
+
+// renderPDF writes the bundle as Typst source and its pictures into a
+// scratch folder, has the PDF helper typeset it, and checks what came back:
+// a PDF that opens, has at most render.MaxPDFPages pages and is at most
+// render.MaxOutput bytes (RFC GR §4.2). The helper sees only the folder's
+// paths; the source never asks it for another file.
+func (p *InProcess) renderPDF(ctx context.Context, bundle []byte) ([]byte, error) {
+	if p.WritePDF == nil {
+		return nil, ErrNotConfigured
+	}
+	release, err := p.slot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(ctx, PDFRenderTimeout)
+	defer cancel()
+	d, opts, err := render.DecodeBundle(bytes.NewReader(bundle), int64(len(bundle)))
+	if err != nil {
+		return nil, err
+	}
+	var src bytes.Buffer
+	used, err := render.WriteTypst(ctx, &src, d, opts)
+	if err != nil {
+		return nil, err
+	}
+	s, err := p.openScratch(ctx, ".pdf-")
+	if err != nil {
+		return nil, err
+	}
+	defer s.remove()
+	if err := writeNew(s.dir, "main.typ", src.Bytes()); err != nil {
+		return nil, err
+	}
+	if err := s.dir.Mkdir("images", 0o700); err != nil {
+		return nil, err
+	}
+	for _, im := range used {
+		if err := writeNew(s.dir, render.TypstImagePath(im.Name), im.Data); err != nil {
+			return nil, err
+		}
+	}
+	res, err := helper.Run(ctx, helper.Spec{
+		Key: p.WritePDF.Key, Template: p.WritePDF.Command, Wrapper: p.WritePDF.Wrapper,
+		Vars: map[string]string{"in": filepath.Join(s.path, "main.typ"), "out": filepath.Join(s.path, "out.pdf"), "dir": s.path},
+		Root: s.rootPath, Dir: s.path, Timeout: p.WritePDF.Timeout,
+	})
+	var exit *helper.ExitError
+	switch {
+	case errors.Is(err, helper.ErrNotFound):
+		return nil, fmt.Errorf("%w: %v", ErrNoHelper, err)
+	case errors.As(err, &exit):
+		return nil, fmt.Errorf("%s: the typesetter could not typeset the document: %s", p.WritePDF.Key, helperMessage(res.Stderr))
+	case err != nil:
+		return nil, err
+	}
+	fi, err := s.dir.Lstat("out.pdf")
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
+		return nil, fmt.Errorf("%s: the typesetter wrote no PDF at {out}", p.WritePDF.Key)
+	}
+	if fi.Size() > render.MaxOutput {
+		return nil, fmt.Errorf("%w: the PDF is %d MiB, more than %d MiB", render.ErrTooLarge, fi.Size()>>20, render.MaxOutput>>20)
+	}
+	fh, err := s.dir.Open("out.pdf")
+	if err != nil {
+		return nil, err
+	}
+	pdf, err := io.ReadAll(io.LimitReader(fh, render.MaxOutput+1))
+	fh.Close()
+	if err != nil {
+		return nil, err
+	}
+	if len(pdf) > render.MaxOutput {
+		return nil, fmt.Errorf("%w: the PDF is more than %d MiB", render.ErrTooLarge, render.MaxOutput>>20)
+	}
+	pages, err := extract.PDFPageCount(ctx, bytes.NewReader(pdf), int64(len(pdf)))
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("%s: the typesetter's output is not a readable PDF: %v", p.WritePDF.Key, err)
+	case pages < 1:
+		return nil, fmt.Errorf("%s: the typesetter wrote a PDF with no page", p.WritePDF.Key)
+	case pages > render.MaxPDFPages:
+		return nil, fmt.Errorf("%w: the PDF has %d pages, more than %d", render.ErrTooLarge, pages, render.MaxPDFPages)
+	}
+	return pdf, nil
+}
+
+// helperMessage is the first error line a helper wrote, short: Typst's
+// diagnostics begin with "error:".
+func helperMessage(stderr []byte) string {
+	msg := ""
+	for _, line := range strings.Split(string(stderr), "\n") {
+		if l := strings.TrimSpace(line); l != "" {
+			msg = l
+			if strings.HasPrefix(l, "error") {
+				break
+			}
+		}
+	}
+	if msg == "" {
+		return "it exited with an error and said nothing"
+	}
+	msg = strings.ToValidUTF8(msg, "?")
+	if r := []rune(msg); len(r) > 300 {
+		msg = string(r[:300]) + "…"
+	}
+	return msg
 }
 
 // ---- scratch ----
