@@ -138,10 +138,10 @@ func TestFileMCP_SchemaIsTheToolsCutToTheTwin(t *testing.T) {
 	if err := json.Unmarshal(got.Properties["op"], &op); err != nil || !slices.Equal(op.Enum, connector.FileTwinOps) {
 		t.Errorf("op enum = %v (%v), want %v", op.Enum, err, connector.FileTwinOps)
 	}
-	for _, f := range []string{"run_id", "op"} {
-		if !slices.Contains(got.Required, f) {
-			t.Errorf("%s is not required: %v", f, got.Required)
-		}
+	// render runs without a run (RFC GR D8), so only op is required; the
+	// twin refuses every other op without a run_id.
+	if !slices.Equal(got.Required, []string{"op"}) {
+		t.Errorf("required = %v, want [op]", got.Required)
 	}
 	for _, name := range []string{"url", "headers", "method", "ranged", "chunk_bytes", "max_bytes", "content_type"} {
 		if _, ok := got.Properties[name]; ok {
