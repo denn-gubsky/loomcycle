@@ -58,9 +58,30 @@ A row in `mcp_server_defs` carries the substrate's content fields:
 ```
 name, description, transport ("http" | "streamable-http" |
 "stdio" [opt-in]), url, headers (map<string,string>),
-command/args/env (stdio only), discovered_tools (cached;
+command/args/env (stdio only), binary_results,
+binary_results_min_bytes, discovered_tools (cached;
 refreshed via rediscover)
 ```
+
+**Files returned as base64 in text.** `binary_results: capture` keeps
+a file the server returns as base64 inside a text block (whole, or as a
+JSON string field) in the run's inbox, and hands the model a one-line
+reference; `passthrough` (the default) hands the text over as it came.
+Under capture, only a string of at least `binary_results_min_bytes`
+characters is a candidate (default `4096`), and it is kept only when it
+decodes to a recognisable file or to readable text, so an opaque id is
+left alone. Lower the minimum for a server that returns small files,
+such as short text notes, as base64:
+
+```json
+{"binary_results": "capture", "binary_results_min_bytes": 256}
+```
+
+A value under `128`, or the minimum on a server without capture, is
+refused at `create` / `fork`. Both keys are content (part of
+`content_sha256`); `passthrough` and `4096` hash as their absence. A
+`fork` that sets `binary_results: passthrough` drops an inherited
+minimum. A yaml `mcp_servers.<name>` entry takes the same two keys.
 
 Plus the standard substrate metadata: `def_id`, `version`,
 `parent_def_id`, `created_at`, `created_by_*`, `retired`,

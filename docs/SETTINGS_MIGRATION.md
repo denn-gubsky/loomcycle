@@ -318,6 +318,7 @@ None of the four has a setting that brings the old behaviour back. Any other val
 - **Process metrics sampler.** No samples are recorded and the activity page of the Web UI is empty.
 - **Document projection.** A positive `LOOMCYCLE_DOCUMENT_PROJECTION_INTERVAL` used to switch the projection on as well as set its cadence. The projection now needs `memory.projection.enabled: true` beside `memory.projection.interval`. A variable that is still set is refused until the yaml names both keys; one that is gone leaves the projection off.
 - **Provider timeouts, GPU offload, context window.** Slow calls time out at the defaults; local models run where Ollama puts them.
+- **Base64 capture minimum.** A server with `binary_results: capture` that returns files under 4 KiB as base64 hands them to the model as base64 again, until the server sets `binary_results_min_bytes`.
 - **Retention.** See [4.10](#410-retention-needs-retentionenabled).
 - **Everything else in table A.** The yaml default applies.
 
@@ -1179,7 +1180,7 @@ Provider options (`providers.<id>.options`).
 | `LOOMCYCLE_CODE_AGENTS_RUN_TIMEOUT_SECONDS` | `providers.code-js.options.run_timeout_seconds` | Seconds; `120` | Moved: a positive number other than `120`. The option counts when it is a positive number. Judged only while the config declares a `code-js` provider. |
 | `LOOMCYCLE_CODE_AGENTS_MAX_WALL_SECONDS` | `providers.code-js.options.max_wall_seconds` | Seconds; `86400` | Moved: a positive number other than `86400`. The option counts when it is a positive number. Judged only while the config declares a `code-js` provider. |
 
-Timeout scaling, memory, concurrency, observability, sign-in, hooks, metrics.
+Timeout scaling, memory, concurrency, observability, sign-in, MCP capture, hooks, metrics.
 
 | Variable | Yaml key | Format and default | Stops the boot when |
 |---|---|---|---|
@@ -1195,6 +1196,7 @@ Timeout scaling, memory, concurrency, observability, sign-in, hooks, metrics.
 | `LOOMCYCLE_OTEL_TENANT_SAMPLER_RATIOS` | `observability.tracing.tenant_sampler_ratios` | Map of tenant to a ratio from 0 to 1; none | Moved: at least one entry. |
 | `LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS` | `observability.tenant_telemetry.allowed_hosts` | List of hosts, each exact or a quoted `"*.suffix"`; none = any public host | Moved: at least one host. Judged only while `LOOMCYCLE_TENANT_TELEMETRY` is on. |
 | `LOOMCYCLE_UI_LOGIN_ORIGINS` | `auth.login_origins` | List, one origin per item; none = the receiver is off | Moved: at least one origin. |
+| `LOOMCYCLE_FILE_BASE64_MIN_BYTES` | `mcp_servers.<name>.binary_results_min_bytes`, on each server with `binary_results: capture` that returns small files as base64 | Bytes; `4096`; at least `128`, and only with `binary_results: capture` | Moved: a positive number other than `4096`. The key counts when any MCP server in the yaml names it. A server registered as an `MCPServerDef` takes the key in its overlay instead: set it there (with `fork`), then remove the variable. |
 | `LOOMCYCLE_HOOKS_PERMIT_HOST_WIDEN_OWNERS` | `hooks.permit_host_widen.owners` | List of `[tenant:]name`; empty | It names an entry the yaml list lacks |
 | `LOOMCYCLE_HOOKS_PRIVATE_HOST_ALLOWLIST` | `hooks.private_host_allowlist` | List of hosts and CIDR ranges; empty | It names an entry the yaml list lacks |
 | `LOOMCYCLE_METRICS_ENABLED` | `metrics.enabled` | `true` or `false`; `false` | Moved: `1`. |
@@ -1236,7 +1238,6 @@ Tool and data caps.
 | `LOOMCYCLE_GIT_SOURCE_MAX_HISTORY` | A clone's history limit is 500 commits. | Lower |
 | `LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT` | One clone runs at a time per replica. | Never |
 | `LOOMCYCLE_GIT_PUSH_MAX_BYTES` | One Git push may send at most 100 MiB. | Lower |
-| `LOOMCYCLE_FILE_BASE64_MIN_BYTES` | A base64 string of 4 KiB or more is captured as a file. | Never |
 | `LOOMCYCLE_CRYPTO_MAX_BYTES` | A Crypto data argument is capped at 1 MiB. | Lower |
 | `LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN` | A run may make 100 Crypto calls. | Lower |
 | `LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES` | A document image and the `/v1/_document` body are capped at 8 MiB. | Lower |

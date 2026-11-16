@@ -8,6 +8,11 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## Unreleased (on `main` after v1.154.0)
+
+- **A per-server minimum for base64 capture.** `binary_results_min_bytes` beside `binary_results` on a yaml `mcp_servers.<name>` entry or an `MCPServerDef` overlay sets the shortest base64 string `binary_results: capture` takes for a file on that server (default `4096`). A server that returns small files, such as short text notes, as base64 inside JSON lowers it, and those files are kept in the run's inbox again instead of reaching the model as base64. A value under `128`, or the key without `binary_results: capture`, is refused at load and at create or fork. The value is part of the def's content hash, and `4096` hashes as its absence, so existing defs keep their hashes. `@loomcycle/client` gains `binaryResultsMinBytes` on `ensureMcpServer`; the release that carries it bumps the adapter.
+- **`LOOMCYCLE_FILE_BASE64_MIN_BYTES` is a moved setting.** v1.153.0 made the minimum a constant and only advised the variable, so a deployment that had lowered it lost the setting on upgrade. Set to a positive number other than `4096`, it now refuses the boot until the yaml names `binary_results_min_bytes` on at least one MCP server; otherwise it is advised. Its value is still not read. [`docs/SETTINGS_MIGRATION.md`](docs/SETTINGS_MIGRATION.md) lists it in table A.
+
 ## What's in v1.154.0
 
 *File conversion leaves the runtime's process by default on Linux (RFC GO P4). With no `conversion.mode`, a Linux runtime sends every extraction, OCR page render, recording conversion, speech encoding and image re-encoding to child worker processes with a memory limit, so a hostile or oversized file kills one worker instead of the runtime. The runtime images are distroless again: `loomcycle-media` is no longer published, and ffmpeg and pdftoppm live in the `loomcycle-worker` image. The cloud example and the TrueNAS app run worker containers. Also here: an agent's override lock, no-trace retention and read-only tool modes now hold across its whole version history; knowledge-base rulings respect relation characteristics; and the `kb/walker` agent widens an overview until the facet counts are covered.*
