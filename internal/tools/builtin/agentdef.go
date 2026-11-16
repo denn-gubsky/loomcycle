@@ -272,26 +272,43 @@ func callerMayLiftNoTrace(ctx context.Context) bool {
 // pointer, and the newest is what a member's next version follows) — and the
 // definition whose hooks the agent runs with now: the active version's, or
 // the newest's when none is active. current is nil for a new name.
+//
+// When the tenant has no active version of its own, its runs resolve the
+// shared ("") tier's (lookup.Agent), so that lineage counts as well — the rule
+// overrideLockedLineage applies to the override lock. A tenant's first
+// version of the name would otherwise replace a shared no-trace agent without
+// the mode. current is then the tenant's own newest, else the shared one's.
 func noTraceLineage(ctx context.Context, st store.Store, tenant, name string) (noTrace bool, current json.RawMessage, err error) {
-	isNone := func(def json.RawMessage) bool {
-		var d struct {
-			Retention string `json:"retention"`
-		}
-		// A definition that does not parse cannot be shown to be ordinary.
-		return json.Unmarshal(def, &d) != nil || d.Retention == retentionmode.None
+	noTrace, hasActive, current, err := noTraceIn(ctx, st, tenant, name)
+	if err != nil || hasActive || tenant == "" {
+		return noTrace, current, err
 	}
+	sharedNoTrace, _, sharedCurrent, err := noTraceIn(ctx, st, "", name)
+	if err != nil {
+		return false, nil, err
+	}
+	if current == nil {
+		current = sharedCurrent
+	}
+	return noTrace || sharedNoTrace, current, nil
+}
+
+// noTraceIn is noTraceLineage for one tenant's rows, and whether that tenant
+// has an active version.
+func noTraceIn(ctx context.Context, st store.Store, tenant, name string) (noTrace, hasActive bool, current json.RawMessage, err error) {
 	var nf *store.ErrNotFound
 	active, err := st.AgentDefGetActive(ctx, tenant, name)
 	switch {
 	case err == nil:
+		hasActive = true
 		current = active.Definition
-		noTrace = isNone(active.Definition)
+		noTrace = defIsNoTrace(active.Definition)
 	case !errors.As(err, &nf):
-		return false, nil, err
+		return false, false, nil, err
 	}
 	rows, err := st.AgentDefListByName(ctx, name) // newest first
 	if err != nil {
-		return false, nil, err
+		return false, false, nil, err
 	}
 	for _, r := range rows {
 		if r.TenantID != tenant {
@@ -300,10 +317,19 @@ func noTraceLineage(ctx context.Context, st store.Store, tenant, name string) (n
 		if current == nil {
 			current = r.Definition
 		}
-		noTrace = noTrace || isNone(r.Definition)
+		noTrace = noTrace || defIsNoTrace(r.Definition)
 		break
 	}
-	return noTrace, current, nil
+	return noTrace, hasActive, current, nil
+}
+
+// defIsNoTrace reports whether a stored agent definition says retention:
+// none. A definition that does not parse cannot be shown to be ordinary.
+func defIsNoTrace(def json.RawMessage) bool {
+	var d struct {
+		Retention string `json:"retention"`
+	}
+	return json.Unmarshal(def, &d) != nil || d.Retention == retentionmode.None
 }
 
 // admitNoTraceChange refuses a version of a no-trace agent that would take
@@ -320,6 +346,17 @@ func (a *AgentDef) admitNoTraceChange(ctx context.Context, op, tenant, name stri
 	if !noTrace {
 		return nil
 	}
+	actions, err := noTraceLiftActions(ctx, op, name, def, current)
+	if err != nil {
+		return err
+	}
+	return a.recordNoTraceLift(ctx, op, tenant, name, actions)
+}
+
+// noTraceLiftActions is what def changes on a no-trace agent whose current
+// definition is current — the actions admitNoTraceChange records — or the
+// refusal when the caller may not make those changes.
+func noTraceLiftActions(ctx context.Context, op, name string, def mergedDef, current json.RawMessage) ([]string, error) {
 	var actions []string
 	if def.Retention != retentionmode.None {
 		actions = append(actions, "retention_none_removed")
@@ -327,12 +364,15 @@ func (a *AgentDef) admitNoTraceChange(ctx context.Context, op, tenant, name stri
 	if !sameHooks(def, current) {
 		actions = append(actions, "retention_none_hooks_changed")
 	}
-	if len(actions) == 0 {
-		return nil
+	if len(actions) > 0 && !callerMayLiftNoTrace(ctx) {
+		return nil, fmt.Errorf("%s: %q is a no-trace agent (retention: none), and only an operator may take that off or add or change its hooks; keep \"retention\": \"none\" and its hooks as they are in this version", op, name)
 	}
-	if !callerMayLiftNoTrace(ctx) {
-		return fmt.Errorf("%s: %q is a no-trace agent (retention: none), and only an operator may take that off or add or change its hooks; keep \"retention\": \"none\" and its hooks as they are in this version", op, name)
-	}
+	return actions, nil
+}
+
+// recordNoTraceLift records an operator's change to a no-trace agent, and
+// refuses it when the record cannot be written.
+func (a *AgentDef) recordNoTraceLift(ctx context.Context, op, tenant, name string, actions []string) error {
 	subject := ""
 	if p, ok := auth.PrincipalFromContext(ctx); ok {
 		subject = p.Subject

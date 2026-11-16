@@ -56,6 +56,12 @@ func (a *AgentDef) admitToolModesChange(ctx context.Context, op, tenant, name st
 	if static, ok := a.Cfg.Agents[name]; ok {
 		held = unionToolModes(held, static.ToolModes)
 	}
+	return refuseDroppedReadModes(ctx, op, name, def, held)
+}
+
+// refuseDroppedReadModes refuses def when it grants a tool held holds in read
+// mode without that mode, unless the caller is the operator plane.
+func refuseDroppedReadModes(ctx context.Context, op, name string, def mergedDef, held map[string]string) error {
 	for _, tool := range sortedModeTools(held) {
 		if held[tool] != config.ToolModeRead || def.ToolModes[tool] == config.ToolModeRead || !grantsTool(def.Tools, tool) {
 			continue
@@ -69,46 +75,66 @@ func (a *AgentDef) admitToolModesChange(ctx context.Context, op, tenant, name st
 }
 
 // lineageToolModes is the read modes name holds in tenant now: its active
-// version's and its newest version's. A definition that does not parse cannot
-// be shown to hold no mode, so it is an error.
+// version's and its newest version's. When the tenant has no active version of
+// its own, its runs resolve the shared ("") tier's (lookup.Agent), so that
+// lineage's modes count as well — the rule overrideLockedLineage applies to
+// the override lock. A tenant's first version of the name would otherwise
+// replace a shared read-mode agent without the mode.
 func lineageToolModes(ctx context.Context, st store.Store, tenant, name string) (map[string]string, error) {
-	modesOf := func(def json.RawMessage) (map[string]string, error) {
-		var d struct {
-			ToolModes map[string]string `json:"tool_modes"`
-		}
-		if err := json.Unmarshal(def, &d); err != nil {
-			return nil, err
-		}
-		return d.ToolModes, nil
+	held, hasActive, err := toolModesIn(ctx, st, tenant, name)
+	if err != nil || hasActive || tenant == "" {
+		return held, err
 	}
-	var held map[string]string
+	shared, _, err := toolModesIn(ctx, st, "", name)
+	if err != nil {
+		return nil, err
+	}
+	return unionToolModes(held, shared), nil
+}
+
+// toolModesIn is lineageToolModes for one tenant's rows, and whether that
+// tenant has an active version.
+func toolModesIn(ctx context.Context, st store.Store, tenant, name string) (held map[string]string, hasActive bool, err error) {
 	var nf *store.ErrNotFound
 	active, err := st.AgentDefGetActive(ctx, tenant, name)
 	switch {
 	case err == nil:
-		m, perr := modesOf(active.Definition)
+		hasActive = true
+		m, perr := defToolModes(active.Definition)
 		if perr != nil {
-			return nil, perr
+			return nil, false, perr
 		}
 		held = unionToolModes(held, m)
 	case !errors.As(err, &nf):
-		return nil, err
+		return nil, false, err
 	}
 	rows, err := st.AgentDefListByName(ctx, name) // newest first
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	for _, r := range rows {
 		if r.TenantID != tenant {
 			continue
 		}
-		m, perr := modesOf(r.Definition)
+		m, perr := defToolModes(r.Definition)
 		if perr != nil {
-			return nil, perr
+			return nil, false, perr
 		}
-		return unionToolModes(held, m), nil
+		return unionToolModes(held, m), hasActive, nil
 	}
-	return held, nil
+	return held, hasActive, nil
+}
+
+// defToolModes is a stored agent definition's tool_modes. A definition that
+// does not parse cannot be shown to hold no mode, so it is an error.
+func defToolModes(def json.RawMessage) (map[string]string, error) {
+	var d struct {
+		ToolModes map[string]string `json:"tool_modes"`
+	}
+	if err := json.Unmarshal(def, &d); err != nil {
+		return nil, err
+	}
+	return d.ToolModes, nil
 }
 
 // unionToolModes is every tool either map gives a mode, a read mode winning.

@@ -588,7 +588,7 @@ func (h *HookDef) noTraceAgentsNaming(ctx context.Context, tenant, name string) 
 		if n.TenantID != tenant {
 			continue
 		}
-		noTrace, current, err := noTraceLineage(ctx, h.Store, n.TenantID, n.Name)
+		noTrace, _, current, err := noTraceIn(ctx, h.Store, n.TenantID, n.Name)
 		if err != nil {
 			return nil, err
 		}
