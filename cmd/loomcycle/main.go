@@ -369,6 +369,7 @@ func main() {
 	b.seedServerState()
 	b.startStoreSweepers()
 	b.startPauseAndResume()
+	b.reconcileConfigTeams() // before anything arms or starts a team
 	b.startTeamSubscriptions()
 	b.startBootReconciles()
 	b.startMetrics()

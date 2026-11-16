@@ -3911,6 +3911,10 @@ export interface TeamDefDetail {
    *  Absent on your own tenant's versions, and for a caller whose own tenant is
    *  the shared one. */
   shared?: boolean;
+  /** `"config"` on a version the server's configuration wrote (a `teams:`
+   *  entry in its yaml): it is changed there, not over the API. Absent on a
+   *  version made over the API. */
+  source?: "config";
 }
 
 /** One team version's record in {@link TeamVersionList} (op=list). Same shape
@@ -3933,6 +3937,10 @@ export interface TeamVersion {
    *  Absent on your own tenant's versions, and for a caller whose own tenant is
    *  the shared one. */
   shared?: boolean;
+  /** `"config"` on a version the server's configuration wrote (a `teams:`
+   *  entry in its yaml): it is changed there, not over the API. Absent on a
+   *  version made over the API. */
+  source?: "config";
 }
 
 /** Result of {@link LoomcycleClient.listTeamVersions} (op=list) — every version

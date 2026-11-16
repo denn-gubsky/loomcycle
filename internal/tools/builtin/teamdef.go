@@ -2619,9 +2619,9 @@ func (t *TeamDef) sizeCapIssues(defJSON []byte, description string) []teamIssue 
 }
 
 // teamDefRowResponse + Map shape the tool's reply envelope (mirror of
-// skillDefRowResponse). bootstrapped_from_static is always false for teams
-// (no static layer) but included so the response shape matches the sibling
-// def-family tools + the Library UI.
+// skillDefRowResponse). For a team, bootstrapped_from_static marks a version
+// the configuration wrote (RFC GS D8), which a reader is told as
+// `source: "config"`: it is changed in the yaml, not over the API.
 func teamDefRowResponse(row store.TeamDefRow, promoted bool) map[string]any {
 	m := teamDefRowResponseMap(row)
 	m["promoted"] = promoted
@@ -2629,7 +2629,7 @@ func teamDefRowResponse(row store.TeamDefRow, promoted bool) map[string]any {
 }
 
 func teamDefRowResponseMap(row store.TeamDefRow) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"def_id":                   row.DefID,
 		"name":                     row.Name,
 		"version":                  row.Version,
@@ -2642,6 +2642,10 @@ func teamDefRowResponseMap(row store.TeamDefRow) map[string]any {
 		"content_sha256":           row.ContentSHA256,
 		"definition":               row.Definition,
 	}
+	if row.BootstrappedFromStatic && row.TenantID == "" {
+		m["source"] = "config"
+	}
+	return m
 }
 
 // mintTeamDefID returns a fresh opaque ID for a new row. Same 64-bit-entropy
