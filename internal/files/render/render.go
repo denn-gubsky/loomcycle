@@ -24,6 +24,10 @@ func Write(ctx context.Context, w io.Writer, d *Doc, format string, opts Options
 		return writeHTML(ctx, w, d, opts)
 	case FormatDOCX:
 		return writeDOCX(ctx, w, d, opts)
+	case FormatPDF:
+		// A PDF is typeset by a helper program from WriteTypst's source;
+		// this package runs none (internal/convert does).
+		return fmt.Errorf("%w: pdf is typeset by the render helper, not written here", ErrUnsupported)
 	}
 	return fmt.Errorf("%w: %q", ErrUnsupported, format)
 }

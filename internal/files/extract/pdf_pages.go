@@ -55,3 +55,19 @@ func SelectPages(ctx context.Context, r io.ReaderAt, size int64, pages []int) (o
 	}
 	return b.Bytes(), nil
 }
+
+// PDFPageCount opens a PDF as untrusted input, under the limits extraction
+// uses, and returns how many pages it has. A Document render checks the
+// typesetter's output with it before the file reaches anyone (RFC GR §4.2).
+func PDFPageCount(ctx context.Context, r io.ReaderAt, size int64) (n int, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("extract: the PDF could not be read: %s", cutPanic(p))
+		}
+	}()
+	pc, err := openPDFContext(ctx, r, size, maxPDFDecode)
+	if err != nil {
+		return 0, err
+	}
+	return pc.PageCount, nil
+}
