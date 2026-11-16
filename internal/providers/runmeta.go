@@ -66,6 +66,15 @@ type RunMeta struct {
 	// same value. LLM drivers ignore it: they see the fenced text.
 	Untrusted []UntrustedEntry
 
+	// TrustedPrompt is the trusted text of the same user turn: the caller's
+	// trusted blocks only, joined in order, with every untrusted block left
+	// out. The code-js provider surfaces it as input.trusted_prompt, so a
+	// script can forward the caller's instructions without the untrusted text
+	// fenced beside them in input.prompt. Built from the run's segments like
+	// Untrusted, never by cutting fenced text out of a rendered message; ""
+	// when the run's segments could not be read. LLM drivers ignore it.
+	TrustedPrompt string
+
 	// RunTimeoutSeconds is the effective per-run/per-agent budget override
 	// for a code-js run (resolved server-side: per-run wins over per-agent).
 	// 0 ⇒ the code-js provider uses its global default

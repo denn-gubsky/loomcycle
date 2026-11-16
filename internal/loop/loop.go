@@ -463,6 +463,12 @@ type RunOptions struct {
 	// which every fresh run leaves it, means "read it from Segments".
 	Untrusted []tools.UntrustedInput
 
+	// TrustedPrompt is the run's trusted user text (TrustedTextOf) for a run
+	// re-entered from the store, rebuilt from the same user_input event as
+	// Untrusted. Read only when Untrusted is non-nil; a fresh run reads it
+	// from Segments.
+	TrustedPrompt string
+
 	// RunTimeoutSeconds is the effective per-run/per-agent code-js wall-clock
 	// budget override (per-run wins over per-agent; resolved by the caller).
 	// 0 ⇒ the code-js provider's global default. Stamped onto RunMeta; LLM
@@ -3242,9 +3248,10 @@ func stampRunMeta(ctx context.Context, opts *RunOptions) context.Context {
 	// The run's untrusted input, as data. A run re-entered from the store has
 	// no user segment to read it from (its conversation is PriorMessages,
 	// already flattened), so the caller hands it in.
-	runUntrusted := opts.Untrusted
+	runUntrusted, trustedPrompt := opts.Untrusted, opts.TrustedPrompt
 	if runUntrusted == nil {
 		runUntrusted = UntrustedOf(opts.Segments)
+		trustedPrompt = TrustedTextOf(opts.Segments)
 	}
 	// Set here for the reason RunMeta is: every run goes through this
 	// function, a sub-run included, so each run's tools see its OWN input and
@@ -3264,6 +3271,7 @@ func stampRunMeta(ctx context.Context, opts *RunOptions) context.Context {
 		Metadata:          opts.Metadata,
 		PayloadMetadata:   opts.PayloadMetadata,
 		Untrusted:         untrustedMeta,
+		TrustedPrompt:     trustedPrompt,
 		RunTimeoutSeconds: opts.RunTimeoutSeconds,
 	})
 	return ctx
@@ -5661,6 +5669,28 @@ func UntrustedOf(segs []PromptSegment) []tools.UntrustedInput {
 		}
 	}
 	return out
+}
+
+// TrustedTextOf returns the caller's trusted text of the user-role segments:
+// every block that splitSegments would hand the model as the caller's own
+// words, joined in order with nothing between them (as a code-js script's
+// input.prompt joins the first user message). Untrusted blocks and images are
+// left out. It reads the typed blocks, never the rendered message, so no
+// untrusted text can reach it however it is written; a block of any other
+// type is left out too, since it is not one the caller declared trusted.
+func TrustedTextOf(segs []PromptSegment) string {
+	var b strings.Builder
+	for _, s := range segs {
+		if s.Role != "user" {
+			continue
+		}
+		for _, c := range s.Content {
+			if c.Type == "" || c.Type == "trusted-text" {
+				b.WriteString(c.Text)
+			}
+		}
+	}
+	return b.String()
 }
 
 // untrustedKind is the tag an untrusted block is rendered under: its own kind

@@ -2055,18 +2055,22 @@ func formatSubAgentOutput(agentID, runID, finalText string) string {
 	return fmt.Sprintf("[sub-agent agent_id=%s run_id=%s]\n%s", agentID, runID, finalText)
 }
 
-// runUntrustedFromEvents rebuilds a run's untrusted input from the user_input
-// event it was started with, which holds the caller's blocks unflattened. A
-// resumed loop has only a system segment to read, so without this a code-js
-// script would see input.untrusted change from what it read before the pause
-// (and diverge on replay), and a forwarded reference would resolve to nothing.
+// runInputFromEvents rebuilds a run's untrusted input, and its trusted text,
+// from the user_input event it was started with, which holds the caller's
+// blocks unflattened. A resumed loop has only a system segment to read, so
+// without this a code-js script would see input.untrusted or
+// input.trusted_prompt change from what it read before the pause (and diverge
+// on replay), and a forwarded reference would resolve to nothing.
 //
 // The FIRST user_input is the one: that is the turn the loop was given when
 // the run began, which is what the value is taken from on a run that was
 // never paused. Later ones are messages sent to it while it ran.
 //
-// Never nil: nil would tell the loop to read the value from its segments.
-func runUntrustedFromEvents(runEvents []store.Event) []tools.UntrustedInput {
+// The untrusted list is never nil: nil would tell the loop to read both values
+// from its segments. An unreadable event yields no trusted text rather than
+// any text read from the flattened conversation, which holds the untrusted
+// blocks too.
+func runInputFromEvents(runEvents []store.Event) ([]tools.UntrustedInput, string) {
 	for _, ev := range runEvents {
 		if ev.Type != "user_input" {
 			continue
@@ -2075,9 +2079,9 @@ func runUntrustedFromEvents(runEvents []store.Event) []tools.UntrustedInput {
 		if err := json.Unmarshal(ev.Payload, &segs); err != nil {
 			break
 		}
-		return loop.UntrustedOf(segs)
+		return loop.UntrustedOf(segs), loop.TrustedTextOf(segs)
 	}
-	return []tools.UntrustedInput{}
+	return []tools.UntrustedInput{}, ""
 }
 
 // childFinalText reads a completed child's final assistant text from its
