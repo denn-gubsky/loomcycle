@@ -3841,14 +3841,7 @@ func (s *Server) routes() *http.ServeMux {
 	// the wire. Same dispatch shape as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_path", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstratePath))))
 	mux.Handle("POST /v1/_document", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocument))))
-	// RFC BO — serve an image chunk's raw bytes. Same auth posture as
-	// /v1/_document (bearer + ScopeTenant, scope resolved from the principal,
-	// opaque-404 cross-scope). GET because the payload is binary, not JSON.
-	mux.Handle("GET /v1/_document/asset/{chunk_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocumentAsset))))
-	// RFC GR §4.4 — a Document rendered as a file (pdf, docx, html, md) and
-	// streamed as an attachment, off-run: the Web UI's "Download as" menu and
-	// the adapters' exportDocument. Gated like the asset GET above.
-	mux.Handle("GET /v1/_document/export/{document_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentExport))))
+	s.documentFileRoutes(mux)
 	// RFC BE History tool — browse/search/annotate past chats. Tenant-confined
 	// (ScopeTenant via isTenantConfinedDefPath); the tool's own scope fold +
 	// admin-gated `global` keep a tenant operator inside its own tenant.

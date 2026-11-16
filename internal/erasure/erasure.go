@@ -392,6 +392,33 @@ type Residue struct {
 	Truncated        bool `json:"truncated"`
 }
 
+// eraseSQLMemory drops the subject's user scope and clears the subject from
+// the render log of the tenant's other scopes (RFC GR §4.8); a dry run
+// counts instead. Execute's SQL Memory step.
+func (s *Service) eraseSQLMemory(ctx context.Context, tenant, subject string, dryRun bool, deleted map[string]int, fail func(string, error)) {
+	// sqlScopeTenant, not the raw tenant: see the helper. A raw "" here would
+	// build a key that matches nothing and silently spare the whole database.
+	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(tenant), Scope: "user", ScopeID: subject}
+	if dryRun {
+		if found, err := s.userSQLScopeExists(ctx, tenant, subject); err != nil {
+			fail("sql_memory", err)
+		} else if found {
+			deleted["sql_memory_scopes"] = 1
+		}
+	} else if removed, err := s.SqlMem.DropScope(ctx, key); err != nil {
+		fail("sql_memory", err)
+	} else if removed {
+		deleted["sql_memory_scopes"] = 1
+	}
+	// The render log of the tenant's other scopes keeps its rows and loses
+	// the subject's name (RFC GR §4.8).
+	if n, err := s.renderActorRows(ctx, tenant, subject, !dryRun); err != nil {
+		fail(renderActorPlane, err)
+	} else {
+		deleted[renderActorPlane] = n
+	}
+}
+
 // ExecuteRequest carries a resolved erasure. Tenant is authoritative and comes
 // from the caller's principal — never from a request field.
 type ExecuteRequest struct {
@@ -916,27 +943,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 
 	if s.SqlMem != nil {
-		// sqlScopeTenant, not the raw tenant: see the helper. A raw "" here would
-		// build a key that matches nothing and silently spare the whole database.
-		key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(tenant), Scope: "user", ScopeID: subject}
-		if req.DryRun {
-			if found, err := s.userSQLScopeExists(ctx, tenant, subject); err != nil {
-				fail("sql_memory", err)
-			} else if found {
-				res.Deleted["sql_memory_scopes"] = 1
-			}
-		} else if removed, err := s.SqlMem.DropScope(ctx, key); err != nil {
-			fail("sql_memory", err)
-		} else if removed {
-			res.Deleted["sql_memory_scopes"] = 1
-		}
-		// The render log of the tenant's shared and agent scopes keeps its
-		// rows and loses the subject's name (RFC GR §4.8).
-		if n, err := s.renderActorRows(ctx, tenant, subject, !req.DryRun); err != nil {
-			fail(renderActorPlane, err)
-		} else {
-			res.Deleted[renderActorPlane] = n
-		}
+		s.eraseSQLMemory(ctx, tenant, subject, req.DryRun, res.Deleted, fail)
 	}
 
 	if rows, err := s.Store.DirentListUnder(ctx, tenant, "user", subject, "/"); err != nil {

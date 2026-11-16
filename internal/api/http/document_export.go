@@ -13,6 +13,19 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
+// documentFileRoutes registers the document routes that answer with bytes
+// rather than JSON.
+func (s *Server) documentFileRoutes(mux *http.ServeMux) {
+	// RFC BO — serve an image chunk's raw bytes. Same auth posture as
+	// /v1/_document (bearer + ScopeTenant, scope resolved from the principal,
+	// opaque-404 cross-scope). GET because the payload is binary, not JSON.
+	mux.Handle("GET /v1/_document/asset/{chunk_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocumentAsset))))
+	// RFC GR §4.4 — a Document rendered as a file (pdf, docx, html, md) and
+	// streamed as an attachment, off-run: the Web UI's download menu and the
+	// adapters' exportDocument. Gated like the asset GET above.
+	mux.Handle("GET /v1/_document/export/{document_id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleDocumentExport))))
+}
+
 // handleDocumentExport serves GET /v1/_document/export/{document_id} (RFC GR
 // §4.4): a Document rendered as a file (pdf, docx, html, md) and streamed as
 // an attachment, for the Web UI's "Download as" menu and the adapters. No
