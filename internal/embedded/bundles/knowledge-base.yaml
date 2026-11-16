@@ -76,7 +76,7 @@
 #                 candidate documents (searches of passages, summaries and each
 #                 clause of the question, then one hop of relations), ranks them
 #                 and keeps the top 120; kb/walker screens their IDS ONLY (no
-#                 document text enters its trusted prompt) in slices of 25, in
+#                 document text enters its trusted prompt) in slices of 12, in
 #                 parallel, each round replying with only FITS and SET ASIDE
 #                 lines; a round that fails, stops at the output cap or lacks a
 #                 line is retried once as two halves; one more walker round
@@ -6040,11 +6040,10 @@ agents:
     # parallel, then one retry wave) and one composing round.
     run_timeout_seconds: 900
     # parallel_spawn runs at most this many screening rounds at once (default
-    # 4). 5 = CAP / SLICE, so a full candidate list is screened in one wave
-    # instead of four rounds and then a fifth. Retry halves can reach 10, but
-    # they are short (13 ids at most) and few: on the measured set no retry
-    # wave had more than 4, so 5 covers them in one wave too without doubling
-    # the burst on the provider.
+    # 4). A full candidate list is CAP / SLICE = 10 slices, so it is screened
+    # in two waves of 5: accepted, because rounds of 12 ids do not fail the way
+    # rounds of 25 did (below, at SLICE), and 5 keeps the burst on the provider
+    # where it was. Retry halves (6 ids at most) are few and go in one wave.
     max_concurrent_children: 5
     code: |
       // kb/survey — answers an overview question ("what do we hold on X") with
@@ -6070,7 +6069,9 @@ agents:
       //    stopped at the output cap before its accounting lines. The round's
       //    block carries the exact documents_summary call for its slice, built
       //    here from the ids: a walker composing that call itself sent the id
-      //    list as one string, which the read-only tool refuses.
+      //    list as one string, which the read-only tool refuses; with 25 ids a
+      //    third of the rounds did so even with the call given, and rounds of
+      //    13 ids or fewer never did, hence SLICE = 12.
       // 3. CHECK (code). A round FAILED when it did not complete, stopped at the
       //    output cap (it still reports completed), was cut to fit this run, or
       //    lacks either line; nothing it said is taken. A failed slice, and the
@@ -6118,7 +6119,7 @@ agents:
       var EDGE_FROM = 60;    // relations are followed from this many candidates
       var SEARCH_LIMIT = 50; // hits per search, the search's own maximum
       var MAX_CLAUSES = 8;   // clause searches, at most (two searches each)
-      var SLICE = 25;        // candidate ids per screening round
+      var SLICE = 12;        // candidate ids per screening round
       // A runtime document id: lowercase hex, dashes allowed (the shape kb/ask
       // reads in loom: links). A row whose id does not match is not a
       // candidate, so nothing but id characters reaches the walker's prompt.
