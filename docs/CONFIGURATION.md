@@ -1955,7 +1955,7 @@ Rules worth knowing:
 - **To change the agent, change its definition.** A new version (a config change, or an `AgentDef` fork) is the way to re-tune it.
 - **A fork can add the lock and cannot remove it.** A fork that does not send `allow_overrides` keeps its parent's; one that sends `true` on a locked parent is refused. The lock comes off where it was put on.
 - **A lock written in the server config holds over a tenant's own version of the agent**, including one forked before the lock was added. It is removed in the config and nowhere else.
-- **For an agent defined only at runtime the lock belongs to its authors:** a fresh `create`, or promoting an earlier open version, removes it. Limit who may author the agent (`agent_def_scopes`, the `substrate:tenant` scope) if that matters.
+- **For an agent defined only at runtime, only an operator may remove the lock** (an admin, or a tenant operator, calling from outside a run): by a fresh `create`, by forking a version from before the lock, or by promoting one. The check looks at the agent's static definition, its active version and its newest version, and, for a tenant with no version of its own, the shared one its runs fall back to. A tenant member or an agent inside a run is refused. Each removal is written to the audit log (`allow_overrides_lock_removed`, with who, the agent and the tenant) when one is configured, and is refused if that record cannot be written.
 - **It is not part of the definition's content hash**, so adding or removing it does not change `content_sha256`. A create that changes only the lock still writes a new version.
 - Unset or `true` leaves the overrides to the caller, as before.
 
