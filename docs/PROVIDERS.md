@@ -476,7 +476,7 @@ agents:
   research-coder:
     description: "Heavy-volume coding-task agent for load testing"
     provider: anthropic-oauth-dev
-    model: claude-sonnet-4-6
+    model: claude-sonnet-5-5
     tools:
       - Read
       - Write
@@ -500,11 +500,11 @@ user_tiers:
   research:
     provider_priority: [anthropic-oauth-dev, anthropic]
     tiers:
-      low:    [{provider: anthropic-oauth-dev, model: claude-haiku-4-5-20251001}]
-      middle: [{provider: anthropic-oauth-dev, model: claude-sonnet-4-6}]
+      low:    [{provider: anthropic-oauth-dev, model: claude-haiku-5-5}]
+      middle: [{provider: anthropic-oauth-dev, model: claude-sonnet-5-5}]
       high:
-        - {provider: anthropic-oauth-dev, model: claude-sonnet-4-6}
-        - {provider: anthropic, model: claude-sonnet-4-6}    # API-key fallback when subscription quota is exhausted
+        - {provider: anthropic-oauth-dev, model: claude-sonnet-5-5}
+        - {provider: anthropic, model: claude-sonnet-5-5}    # API-key fallback when subscription quota is exhausted
     fallback_on_error: true
 ```
 
