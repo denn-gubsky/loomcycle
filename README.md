@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.154) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.155) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,26 +212,22 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.154.0) moves file conversion out of the runtime's
-process by default on Linux: worker processes, or worker containers from the
-new `loomcycle-worker` image, take every extraction, OCR render and audio
-conversion, so one hostile file kills a worker, not the runtime.
-`loomcycle-media` is retired. It also keeps an agent's override lock,
-no-trace retention and read-only modes across its whole version history.
-Its patch release lets an MCP server lower the size at which a base64 file is
-captured, and refuses an encrypted PDF before reading it. Read the upgrade
-notes in [`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.155.0) renders a Document back into a file:
+`File op=render` writes Markdown, HTML, Word or PDF (typeset by Typst in the
+conversion worker), and a render log records each one. It also adds
+`kb/survey`, a knowledge-base agent that answers "what do we hold on X" by
+gathering candidates in code and having a model sort them, and lets a tenant
+run a shared team by name. Read the upgrade notes in
+[`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.153.0 gave every setting one place. 150 environment
-variables are no longer read: policy and tuning moved to the yaml, limits
-nobody changed became fixed values, and seven feature switches are gone. Two
-presets, `personal` and `server`, stand for a whole installation. It also adds
-a knowledge-base question router with read-only tool grants, conversion
-workers that take file conversion out of the runtime's process (off by
-default), and a fix to the pacing of password sign-ins sent together. This
-release stops the boot for some existing configurations: read its upgrade
-notes in [`REVISIONS.md`](REVISIONS.md) and
-[`docs/SETTINGS_MIGRATION.md`](docs/SETTINGS_MIGRATION.md) first.
+Before it, v1.154.0 moved file conversion out of the runtime's process by
+default on Linux, into worker processes or `loomcycle-worker` containers, and
+retired `loomcycle-media`.
+
+Before that, v1.153.0 gave every setting one place: 150 environment variables
+are no longer read. Read its upgrade notes and
+[`docs/SETTINGS_MIGRATION.md`](docs/SETTINGS_MIGRATION.md) before upgrading
+across it.
 
 Before it, v1.152.0 fixed what a measurement of knowledge-base agents found
 and rewrote every annotation once.
