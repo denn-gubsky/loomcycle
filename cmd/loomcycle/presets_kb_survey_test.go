@@ -39,6 +39,11 @@ type surveyFake struct {
 	facetsMissing bool
 	// edges is what get_edges returns, by document id.
 	edges map[string][]map[string]any
+	// chunkCounts is each document's live chunk count, answered to the size
+	// query (query_chunks); a document not in it has none. countErr makes that
+	// query fail as a tool error.
+	chunkCounts map[string]int
+	countErr    string
 	// searchErr makes every search fail as a tool error.
 	searchErr string
 	// screen answers a screening round, given its candidate ids; nil sorts
@@ -52,6 +57,7 @@ type surveyFake struct {
 	walk []surveyReply
 
 	searches []string         // each search's label, in order
+	countSQL []string         // each query_chunks statement, in order
 	edgeIDs  []string         // each get_edges document id, in order
 	queries  []string         // each search's query text, in order
 	spawns   []map[string]any // each walker run's arguments, in order
@@ -129,6 +135,19 @@ func (d *surveyFakeDocument) Execute(_ context.Context, raw json.RawMessage) (to
 			out["facets"] = fc
 		}
 		return okResult(out)
+	case "query_chunks":
+		q, _ := in["sql"].(string)
+		d.f.countSQL = append(d.f.countSQL, q)
+		if d.f.countErr != "" {
+			return tools.Result{IsError: true, Text: d.f.countErr}, nil
+		}
+		rows := [][]any{}
+		for id, n := range d.f.chunkCounts {
+			if strings.Contains(q, "'"+id+"'") {
+				rows = append(rows, []any{id, n})
+			}
+		}
+		return okResult(map[string]any{"columns": []string{"document_id", "count"}, "rows": rows})
 	case "get_edges":
 		id, _ := in["document_id"].(string)
 		d.f.edgeIDs = append(d.f.edgeIDs, id)
@@ -211,8 +230,8 @@ func (a *surveyFakeAgent) child(in map[string]any) (map[string]any, string) {
 		} else {
 			r = surveyReply{text: accounting(nil, ids)}
 		}
-	case strings.Contains(prompt, "\nFitting documents ("):
-		ids := listIn(prompt, "\nFitting documents (")
+	case isWrite(in):
+		ids := writeIDs(prompt)
 		if a.f.write != nil {
 			r = a.f.write(ids)
 		} else {
@@ -321,7 +340,14 @@ func spawnPrompt(in map[string]any) string { p, _ := in["prompt"].(string); retu
 
 func isScreen(in map[string]any) bool { return strings.Contains(spawnPrompt(in), "\nCandidates (") }
 func isWrite(in map[string]any) bool {
-	return strings.Contains(spawnPrompt(in), "\nFitting documents (")
+	p := spawnPrompt(in)
+	return strings.Contains(p, "\nFitting documents (") || strings.Contains(p, "\nFitting sections (")
+}
+
+// writeIDs is a composing round's fitting ids: its documents, then its
+// sections.
+func writeIDs(prompt string) []string {
+	return append(listIn(prompt, "\nFitting documents ("), listIn(prompt, "\nFitting sections (")...)
 }
 
 // screens is each screening round's candidate ids, in spawn order.
@@ -340,7 +366,7 @@ func (f *surveyFake) writes() [][]string {
 	var out [][]string
 	for _, s := range f.spawns {
 		if isWrite(s) {
-			out = append(out, listIn(spawnPrompt(s), "\nFitting documents ("))
+			out = append(out, writeIDs(spawnPrompt(s)))
 		}
 	}
 	return out
@@ -441,7 +467,7 @@ func TestKbSurvey_GatherRanksByWeightDedupsAndSkipsFolderRows(t *testing.T) {
 	if cov != "COVERAGE: complete" || unc != "" {
 		t.Errorf("coverage = %q %q, want complete with no UNCOVERED line", cov, unc)
 	}
-	if sv != "SURVEY: candidates 4 (cut 0) | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
+	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -495,7 +521,7 @@ func TestKbSurvey_GatherKeepsTheTop120AndCountsTheCut(t *testing.T) {
 	if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120" {
 		t.Errorf("coverage = %q %q, want partial with 30 beyond the cap", cov, unc)
 	}
-	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | slices 10 | failed slices 0 | rounds 11 | RUNS: ") {
+	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 | slices 10 | failed slices 0 | rounds 11 | RUNS: ") {
 		t.Errorf("survey line = %q", sv)
 	}
 }
