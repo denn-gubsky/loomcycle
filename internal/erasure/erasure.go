@@ -530,6 +530,11 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 		} else {
 			rep.Tier1.set("sql_memory_scopes", 0)
 		}
+		if n, err := s.renderActorRows(ctx, tenant, subject, false); err != nil {
+			fail(renderActorPlane, err)
+		} else {
+			rep.Tier1.set(renderActorPlane, int64(n))
+		}
 	} else {
 		sqlMemUnexamined = true
 	}
@@ -713,6 +718,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 	if s.SqlMem != nil {
 		res.Deleted["sql_memory_scopes"] = 0
+		res.Deleted[renderActorPlane] = 0
 	}
 	if s.ListTokens != nil && s.RetireTokens != nil {
 		res.Deleted["operator_tokens"] = 0
@@ -923,6 +929,13 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 			fail("sql_memory", err)
 		} else if removed {
 			res.Deleted["sql_memory_scopes"] = 1
+		}
+		// The render log of the tenant's shared and agent scopes keeps its
+		// rows and loses the subject's name (RFC GR §4.8).
+		if n, err := s.renderActorRows(ctx, tenant, subject, !req.DryRun); err != nil {
+			fail(renderActorPlane, err)
+		} else {
+			res.Deleted[renderActorPlane] = n
 		}
 	}
 
