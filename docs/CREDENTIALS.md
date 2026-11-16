@@ -22,8 +22,9 @@ LOOMCYCLE_SECRET_KEY=$(openssl rand -base64 32)   # 32 bytes, base64
   created (the runtime never stores plaintext). External backends aren't affected.
 - **Rotation:** set `LOOMCYCLE_SECRET_KEY_PREVIOUS` to the old key during a grace
   window — rows sealed under it still decrypt while new writes use the new key.
-- **It also keys operator tokens.** With no `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`,
-  the token-hash pepper is derived from this key, so removing it logs out every
+- **It also keys operator tokens.** The token-hash pepper is derived from this
+  key (the legacy `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` only lets its own tokens
+  log in until they move), so removing it logs out every
   operator token, and `LOOMCYCLE_SECRET_KEY_PREVIOUS` must stay until every
   token has logged in once under the new key (each is rehashed at that login).
   Tokens minted with no pepper (before v1.119.0, or before the key was set)

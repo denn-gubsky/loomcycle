@@ -60,7 +60,7 @@ questions:
       private: true
   - variable: token_pepper
     label: Operator-token pepper
-    description: Hardens minted operator-token hashes (LOOMCYCLE_OPERATOR_TOKEN_PEPPER). Optional but recommended.
+    description: Legacy (LOOMCYCLE_OPERATOR_TOKEN_PEPPER) — leave empty on a new install; the pepper is derived from the secret key. An existing install keeps its value until the boot log reports no token row left under it, then clears it.
     group: Secrets
     schema:
       type: string

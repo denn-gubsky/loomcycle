@@ -153,7 +153,8 @@ Create **`.env.secure`** (there is no committed template — repo policy forbids
 ```bash
 # ── loomcycle core ──
 LOOMCYCLE_AUTH_TOKEN=REPLACE_ME              # openssl rand -hex 32
-LOOMCYCLE_OPERATOR_TOKEN_PEPPER=REPLACE_ME   # openssl rand -hex 32
+# LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy: don't set it on a new install (the pepper derives from LOOMCYCLE_SECRET_KEY).
+# An existing install keeps it until the boot log reports no token row left under it — docs/CONFIGURATION.md, Token pepper.
 # LOOMCYCLE_ADMIN_TOKEN=SAME_AS_AUTH_TOKEN   # per-person mode only (LANDING_TENANT empty): the landing mints with it
 LOOMCYCLE_AUTH_MANAGE_TOKEN=REPLACE_ME       # the landing's auth:manage token — see "Enabling accounts" below
 LOOMCYCLE_SECRET_KEY=REPLACE_ME              # required (password gate, audit chain, credentials); openssl rand -base64 32

@@ -119,7 +119,6 @@ tokens:
 
 ```sh
 openssl rand -hex 32   # → LOOMCYCLE_AUTH_TOKEN (Web UI + API bearer)
-openssl rand -hex 32   # → LOOMCYCLE_OPERATOR_TOKEN_PEPPER (hardens minted token hashes)
 openssl rand -hex 32   # → LOOMCYCLE_WORKER_TOKEN (the conversion workers present it)
 ```
 
@@ -144,7 +143,6 @@ cat > /mnt/APPS2/loomcycle/config/loomcycle.secrets.env <<'EOF'
 # Values are LITERAL — no ${VAR} expansion, and no referencing another line.
 # Write the host + password out in full (e.g. @truenas.local, not @${PG_HOST}).
 LOOMCYCLE_AUTH_TOKEN=PASTE_TOKEN_FROM_ABOVE
-LOOMCYCLE_OPERATOR_TOKEN_PEPPER=PASTE_PEPPER_FROM_ABOVE
 LOOMCYCLE_WORKER_TOKEN=PASTE_WORKER_TOKEN_FROM_ABOVE
 LOOMCYCLE_PG_DSN=postgres://loomcycle:CHANGE_ME_STRONG@PG_HOST:5432/loomcycle?sslmode=disable
 LOOMCYCLE_SQLMEM_PG_DSN=postgres://loomcycle:CHANGE_ME_STRONG@PG_HOST:5432/loomcycle_sqlmem?sslmode=disable
