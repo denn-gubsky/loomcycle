@@ -267,6 +267,12 @@ function RetentionSection() {
           mode: rep.mem_content_mode,
           age: rep.mem_content_max_age_ms,
         },
+        {
+          key: "empty_dossier",
+          label: "empty subject documents",
+          mode: rep.empty_dossier_mode,
+          age: rep.empty_dossier_max_age_ms,
+        },
       ]
     : [];
 

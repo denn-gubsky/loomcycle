@@ -1524,6 +1524,8 @@ export interface RetentionReport {
   mem_max_age_ms: number;
   mem_content_mode: string;
   mem_content_max_age_ms: number;
+  empty_dossier_mode: string;
+  empty_dossier_max_age_ms: number;
   export_dir?: string;
   purgeable?: Record<string, number>;
   sqlmem_gc?: Record<string, unknown>;
