@@ -144,7 +144,7 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 	}
 
 	// Model-visible text must not cite design documents.
-	for _, name := range []string{"kb/ask", "kb/classify", "kb/search", "kb/walker", "kb/survey"} {
+	for _, name := range []string{"kb/ask", "kb/classify", "kb/search", "kb/walker", "kb/survey", "kb/screen"} {
 		a := cfg.Agents[name]
 		for where, text := range map[string]string{"system_prompt": a.SystemPrompt, "code": a.Code} {
 			for _, line := range strings.Split(text, "\n") {
@@ -776,5 +776,70 @@ func TestKbAsk_TrustedQuestionIsSentAsThePromptWithNoUntrustedRef(t *testing.T) 
 	runAsk(t, f, askQuestion, nil)
 	if len(f.inputs) != 1 || f.inputs[0]["prompt"] != askQuestion || f.inputs[0]["untrusted"] != nil {
 		t.Errorf("spawn = %v, want prompt %q and no untrusted", f.inputs, askQuestion)
+	}
+}
+
+// knownItemPairs are minimal pairs: each known-item question asks for THE
+// overview, guide or full picture of one thing (one document describes it);
+// its twin, a word or two apart, asks for what the knowledge base holds.
+var knownItemPairs = []struct{ known, overview string }{
+	{"Give me the full picture of how the runtime is put together, end to end.",
+		"Give me the full picture of everything we hold on how the runtime is put together."},
+	{"Where is the guide to configuring providers?",
+		"Where are all the guides on configuring providers?"},
+	{"Show me the overview of the scheduler.",
+		"Show me an overview of the scheduler."},
+	{"I need the complete walkthrough of the release process.",
+		"I need the complete walkthrough of every release document."},
+	{"Can you point me to the introduction to tenant tokens?",
+		"What do we hold on the introduction to tenant tokens?"},
+}
+
+// TestKbAsk_TheOverviewOfOneThingRoutesToSearchAsAKnownItem: a question asking
+// for THE overview, guide or full picture of one thing wants the one document
+// that describes it. Measured: "the full picture of how the runtime is put
+// together" went to the survey every time, and each answer listed the
+// architecture note among dozens without opening it. The rule in code sends it
+// to kb/search before either classifier is asked, also under
+// classifier=agent, and a partial search answer stays with search.
+func TestKbAsk_TheOverviewOfOneThingRoutesToSearchAsAKnownItem(t *testing.T) {
+	for _, p := range knownItemPairs {
+		for name, metadata := range map[string]map[string]any{"cascade": nil, "classifier=agent": {"classifier": "agent"}} {
+			t.Run(name+"/"+p.known, func(t *testing.T) {
+				f := &askFake{score: 0.9, answers: askAnswers("YES", "partial")}
+				out := runAsk(t, f, p.known, metadata)
+				if f.decCalls != 0 {
+					t.Errorf("decision calls = %d, want 0: the rule answers first", f.decCalls)
+				}
+				wantSpawns(t, f, "kb/search")
+				wantRouteLine(t, out, "ROUTE: search | SCORE: none | CLASSIFIER: known-item | RUNS: r1:completed")
+			})
+		}
+	}
+}
+
+// TestKbAsk_AWhatDoWeHoldTwinOfAKnownItemStaysAnOverview: the twin of each
+// known-item question asks for what is held (everything, all, every document,
+// what we hold) or for "an" overview, and goes to the classifiers as before: a
+// genuine overview is never sent away from kb/survey by the rule.
+func TestKbAsk_AWhatDoWeHoldTwinOfAKnownItemStaysAnOverview(t *testing.T) {
+	for _, p := range knownItemPairs {
+		t.Run(p.overview, func(t *testing.T) {
+			f := &askFake{score: 0.9, answers: askAnswers("YES", "complete")}
+			out := runAsk(t, f, p.overview, nil)
+			if f.decCalls != 1 {
+				t.Errorf("decision calls = %d, want 1", f.decCalls)
+			}
+			wantSpawns(t, f, "kb/survey")
+			wantRouteLine(t, out, "ROUTE: survey | SCORE: 0.9 | CLASSIFIER: decision | RUNS: r1:completed")
+		})
+	}
+	// Plain overview questions are untouched too.
+	for _, q := range []string{askQuestion, "What do we hold on the audit trail?", "Which documents describe the guide format?"} {
+		t.Run(q, func(t *testing.T) {
+			f := &askFake{score: 0.9, answers: askAnswers("YES", "complete")}
+			runAsk(t, f, q, nil)
+			wantSpawns(t, f, "kb/survey")
+		})
 	}
 }
