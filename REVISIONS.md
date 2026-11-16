@@ -8,6 +8,48 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.155.0
+
+*A Document can be rendered back into a file (RFC GR P0–P2): `File op=render` writes Markdown, HTML, Word or PDF, with a render log per document. The knowledge-base bundle gains `kb/survey`, which answers overview questions by gathering candidates in code and having a model sort them. A tenant can run a shared team by name, and a read-mode agent whose call does not parse is told what is wrong with it.*
+
+The v1.155 line: #2655 to #2663.
+- `@loomcycle/client` 1.155.0 for version lockstep; its surface did not change. The Python adapter stays at 1.154.0; no change there.
+- No numbered migration. The render log is a new table in each scope's document schema, created when first used.
+- One new Go dependency: `github.com/yuin/goldmark` v1.8.7, for Markdown parsing in the renderer.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **PDF needs a worker from this release (#2663).** PDF is typeset by Typst. The `loomcycle-worker` image now carries Typst v0.15.1 and the Noto Sans fonts, and advertises the `write_pdf` label. A worker built before this release never takes a PDF job, and with no capable worker attached the render is refused at once. In process (`conversion.mode: inprocess`, or local mode), `typst` must be on `PATH`; where it is missing the answer is "this server cannot write PDF". Markdown, HTML and Word need no helper program.
+- **Overview questions to `kb/ask` go to `kb/survey` (#2655, #2657, #2661).** A deployment that loads the `knowledge-base` bundle gets the new agent, and `kb/ask` sends an overview there instead of to `kb/walker`. A tenant that forked `kb/ask` keeps its own version until it forks again.
+- **A shared team runs by name in a tenant (#2660).** `TeamDef op=run`, `verify`, `render_diagram`, and a `delivery: team` schedule or webhook now find a team the tenant does not hold in the shared tier, as `fork` already did. A tenant's own version, retired or not, still wins. A schedule or webhook in a tenant that names only a shared team used to start nothing and now starts the shared team, in the trigger's tenant and as the trigger's user. A shared team with its own agents, schedules or webhooks still runs only in the shared tier, and the refusal says to fork it.
+- **A malformed call in read mode is a validation error (#2662).** An agent holding Document or Path in read mode whose call did not decode was refused as "a call with no recognised op", a permission error. It now gets the tool's own error, "invalid input JSON: …", with category `validation`. The call is still refused before the tool runs.
+
+### Rendering documents (RFC GR P0–P2: #2658, #2659, #2663)
+
+- **`File op=render`** renders a document (by `document` id or `doc_path`), one subtree (`chunk`), or a Markdown file (`path`) to `md`, `html`, `docx` or `pdf`. The file goes to the run's inbox (`volume:inbox:rendered/`) or to a read-write volume via `to`. The model gets back `{ref, format, size, sha256, render_id, reused, report}`. Help topic `File/render`.
+- **What a render holds.** Headings, lists, tables, quotes, code, pictures (png, jpeg, gif, webp; capped per picture and per render) and links. A `loom:chunk` link inside the same file becomes an internal link. A `loom:` link to another document becomes its Web UI URL when `LOOMCYCLE_PUBLIC_URL` is set and the caller may read it, and plain text otherwise. Raw HTML in a body stays text.
+- **The built-in look.** Noto Sans and Noto Sans Mono. No title page unless `title_page`. A small Draft or Review label beside the title. Optional table of contents.
+- **Word** is written by hand as WordprocessingML, with Word's built-in styles and no fields, macros or embedded content. It is checked in CI by opening it in LibreOffice.
+- **PDF** is typeset by Typst from source the runtime writes. Every text from the document goes in as a Typst string, never as markup, and the source reads no file beyond its pictures and no network. The output is checked with the PDF reader's limits (64 MiB, 1–2000 pages).
+- **It goes through the same gates as an export.** A render is an `export_md` read inside: read mode, scope grants and access control all apply. It runs in a conversion worker as a `DOCUMENT_RENDER` job when the server has workers, otherwise in process.
+- **The render log.** `get_document` reports the newest render per format, and `history` with `include: ["renders"]` lists a subtree's renders. An unchanged earlier output still in its volume is reused.
+
+### Knowledge base (#2655, #2657, #2661, #2662)
+
+- **`kb/survey`** (code-js) answers "what do we hold on X":
+  - it gathers candidates in code (several searches, one per clause of the question, and one hop along stored relations), weighted and capped at 120;
+  - it has `kb/walker` sort them in slices, five at a time, passing only document ids;
+  - it retries a failed slice as halves;
+  - it has the walker compose the answer from what fits;
+  - code computes the `COVERAGE` line. `complete` needs every candidate sorted, none cut by the cap, and at least as many candidates as the documents the faceted search counted.
+- **Measured on loomcycle-dev** with a fresh question set each time (Haiku). Over two sets, the share of core documents named went from 0.43 and 0.66 with the walker alone to 0.67 and 0.71, and wrong answers fell from 16 and 7 of 30 to 4 and 0. The survey never claimed `complete` falsely; the walker alone did so 4 times in 30 runs. An overview costs five to seven times as much, still a few cents on Haiku.
+- `kb/walker`'s diagnostic `MOVES:` and `MISSING:` lines no longer reach the caller of `kb/survey`.
+
+### Teams (#2660)
+
+- `builtin.ActiveTeam` is the one read of a team by name: the tenant's active version, else the shared tier's. `verify` marks a shared answer `shared: true`.
+
 ## What's in v1.154.1
 
 *An MCP server can lower the size at which a base64 file in its answer is captured into the run's inbox, which an environment variable did for the whole runtime before v1.153.0; an encrypted PDF is refused before it is read; an operator lifting a team agent's override lock is audited.*
