@@ -536,6 +536,9 @@ func (a *AgentDef) execCreate(ctx context.Context, policy tools.AgentDefPolicyVa
 	if err := a.admitToolModesChange(ctx, "create", tenantID, in.Name, def); err != nil {
 		return errResult(err.Error()), nil
 	}
+	if err := a.admitOverrideLockChange(ctx, "create", tenantID, in.Name, def); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
@@ -747,6 +750,9 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err := a.admitToolModesChange(ctx, "fork", tenantID, in.Name, def); err != nil {
 		return errResult(err.Error()), nil
 	}
+	if err := a.admitOverrideLockChange(ctx, "fork", tenantID, in.Name, def); err != nil {
+		return errResult(err.Error()), nil
+	}
 
 	row := store.AgentDefRow{
 		DefID:            mintDefID(),
@@ -916,6 +922,9 @@ func (a *AgentDef) execPromote(ctx context.Context, policy tools.AgentDefPolicyV
 		return errResult(err.Error()), nil
 	}
 	if err := a.admitToolModesChange(ctx, "promote", ident.TenantID, row.Name, target); err != nil {
+		return errResult(err.Error()), nil
+	}
+	if err := a.admitOverrideLockChange(ctx, "promote", ident.TenantID, row.Name, target); err != nil {
 		return errResult(err.Error()), nil
 	}
 	if err := a.memberActivationGuard(ctx, "promote", ident.TenantID, row.Name); err != nil {
@@ -1136,8 +1145,10 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 		// A fork can add the override lock and cannot remove it, as it cannot
 		// widen its parent's tools: otherwise forking a locked agent would be
 		// the way to run it with other settings. The lock comes off where it
-		// was put on — the operator's config for a static agent, a fresh
-		// create for one defined at runtime.
+		// was put on — the operator's config for a static agent, an operator's
+		// create for one defined at runtime. This sees only the parent; the
+		// rest of the lineage (an older parent, a promote, a create of the
+		// name) is admitOverrideLockChange's.
 		// The operator's config counts as well as the parent version: a
 		// version forked before the config locked the agent is open on paper,
 		// and lookup serves it locked regardless.
@@ -1159,7 +1170,7 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 			ov.Retention = ""
 		}
 		if lockedBase && ov.AllowOverrides != nil && *ov.AllowOverrides {
-			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set allow_overrides to true on %q, whose definition locks its per-run settings (allow_overrides: false); remove the lock in the server config, or create the agent anew", name)
+			return mergedDef{}, fmt.Errorf("AgentDef tool: a fork cannot set allow_overrides to true on %q, whose definition locks its per-run settings (allow_overrides: false); remove the lock in the server config, or have an operator create the agent anew", name)
 		}
 		modesBefore := base.ToolModes
 		if static, ok := a.Cfg.Agents[name]; ok && len(static.ToolModes) > 0 {
