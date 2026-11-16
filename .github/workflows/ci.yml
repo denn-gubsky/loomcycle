@@ -1128,6 +1128,7 @@ jobs:
       - census
       - go
       - fuzz
+      - render-office
       - go-race
       - go-postgres
       - runtime-codejs
