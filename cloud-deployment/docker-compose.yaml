@@ -272,6 +272,13 @@ services:
     environment:
       LOOMCYCLE_WORKER_DISPATCHER: 127.0.0.1:7788
       LOOMCYCLE_WORKER_TOKEN: ${LOOMCYCLE_WORKER_TOKEN:?set LOOMCYCLE_WORKER_TOKEN in .env.secure (openssl rand -hex 32)}
+      # The ffmpeg commands the workers run. In remote mode the runtime's own
+      # transcription.stt.media and speech.encode commands only switch the
+      # conversion on; these are what runs. Tighter than the image's defaults,
+      # since a recording is untrusted: an audio demuxer only, at most 30
+      # minutes decoded into at most 64 MB of WAV.
+      LOOMCYCLE_WORKER_MEDIA_COMMAND: "ffmpeg -nostdin -loglevel error -protocol_whitelist file -format_whitelist ogg,matroska,mov,wav,mp3,flac,aac -i {in} -vn -t 1800 -ac 1 -ar 16000 -fs 64M -f wav {out}"
+      LOOMCYCLE_WORKER_ENCODE_COMMAND: "ffmpeg -nostdin -loglevel error -protocol_whitelist file -format_whitelist wav -i {in} -vn -c:a libopus -b:a 32k -f ogg {out}"
     deploy:
       replicas: 2
     mem_limit: 1g
