@@ -6106,11 +6106,14 @@ agents:
       //    such a search counts 2, the first 1 more. A failed search ends them
       //    and keeps what they found.
       //    Chunk count is the size measure because it is the one the store keeps
-      //    for every document whatever its type. GUIDE_CHUNKS = 20 holds every
-      //    guide that was dropped on the measured sets: 38 chunks the smallest
-      //    on one, and on the next a security guide of 21 chunks whose sections
-      //    never became candidates under 30. About three documents in ten of
-      //    that corpus have 20 or more. It does not tell a
+      //    for every document whatever its type. Under 30, a 21-chunk security
+      //    guide never had a section screened, and multi-topic guides with
+      //    key sections run from 15 to 24 chunks on that corpus (an MCP-server
+      //    guide 19, an install guide 15). GUIDE_CHUNKS = 15 holds them; about
+      //    half the corpus has 15 or more, which is safe because what is done
+      //    with a large guide is capped, not the count of them: GUIDE_DOCS
+      //    searched inside, GUIDE_SECTIONS sections each, SEC_CAP in all, the
+      //    heaviest first. It does not tell a
       //    guide from a long single-topic design document: such a document's
       //    sections are screened too, which costs rounds, not answers, since a
       //    section is dropped from the answer when its whole document fits. A
@@ -6198,7 +6201,7 @@ agents:
       var SEARCH_LIMIT = 50; // hits per search, the search's own maximum
       var MAX_CLAUSES = 8;   // clause searches, at most (two searches each)
       var SLICE = 12;        // candidate ids per screening round
-      var GUIDE_CHUNKS = 20; // live chunks that make a document a large guide
+      var GUIDE_CHUNKS = 15; // live chunks that make a document a large guide
       var GUIDE_SECTIONS = 3; // hit sections of one large guide kept, at most
       var GUIDE_DOCS = 8;    // large guides searched inside, at most
       var GUIDE_HITS = 5;    // hits per search inside one guide

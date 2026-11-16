@@ -34,7 +34,7 @@ func annotationCallOf(id string) string {
 // TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly: a big
 // multi-topic guide answers in one of its sections while its brief describes
 // the whole guide, so a passage hit in a section of a document with at least
-// 20 live chunks makes that section a candidate beside the document; a small
+// 15 live chunks makes that section a candidate beside the document; a small
 // document's sections do not, and a guide gives at most its 3 heaviest hit
 // sections. The size is one count over the kept documents.
 // The screening round names the section by id and carries its exact
@@ -50,7 +50,7 @@ func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 			"S": {secHit(guide, s1), secHit(guide, s3)},
 			"M": {secHit(guide, s1), secHit(guide, s2), secHit(guide, s3), secHit(guide, s4)},
 		},
-		chunkCounts: map[string]int{guide: 20, small: 19, plain: 5},
+		chunkCounts: map[string]int{guide: 15, small: 14, plain: 5},
 	}
 	out := runSurvey(t, f, surveyQuestion)
 
@@ -71,7 +71,7 @@ func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 		}
 	}
 	if got[sSmall] {
-		t.Errorf("a section of a document under 20 chunks was screened")
+		t.Errorf("a section of a document under 15 chunks was screened")
 	}
 	if got[s4] {
 		t.Errorf("a fourth section of one guide was screened; want its 3 heaviest only")
