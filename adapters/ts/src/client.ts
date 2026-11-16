@@ -101,6 +101,9 @@ import type {
   EffectiveConfigResponse,
   RunFileInput,
   RunInboxDownload,
+  DocumentExport,
+  DocumentExportFormat,
+  DocumentExportOptions,
   AgentOverridableResponse,
   RetuneRunResponse,
   RunConfigResponse,
@@ -4357,6 +4360,50 @@ export class LoomcycleClient {
       throw new Error(`fetchDocumentAsset: ${resp.status} ${resp.statusText}`);
     }
     return resp;
+  }
+
+  /** Render a document into a file (RFC GR) — `GET
+   *  /v1/_document/export/{documentId}`: PDF, Word (.docx), HTML or Markdown
+   *  (a Markdown render of a document with pictures comes back as a zip of the
+   *  .md and its pictures; see `mediaType`). `scope` is "user" (default) |
+   *  "agent" | "tenant"; `scopeId`/`tenant` are the RFC AS browse overrides.
+   *
+   *  A refusal raises the typed error for its status, as every method does:
+   *  {@link InvalidArgumentError} on 400, {@link NotFoundError} on 404 (another
+   *  scope's document reads as missing), {@link RequestTooLargeError} on 413,
+   *  {@link UnavailableError} on 503 (busy, or e.g. no typesetter for PDF);
+   *  the error's `code` is the server's code. */
+  async exportDocument(
+    documentId: string,
+    format: DocumentExportFormat,
+    opts?: DocumentExportOptions,
+  ): Promise<DocumentExport> {
+    const q = new URLSearchParams({ format, scope: opts?.scope ?? "user" });
+    if (opts?.scopeId) q.set("scope_id", opts.scopeId);
+    if (opts?.tenant) q.set("tenant", opts.tenant);
+    if (opts?.chunk) q.set("chunk", opts.chunk);
+    if (opts?.toc) q.set("toc", "true");
+    if (opts?.titlePage) q.set("title_page", "true");
+    if (opts?.pageSize) q.set("page_size", opts.pageSize);
+    if (opts?.language) q.set("language", opts.language);
+    if (opts?.provenance === false) q.set("provenance", "false");
+    const headers: Record<string, string> = {};
+    if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
+    const resp = await this.ctx.fetchImpl(
+      `${this.ctx.baseUrl}/v1/_document/export/${encodeURIComponent(documentId)}?${q.toString()}`,
+      { method: "GET", headers, signal: opts?.signal },
+    );
+    if (!resp.ok) {
+      await raiseFromResponse(resp);
+    }
+    const blob = await resp.blob();
+    const renderId = resp.headers.get("X-Loomcycle-Render-Id") ?? undefined;
+    return {
+      blob,
+      filename: dispositionFilename(resp.headers.get("Content-Disposition")) ?? `${documentId}.${format}`,
+      mediaType: resp.headers.get("Content-Type") ?? "",
+      ...(renderId ? { renderId } : {}),
+    };
   }
 
   /** Invoke the RFC BE History tool over HTTP (`POST /v1/_history`). Browse,
