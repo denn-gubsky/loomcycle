@@ -8,6 +8,21 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## Unreleased (on `main` after v1.153.0)
+
+*Not tagged yet. These lines move into the next release's entry when it is cut.*
+
+### Upgrade notes
+
+- **The `oauth` preset names the models `base` names (#2639).** `oauth-haiku`, `oauth-sonnet` and `oauth-opus` name `claude-haiku-5-5`, `claude-sonnet-5-5` and `claude-opus-5-5`; they named `claude-haiku-4-5`, `claude-sonnet-4-6` and `claude-opus-4-7`. A deployment that selects `oauth` routes to different models after the upgrade, and a forced `tool_choice` is dropped on the sonnet and opus aliases, as it already is for `base`. To keep a model, restate its alias in your own config. This was not tested against the OAuth endpoint, which needs an interactive `loomcycle anthropic login`; see [`docs/SETTINGS_MIGRATION.md`](docs/SETTINGS_MIGRATION.md) §4.19.
+
+### Fixes
+
+- **`loomcycle --help` lists every subcommand (#2639).** `operator-token`, `hash`, `worker`, `anthropic`, `memory-eval-live` and `memory-eval-judge` were dispatched and not listed. A test now fails when a dispatched subcommand has no help line.
+- **A snapshot over its size cap names what to change (#2639).** The error and the `--max-bytes` flag help named `LOOMCYCLE_SNAPSHOT_MAX_BYTES`, which v1.153.0 retired. They name `max_bytes` on the request and `--max-bytes` on the CLI, 512 MiB when unset. The proto and adapter comments follow; no adapter surface changed.
+- **The retention page says when a restart is pending (#2638).** After the `retention:` block is edited and the config reloaded, the Web UI's retention page shows that the new settings take effect at the next restart; it showed the running values with nothing said.
+- **Docs (#2639).** `docs/GRPC.md` lost two broken links and two stale pointers.
+
 ## What's in v1.153.0
 
 *Every setting now has one place (RFC GN). 150 environment variables are no longer read: policy and tuning moved to the yaml, limits nobody changed became fixed values, and seven feature switches are gone because the features are always on. The environment keeps secrets, the identity of the host and security gates, and it wins where a setting has both forms. The storage backend, SQL Memory and A2A are inferred from what is configured. Two presets, `personal` and `server`, each stand for a whole installation. **This release stops the boot for some existing configurations, and changes others without a warning: read the upgrade notes before you upgrade.** Also here: a knowledge-base question router with read-only tool grants (RFC GL), conversion workers that take file conversion out of the runtime's process (RFC GO, off by default), and a fix to the pacing of password sign-ins sent together.*

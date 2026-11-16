@@ -392,6 +392,22 @@ The `local` preset's `local-fast` and `local-chat` aliases were written as `mode
 
 **What to do.** `loomcycle init --full` writes the long reference config, as before.
 
+### 4.19 After v1.153.0: the `oauth` preset names the models `base` names
+
+**Who is affected.** A deployment that selects the `oauth` preset and runs a build newer than v1.153.0. v1.153.0 itself still has the older ids.
+
+**What happens.**
+
+| Alias | Before | Now |
+|---|---|---|
+| `oauth-haiku` | `claude-haiku-4-5` | `claude-haiku-5-5` |
+| `oauth-sonnet` | `claude-sonnet-4-6` | `claude-sonnet-5-5` |
+| `oauth-opus` | `claude-opus-4-7` | `claude-opus-5-5` |
+
+The preset still puts the OAuth provider first in the provider priority and its alias first in each tier. On `oauth-sonnet` and `oauth-opus` a forced `tool_choice` is now dropped, as it is for the `sonnet` and `opus` aliases of `base`. The change was not tested against the OAuth endpoint, which needs an interactive `loomcycle anthropic login`: if your sign-in does not serve a `5-5` model, restate the alias as below.
+
+**What to do.** To keep a model, restate its alias in your own config: `models: { oauth-sonnet: { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 } }`. `GET /v1/_routing` and the Web UI's routing page show what each tier resolves to.
+
 ## 5. Step by step, by area
 
 Each area shows the old environment lines and what replaces them. Every key name is the real one. Values are examples.
