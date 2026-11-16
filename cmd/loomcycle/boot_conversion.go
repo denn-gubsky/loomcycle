@@ -39,6 +39,30 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 	if !cv.LocalWorkers() && !cv.RemoteWorkers() {
 		return nil
 	}
+	// The children's binary and socket come first: when local workers are
+	// only the platform's default (no mode written) and this host cannot
+	// start them (no writable temp directory, say), the runtime converts in
+	// process as it did before the default, and says so. A mode the
+	// operator wrote that cannot start stops the boot.
+	var (
+		bin, socket string
+		localL      net.Listener
+		closeSocket func()
+	)
+	if cv.LocalWorkers() {
+		var err error
+		bin, err = os.Executable()
+		if err == nil {
+			localL, socket, closeSocket, err = local.Listen()
+		}
+		if err != nil {
+			if b.cfg.Conversion.Mode == "" {
+				slog.Warn("conversion: cannot start the local workers that are the default on this platform; converting in this process (write conversion.mode to choose)", "err", err)
+				return nil
+			}
+			fatal("conversion: cannot start local workers", "err", err)
+		}
+	}
 	token, err := conversionToken(cv)
 	if err != nil {
 		fatal("conversion: "+err.Error(), "mode", cv.Mode)
@@ -84,15 +108,7 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 		slog.Info("conversion worker endpoint listening", "listen", cv.Listen, "tls", cv.TLS.Enabled(), "client_certs", cv.TLS.ClientCAFile != "")
 	}
 	if cv.LocalWorkers() {
-		bin, err := os.Executable()
-		if err != nil {
-			fatal("conversion: cannot find this binary to start workers from", "err", err)
-		}
-		l, socket, closeSocket, err := local.Listen()
-		if err != nil {
-			fatal("conversion: cannot open the worker socket", "err", err)
-		}
-		serve(l)
+		serve(localL)
 		sup := local.Start(local.Options{
 			Binary: bin, Socket: socket, Token: token,
 			Workers: cv.Local.Workers, MemoryLimitMB: cv.Local.MemoryLimitMB,

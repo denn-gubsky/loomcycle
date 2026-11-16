@@ -1,6 +1,7 @@
 package config
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -10,15 +11,15 @@ func loadConversion(t *testing.T, block string) (*Config, error) {
 	return LoadLayers(Layer{Name: "op", Data: []byte(transcriptionBase + block)})
 }
 
-// Absent, conversion runs in process at the documented defaults: the state
-// every existing deployment is in.
-func TestConversionConfig_AbsentIsInProcessWithDefaults(t *testing.T) {
+// Absent, conversion runs in the platform's default mode at the documented
+// defaults.
+func TestConversionConfig_AbsentIsThePlatformDefault(t *testing.T) {
 	cfg, err := loadConversion(t, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := cfg.Conversion.Resolved()
-	want := ConversionConfig{Mode: ConversionInProcess, QueueWaitS: 60, QuarantineTTLS: 3600,
+	want := ConversionConfig{Mode: DefaultConversionMode(runtime.GOOS), QueueWaitS: 60, QuarantineTTLS: 3600,
 		Local: ConversionLocalConfig{Workers: 2, MemoryLimitMB: 1024}}
 	if got != want {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
@@ -83,6 +84,16 @@ func TestConversionConfig_PlaintextNeedsLoopbackOrAnInsecureFlag(t *testing.T) {
 	} {
 		if _, err := loadConversion(t, block); err != nil {
 			t.Errorf("%q: %v", block, err)
+		}
+	}
+}
+
+// Linux starts children by default (RFC GO D2); every other platform keeps
+// converting in process.
+func TestDefaultConversionMode_IsLocalOnLinuxOnly(t *testing.T) {
+	for goos, want := range map[string]string{"linux": ConversionLocal, "darwin": ConversionInProcess, "windows": ConversionInProcess, "freebsd": ConversionInProcess} {
+		if got := DefaultConversionMode(goos); got != want {
+			t.Errorf("%s: %s, want %s", goos, got, want)
 		}
 	}
 }

@@ -1,15 +1,14 @@
 # pinchtab license files
 
-`Dockerfile.browser` and `Dockerfile.media` copy the `pinchtab` binary out of
-the `pinchtab/pinchtab` image into the `loomcycle-browser` and
-`loomcycle-media` images. pinchtab is
+`Dockerfile.browser` copies the `pinchtab` binary out of the
+`pinchtab/pinchtab` image into the `loomcycle-browser` image. pinchtab is
 MIT-licensed, and MIT requires its copyright and permission notice to travel
 with every copy, but the upstream image carries neither file. These are
-vendored here so both images ship them at `/usr/share/doc/pinchtab/`.
+vendored here so the image ships them at `/usr/share/doc/pinchtab/`.
 
 - **Project:** `https://github.com/pinchtab/pinchtab`
 - **Version:** `v0.15.2` (must match the `FROM pinchtab/pinchtab:` tag in
-  `Dockerfile.browser` and `Dockerfile.media`; scripts/ci/pinchtabpin checks it)
+  `Dockerfile.browser`; scripts/ci/pinchtabpin checks it)
 - **License:** MIT, Copyright (c) 2026 Luigi Agosti
 - **Files:** `LICENSE` and `THIRD_PARTY_LICENSES.md`, unmodified, from the
   `v0.15.2` tag (byte-identical to v0.15.0)

@@ -2,7 +2,7 @@
 
 loomcycle converts files: it extracts a document's text, cuts and renders PDF pages for OCR, turns a recording into a WAV for speech-to-text, encodes synthesized speech, and re-encodes images a vision model must have scaled. These are the jobs whose memory is set by what someone put in a file. One Office document at every extraction cap can take about 700 MiB, and a hostile one is written to take more.
 
-By default every conversion runs inside the runtime's own process. A file that exhausts memory then takes every run on the replica with it. **Conversion workers** move the conversions out (RFC GO): a worker is the same binary, run as `loomcycle worker`, that receives a file's bytes, converts them and sends the result back. A worker that dies fails that one tool call and nothing else.
+Inside the runtime's own process, a file that exhausts memory takes every run on the replica with it. **Conversion workers** move the conversions out (RFC GO): a worker is the same binary, run as `loomcycle worker`, that receives a file's bytes, converts them and sends the result back. A worker that dies fails that one tool call and nothing else.
 
 ## Choosing a mode
 
@@ -10,8 +10,8 @@ By default every conversion runs inside the runtime's own process. A file that e
 
 | Mode | Where conversions run | Use it when |
 |---|---|---|
-| `inprocess` (default) | in the runtime | a single-user install, or you accept the risk |
-| `local` | children of the runtime, started and restarted by it | one host or one container; nothing else to deploy |
+| `inprocess` (default off Linux) | in the runtime | a single-user install, or you accept the risk |
+| `local` (default on Linux) | children of the runtime, started and restarted by it | one host or one container; nothing else to deploy |
 | `remote` | workers you run as their own containers | you want hard memory limits, no shared filesystem, and workers on other hosts |
 | `local+remote` | both, in one pool | moving from `local` to `remote`, or keeping a floor of local capacity |
 

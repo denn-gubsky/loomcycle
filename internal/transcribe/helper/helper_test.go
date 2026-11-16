@@ -223,7 +223,7 @@ func TestRun_MissingBinaryNamesTheHelperKey(t *testing.T) {
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Run = %v, want ErrNotFound", err)
 	}
-	for _, want := range []string{"loomcycle-no-such-helper-binary", "transcription.stt.media", "loomcycle-media"} {
+	for _, want := range []string{"loomcycle-no-such-helper-binary", "transcription.stt.media", "loomcycle-worker"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}

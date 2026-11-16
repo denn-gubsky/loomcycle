@@ -143,7 +143,7 @@ func Run(ctx context.Context, spec Spec) (Result, error) {
 	// Resolved against this process's PATH, which is the PATH the child gets.
 	prog, err := exec.LookPath(argv[0])
 	if err != nil {
-		return Result{}, fmt.Errorf("%s: %q is not installed on this host — use the loomcycle-media image or set %s to a command that exists here: %w",
+		return Result{}, fmt.Errorf("%s: %q is not installed on this host — run conversion workers from the loomcycle-worker image (docs/WORKERS.md) or set %s to a command that exists here: %w",
 			spec.Key, argv[0], spec.Key, ErrNotFound)
 	}
 	args := argv[1:]
