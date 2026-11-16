@@ -45,8 +45,11 @@ const (
 	MaxBodyBytes = 32 << 20
 	MaxImages    = 2000
 	MaxImage     = 8 << 20
-	MaxBundle    = 256 << 20
-	MaxOutput    = 64 << 20
+	// MaxImageBytes caps the pictures of one render together, so a bundle
+	// (pictures plus bodies) stays under MaxBundle.
+	MaxImageBytes = 192 << 20
+	MaxBundle     = 256 << 20
+	MaxOutput     = 64 << 20
 	// maxDepth bounds the nesting of blocks the writers recurse through. A
 	// body nested deeper (a list in a quote in a list, thousands deep) is cut
 	// there; goldmark itself parses it iteratively, the writers would not.

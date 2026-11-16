@@ -403,3 +403,44 @@ func (c *cancelAfter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// One picture a body names many times — a reference definition used over
+// and over — is decoded and stored once, not once per use.
+func TestBuilder_ARepeatedPictureIsStoredOnce(t *testing.T) {
+	pic := base64.StdEncoding.EncodeToString(tinyPNG)
+	body := strings.Repeat("![a][r] ", 5000) + "\n\n[r]: data:image/png;base64," + pic + "\n"
+	b := NewBuilder("x")
+	nodes := b.Body(body)
+	if len(b.Doc.Images) != 1 || b.Report.Images != 1 {
+		t.Fatalf("a picture used 5000 times was stored %d times", len(b.Doc.Images))
+	}
+	uses := 0
+	var count func(ns []Node)
+	count = func(ns []Node) {
+		for _, n := range ns {
+			if n.Kind == KindImage {
+				uses++
+			}
+			count(n.Children)
+		}
+	}
+	count(nodes)
+	if uses != 5000 {
+		t.Fatalf("%d of the 5000 uses are kept", uses)
+	}
+}
+
+func TestBuilder_PicturesPastTheTotalCapAreSkipped(t *testing.T) {
+	b := NewBuilder("x")
+	one := make([]byte, MaxImage)
+	one[0] = 1
+	kept := 0
+	for i := 0; i < MaxImageBytes/MaxImage+3; i++ {
+		if b.Image("image/png", one, "p").Kind == KindImage {
+			kept++
+		}
+	}
+	if kept != MaxImageBytes/MaxImage || b.Report.ImagesSkipped != 3 {
+		t.Fatalf("kept %d pictures of %d MiB (skipped %d)", kept, MaxImage>>20, b.Report.ImagesSkipped)
+	}
+}

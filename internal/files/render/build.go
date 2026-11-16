@@ -27,8 +27,13 @@ type Builder struct {
 	// Links resolves a body's links; nil keeps http, https and mailto.
 	Links LinkResolver
 
-	md          goldmark.Markdown
-	bodyBytes   int
+	md         goldmark.Markdown
+	bodyBytes  int
+	imageBytes int
+	// dataURLs is each data: picture decoded so far, by its URL, so a body
+	// that names one picture many times (a reference definition used over
+	// and over) decodes and stores it once.
+	dataURLs    map[string]Node
 	full        bool // the body cap was reached: later bodies are left out
 	sectionsCut bool
 }
@@ -96,7 +101,10 @@ func (b *Builder) Image(mediaType string, data []byte, alt string) Node {
 		return b.skipImage(alt, fmt.Sprintf("a picture larger than %d MiB was left out", MaxImage>>20))
 	case len(b.Doc.Images) >= MaxImages:
 		return b.skipImage(alt, fmt.Sprintf("pictures past the first %d were left out", MaxImages))
+	case b.imageBytes+len(data) > MaxImageBytes:
+		return b.skipImage(alt, fmt.Sprintf("pictures past %d MiB in all were left out", MaxImageBytes>>20))
 	}
+	b.imageBytes += len(data)
 	name := fmt.Sprintf("img-%d.%s", len(b.Doc.Images)+1, ext)
 	b.Doc.Images = append(b.Doc.Images, Image{Name: name, MediaType: mediaType, Data: data})
 	b.Report.Images++
@@ -350,11 +358,28 @@ func (c *converter) link(dest string, children []Node) []Node {
 // is added; any other reference (a URL, a volume) is left out, since a
 // rendering never fetches.
 func (c *converter) image(dest, alt string) Node {
-	if mt, data, tooLarge, ok := decodeDataURL(dest); ok {
-		if tooLarge {
-			return c.b.skipImage(oneLine(alt), fmt.Sprintf("a picture larger than %d MiB was left out", MaxImage>>20))
+	if strings.HasPrefix(dest, "data:") {
+		if n, ok := c.b.dataURLs[dest]; ok {
+			if n.Kind == KindImage {
+				n.Alt = oneLine(alt)
+			}
+			return n
 		}
-		return c.b.Image(mt, data, alt)
+	}
+	if mt, data, tooLarge, ok := decodeDataURL(dest); ok {
+		// Distinct data: URLs are body text, so what is decoded here is
+		// bounded by the body cap; a repeat is answered from dataURLs.
+		var n Node
+		if tooLarge {
+			n = c.b.skipImage(oneLine(alt), fmt.Sprintf("a picture larger than %d MiB was left out", MaxImage>>20))
+		} else {
+			n = c.b.Image(mt, data, alt)
+		}
+		if c.b.dataURLs == nil {
+			c.b.dataURLs = map[string]Node{}
+		}
+		c.b.dataURLs[dest] = n
+		return n
 	}
 	return c.b.skipImage(oneLine(alt), "a picture the text links to rather than holds was left out")
 }
