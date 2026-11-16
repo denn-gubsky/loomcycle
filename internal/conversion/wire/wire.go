@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 )
 
 // ProtocolVersion is the worker protocol this build speaks. A worker whose
@@ -29,8 +30,10 @@ const ChunkSize = 1 << 20
 const MDAuthorization = "authorization"
 
 // Labels a worker carries: what it can do. Every worker extracts, cuts PDF
-// pages and re-encodes images; render, media and encode need the worker's
-// helper program for each, so a worker carries them only when it resolves.
+// pages, re-encodes images and writes documents; render, media and encode
+// need the worker's helper program for each, so a worker carries them only
+// when it resolves. write (a document rendered to a file, RFC GR) is not
+// render, which is rasterizing a PDF page for OCR.
 const (
 	LabelExtract = "extract"
 	LabelPDF     = "pdf"
@@ -38,6 +41,7 @@ const (
 	LabelRender  = "render"
 	LabelMedia   = "media"
 	LabelEncode  = "encode"
+	LabelWrite   = "write"
 )
 
 // LabelFor is the label a job kind needs.
@@ -53,6 +57,8 @@ func LabelFor(k workerpb.JobKind) string {
 		return LabelEncode
 	case workerpb.JobKind_JOB_KIND_IMAGE_REENCODE:
 		return LabelImage
+	case workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER:
+		return LabelWrite
 	}
 	return LabelExtract
 }
@@ -78,6 +84,8 @@ func KindName(k workerpb.JobKind) string {
 		return "audio_encode"
 	case workerpb.JobKind_JOB_KIND_IMAGE_REENCODE:
 		return "image_reencode"
+	case workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER:
+		return "document_render"
 	}
 	return "unknown"
 }
@@ -141,6 +149,14 @@ func ErrorToWire(err error) (workerpb.ErrorClass, string) {
 		return workerpb.ErrorClass_ERROR_CLASS_SINK_FULL, ""
 	case errors.Is(err, extract.ErrUnsupported):
 		return workerpb.ErrorClass_ERROR_CLASS_UNSUPPORTED, ""
+	// A render's own refusals keep their message: it names the format, or
+	// the cap the document went over.
+	case errors.Is(err, render.ErrUnsupported):
+		return workerpb.ErrorClass_ERROR_CLASS_UNSUPPORTED, err.Error()
+	case errors.Is(err, render.ErrBadBundle):
+		return workerpb.ErrorClass_ERROR_CLASS_INPUT, err.Error()
+	case errors.Is(err, render.ErrTooLarge):
+		return workerpb.ErrorClass_ERROR_CLASS_REFUSED, err.Error()
 	case errors.Is(err, convert.ErrNotConfigured):
 		return workerpb.ErrorClass_ERROR_CLASS_NOT_CONFIGURED, ""
 	case errors.Is(err, context.DeadlineExceeded):
@@ -160,6 +176,18 @@ func ErrorToWire(err error) (workerpb.ErrorClass, string) {
 // its helper already.
 func ErrorFromWire(kind workerpb.JobKind, class workerpb.ErrorClass, msg string) error {
 	msg = clip(msg, maxNoteBytes)
+	if kind == workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER {
+		// A render's refusals answer as the render package's own sentinels,
+		// as the in-process renderer's would.
+		switch class {
+		case workerpb.ErrorClass_ERROR_CLASS_UNSUPPORTED:
+			return remoteErrorOf(render.ErrUnsupported, msg)
+		case workerpb.ErrorClass_ERROR_CLASS_INPUT:
+			return remoteErrorOf(render.ErrBadBundle, msg)
+		case workerpb.ErrorClass_ERROR_CLASS_REFUSED:
+			return remoteErrorOf(render.ErrTooLarge, msg)
+		}
+	}
 	switch class {
 	case workerpb.ErrorClass_ERROR_CLASS_NONE:
 		return nil
@@ -189,6 +217,24 @@ func ErrorFromWire(kind workerpb.JobKind, class workerpb.ErrorClass, msg string)
 		msg = "extract: " + msg
 	}
 	return errors.New(msg)
+}
+
+// remoteError is a worker's message that errors.Is its sentinel. The
+// message already reads as the sentinel's own error does (the worker sent
+// err.Error()), so it is not prefixed again.
+type remoteError struct {
+	msg string
+	err error
+}
+
+func (e *remoteError) Error() string { return e.msg }
+func (e *remoteError) Unwrap() error { return e.err }
+
+func remoteErrorOf(sentinel error, msg string) error {
+	if msg == "" {
+		return sentinel
+	}
+	return &remoteError{msg: msg, err: sentinel}
 }
 
 func clip(s string, n int) string {

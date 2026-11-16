@@ -123,6 +123,8 @@ const (
 	JobKind_JOB_KIND_AUDIO_ENCODE JobKind = 5
 	// An image decoded and encoded again within the vision models' edge.
 	JobKind_JOB_KIND_IMAGE_REENCODE JobKind = 6
+	// A render bundle to a file of `format` (RFC GR).
+	JobKind_JOB_KIND_DOCUMENT_RENDER JobKind = 7
 )
 
 // Enum value maps for JobKind.
@@ -135,6 +137,7 @@ var (
 		4: "JOB_KIND_MEDIA_CONVERT",
 		5: "JOB_KIND_AUDIO_ENCODE",
 		6: "JOB_KIND_IMAGE_REENCODE",
+		7: "JOB_KIND_DOCUMENT_RENDER",
 	}
 	JobKind_value = map[string]int32{
 		"JOB_KIND_UNSPECIFIED":      0,
@@ -144,6 +147,7 @@ var (
 		"JOB_KIND_MEDIA_CONVERT":    4,
 		"JOB_KIND_AUDIO_ENCODE":     5,
 		"JOB_KIND_IMAGE_REENCODE":   6,
+		"JOB_KIND_DOCUMENT_RENDER":  7,
 	}
 )
 
@@ -1658,6 +1662,7 @@ type JobStart struct {
 	// pdf_render, media_convert: the language hint for the helper's {lang}.
 	Language string `protobuf:"bytes,9,opt,name=language,proto3" json:"language,omitempty"`
 	// audio_encode: the format to encode to (mp3, opus, ...).
+	// document_render: the format to render to (md, html).
 	Format        string `protobuf:"bytes,10,opt,name=format,proto3" json:"format,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2084,7 +2089,7 @@ const file_worker_proto_rawDesc = "" +
 	"\x17ERROR_CLASS_UNSUPPORTED\x10\x05\x12\x19\n" +
 	"\x15ERROR_CLASS_CANCELLED\x10\x06\x12\x15\n" +
 	"\x11ERROR_CLASS_INPUT\x10\a\x12\x1e\n" +
-	"\x1aERROR_CLASS_NOT_CONFIGURED\x10\b*\xc5\x01\n" +
+	"\x1aERROR_CLASS_NOT_CONFIGURED\x10\b*\xe3\x01\n" +
 	"\aJobKind\x12\x18\n" +
 	"\x14JOB_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10JOB_KIND_EXTRACT\x10\x01\x12\x1d\n" +
@@ -2092,7 +2097,8 @@ const file_worker_proto_rawDesc = "" +
 	"\x13JOB_KIND_PDF_RENDER\x10\x03\x12\x1a\n" +
 	"\x16JOB_KIND_MEDIA_CONVERT\x10\x04\x12\x19\n" +
 	"\x15JOB_KIND_AUDIO_ENCODE\x10\x05\x12\x1b\n" +
-	"\x17JOB_KIND_IMAGE_REENCODE\x10\x06*d\n" +
+	"\x17JOB_KIND_IMAGE_REENCODE\x10\x06\x12\x1c\n" +
+	"\x18JOB_KIND_DOCUMENT_RENDER\x10\a*d\n" +
 	"\fCancelReason\x12\x1d\n" +
 	"\x19CANCEL_REASON_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17CANCEL_REASON_SINK_FULL\x10\x01\x12\x18\n" +

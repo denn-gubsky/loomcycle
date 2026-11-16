@@ -1,7 +1,8 @@
 // Package convert is the one seam every file conversion the runtime does
 // passes through (RFC GO): extracting a document's text, cutting pages out of
 // a PDF, rendering a page for OCR, turning a recording into a WAV, encoding
-// synthesized speech, and re-encoding an image a model refused.
+// synthesized speech, re-encoding an image a model refused, and writing a
+// Document back out as a file (RFC GR).
 //
 // These are the jobs whose memory a hostile or merely large file decides, so
 // they are the ones a deployment may want out of the core's process. A Client
@@ -41,6 +42,11 @@ type Client interface {
 	// ReencodeImage decodes an image and encodes it again, scaled to fit the
 	// vision models' edge, returning the new bytes and their media type.
 	ReencodeImage(ctx context.Context, data []byte) ([]byte, string, error)
+	// Render writes a document bundle (render.EncodeBundle) as a file of
+	// format (md, html), at most render.MaxOutput bytes (RFC GR). Its
+	// refusals errors.Is render.ErrUnsupported, render.ErrBadBundle and
+	// render.ErrTooLarge.
+	Render(ctx context.Context, bundle []byte, format string) ([]byte, error)
 }
 
 // Spool is a converted file the caller reads at random and then closes; its

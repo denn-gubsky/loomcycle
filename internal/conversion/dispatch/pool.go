@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
@@ -346,6 +347,19 @@ func (p poolClient) ReencodeImage(ctx context.Context, data []byte) ([]byte, str
 		return nil, "", fmt.Errorf("convert: the worker re-encoded the image as %q, not PNG or JPEG", res.mediaType)
 	}
 	return res.out, res.mediaType, nil
+}
+
+// Render has a worker write a document bundle as format. A format or a
+// bundle the worker would refuse is refused here, before anything is sent.
+func (p poolClient) Render(ctx context.Context, bundle []byte, format string) ([]byte, error) {
+	if !render.Supported(format) {
+		return nil, fmt.Errorf("%w: %q", render.ErrUnsupported, format)
+	}
+	if len(bundle) > render.MaxBundle {
+		return nil, fmt.Errorf("%w: the bundle is %d MiB, more than %d MiB", render.ErrTooLarge, len(bundle)>>20, render.MaxBundle>>20)
+	}
+	return p.bytes(ctx, &job{kind: workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER, r: bytesReader(bundle), size: int64(len(bundle)),
+		mediaType: "application/zip", format: format, maxOut: render.MaxOutput})
 }
 
 // ConvertMedia spools the worker's WAV into a file of the core's scratch

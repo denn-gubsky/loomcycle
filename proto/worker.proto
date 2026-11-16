@@ -200,6 +200,8 @@ enum JobKind {
   JOB_KIND_AUDIO_ENCODE = 5;
   // An image decoded and encoded again within the vision models' edge.
   JOB_KIND_IMAGE_REENCODE = 6;
+  // A render bundle to a file of `format` (RFC GR).
+  JOB_KIND_DOCUMENT_RENDER = 7;
 }
 
 message JobStart {
@@ -217,6 +219,7 @@ message JobStart {
   // pdf_render, media_convert: the language hint for the helper's {lang}.
   string language = 9;
   // audio_encode: the format to encode to (mp3, opus, ...).
+  // document_render: the format to render to (md, html).
   string format = 10;
 }
 

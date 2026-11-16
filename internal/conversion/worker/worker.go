@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
@@ -291,12 +292,13 @@ func (w *worker) waitFree(ctx context.Context) error {
 	}
 }
 
-// labels are what this worker can run: extraction and page cuts always,
-// images when it has a re-encoder, and each helper's jobs when the helper's
-// program resolves on this host (RFC GO §5.3). A helper that does not is
-// logged, not fatal: the worker still serves everything else.
+// labels are what this worker can run: extraction, page cuts and document
+// writes always, images when it has a re-encoder, and each helper's jobs
+// when the helper's program resolves on this host (RFC GO §5.3). A helper
+// that does not is logged, not fatal: the worker still serves everything
+// else.
 func labels(opt Options, log *slog.Logger) []string {
-	out := []string{wire.LabelExtract, wire.LabelPDF}
+	out := []string{wire.LabelExtract, wire.LabelPDF, wire.LabelWrite}
 	if opt.Images != nil {
 		out = append(out, wire.LabelImage)
 	}
@@ -599,6 +601,18 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 			}
 		case workerpb.JobKind_JOB_KIND_MEDIA_CONVERT:
 			spool, jerr = p.ConvertMedia(jctx, in, size, start.GetMediaType(), start.GetLanguage())
+		case workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER:
+			// The bundle is read whole; its own cap is far under MaxInput.
+			if size > render.MaxBundle {
+				jerr = fmt.Errorf("%w: the bundle is %d bytes, more than %d", render.ErrTooLarge, size, render.MaxBundle)
+				break
+			}
+			var data []byte
+			if data, jerr = readAll(in, size); jerr == nil {
+				if out, jerr = p.Render(jctx, data, start.GetFormat()); jerr == nil {
+					mediaType = render.MediaType(start.GetFormat())
+				}
+			}
 		default:
 			jerr = fmt.Errorf("this worker does not run %s jobs", start.GetKind())
 		}
