@@ -457,6 +457,21 @@ func (s *Server) lookupOlderTokenForm(ctx context.Context, h auth.TokenHasher, b
 	return store.OperatorTokenDefRow{}, miss
 }
 
+// tokenRowByBearer finds the token row a bearer names on any form this
+// server reads: the current hash, then the older forms (legacy pepper,
+// wrapped, previous key), moving a match onto the current form as a login
+// does. For paths that look a token up without authenticating with it first
+// (an OAuth revoke names the token in its body), so a row still on an older
+// form is not missed.
+func (s *Server) tokenRowByBearer(ctx context.Context, h auth.TokenHasher, bearer string) (store.OperatorTokenDefRow, error) {
+	hash := h.Hash(bearer)
+	row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, hash)
+	if isNotFound(err) && (s.wrappedTokens.Load() || h.HasPrevious() || h.HasLegacy()) {
+		return s.lookupOlderTokenForm(ctx, h, bearer, hash, err)
+	}
+	return row, err
+}
+
 // SetTokenHasher fixes the hasher every mint and lookup on this server uses.
 // Call from main.go before serving, with the hasher the operator-token tool
 // was given, so the two can never disagree. Unset (tests), it is built from

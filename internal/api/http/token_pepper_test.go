@@ -303,3 +303,16 @@ func TestReportTokenHashes_CountsRowsLeftUnderTheLegacyPepper(t *testing.T) {
 		t.Error("the rewrap must refuse while LOOMCYCLE_OPERATOR_TOKEN_PEPPER is set")
 	}
 }
+
+// While the legacy pepper is kept, an admin row still under it can log in, so
+// it switches LOOMCYCLE_AUTH_TOKEN off as it did under the explicit pepper:
+// the upgrade must not turn the shared secret back on.
+func TestLegacyFallback_AdminRowUnderTheLegacyPepperKeepsTheSharedSecretOff(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1), OperatorTokenPepper: "pep", AuthToken: "legacy-shared-secret"}
+	s, st := derivedPepperServer(t, env)
+	seedAdminTokenHash(t, st, "def_00000000000000e4", auth.HashToken("pep", "lct_admin"))
+	bootTokenHashes(t, s)
+	if _, ok := s.resolvePrincipal(context.Background(), "legacy-shared-secret"); ok {
+		t.Error("an admin token under the legacy pepper left LOOMCYCLE_AUTH_TOKEN enabled")
+	}
+}

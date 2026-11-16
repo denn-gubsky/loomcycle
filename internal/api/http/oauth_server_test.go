@@ -793,3 +793,32 @@ func TestOAuthClientMismatch_EndsTheSignInWithOneAlarm(t *testing.T) {
 		t.Error("oauth_client_mismatch is queued; ending a sign-in must be written at once")
 	}
 }
+
+// A revoke names the access token in its body without logging in with it, so
+// a token row still under the legacy pepper (minted before the upgrade, not
+// used since) must be found there too, or the revoke answers 200 and the
+// token keeps working.
+func TestOAuthRevoke_RetiresAnAccessTokenStillUnderTheLegacyPepper(t *testing.T) {
+	f := newAppFixture(t, "tenant")
+	at, _ := f.signIn(t)
+	ctx := context.Background()
+	h0, err := f.s.hasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := f.st.OperatorTokenDefGetByTokenHash(ctx, h0.Hash(at))
+	if err != nil {
+		t.Fatalf("access token row: %v", err)
+	}
+	if ok, err := f.st.OperatorTokenRehash(ctx, row.DefID, row.TokenHash, auth.HashToken("pep", at)); err != nil || !ok {
+		t.Fatalf("put the row under the legacy pepper: %v %v", ok, err)
+	}
+	f.s.SetTokenHasher(auth.NewTokenHasher("", "derived-after-upgrade", "").WithLegacy("pep"))
+
+	if rec, _ := f.post(t, "/v1/_oauth/revoke", url.Values{"token": {at}, "client_id": {"board"}}); rec.Code != http.StatusOK {
+		t.Fatalf("revoke = %d", rec.Code)
+	}
+	if c, _ := f.bearerMe(t, at); c != http.StatusUnauthorized {
+		t.Fatalf("an access token under the legacy pepper still works after its revoke: %d", c)
+	}
+}
