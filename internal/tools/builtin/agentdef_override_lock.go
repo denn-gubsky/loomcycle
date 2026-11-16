@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -27,12 +30,12 @@ import (
 //
 // Only the operator plane may lift it (tools.IsOperatorPlane: the operator's
 // own off-run call, or a tenant operator's in its own tenant — never a run),
-// the same rule as lifting a read mode.
+// the same rule as lifting a read mode. An operator's lift is recorded in the
+// audit log, as taking a no-trace mode off is, and refused when the record
+// cannot be written: the lock is what keeps a measured agent's settings fixed,
+// so its removal must leave a trace of who did it.
 func (a *AgentDef) admitOverrideLockChange(ctx context.Context, op, tenant, name string, def mergedDef) error {
 	if def.AllowOverrides != nil && !*def.AllowOverrides {
-		return nil
-	}
-	if tools.IsOperatorPlane(ctx) {
 		return nil
 	}
 	locked, err := overrideLockedLineage(ctx, a.Store, a.Cfg, tenant, name)
@@ -42,7 +45,25 @@ func (a *AgentDef) admitOverrideLockChange(ctx context.Context, op, tenant, name
 	if !locked {
 		return nil
 	}
-	return fmt.Errorf("%s: %q locks its per-run settings (allow_overrides: false), and only an operator may take that off; keep \"allow_overrides\": false in this version", op, name)
+	if !tools.IsOperatorPlane(ctx) {
+		return fmt.Errorf("%s: %q locks its per-run settings (allow_overrides: false), and only an operator may take that off; keep \"allow_overrides\": false in this version", op, name)
+	}
+	subject := ""
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		subject = p.Subject
+	}
+	const action = "allow_overrides_lock_removed"
+	if a.Audit != nil {
+		if err := a.Audit.Record(audit.Event{
+			Action: action, TargetTenant: tenant, TargetName: name,
+			ActorTenant: tenant, ActorSubject: subject,
+		}); err != nil {
+			return fmt.Errorf("%s: %q was not changed: the audit record of taking its override lock off could not be written: %w", op, name, err)
+		}
+	}
+	slog.WarnContext(ctx, "agentdef: override lock taken off",
+		"op", op, "subject", subject, "agent_name", name, "target_tenant", tenant, "action", action)
+	return nil
 }
 
 // overrideLockedLineage reports whether name, in tenant, is locked: its

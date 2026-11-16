@@ -89,8 +89,8 @@ type AgentDef struct {
 	// 0 = no cap.
 	MaxCodeBytes int
 
-	// Audit records an operator taking an agent's no-trace mode off
-	// (the deployment audit sink). Nil = no audit sink: the process log line
+	// Audit records an operator taking an agent's no-trace mode or its
+	// override lock off (the deployment audit sink). Nil = no audit sink: the process log line
 	// is then the record.
 	Audit audit.Sink
 }
