@@ -203,3 +203,30 @@ func (t *TeamDef) retireRemovedConfigTeams(ctx context.Context, teams map[string
 	sort.Strings(rep.Retired)
 	return nil
 }
+
+// configTeamGuard refuses an edit (create, fork, promote, retire, delete) of a
+// name in the shared tier while the configuration holds it — its active
+// version there is one the configuration wrote and is live. The yaml is where
+// such a team changes: an edit over the API would be undone by the next boot,
+// or would turn the name into a conflict the boot then refuses to resolve.
+// This is the rule create already applies to a static agent or skill name.
+//
+// Only the shared tier is guarded. A tenant forks a configured team into its
+// own tenant like any shared team. A config-written version that is retired is
+// one whose name has left the yaml: the name is the operator's again. Verify,
+// get, list and run are not edits and are never refused.
+func (t *TeamDef) configTeamGuard(ctx context.Context, op, tenantID, name string) error {
+	if tenantID != "" || name == "" {
+		return nil
+	}
+	active, err := t.Store.TeamDefGetActive(ctx, "", name)
+	switch {
+	case isNotFound(err):
+		return nil
+	case err != nil:
+		return fmt.Errorf("%s: %w", op, err)
+	case active.BootstrappedFromStatic && !active.Retired:
+		return fmt.Errorf("%s: team %q comes from the configuration (teams.%s); change it there", op, name, name)
+	}
+	return nil
+}

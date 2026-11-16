@@ -417,7 +417,7 @@ func Run(t *testing.T, factory Factory) {
 		{"TeamDefDeleteDropsItsOwnChannels", testTeamDefDeleteDropsItsOwnChannels},
 		{"TeamDefDeletePurgesOnlyAnExistingTeamsOwnChannels", testTeamDefDeletePurgesOnlyAnExistingTeamsOwnChannels},
 		{"TeamDefDeletePurgesEveryScopeAndTableItsWritersFill", testTeamDefDeletePurgesEveryScopeAndTableItsWritersFill},
-		{"TeamDefListNamesLiveCount", testTeamDefListNamesLiveCount},
+		{"TeamDefListNames", testTeamDefListNames},
 		{"TeamDefStaticFallback", testTeamDefStaticFallback},
 		// RFC N — team definition plane tenant isolation. Fails on the
 		// pre-migration single-`name`-PK schema (clobber); passes after.
@@ -10772,6 +10772,67 @@ func testTeamDefListNamesLiveCount(t *testing.T, s store.Store) {
 	}
 	if !find().ActiveRetired {
 		t.Errorf("ActiveRetired = false, want true (active points at a retired def)")
+	}
+}
+
+// testTeamDefListNames groups the team name-list contracts on one store: their
+// team names do not overlap, and one table entry keeps Run's table in its
+// length budget.
+func testTeamDefListNames(t *testing.T, s store.Store) {
+	t.Run("LiveCount", func(t *testing.T) { testTeamDefListNamesLiveCount(t, s) })
+	t.Run("ActiveSource", func(t *testing.T) { testTeamDefListNamesActiveSource(t, s) })
+}
+
+// testTeamDefListNamesActiveSource: a name whose shared-tier active version the
+// configuration wrote (bootstrapped_from_static, RFC GS) is listed with
+// ActiveSource "config"; an API-made active version, a tenant's own version of
+// the same flag, and a config version that is not active are not.
+func testTeamDefListNamesActiveSource(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	mk := func(id, name, tenant, parent string, fromConfig bool) store.TeamDefRow {
+		r := mkTeamDef(id, name, parent)
+		r.TenantID = tenant
+		r.BootstrappedFromStatic = fromConfig
+		row, err := s.TeamDefCreate(ctx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return row
+	}
+	cfgV1 := mk("tas-cfg-1", "tas-config", "", "", true)
+	if err := s.TeamDefSetActive(ctx, "", "tas-config", cfgV1.DefID, "", store.TeamDefPromoter{}); err != nil {
+		t.Fatal(err)
+	}
+	api := mk("tas-api-1", "tas-api", "", "", false)
+	if err := s.TeamDefSetActive(ctx, "", "tas-api", api.DefID, "", store.TeamDefPromoter{}); err != nil {
+		t.Fatal(err)
+	}
+	// The configured version superseded by an API one: the active one decides.
+	mk("tas-old-1", "tas-moved", "", "", true)
+	moved := mk("tas-old-2", "tas-moved", "", "", false)
+	if err := s.TeamDefSetActive(ctx, "", "tas-moved", moved.DefID, "", store.TeamDefPromoter{}); err != nil {
+		t.Fatal(err)
+	}
+	acme := mk("tas-acme-1", "tas-config", "acme", "", true)
+	if err := s.TeamDefSetActive(ctx, "acme", "tas-config", acme.DefID, "", store.TeamDefPromoter{}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.TeamDefListNames(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"/tas-config": store.TeamDefSourceConfig, "/tas-api": "", "/tas-moved": "", "acme/tas-config": ""}
+	for _, r := range rows {
+		key := r.TenantID + "/" + r.Name
+		if w, ok := want[key]; ok {
+			if r.ActiveSource != w {
+				t.Errorf("%s: ActiveSource = %q, want %q", key, r.ActiveSource, w)
+			}
+			delete(want, key)
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("not listed: %v", want)
 	}
 }
 

@@ -396,7 +396,14 @@ export default function TeamsView() {
   const selectedTeam = creating ? undefined : teams.find((t) => sameTeam(t, selected, selectedTenant));
   // What the by-name ops can do to the selected team. A team being created is
   // the caller's own.
-  const reach = teamReach(creating ? ownTenant : selectedTenant, ownTenant);
+  // A team the server's configuration holds, seen from its own tenant: the
+  // server refuses every edit of it, so it opens read-only (RFC GS).
+  const configOwned = !creating && selectedTenant === ownTenant && selectedTeam?.active_source === "config";
+  const reach = teamReach(creating ? ownTenant : selectedTenant, ownTenant, {
+    name: selected,
+    fromConfig: !creating && selectedTeam?.active_source === "config",
+    ownHasName: !creating && selectedTenant !== ownTenant && teams.some((t) => sameTeam(t, selected, ownTenant)),
+  });
 
   // ---- Editor pane (Splitter left) ----
   const editorPane = (
@@ -421,16 +428,16 @@ export default function TeamsView() {
           <div style={{ display: "flex", gap: "0.4rem" }}>
             <button
               onClick={() => setRunOpen(true)}
-              disabled={saving || deleting || !selectedTeam?.active_def_id || !reach.byName}
-              title={reach.byName ? "Start a walk of this team's active version from its input form" : reach.notice}
+              disabled={saving || deleting || !selectedTeam?.active_def_id || !reach.run}
+              title={reach.run ? "Start a walk of this team's active version from its input form" : reach.notice}
               style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", fontWeight: 600 }}
             >
               Run
             </button>
             <button
               onClick={() => void onDelete()}
-              disabled={saving || deleting || loadingDef || !reach.byName}
-              title={reach.byName ? "Delete this team (all versions)" : reach.notice}
+              disabled={saving || deleting || loadingDef || !reach.del}
+              title={reach.del ? "Delete this team (all versions)" : reach.notice}
               style={{ fontSize: "0.8em", padding: "0.15rem 0.5rem", color: "var(--failed)" }}
             >
               {deleting ? "Deleting…" : "Delete"}
@@ -468,6 +475,7 @@ export default function TeamsView() {
             value={editorText}
             onChange={(e) => setEditorText(e.target.value)}
             spellCheck={false}
+            readOnly={configOwned}
             aria-label="Team definition"
             className="teams-editor-plain"
           />
@@ -480,19 +488,19 @@ export default function TeamsView() {
           defaultFormat="yaml"
           storageKey="loomcycle.teams.editor"
           onParseError={setTextError}
-          readOnly={loadingDef}
+          readOnly={loadingDef || configOwned}
           ariaLabel="Team definition"
           placeholder="Team graph — entry / states / transitions"
         />
       </Suspense>
 
-      <TeamHooksPanel editorText={editorText} setEditorText={setEditorText} disabled={saving || loadingDef} />
+      <TeamHooksPanel editorText={editorText} setEditorText={setEditorText} disabled={saving || loadingDef || configOwned} />
       <TeamOwnDefinitionsPanel
         editorText={editorText}
         setEditorText={setEditorText}
         team={creating ? createName.trim() || "team" : selected}
         tenant={creating ? ownTenant : selectedTenant}
-        disabled={saving || loadingDef}
+        disabled={saving || loadingDef || configOwned}
       />
 
       {editorErr && (
@@ -685,6 +693,7 @@ export default function TeamsView() {
                       v{t.latest_version} · {t.version_count} version
                       {t.version_count === 1 ? "" : "s"}
                       {t.active_retired ? " · retired" : ""}
+                      {t.active_source === "config" ? " · from config" : ""}
                       {t.tenant_id ? ` · ${t.tenant_id}` : ""}
                     </div>
                   </button>

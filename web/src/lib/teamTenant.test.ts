@@ -31,22 +31,39 @@ describe("sameTeam", () => {
 
 describe("teamReach", () => {
   it("leaves everything on for a team in the caller's own tenant", () => {
-    expect(teamReach("", "")).toEqual({ byName: true, save: true, notice: "" });
-    expect(teamReach("acme", "acme")).toEqual({ byName: true, save: true, notice: "" });
+    expect(teamReach("", "")).toEqual({ run: true, del: true, save: true, notice: "" });
+    expect(teamReach("acme", "acme")).toEqual({ run: true, del: true, save: true, notice: "" });
   });
 
   it("turns off run, save and delete for another tenant's team, naming the tenant", () => {
     const r = teamReach("loomcycle-dev", "");
-    expect(r.byName).toBe(false);
-    expect(r.save).toBe(false);
+    expect(r).toMatchObject({ run: false, del: false, save: false });
     expect(r.notice).toContain('tenant "loomcycle-dev"');
     expect(r.notice).toContain("sign in with a token");
   });
 
-  it("keeps save for a shared team, which saves a copy in the caller's tenant", () => {
+  it("runs a shared team by name and saves a copy, but cannot delete it", () => {
     const r = teamReach("", "acme");
-    expect(r.byName).toBe(false);
-    expect(r.save).toBe(true);
+    expect(r).toMatchObject({ run: true, del: false, save: true });
     expect(r.notice).toContain("shared tenant");
+  });
+
+  it("does not run a shared team the caller's own team of that name shadows", () => {
+    const r = teamReach("", "acme", { ownHasName: true });
+    expect(r.run).toBe(false);
+    expect(r.notice).toContain("Your own tenant has a team of this name");
+  });
+
+  it("keeps a configured team read-only in its own tenant, pointing at the yaml key", () => {
+    const r = teamReach("", "", { name: "sdlc", fromConfig: true });
+    expect(r).toMatchObject({ run: true, del: false, save: false });
+    expect(r.notice).toContain("teams.sdlc");
+    expect(r.notice).toContain("change it there");
+  });
+
+  it("lets a tenant save its own copy of a configured shared team", () => {
+    const r = teamReach("", "acme", { name: "sdlc", fromConfig: true });
+    expect(r).toMatchObject({ run: true, del: false, save: true });
+    expect(r.notice).toContain("configuration");
   });
 });

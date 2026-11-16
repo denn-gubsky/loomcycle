@@ -266,3 +266,78 @@ func TestReconcileConfigTeams_AConfiguredTeamIsPromotedUnrestricted(t *testing.T
 	}
 	t.Fatalf("no active entry for review in %+v", entries)
 }
+
+// RFC GS P3: while the yaml holds a team, the shared tier's copy is edited
+// there, not over the API — every edit is refused and names the yaml key.
+// Reads and runs are not edits.
+func TestConfigTeamGuard_EveryEditOfAConfiguredSharedTeamIsRefused(t *testing.T) {
+	tool, shared, done := teamDefFixture(t)
+	defer done()
+	tool.Spawn = textSpawn(func(context.Context, string, teamrun.Prompt, string) (string, error) { return "ok", nil })
+	reconcile(t, tool, configTeams("review", validTeamGraph))
+	defID := sharedActive(t, tool, "review").DefID
+
+	for _, call := range []string{
+		`{"op":"create","name":"review","overlay":` + cappedTeamGraph + `}`,
+		`{"op":"fork","name":"review","overlay":{"max_iterations":4}}`,
+		`{"op":"promote","def_id":"` + defID + `"}`,
+		`{"op":"retire","def_id":"` + defID + `","retired":true}`,
+		`{"op":"delete","name":"review"}`,
+	} {
+		res, _ := tool.Execute(shared, json.RawMessage(call))
+		if !res.IsError || !strings.Contains(res.Text, "teams.review") || !strings.Contains(res.Text, "change it there") {
+			t.Errorf("%s = %s, want refused pointing at teams.review", call, res.Text)
+		}
+	}
+	if row := sharedActive(t, tool, "review"); row.DefID != defID || row.Retired {
+		t.Errorf("after the refused edits active = %+v, want the configured version, live", row)
+	}
+
+	for _, call := range []string{
+		`{"op":"get","def_id":"` + defID + `"}`,
+		`{"op":"list","name":"review"}`,
+		`{"op":"verify","name":"review"}`,
+		`{"op":"render_diagram","name":"review"}`,
+		`{"op":"run","name":"review","input":"x"}`,
+	} {
+		if res, _ := tool.Execute(shared, json.RawMessage(call)); res.IsError {
+			t.Errorf("%s refused: %s", call, res.Text)
+		}
+	}
+}
+
+// A tenant forks a configured team into its own tenant as it would any shared
+// team; the fork is the tenant's to edit.
+func TestConfigTeamGuard_ATenantForksAConfiguredTeamAndEditsItsFork(t *testing.T) {
+	tool, _, done := teamDefFixture(t)
+	defer done()
+	reconcile(t, tool, configTeams("review", validTeamGraph))
+	acme := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a_acme", TenantID: "acme"})
+
+	res, _ := tool.Execute(acme, json.RawMessage(`{"op":"fork","name":"review","overlay":{"max_iterations":4}}`))
+	if res.IsError {
+		t.Fatalf("acme's fork of a configured team: %s", res.Text)
+	}
+	forkID, _ := decodeResult(t, res.Text)["def_id"].(string)
+	if _, ok := decodeResult(t, res.Text)["source"]; ok {
+		t.Errorf("acme's fork carries source: %s", res.Text)
+	}
+	if res, _ := tool.Execute(acme, json.RawMessage(`{"op":"retire","def_id":"`+forkID+`","retired":true}`)); res.IsError {
+		t.Errorf("acme retiring its own fork: %s", res.Text)
+	}
+	if res, _ := tool.Execute(acme, json.RawMessage(`{"op":"delete","name":"review"}`)); res.IsError {
+		t.Errorf("acme deleting its own fork: %s", res.Text)
+	}
+}
+
+// A configured team that left the yaml (its version retired) is the
+// operator's again: the name may be edited over the API.
+func TestConfigTeamGuard_ATeamThatLeftTheYAMLIsEditableAgain(t *testing.T) {
+	tool, shared, done := teamDefFixture(t)
+	defer done()
+	reconcile(t, tool, configTeams("review", validTeamGraph))
+	reconcile(t, tool, nil)
+	if res, _ := tool.Execute(shared, json.RawMessage(`{"op":"create","name":"review","overlay":`+cappedTeamGraph+`}`)); res.IsError {
+		t.Errorf("create over a name the yaml dropped: %s", res.Text)
+	}
+}

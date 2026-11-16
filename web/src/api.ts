@@ -2231,6 +2231,9 @@ export interface TeamNameSummary {
   last_updated?: string;
   live_version_count?: number;
   active_retired?: boolean;
+  // "config" when the active version is one the server's configuration wrote
+  // into the shared tenant (a `teams:` entry): it is changed in the yaml.
+  active_source?: "config";
 }
 
 export interface ListTeamsResponse {
@@ -2322,6 +2325,8 @@ export interface TeamDefDetail {
   // definition loaded into the Teams editor. The server stores it as a
   // json.RawMessage, so it arrives INLINED as an object (not a JSON string).
   definition: unknown;
+  // "config" on a version the server's configuration wrote (RFC GS).
+  source?: "config";
 }
 
 // getTeamDef fetches one version's full record incl. the editable `definition`
