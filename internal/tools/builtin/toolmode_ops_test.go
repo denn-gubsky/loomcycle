@@ -1,9 +1,11 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -132,8 +134,30 @@ func TestToolModes_CallIsReadJudgesTheArguments(t *testing.T) {
 		{p, `{"op":"mv","path":"/a","to":"/b"}`, false},
 		{p, `{"op":"rm","path":"/a"}`, false},
 	} {
-		if _, got := tc.tool.CallIsRead(json.RawMessage(tc.in)); got != tc.read {
+		if _, got, _ := tc.tool.CallIsRead(json.RawMessage(tc.in)); got != tc.read {
 			t.Errorf("%T %s: read = %v, want %v", tc.tool, tc.in, got, tc.read)
 		}
+	}
+}
+
+// The set of ids sent as one JSON string, the malformed call a model made on
+// every refused screening round, is refused in read mode with the Document
+// tool's own decode error, not as a write; a well-formed list still runs.
+func TestToolModes_AnUndecodableDocumentCallNamesItsDecodeError(t *testing.T) {
+	d := tools.NewDispatcher([]tools.Tool{&Document{}})
+	d.SetToolModes(map[string]string{"Document": config.ToolModeRead})
+
+	r := d.Execute(context.Background(), "Document",
+		json.RawMessage(`{"op":"documents_summary","document_ids":"[\"d1\",\"d2\"]"}`))
+	if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryValidation {
+		t.Fatalf("ids as a string = %+v, want a validation error", r)
+	}
+	if !strings.Contains(r.Text, "document_ids") || strings.Contains(r.Text, "no recognised op") {
+		t.Errorf("refusal %q does not name the field that did not decode", r.Text)
+	}
+
+	_, read, err := (&Document{}).CallIsRead(json.RawMessage(`{"op":"documents_summary","document_ids":["d1","d2"]}`))
+	if err != nil || !read {
+		t.Errorf("a list of ids: read = %v, err = %v; want a read", read, err)
 	}
 }
