@@ -209,6 +209,46 @@ func TestOIDCLogin_StartIsThrottledPerSource(t *testing.T) {
 	}
 }
 
+// hangUpAfterThrottleRead is a store whose client goes away right after the
+// throttle read: it cancels the request's context once AuthThrottleGet
+// returns, so the start's record runs on an ended request.
+type hangUpAfterThrottleRead struct {
+	store.Store
+	cancel context.CancelFunc
+	key    string
+}
+
+func (h *hangUpAfterThrottleRead) AuthThrottleGet(ctx context.Context, key string, now time.Time) (int, time.Time, error) {
+	n, until, err := h.Store.AuthThrottleGet(ctx, key, now)
+	h.key = key
+	h.cancel()
+	return n, until, err
+}
+
+// A client that hangs up mid-start must still be counted: recorded under the
+// request's context the store call fails on the cancelled context, the start
+// costs nothing, and the per-source limit never fills.
+func TestOIDCLogin_StartIsCountedWhenTheClientHangsUp(t *testing.T) {
+	f := newOIDCFixture(t, config.AuthIdentityMap{Tenant: "acme"}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := &hangUpAfterThrottleRead{Store: f.st, cancel: cancel}
+	f.s.store = h
+	r := httptest.NewRequest(http.MethodGet, "/v1/_auth/login/idp", nil).WithContext(ctx)
+	r.RemoteAddr = "198.51.100.40:1000"
+	f.s.loginStartAllowed(ctx, r)
+	if h.key == "" {
+		t.Fatal("the start read no throttle")
+	}
+	n, _, err := f.st.AuthThrottleGet(context.Background(), h.key, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("the source has %d starts counted, want 1", n)
+	}
+}
+
 func TestOIDCLogin_PendingUserLandsOnTheAwaitingPage(t *testing.T) {
 	f := newOIDCFixture(t, config.AuthIdentityMap{Tenant: "acme", Provision: config.ProvisionAuto,
 		NewUser: config.AuthNewUser{AccessMode: "isolated", Status: "pending"}}, nil)
