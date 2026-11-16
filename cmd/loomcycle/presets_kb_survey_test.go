@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -29,8 +31,10 @@ type surveyFake struct {
 	// CI:<clause> (a clause's plain and mixed search). A missing label returns
 	// no rows.
 	rows map[string][]map[string]any
-	// facets is what the P search reports beside its rows. nil reports
-	// {"complete": true}; facetsMissing reports none at all.
+	// facets is what the P search reports beside its rows. nil reports what
+	// the store reports on a corpus larger than the facet window: complete
+	// false, and documents_counted the number of documents among the P rows.
+	// facetsMissing reports none at all.
 	facets        map[string]any
 	facetsMissing bool
 	// edges is what get_edges returns, by document id.
@@ -116,7 +120,11 @@ func (d *surveyFakeDocument) Execute(_ context.Context, raw json.RawMessage) (to
 		if label == "P" && !d.f.facetsMissing {
 			fc := d.f.facets
 			if fc == nil {
-				fc = map[string]any{"complete": true}
+				docs := map[any]bool{}
+				for _, r := range rows {
+					docs[r["document_id"]] = true
+				}
+				fc = map[string]any{"complete": false, "documents_counted": len(docs)}
 			}
 			out["facets"] = fc
 		}
@@ -531,6 +539,137 @@ func TestKbSurvey_ScreensInSlicesOf25EachRoundHoldingOnlyItsOwnIDs(t *testing.T)
 	}
 }
 
+// TestKbSurvey_ScreeningRoundCarriesTheExactSummaryCallForItsSlice: a
+// screening round's trusted block gives the one documents_summary call to make,
+// built by code from that slice's ids, so the walker copies an array rather
+// than composing one (a model composing it sent document_ids as one string,
+// which the read-only Document tool refuses). Ids only: the call names no other
+// slice's id and carries no document text.
+func TestKbSurvey_ScreeningRoundCarriesTheExactSummaryCallForItsSlice(t *testing.T) {
+	f, _ := gather120()
+	runSurvey(t, f, surveyQuestion)
+	n := 0
+	for _, s := range f.spawns {
+		if !isScreen(s) {
+			continue
+		}
+		n++
+		ids := listIn(spawnPrompt(s), "\nCandidates (")
+		list, err := json.Marshal(ids)
+		if err != nil {
+			t.Fatal(err)
+		}
+		call := "\nDocument {\"op\":\"documents_summary\",\"scope\":\"tenant\",\"document_ids\":" + string(list) + ",\"with_summary\":true}\n"
+		if !strings.Contains(spawnPrompt(s), call) {
+			t.Errorf("screening round %d lacks its exact call %q:\n%s", n, call, spawnPrompt(s))
+		}
+	}
+	if n != 5 {
+		t.Fatalf("screening rounds = %d, want 5", n)
+	}
+}
+
+// TestKbSurvey_MovesAndMissingLinesAreStrippedFromTheAnswer: the walker's
+// MOVES and MISSING lines describe its own walk, not the knowledge base; they
+// are stripped from the answer however they are marked up, like FITS and
+// COVERAGE.
+func TestKbSurvey_MovesAndMissingLinesAreStrippedFromTheAnswer(t *testing.T) {
+	a := docID(1)
+	for name, tail := range map[string]string{
+		"plain":       "MOVES: search, read\nMISSING: none",
+		"bold":        "**MOVES:** search\n**MISSING:** none",
+		"list":        "- MOVES: search, down\n- MISSING: an op to list a folder",
+		"quoted":      "> _Moves_: search\n> _Missing_: none",
+		"code":        "`MOVES: search`\n`MISSING: none`",
+		"spaced":      "MOVES : search\nMISSING : none",
+		"lower first": "moves: search\nmissing: none",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &surveyFake{
+				rows:   map[string][]map[string]any{"P": hits(a)},
+				screen: fitsOf(a),
+				write: func([]string) surveyReply {
+					return surveyReply{text: "One document: [A](loom:doc/" + a + "?scope=tenant).\n\n" + tail}
+				},
+			}
+			out := runSurvey(t, f, surveyQuestion)
+			if low := strings.ToLower(out); strings.Contains(low, "moves") || strings.Contains(low, "missing") {
+				t.Errorf("a MOVES or MISSING line reached the answer:\n%s", out)
+			}
+			if !strings.HasPrefix(out, "One document:") {
+				t.Errorf("want the composed answer kept:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestKbSurvey_ComposingRoundAsksForReplyTextNotADocument: the last round
+// composes the reply text. Asked to "write" the overview, the walker read it as
+// writing a document and complained the knowledge base is read-only, or tried
+// to. Neither its trusted block nor the walker's section for it says write,
+// and both say nothing is to be stored.
+func TestKbSurvey_ComposingRoundAsksForReplyTextNotADocument(t *testing.T) {
+	const readOnly = "The knowledge base is read-only and nothing is to be stored: your reply text is the whole result."
+	writeWord := regexp.MustCompile(`(?i)\bwrit(e|es|ing|ten)\b`)
+	a := docID(1)
+	f := &surveyFake{rows: map[string][]map[string]any{"P": hits(a)}, screen: fitsOf(a)}
+	runSurvey(t, f, surveyQuestion)
+	if len(f.writes()) != 1 {
+		t.Fatalf("composing rounds = %d, want 1", len(f.writes()))
+	}
+	block := spawnPrompt(f.spawns[len(f.spawns)-1])
+	block = block[strings.Index(block, "COMPOSE."):]
+	for _, want := range []string{"COMPOSE.", "Compose your reply: one line and a link per document", readOnly,
+		"Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines."} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the composing round's block lacks %q:\n%s", want, block)
+		}
+	}
+	if w := writeWord.FindString(block); w != "" {
+		t.Errorf("the composing round's block says %q:\n%s", w, block)
+	}
+
+	p := knowledgeBaseConfig(t).Agents["kb/walker"].SystemPrompt
+	i, j := strings.Index(p, "COMPOSING. When the prompt says COMPOSE"), strings.Index(p, "Without a list, follow the steps below.")
+	if i < 0 || j < i {
+		t.Fatalf("kb/walker prompt lacks its COMPOSING section")
+	}
+	section := p[i:j]
+	for _, want := range []string{"Compose your reply: one line and a link per listed document.", readOnly,
+		"Leave out the FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines."} {
+		if !strings.Contains(section, want) {
+			t.Errorf("kb/walker's COMPOSING section lacks %q:\n%s", want, section)
+		}
+	}
+	if w := writeWord.FindString(section); w != "" {
+		t.Errorf("kb/walker's COMPOSING section says %q:\n%s", w, section)
+	}
+	if strings.Contains(p, "WRITING.") || strings.Contains(p, "says WRITE") {
+		t.Errorf("kb/walker prompt still has the WRITING section")
+	}
+}
+
+// TestKnowledgeBaseBundle_SurveyRunsEverySliceInOneWave: parallel_spawn runs
+// at most the calling agent's max_concurrent_children at once (default 4), so
+// with a full cap the fifth slice waited for a slot. kb/survey's own cap covers
+// the most slices its cap and slice size can make, read from its code.
+func TestKnowledgeBaseBundle_SurveyRunsEverySliceInOneWave(t *testing.T) {
+	s := knowledgeBaseConfig(t).Agents["kb/survey"]
+	num := func(name string) int {
+		m := regexp.MustCompile(`(?m)^var ` + name + ` = (\d+);`).FindStringSubmatch(s.Code)
+		if m == nil {
+			t.Fatalf("kb/survey code has no var %s", name)
+		}
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	capN, slice := num("CAP"), num("SLICE")
+	most := (capN + slice - 1) / slice
+	if s.MaxConcurrentChildren < most {
+		t.Errorf("kb/survey max_concurrent_children = %d, want at least %d (CAP %d / SLICE %d)", s.MaxConcurrentChildren, most, capN, slice)
+	}
+}
+
 // TestKbSurvey_WalkerTrustedPromptHoldsCandidateIDsOnly: a title, a passage, a
 // brief or an abstract is document text, and document text must not become
 // instructions. Neither a screening nor the writing round gets any: they get
@@ -751,8 +890,8 @@ func TestKbSurvey_AnswerIsWrittenFromTheUnionOfFits(t *testing.T) {
 	if strings.Count(out, "COVERAGE:") != 1 {
 		t.Errorf("want exactly code's COVERAGE line:\n%s", out)
 	}
-	if prompt := spawnPrompt(f.spawns[len(f.spawns)-1]); !strings.Contains(prompt, "WRITE") {
-		t.Errorf("the writing round's prompt does not ask it to write:\n%s", prompt)
+	if prompt := spawnPrompt(f.spawns[len(f.spawns)-1]); !strings.Contains(prompt, "COMPOSE.") {
+		t.Errorf("the composing round's prompt does not ask it to compose the reply:\n%s", prompt)
 	}
 }
 
@@ -807,16 +946,21 @@ func TestKbSurvey_WritingFailureFallsBackToAListOfLinks(t *testing.T) {
 }
 
 // TestKbSurvey_CompleteNeedsEveryConditionCode: complete needs every kept
-// candidate sorted, none cut by the cap, and the passage search's facet window
-// to have covered every matching passage. The model's own coverage lines are
-// stripped; each missing condition alone makes it partial.
+// candidate sorted, none cut by the cap, and at least as many kept candidates
+// as the documents the passage search's facet window counted. The window's own
+// complete flag is not asked: on a corpus larger than the window it is never
+// true. The model's coverage lines are stripped; each condition failing on its
+// own makes the line partial.
 func TestKbSurvey_CompleteNeedsEveryConditionCode(t *testing.T) {
 	a, b := docID(1), docID(2)
 	const facetsGap = "the searches may not have reached every matching document"
 	modelClaims := surveyReply{text: "COVERAGE: complete\n" + accounting([]string{a}, []string{b})}
 	t.Run("all hold", func(t *testing.T) {
+		// The window is not complete (a corpus larger than it), yet it
+		// counted no more documents than were kept.
 		f := &surveyFake{
-			rows: map[string][]map[string]any{"P": hits(a, b)},
+			rows:   map[string][]map[string]any{"P": hits(a, b)},
+			facets: map[string]any{"complete": false, "documents_counted": 2},
 			screen: func([]string) surveyReply {
 				return surveyReply{text: "COVERAGE: partial\nUNCOVERED: x\n" + accounting([]string{a}, []string{b})}
 			},
@@ -843,23 +987,37 @@ func TestKbSurvey_CompleteNeedsEveryConditionCode(t *testing.T) {
 	})
 	t.Run("candidates cut by the cap", func(t *testing.T) {
 		f, kept := gather120()
+		f.facets = map[string]any{"complete": true, "documents_counted": 50}
 		f.screen = fitsOf(kept[0])
 		out := runSurvey(t, f, surveyQuestion)
 		if cov, unc, _ := surveyLines(out); cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120" {
 			t.Errorf("coverage = %q %q, want partial with 30 cut", cov, unc)
 		}
 	})
-	for name, f := range map[string]*surveyFake{
-		"facet window incomplete": {facets: map[string]any{"complete": false, "documents_counted": 40}},
-		"facets not reported":     {facetsMissing: true},
+	for name, tc := range map[string]struct {
+		facets  map[string]any
+		missing bool
+		gap     string
+	}{
+		// The window counted more documents than were kept, even with its
+		// own complete flag set.
+		"fewer kept than counted": {facets: map[string]any{"complete": true, "documents_counted": 3},
+			gap: "the passage search counted 3 documents and 2 were kept"},
+		"count not reported":  {facets: map[string]any{"complete": true}, gap: facetsGap},
+		"count not a number":  {facets: map[string]any{"complete": true, "documents_counted": "1"}, gap: facetsGap},
+		"facets not reported": {missing: true, gap: facetsGap},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f.rows = map[string][]map[string]any{"P": hits(a, b)}
-			f.screen = func([]string) surveyReply { return modelClaims }
+			f := &surveyFake{
+				rows:          map[string][]map[string]any{"P": hits(a, b)},
+				facets:        tc.facets,
+				facetsMissing: tc.missing,
+				screen:        func([]string) surveyReply { return modelClaims },
+			}
 			out := runSurvey(t, f, surveyQuestion)
 			cov, unc, _ := surveyLines(out)
-			if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 0 beyond the cap of 120; "+facetsGap {
-				t.Errorf("coverage = %q %q, want partial naming the search gap", cov, unc)
+			if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 0 beyond the cap of 120; "+tc.gap {
+				t.Errorf("coverage = %q %q, want partial naming the search gap %q", cov, unc, tc.gap)
 			}
 		})
 	}
@@ -984,9 +1142,9 @@ func TestKnowledgeBaseBundle_WalkerPromptScreensASliceAndWritesFromFits(t *testi
 		"Reply with ONLY these two lines",
 		"FITS: <id>, <id>, ...",
 		"SET ASIDE: <id>, <id>, ...",
-		"WRITING. When the prompt says WRITE",
+		"COMPOSING. When the prompt says COMPOSE",
 		"one line and a link per listed document",
-		"Do not write FITS, SET ASIDE, COVERAGE or UNCOVERED lines",
+		"Leave out the FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines.",
 		"{{help:Document/documents_summary}}",
 	} {
 		if !strings.Contains(p, want) {
