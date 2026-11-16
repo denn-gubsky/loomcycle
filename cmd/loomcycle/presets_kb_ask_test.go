@@ -156,6 +156,36 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 	}
 }
 
+// TestKnowledgeBaseBundle_WalkerPromptForbidsStoppingBeforeCoverage pins the
+// stopping rules of kb/walker. Measured on two tenants and two models, the walk
+// answered an overview from the first design document while its own facet
+// count said more lay beyond, and answered a fact from a newer document that
+// only mentioned the topic. Each rule below closes one of those exits.
+func TestKnowledgeBaseBundle_WalkerPromptForbidsStoppingBeforeCoverage(t *testing.T) {
+	p := knowledgeBaseConfig(t).Agents["kb/walker"].SystemPrompt
+	for _, want := range []struct{ text, why string }{
+		{`"complete": false`, "an overview must not finish while the facet count is incomplete"},
+		{`documents_counted is larger than`, "an overview must not finish with counted documents unlisted"},
+		{`"facet_window": 500`, "widening raises the facet window to its maximum"},
+		{`query_documents ("type", "under_path"`, "widening lists the largest type and folder, which reaches every document"},
+		{`The budget is 12 tool calls, 14 for an overview.`, "the budget that ends a walk must be stated"},
+		{"COVERAGE: complete\n", "the walk reports its coverage"},
+		{"COVERAGE: partial\n", "the walk reports its coverage"},
+		{"Never write complete then.", "a walk stopped on the budget must not claim complete"},
+		{"UNCOVERED:", "a partial walk names what it left, with counts"},
+		{"not the first hit or", "a fact is read from the passage that states it, not the first hit"},
+		{"overrides nothing", "a newer document that only mentions the topic does not override the passage that states the fact"},
+	} {
+		if !strings.Contains(p, want.text) {
+			t.Errorf("kb/walker prompt lacks %q: %s", want.text, want.why)
+		}
+	}
+	// The old escape: noting "there may be more" instead of walking on.
+	if strings.Contains(p, "say in the answer that there may be more") {
+		t.Error("kb/walker prompt still lets an overview stop by saying there may be more")
+	}
+}
+
 // TestKnowledgeBaseBundle_AnsweringPromptsRenderTheCallFormsTheyName renders the
 // help part of the kb/search and kb/walker prompts the way a run assembles them
 // (the topics a prompt names, each rendered from the embedded help corpus, then
@@ -187,6 +217,9 @@ func TestKnowledgeBaseBundle_AnsweringPromptsRenderTheCallFormsTheyName(t *testi
 		form{`"op":"documents_summary"`, `"with_summary":true`},
 		form{`"op":"query_documents"`, `"title_contains":`},
 		form{`"op":"query_documents"`, `"created_after":`, `"created_before":`},
+		form{`"op":"search"`, `"facets":`, `"facet_window":`},
+		form{`"op":"query_documents"`, `"type":`},
+		form{`"op":"query_documents"`, `"under_path":`},
 	)
 	for name, forms := range map[string][]form{"kb/search": searchForms, "kb/walker": walkerForms} {
 		prompt := cfg.Agents[name].SystemPrompt
