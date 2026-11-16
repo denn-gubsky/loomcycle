@@ -136,6 +136,9 @@ func openPDFContext(ctx context.Context, r io.ReaderAt, size, maxDecode int64) (
 	if !bytes.Contains(head[:n], []byte("%PDF-")) {
 		return nil, errors.New("extract: not a PDF file")
 	}
+	if pdfDeclaresEncryption(r, size) {
+		return nil, refusedf("the PDF is encrypted")
+	}
 	rs := io.NewSectionReader(&ctxReaderAt{ctx: ctx, r: r}, 0, size)
 	pc, err := pdfcpu.Read(ctx, rs, pdfConfig(maxDecode))
 	if err != nil {
