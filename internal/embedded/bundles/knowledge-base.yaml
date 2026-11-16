@@ -5784,9 +5784,12 @@ agents:
       // UNTRUSTED INPUT. A question given as untrusted input is routed on (the
       // classifiers read it as data), and each child gets it by reference, still
       // untrusted, under a fixed trusted prompt. Its text is never pasted into a
-      // child's trusted prompt. With untrusted input present, the run's prompt
-      // text is not forwarded at all: it holds the untrusted blocks too, fenced,
-      // and this body cannot reliably take them out.
+      // child's trusted prompt. The run's prompt text is not forwarded then: it
+      // holds the untrusted blocks too, fenced. What the caller wrote as trusted
+      // text beside the question (input.trusted_prompt, which the runtime builds
+      // with every untrusted block left out) goes to kb/search and kb/walker
+      // under the fixed prompt, as trusted text. kb/classify does not get it: its
+      // answer must stay YES or NO.
 
       // Both bounds are provisional until the decision model is re-measured with
       // one question per call (a batched call scored differently).
@@ -5800,7 +5803,7 @@ agents:
 
       // Q is the question: its text for the classifiers, and how a child is
       // given it. Set once by readQuestion.
-      var Q = { text: "", untrusted: false };
+      var Q = { text: "", untrusted: false, framing: "" };
 
       // readQuestion takes the question from the run's input: the untrusted input
       // when there is any, else the prompt.
@@ -5811,17 +5814,22 @@ agents:
           var t = String(u[i] && u[i].text ? u[i].text : "").replace(/^\s+|\s+$/g, "");
           if (t) { parts.push(t); }
         }
-        if (parts.length) { return { text: parts.join("\n\n"), untrusted: true }; }
-        return { text: String(input && input.prompt ? input.prompt : "").replace(/^\s+|\s+$/g, ""), untrusted: false };
+        if (parts.length) {
+          var tp = input && typeof input.trusted_prompt === "string" ? input.trusted_prompt : "";
+          return { text: parts.join("\n\n"), untrusted: true, framing: tp.replace(/^\s+|\s+$/g, "") };
+        }
+        return { text: String(input && input.prompt ? input.prompt : "").replace(/^\s+|\s+$/g, ""), untrusted: false, framing: "" };
       }
 
       // spawnArgs is how a child is given the question: a trusted question is its
-      // prompt; an untrusted one goes by reference under a fixed trusted prompt.
+      // prompt; an untrusted one goes by reference under a fixed trusted prompt,
+      // followed, when framing is set, by the caller's trusted text from beside it.
       // extra is trusted text kb/ask adds (the ids a search found).
-      function spawnArgs(name, ask, extra) {
+      function spawnArgs(name, ask, extra, framing) {
         var a = { name: name, result: "object" };
         if (Q.untrusted) {
-          a.prompt = ask + (extra ? "\n\n" + extra : "");
+          var f = framing && Q.framing ? "\n\nThe caller's instructions that came with the question:\n" + Q.framing : "";
+          a.prompt = ask + f + (extra ? "\n\n" + extra : "");
           a.untrusted = [{ ref: "input" }];
         } else {
           a.prompt = Q.text + (extra ? "\n\n" + extra : "");
@@ -5878,7 +5886,7 @@ agents:
       // Markdown and punctuation taken out, and it must then be exactly YES or NO.
       // Anything else, or a run that gave no answer, counts as an overview.
       function askAgent(score, error) {
-        var r = call(spawnArgs("kb/classify", "Classify the question given as untrusted input.", ""));
+        var r = call(spawnArgs("kb/classify", "Classify the question given as untrusted input.", "", false));
         runs.push(r.run_id + ":" + r.status);
         var lines = String(r.final_text || "").split("\n"), last = "";
         for (var i = lines.length - 1; i >= 0; i--) {
@@ -5949,7 +5957,7 @@ agents:
         var c = classify(Q.text, input.metadata);
         var route = c.overview ? "walker" : "search";
         var how = route, text;
-        var res = call(spawnArgs(route === "walker" ? "kb/walker" : "kb/search", ANSWER, ""));
+        var res = call(spawnArgs(route === "walker" ? "kb/walker" : "kb/search", ANSWER, "", true));
         runs.push(res.run_id + ":" + res.status);
         if (route === "walker") {
           text = res.final_text || ("The walker agent gave no answer: " + (res.error || res.status));
@@ -5968,7 +5976,7 @@ agents:
           if (why) {
             var found = ids(res.final_text || "");
             var extra = found.length ? "A first search already found these. Start from them and do not repeat that search:\n" + found.join("\n") : "";
-            var w = call(spawnArgs("kb/walker", ANSWER, extra));
+            var w = call(spawnArgs("kb/walker", ANSWER, extra, true));
             runs.push(w.run_id + ":" + w.status);
             how = "search -> walker (" + why + ")";
             if (w.final_text) {
