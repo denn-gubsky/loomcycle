@@ -30,8 +30,8 @@ import (
 
 // localAgentLockActions checks the version of team's own agent local that def
 // is against the locks the team's lineage holds for it, and returns the
-// no-trace changes an operator is making, which recordLocalAgentLockLifts
-// records. A refusal is an error. Reading the lineage only, it is what verify
+// lifts an operator is making (the no-trace changes, and taking the override
+// lock off), which recordLocalAgentLockLifts records. A refusal is an error. Reading the lineage only, it is what verify
 // reports as well.
 func (t *TeamDef) localAgentLockActions(ctx context.Context, op, tenant, team, local string, def mergedDef) ([]string, error) {
 	defs, err := localAgentLineage(ctx, t.Store, tenant, team, local)
@@ -66,20 +66,29 @@ func (t *TeamDef) localAgentLockActions(ctx context.Context, op, tenant, team, l
 		return nil, err
 	}
 	// admitOverrideLockChange's rule, over this lineage.
-	if (def.AllowOverrides != nil && !*def.AllowOverrides) || tools.IsOperatorPlane(ctx) {
+	if def.AllowOverrides != nil && !*def.AllowOverrides {
 		return actions, nil
 	}
 	for _, d := range defs {
-		if defLocksOverrides(d) {
+		if !defLocksOverrides(d) {
+			continue
+		}
+		if !tools.IsOperatorPlane(ctx) {
 			return nil, fmt.Errorf("%s: %q locks its per-run settings (allow_overrides: false), and only an operator may take that off; keep \"allow_overrides\": false in this version", op, full)
 		}
+		return append(actions, actionOverrideLockRemoved), nil
 	}
 	return actions, nil
 }
 
+// actionOverrideLockRemoved is the audit action of an operator taking an
+// override lock off, which recordLocalAgentLockLifts records apart from the
+// no-trace changes.
+const actionOverrideLockRemoved = "allow_overrides_lock_removed"
+
 // recordLocalAgentLockLifts checks every agent the team version def declares
-// against its locks and records each no-trace change an operator makes, as
-// AgentDef does; it refuses when a record cannot be written. create and fork
+// against its locks and records each lift an operator makes, as AgentDef
+// does; it refuses when a record cannot be written. create and fork
 // call it once their checks have passed (localAgentIssues refused the rest,
 // and verify must record nothing); promote calls it as its check.
 func (t *TeamDef) recordLocalAgentLockLifts(ctx context.Context, op, tenant, team string, def teamgraph.Definition) error {
@@ -96,7 +105,16 @@ func (t *TeamDef) recordLocalAgentLockLifts(ctx context.Context, op, tenant, tea
 		if err != nil {
 			return err
 		}
-		if err := t.Agents.recordNoTraceLift(ctx, op, tenant, teamgraph.QualifiedLocalName(team, local), actions); err != nil {
+		full := teamgraph.QualifiedLocalName(team, local)
+		noTrace := actions[:0:0]
+		for _, action := range actions {
+			if action != actionOverrideLockRemoved {
+				noTrace = append(noTrace, action)
+			} else if err := t.Agents.recordOverrideLockLift(ctx, op, tenant, full); err != nil {
+				return err
+			}
+		}
+		if err := t.Agents.recordNoTraceLift(ctx, op, tenant, full, noTrace); err != nil {
 			return err
 		}
 	}
