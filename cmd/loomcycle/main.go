@@ -1217,7 +1217,8 @@ func (v mcpLookupView) Get(tenantID, name string) (lookup.MCPServerSpec, bool) {
 		Command: s.Command, Args: s.Args, Env: s.Env, // stdio (F31)
 		OperatorAuthored: s.OperatorAuthored,
 		DefID:            s.DefID, Version: s.Version,
-		BinaryResults: s.BinaryResults,
+		BinaryResults:         s.BinaryResults,
+		BinaryResultsMinBytes: s.BinaryResultsMinBytes,
 	}, true
 }
 
@@ -1316,26 +1317,24 @@ func (oauthUnavailable) Substitute(_ context.Context, _, _, _, s, _ string, _ fu
 	return s, credential.OAuthRefNames(s), nil
 }
 
-// mcpBase64MinBytes is the shortest base64 string in an MCP text block that
-// capture considers a file: short enough for a small scan, long enough that
-// an ordinary id or hash is never a candidate.
-const mcpBase64MinBytes = 4 << 10
-
 // mcpResultPolicy resolves a server's binary_results (RFC FF) the way
 // mcpPoolBuild resolves the server it dials, so the setting a call renders
 // with belongs to the server that answered it: a static stdio server from the
 // yaml, any other through lookup.MCPServer in the run's tenant.
 func mcpResultPolicy(cfg *config.Config, mcpDynView mcpLookupView) func(tenant, name string) mcp.ResultPolicy {
 	return func(tenant, name string) mcp.ResultPolicy {
-		mode := ""
+		mode, minBytes := "", 0
 		if srv, ok := cfg.MCPServers[name]; ok && srv.Transport == "stdio" {
-			mode = srv.BinaryResults
+			mode, minBytes = srv.BinaryResults, srv.BinaryResultsMinBytes
 		} else if spec, ok := lookup.MCPServer(cfg, mcpDynView, tenant, name); ok {
-			mode = spec.BinaryResults
+			mode, minBytes = spec.BinaryResults, spec.BinaryResultsMinBytes
+		}
+		if minBytes <= 0 {
+			minBytes = mcp.DefaultBase64MinBytes
 		}
 		return mcp.ResultPolicy{
 			CaptureBase64:  mode == config.BinaryResultsCapture,
-			Base64MinBytes: mcpBase64MinBytes,
+			Base64MinBytes: int64(minBytes),
 		}
 	}
 }

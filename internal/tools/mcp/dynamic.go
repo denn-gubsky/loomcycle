@@ -73,6 +73,9 @@ type DynamicMCPServerSpec struct {
 	// BinaryResults is the def's binary_results ("", passthrough or
 	// capture), read by the pool's result policy at each call.
 	BinaryResults string
+	// BinaryResultsMinBytes is the def's binary_results_min_bytes (0 =
+	// the default), read with BinaryResults.
+	BinaryResultsMinBytes int
 }
 
 // DynamicRegistry holds runtime-registered MCP server specs. One

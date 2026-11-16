@@ -171,3 +171,22 @@ func TestSign_BinaryResults(t *testing.T) {
 		t.Error("binary_results: capture hashes the same as absent")
 	}
 }
+
+// binary_results_min_bytes is content too, and its default spelled out hashes
+// as its absence: a capture def stored before the field, and one that names
+// 4096, keep the hash it had (pinned below, computed before the field existed).
+func TestSign_BinaryResultsMinBytes(t *testing.T) {
+	const capturePin = "sha256:151cb24bacdbf93e0921321273b3847d79769c41ad7b2eba1b0f150cf21c8d0d"
+	base := MCPServerContent{Name: "files", Transport: "http", URL: "https://a.example/mcp", BinaryResults: "capture"}
+	if got := Sign(base); got != capturePin {
+		t.Errorf("a capture def without the field changed its hash: %s, want %s", got, capturePin)
+	}
+	dflt, low := base, base
+	dflt.BinaryResultsMinBytes, low.BinaryResultsMinBytes = 4096, 256
+	if got := Sign(dflt); got != capturePin {
+		t.Errorf("binary_results_min_bytes: 4096 hashes differently from absent: %s", got)
+	}
+	if Sign(low) == capturePin {
+		t.Error("binary_results_min_bytes: 256 hashes the same as absent")
+	}
+}

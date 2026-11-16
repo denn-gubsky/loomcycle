@@ -44,3 +44,22 @@ func TestLoad_MCPBinaryResultsUnknownValueRefused(t *testing.T) {
 		t.Fatalf("err = %v, want a load error naming the server and the field", err)
 	}
 }
+
+// binary_results_min_bytes reaches a capture server's config; absent reads as
+// 0, the default minimum.
+func TestLoad_MCPBinaryResultsMinBytesReachesTheServer(t *testing.T) {
+	cfg, err := loadYAMLString(t, binaryResultsYAMLHead+"    binary_results: capture\n    binary_results_min_bytes: 256\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.MCPServers["ms365"].BinaryResultsMinBytes; got != 256 {
+		t.Errorf("binary_results_min_bytes = %d, want 256", got)
+	}
+	cfg, err = loadYAMLString(t, binaryResultsYAMLHead+"    binary_results: capture\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.MCPServers["ms365"].BinaryResultsMinBytes; got != 0 {
+		t.Errorf("absent binary_results_min_bytes = %d, want 0", got)
+	}
+}

@@ -4045,6 +4045,11 @@ type MCPServer struct {
 	// Opt-in because a server may return a long opaque token that looks
 	// like base64. See ValidateBinaryResults.
 	BinaryResults string `yaml:"binary_results"`
+	// BinaryResultsMinBytes is the shortest base64 string capture considers
+	// a file on this server; 0 (absent) is DefaultBinaryResultsMinBytes. A
+	// server that returns small files as base64 lowers it. Meaningful only
+	// with BinaryResults capture.
+	BinaryResultsMinBytes int `yaml:"binary_results_min_bytes"`
 }
 
 // The values of an MCP server's binary_results.
@@ -4052,6 +4057,12 @@ const (
 	BinaryResultsPassthrough = "passthrough"
 	BinaryResultsCapture     = "capture"
 )
+
+// DefaultBinaryResultsMinBytes is the shortest base64 string capture
+// considers a file when a server does not set binary_results_min_bytes:
+// short enough for a small scan, long enough that an ordinary id or hash is
+// never a candidate.
+const DefaultBinaryResultsMinBytes = 4 << 10
 
 // ValidateBinaryResults refuses a binary_results value that is neither
 // passthrough nor capture. "" is passthrough. Shared by the yaml loader and

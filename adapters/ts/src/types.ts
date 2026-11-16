@@ -6078,6 +6078,12 @@ export interface EnsureMcpServerOptions {
    *  could otherwise look like one. Part of the registration's content, so
    *  changing it mints a new version. Sent as the overlay's `binary_results`. */
   binaryResults?: "passthrough" | "capture";
+  /** Under `binaryResults: "capture"`: the shortest base64 string, in
+   *  characters, that is considered a file. Default 4096; at least 128. Lower
+   *  it for a server that returns small files (short text notes) as base64.
+   *  Refused without `binaryResults: "capture"`. Part of the registration's
+   *  content. Sent as the overlay's `binary_results_min_bytes`. */
+  binaryResultsMinBytes?: number;
   /** Force a `tools/list` refresh after registering. Default false.
    *
    *  You usually do NOT need this: registration auto-discovers the upstream's

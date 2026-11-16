@@ -100,13 +100,14 @@ const mcpServerDefInputSchema = `{
     "parent_def_id": {"type": "string", "description": "Fork parent (optional for fork)."},
     "overlay": {
       "type": "object",
-      "description": "Mutable subset for create/fork: transport, url, headers, description, binary_results.",
+      "description": "Mutable subset for create/fork: transport, url, headers, description, binary_results, binary_results_min_bytes.",
       "properties": {
         "transport": {"type": "string", "enum": ["http","streamable-http"]},
         "url":       {"type": "string", "format": "uri"},
         "headers":   {"type": "object", "additionalProperties": {"type": "string"}},
         "description": {"type": "string"},
-        "binary_results": {"type": "string", "enum": ["passthrough","capture"], "description": "passthrough (default) hands the server's text to the model as it came. capture keeps a file the server returns as base64 inside a text block (whole, or as a JSON string field) in the run's inbox and hands the model a one-line reference instead. Opt in only for a server that returns files that way: a long opaque token could otherwise look like one."}
+        "binary_results": {"type": "string", "enum": ["passthrough","capture"], "description": "passthrough (default) hands the server's text to the model as it came. capture keeps a file the server returns as base64 inside a text block (whole, or as a JSON string field) in the run's inbox and hands the model a one-line reference instead. Opt in only for a server that returns files that way: a long opaque token could otherwise look like one."},
+        "binary_results_min_bytes": {"type": "integer", "description": "Under capture: the shortest base64 string (in characters) considered a file. Default 4096. Lower it for a server that returns small files, such as short text notes, as base64. A candidate is kept only when it decodes to a recognisable file or readable text, so an opaque id is left alone."}
       }
     },
     "description":   {"type": "string"},
@@ -148,6 +149,9 @@ type mcpServerOverlay struct {
 	// (RFC FF). Content: part of content_sha256. Mirrored on
 	// lookup.SubstrateMCPServer.
 	BinaryResults string `json:"binary_results,omitempty"`
+	// BinaryResultsMinBytes is the capture's per-server minimum (0 = the
+	// default). Content; mirrored on lookup.SubstrateMCPServer.
+	BinaryResultsMinBytes int `json:"binary_results_min_bytes,omitempty"`
 	// OperatorAuthored is server authority, set by bindOperatorEnv on every
 	// create and fork; applyOverlay never copies it, so an overlay can neither
 	// set nor clear it. Excluded from content_sha256 (signFromMCPServerOverlay
@@ -187,6 +191,14 @@ func (a *mcpServerOverlay) applyOverlay(ov mcpServerOverlay) {
 	}
 	if ov.BinaryResults != "" {
 		a.BinaryResults = ov.BinaryResults
+		// The minimum tunes capture only: turning capture off drops an
+		// inherited one, which would otherwise make the fork invalid.
+		if ov.BinaryResults != config.BinaryResultsCapture {
+			a.BinaryResultsMinBytes = 0
+		}
+	}
+	if ov.BinaryResultsMinBytes != 0 {
+		a.BinaryResultsMinBytes = ov.BinaryResultsMinBytes
 	}
 	// DiscoveredTools is never overlaid — refreshed only via rediscover.
 }
@@ -668,6 +680,8 @@ func specFromOverlay(tenantID, name string, ov mcpServerOverlay) loommcp.Dynamic
 
 		OperatorAuthored: ov.OperatorAuthored,
 		BinaryResults:    ov.BinaryResults,
+
+		BinaryResultsMinBytes: ov.BinaryResultsMinBytes,
 	}
 }
 
@@ -1067,7 +1081,8 @@ func signFromMCPServerOverlay(name string, ov mcpServerOverlay) string {
 		URL:         ov.URL,
 		Headers:     ov.Headers,
 
-		BinaryResults: ov.BinaryResults,
+		BinaryResults:         ov.BinaryResults,
+		BinaryResultsMinBytes: ov.BinaryResultsMinBytes,
 	})
 }
 

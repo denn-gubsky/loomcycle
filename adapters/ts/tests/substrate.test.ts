@@ -547,6 +547,7 @@ describe("ensureMcpServer / mcpServerDefVerify (v0.18.0)", () => {
     expect(body.overlay.headers.Authorization).toContain("${run.credentials.jobs");
     // binary_results is left to the server's default unless asked for
     expect(body.overlay).not.toHaveProperty("binary_results");
+    expect(body.overlay).not.toHaveProperty("binary_results_min_bytes");
   });
 
   it("binaryResults: sent as the overlay's binary_results", async () => {
@@ -564,6 +565,29 @@ describe("ensureMcpServer / mcpServerDefVerify (v0.18.0)", () => {
     await client.ensureMcpServer({ name: "ms365", url: "http://localhost:3000/mcp", binaryResults: "capture" });
     const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
     expect(body.overlay.binary_results).toBe("capture");
+  });
+
+  it("binaryResultsMinBytes: sent as the overlay's binary_results_min_bytes", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({
+        def_id: "mdf_3",
+        name: "files",
+        version: 1,
+        retired: false,
+        bootstrapped_from_static: false,
+        created_at: "2026-11-16T00:00:00Z",
+        promoted: true,
+      }),
+    ]);
+    await client.ensureMcpServer({
+      name: "files",
+      url: "http://localhost:3000/mcp",
+      binaryResults: "capture",
+      binaryResultsMinBytes: 256,
+    });
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
+    expect(body.overlay.binary_results).toBe("capture");
+    expect(body.overlay.binary_results_min_bytes).toBe(256);
   });
 
   it("auto-discovery: surfaces discoveredToolCount from the create response (no rediscover)", async () => {

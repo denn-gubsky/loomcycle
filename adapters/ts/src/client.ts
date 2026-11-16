@@ -3033,6 +3033,7 @@ export class LoomcycleClient {
     };
     if (opts.headers) overlay.headers = opts.headers;
     if (opts.binaryResults) overlay.binary_results = opts.binaryResults;
+    if (opts.binaryResultsMinBytes !== undefined) overlay.binary_results_min_bytes = opts.binaryResultsMinBytes;
     const createInput: SubstrateToolInput = { op: "create", name: opts.name, overlay };
     if (opts.description) createInput.description = opts.description;
 
