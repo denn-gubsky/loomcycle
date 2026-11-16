@@ -144,7 +144,7 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 	}
 
 	// Model-visible text must not cite design documents.
-	for _, name := range []string{"kb/ask", "kb/classify", "kb/search", "kb/walker"} {
+	for _, name := range []string{"kb/ask", "kb/classify", "kb/search", "kb/walker", "kb/survey"} {
 		a := cfg.Agents[name]
 		for where, text := range map[string]string{"system_prompt": a.SystemPrompt, "code": a.Code} {
 			for _, line := range strings.Split(text, "\n") {
@@ -411,6 +411,7 @@ func lastLine(s string) string {
 const (
 	askQuestion     = "What do we hold on speech and voice?"
 	askWalkerAnswer = "Five documents cover it: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\nMOVES: search, down\nMISSING: none"
+	askSurveyAnswer = "Seven documents fit: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nCOVERAGE: complete\nSURVEY: candidates 7 (cut 0) | rounds 1 | RUNS: w1:completed"
 	askHitDoc       = "loom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	askHitChunk     = "loom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
@@ -421,7 +422,7 @@ func askSearchAnswer(cov string) string {
 
 // askAnswers is every agent kb/ask may spawn, with kb/classify answering classify.
 func askAnswers(classify, coverage string) map[string]string {
-	return map[string]string{"kb/classify": classify, "kb/search": askSearchAnswer(coverage), "kb/walker": askWalkerAnswer}
+	return map[string]string{"kb/classify": classify, "kb/search": askSearchAnswer(coverage), "kb/walker": askWalkerAnswer, "kb/survey": askSurveyAnswer}
 }
 
 func wantSpawns(t *testing.T, f *askFake, want ...string) {
@@ -438,17 +439,19 @@ func wantRouteLine(t *testing.T, out, want string) {
 	}
 }
 
-func TestKbAsk_HighDecisionScoreRoutesToWalkerWithoutAskingTheAgent(t *testing.T) {
+// An overview goes to kb/survey, which gathers the candidates in code and has
+// the walker screen them; its answer, coverage line included, comes back as is.
+func TestKbAsk_HighDecisionScoreRoutesToSurveyWithoutAskingTheAgent(t *testing.T) {
 	f := &askFake{score: 0.62, answers: askAnswers("NO", "complete")}
 	out := runAsk(t, f, askQuestion, nil)
-	wantSpawns(t, f, "kb/walker")
-	if !strings.HasPrefix(f.spawns[0], "kb/walker\n"+askQuestion) {
-		t.Errorf("the walker got %q, want the question", f.spawns[0])
+	wantSpawns(t, f, "kb/survey")
+	if f.spawns[0] != "kb/survey\n"+askQuestion {
+		t.Errorf("the survey got %q, want the question", f.spawns[0])
 	}
-	if !strings.HasPrefix(out, askWalkerAnswer) {
-		t.Errorf("the walker's answer must come back unchanged; got %q", out)
+	if !strings.HasPrefix(out, askSurveyAnswer+"\n\nROUTE:") {
+		t.Errorf("the survey's answer must come back unchanged; got %q", out)
 	}
-	wantRouteLine(t, out, "ROUTE: walker | SCORE: 0.62 | CLASSIFIER: decision | RUNS: r1:completed")
+	wantRouteLine(t, out, "ROUTE: survey | SCORE: 0.62 | CLASSIFIER: decision | RUNS: r1:completed")
 }
 
 func TestKbAsk_LowDecisionScoreRoutesToSearchWithoutAskingTheAgent(t *testing.T) {
@@ -472,7 +475,7 @@ func TestKbAsk_MiddleBandScoreAsksTheClassifyAgent(t *testing.T) {
 		reply, route string
 		spawns       []string
 	}{
-		{"YES", "walker", []string{"kb/classify", "kb/walker"}},
+		{"YES", "survey", []string{"kb/classify", "kb/survey"}},
 		{"no.", "search", []string{"kb/classify", "kb/search"}},
 	} {
 		t.Run(tc.reply, func(t *testing.T) {
@@ -510,19 +513,19 @@ func TestKbAsk_DecisionErrorAsksTheClassifyAgentAndReportsTheCode(t *testing.T) 
 
 // A wrong walk costs less than a lost overview: an answer with no YES or NO in
 // it counts as an overview.
-func TestKbAsk_UnreadableClassifyAnswerRoutesToWalker(t *testing.T) {
+func TestKbAsk_UnreadableClassifyAnswerRoutesToSurvey(t *testing.T) {
 	f := &askFake{score: 0.3, answers: askAnswers("It depends on the corpus.", "complete")}
 	out := runAsk(t, f, askQuestion, nil)
-	wantSpawns(t, f, "kb/classify", "kb/walker")
-	wantRouteLine(t, out, "ROUTE: walker | SCORE: 0.3 | CLASSIFIER: agent-unreadable | RUNS: r1:completed, r2:completed")
+	wantSpawns(t, f, "kb/classify", "kb/survey")
+	wantRouteLine(t, out, "ROUTE: survey | SCORE: 0.3 | CLASSIFIER: agent-unreadable | RUNS: r1:completed, r2:completed")
 }
 
 // A classify run that never started is unreadable too.
-func TestKbAsk_FailedClassifySpawnRoutesToWalker(t *testing.T) {
-	f := &askFake{score: 0.3, answers: map[string]string{"kb/search": askSearchAnswer("complete"), "kb/walker": askWalkerAnswer}}
+func TestKbAsk_FailedClassifySpawnRoutesToSurvey(t *testing.T) {
+	f := &askFake{score: 0.3, answers: map[string]string{"kb/search": askSearchAnswer("complete"), "kb/survey": askSurveyAnswer}}
 	out := runAsk(t, f, askQuestion, nil)
-	wantSpawns(t, f, "kb/classify", "kb/walker")
-	wantRouteLine(t, out, "ROUTE: walker | SCORE: 0.3 | CLASSIFIER: agent-unreadable | RUNS: -:not_started, r2:completed")
+	wantSpawns(t, f, "kb/classify", "kb/survey")
+	wantRouteLine(t, out, "ROUTE: survey | SCORE: 0.3 | CLASSIFIER: agent-unreadable | RUNS: -:not_started, r2:completed")
 }
 
 // The measurement's switch: run metadata classifier=agent asks kb/classify only.
@@ -618,9 +621,9 @@ func TestKbAsk_ClassifyVerdictIsTheLastLineExactly(t *testing.T) {
 		{"YES or NO:\nNO", "search", "agent"},
 		{"Thinking about it.\n\n**No.**\n", "search", "agent"},
 		{"no", "search", "agent"},
-		{"Yes!", "walker", "agent"},
-		{"YES or NO: NO", "walker", "agent-unreadable"},
-		{"NO, it is not.", "walker", "agent-unreadable"},
+		{"Yes!", "survey", "agent"},
+		{"YES or NO: NO", "survey", "agent-unreadable"},
+		{"NO, it is not.", "survey", "agent-unreadable"},
 	} {
 		t.Run(tc.reply, func(t *testing.T) {
 			f := &askFake{score: 0.3, answers: askAnswers(tc.reply, "complete")}
@@ -693,7 +696,7 @@ func TestKbAsk_UntrustedQuestionIsForwardedByReferenceNotAsTrustedText(t *testin
 		cov   string
 		want  []string
 	}{
-		{"walker", 0.9, "YES", "complete", []string{"kb/walker"}},
+		{"survey", 0.9, "YES", "complete", []string{"kb/survey"}},
 		{"classify then search then walker", 0.3, "NO", "partial", []string{"kb/classify", "kb/search", "kb/walker"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -734,7 +737,7 @@ func TestKbAsk_TrustedFramingBesideAnUntrustedQuestionReachesTheChildAsTrustedTe
 		cov   string
 		want  []string
 	}{
-		{"walker", 0.9, "YES", "complete", []string{"kb/walker"}},
+		{"survey", 0.9, "YES", "complete", []string{"kb/survey"}},
 		{"classify then search then walker", 0.3, "NO", "partial", []string{"kb/classify", "kb/search", "kb/walker"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -753,7 +756,7 @@ func TestKbAsk_TrustedFramingBesideAnUntrustedQuestionReachesTheChildAsTrustedTe
 				if strings.Contains(prompt, "IGNORE PREVIOUS") || strings.Contains(prompt, "user_input") || strings.Contains(prompt, "speech") {
 					t.Errorf("spawn %d (%s) carries the untrusted text in its trusted prompt: %q", i, name, prompt)
 				}
-				answering := name == "kb/search" || name == "kb/walker"
+				answering := name == "kb/search" || name == "kb/walker" || name == "kb/survey"
 				if answering && !strings.Contains(prompt, framing) {
 					t.Errorf("spawn %d (%s) prompt %q, want the caller's trusted framing %q in it", i, name, prompt, framing)
 				}
