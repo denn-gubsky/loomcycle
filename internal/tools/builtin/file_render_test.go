@@ -191,7 +191,7 @@ func TestFileRender_RefusesBadArguments(t *testing.T) {
 	f, ctx, d, _ := fileDocRun(t)
 	docID, _ := renderFixtureDoc(t, d, ctx)
 	for name, in := range map[string]map[string]any{
-		"later format":   {"op": "render", "document": docID, "format": "docx"},
+		"later format":   {"op": "render", "document": docID, "format": "pdf"},
 		"unknown format": {"op": "render", "document": docID, "format": "rtf"},
 		"no format":      {"op": "render", "document": docID},
 		"two sources":    {"op": "render", "document": docID, "doc_path": "/board/protokol", "format": "md"},
@@ -294,5 +294,32 @@ func TestMoveDocuments_CarriesTheRenderLog(t *testing.T) {
 	res, err := d.query(ctx, ukey, `SELECT count(*) FROM document_renders`)
 	if err != nil || asInt(res.Rows[0][0]) != 0 {
 		t.Fatalf("renders left in the source scope: %v %v", res, err)
+	}
+}
+
+// A Document rendered as Word and extracted again keeps its sections and
+// its picture: the round trip RFC GR §7 asks for, through the tool.
+func TestFileRender_DOCXRoundTripsThroughExtract(t *testing.T) {
+	f, ctx, d, _ := fileDocRun(t)
+	docID, _ := renderFixtureDoc(t, d, ctx)
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": "docx"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if !strings.HasSuffix(asStr(out["ref"]), ".docx") || asStr(out["media_type"]) != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+		t.Fatalf("result = %v", out)
+	}
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": out["ref"]})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	text := asStr(ex["excerpt"])
+	for _, want := range []string{"# Протокол", "## Порядок денний", "Перше питання", "## Рішення", "alert(1)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the extracted render lacks %q:\n%s", want, text)
+		}
+	}
+	if refs, _ := ex["image_refs"].([]any); len(refs) != 1 {
+		t.Errorf("image_refs = %v", ex["image_refs"])
 	}
 }
