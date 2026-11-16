@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/api/memberpath"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
@@ -68,6 +69,16 @@ type fileTwinArgs struct {
 	WorkKey            string `json:"work_key,omitempty"`
 	EditionDate        *int64 `json:"edition_date,omitempty"`
 	AmendingDocumentID string `json:"amending_document_id,omitempty"`
+	// render's document and how to write it (RFC GR); the File tool checks
+	// them as op=render does in a run.
+	Document   string `json:"document,omitempty"`
+	Chunk      string `json:"chunk,omitempty"`
+	Format     string `json:"format,omitempty"`
+	TOC        bool   `json:"toc,omitempty"`
+	TitlePage  bool   `json:"title_page,omitempty"`
+	Provenance *bool  `json:"provenance,omitempty"`
+	PageSize   string `json:"page_size,omitempty"`
+	Language   string `json:"language,omitempty"`
 }
 
 type fileTwinInput struct {
@@ -150,7 +161,10 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 				"Give the agent the File and HTTP tools and let the run do it."), nil
 		}
 		return fileTwinRefusal(tools.CategoryValidation, fmt.Sprintf("file: unknown op %q", in.Op),
-			"One of stat, ls, extract, import, keep, rm, clear."), nil
+			"One of stat, ls, extract, import, keep, rm, clear, render."), nil
+	}
+	if in.Op == "render" {
+		return s.fileTwinRender(ctx, in)
 	}
 	if !validIdent(in.RunID) {
 		return fileTwinRefusal(tools.CategoryValidation, "file: run_id must match [A-Za-z0-9_-]{1,128}", "Pass the run's id, as get_run and list_runs report it."), nil
@@ -383,6 +397,12 @@ func (s *Server) fileTwinCtx(ctx context.Context, in fileTwinInput, root, dir, d
 // The auth model has no scope for writing a volume; the rules are where that
 // grant lives.
 func (s *Server) fileTwinKeepTarget(ctx context.Context, to, dynRoot string, caller auth.Principal) (tools.VolumeBinding, connector.ToolResult, bool) {
+	return s.fileTwinVolumeTarget(ctx, "keep", to, dynRoot, caller)
+}
+
+// fileTwinVolumeTarget is fileTwinKeepTarget for op (keep or render), whose
+// name its refusals carry.
+func (s *Server) fileTwinVolumeTarget(ctx context.Context, op, to, dynRoot string, caller auth.Principal) (tools.VolumeBinding, connector.ToolResult, bool) {
 	tenant := caller.TenantID
 	refuse := func(cat tools.ErrorCategory, msg, next string) (tools.VolumeBinding, connector.ToolResult, bool) {
 		return tools.VolumeBinding{}, fileTwinRefusal(cat, msg, next), false
@@ -390,51 +410,106 @@ func (s *Server) fileTwinKeepTarget(ctx context.Context, to, dynRoot string, cal
 	rest, ok := strings.CutPrefix(strings.TrimSpace(to), "volume:")
 	name, _, named := strings.Cut(rest, ":")
 	if !ok || !named || name == "" {
-		return refuse(tools.CategoryValidation, "file: keep: to must name a volume: volume:<name>:<path>",
+		return refuse(tools.CategoryValidation, "file: "+op+": to must name a volume: volume:<name>:<path>",
 			"Name a dynamic volume of your tenant (volumedef list shows them).")
 	}
 	if name == inbox.Name {
-		return refuse(tools.CategoryValidation, "file: keep: to is in the inbox, which is deleted with the run", "Name a dynamic volume of your tenant.")
+		return refuse(tools.CategoryValidation, "file: "+op+": to is in the inbox, which is deleted with the run", "Name a dynamic volume of your tenant.")
 	}
 	// A dynamic volume is shared by the tenant, and an isolated user is held
 	// to its own scope. Its baseline allows writing volumes because inside a
 	// run the agent definition picks them; here the caller would pick any.
 	if auth.IsIsolated(caller, true) {
-		return refuse(tools.CategoryPermission, "file: keep: an isolated user may not write to its tenant's volumes",
+		return refuse(tools.CategoryPermission, "file: "+op+": an isolated user may not write to its tenant's volumes",
 			"Import a Markdown file of it into your own documents, or run an agent bound to the volume.")
 	}
 	if _, static := s.cfg().Volumes[name]; static {
-		return refuse(tools.CategoryPermission, fmt.Sprintf("file: keep: %q is a configured volume; from here keep copies only into a dynamic volume of your tenant", name),
-			"Create one with volumedef, or have an agent bound to that volume keep the file.")
+		return refuse(tools.CategoryPermission, fmt.Sprintf("file: "+op+": %q is a configured volume; from here "+op+" writes only into a dynamic volume of your tenant", name),
+			"Create one with volumedef, or have an agent bound to that volume write the file.")
 	}
 	if err := dynvol.ValidName(name); err != nil {
-		return refuse(tools.CategoryValidation, "file: keep: "+err.Error(), "")
+		return refuse(tools.CategoryValidation, "file: "+op+": "+err.Error(), "")
 	}
 	row, err := s.store.VolumeDefGetByName(ctx, tenant, name)
 	var nf *store.ErrNotFound
 	switch {
 	case errors.As(err, &nf):
-		return refuse(tools.CategoryValidation, fmt.Sprintf("file: keep: your tenant has no volume named %q", name),
+		return refuse(tools.CategoryValidation, fmt.Sprintf("file: "+op+": your tenant has no volume named %q", name),
 			"Create it with volumedef op=create, or name one volumedef list shows.")
 	case err != nil:
-		return refuse(tools.CategoryTransient, "file: keep: could not read the volume", "Try again.")
+		return refuse(tools.CategoryTransient, "file: "+op+": could not read the volume", "Try again.")
 	}
 	var body struct {
 		Mode string `json:"mode"`
 	}
 	if err := json.Unmarshal(row.Definition, &body); err != nil {
-		return refuse(tools.CategoryBusiness, fmt.Sprintf("file: keep: volume %q has an unreadable record", name), "")
+		return refuse(tools.CategoryBusiness, fmt.Sprintf("file: "+op+": volume %q has an unreadable record", name), "")
 	}
 	if body.Mode == "ro" {
-		return refuse(tools.CategoryPermission, fmt.Sprintf("file: keep: volume %q is read-only", name), "Name a read-write volume.")
+		return refuse(tools.CategoryPermission, fmt.Sprintf("file: "+op+": volume %q is read-only", name), "Name a read-write volume.")
 	}
 	binding := tools.VolumeBinding{Name: name, Root: dynvol.DerivedPath(dynRoot, tenant, name)}
 	narrowed := tools.NarrowVolumesByACL(ctx, caller.Effective, tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{binding}})
 	if len(narrowed.Bindings) != 1 || narrowed.Bindings[0].ReadOnly {
-		return refuse(tools.CategoryPermission, fmt.Sprintf("file: keep: your access rules do not let you write to volume %q", name),
+		return refuse(tools.CategoryPermission, fmt.Sprintf("file: "+op+": your access rules do not let you write to volume %q", name),
 			"Ask an operator for write access to the volume, or name another.")
 	}
 	return binding, connector.ToolResult{}, true
+}
+
+// fileTwinRender is op=render outside a run (RFC GR D8): a Document the
+// caller may read, written as a file into a dynamic volume of the caller's
+// tenant that the caller may write — the target keep takes. No run and no
+// inbox are involved, so to is required, a Markdown file (path) is not a
+// source here, and run_id is refused rather than ignored. The File tool does
+// the work as in a run, with only File, Document (the read) and Write (the
+// one volume) granted; the document is read in the caller's own scopes.
+func (s *Server) fileTwinRender(ctx context.Context, in fileTwinInput) (connector.ToolResult, error) {
+	switch {
+	case in.RunID != "":
+		return fileTwinRefusal(tools.CategoryValidation, "file: render takes no run_id here: it writes a document of yours into one of your volumes",
+			"Drop run_id and pass to, e.g. volume:reports:2026/minutes.pdf."), nil
+	case strings.TrimSpace(in.Path) != "":
+		return fileTwinRefusal(tools.CategoryValidation, "file: render here takes a document (document or doc_path), not a file",
+			"Import the Markdown file as a document first, or have a run render it."), nil
+	case strings.TrimSpace(in.To) == "":
+		return fileTwinRefusal(tools.CategoryValidation, "file: render here needs to: the file to write in one of your tenant's dynamic volumes",
+			"Pass to, e.g. volume:reports:2026/minutes.pdf (volumedef list shows the volumes)."), nil
+	}
+	if s.store == nil {
+		return connector.ToolResult{}, errors.New("file requires persistence (no Store configured)")
+	}
+	dynRoot, ok := builtin.DynamicVolumeRoot(s.cfg())
+	if !ok {
+		return fileTwinRefusal(tools.CategoryBusiness, "file: no dynamic_root volume is configured, so there is no volume to write to",
+			"An operator must mark one volume dynamic_root: true."), nil
+	}
+	p, hasP := auth.PrincipalFromContext(ctx)
+	// The document is read as the MCP document tool reads it: off the
+	// operator plane (a member), an agent's scope is reached only from a run
+	// of that agent, so it is refused here and the session's agent name is
+	// not carried into the read.
+	if !memberpath.OperatorPlane(p, hasP) {
+		if in.Scope == "agent" {
+			return fileTwinRefusal(tools.CategoryValidation, "file: render: not found",
+				"An agent's scope is reached from a run of that agent: pass scope user or tenant."), nil
+		}
+		ctx = tools.WithAgentName(ctx, "")
+	}
+	binding, res, ok := s.fileTwinVolumeTarget(ctx, "render", in.To, dynRoot, p)
+	if !ok {
+		return res, nil
+	}
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Tools = []string{builtin.FileToolName, "Document", "Write"}
+		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{binding}}
+		rp.EphemeralWritable = false
+	})
+	body, err := json.Marshal(in.fileTwinArgs)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return s.dispatchBuiltin(ctx, builtin.FileToolName, body)
 }
 
 func fileTwinNotFound(runID string) connector.ToolResult {

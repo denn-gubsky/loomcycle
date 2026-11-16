@@ -40,6 +40,7 @@ import Connections from "./Connections";
 import CrossReferences from "./CrossReferences";
 import StackSplitter from "./StackSplitter";
 import DocUnavailable from "./DocUnavailable";
+import DownloadMenu from "./DownloadMenu";
 import HistoryModal from "./HistoryModal";
 import Markdown from "./Markdown";
 import MermaidDiagram from "./Mermaid";
@@ -585,43 +586,6 @@ export default function DocumentViewerBody({
     [onOpenDocument, documentId, selectedId, rootTitle],
   );
 
-  // Download the WHOLE document as canonical, round-trippable Markdown (with the
-  // metadata comments), independent of the selected-chunk view above.
-  const download = useCallback(async () => {
-    try {
-      const r = await data.documentExportMd(documentId, scope, true, browse);
-      const blob = new Blob([r.markdown], { type: "text/markdown" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = (r.title || "document").replace(/[^\w.-]+/g, "_") + ".md";
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  }, [data, documentId, scope, browse]);
-
-  // RFC BS — download the whole document as a `.canvas` (JSON) node/edge graph,
-  // mirroring the .md download above. The canvas shape is backend-owned; the
-  // viewer only serializes it.
-  const downloadCanvas = useCallback(async () => {
-    try {
-      const r = await data.documentExportCanvas(documentId, scope, browse);
-      const blob = new Blob([JSON.stringify(r.canvas, null, 2)], {
-        type: "application/json",
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = (rootTitle || "document").replace(/[^\w.-]+/g, "_") + ".canvas";
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  }, [data, documentId, scope, browse, rootTitle]);
-
   // RFC BO authoring — create a media chunk under the selected chunk (or the
   // root). The runtime marks type=image via set_asset; a diagram is a plain
   // type=mermaid chunk whose body is the source.
@@ -864,16 +828,7 @@ export default function DocumentViewerBody({
               classify
             </button>
           )}
-          <button type="button" onClick={() => void download()} title="Download the whole document as Markdown (.md)">
-            ↓ .md
-          </button>
-          <button
-            type="button"
-            onClick={() => void downloadCanvas()}
-            title="Download the whole document as a node/edge canvas graph (.canvas)"
-          >
-            ↓ .canvas
-          </button>
+          <DownloadMenu documentId={documentId} scope={scope} browse={browse} title={rootTitle} onError={setErr} />
           {renderAssistant && (
             <button
               type="button"

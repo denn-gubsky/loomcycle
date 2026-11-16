@@ -4939,6 +4939,41 @@ export interface DocumentFindDuplicatesResult {
   truncated: boolean;
 }
 
+/** A file format {@link LoomcycleClient.exportDocument} renders a document
+ *  into (RFC GR). */
+export type DocumentExportFormat = "pdf" | "docx" | "html" | "md";
+
+/** Options of {@link LoomcycleClient.exportDocument}. Unset options are left
+ *  to the server's defaults. */
+export interface DocumentExportOptions {
+  /** "user" (default), "agent" or "tenant". */
+  scope?: "user" | "agent" | "tenant";
+  /** RFC AS browse overrides: whose subject's / which tenant's document. */
+  scopeId?: string;
+  tenant?: string;
+  /** Render only the subtree under this chunk. */
+  chunk?: string;
+  toc?: boolean;
+  titlePage?: boolean;
+  pageSize?: "a4" | "letter";
+  language?: string;
+  /** false leaves the provenance note out (the server puts it in by default). */
+  provenance?: boolean;
+  signal?: AbortSignal;
+}
+
+/** What {@link LoomcycleClient.exportDocument} returns: the rendered file. */
+export interface DocumentExport {
+  blob: Blob;
+  /** From Content-Disposition; `<document id>.<format>` when the server sent none. */
+  filename: string;
+  /** The Content-Type the server sent — `application/zip` for a Markdown
+   *  render of a document with pictures (the .md and its pictures). */
+  mediaType: string;
+  /** The render log id (`X-Loomcycle-Render-Id`), when the server sent one. */
+  renderId?: string;
+}
+
 /** What a filtered `document({op:"search"|"related", …})` call resolved its
  *  structural filter to — present on the response ONLY when a filter argument
  *  was passed (a filter-free response has no `filter` key). */

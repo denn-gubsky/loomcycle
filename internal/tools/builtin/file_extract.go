@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -130,6 +132,10 @@ func (f *File) converter() convert.Client {
 	}
 	p := &convert.InProcess{Extractions: f.Extractions, SlotWait: f.slotWait, ExtractTimeout: fileExtractTimeout,
 		Scratch: func(ctx context.Context) (string, error) {
+			if !inbox.Available(ctx) && tools.RunID(ctx) == "" {
+				// Off-run (an export): no inbox to work in.
+				return cmp.Or(f.ScratchDir, os.TempDir()), nil
+			}
 			root, _, err := effectiveRoot(ctx, inbox.Name, false)
 			return root, err
 		}}

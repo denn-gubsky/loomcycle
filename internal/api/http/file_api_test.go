@@ -710,3 +710,62 @@ func TestFileTwin_StoredParentIDIsNotAPathSegment(t *testing.T) {
 		t.Errorf("reply = %q, want the missing run's %q", got, want)
 	}
 }
+
+// render needs no run (RFC GR D8): a document of the caller's own scope is
+// written into a read-write dynamic volume of its tenant, and logged on the
+// document as the caller's.
+func TestFileTwin_RenderWritesADocumentIntoTheCallersVolume(t *testing.T) {
+	f := newFileTwinFixture(t)
+	reports := f.mkVolume(t, "acme", "reports", "rw")
+	f.mkVolume(t, "acme", "archive", "ro")
+	raw, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": "# Minutes\n\n## Agenda\n\nFirst item.\n"})
+	res, err := f.srv.Document(sessionCtx(twinOwner), raw)
+	if err != nil || res.IsError {
+		t.Fatalf("import_md: %v %s", err, res.Text)
+	}
+	var doc map[string]any
+	_ = json.Unmarshal([]byte(res.Text), &doc)
+	id, _ := doc["document_id"].(string)
+
+	out, text, isErr := f.call(t, twinOwner, map[string]any{"op": "render", "document": id, "format": "docx", "to": "volume:reports:minutes.docx"})
+	if isErr {
+		t.Fatalf("render: %s", text)
+	}
+	if b, err := os.ReadFile(filepath.Join(reports, "minutes.docx")); err != nil || len(b) < 100 || string(b[:2]) != "PK" {
+		t.Fatalf("written file: %d bytes, %v (result %v)", len(b), err, out)
+	}
+	if out["render_id"] == nil || out["document_id"] != id {
+		t.Errorf("result = %v", out)
+	}
+
+	for name, in := range map[string]map[string]any{
+		"run_id":     {"op": "render", "run_id": "r1", "document": id, "format": "docx", "to": "volume:reports:x.docx"},
+		"path":       {"op": "render", "path": "volume:inbox:x.md", "format": "docx", "to": "volume:reports:x.docx"},
+		"no to":      {"op": "render", "document": id, "format": "docx"},
+		"read-only":  {"op": "render", "document": id, "format": "docx", "to": "volume:archive:x.docx"},
+		"configured": {"op": "render", "document": id, "format": "docx", "to": "volume:work:x.docx"},
+		"not theirs": {"op": "render", "document": id, "format": "docx", "to": "volume:reports:y.docx"},
+	} {
+		p := twinOwner
+		if name == "not theirs" {
+			p = twinOutsider // another tenant: no such volume, and no such document
+		}
+		if _, text, isErr := f.call(t, p, in); !isErr {
+			t.Errorf("%s: rendered (%s)", name, text)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(reports, "y.docx")); err == nil {
+		t.Error("another tenant wrote into the volume")
+	}
+}
+
+// A member renders as the MCP document tool reads: an agent's scope is
+// reached only from a run of that agent, so render refuses it.
+func TestFileTwin_RenderRefusesAMemberTheAgentScope(t *testing.T) {
+	f := newFileTwinFixture(t)
+	f.mkVolume(t, "acme", "reports", "rw")
+	_, text, isErr := f.call(t, twinOwner, map[string]any{"op": "render", "document": "d1", "scope": "agent", "format": "docx", "to": "volume:reports:x.docx"})
+	if !isErr || !strings.Contains(text, "render: not found") {
+		t.Fatalf("member render of the agent scope = %s", text)
+	}
+}

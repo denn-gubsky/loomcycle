@@ -165,6 +165,7 @@
  *     copyDocuments(input) / moveDocuments(input): Promise<DocumentTransferResult> // RFC FT, dry run by default
  *     findDuplicates(input): Promise<DocumentFindDuplicatesResult> // RFC GB, a report unless propose: true
  *     getAnnotation / listAnnotations / annotate                  // a brief + abstract per section, document, folder
+ *     exportDocument(documentId, format, opts?): Promise<DocumentExport> // RFC GR: pdf/docx/html/md file
  *
  *     // History — browse/search/annotate past chats (RFC BE; tenant-confined)
  *     history(input): Promise<HistoryToolResponse>                // list/get/search/rename/annotate/pin/archive/recap/resume
@@ -477,6 +478,9 @@ export type {
   DocumentFindDuplicatesInput,
   DocumentDuplicatePair,
   DocumentFindDuplicatesResult,
+  DocumentExportFormat,
+  DocumentExportOptions,
+  DocumentExport,
   DocumentAnnotation,
   DocumentListAnnotationsInput,
   DocumentListAnnotationsResult,

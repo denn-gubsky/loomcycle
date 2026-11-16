@@ -9,7 +9,8 @@ import (
 )
 
 // The `file` meta-tool is the File tool outside a run (RFC FF D16): it acts on
-// the inbox of a run the session may read, named by run_id. connector.File
+// the inbox of a run the session may read, named by run_id — except render,
+// which needs no run and writes into a volume of the caller (RFC GR D8). connector.File
 // owns every rule (which run, which ops, whose scopes and volumes); this file
 // only advertises the shape.
 
@@ -17,19 +18,20 @@ import (
 // agent's own volumes and grants, which a session does not have. Every other
 // property is the builtin's, byte for byte.
 var fileMCPOverrides = map[string]string{
-	"run_id": `{"type": "string", "description": "The run whose inbox to use, as get_run and list_runs report it. A sub-run's id reaches its tree's inbox."}`,
+	"run_id": `{"type": "string", "description": "The run whose inbox to use, as get_run and list_runs report it. A sub-run's id reaches its tree's inbox. Required for every op but render, which takes none."}`,
 	"from":   `{"type": "string", "description": "keep: the inbox file to copy, e.g. volume:inbox:documents/a.pdf."}`,
-	"to":     `{"type": "string", "description": "keep: where to copy it, volume:<name>:<path>, in a read-write dynamic volume of your tenant (volumedef list shows them). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist."}`,
+	"to":     `{"type": "string", "description": "keep: where to copy it; render (required): the file to write. volume:<name>:<path>, in a read-write dynamic volume of your tenant (volumedef list shows them). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist."}`,
 }
 
 // fileMCPSchema is the File builtin's input schema cut to the fields
 // connector.File takes (connector.FileTwinFields), its op enum cut to
-// connector.FileTwinOps, run_id added and required. Derived rather than
+// connector.FileTwinOps, run_id added (required by every op but render, so
+// the schema requires only op). Derived rather than
 // restated so the shared fields keep tracking the tool's validation; a shape it
 // cannot edit falls back to a minimal schema, which
 // TestFileMCP_SchemaIsTheToolsCutToTheTwin catches.
 func fileMCPSchema() json.RawMessage {
-	fallback := json.RawMessage(`{"type": "object", "properties": {"run_id": {"type": "string"}, "op": {"type": "string"}}, "required": ["run_id", "op"]}`)
+	fallback := json.RawMessage(`{"type": "object", "properties": {"run_id": {"type": "string"}, "op": {"type": "string"}}, "required": ["op"]}`)
 	var s map[string]json.RawMessage
 	if err := json.Unmarshal((&builtin.File{}).InputSchema(), &s); err != nil {
 		return fallback
@@ -60,7 +62,7 @@ func fileMCPSchema() json.RawMessage {
 		return fallback
 	}
 	s["properties"] = encoded
-	s["required"] = json.RawMessage(`["run_id", "op"]`)
+	s["required"] = json.RawMessage(`["op"]`)
 	res, err := marshalNoHTMLEscape(s)
 	if err != nil {
 		return fallback
@@ -75,8 +77,9 @@ const fileMCPDescription = "Inspect and manage the files a RUN's tools returned,
 	"Ops: stat (size, type, sha256 and origin of one file), ls (list the inbox or a folder of it), " +
 	"extract (turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, its pictures kept as files, and return an excerpt), " +
 	"import (build a Document in YOUR own scopes from such a Markdown file, its pictures as image chunks), " +
-	"keep (copy a file into a read-write dynamic volume of your tenant: volume:<name>:<path>), rm (delete one file), clear (empty the inbox, or one folder of it). " +
-	"Paths are volume:inbox:<path>, or a bare path in the inbox; no other volume is reachable here except keep's target. " +
+	"keep (copy a file into a read-write dynamic volume of your tenant: volume:<name>:<path>), rm (delete one file), clear (empty the inbox, or one folder of it), " +
+	"render (write a Document you may read — document or doc_path, in your own scopes — as pdf, docx, html or md into a read-write dynamic volume of your tenant, to: volume:<name>:<path>; it needs NO run_id). " +
+	"Paths are volume:inbox:<path>, or a bare path in the inbox; no other volume is reachable here except keep's and render's target. " +
 	"Works on a run you can read with get_run; another tenant's run is not found. extract, keep, rm and clear write, so only the run's owner or an admin may make them; a tenant operator counts as an admin for the runs of its own tenant. " +
 	"The inbox exists only while the run tree does: it is deleted when the run ends, so keep what must outlive it. Every call is strict: a field the tool does not take is refused. " +
 	"Do NOT use it to download or upload a URL: that needs a run's HTTP allowlist, so give the agent the File and HTTP tools instead. " +

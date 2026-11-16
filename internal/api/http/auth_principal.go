@@ -1926,11 +1926,23 @@ func isTeamChannelsPath(path string) bool {
 	return ok && (after == "channels" || strings.HasPrefix(after, "channels/"))
 }
 
+// isDocumentExportPath matches /v1/_document/export/{document_id}.
+func isDocumentExportPath(path string) bool {
+	id, ok := strings.CutPrefix(path, "/v1/_document/export/")
+	return ok && id != "" && !strings.Contains(id, "/")
+}
+
 func isTenantConfinedDefPath(path string) bool {
 	// RFC BO — the image-asset serving GET lives UNDER /v1/_document with a
 	// variable {chunk_id} suffix, so it needs a prefix match (the family list
 	// below is exact-match). Same ScopeTenant posture as /v1/_document itself.
 	if strings.HasPrefix(path, "/v1/_document/asset/") {
+		return true
+	}
+	// RFC GR §4.4 — the off-run export, /v1/_document/export/{id}: the same
+	// ScopeTenant posture as the asset GET (member-readable; the handler reads
+	// as the caller and answers anything it may not read with an opaque 404).
+	if isDocumentExportPath(path) {
 		return true
 	}
 	// RFC CD Part C — the document change feed lives under /v1/_document with a

@@ -392,6 +392,33 @@ type Residue struct {
 	Truncated        bool `json:"truncated"`
 }
 
+// eraseSQLMemory drops the subject's user scope and clears the subject from
+// the render log of the tenant's other scopes (RFC GR §4.8); a dry run
+// counts instead. Execute's SQL Memory step.
+func (s *Service) eraseSQLMemory(ctx context.Context, tenant, subject string, dryRun bool, deleted map[string]int, fail func(string, error)) {
+	// sqlScopeTenant, not the raw tenant: see the helper. A raw "" here would
+	// build a key that matches nothing and silently spare the whole database.
+	key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(tenant), Scope: "user", ScopeID: subject}
+	if dryRun {
+		if found, err := s.userSQLScopeExists(ctx, tenant, subject); err != nil {
+			fail("sql_memory", err)
+		} else if found {
+			deleted["sql_memory_scopes"] = 1
+		}
+	} else if removed, err := s.SqlMem.DropScope(ctx, key); err != nil {
+		fail("sql_memory", err)
+	} else if removed {
+		deleted["sql_memory_scopes"] = 1
+	}
+	// The render log of the tenant's other scopes keeps its rows and loses
+	// the subject's name (RFC GR §4.8).
+	if n, err := s.renderActorRows(ctx, tenant, subject, !dryRun); err != nil {
+		fail(renderActorPlane, err)
+	} else {
+		deleted[renderActorPlane] = n
+	}
+}
+
 // ExecuteRequest carries a resolved erasure. Tenant is authoritative and comes
 // from the caller's principal — never from a request field.
 type ExecuteRequest struct {
@@ -529,6 +556,11 @@ func (s *Service) Report(ctx context.Context, tenant, subject string) (Report, e
 			rep.Tier1.set("sql_memory_scopes", 1)
 		} else {
 			rep.Tier1.set("sql_memory_scopes", 0)
+		}
+		if n, err := s.renderActorRows(ctx, tenant, subject, false); err != nil {
+			fail(renderActorPlane, err)
+		} else {
+			rep.Tier1.set(renderActorPlane, int64(n))
 		}
 	} else {
 		sqlMemUnexamined = true
@@ -713,6 +745,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 	if s.SqlMem != nil {
 		res.Deleted["sql_memory_scopes"] = 0
+		res.Deleted[renderActorPlane] = 0
 	}
 	if s.ListTokens != nil && s.RetireTokens != nil {
 		res.Deleted["operator_tokens"] = 0
@@ -910,20 +943,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (Result, erro
 	}
 
 	if s.SqlMem != nil {
-		// sqlScopeTenant, not the raw tenant: see the helper. A raw "" here would
-		// build a key that matches nothing and silently spare the whole database.
-		key := sqlmem.ScopeKey{Tenant: sqlScopeTenant(tenant), Scope: "user", ScopeID: subject}
-		if req.DryRun {
-			if found, err := s.userSQLScopeExists(ctx, tenant, subject); err != nil {
-				fail("sql_memory", err)
-			} else if found {
-				res.Deleted["sql_memory_scopes"] = 1
-			}
-		} else if removed, err := s.SqlMem.DropScope(ctx, key); err != nil {
-			fail("sql_memory", err)
-		} else if removed {
-			res.Deleted["sql_memory_scopes"] = 1
-		}
+		s.eraseSQLMemory(ctx, tenant, subject, req.DryRun, res.Deleted, fail)
 	}
 
 	if rows, err := s.Store.DirentListUnder(ctx, tenant, "user", subject, "/"); err != nil {

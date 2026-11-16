@@ -75,6 +75,10 @@ type File struct {
 	// HelperWrapper is LOOMCYCLE_HELPER_WRAPPER, the confinement command a
 	// PDF render's typesetter runs under when it runs in this process.
 	HelperWrapper string
+	// ScratchDir is where a conversion helper runs when there is no run inbox
+	// to run it in: a Document downloaded off-run (Export) typeset as a PDF
+	// in this process. Empty is the system temp directory.
+	ScratchDir string
 	// pdfCommand overrides convert.DefaultPDFCommand, for tests.
 	pdfCommand string
 }
