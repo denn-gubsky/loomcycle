@@ -27,6 +27,8 @@ const running = {
   mem_max_age_ms: 0,
   mem_content_mode: "off",
   mem_content_max_age_ms: 0,
+  empty_dossier_mode: "off",
+  empty_dossier_max_age_ms: 0,
   purgeable: { chats: 4 },
 };
 
@@ -90,5 +92,18 @@ describe("RetentionSection", () => {
     mounted = await mount();
     expect(mounted.el.textContent).toContain("sweeper on, every 60 min");
     expect(mounted.el.querySelector(".settings-warning")).toBeNull();
+  });
+
+  it("lists the empty_dossier family with the mode and age the report gives", async () => {
+    // The family that removes an entity's last trace: a page that omits it reads as
+    // "nothing deletes these" while the sweeper does.
+    stubReport({ ...running, empty_dossier_mode: "prune", empty_dossier_max_age_ms: 14 * 86_400_000 });
+    mounted = await mount();
+    const row = [...mounted.el.querySelectorAll(".settings-stats > div")].find(
+      (d) => d.querySelector("dt")?.textContent === "empty subject documents",
+    );
+    expect(row).toBeDefined();
+    expect(row?.querySelector("code")?.textContent).toBe("prune");
+    expect(row?.textContent).toContain("older than 14d");
   });
 });

@@ -158,7 +158,11 @@ func (s *Server) loginStartAllowed(ctx context.Context, r *http.Request) bool {
 	if _, until, err := s.store.AuthThrottleGet(ctx, key, now); err != nil || until.After(now) {
 		return false
 	}
-	n, _, err := s.store.AuthThrottleRecordFailure(ctx, key, now, loginStartWindow, func(n int) time.Duration {
+	// Recorded detached (recordingContext): a client that hangs up here must
+	// still have its start counted, or hanging up is how the limit is dodged.
+	rctx, cancel := recordingContext(ctx)
+	defer cancel()
+	n, _, err := s.store.AuthThrottleRecordFailure(rctx, key, now, loginStartWindow, func(n int) time.Duration {
 		if n >= loginStartLimit {
 			return loginStartWindow
 		}

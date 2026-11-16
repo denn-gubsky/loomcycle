@@ -393,9 +393,9 @@ The `local` preset's `local-fast` and `local-chat` aliases were written as `mode
 
 **What to do.** `loomcycle init --full` writes the long reference config, as before.
 
-### 4.19 After v1.153.0: the `oauth` preset names the models `base` names
+### 4.19 From v1.154.1: the `oauth` preset names the models `base` names
 
-**Who is affected.** A deployment that selects the `oauth` preset and runs a build newer than v1.153.0. v1.153.0 itself still has the older ids.
+**Who is affected.** A deployment that selects the `oauth` preset and runs v1.154.1 or later. v1.154.0 and earlier still have the older ids.
 
 **What happens.**
 

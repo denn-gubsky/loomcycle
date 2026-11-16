@@ -79,6 +79,8 @@ __pycache__/
 # it with index.html + assets/, which we don't commit (CI runs the
 # build before `go build`).
 web/node_modules/
+# vitest writes its results cache here when run with web/src as the root.
+web/src/node_modules/
 web/dist/
 # tsc-emitted .js / build cache (Vite handles compilation; package.json
 # uses `tsc --noEmit` for typecheck only, but accidental `tsc -b` runs
