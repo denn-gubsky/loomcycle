@@ -13,13 +13,17 @@
 #   2. Postgres ≥ 14 with the `loomcycle` + `loomcycle_sqlmem` DBs and a CREATEROLE
 #      login role (see ../docs/TRUENAS.md §Postgres).
 #   3. A thin overlay at /mnt/tank/loomcycle/config/loomcycle.yaml (the agent
-#      `volumes:` block) — copy loomcycle.overlay.example.yaml.
-#   4. A root-only secrets env file at
-#      /mnt/tank/loomcycle/config/loomcycle.secrets.env holding LOOMCYCLE_AUTH_TOKEN,
-#      LOOMCYCLE_OPERATOR_TOKEN_PEPPER, LOOMCYCLE_PG_DSN, LOOMCYCLE_SQLMEM_PG_DSN and
-#      your provider keys. Secrets go in THAT file, never here — TrueNAS's "Install
-#      via YAML" cannot resolve ${VAR}, so `env_file:` (an absolute host path read at
-#      container-create) is the mechanism that works. (INSTALL.md Phase 4.)
+#      `volumes:` block and the `conversion:` block) — copy
+#      loomcycle.overlay.example.yaml.
+#   4. Two root-only env files under /mnt/tank/loomcycle/config/ (INSTALL.md Phase 4):
+#        • loomcycle.secrets.env — LOOMCYCLE_AUTH_TOKEN, LOOMCYCLE_OPERATOR_TOKEN_PEPPER,
+#          LOOMCYCLE_PG_DSN, LOOMCYCLE_SQLMEM_PG_DSN, LOOMCYCLE_WORKER_TOKEN and your
+#          provider keys.
+#        • loomcycle.worker.env — ONLY LOOMCYCLE_WORKER_TOKEN (the same value), so
+#          the conversion workers never see the DSNs or provider keys.
+#      Secrets go in THOSE files, never here — TrueNAS's "Install via YAML" cannot
+#      resolve ${VAR}, so `env_file:` (an absolute host path read at
+#      container-create) is the mechanism that works.
 #   5. Fill the placeholders below (TRUENAS_HOST, OLLAMA_HOST, the pool) and paste.
 #
 # ── IMAGE CHOICE (this file uses the toolbox image; read this) ────────────────
@@ -42,7 +46,7 @@ services:
   # One-shot schema migration: runs `loomcycle migrate up`, then exits; the runtime
   # waits for it (LOOMCYCLE_PG_AUTOMIGRATE=0 below keeps schema bumps explicit).
   loomcycle-migrate:
-    image: denngubsky/loomcycle-toolbox:1.147.0   # keep in lockstep with the runtime
+    image: denngubsky/loomcycle-toolbox:1.153.0   # keep in lockstep with the runtime
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -51,7 +55,7 @@ services:
       - /mnt/tank/loomcycle/config/loomcycle.secrets.env
 
   loomcycle:
-    image: denngubsky/loomcycle-toolbox:1.147.0
+    image: denngubsky/loomcycle-toolbox:1.153.0
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
@@ -59,7 +63,11 @@ services:
         condition: service_completed_successfully
     ports:
       # App-network port. Front with your tunnel/proxy — no public bind here.
+      # Never publish 7788 (the conversion worker endpoint).
       - "8787:8787"
+    # default: Postgres, Ollama and your proxy reach the app here.
+    # workers: the internal network the conversion workers attach over.
+    networks: [default, workers]
     env_file:
       # Tokens, PG DSNs, provider keys. NEVER put a secret in `environment:` below
       # (an inline key would also OVERRIDE the same key from the env file).
@@ -149,3 +157,44 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  # ── Conversion workers (RFC GO, docs/WORKERS.md) ──────────────────────────
+  # Every file conversion runs here, not in the runtime: text extraction, OCR
+  # page rendering (pdftoppm), voice-note conversion and spoken-reply encoding
+  # (ffmpeg), image re-encoding. A file that exhausts a worker's memory kills
+  # that worker, which restarts; the runtime answers that one call with an
+  # error and every other run goes on. Needs `conversion: mode: remote` in the
+  # overlay (Phase 3); the runtime image then needs no ffmpeg or poppler.
+  #
+  # The workers sit on an internal network with the runtime only: they reach
+  # its worker endpoint (port 7788) and nothing else, not the internet, not
+  # the runtime's API, not your datasets. A file reaches them only as bytes.
+  # Keep the worker image on the runtime's release.
+  conversion-worker:
+    image: denngubsky/loomcycle-worker:1.153.0
+    restart: unless-stopped
+    depends_on:
+      loomcycle:
+        condition: service_started
+    env_file:
+      # ONLY LOOMCYCLE_WORKER_TOKEN; never the main secrets file.
+      - /mnt/tank/loomcycle/config/loomcycle.worker.env
+    environment:
+      LOOMCYCLE_WORKER_DISPATCHER: loomcycle:7788
+      # Plain gRPC, acceptable because the workers network is internal.
+      LOOMCYCLE_WORKER_INSECURE: "1"
+    deploy:
+      # If your TrueNAS version refuses replicas, copy this service as
+      # conversion-worker-1 and conversion-worker-2 instead.
+      replicas: 2
+    mem_limit: 1g
+    read_only: true
+    tmpfs:
+      - /scratch:size=1g,mode=0700,uid=65532,gid=65532
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [workers]
+
+networks:
+  workers:
+    internal: true

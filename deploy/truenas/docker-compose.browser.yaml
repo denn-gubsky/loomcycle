@@ -46,6 +46,9 @@
 #          Kept SEPARATE so the sidecar + the Chromium container never see the PG DSN
 #          or provider keys — they get only these two tokens. loomcycle reads BOTH
 #          files; the sidecar and pinchtab read only sandbox.secrets.env.
+#      And a THIRD for the conversion workers (INSTALL.md "Conversion workers"):
+#        • loomcycle.worker.env   — ONLY LOOMCYCLE_WORKER_TOKEN=<openssl rand -hex 32>;
+#          put the same line in loomcycle.secrets.env too (the runtime checks it).
 #   5. Fill the placeholders (TRUENAS_HOST, OLLAMA_HOST, the pool) and paste.
 
 name: loomcycle
@@ -65,12 +68,16 @@ networks:
   loom-dev:
     name: loom-dev
     driver: bridge
+  # The conversion workers' network: internal, shared with the runtime only, so a
+  # worker reaches the runtime's worker endpoint (7788) and nothing else.
+  workers:
+    internal: true
 
 services:
   # One-shot schema migration: runs `loomcycle migrate up`, then exits; the runtime
   # waits for it. The browser image carries the loomcycle binary, so it runs migrate too.
   loomcycle-migrate:
-    image: denngubsky/loomcycle-browser:1.147.0   # keep in lockstep with the runtime
+    image: denngubsky/loomcycle-browser:1.153.0   # keep in lockstep with the runtime
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
@@ -80,10 +87,10 @@ services:
       - /mnt/tank/loomcycle/config/loomcycle.secrets.env
 
   loomcycle:
-    image: denngubsky/loomcycle-browser:1.147.0
+    image: denngubsky/loomcycle-browser:1.153.0
     user: "65532:65532"
     restart: unless-stopped
-    networks: [loomnet]
+    networks: [loomnet, workers]
     depends_on:
       loomcycle-migrate:
         condition: service_completed_successfully
@@ -91,6 +98,7 @@ services:
         condition: service_healthy
     ports:
       # App-network port. Front with your tunnel/proxy — no public bind here.
+      # Never publish 7788 (the conversion worker endpoint).
       - "8787:8787"
     env_file:
       # Main secrets (tokens, PG DSNs, provider keys) + the sandbox-stack tokens.
@@ -149,7 +157,7 @@ services:
   # Lockstep-versioned with the runtime and published MULTI-ARCH by the
   # `publish-sandbox-images` workflow — pull it, don't hand-build a single-arch image.
   builder-sidecar:
-    image: denngubsky/loomcycle-builder-docker:1.147.0
+    image: denngubsky/loomcycle-builder-docker:1.153.0
     restart: unless-stopped
     networks: [loomnet]
     env_file:
@@ -157,7 +165,7 @@ services:
       - /mnt/tank/loomcycle/config/sandbox.secrets.env
     environment:
       SANDBOX_PODMAN_BIN: docker            # launch sessions as host-Docker siblings
-      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:1.147.0   # the per-session toolchain (host pulls it)
+      SANDBOX_IMAGE: denngubsky/loomcycle-sandbox-session:1.153.0   # the per-session toolchain (host pulls it)
       SANDBOX_WORKSPACE_ROOT: /mnt/work     # per-session /work is tmpfs; durable named
                                             # workspaces need this HOST path (see below)
       SANDBOX_MAX_CPUS: "2"
@@ -198,3 +206,31 @@ services:
       - no-new-privileges:true
     cap_drop: [ALL]
     mem_limit: 2g
+
+  # ── Conversion workers (RFC GO, docs/WORKERS.md) ──────────────────────────────
+  # Every file conversion runs here, not in the runtime (the distroless browser
+  # image has no ffmpeg or poppler): text extraction, OCR page rendering, voice-note
+  # conversion and spoken-reply encoding, image re-encoding. A file that exhausts a
+  # worker's memory kills that worker, which restarts; every other run goes on.
+  # Needs `conversion: mode: remote` in the overlay. Internal network only: no
+  # internet, no runtime API, no datasets; a file reaches a worker only as bytes.
+  conversion-worker:
+    image: denngubsky/loomcycle-worker:1.153.0
+    restart: unless-stopped
+    depends_on:
+      loomcycle:
+        condition: service_started
+    env_file:
+      - /mnt/tank/loomcycle/config/loomcycle.worker.env   # ONLY LOOMCYCLE_WORKER_TOKEN
+    environment:
+      LOOMCYCLE_WORKER_DISPATCHER: loomcycle:7788
+      LOOMCYCLE_WORKER_INSECURE: "1"   # plain gRPC on the internal workers network
+    deploy:
+      replicas: 2   # refused by your TrueNAS? copy the service as -1 and -2 instead
+    mem_limit: 1g
+    read_only: true
+    tmpfs:
+      - /scratch:size=1g,mode=0700,uid=65532,gid=65532
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [workers]

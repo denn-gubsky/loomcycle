@@ -48,3 +48,12 @@ mcp_servers:
     transport: stdio
     command: /usr/local/bin/pinchtab
     args: ["--server", "http://pinchtab:9867", "mcp"]
+
+# Conversion workers (RFC GO): every file conversion goes to the
+# conversion-worker containers of the compose, which attach to this endpoint
+# over the internal `workers` network. Never publish 7788. Delete the block
+# (and the conversion-worker service) to convert inside the runtime instead.
+conversion:
+  mode: remote
+  listen: 0.0.0.0:7788   # reachable only on the internal workers network
+  insecure: true         # plain gRPC, acceptable because that network is internal

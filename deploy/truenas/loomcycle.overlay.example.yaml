@@ -32,6 +32,15 @@ volumes:
   #   path: /mnt/reference
   #   mode: ro
 
+# Conversion workers (RFC GO): every file conversion goes to the
+# conversion-worker containers of the compose, which attach to this endpoint
+# over the internal `workers` network. Never publish 7788. Delete the block
+# (and the conversion-worker service) to convert inside the runtime instead.
+conversion:
+  mode: remote
+  listen: 0.0.0.0:7788   # reachable only on the internal workers network
+  insecure: true         # plain gRPC, acceptable because that network is internal
+
 # Process metrics sampler: CPU and memory samples while runs are active
 # (GET /v1/_metrics/*, the Web UI's activity page), with the host's own CPU
 # and memory beside them. Delete the block to turn it off.

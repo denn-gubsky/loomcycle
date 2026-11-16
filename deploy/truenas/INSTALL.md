@@ -11,12 +11,12 @@ you use local models), and fill the `CHANGE_ME` / `PASTE_…` placeholders throu
 never in the YAML you paste into the TrueNAS UI.**
 
 > **Image choice.** This walkthrough enables in-container code execution, so it uses
-> the **`denngubsky/loomcycle-toolbox:1.147.0`** image — a dev toolchain (python / go /
+> the **`denngubsky/loomcycle-toolbox:1.153.0`** image — a dev toolchain (python / go /
 > rust / c++ / node + git/gh/curl/jq/rsync/wget/unzip/sqlite3) on a shell-bearing base.
 > Code runs in loomcycle's OWN container, so this is a **single-tenant / trusted**
 > posture ([`../../docs/TOOLBOX_IMAGE.md`](../../docs/TOOLBOX_IMAGE.md)). For a
 > locked-down / multi-tenant deploy, use the secure distroless
-> **`denngubsky/loomcycle:1.147.0`** instead and DELETE the "code execution" env block
+> **`denngubsky/loomcycle:1.153.0`** instead and DELETE the "code execution" env block
 > in Phase 5 (its shell tools have no shell/toolchain in distroless); for ISOLATED
 > untrusted code, keep distroless and add the builder sidecar
 > ([`../../docs/SANDBOX.md`](../../docs/SANDBOX.md)). Either way pin **≥ v1.6.0** — the
@@ -25,7 +25,7 @@ never in the YAML you paste into the TrueNAS UI.**
 >
 > **Registry.** Every loomcycle image is published to Docker Hub *and* to
 > `ghcr.io/denn-gubsky/…` (same build, same digest). If a pull fails with
-> `toomanyrequests`, swap the prefix — `ghcr.io/denn-gubsky/loomcycle-toolbox:1.147.0`
+> `toomanyrequests`, swap the prefix — `ghcr.io/denn-gubsky/loomcycle-toolbox:1.153.0`
 > — everywhere in the YAML below. See "Docker Hub rate limits" in Troubleshooting;
 > TrueNAS is unusually exposed to this because it re-checks every installed app for
 > image updates on a timer, and each check spends from the same anonymous quota.
@@ -105,6 +105,11 @@ providers:
   ollama-local:
     options:
       num_gpu: 99         # force GPU offload; leave out to let Ollama decide
+
+conversion:               # file conversion in the worker containers (Phase 5)
+  mode: remote
+  listen: 0.0.0.0:7788    # reachable only on the internal workers network
+  insecure: true          # plain gRPC, acceptable because that network is internal
 ```
 
 ## Phase 4 — Secrets & the secure env file
@@ -115,6 +120,7 @@ tokens:
 ```sh
 openssl rand -hex 32   # → LOOMCYCLE_AUTH_TOKEN (Web UI + API bearer)
 openssl rand -hex 32   # → LOOMCYCLE_OPERATOR_TOKEN_PEPPER (hardens minted token hashes)
+openssl rand -hex 32   # → LOOMCYCLE_WORKER_TOKEN (the conversion workers present it)
 ```
 
 Then write **all** secrets — the two tokens, the Postgres DSNs (they embed the DB
@@ -139,6 +145,7 @@ cat > /mnt/APPS2/loomcycle/config/loomcycle.secrets.env <<'EOF'
 # Write the host + password out in full (e.g. @truenas.local, not @${PG_HOST}).
 LOOMCYCLE_AUTH_TOKEN=PASTE_TOKEN_FROM_ABOVE
 LOOMCYCLE_OPERATOR_TOKEN_PEPPER=PASTE_PEPPER_FROM_ABOVE
+LOOMCYCLE_WORKER_TOKEN=PASTE_WORKER_TOKEN_FROM_ABOVE
 LOOMCYCLE_PG_DSN=postgres://loomcycle:CHANGE_ME_STRONG@PG_HOST:5432/loomcycle?sslmode=disable
 LOOMCYCLE_SQLMEM_PG_DSN=postgres://loomcycle:CHANGE_ME_STRONG@PG_HOST:5432/loomcycle_sqlmem?sslmode=disable
 ANTHROPIC_API_KEY=PASTE_PROVIDER_KEY
@@ -149,6 +156,19 @@ BRAVE_API_KEY=PASTE_BRAVE_API_KEY
 EOF
 chmod 600 /mnt/APPS2/loomcycle/config/loomcycle.secrets.env
 ```
+
+The conversion workers get a second file holding **only** the worker token, so
+they never see the Postgres DSNs or your provider keys:
+
+```sh
+cat > /mnt/APPS2/loomcycle/config/loomcycle.worker.env <<'EOF'
+LOOMCYCLE_WORKER_TOKEN=PASTE_WORKER_TOKEN_FROM_ABOVE
+EOF
+chmod 600 /mnt/APPS2/loomcycle/config/loomcycle.worker.env
+```
+
+The same value goes in both files: the runtime refuses a worker whose token
+differs, and refuses to start the endpoint without one of at least 32 characters.
 
 Notes:
 
@@ -180,21 +200,22 @@ Notes:
 name: loomcycle
 services:
   loomcycle-migrate:
-    image: denngubsky/loomcycle-toolbox:1.147.0
+    image: denngubsky/loomcycle-toolbox:1.153.0
     user: "65532:65532"
     restart: "no"
     command: ["migrate", "up"]
     env_file:
       - /mnt/APPS2/loomcycle/config/loomcycle.secrets.env   # PG DSNs come from here
   loomcycle:
-    image: denngubsky/loomcycle-toolbox:1.147.0
+    image: denngubsky/loomcycle-toolbox:1.153.0
     user: "65532:65532"
     restart: unless-stopped
     depends_on:
       loomcycle-migrate:
         condition: service_completed_successfully
     ports:
-      - "8787:8787"
+      - "8787:8787"                 # never publish 7788 (the worker endpoint)
+    networks: [default, workers]    # default: Postgres, Ollama, your proxy; workers: below
     env_file:
       - /mnt/APPS2/loomcycle/config/loomcycle.secrets.env   # tokens, DSNs, provider keys
     environment:
@@ -261,6 +282,29 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+  conversion-worker:                # file conversion, out of the runtime (see "Conversion workers")
+    image: denngubsky/loomcycle-worker:1.153.0   # same release as the runtime
+    restart: unless-stopped
+    depends_on:
+      loomcycle:
+        condition: service_started
+    env_file:
+      - /mnt/APPS2/loomcycle/config/loomcycle.worker.env    # ONLY LOOMCYCLE_WORKER_TOKEN
+    environment:
+      LOOMCYCLE_WORKER_DISPATCHER: loomcycle:7788
+      LOOMCYCLE_WORKER_INSECURE: "1"
+    deploy:
+      replicas: 2                   # refused by your TrueNAS? copy the service as -1 and -2
+    mem_limit: 1g
+    read_only: true
+    tmpfs:
+      - /scratch:size=1g,mode=0700,uid=65532,gid=65532
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [workers]
+networks:
+  workers:
+    internal: true                  # workers reach the runtime's 7788 and nothing else
 ```
 
 > **Secrets vs. env precedence.** Both services pull secrets from the same
@@ -279,6 +323,15 @@ services:
    → super-admin.
 4. **Mint a tenant token** (no shell): the left menu → **Access → Tokens** →
    Generate (name, tenant, `substrate:tenant`) → copy the once-shown secret.
+5. **Conversion workers**: both are attached.
+   ```sh
+   curl -s -H "Authorization: Bearer <LOOMCYCLE_AUTH_TOKEN>" http://<truenas>:8787/metrics \
+     | grep -E 'conversion_(workers|worker_respawns|jobs_total)'
+   ```
+   Expect `loomcycle_conversion_workers 2` and
+   `loomcycle_conversion_worker_respawns_total 0` (in remote mode the runtime starts
+   no workers of its own). After an agent reads a file,
+   `loomcycle_conversion_jobs_total{kind="extract",outcome="ok"}` counts it.
 
 ## Phase 7 — Ingress (Cloudflare Tunnel)
 
@@ -295,7 +348,14 @@ internal address and gate it behind Cloudflare Access:
 
 Bump the image tag → new binary → refreshed embedded presets automatically; your env
 + overlay persist. If the new version bumped the Postgres schema, the
-`loomcycle-migrate` step re-runs `migrate up` on redeploy.
+`loomcycle-migrate` step re-runs `migrate up` on redeploy. Bump all three tags
+together: `loomcycle-migrate`, `loomcycle` and `conversion-worker`.
+
+An install made before the conversion workers (a compose with no `conversion-worker`
+service) keeps converting inside the runtime. To move it onto workers, add the
+worker token and `loomcycle.worker.env` (Phase 4), the `conversion:` block (Phase 3),
+and the runtime's `networks:` line, the `conversion-worker` service and the `workers`
+network (Phase 5), then redeploy and check Phase 6 step 5.
 
 Operator tokens minted with no pepper (by a release before v1.119.0, or while
 `LOOMCYCLE_SECRET_KEY` was unset) are refused until rewrapped, and the boot log names
@@ -483,7 +543,7 @@ The deltas from the base install:
 4. **Host Docker socket** — the sidecar spawns sessions as host-Docker siblings, so it
    bind-mounts `/var/run/docker.sock` (a privileged grant; keep the box trusted). The
    `loom-dev` network is created automatically when the app comes up. The session image
-   `denngubsky/loomcycle-sandbox-session:1.147.0` is pulled by the **host** Docker on
+   `denngubsky/loomcycle-sandbox-session:1.153.0` is pulled by the **host** Docker on
    first session (public — no login needed).
 5. **PinchTab allowlist** — PinchTab browses **local-only** until you widen its IDPI
    allowlist; add each expose alias, then restart the sidecar:
@@ -497,17 +557,40 @@ The deltas from the base install:
 
 Verify end-to-end: spawn `dev/exec` with `{"expose":"devsrv","commands":["nohup python3 -m http.server 8080 &","sleep 1"],"browser":[{"op":"navigate","args":{"url":"http://devsrv:8080/"}},{"op":"get_text"}]}` — the reply should carry `reachable at http://devsrv:<port>` and the fetched page text.
 
-## Conversion workers (optional)
+## Conversion workers
 
-File extraction, OCR page rendering, speech conversion and image re-encoding run inside the runtime by default, so one hostile or oversized file can exhaust the app's memory. Two ways to move them out (RFC GO, [docs/WORKERS.md](../../docs/WORKERS.md)):
+Every file conversion runs in the `conversion-worker` containers (RFC GO,
+[docs/WORKERS.md](../../docs/WORKERS.md)): text extraction, OCR page rendering
+(`pdftoppm`), voice-note conversion and spoken-reply encoding (`ffmpeg`), and image
+re-encoding. One hostile or oversized file then exhausts a worker's 1 GiB, not the
+app's memory: that worker dies and restarts, the runtime answers that one call
+with an error and refuses the file for an hour, and every other run goes on. The
+runtime's image needs no ffmpeg or poppler, so any of the runtime images works.
 
-- **Children of the runtime**: add `conversion: { mode: local }` to the config overlay. Nothing else changes; the runtime starts and restarts the workers itself. The helper programs (ffmpeg, pdftoppm) must still be in the runtime's image.
-- **Worker containers**: add `conversion: { mode: remote, listen: "0.0.0.0:7788", insecure: true }` to the overlay (or `tls:` with a certificate in place of `insecure`; see the guide), put `LOOMCYCLE_WORKER_TOKEN=<openssl rand -hex 32>` in the secure env file, and add `worker` services from [`deploy/workers/docker-compose.yaml`](../workers/docker-compose.yaml) to the app's compose, on a network shared with the runtime only. Each worker gets a memory limit, a read-only root and a tmpfs at `/scratch`, and mounts no dataset. Do not publish port 7788.
+- **Isolation.** The workers are on the internal `workers` network with the runtime
+  only: no internet, no access to the runtime's API, no dataset mounted. A file
+  reaches a worker only as bytes over the worker endpoint (port 7788), which is
+  never published.
+- **Token.** `LOOMCYCLE_WORKER_TOKEN` in both env files (Phase 4), the same value.
+- **Releases.** Keep the worker image on the runtime's release; bump both together
+  in Phase 8.
+- **More or bigger workers.** Raise `replicas`, or `mem_limit` for very large
+  Office files. `LOOMCYCLE_WORKER_SLOTS` (default 1) runs more jobs per worker,
+  but a crash then fails all of them.
+- **Without workers.** Delete the overlay's `conversion:` block, the
+  `conversion-worker` service, the `workers` network and the runtime's `networks:`
+  line. Conversion then runs inside the runtime, and voice-note conversion and OCR
+  page rendering need `ffmpeg` and `pdftoppm` in the runtime's own image.
+- **Workers on another host.** Use TLS instead of the internal network; see
+  docs/WORKERS.md (`conversion.tls`, `LOOMCYCLE_WORKER_TLS_CA`).
 
 ## Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
+| `loomcycle_conversion_workers 0`, and the worker logs repeat a failed or refused attach | The token differs between `loomcycle.secrets.env` and `loomcycle.worker.env`, the overlay lacks `conversion: mode: remote`, or the runtime is not on the `workers` network. Fix it and redeploy the app. |
+| The runtime crash-loops naming `conversion.listen` | The endpoint is set to the app's own port (8787), or off the loopback without `insecure: true` or `tls:`. Use `0.0.0.0:7788` with `insecure: true` on the internal network. |
+| A file is refused because it crashed the converter | Converting it killed a worker (usually memory), so it is refused for an hour rather than take the next worker down. Raise the workers' `mem_limit` if the file is legitimate. |
 | `no config found` at boot | Image predates RFC AQ — pin `denngubsky/loomcycle:1.6.0` or newer. |
 | Crash-loop ending `auth: refusing to start in open mode on LOOMCYCLE_LISTEN_ADDR=0.0.0.0:8787` | No `LOOMCYCLE_AUTH_TOKEN` reached the container, so the server would serve every route unauthenticated on the LAN, and it refuses to. The `env_file` didn't load or lacks the token (Phase 4) — fix that; don't set `LOOMCYCLE_ALLOW_OPEN_MODE`. |
 | (browser) pinchtab crash-loops `mkdir: can't create directory '/data/.config': Permission denied` | `pinchtab-data` dataset not owned by 1000 — `chown -R 1000:1000 /mnt/APPS2/loomcycle/pinchtab-data`. |
