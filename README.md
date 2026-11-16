@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.155) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.156) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,17 +212,17 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.155.0) renders a Document back into a file:
-`File op=render` writes Markdown, HTML, Word or PDF (typeset by Typst in the
-conversion worker), and a render log records each one. It also adds
-`kb/survey`, a knowledge-base agent that answers "what do we hold on X" by
-gathering candidates in code and having a model sort them, and lets a tenant
-run a shared team by name. Read the upgrade notes in
+The most recent line (v1.156.0) lets people download a Document as a file:
+a download menu on the document toolbar (PDF, Word, HTML, Markdown, Canvas),
+`GET /v1/_document/export/{id}`, the TS client's `exportDocument` and MCP
+`file op=render` without a run. Teams declared in the yaml are written into
+the shared tier at boot and are changed only there, and an explicit token
+pepper becomes legacy so it can be retired. Read the upgrade notes in
 [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.154.0 moved file conversion out of the runtime's process by
-default on Linux, into worker processes or `loomcycle-worker` containers, and
-retired `loomcycle-media`.
+Before it, v1.155.0 rendered a Document back into a file: `File op=render`
+writes Markdown, HTML, Word or PDF (typeset by Typst in the conversion
+worker), with a render log per document, and added `kb/survey`.
 
 Before that, v1.153.0 gave every setting one place: 150 environment variables
 are no longer read. Read its upgrade notes and
