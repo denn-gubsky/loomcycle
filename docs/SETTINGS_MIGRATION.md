@@ -421,7 +421,7 @@ The preset still puts the OAuth provider first in the provider priority and its 
 3. A token nobody uses (a service token that runs rarely): use it once, or re-mint it.
 4. When the boot log reports no row left under it, remove `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`. A later release removes the variable and refuses to start while it is set.
 
-Rolling back to an earlier release after step 2 logs out every token that has moved; plan it as a re-mint.
+Do not run old and new replicas side by side, and do not roll back once tokens have moved. An earlier release refuses every moved token and, with no admin token it can read, accepts `LOOMCYCLE_AUTH_TOKEN` as admin again. If a rollback is unavoidable, rotate or unset `LOOMCYCLE_AUTH_TOKEN` first and plan to re-mint. A row the count keeps listing after its token was used is an unpeppered one that can never move: retire it if you did not mint it.
 
 ## 5. Step by step, by area
 

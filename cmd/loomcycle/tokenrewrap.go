@@ -40,7 +40,7 @@ func logTokenHashes(rep lchttp.TokenHashReport, pepperFingerprint string) {
 			slog.Warn("auth: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is set but no live token row is left under it: remove it from the environment", args...)
 			return
 		}
-		slog.Warn("auth: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy: new tokens use the pepper derived from LOOMCYCLE_SECRET_KEY, and each token row still under the old pepper moves onto it at its next login. Remove the variable once this count reaches 0; a token not used by then must be re-minted.", args...)
+		slog.Warn("auth: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy: new tokens use the pepper derived from LOOMCYCLE_SECRET_KEY, and each token row still under the old pepper moves onto it at its next login. Remove the variable once this count reaches 0; a token not used by then must be re-minted. A row that stays listed after its token logged in is unpeppered and can never move: retire it if nobody minted it. Do not run an older release beside this one or roll back to it: it refuses moved tokens and may accept LOOMCYCLE_AUTH_TOKEN as admin again.", args...)
 		if rep.UntaggedDead > 0 {
 			slog.Info("auth: retired or expired token rows carry an untagged hash; they can never log in", "rows", rep.UntaggedDead)
 		}
