@@ -650,6 +650,11 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 			return errResult(err.Error()), nil
 		}
 	}
+	// Last before the write: it records an operator's lift of a local
+	// agent's no-trace mode, which localAgentIssues has already admitted.
+	if err := t.recordLocalAgentLockLifts(ctx, "create", tenantID, in.Name, def); err != nil {
+		return errResult(err.Error()), nil
+	}
 	created, err := t.Store.TeamDefCreate(ctx, row)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
@@ -745,6 +750,11 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 		if err := t.memberTeamActivationGuard(ctx, "fork", tenantID, in.Name); err != nil {
 			return errResult(err.Error()), nil
 		}
+	}
+	// Last before the write: it records an operator's lift of a local
+	// agent's no-trace mode, which localAgentIssues has already admitted.
+	if err := t.recordLocalAgentLockLifts(ctx, "fork", tenantID, in.Name, def); err != nil {
+		return errResult(err.Error()), nil
 	}
 	created, err := t.Store.TeamDefCreate(ctx, row)
 	if err != nil {
@@ -988,6 +998,13 @@ func (t *TeamDef) execPromote(ctx context.Context, in teamDefInput) (tools.Resul
 	ident := tools.RunIdentity(ctx)
 	if err := t.memberTeamActivationGuard(ctx, "promote", ident.TenantID, row.Name); err != nil {
 		return errResult(err.Error()), nil
+	}
+	// An older version may declare its own agents without the locks a later
+	// one put on them. One that does not parse cannot run and is not judged.
+	if def, err := teamgraph.Parse(row.Definition); err == nil {
+		if err := t.recordLocalAgentLockLifts(ctx, "promote", ident.TenantID, row.Name, def); err != nil {
+			return errResult(err.Error()), nil
+		}
 	}
 	if err := t.Store.TeamDefSetActive(ctx, ident.TenantID, row.Name, row.DefID, ident.AgentID, t.promoter(ctx)); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil

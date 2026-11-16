@@ -120,6 +120,17 @@ func (t *TeamDef) localAgentIssues(ctx context.Context, op, team string, def tea
 			refuse(teamIssueLocalAgentInvalid, "", fmt.Sprintf("%s: %v", where, err))
 			continue
 		}
+		// The locks the team's earlier versions hold on this agent: gateNewDef
+		// sees no lineage, and a fork replaces local.agents wholesale. Judged
+		// in the form a run reads (LocalAgentDefinition), as the lineage is.
+		stored, err := localAgentMergedDef(def.Local.Agents[name])
+		if err == nil {
+			_, err = t.localAgentLockActions(ctx, op, tenantID, team, name, stored)
+		}
+		if err != nil {
+			refuse(teamIssueLocalAgentInvalid, "", fmt.Sprintf("%s: %v", where, err))
+			continue
+		}
 		if merged.Provider == codeJSProvider && merged.Code == "" {
 			refuse(teamIssueLocalAgentInvalid, ".code_body", fmt.Sprintf("%s: a team's own code-js agent must carry its source inline as code_body — "+
 				"there is no agent_code directory for it", where))
