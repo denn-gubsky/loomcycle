@@ -13,14 +13,32 @@ func pepperTestKey(b byte) string {
 	return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32))
 }
 
-func TestEnvTokenHasher_ExplicitPepperWinsOverTheSecretKey(t *testing.T) {
+// RFC GN: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy. Beside a secret key it
+// is kept for lookups only; new hashes use the derived pepper.
+func TestEnvTokenHasher_ExplicitPepperBesideTheSecretKeyIsLegacy(t *testing.T) {
 	e := &Env{OperatorTokenPepper: "pep", SecretKey: pepperTestKey(1)}
 	h, err := e.TokenHasher()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Source() != auth.PepperExplicit || h.Hash("lct_x") != auth.HashToken("pep", "lct_x") {
-		t.Errorf("source=%q: the explicit pepper must be used unchanged", h.Source())
+	cur, _ := credential.DeriveTokenPepper(pepperTestKey(1))
+	if h.Source() != auth.PepperDerived || h.Hash("lct_x") != auth.NewTokenHasher("", cur, "").Hash("lct_x") {
+		t.Fatalf("source=%q: new hashes must use the pepper derived from LOOMCYCLE_SECRET_KEY", h.Source())
+	}
+	if !h.HasLegacy() || h.LegacyHash("lct_x") != auth.HashToken("pep", "lct_x") {
+		t.Errorf("the explicit pepper must stay usable for lookups of its own rows")
+	}
+}
+
+// Alone, the explicit pepper hashes exactly as before, so an instance with no
+// secret key keeps its tokens.
+func TestEnvTokenHasher_ExplicitPepperAloneIsUnchanged(t *testing.T) {
+	h, err := (&Env{OperatorTokenPepper: "pep"}).TokenHasher()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Source() != auth.PepperExplicit || h.Hash("lct_x") != auth.HashToken("pep", "lct_x") || h.HasLegacy() {
+		t.Errorf("source=%q: the explicit pepper alone must be used unchanged", h.Source())
 	}
 }
 

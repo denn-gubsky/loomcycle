@@ -29,6 +29,13 @@ var ticketTestSecretKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{
 
 // enableTickets turns on the client-tool host and the ticket key.
 func enableTickets(s *Server) *clienttools.Registry {
+	// Fix the token hasher first, as boot does: with no hasher fixed it is
+	// built from the env on each call, and setting a secret key beside the
+	// fixture's explicit pepper would switch it to the derived pepper (the
+	// legacy-pepper rule), ending the session the fixture already made.
+	if h, err := s.hasher(); err == nil {
+		s.SetTokenHasher(h)
+	}
 	s.cfg().Env.SecretKey = ticketTestSecretKey
 	reg := clienttools.NewRegistry(0)
 	s.clientTools = reg
@@ -215,6 +222,10 @@ func TestClientToolsTicket_ExpiredTicketRefused(t *testing.T) {
 func TestClientToolsTicket_SpentOnOneReplicaRefusedOnAnother(t *testing.T) {
 	f, _, ts1, at := strictAppFixture(t)
 	s2 := &Server{cfgHolder: f.s.cfgHolder, store: f.st, tokenAudit: f.sink, clientTools: clienttools.NewRegistry(0)}
+	// Replicas share one hasher, as each boot builds the same one.
+	if h, err := f.s.hasher(); err == nil {
+		s2.SetTokenHasher(h)
+	}
 	mux2 := http.NewServeMux()
 	mux2.Handle("GET /v1/client-tools", s2.authMiddleware(http.HandlerFunc(s2.handleClientTools)))
 	ts2 := httptest.NewServer(mux2)

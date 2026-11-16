@@ -108,7 +108,7 @@ func (s *Server) credentialExpiry(r *http.Request) time.Time {
 	if err != nil {
 		return time.Time{}
 	}
-	row, err := s.store.OperatorTokenDefGetByTokenHash(r.Context(), h.Hash(bearer))
+	row, err := s.tokenRowByBearer(r.Context(), h, bearer)
 	if err != nil || (row.ExpiresAt.IsZero() && row.RetiredAt.IsZero()) {
 		return time.Time{}
 	}

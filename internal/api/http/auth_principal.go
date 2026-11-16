@@ -725,7 +725,7 @@ func (s *Server) resolvePrincipalUncached(ctx context.Context, h auth.TokenHashe
 	negativeCacheable := true
 	if s.store != nil {
 		row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, hash)
-		if isNotFound(err) && (s.wrappedTokens.Load() || h.HasPrevious()) {
+		if isNotFound(err) && (s.wrappedTokens.Load() || h.HasPrevious() || h.HasLegacy()) {
 			row, err = s.lookupOlderTokenForm(ctx, h, bearer, hash, err)
 			negativeCacheable = false
 		}

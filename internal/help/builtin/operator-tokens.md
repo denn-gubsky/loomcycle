@@ -316,12 +316,16 @@ re-displayed). Now distribute per-principal tokens at your own pace.
 
 ## Configuration
 
-- `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` — mixed into the token hash, so a
-  database writer cannot insert a row for a token of their choosing.
-  Optional: unset, a pepper is derived from `LOOMCYCLE_SECRET_KEY`; with
-  neither, tokens are hashed with no pepper and the server warns at boot.
-  Changing an explicit pepper invalidates every token (env-allowlisted,
-  never logged).
+- The token pepper, mixed into the token hash so a database writer cannot
+  insert a row for a token of their choosing, is derived from
+  `LOOMCYCLE_SECRET_KEY`; with no key, tokens are hashed with no pepper and
+  the server warns at boot.
+- `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` is legacy; don't set it on a new
+  deployment. Beside `LOOMCYCLE_SECRET_KEY`, it only lets the tokens it
+  hashed log in, and each moves onto the derived pepper at its next login;
+  the boot log counts the rows left under it, and the variable can go at 0
+  (re-mint a token not used by then). Alone, it hashes as before, with a
+  boot warning. Never logged.
 - Tokens minted before a pepper existed carry an unpeppered hash. Under a
   derived pepper they are refused at login, and the boot log names them by
   def_id, until the operator moves them onto the pepper with

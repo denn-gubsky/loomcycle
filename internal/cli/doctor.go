@@ -505,8 +505,12 @@ func checkTokenPepper(r *doctorRun, cfg configForDoctor, authOn bool) {
 	}
 	switch h.Source() {
 	case auth.PepperExplicit:
-		r.pass(label, "LOOMCYCLE_OPERATOR_TOKEN_PEPPER set")
+		r.warn(label, "LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy and will be removed; set LOOMCYCLE_SECRET_KEY beside it, and its tokens move onto the derived pepper at their next login")
 	case auth.PepperDerived:
+		if h.HasLegacy() {
+			r.warn(label, "derived from LOOMCYCLE_SECRET_KEY; LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy, kept only so its tokens log in and move onto the derived pepper. Remove it once the server's boot log reports no row left under it")
+			return
+		}
 		r.pass(label, "derived from LOOMCYCLE_SECRET_KEY; tokens minted before it log in only once reviewed and rewrapped with `loomcycle tokens rewrap`")
 	default:
 		if authOn {

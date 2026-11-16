@@ -149,8 +149,9 @@ func TestDoctor_AllPass(t *testing.T) {
 		backend:   "sqlite",
 		dataDir:   tmp,
 		listen:    freePort(t),
-		// With auth on, an all-pass setup has a token pepper.
-		tokenEnv: config.Env{OperatorTokenPepper: "pep"},
+		// With auth on, an all-pass setup has a token pepper, derived from
+		// the secret key (an explicit pepper is legacy and warns).
+		tokenEnv: config.Env{SecretKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="},
 	})
 	withEnv(t, "LOOMCYCLE_AUTH_TOKEN", "secret-token-value")
 	withEnv(t, "ANTHROPIC_API_KEY", "sk-ant-test")
@@ -578,7 +579,8 @@ func TestCheckTokenPepper_ReportsTheSourceAndWarnsOnNoneWithAuth(t *testing.T) {
 		authSet  bool
 		wantLine string
 	}{
-		{"explicit", config.Env{OperatorTokenPepper: "p"}, true, "PASS"},
+		{"explicit alone is legacy", config.Env{OperatorTokenPepper: "p"}, true, "WARN"},
+		{"explicit beside the key is legacy", config.Env{OperatorTokenPepper: "p", SecretKey: key}, true, "Remove it once"},
 		{"derived", config.Env{SecretKey: key}, true, "loomcycle tokens rewrap"},
 		{"none with auth", config.Env{}, true, "WARN"},
 		{"none without auth", config.Env{}, false, "no auth configured"},

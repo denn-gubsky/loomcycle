@@ -237,3 +237,82 @@ func TestTokenLookup_NegativeAfterOlderFormLookupIsNotCached(t *testing.T) {
 		t.Error("a refusal that went through the older-form lookups was cached")
 	}
 }
+
+// RFC GN: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy. Set beside
+// LOOMCYCLE_SECRET_KEY, a token its pepper hashed still logs in, and that login
+// moves the row onto the derived pepper, so the variable can then go.
+func TestTokenLookup_LegacyPepperRowLogsInAndMovesOntoTheDerivedPepper(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1), OperatorTokenPepper: "pep"}
+	s, st := derivedPepperServer(t, env)
+	seedTokenHash(t, st, "def_00000000000000e0", auth.HashToken("pep", "lct_old"))
+	bootTokenHashes(t, s)
+
+	p, ok := s.resolvePrincipal(context.Background(), "lct_old")
+	if !ok || p.TokenDefID != "def_00000000000000e0" {
+		t.Fatalf("token hashed under the legacy pepper refused: ok=%v", ok)
+	}
+	derivedOnly := config.Env{SecretKey: pepperKey(1)}
+	if got, want := storedHash(t, st, "def_00000000000000e0"), hasherFor(t, derivedOnly).Hash("lct_old"); got != want {
+		t.Fatalf("row not moved onto the derived pepper: %q, want %q", got, want)
+	}
+
+	// The variable removed: the moved token keeps working.
+	s2, _ := derivedPepperServer(t, derivedOnly)
+	s2.store = st
+	bootTokenHashes(t, s2)
+	if _, ok := s2.resolvePrincipal(context.Background(), "lct_old"); !ok {
+		t.Error("a token moved at login must log in once LOOMCYCLE_OPERATOR_TOKEN_PEPPER is gone")
+	}
+}
+
+// The legacy pepper does not bring back an unpeppered row: the lookup computes
+// the legacy hash from the presented token, and SHA-256(token) is not it.
+func TestTokenLookup_LegacyPepperDoesNotRescueAnUnpepperedRow(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1), OperatorTokenPepper: "pep"}
+	s, st := derivedPepperServer(t, env)
+	seedTokenHash(t, st, "def_00000000000000e1", auth.HashToken("", "lct_bare"))
+	bootTokenHashes(t, s)
+	if _, ok := s.resolvePrincipal(context.Background(), "lct_bare"); ok {
+		t.Fatal("an unpeppered row must stay refused with a legacy pepper set")
+	}
+	if got := storedHash(t, st, "def_00000000000000e1"); got != auth.HashToken("", "lct_bare") {
+		t.Errorf("the unpeppered row was rewritten: %q", got)
+	}
+}
+
+// Boot counts the rows still under the legacy pepper, so the operator knows
+// when the variable can go; the rewrap refuses meanwhile, since wrapping a
+// legacy row as an unpeppered one would end its token.
+func TestReportTokenHashes_CountsRowsLeftUnderTheLegacyPepper(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1), OperatorTokenPepper: "pep"}
+	s, st := derivedPepperServer(t, env)
+	seedTokenHash(t, st, "def_00000000000000e2", auth.HashToken("pep", "lct_left"))
+	seedTokenHash(t, st, "def_00000000000000e3", hasherFor(t, env).Hash("lct_new"))
+	rep, err := s.ReportTokenHashes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.LegacyPepper || len(rep.Untagged) != 1 || rep.Untagged[0] != "def_00000000000000e2" || rep.Current != 1 {
+		t.Errorf("report = %+v, want the legacy pepper flagged, one row left under it and one current", rep)
+	}
+	if _, err := ListUntaggedTokenRows(context.Background(), st, hasherFor(t, env)); err == nil {
+		t.Error("the rewrap review must refuse while LOOMCYCLE_OPERATOR_TOKEN_PEPPER is set")
+	}
+	row, _ := st.OperatorTokenDefGet(context.Background(), "def_00000000000000e2")
+	if _, _, err := RewrapTokenRows(context.Background(), st, hasherFor(t, env), []store.OperatorTokenDefRow{row}); err == nil {
+		t.Error("the rewrap must refuse while LOOMCYCLE_OPERATOR_TOKEN_PEPPER is set")
+	}
+}
+
+// While the legacy pepper is kept, an admin row still under it can log in, so
+// it switches LOOMCYCLE_AUTH_TOKEN off as it did under the explicit pepper:
+// the upgrade must not turn the shared secret back on.
+func TestLegacyFallback_AdminRowUnderTheLegacyPepperKeepsTheSharedSecretOff(t *testing.T) {
+	env := config.Env{SecretKey: pepperKey(1), OperatorTokenPepper: "pep", AuthToken: "legacy-shared-secret"}
+	s, st := derivedPepperServer(t, env)
+	seedAdminTokenHash(t, st, "def_00000000000000e4", auth.HashToken("pep", "lct_admin"))
+	bootTokenHashes(t, s)
+	if _, ok := s.resolvePrincipal(context.Background(), "legacy-shared-secret"); ok {
+		t.Error("an admin token under the legacy pepper left LOOMCYCLE_AUTH_TOKEN enabled")
+	}
+}

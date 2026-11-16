@@ -910,7 +910,7 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 		oauthTokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "")
 		return
 	}
-	row, err := s.store.OperatorTokenDefGetByTokenHash(ctx, h.Hash(tok))
+	row, err := s.tokenRowByBearer(ctx, h, tok)
 	if err != nil && !isNotFound(err) {
 		slog.Error("oauth: reading an access token failed", "err", err)
 		oauthTokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "")

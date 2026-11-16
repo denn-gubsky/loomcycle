@@ -409,6 +409,20 @@ The preset still puts the OAuth provider first in the provider priority and its 
 
 **What to do.** To keep a model, restate its alias in your own config: `models: { oauth-sonnet: { provider: anthropic-oauth-dev, model: claude-sonnet-4-6 } }`. `GET /v1/_routing` and the Web UI's routing page show what each tier resolves to.
 
+### 4.20 After v1.155.0: `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` is legacy
+
+**Who is affected.** A deployment that sets `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`.
+
+**What happens.** With `LOOMCYCLE_SECRET_KEY` also set, the token pepper is now the one derived from the key: new tokens are minted under it, and a token the old pepper hashed still logs in and is moved onto the derived pepper at that login. The boot log counts the live token rows still under the old pepper, by `def_id`. `loomcycle doctor` warns while the variable is set. With no `LOOMCYCLE_SECRET_KEY`, the old pepper still hashes as before, with a boot warning. Web UI sessions end once at the switch; tokens keep working.
+
+**What to do.**
+1. Make sure `LOOMCYCLE_SECRET_KEY` is set, and keep `LOOMCYCLE_OPERATOR_TOKEN_PEPPER` set for now.
+2. Upgrade every replica together, then watch the boot log line `auth: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy: …` across restarts. Each token used once leaves the count.
+3. A token nobody uses (a service token that runs rarely): use it once, or re-mint it.
+4. When the boot log reports no row left under it, remove `LOOMCYCLE_OPERATOR_TOKEN_PEPPER`. A later release removes the variable and refuses to start while it is set.
+
+Do not run old and new replicas side by side, and do not roll back once tokens have moved. An earlier release refuses every moved token and, with no admin token it can read, accepts `LOOMCYCLE_AUTH_TOKEN` as admin again. If a rollback is unavoidable, rotate or unset `LOOMCYCLE_AUTH_TOKEN` first and plan to re-mint. A row the count keeps listing after its token was used is an unpeppered one that can never move: retire it if you did not mint it.
+
 ## 5. Step by step, by area
 
 Each area shows the old environment lines and what replaces them. Every key name is the real one. Values are examples.

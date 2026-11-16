@@ -27,6 +27,25 @@ func logTokenHashes(rep lchttp.TokenHashReport, pepperFingerprint string) {
 		slog.Warn("auth: tokens hashed under a LOOMCYCLE_SECRET_KEY that is neither the current nor the previous one; they will not authenticate (set that key as LOOMCYCLE_SECRET_KEY_PREVIOUS, or re-mint them)",
 			"tokens", rep.OtherKey)
 	}
+	if rep.LegacyPepper {
+		// The rows still under LOOMCYCLE_OPERATOR_TOKEN_PEPPER log in and
+		// move at their next login; the count says when the variable can go.
+		// Listed, like unpeppered rows, so a row nobody minted stands out.
+		shown, more := capIDs(rep.Untagged)
+		args := []any{"rows", len(rep.Untagged), "def_ids", shown}
+		if more > 0 {
+			args = append(args, "more_def_ids", more)
+		}
+		if len(rep.Untagged) == 0 {
+			slog.Warn("auth: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is set but no live token row is left under it: remove it from the environment", args...)
+			return
+		}
+		slog.Warn("auth: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy: new tokens use the pepper derived from LOOMCYCLE_SECRET_KEY, and each token row still under the old pepper moves onto it at its next login. Remove the variable once this count reaches 0; a token not used by then must be re-minted. A row that stays listed after its token logged in is unpeppered and can never move: retire it if nobody minted it. Do not run an older release beside this one or roll back to it: it refuses moved tokens and may accept LOOMCYCLE_AUTH_TOKEN as admin again.", args...)
+		if rep.UntaggedDead > 0 {
+			slog.Info("auth: retired or expired token rows carry an untagged hash; they can never log in", "rows", rep.UntaggedDead)
+		}
+		return
+	}
 	if len(rep.Untagged) > 0 {
 		// An untagged row may also be from an explicit pepper since removed;
 		// the two are indistinguishable, and the rewrap cannot bring that
