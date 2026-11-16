@@ -186,6 +186,9 @@ type Server struct {
 	edgeGates edgeGatesHolder
 	// stsCalls bounds a blocked source's concurrent AWS IAM checks.
 	stsCalls inFlight
+	// checks holds the places of the throttled checks in progress on this
+	// replica (authgate_places.go).
+	checks checkPlaces
 	// userTokenMaxTTL caps a delegated user token's lifetime
 	// (SetUserTokenMaxTTL); zero = no cap.
 	userTokenMaxTTL time.Duration

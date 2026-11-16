@@ -207,7 +207,8 @@ class SnapshotNotFoundError(LoomcycleError):
 
 class SnapshotTooLargeError(LoomcycleError):
     """Raised by ``create_snapshot`` when the serialised envelope
-    exceeds ``LOOMCYCLE_SNAPSHOT_MAX_BYTES`` (default 512 MiB).
+    exceeds the size cap (``max_bytes`` on the request; 512 MiB by
+    default).
     Server returns gRPC ResourceExhausted."""
 
 

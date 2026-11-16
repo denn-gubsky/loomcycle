@@ -2432,7 +2432,7 @@ export class LoomcycleClient {
 
   /** Capture running-state into a per-section-semver JSON envelope.
    *  Raises SnapshotTooLargeError on 413 when the envelope exceeds
-   *  LOOMCYCLE_SNAPSHOT_MAX_BYTES (default 512 MiB). */
+   *  the size cap (`maxBytes`; 512 MiB when unset or 0). */
   async createSnapshot(
     opts?: CreateSnapshotOptions & { signal?: AbortSignal },
   ): Promise<SnapshotCreateResponse> {

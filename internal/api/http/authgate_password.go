@@ -134,6 +134,56 @@ func (pg *PasswordGates) sourceLoginKey(gate, ip, login string) string {
 	return "srclogin:" + gate + ":" + pg.hasher.MAC("throttle-source-login", throttleSourceKey(ip)+"\x00"+login)
 }
 
+// loginTurnKey names the one-at-a-time turn of a gate's login (signInPlaces).
+// It is made from the login as written, normalised, whether or not anyone has
+// that login, and MAC'd like the throttle keys.
+func (pg *PasswordGates) loginTurnKey(gate, login string) string {
+	return "login:" + gate + ":" + pg.hasher.MAC("check-login", login)
+}
+
+// signInPlaces takes the places a password check runs in, waiting for each
+// within one budget (reserveCheck), and returns what gives them back; call
+// leave whatever ok is. The source and the source's count against the login
+// admit what their failures leave room for. The login itself admits one
+// check at a time, from every source, existing or not: a check then sees
+// what the one before it did to the account (a failure counted, a lock set),
+// so sign-ins for one login sent together are checked in turn, and because
+// the turn is the login's and not the account's, a sign-in waits the same
+// way for a login nobody has. A request that cannot have its turn in time is
+// told to wait, as one held back at its source is, and charged nothing.
+func (s *Server) signInPlaces(ctx context.Context, pw *passwordGate, src, srcLogin, turn string) (leave func(), ok bool) {
+	var held []*checkPlace
+	leave = func() {
+		for i := len(held) - 1; i >= 0; i-- {
+			held[i].leave()
+		}
+	}
+	// A panic in the store included.
+	defer func() {
+		if !ok {
+			leave()
+		}
+	}()
+	var patience checkPatience
+	th := pw.g.Throttle
+	for _, k := range []struct {
+		key      string
+		blockFor func(int) time.Duration
+	}{{src, th.SourceBlockFor}, {srcLogin, th.SourceLoginBlockFor}} {
+		place, admitted := s.reserveCheck(ctx, k.key, k.blockFor, &patience)
+		if !admitted {
+			return leave, false
+		}
+		held = append(held, place)
+	}
+	place, admitted := s.checks.turn(ctx, turn, &patience)
+	if !admitted {
+		return leave, false
+	}
+	held = append(held, place)
+	return leave, true
+}
+
 // invalidLoginKey is the login every login that does not normalise is
 // throttled under: garbage shares one bucket rather than getting one each.
 const invalidLoginKey = "\x00invalid-login"
@@ -149,7 +199,24 @@ func (s *Server) sourceBlocked(ctx context.Context, key string) bool {
 	return until.After(time.Now())
 }
 
+// failureRecordTimeout bounds one failure record, which no longer ends with
+// its request (recordingContext).
+const failureRecordTimeout = 5 * time.Second
+
+// recordingContext is the context a failure is recorded under: the
+// request's values, not its cancellation. A client that hangs up while its
+// password is being hashed has still had a guess checked; recorded under
+// the request's own context the failure would be dropped (the store call
+// fails on the cancelled context), and the guess, and the turn it held,
+// would have cost nothing. The timeout keeps a store that hangs from
+// keeping the request's goroutine.
+func recordingContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), failureRecordTimeout)
+}
+
 func (s *Server) recordSourceFailure(ctx context.Context, key string, block func(int) time.Duration) {
+	ctx, cancel := recordingContext(ctx)
+	defer cancel()
 	if _, _, err := s.store.AuthThrottleRecordFailure(ctx, key, time.Now(), password.SourceWindow, block); err != nil {
 		slog.Warn("authgate: recording a failure failed", "err", err)
 	}
@@ -168,7 +235,6 @@ type secondFactor struct {
 // which. Only once the password is right does it say a second factor is
 // needed (a *secondFactorChallenge when the account has a passkey) or wrong.
 func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pass string, f secondFactor, ip string) (store.UserIdentityRow, []string, error) {
-	now := time.Now()
 	loginN, lerr := password.NormalizeLogin(login)
 	loginKey := loginN
 	if lerr != nil {
@@ -177,10 +243,16 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 	src := pw.pg.sourceKey(pw.g.Name, ip)
 	srcLogin := pw.pg.sourceLoginKey(pw.g.Name, ip, loginKey)
 	th := pw.g.Throttle
-	if s.sourceBlocked(ctx, src) || s.sourceBlocked(ctx, srcLogin) {
+	// A refused request keeps no place while its hash waits for the hasher.
+	leave, ok := s.signInPlaces(ctx, pw, src, srcLogin, pw.pg.loginTurnKey(pw.g.Name, loginKey))
+	defer leave()
+	if !ok {
 		_ = pw.pg.hasher.Dummy(ctx, pass)
 		return store.UserIdentityRow{}, nil, errTooManyAttempts
 	}
+	// Read once the request has its places: a lock that ran out while it
+	// waited for them is not held against it.
+	now := time.Now()
 	refuse := func() (store.UserIdentityRow, []string, error) {
 		s.recordSourceFailure(ctx, src, th.SourceBlockFor)
 		s.recordSourceFailure(ctx, srcLogin, th.SourceLoginBlockFor)
@@ -199,15 +271,25 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 		}
 		return refuse()
 	}
+	// An account with more than one login could still be checked through
+	// each at once, so the checks in progress on the account are counted
+	// too, before its row is read. One over what its failures leave room
+	// for is answered as a locked account is, source failures and all:
+	// nothing in the answer, its time or what it charged says the login
+	// exists. Neither refusal keeps the account's place through its hash.
+	acct := s.checks.take("account:" + id.TenantID + "\x00" + id.Subject)
+	defer acct.leave()
 	cred, err := s.store.UserCredentialGet(ctx, id.TenantID, id.Subject, store.CredentialKindPassword)
 	if err != nil {
+		acct.leave()
 		_ = pw.pg.hasher.Dummy(ctx, norm)
 		if !isNotFound(err) {
 			return store.UserIdentityRow{}, nil, err
 		}
 		return refuse()
 	}
-	if cred.LockedUntil.After(now) {
+	if cred.LockedUntil.After(now) || acct.n > checksAtOnce(cred.FailedCount, th.AccountLockFor) {
+		acct.leave()
 		_ = pw.pg.hasher.Dummy(ctx, norm)
 		return refuse()
 	}
@@ -312,6 +394,8 @@ func (s *Server) verifyPassword(ctx context.Context, pw *passwordGate, login, pa
 // recordAccountFailure counts a failure on the account and audits the lockout
 // the failure caused.
 func (s *Server) recordAccountFailure(ctx context.Context, pw *passwordGate, id store.UserIdentityRow) {
+	ctx, cancel := recordingContext(ctx)
+	defer cancel()
 	n, _, err := s.store.UserCredentialRecordFailure(ctx, id.TenantID, id.Subject, store.CredentialKindPassword, time.Now(), pw.g.Throttle.AccountLockFor)
 	if err != nil {
 		slog.Warn("authgate: recording a failed login failed", "err", err)
@@ -709,13 +793,20 @@ func (s *Server) linkInvalid(w http.ResponseWriter, ctx context.Context, pg *Pas
 	writeJSONError(w, http.StatusNotFound, "link_invalid", "this link is not valid; it may have been used or have expired")
 }
 
-// codeBlocked reports whether a code has been hammered with bad submissions.
-func (s *Server) codeBlocked(w http.ResponseWriter, ctx context.Context, codeHash string) bool {
-	if s.sourceBlocked(ctx, "code:"+codeHash) {
+// reserveCode admits one submission against an invite or reset code, or
+// writes the refusal (ok=false): the code has been hammered with bad
+// submissions, or as many are in progress as its failures leave room for. The
+// caller keeps the place until it returns: the second factor is checked, and
+// a wrong one recorded (codeFailure), inside it, so wrong codes posted
+// together are checked no faster than posted in turn.
+func (s *Server) reserveCode(w http.ResponseWriter, ctx context.Context, g PasswordGateSettings, codeHash string) (*checkPlace, bool) {
+	var patience checkPatience
+	place, ok := s.reserveCheck(ctx, "code:"+codeHash, g.Throttle.CodeBlockFor, &patience)
+	if !ok {
 		writeJSONError(w, http.StatusTooManyRequests, "too_many_attempts", "too many attempts on this link; wait and try again")
-		return true
+		return nil, false
 	}
-	return false
+	return place, true
 }
 
 func (s *Server) codeFailure(ctx context.Context, g PasswordGateSettings, codeHash string) {
@@ -819,9 +910,11 @@ func (s *Server) handleRedeemInvite(w http.ResponseWriter, r *http.Request) {
 		s.linkInvalid(w, ctx, pg, src)
 		return
 	}
-	if s.codeBlocked(w, ctx, inv.CodeHash) {
+	place, ok := s.reserveCode(w, ctx, g, inv.CodeHash)
+	if !ok {
 		return
 	}
+	defer place.leave()
 	login := inv.Login
 	if login == "" {
 		raw := req.Login
@@ -1219,9 +1312,11 @@ func (s *Server) handleCompleteReset(w http.ResponseWriter, r *http.Request) {
 		s.linkInvalid(w, ctx, pg, src)
 		return
 	}
-	if s.codeBlocked(w, ctx, rs.CodeHash) {
+	place, ok := s.reserveCode(w, ctx, g, rs.CodeHash)
+	if !ok {
 		return
 	}
+	defer place.leave()
 	now := time.Now().UTC()
 	login := ""
 	if ids, err := s.store.UserIdentityListSubject(ctx, rs.TenantID, rs.Subject); err == nil {

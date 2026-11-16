@@ -95,6 +95,13 @@ COPY loomcycle /usr/local/bin/loomcycle
 COPY LICENSE NOTICE /usr/share/doc/loomcycle/
 
 USER 65532:65532
+# Data dir: the binary's default is ./data under the working directory, here
+# /home/nonroot/data, which is not the documented data mount.
+# The WORKDIR line creates the directory owned by the USER above (BuildKit;
+# the same form as the distroless images), so a named volume mounted on it
+# starts out writable: a path the image lacks is mounted root-owned.
+ENV LOOMCYCLE_DATA_DIR=/home/nonroot/.local/share/loomcycle
+WORKDIR /home/nonroot/.local/share/loomcycle
 WORKDIR /home/nonroot
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/loomcycle"]

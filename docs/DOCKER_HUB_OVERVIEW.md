@@ -87,7 +87,7 @@ No `vX` or `vX.Y` floating tags during the v0.11.x line — too early for major-
 | Container path | What it's for | Mode |
 |---|---|---|
 | `/home/nonroot/.config/loomcycle` | yaml config + per-machine `README.md` | typically read-only |
-| `/home/nonroot/.local/share/loomcycle` | SQLite store + transient state, when `LOOMCYCLE_DATA_DIR` names this path as in the command above (unset, the store goes to `./data` under the working directory, outside the mount) | writable |
+| `/home/nonroot/.local/share/loomcycle` | SQLite store + transient state. Images after v1.152.0 set `LOOMCYCLE_DATA_DIR` to this path; an older image needs it set as in the command above (unset there, the store goes to `./data` under the working directory, outside the mount) | writable |
 
 On Linux hosts, the writable mount must be owned by uid 65532:
 
@@ -98,6 +98,8 @@ mkdir -p ./data && sudo chown -R 65532:65532 ./data
 The config mount only has to be readable by uid 65532. A config that `loomcycle import claude-code` or `loomcycle mcp-registry` created on the host is written owner-only (`0600`), because an imported MCP server's `env` block can hold a literal token, so the container cannot read it as is. Either make the file readable (`chmod 0644 loomcycle.yaml`, if it holds no secret; better, move the secret into `.env.local` and reference it as `${NAME}`), or run the container as your own uid (`docker run --user "$(id -u):$(id -g)" …`, with the data mount owned by that uid too).
 
 Docker Desktop on macOS handles this transparently via its file-sharing layer.
+
+Images after v1.152.0 set `LOOMCYCLE_DATA_DIR` to `/home/nonroot/.local/share/loomcycle`, so the store is written to this mount with no variable set, in every variant below. A value you set yourself (`-e LOOMCYCLE_DATA_DIR=/data`) replaces it. With nothing mounted there the server still starts, and the store is lost when the container is removed. The directory exists in the image owned by uid 65532, so a named volume mounted on it is writable from the first start.
 
 ## Docker Compose
 

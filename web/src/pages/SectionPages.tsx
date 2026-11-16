@@ -281,6 +281,14 @@ function RetentionSection() {
       {err && <div className="settings-error">{err}</div>}
       {rep && (
         <>
+          {/* Without this an operator who edited the yaml and reloaded reads the old
+              values here and concludes the edit was lost, or that the new ones run. */}
+          {rep.pending_restart && (
+            <div className="settings-warning">
+              The yaml now asks for different retention settings. They take effect at
+              the next restart; until then the sweeper runs with what this page shows.
+            </div>
+          )}
           <div className="settings-muted">
             {rep.enabled
               ? `sweeper on, every ${Math.round(rep.interval_ms / 60_000)} min`

@@ -46,8 +46,8 @@ var (
 	ErrSnapshotNotFound = errors.New("connector: snapshot not found")
 
 	// ErrSnapshotTooLarge is returned by CreateSnapshot when the
-	// serialised envelope exceeds the configured cap
-	// (LOOMCYCLE_SNAPSHOT_MAX_BYTES; default 512 MiB).
+	// serialised envelope exceeds the size cap (the request's
+	// max_bytes; 512 MiB when that is 0).
 	ErrSnapshotTooLarge = errors.New("connector: snapshot exceeds size cap")
 
 	// ErrSnapshotVersionTooNew is returned by RestoreSnapshot when a

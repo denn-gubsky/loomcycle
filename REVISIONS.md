@@ -8,6 +8,79 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.153.0
+
+*Every setting now has one place (RFC GN). 150 environment variables are no longer read: policy and tuning moved to the yaml, limits nobody changed became fixed values, and seven feature switches are gone because the features are always on. The environment keeps secrets, the identity of the host and security gates, and it wins where a setting has both forms. The storage backend, SQL Memory and A2A are inferred from what is configured. Two presets, `personal` and `server`, each stand for a whole installation. **This release stops the boot for some existing configurations, and changes others without a warning: read the upgrade notes before you upgrade.** Also here: a knowledge-base question router with read-only tool grants (RFC GL), conversion workers that take file conversion out of the runtime's process (RFC GO, off by default), and a fix to the pacing of password sign-ins sent together.*
+
+The v1.153 line: #2610 to #2636.
+- `@loomcycle/client` 1.153.0: `tool_modes` on `AgentDefOverlay`; `lineage` in the Document op union; `facets`, `facet_window`, `title_contains`, `created_after` and `created_before` on the Document input, with the `DocumentSearchFacets` and `DocumentSearchFacetValue` types. The Python adapter is 1.153.0 for version lockstep; its Document call passes the new ops and arguments through.
+- No schema migration.
+- A new image, `loomcycle-worker`, on Docker Hub and GHCR for amd64 and arm64.
+
+### Upgrade notes
+
+The guide is [`docs/SETTINGS_MIGRATION.md`](docs/SETTINGS_MIGRATION.md): a checklist, every removed variable with what to do, and worked examples by area. Back up the store and your config first. What follows is the short form.
+
+- **Ask the new binary before the real start (#2614, #2618, #2623, #2627).** Run `loomcycle validate` and `loomcycle doctor` from the new binary with the deployment's own environment and config layers. A removed variable that is still set is named, never with its value. It stops the boot when ignoring it would change the deployment: a value that asked for a tighter limit or kept a feature off, a setting that decided which store is opened or which data is kept or deleted, or a setting that moved to the yaml when the variable differs from the default and the yaml does not name the key. Any other removed variable only warns. A limit you had raised above the value that is now fixed is among those: it warns and the fixed value applies. `validate` exits 2 on a refusal and `doctor` 1. Neither opens the store, so the store refusal below shows only at the real start.
+- **Seven features are always on (#2618):** the scheduler, the inbound webhook receiver, channel hooks, code agents, code hooks, Bashbox, and the resume of a fan-out parent. A deployment that never set the switch had them off, and gets no warning. Schedules, webhooks and channel `hooks:` blocks that were defined while their feature was off start working at the first boot: list them in every tenant and disable or delete the ones you do not want. A switch set to anything but `1` stops the boot.
+- **Code agents and code hooks reach every tenant operator (#2618).** Anyone who may author an agent or a hook definition in a tenant can run JavaScript in the loomcycle process, bounded in time and not in memory; see the property in [`SECURITY.md`](SECURITY.md). Bashbox is stripped from an agent registered over MCP unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`.
+- **Deleting data with age needs `retention.enabled: true` (#2623).** Retention is set only in the yaml `retention:` block, and its sweeper runs only when `enabled` is true. Remove the old `LOOMCYCLE_RETENTION_*` lines without writing the block and retention stops with nothing said; a family `mode` without `enabled` deletes nothing and warns. These run whatever the block says: the usage rollup (per-call usage rows older than `retention.usage_detail.max_age`, 30 days, are deleted and their daily totals kept), the run heartbeat sweeper, and the fixed housekeeping of expired Memory entries, channel messages, registered agents, token rows and old metrics samples. Audit retention stays `LOOMCYCLE_AUDIT_RETENTION_DAYS`. The legacy usage archiver is gone; use `retention.chats`.
+- **The store is inferred (#2622):** Postgres when a connection string is set, SQLite otherwise. A SQLite deployment whose environment also carries `LOOMCYCLE_PG_DSN` must set `storage.backend: sqlite`. When Postgres is inferred and the data directory holds a SQLite store file, the start stops and says so.
+- **SQL Memory is on with a SQLite store (#2622),** and with a Postgres store when `LOOMCYCLE_SQLMEM_PG_DSN` is set. Documents then work, and scope files appear under `<data dir>/sqlmem`. `storage.sqlmem_enabled: false` keeps it off.
+- **A2A is served when `LOOMCYCLE_A2A_SERVER_CARD` names a card (#2622).** A name with no such card stops the boot.
+- **`LOOMCYCLE_CONFIG_FILES` is gone (#2626).** Set and not empty, it stops the boot. Pass each file as `--config`, in the same order, or put the files in `LOOMCYCLE_CONFIG_DIR`, whose `agents/`, `skills/` and `help/` subdirectories are now loaded when the matching root variable is unset.
+- **One precedence rule (#2624).** Where a setting has an environment form and a yaml form, the environment wins. Two exceptions: `auth.mode` takes the stricter of the two (a yaml value below the environment's used to stop the load), and a provider's yaml `base_url` is used in place of its `*_BASE_URL` variable.
+- **The `base` preset routes differently (#2629).** `haiku`, `sonnet` and `opus` name the `claude-*-5-5` models and `cloud-kimi` names `kimi-k3`. Gemini joins the provider priority after DeepSeek and each tier gains Gemini candidates; with no `GEMINI_API_KEY` the provider is skipped. To keep a model, restate its alias in your own config. An overlay that leaves to `base` the aliases it used to restate, as the cloud example's now does, needs a binary that carries this `base`. With the `local` preset, a pulled `gpt-oss` or `qwen3.6` model becomes the first candidate of the low and middle tiers.
+- **`chat/medium` and `chat/local-small` have a new content signature (#2629).** They no longer set `compaction.memory_flush`, which did nothing in their context mode. What they do is unchanged; a deployment that verifies bundled agents by signature records the new ones.
+- **`loomcycle init` writes a profile's short config (#2629);** `loomcycle init --full` writes the long one. A top-level `include:` in your own file, or `presets:` outside the primary config file, stops the load.
+- **Container images set the data directory (#2634).** The server images set `LOOMCYCLE_DATA_DIR` to `/home/nonroot/.local/share/loomcycle`; a value you set still wins. A container that ran with the variable unset and kept its store at the old default (`./data` under the working directory) must set the variable to that path.
+- **Sign-in (#2635, #2636).** Overlapping password sign-ins for one login are checked one at a time. A sign-in may wait up to 3 seconds for its turn and is then told to wait (429), charged nothing. The bound on checks in flight is counted per replica, so N replicas admit up to N times as many; failure counts and holds stay in the store, shared by all replicas.
+
+### Settings (RFC GN: #2613, #2614, #2618, #2622, #2623, #2624, #2626, #2627, #2629, #2633)
+
+- **Three planes.** The environment keeps secrets, listen addresses, directories, public URLs, the replica id and the gates that open something dangerous. The yaml keeps policy and tuning: `retention:`, `concurrency:`, provider `options`, `timeout_scaling:`, the embedder limits, `metrics:`, `auth.login_origins`, the two `hooks:` allow-lists and the telemetry lists under `observability:`. A value no deployment needed to change is a constant.
+- **Retired variables are reported.** Boot, `validate`, `doctor` and the MCP thin client name each one that is set and say what to do instead. The sandbox builder sidecar refuses its own removed `SANDBOX_*` variables.
+- **Presets.** `personal` layers `base`, `local`, `chat` and `document-agent`; `server` layers `base`, `chat`, `document-agent` and `memory` and turns the metrics sampler on. Neither sets a volume, a sign-in gate, retention, a listen address or a secret. A preset built into the binary can list others under `include:`, and the primary config file can select presets with a `presets:` key (`--preset`, then `LOOMCYCLE_PRESETS`, then the key).
+- **Profiles.** [`examples/profiles/`](examples/profiles/) has a complete minimal configuration for each, the server one with a compose file and Postgres. `loomcycle init --profile server` writes the server's yaml.
+- **One layer assembly.** `validate`, `doctor`, `agents list`, `migrate --config`, `tokens` and `audit` load what the server loads and print the layers. `validate` with no path checks the server's own stack. `migrate` prints where its Postgres connection string came from before it acts.
+- **Debug flags are log lines.** `LOOMCYCLE_AUTH_VERBOSE`, `LOOMCYCLE_CHANNEL_DEBUG` and `LOOMCYCLE_OLLAMA_DEBUG_THINK` are gone; their lines show at `LOOMCYCLE_LOG_LEVEL=debug`.
+- **Docs.** [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) opens with a start page per profile, one table of where each setting lives and the precedence rule. The two env templates are one catalogue, with the defaults the code has.
+
+### Knowledge base (RFC GL: #2611, #2612, #2615, #2616, #2617, #2621)
+
+- **`kb/ask`** in the `knowledge-base` bundle is one entry point for a question. It classifies the question (a decision model first, the `kb/classify` agent when that is unsure or fails) and runs `kb/search` for a lookup or `kb/walker` for an overview. A search that does not complete goes on to the walker with the ids already found, and so does one that reports partial coverage when the decision model was unsure.
+- **`tool_modes`** on an agent definition holds `Document` or `Path` to its read operations: `tool_modes: {Document: read, Path: read}`. A write is refused before it runs, at dispatch and in the tools themselves. A read mode carries down the spawn tree, a fork may add one and may not remove one, and it is authority, not content, so it is outside the content signature. `kb/search` and `kb/walker` hold both tools read-only.
+- **`Document op=lineage`** returns a chunk's enclosing sections, its document and the folders above each of its Path names, each with its brief, in one call.
+- **`query_documents`** filters by `title_contains`, `created_after` and `created_before`.
+- **Search facets.** `op=search` with `facets` (`type`, `folder`, `concept`) also counts how many documents among the nearest matches have each value, over a window of 100 chunks by default and 500 at most, counting only documents the caller may read.
+- **`{{help:<topic>}}`** in a prompt renders that help article's call examples, so a prompt's call samples come from the same text the tool's help does. A topic that does not exist, has no examples or is over the 8 KiB budget is refused when the prompt is authored.
+
+### Conversion workers (RFC GO P0 to P3: #2625, #2628, #2630, #2631)
+
+- **Off by default.** `conversion.mode` is `inprocess` unless set, and every conversion runs in the runtime's own process, as before. No preset or image sets another mode.
+- **`conversion.mode: local`** starts children of the same binary (`loomcycle worker`, 2 by default, each with a memory limit) and sends them every conversion: text extraction, PDF page cuts and rendering for OCR, a recording's conversion for speech-to-text, speech encoding and image re-encoding. A worker gets a file's bytes and returns bytes; it holds no provider key, no store connection and no path. The helper programs must be where the workers run.
+- **`remote` and `local+remote`** listen on `conversion.listen` for workers run as their own containers from the `loomcycle-worker` image. The endpoint needs `LOOMCYCLE_WORKER_TOKEN` of at least 32 characters, and TLS off the loopback unless `conversion.insecure: true`. [`docs/WORKERS.md`](docs/WORKERS.md) is the guide.
+- **A file that kills a worker** fails that one call and is refused for an hour instead of going to the next worker. With every worker busy a call waits, then gets a busy answer; with a pool configured the runtime never converts in its own process instead.
+- `/metrics` adds the `loomcycle_conversion_*` gauges and counters.
+
+### Sign-in (#2635, #2636)
+
+- **Security fix.** Password sign-ins sent together are now paced like ones sent in turn: each check takes a place before the throttle is read, per source, per source and login, and per login. The same holds for second-factor codes posted to a reset or invite link.
+- A guess is charged even when its client disconnects before the answer.
+- Overlapping correct passwords for one account all sign in, in turn. A login nobody has is handled as one somebody has: the same answers, the same waiting, the same charges.
+
+### Images (#2634)
+
+- The standard, release, browser, media and toolbox images set `LOOMCYCLE_DATA_DIR` to the documented data mount and create it owned by the runtime user, so a named volume mounted there is writable from the first start.
+
+### Runs (#2610)
+
+- The append loop and the stateful loop share their iteration steps. A cancelled run stops at the top of its next iteration, and one cancelled during a model call ends as cancelled in both. A run that fails on a provider error ends with stop reason `error` and the usage spent so far. A stateful run forwards its reasoning trace live and has a trace span per step.
+
+### Cloud example (#2619)
+
+- `ollama-local` is back to four chat calls and two decision calls at a time.
+
 ## What's in v1.152.0
 
 *Fixes from the knowledge-base walker measurement (RFC GK). Section and document summaries no longer name their document by another document's code: every annotation request carries its document's code, and `set_annotation` repairs a wrong one and a folder brief that only repeats the folder's name. Every annotation is rewritten once. Search and related hits say where their document is, and an empty section lists its sub-sections. A spawned run reports its whole usage instead of its last model call's, a full queue says how full it is, and a long `spawn_runs` join sends progress so a client does not give up on it. The binaries are built with go1.26.11 for the `net/http` fix GO-2026-6859.*

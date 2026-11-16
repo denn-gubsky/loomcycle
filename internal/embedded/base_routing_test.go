@@ -253,3 +253,18 @@ func TestBasePreset_TiersServedPerProviderMatchItsHeader(t *testing.T) {
 		}
 	}
 }
+
+// oauth puts the same three Anthropic models on top of base, paid for by a
+// subscription instead of a key. It restates their ids, and fell two
+// generations behind when base moved: selecting `base,oauth` then ran older
+// models than `base` alone.
+func TestOAuthPreset_NamesTheModelsBaseNames(t *testing.T) {
+	base, oauth := unitRouting(t, "base"), unitRouting(t, "oauth")
+	for _, name := range []string{"haiku", "sonnet", "opus"} {
+		want, _ := base.Models[name]["model"].(string)
+		got, _ := oauth.Models["oauth-"+name]["model"].(string)
+		if want == "" || got != want {
+			t.Errorf("oauth-%s names model %q, base's %s names %q; they must be the same model", name, got, name, want)
+		}
+	}
+}

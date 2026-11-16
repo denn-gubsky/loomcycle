@@ -13,8 +13,8 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
-// DefaultMaxBytes caps the in-memory snapshot envelope size unless
-// LOOMCYCLE_SNAPSHOT_MAX_BYTES overrides. 512 MB is the Phase-1
+// DefaultMaxBytes caps the in-memory snapshot envelope size unless the
+// request names its own cap (max_bytes). 512 MB is the Phase-1
 // safety stance: Capture() loads the entire envelope into a Go []byte
 // before writing to snapshots.json_content. For larger experiments,
 // streaming export is a v0.9.x candidate (deferred per the RFC's
@@ -31,7 +31,7 @@ type ErrSnapshotTooLarge struct {
 }
 
 func (e *ErrSnapshotTooLarge) Error() string {
-	return fmt.Sprintf("snapshot: serialised size %d bytes exceeds cap %d bytes (raise LOOMCYCLE_SNAPSHOT_MAX_BYTES or narrow the capture scope)",
+	return fmt.Sprintf("snapshot: serialised size %d bytes exceeds cap %d bytes (pass a larger max_bytes on the request, --max-bytes on the CLI, or narrow the capture scope)",
 		e.SizeBytes, e.MaxBytes)
 }
 
