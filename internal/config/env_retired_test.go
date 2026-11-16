@@ -531,6 +531,14 @@ func TestRetiredEnvRefusals_RefusesAValueThatAskedForSomethingTighter(t *testing
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example", refused: true},
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: "https://landing.example", named: []string{"auth.login_origins"}},
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: " , "},
+
+		// The capture minimum moved to each MCP server. The old read took a
+		// positive whole number and refused anything else at boot.
+		{name: "LOOMCYCLE_FILE_BASE64_MIN_BYTES", value: "256", refused: true, says: "mcp_servers.<name>.binary_results_min_bytes"},
+		{name: "LOOMCYCLE_FILE_BASE64_MIN_BYTES", value: "65536", refused: true},
+		{name: "LOOMCYCLE_FILE_BASE64_MIN_BYTES", value: "4096"},
+		{name: "LOOMCYCLE_FILE_BASE64_MIN_BYTES", value: "0"},
+		{name: "LOOMCYCLE_FILE_BASE64_MIN_BYTES", value: ""},
 		{name: "LOOMCYCLE_UI_LOGIN_ORIGINS", value: ""},
 
 		// The metrics sampler moved to the yaml `metrics:` block. Its two
@@ -856,5 +864,41 @@ func TestLoadLayers_RefusalLeadNamesDataKeptOrDeletedDifferently(t *testing.T) {
 	lead, _, _ := strings.Cut(err.Error(), "LOOMCYCLE_USAGE_SWEEPER")
 	if !strings.Contains(lead, "data kept or deleted differently") {
 		t.Errorf("the lead does not name the data case: %q", lead)
+	}
+}
+
+// The capture minimum moved from one variable to each MCP server. Lowered or
+// raised with no server naming binary_results_min_bytes, it refuses the boot
+// and names the key; once a server names it, or at the default, it is only
+// advised. The variable's value is never read.
+func TestLoadLayers_FileBase64MinBytesMovedToTheServer(t *testing.T) {
+	const head = "defaults: {provider: mock}\nmcp_servers:\n  files:\n    transport: stdio\n    command: npx\n    binary_results: capture\n"
+	t.Setenv("LOOMCYCLE_FILE_BASE64_MIN_BYTES", "256")
+	_, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte(head)})
+	if err == nil || !strings.Contains(err.Error(), "LOOMCYCLE_FILE_BASE64_MIN_BYTES: ") || !strings.Contains(err.Error(), "mcp_servers.<name>.binary_results_min_bytes") {
+		t.Fatalf("err = %v, want a refusal naming the variable and the server key", err)
+	}
+
+	// A capture server naming the key, in a later layer: advised only, and
+	// the server's own value applies.
+	cfg, err := LoadLayers(Layer{Name: "t.yaml", Data: []byte(head)},
+		Layer{Name: "site.yaml", Data: []byte("mcp_servers:\n  files:\n    binary_results_min_bytes: 512\n")})
+	if err != nil {
+		t.Fatalf("LoadLayers with the key on the server: %v", err)
+	}
+	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_FILE_BASE64_MIN_BYTES")
+	if got := cfg.MCPServers["files"].BinaryResultsMinBytes; got != 512 {
+		t.Errorf("server minimum = %d, want 512 (the yaml's, not the variable's)", got)
+	}
+
+	// The default: advised only, with no server naming the key.
+	t.Setenv("LOOMCYCLE_FILE_BASE64_MIN_BYTES", "4096")
+	cfg, err = LoadLayers(Layer{Name: "t.yaml", Data: []byte(head)})
+	if err != nil {
+		t.Fatalf("LoadLayers with the variable at its default: %v", err)
+	}
+	requireRetiredAdvisory(t, cfg, "LOOMCYCLE_FILE_BASE64_MIN_BYTES")
+	if got := cfg.MCPServers["files"].BinaryResultsMinBytes; got != 0 {
+		t.Errorf("server minimum = %d, want 0: the variable is not read", got)
 	}
 }

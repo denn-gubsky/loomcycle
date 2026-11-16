@@ -195,6 +195,15 @@ var retiredEnvMoved = map[string]movedSetting{
 		return len(splitCommaTrim(value)) > 0
 	}},
 
+	// The capture minimum moved to each MCP server. The old read took a
+	// positive whole number and stopped the boot on anything else, which no
+	// running deployment can have had. Any server naming the key is the
+	// operator's answer: the key is per server, the variable was global.
+	"LOOMCYCLE_FILE_BASE64_MIN_BYTES": {
+		key: "mcp_servers.<name>.binary_results_min_bytes", differs: positiveOtherThan(DefaultBinaryResultsMinBytes),
+		named: anyMCPServerNames("binary_results_min_bytes"),
+	},
+
 	// The process metrics sampler. Its two tunings were read only by a
 	// sampler that LOOMCYCLE_METRICS_ENABLED=1 had started.
 	"LOOMCYCLE_METRICS_ENABLED":        {key: "metrics.enabled", differs: wasExactlyOne},
@@ -246,6 +255,20 @@ func positiveFloatOtherThan(dflt float64) func(string, retiredEnvCtx) bool {
 	return func(value string, _ retiredEnvCtx) bool {
 		f, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 		return err == nil && f > 0 && f != dflt
+	}
+}
+
+// anyMCPServerNames reports whether the yaml names key on at least one MCP
+// server: the dotted path has the server name in the middle, which the
+// uniform names(key) cannot match.
+func anyMCPServerNames(key string) func(retiredEnvCtx) bool {
+	return func(c retiredEnvCtx) bool {
+		for name := range c.cfg.MCPServers {
+			if c.names("mcp_servers." + name + "." + key) {
+				return true
+			}
+		}
+		return false
 	}
 }
 
