@@ -124,8 +124,9 @@ func TestTokensRewrap_DryRunChangesNothing(t *testing.T) {
 // With no derived pepper the command refuses, says why, and writes nothing.
 func TestTokensRewrap_RefusesWithoutADerivedPepper(t *testing.T) {
 	for name, tc := range map[string]struct{ key, explicit, why string }{
-		"explicit pepper": {testSecretKey(), "explicit-pepper", "LOOMCYCLE_OPERATOR_TOKEN_PEPPER is set"},
-		"no pepper":       {"", "", "LOOMCYCLE_SECRET_KEY is not set"},
+		"explicit pepper alone":        {"", "explicit-pepper", "LOOMCYCLE_OPERATOR_TOKEN_PEPPER is set"},
+		"legacy pepper beside the key": {testSecretKey(), "explicit-pepper", "LOOMCYCLE_OPERATOR_TOKEN_PEPPER is still set"},
+		"no pepper":                    {"", "", "LOOMCYCLE_SECRET_KEY is not set"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			st, cfgPath := tokensTestEnv(t, tc.key, tc.explicit)
