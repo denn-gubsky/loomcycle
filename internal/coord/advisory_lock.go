@@ -151,6 +151,10 @@ var (
 	// runs once per boot; the content-hash gate makes an unchanged corpus a
 	// zero-embed no-op even on the replica that wins the lock.
 	LockKeyHelpIndexReconcile int64
+	// LockKeyTeamConfigReconcile gates the one-shot boot-time write of the
+	// yaml's teams into the store's shared tier (RFC GS P2) so ONE replica
+	// writes them per boot; the others would write the same rows.
+	LockKeyTeamConfigReconcile int64
 	// LockKeyDeadLinkGC gates the dead-link reconciliation — the layer that
 	// collects chunk references nothing can reach any more (a body whose chunk is
 	// gone, an edge to a chunk that does not exist).
@@ -252,6 +256,7 @@ func init() {
 	LockKeyUsageSweeper = fnvKey("usage_sweeper")
 	LockKeyRetentionSweeper = fnvKey("retention_sweeper")
 	LockKeyHelpIndexReconcile = fnvKey("help_index_reconcile")
+	LockKeyTeamConfigReconcile = fnvKey("team_config_reconcile")
 	LockKeyDeadLinkGC = fnvKey("deadlink_gc")
 	LockKeyMemoryPendingSweeper = fnvKey("memory_pending_sweeper")
 	LockKeyScheduleReconcile = fnvKey("schedule_reconcile")

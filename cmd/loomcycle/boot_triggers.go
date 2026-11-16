@@ -156,6 +156,46 @@ func (b *boot) startPauseAndResume() {
 	b.pauseMgrRef = pauseMgrRef
 }
 
+// reconcileConfigTeams writes the yaml's teams into the store's shared tier
+// (RFC GS P2), and retires the ones it wrote that the yaml no longer holds. It
+// runs once, before the subscription sweep and the scheduler, so neither ever
+// sees the previous boot's teams. In a cluster one replica writes them; the
+// others would write the same rows.
+//
+// It does not stop the boot: a team the deployment refuses, or a name an
+// operator already holds in the shared tier over the API, is left out and
+// logged, and every other team and tenant is served.
+func (b *boot) reconcileConfigTeams() {
+	if b.storeIface == nil || b.srv == nil {
+		return
+	}
+	reconcile := func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, time.Minute)
+		defer cancel()
+		rep, err := b.srv.ReconcileConfigTeams(ctx, b.cfg.Teams)
+		for _, p := range rep.Conflicts {
+			slog.Warn("config teams: a team of this name is already an operator's own in the shared tier; not replaced", "team", p.Name, "detail", p.Detail)
+		}
+		for _, p := range rep.Refused {
+			slog.Error("config teams: team refused, not written", "team", p.Name, "detail", p.Detail)
+		}
+		if len(rep.Written)+len(rep.Restored)+len(rep.Retired) > 0 {
+			slog.Info("config teams: reconciled", "written", rep.Written, "restored", rep.Restored, "retired", rep.Retired, "unchanged", len(rep.Unchanged))
+		}
+		if err != nil {
+			slog.Error("config teams: reconcile failed", "err", err)
+		}
+		return nil
+	}
+	if b.advisoryLock != nil {
+		if _, err := b.advisoryLock.TryRun(b.bgCtx, coord.LockKeyTeamConfigReconcile, reconcile); err != nil {
+			slog.Error("config teams: advisory-gated reconcile failed", "err", err)
+		}
+		return
+	}
+	_ = reconcile(b.bgCtx)
+}
+
 // startTeamSubscriptions starts the armed team-subscription sweep when
 // LOOMCYCLE_TEAM_SUBSCRIPTIONS is on.
 func (b *boot) startTeamSubscriptions() {
