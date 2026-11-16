@@ -107,7 +107,7 @@ func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 	if rounds != 1 {
 		t.Errorf("screening rounds = %d, want 1", rounds)
 	}
-	if _, _, sv := surveyLines(out); !strings.HasPrefix(sv, "SURVEY: candidates 6 (cut 0) | sections 3 | slices 1 |") {
+	if _, _, sv := surveyLines(out); !strings.HasPrefix(sv, "SURVEY: candidates 6 (cut 0) | sections 3 (cut 0) | slices 1 |") {
 		t.Errorf("survey line = %q, want 6 candidates of which 3 sections", sv)
 	}
 }
@@ -169,7 +169,7 @@ func TestKbSurvey_FittingSectionIsAccountedAndComposedAsAChunkLink(t *testing.T)
 		if cov != "COVERAGE: complete" || unc != "" {
 			t.Errorf("coverage = %q %q, want complete: every candidate, sections too, accounted for", cov, unc)
 		}
-		if !strings.Contains(sv, "candidates 5 (cut 0) | sections 2 | slices 1 | failed slices 0 |") {
+		if !strings.Contains(sv, "candidates 5 (cut 0) | sections 2 (cut 0) | slices 1 | failed slices 0 |") {
 			t.Errorf("survey line = %q", sv)
 		}
 	})
@@ -255,5 +255,54 @@ func TestKbSurvey_SizeCountFailureLeavesDocumentsOnly(t *testing.T) {
 	}
 	if _, _, sv := surveyLines(out); !strings.Contains(sv, "| sections failed (Document: query_chunks: refused) | slices 1 |") {
 		t.Errorf("survey line = %q, want the failed count named", sv)
+	}
+}
+
+// TestKbSurvey_SectionsHaveTheirOwnCapBesideTheDocuments: under one shared
+// cap, sections pushed documents out (one measured question went from 60
+// documents cut to 107). The 120 highest-weighted documents are kept as
+// before, and beside them at most 24 sections; the documents' cut is all
+// UNCOVERED reports, and the sections past their cap are counted in the
+// trailer.
+func TestKbSurvey_SectionsHaveTheirOwnCapBesideTheDocuments(t *testing.T) {
+	f, kept := gather120()
+	// Ten large guides at the top of the passage list, three hit sections
+	// each: 30 eligible sections. Appended rows weigh nothing extra for the
+	// documents (a document counts once per list, and only the first 10 rows
+	// get the top bonus).
+	f.chunkCounts = map[string]int{}
+	var secs []string
+	for g := 0; g < 10; g++ {
+		f.chunkCounts[docID(g)] = 40
+		for k := 0; k < 3; k++ {
+			s := secID(g*3 + k)
+			secs = append(secs, s)
+			f.rows["P"] = append(f.rows["P"], secHit(docID(g), s))
+		}
+	}
+	out := runSurvey(t, f, surveyQuestion)
+
+	got := map[string]bool{}
+	nsec := 0
+	for _, id := range f.screened() {
+		got[id] = true
+		if isSecID(id) {
+			nsec++
+		}
+	}
+	for _, id := range kept {
+		if !got[id] {
+			t.Errorf("document %s was cut; sections must not take a document's place", id)
+		}
+	}
+	if nsec != 24 {
+		t.Errorf("sections screened = %d, want 24 (their own cap)", nsec)
+	}
+	cov, unc, sv := surveyLines(out)
+	if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120" {
+		t.Errorf("coverage = %q %q, want the 30 documents past the cap and nothing about sections", cov, unc)
+	}
+	if !strings.HasPrefix(sv, "SURVEY: candidates 144 (cut 30) | sections 24 (cut 6) | slices 12 |") {
+		t.Errorf("survey line = %q", sv)
 	}
 }

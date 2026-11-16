@@ -6041,10 +6041,11 @@ agents:
     # parallel, then one retry wave) and one composing round.
     run_timeout_seconds: 900
     # parallel_spawn runs at most this many screening rounds at once (default
-    # 4). A full candidate list is CAP / SLICE = 10 slices, so it is screened
-    # in two waves of 5: accepted, because rounds of 12 ids do not fail the way
-    # rounds of 25 did (below, at SLICE), and 5 keeps the burst on the provider
-    # where it was. Retry halves (6 ids at most) are few and go in one wave.
+    # 4). A full candidate list is (CAP + SEC_CAP) / SLICE = 12 slices, so it
+    # is screened in three waves of 5 (5, 5, 2): accepted, because rounds of 12
+    # ids do not fail the way rounds of 25 did (below, at SLICE), and 5 keeps
+    # the burst on the provider where it was. Retry halves (6 ids at most) are
+    # few and go in one wave.
     max_concurrent_children: 5
     code: |
       // kb/survey — answers an overview question ("what do we hold on X") with
@@ -6073,11 +6074,14 @@ agents:
       //    guide that was dropped on the measured set (38 chunks the smallest)
       //    and about one document in eight of that corpus. It does not tell a
       //    guide from a long single-topic design document: such a document's
-      //    sections are screened too, which costs slots, not answers, since a
+      //    sections are screened too, which costs rounds, not answers, since a
       //    section is dropped from the answer when its whole document fits. A
       //    count that fails leaves the survey to documents only, as before.
-      //    The CAP highest-weighted documents and sections are kept (ties by
-      //    id); the rest are counted.
+      //    The CAP highest-weighted documents are kept (ties by id), and
+      //    beside them the SEC_CAP highest-weighted sections: sections have a
+      //    cap of their own because under one shared cap they pushed
+      //    documents out (one measured question went from 60 documents cut to
+      //    107). The rest are counted.
       // 2. SCREEN (model). The candidates are cut into slices of SLICE ids, one
       //    kb/walker round each, all in one parallel spawn. A round gets its
       //    slice's IDS and nothing else, reads their briefs itself, and
@@ -6119,12 +6123,14 @@ agents:
       //    is not asked: the window is the 500 nearest passages, however far,
       //    so on a corpus larger than that the flag is never true.
       //    and the trailer
-      //      SURVEY: candidates <kept> (cut <m>) | sections <k> | slices <s> |
-      //              failed slices <f> | rounds <walker runs> |
+      //      SURVEY: candidates <kept> (cut <m>) | sections <k> (cut <j>) |
+      //              slices <s> | failed slices <f> | rounds <walker runs> |
       //              RUNS: <run:status[/max_tokens], ...>
-      //    sections counts the kept candidates that are sections ("sections
-      //    failed (<why>)" when the size count failed); failed slices counts
-      //    every screening round that failed, retries too.
+      //    candidates counts documents and sections, its cut documents only;
+      //    sections counts the kept candidates that are sections and the
+      //    sections past SEC_CAP ("sections failed (<why>)" when the size count
+      //    failed); failed slices counts every screening round that failed,
+      //    retries too.
       //    A gather step that throws or finds nothing falls back to a plain walk;
       //    its coverage is partial, and the trailer says why.
       //
@@ -6149,6 +6155,7 @@ agents:
       var SLICE = 12;        // candidate ids per screening round
       var GUIDE_CHUNKS = 30; // live chunks that make a document a large guide
       var GUIDE_SECTIONS = 3; // hit sections of one large guide kept, at most
+      var SEC_CAP = 24;      // sections screened, at most, beside the CAP documents
       // A runtime document id: lowercase hex, dashes allowed (the shape kb/ask
       // reads in loom: links). A row whose id does not match is not a
       // candidate, so nothing but id characters reaches the walker's prompt.
@@ -6335,11 +6342,12 @@ agents:
       }
 
       // gather returns {ids: the kept candidates, best first, cut: how many
-      // more there were, counted: the documents the passage search's facet
-      // window counted, or -1 when it reported no count, sec: each kept
-      // section -> its document, docs and sections: how many of each were
-      // kept, secErr: why the size count failed, or ""}. It throws when a
-      // search or a relation read fails.
+      // more documents there were, secCut: how many more sections,
+      // counted: the documents the passage search's facet window counted, or
+      // -1 when it reported no count, sec: each kept section -> its document,
+      // docs and sections: how many of each were kept, secErr: why the size
+      // count failed, or ""}. It throws when a search or a relation read
+      // fails.
       function gather(q) {
         var P = newSet(), S = newSet(), M = newSet(), C = newSet(), E = newSet();
         var secs = { w: newSet(), doc: newSet() };
@@ -6360,27 +6368,30 @@ agents:
         // a hit section are counted.
         var hasSec = newSet(), probe = [];
         for (var s in secs.doc) { hasSec[secs.doc[s]] = 1; }
-        var top = ranked(pool).slice(0, CAP);
+        var all = ranked(pool), top = all.slice(0, CAP);
         for (i = 0; i < top.length; i++) { if (hasSec[top[i]]) { probe.push(top[i]); } }
         var large = newSet(), secErr = "";
         if (probe.length) {
           try { large = largeGuides(probe); } catch (e) { secErr = errText(e); }
         }
-        var per = newSet(), secOf = newSet(), byW = ranked(secs.w);
+        // Sections have their own cap, SEC_CAP, so they never take a
+        // document's place under CAP.
+        var kept = newSet(), sec = newSet(), per = newSet(), nsec = 0, secCut = 0, byW = ranked(secs.w);
+        for (i = 0; i < top.length; i++) { kept[top[i]] = pool[top[i]]; }
         for (i = 0; i < byW.length; i++) {
           var d = secs.doc[byW[i]];
           if (!large[d] || (per[d] || 0) >= GUIDE_SECTIONS) { continue; }
+          if (nsec >= SEC_CAP) { secCut++; continue; }
           per[d] = (per[d] || 0) + 1;
-          pool[byW[i]] = secs.w[byW[i]];
-          secOf[byW[i]] = d;
+          kept[byW[i]] = secs.w[byW[i]];
+          sec[byW[i]] = d;
+          nsec++;
         }
 
-        var all = ranked(pool), ids = all.slice(0, CAP), sec = newSet(), nsec = 0;
-        for (i = 0; i < ids.length; i++) { if (secOf[ids[i]]) { sec[ids[i]] = secOf[ids[i]]; nsec++; } }
         var dc = pr && pr.facets ? pr.facets.documents_counted : undefined;
-        return { ids: ids, cut: Math.max(0, all.length - CAP),
+        return { ids: ranked(kept), cut: Math.max(0, all.length - CAP), secCut: secCut,
                  counted: typeof dc === "number" && dc >= 0 ? dc : -1,
-                 sec: sec, docs: ids.length - nsec, sections: nsec, secErr: secErr };
+                 sec: sec, docs: top.length, sections: nsec, secErr: secErr };
       }
 
       // ---- 2. screen ----
@@ -6682,7 +6693,7 @@ agents:
               "; the passage search counted " + g.counted + " documents and " + g.docs + " were kept");
         }
         var tail = "SURVEY: candidates " + g.ids.length + " (cut " + g.cut + ") | sections " +
-          (g.secErr ? "failed (" + g.secErr.replace(/\s+/g, " ") + ")" : g.sections) + " | slices " + sliceCount +
+          (g.secErr ? "failed (" + g.secErr.replace(/\s+/g, " ") + ")" : g.sections + " (cut " + g.secCut + ")") + " | slices " + sliceCount +
           " | failed slices " + failed + " | rounds " + runs.length + " | RUNS: " + runs.join(", ");
         return { final_text: body + "\n\n" + cov + "\n" + tail };
       }

@@ -467,7 +467,7 @@ func TestKbSurvey_GatherRanksByWeightDedupsAndSkipsFolderRows(t *testing.T) {
 	if cov != "COVERAGE: complete" || unc != "" {
 		t.Errorf("coverage = %q %q, want complete with no UNCOVERED line", cov, unc)
 	}
-	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
+	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 (cut 0) | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -521,7 +521,7 @@ func TestKbSurvey_GatherKeepsTheTop120AndCountsTheCut(t *testing.T) {
 	if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120" {
 		t.Errorf("coverage = %q %q, want partial with 30 beyond the cap", cov, unc)
 	}
-	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 | slices 10 | failed slices 0 | rounds 11 | RUNS: ") {
+	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 (cut 0) | slices 10 | failed slices 0 | rounds 11 | RUNS: ") {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -677,12 +677,12 @@ func TestKbSurvey_ComposingRoundAsksForReplyTextNotADocument(t *testing.T) {
 	}
 }
 
-// TestKnowledgeBaseBundle_SurveyRunsAFullCapInTwoWaves: parallel_spawn runs
+// TestKnowledgeBaseBundle_SurveyRunsAFullCapInThreeWaves: parallel_spawn runs
 // at most the calling agent's max_concurrent_children at once (default 4).
-// With slices of 12 a full cap is 10 slices; kb/survey runs them in two waves
-// of 5 (accepted, so the burst on the provider stays where it was), never in
-// more. Read from its code.
-func TestKnowledgeBaseBundle_SurveyRunsAFullCapInTwoWaves(t *testing.T) {
+// With slices of 12 a full list (CAP documents and SEC_CAP sections) is 12
+// slices; kb/survey runs them in waves of 5 (accepted, so the burst on the
+// provider stays where it was), never in more than three. Read from its code.
+func TestKnowledgeBaseBundle_SurveyRunsAFullCapInThreeWaves(t *testing.T) {
 	s := knowledgeBaseConfig(t).Agents["kb/survey"]
 	num := func(name string) int {
 		m := regexp.MustCompile(`(?m)^var ` + name + ` = (\d+);`).FindStringSubmatch(s.Code)
@@ -692,14 +692,14 @@ func TestKnowledgeBaseBundle_SurveyRunsAFullCapInTwoWaves(t *testing.T) {
 		n, _ := strconv.Atoi(m[1])
 		return n
 	}
-	capN, slice := num("CAP"), num("SLICE")
+	capN, secCap, slice := num("CAP"), num("SEC_CAP"), num("SLICE")
 	if slice > 12 {
 		t.Errorf("kb/survey SLICE = %d, want at most 12: longer rounds failed", slice)
 	}
-	most := (capN + slice - 1) / slice
-	if s.MaxConcurrentChildren != 5 || (most+s.MaxConcurrentChildren-1)/s.MaxConcurrentChildren > 2 {
-		t.Errorf("kb/survey max_concurrent_children = %d, want 5 running %d slices (CAP %d / SLICE %d) in at most two waves",
-			s.MaxConcurrentChildren, most, capN, slice)
+	most := (capN + secCap + slice - 1) / slice
+	if s.MaxConcurrentChildren != 5 || (most+s.MaxConcurrentChildren-1)/s.MaxConcurrentChildren > 3 {
+		t.Errorf("kb/survey max_concurrent_children = %d, want 5 running %d slices ((CAP %d + SEC_CAP %d) / SLICE %d) in at most three waves",
+			s.MaxConcurrentChildren, most, capN, secCap, slice)
 	}
 }
 
