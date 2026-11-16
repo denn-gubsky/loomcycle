@@ -20,8 +20,9 @@ import (
 // team's local agent does not have. The ninth is dropping a read mode the
 // name's lineage holds (admitToolModesChange): like the no-trace check, it is
 // about the name's stored version history, which a team's local agent does
-// not have.
-const execCreateRefusals = 9
+// not have. The tenth is taking the override lock (allow_overrides: false)
+// off the name's lineage (admitOverrideLockChange), for the same reason.
+const execCreateRefusals = 10
 
 // A team's local agents pass gateNewDef and nothing else of AgentDef create.
 // So a gate added to execCreate directly is one a local agent does not pass —
