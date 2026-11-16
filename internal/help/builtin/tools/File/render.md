@@ -1,6 +1,6 @@
 ---
 name: File/render
-description: "File op=render — write a Document you may read, or a Markdown file, as a file to send: Markdown or HTML, into the inbox or one of your volumes."
+description: "File op=render — write a Document you may read, or a Markdown file, as a file to send: Word (DOCX), HTML or Markdown, into the inbox or one of your volumes."
 ---
 `render` is the reverse of `import`: it writes a Document as a file people
 open, send and print. The runtime reads the document and writes the file, so
@@ -30,9 +30,10 @@ again (with `to`, copied there).
   is the title. For an HTML file, run `extract` first and render its Markdown.
 - `scope` — the document's store: `user` (default), `agent` or `tenant`.
 - `chunk` — render only the part of the document under this chunk, titled by it.
-- `format` — `html` (one self-contained page, pictures inside it) or `md`
-  (clean Markdown, its pictures as files in a folder beside it). `docx` and
-  `pdf` are not available yet.
+- `format` — `docx` (a Word document: headings in Word's own heading styles,
+  lists, tables, pictures, links, and the status in its properties), `html`
+  (one self-contained page, pictures inside it) or `md` (clean Markdown, its
+  pictures as files in a folder beside it). `pdf` is not available yet.
 - `to` — a file in one of your read-write volumes. Its folder must exist.
   Default: `volume:inbox:rendered/<title>.<format>`.
 - `overwrite` — replace a file already at `to`. Default false.
@@ -61,12 +62,18 @@ also returns `image_refs`, the pictures written beside it.
 - The document or chunk is not there, or not readable to you.
 - `to` names the inbox, a read-only volume or one you are not bound to, or a
   file that exists without `overwrite`.
-- `format` is `docx` or `pdf`, which this server does not write yet.
+- `format` is `pdf`, which this server does not write yet.
 - The file would pass 64 MiB: render a part of the document with `chunk`.
 
 ## Examples
 
-The board minutes as a web page, with a table of contents:
+The board minutes as a Word document to send:
+
+```json
+{"op": "render", "doc_path": "/board/2026/minutes", "scope": "tenant", "format": "docx"}
+```
+
+The same as a web page, with a table of contents:
 
 ```json
 {"op": "render", "doc_path": "/board/2026/minutes", "scope": "tenant", "format": "html", "toc": true}

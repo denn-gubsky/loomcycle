@@ -34,17 +34,17 @@ import (
 const renderInboxDir = "rendered"
 
 // renderFormatsLater are formats RFC GR adds in later phases.
-var renderFormatsLater = map[string]string{"docx": "P1", "pdf": "P2"}
+var renderFormatsLater = map[string]string{"pdf": "P2"}
 
 func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error) {
 	format := strings.ToLower(strings.TrimSpace(in.Format))
 	switch {
 	case format == "":
-		return errValidation("render: missing required field: format", "Pass format: md or html."), nil
+		return errValidation("render: missing required field: format", "Pass format: docx, html or md."), nil
 	case renderFormatsLater[format] != "":
-		return errBusiness("render: "+format+" is not available on this server yet", "Render as html or md for now."), nil
+		return errBusiness("render: "+format+" is not available on this server yet", "Render as docx, html or md for now."), nil
 	case !render.Supported(format):
-		return errValidation(fmt.Sprintf("render: unknown format %q", in.Format), "Pass format: md or html."), nil
+		return errValidation(fmt.Sprintf("render: unknown format %q", in.Format), "Pass format: docx, html or md."), nil
 	}
 	sources := 0
 	for _, s := range []string{in.Document, in.DocPath, in.Path} {
