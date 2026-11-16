@@ -486,7 +486,9 @@ func (s *Server) Document(ctx context.Context, req *loomcyclepb.SubstrateRequest
 		return nil, err
 	}
 	return s.dispatchSubstrateRPCCtx(ctx, "Document", req, substrateGRPCDataCtx, func(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
-		res, err := s.connector.Document(ctx, in)
+		// An app surface like POST /v1/_document: color_scheme stays in the
+		// default answer here (builtin.WithDocumentColorSchemes).
+		res, err := s.connector.Document(builtin.WithDocumentColorSchemes(ctx), in)
 		if err != nil {
 			return connector.ToolResult{}, err
 		}

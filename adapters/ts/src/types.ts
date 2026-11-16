@@ -4726,6 +4726,9 @@ export type DocumentToolInput = {
   with_summary?: boolean;
   /** with_summary: the most abstract characters a response carries (default 2000, max 8000). */
   summary_chars?: number;
+  /** get_document / documents_summary / graph_snapshot: return each document's
+   *  color_scheme (default true over HTTP and gRPC; false leaves the palette out). */
+  include_color_scheme?: boolean;
   /** search: rank the annotations too — "include" fuses them with the passages,
    *  "only" answers from them alone (a question about the corpus as a whole). */
   annotations?: "none" | "include" | "only";

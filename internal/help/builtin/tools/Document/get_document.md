@@ -23,7 +23,7 @@ turn a path into a `document_id` and a `root_chunk_id`.
 ## Returns
 
 `{document_id, title, root_chunk_id, color_enabled}`, plus when present:
-`type`, `status`, `tags`, `color_scheme`, and `provenance` for an imported
+`type`, `status`, `tags`, and `provenance` for an imported
 document: where it came from — `origin` (`import`), the captured file's
 `file`, `media_type`, `sha256`, `captured_from`, `captured_at` and `run_id`
 when it was imported from a file a tool returned, and `source_url`,

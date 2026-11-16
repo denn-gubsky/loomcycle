@@ -185,7 +185,9 @@ document. It carries titles and metadata, never bodies.
   `kinds`, `fact_classes`, `methods`), `-1` = none.
   - `documents`: `ids, titles, root_chunk_ids, type_code, status_code,
     created_at, updated_at, color_enabled, color_scheme, paths` (every Path
-    name, shortest first).
+    name, shortest first). `color_scheme` (the display palette) comes over
+    HTTP and gRPC; an in-run or MCP call gets it only with
+    `include_color_scheme: true`.
   - `chunks`: `ids, document_idx, parent_idx, position, type_code,
     status_code, titles, valid_at, invalid_at, updated_at`, plus `is_fact,
     fact_class_code, fact_confidence, fact_retired` with `facts`. Each

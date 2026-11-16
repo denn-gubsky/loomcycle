@@ -167,8 +167,16 @@ func (s *Server) handleSubstratePath(w http.ResponseWriter, r *http.Request) {
 // RFC AK chunked-graph documents. Bearer-authed; requires SQL Memory. Uses the
 // USER-aware ctx so off-run user-scoped documents interoperate with the
 // principal's agent runs (see substrateAdminUserCtx).
+//
+// The Web UI explorer and universe render each document's color_scheme from
+// this route without asking for it, so it stays in the default answer here (an
+// in-run or MCP call leaves it out; see builtin.WithDocumentColorSchemes).
 func (s *Server) handleSubstrateDocument(w http.ResponseWriter, r *http.Request) {
-	s.dispatchSubstrateCtxGuarded(w, r, "Document", s.Document, s.substrateBrowseCtxFn(r), s.browseGuard(r, "user", builtin.DocumentCallReadsOnly))
+	browse := s.substrateBrowseCtxFn(r)
+	ctxFn := func(ctx context.Context) context.Context {
+		return builtin.WithDocumentColorSchemes(browse(ctx))
+	}
+	s.dispatchSubstrateCtxGuarded(w, r, "Document", s.Document, ctxFn, s.browseGuard(r, "user", builtin.DocumentCallReadsOnly))
 }
 
 // handleSubstrateDocumentAsset serves GET /v1/_document/asset/{chunk_id} — the

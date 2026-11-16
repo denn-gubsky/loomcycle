@@ -21,7 +21,8 @@ a shorter answer than you asked for is not an error.
 ## Returns
 
 `{documents: [{document_id, title, root_chunk_id, color_enabled, type?,
-status?, color_scheme?}]}`. `type` and `status` are the root chunk's. When more
+status?}]}`. `type` and `status` are the root chunk's. The display palette
+(`color_scheme`) is left out unless you pass `include_color_scheme: true`. When more
 documents matched than `limit`, you also get `truncated: true` and a `note`.
 There is no cursor: to page, list the directory with `Path op=ls` and pass each
 page's ids as `document_ids`.

@@ -301,7 +301,7 @@ func (d *Document) graphSnapshot(ctx context.Context, key sqlmem.ScopeKey, mscop
 		docIdx[doc.id] = i
 	}
 	if req.include["documents"] {
-		sec, err := d.snapshotDocuments(ctx, key, mscope, docs, &codeTypes, &codeStatuses)
+		sec, err := d.snapshotDocuments(ctx, key, mscope, docs, &codeTypes, &codeStatuses, wantsColorScheme(ctx, in))
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
@@ -582,7 +582,7 @@ func snapshotTreeOrder(root string, rows []snapshotChunk) (order []int, parent [
 	return order, parent
 }
 
-func (d *Document) snapshotDocuments(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docs []snapshotDoc, types, statuses *snapshotCodes) (map[string]any, error) {
+func (d *Document) snapshotDocuments(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docs []snapshotDoc, types, statuses *snapshotCodes, withScheme bool) (map[string]any, error) {
 	pageIDs := make([]string, len(docs))
 	for i, doc := range docs {
 		pageIDs[i] = doc.id
@@ -623,11 +623,15 @@ func (d *Document) snapshotDocuments(ctx context.Context, key sqlmem.ScopeKey, m
 			}
 		}
 	}
-	return map[string]any{
+	sec := map[string]any{
 		"ids": ids, "titles": titles, "root_chunk_ids": roots, "type_code": typeCode, "status_code": statusCode,
-		"created_at": created, "updated_at": updated, "color_enabled": colorEnabled, "color_scheme": colorScheme,
+		"created_at": created, "updated_at": updated, "color_enabled": colorEnabled,
 		"paths": paths,
-	}, nil
+	}
+	if withScheme {
+		sec["color_scheme"] = colorScheme
+	}
+	return sec, nil
 }
 
 // snapshotChunkSection lays the page's chunks out document by document, each
