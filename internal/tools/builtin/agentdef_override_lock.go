@@ -48,11 +48,19 @@ func (a *AgentDef) admitOverrideLockChange(ctx context.Context, op, tenant, name
 	if !tools.IsOperatorPlane(ctx) {
 		return fmt.Errorf("%s: %q locks its per-run settings (allow_overrides: false), and only an operator may take that off; keep \"allow_overrides\": false in this version", op, name)
 	}
+	return a.recordOverrideLockLift(ctx, op, tenant, name)
+}
+
+// recordOverrideLockLift records an operator taking name's override lock off,
+// and refuses the change when the record cannot be written. A team's own
+// agent is recorded under <team>/<name> (teamgraph.QualifiedLocalName), which
+// no stored agent's name can be.
+func (a *AgentDef) recordOverrideLockLift(ctx context.Context, op, tenant, name string) error {
 	subject := ""
 	if p, ok := auth.PrincipalFromContext(ctx); ok {
 		subject = p.Subject
 	}
-	const action = "allow_overrides_lock_removed"
+	const action = actionOverrideLockRemoved
 	if a.Audit != nil {
 		if err := a.Audit.Record(audit.Event{
 			Action: action, TargetTenant: tenant, TargetName: name,
