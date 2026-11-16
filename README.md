@@ -218,7 +218,9 @@ new `loomcycle-worker` image, take every extraction, OCR render and audio
 conversion, so one hostile file kills a worker, not the runtime.
 `loomcycle-media` is retired. It also keeps an agent's override lock,
 no-trace retention and read-only modes across its whole version history.
-Read its upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+Its patch release lets an MCP server lower the size at which a base64 file is
+captured, and refuses an encrypted PDF before reading it. Read the upgrade
+notes in [`REVISIONS.md`](REVISIONS.md).
 
 Before it, v1.153.0 gave every setting one place. 150 environment
 variables are no longer read: policy and tuning moved to the yaml, limits

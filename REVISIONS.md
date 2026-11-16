@@ -8,10 +8,25 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
-## Unreleased (on `main` after v1.154.0)
+## What's in v1.154.1
 
-- **A per-server minimum for base64 capture.** `binary_results_min_bytes` beside `binary_results` on a yaml `mcp_servers.<name>` entry or an `MCPServerDef` overlay sets the shortest base64 string `binary_results: capture` takes for a file on that server (default `4096`). A server that returns small files, such as short text notes, as base64 inside JSON lowers it, and those files are kept in the run's inbox again instead of reaching the model as base64. A value under `128`, or the key without `binary_results: capture`, is refused at load and at create or fork. The value is part of the def's content hash, and `4096` hashes as its absence, so existing defs keep their hashes. `@loomcycle/client` gains `binaryResultsMinBytes` on `ensureMcpServer`; the release that carries it bumps the adapter.
+*An MCP server can lower the size at which a base64 file in its answer is captured into the run's inbox, which an environment variable did for the whole runtime before v1.153.0; an encrypted PDF is refused before it is read; an operator lifting a team agent's override lock is audited.*
+
+The v1.154.1 line: #2651 to #2654.
+- `@loomcycle/client` 1.154.1: `binaryResultsMinBytes` on `ensureMcpServer`. The Python adapter stays at 1.154.0; no change there.
+- No migrations, no wire breakage.
+- A patch tag builds only `loomcycle-browser`. This release is also built in full (a `force_full` dispatch), so `denngubsky/loomcycle:1.154.1`, the other images and the binaries are published.
+
+### MCP capture (#2654)
+
+- **A per-server minimum for base64 capture.** `binary_results_min_bytes` beside `binary_results` on a yaml `mcp_servers.<name>` entry or an `MCPServerDef` overlay sets the shortest base64 string `binary_results: capture` takes for a file on that server (default `4096`). A server that returns small files, such as short text notes, as base64 inside JSON lowers it, and those files are kept in the run's inbox again instead of reaching the model as base64. A value under `128`, or the key without `binary_results: capture`, is refused at load and at create or fork. The value is part of the def's content hash, and `4096` hashes as its absence, so existing defs keep their hashes. `@loomcycle/client` gains `binaryResultsMinBytes` on `ensureMcpServer`.
 - **`LOOMCYCLE_FILE_BASE64_MIN_BYTES` is a moved setting.** v1.153.0 made the minimum a constant and only advised the variable, so a deployment that had lowered it lost the setting on upgrade. Set to a positive number other than `4096`, it now refuses the boot until the yaml names `binary_results_min_bytes` on at least one MCP server; otherwise it is advised. Its value is still not read. [`docs/SETTINGS_MIGRATION.md`](docs/SETTINGS_MIGRATION.md) lists it in table A.
+
+### Fixes
+
+- **An encrypted PDF is refused before it is parsed (#2652).** The runtime reads the first and last 64 KiB and refuses a file whose trailer, or cross-reference stream, names both `/Encrypt` and `/Root`. Before, the file was read whole first: a 22 MB encrypted PDF took 390 MiB, enough to kill a conversion worker with a small memory limit. The refusal after parsing stays for anything the check misses.
+- **An operator lifting a team agent's override lock is audited (#2651),** as the same lift on a stored agent already is. The change is refused when the audit record cannot be written.
+- **The hand-written OAuth examples name the 5-5 models (#2653):** `bundles/document-agent/loomcycle_oauth.yaml` and the OAuth-dev examples in `docs/PROVIDERS.md`.
 
 ## What's in v1.154.0
 
