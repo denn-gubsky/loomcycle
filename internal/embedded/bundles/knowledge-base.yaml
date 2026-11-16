@@ -76,21 +76,26 @@
 #                 candidate documents (searches of passages, summaries and each
 #                 clause of the question, then one hop of relations), ranks them
 #                 and keeps the top 120; kb/walker screens their IDS ONLY (no
-#                 document text enters its trusted prompt) and ends with FITS
-#                 and SET ASIDE lines; code sends the candidates it left out back
-#                 once (two walker runs at most) and computes the COVERAGE line
-#                 (complete only when every candidate was sorted and none was
-#                 cut) and a `SURVEY: candidates … | rounds … | RUNS: …` line.
+#                 document text enters its trusted prompt) in slices of 25, in
+#                 parallel, each round replying with only FITS and SET ASIDE
+#                 lines; a round that fails, stops at the output cap or lacks a
+#                 line is retried once as two halves; one more walker round
+#                 writes the overview from the ids that fit. Code computes the
+#                 COVERAGE line (complete only when every candidate was sorted,
+#                 none was cut, and the passage search's facet window covered
+#                 every match) and a `SURVEY: candidates … | slices … | failed
+#                 slices … | rounds … | RUNS: …` line.
 #                 A gather step that fails or finds nothing falls back to a
 #                 plain walk, reported partial.
 #   kb/walker   — an LLM agent at tier `middle`, Document and Path, tenant scope:
 #                 walks the document tree by its summaries (kb/ask's fallback
-#                 after a partial search), or screens kb/survey's candidate
-#                 list. A walk ends with a COVERAGE line, partial with an
+#                 after a partial search), or screens a slice of kb/survey's
+#                 candidates, or writes kb/survey's overview from the ids that
+#                 fit. A walk ends with a COVERAGE line, partial with an
 #                 UNCOVERED line of counts when it stopped on its call budget
 #                 before the facet counts were covered (kb/ask passes it on
-#                 unread); a screening ends with the FITS and SET ASIDE lines
-#                 instead. Both answering agents are told to only
+#                 unread); a screening replies with only the FITS and SET ASIDE
+#                 lines. Both answering agents are told to only
 #                 read; the runtime does not enforce it yet.
 #
 # OPERATIONAL DOCUMENTS. A document whose root type is SourceStub (a sync's
@@ -6017,7 +6022,8 @@ agents:
   kb/survey:
     provider: code-js
     # The tool ceiling, and the whole of it: Document runs the searches and
-    # reads the relations that gather the candidates, Agent runs kb/walker.
+    # reads the relations that gather the candidates, Agent runs kb/walker (a
+    # parallel spawn for the screening slices).
     # It calls no model of its own.
     tools: [Document, Agent]
     # The tenant knowledge base, read only: the runtime refuses every Document
@@ -6030,7 +6036,8 @@ agents:
     disable_context: true
     # Its session holds search results from tenant documents.
     internal: true
-    # Spans the gather step (about seventy reads) and up to two walker runs.
+    # Spans the gather step (about seventy reads), the screening rounds (in
+    # parallel, then one retry wave) and one writing round.
     run_timeout_seconds: 900
     code: |
       // kb/survey — answers an overview question ("what do we hold on X") with
@@ -6046,19 +6053,35 @@ agents:
       //    document appears in counts 2, a top-10 hit 1 more, a relation hop 1.
       //    Folder rows and folder annotation documents are not candidates. The
       //    CAP highest-weighted are kept (ties by id); the rest are counted.
-      // 2. SCREEN (model). kb/walker gets the candidate document IDS and nothing
-      //    else, reads their briefs itself, and ends with two lines:
+      // 2. SCREEN (model). The candidates are cut into slices of SLICE ids, one
+      //    kb/walker round each, all in one parallel spawn. A round gets its
+      //    slice's document IDS and nothing else, reads their briefs itself, and
+      //    replies with only two lines:
       //      FITS: <id>, ...
       //      SET ASIDE: <id>, ...
-      // 3. CHECK (code). A candidate in neither line is unaccounted. Unaccounted
-      //    candidates go back to the walker once more, alone. At most ROUNDS runs.
-      // 4. ANSWER. The walker's text without the FITS, SET ASIDE, COVERAGE and
-      //    UNCOVERED lines, then a coverage line code computes:
-      //      COVERAGE: complete  every candidate accounted for, none cut;
+      //    One reply cannot carry 120 ids and an answer: a round handed them all
+      //    stopped at the output cap before its accounting lines.
+      // 3. CHECK (code). A round FAILED when it did not complete, stopped at the
+      //    output cap (it still reports completed), was cut to fit this run, or
+      //    lacks either line; nothing it said is taken. A failed slice, and the
+      //    ids a good round named in neither line, go back once more as two
+      //    halves. What is still unnamed then stays unaccounted. Screening texts
+      //    are never joined into the answer.
+      // 4. ANSWER. One more kb/walker round writes the overview from the ids that
+      //    fit (ids only again); its FITS, SET ASIDE, COVERAGE and UNCOVERED
+      //    lines are stripped. Nothing fits: code says so, with no round. The
+      //    writing round fails: code lists the fitting ids as links. Then a
+      //    coverage line code computes:
+      //      COVERAGE: complete  every candidate accounted for, none cut by the
+      //                          cap, and the passage search's facet window
+      //                          covered every matching passage;
       //      COVERAGE: partial   otherwise, then
       //      UNCOVERED: <n> candidates not screened; <m> beyond the cap of <CAP>
+      //                 [; the searches may not have reached every matching document]
       //    and the trailer
-      //      SURVEY: candidates <kept> (cut <m>) | rounds <r> | RUNS: <run:status, ...>
+      //      SURVEY: candidates <kept> (cut <m>) | slices <s> | failed slices <f> |
+      //              rounds <walker runs> | RUNS: <run:status[/max_tokens], ...>
+      //    failed slices counts every screening round that failed, retries too.
       //    A gather step that throws or finds nothing falls back to a plain walk;
       //    its coverage is partial, and the trailer says why.
       //
@@ -6078,7 +6101,7 @@ agents:
       var EDGE_FROM = 60;    // relations are followed from this many candidates
       var SEARCH_LIMIT = 50; // hits per search, the search's own maximum
       var MAX_CLAUSES = 8;   // clause searches, at most (two searches each)
-      var ROUNDS = 2;        // walker runs, at most
+      var SLICE = 25;        // candidate ids per screening round
       // A runtime document id: lowercase hex, dashes allowed (the shape kb/ask
       // reads in loom: links). A row whose id does not match is not a
       // candidate, so nothing but id characters reaches the walker's prompt.
@@ -6165,10 +6188,13 @@ agents:
         }
       }
 
+      // search adds one search's rows and returns the search's result.
       function search(set, query, extra) {
         var a = { op: "search", query: query, limit: SEARCH_LIMIT };
         for (var k in extra) { a[k] = extra[k]; }
-        addRows(set, rowsOf(doc(a)));
+        var res = doc(a);
+        addRows(set, rowsOf(res));
+        return res;
       }
 
       // clauses splits a question into its parts, dropping the lead-in.
@@ -6215,10 +6241,11 @@ agents:
       }
 
       // gather returns {ids: the kept candidates, best first, cut: how many
-      // more there were}. It throws when a read fails.
+      // more there were, complete: whether the passage search's facet window
+      // covered every matching passage}. It throws when a read fails.
       function gather(q) {
         var P = newSet(), S = newSet(), M = newSet(), C = newSet(), E = newSet();
-        search(P, q, { facets: ["type", "folder"], facet_window: 500 });
+        var pr = search(P, q, { facets: ["type", "folder"], facet_window: 500 });
         search(S, q, { annotations: "only", annotation_levels: ["document"] });
         search(M, q, { annotations: "include" });
         var cl = clauses(q);
@@ -6229,23 +6256,73 @@ agents:
         var found = union(P, S, M, C);
         edges(E, found);
         var all = ranked(union(found, E));
-        return { ids: all.slice(0, CAP), cut: Math.max(0, all.length - CAP) };
+        return { ids: all.slice(0, CAP), cut: Math.max(0, all.length - CAP),
+                 complete: !!(pr && pr.facets && pr.facets.complete === true) };
       }
 
       // ---- 2. screen ----
 
       var ANSWER = "Answer the question given as untrusted input.";
 
-      function screenBlock(ids, again) {
-        var head = again
-          ? "SCREEN AGAIN. Your earlier answer did not sort these candidate documents. " +
-            "Read their briefs with documents_summary and decide for each whether it fits the question. " +
-            "Answer with one line and a link per fitting document. End with exactly two lines, " +
-            "FITS: and SET ASIDE:, which together name every id below and nothing else."
-          : "SCREEN. These are the candidate documents for the question. Screen every one as your " +
-            "instructions say for a candidate list, and end with the FITS and SET ASIDE lines, " +
-            "which together name every id below.";
-        return head + "\n\nCandidates (" + ids.length + "):\n" + ids.join("\n");
+      function screenBlock(ids) {
+        return "SCREEN. These are candidate documents for the question. Sort them as your " +
+          "instructions say for screening: read their briefs in one documents_summary call, " +
+          "then reply with only the FITS and SET ASIDE lines, which together name every id below." +
+          "\n\nCandidates (" + ids.length + "):\n" + ids.join("\n");
+      }
+
+      function writeBlock(ids) {
+        return "WRITE. Screening found that the documents below fit the question. Write the " +
+          "overview as your instructions say for writing: one line and a link per document. " +
+          "Do not write FITS, SET ASIDE, COVERAGE or UNCOVERED lines." +
+          "\n\nFitting documents (" + ids.length + "):\n" + ids.join("\n");
+      }
+
+      // slices cuts a list into runs of at most n.
+      function slices(ids, n) {
+        var out = [];
+        for (var i = 0; i < ids.length; i += n) { out.push(ids.slice(i, i + n)); }
+        return out;
+      }
+
+      // halves splits a list in two, the first half the larger; a single id
+      // stays one list.
+      function halves(ids) {
+        if (ids.length < 2) { return [ids]; }
+        var h = Math.ceil(ids.length / 2);
+        return [ids.slice(0, h), ids.slice(h)];
+      }
+
+      // screenAll runs one screening round per id list in ONE parallel spawn;
+      // the runtime runs at most the agent's max_concurrent_children of them at
+      // once. Returns each round's outcome object, in order. A row with no
+      // object (a child that never started) or a call that throws is a round
+      // that failed.
+      function screenAll(lists) {
+        var spawns = [], rows = [], err = "";
+        for (var i = 0; i < lists.length; i++) { spawns.push(spawnArgs("kb/walker", ANSWER, screenBlock(lists[i]), true)); }
+        try {
+          var r = Agent.spawn({ op: "parallel_spawn", spawns: spawns, result: "object" });
+          if (typeof r === "string") { r = JSON.parse(r); }
+          rows = (r && r.results) || [];
+        } catch (e) {
+          err = errText(e);
+        }
+        var out = [];
+        for (i = 0; i < lists.length; i++) {
+          var row = null;
+          for (var j = 0; j < rows.length; j++) { if (rows[j] && rows[j].index === i) { row = rows[j]; } }
+          var o;
+          if (row && row.result) {
+            o = row.result;
+            if (row.truncated) { o.truncated = true; }
+          } else {
+            o = { run_id: row && row.run_id ? row.run_id : "-", status: row ? (row.status || "not_started") : "not_started",
+                  error: row ? row.error : (err || "no result row") };
+          }
+          out.push(o);
+        }
+        return out;
       }
 
       // ---- 3. check ----
@@ -6287,24 +6364,49 @@ agents:
 
       // readAnswer takes the accounting and coverage lines out of an answer.
       // A FITS or SET ASIDE line may carry its ids on the following lines.
-      // Returns {text, accounted: the candidate ids it named}.
+      // Returns {text: the rest, fits and aside: the ids of cands each line
+      // named, lines: how many of the two labels it found}.
       function readAnswer(text, cands) {
-        var lines = String(text || "").split("\n"), keep = [], named = newSet(), inList = false;
+        var lines = String(text || "").split("\n"), keep = [], fits = newSet(), aside = newSet();
+        var into = null, seen = newSet();
         for (var i = 0; i < lines.length; i++) {
           var p = plain(lines[i]);
           var m = /^(FITS|SET[\s-]*ASIDE)\s*(\([^)]*\))?\s*:(.*)$/i.exec(p);
           var w = null;
-          if (m) { w = idTokens(m[3]); inList = true; }
-          else if (inList && onlyIDs(lines[i], cands)) { w = idTokens(lines[i]); }
-          else {
-            inList = false;
+          if (m) {
+            into = /^FITS$/i.test(m[1]) ? fits : aside;
+            seen[into === fits ? "fits" : "aside"] = 1;
+            w = idTokens(m[3]);
+          } else if (into && onlyIDs(lines[i], cands)) {
+            w = idTokens(lines[i]);
+          } else {
+            into = null;
             if (coverageLine(lines[i]) || /^UNCOVERED\s*:/i.test(p)) { continue; }
             keep.push(lines[i]);
             continue;
           }
-          for (var j = 0; j < w.length; j++) { if (cands[w[j]]) { named[w[j]] = 1; } }
+          for (var j = 0; j < w.length; j++) { if (cands[w[j]]) { into[w[j]] = 1; } }
         }
-        return { text: keep.join("\n").replace(/^\s+|\s+$/g, ""), accounted: named };
+        return { text: keep.join("\n").replace(/^\s+|\s+$/g, ""), fits: fits, aside: aside,
+                 lines: (seen.fits ? 1 : 0) + (seen.aside ? 1 : 0) };
+      }
+
+      // cutShort says why a round's answer cannot be used, or "" when it can.
+      // A run stopped by the output cap still reports completed, so the stop
+      // reason is checked on its own; so is an answer cut to fit this run's
+      // window.
+      function cutShort(o) {
+        if (o.status !== "completed") { return o.status || "no status"; }
+        if (o.stop_reason === "max_tokens") { return "max_tokens"; }
+        if (o.truncated) { return "truncated"; }
+        return "";
+      }
+
+      function runTag(o) {
+        var t = (o.run_id || "-") + ":" + o.status;
+        if (o.stop_reason === "max_tokens") { t += "/max_tokens"; }
+        if (o.truncated) { t += "/truncated"; }
+        return t;
       }
 
       function plainWalk(why) {
@@ -6313,6 +6415,26 @@ agents:
         var text = readAnswer(res.final_text, newSet()).text;
         if (!text) { text = "No answer: the walker gave none (" + res.status + (res.error ? ": " + res.error : "") + ")."; }
         return text + "\n\nCOVERAGE: partial\nUNCOVERED: " + why;
+      }
+
+      // ---- 4. answer ----
+
+      function linkList(ids, why) {
+        var out = ["Note: the overview could not be written (" + why + "), so these are the " + ids.length +
+          " documents that fit, by id."];
+        for (var i = 0; i < ids.length; i++) { out.push("- [" + ids[i] + "](loom:doc/" + ids[i] + "?scope=tenant)"); }
+        return out.join("\n");
+      }
+
+      function writeAnswer(fitIDs) {
+        var set = newSet();
+        for (var i = 0; i < fitIDs.length; i++) { set[fitIDs[i]] = 1; }
+        var res = call(spawnArgs("kb/walker", ANSWER, writeBlock(fitIDs), true));
+        runs.push(runTag(res));
+        var why = cutShort(res);
+        var text = why ? "" : readAnswer(res.final_text, set).text;
+        if (!why && !text) { why = "no text"; }
+        return why ? linkList(fitIDs, why + (res.error ? ": " + String(res.error).replace(/\s+/g, " ") : "")) : text;
       }
 
       function run(input) {
@@ -6331,30 +6453,56 @@ agents:
           return { final_text: t0 + "\nSURVEY: candidates 0 (cut " + g.cut + ") | rounds 1 | RUNS: " + runs.join(", ") };
         }
 
-        var cands = newSet();
-        for (var i = 0; i < g.ids.length; i++) { cands[g.ids[i]] = 1; }
-        var accounted = newSet(), texts = [], notes = [], left = g.ids, round = 0;
-        while (left.length && round < ROUNDS) {
-          round++;
-          var res = call(spawnArgs("kb/walker", ANSWER, screenBlock(left, round > 1), true));
-          runs.push(res.run_id + ":" + res.status);
-          if (res.status !== "completed") {
-            notes.push("Note: screening round " + round + " ended " + res.status + (res.error ? " (" + String(res.error).replace(/\s+/g, " ") + ")" : "") + ".");
+        // Screen: every slice once, then each failed slice (and the ids a
+        // good round left out) once more as two halves. Nothing a failed
+        // round said is taken.
+        var fits = newSet(), accounted = newSet(), failed = 0;
+        var pass = slices(g.ids, SLICE), sliceCount = pass.length;
+        for (var round = 0; round < 2 && pass.length; round++) {
+          var outs = screenAll(pass), again = [];
+          for (var i = 0; i < pass.length; i++) {
+            runs.push(runTag(outs[i]));
+            var own = newSet();
+            for (var j = 0; j < pass[i].length; j++) { own[pass[i][j]] = 1; }
+            var a = readAnswer(outs[i].final_text, own);
+            if (cutShort(outs[i]) || a.lines < 2) {
+              failed++;
+              again = again.concat(halves(pass[i]));
+              continue;
+            }
+            for (var k in a.aside) { accounted[k] = 1; }
+            for (k in a.fits) { accounted[k] = 1; fits[k] = 1; }
+            var rest = [];
+            for (j = 0; j < pass[i].length; j++) { if (!accounted[pass[i][j]]) { rest.push(pass[i][j]); } }
+            if (rest.length) { again = again.concat(halves(rest)); }
           }
-          var a = readAnswer(res.final_text, cands);
-          if (a.text) { texts.push(a.text); }
-          for (var k in a.accounted) { accounted[k] = 1; }
-          var next = [];
-          for (var j = 0; j < left.length; j++) { if (!accounted[left[j]]) { next.push(left[j]); } }
-          left = next;
+          pass = again;
         }
 
-        var body = texts.length ? texts.join("\n\n") : "No answer: the walker gave none.";
-        if (notes.length) { body += "\n\n" + notes.join("\n"); }
-        var cov = !left.length && g.cut === 0
-          ? "COVERAGE: complete"
-          : "COVERAGE: partial\nUNCOVERED: " + left.length + " candidates not screened; " + g.cut + " beyond the cap of " + CAP;
-        var tail = "SURVEY: candidates " + g.ids.length + " (cut " + g.cut + ") | rounds " + round + " | RUNS: " + runs.join(", ");
+        var left = [], fitIDs = [];
+        for (i = 0; i < g.ids.length; i++) {
+          if (!accounted[g.ids[i]]) { left.push(g.ids[i]); }
+          if (fits[g.ids[i]]) { fitIDs.push(g.ids[i]); }
+        }
+
+        var body;
+        if (fitIDs.length) {
+          body = writeAnswer(fitIDs);
+        } else if (left.length < g.ids.length) {
+          body = "None of the " + (g.ids.length - left.length) + " candidate documents fits the question.";
+        } else {
+          body = "No answer: no screening round could be used.";
+        }
+
+        var cov;
+        if (!left.length && g.cut === 0 && g.complete) {
+          cov = "COVERAGE: complete";
+        } else {
+          cov = "COVERAGE: partial\nUNCOVERED: " + left.length + " candidates not screened; " + g.cut + " beyond the cap of " + CAP +
+            (g.complete ? "" : "; the searches may not have reached every matching document");
+        }
+        var tail = "SURVEY: candidates " + g.ids.length + " (cut " + g.cut + ") | slices " + sliceCount +
+          " | failed slices " + failed + " | rounds " + runs.length + " | RUNS: " + runs.join(", ");
         return { final_text: body + "\n\n" + cov + "\n" + tail };
       }
 
@@ -6444,8 +6592,9 @@ agents:
   kb/walker:
     # Walks the document tree by its summaries: up, down, sideways and to the
     # common folder; about a quarter larger a prompt than kb/search. Given a
-    # candidate list by kb/survey it screens it instead (SCREENING) and ends with
-    # the FITS and SET ASIDE lines kb/survey checks. Without a list it is the
+    # slice of candidates by kb/survey it screens it instead (SCREENING) and
+    # replies with only the FITS and SET ASIDE lines kb/survey checks; given the
+    # ids that fit, it writes the overview (WRITING). Without a list it is the
     # fallback after a partial search.
     tools: [Document, Path]
     skills: [-*]
@@ -6477,19 +6626,26 @@ agents:
 
       {{memory:ontology}}
 
-      SCREENING. When the prompt gives you a list of candidate document ids,
-      sort every one of them instead of walking:
-        1. Read the briefs of ALL listed ids with documents_summary
-           ("document_ids", about 25 ids per call, "with_summary": true).
-        2. Decide for each id whether the document fits the question. Open a
-           document only when its brief is unclear.
-        3. You may search for more documents; add those that fit.
-        4. Answer with one line and a link per fitting document.
-        5. End with exactly these two lines, which together name every listed
-           id (write "none" for an empty list):
+      SCREENING. When the prompt says SCREEN and lists candidate document ids,
+      sort them instead of walking:
+        1. Read their briefs with ONE documents_summary call ("document_ids":
+           every listed id, "with_summary": true).
+        2. Decide for each id whether the document fits the question.
+        3. Reply with ONLY these two lines, which together name every listed id
+           (write "none" for an empty list):
              FITS: <id>, <id>, ...
              SET ASIDE: <id>, <id>, ...
-        Do not do the WIDEN steps, and write no other line after these two.
+        No answer, no links, no other line.
+
+      WRITING. When the prompt says WRITE and lists the ids of the documents
+      that fit the question, write the overview instead of walking:
+        1. You may read their briefs with documents_summary ("document_ids",
+           "with_summary": true).
+        2. Write one line and a link per listed document.
+        3. Add a document that is not listed only if you found it yourself and
+           it fits.
+        Do not write FITS, SET ASIDE, COVERAGE or UNCOVERED lines.
+
       Without a list, follow the steps below.
 
       Step 1. Decide what kind of question it is.
