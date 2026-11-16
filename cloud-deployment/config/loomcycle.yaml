@@ -59,10 +59,15 @@ timeout_scaling:
 # provider_priority and user_tiers.default come from `base`
 # ([ollama-local, deepseek, gemini, openai, anthropic, ollama]; fallback on,
 # three attempts). The tiers and the other user tiers differ from it on purpose.
+#
+# Anthropic is in no tier and in no user tier's provider list: a run reaches it
+# only when its agent names a Claude model (haiku, sonnet, opus), as test agents
+# pinned to one do. So the operator's Anthropic key is never a fallback for a
+# tenant's ordinary runs. Its spend is capped on the Anthropic side.
 tiers:
-  low:    [local-small,  deepseek-flash, gemini-lite,  haiku,  gpt-mini]
-  middle: [local-medium, deepseek-flash, gemini-flash, sonnet, gpt]
-  high:   [local-high,   deepseek-pro,   gemini-pro, gemini-pro-preview, opus]
+  low:    [local-small,  deepseek-flash, gemini-lite,  gpt-mini]
+  middle: [local-medium, deepseek-flash, gemini-flash, gpt]
+  high:   [local-high,   deepseek-pro,   gemini-pro, gemini-pro-preview]
 
 # A run's `user_tier` picks one of these; `default` is required. An unknown
 # user_tier is refused. fallback_on_error has no default: omitted = false.
@@ -75,15 +80,15 @@ user_tiers:
       high:   [local-high]
     fallback_on_error: false
   low:
-    provider_priority: [ollama-local, deepseek, gemini, anthropic, openai]
+    provider_priority: [ollama-local, deepseek, gemini, openai]
     fallback_on_error: true
     max_fallback_attempts: 3
   medium:
-    provider_priority: [deepseek, gemini, anthropic, openai]
+    provider_priority: [deepseek, gemini, openai]
     fallback_on_error: true
     max_fallback_attempts: 3
   high:                       # best model or an error; no silent downgrade
-    provider_priority: [deepseek, anthropic]
+    provider_priority: [deepseek]
     fallback_on_error: false
 
 # ─── Memory ───────────────────────────────────────────────────────────
