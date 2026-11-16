@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
 
 // renderFixtureDoc imports a small document with a section, a picture and a
@@ -191,7 +193,6 @@ func TestFileRender_RefusesBadArguments(t *testing.T) {
 	f, ctx, d, _ := fileDocRun(t)
 	docID, _ := renderFixtureDoc(t, d, ctx)
 	for name, in := range map[string]map[string]any{
-		"later format":   {"op": "render", "document": docID, "format": "pdf"},
 		"unknown format": {"op": "render", "document": docID, "format": "rtf"},
 		"no format":      {"op": "render", "document": docID},
 		"two sources":    {"op": "render", "document": docID, "doc_path": "/board/protokol", "format": "md"},
@@ -322,4 +323,59 @@ func TestFileRender_DOCXRoundTripsThroughExtract(t *testing.T) {
 	if refs, _ := ex["image_refs"].([]any); len(refs) != 1 {
 		t.Errorf("image_refs = %v", ex["image_refs"])
 	}
+}
+
+// Where Typst is not installed, a PDF render says the server cannot write
+// PDF and offers docx, rather than a raw helper error.
+func TestFileRender_PDFWithoutTheTypesetterSaysSo(t *testing.T) {
+	f, ctx, d, _ := fileDocRun(t)
+	ctx = withInboxScratch(t, ctx)
+	f.pdfCommand = "loomcycle-no-such-typesetter compile {in} {out}"
+	docID, _ := renderFixtureDoc(t, d, ctx)
+	_, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": "pdf"})
+	if !res.IsError || !strings.Contains(res.Text, "cannot write PDF") {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+// A PDF render read back by op=extract gives the document's headings and
+// text, and its body's script as text (RFC GR §7). Skipped where typst is
+// missing; the CI job that installs it sets LOOMCYCLE_REQUIRE_TYPST.
+func TestFileRender_PDFRoundTripsThroughExtract(t *testing.T) {
+	if _, err := exec.LookPath("typst"); err != nil {
+		if os.Getenv("LOOMCYCLE_REQUIRE_TYPST") != "" {
+			t.Fatal("typst is required here and not on PATH")
+		}
+		t.Skip("typst not installed")
+	}
+	f, ctx, d, _ := fileDocRun(t)
+	ctx = withInboxScratch(t, ctx)
+	docID, _ := renderFixtureDoc(t, d, ctx)
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": "pdf", "toc": true})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if !strings.HasSuffix(asStr(out["ref"]), ".pdf") || asStr(out["media_type"]) != "application/pdf" {
+		t.Fatalf("result = %v", out)
+	}
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": out["ref"]})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	text := asStr(ex["excerpt"])
+	for _, want := range []string{"Протокол", "Порядок денний", "Перше питання", "Рішення", "alert(1)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the extracted render lacks %q:\n%s", want, text)
+		}
+	}
+}
+
+// withInboxScratch binds the inbox as a volume, as a run has it: the PDF
+// typesetter runs in a scratch folder there when it runs in process.
+func withInboxScratch(t *testing.T, ctx context.Context) context.Context {
+	t.Helper()
+	root := t.TempDir()
+	return tools.UpdateRunPolicy(ctx, func(p *tools.RunPolicy) {
+		p.Volumes.Bindings = append(p.Volumes.Bindings, tools.VolumeBinding{Name: inbox.Name, Root: root})
+	})
 }

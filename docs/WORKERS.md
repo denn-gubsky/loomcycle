@@ -68,15 +68,18 @@ Each runtime replica keeps its own quarantine: a file that killed a worker is re
 
 ## Helper programs
 
-The worker image ships ffmpeg and poppler, and sets these commands:
+The worker image ships ffmpeg, poppler and Typst (with the Noto Sans and Noto Sans Mono fonts), and sets these commands:
 
 | Variable | Default in the image | The runtime setting it stands for |
 |---|---|---|
 | `LOOMCYCLE_WORKER_MEDIA_COMMAND` | `ffmpeg -nostdin -i {in} -ac 1 -ar 16000 -f wav {out}` | `transcription.stt.media.command` |
 | `LOOMCYCLE_WORKER_RASTERIZE_COMMAND` | `pdftoppm -r 150 -png {in} {out_prefix}` | `transcription.ocr.rasterize.command` |
 | `LOOMCYCLE_WORKER_ENCODE_COMMAND` | `ffmpeg -nostdin -i {in} -c:a libopus -b:a 32k {out}` | `speech.encode.command` |
+| `LOOMCYCLE_WORKER_WRITE_COMMAND` | `typst compile --root {dir} {in} {out}` | none: a Document rendered as a PDF (`File op=render format: pdf`) |
 
 A worker reads its commands from its own environment, never from the runtime: a job says what to convert, not what to run. The runtime's own setting still decides whether a conversion is wanted at all (an OCR pass renders pages only when `transcription.ocr.rasterize` is set, a recording is converted only when `transcription.stt.media` is), so set both. A worker offers a helper's jobs only when the program resolves on its `PATH`; when no attached worker has it, the call is refused as if the setting were unset. In `local` mode the runtime hands its own commands to its children, so there is one place to set them.
+
+The PDF typesetter is the exception to "set both": a PDF render has no runtime setting, and a worker takes PDF renders whenever `typst` is on its `PATH` (or `LOOMCYCLE_WORKER_WRITE_COMMAND` names another program). It is handed `{in}`, the Typst source the runtime wrote (`main.typ`, which reads its pictures from `images/` beside it and imports nothing), `{out}`, the PDF to write, and `{dir}`, the job's folder. The runtime checks what comes back: a PDF that opens, of at most 2000 pages and 64 MiB. A worker built before PDF rendering never receives a PDF job. In `local` mode, and in process, the runtime runs `typst` from its own `PATH`; where it is missing, a PDF render answers that the server cannot write PDF.
 
 The helpers run as they do in the runtime: no shell, a scrubbed environment, a timeout, in the worker's scratch directory. `LOOMCYCLE_HELPER_WRAPPER` confines them further, as it does in the runtime.
 

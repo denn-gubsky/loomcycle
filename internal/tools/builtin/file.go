@@ -72,6 +72,11 @@ type File struct {
 	// and page cuts run there. nil runs them here, under Extractions. Page
 	// rendering runs here either way until RFC GO P2.
 	Convert convert.Client
+	// HelperWrapper is LOOMCYCLE_HELPER_WRAPPER, the confinement command a
+	// PDF render's typesetter runs under when it runs in this process.
+	HelperWrapper string
+	// pdfCommand overrides convert.DefaultPDFCommand, for tests.
+	pdfCommand string
 }
 
 func (f *File) Name() string { return FileToolName }
@@ -88,7 +93,7 @@ func (f *File) Description() string {
 		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost; a VTT or SRT caption file becomes a timed transcript), " +
 		"transcribe (turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model, and return an excerpt; dry_run says how many minutes and what it would cost), " +
 		"import (build a Document from such a Markdown file, its pictures attached as image chunks), " +
-		"render (write a Document you may read, or a Markdown file, as a file to send: docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import). " +
+		"render (write a Document you may read, or a Markdown file, as a file to send: pdf, docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, or `volume:path` for your default volume; a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
 }
@@ -128,7 +133,7 @@ func (f *File) InputSchema() json.RawMessage {
 			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import, render: the document store. Default user."},
 			"document":      {"type": "string", "description": "render: the id of the document to render. Pass exactly one of document, doc_path or path."},
 			"chunk":         {"type": "string", "description": "render: render only the part of the document under this chunk (a section id); its title becomes the file's title."},
-			"format":        {"type": "string", "enum": ["md", "html", "docx", "pdf"], "description": "render: the file to write. docx (a Word document), html (one self-contained page) or md (clean Markdown, its pictures as files in a folder beside it); pdf comes later."},
+			"format":        {"type": "string", "enum": ["md", "html", "docx", "pdf"], "description": "render: the file to write. pdf (paged, typeset), docx (a Word document), html (one self-contained page) or md (clean Markdown, its pictures as files in a folder beside it)."},
 			"toc":           {"type": "boolean", "description": "render: add a table of contents after the title. Default false."},
 			"title_page":    {"type": "boolean", "description": "render: put the title on a page of its own. Default false: the title, a Draft or Review label and a provenance and date line head the first page."},
 			"provenance":    {"type": "boolean", "description": "render: for an imported document, say where it came from under the title. Default true."},

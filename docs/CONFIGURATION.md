@@ -4444,6 +4444,7 @@ The worker reads these variables. In `local` mode the runtime sets them for its 
 | `LOOMCYCLE_WORKER_RASTERIZE_COMMAND` | — | The OCR page rasteriser this worker runs, written as `transcription.ocr.rasterize.command`. Unset: the worker takes no page rendering. |
 | `LOOMCYCLE_WORKER_MEDIA_COMMAND` | — | The recording converter, written as `transcription.stt.media.command`. Unset: no media conversion. |
 | `LOOMCYCLE_WORKER_ENCODE_COMMAND` | — | The speech encoder, written as `speech.encode.command`. Unset: no encoding. |
+| `LOOMCYCLE_WORKER_WRITE_COMMAND` | `typst compile --root {dir} {in} {out}` when `typst` is on `PATH` | The PDF typesetter for `File op=render format: pdf` (RFC GR). Placeholders `{in}` (the Typst source), `{out}` (the PDF) and `{dir}` (the job folder). Unset and no `typst`: the worker takes no PDF renders. |
 | `LOOMCYCLE_HELPER_WRAPPER` | — | The sandbox every helper runs under, as for the runtime (§ transcription). |
 
 A worker reads its helper commands from its own environment and never from the dispatcher: a job says what to convert, never what to run.

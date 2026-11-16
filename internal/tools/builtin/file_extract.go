@@ -136,6 +136,13 @@ func (f *File) converter() convert.Client {
 	if op := f.ocrConfig(); op != nil && op.Rasterize != nil {
 		p.Rasterize = &convert.Helper{Key: "transcription.ocr.rasterize", Command: op.Rasterize.Command, Wrapper: op.Rasterize.Wrapper, Timeout: ocrRasterizeTimeout}
 	}
+	// A PDF render runs Typst from PATH here, as the workers do (RFC GR
+	// P2); where it is not installed the render says so.
+	cmd := f.pdfCommand
+	if cmd == "" {
+		cmd = convert.DefaultPDFCommand
+	}
+	p.WritePDF = &convert.Helper{Key: convert.PDFHelperKey, Command: cmd, Wrapper: f.HelperWrapper, Timeout: convert.PDFRenderTimeout}
 	return p
 }
 

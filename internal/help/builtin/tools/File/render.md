@@ -1,6 +1,6 @@
 ---
 name: File/render
-description: "File op=render — write a Document you may read, or a Markdown file, as a file to send: Word (DOCX), HTML or Markdown, into the inbox or one of your volumes."
+description: "File op=render — write a Document you may read, or a Markdown file, as a file to send: PDF, Word (DOCX), HTML or Markdown, into the inbox or one of your volumes."
 ---
 `render` is the reverse of `import`: it writes a Document as a file people
 open, send and print. The runtime reads the document and writes the file, so
@@ -30,10 +30,12 @@ again (with `to`, copied there).
   is the title. For an HTML file, run `extract` first and render its Markdown.
 - `scope` — the document's store: `user` (default), `agent` or `tenant`.
 - `chunk` — render only the part of the document under this chunk, titled by it.
-- `format` — `docx` (a Word document: headings in Word's own heading styles,
+- `format` — `pdf` (typeset pages: page numbers, a table of contents with
+  page numbers when `toc` is set, internal links, pictures; at most 2000
+  pages), `docx` (a Word document: headings in Word's own heading styles,
   lists, tables, pictures, links, and the status in its properties), `html`
   (one self-contained page, pictures inside it) or `md` (clean Markdown, its
-  pictures as files in a folder beside it). `pdf` is not available yet.
+  pictures as files in a folder beside it).
 - `to` — a file in one of your read-write volumes. Its folder must exist.
   Default: `volume:inbox:rendered/<title>.<format>`.
 - `overwrite` — replace a file already at `to`. Default false.
@@ -53,7 +55,8 @@ report}`. `ref` is the file; `render_id` its row in the document's render log;
 `reused` is true when an earlier, unchanged file was used. `report` counts
 `sections`, `images` and `tables`, and what was left out: `images_skipped`
 (a picture that is not PNG, JPEG, GIF or WebP, too large, or only linked),
-`bodies_cut` (past 32 MiB of text) and `links_flattened`. A Markdown render
+`bodies_cut` (past 32 MiB of text) and `links_flattened`. In a PDF, a
+picture the typesetter could not read is shown as its alt text. A Markdown render
 also returns `image_refs`, the pictures written beside it.
 
 ## Errors
@@ -62,8 +65,10 @@ also returns `image_refs`, the pictures written beside it.
 - The document or chunk is not there, or not readable to you.
 - `to` names the inbox, a read-only volume or one you are not bound to, or a
   file that exists without `overwrite`.
-- `format` is `pdf`, which this server does not write yet.
-- The file would pass 64 MiB: render a part of the document with `chunk`.
+- `format` is `pdf` and the server has no typesetter (Typst) where it
+  converts files: render as `docx`, or ask an operator.
+- The file would pass 64 MiB, or a PDF 2000 pages: render a part of the
+  document with `chunk`.
 
 ## Examples
 
@@ -71,6 +76,12 @@ The board minutes as a Word document to send:
 
 ```json
 {"op": "render", "doc_path": "/board/2026/minutes", "scope": "tenant", "format": "docx"}
+```
+
+The same as a PDF to print, on letter paper, with a table of contents:
+
+```json
+{"op": "render", "doc_path": "/board/2026/minutes", "scope": "tenant", "format": "pdf", "toc": true, "page_size": "letter"}
 ```
 
 The same as a web page, with a table of contents:
