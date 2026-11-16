@@ -612,6 +612,9 @@ func (t *TeamDef) execCreate(ctx context.Context, in teamDefInput) (tools.Result
 	if err := t.checkNewName(ctx, in.Name); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
 	}
+	if err := t.configTeamGuard(ctx, "create", tools.RunIdentity(ctx).TenantID, in.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
 	defJSON, err := t.buildDefinition("", in.Overlay)
 	if err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
@@ -708,6 +711,9 @@ func (t *TeamDef) execFork(ctx context.Context, in teamDefInput) (tools.Result, 
 	// that never held it. That is a new name there, held to the same rule.
 	if err := t.checkNewName(ctx, in.Name); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	}
+	if err := t.configTeamGuard(ctx, "fork", tools.RunIdentity(ctx).TenantID, in.Name); err != nil {
+		return errResult(err.Error()), nil
 	}
 
 	ident := tools.RunIdentity(ctx)
@@ -899,6 +905,9 @@ func (t *TeamDef) execRetire(ctx context.Context, in teamDefInput) (tools.Result
 	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
 		return errResult(fmt.Sprintf("retire: def_id %q not found", in.DefID)), nil
 	}
+	if err := t.configTeamGuard(ctx, "retire", row.TenantID, row.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
 	// Un-retiring puts this version's own agents back in play.
 	if !*in.Retired {
 		if err := t.checkLocalNamesFree(ctx, row); err != nil {
@@ -945,9 +954,9 @@ func (t *TeamDef) execRetire(ctx context.Context, in teamDefInput) (tools.Result
 	return okJSON(out)
 }
 
-// execDelete hard-deletes a team by name (all versions + active pointer). Teams
-// are runtime-only, so an operator needs to remove an obsolete/test team, not
-// just retire a version. RFC N: scoped to the caller's tenant (mirrors
+// execDelete hard-deletes a team by name (all versions + active pointer), so an
+// operator can remove an obsolete/test team, not just retire a version. A team
+// the configuration holds is removed from the yaml instead (configTeamGuard). RFC N: scoped to the caller's tenant (mirrors
 // DynamicAgentDelete) — a principal can't delete another tenant's team.
 func (t *TeamDef) execDelete(ctx context.Context, in teamDefInput) (tools.Result, error) {
 	if in.Name == "" {
@@ -955,6 +964,9 @@ func (t *TeamDef) execDelete(ctx context.Context, in teamDefInput) (tools.Result
 	}
 	tenantID := tools.RunIdentity(ctx).TenantID
 	if err := t.memberTeamActivationGuard(ctx, "delete", tenantID, in.Name); err != nil {
+		return errResult(err.Error()), nil
+	}
+	if err := t.configTeamGuard(ctx, "delete", tenantID, in.Name); err != nil {
 		return errResult(err.Error()), nil
 	}
 	deleted, err := t.Store.TeamDefDelete(ctx, tenantID, in.Name)
@@ -983,6 +995,9 @@ func (t *TeamDef) execPromote(ctx context.Context, in teamDefInput) (tools.Resul
 	// with TeamDefSetActive, which also refuses when ident.TenantID ≠ row.TenantID.
 	if !defCallerIsAdmin(ctx) && row.TenantID != tools.RunIdentity(ctx).TenantID {
 		return errResult(fmt.Sprintf("promote: def_id %q not found", in.DefID)), nil
+	}
+	if err := t.configTeamGuard(ctx, "promote", row.TenantID, row.Name); err != nil {
+		return errResult(err.Error()), nil
 	}
 	if err := t.checkLocalNamesFree(ctx, row); err != nil {
 		return errResult(fmt.Sprintf("promote: %s", err)), nil
@@ -2643,7 +2658,7 @@ func teamDefRowResponseMap(row store.TeamDefRow) map[string]any {
 		"definition":               row.Definition,
 	}
 	if row.BootstrappedFromStatic && row.TenantID == "" {
-		m["source"] = "config"
+		m["source"] = store.TeamDefSourceConfig
 	}
 	return m
 }

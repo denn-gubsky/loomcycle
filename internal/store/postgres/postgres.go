@@ -7635,13 +7635,14 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 			MAX(d.created_at)                         AS last_updated,
 			COALESCE(a.def_id, '')                    AS active_def_id,
 			COALESCE(ad.retired, FALSE)               AS active_retired,
+			COALESCE(ad.bootstrapped_from_static, FALSE) AS active_from_config,
 			a.promoter_operator_key_restricted,
 			a.promoter_isolated,
 			a.promoter_acl_owner
 		FROM teamdefs d
 		LEFT JOIN teamdef_active a ON a.name = d.name AND a.tenant_id = d.tenant_id
 		LEFT JOIN teamdefs ad      ON ad.def_id = a.def_id
-		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired, a.promoter_operator_key_restricted, a.promoter_isolated, a.promoter_acl_owner
+		GROUP BY d.tenant_id, d.name, a.def_id, ad.retired, ad.bootstrapped_from_static, a.promoter_operator_key_restricted, a.promoter_isolated, a.promoter_acl_owner
 		ORDER BY d.tenant_id, d.name`)
 	if err != nil {
 		return nil, fmt.Errorf("team_def list names: %w", err)
@@ -7653,8 +7654,12 @@ func (s *Store) TeamDefListNames(ctx context.Context) ([]store.TeamDefNameSummar
 		var ns store.TeamDefNameSummary
 		var opKey, isolate *bool
 		var aclOwner *string
-		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID, &ns.ActiveRetired, &opKey, &isolate, &aclOwner); err != nil {
+		var activeFromConfig bool
+		if err := rows.Scan(&ns.TenantID, &ns.Name, &ns.VersionCount, &ns.LiveVersionCount, &ns.LatestVersion, &ns.LastUpdated, &ns.ActiveDefID, &ns.ActiveRetired, &activeFromConfig, &opKey, &isolate, &aclOwner); err != nil {
 			return nil, err
+		}
+		if activeFromConfig && ns.TenantID == "" {
+			ns.ActiveSource = store.TeamDefSourceConfig
 		}
 		var err error
 		if ns.ActivePromoter, err = teamDefPromoterFromColumns(opKey, isolate, aclOwner); err != nil {

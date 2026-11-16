@@ -6413,6 +6413,11 @@ type TeamWebhookArm struct {
 	ExpiresAt time.Time
 }
 
+// TeamDefSourceConfig is the `source` of a team version the server's
+// configuration wrote (RFC GS): a shared-tier row marked
+// bootstrapped_from_static.
+const TeamDefSourceConfig = "config"
+
 // TeamDefNameSummary mirrors SkillDefNameSummary.
 type TeamDefNameSummary struct {
 	Name string `json:"name"`
@@ -6430,6 +6435,10 @@ type TeamDefNameSummary struct {
 	// true when the active pointer references a retired row.
 	LiveVersionCount int  `json:"live_version_count"`
 	ActiveRetired    bool `json:"active_retired,omitempty"`
+	// ActiveSource is TeamDefSourceConfig when the active version is one the
+	// server's configuration wrote into the shared tier (RFC GS): it is
+	// changed in the yaml, not over the API. "" otherwise.
+	ActiveSource string `json:"active_source,omitempty"`
 	// ActivePromoter is the confinement recorded with the active pointer; nil
 	// when there is no pointer or it was promoted before the capture existed.
 	// Read by the subscription sweep, which starts the team's walks itself.
