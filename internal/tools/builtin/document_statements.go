@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -1696,19 +1697,36 @@ func operatorRuler(ctx context.Context) string {
 
 // Refusal codes of one ruling, shared by the single and the bulk path.
 const (
-	rulingNotFound    = "not_found"
-	rulingNotProposal = "not_a_proposal"
-	rulingChanged     = "statement_changed"
+	rulingNotFound       = "not_found"
+	rulingNotProposal    = "not_a_proposal"
+	rulingChanged        = "statement_changed"
+	rulingCharacteristic = "characteristic_violation"
 )
 
 // rulingOutcome is one ruling: the status it set, the statement as it was read
-// before (what a revert restores), or the refusal and its code.
+// before (what a revert restores), the original an accepted revision retired,
+// or the refusal and its code.
 type rulingOutcome struct {
 	status  string
 	prior   *statementRow
+	retired *rulingRetired
 	code    string
 	refusal *tools.Result
 }
+
+// rulingRetired is the original statement an accepted revision expired: its id,
+// the status it held and the expired_at the ruling set. A revert brings it back
+// only while it still carries exactly that expiry and status, so a later change
+// to it is never undone.
+type rulingRetired struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	ExpiredAt int64  `json:"expired_at"`
+}
+
+// errRulingChanged rolls back a ruling's (or a revert's) transaction when a
+// statement it writes changed since it was read.
+var errRulingChanged = errors.New("statement changed during the ruling")
 
 // applyRuling rules on one statement: the checks and the write accept_statement
 // and reject_statement make, for both them and a bulk ruling, so the two cannot
@@ -1753,6 +1771,33 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		r := errBusiness(msg, hint)
 		return rulingOutcome{code: rulingNotProposal, refusal: &r}, nil
+	}
+	// An acceptance that makes the statement live answers to the relation's
+	// characteristics exactly as link_chunks does. A rejection makes nothing
+	// live, and a judge's acceptance being confirmed is live already.
+	goesLive := accept && s.Status != edgeStatusAsserted
+	if goesLive {
+		if p := d.characteristicProblem(ctx, key, s); p != nil {
+			r := errBusiness(op+": "+rulingCharacteristic+": "+p.msg,
+				"Retire the existing statement first, or correct it with a revision.")
+			return rulingOutcome{code: rulingCharacteristic, refusal: &r}, nil
+		}
+	}
+	// Accepting a revision (propose_statement with id) retires the statement it
+	// revises in the same transaction, so the corrected relation is never live
+	// twice. Read here, before the transaction: on sqlite a read beside one
+	// would wait on the scope's one connection.
+	var original *statementRow
+	if goesLive {
+		if of := revisedOriginal(s); of != "" {
+			o, err := d.statementByID(ctx, key, of)
+			if err != nil {
+				return rulingOutcome{}, err
+			}
+			if o != nil && o.ExpiredAt == nil {
+				original = o
+			}
+		}
 	}
 	now := time.Now().UnixNano()
 	reasonArg := nullIfEmpty(strings.TrimSpace(reason))
@@ -1803,15 +1848,62 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if audit {
 		args = append(args, s.RuledBy)
 	}
-	ruled, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(`UPDATE chunk_edges SET `+set+` WHERE `+where), args, 0)
+	update := d.docSQL().Rebind(`UPDATE chunk_edges SET ` + set + ` WHERE ` + where)
+	if original == nil {
+		ruled, err := d.docSQL().Exec(ctx, key, update, args, 0)
+		if err != nil {
+			return rulingOutcome{}, err
+		}
+		if ruled.RowsAffected == 0 {
+			return rulingChangedOutcome(op), nil
+		}
+		d.publishEdgeChange(ctx, key, mscope, op, id, s.FromID, s.ToID, s.Kind, status)
+		return rulingOutcome{status: status, prior: s}, nil
+	}
+	err = d.withSqlTxn(ctx, key, func(tx string) error {
+		ruled, err := d.docSQL().ExecTxn(ctx, tx, update, args, 0)
+		if err != nil {
+			return err
+		}
+		if ruled.RowsAffected == 0 {
+			return errRulingChanged
+		}
+		// Only the expiry is written: the original's own ruling and verdict
+		// stay as they were, so a revert has nothing else to put back.
+		ex, err := d.docSQL().ExecTxn(ctx, tx, d.docSQL().Rebind(`UPDATE chunk_edges SET expired_at = ? WHERE `+statementLiveCAS),
+			[]any{now, original.ID, original.Status}, 0)
+		if err != nil {
+			return err
+		}
+		if ex.RowsAffected == 0 {
+			return errRulingChanged
+		}
+		return nil
+	})
+	if errors.Is(err, errRulingChanged) {
+		return rulingChangedOutcome(op), nil
+	}
 	if err != nil {
 		return rulingOutcome{}, err
 	}
-	if ruled.RowsAffected == 0 {
-		return rulingChangedOutcome(op), nil
-	}
 	d.publishEdgeChange(ctx, key, mscope, op, id, s.FromID, s.ToID, s.Kind, status)
-	return rulingOutcome{status: status, prior: s}, nil
+	d.publishEdgeChange(ctx, key, mscope, op, original.ID, original.FromID, original.ToID, original.Kind, "expired")
+	return rulingOutcome{status: status, prior: s,
+		retired: &rulingRetired{ID: original.ID, Status: original.Status, ExpiredAt: now}}, nil
+}
+
+// revisedOriginal is the statement s corrects when s was filed with
+// propose_statement's id: attributes.revision_of, on a row whose discriminator
+// is its own revision marker. A reimport's or a subject merge's copy also names
+// its source in revision_of but carries the source's discriminator, and its
+// source is not to be retired by accepting it: a reimport keeps the source on
+// the old part, where it still holds; a merge has retired it already.
+func revisedOriginal(s *statementRow) string {
+	of, _ := s.Attributes["revision_of"].(string)
+	if of == "" || s.Discriminator != "revision:"+s.ID {
+		return ""
+	}
+	return of
 }
 
 // rulingChangedOutcome refuses a ruling on a statement ruled on or changed
