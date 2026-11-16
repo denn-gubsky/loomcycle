@@ -71,8 +71,8 @@ const (
 	// FormOtherKey is a tagged form under a pepper neither key derives. It
 	// can no longer authenticate.
 	FormOtherKey
-	// FormUntagged, under a derived pepper, is an unpeppered hash (or one
-	// under an explicit pepper since removed).
+	// FormUntagged, under a derived pepper, is an unpeppered hash or one
+	// under an explicit pepper: kept with WithLegacy, or since removed.
 	FormUntagged
 )
 
@@ -114,6 +114,10 @@ type TokenHasher struct {
 	// cur and prev are set only for a derived pepper; prev.pepper is empty
 	// when there is no previous key.
 	cur, prev derivedKey
+	// legacy is an explicit pepper kept beside a derived one while the rows
+	// it hashed move onto the derived pepper (see WithLegacy). Never used to
+	// mint.
+	legacy string
 }
 
 // NewTokenHasher picks the effective pepper: explicit if set, else derived
@@ -136,6 +140,37 @@ func NewTokenHasher(explicit, derived, previousDerived string) TokenHasher {
 	default:
 		return TokenHasher{source: PepperNone}
 	}
+}
+
+// WithLegacy keeps an explicit pepper beside a derived one, for lookups only:
+// a row the explicit pepper hashed (untagged SHA-256(pepper ‖ token)) still
+// authenticates, and the login that matches it moves the row onto the derived
+// pepper. Mints use the derived pepper. This is how a deployment that set
+// LOOMCYCLE_OPERATOR_TOKEN_PEPPER leaves it: the variable can go once no row
+// is left under it. A no-op unless h's pepper is derived and explicit is set.
+//
+// A database writer gains nothing: matching a legacy row still needs the
+// explicit pepper, and an unpeppered row (SHA-256(token)) stays refused,
+// because the lookup computes the legacy hash from the presented token.
+func (h TokenHasher) WithLegacy(explicit string) TokenHasher {
+	if !h.derived() || explicit == "" {
+		return h
+	}
+	h.legacy = explicit
+	return h
+}
+
+// HasLegacy reports whether an explicit pepper is kept for lookups beside the
+// derived one.
+func (h TokenHasher) HasLegacy() bool { return h.derived() && h.legacy != "" }
+
+// LegacyHash is the hash token's row carries if the legacy explicit pepper
+// minted it. Empty without one.
+func (h TokenHasher) LegacyHash(token string) string {
+	if !h.HasLegacy() {
+		return ""
+	}
+	return HashToken(h.legacy, token)
 }
 
 // Source reports where the effective pepper came from.
@@ -197,6 +232,12 @@ func (h TokenHasher) PreviousHashes(token string) []string {
 // this hasher can match: under a derived pepper, either tagged form under the
 // current or previous key (include); otherwise any untagged hash (exclude
 // the tagged forms). A stored hash outside them cannot authenticate.
+//
+// With a legacy explicit pepper kept (WithLegacy), an untagged hash may be
+// one of its rows, so it counts too: an untagged hash is lowercase hex, so
+// the sixteen hex digits as prefixes name exactly the untagged rows. As under
+// an explicit pepper alone, a row cannot tell whether it is the legacy
+// pepper's or an unpeppered one, and every untagged row counts.
 func (h TokenHasher) UsablePrefixes() (include, exclude []string) {
 	if !h.derived() {
 		return nil, []string{currentTagVersion + ":", wrappedTagVersion + ":"}
@@ -208,6 +249,11 @@ func (h TokenHasher) UsablePrefixes() (include, exclude []string) {
 	for _, k := range keys {
 		for _, v := range []string{currentTagVersion, wrappedTagVersion} {
 			include = append(include, v+":"+k.fp+":")
+		}
+	}
+	if h.HasLegacy() {
+		for _, d := range "0123456789abcdef" {
+			include = append(include, string(d))
 		}
 	}
 	return include, nil

@@ -134,3 +134,65 @@ func TestTokenHasher_UsablePrefixesMatchTheFormsALookupReaches(t *testing.T) {
 		}
 	}
 }
+
+// A legacy explicit pepper kept beside a derived one finds its own rows, never
+// mints with them, and never matches an unpeppered row.
+func TestTokenHasher_LegacyPepperIsForLookupsOnly(t *testing.T) {
+	h := NewTokenHasher("", "derived", "").WithLegacy("pep")
+	if !h.HasLegacy() {
+		t.Fatal("WithLegacy on a derived hasher must keep the pepper")
+	}
+	if got, want := h.LegacyHash("lct_x"), HashToken("pep", "lct_x"); got != want {
+		t.Errorf("LegacyHash = %q, want the explicit pepper's hash %q", got, want)
+	}
+	if h.Hash("lct_x") != NewTokenHasher("", "derived", "").Hash("lct_x") {
+		t.Error("a mint must use the derived pepper, not the legacy one")
+	}
+	if h.LegacyHash("lct_x") == HashToken("", "lct_x") {
+		t.Error("the legacy form must differ from the unpeppered one")
+	}
+	for _, other := range []TokenHasher{NewTokenHasher("pep", "", ""), NewTokenHasher("", "", "")} {
+		if other.WithLegacy("pep2").HasLegacy() {
+			t.Errorf("WithLegacy on a %s hasher must be a no-op", other.Source())
+		}
+	}
+}
+
+// With a legacy pepper an untagged row may authenticate, so the usable
+// prefixes cover every untagged (lowercase hex) hash, and still no tagged
+// hash under another key.
+func TestTokenHasher_LegacyPepperCountsUntaggedRowsAsUsable(t *testing.T) {
+	usable := func(h TokenHasher, stored string) bool {
+		include, exclude := h.UsablePrefixes()
+		for _, p := range exclude {
+			if strings.HasPrefix(stored, p) {
+				return false
+			}
+		}
+		if len(include) == 0 {
+			return true
+		}
+		for _, p := range include {
+			if strings.HasPrefix(stored, p) {
+				return true
+			}
+		}
+		return false
+	}
+	plain := NewTokenHasher("", "derived", "")
+	legacy := plain.WithLegacy("pep")
+	untagged := HashToken("pep", "lct_x")
+	other := NewTokenHasher("", "other", "").Hash("lct_x")
+	if usable(plain, untagged) {
+		t.Error("without a legacy pepper an untagged row cannot authenticate")
+	}
+	if !usable(legacy, untagged) {
+		t.Error("with a legacy pepper an untagged row is usable")
+	}
+	if !usable(legacy, legacy.Hash("lct_x")) {
+		t.Error("a current row must stay usable")
+	}
+	if usable(legacy, other) {
+		t.Error("a row under another key must stay unusable")
+	}
+}

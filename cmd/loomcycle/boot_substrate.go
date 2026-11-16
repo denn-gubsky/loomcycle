@@ -207,6 +207,8 @@ func (b *boot) wireAuth() {
 	}
 	srv.SetTokenHasher(tokenHasher)
 	switch tokenHasher.Source() {
+	case auth.PepperExplicit:
+		slog.Warn("auth: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is legacy and will be removed. Set LOOMCYCLE_SECRET_KEY beside it: its tokens then move onto the pepper derived from that key at their next login, and the boot log counts the ones left.")
 	case auth.PepperNone:
 		if srv.AuthConfigured(context.Background()) {
 			slog.Warn("auth: operator tokens are hashed with no pepper — anyone who can write the database can mint a working token. Set LOOMCYCLE_SECRET_KEY (a pepper is derived from it) or LOOMCYCLE_OPERATOR_TOKEN_PEPPER.")

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -78,6 +79,11 @@ type TokenHashReport struct {
 	// UntaggedDead counts unpeppered rows that are retired or expired. They
 	// can never authenticate and are never rewrapped.
 	UntaggedDead int
+	// LegacyPepper is set when LOOMCYCLE_OPERATOR_TOKEN_PEPPER is kept beside
+	// the derived pepper (auth.TokenHasher.WithLegacy). Untagged then counts
+	// the rows still under it: each logs in and moves onto the derived pepper
+	// at its next login, and the variable can go once there are none.
+	LegacyPepper bool
 }
 
 // LikelyWrongKey reports a table that looks as if it was read with a secret
@@ -87,6 +93,12 @@ type TokenHashReport struct {
 func (r TokenHashReport) LikelyWrongKey() bool {
 	return r.OtherKey > 0 && r.Current+r.Wrapped == 0
 }
+
+// errLegacyPepperRewrap refuses a rewrap while LOOMCYCLE_OPERATOR_TOKEN_PEPPER
+// is kept beside the derived pepper. An untagged row may then be one of its
+// rows, and wrapping it as an unpeppered hash would end that token: the
+// legacy rows move onto the derived pepper at their own next login instead.
+var errLegacyPepperRewrap = errors.New("LOOMCYCLE_OPERATOR_TOKEN_PEPPER is still set, so an untagged row may be one of its tokens, which moves onto the derived pepper at its next login; wrapping it would end it. Remove LOOMCYCLE_OPERATOR_TOKEN_PEPPER once the boot log reports no row left under it, then rewrap")
 
 // UntaggedTokenRows is the review of `loomcycle tokens rewrap`.
 type UntaggedTokenRows struct {
@@ -177,6 +189,7 @@ func (s *Server) ReportTokenHashes(ctx context.Context) (TokenHashReport, error)
 	// the wrapped form while this server runs, and its token should then log
 	// in without a restart.
 	s.wrappedTokens.Store(res.Wrapped > 0 || len(res.Untagged) > 0)
+	res.LegacyPepper = h.HasLegacy()
 	return res.TokenHashReport, nil
 }
 
@@ -188,6 +201,9 @@ func (s *Server) ReportTokenHashes(ctx context.Context) (TokenHashReport, error)
 func ListUntaggedTokenRows(ctx context.Context, st store.Store, h auth.TokenHasher) (UntaggedTokenRows, error) {
 	if h.Source() != auth.PepperDerived {
 		return UntaggedTokenRows{}, fmt.Errorf("token pepper is %s, not derived: there is nothing to rewrap under", h.Source())
+	}
+	if h.HasLegacy() {
+		return UntaggedTokenRows{}, errLegacyPepperRewrap
 	}
 	return scanTokenHashes(ctx, st, h)
 }
@@ -367,6 +383,9 @@ func RewrapTokenRows(ctx context.Context, st store.Store, h auth.TokenHasher, ro
 	if h.Source() != auth.PepperDerived {
 		return nil, nil, fmt.Errorf("token pepper is %s, not derived: there is nothing to rewrap under", h.Source())
 	}
+	if h.HasLegacy() {
+		return nil, nil, errLegacyPepperRewrap
+	}
 	if len(rows) == 0 {
 		return nil, nil, nil
 	}
@@ -400,6 +419,11 @@ func RewrapTokenRows(ctx context.Context, st store.Store, h auth.TokenHasher, ro
 // the row onto it in between, and every move is onto currentHash.
 func (s *Server) lookupOlderTokenForm(ctx context.Context, h auth.TokenHasher, bearer, currentHash string, miss error) (store.OperatorTokenDefRow, error) {
 	var older []string
+	// A row the legacy explicit pepper hashed (WithLegacy): the commonest
+	// older form while a deployment leaves LOOMCYCLE_OPERATOR_TOKEN_PEPPER.
+	if h.HasLegacy() {
+		older = append(older, h.LegacyHash(bearer))
+	}
 	if s.wrappedTokens.Load() {
 		older = append(older, h.WrappedHash(bearer))
 	}

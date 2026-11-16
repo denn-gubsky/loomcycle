@@ -112,6 +112,11 @@ func runTokensRewrap(args []string, stdout, stderr io.Writer) int {
 	case auth.PepperExplicit:
 		fmt.Fprintln(stderr, "loomcycle: error: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is set, so tokens are hashed under that explicit pepper and every stored hash is already current. There is nothing to rewrap.")
 		return 2
+	case auth.PepperDerived:
+		if h.HasLegacy() {
+			fmt.Fprintln(stderr, "loomcycle: error: LOOMCYCLE_OPERATOR_TOKEN_PEPPER is still set beside LOOMCYCLE_SECRET_KEY. An untagged row may be one of its tokens, which moves onto the derived pepper at its next login; wrapping it would end it. Remove LOOMCYCLE_OPERATOR_TOKEN_PEPPER once the server's boot log reports no row left under it, then run this again.")
+			return 2
+		}
 	case auth.PepperNone:
 		fmt.Fprintln(stderr, "loomcycle: error: no token pepper: LOOMCYCLE_SECRET_KEY is not set (nor LOOMCYCLE_OPERATOR_TOKEN_PEPPER), so there is no pepper to rewrap under and the stored hashes are already current. If the server runs with LOOMCYCLE_SECRET_KEY, run this command with the same environment.")
 		return 2
