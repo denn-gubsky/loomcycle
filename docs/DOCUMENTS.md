@@ -1300,6 +1300,36 @@ A document built from an outside file or message says so, and points back to whe
 
 Since #2161 (`/loomcycle/rfcs/files-by-reference` D18); the source revision, update time, kind `skybits`, the re-import refresh and `mark_source` since #2458 (RFC GB).
 
+## Getting a file out — PDF, Word, HTML, Markdown (RFC GR)
+
+A document can be rendered as a file people open, send and print: PDF, Word (DOCX), HTML or Markdown. The file is a new rendering of the document as it stands, read with the caller's own access exactly as `export_md` reads it. Nothing in a body becomes markup, script or a field in the file.
+
+**Four ways to get one.**
+
+- **In a run: `File op=render`.** `{op: render, document | doc_path | path, format, to?, chunk?, toc?, title_page?, page_size?, language?, provenance?, scope?}`. The file goes to `volume:inbox:rendered/<title>.<format>`, or with `to` into a read-write volume of the run. The agent needs the Document tool (read is enough) and gets a reference, never the bytes; `keep`, `upload` and the bridges take the file on. Help topic `File/render`.
+- **From the Web UI.** The document toolbar's **download** menu: PDF, Word (.docx), HTML, Markdown (.md) and Canvas (.canvas). Markdown is the round-trippable export with metadata comments and Canvas the node/edge graph; the other three are rendered.
+- **Over HTTP: `GET /v1/_document/export/{document_id}?format=pdf|docx|html|md`.** Optional `scope` (default `user`), `chunk`, `toc`, `title_page`, `page_size` (`a4` or `letter`), `language`, `provenance` (default true), and the browse parameters `scope_id` and `tenant`. The file comes as an attachment named after the title, Unicode kept; Markdown of a document with pictures comes as a zip of the `.md` and its pictures. It is gated like `/v1/_document/asset/`: a document that is missing or not readable to the caller is the same 404. Errors: 400 `bad_request`, 404, 413 `too_large`, 422 `tool_refused` (nothing to render), 503 `unavailable` (no typesetter, no conversion worker) or `busy` (with `Retry-After`). The TS adapter's `exportDocument(id, format, opts)` returns `{blob, filename, mediaType, renderId}`.
+- **From an MCP session, with no run: `file op=render`** without `run_id`. The source is `document` or `doc_path` in the caller's own scopes, and `to` is required: a file in a read-write dynamic volume of the caller's tenant (the volumes `keep` writes to). A member is refused an agent's scope, as the `document` tool refuses it.
+
+**What each format holds.**
+
+| Format | Written by | What it holds |
+|---|---|---|
+| `md` | pure Go | Clean Markdown, its pictures as files beside it (`<name>/img-N.<ext>`). |
+| `html` | pure Go | One self-contained page: embedded style, pictures as data URLs, a strict Content-Security-Policy, no script. |
+| `docx` | pure Go | Word's own heading styles, lists, tables, pictures, bookmarks, internal and external links, and the title, status, language and dates in its properties. No fields, macros or external parts but http, https and mailto links; the table of contents is a list of links. |
+| `pdf` | Typst, as a helper program | Page numbers; `toc` adds an outline with page numbers. Every text is a Typst string literal, never markup, and nothing is imported. |
+
+The look: Noto Sans for text and headings, Noto Sans Mono for code; no title page unless `title_page`; a small Draft or Review label beside the title when the root's status says so. A link to a part of the same document becomes a link inside the file; a link to another document becomes its Web UI address when the server has `LOOMCYCLE_PUBLIC_URL` and the caller may read it, and plain text otherwise. Only http, https and mailto links are kept. A Mermaid diagram is a code block.
+
+**Where it runs.** On the conversion workers when the server has them ([`WORKERS.md`](WORKERS.md)), else in the runtime's own process. Markdown, HTML and Word need nothing installed. A PDF needs Typst: the `loomcycle-worker` image carries a pinned release and the Noto fonts; a worker takes PDF renders when `typst` is on its `PATH` or `LOOMCYCLE_WORKER_WRITE_COMMAND` names another typesetter. In process, and for local workers, `typst` is run from the `PATH`. Without it, a PDF render answers that the server cannot write PDF; the other formats still work.
+
+**Limits.** Per render: 20 000 sections, 32 MiB of text, 2 000 pictures of at most 8 MiB each and 192 MiB together. The file is at most 64 MiB, a PDF at most 2 000 pages. A render may take 2 minutes, a PDF 5. Past a limit, render a part of the document with `chunk`.
+
+**The render log.** Every render of a document is a row of its scope's `document_renders`: a hash of what it was made of, the format and options, the output's sha256 and size, where it went (a volume reference, the inbox, or `download`) and who rendered it (the run, or the person). Never content. `get_document` shows the newest render per format, and `history` with `include: ["renders"]` lists them. A render into a volume is reused while an earlier one of the same content and options is still unchanged there. The log is deleted with its document and travels with `move_documents`. A person's download is also audited (`document_exported`, with format, scope and size), and the file is not served when that record cannot be written. Erasing a subject clears its name from the render log of the tenant's other scopes; the user's own scope goes with the user.
+
+Since #2658 (Markdown, HTML), #2659 (Word), #2663 (PDF) and #2670 (downloads) — `/loomcycle/rfcs/document-rendering`.
+
 ## Classification — classify, accept_classification and memory.classifier
 
 `Document op=classify` says what a document is, from the tenant's confirmed ontology. It runs up to three steps and reports each in `steps`:
@@ -1632,8 +1662,10 @@ SDK helpers: `getAnnotation` / `listAnnotations` / `annotate` (TS) and `get_anno
 ## The Web UI + the Document Assistant
 
 The Web UI exposes Documents through the **`paths`** tab (open a `document`
-node) and the `/documents/:id` deep link: a chunk sub-tree, a Markdown view, MD
-download, and a single-chunk content editor (body/fields, optimistic revision).
+node) and the `/documents/:id` deep link: a chunk sub-tree, a Markdown view, a
+**download** menu (PDF, Word, HTML, Markdown, Canvas; see
+[Getting a file out](#getting-a-file-out--pdf-word-html-markdown-rfc-gr)), and a
+single-chunk content editor (body/fields, optimistic revision).
 Structural editing — restructuring, semantic import, linking — is done by the
 **Document Assistant** (the viewer's `assistant` toggle): you type instructions
 and the **`doc/manager`** agent performs the `Document` ops. That agent +
