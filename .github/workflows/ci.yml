@@ -239,6 +239,34 @@ jobs:
           path: internal/files/extract/testdata/fuzz
           if-no-files-found: ignore
 
+  render-office:
+    # A rendered Word file must open in an office suite, not only in our own
+    # extractor (RFC GR P1). LibreOffice is installed here only to check
+    # that; it is never shipped. The test skips where soffice is missing, so
+    # this job sets LOOMCYCLE_REQUIRE_SOFFICE to make a missing one a failure.
+    name: Rendered files open in LibreOffice
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache: true
+
+      - name: Install LibreOffice Writer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui
+
+      - name: Open the rendered files
+        env:
+          LOOMCYCLE_REQUIRE_SOFFICE: "1"
+        run: go test -count=1 -run '^TestDOCX_OpensInLibreOffice$' -v ./internal/files/render/
+
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core
     # runner it took ~15 min, set by internal/api/http and
