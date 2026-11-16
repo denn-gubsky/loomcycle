@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime"
 	"strconv"
@@ -80,6 +81,7 @@ func runWorker(args []string, stderr io.Writer) int {
 		Rasterize:    helperFrom("LOOMCYCLE_WORKER_RASTERIZE_COMMAND", "transcription.ocr.rasterize"),
 		Media:        helperFrom("LOOMCYCLE_WORKER_MEDIA_COMMAND", "transcription.stt.media"),
 		Encode:       helperFrom("LOOMCYCLE_WORKER_ENCODE_COMMAND", "speech.encode"),
+		WritePDF:     pdfHelper(wrapper),
 		Images:       vision.NewReencoder(),
 		TLS:          tlsCfg,
 		Insecure:     os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1",
@@ -93,6 +95,21 @@ func runWorker(args []string, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 	return 1
+}
+
+// pdfHelper is the PDF render helper (RFC GR P2): the operator's
+// LOOMCYCLE_WORKER_WRITE_COMMAND, else Typst when it is installed here. With
+// neither, the worker takes no PDF renders and says nothing of it: most
+// workers that lack Typst were never meant to typeset.
+func pdfHelper(wrapper string) *convert.Helper {
+	cmd := strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_WRITE_COMMAND"))
+	if cmd == "" {
+		if _, err := exec.LookPath("typst"); err != nil {
+			return nil
+		}
+		cmd = convert.DefaultPDFCommand
+	}
+	return &convert.Helper{Key: convert.PDFHelperKey, Command: cmd, Wrapper: wrapper}
 }
 
 // workerTLS is the TLS a worker dials network dispatchers with, from its

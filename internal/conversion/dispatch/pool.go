@@ -430,7 +430,7 @@ func (d *Dispatcher) run(ctx context.Context, j *job) (result, error) {
 	}
 	j.ctx = ctx
 	j.id = strconv.FormatUint(d.jobs.Add(1), 10)
-	label := wire.LabelFor(j.kind)
+	label := wire.LabelForJob(j.kind, j.format)
 	free, ambiguous := maxFreeRetries, 1
 	for {
 		s, err := d.acquire(ctx, label)

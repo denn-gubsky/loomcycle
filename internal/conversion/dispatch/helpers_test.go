@@ -279,3 +279,34 @@ func TestPool_RenderRefusesAnUnknownFormatBeforeAWorker(t *testing.T) {
 		t.Errorf("format rtf with no worker: %v, want render.ErrUnsupported", err)
 	}
 }
+
+// A PDF render goes only to a worker with the typesetter. With none
+// attached it is refused at once as a program missing on the workers (the
+// File tool words it); a worker that has it typesets the document.
+func TestPool_APDFRenderNeedsAWorkerWithTheTypesetter(t *testing.T) {
+	d, target := pool(t, dispatch.Options{QueueWait: time.Minute,
+		Configured: map[string]bool{wire.LabelWritePDF: true}})
+	realWorker(t, target, "plain")
+	waitIdle(t, d, 1)
+	start := time.Now()
+	if _, err := d.Client().Render(context.Background(), renderBundle(t), render.FormatPDF); !errors.Is(err, convert.ErrNoHelper) || !strings.Contains(err.Error(), "typst") {
+		t.Errorf("PDF with no typesetter attached: %v, want ErrNoHelper naming typst", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Errorf("the refusal waited %v; it must not queue", time.Since(start))
+	}
+	// A stand-in typesetter: it copies a real PDF to {out}, so the check of
+	// the output passes without Typst installed.
+	pdf := filepath.Join(t.TempDir(), "sample.pdf")
+	if err := os.WriteFile(pdf, samplePDF(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	helperWorker(t, target, "typesetter", worker.Options{
+		WritePDF: &convert.Helper{Key: convert.PDFHelperKey, Command: "cp " + pdf + " {out}"},
+	})
+	waitIdle(t, d, 2)
+	got, err := d.Client().Render(context.Background(), renderBundle(t), render.FormatPDF)
+	if err != nil || !bytes.Equal(got, samplePDF(t)) {
+		t.Fatalf("PDF on the typesetter's worker: %d bytes (%v)", len(got), err)
+	}
+}

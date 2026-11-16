@@ -402,7 +402,7 @@ dockers:
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.title=loomcycle-worker"
-      - "--label=org.opencontainers.image.description=loomcycle conversion worker (RFC GO): file extraction, PDF rendering, media conversion and image re-encoding out of the runtime, with ffmpeg and poppler-utils"
+      - "--label=org.opencontainers.image.description=loomcycle conversion worker (RFC GO): file extraction, PDF rendering, media conversion, image re-encoding and document rendering out of the runtime, with ffmpeg, poppler-utils and Typst"
       - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
       - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -425,7 +425,7 @@ dockers:
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.title=loomcycle-worker"
-      - "--label=org.opencontainers.image.description=loomcycle conversion worker (RFC GO): file extraction, PDF rendering, media conversion and image re-encoding out of the runtime, with ffmpeg and poppler-utils"
+      - "--label=org.opencontainers.image.description=loomcycle conversion worker (RFC GO): file extraction, PDF rendering, media conversion, image re-encoding and document rendering out of the runtime, with ffmpeg, poppler-utils and Typst"
       - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
       - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
       - "--label=org.opencontainers.image.version={{ .Version }}"

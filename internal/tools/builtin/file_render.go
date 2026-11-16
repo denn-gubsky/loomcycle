@@ -33,18 +33,13 @@ import (
 // renderInboxDir is the inbox folder renders are written to.
 const renderInboxDir = "rendered"
 
-// renderFormatsLater are formats RFC GR adds in later phases.
-var renderFormatsLater = map[string]string{"pdf": "P2"}
-
 func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error) {
 	format := strings.ToLower(strings.TrimSpace(in.Format))
 	switch {
 	case format == "":
-		return errValidation("render: missing required field: format", "Pass format: docx, html or md."), nil
-	case renderFormatsLater[format] != "":
-		return errBusiness("render: "+format+" is not available on this server yet", "Render as docx, html or md for now."), nil
+		return errValidation("render: missing required field: format", "Pass format: pdf, docx, html or md."), nil
 	case !render.Supported(format):
-		return errValidation(fmt.Sprintf("render: unknown format %q", in.Format), "Pass format: docx, html or md."), nil
+		return errValidation(fmt.Sprintf("render: unknown format %q", in.Format), "Pass format: pdf, docx, html or md."), nil
 	}
 	sources := 0
 	for _, s := range []string{in.Document, in.DocPath, in.Path} {
@@ -451,6 +446,11 @@ func renderFailure(ctx context.Context, err error, wait time.Duration) (tools.Re
 	case errors.Is(err, convert.ErrQuarantined):
 		return errBusiness("render: this document crashed the file converter and will not be tried again here for now",
 			"Render a part of it with chunk, or ask an operator."), true, nil
+	case errors.Is(err, convert.ErrNotConfigured), errors.Is(err, convert.ErrNoHelper):
+		// The only render with a helper is PDF: Typst is not installed
+		// where this server converts files.
+		return errBusiness("render: this server cannot write PDF: the typesetter (Typst) is not installed where it converts files",
+			"Render as docx for now; an operator can run the loomcycle-worker image, which has Typst."), true, nil
 	case errors.Is(err, convert.ErrNoWorkers):
 		return errTransient("render: no file conversion worker is running on this server", "Try again in a minute; an operator can check the conversion workers."), true, nil
 	case errors.Is(err, render.ErrTooLarge):
