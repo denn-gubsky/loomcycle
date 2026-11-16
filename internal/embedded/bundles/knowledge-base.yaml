@@ -80,17 +80,17 @@
 #                 parallel, each round replying with only FITS and SET ASIDE
 #                 lines; a round that fails, stops at the output cap or lacks a
 #                 line is retried once as two halves; one more walker round
-#                 writes the overview from the ids that fit. Code computes the
+#                 composes the reply from the ids that fit. Code computes the
 #                 COVERAGE line (complete only when every candidate was sorted,
-#                 none was cut, and the passage search's facet window covered
-#                 every match) and a `SURVEY: candidates … | slices … | failed
-#                 slices … | rounds … | RUNS: …` line.
+#                 none was cut, and at least as many were kept as the passage
+#                 search's facet window counted) and a `SURVEY: candidates … |
+#                 slices … | failed slices … | rounds … | RUNS: …` line.
 #                 A gather step that fails or finds nothing falls back to a
 #                 plain walk, reported partial.
 #   kb/walker   — an LLM agent at tier `middle`, Document and Path, tenant scope:
 #                 walks the document tree by its summaries (kb/ask's fallback
 #                 after a partial search), or screens a slice of kb/survey's
-#                 candidates, or writes kb/survey's overview from the ids that
+#                 candidates, or composes kb/survey's reply from the ids that
 #                 fit. A walk ends with a COVERAGE line, partial with an
 #                 UNCOVERED line of counts when it stopped on its call budget
 #                 before the facet counts were covered (kb/ask passes it on
@@ -6037,8 +6037,15 @@ agents:
     # Its session holds search results from tenant documents.
     internal: true
     # Spans the gather step (about seventy reads), the screening rounds (in
-    # parallel, then one retry wave) and one writing round.
+    # parallel, then one retry wave) and one composing round.
     run_timeout_seconds: 900
+    # parallel_spawn runs at most this many screening rounds at once (default
+    # 4). 5 = CAP / SLICE, so a full candidate list is screened in one wave
+    # instead of four rounds and then a fifth. Retry halves can reach 10, but
+    # they are short (13 ids at most) and few: on the measured set no retry
+    # wave had more than 4, so 5 covers them in one wave too without doubling
+    # the burst on the provider.
+    max_concurrent_children: 5
     code: |
       // kb/survey — answers an overview question ("what do we hold on X") with
       // every document that fits, not the first few a walk happens to reach.
@@ -6060,24 +6067,34 @@ agents:
       //      FITS: <id>, ...
       //      SET ASIDE: <id>, ...
       //    One reply cannot carry 120 ids and an answer: a round handed them all
-      //    stopped at the output cap before its accounting lines.
+      //    stopped at the output cap before its accounting lines. The round's
+      //    block carries the exact documents_summary call for its slice, built
+      //    here from the ids: a walker composing that call itself sent the id
+      //    list as one string, which the read-only tool refuses.
       // 3. CHECK (code). A round FAILED when it did not complete, stopped at the
       //    output cap (it still reports completed), was cut to fit this run, or
       //    lacks either line; nothing it said is taken. A failed slice, and the
       //    ids a good round named in neither line, go back once more as two
       //    halves. What is still unnamed then stays unaccounted. Screening texts
       //    are never joined into the answer.
-      // 4. ANSWER. One more kb/walker round writes the overview from the ids that
-      //    fit (ids only again); its FITS, SET ASIDE, COVERAGE and UNCOVERED
-      //    lines are stripped. Nothing fits: code says so, with no round. The
-      //    writing round fails: code lists the fitting ids as links. Then a
-      //    coverage line code computes:
+      // 4. ANSWER. One more kb/walker round composes the reply from the ids that
+      //    fit (ids only again); its FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES
+      //    and MISSING lines are stripped. It is asked to COMPOSE, never to
+      //    write: told to write the overview, a walker took it as writing a
+      //    document. Nothing fits: code says so, with no round. The composing
+      //    round fails: code lists the fitting ids as links. Then a coverage
+      //    line code computes:
       //      COVERAGE: complete  every candidate accounted for, none cut by the
-      //                          cap, and the passage search's facet window
-      //                          covered every matching passage;
+      //                          cap, and at least as many candidates kept as
+      //                          documents the passage search's facet window
+      //                          counted;
       //      COVERAGE: partial   otherwise, then
       //      UNCOVERED: <n> candidates not screened; <m> beyond the cap of <CAP>
-      //                 [; the searches may not have reached every matching document]
+      //                 [; the passage search counted <c> documents and <k> were kept]
+      //    (or "; the searches may not have reached every matching document"
+      //    when the search reported no count). The window's own complete flag
+      //    is not asked: the window is the 500 nearest passages, however far,
+      //    so on a corpus larger than that the flag is never true.
       //    and the trailer
       //      SURVEY: candidates <kept> (cut <m>) | slices <s> | failed slices <f> |
       //              rounds <walker runs> | RUNS: <run:status[/max_tokens], ...>
@@ -6241,8 +6258,9 @@ agents:
       }
 
       // gather returns {ids: the kept candidates, best first, cut: how many
-      // more there were, complete: whether the passage search's facet window
-      // covered every matching passage}. It throws when a read fails.
+      // more there were, counted: the documents the passage search's facet
+      // window counted, or -1 when it reported no count}. It throws when a
+      // read fails.
       function gather(q) {
         var P = newSet(), S = newSet(), M = newSet(), C = newSet(), E = newSet();
         var pr = search(P, q, { facets: ["type", "folder"], facet_window: 500 });
@@ -6256,25 +6274,34 @@ agents:
         var found = union(P, S, M, C);
         edges(E, found);
         var all = ranked(union(found, E));
+        var dc = pr && pr.facets ? pr.facets.documents_counted : undefined;
         return { ids: all.slice(0, CAP), cut: Math.max(0, all.length - CAP),
-                 complete: !!(pr && pr.facets && pr.facets.complete === true) };
+                 counted: typeof dc === "number" && dc >= 0 ? dc : -1 };
       }
 
       // ---- 2. screen ----
 
       var ANSWER = "Answer the question given as untrusted input.";
 
+      // summaryCall is the one Document call a screening round makes, built
+      // from ids that match ID_SHAPE, so it holds nothing but id characters.
+      function summaryCall(ids) {
+        return "Document " + JSON.stringify({ op: "documents_summary", scope: "tenant", document_ids: ids, with_summary: true });
+      }
+
       function screenBlock(ids) {
         return "SCREEN. These are candidate documents for the question. Sort them as your " +
-          "instructions say for screening: read their briefs in one documents_summary call, " +
-          "then reply with only the FITS and SET ASIDE lines, which together name every id below." +
+          "instructions say for screening. Read their briefs with this ONE call, exactly as " +
+          "written (document_ids is a list of strings, never one string):\n" + summaryCall(ids) +
+          "\nThen reply with only the FITS and SET ASIDE lines, which together name every id below." +
           "\n\nCandidates (" + ids.length + "):\n" + ids.join("\n");
       }
 
-      function writeBlock(ids) {
-        return "WRITE. Screening found that the documents below fit the question. Write the " +
-          "overview as your instructions say for writing: one line and a link per document. " +
-          "Do not write FITS, SET ASIDE, COVERAGE or UNCOVERED lines." +
+      function composeBlock(ids) {
+        return "COMPOSE. Screening found that the documents below fit the question. " +
+          "Compose your reply: one line and a link per document, as your instructions say for composing. " +
+          "The knowledge base is read-only and nothing is to be stored: your reply text is the whole result. " +
+          "Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines." +
           "\n\nFitting documents (" + ids.length + "):\n" + ids.join("\n");
       }
 
@@ -6362,7 +6389,13 @@ agents:
         return true;
       }
 
-      // readAnswer takes the accounting and coverage lines out of an answer.
+      // walkLine: a walker's MOVES or MISSING line, about its own walk and not
+      // the knowledge base.
+      function walkLine(line) {
+        return /^(MOVES|MISSING)\s*:/i.test(plain(line));
+      }
+
+      // readAnswer takes the accounting, coverage and walk lines out of an answer.
       // A FITS or SET ASIDE line may carry its ids on the following lines.
       // Returns {text: the rest, fits and aside: the ids of cands each line
       // named, lines: how many of the two labels it found}.
@@ -6381,7 +6414,7 @@ agents:
             w = idTokens(lines[i]);
           } else {
             into = null;
-            if (coverageLine(lines[i]) || /^UNCOVERED\s*:/i.test(p)) { continue; }
+            if (coverageLine(lines[i]) || walkLine(lines[i]) || /^UNCOVERED\s*:/i.test(p)) { continue; }
             keep.push(lines[i]);
             continue;
           }
@@ -6426,10 +6459,10 @@ agents:
         return out.join("\n");
       }
 
-      function writeAnswer(fitIDs) {
+      function composeAnswer(fitIDs) {
         var set = newSet();
         for (var i = 0; i < fitIDs.length; i++) { set[fitIDs[i]] = 1; }
-        var res = call(spawnArgs("kb/walker", ANSWER, writeBlock(fitIDs), true));
+        var res = call(spawnArgs("kb/walker", ANSWER, composeBlock(fitIDs), true));
         runs.push(runTag(res));
         var why = cutShort(res);
         var text = why ? "" : readAnswer(res.final_text, set).text;
@@ -6487,19 +6520,24 @@ agents:
 
         var body;
         if (fitIDs.length) {
-          body = writeAnswer(fitIDs);
+          body = composeAnswer(fitIDs);
         } else if (left.length < g.ids.length) {
           body = "None of the " + (g.ids.length - left.length) + " candidate documents fits the question.";
         } else {
           body = "No answer: no screening round could be used.";
         }
 
+        // reached: the gather step kept at least as many documents as the
+        // passage search's facet window counted. A proxy, not a set check: the
+        // facets give counts, not ids.
+        var reached = g.counted >= 0 && g.ids.length >= g.counted;
         var cov;
-        if (!left.length && g.cut === 0 && g.complete) {
+        if (!left.length && g.cut === 0 && reached) {
           cov = "COVERAGE: complete";
         } else {
           cov = "COVERAGE: partial\nUNCOVERED: " + left.length + " candidates not screened; " + g.cut + " beyond the cap of " + CAP +
-            (g.complete ? "" : "; the searches may not have reached every matching document");
+            (reached ? "" : g.counted < 0 ? "; the searches may not have reached every matching document" :
+              "; the passage search counted " + g.counted + " documents and " + g.ids.length + " were kept");
         }
         var tail = "SURVEY: candidates " + g.ids.length + " (cut " + g.cut + ") | slices " + sliceCount +
           " | failed slices " + failed + " | rounds " + runs.length + " | RUNS: " + runs.join(", ");
@@ -6594,7 +6632,7 @@ agents:
     # common folder; about a quarter larger a prompt than kb/search. Given a
     # slice of candidates by kb/survey it screens it instead (SCREENING) and
     # replies with only the FITS and SET ASIDE lines kb/survey checks; given the
-    # ids that fit, it writes the overview (WRITING). Without a list it is the
+    # ids that fit, it composes the reply (COMPOSING). Without a list it is the
     # fallback after a partial search.
     tools: [Document, Path]
     skills: [-*]
@@ -6628,8 +6666,9 @@ agents:
 
       SCREENING. When the prompt says SCREEN and lists candidate document ids,
       sort them instead of walking:
-        1. Read their briefs with ONE documents_summary call ("document_ids":
-           every listed id, "with_summary": true).
+        1. Read their briefs with ONE documents_summary call: make the call the
+           prompt gives, exactly as written. "document_ids" is a list of id
+           strings, never one string holding the list.
         2. Decide for each id whether the document fits the question.
         3. Reply with ONLY these two lines, which together name every listed id
            (write "none" for an empty list):
@@ -6637,14 +6676,15 @@ agents:
              SET ASIDE: <id>, <id>, ...
         No answer, no links, no other line.
 
-      WRITING. When the prompt says WRITE and lists the ids of the documents
-      that fit the question, write the overview instead of walking:
-        1. You may read their briefs with documents_summary ("document_ids",
-           "with_summary": true).
-        2. Write one line and a link per listed document.
+      COMPOSING. When the prompt says COMPOSE and lists the ids of the
+      documents that fit the question, compose your reply instead of walking:
+        1. You may read their briefs with documents_summary ("document_ids" as
+           a list, "with_summary": true).
+        2. Compose your reply: one line and a link per listed document.
         3. Add a document that is not listed only if you found it yourself and
            it fits.
-        Do not write FITS, SET ASIDE, COVERAGE or UNCOVERED lines.
+        The knowledge base is read-only and nothing is to be stored: your reply text is the whole result.
+        Leave out the FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines.
 
       Without a list, follow the steps below.
 
