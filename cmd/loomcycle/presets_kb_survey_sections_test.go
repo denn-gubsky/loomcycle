@@ -34,9 +34,9 @@ func annotationCallOf(id string) string {
 // TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly: a big
 // multi-topic guide answers in one of its sections while its brief describes
 // the whole guide, so a passage hit in a section of a document with at least
-// 30 live chunks makes that section a candidate beside the document; a small
+// 20 live chunks makes that section a candidate beside the document; a small
 // document's sections do not, and a guide gives at most its 3 heaviest hit
-// sections. The size is one count over the kept documents with a hit section.
+// sections. The size is one count over the kept documents.
 // The screening round names the section by id and carries its exact
 // get_annotation call; the documents_summary call holds documents only; no
 // summary text reaches the trusted prompt.
@@ -50,7 +50,7 @@ func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 			"S": {secHit(guide, s1), secHit(guide, s3)},
 			"M": {secHit(guide, s1), secHit(guide, s2), secHit(guide, s3), secHit(guide, s4)},
 		},
-		chunkCounts: map[string]int{guide: 30, small: 29, plain: 200},
+		chunkCounts: map[string]int{guide: 20, small: 19, plain: 5},
 	}
 	out := runSurvey(t, f, surveyQuestion)
 
@@ -58,8 +58,8 @@ func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 		t.Fatalf("size queries = %d, want one", len(f.countSQL))
 	}
 	q := f.countSQL[0]
-	if !strings.Contains(q, "'"+guide+"'") || !strings.Contains(q, "'"+small+"'") || strings.Contains(q, plain) {
-		t.Errorf("size query = %q, want only the documents with a hit section", q)
+	if !strings.Contains(q, "'"+guide+"'") || !strings.Contains(q, "'"+small+"'") || !strings.Contains(q, "'"+plain+"'") {
+		t.Errorf("size query = %q, want every kept document", q)
 	}
 	got := map[string]bool{}
 	for _, id := range f.screened() {
@@ -71,7 +71,7 @@ func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 		}
 	}
 	if got[sSmall] {
-		t.Errorf("a section of a document under 30 chunks was screened")
+		t.Errorf("a section of a document under 20 chunks was screened")
 	}
 	if got[s4] {
 		t.Errorf("a fourth section of one guide was screened; want its 3 heaviest only")
@@ -107,7 +107,7 @@ func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 	if rounds != 1 {
 		t.Errorf("screening rounds = %d, want 1", rounds)
 	}
-	if _, _, sv := surveyLines(out); !strings.HasPrefix(sv, "SURVEY: candidates 6 (cut 0) | sections 3 (cut 0) | slices 1 |") {
+	if _, _, sv := surveyLines(out); !strings.HasPrefix(sv, "SURVEY: candidates 6 (cut 0) | sections 3 (cut 0) | guide searches 3 | slices 1 |") {
 		t.Errorf("survey line = %q, want 6 candidates of which 3 sections", sv)
 	}
 }
@@ -169,7 +169,7 @@ func TestKbSurvey_FittingSectionIsAccountedAndComposedAsAChunkLink(t *testing.T)
 		if cov != "COVERAGE: complete" || unc != "" {
 			t.Errorf("coverage = %q %q, want complete: every candidate, sections too, accounted for", cov, unc)
 		}
-		if !strings.Contains(sv, "candidates 5 (cut 0) | sections 2 (cut 0) | slices 1 | failed slices 0 |") {
+		if !strings.Contains(sv, "candidates 5 (cut 0) | sections 2 (cut 0) | guide searches 6 | slices 1 | failed slices 0 |") {
 			t.Errorf("survey line = %q", sv)
 		}
 	})
@@ -253,7 +253,7 @@ func TestKbSurvey_SizeCountFailureLeavesDocumentsOnly(t *testing.T) {
 	if got := strings.Join(f.screened(), ","); got != guide {
 		t.Errorf("candidates = %s, want the document alone", got)
 	}
-	if _, _, sv := surveyLines(out); !strings.Contains(sv, "| sections failed (Document: query_chunks: refused) | slices 1 |") {
+	if _, _, sv := surveyLines(out); !strings.Contains(sv, "| sections failed (Document: query_chunks: refused) | guide searches 0 | slices 1 |") {
 		t.Errorf("survey line = %q, want the failed count named", sv)
 	}
 }
@@ -302,7 +302,129 @@ func TestKbSurvey_SectionsHaveTheirOwnCapBesideTheDocuments(t *testing.T) {
 	if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120" {
 		t.Errorf("coverage = %q %q, want the 30 documents past the cap and nothing about sections", cov, unc)
 	}
-	if !strings.HasPrefix(sv, "SURVEY: candidates 144 (cut 30) | sections 24 (cut 6) | slices 12 |") {
+	if !strings.HasPrefix(sv, "SURVEY: candidates 144 (cut 30) | sections 24 (cut 6) | guide searches 24 | slices 12 |") {
 		t.Errorf("survey line = %q", sv)
+	}
+}
+
+// TestKbSurvey_SearchInsideALargeGuideFindsASectionNoGeneralSearchHit: a
+// guide's key section becomes a candidate only when a search hits it, and a
+// general search ranks it against the whole corpus. Measured: a 21-chunk
+// security guide was a candidate, but no general search hit a section of it,
+// so none was screened and the guide was dropped. A large guide among the kept
+// documents is searched inside (document_id, 5 hits, with_summary) for the
+// question and each clause; its hit sections become candidates by id only, and
+// a row of another document is not taken.
+func TestKbSurvey_SearchInsideALargeGuideFindsASectionNoGeneralSearchHit(t *testing.T) {
+	guide, other := docID(1), docID(2)
+	key, stray := secID(1), secID(2)
+	f := &surveyFake{
+		rows: map[string][]map[string]any{
+			// The guide is found whole, never through a section.
+			"P":                                 hits(guide, other),
+			"G:" + guide + ":" + surveyQuestion: {secHit(guide, key), secHit(other, stray)},
+		},
+		chunkCounts: map[string]int{guide: 21, other: 3},
+		screen:      fitsOf(key),
+	}
+	out := runSurvey(t, f, surveyQuestion)
+
+	var inside []string
+	for _, l := range f.searches {
+		if strings.HasPrefix(l, "G:") {
+			inside = append(inside, l)
+		}
+	}
+	want := []string{"G:" + guide + ":" + surveyQuestion, "G:" + guide + ":speech", "G:" + guide + ":voice"}
+	if strings.Join(inside, ",") != strings.Join(want, ",") {
+		t.Errorf("searches inside guides = %v, want %v (the large guide only, the question then each clause)", inside, want)
+	}
+	got := strings.Join(f.screened(), ",")
+	if !strings.Contains(got, key) {
+		t.Errorf("candidates = %s, want the guide's key section %s", got, key)
+	}
+	if strings.Contains(got, stray) {
+		t.Errorf("candidates = %s: a section of another document was taken from a search inside the guide", got)
+	}
+	for i, sp := range f.spawns {
+		p := spawnPrompt(sp)
+		for _, marker := range []string{"TITLE-MARKER", "PASSAGE-MARKER", "BRIEF-MARKER", "ABSTRACT-MARKER"} {
+			if strings.Contains(p, marker) {
+				t.Errorf("run %d's trusted prompt carries %q", i+1, marker)
+			}
+		}
+	}
+	if _, _, sv := surveyLines(out); !strings.HasPrefix(sv, "SURVEY: candidates 3 (cut 0) | sections 1 (cut 0) | guide searches 3 | slices 1 |") {
+		t.Errorf("survey line = %q", sv)
+	}
+}
+
+// TestKbSurvey_GuideSearchesAreBounded: only the 8 highest-weighted large
+// guides are searched inside, the question in every one of them first, then
+// each clause in turn, 24 searches at most; a clause that is the question again
+// is not asked twice.
+func TestKbSurvey_GuideSearchesAreBounded(t *testing.T) {
+	const q = "What do we hold on alpha, beta, gamma, delta and epsilon?"
+	var ids []string
+	f := &surveyFake{rows: map[string][]map[string]any{}, chunkCounts: map[string]int{}}
+	for i := 0; i < 12; i++ {
+		ids = append(ids, docID(i))
+		f.chunkCounts[docID(i)] = 50
+	}
+	f.rows["P"] = hits(ids...) // rank order: docID(0) first
+	runSurvey(t, f, q)
+
+	var inside []string
+	for _, l := range f.searches {
+		if strings.HasPrefix(l, "G:") {
+			inside = append(inside, l)
+		}
+	}
+	if len(inside) != 24 {
+		t.Fatalf("searches inside guides = %d, want 24 (the bound)", len(inside))
+	}
+	for i, l := range inside {
+		g, query := docID(i%8), q
+		if i >= 8 {
+			query = []string{"alpha", "beta"}[i/8-1]
+		}
+		if l != "G:"+g+":"+query {
+			t.Errorf("search inside %d = %q, want %q", i, l, "G:"+g+":"+query)
+		}
+	}
+	t.Run("a clause that is the question", func(t *testing.T) {
+		const one = "How can an existing REST API be given to agents as tools?"
+		f := &surveyFake{rows: map[string][]map[string]any{"P": hits(docID(1))}, chunkCounts: map[string]int{docID(1): 50}}
+		runSurvey(t, f, one)
+		n := 0
+		for _, l := range f.searches {
+			if strings.HasPrefix(l, "G:") {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("searches inside the guide = %d, want 1: the one clause is the question", n)
+		}
+	})
+}
+
+// TestKbSurvey_FailedGuideSearchKeepsTheSurvey: a search inside a guide that
+// fails ends those searches, not the survey: the sections the general searches
+// hit stay candidates, and the trailer names the failure.
+func TestKbSurvey_FailedGuideSearchKeepsTheSurvey(t *testing.T) {
+	guide := docID(1)
+	sec := secID(1)
+	f := &surveyFake{
+		rows:        map[string][]map[string]any{"P": {secHit(guide, sec)}},
+		chunkCounts: map[string]int{guide: 40},
+		guideErr:    "Document: search: refused",
+		screen:      fitsOf(sec),
+	}
+	out := runSurvey(t, f, surveyQuestion)
+	if got := strings.Join(f.screened(), ","); !strings.Contains(got, sec) || !strings.Contains(got, guide) {
+		t.Errorf("candidates = %s, want the guide and its general-search section", got)
+	}
+	if _, _, sv := surveyLines(out); !strings.Contains(sv, "| sections 1 (cut 0) | guide searches 1 (failed: Document: search: refused) | slices 1 |") {
+		t.Errorf("survey line = %q, want the failed search named", sv)
 	}
 }

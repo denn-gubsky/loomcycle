@@ -28,8 +28,8 @@ type surveyFake struct {
 	mu sync.Mutex
 	// rows is what each search returns, by label: P (the passage search with
 	// facets), S (summaries only), M (passages and summaries), C:<clause> and
-	// CI:<clause> (a clause's plain and mixed search). A missing label returns
-	// no rows.
+	// CI:<clause> (a clause's plain and mixed search), and G:<document id>:<query>
+	// (a search inside one large guide). A missing label returns no rows.
 	rows map[string][]map[string]any
 	// facets is what the P search reports beside its rows. nil reports what
 	// the store reports on a corpus larger than the facet window: complete
@@ -44,8 +44,10 @@ type surveyFake struct {
 	// query fail as a tool error.
 	chunkCounts map[string]int
 	countErr    string
-	// searchErr makes every search fail as a tool error.
+	// searchErr makes every search fail as a tool error; guideErr only the
+	// searches inside guides.
 	searchErr string
+	guideErr  string
 	// screen answers a screening round, given its candidate ids; nil sorts
 	// every id into SET ASIDE.
 	screen func(ids []string) surveyReply
@@ -99,9 +101,17 @@ func (d *surveyFakeDocument) Execute(_ context.Context, raw json.RawMessage) (to
 		if d.f.searchErr != "" {
 			return tools.Result{IsError: true, Text: d.f.searchErr}, nil
 		}
+		if d.f.guideErr != "" && in["document_id"] != nil {
+			return tools.Result{IsError: true, Text: d.f.guideErr}, nil
+		}
 		q, _ := in["query"].(string)
 		var label string
+		want := float64(50)
 		switch {
+		case in["document_id"] != nil:
+			id, _ := in["document_id"].(string)
+			label = "G:" + id + ":" + q
+			want = 5
 		case in["facets"] != nil:
 			label = "P"
 		case in["annotations"] == "only":
@@ -113,8 +123,8 @@ func (d *surveyFakeDocument) Execute(_ context.Context, raw json.RawMessage) (to
 		default:
 			label = "C:" + q
 		}
-		if in["limit"] != float64(50) {
-			return tools.Result{IsError: true, Text: fmt.Sprintf("search %s: limit %v, want 50", label, in["limit"])}, nil
+		if in["limit"] != want {
+			return tools.Result{IsError: true, Text: fmt.Sprintf("search %s: limit %v, want %v", label, in["limit"], want)}, nil
 		}
 		d.f.searches = append(d.f.searches, label)
 		d.f.queries = append(d.f.queries, q)
@@ -467,7 +477,7 @@ func TestKbSurvey_GatherRanksByWeightDedupsAndSkipsFolderRows(t *testing.T) {
 	if cov != "COVERAGE: complete" || unc != "" {
 		t.Errorf("coverage = %q %q, want complete with no UNCOVERED line", cov, unc)
 	}
-	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 (cut 0) | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
+	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 (cut 0) | guide searches 0 | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -521,7 +531,7 @@ func TestKbSurvey_GatherKeepsTheTop120AndCountsTheCut(t *testing.T) {
 	if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120" {
 		t.Errorf("coverage = %q %q, want partial with 30 beyond the cap", cov, unc)
 	}
-	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 (cut 0) | slices 10 | failed slices 0 | rounds 11 | RUNS: ") {
+	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 (cut 0) | guide searches 0 | slices 10 | failed slices 0 | rounds 11 | RUNS: ") {
 		t.Errorf("survey line = %q", sv)
 	}
 }

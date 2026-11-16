@@ -6037,7 +6037,7 @@ agents:
     disable_context: true
     # Its session holds search results from tenant documents.
     internal: true
-    # Spans the gather step (about seventy reads), the screening rounds (in
+    # Spans the gather step (about a hundred reads), the screening rounds (in
     # parallel, then one retry wave) and one composing round.
     run_timeout_seconds: 900
     # parallel_spawn runs at most this many screening rounds at once (default
@@ -6066,13 +6066,23 @@ agents:
       //    search asks with_summary, and a hit whose nearest summary is a
       //    section's (level branch) names that section's chunk id. A document
       //    with at least GUIDE_CHUNKS live chunks is a large guide (one
-      //    query_chunks count over the kept documents that have such hits); its
-      //    GUIDE_SECTIONS heaviest hit sections become candidates BESIDE it,
-      //    weighted like documents (2 per search list, 1 more in the top 10).
+      //    query_chunks count over the kept documents); its GUIDE_SECTIONS
+      //    heaviest hit sections become candidates BESIDE it, weighted like
+      //    documents (2 per search list, 1 more in the top 10).
+      //    SEARCHES INSIDE GUIDES. A general search reaches a guide's key
+      //    section only when that section ranks among the whole corpus's
+      //    nearest passages, and a measured guide was dropped whose key section
+      //    never did. So the GUIDE_DOCS highest-weighted large guides are also
+      //    searched inside (document_id, GUIDE_HITS hits) for the question and
+      //    each clause, at most GUIDE_SEARCHES searches; each hit section of
+      //    such a search counts 2, the first 1 more. A failed search ends them
+      //    and keeps what they found.
       //    Chunk count is the size measure because it is the one the store keeps
-      //    for every document whatever its type; GUIDE_CHUNKS = 30 holds every
-      //    guide that was dropped on the measured set (38 chunks the smallest)
-      //    and about one document in eight of that corpus. It does not tell a
+      //    for every document whatever its type. GUIDE_CHUNKS = 20 holds every
+      //    guide that was dropped on the measured sets: 38 chunks the smallest
+      //    on one, and on the next a security guide of 21 chunks whose sections
+      //    never became candidates under 30. About three documents in ten of
+      //    that corpus have 20 or more. It does not tell a
       //    guide from a long single-topic design document: such a document's
       //    sections are screened too, which costs rounds, not answers, since a
       //    section is dropped from the answer when its whole document fits. A
@@ -6124,13 +6134,15 @@ agents:
       //    so on a corpus larger than that the flag is never true.
       //    and the trailer
       //      SURVEY: candidates <kept> (cut <m>) | sections <k> (cut <j>) |
-      //              slices <s> | failed slices <f> | rounds <walker runs> |
+      //              guide searches <g> | slices <s> | failed slices <f> |
+      //              rounds <walker runs> |
       //              RUNS: <run:status[/max_tokens], ...>
       //    candidates counts documents and sections, its cut documents only;
       //    sections counts the kept candidates that are sections and the
       //    sections past SEC_CAP ("sections failed (<why>)" when the size count
-      //    failed); failed slices counts every screening round that failed,
-      //    retries too.
+      //    failed); guide searches counts the searches inside guides ("(failed:
+      //    <why>)" after it when one failed); failed slices counts every
+      //    screening round that failed, retries too.
       //    A gather step that throws or finds nothing falls back to a plain walk;
       //    its coverage is partial, and the trailer says why.
       //
@@ -6153,8 +6165,11 @@ agents:
       var SEARCH_LIMIT = 50; // hits per search, the search's own maximum
       var MAX_CLAUSES = 8;   // clause searches, at most (two searches each)
       var SLICE = 12;        // candidate ids per screening round
-      var GUIDE_CHUNKS = 30; // live chunks that make a document a large guide
+      var GUIDE_CHUNKS = 20; // live chunks that make a document a large guide
       var GUIDE_SECTIONS = 3; // hit sections of one large guide kept, at most
+      var GUIDE_DOCS = 8;    // large guides searched inside, at most
+      var GUIDE_HITS = 5;    // hits per search inside one guide
+      var GUIDE_SEARCHES = 24; // searches inside guides, at most
       var SEC_CAP = 24;      // sections screened, at most, beside the CAP documents
       // A runtime document id: lowercase hex, dashes allowed (the shape kb/ask
       // reads in loom: links). A row whose id does not match is not a
@@ -6278,8 +6293,8 @@ agents:
         return res;
       }
 
-      // largeGuides returns which of ids (kept documents with a hit section)
-      // hold at least GUIDE_CHUNKS live chunks, counted in one query. The ids
+      // largeGuides returns which of ids (the kept documents) hold at least
+      // GUIDE_CHUNKS live chunks, counted in one query. The ids
       // match ID_SHAPE (hex digits and dashes), so each is a safe SQL literal.
       // It throws when the count fails.
       function largeGuides(ids) {
@@ -6296,6 +6311,56 @@ agents:
           if (r && typeof r[0] === "string" && Number(r[1]) >= GUIDE_CHUNKS) { out[r[0]] = 1; }
         }
         return out;
+      }
+
+      // searchGuides searches inside the GUIDE_DOCS highest-weighted large
+      // guides of top for the question and each clause: the question in every
+      // guide first, then the first clause in every guide, and so on, at most
+      // GUIDE_SEARCHES searches. A clause that is the question again is not
+      // asked twice. Returns {n: the searches made, err: why one failed, or
+      // ""}; a failed search ends them and the sections found stay.
+      function searchGuides(top, large, q, cl, secs) {
+        var gs = [], qs = [q], asked = newSet();
+        for (var i = 0; i < top.length && gs.length < GUIDE_DOCS; i++) { if (large[top[i]]) { gs.push(top[i]); } }
+        asked[words(q)] = 1;
+        for (i = 0; i < cl.length; i++) {
+          if (!asked[words(cl[i])]) { asked[words(cl[i])] = 1; qs.push(cl[i]); }
+        }
+        var n = 0;
+        for (var a = 0; a < qs.length; a++) {
+          for (var b = 0; b < gs.length; b++) {
+            if (n >= GUIDE_SEARCHES) { return { n: n, err: "" }; }
+            n++;
+            var res;
+            try {
+              res = doc({ op: "search", query: qs[a], document_id: gs[b], limit: GUIDE_HITS, with_summary: true, summary_chars: 1 });
+            } catch (e) {
+              return { n: n, err: errText(e) };
+            }
+            addSections(rowsOf(res), gs[b], secs);
+          }
+        }
+        return { n: n, err: "" };
+      }
+
+      // addSections adds one search inside guide d to secs: 2 per hit
+      // section, 1 more for the first. A row of another document is skipped.
+      function addSections(rows, d, secs) {
+        var seen = newSet(), first = 1;
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i] || {};
+          var sec = r.document_id === d ? sectionOf(r) : "";
+          if (!sec || seen[sec]) { continue; }
+          seen[sec] = 1;
+          secs.w[sec] = (secs.w[sec] || 0) + 2 + first;
+          secs.doc[sec] = d;
+          first = 0;
+        }
+      }
+
+      // words is a text's words, lower case, one space apart.
+      function words(t) {
+        return String(t).toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/^ | $/g, "");
       }
 
       // clauses splits a question into its parts, dropping the lead-in.
@@ -6346,8 +6411,8 @@ agents:
       // counted: the documents the passage search's facet window counted, or
       // -1 when it reported no count, sec: each kept section -> its document,
       // docs and sections: how many of each were kept, secErr: why the size
-      // count failed, or ""}. It throws when a search or a relation read
-      // fails.
+      // count failed, or "", inner: searchGuides' result}. It throws when a
+      // general search or a relation read fails.
       function gather(q) {
         var P = newSet(), S = newSet(), M = newSet(), C = newSet(), E = newSet();
         var secs = { w: newSet(), doc: newSet() };
@@ -6364,16 +6429,14 @@ agents:
         var pool = union(found, E);
 
         // Large guides: only documents the cap keeps can have sections kept
-        // (a section never weighs more than its document), so only those with
-        // a hit section are counted.
-        var hasSec = newSet(), probe = [];
-        for (var s in secs.doc) { hasSec[secs.doc[s]] = 1; }
+        // (a section never weighs more than its document), so only those are
+        // counted; then the largest kept ones are searched inside.
         var all = ranked(pool), top = all.slice(0, CAP);
-        for (i = 0; i < top.length; i++) { if (hasSec[top[i]]) { probe.push(top[i]); } }
-        var large = newSet(), secErr = "";
-        if (probe.length) {
-          try { large = largeGuides(probe); } catch (e) { secErr = errText(e); }
+        var large = newSet(), secErr = "", inner = { n: 0, err: "" };
+        if (top.length) {
+          try { large = largeGuides(top); } catch (e) { secErr = errText(e); }
         }
+        if (!secErr) { inner = searchGuides(top, large, q, cl, secs); }
         // Sections have their own cap, SEC_CAP, so they never take a
         // document's place under CAP.
         var kept = newSet(), sec = newSet(), per = newSet(), nsec = 0, secCut = 0, byW = ranked(secs.w);
@@ -6391,7 +6454,7 @@ agents:
         var dc = pr && pr.facets ? pr.facets.documents_counted : undefined;
         return { ids: ranked(kept), cut: Math.max(0, all.length - CAP), secCut: secCut,
                  counted: typeof dc === "number" && dc >= 0 ? dc : -1,
-                 sec: sec, docs: top.length, sections: nsec, secErr: secErr };
+                 sec: sec, docs: top.length, sections: nsec, secErr: secErr, inner: inner };
       }
 
       // ---- 2. screen ----
@@ -6693,7 +6756,8 @@ agents:
               "; the passage search counted " + g.counted + " documents and " + g.docs + " were kept");
         }
         var tail = "SURVEY: candidates " + g.ids.length + " (cut " + g.cut + ") | sections " +
-          (g.secErr ? "failed (" + g.secErr.replace(/\s+/g, " ") + ")" : g.sections + " (cut " + g.secCut + ")") + " | slices " + sliceCount +
+          (g.secErr ? "failed (" + g.secErr.replace(/\s+/g, " ") + ")" : g.sections + " (cut " + g.secCut + ")") +
+          " | guide searches " + g.inner.n + (g.inner.err ? " (failed: " + g.inner.err.replace(/\s+/g, " ") + ")" : "") + " | slices " + sliceCount +
           " | failed slices " + failed + " | rounds " + runs.length + " | RUNS: " + runs.join(", ");
         return { final_text: body + "\n\n" + cov + "\n" + tail };
       }
