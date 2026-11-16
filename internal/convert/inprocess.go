@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
@@ -28,6 +30,10 @@ const (
 	// RasterizeTimeout bounds the OCR rasteriser on one page. It is not an
 	// operator setting; a page that takes longer is not a page.
 	RasterizeTimeout = 2 * time.Minute
+	// RenderTimeout bounds writing one document bundle as a file (RFC GR),
+	// counted from when the render holds its slot. Like RasterizeTimeout it
+	// is not an operator setting.
+	RenderTimeout = 2 * time.Minute
 )
 
 // Helper is one operator command a job runs: the command line template, the
@@ -234,6 +240,27 @@ func (p *InProcess) ReencodeImage(ctx context.Context, data []byte) ([]byte, str
 		return nil, "", ErrNotConfigured
 	}
 	return p.Images.Reencode(ctx, data)
+}
+
+// Render writes a document bundle as format under an extraction slot: a
+// bundle's bodies are parsed and its output built in memory, work of the
+// same budget as an extraction.
+func (p *InProcess) Render(ctx context.Context, bundle []byte, format string) ([]byte, error) {
+	if !render.Supported(format) {
+		return nil, fmt.Errorf("%w: %q", render.ErrUnsupported, format)
+	}
+	release, err := p.slot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(ctx, RenderTimeout)
+	defer cancel()
+	var out bytes.Buffer
+	if err := render.RenderBundle(ctx, bytes.NewReader(bundle), int64(len(bundle)), format, &out); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 // ---- scratch ----

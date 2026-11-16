@@ -87,7 +87,8 @@ func (f *File) Description() string {
 		"extract (turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, with its pictures as files, and return an excerpt; " +
 		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost; a VTT or SRT caption file becomes a timed transcript), " +
 		"transcribe (turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model, and return an excerpt; dry_run says how many minutes and what it would cost), " +
-		"import (build a Document from such a Markdown file, its pictures attached as image chunks). " +
+		"import (build a Document from such a Markdown file, its pictures attached as image chunks), " +
+		"render (write a Document you may read, or a Markdown file, as a file to send: md or html, into volume:inbox:rendered/ or a volume of yours; the reverse of import). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, or `volume:path` for your default volume; a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
 }
@@ -96,11 +97,11 @@ func (f *File) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import"]},
-			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox."},
+			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render"]},
+			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox. render: a Markdown file to render instead of a document (its first # heading is the title)."},
 			"from":      {"type": "string", "description": "keep: the inbox file to copy. upload: the file to send, in the inbox or a volume you can Read."},
-			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name)."},
-			"overwrite": {"type": "boolean", "description": "keep, download: replace an existing file at to. Default false."},
+			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name). render: the file to write in one of your read-write volumes (needs the Write tool); default volume:inbox:rendered/<title>.<format>."},
+			"overwrite": {"type": "boolean", "description": "keep, download, render: replace an existing file at to. Default false."},
 			"url":       {"type": "string", "description": "download, upload: the absolute http(s) URL. Its host must be on the HTTP allowlist."},
 			"headers":   {"type": "object", "additionalProperties": {"type": "string"}, "description": "download, upload: extra request headers. No credentials: an authorised URL carries its own."},
 			"max_bytes": {"type": "integer", "minimum": 1, "description": "download: refuse a file larger than this. Default and ceiling: the per-file limit."},
@@ -117,14 +118,21 @@ func (f *File) InputSchema() json.RawMessage {
 				"infer_headings": {"type": "boolean", "description": "Make a heading of each short line (one line, at most 120 characters, not ending in . , or ;, not in a list or table) that is wholly bold, at least 1.15 times the body's size, or coloured and bold or larger; real headings keep their level. Also drops a picture repeated 3 or more times as decoration, and collapses non-breaking spaces. The result counts inferred_headings and dropped_decorative_images, and an import of the text records the inferred structure in the document's provenance."}
 			}},
 			"ocr":           {"type": "string", "enum": ["never", "auto", "always"], "description": "extract: read scanned pages and images with the OCR model. auto: only PDF pages with little or no text; always: every page; never: the text layer only. Default: your agent's setting, which is also the most you may ask for."},
-			"language":      {"type": "string", "description": "extract with OCR: the languages of the text, ISO 639-1 codes joined by +, e.g. uk or uk+ru. transcribe: the one language spoken, e.g. uk. Default: the operator's."},
+			"language":      {"type": "string", "description": "extract with OCR: the languages of the text, ISO 639-1 codes joined by +, e.g. uk or uk+ru. transcribe: the one language spoken, e.g. uk. Default: the operator's. render: the document's language, e.g. uk, for the file's properties."},
 			"vocabulary":    {"type": "string", "description": "transcribe: names and terms the recording uses, to help the model spell them (one line, at most 400 characters). Default: the operator's."},
 			"diarize":       {"type": "boolean", "description": "transcribe: label who speaks (Speaker 1, Speaker 2…), where the model can. Default: the operator's setting."},
 			"timestamps":    {"type": "string", "enum": ["segments", "none"], "description": "transcribe: segments (default) puts each passage's start time before it; none leaves times out."},
 			"dry_run":       {"type": "boolean", "description": "extract: say what OCR would read and cost (pages, calls, model, estimated tokens and cost) without running it or writing anything. transcribe: say how many minutes and requests it would take and what it would cost, without sending anything."},
 			"title":         {"type": "string", "description": "import: the document's title. Default: the Markdown's first heading."},
-			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes."},
-			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import: the document store. Default user."},
+			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes. render: the document to render, by its Path-tree name."},
+			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import, render: the document store. Default user."},
+			"document":      {"type": "string", "description": "render: the id of the document to render. Pass exactly one of document, doc_path or path."},
+			"chunk":         {"type": "string", "description": "render: render only the part of the document under this chunk (a section id); its title becomes the file's title."},
+			"format":        {"type": "string", "enum": ["md", "html", "docx", "pdf"], "description": "render: the file to write. md (clean Markdown, its pictures as files in a folder beside it) and html (one self-contained page) are available; docx and pdf come later."},
+			"toc":           {"type": "boolean", "description": "render: add a table of contents after the title. Default false."},
+			"title_page":    {"type": "boolean", "description": "render: put the title on a page of its own. Default false: the title, a Draft or Review label and a provenance and date line head the first page."},
+			"provenance":    {"type": "boolean", "description": "render: for an imported document, say where it came from under the title. Default true."},
+			"page_size":     {"type": "string", "enum": ["a4", "letter"], "description": "render: the page size of a paged format. Default a4."},
 			"tags":          {"type": "array", "items": {"type": "string"}, "description": "import: tags for the document, besides the source/... and untrusted tags it always gets."},
 			"reimport":      {"type": "boolean", "description": "import: the file is a NEW EDITION of the work named by work_key, reconciled onto the document holding it part by part (as Document import_md with reimport): unchanged and moved parts keep their ids and links, changed ones are superseded at edition_date, nothing is deleted. Needs work_key. The document's provenance is refreshed (file, sha256, capture, source revision and update time), the earlier one kept in its root's history; a source.url must be the one the work was imported from, else source_mismatch."},
 			"work_key":      {"type": "string", "description": "import with reimport: the work's key, e.g. law:ua/2297-vi — the document holding it, or the one the first edition creates."},
@@ -185,6 +193,14 @@ type fileInput struct {
 	WorkKey            string `json:"work_key"`
 	EditionDate        *int64 `json:"edition_date"`
 	AmendingDocumentID string `json:"amending_document_id"`
+	// render (file_render.go)
+	Document   string `json:"document"`
+	Chunk      string `json:"chunk"`
+	Format     string `json:"format"`
+	TOC        bool   `json:"toc"`
+	TitlePage  bool   `json:"title_page"`
+	Provenance *bool  `json:"provenance"`
+	PageSize   string `json:"page_size"`
 }
 
 func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
@@ -213,10 +229,12 @@ func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return f.transcribe(ctx, in)
 	case "import":
 		return f.importDoc(ctx, in)
+	case "render":
+		return f.renderOp(ctx, in)
 	case "":
-		return errValidation("missing required field: op", "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import."), nil
+		return errValidation("missing required field: op", "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import, render."), nil
 	}
-	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import."), nil
+	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import, render."), nil
 }
 
 // fileRef parses a path argument: a volume reference, or a bare path that

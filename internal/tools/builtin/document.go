@@ -142,7 +142,7 @@ const documentInputSchema = `{
 		"document_id": {"type": "string", "description": "The document an op works on. search / related: return only this document's chunks. list_statements: only statements with either end in this document."},
 		"document_ids": {"type": "array", "items": {"type": "string"}, "description": "documents_summary: the document ids to summarize (combine with or instead of under_path). The response is bounded (default 500, max 5000) and reports truncated:true when it clips — an under_path over a subject-homed fact store is as large as the tenant's entity count, so page the directory with path op=ls and pass each page's ids here. search / related: return only chunks of these documents. graph_snapshot: only these documents (with chunk_ids, the union). copy_documents / move_documents / find_duplicates: the set (with under_path(s), the union)."},
 		"chunk_ids":   {"type": "array", "items": {"type": "string"}, "description": "graph_snapshot: only the documents holding these chunks (with document_ids, the union)."},
-		"include":     {"type": "array", "items": {"type": "string", "enum": ["documents","chunks","edges","dirents","facts","projection"]}, "description": "graph_snapshot: the sections to return (default all but projection). chunks needs documents; edges, facts and projection need chunks."},
+		"include":     {"type": "array", "items": {"type": "string", "enum": ["documents","chunks","edges","dirents","facts","projection","renders"]}, "description": "graph_snapshot: the sections to return (default all but projection). chunks needs documents; edges, facts and projection need chunks. history: renders adds the files rendered from the subtree rooted at the chunk (File op=render) — a document's root chunk lists the whole document's."},
 		"page_documents": {"type": "integer", "description": "graph_snapshot: documents per page (default 200, at most 1000; a larger value is lowered, never refused). A page always holds whole documents."},
 		"edge_budget": {"type": "integer", "description": "graph_snapshot: the most relations one page returns (default 50000, at most 200000); edges.truncated says it was reached."},
 		"exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of these documents — e.g. the document under review, so its own text is not found as evidence for itself."},
@@ -644,6 +644,10 @@ type docInput struct {
 	ChunkIDs      []string `json:"chunk_ids,omitempty"`
 	PageDocuments int      `json:"page_documents,omitempty"`
 	EdgeBudget    int      `json:"edge_budget,omitempty"`
+
+	// render is set only in process, by File op=render (RFC GR): an export_md
+	// that builds a render tree instead of Markdown (document_render.go).
+	render *renderRequest
 }
 
 // docSchemaDDL is portable across SQL Memory's sqlite + postgres tiers: BIGINT
@@ -792,6 +796,12 @@ var docSchemaDDL = []string{
 	// chunk_annotations: a brief and an abstract per (chunk, level), beside the
 	// content and never part of it (document_annotations.go).
 	chunkAnnotationsDDL,
+	// document_renders: the render log, one row per file a document was
+	// rendered into (RFC GR §4.8, document_render.go).
+	documentRendersDDL,
+	documentRendersDocIndexDDL,
+	documentRendersSourceIndexDDL,
+	documentRendersOutIndexDDL,
 }
 
 // maxChunkDepth caps the ancestor walk in move_chunk (cycle detection) so a
@@ -2712,6 +2722,11 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 				resp["references_note"] = subjectRefsNote(rootID)
 			}
 		}
+		// The newest file rendered from the whole document, per format (RFC GR
+		// §4.8).
+		if renders := d.latestRenders(ctx, key, docID, rootID); len(renders) > 0 {
+			resp["renders"] = renders
+		}
 	}
 	// WHO ELSE KNOWS THIS SUBJECT. Counts rather than rows: a dossier read is a
 	// signpost, and a caller who wants the facts asks list_facts for them. What this
@@ -2999,6 +3014,10 @@ func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			return err
 		}
 		if err := d.execTxn(ctx, txnID, `DELETE FROM document_tags WHERE document_id = ?`, docID); err != nil {
+			return err
+		}
+		// The render log goes with its document (RFC GR §4.8).
+		if err := d.execTxn(ctx, txnID, `DELETE FROM document_renders WHERE document_id = ?`, docID); err != nil {
 			return err
 		}
 		// Same ordering constraint for the entity-tier sidecar, and the same reason
@@ -4320,7 +4339,17 @@ func (d *Document) chunkHistory(ctx context.Context, key sqlmem.ScopeKey, in doc
 		}
 		revs = append(revs, rev)
 	}
-	return jsonResult(map[string]any{"chunk_id": in.ID, "revisions": revs})
+	out := map[string]any{"chunk_id": in.ID, "revisions": revs}
+	// include: renders — the files rendered from the subtree rooted at this
+	// chunk; a document's root chunk lists the whole document's (RFC GR §4.8).
+	if contains(in.Include, "renders") {
+		renders, err := d.rendersRootedAt(ctx, key, in.ID, limit)
+		if err != nil {
+			return errFrom("history: renders: "+err.Error(), err), nil
+		}
+		out["renders"] = renders
+	}
+	return jsonResult(out)
 }
 
 // revisionBody reads one revision's stored body, and the provenance it
@@ -5454,6 +5483,9 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return errNotFound("export_md: no such document: "+docID, "Find the document with op=query_documents in the same scope."), nil
 	}
 	title := asStr(dres.Rows[0][0])
+	if in.render != nil {
+		return d.renderDocument(ctx, key, mscope, in, docID, title)
+	}
 
 	roots, byParent, err := d.loadChunkTree(ctx, key, docID)
 	if err != nil {
@@ -5531,12 +5563,26 @@ func (d *Document) loadChunkTree(ctx context.Context, key sqlmem.ScopeKey, docID
 	return roots, byParent, nil
 }
 
-// renderChunkTree writes rows and their descendants to b depth-first in
-// position order: each chunk is a heading (level = depth+1, capped at 6)
-// followed by its Markdown body — the rendering export_md emits. depth is the
-// depth of rows themselves, so a subtree keeps the heading levels it has in the
-// whole document.
-func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, b *strings.Builder, rows []chunkRow, byParent map[string][]chunkRow, depth int, includeMeta bool) error {
+// treeChunk is one chunk of a walk over a document's tree (walkChunkTree):
+// its row, its depth (the walk's start depth plus its distance from the
+// walk's rows), its body, and for an image chunk its picture.
+type treeChunk struct {
+	row   chunkRow
+	depth int
+	body  chunkBody
+	// assetMT and asset are an image chunk's picture; hasAsset is false for
+	// an image chunk whose bytes are missing, and for every other chunk.
+	assetMT  string
+	asset    []byte
+	hasAsset bool
+}
+
+// walkChunkTree visits rows and their descendants depth-first in position
+// order, reading each chunk's body (and an image chunk's picture) once. With
+// expand, a body's `![[…]]` embeds are expanded as a clean export shows them
+// (RFC BS Phase 2b). export_md and the renderer (RFC GR) both read a document
+// through it, so the two cannot drift on what a document holds.
+func (d *Document) walkChunkTree(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rows []chunkRow, byParent map[string][]chunkRow, depth int, expand bool, visit func(c treeChunk) error) error {
 	// An export that renders headings with silently-empty bodies is
 	// indistinguishable from a document that genuinely has none — precisely the
 	// failure mode that let the v1.33.0 tenant regression pass for a full
@@ -5552,14 +5598,49 @@ func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, msc
 		if walkErr != nil {
 			return
 		}
-		level := depth + 1
-		if level > 6 {
-			level = 6
-		}
 		cb, rerr := d.readBody(ctx, mscope, key, row.ID)
 		if rerr != nil {
 			walkErr = rerr
 			return
+		}
+		c := treeChunk{row: row, depth: depth, body: cb}
+		switch {
+		case row.Type == "image":
+			c.assetMT, c.asset, c.hasAsset = d.readAssetRow(ctx, key, row.ID)
+		case row.Type == "mermaid":
+		case expand && cb.Body != "":
+			// The chain seeds with THIS chunk's id so a chunk embedding itself
+			// is caught as a cycle.
+			c.body.Body = d.expandTransclusions(ctx, key, mscope, acl, cb.Body, []string{row.ID}, 0)
+		}
+		if walkErr = visit(c); walkErr != nil {
+			return
+		}
+		for _, ch := range byParent[row.ID] {
+			walk(ch, depth+1)
+		}
+	}
+	for _, r := range rows {
+		walk(r, depth)
+	}
+	return walkErr
+}
+
+// renderChunkTree writes rows and their descendants to b depth-first in
+// position order: each chunk is a heading (level = depth+1, capped at 6)
+// followed by its Markdown body — the rendering export_md emits. depth is the
+// depth of rows themselves, so a subtree keeps the heading levels it has in the
+// whole document.
+func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, b *strings.Builder, rows []chunkRow, byParent map[string][]chunkRow, depth int, includeMeta bool) error {
+	// RFC BS Phase 2b — expand `![[…]]` embeds ONLY in clean mode. In
+	// metadata/round-trip mode the body stays verbatim, or an
+	// export(include_metadata=true)→import_md would bake the expanded copy in
+	// and lose the embed.
+	return d.walkChunkTree(ctx, key, mscope, rows, byParent, depth, !includeMeta, func(c treeChunk) error {
+		row, cb := c.row, c.body
+		level := c.depth + 1
+		if level > 6 {
+			level = 6
 		}
 		// A heading is one line — collapse any newline in the title to a space
 		// so a multi-line title can't split the heading and corrupt the doc.
@@ -5588,34 +5669,19 @@ func (d *Document) renderChunkTree(ctx context.Context, key sqlmem.ScopeKey, msc
 		case row.Type == "mermaid" && cb.Body != "":
 			b.WriteString("\n```mermaid\n" + cb.Body + "\n```\n")
 		case row.Type == "image":
-			if mt, raw, ok := d.readAssetRow(ctx, key, row.ID); ok {
-				b.WriteString("\n![" + imgAltForExport(cb.Body) + "](data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(raw) + ")\n")
+			if c.hasAsset {
+				b.WriteString("\n![" + imgAltForExport(cb.Body) + "](data:" + c.assetMT + ";base64," + base64.StdEncoding.EncodeToString(c.asset) + ")\n")
 			} else if cb.Body != "" {
 				b.WriteString("\n" + cb.Body + "\n")
 			}
 		default:
 			if cb.Body != "" {
-				body := cb.Body
-				// RFC BS Phase 2b — expand `![[…]]` embeds ONLY in clean mode.
-				// In metadata/round-trip mode the body stays verbatim, or an
-				// export(include_metadata=true)→import_md would bake the expanded
-				// copy in and lose the embed. The chain seeds with THIS chunk's id
-				// so a chunk embedding itself is caught as a cycle.
-				if !includeMeta {
-					body = d.expandTransclusions(ctx, key, mscope, acl, cb.Body, []string{row.ID}, 0)
-				}
-				b.WriteString("\n" + body + "\n")
+				b.WriteString("\n" + cb.Body + "\n")
 			}
 		}
 		b.WriteString("\n")
-		for _, c := range byParent[row.ID] {
-			walk(c, depth+1)
-		}
-	}
-	for _, r := range rows {
-		walk(r, depth)
-	}
-	return walkErr
+		return nil
+	})
 }
 
 // --- ops: Markdown import ---

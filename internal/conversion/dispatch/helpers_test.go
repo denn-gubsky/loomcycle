@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/conversion/worker"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
 )
 
@@ -211,5 +212,70 @@ func TestPool_AHelperTimeoutNamesTheHelper(t *testing.T) {
 	_, err := d.Client().EncodeAudio(context.Background(), []byte("RIFF"), "mp3")
 	if err == nil || !strings.Contains(err.Error(), "speech.encode") || errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("an encoder past its bound: %v, want the helper's own timeout naming speech.encode", err)
+	}
+}
+
+// renderBundle is a small document packed as a render bundle.
+func renderBundle(t *testing.T) []byte {
+	t.Helper()
+	b := render.NewBuilder("Field notes")
+	b.Doc.Blocks = b.Body("Hello **world**.\n\n| a | b |\n|---|---|\n| 1 | 2 |")
+	d, _ := b.Finish()
+	bundle, err := render.EncodeBundle(d, render.Options{TOC: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bundle
+}
+
+// A document rendered on a worker, which needs no helper program, is the
+// file the same render gives in this process, byte for byte.
+func TestPool_DocumentRenderMatchesInProcess(t *testing.T) {
+	d, target := pool(t, dispatch.Options{})
+	realWorker(t, target, "w1")
+	waitIdle(t, d, 1)
+	bundle := renderBundle(t)
+	for _, format := range []string{render.FormatMarkdown, render.FormatHTML} {
+		want, err := (&convert.InProcess{}).Render(context.Background(), bundle, format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := d.Client().Render(context.Background(), bundle, format)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("%s: pool %d bytes (%v), in process %d bytes", format, len(got), err, len(want))
+		}
+	}
+	if st := d.Stats(); st.Jobs["document_render/ok"] != 2 {
+		t.Errorf("the pool ran %v, want two document renders", st.Jobs)
+	}
+}
+
+// A malformed bundle is the input's failure: the worker answers it as an
+// input error, the caller sees render.ErrBadBundle, and the file is not
+// quarantined (it crashed nothing).
+func TestPool_AMalformedBundleIsAnInputErrorNotACrash(t *testing.T) {
+	d, target := pool(t, dispatch.Options{})
+	realWorker(t, target, "w1")
+	waitIdle(t, d, 1)
+	bad := []byte("PK this is not a zip")
+	for range 2 {
+		_, err := d.Client().Render(context.Background(), bad, render.FormatHTML)
+		if !errors.Is(err, render.ErrBadBundle) || errors.Is(err, convert.ErrQuarantined) {
+			t.Fatalf("malformed bundle: %v, want render.ErrBadBundle", err)
+		}
+		waitIdle(t, d, 1)
+	}
+	if st := d.Stats(); st.Jobs["document_render/error"] != 2 || st.Quarantined != 0 {
+		t.Errorf("the pool counted %v with %d quarantined, want two errors and none", st.Jobs, st.Quarantined)
+	}
+}
+
+// A format no worker writes is refused before a worker is asked, as the
+// render package's own sentinel, not as a pool fault.
+func TestPool_RenderRefusesAnUnknownFormatBeforeAWorker(t *testing.T) {
+	d, _ := pool(t, dispatch.Options{})
+	_, err := d.Client().Render(context.Background(), renderBundle(t), "rtf")
+	if !errors.Is(err, render.ErrUnsupported) || errors.Is(err, convert.ErrNoWorkers) {
+		t.Errorf("format rtf with no worker: %v, want render.ErrUnsupported", err)
 	}
 }

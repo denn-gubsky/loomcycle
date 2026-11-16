@@ -157,7 +157,8 @@ type helperSettings struct {
 // this process.
 func conversionHelpers(cfg *config.Config) helperSettings {
 	h := helperSettings{timeouts: map[workerpb.JobKind]time.Duration{
-		workerpb.JobKind_JOB_KIND_PDF_RENDER: convert.RasterizeTimeout,
+		workerpb.JobKind_JOB_KIND_PDF_RENDER:      convert.RasterizeTimeout,
+		workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER: convert.RenderTimeout,
 	}}
 	t := cfg.Transcription.Resolved()
 	if t.OCR != nil && t.OCR.Rasterize != nil {

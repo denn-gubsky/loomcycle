@@ -53,7 +53,10 @@ require (
 	modernc.org/sqlite v1.60.1
 )
 
-require go.opentelemetry.io/proto/otlp v1.11.0
+require (
+	github.com/yuin/goldmark v1.8.7
+	go.opentelemetry.io/proto/otlp v1.11.0
+)
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
