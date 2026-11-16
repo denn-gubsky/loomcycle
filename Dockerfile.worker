@@ -1,7 +1,9 @@
 # Dockerfile.worker — goreleaser variant: the loomcycle binary as a conversion
 # worker (RFC GO, conversion.mode remote), with the helper programs the
 # conversions run: ffmpeg (a recording to a WAV for speech-to-text, speech to
-# Opus or MP3) and poppler's pdftoppm (a PDF page to an image for OCR).
+# Opus or MP3), poppler's pdftoppm (a PDF page to an image for OCR) and Typst
+# (a Document rendered as a PDF, RFC GR), with Noto Sans and Noto Sans Mono
+# for its text (Latin, Cyrillic, Greek).
 #
 # A worker holds no provider key, no store connection and no volume: it dials
 # the runtime's worker endpoint (--dispatcher, or LOOMCYCLE_WORKER_DISPATCHER
@@ -19,10 +21,35 @@
 # builds every arch; this only COPYs it) and the same nonroot uid 65532.
 FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
+# Typst is a pinned release, its archive checked against the sha256 GitHub
+# publishes for it, one per architecture. It never fetches a package: the
+# source loomcycle writes imports nothing.
+ARG TARGETARCH
+ARG TYPST_VERSION=0.15.1
+ARG TYPST_SHA256_AMD64=a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c
+ARG TYPST_SHA256_ARM64=5aa8d74a3d906e60ea12a66ac2f37f8eef1b14cbad7182a745e393a10c23dcee
+
 RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates ffmpeg poppler-utils; \
+        ca-certificates ffmpeg poppler-utils fonts-noto-core fonts-noto-mono curl xz-utils; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) triple=x86_64-unknown-linux-musl; sum="${TYPST_SHA256_AMD64}" ;; \
+        arm64) triple=aarch64-unknown-linux-musl; sum="${TYPST_SHA256_ARM64}" ;; \
+        *) echo "no Typst pin for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/typst.tar.xz "https://github.com/typst/typst/releases/download/v${TYPST_VERSION}/typst-${triple}.tar.xz"; \
+    echo "${sum}  /tmp/typst.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/typst.tar.xz -C /tmp; \
+    install -m 0755 "/tmp/typst-${triple}/typst" /usr/local/bin/typst; \
+    install -d /usr/share/doc/typst; \
+    install -m 0644 "/tmp/typst-${triple}/LICENSE" /usr/share/doc/typst/LICENSE; \
+    rm -rf /tmp/typst.tar.xz "/tmp/typst-${triple}"; \
+    typst --version; \
+    # Keep only the two families the PDF style names (D13); the rest of the
+    # Noto set is some hundreds of MB this image does not need.
+    find /usr/share/fonts/truetype/noto -type f ! -name 'NotoSans-*' ! -name 'NotoSansMono-*' -delete; \
+    apt-get purge -y --auto-remove curl xz-utils; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --gid 65532 nonroot; \
@@ -36,7 +63,8 @@ COPY LICENSE NOTICE /usr/share/doc/loomcycle/
 ENV LOOMCYCLE_WORKER_SCRATCH=/scratch \
     LOOMCYCLE_WORKER_MEDIA_COMMAND="ffmpeg -nostdin -i {in} -ac 1 -ar 16000 -f wav {out}" \
     LOOMCYCLE_WORKER_RASTERIZE_COMMAND="pdftoppm -r 150 -png {in} {out_prefix}" \
-    LOOMCYCLE_WORKER_ENCODE_COMMAND="ffmpeg -nostdin -i {in} -c:a libopus -b:a 32k {out}"
+    LOOMCYCLE_WORKER_ENCODE_COMMAND="ffmpeg -nostdin -i {in} -c:a libopus -b:a 32k {out}" \
+    LOOMCYCLE_WORKER_WRITE_COMMAND="typst compile --root {dir} {in} {out}"
 
 USER 65532:65532
 WORKDIR /scratch

@@ -241,9 +241,11 @@ jobs:
 
   render-office:
     # A rendered Word file must open in an office suite, not only in our own
-    # extractor (RFC GR P1). LibreOffice is installed here only to check
-    # that; it is never shipped. The test skips where soffice is missing, so
-    # this job sets LOOMCYCLE_REQUIRE_SOFFICE to make a missing one a failure.
+    # extractor (RFC GR P1), and a PDF must typeset (P2). LibreOffice is
+    # installed here only to check that; it is never shipped. The tests skip
+    # where soffice or typst is missing, so this job sets
+    # LOOMCYCLE_REQUIRE_SOFFICE and LOOMCYCLE_REQUIRE_TYPST to make a missing
+    # one a failure.
     name: Rendered files open in LibreOffice
     needs: changes
     if: needs.changes.outputs.go == 'true'
@@ -266,6 +268,40 @@ jobs:
         env:
           LOOMCYCLE_REQUIRE_SOFFICE: "1"
         run: go test -count=1 -run '^TestDOCX_OpensInLibreOffice$' -v ./internal/files/render/
+
+      # A PDF render is typeset by Typst (RFC GR P2): the release the worker
+      # image pins, checked against GitHub's sha256 for it. The PDF tests
+      # skip where typst is missing; LOOMCYCLE_REQUIRE_TYPST makes that a
+      # failure here.
+      - name: Install Typst
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/typst.tar.xz" https://github.com/typst/typst/releases/download/v0.15.1/typst-x86_64-unknown-linux-musl.tar.xz
+          echo "a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c  $RUNNER_TEMP/typst.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/typst.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/typst-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+
+      - name: Typeset the rendered PDFs
+        env:
+          LOOMCYCLE_REQUIRE_TYPST: "1"
+        run: |
+          typst --version
+          go test -count=1 -run 'Typst|PDF' -v ./internal/files/render/ ./internal/convert/
+          go test -count=1 -run '^TestFileRender_PDF' -v ./internal/tools/builtin/
+
+      # The worker image is built only at release; build it here (amd64, not
+      # pushed) so a broken Typst pin or font package fails the PR, and check
+      # that its typst runs and finds both families the PDF style names.
+      - name: Build the worker image and check its typesetter
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o loomcycle ./cmd/loomcycle
+          docker buildx build --load --platform linux/amd64 -f Dockerfile.worker -t ci-loomcycle-worker .
+          docker run --rm --entrypoint typst ci-loomcycle-worker --version
+          fonts="$(docker run --rm --entrypoint typst ci-loomcycle-worker fonts)"
+          echo "$fonts"
+          echo "$fonts" | grep -qx 'Noto Sans'
+          echo "$fonts" | grep -qx 'Noto Sans Mono'
 
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core
