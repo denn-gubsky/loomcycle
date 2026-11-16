@@ -150,13 +150,13 @@ func TestStartTeamWalk_StartsADetachedWalkAsTheInputsIdentityWithItsVars(t *test
 }
 
 // The walk's tenant is the input's and nothing else's. A team that exists only
-// in another tenant, or only in the shared layer, is not this trigger's to
-// start — and a principal that happens to be on the ctx, even an admin of the
-// tenant that does own it, changes neither the lookup nor where it would run.
+// in another tenant is not this trigger's to start — and a principal that
+// happens to be on the ctx, even an admin of the tenant that does own it,
+// changes neither the lookup nor where it would run. (A team only in the
+// shared layer is: TestStartTeamWalk_ASharedTeam….)
 func TestStartTeamWalk_OnlyTheInputsTenantIsSearchedWhateverIsOnCtx(t *testing.T) {
 	h := newTriggerWalkHarness(t)
 	seedTenantTeam(t, h.st, "globex", "pr-review", varsTeam)
-	seedTenantTeam(t, h.st, "", "pr-review", varsTeam)
 
 	globexAdmin := auth.WithPrincipal(
 		tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{TenantID: "globex", UserID: "root"}),
@@ -179,6 +179,36 @@ func TestStartTeamWalk_OnlyTheInputsTenantIsSearchedWhateverIsOnCtx(t *testing.T
 	}
 	if run := h.finished(runID); run.TenantID != "acme" || run.UserID != "u-1" {
 		t.Errorf("walk row tenant=%q user=%q, want the input's acme / u-1 — not the principal's globex / root", run.TenantID, run.UserID)
+	}
+}
+
+// localAgentTeam declares an agent of its own, which runs only in the team's
+// tenant.
+const localAgentTeam = `{"entry":"a","local":{"agents":{"w":{"model":"stub-model","system_prompt":"write"}}},"states":[` +
+	`{"state":"a","handler":{"kind":"agent","agent":"./w"}},{"state":"done","handler":{"kind":"terminal"}}],` +
+	`"transitions":[{"from":"a","to":"done","on":"success"}]}`
+
+// A team only in the shared layer starts for a trigger of any tenant, and runs
+// there (RFC GS P0) — unless it declares definitions of its own, which run only
+// in the team's tenant: that is the definition's to fix, not a failure.
+func TestStartTeamWalk_ASharedTeamStartsInTheInputsTenantUnlessItDeclaresItsOwnAgents(t *testing.T) {
+	h := newTriggerWalkHarness(t)
+	seedTenantTeam(t, h.st, "", "pr-review", varsTeam)
+	runID, err := h.srv.StartTeamWalk(context.Background(), runner.TeamWalkInput{Team: "pr-review", TenantID: "acme", UserID: "u-1"})
+	if err != nil {
+		t.Fatalf("StartTeamWalk of a shared team: %v", err)
+	}
+	if run := h.finished(runID); run.TenantID != "acme" || run.Status != store.RunCompleted {
+		t.Errorf("walk row tenant=%q status=%s (%s), want completed in acme", run.TenantID, run.Status, run.ErrorMsg)
+	}
+
+	seedTenantTeam(t, h.st, "", "own-agents", localAgentTeam)
+	_, err = h.srv.StartTeamWalk(context.Background(), runner.TeamWalkInput{Team: "own-agents", TenantID: "acme"})
+	if !errors.Is(err, runner.ErrTeamNotStartable) || !strings.Contains(err.Error(), "shared team") {
+		t.Errorf("err = %v, want ErrTeamNotStartable naming a shared team", err)
+	}
+	if h.walkStarted("own-agents") {
+		t.Error("a walk started for a shared team whose own agents cannot run in acme")
 	}
 }
 

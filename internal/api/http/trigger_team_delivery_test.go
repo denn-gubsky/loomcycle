@@ -33,12 +33,22 @@ func otherTenantsTeam(tenant string) string {
 	return strings.Replace(varsTeam, "Review ${var.repo}", "IN "+tenant+" ${var.repo}", 1)
 }
 
-// seedTeamEverywhereBut seeds a same-named team in two other tenants and the
-// shared layer, each with its own prompt.
+// seedTeamEverywhereBut seeds a same-named team in another tenant and the
+// shared layer, each with its own prompt. Where acme has its own, acme's
+// shadows the shared one.
 func seedTeamEverywhereBut(t *testing.T, st store.Store, name string) {
 	t.Helper()
-	seedTenantTeam(t, st, "globex", name, otherTenantsTeam("GLOBEX"))
+	seedTeamInOtherTenants(t, st, name)
 	seedTenantTeam(t, st, "", name, otherTenantsTeam("SHARED"))
+}
+
+// seedTeamInOtherTenants seeds a same-named team in two other tenants only —
+// none of which a trigger of acme's may reach. (The shared layer is reachable:
+// a name acme lacks resolves to the shared team, RFC GS P0.)
+func seedTeamInOtherTenants(t *testing.T, st store.Store, name string) {
+	t.Helper()
+	seedTenantTeam(t, st, "globex", name, otherTenantsTeam("GLOBEX"))
+	seedTenantTeam(t, st, "initech", name, otherTenantsTeam("INITECH"))
 }
 
 // acmeOperator is a tenant operator of acme: not an admin, so its triggers
@@ -120,8 +130,39 @@ func TestScheduleDef_ADueTeamScheduleStartsADetachedWalkInItsTenantWithItsVars(t
 	})
 }
 
-// A team the schedule's tenant does not have — though two other tenants and
-// the shared layer do — or one it retired, starts nothing. The tick is logged
+// A team the schedule's tenant does not have, held by the shared layer, is the
+// shared one (RFC GS P0): op=run resolves a name the same way. The walk still
+// runs in the schedule's tenant, as its user — only the definition is shared.
+func TestScheduleDef_ATeamScheduleWhoseTenantLacksTheTeamRunsTheSharedOneInItsTenant(t *testing.T) {
+	h := newTriggerWalkHarness(t)
+	seedTeamEverywhereBut(t, h.st, "weekly-report")
+	defID := h.createDueTeamSchedule(`"schedule":"0 6 * * 1","delivery":"team","team":"weekly-report","vars":{"repo":"loomcycle"},"user_id":"u-42","max_fires":1`)
+
+	h.sweep()
+
+	var state store.ScheduleRunStateRow
+	waitFor(t, "the schedule to record how its walk ended", func() bool {
+		got, err := h.st.ScheduleRunStateGet(context.Background(), defID)
+		state = got
+		return err == nil && got.LastStatus != "" && got.LastStatus != "running"
+	})
+	if state.LastStatus != "completed" || state.LastRunID == "" {
+		t.Fatalf("state = status %q run %q (%s), want the shared team's walk completed", state.LastStatus, state.LastRunID, state.LastError)
+	}
+	run := h.finished(state.LastRunID)
+	if run.TenantID != "acme" || run.UserID != "u-42" {
+		t.Errorf("walk row tenant=%q user=%q, want the schedule's acme / u-42", run.TenantID, run.UserID)
+	}
+	if rec := teamRecordOf(t, run); rec.DefTenant != "" {
+		t.Errorf("recorded def tenant = %q, want the shared layer's", rec.DefTenant)
+	}
+	if seen := h.prov.seen(); len(seen) != 1 || seen[0] != "IN SHARED loomcycle pull 0." {
+		t.Errorf("the member's model was sent %q, want the shared team's prompt", seen)
+	}
+}
+
+// A team the schedule's tenant does not have — though two other tenants do,
+// and the shared layer does not — or one it retired, starts nothing. The tick is logged
 // and recorded, and with max_fires=1 the schedule is still there afterwards.
 func TestScheduleDef_ATeamScheduleWhoseTeamIsMissingOrRetiredStartsNothingAndKeepsItsMaxFires(t *testing.T) {
 	for name, setup := range map[string]func(h *triggerWalkHarness){
@@ -135,7 +176,7 @@ func TestScheduleDef_ATeamScheduleWhoseTeamIsMissingOrRetiredStartsNothingAndKee
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newTriggerWalkHarness(t)
-			seedTeamEverywhereBut(t, h.st, "weekly-report")
+			seedTeamInOtherTenants(t, h.st, "weekly-report")
 			setup(h)
 			defID := h.createDueTeamSchedule(`"schedule":"0 6 * * 1","delivery":"team","team":"weekly-report","max_fires":1`)
 
@@ -277,7 +318,7 @@ func TestWebhookDef_ATeamDeliveryThatCannotStartAnswers400AndStartsNothing(t *te
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			h := newTriggerWalkHarness(t)
-			seedTeamEverywhereBut(t, h.st, "pr-review")
+			seedTeamInOtherTenants(t, h.st, "pr-review")
 			if c.seedAcme {
 				seedTenantTeam(t, h.st, "acme", "pr-review", varsTeam)
 			}

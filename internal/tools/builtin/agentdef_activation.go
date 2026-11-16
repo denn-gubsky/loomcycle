@@ -44,21 +44,13 @@ func operatorHoldsAgentName(ctx context.Context, cfg *config.Config, st store.St
 }
 
 // operatorHoldsTeamName is operatorHoldsAgentName for a team: the tenant's
-// active version, else the shared tier's (there is no static team layer).
+// active version, else the shared tier's — the version a run of the name gets
+// (ActiveTeam).
 func operatorHoldsTeamName(ctx context.Context, st store.Store, tenantID, name string) (bool, error) {
-	active, err := st.TeamDefGetActive(ctx, tenantID, name)
+	active, err := ActiveTeam(ctx, st, tenantID, name)
 	switch {
 	case err == nil:
 		return active.OperatorAuthored, nil
-	case !isNotFound(err):
-		return false, err
-	case tenantID == "":
-		return false, nil
-	}
-	shared, err := st.TeamDefGetActive(ctx, "", name)
-	switch {
-	case err == nil:
-		return shared.OperatorAuthored, nil
 	case isNotFound(err):
 		return false, nil
 	}
