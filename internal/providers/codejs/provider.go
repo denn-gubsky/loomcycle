@@ -381,8 +381,10 @@ func hash32(s string) uint32 {
 }
 
 // buildInput assembles the JS run(input) argument: the latest user prompt text,
-// a trusted `metadata` object, an untrusted `payload_metadata` object, and the
-// run's untrusted blocks as an `untrusted` array.
+// a trusted `metadata` object, an untrusted `payload_metadata` object, the
+// run's untrusted blocks as an `untrusted` array, and the run's trusted text
+// alone as `trusted_prompt` (taken from RunMeta, which the loop builds from the
+// typed segments — never from the fenced prompt text here).
 // Credentials are deliberately absent (RFC F) — the JS never sees bearer values.
 //
 // untrusted is ALWAYS an array, so a script reads .length without a guard. It
@@ -406,9 +408,10 @@ func buildInput(req providers.Request, meta providers.RunMeta) map[string]any {
 		untrusted[i] = map[string]any{"kind": u.Kind, "text": u.Text}
 	}
 	out := map[string]any{
-		"prompt":    latestUserText(req),
-		"metadata":  md,
-		"untrusted": untrusted,
+		"prompt":         latestUserText(req),
+		"trusted_prompt": meta.TrustedPrompt,
+		"metadata":       md,
+		"untrusted":      untrusted,
 	}
 	if len(meta.PayloadMetadata) > 0 {
 		out["payload_metadata"] = meta.PayloadMetadata

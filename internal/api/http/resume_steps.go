@@ -822,6 +822,7 @@ func (r *resumeAttempt) buildRunOptions() {
 	if toolChoiceSpent(ctx, s.store, run.ID, resumedToolChoice) {
 		resumedToolChoice = nil
 	}
+	untrusted, trustedPrompt := runInputFromEvents(runEvents)
 	runOpts := loop.RunOptions{
 		// Re-entered under its own run id: it already started, so its
 		// agent_start hooks do not run again.
@@ -833,7 +834,8 @@ func (r *resumeAttempt) buildRunOptions() {
 		Dispatcher:          dispatcher,
 		Segments:            segments,
 		PriorMessages:       priorMessages,
-		Untrusted:           runUntrustedFromEvents(runEvents),
+		Untrusted:           untrusted,
+		TrustedPrompt:       trustedPrompt,
 		InitialState:        seed.Sigma, // RFC DH P2: nil unless the run was stateful
 		InitialObservation:  seed.Observation,
 		OnEvent:             emit,

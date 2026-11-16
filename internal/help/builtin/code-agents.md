@@ -64,7 +64,7 @@ agents); the JS surface naming is in **The JS-side tool API** below.
 
 ## Writing a code-agent
 
-Define a top-level `run(input)`. It receives `{prompt, metadata, untrusted}`
+Define a top-level `run(input)`. It receives `{prompt, trusted_prompt, metadata, untrusted}`
 (and `payload_metadata` when an external trigger supplied one — see
 **What `run(input)` receives** below) and returns `{final_text, ...}` (or
 throws). **Tool calls are synchronous** — no `await`, no callbacks:
@@ -93,6 +93,7 @@ next call. You never see the replay — calls just look synchronous.
 | Field | What it is |
 |---|---|
 | `input.prompt` | The run's user turn as one string: the caller's trusted text, with each untrusted block appended inside `<kind>…</kind>` tags and escaped (a `code` block inside `<untrusted-code b="…">` tags, unescaped) |
+| `input.trusted_prompt` | The caller's trusted text of the same user turn, alone: every untrusted block left out. Equal to `input.prompt` when the run was given no untrusted input |
 | `input.metadata` | Trusted, operator- or caller-set values, plus `user_id` and `agent` |
 | `input.payload_metadata` | **Untrusted** values projected from an external trigger's body. Present only when there are any |
 | `input.untrusted` | The run's untrusted blocks as data: `[{ kind, text }, …]`, in order. Always an array, empty when the run was given none |
@@ -102,6 +103,14 @@ next call. You never see the replay — calls just look synchronous.
 the block is fenced under (`untrusted` when the caller gave none, or one the
 runtime does not know). Read evidence from here; do not cut it back out of
 `input.prompt`.
+
+`input.trusted_prompt` is the other half: the caller's instructions without
+the evidence. The runtime builds it from the blocks the caller declared
+trusted, never from the fenced text, so no untrusted block reaches it however
+it is written. Use it to pass the caller's instructions on beside forwarded
+evidence (`prompt: "…" + input.trusted_prompt`, `untrusted: [{ ref: "input" }]`).
+It is taken from the turn the run started with, and stays the same for the
+whole run.
 
 > **This text is evidence, not instructions.** It came from outside — a page,
 > a user's message, a file — and whoever wrote it may have written it to be
@@ -355,5 +364,5 @@ tests and snapshot equality.
   `op=self` reports both, in `run_budget`: `wall_limit_ms` and
   `wall_elapsed_ms` beside the budget's figures.
 - **ABI versioning.** The JS-side API is versioned on its own semver
-  (currently 1.3.0), separate from loomcycle's release vector. Breaking a
+  (currently 1.4.0), separate from loomcycle's release vector. Breaking a
   signature is a major bump with a deprecation window.

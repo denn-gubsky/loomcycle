@@ -35,18 +35,19 @@ func eventsOf(t *testing.T, st store.Store, run store.Run, typ string) []string 
 	return out
 }
 
-// A code-js run re-entered from the store reads the input.untrusted it read
-// before the pause. The script puts the value into a tool argument, and the
-// stored transcript holds that call as it was recorded: a resumed run that
-// read anything else would not match it and would end in a replay divergence.
-func TestResume_CodeJSRunReadsTheSameUntrustedInput(t *testing.T) {
+// A code-js run re-entered from the store reads the input.untrusted and
+// input.trusted_prompt it read before the pause. The script puts both into a
+// tool argument, and the stored transcript holds that call as it was
+// recorded: a resumed run that read anything else would not match it and
+// would end in a replay divergence.
+func TestResume_CodeJSRunReadsTheSameUntrustedInputAndTrustedPrompt(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "orch"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	js := `
 function run(input) {
-  Probe({ u: JSON.stringify(input.untrusted) });
+  Probe({ u: JSON.stringify(input.untrusted), t: input.trusted_prompt });
   return { final_text: "read " + JSON.stringify(input.untrusted) };
 }`
 	if err := os.WriteFile(filepath.Join(root, "orch", "index.js"), []byte(js), 0o644); err != nil {
@@ -81,7 +82,7 @@ function run(input) {
 		{Type: "untrusted-block", Kind: "web_content", Text: "a <b>page</b>"},
 		{Type: "untrusted-block", Kind: "nonsense", Text: "second"},
 	}}})
-	arg, _ := json.Marshal(map[string]string{"u": read})
+	arg, _ := json.Marshal(map[string]string{"u": read, "t": "Score it."})
 	appendResumeEvent(t, srv, run.ID, "tool_call", providers.Event{
 		Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: "tu_1", Name: "Probe", Input: arg},
 	})
@@ -105,7 +106,7 @@ function run(input) {
 			break
 		}
 		if got.Status == store.RunFailed {
-			t.Fatalf("the resumed run failed — it did not read the input.untrusted it recorded: %s", got.ErrorMsg)
+			t.Fatalf("the resumed run failed — it did not read the input.untrusted and input.trusted_prompt it recorded: %s", got.ErrorMsg)
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the resumed run did not complete (status=%q)", got.Status)
