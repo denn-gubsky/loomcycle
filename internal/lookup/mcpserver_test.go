@@ -148,6 +148,8 @@ func TestMCPServer_DriftDetection(t *testing.T) {
 		"binary_results":    true, // RFC FF base64-in-text capture opt-in
 		"discovered_tools":  true,
 		"operator_authored": true, // server-stamped authority, not content
+
+		"binary_results_min_bytes": true, // capture's per-server minimum
 	}
 	have := jsonTagsOf(reflect.TypeOf(lookup.SubstrateMCPServer{}))
 	for tag := range want {

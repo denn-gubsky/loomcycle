@@ -44,8 +44,8 @@ func TestMCPResultPolicy_FollowsTheServerThePoolDials(t *testing.T) {
 		if got.CaptureBase64 != c.want {
 			t.Errorf("(%q, %q): capture = %v, want %v", c.tenant, c.name, got.CaptureBase64, c.want)
 		}
-		if got.Base64MinBytes != mcpBase64MinBytes {
-			t.Errorf("(%q, %q): min = %d, want %d", c.tenant, c.name, got.Base64MinBytes, mcpBase64MinBytes)
+		if got.Base64MinBytes != mcp.DefaultBase64MinBytes {
+			t.Errorf("(%q, %q): min = %d, want %d", c.tenant, c.name, got.Base64MinBytes, mcp.DefaultBase64MinBytes)
 		}
 	}
 }

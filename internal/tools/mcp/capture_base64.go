@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
 
@@ -20,13 +21,14 @@ type ResultPolicy struct {
 	// server returns as base64 inside a text block is kept in the run's
 	// inbox and the model is handed the stub instead of the base64.
 	CaptureBase64 bool
-	// Base64MinBytes is the shortest string considered a file; 0 takes
-	// DefaultBase64MinBytes.
+	// Base64MinBytes is the shortest string considered a file: the server's
+	// binary_results_min_bytes; 0 takes DefaultBase64MinBytes.
 	Base64MinBytes int64
 }
 
-// DefaultBase64MinBytes is the base64 minimum when none is configured.
-const DefaultBase64MinBytes = 4 << 10
+// DefaultBase64MinBytes is the base64 minimum when the server sets none. It
+// is the config's default, so the yaml, a def and the capture agree on it.
+const DefaultBase64MinBytes = config.DefaultBinaryResultsMinBytes
 
 func (p ResultPolicy) minBytes() int {
 	if p.Base64MinBytes > 0 {

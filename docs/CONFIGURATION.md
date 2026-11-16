@@ -2808,6 +2808,19 @@ Every commit also carries a `Loomcycle-Run: <run id>` trailer. See `docs/TOOLS.m
 
 The runtime makes one ephemeral volume of its own per run tree: **`inbox`**, at `<dynamic_root>/_ephemeral/<root_run_id>/inbox`. A file that a tool returns is kept there instead of reaching the model as bytes; this covers an MCP image/audio/blob block, base64 from a server with `binary_results: capture`, and a binary HTTP or WebFetch body. The model gets a one-line reference such as `volume:inbox:documents/report.pdf` that Read, Crypto and the `File` tool take (see [TOOLS.md](TOOLS.md), "Files tools return").
 
+- **Base64 in a server's text is opt-in, per server.** `binary_results: capture` on a yaml `mcp_servers.<name>` entry or an `MCPServerDef` keeps a file the server returns as base64 inside a text block. Only a string of at least `binary_results_min_bytes` characters is a candidate (default `4096`), and it is kept only when it decodes to a recognisable file or to readable text. Lower the minimum on a server that returns small files, such as short text notes, as base64:
+
+  ```yaml
+  mcp_servers:
+    files:
+      transport: stdio
+      command: npx
+      args: ["-y", "some-files-mcp-server"]
+      binary_results: capture
+      binary_results_min_bytes: 256   # default 4096
+  ```
+
+  A value under `128` refuses the load (or the def's create or fork), and so does the key on a server without `binary_results: capture`, where it would do nothing. A `MCPServerDef` takes it in its overlay; like `binary_results`, it is part of the def's content hash, and `4096` hashes as its absence. It replaces `LOOMCYCLE_FILE_BASE64_MIN_BYTES`, which was global ([SETTINGS_MIGRATION.md](SETTINGS_MIGRATION.md), table A).
 - **Requires a `dynamic_root` volume.** Without one, nothing is kept and every file becomes a refusal line. It is made on the first capture, recorded like any ephemeral volume, and purged with the tree, with the same crash sweeper. The TrueNAS app ships one (a `dynamic` volume on its own dataset, mounted at `/mnt/dynamic`); a hand-written deployment must declare one.
 - **The name is reserved.** `VolumeDef op=create` refuses `inbox`, persistent or ephemeral. A tenant's existing persistent volume, or a configured `volumes:` entry, named `inbox` makes every capture refuse rather than be shadowed: rename it.
 - **Runtime writes are not agent writes.** Captures, downloads and extractions are written by the runtime, so a sub-agent whose ephemeral volumes are read-only still has its results kept. Its own `File rm`/`clear` are refused, like any write.
@@ -3789,7 +3802,7 @@ These are constants of the runtime; no setting changes them.
 | Crypto calls | 100 | Crypto tool calls one run may make. |
 | Document image | 8 MiB | A stored document image, and the `POST /v1/_document` body. |
 | Search filter | 50,000 ids | The chunk-id list a filtered Document search binds; a wider filter is refused (`filter_too_wide`). |
-| Captured base64 | 4 KiB | The shortest base64 string a `binary_results: capture` server's text is searched for. |
+| Captured base64 | 4 KiB | The shortest base64 string a `binary_results: capture` server's text is searched for, unless the server sets `binary_results_min_bytes` ([9d.2.3](#9d23-the-run-inbox-files-tools-return)). |
 | Channel message | 64 KiB | One channel message, on every surface that publishes. |
 | Deferred publishes | 10,000 timers | Live timers for deferred publishes; past it a deferred message is still stored but subscribers see it on their next poll. |
 | Channel-hook worker | 16 messages, 4 per channel | Messages one replica's hook worker decides at once. |

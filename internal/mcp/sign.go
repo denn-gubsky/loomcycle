@@ -11,7 +11,8 @@
 //	headers (map<string, string>), binary_results (RFC FF: it changes
 //	what the model is handed, so two defs differing in it are not the
 //	same server; "passthrough" normalises to absent, so every row stored
-//	before the field keeps its hash)
+//	before the field keeps its hash), binary_results_min_bytes (likewise;
+//	4096, the default, normalises to absent)
 //
 // Explicitly excluded:
 //   - def_id, version, parent_def_id, created_at, created_by_*,
@@ -45,13 +46,19 @@ import (
 // Tag order is load-bearing; do NOT reorder without bumping the hash-
 // format version on every existing row + re-running the backfill.
 type MCPServerContent struct {
-	BinaryResults string            `json:"binary_results,omitempty"`
-	Description   string            `json:"description,omitempty"`
-	Headers       map[string]string `json:"headers,omitempty"`
-	Name          string            `json:"name,omitempty"`
-	Transport     string            `json:"transport,omitempty"`
-	URL           string            `json:"url,omitempty"`
+	BinaryResults         string            `json:"binary_results,omitempty"`
+	BinaryResultsMinBytes int               `json:"binary_results_min_bytes,omitempty"`
+	Description           string            `json:"description,omitempty"`
+	Headers               map[string]string `json:"headers,omitempty"`
+	Name                  string            `json:"name,omitempty"`
+	Transport             string            `json:"transport,omitempty"`
+	URL                   string            `json:"url,omitempty"`
 }
+
+// defaultBinaryResultsMinBytes is config.DefaultBinaryResultsMinBytes. This
+// package sits beside config and does not import it; the MCPServerDef tests
+// fail if the two differ.
+const defaultBinaryResultsMinBytes = 4 << 10
 
 // Sign returns "sha256:" + the lowercase-hex SHA-256 of the canonical
 // JSON encoding of c. See agents.Sign for the rule set.
@@ -74,6 +81,9 @@ func normalize(c *MCPServerContent) {
 	c.Description = normalizeText(c.Description)
 	if c.BinaryResults == "passthrough" {
 		c.BinaryResults = "" // the default, spelled out: the same behaviour
+	}
+	if c.BinaryResultsMinBytes == defaultBinaryResultsMinBytes {
+		c.BinaryResultsMinBytes = 0 // likewise
 	}
 }
 

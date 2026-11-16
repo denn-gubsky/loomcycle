@@ -4045,12 +4045,31 @@ type MCPServer struct {
 	// Opt-in because a server may return a long opaque token that looks
 	// like base64. See ValidateBinaryResults.
 	BinaryResults string `yaml:"binary_results"`
+	// BinaryResultsMinBytes is the shortest base64 string capture considers
+	// a file on this server; 0 (absent) is DefaultBinaryResultsMinBytes. A
+	// server that returns small files as base64 lowers it. Meaningful only
+	// with BinaryResults capture. See ValidateBinaryResultsMinBytes.
+	BinaryResultsMinBytes int `yaml:"binary_results_min_bytes"`
 }
 
 // The values of an MCP server's binary_results.
 const (
 	BinaryResultsPassthrough = "passthrough"
 	BinaryResultsCapture     = "capture"
+)
+
+// DefaultBinaryResultsMinBytes is the shortest base64 string capture
+// considers a file when a server does not set binary_results_min_bytes:
+// short enough for a small scan, long enough that an ordinary id or hash is
+// never a candidate.
+//
+// BinaryResultsMinBytesFloor is the lowest value a server may set. Ids and
+// cursors that servers hand back run to about 200 characters; the capture
+// leaves one that decodes to nothing readable, and the floor keeps the
+// shorter ones from being judged at all.
+const (
+	DefaultBinaryResultsMinBytes = 4 << 10
+	BinaryResultsMinBytesFloor   = 128
 )
 
 // ValidateBinaryResults refuses a binary_results value that is neither
@@ -4062,6 +4081,26 @@ func ValidateBinaryResults(v string) error {
 		return nil
 	}
 	return fmt.Errorf("binary_results %q is not one of %q, %q", v, BinaryResultsPassthrough, BinaryResultsCapture)
+}
+
+// ValidateBinaryResultsMinBytes refuses a binary_results_min_bytes under the
+// floor, and one set on a server that does not capture: there it would do
+// nothing, and the operator who wrote it expects small files to be kept.
+// 0 is unset. There is no upper bound: a larger minimum only makes fewer
+// strings candidates and the scan cheaper, the worst case being the
+// passthrough the server would have without capture. Shared by the yaml
+// loader and the MCPServerDef substrate.
+func ValidateBinaryResultsMinBytes(mode string, n int) error {
+	if n == 0 {
+		return nil
+	}
+	if n < BinaryResultsMinBytesFloor {
+		return fmt.Errorf("binary_results_min_bytes %d is under the floor of %d bytes: a shorter string is an id or a cursor, not a file", n, BinaryResultsMinBytesFloor)
+	}
+	if mode != BinaryResultsCapture {
+		return fmt.Errorf("binary_results_min_bytes is set but binary_results is not %q: the minimum applies only to capture", BinaryResultsCapture)
+	}
+	return nil
 }
 
 // Concurrency caps for the runtime.

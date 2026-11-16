@@ -56,6 +56,9 @@ type MCPServerSpec struct {
 	// in the run's inbox. Carried from the static yaml and from a dynamic
 	// def alike.
 	BinaryResults string
+	// BinaryResultsMinBytes is the server's binary_results_min_bytes (0 =
+	// the default), carried like BinaryResults.
+	BinaryResultsMinBytes int
 }
 
 // MCPServer resolves an MCP server NAME to its effective runtime spec
@@ -119,7 +122,8 @@ func MCPServer(cfg *config.Config, dyn MCPDynamicRegistry, tenantID, name string
 				Tools:     srv.Tools,
 				Source:    "static",
 
-				BinaryResults: srv.BinaryResults,
+				BinaryResults:         srv.BinaryResults,
+				BinaryResultsMinBytes: srv.BinaryResultsMinBytes,
 			}, true
 		}
 	}
@@ -154,6 +158,8 @@ type SubstrateMCPServer struct {
 	Description     string                   `json:"description,omitempty"`
 	BinaryResults   string                   `json:"binary_results,omitempty"`
 	DiscoveredTools []SubstrateMCPServerTool `json:"discovered_tools,omitempty"`
+	// BinaryResultsMinBytes mirrors mcpServerOverlay's binary_results_min_bytes.
+	BinaryResultsMinBytes int `json:"binary_results_min_bytes,omitempty"`
 	// OperatorAuthored is server-stamped on create and fork, never taken from
 	// an overlay: true when the version was saved with operator authority, or
 	// keeps an operator's connection fields unchanged. Only such a version may

@@ -77,7 +77,6 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_GIT_SOURCE_MAX_CONCURRENT":           "one clone runs at a time per replica",
 	"LOOMCYCLE_GIT_SOURCE_MAX_HISTORY":              "a clone's history limit is fixed at 500 commits",
 	"LOOMCYCLE_GIT_PUSH_MAX_BYTES":                  "one Git push may send at most 100 MiB",
-	"LOOMCYCLE_FILE_BASE64_MIN_BYTES":               "a base64 string of 4 KiB or more is captured as a file",
 	"LOOMCYCLE_CRYPTO_MAX_BYTES":                    "a Crypto data argument is capped at 1 MiB",
 	"LOOMCYCLE_CRYPTO_MAX_OPS_PER_RUN":              "a run may make 100 Crypto calls",
 	"LOOMCYCLE_MAX_DOCUMENT_ASSET_BYTES":            "a document image and the /v1/_document body are capped at 8 MiB",
@@ -184,6 +183,10 @@ var retiredEnv = map[string]string{
 	"LOOMCYCLE_TENANT_TELEMETRY_ALLOWED_HOSTS": "set observability.tenant_telemetry.allowed_hosts in the yaml, as a list",
 
 	"LOOMCYCLE_UI_LOGIN_ORIGINS": "set auth.login_origins in the yaml, as a list",
+
+	// Moved to each MCP server: only a server known to return small files
+	// needs a lower minimum.
+	"LOOMCYCLE_FILE_BASE64_MIN_BYTES": "set mcp_servers.<name>.binary_results_min_bytes in the yaml on each server with binary_results: capture that returns small files as base64 (default 4096, at least 128)",
 
 	// The third way to name config layers; --config and the config dir stay.
 	"LOOMCYCLE_CONFIG_FILES": "pass each file as --config <path> (repeatable, in the same order), or place the files in LOOMCYCLE_CONFIG_DIR",
