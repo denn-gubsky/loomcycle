@@ -413,9 +413,12 @@ running `protoc` on a fresh checkout.
 - **No reflection service.** `grpcurl` works against the proto file
   directly but won't autodiscover the schema. Reflection is a 3-line
   add when an operator asks for it.
-- **No streaming `Continue` reconnect/resume.** A dropped client must
-  open a new `Continue` call to pick up where it left off; intermediate
-  events are visible via `GetTranscript`. Resume-from-seq is v1.0.
+- **A dropped `Run` / `Continue` stream is not resumed in place.** The
+  run goes on without the client. To pick it up again, open a new call:
+  `StreamRun(run_id, from_seq)` replays the events after `from_seq` and
+  then follows the run live (the twin of HTTP
+  `GET /v1/runs/{run_id}/stream?from_seq=`), and `GetTranscript`
+  returns the whole persisted event log.
 - **TS gRPC adapter not yet shipped.** TS callers stay on HTTP+SSE
   via `@loomcycle/client`. Tracked in [`PLAN.md`](PLAN.md).
 
