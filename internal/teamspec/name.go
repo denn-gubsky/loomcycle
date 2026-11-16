@@ -6,6 +6,12 @@ import "fmt"
 // package: a team name is shown in run labels and log lines, never a path.
 const MaxNameLen = 64
 
+// MaxDefinitionBytes caps a team definition's JSON. A team carries its own
+// agents' definitions, so it is eight agent definitions' worth rather than one.
+// The TeamDef tool holds a create or fork to it, and the config loader a team
+// in the yaml.
+const MaxDefinitionBytes = 1 << 20
+
 // ValidateName checks a team name: ONE segment of [A-Za-z0-9_-], 1..64
 // characters. Unlike an agent or skill name it has no "/" grouping, because a
 // team name is itself a component of two composites that must split

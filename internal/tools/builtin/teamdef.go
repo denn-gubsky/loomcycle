@@ -25,10 +25,9 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// TeamDefMaxDefinitionBytes is the cap the server puts on a team definition.
-// A team carries its own agents' definitions, so it is eight agent
-// definitions' worth rather than one.
-const TeamDefMaxDefinitionBytes = 1 << 20
+// TeamDefMaxDefinitionBytes is the cap the server puts on a team definition
+// (teamspec.MaxDefinitionBytes, which the config loader holds a yaml team to).
+const TeamDefMaxDefinitionBytes = teamspec.MaxDefinitionBytes
 
 // TeamDef is the RFC AP Phase 2 built-in tool that lets operators + tenant
 // agents author, fork, promote, retire, and inspect TEAM workflow definitions
@@ -38,9 +37,11 @@ const TeamDefMaxDefinitionBytes = 1 << 20
 // transitions), not a skill body.
 //
 // Differences from SkillDef (all deliberate):
-//   - No static-config layer. There is no cfg.Teams, so create never refuses a
-//     "static" name and fork resolves parents ONLY from the store (pin def_id →
-//     own-tenant active → shared "" active). There is no static bootstrap path.
+//   - No static-config read tier. A team in the yaml (cfg.Teams, RFC GS) is
+//     not read by runs: the boot writes it into the store's shared tier as an
+//     ordinary version, so fork resolves parents ONLY from the store (pin
+//     def_id → own-tenant active → shared "" active) and there is no static
+//     bootstrap path.
 //   - No per-agent scope gate. TeamDef authoring is gated at the HTTP route
 //     (ScopeTenant) + the MCP meta-tool authz list; the tool itself does NOT
 //     sub-gate by name. MVP simplification — a per-agent `team_def` capability
@@ -787,8 +788,9 @@ func (e *errForkParent) Error() string { return e.msg }
 
 // resolveForkParent finds the version a fork of name starts from — fork's
 // lookup, and verify's when it checks a draft as a fork, so the two cannot
-// resolve different parents. From the STORE only (no static bootstrap — there
-// is no cfg.Teams). Three paths, mirroring SkillDef minus the static branch:
+// resolve different parents. From the STORE only (no static bootstrap — a
+// configured team is already a stored version, RFC GS). Three paths, mirroring
+// SkillDef minus the static branch:
 //  1. parent_def_id supplied → pin
 //  2. parent_def_id empty + own-tenant active pointer → use it
 //  3. neither → fall back to the shared ("") active base, else

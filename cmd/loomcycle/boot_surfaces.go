@@ -10,6 +10,7 @@ import (
 	lcmcp "github.com/denn-gubsky/loomcycle/internal/api/mcp"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -200,6 +201,13 @@ func (b *boot) wireConfigReload() {
 		if err != nil {
 			return nil, err
 		}
-		return config.LoadLayers(reloadLayers...)
+		cfg, err := config.LoadLayers(reloadLayers...)
+		if err != nil {
+			return nil, err
+		}
+		if err := teamgraph.CheckConfigTeams(cfg); err != nil {
+			return nil, err
+		}
+		return cfg, nil
 	}, reloaders...)
 }

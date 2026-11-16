@@ -275,3 +275,38 @@ func TestRunValidate_PrintsTheEffectiveAuthMode(t *testing.T) {
 		}
 	}
 }
+
+// RFC GS: validate lists the yaml's teams, and a broken one fails it with the
+// team's yaml path, as the server's load does.
+func TestRunValidate_ListsTheConfiguredTeamsAndFailsABrokenOne(t *testing.T) {
+	path := writeTempConfig(t, minimalConfigYAML+`
+teams:
+  review:
+    entry: review
+    states:
+      - {state: review, handler: {kind: agent, agent: default}}
+      - {state: done, handler: {kind: terminal}}
+    transitions: [{from: review, to: done, on: success}]
+`)
+	var stdout, stderr bytes.Buffer
+	if rc := RunValidate([]string{path}, &stdout, &stderr); rc != 0 {
+		t.Fatalf("rc=%d, want 0; stderr=%q", rc, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Teams            : 1") || !strings.Contains(out, "review") || !strings.Contains(out, "entry=review states=2") {
+		t.Errorf("stdout should list team review: %q", out)
+	}
+
+	broken := writeTempConfig(t, minimalConfigYAML+`
+teams:
+  review:
+    entry: nowhere
+    states: [{state: done, handler: {kind: terminal}}]
+    transitions: []
+`)
+	stdout.Reset()
+	stderr.Reset()
+	if rc := RunValidate([]string{broken}, &stdout, &stderr); rc != 2 || !strings.Contains(stderr.String(), "teams.review") {
+		t.Errorf("rc=%d stderr=%q, want 2 naming teams.review", rc, stderr.String())
+	}
+}
