@@ -22,14 +22,15 @@ func (m *modalStub) Execute(context.Context, json.RawMessage) (Result, error) {
 	m.runs++
 	return Result{Text: "ran"}, nil
 }
-func (m *modalStub) CallIsRead(in json.RawMessage) (string, bool) {
+func (m *modalStub) CallIsRead(in json.RawMessage) (string, bool, error) {
 	var c struct {
-		Op string `json:"op"`
+		Op  string   `json:"op"`
+		IDs []string `json:"ids"`
 	}
-	if json.Unmarshal(in, &c) != nil {
-		return "", false
+	if err := json.Unmarshal(in, &c); err != nil {
+		return "", false, err
 	}
-	return c.Op, c.Op == "get"
+	return c.Op, c.Op == "get", nil
 }
 
 func TestDispatcher_ReadModeRefusesAWriteBeforeTheToolRuns(t *testing.T) {
@@ -51,6 +52,32 @@ func TestDispatcher_ReadModeRefusesAWriteBeforeTheToolRuns(t *testing.T) {
 	}
 	if r := d.Execute(context.Background(), "Doc", json.RawMessage(`{"op":"get"}`)); r.IsError || doc.runs != 1 {
 		t.Fatalf("read in read mode = %+v (runs %d), want it to run", r, doc.runs)
+	}
+}
+
+// A read call whose input does not decode is refused before the tool runs, with
+// the decode error and as a validation error: the model sent a malformed call,
+// not a write, and must be told what to fix. (A list sent as a JSON string was
+// refused as "a call with no recognised op", a permission error.)
+func TestDispatcher_ReadModeNamesTheDecodeErrorOfAnUndecodableCall(t *testing.T) {
+	doc := &modalStub{name: "Doc"}
+	d := NewDispatcher([]Tool{doc})
+	d.SetToolModes(map[string]string{"Doc": "read"})
+
+	r := d.Execute(context.Background(), "Doc", json.RawMessage(`{"op":"get","ids":"[\"a\",\"b\"]"}`))
+	if !r.IsError || r.Error == nil || r.Error.Category != CategoryValidation {
+		t.Fatalf("undecodable call = %+v, want a validation error", r)
+	}
+	for _, want := range []string{"invalid input JSON", "cannot unmarshal string", "Nothing was run"} {
+		if !strings.Contains(r.Text, want) {
+			t.Errorf("refusal %q does not say %q", r.Text, want)
+		}
+	}
+	if strings.Contains(r.Text, "no recognised op") || strings.Contains(r.Text, "read mode") {
+		t.Errorf("refusal %q blames the mode for a malformed call", r.Text)
+	}
+	if doc.runs != 0 {
+		t.Fatalf("the tool ran %d times; an undecodable call must not run", doc.runs)
 	}
 }
 

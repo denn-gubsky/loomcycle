@@ -16,7 +16,10 @@ type ModalTool interface {
 	// CallIsRead reports the operation input names and whether the call only
 	// reads. A call it cannot classify — an unknown op, an input it cannot
 	// decode — is not a read: the dispatcher then refuses it in read mode.
-	CallIsRead(input json.RawMessage) (op string, read bool)
+	// decodeErr is set when the input does not decode as the tool's Execute
+	// decodes it; the refusal then names the decode error, which the tool
+	// would have given itself, rather than a missing op.
+	CallIsRead(input json.RawMessage) (op string, read bool, decodeErr error)
 }
 
 // SetToolModes narrows tools this dispatcher holds to some of their
@@ -42,7 +45,11 @@ func (d *Dispatcher) refuseToolMode(name string, input json.RawMessage) (Result,
 	}
 	op, read := "", false
 	if m, isModal := d.tools[name].(ModalTool); isModal {
-		op, read = m.CallIsRead(input)
+		var decodeErr error
+		op, read, decodeErr = m.CallIsRead(input)
+		if decodeErr != nil {
+			return InputDecodeRefusal(name, decodeErr), true
+		}
 	}
 	if read && mode == config.ToolModeRead {
 		return Result{}, false
@@ -65,6 +72,20 @@ func ToolModeRefusal(name, mode, op string) Result {
 		IsError: true,
 		Error: &ErrorInfo{Category: CategoryPermission, Retryable: false,
 			Description: "Use a read operation of " + name + " instead, or ask an operator for an agent that may write."},
+	}
+}
+
+// InputDecodeRefusal is the refusal of a call whose input does not decode.
+// It is the error the tool itself gives for such an input (a validation
+// error naming the decode failure), so a model in read mode learns what is
+// wrong with its call instead of being told it asked for a write. Nothing ran:
+// the call is refused before dispatch, as any read-mode refusal is.
+func InputDecodeRefusal(name string, decodeErr error) Result {
+	return Result{
+		Text:    name + ": invalid input JSON: " + decodeErr.Error() + ". Nothing was run.",
+		IsError: true,
+		Error: &ErrorInfo{Category: CategoryValidation, Retryable: false,
+			Description: "Resend the call as one JSON object matching the " + name + " input schema."},
 	}
 }
 

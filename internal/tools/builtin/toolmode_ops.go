@@ -143,12 +143,12 @@ var pathOpModes = map[string]opRead{
 // CallIsRead implements tools.ModalTool for the Document tool. The input is
 // decoded as Execute decodes it; an input that does not decode, an unknown op
 // or a write is not a read.
-func (d *Document) CallIsRead(raw json.RawMessage) (string, bool) {
+func (d *Document) CallIsRead(raw json.RawMessage) (string, bool, error) {
 	var in docInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return "", false
+		return "", false, err
 	}
-	return in.Op, documentInputIsRead(in)
+	return in.Op, documentInputIsRead(in), nil
 }
 
 // documentInputIsRead classifies a decoded Document call by the table.
@@ -189,13 +189,13 @@ func pathModeRefusal(ctx context.Context, op string) *tools.Result {
 }
 
 // CallIsRead implements tools.ModalTool for the Path tool, on Execute's decode.
-func (p *Path) CallIsRead(raw json.RawMessage) (string, bool) {
+func (p *Path) CallIsRead(raw json.RawMessage) (string, bool, error) {
 	var in pathInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return "", false
+		return "", false, err
 	}
 	m, ok := pathOpModes[in.Op]
-	return in.Op, ok && m.read
+	return in.Op, ok && m.read, nil
 }
 
 var (
