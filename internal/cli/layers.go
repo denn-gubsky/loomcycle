@@ -13,6 +13,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/embedded"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
 // layers.go — the one assembly of the config-layer stack.
@@ -472,7 +473,15 @@ func loadLayeredConfig(explicitPaths ...string) (*config.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return config.LoadLayers(stack.Layers...)
+	cfg, err := config.LoadLayers(stack.Layers...)
+	if err != nil {
+		return nil, err
+	}
+	// The yaml's teams are judged above config, as the server's boot does.
+	if err := teamgraph.CheckConfigTeams(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // assembleForCLI is the CLI's call of AssembleConfigStack: no --preset flags,

@@ -203,6 +203,13 @@ type Config struct {
 	// derived fork layer. Empty / nil = no statically-declared webhooks.
 	Webhooks map[string]Webhook `yaml:"webhooks"`
 
+	// Teams is the RFC GS registry of team workflow graphs, keyed by team
+	// name, in the keys TeamDef create takes. A team here is checked as a
+	// definition at load (resolveTeams). It is not a static tier that runs
+	// read: the boot writes it into the store's shared tier as an ordinary
+	// version (RFC GS P2), and runs read that.
+	Teams map[string]Team `yaml:"teams"`
+
 	// MemoryBackends is the RFC I MR-3a registry of named memory
 	// backend declarations — which backend kind, its
 	// connection config, tenancy strategy, and fallback. Yaml entries
@@ -5078,6 +5085,9 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 		return nil, err
 	}
 	if err := loadAgentFiles(cfg, primaryPath); err != nil {
+		return nil, err
+	}
+	if err := resolveTeams(cfg, primaryPath); err != nil {
 		return nil, err
 	}
 

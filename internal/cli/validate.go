@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
 // RunValidate loads a YAML config and reports on its health. Returns:
@@ -51,6 +52,9 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, "config: %v", err)
 	}
 	cfg, err := config.LoadLayers(stack.Layers...)
+	if err == nil {
+		err = teamgraph.CheckConfigTeams(cfg)
+	}
 	if err != nil {
 		return fail(stderr, "config: %v", err)
 	}
@@ -101,6 +105,8 @@ func RunValidate(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "  %-24s provider=%-10s model=%s\n", name, provider, model)
 		}
 	}
+
+	printTeams(stdout, cfg)
 
 	// Capability gates. `validate` is where an operator looks BEFORE starting
 	// anything, so this is the earliest point the answer can be given — earlier
@@ -182,4 +188,33 @@ func maskDSN(dsn string) string {
 		return dsn
 	}
 	return dsn[:colon+1] + "***" + dsn[at:]
+}
+
+// printTeams lists the yaml's teams (RFC GS). The load has already checked
+// each one as a definition, so a graph that does not parse here is not
+// reached; the line still prints rather than fail the command.
+func printTeams(stdout io.Writer, cfg *config.Config) {
+	if len(cfg.Teams) == 0 {
+		return
+	}
+	names := make([]string, 0, len(cfg.Teams))
+	for name := range cfg.Teams {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fmt.Fprintf(stdout, "Teams            : %d\n", len(names))
+	for _, name := range names {
+		team := cfg.Teams[name]
+		source := "inline"
+		if team.DefinitionFile != "" {
+			source = team.DefinitionFile
+		}
+		def, err := teamgraph.Parse(team.Definition)
+		if err != nil {
+			fmt.Fprintf(stdout, "  %-24s source=%s\n", name, source)
+			continue
+		}
+		fmt.Fprintf(stdout, "  %-24s entry=%s states=%d own_agents=%d source=%s\n",
+			name, def.Entry, len(def.States), len(def.LocalAgentNames()), source)
+	}
 }

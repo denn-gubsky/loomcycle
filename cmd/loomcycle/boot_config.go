@@ -13,6 +13,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
+	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 )
 
 // loadConfig is boot phase 1: assemble the layered config stack and load it.
@@ -29,6 +30,9 @@ func (b *boot) loadConfig() {
 	}
 	cfg, err := config.LoadLayers(layers...)
 	if err != nil {
+		fatal("config: load failed", "err", err)
+	}
+	if err := teamgraph.CheckConfigTeams(cfg); err != nil {
 		fatal("config: load failed", "err", err)
 	}
 	// Non-fatal config advisories (e.g. an agent with Memory in tools
