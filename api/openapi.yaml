@@ -426,6 +426,86 @@ paths:
           description: Missing, wrong-scope, or non-image chunk (opaque — no cross-scope probing).
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_document/export/{document_id}:
+    get:
+      tags: [documents]
+      summary: Download a Document rendered as a file (PDF, Word, HTML or Markdown).
+      description: |
+        Renders the document (or one part of it, `chunk`) as `format` and
+        streams it as an attachment, with no run (RFC GR §4.4). The document is
+        read with the caller's own access, exactly as `Document op=export_md`
+        reads it; one the caller may not read is the same opaque 404 as a
+        missing one. A PDF is typeset by Typst where the server converts
+        files; a server without it answers 503. Markdown of a document with
+        pictures comes as a zip of the `.md` and its pictures. Every download
+        is logged on the document (its render log) and written to the audit
+        trail as `document_exported`; when the audit record cannot be written,
+        the file is not served.
+      operationId: exportDocument
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: format
+          in: query
+          required: true
+          schema: { type: string, enum: [pdf, docx, html, md] }
+        - name: scope
+          in: query
+          required: false
+          schema: { type: string, enum: [agent, user, tenant], default: user }
+        - name: chunk
+          in: query
+          required: false
+          description: Render only the part of the document under this chunk.
+          schema: { type: string }
+        - name: toc
+          in: query
+          required: false
+          schema: { type: boolean }
+        - name: title_page
+          in: query
+          required: false
+          schema: { type: boolean }
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: string, enum: [a4, letter] }
+        - name: language
+          in: query
+          required: false
+          schema: { type: string }
+        - name: provenance
+          in: query
+          required: false
+          description: For an imported document, say under the title where it came from. Default true.
+          schema: { type: boolean }
+        - name: scope_id
+          in: query
+          required: false
+          description: Browse another subject's scope, where the caller may (as on the other document routes).
+          schema: { type: string }
+        - name: tenant
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: The rendered file, as an attachment named after the document's title (Content-Disposition filename*). X-Loomcycle-Render-Id names its render log row.
+          content:
+            application/pdf: { schema: { type: string, format: binary } }
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document: { schema: { type: string, format: binary } }
+            text/html: { schema: { type: string, format: binary } }
+            text/markdown: { schema: { type: string, format: binary } }
+            application/zip: { schema: { type: string, format: binary } }
+        "400": { description: "A parameter is wrong (format, page_size, scope): code bad_request." }
+        "404": { description: Missing, or not readable to the caller (opaque). }
+        "413": { description: "The file would pass the output caps (64 MiB, or 2000 PDF pages): code too_large. Download a part with chunk." }
+        "422": { description: "The document has nothing to render: code tool_refused." }
+        "503": { description: "The server cannot write the format now (no typesetter, no conversion worker: code unavailable), or every converter is busy (code busy, with Retry-After); or the audit record could not be written." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /v1/_decide:
     post:
       tags: [decision]

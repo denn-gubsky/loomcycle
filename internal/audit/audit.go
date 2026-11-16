@@ -105,6 +105,16 @@ type Event struct {
 	// who turned on sending the tenant's prompts and answers out, and when.
 	TelemetryContentCapture string `json:"telemetry_content_capture,omitempty"`
 
+	// --- Document export (Action = "document_exported") ---
+	//
+	// A person downloaded a Document as a file off-run (RFC GR §4.4): a bulk
+	// read, so it is recorded. The document travels in TargetName as
+	// `document:<id>`, its tenant in TargetTenant, the person in
+	// ActorSubject. Never content.
+	ExportFormat string `json:"export_format,omitempty"`
+	ExportScope  string `json:"export_scope,omitempty"`
+	ExportBytes  int64  `json:"export_bytes,omitempty"`
+
 	// --- Crypto (Action = "crypto_op" | "crypto_key_generate" |
 	// "crypto_key_create" | "crypto_key_rotate" | "crypto_key_min_version" |
 	// "crypto_key_delete_version" | "crypto_key_delete" | "crypto_key_export" |

@@ -70,10 +70,12 @@ func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error)
 	return job.fromDocument(ctx)
 }
 
-// renderDest is where a render goes: the inbox (to empty) or a volume file.
+// renderDest is where a render goes: the inbox (to empty), a volume file,
+// or (download) back to an off-run caller (Export).
 type renderDest struct {
 	toVolume bool
 	to       dataRef
+	download bool
 }
 
 func renderDestination(ctx context.Context, in fileInput) (renderDest, tools.Result, bool) {
@@ -101,6 +103,13 @@ type renderJob struct {
 	format string
 	dest   renderDest
 	date   string
+	// actor overrides who the render log records (an off-run export names
+	// the person); exported receives a download's file.
+	actor    string
+	exported *ExportedFile
+	// renderErr is a download's render failure, for Export to classify (an
+	// op answers it as a tool result instead).
+	renderErr error
 }
 
 func (j *renderJob) options() render.Options {
@@ -228,7 +237,7 @@ func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Rep
 		return renderRefusal(err), nil
 	}
 
-	if log != nil && (j.format != render.FormatMarkdown || len(doc.Images) == 0) {
+	if log != nil && !j.dest.download && (j.format != render.FormatMarkdown || len(doc.Images) == 0) {
 		if out, ok := j.reuse(ctx, log, sourceSHA, optsJSON, src, rep); ok {
 			return out, nil
 		}
@@ -237,7 +246,14 @@ func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Rep
 	// Pictures beside a Markdown file are written first: where they land
 	// decides the links the file holds.
 	var imageRefs []string
-	if j.format == render.FormatMarkdown && len(doc.Images) > 0 {
+	zipped := j.dest.download && j.format == render.FormatMarkdown && len(doc.Images) > 0
+	if zipped {
+		// A download carries its pictures in a zip beside the Markdown.
+		opts.ImagePaths = map[string]string{}
+		for _, im := range doc.Images {
+			opts.ImagePaths[im.Name] = stem + "/" + im.Name
+		}
+	} else if j.format == render.FormatMarkdown && len(doc.Images) > 0 {
 		paths, refs, res, ok := j.writeImages(ctx, doc, stem)
 		if !ok {
 			return res, nil
@@ -246,17 +262,36 @@ func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Rep
 	}
 	bundle, err := render.EncodeBundle(doc, opts)
 	if err != nil {
+		if j.dest.download {
+			j.renderErr = err
+		}
 		return renderRefusal(err), nil
 	}
 	data, err := j.f.converter().Render(ctx, bundle, j.format)
+	if err != nil && j.dest.download && ctx.Err() == nil {
+		j.renderErr = err
+	}
 	if res, done, rerr := renderFailure(ctx, err, j.f.slotWait); done {
 		return res, rerr
 	}
 
+	name, mediaType := stem+"."+j.format, render.MediaType(j.format)
+	if zipped {
+		if data, err = markdownBundle(stem, data, doc); err != nil {
+			j.renderErr = err
+			return renderRefusal(err), nil
+		}
+		name, mediaType = stem+".zip", "application/zip"
+	}
 	sum := sha256.Sum256(data)
 	outSHA := hex.EncodeToString(sum[:])
 	var ref, destination string
-	if j.dest.toVolume {
+	if j.dest.download {
+		destination = "download"
+		// A person's download keeps the title as written; the stem inside a
+		// Markdown zip stays the file-system-safe one its links use.
+		*j.exported = ExportedFile{Name: downloadName(doc.Title, strings.TrimPrefix(path.Ext(name), ".")), MediaType: mediaType, Data: data}
+	} else if j.dest.toVolume {
 		var res tools.Result
 		var ok bool
 		ref, res, ok = writeVolumeBytes(ctx, "render", j.dest.to, stem+"."+j.format, data, j.in.Overwrite)
@@ -280,12 +315,15 @@ func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Rep
 	}
 	if log != nil {
 		row := renderRow{DocumentID: src.DocumentID, RootChunkID: src.RootChunkID, SourceSHA256: sourceSHA, Format: j.format,
-			Options: optsJSON, OutputSHA256: outSHA, Size: int64(len(data)), Destination: destination, Actor: renderActor(ctx)}
+			Options: optsJSON, OutputSHA256: outSHA, Size: int64(len(data)), Destination: destination, Actor: j.actorOf(ctx)}
 		if err := log.record(ctx, &row); err != nil {
 			// The file is written; a log fault is said, not hidden.
 			out["render_log_error"] = err.Error()
 		} else {
 			out["render_id"] = row.ID
+			if j.exported != nil {
+				j.exported.RenderID = row.ID
+			}
 		}
 		out["document_id"] = src.DocumentID
 	}
@@ -417,6 +455,14 @@ func renderOrigin(src renderedSource) string {
 		return "render"
 	}
 	return "render:" + src.Scope + "/" + src.DocumentID
+}
+
+// actorOf is who rendered, as the render log records it.
+func (j *renderJob) actorOf(ctx context.Context) string {
+	if j.actor != "" {
+		return j.actor
+	}
+	return renderActor(ctx)
 }
 
 // renderActor is who rendered: the run.
