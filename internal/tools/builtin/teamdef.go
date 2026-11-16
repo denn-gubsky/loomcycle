@@ -819,24 +819,14 @@ func (t *TeamDef) resolveForkParent(ctx context.Context, name, parentDefID strin
 		}
 		return row, nil
 	}
-	row, err := t.Store.TeamDefGetActive(ctx, tenantID, name)
+	// The tenant's own active version, else the SHARED ("") base, so a
+	// per-tenant principal can fork a name seeded under the "" tenant.
+	row, err := ActiveTeam(ctx, t.Store, tenantID, name)
 	if err == nil {
 		return row, nil
 	}
 	if !errors.As(err, &nf) {
 		return store.TeamDefRow{}, err
-	}
-	// No own-tenant active pointer. Fall back to the SHARED ("") base so a
-	// per-tenant principal can fork a name seeded under the legacy "" tenant.
-	// Skip when tenantID is already "" (identical lookup).
-	if tenantID != "" {
-		shared, serr := t.Store.TeamDefGetActive(ctx, "", name)
-		if serr == nil {
-			return shared, nil
-		}
-		if !errors.As(serr, &nf) {
-			return store.TeamDefRow{}, serr
-		}
 	}
 	return store.TeamDefRow{}, &errNoForkParent{name: name}
 }
@@ -1045,8 +1035,9 @@ func (t *TeamDef) execVerify(ctx context.Context, in teamDefInput) (tools.Result
 	if in.As != "" || in.ParentDefID != "" || in.Description != "" {
 		return errResult("verify: as, parent_def_id and description describe a draft — they need an overlay"), nil
 	}
-	// RFC N: verify against the team's own tenant active pointer.
-	row, err := t.Store.TeamDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
+	// RFC N: verify against the version a run of this name gets — the
+	// tenant's own active pointer, else the shared tier's.
+	row, err := ActiveTeam(ctx, t.Store, tools.RunIdentity(ctx).TenantID, in.Name)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -1061,14 +1052,14 @@ func (t *TeamDef) execVerify(ctx context.Context, in teamDefInput) (tools.Result
 		}
 		return errResult(fmt.Sprintf("verify: %s", err)), nil
 	}
-	out := map[string]any{
+	out := markSharedTier(ctx, map[string]any{
 		"matches":        in.ContentSHA256 != "" && in.ContentSHA256 == row.ContentSHA256,
 		"current_sha256": row.ContentSHA256,
 		"current_def_id": row.DefID,
 		"version":        row.Version,
 		"name":           row.Name,
 		"deployed":       true,
-	}
+	}, row.TenantID)
 	// The hash answers "is this the def I wrote". It cannot answer "will it
 	// still run" — a matching def whose channel was deleted or whose member was
 	// retired is byte-identical and broken. So verify also sweeps what the def
@@ -1124,11 +1115,12 @@ func (t *TeamDef) verifyDraft(ctx context.Context, in teamDefInput) (tools.Resul
 	out := map[string]any{"name": in.Name, "deployed": false, "matches": false,
 		"current_sha256": "", "current_def_id": "", "version": 0}
 	// The deployed version, for `matches`: is this draft what is in force now?
-	active, err := t.Store.TeamDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
+	active, err := ActiveTeam(ctx, t.Store, tools.RunIdentity(ctx).TenantID, in.Name)
 	var nf *store.ErrNotFound
 	switch {
 	case err == nil:
 		out["deployed"], out["current_sha256"], out["current_def_id"], out["version"] = true, active.ContentSHA256, active.DefID, active.Version
+		markSharedTier(ctx, out, active.TenantID)
 	case !errors.As(err, &nf):
 		return errResult(fmt.Sprintf("verify: %s", err)), nil
 	}
@@ -1328,7 +1320,7 @@ func (t *TeamDef) execRenderDiagram(ctx context.Context, in teamDefInput) (tools
 			return errResult(fmt.Sprintf("render_diagram: def_id %q not found", in.DefID)), nil
 		}
 	case in.Name != "":
-		row, err = t.Store.TeamDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
+		row, err = ActiveTeam(ctx, t.Store, tools.RunIdentity(ctx).TenantID, in.Name)
 	default:
 		return errResult("render_diagram: provide `name` (active version) or `def_id`"), nil
 	}
@@ -1520,7 +1512,7 @@ func (t *TeamDef) runResolveTeam(ctx context.Context, in teamDefInput, w *teamWa
 			return true, errResult(fmt.Sprintf("run: def_id %q not found", in.DefID)), nil
 		}
 	case in.Name != "":
-		row, err = t.Store.TeamDefGetActive(ctx, tools.RunIdentity(ctx).TenantID, in.Name)
+		row, err = ActiveTeam(ctx, t.Store, tools.RunIdentity(ctx).TenantID, in.Name)
 	default:
 		return true, errResult("run: provide `name` (active version) or `def_id`"), nil
 	}
@@ -1556,8 +1548,7 @@ func (t *TeamDef) runResolveTeam(ctx context.Context, in teamDefInput, w *teamWa
 	// only when the team is its own tenant's). Said here rather than at the
 	// first state that needs one.
 	if len(def.LocalAgentNames()) > 0 && row.TenantID != tools.RunIdentity(ctx).TenantID {
-		return true, errResult(fmt.Sprintf("run: team %q declares agents of its own and belongs to another tenant; "+
-			"a team's own agents run only in the team's tenant — run it as that tenant", row.Name)), nil
+		return true, errResult(foreignTeamRunRefusal(row, "agents")), nil
 	}
 	// A team's own schedules and webhooks publish into its own channels, which
 	// are its tenant's, and are started by whatever arms a walk's triggers.
@@ -1574,8 +1565,7 @@ func (t *TeamDef) runResolveTeam(ctx context.Context, in teamDefInput, w *teamWa
 			return true, errResult(fmt.Sprintf("run: team %q declares %s of its own, and this server cannot run them", row.Name, kind.what)), nil
 		}
 		if row.TenantID != tools.RunIdentity(ctx).TenantID {
-			return true, errResult(fmt.Sprintf("run: team %q declares %s of its own and belongs to another tenant; "+
-				"a team's own %s run only in the team's tenant — run it as that tenant", row.Name, kind.what, kind.what)), nil
+			return true, errResult(foreignTeamRunRefusal(row, kind.what)), nil
 		}
 	}
 

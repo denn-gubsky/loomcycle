@@ -11,6 +11,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/teamgraph"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
 // A schedule or a webhook with `delivery: team` starts a walk here.
@@ -95,9 +96,9 @@ func (s *Server) StartTeamWalk(ctx context.Context, in runner.TeamWalkInput) (st
 // between 400 and 503. A team changed between this read and the start is
 // refused by op=run itself, as an unclassified failure.
 func (s *Server) teamWalkStartable(ctx context.Context, in runner.TeamWalkInput) error {
-	// The trigger definition's tenant, and only that tenant's active pointer —
-	// the same single lookup op=run makes for a caller of that tenant.
-	row, err := s.store.TeamDefGetActive(ctx, in.TenantID, in.Team)
+	// The trigger definition's tenant's active pointer, else the shared tier's
+	// — the same lookup op=run makes for a caller of that tenant.
+	row, err := builtin.ActiveTeam(ctx, s.store, in.TenantID, in.Team)
 	if err != nil {
 		var nf *store.ErrNotFound
 		if errors.As(err, &nf) {
@@ -111,6 +112,13 @@ func (s *Server) teamWalkStartable(ctx context.Context, in runner.TeamWalkInput)
 	def, err := teamgraph.Parse(row.Definition)
 	if err != nil {
 		return fmt.Errorf("%w: team %q: %v", runner.ErrTeamNotStartable, in.Team, err)
+	}
+	// A shared team that declares agents, schedules or webhooks of its own runs
+	// only for the shared tier (op=run refuses it in a tenant). Said here so the
+	// trigger reports it as the definition's to fix, not as a failure.
+	if row.TenantID != in.TenantID && len(def.LocalAgentNames())+len(def.LocalScheduleNames())+len(def.LocalWebhookNames()) > 0 {
+		return fmt.Errorf("%w: team %q is a shared team that declares definitions of its own, which run only in "+
+			"the team's tenant; fork it into tenant %q", runner.ErrTeamNotStartable, in.Team, in.TenantID)
 	}
 	if err := teamgraph.CheckStartVars(def, in.Vars); err != nil {
 		return fmt.Errorf("%w: team %q: %v", runner.ErrTeamNotStartable, in.Team, err)
