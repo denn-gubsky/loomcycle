@@ -5831,6 +5831,45 @@ a.login-btn {
 .doc-toolbar-actions button:hover {
   border-color: var(--accent);
 }
+/* RFC GR P3 — the toolbar's one download menu (explorer DownloadMenu): a
+   button, and a small pop-up list of formats under it. Kept in step with the
+   package's scoped copy in packages/explorer/src/styles.css. */
+.doc-download-menu {
+  position: relative;
+}
+.doc-toolbar-actions .doc-download-menu > button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.doc-download-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 170px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+.doc-toolbar-actions .doc-download-list button {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  white-space: nowrap;
+}
+.doc-toolbar-actions .doc-download-list button:hover,
+.doc-toolbar-actions .doc-download-list button:focus {
+  background: var(--bg-soft);
+  color: var(--accent);
+  outline: none;
+}
 .doc-mode-toggle {
   display: inline-flex;
   border: 1px solid var(--border);

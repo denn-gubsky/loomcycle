@@ -680,6 +680,45 @@
   color: white;
   border-color: var(--accent);
 }
+.loomcycle-explorer .doc-toolbar-actions .doc-download-menu > button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* The toolbar's download menu (DownloadMenu): one button, a small list under it. */
+.loomcycle-explorer .doc-download-menu {
+  position: relative;
+}
+.loomcycle-explorer .doc-download-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 170px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+}
+.loomcycle-explorer .doc-toolbar-actions .doc-download-list button {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg);
+  font-size: var(--lc-text-sm);
+  text-align: left;
+  white-space: nowrap;
+}
+.loomcycle-explorer .doc-toolbar-actions .doc-download-list button:hover,
+.loomcycle-explorer .doc-toolbar-actions .doc-download-list button:focus {
+  background: var(--bg);
+  color: var(--accent);
+  outline: none;
+}
 
 /* Id + copy affordance (IdCopy): the document id in the toolbar, the selected
    chunk id in the content head, and a compact copy on every chunk-tree row.

@@ -466,3 +466,43 @@ describe("documentEntityTypes → wire mapping", () => {
     expect(types).toEqual(["person", "Post"]);
   });
 });
+
+describe("dataLayerFromClient — documentExportFile (RFC GR)", () => {
+  it("is absent without a raw-GET transport", () => {
+    expect(dataLayerFromClient(stubClient().client).documentExportFile).toBeUndefined();
+  });
+
+  it("GETs the export route and returns the bytes under the server's file name", async () => {
+    const assetFetch = vi.fn().mockResolvedValue(
+      new Response("%PDF-1.7", {
+        status: 200,
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": `attachment; filename="Zvit.pdf"; filename*=UTF-8''%D0%97%D0%B2%D1%96%D1%82.pdf`,
+        },
+      }),
+    );
+    const dl = dataLayerFromClient(stubClient().client, assetFetch);
+    const r = await dl.documentExportFile!("d1", "tenant", "pdf", BROWSE);
+    expect(assetFetch).toHaveBeenCalledWith("/v1/_document/export/d1?format=pdf&scope=tenant&scope_id=u1&tenant=t1");
+    expect(r.filename).toBe("Звіт.pdf");
+    expect(await r.blob.text()).toBe("%PDF-1.7");
+  });
+
+  it("names no file when the server sent no Content-Disposition", async () => {
+    const assetFetch = vi.fn().mockResolvedValue(new Response("<p>x</p>", { status: 200 }));
+    const r = await dataLayerFromClient(stubClient().client, assetFetch).documentExportFile!("d1", "user", "html");
+    expect(r.filename).toBe("");
+  });
+
+  it("rejects with the server's message on a refusal", async () => {
+    const assetFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ code: "unavailable", error: "this server cannot write PDF: Typst is not installed" }), {
+        status: 503,
+      }),
+    );
+    await expect(
+      dataLayerFromClient(stubClient().client, assetFetch).documentExportFile!("d1", "user", "pdf"),
+    ).rejects.toThrow("this server cannot write PDF: Typst is not installed");
+  });
+});

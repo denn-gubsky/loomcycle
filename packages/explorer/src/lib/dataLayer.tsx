@@ -26,6 +26,12 @@ import type { RulingCounts, RulingRequest } from "./ruling";
 import { entityTypeNames } from "./subjectType";
 import { transferInput, type TransferRequest, type TransferResult } from "./transfer";
 import { setAnnotationInput } from "./annotation";
+import {
+  errorMessageFromBody,
+  filenameFromContentDisposition,
+  type DocumentExportOptions,
+  type RenderFormat,
+} from "./download";
 
 // ChunkPatch is the subset of chunk fields update_chunk accepts. `fields` is
 // unknown (arbitrary typed JSON the chunk carries); a blank/absent value leaves
@@ -338,6 +344,20 @@ export interface ExplorerDataLayer {
     scope: DocScope,
     browse?: BrowseScope,
   ): Promise<string>;
+  // documentExportFile renders the document into a file (RFC GR —
+  // GET /v1/_document/export/{id}): PDF, Word, HTML or Markdown (a Markdown
+  // render with pictures arrives as a .zip). `filename` is the server's
+  // Content-Disposition name, "" when it sent none. A refusal rejects with the
+  // server's message. Absent, like documentAssetObjectUrl, when the data source
+  // can't do a raw binary GET → the viewer offers only the .md / .canvas
+  // downloads.
+  documentExportFile?(
+    documentId: string,
+    scope: DocScope,
+    format: RenderFormat,
+    browse?: BrowseScope,
+    opts?: DocumentExportOptions,
+  ): Promise<{ blob: Blob; filename: string }>;
   documentUpdateChunk(
     id: string,
     revision: number,
@@ -755,9 +775,41 @@ export function dataLayerFromClient(
             const blob = await resp.blob();
             return URL.createObjectURL(blob);
           },
+          documentExportFile: async (documentId, scope, format, browse, opts) => {
+            const resp = await assetFetch(documentExportPath(documentId, scope, format, browse, opts));
+            if (!resp.ok) {
+              throw new Error(errorMessageFromBody(await resp.text(), resp.status, resp.statusText));
+            }
+            const blob = await resp.blob();
+            return {
+              blob,
+              filename: filenameFromContentDisposition(resp.headers.get("Content-Disposition")) ?? "",
+            };
+          },
         }
       : {}),
   };
+}
+
+// documentExportPath builds the export route's path + query. Unset options are
+// left out, so the server's defaults apply.
+export function documentExportPath(
+  documentId: string,
+  scope: DocScope,
+  format: RenderFormat,
+  browse?: BrowseScope,
+  opts?: DocumentExportOptions,
+): string {
+  const q = new URLSearchParams({ format, scope });
+  if (browse?.scopeId) q.set("scope_id", browse.scopeId);
+  if (browse?.tenant) q.set("tenant", browse.tenant);
+  if (opts?.chunk) q.set("chunk", opts.chunk);
+  if (opts?.toc) q.set("toc", "true");
+  if (opts?.titlePage) q.set("title_page", "true");
+  if (opts?.pageSize) q.set("page_size", opts.pageSize);
+  if (opts?.language) q.set("language", opts.language);
+  if (opts?.provenance === false) q.set("provenance", "false");
+  return `/v1/_document/export/${encodeURIComponent(documentId)}?${q.toString()}`;
 }
 
 // ReviewClient is the part of a newer @loomcycle/client this package reads when

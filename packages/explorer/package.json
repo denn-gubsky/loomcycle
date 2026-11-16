@@ -70,6 +70,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "happy-dom": "^21.0.4",
     "mermaid": "^12.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
