@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.153) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.154) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,7 +212,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.153.0) gives every setting one place. 150 environment
+The most recent line (v1.154.0) moves file conversion out of the runtime's
+process by default on Linux: worker processes, or worker containers from the
+new `loomcycle-worker` image, take every extraction, OCR render and audio
+conversion, so one hostile file kills a worker, not the runtime.
+`loomcycle-media` is retired. It also keeps an agent's override lock,
+no-trace retention and read-only modes across its whole version history.
+Read its upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+
+Before it, v1.153.0 gave every setting one place. 150 environment
 variables are no longer read: policy and tuning moved to the yaml, limits
 nobody changed became fixed values, and seven feature switches are gone. Two
 presets, `personal` and `server`, stand for a whole installation. It also adds
