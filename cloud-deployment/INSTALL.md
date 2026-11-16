@@ -443,9 +443,11 @@ order:
    answer "not configured" and the bridge stays on text.
 2. **Speech engines** in a config file of their own beside `loomcycle.yaml`
    (for example `config/voice.yaml`, which a release does not overwrite):
-   `speech:` and `transcription.stt:`, plus the two ffmpeg helpers (the
-   `conversion-worker` containers run them; the image's defaults are these
-   same commands). A Telegram voice note is OGG/Opus, and an
+   `speech:` and `transcription.stt:`, plus the two ffmpeg helpers. With
+   conversion workers these settings only switch the conversion on: the
+   `conversion-worker` containers run their own commands, which
+   `docker-compose.yaml` sets (`LOOMCYCLE_WORKER_MEDIA_COMMAND`,
+   `LOOMCYCLE_WORKER_ENCODE_COMMAND`); change a command there. A Telegram voice note is OGG/Opus, and an
    engine that reads WAV only (Qwen3-ASR on Ollama) needs it converted;
    Telegram shows only Opus or MP3 as a voice note, so replies need encoding:
    ```yaml
