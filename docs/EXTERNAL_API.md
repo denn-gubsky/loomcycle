@@ -72,6 +72,13 @@ generated client covers the whole surface below.
   behave (they forward the body to the tool verbatim).
 - **Assets:** `GET /v1/_document/asset/{chunk_id}` returns a chunk's binary
   image.
+- **Exports:** `GET /v1/_document/export/{document_id}?format=pdf|docx|html|md`
+  returns a Document rendered as a file, as an attachment named after its
+  title. It reads the document with the caller's own access (open to a
+  tenant's members, like the other document routes), answers a missing or
+  unreadable document with the same 404, and audits each download as
+  `document_exported`. See
+  [DOCUMENTS.md](DOCUMENTS.md#getting-a-file-out--pdf-word-html-markdown-rfc-gr).
 - **Decision models:** `POST /v1/_decide` asks a decision model typed questions
   about state you supply, and `GET /v1/_decide/models` lists the models a call
   may name with their limits. Both need the `runs:create` scope, not
