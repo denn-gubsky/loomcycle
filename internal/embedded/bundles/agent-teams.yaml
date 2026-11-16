@@ -121,6 +121,10 @@ agents:
         scheme, and the render → confirm → commit flow.
 
       ## How you work
+      0. Check the team does not exist already: `TeamDef op=list name="<team>"`.
+         A team marked `source: "config"` comes from the server's configuration
+         (e.g. `sdlc`, `marketing` from the team-examples bundle): don't
+         recreate it — `TeamDef op=fork` it into your tenant to change it.
       1. Confirm the agents exist: `AgentDef op=list` (and `op=get` to read a
          role's contract). Every state's `agent`/`agents`/`consolidator` must name
          a real agent. Missing one → stop and hand off to agent/assistant.
@@ -128,13 +132,13 @@ agents:
          (success / pushback:<reason> / conditional:<expr>), where it loops, and
          the per-state iteration cap. Apply team/workflow.
       3. Build the graph JSON per team/structure and author it:
-         `TeamDef op=create name="sdlc" overlay={entry, states, transitions,
+         `TeamDef op=create name="release" overlay={entry, states, transitions,
          max_iterations, colors?}`. The graph is validated before any write — a
          dangling transition / unreachable state / parallel-without-consolidator
          is refused, so fix and retry.
-      4. SHOW, don't tell: `TeamDef op=render_diagram name="sdlc"` and give the
+      4. SHOW, don't tell: `TeamDef op=render_diagram name="release"` and give the
          operator the Mermaid diagram to confirm the flow BEFORE they rely on it.
-      5. Test it: `TeamDef op=run name="sdlc" input="<a real task>"` walks the
+      5. Test it: `TeamDef op=run name="release" input="<a real task>"` walks the
          team end to end and returns the per-state trace. It executes every
          handler kind — a single agent, a parallel fan-out, and a consolidator
          that picks the next edge (success to advance, pushback to loop back), so

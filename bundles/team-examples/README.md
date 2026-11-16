@@ -10,22 +10,29 @@ LOOMCYCLE_PRESETS=base,agent-teams,team-examples
 
 ## What's inside
 
-- **Handler agents** for two domains (agents *can* be static config; TeamDefs cannot):
+- **Handler agents** for two domains:
   - software: `sdlc/architect`, `sdlc/coder`, `sdlc/reviewer`
   - marketing: `marketing/writer`, `marketing/editor`
-- A **`team/examples`** skill carrying the ready-to-create TeamDef JSON for:
+- Two **teams**, under the `teams:` key (RFC GS):
   - **`sdlc`** — a software team (architecture → implementation → review ⇄ implementation → PR) that uses the software workspace (ephemeral `work` volume + `git`/`gh` via Bashbox; see the `agent-teams` `team/repo` skill + its operator prerequisites).
   - **`marketing`** — a Documents-only team (draft → edit ⇄ draft → published) with **no volume/repo/PR** — the Document task board is the deliverable.
+- A **`team/examples`** skill: how to drive the two teams and how to fork them.
 
 Two domains on purpose: SDLC exercises the repo workspace; marketing proves the
 domain-general design (the workspace is optional — RFC BD).
 
-## Why the teams are in a skill, not config
+## The teams are configuration
 
-TeamDefs are **runtime-only** (RFC AP has no static team layer — they're created
-via `TeamDef op=create`). So a starter team ships as JSON the orchestrator/assistant
-instantiates on request, not as YAML. Ask the orchestrator to *"set up and run the
-marketing example"* and it creates the TeamDef from `team/examples` and drives it.
+At boot the server writes `sdlc` and `marketing` into the store's shared tier as
+ordinary TeamDef versions marked `source: "config"`. Every tenant can run them by
+name (`TeamDef op=run name="sdlc"`), and the handler agents are global so they run
+in every tenant too. Ask the orchestrator to *"run the marketing example"* and it
+drives the configured team.
+
+To change one, overlay its key in your own config (for example
+`teams.sdlc.max_iterations: 8`): an edit of a configured team over the API is
+refused. A tenant can `TeamDef op=fork` either team into its own tenant, and its
+fork then runs in place of the configured one for that tenant.
 
 ## Notes
 
@@ -36,3 +43,6 @@ marketing example"* and it creates the TeamDef from `team/examples` and drives i
   `internal/embedded/bundles/team-examples.yaml`; keep the two in sync.
 - These are starters — fork them (`TeamDef op=fork`) or build your own with the
   `team/assistant` agent.
+- A team in a bundle may not carry `local.webhooks`, `hooks`/`tool_hooks` or a
+  `definition_file`: a bundle arrives in a deployment unread
+  (`internal/embedded/unit_keys_test.go`).
