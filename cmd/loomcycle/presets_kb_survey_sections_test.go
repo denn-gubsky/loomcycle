@@ -163,6 +163,9 @@ func TestKbSurvey_FittingSectionIsAccountedAndComposedAsAChunkLink(t *testing.T)
 		if got := listIn(p, "\nFitting sections ("); strings.Join(got, ",") != sec {
 			t.Errorf("Fitting sections = %v, want [%s]", got, sec)
 		}
+		if got := listIn(p, "\nMatching sections of fitting documents ("); strings.Join(got, ",") != otherSec+" in "+otherGuide {
+			t.Errorf("Matching sections of fitting documents = %v, want the fitting guide's section", got)
+		}
 		if !strings.Contains(p, "loom:chunk/<id>?scope=tenant") || !strings.Contains(p, annotationCallOf(sec)) {
 			t.Errorf("the composing round must ask for a loom:chunk link and give the section's read call:\n%s", p)
 		}
@@ -181,10 +184,12 @@ func TestKbSurvey_FittingSectionIsAccountedAndComposedAsAChunkLink(t *testing.T)
 		f := newFake()
 		f.write = func([]string) surveyReply { return surveyReply{status: "failed"} }
 		out := runSurvey(t, f, surveyQuestion)
+		// The fitting guide's matching section is linked beside it too.
 		if !strings.Contains(out, "- ["+sec+"](loom:chunk/"+sec+"?scope=tenant)") ||
 			!strings.Contains(out, "- ["+other+"](loom:doc/"+other+"?scope=tenant)") ||
-			strings.Contains(out, "loom:doc/"+sec) || strings.Contains(out, otherSec) {
-			t.Errorf("want code's list linking the section as loom:chunk and the documents as loom:doc:\n%s", out)
+			!strings.Contains(out, "- ["+otherSec+"](loom:chunk/"+otherSec+"?scope=tenant)") ||
+			strings.Contains(out, "loom:doc/"+sec) || strings.Contains(out, "loom:doc/"+otherSec) {
+			t.Errorf("want code's list linking the sections as loom:chunk and the documents as loom:doc:\n%s", out)
 		}
 	})
 	t.Run("a good round leaves a section unnamed", func(t *testing.T) {
@@ -646,5 +651,155 @@ func TestKbSurvey_SectionsAreScreenedInSlicesOf20AfterTheDocuments(t *testing.T)
 	}
 	if _, _, sv := surveyLines(out); !strings.Contains(sv, "| sections 25 (cut 0, over guide limit 0, document fits 0) | slices 3 | failed slices 0 |") {
 		t.Errorf("survey line = %q", sv)
+	}
+}
+
+// TestKbSurvey_FittingGuideLinksItsMatchingSectionsUnscreened: when a large
+// guide fit, its sections were dropped and the answer linked the guide alone;
+// measured, its key sections then scored 0 on 5 of 6 questions one guide
+// answers. The matching sections of a fitting guide, the ones its gather
+// searches hit, are linked beside it, best match first, without a screening
+// round: the composing round lists each with its document and carries its
+// get_annotation call, and code's fallback list links them as loom:chunk.
+// Sections of a guide that does not fit are still screened.
+func TestKbSurvey_FittingGuideLinksItsMatchingSectionsUnscreened(t *testing.T) {
+	guide, aside := docID(1), docID(2)
+	s1, s2, s3 := secID(1), secID(2), secID(3)
+	newFake := func() *surveyFake {
+		return &surveyFake{
+			// s2 ranks above s1; s3 is the set-aside guide's.
+			rows:        map[string][]map[string]any{"P": {secHit(guide, s2), secHit(guide, s1), secHit(aside, s3)}},
+			chunkCounts: map[string]int{guide: 40, aside: 40},
+			screen:      fitsOf(guide, s3),
+		}
+	}
+	t.Run("composed", func(t *testing.T) {
+		f := newFake()
+		out := runSurvey(t, f, surveyQuestion)
+		r := f.screens()
+		if len(r) != 2 || strings.Join(r[1], ",") != s3 {
+			t.Errorf("screening rounds = %v, want the documents, then only the set-aside guide's section", r)
+		}
+		w := f.writes()
+		if len(w) != 1 {
+			t.Fatalf("composing rounds = %d, want 1", len(w))
+		}
+		p := spawnPrompt(f.spawns[len(f.spawns)-1])
+		got := listIn(p, "\nMatching sections of fitting documents (")
+		if strings.Join(got, ",") != s2+" in "+guide+","+s1+" in "+guide {
+			t.Errorf("Matching sections of fitting documents = %v, want the guide's two, best match first", got)
+		}
+		for _, id := range []string{s1, s2} {
+			if !strings.Contains(p, "\n"+annotationCallOf(id)+"\n") && !strings.HasSuffix(p, "\n"+annotationCallOf(id)) {
+				t.Errorf("the composing round lacks the get_annotation call for linked section %s:\n%s", id, p)
+			}
+		}
+		if !strings.Contains(p, "loom:chunk/<id>?scope=tenant") || !strings.Contains(p, "Under a fitting document, link each of its matching sections") {
+			t.Errorf("the composing round must ask for the sections as loom:chunk links under their document:\n%s", p)
+		}
+		if docs := listIn(p, "\nFitting documents ("); strings.Join(docs, ",") != guide {
+			t.Errorf("Fitting documents = %v, want the guide", docs)
+		}
+		if secs := listIn(p, "\nFitting sections ("); strings.Join(secs, ",") != s3 {
+			t.Errorf("Fitting sections = %v, want the screened section alone", secs)
+		}
+		cov, unc, sv := surveyLines(out)
+		if cov != "COVERAGE: complete" || unc != "" {
+			t.Errorf("coverage = %q %q, want complete", cov, unc)
+		}
+		if !strings.Contains(sv, "| sections 3 (cut 0, over guide limit 0, document fits 2) | slices 2 | failed slices 0 |") {
+			t.Errorf("survey line = %q", sv)
+		}
+	})
+	t.Run("fallback list", func(t *testing.T) {
+		f := newFake()
+		f.write = func([]string) surveyReply { return surveyReply{status: "failed"} }
+		out := runSurvey(t, f, surveyQuestion)
+		for _, id := range []string{s1, s2, s3} {
+			if !strings.Contains(out, "- ["+id+"](loom:chunk/"+id+"?scope=tenant)") {
+				t.Errorf("code's list lacks section %s as loom:chunk:\n%s", id, out)
+			}
+		}
+	})
+}
+
+// sectionPoolsFake is 40 large guides with 3 hit sections each, 120 sections
+// in all, the guides in fit fitting and the rest set aside. Section k of guide
+// g ranks 3g+k in the mixed search.
+func sectionPoolsFake(fit int) *surveyFake {
+	f := &surveyFake{rows: map[string][]map[string]any{}, chunkCounts: map[string]int{}}
+	var fitting []string
+	for g := 0; g < 40; g++ {
+		f.chunkCounts[docID(g)] = 40
+		if g < fit {
+			fitting = append(fitting, docID(g))
+		}
+		for k := 0; k < 3; k++ {
+			f.rows["M"] = append(f.rows["M"], secHit(docID(g), secID(g*3+k)))
+		}
+	}
+	f.screen = fitsOf(fitting...)
+	// The passage window counts no more documents than are kept, so a cut
+	// section is the only thing that can make coverage partial.
+	f.facets = map[string]any{"complete": false, "documents_counted": 1}
+	return f
+}
+
+// TestKbSurvey_SectionCapBoundsScreenedAndLinkedSectionsApart: one cap of 60
+// over every section, applied before screening, cut 21 to 54 sections on 7 of
+// 12 measured questions, mostly sections of guides that then fit. The cap now
+// bounds each pool apart, after the documents are screened: at most 60
+// sections screened (their guide did not fit) and at most 60 linked
+// unscreened (it fits). Screening rounds stay where they were; a cut in either
+// pool is counted and makes coverage partial.
+func TestKbSurvey_SectionCapBoundsScreenedAndLinkedSectionsApart(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fit                    int
+		screened, linked, cut  int
+		cov, unc, sectionsPart string
+	}{
+		"60 linked and 60 screened, none cut": {20, 60, 60, 0, "COVERAGE: complete", "",
+			"| sections 120 (cut 0, over guide limit 0, document fits 60) |"},
+		"none fit: 60 screened, 60 cut": {0, 60, 0, 60, "COVERAGE: partial",
+			"UNCOVERED: 0 candidates not screened; 0 beyond the cap of 120; 60 sections beyond their cap of 60",
+			"| sections 60 (cut 60, over guide limit 0, document fits 0) |"},
+		"all fit: 60 linked, 60 cut": {40, 0, 60, 60, "COVERAGE: partial",
+			"UNCOVERED: 0 candidates not screened; 0 beyond the cap of 120; 60 sections beyond their cap of 60",
+			"| sections 60 (cut 60, over guide limit 0, document fits 60) |"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := sectionPoolsFake(tc.fit)
+			out := runSurvey(t, f, surveyQuestion)
+			nsec := 0
+			for _, id := range f.screened() {
+				if isSecID(id) {
+					nsec++
+				}
+			}
+			if nsec != tc.screened {
+				t.Errorf("sections screened = %d, want %d", nsec, tc.screened)
+			}
+			var linked []string
+			if w := f.writes(); len(w) == 1 {
+				linked = listIn(spawnPrompt(f.spawns[len(f.spawns)-1]), "\nMatching sections of fitting documents (")
+			}
+			if len(linked) != tc.linked {
+				t.Errorf("sections linked = %d, want %d", len(linked), tc.linked)
+			}
+			// The linked sections kept are the best matches: the first guides'.
+			for i, l := range linked {
+				if want := secID(i) + " in " + docID(i/3); l != want {
+					t.Errorf("linked section %d = %q, want %q", i, l, want)
+					break
+				}
+			}
+			cov, unc, sv := surveyLines(out)
+			if cov != tc.cov || unc != tc.unc {
+				t.Errorf("coverage = %q %q, want %q %q", cov, unc, tc.cov, tc.unc)
+			}
+			if !strings.Contains(sv, tc.sectionsPart) {
+				t.Errorf("survey line = %q, want %q", sv, tc.sectionsPart)
+			}
+		})
 	}
 }
