@@ -6185,6 +6185,11 @@ agents:
       //    documents in documents_summary calls of at most SUMMARY_BATCH ids: a
       //    walker handed 20 to 30 ids and left to build the call sent the list
       //    as one string in most rounds, which the tool refuses.
+      //    It also gets each fitting document's stored type and status, read
+      //    here in one documents_summary call and copied only when each is one
+      //    word (LABEL_SHAPE): a document's one-line brief can name an earlier
+      //    status ("design proposal" for one that shipped), and the stored
+      //    status overrides it.
       //    Its FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines
       //    are stripped.
       //    It is asked to COMPOSE, never to
@@ -6229,7 +6234,9 @@ agents:
       // ID_SHAPE, and read the briefs through their own read-only tool, under
       // their own access rules. Anything else in a search row is never copied: of a hit's summary
       // code reads only whether its level is "branch" and its chunk id, which
-      // must match ID_SHAPE like every other id.
+      // must match ID_SHAPE like every other id. The one exception is a
+      // fitting document's stored type and status, copied into the composing
+      // round only as single LABEL_SHAPE words, never a sentence.
       //
       // UNTRUSTED INPUT. A question given as untrusted input is search text here
       // (code reads it as data), and the walker gets it by reference, still
@@ -6247,6 +6254,10 @@ agents:
       var GUIDE_SECTIONS = 6; // best-matching hit sections of one large guide kept, at most
       var SEC_CAP = 60;      // sections screened, at most; and, apart, sections linked unscreened
       var SUMMARY_BATCH = 12; // document ids per documents_summary call written for a screening round
+      // A stored type or status label: one word. Only such a word is copied
+      // from a summary row into the composing round's prompt; anything else is
+      // left out, so no sentence of stored text can reach it.
+      var LABEL_SHAPE = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
       // A runtime document id: lowercase hex, dashes allowed (the shape kb/ask
       // reads in loom: links). A row whose id does not match is not a
       // candidate, so nothing but id characters reaches the walker's prompt.
@@ -6540,7 +6551,8 @@ agents:
 
       // composeBlock is the composing round's block. c: {docs: the fitting
       // documents, secs: the fitting sections of documents that do not fit,
-      // linked: the matching sections of fitting documents, never screened}.
+      // linked: the matching sections of fitting documents, never screened,
+      // labels: document id -> {type, status} as stored, LABEL_SHAPE words}.
       function composeBlock(c) {
         var all = { docs: c.docs, secs: c.secs.concat(c.linked) };
         var anySec = all.secs.length > 0;
@@ -6551,6 +6563,8 @@ agents:
           (anySec ? "Link a section as [title](loom:chunk/<id>?scope=tenant), a document as [title](loom:doc/<id>?scope=tenant). " : "") +
           (c.linked.length ? "Under a fitting document, link each of its matching sections listed below on a line of its own, " +
             "so the reader can go straight to the part that answers. " : "") +
+          "Describe each document by its stored type and status: a stored status overrides any status wording in a brief " +
+          "or abstract. Status done means it shipped; never call it a proposal. " +
           "The knowledge base is read-only and nothing is to be stored: your reply text is the whole result. " +
           "Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines." +
           " You may read their briefs with these calls, one per line, exactly as given " +
@@ -6562,7 +6576,39 @@ agents:
           for (var i = 0; i < c.linked.length; i++) { ls.push(c.linked[i] + " in " + SEC[c.linked[i]]); }
           t += "\n\nMatching sections of fitting documents (" + ls.length + "), section in document:\n" + ls.join("\n");
         }
+        var lab = [];
+        for (var j = 0; j < c.docs.length; j++) {
+          var l = c.labels[c.docs[j]];
+          if (l && (l.type || l.status)) {
+            lab.push(c.docs[j] + (l.type ? " type " + l.type : "") + (l.status ? " status " + l.status : ""));
+          }
+        }
+        if (lab.length) { t += "\n\nStored type and status of the fitting documents (" + lab.length + "):\n" + lab.join("\n"); }
         return t;
+      }
+
+      // labelsOf reads the stored type and status of each document (its root
+      // chunk's), in one documents_summary call; a word that is not
+      // LABEL_SHAPE is left out. A failed read gives none: the composing
+      // round still reads them in the summary rows.
+      function labelsOf(ids) {
+        var out = newSet();
+        if (!ids.length) { return out; }
+        var rows;
+        try {
+          rows = doc({ op: "documents_summary", document_ids: ids, limit: ids.length }).documents || [];
+        } catch (e) {
+          return out;
+        }
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i] || {};
+          if (typeof r.document_id !== "string" || !ID_SHAPE.test(r.document_id)) { continue; }
+          out[r.document_id] = {
+            type: typeof r.type === "string" && LABEL_SHAPE.test(r.type) ? r.type : "",
+            status: typeof r.status === "string" && LABEL_SHAPE.test(r.status) ? r.status : ""
+          };
+        }
+        return out;
       }
 
       // slices cuts a list into runs of at most n.
@@ -6727,6 +6773,7 @@ agents:
       function composeAnswer(c) {
         var ids = c.docs.concat(c.secs, c.linked), set = newSet();
         for (var i = 0; i < ids.length; i++) { set[ids[i]] = 1; }
+        c.labels = labelsOf(c.docs);
         var res = call(spawnArgs("kb/walker", ANSWER, composeBlock(c), true));
         runs.push(runTag(res));
         var why = cutShort(res);
@@ -7041,7 +7088,11 @@ agents:
            listed section gets its own line, linked as
            [title](loom:chunk/<id>?scope=tenant). A matching section listed
            with its document goes on its own line under that document.
-        3. Add a document that is not listed only if you found it yourself and
+        3. Describe each document by its stored type and status (the "type"
+           and "status" of its summary row, also listed in the prompt). The
+           stored status overrides any status wording in a brief or abstract:
+           status done means it shipped; never call it a proposal.
+        4. Add a document that is not listed only if you found it yourself and
            it fits.
         The knowledge base is read-only and nothing is to be stored: your reply text is the whole result.
         Leave out the FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines.
