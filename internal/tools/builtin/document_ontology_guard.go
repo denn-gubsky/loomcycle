@@ -266,6 +266,8 @@ func ontologyGuardExemption(op string) string {
 		return "writes the annotation table beside a document, never its chunks"
 	case "find_duplicates":
 		return "files its proposals through propose_statement, which passes every gate itself"
+	case "node_stats":
+		return "writes the node_stats table beside the documents (mode compute), never a chunk"
 	}
 	return ""
 }

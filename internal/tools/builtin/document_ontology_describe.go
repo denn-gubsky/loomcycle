@@ -51,6 +51,9 @@ type describedClass struct {
 	// widens to subtypes only when the ontology is confirmed. Every class gets one: a
 	// document's type is not refused for naming a chunk class.
 	Documents *int `json:"documents,omitempty"`
+	// Stats (with_stats only, a document class) is its stored node statistics
+	// (document_node_stats.go).
+	Stats *nodeStatsView `json:"stats,omitempty"`
 }
 
 // describedGrammar is a grammar plus the uses classes in force make of it.
@@ -122,7 +125,7 @@ type describedReview struct {
 
 // describeOntology answers op=describe_ontology for the caller's tenant. The call's
 // `scope` does not apply: the ontology is the tenant's.
-func (d *Document) describeOntology(ctx context.Context, withCounts bool) (tools.Result, error) {
+func (d *Document) describeOntology(ctx context.Context, withCounts, withStats bool) (tools.Result, error) {
 	key, mscope, err := d.ontologyTenantKey(ctx)
 	if err != nil {
 		return docFail("describe_ontology", err), nil
@@ -145,8 +148,13 @@ func (d *Document) describeOntology(ctx context.Context, withCounts bool) (tools
 	out := describeOntologyRead(read)
 	d.describeInstanceSubjects(ctx, key, mscope, acl, read, &out)
 	d.describePolicy(ctx, read, &out)
-	if withCounts {
+	// with_stats implies the counts: a node whose statistics are withheld still shows
+	// the members the caller may read.
+	if withCounts || withStats {
 		d.describeCounts(ctx, key, acl, read, &out)
+	}
+	if withStats {
+		d.describeStats(ctx, key, acl, read, &out)
 	}
 	return jsonResult(out)
 }

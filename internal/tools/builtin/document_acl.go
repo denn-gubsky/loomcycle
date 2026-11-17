@@ -129,6 +129,10 @@ var docACLOps = map[string]docACLRule{
 	// describe_ontology reads the tenant's ontology document whatever the call's
 	// scope: it asks read on that document itself.
 	"describe_ontology": {verb: "read", target: docACLListing},
+	// node_stats reads every document of the tenant scope whatever the call's scope:
+	// it refuses a caller whose rules hide any of them itself, and writes only the
+	// node_stats table, never a document (document_node_stats.go).
+	"node_stats": {verb: "read", target: docACLListing},
 	// effective_policy reports the policy the ontology's concepts set on the document
 	// it names: asked read on that document, as get_document is. It asks read on the
 	// ontology document itself before it shows any concept.

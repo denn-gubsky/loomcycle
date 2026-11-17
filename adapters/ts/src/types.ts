@@ -4402,6 +4402,8 @@ export type DocumentToolInput = {
     | "list_annotations"
     | "delete_annotation"
     | "describe_ontology"
+    // Node statistics of the taxonomy's nodes (RFC GM P2.1).
+    | "node_stats"
     | "effective_policy"
     | "extract_citations"
     | "classify"
@@ -4734,6 +4736,16 @@ export type DocumentToolInput = {
    *  it, each once), `members` on each scheme, `documents` on each class
    *  (with its subclasses in a confirmed ontology). Off by default. */
   with_counts?: boolean;
+  /** describe_ontology: what with_counts gives, plus each concept's and document
+   *  class's stored node statistics as `stats` {members, members_with_vector,
+   *  spread, exemplars, siblings, terms, computed_at, stale} — only when stored and
+   *  the caller may read every member; otherwise `stats` {withheld}. */
+  with_stats?: boolean;
+  /** node_stats: "report" (the default) lists each node's status and writes
+   *  nothing; "compute" recomputes the stale and missing nodes. */
+  mode?: "report" | "compute";
+  /** node_stats: only this scheme's concepts. */
+  scheme?: string;
   /** search: rank the annotations too — "include" fuses them with the passages,
    *  "only" answers from them alone (a question about the corpus as a whole). */
   annotations?: "none" | "include" | "only";

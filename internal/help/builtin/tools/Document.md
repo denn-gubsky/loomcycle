@@ -139,6 +139,7 @@ Every edge is a statement: an id, a status (`proposed`, `asserted`,
 | op | What it does | Required besides `op` |
 |---|---|---|
 | `describe_ontology` | the tenant ontology in force: classes, relation kinds, concept schemes, instances | — |
+| `node_stats` | report or recompute the statistics of the taxonomy's nodes (an operator's or a granted pass) | — |
 | `extract_citations` | find and resolve the citations in a document's or a chunk's text; read-only | `document_id` or `id` |
 | `resolve_anchor` | find a work by its key and a part of it by anchor, as of a date; optionally file a placeholder | `work_key` |
 | `classify` | say what a document is from the ontology; applies a single rule match, proposes the rest | `document_id`, `id` or `path` |
