@@ -113,6 +113,11 @@ type SchemeFocusReport struct {
 	Stale   []string `json:"stale,omitempty"`
 	Written int      `json:"written"`
 	Retired int      `json:"retired"`
+	// Kept counts the @focus pairs already joined by a live focus statement another
+	// method wrote (a person's link, say). That statement is left as it is and stands
+	// for the @focus: never counted as written, and no ontology statement is written
+	// beside it. Reported on every confirm, so it is not a change.
+	Kept int `json:"kept"`
 	// Errors name a @focus that could not be written this time; its concept's existing
 	// statements are kept until it can.
 	Errors []string `json:"errors,omitempty"`
@@ -199,6 +204,22 @@ func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFo
 		}
 		have[pair{asStr(row[1]), asStr(row[2])}] = edge{id: asStr(row[0]), live: asInt64Val(row[3]) == 0}
 	}
+	// A live statement another method wrote for the same pair: link_chunks would only
+	// hand that row back (a statement is unique per from, to and kind), so writing would
+	// report a change that never happens, on every confirm. A rejected one is not
+	// counted here — the write then reports the rejection as an error, which is true.
+	res, err = d.query(ctx, key, `SELECT from_id, to_id FROM chunk_edges
+		WHERE kind = ? AND method <> ? AND expired_at IS NULL AND status <> ?`,
+		focusEdgeKind, edgeMethodOntology, edgeStatusRejected)
+	if err != nil {
+		return rep, err
+	}
+	foreign := map[pair]bool{}
+	for _, row := range res.Rows {
+		if len(row) >= 2 {
+			foreign[pair{asStr(row[0]), asStr(row[1])}] = true
+		}
+	}
 
 	pairs := make([]pair, 0, len(want))
 	for p := range want {
@@ -208,6 +229,10 @@ func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFo
 	for _, p := range pairs {
 		e, exists := have[p]
 		if exists && e.live {
+			continue
+		}
+		if foreign[p] {
+			rep.Kept++
 			continue
 		}
 		rep.Stale = append(rep.Stale, want[p])

@@ -298,6 +298,43 @@ func TestOntologyConfirm_RemovedFocusIsRetired(t *testing.T) {
 	}
 }
 
+// TestOntologyConfirm_ForeignFocusStatementIsKeptNotWritten: when someone else's live
+// focus statement already joins a concept to its @focus target, the confirm reuses it
+// and reports it as kept — on every confirm, never as written — and writes no
+// ontology statement beside it.
+func TestOntologyConfirm_ForeignFocusStatementIsKeptNotWritten(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := installTenantOntology(t, d, base, focusOntologyMD, memrank.OntologyConfirmedStatus)
+	ids := focusIDs(t, d, ctx)
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"link_chunks","scope":"tenant","from_id":%q,"to_id":%q,"kind":"focus"}`,
+		ids.providerConcept, ids.providerClass)); r.IsError {
+		t.Fatalf("a person's focus link: %s", refusalText(r))
+	}
+	for i, label := range []string{"first", "second"} {
+		rep := confirmFocus(t, d, ctx)
+		wantWritten := 1 // the Acme focus, on the first confirm only
+		if i > 0 {
+			wantWritten = 0
+		}
+		if rep.Written != wantWritten || rep.Kept != 1 || len(rep.Errors) != 0 {
+			t.Errorf("%s confirm = %#v, want written %d and the foreign statement kept", label, rep, wantWritten)
+		}
+		for _, s := range rep.Stale {
+			if strings.HasPrefix(s, "components/provider ") {
+				t.Errorf("%s confirm reported the kept statement as a change: %v", label, rep.Stale)
+			}
+		}
+	}
+	for _, e := range ontologyFocusEdges(t, d, ctx) {
+		if e.from == ids.providerConcept {
+			t.Errorf("an ontology statement was written beside the foreign one: %#v", e)
+		}
+	}
+	if dry, _ := d.MirrorSchemeFocus(ctx, true); dry.Written != 0 || dry.Kept != 1 || len(dry.Stale) != 0 {
+		t.Errorf("dry run after confirm = %#v", dry)
+	}
+}
+
 // TestOntologyConfirm_UnadoptedInstanceKeepsItsStatement: a focus whose target cannot
 // be found THIS time (here: the instance lost its class, so it is not adopted) is an
 // error, and the statement already written is kept rather than retired.
