@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"io"
 	"net"
 	"reflect"
 	"strings"
@@ -356,9 +357,13 @@ func attach(t *testing.T, conn *grpc.ClientConn, id string, version uint32, tok 
 	}
 	if err := st.Send(&workerpb.WorkerStatus{Msg: &workerpb.WorkerStatus_Hello{Hello: &workerpb.Hello{
 		WorkerId: id, ProtocolVersion: version, Labels: []string{wire.LabelExtract, wire.LabelPDF}, Slots: 1,
-	}}}); err != nil {
+	}}}); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
+	// A Send that meets a stream the dispatcher already ended returns
+	// io.EOF; the reason (a refused token, another protocol) is the status
+	// Recv returns, as gRPC documents. Reading it there, not from Send,
+	// keeps a fast refusal from looking like a dropped connection.
 	if _, err := st.Recv(); err != nil {
 		return nil, err
 	}
