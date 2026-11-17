@@ -515,3 +515,34 @@ func TestUnplaced_ExcludesOntologyAndVectorless(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+// A concept whose members cancel out has no centroid: it is reported without
+// spread, exemplars or siblings, and the other concepts are still measured.
+func TestGradingMaterial_SkipsAConceptWhoseMembersCancel(t *testing.T) {
+	tax := testTaxonomy(t)
+	docs := map[string]*Doc{
+		"d1": {ID: "d1", DocVec: nodestats.Vector{1, 0}},
+		"d2": {ID: "d2", DocVec: nodestats.Vector{-1, 0}},
+		"d3": {ID: "d3", DocVec: nodestats.Vector{0, 1}},
+	}
+	members := tax.Members(map[string][]string{"d1": {"c12"}, "d2": {"c12"}, "d3": {"c11"}})
+	got, err := GradingMaterial(tax, docs, members)
+	if err != nil {
+		t.Fatalf("GradingMaterial: %v", err)
+	}
+	byID := map[string]NodeMaterial{}
+	for _, nm := range got {
+		byID[nm.ID] = nm
+	}
+	c12 := byID["c12"]
+	if c12.Count != 2 || c12.Spread != nil || c12.Exemplars != nil || c12.Siblings != nil {
+		t.Errorf("cancelling concept: %+v, want count 2 and no spread, exemplars or siblings", c12)
+	}
+	c11 := byID["c11"]
+	if c11.Spread == nil || len(c11.Exemplars) != 1 || c11.Siblings != nil {
+		t.Errorf("sibling concept: %+v, want a spread, one exemplar and no centroid-less sibling", c11)
+	}
+	if byID["t1"].Spread == nil {
+		t.Errorf("parent concept has no spread: %+v", byID["t1"])
+	}
+}
