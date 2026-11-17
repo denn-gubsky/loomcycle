@@ -4405,6 +4405,7 @@ export type DocumentToolInput = {
     // Node statistics of the taxonomy's nodes (RFC GM P2.1).
     | "node_stats"
     | "effective_policy"
+    | "memberships"
     | "extract_citations"
     | "classify"
     | "accept_classification"
@@ -4525,7 +4526,8 @@ export type DocumentToolInput = {
    *  names ONE source (chunk_id; session_id + event_seq; or scope + natural_key)
    *  and the verbatim quote, which the server checks against that source. */
   evidence?: DocumentEdgeEvidence[];
-  /** get_edges (default true) / backlinks (default false) / graph_snapshot
+  /** get_edges / memberships / get_document with_memberships (default true) /
+   *  backlinks (default false) / graph_snapshot
    *  (default false): include relations proposed for review. graph_recall
    *  (default false): also follow them. */
   include_proposed?: boolean;
@@ -4741,6 +4743,10 @@ export type DocumentToolInput = {
    *  spread, exemplars, siblings, terms, computed_at, stale} — only when stored and
    *  the caller may read every member; otherwise `stats` {withheld}. */
   with_stats?: boolean;
+  /** get_document: also return `memberships` — what op=memberships answers for
+   *  the document: its class chain, its concepts per taxonomy with each
+   *  placement, and its folders. Off by default. */
+  with_memberships?: boolean;
   /** node_stats: "report" (the default) lists each node's status and writes
    *  nothing; "compute" recomputes the stale and missing nodes. */
   mode?: "report" | "compute";
