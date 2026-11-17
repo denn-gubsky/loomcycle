@@ -90,6 +90,27 @@ func TestPDFDeclaresEncryption_FirstPageTrailer(t *testing.T) {
 	}
 }
 
+// Stream data and literal strings may hold << and >> (an encrypted stream's
+// ciphertext does, at random); they must not unbalance the dictionary scan
+// and hide the trailer after them. Each case failed before streams and
+// strings were skipped.
+func TestPDFDeclaresEncryption_StrayBracketsDoNotHideTheTrailer(t *testing.T) {
+	trailer := "trailer\n<< /Size 4 /Root 1 0 R /Encrypt 3 0 R >>\nstartxref\n0\n%%EOF\n"
+	cases := map[string]string{
+		"an unclosed << in a stream":                      "%PDF-1.7\n2 0 obj\n<< /Length 6 >>\nstream\nab<<cd\nendstream\nendobj\n" + trailer,
+		"a stray >> in a stream":                          "%PDF-1.7\n2 0 obj\n<< /Length 6 >>\nstream\n<<x>>>>\nendstream\nendobj\n" + trailer,
+		"an unclosed << in a string":                      "%PDF-1.7\n2 0 obj\n<< /Title (a << b) >>\nendobj\n" + trailer,
+		"the window starts in a stream, after a stray <<": "\x9c<<\x01\nendstream\nendobj\n" + trailer,
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			if !pdfDeclaresEncryption(bytes.NewReader([]byte(data)), int64(len(data))) {
+				t.Fatal("the encrypting trailer is not caught")
+			}
+		})
+	}
+}
+
 // Only a trailer or a cross-reference stream's dictionary that names both
 // /Encrypt and /Root counts. A plain PDF that carries lookalikes elsewhere
 // still extracts.

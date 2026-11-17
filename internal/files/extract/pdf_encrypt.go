@@ -55,11 +55,23 @@ func pdfWindowDeclaresEncryption(r io.ReaderAt, off, n int64) bool {
 		return false
 	}
 	// Each dictionary's span, innermost ones first, from a scan of << and
-	// >>. A hex string is <...> and never holds <<, so the pairs balance on
-	// well-formed input; a dictionary cut by the window's edge is skipped.
+	// >>. A hex string is <...> and never holds <<, but a stream's bytes and
+	// a literal string's text can hold either pair (an encrypted stream's
+	// ciphertext does, at random), so both are skipped, and so is the data
+	// of a stream the window begins inside. A dictionary cut by the window's
+	// edge is skipped too.
 	var open []int
-	for i := 0; i+1 < len(buf); i++ {
+	for i := pdfScanStart(buf); i+1 < len(buf); i++ {
 		switch {
+		case pdfStreamStarts(buf, i):
+			end := bytes.Index(buf[i:], []byte("endstream"))
+			if end < 0 {
+				return false
+			}
+			open = nil
+			i += end + len("endstream") - 1
+		case buf[i] == '(':
+			i = pdfSkipLiteralString(buf, i)
 		case buf[i] == '<' && buf[i+1] == '<':
 			open = append(open, i)
 			i++
@@ -79,6 +91,64 @@ func pdfWindowDeclaresEncryption(r io.ReaderAt, off, n int64) bool {
 		}
 	}
 	return false
+}
+
+// pdfScanStart returns where the dictionary scan of a window begins: past the
+// first endstream when no stream starts before it, because then the window
+// began inside a stream and everything up to there is its data.
+func pdfScanStart(buf []byte) int {
+	end := bytes.Index(buf, []byte("endstream"))
+	if end < 0 {
+		return 0
+	}
+	for i := 0; i < end; {
+		j := bytes.Index(buf[i:end], []byte("stream"))
+		if j < 0 {
+			break
+		}
+		if pdfStreamStarts(buf, i+j) {
+			return 0
+		}
+		i += j + 1
+	}
+	return end + len("endstream")
+}
+
+// pdfStreamStarts reports whether the stream keyword starts at i: right after
+// a dictionary's >> (whitespace between) and followed by an end of line, so
+// the word inside a string or a name does not count.
+func pdfStreamStarts(buf []byte, i int) bool {
+	rest := buf[i:]
+	if !bytes.HasPrefix(rest, []byte("stream")) {
+		return false
+	}
+	rest = rest[len("stream"):]
+	if !bytes.HasPrefix(rest, []byte("\n")) && !bytes.HasPrefix(rest, []byte("\r\n")) {
+		return false
+	}
+	before := bytes.TrimRight(buf[:i], "\x00\t\n\f\r ")
+	return bytes.HasSuffix(before, []byte(">>"))
+}
+
+// pdfSkipLiteralString returns the index of the ) that closes the literal
+// string opening at i, honouring nested parentheses and backslash escapes, or
+// the last index when the window ends inside it.
+func pdfSkipLiteralString(buf []byte, i int) int {
+	depth := 0
+	for ; i < len(buf); i++ {
+		switch buf[i] {
+		case '\\':
+			i++
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return len(buf) - 1
 }
 
 // pdfIsEncryptingTrailer reports whether dict, preceded by before, is a
