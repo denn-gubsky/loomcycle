@@ -584,10 +584,14 @@ carries its relations to other documents, by kind and by what each reaches:
 the title of another document, or the subject or topic itself for a link into
 the tenant ontology.
 
-**Prompt version 2.** Raising the prompt version makes every annotation stale
-once: the next scheduled pass rewrites them all (about one model call per
-annotated part). Estimate it with `write: "report"` first. A tenant that forked
-`kb/annotator` or `kb/annotate` keeps the old code and prompt until it
+**Prompt version 2, per level.** The annotator keeps one prompt version per
+level (`branch`, `document`, `path`), all 2 today. Raising one level's version
+makes that level's annotations stale once and leaves the other levels current:
+the next pass rewrites them (about one model call per annotated part). A raised
+`document` version is found by every mode, a raised `path` version by `path`
+and `sweep`, and a raised `branch` version only by a `document` pass: `drain`
+and `sweep` pick a document by its document annotation. Estimate it with `write: "report"` first. A tenant that
+forked `kb/annotator` or `kb/annotate` keeps the old code and prompt until it
 re-forks them from this bundle.
 
 Then the **folders** of the documents it looked at, from the deepest up to `/`.
@@ -632,7 +636,7 @@ leaves its folders to their hashes). Operational
 documents (`SourceStub`, `SyncReport`, `Annotation`) and the `/facts` and
 `/memory` trees are skipped.
 
-**Report.** `{status, mode, write, prompt_version, documents, document_ids,
+**Report.** `{status, mode, write, prompt_versions: {branch, document, path}, documents, document_ids,
 folders, stale: {branch, document, path}, calls: {made, estimated_chars}, skipped: {current,
 uncovered_leaf, manual, operational, unreadable}, queue? | sweep?}`, plus
 `would_call` / `would_write` in report mode, or `writes`, `parse_errors`,
