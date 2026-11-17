@@ -24,6 +24,10 @@ func Write(ctx context.Context, w io.Writer, d *Doc, format string, opts Options
 		return writeHTML(ctx, w, d, opts)
 	case FormatDOCX:
 		return writeDOCX(ctx, w, d, opts)
+	case FormatODT:
+		return writeODT(ctx, w, d, opts)
+	case FormatEPUB:
+		return writeEPUB(ctx, w, d, opts)
 	case FormatPDF:
 		// A PDF is typeset by a helper program from WriteTypst's source;
 		// this package runs none (internal/convert does).

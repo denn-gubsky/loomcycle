@@ -1,5 +1,6 @@
 // Package render turns a chunked Document back into a file (RFC GR): Markdown,
-// HTML, DOCX, and PDF through Typst source a helper program typesets.
+// HTML, DOCX, ODT, EPUB, and PDF through Typst source a helper program
+// typesets.
 //
 // The work is in two halves. The core reads the Document from the store and
 // builds a Doc — a format-neutral tree with a stable anchor per chunk, the
@@ -34,6 +35,10 @@ func MediaType(format string) string {
 		return docxMediaType
 	case FormatPDF:
 		return "application/pdf"
+	case FormatODT:
+		return odtMediaType
+	case FormatEPUB:
+		return epubMediaType
 	}
 	return ""
 }

@@ -421,9 +421,40 @@ func ExternalOnly(dest string) (string, string, bool) {
 	d := strings.TrimSpace(dest)
 	l := strings.ToLower(d)
 	if strings.HasPrefix(l, "http://") || strings.HasPrefix(l, "https://") || strings.HasPrefix(l, "mailto:") {
-		return d, "", true
+		return urlSafe(d), "", true
 	}
 	return "", "", false
+}
+
+// urlSafe percent-encodes the ASCII characters a URL may not hold as they
+// are (a quote, a space, angle brackets, backslash, braces, a control
+// character): escaped in an attribute they are well-formed XML but not a
+// URL, which a reader or a validator (epubcheck) refuses. Other characters,
+// and %-escapes already there, are left as they are.
+func urlSafe(u string) string {
+	const unsafe = " \"<>\\^`{|}"
+	if !strings.ContainsAny(u, unsafe) && !hasControl(u) {
+		return u
+	}
+	var b strings.Builder
+	for i := 0; i < len(u); i++ {
+		c := u[i]
+		if c < 0x20 || c == 0x7f || strings.IndexByte(unsafe, c) >= 0 {
+			fmt.Fprintf(&b, "%%%02X", c)
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func hasControl(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // unescape is what goldmark's HTML writer does to text: backslash escapes

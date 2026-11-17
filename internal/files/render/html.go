@@ -101,16 +101,37 @@ var langRe = regexp.MustCompile(`^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$`)
 type htmlWriter struct {
 	w *capWriter
 	d *Doc
+	// book, when set, writes XHTML for an EPUB page: void elements closed,
+	// text escaped as XML 1.0 requires, pictures as files in the container
+	// and links to a part of the document by the page that holds it.
+	book *epubPages
 }
 
 func (h *htmlWriter) s(s string) { h.w.WriteString(s) }
 
 func esc(s string) string { return html.EscapeString(s) }
 
+// esc escapes text for the page being written. XHTML is XML, which has no
+// place for most control characters, so they are replaced there.
+func (h *htmlWriter) esc(s string) string {
+	if h.book != nil {
+		return xmlText(s)
+	}
+	return esc(s)
+}
+
+// void closes a void element: "<br>" in HTML, "<br/>" in XHTML.
+func (h *htmlWriter) void() string {
+	if h.book != nil {
+		return "/>"
+	}
+	return ">"
+}
+
 func (h *htmlWriter) toc(ss []*Section) {
 	h.s("<ul>\n")
 	for _, s := range ss {
-		h.s(`<li><a href="#` + esc(s.Anchor) + `">` + esc(oneLine(s.Title)) + "</a>")
+		h.s(`<li><a href="` + h.esc(h.anchorHref(s.Anchor)) + `">` + h.esc(oneLine(s.Title)) + "</a>")
 		if len(s.Children) > 0 {
 			h.s("\n")
 			h.toc(s.Children)
@@ -122,7 +143,7 @@ func (h *htmlWriter) toc(ss []*Section) {
 
 func (h *htmlWriter) section(s *Section) {
 	lvl := strconv.Itoa(clampLevel(s.Level))
-	h.s(`<section id="` + esc(s.Anchor) + `">` + "\n<h" + lvl + ">" + esc(oneLine(s.Title)) + "</h" + lvl + ">\n")
+	h.s(`<section id="` + h.esc(s.Anchor) + `">` + "\n<h" + lvl + ">" + h.esc(oneLine(s.Title)) + "</h" + lvl + ">\n")
 	h.blocks(s.Blocks, 0)
 	for _, c := range s.Children {
 		h.section(c)
@@ -151,15 +172,15 @@ func (h *htmlWriter) block(n Node, depth int) {
 		h.inlines(n.Children, 0)
 		h.s("</h" + lvl + ">\n")
 	case KindRule:
-		h.s("<hr>\n")
+		h.s("<hr" + h.void() + "\n")
 	case KindCode:
 		h.s("<pre><code")
 		if l := oneLine(n.Lang); l != "" {
-			h.s(` class="language-` + esc(strings.ReplaceAll(l, " ", "-")) + `"`)
+			h.s(` class="language-` + h.esc(strings.ReplaceAll(l, " ", "-")) + `"`)
 		}
-		h.s(">" + esc(n.Text) + "</code></pre>\n")
+		h.s(">" + h.esc(n.Text) + "</code></pre>\n")
 	case KindDiagram:
-		h.s(`<figure class="diagram"><pre><code>` + esc(n.Text) + "</code></pre><figcaption>" + esc(oneLine(n.Lang)) + " diagram</figcaption></figure>\n")
+		h.s(`<figure class="diagram"><pre><code>` + h.esc(n.Text) + "</code></pre><figcaption>" + h.esc(oneLine(n.Lang)) + " diagram</figcaption></figure>\n")
 	case KindImage:
 		h.s("<p>")
 		h.image(n)
@@ -233,23 +254,23 @@ func (h *htmlWriter) inlines(ns []Node, depth int) {
 		}
 		switch n.Kind {
 		case KindText:
-			h.s(esc(n.Text))
+			h.s(h.esc(n.Text))
 		case KindBreak:
-			h.s("<br>\n")
+			h.s("<br" + h.void() + "\n")
 		case KindEmph, KindStrong, KindStrike:
 			tag := map[string]string{KindEmph: "em", KindStrong: "strong", KindStrike: "del"}[n.Kind]
 			h.s("<" + tag + ">")
 			h.inlines(n.Children, depth+1)
 			h.s("</" + tag + ">")
 		case KindCodeSpan:
-			h.s("<code>" + esc(n.Text) + "</code>")
+			h.s("<code>" + h.esc(n.Text) + "</code>")
 		case KindLink:
-			href, ok := safeHref(n)
+			href, ok := h.safeHref(n)
 			if !ok {
 				h.inlines(n.Children, depth+1)
 				continue
 			}
-			h.s(`<a href="` + esc(href) + `"`)
+			h.s(`<a href="` + h.esc(href) + `"`)
 			if n.Anchor == "" {
 				h.s(` rel="noopener noreferrer"`)
 			}
@@ -263,10 +284,14 @@ func (h *htmlWriter) inlines(ns []Node, depth int) {
 }
 
 // safeHref is a link's target, checked again here: the Doc may come from a
-// bundle, and only an anchor or an http, https or mailto URL is written.
-func safeHref(n Node) (string, bool) {
+// bundle, and only an anchor or an http, https or mailto URL is written. In
+// an EPUB an anchor no page holds is no link.
+func (h *htmlWriter) safeHref(n Node) (string, bool) {
 	if n.Anchor != "" {
-		return "#" + n.Anchor, true
+		if h.book != nil && h.book.pageOf[n.Anchor] == "" {
+			return "", false
+		}
+		return h.anchorHref(n.Anchor), true
 	}
 	if href, _, ok := ExternalOnly(n.Href); ok {
 		return href, true
@@ -274,12 +299,25 @@ func safeHref(n Node) (string, bool) {
 	return "", false
 }
 
+// anchorHref is where a link to an anchor of the document points: the
+// anchor on this page in HTML, the page that holds it in an EPUB.
+func (h *htmlWriter) anchorHref(anchor string) string {
+	if h.book != nil {
+		return h.book.pageOf[anchor] + "#" + anchor
+	}
+	return "#" + anchor
+}
+
 // image writes a picture as a data URL, base64-encoding it into the capped
-// writer as it goes.
+// writer as it goes. In an EPUB it is a file in the container.
 func (h *htmlWriter) image(n Node) {
 	img, ok := h.d.image(n.Asset)
 	if !ok {
-		h.s(esc("[" + n.Alt + "]"))
+		h.s(h.esc("[" + n.Alt + "]"))
+		return
+	}
+	if h.book != nil {
+		h.s(`<img src="../` + epubImageDir + img.Name + `" alt="` + h.esc(oneLine(n.Alt)) + `"/>`)
 		return
 	}
 	h.s(`<img src="data:` + img.MediaType + `;base64,`)
