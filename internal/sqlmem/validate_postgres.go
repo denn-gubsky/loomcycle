@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 )
 
@@ -593,11 +594,12 @@ func wrapValueLimit(statement string, limit int) string {
 
 // cappedErr is valueLimitErr for an agent statement that ran on a postgres
 // connection under the protocol cap (agentConn). A message over the cap can
-// also surface later as database/sql's ErrBadConn, once pgconn has closed the
-// connection (a notice too large, mid-write or mid-transaction); that is the
-// same refusal, said so the model can act on it.
+// also surface later as database/sql's ErrBadConn, or since pgx v5.13 as
+// pgconn.ErrConnClosed, once pgconn has closed the connection (a notice too
+// large, mid-write or mid-transaction); that is the same refusal, said so the
+// model can act on it.
 func cappedErr(err error, limit int) error {
-	if err != nil && errors.Is(err, driver.ErrBadConn) {
+	if err != nil && (errors.Is(err, driver.ErrBadConn) || errors.Is(err, pgconn.ErrConnClosed)) {
 		return refuse("a message from the database was over the %d-byte limit on one SQL Memory value (a row or a notice), or the connection was lost; the statement did not complete", limit)
 	}
 	return valueLimitErr(err, limit)
