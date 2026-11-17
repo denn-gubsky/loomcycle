@@ -8,6 +8,38 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.157.0
+
+*A model no longer reads a document's colour scheme: `documents_summary`, `get_document` and `graph_snapshot` leave it out of in-run and MCP calls, which was most of what a summary call returned. `kb/survey` writes the calls of its answer-writing round itself, keeps the best-matching sections under a cap of 60, and claims `complete` only when nothing was cut. MCP `file op=render` and `keep` now work without a run, as v1.156.0 meant them to. The Health page reports what the boot did with the teams in the yaml (RFC GS), and the PDF encryption pre-check no longer misreads stream data.*
+
+The v1.157 line: #2675 to #2702.
+- `@loomcycle/client` 1.157.0: the optional `include_color_scheme` on `DocumentToolInput`. The Python adapter stays at 1.154.0; no change there.
+- No numbered migration, no new Go dependency (existing ones bumped: aws-sdk-go-v2, pgx 5.13.0, golang.org/x/crypto, image, text, term).
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **The Document tool leaves `color_scheme` out of what a model reads (#2676).** In a run and over the MCP `document` tool, `get_document`, `documents_summary` and the `documents` section of `graph_snapshot` no longer carry each document's display palette (about 1.3k tokens per document); `color_enabled`, `type` and `status` stay. `POST /v1/_document` and the gRPC `Document` RPC still return it, so the Web UI, the 3D universe and `@loomcycle/explorer` are unchanged. A new input `include_color_scheme` (boolean) overrides the surface's default either way. An agent prompt that read the palette from these ops must now pass `include_color_scheme: true`.
+- **`kb/survey` changed again (#2700).** It no longer searches inside large guides (the threshold of 15 live chunks for taking a guide's sections stays), its section cap is 60 rather than 24, and its SURVEY trailer drops the `guide searches` field. A deployment that loads the `knowledge-base` bundle gets the new `kb/survey` and `kb/walker`; a tenant that forked either keeps its own version until it forks again.
+- **New admin route `GET /v1/_config/teams` (#2702).** For each team in `teams:` it reports `written`, `conflict` or `not_written`, with the active def id and a detail. Access control maps it to "read runtime config".
+
+### Knowledge base (#2700)
+
+- The answer-writing round gets its `documents_summary` calls written by code, at most 12 ids each, as the sorting rounds already did; `kb/walker`'s prompt says again that `document_ids` is a list of strings. On dev the walker had sent the list as one string in 20 of 36 such rounds.
+- Past the cap of 60, sections are kept by the best place any of their hits reached in the gather searches.
+- `COVERAGE: complete` also requires that no section was cut and that the section count succeeded; otherwise the uncovered line says how many sections went past the cap, or that they were not counted.
+
+### Teams (RFC GS P4–P5: #2675, #2699, #2702)
+
+- The `team-examples` bundle ships its `sdlc` and `marketing` teams under `teams:`, so they are written into the shared tier at boot; its skill now drives and forks them instead of creating them.
+- `docs/CONFIGURATION.md` §9o, "Teams in the configuration (`teams:`)", covers the entry, what the boot does and the `source: "config"` marker.
+- The Health page has a "Configured teams" table with a status pill and the reason. The refusal reason is known only on the replica that ran the boot's reconcile; another replica's detail says to look in that replica's log. On an older server the panel shows liveness alone.
+
+### Fixes
+
+- **MCP `file op=render` and `keep` without a run (#2701).** Both were refused with `from and to are not available outside a run`: the File tool's reference gate refused every volume on the off-run plane, even after the transport had checked the volume. A transport that has authorized a volume now marks it, and only such a volume passes; memory and document references are still refused.
+- **The PDF encryption pre-check skips stream data and strings (#2698).** It paired `<<` and `>>` across the whole window, so pairs inside ciphertext could hide the trailer and miss an encrypted file (which pdfcpu then refused only after a full decrypt).
+
 ## What's in v1.156.0
 
 *People can now download a Document as a file: the document toolbar's download menu, `GET /v1/_document/export/{id}`, the TS client's `exportDocument` and MCP `file op=render` without a run (RFC GR P3). Teams declared in the yaml are written into the shared tier at boot and can only be changed there (RFC GS P2–P3). An explicit token pepper is now kept for lookups only, so it can be retired. `kb/survey` finds sections inside large guides, and `kb/ask` sends a request for one known item to search.*
