@@ -327,6 +327,13 @@ func (d *Document) measureTargets(ctx context.Context, key sqlmem.ScopeKey, read
 			return out, nil
 		}
 	}
+	// In force, but not in the scheme named: refused, not read as a retired node
+	// (whose rows of every period length would be mixed).
+	if in.Scheme != "" && nodeInForce(read, in.Node) {
+		r := errValidation(fmt.Sprintf("%s: node %q is not in scheme %q", measureOp, in.Node, in.Scheme),
+			"Name the node's own scheme, or omit scheme (a document class has no scheme).")
+		return nil, &r
+	}
 	// No node in force by that name: a retired node's rows stay readable by its id.
 	if in.Compare == nil {
 		stored, err := d.loadMeasurePoints(ctx, key, 0, []string{in.Measure}, []string{in.Node})
@@ -622,4 +629,24 @@ func seriesView(node, schemeID, period string, stored map[pointKey]storedPoint, 
 	}
 	v.Trend = t
 	return v
+}
+
+// nodeInForce: node names a concept of any scheme (chunk id or tag) or a document
+// class in force.
+func nodeInForce(read OntologyRead, node string) bool {
+	if read.Confirmed {
+		for _, s := range read.Schemes {
+			for _, c := range s.Concepts {
+				if c.ChunkID != "" && c.Tag != "" && (c.ChunkID == node || c.Tag == node) {
+					return true
+				}
+			}
+		}
+	}
+	for _, c := range describeOntologyRead(read).Classes {
+		if c.Kind == "document" && c.Name == node {
+			return true
+		}
+	}
+	return false
 }

@@ -635,3 +635,18 @@ func TestMeasure_ShiftLeftEmptyForLackOfVectorsHealsWhenTheyArrive(t *testing.T)
 		t.Errorf("July shift rows = %+v; want a second row of 1 over 3 members", july)
 	}
 }
+
+// TestMeasure_NodeOfAnotherSchemeIsRefused — a node in force in one scheme, asked
+// with another scheme, is refused as not in that scheme, not answered as retired.
+func TestMeasure_NodeOfAnotherSchemeIsRefused(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newMeasureCorpus(t, d, base, conceptOntologyMD)
+	k.doc(t, day(2026, 6, 3), k.rep)
+	k.compute(t)
+	for _, node := range []string{k.rep, "topics/reporting", "Document"} {
+		_, res := docExec(t, d, k.f.reader, fmt.Sprintf(`{"op":"measure","measure":"count","scheme":"rank","node":%q}`, node))
+		if !res.IsError || !strings.Contains(res.Text, `not in scheme "rank"`) {
+			t.Errorf("node %s with scheme rank: %s; want refused as not in that scheme", node, res.Text)
+		}
+	}
+}
