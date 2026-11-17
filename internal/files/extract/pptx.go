@@ -135,6 +135,13 @@ func (s *slideState) shapes(tree *node) error {
 				s.title = strings.Join(paras, " ")
 				continue
 			}
+			// The slide's number and date are the deck's furniture: the
+			// heading already numbers the slide, and a field's cached text
+			// is "‹#›" until PowerPoint shows it. A footer is a person's
+			// text and stays.
+			if ph != nil && (typ == "sldNum" || typ == "dt") {
+				continue
+			}
 			for _, p := range paras {
 				if p := paragraph(p); p != "" {
 					s.blocks = append(s.blocks, p)

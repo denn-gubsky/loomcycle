@@ -249,3 +249,33 @@ func TestExtract_CancelledContextStops(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// A slide's number and date placeholders are the deck's furniture, not its
+// text: the number is already the heading, and PowerPoint caches a field's
+// text as "‹#›" until the slide is shown. A footer is written by a person and
+// stays.
+func TestExtractPPTX_SkipsSlideNumberAndDatePlaceholders(t *testing.T) {
+	pres := `<p:presentation ` + nsP + ` ` + nsR + `><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>`
+	slide := `<p:sld ` + nsP + ` ` + nsA + ` ` + nsR + `><p:cSld><p:spTree>` +
+		pSp("title", "Services") + pSp("body", "Basic testing") +
+		pSp("sldNum", "‹#›") + pSp("dt", "11/17/2026") + pSp("ftr", "Company confidential") +
+		`</p:spTree></p:cSld></p:sld>`
+	data := zipOf(t,
+		xmlEntry("_rels/.rels", relsXML([3]string{"rId1", "officeDocument", "ppt/presentation.xml"})),
+		xmlEntry("ppt/presentation.xml", pres),
+		xmlEntry("ppt/_rels/presentation.xml.rels", relsXML([3]string{"rId2", "slide", "slides/slide1.xml"})),
+		xmlEntry("ppt/slides/slide1.xml", slide),
+	)
+	s, _ := run(t, PPTX{}, data, Options{Name: "deck.pptx"})
+	md := s.md.String()
+	for _, gone := range []string{"‹#›", "11/17/2026"} {
+		if strings.Contains(md, gone) {
+			t.Errorf("placeholder text %q kept:\n%s", gone, md)
+		}
+	}
+	for _, want := range []string{"Basic testing", "Company confidential"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("missing %q in:\n%s", want, md)
+		}
+	}
+}
