@@ -33,7 +33,9 @@ the definition baseline is skipped and the report says so.
 1. Leave-one-out agreement of the declared placement with the nearest centroid,
    at the top level (L1) and under each parent (L2), top-1 and top-3, in three
    arms (full, sections as units, 1/k weights), against a labels-permuted and a
-   definition-only baseline, and per statement provenance.
+   definition-only baseline, and per statement provenance. For arm a, the
+   top-1 hit rate by margin (nearest minus second-nearest centroid cosine), in
+   five quantile bins and at fixed margin thresholds with their coverage.
 4. Grading material per node: count, spread, exemplars, nearest siblings,
    distinctive terms.
 5. Split candidates (nodes of 20 or more) over seeds, and the unplaced
