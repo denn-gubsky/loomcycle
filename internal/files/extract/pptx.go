@@ -179,7 +179,11 @@ func (s *slideState) shapes(tree *node) error {
 							break
 						}
 						if tc.name == "tc" {
-							row = append(row, cell(strings.Join(shapeParagraphs(tc.child("txBody")), " ")))
+							var paras []string
+							for _, p := range shapeParagraphs(tc.child("txBody")) {
+								paras = append(paras, cell(p))
+							}
+							row = append(row, cellParagraphs(paras))
 						}
 					}
 					if !rows.add(row) {

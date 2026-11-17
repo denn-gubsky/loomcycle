@@ -81,12 +81,25 @@ func escapeLiveTags(l string) string {
 	}
 	var b strings.Builder
 	for i := 0; i < len(l); i++ {
-		if l[i] == '<' && i+1 < len(l) && tagStart(l[i+1]) && unescaped(l, i) {
+		if l[i] == '<' && i+1 < len(l) && tagStart(l[i+1]) && unescaped(l, i) && !bareBreakAt(l, i) {
 			b.WriteByte('\\')
 		}
 		b.WriteByte(l[i])
 	}
 	return b.String()
+}
+
+// bareBreakAt reports a bare <br> (<br/>, <br />, any case) at l[i]: the break
+// an extraction writes between a table cell's paragraphs. It carries no
+// attribute, so it cannot act as anything but a line break.
+func bareBreakAt(l string, i int) bool {
+	rest := strings.ToLower(l[i:min(len(l), i+len("<br />"))])
+	for _, tag := range []string{"<br>", "<br/>", "<br />"} {
+		if strings.HasPrefix(rest, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 // unescaped reports whether the byte at i follows an even number of
