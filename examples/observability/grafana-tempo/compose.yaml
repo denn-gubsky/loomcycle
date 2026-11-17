@@ -66,7 +66,7 @@ services:
   # synthesizes Prometheus histograms (calls_total, duration_seconds)
   # by promoting span attributes to labels. See otel-collector/config.yaml.
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.164.0-386@sha256:40392928d2b988b77e7525dbac33e5e3d9bedb40b9ff8c1f9119d92ca3a8a1c3
+    image: otel/opentelemetry-collector-contrib:0.165.0-386@sha256:b30650b1e3ae4a43da2c3d286e1b36036cb7b6c237f5feeee16e68b39c25193a
     command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
       - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
@@ -98,7 +98,7 @@ services:
       - "9090:9090"
 
   loki:
-    image: grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28
+    image: grafana/loki:3.7.10@sha256:b43c257ccfc925d4a50b8717cac61a3b51df8c48d01847936057e5c4075a24a7
     command: ["-config.file=/etc/loki/loki-config.yaml"]
     volumes:
       - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
@@ -109,7 +109,7 @@ services:
   # ---- UI ---------------------------------------------------------
 
   grafana:
-    image: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
+    image: grafana/grafana:13.3.1@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf
     environment:
       # Demo defaults — change for production.
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
