@@ -73,6 +73,20 @@ type OntologyConcept struct {
 	Issues  []string `json:"issues,omitempty"`
 }
 
+// SchemeMaxDepth bounds how many levels of concepts a scheme may hold below itself
+// (RFC GM). Deeper than OntologyMaxDepth on purpose: a concept carries no fields and
+// inherits nothing, and real classification schemes (subject headings, file plans) run
+// deeper than a class hierarchy should. One definition, shared by the reader that
+// flattens past it, the prompt renderer and the classify walk down a scheme.
+const SchemeMaxDepth = 8
+
+// SchemeDepthIssue is the advisory on a scheme whose concepts nest deeper than
+// SchemeMaxDepth. Nothing is discarded: the deeper concepts are kept at the cap.
+func SchemeDepthIssue() string {
+	n := strconv.Itoa(SchemeMaxDepth)
+	return "concepts nest deeper than " + n + " levels below the scheme; the deeper ones were flattened onto level " + n
+}
+
 // Scheme origins a scheme header's @origin may name (RFC GM).
 const (
 	SchemeOriginAdopted   = "adopted"
@@ -365,8 +379,8 @@ func RenderSchemes(schemes []OntologyScheme) string {
 		b.WriteString("\n")
 		for _, c := range s.Concepts {
 			depth := len(c.Path) - 1
-			if depth > OntologyMaxDepth {
-				depth = OntologyMaxDepth
+			if depth > SchemeMaxDepth {
+				depth = SchemeMaxDepth
 			}
 			b.WriteString(strings.Repeat("  ", depth) + "- " + c.Name)
 			if c.Notation != "" {

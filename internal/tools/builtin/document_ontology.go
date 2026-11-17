@@ -367,6 +367,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	// children concepts, a child narrower than its parent. The same fail-open rules as
 	// the other sections; a concept's depth counts from its scheme.
 	var schemes []memrank.OntologyScheme
+	schemeCapped := false // set by walkConcepts, read and reset per scheme
 	var walkConcepts func(chunks []ontologyChunk, s *memrank.OntologyScheme, path []string, depth int)
 	walkConcepts = func(chunks []ontologyChunk, s *memrank.OntologyScheme, path []string, depth int) {
 		for _, c := range chunks {
@@ -394,11 +395,15 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			concept := memrank.ParseConceptBody(s.Name, name, full, bodyOf(c.id))
 			concept.ChunkID = c.id
 			s.Concepts = append(s.Concepts, concept)
+			// Schemes have their own, deeper cap (RFC GM): a concept tree is a
+			// vocabulary, not a class hierarchy whose fields go into every prompt. Past
+			// it the flattening is reported on the scheme, not as DepthCapped, whose
+			// note speaks about class types.
 			childPath := full
-			if depth >= memrank.OntologyMaxDepth {
+			if depth >= memrank.SchemeMaxDepth {
 				childPath = path
 				if len(kids[c.id]) > 0 {
-					depthCapped = true
+					schemeCapped = true
 				}
 			}
 			walkConcepts(kids[c.id], s, childPath, depth+1)
@@ -421,7 +426,11 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 			s := memrank.ParseSchemeBody(name, bodyOf(c.id))
 			s.ChunkID = c.id
+			schemeCapped = false
 			walkConcepts(kids[c.id], &s, nil, 1)
+			if schemeCapped {
+				s.Issues = append(s.Issues, memrank.SchemeDepthIssue())
+			}
 			if s.Ordered {
 				for i := range s.Concepts {
 					s.Concepts[i].Rank = i + 1
