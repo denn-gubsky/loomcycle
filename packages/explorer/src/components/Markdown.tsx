@@ -2,6 +2,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 import MermaidDiagram from "./Mermaid";
+import remarkBareBreak from "../lib/remarkBareBreak";
 
 // Markdown renders a chunk body as GitHub-flavored Markdown (RFC BN): headings,
 // paragraphs, inline styles, links, fenced code, blockquotes, lists, TABLES, and
@@ -9,12 +10,13 @@ import MermaidDiagram from "./Mermaid";
 // safe by default (it does not emit raw HTML — no rehype-raw — and its default
 // urlTransform strips javascript:/other dangerous hrefs). ```mermaid fences
 // render through the shared MermaidDiagram (lazy, securityLevel:"strict",
-// graceful fallback to a code block).
+// graceful fallback to a code block). A bare <br> (a table cell's paragraph
+// break, as an extraction writes it) is a line break (remarkBareBreak).
 
 export default function Markdown({ source }: { source: string }) {
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBareBreak]} components={MD_COMPONENTS}>
         {source}
       </ReactMarkdown>
     </div>

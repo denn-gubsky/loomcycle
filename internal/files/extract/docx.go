@@ -544,7 +544,7 @@ func (d *docx) table(t *node) (string, error) {
 			if len(row) > maxSheetColumns {
 				break
 			}
-			var parts []string
+			var paras []string
 			// A nested table's paragraphs are the cell's too; a paragraph
 			// inside another is read with it (runs descends into it).
 			for _, p := range tc.outermost("p") {
@@ -552,6 +552,7 @@ func (d *docx) table(t *node) (string, error) {
 				if err := d.runs(p, &segs); err != nil {
 					return "", err
 				}
+				var parts []string
 				var text strings.Builder
 				for _, s := range segs {
 					if s.image != "" {
@@ -562,8 +563,9 @@ func (d *docx) table(t *node) (string, error) {
 					text.WriteString(s.text)
 				}
 				parts = append(parts, cell(text.String()))
+				paras = append(paras, strings.Join(nonEmpty(parts), " "))
 			}
-			row = append(row, strings.Join(nonEmpty(parts), " "))
+			row = append(row, cellParagraphs(paras))
 			// A merged cell spans several grid columns; empty cells keep
 			// the columns after it aligned.
 			if span, _ := strconv.Atoi(tc.path("tcPr", "gridSpan").attr("val")); span > 1 {

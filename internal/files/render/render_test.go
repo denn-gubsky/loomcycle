@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -467,5 +468,44 @@ func TestWriteHTML_ARepeatedPictureStopsAtTheOutputCap(t *testing.T) {
 	}
 	if w.n > MaxOutput {
 		t.Fatalf("%d bytes written past the %d cap", w.n, MaxOutput)
+	}
+}
+
+// A bare <br> is the line break an extraction writes between a table cell's
+// paragraphs (GFM cells are one line), so it is the one raw tag read as
+// markup: a break in every format. Any other raw HTML, a <br> with
+// attributes included, stays text (G5).
+func TestBuilder_BareBrInACellIsALineBreak(t *testing.T) {
+	b := NewBuilder("Services")
+	b.Doc.Blocks = b.Body("| Basic | Other |\n|---|---|\n| No test plan<br>Few runs | x<BR/>y<br />z |\n| a<br class=k>b | <b>bold</b> |\n")
+	d, _ := b.Finish()
+
+	h := string(write(t, d, FormatHTML, Options{}))
+	for _, want := range []string{"No test plan<br>\nFew runs", "x<br>\ny<br>\nz", "a&lt;br class=k&gt;b", "&lt;b&gt;bold&lt;/b&gt;"} {
+		if !strings.Contains(h, want) {
+			t.Errorf("html lacks %q:\n%s", want, h)
+		}
+	}
+	if src := typSource(t, d, Options{}); strings.Count(src, "#linebreak()") != 3 {
+		t.Errorf("typst has %d line breaks, want 3:\n%s", strings.Count(src, "#linebreak()"), src)
+	}
+	md := string(write(t, d, FormatMarkdown, Options{}))
+	if !strings.Contains(md, "| No test plan<br>Few runs | x<br>y<br>z |") {
+		t.Errorf("markdown cell lost its breaks or split the row:\n%s", md)
+	}
+	// The Markdown reads back as the same table, breaks and all.
+	again := string(write(t, &Doc{Title: "x", Blocks: NewBuilder("x").Body(md)}, FormatHTML, Options{}))
+	if !strings.Contains(again, "No test plan<br>\nFew runs") {
+		t.Errorf("markdown round trip lost the break:\n%s", again)
+	}
+	// Typst accepts a break inside a table cell (CI's render-office job
+	// requires typst; elsewhere this part is skipped).
+	if typst, err := exec.LookPath("typst"); err == nil {
+		txt := pdfText(t, compileTypst(t, typst, d, Options{}))
+		for _, want := range []string{"No test plan", "Few runs"} {
+			if !strings.Contains(txt, want) {
+				t.Errorf("the PDF lacks %q:\n%s", want, txt)
+			}
+		}
 	}
 }

@@ -749,12 +749,13 @@ func rowBytes(row []string) int {
 // cell renders a table cell's paragraphs (a nested table's included) on
 // one line; an image in a cell stays in the cell.
 func (o *odt) cell(tc *node) (string, error) {
-	var parts []string
+	var paras []string
 	for _, p := range textBlocks(tc) {
 		var segs []seg
 		if err := o.paraRuns(p, &segs); err != nil {
 			return "", err
 		}
+		var parts []string
 		var text strings.Builder
 		for _, s := range segs {
 			if s.image != "" {
@@ -765,8 +766,9 @@ func (o *odt) cell(tc *node) (string, error) {
 			text.WriteString(s.text)
 		}
 		parts = append(parts, cell(text.String()))
+		paras = append(paras, strings.Join(nonEmpty(parts), " "))
 	}
-	return strings.Join(nonEmpty(parts), " "), nil
+	return cellParagraphs(paras), nil
 }
 
 // odfRepeat reads a number-*-repeated attribute: at least one.

@@ -84,3 +84,14 @@ func assertNoLiveTag(t *testing.T, md string) {
 		}
 	}
 }
+
+// A bare <br> is a table cell's paragraph break, as an extraction writes it,
+// and carries nothing else, so it stays live; any other tag, a <br> with
+// attributes included, is escaped.
+func TestNeutralize_KeepsOnlyABareBr(t *testing.T) {
+	in := "| a<br>b<BR/>c<br />d | e<br onclick=x>f <script>g</script> |"
+	want := `| a<br>b<BR/>c<br />d | e\<br onclick=x>f \<script>g\</script> |`
+	if got := Neutralize(in, true); got != want {
+		t.Errorf("Neutralize =\n%s\nwant\n%s", got, want)
+	}
+}

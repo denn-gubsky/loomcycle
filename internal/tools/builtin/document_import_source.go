@@ -342,8 +342,17 @@ func (d *Document) importedProvenance(ctx context.Context, mscope store.MemorySc
 }
 
 // provenanceLine is a clean export's one line under the title saying where
-// the document came from; "" when it says nothing.
+// the document came from, as a Markdown blockquote; "" when it says nothing.
 func provenanceLine(p map[string]any) string {
+	if t := provenanceText(p); t != "" {
+		return "> " + t
+	}
+	return ""
+}
+
+// provenanceText is that line as plain text, for a writer that prints it
+// rather than parsing it as Markdown (File op=render).
+func provenanceText(p map[string]any) string {
 	str := func(k string) string { s, _ := p[k].(string); return s }
 	var parts []string
 	if title, u := str(importFieldSourceTitle), str(importFieldSourceURL); title != "" || u != "" {
@@ -359,7 +368,7 @@ func provenanceLine(p map[string]any) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "> " + strings.Join(parts, " · ")
+	return strings.Join(parts, " · ")
 }
 
 // importSource is import_md's source fields as one source.

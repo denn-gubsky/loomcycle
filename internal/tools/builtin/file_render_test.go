@@ -379,3 +379,66 @@ func withInboxScratch(t *testing.T, ctx context.Context) context.Context {
 		p.Volumes.Bindings = append(p.Volumes.Bindings, tools.VolumeBinding{Name: inbox.Name, Root: root})
 	})
 }
+
+// An imported document's provenance is one plain line under the title. The
+// line export_md writes is a Markdown blockquote ("> Source: …"), and a
+// writer prints its meta lines as text, so the marker must not reach them:
+// it showed as a literal "> " in the PDF and Word files, "\>" in Markdown.
+func TestFileRender_ProvenanceLineHasNoQuoteMarker(t *testing.T) {
+	f, ctx, d, _ := fileDocRun(t)
+	out, res := docExec(t, d, ctx, `{"op":"import_md","scope":"user","path":"/decks/services","markdown":"# Services\n\nBody.\n",`+
+		`"source_url":"https://example.com/d/1","source_title":"Services.pptx","source_kind":"skybits"}`)
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	docID := asStr(out["document_id"])
+	const line = "Source: Services.pptx https://example.com/d/1 (skybits)"
+	for _, format := range []string{"md", "html"} {
+		out, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": format})
+		if res.IsError {
+			t.Fatalf("%s: %s", format, res.Text)
+		}
+		b, err := os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(out["ref"])))
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := string(b)
+		if !strings.Contains(page, line) {
+			t.Errorf("%s lacks the provenance line %q:\n%s", format, line, page)
+		}
+		for _, marker := range []string{"> Source", `\> Source`, "&gt; Source"} {
+			if strings.Contains(page, marker) {
+				t.Errorf("%s carries the quote marker %q:\n%s", format, marker, page)
+			}
+		}
+	}
+}
+
+// A table cell's <br> survives the whole path a file takes: extract (which
+// neutralises the file's markup), import (which neutralises it again) and
+// render, where it is a line break. Other markup in the cell stays text.
+func TestFileImport_CellBreakSurvivesExtractImportRender(t *testing.T) {
+	f, ctx, _, _ := fileDocRun(t)
+	md := "# Services\n\n## Levels\n\n| Basic |\n|---|\n| No test plan<br>Few runs <b>x</b> |\n"
+	kept := inbox.Capture(ctx, inbox.Item{Name: "services.md", Origin: "http"}, []byte(md))
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": ex["ref"], "doc_path": "/decks/services"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	r, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": asStr(out["document_id"]), "format": "html"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	b, err := os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(r["ref"])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(b)
+	if !strings.Contains(page, "No test plan<br>\nFew runs") || !strings.Contains(page, "&lt;b&gt;x&lt;/b&gt;") {
+		t.Errorf("the cell lost its break, or its markup came alive:\n%s", page)
+	}
+}

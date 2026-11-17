@@ -194,7 +194,7 @@ func (m *mdWriter) table(t Node, prefix string) {
 	row := func(r Node) {
 		cells := make([]string, cols)
 		for i, c := range r.Children {
-			cells[i] = escapeCellPipes(oneLine(m.inlines(c.Children)))
+			cells[i] = escapeCellPipes(m.cellInlines(c.Children))
 		}
 		m.s(prefix + "| " + strings.Join(cells, " | ") + " |\n")
 	}
@@ -234,6 +234,22 @@ func (m *mdWriter) image(n Node) string {
 		p = path.Join(m.opts.AssetDir, n.Asset)
 	}
 	return "![" + escapeAlt(n.Alt) + "](<" + escapeDest(p) + ">)"
+}
+
+// cellInlines renders a table cell's inline nodes on one line. A line break
+// is written as <br>, the one break a GFM cell can hold (Markdown's own form
+// ends the row), which the builder reads back as a break.
+func (m *mdWriter) cellInlines(ns []Node) string {
+	var parts []string
+	start := 0
+	for i, n := range ns {
+		if n.Kind == KindBreak {
+			parts = append(parts, oneLine(m.inlines(ns[start:i])))
+			start = i + 1
+		}
+	}
+	parts = append(parts, oneLine(m.inlines(ns[start:])))
+	return strings.Join(parts, "<br>")
 }
 
 // inlines renders inline nodes as one escaped line of Markdown.

@@ -135,6 +135,13 @@ func (s *slideState) shapes(tree *node) error {
 				s.title = strings.Join(paras, " ")
 				continue
 			}
+			// The slide's number and date are the deck's furniture: the
+			// heading already numbers the slide, and a field's cached text
+			// is "‹#›" until PowerPoint shows it. A footer is a person's
+			// text and stays.
+			if ph != nil && (typ == "sldNum" || typ == "dt") {
+				continue
+			}
 			for _, p := range paras {
 				if p := paragraph(p); p != "" {
 					s.blocks = append(s.blocks, p)
@@ -172,7 +179,11 @@ func (s *slideState) shapes(tree *node) error {
 							break
 						}
 						if tc.name == "tc" {
-							row = append(row, cell(strings.Join(shapeParagraphs(tc.child("txBody")), " ")))
+							var paras []string
+							for _, p := range shapeParagraphs(tc.child("txBody")) {
+								paras = append(paras, cell(p))
+							}
+							row = append(row, cellParagraphs(paras))
 						}
 					}
 					if !rows.add(row) {

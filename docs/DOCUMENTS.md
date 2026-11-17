@@ -1304,7 +1304,7 @@ Since #2161 (`/loomcycle/rfcs/files-by-reference` D18); the source revision, upd
 
 ## Getting a file out — PDF, Word, HTML, Markdown (RFC GR)
 
-A document can be rendered as a file people open, send and print: PDF, Word (DOCX), HTML or Markdown. The file is a new rendering of the document as it stands, read with the caller's own access exactly as `export_md` reads it. Nothing in a body becomes markup, script or a field in the file.
+A document can be rendered as a file people open, send and print: PDF, Word (DOCX), HTML or Markdown. The file is a new rendering of the document as it stands, read with the caller's own access exactly as `export_md` reads it. Nothing in a body becomes markup, script or a field in the file; the one tag read is a bare `<br>`, a line break (how an extracted table cell keeps its paragraphs).
 
 **Four ways to get one.**
 

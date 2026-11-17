@@ -95,6 +95,18 @@ func cell(s string) string {
 	return strings.ReplaceAll(escapeInline(oneLine(s)), "|", `\|`)
 }
 
+// cellBreak joins the paragraphs of one table cell. A GFM cell is one line, so
+// a paragraph break inside it is written as the bare <br> GFM renderers read
+// as a line break; text a document holds is escaped by cell, so this is the
+// only raw tag an extraction writes, and the render model reads it alone.
+const cellBreak = "<br>"
+
+// cellParagraphs is one cell's paragraphs, each already rendered with cell
+// (and any picture embeds), empty ones dropped.
+func cellParagraphs(paras []string) string {
+	return strings.Join(nonEmpty(paras), cellBreak)
+}
+
 // table renders rows as a GFM table, the first row as its header. Cells must
 // already be rendered with cell (or hold an image embed).
 func table(rows [][]string) string {

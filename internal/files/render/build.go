@@ -326,8 +326,14 @@ func (c *converter) inline(n gast.Node, depth int) []Node {
 		alt := plainText(n, c.src)
 		return []Node{c.image(string(n.Destination), alt)}
 	case *gast.RawHTML:
-		// Raw HTML is text (G5).
-		return []Node{{Kind: KindText, Text: string(n.Segments.Value(c.src))}}
+		v := n.Segments.Value(c.src)
+		// A bare <br> is the break an extraction writes between a table
+		// cell's paragraphs; it carries nothing but the break.
+		if isBareBreak(v) {
+			return []Node{{Kind: KindBreak}}
+		}
+		// Any other raw HTML is text (G5).
+		return []Node{{Kind: KindText, Text: string(v)}}
 	case *extast.TaskCheckBox:
 		if n.IsChecked {
 			return []Node{{Kind: KindText, Text: "[x] "}}
@@ -451,7 +457,11 @@ func plainText(n gast.Node, src []byte) string {
 		case *gast.String:
 			bb.Write(t.Value)
 		case *gast.RawHTML:
-			bb.Write(t.Segments.Value(src))
+			if v := t.Segments.Value(src); isBareBreak(v) {
+				bb.WriteByte(' ')
+			} else {
+				bb.Write(v)
+			}
 		}
 		if m.Type() == gast.TypeBlock && m.Lines() != nil && m.Lines().Len() > 0 && m.FirstChild() == nil {
 			bb.WriteString(linesText(m.Lines(), src))
@@ -464,4 +474,15 @@ func plainText(n gast.Node, src []byte) string {
 // oneLine folds a title or alt text onto one line.
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// isBareBreak reports a raw inline tag that is only a line break: <br>, <br/>
+// or <br /> in any case, with no attribute. It is the one tag the model reads
+// as markup rather than text (G5).
+func isBareBreak(v []byte) bool {
+	switch strings.ToLower(string(v)) {
+	case "<br>", "<br/>", "<br />":
+		return true
+	}
+	return false
 }

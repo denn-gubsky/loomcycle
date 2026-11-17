@@ -249,3 +249,62 @@ func TestExtract_CancelledContextStops(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+// A slide's number and date placeholders are the deck's furniture, not its
+// text: the number is already the heading, and PowerPoint caches a field's
+// text as "‹#›" until the slide is shown. A footer is written by a person and
+// stays.
+func TestExtractPPTX_SkipsSlideNumberAndDatePlaceholders(t *testing.T) {
+	pres := `<p:presentation ` + nsP + ` ` + nsR + `><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>`
+	slide := `<p:sld ` + nsP + ` ` + nsA + ` ` + nsR + `><p:cSld><p:spTree>` +
+		pSp("title", "Services") + pSp("body", "Basic testing") +
+		pSp("sldNum", "‹#›") + pSp("dt", "11/17/2026") + pSp("ftr", "Company confidential") +
+		`</p:spTree></p:cSld></p:sld>`
+	data := zipOf(t,
+		xmlEntry("_rels/.rels", relsXML([3]string{"rId1", "officeDocument", "ppt/presentation.xml"})),
+		xmlEntry("ppt/presentation.xml", pres),
+		xmlEntry("ppt/_rels/presentation.xml.rels", relsXML([3]string{"rId2", "slide", "slides/slide1.xml"})),
+		xmlEntry("ppt/slides/slide1.xml", slide),
+	)
+	s, _ := run(t, PPTX{}, data, Options{Name: "deck.pptx"})
+	md := s.md.String()
+	for _, gone := range []string{"‹#›", "11/17/2026"} {
+		if strings.Contains(md, gone) {
+			t.Errorf("placeholder text %q kept:\n%s", gone, md)
+		}
+	}
+	for _, want := range []string{"Basic testing", "Company confidential"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("missing %q in:\n%s", want, md)
+		}
+	}
+}
+
+// A table cell's paragraphs keep their breaks as <br>, the one line break a
+// GFM cell can hold; text that reads "<br>" is escaped, so only the break the
+// extraction wrote is a tag.
+func TestExtract_TableCellParagraphsJoinWithBr(t *testing.T) {
+	ap := func(s string) string { return `<a:p><a:r><a:t>` + s + `</a:t></a:r></a:p>` }
+	slide := `<p:sld ` + nsP + ` ` + nsA + ` ` + nsR + `><p:cSld><p:spTree><p:graphicFrame><a:graphic><a:graphicData><a:tbl>` +
+		`<a:tr><a:tc><a:txBody>` + ap("Basic") + `</a:txBody></a:tc></a:tr>` +
+		`<a:tr><a:tc><a:txBody>` + ap("No test plan") + ap("Few test runs") + ap("a &lt;br&gt; b") + `</a:txBody></a:tc></a:tr>` +
+		`</a:tbl></a:graphicData></a:graphic></p:graphicFrame></p:spTree></p:cSld></p:sld>`
+	pptx := zipOf(t,
+		xmlEntry("_rels/.rels", relsXML([3]string{"rId1", "officeDocument", "ppt/presentation.xml"})),
+		xmlEntry("ppt/presentation.xml", `<p:presentation `+nsP+` `+nsR+`><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>`),
+		xmlEntry("ppt/_rels/presentation.xml.rels", relsXML([3]string{"rId2", "slide", "slides/slide1.xml"})),
+		xmlEntry("ppt/slides/slide1.xml", slide),
+	)
+	wp := func(s string) string { return `<w:p><w:r><w:t>` + s + `</w:t></w:r></w:p>` }
+	docx := docxWith(t, `<w:document `+nsW+`><w:body><w:tbl><w:tr><w:tc>`+wp("Basic")+`</w:tc></w:tr>`+
+		`<w:tr><w:tc>`+wp("No test plan")+wp("Few test runs")+wp("a &lt;br&gt; b")+`</w:tc></w:tr></w:tbl></w:body></w:document>`)
+	for name, c := range map[string]struct {
+		e    Extractor
+		data []byte
+	}{"pptx": {PPTX{}, pptx}, "docx": {DOCX{}, docx}} {
+		s, _ := run(t, c.e, c.data, Options{Name: "t." + name})
+		if want := `| No test plan<br>Few test runs<br>a \<br> b |`; !strings.Contains(s.md.String(), want) {
+			t.Errorf("%s: missing %q in:\n%s", name, want, s.md.String())
+		}
+	}
+}
