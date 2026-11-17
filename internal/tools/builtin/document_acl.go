@@ -133,6 +133,10 @@ var docACLOps = map[string]docACLRule{
 	// it refuses a caller whose rules hide any of them itself, and writes only the
 	// node_stats table, never a document (document_node_stats.go).
 	"node_stats": {verb: "read", target: docACLListing},
+	// measure reads the series stored beside the documents; it asks read on the
+	// ontology document itself, and withholds a node's series from a reader who may
+	// not read every document it is built from.
+	"measure": {verb: "read", target: docACLListing},
 	// effective_policy reports the policy the ontology's concepts set on the document
 	// it names: asked read on that document, as get_document is. It asks read on the
 	// ontology document itself before it shows any concept.

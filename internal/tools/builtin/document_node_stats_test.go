@@ -506,6 +506,7 @@ func stripStatsFields(v any) {
 	switch x := v.(type) {
 	case map[string]any:
 		delete(x, "stats")
+		delete(x, "series")
 		for _, e := range x {
 			stripStatsFields(e)
 		}

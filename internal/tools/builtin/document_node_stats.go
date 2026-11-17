@@ -151,14 +151,20 @@ func (p *nodeStatsPlan) nodeHash(n statNode) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "%s\n%s\n%s\nmodel %s\n", nodeStatsHashVersion, n.Kind, n.def, p.model)
 	for _, id := range n.members {
-		ann, text := "", ""
-		if d := p.docs[id]; d != nil && d.annotated {
-			sum := sha256.Sum256([]byte(d.brief + "\x00" + d.abstract))
-			ann, text = d.hash, hex.EncodeToString(sum[:])
-		}
-		fmt.Fprintf(h, "%s %s %s\n", id, ann, text)
+		fmt.Fprintf(h, "%s\n", p.memberLine(id))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// memberLine is one member as an inputs hash reads it: its id, its annotation's
+// inputs_sha256 and a hash of the annotation's own text.
+func (p *nodeStatsPlan) memberLine(id string) string {
+	ann, text := "", ""
+	if d := p.docs[id]; d != nil && d.annotated {
+		sum := sha256.Sum256([]byte(d.brief + "\x00" + d.abstract))
+		ann, text = d.hash, hex.EncodeToString(sum[:])
+	}
+	return id + " " + ann + " " + text
 }
 
 func membersHash(ids []string) string {
@@ -450,6 +456,8 @@ type NodeStatsReport struct {
 	Missing  int      `json:"missing"`
 	Computed int      `json:"computed"`
 	Removed  int      `json:"removed"`
+	// Series is the series stage's part (RFC GM 6A, document_measure.go).
+	Series *SeriesReport `json:"series,omitempty"`
 }
 
 // nodeStats is Document op=node_stats: report what is stale and why, or compute
@@ -531,11 +539,7 @@ func (d *Document) NodeStatsPass(ctx context.Context, key sqlmem.ScopeKey, tenan
 	}
 	ans.Vectors, ans.Note, ans.EmbedModel = p.model != "", p.note, p.model
 
-	type pending struct {
-		n    statNode
-		node *nodeStatsNode
-	}
-	var stale []pending
+	var stale []nodeStatsPending
 	inForce := map[string]bool{}
 	for _, n := range p.nodes {
 		inForce[nodeStatsKey(n.Kind, n.ID)] = true
@@ -563,7 +567,7 @@ func (d *Document) NodeStatsPass(ctx context.Context, key sqlmem.ScopeKey, tenan
 			ans.Missing++
 		}
 		if ans.Nodes[i].Status != "fresh" {
-			stale = append(stale, pending{n: p.nodes[i], node: &ans.Nodes[i]})
+			stale = append(stale, nodeStatsPending{n: p.nodes[i], node: &ans.Nodes[i]})
 		}
 	}
 	if scheme == "" {
@@ -574,22 +578,61 @@ func (d *Document) NodeStatsPass(ctx context.Context, key sqlmem.ScopeKey, tenan
 		}
 		sort.Strings(ans.Orphans)
 	}
-	if !compute || (len(stale) == 0 && len(ans.Orphans) == 0) {
+	// The series stage (RFC GM 6A, document_measure.go): its reads come before any
+	// write, as every read of the pass does.
+	sp, err := d.buildSeriesPlan(ctx, key, read, scheme, p)
+	if err != nil {
+		return ans, err
+	}
+	storedPoints, err := d.loadMeasurePoints(ctx, key, 0, nil, nil)
+	if err != nil {
+		return ans, err
+	}
+	series, points := sp.seriesDiff(storedPoints)
+	ans.Series = &series
+	nodesDue := len(stale) > 0 || len(ans.Orphans) > 0
+	if !compute || (!nodesDue && len(points) == 0) {
 		return ans, nil
 	}
 
 	var vecs map[string]nodestats.Vector
-	if p.model != "" {
+	if p.model != "" && (len(stale) > 0 || hasShift(points)) {
 		vecs, err = d.loadNodeStatsVectors(ctx, key, tenant, p)
 		if errors.Is(err, store.ErrVectorUnsupported) {
 			ans.Vectors, ans.Note, ans.EmbedModel, p.model = false, "the store keeps no vectors (that needs Postgres with pgvector): only member counts are kept", "", ""
+			// No vector was read, so no shift is known: leave the stored ones as they are.
+			points = withoutShift(points)
 		} else if err != nil {
 			return ans, err
 		}
 	}
+	now := time.Now().UnixNano()
+	if nodesDue {
+		if err := d.computeNodeStats(ctx, key, p, stale, vecs, ans.Orphans, now); err != nil {
+			return ans, err
+		}
+		ans.Computed, ans.Removed = len(stale), len(ans.Orphans)
+	}
+	fillShift(points, vecs)
+	if err := d.writeMeasurePoints(ctx, key, points, read.RootRevision, now); err != nil {
+		return ans, err
+	}
+	series.Computed = len(points)
+	return ans, nil
+}
+
+// nodeStatsPending is a node to recompute, with its place in the answer.
+type nodeStatsPending struct {
+	n    statNode
+	node *nodeStatsNode
+}
+
+// computeNodeStats recomputes the stale nodes and writes them with the orphan
+// removals, filling each node's answer.
+func (d *Document) computeNodeStats(ctx context.Context, key sqlmem.ScopeKey, p *nodeStatsPlan, stale []nodeStatsPending,
+	vecs map[string]nodestats.Vector, orphans []string, now int64) error {
 	rows := make([]nodeStatsRow, 0, len(stale))
 	figures := p.figures(vecs)
-	now := time.Now().UnixNano()
 	for _, s := range stale {
 		row, nerr := p.computeRow(s.n, vecs, figures)
 		if nerr != nil {
@@ -600,11 +643,7 @@ func (d *Document) NodeStatsPass(ctx context.Context, key sqlmem.ScopeKey, tenan
 		s.node.MembersWithVector, s.node.Computed = &wv, true
 		rows = append(rows, row)
 	}
-	if err := d.writeNodeStats(ctx, key, rows, ans.Orphans); err != nil {
-		return ans, err
-	}
-	ans.Computed, ans.Removed = len(rows), len(ans.Orphans)
-	return ans, nil
+	return d.writeNodeStats(ctx, key, rows, orphans)
 }
 
 // staleReason says which input of a stale row moved, as far as the row tells.

@@ -191,6 +191,17 @@ read every member of the node: otherwise `stats` is `{withheld: <why>}` and the
 counts beside it are the documents you may read. A node with no stored row has
 no `stats`. Vectors and centroids are never returned.
 
+Beside `stats`, a concept or document class with a stored series (see
+`measure`) carries `series`: `{period, latest, count, share?, fallback_share,
+trend}`. `latest` is the last period holding a member, with its `count`, a
+concept's `share` of its scheme's things dated then, and `fallback_share`, the
+share of those members dated only by when they were stored. `trend` is
+`{previous, previous_count, previous_share?, change}`: the period before, and
+the change of share since (of count where the share is not known). It is served
+beside the node, never written into a summary, and follows the same rule as
+`stats`: `{withheld: <why>}` when you may not read every document it is built
+from.
+
 ## Review rules
 
 The Review section is a root chunk whose first line is `@section review`. Each
@@ -275,6 +286,7 @@ Maintenance topics, by system.
 @origin adopted
 @source https://example.org/ata-chapters
 @version 2024
+@period week
 #### Landing gear
 @focus LandingGear
 ```
@@ -287,14 +299,16 @@ Maintenance topics, by system.
   the tenant wrote, or one generated from the corpus.
 - `@source <text or URL>` and `@version <text>` — an adopted scheme's
   provenance.
+- `@period day|week|month` — the period the scheme's series are kept in (see
+  `measure`); month without it. Weeks are ISO weeks, in UTC.
 - `@focus <class or instance>` on a concept — the entity the concept is about.
   Confirming the ontology writes it as a `focus` statement from the concept's
   chunk to the class's entry, or to the subject an instance was adopted as;
   removing or changing it retires that statement.
 
-A `@projects` class that does not exist, an `@origin` outside the three, and
-a `@focus` that names no class or instance are reported in the entry's
-`issues` and ignored.
+A `@projects` class that does not exist, an `@origin` or `@period` outside
+the three, and a `@focus` that names no class or instance are reported in the
+entry's `issues` and ignored.
 
 ## Errors
 
