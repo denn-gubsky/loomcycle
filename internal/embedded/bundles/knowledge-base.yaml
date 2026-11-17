@@ -4827,6 +4827,10 @@ agents:
 
       var WORDS = { branch: "60–120", document: "120–250", path: "120–250" };
 
+      // A document's stored status as the request's STATUS line carries it:
+      // one word, else no line.
+      var STATUS_SHAPE = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+
       var FOLDER_SLOTS = "what the folder collects; for whom or about what; the period it spans; how its documents relate";
 
       var USAGE = "Pass a JSON object: {\"mode\": document|path|drain|sweep (default document), " +
@@ -5208,7 +5212,12 @@ agents:
             if (f === "/") { break; }
           }
         }
-        if (annotate(st, root, { document_id: doc.document_id }, "document") && typeof root.path === "string" && root.path !== "") {
+        // The document's stored status, for its own request (requestText).
+        // annotation_inputs does not carry it; the listing row does.
+        st.doc_status = typeof doc.status === "string" && STATUS_SHAPE.test(doc.status) ? doc.status : "";
+        var wrote = annotate(st, root, { document_id: doc.document_id }, "document");
+        st.doc_status = "";
+        if (wrote && typeof root.path === "string" && root.path !== "") {
           st.dirty[dirname(root.path)] = true;
         }
       }
@@ -5424,6 +5433,11 @@ agents:
           head.push("CLASS: " + cls);
           head.push("SLOTS: " + (slots !== "" ? slots : DEFAULT_SLOTS.document));
           head.push("TITLE: " + oneLine(in1.document_title || in1.title || "(untitled)", CONFIG.max_title_chars));
+          // The stored status, so the brief (what the document IS) follows it
+          // and not the CLASS description: a class described as a proposal
+          // made briefs call shipped work a proposal while the abstract, from
+          // the material, said every phase had merged.
+          if (st.doc_status) { head.push("STATUS: " + st.doc_status); }
           var place = [];
           if (typeof in1.path === "string" && in1.path !== "") { place.push("folder " + oneLine(dirname(in1.path), CONFIG.max_title_chars)); }
           head.push("PLACE: " + (place.length > 0 ? place.join("; ") : "(top level)"));
@@ -5720,7 +5734,8 @@ agents:
       folder of documents), the CLASS of the thing and the SLOTS such a class is
       expected to state, its TITLE and PLACE (the document and headings above it, or
       the folder it sits in), for a section the DOCUMENT it belongs to, the
-      document's IDENTITY when it has one (its code, its key), the LANGUAGE to
+      document's IDENTITY when it has one (its code, its key), for a whole
+      document its stored STATUS when it has one, the LANGUAGE to
       write in, and the MATERIAL: the text
       itself and, where the part has parts of its own, the brief and abstract already
       written for each of them (or, for a short part, its text). The ABOVE block,
@@ -5732,6 +5747,10 @@ agents:
       apart from its neighbours, so a reader can decide whether to open it. A noun
       phrase is fine. Never begin with "This document", "This section" or "This
       folder".
+      When the request gives a STATUS, the brief and the abstract agree with it,
+      and it overrides the CLASS description and any status the material states:
+      done means the work is finished and shipped, so never call it a proposal;
+      confirmed means it was approved.
 
       ## The abstract
       One paragraph that stands in for reading: what the material states, decides,

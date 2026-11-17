@@ -558,3 +558,54 @@ func TestKBAnnotator_StopsWhenTheProviderIsUnavailable(t *testing.T) {
 		t.Fatalf("two failures then a reply: report %v", rep)
 	}
 }
+
+// TestKBAnnotator_DocumentRequestCarriesItsStoredStatus: briefs called
+// shipped work a "design proposal" while the abstract, written in the same
+// call and the same set_annotation write, said every phase had merged. The
+// brief says what the document IS, and the request gave only the CLASS
+// description to say it from; the stored status was never in it. A
+// document's request now carries its stored STATUS (a section's does not),
+// kb/annotate's prompt says the status overrides the class description, and
+// the brief and abstract are still written together from one reply.
+func TestKBAnnotator_DocumentRequestCarriesItsStoredStatus(t *testing.T) {
+	d, author, driver := annRealDocument(t)
+	a := seedAnnDoc(t, d, author, "Widget guide", "/kb/widgets/guide")
+	root := realDoc(t, d, author, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, a.root))
+	realDoc(t, d, author, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%v,"status":"done"}`, a.root, root["revision"]))
+	f := &annFake{reply: annReplyFromTitle}
+	runAnnotator(t, d, driver, f, fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate"}`, a.doc))
+
+	var docReq string
+	for _, p := range f.prompts {
+		if strings.Contains(p, "LEVEL: a whole document") {
+			docReq = p
+		} else if strings.Contains(p, "STATUS:") {
+			t.Errorf("a request other than the document's carries a STATUS line:\n%s", p)
+		}
+	}
+	if !strings.Contains(docReq, "\nSTATUS: done\n") {
+		t.Errorf("the document's request lacks its stored status:\n%s", docReq)
+	}
+	out := realDoc(t, d, author, fmt.Sprintf(`{"op":"get_annotation","scope":"tenant","id":%q,"level":"document"}`, a.root))
+	recs, _ := out["annotations"].([]any)
+	if len(recs) != 1 {
+		t.Fatalf("document annotations = %v", out)
+	}
+	rec := recs[0].(map[string]any)
+	reply := map[string]string{}
+	_ = json.Unmarshal([]byte(annReplyFromTitle(docReq)), &reply)
+	if rec["brief"] != reply["brief"] || rec["abstract"] != reply["abstract"] {
+		t.Errorf("stored brief/abstract = %q / %q, want both from the one reply %v", rec["brief"], rec["abstract"], reply)
+	}
+
+	p := knowledgeBaseConfig(t).Agents["kb/annotate"].SystemPrompt
+	for _, want := range []string{"its stored STATUS", "When the request gives a STATUS, the brief and the abstract agree with it",
+		"overrides the CLASS description", "never call it a proposal"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("kb/annotate's prompt lacks %q", want)
+		}
+	}
+	if strings.Contains(p, "RFC") {
+		t.Errorf("kb/annotate's prompt names an RFC")
+	}
+}
