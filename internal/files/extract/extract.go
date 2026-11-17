@@ -56,6 +56,22 @@ type PageSink interface {
 	StartPage(n int)
 }
 
+// RecordSink is a Sink told about the record a loomcycle-rendered file
+// carries (RFC GR P4b, D22): Record once, with the record's JSON as the file
+// holds it, before any heading; and HeadingAnchor just before a heading
+// whose paragraph carries an anchor the renderer wrote (a bookmark, an
+// element id). The extractor neither checks nor trusts the record: it only
+// finds it. The caller validates it and maps the anchors through it.
+type RecordSink interface {
+	Sink
+	Record(json []byte)
+	HeadingAnchor(name string)
+}
+
+// MaxRecord bounds a record an extractor hands on: the renderer refuses to
+// write a larger one.
+const MaxRecord = 8 << 20
+
 // ErrSinkFull is what a Sink returns when it will take no more text. An
 // extractor stops and returns its report so far with this error, so the
 // caller can keep what was written and say it was cut.
@@ -273,10 +289,35 @@ type writer struct {
 	// maxDocTableBytes.
 	tableBytes   int
 	docTablesCut bool
+	// recorded says the file carried a loomcycle record (RFC GR P4b) and
+	// the sink took it.
+	recorded bool
 }
 
 func newWriter(ctx context.Context, sink Sink, opts Options) *writer {
 	return &writer{ctx: ctx, sink: sink, keepImages: opts.Images}
+}
+
+// record hands a loomcycle record to a sink that takes one, and reports
+// whether it did: an extractor then names its headings' anchors. A record
+// past MaxRecord is not one the renderer writes, and is left out.
+func (w *writer) record(b []byte) bool {
+	rs, ok := w.sink.(RecordSink)
+	if !ok || len(b) == 0 || len(b) > MaxRecord {
+		return false
+	}
+	w.recorded = true
+	rs.Record(b)
+	return true
+}
+
+// headingAnchor names the anchor on the heading about to be written, when
+// the file carried a record.
+func (w *writer) headingAnchor(name string) {
+	if !w.recorded || name == "" || len(name) > 256 {
+		return
+	}
+	w.sink.(RecordSink).HeadingAnchor(name)
 }
 
 func (w *writer) text(md string) error {

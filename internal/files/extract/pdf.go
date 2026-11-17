@@ -83,11 +83,13 @@ func (PDF) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, op
 	if opts.pdfMaxDecode > 0 {
 		maxDecode = opts.pdfMaxDecode
 	}
-	xr, err := openPDF(ctx, r, size, maxDecode)
+	pc, err := openPDFContext(ctx, r, size, maxDecode)
 	if err != nil {
 		return rep, err
 	}
+	xr := pc.XRefTable
 	w := newWriter(ctx, sink, opts)
+	pdfRecord(ctx, pc, w)
 	e := &pdfExtract{xr: xr, w: w, rep: &rep, maxDecode: maxDecode, seen: map[int]bool{}, fonts: map[int]*pdfFont{}, gridWork: opts.pdfGridWork}
 	err = e.run(opts)
 	rep.finish(w)
@@ -941,4 +943,37 @@ func assembleLines(rows []pdfLine) string {
 		b.WriteString(l)
 	}
 	return b.String()
+}
+
+// pdfRecordName is the file a loomcycle render attaches its record as (RFC
+// GR P4b).
+const pdfRecordName = "loomcycle.json"
+
+// pdfRecord hands the sink the record a loomcycle-rendered PDF carries as an
+// attached file, if it has one. A PDF names no heading's chunk (its text
+// holds no anchors the extractor reads), so the import matches its parts by
+// text and heading alone. An attachment that cannot be read is no record:
+// the text is extracted all the same.
+func pdfRecord(ctx context.Context, pc *model.Context, w *writer) {
+	if _, ok := w.sink.(RecordSink); !ok {
+		return
+	}
+	list, err := pc.ListAttachments(ctx)
+	if err != nil {
+		return
+	}
+	for _, a := range list {
+		if a.FileName != pdfRecordName {
+			continue
+		}
+		got, err := pc.ExtractAttachment(ctx, a)
+		if err != nil || got == nil || got.Reader == nil {
+			return
+		}
+		b, err := io.ReadAll(io.LimitReader(got.Reader, MaxRecord+1))
+		if err == nil {
+			w.record(bytes.TrimSpace(b))
+		}
+		return
+	}
 }

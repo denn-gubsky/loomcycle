@@ -46,6 +46,12 @@ func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts
 	}
 	w := newWriter(ctx, sink, opts)
 	h := &htmlState{w: w, rep: &rep, infer: opts.InferHeadings}
+	// The record a loomcycle render keeps in the page (RFC GR P4b), handed
+	// on before any text so the headings can name their anchors.
+	if rec := htmlRecord(doc); rec != nil {
+		w.record([]byte(strings.TrimSpace(textOf(rec))))
+		h.recordEl = rec
+	}
 	docTitle := ""
 	if t := findElement(doc, "title"); t != nil {
 		docTitle = strings.TrimSpace(textOf(t))
@@ -81,12 +87,68 @@ func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts
 	if h.infer {
 		h.promote()
 	}
-	if err := w.text(strings.Join(h.blocks, "\n\n")); err != nil {
-		rep.finish(w)
-		return rep, err
+	// Block by block, so a heading's anchor is named just before it; the
+	// text is the same as one write of the blocks joined.
+	for i, b := range h.blocks {
+		if i > 0 {
+			b = "\n\n" + b
+		}
+		w.headingAnchor(h.anchors[i])
+		if err := w.text(b); err != nil {
+			rep.finish(w)
+			return rep, err
+		}
 	}
 	rep.finish(w)
 	return rep, nil
+}
+
+// htmlRecord is the element a loomcycle render keeps its record in: a
+// hidden <pre id="loomcycle-metadata">. nil when the page has none.
+func htmlRecord(doc *html.Node) *html.Node {
+	var found *html.Node
+	var walk func(n *html.Node, depth int)
+	walk = func(n *html.Node, depth int) {
+		if found != nil || depth > maxXMLDepth {
+			return
+		}
+		if n.Type == html.ElementNode && n.Data == "pre" && attrOf(n, "id") == "loomcycle-metadata" {
+			for _, a := range n.Attr {
+				if a.Key == "hidden" {
+					found = n
+					return
+				}
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c, depth+1)
+		}
+	}
+	walk(doc, 0)
+	return found
+}
+
+// htmlHeadingAnchor is the loomcycle anchor of a heading: the id of the
+// <section> it opens, when a render wrote it (chunk-<id>).
+func htmlHeadingAnchor(hd *html.Node) string {
+	p := hd.Parent
+	if p == nil || p.Type != html.ElementNode || p.Data != "section" {
+		return ""
+	}
+	id := attrOf(p, "id")
+	if !strings.HasPrefix(id, "chunk-") {
+		return ""
+	}
+	// Only the section's own heading: its first element child.
+	for c := p.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode {
+			if c == hd {
+				return id
+			}
+			return ""
+		}
+	}
+	return ""
 }
 
 // htmlFormatting are the elements the parser keeps on its list of active
@@ -295,6 +357,12 @@ type htmlState struct {
 	paraAt []int
 	decor  decorative
 	sheet  cssSheet
+
+	// recordEl is the loomcycle record's element, left out of the text;
+	// anchors are the loomcycle anchors of heading blocks, by block index
+	// (RFC GR P4b).
+	recordEl *html.Node
+	anchors  map[int]string
 }
 
 // flush ends the paragraph being collected.
@@ -372,6 +440,12 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 			if t := strings.TrimSpace(textOf(c)); t != "" {
 				// Below the document's "#".
 				h.blocks = append(h.blocks, heading(int(tag[1]-'0')+1, t))
+				if a := htmlHeadingAnchor(c); a != "" && h.w.recorded {
+					if h.anchors == nil {
+						h.anchors = map[int]string{}
+					}
+					h.anchors[len(h.blocks)-1] = a
+				}
 				if h.infer {
 					h.paras = append(h.paras, inferPara{real: int(tag[1] - '0')})
 					h.paraAt = append(h.paraAt, len(h.blocks)-1)
@@ -394,6 +468,8 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 				h.rep.Tables++
 				h.blocks = append(h.blocks, t)
 			}
+		case tag == "pre" && c == h.recordEl:
+			// The record is data for the import, not the page's text.
 		case tag == "pre":
 			h.flush()
 			if t := preText(c); strings.TrimSpace(t) != "" {
