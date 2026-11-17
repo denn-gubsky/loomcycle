@@ -4525,6 +4525,22 @@ shared team.
   The new versions are written at the next start.
 - In a cluster, one replica writes the teams per start, under an advisory lock.
 
+**Seeing what the boot did.** `GET /v1/_config/teams` (admin) lists each
+configured team with a `status`: `written`, `conflict` (a team made over the API
+holds the name) or `not_written` (the boot refused it, or the active version is
+retired). `detail` gives the reason. The reason a team was refused is known only
+to the replica that ran the reconcile; another replica's `detail` says so, and
+`reconciled_at` is present only on the replica that ran it. The Web UI's Health
+page shows the same table. `loomcycle doctor` does not report it, because it
+does not open the store.
+
+```sh
+curl -H "Authorization: Bearer $LOOMCYCLE_AUTH_TOKEN" http://localhost:8787/v1/_config/teams
+# → {"teams":[{"name":"marketing","status":"written","active_def_id":"tdf_…"},
+#             {"name":"release","status":"conflict","active_def_id":"tdf_…","detail":"…"}],
+#    "reconciled_at":"2026-11-17T08:00:00Z"}
+```
+
 ### Marked as configuration, changed in the configuration
 
 A version the configuration wrote carries **`source: "config"`** on `TeamDef

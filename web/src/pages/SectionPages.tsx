@@ -5,10 +5,12 @@ import { NAV_ITEMS } from "../components/navItems";
 import { accessSummary, erasureGate, residueMeaning } from "../lib/erasure";
 import { countMeaning, exportMisconfigured, familyEffect } from "../lib/retention";
 import {
+  ConfigTeamsResponse,
   HealthResponse,
   MemoryOrphanReport,
   PresetUnit,
   RuntimeStateResponse,
+  getConfigTeams,
   getEnvTemplate,
   getHealth,
   executeErasure,
@@ -822,6 +824,7 @@ function RuntimeSection() {
 
 function HealthSection() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [teams, setTeams] = useState<ConfigTeamsResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = async () => {
@@ -830,6 +833,12 @@ function HealthSection() {
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+    }
+    try {
+      setTeams(await getConfigTeams());
+    } catch {
+      // An older server has no such route: the panel shows liveness alone.
+      setTeams(null);
     }
   };
 
@@ -866,9 +875,39 @@ function HealthSection() {
           </tbody>
         </table>
       )}
+      {teams && teams.teams.length > 0 && <ConfigTeamsTable teams={teams} />}
       <button type="button" className="ghost-btn" onClick={refresh}>
         refresh
       </button>
     </div>
+  );
+}
+
+// ConfigTeamsTable lists the teams of the server's configuration (RFC GS) and
+// whether each was written into the shared tier. The boot only logs a name
+// conflict or a refused team; this is where an operator sees one later.
+function ConfigTeamsTable({ teams }: { teams: ConfigTeamsResponse }) {
+  return (
+    <>
+      <h3>Configured teams</h3>
+      {teams.reconcile_error && <div className="settings-error">{teams.reconcile_error}</div>}
+      <table className="settings-table">
+        <tbody>
+          {teams.teams.map((t) => (
+            <tr key={t.name}>
+              <td>
+                <code>{t.name}</code>
+              </td>
+              <td>
+                <span className={"status-pill status-" + (t.status === "written" ? "ok" : "warn")}>
+                  {t.status.replace("_", " ")}
+                </span>
+                {t.detail && <div className="settings-help">{t.detail}</div>}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
   );
 }
