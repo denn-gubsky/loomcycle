@@ -99,18 +99,23 @@ func run() error {
 	return write(*out, res)
 }
 
+// write keeps the results private to the operator (0700 / 0600): they hold
+// document titles, briefs and terms of the measured tenant.
 func write(dir string, res *Result) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dir = filepath.Clean(dir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	j, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "nodestats.json"), j, 0o644); err != nil {
+	// #nosec G703 -- the operator names the output directory on the command line
+	if err := os.WriteFile(filepath.Join(dir, "nodestats.json"), j, 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "nodestats.md"), []byte(Render(res)), 0o644); err != nil {
+	// #nosec G703 -- the operator names the output directory on the command line
+	if err := os.WriteFile(filepath.Join(dir, "nodestats.md"), []byte(Render(res)), 0o600); err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "wrote", filepath.Join(dir, "nodestats.json"), "and nodestats.md")
