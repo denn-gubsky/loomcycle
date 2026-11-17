@@ -16,7 +16,35 @@ the same way:
   a document's or a sub-folder's, by name (the first 60, the rest grouped by
   class in `children_more`), the classes and topics of the documents it covers,
   and the kinds of relation among them. It also returns `covers`, the ids of
-  every document below it.
+  every document below it;
+- a node of a confirmed taxonomy (`scheme`, `concept`, or `class` for a
+  document class the ontology declares): see "Taxonomy nodes" below.
+
+## Taxonomy nodes
+
+Every scheme, concept and declared document class has an annotation on its
+chunk in the ontology document. `id` is the chunk `describe_ontology` gives a
+scheme or concept; a class may be named with `name` instead. A standard class
+with no entry in the ontology (the seed `Document`) is refused with
+`standard_class`. The answer says which of three cases the node is in
+(`basis`):
+
+- `written` — at least `min_members` members (documents placed under it,
+  narrower nodes included): the definition (`title`, `meaning`, `place`, the
+  `scheme` header), `members`, `member_statuses` (how many members are done,
+  confirmed, draft …; the brief must follow them), `member_classes`, the
+  `narrower` nodes with their own records, `exemplars` (from the stored
+  `node_stats` row, else a sample), `siblings` and `terms`;
+- `thin` — one or two members: the same, with those members' own briefs as
+  `exemplars`;
+- `declared` — no member: `composed` holds the brief and abstract the runtime
+  wrote from the definition. Write it as it is; no model is needed.
+
+The hash covers the definition, the basis, the member set, the exemplars'
+titles and annotation texts, the narrower records, the sibling names, the
+terms, the class histogram, the language and the prompt version. Member
+statuses are not hashed. Node inputs are refused to a caller whose
+access-control rules hide any document of the scope, as `node_stats` is.
 
 `identity` says which work the document is: the root's natural key and
 identity-like fields (`letter`, `code`, `work_key` …), and the fields its
@@ -40,7 +68,9 @@ reads annotation inputs.
 - `document_id` — a document, for its `document` annotation.
 - `path` — the document's Path-tree name, instead of `document_id`; with
   `level: path`, the folder.
-- `level` — `branch`, `document` or `path`. Default: what the chunk is.
+- `level` — `branch`, `document`, `path`, `scheme`, `concept` or `class`.
+  Default: what the chunk is (a node level is always named).
+- `name` — with `level: class`, the class instead of its chunk.
 - `prompt_version` — the version of the prompt the annotation will be written
   with. It is part of the hash, so a new prompt makes earlier annotations
   stale.

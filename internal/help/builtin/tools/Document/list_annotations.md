@@ -11,7 +11,7 @@ Annotations of documents the caller may not read are left out.
 
 ## Arguments
 
-- `level` — `branch`, `document` or `path`.
+- `level` — `branch`, `document`, `path`, `scheme`, `concept` or `class`.
 - `document_id` — one document's annotations.
 - `under_path` — the annotations of documents under a Path-tree folder.
 - `stale` — only stale ones.
