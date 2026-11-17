@@ -699,6 +699,10 @@ type MemoryConfig struct {
 	// Projection is the 3D layout of document chunks by meaning (see
 	// ProjectionConfig). Off unless enabled.
 	Projection ProjectionConfig `yaml:"projection"`
+
+	// NodeStats is the background pass over the taxonomy's node statistics (see
+	// NodeStatsConfig). Off unless enabled.
+	NodeStats NodeStatsConfig `yaml:"node_stats"`
 }
 
 // RerankerConfig is the memory.reranker block. The rerank is one model call over
@@ -7968,6 +7972,9 @@ func validate(c *Config) error {
 		return err
 	}
 	if _, err := c.Memory.Projection.resolve(); err != nil {
+		return err
+	}
+	if _, err := c.Memory.NodeStats.resolve(); err != nil {
 		return err
 	}
 	if err := c.Decision.validate(c); err != nil {
