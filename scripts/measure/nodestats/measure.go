@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"time"
 )
 
 // Arms of RFC GM decision D3, as measured here.
@@ -23,6 +24,9 @@ type Options struct {
 	// NonCurrentLimit: a node with a larger share of non-current members is not
 	// gradable.
 	NonCurrentLimit float64
+	// ImportedUntil is the last day of the corpus's bulk import; a document
+	// created on or before it is dated by its import. Zero: no import day.
+	ImportedUntil time.Time `json:",omitempty"`
 }
 
 // Result is the whole measurement, written as JSON and rendered as Markdown.
@@ -64,7 +68,7 @@ func Measure(d *Data, opt Options, defVecs map[string][]float64, defNote string)
 	if res.Unplaced, err = UnplacedSplit(d.Docs, placed, d.NotLiveDocs, opt.SplitSeeds); err != nil {
 		return nil, err
 	}
-	res.Dates = Dates(tax, d.Docs, placed, members)
+	res.Dates = Dates(tax, d.Docs, placed, members, opt.ImportedUntil)
 	if res.Misfits, err = MeasureMisfits(tax, d.Docs, members, opt.MisfitMargins); err != nil {
 		return nil, err
 	}

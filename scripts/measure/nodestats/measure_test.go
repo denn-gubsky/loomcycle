@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"reflect"
@@ -279,10 +280,61 @@ func TestDocDate_FollowsTheRFCOrder(t *testing.T) {
 		{"created_at last", Doc{CreatedAt: ca.UnixNano()}, DateCreatedAt, ca},
 	}
 	for _, tc := range cases {
-		at, src := DocDate(&tc.doc)
+		at, src := DocDate(&tc.doc, time.Time{})
 		if src != tc.src || !at.Equal(tc.at) {
 			t.Errorf("%s: got %s %v, want %s %v", tc.name, src, at, tc.src, tc.at)
 		}
+	}
+}
+
+func TestDocDate_CreatedOnOrBeforeTheImportDayIsImportDated(t *testing.T) {
+	day := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		at   time.Time
+		src  string
+	}{
+		{"before the day", time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC), DateImport},
+		{"late on the day", time.Date(2026, 7, 21, 23, 59, 0, 0, time.UTC), DateImport},
+		{"the next day", time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC), DateCreatedAt},
+	}
+	for _, tc := range cases {
+		_, src := DocDate(&Doc{CreatedAt: tc.at.UnixNano()}, day)
+		if src != tc.src {
+			t.Errorf("%s: got %s, want %s", tc.name, src, tc.src)
+		}
+	}
+	va := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, src := DocDate(&Doc{RootValidAt: va.UnixNano(), CreatedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).UnixNano()}, day); src != DateValidAt {
+		t.Errorf("a valid_at is never import-dated, got %s", src)
+	}
+}
+
+func TestDates_MonthsCountOnlyMembersNotDatedByTheImport(t *testing.T) {
+	day := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	tax := testTaxonomy(t)
+	docs := map[string]*Doc{}
+	var ids []string
+	for i, at := range []time.Time{
+		time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC), // import
+		time.Date(2026, 7, 21, 11, 0, 0, 0, time.UTC), // import
+		time.Date(2026, 7, 21, 12, 0, 0, 0, time.UTC), // import
+		time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 9, 4, 0, 0, 0, 0, time.UTC),
+	} {
+		id := fmt.Sprintf("d%d", i)
+		docs[id] = &Doc{ID: id, CreatedAt: at.UnixNano()}
+		ids = append(ids, id)
+	}
+	node := tax.Order()[0]
+	r := Dates(tax, docs, map[string][]string{}, map[string][]string{node: ids}, day)
+	n := r.Nodes[0]
+	if n.Dated != 3 || n.Periods != 1 || n.Usable != 1 {
+		t.Fatalf("got dated=%d months=%d usable=%d, want 3, 1, 1", n.Dated, n.Periods, n.Usable)
+	}
+	if r.All[DateImport] != 3 || r.All[DateCreatedAt] != 3 {
+		t.Fatalf("sources = %v", r.All)
 	}
 }
 

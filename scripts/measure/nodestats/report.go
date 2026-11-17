@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Render writes the readable report. Every number in it is also in the JSON.
@@ -177,16 +178,23 @@ func renderSplits(p printer, r *Result) {
 
 func renderDates(p printer, r *Result) {
 	d := r.Dates
-	p("## 6. Dates\n\nSource of each document's date (root valid_at, else import source_updated_at, else created_at):\n\n")
+	p("## 6. Dates\n\nSource of each document's date (root valid_at, else import source_updated_at, else created_at; a created_at on or before the bulk import day %s counts as the import's):\n\n", importDay(r.Options.ImportedUntil))
 	p("| source | all documents | placed documents |\n|---|---:|---:|\n")
-	for _, s := range []string{DateValidAt, DateSourceUpd, DateCreatedAt} {
+	for _, s := range []string{DateValidAt, DateSourceUpd, DateCreatedAt, DateImport} {
 		p("| %s | %d | %d |\n", s, d.All[s], d.Placed[s])
 	}
-	p("\n| concept | members | months | months with >= %d | first | last |\n|---|---:|---:|---:|---|---|\n", MinPeriodMembers)
+	p("\nMonths count only members not dated by the import.\n\n| concept | members | not import-dated | months | months with >= %d | first | last |\n|---|---:|---:|---:|---:|---|---|\n", MinPeriodMembers)
 	for _, n := range d.Nodes {
-		p("| %s | %d | %d | %d | %s | %s |\n", n.Name, n.Members, n.Periods, n.Usable, n.First, n.Last)
+		p("| %s | %d | %d | %d | %d | %s | %s |\n", n.Name, n.Members, n.Dated, n.Periods, n.Usable, n.First, n.Last)
 	}
 	p("\n")
+}
+
+func importDay(t time.Time) string {
+	if t.IsZero() {
+		return "(none given)"
+	}
+	return t.UTC().Format("2006-01-02")
 }
 
 func renderMisfits(p printer, r *Result) {

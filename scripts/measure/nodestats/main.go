@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -42,6 +43,7 @@ func run() error {
 		seeds      = flag.Int("split-seeds", 10, "Split seeds 1..n")
 		margins    = flag.String("misfit-margins", "0,0.02,0.05,0.1", "comma-separated misfit margins")
 		out        = flag.String("out", "", "output directory (required)")
+		imported   = flag.String("imported-until", "", "last day (YYYY-MM-DD, UTC) of the corpus's bulk import; documents created on or before it are dated by the import")
 	)
 	flag.Parse()
 	if *mainDSN == "" || *sqlDSN == "" || *tenant == "" || *schemeRoot == "" || *out == "" {
@@ -83,6 +85,13 @@ func run() error {
 
 	opt := Options{CurrentPromptVersion: *promptV, Permutations: *perms, SplitSeeds: *seeds,
 		MisfitMargins: ms, NonCurrentLimit: 0.10}
+	if *imported != "" {
+		day, err := time.Parse("2006-01-02", *imported)
+		if err != nil {
+			return fmt.Errorf("--imported-until: %w", err)
+		}
+		opt.ImportedUntil = day
+	}
 	res, err := Measure(data, opt, defVecs, defNote)
 	if err != nil {
 		return err

@@ -300,11 +300,17 @@ const (
 	DateValidAt   = "valid_at"
 	DateSourceUpd = "source_updated_at"
 	DateCreatedAt = "created_at"
+	// DateImport is a created_at on or before the corpus's bulk import: the
+	// time the document was loaded, not when it was written, so it carries no
+	// signal for a time series.
+	DateImport = "created_at (bulk import)"
 )
 
 // DocDate is a document's date by the RFC rule: the root chunk's valid_at, else
 // its import provenance's source_updated_at, else the document's created_at.
-func DocDate(d *Doc) (time.Time, string) {
+// A created_at before the end of importedUntil's day (UTC) is reported as
+// DateImport; a zero importedUntil marks nothing so.
+func DocDate(d *Doc, importedUntil time.Time) (time.Time, string) {
 	if d.RootValidAt != 0 {
 		return time.Unix(0, d.RootValidAt).UTC(), DateValidAt
 	}
@@ -313,7 +319,11 @@ func DocDate(d *Doc) (time.Time, string) {
 			return t.UTC(), DateSourceUpd
 		}
 	}
-	return time.Unix(0, d.CreatedAt).UTC(), DateCreatedAt
+	at := time.Unix(0, d.CreatedAt).UTC()
+	if !importedUntil.IsZero() && at.Before(importedUntil.UTC().Truncate(24*time.Hour).Add(24*time.Hour)) {
+		return at, DateImport
+	}
+	return at, DateCreatedAt
 }
 
 // DateReport is measurement 6.
@@ -324,10 +334,12 @@ type DateReport struct {
 }
 
 // NodeDates: Periods is the number of distinct months the members fall in,
-// Usable those with at least MinPeriodMembers members.
+// Usable those with at least MinPeriodMembers members dated by something other
+// than the bulk import (Dated counts those members).
 type NodeDates struct {
 	Name    string `json:"name"`
 	Members int    `json:"members"`
+	Dated   int    `json:"members_not_import_dated"`
 	Periods int    `json:"months"`
 	Usable  int    `json:"months_with_3_or_more"`
 	First   string `json:"first,omitempty"`
@@ -338,13 +350,13 @@ type NodeDates struct {
 // for a time series (RFC GM section 6A).
 const MinPeriodMembers = 3
 
-func Dates(tax *Taxonomy, docs map[string]*Doc, placed map[string][]string, members map[string][]string) DateReport {
+func Dates(tax *Taxonomy, docs map[string]*Doc, placed map[string][]string, members map[string][]string, importedUntil time.Time) DateReport {
 	r := DateReport{All: map[string]int{}, Placed: map[string]int{}}
 	for id, d := range docs {
 		if d.Ontology {
 			continue
 		}
-		_, src := DocDate(d)
+		_, src := DocDate(d, importedUntil)
 		r.All[src]++
 		if len(placed[id]) > 0 {
 			r.Placed[src]++
@@ -352,13 +364,18 @@ func Dates(tax *Taxonomy, docs map[string]*Doc, placed map[string][]string, memb
 	}
 	for _, id := range tax.Order() {
 		months := map[string]int{}
+		dated := 0
 		for _, m := range members[id] {
 			if d := docs[m]; d != nil {
-				t, _ := DocDate(d)
+				t, src := DocDate(d, importedUntil)
+				if src == DateImport {
+					continue
+				}
+				dated++
 				months[t.Format("2006-01")]++
 			}
 		}
-		nd := NodeDates{Name: pathName(tax, id), Members: len(members[id]), Periods: len(months)}
+		nd := NodeDates{Name: pathName(tax, id), Members: len(members[id]), Dated: dated, Periods: len(months)}
 		keys := make([]string, 0, len(months))
 		for k, n := range months {
 			keys = append(keys, k)
