@@ -124,6 +124,73 @@ func TestSetAnnotation_KeepsTheOwnCodeAndACitedOne(t *testing.T) {
 	}
 }
 
+// seedCodelessRfc makes an RFC whose title carries no code, with one section
+// that cites another RFC by its code.
+func seedCodelessRfc(t *testing.T, d *Document, ctx context.Context) annRfcCorpus {
+	t.Helper()
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Distillation must reclaim the window","path":"/kb/rfcs/distillation","type":"Rfc"}`)
+	if r.IsError {
+		t.Fatalf("create_document: %s", r.Text)
+	}
+	c := annRfcCorpus{doc: out["document_id"].(string), root: out["root_chunk_id"].(string)}
+	o, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"title":"Proposal","body":"Distillation reclaims the context window when it fills. It builds on RFC AB for the statements."}`, c.doc))
+	if r.IsError {
+		t.Fatalf("create_chunk: %s", r.Text)
+	}
+	c.section = o["id"].(string)
+	return c
+}
+
+// A document with no code of its own is given none: the class example's code
+// the model copied becomes a reference to the document itself, and a code the
+// section really cites stays.
+func TestSetAnnotation_CodelessDocumentLosesACopiedCodeAndKeepsACitedOne(t *testing.T) {
+	d, ctx := annOntologyFixture(t, annRfcOntologyMD)
+	c := seedCodelessRfc(t, d, ctx)
+	in := annInputs(t, d, ctx, idTarget(c.section))
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_annotation","scope":"tenant","id":%q,"brief":%q,"abstract":%q,"inputs_sha256":%q}`,
+		c.section, "The proposal of RFC ZZ to reclaim the window.",
+		"RFC ZZ proposes reclaiming the context window when it fills. The RFC ZZ proposal builds on RFC AB.", in["inputs_sha256"]))
+	if r.IsError {
+		t.Fatalf("set_annotation: %s", r.Text)
+	}
+	rec := out["annotation"].(map[string]any)
+	if rec["brief"] != "The proposal of this RFC to reclaim the window." {
+		t.Errorf("brief = %q, want the copied code gone", rec["brief"])
+	}
+	if rec["abstract"] != "This RFC proposes reclaiming the context window when it fills. The RFC proposal builds on RFC AB." {
+		t.Errorf("abstract = %q, want the copied code gone and the citation kept", rec["abstract"])
+	}
+	reps, _ := out["repaired"].([]any)
+	want := []struct{ field, to string }{{"brief", "this RFC"}, {"abstract", "This RFC"}, {"abstract", "RFC"}}
+	if len(reps) != len(want) {
+		t.Fatalf("repaired = %v, want one per copied code", out["repaired"])
+	}
+	for i, w := range want {
+		m := reps[i].(map[string]any)
+		if m["field"] != w.field || m["from"] != "RFC ZZ" || m["to"] != w.to || m["reason"] != annotationRepairForeignCode {
+			t.Errorf("repaired[%d] = %v, want %s → %q", i, m, w.field, w.to)
+		}
+	}
+}
+
+// A code-less document's annotation that names only codes its inputs carry is
+// stored as written.
+func TestSetAnnotation_CodelessDocumentKeepsACodeItsInputsCarry(t *testing.T) {
+	d, ctx := annOntologyFixture(t, annRfcOntologyMD)
+	c := seedCodelessRfc(t, d, ctx)
+	in := annInputs(t, d, ctx, idTarget(c.section))
+	abstract := "Distillation reclaims the context window when it fills, building on RFC AB."
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_annotation","scope":"tenant","id":%q,"brief":"How distillation reclaims the window, after RFC AB.","abstract":%q,"inputs_sha256":%q}`,
+		c.section, abstract, in["inputs_sha256"]))
+	if r.IsError {
+		t.Fatalf("set_annotation: %s", r.Text)
+	}
+	if _, has := out["repaired"]; has || out["annotation"].(map[string]any)["abstract"] != abstract {
+		t.Fatalf("result = %v, want the text as written and no repair", out)
+	}
+}
+
 // An operator's own text is never rewritten.
 func TestSetAnnotation_ManualTextIsNotRepaired(t *testing.T) {
 	d, ctx := annOntologyFixture(t, annRfcOntologyMD)

@@ -29,7 +29,10 @@ reported in `repaired`; the write succeeds:
   value differs from the document's own is rewritten to the document's own,
   unless the token occurs in what the annotation was written from (a section
   that cites another document keeps the citation). Reason
-  `identity_mismatch`.
+  `identity_mismatch`. When the document has no code of its own, such a token
+  is replaced by a reference to the document itself (a copied code before
+  "proposes" becomes "This RFC proposes"), with the same exception for a
+  citation. Reason `foreign_code`.
 - **A folder brief that says nothing.** A `path` brief that, ignoring case and
   punctuation, is the folder's own name (`brief_repeats_folder_name`), or is
   shorter than 20 characters (`brief_too_short`), is replaced by the first
