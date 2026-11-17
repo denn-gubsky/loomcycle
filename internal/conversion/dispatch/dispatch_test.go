@@ -3,6 +3,7 @@ package dispatch_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -28,6 +29,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract/pdftest"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 )
 
 const token = "test-worker-token"
@@ -425,5 +427,89 @@ func (s *fakeSlot) send(t *testing.T, f *workerpb.WorkerFrame) {
 	t.Helper()
 	if err := s.st.Send(f); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// recordRecSink is a recSink that takes a loomcycle record (RFC GR P4b),
+// noting where in the text each heading anchor was named.
+type recordRecSink struct {
+	recSink
+	record  []byte
+	anchors []string
+	at      []int
+}
+
+func (s *recordRecSink) Record(b []byte) { s.record = append([]byte(nil), b...) }
+func (s *recordRecSink) HeadingAnchor(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.anchors = append(s.anchors, name)
+	s.at = append(s.at, s.md.Len())
+}
+
+// recordedDOCX is a Word file loomcycle rendered with its record embedded,
+// the record a large one, so it crosses the wire in several frames.
+func recordedDOCX(t *testing.T) []byte {
+	t.Helper()
+	b := render.NewBuilder("Services")
+	b.Doc.Anchor = "chunk-root"
+	b.AddSection()
+	b.Doc.Sections = []*render.Section{{ID: "s1", Anchor: "chunk-s1", Title: "Basic", Level: 2, Blocks: b.Body("No test plan.")}}
+	d, _ := b.Finish()
+	// Incompressible, as a real record is near enough: a run of one letter
+	// would trip the archive's expansion guard and read as no record.
+	var sb strings.Builder
+	seed := uint32(7)
+	for sb.Len() < 3*wire.ChunkSize {
+		seed = seed*1664525 + 1013904223
+		sb.WriteByte(byte('a' + seed>>24%26))
+	}
+	big, _ := json.Marshal(map[string]string{"note": sb.String()})
+	d.Embed = &render.Embed{Version: render.EmbedVersion, DocumentID: "doc1", Scope: "user", Title: "Services",
+		Chunks: []render.EmbedChunk{{ID: "root", Anchor: "chunk-root", Fields: big}, {ID: "s1", Anchor: "chunk-s1", Parent: "root"}}}
+	var out bytes.Buffer
+	if err := render.Write(context.Background(), &out, d, render.FormatDOCX, render.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+// A worker sends the record and heading anchors only for a caller that
+// takes them, and they arrive as in process: the whole record across its
+// frames, each anchor just before its heading.
+func TestPool_ARecordAndItsAnchorsCrossTheWire(t *testing.T) {
+	d, target := pool(t, dispatch.Options{})
+	realWorker(t, target, "w1")
+	waitIdle(t, d, 1)
+	data := recordedDOCX(t)
+	const mt = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	opts := extract.Options{Name: "services.docx"}
+
+	var here recordRecSink
+	if _, err := (&convert.InProcess{}).Extract(context.Background(), mt, bytes.NewReader(data), int64(len(data)), &here, opts); err != nil {
+		t.Fatal(err)
+	}
+	var there recordRecSink
+	if _, err := d.Client().Extract(context.Background(), mt, bytes.NewReader(data), int64(len(data)), &there, opts); err != nil {
+		t.Fatal(err)
+	}
+	if len(here.record) < 3*wire.ChunkSize || !bytes.Equal(there.record, here.record) {
+		t.Errorf("record: pool %d bytes, in process %d", len(there.record), len(here.record))
+	}
+	if !reflect.DeepEqual(there.anchors, here.anchors) || !reflect.DeepEqual(there.at, here.at) || len(here.anchors) != 1 {
+		t.Errorf("anchors: pool %v at %v, in process %v at %v", there.anchors, there.at, here.anchors, here.at)
+	}
+	if there.md.String() != here.md.String() {
+		t.Errorf("markdown differs:\npool:\n%s\nin process:\n%s", there.md.String(), here.md.String())
+	}
+
+	// A caller that takes no record is sent none: the same file extracts
+	// cleanly, as it would through a dispatcher built before records.
+	var plain recSink
+	if _, err := d.Client().Extract(context.Background(), mt, bytes.NewReader(data), int64(len(data)), &plain, opts); err != nil {
+		t.Fatalf("a caller that takes no record: %v", err)
+	}
+	if plain.md.String() != here.md.String() {
+		t.Error("the text differs for a caller that takes no record")
 	}
 }
