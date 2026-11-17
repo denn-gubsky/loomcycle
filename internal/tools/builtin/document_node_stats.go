@@ -895,6 +895,47 @@ func (p *nodeStatsPlan) statsView(n statNode, row storedNodeStats, list *docRead
 	return v
 }
 
+// NodeStatsScopeKey runs one compute pass over a tenant scope the sweeper found.
+// ran is false, and nothing is read or provisioned, for any other scope, for a
+// tenant scope whose document tables do not exist yet, and for a tenant with no
+// ontology document: there is no taxonomy to keep statistics of.
+//
+// The memory tenant is whichever spelling of the scope's tenant holds its
+// annotation vectors (bodyTenantsFor); the run identity carries it, so the
+// ontology read and the pass resolve the same tenant the op would.
+func (d *Document) NodeStatsScopeKey(ctx context.Context, key sqlmem.ScopeKey) (rep NodeStatsReport, ran bool, err error) {
+	if d.Store == nil || d.SqlMem == nil || key.Scope != "tenant" || key.ScopeID != key.Tenant {
+		return rep, false, nil
+	}
+	// A probe that never provisions: d.query would create the tables on a scope
+	// that holds only Memory SQL.
+	if !d.tableHasColumn(ctx, key, "documents", "id") {
+		return rep, false, nil
+	}
+	tenants := bodyTenantsFor(key.Tenant)
+	memTenant := tenants[len(tenants)-1]
+	if d.nodeStatsVectorsNote() == "" && len(tenants) > 1 {
+		scopeID := annotationMemScopeID(store.MemoryScopeTenant, key)
+		for _, t := range tenants {
+			page, lerr := d.Store.MemoryEmbedListVectors(ctx, t, store.MemoryScopeTenant, scopeID, annotationKeyPrefix, "", 1)
+			if lerr == nil && len(page) > 0 {
+				memTenant = t
+				break
+			}
+		}
+	}
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: memTenant})
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok {
+		return rep, false, fmt.Errorf("node_stats: the tenant ontology could not be read")
+	}
+	if read.DocumentID == "" {
+		return rep, false, nil
+	}
+	rep, err = d.NodeStatsPass(ctx, key, memTenant, read, "", true)
+	return rep, err == nil, err
+}
+
 func sortedSet(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

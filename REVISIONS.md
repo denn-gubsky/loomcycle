@@ -8,6 +8,48 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.158.0
+
+*Documents render as OpenDocument (.odt) and EPUB, and a rendered file can carry the document's record (RFC GR P4a–P4b.1). The ontology gains concept-scheme headers, `@focus`, schemes up to eight levels deep, member counts and node statistics (RFC GM P1a–P2.1). `kb/survey` links the matching sections of a guide that fits and reads each document's stored status, and the annotator writes a document's summary from its stored status and no longer gives a document with no code someone else's.*
+
+The v1.158 line: #2704 to #2720.
+- `@loomcycle/client` 1.158.0: `odt` and `epub` in `DocumentExportFormat`, `metadata` on `exportDocument`, and the `node_stats` op and `with_counts` / `with_stats` on the Document tool input. The Python adapter stays at 1.154.0; no change there.
+- No numbered migration and no new Go dependency. `node_stats` is a new per-scope document table, created on first use.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **Update the conversion workers with this release (#2706, #2715).** ODT and EPUB need the new worker label `write_odt_epub`. With only older workers attached, an ODT or EPUB render is refused at once (counted as `document_render/unsupported`) and never queues. Other formats keep working on older workers.
+- **The knowledge-base bundle changed again (#2705, #2711, #2714, #2716).** A deployment that loads the `knowledge-base` bundle gets the new `kb/survey`, `kb/walker`, `kb/annotator` and `kb/annotate`. A tenant that forked any of them keeps its own version until it forks again.
+  - `kb/annotator`'s `CONFIG.prompt_version` is now `prompt_versions` with one entry per level (`branch`, `document`, `path`), all 2, so no record becomes stale. A fork that sets `prompt_version` must move to the new key.
+  - The annotator now sends a document's stored status with its request, and the summary follows it. Existing summaries are not rewritten by this alone; a `force` pass refreshes them.
+- **Imported table cells keep their line breaks (#2704).** DOCX, ODT and PPTX imports join a cell's paragraphs with a bare `<br>`, which import sanitising now lets through and every renderer turns into a line break. Documents already imported keep their old text until re-imported.
+
+### Rendering documents (RFC GR P4a–P4b.1: #2704, #2706, #2715)
+
+- **ODT** is hand-written OpenDocument with LibreOffice's own style names; **EPUB** is EPUB 3 built from the HTML writer, one page per top-level section. Both are in `File op=render`, the export route, the TS adapter and the Web UI download menu. CI opens the ODT in LibreOffice and runs `epubcheck` on the EPUB.
+- **`metadata: none | embed`** on `File op=render`, `?metadata=embed` on the export route and `exportDocument({metadata})`: the file carries the document's id, scope, title, each chunk's anchor, type, status, tags and fields, and the relations between rendered chunks, never a body. Each format has its own carrier (a custom XML part in DOCX, `loomcycle.json` in ODT, EPUB and PDF, hidden escaped JSON in HTML, export_md's comments in Markdown). A worker refuses a record the core could not have made.
+- The source line is plain text in every format; PPTX imports skip slide-number and date placeholders.
+
+### Ontology and taxonomy nodes (RFC GM P1a–P2.1: #2708, #2709, #2712, #2713, #2719, #2720)
+
+- **Scheme header:** `@domain`, `@projects`, `@origin adopted|declared|generated`, `@source` and `@version` on a scheme, and `@focus` on a concept. Misuse is reported in `issues`, as for every directive. A `@focus` pair already held by another method's statement counts as `scheme_focus.kept`.
+- **Schemes up to eight levels deep** (`SchemeMaxDepth`); class hierarchies stay at four. A deeper scheme is flattened onto level 8 with an issue on the scheme. One Markdown document still holds three concept levels; deeper ones are made with `create_chunk` / `move_chunk`.
+- **`describe_ontology with_counts`** adds member counts to concepts, schemes and classes, under the same membership and access rules as search.
+- **`Document op=node_stats {mode: report | compute}`** computes, for each concept and document class with at least 3 members, the spread, exemplars, nearest siblings, distinctive terms and centroid from the members' annotation vectors, and stores them in `node_stats`. `report` writes nothing. Only an operator, or a run granted `statement_methods` that can read every document of the tenant scope, may run it. `describe_ontology with_stats` shows the stored figures.
+- A measurement program, `scripts/measure/nodestats`, outside the binary (#2707, #2710, #2718).
+
+### Knowledge base (#2705, #2711, #2714, #2716)
+
+- `kb/survey` takes up to 6 sections of a large guide by match, screens whole documents first, then sections of documents that did not fit in rounds of 20. When a guide fits, its matching sections are linked beside it without being screened.
+- The answer-writing round gets one summary call for up to 24 documents and each fitting document's stored type and status; the stored status overrides a summary's wording. A leaked `COMPOSE:` line is removed from the answer.
+- `COVERAGE: complete` also requires that no guide had more matching sections than its limit and that no section was cut.
+- A summary of a document that has no code of its own no longer keeps a code it copied (repair reason `foreign_code`).
+
+### Docs (#2717)
+
+- The README says the binary ships no toolchain or Chromium: those are in the `loomcycle-toolbox` and `loomcycle-browser` images, and extraction runs in the conversion workers.
+
 ## What's in v1.157.0
 
 *A model no longer reads a document's colour scheme: `documents_summary`, `get_document` and `graph_snapshot` leave it out of in-run and MCP calls, which was most of what a summary call returned. `kb/survey` writes the calls of its answer-writing round itself, keeps the best-matching sections under a cap of 60, and claims `complete` only when nothing was cut. MCP `file op=render` and `keep` now work without a run, as v1.156.0 meant them to. The Health page reports what the boot did with the teams in the yaml (RFC GS), and the PDF encryption pre-check no longer misreads stream data.*
