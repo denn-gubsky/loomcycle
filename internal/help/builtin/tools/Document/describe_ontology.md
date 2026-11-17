@@ -87,9 +87,10 @@ relations, grammars, schemes, instances, norm_classes, policy, review?, issues?}
   - `used_as` says how classes name it: `anchor`, `citation` or both. A grammar
     with no `pattern:` line finds no citations; named as a citation grammar it is
     reported as an issue.
-- `schemes` — each concept scheme with its concepts: `name`, `path`, `parent`,
-  `tag`, `notation`, `alt`, `rank`, `exact_match`, `retention`, `acl`, and the
-  concept's effective policy:
+- `schemes` — each concept scheme with its header, when it declares one
+  (`domain`, `projects`, `origin`, `source`, `version`; see Scheme header below),
+  and its concepts: `name`, `path`, `parent`, `tag`, `notation`, `alt`, `rank`,
+  `exact_match`, `focus`, `retention`, `acl`, and the concept's effective policy:
   - `effective_retention` — its own `@retention`, else the nearest ancestor's
     (then `inherited_retention` is true and `retention_from` is that ancestor's
     tag).
@@ -198,6 +199,41 @@ keys `Постанова › 1. Затвердити Положення…` as `
 `1. Це Положення розроблено…` as `point-1`, `Додаток 2 до Положення` as `annex-2`
 and the point 3 inside it as `annex-2/point-3`. The regulation's own heading is no
 scope, so its parts carry no prefix.
+
+## Scheme header
+
+A concept scheme is a taxonomy: one knowledge domain's arrangement of the
+things the classes say exist. Its entry may say what it is for and where it
+came from, and a concept may name the thing it is about:
+
+```text
+### aircraft-systems
+Maintenance topics, by system.
+@domain Aircraft maintenance: which system a task or report concerns
+@projects MaintenanceTask, Drawing
+@origin adopted
+@source https://example.org/ata-chapters
+@version 2024
+#### Landing gear
+@focus LandingGear
+```
+
+- `@domain <text>` — the knowledge domain the scheme covers, one line.
+- `@projects <Class>, <Class>` — the classes whose things it arranges
+  (document, entity or fact classes; subclasses included). Without it, every
+  document class.
+- `@origin adopted|declared|generated` — a published scheme taken over, one
+  the tenant wrote, or one generated from the corpus.
+- `@source <text or URL>` and `@version <text>` — an adopted scheme's
+  provenance.
+- `@focus <class or instance>` on a concept — the entity the concept is about.
+  Confirming the ontology writes it as a `focus` statement from the concept's
+  chunk to the class's entry, or to the subject an instance was adopted as;
+  removing or changing it retires that statement.
+
+A `@projects` class that does not exist, an `@origin` outside the three, and
+a `@focus` that names no class or instance are reported in the entry's
+`issues` and ignored.
 
 ## Errors
 
