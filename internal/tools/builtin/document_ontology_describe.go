@@ -46,6 +46,11 @@ type describedClass struct {
 	// Meaning is the first prose line of the class's entry.
 	Meaning string   `json:"meaning,omitempty"`
 	Issues  []string `json:"issues,omitempty"`
+	// Documents (with_counts only) is the documents whose root type is this class or,
+	// in a confirmed ontology, a subclass of it — what search type: matches, which
+	// widens to subtypes only when the ontology is confirmed. Every class gets one: a
+	// document's type is not refused for naming a chunk class.
+	Documents *int `json:"documents,omitempty"`
 }
 
 // describedGrammar is a grammar plus the uses classes in force make of it.
@@ -117,7 +122,7 @@ type describedReview struct {
 
 // describeOntology answers op=describe_ontology for the caller's tenant. The call's
 // `scope` does not apply: the ontology is the tenant's.
-func (d *Document) describeOntology(ctx context.Context) (tools.Result, error) {
+func (d *Document) describeOntology(ctx context.Context, withCounts bool) (tools.Result, error) {
 	key, mscope, err := d.ontologyTenantKey(ctx)
 	if err != nil {
 		return docFail("describe_ontology", err), nil
@@ -140,7 +145,78 @@ func (d *Document) describeOntology(ctx context.Context) (tools.Result, error) {
 	out := describeOntologyRead(read)
 	d.describeInstanceSubjects(ctx, key, mscope, acl, read, &out)
 	d.describePolicy(ctx, read, &out)
+	if withCounts {
+		d.describeCounts(ctx, key, acl, read, &out)
+	}
 	return jsonResult(out)
+}
+
+// describeCounts adds with_counts' member counts: per concept, per scheme and per
+// document class, over the documents the caller may read. Counts are tenant DATA, as
+// an adopted subject is (describeInstanceSubjects): a caller without the tenant scope
+// gets none, and an issue saying why. A store fault marks the answer partial rather
+// than failing the description of the ontology itself.
+func (d *Document) describeCounts(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, read OntologyRead, out *ontologyDescription) {
+	if _, _, err := d.resolveScope(ctx, "tenant"); err != nil {
+		out.Issues = append(out.Issues, "with_counts: member counts need the tenant scope, which this caller is not granted; none are given")
+		return
+	}
+	var schemes []memrank.OntologyScheme
+	if read.Confirmed {
+		schemes = read.Schemes // out.Schemes holds exactly these, in this order
+	}
+	list, err := d.readableDocList(ctx, acl)
+	var counts ontologyMemberCounts
+	if err == nil {
+		counts, err = d.countOntologyMembers(ctx, key, schemes, list)
+	}
+	if err != nil {
+		out.Partial = true
+		out.Issues = append(out.Issues, "with_counts: the member counts could not be read; read again")
+		return
+	}
+	for i := range out.Schemes {
+		n := counts.schemes[i]
+		out.Schemes[i].Members = &n
+		for j := range out.Schemes[i].Concepts {
+			c := &out.Schemes[i].Concepts[j]
+			m := counts.concepts[c.ChunkID]
+			c.Members = &m
+			if len(counts.conceptTypes[c.ChunkID]) > 0 {
+				c.MembersByClass = counts.conceptTypes[c.ChunkID]
+			}
+		}
+	}
+	// A class's documents take in its subclasses' only where search type: widens to
+	// them (expandTypeFilter): in a confirmed ontology.
+	kids := map[string][]string{}
+	if read.Confirmed {
+		for _, c := range out.Classes {
+			if c.Parent != "" {
+				kids[c.Parent] = append(kids[c.Parent], c.Name)
+			}
+		}
+	}
+	for i := range out.Classes {
+		c := &out.Classes[i]
+		n := 0
+		seen := map[string]bool{c.Name: true}
+		frontier := []string{c.Name}
+		for depth := 0; depth <= memrank.OntologyMaxDepth && len(frontier) > 0; depth++ {
+			var next []string
+			for _, name := range frontier {
+				n += counts.types[name]
+				for _, k := range kids[name] {
+					if !seen[k] {
+						seen[k] = true
+						next = append(next, k)
+					}
+				}
+			}
+			frontier = next
+		}
+		c.Documents = &n
+	}
 }
 
 // describeOntologyRead derives the in-force description from one read. Pure, and it never
