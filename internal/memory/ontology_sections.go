@@ -87,6 +87,8 @@ var knownDirectives = map[string]bool{
 	// schemes
 	"ordered": true, "notation": true, "alt": true, "exact_match": true,
 	"retention": true, "acl": true, "render": true,
+	// scheme header and concept focus (RFC GM); "domain" and "version" are listed above
+	"projects": true, "origin": true, "source": true, "focus": true,
 	// instances
 	"a": true, "nesting": true,
 }

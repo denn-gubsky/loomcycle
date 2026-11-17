@@ -26,7 +26,20 @@ type OntologyScheme struct {
 	// Ordered makes a concept's position its rank (what a precedence relation compares).
 	Ordered bool `json:"ordered,omitempty"`
 	// Render lists the scheme in the extraction prompt.
-	Render   bool              `json:"render,omitempty"`
+	Render bool `json:"render,omitempty"`
+	// The header (RFC GM D14) says what the taxonomy is for and where it came from.
+	// Domain is the knowledge domain it covers, one line of free text.
+	Domain string `json:"domain,omitempty"`
+	// Projects names the ontology classes whose things the taxonomy arranges (document,
+	// entity or fact classes), subclasses included. Empty means the default: every
+	// document class.
+	Projects []string `json:"projects,omitempty"`
+	// Origin is adopted, declared or generated; "" when the scheme does not say.
+	Origin string `json:"origin,omitempty"`
+	// Source and Version are an adopted scheme's provenance: where it was published
+	// (text or a URL) and which edition of it this is.
+	Source   string            `json:"source,omitempty"`
+	Version  string            `json:"version,omitempty"`
 	Meaning  string            `json:"meaning,omitempty"`
 	Concepts []OntologyConcept `json:"concepts,omitempty"`
 	ChunkID  string            `json:"chunk_id,omitempty"`
@@ -46,6 +59,9 @@ type OntologyConcept struct {
 	Notation   string   `json:"notation,omitempty"`
 	Alt        []string `json:"alt,omitempty"`
 	ExactMatch string   `json:"exact_match,omitempty"`
+	// Focus names the class or instance the concept is about (RFC GM D15). Confirming
+	// the ontology writes it as a `focus` statement from the concept's chunk.
+	Focus string `json:"focus,omitempty"`
 	// Retention and ACL are a file-plan concept's policy, carried as data. Not enforced
 	// yet (RFC FO decision 10f.1): enforcement is a later phase of its own.
 	Retention string `json:"retention,omitempty"`
@@ -57,7 +73,18 @@ type OntologyConcept struct {
 	Issues  []string `json:"issues,omitempty"`
 }
 
-// ParseSchemeBody reads a scheme entry's body: @ordered, @render and its prose.
+// Scheme origins a scheme header's @origin may name (RFC GM).
+const (
+	SchemeOriginAdopted   = "adopted"
+	SchemeOriginDeclared  = "declared"
+	SchemeOriginGenerated = "generated"
+)
+
+// ParseSchemeBody reads a scheme entry's body: @ordered, @render, the header (@domain,
+// @projects, @origin, @source, @version) and its prose.
+//
+// Whether a @projects class exists is not known here — the classes are another
+// section — so CheckSchemeReferences reports that once the whole document is read.
 func ParseSchemeBody(name, body string) OntologyScheme {
 	s := OntologyScheme{Name: name, Meaning: firstProseLine(body)}
 	for _, d := range ParseDirectives(body) {
@@ -66,12 +93,69 @@ func ParseSchemeBody(name, body string) OntologyScheme {
 			s.Ordered = true
 		case "render":
 			s.Render = true
+		case "domain":
+			s.Domain = singleValue(&s.Issues, d, s.Domain, strings.TrimSpace(d.Value))
+		case "projects":
+			names := splitNameList(d.Value)
+			if len(names) == 0 {
+				s.Issues = append(s.Issues, "@projects names no class; ignored")
+				continue
+			}
+			s.Projects = append(s.Projects, names...)
+		case "origin":
+			v := strings.ToLower(firstWord(d.Value))
+			switch v {
+			case SchemeOriginAdopted, SchemeOriginDeclared, SchemeOriginGenerated:
+				s.Origin = singleValue(&s.Issues, d, s.Origin, v)
+			default:
+				s.Issues = append(s.Issues, "@origin "+strconv.Quote(d.Value)+" is not an origin (want "+
+					SchemeOriginAdopted+", "+SchemeOriginDeclared+" or "+SchemeOriginGenerated+"); ignored")
+			}
+		case "source":
+			s.Source = singleValue(&s.Issues, d, s.Source, strings.TrimSpace(d.Value))
+		case "version":
+			s.Version = singleValue(&s.Issues, d, s.Version, strings.TrimSpace(d.Value))
 		case "section":
 		default:
 			s.Issues = append(s.Issues, directiveIssue(d.Name, "scheme"))
 		}
 	}
+	if s.Origin != "" && s.Origin != SchemeOriginAdopted {
+		// Kept, not dropped: the operator may be about to change the origin. Said so the
+		// header does not claim a provenance the scheme does not have.
+		for _, f := range []struct{ name, v string }{{"source", s.Source}, {"version", s.Version}} {
+			if f.v != "" {
+				s.Issues = append(s.Issues, "@"+f.name+" describes an adopted scheme, and this one is @origin "+s.Origin)
+			}
+		}
+	}
 	return s
+}
+
+// singleValue is a one-valued directive's value after d: v, unless v is empty (reported,
+// the old value kept). A second, different value replaces the first and is reported, so
+// an operator who wrote two does not have to guess which one is read.
+func singleValue(issues *[]string, d Directive, old, v string) string {
+	if v == "" {
+		*issues = append(*issues, "@"+d.Name+" needs a value; ignored")
+		return old
+	}
+	if old != "" && old != v {
+		*issues = append(*issues, "@"+d.Name+" given more than once; only the last ("+strconv.Quote(v)+") applies")
+	}
+	return v
+}
+
+// splitNameList reads "A, B, C" as class names. Class names may hold spaces, so only
+// the comma separates them.
+func splitNameList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // ParseConceptBody reads one concept entry's body. A concept carries no fields, so a
@@ -92,6 +176,9 @@ func ParseConceptBody(scheme, name string, path []string, body string) OntologyC
 			}
 		case "exact_match":
 			c.ExactMatch = firstWord(d.Value)
+		case "focus":
+			// The whole value: an instance's name may hold spaces ("Acme Bank").
+			c.Focus = singleValue(&c.Issues, d, c.Focus, strings.TrimSpace(d.Value))
 		case "retention":
 			v := firstWord(d.Value)
 			if _, ok := ParseRetention(v); !ok {
@@ -121,6 +208,82 @@ func ParseConceptBody(scheme, name string, path []string, body string) OntologyC
 		c.Issues = append(c.Issues, "a concept carries no fields; the field bullets here are ignored")
 	}
 	return c
+}
+
+// Focus target kinds.
+const (
+	FocusClass    = "class"
+	FocusInstance = "instance"
+)
+
+// FocusTarget is what a concept's @focus names: a class, or an instance of the
+// Instances section (whose Class is its @a class).
+type FocusTarget struct {
+	Kind  string
+	Name  string
+	Class string
+}
+
+// ResolveFocus finds the class or instance a @focus names, case-insensitively — the way
+// adoption matches an instance's class and its relation targets. ok is false when the
+// name is neither. both reports a name that is a class AND an instance; the instance is
+// returned then, as the more specific reading (a concept for one product is about that
+// product, not about every product).
+//
+// classes are the classes in force once the document is confirmed
+// (EffectiveClasses(terms, true)), so a seed class can be a focus.
+func ResolveFocus(name string, classes []OntologyTerm, instances []OntologyInstance) (t FocusTarget, ok, both bool) {
+	n := strings.TrimSpace(name)
+	var class *OntologyTerm
+	for i := range classes {
+		if strings.EqualFold(classes[i].Name, n) {
+			class = &classes[i]
+			break
+		}
+	}
+	for _, in := range instances {
+		if strings.EqualFold(in.Name, n) {
+			return FocusTarget{Kind: FocusInstance, Name: in.Name, Class: in.Class}, true, class != nil
+		}
+	}
+	if class != nil {
+		return FocusTarget{Kind: FocusClass, Name: class.Name}, true, false
+	}
+	return FocusTarget{}, false, false
+}
+
+// CheckSchemeReferences adds the advisories only the whole document can give: a
+// @projects class that does not exist, and a @focus that names no class or instance.
+// It edits the schemes in place and acts on nothing — a name that resolves to nothing
+// is reported and skipped, as every other directive is (fail-open).
+func CheckSchemeReferences(schemes []OntologyScheme, classes []OntologyTerm, instances []OntologyInstance) {
+	known := make(map[string]bool, len(classes))
+	for _, c := range classes {
+		known[strings.ToLower(c.Name)] = true
+	}
+	for i := range schemes {
+		s := &schemes[i]
+		for _, p := range s.Projects {
+			if !known[strings.ToLower(p)] {
+				s.Issues = append(s.Issues, "@projects "+strconv.Quote(p)+" is not a class of this ontology")
+			}
+		}
+		for j := range s.Concepts {
+			c := &s.Concepts[j]
+			if c.Focus == "" {
+				continue
+			}
+			_, ok, both := ResolveFocus(c.Focus, classes, instances)
+			switch {
+			case !ok:
+				c.Issues = append(c.Issues, "@focus "+strconv.Quote(c.Focus)+
+					" is not a class or an instance of this ontology; no focus is written")
+			case both:
+				c.Issues = append(c.Issues, "@focus "+strconv.Quote(c.Focus)+
+					" names both a class and an instance; the instance is used")
+			}
+		}
+	}
 }
 
 func directiveIssue(name, what string) string {

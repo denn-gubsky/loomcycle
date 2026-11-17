@@ -112,3 +112,30 @@ func ontologyJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }
+
+// TestOntologyAPI_ConfirmWritesFocusStatements (RFC GM P1.1): the read reports the
+// focus statements a confirm would write, the confirm writes them and reports it, and
+// the read is then clean.
+func TestOntologyAPI_ConfirmWritesFocusStatements(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	layout := schemesLayout(false)
+	layout[1].kids[0].body = "@domain Operational risk\n@projects incident\n@origin declared\n"
+	layout[1].kids[0].kids[0].body = "@notation RM\n@focus incident\n"
+	replaceOntologyWithSections(t, s, mi, layout)
+
+	draft := s.getOntology(t, mi.Tenant)
+	if len(draft.SchemeFocusStale) != 1 || !strings.HasPrefix(draft.SchemeFocusStale[0], "topics/risk-management -> incident") {
+		t.Fatalf("before confirm: focus stale %v", draft.SchemeFocusStale)
+	}
+	if sc := draft.Schemes[0]; sc.Domain != "Operational risk" || sc.Origin != "declared" || len(sc.Projects) != 1 || len(sc.Issues) != 0 {
+		t.Errorf("scheme header = %#v", sc)
+	}
+	got := s.setOntologyStatus(t, mi.Tenant, meminject.OntologyConfirmedStatus, http.StatusOK)
+	if got.SchemeFocus == nil || got.SchemeFocus.Written != 1 || len(got.SchemeFocusStale) != 0 {
+		t.Fatalf("confirm should write the focus statement: %#v stale %v", got.SchemeFocus, got.SchemeFocusStale)
+	}
+	again := s.setOntologyStatus(t, mi.Tenant, meminject.OntologyConfirmedStatus, http.StatusOK)
+	if again.SchemeFocus == nil || again.SchemeFocus.Written != 0 || again.SchemeFocus.Retired != 0 {
+		t.Errorf("re-confirming changed the focus statements: %#v", again.SchemeFocus)
+	}
+}
