@@ -143,6 +143,21 @@ type Record struct {
 	// file inferred from formatting (File op=extract structure): what an
 	// import of it records as where its structure came from.
 	InferredHeadings int `json:"inferred_headings,omitempty"`
+	// Rendered is the document loomcycle rendered the extracted file from,
+	// when the extraction found the record the render embedded (RFC GR
+	// P4b): what an import of this text re-imports onto.
+	Rendered *Rendered `json:"rendered,omitempty"`
+}
+
+// Rendered names the document a loomcycle-rendered file was made from, and
+// by line of the extracted text (counted from 1) the chunk each heading
+// was. Only what an import needs: the document's own record of its chunks
+// stays in the store.
+type Rendered struct {
+	DocumentID string         `json:"document_id"`
+	Scope      string         `json:"scope"`
+	Title      string         `json:"title,omitempty"`
+	Headings   map[int]string `json:"headings,omitempty"`
 }
 
 // Item is one file a producer hands over.
@@ -169,6 +184,9 @@ type Item struct {
 	// InferredHeadings is the extraction's count of inferred headings (see
 	// Record).
 	InferredHeadings int
+	// Rendered is what the extraction found the file was rendered from (see
+	// Record).
+	Rendered *Rendered
 }
 
 // Result is what a capture produced: the stub the model sees and, when the
@@ -360,6 +378,7 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 		URL:              recordURL(it.URL),
 		ExtractedFrom:    extractedFrom(it.ExtractedFrom),
 		InferredHeadings: max(it.InferredHeadings, 0),
+		Rendered:         it.Rendered,
 	}, nil
 }
 
