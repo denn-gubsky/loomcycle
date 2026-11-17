@@ -157,6 +157,13 @@ func TestProposeScheme_AcceptPutsHeaderAndConceptsInForce(t *testing.T) {
 			if (md == classesOnlyOntologyMD) != (out["carries_section"] == true) {
 				t.Errorf("carries_section = %v", out["carries_section"])
 			}
+			// Listed as ONE scheme proposal wherever it was filed: a proposal carrying its
+			// section sits under the root, where the class walk would read the scheme
+			// and each concept as a proposed class.
+			pending := readOntologyNow(t, d, opCtx).Proposals
+			if len(pending) != 1 || pending[0].Scheme == nil || pending[0].Section != memrank.SectionSchemes {
+				t.Fatalf("proposals before accepting = %#v", pending)
+			}
 			filed := proposalChunkIDs(t, d, opCtx, schemeID)
 			handled, rep, err := d.AcceptSchemeProposal(opCtx, "tenant", schemeID)
 			if !handled || err != nil || rep.Concepts != 3 {
