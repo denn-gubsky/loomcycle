@@ -176,6 +176,7 @@ func TestDocumentExport_RefusesWhatItMayNotServe(t *testing.T) {
 		"unknown format": id + "?format=rtf",
 		"page size":      id + "?format=docx&page_size=a3",
 		"scope":          id + "?format=docx&scope=everyone",
+		"metadata":       id + "?format=docx&metadata=all",
 	} {
 		if resp, body := getExport(t, ts, q); resp.StatusCode != 400 {
 			t.Errorf("%s: %d %s, want 400", name, resp.StatusCode, body)
@@ -230,5 +231,19 @@ func TestIsDocumentExportPath_MatchesOnlyTheRoute(t *testing.T) {
 		if got := isDocumentExportPath(path); got != want {
 			t.Errorf("isDocumentExportPath(%q) = %v, want %v", path, got, want)
 		}
+	}
+}
+
+// metadata=embed puts the document's record into the downloaded file (RFC GR
+// P4b); without it the file carries none.
+func TestDocumentExport_MetadataEmbedIsOptIn(t *testing.T) {
+	ts, _ := exportFixture(t)
+	id := exportDoc(t, ts, false)
+	resp, body := getExport(t, ts, id+"?scope=user&format=html&metadata=embed")
+	if resp.StatusCode != 200 || !bytes.Contains(body, []byte(`<pre id="loomcycle-metadata" hidden>`)) || !bytes.Contains(body, []byte(id)) {
+		t.Fatalf("metadata=embed: %d, the page has no record:\n%s", resp.StatusCode, body)
+	}
+	if _, body := getExport(t, ts, id+"?scope=user&format=html"); bytes.Contains(body, []byte("loomcycle-metadata")) {
+		t.Error("a download without metadata carries a record")
 	}
 }

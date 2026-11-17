@@ -185,7 +185,7 @@ func TestODT_OpensInLibreOffice(t *testing.T) {
 		t.Skip("soffice not installed")
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "fixture.odt"), write(t, fixtureDoc(t), FormatODT, Options{TOC: true, TitlePage: true}), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "fixture.odt"), write(t, embedDoc(t), FormatODT, Options{TOC: true, TitlePage: true}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)

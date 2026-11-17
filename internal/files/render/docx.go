@@ -5,6 +5,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"image"
@@ -18,6 +20,18 @@ import (
 
 	_ "golang.org/x/image/webp"
 )
+
+// docxEmbedNS is the namespace of the custom XML part that carries the
+// embedded record (D21); an extractor finds the part by it.
+const docxEmbedNS = "urn:loomcycle:render:1"
+
+// docxEmbedItemID is the custom XML part's item id: a GUID made from the
+// document's id, so the same Doc writes the same bytes (G6).
+func docxEmbedItemID(e *Embed) string {
+	h := sha256.Sum256([]byte("loomcycle-embed:" + e.DocumentID))
+	x := strings.ToUpper(hex.EncodeToString(h[:16]))
+	return "{" + x[0:8] + "-" + x[8:12] + "-" + x[12:16] + "-" + x[16:20] + "-" + x[20:32] + "}"
+}
 
 // FormatDOCX is a Word document.
 const FormatDOCX = "docx"
@@ -122,6 +136,28 @@ func writeDOCX(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 		{"word/numbering.xml", x.numbering()},
 		{"word/settings.xml", docxSettings},
 		{"word/fontTable.xml", docxFontTable},
+	}
+	if d.Embed != nil {
+		// The record as a custom XML part (D21): data Word keeps with the
+		// document and never shows or runs.
+		js, err := d.Embed.JSON()
+		if err != nil {
+			return firstErr(cw.err, err)
+		}
+		parts = append(parts,
+			struct {
+				name string
+				body string
+			}{"customXml/item1.xml", xml.Header + `<loomcycle xmlns="` + docxEmbedNS + `">` + xmlText(string(js)) + `</loomcycle>`},
+			struct {
+				name string
+				body string
+			}{"customXml/itemProps1.xml", xml.Header + `<ds:datastoreItem ds:itemID="` + docxEmbedItemID(d.Embed) + `" xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml"><ds:schemaRefs><ds:schemaRef ds:uri="` + docxEmbedNS + `"/></ds:schemaRefs></ds:datastoreItem>`},
+			struct {
+				name string
+				body string
+			}{"customXml/_rels/item1.xml.rels", xml.Header + `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rProps1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps" Target="itemProps1.xml"/></Relationships>`},
+		)
 	}
 	for _, p := range parts {
 		if err := entry(zw, p.name, func(ew io.Writer) error {
@@ -617,6 +653,9 @@ func (x *docxWriter) contentTypes() string {
 	b.WriteString(`<Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/>`)
 	b.WriteString(`<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>`)
 	b.WriteString(`<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>`)
+	if x.d.Embed != nil {
+		b.WriteString(`<Override PartName="/customXml/itemProps1.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml"/>`)
+	}
 	b.WriteString(`</Types>`)
 	return b.String()
 }
@@ -635,6 +674,9 @@ func (x *docxWriter) documentRels() string {
 	b.WriteString(`<Relationship Id="rNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>`)
 	b.WriteString(`<Relationship Id="rSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>`)
 	b.WriteString(`<Relationship Id="rFonts" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>`)
+	if x.d.Embed != nil {
+		b.WriteString(`<Relationship Id="rCustom1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml" Target="../customXml/item1.xml"/>`)
+	}
 	for _, im := range x.d.Images {
 		m := x.media[im.Name]
 		if !m.ok {

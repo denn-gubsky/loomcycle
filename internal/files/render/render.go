@@ -188,6 +188,9 @@ func checkDoc(d *Doc) error {
 	if len(d.Images) > MaxImages {
 		return fmt.Errorf("%w: %d pictures", ErrBadBundle, len(d.Images))
 	}
+	if err := checkEmbed(d.Embed); err != nil {
+		return err
+	}
 	sections := 0
 	var nodes func(ns []Node, depth int) error
 	nodes = func(ns []Node, depth int) error {
@@ -257,4 +260,35 @@ func RenderBundle(ctx context.Context, r io.ReaderAt, size int64, format string,
 		return err
 	}
 	return Write(ctx, w, d, format, opts)
+}
+
+// checkEmbed holds a decoded record to the shape the core makes: its
+// version, ids and anchors a writer may put into a file's syntax, at most a
+// chunk per section, and fields that are a JSON object.
+func checkEmbed(e *Embed) error {
+	if e == nil {
+		return nil
+	}
+	if e.Version != EmbedVersion || !embedIDRe.MatchString(e.DocumentID) || len(e.Chunks) > MaxSections+1 || len(e.Relations) > 4*MaxSections {
+		return fmt.Errorf("%w: embedded record", ErrBadBundle)
+	}
+	switch e.Scope {
+	case "agent", "user", "tenant":
+	default:
+		return fmt.Errorf("%w: embedded record scope %q", ErrBadBundle, e.Scope)
+	}
+	for _, c := range e.Chunks {
+		if !embedIDRe.MatchString(c.ID) || !anchorRe.MatchString(c.Anchor) || (c.Parent != "" && !embedIDRe.MatchString(c.Parent)) {
+			return fmt.Errorf("%w: embedded chunk %q", ErrBadBundle, c.ID)
+		}
+		if len(c.Fields) > 0 && c.Fields[0] != '{' {
+			return fmt.Errorf("%w: embedded chunk %q fields", ErrBadBundle, c.ID)
+		}
+	}
+	for _, r := range e.Relations {
+		if !embedIDRe.MatchString(r.From) || !embedIDRe.MatchString(r.To) || !embedKindRe.MatchString(r.Kind) || (r.Status != "" && !embedKindRe.MatchString(r.Status)) {
+			return fmt.Errorf("%w: embedded relation", ErrBadBundle)
+		}
+	}
+	return nil
 }

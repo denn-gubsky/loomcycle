@@ -481,6 +481,11 @@ paths:
           required: false
           description: For an imported document, say under the title where it came from. Default true.
           schema: { type: boolean }
+        - name: metadata
+          in: query
+          required: false
+          description: "embed writes loomcycle's record of the document into the file (chunk ids, types, statuses, tags, fields and the relations inside it, never its provenance), so File op=import of the file can re-import onto the same document. Default none."
+          schema: { type: string, enum: [none, embed], default: none }
         - name: scope_id
           in: query
           required: false
@@ -501,7 +506,7 @@ paths:
             text/html: { schema: { type: string, format: binary } }
             text/markdown: { schema: { type: string, format: binary } }
             application/zip: { schema: { type: string, format: binary } }
-        "400": { description: "A parameter is wrong (format, page_size, scope): code bad_request." }
+        "400": { description: "A parameter is wrong (format, page_size, scope, metadata): code bad_request." }
         "404": { description: Missing, or not readable to the caller (opaque). }
         "413": { description: "The file would pass the output caps (64 MiB, or 2000 PDF pages): code too_large. Download a part with chunk." }
         "422": { description: "The document has nothing to render: code tool_refused." }

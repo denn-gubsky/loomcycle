@@ -125,7 +125,11 @@ Ontology page) are listed to the agents.
 **Concept schemes.** A `@section schemes` heading holds the vocabularies documents
 are classified by — topics, a ranking, a file plan. Each heading under it is a
 scheme, and each heading under a scheme is a concept; a nested concept is narrower
-than the one above it, and inherits nothing:
+than the one above it, and inherits nothing. Concepts nest up to eight levels below
+their scheme, but one Markdown document holds only three (Markdown stops at
+`######`): make deeper concepts with `create_chunk` or `move_chunk` under a concept,
+or with `import_md` given a `parent_id`. `export_md` writes them all at `######`, so
+re-importing a whole exported document flattens them:
 
 ```markdown
 ## Schemes

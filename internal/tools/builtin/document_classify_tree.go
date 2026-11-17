@@ -8,9 +8,9 @@ import (
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 )
 
-// classifyTreeMaxDepth bounds the walk down a scheme. A concept tree deeper than this
-// is unusual; the bound only keeps a malformed one from asking without end.
-const classifyTreeMaxDepth = 8
+// classifyTreeMaxDepth bounds the walk down a scheme: the scheme cap the reader
+// enforces, so the walk reaches every concept the ontology holds and no further.
+const classifyTreeMaxDepth = memrank.SchemeMaxDepth
 
 // classifyTreeMaxCalls bounds the model calls one classify makes walking the tree. Each
 // concept is asked at most once, so the walk already costs at most the vocabulary's

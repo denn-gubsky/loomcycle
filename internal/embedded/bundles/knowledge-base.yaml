@@ -4830,6 +4830,10 @@ agents:
 
       var WORDS = { branch: "60–120", document: "120–250", path: "120–250" };
 
+      // A document's stored status as the request's STATUS line carries it:
+      // one word, else no line.
+      var STATUS_SHAPE = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
+
       var FOLDER_SLOTS = "what the folder collects; for whom or about what; the period it spans; how its documents relate";
 
       var USAGE = "Pass a JSON object: {\"mode\": document|path|drain|sweep (default document), " +
@@ -5214,7 +5218,12 @@ agents:
             if (f === "/") { break; }
           }
         }
-        if (annotate(st, root, { document_id: doc.document_id }, "document") && typeof root.path === "string" && root.path !== "") {
+        // The document's stored status, for its own request (requestText).
+        // annotation_inputs does not carry it; the listing row does.
+        st.doc_status = typeof doc.status === "string" && STATUS_SHAPE.test(doc.status) ? doc.status : "";
+        var wrote = annotate(st, root, { document_id: doc.document_id }, "document");
+        st.doc_status = "";
+        if (wrote && typeof root.path === "string" && root.path !== "") {
           st.dirty[dirname(root.path)] = true;
         }
       }
@@ -5437,6 +5446,11 @@ agents:
           head.push("CLASS: " + cls);
           head.push("SLOTS: " + (slots !== "" ? slots : DEFAULT_SLOTS.document));
           head.push("TITLE: " + oneLine(in1.document_title || in1.title || "(untitled)", CONFIG.max_title_chars));
+          // The stored status, so the brief (what the document IS) follows it
+          // and not the CLASS description: a class described as a proposal
+          // made briefs call shipped work a proposal while the abstract, from
+          // the material, said every phase had merged.
+          if (st.doc_status) { head.push("STATUS: " + st.doc_status); }
           var place = [];
           if (typeof in1.path === "string" && in1.path !== "") { place.push("folder " + oneLine(dirname(in1.path), CONFIG.max_title_chars)); }
           head.push("PLACE: " + (place.length > 0 ? place.join("; ") : "(top level)"));
@@ -5733,7 +5747,8 @@ agents:
       folder of documents), the CLASS of the thing and the SLOTS such a class is
       expected to state, its TITLE and PLACE (the document and headings above it, or
       the folder it sits in), for a section the DOCUMENT it belongs to, the
-      document's IDENTITY when it has one (its code, its key), the LANGUAGE to
+      document's IDENTITY when it has one (its code, its key), for a whole
+      document its stored STATUS when it has one, the LANGUAGE to
       write in, and the MATERIAL: the text
       itself and, where the part has parts of its own, the brief and abstract already
       written for each of them (or, for a short part, its text). The ABOVE block,
@@ -5745,6 +5760,10 @@ agents:
       apart from its neighbours, so a reader can decide whether to open it. A noun
       phrase is fine. Never begin with "This document", "This section" or "This
       folder".
+      When the request gives a STATUS, the brief and the abstract agree with it,
+      and it overrides the CLASS description and any status the material states:
+      done means the work is finished and shipped, so never call it a proposal;
+      confirmed means it was approved.
 
       ## The abstract
       One paragraph that stands in for reading: what the material states, decides,
@@ -6132,29 +6151,37 @@ agents:
       //    guide 19, an install guide 15). GUIDE_CHUNKS = 15 holds them; about
       //    half the corpus has 15 or more, which is safe because what is done
       //    with a large guide is capped, not the count of them: GUIDE_SECTIONS
-      //    sections each, SEC_CAP in all, the best-matching first. It does not
-      //    tell a
-      //    guide from a long single-topic design document: such a document's
-      //    sections are screened too, which costs rounds, not answers, since a
-      //    section is dropped from the answer when its whole document fits. A
-      //    count that fails leaves the survey to documents only, as before.
-      //    The CAP highest-weighted documents are kept (ties by id), and
-      //    beside them at most SEC_CAP sections: sections have a cap of their
-      //    own because under one shared cap they pushed documents out (one
-      //    measured question went from 60 documents cut to 107). Sections are
-      //    kept best match first: by the best rank any gather search gave a
-      //    hit in them (0 = a search's first hit), then by weight, then by id.
-      //    A cap of 24 cut key sections on every measured question; 60 holds
-      //    them. The rest are counted, and a cut section makes coverage
+      //    sections each, SEC_CAP per pool (below), the best-matching first. It
+      //    does not tell a guide from a long single-topic design document: such
+      //    a document's sections are screened or linked too, which costs rounds
+      //    or lines, not answers. A count that fails leaves the survey to
+      //    documents only, as before.
+      //    The CAP highest-weighted documents are kept (ties by id). Sections
+      //    are never weighed against documents: under one shared cap they
+      //    pushed documents out (one measured question went from 60 documents
+      //    cut to 107). Sections are ordered best match first: by the best rank
+      //    any gather search gave a hit in them (0 = a search's first hit), then
+      //    by weight, then by id.
+      //    SEC_CAP is applied after the documents are screened, to each of two
+      //    pools apart: the sections to screen (their document did not fit) and
+      //    the sections to link unscreened (it fits). One cap of 60 over every
+      //    section, applied before screening, cut 21 to 54 sections on 7 of 12
+      //    measured questions, mostly sections of guides that then fit. Apart,
+      //    the screening rounds stay where they were (SEC_CAP / SEC_SLICE = 3
+      //    slices) and a linked section costs a line, not a round. What either
+      //    pool's cap cuts is counted, and a cut section makes coverage
       //    partial.
       // 2. SCREEN (model). Documents first, sections after: the documents are
       //    cut into slices of SLICE ids, one kb/screen round each, all in one
       //    parallel spawn. Then the sections whose own document did not FIT in
       //    that spawn are cut into slices of SEC_SLICE and screened in one
       //    more spawn, beside the documents' retry halves. A section of a
-      //    document that fits is not screened: the answer would leave it out
-      //    for its document's line anyway (a document still being retried has
-      //    its sections screened). Sections go 20 a round where documents go
+      //    document that fits is not screened: it is linked beside its document
+      //    in the answer, since it hit the question's searches (a document
+      //    still being retried has its sections screened, and those that fit
+      //    are linked beside it if it then fits). Measured, when only the
+      //    guide was linked, the key sections of a fitting guide scored 0 on 5
+      //    of 6 questions answered by one guide. Sections go 20 a round where documents go
       //    12: a section is one short brief read by its own get_annotation
       //    call, so its round builds no id list (the failure that set SLICE at
       //    12). Measured, the extra screening rounds were most of a survey's
@@ -6181,18 +6208,30 @@ agents:
       //    lacks either line; nothing it said is taken. A failed slice, and the
       //    ids a good round named in neither line, go back once more as two
       //    halves, in the next spawn. What is still unnamed then stays
-      //    unaccounted, which makes coverage partial. A section left out because
+      //    unaccounted, which makes coverage partial. A section linked because
       //    its document fits counts as accounted for. Screening texts are never
       //    joined into the answer.
       // 4. ANSWER. One more kb/walker round composes the reply from the ids that
-      //    fit (ids only again; a section of a document that fits whole is left
-      //    out, and a section is linked as loom:chunk/<id>). Its block carries
+      //    fit (ids only again; a section is linked as loom:chunk/<id>), and
+      //    lists the matching sections of each fitting document, as
+      //    "<section id> in <document id>", to link under it. Its block carries
       //    the exact read calls, built here like a screening round's, the
-      //    documents in documents_summary calls of at most SUMMARY_BATCH ids: a
+      //    documents in documents_summary calls of at most COMPOSE_BATCH ids: a
       //    walker handed 20 to 30 ids and left to build the call sent the list
-      //    as one string in most rounds, which the tool refuses. Its FITS, SET
-      //    ASIDE, COVERAGE, UNCOVERED, MOVES
-      //    and MISSING lines are stripped. It is asked to COMPOSE, never to
+      //    as one string in most rounds, which the tool refuses; given two
+      //    written calls of 12 it still did (10 refusals in 7 measured
+      //    rounds), so a composing round with up to 24 documents gets one
+      //    call, and more get calls it is told to make one at a time (its
+      //    get_annotation calls may go together: up to 120 one by one would
+      //    outrun the walker's 16 iterations).
+      //    It also gets each fitting document's stored type and status, read
+      //    here in one documents_summary call and copied only when each is one
+      //    word (LABEL_SHAPE): a document's one-line brief can name an earlier
+      //    status ("design proposal" for one that shipped), and the stored
+      //    status overrides it.
+      //    Its FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES, MISSING and COMPOSE
+      //    lines are stripped (a COMPOSE line is the round echoing its block).
+      //    It is asked to COMPOSE, never to
       //    write: told to write the overview, a walker took it as writing a
       //    document. Nothing fits: code says so, with no round. The composing
       //    round fails: code lists the fitting ids as links. Then a coverage
@@ -6220,8 +6259,8 @@ agents:
       //              RUNS: <run:status[/max_tokens], ...>
       //    candidates counts documents and sections, its cut documents only;
       //    sections counts the kept candidates that are sections, the
-      //    sections past SEC_CAP, those past their guide's limit, and the kept
-      //    sections not screened because their document fits ("sections
+      //    sections past either pool's SEC_CAP, those past their guide's limit,
+      //    and the kept sections linked unscreened because their document fits ("sections
       //    failed (<why>)" when the size count failed); slices counts the
       //    first-try slices, documents' and sections'; failed slices counts
       //    every screening round that failed, retries too.
@@ -6234,7 +6273,9 @@ agents:
       // ID_SHAPE, and read the briefs through their own read-only tool, under
       // their own access rules. Anything else in a search row is never copied: of a hit's summary
       // code reads only whether its level is "branch" and its chunk id, which
-      // must match ID_SHAPE like every other id.
+      // must match ID_SHAPE like every other id. The one exception is a
+      // fitting document's stored type and status, copied into the composing
+      // round only as single LABEL_SHAPE words, never a sentence.
       //
       // UNTRUSTED INPUT. A question given as untrusted input is search text here
       // (code reads it as data), and the walker gets it by reference, still
@@ -6250,8 +6291,13 @@ agents:
       var SEC_SLICE = 20;    // section ids per screening round
       var GUIDE_CHUNKS = 15; // live chunks that make a document a large guide
       var GUIDE_SECTIONS = 6; // best-matching hit sections of one large guide kept, at most
-      var SEC_CAP = 60;      // sections screened, at most, beside the CAP documents
-      var SUMMARY_BATCH = 12; // document ids per documents_summary call written for a round
+      var SEC_CAP = 60;      // sections screened, at most; and, apart, sections linked unscreened
+      var SUMMARY_BATCH = 12; // document ids per documents_summary call written for a screening round
+      var COMPOSE_BATCH = 24; // document ids per documents_summary call written for the composing round
+      // A stored type or status label: one word. Only such a word is copied
+      // from a summary row into the composing round's prompt; anything else is
+      // left out, so no sentence of stored text can reach it.
+      var LABEL_SHAPE = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
       // A runtime document id: lowercase hex, dashes allowed (the shape kb/ask
       // reads in loom: links). A row whose id does not match is not a
       // candidate, so nothing but id characters reaches the walker's prompt.
@@ -6450,15 +6496,14 @@ agents:
         return u;
       }
 
-      // gather returns {ids: the kept candidates, best first, cut: how many
-      // more documents there were, secCut: how many more sections past
-      // SEC_CAP, guideCut: how many matching sections past their guide's
-      // GUIDE_SECTIONS,
-      // counted: the documents the passage search's facet window counted, or
-      // -1 when it reported no count, sec: each kept section -> its document,
-      // docs and sections: how many of each were kept, secErr: why the size
-      // count failed, or ""}. It throws when a search or a relation read
-      // fails.
+      // gather returns {docIds: the kept documents, heaviest first, secOrder:
+      // the eligible sections, best match first, cut: how many more documents
+      // there were, guideCut: how many matching sections past their guide's
+      // GUIDE_SECTIONS, counted: the documents the passage search's facet
+      // window counted, or -1 when it reported no count, sec: each eligible
+      // section -> its document, docs: how many documents were kept, secErr:
+      // why the size count failed, or ""}. It throws when a search or a
+      // relation read fails.
       function gather(q) {
         var P = newSet(), S = newSet(), M = newSet(), C = newSet(), E = newSet();
         var secs = { w: newSet(), doc: newSet(), rank: newSet() };
@@ -6482,26 +6527,23 @@ agents:
         if (top.length) {
           try { large = largeGuides(top); } catch (e) { secErr = errText(e); }
         }
-        // Sections have their own cap, SEC_CAP, so they never take a
-        // document's place under CAP. It and each guide's GUIDE_SECTIONS keep
-        // the best-matching first, and what either cuts is counted.
-        var kept = newSet(), sec = newSet(), per = newSet(), nsec = 0, secCut = 0, guideCut = 0, byM = bestMatch(secs);
-        for (i = 0; i < top.length; i++) { kept[top[i]] = pool[top[i]]; }
+        // Each guide keeps its GUIDE_SECTIONS best-matching sections, and what
+        // that cuts is counted. SEC_CAP is applied later (run), to each of the
+        // two pools the screening of the documents splits them into.
+        var sec = newSet(), per = newSet(), secOrder = [], guideCut = 0, byM = bestMatch(secs);
         for (i = 0; i < byM.length; i++) {
           var d = secs.doc[byM[i]];
           if (!large[d]) { continue; }
           if ((per[d] || 0) >= GUIDE_SECTIONS) { guideCut++; continue; }
-          if (nsec >= SEC_CAP) { secCut++; continue; }
           per[d] = (per[d] || 0) + 1;
-          kept[byM[i]] = secs.w[byM[i]];
           sec[byM[i]] = d;
-          nsec++;
+          secOrder.push(byM[i]);
         }
 
         var dc = pr && pr.facets ? pr.facets.documents_counted : undefined;
-        return { ids: ranked(kept), cut: Math.max(0, all.length - CAP), secCut: secCut, guideCut: guideCut,
+        return { docIds: top, secOrder: secOrder, cut: Math.max(0, all.length - CAP), guideCut: guideCut,
                  counted: typeof dc === "number" && dc >= 0 ? dc : -1,
-                 sec: sec, docs: top.length, sections: nsec, secErr: secErr };
+                 sec: sec, docs: top.length, secErr: secErr };
       }
 
       // ---- 2. screen ----
@@ -6527,10 +6569,10 @@ agents:
       }
 
       // readCalls is the read calls for ids, one per line: documents_summary
-      // calls for the documents, SUMMARY_BATCH ids each (a screening slice
-      // fits in one), and one get_annotation call per section.
-      function readCalls(p) {
-        var out = [], b = slices(p.docs, SUMMARY_BATCH);
+      // calls for the documents, batch ids each (a screening slice fits in
+      // one), and one get_annotation call per section.
+      function readCalls(p, batch) {
+        var out = [], b = slices(p.docs, batch);
         for (var i = 0; i < b.length; i++) { out.push(summaryCall(b[i])); }
         for (i = 0; i < p.secs.length; i++) { out.push(annotationCall(p.secs[i])); }
         return out.join("\n");
@@ -6542,25 +6584,71 @@ agents:
           (p.docs.length ? "documents" + (p.secs.length ? ", and sections of large documents" : "") : "sections of large documents") +
           ". Sort them as your " +
           "instructions say for screening. Read their briefs with these calls, one per line, exactly as " +
-          "written (document_ids is a list of strings, never one string):\n" + readCalls(p) +
+          "written (document_ids is a list of strings, never one string):\n" + readCalls(p, SUMMARY_BATCH) +
           "\nThen reply with only the FITS and SET ASIDE lines, which together name every id below." +
           "\n\nCandidates (" + ids.length + "):\n" + ids.join("\n");
       }
 
-      function composeBlock(ids) {
-        var p = split(ids);
-        var t = "COMPOSE. Screening found that the documents" + (p.secs.length ? " and sections" : "") +
+      // composeBlock is the composing round's block. c: {docs: the fitting
+      // documents, secs: the fitting sections of documents that do not fit,
+      // linked: the matching sections of fitting documents, never screened,
+      // labels: document id -> {type, status} as stored, LABEL_SHAPE words}.
+      function composeBlock(c) {
+        var all = { docs: c.docs, secs: c.secs.concat(c.linked) };
+        var anySec = all.secs.length > 0;
+        var t = "COMPOSE. Screening found that the documents" + (c.secs.length ? " and sections" : "") +
           " below fit the question. " +
-          "Compose your reply: one line and a link per document" + (p.secs.length ? " or section" : "") +
+          "Compose your reply: one line and a link per document" + (c.secs.length ? " or section" : "") +
           ", as your instructions say for composing. " +
-          (p.secs.length ? "Link a section as [title](loom:chunk/<id>?scope=tenant), a document as [title](loom:doc/<id>?scope=tenant). " : "") +
+          (anySec ? "Link a section as [title](loom:chunk/<id>?scope=tenant), a document as [title](loom:doc/<id>?scope=tenant). " : "") +
+          (c.linked.length ? "Under a fitting document, link each of its matching sections listed below on a line of its own, " +
+            "so the reader can go straight to the part that answers. " : "") +
+          "Describe each document by its stored type and status: a stored status overrides any status wording in a brief " +
+          "or abstract. Status done means it shipped; never call it a proposal. " +
           "The knowledge base is read-only and nothing is to be stored: your reply text is the whole result. " +
-          "Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines." +
-          " You may read their briefs with these calls, one per line, exactly as given " +
-          "(document_ids is a list of strings, never one string):\n" + readCalls(p);
-        if (p.docs.length) { t += "\n\nFitting documents (" + p.docs.length + "):\n" + p.docs.join("\n"); }
-        if (p.secs.length) { t += "\n\nFitting sections (" + p.secs.length + "):\n" + p.secs.join("\n"); }
+          "Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines. Never repeat this block." +
+          " You may read their briefs with these calls, exactly as given; make the documents_summary calls one call at a time " +
+          "(document_ids is a list of strings, never one string):\n" + readCalls(all, COMPOSE_BATCH);
+        if (c.docs.length) { t += "\n\nFitting documents (" + c.docs.length + "):\n" + c.docs.join("\n"); }
+        if (c.secs.length) { t += "\n\nFitting sections (" + c.secs.length + "):\n" + c.secs.join("\n"); }
+        if (c.linked.length) {
+          var ls = [];
+          for (var i = 0; i < c.linked.length; i++) { ls.push(c.linked[i] + " in " + SEC[c.linked[i]]); }
+          t += "\n\nMatching sections of fitting documents (" + ls.length + "), section in document:\n" + ls.join("\n");
+        }
+        var lab = [];
+        for (var j = 0; j < c.docs.length; j++) {
+          var l = c.labels[c.docs[j]];
+          if (l && (l.type || l.status)) {
+            lab.push(c.docs[j] + (l.type ? " type " + l.type : "") + (l.status ? " status " + l.status : ""));
+          }
+        }
+        if (lab.length) { t += "\n\nStored type and status of the fitting documents (" + lab.length + "):\n" + lab.join("\n"); }
         return t;
+      }
+
+      // labelsOf reads the stored type and status of each document (its root
+      // chunk's), in one documents_summary call; a word that is not
+      // LABEL_SHAPE is left out. A failed read gives none: the composing
+      // round still reads them in the summary rows.
+      function labelsOf(ids) {
+        var out = newSet();
+        if (!ids.length) { return out; }
+        var rows;
+        try {
+          rows = doc({ op: "documents_summary", document_ids: ids, limit: ids.length }).documents || [];
+        } catch (e) {
+          return out;
+        }
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i] || {};
+          if (typeof r.document_id !== "string" || !ID_SHAPE.test(r.document_id)) { continue; }
+          out[r.document_id] = {
+            type: typeof r.type === "string" && LABEL_SHAPE.test(r.type) ? r.type : "",
+            status: typeof r.status === "string" && LABEL_SHAPE.test(r.status) ? r.status : ""
+          };
+        }
+        return out;
       }
 
       // slices cuts a list into runs of at most n.
@@ -6648,9 +6736,10 @@ agents:
       }
 
       // walkLine: a walker's MOVES or MISSING line, about its own walk and not
-      // the knowledge base.
+      // the knowledge base; or a COMPOSE line, the composing round echoing
+      // its own block.
       function walkLine(line) {
-        return /^(MOVES|MISSING)\s*:/i.test(plain(line));
+        return /^(MOVES|MISSING|COMPOSE)\s*[:.]/i.test(plain(line));
       }
 
       // readAnswer takes the accounting, coverage and walk lines out of an answer.
@@ -6720,15 +6809,18 @@ agents:
         return out.join("\n");
       }
 
-      function composeAnswer(fitIDs) {
-        var set = newSet();
-        for (var i = 0; i < fitIDs.length; i++) { set[fitIDs[i]] = 1; }
-        var res = call(spawnArgs("kb/walker", ANSWER, composeBlock(fitIDs), true));
+      // composeAnswer runs the composing round for c (composeBlock's), or
+      // lists the ids itself when the round fails.
+      function composeAnswer(c) {
+        var ids = c.docs.concat(c.secs, c.linked), set = newSet();
+        for (var i = 0; i < ids.length; i++) { set[ids[i]] = 1; }
+        c.labels = labelsOf(c.docs);
+        var res = call(spawnArgs("kb/walker", ANSWER, composeBlock(c), true));
         runs.push(runTag(res));
         var why = cutShort(res);
         var text = why ? "" : readAnswer(res.final_text, set).text;
         if (!why && !text) { why = "no text"; }
-        return why ? linkList(fitIDs, why + (res.error ? ": " + String(res.error).replace(/\s+/g, " ") : "")) : text;
+        return why ? linkList(ids, why + (res.error ? ": " + String(res.error).replace(/\s+/g, " ") : "")) : text;
       }
 
       function run(input) {
@@ -6742,7 +6834,7 @@ agents:
           var t = plainWalk("the candidates were not gathered");
           return { final_text: t + "\nSURVEY: gather failed (" + errText(e).replace(/\s+/g, " ") + ") | rounds 1 | RUNS: " + runs.join(", ") };
         }
-        if (!g.ids.length) {
+        if (!g.docIds.length) {
           var t0 = plainWalk("the searches found no candidates");
           return { final_text: t0 + "\nSURVEY: candidates 0 (cut " + g.cut + ") | rounds 1 | RUNS: " + runs.join(", ") };
         }
@@ -6754,8 +6846,11 @@ agents:
         // slice (and the ids a good round left out) once more as two halves,
         // in the next spawn, never a third time. Nothing a failed round said
         // is taken.
-        var fits = newSet(), accounted = newSet(), failed = 0, covered = 0;
-        var cand = split(g.ids), fresh = slices(cand.docs, SLICE), retry = [], secsDone = false;
+        // cands: every id screened or linked, documents first; what is in it
+        // and not accounted for at the end was not screened.
+        var fits = newSet(), accounted = newSet(), linkedSet = newSet(), failed = 0, secCut = 0;
+        var cands = g.docIds.slice(), nsec = 0, linkedN = 0;
+        var fresh = slices(g.docIds, SLICE), retry = [], secsDone = false;
         var sliceCount = fresh.length;
         while (fresh.length || retry.length || !secsDone) {
           var lists = fresh.concat(retry), again = [];
@@ -6780,32 +6875,54 @@ agents:
           retry = again;
           fresh = [];
           if (!secsDone) {
-            // A section of a document that fits is left out of the answer
-            // anyway, so it is not screened; it counts as accounted for.
+            // The matching sections of a document that fits are linked beside
+            // it unscreened: they are why it matched, and the reader goes
+            // straight to them. The others are screened. SEC_CAP bounds each
+            // pool apart, best match first, and what it cuts is counted.
             secsDone = true;
-            var todo = [];
-            for (j = 0; j < cand.secs.length; j++) {
-              if (fits[SEC[cand.secs[j]]]) { accounted[cand.secs[j]] = 1; covered++; } else { todo.push(cand.secs[j]); }
+            var todo = [], linked = 0;
+            for (j = 0; j < g.secOrder.length; j++) {
+              var s1 = g.secOrder[j];
+              if (fits[SEC[s1]]) {
+                if (linked >= SEC_CAP) { secCut++; continue; }
+                linked++;
+                linkedSet[s1] = 1;
+                accounted[s1] = 1;
+              } else {
+                if (todo.length >= SEC_CAP) { secCut++; continue; }
+                todo.push(s1);
+              }
+              cands.push(s1);
+              nsec++;
             }
+            linkedN = linked;
             fresh = slices(todo, SEC_SLICE);
             sliceCount += fresh.length;
           }
         }
 
-        // A section whose whole document fits is left out of the answer: the
-        // document's line covers it.
-        var left = [], fitIDs = [];
-        for (i = 0; i < g.ids.length; i++) {
-          var id = g.ids[i];
+        // docs: the documents that fit; secs: the sections that fit of a
+        // document that does not; linkedOut: the sections linked beside a
+        // document that fits (unscreened, or screened while their document
+        // was retried, and then only those that fit).
+        var left = [], docs = [], secs = [], linkedOut = [];
+        for (i = 0; i < cands.length; i++) {
+          var id = cands[i];
           if (!accounted[id]) { left.push(id); }
-          if (fits[id] && !(SEC[id] && fits[SEC[id]])) { fitIDs.push(id); }
+          if (!SEC[id]) {
+            if (fits[id]) { docs.push(id); }
+          } else if (fits[SEC[id]]) {
+            if (linkedSet[id] || fits[id]) { linkedOut.push(id); }
+          } else if (fits[id]) {
+            secs.push(id);
+          }
         }
 
         var body;
-        if (fitIDs.length) {
-          body = composeAnswer(fitIDs);
-        } else if (left.length < g.ids.length) {
-          body = "None of the " + (g.ids.length - left.length) + (g.sections ? " candidates" : " candidate documents") + " fits the question.";
+        if (docs.length || secs.length) {
+          body = composeAnswer({ docs: docs, secs: secs, linked: linkedOut });
+        } else if (left.length < cands.length) {
+          body = "None of the " + (cands.length - left.length) + (nsec ? " candidates" : " candidate documents") + " fits the question.";
         } else {
           body = "No answer: no screening round could be used.";
         }
@@ -6819,19 +6936,19 @@ agents:
         // like a cut document. A SET ASIDE was judged, so it does not.
         var reached = g.counted >= 0 && g.docs >= g.counted;
         var cov;
-        if (!left.length && g.cut === 0 && g.secCut === 0 && g.guideCut === 0 && !g.secErr && reached) {
+        if (!left.length && g.cut === 0 && secCut === 0 && g.guideCut === 0 && !g.secErr && reached) {
           cov = "COVERAGE: complete";
         } else {
           cov = "COVERAGE: partial\nUNCOVERED: " + left.length + " candidates not screened; " + g.cut + " beyond the cap of " + CAP +
-            (g.secCut ? "; " + g.secCut + " sections beyond their cap of " + SEC_CAP : "") +
+            (secCut ? "; " + secCut + " sections beyond their cap of " + SEC_CAP : "") +
             (g.guideCut ? "; " + g.guideCut + " matching sections beyond the per-guide limit of " + GUIDE_SECTIONS : "") +
             (g.secErr ? "; the sections were not counted" : "") +
             (reached ? "" : g.counted < 0 ? "; the searches may not have reached every matching document" :
               "; the passage search counted " + g.counted + " documents and " + g.docs + " were kept");
         }
-        var tail = "SURVEY: candidates " + g.ids.length + " (cut " + g.cut + ") | sections " +
+        var tail = "SURVEY: candidates " + cands.length + " (cut " + g.cut + ") | sections " +
           (g.secErr ? "failed (" + g.secErr.replace(/\s+/g, " ") + ")" :
-            g.sections + " (cut " + g.secCut + ", over guide limit " + g.guideCut + ", document fits " + covered + ")") +
+            nsec + " (cut " + secCut + ", over guide limit " + g.guideCut + ", document fits " + linkedN + ")") +
           " | slices " + sliceCount +
           " | failed slices " + failed + " | rounds " + runs.length + " | RUNS: " + runs.join(", ");
         return { final_text: body + "\n\n" + cov + "\n" + tail };
@@ -7006,12 +7123,18 @@ agents:
       documents (and sections) that fit the question, compose your reply
       instead of walking:
         1. You may read their briefs with the calls the prompt gives, copied
-           exactly: "document_ids" is a list of id strings, never one string
-           holding the list.
+           exactly; make the documents_summary calls one call at a time (the
+           get_annotation calls may go together): "document_ids" is a list
+           of id strings, never one string holding the list.
         2. Compose your reply: one line and a link per listed document. A
            listed section gets its own line, linked as
-           [title](loom:chunk/<id>?scope=tenant).
-        3. Add a document that is not listed only if you found it yourself and
+           [title](loom:chunk/<id>?scope=tenant). A matching section listed
+           with its document goes on its own line under that document.
+        3. Describe each document by its stored type and status (the "type"
+           and "status" of its summary row, also listed in the prompt). The
+           stored status overrides any status wording in a brief or abstract:
+           status done means it shipped; never call it a proposal.
+        4. Add a document that is not listed only if you found it yourself and
            it fits.
         The knowledge base is read-only and nothing is to be stored: your reply text is the whole result.
         Leave out the FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines.

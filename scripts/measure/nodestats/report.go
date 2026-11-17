@@ -100,6 +100,7 @@ func renderAgreement(p printer, r *Result) {
 		p("| %s | %d | %d | %s | %s | %s |\n", n, a.Classes[n], l[ArmFull].Evaluable, pct(l[ArmFull].Top1Rate),
 			pct(l[ArmSections].Top1Rate), pct(l[ArmWeighted].Top1Rate))
 	}
+	renderMargin(p, a)
 	p("\nBy provenance (arm a, per statement: is the statement's own class the nearest / in the top 3):\n\n")
 	p("| provenance | L1 n | L1 top-1 | L1 top-3 | L2 n | L2 top-1 | L2 top-3 |\n|---|---:|---:|---:|---:|---:|---:|\n")
 	provs := make([]string, 0, len(a.Provenance))
@@ -113,6 +114,33 @@ func renderAgreement(p printer, r *Result) {
 			l2.Evaluable, pct(l2.Top1Rate), pct(l2.Top3Rate))
 	}
 	p("\n")
+}
+
+func renderMargin(p printer, a AgreementReport) {
+	p("\nTop-1 hit rate by margin (arm a): margin = cos(document, nearest leave-one-out centroid) - cos(document, second nearest). ")
+	p("Coverage is the share of evaluable documents with a margin. L2 pools parents with different numbers of children.\n")
+	for _, key := range []string{"L1", "L2"} {
+		m, ok := a.Margin[key]
+		if !ok {
+			continue
+		}
+		p("\n%s: %d documents with a margin, top-1 %s; %d evaluable with a single candidate left out.\n\n", key, m.Units, pct(rate(m.Hits, m.Units)), m.NoMargin)
+		p("| quantile bin | margin range | documents | top-1 |\n|---:|---|---:|---:|\n")
+		for i, b := range m.Bins {
+			p("| %d | %.4f – %.4f | %d | %s |\n", i+1, b.Lo, b.Hi, b.Units, pct(b.HitRate))
+		}
+		p("\n| margin >= | documents | coverage | top-1 |\n|---:|---:|---:|---:|\n")
+		for _, t := range m.Thresholds {
+			p("| %.2f | %d | %s | %s |\n", t.Min, t.Units, pct(t.Coverage), pct(t.HitRate))
+		}
+	}
+}
+
+func rate(n, d int) float64 {
+	if d == 0 {
+		return 0
+	}
+	return float64(n) / float64(d)
 }
 
 func renderMaterial(p printer, r *Result) {

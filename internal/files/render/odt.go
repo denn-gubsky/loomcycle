@@ -103,6 +103,14 @@ func writeODT(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 		{"meta.xml", x.meta()},
 		{"META-INF/manifest.xml", x.manifest()},
 	}
+	if d.Embed != nil {
+		// The record is a file of the package (D21), listed in the manifest.
+		js, err := d.Embed.JSON()
+		if err != nil {
+			return err
+		}
+		parts = append(parts, struct{ name, body string }{EmbedName, string(js)})
+	}
 	for _, p := range parts {
 		b := p.body
 		if err := entry(zw, p.name, func(ew io.Writer) error {
@@ -630,6 +638,9 @@ func (x *odtWriter) manifest() string {
 	b.WriteString(`<manifest:file-entry manifest:full-path="/" manifest:version="1.3" manifest:media-type="` + odtMediaType + `"/>`)
 	for _, p := range []string{"content.xml", "styles.xml", "meta.xml"} {
 		b.WriteString(`<manifest:file-entry manifest:full-path="` + p + `" manifest:media-type="text/xml"/>`)
+	}
+	if x.d.Embed != nil {
+		b.WriteString(`<manifest:file-entry manifest:full-path="` + EmbedName + `" manifest:media-type="application/json"/>`)
 	}
 	for _, im := range x.d.Images {
 		if m := x.media[im.Name]; m.ok {

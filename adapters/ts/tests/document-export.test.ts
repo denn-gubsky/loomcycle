@@ -48,9 +48,10 @@ describe("exportDocument", () => {
       pageSize: "letter",
       language: "uk",
       provenance: false,
+      metadata: "embed",
     });
     expect(fetchMock.mock.calls[0]![0]).toBe(
-      "http://test-loomcycle:8787/v1/_document/export/d?format=docx&scope=user&chunk=c1&toc=true&title_page=true&page_size=letter&language=uk&provenance=false",
+      "http://test-loomcycle:8787/v1/_document/export/d?format=docx&scope=user&chunk=c1&toc=true&title_page=true&page_size=letter&language=uk&provenance=false&metadata=embed",
     );
   });
 

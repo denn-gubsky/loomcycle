@@ -2,6 +2,7 @@ package render
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"path"
 	"regexp"
@@ -14,7 +15,7 @@ import (
 // the model holds and never as anything else. Pictures are linked under
 // opts.AssetDir, never inlined: the caller writes them beside the file.
 func writeMarkdown(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
-	m := &mdWriter{w: &capWriter{w: w, ctx: ctx}, opts: opts, used: usedAnchors(d, opts)}
+	m := &mdWriter{w: &capWriter{w: w, ctx: ctx}, opts: opts, used: usedAnchors(d, opts), meta: d.embedByAnchor()}
 	m.title(d)
 	if opts.TOC && len(d.Sections) > 0 {
 		m.toc(d.Sections, 0)
@@ -24,6 +25,7 @@ func writeMarkdown(ctx context.Context, w io.Writer, d *Doc, opts Options) error
 	for _, s := range d.Sections {
 		m.section(s)
 	}
+	m.relations(d)
 	return m.w.err
 }
 
@@ -31,6 +33,56 @@ type mdWriter struct {
 	w    *capWriter
 	opts Options
 	used map[string]bool
+	// meta is the embedded record by anchor (D21): each heading then
+	// carries the comment export_md writes, so the file re-imports with
+	// import_md as an export does.
+	meta map[string]*EmbedChunk
+}
+
+// loomComment writes the metadata comment of the chunk at anchor, as
+// export_md writes it, when the render embeds metadata.
+func (m *mdWriter) loomComment(anchor string) {
+	c := m.meta[anchor]
+	if c == nil {
+		return
+	}
+	meta := map[string]any{"id": c.ID}
+	if c.Type != "" {
+		meta["type"] = c.Type
+	}
+	if c.Status != "" {
+		meta["status"] = c.Status
+	}
+	if len(c.Fields) > 0 {
+		meta["fields"] = c.Fields
+	}
+	// json.Marshal escapes <, > and &, so nothing in a field can close the
+	// comment.
+	if b, err := json.Marshal(meta); err == nil {
+		m.s("<!-- loom: " + string(b) + " -->\n")
+	}
+}
+
+// relations writes the embedded record's relations as export_md's
+// loom-edges trailer.
+func (m *mdWriter) relations(d *Doc) {
+	if d.Embed == nil || len(d.Embed.Relations) == 0 {
+		return
+	}
+	var lines []string
+	for _, r := range d.Embed.Relations {
+		if !embedIDRe.MatchString(r.From) || !embedIDRe.MatchString(r.To) || !embedKindRe.MatchString(r.Kind) {
+			continue
+		}
+		line := r.From + " -> " + r.To + " [" + r.Kind + "]"
+		if r.Status != "" && r.Status != "asserted" && embedKindRe.MatchString(r.Status) {
+			line += ` {"status":"` + r.Status + `"}`
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) > 0 {
+		m.s("<!-- loom-edges:\n" + strings.Join(lines, "\n") + "\n-->\n")
+	}
 }
 
 func (m *mdWriter) s(s string) { m.w.WriteString(s) }
@@ -39,7 +91,9 @@ func (m *mdWriter) blank() { m.s("\n") }
 
 func (m *mdWriter) title(d *Doc) {
 	m.anchor(d.Anchor)
-	m.s("# " + escapeInline(oneLine(d.Title)) + "\n\n")
+	m.s("# " + escapeInline(oneLine(d.Title)) + "\n")
+	m.loomComment(d.Anchor)
+	m.s("\n")
 	var meta []string
 	if l := statusLabel(d.Status); l != "" {
 		meta = append(meta, "**"+l+"**")
@@ -76,7 +130,9 @@ func (m *mdWriter) anchor(a string) {
 func (m *mdWriter) section(s *Section) {
 	m.anchor(s.Anchor)
 	lvl := clampLevel(s.Level)
-	m.s(strings.Repeat("#", lvl) + " " + escapeInline(oneLine(s.Title)) + "\n\n")
+	m.s(strings.Repeat("#", lvl) + " " + escapeInline(oneLine(s.Title)) + "\n")
+	m.loomComment(s.Anchor)
+	m.s("\n")
 	m.blocks(s.Blocks, "", 0)
 	for _, c := range s.Children {
 		m.section(c)
