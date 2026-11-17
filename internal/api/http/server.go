@@ -612,6 +612,12 @@ type Server struct {
 	// Nil = the surface returns "not configured" errors. Set via SetTeamDefTool.
 	teamDefTool tools.Tool
 
+	// configTeamsLast is what this replica's boot reconcile of the yaml's
+	// teams did (RFC GS), nil when this replica did not run it — in a cluster
+	// one replica does. GET /v1/_config/teams adds its refusal reasons to the
+	// status it reads from the store.
+	configTeamsLast atomic.Pointer[configTeamsRun]
+
 	// hookDefTool is the HookDef substrate tool (reusable hook definitions).
 	// Dedicated slot, NOT in s.tools — no agent may author a hook. Reached via
 	// Connector.HookDef + POST /v1/_hookdef + the MCP meta-tool `hookdef` + the
@@ -3601,6 +3607,7 @@ func (s *Server) routes() *http.ServeMux {
 	// reloadable sections (providers/models/tiers/provider_priority) in place;
 	// ?dry_run=1 returns the section diff. Admin-gated by the /v1/_ prefix.
 	mux.Handle("POST /v1/_config/reload", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleConfigReload))))
+	mux.Handle("GET /v1/_config/teams", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleConfigTeams))))
 	// v0.12.x live provider introspection. Complements /v1/_resolver
 	// (cached matrix) by doing a fresh ListModels round-trip — useful
 	// after adding a model to the upstream console without waiting

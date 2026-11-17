@@ -194,6 +194,28 @@ export function getHealth(): Promise<HealthResponse> {
   return jsonFetch<HealthResponse>("/healthz");
 }
 
+// ConfigTeamStatus is one team of the server's `teams:` configuration (RFC GS)
+// and whether the shared tier holds the version the configuration wrote:
+// "conflict" = a team made over the API holds the name, "not_written" = the
+// boot refused it (detail says why, on the replica that ran the boot).
+export interface ConfigTeamStatus {
+  name: string;
+  status: "written" | "conflict" | "not_written";
+  active_def_id?: string;
+  detail?: string;
+}
+
+export interface ConfigTeamsResponse {
+  teams: ConfigTeamStatus[];
+  reconciled_at?: string; // when this replica wrote the teams; absent on another replica
+  reconcile_error?: string;
+}
+
+// getConfigTeams reads GET /v1/_config/teams (admin).
+export function getConfigTeams(): Promise<ConfigTeamsResponse> {
+  return jsonFetch<ConfigTeamsResponse>("/v1/_config/teams");
+}
+
 // Agent mirrors agentResponse on the server (internal/api/http/server.go).
 // Field names use snake_case to match the wire shape; renaming any of
 // them is a wire change, not a UI change.

@@ -3,10 +3,14 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
 
@@ -69,5 +73,94 @@ func TestReconcileConfigTeams_AConfiguredStarterTeamIsArmedAndDisarmedWithTheYAM
 	}
 	if subs, _ := srv.listTeamSubscriptions(ctx); len(subs) != 0 {
 		t.Errorf("armed after the team left the yaml = %v, want none", subNames(subs))
+	}
+}
+
+// configTeamsGet calls GET /v1/_config/teams and decodes its rows by name.
+func configTeamsGet(t *testing.T, srv *Server) (map[string]configTeamStatus, map[string]json.RawMessage) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.handleConfigTeams(rec, httptest.NewRequest(http.MethodGet, "/v1/_config/teams", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/_config/teams = %d: %s", rec.Code, rec.Body)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	var rows []configTeamStatus
+	if err := json.Unmarshal(body["teams"], &rows); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]configTeamStatus{}
+	for _, r := range rows {
+		byName[r.Name] = r
+	}
+	return byName, body
+}
+
+// The boot only logs a configured team whose name an API-made team holds; the
+// endpoint the Settings health panel reads reports it, beside the teams the
+// configuration did write.
+func TestConfigTeams_ReportsAWrittenTeamAndANameConflict(t *testing.T) {
+	h := newTriggerWalkHarness(t)
+	ctx := context.Background()
+	plain := `{"entry":"a","states":[{"state":"a","handler":{"kind":"agent","agent":"writer"}},` +
+		`{"state":"done","handler":{"kind":"terminal"}}],"transitions":[{"from":"a","to":"done","on":"success"}]}`
+	res, _ := h.srv.teamDefTool.Execute(substrateAdminCtx(ctx),
+		json.RawMessage(`{"op":"create","name":"taken","overlay":`+plain+`}`))
+	if res.IsError {
+		t.Fatalf("create the API team: %s", res.Text)
+	}
+	h.cfg.Teams = map[string]config.Team{
+		"fine":  {Definition: json.RawMessage(plain)},
+		"taken": {Definition: json.RawMessage(plain)},
+	}
+	if _, err := h.srv.ReconcileConfigTeams(ctx, h.cfg.Teams); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, body := configTeamsGet(t, h.srv)
+	if r := rows["fine"]; r.Status != configTeamWritten || r.ActiveDefID == "" {
+		t.Errorf("fine = %+v, want written with its def id", r)
+	}
+	if r := rows["taken"]; r.Status != configTeamConflict || !strings.Contains(r.Detail, "over the API") {
+		t.Errorf("taken = %+v, want a conflict saying the API version holds the name", r)
+	}
+	if _, ok := body["reconciled_at"]; !ok {
+		t.Errorf("body = %s, want reconciled_at from this replica's reconcile", body)
+	}
+}
+
+// A refused team has no live version. The reason is in the memory of the
+// replica that ran the reconcile; any other replica says where to look.
+func TestConfigTeams_ARefusedTeamCarriesItsReasonOnlyWhereTheReconcileRan(t *testing.T) {
+	teams := map[string]config.Team{"broken": {}, "retired": {}}
+	rows := []store.TeamDefNameSummary{
+		{Name: "retired", ActiveDefID: "td_1", ActiveRetired: true, ActiveSource: store.TeamDefSourceConfig},
+		{Name: "broken", TenantID: "acme", ActiveDefID: "td_2"}, // a tenant's own: not the shared tier
+	}
+	ran := &configTeamsRun{Report: builtin.ConfigTeamsReport{
+		Refused: []builtin.ConfigTeamProblem{{Name: "broken", Detail: "agent ./w: tool Bash is not granted"}},
+	}}
+
+	statuses := func(body map[string]any) map[string]configTeamStatus {
+		out := map[string]configTeamStatus{}
+		for _, r := range body["teams"].([]configTeamStatus) {
+			out[r.Name] = r
+		}
+		return out
+	}
+	here := statuses(configTeamsResponse(teams, rows, ran))
+	if r := here["broken"]; r.Status != configTeamNotWritten || r.Detail != "agent ./w: tool Bash is not granted" {
+		t.Errorf("broken here = %+v, want not_written with the refusal", r)
+	}
+	if r := here["retired"]; r.Status != configTeamNotWritten {
+		t.Errorf("retired = %+v, want not_written: a retired active version is not in service", r)
+	}
+
+	elsewhere := statuses(configTeamsResponse(teams, rows, nil))
+	if r := elsewhere["broken"]; r.Status != configTeamNotWritten || !strings.Contains(r.Detail, "did not run the boot reconcile") {
+		t.Errorf("broken elsewhere = %+v, want not_written pointing at the other replica's log", r)
 	}
 }
