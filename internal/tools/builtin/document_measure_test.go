@@ -568,3 +568,25 @@ func TestOntologySchemes_MeasureAccessAndCompareOnBothTiers(t *testing.T) {
 		checkCompareOrdersNodesByShareChange(t, d, ctx)
 	})
 }
+
+// TestMeasure_DatingChangeWithinAPeriodRefreshesFallbackShare — a member that only
+// creation dated, then given a valid_at in the same period, keeps its period but
+// is no longer fallback-dated: the next compute appends a row whose fallback_share
+// says so (review finding: the inputs hash left the dating source out).
+func TestMeasure_DatingChangeWithinAPeriodRefreshesFallbackShare(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newMeasureCorpus(t, d, base, conceptOntologyMD)
+	undated := k.doc(t, time.Time{}, k.rep)
+	k.compute(t)
+	start := periodStart(time.Now().UnixNano(), "month")
+	rows := rowsOf(measureRows(t, d, k.f.operator), measureCount, k.rep, start)
+	if len(rows) != 1 || rows[0].Fallback != 1 {
+		t.Fatalf("precondition: rows = %+v; want one row dated by creation (fallback 1)", rows)
+	}
+	k.date(t, undated, time.Unix(0, start).UTC().Add(time.Minute))
+	k.compute(t)
+	rows = rowsOf(measureRows(t, d, k.f.operator), measureCount, k.rep, start)
+	if len(rows) != 2 || rows[1].Fallback != 0 || rows[1].Value != 1 {
+		t.Errorf("rows = %+v; want a second row, same count, fallback 0", rows)
+	}
+}

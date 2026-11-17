@@ -252,6 +252,13 @@ func seriesHash(k pointKey, extra string, lines []string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// withFallback adds a row's fallback share to its hash's extra line: the share is
+// stored on the row, and a member's dating source can change (a valid_at set
+// within the same period) without changing which period it falls in.
+func withFallback(extra string, share float64) string {
+	return fmt.Sprintf("%s fallback %.9f", extra, share)
+}
+
 // fallbackShare is the share of ids the last fallback dated.
 func fallbackShare(ids []string, dates map[string]seriesDate) float64 {
 	if len(ids) == 0 {
@@ -391,8 +398,9 @@ func (sp *seriesPlan) schemeRows(ss *seriesScheme, p *nodeStatsPlan, dates map[s
 			}
 		}
 		k := pointKey{measure: measureUnplaced, node: ss.s.ChunkID, period: ss.period, start: start}
+		fb := fallbackShare(unplaced, dates)
 		sp.add(seriesRow{pointKey: k, value: float64(len(unplaced)), members: len(unplaced), basis: len(ids),
-			fallback: fallbackShare(unplaced, dates), inputs: seriesHash(k, "basis "+ss.basisHash[start], unplaced),
+			fallback: fb, inputs: seriesHash(k, withFallback("basis "+ss.basisHash[start], fb), unplaced),
 			readSH: ss.basisHash[start]}, ids)
 	}
 }
@@ -405,8 +413,9 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 	for _, start := range starts {
 		ids := buckets[start]
 		k := pointKey{measure: measureCount, node: n.ID, period: period, start: start}
-		sp.add(seriesRow{pointKey: k, value: float64(len(ids)), members: len(ids), fallback: fallbackShare(ids, dates),
-			inputs: seriesHash(k, "", ids), readSH: membersHash(ids)}, ids)
+		fb := fallbackShare(ids, dates)
+		sp.add(seriesRow{pointKey: k, value: float64(len(ids)), members: len(ids), fallback: fb,
+			inputs: seriesHash(k, withFallback("", fb), ids), readSH: membersHash(ids)}, ids)
 		if ss != nil && len(ss.basis[start]) > 0 {
 			var in []string
 			for _, id := range ids {
@@ -416,8 +425,9 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 			}
 			basis := len(ss.basis[start])
 			k := pointKey{measure: measureShare, node: n.ID, period: period, start: start}
+			sfb := fallbackShare(in, dates)
 			sp.add(seriesRow{pointKey: k, value: float64(len(in)) / float64(basis), members: len(in), basis: basis,
-				fallback: fallbackShare(in, dates), inputs: seriesHash(k, "basis "+ss.basisHash[start], in),
+				fallback: sfb, inputs: seriesHash(k, withFallback("basis "+ss.basisHash[start], sfb), in),
 				readSH: ss.basisHash[start]}, ss.basis[start])
 		}
 		if p.model != "" && len(ids) >= nodestats.MinMembers && len(earlier) >= nodestats.MinMembers {
@@ -433,8 +443,8 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 			}
 			all := append(append([]string{}, earlier...), ids...)
 			sort.Strings(all)
-			sp.add(seriesRow{pointKey: k, members: len(ids), fallback: fallbackShare(ids, dates),
-				inputs: seriesHash(k, "model "+p.model, lines), readSH: membersHash(all),
+			sp.add(seriesRow{pointKey: k, members: len(ids), fallback: fb,
+				inputs: seriesHash(k, withFallback("model "+p.model, fb), lines), readSH: membersHash(all),
 				periodIDs: ids, earlierIDs: append([]string{}, earlier...)}, all)
 		}
 		earlier = append(earlier, ids...)
