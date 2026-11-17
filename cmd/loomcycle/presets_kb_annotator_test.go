@@ -149,13 +149,18 @@ func annRealDocumentOp(t *testing.T) (*builtin.Document, context.Context, contex
 
 func runAnnotator(t *testing.T, d *builtin.Document, ctx context.Context, f *annFake, input string) map[string]any {
 	t.Helper()
-	agent := knowledgeBaseConfig(t).Agents["kb/annotator"]
-	set := []tools.Tool{d, &annFakeAgent{f: f}, &annFakeChannel{f: f}}
+	return runAnnotatorWith(t, d, knowledgeBaseConfig(t).Agents["kb/annotator"].Code, ctx, f, input)
+}
+
+// runAnnotatorWith runs code, a kb/annotator body, with doc as its Document tool.
+func runAnnotatorWith(t *testing.T, doc tools.Tool, code string, ctx context.Context, f *annFake, input string) map[string]any {
+	t.Helper()
+	set := []tools.Tool{doc, &annFakeAgent{f: f}, &annFakeChannel{f: f}}
 	res, err := loop.Run(ctx, loop.RunOptions{
 		Provider:   codejs.New(codejs.Config{CodeRoot: t.TempDir(), RunTimeout: codejs.DefaultRunTimeout}),
 		Model:      "code-js",
 		AgentName:  "kb/annotator",
-		CodeBody:   agent.Code,
+		CodeBody:   code,
 		Tools:      set,
 		Dispatcher: tools.NewDispatcher(set),
 		Segments:   []loop.PromptSegment{{Role: "user", Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: input}}}},

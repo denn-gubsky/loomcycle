@@ -4782,11 +4782,14 @@ agents:
 
       var CONFIG = {
         annotate_agent: "kb/annotate",
-        // The version of the request templates and of kb/annotate's prompt. It is part
-        // of every annotation's hash: raising it makes every annotation stale.
+        // The version of the request template and of kb/annotate's prompt, per
+        // annotation level (branch = a section, document, path = a folder). It is
+        // part of every annotation's hash: raising one level's version makes that
+        // level's annotations stale and leaves the other levels alone. A new level
+        // gets its own entry here.
         // 2: a section's request names its document and the document's identity,
         // and the prompt allows a code only where the request carries it.
-        prompt_version: 2,
+        prompt_versions: { branch: 2, document: 2, path: 2 },
         lease_name: "annotator",
         lease_ttl_ms: 900000,
         lease_renew_every: 10,
@@ -5151,8 +5154,11 @@ agents:
       }
 
       // workAge says whether a document needs a pass: null when every annotation it
-      // has is current and written with this prompt; otherwise the time its document
-      // annotation was written ("" when it has none), which orders a sweep.
+      // has is current and its document annotation is written with this prompt;
+      // otherwise the time its document annotation was written ("" when it has
+      // none), which orders a sweep. Only the document level's prompt version is
+      // compared here: its sections' versions are compared by a pass over the
+      // document, so a raised branch version alone is not found by drain or sweep.
       function workAge(st, doc) {
         if (operationalType(doc.type) !== "") { return null; }
         var r;
@@ -5166,7 +5172,7 @@ agents:
         if (recs.length === 0) { return ""; }
         var rec = recs[0];
         var at = typeof rec.written_at === "string" ? rec.written_at : "";
-        if (rec.stale === true || rec.prompt_version !== CONFIG.prompt_version) { return at; }
+        if (rec.stale === true || rec.prompt_version !== promptVersion("document")) { return at; }
         var counts = call(st, { op: "list_annotations", document_id: doc.document_id, summarize: true });
         var c = isPlainObject(counts) && isPlainObject(counts.counts) ? counts.counts : {};
         for (var lvl in c) {
@@ -5237,7 +5243,7 @@ agents:
           if (cur === null) { bump(st.skipped, "unreadable"); return false; }
         }
         var stale = cur.stale === true || (childWrote && st.opts.write === "report") ||
-          (isPlainObject(cur.record) && cur.record.prompt_version !== CONFIG.prompt_version);
+          (isPlainObject(cur.record) && cur.record.prompt_version !== promptVersion(level));
         if (!stale && !st.opts.force) { bump(st.skipped, "current"); return false; }
         if (isPlainObject(cur.record) && cur.record.manual === true) { bump(st.skipped, "manual"); return false; }
         st.stale[level]++;
@@ -5270,7 +5276,7 @@ agents:
         if (v === null) { st.parse_errors++; return false; }
         if (v.language !== "" && v.language !== cur.language) { st.wrong_language++; return false; }
         var args = { op: "set_annotation", level: level, brief: v.brief, abstract: v.abstract, language: cur.language,
-                     inputs_sha256: cur.inputs_sha256, prompt_version: CONFIG.prompt_version };
+                     inputs_sha256: cur.inputs_sha256, prompt_version: promptVersion(level) };
         if (ref.id) { args.id = ref.id; } else if (ref.path) { args.path = ref.path; } else { args.document_id = ref.document_id; }
         try {
           call(st, args);
@@ -5320,7 +5326,7 @@ agents:
           if (cur === null) { bump(st.skipped, "unreadable"); return false; }
         }
         var stale = cur.stale === true || (st.opts.write === "report" && (childWrote || st.dirty[folder] === true)) ||
-          (isPlainObject(cur.record) && cur.record.prompt_version !== CONFIG.prompt_version);
+          (isPlainObject(cur.record) && cur.record.prompt_version !== promptVersion("path"));
         // force rewrites what the pass was pointed at: folders only in path mode. A
         // forced document pass leaves its folders to their hashes, so one document's
         // regenerate does not rewrite every folder up to the top.
@@ -5343,7 +5349,7 @@ agents:
 
       function folderInputsOf(st, folder) {
         try {
-          var r = call(st, { op: "annotation_inputs", level: "path", path: folder, prompt_version: CONFIG.prompt_version });
+          var r = call(st, { op: "annotation_inputs", level: "path", path: folder, prompt_version: promptVersion("path") });
           return isPlainObject(r) && typeof r.inputs_sha256 === "string" ? r : null;
         } catch (e) {
           return null;
@@ -5351,7 +5357,7 @@ agents:
       }
 
       function inputsOf(st, ref, level) {
-        var args = { op: "annotation_inputs", level: level, prompt_version: CONFIG.prompt_version, body_chars: st.opts.max_body_chars };
+        var args = { op: "annotation_inputs", level: level, prompt_version: promptVersion(level), body_chars: st.opts.max_body_chars };
         if (ref.id) { args.id = ref.id; } else { args.document_id = ref.document_id; }
         try {
           var r = call(st, args);
@@ -5359,6 +5365,13 @@ agents:
         } catch (e) {
           return null;
         }
+      }
+
+      // promptVersion is the prompt version of an annotation level. A level with no
+      // entry is a mistake in this body, not a version 0: it stops the run.
+      function promptVersion(level) {
+        if (!hasOwn(CONFIG.prompt_versions, level)) { throw new Error("no prompt version for level " + level); }
+        return CONFIG.prompt_versions[level];
       }
 
       var REFUSALS = ["annotation_inputs_changed", "manual_record"];
@@ -5623,7 +5636,7 @@ agents:
 
       function report(st) {
         var out = {
-          status: st.status, mode: st.opts.mode, write: st.opts.write, prompt_version: CONFIG.prompt_version,
+          status: st.status, mode: st.opts.mode, write: st.opts.write, prompt_versions: CONFIG.prompt_versions,
           documents: st.documents_count, document_ids: st.documents, folders: st.folders_count, stale: st.stale,
           calls: st.calls, skipped: st.skipped, tool_calls: st.tool_calls
         };
