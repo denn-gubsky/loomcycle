@@ -470,6 +470,8 @@ export type {
   PathToolResponse,
   DocumentToolInput,
   DocumentEdgeEvidence,
+  DocumentProposedConcept,
+  DocumentSchemeHeader,
   DocumentToolResponse,
   DocumentCopyInput,
   DocumentMoveInput,

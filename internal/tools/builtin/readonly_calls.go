@@ -77,7 +77,7 @@ var documentWriteOps = map[string]bool{
 	"copy_documents": true, "move_documents": true, "mark_source": true,
 	"create_chunk": true, "update_chunk": true, "delete_chunk": true, "move_chunk": true, "reorder_chunk": true,
 	"upsert_chunk": true, "supersede_chunk": true, "remember": true, "judge_fact": true,
-	"propose_entity": true, "propose_subject": true,
+	"propose_entity": true, "import_scheme": true, "propose_subject": true,
 	"link_chunks": true, "unlink_chunks": true,
 	"propose_statement": true, "accept_statement": true, "reject_statement": true,
 	"judge_statements": true, "maintain_statement": true,
