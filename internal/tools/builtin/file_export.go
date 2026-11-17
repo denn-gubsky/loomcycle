@@ -36,6 +36,8 @@ type ExportRequest struct {
 	PageSize   string
 	Language   string
 	Provenance *bool
+	// Metadata is none or embed, as File op=render takes it.
+	Metadata string
 	// Actor is who exported, as the render log records it (the HTTP route
 	// passes the principal's subject).
 	Actor string
@@ -116,14 +118,20 @@ func (f *File) Export(ctx context.Context, req ExportRequest) (*ExportedFile, *E
 	default:
 		return invalid("export: scope must be agent, user or tenant")
 	}
+	switch req.Metadata {
+	case "", "none", "embed":
+	default:
+		return invalid("export: metadata must be none or embed")
+	}
 	in := fileInput{Document: req.Document, Scope: scope, Chunk: req.Chunk, Format: format, TOC: req.TOC,
-		TitlePage: req.TitlePage, Provenance: req.Provenance, PageSize: req.PageSize}
+		TitlePage: req.TitlePage, Provenance: req.Provenance, PageSize: req.PageSize, Metadata: req.Metadata}
 	in.Language = req.Language
 	job := &renderJob{f: f, in: in, format: format, dest: renderDest{download: true},
 		date: time.Now().UTC().Format("2006-01-02"), actor: req.Actor, exported: &ExportedFile{}}
 	noMeta := false
 	din := docInput{Op: "export_md", Scope: scope, DocumentID: req.Document, IncludeMetadata: &noMeta,
-		render: &renderRequest{chunkID: req.Chunk, provenance: job.provenance(), language: req.Language, date: job.date, deliver: job.deliver}}
+		render: &renderRequest{chunkID: req.Chunk, provenance: job.provenance(), language: req.Language, date: job.date,
+			embed: req.Metadata == "embed", deliver: job.deliver}}
 	raw := []byte(fmt.Sprintf(`{"op":"export_md","scope":%q,"document_id":%q,"include_metadata":false}`, scope, req.Document))
 	res, err := f.Docs.executeInput(ctx, din, raw)
 	if err != nil {

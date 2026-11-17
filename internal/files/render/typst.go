@@ -84,6 +84,13 @@ func WriteTypst(ctx context.Context, w io.Writer, d *Doc, opts Options) ([]Image
 			used = append(used, im)
 		}
 	}
+	if d.Embed != nil {
+		js, err := d.Embed.JSON()
+		if err != nil {
+			return nil, err
+		}
+		t.embed = string(js)
+	}
 	t.collectAnchors()
 	t.document()
 	if err := bw.Flush(); err != nil {
@@ -119,6 +126,8 @@ type typWriter struct {
 	images   map[string]typImage
 	anchors  map[string]bool // anchors that will carry a label
 	labelled map[string]bool // anchors already labelled
+	// embed is the record a PDF carries as an attachment (D21), "" for none.
+	embed string
 }
 
 func (t *typWriter) s(s string) { _, _ = t.w.WriteString(s) }
@@ -137,15 +146,15 @@ func (t *typWriter) str(s string) {
 // invalid UTF-8 as U+FFFD.
 func typString(s string) string {
 	s = strings.ToValidUTF8(s, "�")
+	// The two characters that are syntax inside a literal, escaped first
+	// and on their own (backslash before quote, so the quote's escape is
+	// not escaped again); the loop below handles only control characters.
+	s = strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`)
 	var b strings.Builder
 	b.Grow(len(s) + 2)
 	b.WriteByte('"')
 	for _, r := range s {
 		switch {
-		case r == '\\':
-			b.WriteString(`\\`)
-		case r == '"':
-			b.WriteString(`\"`)
 		case r == '\n':
 			b.WriteString(`\n`)
 		case r == '\t':
@@ -234,6 +243,11 @@ func (t *typWriter) document() {
 	t.s("#show link: set text(fill: rgb(\"#1d4ed8\"))\n")
 	t.s("#set table(stroke: 0.5pt + luma(170), inset: 5pt)\n")
 	t.s("#show quote.where(block: true): it => block(stroke: (left: 2pt + luma(200)), inset: (left: 10pt, y: 3pt), it.body)\n\n")
+	if t.embed != "" {
+		// The record as an attached file (D21), its bytes from a string
+		// literal: nothing is read from disk.
+		t.s(`#pdf.attach("` + EmbedName + `", bytes(` + typString(t.embed) + `), mime-type: "application/json", description: "loomcycle document metadata")` + "\n\n")
+	}
 
 	// The title, with the Draft or Review label beside it (D15).
 	t.s("#block(below: 0.8em)[#text(size: 20pt, weight: \"bold\")[")

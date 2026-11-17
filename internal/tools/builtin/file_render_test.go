@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"html"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
@@ -479,5 +483,75 @@ func TestFileRender_ODTAndEPUBReachTheInbox(t *testing.T) {
 	b, err := os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(out["ref"])))
 	if err != nil || !bytes.HasPrefix(b[30:], []byte("mimetypeapplication/epub+zip")) {
 		t.Fatalf("the EPUB does not start with its mimetype (%v)", err)
+	}
+}
+
+// metadata: embed writes the document's record into the file (RFC GR P4b,
+// D21): every rendered chunk with its id, anchor, type, tags and fields, the
+// relations inside the document, and never the import provenance.
+func TestFileRender_MetadataEmbedCarriesTheRecord(t *testing.T) {
+	f, ctx, d, _ := fileDocRun(t)
+	md := "# Services\n\nIntro.\n\n## Basic\n<!-- loom: {\"type\":\"section\",\"fields\":{\"level\":\"poc\"}} -->\n\nNo test plan.\n\n## Standard\n\nTest plan.\n"
+	out, res := docExec(t, d, ctx, `{"op":"import_md","scope":"user","path":"/decks/levels","markdown":`+jsonString(md)+`,"source_url":"https://example.com/d/1","source_kind":"skybits"}`)
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	docID := asStr(out["document_id"])
+	basic, _, _ := importedChunk(t, d, ctx, docID, "Basic")
+	standard, _, _ := importedChunk(t, d, ctx, docID, "Standard")
+	bID, sID := asStr(basic["id"]), asStr(standard["id"])
+	if _, r := docExec(t, d, ctx, `{"op":"add_tags","scope":"user","id":"`+bID+`","tags":["level/poc"]}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	if _, r := docExec(t, d, ctx, `{"op":"link_chunks","scope":"user","from_id":"`+sID+`","to_id":"`+bID+`","kind":"related"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+
+	r, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": "html", "metadata": "embed"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	b, err := os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(r["ref"])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`<pre id="loomcycle-metadata" hidden>([^<]*)</pre>`).FindSubmatch(b)
+	if m == nil {
+		t.Fatalf("the page has no record:\n%s", b)
+	}
+	var e render.Embed
+	if err := json.Unmarshal([]byte(html.UnescapeString(string(m[1]))), &e); err != nil {
+		t.Fatal(err)
+	}
+	if e.DocumentID != docID || e.Scope != "user" || len(e.Chunks) != 3 {
+		t.Fatalf("record = %+v", e)
+	}
+	byID := map[string]render.EmbedChunk{}
+	for _, c := range e.Chunks {
+		byID[c.ID] = c
+		if strings.Contains(string(c.Fields), "provenance") || strings.Contains(string(c.Fields), "example.com") {
+			t.Errorf("chunk %s carries the import provenance: %s", c.ID, c.Fields)
+		}
+	}
+	if c := byID[bID]; c.Type != "section" || c.Anchor != chunkAnchor(bID) || c.Parent == "" ||
+		len(c.Tags) != 1 || c.Tags[0] != "level/poc" || !strings.Contains(string(c.Fields), `"level":"poc"`) {
+		t.Errorf("the Basic chunk's record = %+v", c)
+	}
+	if len(e.Relations) != 1 || e.Relations[0] != (render.EmbedRelation{From: sID, To: bID, Kind: "related"}) {
+		t.Errorf("relations = %+v", e.Relations)
+	}
+
+	// Off by default, and refused where it means nothing.
+	r, _ = fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": "html"})
+	if b, _ := os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(r["ref"]))); bytes.Contains(b, []byte("loomcycle-metadata")) {
+		t.Error("a render without metadata carries a record")
+	}
+	for _, in := range []map[string]any{
+		{"op": "render", "document": docID, "format": "html", "metadata": "all"},
+		{"op": "render", "path": "volume:inbox:x.md", "format": "html", "metadata": "embed"},
+	} {
+		if _, res := fileOp(t, f, ctx, in); !res.IsError {
+			t.Errorf("%v was not refused", in)
+		}
 	}
 }

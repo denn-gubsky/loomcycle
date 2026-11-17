@@ -205,6 +205,7 @@ func TestDOCX_OpensInLibreOffice(t *testing.T) {
 	files := map[string][]byte{
 		"fixture.docx":   write(t, fixtureDoc(t), FormatDOCX, Options{TOC: true}),
 		"titlepage.docx": write(t, fixtureDoc(t), FormatDOCX, Options{TitlePage: true, PageSize: "letter"}),
+		"embed.docx":     write(t, embedDoc(t), FormatDOCX, Options{}),
 	}
 	for name, b := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {

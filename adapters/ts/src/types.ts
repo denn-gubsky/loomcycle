@@ -4967,6 +4967,10 @@ export interface DocumentExportOptions {
   language?: string;
   /** false leaves the provenance note out (the server puts it in by default). */
   provenance?: boolean;
+  /** "embed" writes loomcycle's record of the document into the file, so
+   *  importing the file can re-import onto the same document (RFC GR P4b).
+   *  Default "none". */
+  metadata?: "none" | "embed";
   signal?: AbortSignal;
 }
 

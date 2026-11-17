@@ -37,9 +37,9 @@ func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error)
 	format := strings.ToLower(strings.TrimSpace(in.Format))
 	switch {
 	case format == "":
-		return errValidation("render: missing required field: format", "Pass format: pdf, docx, html or md."), nil
+		return errValidation("render: missing required field: format", "Pass format: pdf, docx, odt, epub, html or md."), nil
 	case !render.Supported(format):
-		return errValidation(fmt.Sprintf("render: unknown format %q", in.Format), "Pass format: pdf, docx, html or md."), nil
+		return errValidation(fmt.Sprintf("render: unknown format %q", in.Format), "Pass format: pdf, docx, odt, epub, html or md."), nil
 	}
 	sources := 0
 	for _, s := range []string{in.Document, in.DocPath, in.Path} {
@@ -58,6 +58,15 @@ func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error)
 	case "", "a4", "letter":
 	default:
 		return errValidation("render: page_size must be a4 or letter", ""), nil
+	}
+	switch in.Metadata {
+	case "", "none":
+	case "embed":
+		if in.Path != "" {
+			return errValidation("render: metadata embed records a document, and path is a file", "Render a document (document or doc_path), or drop metadata."), nil
+		}
+	default:
+		return errValidation("render: metadata must be none or embed", ""), nil
 	}
 	dest, res, ok := renderDestination(ctx, in)
 	if !ok {
@@ -145,7 +154,8 @@ func (j *renderJob) fromDocument(ctx context.Context) (tools.Result, error) {
 	raw, _ := json.Marshal(call)
 	noMeta := false
 	din := docInput{Op: "export_md", Scope: scope, DocumentID: in.Document, Path: in.DocPath, IncludeMetadata: &noMeta,
-		render: &renderRequest{chunkID: in.Chunk, provenance: j.provenance(), language: in.Language, date: j.date, deliver: j.deliver}}
+		render: &renderRequest{chunkID: in.Chunk, provenance: j.provenance(), language: in.Language, date: j.date,
+			embed: in.Metadata == "embed", deliver: j.deliver}}
 	res, err := f.Docs.executeInput(ctx, din, raw)
 	if err == nil && res.IsError {
 		res.Text = strings.Replace(res.Text, "export_md: ", "render: ", 1)

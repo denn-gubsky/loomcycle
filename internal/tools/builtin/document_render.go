@@ -54,6 +54,9 @@ type renderRequest struct {
 	language   string
 	// date is the render date, YYYY-MM-DD UTC.
 	date string
+	// embed writes loomcycle's record of the document into the file
+	// (metadata: embed, RFC GR P4b, D21).
+	embed bool
 	// deliver turns the tree into a file and returns the op's result. It
 	// runs inside the export, with the scope's render log at hand.
 	deliver func(ctx context.Context, doc *render.Doc, rep render.Report, src renderedSource, log *renderLog) (tools.Result, error)
@@ -111,6 +114,11 @@ func (d *Document) renderDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	b.Doc.Language = req.language
 	b.Doc.Date = req.date
 
+	var embed *render.Embed
+	if req.embed {
+		embed = &render.Embed{Version: render.EmbedVersion, DocumentID: docID, Scope: scope, Title: strings.Join(strings.Fields(title), " "), Date: req.date}
+	}
+
 	// stack[i] is the open section at walk depth i+1 (depth 0 is a root).
 	var stack []*render.Section
 	stopped := false
@@ -119,6 +127,9 @@ func (d *Document) renderDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			return nil
 		}
 		blocks := renderBlocks(b, c)
+		if embed != nil {
+			embed.Chunks = append(embed.Chunks, embedChunk(c, inFile))
+		}
 		if c.depth == 0 && b.Doc.Anchor == "" {
 			// The walk's first root is the file's title.
 			b.Doc.Title = strings.Join(strings.Fields(c.row.Title), " ")
@@ -165,6 +176,12 @@ func (d *Document) renderDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 			return errFrom("render: body: "+rerr.Error(), rerr), nil
 		}
 		b.Doc.Provenance = provenanceText(d.importedProvenance(ctx, mscope, key, roots[0].ID, rootBody))
+	}
+	if embed != nil {
+		if err := d.embedTagsAndRelations(ctx, key, docID, embed); err != nil {
+			return errFrom("render: metadata: "+err.Error(), err), nil
+		}
+		b.Doc.Embed = embed
 	}
 	doc, rep := b.Finish()
 	rootChunk := rows[0].ID
@@ -365,4 +382,74 @@ func renderOptionsJSON(o render.Options, provenance bool, language, chunkID stri
 		Chunk      string `json:"chunk,omitempty"`
 	}{o.TOC, o.TitlePage, o.PageSize, provenance, language, chunkID})
 	return string(b)
+}
+
+// embedChunk is one chunk's entry in the embedded record (D21): what the
+// file's text cannot say. Its fields lose the import provenance, which only
+// the runtime writes and which a file must not carry back.
+func embedChunk(c treeChunk, inFile map[string]bool) render.EmbedChunk {
+	ec := render.EmbedChunk{ID: c.row.ID, Anchor: chunkAnchor(c.row.ID), Type: c.row.Type, Status: c.row.Status}
+	if inFile[c.row.ParentID] {
+		ec.Parent = c.row.ParentID
+	}
+	if m, ok := fieldsObject(c.body.Fields); ok {
+		delete(m, importProvenanceKey)
+		if len(m) > 0 {
+			if b, err := json.Marshal(m); err == nil {
+				ec.Fields = b
+			}
+		}
+	}
+	return ec
+}
+
+// embedBatch bounds the ids one tag query names.
+const embedBatch = 500
+
+// embedTagsAndRelations adds the rendered chunks' tags, and the statements
+// whose two ends are both among them, to the record. A rejected statement
+// is a tombstone for this scope and is not carried, as export_md does not.
+func (d *Document) embedTagsAndRelations(ctx context.Context, key sqlmem.ScopeKey, docID string, e *render.Embed) error {
+	byID := make(map[string]*render.EmbedChunk, len(e.Chunks))
+	ids := make([]string, 0, len(e.Chunks))
+	for i := range e.Chunks {
+		byID[e.Chunks[i].ID] = &e.Chunks[i]
+		ids = append(ids, e.Chunks[i].ID)
+	}
+	for start := 0; start < len(ids); start += embedBatch {
+		part := ids[start:min(start+embedBatch, len(ids))]
+		args := make([]any, len(part))
+		for i, id := range part {
+			args[i] = id
+		}
+		res, err := d.query(ctx, key, `SELECT chunk_id, tag FROM chunk_tags WHERE chunk_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")+`) ORDER BY chunk_id, tag`, args...)
+		if err != nil {
+			return err
+		}
+		for _, r := range res.Rows {
+			if c := byID[asStr(r[0])]; c != nil {
+				c.Tags = append(c.Tags, asStr(r[1]))
+			}
+		}
+	}
+	res, err := d.query(ctx, key, `SELECT from_id, to_id, kind, status FROM chunk_edges
+		WHERE from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND to_id IN (SELECT id FROM chunks WHERE document_id = ?)
+		  AND status <> ? ORDER BY from_id, to_id, kind`, docID, docID, edgeStatusRejected)
+	if err != nil {
+		return err
+	}
+	for _, r := range res.Rows {
+		// Both ends among the chunks the record lists: a render cut at the
+		// section cap lists fewer than the walk reached.
+		from, to := asStr(r[0]), asStr(r[1])
+		if byID[from] == nil || byID[to] == nil {
+			continue
+		}
+		rel := render.EmbedRelation{From: from, To: to, Kind: asStr(r[2])}
+		if st := asStr(r[3]); st != edgeStatusAsserted {
+			rel.Status = st
+		}
+		e.Relations = append(e.Relations, rel)
+	}
+	return nil
 }

@@ -222,3 +222,24 @@ func TestPDF_TypesetsAndKeepsTheText(t *testing.T) {
 		}
 	}
 }
+
+// A PDF carries the record as an attached file (D21). Its stream is
+// compressed; its name and the PDF's attachment structures are not.
+func TestPDF_CarriesTheRecordAsAnAttachment(t *testing.T) {
+	typst, err := exec.LookPath("typst")
+	if err != nil {
+		if os.Getenv("LOOMCYCLE_REQUIRE_TYPST") != "" {
+			t.Fatal("typst is required here and not on PATH")
+		}
+		t.Skip("typst not installed")
+	}
+	pdf := compileTypst(t, typst, embedDoc(t), Options{})
+	for _, want := range []string{"loomcycle.json", "/EmbeddedFile"} {
+		if !bytes.Contains(pdf, []byte(want)) {
+			t.Errorf("the PDF has no %q", want)
+		}
+	}
+	if bytes.Contains(compileTypst(t, typst, fixtureDoc(t), Options{}), []byte("/EmbeddedFile")) {
+		t.Error("a PDF rendered without metadata embed carries an attachment")
+	}
+}
