@@ -413,3 +413,32 @@ func TestFileRender_ProvenanceLineHasNoQuoteMarker(t *testing.T) {
 		}
 	}
 }
+
+// A table cell's <br> survives the whole path a file takes: extract (which
+// neutralises the file's markup), import (which neutralises it again) and
+// render, where it is a line break. Other markup in the cell stays text.
+func TestFileImport_CellBreakSurvivesExtractImportRender(t *testing.T) {
+	f, ctx, _, _ := fileDocRun(t)
+	md := "# Services\n\n## Levels\n\n| Basic |\n|---|\n| No test plan<br>Few runs <b>x</b> |\n"
+	kept := inbox.Capture(ctx, inbox.Item{Name: "services.md", Origin: "http"}, []byte(md))
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": ex["ref"], "doc_path": "/decks/services"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	r, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": asStr(out["document_id"]), "format": "html"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	b, err := os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(r["ref"])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(b)
+	if !strings.Contains(page, "No test plan<br>\nFew runs") || !strings.Contains(page, "&lt;b&gt;x&lt;/b&gt;") {
+		t.Errorf("the cell lost its break, or its markup came alive:\n%s", page)
+	}
+}
