@@ -46,6 +46,11 @@ type surveyFake struct {
 	// query fail as a tool error.
 	chunkCounts map[string]int
 	countErr    string
+	// labels is each document's stored type and status, answered to
+	// documents_summary; a document not in it has neither.
+	labels map[string]map[string]any
+	// summaryIDs is each documents_summary call's document_ids, in order.
+	summaryIDs [][]string
 	// searchErr makes every search fail as a tool error.
 	searchErr string
 	// screen answers a screening round, given its candidate ids; nil sorts
@@ -155,6 +160,24 @@ func (d *surveyFakeDocument) Execute(_ context.Context, raw json.RawMessage) (to
 			}
 		}
 		return okResult(map[string]any{"columns": []string{"document_id", "count"}, "rows": rows})
+	case "documents_summary":
+		raw, _ := in["document_ids"].([]any)
+		var ids []string
+		docs := []map[string]any{}
+		for _, v := range raw {
+			id, ok := v.(string)
+			if !ok {
+				return tools.Result{IsError: true, Text: "documents_summary: document_ids must be strings"}, nil
+			}
+			ids = append(ids, id)
+			row := map[string]any{"document_id": id, "title": "TITLE-MARKER"}
+			for k, v := range d.f.labels[id] {
+				row[k] = v
+			}
+			docs = append(docs, row)
+		}
+		d.f.summaryIDs = append(d.f.summaryIDs, ids)
+		return okResult(map[string]any{"documents": docs})
 	case "get_edges":
 		id, _ := in["document_id"].(string)
 		d.f.edgeIDs = append(d.f.edgeIDs, id)
