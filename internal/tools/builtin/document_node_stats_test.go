@@ -502,6 +502,38 @@ func TestDescribeOntology_WithoutStatsIsUnchanged(t *testing.T) {
 	}
 }
 
+// TestNodeStatsScopeKey_RunsOnlyWhereATaxonomyIs — the sweeper's entry point
+// computes a tenant scope with an ontology, and skips, without provisioning
+// anything, a scope that is not a tenant scope or has no document tables.
+func TestNodeStatsScopeKey_RunsOnlyWhereATaxonomyIs(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	empty, _, err := d.ontologyTenantKey(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ran, err := d.NodeStatsScopeKey(context.Background(), empty); ran || err != nil {
+		t.Fatalf("a tenant scope with no documents: ran %v err %v, want skipped", ran, err)
+	}
+	if d.tableHasColumn(base, empty, "documents", "id") {
+		t.Fatal("skipping a scope provisioned its document tables")
+	}
+
+	k := newStatsCorpus(t, d, base)
+	key, _, _ := d.ontologyTenantKey(k.f.operator)
+	user := key
+	user.Scope = "user"
+	if _, ran, _ := d.NodeStatsScopeKey(context.Background(), user); ran {
+		t.Error("a user scope was computed")
+	}
+	rep, ran, err := d.NodeStatsScopeKey(context.Background(), key)
+	if err != nil || !ran || rep.Computed == 0 || !rep.Vectors {
+		t.Fatalf("tenant scope with an ontology: ran %v err %v computed %d vectors %v", ran, err, rep.Computed, rep.Vectors)
+	}
+	if r := storedRows(t, d, k.f.operator)[nodeStatsKey(nodeKindConcept, k.rm)]; r.members != 4 || r.spread == nil {
+		t.Errorf("stored Risk Management = %+v, want members 4 with statistics", r)
+	}
+}
+
 func stripStatsFields(v any) {
 	switch x := v.(type) {
 	case map[string]any:

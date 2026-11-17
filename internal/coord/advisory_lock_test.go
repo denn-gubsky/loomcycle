@@ -51,6 +51,10 @@ func TestLockKeyConstants_MatchInitFnv(t *testing.T) {
 	if LockKeyProjectionSweeper != fnvKey("projection_sweeper") {
 		t.Errorf("LockKeyProjectionSweeper drift")
 	}
+	if LockKeyNodeStatsSweeper == 0 || LockKeyNodeStatsSweeper != fnvKey("node_stats_sweeper") ||
+		LockKeyNodeStatsSweeper == LockKeyProjectionSweeper {
+		t.Errorf("LockKeyNodeStatsSweeper drift, or it shares the projection sweeper's key")
+	}
 	if LockKeyOntologyIdentityPass == 0 || LockKeyOntologyIdentityPass != fnvKey("ontology_identity_pass") {
 		t.Errorf("LockKeyOntologyIdentityPass drift")
 	}
