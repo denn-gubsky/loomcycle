@@ -5431,6 +5431,7 @@ agents:
         try {
           desc = call(st, { op: "describe_ontology" });
         } catch (e) {
+          if (isStop(e)) { throw e; }
           bump(st.skipped, "unreadable");
           return;
         }
@@ -5494,6 +5495,7 @@ agents:
         try {
           r = call(st, args);
         } catch (e) {
+          if (isStop(e)) { throw e; }
           return errText(e).indexOf("permission") >= 0 ? "not_permitted" : "failed";
         }
         if (!isPlainObject(r)) { return "failed"; }
@@ -5512,6 +5514,7 @@ agents:
         try {
           cur = call(st, args);
         } catch (e) {
+          if (isStop(e)) { throw e; }
           if (errText(e).indexOf("standard_class") >= 0) {
             if (O.standard_classes.length < CONFIG.max_report_ids) { O.standard_classes.push(clip(name, 120)); }
             return;
@@ -5555,6 +5558,7 @@ agents:
           call(st, { op: "set_annotation", level: level, id: cur.chunk_id, brief: c.brief, abstract: c.abstract,
                      language: cur.language, inputs_sha256: cur.inputs_sha256, prompt_version: promptVersion(level) });
         } catch (e) {
+          if (isStop(e)) { throw e; }
           bump(st.refusals, refusalReason(e));
           return false;
         }

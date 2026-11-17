@@ -292,3 +292,61 @@ func TestNodeAnnotation_RequestStatusLineCarriesOnlyOneWordStatuses(t *testing.T
 		t.Fatalf("Widgets' STATUS line does not count the rest as other:\n%s", p)
 	}
 }
+
+// TestNodeAnnotation_LeaseLostInTheOntologyPassStopsTheRun — the annotator lease is
+// renewed before every call here; a renewal refused inside each of the taxonomy
+// pass's calls (the statistics, describe_ontology, a node's inputs, a declared
+// node's write) stops the run as lease_lost, and nothing after it is written.
+func TestNodeAnnotation_LeaseLostInTheOntologyPassStopsTheRun(t *testing.T) {
+	code := knowledgeBaseConfig(t).Agents["kb/annotator"].Code
+	if !strings.Contains(code, "lease_renew_every: 10,") {
+		t.Fatal("the shipped body's lease_renew_every moved; update this test")
+	}
+	code = strings.Replace(code, "lease_renew_every: 10,", "lease_renew_every: 0,", 1)
+	for _, tc := range []struct {
+		name string
+		// armAfter reports whether the call just answered arms the hook: the next
+		// lease renewal, made inside the call after it, is refused.
+		armAfter func(in, out map[string]any) bool
+	}{
+		{"statistics", func(in, _ map[string]any) bool { return in["op"] == "lease" }},
+		{"describe_ontology", func(in, _ map[string]any) bool { return in["op"] == "node_stats" }},
+		{"node inputs", func(in, _ map[string]any) bool { return in["op"] == "describe_ontology" }},
+		{"declared write", func(in, out map[string]any) bool {
+			return in["op"] == "annotation_inputs" && out != nil && out["basis"] == "declared"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAnnNodesFixture(t)
+			armed, lost := false, false
+			doc := &annDocHook{Document: f.d}
+			doc.before = func(in map[string]any) (tools.Result, bool) {
+				if in["op"] == "lease" && armed {
+					lost = true
+					r, _ := okResult(map[string]any{"name": in["name"], "acquired": false, "held_by": "run-other", "expires_at": 1})
+					return r, true
+				}
+				if in["op"] == "node_stats" && tc.armAfter(in, nil) {
+					armed = true // node_stats is refused to this run: no after call
+				}
+				return tools.Result{}, false
+			}
+			doc.after = func(in, out map[string]any) {
+				if !lost && tc.armAfter(in, out) {
+					armed = true
+				}
+			}
+			fake := &annFake{reply: annStableReply}
+			rep := runAnnotatorWith(t, doc, code, f.driver, fake, `{"mode":"ontology","write":"annotate"}`)
+			if !lost {
+				t.Fatal("the hook never refused a renewal")
+			}
+			if rep["status"] != "lease_lost" {
+				t.Fatalf("status = %v, want lease_lost", rep["status"])
+			}
+			if got := nodeRecordsAt(t, f.d, f.author, "scheme"); len(got) != 0 {
+				t.Fatalf("the scheme was written after the lease was lost: %v", got)
+			}
+		})
+	}
+}
