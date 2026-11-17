@@ -123,6 +123,10 @@ type OntologyRead struct {
 	// level-5 type quietly became a level-4 sibling had no way to know their document
 	// and their ontology disagreed — the exact failure this file was written to end.
 	DepthCapped bool
+	// classChunks maps each in-force class (lower-cased name) to the chunk the class walk
+	// read it from — the first one in document order. A lookup by title alone can land on
+	// a concept, a relation or an instance of the same name.
+	classChunks map[string]string
 }
 
 // ontologyForKey is the reader proper: terms plus the document's confirmed status.
@@ -265,6 +269,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	var out []memrank.OntologyTerm
 	var proposals []memrank.OntologyProposal
 	var grammars []memrank.OntologyGrammar
+	classChunks := map[string]string{}
 	depthCapped := false
 	// The walk starts at the ROOT CHUNK'S CHILDREN: the root is the document's title
 	// ("Tenant Ontology"), not an entity. Including it would invent a type nobody
@@ -345,6 +350,9 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				RenamedFrom:       decl.RenamedFrom,
 				Issues:            decl.Issues,
 			})
+			if _, dup := classChunks[strings.ToLower(name)]; !dup {
+				classChunks[strings.ToLower(name)] = c.id
+			}
 			// AT the cap, this node's children are reported with this node's OWN
 			// parent — so a would-be level-5 type lands at level 4 as a sibling, and
 			// every deeper descendant collapses into that same flat set. The chain is
@@ -484,6 +492,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 		Relations: relations, SectionChunks: sectionChunks, partial: partial,
 		Schemes: checkedSchemes(schemes, out, instances), Instances: instances, Review: review,
+		classChunks: classChunks,
 	}, nil
 }
 

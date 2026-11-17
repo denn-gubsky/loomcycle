@@ -297,9 +297,8 @@ func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFo
 func (d *Document) focusTargetChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, read OntologyRead,
 	t memrank.FocusTarget, declared map[string]string) (string, string, error) {
 	if t.Kind == memrank.FocusClass {
-		id, err := d.classChunkID(ctx, key, read, t.Name)
-		if err != nil || id != "" {
-			return id, "", err
+		if id := read.classChunkID(t.Name); id != "" {
+			return id, "", nil
 		}
 		return "", "the class has no entry in the ontology document (a standard class); declare it to focus on it", nil
 	}
@@ -327,39 +326,14 @@ func (d *Document) focusTargetChunk(ctx context.Context, key sqlmem.ScopeKey, ms
 }
 
 // classChunkID is the in-force chunk of the ontology document that declares the class,
-// "" when none does.
+// "" when none does (a standard class has no entry).
 //
-// Matched by title, as instance_of's class lookup (chunkIDForEntity) matches — but a
-// concept is often titled after the class it focuses on (the topic "provider" about the
-// class provider), and that lookup takes the first chunk of the title, which could be
-// the concept itself. So every chunk the read placed in another role — section, scheme,
-// concept, instance — is passed over.
-func (d *Document) classChunkID(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, name string) (string, error) {
-	notClass := map[string]bool{read.RootChunkID: true}
-	for _, id := range read.SectionChunks {
-		notClass[id] = true
-	}
-	for _, s := range read.Schemes {
-		notClass[s.ChunkID] = true
-		for _, c := range s.Concepts {
-			notClass[c.ChunkID] = true
-		}
-	}
-	for _, in := range read.Instances {
-		notClass[in.ChunkID] = true
-	}
-	res, err := d.query(ctx, key, `SELECT id, coalesce(status, '') FROM chunks
-		WHERE document_id = ? AND lower(coalesce(title, '')) = lower(?) ORDER BY id`, read.DocumentID, name)
-	if err != nil {
-		return "", err
-	}
-	for _, row := range res.Rows {
-		if len(row) < 2 || notClass[asStr(row[0])] || memrank.IsInertEntityStatus(asStr(row[1])) {
-			continue
-		}
-		return asStr(row[0]), nil
-	}
-	return "", nil
+// Taken from the class walk itself, never matched by title: a concept is often titled
+// after the class it focuses on (the topic "provider" about the class provider), and a
+// relation entry, a grammar or an instance can share a class's name too — a title
+// lookup would pick one of them at random.
+func (r OntologyRead) classChunkID(name string) string {
+	return r.classChunks[strings.ToLower(strings.TrimSpace(name))]
 }
 
 // proposeConcept files an inert concept into a scheme. The parent is a scheme name, a
