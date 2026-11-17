@@ -2,7 +2,7 @@
 // .md / .canvas, RFC GR rendered files) share them.
 
 /** The file formats the runtime renders a document into (RFC GR). */
-export type RenderFormat = "pdf" | "docx" | "html" | "md";
+export type RenderFormat = "pdf" | "docx" | "odt" | "epub" | "html" | "md";
 
 /** Options of a rendered export — `GET /v1/_document/export/{id}`. Unset
  *  options are left to the server's defaults. */

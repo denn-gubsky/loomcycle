@@ -72,7 +72,7 @@ generated client covers the whole surface below.
   behave (they forward the body to the tool verbatim).
 - **Assets:** `GET /v1/_document/asset/{chunk_id}` returns a chunk's binary
   image.
-- **Exports:** `GET /v1/_document/export/{document_id}?format=pdf|docx|html|md`
+- **Exports:** `GET /v1/_document/export/{document_id}?format=pdf|docx|odt|epub|html|md`
   returns a Document rendered as a file, as an attachment named after its
   title. It reads the document with the caller's own access (open to a
   tenant's members, like the other document routes), answers a missing or

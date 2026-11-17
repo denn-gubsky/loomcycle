@@ -90,11 +90,14 @@ func getExport(t *testing.T, ts *httptest.Server, query string) (*http.Response,
 func TestDocumentExport_ServesTheFileAsAnAttachment(t *testing.T) {
 	ts, sink := exportFixture(t)
 	id := exportDoc(t, ts, false)
-	for format, ctype := range map[string]string{
+	formats := map[string]string{
 		"docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"odt":  "application/vnd.oasis.opendocument.text",
+		"epub": "application/epub+zip",
 		"html": "text/html",
 		"md":   "text/markdown",
-	} {
+	}
+	for format, ctype := range formats {
 		resp, body := getExport(t, ts, id+"?scope=user&format="+format+"&toc=true")
 		if resp.StatusCode != 200 {
 			t.Fatalf("%s: status %d: %s", format, resp.StatusCode, body)
@@ -114,8 +117,8 @@ func TestDocumentExport_ServesTheFileAsAnAttachment(t *testing.T) {
 			t.Errorf("html: the body's script is not text")
 		}
 	}
-	if len(sink.events) != 3 {
-		t.Fatalf("audit events = %+v, want three document_exported", sink.events)
+	if len(sink.events) != len(formats) {
+		t.Fatalf("audit events = %+v, want %d document_exported", sink.events, len(formats))
 	}
 	ev := sink.events[0]
 	if ev.Action != "document_exported" || ev.TargetName != "document:"+id || ev.ExportBytes == 0 || ev.ExportScope != "user" || ev.ExportFormat == "" {

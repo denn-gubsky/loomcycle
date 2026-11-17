@@ -137,7 +137,7 @@ func (f *File) InputSchema() json.RawMessage {
 			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import, render: the document store. Default user."},
 			"document":      {"type": "string", "description": "render: the id of the document to render. Pass exactly one of document, doc_path or path."},
 			"chunk":         {"type": "string", "description": "render: render only the part of the document under this chunk (a section id); its title becomes the file's title."},
-			"format":        {"type": "string", "enum": ["md", "html", "docx", "pdf"], "description": "render: the file to write. pdf (paged, typeset), docx (a Word document), html (one self-contained page) or md (clean Markdown, its pictures as files in a folder beside it)."},
+			"format":        {"type": "string", "enum": ["md", "html", "docx", "odt", "epub", "pdf"], "description": "render: the file to write. pdf (paged, typeset), docx (a Word document), odt (an OpenDocument text file), epub (an e-book), html (one self-contained page) or md (clean Markdown, its pictures as files in a folder beside it)."},
 			"toc":           {"type": "boolean", "description": "render: add a table of contents after the title. Default false."},
 			"title_page":    {"type": "boolean", "description": "render: put the title on a page of its own. Default false: the title, a Draft or Review label and a provenance and date line head the first page."},
 			"provenance":    {"type": "boolean", "description": "render: for an imported document, say where it came from under the title. Default true."},

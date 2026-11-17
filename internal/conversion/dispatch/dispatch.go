@@ -27,6 +27,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/conversion/wire"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
@@ -410,6 +411,11 @@ func (d *Dispatcher) acquire(ctx context.Context, label string) (*slot, error) {
 			// Workers are up, and none has this helper's program: an install
 			// to fix where the workers run, not a pool that is down.
 			return nil, fmt.Errorf("%w (%s): install it where the workers run (the loomcycle-worker image carries ffmpeg, pdftoppm and typst)", convert.ErrNoHelper, label)
+		}
+		if attached && label == wire.LabelWriteBook {
+			// Workers are up, and every one predates the format: an
+			// upgrade to make where the workers run.
+			return nil, fmt.Errorf("%w: the conversion workers are older than this format; update them to this server's version", render.ErrUnsupported)
 		}
 		return nil, convert.ErrNoWorkers
 	}

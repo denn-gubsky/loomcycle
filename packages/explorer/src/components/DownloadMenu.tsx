@@ -4,7 +4,7 @@ import { useExplorerData, type ExplorerDataLayer } from "../lib/dataLayer";
 import { fileStem, saveBlob, type RenderFormat } from "../lib/download";
 
 /** One entry of the document's download menu. */
-export type DownloadKind = "pdf" | "docx" | "html" | "md" | "canvas";
+export type DownloadKind = "pdf" | "docx" | "odt" | "epub" | "html" | "md" | "canvas";
 
 interface DownloadEntry {
   kind: DownloadKind;
@@ -17,6 +17,8 @@ interface DownloadEntry {
 const ENTRIES: DownloadEntry[] = [
   { kind: "pdf", label: "PDF", title: "Render the whole document as a PDF file", rendered: true },
   { kind: "docx", label: "Word (.docx)", title: "Render the whole document as a Word document", rendered: true },
+  { kind: "odt", label: "OpenDocument (.odt)", title: "Render the whole document as an OpenDocument text file", rendered: true },
+  { kind: "epub", label: "E-book (.epub)", title: "Render the whole document as an EPUB e-book", rendered: true },
   { kind: "html", label: "HTML", title: "Render the whole document as a web page", rendered: true },
   {
     kind: "md",

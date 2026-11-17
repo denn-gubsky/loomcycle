@@ -509,3 +509,22 @@ func TestBuilder_BareBrInACellIsALineBreak(t *testing.T) {
 		}
 	}
 }
+
+// A link keeps its scheme check, and the characters a URL may not hold are
+// percent-encoded, so every format writes a URL a reader and a validator
+// (epubcheck) accept.
+func TestExternalOnly_EncodesWhatAURLMayNotHold(t *testing.T) {
+	for in, want := range map[string]string{
+		`https://example.com/"#x`:           `https://example.com/%22#x`,
+		"https://example.com/a b<c>{d}\x01": `https://example.com/a%20b%3Cc%3E%7Bd%7D%01`,
+		"https://example.com/a?b=1&c=%20":   "https://example.com/a?b=1&c=%20",
+		"mailto:board@example.com":          "mailto:board@example.com",
+	} {
+		if got, _, ok := ExternalOnly(in); !ok || got != want {
+			t.Errorf("ExternalOnly(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	if _, _, ok := ExternalOnly("javascript:alert(1)"); ok {
+		t.Error("a javascript: link was kept")
+	}
+}

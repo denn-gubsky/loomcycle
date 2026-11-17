@@ -4363,7 +4363,7 @@ export class LoomcycleClient {
   }
 
   /** Render a document into a file (RFC GR) — `GET
-   *  /v1/_document/export/{documentId}`: PDF, Word (.docx), HTML or Markdown
+   *  /v1/_document/export/{documentId}`: PDF, Word (.docx), OpenDocument (.odt), EPUB, HTML or Markdown
    *  (a Markdown render of a document with pictures comes back as a zip of the
    *  .md and its pictures; see `mediaType`). `scope` is "user" (default) |
    *  "agent" | "tenant"; `scopeId`/`tenant` are the RFC AS browse overrides.

@@ -442,6 +442,8 @@ func (d *Dispatcher) run(ctx context.Context, j *job) (result, error) {
 				d.count(kind, "no_helper", false)
 			case errors.Is(err, convert.ErrNotConfigured):
 				d.count(kind, "not_configured", false)
+			case errors.Is(err, render.ErrUnsupported):
+				d.count(kind, "unsupported", false)
 			case ctx.Err() == nil:
 				d.count(kind, "busy", false)
 			}

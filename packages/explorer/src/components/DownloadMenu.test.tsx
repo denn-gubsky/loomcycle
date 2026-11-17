@@ -77,7 +77,7 @@ async function pick(el: HTMLElement, kind: string) {
 }
 
 describe("DownloadMenu", () => {
-  it("opens a menu listing the five download formats", () => {
+  it("opens a menu listing the seven download formats", () => {
     const el = mount(fakeData(true).data);
     expect(el.querySelector('[role="menu"]')).toBeNull();
     expect(menuButton(el).getAttribute("aria-expanded")).toBe("false");
@@ -86,6 +86,8 @@ describe("DownloadMenu", () => {
     expect(items(el).map((b) => b.textContent)).toEqual([
       "PDF",
       "Word (.docx)",
+      "OpenDocument (.odt)",
+      "E-book (.epub)",
       "HTML",
       "Markdown (.md)",
       "Canvas (.canvas)",
@@ -99,15 +101,15 @@ describe("DownloadMenu", () => {
     expect(items(el).map((b) => b.dataset.kind)).toEqual(["md", "canvas"]);
   });
 
-  it("renders PDF, Word and HTML through documentExportFile, saved under the server's name", async () => {
+  it("renders PDF, Word, ODT, EPUB and HTML through documentExportFile, saved under the server's name", async () => {
     const f = fakeData(true);
     const el = mount(f.data);
-    for (const kind of ["pdf", "docx", "html"]) {
+    for (const kind of ["pdf", "docx", "odt", "epub", "html"]) {
       openMenu(el);
       await pick(el, kind);
       expect(f.documentExportFile).toHaveBeenLastCalledWith("d1", "tenant", kind, BROWSE);
     }
-    expect(saved).toEqual(["Server name.pdf", "Server name.pdf", "Server name.pdf"]);
+    expect(saved).toEqual(Array(5).fill("Server name.pdf"));
     expect(f.documentExportMd).not.toHaveBeenCalled();
     expect(f.documentExportCanvas).not.toHaveBeenCalled();
   });
@@ -162,11 +164,11 @@ describe("DownloadMenu", () => {
         (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
       });
     key("ArrowUp");
-    expect(document.activeElement).toBe(items(el)[4]);
+    expect(document.activeElement).toBe(items(el).at(-1));
     key("ArrowDown");
     expect(document.activeElement).toBe(items(el)[0]);
     key("End");
-    expect(document.activeElement).toBe(items(el)[4]);
+    expect(document.activeElement).toBe(items(el).at(-1));
   });
 
   it("shows the download in progress on the button and reports a refusal through onError", async () => {
