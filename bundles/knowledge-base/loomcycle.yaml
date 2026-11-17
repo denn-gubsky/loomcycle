@@ -5764,6 +5764,26 @@ agents:
           }
           return out.join(", ");
         };
+        // The STATUS line sits outside the fenced material, and a status is free
+        // text any writer of a member sets: only one-word statuses (STATUS_SHAPE,
+        // as the document request) are named; the rest, and those past max, are
+        // counted as other.
+        var statusCounts = function (list, max) {
+          var out = [];
+          var other = 0;
+          var xs = isArray(list) ? list : [];
+          for (var i = 0; i < xs.length; i++) {
+            var x = xs[i];
+            if (!isPlainObject(x) || typeof x.count !== "number") { continue; }
+            if (typeof x.name === "string" && x.name !== "other" && STATUS_SHAPE.test(x.name) && out.length < max) {
+              out.push(x.count + " " + x.name);
+            } else {
+              other += x.count;
+            }
+          }
+          if (other > 0) { out.push(other + " other"); }
+          return out.join(", ");
+        };
         var narrower = [];
         var ns = isArray(in1.narrower) ? in1.narrower : [];
         for (var i = 0; i < ns.length; i++) {
@@ -5821,7 +5841,7 @@ agents:
           "SLOTS: " + NODE_SLOTS,
           "TITLE: " + oneLine(in1.title || "(untitled)", CONFIG.max_title_chars)
         ];
-        var statuses = counts(in1.member_statuses, 12);
+        var statuses = statusCounts(in1.member_statuses, 12);
         head.push("STATUS: " + (statuses !== "" ? statuses : "(none stored)"));
         if (typeof in1.meaning === "string" && in1.meaning !== "") { head.push("MEANING: " + oneLine(in1.meaning, 400)); }
         var place = [];

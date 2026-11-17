@@ -144,9 +144,9 @@ type nodeAnnotationInputs struct {
 	Basis      string            `json:"basis"`
 	Members    int               `json:"members"`
 	MinMembers int               `json:"min_members"`
-	// MemberStatuses counts the members by their stored status ("" as "none"), most
-	// first: the request's status line, so a brief does not call shipped work a
-	// proposal. Not hashed.
+	// MemberStatuses counts the members by their stored status ("" as "none", one
+	// that is not a single word as "other"), most first: the request's status
+	// line, so a brief does not call shipped work a proposal. Not hashed.
 	MemberStatuses []folderCount     `json:"member_statuses"`
 	MemberClasses  []folderCount     `json:"member_classes,omitempty"`
 	Narrower       []nodeNarrower    `json:"narrower,omitempty"`
@@ -531,7 +531,8 @@ func sampleMembers(members []string, docs map[string]*statDoc) []string {
 	return out
 }
 
-// nodeMemberFacts fills the members' status counts (not hashed) and class histogram.
+// nodeMemberFacts fills the members' status counts (not hashed; a status that is
+// not one word counts as "other") and class histogram.
 func (s *annotationScope) nodeMemberFacts(ctx context.Context, n *annotationNode, p *nodeStatsPlan, in *nodeAnnotationInputs, canon *nodeAnnotationCanon) error {
 	statuses := map[string]int{}
 	classes := map[string]int{}
@@ -546,8 +547,11 @@ func (s *annotationScope) nodeMemberFacts(ctx context.Context, n *annotationNode
 		}
 		for _, r := range res.Rows {
 			st := strings.TrimSpace(asStr(r[1]))
-			if st == "" {
+			switch {
+			case st == "":
 				st = "none"
+			case !isStatusWord(st):
+				st = "other"
 			}
 			statuses[st]++
 			if typ := asStr(r[2]); typ != "" {
@@ -562,6 +566,24 @@ func (s *annotationScope) nodeMemberFacts(ctx context.Context, n *annotationNode
 		canon.Classes = append(canon.Classes, fmt.Sprintf("%s:%d", c.Name, c.Count))
 	}
 	return nil
+}
+
+// isStatusWord reports whether a stored status has the shape the annotator's
+// STATUS line accepts (its STATUS_SHAPE, /^[A-Za-z][A-Za-z0-9_-]{0,31}$/): one word.
+// A status is free text any writer of the document sets, and the node request
+// carries the counts outside its fenced material, so anything else is counted as
+// "other" rather than passed on.
+func isStatusWord(s string) bool {
+	if len(s) == 0 || len(s) > 32 {
+		return false
+	}
+	for i, r := range s {
+		letter := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+		if !letter && (i == 0 || !((r >= '0' && r <= '9') || r == '_' || r == '-')) {
+			return false
+		}
+	}
+	return true
 }
 
 // nodeNarrower is the narrower nodes of n in document order, each with its own

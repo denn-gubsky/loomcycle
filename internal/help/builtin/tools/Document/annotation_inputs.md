@@ -32,7 +32,8 @@ with no entry in the ontology (the seed `Document`) is refused with
 - `written` — at least `min_members` members (documents placed under it,
   narrower nodes included): the definition (`title`, `meaning`, `place`, the
   `scheme` header), `members`, `member_statuses` (how many members are done,
-  confirmed, draft …; the brief must follow them), `member_classes`, the
+  confirmed, draft …; the brief must follow them; a stored status that is not
+  one word is counted as `other`), `member_classes`, the
   `narrower` nodes with their own records, `exemplars` (from the stored
   `node_stats` row, else a sample), `siblings` and `terms`;
 - `thin` — one or two members: the same, with those members' own briefs as
