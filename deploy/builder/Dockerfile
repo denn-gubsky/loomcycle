@@ -26,7 +26,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
 # quay.io/podman/stable ships podman + fuse-overlayfs + slirp4netns + the
 # rootless uid/gid mapping setup — the fiddly parts of running podman in a
 # container are already done here.
-FROM quay.io/podman/stable:latest@sha256:f7a17ef911a2b9b866ada8a9426a07e29a6e4f8109ef8c0e0b7010c2541b4e49
+FROM quay.io/podman/stable:latest@sha256:1d280cfab8e4cdaa221229c121f681c67463fbd82ad2fa6d13fdcf91c6fc747e
 
 # gVisor (runsc) for the strong-isolation runtime tier is OPTIONAL — uncomment
 # to bake it in, then set SANDBOX_RUNTIME=runsc. Left out by default to keep the
