@@ -164,7 +164,7 @@ func (d *Document) renderDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		if rerr != nil {
 			return errFrom("render: body: "+rerr.Error(), rerr), nil
 		}
-		b.Doc.Provenance = provenanceLine(d.importedProvenance(ctx, mscope, key, roots[0].ID, rootBody))
+		b.Doc.Provenance = provenanceText(d.importedProvenance(ctx, mscope, key, roots[0].ID, rootBody))
 	}
 	doc, rep := b.Finish()
 	rootChunk := rows[0].ID
