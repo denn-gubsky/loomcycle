@@ -34,7 +34,7 @@ with a later `computed_at`; the earlier row stays. Read with `shown_at` to see
 the series as it stood then. A node no longer in the ontology keeps its rows:
 read them by its old chunk id.
 
-It always reads the tenant scope, whatever `scope` the call names, and needs
+It always reads the tenant scope (the call takes no `scope`) and needs
 the tenant scope granted. A series is built from every member, so a caller
 whose access-control rules limit its reading gets a node's series only when it
 may read every document the series is built from (for `share` and `unplaced`,
