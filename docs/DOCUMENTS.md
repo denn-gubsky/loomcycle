@@ -1479,16 +1479,21 @@ Every directive this build reads. *Inherited* means a subclass takes its nearest
 | `@auto_assert` | a relation kind | none | — | without a Review section: `accept kind:<kind> method:rule:* when quotes:resolved` | with a Review section: does not apply, issue |
 | `@render` | a scheme | none | — | lists the scheme's concepts in the extraction prompt | — |
 | `@ordered` | a scheme | none | — | a concept's position is its `rank` | — |
+| `@domain` | a scheme | one line of text | — | reported (`schemes[].domain`): the knowledge domain the taxonomy covers | given twice: the last applies, issue |
+| `@projects` | a scheme | class names separated by `,` (repeatable) | — | reported (`schemes[].projects`): the classes whose things the scheme arranges — document, entity or fact classes, subclasses included; without it, every document class | a class that does not exist: ignored, issue |
+| `@origin` | a scheme | `adopted` · `declared` · `generated` | — | reported: a published scheme taken over, one the tenant wrote, or one generated from the corpus | another value: ignored, issue |
+| `@source` · `@version` | a scheme | text or a URL · text | — | reported: an adopted scheme's provenance | on a scheme whose `@origin` is `declared` or `generated`: issue |
 | `@notation` | a concept | one word | no | shown with the concept in the prompt and `describe_ontology` | — |
 | `@alt` | a concept or an instance | a label (one per line) | no | concepts: shown in the prompt; instances: `classify` names an issuer by its name or any `@alt` | — |
 | `@exact_match` | a concept | a concept in another scheme | no | reported | — |
+| `@focus` | a concept | a class or instance name (the whole line) | no | confirming the ontology writes a `focus` statement (method `ontology`) from the concept's chunk to the class's entry, or to the subject an instance was adopted as; removing or changing it retires the statement; a live `focus` statement someone else wrote for the same pair is kept and stands for it (`scheme_focus.kept`) | names no class or instance: ignored, issue; names both: the instance is used, issue |
 | `@retention` | a concept (a file plan) | `90d`, `6w`, `18mo`, `10y` or a Go duration | no | reported on the Ontology page and in `describe_ontology`; **not enforced** | not a duration: ignored, issue |
 | `@acl` | a concept (a file plan) | one word | no | reported; **not enforced** | — |
 | `@a` | an instance | a class in force | — | adoption: the subject's type | missing or undeclared: not adopted, issue |
 | `@nesting` | an instance | a relation kind | — | the statement each child instance has to this one | — |
-| `@<kind> <instance>` | an instance | another instance's title | — | adoption writes that statement | empty value: ignored, issue |
+| `@<kind> <instance>` | an instance | another instance's title | — | adoption writes that statement | empty value: ignored, issue; `projects`, `origin`, `source` or `focus` as the kind: not an instance directive, issue |
 
-No resolver applies `@retention` or `@acl` today: they are carried as data on the concept and shown, and nothing deletes, keeps or restricts a document because of them.
+No resolver applies `@retention` or `@acl` today: they are carried as data on the concept and shown, and nothing deletes, keeps or restricts a document because of them. The confirm response reports the `@focus` work as `scheme_focus` `{concepts, stale, written, retired, kept, errors}`, and `GET /v1/_ontology` lists what a confirm would write or retire as `scheme_focus_stale`.
 
 ### A worked example
 
@@ -1619,6 +1624,7 @@ Here a document titled "Policy SEC-12 Password rotation" is classified `Policy` 
 
 - **A draft:** `GET /v1/_ontology` (the Ontology page) parses the document whether or not it is confirmed: `terms` (with each class's `issues`), `relations`, `schemes`, `instances` (a dry run of adoption), `grammars` and `notes`, beside `effective`, what runs get now. `describe_ontology` shows only what is in force, so it cannot check a draft.
 - **After confirming:** `Document op=describe_ontology` returns the ontology as the runtime applies it. Read `sections` (every section you declared should be listed), `classes[]` (`kind` `document` or `chunk`, `fields` with inherited fields first, `directives` as declared or inherited, `norm` / `inherited_norm`, `memory_scope`, `meaning`, `issues`), `norm_classes`, `relations[]` (`source`, `issues`, `name_issue`), `grammars[]` (an `issue` means disabled), `schemes[].concepts[]` (`tag`, `rank`, `retention`, `acl`, `issues`), `instances[]` (`subject_chunk_id` once adopted, `issues`), `review` (`applied: false` means every proposal waits for a person) and the top-level `issues`. Every issue is advisory except a Review section's, which switches the policy off.
+- **How full it is:** `describe_ontology` with `with_counts: true` adds member counts over the documents the caller may read. Each concept gets `members` (documents with a live `subject` statement to it or to a concept below it, each counted once) and `members_by_class` (the same by the document's class); each scheme gets `members`; each class gets `documents` (documents of that class, and of its subclasses once the ontology is confirmed). Without the option the answer is unchanged. It needs the tenant scope; without it, or on a store fault, the answer carries an issue and no counts.
 - **On a real document:** `Document op=classify` with `write: "report"` shows which class's pattern matched (`steps[0].candidates`, each with the `quote` and where it matched), the fields and work key it would set, and the issuer, and writes nothing.
 
 ## Annotations — a brief and an abstract per section, document and folder (RFC GE)
