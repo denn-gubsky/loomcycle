@@ -375,6 +375,58 @@ type searchACLList struct {
 	overCap bool
 }
 
+// docReadList is a reader's access narrowing of one scope at document
+// granularity: the bare scope's verdict, which every document filed nowhere
+// shares, and the named documents whose verdict differs from it. A rule can only
+// single a document out by a Path-tree name, so the two together answer for every
+// document without a scan of the scope. nil means the reader is not limited.
+type docReadList struct {
+	unnamedReadable bool
+	differs         map[string]bool
+}
+
+// readable is the list's verdict on one document; a nil list reads everything.
+func (l *docReadList) readable(docID string) bool {
+	if l == nil {
+		return true
+	}
+	return l.differs[docID] != l.unnamedReadable
+}
+
+// readableDocList derives the caller's docReadList from its access-control set
+// for the scope (newDocACL; nil = no set). nil when the set limits no reading.
+func (d *Document) readableDocList(ctx context.Context, acl *docACL) (*docReadList, error) {
+	limited, err := acl.limitsReading(ctx)
+	if err != nil || !limited {
+		return nil, err
+	}
+	// Limited, and no rule names part of the scope: the bare scope is denied, so
+	// is every document in it.
+	if !acl.pathSensitive {
+		return &docReadList{}, nil
+	}
+	unnamedReadable, err := acl.readable(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := acl.namesOf(ctx, ""); err != nil { // loads every name in the scope
+		return nil, err
+	}
+	// The named documents whose verdict differs from the bare scope's: the hidden
+	// ones when the bare scope is readable, the readable ones when it is not.
+	list := &docReadList{unnamedReadable: unnamedReadable, differs: map[string]bool{}}
+	for id := range acl.paths {
+		ok, err := acl.readable(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok != unnamedReadable {
+			list.differs[id] = true
+		}
+	}
+	return list, nil
+}
+
 // errSearchACLTooWide stops collecting a list that has passed the cap.
 var errSearchACLTooWide = errors.New("search access-control list over the cap")
 
@@ -405,39 +457,19 @@ var errSearchACLTooWide = errors.New("search access-control list over the cap")
 // acl is the caller's set for this scope (newDocACL), passed in so the names it
 // loads here serve the search's later questions too.
 func (d *Document) resolveSearchACL(ctx context.Context, acl *docACL) (*searchACLList, error) {
-	limited, err := acl.limitsReading(ctx)
-	if err != nil || !limited {
+	list, err := d.readableDocList(ctx, acl)
+	if err != nil || list == nil {
 		return nil, err
 	}
-	// Limited, and no rule names part of the scope: the bare scope is denied, so
-	// is every document in it.
-	if !acl.pathSensitive {
-		return &searchACLList{none: true}, nil
-	}
-	unnamedReadable, err := acl.readable(ctx, "")
-	if err != nil {
-		return nil, err
-	}
-	if _, err := acl.namesOf(ctx, ""); err != nil { // loads every name in the scope
-		return nil, err
-	}
-	// The named documents whose verdict differs from the bare scope's: the hidden
-	// ones when the bare scope is readable, the readable ones when it is not.
-	var docs []string
-	for id := range acl.paths {
-		ok, err := acl.readable(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		if ok != unnamedReadable {
-			docs = append(docs, id)
-		}
-	}
-	if len(docs) == 0 {
-		if unnamedReadable {
+	if len(list.differs) == 0 {
+		if list.unnamedReadable {
 			return nil, nil
 		}
 		return &searchACLList{none: true}, nil
+	}
+	docs := make([]string, 0, len(list.differs))
+	for id := range list.differs {
+		docs = append(docs, id)
 	}
 	sort.Strings(docs)
 	maxIDs := d.searchFilterMaxIDs()
@@ -457,7 +489,7 @@ func (d *Document) resolveSearchACL(ctx context.Context, acl *docACL) (*searchAC
 	}
 	sort.Strings(chunks)
 	switch {
-	case unnamedReadable:
+	case list.unnamedReadable:
 		if len(chunks) == 0 {
 			return nil, nil // the hidden documents hold no chunk to keep out
 		}

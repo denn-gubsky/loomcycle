@@ -172,7 +172,8 @@ const documentInputSchema = `{
 		"written_before": {"type": "string", "description": "list_annotations: only annotations written before this RFC 3339 time."},
 		"annotations": {"type": "string", "enum": ["none","include","only"], "description": "search: rank the corpus's annotations too — the brief and abstract of sections, documents and folders. include fuses them with the passages, one row per target; only answers from them alone, the shape of a question about the corpus as a whole (\"what do we have on X\", \"what does this folder hold\"). A row found this way carries matched_annotation {level, text} and summary; a folder's row is its _annotation document, with folder. Default none."},
 		"annotation_levels": {"type": "array", "items": {"type": "string", "enum": ["branch","document","path"]}, "description": "search with annotations: which levels to rank (default all), e.g. [\"path\", \"document\"] for a corpus question."},
-		"with_summary": {"type": "boolean", "description": "get_document / get_chunk / search / related / graph_recall / documents_summary / query_documents: add each row's annotation as summary {level, brief, abstract?, stale?} — the nearest one at or above the row's chunk. The abstract is added for the target of get_document / get_chunk, the first five documents of a search or related page and the seeds of graph_recall, within summary_chars. A row with no annotation has no summary."},
+		"with_counts": {"type": "boolean", "description": "describe_ontology: also count the documents you may read in the tenant scope — each concept's members (documents at or under it, each once: what search concept:<tag> can return) and members_by_class (split by the document's class), each scheme's members, and each class's documents (of that type and, in a confirmed ontology, its subclasses', as search type: matches). Off by default; without it the answer is unchanged."},
+		"with_summary": {"type": "boolean", "description":"get_document / get_chunk / search / related / graph_recall / documents_summary / query_documents: add each row's annotation as summary {level, brief, abstract?, stale?} — the nearest one at or above the row's chunk. The abstract is added for the target of get_document / get_chunk, the first five documents of a search or related page and the seeds of graph_recall, within summary_chars. A row with no annotation has no summary."},
 		"summary_chars": {"type": "integer", "description": "with_summary: the most abstract characters a response carries in all (default 2000, at most 8000); rows past it keep their brief only."},
 		"include_color_scheme": {"type": "boolean", "description": "get_document / documents_summary / graph_snapshot: also return each document's display palette (color_scheme). Off by default; you rarely need it."},
 		"body_chars": {"type": "integer", "description": "annotation_inputs: how much of the target's own text to return (default 6000, at most 20000). graph_recall: how much of each chunk's text to return. Omit it and chunks that are not facts (clauses, sections, notes) carry the first 600 characters as body, while facts stay title-only because their title is the claim. 0 = titles only, the cheapest structural walk. N (at most 4000) = up to N characters on every row, facts included. A cut body ends on a word and is marked body_truncated; budget_chars counts body characters too."},
@@ -581,6 +582,9 @@ type docInput struct {
 	// SummaryChars bounds the abstracts that adds (annotation_summary.go).
 	WithSummary  bool `json:"with_summary"`
 	SummaryChars int  `json:"summary_chars"`
+	// WithCounts adds member counts to describe_ontology
+	// (document_ontology_counts.go).
+	WithCounts bool `json:"with_counts"`
 	// IncludeColorScheme asks get_document / documents_summary / graph_snapshot
 	// for each document's color_scheme; absent takes the surface's default
 	// (wantsColorScheme).
@@ -1055,7 +1059,7 @@ func (d *Document) dispatch(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return d.deleteAnnotation(ctx, key, mscope, in)
 	case "describe_ontology":
 		// Reads the TENANT ontology whatever `scope` says, as propose_entity files there.
-		return d.describeOntology(ctx)
+		return d.describeOntology(ctx, in.WithCounts)
 	case "effective_policy":
 		return d.effectivePolicy(ctx, key, in)
 	case "classify":

@@ -39,6 +39,9 @@ const (
 type describedScheme struct {
 	memrank.OntologyScheme
 	Concepts []describedConcept `json:"concepts,omitempty"`
+	// Members (with_counts only) is the documents about any concept of the scheme,
+	// each once (document_ontology_counts.go).
+	Members *int `json:"members,omitempty"`
 }
 
 // describedConcept is a concept with its effective policy beside what it declares.
@@ -52,6 +55,11 @@ type describedConcept struct {
 	// EffectiveGroups are the groups a reader must be in: every @acl from the top of
 	// the scheme down to this concept.
 	EffectiveGroups []string `json:"effective_groups,omitempty"`
+	// Members (with_counts only) is the documents at or under the concept, each once:
+	// what a search concept:<tag> can return. MembersByClass splits them by the
+	// document's own class; an untyped document is in Members only.
+	Members        *int           `json:"members,omitempty"`
+	MembersByClass map[string]int `json:"members_by_class,omitempty"`
 }
 
 // describedPolicy is describe_ontology's account of the policy as a whole.
