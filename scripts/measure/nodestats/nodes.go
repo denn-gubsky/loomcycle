@@ -317,8 +317,8 @@ const (
 // A created_at before the end of importedUntil's day (UTC) is reported as
 // DateImport; a zero importedUntil marks nothing so.
 func DocDate(d *Doc, importedUntil time.Time) (time.Time, string) {
-	if d.RootValidAt != 0 {
-		return time.Unix(0, d.RootValidAt).UTC(), DateValidAt
+	if d.RootValidAt != nil {
+		return time.Unix(0, *d.RootValidAt).UTC(), DateValidAt
 	}
 	if d.SourceUpdatedAt != "" {
 		if t, err := time.Parse(time.RFC3339, d.SourceUpdatedAt); err == nil {
