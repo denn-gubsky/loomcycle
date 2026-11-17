@@ -45,6 +45,11 @@ again (with `to`, copied there).
 - `title_page` — put the title on a page of its own.
 - `provenance` — for an imported document, say under the title where it came
   from. Default true.
+- `metadata` — `embed` writes loomcycle's record of the document into the
+  file: each chunk's id, type, status, tags and fields, and the relations
+  inside the document, never its provenance. `File op=import` of such a file
+  can then re-import onto the same document. Default `none`: a file people
+  send carries no ids.
 - `language` — the document's language, e.g. `uk`, for the file's properties.
 - `page_size` — `a4` (default) or `letter`, for the paged formats.
 

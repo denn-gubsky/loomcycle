@@ -79,6 +79,7 @@ type fileTwinArgs struct {
 	Provenance *bool  `json:"provenance,omitempty"`
 	PageSize   string `json:"page_size,omitempty"`
 	Language   string `json:"language,omitempty"`
+	Metadata   string `json:"metadata,omitempty"`
 }
 
 type fileTwinInput struct {
