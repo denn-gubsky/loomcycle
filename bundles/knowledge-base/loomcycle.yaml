@@ -6182,16 +6182,21 @@ agents:
       //    lists the matching sections of each fitting document, as
       //    "<section id> in <document id>", to link under it. Its block carries
       //    the exact read calls, built here like a screening round's, the
-      //    documents in documents_summary calls of at most SUMMARY_BATCH ids: a
+      //    documents in documents_summary calls of at most COMPOSE_BATCH ids: a
       //    walker handed 20 to 30 ids and left to build the call sent the list
-      //    as one string in most rounds, which the tool refuses.
+      //    as one string in most rounds, which the tool refuses; given two
+      //    written calls of 12 it still did (10 refusals in 7 measured
+      //    rounds), so a composing round with up to 24 documents gets one
+      //    call, and more get calls it is told to make one at a time (its
+      //    get_annotation calls may go together: up to 120 one by one would
+      //    outrun the walker's 16 iterations).
       //    It also gets each fitting document's stored type and status, read
       //    here in one documents_summary call and copied only when each is one
       //    word (LABEL_SHAPE): a document's one-line brief can name an earlier
       //    status ("design proposal" for one that shipped), and the stored
       //    status overrides it.
-      //    Its FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines
-      //    are stripped.
+      //    Its FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES, MISSING and COMPOSE
+      //    lines are stripped (a COMPOSE line is the round echoing its block).
       //    It is asked to COMPOSE, never to
       //    write: told to write the overview, a walker took it as writing a
       //    document. Nothing fits: code says so, with no round. The composing
@@ -6254,6 +6259,7 @@ agents:
       var GUIDE_SECTIONS = 6; // best-matching hit sections of one large guide kept, at most
       var SEC_CAP = 60;      // sections screened, at most; and, apart, sections linked unscreened
       var SUMMARY_BATCH = 12; // document ids per documents_summary call written for a screening round
+      var COMPOSE_BATCH = 24; // document ids per documents_summary call written for the composing round
       // A stored type or status label: one word. Only such a word is copied
       // from a summary row into the composing round's prompt; anything else is
       // left out, so no sentence of stored text can reach it.
@@ -6566,9 +6572,9 @@ agents:
           "Describe each document by its stored type and status: a stored status overrides any status wording in a brief " +
           "or abstract. Status done means it shipped; never call it a proposal. " +
           "The knowledge base is read-only and nothing is to be stored: your reply text is the whole result. " +
-          "Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines." +
-          " You may read their briefs with these calls, one per line, exactly as given " +
-          "(document_ids is a list of strings, never one string):\n" + readCalls(all, SUMMARY_BATCH);
+          "Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines. Never repeat this block." +
+          " You may read their briefs with these calls, exactly as given; make the documents_summary calls one call at a time " +
+          "(document_ids is a list of strings, never one string):\n" + readCalls(all, COMPOSE_BATCH);
         if (c.docs.length) { t += "\n\nFitting documents (" + c.docs.length + "):\n" + c.docs.join("\n"); }
         if (c.secs.length) { t += "\n\nFitting sections (" + c.secs.length + "):\n" + c.secs.join("\n"); }
         if (c.linked.length) {
@@ -6696,9 +6702,10 @@ agents:
       }
 
       // walkLine: a walker's MOVES or MISSING line, about its own walk and not
-      // the knowledge base.
+      // the knowledge base; or a COMPOSE line, the composing round echoing
+      // its own block.
       function walkLine(line) {
-        return /^(MOVES|MISSING)\s*:/i.test(plain(line));
+        return /^(MOVES|MISSING|COMPOSE)\s*[:.]/i.test(plain(line));
       }
 
       // readAnswer takes the accounting, coverage and walk lines out of an answer.
@@ -7082,8 +7089,9 @@ agents:
       documents (and sections) that fit the question, compose your reply
       instead of walking:
         1. You may read their briefs with the calls the prompt gives, copied
-           exactly: "document_ids" is a list of id strings, never one string
-           holding the list.
+           exactly; make the documents_summary calls one call at a time (the
+           get_annotation calls may go together): "document_ids" is a list
+           of id strings, never one string holding the list.
         2. Compose your reply: one line and a link per listed document. A
            listed section gets its own line, linked as
            [title](loom:chunk/<id>?scope=tenant). A matching section listed

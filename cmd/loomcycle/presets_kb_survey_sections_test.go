@@ -440,29 +440,13 @@ func TestKbSurvey_NoSearchIsMadeInsideADocument(t *testing.T) {
 	}
 }
 
-// TestKbSurvey_ComposingRoundCarriesSummaryCallsOfAtMost12IDs: a composing
-// walker handed 20 to 30 ids and left to build the documents_summary call
-// sent the list as one string in 20 of 36 measured rounds, which the tool
-// refuses. Code writes the calls, as it does for a screening round: the
-// fitting documents, in order, in calls of at most 12 ids, so the model
-// copies a list and never builds one. The walker's prompt says document_ids
-// is a list of strings.
-func TestKbSurvey_ComposingRoundCarriesSummaryCallsOfAtMost12IDs(t *testing.T) {
-	ids := docIDs(1, 30)
-	f := &surveyFake{rows: map[string][]map[string]any{"P": hits(ids...)}, screen: fitsOf(ids...)}
-	runSurvey(t, f, surveyQuestion)
-	if len(f.writes()) != 1 {
-		t.Fatalf("composing rounds = %d, want 1", len(f.writes()))
-	}
-	p := spawnPrompt(f.spawns[len(f.spawns)-1])
-	fitting := listIn(p, "\nFitting documents (")
-	if len(fitting) != 30 {
-		t.Fatalf("fitting documents = %d, want 30", len(fitting))
-	}
+// composeSummaryCalls reads the documents_summary calls written into a
+// composing round's prompt, checking each one's shape.
+func composeSummaryCalls(t *testing.T, p string) [][]string {
+	t.Helper()
 	callRE := regexp.MustCompile(`(?m)^Document (\{"op":"documents_summary".*\})$`)
-	var called []string
-	ms := callRE.FindAllStringSubmatch(p, -1)
-	for _, m := range ms {
+	var out [][]string
+	for _, m := range callRE.FindAllStringSubmatch(p, -1) {
 		var c struct {
 			Op          string   `json:"op"`
 			Scope       string   `json:"scope"`
@@ -472,21 +456,92 @@ func TestKbSurvey_ComposingRoundCarriesSummaryCallsOfAtMost12IDs(t *testing.T) {
 		if err := json.Unmarshal([]byte(m[1]), &c); err != nil {
 			t.Fatalf("call %s: %v", m[1], err)
 		}
-		if len(c.DocumentIDs) == 0 || len(c.DocumentIDs) > 12 || c.Scope != "tenant" || !c.WithSummary {
-			t.Errorf("call %s: want 1 to 12 ids, scope tenant, with_summary", m[1])
+		if len(c.DocumentIDs) == 0 || c.Scope != "tenant" || !c.WithSummary {
+			t.Errorf("call %s: want ids, scope tenant, with_summary", m[1])
 		}
-		called = append(called, c.DocumentIDs...)
+		out = append(out, c.DocumentIDs)
 	}
-	if len(ms) != 3 || strings.Join(called, ",") != strings.Join(fitting, ",") {
-		t.Errorf("summary calls = %d naming %v, want 3 naming every fitting document in order:\n%s", len(ms), called, p)
-	}
-	if !strings.Contains(p, "document_ids is a list of strings, never one string") {
-		t.Errorf("the composing round's block does not say document_ids is a list:\n%s", p)
+	return out
+}
+
+// TestKbSurvey_ComposingRoundGetsOneSummaryCallForUpTo24Documents: a
+// composing walker handed 20 to 30 ids and left to build the documents_summary
+// call sent the list as one string; given the calls written by code, 12 ids
+// each, it still sent one as a string when there were two (10 refusals in 7
+// measured rounds). Up to 24 fitting documents are one written call, so the
+// common round has nothing to combine; past 24 the calls hold at most 24 ids
+// each and the round is told to make them one at a time. The walker's prompt
+// says document_ids is a list of strings.
+func TestKbSurvey_ComposingRoundGetsOneSummaryCallForUpTo24Documents(t *testing.T) {
+	for _, tc := range []struct {
+		docs, calls int
+	}{{12, 1}, {13, 1}, {24, 1}, {30, 2}} {
+		t.Run(fmt.Sprint(tc.docs), func(t *testing.T) {
+			ids := docIDs(1, tc.docs)
+			f := &surveyFake{rows: map[string][]map[string]any{"P": hits(ids...)}, screen: fitsOf(ids...)}
+			runSurvey(t, f, surveyQuestion)
+			if len(f.writes()) != 1 {
+				t.Fatalf("composing rounds = %d, want 1", len(f.writes()))
+			}
+			p := spawnPrompt(f.spawns[len(f.spawns)-1])
+			fitting := listIn(p, "\nFitting documents (")
+			calls := composeSummaryCalls(t, p)
+			var called []string
+			for _, c := range calls {
+				if len(c) > 24 {
+					t.Errorf("a written call holds %d ids, want at most 24", len(c))
+				}
+				called = append(called, c...)
+			}
+			if len(calls) != tc.calls || strings.Join(called, ",") != strings.Join(fitting, ",") {
+				t.Errorf("summary calls = %d naming %v, want %d naming every fitting document in order:\n%s", len(calls), called, tc.calls, p)
+			}
+			// Only the summary calls go one at a time: up to 120 get_annotation
+			// calls one by one would outrun the walker's 16 iterations.
+			for _, want := range []string{"document_ids is a list of strings, never one string", "make the documents_summary calls one call at a time"} {
+				if !strings.Contains(p, want) {
+					t.Errorf("the composing round's block lacks %q:\n%s", want, p)
+				}
+			}
+		})
 	}
 	wp := knowledgeBaseConfig(t).Agents["kb/walker"].SystemPrompt
 	i, j := strings.Index(wp, "COMPOSING. When the prompt says COMPOSE"), strings.Index(wp, "Without a list, follow the steps below.")
-	if i < 0 || j < i || !strings.Contains(wp[i:j], `"document_ids" is a list of id strings`) {
-		t.Errorf("kb/walker's COMPOSING section does not say document_ids is a list of strings")
+	if i < 0 || j < i || !strings.Contains(wp[i:j], `"document_ids" is a list`) ||
+		!strings.Contains(wp[i:j], "make the documents_summary calls one call at a time") ||
+		!strings.Contains(wp[i:j], "get_annotation calls may go together") {
+		t.Errorf("kb/walker's COMPOSING section does not say document_ids is a list of strings, summary calls one at a time")
+	}
+}
+
+// TestKbSurvey_ComposeLinesAreStrippedFromTheAnswer: a composing round given
+// two calls echoed its block, and a "COMPOSE:" line reached the answer. Code
+// strips such a line, however it is marked up, and keeps the rest.
+func TestKbSurvey_ComposeLinesAreStrippedFromTheAnswer(t *testing.T) {
+	a := docID(1)
+	for name, line := range map[string]string{
+		"plain":  "COMPOSE: one line and a link per document",
+		"period": "COMPOSE. Screening found that the documents below fit",
+		"bold":   "**COMPOSE:** the reply",
+		"list":   "- COMPOSE: the reply",
+		"lower":  "compose: the reply",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &surveyFake{
+				rows:   map[string][]map[string]any{"P": hits(a)},
+				screen: fitsOf(a),
+				write: func([]string) surveyReply {
+					return surveyReply{text: line + "\nOne document: [A](loom:doc/" + a + "?scope=tenant)."}
+				},
+			}
+			out := runSurvey(t, f, surveyQuestion)
+			if strings.Contains(strings.ToLower(out), "compose") {
+				t.Errorf("a COMPOSE line reached the answer:\n%s", out)
+			}
+			if !strings.HasPrefix(out, "One document:") {
+				t.Errorf("want the composed answer kept:\n%s", out)
+			}
+		})
 	}
 }
 
