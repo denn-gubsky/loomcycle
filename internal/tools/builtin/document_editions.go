@@ -760,113 +760,7 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 	}
 	held = live
 
-	// Match the edition to the held parts, in passes, before anything is written:
-	//
-	//  0. a part naming a held part's id: that part (below);
-	//  1. same anchor, same body: unchanged;
-	//  2. a held part's body under another anchor: a move — the text keeps its part,
-	//     so inserting an article and renumbering the rest is a run of moves, never a
-	//     chain of supersessions that would hand one article's links to the next;
-	//  3. same anchor, new body, among what is left: superseded;
-	//  4. anything else: new.
-	const (
-		actCreate = iota
-		actUnchanged
-		actMove
-		actSupersede
-	)
-	type step struct {
-		act  int
-		held *editionPart
-	}
-	steps := make([]step, len(parts))
-	byAnchor := map[string][]*editionPart{}
-	byBody := map[string][]*editionPart{}
-	for i := range held {
-		byAnchor[held[i].anchor] = append(byAnchor[held[i].anchor], &held[i])
-		b := strings.TrimSpace(held[i].body)
-		byBody[b] = append(byBody[b], &held[i])
-	}
-	incomingAnchors := map[string]bool{}
-	for _, p := range parts {
-		incomingAnchors[p.anchor] = true
-	}
-	matched := map[string]bool{}
-	take := func(i, act int, h *editionPart) {
-		matched[h.id] = true
-		steps[i] = step{act: act, held: h}
-	}
-	// 0. A part that names a held part of this document by id (a rendered
-	// file's embedded record, RFC GR P4b, D22) is that part, wherever it
-	// now sits and whatever its heading now says: unchanged when its text
-	// and anchor are, moved when only its place changed, superseded when
-	// its text did. An id of anything else — another document's chunk, a
-	// part already closed — matches nothing and the passes below decide.
-	heldByID := make(map[string]*editionPart, len(held))
-	for i := range held {
-		heldByID[held[i].id] = &held[i]
-	}
-	for i, p := range parts {
-		h := heldByID[p.c.oldID]
-		if p.c.oldID == "" || h == nil || matched[h.id] {
-			continue
-		}
-		sameBody := strings.TrimSpace(h.body) == strings.TrimSpace(p.c.body)
-		switch {
-		case sameBody && h.anchor == p.anchor:
-			take(i, actUnchanged, h)
-		case sameBody:
-			take(i, actMove, h)
-		default:
-			take(i, actSupersede, h)
-		}
-	}
-	for i, p := range parts {
-		if steps[i].held != nil {
-			continue
-		}
-		for _, h := range byAnchor[p.anchor] {
-			if !matched[h.id] && strings.TrimSpace(h.body) == strings.TrimSpace(p.c.body) {
-				take(i, actUnchanged, h)
-				break
-			}
-		}
-	}
-	for i, p := range parts {
-		body := strings.TrimSpace(p.c.body)
-		if steps[i].held != nil || body == "" {
-			continue
-		}
-		// Prefer a part whose anchor the edition no longer uses: of two copies of the
-		// same text, the one that lost its place is the one that moved.
-		var mv *editionPart
-		for _, cand := range byBody[body] {
-			if matched[cand.id] {
-				continue
-			}
-			if !incomingAnchors[cand.anchor] {
-				mv = cand
-				break
-			}
-			if mv == nil {
-				mv = cand
-			}
-		}
-		if mv != nil {
-			take(i, actMove, mv)
-		}
-	}
-	for i, p := range parts {
-		if steps[i].held != nil {
-			continue
-		}
-		for _, h := range byAnchor[p.anchor] {
-			if !matched[h.id] {
-				take(i, actSupersede, h)
-				break
-			}
-		}
-	}
+	steps, matched := matchEdition(parts, held)
 
 	// stable ids already given out in this document: a new part does not take one
 	// that names another part's text.
@@ -1446,4 +1340,122 @@ func (d *Document) publishIngested(ctx context.Context, key sqlmem.ScopeKey, msc
 		MaxMessages: 256,
 	})
 	return ""
+}
+
+// The actions a reimport takes on an incoming part (matchEdition).
+const (
+	actCreate = iota
+	actUnchanged
+	actMove
+	actSupersede
+)
+
+// editionStep is what a reimport does with one incoming part, and the held
+// part it acts on (nil for a new part).
+type editionStep struct {
+	act  int
+	held *editionPart
+}
+
+// matchEdition matches an edition's incoming parts to the held ones, in
+// passes, before anything is written; matched holds the held parts taken.
+func matchEdition(parts []incomingPart, held []editionPart) (steps []editionStep, matched map[string]bool) {
+	// The passes:
+	//
+	//  0. a part naming a held part's id: that part (below);
+	//  1. same anchor, same body: unchanged;
+	//  2. a held part's body under another anchor: a move — the text keeps its part,
+	//     so inserting an article and renumbering the rest is a run of moves, never a
+	//     chain of supersessions that would hand one article's links to the next;
+	//  3. same anchor, new body, among what is left: superseded;
+	//  4. anything else: new.
+	steps = make([]editionStep, len(parts))
+	byAnchor := map[string][]*editionPart{}
+	byBody := map[string][]*editionPart{}
+	for i := range held {
+		byAnchor[held[i].anchor] = append(byAnchor[held[i].anchor], &held[i])
+		b := strings.TrimSpace(held[i].body)
+		byBody[b] = append(byBody[b], &held[i])
+	}
+	incomingAnchors := map[string]bool{}
+	for _, p := range parts {
+		incomingAnchors[p.anchor] = true
+	}
+	matched = map[string]bool{}
+	take := func(i, act int, h *editionPart) {
+		matched[h.id] = true
+		steps[i] = editionStep{act: act, held: h}
+	}
+	// 0. A part that names a held part of this document by id (a rendered
+	// file's embedded record, RFC GR P4b, D22) is that part, wherever it
+	// now sits and whatever its heading now says: unchanged when its text
+	// and anchor are, moved when only its place changed, superseded when
+	// its text did. An id of anything else — another document's chunk, a
+	// part already closed — matches nothing and the passes below decide.
+	heldByID := make(map[string]*editionPart, len(held))
+	for i := range held {
+		heldByID[held[i].id] = &held[i]
+	}
+	for i, p := range parts {
+		h := heldByID[p.c.oldID]
+		if p.c.oldID == "" || h == nil || matched[h.id] {
+			continue
+		}
+		sameBody := strings.TrimSpace(h.body) == strings.TrimSpace(p.c.body)
+		switch {
+		case sameBody && h.anchor == p.anchor:
+			take(i, actUnchanged, h)
+		case sameBody:
+			take(i, actMove, h)
+		default:
+			take(i, actSupersede, h)
+		}
+	}
+	for i, p := range parts {
+		if steps[i].held != nil {
+			continue
+		}
+		for _, h := range byAnchor[p.anchor] {
+			if !matched[h.id] && strings.TrimSpace(h.body) == strings.TrimSpace(p.c.body) {
+				take(i, actUnchanged, h)
+				break
+			}
+		}
+	}
+	for i, p := range parts {
+		body := strings.TrimSpace(p.c.body)
+		if steps[i].held != nil || body == "" {
+			continue
+		}
+		// Prefer a part whose anchor the edition no longer uses: of two copies of the
+		// same text, the one that lost its place is the one that moved.
+		var mv *editionPart
+		for _, cand := range byBody[body] {
+			if matched[cand.id] {
+				continue
+			}
+			if !incomingAnchors[cand.anchor] {
+				mv = cand
+				break
+			}
+			if mv == nil {
+				mv = cand
+			}
+		}
+		if mv != nil {
+			take(i, actMove, mv)
+		}
+	}
+	for i, p := range parts {
+		if steps[i].held != nil {
+			continue
+		}
+		for _, h := range byAnchor[p.anchor] {
+			if !matched[h.id] {
+				take(i, actSupersede, h)
+				break
+			}
+		}
+	}
+	return steps, matched
 }

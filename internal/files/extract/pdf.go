@@ -952,28 +952,100 @@ const pdfRecordName = "loomcycle.json"
 // pdfRecord hands the sink the record a loomcycle-rendered PDF carries as an
 // attached file, if it has one. A PDF names no heading's chunk (its text
 // holds no anchors the extractor reads), so the import matches its parts by
-// text and heading alone. An attachment that cannot be read is no record:
-// the text is extracted all the same.
+// text and heading alone. Anything it cannot read is no record: the text is
+// extracted all the same.
+//
+// The catalog's EmbeddedFiles name tree is walked here rather than through
+// pdfcpu's attachment listing, which reads Typst's single-leaf tree as empty.
 func pdfRecord(ctx context.Context, pc *model.Context, w *writer) {
-	if _, ok := w.sink.(RecordSink); !ok {
+	if _, ok := w.sink.(RecordSink); !ok || pc == nil || pc.XRefTable == nil {
 		return
 	}
-	list, err := pc.ListAttachments(ctx)
-	if err != nil {
+	xr := pc.XRefTable
+	root, err := xr.Catalog()
+	if err != nil || root == nil {
 		return
 	}
-	for _, a := range list {
-		if a.FileName != pdfRecordName {
-			continue
+	names, err := xr.DereferenceDict(root["Names"])
+	if err != nil || names == nil {
+		return
+	}
+	tree, err := xr.DereferenceDict(names["EmbeddedFiles"])
+	if err != nil || tree == nil {
+		return
+	}
+	if b := pdfNamedFile(ctx, xr, tree, pdfRecordName, 0); b != nil {
+		w.record(bytes.TrimSpace(b))
+	}
+}
+
+// pdfNamedFile finds the embedded file named name in a name tree node and
+// returns its bytes, decoded and at most MaxRecord: nil when it is not
+// there or cannot be read. Kids are followed a few levels deep.
+func pdfNamedFile(ctx context.Context, xr *model.XRefTable, node types.Dict, name string, depth int) []byte {
+	if depth > 8 || ctx.Err() != nil {
+		return nil
+	}
+	if arr, err := xr.DereferenceArray(node["Names"]); err == nil {
+		for i := 0; i+1 < len(arr) && i < 2*1024; i += 2 {
+			key, err := xr.Dereference(arr[i])
+			if err != nil || pdfObjectString(key) != name {
+				continue
+			}
+			spec, err := xr.DereferenceDict(arr[i+1])
+			if err != nil || spec == nil {
+				return nil
+			}
+			ef, err := xr.DereferenceDict(spec["EF"])
+			if err != nil || ef == nil {
+				return nil
+			}
+			ref := ef["F"]
+			if ref == nil {
+				ref = ef["UF"]
+			}
+			sd, _, err := xr.DereferenceStreamDict(ref)
+			if err != nil || sd == nil {
+				return nil
+			}
+			// The decode is bounded: a stream that inflates past the record
+			// cap is refused, never held whole.
+			if err := sd.DecodeWithLimit(MaxRecord + 1); err != nil || len(sd.Content) > MaxRecord {
+				return nil
+			}
+			return sd.Content
 		}
-		got, err := pc.ExtractAttachment(ctx, a)
-		if err != nil || got == nil || got.Reader == nil {
-			return
+	}
+	if kids, err := xr.DereferenceArray(node["Kids"]); err == nil {
+		for i, k := range kids {
+			if i >= 1024 {
+				break
+			}
+			kid, err := xr.DereferenceDict(k)
+			if err != nil || kid == nil {
+				continue
+			}
+			if b := pdfNamedFile(ctx, xr, kid, name, depth+1); b != nil {
+				return b
+			}
 		}
-		b, err := io.ReadAll(io.LimitReader(got.Reader, MaxRecord+1))
+	}
+	return nil
+}
+
+// pdfObjectString is a PDF string object's text, "" for anything else.
+func pdfObjectString(o types.Object) string {
+	switch v := o.(type) {
+	case types.StringLiteral:
+		s, err := types.StringLiteralToString(v)
 		if err == nil {
-			w.record(bytes.TrimSpace(b))
+			return s
 		}
-		return
+		return string(v)
+	case types.HexLiteral:
+		if b, err := v.Bytes(); err == nil {
+			return string(b)
+		}
 	}
+	return ""
 }
