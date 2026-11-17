@@ -91,7 +91,17 @@ func writeHTML(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	for _, s := range d.Sections {
 		h.section(s)
 	}
-	h.s("</article>\n</body>\n</html>\n")
+	h.s("</article>\n")
+	if d.Embed != nil {
+		js, err := d.Embed.JSON()
+		if err != nil {
+			return err
+		}
+		// Escaped text in a hidden element: the page runs no script, and
+		// the record is data for loomcycle's import, not for the reader.
+		h.s(`<pre id="loomcycle-metadata" hidden>` + esc(string(js)) + "</pre>\n")
+	}
+	h.s("</body>\n</html>\n")
 	return h.w.err
 }
 
@@ -143,7 +153,11 @@ func (h *htmlWriter) toc(ss []*Section) {
 
 func (h *htmlWriter) section(s *Section) {
 	lvl := strconv.Itoa(clampLevel(s.Level))
-	h.s(`<section id="` + h.esc(s.Anchor) + `">` + "\n<h" + lvl + ">" + h.esc(oneLine(s.Title)) + "</h" + lvl + ">\n")
+	h.s(`<section id="` + h.esc(s.Anchor) + `"`)
+	if h.d.Embed != nil && embedIDRe.MatchString(s.ID) {
+		h.s(` data-loom-chunk="` + s.ID + `"`)
+	}
+	h.s(">\n<h" + lvl + ">" + h.esc(oneLine(s.Title)) + "</h" + lvl + ">\n")
 	h.blocks(s.Blocks, 0)
 	for _, c := range s.Children {
 		h.section(c)

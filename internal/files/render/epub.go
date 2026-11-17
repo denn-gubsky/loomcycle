@@ -86,6 +86,15 @@ func writeEPUB(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 		{epubRoot + "nav.xhtml", epubNav(d, pages, book, lang)},
 		{epubRoot + "style.css", epubStyle},
 	}
+	if d.Embed != nil {
+		// In META-INF, the container's own folder: data for loomcycle's
+		// import, not a resource of the publication a reader shows (D21).
+		js, err := d.Embed.JSON()
+		if err != nil {
+			return firstErr(cw.err, err)
+		}
+		parts = append(parts, struct{ name, body string }{"META-INF/" + EmbedName, string(js)})
+	}
 	for _, p := range parts {
 		body := p.body
 		if err := entry(zw, p.name, func(ew io.Writer) error {

@@ -15,7 +15,12 @@
 // escapes what its format would read as syntax.
 package render
 
-import "errors"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"regexp"
+)
 
 // Formats this package writes.
 const (
@@ -98,6 +103,87 @@ type Doc struct {
 	// Images are the pictures the nodes name, in the order they were added.
 	// Their bytes travel beside the Doc in a bundle, never in its JSON.
 	Images []Image `json:"images,omitempty"`
+	// Embed, when set, is loomcycle's own record of the document, written
+	// into the file so that File op=import of it can re-import onto the same
+	// document (RFC GR P4b, D21). Off unless the caller asks.
+	Embed *Embed `json:"embed,omitempty"`
+}
+
+// EmbedVersion is the version of the embedded record's shape.
+const EmbedVersion = 1
+
+// EmbedName is the embedded record's file name, in a container that holds
+// files (ODT, EPUB, a PDF attachment).
+const EmbedName = "loomcycle.json"
+
+// MaxEmbed bounds the embedded record (its JSON).
+const MaxEmbed = 8 << 20
+
+// Embed is what a file carries about the document it was rendered from
+// (D21): who it is, and per chunk what the file's own text cannot say. Never
+// a body (the file's text is the body), never provenance, and never a
+// relation that leaves the rendered part.
+type Embed struct {
+	Version    int             `json:"loomcycle_render"`
+	DocumentID string          `json:"document_id"`
+	Scope      string          `json:"scope"`
+	Title      string          `json:"title"`
+	Date       string          `json:"rendered,omitempty"`
+	Chunks     []EmbedChunk    `json:"chunks"`
+	Relations  []EmbedRelation `json:"relations,omitempty"`
+}
+
+// EmbedChunk is one chunk of the rendered part.
+type EmbedChunk struct {
+	ID     string          `json:"id"`
+	Anchor string          `json:"anchor"`
+	Parent string          `json:"parent,omitempty"`
+	Type   string          `json:"type,omitempty"`
+	Status string          `json:"status,omitempty"`
+	Tags   []string        `json:"tags,omitempty"`
+	Fields json.RawMessage `json:"fields,omitempty"`
+}
+
+// embedIDRe and embedKindRe are a chunk id and a relation kind or status a
+// writer puts into a file's syntax as it is (a Markdown edge line, an XML
+// attribute); one that is not is left out.
+var (
+	embedIDRe   = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+	embedKindRe = regexp.MustCompile(`^[a-z0-9_.:/-]{1,64}$`)
+)
+
+// EmbedRelation is a statement whose two ends are both in the rendered part.
+type EmbedRelation struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Kind   string `json:"kind"`
+	Status string `json:"status,omitempty"`
+}
+
+// JSON is the record as the file carries it: compact, with <, > and &
+// escaped, so it can sit in an HTML element or an XML comment as it is.
+func (e *Embed) JSON() ([]byte, error) {
+	b, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > MaxEmbed {
+		return nil, fmt.Errorf("%w: the document's metadata is %d MiB, more than %d MiB can be embedded", ErrTooLarge, len(b)>>20, MaxEmbed>>20)
+	}
+	return b, nil
+}
+
+// embedByAnchor indexes the record's chunks by anchor; nil when the Doc
+// carries no record.
+func (d *Doc) embedByAnchor() map[string]*EmbedChunk {
+	if d.Embed == nil {
+		return nil
+	}
+	m := make(map[string]*EmbedChunk, len(d.Embed.Chunks))
+	for i := range d.Embed.Chunks {
+		m[d.Embed.Chunks[i].Anchor] = &d.Embed.Chunks[i]
+	}
+	return m
 }
 
 // Section is one chunk below the root.
