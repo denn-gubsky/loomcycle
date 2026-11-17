@@ -5755,6 +5755,8 @@ agents:
         IDENTITY, PLACE or MATERIAL of this request. Name the document by its own
         TITLE or IDENTITY. The CLASS line says what such a thing is; a name or
         code it quotes is an example of the class, never this document.
+      - A document with no code in its TITLE or IDENTITY has none: never give
+        it one.
       - Name no ids, paths, links or file names.
       - Write both texts in LANGUAGE.
       - Reply with ONE JSON object and nothing else:

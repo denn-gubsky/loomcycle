@@ -15,6 +15,8 @@ package builtin
 //     not the document's own is rewritten to the document's own value, unless
 //     the token is in the text the annotation was written from: that is a
 //     reference to another document, and rewriting it would be the defect.
+//     A document with no code of its own has nothing to rewrite to, so such a
+//     token becomes a reference to the document itself ("This RFC").
 //   - A folder brief that only repeats the folder's name, or is too short to
 //     choose by. It is replaced by the first sentence of the abstract written
 //     with it.
@@ -37,6 +39,9 @@ const (
 	// annotationRepairIdentity: a token of the class's identifier shape named
 	// another document.
 	annotationRepairIdentity = "identity_mismatch"
+	// annotationRepairForeignCode: a document with no code of its own was
+	// given one; the token now refers to the document itself.
+	annotationRepairForeignCode = "foreign_code"
 	// annotationRepairFolderName: the folder brief only repeated the folder name.
 	annotationRepairFolderName = "brief_repeats_folder_name"
 	// annotationRepairFolderShort: the folder brief was under the floor.
@@ -181,24 +186,28 @@ func (s *annotationScope) repairIdentity(ctx context.Context, t annotationTarget
 			own[k] = v
 		}
 	}
-	if len(own) == 0 {
-		return brief, abstract, nil, nil
-	}
 	material, err := s.inputsMaterial(ctx, t, cur)
 	if err != nil {
 		return brief, abstract, nil, err
 	}
 	var repairs []annotationRepair
-	brief = rewriteIdentityTokens(re, own, material, "brief", brief, &repairs)
-	abstract = rewriteIdentityTokens(re, own, material, "abstract", abstract, &repairs)
+	if hasOwnCode(re, own) {
+		brief = rewriteIdentityTokens(re, own, material, "brief", brief, &repairs)
+		abstract = rewriteIdentityTokens(re, own, material, "abstract", abstract, &repairs)
+	} else {
+		brief = neutraliseForeignTokens(re, material, "brief", brief, &repairs)
+		abstract = neutraliseForeignTokens(re, material, "abstract", abstract, &repairs)
+	}
 	brief = cutOnWord(brief, maxAnnotationBriefChars)
 	abstract = cutOnWord(abstract, maxAnnotationAbstractChars)
 	return brief, abstract, repairs, nil
 }
 
 // inputsMaterial is the text an annotation was written from, in full: the
-// target's titles and body, and each part's title, record and text. The class
-// description is not in it: its examples are where a wrong code comes from.
+// target's titles, path, place and body, and each part's title, record and
+// text. The class description is not in it: its examples are where a wrong
+// code comes from. Nor is the ABOVE record: it is model text itself, and a
+// wrong code in it must not vouch for the same code here.
 func (s *annotationScope) inputsMaterial(ctx context.Context, t annotationTarget, cur annotationInputs) (string, error) {
 	var b strings.Builder
 	add := func(parts ...string) {
@@ -211,7 +220,8 @@ func (s *annotationScope) inputsMaterial(ctx context.Context, t annotationTarget
 	if err != nil {
 		return "", err
 	}
-	add(t.chunk.Title, t.docTitle, own.Body)
+	add(t.chunk.Title, t.docTitle, cur.Path, own.Body)
+	add(cur.Place...)
 	for _, ch := range cur.Children {
 		cb, err := s.body(ctx, ch.ChunkID)
 		if err != nil {
@@ -262,6 +272,71 @@ func rewriteIdentityTokens(re *regexp.Regexp, own map[string]string, material, f
 	}
 	out.WriteString(text[last:])
 	return out.String()
+}
+
+// hasOwnCode reports whether own carries a value for at least one named group
+// of the identifier shape: a document whose identity is only, say, a natural
+// key still has no code a token of this shape could be rewritten to.
+func hasOwnCode(re *regexp.Regexp, own map[string]string) bool {
+	for _, n := range re.SubexpNames() {
+		if n != "" && own[n] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// neutraliseForeignTokens is the repair for a document with no code of its
+// own: each token of the identifier shape that the inputs do not contain is
+// replaced by a reference to the document itself ("RFC FT proposes" becomes
+// "This RFC proposes"), so the sentence still reads. A token the inputs
+// contain is a citation and stays.
+func neutraliseForeignTokens(re *regexp.Regexp, material, field, text string, repairs *[]annotationRepair) string {
+	var out strings.Builder
+	last := 0
+	for _, m := range re.FindAllStringSubmatchIndex(text, -1) {
+		token := text[m[0]:m[1]]
+		if strings.Contains(material, token) {
+			continue
+		}
+		to := selfReference(text, m)
+		out.WriteString(text[last:m[0]])
+		out.WriteString(to)
+		last = m[1]
+		*repairs = append(*repairs, annotationRepair{Field: field, From: token, To: to, Reason: annotationRepairForeignCode})
+	}
+	if last == 0 {
+		return text
+	}
+	out.WriteString(text[last:])
+	return out.String()
+}
+
+// selfReference is what a foreign token at match m of text becomes: the
+// token's literal head before its first group (the "RFC" of "RFC FT") as the
+// noun, or "document" when the head has no letter, preceded by "this" ("This"
+// at a sentence start). After "the" the noun stands alone ("the RFC FT
+// proposal" becomes "the RFC proposal").
+func selfReference(text string, m []int) string {
+	head := ""
+	for i := 2; i+1 < len(m); i += 2 {
+		if m[i] >= 0 {
+			head = strings.TrimSpace(text[m[0]:m[i]])
+			break
+		}
+	}
+	if strings.IndexFunc(head, unicode.IsLetter) < 0 {
+		head = "document"
+	}
+	before := strings.TrimRightFunc(text[:m[0]], unicode.IsSpace)
+	words := strings.Fields(before)
+	if len(words) > 0 && strings.EqualFold(words[len(words)-1], "the") {
+		return head
+	}
+	if before == "" || strings.ContainsAny(before[len(before)-1:], ".!?") {
+		return "This " + head
+	}
+	return "this " + head
 }
 
 // repairFolderBrief replaces a folder brief that only repeats the folder's
