@@ -1005,14 +1005,16 @@ func (d *Document) getAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
+		rec.Stale = &stale
 		if isNodeAnnotationLevel(lvl) {
-			if withheld, err := s.nodeRecordWithheld(ctx, acl, rec, stale); err != nil {
+			shown, reported, err := s.nodeRecordShown(ctx, acl, rec, stale)
+			if err != nil {
 				return errFrom(op+": "+err.Error(), err), nil
-			} else if withheld {
+			} else if !shown {
 				continue
 			}
+			rec.Stale = reported
 		}
-		rec.Stale = &stale
 		out = append(out, rec)
 	}
 	return jsonResult(map[string]any{"annotations": out})
@@ -1128,6 +1130,9 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 		checked, truncated := 0, false
 		for _, r := range res.Rows {
 			rec := scanAnnotationRecord(r)
+			// A node record's staleness is not counted for a reader with read
+			// limits: nodeRecordShown says why.
+			countStale := !(limited && isNodeAnnotationLevel(rec.Level))
 			if limited {
 				if ok, err := acl.readable(ctx, rec.DocumentID); err != nil {
 					return errFrom(op+": "+err.Error(), err), nil
@@ -1139,9 +1144,9 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 					if err != nil {
 						return errFrom(op+": "+err.Error(), err), nil
 					}
-					if withheld, err := s.nodeRecordWithheld(ctx, acl, rec, stale); err != nil {
+					if shown, _, err := s.nodeRecordShown(ctx, acl, rec, stale); err != nil {
 						return errFrom(op+": "+err.Error(), err), nil
-					} else if withheld {
+					} else if !shown {
 						continue
 					}
 				}
@@ -1154,6 +1159,9 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 			c["total"]++
 			if rec.Manual {
 				c["manual"]++
+			}
+			if !countStale {
+				continue
 			}
 			if checked >= maxSummarizeStaleChecks {
 				truncated = true
@@ -1202,17 +1210,20 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
-		if in.Stale && !stale {
-			continue
-		}
+		rec.Stale = &stale
 		if isNodeAnnotationLevel(rec.Level) {
-			if withheld, err := s.nodeRecordWithheld(ctx, acl, rec, stale); err != nil {
+			shown, reported, err := s.nodeRecordShown(ctx, acl, rec, stale)
+			if err != nil {
 				return errFrom(op+": "+err.Error(), err), nil
-			} else if withheld {
+			} else if !shown {
 				continue
 			}
+			rec.Stale = reported
 		}
-		rec.Stale = &stale
+		// A record whose staleness the caller is not told never matches the filter.
+		if in.Stale && (rec.Stale == nil || !*rec.Stale) {
+			continue
+		}
 		out = append(out, rec)
 	}
 	resp := map[string]any{"annotations": out}

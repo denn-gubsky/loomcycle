@@ -473,6 +473,11 @@ func (s *annotationScope) nodeInputs(ctx context.Context, n *annotationNode, pro
 		// that is all its hash covers: a narrower node's rewrite, or a sibling's
 		// rename, does not make an empty node stale.
 		in.Composed = composeDeclaredNode(n, in)
+		// Nothing computed from members either: a declared record is shown to a
+		// reader with read limits, so its hash must say nothing about who is under
+		// the node (RFC GM D8 (i)). A first member still marks it stale: the
+		// node's current hash is then a thin one.
+		canon.Basis, canon.Members = "", ""
 		canon.Narrower = canon.Narrower[:0]
 		for _, nw := range in.Narrower {
 			canon.Narrower = append(canon.Narrower, nw.Name)
@@ -807,28 +812,50 @@ func (d *Document) setNodeAnnotation(ctx context.Context, s *annotationScope, t 
 	return annotationWriteResult(ctx, rec, nil)
 }
 
-// nodeRecordWithheld reports whether rec, a node record, is withheld from the
-// caller acl stands for (RFC GM D8 (i)): declared ones never are; any other is
-// unless the caller reads every current member and, with any read limit, the
-// record is fresh. stale is rec's staleness, computed by the caller.
-func (s *annotationScope) nodeRecordWithheld(ctx context.Context, acl *docACL, rec annotationRecord, stale bool) (bool, error) {
-	if rec.Basis == annotationBasisDeclared {
-		return false, nil
-	}
+// readsLimited reports whether the caller acl stands for has any read limit,
+// deriving its read list once per scope.
+func (s *annotationScope) readsLimited(ctx context.Context, acl *docACL) (bool, error) {
 	if !s.listRead {
-		s.listRead = true
 		list, err := s.d.readableDocList(ctx, acl)
 		if err != nil {
-			s.listRead = false
 			return true, err
 		}
+		s.listRead = true
 		if !readsEverything(list) {
 			s.readList = list
 		}
 	}
-	if s.readList == nil {
-		return false, nil
+	return s.readList != nil, nil
+}
+
+// nodeRecordShown applies RFC GM D8 (i) to rec, a node record whose staleness is
+// stale: whether the caller acl stands for sees it, and the staleness it is told.
+// A declared record is shown to anyone; any other only to a caller who reads every
+// current member and, with any read limit, only while it is fresh. A caller with a
+// read limit is never told a node record's staleness (reported is nil): a declared
+// record goes stale when a first member is filed under it, which may be a document
+// this caller cannot read.
+func (s *annotationScope) nodeRecordShown(ctx context.Context, acl *docACL, rec annotationRecord, stale bool) (shown bool, reported *bool, err error) {
+	limited, err := s.readsLimited(ctx, acl)
+	if err != nil {
+		return false, nil, err
 	}
+	if !limited {
+		return true, &stale, nil
+	}
+	if rec.Basis == annotationBasisDeclared {
+		return true, nil, nil
+	}
+	if withheld, err := s.nodeRecordWithheld(ctx, rec, stale); err != nil || withheld {
+		return false, nil, err
+	}
+	return true, nil, nil
+}
+
+// nodeRecordWithheld reports whether rec, a written or thin node record, is
+// withheld from a caller with a read limit (s.readList): it is unless the record
+// is fresh and the caller reads every current member.
+func (s *annotationScope) nodeRecordWithheld(ctx context.Context, rec annotationRecord, stale bool) (bool, error) {
 	if stale {
 		return true, nil
 	}

@@ -328,3 +328,38 @@ func TestNodeAnnotation_OtherLevelsReadAsBefore(t *testing.T) {
 		t.Fatalf("a document record carries basis: %v", rec)
 	}
 }
+
+// TestNodeAnnotation_LimitedReaderLearnsNothingFromDeclaredStaleness — a reader with
+// a read limit polls a declared record; a document it may not read is then filed
+// under the node. What the reader sees (the record, the stale filter, summarize's
+// stale count) must not change: the staleness would tell it the hidden document
+// exists (RFC GM D8 (i)).
+func TestNodeAnnotation_LimitedReaderLearnsNothingFromDeclaredStaleness(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpus(t, d, base)
+	op := k.f.operator
+	comp := k.f.concepts["file-plan/compliance"]
+	nodeWrite(t, d, op, "concept", comp, "")
+	restricted := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"},
+		Resources: []string{"document:tenant:/kb/b1"}}))
+	poll := func() string {
+		get, r := docExec(t, d, restricted, fmt.Sprintf(`{"op":"get_annotation","scope":"tenant","level":"concept","id":%q}`, comp))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		staleList, _ := docExec(t, d, restricted, `{"op":"list_annotations","scope":"tenant","level":"concept","stale":true}`)
+		sum, _ := docExec(t, d, restricted, `{"op":"list_annotations","scope":"tenant","summarize":true}`)
+		return fmt.Sprint(get["annotations"], " | ", staleList["annotations"], " | ", sum["counts"])
+	}
+	before := poll()
+	if !strings.Contains(before, "declared") {
+		t.Fatalf("the restricted reader does not see the declared record: %s", before)
+	}
+	k.f.link("link_chunks", k.f.chunk("tenant", k.b1), comp, "subject")
+	if in := nodeInputs(t, d, op, "concept", comp); in["stale"] != true {
+		t.Fatalf("the operator does not see the record stale after b1 was filed: %v", in["stale"])
+	}
+	if after := poll(); after != before {
+		t.Fatalf("the restricted reader's view changed when a document it may not read was filed under the node:\nbefore %s\nafter  %s", before, after)
+	}
+}
