@@ -47,6 +47,11 @@ const (
 	// worker built before it never carries it, so a PDF job never reaches a
 	// worker that would refuse the format.
 	LabelWritePDF = "write_pdf"
+	// LabelWriteBook is a document render with format odt or epub (RFC GR
+	// P4a). Every worker that writes them carries it; one built before
+	// them never does, so such a job never reaches a worker that would
+	// refuse the format.
+	LabelWriteBook = "write_odt_epub"
 )
 
 // LabelFor is the label a job kind needs.
@@ -71,8 +76,13 @@ func LabelFor(k workerpb.JobKind) string {
 // LabelForJob is the label a job of kind writing format needs: a PDF
 // render needs the typesetter, every other job its kind's label.
 func LabelForJob(k workerpb.JobKind, format string) string {
-	if k == workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER && format == "pdf" {
-		return LabelWritePDF
+	if k == workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER {
+		switch format {
+		case "pdf":
+			return LabelWritePDF
+		case "odt", "epub":
+			return LabelWriteBook
+		}
 	}
 	return LabelFor(k)
 }

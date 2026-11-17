@@ -235,7 +235,8 @@ func TestPool_DocumentRenderMatchesInProcess(t *testing.T) {
 	realWorker(t, target, "w1")
 	waitIdle(t, d, 1)
 	bundle := renderBundle(t)
-	for _, format := range []string{render.FormatMarkdown, render.FormatHTML, render.FormatDOCX} {
+	formats := []string{render.FormatMarkdown, render.FormatHTML, render.FormatDOCX, render.FormatODT, render.FormatEPUB}
+	for _, format := range formats {
 		want, err := (&convert.InProcess{}).Render(context.Background(), bundle, format)
 		if err != nil {
 			t.Fatal(err)
@@ -245,8 +246,31 @@ func TestPool_DocumentRenderMatchesInProcess(t *testing.T) {
 			t.Errorf("%s: pool %d bytes (%v), in process %d bytes", format, len(got), err, len(want))
 		}
 	}
-	if st := d.Stats(); st.Jobs["document_render/ok"] != 3 {
-		t.Errorf("the pool ran %v, want two document renders", st.Jobs)
+	if st := d.Stats(); st.Jobs["document_render/ok"] != uint64(len(formats)) {
+		t.Errorf("the pool ran %v, want %d document renders", st.Jobs, len(formats))
+	}
+}
+
+// An ODT or EPUB render goes only to a worker that writes them. With only
+// older workers attached it is refused at once as a format the workers
+// predate, which the File tool words as an update to make; it never queues.
+func TestPool_AnODTRenderNeedsAWorkerThatWritesIt(t *testing.T) {
+	d, target := pool(t, dispatch.Options{QueueWait: time.Minute})
+	slot := attachFake(t, target, "old", wire.ProtocolVersion).openSlot(t)
+	defer slot.cancel()
+	waitIdle(t, d, 1)
+	for _, format := range []string{render.FormatODT, render.FormatEPUB} {
+		start := time.Now()
+		_, err := d.Client().Render(context.Background(), renderBundle(t), format)
+		if !errors.Is(err, render.ErrUnsupported) || !strings.Contains(err.Error(), "update them") {
+			t.Errorf("%s with only an older worker: %v, want render.ErrUnsupported asking for an update", format, err)
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Errorf("%s: the refusal waited %v; it must not queue", format, time.Since(start))
+		}
+	}
+	if st := d.Stats(); st.Jobs["document_render/unsupported"] != 2 {
+		t.Errorf("the pool counted %v, want two unsupported renders", st.Jobs)
 	}
 }
 

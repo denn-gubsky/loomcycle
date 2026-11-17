@@ -97,6 +97,11 @@ func TestLabelForJob_APDFRenderNeedsTheTypesetter(t *testing.T) {
 			t.Errorf("LabelForJob(document_render, %q) = %q, want write", f, got)
 		}
 	}
+	for _, f := range []string{"odt", "epub"} {
+		if got := LabelForJob(k, f); got != LabelWriteBook || HelperLabel(got) {
+			t.Errorf("LabelForJob(document_render, %q) = %q, want %s (not a helper)", f, got, LabelWriteBook)
+		}
+	}
 	if got := LabelForJob(workerpb.JobKind_JOB_KIND_EXTRACT, "pdf"); got != LabelExtract {
 		t.Errorf("an extract job's format changed its label: %q", got)
 	}

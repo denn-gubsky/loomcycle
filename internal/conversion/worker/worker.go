@@ -302,7 +302,7 @@ func (w *worker) waitFree(ctx context.Context) error {
 // that does not is logged, not fatal: the worker still serves everything
 // else.
 func labels(opt Options, log *slog.Logger) []string {
-	out := []string{wire.LabelExtract, wire.LabelPDF, wire.LabelWrite}
+	out := []string{wire.LabelExtract, wire.LabelPDF, wire.LabelWrite, wire.LabelWriteBook}
 	if opt.Images != nil {
 		out = append(out, wire.LabelImage)
 	}
