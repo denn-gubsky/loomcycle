@@ -104,6 +104,9 @@ func (d *Document) MirrorSchemeTags(ctx context.Context, dryRun bool) (SchemeMir
 // relation vocabulary, so it is in force wherever a Relations section is.
 const focusEdgeKind = "focus"
 
+// focusMirrorOp names the focus mirror's own retire and revive on the change feed.
+const focusMirrorOp = "ontology_focus"
+
 // SchemeFocusReport says what the focus mirror changed (or, dry run, would change).
 type SchemeFocusReport struct {
 	// Concepts is how many concepts declare a @focus.
@@ -188,37 +191,50 @@ func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFo
 		}
 	}
 
-	res, err := d.query(ctx, key, `SELECT id, from_id, to_id, coalesce(expired_at, 0) FROM chunk_edges
+	res, err := d.query(ctx, key, `SELECT id, from_id, to_id, coalesce(expired_at, 0), coalesce(status, '') FROM chunk_edges
 		WHERE kind = ? AND method = ?`, focusEdgeKind, edgeMethodOntology)
 	if err != nil {
 		return rep, err
 	}
 	type edge struct {
-		id   string
-		live bool
+		id, status string
+		live       bool
 	}
 	have := map[pair]edge{}
 	for _, row := range res.Rows {
-		if len(row) < 4 {
+		if len(row) < 5 {
 			continue
 		}
-		have[pair{asStr(row[1]), asStr(row[2])}] = edge{id: asStr(row[0]), live: asInt64Val(row[3]) == 0}
+		have[pair{asStr(row[1]), asStr(row[2])}] = edge{id: asStr(row[0]), live: asInt64Val(row[3]) == 0, status: asStr(row[4])}
 	}
-	// A live statement another method wrote for the same pair: link_chunks would only
-	// hand that row back (a statement is unique per from, to and kind), so writing would
-	// report a change that never happens, on every confirm. A rejected one is not
-	// counted here — the write then reports the rejection as an error, which is true.
-	res, err = d.query(ctx, key, `SELECT from_id, to_id FROM chunk_edges
-		WHERE kind = ? AND method <> ? AND expired_at IS NULL AND status <> ?`,
-		focusEdgeKind, edgeMethodOntology, edgeStatusRejected)
+	// A statement another method wrote on the SAME KEY as the ontology's (from, to,
+	// kind, no valid_at, no discriminator): link_chunks would only hand that row back,
+	// so writing would report a change that never happens, on every confirm. One in
+	// force is kept; one that is not (proposed, rejected, withheld, retired) blocks the
+	// ontology's and is reported, never counted as kept or written. A dated or
+	// discriminated one has another key and does not stand in for the ontology's.
+	res, err = d.query(ctx, key, `SELECT e.from_id, e.to_id, CASE WHEN `+edgeLiveClause+` THEN 1 ELSE 0 END,
+		coalesce(e.status, ''), coalesce(e.expired_at, 0), e.method FROM chunk_edges e
+		WHERE e.kind = ? AND e.method <> ? AND e.valid_at IS NULL AND e.discriminator = ''`,
+		focusEdgeKind, edgeMethodOntology)
 	if err != nil {
 		return rep, err
 	}
-	foreign := map[pair]bool{}
+	foreign := map[pair]string{} // → "" when in force, else why it blocks the ontology's
 	for _, row := range res.Rows {
-		if len(row) >= 2 {
-			foreign[pair{asStr(row[0]), asStr(row[1])}] = true
+		if len(row) < 6 {
+			continue
 		}
+		why := ""
+		switch {
+		case asInt64Val(row[2]) == 1:
+		case asInt64Val(row[4]) != 0:
+			why = "a retired " + asStr(row[5]) + " focus statement holds this pair; remove it to let the ontology's be written"
+		default:
+			why = "a " + asStr(row[3]) + " " + asStr(row[5]) + " focus statement that is not in force holds this pair; " +
+				"rule on it (or remove it) to let the ontology's be written"
+		}
+		foreign[pair{asStr(row[0]), asStr(row[1])}] = why
 	}
 
 	pairs := make([]pair, 0, len(want))
@@ -231,8 +247,19 @@ func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFo
 		if exists && e.live {
 			continue
 		}
-		if foreign[p] {
-			rep.Kept++
+		if why, ok := foreign[p]; ok {
+			if why == "" {
+				rep.Kept++
+			} else {
+				rep.Errors = append(rep.Errors, want[p]+": "+why)
+			}
+			continue
+		}
+		if exists && e.status == edgeStatusRejected {
+			// Retired after an operator rejected it: re-declaring the @focus does not
+			// overrule that.
+			rep.Errors = append(rep.Errors, want[p]+": the ontology's focus statement was rejected; "+
+				"it stays rejected until an operator re-asserts it")
 			continue
 		}
 		rep.Stale = append(rep.Stale, want[p])
@@ -248,6 +275,7 @@ func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFo
 				rep.Errors = append(rep.Errors, want[p]+": "+err.Error())
 				continue
 			}
+			d.publishEdgeChange(ctx, key, mscope, focusMirrorOp, e.id, p.from, p.to, focusEdgeKind, e.status)
 			rep.Written++
 			continue
 		}
@@ -286,6 +314,7 @@ func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFo
 				rep.Errors = append(rep.Errors, p.from+" -> "+p.to+": "+err.Error())
 				continue
 			}
+			d.publishEdgeChange(ctx, key, mscope, focusMirrorOp, have[p].id, p.from, p.to, focusEdgeKind, "expired")
 		}
 		rep.Retired++
 	}
