@@ -3680,6 +3680,22 @@ export interface OntologyProposal {
   body?: string;
   /** "relations" for a proposed relation kind; absent for an entity type (RFC FO). */
   section?: string;
+  /** Set on a proposal of a WHOLE scheme (RFC GM P3.1): what accepting puts in force. */
+  scheme?: ProposedSchemeView;
+}
+
+/** A whole-scheme proposal's header and concept outline. */
+export interface ProposedSchemeView {
+  header: {
+    domain?: string;
+    projects?: string[];
+    origin?: string;
+    source?: string;
+    version?: string;
+  };
+  concepts: number;
+  /** Each concept by name, with its level below the scheme (1 = top). */
+  outline?: { name: string; level: number }[];
 }
 
 /** One qualifier a relation statement may carry; empty values = any value. */

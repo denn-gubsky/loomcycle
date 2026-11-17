@@ -17,6 +17,7 @@ import {
 } from "../lib/ontologySections";
 import {
   OntologyProposal,
+  ProposedSchemeView,
   OntologyResponse,
   OntologyTerm,
   adoptOntologyType,
@@ -704,6 +705,7 @@ export default function OntologySection() {
                     </div>
                     {/* The evidence, so the operator judges a case and not a name. */}
                     {p.body && <pre className="ontology-evidence">{p.body.trim()}</pre>}
+                    {p.scheme && <ProposedSchemeDetail scheme={p.scheme} />}
                     {decides && (
                       <div className="settings-row-actions">
                         <button
@@ -817,6 +819,10 @@ export default function OntologySection() {
 // proposalKind names what a suggestion would become, so a relation kind is not judged
 // as if it were an entity type.
 function proposalKind(p: OntologyProposal): string {
+  if (p.scheme) {
+    const n = p.scheme.concepts;
+    return `scheme of ${n} concept${n === 1 ? "" : "s"}`;
+  }
   switch (p.section) {
     case "relations":
       return "relation kind";
@@ -827,6 +833,31 @@ function proposalKind(p: OntologyProposal): string {
     default:
       return "class";
   }
+}
+
+// ProposedSchemeDetail shows what accepting a whole-scheme proposal puts in force: the
+// header as directives and the concept tree, folded so a long scheme does not push the
+// other suggestions off the page.
+function ProposedSchemeDetail({ scheme }: { scheme: ProposedSchemeView }) {
+  const h = scheme.header;
+  const header = [
+    h.domain && `@domain ${h.domain}`,
+    h.projects && h.projects.length > 0 && `@projects ${h.projects.join(", ")}`,
+    h.origin && `@origin ${h.origin}`,
+    h.source && `@source ${h.source}`,
+    h.version && `@version ${h.version}`,
+  ].filter(Boolean) as string[];
+  return (
+    <details className="settings-help">
+      <summary>
+        {header.length > 0 ? header.join(" · ") : "no header"} — {scheme.concepts} concept
+        {scheme.concepts === 1 ? "" : "s"}
+      </summary>
+      <pre className="ontology-evidence">
+        {(scheme.outline ?? []).map((c) => "  ".repeat(c.level - 1) + "- " + c.name).join("\n")}
+      </pre>
+    </details>
+  );
 }
 
 // OntologyFormatHelp states the document's format rather than leaving it to be inferred
