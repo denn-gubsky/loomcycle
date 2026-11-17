@@ -1308,9 +1308,9 @@ A document can be rendered as a file people open, send and print: PDF, Word (DOC
 
 **Four ways to get one.**
 
-- **In a run: `File op=render`.** `{op: render, document | doc_path | path, format, to?, chunk?, toc?, title_page?, page_size?, language?, provenance?, scope?}`. The file goes to `volume:inbox:rendered/<title>.<format>`, or with `to` into a read-write volume of the run. The agent needs the Document tool (read is enough) and gets a reference, never the bytes; `keep`, `upload` and the bridges take the file on. Help topic `File/render`.
+- **In a run: `File op=render`.** `{op: render, document | doc_path | path, format, to?, chunk?, toc?, title_page?, page_size?, language?, provenance?, metadata?, scope?}`. The file goes to `volume:inbox:rendered/<title>.<format>`, or with `to` into a read-write volume of the run. The agent needs the Document tool (read is enough) and gets a reference, never the bytes; `keep`, `upload` and the bridges take the file on. Help topic `File/render`.
 - **From the Web UI.** The document toolbar's **download** menu: PDF, Word (.docx), OpenDocument (.odt), E-book (.epub), HTML, Markdown (.md) and Canvas (.canvas). Markdown is the round-trippable export with metadata comments and Canvas the node/edge graph; the other five are rendered.
-- **Over HTTP: `GET /v1/_document/export/{document_id}?format=pdf|docx|odt|epub|html|md`.** Optional `scope` (default `user`), `chunk`, `toc`, `title_page`, `page_size` (`a4` or `letter`), `language`, `provenance` (default true), and the browse parameters `scope_id` and `tenant`. The file comes as an attachment named after the title, Unicode kept; Markdown of a document with pictures comes as a zip of the `.md` and its pictures. It is gated like `/v1/_document/asset/`: a document that is missing or not readable to the caller is the same 404. Errors: 400 `bad_request`, 404, 413 `too_large`, 422 `tool_refused` (nothing to render), 503 `unavailable` (no typesetter, no conversion worker) or `busy` (with `Retry-After`). The TS adapter's `exportDocument(id, format, opts)` returns `{blob, filename, mediaType, renderId}`.
+- **Over HTTP: `GET /v1/_document/export/{document_id}?format=pdf|docx|odt|epub|html|md`.** Optional `scope` (default `user`), `chunk`, `toc`, `title_page`, `page_size` (`a4` or `letter`), `language`, `provenance` (default true), `metadata` (`none` or `embed`), and the browse parameters `scope_id` and `tenant`. The file comes as an attachment named after the title, Unicode kept; Markdown of a document with pictures comes as a zip of the `.md` and its pictures. It is gated like `/v1/_document/asset/`: a document that is missing or not readable to the caller is the same 404. Errors: 400 `bad_request`, 404, 413 `too_large`, 422 `tool_refused` (nothing to render), 503 `unavailable` (no typesetter, no conversion worker) or `busy` (with `Retry-After`). The TS adapter's `exportDocument(id, format, opts)` returns `{blob, filename, mediaType, renderId}`.
 - **From an MCP session, with no run: `file op=render`** without `run_id`. The source is `document` or `doc_path` in the caller's own scopes, and `to` is required: a file in a read-write dynamic volume of the caller's tenant (the volumes `keep` writes to). A member is refused an agent's scope, as the `document` tool refuses it.
 
 **What each format holds.**
@@ -1326,13 +1326,24 @@ A document can be rendered as a file people open, send and print: PDF, Word (DOC
 
 The look: Noto Sans for text and headings, Noto Sans Mono for code; no title page unless `title_page`; a small Draft or Review label beside the title when the root's status says so. A link to a part of the same document becomes a link inside the file; a link to another document becomes its Web UI address when the server has `LOOMCYCLE_PUBLIC_URL` and the caller may read it, and plain text otherwise. Only http, https and mailto links are kept. A Mermaid diagram is a code block.
 
+**Embedding loomcycle's record (`metadata: embed`).** Off by default, so a file people send carries no ids. With `embed` the file also carries loomcycle's record of the document: its id, scope and title, each rendered chunk's id, anchor, parent, type, status, tags and fields, and the relations whose two ends are both in the file. It never carries the import provenance, a body (the file's text is the body) or a relation that leaves the rendered part. Each format keeps it in its own place:
+
+- Word: a custom XML part;
+- ODT: `loomcycle.json` in the package;
+- EPUB: `META-INF/loomcycle.json`;
+- HTML: `data-loom-chunk` on each section and a hidden `<pre id="loomcycle-metadata">`;
+- PDF: an attached `loomcycle.json`;
+- Markdown: `export_md`'s own `<!-- loom: -->` comments and `loom-edges` trailer.
+
+The record is what lets `File op=import` of the file re-import onto the same document later. A record over 8 MiB refuses the render. It is refused with a Markdown file as the source, which has no document to record.
+
 **Where it runs.** On the conversion workers when the server has them ([`WORKERS.md`](WORKERS.md)), else in the runtime's own process. Markdown, HTML, Word, ODT and EPUB need nothing installed. ODT and EPUB go only to a worker that writes them: with only older workers attached, such a render is refused at once, asking for the workers to be updated. A PDF needs Typst: the `loomcycle-worker` image carries a pinned release and the Noto fonts; a worker takes PDF renders when `typst` is on its `PATH` or `LOOMCYCLE_WORKER_WRITE_COMMAND` names another typesetter. In process, and for local workers, `typst` is run from the `PATH`. Without it, a PDF render answers that the server cannot write PDF; the other formats still work.
 
 **Limits.** Per render: 20 000 sections, 32 MiB of text, 2 000 pictures of at most 8 MiB each and 192 MiB together. The file is at most 64 MiB, a PDF at most 2 000 pages. A render may take 2 minutes, a PDF 5. Past a limit, render a part of the document with `chunk`.
 
 **The render log.** Every render of a document is a row of its scope's `document_renders`: a hash of what it was made of, the format and options, the output's sha256 and size, where it went (a volume reference, the inbox, or `download`) and who rendered it (the run, or the person). Never content. `get_document` shows the newest render per format, and `history` with `include: ["renders"]` lists them. A render into a volume is reused while an earlier one of the same content and options is still unchanged there. The log is deleted with its document and travels with `move_documents`. A person's download is also audited (`document_exported`, with format, scope and size), and the file is not served when that record cannot be written. Erasing a subject clears its name from the render log of the tenant's other scopes; the user's own scope goes with the user.
 
-Since #2658 (Markdown, HTML), #2659 (Word), #2663 (PDF), #2670 (downloads) and #2706 (ODT, EPUB) — `/loomcycle/rfcs/document-rendering`.
+Since #2658 (Markdown, HTML), #2659 (Word), #2663 (PDF), #2670 (downloads), #2706 (ODT, EPUB) and #2715 (embedded record) — `/loomcycle/rfcs/document-rendering`.
 
 ## Classification — classify, accept_classification and memory.classifier
 
