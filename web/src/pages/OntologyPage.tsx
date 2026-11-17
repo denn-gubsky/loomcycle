@@ -15,6 +15,7 @@ import {
   typedFieldLabel,
   type RelationNode,
 } from "../lib/ontologySections";
+import { proposedOutlineText } from "../lib/ontologyProposedScheme";
 import {
   OntologyProposal,
   ProposedSchemeView,
@@ -853,9 +854,7 @@ function ProposedSchemeDetail({ scheme }: { scheme: ProposedSchemeView }) {
         {header.length > 0 ? header.join(" · ") : "no header"} — {scheme.concepts} concept
         {scheme.concepts === 1 ? "" : "s"}
       </summary>
-      <pre className="ontology-evidence">
-        {(scheme.outline ?? []).map((c) => "  ".repeat(c.level - 1) + "- " + c.name).join("\n")}
-      </pre>
+      <pre className="ontology-evidence">{proposedOutlineText(scheme.outline ?? [])}</pre>
     </details>
   );
 }

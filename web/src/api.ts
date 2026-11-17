@@ -3694,8 +3694,18 @@ export interface ProposedSchemeView {
     version?: string;
   };
   concepts: number;
-  /** Each concept by name, with its level below the scheme (1 = top). */
-  outline?: { name: string; level: number }[];
+  /** Each concept by name, with its level below the scheme (1 = top) and the
+   *  directives accepting writes for it. */
+  outline?: ProposedSchemeConcept[];
+}
+
+/** One concept of a whole-scheme proposal, as accepting would put it in force. */
+export interface ProposedSchemeConcept {
+  name: string;
+  level: number;
+  notation?: string;
+  alt?: string[];
+  exact_match?: string;
 }
 
 /** One qualifier a relation statement may carry; empty values = any value. */
