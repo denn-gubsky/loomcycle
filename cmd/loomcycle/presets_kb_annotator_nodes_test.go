@@ -162,6 +162,7 @@ func TestNodeAnnotation_RequestCarriesMemberStatusCounts(t *testing.T) {
 	fake := &annFake{reply: annStableReply}
 	runAnnotator(t, f.d, f.driver, fake, `{"mode":"ontology","scheme":"topics","write":"annotate"}`)
 	p := promptFor(fake, "Widgets")
+	t.Logf("Widgets' request:\n%s", p)
 	if !strings.Contains(p, "\nSTATUS: 2 done, 1 confirmed, 1 draft\n") {
 		t.Fatalf("Widgets' request has no member status counts:\n%s", p)
 	}
