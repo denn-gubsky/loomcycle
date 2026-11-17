@@ -15,7 +15,8 @@ PDF stays a link and is counted in `skipped`.
 
 The file is treated as someone else's text. A link in it to any other file —
 in the inbox or in your own volumes — stays a link and is counted in
-`skipped`; raw HTML and loom metadata comments in it are kept as text. The
+`skipped`; raw HTML and loom metadata comments in it are kept as text, all
+but a bare `<br>`, which stays a line break (a table cell's paragraphs). The
 document is tagged `untrusted` and `source/…` (where the file came from, e.g.
 `source/mcp/ms365`).
 
