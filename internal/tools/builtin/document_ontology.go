@@ -363,82 +363,10 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	// child chunk a sub-kind. The same fail-open rules as classes — an inert entry is a
 	// proposal and its children attach to the nearest in-force kind, an unnamed chunk
 	// is skipped with its children kept, and the depth cap flattens rather than drops.
-	// walkSchemes reads the Schemes section: each entry is a concept scheme, its
-	// children concepts, a child narrower than its parent. The same fail-open rules as
-	// the other sections; a concept's depth counts from its scheme.
+	// walkSchemes reads the Schemes section (see schemeWalker).
 	var schemes []memrank.OntologyScheme
-	schemeCapped := false // set by walkConcepts, read and reset per scheme
-	var walkConcepts func(chunks []ontologyChunk, s *memrank.OntologyScheme, path []string, depth int)
-	walkConcepts = func(chunks []ontologyChunk, s *memrank.OntologyScheme, path []string, depth int) {
-		for _, c := range chunks {
-			name := entityName(c)
-			parent := s.Name
-			if len(path) > 0 {
-				parent = path[len(path)-1]
-			}
-			if memrank.IsInertEntityStatus(c.status) {
-				if name != "" {
-					proposals = append(proposals, memrank.OntologyProposal{
-						ChunkID: c.id, Name: name, Parent: parent,
-						Status: strings.ToLower(strings.TrimSpace(c.status)),
-						Body:   bodyOf(c.id), Section: memrank.SectionSchemes,
-					})
-				}
-				walkConcepts(kids[c.id], s, path, depth)
-				continue
-			}
-			if name == "" {
-				walkConcepts(kids[c.id], s, path, depth)
-				continue
-			}
-			full := append(append([]string{}, path...), name)
-			concept := memrank.ParseConceptBody(s.Name, name, full, bodyOf(c.id))
-			concept.ChunkID = c.id
-			s.Concepts = append(s.Concepts, concept)
-			// Schemes have their own, deeper cap (RFC GM): a concept tree is a
-			// vocabulary, not a class hierarchy whose fields go into every prompt. Past
-			// it the flattening is reported on the scheme, not as DepthCapped, whose
-			// note speaks about class types.
-			childPath := full
-			if depth >= memrank.SchemeMaxDepth {
-				childPath = path
-				if len(kids[c.id]) > 0 {
-					schemeCapped = true
-				}
-			}
-			walkConcepts(kids[c.id], s, childPath, depth+1)
-		}
-	}
-	walkSchemes := func(chunks []ontologyChunk) {
-		for _, c := range chunks {
-			name := entityName(c)
-			if memrank.IsInertEntityStatus(c.status) {
-				if name != "" {
-					proposals = append(proposals, memrank.OntologyProposal{
-						ChunkID: c.id, Name: name, Status: strings.ToLower(strings.TrimSpace(c.status)),
-						Body: bodyOf(c.id), Section: memrank.SectionSchemes,
-					})
-				}
-				continue
-			}
-			if name == "" {
-				continue // concepts need a named scheme to belong to
-			}
-			s := memrank.ParseSchemeBody(name, bodyOf(c.id))
-			s.ChunkID = c.id
-			schemeCapped = false
-			walkConcepts(kids[c.id], &s, nil, 1)
-			if schemeCapped {
-				s.Issues = append(s.Issues, memrank.SchemeDepthIssue())
-			}
-			if s.Ordered {
-				for i := range s.Concepts {
-					s.Concepts[i].Rank = i + 1
-				}
-			}
-			schemes = append(schemes, s)
-		}
-	}
+	sw := schemeWalker{kids: kids, bodyOf: bodyOf, entityName: entityName, proposals: &proposals}
+	walkSchemes := func(chunks []ontologyChunk) { schemes = append(schemes, sw.schemes(chunks)...) }
 
 	// walkInstances reads the Instances section: each entry a real thing, a child entry
 	// another instance related to its parent by the parent's @nesting kind. The key an
@@ -764,4 +692,90 @@ func typeFilterSQL(column string, types []string) (string, []any) {
 	}
 	ph, args := inPlaceholders(types)
 	return column + " IN (" + ph + ")", args
+}
+
+// schemeWalker reads an ontology's Schemes section: each entry is a concept scheme, its
+// children concepts, a child narrower than its parent. The same fail-open rules as the
+// other sections: an inert entry is a proposal, an unnamed chunk is skipped with its
+// children kept. A concept's depth counts from its scheme.
+type schemeWalker struct {
+	kids       map[string][]ontologyChunk
+	bodyOf     func(id string) string
+	entityName func(c ontologyChunk) string
+	proposals  *[]memrank.OntologyProposal
+	capped     bool // set by concepts, read and reset per scheme
+}
+
+func (w *schemeWalker) schemes(chunks []ontologyChunk) []memrank.OntologyScheme {
+	var out []memrank.OntologyScheme
+	for _, c := range chunks {
+		name := w.entityName(c)
+		if memrank.IsInertEntityStatus(c.status) {
+			if name != "" {
+				*w.proposals = append(*w.proposals, memrank.OntologyProposal{
+					ChunkID: c.id, Name: name, Status: strings.ToLower(strings.TrimSpace(c.status)),
+					Body: w.bodyOf(c.id), Section: memrank.SectionSchemes,
+				})
+			}
+			continue
+		}
+		if name == "" {
+			continue // concepts need a named scheme to belong to
+		}
+		s := memrank.ParseSchemeBody(name, w.bodyOf(c.id))
+		s.ChunkID = c.id
+		w.capped = false
+		w.concepts(w.kids[c.id], &s, nil, 1)
+		if w.capped {
+			s.Issues = append(s.Issues, memrank.SchemeDepthIssue())
+		}
+		if s.Ordered {
+			for i := range s.Concepts {
+				s.Concepts[i].Rank = i + 1
+			}
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+func (w *schemeWalker) concepts(chunks []ontologyChunk, s *memrank.OntologyScheme, path []string, depth int) {
+	for _, c := range chunks {
+		name := w.entityName(c)
+		parent := s.Name
+		if len(path) > 0 {
+			parent = path[len(path)-1]
+		}
+		if memrank.IsInertEntityStatus(c.status) {
+			if name != "" {
+				*w.proposals = append(*w.proposals, memrank.OntologyProposal{
+					ChunkID: c.id, Name: name, Parent: parent,
+					Status: strings.ToLower(strings.TrimSpace(c.status)),
+					Body:   w.bodyOf(c.id), Section: memrank.SectionSchemes,
+				})
+			}
+			w.concepts(w.kids[c.id], s, path, depth)
+			continue
+		}
+		if name == "" {
+			w.concepts(w.kids[c.id], s, path, depth)
+			continue
+		}
+		full := append(append([]string{}, path...), name)
+		concept := memrank.ParseConceptBody(s.Name, name, full, w.bodyOf(c.id))
+		concept.ChunkID = c.id
+		s.Concepts = append(s.Concepts, concept)
+		// Schemes have their own, deeper cap (RFC GM): a concept tree is a
+		// vocabulary, not a class hierarchy whose fields go into every prompt. Past
+		// it the flattening is reported on the scheme, not as DepthCapped, whose
+		// note speaks about class types.
+		childPath := full
+		if depth >= memrank.SchemeMaxDepth {
+			childPath = path
+			if len(w.kids[c.id]) > 0 {
+				w.capped = true
+			}
+		}
+		w.concepts(w.kids[c.id], s, childPath, depth+1)
+	}
 }
