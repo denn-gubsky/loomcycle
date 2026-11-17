@@ -364,8 +364,10 @@ export interface ClassificationRecord {
 }
 
 // AnnotationLevel is where an annotation sits: a branch chunk, a whole document
-// (on its root chunk), or a Path folder (on its `_annotation` document's root).
-export type AnnotationLevel = "branch" | "document" | "path";
+// (on its root chunk), a Path folder (on its `_annotation` document's root), or
+// a node of a confirmed taxonomy (a scheme, a concept or a document class) on
+// its chunk in the ontology document.
+export type AnnotationLevel = "branch" | "document" | "path" | "scheme" | "concept" | "class";
 
 // Annotation is one stored annotation record (get_annotation / set_annotation):
 // an indicative brief and an informative abstract written about a chunk, with

@@ -4700,9 +4700,11 @@ export type DocumentToolInput = {
   /** lease: how long to hold it, in milliseconds (default 60000, max one hour). */
   ttl_ms?: number;
   /** set_annotation / get_annotation / annotation_inputs / delete_annotation /
-   *  list_annotations: which annotation of the target — "branch" (a section) or
-   *  "document" (on the document's root chunk). Default: what the chunk is. */
-  level?: "branch" | "document" | "path";
+   *  list_annotations: which annotation of the target — "branch" (a section),
+   *  "document" (on the document's root chunk), "path" (a folder), or a taxonomy
+   *  node: "scheme", "concept" or "class" (a class may be named by `name`).
+   *  Default: what the chunk is. */
+  level?: DocumentAnnotationLevel;
   /** set_annotation: one sentence (at most 240 characters) for choosing. */
   brief?: string;
   /** set_annotation: one paragraph (at most 2000 characters) standing in for reading. */
@@ -9571,6 +9573,12 @@ export interface DeviceLoginResult {
   scope?: string[];
 }
 
+/** An annotation level: a section (`branch`), a document (`document`, on its
+ *  root chunk), a Path folder (`path`), or a node of a confirmed taxonomy on its
+ *  chunk in the ontology document — a concept scheme (`scheme`), a concept
+ *  (`concept`) or a document class (`class`). */
+export type DocumentAnnotationLevel = "branch" | "document" | "path" | "scheme" | "concept" | "class";
+
 /** One stored annotation (the Document tool's annotation ops): an indicative
  *  `brief` and an informative `abstract` written about a section (`branch`), a
  *  document (`document`, on its root chunk) or a Path folder (`path`). Kept for
@@ -9579,7 +9587,7 @@ export interface DeviceLoginResult {
 export type DocumentAnnotation = {
   chunk_id: string;
   document_id: string;
-  level: "branch" | "document" | "path";
+  level: DocumentAnnotationLevel;
   brief: string;
   abstract: string;
   language: string;
@@ -9592,13 +9600,17 @@ export type DocumentAnnotation = {
   written_by: string;
   /** A path record's folder. */
   folder?: string;
+  /** A taxonomy node's record: how it was written — from its members
+   *  (`written`), from one or two members (`thin`), or composed by the runtime
+   *  from the node's definition because nothing is placed under it (`declared`). */
+  basis?: "written" | "thin" | "declared";
   stale?: boolean;
 };
 
 /** The filters of {@link LoomcycleClient.listAnnotations}. */
 export type DocumentListAnnotationsInput = {
   scope?: "tenant";
-  level?: "branch" | "document" | "path";
+  level?: DocumentAnnotationLevel;
   document_id?: string;
   under_path?: string;
   stale?: boolean;
@@ -9624,7 +9636,7 @@ export type DocumentAnnotateInput = {
   id?: string;
   document_id?: string;
   path?: string;
-  level?: "branch" | "document" | "path";
+  level?: DocumentAnnotationLevel;
   brief: string;
   abstract: string;
   language?: string;
