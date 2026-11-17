@@ -36,17 +36,17 @@ func annotationCallOf(id string) string {
 // multi-topic guide answers in one of its sections while its brief describes
 // the whole guide, so a passage hit in a section of a document with at least
 // 15 live chunks makes that section a candidate beside the document; a small
-// document's sections do not, and a guide gives at most its 3 heaviest hit
-// sections. The size is one count over the kept documents.
-// The screening round names the section by id and carries its exact
-// get_annotation call; the documents_summary call holds documents only; no
-// summary text reaches the trusted prompt.
+// document's sections do not. The size is one count over the kept documents.
+// The documents are screened first; a later round names the sections by id
+// and carries their exact get_annotation calls; a documents_summary call
+// holds documents only; no summary text reaches the trusted prompt.
+// (How many sections a guide gives, and which: GuideSectionsArePickedByMatch.)
 func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 	guide, small, plain := docID(1), docID(2), docID(3)
 	s1, s2, s3, s4, sSmall := secID(1), secID(2), secID(3), secID(4), secID(5)
 	f := &surveyFake{
 		rows: map[string][]map[string]any{
-			// s1 in three lists, s2 and s3 in two, s4 in one: s4 is cut.
+			// s1 in three lists, s2 and s3 in two, s4 in one.
 			"P": {secHit(guide, s1), secHit(guide, s2), secHit(small, sSmall), hits(plain)[0]},
 			"S": {secHit(guide, s1), secHit(guide, s3)},
 			"M": {secHit(guide, s1), secHit(guide, s2), secHit(guide, s3), secHit(guide, s4)},
@@ -66,16 +66,13 @@ func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 	for _, id := range f.screened() {
 		got[id] = true
 	}
-	for _, id := range []string{guide, small, plain, s1, s2, s3} {
+	for _, id := range []string{guide, small, plain, s1, s2, s3, s4} {
 		if !got[id] {
 			t.Errorf("candidate %s missing from screening (%v)", id, f.screened())
 		}
 	}
 	if got[sSmall] {
 		t.Errorf("a section of a document under 15 chunks was screened")
-	}
-	if got[s4] {
-		t.Errorf("a fourth section of one guide was screened; want its 3 heaviest only")
 	}
 	rounds := 0
 	for i, sp := range f.spawns {
@@ -99,25 +96,31 @@ func TestKbSurvey_HitInALargeGuideMakesASectionCandidateByIDOnly(t *testing.T) {
 			}
 			docs = append(docs, id)
 		}
+		if len(docs) == 0 {
+			if strings.Contains(p, "documents_summary") {
+				t.Errorf("screening round %d holds sections only, yet carries a documents_summary call:\n%s", i+1, p)
+			}
+			continue
+		}
 		list, _ := json.Marshal(docs)
 		call := "\nDocument {\"op\":\"documents_summary\",\"scope\":\"tenant\",\"document_ids\":" + string(list) + ",\"with_summary\":true}\n"
 		if !strings.Contains(p, call) {
 			t.Errorf("screening round %d lacks its documents-only summary call %q:\n%s", i+1, call, p)
 		}
 	}
-	if rounds != 1 {
-		t.Errorf("screening rounds = %d, want 1", rounds)
+	if rounds != 2 {
+		t.Errorf("screening rounds = %d, want 2 (the documents, then the sections)", rounds)
 	}
-	if _, _, sv := surveyLines(out); !strings.HasPrefix(sv, "SURVEY: candidates 6 (cut 0) | sections 3 (cut 0) | slices 1 |") {
-		t.Errorf("survey line = %q, want 6 candidates of which 3 sections", sv)
+	if _, _, sv := surveyLines(out); !strings.HasPrefix(sv, "SURVEY: candidates 7 (cut 0) | sections 4 (cut 0, over guide limit 0, document fits 0) | slices 2 |") {
+		t.Errorf("survey line = %q, want 7 candidates of which 4 sections", sv)
 	}
 }
 
 // TestKbSurvey_FittingSectionIsAccountedAndComposedAsAChunkLink: a FITS line
 // naming a section's chunk id accounts for it like a document's; the composing
 // round lists it apart from the documents and asks for a loom:chunk link; a
-// section whose whole document fits is left out; and code's fallback list
-// links a section as loom:chunk.
+// section whose whole document fits is not screened and is left out; and
+// code's fallback list links a section as loom:chunk.
 func TestKbSurvey_FittingSectionIsAccountedAndComposedAsAChunkLink(t *testing.T) {
 	guide, other, otherGuide := docID(1), docID(2), docID(3)
 	sec, otherSec := secID(1), secID(2)
@@ -170,7 +173,7 @@ func TestKbSurvey_FittingSectionIsAccountedAndComposedAsAChunkLink(t *testing.T)
 		if cov != "COVERAGE: complete" || unc != "" {
 			t.Errorf("coverage = %q %q, want complete: every candidate, sections too, accounted for", cov, unc)
 		}
-		if !strings.Contains(sv, "candidates 5 (cut 0) | sections 2 (cut 0) | slices 1 | failed slices 0 |") {
+		if !strings.Contains(sv, "candidates 5 (cut 0) | sections 2 (cut 0, over guide limit 0, document fits 1) | slices 2 | failed slices 0 |") {
 			t.Errorf("survey line = %q", sv)
 		}
 	})
@@ -187,15 +190,20 @@ func TestKbSurvey_FittingSectionIsAccountedAndComposedAsAChunkLink(t *testing.T)
 	t.Run("a good round leaves a section unnamed", func(t *testing.T) {
 		f := newFake()
 		n := 0
+		// Both guides are set aside, so both sections are screened; the
+		// sections' round names otherSec only.
 		f.screen = func(ids []string) surveyReply {
 			n++
-			if n == 1 {
-				return surveyReply{text: accounting([]string{other}, []string{guide, otherGuide, otherSec})}
+			switch n {
+			case 1:
+				return surveyReply{text: accounting([]string{other}, []string{guide, otherGuide})}
+			case 2:
+				return surveyReply{text: accounting(nil, []string{otherSec})}
 			}
 			return fitsOf(sec)(ids)
 		}
 		out := runSurvey(t, f, surveyQuestion)
-		if r := f.screens(); len(r) != 2 || strings.Join(r[1], ",") != sec {
+		if r := f.screens(); len(r) != 3 || strings.Join(r[2], ",") != sec {
 			t.Errorf("screening rounds = %v, want the unnamed section retried alone", r)
 		}
 		if w := f.writes(); len(w) != 1 || len(listIn(spawnPrompt(f.spawns[len(f.spawns)-1]), "\nFitting sections (")) != 1 {
@@ -266,7 +274,7 @@ func TestKbSurvey_SizeCountFailureLeavesDocumentsOnly(t *testing.T) {
 
 // sectionCapFake is a fake with 63 sections eligible beside their documents,
 // three past the section cap of 60. 21 large guides hold three hit sections
-// each, so the per-guide limit of 3 cuts none. The 60 sections of guides 0-19
+// each, so the per-guide limit of 6 cuts none. The 60 sections of guides 0-19
 // are hit once each, in the mixed search, at ranks 0-59 (weight 3 in the top
 // 10, else 2). The 3 sections of guide 20 are hit in two searches, at ranks
 // 60-62 (weight 4): heavier, but the worst matches. It returns the 60
@@ -333,7 +341,7 @@ func TestKbSurvey_SectionCapKeepsTheBestMatchingSections(t *testing.T) {
 			t.Errorf("section %s, the worst match though the heaviest, was kept", id)
 		}
 	}
-	if _, _, sv := surveyLines(out); !strings.Contains(sv, "| sections 60 (cut 3) | slices ") {
+	if _, _, sv := surveyLines(out); !strings.Contains(sv, "| sections 60 (cut 3, over guide limit 0, document fits 0) | slices ") {
 		t.Errorf("survey line = %q, want 60 sections kept and 3 cut", sv)
 	}
 }
@@ -392,7 +400,7 @@ func TestKbSurvey_SectionsHaveTheirOwnCapBesideTheDocuments(t *testing.T) {
 	if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120; 15 sections beyond their cap of 60" {
 		t.Errorf("coverage = %q %q, want the 30 documents and 15 sections past their caps", cov, unc)
 	}
-	if !strings.HasPrefix(sv, "SURVEY: candidates 180 (cut 30) | sections 60 (cut 15) | slices 15 |") {
+	if !strings.HasPrefix(sv, "SURVEY: candidates 180 (cut 30) | sections 60 (cut 15, over guide limit 0, document fits 0) | slices 13 |") {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -474,5 +482,169 @@ func TestKbSurvey_ComposingRoundCarriesSummaryCallsOfAtMost12IDs(t *testing.T) {
 	i, j := strings.Index(wp, "COMPOSING. When the prompt says COMPOSE"), strings.Index(wp, "Without a list, follow the steps below.")
 	if i < 0 || j < i || !strings.Contains(wp[i:j], `"document_ids" is a list of id strings`) {
 		t.Errorf("kb/walker's COMPOSING section does not say document_ids is a list of strings")
+	}
+}
+
+// padHits is n passage hits in n small documents from docID(from), to push a
+// later row of the same list down the ranks.
+func padHits(from, n int) []map[string]any { return hits(docIDs(from, n)...) }
+
+// TestKbSurvey_GuideSectionsArePickedByMatchUpToSix: at 3 sections a guide,
+// key sections of guides that matched the question were never candidates
+// while the section cap rarely bound. A guide now gives up to 6, picked by
+// match (the best rank a hit in them held in any gather search), never by
+// weight: the guide's heaviest section, hit in two lists but far down both,
+// is the one past the limit, and it is counted.
+func TestKbSurvey_GuideSectionsArePickedByMatchUpToSix(t *testing.T) {
+	guide := docID(1)
+	var best []string
+	f := &surveyFake{rows: map[string][]map[string]any{}, chunkCounts: map[string]int{guide: 40}}
+	for k := 0; k < 6; k++ {
+		best = append(best, secID(k))
+		f.rows["M"] = append(f.rows["M"], secHit(guide, secID(k))) // rank k, weight 3
+	}
+	heavy := secID(6)
+	f.rows["P"] = append(padHits(900, 40), secHit(guide, heavy)) // rank 40, weight 2
+	f.rows["S"] = append(padHits(900, 40), secHit(guide, heavy)) // rank 40, weight 2: 4 in all
+	out := runSurvey(t, f, surveyQuestion)
+
+	got := map[string]bool{}
+	for _, id := range f.screened() {
+		got[id] = true
+	}
+	for _, id := range best {
+		if !got[id] {
+			t.Errorf("section %s, one of the guide's 6 best matches, was not a candidate", id)
+		}
+	}
+	if got[heavy] {
+		t.Errorf("section %s, the guide's heaviest but worst match, was kept past the limit of 6", heavy)
+	}
+	if _, _, sv := surveyLines(out); !strings.Contains(sv, "| sections 6 (cut 0, over guide limit 1, document fits 0) |") {
+		t.Errorf("survey line = %q, want 6 sections kept and 1 past the guide's limit", sv)
+	}
+}
+
+// TestKbSurvey_CompleteIsFalseWhenAGuideHadMoreMatchingSections: the complete
+// check could not see sections dropped by the per-guide limit, so a survey
+// that cut nothing else claimed COVERAGE: complete while key sections were
+// never screened. A guide with more matching sections than its limit makes
+// coverage partial, and UNCOVERED counts them; at the limit it stays complete.
+func TestKbSurvey_CompleteIsFalseWhenAGuideHadMoreMatchingSections(t *testing.T) {
+	guide := docID(1)
+	for name, tc := range map[string]struct {
+		sections int
+		cov, unc string
+	}{
+		"six matching sections": {6, "COVERAGE: complete", ""},
+		"seven matching sections": {7, "COVERAGE: partial",
+			"UNCOVERED: 0 candidates not screened; 0 beyond the cap of 120; 1 matching sections beyond the per-guide limit of 6"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &surveyFake{rows: map[string][]map[string]any{}, chunkCounts: map[string]int{guide: 40}}
+			for k := 0; k < tc.sections; k++ {
+				f.rows["P"] = append(f.rows["P"], secHit(guide, secID(k)))
+			}
+			out := runSurvey(t, f, surveyQuestion)
+			if cov, unc, _ := surveyLines(out); cov != tc.cov || unc != tc.unc {
+				t.Errorf("coverage = %q %q, want %q %q", cov, unc, tc.cov, tc.unc)
+			}
+		})
+	}
+}
+
+// TestKbSurvey_SectionsOfAFittingDocumentAreNotScreened: the extra screening
+// rounds were most of a survey's cost over a plain walk, and a section whose
+// whole document fits is left out of the answer anyway. The documents are
+// screened first; only the sections of documents that did not fit are
+// screened after, and the others count as accounted for. A document whose
+// round failed is not known to fit, so its sections are screened.
+func TestKbSurvey_SectionsOfAFittingDocumentAreNotScreened(t *testing.T) {
+	fitGuide, asideGuide := docID(1), docID(2)
+	s1, s2, s3 := secID(1), secID(2), secID(3)
+	newFake := func() *surveyFake {
+		return &surveyFake{
+			rows:        map[string][]map[string]any{"P": {secHit(fitGuide, s1), secHit(fitGuide, s2), secHit(asideGuide, s3)}},
+			chunkCounts: map[string]int{fitGuide: 40, asideGuide: 40},
+			screen:      fitsOf(fitGuide, s3),
+		}
+	}
+	t.Run("document fits", func(t *testing.T) {
+		f := newFake()
+		out := runSurvey(t, f, surveyQuestion)
+		r := f.screens()
+		if len(r) != 2 || strings.Join(r[0], ",") != fitGuide+","+asideGuide || strings.Join(r[1], ",") != s3 {
+			t.Errorf("screening rounds = %v, want the documents, then only the set-aside guide's section", r)
+		}
+		if w := f.writes(); len(w) != 1 || strings.Join(w[0], ",") != fitGuide+","+s3 {
+			t.Errorf("composing ids = %v, want the fitting guide and the other guide's section", w)
+		}
+		cov, unc, sv := surveyLines(out)
+		if cov != "COVERAGE: complete" || unc != "" {
+			t.Errorf("coverage = %q %q, want complete: the unscreened sections are covered by their document", cov, unc)
+		}
+		if !strings.Contains(sv, "| sections 3 (cut 0, over guide limit 0, document fits 2) | slices 2 | failed slices 0 | rounds 3 |") {
+			t.Errorf("survey line = %q", sv)
+		}
+	})
+	t.Run("document round failed", func(t *testing.T) {
+		f := newFake()
+		n := 0
+		f.screen = func(ids []string) surveyReply {
+			n++
+			if n == 1 {
+				return surveyReply{status: "failed"}
+			}
+			return fitsOf(fitGuide, s3)(ids)
+		}
+		runSurvey(t, f, surveyQuestion)
+		got := map[string]bool{}
+		for _, id := range f.screened() {
+			got[id] = true
+		}
+		if !got[s1] || !got[s2] || !got[s3] {
+			t.Errorf("screened = %v, want every section: no document was known to fit", f.screened())
+		}
+		// The sections' slice and the documents' two retry halves share one spawn.
+		if fmt.Sprint(f.batches) != "[1 3]" {
+			t.Errorf("parallel_spawn batches = %v, want [1 3]", f.batches)
+		}
+	})
+}
+
+// TestKbSurvey_SectionsAreScreenedInSlicesOf20AfterTheDocuments: a section is
+// one short brief read by its own get_annotation call, so a section round
+// builds no id list (the failure that keeps document rounds at 12) and takes
+// 20. Documents and sections never share a round.
+func TestKbSurvey_SectionsAreScreenedInSlicesOf20AfterTheDocuments(t *testing.T) {
+	f := &surveyFake{rows: map[string][]map[string]any{}, chunkCounts: map[string]int{}}
+	for g := 0; g < 5; g++ {
+		f.chunkCounts[docID(g)] = 40
+		for k := 0; k < 5; k++ {
+			f.rows["P"] = append(f.rows["P"], secHit(docID(g), secID(g*5+k)))
+		}
+	}
+	out := runSurvey(t, f, surveyQuestion)
+	r := f.screens()
+	if len(r) != 3 || len(r[0]) != 5 || len(r[1]) != 20 || len(r[2]) != 5 {
+		t.Fatalf("screening rounds = %v, want 5 documents, then 20 and 5 sections", r)
+	}
+	for _, id := range r[0] {
+		if isSecID(id) {
+			t.Errorf("section %s was screened with the documents", id)
+		}
+	}
+	for _, round := range r[1:] {
+		for _, id := range round {
+			if !isSecID(id) {
+				t.Errorf("document %s was screened with the sections", id)
+			}
+		}
+	}
+	if fmt.Sprint(f.batches) != "[1 2]" {
+		t.Errorf("parallel_spawn batches = %v, want [1 2]", f.batches)
+	}
+	if _, _, sv := surveyLines(out); !strings.Contains(sv, "| sections 25 (cut 0, over guide limit 0, document fits 0) | slices 3 | failed slices 0 |") {
+		t.Errorf("survey line = %q", sv)
 	}
 }
