@@ -4,8 +4,8 @@ description: "Document op=describe_ontology — the tenant ontology in force, pa
 ---
 `describe_ontology` returns the tenant's ontology as data. It is for code that has
 to act on the ontology, and it saves that code from parsing the document itself.
-It reads the tenant's ontology whatever `scope` the call names, and takes no other
-arguments.
+It reads the tenant's ontology whatever `scope` the call names. Its one other
+argument, `with_counts`, adds how many documents each concept and class has.
 
 It describes what is **in force**, the way the runtime applies it. A draft ontology
 governs nothing, so it describes the standard classes and nothing else, and it
@@ -37,6 +37,8 @@ with `section: relations`, a concept with `section: schemes`, an instance with
 ## Arguments
 
 - `scope` — ignored: the ontology is always the tenant's.
+- `with_counts` — `true` adds member counts (see Member counts below). Off by
+  default; without it the answer is exactly what it is without the argument.
 
 ## Returns
 
@@ -129,6 +131,31 @@ relations, grammars, schemes, instances, norm_classes, policy, review?, issues?}
   - `applied` is false when the section has issues: then no rule applies and
     every proposal waits for a person. The issues are also in `issues`.
 
+## Member counts
+
+With `with_counts: true` the answer also says how much of the tenant scope each
+concept and class covers, counting only documents you may read:
+
+- each concept gets `members` — the documents at the concept or under a
+  narrower one, each counted once, however many of its chunks or narrower
+  concepts reach it. It is exactly the set `search` with `concept:<tag>` in the
+  tenant scope draws from: a document is a member when one of its chunks has a
+  live `subject` statement (or one of a narrower kind) to the concept. Proposed,
+  rejected, refuted and retired statements do not count.
+- each concept gets `members_by_class` — the same documents split by their own
+  class (a document with no class is in `members` only). Absent when no member
+  has a class.
+- each scheme gets `members` — the documents about any of its concepts, each once.
+- each class gets `documents` — the documents whose type (their root chunk's
+  class) is that class and, in a confirmed ontology, one of its subclasses, as
+  `search` with `type:` matches them. In a draft no subclass is included, since
+  a draft widens nothing.
+
+Counts are read on every call; they are never part of the ontology itself.
+They need the tenant scope: a caller without it gets no counts and an issue
+saying so. When the counts cannot be read, the answer is `partial` with an issue
+and carries none.
+
 ## Review rules
 
 The Review section is a root chunk whose first line is `@section review`. Each
@@ -214,4 +241,15 @@ scope, so its parts carry no prefix.
 
 ```json result
 {"exists": true, "document_id": "0b6f1e2a9c4d4e7f8a1b2c3d4e5f6a7b", "status": "confirmed", "confirmed": true, "version": 14, "sections": ["classes", "relations", "instances"], "classes": [{"name": "Law", "parent": "Document", "source": "tenant", "kind": "document", "fields": [{"name": "title", "type": "text", "required": true}], "directives": {"anchor_grammar": "law-part", "citation_grammar": "law-ua", "definitions": "(?i)визначення термінів"}}], "relations": [{"name": "amends", "inverse": "amended_by", "domain": ["Law"], "range": ["Law"], "dated": true, "source": "tenant"}], "grammars": [{"name": "law-ua", "class": "Law", "patterns": ["Закон(?:у)? України № ?(?P<number>\\d+-[IVX]+)"], "resolve": "work_key=law:{number}", "used_as": ["citation"]}], "schemes": [], "instances": [{"name": "Acme Bank", "class": "organization", "alt": ["Acme"], "chunk_id": "5c2d8e1f0a3b4c6d9e7f1a2b3c4d5e6f", "registry_key": "organization:acme-bank", "subject_chunk_id": "9a8b7c6d5e4f40312a1b0c9d8e7f6a5b"}]}
+```
+
+With member counts (a confirmed ontology with a `topics` scheme; other fields cut
+for brevity):
+
+```json
+{"op": "describe_ontology", "with_counts": true}
+```
+
+```json result
+{"exists": true, "status": "confirmed", "confirmed": true, "version": 3, "sections": ["classes", "schemes"], "classes": [{"name": "Provision", "parent": "Document", "source": "tenant", "kind": "document", "documents": 12}], "schemes": [{"name": "topics", "chunk_id": "3e1d0c9b8a7f46e5d4c3b2a190f8e7d6", "members": 9, "concepts": [{"scheme": "topics", "name": "Risk Management", "path": ["Risk Management"], "tag": "topics/risk-management", "chunk_id": "7a6b5c4d3e2f41a0b9c8d7e6f5a4b3c2", "members": 7, "members_by_class": {"Provision": 6}}, {"scheme": "topics", "name": "outsourcing", "path": ["Risk Management", "outsourcing"], "parent": "Risk Management", "tag": "topics/risk-management/outsourcing", "chunk_id": "1f2e3d4c5b6a47980a1b2c3d4e5f6a7b", "members": 3, "members_by_class": {"Provision": 3}}]}], "instances": [], "norm_classes": []}
 ```
