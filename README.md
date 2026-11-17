@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.156) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.157) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,15 +212,18 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.156.0) lets people download a Document as a file:
-a download menu on the document toolbar (PDF, Word, HTML, Markdown, Canvas),
-`GET /v1/_document/export/{id}`, the TS client's `exportDocument` and MCP
-`file op=render` without a run. Teams declared in the yaml are written into
-the shared tier at boot and are changed only there, and an explicit token
-pepper becomes legacy so it can be retired. Read the upgrade notes in
-[`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.157.0) keeps a document's colour scheme out of
+what a model reads, which was most of what a `documents_summary` call
+returned, fixes what a measurement of `kb/survey` found in v1.156.0, lets MCP
+`file op=render` and `keep` work without a run, and reports the yaml's teams
+on the Health page. Read the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.155.0 rendered a Document back into a file: `File op=render`
+Before it, v1.156.0 let people download a Document as a file (PDF, Word,
+HTML, Markdown, Canvas) from the document toolbar,
+`GET /v1/_document/export/{id}` and the TS client's `exportDocument`, and
+wrote the teams declared in the yaml into the shared tier at boot.
+
+Before that, v1.155.0 rendered a Document back into a file: `File op=render`
 writes Markdown, HTML, Word or PDF (typeset by Typst in the conversion
 worker), with a render log per document, and added `kb/survey`.
 
