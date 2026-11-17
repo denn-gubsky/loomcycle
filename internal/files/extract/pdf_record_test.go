@@ -51,7 +51,7 @@ type pdfRecSink struct {
 	record []byte
 }
 
-func (s *pdfRecSink) Record(b []byte)       { s.record = b }
+func (s *pdfRecSink) Record(b []byte)      { s.record = b }
 func (s *pdfRecSink) HeadingAnchor(string) {}
 
 const recordFile = `<< /Type /Filespec /F (loomcycle.json) /EF << /F 9 0 R >> >>`
