@@ -79,6 +79,25 @@ func IsOffRunPlane(ctx context.Context) bool {
 	return CallerTier(ctx) != TierRun && RunID(ctx) == ""
 }
 
+type ctxKeyOffRunVolumes struct{}
+
+// WithOffRunVolumes marks an off-run call whose transport has itself chosen
+// and authorized the volume bindings in the call's policy: named by the
+// caller, its tenant's, read-write and writable under the caller's access
+// rules (the File twin's keep and render target). Only a transport sets it,
+// after that check; nothing a caller sends reaches it.
+func WithOffRunVolumes(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyOffRunVolumes{}, true)
+}
+
+// OffRunVolumes reports WithOffRunVolumes. A volume reference off the run
+// plane is refused unless it is set: off a run, no agent definition chose the
+// volumes, so only a transport that checked them may lend them.
+func OffRunVolumes(ctx context.Context) bool {
+	v, _ := ctx.Value(ctxKeyOffRunVolumes{}).(bool)
+	return v
+}
+
 // TierForPrincipal is the tier of an off-run call by principal p (ok = one is
 // present) acting in tenant actingTenant. A substrate:tenant principal is the
 // operator plane only in its own tenant; acting anywhere else (which no

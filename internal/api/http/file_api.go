@@ -380,6 +380,7 @@ func (s *Server) fileTwinCtx(ctx context.Context, in fileTwinInput, root, dir, d
 		}
 		granted = append(granted, "Write")
 		vols.Bindings = []tools.VolumeBinding{binding}
+		ctx = tools.WithOffRunVolumes(ctx)
 	}
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 		rp.Tools = granted
@@ -505,6 +506,9 @@ func (s *Server) fileTwinRender(ctx context.Context, in fileTwinInput) (connecto
 		rp.Volumes = tools.VolumePolicyValue{Active: true, Bindings: []tools.VolumeBinding{binding}}
 		rp.EphemeralWritable = false
 	})
+	// fileTwinVolumeTarget checked the one binding above, so the File tool
+	// may write it although no run is behind the call.
+	ctx = tools.WithOffRunVolumes(ctx)
 	body, err := json.Marshal(in.fileTwinArgs)
 	if err != nil {
 		return connector.ToolResult{}, err

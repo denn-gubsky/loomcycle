@@ -130,7 +130,11 @@ func checkRefAllowed(ctx context.Context, r dataRef, write bool) (tools.Result, 
 // reference: via names the asking tool (its hooks see it), and instead is
 // the alternative the refusal offers.
 func checkRefGrant(ctx context.Context, r dataRef, write bool, via, instead string) (tools.Result, bool) {
-	if tools.IsOffRunPlane(ctx) {
+	// Off a run no agent definition chose the volumes, so a reference is
+	// refused unless the transport itself authorized the volume it names
+	// (the File twin's keep and render target). Memory and Document
+	// references stay refused.
+	if tools.IsOffRunPlane(ctx) && !(r.kind == refVolume && tools.OffRunVolumes(ctx)) {
 		return errPermission("from and to are not available outside a run", instead+"."), false
 	}
 	need := r.refTool(write)
