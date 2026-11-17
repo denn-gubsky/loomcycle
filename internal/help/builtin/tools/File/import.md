@@ -107,8 +107,11 @@ and the scope must be one your Document grants allow.
   `{line, level, as: "level"}` to change its level. See above.
 - `reimport` — the file is a new edition of the work named by `work_key`; see
   "A new edition" below. Without `work_key`, for a file loomcycle rendered
-  with `metadata: embed`: onto the document it was rendered from; see
-  "A file loomcycle rendered" below.
+  with `metadata: embed`: onto the document it was rendered from, named by
+  `document`; see "A file loomcycle rendered" below.
+- `document` — with `reimport` and no `work_key`: the id of the document a
+  file loomcycle rendered is re-imported onto, the one its `rendered_from`
+  names.
 - `work_key` — with `reimport`: the work's key, e.g. `law:ua/2297-vi`.
 - `edition_date` — with `reimport`: when the edition came into force (unix
   nanoseconds; default now).
@@ -134,8 +137,10 @@ was made from. `extract` finds it and says so in `rendered_from`
 (`document_id`, `scope`, `title`, and `headings_matched`: how many of its
 headings it could tie to the document's parts). Then:
 
-- `reimport: true` without `work_key` re-imports onto that document, in its
-  scope, as a new edition: each heading the renderer marked is matched to
+- `reimport: true` without `work_key`, and `document` naming that document,
+  re-imports onto it, in its scope, as a new edition. You name the document:
+  the record only confirms it, and a file whose record names another is
+  refused, so a file cannot choose what it overwrites. Then each heading the renderer marked is matched to
   its part by id first, so a section renamed and edited in Word supersedes
   its part rather than closing it beside a new one; the rest is matched as
   above. You need write access to that document. `headings` cannot be given,

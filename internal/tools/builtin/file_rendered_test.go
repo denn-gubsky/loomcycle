@@ -79,7 +79,7 @@ func TestFileImport_ARenderedFileReimportsOntoItsDocument(t *testing.T) {
 		t.Error("the record reached the extracted text")
 	}
 
-	imp, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": ex["ref"], "reimport": true})
+	imp, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": ex["ref"], "reimport": true, "document": docID})
 	if res.IsError {
 		t.Fatal(res.Text)
 	}
@@ -96,9 +96,14 @@ func TestFileImport_ARenderedFileReimportsOntoItsDocument(t *testing.T) {
 	}
 
 	// Refused where it would mean something else.
+	// The record confirms a target but never chooses one: the caller names
+	// the document, and it must be the one the file was rendered from.
 	for name, in := range map[string]map[string]any{
-		"another scope": {"op": "import", "path": ex["ref"], "reimport": true, "scope": "tenant"},
-		"headings":      {"op": "import", "path": ex["ref"], "reimport": true, "headings": []any{map[string]any{"line": 1, "as": "drop"}}},
+		"no document":           {"op": "import", "path": ex["ref"], "reimport": true},
+		"other document":        {"op": "import", "path": ex["ref"], "reimport": true, "document": "fedcba9876543210fedcba9876543210"},
+		"another scope":         {"op": "import", "path": ex["ref"], "reimport": true, "document": docID, "scope": "tenant"},
+		"headings":              {"op": "import", "path": ex["ref"], "reimport": true, "document": docID, "headings": []any{map[string]any{"line": 1, "as": "drop"}}},
+		"document, no reimport": {"op": "import", "path": ex["ref"], "document": docID},
 	} {
 		if _, res := fileOp(t, f, ctx, in); !res.IsError {
 			t.Errorf("%s: was not refused", name)
@@ -113,7 +118,7 @@ func TestFileImport_ARenderedFileReimportsOntoItsDocument(t *testing.T) {
 	if res.IsError {
 		t.Fatal(res.Text)
 	}
-	if _, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": fex["ref"], "reimport": true}); !res.IsError {
+	if _, res := fileOp(t, f, ctx, map[string]any{"op": "import", "path": fex["ref"], "reimport": true, "document": "0123456789abcdef0123456789abcdef"}); !res.IsError {
 		t.Error("a record naming a document the caller does not have was re-imported")
 	}
 
@@ -135,7 +140,6 @@ func TestFileImport_ARenderedFileReimportsOntoItsDocument(t *testing.T) {
 	if asStr(rf["document_id"]) != docID {
 		t.Errorf("the new document's provenance = %v, want rendered_from %s", doc["provenance"], docID)
 	}
-	_ = context.Background
 }
 
 // forgeRecord rewrites the document id in a DOCX's embedded record.
@@ -159,4 +163,33 @@ func forgeRecord(t *testing.T, data []byte, from, to string) []byte {
 	}
 	_ = zw.Close()
 	return out.Bytes()
+}
+
+// Document's hooks see the document a rendered file is re-imported onto: a
+// hook that guards a document cannot be stepped around through File.
+func TestFileImport_DocumentHookSeesTheReimportTarget(t *testing.T) {
+	f, ctx, d, _ := fileDocRun(t)
+	out, r := docExec(t, d, ctx, `{"op":"import_md","scope":"user","markdown":"# Services\n\n## Basic\n\nNo test plan.\n"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	docID := asStr(out["document_id"])
+	rr, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": "html", "metadata": "embed"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": rr["ref"]})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	hooked := tools.WithHookPreCheck(ctx, func(_ context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+		if name == "Document" && strings.Contains(string(input), `"document_id":"`+docID+`"`) {
+			return tools.Result{Text: "that document is frozen", IsError: true}, false
+		}
+		return tools.Result{}, true
+	})
+	_, res = fileOp(t, f, hooked, map[string]any{"op": "import", "path": ex["ref"], "reimport": true, "document": docID})
+	if !res.IsError || !strings.Contains(res.Text, "that document is frozen") {
+		t.Fatalf("a hook guarding the document let the re-import through: %q", res.Text)
+	}
 }

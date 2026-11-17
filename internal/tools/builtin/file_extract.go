@@ -501,10 +501,25 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		rendered = rec.Rendered
 	}
 	documentID := ""
+	if in.Document != "" && (rendered == nil || !in.Reimport || in.WorkKey != "") {
+		return errValidation("import: document names the document a file loomcycle rendered is re-imported onto, with reimport and no work_key; this file carries no such record. Nothing was imported.",
+			"Drop document, or extract a file op=render wrote with metadata: embed."), nil
+	}
 	if rendered != nil {
 		if in.Reimport && in.WorkKey == "" {
 			// Onto the document the file was rendered from (D22), in its
-			// own scope; the Document tool asks for write on it there.
+			// own scope; the Document tool asks for write on it there. The
+			// caller names it: the record is someone's file, and may confirm
+			// a target but never choose one (a run with wide write access
+			// would otherwise let a file's author pick what it overwrites).
+			if in.Document == "" {
+				return errValidation(fmt.Sprintf("import: the file was rendered from document %s; name it to re-import onto it. Nothing was imported.", rendered.DocumentID),
+					"Pass document: "+rendered.DocumentID+" (extract's rendered_from) if that is the document to update, or import without reimport to make a new one."), nil
+			}
+			if in.Document != rendered.DocumentID {
+				return errValidation(fmt.Sprintf("import: the file was rendered from document %s, not %s. Nothing was imported.", rendered.DocumentID, in.Document),
+					"Re-import a file onto the document it was rendered from, or import it as a new document."), nil
+			}
 			if len(in.Headings) > 0 {
 				return errValidation("import: headings cannot be given when re-importing a file loomcycle rendered: its headings are matched to the document's parts as they are. Nothing was imported.",
 					"Drop headings, or import it as a new document (no reimport)."), nil
@@ -578,11 +593,7 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	md = hoistExtractedImages(md)
 	release()
 
-	callArgs := importMDCall(in, scope, md)
-	if documentID != "" {
-		callArgs["document_id"] = documentID
-	}
-	call, _ := json.Marshal(callArgs)
+	call, _ := json.Marshal(importMDCall(in, scope, md))
 	ictx := withImportProvenance(withVolumeImageFields(withVolumeAssetReader(ctx, readExtractedImage), extractedImageFields), prov)
 	out, err := f.Docs.Execute(ictx, call)
 	if err != nil {
@@ -651,6 +662,11 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 // fields pass through unchanged: import_md checks them.
 func importMDCall(in fileInput, scope, md string) map[string]any {
 	call := map[string]any{"op": "import_md", "scope": scope, "markdown": md, "path": in.DocPath}
+	if in.Document != "" {
+		// The document a rendered file is re-imported onto: in the call the
+		// Document hooks judge, as in the one that writes.
+		call["document_id"] = in.Document
+	}
 	if in.Reimport {
 		call["reimport"] = true
 	}
