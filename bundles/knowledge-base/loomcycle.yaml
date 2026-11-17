@@ -6069,8 +6069,8 @@ agents:
     # parallel, then one retry wave) and one composing round.
     run_timeout_seconds: 900
     # parallel_spawn runs at most this many screening rounds at once (default
-    # 4). A full candidate list is (CAP + SEC_CAP) / SLICE = 12 slices, so it
-    # is screened in three waves of 5 (5, 5, 2): accepted, because rounds of 12
+    # 4). A full candidate list is (CAP + SEC_CAP) / SLICE = 15 slices, so it
+    # is screened in three waves of 5 (5, 5, 5): accepted, because rounds of 12
     # ids do not fail the way rounds of 25 did (below, at SLICE), and 5 keeps
     # the burst on the provider where it was. Retry halves (6 ids at most) are
     # few and go in one wave.
@@ -6095,34 +6095,32 @@ agents:
       //    section's (level branch) names that section's chunk id. A document
       //    with at least GUIDE_CHUNKS live chunks is a large guide (one
       //    query_chunks count over the kept documents); its GUIDE_SECTIONS
-      //    heaviest hit sections become candidates BESIDE it, weighted like
+      //    best-matching hit sections become candidates BESIDE it, weighted like
       //    documents (2 per search list, 1 more in the top 10).
-      //    SEARCHES INSIDE GUIDES. A general search reaches a guide's key
-      //    section only when that section ranks among the whole corpus's
-      //    nearest passages, and a measured guide was dropped whose key section
-      //    never did. So the GUIDE_DOCS highest-weighted large guides are also
-      //    searched inside (document_id, GUIDE_HITS hits) for the question and
-      //    each clause, at most GUIDE_SEARCHES searches; each hit section of
-      //    such a search counts 2, the first 1 more. A failed search ends them
-      //    and keeps what they found.
+      //    No search is made inside a guide: measured, up to 24 such searches
+      //    per question found no section the general searches had missed.
       //    Chunk count is the size measure because it is the one the store keeps
       //    for every document whatever its type. Under 30, a 21-chunk security
       //    guide never had a section screened, and multi-topic guides with
       //    key sections run from 15 to 24 chunks on that corpus (an MCP-server
       //    guide 19, an install guide 15). GUIDE_CHUNKS = 15 holds them; about
       //    half the corpus has 15 or more, which is safe because what is done
-      //    with a large guide is capped, not the count of them: GUIDE_DOCS
-      //    searched inside, GUIDE_SECTIONS sections each, SEC_CAP in all, the
-      //    heaviest first. It does not tell a
+      //    with a large guide is capped, not the count of them: GUIDE_SECTIONS
+      //    sections each, SEC_CAP in all, the best-matching first. It does not
+      //    tell a
       //    guide from a long single-topic design document: such a document's
       //    sections are screened too, which costs rounds, not answers, since a
       //    section is dropped from the answer when its whole document fits. A
       //    count that fails leaves the survey to documents only, as before.
       //    The CAP highest-weighted documents are kept (ties by id), and
-      //    beside them the SEC_CAP highest-weighted sections: sections have a
-      //    cap of their own because under one shared cap they pushed
-      //    documents out (one measured question went from 60 documents cut to
-      //    107). The rest are counted.
+      //    beside them at most SEC_CAP sections: sections have a cap of their
+      //    own because under one shared cap they pushed documents out (one
+      //    measured question went from 60 documents cut to 107). Sections are
+      //    kept best match first: by the best rank any gather search gave a
+      //    hit in them (0 = a search's first hit), then by weight, then by id.
+      //    A cap of 24 cut key sections on every measured question; 60 holds
+      //    them. The rest are counted, and a cut section makes coverage
+      //    partial.
       // 2. SCREEN (model). The candidates are cut into slices of SLICE ids, one
       //    kb/screen round each, all in one parallel spawn. kb/screen is a
       //    short prompt of its own: on the measured set a screening round run
@@ -6150,19 +6148,26 @@ agents:
       //    are never joined into the answer.
       // 4. ANSWER. One more kb/walker round composes the reply from the ids that
       //    fit (ids only again; a section of a document that fits whole is left
-      //    out, and a section is linked as loom:chunk/<id>); its FITS, SET
+      //    out, and a section is linked as loom:chunk/<id>). Its block carries
+      //    the exact read calls, built here like a screening round's, the
+      //    documents in documents_summary calls of at most SUMMARY_BATCH ids: a
+      //    walker handed 20 to 30 ids and left to build the call sent the list
+      //    as one string in most rounds, which the tool refuses. Its FITS, SET
       //    ASIDE, COVERAGE, UNCOVERED, MOVES
       //    and MISSING lines are stripped. It is asked to COMPOSE, never to
       //    write: told to write the overview, a walker took it as writing a
       //    document. Nothing fits: code says so, with no round. The composing
       //    round fails: code lists the fitting ids as links. Then a coverage
       //    line code computes:
-      //      COVERAGE: complete  every candidate accounted for, none cut by the
-      //                          cap, and at least as many documents kept
-      //                          (sections not counted) as the passage
-      //                          search's facet window counted;
+      //      COVERAGE: complete  every candidate accounted for, no document cut
+      //                          by CAP, no section cut by SEC_CAP, the
+      //                          section count did not fail, and at least as
+      //                          many documents kept (sections not counted) as
+      //                          the passage search's facet window counted;
       //      COVERAGE: partial   otherwise, then
       //      UNCOVERED: <n> candidates not screened; <m> beyond the cap of <CAP>
+      //                 [; <j> sections beyond their cap of <SEC_CAP>]
+      //                 [; the sections were not counted]
       //                 [; the passage search counted <c> documents and <k> were kept]
       //    (or "; the searches may not have reached every matching document"
       //    when the search reported no count). The window's own complete flag
@@ -6170,15 +6175,13 @@ agents:
       //    so on a corpus larger than that the flag is never true.
       //    and the trailer
       //      SURVEY: candidates <kept> (cut <m>) | sections <k> (cut <j>) |
-      //              guide searches <g> | slices <s> | failed slices <f> |
-      //              rounds <walker runs> |
+      //              slices <s> | failed slices <f> | rounds <walker runs> |
       //              RUNS: <run:status[/max_tokens], ...>
       //    candidates counts documents and sections, its cut documents only;
       //    sections counts the kept candidates that are sections and the
       //    sections past SEC_CAP ("sections failed (<why>)" when the size count
-      //    failed); guide searches counts the searches inside guides ("(failed:
-      //    <why>)" after it when one failed); failed slices counts every
-      //    screening round that failed, retries too.
+      //    failed); failed slices counts every screening round that failed,
+      //    retries too.
       //    A gather step that throws or finds nothing falls back to a plain walk;
       //    its coverage is partial, and the trailer says why.
       //
@@ -6203,10 +6206,8 @@ agents:
       var SLICE = 12;        // candidate ids per screening round
       var GUIDE_CHUNKS = 15; // live chunks that make a document a large guide
       var GUIDE_SECTIONS = 3; // hit sections of one large guide kept, at most
-      var GUIDE_DOCS = 8;    // large guides searched inside, at most
-      var GUIDE_HITS = 5;    // hits per search inside one guide
-      var GUIDE_SEARCHES = 24; // searches inside guides, at most
-      var SEC_CAP = 24;      // sections screened, at most, beside the CAP documents
+      var SEC_CAP = 60;      // sections screened, at most, beside the CAP documents
+      var SUMMARY_BATCH = 12; // document ids per documents_summary call written for a round
       // A runtime document id: lowercase hex, dashes allowed (the shape kb/ask
       // reads in loom: links). A row whose id does not match is not a
       // candidate, so nothing but id characters reaches the walker's prompt.
@@ -6295,7 +6296,8 @@ agents:
       // addRows adds one search list: 2 per document however many of its
       // passages the list holds, 1 more for a document in the top 10; and the
       // same per section to secs (secs.w: section -> weight, secs.doc: section
-      // -> its document).
+      // -> its document, secs.rank: section -> the best position a hit in it
+      // held in any list, 0 first).
       function addRows(set, rows, secs) {
         var seen = newSet(), seenSec = newSet();
         for (var i = 0; i < rows.length; i++) {
@@ -6314,6 +6316,7 @@ agents:
             seenSec[sec] = 1;
             secs.w[sec] = (secs.w[sec] || 0) + w;
             secs.doc[sec] = id;
+            if (!(sec in secs.rank) || i < secs.rank[sec]) { secs.rank[sec] = i; }
           }
         }
       }
@@ -6349,56 +6352,6 @@ agents:
         return out;
       }
 
-      // searchGuides searches inside the GUIDE_DOCS highest-weighted large
-      // guides of top for the question and each clause: the question in every
-      // guide first, then the first clause in every guide, and so on, at most
-      // GUIDE_SEARCHES searches. A clause that is the question again is not
-      // asked twice. Returns {n: the searches made, err: why one failed, or
-      // ""}; a failed search ends them and the sections found stay.
-      function searchGuides(top, large, q, cl, secs) {
-        var gs = [], qs = [q], asked = newSet();
-        for (var i = 0; i < top.length && gs.length < GUIDE_DOCS; i++) { if (large[top[i]]) { gs.push(top[i]); } }
-        asked[words(q)] = 1;
-        for (i = 0; i < cl.length; i++) {
-          if (!asked[words(cl[i])]) { asked[words(cl[i])] = 1; qs.push(cl[i]); }
-        }
-        var n = 0;
-        for (var a = 0; a < qs.length; a++) {
-          for (var b = 0; b < gs.length; b++) {
-            if (n >= GUIDE_SEARCHES) { return { n: n, err: "" }; }
-            n++;
-            var res;
-            try {
-              res = doc({ op: "search", query: qs[a], document_id: gs[b], limit: GUIDE_HITS, with_summary: true, summary_chars: 1 });
-            } catch (e) {
-              return { n: n, err: errText(e) };
-            }
-            addSections(rowsOf(res), gs[b], secs);
-          }
-        }
-        return { n: n, err: "" };
-      }
-
-      // addSections adds one search inside guide d to secs: 2 per hit
-      // section, 1 more for the first. A row of another document is skipped.
-      function addSections(rows, d, secs) {
-        var seen = newSet(), first = 1;
-        for (var i = 0; i < rows.length; i++) {
-          var r = rows[i] || {};
-          var sec = r.document_id === d ? sectionOf(r) : "";
-          if (!sec || seen[sec]) { continue; }
-          seen[sec] = 1;
-          secs.w[sec] = (secs.w[sec] || 0) + 2 + first;
-          secs.doc[sec] = d;
-          first = 0;
-        }
-      }
-
-      // words is a text's words, lower case, one space apart.
-      function words(t) {
-        return String(t).toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/^ | $/g, "");
-      }
-
       // clauses splits a question into its parts, dropping the lead-in.
       function clauses(q) {
         var t = q.replace(/^\s*(what|which)\s+(do we hold|do we have|is documented|documents)\s+(on|about|concern)?\s*/i, "");
@@ -6418,6 +6371,17 @@ agents:
         var out = [];
         for (var i = 0; i < arr.length; i++) { out.push(arr[i][0]); }
         return out;
+      }
+
+      // bestMatch lists sections best match first: the best rank a hit in
+      // them held in any gather search, then weight, then id.
+      function bestMatch(secs) {
+        var arr = [];
+        for (var k in secs.w) { arr.push(k); }
+        arr.sort(function (a, b) {
+          return secs.rank[a] - secs.rank[b] || secs.w[b] - secs.w[a] || (a < b ? -1 : a > b ? 1 : 0);
+        });
+        return arr;
       }
 
       // edges adds 1 to each other end of the relations of the EDGE_FROM
@@ -6447,11 +6411,11 @@ agents:
       // counted: the documents the passage search's facet window counted, or
       // -1 when it reported no count, sec: each kept section -> its document,
       // docs and sections: how many of each were kept, secErr: why the size
-      // count failed, or "", inner: searchGuides' result}. It throws when a
-      // general search or a relation read fails.
+      // count failed, or ""}. It throws when a search or a relation read
+      // fails.
       function gather(q) {
         var P = newSet(), S = newSet(), M = newSet(), C = newSet(), E = newSet();
-        var secs = { w: newSet(), doc: newSet() };
+        var secs = { w: newSet(), doc: newSet(), rank: newSet() };
         var pr = search(P, secs, q, { facets: ["type", "folder"], facet_window: 500 });
         search(S, secs, q, { annotations: "only", annotation_levels: ["document"] });
         search(M, secs, q, { annotations: "include" });
@@ -6466,16 +6430,15 @@ agents:
 
         // Large guides: only documents the cap keeps can have sections kept
         // (a section never weighs more than its document), so only those are
-        // counted; then the largest kept ones are searched inside.
+        // counted.
         var all = ranked(pool), top = all.slice(0, CAP);
-        var large = newSet(), secErr = "", inner = { n: 0, err: "" };
+        var large = newSet(), secErr = "";
         if (top.length) {
           try { large = largeGuides(top); } catch (e) { secErr = errText(e); }
         }
-        if (!secErr) { inner = searchGuides(top, large, q, cl, secs); }
         // Sections have their own cap, SEC_CAP, so they never take a
-        // document's place under CAP.
-        var kept = newSet(), sec = newSet(), per = newSet(), nsec = 0, secCut = 0, byW = ranked(secs.w);
+        // document's place under CAP; the best-matching are kept.
+        var kept = newSet(), sec = newSet(), per = newSet(), nsec = 0, secCut = 0, byW = bestMatch(secs);
         for (i = 0; i < top.length; i++) { kept[top[i]] = pool[top[i]]; }
         for (i = 0; i < byW.length; i++) {
           var d = secs.doc[byW[i]];
@@ -6490,7 +6453,7 @@ agents:
         var dc = pr && pr.facets ? pr.facets.documents_counted : undefined;
         return { ids: ranked(kept), cut: Math.max(0, all.length - CAP), secCut: secCut,
                  counted: typeof dc === "number" && dc >= 0 ? dc : -1,
-                 sec: sec, docs: top.length, sections: nsec, secErr: secErr, inner: inner };
+                 sec: sec, docs: top.length, sections: nsec, secErr: secErr };
       }
 
       // ---- 2. screen ----
@@ -6515,12 +6478,13 @@ agents:
         return { docs: docs, secs: secs };
       }
 
-      // readCalls is the read calls for ids, one per line: one
-      // documents_summary call for the documents, one get_annotation call per
-      // section.
+      // readCalls is the read calls for ids, one per line: documents_summary
+      // calls for the documents, SUMMARY_BATCH ids each (a screening slice
+      // fits in one), and one get_annotation call per section.
       function readCalls(p) {
-        var out = p.docs.length ? [summaryCall(p.docs)] : [];
-        for (var i = 0; i < p.secs.length; i++) { out.push(annotationCall(p.secs[i])); }
+        var out = [], b = slices(p.docs, SUMMARY_BATCH);
+        for (var i = 0; i < b.length; i++) { out.push(summaryCall(b[i])); }
+        for (i = 0; i < p.secs.length; i++) { out.push(annotationCall(p.secs[i])); }
         return out.join("\n");
       }
 
@@ -6543,7 +6507,8 @@ agents:
           (p.secs.length ? "Link a section as [title](loom:chunk/<id>?scope=tenant), a document as [title](loom:doc/<id>?scope=tenant). " : "") +
           "The knowledge base is read-only and nothing is to be stored: your reply text is the whole result. " +
           "Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines." +
-          " You may read their briefs with these calls, exactly as given:\n" + readCalls(p);
+          " You may read their briefs with these calls, one per line, exactly as given " +
+          "(document_ids is a list of strings, never one string):\n" + readCalls(p);
         if (p.docs.length) { t += "\n\nFitting documents (" + p.docs.length + "):\n" + p.docs.join("\n"); }
         if (p.secs.length) { t += "\n\nFitting sections (" + p.secs.length + "):\n" + p.secs.join("\n"); }
         return t;
@@ -6782,18 +6747,22 @@ agents:
         // passage search's facet window counted. A proxy, not a set check: the
         // facets give counts, not ids. Sections are not documents, so they do
         // not count toward it.
+        // A section cut by SEC_CAP, or a size count that failed (no section
+        // was weighed at all), leaves material out like a cut document.
         var reached = g.counted >= 0 && g.docs >= g.counted;
         var cov;
-        if (!left.length && g.cut === 0 && reached) {
+        if (!left.length && g.cut === 0 && g.secCut === 0 && !g.secErr && reached) {
           cov = "COVERAGE: complete";
         } else {
           cov = "COVERAGE: partial\nUNCOVERED: " + left.length + " candidates not screened; " + g.cut + " beyond the cap of " + CAP +
+            (g.secCut ? "; " + g.secCut + " sections beyond their cap of " + SEC_CAP : "") +
+            (g.secErr ? "; the sections were not counted" : "") +
             (reached ? "" : g.counted < 0 ? "; the searches may not have reached every matching document" :
               "; the passage search counted " + g.counted + " documents and " + g.docs + " were kept");
         }
         var tail = "SURVEY: candidates " + g.ids.length + " (cut " + g.cut + ") | sections " +
           (g.secErr ? "failed (" + g.secErr.replace(/\s+/g, " ") + ")" : g.sections + " (cut " + g.secCut + ")") +
-          " | guide searches " + g.inner.n + (g.inner.err ? " (failed: " + g.inner.err.replace(/\s+/g, " ") + ")" : "") + " | slices " + sliceCount +
+          " | slices " + sliceCount +
           " | failed slices " + failed + " | rounds " + runs.length + " | RUNS: " + runs.join(", ");
         return { final_text: body + "\n\n" + cov + "\n" + tail };
       }
@@ -6966,7 +6935,9 @@ agents:
       COMPOSING. When the prompt says COMPOSE and lists the ids of the
       documents (and sections) that fit the question, compose your reply
       instead of walking:
-        1. You may read their briefs with the calls the prompt gives.
+        1. You may read their briefs with the calls the prompt gives, copied
+           exactly: "document_ids" is a list of id strings, never one string
+           holding the list.
         2. Compose your reply: one line and a link per listed document. A
            listed section gets its own line, linked as
            [title](loom:chunk/<id>?scope=tenant).
