@@ -152,6 +152,83 @@ func TestAgreement_MatchesRecomputedLeaveOneOut(t *testing.T) {
 		if got := rankIDs(want); !reflect.DeepEqual(got, r.Ranked) {
 			t.Fatalf("group %s: ranked %v, recomputed %v", r.Group, r.Ranked, got)
 		}
+		if len(want) >= 2 {
+			if m := want[0].s - want[1].s; !r.HasMargin || math.Abs(r.Margin-m) > 1e-9 {
+				t.Fatalf("group %s: margin %v (has %v), recomputed %v", r.Group, r.Margin, r.HasMargin, m)
+			}
+		}
+		if hit := r.Evaluable && weights[r.Group][r.Ranked[0]] > 0; hit != r.Top1 {
+			t.Fatalf("group %s: top1 %v, want %v", r.Group, r.Top1, hit)
+		}
+	}
+}
+
+func TestMarginAgreement_HitRateRisesWithMargin(t *testing.T) {
+	// 20 points, margins 0.005 .. 0.100; the nearest is wrong for every point
+	// below 0.03 and right above it.
+	var ps []MarginPoint
+	for i := 1; i <= 20; i++ {
+		m := float64(i) * 0.005
+		ps = append(ps, MarginPoint{Margin: m, Hit: m > 0.0275})
+	}
+	r := MarginAgreement(ps, 5, []float64{0, 0.03, 0.08})
+	if r.Units != 20 || r.Hits != 15 {
+		t.Fatalf("units %d hits %d, want 20 / 15", r.Units, r.Hits)
+	}
+	wantBins := []MarginBin{
+		{Lo: 0.005, Hi: 0.020, Units: 4, Hits: 0, HitRate: 0},
+		{Lo: 0.025, Hi: 0.040, Units: 4, Hits: 3, HitRate: 0.75},
+		{Lo: 0.045, Hi: 0.060, Units: 4, Hits: 4, HitRate: 1},
+		{Lo: 0.065, Hi: 0.080, Units: 4, Hits: 4, HitRate: 1},
+		{Lo: 0.085, Hi: 0.100, Units: 4, Hits: 4, HitRate: 1},
+	}
+	if len(r.Bins) != len(wantBins) {
+		t.Fatalf("bins %+v", r.Bins)
+	}
+	for i, b := range r.Bins {
+		w := wantBins[i]
+		if math.Abs(b.Lo-w.Lo) > 1e-12 || math.Abs(b.Hi-w.Hi) > 1e-12 || b.Units != w.Units || b.Hits != w.Hits || b.HitRate != w.HitRate {
+			t.Fatalf("bin %d = %+v, want %+v", i, b, w)
+		}
+	}
+	wantTh := []MarginThreshold{
+		{Min: 0, Units: 20, Coverage: 1, Hits: 15, HitRate: 0.75},
+		{Min: 0.03, Units: 15, Coverage: 0.75, Hits: 15, HitRate: 1},
+		{Min: 0.08, Units: 5, Coverage: 0.25, Hits: 5, HitRate: 1},
+	}
+	if !reflect.DeepEqual(r.Thresholds, wantTh) {
+		t.Fatalf("thresholds %+v, want %+v", r.Thresholds, wantTh)
+	}
+}
+
+func TestMarginAgreement_UnevenAndEmpty(t *testing.T) {
+	r := MarginAgreement([]MarginPoint{{0.3, true}, {0.1, false}, {0.2, true}}, 5, []float64{0.15})
+	if len(r.Bins) != 3 || r.Bins[0].Lo != 0.1 || r.Bins[2].Hi != 0.3 {
+		t.Fatalf("fewer points than bins: one point per bin in margin order, got %+v", r.Bins)
+	}
+	if th := r.Thresholds[0]; th.Units != 2 || th.HitRate != 1 {
+		t.Fatalf("threshold %+v", th)
+	}
+	sizes := []int{}
+	for _, b := range MarginAgreement(make([]MarginPoint, 7), 5, nil).Bins {
+		sizes = append(sizes, b.Units)
+	}
+	if !reflect.DeepEqual(sizes, []int{2, 2, 1, 1, 1}) {
+		t.Fatalf("7 points in 5 bins: sizes %v", sizes)
+	}
+	if e := MarginAgreement(nil, 5, []float64{0}); len(e.Bins) != 0 || e.Thresholds[0].Units != 0 {
+		t.Fatalf("empty input: %+v", e)
+	}
+}
+
+func TestMarginPoints_SkipNotEvaluableAndCountNoMargin(t *testing.T) {
+	ps, none := marginPoints([]UnitRank{
+		{Evaluable: true, Top1: true, Margin: 0.04, HasMargin: true},
+		{Evaluable: true},
+		{Evaluable: false, Margin: 0.5, HasMargin: true},
+	})
+	if none != 1 || len(ps) != 1 || ps[0] != (MarginPoint{0.04, true}) {
+		t.Fatalf("points %+v none %d", ps, none)
 	}
 }
 

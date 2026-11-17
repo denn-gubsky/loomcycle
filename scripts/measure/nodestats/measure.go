@@ -153,6 +153,9 @@ type AgreementReport struct {
 	// Classes is each level's number of classes: top-3 is no test at a level
 	// of three classes.
 	Classes map[string]int `json:"level_classes"`
+	// Margin: "L1" / "L2" (pooled) -> arm a's top-1 hit rate by the margin
+	// between the nearest and second nearest centroid.
+	Margin map[string]MarginReport `json:"margin_arm_a"`
 }
 
 func levelKey(lv Level) string {
@@ -206,7 +209,7 @@ func MeasureAgreement(tax *Taxonomy, d *Data, placed map[string][]string, opt Op
 	defVecs map[string][]float64, defNote string) (AgreementReport, error) {
 	r := AgreementReport{ByLevel: map[string]map[string]Rates{}, Summary: map[string]map[string]Rates{},
 		Permutation: map[string]PermutationSummary{}, Provenance: map[string]map[string]Rates{},
-		Kinds: map[string]int{}, Classes: map[string]int{}, DefNote: defNote}
+		Kinds: map[string]int{}, Classes: map[string]int{}, DefNote: defNote, Margin: map[string]MarginReport{}}
 	for _, s := range d.Statements {
 		r.Kinds[s.Kind]++
 	}
@@ -215,6 +218,8 @@ func MeasureAgreement(tax *Taxonomy, d *Data, placed map[string][]string, opt Op
 	}
 	permTop1 := map[string][][2]int{} // L1/L2 -> per permutation (top1, evaluable) pooled
 	permTop3 := map[string][][2]int{}
+	margin := map[string][]MarginPoint{}
+	noMargin := map[string]int{}
 	for _, lv := range tax.Levels(placed) {
 		key := levelKey(lv)
 		r.ByLevel[lv.Name] = map[string]Rates{}
@@ -234,6 +239,9 @@ func MeasureAgreement(tax *Taxonomy, d *Data, placed map[string][]string, opt Op
 			r.Summary[key][arm] = sum
 			if arm == ArmFull {
 				addProvenance(r.Provenance, key, tax, lv, ranks, d.Statements)
+				ps, none := marginPoints(ranks)
+				margin[key] = append(margin[key], ps...)
+				noMargin[key] += none
 			}
 		}
 		in := buildInput(lv, d.Docs, ArmFull)
@@ -259,6 +267,11 @@ func MeasureAgreement(tax *Taxonomy, d *Data, placed map[string][]string, opt Op
 			permTop3[key][p][0] += pr.Top3
 			permTop3[key][p][1] += pr.Evaluable
 		}
+	}
+	for key, ps := range margin {
+		mr := MarginAgreement(ps, marginBins, marginThresholds)
+		mr.NoMargin = noMargin[key]
+		r.Margin[key] = mr
 	}
 	for key := range permTop1 {
 		var t1, t3 []float64

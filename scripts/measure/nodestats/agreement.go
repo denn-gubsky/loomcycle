@@ -31,6 +31,12 @@ type UnitRank struct {
 	Group     string
 	Ranked    []string
 	Evaluable bool
+	// Top1: the nearest class is one of the group's declared classes.
+	Top1 bool
+	// Margin is cos(unit, nearest) - cos(unit, second nearest); HasMargin is
+	// false when fewer than two classes were candidates.
+	Margin    float64
+	HasMargin bool
 }
 
 // Rates are hit counts over the evaluable units.
@@ -149,6 +155,9 @@ func Agreement(in AgreementInput) ([]UnitRank, Rates, error) {
 			cands = append(cands, scored{c, num / math.Sqrt(den2)})
 		}
 		ur := UnitRank{Group: u.Group, Ranked: rankIDs(cands)}
+		if len(cands) >= 2 { // rankIDs sorted cands in place
+			ur.Margin, ur.HasMargin = cands[0].s-cands[1].s, true
+		}
 		for _, c := range ur.Ranked {
 			if in.Weights[u.Group][c] > 0 {
 				ur.Evaluable = true
@@ -158,6 +167,7 @@ func Agreement(in AgreementInput) ([]UnitRank, Rates, error) {
 		if ur.Evaluable {
 			r.Evaluable++
 			if hitAt(ur.Ranked, in.Weights[u.Group], 1) {
+				ur.Top1 = true
 				r.Top1++
 			}
 			if hitAt(ur.Ranked, in.Weights[u.Group], 3) {
