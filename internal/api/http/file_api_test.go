@@ -122,6 +122,9 @@ func sessionCtx(p auth.Principal) context.Context {
 	ctx := auth.WithPrincipal(context.Background(), p)
 	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{UserID: p.Subject, TenantID: p.TenantID, AgentID: "a_mcp-operator"})
 	ctx = tools.WithAgentName(ctx, "mcp-operator")
+	// Stamped as the MCP transport stamps it (internal/api/mcp/context.go):
+	// without it the call reads as a run's, and an off-run gate never fires.
+	ctx = tools.WithCallerTier(ctx, tools.TierForPrincipal(p, true, p.TenantID))
 	return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 		rp.Tools = []string{"*"}
 		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"agent", "user", "tenant"}}
