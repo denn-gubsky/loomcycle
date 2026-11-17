@@ -174,6 +174,7 @@ const documentInputSchema = `{
 		"annotation_levels": {"type": "array", "items": {"type": "string", "enum": ["branch","document","path"]}, "description": "search with annotations: which levels to rank (default all), e.g. [\"path\", \"document\"] for a corpus question."},
 		"with_summary": {"type": "boolean", "description": "get_document / get_chunk / search / related / graph_recall / documents_summary / query_documents: add each row's annotation as summary {level, brief, abstract?, stale?} — the nearest one at or above the row's chunk. The abstract is added for the target of get_document / get_chunk, the first five documents of a search or related page and the seeds of graph_recall, within summary_chars. A row with no annotation has no summary."},
 		"summary_chars": {"type": "integer", "description": "with_summary: the most abstract characters a response carries in all (default 2000, at most 8000); rows past it keep their brief only."},
+		"include_color_scheme": {"type": "boolean", "description": "get_document / documents_summary / graph_snapshot: also return each document's display palette (color_scheme). Off by default; you rarely need it."},
 		"body_chars": {"type": "integer", "description": "annotation_inputs: how much of the target's own text to return (default 6000, at most 20000). graph_recall: how much of each chunk's text to return. Omit it and chunks that are not facts (clauses, sections, notes) carry the first 600 characters as body, while facts stay title-only because their title is the claim. 0 = titles only, the cheapest structural walk. N (at most 4000) = up to N characters on every row, facts included. A cut body ends on a word and is marked body_truncated; budget_chars counts body characters too."},
 		"as_of":     {"type": "integer", "description": "graph_recall / list_facts: answer as of this moment (unix nanos) instead of now — returns what was true then, including facts since corrected. A chunk with its own valid_at/invalid_at must also contain the moment. search / related / query_chunks: return only chunks whose stated validity contains this moment (the chunk's own valid_at/invalid_at and, for a fact, its fact dates too); a chunk with no stated validity always matches. get_edges / backlinks / graph_snapshot (its edges): only statements whose own valid_at/invalid_at contain the moment (undated ones always match). extract_citations: read the parts in force then, and resolve each citation as of then (default: each citing part's own edition date)."},
 		"include_retired": {"type": "boolean", "description": "graph_recall / list_facts: also return facts that have been superseded, and on graph_recall chunks whose own valid_at/invalid_at put them out of force now. Off by default, so you get only what is currently true. get_edges / backlinks / list_statements: also return retired statements (list_statements: expired ones and ones whose invalid_at has passed)."},
@@ -580,6 +581,10 @@ type docInput struct {
 	// SummaryChars bounds the abstracts that adds (annotation_summary.go).
 	WithSummary  bool `json:"with_summary"`
 	SummaryChars int  `json:"summary_chars"`
+	// IncludeColorScheme asks get_document / documents_summary / graph_snapshot
+	// for each document's color_scheme; absent takes the surface's default
+	// (wantsColorScheme).
+	IncludeColorScheme *bool `json:"include_color_scheme"`
 	// Annotations is search's annotation leg: none (default), include, only;
 	// AnnotationLevels narrows it (document_annotation_search.go).
 	Annotations      string   `json:"annotations"`
@@ -2693,7 +2698,7 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		rootBody, _ := d.readBody(ctx, mscope, key, rootID)
 		enabled, scheme := docColorMeta(rootBody)
 		resp["color_enabled"] = enabled
-		if len(scheme) > 0 {
+		if len(scheme) > 0 && wantsColorScheme(ctx, in) {
 			resp["color_scheme"] = scheme
 		}
 		// Where an imported document came from: its root's provenance field.
@@ -2739,6 +2744,31 @@ func (d *Document) getDocument(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 	}
 	return jsonResult(resp)
+}
+
+// documentColorSchemesKey marks a ctx whose caller renders documents; see
+// WithDocumentColorSchemes.
+type documentColorSchemesKey struct{}
+
+// WithDocumentColorSchemes makes color_scheme part of the Document read ops'
+// default answer under ctx. The off-run HTTP (POST /v1/_document) and gRPC
+// surfaces set it: the Web UI explorer, the 3D universe and the published
+// @loomcycle/explorer read the palette there and send no flag. In-run and MCP
+// calls leave it unset, because the palette is about 4 KB of hex colours per
+// document that a model has no use for: measured as most of a kb/survey
+// screening round's tool-result input (2026-11-16).
+func WithDocumentColorSchemes(ctx context.Context) context.Context {
+	return context.WithValue(ctx, documentColorSchemesKey{}, true)
+}
+
+// wantsColorScheme reports whether a read op returns color_scheme: the caller's
+// include_color_scheme when it sent one, else the surface default.
+func wantsColorScheme(ctx context.Context, in docInput) bool {
+	if in.IncludeColorScheme != nil {
+		return *in.IncludeColorScheme
+	}
+	on, _ := ctx.Value(documentColorSchemesKey{}).(bool)
+	return on
 }
 
 // docColorMeta extracts the RFC BN per-document color settings from a root
@@ -2893,6 +2923,7 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 			rootRows[row.ID] = row
 		}
 	}
+	withScheme := wantsColorScheme(ctx, in)
 	out := make([]map[string]any, 0, len(uniq))
 	for _, id := range uniq {
 		dm, ok := docs[id]
@@ -2924,7 +2955,7 @@ func (d *Document) documentsSummary(ctx context.Context, key sqlmem.ScopeKey, ms
 			rootBody, _ := d.readBody(ctx, mscope, key, dm.root)
 			enabled, scheme := docColorMeta(rootBody)
 			entry["color_enabled"] = enabled
-			if len(scheme) > 0 {
+			if len(scheme) > 0 && withScheme {
 				entry["color_scheme"] = scheme
 			}
 		}

@@ -1277,8 +1277,9 @@ func TestDocument_ColorMetadataAndSummary(t *testing.T) {
 		t.Fatalf("update root2: %q", res.Text)
 	}
 
-	// get_document surfaces the root's type/status + color settings.
-	out, res = docExec(t, d, ctx, `{"op":"get_document","scope":"agent","id":"`+doc1+`"}`)
+	// get_document surfaces the root's type/status + color settings (the
+	// palette on the app surface only; document_color_scheme_test.go).
+	out, res = docExec(t, d, WithDocumentColorSchemes(ctx), `{"op":"get_document","scope":"agent","id":"`+doc1+`"}`)
 	if res.IsError {
 		t.Fatalf("get_document: %q", res.Text)
 	}
