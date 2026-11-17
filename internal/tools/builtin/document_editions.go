@@ -762,6 +762,7 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 
 	// Match the edition to the held parts, in passes, before anything is written:
 	//
+	//  0. a part naming a held part's id: that part (below);
 	//  1. same anchor, same body: unchanged;
 	//  2. a held part's body under another anchor: a move — the text keeps its part,
 	//     so inserting an article and renumbering the rest is a run of moves, never a
@@ -795,7 +796,35 @@ func (d *Document) reimportMD(ctx context.Context, key sqlmem.ScopeKey, mscope s
 		matched[h.id] = true
 		steps[i] = step{act: act, held: h}
 	}
+	// 0. A part that names a held part of this document by id (a rendered
+	// file's embedded record, RFC GR P4b, D22) is that part, wherever it
+	// now sits and whatever its heading now says: unchanged when its text
+	// and anchor are, moved when only its place changed, superseded when
+	// its text did. An id of anything else — another document's chunk, a
+	// part already closed — matches nothing and the passes below decide.
+	heldByID := make(map[string]*editionPart, len(held))
+	for i := range held {
+		heldByID[held[i].id] = &held[i]
+	}
 	for i, p := range parts {
+		h := heldByID[p.c.oldID]
+		if p.c.oldID == "" || h == nil || matched[h.id] {
+			continue
+		}
+		sameBody := strings.TrimSpace(h.body) == strings.TrimSpace(p.c.body)
+		switch {
+		case sameBody && h.anchor == p.anchor:
+			take(i, actUnchanged, h)
+		case sameBody:
+			take(i, actMove, h)
+		default:
+			take(i, actSupersede, h)
+		}
+	}
+	for i, p := range parts {
+		if steps[i].held != nil {
+			continue
+		}
 		for _, h := range byAnchor[p.anchor] {
 			if !matched[h.id] && strings.TrimSpace(h.body) == strings.TrimSpace(p.c.body) {
 				take(i, actUnchanged, h)
