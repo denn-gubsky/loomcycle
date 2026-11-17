@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"os"
@@ -440,5 +441,43 @@ func TestFileImport_CellBreakSurvivesExtractImportRender(t *testing.T) {
 	page := string(b)
 	if !strings.Contains(page, "No test plan<br>\nFew runs") || !strings.Contains(page, "&lt;b&gt;x&lt;/b&gt;") {
 		t.Errorf("the cell lost its break, or its markup came alive:\n%s", page)
+	}
+}
+
+// ODT reads back through loomcycle's own extractor; an EPUB lands in the
+// inbox as an e-book (RFC GR P4a).
+func TestFileRender_ODTAndEPUBReachTheInbox(t *testing.T) {
+	f, ctx, d, _ := fileDocRun(t)
+	docID, _ := renderFixtureDoc(t, d, ctx)
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": "odt"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if !strings.HasSuffix(asStr(out["ref"]), ".odt") || asStr(out["media_type"]) != "application/vnd.oasis.opendocument.text" {
+		t.Fatalf("odt result = %v", out)
+	}
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": out["ref"]})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	text := asStr(ex["excerpt"])
+	for _, want := range []string{"# Протокол", "## Порядок денний", "Перше питання", "## Рішення"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the extracted ODT lacks %q:\n%s", want, text)
+		}
+	}
+	if refs, _ := ex["image_refs"].([]any); len(refs) != 1 {
+		t.Errorf("image_refs = %v", ex["image_refs"])
+	}
+	out, res = fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": "epub"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if !strings.HasSuffix(asStr(out["ref"]), ".epub") || asStr(out["media_type"]) != "application/epub+zip" {
+		t.Fatalf("epub result = %v", out)
+	}
+	b, err := os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(out["ref"])))
+	if err != nil || !bytes.HasPrefix(b[30:], []byte("mimetypeapplication/epub+zip")) {
+		t.Fatalf("the EPUB does not start with its mimetype (%v)", err)
 	}
 }

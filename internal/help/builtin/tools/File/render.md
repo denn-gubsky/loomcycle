@@ -33,9 +33,11 @@ again (with `to`, copied there).
 - `format` — `pdf` (typeset pages: page numbers, a table of contents with
   page numbers when `toc` is set, internal links, pictures; at most 2000
   pages), `docx` (a Word document: headings in Word's own heading styles,
-  lists, tables, pictures, links, and the status in its properties), `html`
-  (one self-contained page, pictures inside it) or `md` (clean Markdown, its
-  pictures as files in a folder beside it).
+  lists, tables, pictures, links, and the status in its properties), `odt`
+  (an OpenDocument text file, the same content in LibreOffice's own styles),
+  `epub` (an e-book: a page per top-level section, a contents list, pictures
+  inside it), `html` (one self-contained page, pictures inside it) or `md`
+  (clean Markdown, its pictures as files in a folder beside it).
 - `to` — a file in one of your read-write volumes. Its folder must exist.
   Default: `volume:inbox:rendered/<title>.<format>`.
 - `overwrite` — replace a file already at `to`. Default false.

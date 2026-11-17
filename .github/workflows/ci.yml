@@ -240,12 +240,13 @@ jobs:
           if-no-files-found: ignore
 
   render-office:
-    # A rendered Word file must open in an office suite, not only in our own
-    # extractor (RFC GR P1), and a PDF must typeset (P2). LibreOffice is
-    # installed here only to check that; it is never shipped. The tests skip
-    # where soffice or typst is missing, so this job sets
-    # LOOMCYCLE_REQUIRE_SOFFICE and LOOMCYCLE_REQUIRE_TYPST to make a missing
-    # one a failure.
+    # A rendered Word or ODT file must open in an office suite, not only in
+    # our own extractor (RFC GR P1, P4a), a PDF must typeset (P2) and an EPUB
+    # must pass epubcheck (P4a). LibreOffice and epubcheck are installed here
+    # only to check that; they are never shipped. The tests skip where a tool
+    # is missing, so this job sets LOOMCYCLE_REQUIRE_SOFFICE,
+    # LOOMCYCLE_REQUIRE_TYPST and LOOMCYCLE_REQUIRE_EPUBCHECK to make a
+    # missing one a failure.
     name: Rendered files open in LibreOffice
     needs: changes
     if: needs.changes.outputs.go == 'true'
@@ -259,15 +260,16 @@ jobs:
           check-latest: true
           cache: true
 
-      - name: Install LibreOffice Writer
+      - name: Install LibreOffice Writer and epubcheck
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui
+          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui epubcheck
 
       - name: Open the rendered files
         env:
           LOOMCYCLE_REQUIRE_SOFFICE: "1"
-        run: go test -count=1 -run '^TestDOCX_OpensInLibreOffice$' -v ./internal/files/render/
+          LOOMCYCLE_REQUIRE_EPUBCHECK: "1"
+        run: go test -count=1 -run '^(TestDOCX_OpensInLibreOffice|TestODT_OpensInLibreOffice|TestEPUB_PassesEpubcheck)$' -v ./internal/files/render/
 
       # A PDF render is typeset by Typst (RFC GR P2): the release the worker
       # image pins, checked against GitHub's sha256 for it. The PDF tests

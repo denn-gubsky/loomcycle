@@ -4944,7 +4944,7 @@ export interface DocumentFindDuplicatesResult {
 
 /** A file format {@link LoomcycleClient.exportDocument} renders a document
  *  into (RFC GR). */
-export type DocumentExportFormat = "pdf" | "docx" | "html" | "md";
+export type DocumentExportFormat = "pdf" | "docx" | "odt" | "epub" | "html" | "md";
 
 /** Options of {@link LoomcycleClient.exportDocument}. Unset options are left
  *  to the server's defaults. */

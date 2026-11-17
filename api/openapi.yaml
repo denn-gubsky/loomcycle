@@ -450,7 +450,7 @@ paths:
         - name: format
           in: query
           required: true
-          schema: { type: string, enum: [pdf, docx, html, md] }
+          schema: { type: string, enum: [pdf, docx, odt, epub, html, md] }
         - name: scope
           in: query
           required: false
@@ -496,6 +496,8 @@ paths:
           content:
             application/pdf: { schema: { type: string, format: binary } }
             application/vnd.openxmlformats-officedocument.wordprocessingml.document: { schema: { type: string, format: binary } }
+            application/vnd.oasis.opendocument.text: { schema: { type: string, format: binary } }
+            application/epub+zip: { schema: { type: string, format: binary } }
             text/html: { schema: { type: string, format: binary } }
             text/markdown: { schema: { type: string, format: binary } }
             application/zip: { schema: { type: string, format: binary } }
