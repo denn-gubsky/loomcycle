@@ -6,14 +6,15 @@
 #   LOOMCYCLE_PRESETS=base,agent-teams,team-examples
 #
 # It provides:
-#   - handler agents for two domains (they CAN be static config; TeamDefs cannot):
+#   - handler agents for two domains:
 #       software: sdlc/architect, sdlc/coder, sdlc/reviewer
 #       marketing: marketing/writer, marketing/editor
-#   - a `team/examples` skill carrying the ready-to-create TeamDef JSON for an
-#     `sdlc` team (software workspace: repo volume + PR) and a `marketing` team
-#     (Documents-only), so the orchestrator/assistant can `TeamDef op=create` them
-#     and drive them. (TeamDefs are runtime-only — RFC AP has no static team layer
-#     — so a starter team ships as JSON a skill instantiates, not as config.)
+#   - two TEAMS, under `teams:` (RFC GS): `sdlc` (software workspace: repo volume +
+#     PR) and `marketing` (Documents-only). The boot writes them into the store's
+#     shared tier, so every tenant can run them by name, and fork them into its own
+#     tenant to change them. Their handler agents are global for the same reason
+#     (RFC GS D9). To change a team here, overlay its `teams:` key in your config.
+#   - a `team/examples` skill: how to drive and fork the two teams.
 #
 # Two domains on purpose: the SDLC team exercises the software workspace (ephemeral
 # volume + git/gh via Bashbox — see the agent-teams `team/repo` skill + its
@@ -94,66 +95,69 @@ agents:
       return "approve", or return "pushback: <specific edits>" for the writer. Be
       concrete. The Document is the deliverable — no repo, no PR.
 
+teams:
+  # Flow: architect designs → coder implements in `work` → reviewer approves (→ pr)
+  # or pushes back to the coder. Needs the team/repo software prerequisites.
+  sdlc:
+    description: A software team — architect, coder, reviewer — working in a repo volume, ending in a PR.
+    entry: architecture
+    max_iterations: 5
+    states:
+      - {state: architecture, handler: {kind: agent, agent: sdlc/architect}}
+      - {state: implementation, handler: {kind: agent, agent: sdlc/coder}}
+      - {state: review, handler: {kind: agent, agent: sdlc/reviewer}}
+      - {state: pr, handler: {kind: terminal}}
+    transitions:
+      - {from: architecture, to: implementation, on: success}
+      - {from: implementation, to: review, on: success}
+      - {from: review, to: pr, on: success}
+      - {from: review, to: implementation, on: "pushback:code-fix"}
+
+  # Flow: writer drafts into the Document → editor polishes (→ published) or
+  # pushes back to the writer. No volume, no repo, no PR.
+  marketing:
+    description: A Documents-only marketing team — a writer drafts into the board, an editor polishes it.
+    entry: draft
+    max_iterations: 4
+    states:
+      - {state: draft, handler: {kind: agent, agent: marketing/writer}}
+      - {state: edit, handler: {kind: agent, agent: marketing/editor}}
+      - {state: published, handler: {kind: terminal}}
+    transitions:
+      - {from: draft, to: edit, on: success}
+      - {from: edit, to: published, on: success}
+      - {from: edit, to: draft, on: "pushback:revise"}
+
 skills:
   team/examples:
-    description: Ready-to-create starter TeamDefs (an SDLC software team + a marketing Documents-only team) the orchestrator can instantiate and drive.
+    description: How to drive and fork the two starter teams (sdlc, marketing) this bundle configures.
     tools: [TeamDef, Document]
     body: |
       # Starter teams
 
-      Two ready-to-run example teams. To use one: `TeamDef op=create name="<name>"
-      overlay=<the JSON below>` (it validates on write), then drive it per the
-      team/orchestrate skill. Both reference handler agents shipped by the
-      team-examples bundle — confirm they exist with `AgentDef op=list` first.
+      Two teams come from the server's configuration (the team-examples bundle):
+      `sdlc` and `marketing`. They already exist — do NOT `TeamDef op=create` them.
+      `TeamDef op=list name="<team>"` shows the version; it is marked
+      `source: "config"`. `TeamDef op=render_diagram name="<team>"` draws it.
+      Run one with `TeamDef op=run name="<team>"`, or drive it per the
+      team/orchestrate skill.
 
       ## `sdlc` — a software team (repo workspace + PR)
-      Needs the software prerequisites from the `team/repo` skill (Bashbox + git/gh +
-      a dynamic_root volume + GITHUB_TOKEN). Set up the `work` volume + clone per
-      team/repo BEFORE driving, and open the PR at the terminal state.
-      ```json
-      {
-        "entry": "architecture",
-        "max_iterations": 5,
-        "states": [
-          {"state": "architecture",   "handler": {"kind": "agent", "agent": "sdlc/architect"}},
-          {"state": "implementation", "handler": {"kind": "agent", "agent": "sdlc/coder"}},
-          {"state": "review",         "handler": {"kind": "agent", "agent": "sdlc/reviewer"}},
-          {"state": "pr",             "handler": {"kind": "terminal"}}
-        ],
-        "transitions": [
-          {"from": "architecture",   "to": "implementation", "on": "success"},
-          {"from": "implementation", "to": "review",         "on": "success"},
-          {"from": "review",         "to": "pr",             "on": "success"},
-          {"from": "review",         "to": "implementation", "on": "pushback:code-fix"}
-        ]
-      }
-      ```
-      Flow: architect designs → coder implements in `work` → reviewer approves
-      (→ PR) or pushes back to the coder → at `pr` you `gh pr create` (team/repo).
+      architecture (sdlc/architect) → implementation (sdlc/coder) → review
+      (sdlc/reviewer) → pr; a review pushback (`pushback:code-fix`) loops back to
+      implementation. Needs the software prerequisites from the `team/repo` skill
+      (Bashbox + git/gh + a dynamic_root volume + GITHUB_TOKEN). Set up the `work`
+      volume + clone per team/repo BEFORE driving, and open the PR at `pr`.
 
       ## `marketing` — a Documents-only team (no repo, no PR)
-      No volume, no git — the Document task board is the deliverable. Create a board
-      (Document op=create_document), seed a chunk at `draft`, and drive.
-      ```json
-      {
-        "entry": "draft",
-        "max_iterations": 4,
-        "states": [
-          {"state": "draft",     "handler": {"kind": "agent", "agent": "marketing/writer"}},
-          {"state": "edit",      "handler": {"kind": "agent", "agent": "marketing/editor"}},
-          {"state": "published", "handler": {"kind": "terminal"}}
-        ],
-        "transitions": [
-          {"from": "draft", "to": "edit",      "on": "success"},
-          {"from": "edit",  "to": "published", "on": "success"},
-          {"from": "edit",  "to": "draft",     "on": "pushback:revise"}
-        ]
-      }
-      ```
-      Flow: writer drafts into the Document → editor polishes (→ published) or pushes
-      back to the writer. The finished copy lives in the Document chunk.
+      draft (marketing/writer) → edit (marketing/editor) → published; an editor
+      pushback (`pushback:revise`) loops back to draft. Create a board
+      (Document op=create_document), seed a chunk at `draft`, and drive. The
+      finished copy lives in the Document chunk.
 
-      ## Note
-      These are STARTERS — fork + edit them (`TeamDef op=fork`) or build your own with
-      team/assistant. The handler agents are likewise examples: retarget their tiers
-      or swap prompts via an overlay.
+      ## Changing them
+      The configuration owns these teams in the shared tenant: an edit of them
+      there is refused. To change one for your tenant, `TeamDef op=fork
+      name="<team>" overlay={...}` — the fork is your tenant's, and runs in place
+      of the configured one for it. An operator changes the shared one in the
+      configuration (`teams.<name>`). Build a new team with team/assistant.

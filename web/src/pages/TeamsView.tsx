@@ -43,15 +43,18 @@ const StructuredEditor = lazy(() => import("@loomcycle/code-editor").then((m) =>
 // persist), then "Save new version" to fork+promote it. Create shows the editor
 // with an EMPTY diagram (no stale one) until the first refresh.
 
-// Starter templates — mirror the `team/examples` skill in the team-examples
-// bundle. Their handler agents (sdlc/*, marketing/*) ship in that bundle, so a
-// created team only RUNS if team-examples is selected; create validates the
-// graph shape only, not agent existence.
+// Starter templates — the two teams the team-examples bundle configures
+// (`teams:`, RFC GS). That bundle already provides them as `sdlc` and
+// `marketing` in the shared tenant, where creating either name again is
+// refused, so a template suggests a name of its own. Their handler agents
+// (sdlc/*, marketing/*) ship in that bundle, so a created team only RUNS if
+// team-examples is selected; create validates the graph shape only, not agent
+// existence.
 const TEAM_TEMPLATES: { key: string; label: string; name: string; overlay: unknown }[] = [
   {
     key: "sdlc",
     label: "SDLC (software: architect → code → review → PR)",
-    name: "sdlc",
+    name: "my-sdlc",
     overlay: {
       entry: "architecture",
       max_iterations: 5,
@@ -72,7 +75,7 @@ const TEAM_TEMPLATES: { key: string; label: string; name: string; overlay: unkno
   {
     key: "marketing",
     label: "Marketing (docs: draft → edit → publish)",
-    name: "marketing",
+    name: "my-marketing",
     overlay: {
       entry: "draft",
       max_iterations: 4,

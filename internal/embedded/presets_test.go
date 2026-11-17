@@ -223,10 +223,11 @@ func TestBundle_TeamAndChatToolGrants(t *testing.T) {
 	}
 }
 
-// TestBundle_TeamExamplesHasStarters guards the RFC BD Phase 2 starter content:
-// the team-examples bundle must ship the SDLC + marketing handler agents and the
-// team/examples skill (the ready-to-create TeamDefs). Without these the
-// orchestrator has nothing to drive out of the box.
+// TestBundle_TeamExamplesHasStarters guards the RFC BD starter content: the
+// team-examples bundle ships the SDLC + marketing handler agents, the two
+// teams themselves as configuration (RFC GS), and the team/examples skill that
+// says how to drive them. Without these the orchestrator has nothing to drive
+// out of the box.
 func TestBundle_TeamExamplesHasStarters(t *testing.T) {
 	data, err := Show("team-examples")
 	if err != nil {
@@ -235,6 +236,9 @@ func TestBundle_TeamExamplesHasStarters(t *testing.T) {
 	var tree struct {
 		Agents map[string]any `yaml:"agents"`
 		Skills map[string]any `yaml:"skills"`
+		Teams  map[string]struct {
+			Entry string `yaml:"entry"`
+		} `yaml:"teams"`
 	}
 	if err := yaml.Unmarshal(data, &tree); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -247,11 +251,9 @@ func TestBundle_TeamExamplesHasStarters(t *testing.T) {
 	if _, ok := tree.Skills["team/examples"]; !ok {
 		t.Errorf("team-examples missing the team/examples skill")
 	}
-	// The skill must carry both starter TeamDefs so they're actually creatable.
-	body, _ := Show("team-examples")
-	for _, marker := range []string{"sdlc/architect", "marketing/writer", `"entry": "architecture"`, `"entry": "draft"`} {
-		if !strings.Contains(string(body), marker) {
-			t.Errorf("team/examples skill missing starter marker %q", marker)
+	for team, entry := range map[string]string{"sdlc": "architecture", "marketing": "draft"} {
+		if got := tree.Teams[team].Entry; got != entry {
+			t.Errorf("team-examples team %q: entry %q, want %q", team, got, entry)
 		}
 	}
 }
