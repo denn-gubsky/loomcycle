@@ -350,3 +350,33 @@ func TestNodeAnnotation_LeaseLostInTheOntologyPassStopsTheRun(t *testing.T) {
 		})
 	}
 }
+
+// TestKBAnnotator_SweepReportCountsNodesItsDocumentRewritesMakeStale — a document
+// a sweep would rewrite is an exemplar of its node (a thin node's every member):
+// the report counts that node, and the nodes above it, as the annotate sweep then
+// rewrites them, the way a folder is counted when a document under it would be.
+func TestKBAnnotator_SweepReportCountsNodesItsDocumentRewritesMakeStale(t *testing.T) {
+	f := newAnnNodesFixture(t)
+	// The fake's text names a hash of its request, so a rewritten document's text,
+	// and so its nodes' inputs, really change.
+	fake := &annFake{reply: annReplyFromTitle}
+	if rep := runAnnotator(t, f.d, f.driver, fake, `{"mode":"sweep","write":"annotate"}`); rep["status"] != "complete" {
+		t.Fatalf("first sweep = %v", rep)
+	}
+	if rep := runAnnotator(t, f.d, f.driver, fake, `{"mode":"sweep"}`); annCount(rep, "would_write") != 0 {
+		t.Fatalf("a second report finds work: %v", rep)
+	}
+	realDoc(t, f.d, f.op, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"title":"Storage","body":"Keep the widget dry and away from heat while it is stored."}`, f.safe))
+	nodeStale := func(rep map[string]any) string {
+		s, _ := rep["stale"].(map[string]any)
+		return fmt.Sprintf("scheme %v concept %v class %v", s["scheme"], s["concept"], s["class"])
+	}
+	report := runAnnotator(t, f.d, f.driver, fake, `{"mode":"sweep"}`)
+	annotate := runAnnotator(t, f.d, f.driver, fake, `{"mode":"sweep","write":"annotate"}`)
+	if !strings.HasPrefix(nodeStale(annotate), "scheme 1 concept 1 ") {
+		t.Fatalf("the annotate sweep rewrote %s, want Safety and the scheme above it (and the classes of the document)", nodeStale(annotate))
+	}
+	if nodeStale(report) != nodeStale(annotate) {
+		t.Fatalf("the report counts %s stale nodes, the annotate sweep then rewrote %s", nodeStale(report), nodeStale(annotate))
+	}
+}

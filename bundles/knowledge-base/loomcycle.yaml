@@ -5011,6 +5011,9 @@ agents:
           // Report mode writes nothing, so a folder whose child would be rewritten
           // still reads current: dirty carries the would-be rewrite up instead.
           dirty: {},
+          // Likewise a node one of whose exemplars would be rewritten: the
+          // documents a report pass would rewrite, by id.
+          rewritten: {},
           calls: { made: 0, estimated_chars: 0 }, writes: 0, would_call: 0, would_write: 0,
           model_failures: 0, failures_in_a_row: 0, parse_errors: 0, wrong_language: 0,
           skipped: {}, refusals: {}, documents: [], documents_count: 0, skipped_documents: [],
@@ -5258,6 +5261,7 @@ agents:
         if (wrote && typeof root.path === "string" && root.path !== "") {
           st.dirty[dirname(root.path)] = true;
         }
+        if (wrote && st.opts.write === "report") { st.rewritten[doc.document_id] = true; }
       }
 
       // annotate writes the annotation of one part after its parts', and says whether
@@ -5530,7 +5534,8 @@ agents:
             O.missing.push({ level: ref.level, name: clip(name, 120), chunk_id: cur.chunk_id });
           }
         }
-        var stale = cur.stale === true || (st.opts.write === "report" && st.dirty[key] === true) ||
+        var stale = cur.stale === true ||
+          (st.opts.write === "report" && (st.dirty[key] === true || exemplarRewritten(st, cur))) ||
           (isPlainObject(cur.record) && cur.record.prompt_version !== promptVersion(ref.level));
         if (!stale && !(st.opts.force && st.opts.mode === "ontology")) { bump(st.skipped, "current"); return; }
         if (isPlainObject(cur.record) && cur.record.manual === true) { bump(st.skipped, "manual"); return; }
@@ -5545,6 +5550,17 @@ agents:
           if (cur.basis === "declared") { O.declared++; } else if (cur.basis === "thin") { O.thin++; } else { O.written++; }
           if (parent !== "") { st.dirty[parent] = true; }
         }
+      }
+
+      // exemplarRewritten says whether a document this report pass would rewrite is
+      // one of the node's exemplars: their stored text is in the node's inputs, so
+      // the annotate pass finds the node stale once it has rewritten them.
+      function exemplarRewritten(st, cur) {
+        var ex = isArray(cur.exemplars) ? cur.exemplars : [];
+        for (var i = 0; i < ex.length; i++) {
+          if (isPlainObject(ex[i]) && st.rewritten[ex[i].document_id] === true) { return true; }
+        }
+        return false;
       }
 
       // writeDeclared writes the text the runtime composed for a node with no
