@@ -135,6 +135,11 @@ type ontologyResponse struct {
 	SchemeMirrorStale []string `json:"scheme_mirror_stale,omitempty"`
 	// SchemeMirror reports what the mirror changed, on the confirm that ran it.
 	SchemeMirror *builtin.SchemeMirrorReport `json:"scheme_mirror,omitempty"`
+	// SchemeFocusStale lists the `focus` statements confirming would write or retire
+	// (RFC GM): a concept's @focus added, changed or removed since the last confirm.
+	SchemeFocusStale []string `json:"scheme_focus_stale,omitempty"`
+	// SchemeFocus reports what the focus mirror did, on the confirm that ran it.
+	SchemeFocus *builtin.SchemeFocusReport `json:"scheme_focus,omitempty"`
 
 	// --- RFC FO P1c-2. Filled only when the document declares an Instances section.
 
@@ -267,6 +272,7 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 	var mirror *builtin.SchemeMirrorReport
 	var mirrorNote string
 	var adoption *builtin.InstanceReport
+	var focus *builtin.SchemeFocusReport
 	if status == meminject.OntologyConfirmedStatus {
 		if rep, merr := doc.MirrorSchemeTags(dctx, false); merr != nil {
 			slog.Warn("ontology: scheme tag mirror failed", "tenant", tenant, "err", merr)
@@ -282,6 +288,13 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 		} else if len(rep.Instances) > 0 || len(rep.Orphaned) > 0 {
 			adoption = &rep
 		}
+		// After adoption: a @focus on an instance points at its adopted subject.
+		if rep, ferr := doc.MirrorSchemeFocus(dctx, false); ferr != nil {
+			slog.Warn("ontology: scheme focus mirror failed", "tenant", tenant, "err", ferr)
+			mirrorNote = strings.TrimSpace(mirrorNote + " The concepts' focus statements could not be written this time; confirm again to retry.")
+		} else if rep.Concepts > 0 || rep.Retired > 0 {
+			focus = &rep
+		}
 	}
 
 	// Re-read rather than synthesizing the new state: the response then shows the
@@ -293,6 +306,7 @@ func (s *Server) handleOntologySetStatus(w http.ResponseWriter, r *http.Request)
 	}
 	resp.SchemeMirror = mirror
 	resp.InstanceAdoption = adoption
+	resp.SchemeFocus = focus
 	if mirrorNote != "" {
 		resp.Notes = append(resp.Notes, mirrorNote)
 	}
@@ -337,6 +351,9 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 			resp.Schemes = read.Schemes
 			if dry, derr := doc.MirrorSchemeTags(dctx, true); derr == nil {
 				resp.SchemeMirrorStale = dry.Stale
+			}
+			if dry, derr := doc.MirrorSchemeFocus(dctx, true); derr == nil {
+				resp.SchemeFocusStale = dry.Stale
 			}
 		}
 		// Document-level advisories (a duplicate or unknown section) join the reader

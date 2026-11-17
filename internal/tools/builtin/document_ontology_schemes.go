@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -97,6 +98,243 @@ func (d *Document) MirrorSchemeTags(ctx context.Context, dryRun bool) (SchemeMir
 		}
 	}
 	return rep, nil
+}
+
+// focusEdgeKind is the statement a concept's @focus becomes (RFC GM D15). Seeded in the
+// relation vocabulary, so it is in force wherever a Relations section is.
+const focusEdgeKind = "focus"
+
+// SchemeFocusReport says what the focus mirror changed (or, dry run, would change).
+type SchemeFocusReport struct {
+	// Concepts is how many concepts declare a @focus.
+	Concepts int `json:"concepts"`
+	// Stale lists each change as "<concept tag> -> <target>", with "(retire)" for a
+	// statement whose @focus was removed or changed.
+	Stale   []string `json:"stale,omitempty"`
+	Written int      `json:"written"`
+	Retired int      `json:"retired"`
+	// Errors name a @focus that could not be written this time; its concept's existing
+	// statements are kept until it can.
+	Errors []string `json:"errors,omitempty"`
+}
+
+// MirrorSchemeFocus writes each concept's @focus as a `focus` statement, method
+// ontology, from the concept's chunk to its target, and retires (expires — never
+// deletes) the ontology's focus statements no @focus declares any more. With dryRun
+// nothing is written and the report says what would change. Idempotent: a second run
+// changes nothing.
+//
+// THE TARGET. A class's target is its chunk in the ontology document, found as
+// instance_of finds it. An instance's target is the registry SUBJECT it was adopted as,
+// not its entry in the Instances section: instance_of and the instances' own relations
+// are written between the adopted subjects, and the subject is where the consolidator
+// files facts — so "documents about X" (the concept) and "facts about X" (the registry)
+// meet at one node. That is why this runs after AdoptInstances.
+//
+// What cannot be resolved NOW — a seed class with no chunk, an instance not adopted yet,
+// a store fault — is an error, and that concept's existing statements are kept: a
+// transient failure must not retire what the operator declared. A @focus that names
+// nothing at all is the reader's advisory, and retires what the concept had.
+func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFocusReport, error) {
+	var rep SchemeFocusReport
+	key, mscope, err := d.ontologyTenantKey(ctx)
+	if err != nil {
+		return rep, err
+	}
+	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
+	if err != nil {
+		return rep, err
+	}
+	if read.partial {
+		// A lost section body would read as every @focus removed.
+		return rep, fmt.Errorf("the ontology could not be read completely; try again")
+	}
+	classes := memrank.EffectiveClasses(read.Terms, true)
+	declared := map[string]string{}
+	for _, c := range classes {
+		declared[strings.ToLower(c.Name)] = c.Name
+	}
+
+	type pair struct{ from, to string }
+	want := map[pair]string{}    // → "<tag> -> <target>"
+	held := map[string]bool{}    // concept chunks whose statements are kept as they are
+	tagOf := map[string]string{} // concept chunk → tag, to name what is retired
+	for _, s := range read.Schemes {
+		for _, c := range s.Concepts {
+			tagOf[c.ChunkID] = c.Tag
+			if c.Focus == "" {
+				continue
+			}
+			rep.Concepts++
+			target, ok, _ := memrank.ResolveFocus(c.Focus, classes, read.Instances)
+			if !ok {
+				continue
+			}
+			to, why, err := d.focusTargetChunk(ctx, key, mscope, read, target, declared)
+			if err != nil {
+				return rep, err
+			}
+			if to == "" {
+				held[c.ChunkID] = true
+				rep.Errors = append(rep.Errors, c.Tag+": @focus "+c.Focus+": "+why)
+				continue
+			}
+			want[pair{c.ChunkID, to}] = c.Tag + " -> " + target.Name
+		}
+	}
+
+	res, err := d.query(ctx, key, `SELECT id, from_id, to_id, coalesce(expired_at, 0) FROM chunk_edges
+		WHERE kind = ? AND method = ?`, focusEdgeKind, edgeMethodOntology)
+	if err != nil {
+		return rep, err
+	}
+	type edge struct {
+		id   string
+		live bool
+	}
+	have := map[pair]edge{}
+	for _, row := range res.Rows {
+		if len(row) < 4 {
+			continue
+		}
+		have[pair{asStr(row[1]), asStr(row[2])}] = edge{id: asStr(row[0]), live: asInt64Val(row[3]) == 0}
+	}
+
+	pairs := make([]pair, 0, len(want))
+	for p := range want {
+		pairs = append(pairs, p)
+	}
+	sort.Slice(pairs, func(i, j int) bool { return want[pairs[i]] < want[pairs[j]] })
+	for _, p := range pairs {
+		e, exists := have[p]
+		if exists && e.live {
+			continue
+		}
+		rep.Stale = append(rep.Stale, want[p])
+		if dryRun {
+			rep.Written++
+			continue
+		}
+		if exists {
+			// Re-declared after it was retired: the same statement comes back rather than
+			// a second one beside it (its key would collide anyway).
+			if err := d.exec(ctx, key, `UPDATE chunk_edges SET expired_at = NULL
+				WHERE id = ? AND method = ? AND expired_at IS NOT NULL`, e.id, edgeMethodOntology); err != nil {
+				rep.Errors = append(rep.Errors, want[p]+": "+err.Error())
+				continue
+			}
+			rep.Written++
+			continue
+		}
+		r, err := d.linkChunks(ctx, key, mscope, docInput{Scope: "tenant", FromID: p.from, ToID: p.to,
+			Kind: focusEdgeKind, edgeMethod: edgeMethodOntology})
+		switch {
+		case err != nil:
+			rep.Errors = append(rep.Errors, want[p]+": "+err.Error())
+		case r.IsError:
+			rep.Errors = append(rep.Errors, want[p]+": "+r.Text)
+		default:
+			rep.Written++
+		}
+	}
+
+	var retire []pair
+	for p, e := range have {
+		if _, keep := want[p]; keep || !e.live || held[p.from] {
+			continue
+		}
+		retire = append(retire, p)
+	}
+	sort.Slice(retire, func(i, j int) bool {
+		return retire[i].from+retire[i].to < retire[j].from+retire[j].to
+	})
+	now := time.Now().UnixNano()
+	for _, p := range retire {
+		from := tagOf[p.from]
+		if from == "" {
+			from = p.from // the concept itself is gone from the ontology
+		}
+		rep.Stale = append(rep.Stale, from+" -> "+p.to+" (retire)")
+		if !dryRun {
+			if err := d.exec(ctx, key, `UPDATE chunk_edges SET expired_at = ?
+				WHERE id = ? AND method = ? AND expired_at IS NULL`, now, have[p].id, edgeMethodOntology); err != nil {
+				rep.Errors = append(rep.Errors, p.from+" -> "+p.to+": "+err.Error())
+				continue
+			}
+		}
+		rep.Retired++
+	}
+	return rep, nil
+}
+
+// focusTargetChunk is the chunk a resolved @focus points at, or "" with the reason it
+// has none yet. err is a store fault only.
+func (d *Document) focusTargetChunk(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, read OntologyRead,
+	t memrank.FocusTarget, declared map[string]string) (string, string, error) {
+	if t.Kind == memrank.FocusClass {
+		id, err := d.classChunkID(ctx, key, read, t.Name)
+		if err != nil || id != "" {
+			return id, "", err
+		}
+		return "", "the class has no entry in the ontology document (a standard class); declare it to focus on it", nil
+	}
+	class, ok := declared[strings.ToLower(t.Class)]
+	if !ok {
+		return "", "the instance has no declared class, so it is not adopted", nil
+	}
+	for _, inst := range read.Instances {
+		if inst.Name != t.Name {
+			continue
+		}
+		nk, _ := d.instanceKey(ctx, key, mscope, inst, class, func(nk string) (string, error) {
+			return d.chunkIDByNaturalKey(ctx, key, nk)
+		})
+		root, err := d.chunkIDByNaturalKey(ctx, key, nk)
+		if err != nil {
+			return "", "", err
+		}
+		if root == "" {
+			return "", "the instance is not adopted yet; confirm again once it is", nil
+		}
+		return root, "", nil
+	}
+	return "", "the instance is not declared", nil
+}
+
+// classChunkID is the in-force chunk of the ontology document that declares the class,
+// "" when none does.
+//
+// Matched by title, as instance_of's class lookup (chunkIDForEntity) matches — but a
+// concept is often titled after the class it focuses on (the topic "provider" about the
+// class provider), and that lookup takes the first chunk of the title, which could be
+// the concept itself. So every chunk the read placed in another role — section, scheme,
+// concept, instance — is passed over.
+func (d *Document) classChunkID(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, name string) (string, error) {
+	notClass := map[string]bool{read.RootChunkID: true}
+	for _, id := range read.SectionChunks {
+		notClass[id] = true
+	}
+	for _, s := range read.Schemes {
+		notClass[s.ChunkID] = true
+		for _, c := range s.Concepts {
+			notClass[c.ChunkID] = true
+		}
+	}
+	for _, in := range read.Instances {
+		notClass[in.ChunkID] = true
+	}
+	res, err := d.query(ctx, key, `SELECT id, coalesce(status, '') FROM chunks
+		WHERE document_id = ? AND lower(coalesce(title, '')) = lower(?) ORDER BY id`, read.DocumentID, name)
+	if err != nil {
+		return "", err
+	}
+	for _, row := range res.Rows {
+		if len(row) < 2 || notClass[asStr(row[0])] || memrank.IsInertEntityStatus(asStr(row[1])) {
+			continue
+		}
+		return asStr(row[0]), nil
+	}
+	return "", nil
 }
 
 // proposeConcept files an inert concept into a scheme. The parent is a scheme name, a

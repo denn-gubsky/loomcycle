@@ -546,8 +546,17 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		Proposals: proposals, DocumentID: docID, RootChunkID: rootID,
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 		Relations: relations, SectionChunks: sectionChunks, partial: partial,
-		Schemes: schemes, Instances: instances, Review: review,
+		Schemes: checkedSchemes(schemes, out, instances), Instances: instances, Review: review,
 	}, nil
+}
+
+// checkedSchemes adds the scheme advisories only the whole document can give (RFC GM):
+// a scheme's @projects and a concept's @focus name classes and instances of other
+// sections. Checked against the classes the document WOULD put in force, so a draft is
+// checked as it reads.
+func checkedSchemes(schemes []memrank.OntologyScheme, terms []memrank.OntologyTerm, instances []memrank.OntologyInstance) []memrank.OntologyScheme {
+	memrank.CheckSchemeReferences(schemes, memrank.EffectiveClasses(terms, true), instances)
+	return schemes
 }
 
 // expandTypeFilter turns a type filter into the type plus every type that is a
