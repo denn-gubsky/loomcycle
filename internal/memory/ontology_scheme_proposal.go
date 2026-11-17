@@ -75,11 +75,15 @@ type ProposedSchemeView struct {
 	Outline  []OutlineNode `json:"outline,omitempty"`
 }
 
-// OutlineNode is one concept of a proposed scheme's outline: its name and its level
-// below the scheme (1 = top).
+// OutlineNode is one concept of a proposed scheme's outline: its name, its level below
+// the scheme (1 = top), and the directives accepting writes for it, so a reviewer sees
+// them before they are in force.
 type OutlineNode struct {
-	Name  string `json:"name"`
-	Level int    `json:"level"`
+	Name       string   `json:"name"`
+	Level      int      `json:"level"`
+	Notation   string   `json:"notation,omitempty"`
+	Alt        []string `json:"alt,omitempty"`
+	ExactMatch string   `json:"exact_match,omitempty"`
 }
 
 // Check normalises a proposal in place and reports what makes it unusable (err) and
@@ -234,7 +238,7 @@ func OutlineOf(cs []ProposedConcept) []OutlineNode {
 	var walk func(cs []ProposedConcept, level int)
 	walk = func(cs []ProposedConcept, level int) {
 		for _, c := range cs {
-			out = append(out, OutlineNode{Name: c.Name, Level: level})
+			out = append(out, OutlineNode{Name: c.Name, Level: level, Notation: c.Notation, Alt: c.Alt, ExactMatch: c.ExactMatch})
 			walk(c.Children, level+1)
 		}
 	}

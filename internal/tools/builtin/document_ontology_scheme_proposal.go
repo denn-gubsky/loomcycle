@@ -204,15 +204,27 @@ func (w *schemeWalker) proposedView(c ontologyChunk) *memrank.ProposedSchemeView
 	if !proposalMark(w.fieldsOf(c.id), schemeProposalField, &mark) {
 		return nil
 	}
-	v := &memrank.ProposedSchemeView{Header: mark.Header}
-	var walk func(id string, level int)
-	walk = func(id string, level int) {
+	// The same concepts AcceptSchemeProposal gathers (proposed, marked; an unmarked
+	// chunk and its subtree are left out), normalised by the same Check, so what the
+	// reviewer sees is what accepting writes — directives included.
+	var walk func(id string) []memrank.ProposedConcept
+	walk = func(id string) []memrank.ProposedConcept {
+		var out []memrank.ProposedConcept
 		for _, k := range w.kids[id] {
-			v.Outline = append(v.Outline, memrank.OutlineNode{Name: w.entityName(k), Level: level})
-			walk(k.id, level+1)
+			var m conceptProposalMark
+			if strings.ToLower(strings.TrimSpace(k.status)) != memrank.OntologyStatusProposed ||
+				!proposalMark(w.fieldsOf(k.id), conceptProposalField, &m) {
+				continue
+			}
+			out = append(out, memrank.ProposedConcept{Name: w.entityName(k), Notation: m.Notation, Alt: m.Alt,
+				ExactMatch: m.ExactMatch, Children: walk(k.id)})
 		}
+		return out
 	}
-	walk(c.id, 1)
+	p := memrank.SchemeProposal{Name: w.entityName(c), Header: mark.Header, Concepts: walk(c.id)}
+	// A proposal that fails Check is shown as stored; accepting it is refused anyway.
+	_, _ = p.Check()
+	v := &memrank.ProposedSchemeView{Header: p.Header, Outline: memrank.OutlineOf(p.Concepts)}
 	v.Concepts = len(v.Outline)
 	return v
 }
@@ -255,6 +267,15 @@ func (d *Document) AcceptSchemeProposal(ctx context.Context, scope, chunkID stri
 	if err != nil {
 		return false, rep, err
 	}
+	// One accept at a time per tenant ontology, read included: two accepts that both
+	// saw no Schemes section would each add one, and a double-click would accept the
+	// same proposal twice. Within this process only; on another replica the revision
+	// each update carries still refuses the second write of a chunk.
+	unlock, err := d.editions.lock(ctx, key, "ontology_accept", memrank.OntologyPath)
+	if err != nil {
+		return false, rep, err
+	}
+	defer unlock()
 	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
 	if err != nil {
 		return false, rep, err
@@ -333,6 +354,9 @@ func (d *Document) AcceptSchemeProposal(ctx context.Context, scope, chunkID stri
 	if err != nil {
 		return true, rep, fmt.Errorf("%w: %v", ErrSchemeProposalInvalid, err)
 	}
+	if err := tagInForce(read, isScheme, self.parent, p.Name); err != nil {
+		return true, rep, fmt.Errorf("%w: %v", ErrSchemeProposalInvalid, err)
+	}
 	rep.Warnings = warnings
 	flat := flattenProposed(p.Concepts)
 	if len(flat) != len(nodes) {
@@ -355,6 +379,45 @@ func (d *Document) AcceptSchemeProposal(ctx context.Context, scope, chunkID stri
 		rep.Concepts++
 	}
 	return true, rep, nil
+}
+
+// tagInForce refuses what would put a mirror tag in force twice: a scheme whose name's
+// segment an in-force scheme already has (declared since the proposal was filed), or a
+// lone concept whose tag a concept in force beside it already has. The filing checks
+// the first only, and only as things stood then.
+func tagInForce(read OntologyRead, isScheme bool, parentID, name string) error {
+	seg := memrank.MirrorSegment(name)
+	if isScheme {
+		for _, s := range read.Schemes {
+			if memrank.MirrorSegment(s.Name) == seg {
+				return fmt.Errorf("a scheme named %s is already in force", s.Name)
+			}
+		}
+		return nil
+	}
+	parentTag := ""
+	for _, s := range read.Schemes {
+		if s.ChunkID == parentID {
+			parentTag = memrank.MirrorSegment(s.Name)
+		}
+		for _, c := range s.Concepts {
+			if c.ChunkID == parentID {
+				parentTag = c.Tag
+			}
+		}
+	}
+	if parentTag == "" {
+		return nil // under a concept still proposed: nothing in force beside it
+	}
+	tag := parentTag + "/" + seg
+	for _, s := range read.Schemes {
+		for _, c := range s.Concepts {
+			if c.Tag == tag {
+				return fmt.Errorf("a concept with the tag %s is already in force", tag)
+			}
+		}
+	}
+	return nil
 }
 
 // placeSchemeProposal puts the Schemes section in place for a proposal filed without
@@ -385,24 +448,15 @@ func (d *Document) placeSchemeProposal(ctx context.Context, read OntologyRead, s
 
 // acceptProposalChunk puts one proposed chunk in force in ONE update: its body becomes
 // the checked directives above its own text (any directive line in that text stays
-// quoted), the marker leaves its fields, and its status is cleared.
+// quoted), the marker leaves its fields, and its status is cleared. The update carries
+// the revision n's body was read at, so an edit made since is refused, not overwritten.
 func (d *Document) acceptProposalChunk(ctx context.Context, n proposalNode, directives []string, mark string) error {
 	body := neutraliseDirectives(strings.TrimSpace(n.body.Body))
 	if len(directives) > 0 {
 		body = strings.TrimSpace(strings.Join(directives, "\n") + "\n\n" + body)
 	}
-	g, err := d.execOp(ctx, map[string]any{"op": "get_chunk", "scope": "tenant", "id": n.id})
-	if err != nil {
-		return err
-	}
-	var cur struct {
-		Revision int `json:"revision"`
-	}
-	if json.Unmarshal([]byte(g), &cur) != nil {
-		return fmt.Errorf("read chunk %s: no revision", n.id)
-	}
-	_, err = d.execOp(ctx, map[string]any{"op": "update_chunk", "scope": "tenant", "id": n.id,
-		"revision": cur.Revision, "body": body, "fields": withoutMark(n.body.Fields, mark), "status": ""})
+	_, err := d.execOp(ctx, map[string]any{"op": "update_chunk", "scope": "tenant", "id": n.id,
+		"revision": n.revision, "body": body, "fields": withoutMark(n.body.Fields, mark), "status": ""})
 	return err
 }
 
