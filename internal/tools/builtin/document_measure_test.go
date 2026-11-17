@@ -590,3 +590,48 @@ func TestMeasure_DatingChangeWithinAPeriodRefreshesFallbackShare(t *testing.T) {
 		t.Errorf("rows = %+v; want a second row, same count, fallback 0", rows)
 	}
 }
+
+// TestMeasure_ShiftLeftEmptyForLackOfVectorsHealsWhenTheyArrive — a shift point
+// written empty because a member had no vector is computed once the vector is
+// there, though no member, annotation or text changed; while nothing changes, a
+// recompute appends no further row.
+func TestMeasure_ShiftLeftEmptyForLackOfVectorsHealsWhenTheyArrive(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newMeasureCorpus(t, d, base, conceptOntologyMD)
+	shiftCorpus(t, k)
+	// One July member loses its vector: July keeps 2 vectors, below MinMembers.
+	var julyDoc string
+	for doc, root := range k.roots {
+		g := k.f.c.exec(map[string]any{"op": "get_chunk", "scope": "tenant", "id": root})
+		if v, ok := g["valid_at"].(float64); ok && int64(v) >= monthStart(2026, 7) {
+			julyDoc = doc
+			break
+		}
+	}
+	if julyDoc == "" {
+		t.Fatal("precondition: no July document found")
+	}
+	key, mscope, err := d.ontologyTenantKey(k.f.operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vecKey := annotationKey(k.roots[julyDoc], annotationLevelDocument)
+	if err := k.f.c.vs.MemoryEmbedDelete(k.f.operator, "", mscope, annotationMemScopeID(mscope, key), vecKey); err != nil {
+		t.Fatal(err)
+	}
+	k.compute(t)
+	july := rowsOf(measureRows(t, d, k.f.operator), measureShift, k.rep, monthStart(2026, 7))
+	if len(july) != 1 || july[0].Members != 0 {
+		t.Fatalf("precondition: July shift rows = %+v; want one empty row", july)
+	}
+	if again := k.compute(t); again.Series.Computed != 0 {
+		t.Errorf("a recompute with no vector change appended %d rows", again.Series.Computed)
+	}
+	sc := &statsCorpus{f: k.f, d: k.d, vecs: map[string][]float32{}, briefs: map[string]string{}, docs: k.roots}
+	sc.setVector(t, julyDoc, []float32{0, 1, 0, 0}, "m1")
+	k.compute(t)
+	july = rowsOf(measureRows(t, d, k.f.operator), measureShift, k.rep, monthStart(2026, 7))
+	if len(july) != 2 || july[1].Members != 3 || math.Abs(july[1].Value-1) > 1e-9 {
+		t.Errorf("July shift rows = %+v; want a second row of 1 over 3 members", july)
+	}
+}

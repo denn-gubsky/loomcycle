@@ -122,6 +122,10 @@ type seriesRow struct {
 	empty          bool
 	// shift only: the ids of the period's members and of every earlier member.
 	periodIDs, earlierIDs []string
+	// recheck, shift only: the inputs hash of the stored row when that row is
+	// empty. It may have been left empty for lack of vectors, which no plan hash
+	// sees, so the point is recomputed; a result as empty as before is not written.
+	recheck string
 }
 
 // storedPoint is one stored row, without its key.
@@ -533,6 +537,11 @@ func (sp *seriesPlan) seriesDiff(stored map[pointKey]storedPoint) (SeriesReport,
 			rep.Missing++
 			note(r, "missing", "never computed")
 			out = append(out, r)
+		case s.inputs != r.inputs && r.measure == measureShift && emptyPoint(s):
+			rep.Stale++
+			note(r, "stale", "it was last computed empty; rechecked against the vectors, and written only if that changed")
+			r.recheck = s.inputs
+			out = append(out, r)
 		case s.inputs != r.inputs:
 			rep.Stale++
 			note(r, "stale", "its members or their inputs changed")
@@ -598,8 +607,10 @@ func withoutShift(rows []seriesRow) []seriesRow {
 }
 
 // fillShift computes the value of each shift row in rows from vecs; one with too
-// few members with a vector on either side becomes an empty row.
-func fillShift(rows []seriesRow, vecs map[string]nodestats.Vector) {
+// few members with a vector on either side becomes an empty row, hashed with the
+// members that had one, so a vector arriving later makes it differ. It returns rows
+// without the rechecked ones that came out as empty as their stored row.
+func fillShift(rows []seriesRow, vecs map[string]nodestats.Vector) []seriesRow {
 	centroid := func(ids []string) (nodestats.Centroid, int, error) {
 		var vs []nodestats.Vector
 		for _, id := range ids {
@@ -629,10 +640,35 @@ func fillShift(rows []seriesRow, vecs map[string]nodestats.Vector) {
 		}
 		if err != nil {
 			r.empty, r.value, r.members = true, 0, 0
+			r.inputs = noVectorHash(r.inputs, r.periodIDs, r.earlierIDs, vecs)
 			continue
 		}
 		r.value, r.members = shift, n
 	}
+	out := rows[:0:0]
+	for _, r := range rows {
+		if r.recheck != "" && r.empty && r.inputs == r.recheck {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// noVectorHash is the inputs hash of a shift row left empty: its plan hash and
+// which of its members had a vector.
+func noVectorHash(inputs string, periodIDs, earlierIDs []string, vecs map[string]nodestats.Vector) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\nno vector\n%s\n", measureHashVersion, inputs)
+	for _, group := range [][]string{periodIDs, earlierIDs} {
+		for _, id := range group {
+			if _, ok := vecs[id]; ok {
+				fmt.Fprintf(h, "%s\n", id)
+			}
+		}
+		fmt.Fprint(h, "--\n")
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // writeMeasurePoints appends rows in one transaction. ON CONFLICT DO NOTHING: two

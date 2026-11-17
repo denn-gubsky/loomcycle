@@ -613,7 +613,7 @@ func (d *Document) NodeStatsPass(ctx context.Context, key sqlmem.ScopeKey, tenan
 		}
 		ans.Computed, ans.Removed = len(stale), len(ans.Orphans)
 	}
-	fillShift(points, vecs)
+	points = fillShift(points, vecs)
 	if err := d.writeMeasurePoints(ctx, key, points, read.RootRevision, now); err != nil {
 		return ans, err
 	}
