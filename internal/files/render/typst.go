@@ -146,15 +146,15 @@ func (t *typWriter) str(s string) {
 // invalid UTF-8 as U+FFFD.
 func typString(s string) string {
 	s = strings.ToValidUTF8(s, "�")
+	// The two characters that are syntax inside a literal, escaped first
+	// and on their own (backslash before quote, so the quote's escape is
+	// not escaped again); the loop below handles only control characters.
+	s = strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`)
 	var b strings.Builder
 	b.Grow(len(s) + 2)
 	b.WriteByte('"')
 	for _, r := range s {
 		switch {
-		case r == '\\':
-			b.WriteString(`\\`)
-		case r == '"':
-			b.WriteString(`\"`)
 		case r == '\n':
 			b.WriteString(`\n`)
 		case r == '\t':
