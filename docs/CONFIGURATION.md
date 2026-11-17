@@ -194,6 +194,7 @@ The table says, for each area, what is set in which plane and what is inferred. 
 | Outbound network ([`TOOLS.md`](TOOLS.md)) | Gates: `LOOMCYCLE_HTTP_HOST_ALLOWLIST`, `LOOMCYCLE_HTTP_PRIVATE_HOST_ALLOWLIST`, `LOOMCYCLE_HTTP_CALLER_AUTHORITATIVE`; search keys such as `BRAVE_API_KEY` | `search_providers:`, `search_priority:`, `hooks.private_host_allowlist` | With no allowlist the HTTP tools reach no host |
 | MCP servers ([`MCP_INTEGRATION.md`](MCP_INTEGRATION.md)) | Gates: `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS`, `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` (both off by default), `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS` (on by default) | `mcp_servers:`, `local_api:` | none |
 | Hooks, interruptions and context plugins | none | `hooks:`, `interruption:`, `context_plugins:` | none |
+| Teams ([9o](#9o-teams-in-the-configuration-teams)) | none | `teams:` | none |
 | Speech, transcription and conversion ([9h](#9h-transcription--ocr-and-speech-to-text), [9i](#9i-speech--text-to-speech), [9n](#9n-conversion-workers-conversion)) | `LOOMCYCLE_AUDIO_MAX_INFLIGHT` | `transcription:`, `speech:`, `conversion:` | none |
 | Cluster ([`MULTI-REPLICA.md`](MULTI-REPLICA.md)) | `LOOMCYCLE_REPLICA_ID`, `LOOMCYCLE_REPLICAS_STALE_AFTER_MS`, `LOOMCYCLE_HEARTBEAT_STALE_MS` | none | Cluster mode is on when `LOOMCYCLE_REPLICA_ID` is set |
 
@@ -248,7 +249,7 @@ The file has a different name in each install path, for historical reasons. The 
 
 ---
 
-**The reference starts here.** Sections 0 to 8 cover model routing: providers, tiers, the `models:` alias map, the `user_tiers:` overlay and the agent `.md` frontmatter. Section 9 covers validation and reload, and sections 9b to 9n each cover one area: authentication (9b), environment files (9c), volumes (9d), config layering (9e), presets (9f), then the features with their own yaml block, the environment variable reference (9l) and retention (9m). MCP servers are in [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md) and Postgres in [`POSTGRES.md`](POSTGRES.md).
+**The reference starts here.** Sections 0 to 8 cover model routing: providers, tiers, the `models:` alias map, the `user_tiers:` overlay and the agent `.md` frontmatter. Section 9 covers validation and reload, and sections 9b to 9o each cover one area: authentication (9b), environment files (9c), volumes (9d), config layering (9e), presets (9f), then the features with their own yaml block, the environment variable reference (9l), retention (9m), conversion workers (9n) and teams (9o). MCP servers are in [`MCP_INTEGRATION.md`](MCP_INTEGRATION.md) and Postgres in [`POSTGRES.md`](POSTGRES.md).
 
 ---
 
@@ -4450,6 +4451,109 @@ The worker reads these variables. In `local` mode the runtime sets them for its 
 | `LOOMCYCLE_HELPER_WRAPPER` | — | The sandbox every helper runs under, as for the runtime (§ transcription). |
 
 A worker reads its helper commands from its own environment and never from the dispatcher: a job says what to convert, never what to run.
+
+## 9o. Teams in the configuration (`teams:`)
+
+A team (a `TeamDef`: a graph of states, each handled by an agent, a parallel
+group, a consolidator or a starter) can be written in the yaml under a top-level
+`teams:` map, as well as made over the API. A team in the configuration
+is reviewed with the rest of the config, travels in a bundle, and exists the
+moment the server starts (RFC GS).
+
+```yaml
+teams:
+  marketing:
+    description: A writer drafts into the board, an editor polishes it.
+    entry: draft
+    max_iterations: 4
+    states:
+      - {state: draft, handler: {kind: agent, agent: marketing/writer}}
+      - {state: edit, handler: {kind: agent, agent: marketing/editor}}
+      - {state: published, handler: {kind: terminal}}
+    transitions:
+      - {from: draft, to: edit, on: success}
+      - {from: edit, to: published, on: success}
+      - {from: edit, to: draft, on: "pushback:revise"}
+
+  release:
+    description: Our release train.
+    definition_file: teams/release.yaml   # the graph in its own file, JSON or YAML
+```
+
+- **The keys are TeamDef create's.** The map key is the team's name. Every key
+  other than `description` and `definition_file` is the graph, exactly as
+  `TeamDef op=create` takes it (`entry`, `states`, `transitions`,
+  `max_iterations`, `local`, …), so there is no second schema to learn. A
+  team's own agents (`local.agents`) and schedules (`local.schedules`) are
+  written here as well.
+- **`definition_file`** holds the graph in a separate file instead, JSON or YAML.
+  A relative path is read from the directory of the last config file, as
+  `system_prompt_file` is. Give it or the inline keys, not both.
+- **Layering merges a team like any other map** (§9e): an overlay can change one
+  key of a team a bundle brings, for example `teams.sdlc.max_iterations: 8`.
+- **The load checks the graph** with the rules a create applies: the name, the
+  size (1 MiB), the states and transitions, the handlers. A broken team stops
+  the boot, `loomcycle validate` and a config reload, naming its yaml path
+  (`teams.<name>…`). `loomcycle validate` lists each team with its entry,
+  states, own agents and source file.
+
+### What the server does with them
+
+At boot the server writes each team into the store's **shared tier** (tenant
+`""`) as an ordinary TeamDef version, promoted and ready to run, before any
+schedule or subscription starts. Walks, member runs, resume, snapshots and armed
+subscriptions all work on it as they do on a team made over the API. Every
+tenant can run it by name (`TeamDef op=run name="marketing"`), as it can any
+shared team.
+
+- **A restart writes nothing new.** A team whose content is unchanged keeps its
+  version. A changed team gets a new version, which becomes the active one.
+- **A team removed from the yaml is retired, never deleted.** The walks
+  it ran and their runs keep pointing at its version. Put it back unchanged
+  and the same version is restored.
+- **A name the API already holds is left alone.** If the shared tier's active
+  version of a name was made over the API, the boot does not take it over: it
+  logs a warning (`config teams: a team of this name is already an operator's
+  own in the shared tier; not replaced`) and carries on. Retire or rename one
+  of the two.
+- **The deployment's checks run at the write.** A team whose own agents break
+  the AgentDef rules, or which needs channel or decision authority the
+  deployment does not give, is not written. The boot logs it at error and
+  carries on with the other teams.
+- **A config reload checks the teams but does not write them.** `POST
+  /v1/_config/reload` reports a changed `teams` section as `restart_required`.
+  The new versions are written at the next start.
+- In a cluster, one replica writes the teams per start, under an advisory lock.
+
+### Marked as configuration, changed in the configuration
+
+A version the configuration wrote carries **`source: "config"`** on `TeamDef
+op=get` and `op=list`, and `active_source: "config"` on the name listing
+(`GET /v1/_teamdef/names`). The Web UI marks such a team "· from config" and
+shows it read-only, with Run still available.
+
+The configuration owns these teams. While a team's active version in the shared
+tier is config-written and not retired, `create`, `fork`, `promote`, `retire` and
+`delete` of that name in the shared tier are refused:
+
+```
+create: team "marketing" comes from the configuration (teams.marketing); change it there
+```
+
+A **tenant** may still fork a configured team into its own tenant
+(`TeamDef op=fork name="marketing" overlay={…}` with a tenant token). That fork
+is the tenant's and runs in place of the shared team for that tenant. The
+configured version is not touched.
+
+### Teams in a bundle
+
+The `team-examples` bundle ships its two starter teams, `sdlc` and
+`marketing`, this way (`LOOMCYCLE_PRESETS=base,agent-teams,team-examples`).
+A bundle reaches a deployment that nobody has read line by line, so a team
+in a bundle built into the binary may not carry `local.webhooks` (an inbound
+route), `hooks` or `tool_hooks` (on the team or on a state's handler), or a
+`definition_file`. A test holds every built-in unit to this. `local.schedules`
+is allowed. Your own config files carry no such limit.
 
 ## 10. Cross-references
 
