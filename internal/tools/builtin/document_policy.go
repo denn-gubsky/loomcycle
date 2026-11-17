@@ -42,6 +42,10 @@ type describedScheme struct {
 	// Members (with_counts only) is the documents about any concept of the scheme,
 	// each once (document_ontology_counts.go).
 	Members *int `json:"members,omitempty"`
+	// Unplaced (with_counts only) is the documents of the classes the scheme
+	// projects with no live placement under any of its concepts
+	// (document_ontology_counts.go).
+	Unplaced *int `json:"unplaced,omitempty"`
 }
 
 // describedConcept is a concept with its effective policy beside what it declares.

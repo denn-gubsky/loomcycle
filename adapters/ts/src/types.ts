@@ -4733,7 +4733,7 @@ export type DocumentToolInput = {
   include_color_scheme?: boolean;
   /** describe_ontology: also count the documents the caller may read in the tenant
    *  scope — `members` / `members_by_class` on each concept (documents at or under
-   *  it, each once), `members` on each scheme, `documents` on each class
+   *  it, each once), `members` and `unplaced` on each scheme, `documents` on each class
    *  (with its subclasses in a confirmed ontology). Off by default. */
   with_counts?: boolean;
   /** describe_ontology: what with_counts gives, plus each concept's and document

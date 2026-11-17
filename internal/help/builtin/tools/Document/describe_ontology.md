@@ -150,6 +150,13 @@ concept and class covers, counting only documents you may read:
   class (a document with no class is in `members` only). Absent when no member
   has a class.
 - each scheme gets `members` — the documents about any of its concepts, each once.
+- each scheme gets `unplaced` — the documents of the classes the scheme
+  projects (its `@projects` classes and their subclasses; without `@projects`,
+  every document class) that are under none of its concepts by the same rule
+  as `members`. A document with no class is never counted, and neither are the
+  ontology document itself and the operational types `classify` skips
+  (`SourceStub`, `SyncReport`, `Annotation`). Use it to see which taxonomy has
+  documents waiting to be placed; `memberships` shows where one document sits.
 - each class gets `documents` — the documents whose type (their root chunk's
   class) is that class and, in a confirmed ontology, one of its subclasses, as
   `search` with `type:` matches them. In a draft no subclass is included, since
