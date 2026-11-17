@@ -67,6 +67,51 @@ func (d *Document) countOntologyMembers(ctx context.Context, key sqlmem.ScopeKey
 		return out, err
 	}
 
+	m, err := d.conceptMembership(ctx, key, schemes, readable)
+	if err != nil {
+		return out, err
+	}
+	for id, docs := range m.members {
+		out.concepts[id] = len(docs)
+		for docID := range docs {
+			typ := m.docType[docID]
+			if typ == "" {
+				continue
+			}
+			if out.conceptTypes[id] == nil {
+				out.conceptTypes[id] = map[string]int{}
+			}
+			out.conceptTypes[id][typ]++
+		}
+	}
+	for _, in := range m.docSchemes {
+		for i := range in {
+			out.schemes[i]++
+		}
+	}
+	return out, nil
+}
+
+// conceptMembership is who the members of a scope's concepts are.
+type conceptMembership struct {
+	// members: concept chunk id → the documents at or under the concept, each once.
+	// A concept with no member has no entry.
+	members map[string]map[string]bool
+	// docType: member document → its own type ("" untyped).
+	docType map[string]string
+	// docSchemes: member document → the indexes of the schemes it is in.
+	docSchemes map[string]map[int]bool
+}
+
+// conceptMembership reads who the members of schemes' concepts are in the scope key
+// names, narrowed to readable (nil = every document). It is the one membership rule
+// of both the counts (with_counts) and the node statistics (node_stats), so a
+// statistic is never over a set the count does not describe. Reads only, outside
+// any transaction, as countOntologyMembers.
+func (d *Document) conceptMembership(ctx context.Context, key sqlmem.ScopeKey,
+	schemes []memrank.OntologyScheme, readable *docReadList) (conceptMembership, error) {
+	out := conceptMembership{members: map[string]map[string]bool{}, docType: map[string]string{},
+		docSchemes: map[string]map[int]bool{}}
 	tagOf := map[string]string{}   // concept id → tag
 	schemeOf := map[string]int{}   // concept id → scheme index
 	byTag := map[string][]string{} // tag → concept ids (a tag is unique in a sound ontology)
@@ -88,7 +133,6 @@ func (d *Document) countOntologyMembers(ctx context.Context, key sqlmem.ScopeKey
 	}
 
 	direct := map[string]map[string]bool{} // document → the concepts it reaches itself
-	docType := map[string]string{}
 	err := d.eachConceptMember(ctx, key, ids, func(conceptID, docID, typ string) {
 		if !readable.readable(docID) {
 			return
@@ -97,13 +141,12 @@ func (d *Document) countOntologyMembers(ctx context.Context, key sqlmem.ScopeKey
 			direct[docID] = map[string]bool{}
 		}
 		direct[docID][conceptID] = true
-		docType[docID] = typ
+		out.docType[docID] = typ
 	})
 	if err != nil {
 		return out, err
 	}
 	for docID, concepts := range direct {
-		nodes := map[string]bool{}
 		inScheme := map[int]bool{}
 		for cid := range concepts {
 			inScheme[schemeOf[cid]] = true
@@ -111,7 +154,10 @@ func (d *Document) countOntologyMembers(ctx context.Context, key sqlmem.ScopeKey
 			// concepts whose closure (conceptClosure) holds this one.
 			for p := tagOf[cid]; ; {
 				for _, id := range byTag[p] {
-					nodes[id] = true
+					if out.members[id] == nil {
+						out.members[id] = map[string]bool{}
+					}
+					out.members[id][docID] = true
 				}
 				i := strings.LastIndex(p, "/")
 				if i < 0 {
@@ -120,20 +166,7 @@ func (d *Document) countOntologyMembers(ctx context.Context, key sqlmem.ScopeKey
 				p = p[:i]
 			}
 		}
-		typ := docType[docID]
-		for id := range nodes {
-			out.concepts[id]++
-			if typ == "" {
-				continue
-			}
-			if out.conceptTypes[id] == nil {
-				out.conceptTypes[id] = map[string]int{}
-			}
-			out.conceptTypes[id][typ]++
-		}
-		for i := range inScheme {
-			out.schemes[i]++
-		}
+		out.docSchemes[docID] = inScheme
 	}
 	return out, nil
 }

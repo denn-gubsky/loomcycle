@@ -60,6 +60,9 @@ type describedConcept struct {
 	// document's own class; an untyped document is in Members only.
 	Members        *int           `json:"members,omitempty"`
 	MembersByClass map[string]int `json:"members_by_class,omitempty"`
+	// Stats (with_stats only) is the concept's stored node statistics
+	// (document_node_stats.go).
+	Stats *nodeStatsView `json:"stats,omitempty"`
 }
 
 // describedPolicy is describe_ontology's account of the policy as a whole.

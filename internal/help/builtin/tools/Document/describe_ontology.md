@@ -4,8 +4,9 @@ description: "Document op=describe_ontology — the tenant ontology in force, pa
 ---
 `describe_ontology` returns the tenant's ontology as data. It is for code that has
 to act on the ontology, and it saves that code from parsing the document itself.
-It reads the tenant's ontology whatever `scope` the call names. Its one other
-argument, `with_counts`, adds how many documents each concept and class has.
+It reads the tenant's ontology whatever `scope` the call names. Its other
+arguments, `with_counts` and `with_stats`, add how many documents each concept
+and class has, and the node statistics `node_stats` stored for them.
 
 It describes what is **in force**, the way the runtime applies it. A draft ontology
 governs nothing, so it describes the standard classes and nothing else, and it
@@ -39,6 +40,8 @@ with `section: relations`, a concept with `section: schemes`, an instance with
 - `scope` — ignored: the ontology is always the tenant's.
 - `with_counts` — `true` adds member counts (see Member counts below). Off by
   default; without it the answer is exactly what it is without the argument.
+- `with_stats` — `true` adds the member counts and the stored node statistics
+  (see Node statistics below). Off by default, with the same guarantee.
 
 ## Returns
 
@@ -156,6 +159,30 @@ Counts are read on every call; they are never part of the ontology itself.
 They need the tenant scope: a caller without it gets no counts and an issue
 saying so. When the counts cannot be read, the answer is `partial` with an issue
 and carries none.
+
+## Node statistics
+
+With `with_stats: true` the answer carries the counts above and, on each concept
+and each document class whose statistics `node_stats` has stored, `stats`:
+
+- `members` and `members_with_vector` — the members when they were computed,
+  and how many of them had a document-level annotation vector;
+- `spread` — the mean cosine distance of those vectors to their centroid (0:
+  all alike; nearer 1: scattered);
+- `exemplars` — the three members nearest the centroid, `{document_id, title}`;
+- `siblings` — the names of the three nodes under the same parent nearest by
+  centroid;
+- `terms` — up to ten words frequent in the members' briefs and abstracts and
+  rare in the siblings';
+- `computed_at` (unix nanoseconds) and `stale` — true when the node's
+  definition, its members, a member's annotation or the embed model changed
+  since.
+
+Without a vector store (Postgres with pgvector) a stored row has counts only.
+Statistics are drawn from every member, so they are shown only when you may
+read every member of the node: otherwise `stats` is `{withheld: <why>}` and the
+counts beside it are the documents you may read. A node with no stored row has
+no `stats`. Vectors and centroids are never returned.
 
 ## Review rules
 

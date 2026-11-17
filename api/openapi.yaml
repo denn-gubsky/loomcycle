@@ -2767,6 +2767,7 @@ components:
             - list_annotations
             - delete_annotation
             - describe_ontology
+            - node_stats
             - effective_policy
             - extract_citations
             - classify
@@ -2823,6 +2824,9 @@ components:
         propose: { type: boolean, description: "find_duplicates: true files a duplicate_of proposal per pair; false (the default) only reports." }
         include_color_scheme: { type: boolean, description: "get_document / documents_summary / graph_snapshot: return each document's color_scheme. Defaults to true on this route and over gRPC; an in-run or MCP call leaves the palette out unless it sends true." }
         with_counts: { type: boolean, description: "describe_ontology: also count the documents the caller may read in the tenant scope — members and members_by_class on each concept (documents at or under it, each once), members on each scheme, documents on each class (with its subclasses in a confirmed ontology). Off by default; without it the answer is unchanged." }
+        with_stats: { type: boolean, description: "describe_ontology: what with_counts gives, plus each concept's and document class's stored node statistics as stats {members, members_with_vector, spread, exemplars, siblings, terms, computed_at, stale} — only when stored and the caller may read every member; otherwise stats {withheld}. Off by default; without it the answer is unchanged." }
+        mode: { type: string, enum: [report, compute], description: "node_stats: report (the default) lists each node's status and writes nothing; compute recomputes the stale and missing nodes." }
+        scheme: { type: string, description: "node_stats: only this scheme's concepts (by name)." }
     PathToolInput:
       type: object
       additionalProperties: true

@@ -20,6 +20,7 @@ type documentReadOnlyCall struct {
 	Write             string `json:"write"`
 	CreatePlaceholder bool   `json:"create_placeholder"`
 	Propose           bool   `json:"propose"`
+	Mode              string `json:"mode"`
 }
 
 // documentReadOnlyOps are the Document ops that change nothing, each with the
@@ -64,6 +65,8 @@ var documentReadOnlyOps = map[string]func(documentReadOnlyCall) bool{
 	"resolve_anchor": func(in documentReadOnlyCall) bool { return !in.CreatePlaceholder },
 	// find_duplicates files a proposal per pair when propose is true.
 	"find_duplicates": func(in documentReadOnlyCall) bool { return !in.Propose },
+	// node_stats stores what it computes with mode compute; report writes nothing.
+	"node_stats": func(in documentReadOnlyCall) bool { return in.Mode != "compute" },
 }
 
 // documentWriteOps are the Document ops that change something. copy and move
