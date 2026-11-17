@@ -363,3 +363,48 @@ func TestNodeAnnotation_LimitedReaderLearnsNothingFromDeclaredStaleness(t *testi
 		t.Fatalf("the restricted reader's view changed when a document it may not read was filed under the node:\nbefore %s\nafter  %s", before, after)
 	}
 }
+
+// TestNodeAnnotation_DeleteReachesARecordWhoseNodeIsNoLongerInForce — a node record
+// whose concept was rejected, or whose ontology went back to draft, is still deleted
+// by its chunk id and level; a write-permission refusal still holds.
+func TestNodeAnnotation_DeleteReachesARecordWhoseNodeIsNoLongerInForce(t *testing.T) {
+	setStatus := func(t *testing.T, d *Document, ctx context.Context, id, status string) {
+		t.Helper()
+		g, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"tenant","id":"`+id+`"}`)
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"status":%q,"revision":%v}`, id, status, g["revision"])); r.IsError {
+			t.Fatal(r.Text)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		retire func(t *testing.T, d *Document, k *statsCorpus)
+	}{
+		{"concept rejected", func(t *testing.T, d *Document, k *statsCorpus) {
+			setStatus(t, d, k.f.operator, k.law, memrank.OntologyStatusRejected)
+		}},
+		{"ontology back to draft", func(t *testing.T, d *Document, k *statsCorpus) {
+			read, _ := d.tenantOntologyRead(k.f.operator)
+			setStatus(t, d, k.f.operator, read.RootChunkID, "draft")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, base, _ := documentFixture(t)
+			k := newStatsCorpus(t, d, base)
+			op := k.f.operator
+			nodeWrite(t, d, op, "concept", k.law, "Law")
+			tc.retire(t, d, k)
+			del := fmt.Sprintf(`{"op":"delete_annotation","scope":"tenant","level":"concept","id":%q}`, k.law)
+			if _, r := docExec(t, d, k.f.reader, del); !r.IsError {
+				t.Fatal("a reader without the annotate grant deleted a node record")
+			}
+			out, r := docExec(t, d, op, del)
+			if r.IsError || out["deleted"] != true {
+				t.Fatalf("delete_annotation = %v %s, want deleted", out, r.Text)
+			}
+			list, _ := docExec(t, d, op, `{"op":"list_annotations","scope":"tenant","level":"concept"}`)
+			if n := len(anyList(list["annotations"])); n != 0 {
+				t.Fatalf("%d concept records left after the delete, want 0", n)
+			}
+		})
+	}
+}

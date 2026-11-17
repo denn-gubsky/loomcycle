@@ -717,6 +717,28 @@ func (d *Document) resolveNodeAnnotationTarget(ctx context.Context, s *annotatio
 	return t, nil
 }
 
+// retiredNodeTarget is delete_annotation's way to a node record whose node is no
+// longer in force (its concept rejected, its class gone, its ontology back in
+// draft): resolveNodeAnnotationTarget refuses those, and nothing else reaches the
+// record, which would then stay listed as stale for good. The record is addressed
+// by its raw chunk id and level, in the tenant scope only; refused is returned when
+// there is no such record. The caller's write-permission and manual-record checks
+// still apply.
+func (d *Document) retiredNodeTarget(ctx context.Context, key sqlmem.ScopeKey, in docInput, refused tools.Result) (annotationTarget, *tools.Result) {
+	if !isNodeAnnotationLevel(in.Level) || key.Scope != "tenant" || in.ID == "" {
+		return annotationTarget{}, &refused
+	}
+	recs, err := d.annotationRecordsFor(ctx, key, []string{in.ID}, in.Level)
+	if err != nil {
+		r := errFrom("delete_annotation: "+err.Error(), err)
+		return annotationTarget{}, &r
+	}
+	if _, ok := recs[in.ID][in.Level]; !ok {
+		return annotationTarget{}, &refused
+	}
+	return annotationTarget{chunk: chunkRow{ID: in.ID}, level: in.Level}, nil
+}
+
 // nodeAnnotationsReadEverything refuses a node annotation's inputs or write to a
 // caller whose access-control rules hide a document of the scope: the request is
 // computed from every member, as node_stats is.

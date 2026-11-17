@@ -1042,7 +1042,9 @@ func (d *Document) deleteAnnotation(ctx context.Context, key sqlmem.ScopeKey, ms
 	s := d.newAnnotationScope(key, mscope)
 	t, refused := d.resolveAnnotationTarget(ctx, s, op, in, true)
 	if refused != nil {
-		return *refused, nil
+		if t, refused = d.retiredNodeTarget(ctx, key, in, *refused); refused != nil {
+			return *refused, nil
+		}
 	}
 	recs, err := d.annotationRecordsFor(ctx, key, []string{t.chunk.ID}, t.level)
 	if err != nil {
