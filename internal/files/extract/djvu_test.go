@@ -36,6 +36,12 @@ func iffForm(kind string, body ...[]byte) []byte {
 // chunk when text[i]; the chunks' bodies are not real DjVu data, which the
 // walk never decodes. outline adds a NAVM chunk, anno an ANTz in page 1.
 func djvuDoc(text []bool, outline, anno bool) []byte {
+	return djvuDocIncluding(text, outline, anno, "")
+}
+
+// djvuDocIncluding is djvuDoc with page 1 including the component named
+// incl (an INCL chunk), when it is not "".
+func djvuDocIncluding(text []bool, outline, anno bool, incl string) []byte {
 	var comps [][]byte
 	for i, t := range text {
 		parts := [][]byte{iffChunk("INFO", make([]byte, 10)), iffChunk("Sjbz", []byte("jb2"))}
@@ -44,6 +50,9 @@ func djvuDoc(text []bool, outline, anno bool) []byte {
 		}
 		if anno && i == 0 {
 			parts = append(parts, iffChunk("ANTz", []byte("bzz")))
+		}
+		if incl != "" && i == 0 {
+			parts = append(parts, iffChunk("INCL", []byte(incl)))
 		}
 		comps = append(comps, iffForm("DJVU", parts...))
 	}
@@ -276,6 +285,49 @@ func TestDjVuIFF_RefusesWhatItCannotTrust(t *testing.T) {
 		if _, err := walkDjVu(bytes.NewReader(data), int64(len(data))); err == nil {
 			t.Errorf("%s: walked, want refused", name)
 		}
+	}
+}
+
+// TestDjVuIFF_RefusesWhatWouldOpenAnotherFile: DjVuLibre opens the file a
+// single page's INCL names beside it, so such a page, or one naming files
+// in an NDIR, is refused before any helper runs. In a bundle an include is
+// resolved among the bundle's own parts; its id must still be a plain name,
+// never a path. Only a page (DJVU) or a bundle (DJVM) is a document: a
+// shared part or a thumbnail file on its own is not.
+func TestDjVuIFF_RefusesWhatWouldOpenAnotherFile(t *testing.T) {
+	page := func(extra ...[]byte) []byte {
+		return append([]byte("AT&T"), iffForm("DJVU", append([][]byte{iffChunk("INFO", make([]byte, 10))}, extra...)...)...)
+	}
+	refused := map[string][]byte{
+		"page INCL":       page(iffChunk("INCL", []byte("shared_anno.iff"))),
+		"page NDIR":       page(iffChunk("NDIR", []byte("bzz"))),
+		"top DJVI":        append([]byte("AT&T"), iffForm("DJVI", iffChunk("ANTz", []byte("bzz")))...),
+		"top THUM":        append([]byte("AT&T"), iffForm("THUM", iffChunk("TH44", []byte("x")))...),
+		"bundle up":       djvuDocIncluding(allText(2), false, false, "../secret.iff"),
+		"bundle slash":    djvuDocIncluding(allText(2), false, false, "dir/shared.iff"),
+		"bundle bslash":   djvuDocIncluding(allText(2), false, false, `dir\shared.iff`),
+		"bundle colon":    djvuDocIncluding(allText(2), false, false, "file:shared.iff"),
+		"bundle nul":      djvuDocIncluding(allText(2), false, false, "shared\x00.iff"),
+		"bundle dotdot":   djvuDocIncluding(allText(2), false, false, ".."),
+		"bundle newline":  djvuDocIncluding(allText(2), false, false, "shared\n.iff"),
+		"bundle too long": djvuDocIncluding(allText(2), false, false, strings.Repeat("a", maxDjVuIncludeID+1)),
+	}
+	for name, data := range refused {
+		h := &fakeDjVu{text: pageTexts(2)}
+		_, err := extractDjVu(t, data, h, &djvuSink{}, Options{})
+		if err == nil {
+			t.Errorf("%s: read, want refused", name)
+		}
+		if h.opens != 0 {
+			t.Errorf("%s: the helpers were opened", name)
+		}
+	}
+	if _, err := walkDjVu(bytes.NewReader(refused["page INCL"]), int64(len(refused["page INCL"]))); !IsRefused(err) || !strings.Contains(err.Error(), "includes other files") {
+		t.Errorf("page INCL: %v, want a refusal saying why", err)
+	}
+	ok := djvuDocIncluding(allText(2), false, false, "shared_anno.iff")
+	if _, err := walkDjVu(bytes.NewReader(ok), int64(len(ok))); err != nil {
+		t.Errorf("a bundle including a part by its name: %v", err)
 	}
 }
 

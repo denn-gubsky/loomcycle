@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // The DjVu container (RFC GV §4.5, D6): an IFF85 file of chunks, read here
@@ -111,8 +112,8 @@ func next(c djvuChunk) int64 {
 }
 
 // scan visits the chunks of [off, end) and, inside FORMs, theirs, calling
-// leaf for each chunk that is not a FORM.
-func (w *djvuWalker) scan(off, end int64, depth int, leaf func(id string)) error {
+// leaf for each chunk that is not a FORM. A leaf's error stops the walk.
+func (w *djvuWalker) scan(off, end int64, depth int, leaf func(c djvuChunk) error) error {
 	if depth > maxDjVuDepth {
 		return refusedf("the DjVu file nests its parts more than %d deep", maxDjVuDepth)
 	}
@@ -130,7 +131,9 @@ func (w *djvuWalker) scan(off, end int64, depth int, leaf func(id string)) error
 				return err
 			}
 		} else {
-			leaf(c.id)
+			if err := leaf(c); err != nil {
+				return err
+			}
 		}
 		off = next(c)
 	}
@@ -158,21 +161,60 @@ func walkDjVu(r io.ReaderAt, size int64) (djvuInfo, error) {
 	case "DJVU":
 		var d djvuInfo
 		d.pages, d.pageText = 1, []bool{false}
-		err := w.scan(top.start, top.end, 1, func(id string) {
-			switch id {
+		err := w.scan(top.start, top.end, 1, func(c djvuChunk) error {
+			switch c.id {
 			case "TXTa", "TXTz":
 				d.pageText[0] = true
 			case "ANTa", "ANTz":
 				d.anno = true
 			case "NAVM":
 				d.outline = true
+			case "INCL", "NDIR":
+				// A single page that includes another component names a
+				// file: DjVuLibre opens it beside the page (seen with
+				// strace: djvutxt and djvused open <dir>/<id>), which in
+				// a scratch folder is another job's or nothing at all.
+				return refusedf("the DjVu page includes other files (%s), and only a self-contained DjVu file can be read", c.id)
 			}
+			return nil
 		})
 		return d, err
 	case "DJVM":
 		return w.bundled(top)
 	}
 	return djvuInfo{}, errNotDjVu
+}
+
+// maxDjVuIncludeID bounds an INCL chunk's component id.
+const maxDjVuIncludeID = 255
+
+// bundledInclude checks the component id an INCL chunk of a bundled
+// document names. Inside a bundle DjVuLibre resolves the id among the
+// bundle's own components and opens no other file, an id naming none
+// included (seen with strace on 3.5.28: a dangling id, and one climbing
+// out with "../", read nothing beside the bundle). The ids the directory
+// lists are BZZ-compressed, which this walk does not decode (D6), so the
+// id is held to the shape a component id has instead: one plain name, no
+// path, nothing DjVuLibre or a file system would read as more than a name.
+func (w *djvuWalker) bundledInclude(c djvuChunk) error {
+	n := c.end - c.start
+	if n < 1 || n > maxDjVuIncludeID {
+		return refusedf("the DjVu document includes a part by a name that is not one")
+	}
+	id := make([]byte, n)
+	if _, err := w.r.ReadAt(id, c.start); err != nil {
+		return fmt.Errorf("extract: reading the DjVu file: %w", err)
+	}
+	s := string(id)
+	if s == "." || strings.Contains(s, "..") || strings.ContainsAny(s, "/\\:\x00") {
+		return refusedf("the DjVu document includes a part by a path, and only a self-contained DjVu file can be read")
+	}
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return refusedf("the DjVu document includes a part by a name that is not one")
+		}
+	}
+	return nil
 }
 
 // djvuComponent is one component of a bundled document.
@@ -227,13 +269,18 @@ func (w *djvuWalker) bundled(top djvuChunk) (djvuInfo, error) {
 			d.outline = true
 		case c.id == "FORM":
 			comp := &djvuComponent{form: c.form}
-			if err := w.scan(c.start, c.end, 2, func(id string) {
-				switch id {
+			if err := w.scan(c.start, c.end, 2, func(c djvuChunk) error {
+				switch c.id {
 				case "TXTa", "TXTz":
 					comp.text = true
 				case "ANTa", "ANTz":
 					d.anno = true
+				case "NDIR":
+					return refusedf("the DjVu document names other files (NDIR), and only a self-contained DjVu file can be read")
+				case "INCL":
+					return w.bundledInclude(c)
 				}
+				return nil
 			}); err != nil {
 				return d, err
 			}

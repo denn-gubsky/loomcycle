@@ -194,3 +194,31 @@ func TestInProcess_DjVuLibreReadsTheFixtures(t *testing.T) {
 		t.Errorf("indirect: %v, want refused", err)
 	}
 }
+
+// A single page that includes another component by name would have
+// DjVuLibre open that name beside the copy in the scratch folder: it is
+// refused by the container walk, and no helper ever runs on it. The copy is
+// alone in a folder made for this extraction.
+func TestInProcess_DjVuIncludingAnotherFileIsRefusedBeforeAHelperRuns(t *testing.T) {
+	fake := djvutest.Install(t)
+	single := djvuFixture(t, "single.djvu")
+	info := bytes.Index(single, []byte("INFO"))
+	incl := []byte("INCL\x00\x00\x00\x0fsecret_file.iff\x00")
+	data := append(append(append([]byte{}, single[:info+18]...), incl...), single[info+18:]...)
+	size := uint32(len(data) - 12)
+	data[8], data[9], data[10], data[11] = byte(size>>24), byte(size>>16), byte(size>>8), byte(size)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "secret_file.iff"), []byte("not for the helper"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := djvuInProcess(root, true).Extract(context.Background(), extract.DjVuMediaType, bytes.NewReader(data), int64(len(data)), &pagedSink{}, extract.Options{})
+	if !extract.IsRefused(err) {
+		t.Fatalf("err = %v, want refused", err)
+	}
+	if calls := fake.Calls(t); len(calls) != 0 {
+		t.Errorf("a helper ran: %q", calls)
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 1 {
+		t.Errorf("the scratch root holds %d entries, want only the planted file", len(entries))
+	}
+}
