@@ -51,6 +51,12 @@ type surveyFake struct {
 	labels map[string]map[string]any
 	// summaryIDs is each documents_summary call's document_ids, in order.
 	summaryIDs [][]string
+	// briefs is each document's or section's stored brief and abstract
+	// ({"brief": ..., "abstract": ...}), answered to documents_summary (as its
+	// summary) and to get_annotation (as a branch record); an id not in it
+	// has none. annotationIDs is each get_annotation call's id, in order.
+	briefs        map[string]map[string]any
+	annotationIDs []string
 	// searchErr makes every search fail as a tool error.
 	searchErr string
 	// screen answers a screening round, given its candidate ids; nil sorts
@@ -174,10 +180,24 @@ func (d *surveyFakeDocument) Execute(_ context.Context, raw json.RawMessage) (to
 			for k, v := range d.f.labels[id] {
 				row[k] = v
 			}
+			if b, ok := d.f.briefs[id]; ok && in["with_summary"] == true {
+				row["summary"] = map[string]any{"level": "document", "brief": b["brief"], "abstract": b["abstract"]}
+			}
 			docs = append(docs, row)
 		}
 		d.f.summaryIDs = append(d.f.summaryIDs, ids)
 		return okResult(map[string]any{"documents": docs})
+	case "get_annotation":
+		id, _ := in["id"].(string)
+		if in["level"] != "branch" {
+			return tools.Result{IsError: true, Text: "get_annotation: want level branch, got " + string(raw)}, nil
+		}
+		d.f.annotationIDs = append(d.f.annotationIDs, id)
+		recs := []map[string]any{}
+		if b, ok := d.f.briefs[id]; ok {
+			recs = append(recs, map[string]any{"chunk_id": id, "level": "branch", "brief": b["brief"], "abstract": b["abstract"]})
+		}
+		return okResult(map[string]any{"annotations": recs})
 	case "get_edges":
 		id, _ := in["document_id"].(string)
 		d.f.edgeIDs = append(d.f.edgeIDs, id)
@@ -825,9 +845,15 @@ func TestKbSurvey_UntrustedQuestionGoesToTheWalkerByReferenceOnly(t *testing.T) 
 		if !strings.Contains(prompt, framing) {
 			t.Errorf("walker run %d's prompt lacks the caller's trusted framing %q:\n%s", i+1, framing, prompt)
 		}
+		u, _ := s["untrusted"].([]any)
 		b, _ := json.Marshal(s["untrusted"])
-		if string(b) != `[{"ref":"input"}]` {
-			t.Errorf("walker run %d: untrusted = %s, want [{\"ref\":\"input\"}]", i+1, b)
+		if len(u) == 0 || !strings.HasPrefix(string(b), `[{"ref":"input"}`) {
+			t.Errorf("walker run %d: untrusted = %s, want the question by reference first", i+1, b)
+		}
+		// The composing round also gets the briefs code read, as a block of
+		// their own after the question; a screening round gets nothing more.
+		if want := map[bool]int{true: 2, false: 1}[isWrite(s)]; len(u) != want {
+			t.Errorf("walker run %d: untrusted = %s, want %d entries", i+1, b, want)
 		}
 	}
 }
