@@ -125,6 +125,8 @@ func (f *File) InputSchema() json.RawMessage {
 			"images":        {"type": "boolean", "description": "extract: keep the document's pictures as files and link them from the Markdown. Default true."},
 			"max_rows":      {"type": "integer", "minimum": 0, "description": "extract: the rows of each spreadsheet or CSV table to keep, header included. Default 1000, at most 10000."},
 			"excerpt_chars": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "extract: how much of the text to return. Default and most 30000."},
+			"pages":         {"type": "string", "description": "extract, PDF only: read only these pages, e.g. 1-10 or 1-3,7 (at most 2000). Only those pages are parsed, so a sample of a long file costs what the sample costs. Other formats are read from the start. Default every page."},
+			"max_chars":     {"type": "integer", "minimum": 1, "description": "extract: stop once this many characters of Markdown are written; the converter stops there too, instead of reading the rest. The result's truncated_at says it was reached. Default: no limit but the extraction's own."},
 			"structure":     {"type": "object", "additionalProperties": false, "description": "extract, DOCX and HTML only: recover the structure the document's formatting implies, for a file whose headings are bold, larger or coloured lines rather than heading styles (as an editor without heading styles exports it). Off by default; the same file always gives the same outline.", "properties": {
 				"infer_headings": {"type": "boolean", "description": "Make a heading of each short line (one line, at most 120 characters, not ending in . , or ;, not in a list or table) that is wholly bold, at least 1.15 times the body's size, or coloured and bold or larger; real headings keep their level. Also drops a picture repeated 3 or more times as decoration, and collapses non-breaking spaces. The result counts inferred_headings and dropped_decorative_images, and an import of the text records the inferred structure in the document's provenance."}
 			}},
@@ -179,12 +181,16 @@ type fileInput struct {
 	Recursive bool   `json:"recursive"`
 	Prefix    string `json:"prefix"`
 	// extract
-	Images       *bool  `json:"images"`
-	MaxRows      int    `json:"max_rows"`
-	ExcerptChars int    `json:"excerpt_chars"`
-	OCR          string `json:"ocr"`
-	Language     string `json:"language"`
-	DryRun       bool   `json:"dry_run"`
+	Images       *bool `json:"images"`
+	MaxRows      int   `json:"max_rows"`
+	ExcerptChars int   `json:"excerpt_chars"`
+	// Pages and MaxChars read a sample (RFC GP D17): only these PDF pages,
+	// and no more than this much text.
+	Pages    string `json:"pages"`
+	MaxChars int    `json:"max_chars"`
+	OCR      string `json:"ocr"`
+	Language string `json:"language"`
+	DryRun   bool   `json:"dry_run"`
 	// Structure asks extract to recover structure the file's formatting
 	// implies (RFC GB §6).
 	Structure *ExtractStructure `json:"structure"`

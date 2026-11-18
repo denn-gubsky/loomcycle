@@ -96,6 +96,11 @@ type Options struct {
 	// (RFC GB §6). DOCX and HTML read it; other formats ignore it. Off, the
 	// output is what it was before the option existed.
 	InferHeadings bool
+	// Pages are the pages of a paged document to read, ascending and
+	// without repeats; empty reads every page. Only those pages are parsed,
+	// so a sample of a long file costs what the sample costs. PDF reads it;
+	// formats without pages ignore it. A page past the end is not read.
+	Pages []int
 
 	// limits overrides the archive bounds, and pdfMaxPages and pdfMaxDecode
 	// the PDF page and decode caps, for tests.

@@ -295,6 +295,13 @@ func (d *Dispatcher) detach(w *worker) {
 	d.waiters = kept
 }
 
+// canRun reports whether an attached worker carries label.
+func (d *Dispatcher) canRun(label string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.canRunLocked(label)
+}
+
 func (d *Dispatcher) canRunLocked(label string) bool {
 	for _, w := range d.workers {
 		if w.labels[label] {

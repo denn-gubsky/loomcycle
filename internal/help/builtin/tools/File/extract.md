@@ -141,6 +141,15 @@ to you came from the file. Read the whole text with Read on the `.md`.
   document together at 32 MiB, and a sheet's cell at 32 KiB; `notes` says
   where.
 - `excerpt_chars` — how much of the text to return. Default and most 30000.
+  It trims only what is returned; the whole text is still written.
+- `pages` — PDF only: read only these pages, e.g. `1-10` or `1-3,7`, at most
+  2000. Only those pages are parsed, so the first pages of a long book cost
+  what those pages cost. Other formats are read from the start. Default every
+  page.
+- `max_chars` — stop once this much Markdown is written. The converter stops
+  there too, instead of reading the rest of the file. Unlike
+  `excerpt_chars`, it limits what is extracted and kept. Default: no limit
+  but the extraction's own.
 - `structure` — `{"infer_headings": true}` makes headings of the lines a
   DOCX or HTML file marks by formatting (see above). Default off.
 - `ocr` — `never`, `auto` or `always` (see above). Default: your agent's
@@ -159,7 +168,10 @@ Markdown file; counts that do not apply to the format are left out. With
 `dropped_decorative_images` are given, zero included.
 `yield_chars_per_page` is given when the page count is known; a low value
 means the pages are mostly pictures (a scan) rather than text.
-`low_yield_pages` lists a PDF's likely scanned pages. After OCR, `ocr` is
+`low_yield_pages` lists a PDF's likely scanned pages. With `pages`, a PDF's
+result has `pages_read`, the pages whose text was written (`""` when none
+were); OCR reads only among them. With `max_chars`, `truncated_at` is given
+when the limit stopped the extraction. After OCR, `ocr` is
 `{mode, engine, provider, model, pages, pages_sent, units, status,
 input_tokens, output_tokens, cost, currency}`: the pages read, the pages sent
 to the model (a call that failed after reaching it still counts against the

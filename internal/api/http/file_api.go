@@ -51,6 +51,8 @@ type fileTwinArgs struct {
 	Images       *bool  `json:"images,omitempty"`
 	MaxRows      int    `json:"max_rows,omitempty"`
 	ExcerptChars int    `json:"excerpt_chars,omitempty"`
+	Pages        string `json:"pages,omitempty"`
+	MaxChars     int    `json:"max_chars,omitempty"`
 	// Structure is extract's heading recovery; the File tool reads it.
 	Structure *builtin.ExtractStructure `json:"structure,omitempty"`
 	Title     string                    `json:"title,omitempty"`

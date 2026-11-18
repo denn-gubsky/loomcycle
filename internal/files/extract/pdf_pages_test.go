@@ -126,3 +126,95 @@ func TestSelectPages_RealProducerFile(t *testing.T) {
 		t.Fatalf("the cut page lost its text: %+v\n%s", rep.PageYields, cut.md.String())
 	}
 }
+
+// fivePagePDF is five pages, each saying which page it is.
+func fivePagePDF() []byte {
+	var pages []pdftest.Page
+	for _, w := range []string{"one", "two", "three", "four", "five"} {
+		pages = append(pages, pdftest.Page{Lines: []pdftest.Line{{Text: "This is page " + w + " of the book.", X: 72, Y: 770, Size: 12}}})
+	}
+	return pdftest.Doc{Pages: pages}.Bytes()
+}
+
+// TestPDF_PagesReadsOnlyThosePages — with Options.Pages only those pages are
+// parsed (their yields are the only ones reported), the Markdown holds their
+// text alone, the page count is still the document's, and the notes say what
+// was read.
+func TestPDF_PagesReadsOnlyThosePages(t *testing.T) {
+	data := fivePagePDF()
+	s := &pageSink{}
+	rep, err := PDF{}.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), s, Options{Name: "book.pdf", Pages: []int{2, 4}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := s.md.String()
+	for _, w := range []string{"two", "four"} {
+		if !strings.Contains(md, "page "+w+" ") {
+			t.Errorf("page %s is missing:\n%s", w, md)
+		}
+	}
+	for _, w := range []string{"one", "three", "five"} {
+		if strings.Contains(md, "page "+w+" ") {
+			t.Errorf("page %s was read:\n%s", w, md)
+		}
+	}
+	var parsed []int
+	for _, y := range rep.PageYields {
+		parsed = append(parsed, y.Page)
+	}
+	if len(parsed) != 2 || parsed[0] != 2 || parsed[1] != 4 {
+		t.Errorf("pages parsed = %v, want [2 4]", parsed)
+	}
+	if _, ok := s.starts[2]; !ok || len(s.starts) != 2 {
+		t.Errorf("page starts = %v, want pages 2 and 4", s.starts)
+	}
+	if rep.Pages != 5 {
+		t.Errorf("pages = %d, want the document's 5", rep.Pages)
+	}
+	if !strings.Contains(strings.Join(rep.Notes, "\n"), "only pages 2, 4 of 5 were read") {
+		t.Errorf("notes = %v", rep.Notes)
+	}
+}
+
+// A page past the end is not read, and the notes say so.
+func TestPDF_PagesPastTheEndAreNotRead(t *testing.T) {
+	data := fivePagePDF()
+	s := &pageSink{}
+	rep, err := PDF{}.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), s, Options{Name: "book.pdf", Pages: []int{5, 9}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.PageYields) != 1 || rep.PageYields[0].Page != 5 {
+		t.Errorf("yields = %+v, want page 5 alone", rep.PageYields)
+	}
+	if !strings.Contains(strings.Join(rep.Notes, "\n"), "does not have (it has 5)") {
+		t.Errorf("notes = %v", rep.Notes)
+	}
+}
+
+// A sink that stops taking text stops the reader: a page is parsed before
+// its text is written, so the page refused is the last one parsed.
+func TestPDF_ASinkThatIsFullStopsTheReading(t *testing.T) {
+	data := fivePagePDF()
+	s := &stopAfterPages{limit: 2}
+	rep, err := PDF{}.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), s, Options{Name: "book.pdf"})
+	if err != ErrSinkFull {
+		t.Fatalf("err = %v, want ErrSinkFull", err)
+	}
+	if len(rep.PageYields) != 3 {
+		t.Errorf("%d pages were parsed, want the two taken and the one refused", len(rep.PageYields))
+	}
+}
+
+// stopAfterPages takes the title and limit pages, then refuses text.
+type stopAfterPages struct {
+	pageSink
+	limit int
+}
+
+func (s *stopAfterPages) Text(md string) error {
+	if len(s.starts) > s.limit {
+		return ErrSinkFull
+	}
+	return s.pageSink.Text(md)
+}
