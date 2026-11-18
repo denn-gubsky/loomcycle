@@ -77,13 +77,11 @@ func focusIDs(t *testing.T, d *Document, ctx context.Context) focusFixtureIDs {
 	ids := focusFixtureIDs{providerConcept: by["components/provider"].ChunkID, acmeConcept: by["components/acme-work"].ChunkID,
 		miscConcept: by["components/misc"].ChunkID}
 	key := mustTenantKey(t, d, ctx)
-	var err error
-	if ids.providerClass, err = d.classChunkID(ctx, key, read, "Provider"); err != nil || ids.providerClass == "" ||
-		ids.providerClass == ids.providerConcept {
-		t.Fatalf("provider class chunk = %q (concept %q), %v", ids.providerClass, ids.providerConcept, err)
+	if ids.providerClass = read.classChunkID("Provider"); ids.providerClass == "" || ids.providerClass == ids.providerConcept {
+		t.Fatalf("provider class chunk = %q (concept %q)", ids.providerClass, ids.providerConcept)
 	}
-	if ids.runbookClass, err = d.classChunkID(ctx, key, read, "Runbook"); err != nil || ids.runbookClass == "" {
-		t.Fatalf("runbook class chunk = %q, %v", ids.runbookClass, err)
+	if ids.runbookClass = read.classChunkID("Runbook"); ids.runbookClass == "" {
+		t.Fatalf("runbook class chunk = %q", ids.runbookClass)
 	}
 	ids.acmeSubject, _ = d.chunkIDByNaturalKey(ctx, key, memrank.ConsolidatorEntityKey("organization", "Acme Bank"))
 	return ids
