@@ -57,7 +57,10 @@ func writeHTML(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	if d.Date != "" {
 		h.s(`<meta name="date" content="` + esc(d.Date) + `">` + "\n")
 	}
-	h.s("<title>" + esc(oneLine(d.Title)) + "</title>\n<style>\n" + htmlStyle + "</style>\n</head>\n<body>\n<article>\n")
+	h.s("<title>" + esc(oneLine(d.Title)) + "</title>\n<style>\n" + htmlStyle + d.Style.cssOverrides("article") + "</style>\n</head>\n<body>\n<article>\n")
+	if l := d.Style.header(); l != "" {
+		h.s(`<p class="style-header">` + esc(l) + "</p>\n")
+	}
 
 	h.s("<header")
 	if opts.TitlePage {
@@ -66,7 +69,9 @@ func writeHTML(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	if d.Anchor != "" {
 		h.s(` id="` + esc(d.Anchor) + `"`)
 	}
-	h.s(">\n<h1>" + esc(oneLine(d.Title)))
+	h.s(">\n")
+	h.logo()
+	h.s("<h1>" + esc(oneLine(d.Title)))
 	if l := statusLabel(d.Status); l != "" {
 		h.s(` <span class="status">` + l + `</span>`)
 	}
@@ -90,6 +95,9 @@ func writeHTML(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	h.blocks(d.Blocks, 0)
 	for _, s := range d.Sections {
 		h.section(s)
+	}
+	if l := d.Style.footer(); l != "" {
+		h.s(`<p class="style-footer">` + esc(l) + "</p>\n")
 	}
 	h.s("</article>\n")
 	if d.Embed != nil {
@@ -331,10 +339,18 @@ func (h *htmlWriter) image(n Node) {
 		return
 	}
 	if h.book != nil {
-		h.s(`<img src="../` + epubImageDir + img.Name + `" alt="` + h.esc(oneLine(n.Alt)) + `"/>`)
+		cls := ""
+		if h.d.Style != nil && img.Name == h.d.Style.Logo && n.Alt == "logo" {
+			cls = ` class="logo"`
+		}
+		h.s(`<img` + cls + ` src="../` + epubImageDir + img.Name + `" alt="` + h.esc(oneLine(n.Alt)) + `"/>`)
 		return
 	}
-	h.s(`<img src="data:` + img.MediaType + `;base64,`)
+	h.s(`<img`)
+	if h.d.Style != nil && img.Name == h.d.Style.Logo && n.Alt == "logo" {
+		h.s(` class="logo"`)
+	}
+	h.s(` src="data:` + img.MediaType + `;base64,`)
 	if h.w.err == nil {
 		enc := base64.NewEncoder(base64.StdEncoding, h.w)
 		_, _ = enc.Write(img.Data)
@@ -354,4 +370,13 @@ func (d *Doc) image(name string) (Image, bool) {
 		}
 	}
 	return Image{}, false
+}
+
+// logo writes the style's picture above the title, when it has one.
+func (h *htmlWriter) logo() {
+	im, ok := h.d.logo()
+	if !ok {
+		return
+	}
+	h.image(Node{Kind: KindImage, Asset: im.Name, Alt: "logo"})
 }

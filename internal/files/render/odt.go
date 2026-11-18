@@ -59,7 +59,7 @@ func writeODT(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	cw := &capWriter{w: w, ctx: ctx}
 	zw := zip.NewWriter(cw)
 	pw, _ := pageCm(opts.PageSize)
-	x := &odtWriter{d: d, opts: opts, media: map[string]docxMedia{}, textCm: pw - 2*odtMarginCm,
+	x := &odtWriter{d: d, opts: opts, media: map[string]docxMedia{}, textCm: pw - 2*odtMargin(d.Style),
 		textStyles: map[runProps]string{}}
 	for _, im := range d.Images {
 		m := docxMedia{img: im, contentExt: imageExt[im.MediaType]}
@@ -149,6 +149,14 @@ func odtBookmark(anchor string) string { return bookmarkName(anchor) }
 
 func (x *odtWriter) body() {
 	d := x.d
+	// The style's logo above the title.
+	if im, ok := d.logo(); ok {
+		if m := x.media[im.Name]; m.ok {
+			x.s(`<text:p text:style-name="Standard">`)
+			x.imageWidth(Node{Kind: KindImage, Asset: im.Name, Alt: "logo"}, d.Style.logoMM()/10)
+			x.s(`</text:p>`)
+		}
+	}
 	x.s(`<text:p text:style-name="Title">`)
 	x.bookmarkStart(d.Anchor)
 	x.text(oneLine(d.Title))
@@ -486,13 +494,21 @@ func (x *odtWriter) text(s string) {
 
 // image writes a picture as a frame anchored as a character, scaled down to
 // the text width. One whose size cannot be read is its alt text.
-func (x *odtWriter) image(n Node) {
+func (x *odtWriter) image(n Node) { x.imageWidth(n, 0) }
+
+// imageWidth writes a picture as a frame, at width cm when width is set
+// (the style's logo), else at its own size; never wider than the text.
+func (x *odtWriter) imageWidth(n Node, width float64) {
 	m, ok := x.media[n.Asset]
 	if !ok || !m.ok {
 		x.text("[" + oneLine(n.Alt) + "]")
 		return
 	}
 	wcm, hcm := float64(m.w)*2.54/96, float64(m.h)*2.54/96
+	if width > 0 && wcm > 0 {
+		hcm = hcm * width / wcm
+		wcm = width
+	}
 	if wcm > x.textCm {
 		hcm = hcm * x.textCm / wcm
 		wcm = x.textCm
@@ -550,6 +566,7 @@ func (x *odtWriter) contentHead() string {
 }
 
 const odfFontDecls = `<office:font-face-decls>` +
+	`<style:font-face style:name="Noto Serif" svg:font-family="'Noto Serif'" style:font-family-generic="roman" style:font-pitch="variable"/>` +
 	`<style:font-face style:name="Noto Sans" svg:font-family="'Noto Sans'" style:font-family-generic="swiss" style:font-pitch="variable"/>` +
 	`<style:font-face style:name="Noto Sans Mono" svg:font-family="'Noto Sans Mono'" style:font-family-generic="modern" style:font-pitch="fixed"/>` +
 	`</office:font-face-decls>`
@@ -583,14 +600,31 @@ func (x *odtWriter) styles() string {
 	b.WriteString(`<office:document-styles ` + odfNS + `>`)
 	b.WriteString(odfFontDecls)
 	b.WriteString(`<office:styles>`)
-	b.WriteString(`<style:default-style style:family="paragraph"><style:paragraph-properties fo:margin-bottom="0.21cm" fo:line-height="115%"/><style:text-properties style:font-name="Noto Sans" fo:font-size="10.5pt"/></style:default-style>`)
+	st := x.d.Style
+	font, size, textColor := "Noto Sans", "10.5pt", ""
+	if st != nil {
+		if st.serif() {
+			font = "Noto Serif"
+		}
+		size = typNum(st.BaseSize()) + "pt"
+		textColor = ` fo:color="` + st.textColor() + `"`
+	}
+	b.WriteString(`<style:default-style style:family="paragraph"><style:paragraph-properties fo:margin-bottom="0.21cm" fo:line-height="115%"/><style:text-properties style:font-name="` + font + `" fo:font-size="` + size + `"` + textColor + `/></style:default-style>`)
 	b.WriteString(`<style:style style:name="Standard" style:family="paragraph" style:class="text"/>`)
 	b.WriteString(`<style:style style:name="Text_20_body" style:display-name="Text body" style:family="paragraph" style:parent-style-name="Standard" style:class="text"/>`)
 	b.WriteString(`<style:style style:name="Title" style:family="paragraph" style:parent-style-name="Standard" style:next-style-name="Text_20_body" style:class="chapter"><style:paragraph-properties fo:margin-bottom="0.14cm"/><style:text-properties fo:font-size="22pt" fo:font-weight="bold"/></style:style>`)
 	b.WriteString(`<style:style style:name="Subtitle" style:family="paragraph" style:parent-style-name="Standard" style:next-style-name="Text_20_body" style:class="chapter"><style:paragraph-properties fo:margin-bottom="0.64cm"/><style:text-properties fo:color="#5b5b5b" fo:font-size="9pt"/></style:style>`)
-	for i, sz := range []string{"16pt", "14pt", "12pt", "11pt", "10.5pt", "10.5pt"} {
+	headColor := ""
+	if st != nil {
+		headColor = ` fo:color="` + st.headingColor() + `"`
+	}
+	for i, pt := range []float64{16, 14, 12, 11, 10.5, 10.5} {
 		n := strconv.Itoa(i + 1)
-		b.WriteString(`<style:style style:name="Heading_20_` + n + `" style:display-name="Heading ` + n + `" style:family="paragraph" style:parent-style-name="Standard" style:next-style-name="Text_20_body" style:default-outline-level="` + n + `" style:class="text"><style:paragraph-properties fo:margin-top="0.42cm" fo:margin-bottom="0.14cm" fo:keep-with-next="always"/><style:text-properties fo:font-size="` + sz + `" fo:font-weight="bold"/></style:style>`)
+		sz := typNum(pt) + "pt"
+		if st != nil {
+			sz = strconv.FormatFloat(pt*st.headScale(), 'f', 1, 64) + "pt"
+		}
+		b.WriteString(`<style:style style:name="Heading_20_` + n + `" style:display-name="Heading ` + n + `" style:family="paragraph" style:parent-style-name="Standard" style:next-style-name="Text_20_body" style:default-outline-level="` + n + `" style:class="text"><style:paragraph-properties fo:margin-top="0.42cm" fo:margin-bottom="0.14cm" fo:keep-with-next="always"/><style:text-properties fo:font-size="` + sz + `" fo:font-weight="bold"` + headColor + `/></style:style>`)
 	}
 	b.WriteString(`<style:style style:name="Quotations" style:family="paragraph" style:parent-style-name="Standard" style:class="html"><style:paragraph-properties fo:margin-left="1cm" fo:padding-left="0.3cm" fo:border-left="1.5pt solid #d6d3d1"/><style:text-properties fo:color="#44403c"/></style:style>`)
 	b.WriteString(`<style:style style:name="Preformatted_20_Text" style:display-name="Preformatted Text" style:family="paragraph" style:parent-style-name="Standard" style:class="html"><style:paragraph-properties fo:background-color="#f5f5f4" fo:padding="0.15cm"/><style:text-properties style:font-name="Noto Sans Mono" fo:font-size="9pt"/></style:style>`)
@@ -600,12 +634,39 @@ func (x *odtWriter) styles() string {
 	b.WriteString(`<style:style style:name="Table_20_Heading" style:display-name="Table Heading" style:family="paragraph" style:parent-style-name="Table_20_Contents" style:class="extra"><style:text-properties fo:font-weight="bold"/></style:style>`)
 	b.WriteString(`<style:style style:name="Contents_20_Entry" style:display-name="Contents Entry" style:family="paragraph" style:parent-style-name="Standard" style:class="index"><style:paragraph-properties fo:margin-bottom="0.07cm"/></style:style>`)
 	b.WriteString(`<style:style style:name="Horizontal_20_Line" style:display-name="Horizontal Line" style:family="paragraph" style:parent-style-name="Standard" style:class="html"><style:paragraph-properties fo:border-bottom="0.5pt solid #a8a29e" fo:padding="0cm"/></style:style>`)
-	b.WriteString(`<style:style style:name="Internet_20_link" style:display-name="Internet link" style:family="text"><style:text-properties fo:color="#1d4ed8" style:text-underline-style="solid" style:text-underline-width="auto" style:text-underline-color="font-color"/></style:style>`)
+	link := "#1d4ed8"
+	if st != nil {
+		link = st.linkColor()
+	}
+	b.WriteString(`<style:style style:name="Internet_20_link" style:display-name="Internet link" style:family="text"><style:text-properties fo:color="` + link + `" style:text-underline-style="solid" style:text-underline-width="auto" style:text-underline-color="font-color"/></style:style>`)
+	b.WriteString(`<style:style style:name="Header_Footer" style:family="paragraph" style:parent-style-name="Standard"><style:paragraph-properties fo:margin-bottom="0cm"/><style:text-properties fo:color="#6e6e6e" fo:font-size="8pt"/></style:style>`)
 	b.WriteString(`<style:style style:name="Status_20_Label" style:display-name="Status Label" style:family="text"><style:text-properties fo:color="#b45309" fo:font-size="8pt" fo:font-weight="bold" fo:text-transform="uppercase"/></style:style>`)
 	b.WriteString(`</office:styles><office:automatic-styles>`)
-	m := cm(odtMarginCm)
+	m := cm(odtMargin(st))
 	b.WriteString(`<style:page-layout style:name="PM1"><style:page-layout-properties fo:page-width="` + cm(pw) + `" fo:page-height="` + cm(ph) + `" style:print-orientation="portrait" fo:margin-top="` + m + `" fo:margin-bottom="` + m + `" fo:margin-left="` + m + `" fo:margin-right="` + m + `"/></style:page-layout>`)
-	b.WriteString(`</office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="PM1"/></office:master-styles></office:document-styles>`)
+	b.WriteString(`</office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="PM1"`)
+	if h, f, n := st.header(), st.footer(), st != nil && st.pageNumbers(); h != "" || f != "" || n {
+		// The style's header and footer lines, as text, and the page number
+		// (text:page-number) at the footer's end.
+		b.WriteString(`>`)
+		if h != "" {
+			b.WriteString(`<style:header><text:p text:style-name="Header_Footer">` + xmlText(h) + `</text:p></style:header>`)
+		}
+		if f != "" || n {
+			b.WriteString(`<style:footer><text:p text:style-name="Header_Footer">` + xmlText(f))
+			if n {
+				if f != "" {
+					b.WriteString(`<text:tab/>`)
+				}
+				b.WriteString(`<text:page-number text:select-page="current">1</text:page-number>`)
+			}
+			b.WriteString(`</text:p></style:footer>`)
+		}
+		b.WriteString(`</style:master-page>`)
+	} else {
+		b.WriteString(`/>`)
+	}
+	b.WriteString(`</office:master-styles></office:document-styles>`)
 	return b.String()
 }
 
@@ -649,4 +710,12 @@ func (x *odtWriter) manifest() string {
 	}
 	b.WriteString(`</manifest:manifest>`)
 	return b.String()
+}
+
+// odtMargin is the page margin in cm: the style's, else 2.54.
+func odtMargin(st *Style) float64 {
+	if st == nil || st.Page.MarginMM == 0 {
+		return odtMarginCm
+	}
+	return st.Page.MarginMM / 10
 }

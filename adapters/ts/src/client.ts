@@ -266,6 +266,7 @@ import type {
   DocumentFindDuplicatesInput,
   DocumentFindDuplicatesResult,
   DocumentAnnotation,
+  DocumentAnnotationLevel,
   DocumentListAnnotationsInput,
   DocumentListAnnotationsResult,
   DocumentAnnotateInput,
@@ -4272,7 +4273,7 @@ export class LoomcycleClient {
    *  folder's annotation is left out unless the caller may read every document
    *  it covers. `opts` as on {@link LoomcycleClient.document}. */
   async getAnnotation(
-    input: { scope?: "tenant"; id?: string; document_id?: string; path?: string; level?: "branch" | "document" | "path" },
+    input: { scope?: "tenant"; id?: string; document_id?: string; path?: string; level?: DocumentAnnotationLevel; name?: string },
     opts?: { signal?: AbortSignal; scopeId?: string; tenant?: string },
   ): Promise<{ annotations: DocumentAnnotation[] }> {
     return (await this.document(
@@ -4388,6 +4389,7 @@ export class LoomcycleClient {
     if (opts?.language) q.set("language", opts.language);
     if (opts?.provenance === false) q.set("provenance", "false");
     if (opts?.metadata) q.set("metadata", opts.metadata);
+    if (opts?.style) q.set("style", opts.style);
     const headers: Record<string, string> = {};
     if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
     const resp = await this.ctx.fetchImpl(

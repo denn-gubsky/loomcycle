@@ -46,7 +46,7 @@ tenant scope: a node's figures are drawn from every member.
 ## Returns
 
 `{mode, scheme?, vectors, note?, embed_model?, min_members, nodes, orphans?,
-fresh, stale, missing, computed, removed}`:
+fresh, stale, missing, computed, removed, series}`:
 
 - `vectors` — whether the vector stage runs here; `note` says why it does not.
 - `nodes` — `{node_id, kind (concept | class), name, tag?, members,
@@ -56,6 +56,15 @@ fresh, stale, missing, computed, removed}`:
   compute, the members a vector was found for. `error` says why a node's
   statistics could not be computed (its counts were still stored).
 - `orphans` — rows whose node is no longer in force, as `kind:node_id`.
+- `series` — the taxonomy's series per node and period, which `measure`
+  reads: `{shift?, fresh, stale, missing, computed, points?, truncated?}`.
+  A point is stale when the documents it is computed from changed (a late
+  member, a removed placement, a new date; for shift, a member's annotation or
+  the embed model). `compute` appends a row for each stale or missing point
+  and never changes a stored one; a period that lost every member gets an
+  empty row. `points` lists the stale and missing ones (at most 200),
+  `{measure, node_id, period, label, status, reason}`. `shift` says why shift
+  is not kept here. Rows of a node no longer in force are kept.
 
 ## Errors
 

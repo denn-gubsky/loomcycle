@@ -56,7 +56,7 @@ func (s *Server) handleDocumentExport(w http.ResponseWriter, r *http.Request) {
 	req := builtin.ExportRequest{
 		Document: id, Scope: scope, Chunk: strings.TrimSpace(q.Get("chunk")), Format: q.Get("format"),
 		TOC: queryBool(q, "toc"), TitlePage: queryBool(q, "title_page"),
-		PageSize: q.Get("page_size"), Language: q.Get("language"), Metadata: q.Get("metadata"),
+		PageSize: q.Get("page_size"), Language: q.Get("language"), Metadata: q.Get("metadata"), Style: q.Get("style"),
 	}
 	if v := q.Get("provenance"); v != "" {
 		on := queryBool(q, "provenance")

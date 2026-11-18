@@ -84,7 +84,7 @@ func writeEPUB(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 		{"META-INF/container.xml", epubContainer},
 		{epubRoot + "content.opf", epubOPF(d, pages, lang)},
 		{epubRoot + "nav.xhtml", epubNav(d, pages, book, lang)},
-		{epubRoot + "style.css", epubStyle},
+		{epubRoot + "style.css", epubStyle + d.Style.cssOverrides("body")},
 	}
 	if d.Embed != nil {
 		// In META-INF, the container's own folder: data for loomcycle's
@@ -273,16 +273,27 @@ func xhtmlHead(lang, title, css string) string {
 func (h *htmlWriter) page(p epubPage, opts Options, lang string) {
 	d := h.d
 	h.s(xhtmlHead(lang, p.title, "../style.css"))
+	if l := d.Style.header(); l != "" {
+		h.s(`<p class="style-header">` + h.esc(l) + "</p>\n")
+	}
+	end := func() {
+		if l := d.Style.footer(); l != "" {
+			h.s(`<p class="style-footer">` + h.esc(l) + "</p>\n")
+		}
+		h.s("</body>\n</html>\n")
+	}
 	if p.sec != nil {
 		h.section(p.sec)
-		h.s("</body>\n</html>\n")
+		end()
 		return
 	}
 	h.s("<header")
 	if d.Anchor != "" {
 		h.s(` id="` + h.esc(d.Anchor) + `"`)
 	}
-	h.s(">\n<h1>" + h.esc(oneLine(d.Title)))
+	h.s(">\n")
+	h.logo()
+	h.s("<h1>" + h.esc(oneLine(d.Title)))
 	if l := statusLabel(d.Status); l != "" {
 		h.s(` <span class="status">` + l + `</span>`)
 	}
@@ -304,5 +315,5 @@ func (h *htmlWriter) page(p epubPage, opts Options, lang string) {
 		h.s("</nav>\n")
 	}
 	h.blocks(d.Blocks, 0)
-	h.s("</body>\n</html>\n")
+	end()
 }

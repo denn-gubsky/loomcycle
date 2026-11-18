@@ -68,6 +68,7 @@ var documentReadOnlyOps = map[string]func(documentReadOnlyCall) bool{
 	"find_duplicates": func(in documentReadOnlyCall) bool { return !in.Propose },
 	// node_stats stores what it computes with mode compute; report writes nothing.
 	"node_stats": func(in documentReadOnlyCall) bool { return in.Mode != "compute" },
+	"measure":    nil,
 }
 
 // documentWriteOps are the Document ops that change something. copy and move

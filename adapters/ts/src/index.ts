@@ -484,6 +484,7 @@ export type {
   DocumentExportOptions,
   DocumentExport,
   DocumentAnnotation,
+  DocumentAnnotationLevel,
   DocumentListAnnotationsInput,
   DocumentListAnnotationsResult,
   DocumentAnnotateInput,

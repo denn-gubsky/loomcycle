@@ -37,6 +37,22 @@ func Exemplars(c Centroid, members []Member, k int) ([]Scored, error) {
 	return topK(out, k), nil
 }
 
+// Shift is the cosine distance between two centroids' directions, 1 - cos: how far
+// a node's centroid moved from one member set (its earlier members) to another (a
+// period's), RFC GM 6A.1. 0 is no movement, 2 the opposite direction.
+func Shift(from, to Centroid) (float64, error) {
+	if err := checkCentroid(from, "from"); err != nil {
+		return 0, err
+	}
+	if err := checkCentroid(to, "to"); err != nil {
+		return 0, err
+	}
+	if len(from.Unit) != len(to.Unit) {
+		return 0, fmt.Errorf("%w: got %d, want %d", ErrDimensionMismatch, len(to.Unit), len(from.Unit))
+	}
+	return 1 - dot(from.Unit, to.Unit), nil
+}
+
 // NearestSiblings orders the sibling nodes by the cosine similarity of their
 // centroid to self's, most similar first, ties broken by id ascending, and
 // returns the first k. A sibling with self's own id is refused: the caller

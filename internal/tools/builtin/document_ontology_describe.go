@@ -54,6 +54,9 @@ type describedClass struct {
 	// Stats (with_stats only, a document class) is its stored node statistics
 	// (document_node_stats.go).
 	Stats *nodeStatsView `json:"stats,omitempty"`
+	// Series (with_stats only) is the class's latest count and trend from the
+	// built-in series (document_measure_read.go).
+	Series *nodeSeriesView `json:"series,omitempty"`
 }
 
 // describedGrammar is a grammar plus the uses classes in force make of it.
@@ -155,6 +158,7 @@ func (d *Document) describeOntology(ctx context.Context, withCounts, withStats b
 	}
 	if withStats {
 		d.describeStats(ctx, key, acl, read, &out)
+		d.describeSeries(ctx, key, acl, read, &out)
 	}
 	return jsonResult(out)
 }

@@ -38,6 +38,8 @@ type ExportRequest struct {
 	Provenance *bool
 	// Metadata is none or embed, as File op=render takes it.
 	Metadata string
+	// Style is the house style's Path, none, or "" for the tenant default.
+	Style string
 	// Actor is who exported, as the render log records it (the HTTP route
 	// passes the principal's subject).
 	Actor string
@@ -124,10 +126,21 @@ func (f *File) Export(ctx context.Context, req ExportRequest) (*ExportedFile, *E
 		return invalid("export: metadata must be none or embed")
 	}
 	in := fileInput{Document: req.Document, Scope: scope, Chunk: req.Chunk, Format: format, TOC: req.TOC,
-		TitlePage: req.TitlePage, Provenance: req.Provenance, PageSize: req.PageSize, Metadata: req.Metadata}
+		TitlePage: req.TitlePage, Provenance: req.Provenance, PageSize: req.PageSize, Metadata: req.Metadata, Style: req.Style}
 	in.Language = req.Language
 	job := &renderJob{f: f, in: in, format: format, dest: renderDest{download: true},
 		date: time.Now().UTC().Format("2006-01-02"), actor: req.Actor, exported: &ExportedFile{}}
+	// Off a run there is no grant or hook to ask: the style is read with
+	// the person's own access, as the document is.
+	if res, ok := job.resolveStyle(ctx, false); !ok {
+		if res.Text == "" {
+			return nil, nil, ctx.Err()
+		}
+		// A bad style parameter, whether it names nothing or something the
+		// person may not read: one answer for both, and not the document's
+		// own 404.
+		return nil, &ExportError{Kind: ExportInvalid, Message: strings.Replace(res.Text, "render: ", "export: ", 1)}, nil
+	}
 	noMeta := false
 	din := docInput{Op: "export_md", Scope: scope, DocumentID: req.Document, IncludeMetadata: &noMeta,
 		render: &renderRequest{chunkID: req.Chunk, provenance: job.provenance(), language: req.Language, date: job.date,
