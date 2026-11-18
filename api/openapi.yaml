@@ -518,6 +518,112 @@ paths:
         "503": { description: "The server cannot write the format now (no typesetter, no conversion worker: code unavailable), or every converter is busy (code busy, with Retry-After); or the audit record could not be written." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_ontology/plan:
+    post:
+      tags: [documents]
+      summary: Plan changes to the tenant ontology — what they would do, before any is made.
+      description: |
+        For each change (retire, rename, move, edit or delete of an entry of
+        the tenant ontology, named by its chunk id) reports its risk class and
+        a count of each kind of dependent: rows keyed by a chunk id of the
+        entry's subtree (statements, node annotations, node statistics,
+        memberships) in the tenant scope, and rows keyed by its name (documents
+        and chunks of a class, matched case-insensitively, identity and subject
+        keys, statements of a relation kind, documents carrying a concept's tag)
+        in the tenant scope and every user and agent scope of the tenant. Each
+        count says what the change does to it: `destroyed`, `orphaned`, `stale`
+        or `kept`; the risk is `destroys` when any non-zero count is destroyed
+        or orphaned, `stales` when any is stale, else `none`. Sample ids come
+        from the tenant scope only. `issues` are the advisories of the ontology
+        as it would read after every change, `new_issues` those it does not
+        report now. `fingerprint` identifies the ontology the plan was computed
+        against. The plan writes nothing (RFC GQ P1). For a tenant operator
+        (`substrate:tenant`, its own tenant) or an admin (`?tenant=` focuses
+        another); not open to a tenant's members, since the counts cover every
+        user's scope.
+      operationId: planOntology
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          description: An admin's focus on another tenant; ignored for anyone else.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [changes]
+              additionalProperties: false
+              properties:
+                changes:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [op, entry]
+                    properties:
+                      op: { type: string, enum: [retire, rename, move, edit, delete] }
+                      entry: { type: string, description: "An in-force entry's chunk id (a class, relation, scheme, concept or instance)." }
+                      name: { type: string, description: "rename: the new name, one line, at most 200 characters." }
+                      parent: { type: string, description: "move: the new parent — the entry's section, or an entry of it that can hold it." }
+                      body: { type: string, description: "edit: the new body, at most 32 KiB." }
+      responses:
+        "200":
+          description: The plan. Nothing was written.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant: { type: string }
+                  fingerprint: { type: string, description: "sha256 (hex) of the ontology's state the plan was computed against." }
+                  changes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        op: { type: string }
+                        entry:
+                          type: object
+                          properties:
+                            chunk_id: { type: string }
+                            name: { type: string }
+                            section: { type: string, enum: [classes, relations, schemes, instances] }
+                            kind: { type: string, enum: [class, relation, scheme, concept, instance] }
+                        risk: { type: string, enum: [destroys, stales, none] }
+                        counts:
+                          type: object
+                          description: "Keyed by dependent: statements, node_annotations, members, node_stats, measure_points, typed_documents, typed_chunks, identity_keys, subject_keys, document_annotations, instances, projects, statements_of_kind, characteristic_breaks, review_rules, concept_tags, policy_changes, subject, facts_about — those that apply to the entry."
+                          additionalProperties:
+                            type: object
+                            properties:
+                              n: { type: integer }
+                              effect: { type: string, enum: [destroyed, orphaned, stale, kept] }
+                              tenant_scope: { type: integer }
+                              other_scopes: { type: integer }
+                              by_status: { type: object, additionalProperties: { type: integer } }
+                              sample: { type: array, items: { type: string } }
+                        subtree:
+                          type: array
+                          items: { type: object }
+                        notes: { type: array, items: { type: string } }
+                  issues: { type: array, items: { type: string } }
+                  new_issues: { type: array, items: { type: string } }
+                  scopes_counted: { type: integer }
+                  scopes_skipped: { type: integer }
+                  complete: { type: boolean, description: "false when a user or agent scope was left out (a fault, or the time budget); the other-scope counts are then a floor." }
+        "400":
+          description: "`invalid_body` (not JSON, an unknown field, over 64 KiB) or `invalid_request` (no changes, more than 50, an unknown op, a missing name, parent or body)."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403": { description: "`forbidden`: not an admin or a tenant operator." }
+        "404":
+          description: "`entry_not_found`: the tenant has no ontology, a change names no in-force entry, or a move names a parent that cannot hold the entry."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503": { description: "`unavailable`: no SQL Memory on this server." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
   /v1/_decide:
     post:
       tags: [decision]

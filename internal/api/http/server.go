@@ -3528,6 +3528,15 @@ func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 	return mux
 }
 
+// ontologyPlanRoutes registers RFC GQ P1's plan: what changes to the ontology would
+// do, before any is made. It writes nothing, but its counts cover every scope of the
+// tenant: gated (requiredScopeFor) and carved out of the member path as the subject
+// merge is; the connector checks the caller again.
+func (s *Server) ontologyPlanRoutes(mux *http.ServeMux) *http.ServeMux {
+	mux.Handle("POST /v1/_ontology/plan", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyPlan))))
+	return mux
+}
+
 func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -4232,7 +4241,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return s.tenantTelemetryRoutes(mux)
+	return s.ontologyPlanRoutes(s.tenantTelemetryRoutes(mux))
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount

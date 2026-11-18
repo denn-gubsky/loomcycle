@@ -1428,8 +1428,8 @@ func requiredScopeFor(method, path string) string {
 	// RFC FR P2: /subjects/merge too — and, unlike the others, it is carved out of
 	// the member path (memberpath.CarvedOut): which of two subjects survives is
 	// the operator's decision, not a member's. RFC FR P4: /subjects/principal
-	// likewise — which person a subject is decides what an erasure finds.
-	case path == "/v1/_ontology" ||
+	// likewise — which person a subject is decides what an erasure finds; RFC GQ /plan, whose counts span every scope.
+	case path == "/v1/_ontology" || path == "/v1/_ontology/plan" ||
 		path == "/v1/_ontology/proposals" || path == "/v1/_ontology/adopt" ||
 		path == "/v1/_ontology/subjects/merge" || path == "/v1/_ontology/subjects/principal":
 		return auth.ScopeTenant
