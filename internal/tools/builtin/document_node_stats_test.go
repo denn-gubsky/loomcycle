@@ -298,13 +298,107 @@ func TestNodeStats_ReaderLackingAMemberGetsNoStatistics(t *testing.T) {
 		// limit still sees it, marked stale.
 		k.f.link("link_chunks", k.f.chunk("tenant", k.r1), k.law, "subject")
 		desc = describeStats(t, d, denyA2)
-		if s, _ := conceptStats(desc, k.law); s == nil || !strings.Contains(s.Withheld, "members changed") {
-			t.Errorf("Law after a new member, limited reader: stats = %+v, want withheld (members changed)", s)
+		if s, _ := conceptStats(desc, k.law); s == nil || s.Withheld == "" || s.Spread != nil {
+			t.Errorf("Law after a new member, limited reader: stats = %+v, want withheld", s)
 		}
 		if s, _ := conceptStats(describeStats(t, d, k.f.reader), k.law); s == nil || s.Withheld != "" || !s.Stale {
 			t.Errorf("Law after a new member, full reader: stats = %+v, want shown and stale", s)
 		}
 	})
+}
+
+// TestNodeStats_LimitedReaderCannotTellWhyStatsAreWithheld — to a reader with
+// access-control limits, a node withheld for a member it may not read looks exactly
+// like one withheld because its members changed or because no row is stored:
+// otherwise the answer names the nodes that hold a hidden document.
+func TestNodeStats_LimitedReaderCannotTellWhyStatsAreWithheld(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpus(t, d, base)
+	nodeStatsRun(t, d, k.f.operator, computeAll)
+	key, _, err := d.ontologyTenantKey(k.f.operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// reporting: no stored row.
+	if err := d.writeNodeStats(k.f.operator, key, nil, []string{nodeKindConcept + ":" + k.rep}); err != nil {
+		t.Fatal(err)
+	}
+	// Law: a member added since its row was computed (r1, which the reader may read).
+	k.f.link("link_chunks", k.f.chunk("tenant", k.r1), k.law, "subject")
+	denyA2 := tools.UpdateRunPolicy(k.f.reader, func(rp *tools.RunPolicy) {
+		rp.ACL = aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/a2"}})
+	})
+	desc := describeStats(t, d, denyA2)
+	hidden, _ := conceptStats(desc, k.out) // a2, hidden, is a member
+	changed, _ := conceptStats(desc, k.law)
+	missing, _ := conceptStats(desc, k.rep)
+	if hidden == nil || hidden.Withheld == "" {
+		t.Fatalf("precondition: outsourcing is withheld from the limited reader: %+v", hidden)
+	}
+	if !reflect.DeepEqual(hidden, changed) || !reflect.DeepEqual(hidden, missing) {
+		t.Errorf("withheld views differ by cause:\n hidden member %+v\n members changed %+v\n no row %+v", hidden, changed, missing)
+	}
+}
+
+// TestNodeStats_VectorArrivingLaterMarksStale — a row computed while a member's
+// vector was missing (the annotation is written before its vector, and an embed can
+// fail) goes stale when the vector arrives, and the next compute uses it.
+func TestNodeStats_VectorArrivingLaterMarksStale(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpus(t, d, base)
+	key, mscope, err := d.ontologyTenantKey(k.f.operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k.f.c.vs.MemoryEmbedDelete(k.f.operator, "", mscope, annotationMemScopeID(mscope, key),
+		annotationKey(k.docs[k.b1], annotationLevelDocument)); err != nil {
+		t.Fatal(err)
+	}
+	nodeStatsRun(t, d, k.f.operator, computeAll)
+	if r := storedRows(t, d, k.f.operator)[nodeStatsKey(nodeKindConcept, k.rm)]; r.withVector != 3 {
+		t.Fatalf("precondition: Risk Management computed without b1's vector: %+v", r)
+	}
+	k.setVector(t, k.b1, k.vecs[k.b1], "m1")
+	rep := nodeStatsRun(t, d, k.f.operator, `{"op":"node_stats"}`)
+	if n := rep.node(t, nodeKindConcept, k.rm); n.Status != "stale" {
+		t.Errorf("Risk Management after b1's vector arrived: %s, want stale", n.Status)
+	}
+	if n := rep.node(t, nodeKindConcept, k.rep); n.Status != "fresh" {
+		t.Errorf("reporting (b1 is no member): %s, want fresh", n.Status)
+	}
+	nodeStatsRun(t, d, k.f.operator, computeAll)
+	if r := storedRows(t, d, k.f.operator)[nodeStatsKey(nodeKindConcept, k.rm)]; r.withVector != 4 {
+		t.Errorf("Risk Management after recompute: members_with_vector %d, want 4", r.withVector)
+	}
+}
+
+// TestNodeStats_PartialOntologyReadIsRefused — a read that lost a chunk body may
+// have lost a whole scheme section; a compute on it would delete those nodes' rows
+// as orphans and recompute others from incomplete definitions. Both the op and the
+// sweeper's entry point refuse it and leave the rows as they are.
+func TestNodeStats_PartialOntologyReadIsRefused(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpus(t, d, base)
+	nodeStatsRun(t, d, k.f.operator, computeAll)
+	before := storedRows(t, d, k.f.operator)
+	// An ontology edit, so the next read is a fresh build and not the cached one.
+	g := k.f.c.exec(map[string]any{"op": "get_chunk", "scope": "tenant", "id": k.law})
+	k.f.c.exec(map[string]any{"op": "update_chunk", "scope": "tenant", "id": k.law,
+		"body": "Statutes and regulations in force.", "revision": g["revision"]})
+	d2 := &Document{Store: &failingBodyStore{Store: d.Store, fail: true}, SqlMem: d.SqlMem, Bus: d.Bus, Embedder: d.Embedder}
+	if read, _ := d2.tenantOntologyRead(k.f.operator); !read.partial {
+		t.Fatal("precondition: the failing store gives a partial read")
+	}
+	if _, res := docExec(t, d2, k.f.operator, computeAll); !res.IsError {
+		t.Errorf("node_stats compute on a partial read was not refused: %s", res.Text)
+	}
+	key, _, _ := d.ontologyTenantKey(k.f.operator)
+	if _, ran, err := d2.NodeStatsScopeKey(context.Background(), key); err == nil || ran {
+		t.Errorf("sweeper pass on a partial read: ran %v err %v, want refused", ran, err)
+	}
+	if after := storedRows(t, d, k.f.operator); !reflect.DeepEqual(before, after) {
+		t.Error("a pass on a partial read changed stored rows")
+	}
 }
 
 // TestNodeStats_StoreWithoutVectorsReportsCountsOnly — on a store that keeps no
