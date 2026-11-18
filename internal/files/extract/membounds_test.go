@@ -168,6 +168,25 @@ func TestHTML_ReconstructedFormattingRefusedBeforeParse(t *testing.T) {
 	})
 }
 
+// A book's content document is held to the same pre-parse bounds as a web
+// page: the clone flood is refused before the parser builds it, and the
+// book with it.
+func TestEPUB_ReconstructedFormattingRefusedBeforeParse(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("<p>")
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&b, "<b class=c%d>", i)
+	}
+	b.WriteString(strings.Repeat("</p><p>x", 10000))
+	book := epubOf(t, epubContainer("c.opf"),
+		xmlEntry("c.opf", `<package xmlns="http://www.idpf.org/2007/opf"><metadata/><manifest><item id="a" href="a.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="a"/></spine></package>`),
+		entry{"a.xhtml", []byte(b.String())})
+	wantRefusedUnder(t, "reconstructed formatting in a book", 32<<20, func() error {
+		_, err := extractBytes(EPUB{}, "clones.epub", book)
+		return err
+	})
+}
+
 func TestHTML_PageWithFormattingStillExtracts(t *testing.T) {
 	// The formatting count is not a refusal of formatting: closed tags, a few
 	// left open, and the same tag repeated (the parser keeps three) pass.

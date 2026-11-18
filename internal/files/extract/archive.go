@@ -147,6 +147,13 @@ func (a *archive) lookup(name string) (*zip.File, bool) {
 // and the entry's own expansion bound, both enforced on the bytes as they
 // are inflated: the sizes an entry declares are not trusted.
 func (a *archive) read(name string) ([]byte, error) {
+	return a.readMax(name, 0)
+}
+
+// readMax is read with a cap of its own on the entry (most > 0), so a part
+// with a smaller bound than the archive's (a book's content document) is
+// refused once it passes that bound, not after it has been inflated whole.
+func (a *archive) readMax(name string, most int64) ([]byte, error) {
 	if err := a.ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -158,8 +165,11 @@ func (a *archive) read(name string) ([]byte, error) {
 		return nil, fmt.Errorf("extract: %s is a folder", name)
 	}
 	limit := a.budget
-	if byRatio := int64(f.CompressedSize64)*a.limits.ratio + a.limits.ratioFree; byRatio < limit {
-		limit = byRatio
+	byRatio := int64(f.CompressedSize64)*a.limits.ratio + a.limits.ratioFree
+	limit = min(limit, byRatio)
+	ownCap := most > 0 && most < limit
+	if ownCap {
+		limit = most
 	}
 	rc, err := f.Open()
 	if err != nil {
@@ -175,7 +185,10 @@ func (a *archive) read(name string) ([]byte, error) {
 		return nil, fmt.Errorf("extract: cannot read %s in the archive: %w", name, err)
 	}
 	if n > limit {
-		if limit < a.budget {
+		switch {
+		case ownCap:
+			return nil, refusedf("%s is over %d bytes", name, most)
+		case limit < a.budget:
 			return nil, refusedf("%s expands more than %d times its compressed size", name, a.limits.ratio)
 		}
 		return nil, refusedf("the archive expands to more than %d bytes", a.budget)

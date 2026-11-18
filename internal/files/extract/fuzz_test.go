@@ -221,6 +221,11 @@ func FuzzExtractODT(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, ODT{}, "f.odt", data, true) })
 }
 
+func FuzzEPUB(f *testing.F) {
+	addZipSeeds(f, epub3Book(f), epub2Book(f))
+	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtractBoth(t, EPUB{}, "f.epub", data, true) })
+}
+
 func FuzzExtractHTML(f *testing.F) {
 	for _, s := range []string{
 		`<!doctype html><html><head><title>Новини</title><script>x()</script></head><body><h1>Засідання</h1><p>Рішення: затвердити

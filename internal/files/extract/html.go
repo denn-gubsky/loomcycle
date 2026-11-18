@@ -435,7 +435,8 @@ type htmlBody struct {
 	// book's contents entry for it.
 	label string
 	// picture returns the bytes of the picture a document names by a
-	// relative reference; false when the book holds none by that name.
+	// relative reference; false when the book holds none by that name, and
+	// true with no bytes for one already written (the cover).
 	picture func(ref string) ([]byte, bool)
 	// noteRef returns "[n]" for a link to a footnote, "" for any other link;
 	// note takes a footnote element out of the flow, reporting whether el
@@ -579,7 +580,9 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 				if err != nil {
 					return err
 				}
-				h.blocks = append(h.blocks, l)
+				if l != "" {
+					h.blocks = append(h.blocks, l)
+				}
 				continue
 			}
 			if l := imgLink(c); l != "" {
@@ -611,8 +614,11 @@ func (h *htmlState) bookImage(ref, alt string, n *html.Node) (string, error) {
 		return imgLink(n), nil
 	}
 	data, ok := h.body.picture(ref)
-	if !ok {
+	switch {
+	case !ok:
 		return altOnly(cleanAlt(alt)), nil
+	case data == nil:
+		return "", nil
 	}
 	return h.w.image(data, alt)
 }
@@ -635,7 +641,9 @@ func (h *htmlState) svgImages(n *html.Node, depth int) error {
 			if err != nil {
 				return err
 			}
-			h.blocks = append(h.blocks, l)
+			if l != "" {
+				h.blocks = append(h.blocks, l)
+			}
 			continue
 		}
 		if err := h.svgImages(c, depth+1); err != nil {
