@@ -19,6 +19,10 @@ turn a path into a `document_id` and a `root_chunk_id`.
   to three extra queries; never reaches another user's store.
 - `with_summary` — add the document's annotation as `summary` (`{level, brief, abstract, stale?}`), when it has one. `summary_chars` caps the abstract (default 2000).
 - `summary_chars` — with `with_summary`, the most abstract characters the answer carries (default 2000, at most 8000).
+- `with_memberships` — `true` adds `memberships`: what `memberships` answers
+  for the document (its class chain, its concepts in each taxonomy with each
+  placement, and its folders). `include_proposed: false` leaves proposed
+  placements out of it. Off by default; without it the answer is unchanged.
 
 ## Returns
 
