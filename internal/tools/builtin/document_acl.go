@@ -93,6 +93,7 @@ var docACLOps = map[string]docACLRule{
 	"mark_source":        {verb: "write", target: docACLDocument},
 	"judge_fact":         {verb: "write", target: docACLJudge},
 	"propose_entity":     {verb: "write", target: docACLTenantScope},
+	"import_scheme":      {verb: "write", target: docACLTenantScope}, // files an inert proposal, as propose_entity does
 	"propose_subject":    {verb: "write", target: docACLTenantScope},
 	"create_chunk":       {verb: "write", target: docACLCreateChunk},
 	"get_chunk":          {verb: "read", target: docACLChunk},

@@ -807,6 +807,9 @@ type OntologyProposal struct {
 	// Section is the section the proposal sits in when it is not a class (RFC FO P1b:
 	// "relations"); "" for a class, as every proposal was before sections.
 	Section string `json:"section,omitempty"`
+	// Scheme is set on a proposal of a WHOLE scheme (RFC GM P3.1): the header and the
+	// concept tree accepting it would put in force. nil on every other proposal.
+	Scheme *ProposedSchemeView `json:"scheme,omitempty"`
 }
 
 // TrimOntologyName normalises a heading line or a chunk title into an entity name.

@@ -52,6 +52,9 @@ const (
 	// them never does, so such a job never reaches a worker that would
 	// refuse the format.
 	LabelWriteBook = "write_odt_epub"
+	// LabelDraw is a Mermaid diagram drawn as a picture (RFC GR P4d), with
+	// the diagram helper. A worker carries it when the helper resolves.
+	LabelDraw = "draw_diagram"
 )
 
 // LabelFor is the label a job kind needs.
@@ -69,6 +72,8 @@ func LabelFor(k workerpb.JobKind) string {
 		return LabelImage
 	case workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER:
 		return LabelWrite
+	case workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW:
+		return LabelDraw
 	}
 	return LabelExtract
 }
@@ -90,7 +95,7 @@ func LabelForJob(k workerpb.JobKind, format string) string {
 // HelperLabel reports whether a label stands for an operator helper program,
 // which a worker may lack while still running other jobs.
 func HelperLabel(label string) bool {
-	return label == LabelRender || label == LabelMedia || label == LabelEncode || label == LabelWritePDF
+	return label == LabelRender || label == LabelMedia || label == LabelEncode || label == LabelWritePDF || label == LabelDraw
 }
 
 // KindName is a job kind's name in metrics and logs.
@@ -110,6 +115,8 @@ func KindName(k workerpb.JobKind) string {
 		return "image_reencode"
 	case workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER:
 		return "document_render"
+	case workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW:
+		return "diagram_draw"
 	}
 	return "unknown"
 }

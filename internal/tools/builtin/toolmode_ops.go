@@ -67,6 +67,7 @@ var documentOpModes = map[string]opRead{
 	"mark_source":           writeOp,
 	"create_chunk":          writeOp,
 	"propose_entity":        writeOp,
+	"import_scheme":         writeOp,
 	"propose_subject":       writeOp,
 	"judge_fact":            writeOp,
 	"upsert_chunk":          writeOp,

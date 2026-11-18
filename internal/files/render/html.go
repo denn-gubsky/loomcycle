@@ -1,9 +1,12 @@
 package render
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"html"
+	"image"
 	"io"
 	"regexp"
 	"strconv"
@@ -343,10 +346,10 @@ func (h *htmlWriter) image(n Node) {
 		if h.d.Style != nil && img.Name == h.d.Style.Logo && n.Alt == "logo" {
 			cls = ` class="logo"`
 		}
-		h.s(`<img` + cls + ` src="../` + epubImageDir + img.Name + `" alt="` + h.esc(oneLine(n.Alt)) + `"/>`)
+		h.s(`<img` + cls + ` src="../` + epubImageDir + img.Name + `"` + shownSize(img) + ` alt="` + h.esc(oneLine(n.Alt)) + `"/>`)
 		return
 	}
-	h.s(`<img`)
+	h.s(`<img` + shownSize(img))
 	if h.d.Style != nil && img.Name == h.d.Style.Logo && n.Alt == "logo" {
 		h.s(` class="logo"`)
 	}
@@ -379,4 +382,18 @@ func (h *htmlWriter) logo() {
 		return
 	}
 	h.image(Node{Kind: KindImage, Asset: im.Name, Alt: "logo"})
+}
+
+// shownSize is a 2× picture's width and height attributes, so a page shows
+// it at half its pixel size; "" for any other picture, shown at its own.
+func shownSize(im Image) string {
+	if im.Density != 2 {
+		return ""
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(im.Data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return ""
+	}
+	w, h := im.shown(cfg.Width, cfg.Height)
+	return fmt.Sprintf(` width="%d" height="%d"`, w, h)
 }

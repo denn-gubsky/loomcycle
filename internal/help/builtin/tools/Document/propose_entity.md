@@ -25,13 +25,33 @@ run can open (the default `user` needs a user id; otherwise pass `agent`).
   needs `parent`: the scheme, or the broader concept, it belongs under — by name
   or by its tag (`topics/risk-management`). An instance needs `parent`: the class
   it is an instance of (`organization`).
+- `concepts` — with `section: schemes` and **no** `parent`: a whole NEW scheme
+  named `name`, filed as ONE proposal. Each concept is `{name, meaning?,
+  notation?, alt?, exact_match?, children?}`, `children` being narrower concepts
+  of the same shape: up to 8 levels deep (deeper ones are lifted onto the
+  eighth, with a warning) and at most 500 concepts in all (more is refused,
+  naming the limit). Without a Schemes section in the ontology the proposal
+  carries one, and accepting puts it in place.
+- `header` — a new scheme's header: `{domain?, projects?, origin?, source?,
+  version?}` — the knowledge domain it serves, the classes whose things it
+  arranges, `adopted`, `declared` or `generated`, and an adopted scheme's
+  source and edition. Carried as data, never in the text, and written as
+  directives only when an operator accepts — so is each concept's notation,
+  alternative labels and exact match. Nothing else becomes a directive: any
+  `@` line in `body` or a `meaning` stays quoted text.
 - `body` — your evidence: counts and a few example facts, at most 4000 bytes.
+  For a new scheme, its meaning.
 - `scope` — see above.
+
+To file a published classification, use `import_scheme`, which reads a Markdown
+outline or SKOS and files the same kind of proposal.
 
 ## Returns
 
 `{proposed, chunk_id, parent_id, note}` — `note` says it is filed and not in
-force.
+force. A new scheme adds `concepts` (how many), `header`, `warnings` when
+something was changed to fit, and `carries_section: true` when the ontology
+has no Schemes section yet.
 
 ## Errors
 
@@ -79,6 +99,12 @@ An instance — a real organisation the tenant keeps meeting:
 
 ```json
 {"op": "propose_entity", "section": "instances", "name": "National Bank of Ukraine", "parent": "organization", "body": "Cited as the issuer in 23 documents."}
+```
+
+A whole new scheme with its header and concepts, as one proposal:
+
+```json
+{"op": "propose_entity", "section": "schemes", "name": "Aircraft systems", "body": "Chapters of the maintenance manuals.", "header": {"domain": "aircraft maintenance documentation", "projects": ["manual"], "origin": "generated"}, "concepts": [{"name": "Hydraulics", "notation": "29", "children": [{"name": "Pumps"}]}, {"name": "Avionics"}]}
 ```
 
 A top-level type from an agent with no user on its run:

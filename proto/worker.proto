@@ -217,6 +217,9 @@ enum JobKind {
   JOB_KIND_IMAGE_REENCODE = 6;
   // A render bundle to a file of `format` (RFC GR).
   JOB_KIND_DOCUMENT_RENDER = 7;
+  // A Mermaid diagram's source to a PNG, with the diagram helper (RFC GR
+  // P4d).
+  JOB_KIND_DIAGRAM_DRAW = 8;
 }
 
 message JobStart {

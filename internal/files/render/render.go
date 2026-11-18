@@ -155,6 +155,9 @@ func DecodeBundle(r io.ReaderAt, size int64) (*Doc, Options, error) {
 		if _, ok := imageExt[im.MediaType]; !ok {
 			return nil, Options{}, fmt.Errorf("%w: picture %q has type %q", ErrBadBundle, im.Name, im.MediaType)
 		}
+		if im.Density != 0 && im.Density != 1 && im.Density != 2 {
+			return nil, Options{}, fmt.Errorf("%w: picture %q has density %d", ErrBadBundle, im.Name, im.Density)
+		}
 		im.Data = data
 	}
 	return d, bd.Options, nil

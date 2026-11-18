@@ -44,6 +44,15 @@ const (
 	DefaultPDFCommand = "typst compile --root {dir} {in} {out}"
 	// PDFHelperKey names the PDF render helper in errors and logs.
 	PDFHelperKey = "render.pdf"
+	// DefaultDiagramCommand draws a Mermaid diagram (RFC GR P4d, D23) with
+	// merman (pinned in the worker image) as a PNG at twice its size (-s 2),
+	// reading {in} and writing {out}. Replaced on a worker by
+	// LOOMCYCLE_WORKER_MERMAID_COMMAND.
+	DefaultDiagramCommand = "merman-cli render -q -s 2 -o {out} {in}"
+	// DiagramProgram is the default diagram renderer's program.
+	DiagramProgram = "merman-cli"
+	// DiagramHelperKey names the diagram helper in errors and logs.
+	DiagramHelperKey = "render.diagram"
 )
 
 // Helper is one operator command a job runs: the command line template, the
@@ -84,6 +93,9 @@ type InProcess struct {
 	// with format pdf, RFC GR); nil makes a PDF render return
 	// ErrNotConfigured.
 	WritePDF *Helper
+	// Draw draws a Mermaid diagram as a picture (DrawDiagram, RFC GR P4d);
+	// nil makes DrawDiagram return ErrNotConfigured.
+	Draw *Helper
 	// MaxEncodedBytes caps what the encoder may hand back; zero is no cap.
 	MaxEncodedBytes int64
 	// Scratch names the operator directory a helper job makes its scratch
@@ -569,4 +581,45 @@ func recordingExt(mt string) string {
 		return ".wav"
 	}
 	return ".bin"
+}
+
+// DrawDiagram has the diagram helper draw a Mermaid diagram's source as a
+// PNG, in a scratch folder removed afterwards. It returns the helper's bytes
+// within render.MaxImage; whether they are a picture a file may carry is the
+// caller's check (render.DrawDiagrams).
+func (p *InProcess) DrawDiagram(ctx context.Context, src []byte) ([]byte, error) {
+	if p.Draw == nil {
+		return nil, ErrNotConfigured
+	}
+	if len(src) == 0 || len(src) > render.MaxDiagramSource {
+		return nil, fmt.Errorf("%w: a diagram of %d bytes, not 1 to %d", render.ErrTooLarge, len(src), render.MaxDiagramSource)
+	}
+	s, err := p.openScratch(ctx, ".mmd-")
+	if err != nil {
+		return nil, err
+	}
+	defer s.remove()
+	if err := writeNew(s.dir, "diagram.mmd", src); err != nil {
+		return nil, err
+	}
+	err = s.run(ctx, p.Draw, map[string]string{"in": filepath.Join(s.path, "diagram.mmd"), "out": filepath.Join(s.path, "diagram.png")})
+	if errors.Is(err, helper.ErrNotFound) {
+		return nil, fmt.Errorf("%w: %v", ErrNoHelper, err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	fi, err := s.dir.Lstat("diagram.png")
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
+		return nil, fmt.Errorf("%s: the diagram renderer wrote no picture at {out}", p.Draw.Key)
+	}
+	if fi.Size() > render.MaxImage {
+		return nil, fmt.Errorf("%w: the diagram's picture is %d bytes, more than %d", render.ErrTooLarge, fi.Size(), render.MaxImage)
+	}
+	fh, err := s.dir.Open("diagram.png")
+	if err != nil {
+		return nil, err
+	}
+	defer fh.Close()
+	return io.ReadAll(io.LimitReader(fh, render.MaxImage))
 }

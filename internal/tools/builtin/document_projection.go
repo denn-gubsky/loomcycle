@@ -576,6 +576,10 @@ func (d *Document) latestBasisVersion(ctx context.Context, key sqlmem.ScopeKey, 
 // and ON CONFLICT DO NOTHING turns the loser's key violation into a zero-row
 // insert. Allocating the version in the same transaction would not help: under
 // read committed both passes still read the same max.
+//
+// It also reports false when a version above b.version is stored (basisSuperseded):
+// the prune deletes old versions, so the key alone cannot refuse a pass that is
+// late enough to find its version already pruned.
 func (d *Document) saveBasis(ctx context.Context, key sqlmem.ScopeKey, model string, b *storedBasis) (bool, error) {
 	comps := make([]float32, 0, projection.Components*b.Dimension)
 	for k := range projection.Components {
@@ -584,6 +588,9 @@ func (d *Document) saveBasis(ctx context.Context, key sqlmem.ScopeKey, model str
 	ev := fmt.Sprintf("[%s,%s,%s]", fmtFloat(b.ExplainedVariance[0]), fmtFloat(b.ExplainedVariance[1]), fmtFloat(b.ExplainedVariance[2]))
 	saved := false
 	err := d.withSqlTxn(ctx, key, func(txnID string) error {
+		if gone, err := d.basisSuperseded(ctx, txnID, model, b.version); err != nil || gone {
+			return err
+		}
 		res, err := d.docSQL().ExecTxn(ctx, txnID, d.docSQL().Rebind(`INSERT INTO chunk_projection_basis
 			(model, version, dimension, mean, components, explained_variance, sample_n, fitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (model, version) DO NOTHING`),
@@ -595,6 +602,21 @@ func (d *Document) saveBasis(ctx context.Context, key sqlmem.ScopeKey, model str
 		return d.pruneBases(ctx, txnID, model, b.version)
 	})
 	return saved && err == nil, err
+}
+
+// basisSuperseded reports whether model already has a basis newer than version,
+// read in the caller's transaction. A refit that read v1 and saves v2 after other
+// passes saved v3 and v4 finds v2 pruned (the v4 save keeps only v3 and v4), so
+// its insert would succeed. It would then report a second fit of v2 and store a
+// basis older than the latest. On SQLite the scope's one connection serialises
+// the whole transaction. On Postgres a save that commits between this read and the
+// insert can still slip through, but only after its own pass has also pruned v2.
+func (d *Document) basisSuperseded(ctx context.Context, txnID, model string, version int) (bool, error) {
+	res, err := d.queryTxn(ctx, txnID, `SELECT 1 FROM chunk_projection_basis WHERE model = ? AND version > ? LIMIT 1`, model, version)
+	if err != nil {
+		return false, err
+	}
+	return len(res.Rows) > 0, nil
 }
 
 // pruneBases drops model's basis rows and anchors older than the version before

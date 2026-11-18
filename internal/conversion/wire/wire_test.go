@@ -106,3 +106,14 @@ func TestLabelForJob_APDFRenderNeedsTheTypesetter(t *testing.T) {
 		t.Errorf("an extract job's format changed its label: %q", got)
 	}
 }
+
+// A diagram draw needs the diagram helper's label, a helper label a worker
+// carries only with its program (RFC GR P4d).
+func TestLabelFor_DiagramDrawNeedsTheRenderer(t *testing.T) {
+	if got := LabelForJob(workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW, ""); got != LabelDraw || !HelperLabel(got) {
+		t.Errorf("label %q (helper %v), want %q", got, HelperLabel(got), LabelDraw)
+	}
+	if KindName(workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW) != "diagram_draw" {
+		t.Error("KindName")
+	}
+}

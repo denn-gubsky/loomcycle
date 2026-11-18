@@ -146,7 +146,8 @@ Every edge is a statement: an id, a status (`proposed`, `asserted`,
 | `resolve_anchor` | find a work by its key and a part of it by anchor, as of a date; optionally file a placeholder | `work_key` |
 | `classify` | say what a document is from the ontology; applies a single rule match, proposes the rest | `document_id`, `id` or `path` |
 | `accept_classification` | an operator accepts a document's pending classification; refused inside a run | `document_id`, `id` or `path` |
-| `propose_entity` | suggest a class, relation kind, concept or instance for the tenant ontology | `name` |
+| `propose_entity` | suggest a class, relation kind, concept, instance or a whole new scheme for the tenant ontology | `name` |
+| `import_scheme` | file a published classification (Markdown outline or SKOS RDF/XML) as one proposed scheme, `@origin adopted` | `markdown` or `skos_xml` |
 | `propose_subject` | suggest a new shared subject for the tenant | `subject`, `natural_key` |
 
 **Finding things**

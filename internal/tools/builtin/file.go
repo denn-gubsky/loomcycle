@@ -81,6 +81,8 @@ type File struct {
 	ScratchDir string
 	// pdfCommand overrides convert.DefaultPDFCommand, for tests.
 	pdfCommand string
+	// diagramCommand overrides convert.DefaultDiagramCommand, for tests.
+	diagramCommand string
 }
 
 func (f *File) Name() string { return FileToolName }

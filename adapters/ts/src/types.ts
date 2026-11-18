@@ -4357,6 +4357,29 @@ export type DocumentEdgeEvidence = {
   part?: "body" | "title";
 };
 
+/** One concept of a proposed scheme (propose_entity `concepts`, RFC GM P3.1). */
+export type DocumentProposedConcept = {
+  name: string;
+  meaning?: string;
+  notation?: string;
+  alt?: string[];
+  exact_match?: string;
+  /** Narrower concepts, of the same shape. */
+  children?: DocumentProposedConcept[];
+};
+
+/** A proposed scheme's header (RFC GM D14). */
+export type DocumentSchemeHeader = {
+  /** The knowledge domain the scheme serves. */
+  domain?: string;
+  /** The classes whose things it arranges. */
+  projects?: string[];
+  origin?: "adopted" | "declared" | "generated";
+  /** An adopted scheme's publisher or URL, and its edition. */
+  source?: string;
+  version?: string;
+};
+
 export type DocumentToolInput = {
   // Op order mirrors the backend enum (internal/tools/builtin/document.go)
   // exactly so a reader can line the two up 1:1. set_path attaches/re-homes a
@@ -4443,6 +4466,8 @@ export type DocumentToolInput = {
     | "verification_stats"
     | "remember"
     | "propose_entity"
+    // A published scheme (outline or SKOS) filed as one proposed scheme (RFC GM P1.4).
+    | "import_scheme"
     | "propose_subject"
     | "search"
     // Remote document sources (RFC CE).
@@ -4847,8 +4872,22 @@ export type DocumentToolInput = {
   /** import_md: an export_md-shaped Markdown document (headings = hierarchy;
    *  `<!-- loom: ... -->` metadata; `<!-- loom-edges: ... -->` trailer). Omit
    *  document_id to create a new document; pass it (+ optional parent_id) to
-   *  import under an existing chunk. */
+   *  import under an existing chunk. import_scheme: a scheme as an outline —
+   *  `# name`, then nested `-` bullets (or `##` headings), each an optional
+   *  notation in a code span then the name, with `alt:`, `note:`, `exact:`
+   *  lines under it. */
   markdown?: string;
+  /** propose_entity with section "schemes" and no parent: a NEW scheme's
+   *  concepts, nested up to 8 levels, at most 500 in all (RFC GM P3.1). */
+  concepts?: DocumentProposedConcept[];
+  /** propose_entity (a new scheme) / import_scheme: the scheme's header, carried
+   *  as data and written as directives only when an operator accepts.
+   *  import_scheme: origin is always "adopted". */
+  header?: DocumentSchemeHeader;
+  /** import_scheme: a SKOS concept scheme in RDF/XML (at most 2 MB); pass this
+   *  or `markdown`. `language` picks the labels, `scheme` one ConceptScheme of
+   *  several. */
+  skos_xml?: string;
   [extra: string]: unknown;
 };
 
