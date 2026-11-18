@@ -4769,8 +4769,10 @@ export type DocumentToolInput = {
   with_counts?: boolean;
   /** describe_ontology: what with_counts gives, plus each concept's and document
    *  class's stored node statistics as `stats` {members, members_with_vector,
-   *  spread, exemplars, siblings, terms, computed_at, stale} — only when stored and
-   *  the caller may read every member; otherwise `stats` {withheld}. */
+   *  spread, exemplars, siblings, terms, computed_at, stale, recomputing?} where
+   *  stored — computed only from the documents every member of the tenant may
+   *  read, and the same for every reader; with `recomputing` (the members changed
+   *  since the pass) only today's `members` is served until the next pass. */
   with_stats?: boolean;
   /** get_document: also return `memberships` — what op=memberships answers for
    *  the document: its class chain, its concepts per taxonomy with each

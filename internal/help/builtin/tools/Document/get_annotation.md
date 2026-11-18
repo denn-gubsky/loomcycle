@@ -22,11 +22,14 @@ covers.
 - `path` — the document's Path-tree name, instead of `document_id`; with
   `level: path`, the folder.
 - `level` — `branch`, `document`, `path`, `scheme`, `concept` or `class`, to
-  read only that one. A taxonomy node's record is shown only to a caller who
-  may read every member of the node (a `declared` one, which covers nothing,
-  to anyone who may read the ontology). A caller whose access-control rules
-  hide any document is not told a node record's `stale` (the field is left
-  out): its staleness could reveal a document filed under the node.
+  read only that one. A taxonomy node's record is written from the documents
+  every member of the tenant may read, so it is shown, with its `stale`, to
+  every caller who may read the ontology. A `written` or `thin` record is shown
+  only while the node's members are the ones it was written from: one stored
+  before that rule, or written before a member was restricted, filed under a
+  denied name, turned metadata-only or added, is shown to no one until the
+  annotator writes it again (one an operator wrote by hand stays shown, and so
+  does a `declared` one).
 - `scope` — `tenant`.
 
 ## Returns

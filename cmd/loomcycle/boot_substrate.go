@@ -255,6 +255,10 @@ func (b *boot) wireAuth() {
 	// The Identity tool compiles another person's set (can, explain) and
 	// reads the config-declared groups through the same resolver.
 	b.identityTool.ACL = aclResolver
+	// RFC GM C8: the taxonomy's figures count only the documents every member of
+	// the tenant may read, decided by the same rules (the sweeper's Document is
+	// handed this one in startBackground).
+	b.documentTool.Audience = aclResolver
 	slog.Info("authz: access control (LOOMCYCLE_ACL)", "mode", aclMode, "set_cache_ttl_seconds", cfg.Env.ACLCacheTTLSeconds, "live", cfg.Env.ACLLive)
 	// Delegated user-token mints and revocations, sign-ins, gate management
 	// and ACL denials and edits are recorded to the same sink as

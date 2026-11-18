@@ -5,13 +5,13 @@ package builtin
 // describe_ontology with_stats serves beside each node (D31: beside the node, never
 // written into a summary).
 //
-// ACCESS. A stored series cannot be computed per caller, so it is shown whole or not
-// at all. A caller whose access rules limit no reading sees every row. Any other
-// caller gets a node's series only when, for every row returned, it may read every
-// document the row is built from (members_sha256's set) AND the row was built from
-// the set the current state yields; otherwise the node is withheld and says why.
-// A past row (shown_at) whose set is not today's is therefore withheld from such a
-// caller: nothing says it read no document the caller cannot see.
+// ACCESS (RFC GM C8, replacing D8 (i)). A stored series cannot be computed per
+// caller, so it is computed from what every member of the tenant may read
+// (document_measure.go) and served the same to every reader of the ontology. Rows
+// stored before that rule are never read (loadMeasurePoints), shown_at included.
+// Nor is a row whose members are no longer its point's current unrestricted members
+// (seriesPlan.servable), shown_at included: a document restricted after a pass
+// stops counting at once, not at the next pass.
 
 import (
 	"context"
@@ -67,15 +67,14 @@ type measurePoint struct {
 
 // measureNode is one node's series.
 type measureNode struct {
-	NodeID   string         `json:"node_id"`
-	Kind     string         `json:"kind,omitempty"`
-	Name     string         `json:"name,omitempty"`
-	Tag      string         `json:"tag,omitempty"`
-	Scheme   string         `json:"scheme,omitempty"`
-	Period   string         `json:"period,omitempty"`
-	Retired  bool           `json:"retired,omitempty"`
-	Points   []measurePoint `json:"points"`
-	Withheld string         `json:"withheld,omitempty"`
+	NodeID  string         `json:"node_id"`
+	Kind    string         `json:"kind,omitempty"`
+	Name    string         `json:"name,omitempty"`
+	Tag     string         `json:"tag,omitempty"`
+	Scheme  string         `json:"scheme,omitempty"`
+	Period  string         `json:"period,omitempty"`
+	Retired bool           `json:"retired,omitempty"`
+	Points  []measurePoint `json:"points"`
 }
 
 // measureCompared is one node of a comparison.
@@ -93,75 +92,27 @@ type measureCompared struct {
 	LogRatio      float64  `json:"log_ratio"`
 }
 
-// measureWithheld is a node a comparison leaves out, and why.
-type measureWithheld struct {
-	NodeID string `json:"node_id"`
-	Name   string `json:"name,omitempty"`
-	Why    string `json:"withheld"`
-}
-
 // measureComparison is compare's answer: the nodes ordered by how far their share
 // moved from the baseline range to the main one.
 type measureComparison struct {
 	Range    measureRange      `json:"range"`
 	Baseline measureRange      `json:"baseline"`
 	Nodes    []measureCompared `json:"nodes"`
-	Withheld []measureWithheld `json:"withheld,omitempty"`
 }
 
 // measureAnswer is op=measure's answer.
 type measureAnswer struct {
-	Measure string             `json:"measure"`
-	Scheme  string             `json:"scheme,omitempty"`
-	From    *int64             `json:"from,omitempty"`
-	To      *int64             `json:"to,omitempty"`
-	ShownAt *int64             `json:"shown_at,omitempty"`
-	Note    string             `json:"note,omitempty"`
-	Nodes   []measureNode      `json:"nodes"`
-	Compare *measureComparison `json:"compare,omitempty"`
-}
-
-// seriesCheck is a limited reader's view: the documents it may read, and the set
-// each point's row is built from now. nil reads everything.
-type seriesCheck struct {
-	list *docReadList
-	read map[pointKey][]string
-}
-
-// withheld says why the caller may not see s, the stored row of k; "" when it may.
-func (c *seriesCheck) withheld(k pointKey, s storedPoint) string {
-	if c == nil {
-		return ""
-	}
-	cur, ok := c.read[k]
-	if !ok {
-		return "it was computed from members other than the current ones, which cannot be checked against what you may read"
-	}
-	for _, id := range cur {
-		if !c.list.readable(id) {
-			return "the series is computed from every member, and you may not read all of them"
-		}
-	}
-	if membersHash(cur) != s.readSH {
-		return "the members changed since the series was computed; it is shown again after node_stats mode=compute"
-	}
-	return ""
-}
-
-// newSeriesCheck is the check for a caller with list; nil when list hides nothing.
-func (d *Document) newSeriesCheck(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, list *docReadList) (*seriesCheck, error) {
-	if readsEverything(list) {
-		return nil, nil
-	}
-	p, err := d.buildNodeStatsPlan(ctx, key, read, "")
-	if err != nil {
-		return nil, err
-	}
-	sp, err := d.buildSeriesPlan(ctx, key, read, "", p)
-	if err != nil {
-		return nil, err
-	}
-	return &seriesCheck{list: list, read: sp.read}, nil
+	Measure string `json:"measure"`
+	Scheme  string `json:"scheme,omitempty"`
+	From    *int64 `json:"from,omitempty"`
+	To      *int64 `json:"to,omitempty"`
+	ShownAt *int64 `json:"shown_at,omitempty"`
+	Note    string `json:"note,omitempty"`
+	// Recomputing: some stored points were left out because their point's members
+	// changed since they were computed (seriesPlan.servable).
+	Recomputing string             `json:"recomputing,omitempty"`
+	Nodes       []measureNode      `json:"nodes"`
+	Compare     *measureComparison `json:"compare,omitempty"`
 }
 
 // emptyPoint: a row that says the point holds no value now.
@@ -202,14 +153,6 @@ func (d *Document) measure(ctx context.Context, in docInput) (tools.Result, erro
 	if res != nil {
 		return *res, nil
 	}
-	list, err := d.readableDocList(ctx, acl)
-	if err != nil {
-		return errFrom(measureOp+": "+err.Error(), err), nil
-	}
-	check, err := d.newSeriesCheck(ctx, key, read, list)
-	if err != nil {
-		return errFrom(measureOp+": "+err.Error(), err), nil
-	}
 	ans := measureAnswer{Measure: in.Measure, Scheme: in.Scheme, From: in.From, To: in.To, ShownAt: in.ShownAt, Nodes: []measureNode{}}
 	if in.Measure == measureShift {
 		if note := d.nodeStatsVectorsNote(); note != "" {
@@ -220,10 +163,17 @@ func (d *Document) measure(ctx context.Context, in docInput) (tools.Result, erro
 	if in.ShownAt != nil {
 		shownAt = *in.ShownAt
 	}
+	sp, err := d.currentSeriesPlan(ctx, key, read)
+	if err != nil {
+		return errFrom(measureOp+": "+err.Error(), err), nil
+	}
 	if in.Compare != nil {
-		cmp, err := d.measureCompare(ctx, key, read, targets, check, shownAt, measureRange{From: in.From, To: in.To}, *in.Compare)
+		cmp, dropped, err := d.measureCompare(ctx, key, read, sp, targets, shownAt, measureRange{From: in.From, To: in.To}, *in.Compare)
 		if err != nil {
 			return errFrom(measureOp+": "+err.Error(), err), nil
+		}
+		if dropped > 0 {
+			ans.Recomputing = measureRecomputing
 		}
 		ans.Compare = cmp
 		return jsonResult(ans)
@@ -236,11 +186,28 @@ func (d *Document) measure(ctx context.Context, in docInput) (tools.Result, erro
 	if err != nil {
 		return errFrom(measureOp+": "+err.Error(), err), nil
 	}
+	if sp.servable(stored) > 0 {
+		ans.Recomputing = measureRecomputing
+	}
 	rng := measureRange{From: in.From, To: in.To}
 	for _, t := range targets {
-		ans.Nodes = append(ans.Nodes, seriesOf(t, in.Measure, stored, rng, check))
+		ans.Nodes = append(ans.Nodes, seriesOf(t, in.Measure, stored, rng))
 	}
 	return jsonResult(ans)
+}
+
+// measureRecomputing is measureAnswer.Recomputing's text: one for every cause, so
+// it does not say which.
+const measureRecomputing = "some points are left out: their members changed since they were computed; a node_stats pass computes them again"
+
+// currentSeriesPlan is the series plan of the tenant's current state, every scheme,
+// which a read checks stored points against (servable).
+func (d *Document) currentSeriesPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead) (*seriesPlan, error) {
+	p, err := d.buildNodeStatsPlan(ctx, key, read, "")
+	if err != nil {
+		return nil, err
+	}
+	return d.buildSeriesPlan(ctx, key, read, "", p)
 }
 
 // checkMeasureInput refuses what measure cannot answer, before anything is read.
@@ -367,7 +334,7 @@ func (d *Document) loadMeasurePointsBatched(ctx context.Context, key sqlmem.Scop
 }
 
 // seriesOf is t's series of measure from stored, within rng.
-func seriesOf(t measureTarget, measure string, stored map[pointKey]storedPoint, rng measureRange, check *seriesCheck) measureNode {
+func seriesOf(t measureTarget, measure string, stored map[pointKey]storedPoint, rng measureRange) measureNode {
 	n := measureNode{NodeID: t.id, Kind: t.kind, Name: t.name, Tag: t.tag, Scheme: t.scheme, Period: t.period,
 		Retired: t.retired, Points: []measurePoint{}}
 	var keys []pointKey
@@ -383,14 +350,6 @@ func seriesOf(t measureTarget, measure string, stored map[pointKey]storedPoint, 
 	sort.Slice(keys, func(i, j int) bool { return pointLess(keys[i], keys[j]) })
 	for _, k := range keys {
 		s := stored[k]
-		if check != nil && t.retired {
-			n.Withheld, n.Points = "the node is no longer in force, so who its members were cannot be checked against what you may read", []measurePoint{}
-			return n
-		}
-		if why := check.withheld(k, s); why != "" {
-			n.Withheld, n.Points = why, []measurePoint{}
-			return n
-		}
 		pt := measurePoint{PeriodStart: k.start, Label: periodLabel(k.start, k.period), Value: s.value, Members: s.members,
 			FallbackShare: s.fallback, ComputedAt: s.computedAt}
 		if measure == measureShare || measure == measureUnplaced {
@@ -412,9 +371,9 @@ func seriesOf(t measureTarget, measure string, stored map[pointKey]storedPoint, 
 // measureCompare sums each concept's share over the main range and the baseline,
 // the basis from its scheme's unplaced rows (kept for every period with a basis),
 // and orders the concepts by the capped log-ratio of the two shares, largest move
-// first.
-func (d *Document) measureCompare(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, targets []measureTarget,
-	check *seriesCheck, shownAt int64, main, base measureRange) (*measureComparison, error) {
+// first. Only servable rows are summed; dropped is how many were not.
+func (d *Document) measureCompare(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, sp *seriesPlan, targets []measureTarget,
+	shownAt int64, main, base measureRange) (_ *measureComparison, dropped int, _ error) {
 	if main.From == nil && main.To == nil {
 		// The main range defaults to everything after the baseline.
 		main.From = base.To
@@ -432,24 +391,21 @@ func (d *Document) measureCompare(ctx context.Context, key sqlmem.ScopeKey, read
 	}
 	stored, err := d.loadMeasurePointsBatched(ctx, key, shownAt, []string{measureShare, measureUnplaced}, ids)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	dropped = sp.servable(stored)
 	out := &measureComparison{Range: main, Baseline: base, Nodes: []measureCompared{}}
 	type sums struct{ count, basis int }
 	for _, t := range targets {
 		var m, b sums
-		why := ""
 		for k, s := range stored {
-			if k.period != t.period || emptyPoint(s) || why != "" {
+			if k.period != t.period || emptyPoint(s) {
 				continue
 			}
 			inMain, inBase := main.holds(k.start), base.holds(k.start)
 			share := k.measure == measureShare && k.node == t.id
 			basis := k.measure == measureUnplaced && k.node == schemeID[t.scheme]
 			if (!inMain && !inBase) || (!share && !basis) {
-				continue
-			}
-			if why = check.withheld(k, s); why != "" {
 				continue
 			}
 			// A share row's members are the node's projected members; an unplaced row
@@ -466,10 +422,6 @@ func (d *Document) measureCompare(ctx context.Context, key sqlmem.ScopeKey, read
 					r.s.basis += s.basis
 				}
 			}
-		}
-		if why != "" {
-			out.Withheld = append(out.Withheld, measureWithheld{NodeID: t.id, Name: t.name, Why: why})
-			continue
 		}
 		c := measureCompared{NodeID: t.id, Name: t.name, Tag: t.tag, Scheme: t.scheme,
 			Count: m.count, Basis: m.basis, BaselineCount: b.count, BaselineBasis: b.basis}
@@ -494,7 +446,7 @@ func (d *Document) measureCompare(ctx context.Context, key sqlmem.ScopeKey, read
 		}
 		return a.Tag < b.Tag
 	})
-	return out, nil
+	return out, dropped, nil
 }
 
 // cappedLogRatio is ln(share now / share then), each share smoothed by half a member
@@ -511,7 +463,7 @@ func cappedLogRatio(count, basis, baseCount, baseBasis int) float64 {
 
 // nodeSeriesView is a node's series as describe_ontology with_stats serves it: the
 // latest period with a member, its count and (a concept) share, and the trend from
-// the period before. Withheld replaces every figure when the caller may not see them.
+// the period before; the same to every reader.
 type nodeSeriesView struct {
 	Period        string     `json:"period,omitempty"`
 	Latest        string     `json:"latest,omitempty"`
@@ -519,7 +471,6 @@ type nodeSeriesView struct {
 	Share         *float64   `json:"share,omitempty"`
 	FallbackShare *float64   `json:"fallback_share,omitempty"`
 	Trend         *nodeTrend `json:"trend,omitempty"`
-	Withheld      string     `json:"withheld,omitempty"`
 }
 
 // nodeTrend is the move from the period before the latest one: Change is the share
@@ -531,31 +482,30 @@ type nodeTrend struct {
 	Change        float64  `json:"change"`
 }
 
-// describeSeries adds each concept's and document class's series view (with_stats).
-// A store fault marks the answer partial, as the statistics do.
-func (d *Document) describeSeries(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, read OntologyRead, out *ontologyDescription) {
-	if _, _, err := d.resolveScope(ctx, "tenant"); err != nil {
-		return // describeCounts has said why
+// describeSeries adds each concept's and document class's series view (with_stats),
+// from the servable rows only; p is describeStats' plan (nil: it could not be
+// built, and has said so). A store fault marks the answer partial, as the
+// statistics do.
+func (d *Document) describeSeries(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, p *nodeStatsPlan, out *ontologyDescription) {
+	if p == nil {
+		return
 	}
 	fail := func() {
 		out.Partial = true
 		out.Issues = append(out.Issues, "with_stats: the series could not be read; read again")
+	}
+	sp, err := d.buildSeriesPlan(ctx, key, read, "", p)
+	if err != nil {
+		fail()
+		return
 	}
 	stored, err := d.loadMeasurePoints(ctx, key, 0, []string{measureCount, measureShare, measureUnplaced}, nil)
 	if err != nil {
 		fail()
 		return
 	}
+	sp.servable(stored)
 	if len(stored) == 0 {
-		return
-	}
-	list, err := d.readableDocList(ctx, acl)
-	var check *seriesCheck
-	if err == nil {
-		check, err = d.newSeriesCheck(ctx, key, read, list)
-	}
-	if err != nil {
-		fail()
 		return
 	}
 	for i := range out.Schemes {
@@ -563,19 +513,19 @@ func (d *Document) describeSeries(ctx context.Context, key sqlmem.ScopeKey, acl 
 		per := schemePeriod(s.OntologyScheme)
 		for j := range s.Concepts {
 			c := &s.Concepts[j]
-			c.Series = seriesView(c.ChunkID, s.ChunkID, per, stored, check)
+			c.Series = seriesView(c.ChunkID, s.ChunkID, per, stored)
 		}
 	}
 	for i := range out.Classes {
 		if out.Classes[i].Kind == "document" {
-			out.Classes[i].Series = seriesView(out.Classes[i].Name, "", memrank.SchemePeriodMonth, stored, check)
+			out.Classes[i].Series = seriesView(out.Classes[i].Name, "", memrank.SchemePeriodMonth, stored)
 		}
 	}
 }
 
 // seriesView is node's view from stored; schemeID names its scheme's unplaced rows
 // ("" for a class). nil when the node has no count row at its period.
-func seriesView(node, schemeID, period string, stored map[pointKey]storedPoint, check *seriesCheck) *nodeSeriesView {
+func seriesView(node, schemeID, period string, stored map[pointKey]storedPoint) *nodeSeriesView {
 	latest, found := int64(0), false
 	for k, s := range stored {
 		if k.measure == measureCount && k.node == node && k.period == period && !emptyPoint(s) && (!found || k.start > latest) {
@@ -586,25 +536,16 @@ func seriesView(node, schemeID, period string, stored map[pointKey]storedPoint, 
 		return nil
 	}
 	prev := shiftPeriod(latest, period, -1)
-	get := func(measure, id string, start int64) (storedPoint, bool, string) {
-		k := pointKey{measure: measure, node: id, period: period, start: start}
-		s, ok := stored[k]
-		if !ok || emptyPoint(s) {
-			return s, false, ""
-		}
-		return s, true, check.withheld(k, s)
+	get := func(measure, id string, start int64) (storedPoint, bool) {
+		s, ok := stored[pointKey{measure: measure, node: id, period: period, start: start}]
+		return s, ok && !emptyPoint(s)
 	}
 	v := &nodeSeriesView{Period: period, Latest: periodLabel(latest, period)}
-	cnt, _, why := get(measureCount, node, latest)
-	shr, hasShare, why2 := get(measureShare, node, latest)
-	pc, hasPC, why3 := get(measureCount, node, prev)
-	ps, hasPS, why4 := get(measureShare, node, prev)
-	_, hasPU, why5 := get(measureUnplaced, schemeID, prev)
-	for _, w := range []string{why, why2, why3, why4, why5} {
-		if w != "" {
-			return &nodeSeriesView{Withheld: w}
-		}
-	}
+	cnt, _ := get(measureCount, node, latest)
+	shr, hasShare := get(measureShare, node, latest)
+	pc, hasPC := get(measureCount, node, prev)
+	ps, hasPS := get(measureShare, node, prev)
+	_, hasPU := get(measureUnplaced, schemeID, prev)
 	n, fb := cnt.members, cnt.fallback
 	v.Count, v.FallbackShare = &n, &fb
 	t := &nodeTrend{Previous: periodLabel(prev, period)}
