@@ -739,3 +739,56 @@ func TestOntologyPlan_ScopeBudgetCutsTheCountAndSaysSo(t *testing.T) {
 			res.Complete, res.ScopesCounted, res.ScopesSkipped, got)
 	}
 }
+
+// TestOntologyPlan_NonASCIIClassMatchesOnBothTiers — a class whose name has a non-ASCII
+// capital matches its stored spellings under Unicode case folding on both tiers. SQLite's
+// lower() folds ASCII only, so "ÄRZTE" was never a "Ärzte" there.
+func TestOntologyPlan_NonASCIIClassMatchesOnBothTiers(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) {
+		d, ctx, _ := documentFixture(t)
+		assertNonASCIIClassMatches(t, d, ctx)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		d, ctx := pgDocumentOrSkip(t)
+		assertNonASCIIClassMatches(t, d, ctx)
+	})
+}
+
+func assertNonASCIIClassMatches(t *testing.T, d *Document, base context.Context) {
+	base = tools.UpdateRunPolicy(base, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user", "agent"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user", "agent"}}
+	})
+	op := installTenantOntology(t, d, base, "# Tenant Ontology\n\n## Classes\n@section classes\n\n### Ärzte\nPhysicians.\n\n### Other\n",
+		memrank.OntologyConfirmedStatus)
+	op = tools.UpdateRunPolicy(op, func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"tenant", "user", "agent"}}
+		rp.SqlMem = tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant", "user", "agent"}}
+		rp.Tools = []string{"*"}
+	})
+	read, err := d.OntologyTermsFromTree(op, "tenant", memrank.OntologyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &planFixture{t: t, d: d, op: op, user: base, entries: map[string]string{}, tenantID: sqlScopeTenant(op)}
+	for id, e := range planEntries(read) {
+		f.entries[e.Kind+":"+e.Name] = id
+	}
+	if f.entries["class:Ärzte"] == "" {
+		t.Fatalf("no class Ärzte: %v", f.entries)
+	}
+	for _, typ := range []string{"Ärzte", "ÄRZTE", "ärzte"} {
+		f.doc(op, "tenant", typ)
+	}
+	f.doc(base, "user", "ÄRZTE")
+	ud, _ := f.doc(base, "user", "")
+	f.exec(base, map[string]any{"op": "upsert_chunk", "scope": "user", "document_id": ud, "natural_key": "ÄRZTE:dr-x",
+		"title": "Dr X", "body": "a physician"})
+	res := f.plan(connector.OntologyChange{Op: connector.OntologyPlanRetire, Entry: f.entries["class:Ärzte"]})
+	if got := planCount(t, res.Changes[0], "typed_documents"); got.TenantScope != 3 || got.OtherScopes != 1 {
+		t.Errorf("typed_documents = %+v, want the 3 tenant spellings and the user one", got)
+	}
+	if got := planCount(t, res.Changes[0], "subject_keys"); got.OtherScopes != 1 {
+		t.Errorf("subject_keys = %+v, want the user scope's ÄRZTE: key", got)
+	}
+}

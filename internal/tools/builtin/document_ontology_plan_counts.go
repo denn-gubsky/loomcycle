@@ -23,9 +23,11 @@ package builtin
 // holding its documents exists. No transaction is opened: on SQLite a scope has one
 // connection.
 //
-// CLASS NAMES MATCH CASE-INSENSITIVELY, as identity keys lower-case them: lower() over
-// the column against lower-cased names, and prefixes compared with substr — portable
-// to both tiers (instr and split_part are not).
+// CLASS NAMES MATCH UNDER UNICODE CASE FOLDING, as everywhere else (strings.EqualFold):
+// the stored spellings are read, narrowed by length, and folded in Go (planSpellings),
+// then counted exactly — SQL lower() folds ASCII only on SQLite and Unicode on Postgres.
+// Prefixes are compared with substr, portable to both tiers (instr and split_part are
+// not).
 
 import (
 	"context"
@@ -209,22 +211,83 @@ func (d *Document) planIDs(ctx context.Context, key sqlmem.ScopeKey, stmt string
 	return out, nil
 }
 
-// lowerIn is `lower(col) IN (...)` over names already lower-cased.
-func lowerIn(col string, names []string) (string, []any) {
-	ph, args := inPlaceholders(names)
-	return "lower(" + col + ") IN (" + ph + ")", args
-}
-
-// prefixAny is `(substr(lower(col), 1, n) = p OR …)` for each name's "<name>:" prefix.
-func prefixAny(col string, names []string) (string, []any) {
-	parts := make([]string, 0, len(names))
+// prefixAny is `(substr(col, 1, n) = p OR …)` for each prefix's "<prefix>:".
+func prefixAny(col string, prefixes []string) (string, []any) {
+	parts := make([]string, 0, len(prefixes))
 	var args []any
-	for _, n := range names {
+	for _, n := range prefixes {
 		p := n + ":"
-		parts = append(parts, "substr(lower("+col+"), 1, ?) = ?")
+		parts = append(parts, "substr("+col+", 1, ?) = ?")
 		args = append(args, utf8.RuneCountInString(p), p)
 	}
 	return "(" + strings.Join(parts, " OR ") + ")", args
+}
+
+// planSpellings is the stored values of col (with prefix, the "<value>:" prefixes of
+// it) equal to one of names under Unicode case folding (strings.EqualFold, as class
+// names are matched everywhere else), for the counts to match exactly. SQL lower()
+// cannot do it portably: SQLite's folds ASCII only and Postgres's folds Unicode, so
+// "Ärzte" against "ÄRZTE" matched on one tier and not the other. Values equal under
+// folding have the same length in characters, which length() and substr() count on
+// both tiers, so the read is narrowed by length and the folding done here. where, when
+// not empty, narrows the rows further.
+func (d *Document) planSpellings(ctx context.Context, key sqlmem.ScopeKey, table, col, where string, names []string, prefix bool) ([]string, error) {
+	byLen := map[int][]string{}
+	var lengths []int
+	for _, n := range names {
+		l := utf8.RuneCountInString(n)
+		if byLen[l] == nil {
+			lengths = append(lengths, l)
+		}
+		byLen[l] = append(byLen[l], n)
+	}
+	sort.Ints(lengths)
+	var out []string
+	for _, l := range lengths {
+		stmt, args := `SELECT DISTINCT `+col+` FROM `+table+` WHERE `+col+` IS NOT NULL AND length(`+col+`) = ?`, []any{l}
+		if prefix {
+			stmt = `SELECT DISTINCT substr(` + col + `, 1, ?) FROM ` + table + ` WHERE ` + col + ` IS NOT NULL AND substr(` + col + `, ?, 1) = ':'`
+			args = []any{l, l + 1}
+		}
+		if where != "" {
+			stmt += ` AND ` + where
+		}
+		res, err := d.planQuery(ctx, key, stmt, args...)
+		if err != nil {
+			return nil, err
+		}
+		if res.Truncated {
+			return nil, fmt.Errorf("too many distinct values of %s.%s to match", table, col)
+		}
+		for _, r := range res.Rows {
+			if len(r) == 0 {
+				continue
+			}
+			v := asStr(r[0])
+			for _, n := range byLen[l] {
+				if strings.EqualFold(v, n) {
+					out = appendUnique(out, v)
+					break
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// planClassMatch is the condition matching col's stored spellings of the change's
+// classes; ok is false when the scope stores none (nothing to count).
+func (d *Document) planClassMatch(ctx context.Context, key sqlmem.ScopeKey, table, col, where string, classes []string, prefix bool) (string, []any, bool, error) {
+	vals, err := d.planSpellings(ctx, key, table, col, where, classes, prefix)
+	if err != nil || len(vals) == 0 {
+		return "", nil, false, err
+	}
+	if prefix {
+		cond, args := prefixAny(col, vals)
+		return cond, args, true, nil
+	}
+	ph, args := inPlaceholders(vals)
+	return col + ` IN (` + ph + `)`, args, true, nil
 }
 
 // countPlanNames counts the name-keyed dependents of one change in one scope. Samples
@@ -238,14 +301,26 @@ func (d *Document) countPlanNames(ctx context.Context, key sqlmem.ScopeKey, excl
 	}
 	var counts []count
 	if len(p.classes) > 0 {
-		inDoc, a := lowerIn("type", p.classes)
-		idKey, ia := prefixAny("identity_key", p.classes)
-		natKey, na := prefixAny("natural_key", p.classes)
-		counts = append(counts,
-			count{"typed_documents", `SELECT count(*) FROM documents WHERE ` + inDoc, `SELECT id FROM documents WHERE ` + inDoc + ` ORDER BY id`, a},
-			count{"typed_chunks", `SELECT count(*) FROM chunks WHERE ` + inDoc, `SELECT id FROM chunks WHERE ` + inDoc + ` ORDER BY id`, a},
-			count{"identity_keys", `SELECT count(*) FROM chunks WHERE identity_key IS NOT NULL AND ` + idKey, `SELECT id FROM chunks WHERE identity_key IS NOT NULL AND ` + idKey + ` ORDER BY id`, ia},
-			count{"subject_keys", `SELECT count(*) FROM chunk_memory_meta WHERE natural_key IS NOT NULL AND ` + natKey, `SELECT chunk_id FROM chunk_memory_meta WHERE natural_key IS NOT NULL AND ` + natKey + ` ORDER BY chunk_id`, na})
+		for _, c := range []struct {
+			name, table, col, id string
+			prefix               bool
+		}{
+			{"typed_documents", "documents", "type", "id", false},
+			{"typed_chunks", "chunks", "type", "id", false},
+			{"identity_keys", "chunks", "identity_key", "id", true},
+			{"subject_keys", "chunk_memory_meta", "natural_key", "chunk_id", true},
+		} {
+			cond, a, ok, err := d.planClassMatch(ctx, key, c.table, c.col, "", p.classes, c.prefix)
+			if err != nil {
+				return fmt.Errorf("%s: %w", c.name, err)
+			}
+			if !ok {
+				p.add(c.name, tenant, 0, nil, nil)
+				continue
+			}
+			from := ` FROM ` + c.table + ` WHERE ` + cond
+			counts = append(counts, count{c.name, `SELECT count(*)` + from, `SELECT ` + c.id + from + ` ORDER BY ` + c.id, a})
+		}
 	}
 	if len(p.kinds) > 0 {
 		ph, ka := inPlaceholders(p.kinds)
@@ -375,11 +450,16 @@ func (d *Document) countPlanTenant(ctx context.Context, key sqlmem.ScopeKey, bef
 		}
 	}
 	if len(p.classes) > 0 {
-		in, a := lowerIn("doc.type", p.classes)
-		stmt := ` FROM chunk_annotations an JOIN chunks c ON c.id = an.chunk_id JOIN documents doc ON doc.id = c.document_id WHERE ` + in
-		n, err := d.planCount(ctx, key, `SELECT count(*)`+stmt, a...)
+		in, a, matched, err := d.planClassMatch(ctx, key, "documents", "type", "", p.classes, false)
 		if err != nil {
 			return fmt.Errorf("document_annotations: %w", err)
+		}
+		n := 0
+		stmt := ` FROM chunk_annotations an JOIN chunks c ON c.id = an.chunk_id JOIN documents doc ON doc.id = c.document_id WHERE doc.` + in
+		if matched {
+			if n, err = d.planCount(ctx, key, `SELECT count(*)`+stmt, a...); err != nil {
+				return fmt.Errorf("document_annotations: %w", err)
+			}
 		}
 		var sample []string
 		if n > 0 {
@@ -415,13 +495,13 @@ func (d *Document) countPlanTenant(ctx context.Context, key sqlmem.ScopeKey, bef
 func (p *plannedChange) countClassReferences(r OntologyRead) {
 	var inst, proj []string
 	for _, in := range r.Instances {
-		if containsString(p.classes, strings.ToLower(in.Class)) {
+		if containsFold(p.classes, in.Class) {
 			inst = append(inst, in.ChunkID)
 		}
 	}
 	for _, s := range r.Schemes {
 		for _, c := range s.Projects {
-			if containsString(p.classes, strings.ToLower(c)) {
+			if containsFold(p.classes, c) {
 				proj = append(proj, s.ChunkID)
 				break
 			}
@@ -539,18 +619,30 @@ func (d *Document) countSubtreeRows(ctx context.Context, key sqlmem.ScopeKey, p 
 	if len(p.concepts) == 0 && len(p.classes) == 0 {
 		return nil
 	}
-	var conds []string
-	var args []any
-	if len(p.concepts) > 0 {
-		ph, a := inPlaceholders(p.concepts)
-		conds, args = append(conds, `node_id IN (`+ph+`)`), append(args, a...)
-	}
-	if len(p.classes) > 0 {
-		in, a := lowerIn("node_id", p.classes)
-		conds, args = append(conds, in), append(args, a...)
-	}
-	where := `(` + strings.Join(conds, " OR ") + `)`
+	// A class's node id is its name; the rows a class match reads are narrowed to class
+	// nodes (node_stats records the kind; a measure's concept node is an ontology chunk).
+	classNodes := map[string]string{"node_stats": `kind = 'class'`, "measure_points": `node_id NOT IN (SELECT id FROM chunks)`}
 	for _, table := range []string{"node_stats", "measure_points"} {
+		var conds []string
+		var args []any
+		if len(p.concepts) > 0 {
+			ph, a := inPlaceholders(p.concepts)
+			conds, args = append(conds, `node_id IN (`+ph+`)`), append(args, a...)
+		}
+		if len(p.classes) > 0 {
+			in, a, ok, err := d.planClassMatch(ctx, key, table, "node_id", classNodes[table], p.classes, false)
+			if err != nil {
+				return fmt.Errorf("%s: %w", table, err)
+			}
+			if ok {
+				conds, args = append(conds, in), append(args, a...)
+			}
+		}
+		if len(conds) == 0 {
+			p.add(table, true, 0, nil, nil)
+			continue
+		}
+		where := `(` + strings.Join(conds, " OR ") + `)`
 		n, err := d.planCount(ctx, key, `SELECT count(*) FROM `+table+` WHERE `+where, args...)
 		if err != nil {
 			return fmt.Errorf("%s: %w", table, err)

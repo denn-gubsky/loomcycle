@@ -73,8 +73,8 @@ type plannedChange struct {
 	subtree []string
 	// under is the in-force entries below the entry, in document order.
 	under []planEntry
-	// What the name-keyed counts match: lower-cased class names (the entry's and its
-	// subclasses'), relation kinds (the entry's and its sub-kinds'), concept tags (a
+	// What the name-keyed counts match: class names as declared, matched under Unicode
+	// case folding (the entry's and its subclasses'), relation kinds (the entry's and its sub-kinds'), concept tags (a
 	// document tagged with one, or under one, counts), and the concepts and instances
 	// of the subtree.
 	classes, kinds, tags []string
@@ -371,7 +371,7 @@ func (p *plannedChange) collectNames() {
 	for _, e := range append([]planEntry{p.entry}, p.under...) {
 		switch e.Kind {
 		case planKindClass:
-			p.classes = appendUnique(p.classes, strings.ToLower(e.Name))
+			p.classes = appendUnique(p.classes, e.Name)
 		case planKindRelation:
 			p.kinds = appendUnique(p.kinds, e.Name)
 		case planKindConcept:
