@@ -110,6 +110,8 @@ var extTypes = map[string]string{
 	".fb2":     fb2Type,
 	".fb2.zip": fb2ZipType,
 
+	".rtf": rtfType,
+
 	// Recordings whose bytes a sniffer does not know (FLAC, a bare AAC)
 	// or knows only as a generic container.
 	".m4a":  "audio/mp4",
@@ -133,6 +135,7 @@ var typeExts = map[string]string{
 	"application/epub+zip":          ".epub",
 	fb2Type:                         ".fb2",
 	fb2ZipType:                      ".fb2.zip",
+	rtfType:                         ".rtf",
 	"application/msword":            ".doc",
 	"application/vnd.ms-excel":      ".xls",
 	"application/vnd.ms-powerpoint": ".ppt",
@@ -166,6 +169,14 @@ var typeExts = map[string]string{
 // when the sniff is generic (an Office file is a zip to a sniffer).
 func settleMediaType(declared string, head []byte, name string) string {
 	mt := normalizeType(declared)
+	if mt == "text/rtf" || mt == "application/x-rtf" {
+		mt = rtfType
+	}
+	// RTF often hides behind a .doc name and a Word type: its header wins
+	// over both.
+	if (generic(mt) || mt == rtfType || mt == "application/msword") && rtfHeader(head) {
+		return rtfType
+	}
 	// An FB2 book is XML to a sniffer and often to its producer too.
 	if (generic(mt) || mt == "text/xml" || mt == "application/xml") && fictionBook(head) {
 		return fb2Type
@@ -238,6 +249,15 @@ const (
 	fb2Type    = "application/x-fictionbook+xml"
 	fb2ZipType = "application/x-zip-compressed-fb2"
 )
+
+// rtfType is an RTF document's type (RFC GV §4.9); text/rtf folds into it.
+const rtfType = "application/rtf"
+
+// rtfHeader reports whether head begins an RTF document: "{\rtf", after a
+// UTF-8 byte order mark if there is one.
+func rtfHeader(head []byte) bool {
+	return bytes.HasPrefix(bytes.TrimPrefix(head, []byte("\xEF\xBB\xBF")), []byte(`{\rtf`))
+}
 
 // fileExt is a name's extension: path.Ext, except that a zipped FB2 book's
 // double extension is kept whole (path.Ext of "a.fb2.zip" is ".zip"), so
