@@ -201,6 +201,10 @@ type OntologyTerm struct {
 	// unknown directive, a pattern that does not compile. Advisory only: the class is in
 	// force.
 	Issues []string `json:"issues,omitempty"`
+	// EntryStatus is "retired" for a retired class (OntologyStatusRetired), "" for a
+	// live one. Named apart from `retired`, which already names a superseded fact in
+	// read results.
+	EntryStatus string `json:"entry_status,omitempty"`
 }
 
 // inheritableDirectives are the class directives a subclass takes from its ancestors
@@ -339,7 +343,10 @@ func RenderOntology(terms []OntologyTerm, tenantConfirmed bool) string {
 	// Document classes govern documents.type; they are not things memory records facts
 	// about, and keeping them out is what keeps the seed-only and flat renders
 	// byte-identical now that a `Document` seed exists (RFC FO decision 10b.2).
-	terms = entityTermsOnly(terms)
+	// A retired class is closed to new writes, so the extractor is not told about it.
+	// With nothing retired the slice is passed through untouched and the render is
+	// byte-identical.
+	terms = withoutRetiredTerms(entityTermsOnly(terms))
 	if len(terms) == 0 {
 		return ""
 	}
@@ -396,6 +403,27 @@ func entityTermsOnly(terms []OntologyTerm) []OntologyTerm {
 	out := make([]OntologyTerm, 0, len(terms)-n)
 	for _, t := range terms {
 		if !t.IsDocumentClass {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// withoutRetiredTerms drops retired classes, returning the input slice untouched when
+// there are none.
+func withoutRetiredTerms(terms []OntologyTerm) []OntologyTerm {
+	n := 0
+	for _, t := range terms {
+		if t.EntryStatus != "" {
+			n++
+		}
+	}
+	if n == 0 {
+		return terms
+	}
+	out := make([]OntologyTerm, 0, len(terms)-n)
+	for _, t := range terms {
+		if t.EntryStatus == "" {
 			out = append(out, t)
 		}
 	}
@@ -764,7 +792,28 @@ const OntologyMaxDepth = 4
 const (
 	OntologyStatusProposed = "proposed"
 	OntologyStatusRejected = "rejected"
+	// OntologyStatusRetired (RFC GQ D4, RFC FO 3.1a) is NOT inert: a retired entry stays
+	// in the read — filters, policy and memberships keep working on what already uses
+	// it — and is closed to new writes. It is the third reserved status word (RFC FO
+	// 3.7 B1); before it, a tenant could use the word for its own purposes and it read
+	// as in force.
+	OntologyStatusRetired = "retired"
 )
+
+// IsRetiredEntityStatus reports whether a chunk status retires the entry. Compared like
+// IsInertEntityStatus (trimmed, any case), so "Retired" is the same word.
+func IsRetiredEntityStatus(status string) bool {
+	return strings.ToLower(strings.TrimSpace(status)) == OntologyStatusRetired
+}
+
+// EntryStatusOf is the EntryStatus an entry read from a chunk with this status carries:
+// OntologyStatusRetired, or "" for a live one.
+func EntryStatusOf(status string) string {
+	if IsRetiredEntityStatus(status) {
+		return OntologyStatusRetired
+	}
+	return ""
+}
 
 // IsInertEntityStatus reports whether a chunk status takes the entity out of force.
 //

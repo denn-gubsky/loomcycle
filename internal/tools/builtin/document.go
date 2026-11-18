@@ -3794,6 +3794,20 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return *refused, nil
 		}
 	}
+	// Retiring an ontology entry retires its subtree in the same change (RFC GQ P2.1);
+	// what cannot be retired is refused here, before the revision moves.
+	retiring := false
+	var retireSubtree []string
+	if _, has := present["status"]; has && memrank.IsRetiredEntityStatus(in.Status) && !memrank.IsRetiredEntityStatus(row.Status) {
+		sub, isOntology, refused, rerr := d.ontologyRetireSubtree(ctx, key, mscope, row)
+		if rerr != nil {
+			return errFrom("update_chunk: "+rerr.Error(), rerr), nil
+		}
+		if refused != nil {
+			return *refused, nil
+		}
+		retiring, retireSubtree = isOntology, sub
+	}
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
@@ -3825,7 +3839,11 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return errFrom("update_chunk: "+err.Error(), err), nil
 		}
 	}
-	if _, has := present["status"]; has {
+	if _, has := present["status"]; has && retiring {
+		if err := d.retireChunks(ctx, key, in.ID, retireSubtree); err != nil {
+			return errFrom("update_chunk: "+err.Error(), err), nil
+		}
+	} else if has {
 		if err := d.exec(ctx, key, `UPDATE chunks SET status = ? WHERE id = ?`, nullIfEmpty(in.Status), in.ID); err != nil {
 			return errFrom("update_chunk: "+err.Error(), err), nil
 		}

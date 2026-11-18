@@ -198,6 +198,9 @@ func (d *Document) applyClassRules(ctx context.Context, key sqlmem.ScopeKey, msc
 	if !declared {
 		return res, nil
 	}
+	if refused := d.retiredClassRefusal(ctx, key, mscope, in, class, typ, selfID, fields); refused != nil {
+		return classRuleResult{}, refused
+	}
 	if view.sectioned {
 		res.warnings = append(res.warnings, memrank.ValidateFields(class, fields, title)...)
 	}

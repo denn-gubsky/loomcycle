@@ -545,6 +545,14 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err != nil {
 		return out, nil, err
 	}
+	// A NEW statement may not use a retired kind or concept (RFC GQ P2.1); one that
+	// already holds is written to as before. A copy (import, canvas, sync) keeps what
+	// it copies, as the vocabulary gate does.
+	if (existing == nil || w.revisionOf != "") && !copiedEdgeMethod(w.method) {
+		if r := d.retiredStatementRefusal(ctx, w.kind, w.from, w.to); r != nil {
+			return out, r, nil
+		}
+	}
 	now := time.Now().UnixNano()
 	ident := tools.RunIdentity(ctx)
 	actor := ident.UserID

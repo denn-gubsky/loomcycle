@@ -39,6 +39,9 @@ type OntologyInstance struct {
 	RegistryKey string   `json:"registry_key,omitempty"`
 	ChunkID     string   `json:"chunk_id,omitempty"`
 	Issues      []string `json:"issues,omitempty"`
+	// EntryStatus is "retired" for a retired instance: it keeps its adopted subject and
+	// is neither adopted again nor reported as orphaned.
+	EntryStatus string `json:"entry_status,omitempty"`
 }
 
 // ParseInstanceBody reads an instance entry's body. A directive that is not one of the
