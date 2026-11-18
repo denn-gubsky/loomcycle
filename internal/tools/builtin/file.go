@@ -79,10 +79,12 @@ type File struct {
 	// to run it in: a Document downloaded off-run (Export) typeset as a PDF
 	// in this process. Empty is the system temp directory.
 	ScratchDir string
-	// pdfCommand overrides convert.DefaultPDFCommand, for tests.
-	pdfCommand string
-	// diagramCommand overrides convert.DefaultDiagramCommand, for tests.
-	diagramCommand string
+	// PDFCommand is LOOMCYCLE_RENDER_PDF_COMMAND, the typesetter a PDF
+	// render runs here; empty is convert.DefaultPDFCommand (Typst).
+	PDFCommand string
+	// DiagramCommand is LOOMCYCLE_RENDER_DIAGRAM_COMMAND, the Mermaid
+	// renderer here; empty is convert.DefaultDiagramCommand (merman-cli).
+	DiagramCommand string
 }
 
 func (f *File) Name() string { return FileToolName }

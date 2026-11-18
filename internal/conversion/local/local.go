@@ -58,6 +58,11 @@ type Options struct {
 	// and Wrapper is LOOMCYCLE_HELPER_WRAPPER: a child runs the helpers the
 	// core is configured with. Empty passes none.
 	Rasterize, Media, Encode, Wrapper string
+	// WritePDF and Draw are the operator's render helpers
+	// (LOOMCYCLE_RENDER_PDF_COMMAND, LOOMCYCLE_RENDER_DIAGRAM_COMMAND), so a
+	// local worker typesets and draws as this process would. Empty leaves a
+	// child its defaults, Typst and merman-cli from PATH.
+	WritePDF, Draw string
 	// OnRespawn is called each time a child is started again.
 	OnRespawn func()
 	Logger    *slog.Logger
@@ -212,6 +217,8 @@ func childEnv(opt Options) []string {
 		{"LOOMCYCLE_WORKER_RASTERIZE_COMMAND", opt.Rasterize},
 		{"LOOMCYCLE_WORKER_MEDIA_COMMAND", opt.Media},
 		{"LOOMCYCLE_WORKER_ENCODE_COMMAND", opt.Encode},
+		{"LOOMCYCLE_WORKER_WRITE_COMMAND", opt.WritePDF},
+		{"LOOMCYCLE_WORKER_MERMAID_COMMAND", opt.Draw},
 		{"LOOMCYCLE_HELPER_WRAPPER", opt.Wrapper},
 	} {
 		if kv[1] != "" {

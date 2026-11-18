@@ -147,20 +147,13 @@ func (f *File) converter() convert.Client {
 	if op := f.ocrConfig(); op != nil && op.Rasterize != nil {
 		p.Rasterize = &convert.Helper{Key: "transcription.ocr.rasterize", Command: op.Rasterize.Command, Wrapper: op.Rasterize.Wrapper, Timeout: ocrRasterizeTimeout}
 	}
-	// A PDF render runs Typst from PATH here, as the workers do (RFC GR
-	// P2); where it is not installed the render says so.
-	cmd := f.pdfCommand
-	if cmd == "" {
-		cmd = convert.DefaultPDFCommand
-	}
-	p.WritePDF = &convert.Helper{Key: convert.PDFHelperKey, Command: cmd, Wrapper: f.HelperWrapper, Timeout: convert.PDFRenderTimeout}
+	// A PDF render runs the operator's typesetter here, else Typst from
+	// PATH, as the workers do (RFC GR P2); where it is not installed the
+	// render says so.
+	p.WritePDF = &convert.Helper{Key: convert.PDFHelperKey, Command: cmp.Or(f.PDFCommand, convert.DefaultPDFCommand), Wrapper: f.HelperWrapper, Timeout: convert.PDFRenderTimeout}
 	// So does the diagram renderer (RFC GR P4d); where it is missing a
 	// render's diagrams stay code.
-	draw := f.diagramCommand
-	if draw == "" {
-		draw = convert.DefaultDiagramCommand
-	}
-	p.Draw = &convert.Helper{Key: convert.DiagramHelperKey, Command: draw, Wrapper: f.HelperWrapper, Timeout: render.DiagramTimeout}
+	p.Draw = &convert.Helper{Key: convert.DiagramHelperKey, Command: cmp.Or(f.DiagramCommand, convert.DefaultDiagramCommand), Wrapper: f.HelperWrapper, Timeout: render.DiagramTimeout}
 	return p
 }
 

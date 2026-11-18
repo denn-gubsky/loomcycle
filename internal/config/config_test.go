@@ -3131,3 +3131,36 @@ func TestLoad_PgAutoMigrateRefusesAValueThatIsNotZeroOrOne(t *testing.T) {
 		}
 	}
 }
+
+// The render helpers an operator names (RFC GR) are read and checked at
+// load: one the runner could not run, or that could not do the job, fails
+// the boot rather than the first render.
+func TestLoad_RenderCommandsCheckedAtLoad(t *testing.T) {
+	yamlPath := filepath.Join(t.TempDir(), "loomcycle.yaml")
+	if err := os.WriteFile(yamlPath, []byte("agents: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOOMCYCLE_RENDER_PDF_COMMAND", " /opt/typst/bin/typst compile --root {dir} {in} {out} ")
+	t.Setenv("LOOMCYCLE_RENDER_DIAGRAM_COMMAND", "mmdc -i {in} -o {out} -s 2")
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Env.RenderPDFCommand != "/opt/typst/bin/typst compile --root {dir} {in} {out}" || cfg.Env.RenderDiagramCommand != "mmdc -i {in} -o {out} -s 2" {
+		t.Errorf("read %q and %q", cfg.Env.RenderPDFCommand, cfg.Env.RenderDiagramCommand)
+	}
+	for _, c := range []struct{ name, cmd string }{
+		{"LOOMCYCLE_RENDER_PDF_COMMAND", "typst compile {in}"},                        // no {out}
+		{"LOOMCYCLE_RENDER_PDF_COMMAND", "typst compile {in} {out} {lang}"},           // a placeholder the job does not fill
+		{"LOOMCYCLE_RENDER_PDF_COMMAND", "{dir}/typst compile {in} {out}"},            // the program a placeholder
+		{"LOOMCYCLE_RENDER_DIAGRAM_COMMAND", "merman-cli render -o {out} {in} {dir}"}, // a diagram has no folder
+		{"LOOMCYCLE_RENDER_DIAGRAM_COMMAND", "merman-cli render -o {out} 'unterminated {in}"},
+	} {
+		t.Setenv("LOOMCYCLE_RENDER_PDF_COMMAND", "")
+		t.Setenv("LOOMCYCLE_RENDER_DIAGRAM_COMMAND", "")
+		t.Setenv(c.name, c.cmd)
+		if _, err := Load(yamlPath); err == nil || !strings.Contains(err.Error(), c.name) {
+			t.Errorf("%s=%q: err = %v, want a load error naming the var", c.name, c.cmd, err)
+		}
+	}
+}

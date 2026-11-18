@@ -410,7 +410,7 @@ func (d *Dispatcher) acquire(ctx context.Context, label string) (*slot, error) {
 		if attached && wire.HelperLabel(label) {
 			// Workers are up, and none has this helper's program: an install
 			// to fix where the workers run, not a pool that is down.
-			return nil, fmt.Errorf("%w (%s): install it where the workers run (the loomcycle-worker image carries ffmpeg, pdftoppm, typst and mmdr)", convert.ErrNoHelper, label)
+			return nil, fmt.Errorf("%w (%s): install it where the workers run (the loomcycle-worker image carries ffmpeg, pdftoppm, typst and merman-cli)", convert.ErrNoHelper, label)
 		}
 		if attached && label == wire.LabelWriteBook {
 			// Workers are up, and every one predates the format: an
