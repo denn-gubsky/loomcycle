@@ -145,6 +145,25 @@ func monthStart(y int, m time.Month) int64 {
 
 // TestMeasure_RecomputeOfUnchangedPeriodAddsNoRow — a second compute over the same
 // state appends no row; a change to one period appends rows for that period only.
+// TestMeasure_PointsCarryNoOntologyVersion: the table stores what a row was computed
+// from (inputs_sha256), never the root revision, which misses entry edits.
+func TestMeasure_PointsCarryNoOntologyVersion(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newMeasureCorpus(t, d, base, conceptOntologyMD)
+	k.doc(t, day(2026, 6, 3), k.rep)
+	k.compute(t)
+	key, _, err := d.ontologyTenantKey(k.f.operator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.query(k.f.operator, key, `SELECT ontology_version FROM measure_points`); err == nil {
+		t.Fatal("measure_points has an ontology_version column; want none")
+	}
+	if _, err := d.query(k.f.operator, key, `SELECT inputs_sha256 FROM measure_points`); err != nil {
+		t.Fatalf("inputs_sha256 must stay: %v", err)
+	}
+}
+
 func TestMeasure_RecomputeOfUnchangedPeriodAddsNoRow(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	k := newMeasureCorpus(t, d, base, conceptOntologyMD)

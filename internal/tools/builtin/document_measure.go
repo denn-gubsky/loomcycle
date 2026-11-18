@@ -91,14 +91,17 @@ const (
 // RFC's columns: basis (the things a share is of), fallback_share (6A.2) and
 // members_sha256 (the read check). value_sum is DOUBLE PRECISION, not REAL: a
 // Postgres REAL is 4 bytes and would round a share. groups and sources are the
-// declared measures' (P8); a built-in row writes 0.
+// declared measures' (P8); a built-in row writes 0. Section 6A.5's
+// ontology_version column is left out (owner, 2026-11-18): the root chunk's
+// revision does not change when an entry is edited (RFC GQ problem 4), so it says
+// nothing about what a row was computed from — inputs_sha256 does.
 const measurePointsDDL = `CREATE TABLE IF NOT EXISTS measure_points (
 		measure TEXT NOT NULL, node_id TEXT NOT NULL, subject_id TEXT NOT NULL DEFAULT '',
 		period_start BIGINT NOT NULL, period TEXT NOT NULL,
 		value_sum DOUBLE PRECISION NOT NULL,
 		members INTEGER NOT NULL, groups INTEGER NOT NULL, sources INTEGER NOT NULL,
 		basis INTEGER NOT NULL, fallback_share DOUBLE PRECISION NOT NULL,
-		ontology_version INTEGER NOT NULL, inputs_sha256 TEXT NOT NULL, members_sha256 TEXT NOT NULL,
+		inputs_sha256 TEXT NOT NULL, members_sha256 TEXT NOT NULL,
 		computed_at BIGINT NOT NULL,
 		PRIMARY KEY (measure, node_id, subject_id, period_start, computed_at))`
 
@@ -674,7 +677,7 @@ func noVectorHash(inputs string, periodIDs, earlierIDs []string, vecs map[string
 // writeMeasurePoints appends rows in one transaction. ON CONFLICT DO NOTHING: two
 // passes over one scope (the sweeper on another replica and an operator call) may
 // both append the same row; only an identical key (to the nanosecond) collides.
-func (d *Document) writeMeasurePoints(ctx context.Context, key sqlmem.ScopeKey, rows []seriesRow, ontologyVersion int, now int64) error {
+func (d *Document) writeMeasurePoints(ctx context.Context, key sqlmem.ScopeKey, rows []seriesRow, now int64) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -685,10 +688,10 @@ func (d *Document) writeMeasurePoints(ctx context.Context, key sqlmem.ScopeKey, 
 				value, members, basis, fb = 0, 0, 0, 0
 			}
 			if err := d.execTxn(ctx, txnID, `INSERT INTO measure_points (measure, node_id, subject_id, period_start, period,
-				value_sum, members, groups, sources, basis, fallback_share, ontology_version, inputs_sha256, members_sha256, computed_at)
-				VALUES (?, ?, '', ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
+				value_sum, members, groups, sources, basis, fallback_share, inputs_sha256, members_sha256, computed_at)
+				VALUES (?, ?, '', ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)
 				ON CONFLICT (measure, node_id, subject_id, period_start, computed_at) DO NOTHING`,
-				r.measure, r.node, r.start, r.period, value, members, basis, fb, ontologyVersion, r.inputs, r.readSH, now); err != nil {
+				r.measure, r.node, r.start, r.period, value, members, basis, fb, r.inputs, r.readSH, now); err != nil {
 				return fmt.Errorf("measure_points %s %s %d: %w", r.measure, r.node, r.start, err)
 			}
 		}
