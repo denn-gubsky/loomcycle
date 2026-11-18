@@ -792,3 +792,21 @@ func assertNonASCIIClassMatches(t *testing.T, d *Document, base context.Context)
 		t.Errorf("subject_keys = %+v, want the user scope's ÄRZTE: key", got)
 	}
 }
+
+// TestOntologyPlan_RenameCountsOnlyTheEntrysOwnName — a rename changes the entry's own
+// name, not its subclasses' or sub-kinds': a document typed with the subclass, or a
+// statement of the sub-kind, keeps its name and is not counted stale.
+func TestOntologyPlan_RenameCountsOnlyTheEntrysOwnName(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	f := newPlanFixture(t, d, ctx)
+	f.doc(f.op, "tenant", "Article") // Article is Provision's subclass
+	cls := f.plan(connector.OntologyChange{Op: connector.OntologyPlanRename, Entry: f.entries["class:Provision"], Name: "Regulation"}).Changes[0]
+	if got := planCount(t, cls, "typed_documents"); got.N != 0 {
+		t.Errorf("rename Provision: typed_documents %+v; want 0 (the Article document keeps its type)", got)
+	}
+	f.populate() // filed_under 1 statement, filed_mainly_under (its sub-kind) 1
+	rel := f.plan(connector.OntologyChange{Op: connector.OntologyPlanRename, Entry: f.entries["relation:filed_under"], Name: "filed_in"}).Changes[0]
+	if got := planCount(t, rel, "statements_of_kind"); got.N != 1 {
+		t.Errorf("rename filed_under: statements_of_kind %+v, want the 1 filed_under statement only", got)
+	}
+}

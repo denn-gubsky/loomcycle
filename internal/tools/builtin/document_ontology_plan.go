@@ -366,14 +366,22 @@ func (d *Document) resolvePlanChange(ctx context.Context, key sqlmem.ScopeKey, m
 }
 
 // collectNames fills what the name-keyed counts match, from the entry and the entries
-// of its subtree.
+// of its subtree. A rename changes only the entry's own name: rows typed with a
+// subclass, or statements of a sub-kind, keep theirs (RFC GQ 4.2), so only the entry's
+// class or kind is matched. A concept's tag carries its ancestors' segments, so its
+// tag prefix (below) still covers the subtree.
 func (p *plannedChange) collectNames() {
-	for _, e := range append([]planEntry{p.entry}, p.under...) {
+	for i, e := range append([]planEntry{p.entry}, p.under...) {
+		renamedOnly := p.in.Op == connector.OntologyPlanRename && i > 0
 		switch e.Kind {
 		case planKindClass:
-			p.classes = appendUnique(p.classes, e.Name)
+			if !renamedOnly {
+				p.classes = appendUnique(p.classes, e.Name)
+			}
 		case planKindRelation:
-			p.kinds = appendUnique(p.kinds, e.Name)
+			if !renamedOnly {
+				p.kinds = appendUnique(p.kinds, e.Name)
+			}
 		case planKindConcept:
 			p.concepts = append(p.concepts, e.ChunkID)
 		case planKindInstance:
