@@ -198,9 +198,13 @@ in `members` and left out of the centroid, the exemplars and the terms.
 Without a vector store (Postgres with pgvector) a stored row has counts only.
 A node with no stored row has no `stats`, and neither has one whose row was
 stored before statistics left out restricted documents, until `node_stats`
-computes it again. A stale row is shown, marked `stale`; an exemplar that is a
-member of no node any more is left out of it. Vectors and centroids are never
-returned.
+computes it again. A stale row is shown, marked `stale`, while the node's
+members are still the ones it was computed from. When they are not — a member
+was restricted, filed under a denied name, turned metadata-only or added since —
+`stats` holds only today's `members`, `computed_at`, `stale: true` and
+`recomputing` (why), until the next `node_stats` pass: spread, terms,
+exemplars and siblings drawn from the old members are not served. Vectors and
+centroids are never returned.
 
 Beside `stats`, a concept or document class with a stored series (see
 `measure`) carries `series`: `{period, latest, count, share?, fallback_share,

@@ -40,7 +40,14 @@ member of the tenant may read — the members and, for `share` and `unplaced`, t
 period's `basis` — so a document the tenant's access-control rules keep from
 some member is never counted, and every reader of the ontology reads the same
 rows. Rows stored before this rule are kept and never read, `shown_at`
-included: a moment before the first rows computed under it shows nothing.
+included: a moment before the first rows computed under it shows nothing. A
+document restricted after a row was computed stops counting at once: a row is
+served when it was computed from its period's current members (for `share` and
+`unplaced`, its basis; for `shift`, every member up to it), or when no document
+restricted now is dated in its period (for `shift`, in it or before). Any other
+row is left out — `shown_at` included, a retired node's rows too — and the
+answer carries `recomputing`; a `node_stats` pass appends the current point
+again.
 
 ## Arguments
 

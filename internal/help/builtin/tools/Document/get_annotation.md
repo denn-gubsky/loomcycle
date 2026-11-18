@@ -24,9 +24,12 @@ covers.
 - `level` — `branch`, `document`, `path`, `scheme`, `concept` or `class`, to
   read only that one. A taxonomy node's record is written from the documents
   every member of the tenant may read, so it is shown, with its `stale`, to
-  every caller who may read the ontology. A `written` or `thin` record stored
-  before that rule is shown to no one until the annotator writes it again
-  (one an operator wrote by hand stays shown).
+  every caller who may read the ontology. A `written` or `thin` record is shown
+  only while the node's members are the ones it was written from: one stored
+  before that rule, or written before a member was restricted, filed under a
+  denied name, turned metadata-only or added, is shown to no one until the
+  annotator writes it again (one an operator wrote by hand stays shown, and so
+  does a `declared` one).
 - `scope` — `tenant`.
 
 ## Returns
