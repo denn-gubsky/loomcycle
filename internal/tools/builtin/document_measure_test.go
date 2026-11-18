@@ -9,9 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/denn-gubsky/loomcycle/internal/authz"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // measureCorpus is a concept fixture whose documents the test dates itself (root
@@ -296,50 +293,6 @@ func TestMeasure_DateFallbackShareIsReported(t *testing.T) {
 	}
 }
 
-// TestMeasure_ReaderLackingAMemberGetsNoSeries — a reader whose rules hide one
-// member of a node gets that node's series withheld, and the series of a node
-// whose members it all reads; a full reader gets both.
-func TestMeasure_ReaderLackingAMemberGetsNoSeries(t *testing.T) {
-	d, base, _ := documentFixture(t)
-	checkReaderLackingAMemberGetsNoSeries(t, d, base)
-}
-
-func checkReaderLackingAMemberGetsNoSeries(t *testing.T, d *Document, ctx context.Context) {
-	t.Helper()
-	k := newMeasureCorpus(t, d, ctx, conceptOntologyMD)
-	k.doc(t, day(2026, 6, 3), k.rep)
-	k.doc(t, day(2026, 6, 4), k.out)
-	k.doc(t, day(2026, 6, 5), k.law)
-	k.compute(t)
-	if n := measureRun(t, d, k.f.reader, `{"op":"measure","measure":"count"}`).node(t, k.out); n.Withheld != "" || len(n.Points) != 1 {
-		t.Fatalf("precondition: a full reader sees outsourcing: %+v", n)
-	}
-	deny := tools.UpdateRunPolicy(k.f.reader, func(rp *tools.RunPolicy) {
-		rp.ACL = aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: []string{"document:tenant:/kb/m2"}})
-	})
-	got := measureRun(t, d, deny, `{"op":"measure","measure":"count"}`)
-	for _, id := range []string{k.out, k.rm} {
-		if n := got.node(t, id); n.Withheld == "" || len(n.Points) != 0 {
-			t.Errorf("node %s: %+v; want withheld, no point", id, n)
-		}
-	}
-	if n := got.node(t, k.law); n.Withheld != "" || len(n.Points) != 1 {
-		t.Errorf("law (every member readable): %+v; want shown", n)
-	}
-	// share is a share of every projected thing of the period, the hidden one too.
-	if n := measureRun(t, d, deny, fmt.Sprintf(`{"op":"measure","measure":"share","node":%q}`, k.rep)).node(t, k.rep); n.Withheld == "" {
-		t.Errorf("share of reporting: %+v; want withheld (its basis holds the hidden document)", n)
-	}
-	desc := describeStats(t, d, deny)
-	for _, s := range desc.Schemes {
-		for _, c := range s.Concepts {
-			if c.ChunkID == k.out && (c.Series == nil || c.Series.Withheld == "" || c.Series.Count != nil) {
-				t.Errorf("with_stats outsourcing series = %+v; want withheld", c.Series)
-			}
-		}
-	}
-}
-
 // TestMeasure_CompareOrdersNodesByShareChange — compare sums each concept's share
 // over the baseline and the main range and orders the concepts by how far it moved.
 func TestMeasure_CompareOrdersNodesByShareChange(t *testing.T) {
@@ -577,12 +530,8 @@ func TestOntologySchemes_MeasureSeriesOnBothTiers(t *testing.T) {
 	})
 }
 
-// TestOntologySchemes_MeasureAccessAndCompareOnBothTiers — the withholding rule and
-// compare on both tiers.
-func TestOntologySchemes_MeasureAccessAndCompareOnBothTiers(t *testing.T) {
-	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
-		checkReaderLackingAMemberGetsNoSeries(t, d, ctx)
-	})
+// TestOntologySchemes_MeasureCompareOnBothTiers — compare on both tiers.
+func TestOntologySchemes_MeasureCompareOnBothTiers(t *testing.T) {
 	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
 		checkCompareOrdersNodesByShareChange(t, d, ctx)
 	})

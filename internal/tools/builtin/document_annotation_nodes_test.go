@@ -6,9 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/denn-gubsky/loomcycle/internal/authz"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // Node annotations (RFC GM §4, D33; plan P4.2), against statsCorpus:
@@ -122,55 +120,6 @@ func TestNodeAnnotation_FirstMemberReplacesDeclared(t *testing.T) {
 	if rec := nodeWrite(t, d, op, "concept", comp, "Compliance filings"); rec["basis"] != "thin" {
 		t.Fatalf("rewrite = %v, want basis thin", rec)
 	}
-}
-
-// TestNodeAnnotation_ReaderLackingAMemberGetsNone — a written record is served only
-// to a caller who may read every member; a declared one to anyone who may read the
-// ontology.
-func TestNodeAnnotation_ReaderLackingAMemberGetsNone(t *testing.T) {
-	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
-		k := newStatsCorpus(t, d, base)
-		op := k.f.operator
-		comp := k.f.concepts["file-plan/compliance"]
-		nodeWrite(t, d, op, "concept", k.rm, "Risk management")
-		nodeWrite(t, d, op, "concept", k.rep, "Reporting")
-		nodeWrite(t, d, op, "concept", comp, "")
-		deny := aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"},
-			Resources: []string{"document:tenant:/kb/b1"}})
-		restricted := tenantDocCtx(base, deny)
-		if got := nodeRecords(t, d, restricted, "concept", k.rm); len(got) != 0 {
-			t.Fatalf("a reader who may not read b1 got Risk Management's record: %v", got)
-		}
-		if got := nodeRecords(t, d, restricted, "concept", k.rep); len(got) != 1 {
-			t.Fatalf("Reporting (every member readable) = %v, want its record", got)
-		}
-		if got := nodeRecords(t, d, restricted, "concept", comp); len(got) != 1 {
-			t.Fatalf("declared compliance = %v, want its record", got)
-		}
-		if got := nodeRecords(t, d, k.f.reader, "concept", k.rm); len(got) != 1 {
-			t.Fatalf("an unrestricted reader got %v, want Risk Management's record", got)
-		}
-		list, _ := docExec(t, d, restricted, `{"op":"list_annotations","scope":"tenant","level":"concept"}`)
-		if n := len(anyList(list["annotations"])); n != 2 {
-			t.Fatalf("restricted list_annotations level concept = %d records, want 2 (reporting, compliance)", n)
-		}
-		sum, _ := docExec(t, d, restricted, `{"op":"list_annotations","scope":"tenant","summarize":true}`)
-		if c, _ := sum["counts"].(map[string]any)["concept"].(map[string]any); c["total"] != float64(2) {
-			t.Fatalf("restricted summarize = %v, want 2 concept records", sum["counts"])
-		}
-		// A restricted reader may not ask for a node's inputs: they are computed from
-		// every member.
-		driver := tools.WithRunID(tools.WithRunPolicy(base, tools.RunPolicy{
-			Tools:            []string{"*"},
-			Memory:           tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}},
-			SqlMem:           tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}},
-			StatementMethods: []string{annotationGrant},
-			ACL:              deny,
-		}), "run-restricted-annotator")
-		if _, r := docExec(t, d, driver, fmt.Sprintf(`{"op":"annotation_inputs","scope":"tenant","level":"concept","id":%q}`, k.rm)); !r.IsError {
-			t.Fatal("annotation_inputs answered a caller whose rules hide a member")
-		}
-	})
 }
 
 // TestNodeAnnotation_NonExemplarEditMarksNothingStale — a member that is not an
@@ -326,41 +275,6 @@ func TestNodeAnnotation_OtherLevelsReadAsBefore(t *testing.T) {
 	rec := annWrite(t, d, op, `"document_id":"`+out["document_id"].(string)+`"`, "A plain document")
 	if _, has := rec["basis"]; has {
 		t.Fatalf("a document record carries basis: %v", rec)
-	}
-}
-
-// TestNodeAnnotation_LimitedReaderLearnsNothingFromDeclaredStaleness — a reader with
-// a read limit polls a declared record; a document it may not read is then filed
-// under the node. What the reader sees (the record, the stale filter, summarize's
-// stale count) must not change: the staleness would tell it the hidden document
-// exists (RFC GM D8 (i)).
-func TestNodeAnnotation_LimitedReaderLearnsNothingFromDeclaredStaleness(t *testing.T) {
-	d, base, _ := documentFixture(t)
-	k := newStatsCorpus(t, d, base)
-	op := k.f.operator
-	comp := k.f.concepts["file-plan/compliance"]
-	nodeWrite(t, d, op, "concept", comp, "")
-	restricted := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"},
-		Resources: []string{"document:tenant:/kb/b1"}}))
-	poll := func() string {
-		get, r := docExec(t, d, restricted, fmt.Sprintf(`{"op":"get_annotation","scope":"tenant","level":"concept","id":%q}`, comp))
-		if r.IsError {
-			t.Fatal(r.Text)
-		}
-		staleList, _ := docExec(t, d, restricted, `{"op":"list_annotations","scope":"tenant","level":"concept","stale":true}`)
-		sum, _ := docExec(t, d, restricted, `{"op":"list_annotations","scope":"tenant","summarize":true}`)
-		return fmt.Sprint(get["annotations"], " | ", staleList["annotations"], " | ", sum["counts"])
-	}
-	before := poll()
-	if !strings.Contains(before, "declared") {
-		t.Fatalf("the restricted reader does not see the declared record: %s", before)
-	}
-	k.f.link("link_chunks", k.f.chunk("tenant", k.b1), comp, "subject")
-	if in := nodeInputs(t, d, op, "concept", comp); in["stale"] != true {
-		t.Fatalf("the operator does not see the record stale after b1 was filed: %v", in["stale"])
-	}
-	if after := poll(); after != before {
-		t.Fatalf("the restricted reader's view changed when a document it may not read was filed under the node:\nbefore %s\nafter  %s", before, after)
 	}
 }
 

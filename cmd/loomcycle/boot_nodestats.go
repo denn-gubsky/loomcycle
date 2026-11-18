@@ -20,8 +20,11 @@ import (
 // Otherwise no goroutine starts and no lock is taken. It needs no embedder and no
 // vector store: without them it keeps member counts only, as Document
 // op=node_stats does. It makes no model call.
+//
+// audience is the access-control resolver: the pass counts only documents every
+// member of the tenant may read (RFC GM C8). nil reads no rules.
 func startNodeStatsSweeper(ctx context.Context, cfg *config.Config, st store.Store, mgr *sqlmem.Manager,
-	emb providers.Embedder, lock *coord.AdvisoryLock) bool {
+	emb providers.Embedder, audience builtin.MemberAudience, lock *coord.AdvisoryLock) bool {
 	s := cfg.DocumentNodeStats()
 	switch {
 	case !s.Enabled:
@@ -33,7 +36,7 @@ func startNodeStatsSweeper(ctx context.Context, cfg *config.Config, st store.Sto
 		slog.Warn("node statistics: sweeper disabled (no SQL Memory, so no documents)")
 		return false
 	}
-	doc := &builtin.Document{Store: st, SqlMem: mgr, Embedder: emb, Cfg: cfg}
+	doc := &builtin.Document{Store: st, SqlMem: mgr, Embedder: emb, Cfg: cfg, Audience: audience}
 	goAdvisoryGatedSweeper(ctx, s.Interval, lock, coord.LockKeyNodeStatsSweeper, "node_stats",
 		func(ctx context.Context) { nodeStatsSweep(ctx, doc, mgr) })
 	slog.Info("node statistics: sweeper enabled", "interval", s.Interval)
