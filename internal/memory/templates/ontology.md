@@ -38,6 +38,10 @@ Nesting under it then means what that section says:
   schemes, and your organisation's real units. Reserved for upcoming versions;
   declaring them now is harmless.
 
+A heading with no `@section` line is a class, as above. A `@section` naming a
+kind this version does not know is reported, and nothing under that heading is
+in force: it is never read as entity types.
+
 Inside a classes section, a field can say what it holds, and a class under
 `Document` describes a kind of *document* rather than a kind of thing memory records:
 
