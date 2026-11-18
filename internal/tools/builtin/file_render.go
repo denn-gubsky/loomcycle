@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
@@ -192,37 +194,118 @@ func fileDocumentReadGrant(ctx context.Context, call map[string]any) (tools.Resu
 }
 
 // fromFile renders a Markdown file: its first heading is the title and the
-// rest its body. An HTML file is extracted to Markdown first (op=extract).
+// rest its body. An HTML file is read into Markdown first, as op=extract
+// reads it.
 func (j *renderJob) fromFile(ctx context.Context) (tools.Result, error) {
 	r, err := fileRef(j.in.Path)
 	if err != nil {
 		return errValidation("render: "+err.Error(), "Pass path, e.g. volume:inbox:extracted/report.md."), nil
 	}
-	if ext := strings.ToLower(path.Ext(r.path)); ext == ".html" || ext == ".htm" {
-		return errValidation("render: path is an HTML file", "Turn it into Markdown with op=extract first, then render the Markdown it writes."), nil
-	}
 	vfs, rel, res, ok := openRef(ctx, r, false)
 	if !ok {
 		return res, nil
 	}
-	release, err := j.f.extractSlot(ctx)
-	if err != nil {
+	var text string
+	if ext := strings.ToLower(path.Ext(r.path)); ext == ".html" || ext == ".htm" {
+		// The converter takes its own extraction slot for the parse.
+		text, res, ok = j.htmlMarkdown(ctx, vfs, rel, r)
 		vfs.Close()
-		return slotBusy(ctx, "render", j.f.slotWait)
+		if !ok {
+			return res, nil
+		}
+	} else {
+		release, err := j.f.extractSlot(ctx)
+		if err != nil {
+			vfs.Close()
+			return slotBusy(ctx, "render", j.f.slotWait)
+		}
+		defer release()
+		b, res, ok := readMarkdown(vfs, rel, r)
+		vfs.Close()
+		if !ok {
+			res.Text = strings.Replace(res.Text, "import: ", "render: ", 1)
+			return res, nil
+		}
+		text = string(b)
 	}
-	defer release()
-	b, res, ok := readMarkdown(vfs, rel, r)
-	vfs.Close()
-	if !ok {
-		res.Text = strings.Replace(res.Text, "import: ", "render: ", 1)
-		return res, nil
-	}
-	title, body := splitMarkdownTitle(string(b), fileTitle(path.Base(filepath.ToSlash(rel))))
+	title, body := splitMarkdownTitle(text, fileTitle(path.Base(filepath.ToSlash(rel))))
 	bld := render.NewBuilder(title)
 	bld.Doc.Date, bld.Doc.Language = j.date, j.in.Language
+	bld.Pictures = extractedPictures(ctx)
 	bld.Doc.Blocks = bld.Body(body)
 	doc, rep := bld.Finish()
 	return j.deliver(ctx, doc, rep, renderedSource{}, nil)
+}
+
+// htmlMarkdown reads an HTML file into Markdown through the converter, as
+// op=extract does, keeping nothing in the inbox: an <img> becomes a link to
+// its source, which a render then leaves out, as it never fetches.
+func (j *renderJob) htmlMarkdown(ctx context.Context, vfs *volumeFS, rel string, r dataRef) (string, tools.Result, bool) {
+	fh, err := vfs.open(rel)
+	if err != nil {
+		return "", errNotFound(fmt.Sprintf("render: no file at %s", r.raw), "List the folder with op=ls."), false
+	}
+	defer fh.Close()
+	info, err := fh.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errValidation(fmt.Sprintf("render: %s is not a file", r.raw), ""), false
+	}
+	sink := &htmlRenderSink{}
+	rep, err := j.f.converter().Extract(ctx, "text/html", fh, info.Size(), sink, extract.Options{Name: path.Base(filepath.ToSlash(rel))})
+	switch {
+	case err == nil:
+	case errors.Is(err, extract.ErrSinkFull):
+		// Cut where the extraction stopped; the body cap may cut it again.
+	case errors.Is(err, convert.ErrBusy):
+		res, _ := slotBusy(ctx, "render", j.f.slotWait)
+		return "", res, false
+	case errors.Is(err, convert.ErrQuarantined):
+		return "", errBusiness(fmt.Sprintf("render: %s crashed the file converter and will not be tried again here for now", r.raw),
+			"The file may be damaged or built to exhaust memory. Try a different copy of it, or ask an operator."), false
+	case errors.Is(err, convert.ErrNoWorkers):
+		return "", errTransient("render: no file conversion worker is running on this server", "Try again in a minute; an operator can check the conversion workers."), false
+	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
+		return "", errTransient(fmt.Sprintf("render: reading %s took longer than %s", r.raw, fileExtractTimeout), "The file is too large or complex to render here."), false
+	case extract.IsRefused(err):
+		return "", errValidation(fmt.Sprintf("render: %s was refused: %s", r.raw, strings.TrimPrefix(err.Error(), "extract: refused: ")), ""), false
+	default:
+		return "", errValidation(fmt.Sprintf("render: could not read %s as %s: %s", r.raw, cmp.Or(rep.Format, "html"), strings.TrimPrefix(err.Error(), "extract: ")),
+			"Check the file is not damaged, or that it is HTML."), false
+	}
+	return sink.md.String(), tools.Result{}, true
+}
+
+// htmlRenderSink collects an HTML file's Markdown for a render, within the
+// extracted text's cap; it keeps no pictures.
+type htmlRenderSink struct{ md strings.Builder }
+
+func (s *htmlRenderSink) Text(md string) error {
+	if s.md.Len()+len(md) > fileExtractMaxMarkdown {
+		return extract.ErrSinkFull
+	}
+	s.md.WriteString(md)
+	return nil
+}
+
+func (s *htmlRenderSink) Image(extract.Image) (string, error) { return "", nil }
+
+// extractedPictures reads the pictures a rendered Markdown file names that
+// op=extract wrote, as File op=import does (readExtractedImage): the file may
+// be anyone's text, so a path it names to any other file, in the inbox or a
+// volume, is not followed. Another reference is not a volume's, and is left
+// out (a web URL: a render never fetches).
+func extractedPictures(ctx context.Context) render.PictureReader {
+	return func(ref string, max int) ([]byte, bool, error) {
+		if !strings.HasPrefix(ref, "volume:") {
+			return nil, false, nil
+		}
+		r, err := parseDataRef(ref)
+		if err != nil || !isExtractedRef(r) {
+			return nil, true, errors.New("only pictures op=extract wrote are read")
+		}
+		b, err := readVolumeBytes(ctx, r, int64(max))
+		return b, true, err
+	}
 }
 
 // splitMarkdownTitle takes a leading "# " heading off a Markdown text as its

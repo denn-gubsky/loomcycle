@@ -101,7 +101,7 @@ func (f *File) Description() string {
 		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost; a VTT or SRT caption file becomes a timed transcript), " +
 		"transcribe (turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model, and return an excerpt; dry_run says how many minutes and what it would cost), " +
 		"import (build a Document from such a Markdown file, its pictures attached as image chunks), " +
-		"render (write a Document you may read, or a Markdown file, as a file to send: pdf, docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import). " +
+		"render (write a Document you may read, or a Markdown or HTML file, as a file to send: pdf, docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, or `volume:path` for your default volume; a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
 }
@@ -111,7 +111,7 @@ func (f *File) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render"]},
-			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox. render: a Markdown file to render instead of a document (its first # heading is the title)."},
+			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox. render: a Markdown or HTML file to render instead of a document (its first # heading is the title)."},
 			"from":      {"type": "string", "description": "keep: the inbox file to copy. upload: the file to send, in the inbox or a volume you can Read."},
 			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name). render: the file to write in one of your read-write volumes (needs the Write tool); default volume:inbox:rendered/<title>.<format>."},
 			"overwrite": {"type": "boolean", "description": "keep, download, render: replace an existing file at to. Default false."},

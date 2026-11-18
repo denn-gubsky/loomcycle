@@ -1,6 +1,6 @@
 ---
 name: File/render
-description: "File op=render — write a Document you may read, or a Markdown file, as a file to send: PDF, Word (DOCX), HTML or Markdown, into the inbox or one of your volumes."
+description: "File op=render — write a Document you may read, or a Markdown or HTML file, as a file to send: PDF, Word (DOCX), HTML or Markdown, into the inbox or one of your volumes."
 ---
 `render` is the reverse of `import`: it writes a Document as a file people
 open, send and print. The runtime reads the document and writes the file, so
@@ -26,8 +26,12 @@ again (with `to`, copied there).
 
 - `document` — the id of the document to render.
 - `doc_path` — or the document's name in the Path tree, e.g. `/board/2026/minutes`.
-- `path` — or a Markdown file in the inbox or a volume; its first `#` heading
-  is the title. For an HTML file, run `extract` first and render its Markdown.
+- `path` — or a Markdown or HTML file in the inbox or a volume; its first `#`
+  heading is the title. An HTML file is read as `extract` reads it: its text,
+  headings, lists and tables, with an `<img>` kept as a link to its source.
+  A picture a Markdown file names is embedded only when `extract` wrote it
+  (`volume:inbox:extracted/…`), as `import` follows them; a path it names to
+  any other file, and a web address, are left out.
 - `scope` — the document's store: `user` (default), `agent` or `tenant`.
 - `chunk` — render only the part of the document under this chunk, titled by it.
 - `format` — `pdf` (typeset pages: page numbers, a table of contents with

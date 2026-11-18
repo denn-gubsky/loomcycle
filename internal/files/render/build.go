@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/yuin/goldmark"
@@ -19,6 +20,12 @@ import (
 // link's text and drop the link. nil keeps http, https and mailto links only.
 type LinkResolver func(dest string) (href, anchor string, ok bool)
 
+// PictureReader reads a picture a body names by reference rather than
+// holds: at most max bytes of it. handled false means the reference is not
+// one it reads (a web URL: a render never fetches), and the picture is left
+// out as before; an error leaves it out with that reason.
+type PictureReader func(ref string, max int) (data []byte, handled bool, err error)
+
 // Builder builds a Doc. The core walks a Document and hands each chunk's body
 // to Body, each picture to Image; the Builder parses, counts and caps.
 type Builder struct {
@@ -26,13 +33,15 @@ type Builder struct {
 	Report Report
 	// Links resolves a body's links; nil keeps http, https and mailto.
 	Links LinkResolver
+	// Pictures reads a picture a body names by reference; nil reads none.
+	Pictures PictureReader
 
 	md         goldmark.Markdown
 	bodyBytes  int
 	imageBytes int
-	// dataURLs is each data: picture decoded so far, by its URL, so a body
-	// that names one picture many times (a reference definition used over
-	// and over) decodes and stores it once.
+	// dataURLs is each picture decoded or read so far, by its data: URL or
+	// reference, so a body that names one picture many times (a reference
+	// definition used over and over) decodes, reads and stores it once.
 	dataURLs    map[string]Node
 	full        bool // the body cap was reached: later bodies are left out
 	sectionsCut bool
@@ -361,16 +370,14 @@ func (c *converter) link(dest string, children []Node) []Node {
 }
 
 // image takes a picture a body names. A data: URL is the picture itself and
-// is added; any other reference (a URL, a volume) is left out, since a
-// rendering never fetches.
+// is added; a reference the Builder's Pictures reads is read and added; any
+// other (a web URL) is left out, since a rendering never fetches.
 func (c *converter) image(dest, alt string) Node {
-	if strings.HasPrefix(dest, "data:") {
-		if n, ok := c.b.dataURLs[dest]; ok {
-			if n.Kind == KindImage {
-				n.Alt = oneLine(alt)
-			}
-			return n
+	if n, ok := c.b.dataURLs[dest]; ok {
+		if n.Kind == KindImage {
+			n.Alt = oneLine(alt)
 		}
+		return n
 	}
 	if mt, data, tooLarge, ok := decodeDataURL(dest); ok {
 		// Distinct data: URLs are body text, so what is decoded here is
@@ -387,7 +394,42 @@ func (c *converter) image(dest, alt string) Node {
 		c.b.dataURLs[dest] = n
 		return n
 	}
+	if n, ok := c.readPicture(dest, alt); ok {
+		if c.b.dataURLs == nil {
+			c.b.dataURLs = map[string]Node{}
+		}
+		c.b.dataURLs[dest] = n
+		return n
+	}
 	return c.b.skipImage(oneLine(alt), "a picture the text links to rather than holds was left out")
+}
+
+// readPicture reads a picture by reference through the Builder's Pictures,
+// asking for no more than the caps still allow. ok false: not a reference
+// Pictures reads.
+func (c *converter) readPicture(dest, alt string) (Node, bool) {
+	if c.b.Pictures == nil {
+		return Node{}, false
+	}
+	alt = oneLine(alt)
+	// Read nothing the caps would refuse: the count first, then no more
+	// bytes than one picture, or what is left of them all, may take.
+	if len(c.b.Doc.Images) >= MaxImages {
+		return c.b.skipImage(alt, fmt.Sprintf("pictures past the first %d were left out", MaxImages)), true
+	}
+	limit := min(MaxImage, MaxImageBytes-c.b.imageBytes)
+	if limit <= 0 {
+		return c.b.skipImage(alt, fmt.Sprintf("pictures past %d MiB in all were left out", MaxImageBytes>>20)), true
+	}
+	data, handled, err := c.b.Pictures(dest, limit)
+	switch {
+	case !handled:
+		return Node{}, false
+	case err != nil:
+		return c.b.skipImage(alt, "a picture at "+oneLine(dest)+" was left out: "+oneLine(err.Error())), true
+	}
+	// The type is what the bytes are, not what the name says.
+	return c.b.Image(http.DetectContentType(data), data, alt), true
 }
 
 // decodeDataURL reads data:<media type>;base64,<data>. tooLarge reports a

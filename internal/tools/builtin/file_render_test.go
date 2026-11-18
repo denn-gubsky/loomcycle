@@ -555,3 +555,78 @@ func TestFileRender_MetadataEmbedCarriesTheRecord(t *testing.T) {
 		}
 	}
 }
+
+// A Markdown file's pictures are read as File op=import reads them: one
+// op=extract wrote is embedded; a path the text names to any other file, in
+// a volume or the inbox, and a web URL, are left out with a note.
+func TestFileRender_MarkdownFileEmbedsOnlyExtractedPictures(t *testing.T) {
+	f, ctx, _, docs := fileDocRun(t)
+	pic := testPNG(t)
+	kept := inbox.Capture(ctx, inbox.Item{Name: "Протокол.docx", Origin: "mcp:ms365/get-attachment"}, minutesDOCX(t, pic))
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "render", "path": ex["ref"], "format": "html"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	rep, _ := out["report"].(map[string]any)
+	if asInt(rep["images"]) != 1 || asInt(rep["images_skipped"]) != 0 {
+		t.Fatalf("the extracted picture was not embedded: %v", out)
+	}
+	page, _ := os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(out["ref"])))
+	if !strings.Contains(string(page), `src="data:image/png;base64,`) {
+		t.Fatalf("no embedded picture:\n%s", page)
+	}
+
+	// Someone else's text: a path into the agent's volume, into the inbox
+	// outside extracted/, and a URL. The inbox copy is a picture too, so
+	// only the rule keeps it out.
+	if err := os.WriteFile(inboxFile(t, tools.EphemeralVolumes(ctx), "volume:inbox:loose.png"), pic, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	md := "# Hostile\n\n![a](volume:docs:secret.png)\n\n![b](volume:secret.png)\n\n![c](volume:inbox:loose.png)\n\n" +
+		"![d](https://example.com/x.png)\n\n![e](volume:inbox:extracted/../loose.png)\n"
+	if err := os.WriteFile(filepath.Join(docs, "hostile.md"), []byte(md), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, res = fileOp(t, f, ctx, map[string]any{"op": "render", "path": "volume:docs:hostile.md", "format": "html"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	rep, _ = out["report"].(map[string]any)
+	if asInt(rep["images"]) != 0 || asInt(rep["images_skipped"]) != 5 {
+		t.Fatalf("a picture the text chose was read: %v", out)
+	}
+	page, _ = os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(out["ref"])))
+	if strings.Contains(string(page), "data:image/") {
+		t.Fatalf("a picture was embedded:\n%s", page)
+	}
+}
+
+// An HTML file renders as op=extract reads it: its text and structure, no
+// script, and an <img> left as a link to its source, never fetched.
+func TestFileRender_HTMLFileSource(t *testing.T) {
+	f, ctx, _, docs := fileDocRun(t)
+	page := `<!doctype html><html><head><title>Звіт</title><script>alert(1)</script></head><body>
+<h1>Звіт</h1><p>Текст <b>звіту</b>.</p><table><tr><th>a</th><th>b</th></tr><tr><td>1</td><td>2</td></tr></table>
+<img src="https://example.com/logo.png" alt="logo"></body></html>`
+	if err := os.WriteFile(filepath.Join(docs, "report.HTML"), []byte(page), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "render", "path": "volume:docs:report.HTML", "format": "md"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	got, _ := os.ReadFile(inboxFile(t, tools.EphemeralVolumes(ctx), asStr(out["ref"])))
+	for _, want := range []string{"# Звіт", "Текст звіту.", "| 1 | 2 |", "(<https://example.com/logo.png>)"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("the Markdown lacks %q:\n%s", want, got)
+		}
+	}
+	rep, _ := out["report"].(map[string]any)
+	if strings.Contains(string(got), "alert") || asInt(rep["images"]) != 0 {
+		t.Errorf("a script or a fetched picture reached the render (%v):\n%s", out, got)
+	}
+}
