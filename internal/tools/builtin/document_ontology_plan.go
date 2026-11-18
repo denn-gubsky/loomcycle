@@ -160,9 +160,21 @@ func (d *Document) PlanOntology(ctx context.Context, changes []connector.Ontolog
 		}
 	}
 	for _, p := range planned {
-		if p.in.Op == connector.OntologyPlanEdit {
-			compareEditedEntry(before, after, p)
+		if p.in.Op != connector.OntologyPlanEdit {
+			continue
 		}
+		// An edit is judged against the ontology with that edit alone: in `after`, a
+		// rename, move or delete elsewhere in the request (of the entry, or an ancestor)
+		// changes its declaration too and would read as a directive change.
+		alone := after
+		if len(planned) > 1 {
+			only := newOntologyOverlay()
+			only.bodies[p.entry.ChunkID] = ov.bodies[p.entry.ChunkID]
+			if alone, err = d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, only); err != nil {
+				return out, planReadErr(err)
+			}
+		}
+		compareEditedEntry(before, alone, p)
 	}
 
 	counted, skipped, complete, err := d.countPlanDependents(ctx, key, before, after, planned)

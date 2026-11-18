@@ -810,3 +810,21 @@ func TestOntologyPlan_RenameCountsOnlyTheEntrysOwnName(t *testing.T) {
 		t.Errorf("rename filed_under: statements_of_kind %+v, want the 1 filed_under statement only", got)
 	}
 }
+
+// TestOntologyPlan_EditIsJudgedWithoutTheRequestsOtherChanges — a meaning-only edit of
+// a class is kept with risk none even when the same request renames that class: the
+// rename is the rename's effect, not a directive change of the edit.
+func TestOntologyPlan_EditIsJudgedWithoutTheRequestsOtherChanges(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	f := newPlanFixture(t, d, ctx)
+	f.populate()
+	prov := f.entries["class:Provision"]
+	res := f.plan(
+		connector.OntologyChange{Op: connector.OntologyPlanRename, Entry: prov, Name: "Regulation"},
+		connector.OntologyChange{Op: connector.OntologyPlanEdit, Entry: prov, Body: "A rule a supervisor sets.\n"},
+	)
+	edit := res.Changes[1]
+	if got := planCount(t, edit, "typed_documents"); got.Effect != connector.OntologyEffectKept || edit.Risk != connector.OntologyRiskNone {
+		t.Errorf("meaning edit beside a rename: typed_documents %+v risk %s; want kept and none", got, edit.Risk)
+	}
+}
