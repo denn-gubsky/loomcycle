@@ -157,10 +157,14 @@ const documentInputSchema = `{
 		"page_documents": {"type": "integer", "description": "graph_snapshot: documents per page (default 200, at most 1000; a larger value is lowered, never refused). A page always holds whole documents."},
 		"edge_budget": {"type": "integer", "description": "graph_snapshot: the most relations one page returns (default 50000, at most 200000); edges.truncated says it was reached."},
 		"exclude_document_ids": {"type": "array", "items": {"type": "string"}, "description": "search / related: never return chunks of these documents — e.g. the document under review, so its own text is not found as evidence for itself."},
-		"parent":      {"type": "string", "description": "propose_entity: the IN-FORCE entity type this one is a kind of, BY NAME (omit for a new top-level type). Use a name from the entity types listed in your instructions."},
+		"parent":      {"type": "string", "description": "propose_entity: the IN-FORCE entity type this one is a kind of, BY NAME (omit for a new top-level type). Use a name from the entity types listed in your instructions. With change=edit: the entry's new parent, by chunk id or name, in the entry's own section."},
 		"section":     {"type": "string", "enum": ["classes","relations","schemes","instances"], "description": "propose_entity: what is being proposed — classes (default) for an entity type, relations for a relation kind (a name for how two things are related, e.g. supervises), schemes for a topic or classification concept, instances for a real organisation, unit or post the tenant should know. parent then names an in-force entry of the same section; for a concept, the scheme or broader concept it belongs under (a name or a tag such as topics/risk-management); for an instance, its class. A NEW scheme takes no parent: pass section=schemes with concepts (and optionally header) instead."},
 		"concepts":    {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "meaning": {"type": "string"}, "notation": {"type": "string"}, "alt": {"type": "array", "items": {"type": "string"}}, "exact_match": {"type": "string"}, "children": {"type": "array", "items": {"type": "object"}, "description": "narrower concepts, each of this same shape"}}, "required": ["name"]}, "description": "propose_entity with section=schemes and no parent: a NEW scheme's concepts, each {name, meaning?, notation?, alt?, exact_match?, children?}, nested up to 8 levels, at most 500 in all. The whole scheme is one proposal, inert until an operator accepts it."},
 		"header":      {"type": "object", "properties": {"domain": {"type": "string"}, "projects": {"type": "array", "items": {"type": "string"}}, "origin": {"type": "string", "enum": ["adopted","declared","generated"]}, "source": {"type": "string"}, "version": {"type": "string"}}, "description": "propose_entity (a new scheme) / import_scheme: the scheme's header — domain (the knowledge domain it serves), projects (the classes whose things it arranges), origin, and for an adopted scheme source and version. Carried as data and written as directives only when an operator accepts. import_scheme: origin is always adopted."},
+		"change":      {"type": "string", "enum": ["edit","retire"], "description": "propose_entity: propose a CHANGE to an entry already in force instead of a new one — edit (a new name, parent, meaning or directives) or retire (no new write may use it; what uses it stays). Pass entry. Inert until an operator accepts it."},
+		"entry":       {"type": "string", "description": "propose_entity with change: the in-force entry (class, relation, scheme, concept or instance) to change or retire — its chunk id from describe_ontology, or its name (a concept's tag) when that names one entry. A section header, the root and a proposal are not entries."},
+		"meaning":     {"type": "string", "description": "propose_entity change=edit: the entry's new meaning; any @ line stays quoted text. Omit to keep it."},
+		"directives":  {"type": "object", "description": "propose_entity change=edit: the entry's COMPLETE new directive set, name to value — a string, true for a flag (symmetric), or a list for one that repeats (alt); {} clears them. Only the directives the entry's section takes; never locked. Carried as data, checked again when an operator accepts."},
 		"skos_xml":    {"type": "string", "description": "import_scheme: a SKOS concept scheme in RDF/XML (skos:ConceptScheme, skos:Concept, prefLabel, altLabel, notation, definition or scopeNote, broader, narrower, topConceptOf, exactMatch), at most 2 MB. Turtle is not read. Pass this or markdown."},
 		"parent_id":   {"type": "string", "description": "create_chunk: the parent chunk. Omit it to add the chunk under the document's title (the root chunk)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent. Empty moves the chunk directly under the document's title (the root chunk)."},
@@ -304,7 +308,7 @@ const documentInputSchema = `{
 		"concept_prefix": {"type": "string", "description": "search / related: like concept, for every concept whose tag is this path or lies under it, e.g. concept_prefix=topics covers the whole topics scheme."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer", "description": "The most rows to return. The default depends on the op (graph_recall: 50 chunks); each op's help article gives its own."},
-		"name":        {"type": "string", "description": "define/list_types: the type name. set_annotation / get_annotation / annotation_inputs / delete_annotation with level class: the document class, instead of its chunk id. lease / release: the lease's name, e.g. linker (1–64 of a-z 0-9 _ . : / -). import_scheme: the scheme's name (default: the outline's # title or the SKOS scheme's label)."},
+		"name":        {"type": "string", "description": "define/list_types: the type name. set_annotation / get_annotation / annotation_inputs / delete_annotation with level class: the document class, instead of its chunk id. lease / release: the lease's name, e.g. linker (1–64 of a-z 0-9 _ . : / -). import_scheme: the scheme's name (default: the outline's # title or the SKOS scheme's label). propose_entity: the proposed entry's name; with change=edit, the entry's new name."},
 		"ttl_ms":      {"type": "integer", "description": "lease: how long to hold it, in milliseconds (default 60000, capped at one hour). The lease expires on its own; the holder re-leases to extend it."},
 		"write":       {"type": "string", "enum": ["propose","report","rule","recommend"], "description": "classify: propose (default) applies an unambiguous rule match and files the rest for review; report writes nothing and returns the same answer. judge_statements: rule (default) rules each routed proposal whose verdict clears the floor; recommend only records the verdicts."},
 		"judgements":  {"type": "array", "description": "judge_statements: 1-100 verdicts, each {id (a statement), verdict (accept|reject|unsure), confidence (0..1), rationale (one sentence), verdict_run_id? (the run that judged it, from the sub-agent result header)}.", "items": {"type": "object", "properties": {"id": {"type": "string"}, "verdict": {"type": "string", "enum": ["accept","reject","unsure"]}, "confidence": {"type": "number"}, "rationale": {"type": "string"}, "verdict_run_id": {"type": "string"}}, "required": ["id","verdict","confidence","rationale"]}},
@@ -368,6 +372,15 @@ type docInput struct {
 	// as data and written as directives only when an operator accepts.
 	Concepts []memrank.ProposedConcept `json:"concepts,omitempty"`
 	Header   *memrank.SchemeHeader     `json:"header,omitempty"`
+	// Change, Entry, Meaning and Directives file a proposal to change or retire an
+	// entry in force (propose_entity, RFC GQ P4.1): change is "edit" or "retire", entry
+	// the entry (chunk id, or name), and for an edit its new meaning and its complete new
+	// directive set, carried as inert data. Directives is a raw object so a flag
+	// (true), a value and a repeated directive (a list) each decode.
+	Change     string          `json:"change,omitempty"`
+	Entry      string          `json:"entry,omitempty"`
+	Meaning    *string         `json:"meaning,omitempty"`
+	Directives json.RawMessage `json:"directives,omitempty"`
 	// SKOSXML is import_scheme's SKOS input in RDF/XML; its outline input is markdown.
 	SKOSXML string `json:"skos_xml,omitempty"`
 	// SourceQuote is the span a fact was derived from (upsert_chunk). Persisted on the
@@ -3109,7 +3122,26 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err != nil {
 		return errFrom("delete_document: "+err.Error(), err), nil
 	}
-	n, txErr := d.removeDocument(ctx, key, mscope, docID)
+	// RFC GQ D3: not the tenant ontology while any entry of it is in use.
+	refused, ontCheck := d.ontologyDeleteGuard(ctx, key, mscope, "delete_document", docID, "")
+	if refused != nil {
+		return *refused, nil
+	}
+	changed := ""
+	var recheck func(txnID string, ids []string) error
+	if ontCheck != nil {
+		recheck = func(txnID string, ids []string) error {
+			why, err := d.ontologyDeleteRecheck(ctx, txnID, ontCheck, ids)
+			if err == nil && why != "" {
+				changed, err = why, errOntologyChangedTxn
+			}
+			return err
+		}
+	}
+	n, txErr := d.removeDocumentChecked(ctx, key, mscope, docID, recheck)
+	if changed != "" {
+		return errOntologyChangedDuringDelete("delete_document", changed), nil
+	}
 	if txErr != nil {
 		return errFrom("delete_document: "+txErr.Error(), txErr), nil
 	}
@@ -3136,6 +3168,14 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 // the document lives on, under the same id, in another scope. It returns the
 // number of chunks removed.
 func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID string) (int, error) {
+	return d.removeDocumentChecked(ctx, key, mscope, docID, nil)
+}
+
+// removeDocumentChecked is removeDocument with recheck asked inside the transaction,
+// once the chunk ids are read: a non-nil error rolls the whole removal back.
+// delete_document re-asserts the ontology guard's read there (RFC GQ D3).
+func (d *Document) removeDocumentChecked(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID string,
+	recheck func(txnID string, ids []string) error) (int, error) {
 	// The SQL side runs in ONE transaction: enumerate the chunk ids (for the
 	// Memory-body cleanup below), then delete edges (BOTH directions — so an
 	// INCOMING cross-document edge from another doc no longer dangles), then
@@ -3149,6 +3189,11 @@ func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 		for _, r := range res.Rows {
 			ids = append(ids, asStr(r[0]))
+		}
+		if recheck != nil {
+			if err := recheck(txnID, ids); err != nil {
+				return err
+			}
 		}
 		// Facts derived from this document's text keep their quotes (RFC FN P3a).
 		if err := d.snapshotDerivedQuotes(ctx, txnID, `{col} IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
@@ -3813,6 +3858,12 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		retiring, retireSubtree = isOntology, sub
 	}
+	// RFC GQ D3: out of force only by retirement (document_ontology_delete.go).
+	if _, has := present["status"]; has && memrank.IsInertEntityStatus(in.Status) && !memrank.IsInertEntityStatus(row.Status) {
+		if refused := d.ontologyDemotionRefusal(ctx, key, row); refused != nil {
+			return *refused, nil
+		}
+	}
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
@@ -3968,6 +4019,13 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	} else if len(rr.Rows) > 0 {
 		return errBusiness("delete_chunk: refusing to delete a document's root chunk — use delete_document", ""), nil
 	}
+	// RFC GQ D3: an ontology entry something rests on is retired, never deleted — for
+	// every caller, the operator plane included (document_ontology_delete.go).
+	refused, ontCheck := d.ontologyDeleteGuard(ctx, key, mscope, "delete_chunk", row.DocumentID, in.ID)
+	if refused != nil {
+		return *refused, nil
+	}
+	changed := ""
 	// The cascade runs in ONE transaction: enumerate the chunk + all
 	// descendants (iterative BFS — portable, no recursive CTE; a visited set
 	// guarantees termination even on a corrupt parent cycle), then delete each
@@ -4004,6 +4062,14 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 				}
 			}
 			frontier = next
+		}
+		why, rerr := d.ontologyDeleteRecheck(ctx, txnID, ontCheck, ids)
+		if rerr != nil {
+			return rerr
+		}
+		if why != "" {
+			changed = why
+			return errOntologyChangedTxn
 		}
 		// BATCHED, and it matters most here of all the cascades. This ran SEVEN
 		// statements per chunk over the whole descendant set, inside one transaction
@@ -4060,6 +4126,9 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		return nil
 	})
+	if changed != "" {
+		return errOntologyChangedDuringDelete("delete_chunk", changed), nil
+	}
 	if txErr != nil {
 		return errFrom("delete_chunk: "+txErr.Error(), txErr), nil
 	}
@@ -4148,6 +4217,12 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 				return errBusiness("move_chunk: cannot move a chunk into its own subtree (would create a cycle)", "Pass a new_parent_id outside this chunk's own subtree."), nil
 			}
 			cur = anc.ParentID
+		}
+	}
+	// RFC GQ D3: no entry leaves the ontology by a move (document_ontology_delete.go).
+	if in.NewParentID != row.ParentID {
+		if refused := d.ontologyMoveRefusal(ctx, key, row, in.NewParentID); refused != nil {
+			return *refused, nil
 		}
 	}
 	pos := 0
@@ -6122,6 +6197,10 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			"Pass reimport: true and the work's work_key, or omit amending_document_id."), nil
 	}
 	if in.Reimport {
+		// RFC GQ D3: the ontology changes in place (document_ontology_delete.go).
+		if refused := d.ontologyReimportRefusal(ctx, key, in); refused != nil {
+			return *refused, nil
+		}
 		return d.reimportMD(ctx, key, mscope, in, chunks, edges)
 	}
 	// Checked before anything is written: import_md is not atomic, and a refusal

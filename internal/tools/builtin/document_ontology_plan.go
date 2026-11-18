@@ -97,17 +97,29 @@ type planRows struct {
 // writes nothing. ctx carries the tenant (the run identity) and the tenant-scope
 // grants; the caller decides who may ask (the connector admits operators only).
 func (d *Document) PlanOntology(ctx context.Context, changes []connector.OntologyChange) (connector.PlanOntologyResult, error) {
-	ctx = noWrites(ctx)
-	out := connector.PlanOntologyResult{Changes: []connector.OntologyPlannedChange{}, Issues: []string{}, NewIssues: []string{}}
-	if err := validatePlanChanges(changes); err != nil {
-		return out, err
-	}
 	if d.Store == nil || d.SqlMem == nil {
+		out := connector.PlanOntologyResult{Changes: []connector.OntologyPlannedChange{}, Issues: []string{}, NewIssues: []string{}}
+		if err := validatePlanChanges(changes); err != nil {
+			return out, err
+		}
 		return out, connector.WithMessage(connector.ErrOntologyPlanUnavailable, "planning ontology changes needs SQL Memory; none is configured")
 	}
 	key, mscope, err := d.ontologyTenantKey(ctx)
 	if err != nil {
-		return out, connector.WithMessage(connector.ErrOntologyPlanUnavailable, err.Error())
+		return connector.PlanOntologyResult{Changes: []connector.OntologyPlannedChange{}, Issues: []string{}, NewIssues: []string{}},
+			connector.WithMessage(connector.ErrOntologyPlanUnavailable, err.Error())
+	}
+	return d.planOntologyAt(ctx, key, mscope, changes)
+}
+
+// planOntologyAt is PlanOntology on a tenant scope key already resolved. The delete
+// paths call it with the key of the call they guard (document_ontology_delete.go), so
+// "has dependents" is the plan's own answer, not a second count.
+func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, changes []connector.OntologyChange) (connector.PlanOntologyResult, error) {
+	ctx = noWrites(ctx)
+	out := connector.PlanOntologyResult{Changes: []connector.OntologyPlannedChange{}, Issues: []string{}, NewIssues: []string{}}
+	if err := validatePlanChanges(changes); err != nil {
+		return out, err
 	}
 	docID, err := d.resolveOntologyID(ctx, key)
 	if err != nil {

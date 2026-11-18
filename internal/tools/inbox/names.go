@@ -54,7 +54,7 @@ func SanitizeName(name string) string {
 		out = "file" + ext
 	}
 	if len(out) > 120 {
-		ext := path.Ext(out)
+		ext := fileExt(out)
 		if len(ext) > 16 {
 			ext = ""
 		}
@@ -108,6 +108,11 @@ var extTypes = map[string]string{
 	".srt":  "application/x-subrip",
 	".djvu": djvuType,
 	".djv":  djvuType,
+
+	// FB2 books; ".fb2.zip" is a double extension, read whole by fileExt.
+	".fb2":     fb2Type,
+	".fb2.zip": fb2ZipType,
+
 	// Recordings whose bytes a sniffer does not know (FLAC, a bare AAC)
 	// or knows only as a generic container.
 	".m4a":  "audio/mp4",
@@ -129,6 +134,8 @@ var typeExts = map[string]string{
 	"application/vnd.oasis.opendocument.text":                                   ".odt",
 	"application/vnd.oasis.opendocument.text-template":                          ".ott",
 	"application/epub+zip":          ".epub",
+	fb2Type:                         ".fb2",
+	fb2ZipType:                      ".fb2.zip",
 	"application/msword":            ".doc",
 	"application/vnd.ms-excel":      ".xls",
 	"application/vnd.ms-powerpoint": ".ppt",
@@ -162,7 +169,16 @@ var typeExts = map[string]string{
 // is specific, else what the bytes sniff as, refined by the name's extension
 // when the sniff is generic (an Office file is a zip to a sniffer).
 func settleMediaType(declared string, head []byte, name string) string {
-	if mt := normalizeType(declared); mt != "" && !generic(mt) {
+	mt := normalizeType(declared)
+	// An FB2 book is XML to a sniffer and often to its producer too.
+	if (generic(mt) || mt == "text/xml" || mt == "application/xml") && fictionBook(head) {
+		return fb2Type
+	}
+	// A zip names no book type; one whose entry is an FB2 book is one.
+	if (mt == "application/zip" || mt == "application/x-zip-compressed") && zippedFB2(head) {
+		return fb2ZipType
+	}
+	if mt != "" && !generic(mt) {
 		if mt == "image/x-djvu" || mt == "image/x.djvu" {
 			return djvuType
 		}
@@ -178,8 +194,11 @@ func settleMediaType(declared string, head []byte, name string) string {
 		if mt := zipMimetype(head); mt != "" {
 			return mt
 		}
+		if zippedFB2(head) {
+			return fb2ZipType
+		}
 	}
-	if byExt, ok := extTypes[strings.ToLower(path.Ext(name))]; ok && (generic(sniffed) || sniffed == "application/zip" || sniffed == "application/x-ole-storage") {
+	if byExt, ok := extTypes[strings.ToLower(fileExt(name))]; ok && (generic(sniffed) || sniffed == "application/zip" || sniffed == "application/x-ole-storage") {
 		return byExt
 	}
 	if sniffed == "application/zip" && bytes.Contains(head, []byte("word/")) {
@@ -236,6 +255,94 @@ func zipMimetype(head []byte) string {
 		return ""
 	}
 	return mt
+}
+
+// The FB2 types (RFC GV §4.1): a book, and a zip of one book.
+const (
+	fb2Type    = "application/x-fictionbook+xml"
+	fb2ZipType = "application/x-zip-compressed-fb2"
+)
+
+// fileExt is a name's extension: path.Ext, except that a zipped FB2 book's
+// double extension is kept whole (path.Ext of "a.fb2.zip" is ".zip"), so
+// the name keeps it when it is typed, trimmed or numbered.
+func fileExt(name string) string {
+	const fb2Zip = ".fb2.zip"
+	if len(name) > len(fb2Zip) && strings.EqualFold(name[len(name)-len(fb2Zip):], fb2Zip) {
+		return name[len(name)-len(fb2Zip):]
+	}
+	return path.Ext(name)
+}
+
+// fictionBook reports whether head is the start of an FB2 book: XML whose
+// root element is FictionBook, found in the first 4 KiB after a byte order
+// mark, the XML declaration, comments and processing instructions.
+func fictionBook(head []byte) bool {
+	if len(head) > 4096 {
+		head = head[:4096]
+	}
+	switch {
+	case bytes.HasPrefix(head, []byte("\xEF\xBB\xBF")):
+		head = head[3:]
+	case len(head) >= 2 && (head[0] == 0xFF && head[1] == 0xFE || head[0] == 0xFE && head[1] == 0xFF):
+		// UTF-16: the markup up to the root is ASCII, one byte in two.
+		lo := 2
+		if head[0] == 0xFE {
+			lo = 3
+		}
+		var b []byte
+		for i := lo; i < len(head); i += 2 {
+			b = append(b, head[i])
+		}
+		head = b
+	}
+	for {
+		head = bytes.TrimLeft(head, " \t\r\n")
+		var end []byte
+		switch {
+		case bytes.HasPrefix(head, []byte("<?")):
+			end = []byte("?>")
+		case bytes.HasPrefix(head, []byte("<!--")):
+			end = []byte("-->")
+		}
+		if end == nil {
+			break
+		}
+		i := bytes.Index(head[2:], end)
+		if i < 0 {
+			return false
+		}
+		head = head[2+i+len(end):]
+	}
+	if !bytes.HasPrefix(head, []byte("<")) {
+		return false
+	}
+	name := head[1:]
+	if i := bytes.IndexAny(name, " \t\r\n/>"); i >= 0 {
+		name = name[:i]
+	} else {
+		return false
+	}
+	if i := bytes.LastIndexByte(name, ':'); i >= 0 {
+		name = name[i+1:]
+	}
+	return string(name) == "FictionBook"
+}
+
+// zippedFB2 reports whether a zip's first entry, as its first local file
+// header names it, is an .fb2 book. Whether it is the only one is the
+// extractor's to check: an archive of many books is refused there, with a
+// reason, rather than typed as a plain zip here.
+func zippedFB2(head []byte) bool {
+	const hdr = 30
+	if len(head) < hdr || !bytes.HasPrefix(head, []byte("PK\x03\x04")) {
+		return false
+	}
+	nameLen := int(head[26]) | int(head[27])<<8
+	if nameLen == 0 || len(head) < hdr+nameLen {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(string(head[hdr:hdr+nameLen])), ".fb2")
 }
 
 // Sniff is settleMediaType for a producer that has the head of the bytes but

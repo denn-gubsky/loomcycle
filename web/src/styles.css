@@ -6476,6 +6476,14 @@ a.login-btn {
   margin-top: var(--lc-space-1);
 }
 
+/* An entry's retire / delete (RFC GQ P2.2): beside its name, on the same line. */
+.ontology-entry-actions {
+  display: inline-flex;
+  gap: var(--lc-space-1);
+  margin-left: var(--lc-space-1);
+  vertical-align: baseline;
+}
+
 /* The ontology tree (RFC BZ P4). A taxonomy read as a flat list with one level of
    indent is a taxonomy nobody can check — the operator has to see which type is a
    kind of which, because that is now what steers extraction AND what widens a

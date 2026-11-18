@@ -301,7 +301,9 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 	}
 	defer ir.Close()
 
-	head := make([]byte, 512)
+	// 4 KiB: an FB2 book's root element is looked for past its prolog and
+	// comments; http.DetectContentType reads the first 512 bytes of it.
+	head := make([]byte, 4096)
 	n, err := io.ReadFull(r, head)
 	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 		return Record{}, fmt.Errorf("could not read the file: %v", err)
@@ -640,7 +642,7 @@ func humanBytes(n int64) string {
 // reserveName creates an empty file under dir with name or the first free
 // name-<n> variant, O_EXCL, and returns its path relative to the root.
 func reserveName(ir *os.Root, dir, name string) (string, error) {
-	ext := path.Ext(name)
+	ext := fileExt(name)
 	stem := strings.TrimSuffix(name, ext)
 	for i := 1; i <= 1000; i++ {
 		cand := name

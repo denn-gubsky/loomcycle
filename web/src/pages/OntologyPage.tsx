@@ -16,13 +16,16 @@ import {
   type RelationNode,
 } from "../lib/ontologySections";
 import { proposedOutlineText } from "../lib/ontologyProposedScheme";
+import { proposedChangeText } from "../lib/ontologyProposedChange";
 import {
   OntologyProposal,
   ProposedSchemeView,
   OntologyResponse,
   OntologyTerm,
   adoptOntologyType,
+  deleteOntologyEntry,
   getOntology,
+  retireOntologyEntry,
   resolveOntologyProposal,
   setOntologyStatus,
 } from "../api";
@@ -114,6 +117,65 @@ function OntologyFieldSummary({ term, isLeaf }: { term: OntologyNode; isLeaf: bo
   );
 }
 
+// EntryActions are the operator's retire and delete of one ontology entry (RFC GQ
+// P2.2). Absent for a caller who may not change the ontology (a member).
+type EntryActions = {
+  busy: boolean;
+  retire: (chunkId: string) => void;
+  remove: (chunkId: string, name: string) => void;
+};
+
+// EntryControls marks a retired entry and offers the operator retire and delete. Delete
+// is offered on every entry: the runtime refuses it while anything rests on the entry,
+// for every caller, and the page shows that refusal with its counts — the operator
+// learns what uses the entry by asking, never by losing it.
+function EntryControls({
+  name,
+  chunkId,
+  retired,
+  actions,
+}: {
+  name: string;
+  chunkId?: string;
+  retired?: boolean;
+  actions?: EntryActions;
+}) {
+  return (
+    <>
+      {retired && (
+        <span className="ontology-warn" title="Kept for what already uses it; offered for no new write">
+          {" "}
+          · retired
+        </span>
+      )}
+      {actions && chunkId && (
+        <span className="ontology-entry-actions">
+          {!retired && (
+            <button
+              type="button"
+              className="ghost-btn"
+              disabled={actions.busy}
+              onClick={() => actions.retire(chunkId)}
+              title={`Retire "${name}": everything that uses it is kept; nothing new may use it`}
+            >
+              retire
+            </button>
+          )}
+          <button
+            type="button"
+            className="ghost-btn"
+            disabled={actions.busy}
+            onClick={() => actions.remove(chunkId, name)}
+            title={`Delete "${name}" — refused while anything uses it`}
+          >
+            delete
+          </button>
+        </span>
+      )}
+    </>
+  );
+}
+
 // OntologyTermTree renders the nodes, recursing into subclasses.
 //
 // Depth-bounded even though the chunk tree cannot cycle: a malformed term list must not
@@ -122,10 +184,15 @@ function OntologyTermTree({
   nodes,
   depth = 0,
   markSource = false,
+  chunkOf,
+  actions,
 }: {
   nodes: OntologyNode[];
   depth?: number;
   markSource?: boolean;
+  // The class's chunk, for the retire / delete controls (the tenant's own column).
+  chunkOf?: (name: string) => string | undefined;
+  actions?: EntryActions;
 }) {
   if (nodes.length === 0 || depth > 8) return null;
   return (
@@ -136,8 +203,20 @@ function OntologyTermTree({
           {markSource && n.source === "tenant" && (
             <span className="settings-flash"> yours</span>
           )}
+          <EntryControls
+            name={n.name}
+            chunkId={chunkOf?.(n.name)}
+            retired={n.entry_status === "retired"}
+            actions={actions}
+          />
           <OntologyFieldSummary term={n} isLeaf={n.children.length === 0} />
-          <OntologyTermTree nodes={n.children} depth={depth + 1} markSource={markSource} />
+          <OntologyTermTree
+            nodes={n.children}
+            depth={depth + 1}
+            markSource={markSource}
+            chunkOf={chunkOf}
+            actions={actions}
+          />
         </li>
       ))}
     </ul>
@@ -150,10 +229,12 @@ function OntologyRelationTree({
   nodes,
   depth = 0,
   markSource = false,
+  actions,
 }: {
   nodes: RelationNode[];
   depth?: number;
   markSource?: boolean;
+  actions?: EntryActions;
 }) {
   if (nodes.length === 0 || depth > 8) return null;
   return (
@@ -167,6 +248,12 @@ function OntologyRelationTree({
             {markSource && n.source === "reserved" && (
               <span className="settings-muted"> reserved</span>
             )}
+            <EntryControls
+              name={n.name}
+              chunkId={n.chunk_id}
+              retired={n.entry_status === "retired"}
+              actions={actions}
+            />
             {summary && <span className="settings-muted"> {summary}</span>}
             {[...(n.issues ?? []), ...(n.name_issue ? [n.name_issue] : [])].map((iss) => (
               <span className="ontology-warn" key={iss}>
@@ -174,7 +261,12 @@ function OntologyRelationTree({
                 · {iss}
               </span>
             ))}
-            <OntologyRelationTree nodes={n.children} depth={depth + 1} markSource={markSource} />
+            <OntologyRelationTree
+              nodes={n.children}
+              depth={depth + 1}
+              markSource={markSource}
+              actions={actions}
+            />
           </li>
         );
       })}
@@ -190,11 +282,13 @@ function OntologyRelationsDetail({
   state,
   busy,
   onAdopt,
+  actions,
 }: {
   state: OntologyResponse;
   busy: boolean;
   // Absent for a caller who may not adopt (a member): the server refuses it.
   onAdopt?: (name: string) => void;
+  actions?: EntryActions;
 }) {
   const mine = state.relations ?? [];
   const inForce = state.effective_relations ?? [];
@@ -214,7 +308,7 @@ function OntologyRelationsDetail({
                 {mine.length === 0 ? (
                   <span className="settings-muted">none yet — the standard kinds still apply</span>
                 ) : (
-                  <OntologyRelationTree nodes={buildRelationTree(mine)} />
+                  <OntologyRelationTree nodes={buildRelationTree(mine)} actions={actions} />
                 )}
               </td>
               <td>
@@ -262,7 +356,13 @@ function OntologyRelationsDetail({
 // each instance with its class, what a confirm does (or did) for it, and its registry key
 // — the key the memory tier files facts about it under. Subjects whose instance was
 // removed are listed as kept, because removal never erases.
-function OntologyInstancesDetail({ state }: { state: OntologyResponse }) {
+function OntologyInstancesDetail({
+  state,
+  actions,
+}: {
+  state: OntologyResponse;
+  actions?: EntryActions;
+}) {
   const rep = state.instances;
   const did = state.instance_adoption;
   return (
@@ -289,6 +389,12 @@ function OntologyInstancesDetail({ state }: { state: OntologyResponse }) {
                 · {instanceStateLabel(i)}
               </span>
               {i.key && <span className="settings-muted"> · {i.key}</span>}
+              <EntryControls
+                name={i.name}
+                chunkId={state.instance_chunks?.[i.name]}
+                retired={i.state === "retired"}
+                actions={actions}
+              />
             </li>
           ))}
         </ul>
@@ -307,7 +413,13 @@ function OntologyInstancesDetail({ state }: { state: OntologyResponse }) {
 // scheme's concepts as a tree — a concept's tag is its identity in every scope, which is
 // how a document is classified under it — and, when a concept chunk lacks its tag, the
 // note that confirming again applies it.
-function OntologySchemesDetail({ state }: { state: OntologyResponse }) {
+function OntologySchemesDetail({
+  state,
+  actions,
+}: {
+  state: OntologyResponse;
+  actions?: EntryActions;
+}) {
   const stale = state.scheme_mirror_stale ?? [];
   return (
     <div className="settings-row">
@@ -322,6 +434,12 @@ function OntologySchemesDetail({ state }: { state: OntologyResponse }) {
             <code>{sc.name}</code>
             {sc.ordered && <span className="settings-muted"> ordered</span>}
             {sc.render && <span className="settings-flash"> listed to agents</span>}
+            <EntryControls
+              name={sc.name}
+              chunkId={sc.chunk_id}
+              retired={sc.entry_status === "retired"}
+              actions={actions}
+            />
             {(sc.issues ?? []).map((iss) => (
               <span className="ontology-warn" key={iss}>
                 {" "}
@@ -332,6 +450,12 @@ function OntologySchemesDetail({ state }: { state: OntologyResponse }) {
               {(sc.concepts ?? []).map((c) => (
                 <li key={c.tag} style={{ marginLeft: `${(c.path.length - 1) * 1.2}em` }}>
                   <code>{c.name}</code>
+                  <EntryControls
+                    name={c.name}
+                    chunkId={c.chunk_id}
+                    retired={c.entry_status === "retired"}
+                    actions={actions}
+                  />
                   <span className="settings-muted"> {conceptSummary(c)}</span>
                   {(c.issues ?? []).map((iss) => (
                     <span className="ontology-warn" key={iss}>
@@ -362,11 +486,13 @@ function OntologyClassesTab({
   state,
   busy,
   onAdopt,
+  actions,
 }: {
   state: OntologyResponse;
   busy: boolean;
   // Absent for a caller who may not adopt (a member): the server refuses it.
   onAdopt?: (name: string) => void;
+  actions?: EntryActions;
 }) {
   const tenantTerms = state.terms ?? [];
   return (
@@ -417,7 +543,11 @@ function OntologyClassesTab({
                 {tenantTerms.length === 0 ? (
                   <span className="settings-muted">none yet</span>
                 ) : (
-                  <OntologyTermTree nodes={buildOntologyTree(tenantTerms)} />
+                  <OntologyTermTree
+                    nodes={buildOntologyTree(tenantTerms)}
+                    chunkOf={(name) => state.class_chunks?.[name]}
+                    actions={actions}
+                  />
                 )}
               </td>
               <td>
@@ -589,6 +719,18 @@ export default function OntologySection() {
   const adopt = (name: string, section?: "relations") =>
     act(() => adoptOntologyType(name, undefined, section));
   const flip = (status: "confirmed" | "draft") => act(() => setOntologyStatus(status));
+  // RFC GQ P2.2: retire keeps what uses an entry; delete is refused while anything
+  // does, and the refusal (with its counts) lands in the page's error line.
+  const entryActions: EntryActions | undefined = decides
+    ? {
+        busy,
+        retire: (chunkId) => void act(() => retireOntologyEntry(chunkId)),
+        remove: (chunkId, name) => {
+          if (!window.confirm(`Delete "${name}" and everything under it from the ontology?`)) return;
+          void act(() => deleteOntologyEntry(chunkId));
+        },
+      }
+    : undefined;
 
   // Split by status rather than filtering twice at the render site: pending needs a
   // decision, rejected is a record.
@@ -707,11 +849,21 @@ export default function OntologySection() {
                     {/* The evidence, so the operator judges a case and not a name. */}
                     {p.body && <pre className="ontology-evidence">{p.body.trim()}</pre>}
                     {p.scheme && <ProposedSchemeDetail scheme={p.scheme} />}
+                    {p.change && <pre className="ontology-evidence">{proposedChangeText(p.change)}</pre>}
+                    {/* Accepting a change proposal applies it to the entry it names (RFC GQ
+                        P4.2, not built yet); the route refuses it, so it is not offered. */}
+                    {decides && p.change && (
+                      <p className="settings-muted">
+                        Accepting a change comes in a later release — reject it, or make the change in
+                        the document editor.
+                      </p>
+                    )}
                     {decides && (
                       <div className="settings-row-actions">
                         <button
                           type="button"
                           disabled={busy}
+                          hidden={!!p.change}
                           onClick={() => void resolveProposal(p.chunk_id, "accept")}
                         >
                           accept
@@ -788,12 +940,22 @@ export default function OntologySection() {
             ))}
           </div>
 
+          {decides && (
+            <p className="settings-help">
+              <strong>Retire, don&rsquo;t delete:</strong> retiring an entry keeps everything
+              that already uses it, readable, and offers it for no new write; clear its status in
+              the document editor to bring it back. Deleting is refused while anything uses the
+              entry or an entry under it.
+            </p>
+          )}
+
           <div className="ontology-tab-body">
             {tab === "classes" && (
               <OntologyClassesTab
                 state={state}
                 busy={busy}
                 onAdopt={decides ? (name) => void adopt(name) : undefined}
+                actions={entryActions}
               />
             )}
             {tab === "document-classes" && <OntologyDocumentClassesTab state={state} />}
@@ -802,10 +964,11 @@ export default function OntologySection() {
                 state={state}
                 busy={busy}
                 onAdopt={decides ? (name) => void adopt(name, "relations") : undefined}
+                actions={entryActions}
               />
             )}
-            {tab === "schemes" && <OntologySchemesDetail state={state} />}
-            {tab === "instances" && <OntologyInstancesDetail state={state} />}
+            {tab === "schemes" && <OntologySchemesDetail state={state} actions={entryActions} />}
+            {tab === "instances" && <OntologyInstancesDetail state={state} actions={entryActions} />}
             {tab === "grammars" && <OntologyGrammarsTab state={state} />}
             {tab === "health" && <OntologyHealthTab state={state} />}
           </div>
@@ -820,6 +983,9 @@ export default function OntologySection() {
 // proposalKind names what a suggestion would become, so a relation kind is not judged
 // as if it were an entity type.
 function proposalKind(p: OntologyProposal): string {
+  if (p.change) {
+    return `${p.change.op === "retire" ? "retirement" : "change"} of the ${p.change.kind} ${p.change.target_name}`;
+  }
   if (p.scheme) {
     const n = p.scheme.concepts;
     return `scheme of ${n} concept${n === 1 ? "" : "s"}`;

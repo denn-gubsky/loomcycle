@@ -113,6 +113,10 @@ type Options struct {
 	// djvuBatchSize overrides the pages asked of the DjVu text helper in
 	// one call, for tests.
 	djvuBatchSize int
+	// fb2MaxPicture overrides the cap on one FB2 picture, for tests.
+	fb2MaxPicture int
+	// fb2MaxDecoded overrides the cap on an FB2 book's decoded text.
+	fb2MaxDecoded int64
 }
 
 // DefaultMaxRows is the row cap when Options.MaxRows is zero.
@@ -210,7 +214,7 @@ func NewRegistry(ex ...Extractor) *Registry {
 
 // Default is the registry of the pure-Go extractors this package ships.
 func Default() *Registry {
-	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
+	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, FB2{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
 }
 
 // Register adds an extractor, tried before the ones already there, so a

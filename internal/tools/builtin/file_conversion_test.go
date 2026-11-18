@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
+	"golang.org/x/text/encoding/charmap"
 )
 
 // refusingPool is a worker pool that refuses every extraction with err.
@@ -181,6 +182,74 @@ func TestFileExtract_EPUBWorkerAndInProcessAgree(t *testing.T) {
 	}
 	if !strings.Contains(thereText, "Пролог") {
 		t.Errorf("the chapter was not read:\n%s", thereText)
+	}
+	if st := d.Stats(); st.Jobs["extract/ok"] != 1 {
+		t.Fatalf("the pool ran %v, want one extract", st.Jobs)
+	}
+}
+
+// An FB2 book in windows-1251 read through a conversion worker gives what
+// it gives in this process: the same text, notes and metadata. It is kept
+// with no name, so its type comes from its root element.
+func TestFileExtract_FB2WorkerAndInProcessAgree(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dispatch.New(dispatch.Options{Token: "tok"})
+	go func() { _ = d.Serve(l) }()
+	defer d.Stop()
+	wctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() {
+		_ = worker.Run(wctx, worker.Options{Target: l.Addr().String(), Token: "tok", ID: "w", Scratch: t.TempDir()})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for d.Stats().Idle == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the worker did not attach")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	book, err := charmap.Windows1251.NewEncoder().Bytes([]byte(`<?xml version="1.0" encoding="windows-1251"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+<description><title-info><author><first-name>Лев</first-name><last-name>Толстой</last-name></author><book-title>Война и мир</book-title><lang>ru</lang><date value="1869-01-01"/></title-info>
+<publish-info><isbn>9780000000002</isbn></publish-info></description>
+<body><section><title><p>Часть первая</p></title><p>Eh bien, mon prince<a l:href="#n1" type="note">1</a>.</p></section></body>
+<body name="notes"><section id="n1"><p>Итак, князь.</p></section></body>
+</FictionBook>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	extractBook := func(f *File) (map[string]any, string) {
+		t.Helper()
+		r, ctx, _ := fileRun(t, inbox.Service{}, false)
+		kept := inbox.Capture(r.Ctx, inbox.Item{Origin: "http", Fallback: "book"}, book)
+		if kept.Record.MediaType != "application/x-fictionbook+xml" {
+			t.Fatalf("kept as %q", kept.Record.MediaType)
+		}
+		res, err := execFile(f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref})
+		if err != nil || res.IsError {
+			t.Fatalf("extract: %+v %v", res, err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+			t.Fatalf("result is not JSON: %v\n%s", err, res.Text)
+		}
+		return out, res.Text
+	}
+	here, hereText := extractBook(&File{})
+	there, thereText := extractBook(&File{Convert: d.Client()})
+	if hereText != thereText {
+		t.Fatalf("through the worker:\n%s\nin process:\n%s", thereText, hereText)
+	}
+	meta, _ := there["metadata"].(map[string]any)
+	if here["format"] != "fb2" || meta["title"] != "Война и мир" || meta["year"] != float64(1869) ||
+		!strings.Contains(fmt.Sprint(meta["authors"]), "Лев Толстой") || !strings.Contains(fmt.Sprint(meta["identifiers"]), "9780000000002") {
+		t.Errorf("format %v, metadata %v", here["format"], meta)
+	}
+	if !strings.Contains(thereText, "Часть первая") || !strings.Contains(thereText, "Итак, князь.") {
+		t.Errorf("the chapter or its note was not read:\n%s", thereText)
 	}
 	if st := d.Stats(); st.Jobs["extract/ok"] != 1 {
 		t.Fatalf("the pool ran %v, want one extract", st.Jobs)

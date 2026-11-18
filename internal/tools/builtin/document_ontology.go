@@ -512,7 +512,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	issues = append(issues, retiredIssues(kids, rootID, sectionOf, entityName, out, relations, instances, review)...)
 	return OntologyRead{
 		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
-		Proposals: proposals, DocumentID: docID, RootChunkID: rootID,
+		Proposals: withChangeMarks(proposals, chunkOf), DocumentID: docID, RootChunkID: rootID,
 		Sections: sections, Grammars: grammars, Issues: issues, RootRevision: rootRevision,
 		Relations: relations, SectionChunks: sectionChunks, partial: partial,
 		Schemes: checkedSchemes(schemes, out, instances), Instances: instances, Review: review,
