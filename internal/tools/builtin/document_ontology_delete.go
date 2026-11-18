@@ -21,10 +21,16 @@ package builtin
 // delete: an incomplete count of zero is not "no dependents".
 //
 // THE WINDOW. The plan reads outside the delete's transaction (on SQLite a scope has
-// one connection, so it cannot run inside it). delete_chunk closes the cheap half of
-// the window: inside its transaction it re-asserts that the subtree it is about to
-// remove still has no statement (ontologyEntryGainedStatements), the dependent a
-// concurrent write is most likely to add.
+// one connection, so it cannot run inside it). delete_chunk and delete_document close
+// the cheap half of it: inside the transaction, ontologyDeleteRecheck re-asserts that
+// the chunks going are exactly the ones the guard read, with the statuses it read, and
+// that the subtrees it found quiet have gained no statement.
+//
+// THE WAYS AROUND IT, closed here too: an entry taken out of the read first and then
+// deleted as a non-entry — demoted to an inert status (ontologyDemotionRefusal), moved
+// where the reader stops (ontologyMoveRefusal) — or closed by a supersede so that the
+// retention prune deletes it unguarded (ontologyCloseRefusal; PruneRetiredChunks also
+// skips the ontology document).
 
 import (
 	"context"
@@ -48,17 +54,25 @@ const entryHasDependentsCode = "entry_has_dependents"
 // ontologyDeleteNamed bounds how many entries a refusal names; the rest are counted.
 const ontologyDeleteNamed = 5
 
+// ontologyDeleteCheck is what the guard read and approved, re-asserted inside the
+// delete's transaction (ontologyDeleteRecheck): every chunk of the subtree with its
+// status, and the chunks the plan found no statement on.
+type ontologyDeleteCheck struct {
+	statuses map[string]string
+	quiet    []string
+}
+
 // ontologyDeleteGuard is asked by every path that deletes chunks of a document in the
 // tenant scope. top is the chunk whose subtree goes ("" = the whole document). It
 // returns a refusal when the subtree holds an in-force entry of the tenant ontology
-// that has dependents. checked is the chunks of the entries' subtrees when the subtree
-// held entries and none was in use — exactly what the plan found no statement on: the
-// caller re-asserts, inside its transaction, that none gained one meanwhile.
-func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, docID, top string) (refused *tools.Result, checked []string) {
+// that has dependents. When the delete may go ahead on a chunk of the ontology, check
+// is what it approved, for the caller to re-assert inside its transaction; nil outside
+// the ontology.
+func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, docID, top string) (refused *tools.Result, check *ontologyDeleteCheck) {
 	if key.Scope != "tenant" {
 		return nil, nil
 	}
-	fail := func(err error) (*tools.Result, []string) {
+	fail := func(err error) (*tools.Result, *ontologyDeleteCheck) {
 		r := errFrom(op+": could not tell whether the ontology entries it would remove are in use, so nothing was deleted: "+err.Error(), err)
 		return &r, nil
 	}
@@ -78,9 +92,22 @@ func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey,
 	if err != nil {
 		return fail(err)
 	}
+	all, err := d.ontologyChunkStatuses(rctx, key, ontID)
+	if err != nil {
+		return fail(err)
+	}
+	// Only the subtree going: a chunk elsewhere in the document that moves under the
+	// target between here and the transaction must read as arrived.
+	check = &ontologyDeleteCheck{statuses: all}
+	if top != "" {
+		check.statuses = map[string]string{}
+		for _, id := range rows.subtree(top) {
+			check.statuses[id] = all[id]
+		}
+	}
 	tops := topEntries(rows, planEntries(read), top)
 	if len(tops) == 0 {
-		return nil, nil // a proposal, a grammar, an empty section: no entry goes
+		return nil, check // a proposal, a grammar, an empty section: no entry goes
 	}
 	var inUse []connector.OntologyPlannedChange
 	for start := 0; start < len(tops); start += ontologyPlanMaxChanges {
@@ -106,12 +133,189 @@ func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey,
 	}
 	if len(inUse) == 0 {
 		for _, t := range tops {
-			checked = append(checked, rows.subtree(t)...)
+			check.quiet = append(check.quiet, rows.subtree(t)...)
 		}
-		return nil, checked
+		return nil, check
 	}
 	r := entryInUseRefusal(op, top == "", inUse)
 	return &r, nil
+}
+
+// ontologyDemotionRefusal refuses update_chunk setting an inert status (proposed,
+// rejected) on a chunk of the tenant ontology that is not one already — an entry, a
+// retired entry or a section. The reader drops an inert chunk with its subtree, so a
+// demoted entry would read as a non-entry and delete_chunk would pass it: retirement is
+// the one way out of force (RFC GQ D3, D4). The root keeps its own status words; a
+// proposal still moves between proposed and rejected. For every caller; fails closed.
+func (d *Document) ontologyDemotionRefusal(ctx context.Context, key sqlmem.ScopeKey, row chunkRow) *tools.Result {
+	if key.Scope != "tenant" || row.ParentID == "" {
+		return nil
+	}
+	ontID, err := d.resolveOntologyID(ctx, key)
+	if err != nil {
+		r := errFrom("update_chunk: could not tell whether the chunk is in the tenant ontology, so its status was not changed: "+err.Error(), err)
+		return &r
+	}
+	if ontID == "" || ontID != row.DocumentID {
+		return nil
+	}
+	r := errValidation("update_chunk: an entry or section of the tenant ontology cannot be made a proposal: that status "+
+		"takes it and everything under it out of the ontology while what uses them stays behind; retire it instead",
+		"Set status \"retired\": what uses the entry is kept and readable, and nothing new may use it.")
+	return &r
+}
+
+// ontologyMoveRefusal refuses move_chunk taking an in-force entry of the tenant
+// ontology where the reader no longer finds it — under a proposal, a rejection or a
+// grammar, past a depth the reader keeps. Such an entry reads as a non-entry, so a
+// delete would pass it (RFC GQ D3). Judged by reading the ontology with the move
+// applied in memory (the plan's overlay), so it is the reader's own rule, not a copy.
+// For every caller; fails closed.
+func (d *Document) ontologyMoveRefusal(ctx context.Context, key sqlmem.ScopeKey, row chunkRow, newParent string) *tools.Result {
+	if key.Scope != "tenant" {
+		return nil
+	}
+	fail := func(err error) *tools.Result {
+		r := errFrom("move_chunk: could not tell whether the move takes an ontology entry out of force, so nothing was moved: "+err.Error(), err)
+		return &r
+	}
+	rctx := noWrites(ctx)
+	ontID, err := d.resolveOntologyID(rctx, key)
+	if err != nil {
+		return fail(err)
+	}
+	if ontID == "" || ontID != row.DocumentID {
+		return nil
+	}
+	before, err := d.ontologyForKey(rctx, key, store.MemoryScopeTenant, memrank.OntologyPath, nil)
+	if err != nil {
+		return fail(err)
+	}
+	ov := newOntologyOverlay()
+	ov.parents[row.ID] = newParent
+	after, err := d.ontologyForKey(rctx, key, store.MemoryScopeTenant, memrank.OntologyPath, ov)
+	if err != nil {
+		return fail(err)
+	}
+	rows, err := d.planChunkRows(rctx, key, ontID)
+	if err != nil {
+		return fail(err)
+	}
+	was, now := planEntries(before), planEntries(after)
+	var lost []string
+	for _, id := range rows.subtree(row.ID) {
+		if e, ok := was[id]; ok {
+			if _, still := now[id]; !still {
+				lost = append(lost, e.Kind+" "+strconv.Quote(e.Name))
+			}
+		}
+	}
+	if len(lost) == 0 {
+		return nil
+	}
+	r := errValidation("move_chunk: the move would take "+strings.Join(lost, ", ")+" out of the tenant ontology (under "+
+		"a proposal, a rejection or a grammar, or past the depth the reader keeps), so nothing was moved; retire an entry instead",
+		"Move the entry under its section or another in-force entry, or set status \"retired\" on it.")
+	return &r
+}
+
+// errOntologyChunkClosed is retireChunk's refusal to close a chunk of the tenant
+// ontology.
+var errOntologyChunkClosed = errors.New("a chunk of the tenant ontology is never closed or superseded: the retention " +
+	"prune deletes closed chunks; retire an entry instead (update_chunk with status \"retired\")")
+
+// ontologyCloseRefusal refuses closing (superseding) chunkID when it is a chunk of the
+// tenant ontology document: a closed chunk is what PruneRetiredChunks deletes, past
+// the D3 guard. Asked by retireChunk, the one writer of a closure, so Document
+// supersede_chunk and Memory supersede both meet it. Fails closed.
+func (d *Document) ontologyCloseRefusal(ctx context.Context, key sqlmem.ScopeKey, chunkID string) error {
+	if key.Scope != "tenant" {
+		return nil
+	}
+	ontID, err := d.resolveOntologyID(ctx, key)
+	if err != nil {
+		return fmt.Errorf("could not tell whether the chunk is in the tenant ontology, so it was not closed: %w", err)
+	}
+	if ontID == "" {
+		return nil
+	}
+	docID, err := d.chunkDocumentIDOrErr(ctx, key, chunkID)
+	if err != nil {
+		return fmt.Errorf("could not tell whether the chunk is in the tenant ontology, so it was not closed: %w", err)
+	}
+	if docID == ontID {
+		return errOntologyChunkClosed
+	}
+	return nil
+}
+
+// chunkDocumentIDOrErr is the document chunkID belongs to: "" with no error only when
+// the scope has no such chunk. documentIDForChunk answers "" on a failed read too, which
+// a guard must not take for "not in the ontology". A raw read: d.query re-provisions a
+// missing table and answers "no row", which would read as a confirmed miss.
+func (d *Document) chunkDocumentIDOrErr(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (string, error) {
+	res, err := d.sqlRead(ctx, key, `SELECT document_id FROM chunks WHERE id = ? LIMIT 1`, []any{chunkID})
+	if err != nil {
+		return "", err
+	}
+	if len(res.Rows) == 0 || len(res.Rows[0]) == 0 {
+		return "", nil
+	}
+	return asStr(res.Rows[0][0]), nil
+}
+
+// ontologyChunkStatuses is every chunk of the ontology document with its status.
+func (d *Document) ontologyChunkStatuses(ctx context.Context, key sqlmem.ScopeKey, ontID string) (map[string]string, error) {
+	res, err := d.query(ctx, key, `SELECT id, coalesce(status, '') FROM chunks WHERE document_id = ?`, ontID)
+	if err != nil {
+		return nil, err
+	}
+	if res.Truncated {
+		return nil, fmt.Errorf("the ontology document has more chunks than one read returns")
+	}
+	out := make(map[string]string, len(res.Rows))
+	for _, r := range res.Rows {
+		if len(r) >= 2 {
+			out[asStr(r[0])] = asStr(r[1])
+		}
+	}
+	return out, nil
+}
+
+// ontologyDeleteRecheck re-asserts, inside the delete's transaction, what the guard
+// approved: ids (the chunks the transaction is about to remove) are all chunks the
+// guard read, each with the status it read — so no entry arrived under the target by a
+// move or a new chunk, and none changed status — and none of the chunks the plan found
+// quiet has gained a statement. why is "" when the delete may go ahead.
+func (d *Document) ontologyDeleteRecheck(ctx context.Context, txnID string, check *ontologyDeleteCheck, ids []string) (why string, err error) {
+	if check == nil {
+		return "", nil
+	}
+	for _, batch := range batchIDs(ids, graphIDBatch) {
+		if len(batch) == 0 {
+			continue
+		}
+		ph, args := inPlaceholders(batch)
+		res, err := d.queryTxn(ctx, txnID, `SELECT id, coalesce(status, '') FROM chunks WHERE id IN (`+ph+`)`, args...)
+		if err != nil {
+			return "", err
+		}
+		for _, r := range res.Rows {
+			id, status := asStr(r[0]), asStr(r[1])
+			was, seen := check.statuses[id]
+			if !seen {
+				return "chunk " + id + " arrived under it", nil
+			}
+			if was != status {
+				return "chunk " + id + " changed status", nil
+			}
+		}
+	}
+	gained, err := d.ontologyEntryGainedStatements(ctx, txnID, check.quiet)
+	if err != nil || !gained {
+		return "", err
+	}
+	return "a statement was written to it", nil
 }
 
 // topEntries are the in-force entries of top's subtree that no other entry of it is
@@ -202,15 +406,15 @@ func (d *Document) ontologyEntryGainedStatements(ctx context.Context, txnID stri
 	return false, nil
 }
 
-// errEntryGainedStatementsTxn rolls delete_chunk's transaction back when the re-check
-// finds a statement; the caller answers with errEntryGainedStatements, never this.
-var errEntryGainedStatementsTxn = errors.New("an ontology entry gained a statement while it was being deleted")
+// errOntologyChangedTxn rolls a delete's transaction back when ontologyDeleteRecheck
+// finds a change; the caller answers with errOntologyChangedDuringDelete, never this.
+var errOntologyChangedTxn = errors.New("the ontology changed while it was being deleted from")
 
-// errEntryGainedStatements is delete_chunk's refusal when the re-check above finds a
-// statement the plan did not.
-func errEntryGainedStatements() tools.Result {
-	return errBusiness("delete_chunk: "+entryHasDependentsCode+": a statement was written to the ontology entry while it "+
-		"was being deleted, so nothing was deleted", "Retire it instead: update_chunk with status \"retired\".")
+// errOntologyChangedDuringDelete is a delete's refusal when the re-check finds that
+// what the guard approved changed before the transaction.
+func errOntologyChangedDuringDelete(op, why string) tools.Result {
+	return errBusiness(op+": "+entryHasDependentsCode+": the ontology changed while this delete was checked ("+why+
+		"), so nothing was deleted", "Send the delete again; it is checked afresh. To keep what uses an entry, retire it instead (status \"retired\").")
 }
 
 // ontologyReimportRefusal refuses import_md reimport onto the tenant ontology, for
