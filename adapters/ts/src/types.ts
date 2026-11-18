@@ -359,7 +359,7 @@ export type RunFileInput = {
   /** extract: stop once this many characters of Markdown are written; the
    *  converter stops there too. The result then carries `truncated_at`. */
   max_chars?: number;
-  /** extract, DOCX and HTML only: recover the headings a document marks by
+  /** extract, DOCX, HTML and EPUB only: recover the headings a document marks by
    *  formatting (bold, larger or coloured lines) rather than heading styles.
    *  The result then counts `inferred_headings` and
    *  `dropped_decorative_images`. Off by default. */

@@ -1,6 +1,6 @@
 ---
 name: File/extract
-description: "File op=extract — turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
+description: "File op=extract — turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
 ---
 `extract` reads a document the runtime kept (or one in a volume you can Read)
 and writes its text as Markdown to `volume:inbox:extracted/<name>.md`. The
@@ -14,6 +14,7 @@ runtime does the reading; the file's bytes never pass through you.
 | PPTX | `## Slide N — <title>` per slide in presentation order, its text and tables, pictures in place, speaker notes as a quote |
 | PDF | `## Page N` per page, its text read row by row from the top; its JPEG and JPEG 2000 pictures after the text, copied as they are (pictures stored as raw pixels are left out and counted in `notes`) |
 | HTML | headings, paragraphs, lists and tables; an image becomes a link to where it points, nothing is fetched |
+| EPUB (2 and 3) | the book title as `#`, each chapter in spine order with its own headings one level down (a chapter with none takes its contents-list label), footnotes as `[n]` listed under Notes, the cover and pictures kept; items marked non-linear come last under Supplementary. A book with DRM (an `encryption.xml` that encrypts anything but fonts) is refused |
 | CSV, TSV | one table |
 | text, Markdown | the text; Markdown keeps its structure, without raw HTML or embedded images |
 | PNG, JPEG, GIF, WebP, BMP | a one-section Markdown file that embeds the image |
@@ -23,7 +24,7 @@ runtime does the reading; the file's bytes never pass through you.
 A Markdown table cell is one line, so the paragraphs of a DOCX, ODT or PPTX
 cell are joined by `<br>`, a line break: the only HTML an extraction writes.
 
-A DOCX, ODT, HTML or PDF file `File op=render` wrote with `metadata: embed`
+A DOCX, ODT, HTML, EPUB or PDF file `File op=render` wrote with `metadata: embed`
 carries the document it was made from: the result then has `rendered_from`
 (`document_id`, `scope`, `title`, `headings_matched`), and `import` with
 `reimport` can go back onto that document (see File/import).
@@ -44,7 +45,7 @@ most 2000 pages are read.
 Some editors export headings as formatting rather than heading styles: a
 section title is a 14pt coloured line, a sub-section a lone bold line. Such
 a document extracts as one long section. `structure: {"infer_headings":
-true}` recovers the outline, for DOCX and HTML only (any other format is
+true}` recovers the outline, for DOCX, HTML and EPUB only (any other format is
 extracted as usual, and `notes` says the option was not applied).
 
 A paragraph becomes a heading when it is one line of at most 120
@@ -162,9 +163,13 @@ to you came from the file. Read the whole text with Read on the `.md`.
 ## Returns
 
 `{ref, source, media_type, format, chars, pages, sheets, slides, tables,
-images, image_refs, yield_chars_per_page, notes, excerpt}` — `ref` is the
-Markdown file; counts that do not apply to the format are left out. With
-`structure.infer_headings` on a DOCX or HTML file, `inferred_headings` and
+images, image_refs, yield_chars_per_page, notes, metadata, excerpt}` — `ref` is the
+Markdown file; counts that do not apply to the format are left out. `metadata`
+is what a book says about itself (EPUB: `title`, `authors`, `translators`,
+`language`, `date`, `year`, `publisher`, `identifiers`, `series`,
+`series_index`, `subjects`, `description`, `source_format`), each value
+bounded and untrusted text like the rest. With
+`structure.infer_headings` on a DOCX, HTML or EPUB file, `inferred_headings` and
 `dropped_decorative_images` are given, zero included.
 `yield_chars_per_page` is given when the page count is known; a low value
 means the pages are mostly pictures (a scan) rather than text.
