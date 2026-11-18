@@ -178,6 +178,12 @@ func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFo
 			if !ok {
 				continue
 			}
+			if c.EntryStatus != "" || s.EntryStatus != "" || target.Retired {
+				// Retired at either end (RFC FO 3.1a): no new focus statement, and the
+				// one already written is kept, not retired with it.
+				held[c.ChunkID] = true
+				continue
+			}
 			to, why, err := d.focusTargetChunk(ctx, key, mscope, read, target, declared)
 			if err != nil {
 				return rep, err
@@ -380,16 +386,20 @@ func (d *Document) proposeConcept(ctx context.Context, key sqlmem.ScopeKey, msco
 	}
 	var parentChunk, parentTag string
 	var have []string
+	parentRetired := false
 	for _, s := range read.Schemes {
 		have = append(have, s.Name)
 		if parentChunk == "" && (s.Name == want || memrank.MirrorTag(s.Name, nil) == want) {
-			parentChunk, parentTag = s.ChunkID, memrank.MirrorTag(s.Name, nil)
+			parentChunk, parentTag, parentRetired = s.ChunkID, memrank.MirrorTag(s.Name, nil), s.EntryStatus != ""
 		}
 		for _, c := range s.Concepts {
 			if parentChunk == "" && (c.Tag == want || strings.EqualFold(c.Name, want)) {
-				parentChunk, parentTag = c.ChunkID, c.Tag
+				parentChunk, parentTag, parentRetired = c.ChunkID, c.Tag, c.EntryStatus != ""
 			}
 		}
+	}
+	if parentRetired {
+		return *retiredParentRefusal("the scheme or concept " + want), nil
 	}
 	if parentChunk == "" {
 		return errValidation("propose_entity: no scheme or concept named "+want+" is declared (schemes: "+
@@ -398,6 +408,9 @@ func (d *Document) proposeConcept(ctx context.Context, key sqlmem.ScopeKey, msco
 	tag := parentTag + "/" + memrank.MirrorSegment(name)
 	for _, s := range read.Schemes {
 		for _, c := range s.Concepts {
+			if c.Tag == tag && c.EntryStatus != "" {
+				return *retiredNameRefusal("the concept " + tag), nil
+			}
 			if c.Tag == tag {
 				return errBusiness("propose_entity: concept "+tag+" is already declared", "Use it as it is."), nil
 			}

@@ -57,6 +57,9 @@ type describedClass struct {
 	// Series (with_stats only) is the class's latest count and trend from the
 	// built-in series (document_measure_read.go).
 	Series *nodeSeriesView `json:"series,omitempty"`
+	// EntryStatus is "retired" for a retired class (RFC GQ P2.1): described, and its
+	// documents still counted, but no new document or fact may use it.
+	EntryStatus string `json:"entry_status,omitempty"`
 }
 
 // describedGrammar is a grammar plus the uses classes in force make of it.
@@ -81,6 +84,8 @@ type describedInstance struct {
 	RegistryKey    string   `json:"registry_key,omitempty"`
 	SubjectChunkID string   `json:"subject_chunk_id,omitempty"`
 	Issues         []string `json:"issues,omitempty"`
+	// EntryStatus is "retired" for a retired instance, which keeps its subject.
+	EntryStatus string `json:"entry_status,omitempty"`
 	// declaredClass is Class when a class in force has that name, "" otherwise: only an
 	// instance of a declared class is ever adopted.
 	declaredClass string
@@ -264,7 +269,7 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 			TitleIdentity: c.TitleIdentity || c.InheritedTitleIdentity,
 			Norm:          memrank.IsNorm(c), InheritedNorm: c.InheritedNorm,
 			MemoryScope: memrank.EffectiveMemoryScope(c), RenamedFrom: c.RenamedFrom, Meaning: c.Meaning,
-			Issues: append([]string(nil), c.Issues...)}
+			Issues: append([]string(nil), c.Issues...), EntryStatus: c.EntryStatus}
 		if c.IsDocumentClass {
 			dc.Kind = "document"
 		}
@@ -322,7 +327,7 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 			declared[strings.ToLower(c.Name)] = c.Name
 		}
 		for _, inst := range read.Instances {
-			di := describedInstance{Name: inst.Name, Class: inst.Class, ChunkID: inst.ChunkID,
+			di := describedInstance{Name: inst.Name, Class: inst.Class, ChunkID: inst.ChunkID, EntryStatus: inst.EntryStatus,
 				Alt: append([]string(nil), inst.Alt...), Issues: append([]string(nil), inst.Issues...)}
 			if name, ok := declared[strings.ToLower(inst.Class)]; ok {
 				di.Class, di.declaredClass = name, name

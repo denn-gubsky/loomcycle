@@ -339,6 +339,9 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 			"Omit section for an entity type, or pass section=relations, schemes or instances."), nil
 	}
 	for _, t := range read.Terms {
+		if strings.EqualFold(t.Name, name) && t.EntryStatus != "" {
+			return *retiredNameRefusal("the class " + t.Name), nil
+		}
 		if strings.EqualFold(t.Name, name) {
 			return errBusiness("propose_entity: "+name+" is already in force — propose a "+
 				"SUBTYPE of it (parent=\""+t.Name+"\") or leave it alone", ""), nil
@@ -377,6 +380,11 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 				"tenant's ontology (have: "+strings.Join(names, ", ")+"). A subtype must "+
 				"hang off a type the operator has already accepted", "Pass one of the listed types as parent, or omit parent."), nil
 		}
+		for _, t := range read.Terms {
+			if strings.EqualFold(t.Name, want) && t.EntryStatus != "" {
+				return *retiredParentRefusal("the class " + t.Name), nil
+			}
+		}
 		parentChunk = id
 	}
 	// Accepted in place like every other proposal, so its evidence must not carry a
@@ -400,6 +408,9 @@ func (d *Document) proposeRelation(ctx context.Context, key sqlmem.ScopeKey, msc
 		return errBusiness("propose_entity: "+name+" is written only by the runtime", "Propose a different name."), nil
 	}
 	for _, r := range read.Relations {
+		if r.Name == name && r.EntryStatus != "" {
+			return *retiredNameRefusal("the relation kind " + name), nil
+		}
 		if r.Name == name {
 			return errBusiness("propose_entity: relation kind "+name+" is already in force — propose a "+
 				"sub-kind of it (parent=\""+name+"\") or use it as it is", ""), nil
@@ -424,6 +435,9 @@ func (d *Document) proposeRelation(ctx context.Context, key sqlmem.ScopeKey, msc
 		for _, r := range read.Relations {
 			have = append(have, r.Name)
 			if r.Name == want {
+				if r.EntryStatus != "" {
+					return *retiredParentRefusal("the relation kind " + want), nil
+				}
 				parentChunk = r.ChunkID
 			}
 		}

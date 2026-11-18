@@ -349,6 +349,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				Meaning:           decl.Meaning,
 				RenamedFrom:       decl.RenamedFrom,
 				Issues:            decl.Issues,
+				EntryStatus:       memrank.EntryStatusOf(c.status),
 			})
 			if _, dup := classChunks[strings.ToLower(name)]; !dup {
 				classChunks[strings.ToLower(name)] = c.id
@@ -402,6 +403,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			cb := chunkOf(c.id)
 			inst := memrank.ParseInstanceBody(name, cb.Body)
 			inst.Parent, inst.ParentKind, inst.ChunkID = parent, parentKind, c.id
+			inst.EntryStatus = memrank.EntryStatusOf(c.status)
 			if len(cb.Fields) > 0 {
 				var f struct {
 					RegistryKey string `json:"registry_key"`
@@ -444,7 +446,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				continue
 			}
 			rel := memrank.ParseRelationBody(name, bodyOf(c.id))
-			rel.Parent, rel.ChunkID = parentName, c.id
+			rel.Parent, rel.ChunkID, rel.EntryStatus = parentName, c.id, memrank.EntryStatusOf(c.status)
 			relations = append(relations, rel)
 			childParent := name
 			if depth >= memrank.OntologyMaxDepth {
@@ -486,6 +488,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 		}
 	}
+	issues = append(issues, retiredIssues(kids, rootID, sectionOf, entityName, out, relations, instances, review)...)
 	return OntologyRead{
 		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
 		Proposals: proposals, DocumentID: docID, RootChunkID: rootID,
@@ -733,7 +736,7 @@ func (w *schemeWalker) schemes(chunks []ontologyChunk) []memrank.OntologyScheme 
 			continue // concepts need a named scheme to belong to
 		}
 		s := memrank.ParseSchemeBody(name, w.bodyOf(c.id))
-		s.ChunkID = c.id
+		s.ChunkID, s.EntryStatus = c.id, memrank.EntryStatusOf(c.status)
 		w.capped = false
 		w.concepts(w.kids[c.id], &s, nil, 1)
 		if w.capped {
@@ -773,7 +776,7 @@ func (w *schemeWalker) concepts(chunks []ontologyChunk, s *memrank.OntologySchem
 		}
 		full := append(append([]string{}, path...), name)
 		concept := memrank.ParseConceptBody(s.Name, name, full, w.bodyOf(c.id))
-		concept.ChunkID, concept.Origin = c.id, s.Origin
+		concept.ChunkID, concept.Origin, concept.EntryStatus = c.id, s.Origin, memrank.EntryStatusOf(c.status)
 		s.Concepts = append(s.Concepts, concept)
 		// Schemes have their own, deeper cap (RFC GM): a concept tree is a
 		// vocabulary, not a class hierarchy whose fields go into every prompt. Past

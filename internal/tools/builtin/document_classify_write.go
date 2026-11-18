@@ -356,6 +356,7 @@ func (d *Document) acceptClassification(ctx context.Context, key sqlmem.ScopeKey
 		return errBusiness("accept_classification: the tenant ontology is not confirmed",
 			"Confirm the ontology, then classify the document again."), nil
 	}
+	retiredConcepts := retiredConceptChunks(read)
 	acl := d.newDocACL(ctx, key)
 	out := map[string]any{"document_id": docID}
 	var accepted, skipped []string
@@ -367,7 +368,10 @@ func (d *Document) acceptClassification(ctx context.Context, key sqlmem.ScopeKey
 		// Only what classify filed from THIS document's root, still awaiting review:
 		// never another document's proposal, never a person's, and never a rejection,
 		// which accept_statement would otherwise reverse.
-		if s == nil || s.Method != edgeMethodClassify || s.FromID != cd.rootID || s.Status != edgeStatusProposed {
+		// Nor a placement under a concept retired since it was proposed: accepting it
+		// would be a new placement there (RFC GQ P2.1).
+		if s == nil || s.Method != edgeMethodClassify || s.FromID != cd.rootID || s.Status != edgeStatusProposed ||
+			retiredConcepts[s.ToID] {
 			skipped = append(skipped, id)
 			continue
 		}
@@ -407,7 +411,7 @@ func (d *Document) acceptClassification(ctx context.Context, key sqlmem.ScopeKey
 	conceptTags := map[string]bool{}
 	for _, s := range read.Schemes {
 		for _, c := range s.Concepts {
-			conceptTags[c.Tag] = true
+			conceptTags[c.Tag] = c.EntryStatus == "" && s.EntryStatus == ""
 		}
 	}
 	var tags, skippedTags []string
@@ -438,7 +442,7 @@ func (d *Document) acceptClassification(ctx context.Context, key sqlmem.ScopeKey
 		// A declared document class only, and only that class's own fields.
 		var class *memrank.OntologyTerm
 		for _, c := range memrank.EffectiveClasses(read.Terms, true) {
-			if c.IsDocumentClass && strings.EqualFold(c.Name, rec.Proposed) {
+			if c.IsDocumentClass && c.EntryStatus == "" && strings.EqualFold(c.Name, rec.Proposed) {
 				class = &c
 				break
 			}
