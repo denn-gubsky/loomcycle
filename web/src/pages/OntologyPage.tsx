@@ -128,16 +128,21 @@ type EntryActions = {
 // EntryControls marks a retired entry and offers the operator retire and delete. Delete
 // is offered on every entry: the runtime refuses it while anything rests on the entry,
 // for every caller, and the page shows that refusal with its counts — the operator
-// learns what uses the entry by asking, never by losing it.
+// learns what uses the entry by asking, never by losing it. A locked entry (RFC GQ P2.3)
+// is marked and offered neither: the runtime refuses both until an operator removes the
+// @locked line in the document editor. An entry above a locked one still shows them; the
+// runtime's refusal names the locked entry below.
 function EntryControls({
   name,
   chunkId,
   retired,
+  locked,
   actions,
 }: {
   name: string;
   chunkId?: string;
   retired?: boolean;
+  locked?: boolean;
   actions?: EntryActions;
 }) {
   return (
@@ -148,7 +153,16 @@ function EntryControls({
           · retired
         </span>
       )}
-      {actions && chunkId && (
+      {locked && (
+        <span
+          className="settings-muted"
+          title="@locked: it cannot be renamed, moved, retired or deleted until an operator removes the line"
+        >
+          {" "}
+          · locked
+        </span>
+      )}
+      {actions && chunkId && !locked && (
         <span className="ontology-entry-actions">
           {!retired && (
             <button
@@ -207,6 +221,7 @@ function OntologyTermTree({
             name={n.name}
             chunkId={chunkOf?.(n.name)}
             retired={n.entry_status === "retired"}
+            locked={n.locked}
             actions={actions}
           />
           <OntologyFieldSummary term={n} isLeaf={n.children.length === 0} />
@@ -252,6 +267,7 @@ function OntologyRelationTree({
               name={n.name}
               chunkId={n.chunk_id}
               retired={n.entry_status === "retired"}
+              locked={n.locked}
               actions={actions}
             />
             {summary && <span className="settings-muted"> {summary}</span>}
@@ -393,6 +409,7 @@ function OntologyInstancesDetail({
                 name={i.name}
                 chunkId={state.instance_chunks?.[i.name]}
                 retired={i.state === "retired"}
+                locked={i.locked}
                 actions={actions}
               />
             </li>
@@ -438,6 +455,7 @@ function OntologySchemesDetail({
               name={sc.name}
               chunkId={sc.chunk_id}
               retired={sc.entry_status === "retired"}
+              locked={sc.locked}
               actions={actions}
             />
             {(sc.issues ?? []).map((iss) => (
@@ -454,6 +472,7 @@ function OntologySchemesDetail({
                     name={c.name}
                     chunkId={c.chunk_id}
                     retired={c.entry_status === "retired"}
+                    locked={c.locked}
                     actions={actions}
                   />
                   <span className="settings-muted"> {conceptSummary(c)}</span>
