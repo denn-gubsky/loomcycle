@@ -24,6 +24,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -245,6 +246,16 @@ func (d *Document) DeleteOntologyChunk(ctx context.Context, scope, chunkID strin
 	key, mscope, err := d.resolveScope(ctx, scope)
 	if err != nil {
 		return err
+	}
+	// Its caller removes a proposal, which is never an entry; held to RFC GQ D3 all the
+	// same, so this exported door cannot delete an entry something rests on.
+	// A lookup that fails is not "not an ontology chunk": only a confirmed missing row is.
+	docID, err := d.chunkDocumentIDOrErr(ctx, key, chunkID)
+	if err != nil {
+		return fmt.Errorf("delete_chunk: could not tell which document chunk %s is in, so nothing was deleted: %w", chunkID, err)
+	}
+	if refused, _ := d.ontologyDeleteGuard(ctx, key, mscope, "delete_chunk", docID, chunkID); refused != nil {
+		return errors.New(refused.Text)
 	}
 	_, err = d.cascadeDeleteChunks(ctx, key, mscope, []string{chunkID})
 	return err

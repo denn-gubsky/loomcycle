@@ -371,6 +371,12 @@ func (r OntologyRead) classChunkID(name string) string {
 	return r.classChunks[strings.ToLower(strings.TrimSpace(name))]
 }
 
+// ClassChunkID is classChunkID for the operator plane: the Ontology page retires a
+// class by its chunk (RFC GQ P2.2).
+func (r OntologyRead) ClassChunkID(name string) string {
+	return r.classChunkID(name)
+}
+
 // proposeConcept files an inert concept into a scheme. The parent is a scheme name, a
 // concept name, or a concept's mirror tag — the tag disambiguates a concept name that
 // two schemes share.

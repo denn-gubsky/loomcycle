@@ -3122,7 +3122,26 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err != nil {
 		return errFrom("delete_document: "+err.Error(), err), nil
 	}
-	n, txErr := d.removeDocument(ctx, key, mscope, docID)
+	// RFC GQ D3: not the tenant ontology while any entry of it is in use.
+	refused, ontCheck := d.ontologyDeleteGuard(ctx, key, mscope, "delete_document", docID, "")
+	if refused != nil {
+		return *refused, nil
+	}
+	changed := ""
+	var recheck func(txnID string, ids []string) error
+	if ontCheck != nil {
+		recheck = func(txnID string, ids []string) error {
+			why, err := d.ontologyDeleteRecheck(ctx, txnID, ontCheck, ids)
+			if err == nil && why != "" {
+				changed, err = why, errOntologyChangedTxn
+			}
+			return err
+		}
+	}
+	n, txErr := d.removeDocumentChecked(ctx, key, mscope, docID, recheck)
+	if changed != "" {
+		return errOntologyChangedDuringDelete("delete_document", changed), nil
+	}
 	if txErr != nil {
 		return errFrom("delete_document: "+txErr.Error(), txErr), nil
 	}
@@ -3149,6 +3168,14 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 // the document lives on, under the same id, in another scope. It returns the
 // number of chunks removed.
 func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID string) (int, error) {
+	return d.removeDocumentChecked(ctx, key, mscope, docID, nil)
+}
+
+// removeDocumentChecked is removeDocument with recheck asked inside the transaction,
+// once the chunk ids are read: a non-nil error rolls the whole removal back.
+// delete_document re-asserts the ontology guard's read there (RFC GQ D3).
+func (d *Document) removeDocumentChecked(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, docID string,
+	recheck func(txnID string, ids []string) error) (int, error) {
 	// The SQL side runs in ONE transaction: enumerate the chunk ids (for the
 	// Memory-body cleanup below), then delete edges (BOTH directions — so an
 	// INCOMING cross-document edge from another doc no longer dangles), then
@@ -3162,6 +3189,11 @@ func (d *Document) removeDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 		for _, r := range res.Rows {
 			ids = append(ids, asStr(r[0]))
+		}
+		if recheck != nil {
+			if err := recheck(txnID, ids); err != nil {
+				return err
+			}
 		}
 		// Facts derived from this document's text keep their quotes (RFC FN P3a).
 		if err := d.snapshotDerivedQuotes(ctx, txnID, `{col} IN (SELECT id FROM chunks WHERE document_id = ?)`, docID); err != nil {
@@ -3826,6 +3858,12 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		retiring, retireSubtree = isOntology, sub
 	}
+	// RFC GQ D3: out of force only by retirement (document_ontology_delete.go).
+	if _, has := present["status"]; has && memrank.IsInertEntityStatus(in.Status) && !memrank.IsInertEntityStatus(row.Status) {
+		if refused := d.ontologyDemotionRefusal(ctx, key, row); refused != nil {
+			return *refused, nil
+		}
+	}
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
@@ -3981,6 +4019,13 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	} else if len(rr.Rows) > 0 {
 		return errBusiness("delete_chunk: refusing to delete a document's root chunk — use delete_document", ""), nil
 	}
+	// RFC GQ D3: an ontology entry something rests on is retired, never deleted — for
+	// every caller, the operator plane included (document_ontology_delete.go).
+	refused, ontCheck := d.ontologyDeleteGuard(ctx, key, mscope, "delete_chunk", row.DocumentID, in.ID)
+	if refused != nil {
+		return *refused, nil
+	}
+	changed := ""
 	// The cascade runs in ONE transaction: enumerate the chunk + all
 	// descendants (iterative BFS — portable, no recursive CTE; a visited set
 	// guarantees termination even on a corrupt parent cycle), then delete each
@@ -4017,6 +4062,14 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 				}
 			}
 			frontier = next
+		}
+		why, rerr := d.ontologyDeleteRecheck(ctx, txnID, ontCheck, ids)
+		if rerr != nil {
+			return rerr
+		}
+		if why != "" {
+			changed = why
+			return errOntologyChangedTxn
 		}
 		// BATCHED, and it matters most here of all the cascades. This ran SEVEN
 		// statements per chunk over the whole descendant set, inside one transaction
@@ -4073,6 +4126,9 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		return nil
 	})
+	if changed != "" {
+		return errOntologyChangedDuringDelete("delete_chunk", changed), nil
+	}
 	if txErr != nil {
 		return errFrom("delete_chunk: "+txErr.Error(), txErr), nil
 	}
@@ -4161,6 +4217,12 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 				return errBusiness("move_chunk: cannot move a chunk into its own subtree (would create a cycle)", "Pass a new_parent_id outside this chunk's own subtree."), nil
 			}
 			cur = anc.ParentID
+		}
+	}
+	// RFC GQ D3: no entry leaves the ontology by a move (document_ontology_delete.go).
+	if in.NewParentID != row.ParentID {
+		if refused := d.ontologyMoveRefusal(ctx, key, row, in.NewParentID); refused != nil {
+			return *refused, nil
 		}
 	}
 	pos := 0
@@ -6135,6 +6197,10 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			"Pass reimport: true and the work's work_key, or omit amending_document_id."), nil
 	}
 	if in.Reimport {
+		// RFC GQ D3: the ontology changes in place (document_ontology_delete.go).
+		if refused := d.ontologyReimportRefusal(ctx, key, in); refused != nil {
+			return *refused, nil
+		}
 		return d.reimportMD(ctx, key, mscope, in, chunks, edges)
 	}
 	// Checked before anything is written: import_md is not atomic, and a refusal

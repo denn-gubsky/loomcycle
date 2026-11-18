@@ -150,6 +150,12 @@ type ontologyResponse struct {
 	// InstanceAdoption reports what adoption did, on the confirm that ran it.
 	InstanceAdoption *builtin.InstanceReport `json:"instance_adoption,omitempty"`
 
+	// --- RFC GQ P2.2. The chunk of each tenant class and instance, by name as
+	// declared: the Ontology page retires an entry through update_chunk on its chunk.
+	// Relations, schemes and concepts carry their own chunk_id.
+	ClassChunks    map[string]string `json:"class_chunks,omitempty"`
+	InstanceChunks map[string]string `json:"instance_chunks,omitempty"`
+
 	// NotAnnounced says why accepting a subject proposal was not announced on
 	// memory/subjects (the caller's access-control rules hide part of the scope from
 	// reading); set only on the accept that adopted it.
@@ -362,6 +368,7 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		// Document-level advisories (a duplicate or unknown section) join the reader
 		// notes the panel already renders.
 		notes = append(notes, read.Issues...)
+		resp.ClassChunks, resp.InstanceChunks = ontologyEntryChunks(read)
 	}
 	rootID, docID, status, err := s.ontologyRoot(dctx, doc)
 	if err == nil {
@@ -453,6 +460,28 @@ func (s *Server) ontologyState(ctx context.Context, tenant string) (ontologyResp
 		}
 	}
 	return resp, nil
+}
+
+// ontologyEntryChunks maps each class and instance the read holds to its chunk; nil
+// for a section with none.
+func ontologyEntryChunks(read builtin.OntologyRead) (classes, instances map[string]string) {
+	for _, t := range read.Terms {
+		if id := read.ClassChunkID(t.Name); id != "" {
+			if classes == nil {
+				classes = map[string]string{}
+			}
+			classes[t.Name] = id
+		}
+	}
+	for _, in := range read.Instances {
+		if in.ChunkID != "" {
+			if instances == nil {
+				instances = map[string]string{}
+			}
+			instances[in.Name] = in.ChunkID
+		}
+	}
+	return classes, instances
 }
 
 // ontologyDocument is the Document the operator-plane ontology routes act through.
