@@ -103,6 +103,8 @@ type Options struct {
 	// WritePDF typesets a Document render as a PDF (RFC GR P2): Typst by
 	// default. The worker takes PDF renders only when its program resolves.
 	WritePDF *convert.Helper
+	// Draw draws Mermaid diagrams (RFC GR P4d); nil takes no draw jobs.
+	Draw *convert.Helper
 	// Images re-encodes images (vision.NewReencoder()); nil takes no image
 	// jobs.
 	Images convert.ImageReencoder
@@ -309,7 +311,7 @@ func labels(opt Options, log *slog.Logger) []string {
 	for _, h := range []struct {
 		label  string
 		helper *convert.Helper
-	}{{wire.LabelRender, opt.Rasterize}, {wire.LabelMedia, opt.Media}, {wire.LabelEncode, opt.Encode}, {wire.LabelWritePDF, opt.WritePDF}} {
+	}{{wire.LabelRender, opt.Rasterize}, {wire.LabelMedia, opt.Media}, {wire.LabelEncode, opt.Encode}, {wire.LabelWritePDF, opt.WritePDF}, {wire.LabelDraw, opt.Draw}} {
 		if h.helper == nil {
 			continue
 		}
@@ -620,6 +622,15 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 					mediaType = render.MediaType(start.GetFormat())
 				}
 			}
+		case workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW:
+			if size > render.MaxDiagramSource {
+				jerr = fmt.Errorf("%w: a diagram of %d bytes, more than %d", render.ErrTooLarge, size, render.MaxDiagramSource)
+				break
+			}
+			var data []byte
+			if data, jerr = readAll(in, size); jerr == nil {
+				out, jerr = p.DrawDiagram(jctx, data)
+			}
 		default:
 			jerr = fmt.Errorf("this worker does not run %s jobs", start.GetKind())
 		}
@@ -659,7 +670,7 @@ func (w *worker) converter(timeout time.Duration) *convert.InProcess {
 		return &c
 	}
 	return &convert.InProcess{
-		Rasterize: bound(w.opt.Rasterize), Media: bound(w.opt.Media), Encode: bound(w.opt.Encode), WritePDF: bound(w.opt.WritePDF),
+		Rasterize: bound(w.opt.Rasterize), Media: bound(w.opt.Media), Encode: bound(w.opt.Encode), WritePDF: bound(w.opt.WritePDF), Draw: bound(w.opt.Draw),
 		Images:          w.opt.Images,
 		MaxEncodedBytes: maxEncoded,
 		Scratch:         func(context.Context) (string, error) { return w.opt.Scratch, nil },

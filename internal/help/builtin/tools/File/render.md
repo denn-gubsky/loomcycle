@@ -107,6 +107,16 @@ One section as Markdown, kept in the `reports` volume:
 {"op": "render", "document": "4f1c…", "chunk": "9a0e…", "format": "md", "to": "volume:reports:2026/decisions.md"}
 ```
 
+## Diagrams
+
+A Mermaid diagram (a ```` ```mermaid ```` block) is drawn as a picture when
+the server has a diagram renderer: a PNG drawn at twice its size, so it stays
+sharp, in every format but Markdown, which keeps the source. The diagram's
+source is the picture's alt text. A diagram the renderer cannot draw, or past the first 200 in a
+render, stays a code block and the render goes on; the report counts
+`diagrams_drawn` and `diagrams_left_as_code`, and says when the server has
+no renderer at all.
+
 ## House styles
 
 A style is a Document in the tenant's tree. Its root's text is the style's

@@ -21,6 +21,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/fence"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe"
@@ -153,6 +154,13 @@ func (f *File) converter() convert.Client {
 		cmd = convert.DefaultPDFCommand
 	}
 	p.WritePDF = &convert.Helper{Key: convert.PDFHelperKey, Command: cmd, Wrapper: f.HelperWrapper, Timeout: convert.PDFRenderTimeout}
+	// So does the diagram renderer (RFC GR P4d); where it is missing a
+	// render's diagrams stay code.
+	draw := f.diagramCommand
+	if draw == "" {
+		draw = convert.DefaultDiagramCommand
+	}
+	p.Draw = &convert.Helper{Key: convert.DiagramHelperKey, Command: draw, Wrapper: f.HelperWrapper, Timeout: render.DiagramTimeout}
 	return p
 }
 

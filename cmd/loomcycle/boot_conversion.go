@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/conversion/wire"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
@@ -161,6 +162,7 @@ func conversionHelpers(cfg *config.Config) helperSettings {
 		// A PDF render is the slow one; md, html and docx are bound inside
 		// the worker by convert.RenderTimeout.
 		workerpb.JobKind_JOB_KIND_DOCUMENT_RENDER: convert.PDFRenderTimeout,
+		workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW:    render.DiagramTimeout,
 	}}
 	t := cfg.Transcription.Resolved()
 	if t.OCR != nil && t.OCR.Rasterize != nil {
@@ -194,6 +196,9 @@ func (h helperSettings) configured() map[string]bool {
 		// PDF renders have a default helper (Typst) on every worker that
 		// has the program: a worker lacking it is a program to install.
 		wire.LabelWritePDF: true,
+		// Diagrams likewise: a worker with the renderer installed draws them,
+		// and a render with none left draws nothing (RFC GR P4d).
+		wire.LabelDraw: true,
 	}
 }
 

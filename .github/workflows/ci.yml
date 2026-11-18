@@ -283,13 +283,27 @@ jobs:
           tar -xJf "$RUNNER_TEMP/typst.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/typst-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
 
-      - name: Typeset the rendered PDFs
+      # A Mermaid diagram is drawn by merman (RFC GR P4d): the release the
+      # worker image pins, checked against its published sha256. The
+      # diagram tests skip where merman-cli is missing;
+      # LOOMCYCLE_REQUIRE_MERMAN makes that a failure here.
+      - name: Install merman
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/merman.tar.xz" https://github.com/Latias94/merman/releases/download/v0.9.3/merman-cli-x86_64-unknown-linux-gnu.tar.xz
+          echo "e93dbf741319190d53107c4277b373d357dcdad3f4f7e50f114a51c9b682109b  $RUNNER_TEMP/merman.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/merman.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/merman-cli-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
+
+      - name: Typeset the rendered PDFs and draw the diagrams
         env:
           LOOMCYCLE_REQUIRE_TYPST: "1"
+          LOOMCYCLE_REQUIRE_MERMAN: "1"
         run: |
           typst --version
-          go test -count=1 -run 'Typst|PDF' -v ./internal/files/render/ ./internal/convert/
-          go test -count=1 -run '^TestFileRender_PDF' -v ./internal/tools/builtin/
+          merman-cli --version
+          go test -count=1 -run 'Typst|PDF|Merman|Diagram' -v ./internal/files/render/ ./internal/convert/
+          go test -count=1 -run '^TestFileRender_(PDF|DrawsMermaid)' -v ./internal/tools/builtin/
 
       # The worker image is built only at release; build it here (amd64, not
       # pushed) so a broken Typst pin or font package fails the PR, and check
@@ -300,6 +314,11 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o loomcycle ./cmd/loomcycle
           docker buildx build --load --platform linux/amd64 -f Dockerfile.worker -t ci-loomcycle-worker .
           docker run --rm --entrypoint typst ci-loomcycle-worker --version
+          docker run --rm --entrypoint merman-cli ci-loomcycle-worker --version
+          # It draws in the image as built (its libraries, the nonroot user):
+          # a diagram from stdin to a PNG on stdout.
+          printf 'flowchart LR\n  A[Протокол] --> B\n' | docker run --rm -i --entrypoint merman-cli ci-loomcycle-worker render -q -f png -o - - > "$RUNNER_TEMP/diagram.png"
+          file "$RUNNER_TEMP/diagram.png" | grep -q 'PNG image data'
           fonts="$(docker run --rm --entrypoint typst ci-loomcycle-worker fonts)"
           echo "$fonts"
           echo "$fonts" | grep -qx 'Noto Sans'
