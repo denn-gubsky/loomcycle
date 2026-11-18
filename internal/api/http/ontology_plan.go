@@ -19,7 +19,8 @@ import (
 
 // ontologyPlanBodyLimit bounds the request: at most 50 changes, each an edit body of
 // at most 32 KiB in the Document's check, but one plan's whole body is held here.
-const ontologyPlanBodyLimit = 64 << 10
+// Shared with the gRPC and MCP twins.
+const ontologyPlanBodyLimit = connector.OntologyPlanMaxRequestBytes
 
 // handleOntologyPlan serves POST /v1/_ontology/plan. The body is {changes: [...]};
 // an admin may focus another tenant with ?tenant=, as on the other ontology routes.

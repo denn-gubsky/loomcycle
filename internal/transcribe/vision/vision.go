@@ -102,12 +102,20 @@ func (e *Engine) Accepts(mediaType string) bool {
 
 // Plan resolves the model and how it reads a file of mediaType. The model
 // must see; a PDF needs either a model that reads documents or the rasterize
-// helper, and the refusal names that setting.
-func (e *Engine) Plan(ctx context.Context, mediaType string) (transcribe.Plan, error) {
+// helper, and the refusal names that setting. agentModel is the agent's
+// transcription.ocr_model: when set it is the model, and the operator's
+// model and tier are not consulted. An agent alias that no longer resolves
+// is refused, never replaced by the operator's model: an agent pins its OCR
+// model to keep its files on that model (RFC GV D9: local models only).
+func (e *Engine) Plan(ctx context.Context, mediaType, agentModel string) (transcribe.Plan, error) {
 	if !e.Accepts(mediaType) {
 		return transcribe.Plan{}, fmt.Errorf("the OCR engine does not read %s", mediaType)
 	}
-	providerID, model, err := e.resolve(ctx, e.cfg.Tier, e.cfg.Model)
+	alias, setting := e.cfg.Model, "transcription.ocr.tier (or .model)"
+	if agentModel != "" {
+		alias, setting = agentModel, "this agent's transcription.ocr_model"
+	}
+	providerID, model, err := e.resolve(ctx, e.cfg.Tier, alias)
 	if err != nil {
 		return transcribe.Plan{}, fmt.Errorf("the OCR model could not be resolved: %w", err)
 	}
@@ -117,7 +125,7 @@ func (e *Engine) Plan(ctx context.Context, mediaType string) (transcribe.Plan, e
 	}
 	caps := prov.Capabilities()
 	if !caps.SupportsVision {
-		return transcribe.Plan{}, fmt.Errorf("the OCR model %s/%s cannot accept images; point transcription.ocr.tier (or .model) at a vision-capable model", providerID, model)
+		return transcribe.Plan{}, fmt.Errorf("the OCR model %s/%s cannot accept images; point %s at a vision-capable model", providerID, model, setting)
 	}
 	plan := transcribe.Plan{Engine: e.Name(), Provider: providerID, Model: model, WholePDF: caps.SupportsDocumentInput, MaxUnitBytes: MaxUnitBytes}
 	if mediaType == "application/pdf" && !plan.WholePDF && e.cfg.Rasterize == nil {

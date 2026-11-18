@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -118,16 +119,16 @@ var imageOnlyModel = providers.Capabilities{SupportsVision: true}
 func TestOCR_ImageOnlyEngineRefusesPDFWithoutRasterize(t *testing.T) {
 	m := &fakeModel{caps: imageOnlyModel}
 	e := engineWith(t, m, config.OCRConfig{})
-	_, err := e.Plan(context.Background(), "application/pdf")
+	_, err := e.Plan(context.Background(), "application/pdf", "")
 	if err == nil || !strings.Contains(err.Error(), "transcription.ocr.rasterize") {
 		t.Fatalf("plan for a PDF = %v, want a refusal naming transcription.ocr.rasterize", err)
 	}
-	if p, err := e.Plan(context.Background(), "image/png"); err != nil || p.Provider != "fake-provider" || p.Model != "fake-model" {
+	if p, err := e.Plan(context.Background(), "image/png", ""); err != nil || p.Provider != "fake-provider" || p.Model != "fake-model" {
 		t.Fatalf("an image is refused too: %+v %v", p, err)
 	}
 	// With the helper configured the PDF is planned page image by page image.
 	e = engineWith(t, m, config.OCRConfig{Rasterize: &config.HelperCommand{Command: "pdftoppm -r 150 -png {in} {out_prefix}"}})
-	p, err := e.Plan(context.Background(), "application/pdf")
+	p, err := e.Plan(context.Background(), "application/pdf", "")
 	if err != nil || p.WholePDF {
 		t.Fatalf("plan with rasterize = %+v %v, want page images", p, err)
 	}
@@ -144,7 +145,7 @@ func TestOCR_ImageOnlyEngineRefusesPDFWithoutRasterize(t *testing.T) {
 func TestVision_BlindModelRefusedBeforeAnyCall(t *testing.T) {
 	m := &fakeModel{caps: providers.Capabilities{}}
 	e := engineWith(t, m, config.OCRConfig{})
-	if _, err := e.Plan(context.Background(), "image/png"); err == nil || !strings.Contains(err.Error(), "cannot accept images") {
+	if _, err := e.Plan(context.Background(), "image/png", ""); err == nil || !strings.Contains(err.Error(), "cannot accept images") {
 		t.Fatalf("plan = %v", err)
 	}
 	if len(m.calls()) != 0 {
@@ -161,7 +162,7 @@ func TestVision_PDFRangeGoesAsOneDocumentAndSplitsIntoPages(t *testing.T) {
 		return "preamble\n" + marker + "\nПерша сторінка\n" + marker + "\n\n" + marker + "\n## Третя\n"
 	}
 	e := engineWith(t, m, config.OCRConfig{})
-	plan, err := e.Plan(context.Background(), "application/pdf")
+	plan, err := e.Plan(context.Background(), "application/pdf", "")
 	if err != nil || !plan.WholePDF {
 		t.Fatalf("plan = %+v %v", plan, err)
 	}
@@ -206,7 +207,7 @@ func TestVision_PDFRangeGoesAsOneDocumentAndSplitsIntoPages(t *testing.T) {
 func TestVision_MarkerMismatchKeepsTheTextOnTheFirstPage(t *testing.T) {
 	m := &fakeModel{caps: documentModel, reply: func(providers.Request) string { return "all the text, no markers" }}
 	e := engineWith(t, m, config.OCRConfig{})
-	plan, _ := e.Plan(context.Background(), "application/pdf")
+	plan, _ := e.Plan(context.Background(), "application/pdf", "")
 	res, err := e.OCR(context.Background(), plan, pdfUnit(t, 1, 2), transcribe.OCROptions{Prompt: "x", MaxTokens: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +222,7 @@ func TestVision_MarkerMismatchKeepsTheTextOnTheFirstPage(t *testing.T) {
 func TestVision_EmptyAndCutReplies(t *testing.T) {
 	m := &fakeModel{caps: imageOnlyModel}
 	e := engineWith(t, m, config.OCRConfig{})
-	plan, _ := e.Plan(context.Background(), "image/png")
+	plan, _ := e.Plan(context.Background(), "image/png", "")
 	res, err := e.OCR(context.Background(), plan, imageUnit(t, pngOf(t, 4, 4), "image/png"), transcribe.OCROptions{Prompt: "x", MaxTokens: 10})
 	if err != nil || len(res.Pages) != 1 || res.Pages[0].Text != "[no text]" {
 		t.Fatalf("empty reply = %+v %v", res, err)
@@ -243,7 +244,7 @@ func TestVision_EmptyAndCutReplies(t *testing.T) {
 func TestVision_ImagesWholeUnlessAboveThePixelCap(t *testing.T) {
 	m := &fakeModel{caps: imageOnlyModel, reply: func(providers.Request) string { return "text" }}
 	e := engineWith(t, m, config.OCRConfig{})
-	plan, _ := e.Plan(context.Background(), "image/png")
+	plan, _ := e.Plan(context.Background(), "image/png", "")
 	small := pngOf(t, 40, 30)
 	if _, err := e.OCR(context.Background(), plan, imageUnit(t, small, "image/png"), transcribe.OCROptions{Prompt: "x", MaxTokens: 10}); err != nil {
 		t.Fatal(err)
@@ -305,7 +306,7 @@ func markerIn(t *testing.T, req providers.Request) string {
 func TestVision_ResultSaysWhetherTheModelWasReached(t *testing.T) {
 	m := &fakeModel{caps: imageOnlyModel}
 	e := engineWith(t, m, config.OCRConfig{})
-	plan, _ := e.Plan(context.Background(), "image/png")
+	plan, _ := e.Plan(context.Background(), "image/png", "")
 	res, err := e.OCR(context.Background(), plan, pdfUnit(t, 1, 1), transcribe.OCROptions{Prompt: "x", MaxTokens: 10})
 	if err == nil || res.Reached || len(m.calls()) != 0 {
 		t.Fatalf("a PDF to an image-only model: reached %v, err %v, calls %d", res.Reached, err, len(m.calls()))
@@ -319,5 +320,63 @@ func TestVision_ResultSaysWhetherTheModelWasReached(t *testing.T) {
 	res, err = e.OCR(context.Background(), plan, imageUnit(t, pngOf(t, 4, 4), "image/png"), transcribe.OCROptions{Prompt: "x", MaxTokens: 10})
 	if err != nil || !res.Reached {
 		t.Fatalf("a successful call: reached %v, err %v", res.Reached, err)
+	}
+}
+
+// TestPlan_AgentOCRModelWinsOverTheOperators — RFC GV D9: an agent's
+// transcription.ocr_model is resolved instead of the operator's model and
+// tier; without one, the operator's are. A model the agent pins that cannot
+// see is refused naming the agent's setting, and nothing is called.
+func TestPlan_AgentOCRModelWinsOverTheOperators(t *testing.T) {
+	type asked struct{ tier, alias string }
+	var got []asked
+	seeing := &fakeModel{caps: documentModel}
+	blind := &fakeModel{}
+	e, err := New(Options{
+		Config: *config.TranscriptionConfig{OCR: &config.OCRConfig{Engine: config.OCREngineVision, Tier: "high", Model: "cloud-vision"}}.Resolved().OCR,
+		Resolve: func(_ context.Context, tier, alias string) (string, string, error) {
+			got = append(got, asked{tier, alias})
+			switch alias {
+			case "cloud-vision":
+				return "seeing", "claude-x", nil
+			case "local-vision":
+				return "seeing", "qwen2.5vl:7b", nil
+			case "local-text":
+				return "blind", "qwen3:8b", nil
+			}
+			return "", "", errors.New("unknown alias")
+		},
+		Provider: func(id string) (providers.Provider, error) {
+			switch id {
+			case "seeing":
+				return seeing, nil
+			case "blind":
+				return blind, nil
+			}
+			return nil, errors.New("no such provider")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := e.Plan(context.Background(), "image/png", "local-vision"); err != nil || p.Model != "qwen2.5vl:7b" {
+		t.Errorf("plan with the agent's model = %+v %v, want qwen2.5vl:7b", p, err)
+	}
+	if p, err := e.Plan(context.Background(), "image/png", ""); err != nil || p.Model != "claude-x" {
+		t.Errorf("plan without one = %+v %v, want the operator's claude-x", p, err)
+	}
+	if want := []asked{{"high", "local-vision"}, {"high", "cloud-vision"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("resolver asked %+v, want %+v", got, want)
+	}
+	if _, err := e.Plan(context.Background(), "image/png", "local-text"); err == nil || !strings.Contains(err.Error(), "transcription.ocr_model") {
+		t.Errorf("plan with a blind agent model = %v, want a refusal naming transcription.ocr_model", err)
+	}
+	// An agent alias that no longer resolves is refused, never replaced by
+	// the operator's model.
+	if p, err := e.Plan(context.Background(), "image/png", "gone"); err == nil {
+		t.Errorf("an unresolvable agent model planned %+v", p)
+	}
+	if n := len(seeing.calls()) + len(blind.calls()); n != 0 {
+		t.Errorf("%d model calls from planning, want none", n)
 	}
 }

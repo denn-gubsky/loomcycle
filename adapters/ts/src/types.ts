@@ -2307,6 +2307,71 @@ export interface BindSubjectPrincipalResult {
   changed: boolean;
 }
 
+/** One change {@link LoomcycleClient.planOntology} is asked about. `entry` is
+ *  an in-force entry of the tenant ontology by its chunk id. */
+export interface OntologyChange {
+  op: "retire" | "rename" | "move" | "edit" | "delete";
+  entry: string;
+  /** rename: the new name, one line. */
+  name?: string;
+  /** move: the new parent's chunk id (an entry of the same section, or the section). */
+  parent?: string;
+  /** edit: the entry's new body, at most 32 KiB. */
+  body?: string;
+}
+
+/** An entry of the ontology as a plan names it. */
+export interface OntologyPlanEntry {
+  chunk_id: string;
+  name: string;
+  /** classes | relations | schemes | instances */
+  section: string;
+  /** class | relation | scheme | concept | instance */
+  kind: string;
+}
+
+/** One kind of dependent of a planned change. `n` is the whole tenant:
+ *  `tenant_scope` the part in the tenant scope, `other_scopes` the part in user
+ *  and agent scopes (counted, never listed). `sample` is up to five ids from the
+ *  tenant scope only. */
+export interface OntologyPlanCount {
+  n: number;
+  effect: "destroyed" | "orphaned" | "stale" | "kept";
+  tenant_scope: number;
+  other_scopes?: number;
+  by_status?: Record<string, number>;
+  sample?: string[];
+}
+
+/** The plan of one change. */
+export interface OntologyPlannedChange {
+  op: string;
+  entry: OntologyPlanEntry;
+  risk: "destroys" | "stales" | "none";
+  /** Keyed by the kind of dependent (typed_documents, statements, ...). */
+  counts: Record<string, OntologyPlanCount>;
+  /** The entries of the subtree that go with the entry. */
+  subtree?: OntologyPlanEntry[];
+  notes?: string[];
+}
+
+/** Result of {@link LoomcycleClient.planOntology}. It wrote nothing. */
+export interface PlanOntologyResult {
+  tenant: string;
+  /** Identifies the ontology the plan was computed against. */
+  fingerprint: string;
+  changes: OntologyPlannedChange[];
+  /** The ontology's advisories as it would read after every change. */
+  issues: string[];
+  /** Those of `issues` it does not report now. */
+  new_issues: string[];
+  scopes_counted: number;
+  scopes_skipped: number;
+  /** False when some user or agent scope was not counted; the other-scope
+   *  counts are then a floor. */
+  complete: boolean;
+}
+
 /** Narrows the statement review queue and selects what a bulk ruling rules
  *  ({@link LoomcycleClient.listReviewQueue}, {@link LoomcycleClient.ruleStatements}).
  *  Every field is optional; they combine with AND. A filter never shows more
@@ -6383,6 +6448,9 @@ export interface AgentTranscription {
   max_pages_per_run?: number;
   /** At most the operator's `transcription.stt.max_minutes_per_run`. */
   max_minutes_per_run?: number;
+  /** A `models:` alias (kind chat): this agent's OCR model, used before the
+   *  operator's `transcription.ocr.model` or tier (RFC GV D9). */
+  ocr_model?: string;
 }
 
 /** An agent's text-to-speech settings. It can switch speech off for the agent

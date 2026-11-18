@@ -60,6 +60,10 @@ type mockConnector struct {
 	bindRes connector.BindSubjectPrincipalResult
 	bindErr error
 
+	planReq connector.PlanOntologyRequest
+	planRes connector.PlanOntologyResult
+	planErr error
+
 	dirTenant atomic.Value
 	// identityTool, when set, answers Identity calls as the server would
 	// (the builtin, on the ctx the handler stamped); identityTenant records
@@ -2091,10 +2095,11 @@ func (m *mockConnector) BindSubjectPrincipal(_ context.Context, req connector.Bi
 	return m.bindRes, m.bindErr
 }
 
-// PlanOntology answers an empty plan (connector.Connector); no transport but
-// HTTP reaches it yet (RFC GQ P1.2 adds MCP and gRPC).
-func (m *mockConnector) PlanOntology(context.Context, connector.PlanOntologyRequest) (connector.PlanOntologyResult, error) {
-	return connector.PlanOntologyResult{}, nil
+// PlanOntology records the request and answers with the configured result
+// (connector.Connector).
+func (m *mockConnector) PlanOntology(_ context.Context, req connector.PlanOntologyRequest) (connector.PlanOntologyResult, error) {
+	m.planReq = req
+	return m.planRes, m.planErr
 }
 
 // ListReviewQueue, RuleStatements and RevertRuling record the request and answer

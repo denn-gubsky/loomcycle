@@ -32,7 +32,9 @@ type OCREngine interface {
 	// of mediaType in the run on ctx: the model, and whether a PDF goes whole
 	// or one page image at a time. A file the engine cannot take is refused
 	// here, before anything is reserved or spent; a dry run reports the plan.
-	Plan(ctx context.Context, mediaType string) (Plan, error)
+	// model, when set, is the agent's transcription.ocr_model (a models:
+	// alias, RFC GV D9) and is used instead of the operator's model or tier.
+	Plan(ctx context.Context, mediaType, model string) (Plan, error)
 	// OCR makes one call for one unit under plan. Its Result carries what the
 	// call spent, also alongside an error when the call got that far.
 	OCR(ctx context.Context, plan Plan, unit Unit, opts OCROptions) (Result, error)

@@ -1170,6 +1170,10 @@ var grpcConsumerScopes = map[string]string{
 	// /v1/_ontology/subjects/principal gates it; carved out of the member path
 	// like the merge, and checked again in the connector.
 	"BindSubjectPrincipal": auth.ScopeTenant,
+	// RFC GQ P1.2: planning ontology changes, as POST /v1/_ontology/plan gates
+	// it; carved out of the member path (its counts cover every user's scope of
+	// the tenant), and checked again in the connector.
+	"PlanOntology": auth.ScopeTenant,
 
 	// RFC BL P5 erasure. ScopeTenant, mirroring the HTTP gate: answering a
 	// data-subject request is the tenant operator's job, and both RPCs confine

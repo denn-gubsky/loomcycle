@@ -25,9 +25,11 @@ import (
 // File op=extract with OCR (RFC FG): a scanned page or an image has its text
 // in pixels, so the runtime sends it to the operator's OCR engine and writes
 // the transcript where the page's text layer would have been. The model asks
-// for it by mode and never handles a page; the engine, the model and every
-// cap are operator configuration, and the agent's definition decides whether
-// OCR may run at all (its transcription.ocr: never, auto, always).
+// for it by mode and never handles a page; the engine and every cap are
+// operator configuration, the model is the operator's unless the agent's
+// definition pins one of the operator's models: aliases (transcription.
+// ocr_model, RFC GV D9), and the definition decides whether OCR may run at
+// all (its transcription.ocr: never, auto, always).
 
 // FileOCR is what op=extract needs to run OCR. nil (or no engine) leaves OCR
 // off, and extract behaves as without it.
@@ -55,8 +57,10 @@ const (
 
 // ocrCall is one extract call's OCR request, decided before extraction.
 type ocrCall struct {
-	mode     transcribe.OCRMode
-	caps     transcribe.Caps
+	mode transcribe.OCRMode
+	caps transcribe.Caps
+	// model is the agent's transcription.ocr_model ("" = the operator's).
+	model    string
 	language string
 	dryRun   bool
 	minChars int
@@ -80,6 +84,7 @@ func (f *File) ocrRequest(ctx context.Context, in fileInput) (ocrCall, tools.Res
 			agent = *a
 		}
 		c.caps = transcribe.Effective(f.OCR.Config, agent)
+		c.model = agent.OCRModel
 	}
 	mode, err := transcribe.ModeFor(c.caps.OCR, in.OCR)
 	if err != nil {

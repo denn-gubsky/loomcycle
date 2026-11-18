@@ -10,15 +10,23 @@ import (
 // agent_transcription.go — the per-agent `transcription:` block. The operator
 // block it is judged against is in transcription.go.
 
-// AgentTranscription is an agent's `transcription:` block. It may opt in to OCR
-// and lower the operator's per-run caps; it can never raise them or choose an
-// engine. Content-identifying (part of content_sha256), like compaction.
+// AgentTranscription is an agent's `transcription:` block. It may opt in to OCR,
+// pick the OCR model among the operator's `models:` aliases, and lower the
+// operator's per-run caps; it can never raise them or choose an engine.
+// Content-identifying (part of content_sha256), like compaction.
 //
 // Zero values are "unset": OCR "" is never (OCR spends tokens per page, so it
-// is opt-in), STT "" is on when the operator configured an engine, and a zero
-// cap is the operator's.
+// is opt-in), OCRModel "" is the operator's transcription.ocr model or tier,
+// STT "" is on when the operator configured an engine, and a zero cap is the
+// operator's.
 type AgentTranscription struct {
-	OCR              string `json:"ocr,omitempty" yaml:"ocr,omitempty"`
+	OCR string `json:"ocr,omitempty" yaml:"ocr,omitempty"`
+	// OCRModel is a `models:` alias this agent's OCR calls use instead of the
+	// operator's transcription.ocr.model / tier (RFC GV D9: a library that may
+	// only be read by local models pins a local vision alias on the agent that
+	// reads it, not on the whole deployment). Only an alias, never a literal
+	// model: the operator's models: map is the menu, as for transcription.ocr.
+	OCRModel         string `json:"ocr_model,omitempty" yaml:"ocr_model,omitempty"`
 	STT              string `json:"stt,omitempty" yaml:"stt,omitempty"`
 	MaxPagesPerRun   int    `json:"max_pages_per_run,omitempty" yaml:"max_pages_per_run,omitempty"`
 	MaxMinutesPerRun int    `json:"max_minutes_per_run,omitempty" yaml:"max_minutes_per_run,omitempty"`
@@ -63,6 +71,9 @@ func MergeAgentTranscription(base, over *AgentTranscription) *AgentTranscription
 	}
 	if over.OCR != "" {
 		out.OCR = over.OCR
+	}
+	if over.OCRModel != "" {
+		out.OCRModel = over.OCRModel
 	}
 	if over.STT != "" {
 		out.STT = over.STT
@@ -113,6 +124,22 @@ func (c *Config) CheckAgentTranscription(a *AgentTranscription) error {
 	}
 	if a.IsZero() {
 		return nil
+	}
+	// The same check as the operator's transcription.ocr.model (validateOCR):
+	// an alias of this config's models:, of kind chat. Whether the model can
+	// see is a property of its provider, answered at use (vision.Engine.Plan
+	// refuses a model that cannot accept images), as for the operator's.
+	if a.OCRModel != "" {
+		const place = "transcription.ocr_model"
+		if _, ok := c.Models[a.OCRModel]; !ok {
+			return fmt.Errorf("%s: %q is not a models: alias (the OCR model has no provider of its own, so it must be one)", place, a.OCRModel)
+		}
+		// CheckModelKind, not requireModelKind: this also runs at AgentDef
+		// create/fork on the live config, which must not be written to, and
+		// requireModelKind's advisory is never raised for a chat model anyway.
+		if err := c.CheckModelKind(a.OCRModel, ModelKindChat); err != nil {
+			return fmt.Errorf("%s: %w", place, err)
+		}
 	}
 	op := c.Transcription.Resolved()
 	if op.OCREnabled() && a.MaxPagesPerRun > op.OCR.MaxPagesPerRun {
