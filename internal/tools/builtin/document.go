@@ -3858,8 +3858,8 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		retiring, retireSubtree = isOntology, sub
 	}
-	// RFC GQ P2.3: a locked entry, and any entry above one, keeps its name.
-	if refused := d.ontologyRenameRefusal(ctx, key, mscope, row, in, present); refused != nil {
+	// RFC GQ P2.3: a locked entry, and any entry above one, keeps its name and section.
+	if refused := d.ontologyLockedUpdateRefusal(ctx, key, mscope, row, in, present); refused != nil {
 		return *refused, nil
 	}
 	// RFC GQ D3: out of force only by retirement (document_ontology_delete.go).

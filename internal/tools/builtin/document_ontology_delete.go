@@ -88,6 +88,9 @@ func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey,
 	if err != nil {
 		return fail(err)
 	}
+	if read.partial {
+		return lockReadPartial(op), nil
+	}
 	rows, err := d.planChunkRows(rctx, key, ontID)
 	if err != nil {
 		return fail(err)
@@ -196,6 +199,9 @@ func (d *Document) ontologyMoveRefusal(ctx context.Context, key sqlmem.ScopeKey,
 	before, err := d.ontologyForKey(rctx, key, store.MemoryScopeTenant, memrank.OntologyPath, nil)
 	if err != nil {
 		return fail(err)
+	}
+	if before.partial {
+		return lockReadPartial("move_chunk")
 	}
 	ov := newOntologyOverlay()
 	ov.parents[row.ID] = newParent

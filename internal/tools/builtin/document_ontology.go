@@ -367,7 +367,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				Meaning:           decl.Meaning,
 				RenamedFrom:       decl.RenamedFrom,
 				Issues:            decl.Issues,
-				EntryStatus:       memrank.EntryStatusOf(c.status), Locked: decl.Locked,
+				EntryStatus:       memrank.EntryStatusOf(c.status), Locked: decl.Locked, ChunkID: c.id,
 			})
 			if _, dup := classChunks[strings.ToLower(name)]; !dup {
 				classChunks[strings.ToLower(name)] = c.id

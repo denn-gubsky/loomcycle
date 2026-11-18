@@ -111,6 +111,19 @@ func lockedFlag(d Directive, issues *[]string) bool {
 	return true
 }
 
+// BodyLocked reports whether an entry with this body is locked, as its parser reads
+// it: a @locked line with no value.
+func BodyLocked(body string) bool {
+	locked := false
+	for _, d := range ParseDirectives(body) {
+		if d.Name == LockedDirective {
+			var ignored []string
+			locked = lockedFlag(d, &ignored) || locked
+		}
+	}
+	return locked
+}
+
 // DeclaresLocked reports whether a body carries a @locked line, in either spelling. For
 // the places that must see the lock in text that is not read as an entry: a proposal's
 // body, and a section header's or the root's.

@@ -158,6 +158,9 @@ func (d *Document) proposeChange(ctx context.Context, in docInput) (tools.Result
 	if op == memrank.ChangeOpRetire || mark.Name != "" || mark.Parent != "" {
 		ids = tg.rows.subtree(e.ChunkID)
 	}
+	if tg.read.partial {
+		return *lockReadPartial("propose_entity"), nil
+	}
 	if locked := lockedAmong(ids, tg.entries); locked != "" {
 		return errBusiness("propose_entity: entry_locked: "+locked+" carries @locked, so no proposal may "+op+
 			" it (or an entry above it); only an operator's own edit removes the lock",

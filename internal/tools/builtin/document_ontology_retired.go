@@ -465,6 +465,9 @@ func (d *Document) ontologyRetireSubtree(ctx context.Context, key sqlmem.ScopeKe
 	if err != nil {
 		return nil, true, nil, err
 	}
+	if read.partial {
+		return nil, true, lockReadPartial("update_chunk"), nil
+	}
 	for kind, id := range read.SectionChunks {
 		if id == row.ID {
 			r := errValidation("update_chunk: the "+kind+" section header cannot be retired",

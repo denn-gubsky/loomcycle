@@ -302,7 +302,13 @@ func planEntries(r OntologyRead) map[string]planEntry {
 		return &e
 	}
 	for _, t := range r.Terms {
-		put(r.classChunks[strings.ToLower(t.Name)], t.Name, memrank.SectionClasses, planKindClass, t.Locked)
+		// By the class's own chunk: a second in-force class of the same name is an entry
+		// too (its lock counts). classChunks is the fallback for a term built elsewhere.
+		id := t.ChunkID
+		if id == "" {
+			id = r.classChunks[strings.ToLower(t.Name)]
+		}
+		put(id, t.Name, memrank.SectionClasses, planKindClass, t.Locked)
 	}
 	for _, rel := range r.Relations {
 		put(rel.ChunkID, rel.Name, memrank.SectionRelations, planKindRelation, rel.Locked)

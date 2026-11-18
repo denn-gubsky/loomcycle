@@ -301,4 +301,13 @@ func TestOntologyLocked_RefusedOnPostgres(t *testing.T) {
 	if !f.exists(id) || f.status(id) != "" {
 		t.Errorf("after the refusals: exists=%v status=%q", f.exists(id), f.status(id))
 	}
+	// The #2762 review's SQL: the top-level check and the upsert refusal.
+	wantLocked(t, "re-read the Schemes header", f.update(f.ctx, f.chunk("Schemes"), map[string]any{"body": "@section bogus"}), `concept "Reporting"`)
+	read := f.read()
+	f.must(map[string]any{"op": "upsert_chunk", "scope": "tenant", "document_id": read.DocumentID,
+		"parent_id": read.SectionChunks[memrank.SectionClasses], "natural_key": "class:ledger", "title": "Ledger"})
+	if _, r := f.do(f.ctx, map[string]any{"op": "upsert_chunk", "scope": "tenant", "document_id": read.DocumentID,
+		"natural_key": "class:ledger", "title": "Journal"}); !r.IsError {
+		t.Error("an upsert over an ontology entry went through on postgres")
+	}
 }

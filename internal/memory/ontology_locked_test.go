@@ -55,3 +55,15 @@ func TestDeclaresLocked_SeesEitherSpellingAndNotAQuotedLine(t *testing.T) {
 		}
 	}
 }
+
+// TestBodyLocked_ReadsTheFlagAsTheParserDoes: a valued @locked is no lock, as the entry
+// parsers read it; the plan judges an edited body with this.
+func TestBodyLocked_ReadsTheFlagAsTheParserDoes(t *testing.T) {
+	for body, want := range map[string]bool{
+		"@locked": true, "- `@locked` — legal hold": true, "@locked false": false, "> @locked": false, "x": false,
+	} {
+		if got := BodyLocked(body); got != want {
+			t.Errorf("BodyLocked(%q) = %v, want %v", body, got, want)
+		}
+	}
+}
