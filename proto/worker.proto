@@ -184,6 +184,32 @@ message Report {
   int32 dropped_decorative_images = 10;
   repeated string notes = 11;
   repeated PageYield page_yields = 12;
+  // What a book says about itself (RFC GV D10); unset for a format that
+  // carries none, and from a worker of an earlier release.
+  BookMetadata metadata = 13;
+}
+
+// extract.BookMetadata. Every value is the file's own text, bounded by the
+// worker and again by the core.
+message BookMetadata {
+  string title = 1;
+  repeated string authors = 2;
+  repeated string translators = 3;
+  string language = 4;
+  string date = 5;
+  int32 year = 6;
+  string publisher = 7;
+  repeated BookIdentifier identifiers = 8;
+  string series = 9;
+  string series_index = 10;
+  repeated string subjects = 11;
+  string description = 12;
+  string source_format = 13;
+}
+
+message BookIdentifier {
+  string scheme = 1;
+  string value = 2;
 }
 
 message PageYield {

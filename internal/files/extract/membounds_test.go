@@ -168,6 +168,25 @@ func TestHTML_ReconstructedFormattingRefusedBeforeParse(t *testing.T) {
 	})
 }
 
+// A book's content document is held to the same pre-parse bounds as a web
+// page: the clone flood is refused before the parser builds it, and the
+// book with it.
+func TestEPUB_ReconstructedFormattingRefusedBeforeParse(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("<p>")
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&b, "<b class=c%d>", i)
+	}
+	b.WriteString(strings.Repeat("</p><p>x", 10000))
+	book := epubOf(t, epubContainer("c.opf"),
+		xmlEntry("c.opf", `<package xmlns="http://www.idpf.org/2007/opf"><metadata/><manifest><item id="a" href="a.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="a"/></spine></package>`),
+		entry{"a.xhtml", []byte(b.String())})
+	wantRefusedUnder(t, "reconstructed formatting in a book", 32<<20, func() error {
+		_, err := extractBytes(EPUB{}, "clones.epub", book)
+		return err
+	})
+}
+
 func TestHTML_PageWithFormattingStillExtracts(t *testing.T) {
 	// The formatting count is not a refusal of formatting: closed tags, a few
 	// left open, and the same tag repeated (the parser keeps three) pass.
@@ -380,4 +399,41 @@ func TestHTML_PeakAtTheNodeCapIsBounded(t *testing.T) {
 		t.Fatalf("a page at the node cap held %d MiB at its peak, want at most %d MiB", peak>>20, c>>20)
 	}
 	t.Logf("peak %d MiB", peak>>20)
+}
+
+// A book's description is its own markup: a clone flood or a fragment of
+// megabytes is not handed to the HTML parser, and the text kept is bounded
+// (RFC GV §4.7).
+func TestEPUB_DescriptionMarkupIsBoundedBeforeParse(t *testing.T) {
+	var flood strings.Builder
+	for i := 0; flood.Len() < maxDescriptionHTML/2; i++ {
+		fmt.Fprintf(&flood, "<b class=c%d>", i)
+	}
+	for flood.Len() < maxDescriptionHTML-8 {
+		flood.WriteString("</p><p>x")
+	}
+	for name, desc := range map[string]string{
+		"clone flood": flood.String(),
+		"oversized":   strings.Repeat("<p><i>a</i></p>", 2<<20/15),
+		"deep":        strings.Repeat("<div>", 100000) + "x",
+	} {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		got := htmlFragmentText(context.Background(), desc)
+		runtime.ReadMemStats(&after)
+		t.Logf("%s: %d bytes in, %d KiB allocated", name, len(desc), (after.TotalAlloc-before.TotalAlloc)>>10)
+		if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 8<<20 {
+			t.Errorf("%s: reading the description allocated %d MiB", name, alloc>>20)
+		}
+		if len(got) > MaxMetaDescription*2 {
+			t.Errorf("%s: %d bytes of description text kept", name, len(got))
+		}
+		if strings.Contains(got, "<") {
+			t.Errorf("%s: tags left in the text: %.80q", name, got)
+		}
+	}
+	if got := htmlFragmentText(context.Background(), "<p>A <b>first</b> collection.</p>"); got != "A first collection." {
+		t.Errorf("a small description = %q", got)
+	}
 }

@@ -59,6 +59,9 @@ func TestExtract_FindsTheRecordAndEachHeadingsAnchor(t *testing.T) {
 		{render.FormatDOCX, DOCX{}, []string{"chunk_s1", "chunk_s2"}},
 		{render.FormatODT, ODT{}, []string{"chunk_s1", "chunk_s2"}},
 		{render.FormatHTML, HTML{}, []string{"chunk-s1", "chunk-s2"}},
+		// The book's title page only repeats the title, so the root's own
+		// text sits under the book's "#" (RFC GV §4.2).
+		{render.FormatEPUB, EPUB{}, []string{"chunk-s1", "chunk-s2"}},
 	} {
 		data, want := renderedWithRecord(t, c.format)
 		s := &recordSink{}
