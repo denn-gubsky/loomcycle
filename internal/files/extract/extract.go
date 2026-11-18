@@ -219,6 +219,13 @@ func (g *Registry) Register(e Extractor) {
 	g.list = append([]Extractor{e}, g.list...)
 }
 
+// With is a new registry that tries e first and then the extractors of g,
+// which is left as it is: a converter adds the extractor its helpers make
+// possible (DjVu) to a registry it may share.
+func (g *Registry) With(e Extractor) *Registry {
+	return &Registry{list: append([]Extractor{e}, g.list...)}
+}
+
 // For returns the extractor for a file: the first that matches its sniffed
 // media type, else the first that matches its name's extension.
 func (g *Registry) For(mediaType, name string) (Extractor, bool) {
