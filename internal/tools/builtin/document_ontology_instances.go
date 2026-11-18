@@ -73,7 +73,7 @@ func (d *Document) AdoptInstances(ctx context.Context, dryRun bool) (InstanceRep
 	if err != nil {
 		return rep, err
 	}
-	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
+	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
 		return rep, err
 	}

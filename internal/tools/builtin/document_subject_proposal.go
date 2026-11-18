@@ -90,7 +90,7 @@ func (d *Document) proposeSubject(ctx context.Context, in docInput) (tools.Resul
 	if err != nil {
 		return errBusiness("propose_subject: "+err.Error(), "This deployment has no SQL Memory; ask an operator to enable it."), nil
 	}
-	read, err := d.ontologyForKey(ctx, key, mscope, memory.OntologyPath)
+	read, err := d.ontologyForKey(ctx, key, mscope, memory.OntologyPath, nil)
 	if err != nil {
 		return errFrom("propose_subject: "+err.Error(), err), nil
 	}

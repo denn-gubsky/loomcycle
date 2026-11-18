@@ -443,6 +443,42 @@ func SubjectBindCode(err error) string {
 	return ""
 }
 
+// Planning ontology changes (Connector.PlanOntology). Returned wrapped
+// WithMessage; OntologyPlanCode names them.
+var (
+	// ErrOntologyPlanInvalid — a malformed request: no changes, too many, an
+	// unknown op, a missing name or parent.
+	ErrOntologyPlanInvalid = errors.New("connector: invalid ontology plan request")
+	// ErrOntologyPlanForbidden — the caller is not an admin or a tenant
+	// operator.
+	ErrOntologyPlanForbidden = errors.New("connector: ontology plan not permitted")
+	// ErrOntologyPlanNotFound — the tenant has no ontology, or a change names
+	// no in-force entry of it (a section, the root and a proposal are not
+	// entries), or a move names a parent outside the entry's section.
+	ErrOntologyPlanNotFound = errors.New("connector: no such ontology entry")
+	// ErrOntologyPlanUnavailable — this deployment has no SQL Memory.
+	ErrOntologyPlanUnavailable = errors.New("connector: ontology plans need SQL Memory")
+)
+
+// OntologyPlanCode is the stable wire code for a plan refusal. "" for an error
+// that is none of the sentinels (an internal failure).
+func OntologyPlanCode(err error) string {
+	for _, c := range []struct {
+		sentinel error
+		code     string
+	}{
+		{ErrOntologyPlanInvalid, "invalid_request"},
+		{ErrOntologyPlanForbidden, "forbidden"},
+		{ErrOntologyPlanNotFound, "entry_not_found"},
+		{ErrOntologyPlanUnavailable, "unavailable"},
+	} {
+		if errors.Is(err, c.sentinel) {
+			return c.code
+		}
+	}
+	return ""
+}
+
 // Reviewing statements in bulk (Connector.ListReviewQueue, RuleStatements,
 // RevertRuling). Each is returned wrapped WithMessage; StatementReviewCode
 // names the sentinel for the wire.
