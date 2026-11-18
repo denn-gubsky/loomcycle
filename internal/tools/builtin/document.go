@@ -160,7 +160,7 @@ const documentInputSchema = `{
 		"hops":      {"type": "integer", "description": "graph_recall: how far to follow relations from each starting chunk. A hop is ONE edge, so a fact→entity→fact step costs two: a two-hop question needs 2, a three-hop needs 4. 0 = the starting chunks only, 1 = their neighbours (default), 6 = the maximum. What bounds a long walk is budget_chars, not this."},
 		"seeds":     {"type": "integer", "description": "graph_recall: how many of the best-ranked facts start the walk (default 5). Small on purpose — seeding from every hit spends the budget before the walk contributes anything."},
 		"budget_chars": {"type": "integer", "description": "graph_recall: cap the answer on CONTENT rather than on rows, and backfill. A walk fetches more rows than a search by construction, so a row limit lets it win on volume instead of on the relations; and when the graph runs dry the walk under-fills, which scores worse than not walking at all. Set this and whatever budget the walk leaves is spent on the best-ranked facts it did not reach. 0 = the row-limited behaviour."},
-		"level":       {"type": "string", "enum": ["branch","document","path"], "description": "set_annotation / get_annotation / annotation_inputs / delete_annotation / list_annotations: which annotation of the target — branch (a section), document (a document, on its root chunk). Default: what the target chunk is."},
+		"level":       {"type": "string", "enum": ["branch","document","path","scheme","concept","class"], "description": "set_annotation / get_annotation / annotation_inputs / delete_annotation / list_annotations: which annotation of the target — branch (a section), document (a document, on its root chunk), path (a folder), or a node of a confirmed taxonomy: scheme, concept (by the chunk_id describe_ontology gives) or class (by its chunk, or by name). Default: what the target chunk is."},
 		"brief":       {"type": "string", "description": "set_annotation: one sentence, at most 240 characters, saying what the target is so a reader can choose it."},
 		"abstract":    {"type": "string", "description": "set_annotation: one paragraph, at most 2000 characters, saying what the target states so a reader need not open it."},
 		"language":    {"type": "string", "description": "set_annotation: the language the annotation is written in, a two- or three-letter code (default: the document's)."},
@@ -290,7 +290,7 @@ const documentInputSchema = `{
 		"concept_prefix": {"type": "string", "description": "search / related: like concept, for every concept whose tag is this path or lies under it, e.g. concept_prefix=topics covers the whole topics scheme."},
 		"sql":         {"type": "string", "description": "query_chunks: raw read-only SELECT against the chunk tables (escape hatch; validator-gated)."},
 		"limit":       {"type": "integer", "description": "The most rows to return. The default depends on the op (graph_recall: 50 chunks); each op's help article gives its own."},
-		"name":        {"type": "string", "description": "define/list_types: the type name. lease / release: the lease's name, e.g. linker (1–64 of a-z 0-9 _ . : / -)."},
+		"name":        {"type": "string", "description": "define/list_types: the type name. set_annotation / get_annotation / annotation_inputs / delete_annotation with level class: the document class, instead of its chunk id. lease / release: the lease's name, e.g. linker (1–64 of a-z 0-9 _ . : / -)."},
 		"ttl_ms":      {"type": "integer", "description": "lease: how long to hold it, in milliseconds (default 60000, capped at one hour). The lease expires on its own; the holder re-leases to extend it."},
 		"write":       {"type": "string", "enum": ["propose","report","rule","recommend"], "description": "classify: propose (default) applies an unambiguous rule match and files the rest for review; report writes nothing and returns the same answer. judge_statements: rule (default) rules each routed proposal whose verdict clears the floor; recommend only records the verdicts."},
 		"judgements":  {"type": "array", "description": "judge_statements: 1-100 verdicts, each {id (a statement), verdict (accept|reject|unsure), confidence (0..1), rationale (one sentence), verdict_run_id? (the run that judged it, from the sub-agent result header)}.", "items": {"type": "object", "properties": {"id": {"type": "string"}, "verdict": {"type": "string", "enum": ["accept","reject","unsure"]}, "confidence": {"type": "number"}, "rationale": {"type": "string"}, "verdict_run_id": {"type": "string"}}, "required": ["id","verdict","confidence","rationale"]}},
@@ -1441,6 +1441,9 @@ func (d *Document) provisionTables(ctx context.Context, key sqlmem.ScopeKey) err
 		return err
 	}
 	if err := d.migrateAnnotationFolders(ctx, key); err != nil {
+		return err
+	}
+	if err := d.migrateAnnotationBasis(ctx, key); err != nil {
 		return err
 	}
 	if err := d.migrateRevisionProvenance(ctx, key); err != nil {
