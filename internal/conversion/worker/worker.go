@@ -304,7 +304,7 @@ func (w *worker) waitFree(ctx context.Context) error {
 // that does not is logged, not fatal: the worker still serves everything
 // else.
 func labels(opt Options, log *slog.Logger) []string {
-	out := []string{wire.LabelExtract, wire.LabelPDF, wire.LabelWrite, wire.LabelWriteBook}
+	out := []string{wire.LabelExtract, wire.LabelExtractPages, wire.LabelPDF, wire.LabelWrite, wire.LabelWriteBook}
 	if opt.Images != nil {
 		out = append(out, wire.LabelImage)
 	}
@@ -581,8 +581,12 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 			if o.GetRecords() {
 				sink = &recordRemoteSink{remoteSink: sink.(*remoteSink)}
 			}
+			var pages []int
+			for _, n := range start.GetPages() {
+				pages = append(pages, int(n))
+			}
 			rep, jerr = p.Extract(jctx, start.GetMediaType(), in, size, sink,
-				extract.Options{Name: start.GetName(), Images: o.GetImages(), MaxRows: int(o.GetMaxRows()), InferHeadings: o.GetInferHeadings()})
+				extract.Options{Name: start.GetName(), Images: o.GetImages(), MaxRows: int(o.GetMaxRows()), InferHeadings: o.GetInferHeadings(), Pages: pages})
 		case workerpb.JobKind_JOB_KIND_PDF_SELECT_PAGES:
 			pages := make([]int, len(start.GetPages()))
 			for i, p := range start.GetPages() {

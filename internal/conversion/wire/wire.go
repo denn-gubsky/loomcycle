@@ -52,6 +52,11 @@ const (
 	// them never does, so such a job never reaches a worker that would
 	// refuse the format.
 	LabelWriteBook = "write_odt_epub"
+	// LabelExtractPages is an extraction of only some of a document's pages
+	// (JobStart.pages on an extract job, RFC GP D17). A worker built before
+	// it ignores the pages and reads the whole file, so such a job goes only
+	// to a worker that carries this label; every worker built since does.
+	LabelExtractPages = "extract_pages"
 	// LabelDraw is a Mermaid diagram drawn as a picture (RFC GR P4d), with
 	// the diagram helper. A worker carries it when the helper resolves.
 	LabelDraw = "draw_diagram"

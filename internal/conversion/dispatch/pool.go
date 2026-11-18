@@ -341,9 +341,20 @@ func (d *Dispatcher) Client() convert.Client { return poolClient{d} }
 type poolClient struct{ d *Dispatcher }
 
 func (p poolClient) Extract(ctx context.Context, mediaType string, r io.ReaderAt, size int64, sink extract.Sink, opts extract.Options) (extract.Report, error) {
-	res, err := p.d.run(ctx, &job{kind: workerpb.JobKind_JOB_KIND_EXTRACT, r: r, size: size, mediaType: mediaType, name: opts.Name, opts: opts, sink: sink})
+	j := &job{kind: workerpb.JobKind_JOB_KIND_EXTRACT, r: r, size: size, mediaType: mediaType, name: opts.Name, opts: opts, sink: sink, pages: opts.Pages}
+	// Workers older than the pages option are attached and none newer: the
+	// whole file is read, and the report says so. The caller's own cut
+	// (a sink that stops taking text) still bounds what it costs.
+	allPages := len(opts.Pages) > 0 && !p.d.canRun(wire.LabelExtractPages) && p.d.canRun(wire.LabelExtract)
+	if allPages {
+		j.pages, j.opts.Pages = nil, nil
+	}
+	res, err := p.d.run(ctx, j)
 	if err != nil {
 		return extract.Report{}, err
+	}
+	if allPages {
+		res.report.Notes = append(res.report.Notes, "the pages asked for were not applied: the conversion workers are older than that option, so every page was read")
 	}
 	return res.report, res.err
 }
@@ -470,6 +481,9 @@ func (d *Dispatcher) run(ctx context.Context, j *job) (result, error) {
 	j.ctx = ctx
 	j.id = strconv.FormatUint(d.jobs.Add(1), 10)
 	label := wire.LabelForJob(j.kind, j.format)
+	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT && len(j.pages) > 0 {
+		label = wire.LabelExtractPages
+	}
 	free, ambiguous := maxFreeRetries, 1
 	for {
 		s, err := d.acquire(ctx, label)

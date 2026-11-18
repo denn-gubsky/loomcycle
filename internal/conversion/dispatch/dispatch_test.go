@@ -518,3 +518,72 @@ func TestPool_ARecordAndItsAnchorsCrossTheWire(t *testing.T) {
 		t.Error("the text differs for a caller that takes no record")
 	}
 }
+
+// TestPool_ExtractPagesMatchesInProcess — an extraction of some pages, run on
+// a worker, reads the pages the in-process client reads: the same Markdown,
+// page starts and report.
+func TestPool_ExtractPagesMatchesInProcess(t *testing.T) {
+	d, target := pool(t, dispatch.Options{})
+	realWorker(t, target, "w1")
+	waitIdle(t, d, 1)
+	data := samplePDF(t)
+	opts := extract.Options{Name: "minutes.pdf", Pages: []int{2}}
+
+	var here recSink
+	wantRep, err := (&convert.InProcess{}).Extract(context.Background(), "application/pdf", bytes.NewReader(data), int64(len(data)), &here, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var there recSink
+	gotRep, err := d.Client().Extract(context.Background(), "application/pdf", bytes.NewReader(data), int64(len(data)), &there, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if there.md.String() != here.md.String() || strings.Contains(there.md.String(), "budget") || !strings.Contains(there.md.String(), "Second page") {
+		t.Errorf("markdown:\npool:\n%s\nin process:\n%s\nwant page 2 alone", there.md.String(), here.md.String())
+	}
+	if !reflect.DeepEqual(there.starts, here.starts) || len(there.starts) != 1 {
+		t.Errorf("page starts: pool %v, in process %v", there.starts, here.starts)
+	}
+	if !reflect.DeepEqual(gotRep, wantRep) {
+		t.Errorf("report:\npool       %+v\nin process %+v", gotRep, wantRep)
+	}
+}
+
+// TestPool_PagesAreNotSentToAnOlderWorker — a worker without the
+// extract_pages label would ignore the pages and read the whole file while
+// the caller believes it read a few. With only such workers attached the job
+// is sent without pages, reads every page, and the report says so.
+func TestPool_PagesAreNotSentToAnOlderWorker(t *testing.T) {
+	d, target := pool(t, dispatch.Options{QueueWait: time.Minute})
+	s := attachFake(t, target, "old", wire.ProtocolVersion).openSlot(t)
+	waitIdle(t, d, 1)
+	data := samplePDF(t)
+	type out struct {
+		rep extract.Report
+		err error
+	}
+	done := make(chan out, 1)
+	sink := &recSink{}
+	go func() {
+		rep, err := d.Client().Extract(context.Background(), "application/pdf", bytes.NewReader(data), int64(len(data)), sink, extract.Options{Name: "minutes.pdf", Pages: []int{2}})
+		done <- out{rep, err}
+	}()
+	if start := s.recvStart(t); len(start.GetPages()) != 0 {
+		t.Fatalf("pages %v were sent to a worker that predates them", start.GetPages())
+	}
+	// Hand the job on to a current worker, as a busy slot does: it was
+	// already planned without pages, so it reads every page.
+	realWorker(t, target, "new")
+	s.send(t, &workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_Busy{Busy: &workerpb.Busy{}}})
+	got := <-done
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if !strings.Contains(sink.md.String(), "budget") || !strings.Contains(sink.md.String(), "Second page") {
+		t.Errorf("markdown %q, want every page", sink.md.String())
+	}
+	if !strings.Contains(strings.Join(got.rep.Notes, "\n"), "older than that option, so every page was read") {
+		t.Errorf("notes = %v", got.rep.Notes)
+	}
+}
