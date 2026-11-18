@@ -20,6 +20,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -161,6 +162,25 @@ func retiredConceptChunks(read OntologyRead) map[string]string {
 		}
 	}
 	return out
+}
+
+// ErrEntryRetired is an operator-plane write refused because it would make something new
+// use a retired entry (RFC GQ P2.1).
+var ErrEntryRetired = errors.New("entry_retired")
+
+// retiredClassNamed is the retired class typ names after the seed layering
+// (case-insensitively, as a type is matched), if it is one.
+func retiredClassNamed(read OntologyRead, typ string) (memrank.OntologyTerm, bool) {
+	typ = strings.TrimSpace(typ)
+	if typ == "" {
+		return memrank.OntologyTerm{}, false
+	}
+	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
+		if c.EntryStatus != "" && strings.EqualFold(c.Name, typ) {
+			return c, true
+		}
+	}
+	return memrank.OntologyTerm{}, false
 }
 
 // errEntryRetired is the refusal of a new write that would use a retired entry. A

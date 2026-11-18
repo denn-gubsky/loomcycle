@@ -108,6 +108,10 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 	if action == "accept" {
 		if isSubject, f, evidence := doc.SubjectProposal(dctx, "tenant", chunkID); isSubject {
 			notAnnounced, aerr := s.adoptSubjectProposal(dctx, doc, f, evidence, chunkID)
+			if errors.Is(aerr, builtin.ErrEntryRetired) {
+				writeJSONError(w, http.StatusConflict, "entry_retired", aerr.Error())
+				return
+			}
 			if aerr != nil {
 				writeJSONError(w, http.StatusInternalServerError, "adopt_failed", aerr.Error())
 				return

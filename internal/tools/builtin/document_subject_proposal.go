@@ -25,6 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/memory"
@@ -98,6 +99,10 @@ func (d *Document) proposeSubject(ctx context.Context, in docInput) (tools.Resul
 		return errBusiness("propose_subject: this tenant has no ontology document yet — an "+
 			"operator opens the Ontology page once to create it", ""), nil
 	}
+	// A subject of a retired class would be a new instance of it (RFC GQ P2.1).
+	if c, retired := retiredClassNamed(read, entityTypeOfKey(naturalKey)); retired {
+		return errEntryRetired("propose_subject", "the class "+strconv.Quote(c.Name)), nil
+	}
 	// Already filed, in either state. An accepted one is gone (the entity replaced it),
 	// so reaching here means pending or rejected — and a rejected twin means the
 	// operator already said no, which is what the tombstone is for.
@@ -153,6 +158,14 @@ func entityTypeOfKey(naturalKey string) string {
 // so the next pass's create_document for the same subject fails, the subject resolves
 // to nothing, and its facts land with no edge to it. That failure shipped once already.
 func (d *Document) AdoptSubjectProposal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, f SubjectProposalFields, evidence string) (docID, notAnnounced string, err error) {
+	// Checked again at accept: the class may have been retired since it was filed.
+	read, err := d.ontologyForKey(ctx, key, mscope, memory.OntologyPath, nil)
+	if err != nil {
+		return "", "", err
+	}
+	if c, retired := retiredClassNamed(read, f.EntityType); retired {
+		return "", "", fmt.Errorf("%w: the class %q is retired, so no new subject of it is adopted", ErrEntryRetired, c.Name)
+	}
 	slug := strings.TrimSpace(f.PathSlug)
 	if slug == "" {
 		slug = strings.TrimPrefix(f.NaturalKey, entityTypeOfKey(f.NaturalKey)+":")

@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -215,5 +216,25 @@ func TestProposeStatement_RevisionOfAStatementNotInForceIsCheckedInFull(t *testi
 	}
 	if _, r := f.do(f.ctx, map[string]any{"op": "propose_statement", "scope": "tenant", "id": asserted, "confidence": 0.5}); r.IsError {
 		t.Errorf("a revision of the asserted statement: %s", r.Text)
+	}
+}
+
+// TestProposeSubject_RetiredEntityTypeIsRefused: a subject of a retired class is not
+// filed, and a proposal filed before the class was retired is not adopted.
+func TestProposeSubject_RetiredEntityTypeIsRefused(t *testing.T) {
+	f := newRetiredFixture(t)
+	f.must(map[string]any{"op": "propose_subject", "subject": "Launch", "natural_key": "event:launch"})
+	f.retire("event")
+	if _, r := f.do(f.ctx, map[string]any{"op": "propose_subject", "subject": "Offsite", "natural_key": "event:offsite"}); !r.IsError ||
+		!strings.Contains(r.Text, "entry_retired") {
+		t.Errorf("propose_subject of a retired class: %q, want entry_retired", r.Text)
+	}
+	_, _, err := f.d.AdoptSubjectProposalInScope(f.ctx, "tenant",
+		SubjectProposalFields{Subject: "Launch", EntityType: "event", NaturalKey: "event:launch"}, "")
+	if !errors.Is(err, ErrEntryRetired) {
+		t.Errorf("adopting a subject of a retired class: %v, want ErrEntryRetired", err)
+	}
+	if id, _ := f.d.chunkIDByNaturalKey(f.ctx, mustTenantKey(t, f.d, f.ctx), "event:launch"); id != "" {
+		t.Error("a subject of the retired class was minted")
 	}
 }
