@@ -68,6 +68,15 @@ const (
 	// into one token, so a single node of most of the file would cost its
 	// decoded size at once. A paragraph is kilobytes.
 	maxFB2Span = 4 << 20
+	// maxFB2Quotes caps the block quote markers written before a line:
+	// deeper nesting is read, and written at this depth, so a prefix never
+	// multiplies a line by the nesting of a hostile book.
+	maxFB2Quotes = 8
+	// maxFB2Para is the text one paragraph collects before what it holds
+	// is written as a paragraph of its own; maxFB2Line caps a heading, a
+	// verse line or an attribution, which are kept whole on one line.
+	maxFB2Para = 1 << 20
+	maxFB2Line = 64 << 10
 )
 
 func (FB2) Match(mediaType, name string) bool {
@@ -168,7 +177,7 @@ type fb2Book struct {
 	sections, quotes int
 	tgt              *fb2Target
 	skip             int // the depth of an element whose content is skipped; 0 none
-	stanza           []string
+	stanzaLines      int
 	inStanza         bool
 	poems            int
 	eof              bool // the stream was read to its end
@@ -452,8 +461,30 @@ func (b *fb2Book) chars(c xml.CharData) error {
 		b.bin.buf = append(b.bin.buf, c...)
 		return nil
 	}
-	if b.tgt != nil {
+	if b.tgt == nil {
+		return nil
+	}
+	if b.tgt.kind != "p" {
 		b.tgt.add(string(c))
+		return nil
+	}
+	// A paragraph of megabytes is written as it grows, in pieces of
+	// maxFB2Para cut on a character, so the output limit sees it before all
+	// of it is held, and no piece costs more than its own size to render.
+	for len(c) > 0 {
+		n := min(len(c), max(maxFB2Para-b.tgt.buf.Len(), 1))
+		for n < len(c) && n > 1 && !utf8.RuneStart(c[n]) {
+			n--
+		}
+		b.tgt.add(string(c[:n]))
+		c = c[n:]
+		if b.tgt.buf.Len() >= maxFB2Para {
+			text := oneLine(b.tgt.buf.String())
+			b.tgt.buf.Reset()
+			if err := b.emit(escapeLine(text)); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -500,19 +531,50 @@ func (b *fb2Book) begin() error {
 }
 
 // emit writes one block, inside the block quotes open where it stands.
+//
+// A quoted block is written a line at a time, each with its prefix, so the
+// prefixes never build a second, larger copy of the block in memory.
 func (b *fb2Book) emit(md string) error {
 	if md == "" {
 		return nil
 	}
-	if b.quotes > 0 {
-		prefix := strings.Repeat("> ", b.quotes)
-		md = prefix + strings.ReplaceAll(md, "\n", "\n"+prefix)
-	}
+	lead := ""
 	if b.written {
-		md = "\n\n" + md
+		lead = "\n\n"
 	}
 	b.written = true
-	return b.w.text(md)
+	if b.quotes == 0 {
+		return b.w.text(lead + md)
+	}
+	return b.quoted(lead, md)
+}
+
+// quoted writes md's lines inside the block quotes open where it stands,
+// the first after lead.
+func (b *fb2Book) quoted(lead, md string) error {
+	prefix := strings.Repeat("> ", min(b.quotes, maxFB2Quotes))
+	for {
+		line, rest, more := strings.Cut(md, "\n")
+		if err := b.w.text(lead + prefix + line); err != nil {
+			return err
+		}
+		if !more {
+			return nil
+		}
+		lead, md = "\n", rest
+	}
+}
+
+// verse writes one verse line: the first of its stanza as a new block, each
+// later one after a hard break, so a stanza of many lines is never held.
+func (b *fb2Book) verse(line string) error {
+	if b.stanzaLines++; b.stanzaLines == 1 {
+		return b.emit(line)
+	}
+	if b.quotes == 0 {
+		return b.w.text("\\\n" + line)
+	}
+	return b.quoted("\\\n", line)
 }
 
 // startText handles an element of the book's body.
@@ -527,7 +589,7 @@ func (b *fb2Book) startText(t xml.StartElement, depth int) error {
 	case "epigraph", "cite", "annotation":
 		b.quotes++
 	case "title", "p", "subtitle", "text-author", "v", "date":
-		b.open(name, depth, 0)
+		b.open(name, depth, fb2Limit(name))
 	case "poem":
 		b.poems++
 	case "stanza":
@@ -544,7 +606,7 @@ func (b *fb2Book) startText(t xml.StartElement, depth int) error {
 	case "tr":
 		b.row = b.row[:0]
 	case "td", "th":
-		b.open("cell", depth, 0)
+		b.open("cell", depth, maxCellBytes)
 	case "a":
 		if b.tgt != nil && fb2Attr(t, "type") == "note" {
 			if id, ok := fb2Local(fb2Attr(t, "href")); ok {
@@ -605,8 +667,7 @@ func (b *fb2Book) endText(t xml.EndElement, depth int) error {
 		return nil
 	case "v":
 		if text != "" && b.inStanza {
-			b.stanza = append(b.stanza, escapeLine(text))
-			return nil
+			return b.verse(escapeLine(text))
 		}
 	}
 	if text == "" {
@@ -637,15 +698,17 @@ func (b *fb2Book) endText(t xml.EndElement, depth int) error {
 // flushStanza writes the verse lines collected, each kept on its own line
 // with a hard break.
 func (b *fb2Book) flushStanza() error {
-	if !b.inStanza {
-		return nil
+	b.inStanza, b.stanzaLines = false, 0
+	return nil
+}
+
+// fb2Limit is the text a block of the body collects: a paragraph is written
+// in pieces past maxFB2Para (see chars), every other block is one line.
+func fb2Limit(kind string) int {
+	if kind == "p" {
+		return 0
 	}
-	lines := b.stanza
-	b.stanza, b.inStanza = b.stanza[:0], false
-	if len(lines) == 0 {
-		return nil
-	}
-	return b.emit(strings.Join(lines, "\\\n"))
+	return maxFB2Line
 }
 
 // image handles a picture reference in the book's body: inside a block's

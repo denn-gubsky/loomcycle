@@ -419,16 +419,57 @@ func TestFB2_DecodedTextOverTheCapIsRefused(t *testing.T) {
 }
 
 // One text node of most of the file is refused while it streams in, before
-// the decoder has built it into a token.
+// the decoder has built it into a token. The decoder hands over the text it
+// read before the refusal, at most maxFB2Span of it, and that is rendered
+// (in maxFB2Para pieces, each costing some times its size in garbage): the
+// ceilings are a few times the span, where 40 MiB built whole would cost
+// hundreds.
 func TestFB2_LongTextRunIsRefusedWhileItStreams(t *testing.T) {
-	for name, book := range map[string][]byte{
-		"text":      []byte(`<FictionBook><body><p>` + strings.Repeat("слово ", 40<<20/11) + `</p></body></FictionBook>`),
-		"comment":   []byte(`<FictionBook><!--` + strings.Repeat("c", 40<<20) + `--></FictionBook>`),
-		"attribute": []byte(`<FictionBook><body><p id="` + strings.Repeat("v", 40<<20) + `">x</p></body></FictionBook>`),
+	for name, c := range map[string]struct {
+		book    []byte
+		ceiling uint64
+	}{
+		"text":      {[]byte(`<FictionBook><body><p>` + strings.Repeat("слово ", 40<<20/11) + `</p></body></FictionBook>`), 96 << 20},
+		"comment":   {[]byte(`<FictionBook><!--` + strings.Repeat("c", 40<<20) + `--></FictionBook>`), 32 << 20},
+		"attribute": {[]byte(`<FictionBook><body><p id="` + strings.Repeat("v", 40<<20) + `">x</p></body></FictionBook>`), 32 << 20},
 	} {
-		wantRefusedUnder(t, name, 32<<20, func() error {
+		book := c.book
+		wantRefusedUnder(t, name, c.ceiling, func() error {
 			_, err := extractBytes(FB2{}, "long.fb2", book)
 			return err
 		})
+	}
+}
+
+// Block quote markers are written a line at a time and at most
+// maxFB2Quotes deep: a stanza of many lines (or a table) inside hundreds of
+// nested quotes is not multiplied in memory before the output limit sees it.
+func TestFB2_NestedQuotesDoNotMultiplyTheOutput(t *testing.T) {
+	const depth = 240
+	book := []byte(`<FictionBook><body>` + strings.Repeat("<cite>", depth) +
+		`<poem><stanza>` + strings.Repeat("<v>x</v>", 100000) + `</stanza></poem>` +
+		`<table>` + strings.Repeat("<tr><td>a</td></tr>", 1000) + `</table>` +
+		strings.Repeat("</cite>", depth) + `</body></FictionBook>`)
+	s := &memSink{limit: 64 << 10}
+	var err error
+	got := allocated(func() {
+		_, err = FB2{}.Extract(context.Background(), bytes.NewReader(book), int64(len(book)), s, Options{Name: "q.fb2"})
+	})
+	if err != ErrSinkFull {
+		t.Fatalf("err = %v, want ErrSinkFull", err)
+	}
+	if c := ceiling(8 << 20); got > c {
+		t.Errorf("a cut stanza in %d quotes allocated %d MiB, want at most %d MiB", depth, got>>20, c>>20)
+	}
+	prefix := strings.Repeat("> ", maxFB2Quotes)
+	for _, l := range strings.Split(s.md.String(), "\n")[2:] {
+		if !strings.HasPrefix(l, prefix+"x") || strings.HasPrefix(l, prefix+">") {
+			t.Fatalf("line %q, want %d quote markers", l, maxFB2Quotes)
+		}
+	}
+	// Not cut, the whole book reads, its table and stanza inside the quotes.
+	full, _ := run(t, FB2{}, book, Options{Name: "q.fb2"})
+	if md := full.md.String(); !strings.Contains(md, "\n"+prefix+"x\\\n"+prefix+"x\n") || !strings.Contains(md, "\n"+prefix+"| a |") {
+		t.Errorf("quoted stanza and table not written line by line:\n%.300s", md)
 	}
 }
