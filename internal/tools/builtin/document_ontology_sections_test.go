@@ -125,17 +125,17 @@ func TestOntologyTree_SectionlessDocumentReadsAsBefore(t *testing.T) {
 	}
 }
 
-// TestOntologyTree_DuplicateAndUnknownSectionsFailOpen.
+// TestOntologyTree_DuplicateSectionReadsAsAClass.
 //
-// A second section of a kind, and a section of an unknown kind, both read the way the
-// chunk read before sections existed — as a class — and are reported. Declaring
-// sections must never take a type out of force.
-func TestOntologyTree_DuplicateAndUnknownSectionsFailOpen(t *testing.T) {
+// A second section of a kind reads the way the chunk read before sections existed — as
+// a class — and is reported. Declaring a known section twice must never take a type
+// out of force. (An UNKNOWN kind is out of force instead: see
+// TestOntology_UnknownSectionKindIsNotInForce.)
+func TestOntologyTree_DuplicateSectionReadsAsAClass(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
 	path := ontologyDocFixture(t, d, ctx, "# Tenant Ontology\n\n"+
 		"## Classes\n@section classes\n\n### project\n\n"+
-		"## More\n@section classes\n\n### incident\n\n"+
-		"## Rules\n@section rules\n\n### approval\n")
+		"## More\n@section classes\n\n### incident\n")
 	read, err := d.OntologyTermsFromTree(ctx, "user", path)
 	if err != nil {
 		t.Fatal(err)
@@ -150,11 +150,8 @@ func TestOntologyTree_DuplicateAndUnknownSectionsFailOpen(t *testing.T) {
 	if by["More"].Name == "" || by["incident"].Parent != "More" {
 		t.Errorf("the duplicate section should read as a class with its subclasses: %v", termNames(by))
 	}
-	if by["Rules"].Name == "" || by["approval"].Parent != "Rules" {
-		t.Errorf("the unknown section kind should read as a class: %v", termNames(by))
-	}
 	joined := strings.Join(read.Issues, "\n")
-	if !strings.Contains(joined, "second @section classes") || !strings.Contains(joined, `"rules"`) {
+	if !strings.Contains(joined, "second @section classes") || len(read.Issues) != 1 {
 		t.Errorf("issues = %q", joined)
 	}
 }

@@ -112,8 +112,10 @@ func (s *Server) tenantOntologyTerms(ctx context.Context, mi memInject) (terms [
 	tree, terr := doc.OntologyTermsFromTree(dctx, "tenant", meminject.OntologyPath)
 	// A SECTIONED document that declares no classes is still a tree read, not a reason
 	// for the flat fallback: that parser knows nothing of sections and would turn
-	// "## Relations" into an entity type (RFC FO §3.1).
-	if terr == nil && (len(tree.Terms) > 0 || len(tree.Sections) > 0) {
+	// "## Relations" into an entity type (RFC FO §3.1). The same holds for a document
+	// whose only section is of a kind this build does not know: the tree read reported
+	// it (an issue) and took it out of force, and the flat parser must not put it back.
+	if terr == nil && (len(tree.Terms) > 0 || len(tree.Sections) > 0 || len(tree.Issues) > 0) {
 		if tree.DepthCapped {
 			notes = append(notes, "This document nests deeper than "+
 				strconv.Itoa(meminject.OntologyMaxDepth)+" levels. The types below that "+
