@@ -6370,6 +6370,9 @@ export interface AgentTranscription {
   max_pages_per_run?: number;
   /** At most the operator's `transcription.stt.max_minutes_per_run`. */
   max_minutes_per_run?: number;
+  /** A `models:` alias (kind chat): this agent's OCR model, used before the
+   *  operator's `transcription.ocr.model` or tier (RFC GV D9). */
+  ocr_model?: string;
 }
 
 /** An agent's text-to-speech settings. It can switch speech off for the agent

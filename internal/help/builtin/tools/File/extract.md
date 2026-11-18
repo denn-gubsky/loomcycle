@@ -105,7 +105,8 @@ page. Each page read costs a model call's tokens.
 Leave `ocr` out to use your agent's own setting. That setting is also the
 most you may ask for: an agent set to `auto` may ask for `never`, not
 `always`. An agent that is not allowed OCR gets an error for `auto` or
-`always`.
+`always`. The model that reads the pages is your agent's own OCR model when
+its definition names one (`transcription.ocr_model`), else the operator's.
 
 A page that was read becomes `## Page N` followed by the text the model read,
 in place of the page's text layer and its picture; its headings sit under the
