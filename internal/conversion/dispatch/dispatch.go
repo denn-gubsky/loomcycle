@@ -109,6 +109,16 @@ type worker struct {
 	open   map[*slot]struct{}
 }
 
+// carries reports whether the worker carries every label of need.
+func (w *worker) carries(need []string) bool {
+	for _, l := range need {
+		if !w.labels[l] {
+			return false
+		}
+	}
+	return true
+}
+
 // slot is one Work stream: an idle slot of an attached worker until a job
 // is handed to it.
 type slot struct {
@@ -123,7 +133,8 @@ type slot struct {
 }
 
 type waiter struct {
-	label string
+	// need are the labels a slot's worker must carry, all of them.
+	need []string
 	// ch receives the slot handed to this waiter, or nil when no attached
 	// worker can run its job any more.
 	ch chan *slot
@@ -286,7 +297,7 @@ func (d *Dispatcher) detach(w *worker) {
 	}
 	kept := d.waiters[:0]
 	for _, wt := range d.waiters {
-		if d.canRunLocked(wt.label) {
+		if d.canRunLocked(wt.need...) {
 			kept = append(kept, wt)
 			continue
 		}
@@ -295,16 +306,16 @@ func (d *Dispatcher) detach(w *worker) {
 	d.waiters = kept
 }
 
-// canRun reports whether an attached worker carries label.
-func (d *Dispatcher) canRun(label string) bool {
+// canRun reports whether an attached worker carries every label of need.
+func (d *Dispatcher) canRun(need ...string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.canRunLocked(label)
+	return d.canRunLocked(need...)
 }
 
-func (d *Dispatcher) canRunLocked(label string) bool {
+func (d *Dispatcher) canRunLocked(need ...string) bool {
 	for _, w := range d.workers {
-		if w.labels[label] {
+		if w.carries(need) {
 			return true
 		}
 	}
@@ -374,7 +385,7 @@ func (d *Dispatcher) Work(stream workerpb.WorkerService_WorkServer) error {
 // keeps it idle.
 func (d *Dispatcher) offerLocked(s *slot) {
 	for i, wt := range d.waiters {
-		if s.w.labels[wt.label] {
+		if s.w.carries(wt.need) {
 			d.waiters = append(d.waiters[:i], d.waiters[i+1:]...)
 			s.taken = true
 			wt.ch <- s
@@ -404,15 +415,29 @@ func (d *Dispatcher) timeoutFor(kind workerpb.JobKind) time.Duration {
 // errNoSlot is the wait for an idle slot running out.
 var errNoSlot = fmt.Errorf("%w: every conversion worker stayed busy", convert.ErrBusy)
 
-// acquire takes the oldest idle slot that can run a job needing label,
-// waiting up to QueueWait. Waiters are served first come, first served (D9).
-func (d *Dispatcher) acquire(ctx context.Context, label string) (*slot, error) {
+// acquire takes the oldest idle slot whose worker carries every label of
+// need, waiting up to QueueWait. Waiters are served first come, first
+// served (D9).
+func (d *Dispatcher) acquire(ctx context.Context, need ...string) (*slot, error) {
 	d.mu.Lock()
-	if !d.canRunLocked(label) {
+	if !d.canRunLocked(need...) {
 		attached := len(d.workers) > 0
+		// The label no attached worker carries says why; a need every
+		// label of which some worker carries, but no one worker all of,
+		// reads as no worker for it.
+		label := ""
+		for _, l := range need {
+			if !d.canRunLocked(l) {
+				label = l
+				break
+			}
+		}
 		d.mu.Unlock()
 		if attached && wire.HelperLabel(label) && d.opt.Configured != nil && !d.opt.Configured[label] {
 			return nil, convert.ErrNotConfigured
+		}
+		if attached && label == wire.LabelDjVu {
+			return nil, fmt.Errorf("%w (%s): no conversion worker has DjVuLibre's %s; install djvulibre-bin where the workers run (the loomcycle-worker image carries it)", convert.ErrNoHelper, label, convert.DjVuTextProgram)
 		}
 		if attached && wire.HelperLabel(label) {
 			// Workers are up, and none has this helper's program: an install
@@ -427,14 +452,14 @@ func (d *Dispatcher) acquire(ctx context.Context, label string) (*slot, error) {
 		return nil, convert.ErrNoWorkers
 	}
 	for i, s := range d.idle {
-		if s.w.labels[label] {
+		if s.w.carries(need) {
 			d.idle = append(d.idle[:i], d.idle[i+1:]...)
 			s.taken = true
 			d.mu.Unlock()
 			return s, nil
 		}
 	}
-	wt := &waiter{label: label, ch: make(chan *slot, 1)}
+	wt := &waiter{need: need, ch: make(chan *slot, 1)}
 	d.waiters = append(d.waiters, wt)
 	d.mu.Unlock()
 

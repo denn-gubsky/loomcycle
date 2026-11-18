@@ -8,6 +8,7 @@ import (
 	"flag"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -144,5 +145,22 @@ func TestChildEnv_CarriesTheCoresHelpers(t *testing.T) {
 		if strings.Contains(got, unset) {
 			t.Errorf("an unset helper (%s) reached the child:\n%s", unset, got)
 		}
+	}
+}
+
+// The core's DjVu helpers (transcription.ocr.djvu) reach its children, which
+// read DjVu with them; unset, a child is given none and takes its defaults.
+func TestChildEnv_CarriesTheDjVuHelpers(t *testing.T) {
+	env := childEnv(Options{Token: "tok", DjVuText: "djvutxt --detail=page --page={pages} {in}", DjVuInspect: "djvused -e {script} {in}"})
+	for _, want := range []string{
+		"LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND=djvutxt --detail=page --page={pages} {in}",
+		"LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND=djvused -e {script} {in}",
+	} {
+		if !slices.Contains(env, want) {
+			t.Errorf("child env lacks %q:\n%s", want, strings.Join(env, "\n"))
+		}
+	}
+	if env := strings.Join(childEnv(Options{Token: "tok"}), "\n"); strings.Contains(env, "DJVU") {
+		t.Errorf("unset DjVu helpers were passed:\n%s", env)
 	}
 }

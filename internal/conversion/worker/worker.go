@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,6 +106,10 @@ type Options struct {
 	WritePDF *convert.Helper
 	// Draw draws Mermaid diagrams (RFC GR P4d); nil takes no draw jobs.
 	Draw *convert.Helper
+	// DjVuText reads a DjVu document's text layer and DjVuInspect its
+	// outline and metadata (RFC GV P3). The worker reads DjVu, and carries
+	// the djvu label, only when DjVuText's program resolves here.
+	DjVuText, DjVuInspect *convert.Helper
 	// Images re-encodes images (vision.NewReencoder()); nil takes no image
 	// jobs.
 	Images convert.ImageReencoder
@@ -297,6 +302,9 @@ func (w *worker) waitFree(ctx context.Context) error {
 	}
 }
 
+// has reports whether this worker carries label.
+func (w *worker) has(label string) bool { return slices.Contains(w.labels, label) }
+
 // labels are what this worker can run: extraction, page cuts and document
 // writes always, images when it has a re-encoder, and each helper's jobs
 // (PDF renders among them) when the helper's program resolves on this host
@@ -311,7 +319,7 @@ func labels(opt Options, log *slog.Logger) []string {
 	for _, h := range []struct {
 		label  string
 		helper *convert.Helper
-	}{{wire.LabelRender, opt.Rasterize}, {wire.LabelMedia, opt.Media}, {wire.LabelEncode, opt.Encode}, {wire.LabelWritePDF, opt.WritePDF}, {wire.LabelDraw, opt.Draw}} {
+	}{{wire.LabelRender, opt.Rasterize}, {wire.LabelMedia, opt.Media}, {wire.LabelEncode, opt.Encode}, {wire.LabelWritePDF, opt.WritePDF}, {wire.LabelDraw, opt.Draw}, {wire.LabelDjVu, opt.DjVuText}} {
 		if h.helper == nil {
 			continue
 		}
@@ -673,8 +681,25 @@ func (w *worker) converter(timeout time.Duration) *convert.InProcess {
 		c.Timeout = timeout
 		return &c
 	}
+	// A DjVu helper runs once per batch of pages: each call gets its own
+	// bound, within the job's.
+	perCall := func(h *convert.Helper) *convert.Helper {
+		if h == nil {
+			return nil
+		}
+		c := *h
+		c.Timeout = min(convert.DjVuCallTimeout, timeout)
+		return &c
+	}
+	djvuText := perCall(w.opt.DjVuText)
+	if !w.has(wire.LabelDjVu) {
+		// The program did not resolve when the worker started: it reads no
+		// DjVu, as its labels told the dispatcher.
+		djvuText = nil
+	}
 	return &convert.InProcess{
 		Rasterize: bound(w.opt.Rasterize), Media: bound(w.opt.Media), Encode: bound(w.opt.Encode), WritePDF: bound(w.opt.WritePDF), Draw: bound(w.opt.Draw),
+		DjVuText: djvuText, DjVuInspect: perCall(w.opt.DjVuInspect),
 		Images:          w.opt.Images,
 		MaxEncodedBytes: maxEncoded,
 		Scratch:         func(context.Context) (string, error) { return w.opt.Scratch, nil },

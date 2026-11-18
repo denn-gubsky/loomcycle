@@ -115,6 +115,7 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 			Workers: cv.Local.Workers, MemoryLimitMB: cv.Local.MemoryLimitMB,
 			Rasterize: h.rasterize, Media: h.media, Encode: h.encode, Wrapper: b.cfg.Env.HelperWrapper,
 			WritePDF: b.cfg.Env.RenderPDFCommand, Draw: b.cfg.Env.RenderDiagramCommand,
+			DjVuText: h.djvuText, DjVuInspect: h.djvuInspect,
 			OnRespawn: d.AddRespawn, Logger: slog.Default(),
 		})
 		stopChildren = sup.Stop
@@ -151,7 +152,9 @@ func conversionToken(cv config.ConversionConfig) (string, error) {
 // and the time bound of each helper's jobs.
 type helperSettings struct {
 	rasterize, media, encode string
-	timeouts                 map[workerpb.JobKind]time.Duration
+	// djvuText and djvuInspect are transcription.ocr.djvu's commands.
+	djvuText, djvuInspect string
+	timeouts              map[workerpb.JobKind]time.Duration
 }
 
 // conversionHelpers reads the helper settings from the transcription and
@@ -168,6 +171,14 @@ func conversionHelpers(cfg *config.Config) helperSettings {
 	t := cfg.Transcription.Resolved()
 	if t.OCR != nil && t.OCR.Rasterize != nil {
 		h.rasterize = t.OCR.Rasterize.Command
+	}
+	if t.OCR != nil && t.OCR.DjVu != nil {
+		if t.OCR.DjVu.Text != nil {
+			h.djvuText = t.OCR.DjVu.Text.Command
+		}
+		if t.OCR.DjVu.Inspect != nil {
+			h.djvuInspect = t.OCR.DjVu.Inspect.Command
+		}
 	}
 	if t.STT != nil {
 		if t.STT.Media != nil {
@@ -200,6 +211,9 @@ func (h helperSettings) configured() map[string]bool {
 		// Diagrams likewise: a worker with the renderer installed draws them,
 		// and a render with none left draws nothing (RFC GR P4d).
 		wire.LabelDraw: true,
+		// DjVu likewise (RFC GV P3): a worker with DjVuLibre installed reads
+		// it, so a worker without is a program to install.
+		wire.LabelDjVu: true,
 	}
 }
 

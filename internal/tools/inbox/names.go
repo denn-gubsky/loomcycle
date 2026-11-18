@@ -79,7 +79,8 @@ func sanitizeDir(dir string) string {
 
 // DirFor is the folder a file of media type mt goes to.
 func DirFor(mt string) string {
-	if strings.HasPrefix(mt, "image/") {
+	// A DjVu book is image/vnd.djvu, and a document (RFC GV §4.1).
+	if strings.HasPrefix(mt, "image/") && mt != djvuType {
 		return DirImages
 	}
 	return DirDocuments
@@ -105,6 +106,8 @@ var extTypes = map[string]string{
 	".json": "application/json",
 	".vtt":  "text/vtt",
 	".srt":  "application/x-subrip",
+	".djvu": djvuType,
+	".djv":  djvuType,
 
 	// FB2 books; ".fb2.zip" is a double extension, read whole by fileExt.
 	".fb2":     fb2Type,
@@ -153,6 +156,7 @@ var typeExts = map[string]string{
 	"image/svg+xml":                 ".svg",
 	"image/bmp":                     ".bmp",
 	"image/tiff":                    ".tiff",
+	djvuType:                        ".djvu",
 	"audio/mpeg":                    ".mp3",
 	"audio/wav":                     ".wav",
 	"audio/wave":                    ".wav",
@@ -186,7 +190,13 @@ func settleMediaType(declared string, head []byte, name string) string {
 		return fb2ZipType
 	}
 	if mt != "" && !generic(mt) {
+		if mt == "image/x-djvu" || mt == "image/x.djvu" {
+			return djvuType
+		}
 		return mt
+	}
+	if isDjVu(head) {
+		return djvuType
 	}
 	sniffed := normalizeType(http.DetectContentType(head))
 	if sniffed == "application/zip" {
@@ -206,6 +216,20 @@ func settleMediaType(declared string, head []byte, name string) string {
 		return extTypes[".docx"]
 	}
 	return sniffed
+}
+
+// djvuType is a DjVu document's media type; image/x-djvu is its older name.
+const djvuType = "image/vnd.djvu"
+
+// isDjVu reports whether head begins a DjVu file: "AT&TFORM", a length, then
+// DJVU (one page) or DJVM (bundled pages) at offset 12. http.DetectContentType
+// knows none of it.
+func isDjVu(head []byte) bool {
+	if len(head) < 16 || string(head[:8]) != "AT&TFORM" {
+		return false
+	}
+	kind := string(head[12:16])
+	return kind == "DJVU" || kind == "DJVM"
 }
 
 // zipMimetype reads the type an OpenDocument package or an EPUB (OCF)
