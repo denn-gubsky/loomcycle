@@ -488,6 +488,9 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				}
 			}
 			review = &p
+		case sectionOutOfForce:
+			// An unknown section kind: nothing under it is read. Its own arm, so the
+			// catch-all below can never read it as a class.
 		default: // no directive: a class as before sections, unless a whole proposed scheme
 			if !sw.rootProposal(c) {
 				walk([]ontologyChunk{c}, rootID, "", 1, false)
