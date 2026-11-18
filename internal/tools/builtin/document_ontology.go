@@ -490,8 +490,8 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 			review = &p
 		case "":
-			// No directive: a class, exactly as before sections existed. Anything else
-			// left here is sectionOutOfForce: nothing under it is read.
+			// No directive: a class, exactly as before sections existed. sectionOutOfForce
+			// matches no case, so nothing under such a heading is read.
 			walk([]ontologyChunk{c}, rootID, "", 1, false)
 		}
 	}
