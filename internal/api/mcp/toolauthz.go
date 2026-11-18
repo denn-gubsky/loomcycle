@@ -549,6 +549,7 @@ var mcpToolTwins = map[string]mcpToolTwin{
 	"ontology": {Ops: map[string]mcpOpTwin{
 		"merge_subjects": {Method: "POST", Path: "/v1/_ontology/subjects/merge"},
 		"bind_principal": {Method: "POST", Path: "/v1/_ontology/subjects/principal"},
+		"plan":           {Method: "POST", Path: "/v1/_ontology/plan"},
 	}},
 	"review": {Ops: map[string]mcpOpTwin{
 		"queue":        {Method: "GET", Path: "/v1/_statements/review"},

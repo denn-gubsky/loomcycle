@@ -62,8 +62,8 @@ var handlersByName = map[string]toolHandler{
 	"retention_override": handleRetentionOverride,
 	// A tenant's own trace export (telemetry.go).
 	"telemetry": handleTelemetry,
-	// Operator actions on the tenant ontology: merge_subjects, bind_principal
-	// (ontology.go).
+	// Operator actions on the tenant ontology: merge_subjects, bind_principal,
+	// plan (ontology.go).
 	"ontology": handleOntology,
 	// The statement review queue, bulk rulings and their undo (review.go).
 	"review":    handleReview,

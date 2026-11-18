@@ -1466,6 +1466,11 @@ const (
 	OntologyPlanDelete = "delete"
 )
 
+// OntologyPlanMaxRequestBytes bounds one plan request on every transport (the HTTP
+// body, the gRPC message, the MCP arguments), so none accepts a larger plan than
+// another. The Document's own caps (50 changes, a 32 KiB edit body) fit inside it.
+const OntologyPlanMaxRequestBytes = 64 << 10
+
 // Risk classes of a planned change (OntologyPlannedChange.Risk).
 const (
 	// OntologyRiskDestroys: applying the change would lose stored rows — the
