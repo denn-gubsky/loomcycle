@@ -24,6 +24,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -245,6 +246,11 @@ func (d *Document) DeleteOntologyChunk(ctx context.Context, scope, chunkID strin
 	key, mscope, err := d.resolveScope(ctx, scope)
 	if err != nil {
 		return err
+	}
+	// Its caller removes a proposal, which is never an entry; held to RFC GQ D3 all the
+	// same, so this exported door cannot delete an entry something rests on.
+	if refused, _ := d.ontologyDeleteGuard(ctx, key, mscope, "delete_chunk", d.documentIDForChunk(ctx, key, chunkID), chunkID); refused != nil {
+		return errors.New(refused.Text)
 	}
 	_, err = d.cascadeDeleteChunks(ctx, key, mscope, []string{chunkID})
 	return err

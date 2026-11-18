@@ -3109,6 +3109,10 @@ func (d *Document) deleteDocument(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err != nil {
 		return errFrom("delete_document: "+err.Error(), err), nil
 	}
+	// RFC GQ D3: not the tenant ontology while any entry of it is in use.
+	if refused, _ := d.ontologyDeleteGuard(ctx, key, mscope, "delete_document", docID, ""); refused != nil {
+		return *refused, nil
+	}
 	n, txErr := d.removeDocument(ctx, key, mscope, docID)
 	if txErr != nil {
 		return errFrom("delete_document: "+txErr.Error(), txErr), nil
@@ -3968,6 +3972,13 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	} else if len(rr.Rows) > 0 {
 		return errBusiness("delete_chunk: refusing to delete a document's root chunk — use delete_document", ""), nil
 	}
+	// RFC GQ D3: an ontology entry something rests on is retired, never deleted — for
+	// every caller, the operator plane included (document_ontology_delete.go).
+	refused, recheck := d.ontologyDeleteGuard(ctx, key, mscope, "delete_chunk", row.DocumentID, in.ID)
+	if refused != nil {
+		return *refused, nil
+	}
+	gained := false
 	// The cascade runs in ONE transaction: enumerate the chunk + all
 	// descendants (iterative BFS — portable, no recursive CTE; a visited set
 	// guarantees termination even on a corrupt parent cycle), then delete each
@@ -4004,6 +4015,16 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 				}
 			}
 			frontier = next
+		}
+		if recheck {
+			found, err := d.ontologyEntryGainedStatements(ctx, txnID, ids)
+			if err != nil {
+				return err
+			}
+			if found {
+				gained = true
+				return errEntryGainedStatementsTxn
+			}
 		}
 		// BATCHED, and it matters most here of all the cascades. This ran SEVEN
 		// statements per chunk over the whole descendant set, inside one transaction
@@ -4060,6 +4081,9 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		return nil
 	})
+	if gained {
+		return errEntryGainedStatements(), nil
+	}
 	if txErr != nil {
 		return errFrom("delete_chunk: "+txErr.Error(), txErr), nil
 	}
@@ -6122,6 +6146,10 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 			"Pass reimport: true and the work's work_key, or omit amending_document_id."), nil
 	}
 	if in.Reimport {
+		// RFC GQ D3: the ontology changes in place (document_ontology_delete.go).
+		if refused := d.ontologyReimportRefusal(ctx, key, in); refused != nil {
+			return *refused, nil
+		}
 		return d.reimportMD(ctx, key, mscope, in, chunks, edges)
 	}
 	// Checked before anything is written: import_md is not atomic, and a refusal
