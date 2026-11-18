@@ -4404,6 +4404,8 @@ export type DocumentToolInput = {
     | "describe_ontology"
     // Node statistics of the taxonomy's nodes (RFC GM P2.1).
     | "node_stats"
+    // The taxonomy's built-in series (RFC GM P2.2).
+    | "measure"
     | "effective_policy"
     | "memberships"
     | "extract_citations"
@@ -4750,8 +4752,25 @@ export type DocumentToolInput = {
   /** node_stats: "report" (the default) lists each node's status and writes
    *  nothing; "compute" recomputes the stale and missing nodes. */
   mode?: "report" | "compute";
-  /** node_stats: only this scheme's concepts. */
+  /** node_stats / measure: only this scheme's concepts (measure unplaced: only
+   *  this scheme). */
   scheme?: string;
+  /** measure: which built-in series — count, share, shift (only where the store
+   *  keeps vectors) or unplaced (per scheme). */
+  measure?: "count" | "share" | "shift" | "unplaced";
+  /** measure: one node — a concept by chunk id or tag, or a document class by
+   *  name. With compare, the concept and those under it. */
+  node?: string;
+  /** measure: only periods starting at or after this instant (unix nanos); with
+   *  compare, the start of the range compared (default compare.to). */
+  from?: number;
+  /** measure: only periods starting before this instant (unix nanos). */
+  to?: number;
+  /** measure: read the series as stored at this moment (unix nanos). */
+  shown_at?: number;
+  /** measure share: the baseline range; the answer orders the concepts by the
+   *  capped log-ratio of their share against it. */
+  compare?: { from: number; to: number };
   /** search: rank the annotations too — "include" fuses them with the passages,
    *  "only" answers from them alone (a question about the corpus as a whole). */
   annotations?: "none" | "include" | "only";
