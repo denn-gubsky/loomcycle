@@ -254,3 +254,36 @@ func TestRemember_RetiredClassIsRefused(t *testing.T) {
 		t.Errorf("remembering an existing fact of the retired class again: %s", r.Text)
 	}
 }
+
+// TestTags_RetiredConceptTagIsRefusedOutsideTheTenantScope: in a user scope a concept's
+// members are found by its mirror tag, so a NEW tag equal to a retired concept's, or
+// under it, is a new placement and is refused on every tag write; a tag the target
+// already carries is kept, and a live concept's tag is written.
+func TestTags_RetiredConceptTagIsRefusedOutsideTheTenantScope(t *testing.T) {
+	f := newRetiredFixture(t)
+	doc := f.must(map[string]any{"op": "create_document", "scope": "user", "title": "Notes", "tags": []any{"topics/risk-management"}})
+	chunk := f.must(map[string]any{"op": "create_chunk", "scope": "user", "document_id": doc["document_id"], "title": "c",
+		"tags": []any{"topics/risk-management/outsourcing"}})["id"].(string)
+	f.retire("Risk Management")
+	for _, in := range []map[string]any{
+		{"op": "create_document", "title": "More", "tags": []any{"topics/risk-management"}},
+		{"op": "create_chunk", "document_id": doc["document_id"], "title": "d", "tags": []any{"topics/risk-management/outsourcing/cloud"}},
+		{"op": "upsert_chunk", "document_id": doc["document_id"], "natural_key": "note:e", "title": "e", "body": "e", "tags": []any{"topics/risk-management"}},
+		{"op": "add_tags", "id": chunk, "tags": []any{"topics/risk-management"}},
+		{"op": "add_tags", "document_id": doc["document_id"], "tags": []any{"topics/risk-management/outsourcing"}},
+	} {
+		in["scope"] = "user"
+		if _, r := f.do(f.ctx, in); !r.IsError || !strings.Contains(r.Text, "entry_retired") {
+			t.Errorf("%v: %q, want entry_retired", in, r.Text)
+		}
+	}
+	rev := int(f.must(map[string]any{"op": "get_chunk", "scope": "user", "id": chunk})["revision"].(float64))
+	if _, r := f.do(f.ctx, map[string]any{"op": "update_chunk", "scope": "user", "id": chunk, "revision": rev,
+		"tags": []any{"topics/risk-management"}}); !r.IsError || !strings.Contains(r.Text, "entry_retired") {
+		t.Errorf("update_chunk adding a retired concept's tag: %q, want entry_retired", r.Text)
+	}
+	if _, r := f.do(f.ctx, map[string]any{"op": "update_chunk", "scope": "user", "id": chunk, "revision": rev,
+		"tags": []any{"topics/risk-management/outsourcing", "topics/reporting"}}); r.IsError {
+		t.Errorf("update_chunk keeping its tag and adding a live one: %s", r.Text)
+	}
+}

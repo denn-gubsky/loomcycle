@@ -608,3 +608,60 @@ func (d *Document) RetiredProposalProblem(ctx context.Context, scope, chunkID st
 	}
 	return r.Text, nil
 }
+
+// retiredTagRefusal refuses a tag write that would place something new under a retired
+// concept. Outside the tenant scope a concept's members are found by its mirror tag
+// (resolveConceptFilters), so a NEW tag equal to a retired scheme's or concept's, or
+// under it, is a placement there; a tag the target already carries is kept (an edit,
+// RFC FO 3.7 B2). In the tenant scope membership is by statement, which
+// retiredStatementRefusal guards, so a tag there places nothing. The dispatch calls
+// this for the direct tag writes; import_md and the other faithful copies write tags
+// internally and keep what they copy.
+func (d *Document) retiredTagRefusal(ctx context.Context, key sqlmem.ScopeKey, in docInput) *tools.Result {
+	if key.Scope == "tenant" || len(in.Tags) == 0 {
+		return nil
+	}
+	switch in.Op {
+	case "create_document", "create_chunk", "upsert_chunk", "update_chunk", "add_tags":
+	default:
+		return nil
+	}
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok || !read.Confirmed {
+		return nil
+	}
+	var retired []string
+	for _, tag := range retiredConceptChunks(read) {
+		retired = append(retired, tag)
+	}
+	if len(retired) == 0 {
+		return nil
+	}
+	have := map[string]bool{}
+	var kept []string
+	switch {
+	case in.Op == "update_chunk" || (in.Op == "add_tags" && in.ID != ""):
+		kept, _ = d.listChunkTags(ctx, key, in.ID)
+	case in.Op == "add_tags" && in.DocumentID != "":
+		kept, _ = d.listDocumentTags(ctx, key, in.DocumentID)
+	case in.Op == "upsert_chunk" && strings.TrimSpace(in.NaturalKey) != "":
+		if id, err := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey); err == nil && id != "" {
+			kept, _ = d.listChunkTags(ctx, key, id)
+		}
+	}
+	for _, t := range kept {
+		have[t] = true
+	}
+	for _, t := range sanitizeTags(in.Tags) {
+		if have[t] {
+			continue
+		}
+		for _, r := range retired {
+			if t == r || strings.HasPrefix(t, r+"/") {
+				res := errEntryRetired(in.Op, "the concept "+r+" (tag "+t+")")
+				return &res
+			}
+		}
+	}
+	return nil
+}
