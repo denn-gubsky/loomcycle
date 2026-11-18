@@ -304,6 +304,9 @@ func (d *Document) documentIDForChunk(ctx context.Context, key sqlmem.ScopeKey, 
 // inverts the point. The tenant comes from the run's server-stamped identity, so nothing
 // here crosses a tenant.
 func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result, error) {
+	if wantsChange(in) {
+		return d.proposeChange(ctx, in) // RFC GQ P4.1: change or retire an entry in force
+	}
 	name := memrank.TrimOntologyName(in.Name)
 	if name == "" {
 		name = memrank.TrimOntologyName(in.Title)
