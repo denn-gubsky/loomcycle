@@ -828,3 +828,30 @@ func TestOntologyPlan_EditIsJudgedWithoutTheRequestsOtherChanges(t *testing.T) {
 		t.Errorf("meaning edit beside a rename: typed_documents %+v risk %s; want kept and none", got, edit.Risk)
 	}
 }
+
+// TestOntologyPlan_FunctionalBreaksCountOnlyTheEditedKind — adding @functional to a
+// relation counts the from-ends with two targets of that kind only: a target under the
+// parent kind and one under a sub-kind, or two under the sub-kind, break nothing (the
+// sub-kind does not inherit the characteristic).
+func TestOntologyPlan_FunctionalBreaksCountOnlyTheEditedKind(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	f := newPlanFixture(t, d, ctx)
+	f.populate()
+	tk := f.tenantKey()
+	res, err := f.d.docSQL().Query(context.Background(), tk, `SELECT from_id, to_id FROM chunk_edges WHERE kind = 'filed_under'`, nil)
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatalf("filed_under statement: %v %v", err, res)
+	}
+	a, b := asStr(res.Rows[0][0]), asStr(res.Rows[0][1])
+	res, err = f.d.docSQL().Query(context.Background(), tk, `SELECT to_id FROM chunk_edges WHERE kind = 'filed_mainly_under'`, nil)
+	if err != nil || len(res.Rows) != 1 {
+		t.Fatalf("filed_mainly_under statement: %v %v", err, res)
+	}
+	c := asStr(res.Rows[0][0])
+	f.link(a, c, "filed_mainly_under") // a: filed_under b, filed_mainly_under c
+	f.link(b, a, "filed_mainly_under") // b: filed_mainly_under c and a
+	fn := f.plan(connector.OntologyChange{Op: connector.OntologyPlanEdit, Entry: f.entries["relation:filed_under"], Body: "Filed under another.\n@functional\n"}).Changes[0]
+	if got := planCount(t, fn, "characteristic_breaks"); got.N != 0 {
+		t.Errorf("characteristic_breaks = %+v, want 0: no from-end has two filed_under targets", got)
+	}
+}

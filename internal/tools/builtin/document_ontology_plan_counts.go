@@ -105,7 +105,7 @@ func (d *Document) countPlanDependents(ctx context.Context, key sqlmem.ScopeKey,
 		scratch := make([]map[string]*connector.OntologyPlanCount, len(planned))
 		var serr error
 		for i, p := range planned {
-			q := &plannedChange{classes: p.classes, kinds: p.kinds, tags: p.tags,
+			q := &plannedChange{entry: p.entry, classes: p.classes, kinds: p.kinds, tags: p.tags,
 				newlyFunctional: p.newlyFunctional, newlyAsymmetric: p.newlyAsymmetric,
 				counts: map[string]*connector.OntologyPlanCount{}}
 			if serr = d.countPlanNames(sctx, at, "", false, q); serr != nil {
@@ -336,7 +336,7 @@ func (d *Document) countPlanNames(ctx context.Context, key sqlmem.ScopeKey, excl
 		}
 		p.add("statements_of_kind", tenant, n, by, sample)
 		if p.newlyFunctional || p.newlyAsymmetric {
-			if err := d.countCharacteristicBreaks(ctx, key, tenant, p, ph, ka); err != nil {
+			if err := d.countCharacteristicBreaks(ctx, key, tenant, p); err != nil {
 				return err
 			}
 		}
@@ -368,8 +368,11 @@ func (d *Document) countPlanNames(ctx context.Context, key sqlmem.ScopeKey, excl
 
 // countCharacteristicBreaks counts the live asserted statements a characteristic the
 // edit adds would break: for @functional, the from-ends holding more than one target
-// of the kind; for @asymmetric, the statements whose reverse is also asserted.
-func (d *Document) countCharacteristicBreaks(ctx context.Context, key sqlmem.ScopeKey, tenant bool, p *plannedChange, ph string, ka []any) error {
+// of the kind; for @asymmetric, the statements whose reverse is also asserted. Only the
+// edited relation's own kind: a characteristic is not inherited by its sub-kinds, and
+// the statement gate checks it per kind (checkCharacteristics).
+func (d *Document) countCharacteristicBreaks(ctx context.Context, key sqlmem.ScopeKey, tenant bool, p *plannedChange) error {
+	ph, ka := "?", []any{p.entry.Name}
 	live := func(a string) string {
 		return a + `.status = '` + edgeStatusAsserted + `' AND ` + a + `.expired_at IS NULL`
 	}
