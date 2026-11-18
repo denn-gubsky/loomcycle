@@ -371,7 +371,7 @@ func (d *Document) acceptClassification(ctx context.Context, key sqlmem.ScopeKey
 		// Nor a placement under a concept retired since it was proposed: accepting it
 		// would be a new placement there (RFC GQ P2.1).
 		if s == nil || s.Method != edgeMethodClassify || s.FromID != cd.rootID || s.Status != edgeStatusProposed ||
-			retiredConcepts[s.ToID] {
+			retiredConcepts[s.ToID] != "" {
 			skipped = append(skipped, id)
 			continue
 		}

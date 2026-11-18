@@ -144,16 +144,17 @@ func forNewWrites(read OntologyRead) OntologyRead {
 	return read
 }
 
-// retiredConceptChunks is the chunk ids of the retired schemes and concepts.
-func retiredConceptChunks(read OntologyRead) map[string]bool {
-	out := map[string]bool{}
+// retiredConceptChunks maps the chunk id of each retired scheme and concept to its
+// mirror tag, which names it in a refusal.
+func retiredConceptChunks(read OntologyRead) map[string]string {
+	out := map[string]string{}
 	for _, s := range read.Schemes {
 		if s.EntryStatus != "" {
-			out[s.ChunkID] = true
+			out[s.ChunkID] = memrank.MirrorTag(s.Name, nil)
 		}
 		for _, c := range s.Concepts {
 			if c.EntryStatus != "" {
-				out[c.ChunkID] = true
+				out[c.ChunkID] = c.Tag
 			}
 		}
 	}
@@ -163,8 +164,12 @@ func retiredConceptChunks(read OntologyRead) map[string]bool {
 // errEntryRetired is the refusal of a new write that would use a retired entry. A
 // validation error, not a business one: the fact-relation path reads a business refusal
 // as an operator's rejection and would report it as one.
+// op is "" where the caller prefixes its own op name.
 func errEntryRetired(op, what string) tools.Result {
-	return errValidation(op+": entry_retired: "+what+" is retired, so nothing new may use it; "+
+	if op != "" {
+		op += ": "
+	}
+	return errValidation(op+"entry_retired: "+what+" is retired, so nothing new may use it; "+
 		"what already uses it stays readable",
 		"Use a live entry. An operator brings a retired entry back by clearing its status.")
 }
@@ -224,14 +229,14 @@ func (d *Document) retiredStatementRefusal(ctx context.Context, kind, from, to s
 	}
 	for _, r := range memrank.EffectiveRelations(read.Relations, hasSection(read.Sections, memrank.SectionRelations), true) {
 		if r.Name == kind && r.EntryStatus != "" {
-			res := errEntryRetired("link", "the relation kind "+strconv.Quote(kind))
+			res := errEntryRetired("", "the relation kind "+strconv.Quote(kind))
 			return &res
 		}
 	}
 	retired := retiredConceptChunks(read)
 	for _, id := range []string{from, to} {
-		if retired[id] {
-			res := errEntryRetired("link", "the concept "+id)
+		if tag := retired[id]; tag != "" {
+			res := errEntryRetired("", "the concept "+tag)
 			return &res
 		}
 	}

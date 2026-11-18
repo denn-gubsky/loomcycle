@@ -418,7 +418,7 @@ func tagInForce(read OntologyRead, isScheme bool, parentID, name string) error {
 	if parentTag == "" {
 		return nil // under a concept still proposed: nothing in force beside it
 	}
-	if retiredConceptChunks(read)[parentID] {
+	if retiredConceptChunks(read)[parentID] != "" {
 		return fmt.Errorf("its parent was retired since it was filed; nothing new is placed under a retired entry")
 	}
 	tag := parentTag + "/" + seg
