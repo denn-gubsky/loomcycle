@@ -238,3 +238,19 @@ func TestProposeSubject_RetiredEntityTypeIsRefused(t *testing.T) {
 		t.Error("a subject of the retired class was minted")
 	}
 }
+
+// TestRemember_RetiredClassIsRefused: a remembered fact is a new row, so it may not take
+// a retired class as its type; remembering the same fact again, already of that type,
+// is not a new use.
+func TestRemember_RetiredClassIsRefused(t *testing.T) {
+	f := newRetiredFixture(t)
+	f.must(map[string]any{"op": "remember", "scope": "user", "text": "The launch slipped a week.", "type": "event"})
+	f.retire("event")
+	if _, r := f.do(f.ctx, map[string]any{"op": "remember", "scope": "user", "text": "The offsite moved to May.", "type": "event"}); !r.IsError ||
+		!strings.Contains(r.Text, "entry_retired") {
+		t.Errorf("remember of a retired class: %q, want entry_retired", r.Text)
+	}
+	if _, r := f.do(f.ctx, map[string]any{"op": "remember", "scope": "user", "text": "The launch slipped a week.", "type": "event"}); r.IsError {
+		t.Errorf("remembering an existing fact of the retired class again: %s", r.Text)
+	}
+}

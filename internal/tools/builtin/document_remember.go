@@ -29,6 +29,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -101,6 +102,12 @@ func (d *Document) rememberFact(ctx context.Context, key sqlmem.ScopeKey, mscope
 		Class:   "evidential",
 		Type:    strings.TrimSpace(in.Type),
 		Subject: strings.TrimSpace(in.Subject),
+	}
+	// A new fact may not take a retired class as its type (RFC GQ P2.1); the same fact
+	// remembered again, already of that type, is an edit. remember is not in the
+	// dispatch's class rules, so it is checked here.
+	if refused := d.retiredRememberRefusal(ctx, key, next); refused != nil {
+		return *refused, nil
 	}
 	// THE EDGE A DISTILLED FACT GETS. A remembered fact named its subject and was
 	// still unreachable from it: the consolidator writes `about` to the subject's
@@ -256,4 +263,24 @@ func (d *Document) ensureEntitiesDocument(ctx context.Context, key sqlmem.ScopeK
 	}
 	res, _ := jsonResult(resp)
 	return res, true
+}
+
+// retiredRememberRefusal refuses a remembered fact whose type is a retired class, unless
+// the fact it rewrites (same natural key) already has that type.
+func (d *Document) retiredRememberRefusal(ctx context.Context, key sqlmem.ScopeKey, next docInput) *tools.Result {
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok {
+		return nil
+	}
+	c, retired := retiredClassNamed(read, next.Type)
+	if !retired {
+		return nil
+	}
+	if existing, err := d.chunkIDByNaturalKey(ctx, key, next.NaturalKey); err == nil && existing != "" {
+		if row, found, err := d.getChunkRow(ctx, key, existing); err == nil && found && strings.EqualFold(strings.TrimSpace(row.Type), next.Type) {
+			return nil
+		}
+	}
+	r := errEntryRetired("remember", "the class "+strconv.Quote(c.Name))
+	return &r
 }
