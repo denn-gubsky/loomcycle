@@ -83,11 +83,13 @@ func (PDF) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, op
 	if opts.pdfMaxDecode > 0 {
 		maxDecode = opts.pdfMaxDecode
 	}
-	xr, err := openPDF(ctx, r, size, maxDecode)
+	pc, err := openPDFContext(ctx, r, size, maxDecode)
 	if err != nil {
 		return rep, err
 	}
+	xr := pc.XRefTable
 	w := newWriter(ctx, sink, opts)
+	pdfRecord(ctx, pc, w)
 	e := &pdfExtract{xr: xr, w: w, rep: &rep, maxDecode: maxDecode, seen: map[int]bool{}, fonts: map[int]*pdfFont{}, gridWork: opts.pdfGridWork}
 	err = e.run(opts)
 	rep.finish(w)
@@ -941,4 +943,148 @@ func assembleLines(rows []pdfLine) string {
 		b.WriteString(l)
 	}
 	return b.String()
+}
+
+// pdfRecordName is the file a loomcycle render attaches its record as (RFC
+// GR P4b).
+const pdfRecordName = "loomcycle.json"
+
+// pdfRecord hands the sink the record a loomcycle-rendered PDF carries as an
+// attached file, if it has one. A PDF names no heading's chunk (its text
+// holds no anchors the extractor reads), so the import matches its parts by
+// text and heading alone. Anything it cannot read is no record: the text is
+// extracted all the same.
+//
+// The catalog's EmbeddedFiles name tree is walked here rather than through
+// pdfcpu's attachment listing, which reads Typst's single-leaf tree as empty.
+func pdfRecord(ctx context.Context, pc *model.Context, w *writer) {
+	if _, ok := w.sink.(RecordSink); !ok || pc == nil || pc.XRefTable == nil {
+		return
+	}
+	xr := pc.XRefTable
+	root, err := xr.Catalog()
+	if err != nil || root == nil {
+		return
+	}
+	names, err := xr.DereferenceDict(root["Names"])
+	if err != nil || names == nil {
+		return
+	}
+	tree, err := xr.DereferenceDict(names["EmbeddedFiles"])
+	if err != nil || tree == nil {
+		return
+	}
+	walk := &pdfNameWalk{ctx: ctx, xr: xr, name: pdfRecordName, budget: pdfNameWalkBudget, seen: map[int]bool{}}
+	walk.node(tree, 0)
+	if walk.data != nil {
+		w.record(bytes.TrimSpace(walk.data))
+	}
+}
+
+// pdfNameWalkBudget bounds the name tree nodes and entries one walk reads,
+// together: a tree of shared or deep kids cannot make the walk long.
+const pdfNameWalkBudget = 4096
+
+// pdfNameWalk finds one embedded file by name in a name tree. It reads each
+// indirect node once, spends one budget for every node and entry, and stops
+// at the first entry with the name, whether or not its file reads.
+type pdfNameWalk struct {
+	ctx    context.Context
+	xr     *model.XRefTable
+	name   string
+	budget int
+	seen   map[int]bool
+	done   bool
+	data   []byte
+}
+
+func (w *pdfNameWalk) spend() bool {
+	if w.done || w.budget <= 0 || w.ctx.Err() != nil {
+		return false
+	}
+	w.budget--
+	return true
+}
+
+func (w *pdfNameWalk) node(node types.Dict, depth int) {
+	if depth > 8 || !w.spend() {
+		return
+	}
+	if arr, err := w.xr.DereferenceArray(node["Names"]); err == nil {
+		for i := 0; i+1 < len(arr); i += 2 {
+			if !w.spend() {
+				return
+			}
+			key, err := w.xr.Dereference(arr[i])
+			if err != nil || pdfObjectString(key) != w.name {
+				continue
+			}
+			w.done = true
+			w.data = pdfEmbeddedFile(w.xr, arr[i+1])
+			return
+		}
+	}
+	kids, err := w.xr.DereferenceArray(node["Kids"])
+	if err != nil {
+		return
+	}
+	for _, k := range kids {
+		if w.done || w.budget <= 0 {
+			return
+		}
+		if ref, ok := k.(types.IndirectRef); ok {
+			if w.seen[ref.ObjectNumber.Value()] {
+				continue
+			}
+			w.seen[ref.ObjectNumber.Value()] = true
+		}
+		kid, err := w.xr.DereferenceDict(k)
+		if err != nil || kid == nil {
+			continue
+		}
+		w.node(kid, depth+1)
+	}
+}
+
+// pdfEmbeddedFile is a file specification's embedded file, decoded and at
+// most MaxRecord; nil when it is missing or cannot be read. The decode is
+// bounded: a stream that inflates past the cap is refused, never held whole.
+func pdfEmbeddedFile(xr *model.XRefTable, specRef types.Object) []byte {
+	spec, err := xr.DereferenceDict(specRef)
+	if err != nil || spec == nil {
+		return nil
+	}
+	ef, err := xr.DereferenceDict(spec["EF"])
+	if err != nil || ef == nil {
+		return nil
+	}
+	ref := ef["F"]
+	if ref == nil {
+		ref = ef["UF"]
+	}
+	sd, _, err := xr.DereferenceStreamDict(ref)
+	if err != nil || sd == nil {
+		return nil
+	}
+	if err := sd.DecodeWithLimit(MaxRecord + 1); err != nil || len(sd.Content) > MaxRecord {
+		return nil
+	}
+	return sd.Content
+}
+
+// pdfObjectString is a PDF string object's text, "" for anything else.
+func pdfObjectString(o types.Object) string {
+	switch v := o.(type) {
+	case types.StringLiteral:
+		s, err := types.StringLiteralToString(v)
+		if err == nil {
+			return s
+		}
+		return string(v)
+	case types.HexLiteral:
+		if b, err := v.Bytes(); err == nil {
+			return string(b)
+		}
+	}
+	return ""
 }

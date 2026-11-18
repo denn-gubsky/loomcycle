@@ -86,6 +86,7 @@ and examples, as `Document/<op>` — for example
 |---|---|---|
 | `create_document` | new document with an empty root chunk, named in the Path tree | `title` |
 | `get_document` | a document's metadata: title, root chunk, type, status, tags | `id` or `path` |
+| `memberships` | where one document sits: its class chain, its concepts in each taxonomy, its folders | `id` or `path` |
 | `documents_summary` | title/type/status/colour for many documents in one call | `document_ids` or `under_path` |
 | `query_documents` | list documents filtered by path, type, status, tag, words in the title or creation time | — |
 | `graph_snapshot` | a whole scope's documents, chunk trees, relations and Path names as columns, paged by whole documents | — |

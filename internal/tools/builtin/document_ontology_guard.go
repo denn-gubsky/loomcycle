@@ -232,7 +232,7 @@ func documentReadOp(op string) bool {
 	switch op {
 	case "get_document", "documents_summary", "query_documents", "graph_snapshot",
 		"get_chunk", "lineage", "graph_recall", "verbatim_answer", "verification_stats", "list_facts",
-		"get_edges", "get_edge", "list_statements", "describe_ontology", "effective_policy", "query_chunks",
+		"get_edges", "get_edge", "list_statements", "describe_ontology", "effective_policy", "memberships", "query_chunks",
 		"list_tags", "list_types", "get_asset", "export_md", "export_canvas", "history",
 		"get_version", "diff", "backlinks", "search", "related", "unlinked_mentions",
 		"diff_remote", "get_annotation", "annotation_inputs", "list_annotations":
@@ -364,7 +364,10 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 		parentChunk = sec
 	}
 	if want := memrank.TrimOntologyName(in.Parent); want != "" {
-		id := d.chunkIDForEntity(ctx, key, read.DocumentID, want)
+		// Only a class the walk put in force: a title match anywhere in the document
+		// could file the proposal under a concept, a relation or an instance, where an
+		// accept would read it as one of those (a concept's @focus, @retention, @acl).
+		id := read.classChunkID(want)
 		if id == "" {
 			names := make([]string, 0, len(read.Terms))
 			for _, t := range read.Terms {
@@ -376,7 +379,9 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 		}
 		parentChunk = id
 	}
-	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, in.Body)
+	// Accepted in place like every other proposal, so its evidence must not carry a
+	// declaration that would go live on the accept.
+	return d.createOntologyProposal(ctx, key, mscope, read.DocumentID, parentChunk, name, neutraliseDirectives(in.Body))
 }
 
 // proposeRelation files an inert relation kind into the Relations section.
@@ -435,7 +440,8 @@ func (d *Document) proposeRelation(ctx context.Context, key sqlmem.ScopeKey, msc
 // would parse as a directive — a bare `@name value` line or a `- `@name“ bullet — so it
 // stays evidence. A relation, concept or instance proposal is ACCEPTED IN PLACE: without
 // this, an `@auto_assert` or a second `@a` in the evidence would become a live
-// declaration the moment an operator accepted the name it was filed under.
+// declaration the moment an operator accepted the name it was filed under. A class
+// proposal is accepted in place too.
 func neutraliseDirectives(body string) string {
 	lines := strings.Split(body, "\n")
 	for i, line := range lines {

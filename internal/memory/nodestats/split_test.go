@@ -179,3 +179,50 @@ func TestAdjustedRand_MatchesHandValues(t *testing.T) {
 		})
 	}
 }
+
+// A cancelling cluster and two empty ones each take the member least similar
+// to its own centre, drawn only from a cluster that still has more than one
+// member after the reseeds before it, so no cluster is left empty.
+func TestRecenter_EmptyAndCancellingClustersTakeTheFarthestMember(t *testing.T) {
+	us := [][]float64{
+		{1, 0, 0},     // 0: cluster 0, the least similar of all
+		{0.8, 0.6, 0}, // 1: cluster 0, next least similar
+		{0, 1, 0},     // 2: cluster 1
+		{0, 0.8, 0.6}, // 3: cluster 1
+		{0.6, 0.8, 0}, // 4: cluster 1
+		{0, 0, 1},     // 5: cluster 2 (cancels with 6)
+		{0, 0, -1},    // 6: cluster 2
+	}
+	labels := []int{0, 0, 1, 1, 1, 2, 2}
+	sims := []float64{0.3, 0.4, 0.9, 0.8, 0.7, 0.95, 0.96}
+	centers := make([][]float64, 5)
+	for j := range centers {
+		centers[j] = make([]float64, 3)
+	}
+	recenter(us, labels, sims, centers)
+
+	// Cluster 2 cancels and takes member 0. Cluster 0 is then a singleton, so
+	// empty cluster 3 must pass over member 1 and take member 4; empty
+	// cluster 4 then takes member 3.
+	want := []int{2, 0, 1, 4, 3, 2, 2}
+	if !reflect.DeepEqual(labels, want) {
+		t.Fatalf("labels %v, want %v", labels, want)
+	}
+	for j, m := range map[int]int{2: 0, 3: 4, 4: 3} {
+		if !reflect.DeepEqual(centers[j], us[m]) {
+			t.Errorf("centre %d = %v, want member %d %v", j, centers[j], m, us[m])
+		}
+		if sims[m] != 1 {
+			t.Errorf("member %d sim %g, want 1", m, sims[m])
+		}
+	}
+	size := make([]int, len(centers))
+	for _, l := range labels {
+		size[l]++
+	}
+	for j, n := range size {
+		if n == 0 {
+			t.Errorf("cluster %d left empty: %v", j, labels)
+		}
+	}
+}

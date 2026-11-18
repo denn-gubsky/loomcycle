@@ -23,6 +23,11 @@ runtime does the reading; the file's bytes never pass through you.
 A Markdown table cell is one line, so the paragraphs of a DOCX, ODT or PPTX
 cell are joined by `<br>`, a line break: the only HTML an extraction writes.
 
+A DOCX, ODT, HTML or PDF file `File op=render` wrote with `metadata: embed`
+carries the document it was made from: the result then has `rendered_from`
+(`document_id`, `scope`, `title`, `headings_matched`), and `import` with
+`reimport` can go back onto that document (see File/import).
+
 Pictures are kept as `volume:inbox:extracted/<name>/img-<n>.<ext>` and the
 Markdown links them there, so `import` can attach them to a document; each
 remembers the page or slide it was on, and the image chunk `import` makes

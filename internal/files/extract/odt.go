@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"path"
@@ -86,6 +87,15 @@ func (ODT) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, op
 	}
 	o := &odt{a: a, w: newWriter(ctx, sink, opts), rep: &rep, opts: opts,
 		styles: map[string]odtStyle{}, lists: map[string]map[int]bool{}}
+	// The record a loomcycle render keeps in the package (RFC GR P4b); one
+	// that cannot be read is no record.
+	if _, ok := sink.(RecordSink); ok && a.has(odtRecordName) {
+		if b, err := a.read(odtRecordName); err == nil {
+			o.w.record(bytes.TrimSpace(b))
+		} else if IsRefused(err) || ctx.Err() != nil {
+			return rep, err
+		}
+	}
 	// styles.xml first: the automatic styles of content.xml are based on
 	// its named styles, and a name both use is the content's.
 	if a.has("styles.xml") {
@@ -302,6 +312,7 @@ func (o *odt) emit(b block) error {
 		sep = "\n"
 	}
 	o.started, o.lastList = true, b.list
+	o.w.headingAnchor(b.anchor)
 	return o.w.text(sep + b.text)
 }
 
@@ -387,10 +398,31 @@ func (o *odt) para(p *node) (block, error) {
 			h = heading(lv, t)
 		}
 		parts := append([]string{h}, images...)
-		return block{text: strings.Trim(strings.Join(parts, "\n"), "\n")}, nil
+		bl := block{text: strings.Trim(strings.Join(parts, "\n"), "\n")}
+		if h != "" {
+			bl.anchor = odtLoomBookmark(p)
+		}
+		return bl, nil
 	}
 	return block{text: renderSegs(segs)}, nil
 }
+
+// odtLoomBookmark is the loomcycle anchor a heading carries: the name of its
+// first bookmark a render wrote (chunk_<id>), "" for none.
+func odtLoomBookmark(p *node) string {
+	for _, name := range []string{"bookmark-start", "bookmark"} {
+		for _, b := range p.all(name) {
+			if n := b.attr("name"); strings.HasPrefix(n, "chunk_") {
+				return n
+			}
+		}
+	}
+	return ""
+}
+
+// odtRecordName is the package file a loomcycle render keeps its record in
+// (RFC GR P4b).
+const odtRecordName = "loomcycle.json"
 
 // runs collects a paragraph's text and images in order. ODF collapses runs
 // of white space in its text to one space; a space it means to keep is a

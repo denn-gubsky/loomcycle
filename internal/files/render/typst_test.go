@@ -3,6 +3,7 @@ package render
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -242,4 +243,21 @@ func TestPDF_CarriesTheRecordAsAnAttachment(t *testing.T) {
 	if bytes.Contains(compileTypst(t, typst, fixtureDoc(t), Options{}), []byte("/EmbeddedFile")) {
 		t.Error("a PDF rendered without metadata embed carries an attachment")
 	}
+	// The PDF extractor finds it again (RFC GR P4b.2).
+	sink := &pdfRecordSink{}
+	if _, err := (extract.PDF{}).Extract(context.Background(), bytes.NewReader(pdf), int64(len(pdf)), sink, extract.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	var e Embed
+	if err := json.Unmarshal(sink.record, &e); err != nil || e.DocumentID != "doc1" || len(e.Chunks) != 4 {
+		t.Errorf("the extracted record = %s (%v)", sink.record, err)
+	}
 }
+
+type pdfRecordSink struct {
+	mdSink
+	record []byte
+}
+
+func (s *pdfRecordSink) Record(b []byte)      { s.record = append([]byte(nil), b...) }
+func (s *pdfRecordSink) HeadingAnchor(string) {}
