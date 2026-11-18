@@ -5821,14 +5821,22 @@ agents:
       // kb/ask — one question in, one answer out, from the tenant knowledge base.
       //
       // 1. classify(question): is it asking for an overview (a list of everything
-      //    held on a subject, over several documents)? First a rule in code: a
-      //    question asking for THE overview, guide or full picture of one thing
-      //    (knownItem) is not; it wants the one document that describes it.
+      //    held on a subject, over several documents)? First two rules in code.
+      //    A question bounded by a date or a version (dated: "since v1.0",
+      //    "opened after 9 November", "in the last 10 days") goes to kb/walker,
+      //    which lists documents by creation date; the survey's searches cannot
+      //    filter by date. Measured: "which definition kinds since v1.0" failed
+      //    in every run of every arm (no definition design was ever gathered),
+      //    and for "opened since 9 November" the walker found all 16 by date,
+      //    the survey 8 or 9. Then a question asking for THE overview, guide or
+      //    full picture of one thing (knownItem) is not an overview; it wants
+      //    the one document that describes it.
       //    Then a cascade: the decision model first; when its score falls
       //    between LOW and HIGH, or the call fails, the small chat agent
       //    kb/classify answers YES or NO. With run metadata classifier "agent"
       //    only kb/classify is asked.
-      // 2. An overview goes to kb/survey, which gathers the candidate documents in
+      // 2. A dated question goes to kb/walker with a fixed note to list by date.
+      //    An overview goes to kb/survey, which gathers the candidate documents in
       //    code and has kb/screen screen them; anything else to kb/search, the
       //    cheaper path.
       // 3. The question goes on from kb/search to kb/walker, with the ids the search
@@ -5876,6 +5884,28 @@ agents:
       var KNOWN = /\bthe\s+(?:(?:full|whole|complete|big|overall|general|main|end[- ]to[- ]end)\s+)?(?:picture|overview|guide|explanation|description|walkthrough|walk-through|introduction|tour|write-?up)\s+(?:of|to|on|for|about)\b/i;
       var BROAD = /\b(?:everything|anything|all|every|each|list|documents?|docs|guides|notes|papers|rfcs|we\s+(?:hold|have|keep|store)|is\s+(?:held|documented|written|recorded|stored))\b/i;
 
+      // DATED: the question is bounded by a date or a version, so its answer
+      // is a listing by creation date. "since" or "after" followed by a
+      // version (v1.0, version 1.2), a date (9 November, November 9th,
+      // 2026-11-09, a month, a year) or "last week"; or "in the last/past N
+      // days/weeks/months". "since" alone is not a date: "since when",
+      // "since the tool is read-only" and "after the migration" stay with the
+      // cascade, and so does a date with no bound ("the November release
+      // notes", "what is v1.0").
+      var MONTH = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+      var DATED = new RegExp(
+        "\\b(?:since|after)\\s+(?:the\\s+)?(?:(?:version|release|tag)\\s+)?(?:" +
+          "v\\d+(?:\\.\\d+)*\\b|\\d+\\.\\d+(?:\\.\\d+)?\\b|\\d{4}-\\d{2}(?:-\\d{2})?\\b|" +
+          "\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?" + MONTH + "\\b|" + MONTH + "(?:\\s+\\d{1,2}(?:st|nd|rd|th)?)?\\b|" +
+          "(?:19|20)\\d{2}\\b|(?:last|this)\\s+(?:week|month|year|quarter)\\b|yesterday\\b)" +
+        "|\\b(?:in|over|during|within)\\s+the\\s+(?:last|past)\\s+(?:\\d+\\s+|a\\s+|one\\s+|two\\s+|three\\s+|four\\s+|five\\s+|six\\s+|seven\\s+|ten\\s+|few\\s+|couple\\s+of\\s+)?(?:days?|weeks?|months?)\\b",
+        "i");
+      // DATED_NOTE is the fixed trusted text a dated question's walk gets: how
+      // to answer it, never a word of the question.
+      var DATED_NOTE = "DATED. The question is bounded by a date or a version. List the documents created after that " +
+        "point with query_documents (created_after; for a version, first find the date it was released) and answer " +
+        "from that listing, then read what you need of each; a search alone does not reach every document of a period.";
+
       // runs records every child this run started, classifier included.
       var runs = [];
 
@@ -5918,9 +5948,11 @@ agents:
       // classify is the one place the question is judged, so the cascade can
       // change without touching the routing. It never throws.
       // Returns {overview, score: 0..1 or null,
-      // source: known-item|decision|agent|agent-unreadable,
-      // error: null or the decision model's failure code}.
+      // source: dated|known-item|decision|agent|agent-unreadable,
+      // error: null or the decision model's failure code, dated: true for a
+      // question bounded by a date or a version}.
       function classify(question, metadata) {
+        if (DATED.test(question)) { return { overview: false, score: null, source: "dated", error: null, dated: true }; }
         if (knownItem(question)) { return { overview: false, score: null, source: "known-item", error: null }; }
         if (metadata && metadata.classifier === "agent") {
           return askAgent(null, null);
@@ -6041,11 +6073,13 @@ agents:
         Q = readQuestion(input);
         if (!Q.text) { return { final_text: "No question given." }; }
         var c = classify(Q.text, input.metadata);
-        var route = c.overview ? "survey" : "search";
+        var route = c.dated ? "walker" : c.overview ? "survey" : "search";
         var how = route, text;
-        var res = call(spawnArgs(route === "survey" ? "kb/survey" : "kb/search", ANSWER, "", true));
+        var res = call(spawnArgs("kb/" + route, ANSWER, c.dated ? DATED_NOTE : "", true));
         runs.push(res.run_id + ":" + res.status);
-        if (route === "survey") {
+        if (route === "walker") {
+          text = res.final_text || ("The walker gave no answer: " + (res.error || res.status));
+        } else if (route === "survey") {
           text = res.final_text || ("The survey agent gave no answer: " + (res.error || res.status));
         } else {
           var s = splitCoverage(res.final_text || "");
