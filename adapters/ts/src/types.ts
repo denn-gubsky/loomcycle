@@ -4989,6 +4989,10 @@ export interface DocumentExportOptions {
    *  importing the file can re-import onto the same document (RFC GR P4b).
    *  Default "none". */
   metadata?: "none" | "embed";
+  /** The house style (RFC GR P4c): the Path of a style document in the
+   *  tenant's tree, or "none" for the built-in look. Default: the tenant's
+   *  /render/styles/default when it exists. */
+  style?: string;
   signal?: AbortSignal;
 }
 

@@ -481,6 +481,11 @@ paths:
           required: false
           description: For an imported document, say under the title where it came from. Default true.
           schema: { type: boolean }
+        - name: style
+          in: query
+          required: false
+          description: "The house style to write the file in: the Path of a style document in the tenant's tree, or none for the built-in look. Default: the tenant's /render/styles/default when it exists. A style that is missing, unreadable or not a valid style is a 400."
+          schema: { type: string }
         - name: metadata
           in: query
           required: false

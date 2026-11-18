@@ -304,6 +304,7 @@ jobs:
           echo "$fonts"
           echo "$fonts" | grep -qx 'Noto Sans'
           echo "$fonts" | grep -qx 'Noto Sans Mono'
+          echo "$fonts" | grep -qx 'Noto Serif'
 
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core

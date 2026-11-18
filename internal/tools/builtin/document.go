@@ -669,6 +669,9 @@ type docInput struct {
 	// render is set only in process, by File op=render (RFC GR): an export_md
 	// that builds a render tree instead of Markdown (document_render.go).
 	render *renderRequest
+	// styleRead asks export_md for a style document's parts (RFC GR P4c,
+	// render_style.go); set only in process.
+	styleRead *styleRequest
 }
 
 // docSchemaDDL is portable across SQL Memory's sqlite + postgres tiers: BIGINT
@@ -5548,6 +5551,9 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return errNotFound("export_md: no such document: "+docID, "Find the document with op=query_documents in the same scope."), nil
 	}
 	title := asStr(dres.Rows[0][0])
+	if in.styleRead != nil {
+		return d.readStyleDoc(ctx, key, mscope, docID, in.styleRead)
+	}
 	if in.render != nil {
 		return d.renderDocument(ctx, key, mscope, in, docID, title)
 	}

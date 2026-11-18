@@ -64,12 +64,21 @@ func TypstImagePath(name string) string { return "images/" + name }
 // write beside it. Only pictures that decode are used: one that does not (or
 // is too large) is its alt text, so one bad picture cannot fail the PDF.
 func WriteTypst(ctx context.Context, w io.Writer, d *Doc, opts Options) ([]Image, error) {
+	opts = withStylePage(d, opts)
 	cw := &capWriter{w: w, ctx: ctx}
 	bw := bufio.NewWriterSize(cw, 64<<10)
 	t := &typWriter{w: bw, d: d, opts: opts, images: map[string]typImage{}, anchors: map[string]bool{}, labelled: map[string]bool{}}
 	t.textW = typA4TextW
 	if opts.PageSize == "letter" {
 		t.textW = typLetterTxtW
+	}
+	if d.Style != nil {
+		// The text width a style's margins leave, in points.
+		pageW := 595.28
+		if opts.PageSize == "letter" {
+			pageW = 612
+		}
+		t.textW = pageW - 2*d.Style.marginMM()*72/25.4
 	}
 	var used []Image
 	for _, im := range d.Images {
@@ -232,15 +241,33 @@ func (t *typWriter) document() {
 	if t.opts.PageSize == "letter" {
 		paper = `"us-letter"`
 	}
-	t.s("#set page(paper: " + paper + ", margin: 2.5cm, numbering: \"1\")\n")
-	t.s(`#set text(font: ("Noto Sans", "DejaVu Sans", "Libertinus Serif"), size: 10.5pt`)
+	st := d.Style
+	if st == nil {
+		t.s("#set page(paper: " + paper + ", margin: 2.5cm, numbering: \"1\")\n")
+		t.s(`#set text(font: ("Noto Sans", "DejaVu Sans", "Libertinus Serif"), size: 10.5pt`)
+	} else {
+		t.stylePage(st, paper)
+		font := `("Noto Sans", "DejaVu Sans", "Libertinus Serif")`
+		if st.serif() {
+			font = `("Noto Serif", "DejaVu Serif", "Libertinus Serif")`
+		}
+		t.s(`#set text(font: ` + font + `, size: ` + typNum(st.BaseSize()) + `pt, fill: rgb("` + st.textColor() + `")`)
+	}
 	if typLangRe.MatchString(d.Language) {
 		t.s(`, lang: "` + d.Language + `"`)
 	}
 	t.s(")\n")
 	t.s("#set par(justify: false, leading: 0.65em)\n")
 	t.s(`#show raw: set text(font: ("Noto Sans Mono", "DejaVu Sans Mono"), size: 9pt)` + "\n")
-	t.s("#show link: set text(fill: rgb(\"#1d4ed8\"))\n")
+	if st == nil {
+		t.s("#show link: set text(fill: rgb(\"#1d4ed8\"))\n")
+	} else {
+		t.s(`#show link: set text(fill: rgb("` + st.linkColor() + `"))` + "\n")
+		t.s(`#show heading: set text(fill: rgb("` + st.headingColor() + `"))` + "\n")
+		if k := st.headScale(); k != 1 {
+			t.s(`#show heading: it => { set text(size: ` + typNum(k) + `em); it }` + "\n")
+		}
+	}
 	t.s("#set table(stroke: 0.5pt + luma(170), inset: 5pt)\n")
 	t.s("#show quote.where(block: true): it => block(stroke: (left: 2pt + luma(200)), inset: (left: 10pt, y: 3pt), it.body)\n\n")
 	if t.embed != "" {
@@ -249,6 +276,12 @@ func (t *typWriter) document() {
 		t.s(`#pdf.attach("` + EmbedName + `", bytes(` + typString(t.embed) + `), mime-type: "application/json", description: "loomcycle document metadata")` + "\n\n")
 	}
 
+	// The style's logo above the title.
+	if im, ok := d.logo(); ok {
+		if _, decodes := t.images[im.Name]; decodes {
+			t.s("#block(below: 0.8em)[#image(" + typString(TypstImagePath(im.Name)) + ", width: " + typNum(st.logoMM()) + "mm, alt: \"logo\")]\n")
+		}
+	}
 	// The title, with the Draft or Review label beside it (D15).
 	t.s("#block(below: 0.8em)[#text(size: 20pt, weight: \"bold\")[")
 	t.str(oneLine(d.Title))
@@ -509,4 +542,28 @@ func (t *typWriter) image(n Node, inline bool) {
 		return
 	}
 	t.s("#" + call)
+}
+
+// typNum is a number as Typst source: a checked style value, at most two
+// decimals.
+func typNum(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+
+// stylePage writes the page rule for a style: its margins, and its header
+// and footer lines as string literals, the footer ending in the page number
+// unless the style turns that off.
+func (t *typWriter) stylePage(st *Style, paper string) {
+	t.s("#set page(paper: " + paper + ", margin: " + typNum(st.marginMM()) + "mm")
+	small := `text(size: 8pt, fill: luma(110))`
+	if h := st.header(); h != "" {
+		t.s(", header: align(right, " + small + "[#" + typString(h) + "])")
+	}
+	switch f, n := st.footer(), st.pageNumbers(); {
+	case f != "" && n:
+		t.s(", footer: " + small + "[#" + typString(f) + " #h(1fr) #context counter(page).display()]")
+	case f != "":
+		t.s(", footer: " + small + "[#" + typString(f) + "]")
+	case n:
+		t.s(`, numbering: "1"`)
+	}
+	t.s(")\n")
 }
