@@ -8,6 +8,57 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.160.0
+
+*Mermaid diagrams render as pictures, an HTML file and the pictures `extract` wrote can be rendered, and an operator can choose the PDF typesetter and diagram renderer (RFC GR P4d). `File op=extract` can read a sample: chosen PDF pages and a character limit (RFC GP P2.1). The ontology can take a whole proposed scheme, import one from SKOS or an outline (RFC GM P3.1, P1.4), and plan a change before it is made (RFC GQ P1.1). A tenant can run a stricter access-control mode than the deployment (RFC EZ P5). Taxonomy statistics count only documents every member may read (RFC GM C8).*
+
+The v1.160 line: #2729 to #2749.
+- `@loomcycle/client` 1.160.0: `import_scheme` and the proposed-scheme types on `Document`, and `pages` / `max_chars` on `RunFileInput`. The Python adapter stays at 1.154.0; no change there.
+- No numbered migration and no new Go dependency.
+- The conversion worker protocol gains one job kind (`JOB_KIND_DIAGRAM_DRAW`) and one worker label (`extract_pages`).
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **Update the conversion workers with this release (#2740, #2748).** A worker draws Mermaid diagrams only when it carries `merman-cli`, and reads a page sample only when it carries `extract_pages`. **The worker image moves from Debian 12 to Debian 13** (merman needs glibc 2.38) and grows from about 930 MB to 1.09 GB. With older workers a diagram stays code and a page-limited extract reads every page, and the report says so.
+- **In process, `merman-cli` runs from `PATH` (#2740)**, as `typst` does. Without it every diagram stays code, with one note. `LOOMCYCLE_RENDER_PDF_COMMAND` and `LOOMCYCLE_RENDER_DIAGRAM_COMMAND` replace either command in process and in `local` worker mode (#2745); a bad command refuses the boot, naming the variable.
+- **Every node statistic and node annotation recomputes once (#2742).** The statistics hash moves to `node_stats/3` and the node annotation canon to `node_annotation/2`. Until the next sweeper or annotator pass, a statistic from before reads as absent and a written or thin node record is shown to no one. Old `measure_points` rows stay stored and are no longer read.
+- **An unknown `@section` kind is no longer read as classes (#2739).** Its heading and everything under it are out of force, with one issue naming the kind. An ontology with no unknown kind reads byte-identically.
+- **`acl_modes:` (#2747)** raises the access-control mode for the tenants it names (`shadow` < `compat` < `enforce`). An entry below `LOOMCYCLE_ACL` fails config load. A tenant above `compat` makes the store-backed audit stream mandatory, as the global setting does.
+- **The knowledge-base bundle changed again (#2737).** A tenant that forked `kb/annotator` or `kb/annotate` keeps its own version until it forks again. No prompt version moved, so existing summaries are not marked stale: refresh done documents with a forced document-mode pass.
+
+### Rendering (RFC GR: #2740, #2745, #2749)
+
+- **Mermaid diagrams are drawn** as PNG at 2× in every format but Markdown, which keeps the source; the source is the picture's alt text. A picture must decode whole, be at most 8 MiB and 4096 px a side. A source over 64 KiB, a diagram past the first 200, a helper failure or a failed check leaves the diagram as code. Each diagram has 10 s, a render's diagrams share 2 minutes, and after two time-outs the rest stay code.
+- **An HTML file renders** through the converter, as `extract` reads it; scripts are dropped and an `<img>` stays a link.
+- **A Markdown file's pictures render** when they are ones `extract` wrote (`volume:inbox:extracted/…`). Any other path, volume file or URL the text names is not read.
+
+### Files (RFC GP P2.1: #2748)
+
+- **`File op=extract pages`** (PDF only, e.g. `1-10`, at most 2000 pages) parses only those pages and reports `pages_read`.
+- **`max_chars`** stops the extraction at that many characters, cuts the kept Markdown there too, and reports `truncated_at`.
+
+### Ontology (RFC GM P3.1, P1.4, C8; RFC GQ P1.1: #2729, #2742, #2743)
+
+- **A whole scheme as one proposal:** `propose_entity section=schemes` with no `parent` and nested `concepts` (up to 500, 8 levels). Accepting it puts the header and every concept in force; until then it is inert.
+- **`Document op=import_scheme`** files a published classification (an outline in Markdown, or SKOS RDF/XML) as the same proposal with `@origin adopted`. `describe_ontology` shows `origin: adopted` on its concepts.
+- **`POST /v1/_ontology/plan`** reads 1–50 changes (`retire`, `rename`, `move`, `edit`, `delete`) against the ontology in memory and reports, per change, the dependents it would destroy, orphan or make stale across every scope, with a risk and a fingerprint. It writes nothing.
+- **Taxonomy statistics, series and node annotations use only documents every tenant member may read.** A restricted document is never counted, never an exemplar and never a source of terms, so no figure is withheld per reader any more.
+
+### Access control (RFC EZ P5: #2747)
+
+- `acl_modes:` in the yaml (above), resolved per principal on HTTP, MCP, gRPC and `/v1/_me`, and per origin record for resumed, queued, scheduled, webhook and A2A starts. A principal with no tenant keeps the deployment's mode.
+
+### Knowledge base (#2737)
+
+- **A done document's annotation request opens with its state** (`NOW: finished work, built and shipped`), names its class without the class description, and a sweep now sends the stored status too. `kb/annotate` reads the NOW line and does not call such a document a proposal.
+
+### Fixes
+
+- **Annotation search sends the reader's access list to the vector store (#2746)**, so a reader denied the nearest annotations still gets a full page of readable ones.
+- **A refit whose basis version was pruned loses the race (#2738)** instead of storing a stale basis below the latest one.
+- `@loomcycle/explorer` 0.19.0 published (#2744).
+
 ## What's in v1.159.0
 
 *A file loomcycle rendered can be imported back onto its document, and documents render in the tenant's house style (RFC GR P4b.2, P4c). The taxonomy gains a `memberships` op, a node statistics sweeper, built-in series with a `measure` op, and an annotation on every scheme, concept and class (RFC GM P1.3–P4.2). `kb/survey` reads the answer round's summaries in code, `kb/ask` routes dated questions to the walker and takes a retrieval `depth`, and a done document's summary no longer calls it a proposal.*
