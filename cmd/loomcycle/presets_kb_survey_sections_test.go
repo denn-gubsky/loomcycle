@@ -166,8 +166,11 @@ func TestKbSurvey_FittingSectionIsAccountedAndComposedAsAChunkLink(t *testing.T)
 		if got := listIn(p, "\nMatching sections of fitting documents ("); strings.Join(got, ",") != otherSec+" in "+otherGuide {
 			t.Errorf("Matching sections of fitting documents = %v, want the fitting guide's section", got)
 		}
-		if !strings.Contains(p, "loom:chunk/<id>?scope=tenant") || !strings.Contains(p, annotationCallOf(sec)) {
-			t.Errorf("the composing round must ask for a loom:chunk link and give the section's read call:\n%s", p)
+		if !strings.Contains(p, "loom:chunk/<id>?scope=tenant") || strings.Contains(p, annotationCallOf(sec)) {
+			t.Errorf("the composing round must ask for a loom:chunk link, with no read call for code to make:\n%s", p)
+		}
+		if got := strings.Join(f.annotationIDs, ","); got != sec+","+otherSec {
+			t.Errorf("get_annotation calls by code = %s, want the fitting section's and the linked section's", got)
 		}
 		if !strings.HasPrefix(out, "Composed.\n- [9h](loom:chunk/"+sec+"?scope=tenant)") || strings.Contains(out, "FITS") {
 			t.Errorf("want the composed answer with its accounting stripped:\n%s", out)
@@ -440,80 +443,6 @@ func TestKbSurvey_NoSearchIsMadeInsideADocument(t *testing.T) {
 	}
 }
 
-// composeSummaryCalls reads the documents_summary calls written into a
-// composing round's prompt, checking each one's shape.
-func composeSummaryCalls(t *testing.T, p string) [][]string {
-	t.Helper()
-	callRE := regexp.MustCompile(`(?m)^Document (\{"op":"documents_summary".*\})$`)
-	var out [][]string
-	for _, m := range callRE.FindAllStringSubmatch(p, -1) {
-		var c struct {
-			Op          string   `json:"op"`
-			Scope       string   `json:"scope"`
-			DocumentIDs []string `json:"document_ids"`
-			WithSummary bool     `json:"with_summary"`
-		}
-		if err := json.Unmarshal([]byte(m[1]), &c); err != nil {
-			t.Fatalf("call %s: %v", m[1], err)
-		}
-		if len(c.DocumentIDs) == 0 || c.Scope != "tenant" || !c.WithSummary {
-			t.Errorf("call %s: want ids, scope tenant, with_summary", m[1])
-		}
-		out = append(out, c.DocumentIDs)
-	}
-	return out
-}
-
-// TestKbSurvey_ComposingRoundGetsOneSummaryCallForUpTo24Documents: a
-// composing walker handed 20 to 30 ids and left to build the documents_summary
-// call sent the list as one string; given the calls written by code, 12 ids
-// each, it still sent one as a string when there were two (10 refusals in 7
-// measured rounds). Up to 24 fitting documents are one written call, so the
-// common round has nothing to combine; past 24 the calls hold at most 24 ids
-// each and the round is told to make them one at a time. The walker's prompt
-// says document_ids is a list of strings.
-func TestKbSurvey_ComposingRoundGetsOneSummaryCallForUpTo24Documents(t *testing.T) {
-	for _, tc := range []struct {
-		docs, calls int
-	}{{12, 1}, {13, 1}, {24, 1}, {30, 2}} {
-		t.Run(fmt.Sprint(tc.docs), func(t *testing.T) {
-			ids := docIDs(1, tc.docs)
-			f := &surveyFake{rows: map[string][]map[string]any{"P": hits(ids...)}, screen: fitsOf(ids...)}
-			runSurvey(t, f, surveyQuestion)
-			if len(f.writes()) != 1 {
-				t.Fatalf("composing rounds = %d, want 1", len(f.writes()))
-			}
-			p := spawnPrompt(f.spawns[len(f.spawns)-1])
-			fitting := listIn(p, "\nFitting documents (")
-			calls := composeSummaryCalls(t, p)
-			var called []string
-			for _, c := range calls {
-				if len(c) > 24 {
-					t.Errorf("a written call holds %d ids, want at most 24", len(c))
-				}
-				called = append(called, c...)
-			}
-			if len(calls) != tc.calls || strings.Join(called, ",") != strings.Join(fitting, ",") {
-				t.Errorf("summary calls = %d naming %v, want %d naming every fitting document in order:\n%s", len(calls), called, tc.calls, p)
-			}
-			// Only the summary calls go one at a time: up to 120 get_annotation
-			// calls one by one would outrun the walker's 16 iterations.
-			for _, want := range []string{"document_ids is a list of strings, never one string", "make the documents_summary calls one call at a time"} {
-				if !strings.Contains(p, want) {
-					t.Errorf("the composing round's block lacks %q:\n%s", want, p)
-				}
-			}
-		})
-	}
-	wp := knowledgeBaseConfig(t).Agents["kb/walker"].SystemPrompt
-	i, j := strings.Index(wp, "COMPOSING. When the prompt says COMPOSE"), strings.Index(wp, "Without a list, follow the steps below.")
-	if i < 0 || j < i || !strings.Contains(wp[i:j], `"document_ids" is a list`) ||
-		!strings.Contains(wp[i:j], "make the documents_summary calls one call at a time") ||
-		!strings.Contains(wp[i:j], "get_annotation calls may go together") {
-		t.Errorf("kb/walker's COMPOSING section does not say document_ids is a list of strings, summary calls one at a time")
-	}
-}
-
 // TestKbSurvey_ComposeLinesAreStrippedFromTheAnswer: a composing round given
 // two calls echoed its block, and a "COMPOSE:" line reached the answer. Code
 // strips such a line, however it is marked up, and keeps the rest.
@@ -744,10 +673,10 @@ func TestKbSurvey_FittingGuideLinksItsMatchingSectionsUnscreened(t *testing.T) {
 		if strings.Join(got, ",") != s2+" in "+guide+","+s1+" in "+guide {
 			t.Errorf("Matching sections of fitting documents = %v, want the guide's two, best match first", got)
 		}
-		for _, id := range []string{s1, s2} {
-			if !strings.Contains(p, "\n"+annotationCallOf(id)+"\n") && !strings.HasSuffix(p, "\n"+annotationCallOf(id)) {
-				t.Errorf("the composing round lacks the get_annotation call for linked section %s:\n%s", id, p)
-			}
+		// Code reads every composed section's brief itself: the screened one,
+		// then the linked ones.
+		if got := strings.Join(f.annotationIDs, ","); got != s3+","+s2+","+s1 {
+			t.Errorf("get_annotation calls by code = %s, want %s,%s,%s", got, s3, s2, s1)
 		}
 		if !strings.Contains(p, "loom:chunk/<id>?scope=tenant") || !strings.Contains(p, "Under a fitting document, link each of its matching sections") {
 			t.Errorf("the composing round must ask for the sections as loom:chunk links under their document:\n%s", p)

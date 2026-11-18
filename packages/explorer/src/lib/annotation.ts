@@ -14,7 +14,7 @@ export function annotationsApply(scope: DocScope): boolean {
 export const BRIEF_MAX_CHARS = 240;
 export const ABSTRACT_MAX_CHARS = 2000;
 
-const LEVELS: readonly AnnotationLevel[] = ["branch", "document", "path"];
+const LEVELS: readonly AnnotationLevel[] = ["branch", "document", "path", "scheme", "concept", "class"];
 
 function isLevel(v: unknown): v is AnnotationLevel {
   return typeof v === "string" && (LEVELS as readonly string[]).includes(v);

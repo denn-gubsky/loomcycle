@@ -4,7 +4,8 @@ package builtin
 // annotation before it stores it, and the document identity both the inputs
 // and the correction read.
 //
-// Two defects are repaired, and only these two: model text is otherwise
+// Two defects are repaired here, and a third (a done document called a
+// proposal) in document_annotation_status_repair.go: model text is otherwise
 // stored as it came.
 //
 //   - A brief or abstract that names its document by another document's code
@@ -119,6 +120,20 @@ func (s *annotationScope) identity(ctx context.Context, t annotationTarget, own 
 		}
 	}
 	return out, nil
+}
+
+// ownCode is the token of the class's identifier shape the document's title
+// carries ("RFC GL"), or "" when it carries none.
+func (s *annotationScope) ownCode(ctx context.Context, t annotationTarget) string {
+	term, ok := s.classTerm(ctx, t.docType)
+	if !ok {
+		return ""
+	}
+	re := identifierShape(term)
+	if re == nil {
+		return ""
+	}
+	return re.FindString(t.docTitle)
 }
 
 // identifierGroups is the named groups of the class's identifier pattern

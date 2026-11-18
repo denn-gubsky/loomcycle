@@ -21,7 +21,7 @@ with `annotation_inputs`, write the annotation from them, and pass back the
 refused and you read again. Once written, the annotation reads `stale: true`
 whenever its inputs change, until it is written again.
 
-Two mistakes a model makes are repaired as the annotation is written, and
+Three mistakes a model makes are repaired as the annotation is written, and
 reported in `repaired`; the write succeeds:
 
 - **A code that is not the document's.** When the document's class has an
@@ -33,6 +33,19 @@ reported in `repaired`; the write succeeds:
   is replaced by a reference to the document itself (a copied code before
   "proposes" becomes "This RFC proposes"), with the same exception for a
   citation. Reason `foreign_code`.
+- **A done document called a proposal.** When the document's stored status
+  (its root chunk's) is `done`, its `document` annotation loses the framing
+  that it is still a proposal: a leading "Design proposal", "A design
+  proposal", "Proposal for", or "Design RFC" naming the document (a code
+  after it then opens the brief; "A design proposal for a console" becomes
+  "A design for a console"); a sentence whose
+  subject is the document itself ("This RFC", "The document", its own code)
+  that "proposes" (now "specifies"), "would add" (now "adds") or "is a
+  proposal for" (now "is a design for"); and a sentence saying it is awaiting
+  approval or stating a status other than done, which is dropped. Nothing
+  says "shipped" that did not; a sentence about another document's proposal
+  is kept; a section's annotation and a document of any other status are not
+  touched. Reason `status_wording`.
 - **A folder brief that says nothing.** A `path` brief that, ignoring case and
   punctuation, is the folder's own name (`brief_repeats_folder_name`), or is
   shorter than 20 characters (`brief_too_short`), is replaced by the first
@@ -53,7 +66,10 @@ overwritten by a driver.
 - `document_id` — a document, for its `document` annotation.
 - `path` — the document's Path-tree name, instead of `document_id`; with
   `level: path`, the folder, e.g. `/kb/policies` (`/` for the top).
-- `level` — `branch`, `document` or `path`. Default: what the chunk is.
+- `level` — `branch`, `document`, `path`, `scheme`, `concept` or `class` (a
+  node of a confirmed taxonomy, on its chunk; `name` may name a class).
+  Default: what the chunk is. A node record's `basis` (written, thin or
+  declared) is the case the node is in when it is written, set by the runtime.
 - `brief` (required) — at most 240 characters.
 - `abstract` (required) — at most 2000 characters.
 - `inputs_sha256` — the hash from `annotation_inputs`. Required unless

@@ -67,6 +67,9 @@ type describedConcept struct {
 	// Stats (with_stats only) is the concept's stored node statistics
 	// (document_node_stats.go).
 	Stats *nodeStatsView `json:"stats,omitempty"`
+	// Series (with_stats only) is the node's latest count, share and trend from the
+	// built-in series (document_measure_read.go).
+	Series *nodeSeriesView `json:"series,omitempty"`
 }
 
 // describedPolicy is describe_ontology's account of the policy as a whole.
