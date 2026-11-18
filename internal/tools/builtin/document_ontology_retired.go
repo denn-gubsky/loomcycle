@@ -20,6 +20,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -33,8 +34,8 @@ import (
 
 // retiredIssues are the document-level advisories retired entries raise: a section
 // header carrying the status (it cannot be retired; the status is ignored), a live
-// entry under a retired one, and a review rule naming a retired kind (the rule still
-// applies to the proposals it selects). An instance not yet adopted whose class is
+// entry under a retired one, and a review rule naming a retired kind (its rejections
+// still apply; an acceptance of a retired kind is refused by applyRuling). An instance not yet adopted whose class is
 // retired gets an issue of its own, since adoption skips it. With nothing retired it
 // returns nil and touches nothing.
 func retiredIssues(kids map[string][]ontologyChunk, rootID string, sectionOf map[string]string,
@@ -88,7 +89,7 @@ func retiredIssues(kids map[string][]ontologyChunk, rootID string, sectionOf map
 			for _, k := range rule.Kinds {
 				if retiredKinds[k] {
 					issues = append(issues, fmt.Sprintf("Review rule %d names the retired relation kind %s; "+
-						"it still rules on the proposals it selects", rule.Index, k))
+						"it may still reject the proposals it selects, but none it accepts goes in force", rule.Index, k))
 				}
 			}
 		}
@@ -163,6 +164,25 @@ func retiredConceptChunks(read OntologyRead) map[string]string {
 	return out
 }
 
+// ErrEntryRetired is an operator-plane write refused because it would make something new
+// use a retired entry (RFC GQ P2.1).
+var ErrEntryRetired = errors.New("entry_retired")
+
+// retiredClassNamed is the retired class typ names after the seed layering
+// (case-insensitively, as a type is matched), if it is one.
+func retiredClassNamed(read OntologyRead, typ string) (memrank.OntologyTerm, bool) {
+	typ = strings.TrimSpace(typ)
+	if typ == "" {
+		return memrank.OntologyTerm{}, false
+	}
+	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
+		if c.EntryStatus != "" && strings.EqualFold(c.Name, typ) {
+			return c, true
+		}
+	}
+	return memrank.OntologyTerm{}, false
+}
+
 // errEntryRetired is the refusal of a new write that would use a retired entry. A
 // validation error, not a business one: the fact-relation path reads a business refusal
 // as an operator's rejection and would report it as one.
@@ -216,10 +236,47 @@ func copiedEdgeMethod(method string) bool {
 	return method == edgeMethodImport || method == edgeMethodCanvas || method == edgeMethodSync
 }
 
+// retiredNewUseRefusal is retiredStatementRefusal for a statement that may revise
+// another (propose_statement with id). A revision replaces the statement it revises, so
+// what it shares with one IN FORCE is no new use (RFC FO 3.7 B2): only a kind or an end
+// the revision changes is checked. A base not in force (proposed, rejected, expired or
+// withheld by a judge) uses nothing yet, so its revision is checked in full.
+func (d *Document) retiredNewUseRefusal(ctx context.Context, key sqlmem.ScopeKey, kind, from, to, revisionOf string) (*tools.Result, error) {
+	if revisionOf != "" {
+		base, err := d.statementByID(ctx, key, revisionOf)
+		if err != nil {
+			return nil, err
+		}
+		if statementInForce(base) {
+			if base.Kind == kind {
+				kind = ""
+			}
+			if base.FromID == from {
+				from = ""
+			}
+			if base.ToID == to {
+				to = ""
+			}
+		}
+	}
+	if kind == "" && from == "" && to == "" {
+		return nil, nil
+	}
+	return d.retiredStatementRefusal(ctx, key, kind, from, to), nil
+}
+
+// statementInForce: asserted, not expired, and not withheld by a refuting verdict.
+func statementInForce(s *statementRow) bool {
+	return s != nil && s.Status == edgeStatusAsserted && s.ExpiredAt == nil &&
+		(s.VerdictConfidence == nil || *s.VerdictConfidence >= withholdBelowConfidence)
+}
+
 // retiredStatementRefusal refuses a NEW statement of a retired relation kind, or one
-// from or to a retired concept (a new placement under it). Only a confirmed ontology
-// governs; a fault fails open, like every other vocabulary check.
-func (d *Document) retiredStatementRefusal(ctx context.Context, kind, from, to string) *tools.Result {
+// from or to a retired entry: a concept (a new placement under it), a class or relation
+// entry's chunk, or a retired instance — its entry chunk or the subject it was adopted
+// as. "" for kind, from or to is not checked. Only a confirmed ontology governs; a
+// fault fails open, like every other vocabulary check.
+func (d *Document) retiredStatementRefusal(ctx context.Context, key sqlmem.ScopeKey, kind, from, to string) *tools.Result {
 	// A reserved kind (about, derived_from, …) is the runtime's own and never a tenant
 	// entry; skipping it keeps the per-fact runtime edges free of an ontology read.
 	if d.Store == nil || d.SqlMem == nil || memrank.IsReservedRelation(kind) {
@@ -229,20 +286,68 @@ func (d *Document) retiredStatementRefusal(ctx context.Context, kind, from, to s
 	if !ok || !read.Confirmed {
 		return nil
 	}
-	for _, r := range memrank.EffectiveRelations(read.Relations, hasSection(read.Sections, memrank.SectionRelations), true) {
-		if r.Name == kind && r.EntryStatus != "" {
-			res := errEntryRetired("", "the relation kind "+strconv.Quote(kind))
+	if kind != "" {
+		for _, r := range memrank.EffectiveRelations(read.Relations, hasSection(read.Sections, memrank.SectionRelations), true) {
+			if r.Name == kind && r.EntryStatus != "" {
+				res := errEntryRetired("", "the relation kind "+strconv.Quote(kind))
+				return &res
+			}
+		}
+	}
+	if from == "" && to == "" {
+		return nil
+	}
+	retired := retiredEntryChunks(read)
+	for _, id := range []string{from, to} {
+		if what := retired[id]; id != "" && what != "" {
+			res := errEntryRetired("", what)
 			return &res
 		}
 	}
-	retired := retiredConceptChunks(read)
-	for _, id := range []string{from, to} {
-		if tag := retired[id]; tag != "" {
-			res := errEntryRetired("", "the concept "+tag)
+	// An adopted instance's subject lives in the tenant scope under the key adoption
+	// recorded on the instance; one never adopted has no subject to protect.
+	if key.Scope != "tenant" {
+		return nil
+	}
+	for _, in := range read.Instances {
+		if in.EntryStatus == "" || in.RegistryKey == "" {
+			continue
+		}
+		subject, err := d.chunkIDByNaturalKey(ctx, key, in.RegistryKey)
+		if err != nil || subject == "" {
+			continue
+		}
+		if subject == from || subject == to {
+			res := errEntryRetired("", "the instance "+strconv.Quote(in.Name))
 			return &res
 		}
 	}
 	return nil
+}
+
+// retiredEntryChunks names, by chunk id, every retired entry a statement could point
+// at: concepts and schemes (by mirror tag), classes, relation kinds and instances.
+func retiredEntryChunks(read OntologyRead) map[string]string {
+	out := map[string]string{}
+	for id, tag := range retiredConceptChunks(read) {
+		out[id] = "the concept " + tag
+	}
+	for _, t := range read.Terms {
+		if id := read.classChunkID(t.Name); t.EntryStatus != "" && id != "" {
+			out[id] = "the class " + strconv.Quote(t.Name)
+		}
+	}
+	for _, r := range read.Relations {
+		if r.EntryStatus != "" && r.ChunkID != "" {
+			out[r.ChunkID] = "the relation kind " + strconv.Quote(r.Name)
+		}
+	}
+	for _, in := range read.Instances {
+		if in.EntryStatus != "" && in.ChunkID != "" {
+			out[in.ChunkID] = "the instance " + strconv.Quote(in.Name)
+		}
+	}
+	return out
 }
 
 // retiredClassRefusal refuses a write that gives a chunk a retired class as its type
@@ -410,4 +515,153 @@ func (d *Document) retireChunks(ctx context.Context, key sqlmem.ScopeKey, entryI
 	return d.exec(ctx, key, `UPDATE chunks SET status = ?, updated_at = ?,
 		revision = CASE WHEN id = ? THEN revision ELSE revision + 1 END WHERE id IN (`+ph+`)`,
 		append([]any{memrank.OntologyStatusRetired, time.Now().UnixNano(), entryID}, args...)...)
+}
+
+// retiredProposalRefusal refuses a proposal, filed at parentID with title in the
+// ontology document docID, that would make something new use a retired entry: one
+// filed under a retired entry, or one named as a retired entry of the same section (in
+// the Schemes section, under the same parent, as a concept's tag is). selfID is the
+// proposal's own chunk when it exists. The root and the section headers are not entries
+// (a status on them is ignored), so they never count as a retired ancestor. The same
+// rules propose_entity applies, for a proposal that did not come through it: an
+// agent's raw create_chunk/upsert_chunk, or one accepted after its parent was retired.
+func (d *Document) retiredProposalRefusal(ctx context.Context, key sqlmem.ScopeKey, docID, selfID, parentID, title string) (*tools.Result, error) {
+	res, err := d.query(ctx, key, `SELECT id, coalesce(parent_id, ''), coalesce(status, ''), coalesce(title, '') FROM chunks WHERE document_id = ?`, docID)
+	if err != nil {
+		return nil, err
+	}
+	type node struct{ parent, status, name string }
+	nodes := map[string]node{}
+	root := ""
+	for _, r := range res.Rows {
+		if len(r) < 4 {
+			continue
+		}
+		n := node{parent: asStr(r[1]), status: asStr(r[2]), name: memrank.TrimOntologyName(asStr(r[3]))}
+		nodes[asStr(r[0])] = n
+		if n.parent == "" {
+			root = asStr(r[0])
+		}
+	}
+	// sectionOf walks up to the child of the root; "" for the root or an unknown chunk.
+	sectionOf := func(id string) string {
+		for seen := 0; id != "" && seen <= len(nodes); seen++ {
+			n, ok := nodes[id]
+			if !ok || n.parent == "" {
+				return ""
+			}
+			if n.parent == root {
+				return id
+			}
+			id = n.parent
+		}
+		return ""
+	}
+	section := sectionOf(parentID)
+	if parentID == root || section == "" {
+		return nil, nil // a section header of its own, or outside any section
+	}
+	for id, seen := parentID, 0; id != section && seen <= len(nodes); seen++ {
+		n := nodes[id]
+		if memrank.IsRetiredEntityStatus(n.status) {
+			return retiredParentRefusal(strconv.Quote(n.name)), nil
+		}
+		id = n.parent
+	}
+	name := memrank.TrimOntologyName(title)
+	if name == "" {
+		return nil, nil
+	}
+	schemes := false
+	if read, ok := d.tenantOntologyRead(ctx); ok {
+		schemes = read.SectionChunks[memrank.SectionSchemes] == section
+	}
+	for id, n := range nodes {
+		if id == selfID || !memrank.IsRetiredEntityStatus(n.status) || sectionOf(id) != section {
+			continue
+		}
+		if schemes && n.parent != parentID {
+			continue
+		}
+		if strings.EqualFold(n.name, name) || (schemes && memrank.MirrorSegment(n.name) == memrank.MirrorSegment(name)) {
+			return retiredNameRefusal(strconv.Quote(n.name)), nil
+		}
+	}
+	return nil, nil
+}
+
+// RetiredProposalProblem says why accepting the ontology proposal chunkID would make
+// something new use a retired entry (filed under one, or named as one), "" when it
+// would not. For the operator's accept route, which writes the proposal's status alone.
+func (d *Document) RetiredProposalProblem(ctx context.Context, scope, chunkID string) (string, error) {
+	key, _, err := d.resolveScope(ctx, scope)
+	if err != nil {
+		return "", err
+	}
+	row, found, err := d.getChunkRow(ctx, key, chunkID)
+	if err != nil || !found {
+		return "", err
+	}
+	r, err := d.retiredProposalRefusal(ctx, key, row.DocumentID, row.ID, row.ParentID, row.Title)
+	if err != nil || r == nil {
+		return "", err
+	}
+	return r.Text, nil
+}
+
+// retiredTagRefusal refuses a tag write that would place something new under a retired
+// concept. Outside the tenant scope a concept's members are found by its mirror tag
+// (resolveConceptFilters), so a NEW tag equal to a retired scheme's or concept's, or
+// under it, is a placement there; a tag the target already carries is kept (an edit,
+// RFC FO 3.7 B2). In the tenant scope membership is by statement, which
+// retiredStatementRefusal guards, so a tag there places nothing. The dispatch calls
+// this for the direct tag writes; import_md and the other faithful copies write tags
+// internally and keep what they copy.
+func (d *Document) retiredTagRefusal(ctx context.Context, key sqlmem.ScopeKey, in docInput) *tools.Result {
+	if key.Scope == "tenant" || len(in.Tags) == 0 {
+		return nil
+	}
+	switch in.Op {
+	case "create_document", "create_chunk", "upsert_chunk", "update_chunk", "add_tags":
+	default:
+		return nil
+	}
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok || !read.Confirmed {
+		return nil
+	}
+	var retired []string
+	for _, tag := range retiredConceptChunks(read) {
+		retired = append(retired, tag)
+	}
+	if len(retired) == 0 {
+		return nil
+	}
+	have := map[string]bool{}
+	var kept []string
+	switch {
+	case in.Op == "update_chunk" || (in.Op == "add_tags" && in.ID != ""):
+		kept, _ = d.listChunkTags(ctx, key, in.ID)
+	case in.Op == "add_tags" && in.DocumentID != "":
+		kept, _ = d.listDocumentTags(ctx, key, in.DocumentID)
+	case in.Op == "upsert_chunk" && strings.TrimSpace(in.NaturalKey) != "":
+		if id, err := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey); err == nil && id != "" {
+			kept, _ = d.listChunkTags(ctx, key, id)
+		}
+	}
+	for _, t := range kept {
+		have[t] = true
+	}
+	for _, t := range sanitizeTags(in.Tags) {
+		if have[t] {
+			continue
+		}
+		for _, r := range retired {
+			if t == r || strings.HasPrefix(t, r+"/") {
+				res := errEntryRetired(in.Op, "the concept "+r+" (tag "+t+")")
+				return &res
+			}
+		}
+	}
+	return nil
 }

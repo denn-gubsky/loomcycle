@@ -979,6 +979,11 @@ func (d *Document) executeGated(ctx context.Context, in docInput, raw json.RawMe
 	if refused != nil {
 		return *refused, nil
 	}
+	// RFC GQ P2.1: a new tag of a retired concept is a new placement under it outside
+	// the tenant scope; see document_ontology_retired.go.
+	if refused := d.retiredTagRefusal(ctx, key, in); refused != nil {
+		return *refused, nil
+	}
 	// RFC CA: an agent may PROPOSE an ontology entity, never decide one. Checked at the
 	// single dispatch point rather than inside each op — a per-op check is one op away
 	// from being forgotten, and the ops that would need it (create/update/delete/move/

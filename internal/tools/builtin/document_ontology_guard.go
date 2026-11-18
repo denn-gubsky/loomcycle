@@ -110,6 +110,7 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 		// rewrites it in place, so a "proposed" upsert over an accepted (or rejected)
 		// entity would edit it and drop it back to proposed. Re-filing a chunk that is
 		// itself still a proposal stays allowed.
+		self := ""
 		if op == "upsert_chunk" {
 			existing, status, err := d.ontologyChunkByNaturalKey(ctx, key, docID, in.NaturalKey)
 			if err != nil {
@@ -121,8 +122,16 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 					strconv.Quote(in.NaturalKey)+" names an entity that is not a proposal, and an upsert "+
 					"would rewrite it. Propose a NEW entity under its own key instead.", ""))
 			}
+			self = existing
 		}
-		return nil
+		// Held to propose_entity's rules (RFC GQ P2.1): nothing filed under a retired
+		// entry, and no proposal of a retired entry's name. Fails closed, like the rest.
+		r, err := d.retiredProposalRefusal(ctx, key, docID, self, in.ParentID, in.Title)
+		if err != nil {
+			return refusal(errFrom("could not check the proposal against the retired entries, so this "+
+				"write is refused: "+err.Error(), err))
+		}
+		return r
 	}
 	return refusal(errPermission("an agent may not modify the ontology document — it may only add a "+
 		"proposal (op=propose_entity). Resolving one, editing a live entity, importing "+
