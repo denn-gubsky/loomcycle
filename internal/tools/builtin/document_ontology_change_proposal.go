@@ -26,10 +26,12 @@ package builtin
 // a class named that. Rejecting is the route's ordinary reject.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,8 +46,9 @@ import (
 const (
 	changeProposalField = "change_proposal"
 	// changeMaxDirectives / changeMaxDirectiveValue bound an edit's directive set.
-	changeMaxDirectives     = 32
-	changeMaxDirectiveValue = 1000
+	changeMaxDirectives      = 32
+	changeMaxDirectiveValues = 64
+	changeMaxDirectiveValue  = 1000
 	// lockedDirective is RFC FO 3.1a's @locked (RFC GQ D5). A proposal may neither set
 	// nor clear it, so it is refused here by name whether or not this build parses it.
 	lockedDirective = "locked"
@@ -65,6 +68,20 @@ var changeDirectives = map[string]map[string]bool{
 	planKindInstance: directiveSet("a", "identity", "alt", "nesting"),
 }
 
+// directiveNameRe is the shape of a directive name the reader parses (bareDirectiveRe).
+var directiveNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// instanceRelationDirective reports a name an instance body declares a statement with
+// (@<kind> target): ParseInstanceBody reads it as a relation, with no issue. A known
+// directive of another section, and @locked, are not.
+func instanceRelationDirective(name string) bool {
+	if !directiveNameRe.MatchString(name) || strings.EqualFold(name, lockedDirective) {
+		return false
+	}
+	in := memrank.ParseInstanceBody("x", "@a x\n@"+name+" target")
+	return len(in.Issues) == 0 && len(in.Relations) == 1 && in.Relations[0].Kind == name
+}
+
 func directiveSet(names ...string) map[string]bool {
 	out := make(map[string]bool, len(names))
 	for _, n := range names {
@@ -76,7 +93,14 @@ func directiveSet(names ...string) map[string]bool {
 // wantsChange reports a propose_entity call carrying any field of a change proposal.
 func wantsChange(in docInput) bool {
 	return strings.TrimSpace(in.Change) != "" || strings.TrimSpace(in.Entry) != "" ||
-		in.Meaning != nil || len(in.Directives) > 0
+		in.Meaning != nil || directivesGiven(in)
+}
+
+// directivesGiven reports whether the call carries a directive set: a literal null is
+// none, never "clear them" ({} is that).
+func directivesGiven(in docInput) bool {
+	raw := bytes.TrimSpace(in.Directives)
+	return len(raw) > 0 && !bytes.Equal(raw, []byte("null"))
 }
 
 // changeTarget is a change proposal's target resolved against the ontology as read.
@@ -98,6 +122,15 @@ func (d *Document) proposeChange(ctx context.Context, in docInput) (tools.Result
 	if err != nil {
 		return errBusiness("propose_entity: "+err.Error(), "This deployment has no SQL Memory; ask an operator to enable it."), nil
 	}
+	// The read, the duplicate check and the filing run under one lock per tenant
+	// ontology, so two identical proposals filed at once file one. The lock is
+	// in-process only: on another replica a duplicate can still land, so P4.2's accept
+	// must refuse a second proposal for a target an accepted one already changed.
+	unlock, err := d.editions.lock(ctx, key, "ontology_change_proposal", memrank.OntologyPath)
+	if err != nil {
+		return errFrom("propose_entity: "+err.Error(), err), nil
+	}
+	defer unlock()
 	tg, r, err := d.resolveChangeTarget(ctx, key, mscope, in)
 	if err != nil {
 		return errFrom("propose_entity: "+err.Error(), err), nil
@@ -161,7 +194,7 @@ func checkChangeShape(op string, in docInput) *tools.Result {
 		return refuse("concepts and header describe a NEW scheme, not a change", "")
 	}
 	if op == memrank.ChangeOpRetire && (strings.TrimSpace(in.Name) != "" || strings.TrimSpace(in.Parent) != "" ||
-		in.Meaning != nil || len(in.Directives) > 0) {
+		in.Meaning != nil || directivesGiven(in)) {
 		return refuse("a retire proposal names only its entry; name, parent, meaning and directives belong to change=\"edit\"", "")
 	}
 	if len(in.Body) > proposalBodyMax || (in.Meaning != nil && len(*in.Meaning) > proposalBodyMax) {
@@ -243,15 +276,29 @@ func (tg changeTarget) fillEdit(mark *memrank.ProposedChange, in docInput) *tool
 		}
 		mark.Parent, mark.ParentName, parentID = id, name, id
 	}
-	if name := strings.TrimSpace(in.Name); name != "" {
+	if strings.TrimSpace(in.Name) != "" {
+		// Normalised as the reader names an entry (TrimOntologyName), so the stored name is
+		// the one accepting would write.
+		name := memrank.TrimOntologyName(in.Name)
+		if name == "" {
+			return refuse("name is empty once trimmed; pass the entry's new name")
+		}
 		if strings.ContainsAny(name, "\r\n") || utf8.RuneCountInString(name) > ontologyPlanMaxName {
 			return refuse("name is one line of at most " + strconv.Itoa(ontologyPlanMaxName) + " characters")
 		}
 		if name != e.Name {
-			if r := tg.nameRefusal(name, parentID); r != nil {
-				return r
-			}
 			mark.Name = name
+		}
+	}
+	// A move keeps the name, which must be free under the new parent too (a concept's
+	// tag is its parent's plus its own).
+	if mark.Name != "" || mark.Parent != "" {
+		effective := e.Name
+		if mark.Name != "" {
+			effective = mark.Name
+		}
+		if r := tg.nameRefusal(effective, parentID, mark.Name != ""); r != nil {
+			return r
 		}
 	}
 	if in.Meaning != nil {
@@ -261,9 +308,12 @@ func (tg changeTarget) fillEdit(mark *memrank.ProposedChange, in docInput) *tool
 		}
 		mark.Meaning = neutraliseDirectives(m)
 	}
-	if len(in.Directives) > 0 {
+	if directivesGiven(in) {
 		dirs, r := checkChangeDirectives(e.Kind, e.Name, in.Directives)
 		if r != nil {
+			return r
+		}
+		if r := tg.retiredReference(dirs); r != nil {
 			return r
 		}
 		mark.SetsDirectives, mark.Directives = true, dirs
@@ -317,12 +367,19 @@ func (tg changeTarget) resolveChangeParent(want string) (id, name string, refusa
 // nameRefusal refuses a rename to a name an entry of the same kind already has (beside
 // it, for a concept, whose tag is its parent's plus its own), pointing at un-retiring
 // when that entry is retired (RFC FO 3.1a).
-func (tg changeTarget) nameRefusal(name, parentID string) *tools.Result {
+func (tg changeTarget) nameRefusal(name, parentID string, renamed bool) *tools.Result {
 	e := tg.entry
-	if e.Kind == planKindRelation {
+	if e.Kind == planKindRelation && renamed {
 		if iss := memrank.RelationNameIssue(name); iss != "" || memrank.IsReservedRelation(name) {
 			r := errValidation("propose_entity: "+strconv.Quote(name)+" is not a name a relation kind can take "+iss, "")
 			return &r
+		}
+		for _, s := range memrank.SeedRelations() {
+			if s.Name == name {
+				r := errBusiness("propose_entity: "+name+" is a standard relation kind and already valid",
+					"Use it as it is; an operator can adopt it to list it to agents.")
+				return &r
+			}
 		}
 	}
 	same := func(a, b string) bool { return strings.EqualFold(a, b) }
@@ -342,6 +399,36 @@ func (tg changeTarget) nameRefusal(name, parentID string) *tools.Result {
 		r := errBusiness("propose_entity: the "+e.Kind+" "+strconv.Quote(o.Name)+" is already in force under that name",
 			"Pick another name.")
 		return &r
+	}
+	return nil
+}
+
+// retiredReference refuses a directive set that names a retired entry: a relation's
+// domain, range or inverse, a scheme's @projects, an instance's @a. Each is read with the
+// section's own parser, so what is checked is what the reader would take.
+func (tg changeTarget) retiredReference(dirs []memrank.ProposedDirective) *tools.Result {
+	body, read := directiveLines(dirs), tg.read
+	var classes []string
+	switch tg.entry.Kind {
+	case planKindRelation:
+		rel := memrank.ParseRelationBody(tg.entry.Name, body)
+		classes = append(append(classes, rel.Domain...), rel.Range...)
+		for _, r := range read.Relations {
+			if rel.Inverse != "" && r.Name == rel.Inverse && r.EntryStatus != "" {
+				res := errEntryRetired("propose_entity", "the relation kind "+strconv.Quote(r.Name)+" (named in @inverse)")
+				return &res
+			}
+		}
+	case planKindScheme:
+		return retiredProjectsRefusal(read, memrank.ParseSchemeBody(tg.entry.Name, body).Projects)
+	case planKindInstance:
+		classes = append(classes, memrank.ParseInstanceBody(tg.entry.Name, body).Class)
+	}
+	for _, c := range classes {
+		if t, ok := retiredClassNamed(read, c); ok {
+			res := errEntryRetired("propose_entity", "the class "+strconv.Quote(t.Name)+" (named in a directive)")
+			return &res
+		}
 	}
 	return nil
 }
@@ -369,18 +456,24 @@ func checkChangeDirectives(kind, entryName string, raw json.RawMessage) ([]memra
 		if strings.EqualFold(name, lockedDirective) {
 			return refuse("@locked cannot be set or cleared by a proposal (RFC FO 3.1a); only an operator's own edit does that")
 		}
-		if !allowed[name] {
+		if !allowed[name] && !(kind == planKindInstance && instanceRelationDirective(name)) {
 			return refuse("@" + name + " is not a directive a " + kind + " takes (" + strings.Join(directiveNames(allowed), ", ") + ")")
 		}
 		values, err := directiveValues(v)
 		if err != nil {
 			return refuse("@" + name + ": " + err.Error())
 		}
+		if len(out)+len(values) > changeMaxDirectiveValues {
+			return refuse(fmt.Sprintf("at most %d values in all", changeMaxDirectiveValues))
+		}
 		for _, val := range values {
 			out = append(out, memrank.ProposedDirective{Name: name, Value: val})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	if enc, _ := json.Marshal(out); len(enc) > proposalBodyMax {
+		return refuse(fmt.Sprintf("the set is %d bytes encoded, over the %d-byte limit", len(enc), proposalBodyMax))
+	}
 	if issues := changeDirectiveIssues(kind, entryName, directiveLines(out)); len(issues) > 0 {
 		return refuse(strings.Join(issues, "; "))
 	}
@@ -459,6 +552,9 @@ func directiveNames(m map[string]bool) []string {
 // none. Read from the bodies, so it holds before this build parses the directive.
 func (d *Document) lockedAmong(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, ids []string, entries map[string]planEntry) (string, error) {
 	for _, id := range ids {
+		if _, entry := entries[id]; !entry {
+			continue // a proposal or rejection under the entry: its text locks nothing
+		}
 		b, err := d.readBody(ctx, mscope, key, id)
 		if err != nil {
 			return "", err
@@ -508,6 +604,21 @@ func withChangeMarks(ps []memrank.OntologyProposal, chunkOf func(string) chunkBo
 		}
 	}
 	return ps
+}
+
+// proposalMarkIn names the first proposal mark key present in fields, "" for none.
+// Fields that are not an object carry none.
+func proposalMarkIn(fields json.RawMessage) string {
+	var m map[string]json.RawMessage
+	if len(fields) == 0 || json.Unmarshal(fields, &m) != nil {
+		return ""
+	}
+	for _, k := range []string{changeProposalField, schemeProposalField, conceptProposalField} {
+		if _, ok := m[k]; ok {
+			return k
+		}
+	}
+	return ""
 }
 
 // ChangeProposalMarked reports whether chunkID's fields carry a change_proposal mark at
