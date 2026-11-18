@@ -144,10 +144,13 @@ func (d *Document) refitUMAP(ctx context.Context, key sqlmem.ScopeKey, list func
 // key decides which of two concurrent refits of one scope wins, on both tiers and
 // across replicas, and the loser's anchors are never written. A version's anchors
 // are written only by the transaction that inserted its basis row, so they cannot
-// collide.
+// collide. A version above b.version also makes it report false (basisSuperseded).
 func (d *Document) saveUMAPBasis(ctx context.Context, key sqlmem.ScopeKey, model string, b *storedBasis, ids []string, pos [][3]float64) (bool, error) {
 	saved := false
 	err := d.withSqlTxn(ctx, key, func(txnID string) error {
+		if gone, err := d.basisSuperseded(ctx, txnID, model, b.version); err != nil || gone {
+			return err
+		}
 		res, err := d.docSQL().ExecTxn(ctx, txnID, d.docSQL().Rebind(`INSERT INTO chunk_projection_basis
 			(model, version, dimension, mean, components, explained_variance, sample_n, fitted_at, method) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (model, version) DO NOTHING`),
