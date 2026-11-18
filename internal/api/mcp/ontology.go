@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,7 +74,9 @@ func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		Principal *string `json:"principal"`
 		Tenant    string  `json:"tenant"`
 
-		Changes []connector.OntologyChange `json:"changes"`
+		// Decoded in op plan only, after the size bound and with unknown keys
+		// refused, as HTTP does.
+		Changes json.RawMessage `json:"changes"`
 	}
 	if len(args) > 0 {
 		if err := json.Unmarshal(args, &p); err != nil {
@@ -110,7 +113,16 @@ func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 			return ontologyRefusal("plan", "invalid_body",
 				fmt.Errorf("the plan arguments are %d bytes; at most %d", len(args), connector.OntologyPlanMaxRequestBytes)), nil
 		}
-		res, err := env.connector.PlanOntology(ctx, connector.PlanOntologyRequest{Tenant: p.Tenant, Changes: p.Changes})
+		var changes []connector.OntologyChange
+		if len(p.Changes) > 0 {
+			dec := json.NewDecoder(bytes.NewReader(p.Changes))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&changes); err != nil {
+				return ontologyRefusal("plan", "invalid_body",
+					fmt.Errorf(`expected changes: [{"op": "retire|rename|move|edit|delete", "entry": "<chunk id>", …}]: %w`, err)), nil
+			}
+		}
+		res, err := env.connector.PlanOntology(ctx, connector.PlanOntologyRequest{Tenant: p.Tenant, Changes: changes})
 		if err != nil {
 			code := connector.OntologyPlanCode(err)
 			if code == "" {

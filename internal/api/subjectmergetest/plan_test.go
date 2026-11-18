@@ -98,6 +98,14 @@ func (e *env) asPlan(raw string) connector.PlanOntologyResult {
 }
 
 func (e *env) planHTTP(bearer string, changes []connector.OntologyChange) (connector.PlanOntologyResult, outcome) {
+	body, _ := json.Marshal(changes)
+	return e.planHTTPRaw(bearer, body)
+}
+
+// planHTTPRaw and planMCPRaw send the changes as given JSON, to ask with a key
+// the shared type has no field for. gRPC has no twin: its message has fixed
+// fields, so a stray key is the client's encode error, never a request.
+func (e *env) planHTTPRaw(bearer string, changes json.RawMessage) (connector.PlanOntologyResult, outcome) {
 	body, _ := json.Marshal(map[string]any{"changes": changes})
 	resp, raw := e.do(http.MethodPost, "/v1/_ontology/plan", bearer, string(body), nil)
 	if resp.StatusCode == http.StatusOK {
@@ -167,6 +175,11 @@ func (e *env) planGRPC(bearer string, changes []connector.OntologyChange) (conne
 }
 
 func (e *env) planMCP(bearer string, changes []connector.OntologyChange) (connector.PlanOntologyResult, outcome) {
+	body, _ := json.Marshal(changes)
+	return e.planMCPRaw(bearer, body)
+}
+
+func (e *env) planMCPRaw(bearer string, changes json.RawMessage) (connector.PlanOntologyResult, outcome) {
 	o := e.toolMCP(bearer, "ontology", map[string]any{"op": "plan", "changes": changes})
 	if !o.ok {
 		return connector.PlanOntologyResult{}, o
@@ -270,6 +283,17 @@ func TestPlanOntology_SameRefusalOnEveryTransport(t *testing.T) {
 			if _, o := s.plan(e, c.bearer, c.changes); o.ok || o.code != c.code {
 				t.Errorf("%s %s: ok=%v code %q, want %q (%.200s)", s.name, c.name, o.ok, o.code, c.code, o.raw)
 			}
+		}
+	}
+	// A key the change has no field for (a misspelt parent) is refused, not
+	// dropped. Only HTTP and MCP can send one; see planHTTPRaw.
+	unknown := json.RawMessage(`[{"op":"retire","entry":"` + f.provision + `","prent":"x"}]`)
+	for _, s := range []struct {
+		name string
+		plan func(string, json.RawMessage) (connector.PlanOntologyResult, outcome)
+	}{{"http", e.planHTTPRaw}, {"mcp", e.planMCPRaw}} {
+		if _, o := s.plan(operator, unknown); o.ok || o.code != "invalid_body" {
+			t.Errorf("%s an unknown key: ok=%v code %q, want invalid_body (%.200s)", s.name, o.ok, o.code, o.raw)
 		}
 	}
 }
