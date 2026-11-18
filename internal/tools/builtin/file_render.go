@@ -73,6 +73,12 @@ func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error)
 		return res, nil
 	}
 	job := &renderJob{f: f, in: in, format: format, dest: dest, date: time.Now().UTC().Format("2006-01-02")}
+	if res, ok := job.resolveStyle(ctx, true); !ok {
+		if res.Text == "" {
+			return tools.Result{}, ctx.Err()
+		}
+		return res, nil
+	}
 	if in.Path != "" {
 		return job.fromFile(ctx)
 	}
@@ -119,6 +125,12 @@ type renderJob struct {
 	// renderErr is a download's render failure, for Export to classify (an
 	// op answers it as a tool result instead).
 	renderErr error
+	// style is the house style the file is written in, and logo its
+	// picture (render_style.go); styleNote says a named style was not used.
+	style     *render.Style
+	logo      []byte
+	logoMT    string
+	styleNote string
 }
 
 func (j *renderJob) options() render.Options {
@@ -228,6 +240,7 @@ func splitMarkdownTitle(md, fallback string) (string, string) {
 // document (log non-nil), and answers the op.
 func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Report, src renderedSource, log *renderLog) (tools.Result, error) {
 	rep.Format = j.format
+	j.attachStyle(doc, &rep)
 	opts := j.options()
 	optsJSON := renderOptionsJSON(opts, j.provenance(), j.in.Language, j.in.Chunk)
 	stem := inbox.SanitizeName(doc.Title)

@@ -231,6 +231,32 @@ func TestNearestSiblings_RefusesSelfAndDuplicates(t *testing.T) {
 	}
 }
 
+func TestShift_IsCosineDistanceBetweenCentroids(t *testing.T) {
+	a, _ := CentroidOf([]Vector{{1, 0}, {1, 0}})
+	b, _ := CentroidOf([]Vector{{0, 3}})
+	ab, _ := CentroidOf([]Vector{{1, 0}, {0, 1}})
+	for _, tc := range []struct {
+		name     string
+		from, to Centroid
+		want     float64
+	}{
+		{"same direction", a, a, 0},
+		{"orthogonal", a, b, 1},
+		{"45 degrees", a, ab, 1 - math.Sqrt2/2},
+	} {
+		if got, err := Shift(tc.from, tc.to); err != nil || !near(got, tc.want) {
+			t.Errorf("%s: shift = %v (%v), want %v", tc.name, got, err, tc.want)
+		}
+	}
+	if _, err := Shift(Centroid{}, a); !errors.Is(err, ErrEmpty) {
+		t.Errorf("empty: err = %v", err)
+	}
+	c3, _ := CentroidOf([]Vector{{1, 0, 0}})
+	if _, err := Shift(a, c3); !errors.Is(err, ErrDimensionMismatch) {
+		t.Errorf("dimension: err = %v", err)
+	}
+}
+
 // Members that all point one way have spread 0, but the normalised mean can
 // round to a length just above 1; the spread must not then come out negative.
 func TestCentroid_SpreadOfIdenticalMembersIsNeverNegative(t *testing.T) {

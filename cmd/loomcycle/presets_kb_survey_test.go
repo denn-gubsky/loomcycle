@@ -51,6 +51,12 @@ type surveyFake struct {
 	labels map[string]map[string]any
 	// summaryIDs is each documents_summary call's document_ids, in order.
 	summaryIDs [][]string
+	// briefs is each document's or section's stored brief and abstract
+	// ({"brief": ..., "abstract": ...}), answered to documents_summary (as its
+	// summary) and to get_annotation (as a branch record); an id not in it
+	// has none. annotationIDs is each get_annotation call's id, in order.
+	briefs        map[string]map[string]any
+	annotationIDs []string
 	// searchErr makes every search fail as a tool error.
 	searchErr string
 	// screen answers a screening round, given its candidate ids; nil sorts
@@ -174,10 +180,24 @@ func (d *surveyFakeDocument) Execute(_ context.Context, raw json.RawMessage) (to
 			for k, v := range d.f.labels[id] {
 				row[k] = v
 			}
+			if b, ok := d.f.briefs[id]; ok && in["with_summary"] == true {
+				row["summary"] = map[string]any{"level": "document", "brief": b["brief"], "abstract": b["abstract"]}
+			}
 			docs = append(docs, row)
 		}
 		d.f.summaryIDs = append(d.f.summaryIDs, ids)
 		return okResult(map[string]any{"documents": docs})
+	case "get_annotation":
+		id, _ := in["id"].(string)
+		if in["level"] != "branch" {
+			return tools.Result{IsError: true, Text: "get_annotation: want level branch, got " + string(raw)}, nil
+		}
+		d.f.annotationIDs = append(d.f.annotationIDs, id)
+		recs := []map[string]any{}
+		if b, ok := d.f.briefs[id]; ok {
+			recs = append(recs, map[string]any{"chunk_id": id, "level": "branch", "brief": b["brief"], "abstract": b["abstract"]})
+		}
+		return okResult(map[string]any{"annotations": recs})
 	case "get_edges":
 		id, _ := in["document_id"].(string)
 		d.f.edgeIDs = append(d.f.edgeIDs, id)
@@ -502,7 +522,7 @@ func TestKbSurvey_GatherRanksByWeightDedupsAndSkipsFolderRows(t *testing.T) {
 	if cov != "COVERAGE: complete" || unc != "" {
 		t.Errorf("coverage = %q %q, want complete with no UNCOVERED line", cov, unc)
 	}
-	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 (cut 0, over guide limit 0, document fits 0) | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
+	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 (cut 0, over guide limit 0, document fits 0) | slices 1 | failed slices 0 | rounds 2 | depth standard | RUNS: w1:completed, w2:completed" {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -556,7 +576,7 @@ func TestKbSurvey_GatherKeepsTheTop120AndCountsTheCut(t *testing.T) {
 	if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120" {
 		t.Errorf("coverage = %q %q, want partial with 30 beyond the cap", cov, unc)
 	}
-	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 (cut 0, over guide limit 0, document fits 0) | slices 10 | failed slices 0 | rounds 11 | RUNS: ") {
+	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 (cut 0, over guide limit 0, document fits 0) | slices 10 | failed slices 0 | rounds 11 | depth standard | RUNS: ") {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -661,6 +681,43 @@ func TestKbSurvey_MovesAndMissingLinesAreStrippedFromTheAnswer(t *testing.T) {
 			}
 			if !strings.HasPrefix(out, "One document:") {
 				t.Errorf("want the composed answer kept:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestKbSurvey_SentencesAboutTheProtocolAreStrippedFromTheAnswer: measured,
+// the composing round wrote a sentence saying it had left out the MOVES and
+// MISSING lines, and the strip only took lines that start with a label. Any
+// sentence naming MOVES, MISSING, COMPOSE, FITS or SET ASIDE in capitals
+// outside a link goes, on a line of its own, as a list item, or beside
+// ordinary prose, which stays; lower-case words and a cited title stay.
+func TestKbSurvey_SentencesAboutTheProtocolAreStrippedFromTheAnswer(t *testing.T) {
+	a := docID(1)
+	link := "[A](loom:doc/" + a + "?scope=tenant)"
+	for name, tc := range map[string]struct{ text, want string }{
+		"own line": {"One document: " + link + ".\n\nI've omitted the MOVES and MISSING lines as instructed…",
+			"One document: " + link + "."},
+		"bulleted": {"One document: " + link + ".\n- I've left out the MOVES and MISSING lines, as asked.\n- Second point stays.",
+			"One document: " + link + ".\n- Second point stays."},
+		"beside prose": {"One document: " + link + ". I've omitted the MOVES and MISSING lines. It is the guide.",
+			"One document: " + link + ". It is the guide."},
+		"bold note": {"One document: " + link + ".\n**Note:** the FITS and SET ASIDE lines and the COMPOSE block are not repeated.",
+			"One document: " + link + "."},
+		"ordinary prose": {"One document: " + link + ". Nothing is missing from it, and it fits; its moves are listed.",
+			"One document: " + link + ". Nothing is missing from it, and it fits; its moves are listed."},
+		"cited title": {"- [FITS headers](loom:doc/" + a + "?scope=tenant): describes the FITS format.",
+			"- [FITS headers](loom:doc/" + a + "?scope=tenant): describes the FITS format."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &surveyFake{
+				rows:   map[string][]map[string]any{"P": hits(a)},
+				screen: fitsOf(a),
+				write:  func([]string) surveyReply { return surveyReply{text: tc.text} },
+			}
+			out := runSurvey(t, f, surveyQuestion)
+			if body := strings.SplitN(out, "\n\nCOVERAGE:", 2)[0]; body != tc.want {
+				t.Errorf("answer = %q, want %q", body, tc.want)
 			}
 		})
 	}
@@ -825,9 +882,15 @@ func TestKbSurvey_UntrustedQuestionGoesToTheWalkerByReferenceOnly(t *testing.T) 
 		if !strings.Contains(prompt, framing) {
 			t.Errorf("walker run %d's prompt lacks the caller's trusted framing %q:\n%s", i+1, framing, prompt)
 		}
+		u, _ := s["untrusted"].([]any)
 		b, _ := json.Marshal(s["untrusted"])
-		if string(b) != `[{"ref":"input"}]` {
-			t.Errorf("walker run %d: untrusted = %s, want [{\"ref\":\"input\"}]", i+1, b)
+		if len(u) == 0 || !strings.HasPrefix(string(b), `[{"ref":"input"}`) {
+			t.Errorf("walker run %d: untrusted = %s, want the question by reference first", i+1, b)
+		}
+		// The composing round also gets the briefs code read, as a block of
+		// their own after the question; a screening round gets nothing more.
+		if want := map[bool]int{true: 2, false: 1}[isWrite(s)]; len(u) != want {
+			t.Errorf("walker run %d: untrusted = %s, want %d entries", i+1, b, want)
 		}
 	}
 }
@@ -1140,10 +1203,10 @@ func TestKbSurvey_GatherFailureFallsBackToAPlainWalk(t *testing.T) {
 	}{
 		"search throws": {&surveyFake{searchErr: "Document: search: the store is unavailable"},
 			"UNCOVERED: the candidates were not gathered",
-			"SURVEY: gather failed (Document: search: the store is unavailable) | rounds 1 | RUNS: w1:completed"},
+			"SURVEY: gather failed (Document: search: the store is unavailable) | rounds 1 | depth standard | RUNS: w1:completed"},
 		"nothing found": {&surveyFake{},
 			"UNCOVERED: the searches found no candidates",
-			"SURVEY: candidates 0 (cut 0) | rounds 1 | RUNS: w1:completed"},
+			"SURVEY: candidates 0 (cut 0) | rounds 1 | depth standard | RUNS: w1:completed"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tc.f.walk = []surveyReply{{text: "Two documents: [A](loom:doc/" + docID(1) + "?scope=tenant).\nCOVERAGE: complete\nMOVES: search\nMISSING: none"}}

@@ -82,6 +82,8 @@ type docxWriter struct {
 	lists    []docxList // one numbering instance per list
 	media    map[string]docxMedia
 	textW    int64 // text width in EMU, the widest a picture is drawn
+	// headerFooter says the style's header and footer parts are written.
+	headerFooter bool
 }
 
 type docxList struct {
@@ -105,7 +107,7 @@ func writeDOCX(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	zw := zip.NewWriter(cw)
 	pw, _ := pageTwips(opts.PageSize)
 	x := &docxWriter{d: d, opts: opts, linkIDs: map[string]int{}, media: map[string]docxMedia{},
-		textW: int64(pw-2*docxMarginTw) * emuPerInch / twipsPerInch}
+		textW: int64(pw-2*docxMargin(d.Style)) * emuPerInch / twipsPerInch}
 	for i, im := range d.Images {
 		m := docxMedia{img: im, relID: "rImg" + strconv.Itoa(i+1), contentExt: imageExt[im.MediaType]}
 		if cfg, _, err := image.DecodeConfig(bytes.NewReader(im.Data)); err == nil && cfg.Width > 0 && cfg.Height > 0 {
@@ -113,6 +115,10 @@ func writeDOCX(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 		}
 		x.media[im.Name] = m
 	}
+
+	// The style's header and footer parts, decided before document.xml,
+	// whose section refers to them.
+	x.headerFooter = d.Style != nil && (d.Style.header() != "" || d.Style.footer() != "" || d.Style.pageNumbers())
 
 	// document.xml first: it decides the hyperlinks and lists the other
 	// parts name.
@@ -132,10 +138,24 @@ func writeDOCX(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 		{"docProps/core.xml", x.coreProps()},
 		{"docProps/app.xml", docxAppProps},
 		{"word/_rels/document.xml.rels", x.documentRels()},
-		{"word/styles.xml", docxStyles},
+		{"word/styles.xml", docxStylesFor(d.Style)},
 		{"word/numbering.xml", x.numbering()},
 		{"word/settings.xml", docxSettings},
 		{"word/fontTable.xml", docxFontTable},
+	}
+	if x.headerFooter {
+		// The style's header and footer as their own parts; the footer's
+		// page number is the writer's one field (§12.1).
+		parts = append(parts,
+			struct {
+				name string
+				body string
+			}{"word/header1.xml", docxHeaderFooter("hdr", d.Style.header(), false)},
+			struct {
+				name string
+				body string
+			}{"word/footer1.xml", docxHeaderFooter("ftr", d.Style.footer(), d.Style.pageNumbers())},
+		)
 	}
 	if d.Embed != nil {
 		// The record as a custom XML part (D21): data Word keeps with the
@@ -234,6 +254,14 @@ func (x *docxWriter) document() {
 	x.s(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>`)
 	d := x.d
 
+	// The style's logo above the title.
+	if im, ok := d.logo(); ok {
+		if m := x.media[im.Name]; m.ok {
+			x.s(`<w:p>`)
+			x.imageWidth(Node{Kind: KindImage, Asset: im.Name, Alt: "logo"}, int64(d.Style.logoMM()*36000))
+			x.s(`</w:p>`)
+		}
+	}
 	// The title, with the Draft or Review label beside it (D15).
 	x.s(`<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr>`)
 	x.bookmarkStart(d.Anchor)
@@ -267,8 +295,12 @@ func (x *docxWriter) document() {
 		x.section(s)
 	}
 	pw, ph := pageTwips(x.opts.PageSize)
-	m := strconv.Itoa(docxMarginTw)
-	x.s(`<w:sectPr><w:pgSz w:w="` + strconv.Itoa(pw) + `" w:h="` + strconv.Itoa(ph) + `"/><w:pgMar w:top="` + m + `" w:right="` + m + `" w:bottom="` + m + `" w:left="` + m + `" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>`)
+	m := strconv.Itoa(docxMargin(d.Style))
+	x.s(`<w:sectPr>`)
+	if x.headerFooter {
+		x.s(`<w:headerReference w:type="default" r:id="rHdr1"/><w:footerReference w:type="default" r:id="rFtr1"/>`)
+	}
+	x.s(`<w:pgSz w:w="` + strconv.Itoa(pw) + `" w:h="` + strconv.Itoa(ph) + `"/><w:pgMar w:top="` + m + `" w:right="` + m + `" w:bottom="` + m + `" w:left="` + m + `" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>`)
 	x.s(`</w:body></w:document>`)
 }
 
@@ -608,13 +640,21 @@ func (x *docxWriter) runP(text string, p runProps) {
 
 // image writes a picture inline, scaled down to the text width. One whose
 // size cannot be read is its alt text.
-func (x *docxWriter) image(n Node) {
+func (x *docxWriter) image(n Node) { x.imageWidth(n, 0) }
+
+// imageWidth writes a picture inline, at width EMU when width is set (the
+// style's logo), else at its own size; never wider than the text.
+func (x *docxWriter) imageWidth(n Node, width int64) {
 	m, ok := x.media[n.Asset]
 	if !ok || !m.ok {
 		x.run("["+oneLine(n.Alt)+"]", "")
 		return
 	}
 	cx, cy := int64(m.w)*emuPerPixel, int64(m.h)*emuPerPixel
+	if width > 0 && cx > 0 {
+		cy = cy * width / cx
+		cx = width
+	}
 	if cx > x.textW {
 		cy = cy * x.textW / cx
 		cx = x.textW
@@ -653,6 +693,10 @@ func (x *docxWriter) contentTypes() string {
 	b.WriteString(`<Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/>`)
 	b.WriteString(`<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>`)
 	b.WriteString(`<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>`)
+	if x.headerFooter {
+		b.WriteString(`<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>`)
+		b.WriteString(`<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>`)
+	}
 	if x.d.Embed != nil {
 		b.WriteString(`<Override PartName="/customXml/itemProps1.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml"/>`)
 	}
@@ -674,6 +718,10 @@ func (x *docxWriter) documentRels() string {
 	b.WriteString(`<Relationship Id="rNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>`)
 	b.WriteString(`<Relationship Id="rSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>`)
 	b.WriteString(`<Relationship Id="rFonts" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>`)
+	if x.headerFooter {
+		b.WriteString(`<Relationship Id="rHdr1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>`)
+		b.WriteString(`<Relationship Id="rFtr1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>`)
+	}
 	if x.d.Embed != nil {
 		b.WriteString(`<Relationship Id="rCustom1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml" Target="../customXml/item1.xml"/>`)
 	}
@@ -720,6 +768,7 @@ const docxSettings = xml.Header + `<w:settings xmlns:w="http://schemas.openxmlfo
 const docxFontTable = xml.Header + `<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
 	`<w:font w:name="Noto Sans"><w:altName w:val="Calibri"/><w:charset w:val="00"/><w:family w:val="swiss"/><w:pitch w:val="variable"/></w:font>` +
 	`<w:font w:name="Noto Sans Mono"><w:altName w:val="Consolas"/><w:charset w:val="00"/><w:family w:val="modern"/><w:pitch w:val="fixed"/></w:font>` +
+	`<w:font w:name="Noto Serif"><w:altName w:val="Georgia"/><w:charset w:val="00"/><w:family w:val="roman"/><w:pitch w:val="variable"/></w:font>` +
 	`</w:fonts>`
 
 // numbering is one abstract list per kind (bullet, decimal) and one
@@ -788,5 +837,77 @@ func docxHeadingStyles() string {
 		s := strconv.Itoa(sz)
 		fmt.Fprintf(&b, `<w:style w:type="paragraph" w:styleId="Heading%s"><w:name w:val="heading %s"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="%d"/></w:pPr><w:rPr><w:b/><w:sz w:val="%s"/><w:szCs w:val="%s"/></w:rPr></w:style>`, n, n, i, s, s)
 	}
+	return b.String()
+}
+
+// docxMargin is the page margin in twips: the style's, else one inch.
+func docxMargin(st *Style) int {
+	if st == nil || st.Page.MarginMM == 0 {
+		return docxMarginTw
+	}
+	return int(st.Page.MarginMM * twipsPerInch / 25.4)
+}
+
+// docxStylesFor is styles.xml for a style: the built-in look, its font,
+// size and colours replaced by the style's. Every value is a checked one: a
+// hex colour, a size in range, one of two font names.
+func docxStylesFor(st *Style) string {
+	if st == nil {
+		return docxStyles
+	}
+	font := "Noto Sans"
+	if st.serif() {
+		font = "Noto Serif"
+	}
+	half := strconv.Itoa(int(st.BaseSize()*2 + 0.5))
+	color := strings.ToUpper(strings.TrimPrefix(st.textColor(), "#"))
+	s := docxStyles
+	s = strings.Replace(s, `<w:rFonts w:ascii="Noto Sans" w:hAnsi="Noto Sans" w:eastAsia="Noto Sans" w:cs="Noto Sans"/><w:sz w:val="21"/><w:szCs w:val="21"/>`,
+		`<w:rFonts w:ascii="`+font+`" w:hAnsi="`+font+`" w:eastAsia="`+font+`" w:cs="`+font+`"/><w:color w:val="`+color+`"/><w:sz w:val="`+half+`"/><w:szCs w:val="`+half+`"/>`, 1)
+	s = strings.Replace(s, docxHeadingStyles(), docxHeadingStylesFor(st), 1)
+	s = strings.Replace(s, `<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:rPr><w:color w:val="1D4ED8"/>`,
+		`<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:rPr><w:color w:val="`+strings.ToUpper(strings.TrimPrefix(st.linkColor(), "#"))+`"/>`, 1)
+	return s
+}
+
+// docxHeadingStylesFor is Heading 1…6 at the style's scale and colour.
+func docxHeadingStylesFor(st *Style) string {
+	sizes := []int{32, 28, 24, 22, 21, 21}
+	color := strings.ToUpper(strings.TrimPrefix(st.headingColor(), "#"))
+	var b strings.Builder
+	for i, sz := range sizes {
+		n := strconv.Itoa(i + 1)
+		s := strconv.Itoa(int(float64(sz)*st.headScale() + 0.5))
+		fmt.Fprintf(&b, `<w:style w:type="paragraph" w:styleId="Heading%s"><w:name w:val="heading %s"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="%d"/></w:pPr><w:rPr><w:b/><w:color w:val="%s"/><w:sz w:val="%s"/><w:szCs w:val="%s"/></w:rPr></w:style>`, n, n, i, color, s, s)
+	}
+	return b.String()
+}
+
+// docxHeaderFooter is a header or footer part: the style's line as text,
+// and in the footer the page number, a PAGE field. It is the one field the
+// writer writes, and its instruction is the writer's own: no text of the
+// document or the style reaches it (§12.1).
+func docxHeaderFooter(kind, line string, pageNumber bool) string {
+	root, align := "w:hdr", "right"
+	if kind == "ftr" {
+		root, align = "w:ftr", "left"
+	}
+	var b strings.Builder
+	b.WriteString(xml.Header)
+	b.WriteString(`<` + root + ` xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:pPr><w:jc w:val="` + align + `"/>`)
+	if pageNumber {
+		b.WriteString(`<w:tabs><w:tab w:val="right" w:pos="9000"/></w:tabs>`)
+	}
+	b.WriteString(`</w:pPr>`)
+	run := func(t string) {
+		b.WriteString(`<w:r><w:rPr><w:color w:val="6E6E6E"/><w:sz w:val="16"/></w:rPr><w:t xml:space="preserve">` + xmlText(t) + `</w:t></w:r>`)
+	}
+	if line != "" {
+		run(line)
+	}
+	if pageNumber {
+		b.WriteString(`<w:r><w:tab/></w:r><w:fldSimple w:instr=" PAGE "><w:r><w:rPr><w:color w:val="6E6E6E"/><w:sz w:val="16"/></w:rPr><w:t>1</w:t></w:r></w:fldSimple>`)
+	}
+	b.WriteString(`</w:p></` + root + `>`)
 	return b.String()
 }

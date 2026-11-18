@@ -116,6 +116,9 @@ type annotationRecord struct {
 	WrittenBy       string `json:"written_by"`
 	// Folder is the Path folder a path record annotates.
 	Folder string `json:"folder,omitempty"`
+	// Basis is how a node record (scheme, concept, class) was written: written,
+	// thin or declared (document_annotation_nodes.go). Empty on every other level.
+	Basis string `json:"basis,omitempty"`
 	// Stale is computed on read: the current inputs hash differs from the stored
 	// one. Absent where the read did not compute it.
 	Stale *bool `json:"stale,omitempty"`
@@ -128,7 +131,7 @@ type annotationRecord struct {
 
 const annotationSelectCols = `a.chunk_id, c.document_id, a.level, a.brief, a.abstract, a.language, a.class,
 	a.ontology_version, a.inputs_sha256, a.prompt_version, a.model, a.manual, a.written_at, a.written_by,
-	a.folder, a.covers`
+	a.folder, a.covers, a.basis`
 
 // annotationFrom is the FROM clause every record read uses: a record whose chunk
 // is gone is an orphan and is never returned.
@@ -150,6 +153,7 @@ func scanAnnotationRecord(r []any) annotationRecord {
 	if c := asStr(r[15]); c != "" {
 		rec.covers = parseCovers(c)
 	}
+	rec.Basis = asStr(r[16])
 	return rec
 }
 
@@ -273,6 +277,8 @@ type annotationTarget struct {
 	docTitle string
 	docType  string
 	rootID   string
+	// node is set for a node level (scheme, concept, class).
+	node *annotationNode
 }
 
 // annotationScope reads the records, documents and languages one call needs
@@ -287,6 +293,14 @@ type annotationScope struct {
 	// onto is the tenant ontology, read once (nil until then; ontoRead says it was).
 	onto     *OntologyRead
 	ontoRead bool
+	// plan is the node statistics plan a node level reads (nil until then);
+	// docTypes the member documents' types it has read.
+	plan     *nodeStatsPlan
+	docTypes map[string]string
+	// readList is the caller's read list when it limits reading (listRead says it
+	// was derived): the node records' withholding check.
+	readList *docReadList
+	listRead bool
 }
 
 // ontology is the tenant ontology in force, or nil without one.
@@ -342,7 +356,7 @@ type annDoc struct {
 
 func (d *Document) newAnnotationScope(key sqlmem.ScopeKey, mscope store.MemoryScope) *annotationScope {
 	return &annotationScope{d: d, key: key, mscope: mscope, docs: map[string]annDoc{},
-		langs: map[string]string{}, bodies: map[string]chunkBody{}}
+		langs: map[string]string{}, bodies: map[string]chunkBody{}, docTypes: map[string]string{}}
 }
 
 func (s *annotationScope) doc(ctx context.Context, id string) (annDoc, bool, error) {
@@ -639,6 +653,9 @@ func (s *annotationScope) relations(ctx context.Context, docID string, acl *docA
 // under the prompt version it was written with (a newer prompt is the driver's
 // to know about, through annotation_inputs).
 func (s *annotationScope) stale(ctx context.Context, rec annotationRecord) (bool, error) {
+	if isNodeAnnotationLevel(rec.Level) {
+		return s.nodeStale(ctx, rec)
+	}
 	if rec.Level == annotationLevelPath {
 		if rec.Folder == "" {
 			return true, nil
@@ -679,6 +696,9 @@ func (s *annotationScope) targetOf(ctx context.Context, chunkID, level string) (
 // root. level defaults to what the chunk is.
 func (d *Document) resolveAnnotationTarget(ctx context.Context, s *annotationScope, op string, in docInput, needLevel bool) (annotationTarget, *tools.Result) {
 	fail := func(r tools.Result) (annotationTarget, *tools.Result) { return annotationTarget{}, &r }
+	if isNodeAnnotationLevel(in.Level) {
+		return d.resolveNodeAnnotationTarget(ctx, s, op, in)
+	}
 	chunkID := in.ID
 	if chunkID == "" {
 		if in.DocumentID == "" && in.Path == "" {
@@ -706,7 +726,7 @@ func (d *Document) resolveAnnotationTarget(ctx context.Context, s *annotationSco
 			return fail(errValidation(op+": a folder's annotation is addressed by its path with level path", ""))
 		}
 	default:
-		return fail(errValidation(op+": level must be branch, document or path", ""))
+		return fail(errValidation(op+": level must be branch, document, path, scheme, concept or class", ""))
 	}
 	t, ok, err := s.targetOf(ctx, chunkID, level)
 	if err != nil {
@@ -804,6 +824,9 @@ func (d *Document) annotationInputsOp(ctx context.Context, key sqlmem.ScopeKey, 
 	if refused != nil {
 		return *refused, nil
 	}
+	if t.node != nil {
+		return d.nodeAnnotationInputsOp(ctx, s, t, in.PromptVersion)
+	}
 	got, err := s.inputs(ctx, t, in.PromptVersion, bodyChars, d.newDocACL(ctx, key), true)
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
@@ -875,6 +898,9 @@ func (d *Document) setAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 	}
 	if t.level == annotationLevelPath {
 		return errValidation(op+": a folder's annotation is written by its path with level path", ""), nil
+	}
+	if t.node != nil {
+		return d.setNodeAnnotation(ctx, s, t, in, brief, abstract)
 	}
 	cur, err := s.inputs(ctx, t, in.PromptVersion, 0, nil, false)
 	if err != nil {
@@ -968,7 +994,7 @@ func (d *Document) getAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 		return errFrom(op+": "+err.Error(), err), nil
 	}
 	out := []annotationRecord{}
-	for _, lvl := range []string{annotationLevelDocument, annotationLevelPath, annotationLevelBranch} {
+	for _, lvl := range append([]string{annotationLevelDocument, annotationLevelPath, annotationLevelBranch}, nodeAnnotationLevels...) {
 		rec, ok := recs[t.chunk.ID][lvl]
 		if !ok {
 			continue
@@ -985,6 +1011,15 @@ func (d *Document) getAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 			return errFrom(op+": "+err.Error(), err), nil
 		}
 		rec.Stale = &stale
+		if isNodeAnnotationLevel(lvl) {
+			shown, reported, err := s.nodeRecordShown(ctx, acl, rec, stale)
+			if err != nil {
+				return errFrom(op+": "+err.Error(), err), nil
+			} else if !shown {
+				continue
+			}
+			rec.Stale = reported
+		}
 		out = append(out, rec)
 	}
 	return jsonResult(map[string]any{"annotations": out})
@@ -997,7 +1032,7 @@ func (d *Document) deleteAnnotation(ctx context.Context, key sqlmem.ScopeKey, ms
 			"Delete it from the console."), nil
 	}
 	if in.Level == "" {
-		return errValidation(op+": missing required field: level (branch, document or path)", ""), nil
+		return errValidation(op+": missing required field: level (branch, document, path, scheme, concept or class)", ""), nil
 	}
 	if in.Level == annotationLevelPath && in.ID == "" {
 		root, refused := d.folderRecordChunk(ctx, key, op, in.Path)
@@ -1012,7 +1047,9 @@ func (d *Document) deleteAnnotation(ctx context.Context, key sqlmem.ScopeKey, ms
 	s := d.newAnnotationScope(key, mscope)
 	t, refused := d.resolveAnnotationTarget(ctx, s, op, in, true)
 	if refused != nil {
-		return *refused, nil
+		if t, refused = d.retiredNodeTarget(ctx, key, in, *refused); refused != nil {
+			return *refused, nil
+		}
 	}
 	recs, err := d.annotationRecordsFor(ctx, key, []string{t.chunk.ID}, t.level)
 	if err != nil {
@@ -1047,11 +1084,12 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 	var args []any
 	switch in.Level {
 	case "":
-	case annotationLevelBranch, annotationLevelDocument, annotationLevelPath:
+	case annotationLevelBranch, annotationLevelDocument, annotationLevelPath,
+		annotationLevelScheme, annotationLevelConcept, annotationLevelClass:
 		where = append(where, "a.level = ?")
 		args = append(args, in.Level)
 	default:
-		return errValidation(op+": level must be branch, document or path", ""), nil
+		return errValidation(op+": level must be branch, document, path, scheme, concept or class", ""), nil
 	}
 	if in.DocumentID != "" {
 		where = append(where, "c.document_id = ?")
@@ -1099,11 +1137,25 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 		checked, truncated := 0, false
 		for _, r := range res.Rows {
 			rec := scanAnnotationRecord(r)
+			// A node record's staleness is not counted for a reader with read
+			// limits: nodeRecordShown says why.
+			countStale := !(limited && isNodeAnnotationLevel(rec.Level))
 			if limited {
 				if ok, err := acl.readable(ctx, rec.DocumentID); err != nil {
 					return errFrom(op+": "+err.Error(), err), nil
 				} else if !ok {
 					continue
+				}
+				if isNodeAnnotationLevel(rec.Level) {
+					stale, err := s.stale(ctx, rec)
+					if err != nil {
+						return errFrom(op+": "+err.Error(), err), nil
+					}
+					if shown, _, err := s.nodeRecordShown(ctx, acl, rec, stale); err != nil {
+						return errFrom(op+": "+err.Error(), err), nil
+					} else if !shown {
+						continue
+					}
 				}
 			}
 			c := counts[rec.Level]
@@ -1114,6 +1166,9 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 			c["total"]++
 			if rec.Manual {
 				c["manual"]++
+			}
+			if !countStale {
+				continue
 			}
 			if checked >= maxSummarizeStaleChecks {
 				truncated = true
@@ -1162,10 +1217,20 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
-		if in.Stale && !stale {
+		rec.Stale = &stale
+		if isNodeAnnotationLevel(rec.Level) {
+			shown, reported, err := s.nodeRecordShown(ctx, acl, rec, stale)
+			if err != nil {
+				return errFrom(op+": "+err.Error(), err), nil
+			} else if !shown {
+				continue
+			}
+			rec.Stale = reported
+		}
+		// A record whose staleness the caller is not told never matches the filter.
+		if in.Stale && (rec.Stale == nil || !*rec.Stale) {
 			continue
 		}
-		rec.Stale = &stale
 		out = append(out, rec)
 	}
 	resp := map[string]any{"annotations": out}

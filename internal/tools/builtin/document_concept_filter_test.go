@@ -34,10 +34,16 @@ type conceptFixture struct {
 
 func newConceptFixture(t *testing.T, d *Document, base context.Context) *conceptFixture {
 	t.Helper()
+	return newConceptFixtureMD(t, d, base, conceptOntologyMD)
+}
+
+// newConceptFixtureMD is newConceptFixture over the ontology text md.
+func newConceptFixtureMD(t *testing.T, d *Document, base context.Context, md string) *conceptFixture {
+	t.Helper()
 	vs := newVectorStore(d.Store)
 	d.Store = &ftsStore{vs}
 	d.Embedder = newFakeEmbedder("fake", "m1", "risk", "note")
-	op := installTenantOntology(t, d, base, conceptOntologyMD, memrank.OntologyConfirmedStatus)
+	op := installTenantOntology(t, d, base, md, memrank.OntologyConfirmedStatus)
 	read, ok := d.tenantOntologyRead(op)
 	if !ok || !read.Confirmed {
 		t.Fatalf("ontology not confirmed: %#v", read)

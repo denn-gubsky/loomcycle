@@ -80,6 +80,7 @@ type fileTwinArgs struct {
 	PageSize   string `json:"page_size,omitempty"`
 	Language   string `json:"language,omitempty"`
 	Metadata   string `json:"metadata,omitempty"`
+	Style      string `json:"style,omitempty"`
 }
 
 type fileTwinInput struct {

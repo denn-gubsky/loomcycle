@@ -247,3 +247,25 @@ func TestDocumentExport_MetadataEmbedIsOptIn(t *testing.T) {
 		t.Error("a download without metadata carries a record")
 	}
 }
+
+// ?style= writes the download in a house style of the tenant (RFC GR P4c);
+// a style that is not there is a bad parameter, the same 400 for one that
+// is missing as for one the person may not read.
+func TestDocumentExport_WritesAHouseStyle(t *testing.T) {
+	ts, _ := exportFixture(t)
+	id := exportDoc(t, ts, false)
+	style := "# House\n\n```json\n{\"loomcycle_style\": 1, \"footer\": \"Acme internal\", \"colors\": {\"link\": \"#aa0000\"}}\n```\n"
+	body, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "tenant", "path": "/render/styles/house", "markdown": style})
+	r := postAdmin(t, ts, "/v1/_document", string(body))
+	r.Body.Close()
+	if r.StatusCode != 200 {
+		t.Fatalf("put style: %d", r.StatusCode)
+	}
+	resp, page := getExport(t, ts, id+"?scope=user&format=html&style=/render/styles/house")
+	if resp.StatusCode != 200 || !bytes.Contains(page, []byte(`<p class="style-footer">Acme internal</p>`)) || !bytes.Contains(page, []byte("a{color:#aa0000}")) {
+		t.Fatalf("styled download: %d\n%s", resp.StatusCode, page)
+	}
+	if resp, body := getExport(t, ts, id+"?scope=user&format=html&style=/render/styles/missing"); resp.StatusCode != 400 || !bytes.Contains(body, []byte("no style at")) {
+		t.Errorf("a missing style: %d %s, want 400", resp.StatusCode, body)
+	}
+}
