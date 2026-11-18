@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.159) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.160) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,15 +212,15 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.159.0) imports a rendered file back onto its
-document, renders documents in the tenant's house style, gives every
-taxonomy node statistics, series and an annotation, and has `kb/survey`
-read its summaries in code, `kb/ask` route dated questions and take a
-retrieval `depth`. Read the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.160.0) draws Mermaid diagrams as pictures in
+rendered files, extracts a sample of a file (chosen PDF pages, a character
+limit), imports a whole classification scheme into the ontology and plans an
+ontology change before it is made, and lets a tenant run a stricter
+access-control mode. Read the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.158.0 rendered documents as OpenDocument and EPUB with an
-embedded record, and added concept-scheme headers, deeper schemes and member
-counts to the ontology.
+Before it, v1.159.0 imported a rendered file back onto its document,
+rendered documents in the tenant's house style, and gave every taxonomy node
+statistics, series and an annotation.
 
 Before that, v1.155.0 rendered a Document back into a file: `File op=render`
 writes Markdown, HTML, Word or PDF (typeset by Typst in the conversion
