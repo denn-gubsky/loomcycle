@@ -16,7 +16,7 @@ import (
 // what agents use. Not on it, and so refused by this test: `volumes` (a host
 // path), `principals` and the `auth` keys that decide who gets in, `storage`
 // and `retention` (where data lives and when it is deleted), `acls`,
-// `acl_bindings` and `groups`, `hooks` (it holds the host-widening permits),
+// `acl_bindings`, `acl_modes` and `groups`, `hooks` (it holds the host-widening permits),
 // `webhooks`, and anything not thought of yet. `teams` is on it under a
 // narrower rule than the API's (unitTeamProblems).
 var unitTopLevelKeys = map[string]bool{
@@ -81,7 +81,7 @@ func TestUnits_EveryUnitSetsOnlyKeysAPresetMayCarry(t *testing.T) {
 // The check above must be able to fail: the keys it exists to keep out are
 // not on its list.
 func TestUnits_TheKeysThatDecideAccessAndDataAreNotOnTheList(t *testing.T) {
-	for _, key := range []string{"volumes", "principals", "retention", "storage", "acls", "acl_bindings", "groups", "hooks", "webhooks", "presets"} {
+	for _, key := range []string{"volumes", "principals", "retention", "storage", "acls", "acl_bindings", "acl_modes", "groups", "hooks", "webhooks", "presets"} {
 		if unitTopLevelKeys[key] {
 			t.Errorf("%q is allowed to units", key)
 		}

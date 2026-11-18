@@ -178,7 +178,7 @@ The table says, for each area, what is set in which plane and what is inferred. 
 | Config files and presets ([9e](#9e-config-layering--stacking-multiple-config-files-rfc-an), [9f](#9f-embedded-presets--bundles-rfc-aq)) | `LOOMCYCLE_CONFIG_DIR`, `LOOMCYCLE_PRESETS`, `LOOMCYCLE_CONFIG_STRICT`, `LOOMCYCLE_NO_DEFAULT_PROVIDERS`; the `--config` and `--preset` flags | `presets:`, in the primary config file only | With no `--config` and no yaml file in `LOOMCYCLE_CONFIG_DIR`, `loomcycle.yaml` is looked for in the working directory, then in `$XDG_CONFIG_HOME/loomcycle/`, then in `~/.config/loomcycle/` |
 | Listeners and addresses | `LOOMCYCLE_LISTEN_ADDR`, `LOOMCYCLE_GRPC_ADDR`, `LOOMCYCLE_METRICS_LISTEN`, `LOOMCYCLE_PUBLIC_URL` | none | none |
 | Authentication ([9b](#9b-multi-tenant-authentication-rfc-l)) | `LOOMCYCLE_AUTH_TOKEN`, `LOOMCYCLE_SECRET_KEY`, the variables that `token_env` and `client_secret_env` keys name; gates: `LOOMCYCLE_AUTH_MODE`, `LOOMCYCLE_ALLOW_OPEN_MODE` | `auth:` (`mode`, `gates`, `clients`, `login_origins`, `trusted_proxies`), `principals:` | Open mode (every caller accepted) when no token, principal or admin token exists; allowed on a loopback address only |
-| Access control | Gates: `LOOMCYCLE_ACL`, `LOOMCYCLE_OPERATOR_KEY_RESTRICTION`, `LOOMCYCLE_LIMITS_ENFORCE` | `acls:`, `groups:`, `acl_bindings:` | none |
+| Access control | Gates: `LOOMCYCLE_ACL`, `LOOMCYCLE_OPERATOR_KEY_RESTRICTION`, `LOOMCYCLE_LIMITS_ENFORCE` | `acls:`, `groups:`, `acl_bindings:`, `acl_modes:` | none |
 | Providers and routing (sections [1](#1-the-four-resolution-axes-overview) to [8](#8-conflict-resolution--what-wins-when), [`PROVIDERS.md`](PROVIDERS.md)) | Provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_API_KEY`); endpoints (`OLLAMA_BASE_URL`); `LOOMCYCLE_OLLAMA_LOCAL_NUM_CTX` | `providers:` (with each provider's `options`), `models:`, `tiers:`, `provider_priority:`, `user_tiers:`, `timeout_scaling:`, `pricing:`, `decision:` | A provider whose key is not set is skipped |
 | Agents, skills and help topics ([7](#7-agent-md-frontmatter-reference)) | Directories: `LOOMCYCLE_AGENTS_ROOT`, `LOOMCYCLE_SKILLS_ROOT`, `LOOMCYCLE_HELP_ROOT`, `LOOMCYCLE_CODE_AGENTS_ROOT` | `agents:`, `skills:`, `defaults:` | When `LOOMCYCLE_CONFIG_DIR` is set, its `agents/`, `skills/` and `help/` subdirectories are used where they exist and the variable is unset. A variable set to the empty string declines that. A `loomcycle.yaml` found by discovery brings no such directories |
 | Storage ([`POSTGRES.md`](POSTGRES.md)) | `LOOMCYCLE_PG_DSN`, `LOOMCYCLE_DATA_DIR`, `LOOMCYCLE_PG_AUTOMIGRATE`, the Postgres pool sizes | `storage:` (`backend` pins the store) | The store is Postgres when a connection string is set, SQLite otherwise |
@@ -1674,11 +1674,32 @@ acl_bindings:
   - { acl: support-tier-1, group: support, tenant: acme }
 ```
 
+#### A tenant's own mode (`acl_modes:`)
+
+`LOOMCYCLE_ACL` sets the mode for the whole deployment. `acl_modes:` raises it for the tenants it names (RFC EZ P5), so tenants can move to `enforce` one at a time before the operator sets `enforce` everywhere:
+
+```yaml
+acl_modes:
+  acme: enforce      # acme's requests and runs are decided by the engine
+  beta: compat       # under LOOMCYCLE_ACL=shadow: beta's explicit denies hold
+# every other tenant, and the legacy token and open mode (no tenant): LOOMCYCLE_ACL
+```
+
+- **Only stricter.** The modes are ordered by what they refuse: `shadow` < `compat` < `enforce`. Shadow comes first because it enforces no deny (it only logs one), while compat honours every explicit deny. An entry may only raise a tenant above `LOOMCYCLE_ACL`. One below it fails the load, so `loomcycle validate` and a reload refuse it too:
+  - under `compat`, a tenant may go to `enforce`;
+  - under `shadow`, a tenant may go to `compat` or `enforce`;
+  - under `enforce`, every tenant is `enforce`.
+
+  A tenant never loses an explicit deny through this map. An empty tenant id or an unknown mode is refused too.
+- **Whose tenant.** Requests are decided under the mode of their principal's tenant, on HTTP, MCP (`/v1/_mcp`) and gRPC. A run that outlives its request is decided under the mode of the tenant its start recorded: a resumed or queued run, and a schedule, webhook or A2A fire. An admin is held to its own tenant's mode, not to the tenant it focuses with `?tenant=`. The legacy `LOOMCYCLE_AUTH_TOKEN` and open mode have no tenant, so they keep `LOOMCYCLE_ACL`.
+- **Reading it.** `GET /v1/_me` reports `acl_mode` for the caller's tenant, and the Access console shows the same. The map is read from the live config, so a config reload applies it on the next request.
+- **Audit.** A tenant above `compat` makes the store-backed audit stream mandatory, as `LOOMCYCLE_ACL` above `compat` does (below).
+
 ### Audit trail
 
 Every audit record — token mints and revocations, sign-ins and gate management, approvals and links, ACL denials and edits, erasures, run-tree deletes, statement rulings, crypto and git operations, directory lookups, document moves — goes to one sink: a **store-backed stream**, the JSONL file of `LOOMCYCLE_AUDIT_LOG_PATH`, or both. SQL Memory's per-statement records go to the file only.
 
-**When the stream is on.** A sign-in gate (`auth.gates`), `auth.mode: strict`, a `LOOMCYCLE_ACL` other than `compat`, or **more than one principal** turns it on with no setting. Principals are counted from what load and boot can see: the legacy `LOOMCYCLE_AUTH_TOKEN`, each `principals:` entry whose `token_env` is set, and, at boot, each live operator token name in the store (more than one tenant implies more than one principal). A token minted later on a single-operator deployment takes effect at the next start. A config reload whose posture would require the stream on a server that started without it is refused (`candidate invalid … restart instead of reloading`). Config load (and so `loomcycle validate`) refuses such a deployment without `LOOMCYCLE_SECRET_KEY`, and the server **refuses to start** if it cannot open the stream: no store, or a store that cannot serve the tables. `LOOMCYCLE_AUDIT_STORE=0` is refused there. A single-operator deployment (the legacy token, no gate, `compat`) keeps the file-or-nothing behaviour unless `LOOMCYCLE_AUDIT_STORE=1`.
+**When the stream is on.** A sign-in gate (`auth.gates`), `auth.mode: strict`, a `LOOMCYCLE_ACL` or an `acl_modes:` entry other than `compat`, or **more than one principal** turns it on with no setting. Principals are counted from what load and boot can see: the legacy `LOOMCYCLE_AUTH_TOKEN`, each `principals:` entry whose `token_env` is set, and, at boot, each live operator token name in the store (more than one tenant implies more than one principal). A token minted later on a single-operator deployment takes effect at the next start. A config reload whose posture would require the stream on a server that started without it is refused (`candidate invalid … restart instead of reloading`). Config load (and so `loomcycle validate`) refuses such a deployment without `LOOMCYCLE_SECRET_KEY`, and the server **refuses to start** if it cannot open the stream: no store, or a store that cannot serve the tables. `LOOMCYCLE_AUDIT_STORE=0` is refused there. A single-operator deployment (the legacy token, no gate, `compat`) keeps the file-or-nothing behaviour unless `LOOMCYCLE_AUDIT_STORE=1`.
 
 **Upgrading (multi-principal).** A deployment with more than one principal — the legacy token beside a config principal or a minted operator token, two config principals, or several minted tokens — and no `LOOMCYCLE_SECRET_KEY` no longer starts (nor loads, when config principals alone make two): set `LOOMCYCLE_SECRET_KEY`. `LOOMCYCLE_AUDIT_STORE=0` is refused there too. Token mints, user creates and re-enables and access-control writes on such a deployment now fail with `503 audit_unavailable` when their audit row cannot be written (below).
 

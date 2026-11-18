@@ -2222,7 +2222,7 @@ func (s *Server) recordedCallerACL(ctx context.Context, o *aclOriginRecord, agen
 // another question than `run agent:` (a trigger's team walk): an unreadable
 // set is audited against surface.
 func (s *Server) recordedCallerACLFor(ctx context.Context, o *aclOriginRecord, surface authz.Surface) (context.Context, *authz.Effective, error) {
-	ctx = authz.WithMode(ctx, s.aclMode())
+	ctx = authz.WithMode(ctx, s.ACLModeFor(o.TenantID))
 	if o.Transport != "" {
 		ctx = authz.WithTransport(ctx, o.Transport)
 	}

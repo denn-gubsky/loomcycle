@@ -2,15 +2,16 @@ package config
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
 // AuditStoreRequired reports whether the deployment's posture makes the
 // store-backed audit stream (RFC FZ Part E) mandatory: a sign-in gate is
-// configured, auth.mode is strict, LOOMCYCLE_ACL is not compat, or more than
-// one principal is configured. Those are the deployments where who signed
-// in, minted a token or changed a rule is a question someone other than the
-// single operator will ask, so the stream is on without configuration and
+// configured, auth.mode is strict, LOOMCYCLE_ACL or a tenant's acl_modes
+// entry is not compat, or more than one principal is configured. Those are
+// the deployments where who signed in, minted a token or changed a rule is a
+// question someone other than the single operator will ask, so the stream is on without configuration and
 // boot refuses if it cannot open. A single-operator deployment (one
 // credential: the legacy token or one config principal, no gate, compat ACL)
 // keeps the file-or-nothing behaviour unless LOOMCYCLE_AUDIT_STORE=1.
@@ -36,6 +37,9 @@ func (c *Config) AuditStoreRequiredWith(storedPrincipals int) bool {
 // configured credentials; "" when it does not.
 func (c *Config) AuditRequiredReason(storedPrincipals int) string {
 	if r := auditPostureReason(len(c.ResolvedAuth.Gates) > 0, c.ResolvedAuth.Strict(), c.ResolvedAuth.StrictFromEnv(), c.Env.ACLMode); r != "" {
+		return r
+	}
+	if r := tenantACLModeReason(c.ACLModes); r != "" {
 		return r
 	}
 	if n := c.ConfiguredPrincipals() + storedPrincipals; n > 1 {
@@ -66,7 +70,28 @@ func (c *Config) AuditStoreEnabled() bool {
 func (c *Config) auditStoreOn(gates bool) bool {
 	strict := strings.EqualFold(strings.TrimSpace(c.Auth.Mode), AuthModeStrict) ||
 		strings.EqualFold(strings.TrimSpace(c.Env.AuthMode), AuthModeStrict)
-	return c.Env.AuditStore || auditPostureReason(gates, strict, false, c.Env.ACLMode) != "" || c.ConfiguredPrincipals() > 1
+	return c.Env.AuditStore || auditPostureReason(gates, strict, false, c.Env.ACLMode) != "" ||
+		tenantACLModeReason(c.ACLModes) != "" || c.ConfiguredPrincipals() > 1
+}
+
+// tenantACLModeReason names the first tenant (by id) whose acl_modes entry is
+// above compat, as auditPostureReason names LOOMCYCLE_ACL above compat: a
+// tenant on enforce is audited as a deployment on enforce is. Read from the
+// raw yaml, as auditStoreOn runs before the entries are validated.
+func tenantACLModeReason(modes map[string]string) string {
+	tenants := make([]string, 0, len(modes))
+	for t := range modes {
+		tenants = append(tenants, t)
+	}
+	sort.Strings(tenants)
+	for _, t := range tenants {
+		switch m := strings.ToLower(strings.TrimSpace(modes[t])); m {
+		case "", "compat":
+		default:
+			return "acl_modes." + t + " is " + m
+		}
+	}
+	return ""
 }
 
 // auditPostureReason names what requires the audit stream. strictFromEnv
