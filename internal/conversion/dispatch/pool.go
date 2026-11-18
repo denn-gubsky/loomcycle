@@ -480,13 +480,13 @@ func (d *Dispatcher) run(ctx context.Context, j *job) (result, error) {
 	}
 	j.ctx = ctx
 	j.id = strconv.FormatUint(d.jobs.Add(1), 10)
-	label := wire.LabelForJob(j.kind, j.format)
-	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT && len(j.pages) > 0 {
-		label = wire.LabelExtractPages
+	need := []string{wire.LabelForJob(j.kind, j.format)}
+	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT {
+		need = wire.ExtractLabels(j.mediaType, j.name, len(j.pages) > 0)
 	}
 	free, ambiguous := maxFreeRetries, 1
 	for {
-		s, err := d.acquire(ctx, label)
+		s, err := d.acquire(ctx, need...)
 		if err != nil {
 			switch {
 			case errors.Is(err, convert.ErrNoWorkers):

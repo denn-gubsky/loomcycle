@@ -63,6 +63,10 @@ type Options struct {
 	// local worker typesets and draws as this process would. Empty leaves a
 	// child its defaults, Typst and merman-cli from PATH.
 	WritePDF, Draw string
+	// DjVuText and DjVuInspect are the operator's DjVu helpers
+	// (transcription.ocr.djvu, RFC GV P3). Empty leaves a child its
+	// defaults, djvutxt and djvused from PATH.
+	DjVuText, DjVuInspect string
 	// OnRespawn is called each time a child is started again.
 	OnRespawn func()
 	Logger    *slog.Logger
@@ -219,6 +223,8 @@ func childEnv(opt Options) []string {
 		{"LOOMCYCLE_WORKER_ENCODE_COMMAND", opt.Encode},
 		{"LOOMCYCLE_WORKER_WRITE_COMMAND", opt.WritePDF},
 		{"LOOMCYCLE_WORKER_MERMAID_COMMAND", opt.Draw},
+		{"LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND", opt.DjVuText},
+		{"LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND", opt.DjVuInspect},
 		{"LOOMCYCLE_HELPER_WRAPPER", opt.Wrapper},
 	} {
 		if kv[1] != "" {
