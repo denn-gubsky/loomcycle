@@ -173,6 +173,50 @@ func TestSearchAnnotations_FollowTheRecords(t *testing.T) {
 	}
 }
 
+// TestSearchAnnotations_ReaderOutsideALargeRestrictedSetStillGetsAFullPage —
+// the leg sends the reader's access list with the query, as the passage leg
+// does. When it filtered only after the query's limit, a reader denied the
+// annotations nearest the question got an empty page although a readable one
+// matched: here the six denied documents fill the over-fetch of a limit of 1.
+func TestSearchAnnotations_ReaderOutsideALargeRestrictedSetStillGetsAFullPage(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	d.Store = &ftsStore{newVectorStore(d.Store)}
+	d.Embedder = newFakeEmbedder("fake", "m1", "pricing", "install")
+	op := annOperator(base)
+	mk := func(title, path, brief string) string {
+		out, r := docExec(t, d, op, fmt.Sprintf(`{"op":"create_document","scope":"tenant","title":%q,"path":%q,"type":"Guide"}`, title, path))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		doc := out["document_id"].(string)
+		if _, r := docExec(t, d, op, fmt.Sprintf(`{"op":"create_chunk","scope":"tenant","document_id":%q,"title":"Body","body":"text"}`, doc)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		in := annInputs(t, d, op, `"document_id":"`+doc+`"`)
+		if _, r := docExec(t, d, op, fmt.Sprintf(`{"op":"set_annotation","scope":"tenant","document_id":%q,"brief":%q,"abstract":%q,"inputs_sha256":%q}`,
+			doc, brief, brief, in["inputs_sha256"])); r.IsError {
+			t.Fatal(r.Text)
+		}
+		return doc
+	}
+	for i := 0; i < 6; i++ {
+		mk(fmt.Sprintf("Restricted %d", i), fmt.Sprintf("/kb/restricted/r%d", i), "pricing")
+	}
+	open := mk("Open", "/kb/open/a", "pricing install")
+
+	member := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"},
+		Resources: []string{"document:tenant:/kb/restricted/**"}}))
+	rows := searchRows(t, d, member, `{"op":"search","scope":"tenant","query":"pricing","annotations":"only","annotation_levels":["document"],"limit":1}`)
+	if len(rows) != 1 || rows[0]["document_id"] != open {
+		t.Fatalf("rows = %v, want the one readable document", rows)
+	}
+	// A reader the set does not limit gets the nearest annotation, as before.
+	rows = searchRows(t, d, op, `{"op":"search","scope":"tenant","query":"pricing","annotations":"only","annotation_levels":["document"],"limit":1}`)
+	if len(rows) != 1 || rows[0]["document_id"] == open {
+		t.Fatalf("operator rows = %v, want a restricted document first", rows)
+	}
+}
+
 // Index rows are kept for the tenant scope only: a copy into a user scope, whose
 // memory is erased by its own scope id, leaves none beside it.
 func TestSearchAnnotations_NoRowsOutsideTheTenantScope(t *testing.T) {
