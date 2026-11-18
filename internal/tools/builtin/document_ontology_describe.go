@@ -158,8 +158,8 @@ func (d *Document) describeOntology(ctx context.Context, withCounts, withStats b
 		d.describeCounts(ctx, key, acl, read, &out)
 	}
 	if withStats {
-		d.describeStats(ctx, key, read, &out)
-		d.describeSeries(ctx, key, read, &out)
+		p := d.describeStats(ctx, key, read, &out)
+		d.describeSeries(ctx, key, read, p, &out)
 	}
 	return jsonResult(out)
 }

@@ -40,9 +40,10 @@ package builtin
 //
 // READING (describe_ontology with_stats). Every reader of the ontology gets the same
 // statistics: nothing is withheld per reader. Only rows of unrestrictedFamily are
-// served; one stored before C8 reads as absent until the next pass. A stored
-// exemplar that is a member of no node now (it may have become restricted since the
-// row was computed) is left out of the answer.
+// served; one stored before C8 reads as absent until the next pass. A row whose
+// stored member set (members_sha256) is not the node's current one — a member
+// restricted, filed elsewhere or turned metadata-only since the pass — serves only
+// today's member count until the next pass (statsView).
 //
 // SQLite has one connection per scope: every read is made before the write
 // transaction opens.
@@ -89,8 +90,10 @@ const (
 // nodeStatsDDL is built per tier, like chunk_projection_basis: the centroid is
 // binary (float32 little-endian, the mean of the members' unit vectors), BLOB on
 // sqlite and BYTEA on postgres. exemplars, siblings and terms are JSON arrays.
-// members_sha256 is the hash of the sorted member ids alone: staleReason's way to
-// say the members moved.
+// members_sha256 is memberSetHash: the sorted member ids, each marked when it is
+// metadata-only. A read serves the row's figures only while it still equals the
+// node's current members' (statsView), so a document restricted after a pass, or
+// turned metadata-only, stops shaping what every reader sees at once.
 func nodeStatsDDL(binType string) string {
 	return `CREATE TABLE IF NOT EXISTS node_stats (
 		node_id TEXT NOT NULL, kind TEXT NOT NULL,
@@ -208,6 +211,20 @@ func (p *nodeStatsPlan) memberLine(id string) string {
 func (p *nodeStatsPlan) averaged(id string) bool {
 	d := p.docs[id]
 	return d == nil || !d.metadataOnly
+}
+
+// memberSetHash is a row's or record's stored member set: membersHash of the ids,
+// a metadata-only member's id followed by " metadata" (C9). With no metadata-only
+// member it equals membersHash(ids).
+func (p *nodeStatsPlan) memberSetHash(ids []string) string {
+	lines := make([]string, len(ids))
+	for i, id := range ids {
+		lines[i] = id
+		if !p.averaged(id) {
+			lines[i] += " metadata"
+		}
+	}
+	return membersHash(lines)
 }
 
 func membersHash(ids []string) string {
@@ -622,7 +639,7 @@ func (d *Document) NodeStatsPass(ctx context.Context, key sqlmem.ScopeKey, tenan
 		case !ok:
 			node.Status, node.Reason = "missing", "never computed"
 		case row.inputs != p.nodeHash(n):
-			node.Status, node.Reason = "stale", staleReason(row, n, p.model)
+			node.Status, node.Reason = "stale", p.staleReason(row, n)
 		}
 		if ok {
 			wv := row.withVector
@@ -720,13 +737,13 @@ func (d *Document) computeNodeStats(ctx context.Context, key sqlmem.ScopeKey, p 
 }
 
 // staleReason says which input of a stale row moved, as far as the row tells.
-func staleReason(row storedNodeStats, n statNode, model string) string {
+func (p *nodeStatsPlan) staleReason(row storedNodeStats, n statNode) string {
 	switch {
 	case !row.current():
 		return "computed before statistics left out restricted documents; not served until recomputed"
-	case row.embedModel != model:
+	case row.embedModel != p.model:
 		return "embed model changed"
-	case row.memberSHA != membersHash(n.members):
+	case row.memberSHA != p.memberSetHash(n.members):
 		return "members changed"
 	}
 	return "the node's definition or a member's annotation changed"
@@ -791,7 +808,7 @@ type nodeStatsRow struct {
 func (p *nodeStatsPlan) computeRow(n statNode, vecs map[string]nodestats.Vector, figures map[string]*nodeFigures) (nodeStatsRow, error) {
 	f := figures[nodeStatsKey(n.Kind, n.ID)]
 	row := nodeStatsRow{id: n.ID, kind: n.Kind, members: len(n.members), withVector: len(f.members),
-		embedModel: p.model, inputs: p.nodeHash(n), memberSHA: membersHash(n.members), countsOnly: true}
+		embedModel: p.model, inputs: p.nodeHash(n), memberSHA: p.memberSetHash(n.members), countsOnly: true}
 	if p.model == "" || f.centroid == nil {
 		return row, f.err
 	}
@@ -901,7 +918,15 @@ type nodeStatsView struct {
 	ComputedAt        int64             `json:"computed_at,omitempty"`
 	// Stale: an input of the row moved since it was computed.
 	Stale bool `json:"stale,omitempty"`
+	// Recomputing: the node's members are no longer the ones the row was computed
+	// from, so only today's member count is served until the next pass.
+	Recomputing string `json:"recomputing,omitempty"`
 }
+
+// nodeStatsRecomputing is Recomputing's text. One text for every cause (a member
+// restricted, filed elsewhere, turned metadata-only, or simply added), so the
+// answer does not say which.
+const nodeStatsRecomputing = "the node's members changed since these statistics were computed; spread, terms, exemplars and siblings return after the next node_stats pass"
 
 // nodeStatsTitled is an exemplar document.
 type nodeStatsTitled struct {
@@ -913,16 +938,17 @@ type nodeStatsTitled struct {
 // already counted: per concept and per document class, the stored row when one of
 // unrestrictedFamily is stored. Every reader gets the same view: the figures come
 // from unrestricted documents only. A store fault marks the answer partial, as the
-// counts do.
-func (d *Document) describeStats(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, out *ontologyDescription) {
+// counts do. It returns the plan, which describeSeries checks the series against;
+// nil when there is none.
+func (d *Document) describeStats(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, out *ontologyDescription) *nodeStatsPlan {
 	if _, _, err := d.resolveScope(ctx, "tenant"); err != nil {
-		return // describeCounts has said why
+		return nil // describeCounts has said why
 	}
 	p, err := d.buildNodeStatsPlan(ctx, key, read, "")
 	if err != nil {
 		out.Partial = true
 		out.Issues = append(out.Issues, "with_stats: the node statistics could not be read; read again")
-		return
+		return nil
 	}
 	names := map[string]string{}
 	for _, n := range p.nodes {
@@ -946,13 +972,22 @@ func (d *Document) describeStats(ctx context.Context, key sqlmem.ScopeKey, read 
 			out.Classes[i].Stats = view[nodeStatsKey(nodeKindClass, out.Classes[i].Name)]
 		}
 	}
+	return p
 }
 
-// statsView is n's stored row as every reader sees it. An exemplar that is a member
-// of no node now (p.docs holds exactly the current members, all unrestricted) is
-// left out: it may have become restricted after the row was computed, and until the
-// next pass its title is the one figure that would name it.
+// statsView is n's stored row as every reader sees it. The row's figures are served
+// only while its stored member set is the node's current one (memberSetHash): every
+// member then is still unrestricted, and still not metadata-only. Otherwise a
+// document restricted after the pass (a new deny, a set_path under a denied name)
+// would keep shaping the terms, spread, exemplars and siblings every reader sees
+// until the next pass, which the sweeper, off by default, may never run; so only
+// today's member count is served. This also hides the figures of a node that merely
+// gained a member: the safe direction, for one pass.
 func (p *nodeStatsPlan) statsView(n statNode, row storedNodeStats, names map[string]string) *nodeStatsView {
+	if row.memberSHA != p.memberSetHash(n.members) {
+		members := len(n.members)
+		return &nodeStatsView{Members: &members, ComputedAt: row.computedAt, Stale: true, Recomputing: nodeStatsRecomputing}
+	}
 	v := &nodeStatsView{Members: &row.members, MembersWithVector: &row.withVector, Spread: row.spread,
 		Terms: row.terms, ComputedAt: row.computedAt, Stale: row.inputs != p.nodeHash(n)}
 	for _, e := range row.exemplars {

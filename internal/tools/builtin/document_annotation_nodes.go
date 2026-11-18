@@ -23,8 +23,11 @@ package builtin
 // the documents every member of the tenant may read (RFC GM C8), a metadata-only
 // member counted but never an exemplar (C9). So the record — written, thin or
 // declared, fresh or stale — is shown to every reader of the ontology alike, with
-// its staleness. A written or thin record stored before C8 (its inputs_sha256 lacks
-// unrestrictedFamily) was written from every member, a restricted one included: it
+// its staleness, while it was written from the node's current members
+// (nodeRecordCurrent: a written or thin record keeps its member set at the end of
+// its inputs hash). A written or thin record stored before C8 (its inputs_sha256
+// lacks unrestrictedFamily) was written from every member, a restricted one
+// included, and one written before a member was restricted since may quote it: it
 // is shown to no one until the annotator writes it again, unless an operator wrote
 // it by hand (manual), which the annotator never overwrites.
 //
@@ -409,7 +412,10 @@ func (s *annotationScope) nodeInputs(ctx context.Context, n *annotationNode, pro
 	}
 	row, hasRow := p.stored[n.statKey]
 	hasRow = hasRow && row.current() // a row from before C8 is no row
-	usable := hasRow && row.memberSHA == membersHash(n.members)
+	// The stored set carries each member's metadata-only mark (memberSetHash): a
+	// member turned metadata-only since the pass makes the row's exemplars and terms
+	// unusable, as a member restricted since does (C9, C8).
+	usable := hasRow && row.memberSHA == p.memberSetHash(n.members)
 	if hasRow {
 		switch {
 		case !usable:
@@ -499,8 +505,34 @@ func (s *annotationScope) nodeInputs(ctx context.Context, n *annotationNode, pro
 	canon.Siblings = append(canon.Siblings, in.Siblings...)
 	canon.Terms = append(canon.Terms, in.Terms...)
 	raw, _ := json.Marshal(canon)
-	in.InputsSHA256 = unrestrictedFamily + sha256Hex(string(raw))
+	in.InputsSHA256 = unrestrictedFamily + sha256Hex(string(raw)) + nodeRecordMembersSep + p.memberSetHash(n.members)
 	return in, nil
+}
+
+// nodeRecordMembersSep ends a written or thin record's inputs hash and starts its
+// member set (memberSetHash), kept readable so a read can compare it with the
+// node's current members without the rest of the request (nodeRecordCurrent).
+const nodeRecordMembersSep = "/m:"
+
+// nodeRecordCurrent reports whether rec, a record of a node whose current members
+// are members, may be served. A declared record names no member and a manual one is
+// an operator's own text. A written or thin one is served only when it is of
+// unrestrictedFamily and was written from exactly today's members: one written
+// before a member was restricted (a deny, a set_path under a denied name) or turned
+// metadata-only would otherwise keep its text — drawn from that member's brief —
+// in front of every reader until the annotator writes it again. A record written
+// before its member set was kept in the hash has none and is not served either.
+// One that merely gained a member is withheld too, until rewritten: the safe
+// direction.
+func nodeRecordCurrent(rec annotationRecord, p *nodeStatsPlan, members []string) bool {
+	if rec.Basis == annotationBasisDeclared || rec.Manual {
+		return true
+	}
+	if !strings.HasPrefix(rec.InputsSHA256, unrestrictedFamily) {
+		return false
+	}
+	_, stored, ok := strings.Cut(rec.InputsSHA256, nodeRecordMembersSep)
+	return ok && stored == p.memberSetHash(members)
 }
 
 // statKind is the kind half of a node_stats key.
@@ -639,7 +671,9 @@ func (s *annotationScope) nodeNarrower(ctx context.Context, n *annotationNode, p
 	for _, k := range kids {
 		nw := nodeNarrower{Name: k.sn.Name, Members: len(k.sn.members)}
 		h := "none"
-		if rec, ok := recs[k.chunkID][level]; ok && k.chunkID != "" {
+		// A narrower record not servable now is not carried into this node's
+		// request either: its text would reach the new record.
+		if rec, ok := recs[k.chunkID][level]; ok && k.chunkID != "" && nodeRecordCurrent(rec, p, k.sn.members) {
 			nw.Brief, nw.Abstract = rec.Brief, rec.Abstract
 			h = sha256Hex(rec.Brief + "\x00" + rec.Abstract)
 		}
@@ -867,13 +901,31 @@ func (d *Document) setNodeAnnotation(ctx context.Context, s *annotationScope, t 
 
 // nodeRecordShown reports whether rec, a node record, is shown at all. The answer
 // is the same for every reader of the ontology, and so is its staleness (RFC GM C8:
-// the request is built from unrestricted documents only). A written or thin record
-// stored before C8 was written from every member, a restricted one included, and is
-// shown to no one until the annotator writes it again; a declared one never named
-// a member, and a manual one is an operator's own text, which the annotator never
-// rewrites.
-func nodeRecordShown(rec annotationRecord) bool {
-	return rec.Basis == annotationBasisDeclared || rec.Manual || strings.HasPrefix(rec.InputsSHA256, unrestrictedFamily)
+// the request is built from unrestricted documents only): nodeRecordCurrent against
+// the node's current members. A written or thin record stored before C8, or whose
+// node is no longer in force (its members cannot be checked), is shown to no one
+// until the annotator writes it again; a declared one never named a member, and a
+// manual one is an operator's own text, which the annotator never rewrites.
+func (s *annotationScope) nodeRecordShown(ctx context.Context, rec annotationRecord) (bool, error) {
+	if rec.Basis == annotationBasisDeclared || rec.Manual {
+		return true, nil
+	}
+	if !strings.HasPrefix(rec.InputsSHA256, unrestrictedFamily) {
+		return false, nil
+	}
+	n, err := s.resolveNode(ctx, "get_annotation", rec.ChunkID, rec.Level, "")
+	if err != nil {
+		var nr *nodeRefusal
+		if errors.As(err, &nr) {
+			return false, nil
+		}
+		return false, err
+	}
+	p, err := s.nodePlan(ctx)
+	if err != nil {
+		return false, err
+	}
+	return nodeRecordCurrent(rec, p, n.members), nil
 }
 
 // nodeStale is a node record's staleness: its node's current inputs under the

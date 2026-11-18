@@ -1002,8 +1002,12 @@ func (d *Document) getAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 				continue
 			}
 		}
-		if isNodeAnnotationLevel(lvl) && !nodeRecordShown(rec) {
-			continue
+		if isNodeAnnotationLevel(lvl) {
+			if shown, err := s.nodeRecordShown(ctx, rec); err != nil {
+				return errFrom(op+": "+err.Error(), err), nil
+			} else if !shown {
+				continue
+			}
 		}
 		stale, err := s.stale(ctx, rec)
 		if err != nil {
@@ -1134,8 +1138,12 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 					continue
 				}
 			}
-			if isNodeAnnotationLevel(rec.Level) && !nodeRecordShown(rec) {
-				continue
+			if isNodeAnnotationLevel(rec.Level) {
+				if shown, err := s.nodeRecordShown(ctx, rec); err != nil {
+					return errFrom(op+": "+err.Error(), err), nil
+				} else if !shown {
+					continue
+				}
 			}
 			c := counts[rec.Level]
 			if c == nil {
@@ -1189,8 +1197,12 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 	out := []annotationRecord{}
 	for _, r := range rows {
 		rec := scanAnnotationRecord(r)
-		if isNodeAnnotationLevel(rec.Level) && !nodeRecordShown(rec) {
-			continue
+		if isNodeAnnotationLevel(rec.Level) {
+			if shown, err := s.nodeRecordShown(ctx, rec); err != nil {
+				return errFrom(op+": "+err.Error(), err), nil
+			} else if !shown {
+				continue
+			}
 		}
 		stale, err := s.stale(ctx, rec)
 		if err != nil {

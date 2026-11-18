@@ -9,6 +9,9 @@ package builtin
 // caller, so it is computed from what every member of the tenant may read
 // (document_measure.go) and served the same to every reader of the ontology. Rows
 // stored before that rule are never read (loadMeasurePoints), shown_at included.
+// Nor is a row whose members are no longer its point's current unrestricted members
+// (seriesPlan.servable), shown_at included: a document restricted after a pass
+// stops counting at once, not at the next pass.
 
 import (
 	"context"
@@ -99,14 +102,17 @@ type measureComparison struct {
 
 // measureAnswer is op=measure's answer.
 type measureAnswer struct {
-	Measure string             `json:"measure"`
-	Scheme  string             `json:"scheme,omitempty"`
-	From    *int64             `json:"from,omitempty"`
-	To      *int64             `json:"to,omitempty"`
-	ShownAt *int64             `json:"shown_at,omitempty"`
-	Note    string             `json:"note,omitempty"`
-	Nodes   []measureNode      `json:"nodes"`
-	Compare *measureComparison `json:"compare,omitempty"`
+	Measure string `json:"measure"`
+	Scheme  string `json:"scheme,omitempty"`
+	From    *int64 `json:"from,omitempty"`
+	To      *int64 `json:"to,omitempty"`
+	ShownAt *int64 `json:"shown_at,omitempty"`
+	Note    string `json:"note,omitempty"`
+	// Recomputing: some stored points were left out because their point's members
+	// changed since they were computed (seriesPlan.servable).
+	Recomputing string             `json:"recomputing,omitempty"`
+	Nodes       []measureNode      `json:"nodes"`
+	Compare     *measureComparison `json:"compare,omitempty"`
 }
 
 // emptyPoint: a row that says the point holds no value now.
@@ -157,10 +163,17 @@ func (d *Document) measure(ctx context.Context, in docInput) (tools.Result, erro
 	if in.ShownAt != nil {
 		shownAt = *in.ShownAt
 	}
+	sp, err := d.currentSeriesPlan(ctx, key, read)
+	if err != nil {
+		return errFrom(measureOp+": "+err.Error(), err), nil
+	}
 	if in.Compare != nil {
-		cmp, err := d.measureCompare(ctx, key, read, targets, shownAt, measureRange{From: in.From, To: in.To}, *in.Compare)
+		cmp, dropped, err := d.measureCompare(ctx, key, read, sp, targets, shownAt, measureRange{From: in.From, To: in.To}, *in.Compare)
 		if err != nil {
 			return errFrom(measureOp+": "+err.Error(), err), nil
+		}
+		if dropped > 0 {
+			ans.Recomputing = measureRecomputing
 		}
 		ans.Compare = cmp
 		return jsonResult(ans)
@@ -173,11 +186,28 @@ func (d *Document) measure(ctx context.Context, in docInput) (tools.Result, erro
 	if err != nil {
 		return errFrom(measureOp+": "+err.Error(), err), nil
 	}
+	if sp.servable(stored) > 0 {
+		ans.Recomputing = measureRecomputing
+	}
 	rng := measureRange{From: in.From, To: in.To}
 	for _, t := range targets {
 		ans.Nodes = append(ans.Nodes, seriesOf(t, in.Measure, stored, rng))
 	}
 	return jsonResult(ans)
+}
+
+// measureRecomputing is measureAnswer.Recomputing's text: one for every cause, so
+// it does not say which.
+const measureRecomputing = "some points are left out: their members changed since they were computed; a node_stats pass computes them again"
+
+// currentSeriesPlan is the series plan of the tenant's current state, every scheme,
+// which a read checks stored points against (servable).
+func (d *Document) currentSeriesPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead) (*seriesPlan, error) {
+	p, err := d.buildNodeStatsPlan(ctx, key, read, "")
+	if err != nil {
+		return nil, err
+	}
+	return d.buildSeriesPlan(ctx, key, read, "", p)
 }
 
 // checkMeasureInput refuses what measure cannot answer, before anything is read.
@@ -341,9 +371,9 @@ func seriesOf(t measureTarget, measure string, stored map[pointKey]storedPoint, 
 // measureCompare sums each concept's share over the main range and the baseline,
 // the basis from its scheme's unplaced rows (kept for every period with a basis),
 // and orders the concepts by the capped log-ratio of the two shares, largest move
-// first.
-func (d *Document) measureCompare(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, targets []measureTarget,
-	shownAt int64, main, base measureRange) (*measureComparison, error) {
+// first. Only servable rows are summed; dropped is how many were not.
+func (d *Document) measureCompare(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, sp *seriesPlan, targets []measureTarget,
+	shownAt int64, main, base measureRange) (_ *measureComparison, dropped int, _ error) {
 	if main.From == nil && main.To == nil {
 		// The main range defaults to everything after the baseline.
 		main.From = base.To
@@ -361,8 +391,9 @@ func (d *Document) measureCompare(ctx context.Context, key sqlmem.ScopeKey, read
 	}
 	stored, err := d.loadMeasurePointsBatched(ctx, key, shownAt, []string{measureShare, measureUnplaced}, ids)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
+	dropped = sp.servable(stored)
 	out := &measureComparison{Range: main, Baseline: base, Nodes: []measureCompared{}}
 	type sums struct{ count, basis int }
 	for _, t := range targets {
@@ -415,7 +446,7 @@ func (d *Document) measureCompare(ctx context.Context, key sqlmem.ScopeKey, read
 		}
 		return a.Tag < b.Tag
 	})
-	return out, nil
+	return out, dropped, nil
 }
 
 // cappedLogRatio is ln(share now / share then), each share smoothed by half a member
@@ -451,18 +482,29 @@ type nodeTrend struct {
 	Change        float64  `json:"change"`
 }
 
-// describeSeries adds each concept's and document class's series view (with_stats).
-// A store fault marks the answer partial, as the statistics do.
-func (d *Document) describeSeries(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, out *ontologyDescription) {
-	if _, _, err := d.resolveScope(ctx, "tenant"); err != nil {
-		return // describeCounts has said why
+// describeSeries adds each concept's and document class's series view (with_stats),
+// from the servable rows only; p is describeStats' plan (nil: it could not be
+// built, and has said so). A store fault marks the answer partial, as the
+// statistics do.
+func (d *Document) describeSeries(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, p *nodeStatsPlan, out *ontologyDescription) {
+	if p == nil {
+		return
+	}
+	fail := func() {
+		out.Partial = true
+		out.Issues = append(out.Issues, "with_stats: the series could not be read; read again")
+	}
+	sp, err := d.buildSeriesPlan(ctx, key, read, "", p)
+	if err != nil {
+		fail()
+		return
 	}
 	stored, err := d.loadMeasurePoints(ctx, key, 0, []string{measureCount, measureShare, measureUnplaced}, nil)
 	if err != nil {
-		out.Partial = true
-		out.Issues = append(out.Issues, "with_stats: the series could not be read; read again")
+		fail()
 		return
 	}
+	sp.servable(stored)
 	if len(stored) == 0 {
 		return
 	}

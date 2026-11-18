@@ -169,6 +169,16 @@ type seriesPlan struct {
 	period map[string]string
 	// shiftOff says why shift is not computed here, "" when it is.
 	shiftOff string
+	// readSH is, per point the current members date into, the members_sha256 a
+	// stored row of it carries when it was computed from exactly those members
+	// (servable). Shift's is set for every period, whether or not the shift itself
+	// can be computed here.
+	readSH map[pointKey]string
+	// restrictedAt is the date of every document of the scope that is restricted
+	// now (not every member may read it), sorted; restrictedStarts caches, per
+	// period length, the periods they fall in.
+	restrictedAt     []int64
+	restrictedStarts map[string]map[int64]bool
 }
 
 // SeriesReport is the series stage's part of node_stats' answer.
@@ -323,7 +333,7 @@ func (d *Document) buildSeriesPlan(ctx context.Context, key sqlmem.ScopeKey, rea
 	if err != nil {
 		return nil, err
 	}
-	sp := &seriesPlan{period: map[string]string{}}
+	sp := &seriesPlan{period: map[string]string{}, readSH: map[pointKey]string{}}
 	if p.model == "" {
 		sp.shiftOff = "shift needs the vector stage, which does not run here: " + p.note
 	}
@@ -345,6 +355,13 @@ func (d *Document) buildSeriesPlan(ctx context.Context, key sqlmem.ScopeKey, rea
 		}
 	}
 	need := map[string]bool{}
+	var restricted []string
+	for id := range docs {
+		if id != read.DocumentID && !p.unrestricted.readable(id) {
+			restricted = append(restricted, id)
+			need[id] = true
+		}
+	}
 	for _, n := range p.nodes {
 		for _, id := range n.members {
 			need[id] = true
@@ -359,6 +376,12 @@ func (d *Document) buildSeriesPlan(ctx context.Context, key sqlmem.ScopeKey, rea
 	if err != nil {
 		return nil, err
 	}
+	for _, id := range restricted {
+		if dt, ok := dates[id]; ok {
+			sp.restrictedAt = append(sp.restrictedAt, dt.at)
+		}
+	}
+	sort.Slice(sp.restrictedAt, func(i, j int) bool { return sp.restrictedAt[i] < sp.restrictedAt[j] })
 	schemeOf := map[string]*seriesScheme{}
 	for _, ss := range schemes {
 		sp.schemeRows(ss, p, dates)
@@ -410,6 +433,7 @@ func (sp *seriesPlan) schemeRows(ss *seriesScheme, p *nodeStatsPlan, dates map[s
 		}
 		k := pointKey{measure: measureUnplaced, node: ss.s.ChunkID, period: ss.period, start: start}
 		fb := fallbackShare(unplaced, dates)
+		sp.readSH[k] = ss.basisHash[start]
 		sp.add(seriesRow{pointKey: k, value: float64(len(unplaced)), members: len(unplaced), basis: len(ids),
 			fallback: fb, inputs: seriesHash(k, withFallback("basis "+ss.basisHash[start], fb), unplaced),
 			readSH: ss.basisHash[start]})
@@ -425,6 +449,7 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 		ids := buckets[start]
 		k := pointKey{measure: measureCount, node: n.ID, period: period, start: start}
 		fb := fallbackShare(ids, dates)
+		sp.readSH[k] = membersHash(ids)
 		sp.add(seriesRow{pointKey: k, value: float64(len(ids)), members: len(ids), fallback: fb,
 			inputs: seriesHash(k, withFallback("", fb), ids), readSH: membersHash(ids)})
 		if ss != nil && len(ss.basis[start]) > 0 {
@@ -437,12 +462,17 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 			basis := len(ss.basis[start])
 			k := pointKey{measure: measureShare, node: n.ID, period: period, start: start}
 			sfb := fallbackShare(in, dates)
+			sp.readSH[k] = ss.basisHash[start]
 			sp.add(seriesRow{pointKey: k, value: float64(len(in)) / float64(basis), members: len(in), basis: basis,
 				fallback: sfb, inputs: seriesHash(k, withFallback("basis "+ss.basisHash[start], sfb), in),
 				readSH: ss.basisHash[start]})
 		}
+		all := append(append([]string{}, earlier...), ids...)
+		sort.Strings(all)
+		shiftKey := pointKey{measure: measureShift, node: n.ID, period: period, start: start}
+		sp.readSH[shiftKey] = membersHash(all)
 		if p.model != "" && len(ids) >= nodestats.MinMembers && len(earlier) >= nodestats.MinMembers {
-			k := pointKey{measure: measureShift, node: n.ID, period: period, start: start}
+			k := shiftKey
 			lines := make([]string, 0, len(ids)+len(earlier))
 			for _, group := range []struct {
 				tag string
@@ -452,8 +482,6 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 					lines = append(lines, group.tag+" "+p.memberLine(id))
 				}
 			}
-			all := append(append([]string{}, earlier...), ids...)
-			sort.Strings(all)
 			sp.add(seriesRow{pointKey: k, members: len(ids), fallback: fb,
 				inputs: seriesHash(k, withFallback("model "+p.model, fb), lines), readSH: membersHash(all),
 				periodIDs: ids, earlierIDs: append([]string{}, earlier...)})
@@ -464,6 +492,64 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 
 func (sp *seriesPlan) add(r seriesRow) {
 	sp.rows = append(sp.rows, r)
+}
+
+// servable drops from stored, rows a read is about to serve, every row that may
+// have counted a document restricted now, and reports how many it dropped. A row
+// is computed from unrestricted documents, but a document restricted after the pass
+// (a new deny, a set_path under a denied name) would otherwise stay counted in every
+// reader's series until a pass appends a fresh row — and in a shown_at read of the
+// past, for good.
+//
+// A row is kept when its members_sha256 is the one its point's current members
+// give (readSH): it was computed from exactly today's unrestricted members. Any
+// other row — an older one of a period that has gained or lost members since, a
+// retired node's — stores only a hash of its members, so it is kept only when no
+// document restricted now is dated in its period (for shift, in it or before it):
+// then none can be among them. A row of such a period that merely gained a member
+// is dropped too until the next pass, the safe direction; and a shown_at read of a
+// period holding a restricted document shows only rows computed from today's
+// members. An empty row is left: it says nothing of any document, and the readers
+// skip it. Assumed: a document's date does not move out of a period once it is
+// restricted (a date move with no restriction is harmless).
+func (sp *seriesPlan) servable(stored map[pointKey]storedPoint) int {
+	dropped := 0
+	for k, s := range stored {
+		if emptyPoint(s) {
+			continue
+		}
+		if want, ok := sp.readSH[k]; ok && want == s.readSH {
+			continue
+		}
+		if sp.touchesRestricted(k) {
+			delete(stored, k)
+			dropped++
+		}
+	}
+	return dropped
+}
+
+// touchesRestricted reports whether a document restricted now is dated in k's
+// period, or for shift (built from every member up to its period) in it or before.
+func (sp *seriesPlan) touchesRestricted(k pointKey) bool {
+	if len(sp.restrictedAt) == 0 {
+		return false
+	}
+	if k.measure == measureShift {
+		return periodStart(sp.restrictedAt[0], k.period) <= k.start
+	}
+	if sp.restrictedStarts == nil {
+		sp.restrictedStarts = map[string]map[int64]bool{}
+	}
+	starts, ok := sp.restrictedStarts[k.period]
+	if !ok {
+		starts = map[int64]bool{}
+		for _, at := range sp.restrictedAt {
+			starts[periodStart(at, k.period)] = true
+		}
+		sp.restrictedStarts[k.period] = starts
+	}
+	return starts[k.start]
 }
 
 // loadMeasurePoints reads, per point, the latest stored row computed at or before
