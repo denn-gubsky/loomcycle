@@ -73,8 +73,9 @@ func (s *Server) defaultDocumentFeedPolling() documentFeedPolling {
 // cannot re-check its reader stops rather than keep sending.
 func (s *Server) reauthenticateFeed(r *http.Request) (auth.Principal, error) {
 	ctx := r.Context()
+	rt := requestRoute(r)
 	p, ui, ok := s.authenticateRequest(r)
-	if !ok || (ui != nil && ui.pending) || !RouteAdmits(p, r.Method, r.URL.Path) {
+	if !ok || (ui != nil && ui.pending) || !routeAdmits(p, rt, r.Method, r.URL.Path) {
 		return auth.Principal{}, errFeedCredentialRevoked
 	}
 	if s.aclResolver != nil {
@@ -83,7 +84,7 @@ func (s *Server) reauthenticateFeed(r *http.Request) (auth.Principal, error) {
 			return auth.Principal{}, fmt.Errorf("%w: %v", errFeedAccessUnavailable, err)
 		}
 	}
-	if surface, governed := authz.HTTPSurface(r.Method, r.URL.Path); governed {
+	if surface, governed := rt.Question(r.Method, r.URL.Path); governed {
 		res := authz.EvaluateSurface(ctx, p.Effective, surface, true)
 		if res.Unavailable {
 			return auth.Principal{}, errFeedAccessUnavailable

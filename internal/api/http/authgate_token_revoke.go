@@ -13,7 +13,7 @@ import (
 // on the request retires itself. It is how `loomcycle logout` ends the token
 // `loomcycle login` was issued, so a person can sign a machine out without an
 // operator. Retiring the credential you present is never an escalation, so it
-// needs no scope, and an agent-restricted token reaches it (runPlaneRoute).
+// needs no scope, and an agent-restricted token reaches it (its row in the route table is on the run plane).
 //
 // It only ever touches the presented credential, and only a delegated user
 // token: a config principal or the legacy secret has no row to retire, and an

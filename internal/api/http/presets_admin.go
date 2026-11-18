@@ -10,7 +10,7 @@ import (
 // and the env catalogue, mirroring the `loomcycle presets` / `env-template` CLI
 // so they're reachable from the Web UI's Presets page (TrueNAS has no shell —
 // RFC AR). All three fall under the /v1/_* operator-admin scope gate
-// (requiredScopeFor): admin-only, like the rest of the operator plane. The
+// (the route table, authz.HTTPRoute): admin-only, like the rest of the operator plane. The
 // content is non-secret (only token_env *names*), so the gate is about keeping
 // the operability hub coherent, not about secrecy.
 

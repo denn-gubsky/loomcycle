@@ -1,0 +1,585 @@
+DELETE /healthz	any	false	-
+DELETE /scim/v2/Groups/x	scim:provision	false	manage principal:scim:groups
+DELETE /scim/v2/Users/x	scim:provision	false	manage principal:scim:users
+DELETE /v1/_aclbinding/b	substrate:tenant	false	read def:acl/*
+DELETE /v1/_aclbinding/x	substrate:tenant	false	read def:acl/*
+DELETE /v1/_auth/passkeys/x	any	false	-
+DELETE /v1/_auth/tenant-policies/x	substrate:admin	false	manage runtime:tenants
+DELETE /v1/_auth/totp	any	false	-
+DELETE /v1/_authgate/x/credentials/x	substrate:tenant	false	manage principal:user:*
+DELETE /v1/_authgate/x/invites/x	substrate:tenant	false	manage principal:user:*
+DELETE /v1/_channels/_await	substrate:tenant	false	await channel:*
+DELETE /v1/_channels/_broadcast	substrate:tenant	false	broadcast channel:*
+DELETE /v1/_channels/x	substrate:tenant	false	manage channel:x
+DELETE /v1/_groups/g	substrate:tenant	false	read principal:group:*
+DELETE /v1/_groups/g/members/user/u	substrate:tenant	false	read principal:group:*
+DELETE /v1/_groups/g/members/x/y	substrate:tenant	false	read principal:group:*
+DELETE /v1/_groups/x	substrate:tenant	false	read principal:group:*
+DELETE /v1/_groups/x/members/x/x	substrate:tenant	false	read principal:group:*
+DELETE /v1/_limits	substrate:tenant	false	manage runtime:limits
+DELETE /v1/_mcp	substrate:tenant	true	use transport:mcp
+DELETE /v1/_me/app-sign-ins/f	any	false	-
+DELETE /v1/_me/app-sign-ins/x	any	false	-
+DELETE /v1/_memory/scopes/user/u/keys/k	substrate:tenant	false	write memory:*
+DELETE /v1/_memory/scopes/user/u/keys/k/x	substrate:tenant	false	write memory:*
+DELETE /v1/_memory/scopes/user/u/keys/k/x/y	substrate:tenant	false	write memory:*
+DELETE /v1/_memory/scopes/user/u/keys/k/x/y/z	substrate:tenant	false	write memory:*
+DELETE /v1/_memory/scopes/x/x/keys	substrate:tenant	false	write memory:*
+DELETE /v1/_memory/scopes/x/x/keys/x	substrate:tenant	false	write memory:*
+DELETE /v1/_retention/overrides	substrate:tenant	false	manage runtime:retention
+DELETE /v1/_snapshots/x	substrate:admin	false	manage runtime:snapshot
+DELETE /v1/_telemetry	substrate:tenant	false	manage runtime:telemetry
+DELETE /v1/_users/u	substrate:tenant	false	manage principal:user:u
+DELETE /v1/_users/u/app-sign-ins/f	substrate:tenant	false	manage principal:user:u
+DELETE /v1/_users/u/app-sign-ins/x	substrate:tenant	false	manage principal:user:u
+DELETE /v1/_users/x	substrate:tenant	false	manage principal:user:x
+DELETE /v1/_users/x/app-sign-ins/x	substrate:tenant	false	manage principal:user:x
+DELETE /v1/_users/x/identities/x	substrate:tenant	false	manage principal:user:x
+DELETE /v1/_users/x/tokens/x	substrate:tenant	false	mint principal:user:x
+DELETE /v1/runs/r	runs:create	true	run agent:*
+DELETE /v1/runs/r/tree	runs:delete	false	delete run:*
+DELETE /v1/runs/tree	runs:create	true	run agent:*
+DELETE /v1/runs/tree/tree	runs:delete	false	delete run:*
+DELETE /v1/runs/x	runs:create	true	run agent:*
+DELETE /v1/runs/x/tree	runs:delete	false	delete run:*
+DELETE /v1/sessions/tree	runs:delete	false	delete run:*
+DELETE /v1/sessions/x	runs:delete	false	delete run:*
+GET /.well-known/agent-card.json/extended	any	false	-
+GET /.well-known/oauth-authorization-server	any	false	-
+GET /healthz	any	false	-
+GET /metrics	substrate:admin	false	read runtime:metrics
+GET /scim/v2/Groups	scim:provision	false	read principal:scim:groups
+GET /scim/v2/Groups/x	scim:provision	false	read principal:scim:groups
+GET /scim/v2/ResourceTypes	scim:provision	false	read principal:scim:users
+GET /scim/v2/ResourceTypes/x	scim:provision	false	read principal:scim:users
+GET /scim/v2/Schemas	scim:provision	false	read principal:scim:users
+GET /scim/v2/Schemas/x	scim:provision	false	read principal:scim:users
+GET /scim/v2/ServiceProviderConfig	scim:provision	false	read principal:scim:users
+GET /scim/v2/Users	scim:provision	false	read principal:scim:users
+GET /scim/v2/Users/x	scim:provision	false	read principal:scim:users
+GET /ui	any	false	-
+GET /ui/	any	false	-
+GET /ui/session	any	false	-
+GET /ui/x	any	false	-
+GET /ui/x/y	any	false	-
+GET /ui/x/y/z	any	false	-
+GET /v1/_a2aagentdef/names	substrate:tenant	false	read def:a2a/*
+GET /v1/_a2aservercarddef/names	substrate:tenant	false	read def:a2aserver/*
+GET /v1/_aclbinding	substrate:tenant	false	read def:acl/*
+GET /v1/_acldef/names	substrate:tenant	false	read def:acl/*
+GET /v1/_agentdef/names	substrate:tenant	false	read def:agent/*
+GET /v1/_agentdef/x/overridable	substrate:tenant	true	read agent:*
+GET /v1/_audit	substrate:tenant	false	read runtime:audit
+GET /v1/_auth/account	any	false	-
+GET /v1/_auth/complete/x	any	false	-
+GET /v1/_auth/login/x	any	false	-
+GET /v1/_auth/passkeys	any	false	-
+GET /v1/_auth/tenant-policies	substrate:admin	false	read runtime:tenants
+GET /v1/_authgate	substrate:admin	false	read runtime:config
+GET /v1/_authgate/x/identities	substrate:tenant	false	manage principal:user:*
+GET /v1/_authgate/x/invites	substrate:tenant	false	manage principal:user:*
+GET /v1/_authgate/x/tenant-status	substrate:tenant	false	manage principal:user:*
+GET /v1/_channels	substrate:tenant	false	subscribe channel:*
+GET /v1/_channels/c/peek	substrate:tenant	false	subscribe channel:c
+GET /v1/_channels/x/peek	substrate:tenant	false	subscribe channel:x
+GET /v1/_clientdef/names	substrate:tenant	false	read def:client/*
+GET /v1/_concurrency/stats	substrate:admin	false	read runtime:metrics
+GET /v1/_config/teams	substrate:admin	false	read runtime:config
+GET /v1/_decide/models	runs:create	false	use gateway:decide
+GET /v1/_document/asset/x	substrate:tenant	false	read document:*
+GET /v1/_document/changes	substrate:tenant	false	read document:*
+GET /v1/_document/export/x	substrate:tenant	false	read document:*
+GET /v1/_document/feed	substrate:tenant	false	read document:*
+GET /v1/_documentsourcedef/names	substrate:tenant	false	read def:documentsource/*
+GET /v1/_env_template	substrate:admin	false	read runtime:config
+GET /v1/_erasure	substrate:tenant	false	read runtime:erasure
+GET /v1/_events	substrate:tenant	false	read runtime:events
+GET /v1/_groups	substrate:tenant	false	read principal:group:*
+GET /v1/_groups/g	substrate:tenant	false	read principal:group:*
+GET /v1/_groups/g/effective	substrate:tenant	false	read principal:group:*
+GET /v1/_groups/x	substrate:tenant	false	read principal:group:*
+GET /v1/_groups/x/effective	substrate:tenant	false	read principal:group:*
+GET /v1/_hookdef/names	substrate:tenant	false	read def:hook/*
+GET /v1/_library/agents	substrate:tenant	false	read agent:*
+GET /v1/_library/mcp-servers	substrate:tenant	false	read def:mcpserver/*
+GET /v1/_library/skills	substrate:tenant	false	read skill:*
+GET /v1/_limits	substrate:tenant	false	read runtime:limits
+GET /v1/_mcpserverdef/names	substrate:tenant	false	read def:mcpserver/*
+GET /v1/_me	any	true	-
+GET /v1/_me/app-sign-ins	any	false	-
+GET /v1/_memory/changes	substrate:tenant	false	read memory:*
+GET /v1/_memory/embed_stats	substrate:tenant	false	read memory:*
+GET /v1/_memory/scopes	substrate:tenant	false	read memory:*
+GET /v1/_memory/scopes/user/u/keys/k	substrate:tenant	false	read memory:*
+GET /v1/_memory/scopes/user/u/keys/k/x	substrate:tenant	false	read memory:*
+GET /v1/_memory/scopes/user/u/keys/k/x/y	substrate:tenant	false	read memory:*
+GET /v1/_memory/scopes/user/u/keys/k/x/y/z	substrate:tenant	false	read memory:*
+GET /v1/_memory/scopes/x	substrate:tenant	false	read memory:*
+GET /v1/_memory/scopes/x/x/keys	substrate:tenant	false	read memory:*
+GET /v1/_memory/scopes/x/x/keys/x	substrate:tenant	false	read memory:*
+GET /v1/_memorybackenddef/names	substrate:tenant	false	read def:memorybackend/*
+GET /v1/_metrics/runs/x	substrate:admin	false	read runtime:metrics
+GET /v1/_metrics/samples	substrate:admin	false	read runtime:metrics
+GET /v1/_metrics/summary	substrate:admin	false	read runtime:metrics
+GET /v1/_models	substrate:tenant	false	read runtime:routing
+GET /v1/_oauth/authorize	substrate:admin	false	-
+GET /v1/_ontology	substrate:tenant	false	read document:*
+GET /v1/_operatortokendef/names	substrate:admin	false	read principal:token:*
+GET /v1/_presets	substrate:admin	false	read runtime:config
+GET /v1/_presets/x	substrate:admin	false	read runtime:config
+GET /v1/_providers/x/models	substrate:admin	false	read runtime:config
+GET /v1/_resident	substrate:tenant	false	read run:*
+GET /v1/_resolver	substrate:admin	false	read runtime:config
+GET /v1/_retention	substrate:tenant	false	read runtime:retention
+GET /v1/_retention/overrides	substrate:tenant	false	read runtime:retention
+GET /v1/_routing	substrate:tenant	false	read runtime:routing
+GET /v1/_runnable-agents	runs:read	true	read agent:*
+GET /v1/_scheduledef/names	substrate:tenant	false	read def:schedule/*
+GET /v1/_schedules/list-all	substrate:tenant	false	read def:schedule/*
+GET /v1/_schedules/x/state	substrate:tenant	false	read def:schedule/*
+GET /v1/_skilldef/names	substrate:tenant	false	read def:skill/*
+GET /v1/_snapshots	substrate:admin	false	read runtime:snapshot
+GET /v1/_snapshots/x	substrate:admin	false	read runtime:snapshot
+GET /v1/_snapshots/x/export	substrate:admin	false	read runtime:snapshot
+GET /v1/_speech	runs:create	false	-
+GET /v1/_state	substrate:admin	false	read runtime:pause
+GET /v1/_statements/agreement	substrate:tenant	false	read document:*
+GET /v1/_statements/review	substrate:tenant	false	read document:*
+GET /v1/_statements/rulings	substrate:tenant	false	read document:*
+GET /v1/_teamdef/names	substrate:tenant	false	read def:team/*
+GET /v1/_teamdef/t/channels	substrate:tenant	false	subscribe channel:*
+GET /v1/_teamdef/t/channels/c/peek	substrate:tenant	false	subscribe channel:*
+GET /v1/_teamdef/x/channels	substrate:tenant	false	subscribe channel:*
+GET /v1/_teamdef/x/channels/x/peek	substrate:tenant	false	subscribe channel:*
+GET /v1/_telemetry	substrate:tenant	false	read runtime:telemetry
+GET /v1/_tenants	substrate:admin	false	read runtime:tenants
+GET /v1/_usage	substrate:tenant	false	read runtime:usage
+GET /v1/_usage/speed	substrate:tenant	false	read runtime:usage
+GET /v1/_users	any	false	read principal:user:*
+GET /v1/_users/u	substrate:tenant	false	read principal:user:u
+GET /v1/_users/u/app-sign-ins	substrate:tenant	false	read principal:user:u
+GET /v1/_users/x	substrate:tenant	false	read principal:user:x
+GET /v1/_users/x/app-sign-ins	substrate:tenant	false	read principal:user:x
+GET /v1/_users/x/identities	substrate:tenant	false	read principal:user:x
+GET /v1/_users/x/tokens	substrate:tenant	false	mint principal:user:x
+GET /v1/_volumes	substrate:tenant	false	read volume:*
+GET /v1/_volumes/ephemeral	substrate:tenant	false	read volume:*
+GET /v1/_webhookdef/names	substrate:tenant	false	read def:webhook/*
+GET /v1/_webhooks/x/delivery-counts	substrate:admin	false	manage def:webhook/*
+GET /v1/_webhooks/x/recent-deliveries	substrate:admin	false	manage def:webhook/*
+GET /v1/agents/a	runs:read	true	read run:*
+GET /v1/agents/tree	runs:read	true	read run:*
+GET /v1/agents/x	runs:read	true	read run:*
+GET /v1/agents/x/channels	runs:read	false	subscribe channel:*
+GET /v1/client-tools	runs:create	false	run agent:*
+GET /v1/config	any	true	-
+GET /v1/docs	any	false	-
+GET /v1/docs/x	any	false	-
+GET /v1/openapi.json	any	false	-
+GET /v1/openapi.yaml	any	false	-
+GET /v1/runs	runs:read	true	read run:*
+GET /v1/runs/r	runs:read	true	read run:*
+GET /v1/runs/r/stream	runs:read	true	read run:*
+GET /v1/runs/tree	runs:read	true	read run:*
+GET /v1/runs/tree/breakpoints	runs:read	true	read run:*
+GET /v1/runs/tree/config	runs:read	true	read run:*
+GET /v1/runs/tree/effective-config	runs:read	true	read run:*
+GET /v1/runs/tree/inbox	runs:read	true	read run:*
+GET /v1/runs/tree/stream	runs:read	true	read run:*
+GET /v1/runs/x	runs:read	true	read run:*
+GET /v1/runs/x/breakpoints	runs:read	true	read run:*
+GET /v1/runs/x/config	runs:read	true	read run:*
+GET /v1/runs/x/effective-config	runs:read	true	read run:*
+GET /v1/runs/x/inbox	runs:read	true	read run:*
+GET /v1/runs/x/inbox/x	runs:read	true	read run:*
+GET /v1/runs/x/interrupts	runs:read	true	read run:*
+GET /v1/runs/x/prompt	runs:read	true	read run:*
+GET /v1/runs/x/stream	runs:read	true	read run:*
+GET /v1/sessions/s/transcript	runs:read	true	read run:*
+GET /v1/sessions/x/transcript	runs:read	true	read run:*
+GET /v1/users/u/agents	runs:read	true	read run:*
+GET /v1/users/u/agents/stream	runs:read	true	read run:*
+GET /v1/users/x/agents	runs:read	true	read run:*
+GET /v1/users/x/agents/stream	runs:read	true	read run:*
+GET /v1/users/x/channels/x/peek	channel:read	false	subscribe channel:x
+GET /v1/users/x/interrupts	runs:read	true	read run:*
+HEAD /.well-known/agent-card.json/extended	any	false	-
+HEAD /.well-known/oauth-authorization-server	any	false	-
+HEAD /healthz	any	false	-
+HEAD /metrics	substrate:admin	false	read runtime:metrics
+HEAD /scim/v2/Groups	scim:provision	false	read principal:scim:groups
+HEAD /scim/v2/Groups/x	scim:provision	false	read principal:scim:groups
+HEAD /scim/v2/ResourceTypes	scim:provision	false	read principal:scim:users
+HEAD /scim/v2/ResourceTypes/x	scim:provision	false	read principal:scim:users
+HEAD /scim/v2/Schemas	scim:provision	false	read principal:scim:users
+HEAD /scim/v2/Schemas/x	scim:provision	false	read principal:scim:users
+HEAD /scim/v2/ServiceProviderConfig	scim:provision	false	read principal:scim:users
+HEAD /scim/v2/Users	scim:provision	false	read principal:scim:users
+HEAD /scim/v2/Users/x	scim:provision	false	read principal:scim:users
+HEAD /ui	any	false	-
+HEAD /ui/	any	false	-
+HEAD /ui/session	any	false	-
+HEAD /ui/x	any	false	-
+HEAD /ui/x/y	any	false	-
+HEAD /ui/x/y/z	any	false	-
+HEAD /v1/_a2aagentdef/names	substrate:tenant	false	read def:a2a/*
+HEAD /v1/_a2aservercarddef/names	substrate:tenant	false	read def:a2aserver/*
+HEAD /v1/_aclbinding	substrate:tenant	false	read def:acl/*
+HEAD /v1/_acldef/names	substrate:tenant	false	read def:acl/*
+HEAD /v1/_agentdef/names	substrate:tenant	false	read def:agent/*
+HEAD /v1/_agentdef/x/overridable	substrate:tenant	true	read agent:*
+HEAD /v1/_audit	substrate:tenant	false	read runtime:audit
+HEAD /v1/_auth/account	any	false	-
+HEAD /v1/_auth/complete/x	any	false	-
+HEAD /v1/_auth/login/x	any	false	-
+HEAD /v1/_auth/passkeys	any	false	-
+HEAD /v1/_auth/tenant-policies	substrate:admin	false	read runtime:tenants
+HEAD /v1/_authgate	substrate:admin	false	read runtime:config
+HEAD /v1/_authgate/x/identities	substrate:tenant	false	manage principal:user:*
+HEAD /v1/_authgate/x/invites	substrate:tenant	false	manage principal:user:*
+HEAD /v1/_authgate/x/tenant-status	substrate:tenant	false	manage principal:user:*
+HEAD /v1/_channels	substrate:tenant	false	subscribe channel:*
+HEAD /v1/_channels/c/peek	substrate:tenant	false	subscribe channel:c
+HEAD /v1/_channels/x/peek	substrate:tenant	false	subscribe channel:x
+HEAD /v1/_clientdef/names	substrate:tenant	false	read def:client/*
+HEAD /v1/_concurrency/stats	substrate:admin	false	read runtime:metrics
+HEAD /v1/_config/teams	substrate:admin	false	read runtime:config
+HEAD /v1/_decide/models	runs:create	false	use gateway:decide
+HEAD /v1/_document/asset/x	substrate:tenant	false	read document:*
+HEAD /v1/_document/changes	substrate:tenant	false	read document:*
+HEAD /v1/_document/export/x	substrate:tenant	false	read document:*
+HEAD /v1/_document/feed	substrate:tenant	false	read document:*
+HEAD /v1/_documentsourcedef/names	substrate:tenant	false	read def:documentsource/*
+HEAD /v1/_env_template	substrate:admin	false	read runtime:config
+HEAD /v1/_erasure	substrate:tenant	false	read runtime:erasure
+HEAD /v1/_events	substrate:tenant	false	read runtime:events
+HEAD /v1/_groups	substrate:tenant	false	read principal:group:*
+HEAD /v1/_groups/g	substrate:tenant	false	read principal:group:*
+HEAD /v1/_groups/g/effective	substrate:tenant	false	read principal:group:*
+HEAD /v1/_groups/x	substrate:tenant	false	read principal:group:*
+HEAD /v1/_groups/x/effective	substrate:tenant	false	read principal:group:*
+HEAD /v1/_hookdef/names	substrate:tenant	false	read def:hook/*
+HEAD /v1/_library/agents	substrate:tenant	false	read agent:*
+HEAD /v1/_library/mcp-servers	substrate:tenant	false	read def:mcpserver/*
+HEAD /v1/_library/skills	substrate:tenant	false	read skill:*
+HEAD /v1/_limits	substrate:tenant	false	read runtime:limits
+HEAD /v1/_mcpserverdef/names	substrate:tenant	false	read def:mcpserver/*
+HEAD /v1/_me	any	true	-
+HEAD /v1/_me/app-sign-ins	any	false	-
+HEAD /v1/_memory/changes	substrate:tenant	false	read memory:*
+HEAD /v1/_memory/embed_stats	substrate:tenant	false	read memory:*
+HEAD /v1/_memory/scopes	substrate:tenant	false	read memory:*
+HEAD /v1/_memory/scopes/user/u/keys/k	substrate:tenant	false	read memory:*
+HEAD /v1/_memory/scopes/user/u/keys/k/x	substrate:tenant	false	read memory:*
+HEAD /v1/_memory/scopes/user/u/keys/k/x/y	substrate:tenant	false	read memory:*
+HEAD /v1/_memory/scopes/user/u/keys/k/x/y/z	substrate:tenant	false	read memory:*
+HEAD /v1/_memory/scopes/x	substrate:tenant	false	read memory:*
+HEAD /v1/_memory/scopes/x/x/keys	substrate:tenant	false	read memory:*
+HEAD /v1/_memory/scopes/x/x/keys/x	substrate:tenant	false	read memory:*
+HEAD /v1/_memorybackenddef/names	substrate:tenant	false	read def:memorybackend/*
+HEAD /v1/_metrics/runs/x	substrate:admin	false	read runtime:metrics
+HEAD /v1/_metrics/samples	substrate:admin	false	read runtime:metrics
+HEAD /v1/_metrics/summary	substrate:admin	false	read runtime:metrics
+HEAD /v1/_models	substrate:tenant	false	read runtime:routing
+HEAD /v1/_oauth/authorize	substrate:admin	false	-
+HEAD /v1/_ontology	substrate:tenant	false	read document:*
+HEAD /v1/_operatortokendef/names	substrate:admin	false	read principal:token:*
+HEAD /v1/_presets	substrate:admin	false	read runtime:config
+HEAD /v1/_presets/x	substrate:admin	false	read runtime:config
+HEAD /v1/_providers/x/models	substrate:admin	false	read runtime:config
+HEAD /v1/_resident	substrate:tenant	false	read run:*
+HEAD /v1/_resolver	substrate:admin	false	read runtime:config
+HEAD /v1/_retention	substrate:tenant	false	read runtime:retention
+HEAD /v1/_retention/overrides	substrate:tenant	false	read runtime:retention
+HEAD /v1/_routing	substrate:tenant	false	read runtime:routing
+HEAD /v1/_runnable-agents	runs:read	true	read agent:*
+HEAD /v1/_scheduledef/names	substrate:tenant	false	read def:schedule/*
+HEAD /v1/_schedules/list-all	substrate:tenant	false	read def:schedule/*
+HEAD /v1/_schedules/x/state	substrate:tenant	false	read def:schedule/*
+HEAD /v1/_skilldef/names	substrate:tenant	false	read def:skill/*
+HEAD /v1/_snapshots	substrate:admin	false	read runtime:snapshot
+HEAD /v1/_snapshots/x	substrate:admin	false	read runtime:snapshot
+HEAD /v1/_snapshots/x/export	substrate:admin	false	read runtime:snapshot
+HEAD /v1/_speech	runs:create	false	-
+HEAD /v1/_state	substrate:admin	false	read runtime:pause
+HEAD /v1/_statements/agreement	substrate:tenant	false	read document:*
+HEAD /v1/_statements/review	substrate:tenant	false	read document:*
+HEAD /v1/_statements/rulings	substrate:tenant	false	read document:*
+HEAD /v1/_teamdef/names	substrate:tenant	false	read def:team/*
+HEAD /v1/_teamdef/t/channels	substrate:tenant	false	subscribe channel:*
+HEAD /v1/_teamdef/t/channels/c/peek	substrate:tenant	false	subscribe channel:*
+HEAD /v1/_teamdef/x/channels	substrate:tenant	false	subscribe channel:*
+HEAD /v1/_teamdef/x/channels/x/peek	substrate:tenant	false	subscribe channel:*
+HEAD /v1/_telemetry	substrate:tenant	false	read runtime:telemetry
+HEAD /v1/_tenants	substrate:admin	false	read runtime:tenants
+HEAD /v1/_usage	substrate:tenant	false	read runtime:usage
+HEAD /v1/_usage/speed	substrate:tenant	false	read runtime:usage
+HEAD /v1/_users	any	false	read principal:user:*
+HEAD /v1/_users/u	substrate:tenant	false	read principal:user:u
+HEAD /v1/_users/u/app-sign-ins	substrate:tenant	false	read principal:user:u
+HEAD /v1/_users/x	substrate:tenant	false	read principal:user:x
+HEAD /v1/_users/x/app-sign-ins	substrate:tenant	false	read principal:user:x
+HEAD /v1/_users/x/identities	substrate:tenant	false	read principal:user:x
+HEAD /v1/_users/x/tokens	substrate:tenant	false	mint principal:user:x
+HEAD /v1/_volumes	substrate:tenant	false	read volume:*
+HEAD /v1/_volumes/ephemeral	substrate:tenant	false	read volume:*
+HEAD /v1/_webhookdef/names	substrate:tenant	false	read def:webhook/*
+HEAD /v1/_webhooks/x/delivery-counts	substrate:admin	false	manage def:webhook/*
+HEAD /v1/_webhooks/x/recent-deliveries	substrate:admin	false	manage def:webhook/*
+HEAD /v1/agents/a	runs:read	true	read run:*
+HEAD /v1/agents/tree	runs:read	true	read run:*
+HEAD /v1/agents/x	runs:read	true	read run:*
+HEAD /v1/agents/x/channels	runs:read	false	subscribe channel:*
+HEAD /v1/client-tools	runs:create	false	run agent:*
+HEAD /v1/config	any	true	-
+HEAD /v1/docs	any	false	-
+HEAD /v1/docs/x	any	false	-
+HEAD /v1/openapi.json	any	false	-
+HEAD /v1/openapi.yaml	any	false	-
+HEAD /v1/runs	runs:read	true	read run:*
+HEAD /v1/runs/r	runs:read	true	read run:*
+HEAD /v1/runs/r/stream	runs:read	true	read run:*
+HEAD /v1/runs/tree	runs:read	true	read run:*
+HEAD /v1/runs/tree/breakpoints	runs:read	true	read run:*
+HEAD /v1/runs/tree/config	runs:read	true	read run:*
+HEAD /v1/runs/tree/effective-config	runs:read	true	read run:*
+HEAD /v1/runs/tree/inbox	runs:read	true	read run:*
+HEAD /v1/runs/tree/stream	runs:read	true	read run:*
+HEAD /v1/runs/x	runs:read	true	read run:*
+HEAD /v1/runs/x/breakpoints	runs:read	true	read run:*
+HEAD /v1/runs/x/config	runs:read	true	read run:*
+HEAD /v1/runs/x/effective-config	runs:read	true	read run:*
+HEAD /v1/runs/x/inbox	runs:read	true	read run:*
+HEAD /v1/runs/x/inbox/x	runs:read	true	read run:*
+HEAD /v1/runs/x/interrupts	runs:read	true	read run:*
+HEAD /v1/runs/x/prompt	runs:read	true	read run:*
+HEAD /v1/runs/x/stream	runs:read	true	read run:*
+HEAD /v1/sessions/s/transcript	runs:read	true	read run:*
+HEAD /v1/sessions/x/transcript	runs:read	true	read run:*
+HEAD /v1/users/u/agents	runs:read	true	read run:*
+HEAD /v1/users/u/agents/stream	runs:read	true	read run:*
+HEAD /v1/users/x/agents	runs:read	true	read run:*
+HEAD /v1/users/x/agents/stream	runs:read	true	read run:*
+HEAD /v1/users/x/channels/x/peek	channel:read	false	subscribe channel:x
+HEAD /v1/users/x/interrupts	runs:read	true	read run:*
+OPTIONS /healthz	any	false	-
+OPTIONS /v1/_oauth/revoke	substrate:admin	false	-
+OPTIONS /v1/_oauth/token	substrate:admin	false	-
+PATCH /healthz	any	false	-
+PATCH /scim/v2/Groups/x	scim:provision	false	manage principal:scim:groups
+PATCH /scim/v2/Users/x	scim:provision	false	manage principal:scim:users
+PATCH /v1/_auth/passkeys/x	any	false	-
+PATCH /v1/_authgate/x/logins/x	substrate:tenant	false	manage principal:user:*
+PATCH /v1/_channels/_await	substrate:tenant	false	await channel:*
+PATCH /v1/_channels/_broadcast	substrate:tenant	false	broadcast channel:*
+PATCH /v1/_channels/x	substrate:tenant	false	manage channel:x
+PATCH /v1/_users/u	substrate:tenant	false	manage principal:user:u
+PATCH /v1/_users/x	substrate:tenant	false	manage principal:user:x
+PATCH /v1/runs/r	runs:create	true	run agent:*
+PATCH /v1/runs/tree	runs:create	true	run agent:*
+PATCH /v1/runs/x	runs:create	true	run agent:*
+POST /healthz	any	false	-
+POST /scim/v2/Groups	scim:provision	false	manage principal:scim:groups
+POST /scim/v2/Users	scim:provision	false	manage principal:scim:users
+POST /ui/session	substrate:admin	false	-
+POST /v1/_a2aagentdef	substrate:tenant	false	read def:a2a/*
+POST /v1/_a2aservercarddef	substrate:tenant	false	read def:a2aserver/*
+POST /v1/_aclbinding	substrate:tenant	false	read def:acl/*
+POST /v1/_acldef	substrate:tenant	false	read def:acl/*
+POST /v1/_agentdef	substrate:tenant	false	read def:agent/*
+POST /v1/_auth/assert	any	false	-
+POST /v1/_auth/complete/x	any	false	-
+POST /v1/_auth/device	any	false	-
+POST /v1/_auth/device/approve	any	false	mint principal:token:self
+POST /v1/_auth/device/info	any	false	mint principal:token:self
+POST /v1/_auth/device/token	any	false	-
+POST /v1/_auth/invite	any	false	-
+POST /v1/_auth/invite/info	any	false	-
+POST /v1/_auth/logout	any	false	-
+POST /v1/_auth/passkey/x/begin	any	false	-
+POST /v1/_auth/passkeys/register/begin	any	false	-
+POST /v1/_auth/passkeys/register/finish	any	false	-
+POST /v1/_auth/password	any	false	-
+POST /v1/_auth/reset	any	false	-
+POST /v1/_auth/reset/info	any	false	-
+POST /v1/_auth/revoke	any	false	-
+POST /v1/_auth/sync	any	false	-
+POST /v1/_auth/token/revoke	any	true	manage principal:token:self
+POST /v1/_auth/totp/begin	any	false	-
+POST /v1/_auth/totp/confirm	any	false	-
+POST /v1/_authgate/x/invites	substrate:tenant	false	manage principal:user:*
+POST /v1/_authgate/x/resets	substrate:tenant	false	manage principal:user:*
+POST /v1/_authz/evaluation	any	false	-
+POST /v1/_authz/evaluations	any	false	-
+POST /v1/_authz/explain	any	false	-
+POST /v1/_authz/simulate	any	false	-
+POST /v1/_channels	substrate:tenant	false	manage channel:*
+POST /v1/_channels/_await	substrate:tenant	false	await channel:*
+POST /v1/_channels/_await/x	substrate:tenant	false	await channel:*
+POST /v1/_channels/_await/x/y	substrate:tenant	false	await channel:*
+POST /v1/_channels/_await/x/y/z	substrate:tenant	false	await channel:*
+POST /v1/_channels/_broadcast	substrate:tenant	false	broadcast channel:*
+POST /v1/_channels/_broadcast/x	substrate:tenant	false	broadcast channel:*
+POST /v1/_channels/_broadcast/x/y	substrate:tenant	false	broadcast channel:*
+POST /v1/_channels/_broadcast/x/y/z	substrate:tenant	false	broadcast channel:*
+POST /v1/_channels/c/ack	substrate:tenant	false	ack channel:c
+POST /v1/_channels/c/ack/x	substrate:tenant	false	ack channel:c
+POST /v1/_channels/c/ack/x/y	substrate:tenant	false	ack channel:c
+POST /v1/_channels/c/ack/x/y/z	substrate:tenant	false	ack channel:c
+POST /v1/_channels/c/peek	substrate:tenant	false	subscribe channel:c
+POST /v1/_channels/c/peek/x	substrate:tenant	false	subscribe channel:c
+POST /v1/_channels/c/peek/x/y	substrate:tenant	false	subscribe channel:c
+POST /v1/_channels/c/peek/x/y/z	substrate:tenant	false	subscribe channel:c
+POST /v1/_channels/c/publish	substrate:tenant	false	publish channel:c
+POST /v1/_channels/c/publish/x	substrate:tenant	false	publish channel:c
+POST /v1/_channels/c/publish/x/y	substrate:tenant	false	publish channel:c
+POST /v1/_channels/c/publish/x/y/z	substrate:tenant	false	publish channel:c
+POST /v1/_channels/c/subscribe	substrate:tenant	false	subscribe channel:c
+POST /v1/_channels/c/subscribe/x	substrate:tenant	false	subscribe channel:c
+POST /v1/_channels/c/subscribe/x/y	substrate:tenant	false	subscribe channel:c
+POST /v1/_channels/c/subscribe/x/y/z	substrate:tenant	false	subscribe channel:c
+POST /v1/_channels/x	substrate:tenant	false	publish channel:x
+POST /v1/_channels/x/ack	substrate:tenant	false	ack channel:x
+POST /v1/_channels/x/peek	substrate:tenant	false	subscribe channel:x
+POST /v1/_channels/x/publish	substrate:tenant	false	publish channel:x
+POST /v1/_channels/x/purge	substrate:tenant	false	manage channel:x
+POST /v1/_channels/x/release	substrate:tenant	false	manage channel:x
+POST /v1/_channels/x/subscribe	substrate:tenant	false	subscribe channel:x
+POST /v1/_channels/x/y	substrate:tenant	false	manage channel:x
+POST /v1/_channels/x/y/ack	substrate:tenant	false	manage channel:x
+POST /v1/_channels/x/y/peek	substrate:tenant	false	manage channel:x
+POST /v1/_channels/x/y/publish	substrate:tenant	false	manage channel:x
+POST /v1/_channels/x/y/purge	substrate:tenant	false	manage channel:x
+POST /v1/_channels/x/y/release	substrate:tenant	false	manage channel:x
+POST /v1/_channels/x/y/subscribe	substrate:tenant	false	manage channel:x
+POST /v1/_channels/x/y/z	substrate:tenant	false	manage channel:x
+POST /v1/_clientdef	substrate:tenant	false	read def:client/*
+POST /v1/_config/reload	substrate:admin	false	manage runtime:config
+POST /v1/_credentialdef	substrate:tenant	false	use credential:*
+POST /v1/_crypto	substrate:tenant	false	use crypto:*
+POST /v1/_decide	runs:create	false	use gateway:decide
+POST /v1/_document	substrate:tenant	false	read document:*
+POST /v1/_document/derive_units	substrate:tenant	false	write document:*
+POST /v1/_document/describe_images	substrate:tenant	false	write document:*
+POST /v1/_document/project	substrate:admin	false	write document:*
+POST /v1/_document/reindex	substrate:tenant	false	write document:*
+POST /v1/_documentsourcedef	substrate:tenant	false	read def:documentsource/*
+POST /v1/_erasure	substrate:tenant	false	manage runtime:erasure
+POST /v1/_evaluation	runs:read	false	read evaluation:*
+POST /v1/_groups	substrate:tenant	false	read principal:group:*
+POST /v1/_groups/g/members	substrate:tenant	false	read principal:group:*
+POST /v1/_groups/x/members	substrate:tenant	false	read principal:group:*
+POST /v1/_history	runs:read	false	read history:*
+POST /v1/_hookdef	substrate:tenant	false	read def:hook/*
+POST /v1/_llm/chat	llm:gateway	false	use gateway:chat
+POST /v1/_mcp	substrate:tenant	true	use transport:mcp
+POST /v1/_mcpserverdef	substrate:tenant	false	read def:mcpserver/*
+POST /v1/_memory/backfill_embeddings	substrate:tenant	false	write memory:*
+POST /v1/_memory/backfill_traces	substrate:tenant	false	write memory:*
+POST /v1/_memory/collapse_facts	substrate:tenant	false	write memory:*
+POST /v1/_memory/home_facts	substrate:tenant	false	write memory:*
+POST /v1/_memory/purge_stale_embeddings	substrate:tenant	false	write memory:*
+POST /v1/_memory/reembed	substrate:tenant	false	write memory:*
+POST /v1/_memory/repair-tenant	substrate:admin	false	manage runtime:tenants
+POST /v1/_memory/search	substrate:tenant	false	read memory:*
+POST /v1/_memorybackenddef	substrate:tenant	false	read def:memorybackend/*
+POST /v1/_oauth/revoke	substrate:admin	false	-
+POST /v1/_oauth/token	substrate:admin	false	-
+POST /v1/_ontology	substrate:tenant	false	read document:*
+POST /v1/_ontology/adopt	substrate:tenant	false	write document:*
+POST /v1/_ontology/plan	substrate:tenant	false	read document:*
+POST /v1/_ontology/proposals	substrate:tenant	false	write document:*
+POST /v1/_ontology/subjects/merge	substrate:tenant	false	write document:*
+POST /v1/_ontology/subjects/principal	substrate:tenant	false	write document:*
+POST /v1/_operatortokendef	substrate:tenant	false	read principal:token:*
+POST /v1/_path	substrate:tenant	false	read document:*
+POST /v1/_pause	substrate:admin	false	manage runtime:pause
+POST /v1/_resident/x/cancel	substrate:tenant	false	cancel run:*
+POST /v1/_resident/x/close	substrate:tenant	false	cancel run:*
+POST /v1/_resolve/probe	substrate:admin	false	manage runtime:config
+POST /v1/_resume	substrate:admin	false	manage runtime:pause
+POST /v1/_scheduledef	substrate:tenant	false	read def:schedule/*
+POST /v1/_schedules/x/pause	substrate:tenant	false	manage def:schedule/*
+POST /v1/_schedules/x/resume	substrate:tenant	false	manage def:schedule/*
+POST /v1/_schedules/x/run-now	substrate:tenant	false	manage def:schedule/*
+POST /v1/_skilldef	substrate:tenant	false	read def:skill/*
+POST /v1/_snapshots	substrate:admin	false	manage runtime:snapshot
+POST /v1/_snapshots/x/restore	substrate:admin	false	manage runtime:snapshot
+POST /v1/_statements/apply_policy	substrate:tenant	false	read document:*
+POST /v1/_statements/revert	substrate:tenant	false	read document:*
+POST /v1/_statements/rule	substrate:tenant	false	read document:*
+POST /v1/_teamdef	substrate:tenant	false	read def:team/*
+POST /v1/_teamdef/t/channels/c/release	substrate:tenant	false	manage channel:*
+POST /v1/_teamdef/x/channels/x/release	substrate:tenant	false	manage channel:*
+POST /v1/_teams/x/webhooks/x	substrate:admin	false	run team:*
+POST /v1/_teams/x/x/webhooks/x	substrate:admin	false	run team:*
+POST /v1/_telemetry:test	substrate:tenant	false	manage runtime:telemetry
+POST /v1/_users	substrate:tenant	false	manage principal:user:*
+POST /v1/_users/x/approve	substrate:tenant	false	manage principal:user:x
+POST /v1/_users/x/identities	substrate:tenant	false	manage principal:user:x
+POST /v1/_users/x/tokens	substrate:tenant	false	mint principal:user:x
+POST /v1/_volumedef	substrate:tenant	false	read def:volume/*
+POST /v1/_webhookdef	substrate:tenant	false	read def:webhook/*
+POST /v1/_webhooks/x	substrate:admin	false	manage def:webhook/*
+POST /v1/_webhooks/x/delivery-counts	substrate:admin	false	manage def:webhook/*
+POST /v1/_webhooks/x/recent-deliveries	substrate:admin	false	manage def:webhook/*
+POST /v1/_webhooks/x/test	substrate:admin	false	manage def:webhook/*
+POST /v1/_webhooks/x/x	substrate:admin	false	manage def:webhook/*
+POST /v1/_webhooks/x/y	substrate:admin	false	manage def:webhook/*
+POST /v1/agents/a/cancel	runs:create	true	cancel run:*
+POST /v1/agents/tree/cancel	runs:create	true	cancel run:*
+POST /v1/agents/x/cancel	runs:create	true	cancel run:*
+POST /v1/audio/speech	runs:create	false	use gateway:speech
+POST /v1/audio/transcriptions	runs:create	false	use gateway:transcription
+POST /v1/chat/completions	llm:gateway	false	use gateway:chat
+POST /v1/client-tools/ticket	runs:create	false	run agent:*
+POST /v1/embeddings	llm:gateway	false	use gateway:embeddings
+POST /v1/runs	runs:create	true	run agent:*
+POST /v1/runs:batch	runs:create	true	run agent:*
+POST /v1/runs/r/cancel	runs:create	true	cancel run:*
+POST /v1/runs/r/compact	runs:create	true	compact run:*
+POST /v1/runs/r/input	runs:create	true	steer run:*
+POST /v1/runs/r/interrupts/i/resolve	runs:create	true	steer run:*
+POST /v1/runs/r/retune	runs:create	true	retune run:*
+POST /v1/runs/r/review	runs:create	true	review run:*
+POST /v1/runs/r/start	runs:create	true	run agent:*
+POST /v1/runs/tree/cancel	runs:create	true	cancel run:*
+POST /v1/runs/tree/compact	runs:create	true	compact run:*
+POST /v1/runs/tree/file	runs:read	true	read run:*
+POST /v1/runs/tree/input	runs:create	true	steer run:*
+POST /v1/runs/tree/interrupts/x/resolve	runs:create	true	steer run:*
+POST /v1/runs/tree/retune	runs:create	true	retune run:*
+POST /v1/runs/tree/review	runs:create	true	review run:*
+POST /v1/runs/tree/start	runs:create	true	run agent:*
+POST /v1/runs/x/cancel	runs:create	true	cancel run:*
+POST /v1/runs/x/compact	runs:create	true	compact run:*
+POST /v1/runs/x/file	runs:read	true	read run:*
+POST /v1/runs/x/input	runs:create	true	steer run:*
+POST /v1/runs/x/interrupts/x/resolve	runs:create	true	steer run:*
+POST /v1/runs/x/retune	runs:create	true	retune run:*
+POST /v1/runs/x/review	runs:create	true	review run:*
+POST /v1/runs/x/start	runs:create	true	run agent:*
+POST /v1/sessions/s/messages	runs:create	true	run agent:*
+POST /v1/sessions/s/replay	runs:create	true	run agent:*
+POST /v1/sessions/tree/messages	runs:create	true	run agent:*
+POST /v1/sessions/tree/replay	runs:create	true	run agent:*
+POST /v1/sessions/x/messages	runs:create	true	run agent:*
+POST /v1/sessions/x/replay	runs:create	true	run agent:*
+POST /v1/users/x/channels/x/ack	channel:publish	false	ack channel:x
+POST /v1/users/x/channels/x/publish	channel:publish	false	publish channel:x
+POST /v1/users/x/channels/x/subscribe	channel:publish	false	subscribe channel:x
+PUT /healthz	any	false	-
+PUT /scim/v2/Groups/x	scim:provision	false	manage principal:scim:groups
+PUT /scim/v2/Users/x	scim:provision	false	manage principal:scim:users
+PUT /v1/_auth/tenant-policies/x	substrate:admin	false	manage runtime:tenants
+PUT /v1/_limits	substrate:tenant	false	manage runtime:limits
+PUT /v1/_memory/scopes/user/u/keys/k	substrate:tenant	false	write memory:*
+PUT /v1/_memory/scopes/user/u/keys/k/x	substrate:tenant	false	write memory:*
+PUT /v1/_memory/scopes/user/u/keys/k/x/y	substrate:tenant	false	write memory:*
+PUT /v1/_memory/scopes/user/u/keys/k/x/y/z	substrate:tenant	false	write memory:*
+PUT /v1/_memory/scopes/x/x/keys	substrate:tenant	false	write memory:*
+PUT /v1/_memory/scopes/x/x/keys/x	substrate:tenant	false	write memory:*
+PUT /v1/_retention/overrides	substrate:tenant	false	manage runtime:retention
+PUT /v1/_telemetry	substrate:tenant	false	manage runtime:telemetry
+PUT /v1/runs/tree/breakpoints	runs:create	true	steer run:*
+PUT /v1/runs/x/breakpoints	runs:create	true	steer run:*

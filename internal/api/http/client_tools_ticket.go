@@ -39,7 +39,7 @@ import (
 
 const (
 	// clientToolsTicketPath mints a ticket. Gated as the socket is (see
-	// requiredScopeFor, runPlaneRoute, authz.HTTPSurface).
+	// authz.HTTPRoute: its scope, run plane and question).
 	clientToolsTicketPath = "/v1/client-tools/ticket"
 	// clientToolsTicketTTL is fixed (D2): a connect follows the mint at once,
 	// and a reconnect mints again.

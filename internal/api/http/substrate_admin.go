@@ -60,7 +60,7 @@ func (s *Server) handleSubstrateSkillDef(w http.ResponseWriter, r *http.Request)
 
 // handleSubstrateTeamDef serves POST /v1/_teamdef.
 // RFC AP Phase 2 team-workflow substrate. Bearer-authed; tenant-confined
-// (ScopeTenant via isTenantConfinedDefPath) — same dispatch shape as the
+// (ScopeTenant in the route table) — same dispatch shape as the
 // AgentDef + SkillDef admin endpoints, but with the USER-aware ctx
 // (substrateAdminUserCtx): op=run files the walk's run — and every member run
 // it spawns — under RunIdentity.UserID, so under the synthetic http-admin id a
@@ -224,7 +224,7 @@ func (s *Server) handleSubstrateDocumentAsset(w http.ResponseWriter, r *http.Req
 
 // handleSubstrateHistory serves POST /v1/_history.
 // RFC BE History tool (browse/search/annotate past chats). Bearer-authed;
-// tenant-confined (ScopeTenant via isTenantConfinedDefPath; admin satisfies).
+// tenant-confined (ScopeTenant in the route table; admin satisfies).
 // Uses the USER-aware ctx (substrateAdminUserCtx) so a scope:"user" op keys on
 // the principal's OWN subject — the same user-scope id an agent run for this
 // principal uses — and a scope:"tenant" op stamps the principal's authoritative
@@ -262,7 +262,7 @@ func substrateEvaluationCtx(ctx context.Context) context.Context {
 
 // handleSubstrateCredentialDef serves POST /v1/_credentialdef.
 // RFC AR secure per-tenant credential store. Bearer-authed; tenant-confined
-// (ScopeTenant via isTenantConfinedDefPath). Uses the USER-aware ctx
+// (ScopeTenant in the route table). Uses the USER-aware ctx
 // (substrateAdminUserCtx) so a scope:"user" op keys on the principal's OWN
 // subject — the same user-scope id an agent run for this principal uses
 // (auth.applyPrincipal derives user_id from principal.Subject) — and a

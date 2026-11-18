@@ -28,7 +28,7 @@ const mcpErrForbidden = -32001
 //
 // A tool ABSENT from this set requires substrate:admin: deny-by-default, so a
 // newly added meta-tool is admin-only until it is explicitly classified
-// tenant-safe here (RFC AG §2 / §5). This mirrors requiredScopeFor's
+// tenant-safe here (RFC AG §2 / §5). This mirrors the HTTP route table's
 // default-deny arm on the HTTP plane — the enforcement-correctness lives in this
 // map, not the router, so an unclassified tool must fail closed.
 //
@@ -51,23 +51,23 @@ var tenantConfinableTools = map[string]bool{
 	// tenant from the PRINCIPAL and offers no wire field for it, so a tenant
 	// session physically cannot reach another tenant's subject — the same posture
 	// as credentialdef. It also needs substrate:tenant by name
-	// (toolRequiredScope): POST /v1/_erasure is carved out of the member path,
+	// (toolScope): POST /v1/_erasure is carved out of the member path,
 	// and neither the handler nor the connector asks who is calling (RFC FY).
 	"erasure": true,
 	// retention_override: the connector takes the tenant from the PRINCIPAL
 	// for anyone but an admin, so a tenant operator's session can only reach
 	// its own tenant's agents. It also needs substrate:tenant by name
-	// (toolRequiredScope): a member must not switch storage back on.
+	// (toolScope): a member must not switch storage back on.
 	"retention_override": true,
 	// telemetry: a tenant's own trace export. The connector takes the tenant
 	// from the PRINCIPAL for anyone but an admin and refuses another one. It
-	// also needs substrate:tenant by name (toolRequiredScope): where the
+	// also needs substrate:tenant by name (toolScope): where the
 	// tenant's traces go, with which of its credentials, is the operator's.
 	"telemetry": true,
 	// ontology: merge_subjects folds one subject into another in the
 	// connector, which takes the tenant from the PRINCIPAL for anyone but an
 	// admin and checks write on both documents. It also needs substrate:tenant
-	// by name (toolRequiredScope): which subject survives is the operator's
+	// by name (toolScope): which subject survives is the operator's
 	// call, not a member's.
 	"ontology": true,
 	// review: the statement review queue and bulk rulings. The connector takes
@@ -93,7 +93,7 @@ var tenantConfinableTools = map[string]bool{
 	"list_runs":      true,
 	// delete_run_tree: the connector requires read access to the root through
 	// the tenant gate and refuses a tree that leaves the root's tenant. It
-	// additionally needs runs:delete (toolRequiredScope), which a member holds
+	// additionally needs runs:delete (toolScope), which a member holds
 	// only by explicit grant.
 	"delete_run_tree": true,
 
@@ -129,19 +129,19 @@ var tenantConfinableTools = map[string]bool{
 	// whose user keys it may use from the PRINCIPAL; the only wire field that
 	// names a tenant is the admin-only top-level "tenant", which it refuses
 	// for anyone else. It also needs substrate:tenant by name
-	// (toolRequiredScope): it uses the tenant's keys.
+	// (toolScope): it uses the tenant's keys.
 	"crypto": true,
 	// file (RFC FF D16): a run's inbox, read through get_run's tenant and
 	// owner gate; the writing ops need the run's owner or an admin (a tenant
 	// operator is one for its own tenant's runs), and keep reaches only the
 	// caller's own tenant's volumes. It needs runs:read by
-	// name (toolRequiredScope), as get_run does.
+	// name (toolScope), as get_run does.
 	"file": true,
 
 	// RFC EZ access-control management. The shared implementation stamps the
 	// tenant from the principal (an admin alone may focus another) and holds
 	// every gate itself; groupdef/acldef/aclbinding also need substrate:tenant
-	// by name (toolRequiredScope), as their HTTP routes keep members out.
+	// by name (toolScope), as their HTTP routes keep members out.
 	"groupdef":   true,
 	"acldef":     true,
 	"aclbinding": true,
@@ -150,7 +150,7 @@ var tenantConfinableTools = map[string]bool{
 	"authz": true,
 	// clientdef: the implementation stamps the tenant from the principal (an
 	// admin alone names another) and opaque-404s another tenant's client. It
-	// also needs substrate:tenant by name (toolRequiredScope), as its HTTP
+	// also needs substrate:tenant by name (toolScope), as its HTTP
 	// route keeps members out.
 	"clientdef": true,
 
@@ -167,7 +167,7 @@ var tenantConfinableTools = map[string]bool{
 	// decision: it holds no tenant's data (it reads only the state passed in the
 	// call), and the connector resolves the provider key and the bill for the
 	// caller's own principal. It spends tokens, so it additionally needs the
-	// scope that creates a run (toolRequiredScope).
+	// scope that creates a run (toolScope).
 	"decision": true,
 
 	// Per-run / per-user — tenant inherited; the underlying tool applies its
@@ -183,7 +183,7 @@ var tenantConfinableTools = map[string]bool{
 	// operatortokendef: a tenant operator's own tenant's metrics scrape
 	// tokens and nothing else — the tool's grant comes from the principal
 	// (tools.OperatorTokenDefPolicyFor), which confines it to those. It also
-	// needs substrate:tenant by name (toolRequiredScope), as the route's
+	// needs substrate:tenant by name (toolScope), as the route's
 	// member carve-out keeps a member from minting.
 	"operatortokendef": true,
 }
@@ -233,79 +233,28 @@ var userSelfServiceTools = map[string]bool{
 	"evaluation": true,
 }
 
-// toolRequiredScope is a scope a principal must hold to list + call a tool, ON
-// TOP of its class's allowlist above. The allowlists say which tools a class of
-// principal can be confined on; they do not look at what the token was granted.
-// A non-isolated member token reaches /v1/_mcp whatever its scopes are (the
-// route's member path), so without this a token minted with only runs:read
-// could start, steer and cancel runs here, or spend tokens on a decision, while
-// POST /v1/runs and the Run RPC refuse it.
-//
-// Each entry is the scope the tool's gRPC twin needs (grpcConsumerScopes), which
-// mirrors the HTTP route's. A tool with no entry is governed by its allowlist
-// alone: the def-authoring and data tools, whose HTTP routes a member also
-// reaches on the member path.
-var toolRequiredScope = map[string]string{
-	// An operator's control, not member data: a member who could set one could
-	// read what its colleagues' no-trace runs said.
-	"retention_override": auth.ScopeTenant,
-	// Where the tenant's traces are sent, which /v1/_telemetry keeps from a
-	// tenant's members.
-	"telemetry": auth.ScopeTenant,
-	// The tenant's keys, which POST /v1/_crypto keeps from a tenant's
-	// members: a member who could decrypt with them could read whatever the
-	// tenant sealed.
-	"crypto": auth.ScopeTenant,
-	// Folding one ontology subject into another, which POST
-	// /v1/_ontology/subjects/merge keeps from a tenant's members.
-	"ontology": auth.ScopeTenant,
-	// Reporting on or erasing a subject, which /v1/_erasure keeps from a
-	// tenant's members: a member could otherwise erase a colleague.
-	"erasure": auth.ScopeTenant,
-	// Starting a run, and every write on a run's state.
-	"spawn_run":            auth.ScopeRunsCreate,
-	"spawn_runs":           auth.ScopeRunsCreate,
-	"cancel_run":           auth.ScopeRunsCreate,
-	"compact_run":          auth.ScopeRunsCreate,
-	"retune_run":           auth.ScopeRunsCreate,
-	"review_run":           auth.ScopeRunsCreate,
-	"configured_run":       auth.ScopeRunsCreate,
-	"interruption_resolve": auth.ScopeRunsCreate,
-	// Deleting a run tree removes stored records: a scope of its own, not
-	// implied for a member.
-	"delete_run_tree": auth.ScopeRunsDelete,
-	// Reading runs.
-	"get_run":                auth.ScopeRunsRead,
-	"file":                   auth.ScopeRunsRead,
-	"list_runs":              auth.ScopeRunsRead,
-	"stream_user_run_states": auth.ScopeRunsRead,
-	// The per-user channel surface.
-	"publish_channel":   auth.ScopeChannelPublish,
-	"ack_channel":       auth.ScopeChannelPublish,
-	"subscribe_channel": auth.ScopeChannelRead,
-	"peek_channel":      auth.ScopeChannelRead,
-	// A team's own channels are channels: reading one is a channel read, and
-	// releasing what one holds is a channel write. The HTTP routes ask the
-	// same of a member; the RPCs ask substrate:tenant, which implies both.
-	"list_team_channels":   auth.ScopeChannelRead,
-	"peek_team_channel":    auth.ScopeChannelRead,
-	"release_team_channel": auth.ScopeChannelPublish,
-	// Asking a decision model outside a run spends tokens: the scope
-	// POST /v1/_decide and the Decide RPC require.
-	"decision": auth.ScopeRunsCreate,
-	// Evaluation: the floor POST /v1/_evaluation and the Evaluation RPC gate on.
-	"evaluation": auth.ScopeRunsRead,
-	// Groups, lists and bindings are the tenant operator's: the scope their
-	// HTTP routes and RPCs require, which keeps a member out here too.
-	"groupdef":   auth.ScopeTenant,
-	"acldef":     auth.ScopeTenant,
-	"aclbinding": auth.ScopeTenant,
-	// An app client decides where people's sign-in codes go: the operator's
-	// to register, as POST /v1/_clientdef requires.
-	"clientdef": auth.ScopeTenant,
-	// Handing out a credential, even a tenant's own scrape token, is the
-	// operator's: POST /v1/_operatortokendef is carved out of the member path.
-	"operatortokendef": auth.ScopeTenant,
+// toolScope is the scope a principal must hold to list and call a tool, ON
+// TOP of its class's allowlist above: the tool's row in the shared route
+// table (authz.MCPToolRoute), the scope the tool's gRPC twin needs. The
+// allowlists say which tools a class of principal can be confined on; they do
+// not look at what the token was granted. A non-isolated member token reaches
+// /v1/_mcp whatever its scopes are (the route's member path), so without this
+// a token minted with only runs:read could start, steer and cancel runs here,
+// or spend tokens on a decision, while POST /v1/runs and the Run RPC refuse
+// it. The second result is false for a tool governed by its allowlist alone.
+func toolScope(name string) (string, bool) {
+	t, _ := authz.MCPToolRoute(name)
+	return t.Scope, t.Scope != ""
+}
+
+// toolOnRunPlane reports whether a tool is on the run plane: the whole of
+// what a credential with an agent allowlist may call on this transport
+// (auth.Restrictions.RunPlaneOnly). `decision` is deliberately off it — a
+// model call with no agent — and so are teamdef, every other definition tool,
+// channels, memory and documents.
+func toolOnRunPlane(name string) bool {
+	t, _ := authz.MCPToolRoute(name)
+	return t.RunPlane
 }
 
 // principalMayCallTool reports whether the principal on ctx may list/invoke
@@ -319,19 +268,9 @@ var toolRequiredScope = map[string]string{
 //   - Non-admin, non-isolated (substrate:tenant / RFC CB member) principal: the
 //     tenant-confinable allowlist; everything else — including an unclassified new
 //     tool — is admin-only (deny-by-default).
-//   - Any non-admin principal additionally needs a tool's toolRequiredScope,
+//   - Any non-admin principal additionally needs a tool's toolScope,
 //     when it has one.
 //
-// runPlaneTools is the run plane on this transport: the whole of what a
-// credential with an agent allowlist may call (auth.Restrictions.RunPlaneOnly).
-// `decision` is deliberately absent — a model call with no agent — and so are
-// teamdef, every other definition tool, channels, memory and documents.
-var runPlaneTools = map[string]bool{
-	"spawn_run": true, "spawn_runs": true, "configured_run": true,
-	"cancel_run": true, "compact_run": true, "retune_run": true, "review_run": true,
-	"interruption_resolve": true,
-	"get_run":              true, "list_runs": true, "stream_user_run_states": true,
-}
 
 // mcpToolQuestions is every ACL question the per-tool gate asks of toolName,
 // whatever the op: `invoke mcp-tool:<name>`, and the question each op's HTTP
@@ -530,7 +469,7 @@ var mcpToolTwins = map[string]mcpToolTwin{
 	"review_run":             {Method: "POST", Path: "/v1/runs/r/review"},
 	"delete_run_tree":        {Method: "DELETE", Path: "/v1/runs/r/tree"},
 	"interruption_resolve":   {Method: "POST", Path: "/v1/runs/r/interrupts/i/resolve"},
-	"file":                   {Method: "GET", Path: "/v1/runs/r/file"},
+	"file":                   {Method: "POST", Path: "/v1/runs/r/file"},
 	"retention_override": {DefaultOp: "list", Ops: map[string]mcpOpTwin{
 		"list":  {Method: "GET", Path: "/v1/_retention/overrides"},
 		"set":   {Method: "PUT", Path: "/v1/_retention/overrides"},
@@ -626,7 +565,7 @@ var mcpOpsInBody = map[string]string{
 	"configured_run":    "create, update, start and delete each ask run agent:*, as their routes do; the run intake asks the agent",
 	"memory":            "a write op asks write memory:* (sqlmem for SQL) in the shared operation (memoryOpQuestion)",
 	"channel":           "each op asks its own route's question of the channel it names in the shared operation (channelOpQuestions)",
-	"file":              "one route, GET|POST /v1/runs/{id}/file; the File twin asks the run's owner for its writing ops",
+	"file":              "one route, POST /v1/runs/{id}/file; the File twin asks the run's owner for its writing ops",
 	"path":              "one route; the Path tool asks each op's verb of the name it touches",
 	"document":          "one route; the Document tool asks each op's verb of the document it resolves",
 	"history":           "one route; the History tool reads only the caller's own scopes",
@@ -668,7 +607,7 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	}
 	// Before the admin shortcut: a credential limited to certain agents is
 	// held to the run plane however wide its scopes.
-	if p.Restrictions.RunPlaneOnly() && !runPlaneTools[toolName] {
+	if p.Restrictions.RunPlaneOnly() && !toolOnRunPlane(toolName) {
 		return false
 	}
 	// A metrics scraper's credential calls no tool. The route gate keeps it
@@ -686,7 +625,7 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	if auth.HasScope(p.Scopes, auth.ScopeAdmin) {
 		return true
 	}
-	if required, gated := toolRequiredScope[toolName]; gated && !auth.HasScope(p.Scopes, required) {
+	if required, gated := toolScope(toolName); gated && !auth.HasScope(p.Scopes, required) {
 		return false
 	}
 	if auth.IsIsolated(p, ok) {
@@ -699,7 +638,7 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 // the refusal's text: the tool's own required scope when that is what failed,
 // else substrate:admin (the tool is outside the principal's allowlist).
 func scopeNeededFor(ctx context.Context, toolName string) string {
-	if required, gated := toolRequiredScope[toolName]; gated {
+	if required, gated := toolScope(toolName); gated {
 		if p, ok := auth.PrincipalFromContext(ctx); ok && !auth.HasScope(p.Scopes, required) {
 			return required
 		}
@@ -711,7 +650,7 @@ func scopeNeededFor(ctx context.Context, toolName string) string {
 // OPERATION a call asks of a tool that passed principalMayCallTool, and that
 // operation; scope is "" when the call may proceed.
 //
-// toolRequiredScope gates a whole tool, which fits the run and channel tools:
+// toolScope gates a whole tool, which fits the run and channel tools:
 // every operation of each needs the same scope. teamdef does not fit: most of
 // its ops author definitions, which a member may do whatever its token holds,
 // so the tool has no entry there and stays listed — but op=run starts a walk
