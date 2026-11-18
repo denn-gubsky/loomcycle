@@ -124,6 +124,13 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 			}
 			self = existing
 		}
+		// The proposal marks are propose_entity's and import_scheme's to write: a forged
+		// one would be accepted as structured data an operator never saw filed, and would
+		// block the real filing as already proposed.
+		if mk := proposalMarkIn(in.Fields); mk != "" {
+			return refusal(errPermission("an agent may not write the "+mk+" mark into an ontology chunk's fields; "+
+				"file the proposal with op=propose_entity (or import_scheme), which writes it", ""))
+		}
 		// Held to propose_entity's rules (RFC GQ P2.1): nothing filed under a retired
 		// entry, and no proposal of a retired entry's name. Fails closed, like the rest.
 		r, err := d.retiredProposalRefusal(ctx, key, docID, self, in.ParentID, in.Title)
