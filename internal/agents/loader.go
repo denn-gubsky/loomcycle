@@ -256,6 +256,7 @@ type ToolChoice struct {
 // stays config-free). json: tags are LOAD-BEARING for content_sha256.
 type Transcription struct {
 	OCR              string `json:"ocr,omitempty"`
+	OCRModel         string `json:"ocr_model,omitempty"`
 	STT              string `json:"stt,omitempty"`
 	MaxPagesPerRun   int    `json:"max_pages_per_run,omitempty"`
 	MaxMinutesPerRun int    `json:"max_minutes_per_run,omitempty"`

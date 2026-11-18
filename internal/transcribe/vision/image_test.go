@@ -63,7 +63,7 @@ func countingEngine(t *testing.T, d *countingDecoder) (*Engine, transcribe.Plan)
 	m := &fakeModel{caps: imageOnlyModel, reply: func(providers.Request) string { return "text" }}
 	e := engineWith(t, m, config.OCRConfig{})
 	e.decode = d.decode
-	plan, err := e.Plan(context.Background(), "image/png")
+	plan, err := e.Plan(context.Background(), "image/png", "")
 	if err != nil {
 		t.Fatal(err)
 	}

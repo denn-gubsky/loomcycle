@@ -3551,19 +3551,21 @@ transcription:
 - **The helper commands run as the loomcycle user.** `transcription.ocr.rasterize`, `transcription.stt.media` and `speech.encode` start without a shell, in a scratch folder, with a scrubbed environment and a timeout, but they parse untrusted files and can read whatever the loomcycle process can. To confine them, set `LOOMCYCLE_HELPER_WRAPPER` to a command that runs its arguments in a sandbox, for example `bwrap --ro-bind / / --dev /dev --bind /tmp /tmp --bind <inbox root> <inbox root> --unshare-net --die-with-parent --`. The helpers write their output under the inbox root (the directory of the volume marked `dynamic_root`, for the `File` tool) and under the server's `TMPDIR` (the scratch of the `/v1/audio` routes), so a sandbox must keep both writable; with the root read-only and nothing bound writable, every conversion fails at `{out}`. It is split into words by the same rules as a helper command (quotes, no shell, no placeholders), loaded and checked at startup, and every helper then runs as `<wrapper words> <helper program, by its resolved path> <helper arguments>`, each one its own argument. The wrapper must exist on the host; a missing one fails the helper call, naming it. An `ffmpeg` command always gets `-nostdin` and, before each `-i`, `-protocol_whitelist file,pipe`, so a recording that is really a playlist or a concat list cannot fetch a URL or open another protocol; an option already in the template is kept as written. Local files a demuxer opens (an HLS playlist naming a file segment) are still within ffmpeg's own extension checks only; the wrapper is what limits them.
 - Speech-to-text is priced per minute of audio: `pricing.models."<provider>/<model>": { per_minute: 0.006 }`, billed by the second, plus token prices for a model that reports tokens (e.g. `gpt-4o-transcribe`).
 
-**Per agent.** An agent opts in to OCR and may lower the caps:
+**Per agent.** An agent opts in to OCR, may lower the caps, and may name its own OCR model:
 
 ```yaml
 agents:
   doc-reader:
     transcription:
       ocr: auto                # auto | always | never — default never (OCR is billed per page)
+      ocr_model: local-vision  # optional models: alias (kind: chat): this agent's OCR model
       stt: on                  # on | off — default on when the operator configured an engine
       max_pages_per_run: 50    # at most transcription.ocr.max_pages_per_run
       max_minutes_per_run: 60  # at most transcription.stt.max_minutes_per_run
 ```
 
 - A cap above the operator's is **refused** at config load and at AgentDef create/fork, naming both values. At run time the lower of the two applies, so an operator who lowers a cap later still binds stored agents.
+- `ocr_model` (RFC GV D9) must be a `models:` alias of kind chat, checked at config load and at AgentDef create/fork. The agent's OCR passes, dry runs included, use it before the operator's `transcription.ocr.model` or tier, so one agent can be held to a local model while the rest of the deployment reads scans elsewhere. A model that cannot read images is refused, naming the setting that chose it. If the alias stops resolving, the call is refused; it never falls back to the operator's model.
 - With no engine configured, the agent's setting is accepted and has no effect.
 - The block is set in yaml or the AgentDef overlay, merges per field on a fork, and is part of the agent's content hash. A run cannot override it.
 

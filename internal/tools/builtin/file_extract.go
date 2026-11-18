@@ -411,8 +411,8 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	if pages := ocrSet; len(pages) > 0 || in.DryRun {
 		var plan transcribe.Plan
 		if len(pages) > 0 {
-			if plan, err = f.OCR.Engine.Plan(ctx, mt); err != nil {
-				return errBusiness("extract: OCR cannot read "+r.raw+": "+err.Error(), "An operator configures the OCR model (transcription.ocr)."), nil
+			if plan, err = f.OCR.Engine.Plan(ctx, mt, oc.model); err != nil {
+				return errBusiness("extract: OCR cannot read "+r.raw+": "+err.Error(), "An operator configures the OCR model (transcription.ocr, or the agent's transcription.ocr_model)."), nil
 			}
 		}
 		if in.DryRun {

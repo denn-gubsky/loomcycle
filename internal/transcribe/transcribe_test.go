@@ -66,7 +66,7 @@ type fakeOCR struct{}
 
 func (fakeOCR) Name() string                  { return "fake-ocr" }
 func (fakeOCR) Accepts(mediaType string) bool { return strings.HasPrefix(mediaType, "image/") }
-func (fakeOCR) Plan(context.Context, string) (Plan, error) {
+func (fakeOCR) Plan(context.Context, string, string) (Plan, error) {
 	return Plan{Engine: "fake-ocr", WholePDF: true}, nil
 }
 func (fakeOCR) OCR(_ context.Context, _ Plan, u Unit, o OCROptions) (Result, error) {
@@ -93,7 +93,7 @@ func TestEngines_ImplementTheInterfaces(t *testing.T) {
 	u, _ := NewUnit(bytes.NewReader([]byte("png")), 0, 3, "image/png")
 	u.Pages = PageRange{First: 2, Last: 2}
 	var o OCREngine = fakeOCR{}
-	plan, err := o.Plan(context.Background(), "image/png")
+	plan, err := o.Plan(context.Background(), "image/png", "")
 	if err != nil {
 		t.Fatal(err)
 	}

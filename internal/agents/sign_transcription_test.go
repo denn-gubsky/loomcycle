@@ -39,7 +39,9 @@ func TestSign_Transcription_IsContentIdentifyingAndAbsentIsStable(t *testing.T) 
 	opted.Transcription = &Transcription{OCR: "auto"}
 	lowered := base
 	lowered.Transcription = &Transcription{OCR: "auto", MaxPagesPerRun: 10}
-	if Sign(opted) == pinned || Sign(lowered) == Sign(opted) {
+	pinnedModel := base
+	pinnedModel.Transcription = &Transcription{OCR: "auto", OCRModel: "local-vision"}
+	if Sign(opted) == pinned || Sign(lowered) == Sign(opted) || Sign(pinnedModel) == Sign(opted) {
 		t.Error("a transcription field did not change the hash")
 	}
 }

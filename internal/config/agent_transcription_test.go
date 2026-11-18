@@ -123,3 +123,63 @@ func TestMergeAgentDef_CarriesTranscription(t *testing.T) {
 		t.Errorf("merged = %+v, want %+v", out.Transcription, want)
 	}
 }
+
+// TestAgentTranscription_OCRModelLoadsWhenAnAlias — an agent may name the OCR
+// model it reads with (RFC GV D9), as an alias of this config's models:, and
+// the yaml override on an MD-discovered agent carries it per field.
+func TestAgentTranscription_OCRModelLoadsWhenAnAlias(t *testing.T) {
+	cfg, err := loadTranscription(t, agentTranscriptionOperator+`
+  reader:
+    transcription: { ocr: auto, ocr_model: talker }
+  untagged:
+    transcription: { ocr_model: plain }
+`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := cfg.Agents["reader"].Transcription; got == nil || got.OCRModel != "talker" {
+		t.Errorf("reader transcription = %+v, want ocr_model talker", got)
+	}
+	out := mergeAgentDef(
+		AgentDef{Transcription: &AgentTranscription{OCR: "auto", OCRModel: "talker"}},
+		AgentDef{Transcription: &AgentTranscription{OCR: "always"}},
+	)
+	if want := (&AgentTranscription{OCR: "always", OCRModel: "talker"}); !reflect.DeepEqual(out.Transcription, want) {
+		t.Errorf("merged = %+v, want %+v", out.Transcription, want)
+	}
+}
+
+// TestAgentTranscription_OCRModelRefusedUnlessAChatAlias — the same refusal as
+// the operator's transcription.ocr.model: a literal model or an alias this
+// config does not declare refuses the load, and so does an alias of another
+// kind. The AgentDef path calls the same check on a loaded config.
+func TestAgentTranscription_OCRModelRefusedUnlessAChatAlias(t *testing.T) {
+	for _, c := range []struct{ name, block string }{
+		{"not an alias", "{ ocr: auto, ocr_model: gpt-x }"},
+		{"an embedder", "{ ocr: auto, ocr_model: embed }"},
+		{"a transcriber", "{ ocr_model: whisper }"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := loadTranscription(t, agentTranscriptionOperator+"  a:\n    transcription: "+c.block+"\n")
+			if err == nil || !strings.Contains(err.Error(), "transcription.ocr_model") || !strings.Contains(err.Error(), `agent "a"`) {
+				t.Errorf("err = %v, want a refusal naming transcription.ocr_model", err)
+			}
+		})
+	}
+	cfg, err := loadTranscription(t, agentTranscriptionOperator)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	before := len(cfg.Warnings)
+	if err := cfg.CheckAgentTranscription(&AgentTranscription{OCRModel: "missing"}); err == nil || !strings.Contains(err.Error(), `"missing" is not a models: alias`) {
+		t.Errorf("CheckAgentTranscription(unknown alias) = %v, want a refusal", err)
+	}
+	if err := cfg.CheckAgentTranscription(&AgentTranscription{OCRModel: "talker"}); err != nil {
+		t.Errorf("CheckAgentTranscription(chat alias) = %v", err)
+	}
+	if n := len(cfg.Warnings) - before; n != 0 {
+		// Judging a block must not write to the config it judges: the AgentDef
+		// tool calls it on the live one.
+		t.Errorf("checking added %d warnings: %v", n, cfg.Warnings[before:])
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -62,7 +63,9 @@ type fakeOCR struct {
 
 	mu    sync.Mutex
 	plans int
-	units []sentUnit
+	// models is the agent model each Plan was asked for ("" = the operator's).
+	models []string
+	units  []sentUnit
 }
 
 type sentUnit struct {
@@ -75,11 +78,17 @@ type sentUnit struct {
 
 func (f *fakeOCR) Name() string                  { return "vision" }
 func (f *fakeOCR) Accepts(mediaType string) bool { return true }
-func (f *fakeOCR) Plan(context.Context, string) (transcribe.Plan, error) {
+func (f *fakeOCR) Plan(_ context.Context, _, model string) (transcribe.Plan, error) {
 	f.mu.Lock()
 	f.plans++
+	f.models = append(f.models, model)
 	f.mu.Unlock()
-	return f.plan, f.planErr
+	plan := f.plan
+	if model != "" {
+		// As the vision engine resolves it: the agent's alias is the model.
+		plan.Provider, plan.Model = "ollama-local", model
+	}
+	return plan, f.planErr
 }
 
 func (f *fakeOCR) OCR(_ context.Context, plan transcribe.Plan, u transcribe.Unit, o transcribe.OCROptions) (transcribe.Result, error) {
@@ -828,5 +837,34 @@ func TestOCR_LedgerFailureLogsTheClassNotTheErrorText(t *testing.T) {
 		if !strings.Contains(res.Text, want) {
 			t.Errorf("result lacks %s: %s", want, res.Text)
 		}
+	}
+}
+
+// TestOCR_DryRunReportsTheAgentsOCRModel — RFC GV D9: the agent's
+// transcription.ocr_model is what the engine is asked to plan with, and the
+// dry run (result and event) reports the model that would read the pages. An
+// agent without one plans with the operator's.
+func TestOCR_DryRunReportsTheAgentsOCRModel(t *testing.T) {
+	x := ocrRun(t, config.OCRConfig{MaxPagesPerRun: 3}, &config.AgentTranscription{OCR: "auto", OCRModel: "local-vision"})
+	ref := x.keep(t, "skan.pdf", scannedPDF(t, 2))
+	out, _, res := x.extract(t, map[string]any{"path": ref, "dry_run": true})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if out["provider"] != "ollama-local" || out["model"] != "local-vision" {
+		t.Errorf("dry run reads with %v/%v, want ollama-local/local-vision", out["provider"], out["model"])
+	}
+	if ev := x.transcriptionEvents(); len(ev) != 1 || ev[0].Model != "local-vision" || ev[0].Provider != "ollama-local" {
+		t.Errorf("transcription events = %+v, want one naming local-vision", ev)
+	}
+	if !reflect.DeepEqual(x.engine.models, []string{"local-vision"}) {
+		t.Errorf("engine asked for %q, want [local-vision]", x.engine.models)
+	}
+
+	x = ocrRun(t, config.OCRConfig{MaxPagesPerRun: 3}, agentOCR("auto"))
+	ref = x.keep(t, "skan.pdf", scannedPDF(t, 2))
+	out, _, _ = x.extract(t, map[string]any{"path": ref, "dry_run": true})
+	if out["model"] != "claude-x" || !reflect.DeepEqual(x.engine.models, []string{""}) {
+		t.Errorf("without an agent model: model %v, engine asked %q; want the operator's", out["model"], x.engine.models)
 	}
 }

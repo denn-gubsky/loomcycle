@@ -2311,6 +2311,7 @@ func signFromMergedDef(name string, def mergedDef) string {
 	if tr := def.Transcription; !tr.IsZero() {
 		c.Transcription = &agents.Transcription{
 			OCR:              tr.OCR,
+			OCRModel:         tr.OCRModel,
 			STT:              tr.STT,
 			MaxPagesPerRun:   tr.MaxPagesPerRun,
 			MaxMinutesPerRun: tr.MaxMinutesPerRun,
