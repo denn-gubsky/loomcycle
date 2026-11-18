@@ -283,10 +283,7 @@ func (s *annotationScope) resolveClassNode(ctx context.Context, op string, n *an
 		return fail(errNotFound(fmt.Sprintf("%s: %q is not a document class of the ontology in force", op, name),
 			"Name a class describe_ontology lists with kind document; entity classes get no annotation (RFC GM D6)."))
 	}
-	id, err := s.d.classChunkID(ctx, s.key, *onto, cls.Name)
-	if err != nil {
-		return nil, err
-	}
+	id := onto.classChunkID(cls.Name)
 	if id == "" {
 		return fail(errBusiness(op+": standard_class: "+cls.Name+" is a standard class with no entry in the ontology document, so it has no chunk to annotate",
 			"Declare the class in the ontology to annotate it."))
@@ -605,10 +602,7 @@ func (s *annotationScope) nodeNarrower(ctx context.Context, n *annotationNode, p
 		}
 		id := sn.ID
 		if sn.Kind == nodeKindClass {
-			var err error
-			if id, err = s.d.classChunkID(ctx, s.key, *s.ontology(ctx), sn.Name); err != nil {
-				return nil, 0, nil, err
-			}
+			id = s.ontology(ctx).classChunkID(sn.Name)
 		}
 		kids = append(kids, kid{sn: sn, chunkID: id})
 	}
