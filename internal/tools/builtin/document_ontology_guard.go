@@ -249,7 +249,7 @@ func ontologyGuardExemption(op string) string {
 		return "makes a new document; the reserved names are refused by reservedTargetRefusal"
 	case "copy_documents", "move_documents":
 		return "planCopy refuses the ontology as a member of the set and as a target name"
-	case "propose_entity", "propose_subject":
+	case "propose_entity", "import_scheme", "propose_subject":
 		return "files an inert proposal, which is what an agent may do to the ontology"
 	case "remember":
 		return "writes only the scope's entity document, which the runtime chooses"
@@ -319,11 +319,18 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 		return errBusiness("propose_entity: this tenant has no ontology document yet — an "+
 			"operator opens the Ontology page once to create it", ""), nil
 	}
-	switch strings.ToLower(strings.TrimSpace(in.Section)) {
+	section := strings.ToLower(strings.TrimSpace(in.Section))
+	if wantsWholeScheme(in) && section != memrank.SectionSchemes {
+		return errValidation("propose_entity: concepts and header describe a scheme; pass section=schemes", ""), nil
+	}
+	switch section {
 	case "", memrank.SectionClasses:
 	case memrank.SectionRelations:
 		return d.proposeRelation(ctx, key, mscope, read, name, in)
 	case memrank.SectionSchemes:
+		if wantsWholeScheme(in) {
+			return d.proposeScheme(ctx, key, mscope, read, name, in)
+		}
 		return d.proposeConcept(ctx, key, mscope, read, name, in)
 	case memrank.SectionInstances:
 		return d.proposeInstance(ctx, key, mscope, read, name, in)

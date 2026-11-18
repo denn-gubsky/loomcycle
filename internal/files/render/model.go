@@ -206,7 +206,19 @@ type Image struct {
 	// Name is the picture's file name, img-N.<ext>, unique in the Doc.
 	Name      string `json:"name"`
 	MediaType string `json:"media_type"`
-	Data      []byte `json:"-"`
+	// Density is pixels per shown pixel: 2 for a picture drawn at twice
+	// its size to stay sharp (a diagram, RFC GR P4d), shown at half its
+	// pixel size; 0 or 1 is shown at its own size.
+	Density int    `json:"density,omitempty"`
+	Data    []byte `json:"-"`
+}
+
+// shown is the size a picture of w×h pixels is shown at.
+func (im Image) shown(w, h int) (int, int) {
+	if im.Density == 2 {
+		return max(1, w/2), max(1, h/2)
+	}
+	return w, h
 }
 
 // Node kinds. Block kinds hold blocks or inline nodes; inline kinds hold
@@ -271,15 +283,19 @@ type Options struct {
 
 // Report says what a render contained and what it left out.
 type Report struct {
-	Format         string   `json:"format"`
-	Sections       int      `json:"sections"`
-	Images         int      `json:"images"`
-	Tables         int      `json:"tables"`
-	Pages          int      `json:"pages,omitempty"`
-	ImagesSkipped  int      `json:"images_skipped,omitempty"`
-	BodiesCut      int      `json:"bodies_cut,omitempty"`
-	LinksFlattened int      `json:"links_flattened,omitempty"`
-	Notes          []string `json:"notes,omitempty"`
+	Format         string `json:"format"`
+	Sections       int    `json:"sections"`
+	Images         int    `json:"images"`
+	Tables         int    `json:"tables"`
+	Pages          int    `json:"pages,omitempty"`
+	ImagesSkipped  int    `json:"images_skipped,omitempty"`
+	BodiesCut      int    `json:"bodies_cut,omitempty"`
+	LinksFlattened int    `json:"links_flattened,omitempty"`
+	// DiagramsDrawn and DiagramsLeftAsCode count the Mermaid diagrams drawn
+	// as pictures and those shown as code (RFC GR P4d, D24).
+	DiagramsDrawn      int      `json:"diagrams_drawn,omitempty"`
+	DiagramsLeftAsCode int      `json:"diagrams_left_as_code,omitempty"`
+	Notes              []string `json:"notes,omitempty"`
 }
 
 // statusLabel is the label shown beside the title for status (D15), "" for

@@ -143,6 +143,44 @@ func TestProjection_ConcurrentRefitsOfOneScopeAllSucceed(t *testing.T) {
 	})
 }
 
+// TestProjection_SaveOfAPrunedVersionIsRefused — a refit that read v1 and saves v2
+// only after other passes saved v3 and v4 (whose prune deleted v2) must lose, as if
+// v2 were still there. The concurrent test above hit this interleaving about once
+// in 17 runs on SQLite. This test sets the interleaving up in sequence.
+func TestProjection_SaveOfAPrunedVersionIsRefused(t *testing.T) {
+	projectionBothTiers(t, func(t *testing.T, d *Document, vs *vectorStore, ctx context.Context) {
+		projDoc(t, d, vs, ctx, "Map", synthVectors(40, 3))
+		project(t, d, ctx, ProjectionOptions{})
+		key := sidecarScope(t, d, ctx)
+		const model = "fake/m1"
+		cur, err := d.loadBasis(ctx, key, model)
+		if err != nil || cur == nil {
+			t.Fatalf("loadBasis = %v, %v; want the first pass's basis", cur, err)
+		}
+		save := func(version int) bool {
+			t.Helper()
+			b := *cur
+			b.version = version
+			saved, err := d.saveBasis(ctx, key, model, &b)
+			if err != nil {
+				t.Fatalf("saveBasis v%d: %v", version, err)
+			}
+			return saved
+		}
+		for _, v := range []int{2, 3, 4} {
+			if !save(v) {
+				t.Fatalf("saveBasis v%d reported a lost race with no rival", v)
+			}
+		}
+		if save(2) {
+			t.Fatal("a save of v2, pruned under v4, was taken as a new fit")
+		}
+		if v, _, err := d.latestBasisVersion(ctx, key, model); err != nil || v != 4 {
+			t.Fatalf("latest basis = v%d (%v), want v4", v, err)
+		}
+	})
+}
+
 // TestProjection_ConcurrentPassesPlacingTheSameChunksAllSucceed — passes that find
 // the same chunks unplaced (no refit) write their rows at once. Every pass must
 // finish, and every chunk be placed.

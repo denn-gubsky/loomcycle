@@ -89,6 +89,7 @@ func WriteTypst(ctx context.Context, w io.Writer, d *Doc, opts Options) ([]Image
 			return nil, err
 		}
 		if wpx, hpx, ok := typDecodes(im.Data); ok {
+			wpx, hpx = im.shown(wpx, hpx)
 			t.images[im.Name] = typImage{w: wpx, h: hpx}
 			used = append(used, im)
 		}

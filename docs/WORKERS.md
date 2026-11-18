@@ -68,7 +68,7 @@ Each runtime replica keeps its own quarantine: a file that killed a worker is re
 
 ## Helper programs
 
-The worker image ships ffmpeg, poppler and Typst (with the Noto Sans, Noto Sans Mono and Noto Serif fonts; Noto Serif is for a house style that asks for serif type), and sets these commands:
+The worker image ships ffmpeg, poppler, Typst (with the Noto Sans, Noto Sans Mono and Noto Serif fonts; Noto Serif is for a house style that asks for serif type) and merman (`merman-cli`, which draws Mermaid diagrams without a browser), and sets these commands:
 
 | Variable | Default in the image | The runtime setting it stands for |
 |---|---|---|
@@ -76,10 +76,13 @@ The worker image ships ffmpeg, poppler and Typst (with the Noto Sans, Noto Sans 
 | `LOOMCYCLE_WORKER_RASTERIZE_COMMAND` | `pdftoppm -r 150 -png {in} {out_prefix}` | `transcription.ocr.rasterize.command` |
 | `LOOMCYCLE_WORKER_ENCODE_COMMAND` | `ffmpeg -nostdin -i {in} -c:a libopus -b:a 32k {out}` | `speech.encode.command` |
 | `LOOMCYCLE_WORKER_WRITE_COMMAND` | `typst compile --root {dir} {in} {out}` | none: a Document rendered as a PDF (`File op=render format: pdf`) |
+| `LOOMCYCLE_WORKER_MERMAID_COMMAND` | unset: `merman-cli render -q -s 2 -o {out} {in}` | none: a Mermaid diagram drawn as a picture in a rendered file |
 
 A worker reads its commands from its own environment, never from the runtime: a job says what to convert, not what to run. The runtime's own setting still decides whether a conversion is wanted at all (an OCR pass renders pages only when `transcription.ocr.rasterize` is set, a recording is converted only when `transcription.stt.media` is), so set both. A worker offers a helper's jobs only when the program resolves on its `PATH`; when no attached worker has it, the call is refused as if the setting were unset. In `local` mode the runtime hands its own commands to its children, so there is one place to set them.
 
 The PDF typesetter is the exception to "set both": a PDF render has no runtime setting, and a worker takes PDF renders whenever `typst` is on its `PATH` (or `LOOMCYCLE_WORKER_WRITE_COMMAND` names another program). It is handed `{in}`, the Typst source the runtime wrote (`main.typ`, which reads its pictures from `images/` beside it and imports nothing), `{out}`, the PDF to write, and `{dir}`, the job's folder. The runtime checks what comes back: a PDF that opens, of at most 2000 pages and 64 MiB. A worker built before PDF rendering never receives a PDF job. In `local` mode, and in process, the runtime runs `typst` from its own `PATH`; where it is missing, a PDF render answers that the server cannot write PDF.
+
+Diagrams work the same way. A worker draws them whenever `merman-cli` is on its `PATH`, with `merman-cli render -q -s 2 -o {out} {in}`: a PNG at twice the diagram's size, which every format shows at half its pixel size so it stays sharp. `LOOMCYCLE_WORKER_MERMAID_COMMAND` replaces that command with your own: `{in}` is the diagram's source and `{out}` the PNG to write. The runtime checks what comes back: a PNG that decodes whole, at most 8 MiB and 4096 px a side. A diagram that does not draw, or whose picture fails the check, stays code in the file and the render goes on; with no worker carrying a renderer, every diagram stays code. One render draws at most 200 diagrams, each within 10 seconds and all within 2 minutes; after two diagrams run out of time the rest stay code. In `local` mode, and in process, the runtime runs `merman-cli` from its own `PATH`.
 
 The helpers run as they do in the runtime: no shell, a scrubbed environment, a timeout, in the worker's scratch directory. `LOOMCYCLE_HELPER_WRAPPER` confines them further, as it does in the runtime.
 

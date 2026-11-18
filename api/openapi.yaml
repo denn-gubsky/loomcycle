@@ -2819,6 +2819,26 @@ components:
         current_embedder: { $ref: "#/components/schemas/EmbedMeta" }
         failed_keys: { type: array, items: { type: string } }
       required: [scope, scope_id, dry_run, rows_reembedded, rows_failed]
+    DocumentProposedConcept:
+      type: object
+      description: One concept of a proposed scheme (RFC GM P3.1).
+      properties:
+        name: { type: string }
+        meaning: { type: string }
+        notation: { type: string }
+        alt: { type: array, items: { type: string } }
+        exact_match: { type: string }
+        children: { type: array, items: { $ref: "#/components/schemas/DocumentProposedConcept" }, description: "Narrower concepts." }
+      required: [name]
+    DocumentSchemeHeader:
+      type: object
+      description: "propose_entity (a new scheme) / import_scheme: the scheme's header, carried as data and written as directives only when an operator accepts. import_scheme: origin is always adopted."
+      properties:
+        domain: { type: string, description: "The knowledge domain the scheme serves." }
+        projects: { type: array, items: { type: string }, description: "The classes whose things it arranges." }
+        origin: { type: string, enum: [adopted, declared, generated] }
+        source: { type: string, description: "An adopted scheme's publisher or URL." }
+        version: { type: string, description: "An adopted scheme's edition." }
     # DocumentToolInput / PathToolInput mirror the Document / Path tool
     # InputSchema()s. The `op` enums here are drift-tested against the live
     # tool schemas (internal/api/http/openapi_test.go); additionalProperties is
@@ -2844,6 +2864,7 @@ components:
             - mark_source
             - create_chunk
             - propose_entity
+            - import_scheme
             - propose_subject
             - upsert_chunk
             - get_chunk
@@ -2922,7 +2943,10 @@ components:
         query: { type: string }
         sql: { type: string, description: "query_chunks read-only SELECT escape hatch." }
         tags: { type: array, items: { type: string } }
-        markdown: { type: string, description: "import_md source." }
+        markdown: { type: string, description: "import_md source. import_scheme: a scheme as an outline — # name, then nested - bullets (or ## headings), each an optional notation in a code span then the name, with alt:, note:, exact: lines under it." }
+        concepts: { type: array, items: { $ref: "#/components/schemas/DocumentProposedConcept" }, description: "propose_entity with section=schemes and no parent: a NEW scheme's concepts, nested up to 8 levels, at most 500 in all; the whole scheme is one proposal, inert until an operator accepts it." }
+        header: { $ref: "#/components/schemas/DocumentSchemeHeader" }
+        skos_xml: { type: string, description: "import_scheme: a SKOS concept scheme in RDF/XML, at most 2 MB (Turtle is not read). Pass this or markdown; language picks the labels, scheme one ConceptScheme of several." }
         media_type: { type: string }
         data: { type: string, description: "set_asset image bytes, base64." }
         to_scope: { type: string, enum: [agent, user, tenant], description: "copy_documents / move_documents: the scope the documents go to." }

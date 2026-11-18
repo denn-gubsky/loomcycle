@@ -381,9 +381,8 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	// child chunk a sub-kind. The same fail-open rules as classes — an inert entry is a
 	// proposal and its children attach to the nearest in-force kind, an unnamed chunk
 	// is skipped with its children kept, and the depth cap flattens rather than drops.
-	// walkSchemes reads the Schemes section (see schemeWalker).
-	var schemes []memrank.OntologyScheme
-	sw := schemeWalker{kids: kids, bodyOf: bodyOf, entityName: entityName, proposals: &proposals}
+	var schemes []memrank.OntologyScheme // the Schemes section, read by schemeWalker
+	sw := schemeWalker{kids: kids, bodyOf: bodyOf, fieldsOf: func(id string) json.RawMessage { return chunkOf(id).Fields }, entityName: entityName, proposals: &proposals}
 	walkSchemes := func(chunks []ontologyChunk) { schemes = append(schemes, sw.schemes(chunks)...) }
 
 	// walkInstances reads the Instances section: each entry a real thing, a child entry
@@ -491,9 +490,10 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				}
 			}
 			review = &p
-		default:
-			// No directive: a class, exactly as before sections existed.
-			walk([]ontologyChunk{c}, rootID, "", 1, false)
+		default: // no directive: a class as before sections, unless a whole proposed scheme
+			if !sw.rootProposal(c) {
+				walk([]ontologyChunk{c}, rootID, "", 1, false)
+			}
 		}
 	}
 	return OntologyRead{
@@ -720,6 +720,7 @@ func typeFilterSQL(column string, types []string) (string, []any) {
 type schemeWalker struct {
 	kids       map[string][]ontologyChunk
 	bodyOf     func(id string) string
+	fieldsOf   func(id string) json.RawMessage
 	entityName func(c ontologyChunk) string
 	proposals  *[]memrank.OntologyProposal
 	capped     bool // set by concepts, read and reset per scheme
@@ -733,7 +734,7 @@ func (w *schemeWalker) schemes(chunks []ontologyChunk) []memrank.OntologyScheme 
 			if name != "" {
 				*w.proposals = append(*w.proposals, memrank.OntologyProposal{
 					ChunkID: c.id, Name: name, Status: strings.ToLower(strings.TrimSpace(c.status)),
-					Body: w.bodyOf(c.id), Section: memrank.SectionSchemes,
+					Body: w.bodyOf(c.id), Section: memrank.SectionSchemes, Scheme: w.proposedView(c),
 				})
 			}
 			continue
@@ -782,7 +783,7 @@ func (w *schemeWalker) concepts(chunks []ontologyChunk, s *memrank.OntologySchem
 		}
 		full := append(append([]string{}, path...), name)
 		concept := memrank.ParseConceptBody(s.Name, name, full, w.bodyOf(c.id))
-		concept.ChunkID = c.id
+		concept.ChunkID, concept.Origin = c.id, s.Origin
 		s.Concepts = append(s.Concepts, concept)
 		// Schemes have their own, deeper cap (RFC GM): a concept tree is a
 		// vocabulary, not a class hierarchy whose fields go into every prompt. Past
