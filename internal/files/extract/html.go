@@ -31,16 +31,7 @@ func (HTML) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 // parameter, so a test can reach it with a small page.
 func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts Options, cssBudget int) (Report, error) {
 	rep := Report{Format: "html"}
-	if size > maxHTMLBytes {
-		return rep, refusedf("the page is over %d bytes", maxHTMLBytes)
-	}
-	// Both passes read through the context, so a deadline that comes while
-	// either is reading stops it at its next read: html.Parse has no context
-	// of its own.
-	if err := countHTML(ctx, &ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, size)}); err != nil {
-		return rep, err
-	}
-	doc, err := html.Parse(&ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, size)})
+	doc, err := parseHTMLPage(ctx, r, size)
 	if err != nil {
 		return rep, err
 	}
@@ -60,6 +51,33 @@ func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts
 		docTitle = title(opts.Name, "Page")
 	}
 	h.blocks = append(h.blocks, heading(1, docTitle))
+	if err := h.page(doc, cssBudget); err != nil {
+		return rep, err
+	}
+	if err := h.write(false); err != nil {
+		rep.finish(w)
+		return rep, err
+	}
+	rep.finish(w)
+	return rep, nil
+}
+
+// parseHTMLPage refuses a page over maxHTMLBytes or one whose tree would be
+// out of proportion to it (countHTML), then parses it. Both passes read
+// through the context, so a deadline that comes while either is reading
+// stops it at its next read: html.Parse has no context of its own.
+func parseHTMLPage(ctx context.Context, r io.ReaderAt, size int64) (*html.Node, error) {
+	if size > maxHTMLBytes {
+		return nil, refusedf("the page is over %d bytes", maxHTMLBytes)
+	}
+	if err := countHTML(ctx, &ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, size)}); err != nil {
+		return nil, err
+	}
+	return html.Parse(&ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, size)})
+}
+
+// page walks the page's body into h.blocks.
+func (h *htmlState) page(doc *html.Node, cssBudget int) error {
 	body := findElement(doc, "body")
 	if body == nil {
 		body = doc
@@ -71,7 +89,7 @@ func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts
 			// proportion to it: the page is extracted as if the option
 			// were off, and says so.
 			h.infer, h.sheet = false, nil
-			rep.note("headings were not inferred: the page's class rules apply to more elements than %d", cssBudget)
+			h.rep.note("headings were not inferred: the page's class rules apply to more elements than %d", cssBudget)
 		}
 	}
 	if h.infer {
@@ -80,27 +98,62 @@ func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts
 		budget := maxXMLNodes
 		countImages(body, h.decor, &budget, 0)
 	}
+	if h.body != nil && h.body.label != "" && !hasHeading(body, 0) {
+		// A book's chapter that is only styled paragraphs still gets the
+		// heading its contents entry gives it.
+		h.blocks = append(h.blocks, heading(2, h.body.label))
+	}
 	if err := h.walk(body, 0); err != nil {
-		return rep, err
+		return err
 	}
 	h.flush()
 	if h.infer {
 		h.promote()
 	}
-	// Block by block, so a heading's anchor is named just before it; the
-	// text is the same as one write of the blocks joined.
+	return nil
+}
+
+// write hands h.blocks to the sink block by block, so a heading's anchor is
+// named just before it; the text is the same as one write of the blocks
+// joined. lead separates the first block from text written before it.
+func (h *htmlState) write(lead bool) error {
 	for i, b := range h.blocks {
-		if i > 0 {
+		if i > 0 || lead {
 			b = "\n\n" + b
 		}
-		w.headingAnchor(h.anchors[i])
-		if err := w.text(b); err != nil {
-			rep.finish(w)
-			return rep, err
+		h.w.headingAnchor(h.anchors[i])
+		if err := h.w.text(b); err != nil {
+			return err
 		}
 	}
-	rep.finish(w)
-	return rep, nil
+	return nil
+}
+
+// hasHeading reports whether a heading element with text lies under n.
+func hasHeading(n *html.Node, depth int) bool {
+	if depth > maxXMLDepth {
+		return false
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type != html.ElementNode || htmlSkip[c.Data] {
+			continue
+		}
+		if htmlHeadingLevel(c.Data) > 0 && strings.TrimSpace(textOf(c)) != "" {
+			return true
+		}
+		if hasHeading(c, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
+// htmlHeadingLevel is 1..6 for h1..h6, 0 for any other element.
+func htmlHeadingLevel(tag string) int {
+	if len(tag) == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6' {
+		return int(tag[1] - '0')
+	}
+	return 0
 }
 
 // htmlRecord is the element a loomcycle render keeps its record in: a
@@ -363,6 +416,32 @@ type htmlState struct {
 	// (RFC GR P4b).
 	recordEl *html.Node
 	anchors  map[int]string
+
+	// body is the body-only mode a book's content documents are read in
+	// (RFC GV §4.2); nil for a web page.
+	body *htmlBody
+}
+
+// htmlBody is the HTML walker's body-only mode, for a content document of a
+// book (EPUB, later MOBI). The book, not the document, has the title, so the
+// document's <title> is not written; a picture is a file of the book, so its
+// bytes are kept instead of a link written; and footnotes are taken out of
+// the flow for the book to list at its end.
+type htmlBody struct {
+	// title is the book's title: a heading that only repeats it (a title
+	// page's) is not written a second time.
+	title string
+	// label is the heading a document with none of its own is given: the
+	// book's contents entry for it.
+	label string
+	// picture returns the bytes of the picture a document names by a
+	// relative reference; false when the book holds none by that name.
+	picture func(ref string) ([]byte, bool)
+	// noteRef returns "[n]" for a link to a footnote, "" for any other link;
+	// note takes a footnote element out of the flow, reporting whether el
+	// was one. Either may be nil.
+	noteRef func(a *html.Node) string
+	note    func(el *html.Node) bool
 }
 
 // flush ends the paragraph being collected.
@@ -395,7 +474,7 @@ func (h *htmlState) promote() {
 			h.blocks[h.paraAt[i]] = heading(lv+1, h.paras[i].look().text)
 		}
 	}
-	h.rep.InferredHeadings = res.headings
+	h.rep.InferredHeadings += res.headings
 	res.note(h.rep)
 }
 
@@ -433,13 +512,27 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 			continue
 		}
 		tag := c.Data
+		if h.body != nil && h.body.note != nil && h.body.note(c) {
+			continue
+		}
 		switch {
+		case h.body != nil && tag == "svg":
+			// An SVG wrapper is how many books place their cover.
+			h.flush()
+			if err := h.svgImages(c, 0); err != nil {
+				return err
+			}
 		case htmlSkip[tag]:
-		case len(tag) == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6':
+		case h.body != nil && tag == "a" && h.body.noteRef != nil && h.body.noteRef(c) != "":
+			h.text(h.body.noteRef(c))
+		case htmlHeadingLevel(tag) > 0:
 			h.flush()
 			if t := strings.TrimSpace(textOf(c)); t != "" {
+				if h.body != nil && tag == "h1" && oneLine(t) == h.body.title {
+					continue
+				}
 				// Below the document's "#".
-				h.blocks = append(h.blocks, heading(int(tag[1]-'0')+1, t))
+				h.blocks = append(h.blocks, heading(htmlHeadingLevel(tag)+1, t))
 				if a := htmlHeadingAnchor(c); a != "" && h.w.recorded {
 					if h.anchors == nil {
 						h.anchors = map[int]string{}
@@ -447,7 +540,7 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 					h.anchors[len(h.blocks)-1] = a
 				}
 				if h.infer {
-					h.paras = append(h.paras, inferPara{real: int(tag[1] - '0')})
+					h.paras = append(h.paras, inferPara{real: htmlHeadingLevel(tag)})
 					h.paraAt = append(h.paraAt, len(h.blocks)-1)
 				}
 			}
@@ -481,6 +574,14 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 				h.rep.DroppedDecorativeImages++
 				continue
 			}
+			if h.body != nil {
+				l, err := h.bookImage(imageSrc(c), attrOf(c, "alt"), c)
+				if err != nil {
+					return err
+				}
+				h.blocks = append(h.blocks, l)
+				continue
+			}
 			if l := imgLink(c); l != "" {
 				h.blocks = append(h.blocks, l)
 			}
@@ -497,6 +598,75 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 		}
 	}
 	return nil
+}
+
+// bookImage is the Markdown for a picture a book's document names: the
+// picture kept, when ref is a file of the book; a link, when it is a URL
+// (nothing is fetched); its alt text otherwise.
+func (h *htmlState) bookImage(ref, alt string, n *html.Node) (string, error) {
+	if ref == "" || strings.HasPrefix(strings.ToLower(ref), "data:") {
+		return altOnly(cleanAlt(alt)), nil
+	}
+	if hasScheme(ref) {
+		return imgLink(n), nil
+	}
+	data, ok := h.body.picture(ref)
+	if !ok {
+		return altOnly(cleanAlt(alt)), nil
+	}
+	return h.w.image(data, alt)
+}
+
+// svgImages writes the pictures an <svg> places with <image>: its text is
+// not read, as a web page's is not.
+func (h *htmlState) svgImages(n *html.Node, depth int) error {
+	if depth > maxXMLDepth {
+		return nil
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type != html.ElementNode {
+			continue
+		}
+		if c.Data == "image" {
+			if h.nodes++; h.nodes > maxXMLNodes {
+				return refusedf("the page holds more than %d elements", maxXMLNodes)
+			}
+			l, err := h.bookImage(svgHref(c), "", c)
+			if err != nil {
+				return err
+			}
+			h.blocks = append(h.blocks, l)
+			continue
+		}
+		if err := h.svgImages(c, depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// svgHref is an SVG <image>'s target: xlink:href, or SVG 2's plain href.
+func svgHref(n *html.Node) string {
+	for _, a := range n.Attr {
+		if a.Key == "href" || a.Key == "xlink:href" {
+			return strings.TrimSpace(a.Val)
+		}
+	}
+	return ""
+}
+
+// hasScheme reports whether ref is a URL with a scheme (https:, mailto:)
+// rather than a reference relative to the document.
+func hasScheme(ref string) bool {
+	for i := 0; i < len(ref); i++ {
+		switch c := ref[i]; {
+		case c == ':':
+			return i > 0
+		case c == '/' || c == '?' || c == '#':
+			return false
+		}
+	}
+	return false
 }
 
 // list renders a <ul>/<ol>, nested lists indented under their item.
