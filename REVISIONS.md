@@ -8,6 +8,65 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.161.0
+
+*`File op=extract` reads books: EPUB, FB2 (and a `.fb2.zip` holding one book), RTF, and a DjVu book's text layer. It returns what a book says about itself as `metadata` (RFC GV). An agent can name its own OCR model. In the tenant ontology an entry is retired instead of deleted, a delete of an entry something rests on is refused, an agent can propose changing or retiring an entry, and the change plan is on every transport (RFC GQ).*
+
+The v1.161 line: #2750 to #2760.
+- `@loomcycle/client` 1.161.0: `planOntology`, and `ocr_model` on `AgentTranscription`. The Python adapter moves to 1.161.0 (tag `python-v1.161.0`) for `plan_ontology`.
+- No numbered migration and no new Go dependency.
+- The conversion worker protocol gains `Report.metadata` (`BookMetadata`) and one worker label (`djvu`). gRPC gains `PlanOntology`.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **Update the conversion workers with this release (#2759).**
+  - The worker image adds DjVuLibre (`djvulibre-bin`, from Debian 13). `curl` stays in the image, since `djvulibre-bin` depends on it.
+  - A worker reads DjVu only when it carries `djvutxt`, and then carries the `djvu` label. A DjVu extraction goes only to such a worker; with none attached it is refused, naming the program.
+  - Workers of an older release send no `metadata`, which reads as none.
+- **In process, DjVu is read only when you set `transcription.ocr.djvu.text`** (and optionally `inspect`). No default runs DjVuLibre in the server's own process. `transcription.ocr.djvu.rasterize` is refused by name until DjVu OCR ships.
+- **`transcription.ocr_model` on an agent (#2755)** must be a `models:` alias of kind chat; an unknown one refuses the load and AgentDef create/fork. The agent's OCR uses it before `transcription.ocr.model` or the tier. If the alias later stops resolving, the call is refused rather than moved to the deployment's model.
+- **A captured file's type is now sniffed from its first 4 KiB rather than 512 bytes (#2758)**, so an FB2 book's root element is found past its prolog. Nothing else about capture changes.
+- **The ontology (RFC GQ, #2750, #2752, #2757).**
+  - `retired` is a third reserved status word. A tenant that already used `retired` as its own status on ontology entries now finds those entries closed to new uses; check before upgrading.
+  - Deleting an ontology entry that something rests on is now refused for every caller, the operator plane included, with `entry_has_dependents`. Retire it instead.
+
+### Files (RFC GV: #2753, #2755, #2758, #2759, #2760)
+
+- **EPUB 2 and 3.**
+  - The book title is the one `#`. Chapters come in spine order, their headings one level down; a chapter with none takes its contents-list label. Non-linear items come last.
+  - Footnotes become `[n]` under Notes, and the cover is written first.
+  - A book whose `encryption.xml` encrypts anything but fonts is refused as DRM.
+  - Chapters past the output cap are never inflated. A loomcycle-rendered EPUB re-imports keeping its chunk ids.
+- **FB2 and `.fb2.zip`.**
+  - Read as a stream. Its declared encoding may be UTF-8/16, windows-1250/1251/1252, koi8-r/u, iso-8859-1/2/5 or ibm866; any other is refused by name.
+  - Sections become headings, epigraphs and citations become quotes, poems keep their lines, and notes become `[n]`.
+  - Base64 pictures are size-checked before decoding. A zip with more than one entry is refused as an archive.
+- **RTF**, also one saved as `.doc`.
+  - Read by a bounded pure-Go tokenizer: code pages 1250/1251/1252, 866, KOI8 and Mac Roman, `\uN` escapes and font charsets.
+  - Headings come from outline levels or `heading N` styles. Bold and italic, tables, footnotes and field results are kept; PNG and JPEG pictures are kept.
+- **DjVu, its text layer.**
+  - DjVuLibre's `djvutxt` and `djvused` read the text, outline and metadata of the pages asked for: only pages that carry text, in batches of 16. `pages` limits them.
+  - Each page is `## Page N`, and a page without text is listed in `low_yield_pages`.
+  - An indirect DjVu, or one that includes other files, is refused before any helper runs.
+  - OCR of DjVu pages is not available yet: the file is never sent to a vision model as one picture.
+- **`metadata`** on every transport: `title`, `authors`, `translators`, `language`, `date`, `year`, `publisher`, `identifiers`, `series`, `series_index`, `subjects`, `description`, `source_format`. Every value is bounded and treated as untrusted text.
+- **An agent's own OCR model** (`transcription.ocr_model`), so one agent can be held to a local vision model while the deployment reads scans elsewhere.
+- **Bounds**, found by security review during the build and fixed before merge:
+  - an EPUB description's markup is bounded before it is parsed;
+  - FB2 decoded text is counted against three times the file cap, and each text run is capped while it streams;
+  - quote nesting is capped at 8 levels and written line by line;
+  - a DjVu file that would make DjVuLibre open another file by name is refused.
+
+### Ontology (RFC GQ: #2750, #2752, #2754, #2756, #2757)
+
+- **Retire, don't delete.**
+  - An operator retires an entry with `update_chunk status=retired`. Everything that already uses it keeps working, and nothing new may use it.
+  - Proposals, rulings, `remember`, tags and statements that would put a retired entry to a new use are refused (`entry_retired`).
+- **A delete of an entry in use is refused** for every caller, from the delete paths themselves, with the planner's count of what it would destroy.
+- **Change and retire proposals.** `propose_entity change=edit|retire` with `entry` files a proposal to rename, move, re-describe or retire an in-force entry. Accepting one is a later phase.
+- **The change plan on every transport:** the MCP `ontology` tool's op `plan`, gRPC `PlanOntology`, TS `planOntology` and Python `plan_ontology`. All of them call the same connector as `POST /v1/_ontology/plan`.
+
 ## What's in v1.160.0
 
 *Mermaid diagrams render as pictures, an HTML file and the pictures `extract` wrote can be rendered, and an operator can choose the PDF typesetter and diagram renderer (RFC GR P4d). `File op=extract` can read a sample: chosen PDF pages and a character limit (RFC GP P2.1). The ontology can take a whole proposed scheme, import one from SKOS or an outline (RFC GM P3.1, P1.4), and plan a change before it is made (RFC GQ P1.1). A tenant can run a stricter access-control mode than the deployment (RFC EZ P5). Taxonomy statistics count only documents every member may read (RFC GM C8).*
