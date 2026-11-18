@@ -103,3 +103,64 @@ func TestStaticToMergedDef_CarriesTranscription(t *testing.T) {
 		t.Error("staticToMergedDef aliased the operator's block")
 	}
 }
+
+// TestAgentDef_OCRModelRoundTripsAndUnknownAliasIsRefused — RFC GV D9's
+// ocr_model rides the overlay like the block's other keys: it is stored, read
+// back through lookup, kept by a fork that does not name it, and a fork that
+// changes only it is a new version. An alias the operator's models: does not
+// declare is refused at create and fork, and nothing is stored.
+func TestAgentDef_OCRModelRoundTripsAndUnknownAliasIsRefused(t *testing.T) {
+	tool, ctx, cleanup := agentDefFixture(t)
+	defer cleanup()
+	tool.Cfg.Models = map[string]config.ModelRef{
+		"local-vision":  {Provider: "ollama-local", Model: "qwen2.5vl:7b"},
+		"local-vision2": {Provider: "ollama-local", Model: "gemma3:12b", Kind: config.ModelKindChat},
+		"embed":         {Provider: "openai", Model: "text-embedding-3-small", Kind: config.ModelKindEmbedder},
+	}
+
+	got := storedRouting(t, tool, ctx, `{"op":"create","name":"cataloguer","overlay":{"tier":"middle","system_prompt":"s","transcription":{"ocr":"auto","ocr_model":"local-vision"}}}`)
+	want := &config.AgentTranscription{OCR: "auto", OCRModel: "local-vision"}
+	if !reflect.DeepEqual(got.Transcription, want) {
+		t.Fatalf("stored transcription = %+v, want %+v", got.Transcription, want)
+	}
+	got = storedRouting(t, tool, ctx, `{"op":"fork","name":"cataloguer","overlay":{"transcription":{"ocr":"always"}}}`)
+	want = &config.AgentTranscription{OCR: "always", OCRModel: "local-vision"}
+	if !reflect.DeepEqual(got.Transcription, want) {
+		t.Errorf("a fork not naming ocr_model = %+v, want %+v", got.Transcription, want)
+	}
+	res, _ := tool.Execute(ctx, json.RawMessage(`{"op":"fork","name":"cataloguer","overlay":{"transcription":{"ocr_model":"local-vision2"}}}`))
+	if res.IsError {
+		t.Fatalf("fork: %s", res.Text)
+	}
+	if deduped, _ := decodeResult(t, res.Text)["deduped"].(bool); deduped {
+		t.Errorf("a fork that changes only ocr_model deduped: %s", res.Text)
+	}
+
+	for _, call := range []string{
+		`{"op":"create","name":"stray","overlay":{"tier":"middle","system_prompt":"s","transcription":{"ocr":"auto","ocr_model":"gpt-x"}}}`,
+		`{"op":"fork","name":"cataloguer","overlay":{"transcription":{"ocr_model":"gpt-x"}}}`,
+		`{"op":"fork","name":"cataloguer","overlay":{"transcription":{"ocr_model":"embed"}}}`,
+	} {
+		res, _ := tool.Execute(ctx, json.RawMessage(call))
+		if !res.IsError || !strings.Contains(res.Text, "transcription.ocr_model") {
+			t.Errorf("%s: got %s, want a refusal naming transcription.ocr_model", call, res.Text)
+		}
+	}
+	if _, err := tool.Store.AgentDefGetActive(ctx, "", "stray"); err == nil {
+		t.Error("a refused create still stored a row")
+	}
+}
+
+// TestSignFromMergedDef_OCRModelIsContentIdentifying — two agents that differ
+// only in the OCR model read their files with different models, so they hash
+// apart; an agent without it keeps the hash it had.
+func TestSignFromMergedDef_OCRModelIsContentIdentifying(t *testing.T) {
+	def := staticToMergedDef(config.AgentDef{Tier: "middle", SystemPrompt: "s", Transcription: &config.AgentTranscription{OCR: "auto"}})
+	without := signFromMergedDef("a", def)
+	def.Transcription = &config.AgentTranscription{OCR: "auto", OCRModel: "local-vision"}
+	with := signFromMergedDef("a", def)
+	def.Transcription = &config.AgentTranscription{OCR: "auto", OCRModel: "other"}
+	if with == without || signFromMergedDef("a", def) == with {
+		t.Error("ocr_model did not change the hash")
+	}
+}
