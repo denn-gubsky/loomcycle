@@ -897,6 +897,11 @@ func (d *Document) setAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 		if brief, abstract, repairs, err = s.repairIdentity(ctx, t, cur, brief, abstract); err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
+		// t.chunk is the root at document level: its status is the stored one
+		// (documents.status mirrors it).
+		var wording []annotationRepair
+		brief, abstract, wording = repairStatusWording(t.level, t.chunk.Status, s.ownCode(ctx, t), brief, abstract)
+		repairs = append(repairs, wording...)
 	}
 	language := in.Language
 	if language == "" {
