@@ -174,6 +174,37 @@ func TestOntologyDeleteRecheck_RefusesAChangedSubtree(t *testing.T) {
 	}
 }
 
+// TestChangeProposal_StaysRejectableAndDeletable (RFC GQ P4.1 beside P2.2): a change
+// proposal is filed under a section header as a proposal, so neither the demotion
+// refusal, the move refusal nor the delete guard treats it as an entry — while the
+// entry it names, in use, stays undeletable.
+func TestChangeProposal_StaysRejectableAndDeletable(t *testing.T) {
+	f := newRetiredFixture(t)
+	f.placeUnder("topics/reporting")
+	concept := f.chunk("Reporting")
+	retire := f.must(map[string]any{"op": "propose_entity", "change": "retire", "entry": concept, "body": "Unused soon."})["chunk_id"].(string)
+	edit := f.must(map[string]any{"op": "propose_entity", "change": "edit", "entry": concept, "meaning": "Periodic reports."})["chunk_id"].(string)
+	if text := f.setStatus(f.ctx, retire, memrank.OntologyStatusRejected); text != "" {
+		t.Errorf("rejecting a change proposal: %s", text)
+	}
+	if text := f.setStatus(f.ctx, retire, memrank.OntologyStatusProposed); text != "" {
+		t.Errorf("re-opening a rejected change proposal: %s", text)
+	}
+	read := f.read()
+	if _, r := f.do(f.ctx, map[string]any{"op": "move_chunk", "scope": "tenant", "id": edit,
+		"new_parent_id": read.SectionChunks[memrank.SectionClasses]}); r.IsError {
+		t.Errorf("moving a change proposal: %s", r.Text)
+	}
+	for _, id := range []string{retire, edit} {
+		if text := f.deleteChunk(f.ctx, id); text != "" || f.exists(id) {
+			t.Errorf("deleting change proposal %s: %q (still there %v)", id, text, f.exists(id))
+		}
+	}
+	if text := f.deleteChunk(f.ctx, concept); !strings.Contains(text, entryHasDependentsCode) {
+		t.Errorf("the entry the proposals named, in use: %q", text)
+	}
+}
+
 // TestDeleteOntologyChunk_RefusesWhenItCannotTellTheDocument: a lookup that fails is
 // not "not an ontology chunk".
 func TestDeleteOntologyChunk_RefusesWhenItCannotTellTheDocument(t *testing.T) {
