@@ -205,6 +205,8 @@ type OntologyTerm struct {
 	// live one. Named apart from `retired`, which already names a superseded fact in
 	// read results.
 	EntryStatus string `json:"entry_status,omitempty"`
+	// Locked: the class's body carries @locked (RFC FO 3.1a).
+	Locked bool `json:"locked,omitempty"`
 }
 
 // inheritableDirectives are the class directives a subclass takes from its ancestors
