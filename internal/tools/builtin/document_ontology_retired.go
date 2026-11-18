@@ -34,8 +34,8 @@ import (
 
 // retiredIssues are the document-level advisories retired entries raise: a section
 // header carrying the status (it cannot be retired; the status is ignored), a live
-// entry under a retired one, and a review rule naming a retired kind (the rule still
-// applies to the proposals it selects). An instance not yet adopted whose class is
+// entry under a retired one, and a review rule naming a retired kind (its rejections
+// still apply; an acceptance of a retired kind is refused by applyRuling). An instance not yet adopted whose class is
 // retired gets an issue of its own, since adoption skips it. With nothing retired it
 // returns nil and touches nothing.
 func retiredIssues(kids map[string][]ontologyChunk, rootID string, sectionOf map[string]string,
@@ -89,7 +89,7 @@ func retiredIssues(kids map[string][]ontologyChunk, rootID string, sectionOf map
 			for _, k := range rule.Kinds {
 				if retiredKinds[k] {
 					issues = append(issues, fmt.Sprintf("Review rule %d names the retired relation kind %s; "+
-						"it still rules on the proposals it selects", rule.Index, k))
+						"it may still reject the proposals it selects, but none it accepts goes in force", rule.Index, k))
 				}
 			}
 		}
