@@ -83,12 +83,14 @@ func (d *Document) countPlanDependents(ctx context.Context, key sqlmem.ScopeKey,
 			skipped++
 			continue
 		}
-		if ok, perr := d.docSQL().PlaneExists(ctx, sk); perr != nil || !ok {
-			if perr != nil {
-				skipped++
-				slog.WarnContext(ctx, "ontology plan: could not check a scope", "tenant", sk.Tenant, "scope", sk.Scope, "err", perr)
-			}
-			continue // no document plane: no documents to count
+		at, ok, perr := d.planScopePlane(ctx, sk)
+		if perr != nil {
+			skipped++
+			slog.WarnContext(ctx, "ontology plan: could not check a scope", "tenant", sk.Tenant, "scope", sk.Scope, "err", perr)
+			continue
+		}
+		if !ok {
+			continue // neither plane holds documents: nothing to count
 		}
 		// Counted into a copy first, so a scope that fails halfway adds nothing.
 		scratch := make([]map[string]*connector.OntologyPlanCount, len(planned))
@@ -97,7 +99,7 @@ func (d *Document) countPlanDependents(ctx context.Context, key sqlmem.ScopeKey,
 			q := &plannedChange{classes: p.classes, kinds: p.kinds, tags: p.tags,
 				newlyFunctional: p.newlyFunctional, newlyAsymmetric: p.newlyAsymmetric,
 				counts: map[string]*connector.OntologyPlanCount{}}
-			if serr = d.countPlanNames(ctx, sk, "", false, q); serr != nil {
+			if serr = d.countPlanNames(ctx, at, "", false, q); serr != nil {
 				break
 			}
 			scratch[i] = q.counts
@@ -115,6 +117,26 @@ func (d *Document) countPlanDependents(ctx context.Context, key sqlmem.ScopeKey,
 		counted++
 	}
 	return counted, skipped, skipped == 0, nil
+}
+
+// planScopePlane is the plane holding a user or agent scope's documents: its document
+// plane once that exists, else its agent plane when the scope is from before the planes
+// split and still holds them there. Postgres never moves such a scope until the
+// Document tool next uses it, and sqlite leaves one it could not move at boot (or one a
+// snapshot from before the split restored) for its first use, so "no document plane"
+// is not "no documents". ok is false when neither plane holds them. An agent could plant
+// a table named documents in a scope that never held any; what that adds is a count,
+// never a write or a sample.
+func (d *Document) planScopePlane(ctx context.Context, sk sqlmem.ScopeKey) (sqlmem.ScopeKey, bool, error) {
+	ok, err := d.docSQL().PlaneExists(ctx, sk)
+	if err != nil || ok {
+		return sk, ok, err
+	}
+	held, err := d.docSQL().AgentPlaneTables(ctx, sk, []string{"documents"})
+	if err != nil || len(held) == 0 {
+		return sk, false, err
+	}
+	return sk.AgentPlane(), true, nil
 }
 
 // add folds n rows of one dependent into the change's counts. An absent count is

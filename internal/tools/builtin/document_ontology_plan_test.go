@@ -673,3 +673,53 @@ func TestOntologyPlan_OtherTenantsScopesAreNotCounted(t *testing.T) {
 		t.Errorf("scopes counted %d → %d: another tenant's scope was counted", before.ScopesCounted, after.ScopesCounted)
 	}
 }
+
+// TestOntologyPlan_CountsAPreSplitScopeOnItsAgentPlane — a user scope whose documents
+// are still on its agent plane (from before the planes split: postgres moves such a
+// scope only on its next use) is counted there, read-only: the plan neither skips it
+// as empty nor moves it.
+func TestOntologyPlan_CountsAPreSplitScopeOnItsAgentPlane(t *testing.T) {
+	t.Run("sqlite", func(t *testing.T) {
+		d, ctx, _ := documentFixture(t)
+		assertPlanCountsPreSplitScope(t, d, ctx)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		d, ctx := pgDocumentOrSkip(t)
+		assertPlanCountsPreSplitScope(t, d, ctx)
+	})
+}
+
+func assertPlanCountsPreSplitScope(t *testing.T, d *Document, base context.Context) {
+	f := newPlanFixture(t, d, base)
+	f.populate()
+	ctx := context.Background()
+	key := f.userKey()
+	dump, err := d.SqlMem.ExportScope(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dump.DocTail = nil
+	if _, err := d.SqlMem.DropScope(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SqlMem.RestoreScope(ctx, key, dump); err != nil {
+		t.Fatal(err)
+	}
+	d.SqlMem.ForgetEnsured(key)
+	preSplit := func() bool {
+		ok, err := d.docSQL().PlaneExists(ctx, key)
+		held, herr := d.docSQL().AgentPlaneTables(ctx, key, []string{"documents"})
+		return err == nil && herr == nil && !ok && len(held) == 1
+	}
+	if !preSplit() {
+		t.Fatal("the user scope is not in the pre-split layout")
+	}
+	res := f.plan(connector.OntologyChange{Op: connector.OntologyPlanRetire, Entry: f.entries["class:Provision"]})
+	if got := planCount(t, res.Changes[0], "typed_documents"); got.OtherScopes != 2 || !res.Complete {
+		t.Errorf("typed_documents other_scopes = %d, complete %v; want the pre-split user document and the agent one, complete",
+			got.OtherScopes, res.Complete)
+	}
+	if !preSplit() {
+		t.Error("the plan moved the pre-split scope")
+	}
+}
