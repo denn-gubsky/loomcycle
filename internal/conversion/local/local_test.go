@@ -127,18 +127,22 @@ func TestChildEnv_CarriesNoCoreSetting(t *testing.T) {
 // A child runs the helpers the core is configured with, and only the ones
 // set: an unset helper sends no variable, so the worker does not offer it.
 func TestChildEnv_CarriesTheCoresHelpers(t *testing.T) {
-	env := childEnv(Options{Token: "tok", Rasterize: "pdftoppm -png {in} {out_prefix}", Encode: "ffmpeg -i {in} {out}", Wrapper: "bwrap --"})
+	env := childEnv(Options{Token: "tok", Rasterize: "pdftoppm -png {in} {out_prefix}", Encode: "ffmpeg -i {in} {out}", Wrapper: "bwrap --",
+		WritePDF: "typst-pinned compile --root {dir} {in} {out}"})
 	got := strings.Join(env, "\n")
 	for _, want := range []string{
 		"LOOMCYCLE_WORKER_RASTERIZE_COMMAND=pdftoppm -png {in} {out_prefix}",
 		"LOOMCYCLE_WORKER_ENCODE_COMMAND=ffmpeg -i {in} {out}",
+		"LOOMCYCLE_WORKER_WRITE_COMMAND=typst-pinned compile --root {dir} {in} {out}",
 		"LOOMCYCLE_HELPER_WRAPPER=bwrap --",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the child environment lacks %s:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "LOOMCYCLE_WORKER_MEDIA_COMMAND") {
-		t.Errorf("an unset helper reached the child:\n%s", got)
+	for _, unset := range []string{"LOOMCYCLE_WORKER_MEDIA_COMMAND", "LOOMCYCLE_WORKER_MERMAID_COMMAND"} {
+		if strings.Contains(got, unset) {
+			t.Errorf("an unset helper (%s) reached the child:\n%s", unset, got)
+		}
 	}
 }

@@ -14,6 +14,8 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -68,6 +70,13 @@ type extractSink struct {
 	// (extract.RecordSink, file_rendered.go).
 	record  []byte
 	anchors []headingAnchorAt
+	// maxChars, when set, is the most Markdown the caller asked for, in
+	// characters (max_chars); chars counts what was taken and sampled says
+	// the limit stopped the extraction. Returning ErrSinkFull is what stops
+	// the converter, in this process or on a worker (which is sent a cancel).
+	maxChars int
+	chars    int
+	sampled  bool
 }
 
 func (s *extractSink) StartPage(n int) {
@@ -78,11 +87,92 @@ func (s *extractSink) StartPage(n int) {
 }
 
 func (s *extractSink) Text(md string) error {
+	if s.maxChars > 0 {
+		if s.sampled {
+			return extract.ErrSinkFull
+		}
+		if n := utf8.RuneCountInString(md); s.chars+n > s.maxChars {
+			md, _ = cutRunes(md, s.maxChars-s.chars)
+			s.sampled = true
+		}
+	}
 	if s.md.Len()+len(md) > fileExtractMaxMarkdown {
 		return extract.ErrSinkFull
 	}
 	s.md.WriteString(md)
+	s.chars += utf8.RuneCountInString(md)
+	if s.sampled {
+		return extract.ErrSinkFull
+	}
 	return nil
+}
+
+// maxExtractPages bounds the pages one pages argument names: the most a PDF
+// extraction reads.
+const maxExtractPages = extract.MaxPDFPages
+
+// parsePageSpec reads extract's pages: page numbers and ranges joined by
+// commas ("1-10", "1-3,7"), returned ascending without repeats.
+func parsePageSpec(spec string) ([]int, error) {
+	seen := map[int]bool{}
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("%q has an empty part", spec)
+		}
+		lo, hi, isRange := strings.Cut(part, "-")
+		a, err := strconv.Atoi(strings.TrimSpace(lo))
+		if err != nil || a < 1 {
+			return nil, fmt.Errorf("%q is not a page number or a range of them", part)
+		}
+		b := a
+		if isRange {
+			if b, err = strconv.Atoi(strings.TrimSpace(hi)); err != nil || b < a {
+				return nil, fmt.Errorf("%q is not a range from a lower page to a higher one", part)
+			}
+		}
+		// A page past the reader's cap is never read, and refusing it here
+		// also keeps the loop below from running up to an integer's limit,
+		// where n++ would wrap and never reach b.
+		if b > maxExtractPages {
+			return nil, fmt.Errorf("%q names a page past %d, the most a PDF extraction reads", part, maxExtractPages)
+		}
+		for n := a; n <= b; n++ {
+			seen[n] = true
+		}
+		if len(seen) > maxExtractPages {
+			return nil, fmt.Errorf("it names more than %d pages", maxExtractPages)
+		}
+	}
+	out := make([]int, 0, len(seen))
+	for n := range seen {
+		out = append(out, n)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+// pagesRead lists, as ranges, the pages whose text was written.
+func (s *extractSink) pagesRead() string {
+	pages := make([]int, 0, len(s.starts))
+	for n := range s.starts {
+		pages = append(pages, n)
+	}
+	sort.Ints(pages)
+	var parts []string
+	for i := 0; i < len(pages); {
+		j := i
+		for j+1 < len(pages) && pages[j+1] == pages[j]+1 {
+			j++
+		}
+		if i == j {
+			parts = append(parts, strconv.Itoa(pages[i]))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d-%d", pages[i], pages[j]))
+		}
+		i = j + 1
+	}
+	return strings.Join(parts, ",")
 }
 
 func (s *extractSink) Image(img extract.Image) (string, error) {
@@ -147,20 +237,13 @@ func (f *File) converter() convert.Client {
 	if op := f.ocrConfig(); op != nil && op.Rasterize != nil {
 		p.Rasterize = &convert.Helper{Key: "transcription.ocr.rasterize", Command: op.Rasterize.Command, Wrapper: op.Rasterize.Wrapper, Timeout: ocrRasterizeTimeout}
 	}
-	// A PDF render runs Typst from PATH here, as the workers do (RFC GR
-	// P2); where it is not installed the render says so.
-	cmd := f.pdfCommand
-	if cmd == "" {
-		cmd = convert.DefaultPDFCommand
-	}
-	p.WritePDF = &convert.Helper{Key: convert.PDFHelperKey, Command: cmd, Wrapper: f.HelperWrapper, Timeout: convert.PDFRenderTimeout}
+	// A PDF render runs the operator's typesetter here, else Typst from
+	// PATH, as the workers do (RFC GR P2); where it is not installed the
+	// render says so.
+	p.WritePDF = &convert.Helper{Key: convert.PDFHelperKey, Command: cmp.Or(f.PDFCommand, convert.DefaultPDFCommand), Wrapper: f.HelperWrapper, Timeout: convert.PDFRenderTimeout}
 	// So does the diagram renderer (RFC GR P4d); where it is missing a
 	// render's diagrams stay code.
-	draw := f.diagramCommand
-	if draw == "" {
-		draw = convert.DefaultDiagramCommand
-	}
-	p.Draw = &convert.Helper{Key: convert.DiagramHelperKey, Command: draw, Wrapper: f.HelperWrapper, Timeout: render.DiagramTimeout}
+	p.Draw = &convert.Helper{Key: convert.DiagramHelperKey, Command: cmp.Or(f.DiagramCommand, convert.DefaultDiagramCommand), Wrapper: f.HelperWrapper, Timeout: render.DiagramTimeout}
 	return p
 }
 
@@ -185,8 +268,14 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	if err != nil {
 		return errValidation("extract: "+err.Error(), "Pass path, e.g. volume:inbox:documents/minutes.docx."), nil
 	}
-	if in.MaxRows < 0 || in.ExcerptChars < 0 {
-		return errValidation("extract: max_rows and excerpt_chars may not be negative", ""), nil
+	if in.MaxRows < 0 || in.ExcerptChars < 0 || in.MaxChars < 0 {
+		return errValidation("extract: max_rows, excerpt_chars and max_chars may not be negative", ""), nil
+	}
+	var pages []int
+	if strings.TrimSpace(in.Pages) != "" {
+		if pages, err = parsePageSpec(in.Pages); err != nil {
+			return errValidation("extract: pages: "+err.Error(), "Pass page numbers and ranges joined by commas, e.g. 1-10 or 1-3,7."), nil
+		}
 	}
 	excerptChars := in.ExcerptChars
 	if excerptChars == 0 || excerptChars > fileExcerptChars {
@@ -253,11 +342,15 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	// extraction's own time bound starts once it holds it: time spent queued
 	// behind other files is not this file's. The OCR pass below calls a model
 	// and cuts pages under slots of its own.
-	sink := &extractSink{ctx: ctx, dir: path.Join(inbox.DirExtracted, slug), origin: origin}
+	sink := &extractSink{ctx: ctx, dir: path.Join(inbox.DirExtracted, slug), origin: origin, maxChars: in.MaxChars}
 	// A dry run writes nothing, so it keeps no pictures either.
 	images := (in.Images == nil || *in.Images) && !in.DryRun
 	infer := in.Structure != nil && in.Structure.InferHeadings
-	rep, err := f.converter().Extract(ctx, mt, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows, InferHeadings: infer})
+	rep, err := f.converter().Extract(ctx, mt, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows, InferHeadings: infer, Pages: pages})
+	if sink.sampled && err == nil {
+		// The converter finished on the very text that reached the limit.
+		err = extract.ErrSinkFull
+	}
 	cut := false
 	switch {
 	case errors.Is(err, convert.ErrBusy):
@@ -270,7 +363,11 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	case err == nil:
 	case errors.Is(err, extract.ErrSinkFull):
 		cut = true
-		rep.Notes = append(rep.Notes, fmt.Sprintf("the text was cut at %d bytes", fileExtractMaxMarkdown))
+		if sink.sampled {
+			rep.Notes = append(rep.Notes, fmt.Sprintf("the text was cut at %d characters, as max_chars asked; the rest of the file was not read", in.MaxChars))
+		} else {
+			rep.Notes = append(rep.Notes, fmt.Sprintf("the text was cut at %d bytes", fileExtractMaxMarkdown))
+		}
 	case errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:
 		return errTransient(fmt.Sprintf("extract: %s took longer than %s", r.raw, fileExtractTimeout), "The file is too large or complex to extract here."), nil
 	case ctx.Err() != nil:
@@ -280,6 +377,9 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	default:
 		return errValidation(fmt.Sprintf("extract: could not read %s as %s: %s", r.raw, rep.Format, strings.TrimPrefix(err.Error(), "extract: ")),
 			"Check the file is not damaged, or that its type is the one its name says."), nil
+	}
+	if len(pages) > 0 && rep.Format != "pdf" {
+		rep.Notes = append(rep.Notes, fmt.Sprintf("pages reads PDF pages; %s has none, so it was read from the start", rep.Format))
 	}
 	inferred := infer && inferFormats[rep.Format]
 	if infer && !inferred {
@@ -296,7 +396,19 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 		lowYield = lowYieldPages(rep, oc.minChars)
 	}
 	var pass *ocrPass
-	if pages := ocrPages(rep, oc); len(pages) > 0 || in.DryRun {
+	ocrSet := ocrPages(rep, oc)
+	if sink.sampled && rep.Format == "pdf" {
+		// The page whose text max_chars refused was parsed, so it has a
+		// yield, but none of its text was written: OCR has no place for it.
+		var written []int
+		for _, n := range ocrSet {
+			if _, ok := sink.starts[n]; ok {
+				written = append(written, n)
+			}
+		}
+		ocrSet = written
+	}
+	if pages := ocrSet; len(pages) > 0 || in.DryRun {
 		var plan transcribe.Plan
 		if len(pages) > 0 {
 			if plan, err = f.OCR.Engine.Plan(ctx, mt); err != nil {
@@ -343,6 +455,13 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	}
 	out["ref"] = kept.Record.Ref
 	out["source"] = r.raw
+	if len(pages) > 0 && rep.Format == "pdf" {
+		// Counted even when empty: the caller asked, and none is an answer.
+		out["pages_read"] = sink.pagesRead()
+	}
+	if sink.sampled {
+		out["truncated_at"] = in.MaxChars
+	}
 	out["media_type"] = mt
 	// A picture of a page OCR replaced is no longer in the Markdown.
 	out["image_refs"] = keptImageRefs(sink.images, md)

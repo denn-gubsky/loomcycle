@@ -28,6 +28,7 @@ package sqlmem
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -106,6 +107,10 @@ type Config struct {
 // (sqlite.go) and postgresBackend (postgres.go).
 type backend interface {
 	query(ctx context.Context, key ScopeKey, statement string, args []any, maxBytes int) (*QueryResult, error)
+	// queryExisting is query for a plane that already exists, and only then: it
+	// never creates the plane (sqlite: its file; postgres: its schema, role and
+	// grants) and returns ErrPlaneAbsent when there is none (Manager.QueryExisting).
+	queryExisting(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error)
 	exec(ctx context.Context, key ScopeKey, statement string, args []any, quotaOverride int) (*ExecResult, error)
 	dropRunScope(runID string) (removed bool, err error)
 	// dropScope drops one DURABLE (agent/user) scope: retire its pool, drop its
@@ -139,7 +144,8 @@ type backend interface {
 	sweepBudget(budget int64) (dropped int, err error)
 	// listScopes enumerates every DURABLE scope for snapshot capture (RFC AA
 	// Phase 3e); exportScope/restoreScope move one scope's logical dump in/out.
-	listScopes(ctx context.Context) ([]ScopeKey, error)
+	// tenant, when not empty, limits the listing to that tenant's scopes.
+	listScopes(ctx context.Context, tenant string) ([]ScopeKey, error)
 	// scopeExists reports whether one DURABLE scope is provisioned, without
 	// provisioning it (every other entry point creates the scope on first use).
 	scopeExists(ctx context.Context, key ScopeKey) (bool, error)
@@ -600,6 +606,34 @@ func (m *Manager) Query(ctx context.Context, key ScopeKey, statement string, arg
 	}
 	defer m.touch(key)
 	return m.backend.query(ctx, m.onPlane(key), statement, args, 0)
+}
+
+// ErrPlaneAbsent is QueryExisting's answer for a plane that has not been
+// provisioned: there is nothing to read, and the read did not create it.
+var ErrPlaneAbsent = errors.New("sqlmem: the scope plane does not exist")
+
+// QueryExisting is Query for a reader that must leave the scope as it found it:
+// it never provisions the plane and never records the read as a use of the scope.
+//
+// Query does both. On postgres its first read of a scope per process runs the
+// provisioning DDL (CREATE SCHEMA, ALTER ROLE ... PASSWORD / SET, GRANT and the
+// registry row), and with scope GC on it stamps the scope's last use (sqlite: the
+// files' mtime; postgres: sqlmem_meta.scope_access), which keeps a dormant scope
+// from ever being reclaimed. A reader that walks every scope of a tenant to
+// report on it (the ontology change plan, RFC GQ P1) must do neither. A plane
+// that was never provisioned is ErrPlaneAbsent; one whose role cannot
+// authenticate is an error, not a reason to repair it.
+func (m *Manager) QueryExisting(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
+	if err := validateStatementForDialect(statement, true, m.dialect); err != nil {
+		return nil, err
+	}
+	if err := key.validate(); err != nil {
+		return nil, err
+	}
+	if key.Scope == runScope || key.Scope == "" || strings.TrimSpace(key.ScopeID) == "" {
+		return nil, fmt.Errorf("sqlmem: QueryExisting is for durable scopes")
+	}
+	return m.backend.queryExisting(ctx, m.onPlane(key), statement, args)
 }
 
 // QueryCapped is Query with the result also bounded by MaxResultBytes. It is

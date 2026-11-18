@@ -113,6 +113,8 @@ type Server struct {
 	// under auth.grpc_trusted_proxies (Config.ClientIP). Nil: the peer.
 	clientIP func(peer netip.Addr, header func(string) []string) net.IP
 	aclMode  authz.Mode
+	// aclModeFor is a tenant's mode (Config.ACLModeFor); nil: aclMode.
+	aclModeFor func(tenant string) authz.Mode
 	// authConfigured reports whether auth is active (open-mode decision).
 	authConfigured func(context.Context) bool
 
@@ -155,6 +157,10 @@ type Config struct {
 	// ACLMode is the RFC EY rollout mode the gate evaluates under (compat
 	// when unset); it mirrors the HTTP server's.
 	ACLMode authz.Mode
+	// ACLModeFor is a tenant's mode (RFC EZ P5: its acl_modes entry when
+	// stricter than ACLMode). Wired to the HTTP server's, so the two
+	// transports stamp one answer. Nil: ACLMode for every tenant.
+	ACLModeFor func(tenant string) authz.Mode
 	// PrincipalResolver resolves a raw bearer to an auth.Principal (RFC
 	// L). Wired in main.go to the HTTP server's resolver so gRPC reuses
 	// the identical token-substrate + legacy-fallback logic. When set,
@@ -202,6 +208,7 @@ func New(cfg Config) *Server {
 		principalResolver: cfg.PrincipalResolver,
 		clientIP:          cfg.ClientIP,
 		aclMode:           cfg.ACLMode,
+		aclModeFor:        cfg.ACLModeFor,
 		authConfigured:    cfg.AuthConfigured,
 		buildCommit:       cfg.BuildCommit,
 		buildTime:         cfg.BuildTime,
@@ -949,6 +956,14 @@ func (s *Server) StreamAuthInterceptor() googlegrpc.StreamServerInterceptor {
 	}
 }
 
+// modeFor is the mode a call by a principal of tenant is evaluated under.
+func (s *Server) modeFor(tenant string) authz.Mode {
+	if s.aclModeFor != nil {
+		return s.aclModeFor(tenant)
+	}
+	return s.aclMode
+}
+
 // authenticate is the shared auth path for both interceptors (RFC L).
 // Open mode → pass through. Otherwise resolve the bearer to a principal
 // (stamped into the returned ctx so gRPC runs flow authoritatively
@@ -972,7 +987,7 @@ func (s *Server) authenticate(ctx context.Context) (context.Context, error) {
 		if !ok {
 			return nil, status.Error(codes.Unauthenticated, "invalid bearer token")
 		}
-		ctx = authz.WithTransport(authz.WithMode(ctx, s.aclMode), "grpc")
+		ctx = authz.WithTransport(authz.WithMode(ctx, s.modeFor(p.TenantID)), "grpc")
 		// The client address a source_cidr condition reads: the gRPC peer,
 		// or the client a listed gRPC proxy names for it.
 		ctx = authz.WithSourceIP(ctx, s.callerIP(ctx))

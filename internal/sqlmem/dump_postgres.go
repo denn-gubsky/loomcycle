@@ -28,13 +28,15 @@ import (
 // listScopes reads the durable scopes from the identity registry, skipping any
 // whose schema has since been dropped (a dangling row that a missed cleanup
 // left) by joining against information_schema.schemata.
-func (b *postgresBackend) listScopes(ctx context.Context) ([]ScopeKey, error) {
+//
+// A tenant limits the rows to it ("" lists every tenant).
+func (b *postgresBackend) listScopes(ctx context.Context, tenant string) ([]ScopeKey, error) {
 	rows, err := b.admin.QueryContext(ctx,
 		`SELECT r.tenant, r.scope, r.scope_id
 		   FROM sqlmem_meta.scope_registry r
 		   JOIN information_schema.schemata s ON s.schema_name = r.schema_name
-		  WHERE r.scope <> $1
-		  ORDER BY r.schema_name`, runScope)
+		  WHERE r.scope <> $1 AND ($2 = '' OR r.tenant = $2)
+		  ORDER BY r.schema_name`, runScope, tenant)
 	if err != nil {
 		return nil, fmt.Errorf("sqlmem: list scopes: %w", err)
 	}

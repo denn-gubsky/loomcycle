@@ -801,6 +801,10 @@ func (m *httpMockConnector) BindSubjectPrincipal(context.Context, connector.Bind
 	return connector.BindSubjectPrincipalResult{}, nil
 }
 
+func (m *httpMockConnector) PlanOntology(context.Context, connector.PlanOntologyRequest) (connector.PlanOntologyResult, error) {
+	return connector.PlanOntologyResult{}, nil
+}
+
 func (m *httpMockConnector) ListReviewQueue(context.Context, connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
 	return connector.ListReviewQueueResult{}, nil
 }

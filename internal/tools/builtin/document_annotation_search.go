@@ -137,8 +137,22 @@ func (d *Document) searchAnnotations(ctx context.Context, key sqlmem.ScopeKey, m
 	if len(vec) == 0 {
 		return nil, nil
 	}
+	// The lists go into the query, before its limit, as the passage leg sends them.
+	// Applied only after the limit, a reader denied a large part of the scope got a
+	// short or empty page while readable annotations existed further down: the
+	// nearest rows were all ones it may not read. The id segment of
+	// doc.annotation:<chunk>:<level> is the chunk id, which is what both lists
+	// hold. The checks below stay, for a list over the cap (sent as none) and for a
+	// store that does not apply the lists.
+	sf := store.MemorySearchFilter{KeyPrefix: annotationKeyPrefix}
+	if filter != nil {
+		sf.IDs, sf.ExcludeIDs = filter.ids, filter.excludeIDs
+	}
+	if aclList != nil {
+		sf.IDs, sf.ExcludeIDs = aclList.ids, aclList.excludeIDs
+	}
 	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, annotationMemScopeID(mscope, key),
-		store.MemorySearchFilter{KeyPrefix: annotationKeyPrefix}, vec[0], topK*3)
+		sf, vec[0], topK*3)
 	if err != nil {
 		return nil, err
 	}

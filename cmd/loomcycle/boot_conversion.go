@@ -114,6 +114,7 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 			Binary: bin, Socket: socket, Token: token,
 			Workers: cv.Local.Workers, MemoryLimitMB: cv.Local.MemoryLimitMB,
 			Rasterize: h.rasterize, Media: h.media, Encode: h.encode, Wrapper: b.cfg.Env.HelperWrapper,
+			WritePDF: b.cfg.Env.RenderPDFCommand, Draw: b.cfg.Env.RenderDiagramCommand,
 			OnRespawn: d.AddRespawn, Logger: slog.Default(),
 		})
 		stopChildren = sup.Stop

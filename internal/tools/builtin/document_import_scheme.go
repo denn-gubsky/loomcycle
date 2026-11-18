@@ -57,7 +57,7 @@ func (d *Document) importScheme(ctx context.Context, in docInput) (tools.Result,
 	if err != nil {
 		return errBusiness("import_scheme: "+err.Error(), "This deployment has no SQL Memory; ask an operator to enable it."), nil
 	}
-	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
+	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
 		return errFrom("import_scheme: "+err.Error(), err), nil
 	}

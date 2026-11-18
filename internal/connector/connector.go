@@ -230,6 +230,20 @@ type Connector interface {
 	// the MCP `ontology` tool (op bind_principal).
 	BindSubjectPrincipal(ctx context.Context, req BindSubjectPrincipalRequest) (BindSubjectPrincipalResult, error)
 
+	// PlanOntology reports what a set of changes to the tenant ontology
+	// (retire, rename, move, edit, delete of an entry) would do to what rests
+	// on it, before any is made (RFC GQ P1): per change a risk class and a
+	// count of each kind of dependent across the tenant scope and every user
+	// and agent scope of the tenant, plus the issues of the ontology as it
+	// would read after them and a fingerprint of the ontology it was computed
+	// against. It writes nothing.
+	//
+	// Operator-only on every transport, as MergeSubjects: the counts cover the
+	// whole tenant, so a member never sees them. Sample ids come from the
+	// tenant scope only. Errors wrap the ErrOntologyPlan* sentinels;
+	// OntologyPlanCode names them. Reachable via POST /v1/_ontology/plan.
+	PlanOntology(ctx context.Context, req PlanOntologyRequest) (PlanOntologyResult, error)
+
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (status proposed unless the filter names another), narrowed by the queue
 	// filters, or with req.Summarize their counts grouped by kind × method ×

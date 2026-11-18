@@ -96,7 +96,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// gate admitted the request. The mode and transport ride the ctx so
 		// the instance checks downstream (the run intakes, the MCP per-tool
 		// gate behind /v1/_mcp) evaluate under the same rules.
-		ctx := authz.WithTransport(authz.WithMode(r.Context(), s.aclMode()), requestTransport(r, ui != nil))
+		ctx := authz.WithTransport(authz.WithMode(r.Context(), s.ACLModeFor(p.TenantID)), requestTransport(r, ui != nil))
 		// The client address a source_cidr condition reads (RFC FY Part E):
 		// the peer, or the client a trusted proxy names for it.
 		ctx = authz.WithSourceIP(ctx, net.ParseIP(s.clientSource(r)))
@@ -1115,9 +1115,10 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	// user's current access_mode (inherit), so a UI can say a promotion
 	// needs no new token.
 	out["authority"] = p.AuthorityMode()
-	// RFC EY: the principal's groups and the rollout mode, so a UI can show
-	// why a surface is missing; the compiled set itself is not serialised.
-	out["acl_mode"] = string(s.aclMode())
+	// RFC EY: the principal's groups and the rollout mode (its tenant's, RFC
+	// EZ P5), so a UI can show why a surface is missing; the compiled set
+	// itself is not serialised.
+	out["acl_mode"] = string(s.ACLModeFor(p.TenantID))
 	if p.Groups != nil {
 		out["groups"] = p.Groups
 	}
@@ -1428,8 +1429,8 @@ func requiredScopeFor(method, path string) string {
 	// RFC FR P2: /subjects/merge too — and, unlike the others, it is carved out of
 	// the member path (memberpath.CarvedOut): which of two subjects survives is
 	// the operator's decision, not a member's. RFC FR P4: /subjects/principal
-	// likewise — which person a subject is decides what an erasure finds.
-	case path == "/v1/_ontology" ||
+	// likewise — which person a subject is decides what an erasure finds; RFC GQ /plan, whose counts span every scope.
+	case path == "/v1/_ontology" || path == "/v1/_ontology/plan" ||
 		path == "/v1/_ontology/proposals" || path == "/v1/_ontology/adopt" ||
 		path == "/v1/_ontology/subjects/merge" || path == "/v1/_ontology/subjects/principal":
 		return auth.ScopeTenant

@@ -47,7 +47,7 @@ func (d *Document) MirrorSchemeTags(ctx context.Context, dryRun bool) (SchemeMir
 	}
 	// Read directly, not through the cache: a mirror run is an operator action that
 	// must see the document as it is now, and it is rare enough not to need the cache.
-	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
+	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
 		return rep, err
 	}
@@ -149,7 +149,7 @@ func (d *Document) MirrorSchemeFocus(ctx context.Context, dryRun bool) (SchemeFo
 	if err != nil {
 		return rep, err
 	}
-	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
+	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
 		return rep, err
 	}

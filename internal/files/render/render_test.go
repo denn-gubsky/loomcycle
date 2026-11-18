@@ -528,3 +528,47 @@ func TestExternalOnly_EncodesWhatAURLMayNotHold(t *testing.T) {
 		t.Error("a javascript: link was kept")
 	}
 }
+
+// A picture a body names by reference is read once however often it is
+// named, never asked for more than the caps leave, and a reference the
+// reader does not take (a web URL) is left out without a read error.
+func TestBuilder_PicturesReadsEachReferenceOnceWithinTheCaps(t *testing.T) {
+	b := NewBuilder("Pictures")
+	reads := map[string]int{}
+	b.Pictures = func(ref string, max int) ([]byte, bool, error) {
+		reads[ref]++
+		if max > MaxImage {
+			t.Errorf("asked for %d bytes, over MaxImage", max)
+		}
+		switch ref {
+		case "volume:inbox:extracted/a/img-1.png":
+			return tinyPNG, true, nil
+		case "volume:docs:nope.png":
+			return nil, true, errors.New("not read")
+		}
+		return nil, false, nil
+	}
+	blocks := b.Body("![one](volume:inbox:extracted/a/img-1.png)\n\n![again](volume:inbox:extracted/a/img-1.png)\n\n" +
+		"![no](volume:docs:nope.png)\n\n![web](https://example.com/x.png)\n")
+	_, rep := b.Finish()
+	if reads["volume:inbox:extracted/a/img-1.png"] != 1 {
+		t.Errorf("read the repeated picture %d times", reads["volume:inbox:extracted/a/img-1.png"])
+	}
+	if rep.Images != 1 || rep.ImagesSkipped != 2 || len(b.Doc.Images) != 1 || len(blocks) != 4 {
+		t.Fatalf("images %d, skipped %d, held %d, blocks %d; notes %q", rep.Images, rep.ImagesSkipped, len(b.Doc.Images), len(blocks), rep.Notes)
+	}
+	if !strings.Contains(strings.Join(rep.Notes, "\n"), "volume:docs:nope.png was left out: not read") {
+		t.Errorf("the read error is not in the notes: %q", rep.Notes)
+	}
+
+	// Past the count cap nothing more is read.
+	full := NewBuilder("Full")
+	for i := 0; i < MaxImages; i++ {
+		full.Doc.Images = append(full.Doc.Images, Image{Name: "x"})
+	}
+	full.Pictures = func(string, int) ([]byte, bool, error) {
+		t.Error("read past MaxImages")
+		return tinyPNG, true, nil
+	}
+	full.Body("![p](volume:inbox:extracted/a/img-1.png)\n")
+}

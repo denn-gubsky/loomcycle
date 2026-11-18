@@ -79,10 +79,12 @@ type File struct {
 	// to run it in: a Document downloaded off-run (Export) typeset as a PDF
 	// in this process. Empty is the system temp directory.
 	ScratchDir string
-	// pdfCommand overrides convert.DefaultPDFCommand, for tests.
-	pdfCommand string
-	// diagramCommand overrides convert.DefaultDiagramCommand, for tests.
-	diagramCommand string
+	// PDFCommand is LOOMCYCLE_RENDER_PDF_COMMAND, the typesetter a PDF
+	// render runs here; empty is convert.DefaultPDFCommand (Typst).
+	PDFCommand string
+	// DiagramCommand is LOOMCYCLE_RENDER_DIAGRAM_COMMAND, the Mermaid
+	// renderer here; empty is convert.DefaultDiagramCommand (merman-cli).
+	DiagramCommand string
 }
 
 func (f *File) Name() string { return FileToolName }
@@ -99,7 +101,7 @@ func (f *File) Description() string {
 		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost; a VTT or SRT caption file becomes a timed transcript), " +
 		"transcribe (turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model, and return an excerpt; dry_run says how many minutes and what it would cost), " +
 		"import (build a Document from such a Markdown file, its pictures attached as image chunks), " +
-		"render (write a Document you may read, or a Markdown file, as a file to send: pdf, docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import). " +
+		"render (write a Document you may read, or a Markdown or HTML file, as a file to send: pdf, docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, or `volume:path` for your default volume; a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
 }
@@ -109,7 +111,7 @@ func (f *File) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render"]},
-			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox. render: a Markdown file to render instead of a document (its first # heading is the title)."},
+			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox. render: a Markdown or HTML file to render instead of a document (its first # heading is the title)."},
 			"from":      {"type": "string", "description": "keep: the inbox file to copy. upload: the file to send, in the inbox or a volume you can Read."},
 			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name). render: the file to write in one of your read-write volumes (needs the Write tool); default volume:inbox:rendered/<title>.<format>."},
 			"overwrite": {"type": "boolean", "description": "keep, download, render: replace an existing file at to. Default false."},
@@ -125,6 +127,8 @@ func (f *File) InputSchema() json.RawMessage {
 			"images":        {"type": "boolean", "description": "extract: keep the document's pictures as files and link them from the Markdown. Default true."},
 			"max_rows":      {"type": "integer", "minimum": 0, "description": "extract: the rows of each spreadsheet or CSV table to keep, header included. Default 1000, at most 10000."},
 			"excerpt_chars": {"type": "integer", "minimum": 0, "maximum": 30000, "description": "extract: how much of the text to return. Default and most 30000."},
+			"pages":         {"type": "string", "description": "extract, PDF only: read only these pages, e.g. 1-10 or 1-3,7 (at most 2000). Only those pages are parsed, so a sample of a long file costs what the sample costs. Other formats are read from the start. Default every page."},
+			"max_chars":     {"type": "integer", "minimum": 1, "description": "extract: stop once this many characters of Markdown are written; the converter stops there too, instead of reading the rest. The result's truncated_at says it was reached. Default: no limit but the extraction's own."},
 			"structure":     {"type": "object", "additionalProperties": false, "description": "extract, DOCX and HTML only: recover the structure the document's formatting implies, for a file whose headings are bold, larger or coloured lines rather than heading styles (as an editor without heading styles exports it). Off by default; the same file always gives the same outline.", "properties": {
 				"infer_headings": {"type": "boolean", "description": "Make a heading of each short line (one line, at most 120 characters, not ending in . , or ;, not in a list or table) that is wholly bold, at least 1.15 times the body's size, or coloured and bold or larger; real headings keep their level. Also drops a picture repeated 3 or more times as decoration, and collapses non-breaking spaces. The result counts inferred_headings and dropped_decorative_images, and an import of the text records the inferred structure in the document's provenance."}
 			}},
@@ -179,12 +183,16 @@ type fileInput struct {
 	Recursive bool   `json:"recursive"`
 	Prefix    string `json:"prefix"`
 	// extract
-	Images       *bool  `json:"images"`
-	MaxRows      int    `json:"max_rows"`
-	ExcerptChars int    `json:"excerpt_chars"`
-	OCR          string `json:"ocr"`
-	Language     string `json:"language"`
-	DryRun       bool   `json:"dry_run"`
+	Images       *bool `json:"images"`
+	MaxRows      int   `json:"max_rows"`
+	ExcerptChars int   `json:"excerpt_chars"`
+	// Pages and MaxChars read a sample (RFC GP D17): only these PDF pages,
+	// and no more than this much text.
+	Pages    string `json:"pages"`
+	MaxChars int    `json:"max_chars"`
+	OCR      string `json:"ocr"`
+	Language string `json:"language"`
+	DryRun   bool   `json:"dry_run"`
 	// Structure asks extract to recover structure the file's formatting
 	// implies (RFC GB §6).
 	Structure *ExtractStructure `json:"structure"`

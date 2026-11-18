@@ -316,6 +316,13 @@ type Config struct {
 	// ResolvedACL is the validated form of the three blocks above; nil when
 	// none is declared.
 	ResolvedACL *authz.Static `yaml:"-"`
+	// ACLModes (RFC EZ P5) raises named tenants' access control mode above
+	// the deployment's LOOMCYCLE_ACL: tenant → compat | shadow | enforce,
+	// stricter only (shadow < compat < enforce). Validated at load into
+	// ResolvedACLModes; read from the live config, so a reload applies it.
+	ACLModes map[string]string `yaml:"acl_modes,omitempty"`
+	// ResolvedACLModes is ACLModes parsed; nil when none is declared.
+	ResolvedACLModes map[string]authz.Mode `yaml:"-"`
 
 	// ResolvedPrincipals is the boot-resolved token→Principal table built from
 	// Principals during validate (each token_env read from the environment).
@@ -4379,6 +4386,19 @@ type Env struct {
 	// /v1/audio routes), so both stay writable. Empty runs them
 	// directly, as the loomcycle user. Parsed at load; see helper.ParseWrapper.
 	HelperWrapper string
+	// RenderPDFCommand is LOOMCYCLE_RENDER_PDF_COMMAND: the typesetter a PDF
+	// render runs in this process and in the local workers this boot starts
+	// (RFC GR), in place of convert.DefaultPDFCommand. {in} is main.typ, {out}
+	// the PDF to write and {dir} the job folder that holds main.typ and its
+	// images. A remote worker reads its own LOOMCYCLE_WORKER_WRITE_COMMAND.
+	// Checked at load; empty is the default.
+	RenderPDFCommand string
+	// RenderDiagramCommand is LOOMCYCLE_RENDER_DIAGRAM_COMMAND: the Mermaid
+	// renderer (RFC GR P4d) in this process and the local workers, in place
+	// of convert.DefaultDiagramCommand. {in} is the diagram source and {out}
+	// the PNG to write, at twice the size it is shown. A remote worker reads
+	// its own LOOMCYCLE_WORKER_MERMAID_COMMAND. Checked at load.
+	RenderDiagramCommand string
 	// MCPAllowPrivateIPs controls whether the MCP-HTTP client may dial
 	// private/loopback/metadata IPs. DEFAULT true (MCP servers are commonly
 	// operator-run on localhost / a private network — incl. loomcycle's own
@@ -5186,6 +5206,8 @@ func LoadLayersWith(opts LoadOptions, layers ...Layer) (*Config, error) {
 
 	// RFC FZ D8: one operator wrapper confines every helper command.
 	cfg.Env.HelperWrapper = strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
+	cfg.Env.RenderPDFCommand = strings.TrimSpace(os.Getenv("LOOMCYCLE_RENDER_PDF_COMMAND"))
+	cfg.Env.RenderDiagramCommand = strings.TrimSpace(os.Getenv("LOOMCYCLE_RENDER_DIAGRAM_COMMAND"))
 	stampHelperWrapper(cfg)
 
 	if err := validate(cfg); err != nil {
@@ -8054,8 +8076,36 @@ func validateEnvPolicy(c *Config) error {
 			return fmt.Errorf("LOOMCYCLE_HELPER_WRAPPER: %w", err)
 		}
 	}
+	if err := validateRenderCommand("LOOMCYCLE_RENDER_PDF_COMMAND", c.Env.RenderPDFCommand, []string{"in", "out", "dir"}); err != nil {
+		return err
+	}
+	if err := validateRenderCommand("LOOMCYCLE_RENDER_DIAGRAM_COMMAND", c.Env.RenderDiagramCommand, []string{"in", "out"}); err != nil {
+		return err
+	}
 	if err := validateWebUIBundleSource(c.Env); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateRenderCommand checks an operator's render helper the way the
+// runner will read it, so a broken one fails the boot rather than the first
+// render: its syntax, a program name, only the placeholders the job fills,
+// and both {in} and {out}, without which it cannot do the job.
+func validateRenderCommand(name, cmd string, allowed []string) error {
+	if cmd == "" {
+		return nil
+	}
+	if err := helper.Validate(cmd, allowed); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	if _, err := helper.Program(cmd); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	for _, p := range []string{"{in}", "{out}"} {
+		if !strings.Contains(cmd, p) {
+			return fmt.Errorf("%s must reference %s", name, p)
+		}
 	}
 	return nil
 }
@@ -8108,6 +8158,10 @@ func validateAccess(c *Config) error {
 	// RFC EY §9: validate the acls / groups / acl_bindings blocks with the
 	// engine's own strict parser, so an unenforceable entry fails the load.
 	if err := ResolveACLConfig(c); err != nil {
+		return err
+	}
+	// RFC EZ P5: per-tenant modes, stricter than LOOMCYCLE_ACL only.
+	if err := ResolveACLModes(c); err != nil {
 		return err
 	}
 	return nil

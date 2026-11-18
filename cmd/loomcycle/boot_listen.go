@@ -64,6 +64,8 @@ func (b *boot) startListeners() {
 			AuthToken:        cfg.Env.AuthToken,
 			// RFC EY: the gRPC gate evaluates under the same mode as HTTP.
 			ACLMode: srv.ACLResolver().Mode(),
+			// RFC EZ P5: and a tenant's acl_modes entry, from the live config.
+			ACLModeFor: srv.ACLModeFor,
 			// RFC L: reuse the HTTP server's token resolution so gRPC
 			// stamps the same authoritative principal (gRPC runs flow
 			// authoritatively through RunOnce) and shares the open-mode

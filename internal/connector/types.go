@@ -1457,6 +1457,110 @@ type BindSubjectPrincipalResult struct {
 	Changed     bool   `json:"changed"`
 }
 
+// Ontology plan ops (OntologyChange.Op).
+const (
+	OntologyPlanRetire = "retire"
+	OntologyPlanRename = "rename"
+	OntologyPlanMove   = "move"
+	OntologyPlanEdit   = "edit"
+	OntologyPlanDelete = "delete"
+)
+
+// Risk classes of a planned change (OntologyPlannedChange.Risk).
+const (
+	// OntologyRiskDestroys: applying the change would lose stored rows — the
+	// rows keyed by a chunk id of the entry's subtree are deleted with it, and
+	// those keyed by its name are left naming nothing.
+	OntologyRiskDestroys = "destroys"
+	// OntologyRiskStales: stored rows would need rework (a rename, a move, a
+	// retirement, an edit of identity or a characteristic, with dependents).
+	OntologyRiskStales = "stales"
+	// OntologyRiskNone: nothing stored rests on what the change touches.
+	OntologyRiskNone = "none"
+)
+
+// What a change does to one kind of dependent (OntologyPlanCount.Effect).
+const (
+	OntologyEffectDestroyed = "destroyed" // deleted with the entry
+	OntologyEffectOrphaned  = "orphaned"  // kept, naming an entry that is gone
+	OntologyEffectStale     = "stale"     // kept, needs rework
+	OntologyEffectKept      = "kept"      // not affected; shown for reference
+)
+
+// OntologyChange is one change a plan is asked about. Entry is an in-force entry
+// of the tenant ontology by its chunk id. Name is a rename's new name, Parent a
+// move's new parent (an entry of the same section, or the section itself), Body
+// an edit's new body.
+type OntologyChange struct {
+	Op     string `json:"op"`
+	Entry  string `json:"entry"`
+	Name   string `json:"name,omitempty"`
+	Parent string `json:"parent,omitempty"`
+	Body   string `json:"body,omitempty"`
+}
+
+// PlanOntologyRequest asks what a set of changes would do to the tenant
+// ontology's dependents. Tenant is whose ontology it is: only an admin may
+// name one; for anyone else it is the caller's own tenant.
+type PlanOntologyRequest struct {
+	Tenant  string           `json:"tenant,omitempty"`
+	Changes []OntologyChange `json:"changes"`
+}
+
+// OntologyPlanEntry names an entry of the ontology: its chunk, its name, the
+// section it is in (classes, relations, schemes, instances) and what it is
+// there (class, relation, scheme, concept, instance).
+type OntologyPlanEntry struct {
+	ChunkID string `json:"chunk_id"`
+	Name    string `json:"name"`
+	Section string `json:"section"`
+	Kind    string `json:"kind"`
+}
+
+// OntologyPlanCount is one kind of dependent of a change. N is the whole
+// tenant: TenantScope is the part in the tenant scope and OtherScopes the part
+// in user and agent scopes, which are counted and never listed. Sample is up
+// to five ids from the tenant scope only.
+type OntologyPlanCount struct {
+	N           int            `json:"n"`
+	Effect      string         `json:"effect"`
+	TenantScope int            `json:"tenant_scope"`
+	OtherScopes int            `json:"other_scopes,omitempty"`
+	ByStatus    map[string]int `json:"by_status,omitempty"`
+	Sample      []string       `json:"sample,omitempty"`
+}
+
+// OntologyPlannedChange is the plan of one change: the entry, its risk class,
+// each dependent's count, and the entries of its subtree that go with it.
+type OntologyPlannedChange struct {
+	Op      string                       `json:"op"`
+	Entry   OntologyPlanEntry            `json:"entry"`
+	Risk    string                       `json:"risk"`
+	Counts  map[string]OntologyPlanCount `json:"counts"`
+	Subtree []OntologyPlanEntry          `json:"subtree,omitempty"`
+	// Notes say what the counts cannot: a rename the runtime cannot yet
+	// carry through, a body edit that changes only the meaning.
+	Notes []string `json:"notes,omitempty"`
+}
+
+// PlanOntologyResult is a plan. It wrote nothing. Fingerprint identifies the
+// ontology it was computed against (a later change that destroys or stales
+// will be asked for it). Issues are the advisories of the ontology as it would
+// read after every change; NewIssues those it does not report now.
+// ScopesCounted / ScopesSkipped are the user and agent scopes counted and
+// those left out (a fault, or the plan's time budget), in which case Complete
+// is false and the other-scope counts are a floor.
+type PlanOntologyResult struct {
+	Tenant        string                  `json:"tenant"`
+	Fingerprint   string                  `json:"fingerprint"`
+	Changes       []OntologyPlannedChange `json:"changes"`
+	Issues        []string                `json:"issues"`
+	NewIssues     []string                `json:"new_issues"`
+	ScopesCounted int                     `json:"scopes_counted"`
+	ScopesSkipped int                     `json:"scopes_skipped"`
+	Complete      bool                    `json:"complete"`
+}
+
 // ReviewQueueFilter narrows the review queue (ListReviewQueue) and selects
 // what a bulk ruling rules (RuleStatementsRequest.Filter). Every field is
 // optional and they combine with AND; the zero value is every proposal of the

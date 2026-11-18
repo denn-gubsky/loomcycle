@@ -670,6 +670,35 @@ func (b *postgresBackend) query(ctx context.Context, key ScopeKey, statement str
 	if err := b.provision(ctx, schema, role, key); err != nil {
 		return nil, err
 	}
+	return b.readScope(ctx, schema, role, statement, args, maxBytes)
+}
+
+// queryExisting reads a schema this process may never have provisioned without
+// provisioning it: the catalog says whether it is there, and the read runs as
+// its role as it stands.
+func (b *postgresBackend) queryExisting(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
+	schema, role, err := pgScopeNames(key)
+	if err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	done := b.provisioned[schema]
+	b.mu.Unlock()
+	if !done {
+		var ok bool
+		if err := b.admin.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = $1)`, schema).Scan(&ok); err != nil {
+			return nil, fmt.Errorf("sqlmem: scope exists: %w", err)
+		}
+		if !ok {
+			return nil, ErrPlaneAbsent
+		}
+	}
+	return b.readScope(ctx, schema, role, statement, args, 0)
+}
+
+// readScope runs a read on a provisioned scope as its role.
+func (b *postgresBackend) readScope(ctx context.Context, schema, role, statement string, args []any, maxBytes int) (*QueryResult, error) {
 	sc, err := b.acquireScope(role)
 	if err != nil {
 		return nil, err

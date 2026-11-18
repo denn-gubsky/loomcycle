@@ -218,7 +218,26 @@ func (e *pdfExtract) run(opts Options) error {
 		return err
 	}
 	read := min(total, opts.pdfPageCap())
-	for n := 1; n <= read; n++ {
+	pages := opts.Pages
+	if len(pages) == 0 {
+		pages = make([]int, read)
+		for i := range pages {
+			pages[i] = i + 1
+		}
+	} else {
+		// Only the pages asked for, inside the document and the page cap.
+		var in []int
+		for _, n := range pages {
+			if n >= 1 && n <= read && (len(in) == 0 || n > in[len(in)-1]) {
+				in = append(in, n)
+			}
+		}
+		if len(in) < len(pages) {
+			e.rep.note("pages asked for that the document does not have (it has %d) were not read", total)
+		}
+		pages = in
+	}
+	for _, n := range pages {
 		if err := e.w.ctx.Err(); err != nil {
 			return err
 		}
@@ -241,7 +260,12 @@ func (e *pdfExtract) run(opts Options) error {
 		}
 		e.pagesRead++
 	}
-	if total > read {
+	switch {
+	case len(opts.Pages) > 0:
+		if len(pages) > 0 {
+			e.rep.note("only %s of %d were read, as asked", pagesPhrase(pages), total)
+		}
+	case total > read:
 		e.rep.note("only the first %d of %d pages were read", read, total)
 	}
 	return nil

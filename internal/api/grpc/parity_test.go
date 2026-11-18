@@ -584,6 +584,10 @@ func (m *parityMock) BindSubjectPrincipal(context.Context, connector.BindSubject
 	return connector.BindSubjectPrincipalResult{}, nil
 }
 
+func (m *parityMock) PlanOntology(context.Context, connector.PlanOntologyRequest) (connector.PlanOntologyResult, error) {
+	return connector.PlanOntologyResult{}, nil
+}
+
 func (m *parityMock) ListReviewQueue(context.Context, connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {
 	return connector.ListReviewQueueResult{}, nil
 }

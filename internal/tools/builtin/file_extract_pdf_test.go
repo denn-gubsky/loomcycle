@@ -145,3 +145,70 @@ func inboxRun(ctx context.Context) (*tools.EphemeralVolumeSet, bool) {
 	s := tools.EphemeralVolumes(ctx)
 	return s, s != nil
 }
+
+// TestFileExtract_PagesReadsOnlyThosePages — pages reads only the PDF pages
+// named; the result says which were read, and the kept Markdown holds no
+// other page.
+func TestFileExtract_PagesReadsOnlyThosePages(t *testing.T) {
+	f, ctx, _, _ := fileDocRun(t)
+	kept := inbox.Capture(ctx, inbox.Item{Name: "Протокол.pdf"}, boardMinutesPDF(t, testJPEG(t)))
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref, "pages": "2"})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if ex["pages_read"] != "2" || asInt(ex["pages"]) != 2 {
+		t.Fatalf("extract = %v", ex)
+	}
+	excerpt, _ := ex["excerpt"].(string)
+	if strings.Contains(excerpt, "бюджет") || !strings.Contains(excerpt, "Додаток") {
+		t.Errorf("excerpt = %q, want page 2 alone", excerpt)
+	}
+}
+
+// TestFileExtract_MaxCharsStopsTheExtraction — max_chars bounds what is
+// extracted and kept, not only what is returned: the kept Markdown is cut at
+// the limit, the converter stops (page 2 is never read), and truncated_at
+// says so.
+func TestFileExtract_MaxCharsStopsTheExtraction(t *testing.T) {
+	f, ctx, _, _ := fileDocRun(t)
+	kept := inbox.Capture(ctx, inbox.Item{Name: "Протокол.pdf"}, boardMinutesPDF(t, testJPEG(t)))
+	ex, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref, "max_chars": 40})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if asInt(ex["truncated_at"]) != 40 {
+		t.Fatalf("truncated_at = %v in %v", ex["truncated_at"], ex)
+	}
+	excerpt, _ := ex["excerpt"].(string)
+	if strings.Contains(excerpt, "Додаток") {
+		t.Errorf("page 2 was read: %q", excerpt)
+	}
+	if notes, _ := json.Marshal(ex["notes"]); !strings.Contains(string(notes), "as max_chars asked") {
+		t.Errorf("notes = %v", ex["notes"])
+	}
+	// Without the options the same file is read whole, as before.
+	ex, res = fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref})
+	if res.IsError || ex["truncated_at"] != nil || ex["pages_read"] != nil {
+		t.Fatalf("plain extract = %v (%s)", ex, res.Text)
+	}
+}
+
+// TestFileExtract_PagesIsChecked — a malformed or oversized pages argument
+// is refused before anything is read, including a range at the integer limit,
+// whose loop would otherwise never end.
+func TestFileExtract_PagesIsChecked(t *testing.T) {
+	f, ctx, _, _ := fileDocRun(t)
+	kept := inbox.Capture(ctx, inbox.Item{Name: "Протокол.pdf"}, boardMinutesPDF(t, testJPEG(t)))
+	for _, spec := range []string{"0", "3-1", "a", "1,,2", "1-5000", "2001", "9223372036854775800-9223372036854775807"} {
+		if _, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref, "pages": spec}); !res.IsError || !strings.Contains(res.Text, "pages") {
+			t.Errorf("pages %q: %s", spec, res.Text)
+		}
+	}
+}
+
+func TestParsePageSpec_SortsAndDeduplicates(t *testing.T) {
+	got, err := parsePageSpec(" 7, 1-3 ,2")
+	if err != nil || len(got) != 4 || got[0] != 1 || got[3] != 7 {
+		t.Fatalf("parsePageSpec = %v, %v", got, err)
+	}
+}

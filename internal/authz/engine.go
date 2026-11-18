@@ -841,6 +841,35 @@ func ParseMode(s string) (Mode, error) {
 	return "", fmt.Errorf("LOOMCYCLE_ACL: %q is not one of compat, shadow, enforce", s)
 }
 
+// Strictness orders the modes by what they refuse: shadow (the scope gate
+// alone; a deny is only logged) < compat (the scope gate plus every explicit
+// deny) < enforce (the engine; no matching rule refuses). It is not the
+// rollout order. A tenant's acl_modes entry may only raise its mode above the
+// deployment's by this order (RFC EZ P5), so no entry drops a deny.
+func (m Mode) Strictness() int {
+	switch m {
+	case ModeShadow:
+		return 0
+	case ModeEnforce:
+		return 2
+	}
+	return 1
+}
+
+// TenantMode is a tenant's mode: its entry in modes when that is stricter
+// than the deployment's, else the deployment's. A tenantless principal
+// (legacy, open mode) gets the deployment's. The floor is applied here as
+// well as at config load, so a map that skipped validation cannot lower it.
+func TenantMode(deployment Mode, modes map[string]Mode, tenant string) Mode {
+	if tenant == "" {
+		return deployment
+	}
+	if m, ok := modes[tenant]; ok && m.Strictness() > deployment.Strictness() {
+		return m
+	}
+	return deployment
+}
+
 // Resolve folds the engine's outcome and the legacy answer into the final
 // yes/no under a mode. legacy is what the scope gate says today.
 //

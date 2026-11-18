@@ -311,7 +311,7 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 	if err != nil {
 		return errBusiness("propose_entity: "+err.Error(), "This deployment has no SQL Memory; ask an operator to enable it."), nil
 	}
-	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
+	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
 		return errFrom("propose_entity: "+err.Error(), err), nil
 	}

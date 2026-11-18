@@ -352,6 +352,13 @@ export type RunFileInput = {
   images?: boolean;
   max_rows?: number;
   excerpt_chars?: number;
+  /** extract, PDF only: read only these pages, e.g. `1-10` or `1-3,7`
+   *  (at most 2000). Other formats are read from the start. The result then
+   *  carries `pages_read`. */
+  pages?: string;
+  /** extract: stop once this many characters of Markdown are written; the
+   *  converter stops there too. The result then carries `truncated_at`. */
+  max_chars?: number;
   /** extract, DOCX and HTML only: recover the headings a document marks by
    *  formatting (bold, larger or coloured lines) rather than heading styles.
    *  The result then counts `inferred_headings` and

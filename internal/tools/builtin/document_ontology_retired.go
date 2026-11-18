@@ -356,7 +356,7 @@ func (d *Document) ontologyRetireSubtree(ctx context.Context, key sqlmem.ScopeKe
 			"Accept or reject it on the Ontology page.")
 		return nil, true, &r, nil
 	}
-	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
+	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
 		return nil, true, nil, err
 	}
