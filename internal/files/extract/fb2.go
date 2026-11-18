@@ -543,6 +543,7 @@ func (b *fb2Book) emit(md string) error {
 		lead = "\n\n"
 	}
 	b.written = true
+	b.stanzaLines = 0 // a verse after another block starts a block of its own
 	if b.quotes == 0 {
 		return b.w.text(lead + md)
 	}
@@ -568,8 +569,10 @@ func (b *fb2Book) quoted(lead, md string) error {
 // verse writes one verse line: the first of its stanza as a new block, each
 // later one after a hard break, so a stanza of many lines is never held.
 func (b *fb2Book) verse(line string) error {
-	if b.stanzaLines++; b.stanzaLines == 1 {
-		return b.emit(line)
+	if b.stanzaLines == 0 {
+		err := b.emit(line)
+		b.stanzaLines = 1
+		return err
 	}
 	if b.quotes == 0 {
 		return b.w.text("\\\n" + line)

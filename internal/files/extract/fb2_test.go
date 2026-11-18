@@ -473,3 +473,11 @@ func TestFB2_NestedQuotesDoNotMultiplyTheOutput(t *testing.T) {
 		t.Errorf("quoted stanza and table not written line by line:\n%.300s", md)
 	}
 }
+
+func TestFB2_VerseAfterAStanzaSubtitleStartsABlock(t *testing.T) {
+	book := `<FictionBook><body><poem><stanza><v>a</v><subtitle>S</subtitle><v>b</v><v>c</v></stanza></poem></body></FictionBook>`
+	s, _ := run(t, FB2{}, []byte(book), Options{Name: "v.fb2"})
+	if want := "# v\n\na\n\n**S**\n\nb\\\nc"; s.md.String() != want {
+		t.Errorf("got %q, want %q", s.md.String(), want)
+	}
+}
