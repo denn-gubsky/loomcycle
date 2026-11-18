@@ -335,7 +335,7 @@ func TestFileRender_DOCXRoundTripsThroughExtract(t *testing.T) {
 func TestFileRender_PDFWithoutTheTypesetterSaysSo(t *testing.T) {
 	f, ctx, d, _ := fileDocRun(t)
 	ctx = withInboxScratch(t, ctx)
-	f.pdfCommand = "loomcycle-no-such-typesetter compile {in} {out}"
+	f.PDFCommand = "loomcycle-no-such-typesetter compile {in} {out}"
 	docID, _ := renderFixtureDoc(t, d, ctx)
 	_, res := fileOp(t, f, ctx, map[string]any{"op": "render", "document": docID, "format": "pdf"})
 	if !res.IsError || !strings.Contains(res.Text, "cannot write PDF") {

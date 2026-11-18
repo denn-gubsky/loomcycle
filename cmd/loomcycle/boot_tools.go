@@ -416,6 +416,7 @@ func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
 	// of this tool and its off-run twins share it.
 	fileTool := &builtin.File{HTTP: httpTool, RegisterSecret: b.secrets.registerObserved,
 		Extractions: extract.NewLimiter(cfg.Env.ExtractConcurrency), HelperWrapper: cfg.Env.HelperWrapper,
+		PDFCommand: cfg.Env.RenderPDFCommand, DiagramCommand: cfg.Env.RenderDiagramCommand,
 		ScratchDir: conversionSpoolDir(cfg)}
 	// RFC GO: with conversion.mode local, extraction runs in worker
 	// processes this boot starts; mode inprocess starts nothing.

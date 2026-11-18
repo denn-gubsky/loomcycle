@@ -20,7 +20,7 @@ func diagramRun(t *testing.T) (*File, context.Context, *Document) {
 	if err := os.WriteFile(filepath.Join(dir, "pic.png"), testPNG(t), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	f.diagramCommand = "cp " + filepath.Join(dir, "pic.png") + " {out}"
+	f.DiagramCommand = "cp " + filepath.Join(dir, "pic.png") + " {out}"
 	return f, ctx, d
 }
 
@@ -76,7 +76,7 @@ func TestFileRender_DrawsMermaidDiagrams(t *testing.T) {
 // shown as code, and the report says why.
 func TestFileRender_WithoutARendererDiagramsStayCode(t *testing.T) {
 	f, ctx, d := diagramRun(t)
-	f.diagramCommand = "loomcycle-no-such-renderer {in} {out}"
+	f.DiagramCommand = "loomcycle-no-such-renderer {in} {out}"
 	docID := diagramDocument(t, d, ctx)
 	page, out := renderedPage(t, f, ctx, map[string]any{"document": docID, "format": "html"})
 	rep, _ := out["report"].(map[string]any)
