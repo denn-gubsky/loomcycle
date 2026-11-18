@@ -95,6 +95,7 @@ var extTypes = map[string]string{
 	".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 	".odt":  "application/vnd.oasis.opendocument.text",
 	".ott":  "application/vnd.oasis.opendocument.text-template",
+	".epub": "application/epub+zip",
 	".doc":  "application/msword",
 	".xls":  "application/vnd.ms-excel",
 	".ppt":  "application/vnd.ms-powerpoint",
@@ -124,6 +125,7 @@ var typeExts = map[string]string{
 	"application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
 	"application/vnd.oasis.opendocument.text":                                   ".odt",
 	"application/vnd.oasis.opendocument.text-template":                          ".ott",
+	"application/epub+zip":          ".epub",
 	"application/msword":            ".doc",
 	"application/vnd.ms-excel":      ".xls",
 	"application/vnd.ms-powerpoint": ".ppt",
@@ -161,9 +163,9 @@ func settleMediaType(declared string, head []byte, name string) string {
 	}
 	sniffed := normalizeType(http.DetectContentType(head))
 	if sniffed == "application/zip" {
-		// An OpenDocument file names its own type: it wins over the
-		// extension, which a mail attachment may have lost or got wrong.
-		if mt := odfMimetype(head); mt != "" {
+		// An OpenDocument file or an EPUB names its own type: it wins over
+		// the extension, which a mail attachment may have lost or got wrong.
+		if mt := zipMimetype(head); mt != "" {
 			return mt
 		}
 	}
@@ -176,10 +178,11 @@ func settleMediaType(declared string, head []byte, name string) string {
 	return sniffed
 }
 
-// odfMimetype reads the type an OpenDocument package declares. The format
-// stores an uncompressed "mimetype" entry first in the zip, so its value
-// sits in the first local file header: "" for any other zip.
-func odfMimetype(head []byte) string {
+// zipMimetype reads the type an OpenDocument package or an EPUB (OCF)
+// declares. Both formats store an uncompressed "mimetype" entry first in
+// the zip, so its value sits in the first local file header: "" for any
+// other zip, and for a declared type that is neither.
+func zipMimetype(head []byte) string {
 	const hdr = 30
 	if len(head) < hdr || !bytes.HasPrefix(head, []byte("PK\x03\x04")) {
 		return ""
@@ -205,7 +208,7 @@ func odfMimetype(head []byte) string {
 		return ""
 	}
 	mt := normalizeType(string(head[start : start+size]))
-	if !strings.HasPrefix(mt, "application/vnd.oasis.opendocument.") {
+	if mt != "application/epub+zip" && !strings.HasPrefix(mt, "application/vnd.oasis.opendocument.") {
 		return ""
 	}
 	return mt

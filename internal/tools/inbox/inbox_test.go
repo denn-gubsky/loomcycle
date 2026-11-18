@@ -109,6 +109,33 @@ func odfPackage(t *testing.T, mimetype string, sized bool) []byte {
 	return b.Bytes()
 }
 
+// An EPUB declares its type in the same leading mimetype entry as an
+// OpenDocument file (RFC GV §4.1): with no extension or the wrong one it is
+// still a book, named .epub and kept with the documents.
+func TestInbox_EPUBIsTypedByItsMimetypeEntryAndKeptWithDocuments(t *testing.T) {
+	r := inboxtest.New(t, "root-1", inbox.Service{})
+	for _, sized := range []bool{true, false} {
+		book := odfPackage(t, "application/epub+zip", sized)
+		for _, name := range []string{"", "book.zip", "book.epub"} {
+			res := inbox.Capture(r.Ctx, inbox.Item{Name: name, Fallback: "book", MediaType: "application/octet-stream", Origin: "o"}, book)
+			if res.Record.MediaType != "application/epub+zip" {
+				t.Errorf("sized=%v %q: media type = %q", sized, name, res.Record.MediaType)
+			}
+			if !strings.HasPrefix(res.Record.Path, "documents/") {
+				t.Errorf("sized=%v %q: path = %q, want documents/", sized, name, res.Record.Path)
+			}
+			if name == "" && !strings.HasSuffix(res.Record.Path, ".epub") {
+				t.Errorf("sized=%v: a nameless book was named %q", sized, res.Record.Path)
+			}
+		}
+	}
+	// Named .epub with no mimetype entry: the extension decides.
+	plain := append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0}, 100)...)
+	if mt := inbox.Sniff("", plain, "a.epub"); mt != "application/epub+zip" {
+		t.Errorf("Sniff(a.epub) = %q", mt)
+	}
+}
+
 // An OpenDocument file is typed by the type it declares inside, so a mail
 // attachment with no extension, or the wrong one, still reads as what it is.
 func TestInbox_OpenDocumentIsTypedByItsMimetypeEntry(t *testing.T) {
