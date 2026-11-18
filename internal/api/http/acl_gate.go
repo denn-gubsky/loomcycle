@@ -50,6 +50,19 @@ func (s *Server) aclMode() authz.Mode {
 	return s.aclResolver.Mode()
 }
 
+// ACLModeFor is tenant's rollout mode (RFC EZ P5): its acl_modes entry from
+// the live config when stricter than the deployment's, else the deployment's.
+// Every place that stamps a mode on a ctx asks it with the tenant the work
+// runs for: the principal's on a request, the origin record's on a resumed,
+// queued or trigger-started run.
+func (s *Server) ACLModeFor(tenant string) authz.Mode {
+	var modes map[string]authz.Mode
+	if c := s.cfg(); c != nil {
+		modes = c.ResolvedACLModes
+	}
+	return authz.TenantMode(s.aclMode(), modes, tenant)
+}
+
 // enrichPrincipal fills the principal's groups and compiled set. A store
 // fault is counted (loomcycle_acl_resolution_failures_total), logged and
 // audited (acl_resolution_failed) — in compat it drops every stored deny for
@@ -66,7 +79,7 @@ func (s *Server) enrichPrincipal(ctx context.Context, p auth.Principal) auth.Pri
 	if err == nil {
 		return out
 	}
-	mode := s.aclMode()
+	mode := s.ACLModeFor(p.TenantID)
 	// Recorded, so a check that grants from the caller's own rules refuses
 	// rather than taking the class baseline in their place.
 	p.ACLFault = true

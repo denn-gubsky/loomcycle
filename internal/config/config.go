@@ -316,6 +316,13 @@ type Config struct {
 	// ResolvedACL is the validated form of the three blocks above; nil when
 	// none is declared.
 	ResolvedACL *authz.Static `yaml:"-"`
+	// ACLModes (RFC EZ P5) raises named tenants' access control mode above
+	// the deployment's LOOMCYCLE_ACL: tenant → compat | shadow | enforce,
+	// stricter only (shadow < compat < enforce). Validated at load into
+	// ResolvedACLModes; read from the live config, so a reload applies it.
+	ACLModes map[string]string `yaml:"acl_modes,omitempty"`
+	// ResolvedACLModes is ACLModes parsed; nil when none is declared.
+	ResolvedACLModes map[string]authz.Mode `yaml:"-"`
 
 	// ResolvedPrincipals is the boot-resolved token→Principal table built from
 	// Principals during validate (each token_env read from the environment).
@@ -8151,6 +8158,10 @@ func validateAccess(c *Config) error {
 	// RFC EY §9: validate the acls / groups / acl_bindings blocks with the
 	// engine's own strict parser, so an unenforceable entry fails the load.
 	if err := ResolveACLConfig(c); err != nil {
+		return err
+	}
+	// RFC EZ P5: per-tenant modes, stricter than LOOMCYCLE_ACL only.
+	if err := ResolveACLModes(c); err != nil {
 		return err
 	}
 	return nil

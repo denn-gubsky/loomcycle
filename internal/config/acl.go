@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/authz"
@@ -54,6 +55,50 @@ type ACLBindingConfig struct {
 	Token      string    `yaml:"token"`
 	TenantWide bool      `yaml:"tenant_wide"`
 	ExpiresAt  time.Time `yaml:"expires_at"`
+}
+
+// ResolveACLModes validates acl_modes (RFC EZ P5) against the deployment's
+// LOOMCYCLE_ACL and builds Config.ResolvedACLModes. An entry may only raise
+// a tenant's mode (authz.Mode.Strictness): one below the deployment's would
+// drop denies the operator set fleet-wide, so it fails the load instead.
+//
+//	acl_modes:
+//	  acme: enforce
+func ResolveACLModes(c *Config) error {
+	c.ResolvedACLModes = nil
+	if len(c.ACLModes) == 0 {
+		return nil
+	}
+	deployment, err := authz.ParseMode(c.Env.ACLMode)
+	if err != nil {
+		return err
+	}
+	tenants := make([]string, 0, len(c.ACLModes))
+	for t := range c.ACLModes {
+		tenants = append(tenants, t)
+	}
+	sort.Strings(tenants)
+	out := make(map[string]authz.Mode, len(tenants))
+	for _, t := range tenants {
+		if strings.TrimSpace(t) == "" || strings.TrimSpace(t) != t {
+			return fmt.Errorf("acl_modes: %q is not a tenant id", t)
+		}
+		raw := c.ACLModes[t]
+		if strings.TrimSpace(raw) == "" {
+			return fmt.Errorf("acl_modes.%s: a mode is required (compat, shadow or enforce)", t)
+		}
+		m, err := authz.ParseMode(raw)
+		if err != nil {
+			return fmt.Errorf("acl_modes.%s: %q is not one of compat, shadow, enforce", t, raw)
+		}
+		if m.Strictness() < deployment.Strictness() {
+			return fmt.Errorf("acl_modes.%s: %s refuses less than the deployment's LOOMCYCLE_ACL=%s "+
+				"(shadow < compat < enforce); a tenant's mode may only be stricter", t, m, deployment)
+		}
+		out[t] = m
+	}
+	c.ResolvedACLModes = out
+	return nil
 }
 
 // ResolveACLConfig validates the acls / groups / acl_bindings blocks and
