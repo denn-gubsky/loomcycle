@@ -91,6 +91,24 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 			"no proposal with that chunk_id in this tenant's ontology")
 		return
 	}
+	// A CHANGE OR RETIRE PROPOSAL (RFC GQ P4.1) names another entry; clearing its own
+	// status, which is all the accept below does, would put "retire: X" in force as an
+	// entry of that name and change nothing about X. Accepting one applies it to X in
+	// place, which is P4.2's; until then it is refused. Asked of the stored fields, not
+	// the read, so a mark that no longer decodes is refused too.
+	if action == "accept" {
+		marked, merr := doc.ChangeProposalMarked(dctx, "tenant", chunkID)
+		if merr != nil {
+			writeJSONError(w, http.StatusInternalServerError, "ontology_read_failed", merr.Error())
+			return
+		}
+		if marked || target.Change != nil {
+			writeJSONError(w, http.StatusConflict, "change_proposal_not_acceptable",
+				"accepting change proposals comes with P4.2 (RFC GQ): this proposal names another entry and cannot be "+
+					"accepted yet. Reject it, or make the change in the document editor.")
+			return
+		}
+	}
 	if action == "accept" && target.Status != meminject.OntologyStatusProposed {
 		// Re-accepting a rejection would be a silent un-reject. Say what state it is in.
 		writeJSONError(w, http.StatusConflict, "not_pending",

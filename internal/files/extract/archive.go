@@ -197,6 +197,69 @@ func (a *archive) readMax(name string, most int64) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// open is readMax as a stream: the same bounds, each enforced on the bytes as
+// they are inflated and charged to the archive's budget as they are read, so
+// a reader that stops early inflates no more than it took (a book cut at its
+// output limit).
+func (a *archive) open(name string, most int64) (io.ReadCloser, error) {
+	if err := a.ctx.Err(); err != nil {
+		return nil, err
+	}
+	f, ok := a.lookup(name)
+	if !ok {
+		return nil, fmt.Errorf("extract: the archive has no %s", name)
+	}
+	if f.Mode().IsDir() {
+		return nil, fmt.Errorf("extract: %s is a folder", name)
+	}
+	limit := min(a.budget, int64(f.CompressedSize64)*a.limits.ratio+a.limits.ratioFree)
+	byRatio, budget := limit < a.budget, a.budget
+	ownCap := most > 0 && most < limit
+	if ownCap {
+		limit = most
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, fmt.Errorf("extract: cannot open %s in the archive: %w", name, err)
+	}
+	return &entryStream{a: a, rc: rc, r: &ctxReader{ctx: a.ctx, r: io.LimitReader(rc, limit+1)},
+		name: name, limit: limit, most: most, ownCap: ownCap, byRatio: byRatio, budget: budget}, nil
+}
+
+// entryStream is one entry being read under open's bounds.
+type entryStream struct {
+	a      *archive
+	rc     io.ReadCloser
+	r      io.Reader
+	name   string
+	n      int64
+	limit  int64
+	most   int64
+	ownCap bool
+	// byRatio says the entry's expansion bound is the one that binds, and
+	// budget is what the archive had left when it was opened.
+	byRatio bool
+	budget  int64
+}
+
+func (e *entryStream) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	e.n += int64(n)
+	if e.n > e.limit {
+		switch {
+		case e.ownCap:
+			return 0, refusedf("%s is over %d bytes", e.name, e.most)
+		case e.byRatio:
+			return 0, refusedf("%s expands more than %d times its compressed size", e.name, e.a.limits.ratio)
+		}
+		return 0, refusedf("the archive expands to more than %d bytes", e.budget)
+	}
+	e.a.budget -= int64(n)
+	return n, err
+}
+
+func (e *entryStream) Close() error { return e.rc.Close() }
+
 // readXML reads an entry and parses it into a tree.
 func (a *archive) readXML(name string) (*node, error) {
 	b, err := a.read(name)

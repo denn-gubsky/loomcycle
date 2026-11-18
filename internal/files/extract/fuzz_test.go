@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/text/encoding/charmap"
 )
 
 // Fuzzers for every extractor but PDF, which has its own (FuzzExtractPDF).
@@ -224,6 +226,15 @@ func FuzzExtractODT(f *testing.F) {
 func FuzzEPUB(f *testing.F) {
 	addZipSeeds(f, epub3Book(f), epub2Book(f))
 	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtractBoth(t, EPUB{}, "f.epub", data, true) })
+}
+
+func FuzzFB2(f *testing.F) {
+	book := []byte(fb2Text(f, "UTF-8"))
+	f.Add(book)
+	f.Add(book[:len(book)/2])
+	f.Add(fb2Encoded(f, "windows-1251", charmap.Windows1251))
+	addZipSeeds(f, zipOf(f, entry{"a.fb2", book}))
+	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, FB2{}, "f.fb2", data, true) })
 }
 
 func FuzzExtractHTML(f *testing.F) {

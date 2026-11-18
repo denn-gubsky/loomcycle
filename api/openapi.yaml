@@ -2946,6 +2946,10 @@ components:
         markdown: { type: string, description: "import_md source. import_scheme: a scheme as an outline — # name, then nested - bullets (or ## headings), each an optional notation in a code span then the name, with alt:, note:, exact: lines under it." }
         concepts: { type: array, items: { $ref: "#/components/schemas/DocumentProposedConcept" }, description: "propose_entity with section=schemes and no parent: a NEW scheme's concepts, nested up to 8 levels, at most 500 in all; the whole scheme is one proposal, inert until an operator accepts it." }
         header: { $ref: "#/components/schemas/DocumentSchemeHeader" }
+        change: { type: string, enum: [edit, retire], description: "propose_entity: propose a change to an entry in force (edit: a new name, parent, meaning or directives; retire) instead of a new entry. Inert until an operator accepts it; accepting one comes with RFC GQ P4.2." }
+        entry: { type: string, description: "propose_entity with change: the in-force entry to change or retire, by chunk id (or name, or a concept's tag)." }
+        meaning: { type: string, description: "propose_entity change=edit: the entry's new meaning; any @ line stays quoted text." }
+        directives: { type: object, additionalProperties: true, description: "propose_entity change=edit: the entry's complete new directive set, name to value (a string, true for a flag, or a list for a repeated directive); {} clears them. Never locked. Carried as data." }
         skos_xml: { type: string, description: "import_scheme: a SKOS concept scheme in RDF/XML, at most 2 MB (Turtle is not read). Pass this or markdown; language picks the labels, scheme one ConceptScheme of several." }
         media_type: { type: string }
         data: { type: string, description: "set_asset image bytes, base64." }
