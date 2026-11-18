@@ -65,12 +65,6 @@ const ontologyToolSchema = `{
 // connector, which holds who may act, the tenant and the operation itself, so this
 // transport cannot differ from HTTP or gRPC.
 func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
-	if len(args) > connector.OntologyPlanMaxRequestBytes {
-		// The plan's bound, held for every op: HTTP refuses a plan body over it, and
-		// no other op's arguments come near it.
-		return ontologyRefusal("arguments", "invalid_body",
-			fmt.Errorf("ontology arguments are %d bytes; at most %d", len(args), connector.OntologyPlanMaxRequestBytes)), nil
-	}
 	var p struct {
 		Op        string  `json:"op"`
 		Duplicate string  `json:"duplicate"`
@@ -111,6 +105,11 @@ func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 		}
 		return toolResultJSON(res), nil
 	case "plan":
+		// HTTP's body bound, so this transport accepts no larger plan than HTTP does.
+		if len(args) > connector.OntologyPlanMaxRequestBytes {
+			return ontologyRefusal("plan", "invalid_body",
+				fmt.Errorf("the plan arguments are %d bytes; at most %d", len(args), connector.OntologyPlanMaxRequestBytes)), nil
+		}
 		res, err := env.connector.PlanOntology(ctx, connector.PlanOntologyRequest{Tenant: p.Tenant, Changes: p.Changes})
 		if err != nil {
 			code := connector.OntologyPlanCode(err)
