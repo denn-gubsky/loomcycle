@@ -522,7 +522,7 @@ func TestKbSurvey_GatherRanksByWeightDedupsAndSkipsFolderRows(t *testing.T) {
 	if cov != "COVERAGE: complete" || unc != "" {
 		t.Errorf("coverage = %q %q, want complete with no UNCOVERED line", cov, unc)
 	}
-	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 (cut 0, over guide limit 0, document fits 0) | slices 1 | failed slices 0 | rounds 2 | RUNS: w1:completed, w2:completed" {
+	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 (cut 0, over guide limit 0, document fits 0) | slices 1 | failed slices 0 | rounds 2 | depth standard | RUNS: w1:completed, w2:completed" {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -576,7 +576,7 @@ func TestKbSurvey_GatherKeepsTheTop120AndCountsTheCut(t *testing.T) {
 	if cov != "COVERAGE: partial" || unc != "UNCOVERED: 0 candidates not screened; 30 beyond the cap of 120" {
 		t.Errorf("coverage = %q %q, want partial with 30 beyond the cap", cov, unc)
 	}
-	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 (cut 0, over guide limit 0, document fits 0) | slices 10 | failed slices 0 | rounds 11 | RUNS: ") {
+	if !strings.HasPrefix(sv, "SURVEY: candidates 120 (cut 30) | sections 0 (cut 0, over guide limit 0, document fits 0) | slices 10 | failed slices 0 | rounds 11 | depth standard | RUNS: ") {
 		t.Errorf("survey line = %q", sv)
 	}
 }
@@ -1203,10 +1203,10 @@ func TestKbSurvey_GatherFailureFallsBackToAPlainWalk(t *testing.T) {
 	}{
 		"search throws": {&surveyFake{searchErr: "Document: search: the store is unavailable"},
 			"UNCOVERED: the candidates were not gathered",
-			"SURVEY: gather failed (Document: search: the store is unavailable) | rounds 1 | RUNS: w1:completed"},
+			"SURVEY: gather failed (Document: search: the store is unavailable) | rounds 1 | depth standard | RUNS: w1:completed"},
 		"nothing found": {&surveyFake{},
 			"UNCOVERED: the searches found no candidates",
-			"SURVEY: candidates 0 (cut 0) | rounds 1 | RUNS: w1:completed"},
+			"SURVEY: candidates 0 (cut 0) | rounds 1 | depth standard | RUNS: w1:completed"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tc.f.walk = []surveyReply{{text: "Two documents: [A](loom:doc/" + docID(1) + "?scope=tenant).\nCOVERAGE: complete\nMOVES: search\nMISSING: none"}}

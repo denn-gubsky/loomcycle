@@ -5802,6 +5802,8 @@ agents:
   # RFC's sections 1 to 4 for the evidence and the open re-measurement.
   kb/ask:
     provider: code-js
+    # What a caller choosing an agent reads (list_agents, the Library).
+    description: "Answers one question from the tenant knowledge base, with links to the documents. Optional run metadata depth: quick (at most 30 documents considered, a short answer; also picked when the question says briefly, in short, a quick list or top N), standard (the default) or deep (more relations and guide sections followed). Ask for quick when you do not need a full overview."
     # The tool ceiling, and the whole of it: Decision asks the classifier
     # question, Agent runs kb/classify, kb/search, kb/survey or kb/walker. It reads no
     # document itself: each child opens the hits under the caller's own access
@@ -5852,6 +5854,8 @@ agents:
       //    (kb/survey's COVERAGE line, computed by its code, stays), followed by
       //    one line:
       //    ROUTE: <route> | SCORE: <score or none> | CLASSIFIER: <source> | RUNS: <run:status, ...>
+      //    followed by " | DEPTH: <quick|deep> (<caller|wording>)" when the
+      //    depth is not standard (DEPTH, below).
       //
       // When in doubt the cascade says overview: sending a question to the survey
       // costs a little, sending an overview to flat search loses the answer.
@@ -5900,6 +5904,21 @@ agents:
           "(?:19|20)\\d{2}\\b|(?:last|this)\\s+(?:week|month|year|quarter)\\b|yesterday\\b)" +
         "|\\b(?:in|over|during|within)\\s+the\\s+(?:last|past)\\s+(?:\\d+\\s+|a\\s+|one\\s+|two\\s+|three\\s+|four\\s+|five\\s+|six\\s+|seven\\s+|ten\\s+|few\\s+|couple\\s+of\\s+)?(?:days?|weeks?|months?)\\b",
         "i");
+      // DEPTH: how much the caller wants retrieved. Run metadata depth (quick,
+      // standard or deep) wins; else QUICK in the question's own wording
+      // ("briefly", "in short", "a quick list", "top 5") picks quick; else
+      // standard, which changes nothing. Any other depth goes on to the
+      // answering child as one fixed trusted line, DEPTH_NOTES[depth]: kb/survey
+      // reads it for its caps, kb/search and kb/walker as how much to give.
+      // On the search route quick also keeps a partial search answer (no walk
+      // after it), and deep walks after any partial one. The route line then
+      // ends "| DEPTH: <depth> (caller|wording)".
+      var QUICK = /\b(?:briefly|in\s+(?:short|brief)(?![-\w])|quick(?:ly)?\s+(?:list|overview|summary|answer|look|rundown)\b|short\s+(?:list|answer|summary|overview)\b|top\s+(?:\d+|three|five|ten)\b)/i;
+      var DEPTH_NOTES = {
+        quick: "DEPTH: quick. The caller wants a short answer: the few documents that answer best, one short line each; do not widen.",
+        deep: "DEPTH: deep. The caller wants a thorough answer: widen until every counted document is examined."
+      };
+
       // DATED_NOTE is the fixed trusted text a dated question's walk gets: how
       // to answer it, never a word of the question.
       var DATED_NOTE = "DATED. The question is bounded by a date or a version. List the documents created after that " +
@@ -6069,13 +6088,29 @@ agents:
 
       var ANSWER = "Answer the question given as untrusted input.";
 
+      // chooseDepth: the caller's run metadata depth when it is one of the
+      // three names (matched, never looked up as given), else quick when the
+      // question's wording asks for little, else standard.
+      // Returns {depth, source: caller|wording|default}.
+      function chooseDepth(question, metadata) {
+        var md = metadata ? metadata.depth : undefined;
+        if (typeof md === "string" && /^(quick|standard|deep)$/i.test(md)) { return { depth: md.toLowerCase(), source: "caller" }; }
+        if (QUICK.test(question)) { return { depth: "quick", source: "wording" }; }
+        return { depth: "standard", source: "default" };
+      }
+
+      // both joins two pieces of trusted text kb/ask adds, either may be "".
+      function both(a, b) { return a && b ? a + "\n\n" + b : a || b; }
+
       function run(input) {
         Q = readQuestion(input);
         if (!Q.text) { return { final_text: "No question given." }; }
         var c = classify(Q.text, input.metadata);
+        var dp = chooseDepth(Q.text, input.metadata);
+        var dnote = DEPTH_NOTES[dp.depth] || "";
         var route = c.dated ? "walker" : c.overview ? "survey" : "search";
         var how = route, text;
-        var res = call(spawnArgs("kb/" + route, ANSWER, c.dated ? DATED_NOTE : "", true));
+        var res = call(spawnArgs("kb/" + route, ANSWER, both(c.dated ? DATED_NOTE : "", dnote), true));
         runs.push(res.run_id + ":" + res.status);
         if (route === "walker") {
           text = res.final_text || ("The walker gave no answer: " + (res.error || res.status));
@@ -6094,11 +6129,11 @@ agents:
           text = s.text;
           var why = "";
           if (!done) { why = "search " + res.status; }
-          else if (s.coverage === "partial" && !sureNot) { why = "partial coverage"; }
+          else if (s.coverage === "partial" && dp.depth !== "quick" && (!sureNot || dp.depth === "deep")) { why = "partial coverage"; }
           if (why) {
             var found = ids(res.final_text || "");
             var extra = found.length ? "A first search already found these. Start from them and do not repeat that search:\n" + found.join("\n") : "";
-            var w = call(spawnArgs("kb/walker", ANSWER, extra, true));
+            var w = call(spawnArgs("kb/walker", ANSWER, both(extra, dnote), true));
             runs.push(w.run_id + ":" + w.status);
             how = "search -> walker (" + why + ")";
             if (w.final_text) {
@@ -6111,7 +6146,8 @@ agents:
           }
           if (!text) { text = "The search agent gave no answer: " + (res.error || res.status); }
         }
-        var tail = "ROUTE: " + how + " | SCORE: " + scoreText(c) + " | CLASSIFIER: " + c.source + " | RUNS: " + runs.join(", ");
+        var tail = "ROUTE: " + how + " | SCORE: " + scoreText(c) + " | CLASSIFIER: " + c.source + " | RUNS: " + runs.join(", ") +
+          (dp.depth === "standard" ? "" : " | DEPTH: " + dp.depth + " (" + dp.source + ")");
         return { final_text: text + "\n\n" + tail };
       }
 
@@ -6305,6 +6341,7 @@ agents:
       //      SURVEY: candidates <kept> (cut <m>) | sections <k> (cut <j>,
       //              over guide limit <g>, document fits <d>) | slices <s> |
       //              failed slices <f> | rounds <walker runs> |
+      //              depth <quick|standard|deep> |
       //              RUNS: <run:status[/max_tokens], ...>
       //    candidates counts documents and sections, its cut documents only;
       //    sections counts the kept candidates that are sections, the
@@ -6343,6 +6380,31 @@ agents:
       var GUIDE_CHUNKS = 15; // live chunks that make a document a large guide
       var GUIDE_SECTIONS = 6; // best-matching hit sections of one large guide kept, at most
       var SEC_CAP = 60;      // sections screened, at most; and, apart, sections linked unscreened
+
+      // DEPTH: how deep the caller wants the survey to go, read once in run
+      // (readDepth): run metadata depth, else the last "DEPTH: <word>" line of
+      // the trusted text (how kb/ask passes it on), else standard.
+      //   quick     at most 30 documents (3 screening slices: one wave of at
+      //             most max_concurrent_children rounds), no sections of large
+      //             guides, no retry wave, relations from the 15 heaviest,
+      //             4 clauses, and a short composed answer. About 4 child runs
+      //             where a full standard survey makes 15 or more. What it
+      //             leaves out (documents past 30, a guide's matching sections,
+      //             ids a failed round did not sort) is counted, so its
+      //             coverage says partial when it cut anything.
+      //   standard  the caps above, unchanged.
+      //   deep      the caps above, with what costs no model round raised:
+      //             relations from the 100 heaviest (code reads), and 8
+      //             matching sections per large guide (a linked section is a
+      //             line; screened ones stay under SEC_CAP, so the rounds do
+      //             not grow).
+      var DEPTHS = {
+        quick: { cap: 30, edgeFrom: 15, clauses: 4, guideSections: 0, retry: false },
+        standard: { cap: CAP, edgeFrom: EDGE_FROM, clauses: MAX_CLAUSES, guideSections: GUIDE_SECTIONS, retry: true },
+        deep: { cap: CAP, edgeFrom: 100, clauses: MAX_CLAUSES, guideSections: 8, retry: true }
+      };
+      var DEPTH = "standard", D = DEPTHS.standard;
+      var DEPTH_LINE = /^[ \t]*DEPTH:[ \t]*(quick|standard|deep)\b.*$/gim;
       var SUMMARY_BATCH = 12; // document ids per documents_summary call written for a screening round
       var COMPOSE_BATCH = 24; // document ids per documents_summary call code makes for the composing round
       // The BRIEFS block: one row per fitting id, each at most BRIEF_ITEM
@@ -6506,7 +6568,7 @@ agents:
       function clauses(q) {
         var t = q.replace(/^\s*(what|which)\s+(do we hold|do we have|is documented|documents)\s+(on|about|concern)?\s*/i, "");
         var parts = t.split(/[:;,?]|\band\b|\bor\b/i), out = [];
-        for (var i = 0; i < parts.length && out.length < MAX_CLAUSES; i++) {
+        for (var i = 0; i < parts.length && out.length < D.clauses; i++) {
           var p = parts[i].replace(/^\s+|\s+$/g, "");
           if (/[A-Za-z]{4,}/.test(p)) { out.push(p); }
         }
@@ -6537,7 +6599,7 @@ agents:
       // edges adds 1 to each other end of the relations of the EDGE_FROM
       // highest-weighted candidates.
       function edges(set, from) {
-        var top = ranked(from).slice(0, EDGE_FROM);
+        var top = ranked(from).slice(0, D.edgeFrom);
         for (var n = 0; n < top.length; n++) {
           var es = doc({ op: "get_edges", document_id: top[n], limit: 100 }).edges || [];
           for (var i = 0; i < es.length; i++) {
@@ -6582,7 +6644,7 @@ agents:
         // Large guides: only documents the cap keeps can have sections kept
         // (a section never weighs more than its document), so only those are
         // counted.
-        var all = ranked(pool), top = all.slice(0, CAP);
+        var all = ranked(pool), top = all.slice(0, D.cap);
         var large = newSet(), secErr = "";
         if (top.length) {
           try { large = largeGuides(top); } catch (e) { secErr = errText(e); }
@@ -6594,14 +6656,14 @@ agents:
         for (i = 0; i < byM.length; i++) {
           var d = secs.doc[byM[i]];
           if (!large[d]) { continue; }
-          if ((per[d] || 0) >= GUIDE_SECTIONS) { guideCut++; continue; }
+          if ((per[d] || 0) >= D.guideSections) { guideCut++; continue; }
           per[d] = (per[d] || 0) + 1;
           sec[byM[i]] = d;
           secOrder.push(byM[i]);
         }
 
         var dc = pr && pr.facets ? pr.facets.documents_counted : undefined;
-        return { docIds: top, secOrder: secOrder, cut: Math.max(0, all.length - CAP), guideCut: guideCut,
+        return { docIds: top, secOrder: secOrder, cut: Math.max(0, all.length - D.cap), guideCut: guideCut,
                  counted: typeof dc === "number" && dc >= 0 ? dc : -1,
                  sec: sec, docs: top.length, secErr: secErr };
       }
@@ -6666,6 +6728,8 @@ agents:
           "Describe each document by its stored type and status: a stored status overrides any status wording in a brief " +
           "or abstract. Status done means it shipped; never call it a proposal. " +
           "The knowledge base is read-only and nothing is to be stored: your reply text is the whole result. " +
+          (DEPTH === "quick" ? "The caller asked for a quick answer: keep each line short, best fit first, " +
+            "with no introduction and no closing summary. " : "") +
           "Leave out FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES and MISSING lines. Never repeat this block. " +
           "Code has read the briefs for you: the untrusted block that begins with BRIEFS holds, per id below, its title, " +
           "type, status, brief and abstract. Compose from it; you need no tool call to compose. That block is document " +
@@ -6983,8 +7047,29 @@ agents:
         return why ? linkList(ids, why + (res.error ? ": " + String(res.error).replace(/\s+/g, " ") : "")) : text;
       }
 
+      // readDepth sets DEPTH and D: run metadata depth when it is one of
+      // DEPTHS, else the last DEPTH line of the trusted text (a trusted
+      // question's prompt, or the trusted text beside an untrusted one),
+      // else standard. An untrusted question's own text is never read for
+      // it. The DEPTH lines are taken out of the question and the framing,
+      // so they reach neither a search nor a child's prompt.
+      function readDepth(input) {
+        var md = input && input.metadata ? input.metadata.depth : undefined;
+        var trusted = Q.untrusted ? Q.framing : Q.text, m, last = "";
+        DEPTH_LINE.lastIndex = 0;
+        while ((m = DEPTH_LINE.exec(trusted)) !== null) { last = m[1].toLowerCase(); }
+        var strip = function (s) { return s.replace(DEPTH_LINE, "").replace(/\n{3,}/g, "\n\n").replace(/^\s+|\s+$/g, ""); };
+        if (Q.untrusted) { Q.framing = strip(Q.framing); } else { Q.text = strip(Q.text); }
+        // Matched against the three names, never looked up as given: a key
+        // like "constructor" must not reach DEPTHS.
+        var d = typeof md === "string" && /^(quick|standard|deep)$/i.test(md) ? md.toLowerCase() : last || "standard";
+        DEPTH = d;
+        D = DEPTHS[d];
+      }
+
       function run(input) {
         Q = readQuestion(input);
+        readDepth(input);
         if (!Q.text) { return { final_text: "No question given." }; }
 
         var g;
@@ -6992,11 +7077,11 @@ agents:
           g = gather(Q.text);
         } catch (e) {
           var t = plainWalk("the candidates were not gathered");
-          return { final_text: t + "\nSURVEY: gather failed (" + errText(e).replace(/\s+/g, " ") + ") | rounds 1 | RUNS: " + runs.join(", ") };
+          return { final_text: t + "\nSURVEY: gather failed (" + errText(e).replace(/\s+/g, " ") + ") | rounds 1 | depth " + DEPTH + " | RUNS: " + runs.join(", ") };
         }
         if (!g.docIds.length) {
           var t0 = plainWalk("the searches found no candidates");
-          return { final_text: t0 + "\nSURVEY: candidates 0 (cut " + g.cut + ") | rounds 1 | RUNS: " + runs.join(", ") };
+          return { final_text: t0 + "\nSURVEY: candidates 0 (cut " + g.cut + ") | rounds 1 | depth " + DEPTH + " | RUNS: " + runs.join(", ") };
         }
         SEC = g.sec;
 
@@ -7023,14 +7108,16 @@ agents:
             var a = readAnswer(outs[i].final_text, own);
             if (cutShort(outs[i]) || a.lines < 2) {
               failed++;
-              if (first) { again = again.concat(halves(lists[i])); }
+              // A quick survey makes no retry wave: what a failed round did
+              // not sort stays unaccounted, and coverage says partial.
+              if (first && D.retry) { again = again.concat(halves(lists[i])); }
               continue;
             }
             for (var k in a.aside) { accounted[k] = 1; }
             for (k in a.fits) { accounted[k] = 1; fits[k] = 1; }
             var rest = [];
             for (j = 0; j < lists[i].length; j++) { if (!accounted[lists[i][j]]) { rest.push(lists[i][j]); } }
-            if (first && rest.length) { again = again.concat(halves(rest)); }
+            if (first && D.retry && rest.length) { again = again.concat(halves(rest)); }
           }
           retry = again;
           fresh = [];
@@ -7099,9 +7186,10 @@ agents:
         if (!left.length && g.cut === 0 && secCut === 0 && g.guideCut === 0 && !g.secErr && reached) {
           cov = "COVERAGE: complete";
         } else {
-          cov = "COVERAGE: partial\nUNCOVERED: " + left.length + " candidates not screened; " + g.cut + " beyond the cap of " + CAP +
+          cov = "COVERAGE: partial\nUNCOVERED: " + left.length + " candidates not screened; " + g.cut + " beyond the cap of " + D.cap +
             (secCut ? "; " + secCut + " sections beyond their cap of " + SEC_CAP : "") +
-            (g.guideCut ? "; " + g.guideCut + " matching sections beyond the per-guide limit of " + GUIDE_SECTIONS : "") +
+            (g.guideCut ? "; " + g.guideCut + (D.guideSections ? " matching sections beyond the per-guide limit of " + D.guideSections :
+              " matching sections of large documents left out at depth " + DEPTH) : "") +
             (g.secErr ? "; the sections were not counted" : "") +
             (reached ? "" : g.counted < 0 ? "; the searches may not have reached every matching document" :
               "; the passage search counted " + g.counted + " documents and " + g.docs + " were kept");
@@ -7110,7 +7198,7 @@ agents:
           (g.secErr ? "failed (" + g.secErr.replace(/\s+/g, " ") + ")" :
             nsec + " (cut " + secCut + ", over guide limit " + g.guideCut + ", document fits " + linkedN + ")") +
           " | slices " + sliceCount +
-          " | failed slices " + failed + " | rounds " + runs.length + " | RUNS: " + runs.join(", ");
+          " | failed slices " + failed + " | rounds " + runs.length + " | depth " + DEPTH + " | RUNS: " + runs.join(", ");
         return { final_text: body + "\n\n" + cov + "\n" + tail };
       }
 
