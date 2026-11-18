@@ -98,8 +98,9 @@ type Options struct {
 	InferHeadings bool
 	// Pages are the pages of a paged document to read, ascending and
 	// without repeats; empty reads every page. Only those pages are parsed,
-	// so a sample of a long file costs what the sample costs. PDF reads it;
-	// formats without pages ignore it. A page past the end is not read.
+	// so a sample of a long file costs what the sample costs. PDF and DjVu
+	// read it; formats without pages ignore it. A page past the end is not
+	// read.
 	Pages []int
 
 	// limits overrides the archive bounds, and pdfMaxPages and pdfMaxDecode
@@ -109,6 +110,9 @@ type Options struct {
 	pdfMaxDecode int64
 	// pdfGridWork overrides the PDF table search's work budget, for tests.
 	pdfGridWork int
+	// djvuBatchSize overrides the pages asked of the DjVu text helper in
+	// one call, for tests.
+	djvuBatchSize int
 }
 
 // DefaultMaxRows is the row cap when Options.MaxRows is zero.
