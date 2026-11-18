@@ -131,8 +131,11 @@ func parsePageSpec(spec string) ([]int, error) {
 				return nil, fmt.Errorf("%q is not a range from a lower page to a higher one", part)
 			}
 		}
-		if b-a+1 > maxExtractPages {
-			return nil, fmt.Errorf("%q names more than %d pages", part, maxExtractPages)
+		// A page past the reader's cap is never read, and refusing it here
+		// also keeps the loop below from running up to an integer's limit,
+		// where n++ would wrap and never reach b.
+		if b > maxExtractPages {
+			return nil, fmt.Errorf("%q names a page past %d, the most a PDF extraction reads", part, maxExtractPages)
 		}
 		for n := a; n <= b; n++ {
 			seen[n] = true

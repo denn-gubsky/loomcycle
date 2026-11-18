@@ -194,11 +194,12 @@ func TestFileExtract_MaxCharsStopsTheExtraction(t *testing.T) {
 }
 
 // TestFileExtract_PagesIsChecked — a malformed or oversized pages argument
-// is refused before anything is read.
+// is refused before anything is read, including a range at the integer limit,
+// whose loop would otherwise never end.
 func TestFileExtract_PagesIsChecked(t *testing.T) {
 	f, ctx, _, _ := fileDocRun(t)
 	kept := inbox.Capture(ctx, inbox.Item{Name: "Протокол.pdf"}, boardMinutesPDF(t, testJPEG(t)))
-	for _, spec := range []string{"0", "3-1", "a", "1,,2", "1-5000"} {
+	for _, spec := range []string{"0", "3-1", "a", "1,,2", "1-5000", "2001", "9223372036854775800-9223372036854775807"} {
 		if _, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref, "pages": spec}); !res.IsError || !strings.Contains(res.Text, "pages") {
 			t.Errorf("pages %q: %s", spec, res.Text)
 		}
