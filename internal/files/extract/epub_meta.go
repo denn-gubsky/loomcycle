@@ -2,6 +2,7 @@ package extract
 
 import (
 	"bytes"
+	"context"
 	"path"
 	"strconv"
 	"strings"
@@ -13,7 +14,7 @@ import (
 // epubMetadata reads the package's Dublin Core metadata, with the EPUB 3
 // refinements (<meta refines="#id" property="role">) and Calibre's series
 // meta. Values are taken as written; Clean bounds them.
-func epubMetadata(md *node) BookMetadata {
+func epubMetadata(ctx context.Context, md *node) BookMetadata {
 	var m BookMetadata
 	if md == nil {
 		return m
@@ -103,7 +104,7 @@ func epubMetadata(md *node) BookMetadata {
 	if k := md.child("description"); k != nil {
 		// A description is often HTML, escaped inside the XML: its text
 		// is what a catalogue wants, not its tags.
-		m.Description = htmlFragmentText(k.text)
+		m.Description = htmlFragmentText(ctx, k.text)
 	}
 	for _, k := range md.kidsNamed("meta") {
 		switch k.attr("name") {
@@ -146,20 +147,50 @@ func epubIdentifier(k *node, refinedScheme string) BookIdentifier {
 	return BookIdentifier{Scheme: scheme, Value: v}
 }
 
+// maxDescriptionHTML caps the description markup parsed as HTML: a blurb
+// is a few KB, and Clean keeps MaxMetaDescription characters of its text.
+const maxDescriptionHTML = MaxMetaDescription * 4
+
 // htmlFragmentText is the text of an HTML fragment, its tags dropped. The
-// fragment is bounded by the XML part's own caps; the walk by depth.
-func htmlFragmentText(s string) string {
+// description is the book's own markup, so it is held to the web page's
+// bounds before the parser builds anything: a fragment past
+// maxDescriptionHTML bytes, or one countHTML refuses, is not parsed; its
+// tags are stripped by stripTags instead.
+func htmlFragmentText(ctx context.Context, s string) string {
 	if !strings.ContainsRune(s, '<') {
 		return strings.TrimSpace(s)
 	}
-	nodes, err := html.ParseFragment(strings.NewReader(s), &html.Node{Type: html.ElementNode, Data: "div", DataAtom: atom.Div})
+	if len(s) > maxDescriptionHTML || countHTML(ctx, &ctxReader{ctx: ctx, r: strings.NewReader(s)}) != nil {
+		return stripTags(s)
+	}
+	nodes, err := html.ParseFragment(&ctxReader{ctx: ctx, r: strings.NewReader(s)}, &html.Node{Type: html.ElementNode, Data: "div", DataAtom: atom.Div})
 	if err != nil {
-		return strings.TrimSpace(s)
+		return stripTags(s)
 	}
 	var b strings.Builder
 	for _, n := range nodes {
 		b.WriteString(textOf(n))
 		b.WriteString(" ")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// stripTags drops everything from a "<" to the next ">", in one pass and
+// without building anything; only the first MaxMetaDescription*2 bytes of
+// text are kept, more than Clean keeps. Entities stay as written.
+func stripTags(s string) string {
+	var b strings.Builder
+	in := false
+	for i := 0; i < len(s) && b.Len() < MaxMetaDescription*2; i++ {
+		switch c := s[i]; {
+		case c == '<':
+			in = true
+		case c == '>' && in:
+			in = false
+			b.WriteByte(' ')
+		case !in:
+			b.WriteByte(c)
+		}
 	}
 	return strings.TrimSpace(b.String())
 }

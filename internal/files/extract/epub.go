@@ -64,7 +64,7 @@ func (EPUB) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 	}
 	b := &epubBook{a: a, rep: &rep, opts: opts, dir: path.Dir(opfPath), notes: &epubNotes{num: map[string]int{}, text: map[int]string{}}}
 	b.readManifest(pkg)
-	meta := epubMetadata(pkg.child("metadata"))
+	meta := epubMetadata(ctx, pkg.child("metadata"))
 	meta.SourceFormat = "epub"
 	rep.Metadata = meta.Clean()
 	b.labels = b.navLabels(pkg)

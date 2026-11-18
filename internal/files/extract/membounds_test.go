@@ -400,3 +400,40 @@ func TestHTML_PeakAtTheNodeCapIsBounded(t *testing.T) {
 	}
 	t.Logf("peak %d MiB", peak>>20)
 }
+
+// A book's description is its own markup: a clone flood or a fragment of
+// megabytes is not handed to the HTML parser, and the text kept is bounded
+// (RFC GV §4.7).
+func TestEPUB_DescriptionMarkupIsBoundedBeforeParse(t *testing.T) {
+	var flood strings.Builder
+	for i := 0; flood.Len() < maxDescriptionHTML/2; i++ {
+		fmt.Fprintf(&flood, "<b class=c%d>", i)
+	}
+	for flood.Len() < maxDescriptionHTML-8 {
+		flood.WriteString("</p><p>x")
+	}
+	for name, desc := range map[string]string{
+		"clone flood": flood.String(),
+		"oversized":   strings.Repeat("<p><i>a</i></p>", 2<<20/15),
+		"deep":        strings.Repeat("<div>", 100000) + "x",
+	} {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		got := htmlFragmentText(context.Background(), desc)
+		runtime.ReadMemStats(&after)
+		t.Logf("%s: %d bytes in, %d KiB allocated", name, len(desc), (after.TotalAlloc-before.TotalAlloc)>>10)
+		if alloc := after.TotalAlloc - before.TotalAlloc; alloc > 8<<20 {
+			t.Errorf("%s: reading the description allocated %d MiB", name, alloc>>20)
+		}
+		if len(got) > MaxMetaDescription*2 {
+			t.Errorf("%s: %d bytes of description text kept", name, len(got))
+		}
+		if strings.Contains(got, "<") {
+			t.Errorf("%s: tags left in the text: %.80q", name, got)
+		}
+	}
+	if got := htmlFragmentText(context.Background(), "<p>A <b>first</b> collection.</p>"); got != "A first collection." {
+		t.Errorf("a small description = %q", got)
+	}
+}
