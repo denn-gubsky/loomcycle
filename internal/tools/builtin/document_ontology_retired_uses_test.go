@@ -6,6 +6,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // The new uses of a retired entry the RFC GQ P2.1 review found unguarded: accepting a
@@ -159,6 +160,34 @@ func TestOntologyConfirm_NoNewInstanceOfToARetiredClass(t *testing.T) {
 		if e["to_id"] == provision && e["expired_at"] == nil {
 			t.Errorf("a new instance_of to the retired class was written: %v", e)
 		}
+	}
+}
+
+// TestOntologyGuard_AgentProposalUnderOrNamedAsARetiredEntryIsRefused: an agent's raw
+// create_chunk/upsert_chunk proposal is held to propose_entity's rules — nothing filed
+// under a retired entry, and no proposal of a retired entry's name.
+func TestOntologyGuard_AgentProposalUnderOrNamedAsARetiredEntryIsRefused(t *testing.T) {
+	f := newRetiredFixture(t)
+	docID := f.read().DocumentID
+	classes := f.read().SectionChunks[memrank.SectionClasses]
+	memo, outsourcing := f.chunk("Memo"), f.chunk("outsourcing")
+	f.retire("Memo")
+	f.retire("Risk Management")
+	agent := tools.WithCallerTier(inRunCtx(f.ctx), tools.TierMember)
+	for _, in := range []map[string]any{
+		{"op": "create_chunk", "parent_id": memo, "title": "Board Memo"},
+		{"op": "create_chunk", "parent_id": outsourcing, "title": "cloud"},
+		{"op": "create_chunk", "parent_id": classes, "title": "Memo"},
+		{"op": "upsert_chunk", "natural_key": "proposal:board-memo", "parent_id": memo, "title": "Board Memo", "body": "x"},
+	} {
+		in["scope"], in["document_id"], in["status"] = "tenant", docID, memrank.OntologyStatusProposed
+		if _, r := f.do(agent, in); !r.IsError || !strings.Contains(r.Text, "retired") {
+			t.Errorf("%v: %q, want a retired refusal", in, r.Text)
+		}
+	}
+	if _, r := f.do(agent, map[string]any{"op": "create_chunk", "scope": "tenant", "document_id": docID,
+		"parent_id": classes, "title": "Note", "status": memrank.OntologyStatusProposed}); r.IsError {
+		t.Errorf("a proposal under a live section: %s", r.Text)
 	}
 }
 

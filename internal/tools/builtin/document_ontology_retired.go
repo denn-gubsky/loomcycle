@@ -496,3 +496,95 @@ func (d *Document) retireChunks(ctx context.Context, key sqlmem.ScopeKey, entryI
 		revision = CASE WHEN id = ? THEN revision ELSE revision + 1 END WHERE id IN (`+ph+`)`,
 		append([]any{memrank.OntologyStatusRetired, time.Now().UnixNano(), entryID}, args...)...)
 }
+
+// retiredProposalRefusal refuses a proposal, filed at parentID with title in the
+// ontology document docID, that would make something new use a retired entry: one
+// filed under a retired entry, or one named as a retired entry of the same section (in
+// the Schemes section, under the same parent, as a concept's tag is). selfID is the
+// proposal's own chunk when it exists. The root and the section headers are not entries
+// (a status on them is ignored), so they never count as a retired ancestor. The same
+// rules propose_entity applies, for a proposal that did not come through it: an
+// agent's raw create_chunk/upsert_chunk, or one accepted after its parent was retired.
+func (d *Document) retiredProposalRefusal(ctx context.Context, key sqlmem.ScopeKey, docID, selfID, parentID, title string) (*tools.Result, error) {
+	res, err := d.query(ctx, key, `SELECT id, coalesce(parent_id, ''), coalesce(status, ''), coalesce(title, '') FROM chunks WHERE document_id = ?`, docID)
+	if err != nil {
+		return nil, err
+	}
+	type node struct{ parent, status, name string }
+	nodes := map[string]node{}
+	root := ""
+	for _, r := range res.Rows {
+		if len(r) < 4 {
+			continue
+		}
+		n := node{parent: asStr(r[1]), status: asStr(r[2]), name: memrank.TrimOntologyName(asStr(r[3]))}
+		nodes[asStr(r[0])] = n
+		if n.parent == "" {
+			root = asStr(r[0])
+		}
+	}
+	// sectionOf walks up to the child of the root; "" for the root or an unknown chunk.
+	sectionOf := func(id string) string {
+		for seen := 0; id != "" && seen <= len(nodes); seen++ {
+			n, ok := nodes[id]
+			if !ok || n.parent == "" {
+				return ""
+			}
+			if n.parent == root {
+				return id
+			}
+			id = n.parent
+		}
+		return ""
+	}
+	section := sectionOf(parentID)
+	if parentID == root || section == "" {
+		return nil, nil // a section header of its own, or outside any section
+	}
+	for id, seen := parentID, 0; id != section && seen <= len(nodes); seen++ {
+		n := nodes[id]
+		if memrank.IsRetiredEntityStatus(n.status) {
+			return retiredParentRefusal(strconv.Quote(n.name)), nil
+		}
+		id = n.parent
+	}
+	name := memrank.TrimOntologyName(title)
+	if name == "" {
+		return nil, nil
+	}
+	schemes := false
+	if read, ok := d.tenantOntologyRead(ctx); ok {
+		schemes = read.SectionChunks[memrank.SectionSchemes] == section
+	}
+	for id, n := range nodes {
+		if id == selfID || !memrank.IsRetiredEntityStatus(n.status) || sectionOf(id) != section {
+			continue
+		}
+		if schemes && n.parent != parentID {
+			continue
+		}
+		if strings.EqualFold(n.name, name) || (schemes && memrank.MirrorSegment(n.name) == memrank.MirrorSegment(name)) {
+			return retiredNameRefusal(strconv.Quote(n.name)), nil
+		}
+	}
+	return nil, nil
+}
+
+// RetiredProposalProblem says why accepting the ontology proposal chunkID would make
+// something new use a retired entry (filed under one, or named as one), "" when it
+// would not. For the operator's accept route, which writes the proposal's status alone.
+func (d *Document) RetiredProposalProblem(ctx context.Context, scope, chunkID string) (string, error) {
+	key, _, err := d.resolveScope(ctx, scope)
+	if err != nil {
+		return "", err
+	}
+	row, found, err := d.getChunkRow(ctx, key, chunkID)
+	if err != nil || !found {
+		return "", err
+	}
+	r, err := d.retiredProposalRefusal(ctx, key, row.DocumentID, row.ID, row.ParentID, row.Title)
+	if err != nil || r == nil {
+		return "", err
+	}
+	return r.Text, nil
+}

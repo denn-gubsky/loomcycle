@@ -147,6 +147,21 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// A class, relation or instance proposal is in force once its status clears, and
+	// the reader inherits nothing from its parent: one filed under an entry retired
+	// since, or named as a retired entry, would be a new use of it (RFC GQ P2.1).
+	if action == "accept" {
+		problem, perr := doc.RetiredProposalProblem(dctx, "tenant", chunkID)
+		if perr != nil {
+			writeJSONError(w, http.StatusInternalServerError, "ontology_read_failed", perr.Error())
+			return
+		}
+		if problem != "" {
+			writeJSONError(w, http.StatusConflict, "entry_retired", problem)
+			return
+		}
+	}
+
 	newStatus := meminject.OntologyStatusRejected
 	if action == "accept" {
 		newStatus = "" // in force, in place
