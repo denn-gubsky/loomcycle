@@ -60,7 +60,27 @@ const (
 	// LabelDraw is a Mermaid diagram drawn as a picture (RFC GR P4d), with
 	// the diagram helper. A worker carries it when the helper resolves.
 	LabelDraw = "draw_diagram"
+	// LabelDjVu is an extraction of a DjVu document (RFC GV P3), which
+	// needs DjVuLibre's djvutxt. A worker carries it when its text helper
+	// resolves.
+	LabelDjVu = "djvu"
 )
+
+// ExtractLabels are the labels an extract job needs, every one of them:
+// extract, or djvu for a DjVu document; and extract_pages when only some
+// pages are read. A file is DjVu as a worker's registry would find it: by
+// its media type, or by its name when no other extractor reads that type.
+func ExtractLabels(mediaType, name string, pages bool) []string {
+	need := []string{LabelExtract}
+	_, typed := extract.Default().For(mediaType, "")
+	if extract.IsDjVu(mediaType, "") || (!typed && extract.IsDjVu("", name)) {
+		need = []string{LabelDjVu}
+	}
+	if pages {
+		need = append(need, LabelExtractPages)
+	}
+	return need
+}
 
 // LabelFor is the label a job kind needs.
 func LabelFor(k workerpb.JobKind) string {
@@ -100,7 +120,7 @@ func LabelForJob(k workerpb.JobKind, format string) string {
 // HelperLabel reports whether a label stands for an operator helper program,
 // which a worker may lack while still running other jobs.
 func HelperLabel(label string) bool {
-	return label == LabelRender || label == LabelMedia || label == LabelEncode || label == LabelWritePDF || label == LabelDraw
+	return label == LabelRender || label == LabelMedia || label == LabelEncode || label == LabelWritePDF || label == LabelDraw || label == LabelDjVu
 }
 
 // KindName is a job kind's name in metrics and logs.

@@ -1,0 +1,4 @@
+title "A Synthetic Book"
+author "Ada Example"
+year "2019"
+publisher "Loomcycle Test Press"

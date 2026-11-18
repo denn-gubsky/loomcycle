@@ -295,6 +295,17 @@ jobs:
           tar -xJf "$RUNNER_TEMP/merman.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/merman-cli-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
 
+      # A DjVu book's text layer is read with DjVuLibre's djvutxt and
+      # djvused (RFC GV P3), from Debian's djvulibre-bin as the worker image
+      # installs it. The DjVu tests skip where djvutxt is missing;
+      # LOOMCYCLE_REQUIRE_DJVULIBRE makes that a failure here.
+      - name: Read the DjVu fixtures with DjVuLibre
+        env:
+          LOOMCYCLE_REQUIRE_DJVULIBRE: "1"
+        run: |
+          sudo apt-get install -y --no-install-recommends djvulibre-bin
+          go test -count=1 -run 'DjVu' -v ./internal/convert/
+
       - name: Typeset the rendered PDFs and draw the diagrams
         env:
           LOOMCYCLE_REQUIRE_TYPST: "1"
@@ -308,7 +319,7 @@ jobs:
       # The worker image is built only at release; build it here (amd64, not
       # pushed) so a broken Typst pin or font package fails the PR, and check
       # that its typst runs and finds both families the PDF style names.
-      - name: Build the worker image and check its typesetter
+      - name: Build the worker image and check its typesetter and DjVuLibre
         run: |
           set -euo pipefail
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o loomcycle ./cmd/loomcycle
@@ -319,6 +330,9 @@ jobs:
           # a diagram from stdin to a PNG on stdout.
           printf 'flowchart LR\n  A[Протокол] --> B\n' | docker run --rm -i --entrypoint merman-cli ci-loomcycle-worker render -q -f png -o - - > "$RUNNER_TEMP/diagram.png"
           file "$RUNNER_TEMP/diagram.png" | grep -q 'PNG image data'
+          # It reads a DjVu's text layer in the image as built.
+          docker run --rm -i --entrypoint sh ci-loomcycle-worker -c 'cat > /scratch/book.djvu && djvutxt --detail=page --page=3 /scratch/book.djvu' \
+            < internal/files/extract/testdata/djvu/book.djvu | grep -q 'Третья страница'
           fonts="$(docker run --rm --entrypoint typst ci-loomcycle-worker fonts)"
           echo "$fonts"
           echo "$fonts" | grep -qx 'Noto Sans'

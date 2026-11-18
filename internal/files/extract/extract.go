@@ -98,8 +98,9 @@ type Options struct {
 	InferHeadings bool
 	// Pages are the pages of a paged document to read, ascending and
 	// without repeats; empty reads every page. Only those pages are parsed,
-	// so a sample of a long file costs what the sample costs. PDF reads it;
-	// formats without pages ignore it. A page past the end is not read.
+	// so a sample of a long file costs what the sample costs. PDF and DjVu
+	// read it; formats without pages ignore it. A page past the end is not
+	// read.
 	Pages []int
 
 	// limits overrides the archive bounds, and pdfMaxPages and pdfMaxDecode
@@ -109,6 +110,9 @@ type Options struct {
 	pdfMaxDecode int64
 	// pdfGridWork overrides the PDF table search's work budget, for tests.
 	pdfGridWork int
+	// djvuBatchSize overrides the pages asked of the DjVu text helper in
+	// one call, for tests.
+	djvuBatchSize int
 	// fb2MaxPicture overrides the cap on one FB2 picture, for tests.
 	fb2MaxPicture int
 	// fb2MaxDecoded overrides the cap on an FB2 book's decoded text.
@@ -217,6 +221,13 @@ func Default() *Registry {
 // deployment's own extractor for a type wins over the built-in one.
 func (g *Registry) Register(e Extractor) {
 	g.list = append([]Extractor{e}, g.list...)
+}
+
+// With is a new registry that tries e first and then the extractors of g,
+// which is left as it is: a converter adds the extractor its helpers make
+// possible (DjVu) to a registry it may share.
+func (g *Registry) With(e Extractor) *Registry {
+	return &Registry{list: append([]Extractor{e}, g.list...)}
 }
 
 // For returns the extractor for a file: the first that matches its sniffed

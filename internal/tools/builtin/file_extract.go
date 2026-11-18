@@ -237,6 +237,15 @@ func (f *File) converter() convert.Client {
 	if op := f.ocrConfig(); op != nil && op.Rasterize != nil {
 		p.Rasterize = &convert.Helper{Key: "transcription.ocr.rasterize", Command: op.Rasterize.Command, Wrapper: op.Rasterize.Wrapper, Timeout: ocrRasterizeTimeout}
 	}
+	// DjVu is read here only with the helpers the operator wrote (RFC GV
+	// D8): its parser is C++ with a history, and a worker is the place for
+	// it. No default from PATH.
+	if op := f.ocrConfig(); op != nil && op.DjVu != nil && op.DjVu.Text != nil {
+		p.DjVuText = &convert.Helper{Key: convert.DjVuTextHelperKey, Command: op.DjVu.Text.Command, Wrapper: op.DjVu.Text.Wrapper, Timeout: convert.DjVuCallTimeout}
+		if in := op.DjVu.Inspect; in != nil {
+			p.DjVuInspect = &convert.Helper{Key: convert.DjVuInspectHelperKey, Command: in.Command, Wrapper: in.Wrapper, Timeout: convert.DjVuCallTimeout}
+		}
+	}
 	// A PDF render runs the operator's typesetter here, else Typst from
 	// PATH, as the workers do (RFC GR P2); where it is not installed the
 	// render says so.
@@ -316,7 +325,8 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 		}
 		return f.transcribeFile(ctx, call, r, rel, fh, info.Size(), mt)
 	}
-	if _, ok := extract.Default().For(mt, name); !ok {
+	djvu := extract.IsDjVu(mt, "")
+	if _, ok := extract.Default().For(mt, name); !ok && !djvu {
 		return errValidation(fmt.Sprintf("extract: cannot extract text from %s (%s)", r.raw, mt),
 			"Extract reads DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, CSV and TSV, text, Markdown, VTT and SRT captions, and images; op=transcribe reads audio and video."), nil
 	}
@@ -360,6 +370,9 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 			"The file may be damaged or built to exhaust memory. Try a different copy of it, or ask an operator."), nil
 	case errors.Is(err, convert.ErrNoWorkers):
 		return errTransient("extract: no file conversion worker is running on this server", "Try again in a minute; an operator can check the conversion workers."), nil
+	case djvu && (errors.Is(err, extract.ErrUnsupported) || errors.Is(err, convert.ErrNoHelper)):
+		return errBusiness(fmt.Sprintf("extract: %s is a DjVu document, and this server cannot read DjVu", r.raw),
+			"An operator runs conversion workers from the loomcycle-worker image (it has DjVuLibre's djvulibre-bin), or sets transcription.ocr.djvu.text to read DjVu in the server's own process."), nil
 	case err == nil:
 	case errors.Is(err, extract.ErrSinkFull):
 		cut = true
@@ -378,7 +391,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 		return errValidation(fmt.Sprintf("extract: could not read %s as %s: %s", r.raw, rep.Format, strings.TrimPrefix(err.Error(), "extract: ")),
 			"Check the file is not damaged, or that its type is the one its name says."), nil
 	}
-	if len(pages) > 0 && rep.Format != "pdf" {
+	if len(pages) > 0 && rep.Format != "pdf" && rep.Format != "djvu" {
 		rep.Notes = append(rep.Notes, fmt.Sprintf("pages reads PDF pages; %s has none, so it was read from the start", rep.Format))
 	}
 	inferred := infer && inferFormats[rep.Format]
@@ -392,8 +405,14 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 
 	// OCR: after the text layer, which says which pages need it.
 	var lowYield []int
-	if rep.Format == "pdf" {
+	if rep.Format == "pdf" || rep.Format == "djvu" {
 		lowYield = lowYieldPages(rep, oc.minChars)
+	}
+	if rep.Format == "djvu" && oc.active() {
+		// Its thin pages are found (PageYields) but not rendered yet.
+		if low := lowYieldPages(rep, oc.minChars); len(low) > 0 {
+			rep.Notes = append(rep.Notes, errDjVuOCR.Error()+": the pages with little or no text layer were not read by the OCR model")
+		}
 	}
 	var pass *ocrPass
 	ocrSet := ocrPages(rep, oc)
@@ -455,7 +474,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	}
 	out["ref"] = kept.Record.Ref
 	out["source"] = r.raw
-	if len(pages) > 0 && rep.Format == "pdf" {
+	if len(pages) > 0 && (rep.Format == "pdf" || rep.Format == "djvu") {
 		// Counted even when empty: the caller asked, and none is an answer.
 		out["pages_read"] = sink.pagesRead()
 	}

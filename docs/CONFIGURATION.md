@@ -3588,6 +3588,39 @@ Rows also carry `input_chars`, the characters text-to-speech and embedding calls
 
 **What every usage row was for, and its tier.** Every model call the runtime makes on someone's behalf is a usage row, and its `purpose` says why. *Foreground* — what a person or caller asked a model for: `chat` (an agent's own turns) and `gateway` (a call through `/v1/_llm/chat` or `/v1/chat/completions`). *Background* — what the runtime asked a model for to serve it: `consolidation` (the turns of an `internal:` agent, i.e. memory consolidation), `rerank` (a Memory or Document search's rerank), `decision` (the Decision tool and `POST /v1/_decide`), `compaction` and `recap` (summaries), `unit_generation` and `image_description` (Document jobs), `embedding` (every embedder call: memory and document writes, search queries, re-embeds and `/v1/embeddings`), and `ocr`, `stt`, `tts`. Compaction and recap summaries, unit generation, image description and embeddings were not billed before this version; they now count against the token budgets like any call. An embedding row carries `input_chars` and the tokens when the provider reported them (OpenAI, Voyage, Ollama and Bedrock do; Gemini does not). It is priced by tokens from the model's `input` price, else by `per_million_chars`, else left unpriced rather than free. A summary is charged to its run (or, for a chat's recap, to the chat's tenant and user); a Document job started from an operator route to the tenant and user whose documents it worked on. Each row also records the run's **user tier** and, on an agent's own turns and gateway calls, the **model tier** it was resolved through (`pinned` for an agent or gateway request that names its model; empty on rows from before this version and on background calls, whose model the tier did not choose). The rolled-up archive keeps both tiers apart.
 
+### DjVu books (`transcription.ocr.djvu`, RFC GV)
+
+`File op=extract` reads a DjVu book's text layer, its outline and its metadata through DjVuLibre's programs, `djvutxt` and `djvused`. Go reads only the file's container structure: the page count, which pages carry text, and whether the file is one the runtime will hand to a helper.
+
+```yaml
+transcription:
+  ocr:
+    djvu:
+      text:    { command: "djvutxt --detail=page --page={pages} {in}" }   # {in}, {pages} (e.g. 1-3,7)
+      inspect: { command: "djvused -e {script} {in}" }                   # {in}, {script}: print-outline | print-meta
+```
+
+- **Where it runs.**
+  - On a conversion worker the commands above are the defaults when the programs are on its `PATH`; the `loomcycle-worker` image carries `djvulibre-bin`. Such a worker carries the `djvu` label, and a DjVu extraction goes only to a worker that has it. A worker's own `LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND` / `LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND` replace them (§9n).
+  - In the server's own process DjVu is read only when this block sets `text` (RFC GV D8). The runtime writes no default here, because DjVuLibre is a C++ parser with a history of memory-safety bugs; a worker is the recommended place.
+  - Without either, an extraction answers that this server cannot read DjVu.
+- **Checks.** Each command is checked at load: its placeholders must be the ones above, and it runs without a shell under `LOOMCYCLE_HELPER_WRAPPER`. `{script}` is always one of the two fixed scripts, never text from a file or a caller. `rasterize` (rendering pages for OCR) is refused by name until DjVu OCR ships.
+- **What is refused before any helper runs.**
+  - An indirect DjVu, whose pages are separate files.
+  - A single page that includes another file (`INCL`, `NDIR`).
+  - A bundle whose included component names a path (`/`, `\`, `:`, `..`, a control character).
+  - Any top-level form other than one page or a bundle.
+
+  DjVuLibre opens included files by name next to its input, so these are refused rather than handed over. The input is copied alone into a fresh scratch folder.
+- **How it reads.**
+  - The text helper is asked only for the pages that carry a text chunk, and only the ones `pages` names. It is asked in batches of 16, with 30 seconds and 1 MiB of output per page; a failed batch is retried page by page.
+  - Each page is written as `## Page N`, after the outline's headings for that page.
+  - A page with little or no text is listed in `low_yield_pages`, as a PDF's is.
+  - Reading stops at the extraction's output cap.
+  - The book's title, author, year and the rest come back as `metadata`.
+- **OCR of DjVu pages is not available yet.** An `ocr: auto|always` extract of a DjVu file reads the text layer only, and the file is never sent to a vision model as one picture.
+- **Known limit.** A whole large book still runs under the extraction's 60-second bound; read the first pages with `pages`.
+
 ## 9i. Speech — text-to-speech
 
 > **Speaks through the gateway.** `POST /v1/audio/speech` reads text aloud outside a run, for a chat client's read-aloud button; `docs/SPEECH.md` covers the route, its gate and the client methods. An agent's `File op=speak` arrives in a later release.
@@ -4445,7 +4478,7 @@ conversion:
 What `local` does:
 
 - The runtime listens on a Unix socket in a private directory (mode 0700) and starts `local.workers` copies of itself as `loomcycle worker`. Each child has `GOMEMLIMIT` set from `local.memory_limit_mb`, and on Linux raises its own `oom_score_adj` to 1000, so that in a shared cgroup the kernel kills a worker before the runtime. A child exits when the runtime does.
-- A child gets a minimal environment: `PATH`, `HOME`, the temp-directory and locale variables, its token, its memory limit, and the runtime's helper command lines (`transcription.ocr.rasterize.command`, `transcription.stt.media.command`, `speech.encode.command`, `LOOMCYCLE_RENDER_PDF_COMMAND`, `LOOMCYCLE_RENDER_DIAGRAM_COMMAND`, and `LOOMCYCLE_HELPER_WRAPPER`). It holds no provider key, no store connection and no setting of the runtime's, and it is never given a path. The runtime keeps every grant, fence and inbox write, and sends the worker only the file's bytes, which it spools to its own temp directory.
+- A child gets a minimal environment: `PATH`, `HOME`, the temp-directory and locale variables, its token, its memory limit, and the runtime's helper command lines (`transcription.ocr.rasterize.command`, `transcription.ocr.djvu.text.command`, `transcription.ocr.djvu.inspect.command`, `transcription.stt.media.command`, `speech.encode.command`, `LOOMCYCLE_RENDER_PDF_COMMAND`, `LOOMCYCLE_RENDER_DIAGRAM_COMMAND`, and `LOOMCYCLE_HELPER_WRAPPER`). It holds no provider key, no store connection and no setting of the runtime's, and it is never given a path. The runtime keeps every grant, fence and inbox write, and sends the worker only the file's bytes, which it spools to its own temp directory.
 - Everything that parses a file runs on the workers: `File op=extract`, the page cuts and page rendering of an OCR pass, the conversion of a recording for speech-to-text (the `File` tool and `/v1/audio/transcriptions`), the encoding of synthesized speech (`/v1/audio/speech`), the re-encoding of an image a vision model must have scaled, and the writing of a Document as a file (`File op=render` and the off-run export; a PDF is typeset by `LOOMCYCLE_WORKER_WRITE_COMMAND`, and ODT and EPUB go only to workers of a release that writes them), and the drawing of each Mermaid diagram in such a file as a picture (`LOOMCYCLE_WORKER_MERMAID_COMMAND`). The runtime still makes the model calls; a worker only converts.
 - A helper runs in the worker's scratch directory (`LOOMCYCLE_WORKER_SCRATCH`), not in the run's inbox, under the time bound the runtime sets for its job (`transcription.stt.timeout_s`, `speech.timeout_s`, two minutes for an OCR page). A `LOOMCYCLE_HELPER_WRAPPER` sandbox must keep that directory writable rather than the inbox root. A worker offers a helper's jobs only when the helper's program is found on its `PATH`; when no attached worker has it, the call is refused saying the program is not installed where the workers run. A change to a helper setting reaches the workers when they next start.
 - A worker that dies mid-job fails that one call, and the file is quarantined for `quarantine_ttl_s`: it is refused with "crashed the file converter" instead of being sent to the next worker. A dead child is started again with backoff (1 s, doubling to 30 s). With every worker busy, a call waits `queue_wait_s` and is then answered as a busy server the model may retry. With no worker attached at all, the call is refused. The runtime never falls back to converting in its own process.
@@ -4475,6 +4508,8 @@ The worker reads these variables. In `local` mode the runtime sets them for its 
 | `LOOMCYCLE_WORKER_SLOTS` | 1 | Conversions one worker runs at once, 1–64. One means a worker that dies takes exactly the job that killed it. |
 | `LOOMCYCLE_WORKER_SCRATCH` | the system temp directory | Where a worker spools each job's input and runs its helpers. Never shared with the runtime. |
 | `LOOMCYCLE_WORKER_RASTERIZE_COMMAND` | — | The OCR page rasteriser this worker runs, written as `transcription.ocr.rasterize.command`. Unset: the worker takes no page rendering. |
+| `LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND` | `djvutxt --detail=page --page={pages} {in}` when `djvutxt` is on `PATH` | The DjVu text-layer reader (RFC GV P3), written as `transcription.ocr.djvu.text.command`. Placeholders `{in}` (the DjVu file) and `{pages}` (the pages to read, as `1-3,7`); it must write one S-expression per page, as `djvutxt --detail=page` does. Unset and no `djvutxt`: the worker reads no DjVu and does not carry the `djvu` label. |
+| `LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND` | `djvused -e {script} {in}` when `djvused` is on `PATH` | The DjVu outline and metadata reader, written as `transcription.ocr.djvu.inspect.command`. `{script}` is always `print-outline` or `print-meta`, never text from a file or a caller. Unset and no `djvused`: DjVu is read without its outline and metadata. |
 | `LOOMCYCLE_WORKER_MEDIA_COMMAND` | — | The recording converter, written as `transcription.stt.media.command`. Unset: no media conversion. |
 | `LOOMCYCLE_WORKER_ENCODE_COMMAND` | — | The speech encoder, written as `speech.encode.command`. Unset: no encoding. |
 | `LOOMCYCLE_WORKER_WRITE_COMMAND` | `typst compile --root {dir} {in} {out}` when `typst` is on `PATH` | The PDF typesetter for `File op=render format: pdf` (RFC GR). Placeholders `{in}` (the Typst source), `{out}` (the PDF) and `{dir}` (the job folder). Unset and no `typst`: the worker takes no PDF renders. |
