@@ -102,7 +102,7 @@ type chunkRef struct {
 }
 
 func loadDocs(ctx context.Context, db *pgx.Conn, t func(string) string, d *Data) (map[string]chunkRef, error) {
-	rows, err := db.Query(ctx, `SELECT d.id, d.title, d.root_chunk_id, d.created_at, COALESCE(c.valid_at, 0)
+	rows, err := db.Query(ctx, `SELECT d.id, d.title, d.root_chunk_id, d.created_at, c.valid_at
 		FROM `+t("documents")+` d LEFT JOIN `+t("chunks")+` c ON c.id = d.root_chunk_id`)
 	if err != nil {
 		return nil, fmt.Errorf("documents: %w", err)

@@ -4571,6 +4571,21 @@ route), `hooks` or `tool_hooks` (on the team or on a state's handler), or a
 `definition_file`. A test holds every built-in unit to this. `local.schedules`
 is allowed. Your own config files carry no such limit.
 
+## 9p. Taxonomy node statistics (`memory.node_stats`)
+
+Keeps the statistics of each node of a tenant's taxonomy — every concept of every scheme and every document class — current in the background: member counts and, where the store keeps vectors, spread, exemplars, nearest siblings and distinctive terms. `Document op=node_stats` runs the same pass on demand whatever this block says; `describe_ontology with_stats` reads the result. See the Documents guide, "Node statistics".
+
+```yaml
+memory:
+  node_stats:
+    enabled: true   # default false: no sweeper starts, no lock is taken
+    interval: 6h    # how often the sweeper walks the tenant scopes; empty or 0 = no sweeper
+```
+
+- **Off by default.** On, the sweeper also needs a positive `interval` (a Go duration). A duration that does not parse stops the boot. There is no environment variable: the yaml block is the only source.
+- **What a pass does.** On one replica at a time, it walks every tenant scope that has document tables and a tenant ontology (others are skipped without being provisioned) and recomputes only the nodes whose inputs changed: a node's definition, its members, a member's annotation or the embed model. It makes no model call.
+- **Needs** SQL Memory. Without a vector index (Postgres with pgvector) and `memory.embedder` it keeps counts only.
+
 ## 10. Cross-references
 
 - [`loomcycle.example.yaml`](../loomcycle.example.yaml) — the repo-root reference yaml. All six user_tiers wired, inline comments on every section. Copy-paste and edit.

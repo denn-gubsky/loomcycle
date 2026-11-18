@@ -19,8 +19,9 @@ package builtin
 //
 // STALENESS. A row is recomputed when its inputs hash moves: the node's own
 // definition (kind, name, meaning line, tag or parent chain), its sorted member ids,
-// each member's annotation inputs_sha256, and the embed model. The ontology version
-// is not in it: it moves on every ontology edit and would mark every node stale. A
+// each member's annotation inputs_sha256, whether each member has a vector, and the
+// embed model. The ontology version is not in it: it moves on every ontology edit
+// and would mark every node stale. A
 // sibling's change does not mark a node stale either (RFC GM §3.2), so its siblings
 // and terms can be one pass behind; the sweeper's next pass after the sibling's own
 // recompute does not fix that, a definition or membership change of the node does.
@@ -69,7 +70,7 @@ const (
 
 	// nodeStatsHashVersion is the version of what the inputs hash covers: a change
 	// to the hashed form bumps it, which marks every row stale on purpose.
-	nodeStatsHashVersion = "node_stats/1"
+	nodeStatsHashVersion = "node_stats/2"
 	// nodeStatsVectorPage is the vectors read per store call (the store's cap).
 	nodeStatsVectorPage = 1000
 	// nodeStatsDocBatch is the document ids per IN list.
@@ -137,6 +138,8 @@ type nodeStatsPlan struct {
 	// model is the embed model a vector must be of, "" when the vector stage cannot
 	// run; note says why it cannot.
 	model, note string
+	// vecs is each member document's vector of model, read once per plan.
+	vecs map[string]nodestats.Vector
 }
 
 func nodeStatsKey(kind, id string) string { return kind + "\x00" + id }
@@ -152,6 +155,14 @@ func (p *nodeStatsPlan) nodeHash(n statNode) string {
 	fmt.Fprintf(h, "%s\n%s\n%s\nmodel %s\n", nodeStatsHashVersion, n.Kind, n.def, p.model)
 	for _, id := range n.members {
 		fmt.Fprintf(h, "%s\n", p.memberLine(id))
+	}
+	// Whether a member HAS a vector is an input too: the annotation row is written
+	// before its vector, and an embed can fail, so a row computed while a vector was
+	// missing must go stale when it arrives.
+	for _, id := range n.members {
+		if _, ok := p.vecs[id]; ok {
+			fmt.Fprintf(h, "vector %s\n", id)
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -237,6 +248,16 @@ func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, 
 	}
 	if err := d.loadStatDocs(ctx, key, sortedSet(all), p.docs); err != nil {
 		return nil, err
+	}
+	// The vectors are read here, not only when a pass computes: which members have
+	// one is part of every node's inputs hash. The memory tenant is the run
+	// identity's, as NodeStatsPass's tenant is (NodeStatsScopeKey stamps it).
+	if p.model != "" {
+		if _, err := d.loadNodeStatsVectors(ctx, key, direntTenant(ctx), p); errors.Is(err, store.ErrVectorUnsupported) {
+			p.model, p.note = "", "the store keeps no vectors (that needs Postgres with pgvector): only member counts are kept"
+		} else if err != nil {
+			return nil, err
+		}
 	}
 	if err := d.loadStoredNodeStats(ctx, key, p.stored); err != nil {
 		return nil, err
@@ -386,8 +407,12 @@ func (d *Document) loadStoredNodeStats(ctx context.Context, key sqlmem.ScopeKey,
 }
 
 // loadNodeStatsVectors reads the document-level annotation vector of each member
-// document's root, of model only. A vector of another model is no vector.
+// document's root, of model only. A vector of another model is no vector. Read
+// once per plan: a second call returns the first one's vectors.
 func (d *Document) loadNodeStatsVectors(ctx context.Context, key sqlmem.ScopeKey, tenant string, p *nodeStatsPlan) (map[string]nodestats.Vector, error) {
+	if p.vecs != nil {
+		return p.vecs, nil
+	}
 	docOfRoot := map[string]string{}
 	for id, sd := range p.docs {
 		docOfRoot[sd.root] = id
@@ -412,6 +437,7 @@ func (d *Document) loadNodeStatsVectors(ctx context.Context, key sqlmem.ScopeKey
 			}
 		}
 		if len(rows) < nodeStatsVectorPage {
+			p.vecs = out
 			return out, nil
 		}
 		after = rows[len(rows)-1].Key
@@ -494,8 +520,10 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 			"Run it as an operator, or from an agent whose rules let it read the whole tenant scope."), nil
 	}
 	read, ok := d.tenantOntologyRead(ctx)
-	if !ok {
-		return errBusiness(nodeStatsOp+": the tenant ontology could not be read", "Retry the call; a store fault is usually transient."), nil
+	if !ok || read.partial {
+		// A partial read can lose a whole scheme section: its nodes would read as
+		// removed and their rows be deleted as orphans.
+		return errBusiness(nodeStatsOp+": the tenant ontology could not be read completely", "Retry the call; a store fault is usually transient."), nil
 	}
 	if in.Scheme != "" && !schemeInForce(read, in.Scheme) {
 		return errValidation(fmt.Sprintf("%s: no scheme %q is in force", nodeStatsOp, in.Scheme),
@@ -892,6 +920,9 @@ func (d *Document) describeStats(ctx context.Context, key sqlmem.ScopeKey, acl *
 		k := nodeStatsKey(n.Kind, n.ID)
 		row, ok := p.stored[k]
 		if !ok {
+			if list != nil {
+				view[k] = &nodeStatsView{Withheld: nodeStatsWithheld}
+			}
 			continue
 		}
 		view[k] = p.statsView(n, row, list, names, titles)
@@ -909,16 +940,22 @@ func (d *Document) describeStats(ctx context.Context, key sqlmem.ScopeKey, acl *
 	}
 }
 
+// nodeStatsWithheld is the one answer a limited reader gets for a node whose
+// statistics it may not see. One message for every cause — a member it may not read,
+// a member set changed since the row was computed, no row — so the answer does not
+// say which: a cause of its own would name the nodes that hold a hidden document.
+const nodeStatsWithheld = "statistics are shown to a reader with access-control limits only when it may read every member and they were computed from the current members"
+
 // statsView is what list (nil = reads everything) may see of n's stored row.
 func (p *nodeStatsPlan) statsView(n statNode, row storedNodeStats, list *docReadList, names, titles map[string]string) *nodeStatsView {
 	if list != nil {
 		for _, id := range n.members {
 			if !list.readable(id) {
-				return &nodeStatsView{Withheld: "the statistics are computed from every member, and you may not read all of them"}
+				return &nodeStatsView{Withheld: nodeStatsWithheld}
 			}
 		}
 		if row.memberSHA != membersHash(n.members) {
-			return &nodeStatsView{Withheld: "the members changed since the statistics were computed; they are shown again after node_stats mode=compute"}
+			return &nodeStatsView{Withheld: nodeStatsWithheld}
 		}
 	}
 	v := &nodeStatsView{Members: &row.members, MembersWithVector: &row.withVector, Spread: row.spread,
@@ -932,6 +969,47 @@ func (p *nodeStatsPlan) statsView(n statNode, row storedNodeStats, list *docRead
 		}
 	}
 	return v
+}
+
+// NodeStatsScopeKey runs one compute pass over a tenant scope the sweeper found.
+// ran is false, and nothing is read or provisioned, for any other scope, for a
+// tenant scope whose document tables do not exist yet, and for a tenant with no
+// ontology document: there is no taxonomy to keep statistics of.
+//
+// The memory tenant is whichever spelling of the scope's tenant holds its
+// annotation vectors (bodyTenantsFor); the run identity carries it, so the
+// ontology read and the pass resolve the same tenant the op would.
+func (d *Document) NodeStatsScopeKey(ctx context.Context, key sqlmem.ScopeKey) (rep NodeStatsReport, ran bool, err error) {
+	if d.Store == nil || d.SqlMem == nil || key.Scope != "tenant" || key.ScopeID != key.Tenant {
+		return rep, false, nil
+	}
+	// A probe that never provisions: d.query would create the tables on a scope
+	// that holds only Memory SQL.
+	if !d.tableHasColumn(ctx, key, "documents", "id") {
+		return rep, false, nil
+	}
+	tenants := bodyTenantsFor(key.Tenant)
+	memTenant := tenants[len(tenants)-1]
+	if d.nodeStatsVectorsNote() == "" && len(tenants) > 1 {
+		scopeID := annotationMemScopeID(store.MemoryScopeTenant, key)
+		for _, t := range tenants {
+			page, lerr := d.Store.MemoryEmbedListVectors(ctx, t, store.MemoryScopeTenant, scopeID, annotationKeyPrefix, "", 1)
+			if lerr == nil && len(page) > 0 {
+				memTenant = t
+				break
+			}
+		}
+	}
+	ctx = tools.WithRunIdentity(ctx, tools.RunIdentityValue{TenantID: memTenant})
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok || read.partial {
+		return rep, false, fmt.Errorf("node_stats: the tenant ontology could not be read completely")
+	}
+	if read.DocumentID == "" {
+		return rep, false, nil
+	}
+	rep, err = d.NodeStatsPass(ctx, key, memTenant, read, "", true)
+	return rep, err == nil, err
 }
 
 func sortedSet(m map[string]bool) []string {

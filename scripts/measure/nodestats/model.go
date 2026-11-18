@@ -9,9 +9,10 @@ type Doc struct {
 	ID        string
 	Title     string
 	RootChunk string
-	// CreatedAt, RootValidAt: unix nanoseconds; RootValidAt 0 when unset.
+	// CreatedAt, RootValidAt: unix nanoseconds. RootValidAt is nil when the
+	// root chunk has no valid_at; 0 is a real date (1970-01-01), not unset.
 	CreatedAt   int64
-	RootValidAt int64
+	RootValidAt *int64
 	// SourceUpdatedAt is the root chunk's import provenance source_updated_at
 	// (RFC 3339), "" when absent.
 	SourceUpdatedAt string

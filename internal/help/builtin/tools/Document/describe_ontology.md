@@ -186,10 +186,13 @@ and each document class whose statistics `node_stats` has stored, `stats`:
   since.
 
 Without a vector store (Postgres with pgvector) a stored row has counts only.
-Statistics are drawn from every member, so they are shown only when you may
-read every member of the node: otherwise `stats` is `{withheld: <why>}` and the
-counts beside it are the documents you may read. A node with no stored row has
-no `stats`. Vectors and centroids are never returned.
+Statistics are drawn from every member, so a reader with access-control
+limits sees them only when it may read every member of the node and the stored
+row was computed from its current members. Otherwise — and for a node with no
+stored row — `stats` is `{withheld: <reason>}`, one reason for every cause, so
+it does not tell which; the counts beside it are the documents you may read.
+For a reader without limits a node with no stored row has no `stats`. Vectors
+and centroids are never returned.
 
 Beside `stats`, a concept or document class with a stored series (see
 `measure`) carries `series`: `{period, latest, count, share?, fallback_share,

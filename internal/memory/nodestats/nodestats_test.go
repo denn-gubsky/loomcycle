@@ -3,6 +3,7 @@ package nodestats
 import (
 	"errors"
 	"math"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -253,5 +254,28 @@ func TestShift_IsCosineDistanceBetweenCentroids(t *testing.T) {
 	c3, _ := CentroidOf([]Vector{{1, 0, 0}})
 	if _, err := Shift(a, c3); !errors.Is(err, ErrDimensionMismatch) {
 		t.Errorf("dimension: err = %v", err)
+	}
+}
+
+// Members that all point one way have spread 0, but the normalised mean can
+// round to a length just above 1; the spread must not then come out negative.
+func TestCentroid_SpreadOfIdenticalMembersIsNeverNegative(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 5))
+	for trial := 0; trial < 2000; trial++ {
+		v := make(Vector, 1+rng.IntN(64))
+		for d := range v {
+			v[d] = float32(rng.Float64()*2 - 1)
+		}
+		vs := make([]Vector, 1+rng.IntN(10))
+		for i := range vs {
+			vs[i] = v
+		}
+		c, err := CentroidOf(vs)
+		if err != nil {
+			continue
+		}
+		if s := c.Spread(); s < 0 || s >= 1 {
+			t.Fatalf("trial %d (dim %d, n %d): spread %g outside [0,1)", trial, len(v), len(vs), s)
+		}
 	}
 }

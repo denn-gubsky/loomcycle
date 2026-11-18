@@ -198,6 +198,11 @@ var (
 	// time: two concurrent refits of one scope would race for the same basis
 	// version. Its own key, like LockKeyDeadLinkGC, so neither starves the other.
 	LockKeyProjectionSweeper int64
+	// LockKeyNodeStatsSweeper gates the node statistics sweeper (RFC GM P2.1),
+	// which recomputes each tenant taxonomy's stale node rows. One replica at a
+	// time, so two replicas do not recompute the same nodes in the same tick. Its
+	// own key, so it neither starves nor is starved by the projection sweeper.
+	LockKeyNodeStatsSweeper int64
 )
 
 // TeamSubscriptionLockKey derives a team's subscription-sweep key from its
@@ -265,6 +270,7 @@ func init() {
 	LockKeyAuthGateSweeper = fnvKey("auth_gate_sweeper")
 	LockKeyAuthLifecycleSweeper = fnvKey("auth_lifecycle_sweeper")
 	LockKeyProjectionSweeper = fnvKey("projection_sweeper")
+	LockKeyNodeStatsSweeper = fnvKey("node_stats_sweeper")
 	LockKeyOntologyIdentityPass = fnvKey("ontology_identity_pass")
 }
 
