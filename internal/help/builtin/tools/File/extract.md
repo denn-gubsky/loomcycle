@@ -1,6 +1,6 @@
 ---
 name: File/extract
-description: "File op=extract — turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
+description: "File op=extract — turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, DjVu, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
 ---
 `extract` reads a document the runtime kept (or one in a volume you can Read)
 and writes its text as Markdown to `volume:inbox:extracted/<name>.md`. The
@@ -15,6 +15,7 @@ runtime does the reading; the file's bytes never pass through you.
 | PDF | `## Page N` per page, its text read row by row from the top; its JPEG and JPEG 2000 pictures after the text, copied as they are (pictures stored as raw pixels are left out and counted in `notes`) |
 | HTML | headings, paragraphs, lists and tables; an image becomes a link to where it points, nothing is fetched |
 | EPUB (2 and 3) | the book title as `#`, each chapter in spine order with its own headings one level down (a chapter with none takes its contents-list label), footnotes as `[n]` listed under Notes, the cover and pictures kept; items marked non-linear come last under Supplementary. A book with DRM (an `encryption.xml` that encrypts anything but fonts) is refused |
+| DjVu | its text layer, `## Page N` per page, after the book's outline headings; `pages` reads only those pages; a page with no text is listed in `low_yield_pages`. Read by DjVuLibre on a conversion worker, or in the server only where the operator configured it; OCR of DjVu pages is not available yet. A DjVu whose pages are separate files, or that includes other files, is refused |
 | CSV, TSV | one table |
 | text, Markdown | the text; Markdown keeps its structure, without raw HTML or embedded images |
 | PNG, JPEG, GIF, WebP, BMP | a one-section Markdown file that embeds the image |
