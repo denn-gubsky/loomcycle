@@ -486,6 +486,26 @@ func TestOntology_RetiredClassRefusesNewTypedWrites(t *testing.T) {
 	}
 }
 
+// TestOntology_RetiredInAnUnknownSectionRaisesNoIssue: an unknown section's entries are
+// not in force, so a live one under a retired one there is not reported.
+func TestOntology_RetiredInAnUnknownSectionRaisesNoIssue(t *testing.T) {
+	md := retiredOntologyMD + "\n## Questions\n@section questions\n\n### Who owns it\n\n#### Follow-up\n"
+	d, base, _ := documentFixture(t)
+	f := &retiredFixture{t: t, d: d, ctx: operatorCtx(installTenantOntology(t, d, base, md, memrank.OntologyConfirmedStatus))}
+	id := f.chunk("Who owns it")
+	if text := f.setStatus(f.ctx, id, memrank.OntologyStatusRetired); text != "" {
+		t.Fatal(text)
+	}
+	if text := f.setStatus(f.ctx, f.chunk("Follow-up"), ""); text != "" {
+		t.Fatal(text)
+	}
+	for _, iss := range f.read().Issues {
+		if strings.Contains(iss, "live under the retired") {
+			t.Errorf("an out-of-force entry was reported: %q", iss)
+		}
+	}
+}
+
 // TestOntologySchemes_RetiredEntryOnPostgres runs the retire cascade, the read and the
 // write refusals on the postgres tier.
 func TestOntologySchemes_RetiredEntryOnPostgres(t *testing.T) {

@@ -70,7 +70,9 @@ func retiredIssues(kids map[string][]ontologyChunk, rootID string, sectionOf map
 			issues = append(issues, "the section "+strconv.Quote(memrank.TrimOntologyName(c.title))+
 				" cannot be retired; its status is ignored")
 		}
-		if kind != memrank.SectionReview {
+		// Review rules are list items, and an unknown section's entries are not in force
+		// at all: neither holds entries a status could apply to.
+		if kind != memrank.SectionReview && kind != sectionOutOfForce {
 			walk(kids[c.id], "")
 		}
 	}
