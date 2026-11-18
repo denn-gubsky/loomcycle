@@ -49,7 +49,9 @@ print-outline) printf '(bookmarks ("Chapter From The Stand-in" "#1"))\n' ;;
 esac
 `
 	for name, body := range map[string]string{"djvutxt": txt, "djvused": sed} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+		// #nosec G306 -- a test helper's stand-in program under the test's temp
+		// dir: it must be executable, and only its owner may run it.
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
