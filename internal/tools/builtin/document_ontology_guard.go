@@ -124,6 +124,13 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 			}
 			self = existing
 		}
+		// The proposal marks are propose_entity's and import_scheme's to write: a forged
+		// one would be accepted as structured data an operator never saw filed, and would
+		// block the real filing as already proposed.
+		if mk := proposalMarkIn(in.Fields); mk != "" {
+			return refusal(errPermission("an agent may not write the "+mk+" mark into an ontology chunk's fields; "+
+				"file the proposal with op=propose_entity (or import_scheme), which writes it", ""))
+		}
 		// Held to propose_entity's rules (RFC GQ P2.1): nothing filed under a retired
 		// entry, and no proposal of a retired entry's name. Fails closed, like the rest.
 		r, err := d.retiredProposalRefusal(ctx, key, docID, self, in.ParentID, in.Title)
@@ -304,6 +311,9 @@ func (d *Document) documentIDForChunk(ctx context.Context, key sqlmem.ScopeKey, 
 // inverts the point. The tenant comes from the run's server-stamped identity, so nothing
 // here crosses a tenant.
 func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result, error) {
+	if wantsChange(in) {
+		return d.proposeChange(ctx, in) // RFC GQ P4.1: change or retire an entry in force
+	}
 	name := memrank.TrimOntologyName(in.Name)
 	if name == "" {
 		name = memrank.TrimOntologyName(in.Title)

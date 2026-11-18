@@ -4956,6 +4956,19 @@ export type DocumentToolInput = {
    *  as data and written as directives only when an operator accepts.
    *  import_scheme: origin is always "adopted". */
   header?: DocumentSchemeHeader;
+  /** propose_entity: propose a change to an entry in force instead of a new
+   *  one — "edit" (a new name, parent, meaning or directives) or "retire".
+   *  Inert until an operator accepts it (RFC GQ P4.1). */
+  change?: "edit" | "retire";
+  /** propose_entity with `change`: the in-force entry, by chunk id (or name,
+   *  or a concept's tag). */
+  entry?: string;
+  /** propose_entity change "edit": the entry's new meaning. */
+  meaning?: string;
+  /** propose_entity change "edit": the entry's complete new directive set —
+   *  a string, `true` for a flag, or a list for a repeated directive; `{}`
+   *  clears them. Never `locked`. */
+  directives?: Record<string, string | boolean | string[]>;
   /** import_scheme: a SKOS concept scheme in RDF/XML (at most 2 MB); pass this
    *  or `markdown`. `language` picks the labels, `scheme` one ConceptScheme of
    *  several. */

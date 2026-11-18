@@ -16,6 +16,7 @@ import {
   type RelationNode,
 } from "../lib/ontologySections";
 import { proposedOutlineText } from "../lib/ontologyProposedScheme";
+import { proposedChangeText } from "../lib/ontologyProposedChange";
 import {
   OntologyProposal,
   ProposedSchemeView,
@@ -707,11 +708,21 @@ export default function OntologySection() {
                     {/* The evidence, so the operator judges a case and not a name. */}
                     {p.body && <pre className="ontology-evidence">{p.body.trim()}</pre>}
                     {p.scheme && <ProposedSchemeDetail scheme={p.scheme} />}
+                    {p.change && <pre className="ontology-evidence">{proposedChangeText(p.change)}</pre>}
+                    {/* Accepting a change proposal applies it to the entry it names (RFC GQ
+                        P4.2, not built yet); the route refuses it, so it is not offered. */}
+                    {decides && p.change && (
+                      <p className="settings-muted">
+                        Accepting a change comes in a later release — reject it, or make the change in
+                        the document editor.
+                      </p>
+                    )}
                     {decides && (
                       <div className="settings-row-actions">
                         <button
                           type="button"
                           disabled={busy}
+                          hidden={!!p.change}
                           onClick={() => void resolveProposal(p.chunk_id, "accept")}
                         >
                           accept
@@ -820,6 +831,9 @@ export default function OntologySection() {
 // proposalKind names what a suggestion would become, so a relation kind is not judged
 // as if it were an entity type.
 function proposalKind(p: OntologyProposal): string {
+  if (p.change) {
+    return `${p.change.op === "retire" ? "retirement" : "change"} of the ${p.change.kind} ${p.change.target_name}`;
+  }
   if (p.scheme) {
     const n = p.scheme.concepts;
     return `scheme of ${n} concept${n === 1 ? "" : "s"}`;

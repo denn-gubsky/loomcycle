@@ -859,6 +859,47 @@ type OntologyProposal struct {
 	// Scheme is set on a proposal of a WHOLE scheme (RFC GM P3.1): the header and the
 	// concept tree accepting it would put in force. nil on every other proposal.
 	Scheme *ProposedSchemeView `json:"scheme,omitempty"`
+	// Change is set on a proposal to change or retire an entry in force (RFC GQ P4.1):
+	// what accepting it would do to that entry. nil on every other proposal.
+	Change *ProposedChange `json:"change,omitempty"`
+}
+
+// The operations of a change proposal (RFC GQ 4.4).
+const (
+	ChangeOpEdit   = "edit"
+	ChangeOpRetire = "retire"
+)
+
+// ProposedChange is a proposal to change or retire one entry in force (RFC GQ P4.1).
+// It is stored, as is, in the proposal chunk's fields under the change_proposal mark
+// and shown to the reviewer; nothing in it is in force until an operator accepts it.
+//
+// An edit carries only what it changes. Name and Parent (a chunk id) are absent when
+// kept; Meaning is the new meaning, its directive lines quoted, absent when kept.
+// Directives, when SetsDirectives is true, is the entry's COMPLETE new directive set,
+// each validated by its section's parser when filed and again when accepted (D12); an
+// empty set with SetsDirectives clears them. A retire carries only its target.
+type ProposedChange struct {
+	Op string `json:"op"`
+	// Target is the entry's chunk id, kept by accepting (D1). TargetName, Section and
+	// Kind (class, relation, scheme, concept, instance) are as filed.
+	Target         string              `json:"target"`
+	TargetName     string              `json:"target_name"`
+	Section        string              `json:"section"`
+	Kind           string              `json:"kind"`
+	Name           string              `json:"name,omitempty"`
+	Parent         string              `json:"parent,omitempty"`
+	ParentName     string              `json:"parent_name,omitempty"`
+	Meaning        string              `json:"meaning,omitempty"`
+	SetsDirectives bool                `json:"sets_directives,omitempty"`
+	Directives     []ProposedDirective `json:"directives,omitempty"`
+}
+
+// ProposedDirective is one directive of a change proposal: @Name Value, Value "" for a
+// flag such as @symmetric. A directive that may repeat (@alt) is several of these.
+type ProposedDirective struct {
+	Name  string `json:"name"`
+	Value string `json:"value,omitempty"`
 }
 
 // TrimOntologyName normalises a heading line or a chunk title into an entity name.

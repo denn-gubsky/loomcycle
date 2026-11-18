@@ -3682,6 +3682,25 @@ export interface OntologyProposal {
   section?: string;
   /** Set on a proposal of a WHOLE scheme (RFC GM P3.1): what accepting puts in force. */
   scheme?: ProposedSchemeView;
+  /** Set on a proposal to change or retire an entry in force (RFC GQ P4.1). */
+  change?: ProposedChange;
+}
+
+/** What a change or retire proposal would do to the entry it names (RFC GQ P4.1). */
+export interface ProposedChange {
+  op: "edit" | "retire";
+  /** The entry's chunk id, its name as filed, its section and kind. */
+  target: string;
+  target_name: string;
+  section: string;
+  kind: string;
+  name?: string;
+  parent?: string;
+  parent_name?: string;
+  meaning?: string;
+  /** When true, directives is the entry's complete new directive set. */
+  sets_directives?: boolean;
+  directives?: { name: string; value?: string }[];
 }
 
 /** A whole-scheme proposal's header and concept outline. */
