@@ -107,6 +107,9 @@ type Doc struct {
 	// into the file so that File op=import of it can re-import onto the same
 	// document (RFC GR P4b, D21). Off unless the caller asks.
 	Embed *Embed `json:"embed,omitempty"`
+	// Style is the tenant's house style the file is written in (RFC GR
+	// P4c); nil is the built-in look.
+	Style *Style `json:"style,omitempty"`
 }
 
 // EmbedVersion is the version of the embedded record's shape.

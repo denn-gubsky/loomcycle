@@ -17,6 +17,7 @@ func Write(ctx context.Context, w io.Writer, d *Doc, format string, opts Options
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	opts = withStylePage(d, opts)
 	switch format {
 	case FormatMarkdown:
 		return writeMarkdown(ctx, w, d, opts)
@@ -191,6 +192,11 @@ func checkDoc(d *Doc) error {
 	if err := checkEmbed(d.Embed); err != nil {
 		return err
 	}
+	if d.Style != nil {
+		if err := d.Style.check(); err != nil {
+			return fmt.Errorf("%w: %v", ErrBadBundle, err)
+		}
+	}
 	sections := 0
 	var nodes func(ns []Node, depth int) error
 	nodes = func(ns []Node, depth int) error {
@@ -312,4 +318,13 @@ func checkEmbed(e *Embed) error {
 		}
 	}
 	return nil
+}
+
+// withStylePage gives the paged formats the style's page size when the call
+// set none (§12.1: the call's own page_size wins).
+func withStylePage(d *Doc, opts Options) Options {
+	if d.Style != nil {
+		opts.PageSize = d.Style.PageSize(opts.PageSize)
+	}
+	return opts
 }

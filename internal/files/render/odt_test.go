@@ -185,7 +185,16 @@ func TestODT_OpensInLibreOffice(t *testing.T) {
 		t.Skip("soffice not installed")
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "fixture.odt"), write(t, embedDoc(t), FormatODT, Options{TOC: true, TitlePage: true}), 0o600); err != nil {
+	// Styled and carrying a record: the master page's header, footer and
+	// page number, and the record file, must all open.
+	d := embedDoc(t)
+	st, err := ParseStyle(fullStyle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Logo = d.Images[0].Name
+	d.Style = st
+	if err := os.WriteFile(filepath.Join(dir, "fixture.odt"), write(t, d, FormatODT, Options{TOC: true, TitlePage: true}), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
