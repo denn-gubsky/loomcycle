@@ -258,6 +258,12 @@ func TestPlanOntology_SameRefusalOnEveryTransport(t *testing.T) {
 		{"no such entry", operator, []connector.OntologyChange{{Op: "retire", Entry: "no-such-chunk"}}, "entry_not_found"},
 		{"over the bound", operator, []connector.OntologyChange{{Op: "edit", Entry: f.provision,
 			Body: strings.Repeat("a", connector.OntologyPlanMaxRequestBytes)}}, "invalid_body"},
+		// Each body is within the Document's 32 KiB, and the two are under the
+		// bound as protobuf (one byte a quote) but over it as JSON (two): the
+		// bound is the JSON size on every transport, so gRPC refuses it too.
+		{"over the bound as JSON only", operator, []connector.OntologyChange{
+			{Op: "edit", Entry: f.provision, Body: strings.Repeat(`"`, 20000)},
+			{Op: "edit", Entry: f.article, Body: strings.Repeat(`"`, 20000)}}, "invalid_body"},
 	}
 	for _, s := range planSurfaces {
 		for _, c := range cases {

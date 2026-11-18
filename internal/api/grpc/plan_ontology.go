@@ -5,14 +5,16 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"math"
 	"strconv"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/denn-gubsky/loomcycle/internal/api/grpc/loomcyclepb"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
@@ -23,22 +25,42 @@ func (s *Server) PlanOntology(ctx context.Context, req *loomcyclepb.PlanOntology
 	if s.connector == nil {
 		return nil, status.Error(codes.Unimplemented, "PlanOntology requires a connector; this Server was constructed without one")
 	}
-	// HTTP's body bound, so this transport accepts no larger plan than HTTP does.
-	if n := proto.Size(req); n > connector.OntologyPlanMaxRequestBytes {
-		return nil, statusWithReason(codes.InvalidArgument, "invalid_body",
-			"the plan request is "+strconv.Itoa(n)+" bytes; at most "+strconv.Itoa(connector.OntologyPlanMaxRequestBytes))
-	}
 	changes := make([]connector.OntologyChange, 0, len(req.GetChanges()))
 	for _, c := range req.GetChanges() {
 		changes = append(changes, connector.OntologyChange{
 			Op: c.GetOp(), Entry: c.GetEntry(), Name: c.GetName(), Parent: c.GetParent(), Body: c.GetBody(),
 		})
 	}
+	// HTTP's body bound, measured on the JSON HTTP would carry: protobuf writes a
+	// quote or a newline in one byte where JSON writes two, so bounding the proto
+	// size would accept a plan HTTP and MCP refuse.
+	if n := planJSONSize(req.GetTenant(), changes); n > connector.OntologyPlanMaxRequestBytes {
+		return nil, statusWithReason(codes.InvalidArgument, "invalid_body",
+			"the plan request is "+strconv.Itoa(n)+" bytes as JSON; at most "+strconv.Itoa(connector.OntologyPlanMaxRequestBytes))
+	}
 	res, err := s.connector.PlanOntology(ctx, connector.PlanOntologyRequest{Tenant: req.GetTenant(), Changes: changes})
 	if err != nil {
 		return nil, planOntologyErrToStatus(err)
 	}
 	return planOntologyToProto(res), nil
+}
+
+// planJSONSize is the length of {"changes": [...]} as compact JSON, plus the
+// tenant (HTTP carries it in the query). HTML characters are not escaped: a
+// client need not escape them, so counting \u003c for '<' would refuse a plan
+// HTTP accepts.
+func planJSONSize(tenant string, changes []connector.OntologyChange) int {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(struct {
+		Changes []connector.OntologyChange `json:"changes"`
+	}{changes}); err != nil {
+		// Strings and a slice of them always encode; a failure would be a bug,
+		// and the size it cannot report is then not under the bound.
+		return math.MaxInt
+	}
+	return buf.Len() - 1 + len(tenant) // Encode appends a newline
 }
 
 func planOntologyToProto(res connector.PlanOntologyResult) *loomcyclepb.PlanOntologyResponse {
