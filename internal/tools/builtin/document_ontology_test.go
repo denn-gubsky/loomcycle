@@ -344,6 +344,56 @@ func TestSubtypeExpansion_QueryChunksMatchesSubclasses(t *testing.T) {
 	}
 }
 
+// TestSubtypeExpansion_QueryDocumentsListsSubclassDocuments: query_documents'
+// type filter means what search's and query_chunks' does. Measured: a walker
+// listing a kind by type got the documents typed exactly that and none of the
+// more specific kind beside them, and still called its listing complete.
+func TestSubtypeExpansion_QueryDocumentsListsSubclassDocuments(t *testing.T) {
+	d, ctx := ontologyRetrievalFixture(t, true)
+	for _, c := range []struct{ title, typ string }{
+		{"Outage review", "outage"},
+		{"Incident review", "incident"},
+		{"All-hands notes", "event"},
+		{"Ada", "person"},
+	} {
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_document","scope":"user","title":%q,"type":%q,"body":"x"}`, c.title, c.typ)); r.IsError {
+			t.Fatalf("create_document %s: %s", c.typ, r.Text)
+		}
+	}
+	listed := func(typ string) (map[string]bool, map[string]any) {
+		out, r := docExec(t, d, ctx, `{"op":"query_documents","scope":"user","type":"`+typ+`"}`)
+		if r.IsError {
+			t.Fatalf("query_documents: %s", r.Text)
+		}
+		got := map[string]bool{}
+		rows, _ := out["documents"].([]any)
+		for _, row := range rows {
+			m, _ := row.(map[string]any)
+			got[fmt.Sprint(m["title"])] = true
+		}
+		return got, out
+	}
+	got, out := listed("event")
+	for _, want := range []string{"Outage review", "Incident review", "All-hands notes"} {
+		if !got[want] {
+			t.Errorf("type=event did not list %q — have %v", want, got)
+		}
+	}
+	if got["Ada"] {
+		t.Error("type=event listed a document of an unrelated root type")
+	}
+	if exp, _ := out["type_expanded_to"].([]any); len(exp) != 3 || exp[0] != "event" {
+		t.Errorf("type_expanded_to = %v, want the three-type chain, event first", out["type_expanded_to"])
+	}
+	leaf, lout := listed("outage")
+	if len(leaf) != 1 || !leaf["Outage review"] {
+		t.Errorf("type=outage should list only itself, got %v", leaf)
+	}
+	if _, reported := lout["type_expanded_to"]; reported {
+		t.Error("a leaf type must not report an expansion")
+	}
+}
+
 // TestSubtypeExpansion_DraftOntologyDoesNotWidenRetrieval.
 //
 // A draft ontology is inert on every other surface by design. Retrieval must not be

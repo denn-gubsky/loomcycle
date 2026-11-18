@@ -170,7 +170,7 @@ const documentInputSchema = `{
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent. Empty moves the chunk directly under the document's title (the root chunk)."},
 		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
 		"direction":   {"type": "string", "enum": ["up","down","pull","push","out","in","both"], "description": "get_edges: out (statements leaving the document), in (arriving) or both (default). graph_recall: follow relations out of (out), into (in) or both ways from (both, default) each chunk. reorder_chunk: move the chunk up or down within its current level. sync: pull (default) copies the peer document's keyed chunks into this one; push writes this document's keyed chunks up to the peer (reconciled by natural_key, carrying body/tags/hierarchy/manual-links; the losing side keeps the overwritten body in its history)."},
-		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type. On list_facts, query_chunks, search and related the filter INCLUDES SUBTYPES — asking for a general type also returns the more specific kinds of it, so filter by the broadest type that still answers your question. The response reports type_expanded_to when this widened the filter."},
+		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type. On list_facts, query_chunks, query_documents, search and related the filter INCLUDES SUBTYPES — asking for a general type also returns the more specific kinds of it, so filter by the broadest type that still answers your question. The response reports type_expanded_to when this widened the filter."},
 		"types":       {"type": "array", "items": {"type": "string"}, "description": "search / related: return only chunks of any of these types, each including its subtypes (with type, the union of both). graph_snapshot: documents of these types (the root chunk's), subtypes included."},
 		"body":        {"type": "string", "description": "Markdown body."},
 		"seed_ids":  {"type": "array", "items": {"type": "string"}, "description": "graph_recall: chunk ids to start from. Use this to hand in results you already found some other way (a Memory search, a previous recall) and follow the graph out from them."},
@@ -7078,9 +7078,18 @@ func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in d
 		where += " AND id IN (" + ph + ")"
 		args = append(args, pargs...)
 	}
+	// The type filter includes subtypes, as on search and query_chunks: one
+	// filter means one thing on every op. Measured: a listing by type missed
+	// every document of a more specific kind and was still called complete.
+	var typeExpansion []string
 	if in.Type != "" {
-		where += " AND type = ?"
-		args = append(args, in.Type)
+		typeExpansion = d.expandTypeFilter(ctx, in.Type)
+		if len(typeExpansion) == 0 {
+			typeExpansion = []string{in.Type}
+		}
+		frag, targs := typeFilterSQL("type", typeExpansion)
+		where += " AND " + frag
+		args = append(args, targs...)
 	}
 	if in.Status != "" {
 		where += " AND status = ?"
@@ -7121,7 +7130,7 @@ func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in d
 		if err != nil {
 			return errFrom("query_documents: "+err.Error(), err), nil
 		}
-		return queryDocumentsAnswer(res.Columns, res.Rows)
+		return queryDocumentsAnswer(res.Columns, res.Rows, typeExpansion)
 	}
 	// A floor, so a small limit among many hidden documents is not a query per row.
 	batch := max(limit, 100)
@@ -7159,7 +7168,7 @@ func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in d
 		}
 		after = res.Rows[len(res.Rows)-1]
 	}
-	return queryDocumentsAnswer(columns, rows)
+	return queryDocumentsAnswer(columns, rows, typeExpansion)
 }
 
 // escapeLike escapes LIKE's wildcards (and esc itself) in s, for a pattern
@@ -7175,8 +7184,9 @@ func escapeLike(s string, esc rune) string {
 	return b.String()
 }
 
-// queryDocumentsAnswer renders query_documents' rows.
-func queryDocumentsAnswer(columns []string, rows [][]any) (tools.Result, error) {
+// queryDocumentsAnswer renders query_documents' rows, and type_expanded_to
+// when the type filter that ran was wider than the one asked for.
+func queryDocumentsAnswer(columns []string, rows [][]any, typeExpansion []string) (tools.Result, error) {
 	docs := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
 		m := map[string]any{}
@@ -7200,7 +7210,11 @@ func queryDocumentsAnswer(columns []string, rows [][]any) (tools.Result, error) 
 		}
 		docs = append(docs, entry)
 	}
-	return jsonResult(map[string]any{"documents": docs})
+	out := map[string]any{"documents": docs}
+	if len(typeExpansion) > 1 {
+		out["type_expanded_to"] = typeExpansion
+	}
+	return jsonResult(out)
 }
 
 // --- change events ---
