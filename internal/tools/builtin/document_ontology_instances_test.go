@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlite"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -169,8 +170,16 @@ func TestAdoptInstances_ARenameKeepsTheKeyAndARemovalErasesNothing(t *testing.T)
 		acmeChunk, int(g["revision"].(float64)))); r.IsError {
 		t.Fatal(r.Text)
 	}
-	if _, r := docExec(t, d, ctx, `{"op":"delete_chunk","scope":"tenant","id":"`+headChunk+`"}`); r.IsError {
-		t.Fatal(r.Text)
+	// An adopted instance has a subject resting on it, so delete_chunk now refuses it
+	// (RFC GQ D3: retire it instead). An instance removed before that rule, or by a
+	// build without it, is still reported orphaned and its subject kept: the removal
+	// is made here the way such a build made it.
+	if _, r := docExec(t, d, ctx, `{"op":"delete_chunk","scope":"tenant","id":"`+headChunk+`"}`); !r.IsError ||
+		!strings.Contains(r.Text, entryHasDependentsCode) {
+		t.Fatalf("delete_chunk of an adopted instance = %q, want it refused", r.Text)
+	}
+	if _, err := d.cascadeDeleteChunks(ctx, key, store.MemoryScopeTenant, []string{headChunk}); err != nil {
+		t.Fatal(err)
 	}
 
 	rep, err := d.AdoptInstances(ctx, false)

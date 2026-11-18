@@ -49,12 +49,24 @@ func (d *Document) PruneRetiredChunks(ctx context.Context, key sqlmem.ScopeKey, 
 	// ensureSchema runs. Creating it here would provision a table for every scope
 	// the sweeper walks past, so the query is attempted and a missing-table error is
 	// reported as "nothing to prune" rather than as a fault.
-	res, err := d.query(ctx, key,
-		`SELECT chunk_id FROM chunk_memory_meta
+	stmt := `SELECT chunk_id FROM chunk_memory_meta
 		  WHERE (invalid_at IS NOT NULL OR expired_at IS NOT NULL)
 		    AND COALESCE(expired_at, invalid_at) < ?
-		    AND (class IS NULL OR class <> ?)`,
-		cutoff, EvidentialClass)
+		    AND (class IS NULL OR class <> ?)`
+	args := []any{cutoff, EvidentialClass}
+	// RFC GQ D3: no chunk of the tenant ontology, whatever closed it — this cascade is
+	// unguarded. Not knowing which document that is prunes nothing in the scope.
+	if key.Scope == "tenant" {
+		ontID, oerr := d.resolveOntologyID(noWrites(ctx), key)
+		if oerr != nil {
+			return 0, fmt.Errorf("document prune: could not tell which document is the tenant ontology: %w", oerr)
+		}
+		if ontID != "" {
+			stmt += ` AND chunk_id NOT IN (SELECT id FROM chunks WHERE document_id = ?)`
+			args = append(args, ontID)
+		}
+	}
+	res, err := d.query(ctx, key, stmt, args...)
 	if err != nil {
 		return 0, nil
 	}

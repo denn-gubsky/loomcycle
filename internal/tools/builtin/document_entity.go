@@ -22,6 +22,7 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -965,6 +966,9 @@ func (d *Document) supersedeChunk(ctx context.Context, key sqlmem.ScopeKey, in d
 	}
 
 	now, _, txErr := d.retireChunk(ctx, key, in.SupersedesID, in.ID)
+	if errors.Is(txErr, errOntologyChunkClosed) {
+		return errBusiness("supersede_chunk: "+txErr.Error(), "Supersede facts, not ontology entries."), nil
+	}
 	if txErr != nil {
 		return errFrom("supersede_chunk: "+txErr.Error(), txErr), nil
 	}
@@ -986,6 +990,10 @@ func (d *Document) supersedeChunk(ctx context.Context, key sqlmem.ScopeKey, in d
 // closed; it simply carries no `supersedes` edge, which is honest: an edge to
 // nothing would assert a replacement that does not exist.
 func (d *Document) retireChunk(ctx context.Context, key sqlmem.ScopeKey, retiredID, replacementID string) (int64, string, error) {
+	// RFC GQ D3: an ontology chunk is never closed, or the retention prune deletes it.
+	if err := d.ontologyCloseRefusal(ctx, key, retiredID); err != nil {
+		return 0, "", err
+	}
 	// IDEMPOTENCE BELONGS TO THE WRITER, not to each caller. These retirements are
 	// driven by a background consolidator that retries after a partial failure, and
 	// a retry that reports failure for work already done is indistinguishable from

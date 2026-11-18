@@ -3634,6 +3634,8 @@ export interface OntologyTerm {
   inherited_directives?: Record<string, string>;
   /** Advisories about this class's declarations; the class stays in force. */
   issues?: string[];
+  /** "retired" (RFC GQ): kept for reads, offered for no new write; absent when live. */
+  entry_status?: "retired";
 }
 
 /** One typed field of a class (RFC FO). */
@@ -3751,6 +3753,8 @@ export interface OntologyConcept {
   meaning?: string;
   chunk_id?: string;
   issues?: string[];
+  /** "retired" (RFC GQ): kept for reads, offered for no new write; absent when live. */
+  entry_status?: "retired";
 }
 
 /** One concept scheme (RFC FO P1c). */
@@ -3762,6 +3766,8 @@ export interface OntologyScheme {
   concepts?: OntologyConcept[];
   chunk_id?: string;
   issues?: string[];
+  /** "retired" (RFC GQ): kept for reads, offered for no new write; absent when live. */
+  entry_status?: "retired";
 }
 
 /** One instance's adoption state (RFC FO P1c-2). */
@@ -3770,7 +3776,8 @@ export interface OntologyInstanceState {
   class?: string;
   /** The registry key — the same key the memory tier files facts about it under. */
   key?: string;
-  state: "pending" | "adopted" | "linked" | "renamed" | "unchanged" | "error";
+  /** retired: the instance is retired, its subject kept; skipped: its class is retired (RFC GQ P2.1). */
+  state: "pending" | "adopted" | "linked" | "renamed" | "unchanged" | "error" | "retired" | "skipped";
   note?: string;
 }
 
@@ -3812,6 +3819,8 @@ export interface OntologyRelation {
   issues?: string[];
   name_issue?: string;
   chunk_id?: string;
+  /** "retired" (RFC GQ): kept for reads, offered for no new write; absent when live. */
+  entry_status?: "retired";
 }
 
 export interface OntologyResponse {
@@ -3872,6 +3881,31 @@ export interface OntologyResponse {
   instances?: OntologyInstanceReport;
   /** What adoption did, on the confirm that ran it. */
   instance_adoption?: OntologyInstanceReport;
+  // RFC GQ P2.2 — the chunk of each tenant class and instance, by name as declared;
+  // relations, schemes and concepts carry their own chunk_id.
+  class_chunks?: Record<string, string>;
+  instance_chunks?: Record<string, string>;
+}
+
+/**
+ * Retire an ontology entry (RFC GQ D3, D4): its status becomes `retired`, which the
+ * runtime carries to its subtree. What rests on it is kept and readable; no new write
+ * may use it. The operator's update_chunk, at the chunk's current revision.
+ */
+export async function retireOntologyEntry(chunkId: string): Promise<OntologyResponse> {
+  const chunk = await documentGetChunk(chunkId, "tenant");
+  await documentUpdateChunk(chunkId, chunk.revision, { status: "retired" }, "tenant");
+  return getOntology();
+}
+
+/**
+ * Delete an ontology entry. The runtime refuses it (entry_has_dependents, naming the
+ * counts) while anything rests on the entry or its subtree, for every caller; the
+ * refusal is thrown with the server's message.
+ */
+export async function deleteOntologyEntry(chunkId: string): Promise<OntologyResponse> {
+  await substratePost("/v1/_document", { op: "delete_chunk", id: chunkId, scope: "tenant" });
+  return getOntology();
 }
 
 /** Accept (put in force, in place) or reject (keep as a tombstone) a proposal. */

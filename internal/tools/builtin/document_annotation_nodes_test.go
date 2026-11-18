@@ -294,7 +294,12 @@ func TestNodeAnnotation_DeleteReachesARecordWhoseNodeIsNoLongerInForce(t *testin
 		retire func(t *testing.T, d *Document, k *statsCorpus)
 	}{
 		{"concept rejected", func(t *testing.T, d *Document, k *statsCorpus) {
-			setStatus(t, d, k.f.operator, k.law, memrank.OntologyStatusRejected)
+			// update_chunk now refuses demoting an in-force concept (RFC GQ D3: retire
+			// instead); a concept rejected by an earlier build is written directly.
+			if err := d.exec(k.f.operator, mustTenantKey(t, d, k.f.operator), `UPDATE chunks SET status = ? WHERE id = ?`,
+				memrank.OntologyStatusRejected, k.law); err != nil {
+				t.Fatal(err)
+			}
 		}},
 		{"ontology back to draft", func(t *testing.T, d *Document, k *statsCorpus) {
 			read, _ := d.tenantOntologyRead(k.f.operator)
