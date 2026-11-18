@@ -42,7 +42,7 @@ func TestKbAsk_DatedQuestionRoutesToTheWalkerWithoutAClassifier(t *testing.T) {
 				if pr, _ := f.inputs[0]["prompt"].(string); !strings.Contains(pr, "\n\nDATED. ") || !strings.Contains(pr, "created_after") {
 					t.Errorf("the walker's prompt lacks the dated note:\n%s", pr)
 				}
-				if !strings.HasPrefix(out, askWalkerAnswer+"\n\nROUTE:") {
+				if !strings.HasPrefix(out, askWalkerReturned+"\n\nROUTE:") {
 					t.Errorf("want the walker's answer:\n%s", out)
 				}
 			})

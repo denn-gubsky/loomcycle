@@ -5851,7 +5851,9 @@ agents:
       //      skipped, failed or absent).
       //    A walk that gives no answer keeps the search's.
       // 4. The answer is the chosen agent's, without kb/search's COVERAGE line
-      //    (kb/survey's COVERAGE line, computed by its code, stays), followed by
+      //    (kb/survey's COVERAGE line, computed by its code, stays), and without
+      //    a walker's MOVES, MISSING and COMPOSE lines or any sentence about
+      //    them (walkerText, on the dated route and after a search), followed by
       //    one line:
       //    ROUTE: <route> | SCORE: <score or none> | CLASSIFIER: <source> | RUNS: <run:status, ...>
       //    followed by " | DEPTH: <quick|deep> (<caller|wording>)" when the
@@ -6088,6 +6090,76 @@ agents:
 
       var ANSWER = "Answer the question given as untrusted input.";
 
+      // ---- the walker's protocol lines ----
+      // plain, walkLine, PROTOCOL, sentences and withoutProtocolTalk are
+      // kb/survey's, copied exactly: two code agents share no code.
+      // TestKbAsk_ProtocolStripMirrorsKbSurvey pins the copies as identical.
+
+      // plain takes out the Markdown a model puts around a line: bold, italics,
+      // backticks, a quote or list marker.
+      function plain(line) {
+        return String(line).replace(/[*_`]/g, "").replace(/^[\s>\-+]+/, "").replace(/\s+$/, "");
+      }
+
+      // walkLine: a walker's MOVES or MISSING line, about its own walk and not
+      // the knowledge base; or a COMPOSE line, the composing round echoing
+      // its own block.
+      function walkLine(line) {
+        return /^(MOVES|MISSING|COMPOSE)\s*[:.]/i.test(plain(line));
+      }
+
+      // PROTOCOL: a word of the rounds' own protocol, written as one (in
+      // capitals). In ordinary prose these are lower-case words ("nothing is
+      // missing", "it fits"), and those stay.
+      var PROTOCOL = /\b(?:MOVES|MISSING|COMPOSE|FITS|SET[\s-]*ASIDE)\b/;
+
+      // sentences cuts a line after each ".", "!", "?" or "…" that a space or
+      // the line's end follows; the pieces joined give the line back.
+      function sentences(s) {
+        var out = [], from = 0;
+        for (var i = 0; i < s.length; i++) {
+          if (/[.!?\u2026]/.test(s.charAt(i)) && (i + 1 === s.length || /\s/.test(s.charAt(i + 1)))) {
+            out.push(s.slice(from, i + 1));
+            from = i + 1;
+          }
+        }
+        if (from < s.length) { out.push(s.slice(from)); }
+        return out;
+      }
+
+      // withoutProtocolTalk drops each sentence of a line that talks about
+      // the protocol: one naming a PROTOCOL word outside a link (measured: "I've
+      // omitted the MOVES and MISSING lines as instructed", on a line of its
+      // own and as a list item). A sentence holding a loom: link cites a
+      // document and stays. Returns the rest of the line, or null when nothing
+      // but its list or quote marker and markup is left.
+      function withoutProtocolTalk(line) {
+        var bare = function (t) { return t.replace(/\[[^\]]*\]\([^)]*\)/g, " "); };
+        if (!PROTOCOL.test(bare(line))) { return line; }
+        var lead = /^\s*(?:[-*+>]|\d+[.)])?\s*/.exec(line)[0];
+        var parts = sentences(line.slice(lead.length)), keep = [];
+        for (var i = 0; i < parts.length; i++) {
+          if (/loom:(doc|chunk)\//.test(parts[i]) || !PROTOCOL.test(bare(parts[i]))) { keep.push(parts[i]); }
+        }
+        var rest = keep.join("").replace(/^\s+|\s+$/g, "");
+        return rest.replace(/[\s*_`>()\[\]:.\u2026-]/g, "") === "" ? null : lead + rest;
+      }
+
+      // walkerText is a walker's answer as kb/ask returns it: its MOVES,
+      // MISSING and COMPOSE lines, and every sentence about the protocol,
+      // taken out (measured: a walker wrote "I've omitted the MOVES and
+      // MISSING lines" into its answer). Links, ordinary prose and its
+      // COVERAGE line stay.
+      function walkerText(text) {
+        var lines = String(text || "").split("\n"), keep = [];
+        for (var i = 0; i < lines.length; i++) {
+          if (walkLine(lines[i])) { continue; }
+          var rest = withoutProtocolTalk(lines[i]);
+          if (rest !== null) { keep.push(rest); }
+        }
+        return keep.join("\n").replace(/^\s+|\s+$/g, "");
+      }
+
       // chooseDepth: the caller's run metadata depth when it is one of the
       // three names (matched, never looked up as given), else quick when the
       // question's wording asks for little, else standard.
@@ -6113,7 +6185,7 @@ agents:
         var res = call(spawnArgs("kb/" + route, ANSWER, both(c.dated ? DATED_NOTE : "", dnote), true));
         runs.push(res.run_id + ":" + res.status);
         if (route === "walker") {
-          text = res.final_text || ("The walker gave no answer: " + (res.error || res.status));
+          text = walkerText(res.final_text) || ("The walker gave no answer: " + (res.error || res.status));
         } else if (route === "survey") {
           text = res.final_text || ("The survey agent gave no answer: " + (res.error || res.status));
         } else {
@@ -6136,8 +6208,9 @@ agents:
             var w = call(spawnArgs("kb/walker", ANSWER, both(extra, dnote), true));
             runs.push(w.run_id + ":" + w.status);
             how = "search -> walker (" + why + ")";
-            if (w.final_text) {
-              text = w.final_text;
+            var wt = walkerText(w.final_text);
+            if (wt) {
+              text = wt;
             } else if (text) {
               how += " -> search kept (walker " + w.status + ")";
             } else {

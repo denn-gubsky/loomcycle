@@ -411,9 +411,12 @@ func lastLine(s string) string {
 const (
 	askQuestion     = "What do we hold on speech and voice?"
 	askWalkerAnswer = "Five documents cover it: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\nMOVES: search, down\nMISSING: none"
-	askSurveyAnswer = "Seven documents fit: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nCOVERAGE: complete\nSURVEY: candidates 7 (cut 0) | rounds 1 | RUNS: w1:completed"
-	askHitDoc       = "loom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	askHitChunk     = "loom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	// askWalkerReturned is askWalkerAnswer as kb/ask returns it: without the
+	// walker's MOVES and MISSING lines.
+	askWalkerReturned = "Five documents cover it: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant)."
+	askSurveyAnswer   = "Seven documents fit: [A](loom:doc/0123456789abcdef0123456789abcdef?scope=tenant).\n\nCOVERAGE: complete\nSURVEY: candidates 7 (cut 0) | rounds 1 | RUNS: w1:completed"
+	askHitDoc         = "loom:doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	askHitChunk       = "loom:chunk/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
 
 func askSearchAnswer(cov string) string {
@@ -554,7 +557,7 @@ func TestKbAsk_PartialCoverageAfterAgentNoFallsBackToWalkerWithHitIDs(t *testing
 			t.Errorf("the walker's prompt is missing the hit %s:\n%s", id, walk)
 		}
 	}
-	if !strings.HasPrefix(out, askWalkerAnswer) {
+	if !strings.HasPrefix(out, askWalkerReturned+"\n\nROUTE:") {
 		t.Errorf("the walker's answer must replace the partial one; got %q", out)
 	}
 	wantRouteLine(t, out, "ROUTE: search -> walker (partial coverage) | SCORE: 0.2 | CLASSIFIER: agent | RUNS: r1:completed, r2:completed, r3:completed")
@@ -650,7 +653,7 @@ func TestKbAsk_SearchThatDidNotCompleteGoesToWalker(t *testing.T) {
 			f := &askFake{score: 0.05, statuses: map[string]string{"kb/search": status}, answers: askAnswers("NO", "complete")}
 			out := runAsk(t, f, askQuestion, nil)
 			wantSpawns(t, f, "kb/search", "kb/walker")
-			if !strings.HasPrefix(out, askWalkerAnswer) {
+			if !strings.HasPrefix(out, askWalkerReturned+"\n\nROUTE:") {
 				t.Errorf("want the walker's answer; got %q", out)
 			}
 			wantRouteLine(t, out, "ROUTE: search -> walker (search "+status+") | SCORE: 0.05 | CLASSIFIER: decision | RUNS: r1:"+status+", r2:completed")
