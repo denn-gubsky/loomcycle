@@ -6180,14 +6180,19 @@ agents:
       //    filter by date. Measured: "which definition kinds since v1.0" failed
       //    in every run of every arm (no definition design was ever gathered),
       //    and for "opened since 9 November" the walker found all 16 by date,
-      //    the survey 8 or 9. Then a question asking for THE overview, guide or
-      //    full picture of one thing (knownItem) is not an overview; it wants
-      //    the one document that describes it.
+      //    the survey 8 or 9. So does a question naming a period by both ends
+      //    ("in November 2026", "between 1 May and 1 June": DATED_RANGE;
+      //    measured: "which plans did we write in November 2026" went to the
+      //    survey, which named 5 of 10 every run). Then a question
+      //    asking for THE overview, guide or full picture of one thing
+      //    (knownItem) is not an overview; it wants the one document that
+      //    describes it.
       //    Then a cascade: the decision model first; when its score falls
       //    between LOW and HIGH, or the call fails, the small chat agent
       //    kb/classify answers YES or NO. With run metadata classifier "agent"
       //    only kb/classify is asked.
-      // 2. A dated question goes to kb/walker with a fixed note to list by date.
+      // 2. A dated question goes to kb/walker with a fixed note: how to list
+      //    by date, never a word of the question.
       //    An overview goes to kb/survey, which gathers the candidate documents in
       //    code and has kb/screen screen them; anything else to kb/search, the
       //    cheaper path.
@@ -6203,7 +6208,7 @@ agents:
       // 4. The answer is the chosen agent's, without kb/search's COVERAGE line
       //    (kb/survey's COVERAGE line, computed by its code, stays), and without
       //    a walker's MOVES, MISSING and COMPOSE lines or any sentence about
-      //    them (walkerText, on the dated route and after a search), followed by
+      //    them (walkerText, on the walker route and after a search), followed by
       //    one line:
       //    ROUTE: <route> | SCORE: <score or none> | CLASSIFIER: <source> | RUNS: <run:status, ...>
       //    followed by " | DEPTH: <quick|deep> (<caller|wording>)" when the
@@ -6256,6 +6261,35 @@ agents:
           "(?:19|20)\\d{2}\\b|(?:last|this)\\s+(?:week|month|year|quarter)\\b|yesterday\\b)" +
         "|\\b(?:in|over|during|within)\\s+the\\s+(?:last|past)\\s+(?:\\d+\\s+|a\\s+|one\\s+|two\\s+|three\\s+|four\\s+|five\\s+|six\\s+|seven\\s+|ten\\s+|few\\s+|couple\\s+of\\s+)?(?:days?|weeks?|months?)\\b",
         "i");
+
+      // DATED_RANGE: the question names a period by both its ends, so its
+      // answer is a listing created inside it. Three shapes:
+      // - "in|during <month> <year>" ("in November 2026"): a month with a
+      //   year is a date wherever it stands.
+      // - "in|during <month>" or "in|during <year>" with nothing after it but
+      //   the end of the clause (punctuation, the end, "and", "or", "to"):
+      //   "which plans did we write in March?". Two month names are ordinary
+      //   words (may, march) and some questions put a month or a year before a
+      //   noun ("what is in November release notes", "chunks in 2048 pieces"),
+      //   so the preposition right before it and the clause end right after it
+      //   are both required: "what may change", "the march of versions", "in
+      //   May release notes" stay with the cascade. "in v2026" is a version
+      //   name, not a year, and never matches (the year must stand alone).
+      // - "between <date> and <date>", each a day with its month, a month
+      //   (with or without a year), an ISO date or a year. A version range
+      //   ("between v1.0 and v1.2") is left out: "the difference between v1.0
+      //   and v1.2" asks about the versions, not for a listing.
+      var YEAR = "(?:19|20)\\d{2}";
+      var CLAUSE_END = "(?=\\s*(?:[.?!,;:)]|$)|\\s+(?:and|or|to|through|until)\\b)";
+      var DAY = "\\d{1,2}(?:st|nd|rd|th)?";
+      var DATE = "(?:\\d{4}-\\d{2}(?:-\\d{2})?|" + DAY + "\\s+(?:of\\s+)?" + MONTH + "(?:,?\\s+" + YEAR + ")?|" +
+        MONTH + "(?:\\s+" + DAY + ")?(?:,?\\s+" + YEAR + ")?|" + YEAR + ")";
+      var DATED_RANGE = new RegExp(
+        "\\b(?:in|during)\\s+" + MONTH + ",?\\s+" + YEAR + "\\b" +
+        "|\\b(?:in|during)\\s+(?:" + MONTH + "|" + YEAR + ")\\b" + CLAUSE_END +
+        "|\\bbetween\\s+" + DATE + "\\s+and\\s+" + DATE + "\\b",
+        "i");
+
       // DEPTH: how much the caller wants retrieved. Run metadata depth (quick,
       // standard or deep) wins; else QUICK in the question's own wording
       // ("briefly", "in short", "a quick list", "top 5") picks quick; else
@@ -6276,6 +6310,24 @@ agents:
       var DATED_NOTE = "DATED. The question is bounded by a date or a version. List the documents created after that " +
         "point with query_documents (created_after; for a version, first find the date it was released) and answer " +
         "from that listing, then read what you need of each; a search alone does not reach every document of a period.";
+      // DATED_RANGE_NOTE: the same for a period with two ends. Both bounds,
+      // or a listing "in November" runs on to today. A month with no year is
+      // the latest such month that has begun: the simplest reading that is
+      // never in the future, and the walker says which year it took, so a
+      // wrong guess is visible. The walker has no clock, so the note is
+      // followed by one TODAY line (todayLine), the run's own date.
+      var DATED_RANGE_NOTE = "DATED. The question names a period with two ends (a month, a year, or between two dates). " +
+        "List the documents created in it with query_documents: created_after the start of the period and created_before " +
+        "the first instant after it (for a month, the start of the next month; for a year, 1 January of the next year), " +
+        "and answer from that listing, then read what you need of each; a search alone does not reach every document of " +
+        "a period. A month given without a year is the latest such month that has begun by TODAY (below): say which year " +
+        "you took.";
+
+      // todayLine is the run's own date, for a period whose year the question
+      // leaves out. Never a word of the question.
+      function todayLine() {
+        return "TODAY: " + new Date().toISOString().slice(0, 10) + " (UTC).";
+      }
 
       // runs records every child this run started, classifier included.
       var runs = [];
@@ -6320,10 +6372,11 @@ agents:
       // change without touching the routing. It never throws.
       // Returns {overview, score: 0..1 or null,
       // source: dated|known-item|decision|agent|agent-unreadable,
-      // error: null or the decision model's failure code, dated: true for a
-      // question bounded by a date or a version}.
+      // error: null or the decision model's failure code, walker: true for a
+      // question the dated rule took, with its note}.
       function classify(question, metadata) {
-        if (DATED.test(question)) { return { overview: false, score: null, source: "dated", error: null, dated: true }; }
+        var w = walkerRule(question);
+        if (w) { return { overview: false, score: null, source: w.source, error: null, walker: true, note: w.note }; }
         if (knownItem(question)) { return { overview: false, score: null, source: "known-item", error: null }; }
         if (metadata && metadata.classifier === "agent") {
           return askAgent(null, null);
@@ -6332,6 +6385,15 @@ agents:
         if (d.score !== null && d.score >= HIGH) { return { overview: true, score: d.score, source: "decision", error: null }; }
         if (d.score !== null && d.score <= LOW) { return { overview: false, score: d.score, source: "decision", error: null }; }
         return askAgent(d.score, d.error);
+      }
+
+      // walkerRule reads the question as data: is it dated (DATED, else
+      // DATED_RANGE)? Returns {source: "dated", note: its fixed note}, or
+      // null when no rule holds.
+      function walkerRule(question) {
+        if (DATED.test(question)) { return { source: "dated", note: DATED_NOTE }; }
+        if (DATED_RANGE.test(question)) { return { source: "dated", note: DATED_RANGE_NOTE + "\n" + todayLine() }; }
+        return null;
       }
 
       // knownItem reads the question as data: it asks for the one document
@@ -6530,9 +6592,9 @@ agents:
         var c = classify(Q.text, input.metadata);
         var dp = chooseDepth(Q.text, input.metadata);
         var dnote = DEPTH_NOTES[dp.depth] || "";
-        var route = c.dated ? "walker" : c.overview ? "survey" : "search";
+        var route = c.walker ? "walker" : c.overview ? "survey" : "search";
         var how = route, text;
-        var res = call(spawnArgs("kb/" + route, ANSWER, both(c.dated ? DATED_NOTE : "", dnote), true));
+        var res = call(spawnArgs("kb/" + route, ANSWER, both(c.walker ? c.note : "", dnote), true));
         runs.push(res.run_id + ":" + res.status);
         if (route === "walker") {
           text = walkerText(res.final_text) || ("The walker gave no answer: " + (res.error || res.status));
