@@ -46,8 +46,8 @@ run can open (the default `user` needs a user id; otherwise pass `agent`).
 ## Changing or retiring an entry
 
 With `change`, the proposal is about an entry ALREADY in force — a class,
-relation kind, scheme, concept or instance — instead of a new one (RFC GQ
-P4.1). It is just as inert: the entry, every read and every run are unchanged
+relation kind, scheme, concept or instance — instead of a new one. It is
+just as inert: the entry, every read and every run are unchanged
 until an operator accepts it.
 
 - `change` — `edit` or `retire`. A retired entry is not deleted: nothing new
@@ -69,9 +69,9 @@ until an operator accepts it.
 A retire names only `entry`. The proposal is filed under the entry's section,
 titled `edit: <name>` or `retire: <name>`, and the change travels as data in
 its fields (`change_proposal`), never in its text. Accepting one applies it to
-the entry in place, keeping its id; that comes with RFC GQ P4.2 — until then
-the operator's proposals route refuses to accept it, and rejecting works as for
-any proposal.
+the entry in place, keeping its id; this server cannot accept one yet — the
+operator's proposals route refuses it, and rejecting works as for any
+proposal.
 
 Refused: an entry that is not in force; a retired entry (it is brought back by
 an operator clearing its status, not changed by a proposal); retiring one
