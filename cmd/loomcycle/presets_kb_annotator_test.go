@@ -614,3 +614,91 @@ func TestKBAnnotator_DocumentRequestCarriesItsStoredStatus(t *testing.T) {
 		t.Errorf("kb/annotate's prompt names an RFC")
 	}
 }
+
+// annClassDoc is the real Document tool with a class description on every
+// annotation_inputs answer, the line the ontology adds on a deployment.
+type annClassDoc struct {
+	*builtin.Document
+	desc string
+}
+
+func (c *annClassDoc) Execute(ctx context.Context, raw json.RawMessage) (tools.Result, error) {
+	res, err := c.Document.Execute(ctx, raw)
+	var in map[string]any
+	_ = json.Unmarshal(raw, &in)
+	if op, _ := in["op"].(string); err != nil || res.IsError || op != "annotation_inputs" {
+		return res, err
+	}
+	var out map[string]any
+	if json.Unmarshal([]byte(res.Text), &out) != nil {
+		return res, err
+	}
+	out["class_description"] = c.desc
+	b, _ := json.Marshal(out)
+	res.Text = string(b)
+	return res, nil
+}
+
+// TestKBAnnotator_AFinishedDocumentsRequestOpensWithItsState: with STATUS
+// done placed after a CLASS description that defines the class as a
+// proposal, briefs still said "Design proposal … status done" on 5 of 13
+// done documents (dev, 2026-11-17/18). A done document's request now opens
+// with a NOW line and names the class without its description; every other
+// request is as before. A sweep carries the stored status too: it read rows
+// that had it and dropped it.
+func TestKBAnnotator_AFinishedDocumentsRequestOpensWithItsState(t *testing.T) {
+	const desc = "A design proposal, named by a two-letter code."
+	d, author, driver := annRealDocument(t)
+	done := seedAnnDoc(t, d, author, "Widget guide", "/kb/widgets/guide")
+	open := seedAnnDoc(t, d, author, "Gadget guide", "/kb/gadgets/guide")
+	setStatus := func(root, status string) {
+		c := realDoc(t, d, author, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q}`, root))
+		realDoc(t, d, author, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%v,"status":%q}`, root, c["revision"], status))
+	}
+	setStatus(done.root, "done")
+	setStatus(open.root, "confirmed")
+	doc := &annClassDoc{Document: d, desc: desc}
+	code := knowledgeBaseConfig(t).Agents["kb/annotator"].Code
+
+	for _, mode := range []string{"document", "sweep"} {
+		t.Run(mode, func(t *testing.T) {
+			f := &annFake{reply: annReplyFromTitle}
+			if mode == "document" {
+				for _, a := range []annDoc{done, open} {
+					runAnnotatorWith(t, doc, code, driver, f, fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate","force":true}`, a.doc))
+				}
+			} else {
+				runAnnotatorWith(t, doc, code, driver, f, `{"mode":"sweep","under_path":"/kb","write":"annotate","force":true}`)
+			}
+			var doneReq, openReq string
+			for _, p := range f.prompts {
+				switch {
+				case strings.Contains(p, "LEVEL: a whole document") && strings.Contains(p, "TITLE: Widget guide"):
+					doneReq = p
+				case strings.Contains(p, "LEVEL: a whole document") && strings.Contains(p, "TITLE: Gadget guide"):
+					openReq = p
+				case strings.Contains(p, "NOW:"):
+					t.Errorf("a request other than the done document's carries a NOW line:\n%s", p)
+				}
+			}
+			if !strings.HasPrefix(doneReq, "NOW: finished work") {
+				t.Errorf("the done document's request does not open with its state:\n%s", doneReq)
+			}
+			if strings.Contains(doneReq, desc) || !strings.Contains(doneReq, "\nCLASS: Guide\n") {
+				t.Errorf("the done document's CLASS line is not the bare class name:\n%s", doneReq)
+			}
+			if !strings.Contains(doneReq, "\nSTATUS: done\n") {
+				t.Errorf("the done document's request lacks STATUS:\n%s", doneReq)
+			}
+			if strings.Contains(openReq, "NOW:") || !strings.Contains(openReq, "CLASS: Guide — "+desc) ||
+				!strings.Contains(openReq, "\nSTATUS: confirmed\n") {
+				t.Errorf("a confirmed document's request changed:\n%s", openReq)
+			}
+		})
+	}
+
+	p := knowledgeBaseConfig(t).Agents["kb/annotate"].SystemPrompt
+	if !strings.Contains(p, "A request that opens with a NOW line describes finished work") {
+		t.Errorf("kb/annotate's prompt does not say what the NOW line means")
+	}
+}

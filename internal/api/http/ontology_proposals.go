@@ -22,6 +22,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -117,6 +118,30 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			resp.NotAnnounced = notAnnounced
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+	}
+
+	// A WHOLE SCHEME (RFC GM P3.1) accepts with its concepts, and its directives are
+	// written from the structured data the proposal carries, checked again here; a
+	// concept carrying such data accepts the same way. Rejecting needs nothing special.
+	if action == "accept" {
+		handled, rep, aerr := doc.AcceptSchemeProposal(dctx, "tenant", chunkID)
+		switch {
+		case handled && errors.Is(aerr, builtin.ErrSchemeProposalInvalid):
+			writeJSONError(w, http.StatusUnprocessableEntity, "invalid_proposal", aerr.Error())
+			return
+		case aerr != nil:
+			writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", aerr.Error())
+			return
+		case handled:
+			resp, err := s.ontologyState(r.Context(), tenant)
+			if err != nil {
+				writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
+				return
+			}
+			resp.SchemeAccepted = &rep
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}

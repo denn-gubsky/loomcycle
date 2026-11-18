@@ -154,6 +154,9 @@ type ontologyResponse struct {
 	// memory/subjects (the caller's access-control rules hide part of the scope from
 	// reading); set only on the accept that adopted it.
 	NotAnnounced string `json:"not_announced,omitempty"`
+	// SchemeAccepted says what accepting a whole-scheme proposal put in force (RFC GM
+	// P3.1); set only on that accept.
+	SchemeAccepted *builtin.SchemeAcceptReport `json:"scheme_accepted,omitempty"`
 }
 
 // ontologyTenant is the tenant every ontology route reads and writes: an admin's

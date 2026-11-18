@@ -69,6 +69,10 @@ type OntologyConcept struct {
 	// yet (RFC FO decision 10f.1): enforcement is a later phase of its own.
 	Retention string `json:"retention,omitempty"`
 	ACL       string `json:"acl,omitempty"`
+	// Origin is its scheme's @origin, so a reader of one concept knows whether it is
+	// adopted — a concept of a published scheme is never renamed or moved by a proposal
+	// pass (RFC GM 2B). "" when the scheme declares none.
+	Origin string `json:"origin,omitempty"`
 	// Tag is the concept's mirror tag, `<scheme>/<path>`.
 	Tag     string   `json:"tag"`
 	Meaning string   `json:"meaning,omitempty"`
