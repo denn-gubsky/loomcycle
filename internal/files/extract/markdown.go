@@ -17,7 +17,12 @@ var orderedStart = regexp.MustCompile(`^(\d{1,9})([.)])(\s|$)`)
 // block construct is backslash-escaped.
 func escapeLine(s string) string {
 	s = strings.TrimLeft(s, " \t\u00a0")
-	s = escapeInline(s)
+	return escapeBlockStart(escapeInline(s))
+}
+
+// escapeBlockStart escapes what would open a block construct at the start
+// of a line already escaped inline.
+func escapeBlockStart(s string) string {
 	if s == "" {
 		return s
 	}
