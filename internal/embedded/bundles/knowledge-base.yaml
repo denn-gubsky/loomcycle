@@ -5126,7 +5126,7 @@ agents:
           var d = rows[i];
           if (!isPlainObject(d) || !isID(d.document_id)) { continue; }
           S.documents++;
-          var doc = { document_id: d.document_id, root_chunk_id: d.root_chunk_id, title: d.title, type: d.type };
+          var doc = { document_id: d.document_id, root_chunk_id: d.root_chunk_id, title: d.title, type: d.type, status: d.status };
           if (operationalType(doc.type) !== "") { passDocument(st, doc); continue; }
           var age = st.opts.force ? "" : workAge(st, doc);
           if (age === null) { S.current++; continue; }
@@ -5435,12 +5435,23 @@ agents:
             fParts = fence("parts", material), fRel = fence("relations", material);
 
         var head = [];
+        // A whole document whose stored status says the work is finished.
+        // The STATUS line alone did not hold: placed after a CLASS
+        // description that defines the class as a proposal, it lost to it on
+        // 5 of 13 done documents (measured on dev, 2026-11-17/18), and briefs
+        // said "Design proposal … status done". So the state comes first, as
+        // the NOW line, and the class goes by name only: what a class is when
+        // proposed is not what this document is now.
+        var finished = level === "document" && st.doc_status === "done";
         var cls = typeof in1.class === "string" && in1.class !== "" ? oneLine(in1.class, 80) : "(none)";
         // The class's meaning and the slots its annotations fill, as the ontology says.
-        if (typeof in1.class_description === "string" && in1.class_description !== "") {
+        if (!finished && typeof in1.class_description === "string" && in1.class_description !== "") {
           cls += " — " + oneLine(in1.class_description, 400);
         }
         var slots = typeof in1.slots === "string" && in1.slots !== "" ? oneLine(in1.slots, 400) : "";
+        if (finished) {
+          head.push("NOW: finished work, built and shipped (stored status done)");
+        }
         if (level === "document") {
           head.push("LEVEL: a whole document");
           head.push("CLASS: " + cls);
@@ -5764,6 +5775,10 @@ agents:
       and it overrides the CLASS description and any status the material states:
       done means the work is finished and shipped, so never call it a proposal;
       confirmed means it was approved.
+      A request that opens with a NOW line describes finished work: its CLASS
+      line then gives the class by name only. Say what the work is and what
+      was built, in the past or present tense; never "proposal", "proposes"
+      or "would", even where the material, written before the build, does.
 
       ## The abstract
       One paragraph that stands in for reading: what the material states, decides,
