@@ -158,6 +158,8 @@ export function instanceStateLabel(s: OntologyInstanceState): string {
       return "renamed — keeps its key";
     case "unchanged":
       return "in the registry";
+    case "retired":
+      return "retired — its subject is kept, not adopted again";
     default:
       return s.note ? `not adopted: ${s.note}` : "not adopted";
   }
