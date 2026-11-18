@@ -84,6 +84,7 @@ type plannedChange struct {
 	// An edit's effect, from comparing the entry before and after it.
 	directivesChanged                bool
 	newlyFunctional, newlyAsymmetric bool
+	editRenames                      bool // the edit's body changes the entry's name
 	notes                            []string
 	counts                           map[string]*connector.OntologyPlanCount
 }
@@ -188,6 +189,12 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 		}
 		compareEditedEntry(before, alone, p)
+		if a, ok := planEntries(alone)[p.entry.ChunkID]; ok && a.Name != p.entry.Name {
+			p.editRenames = true // a body heading names an untitled entry
+		}
+	}
+	for _, p := range planned {
+		p.noteLock(entries, ov)
 	}
 
 	counted, skipped, complete, err := d.countPlanDependents(ctx, key, before, after, planned)
@@ -354,11 +361,6 @@ func (d *Document) resolvePlanChange(ctx context.Context, key sqlmem.ScopeKey, m
 		}
 	}
 	p.collectNames()
-	// A lock refuses each op but an edit, on the entry and on any entry above a locked
-	// one (RFC GQ P2.3); the plan says so beside the counts, naming the locked entry.
-	if locked := lockedIn(p.subtree, entries); ch.Op != connector.OntologyPlanEdit && len(locked) > 0 {
-		p.notes = append(p.notes, lockedPlanNote(ch.Op, e, locked))
-	}
 
 	switch ch.Op {
 	case connector.OntologyPlanRetire, connector.OntologyPlanDelete:

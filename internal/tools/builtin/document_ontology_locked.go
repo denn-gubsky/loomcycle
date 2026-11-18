@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -80,6 +81,45 @@ func lockedRefusal(op, target, verb string, locked []planEntry) tools.Result {
 func lockedPlanNote(op string, e planEntry, locked []planEntry) string {
 	return entryLockedCode + ": " + lockedWho(e.ChunkID, locked) + ", so this " + op + " would be refused until " +
 		"an operator removes the lock"
+}
+
+// lockedPlanned is lockedIn over the ontology as the plan's edits leave it: an entry
+// whose body a change of the request rewrites is locked as that body says, so an edit
+// that adds or removes @locked is seen by the other changes. self keeps its lock as
+// read: an edit cannot unlock the entry it renames in the same call (update_chunk
+// reads the lock before the write).
+func lockedPlanned(ids []string, entries map[string]planEntry, ov *ontologyOverlay, self string) []planEntry {
+	var out []planEntry
+	for _, id := range ids {
+		e, ok := entries[id]
+		if !ok {
+			continue
+		}
+		locked := e.locked
+		if b, edited := ov.bodies[id]; edited && id != self {
+			locked = memrank.BodyLocked(b.Body)
+		}
+		if locked {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// noteLock adds the plan's entry_locked note to a change a lock would refuse: a
+// retire, rename, move or delete, or an edit whose body renames the entry, of a locked
+// entry or an entry above one.
+func (p *plannedChange) noteLock(entries map[string]planEntry, ov *ontologyOverlay) {
+	op, self := p.in.Op, ""
+	if op == connector.OntologyPlanEdit {
+		if !p.editRenames {
+			return // the text is not frozen (RFC FO 3.7 B6)
+		}
+		op, self = "edit (its heading renames the entry)", p.entry.ChunkID
+	}
+	if locked := lockedPlanned(p.subtree, entries, ov, self); len(locked) > 0 {
+		p.notes = append(p.notes, lockedPlanNote(op, p.entry, locked))
+	}
 }
 
 // lockedHeaderIssues reports @locked on the ontology's root or on a section header:
