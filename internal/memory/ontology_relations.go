@@ -66,6 +66,10 @@ type OntologyRelation struct {
 	// ChunkID is the entry's chunk in the ontology document; "" for a seed or reserved
 	// kind, which has none. Lets a proposal hang under a declared kind by name.
 	ChunkID string `json:"chunk_id,omitempty"`
+	// EntryStatus is "retired" for a retired kind: still declared, so its statements
+	// stay readable and filters for a parent kind still expand to it, but no new
+	// statement may use it.
+	EntryStatus string `json:"entry_status,omitempty"`
 }
 
 // relationDirectives are the directives a relation entry may carry. A class directive in
@@ -497,7 +501,8 @@ const relationFactTemplate = `{"text": "...", "class": "...", "type": "...", "su
 func RenderRelations(effective []OntologyRelation) string {
 	var tenant []OntologyRelation
 	for _, r := range effective {
-		if r.Source == RelationSourceTenant {
+		// A retired kind takes no new statement, so the extractor is not offered it.
+		if r.Source == RelationSourceTenant && r.EntryStatus == "" {
 			tenant = append(tenant, r)
 		}
 	}
