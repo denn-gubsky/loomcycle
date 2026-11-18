@@ -8,6 +8,52 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.159.0
+
+*A file loomcycle rendered can be imported back onto its document, and documents render in the tenant's house style (RFC GR P4b.2, P4c). The taxonomy gains a `memberships` op, a node statistics sweeper, built-in series with a `measure` op, and an annotation on every scheme, concept and class (RFC GM P1.3–P4.2). `kb/survey` reads the answer round's summaries in code, `kb/ask` routes dated questions to the walker and takes a retrieval `depth`, and a done document's summary no longer calls it a proposal.*
+
+The v1.159 line: #2722 to #2736.
+- `@loomcycle/client` 1.159.0: `style` on `exportDocument`, the `memberships` and `measure` ops, the `scheme` / `concept` / `class` annotation levels with `basis`, and `name` on `getAnnotation`. The Python adapter stays at 1.154.0; no change there.
+- No numbered migration and no new Go dependency. Per-scope document tables gain `measure_points` and a `basis` column on `chunk_annotations`, both added on first use.
+- The conversion worker protocol gains two frames (`Record`, `HeadingAnchor`), sent only when a job asks for them.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **Update the conversion workers with this release (#2724, #2734).** Re-importing a rendered file needs the new extraction frames, and a worker checks a bundled render style. An older worker still extracts and renders as before.
+- **A tenant default render style applies on its own (#2734).** When `/render/styles/default` exists in a tenant's Path tree, every PDF, Word, ODT, HTML and EPUB render of that tenant uses it unless the caller passes `style: none` or another `style`. Unstyled output is byte-identical to before. A style that is missing, unreadable or out of range refuses the render (400 on the export route) and names the key.
+- **Every stored node statistic recomputes once (#2731).** The inputs hash moved to `node_stats/2` and now covers whether each member has a vector; the next `node_stats compute` or sweeper pass rewrites every row. `node_stats` and the sweeper now refuse a partial ontology read instead of deleting rows.
+- **The node statistics sweeper is off by default (#2723).** Turn it on with `memory.node_stats {enabled: true, interval: …}` in the yaml; there is no environment variable.
+- **Concepts deeper than four levels read with their real path (#2732).** Their mirror tag moves (for example `topics/a/b/c/e` becomes `topics/a/b/c/d/e`); documents tagged under the old flattened tag keep it until re-tagged.
+- **The knowledge-base bundle changed again (#2733, #2735, #2736).** A deployment that loads the `knowledge-base` bundle gets the new `kb/ask`, `kb/survey`, `kb/walker` and `kb/annotator`; a tenant that forked any of them keeps its own version until it forks again.
+  - `kb/ask` sends a question bounded by a date or version ("since v1.0", "after 9 November", "in the last 3 weeks") to `kb/walker`, reported as `CLASSIFIER: dated`.
+  - `kb/ask` and `kb/survey` take an optional `depth` (`quick`, `standard`, `deep`). `standard` is today's behaviour; the SURVEY trailer now always names the depth.
+  - `kb/annotator` gains mode `ontology`, and a whole-scope `sweep` ends by annotating the taxonomy's nodes.
+
+### Documents and rendering (RFC GR P4b.2, P4c: #2724, #2734)
+
+- **Re-import onto the same document.** `File op=import` with `reimport` and `document` takes a DOCX, ODT, HTML or PDF that loomcycle rendered with `metadata: embed` and matches its parts by the ids in the file: an unchanged part stays, a moved one moves, an edited one is superseded. A PDF names no heading's anchor, so its parts match by text. An import without `reimport` makes a new document whose provenance records `rendered_from`.
+- **House style.** A style document holds font, size, heading scale, colours, page size and margins, a one-line header and footer, page numbers and a logo. `style: <path>` on `File op=render`, its MCP twin, the export route (`?style=`) and the TS adapter; `style: none` for the built-in look. The style is read with the caller's own access. Markdown is unchanged.
+
+### Taxonomy (RFC GM P1.2–P4.2: #2722, #2723, #2725, #2727, #2728, #2730–#2733)
+
+- **`Document op=memberships`** lists one document's classes, its concepts in every scheme (with the statements that place it, and the broader concepts it is implied under) and its folders, under the same access as `get_document`.
+- **Node statistics sweeper** (`memory.node_stats`), under its own cluster lock.
+- **Series and `measure`:** each `node_stats` pass appends `count`, `share`, `shift` and per-scheme `unplaced` rows to `measure_points`, monthly by default; a scheme can set `@period day|week|month`. A document is dated by its root's `valid_at`, then its source's update time, then its creation.
+- **An annotation on every node:** levels `scheme`, `concept` and `class` on every annotation op. A node with members gets a brief and abstract written from its members (`basis` `written` or `thin`); a node with none gets one composed by the runtime with no model call (`declared`). A record is withheld from a reader who cannot read every member. Node records are not yet searchable.
+- Review fixes: the spread is clamped at 0 and a degenerate node is skipped; a limited reader can no longer tell which nodes hold a hidden document; class proposals need an in-force parent; `@focus` matching and its revive/retire follow the write key and reach the change feed.
+
+### Knowledge base (#2735, #2736)
+
+- **`kb/survey` reads the answer round's summaries in code** and hands them to the walker as one untrusted block (each field cleaned of control and invisible characters and folded to one line; at most 1,200 characters a row and 48,000 in all). The walker needs no call to compose; the trusted block still holds only ids and one-word labels.
+- **Protocol talk is stripped** from every walker answer `kb/ask` or `kb/survey` returns: any sentence naming MOVES, MISSING, COMPOSE, FITS or SET ASIDE in capitals outside a link.
+- **`depth: quick`** caps a survey at 30 documents in one wave with no guide sections and a short answer, and reports `partial` when it cut anything; `kb/ask` also picks it from wording such as "briefly" or "top N". The caller's value wins.
+- **A done document's summary loses its proposal framing** when it is saved: a leading "Design proposal …" and "this RFC proposes / would add / is awaiting approval" about the document itself are reworded or dropped, reported as `status_wording`. Manual records, section records and other statuses are untouched.
+
+### CI (#2726)
+
+- The SQL Memory Postgres-tier CI step now runs the Postgres halves of helper-based document tests too (224 that it missed), found by a census that follows the helpers.
+
 ## What's in v1.158.0
 
 *Documents render as OpenDocument (.odt) and EPUB, and a rendered file can carry the document's record (RFC GR P4a–P4b.1). The ontology gains concept-scheme headers, `@focus`, schemes up to eight levels deep, member counts and node statistics (RFC GM P1a–P2.1). `kb/survey` links the matching sections of a guide that fits and reads each document's stored status, and the annotator writes a document's summary from its stored status and no longer gives a document with no code someone else's.*
