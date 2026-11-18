@@ -75,6 +75,10 @@ func CarvedOut(method, path string) bool {
 	// and unbinds: the operator's decision.
 	case path == "/v1/_ontology/subjects/principal":
 		return true
+	// A plan of ontology changes counts what rests on an entry across every
+	// scope of the tenant, other users' included (RFC GQ 7): the operator's.
+	case path == "/v1/_ontology/plan":
+		return true
 	case path == "/v1/_limits" && (method == http.MethodPut || method == http.MethodDelete):
 		return true
 	// RFC EY: who may do what is the operator's to write and to read; a

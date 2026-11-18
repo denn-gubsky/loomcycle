@@ -63,7 +63,7 @@ func (d *Document) OntologyTermsFromTree(ctx context.Context, scope, path string
 	if err != nil {
 		return OntologyRead{}, err
 	}
-	return d.ontologyForKey(ctx, key, mscope, path)
+	return d.ontologyForKey(ctx, key, mscope, path, nil)
 }
 
 // OntologyRead is one read of the ontology document.
@@ -141,7 +141,10 @@ const sectionOutOfForce = "\x00out-of-force"
 // Split out from OntologyTermsFromTree so the retrieval-side expansion can reuse it
 // with a tenant key it built itself. One reader, two callers — the alternative was a
 // second tree walk, and two walks of the same tree eventually disagree about it.
-func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, path string) (OntologyRead, error) {
+//
+// ov, when not nil, changes the chunks in memory before they are parsed (a plan's
+// changes, document_ontology_plan.go); nil reads the document as stored.
+func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, path string, ov *ontologyOverlay) (OntologyRead, error) {
 	// DELIBERATELY NO ensureSchema. Reading must not provision.
 	//
 	// This is called from a query path, so ensuring here would mean an agent running
@@ -199,6 +202,9 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		if c.id == rootID {
 			rootRevision = asInt(row[5])
 		}
+		if !ov.rewrite(&c) {
+			continue // a planned delete or retire: read as if gone
+		}
 		kids[c.parentID] = append(kids[c.parentID], c)
 	}
 	for k := range kids {
@@ -213,6 +219,10 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 	partial := false
 	chunkOf := func(id string) chunkBody {
 		if b, ok := bodies[id]; ok {
+			return b
+		}
+		if b, ok := ov.body(id); ok {
+			bodies[id] = b
 			return b
 		}
 		got, err := d.readBody(ctx, mscope, key, id)
@@ -645,7 +655,7 @@ func (d *Document) tenantOntologyRead(ctx context.Context) (OntologyRead, bool) 
 	}
 	var uncached OntologyRead
 	v, err := d.docSQL().Memo(key, "ontology", fp, func() (any, error) {
-		read, rerr := d.ontologyForKey(ctx, key, store.MemoryScopeTenant, memrank.OntologyPath)
+		read, rerr := d.ontologyForKey(ctx, key, store.MemoryScopeTenant, memrank.OntologyPath, nil)
 		if rerr != nil {
 			return nil, rerr
 		}

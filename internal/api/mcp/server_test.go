@@ -2091,6 +2091,12 @@ func (m *mockConnector) BindSubjectPrincipal(_ context.Context, req connector.Bi
 	return m.bindRes, m.bindErr
 }
 
+// PlanOntology answers an empty plan (connector.Connector); no transport but
+// HTTP reaches it yet (RFC GQ P1.2 adds MCP and gRPC).
+func (m *mockConnector) PlanOntology(context.Context, connector.PlanOntologyRequest) (connector.PlanOntologyResult, error) {
+	return connector.PlanOntologyResult{}, nil
+}
+
 // ListReviewQueue, RuleStatements and RevertRuling record the request and answer
 // with the configured result (connector.Connector).
 func (m *mockConnector) ListReviewQueue(_ context.Context, req connector.ListReviewQueueRequest) (connector.ListReviewQueueResult, error) {

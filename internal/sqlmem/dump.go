@@ -87,7 +87,17 @@ func (m *Manager) Tier() string {
 // ListScopes enumerates every DURABLE (agent/user) scope the tier currently
 // holds, for snapshot capture. The run scope is never included.
 func (m *Manager) ListScopes(ctx context.Context) ([]ScopeKey, error) {
-	return m.backend.listScopes(ctx)
+	return m.backend.listScopes(ctx, "")
+}
+
+// ListTenantScopes is ListScopes for one tenant: its cost is that tenant's
+// scopes, not every tenant's (sqlite walks only the tenant's directory). Every
+// key returned carries the tenant.
+func (m *Manager) ListTenantScopes(ctx context.Context, tenant string) ([]ScopeKey, error) {
+	if strings.TrimSpace(tenant) == "" {
+		return nil, fmt.Errorf("sqlmem: ListTenantScopes requires a tenant")
+	}
+	return m.backend.listScopes(ctx, tenant)
 }
 
 // ExportScope produces the logical dump (DDL + data) for one durable scope.

@@ -276,7 +276,7 @@ func (d *Document) AcceptSchemeProposal(ctx context.Context, scope, chunkID stri
 		return false, rep, err
 	}
 	defer unlock()
-	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath)
+	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
 		return false, rep, err
 	}

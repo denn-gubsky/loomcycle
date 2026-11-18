@@ -455,6 +455,23 @@ func (b *sqliteBackend) query(ctx context.Context, key ScopeKey, statement strin
 	return collectRows(rows, b.cfg.MaxRows, maxBytes)
 }
 
+// queryExisting reads the key's file only when it is already there: opening a
+// missing one would create it.
+func (b *sqliteBackend) queryExisting(ctx context.Context, key ScopeKey, statement string, args []any) (*QueryResult, error) {
+	path, err := key.keyPath(b.cfg.Root)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := statExists(path)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrPlaneAbsent
+	}
+	return b.query(ctx, key, statement, args, 0)
+}
+
 // exec runs a (already-validated, read-write) DDL/DML statement against the
 // scope database. The quota is checked BEFORE the write (page_count *
 // page_size): an approximate bound — a single statement can push the file

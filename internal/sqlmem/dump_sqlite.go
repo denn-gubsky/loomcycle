@@ -31,11 +31,24 @@ import (
 // sanitized form, which is still a STABLE identity (sanitize is idempotent on
 // its own output: a restore re-derives the same file), so the scope round-trips
 // regardless; only the literal pre-sanitize string would differ.
-func (b *sqliteBackend) listScopes(ctx context.Context) ([]ScopeKey, error) {
+//
+// A tenant walks only <root>/<tenant>, and a missing directory is no scopes.
+func (b *sqliteBackend) listScopes(ctx context.Context, tenant string) ([]ScopeKey, error) {
 	runDir := filepath.Join(b.cfg.Root, runScope)
+	start := b.cfg.Root
+	if tenant != "" {
+		dir, err := sanitize(tenant)
+		if err != nil {
+			return nil, err
+		}
+		start = filepath.Join(b.cfg.Root, dir)
+		if ok, err := statExists(start); err != nil || !ok {
+			return nil, err
+		}
+	}
 	var out []ScopeKey
 	seen := map[string]bool{}
-	err := filepath.WalkDir(b.cfg.Root, func(path string, d fs.DirEntry, werr error) error {
+	err := filepath.WalkDir(start, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return nil // skip unreadable entries
 		}
@@ -58,6 +71,9 @@ func (b *sqliteBackend) listScopes(ctx context.Context) ([]ScopeKey, error) {
 			return nil // a durable scope is exactly <tenant>/<scope>/<id>
 		}
 		seen[base] = true
+		if tenant != "" {
+			parts[0] = tenant // the walk is that tenant's directory
+		}
 		out = append(out, ScopeKey{
 			Tenant:  parts[0],
 			Scope:   parts[1],

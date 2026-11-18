@@ -119,6 +119,10 @@ type Document struct {
 
 	// editions serialises the reimports of one work (see document_editions.go).
 	editions editionLocks
+
+	// planScopeBudget bounds an ontology plan's user and agent scope pass; zero is
+	// ontologyPlanScopeBudget. A test shortens it.
+	planScopeBudget time.Duration
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -1371,6 +1375,36 @@ func (d *Document) reensureSchema(ctx context.Context, key sqlmem.ScopeKey) erro
 	return d.ensureSchema(ctx, key)
 }
 
+// noWritesCtxKey marks a context whose Document reads must leave every scope as
+// they found it: the ontology change plan (RFC GQ P1), which must write nothing.
+// Under it d.query reads through sqlmem.Manager.QueryExisting (no provisioning, no
+// last-use stamp) and never re-ensures the schema on a missing table or column,
+// d.exec refuses, and resolveOntologyID does not record the role it resolves.
+type noWritesCtxKey struct{}
+
+func noWrites(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noWritesCtxKey{}, true)
+}
+
+func writesForbidden(ctx context.Context) bool {
+	v, _ := ctx.Value(noWritesCtxKey{}).(bool)
+	return v
+}
+
+// errNoWrites is d.exec's answer under noWrites: a write reached from a path that
+// promised none is a bug, refused rather than made.
+var errNoWrites = errors.New("document: a write was attempted by a read that must write nothing")
+
+// sqlRead is the Manager read for the tool's own statements that must not
+// provision (callers handle a missing table themselves): QueryExisting under
+// noWrites, Query otherwise. stmt is written with portable `?` placeholders.
+func (d *Document) sqlRead(ctx context.Context, key sqlmem.ScopeKey, stmt string, args []any) (*sqlmem.QueryResult, error) {
+	if writesForbidden(ctx) {
+		return d.docSQL().QueryExisting(ctx, key, d.docSQL().Rebind(stmt), args)
+	}
+	return d.docSQL().Query(ctx, key, d.docSQL().Rebind(stmt), args)
+}
+
 // errAlreadyProvisioning short-circuits the staleness retry for statements issued
 // BY provisioning itself. Returned rather than nil so the caller does not retry.
 var errAlreadyProvisioning = errors.New("document: already provisioning")
@@ -2146,6 +2180,9 @@ func schemaMissing(err error) bool {
 // escape hatch does NOT go through these (it calls the Manager directly with
 // the model's dialect-native SQL).
 func (d *Document) exec(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) error {
+	if writesForbidden(ctx) {
+		return errNoWrites
+	}
 	_, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(stmt), args, 0)
 	if schemaMissing(err) && d.reensureSchema(ctx, key) == nil {
 		_, err = d.docSQL().Exec(ctx, key, d.docSQL().Rebind(stmt), args, 0)
@@ -2154,6 +2191,9 @@ func (d *Document) exec(ctx context.Context, key sqlmem.ScopeKey, stmt string, a
 }
 
 func (d *Document) query(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) (*sqlmem.QueryResult, error) {
+	if writesForbidden(ctx) {
+		return d.sqlRead(ctx, key, stmt, args) // a missing table is the caller's error, never a migration
+	}
 	res, err := d.docSQL().Query(ctx, key, d.docSQL().Rebind(stmt), args)
 	if schemaMissing(err) && d.reensureSchema(ctx, key) == nil {
 		return d.docSQL().Query(ctx, key, d.docSQL().Rebind(stmt), args)
