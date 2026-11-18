@@ -545,12 +545,13 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 	if err != nil {
 		return out, nil, err
 	}
-	// A NEW statement may not use a retired kind or concept (RFC GQ P2.1); one that
-	// already holds is written to as before. A copy (import, canvas, sync) keeps what
-	// it copies, as the vocabulary gate does.
+	// A NEW statement may not use a retired entry (RFC GQ P2.1); one that already
+	// holds is written to as before, and a revision only for what it changes. A copy
+	// (import, canvas, sync) keeps what it copies, as the vocabulary gate does.
 	if (existing == nil || w.revisionOf != "") && !copiedEdgeMethod(w.method) {
-		if r := d.retiredStatementRefusal(ctx, w.kind, w.from, w.to); r != nil {
-			return out, r, nil
+		r, err := d.retiredNewUseRefusal(ctx, key, w.kind, w.from, w.to, w.revisionOf)
+		if err != nil || r != nil {
+			return out, r, err
 		}
 	}
 	now := time.Now().UnixNano()
@@ -649,6 +650,9 @@ func (d *Document) writeStatement(ctx context.Context, key sqlmem.ScopeKey, msco
 				r, err := d.applyRuling(ctx, key, mscope, "accept_statement", existing.ID, true, "", operatorRuler(ctx), "")
 				if err != nil {
 					return out, nil, err
+				}
+				if r.code == rulingEntryRetired {
+					return out, r.refusal, nil
 				}
 				if r.refusal == nil {
 					out.Status = r.status
@@ -1709,6 +1713,7 @@ const (
 	rulingNotProposal    = "not_a_proposal"
 	rulingChanged        = "statement_changed"
 	rulingCharacteristic = "characteristic_violation"
+	rulingEntryRetired   = "entry_retired"
 )
 
 // rulingOutcome is one ruling: the status it set, the statement as it was read
@@ -1789,6 +1794,15 @@ func (d *Document) applyRuling(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			r := errBusiness(op+": "+rulingCharacteristic+": "+p.msg,
 				"Retire the existing statement first, or correct it with a revision.")
 			return rulingOutcome{code: rulingCharacteristic, refusal: &r}, nil
+		}
+		// Putting a proposal in force is a new use of its kind and its ends: one
+		// filed before an entry was retired goes live no more than a new one would.
+		r, err := d.retiredNewUseRefusal(ctx, key, s.Kind, s.FromID, s.ToID, revisedOriginal(s))
+		if err != nil {
+			return rulingOutcome{}, err
+		}
+		if r != nil {
+			return rulingOutcome{code: rulingEntryRetired, refusal: r}, nil
 		}
 	}
 	// Accepting a revision (propose_statement with id) retires the statement it

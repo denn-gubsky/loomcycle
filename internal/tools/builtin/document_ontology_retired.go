@@ -216,10 +216,40 @@ func copiedEdgeMethod(method string) bool {
 	return method == edgeMethodImport || method == edgeMethodCanvas || method == edgeMethodSync
 }
 
+// retiredNewUseRefusal is retiredStatementRefusal for a statement that may revise
+// another (propose_statement with id). A revision replaces the statement it revises, so
+// what it shares with it is no new use (RFC FO 3.7 B2): only a kind or an end the
+// revision changes is checked.
+func (d *Document) retiredNewUseRefusal(ctx context.Context, key sqlmem.ScopeKey, kind, from, to, revisionOf string) (*tools.Result, error) {
+	if revisionOf != "" {
+		base, err := d.statementByID(ctx, key, revisionOf)
+		if err != nil {
+			return nil, err
+		}
+		if base != nil {
+			if base.Kind == kind {
+				kind = ""
+			}
+			if base.FromID == from {
+				from = ""
+			}
+			if base.ToID == to {
+				to = ""
+			}
+		}
+	}
+	if kind == "" && from == "" && to == "" {
+		return nil, nil
+	}
+	return d.retiredStatementRefusal(ctx, key, kind, from, to), nil
+}
+
 // retiredStatementRefusal refuses a NEW statement of a retired relation kind, or one
-// from or to a retired concept (a new placement under it). Only a confirmed ontology
-// governs; a fault fails open, like every other vocabulary check.
-func (d *Document) retiredStatementRefusal(ctx context.Context, kind, from, to string) *tools.Result {
+// from or to a retired entry: a concept (a new placement under it), a class or relation
+// entry's chunk, or a retired instance — its entry chunk or the subject it was adopted
+// as. "" for kind, from or to is not checked. Only a confirmed ontology governs; a
+// fault fails open, like every other vocabulary check.
+func (d *Document) retiredStatementRefusal(ctx context.Context, key sqlmem.ScopeKey, kind, from, to string) *tools.Result {
 	// A reserved kind (about, derived_from, …) is the runtime's own and never a tenant
 	// entry; skipping it keeps the per-fact runtime edges free of an ontology read.
 	if d.Store == nil || d.SqlMem == nil || memrank.IsReservedRelation(kind) {
@@ -229,20 +259,68 @@ func (d *Document) retiredStatementRefusal(ctx context.Context, kind, from, to s
 	if !ok || !read.Confirmed {
 		return nil
 	}
-	for _, r := range memrank.EffectiveRelations(read.Relations, hasSection(read.Sections, memrank.SectionRelations), true) {
-		if r.Name == kind && r.EntryStatus != "" {
-			res := errEntryRetired("", "the relation kind "+strconv.Quote(kind))
+	if kind != "" {
+		for _, r := range memrank.EffectiveRelations(read.Relations, hasSection(read.Sections, memrank.SectionRelations), true) {
+			if r.Name == kind && r.EntryStatus != "" {
+				res := errEntryRetired("", "the relation kind "+strconv.Quote(kind))
+				return &res
+			}
+		}
+	}
+	if from == "" && to == "" {
+		return nil
+	}
+	retired := retiredEntryChunks(read)
+	for _, id := range []string{from, to} {
+		if what := retired[id]; id != "" && what != "" {
+			res := errEntryRetired("", what)
 			return &res
 		}
 	}
-	retired := retiredConceptChunks(read)
-	for _, id := range []string{from, to} {
-		if tag := retired[id]; tag != "" {
-			res := errEntryRetired("", "the concept "+tag)
+	// An adopted instance's subject lives in the tenant scope under the key adoption
+	// recorded on the instance; one never adopted has no subject to protect.
+	if key.Scope != "tenant" {
+		return nil
+	}
+	for _, in := range read.Instances {
+		if in.EntryStatus == "" || in.RegistryKey == "" {
+			continue
+		}
+		subject, err := d.chunkIDByNaturalKey(ctx, key, in.RegistryKey)
+		if err != nil || subject == "" {
+			continue
+		}
+		if subject == from || subject == to {
+			res := errEntryRetired("", "the instance "+strconv.Quote(in.Name))
 			return &res
 		}
 	}
 	return nil
+}
+
+// retiredEntryChunks names, by chunk id, every retired entry a statement could point
+// at: concepts and schemes (by mirror tag), classes, relation kinds and instances.
+func retiredEntryChunks(read OntologyRead) map[string]string {
+	out := map[string]string{}
+	for id, tag := range retiredConceptChunks(read) {
+		out[id] = "the concept " + tag
+	}
+	for _, t := range read.Terms {
+		if id := read.classChunkID(t.Name); t.EntryStatus != "" && id != "" {
+			out[id] = "the class " + strconv.Quote(t.Name)
+		}
+	}
+	for _, r := range read.Relations {
+		if r.EntryStatus != "" && r.ChunkID != "" {
+			out[r.ChunkID] = "the relation kind " + strconv.Quote(r.Name)
+		}
+	}
+	for _, in := range read.Instances {
+		if in.EntryStatus != "" && in.ChunkID != "" {
+			out[in.ChunkID] = "the instance " + strconv.Quote(in.Name)
+		}
+	}
+	return out
 }
 
 // retiredClassRefusal refuses a write that gives a chunk a retired class as its type

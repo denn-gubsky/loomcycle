@@ -414,12 +414,19 @@ func (d *Document) writeInstanceStatements(ctx context.Context, key sqlmem.Scope
 			retired[strings.ToLower(inst.Name)] = true
 		}
 	}
+	retiredClass := map[string]bool{}
+	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
+		if c.EntryStatus != "" {
+			retiredClass[strings.ToLower(c.Name)] = true
+		}
+	}
 	for _, inst := range read.Instances {
 		from := roots[strings.ToLower(inst.Name)]
 		if from == "" {
 			continue
 		}
-		if classChunk := d.chunkIDForEntity(ctx, key, read.DocumentID, inst.Class); classChunk != "" {
+		// A retired class takes no new instance_of; one already written stays.
+		if classChunk := d.chunkIDForEntity(ctx, key, read.DocumentID, inst.Class); classChunk != "" && !retiredClass[strings.ToLower(inst.Class)] {
 			link(from, classChunk, "instance_of", inst.Name)
 		}
 		if inst.Parent != "" && inst.ParentKind != "" {
