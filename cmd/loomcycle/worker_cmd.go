@@ -82,6 +82,7 @@ func runWorker(args []string, stderr io.Writer) int {
 		Media:        helperFrom("LOOMCYCLE_WORKER_MEDIA_COMMAND", "transcription.stt.media"),
 		Encode:       helperFrom("LOOMCYCLE_WORKER_ENCODE_COMMAND", "speech.encode"),
 		WritePDF:     pdfHelper(wrapper),
+		Draw:         diagramHelper(wrapper),
 		Images:       vision.NewReencoder(),
 		TLS:          tlsCfg,
 		Insecure:     os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1",
@@ -110,6 +111,21 @@ func pdfHelper(wrapper string) *convert.Helper {
 		cmd = convert.DefaultPDFCommand
 	}
 	return &convert.Helper{Key: convert.PDFHelperKey, Command: cmd, Wrapper: wrapper}
+}
+
+// diagramHelper draws Mermaid diagrams (RFC GR P4d): the operator's
+// LOOMCYCLE_WORKER_MERMAID_COMMAND, else the default renderer when it is
+// installed here. With neither, the worker takes no diagrams; a render's
+// diagrams then stay code.
+func diagramHelper(wrapper string) *convert.Helper {
+	cmd := strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_MERMAID_COMMAND"))
+	if cmd == "" {
+		if _, err := exec.LookPath(convert.DiagramProgram); err != nil {
+			return nil
+		}
+		cmd = convert.DefaultDiagramCommand
+	}
+	return &convert.Helper{Key: convert.DiagramHelperKey, Command: cmd, Wrapper: wrapper}
 }
 
 // workerTLS is the TLS a worker dials network dispatchers with, from its

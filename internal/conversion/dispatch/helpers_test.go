@@ -334,3 +334,34 @@ func TestPool_APDFRenderNeedsAWorkerWithTheTypesetter(t *testing.T) {
 		t.Fatalf("PDF on the typesetter's worker: %d bytes (%v)", len(got), err)
 	}
 }
+
+// A diagram drawn on a worker comes back as the same job gives in this
+// process; with workers attached and none carrying the renderer, a draw is
+// refused at once as a program missing where the workers run (RFC GR P4d).
+func TestPool_DiagramDrawMatchesInProcessAndNeedsTheRenderer(t *testing.T) {
+	d, target := pool(t, dispatch.Options{Configured: map[string]bool{wire.LabelDraw: true}})
+	helperWorker(t, target, "w1", worker.Options{Draw: copyHelper(convert.DiagramHelperKey)})
+	waitIdle(t, d, 1)
+	here := &convert.InProcess{Draw: copyHelper(convert.DiagramHelperKey),
+		Scratch: func(context.Context) (string, error) { return t.TempDir(), nil }}
+	src := []byte("flowchart LR\n  A --> B\n")
+	want, err := here.DrawDiagram(context.Background(), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.Client().DrawDiagram(context.Background(), src)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Errorf("pool %q (%v), in process %q", got, err, want)
+	}
+
+	bare, target2 := pool(t, dispatch.Options{QueueWait: time.Minute, Configured: map[string]bool{wire.LabelDraw: true}})
+	helperWorker(t, target2, "w2", worker.Options{})
+	waitIdle(t, bare, 1)
+	start := time.Now()
+	if _, err := bare.Client().DrawDiagram(context.Background(), src); !errors.Is(err, convert.ErrNoHelper) {
+		t.Errorf("no worker with the renderer: %v, want ErrNoHelper", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Errorf("the refusal waited %v", time.Since(start))
+	}
+}

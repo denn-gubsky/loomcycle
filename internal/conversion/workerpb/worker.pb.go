@@ -125,6 +125,9 @@ const (
 	JobKind_JOB_KIND_IMAGE_REENCODE JobKind = 6
 	// A render bundle to a file of `format` (RFC GR).
 	JobKind_JOB_KIND_DOCUMENT_RENDER JobKind = 7
+	// A Mermaid diagram's source to a PNG, with the diagram helper (RFC GR
+	// P4d).
+	JobKind_JOB_KIND_DIAGRAM_DRAW JobKind = 8
 )
 
 // Enum value maps for JobKind.
@@ -138,6 +141,7 @@ var (
 		5: "JOB_KIND_AUDIO_ENCODE",
 		6: "JOB_KIND_IMAGE_REENCODE",
 		7: "JOB_KIND_DOCUMENT_RENDER",
+		8: "JOB_KIND_DIAGRAM_DRAW",
 	}
 	JobKind_value = map[string]int32{
 		"JOB_KIND_UNSPECIFIED":      0,
@@ -148,6 +152,7 @@ var (
 		"JOB_KIND_AUDIO_ENCODE":     5,
 		"JOB_KIND_IMAGE_REENCODE":   6,
 		"JOB_KIND_DOCUMENT_RENDER":  7,
+		"JOB_KIND_DIAGRAM_DRAW":     8,
 	}
 )
 
@@ -2241,7 +2246,7 @@ const file_worker_proto_rawDesc = "" +
 	"\x17ERROR_CLASS_UNSUPPORTED\x10\x05\x12\x19\n" +
 	"\x15ERROR_CLASS_CANCELLED\x10\x06\x12\x15\n" +
 	"\x11ERROR_CLASS_INPUT\x10\a\x12\x1e\n" +
-	"\x1aERROR_CLASS_NOT_CONFIGURED\x10\b*\xe3\x01\n" +
+	"\x1aERROR_CLASS_NOT_CONFIGURED\x10\b*\xfe\x01\n" +
 	"\aJobKind\x12\x18\n" +
 	"\x14JOB_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10JOB_KIND_EXTRACT\x10\x01\x12\x1d\n" +
@@ -2250,7 +2255,8 @@ const file_worker_proto_rawDesc = "" +
 	"\x16JOB_KIND_MEDIA_CONVERT\x10\x04\x12\x19\n" +
 	"\x15JOB_KIND_AUDIO_ENCODE\x10\x05\x12\x1b\n" +
 	"\x17JOB_KIND_IMAGE_REENCODE\x10\x06\x12\x1c\n" +
-	"\x18JOB_KIND_DOCUMENT_RENDER\x10\a*d\n" +
+	"\x18JOB_KIND_DOCUMENT_RENDER\x10\a\x12\x19\n" +
+	"\x15JOB_KIND_DIAGRAM_DRAW\x10\b*d\n" +
 	"\fCancelReason\x12\x1d\n" +
 	"\x19CANCEL_REASON_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17CANCEL_REASON_SINK_FULL\x10\x01\x12\x18\n" +

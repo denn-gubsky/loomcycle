@@ -241,6 +241,11 @@ func splitMarkdownTitle(md, fallback string) (string, string) {
 func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Report, src renderedSource, log *renderLog) (tools.Result, error) {
 	rep.Format = j.format
 	j.attachStyle(doc, &rep)
+	// Diagrams are drawn before anything is hashed or bundled: the render
+	// log's hash covers their pictures, and every writer sees a picture.
+	if err := render.DrawDiagrams(ctx, doc, j.format, j.drawDiagram, &rep); err != nil {
+		return tools.Result{}, err
+	}
 	opts := j.options()
 	optsJSON := renderOptionsJSON(opts, j.provenance(), j.in.Language, j.in.Chunk)
 	stem := inbox.SanitizeName(doc.Title)
@@ -643,4 +648,17 @@ func ensureVolumeFolder(ctx context.Context, op string, r dataRef) (tools.Result
 		return errBusiness(fmt.Sprintf("%s: %s is not a folder", op, r.raw), "Choose another name for the file."), false
 	}
 	return tools.Result{}, true
+}
+
+// drawDiagram draws one Mermaid diagram on this tool's converter (RFC GR
+// P4d). A server with nothing to draw it, or none free to, answers
+// render.ErrNoDrawer: the render's diagrams then stay code rather than
+// each waiting its turn.
+func (j *renderJob) drawDiagram(ctx context.Context, src string) ([]byte, error) {
+	b, err := j.f.converter().DrawDiagram(ctx, []byte(src))
+	if errors.Is(err, convert.ErrNotConfigured) || errors.Is(err, convert.ErrNoHelper) ||
+		errors.Is(err, convert.ErrNoWorkers) || errors.Is(err, convert.ErrBusy) {
+		return nil, render.ErrNoDrawer
+	}
+	return b, err
 }
