@@ -41,11 +41,17 @@ with no entry in the ontology (the seed `Document`) is refused with
 - `declared` — no member: `composed` holds the brief and abstract the runtime
   wrote from the definition. Write it as it is; no model is needed.
 
+A node's members are only the documents every member of the tenant may read:
+one the tenant's access-control rules keep from some member is not counted,
+not sampled, not in the class histogram, the statuses or the terms. A member
+whose document annotation is metadata-only is counted and never an exemplar.
+
 The hash covers the definition, the basis, the member set, the exemplars'
 titles and annotation texts, the narrower records, the sibling names, the
 terms, the class histogram, the language and the prompt version. Member
-statuses are not hashed. Node inputs are refused to a caller whose
-access-control rules hide any document of the scope, as `node_stats` is.
+statuses are not hashed. A record written before members were narrowed this way
+is stale. Node inputs are refused to a caller whose access-control rules hide
+any document of the scope, as `node_stats` is.
 
 `identity` says which work the document is: the root's natural key and
 identity-like fields (`letter`, `code`, `work_key` …), and the fields its

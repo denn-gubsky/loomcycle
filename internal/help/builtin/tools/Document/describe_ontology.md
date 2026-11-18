@@ -170,7 +170,17 @@ and carries none.
 ## Node statistics
 
 With `with_stats: true` the answer carries the counts above and, on each concept
-and each document class whose statistics `node_stats` has stored, `stats`:
+and each document class whose statistics `node_stats` has stored, `stats`.
+
+The statistics are computed only from the documents every member of the tenant
+may read: a document the tenant's access-control rules keep from some member
+(a deny bound to a group, a user, a token or the whole tenant) is left out of
+them entirely — never counted, never an exemplar, never in the terms. They are
+then the same for every reader of the ontology; nothing is withheld from a
+reader with access-control limits. The counts above are not: they stay the
+caller's own, the documents it may read. A member whose document annotation is
+metadata-only (written from a catalogue record without its content) is counted
+in `members` and left out of the centroid, the exemplars and the terms.
 
 - `members` and `members_with_vector` — the members when they were computed,
   and how many of them had a document-level annotation vector;
@@ -186,13 +196,15 @@ and each document class whose statistics `node_stats` has stored, `stats`:
   since.
 
 Without a vector store (Postgres with pgvector) a stored row has counts only.
-Statistics are drawn from every member, so a reader with access-control
-limits sees them only when it may read every member of the node and the stored
-row was computed from its current members. Otherwise — and for a node with no
-stored row — `stats` is `{withheld: <reason>}`, one reason for every cause, so
-it does not tell which; the counts beside it are the documents you may read.
-For a reader without limits a node with no stored row has no `stats`. Vectors
-and centroids are never returned.
+A node with no stored row has no `stats`, and neither has one whose row was
+stored before statistics left out restricted documents, until `node_stats`
+computes it again. A stale row is shown, marked `stale`, while the node's
+members are still the ones it was computed from. When they are not — a member
+was restricted, filed under a denied name, turned metadata-only or added since —
+`stats` holds only today's `members`, `computed_at`, `stale: true` and
+`recomputing` (why), until the next `node_stats` pass: spread, terms,
+exemplars and siblings drawn from the old members are not served. Vectors and
+centroids are never returned.
 
 Beside `stats`, a concept or document class with a stored series (see
 `measure`) carries `series`: `{period, latest, count, share?, fallback_share,
@@ -202,8 +214,8 @@ share of those members dated only by when they were stored. `trend` is
 `{previous, previous_count, previous_share?, change}`: the period before, and
 the change of share since (of count where the share is not known). It is served
 beside the node, never written into a summary, and follows the same rule as
-`stats`: `{withheld: <why>}` when you may not read every document it is built
-from.
+`stats`: built from the documents every member may read, the same for every
+reader.
 
 ## Review rules
 

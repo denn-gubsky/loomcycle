@@ -19,13 +19,17 @@ package builtin
 //	declared  no member: annotation_inputs composes the text from the definition and
 //	          the annotator writes it with no model call.
 //
-// The stored record carries its basis. A declared record covers nothing: it is shown
-// to anyone who may read the ontology. A written or thin one is computed from every
-// member (the count, the histogram, the terms), so it is shown only to a caller who
-// may read every CURRENT member, and — to a caller with any read limit — only while
-// it is fresh: a stale record may have been written from a member that has since
-// left, which this caller might not be allowed to read (RFC GM D8 (i), §7). No id
-// list is stored; the check runs the membership query at read time.
+// The stored record carries its basis. Its members are the node_stats plan's: only
+// the documents every member of the tenant may read (RFC GM C8), a metadata-only
+// member counted but never an exemplar (C9). So the record — written, thin or
+// declared, fresh or stale — is shown to every reader of the ontology alike, with
+// its staleness, while it was written from the node's current members
+// (nodeRecordCurrent: a written or thin record keeps its member set at the end of
+// its inputs hash). A written or thin record stored before C8 (its inputs_sha256
+// lacks unrestrictedFamily) was written from every member, a restricted one
+// included, and one written before a member was restricted since may quote it: it
+// is shown to no one until the annotator writes it again, unless an operator wrote
+// it by hand (manual), which the annotator never overwrites.
 //
 // THE HASH covers what the request carries (RFC GM §4.3, D5): the definition (and
 // the scheme header), the basis, the member set, each exemplar's title and stored
@@ -64,7 +68,8 @@ const (
 
 	// nodeAnnotationCanonVersion is the version of the node hash's form; a change to
 	// what it covers bumps it, which marks every node record stale on purpose.
-	nodeAnnotationCanonVersion = "node_annotation/1"
+	// node_annotation/2: members are the unrestricted documents (RFC GM C8).
+	nodeAnnotationCanonVersion = "node_annotation/2"
 	// nodeAnnotationNarrowerCap and nodeAnnotationSiblingCap bound how many narrower
 	// nodes and siblings one request names.
 	nodeAnnotationNarrowerCap = 30
@@ -406,7 +411,11 @@ func (s *annotationScope) nodeInputs(ctx context.Context, n *annotationNode, pro
 		in.Statistics = "missing"
 	}
 	row, hasRow := p.stored[n.statKey]
-	usable := hasRow && row.memberSHA == membersHash(n.members)
+	hasRow = hasRow && row.current() // a row from before C8 is no row
+	// The stored set carries each member's metadata-only mark (memberSetHash): a
+	// member turned metadata-only since the pass makes the row's exemplars and terms
+	// unusable, as a member restricted since does (C9, C8).
+	usable := hasRow && row.memberSHA == p.memberSetHash(n.members)
 	if hasRow {
 		switch {
 		case !usable:
@@ -427,7 +436,12 @@ func (s *annotationScope) nodeInputs(ctx context.Context, n *annotationNode, pro
 		var exIDs []string
 		switch {
 		case in.Basis == annotationBasisThin:
-			exIDs, in.ExemplarsFrom = n.members, "members"
+			for _, id := range n.members {
+				if p.averaged(id) {
+					exIDs = append(exIDs, id)
+				}
+			}
+			in.ExemplarsFrom = "members"
 		case usable && len(row.exemplars) > 0:
 			for _, e := range row.exemplars {
 				exIDs = append(exIDs, e.ID)
@@ -443,7 +457,7 @@ func (s *annotationScope) nodeInputs(ctx context.Context, n *annotationNode, pro
 			}
 		}
 		if len(missing) > 0 {
-			if err := s.d.loadStatDocs(ctx, s.key, missing, p.docs); err != nil {
+			if err := s.d.loadStatDocs(ctx, s.key, missing, p.docs, p.tierCol); err != nil {
 				return in, err
 			}
 		}
@@ -470,17 +484,15 @@ func (s *annotationScope) nodeInputs(ctx context.Context, n *annotationNode, pro
 		// that is all its hash covers: a narrower node's rewrite, or a sibling's
 		// rename, does not make an empty node stale.
 		in.Composed = composeDeclaredNode(n, in)
-		// Nothing computed from members either: a declared record is shown to a
-		// reader with read limits, so its hash must say nothing about who is under
-		// the node (RFC GM D8 (i)). A first member still marks it stale: the
-		// node's current hash is then a thin one.
+		// Nothing computed from members either. A first member still marks it
+		// stale: the node's current hash is then a thin one.
 		canon.Basis, canon.Members = "", ""
 		canon.Narrower = canon.Narrower[:0]
 		for _, nw := range in.Narrower {
 			canon.Narrower = append(canon.Narrower, nw.Name)
 		}
 		raw, _ := json.Marshal(canon)
-		in.InputsSHA256 = sha256Hex(string(raw))
+		in.InputsSHA256 = unrestrictedFamily + sha256Hex(string(raw))
 		return in, nil
 	}
 	if len(in.Siblings) == 0 && n.ownGroup != "" {
@@ -493,8 +505,34 @@ func (s *annotationScope) nodeInputs(ctx context.Context, n *annotationNode, pro
 	canon.Siblings = append(canon.Siblings, in.Siblings...)
 	canon.Terms = append(canon.Terms, in.Terms...)
 	raw, _ := json.Marshal(canon)
-	in.InputsSHA256 = sha256Hex(string(raw))
+	in.InputsSHA256 = unrestrictedFamily + sha256Hex(string(raw)) + nodeRecordMembersSep + p.memberSetHash(n.members)
 	return in, nil
+}
+
+// nodeRecordMembersSep ends a written or thin record's inputs hash and starts its
+// member set (memberSetHash), kept readable so a read can compare it with the
+// node's current members without the rest of the request (nodeRecordCurrent).
+const nodeRecordMembersSep = "/m:"
+
+// nodeRecordCurrent reports whether rec, a record of a node whose current members
+// are members, may be served. A declared record names no member and a manual one is
+// an operator's own text. A written or thin one is served only when it is of
+// unrestrictedFamily and was written from exactly today's members: one written
+// before a member was restricted (a deny, a set_path under a denied name) or turned
+// metadata-only would otherwise keep its text — drawn from that member's brief —
+// in front of every reader until the annotator writes it again. A record written
+// before its member set was kept in the hash has none and is not served either.
+// One that merely gained a member is withheld too, until rewritten: the safe
+// direction.
+func nodeRecordCurrent(rec annotationRecord, p *nodeStatsPlan, members []string) bool {
+	if rec.Basis == annotationBasisDeclared || rec.Manual {
+		return true
+	}
+	if !strings.HasPrefix(rec.InputsSHA256, unrestrictedFamily) {
+		return false
+	}
+	_, stored, ok := strings.Cut(rec.InputsSHA256, nodeRecordMembersSep)
+	return ok && stored == p.memberSetHash(members)
 }
 
 // statKind is the kind half of a node_stats key.
@@ -514,16 +552,24 @@ func statNodeOf(p *nodeStatsPlan, key string) statNode {
 }
 
 // sampleMembers is the exemplars of a node with no stored statistics: its first
-// members by id that carry a document annotation, else its first members.
+// members by id that carry a document annotation, else its first members; never a
+// metadata-only member (C9).
 func sampleMembers(members []string, docs map[string]*statDoc) []string {
-	var out []string
+	var out, plain []string
 	for _, id := range members {
-		if sd := docs[id]; sd != nil && sd.annotated && len(out) < nodestats.KExemplars {
+		sd := docs[id]
+		if sd != nil && sd.metadataOnly {
+			continue
+		}
+		if sd != nil && sd.annotated && len(out) < nodestats.KExemplars {
 			out = append(out, id)
+		}
+		if len(plain) < nodestats.KExemplars {
+			plain = append(plain, id)
 		}
 	}
 	if len(out) == 0 {
-		out = members[:min(len(members), nodestats.KExemplars)]
+		out = plain
 	}
 	return out
 }
@@ -625,7 +671,9 @@ func (s *annotationScope) nodeNarrower(ctx context.Context, n *annotationNode, p
 	for _, k := range kids {
 		nw := nodeNarrower{Name: k.sn.Name, Members: len(k.sn.members)}
 		h := "none"
-		if rec, ok := recs[k.chunkID][level]; ok && k.chunkID != "" {
+		// A narrower record not servable now is not carried into this node's
+		// request either: its text would reach the new record.
+		if rec, ok := recs[k.chunkID][level]; ok && k.chunkID != "" && nodeRecordCurrent(rec, p, k.sn.members) {
 			nw.Brief, nw.Abstract = rec.Brief, rec.Abstract
 			h = sha256Hex(rec.Brief + "\x00" + rec.Abstract)
 		}
@@ -756,8 +804,9 @@ func (d *Document) retiredNodeTarget(ctx context.Context, key sqlmem.ScopeKey, i
 }
 
 // nodeAnnotationsReadEverything refuses a node annotation's inputs or write to a
-// caller whose access-control rules hide a document of the scope: the request is
-// computed from every member, as node_stats is.
+// caller whose access-control rules hide a document of the scope, as node_stats
+// refuses its pass: writing the taxonomy's figures is the work of a caller that
+// reads the whole tenant scope. Reading a record is not gated (nodeRecordShown).
 func (d *Document) nodeAnnotationsReadEverything(ctx context.Context, op string, key sqlmem.ScopeKey) *tools.Result {
 	list, err := d.readableDocList(ctx, d.newDocACL(ctx, key))
 	if err != nil {
@@ -850,67 +899,33 @@ func (d *Document) setNodeAnnotation(ctx context.Context, s *annotationScope, t 
 	return annotationWriteResult(ctx, rec, nil)
 }
 
-// readsLimited reports whether the caller acl stands for has any read limit,
-// deriving its read list once per scope.
-func (s *annotationScope) readsLimited(ctx context.Context, acl *docACL) (bool, error) {
-	if !s.listRead {
-		list, err := s.d.readableDocList(ctx, acl)
-		if err != nil {
-			return true, err
-		}
-		s.listRead = true
-		if !readsEverything(list) {
-			s.readList = list
-		}
-	}
-	return s.readList != nil, nil
-}
-
-// nodeRecordShown applies RFC GM D8 (i) to rec, a node record whose staleness is
-// stale: whether the caller acl stands for sees it, and the staleness it is told.
-// A declared record is shown to anyone; any other only to a caller who reads every
-// current member and, with any read limit, only while it is fresh. A caller with a
-// read limit is never told a node record's staleness (reported is nil): a declared
-// record goes stale when a first member is filed under it, which may be a document
-// this caller cannot read.
-func (s *annotationScope) nodeRecordShown(ctx context.Context, acl *docACL, rec annotationRecord, stale bool) (shown bool, reported *bool, err error) {
-	limited, err := s.readsLimited(ctx, acl)
-	if err != nil {
-		return false, nil, err
-	}
-	if !limited {
-		return true, &stale, nil
-	}
-	if rec.Basis == annotationBasisDeclared {
-		return true, nil, nil
-	}
-	if withheld, err := s.nodeRecordWithheld(ctx, rec, stale); err != nil || withheld {
-		return false, nil, err
-	}
-	return true, nil, nil
-}
-
-// nodeRecordWithheld reports whether rec, a written or thin node record, is
-// withheld from a caller with a read limit (s.readList): it is unless the record
-// is fresh and the caller reads every current member.
-func (s *annotationScope) nodeRecordWithheld(ctx context.Context, rec annotationRecord, stale bool) (bool, error) {
-	if stale {
+// nodeRecordShown reports whether rec, a node record, is shown at all. The answer
+// is the same for every reader of the ontology, and so is its staleness (RFC GM C8:
+// the request is built from unrestricted documents only): nodeRecordCurrent against
+// the node's current members. A written or thin record stored before C8, or whose
+// node is no longer in force (its members cannot be checked), is shown to no one
+// until the annotator writes it again; a declared one never named a member, and a
+// manual one is an operator's own text, which the annotator never rewrites.
+func (s *annotationScope) nodeRecordShown(ctx context.Context, rec annotationRecord) (bool, error) {
+	if rec.Basis == annotationBasisDeclared || rec.Manual {
 		return true, nil
+	}
+	if !strings.HasPrefix(rec.InputsSHA256, unrestrictedFamily) {
+		return false, nil
 	}
 	n, err := s.resolveNode(ctx, "get_annotation", rec.ChunkID, rec.Level, "")
 	if err != nil {
 		var nr *nodeRefusal
 		if errors.As(err, &nr) {
-			return true, nil
+			return false, nil
 		}
-		return true, err
+		return false, err
 	}
-	for _, id := range n.members {
-		if !s.readList.readable(id) {
-			return true, nil
-		}
+	p, err := s.nodePlan(ctx)
+	if err != nil {
+		return false, err
 	}
-	return false, nil
+	return nodeRecordCurrent(rec, p, n.members), nil
 }
 
 // nodeStale is a node record's staleness: its node's current inputs under the

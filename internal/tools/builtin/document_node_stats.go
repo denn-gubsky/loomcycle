@@ -30,12 +30,20 @@ package builtin
 // already the union of its narrower ones' (conceptMembership), so no running sum is
 // kept: at hundreds to low thousands of documents a recompute is milliseconds.
 //
-// READING (describe_ontology with_stats). A node's statistics come from every member,
-// so they are shown only to a caller who may read every member (RFC GM §7). A
-// caller with no access-control limit reads everything. Any other caller is checked
-// against the CURRENT membership, and the stored row must have been computed from
-// that same member set (members_sha256): otherwise a member the row was computed
-// from may be one the caller cannot see, and nothing says so.
+// WHO IS COUNTED (RFC GM C8, replacing D8 (i)). A node's members, here and in
+// everything built on the plan (the series, the node annotations' requests), are
+// only the documents every member of the tenant may read (unrestrictedDocList). A
+// restricted document is left out entirely: never counted, never an exemplar, never
+// in the terms. A member whose document annotation is metadata-only (RFC GP 10f,
+// chunk_annotations.tier = 'metadata', read only where the column exists) is
+// counted in members but left out of the centroid, the exemplars and the terms.
+//
+// READING (describe_ontology with_stats). Every reader of the ontology gets the same
+// statistics: nothing is withheld per reader. Only rows of unrestrictedFamily are
+// served; one stored before C8 reads as absent until the next pass. A row whose
+// stored member set (members_sha256) is not the node's current one — a member
+// restricted, filed elsewhere or turned metadata-only since the pass — serves only
+// today's member count until the next pass (statsView).
 //
 // SQLite has one connection per scope: every read is made before the write
 // transaction opens.
@@ -70,7 +78,9 @@ const (
 
 	// nodeStatsHashVersion is the version of what the inputs hash covers: a change
 	// to the hashed form bumps it, which marks every row stale on purpose.
-	nodeStatsHashVersion = "node_stats/2"
+	// node_stats/3: members are the unrestricted documents (RFC GM C8) and a
+	// metadata-only member is marked (C9).
+	nodeStatsHashVersion = "node_stats/3"
 	// nodeStatsVectorPage is the vectors read per store call (the store's cap).
 	nodeStatsVectorPage = 1000
 	// nodeStatsDocBatch is the document ids per IN list.
@@ -80,8 +90,10 @@ const (
 // nodeStatsDDL is built per tier, like chunk_projection_basis: the centroid is
 // binary (float32 little-endian, the mean of the members' unit vectors), BLOB on
 // sqlite and BYTEA on postgres. exemplars, siblings and terms are JSON arrays.
-// members_sha256 is the hash of the sorted member ids alone: the reader's check
-// that a row was computed from the member set it can see.
+// members_sha256 is memberSetHash: the sorted member ids, each marked when it is
+// metadata-only. A read serves the row's figures only while it still equals the
+// node's current members' (statsView), so a document restricted after a pass, or
+// turned metadata-only, stops shaping what every reader sees at once.
 func nodeStatsDDL(binType string) string {
 	return `CREATE TABLE IF NOT EXISTS node_stats (
 		node_id TEXT NOT NULL, kind TEXT NOT NULL,
@@ -109,6 +121,9 @@ type statDoc struct {
 	root, title           string
 	brief, abstract, hash string // the document-level annotation; hash its inputs_sha256
 	annotated             bool
+	// metadataOnly: the annotation was written from the record without its content
+	// (tier metadata, C9): counted, never averaged, an exemplar or a source of terms.
+	metadataOnly bool
 }
 
 // storedNodeStats is one node_stats row, without its centroid.
@@ -122,6 +137,10 @@ type storedNodeStats struct {
 	inputs, memberSHA   string
 	computedAt          int64
 }
+
+// current reports whether the row was computed under RFC GM C8, from unrestricted
+// documents only: only such a row is ever served.
+func (r storedNodeStats) current() bool { return strings.HasPrefix(r.inputs, unrestrictedFamily) }
 
 // nodeStatsScored is a stored exemplar (a document) or sibling (a node) with its
 // cosine similarity to the node's centroid.
@@ -138,8 +157,13 @@ type nodeStatsPlan struct {
 	// model is the embed model a vector must be of, "" when the vector stage cannot
 	// run; note says why it cannot.
 	model, note string
-	// vecs is each member document's vector of model, read once per plan.
+	// vecs is each member document's vector of model, read once per plan; a
+	// metadata-only member has none.
 	vecs map[string]nodestats.Vector
+	// unrestricted narrows the scope to what every member may read (nil: all of it);
+	// tierCol says chunk_annotations has the tier column (C9), probed once per plan.
+	unrestricted *docReadList
+	tierCol      bool
 }
 
 func nodeStatsKey(kind, id string) string { return kind + "\x00" + id }
@@ -164,18 +188,43 @@ func (p *nodeStatsPlan) nodeHash(n statNode) string {
 			fmt.Fprintf(h, "vector %s\n", id)
 		}
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return unrestrictedFamily + hex.EncodeToString(h.Sum(nil))
 }
 
 // memberLine is one member as an inputs hash reads it: its id, its annotation's
-// inputs_sha256 and a hash of the annotation's own text.
+// inputs_sha256, a hash of the annotation's own text, and whether it is
+// metadata-only (which takes it out of the centroid and the terms).
 func (p *nodeStatsPlan) memberLine(id string) string {
-	ann, text := "", ""
+	ann, text, meta := "", "", ""
 	if d := p.docs[id]; d != nil && d.annotated {
 		sum := sha256.Sum256([]byte(d.brief + "\x00" + d.abstract))
 		ann, text = d.hash, hex.EncodeToString(sum[:])
+		if d.metadataOnly {
+			meta = " metadata"
+		}
 	}
-	return id + " " + ann + " " + text
+	return id + " " + ann + " " + text + meta
+}
+
+// averaged reports whether member id's text and vector go into a node's figures:
+// a metadata-only member is counted and nothing more (C9).
+func (p *nodeStatsPlan) averaged(id string) bool {
+	d := p.docs[id]
+	return d == nil || !d.metadataOnly
+}
+
+// memberSetHash is a row's or record's stored member set: membersHash of the ids,
+// a metadata-only member's id followed by " metadata" (C9). With no metadata-only
+// member it equals membersHash(ids).
+func (p *nodeStatsPlan) memberSetHash(ids []string) string {
+	lines := make([]string, len(ids))
+	for i, id := range ids {
+		lines[i] = id
+		if !p.averaged(id) {
+			lines[i] += " metadata"
+		}
+	}
+	return membersHash(lines)
 }
 
 func membersHash(ids []string) string {
@@ -204,6 +253,7 @@ func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, 
 		return nil, err
 	}
 	p := &nodeStatsPlan{docs: map[string]*statDoc{}, stored: map[string]storedNodeStats{}}
+	var err error
 	if p.note = d.nodeStatsVectorsNote(); p.note == "" {
 		p.model = d.projectionModel()
 	}
@@ -211,7 +261,11 @@ func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, 
 	if read.Confirmed {
 		schemes = read.Schemes
 	}
-	membership, err := d.conceptMembership(ctx, key, schemes, nil)
+	if p.unrestricted, err = d.unrestrictedDocList(ctx, key); err != nil {
+		return nil, err
+	}
+	p.tierCol = d.tableHasColumn(ctx, key, "chunk_annotations", "tier")
+	membership, err := d.conceptMembership(ctx, key, schemes, p.unrestricted)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +288,7 @@ func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, 
 		}
 	}
 	if scheme == "" {
-		classes, err := d.classStatNodes(ctx, key, read)
+		classes, err := d.classStatNodes(ctx, key, read, p.unrestricted)
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +300,7 @@ func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, 
 			all[id] = true
 		}
 	}
-	if err := d.loadStatDocs(ctx, key, sortedSet(all), p.docs); err != nil {
+	if err := d.loadStatDocs(ctx, key, sortedSet(all), p.docs, p.tierCol); err != nil {
 		return nil, err
 	}
 	// The vectors are read here, not only when a pass computes: which members have
@@ -267,7 +321,7 @@ func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, 
 
 // classStatNodes is every document class in force, its members the documents of its
 // type and — in a confirmed ontology, where search type: widens — its subclasses'.
-func (d *Document) classStatNodes(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead) ([]statNode, error) {
+func (d *Document) classStatNodes(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, unrestricted *docReadList) ([]statNode, error) {
 	described := describeOntologyRead(read)
 	parentOf := map[string]string{}
 	kids := map[string][]string{}
@@ -302,7 +356,9 @@ func (d *Document) classStatNodes(ctx context.Context, key sqlmem.ScopeKey, read
 			var next []string
 			for _, name := range frontier {
 				for _, id := range byType[name] {
-					members[id] = true
+					if unrestricted.readable(id) {
+						members[id] = true
+					}
 				}
 				for _, k := range kids[name] {
 					if !seen[k] {
@@ -342,8 +398,9 @@ func (d *Document) documentsByType(ctx context.Context, key sqlmem.ScopeKey) (ma
 }
 
 // loadStatDocs fills docs with each document's root, title and document-level
-// annotation. A document that is gone has no entry.
-func (d *Document) loadStatDocs(ctx context.Context, key sqlmem.ScopeKey, ids []string, docs map[string]*statDoc) error {
+// annotation. A document that is gone has no entry. tierCol: chunk_annotations has
+// RFC GP's tier column, whose 'metadata' marks a metadata-only member (C9).
+func (d *Document) loadStatDocs(ctx context.Context, key sqlmem.ScopeKey, ids []string, docs map[string]*statDoc, tierCol bool) error {
 	byRoot := map[string]*statDoc{}
 	for start := 0; start < len(ids); start += nodeStatsDocBatch {
 		ph, args := inPlaceholders(ids[start:min(start+nodeStatsDocBatch, len(ids))])
@@ -365,9 +422,13 @@ func (d *Document) loadStatDocs(ctx context.Context, key sqlmem.ScopeKey, ids []
 		roots = append(roots, r)
 	}
 	sort.Strings(roots)
+	tier := `''`
+	if tierCol {
+		tier = `coalesce(tier, '')`
+	}
 	for start := 0; start < len(roots); start += nodeStatsDocBatch {
 		ph, args := inPlaceholders(roots[start:min(start+nodeStatsDocBatch, len(roots))])
-		res, err := d.query(ctx, key, `SELECT chunk_id, brief, abstract, inputs_sha256 FROM chunk_annotations
+		res, err := d.query(ctx, key, `SELECT chunk_id, brief, abstract, inputs_sha256, `+tier+` FROM chunk_annotations
 			WHERE level = '`+annotationLevelDocument+`' AND chunk_id IN (`+ph+`)`, args...)
 		if err != nil {
 			return err
@@ -378,6 +439,7 @@ func (d *Document) loadStatDocs(ctx context.Context, key sqlmem.ScopeKey, ids []
 		for _, r := range res.Rows {
 			if sd := byRoot[asStr(r[0])]; sd != nil {
 				sd.brief, sd.abstract, sd.hash, sd.annotated = asStr(r[1]), asStr(r[2]), asStr(r[3]), true
+				sd.metadataOnly = asStr(r[4]) == "metadata"
 			}
 		}
 	}
@@ -432,7 +494,7 @@ func (d *Document) loadNodeStatsVectors(ctx context.Context, key sqlmem.ScopeKey
 			if !ok || rowModel(r) != p.model {
 				continue
 			}
-			if doc, ok := docOfRoot[root]; ok {
+			if doc, ok := docOfRoot[root]; ok && p.averaged(doc) {
 				out[doc] = nodestats.Vector(r.Vector)
 			}
 		}
@@ -577,7 +639,7 @@ func (d *Document) NodeStatsPass(ctx context.Context, key sqlmem.ScopeKey, tenan
 		case !ok:
 			node.Status, node.Reason = "missing", "never computed"
 		case row.inputs != p.nodeHash(n):
-			node.Status, node.Reason = "stale", staleReason(row, n, p.model)
+			node.Status, node.Reason = "stale", p.staleReason(row, n)
 		}
 		if ok {
 			wv := row.withVector
@@ -675,11 +737,13 @@ func (d *Document) computeNodeStats(ctx context.Context, key sqlmem.ScopeKey, p 
 }
 
 // staleReason says which input of a stale row moved, as far as the row tells.
-func staleReason(row storedNodeStats, n statNode, model string) string {
+func (p *nodeStatsPlan) staleReason(row storedNodeStats, n statNode) string {
 	switch {
-	case row.embedModel != model:
+	case !row.current():
+		return "computed before statistics left out restricted documents; not served until recomputed"
+	case row.embedModel != p.model:
 		return "embed model changed"
-	case row.memberSHA != membersHash(n.members):
+	case row.memberSHA != p.memberSetHash(n.members):
 		return "members changed"
 	}
 	return "the node's definition or a member's annotation changed"
@@ -703,7 +767,7 @@ func (p *nodeStatsPlan) figures(vecs map[string]nodestats.Vector) map[string]*no
 			if v, ok := vecs[id]; ok {
 				f.members = append(f.members, nodestats.Member{ID: id, Vec: v})
 			}
-			if sd := p.docs[id]; sd != nil && sd.annotated {
+			if sd := p.docs[id]; sd != nil && sd.annotated && !sd.metadataOnly {
 				f.texts = append(f.texts, sd.brief, sd.abstract)
 			}
 		}
@@ -744,7 +808,7 @@ type nodeStatsRow struct {
 func (p *nodeStatsPlan) computeRow(n statNode, vecs map[string]nodestats.Vector, figures map[string]*nodeFigures) (nodeStatsRow, error) {
 	f := figures[nodeStatsKey(n.Kind, n.ID)]
 	row := nodeStatsRow{id: n.ID, kind: n.Kind, members: len(n.members), withVector: len(f.members),
-		embedModel: p.model, inputs: p.nodeHash(n), memberSHA: membersHash(n.members), countsOnly: true}
+		embedModel: p.model, inputs: p.nodeHash(n), memberSHA: p.memberSetHash(n.members), countsOnly: true}
 	if p.model == "" || f.centroid == nil {
 		return row, f.err
 	}
@@ -842,8 +906,8 @@ func (d *Document) writeNodeStats(ctx context.Context, key sqlmem.ScopeKey, rows
 	})
 }
 
-// nodeStatsView is a node's statistics as describe_ontology with_stats shows them.
-// Withheld replaces every figure when the caller may not see them.
+// nodeStatsView is a node's statistics as describe_ontology with_stats shows them,
+// the same to every reader of the ontology (RFC GM C8).
 type nodeStatsView struct {
 	Members           *int              `json:"members,omitempty"`
 	MembersWithVector *int              `json:"members_with_vector,omitempty"`
@@ -853,9 +917,16 @@ type nodeStatsView struct {
 	Terms             []string          `json:"terms,omitempty"`
 	ComputedAt        int64             `json:"computed_at,omitempty"`
 	// Stale: an input of the row moved since it was computed.
-	Stale    bool   `json:"stale,omitempty"`
-	Withheld string `json:"withheld,omitempty"`
+	Stale bool `json:"stale,omitempty"`
+	// Recomputing: the node's members are no longer the ones the row was computed
+	// from, so only today's member count is served until the next pass.
+	Recomputing string `json:"recomputing,omitempty"`
 }
+
+// nodeStatsRecomputing is Recomputing's text. One text for every cause (a member
+// restricted, filed elsewhere, turned metadata-only, or simply added), so the
+// answer does not say which.
+const nodeStatsRecomputing = "the node's members changed since these statistics were computed; spread, terms, exemplars and siblings return after the next node_stats pass"
 
 // nodeStatsTitled is an exemplar document.
 type nodeStatsTitled struct {
@@ -864,68 +935,31 @@ type nodeStatsTitled struct {
 }
 
 // describeStats adds with_stats' statistics to a description describeCounts has
-// already counted: per concept and per document class, the stored row — only when
-// one is stored and the caller may read every member. A store fault marks the
-// answer partial, as the counts do.
-func (d *Document) describeStats(ctx context.Context, key sqlmem.ScopeKey, acl *docACL, read OntologyRead, out *ontologyDescription) {
+// already counted: per concept and per document class, the stored row when one of
+// unrestrictedFamily is stored. Every reader gets the same view: the figures come
+// from unrestricted documents only. A store fault marks the answer partial, as the
+// counts do. It returns the plan, which describeSeries checks the series against;
+// nil when there is none.
+func (d *Document) describeStats(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, out *ontologyDescription) *nodeStatsPlan {
 	if _, _, err := d.resolveScope(ctx, "tenant"); err != nil {
-		return // describeCounts has said why
-	}
-	fail := func() {
-		out.Partial = true
-		out.Issues = append(out.Issues, "with_stats: the node statistics could not be read; read again")
+		return nil // describeCounts has said why
 	}
 	p, err := d.buildNodeStatsPlan(ctx, key, read, "")
 	if err != nil {
-		fail()
-		return
-	}
-	if len(p.stored) == 0 {
-		return
-	}
-	list, err := d.readableDocList(ctx, acl)
-	if err != nil {
-		fail()
-		return
-	}
-	if readsEverything(list) {
-		list = nil
+		out.Partial = true
+		out.Issues = append(out.Issues, "with_stats: the node statistics could not be read; read again")
+		return nil
 	}
 	names := map[string]string{}
-	var exemplarIDs []string
 	for _, n := range p.nodes {
 		names[nodeStatsKey(n.Kind, n.ID)] = n.Name
-		for _, e := range p.stored[nodeStatsKey(n.Kind, n.ID)].exemplars {
-			if _, ok := p.docs[e.ID]; !ok {
-				exemplarIDs = append(exemplarIDs, e.ID)
-			}
-		}
-	}
-	titles := map[string]string{}
-	for id, sd := range p.docs {
-		titles[id] = sd.title
-	}
-	if len(exemplarIDs) > 0 {
-		gone := map[string]*statDoc{}
-		if err := d.loadStatDocs(ctx, key, exemplarIDs, gone); err != nil {
-			fail()
-			return
-		}
-		for id, sd := range gone {
-			titles[id] = sd.title
-		}
 	}
 	view := map[string]*nodeStatsView{}
 	for _, n := range p.nodes {
 		k := nodeStatsKey(n.Kind, n.ID)
-		row, ok := p.stored[k]
-		if !ok {
-			if list != nil {
-				view[k] = &nodeStatsView{Withheld: nodeStatsWithheld}
-			}
-			continue
+		if row, ok := p.stored[k]; ok && row.current() {
+			view[k] = p.statsView(n, row, names)
 		}
-		view[k] = p.statsView(n, row, list, names, titles)
 	}
 	for i := range out.Schemes {
 		for j := range out.Schemes[i].Concepts {
@@ -938,30 +972,28 @@ func (d *Document) describeStats(ctx context.Context, key sqlmem.ScopeKey, acl *
 			out.Classes[i].Stats = view[nodeStatsKey(nodeKindClass, out.Classes[i].Name)]
 		}
 	}
+	return p
 }
 
-// nodeStatsWithheld is the one answer a limited reader gets for a node whose
-// statistics it may not see. One message for every cause — a member it may not read,
-// a member set changed since the row was computed, no row — so the answer does not
-// say which: a cause of its own would name the nodes that hold a hidden document.
-const nodeStatsWithheld = "statistics are shown to a reader with access-control limits only when it may read every member and they were computed from the current members"
-
-// statsView is what list (nil = reads everything) may see of n's stored row.
-func (p *nodeStatsPlan) statsView(n statNode, row storedNodeStats, list *docReadList, names, titles map[string]string) *nodeStatsView {
-	if list != nil {
-		for _, id := range n.members {
-			if !list.readable(id) {
-				return &nodeStatsView{Withheld: nodeStatsWithheld}
-			}
-		}
-		if row.memberSHA != membersHash(n.members) {
-			return &nodeStatsView{Withheld: nodeStatsWithheld}
-		}
+// statsView is n's stored row as every reader sees it. The row's figures are served
+// only while its stored member set is the node's current one (memberSetHash): every
+// member then is still unrestricted, and still not metadata-only. Otherwise a
+// document restricted after the pass (a new deny, a set_path under a denied name)
+// would keep shaping the terms, spread, exemplars and siblings every reader sees
+// until the next pass, which the sweeper, off by default, may never run; so only
+// today's member count is served. This also hides the figures of a node that merely
+// gained a member: the safe direction, for one pass.
+func (p *nodeStatsPlan) statsView(n statNode, row storedNodeStats, names map[string]string) *nodeStatsView {
+	if row.memberSHA != p.memberSetHash(n.members) {
+		members := len(n.members)
+		return &nodeStatsView{Members: &members, ComputedAt: row.computedAt, Stale: true, Recomputing: nodeStatsRecomputing}
 	}
 	v := &nodeStatsView{Members: &row.members, MembersWithVector: &row.withVector, Spread: row.spread,
 		Terms: row.terms, ComputedAt: row.computedAt, Stale: row.inputs != p.nodeHash(n)}
 	for _, e := range row.exemplars {
-		v.Exemplars = append(v.Exemplars, nodeStatsTitled{DocumentID: e.ID, Title: titles[e.ID]})
+		if sd := p.docs[e.ID]; sd != nil {
+			v.Exemplars = append(v.Exemplars, nodeStatsTitled{DocumentID: e.ID, Title: sd.title})
+		}
 	}
 	for _, s := range row.siblings {
 		if name, ok := names[nodeStatsKey(n.Kind, s.ID)]; ok {

@@ -35,12 +35,19 @@ the series as it stood then. A node no longer in the ontology keeps its rows:
 read them by its old chunk id.
 
 It always reads the tenant scope (the call takes no `scope`) and needs
-the tenant scope granted. A series is built from every member, so a caller
-whose access-control rules limit its reading gets a node's series only when it
-may read every document the series is built from (for `share` and `unplaced`,
-every document of the period's `basis`), and only when the stored rows were
-built from the documents there are now; otherwise the node carries
-`withheld` and why.
+the tenant scope granted. A series is built only from the documents every
+member of the tenant may read — the members and, for `share` and `unplaced`, the
+period's `basis` — so a document the tenant's access-control rules keep from
+some member is never counted, and every reader of the ontology reads the same
+rows. Rows stored before this rule are kept and never read, `shown_at`
+included: a moment before the first rows computed under it shows nothing. A
+document restricted after a row was computed stops counting at once: a row is
+served when it was computed from its period's current members (for `share` and
+`unplaced`, its basis; for `shift`, every member up to it), or when no document
+restricted now is dated in its period (for `shift`, in it or before). Any other
+row is left out — `shown_at` included, a retired node's rows too — and the
+answer carries `recomputing`; a `node_stats` pass appends the current point
+again.
 
 ## Arguments
 
@@ -64,13 +71,13 @@ built from the documents there are now; otherwise the node carries
 `{measure, scheme?, from?, to?, shown_at?, note?, nodes, compare?}`:
 
 - `nodes` — `{node_id, kind (concept | class | scheme), name, tag?, scheme?,
-  period, retired?, points, withheld?}`; each point `{period_start (unix
+  period, retired?, points}`; each point `{period_start (unix
   nanoseconds), label (2026-07, 2026-W29, 2026-07-21), value, members, basis?,
   share?, fallback_share, computed_at}`. For `count`, `value` is `members`; for
   `share`, `members` is the projected members it counts; for `shift`, `members`
   is the period's members with a vector.
 - `note` — why a series is not kept here (`shift` without vectors).
-- `compare` — `{range, baseline, nodes, withheld?}`; each node `{node_id, name,
+- `compare` — `{range, baseline, nodes}`; each node `{node_id, name,
   tag, scheme, count, basis, share?, baseline_count, baseline_basis,
   baseline_share?, log_ratio}`.
 
