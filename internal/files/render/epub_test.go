@@ -206,7 +206,7 @@ func TestEPUB_PassesEpubcheck(t *testing.T) {
 		"injection.epub": write(t, injectionDoc(t), FormatEPUB, Options{TOC: true, TitlePage: true}),
 		"embed.epub":     write(t, embedDoc(t), FormatEPUB, Options{}),
 		"styled.epub":    write(t, styledFixture(t), FormatEPUB, Options{}),
-		"diagrams.epub":  write(t, drawnDoc(t), FormatEPUB, Options{}),
+		"diagrams.epub":  write(t, drawnFixture(t), FormatEPUB, Options{}),
 	}
 	for name, b := range books {
 		p := filepath.Join(dir, name)

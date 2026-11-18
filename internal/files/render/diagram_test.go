@@ -263,3 +263,14 @@ func TestPDF_TypesetsADrawnDiagram(t *testing.T) {
 		t.Error("no PDF")
 	}
 }
+
+// drawnFixture is the full fixture (every block kind, the text the office
+// checks look for) with a drawn diagram added, for those checks.
+func drawnFixture(t *testing.T) *Doc {
+	t.Helper()
+	d := fixtureDoc(t)
+	name := fmt.Sprintf("img-%d.png", len(d.Images)+1)
+	d.Images = append(d.Images, Image{Name: name, MediaType: "image/png", Density: 2, Data: pngOf(120, 80)})
+	d.Blocks = append(d.Blocks, Node{Kind: KindImage, Asset: name, Alt: "flowchart LR A --> B"})
+	return d
+}
