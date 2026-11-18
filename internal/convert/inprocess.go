@@ -96,6 +96,11 @@ type InProcess struct {
 	// Draw draws a Mermaid diagram as a picture (DrawDiagram, RFC GR P4d);
 	// nil makes DrawDiagram return ErrNotConfigured.
 	Draw *Helper
+	// DjVuText reads a DjVu document's text layer and DjVuInspect its
+	// outline and metadata (RFC GV P3). With DjVuText set, Extract reads
+	// DjVu; nil reads none here. DjVuInspect may be nil: the text is read
+	// without an outline or metadata.
+	DjVuText, DjVuInspect *Helper
 	// MaxEncodedBytes caps what the encoder may hand back; zero is no cap.
 	MaxEncodedBytes int64
 	// Scratch names the operator directory a helper job makes its scratch
@@ -117,10 +122,14 @@ type ImageReencoder interface {
 var _ Client = (*InProcess)(nil)
 
 func (p *InProcess) registry() *extract.Registry {
-	if p.Registry != nil {
-		return p.Registry
+	r := p.Registry
+	if r == nil {
+		r = extract.Default()
 	}
-	return extract.Default()
+	if p.DjVuText != nil {
+		r = r.With(extract.DjVu{Helpers: djvuHelpers{p}})
+	}
+	return r
 }
 
 // slot waits for an extraction slot, at most SlotWait.
