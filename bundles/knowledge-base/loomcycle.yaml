@@ -6183,7 +6183,10 @@ agents:
       //    the survey 8 or 9. So does a question naming a period by both ends
       //    ("in November 2026", "between 1 May and 1 June": DATED_RANGE;
       //    measured: "which plans did we write in November 2026" went to the
-      //    survey, which named 5 of 10 every run). Then a question
+      //    survey, which named 5 of 10 every run), and a question asking to
+      //    list the documents of a stored status (listing: "which of our rfcs
+      //    are still drafts"; measured: the walker listing by status named 15
+      //    of 15 every run, the survey the same 7). Then a question
       //    asking for THE overview, guide or full picture of one thing
       //    (knownItem) is not an overview; it wants the one document that
       //    describes it.
@@ -6191,8 +6194,9 @@ agents:
       //    between LOW and HIGH, or the call fails, the small chat agent
       //    kb/classify answers YES or NO. With run metadata classifier "agent"
       //    only kb/classify is asked.
-      // 2. A dated question goes to kb/walker with a fixed note: how to list
-      //    by date, never a word of the question.
+      // 2. A dated or listing question goes to kb/walker with a fixed note:
+      //    how to list by date or by status, never a word of the
+      //    question. One that is both gets both notes (CLASSIFIER: dated+listing).
       //    An overview goes to kb/survey, which gathers the candidate documents in
       //    code and has kb/screen screen them; anything else to kb/search, the
       //    cheaper path.
@@ -6290,6 +6294,31 @@ agents:
         "|\\bbetween\\s+" + DATE + "\\s+and\\s+" + DATE + "\\b",
         "i");
 
+      // LISTING: the question asks to list the documents of a stored status,
+      // which only a listing call reaches in full. It needs a question word or
+      // a list verb at the start of a clause (LIST_HEAD), so a statement or a
+      // "how" question does not count.
+      // KINDS is a fixed vocabulary of document kinds, singular or plural: the
+      // stored types differ per tenant (the ontology names them, and kb/ask
+      // reads no document), so the walker maps the kind onto the stored types
+      // itself (LISTING_CLASSES). Generic "documents" is left out: "which
+      // documents do we have" is an overview of everything, not a kind.
+      var LIST_HEAD = /(?:^|[.,;:!?]\s*)\s*(?:which|what|list|name|show(?:\s+me)?|give\s+me|enumerate|how\s+many)\b/i;
+      var KINDS = "(?:rfcs?|design\\s+(?:notes?|docs?|documents?|proposals?)|designs?|(?:implementation\\s+)?plans?|" +
+        "(?:technical\\s+)?research(?:\\s+(?:notes?|papers?|documents?|docs?))?|guides?|how-?tos?|runbooks?|specs?|" +
+        "specifications?|proposals?|measurements?|reports?|papers?|publications?|notes?)";
+      // LISTING_STATUS: a kind with a stored status after it ("rfcs are still
+      // drafts", "plans that are not done yet", "notes awaiting review") or
+      // before it ("the draft plans", "confirmed rfcs"). A status word with no
+      // kind ("what do we hold on draft handling", "when is a plan
+      // confirmed"), or the word status itself ("what is the status of rfc
+      // X", "how do document statuses work"), stays with the cascade.
+      var STATUS = "(?:(?:still\\s+|now\\s+|currently\\s+)?(?:not\\s+(?:yet\\s+)?)?(?:(?:a\\s+)?drafts?|in\\s+draft|" +
+        "(?:in|under|awaiting|up\\s+for|for)\\s+review|confirmed|done|finished|shipped|completed?|unfinished))";
+      var LISTING_STATUS = new RegExp(
+        "\\b" + KINDS + "(?:\\s+(?:that|which))?\\s+(?:(?:are|is|were|was|remain|stay)\\s+" + STATUS + "|awaiting\\s+review|still\\s+in\\s+draft)\\b" +
+        "|\\b(?:draft|confirmed|done|finished|shipped|unfinished)\\s+" + KINDS + "\\b",
+        "i");
       // DEPTH: how much the caller wants retrieved. Run metadata depth (quick,
       // standard or deep) wins; else QUICK in the question's own wording
       // ("briefly", "in short", "a quick list", "top 5") picks quick; else
@@ -6322,6 +6351,27 @@ agents:
         "and answer from that listing, then read what you need of each; a search alone does not reach every document of " +
         "a period. A month given without a year is the latest such month that has begun by TODAY (below): say which year " +
         "you took.";
+
+      // LISTING_STATUS_NOTE: how a listing question's
+      // walk lists, never a word of the question. A type filter includes the
+      // kinds under the type, never a sibling class; measured: a walk that
+      // listed "research" alone missed the technical research beside it,
+      // found 1 of 5, and still said COVERAGE: complete.
+      var LISTING_CLASSES = "A type filter includes the kinds under that type (the answer's type_expanded_to names them), " +
+        "never a sibling class: find in the ontology every class that is this kind of document (technical research beside " +
+        "research, say) and list each, or list the folder that holds the kind (under_path).";
+      var LISTING_STATUS_NOTE = "LISTING. The question asks for the documents that hold a stored status (draft, review, " +
+        "confirmed, done). List them with query_documents filtered by status, one call per status the question names (for " +
+        "\"not done\", one call per status other than done), with the kind of document the question names (type) and " +
+        "limit 1000. " + LISTING_CLASSES + " Name every document listed, each with a link and its stored status; never " +
+        "pick a sample. Then read what you need of each for the rest of the question. Write COVERAGE: complete only when " +
+        "every such call was made and none returned its limit.";
+      // A listing is complete or it is wrong, so depth quick on a listing
+      // shortens each line and stops the reading, never the list.
+      // DEPTH_NOTES.quick ("the few documents that answer best") would undo
+      // the listing note.
+      var LISTING_QUICK = "DEPTH: quick. The caller wants a short answer: one short line per document listed, and no " +
+        "reading beyond the listings; still name every document listed.";
 
       // todayLine is the run's own date, for a period whose year the question
       // leaves out. Never a word of the question.
@@ -6371,12 +6421,13 @@ agents:
       // classify is the one place the question is judged, so the cascade can
       // change without touching the routing. It never throws.
       // Returns {overview, score: 0..1 or null,
-      // source: dated|known-item|decision|agent|agent-unreadable,
+      // source: dated|listing|dated+listing|known-item|decision|agent|agent-unreadable,
       // error: null or the decision model's failure code, walker: true for a
-      // question the dated rule took, with its note}.
+      // question one of the walker rules took, with its note and listing:
+      // true when a listing rule was one of them}.
       function classify(question, metadata) {
         var w = walkerRule(question);
-        if (w) { return { overview: false, score: null, source: w.source, error: null, walker: true, note: w.note }; }
+        if (w) { return { overview: false, score: null, source: w.source, error: null, walker: true, note: w.note, listing: w.listing }; }
         if (knownItem(question)) { return { overview: false, score: null, source: "known-item", error: null }; }
         if (metadata && metadata.classifier === "agent") {
           return askAgent(null, null);
@@ -6388,12 +6439,21 @@ agents:
       }
 
       // walkerRule reads the question as data: is it dated (DATED, else
-      // DATED_RANGE)? Returns {source: "dated", note: its fixed note}, or
-      // null when no rule holds.
+      // DATED_RANGE) or a listing (LISTING_STATUS)? The
+      // label names each rule that held, in that fixed order ("dated",
+      // "listing", "dated+listing"), and the note is their fixed notes, in the
+      // same order. Returns null when no rule holds.
       function walkerRule(question) {
-        if (DATED.test(question)) { return { source: "dated", note: DATED_NOTE }; }
-        if (DATED_RANGE.test(question)) { return { source: "dated", note: DATED_RANGE_NOTE + "\n" + todayLine() }; }
-        return null;
+        var labels = [], notes = [], listing = "";
+        if (DATED.test(question)) {
+          labels.push("dated"); notes.push(DATED_NOTE);
+        } else if (DATED_RANGE.test(question)) {
+          labels.push("dated"); notes.push(DATED_RANGE_NOTE + "\n" + todayLine());
+        }
+        if (LIST_HEAD.test(question) && LISTING_STATUS.test(question)) { listing = LISTING_STATUS_NOTE; }
+        if (listing) { labels.push("listing"); notes.push(listing); }
+        if (!labels.length) { return null; }
+        return { source: labels.join("+"), note: notes.join("\n\n"), listing: listing !== "" };
       }
 
       // knownItem reads the question as data: it asks for the one document
@@ -6591,7 +6651,7 @@ agents:
         if (!Q.text) { return { final_text: "No question given." }; }
         var c = classify(Q.text, input.metadata);
         var dp = chooseDepth(Q.text, input.metadata);
-        var dnote = DEPTH_NOTES[dp.depth] || "";
+        var dnote = c.listing && dp.depth === "quick" ? LISTING_QUICK : DEPTH_NOTES[dp.depth] || "";
         var route = c.walker ? "walker" : c.overview ? "survey" : "search";
         var how = route, text;
         var res = call(spawnArgs("kb/" + route, ANSWER, both(c.walker ? c.note : "", dnote), true));
