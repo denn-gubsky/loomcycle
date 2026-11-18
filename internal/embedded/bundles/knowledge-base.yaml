@@ -6153,7 +6153,7 @@ agents:
   kb/ask:
     provider: code-js
     # What a caller choosing an agent reads (list_agents, the Library).
-    description: "Answers one question from the tenant knowledge base, with links to the documents. Optional run metadata depth: quick (at most 30 documents considered, a short answer; also picked when the question says briefly, in short, a quick list or top N), standard (the default) or deep (more relations and guide sections followed). Ask for quick when you do not need a full overview."
+    description: "Answers one question from the tenant knowledge base, with links to the documents. A question about a period (since a date or version, in a month or year) or asking to list documents of a kind or a status is answered from a full listing. Optional run metadata depth: quick (at most 30 documents considered, a short answer; also picked when the question says briefly, in short, a quick list or top N), standard (the default) or deep (more relations and guide sections followed). Ask for quick when you do not need a full overview."
     # The tool ceiling, and the whole of it: Decision asks the classifier
     # question, Agent runs kb/classify, kb/search, kb/survey or kb/walker. It reads no
     # document itself: each child opens the hits under the caller's own access
