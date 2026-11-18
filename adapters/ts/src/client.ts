@@ -89,6 +89,8 @@ import type {
   ListRulingsResult,
   ApplyReviewPolicyResult,
   BindSubjectPrincipalResult,
+  OntologyChange,
+  PlanOntologyResult,
   Agent,
   AgentEvent,
   AgentList,
@@ -1103,6 +1105,38 @@ export class LoomcycleClient {
       this.ctx,
       `/v1/_ontology/subjects/principal${q}`,
       { subject, principal },
+      opts,
+    );
+  }
+
+  /**
+   * Say what changes to the tenant ontology's entries would do before any is
+   * made; writes nothing. Mirrors POST /v1/_ontology/plan. `changes` is 1 to
+   * 50 of `{op, entry, name?, parent?, body?}`: retire, rename (needs `name`),
+   * move (needs `parent`), edit (needs `body`) or delete, each `entry` a chunk
+   * id of the ontology.
+   *
+   * Per change: the entry, a risk (`destroys`, `stales`, `none`), the count of
+   * each kind of dependent across the tenant scope and every user and agent
+   * scope of the tenant, the subtree that goes with it, and notes. Also the
+   * ontology's issues as it would read after the changes and the fingerprint of
+   * the ontology the plan was computed against.
+   *
+   * For an admin or a tenant operator only. `tenant` is honored only for an
+   * admin token. A refusal throws with the server's code: `invalid_body` (over
+   * 64 KiB), `invalid_request`, `entry_not_found`, `forbidden`, `unavailable`.
+   */
+  async planOntology(
+    changes: OntologyChange[],
+    opts?: { tenant?: string; signal?: AbortSignal },
+  ): Promise<PlanOntologyResult> {
+    const q = opts?.tenant !== undefined
+      ? `?tenant=${encodeURIComponent(opts.tenant)}`
+      : "";
+    return postJSON<PlanOntologyResult>(
+      this.ctx,
+      `/v1/_ontology/plan${q}`,
+      { changes },
       opts,
     );
   }

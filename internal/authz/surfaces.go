@@ -545,6 +545,9 @@ func GRPCSurface(rpc string) (Surface, bool) {
 	// subject's document, as POST /v1/_ontology/subjects/principal asks.
 	case "MergeSubjects", "BindSubjectPrincipal":
 		return typeLevel("write", "document"), true
+	// A plan writes nothing: read documents, as POST /v1/_ontology/plan asks.
+	case "PlanOntology":
+		return typeLevel("read", "document"), true
 	// The review queue, a bulk ruling and its undo ask read, as their routes
 	// (/v1/_statements/*); the connector asks review or write per statement.
 	case "ListReviewQueue", "RuleStatements", "RevertRuling", "ListRulings", "ApplyReviewPolicy":

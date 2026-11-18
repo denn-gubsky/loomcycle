@@ -1,6 +1,7 @@
 // Package subjectmergetest holds the transport parity tests of the ontology
 // subject operations: the subject merge (RFC FR P2) and the subject's user
-// binding (P4). The same operation driven through its HTTP route, its gRPC RPC
+// binding (P4), and the ontology change plan (RFC GQ P1.2, plan_test.go). The
+// same operation driven through its HTTP route, its gRPC RPC
 // and the MCP `ontology` tool, each behind its real authentication over one
 // real server wired as boot wires it (SQL Memory, a channel bus), must give one
 // answer and leave the store in one state.

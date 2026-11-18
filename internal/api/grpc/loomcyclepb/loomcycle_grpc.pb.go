@@ -76,6 +76,7 @@ const (
 	Loomcycle_TenantTelemetry_FullMethodName      = "/loomcycle.v1.Loomcycle/TenantTelemetry"
 	Loomcycle_MergeSubjects_FullMethodName        = "/loomcycle.v1.Loomcycle/MergeSubjects"
 	Loomcycle_BindSubjectPrincipal_FullMethodName = "/loomcycle.v1.Loomcycle/BindSubjectPrincipal"
+	Loomcycle_PlanOntology_FullMethodName         = "/loomcycle.v1.Loomcycle/PlanOntology"
 	Loomcycle_ListReviewQueue_FullMethodName      = "/loomcycle.v1.Loomcycle/ListReviewQueue"
 	Loomcycle_RuleStatements_FullMethodName       = "/loomcycle.v1.Loomcycle/RuleStatements"
 	Loomcycle_RevertRuling_FullMethodName         = "/loomcycle.v1.Loomcycle/RevertRuling"
@@ -416,6 +417,22 @@ type LoomcycleClient interface {
 	//
 	// Mirrors POST /v1/_ontology/subjects/principal.
 	BindSubjectPrincipal(ctx context.Context, in *BindSubjectPrincipalRequest, opts ...grpc.CallOption) (*BindSubjectPrincipalResponse, error)
+	// PlanOntology reports what a set of changes to the tenant ontology's
+	// entries (retire, rename, move, edit, delete) would do to what rests on
+	// them, before any is made, and writes nothing: per change a risk class and
+	// a count of each kind of dependent across the tenant scope and every user
+	// and agent scope of the tenant, the ontology's issues as it would read
+	// after the changes, and the fingerprint of the ontology it was computed
+	// against.
+	//
+	// Operator-only, as MergeSubjects: an admin (any tenant, via `tenant`) or a
+	// tenant operator for its own. A request over 64 KiB is INVALID_ARGUMENT
+	// invalid_body, as HTTP's body bound. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns
+	// (invalid_request, forbidden, entry_not_found, unavailable).
+	//
+	// Mirrors POST /v1/_ontology/plan.
+	PlanOntology(ctx context.Context, in *PlanOntologyRequest, opts ...grpc.CallOption) (*PlanOntologyResponse, error)
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (proposed unless the filter names another status), narrowed by the queue
 	// filters, newest first; or, with summarize, their counts grouped by kind,
@@ -1223,6 +1240,16 @@ func (c *loomcycleClient) BindSubjectPrincipal(ctx context.Context, in *BindSubj
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(BindSubjectPrincipalResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_BindSubjectPrincipal_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) PlanOntology(ctx context.Context, in *PlanOntologyRequest, opts ...grpc.CallOption) (*PlanOntologyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PlanOntologyResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_PlanOntology_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2071,6 +2098,22 @@ type LoomcycleServer interface {
 	//
 	// Mirrors POST /v1/_ontology/subjects/principal.
 	BindSubjectPrincipal(context.Context, *BindSubjectPrincipalRequest) (*BindSubjectPrincipalResponse, error)
+	// PlanOntology reports what a set of changes to the tenant ontology's
+	// entries (retire, rename, move, edit, delete) would do to what rests on
+	// them, before any is made, and writes nothing: per change a risk class and
+	// a count of each kind of dependent across the tenant scope and every user
+	// and agent scope of the tenant, the ontology's issues as it would read
+	// after the changes, and the fingerprint of the ontology it was computed
+	// against.
+	//
+	// Operator-only, as MergeSubjects: an admin (any tenant, via `tenant`) or a
+	// tenant operator for its own. A request over 64 KiB is INVALID_ARGUMENT
+	// invalid_body, as HTTP's body bound. A refusal carries a
+	// google.rpc.ErrorInfo whose reason is the code HTTP returns
+	// (invalid_request, forbidden, entry_not_found, unavailable).
+	//
+	// Mirrors POST /v1/_ontology/plan.
+	PlanOntology(context.Context, *PlanOntologyRequest) (*PlanOntologyResponse, error)
 	// ListReviewQueue lists a document scope's statements awaiting review
 	// (proposed unless the filter names another status), narrowed by the queue
 	// filters, newest first; or, with summarize, their counts grouped by kind,
@@ -2581,6 +2624,9 @@ func (UnimplementedLoomcycleServer) MergeSubjects(context.Context, *MergeSubject
 }
 func (UnimplementedLoomcycleServer) BindSubjectPrincipal(context.Context, *BindSubjectPrincipalRequest) (*BindSubjectPrincipalResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method BindSubjectPrincipal not implemented")
+}
+func (UnimplementedLoomcycleServer) PlanOntology(context.Context, *PlanOntologyRequest) (*PlanOntologyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PlanOntology not implemented")
 }
 func (UnimplementedLoomcycleServer) ListReviewQueue(context.Context, *ListReviewQueueRequest) (*ListReviewQueueResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListReviewQueue not implemented")
@@ -3420,6 +3466,24 @@ func _Loomcycle_BindSubjectPrincipal_Handler(srv interface{}, ctx context.Contex
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).BindSubjectPrincipal(ctx, req.(*BindSubjectPrincipalRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_PlanOntology_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PlanOntologyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).PlanOntology(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_PlanOntology_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).PlanOntology(ctx, req.(*PlanOntologyRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4549,6 +4613,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "BindSubjectPrincipal",
 			Handler:    _Loomcycle_BindSubjectPrincipal_Handler,
+		},
+		{
+			MethodName: "PlanOntology",
+			Handler:    _Loomcycle_PlanOntology_Handler,
 		},
 		{
 			MethodName: "ListReviewQueue",
