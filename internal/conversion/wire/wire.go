@@ -146,7 +146,54 @@ func ReportToWire(r extract.Report) *workerpb.Report {
 	for _, y := range r.PageYields {
 		w.PageYields = append(w.PageYields, &workerpb.PageYield{Page: I32(y.Page), Chars: I32(y.Chars), Unread: y.Unread})
 	}
+	w.Metadata = metadataToWire(r.Metadata)
 	return w
+}
+
+func metadataToWire(m *extract.BookMetadata) *workerpb.BookMetadata {
+	if m == nil {
+		return nil
+	}
+	w := &workerpb.BookMetadata{
+		Title: m.Title, Authors: m.Authors, Translators: m.Translators, Language: m.Language, Date: m.Date,
+		Year: I32(m.Year), Publisher: m.Publisher, Series: m.Series, SeriesIndex: m.SeriesIndex,
+		Subjects: m.Subjects, Description: m.Description, SourceFormat: m.SourceFormat,
+	}
+	for _, id := range m.Identifiers {
+		w.Identifiers = append(w.Identifiers, &workerpb.BookIdentifier{Scheme: id.Scheme, Value: id.Value})
+	}
+	return w
+}
+
+// metadataFromWire is the metadata a worker sent, bounded again: Clean
+// caps every value and every list, so a worker cannot hand the core more
+// than an in-process extraction would keep.
+func metadataFromWire(w *workerpb.BookMetadata) *extract.BookMetadata {
+	if w == nil {
+		return nil
+	}
+	m := &extract.BookMetadata{
+		Title: w.GetTitle(), Language: w.GetLanguage(), Date: w.GetDate(), Year: int(w.GetYear()),
+		Publisher: w.GetPublisher(), Series: w.GetSeries(), SeriesIndex: w.GetSeriesIndex(),
+		Description: w.GetDescription(), SourceFormat: w.GetSourceFormat(),
+		Authors:     firstN(w.GetAuthors(), extract.MaxMetaList),
+		Translators: firstN(w.GetTranslators(), extract.MaxMetaList),
+		Subjects:    firstN(w.GetSubjects(), extract.MaxMetaList),
+	}
+	for i, id := range w.GetIdentifiers() {
+		if i == extract.MaxMetaList {
+			break
+		}
+		m.Identifiers = append(m.Identifiers, extract.BookIdentifier{Scheme: id.GetScheme(), Value: id.GetValue()})
+	}
+	return m.Clean()
+}
+
+func firstN(s []string, n int) []string {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
 }
 
 // ReportFromWire is the report the core keeps, cut to its caps.
@@ -172,6 +219,7 @@ func ReportFromWire(w *workerpb.Report) extract.Report {
 		}
 		r.PageYields = append(r.PageYields, extract.PageYield{Page: int(y.GetPage()), Chars: nonNeg(int(y.GetChars())), Unread: y.GetUnread()})
 	}
+	r.Metadata = metadataFromWire(w.GetMetadata())
 	return r
 }
 

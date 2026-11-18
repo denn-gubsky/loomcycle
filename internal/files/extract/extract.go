@@ -144,6 +144,9 @@ type Report struct {
 	// part of what the model is shown: a caller uses it to choose the pages
 	// an OCR pass reads.
 	PageYields []PageYield `json:"-"`
+	// Metadata is what a book says about itself (RFC GV D10), nil for a
+	// format that carries none or a file that fills none of it.
+	Metadata *BookMetadata `json:"metadata,omitempty"`
 }
 
 // PageYield is how much text one page's text layer gave.

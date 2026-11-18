@@ -4,10 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
+	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
 )
 
@@ -115,5 +119,38 @@ func TestLabelFor_DiagramDrawNeedsTheRenderer(t *testing.T) {
 	}
 	if KindName(workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW) != "diagram_draw" {
 		t.Error("KindName")
+	}
+}
+
+// A book's metadata crosses the worker protocol whole, and what comes back
+// is bounded again: a worker cannot hand the core more than an in-process
+// extraction would keep (RFC GV D10).
+func TestReportFromWire_MetadataRoundTripsAndIsBounded(t *testing.T) {
+	in := extract.Report{Format: "epub", Metadata: &extract.BookMetadata{
+		Title: "Война и мир", Authors: []string{"Лев Толстой"}, Translators: []string{"A. Maude"},
+		Language: "ru", Date: "1869-01-01", Year: 1869, Publisher: "P", Series: "S", SeriesIndex: "2",
+		Identifiers: []extract.BookIdentifier{{Scheme: "isbn", Value: "9780000000002"}},
+		Subjects:    []string{"Fiction"}, Description: "D", SourceFormat: "epub",
+	}}
+	got := ReportFromWire(ReportToWire(in))
+	if !reflect.DeepEqual(got.Metadata, in.Metadata) {
+		t.Errorf("metadata changed on the way:\n got %+v\nwant %+v", got.Metadata, in.Metadata)
+	}
+	if ReportFromWire(ReportToWire(extract.Report{Format: "pdf"})).Metadata != nil {
+		t.Error("a report with no metadata came back with some")
+	}
+
+	many := make([]string, 500)
+	for i := range many {
+		many[i] = fmt.Sprintf("author %d", i)
+	}
+	w := &workerpb.Report{Metadata: &workerpb.BookMetadata{
+		Title: strings.Repeat("x", 100000) + "\x1b[2J", Authors: many, Description: strings.Repeat("d", 100000),
+	}}
+	m := ReportFromWire(w).Metadata
+	if m == nil || utf8.RuneCountInString(m.Title) > extract.MaxMetaString || len(m.Authors) > extract.MaxMetaList ||
+		utf8.RuneCountInString(m.Description) > extract.MaxMetaDescription || strings.ContainsRune(m.Title, 0x1b) {
+		t.Errorf("a worker's metadata was not bounded: title %d, authors %d, description %d",
+			len(m.Title), len(m.Authors), len(m.Description))
 	}
 }
