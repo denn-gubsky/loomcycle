@@ -85,6 +85,8 @@ message WorkerFrame {
     ImageEnd image_end = 8;
     Chunk output_chunk = 9;
     Done done = 10;
+    Record record = 11;
+    HeadingAnchor heading_anchor = 12;
   }
 }
 
@@ -106,6 +108,19 @@ message Text {
 
 message PageStart {
   int32 page = 1;
+}
+
+// The record a loomcycle-rendered file carries (RFC GR P4b), sent before
+// any text, at most 1 MiB of it per frame, in order; last ends it. A
+// dispatcher that does not know the frame ignores it.
+message Record {
+  bytes data = 1;
+  bool last = 2;
+}
+
+// The loomcycle anchor on the heading whose text comes next (RFC GR P4b).
+message HeadingAnchor {
+  string name = 1;
 }
 
 // An image found in the document. Its bytes follow as image_chunk frames,
@@ -227,6 +242,11 @@ message ExtractOptions {
   bool images = 1;
   int32 max_rows = 2;
   bool infer_headings = 3;
+  // records: the caller takes a loomcycle record and heading anchors (RFC GR
+  // P4b), so the worker may send Record and HeadingAnchor frames. Without
+  // it the worker sends neither: a dispatcher built before them would read
+  // one as a broken worker.
+  bool records = 4;
 }
 
 message InputEnd {}

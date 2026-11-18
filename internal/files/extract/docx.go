@@ -48,6 +48,7 @@ func (DOCX) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 		return rep, err
 	}
 	d := &docx{a: a, rels: rels, w: newWriter(ctx, sink, opts), rep: &rep}
+	d.findRecord()
 	for _, rl := range rels {
 		if rl.External {
 			continue
@@ -273,6 +274,9 @@ func (d *docx) paraLevel(p *node) int {
 type block struct {
 	text string
 	list bool
+	// anchor is the loomcycle anchor a heading's paragraph carries (a
+	// bookmark the renderer wrote), named to the sink before the heading.
+	anchor string
 }
 
 func (d *docx) emit(b block) error {
@@ -287,6 +291,7 @@ func (d *docx) emit(b block) error {
 		sep = "\n"
 	}
 	d.started, d.lastList = true, b.list
+	d.w.headingAnchor(b.anchor)
 	return d.w.text(sep + b.text)
 }
 
@@ -465,7 +470,11 @@ func (d *docx) para(p *node) (block, error) {
 			h = heading(lv, t)
 		}
 		parts := append([]string{h}, images...)
-		return block{text: strings.Trim(strings.Join(parts, "\n"), "\n")}, nil
+		bl := block{text: strings.Trim(strings.Join(parts, "\n"), "\n")}
+		if h != "" {
+			bl.anchor = loomBookmark(p)
+		}
+		return bl, nil
 	}
 	var clean func(string) string
 	if d.inferred != nil {
@@ -619,4 +628,44 @@ func plainText(n *node) string {
 	}
 	walk(n, 0)
 	return b.String()
+}
+
+// docxRecordNS is the namespace of the custom XML part a loomcycle render
+// keeps its record in (RFC GR P4b).
+const docxRecordNS = "urn:loomcycle:render:1"
+
+// findRecord hands the sink the record a loomcycle-rendered file carries in
+// a custom XML part, if it has one. A part that cannot be read is no record:
+// the document's text is extracted all the same.
+func (d *docx) findRecord() {
+	if _, ok := d.w.sink.(RecordSink); !ok {
+		return
+	}
+	for _, rl := range d.rels {
+		if rl.External || !relType(rl.Type, "customXml") {
+			continue
+		}
+		root, err := d.a.readXML(rl.Target)
+		if err != nil {
+			continue
+		}
+		el := root.child("loomcycle")
+		if el == nil || el.space != docxRecordNS {
+			continue
+		}
+		if d.w.record([]byte(strings.TrimSpace(el.text))) {
+			return
+		}
+	}
+}
+
+// loomBookmark is the loomcycle anchor a paragraph carries: the name of its
+// first bookmark that a render wrote (chunk_<id>), "" for none.
+func loomBookmark(p *node) string {
+	for _, b := range p.all("bookmarkStart") {
+		if n := b.attr("name"); strings.HasPrefix(n, "chunk_") {
+			return n
+		}
+	}
+	return ""
 }

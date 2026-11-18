@@ -69,6 +69,10 @@ const (
 	// importFieldStructured records that a run added headings to the file
 	// on import (File op=import headings): {headings: <n>, by: <run id>}.
 	importFieldStructured = "structured"
+	// importFieldRenderedFrom names the document a loomcycle-rendered file
+	// was made from, when an import of it made a new document (RFC GR P4b,
+	// D22): {document_id, scope}.
+	importFieldRenderedFrom = "rendered_from"
 )
 
 // importProvenanceFields are those fields, in the order they are shown.
@@ -77,7 +81,7 @@ var importProvenanceFields = []string{
 	importFieldCapturedFrom, importFieldCapturedAt, importFieldRunID,
 	importFieldSourceURL, importFieldSourceKind, importFieldSourceTitle,
 	importFieldSourceRevision, importFieldSourceUpdatedAt, importFieldSourceStatus,
-	importFieldStructured,
+	importFieldStructured, importFieldRenderedFrom,
 }
 
 // ImportSource is the link to where an imported document came from, as the

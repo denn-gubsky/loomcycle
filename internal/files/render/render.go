@@ -262,6 +262,27 @@ func RenderBundle(ctx context.Context, r io.ReaderAt, size int64, format string,
 	return Write(ctx, w, d, format, opts)
 }
 
+// ParseEmbed reads a record a file carried (RFC GR P4b) and holds it to
+// the shape the core writes: an extraction hands it on unchecked, from a
+// file anyone may have made.
+func ParseEmbed(b []byte) (*Embed, error) {
+	if len(b) > MaxEmbed {
+		return nil, fmt.Errorf("%w: embedded record", ErrTooLarge)
+	}
+	var e Embed
+	if err := json.Unmarshal(b, &e); err != nil {
+		return nil, fmt.Errorf("%w: embedded record: %v", ErrBadBundle, err)
+	}
+	if err := checkEmbed(&e); err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+// AnchorBookmark is an anchor as the DOCX and ODT writers name its bookmark,
+// so a bookmark read back maps to its chunk.
+func AnchorBookmark(anchor string) string { return bookmarkName(anchor) }
+
 // checkEmbed holds a decoded record to the shape the core makes: its
 // version, ids and anchors a writer may put into a file's syntax, at most a
 // chunk per section, and fields that are a JSON object.

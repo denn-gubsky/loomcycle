@@ -1335,7 +1335,15 @@ The look: Noto Sans for text and headings, Noto Sans Mono for code; no title pag
 - PDF: an attached `loomcycle.json`;
 - Markdown: `export_md`'s own `<!-- loom: -->` comments and `loom-edges` trailer.
 
-The record is what lets `File op=import` of the file re-import onto the same document later. A record over 8 MiB refuses the render. It is refused with a Markdown file as the source, which has no document to record.
+A record over 8 MiB refuses the render. It is refused with a Markdown file as the source, which has no document to record.
+
+**Bringing it back.** A Word, ODT, HTML or PDF file rendered with `embed` can be edited (in Word or LibreOffice) and imported back:
+
+1. `File op=extract` finds the record and says so in `rendered_from`: `document_id`, `scope`, `title`, and `headings_matched`, how many of its headings it tied to the document's parts through the bookmarks or section ids the renderer wrote. A PDF names no heading's part.
+2. `File op=import` with `reimport: true` and `document` naming that document re-imports onto it, in its scope, as a new edition. Each tied heading is matched to its part by id first, so a section renamed and edited supersedes its part, keeping its links, rather than closing it beside a new one; the rest is matched by anchor and text as any reimport is.
+3. Without `reimport`, the file becomes a new document whose provenance records `rendered_from`.
+
+The record is part of someone's file, as untrusted as its text: it only confirms a target. The caller names the document, a file whose record names another is refused, the Document tool's write check and hooks apply to the named document, and `headings`, or a scope other than the document's, is refused with it.
 
 **Where it runs.** On the conversion workers when the server has them ([`WORKERS.md`](WORKERS.md)), else in the runtime's own process. Markdown, HTML, Word, ODT and EPUB need nothing installed. ODT and EPUB go only to a worker that writes them: with only older workers attached, such a render is refused at once, asking for the workers to be updated. A PDF needs Typst: the `loomcycle-worker` image carries a pinned release and the Noto fonts; a worker takes PDF renders when `typst` is on its `PATH` or `LOOMCYCLE_WORKER_WRITE_COMMAND` names another typesetter. In process, and for local workers, `typst` is run from the `PATH`. Without it, a PDF render answers that the server cannot write PDF; the other formats still work.
 
@@ -1343,7 +1351,7 @@ The record is what lets `File op=import` of the file re-import onto the same doc
 
 **The render log.** Every render of a document is a row of its scope's `document_renders`: a hash of what it was made of, the format and options, the output's sha256 and size, where it went (a volume reference, the inbox, or `download`) and who rendered it (the run, or the person). Never content. `get_document` shows the newest render per format, and `history` with `include: ["renders"]` lists them. A render into a volume is reused while an earlier one of the same content and options is still unchanged there. The log is deleted with its document and travels with `move_documents`. A person's download is also audited (`document_exported`, with format, scope and size), and the file is not served when that record cannot be written. Erasing a subject clears its name from the render log of the tenant's other scopes; the user's own scope goes with the user.
 
-Since #2658 (Markdown, HTML), #2659 (Word), #2663 (PDF), #2670 (downloads), #2706 (ODT, EPUB) and #2715 (embedded record) — `/loomcycle/rfcs/document-rendering`.
+Since #2658 (Markdown, HTML), #2659 (Word), #2663 (PDF), #2670 (downloads), #2706 (ODT, EPUB), #2715 (embedded record) and #2724 (bringing it back) — `/loomcycle/rfcs/document-rendering`.
 
 ## Classification — classify, accept_classification and memory.classifier
 

@@ -94,7 +94,8 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 	start := &workerpb.JobStart{JobId: j.id, Kind: j.kind, InputSize: j.size, MediaType: j.mediaType, Name: j.name,
 		TimeoutMs: timeout.Milliseconds(), Language: j.language, Format: j.format}
 	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT {
-		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: wire.I32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings}
+		_, records := j.sink.(extract.RecordSink)
+		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: wire.I32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings, Records: records}
 	}
 	for _, p := range j.pages {
 		start.Pages = append(start.Pages, wire.I32(p))
@@ -178,6 +179,10 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 		imgSize             int64
 		out                 []byte
 		outSize             int64
+		// record is a loomcycle record arriving in Record frames (RFC GR
+		// P4b); recordDone says its last frame came.
+		record     []byte
+		recordDone bool
 	)
 	maxOut := j.maxOut
 	if maxOut <= 0 {
@@ -228,6 +233,29 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 			case *workerpb.WorkerFrame_PageStart:
 				if ps, ok := j.sink.(extract.PageSink); ok && !sinkFull && sinkErr == nil {
 					ps.StartPage(int(m.PageStart.GetPage()))
+				}
+			case *workerpb.WorkerFrame_Record:
+				// Asked for only when the sink takes it; a record past the
+				// renderer's cap is a worker that does not follow the
+				// protocol.
+				rs, ok := j.sink.(extract.RecordSink)
+				if !ok || recordDone || len(record)+len(m.Record.GetData()) > extract.MaxRecord {
+					return broke("record")
+				}
+				record = append(record, m.Record.GetData()...)
+				if m.Record.GetLast() {
+					recordDone = true
+					if !sinkFull && sinkErr == nil {
+						rs.Record(record)
+					}
+				}
+			case *workerpb.WorkerFrame_HeadingAnchor:
+				rs, ok := j.sink.(extract.RecordSink)
+				if !ok {
+					return broke("heading_anchor")
+				}
+				if !sinkFull && sinkErr == nil {
+					rs.HeadingAnchor(m.HeadingAnchor.GetName())
 				}
 			case *workerpb.WorkerFrame_ImageBegin:
 				b := m.ImageBegin

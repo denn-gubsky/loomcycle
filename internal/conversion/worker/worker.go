@@ -575,7 +575,10 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 		switch start.GetKind() {
 		case workerpb.JobKind_JOB_KIND_EXTRACT:
 			o := start.GetExtract()
-			sink := &remoteSink{ctx: jctx, send: send, refs: refs, full: &sinkFull}
+			var sink extract.Sink = &remoteSink{ctx: jctx, send: send, refs: refs, full: &sinkFull}
+			if o.GetRecords() {
+				sink = &recordRemoteSink{remoteSink: sink.(*remoteSink)}
+			}
 			rep, jerr = p.Extract(jctx, start.GetMediaType(), in, size, sink,
 				extract.Options{Name: start.GetName(), Images: o.GetImages(), MaxRows: int(o.GetMaxRows()), InferHeadings: o.GetInferHeadings()})
 		case workerpb.JobKind_JOB_KIND_PDF_SELECT_PAGES:
@@ -764,6 +767,28 @@ func (s *remoteSink) Text(md string) error {
 		md = md[n:]
 	}
 	return nil
+}
+
+// recordRemoteSink is remoteSink for a job whose caller takes a loomcycle
+// record (RFC GR P4b): the extractor finds it a RecordSink, and the record
+// and heading anchors go to the dispatcher as their own frames.
+type recordRemoteSink struct {
+	*remoteSink
+}
+
+func (s *recordRemoteSink) Record(b []byte) {
+	for {
+		n := min(len(b), wire.ChunkSize)
+		last := n == len(b)
+		if err := s.send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_Record{Record: &workerpb.Record{Data: b[:n], Last: last}}}); err != nil || last {
+			return
+		}
+		b = b[n:]
+	}
+}
+
+func (s *recordRemoteSink) HeadingAnchor(name string) {
+	_ = s.send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_HeadingAnchor{HeadingAnchor: &workerpb.HeadingAnchor{Name: name}}})
 }
 
 func (s *remoteSink) StartPage(n int) {
