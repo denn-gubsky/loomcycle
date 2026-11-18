@@ -29,10 +29,19 @@ A row is **stale** when its node's definition (name, meaning line, place in the
 scheme), its member set, a member's annotation or the embed model changed since
 it was computed. An ontology edit to another node marks nothing stale.
 
+A node's members are only the documents every member of the tenant may read: a
+document the tenant's access-control rules keep from some member (a deny bound
+to a group, a user, a token or the whole tenant) is in no node's figures — not
+counted, not an exemplar, not in the terms, not in a series. The figures are
+then served the same to every reader of the ontology. A member whose document
+annotation is metadata-only (a catalogue record annotated without its content)
+is counted and left out of the centroid, the exemplars and the terms. A row
+stored before this rule is reported `stale` and computed again.
+
 It always works on the tenant scope, whatever `scope` the call names. It may be
 run by an operator, or by a code agent granted `statement_methods`, holding the
 tenant scope, whose access-control rules let it read every document of the
-tenant scope: a node's figures are drawn from every member.
+tenant scope.
 
 ## Arguments
 
