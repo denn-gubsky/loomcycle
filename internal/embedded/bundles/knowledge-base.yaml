@@ -6184,9 +6184,11 @@ agents:
       //    ("in November 2026", "between 1 May and 1 June": DATED_RANGE;
       //    measured: "which plans did we write in November 2026" went to the
       //    survey, which named 5 of 10 every run), and a question asking to
-      //    list the documents of a stored status (listing: "which of our rfcs
-      //    are still drafts"; measured: the walker listing by status named 15
-      //    of 15 every run, the survey the same 7). Then a question
+      //    list the documents of a kind or of a stored status (listing: "which
+      //    of our rfcs are still drafts", "which design notes do we have";
+      //    measured: the walker listing by status named 15 of 15 every run,
+      //    the survey the same 7; by type the walker 30 to 34 plans of 35 and
+      //    13 of 13 design notes, the survey 24 to 25 and 8). Then a question
       //    asking for THE overview, guide or full picture of one thing
       //    (knownItem) is not an overview; it wants the one document that
       //    describes it.
@@ -6195,7 +6197,7 @@ agents:
       //    kb/classify answers YES or NO. With run metadata classifier "agent"
       //    only kb/classify is asked.
       // 2. A dated or listing question goes to kb/walker with a fixed note:
-      //    how to list by date or by status, never a word of the
+      //    how to list by date, by status or by type, never a word of the
       //    question. One that is both gets both notes (CLASSIFIER: dated+listing).
       //    An overview goes to kb/survey, which gathers the candidate documents in
       //    code and has kb/screen screen them; anything else to kb/search, the
@@ -6294,10 +6296,10 @@ agents:
         "|\\bbetween\\s+" + DATE + "\\s+and\\s+" + DATE + "\\b",
         "i");
 
-      // LISTING: the question asks to list the documents of a stored status,
-      // which only a listing call reaches in full. It needs a question word or
-      // a list verb at the start of a clause (LIST_HEAD), so a statement or a
-      // "how" question does not count.
+      // LISTING: the question asks to list the documents of a kind, or of a
+      // stored status, which only a listing call reaches in full. Both need a
+      // question word or a list verb at the start of a clause (LIST_HEAD), so a
+      // statement or a "how" question does not count.
       // KINDS is a fixed vocabulary of document kinds, singular or plural: the
       // stored types differ per tenant (the ontology names them, and kb/ask
       // reads no document), so the walker maps the kind onto the stored types
@@ -6318,6 +6320,23 @@ agents:
       var LISTING_STATUS = new RegExp(
         "\\b" + KINDS + "(?:\\s+(?:that|which))?\\s+(?:(?:are|is|were|was|remain|stay)\\s+" + STATUS + "|awaiting\\s+review|still\\s+in\\s+draft)\\b" +
         "|\\b(?:draft|confirmed|done|finished|shipped|unfinished)\\s+" + KINDS + "\\b",
+        "i");
+      // LISTING_TYPE: every document of a kind, with nothing narrowing it:
+      // "which implementation plans do we have", "list all design notes",
+      // "what rfcs do we hold". Only a determiner may stand between the
+      // question word and the kind (all, every, the, our, of), and only "do
+      // we have" or the like, then the end of the clause, after it. A kind
+      // with a topic ("which design notes cover the scheduler", "which plans
+      // do we have for speech", "which security rfcs do we have") is a
+      // question about the topic and stays with the cascade.
+      var KINDS_PL = "(?:rfcs|design\\s+(?:notes|docs|documents|proposals)|designs|(?:implementation\\s+)?plans|" +
+        "(?:technical\\s+)?research(?:\\s+(?:notes|papers|documents|docs))?|guides|how-?tos|runbooks|specs|" +
+        "specifications|proposals|measurements|reports|papers|publications|notes)";
+      var LISTING_TYPE = new RegExp(
+        LIST_HEAD.source + "\\s+(?:(?:of|all|every|the|our)\\s+)*" + KINDS_PL +
+        "(?:\\s+(?:(?:do|did)\\s+we\\s+(?:(?:still|currently)\\s+)?(?:have|hold|keep|store)|are\\s+there|exist|" +
+        "we\\s+(?:have|hold|keep|store)|(?:are\\s+)?(?:held|stored)))?" +
+        "(?=\\s*(?:[.?!,;:)]|$)|\\s+(?:and|or|now|today|currently|so\\s+far|yet|at\\s+all|in\\s+total)\\b)",
         "i");
       // DEPTH: how much the caller wants retrieved. Run metadata depth (quick,
       // standard or deep) wins; else QUICK in the question's own wording
@@ -6352,7 +6371,7 @@ agents:
         "a period. A month given without a year is the latest such month that has begun by TODAY (below): say which year " +
         "you took.";
 
-      // LISTING_STATUS_NOTE: how a listing question's
+      // LISTING_STATUS_NOTE and LISTING_TYPE_NOTE: how a listing question's
       // walk lists, never a word of the question. A type filter includes the
       // kinds under the type, never a sibling class; measured: a walk that
       // listed "research" alone missed the technical research beside it,
@@ -6366,6 +6385,10 @@ agents:
         "limit 1000. " + LISTING_CLASSES + " Name every document listed, each with a link and its stored status; never " +
         "pick a sample. Then read what you need of each for the rest of the question. Write COVERAGE: complete only when " +
         "every such call was made and none returned its limit.";
+      var LISTING_TYPE_NOTE = "LISTING. The question asks for every document of a kind. List them with query_documents " +
+        "filtered by type, with limit 1000. " + LISTING_CLASSES + " Name every document listed, each with a link; never " +
+        "pick a sample. Write COVERAGE: complete only when every class of the kind was listed and no listing returned its " +
+        "limit.";
       // A listing is complete or it is wrong, so depth quick on a listing
       // shortens each line and stops the reading, never the list.
       // DEPTH_NOTES.quick ("the few documents that answer best") would undo
@@ -6439,7 +6462,7 @@ agents:
       }
 
       // walkerRule reads the question as data: is it dated (DATED, else
-      // DATED_RANGE) or a listing (LISTING_STATUS)? The
+      // DATED_RANGE) or a listing (LISTING_STATUS, else LISTING_TYPE)? The
       // label names each rule that held, in that fixed order ("dated",
       // "listing", "dated+listing"), and the note is their fixed notes, in the
       // same order. Returns null when no rule holds.
@@ -6451,6 +6474,7 @@ agents:
           labels.push("dated"); notes.push(DATED_RANGE_NOTE + "\n" + todayLine());
         }
         if (LIST_HEAD.test(question) && LISTING_STATUS.test(question)) { listing = LISTING_STATUS_NOTE; }
+        else if (LISTING_TYPE.test(question)) { listing = LISTING_TYPE_NOTE; }
         if (listing) { labels.push("listing"); notes.push(listing); }
         if (!labels.length) { return null; }
         return { source: labels.join("+"), note: notes.join("\n\n"), listing: listing !== "" };
