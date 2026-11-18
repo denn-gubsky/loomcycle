@@ -141,6 +141,7 @@ func (f *File) InputSchema() json.RawMessage {
 			"toc":           {"type": "boolean", "description": "render: add a table of contents after the title. Default false."},
 			"title_page":    {"type": "boolean", "description": "render: put the title on a page of its own. Default false: the title, a Draft or Review label and a provenance and date line head the first page."},
 			"provenance":    {"type": "boolean", "description": "render: for an imported document, say where it came from under the title. Default true."},
+			"style":         {"type": "string", "description": "render: the house style to write the file in: the Path of a style document in the tenant's tree (help topic File/render lists its keys), or none for the built-in look. Default: the tenant's /render/styles/default when it exists."},
 			"metadata":      {"type": "string", "enum": ["none", "embed"], "description": "render: embed writes loomcycle's record of the document into the file (chunk ids, types, statuses, tags, fields and the relations inside it, never its provenance), so File op=import of the file can re-import onto the same document. Default none: a file people send carries no ids."},
 			"page_size":     {"type": "string", "enum": ["a4", "letter"], "description": "render: the page size of a paged format. Default a4."},
 			"tags":          {"type": "array", "items": {"type": "string"}, "description": "import: tags for the document, besides the source/... and untrusted tags it always gets."},
@@ -214,6 +215,9 @@ type fileInput struct {
 	// Metadata: embed writes loomcycle's record of the document into the
 	// file (RFC GR P4b, D21); "" or none writes none.
 	Metadata string `json:"metadata"`
+	// Style is the house style a render is written in: a Path of the
+	// tenant's tree, or none (RFC GR P4c); "" is the tenant default.
+	Style string `json:"style"`
 }
 
 func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {

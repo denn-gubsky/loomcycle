@@ -4388,6 +4388,7 @@ export class LoomcycleClient {
     if (opts?.language) q.set("language", opts.language);
     if (opts?.provenance === false) q.set("provenance", "false");
     if (opts?.metadata) q.set("metadata", opts.metadata);
+    if (opts?.style) q.set("style", opts.style);
     const headers: Record<string, string> = {};
     if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
     const resp = await this.ctx.fetchImpl(

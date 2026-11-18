@@ -45,6 +45,10 @@ again (with `to`, copied there).
 - `title_page` — put the title on a page of its own.
 - `provenance` — for an imported document, say under the title where it came
   from. Default true.
+- `style` — the house style to write the file in: the Path of a style
+  document in the tenant's tree, or `none` for the built-in look. Default:
+  the tenant's `/render/styles/default` when it exists. See "House styles"
+  below.
 - `metadata` — `embed` writes loomcycle's record of the document into the
   file: each chunk's id, type, status, tags and fields, and the relations
   inside the document, never its provenance. `File op=import` of such a file
@@ -102,3 +106,30 @@ One section as Markdown, kept in the `reports` volume:
 ```json
 {"op": "render", "document": "4f1c…", "chunk": "9a0e…", "format": "md", "to": "volume:reports:2026/decisions.md"}
 ```
+
+## House styles
+
+A style is a Document in the tenant's tree. Its root's text is the style's
+JSON (or one fenced json block of it), and its first picture is the logo
+shown above the title. Every key but `loomcycle_style` is optional:
+
+```json
+{"loomcycle_style": 1, "font": "serif", "size": 11, "heading_scale": 1.1,
+ "colors": {"text": "#1b1b1b", "heading": "#0f3d6e", "link": "#1d4ed8"},
+ "page": {"size": "a4", "margin_mm": 20},
+ "header": "Acme Ltd · Internal", "footer": "Confidential",
+ "page_numbers": true, "logo_width_mm": 30}
+```
+
+- `font`: `sans` or `serif` (Noto Sans or Noto Serif; code stays Noto Sans
+  Mono). `size`: 8–14 points. `heading_scale`: 0.8–1.5.
+- `colors`: `#rrggbb`. `page.size`: `a4` or `letter` (the call's `page_size`
+  wins). `page.margin_mm`: 10–50.
+- `header`, `footer`: one line of at most 120 characters, printed on every
+  page of a PDF, Word or ODT file and at the top and bottom of an HTML page
+  or e-book page. `page_numbers` (default true) ends a paged file's footer
+  with the page number. `logo_width_mm`: 10–80.
+
+An unknown key or a value out of range refuses the render and names the key;
+a style never falls back to the built-in look. Markdown is never styled. A
+style you may not read is refused like one that does not exist.

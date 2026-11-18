@@ -295,3 +295,20 @@ func (s *Style) cssOverrides(scope string) string {
 	fmt.Fprintf(&b, "img.logo{width:%gmm;max-width:100%%;height:auto;display:block;margin:0 0 1em}\n", s.logoMM())
 	return b.String()
 }
+
+// AddLogo gives the Doc the style's logo as a picture of its own, and
+// reports whether it took it: a media type a writer shows, at most
+// MaxImage, within the picture count.
+func (d *Doc) AddLogo(mediaType string, data []byte) bool {
+	ext, ok := imageExt[mediaType]
+	if d.Style == nil || !ok || len(data) == 0 || len(data) > MaxImage || len(d.Images) >= MaxImages {
+		return false
+	}
+	name := fmt.Sprintf("img-%d.%s", len(d.Images)+1, ext)
+	if _, taken := d.image(name); taken {
+		return false
+	}
+	d.Images = append(d.Images, Image{Name: name, MediaType: mediaType, Data: data})
+	d.Style.Logo = name
+	return true
+}
