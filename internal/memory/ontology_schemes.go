@@ -47,6 +47,8 @@ type OntologyScheme struct {
 	Concepts []OntologyConcept `json:"concepts,omitempty"`
 	ChunkID  string            `json:"chunk_id,omitempty"`
 	Issues   []string          `json:"issues,omitempty"`
+	// EntryStatus is "retired" for a retired scheme ("" when live).
+	EntryStatus string `json:"entry_status,omitempty"`
 }
 
 // OntologyConcept is one concept of a scheme.
@@ -78,6 +80,10 @@ type OntologyConcept struct {
 	Meaning string   `json:"meaning,omitempty"`
 	ChunkID string   `json:"chunk_id,omitempty"`
 	Issues  []string `json:"issues,omitempty"`
+	// EntryStatus is "retired" for a retired concept: the concept filter, memberships
+	// and its policy keep working for what is already placed under it; nothing new is
+	// placed there.
+	EntryStatus string `json:"entry_status,omitempty"`
 }
 
 // SchemeMaxDepth bounds how many levels of concepts a scheme may hold below itself
@@ -261,6 +267,9 @@ type FocusTarget struct {
 	Kind  string
 	Name  string
 	Class string
+	// Retired: the class or instance named is retired, so no new focus statement may
+	// point at it.
+	Retired bool
 }
 
 // ResolveFocus finds the class or instance a @focus names, case-insensitively — the way
@@ -282,13 +291,24 @@ func ResolveFocus(name string, classes []OntologyTerm, instances []OntologyInsta
 	}
 	for _, in := range instances {
 		if strings.EqualFold(in.Name, n) {
-			return FocusTarget{Kind: FocusInstance, Name: in.Name, Class: in.Class}, true, class != nil
+			return FocusTarget{Kind: FocusInstance, Name: in.Name, Class: in.Class, Retired: in.EntryStatus != ""}, true, class != nil
 		}
 	}
 	if class != nil {
-		return FocusTarget{Kind: FocusClass, Name: class.Name}, true, false
+		return FocusTarget{Kind: FocusClass, Name: class.Name, Retired: class.EntryStatus != ""}, true, false
 	}
 	return FocusTarget{}, false, false
+}
+
+// liveConcepts is concepts without the retired ones, as a new slice.
+func liveConcepts(concepts []OntologyConcept) []OntologyConcept {
+	out := make([]OntologyConcept, 0, len(concepts))
+	for _, c := range concepts {
+		if c.EntryStatus == "" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // CheckSchemeReferences adds the advisories only the whole document can give: a
@@ -297,14 +317,22 @@ func ResolveFocus(name string, classes []OntologyTerm, instances []OntologyInsta
 // is reported and skipped, as every other directive is (fail-open).
 func CheckSchemeReferences(schemes []OntologyScheme, classes []OntologyTerm, instances []OntologyInstance) {
 	known := make(map[string]bool, len(classes))
+	retired := map[string]bool{}
 	for _, c := range classes {
 		known[strings.ToLower(c.Name)] = true
+		if c.EntryStatus != "" {
+			retired[strings.ToLower(c.Name)] = true
+		}
 	}
 	for i := range schemes {
 		s := &schemes[i]
 		for _, p := range s.Projects {
-			if !known[strings.ToLower(p)] {
+			switch {
+			case !known[strings.ToLower(p)]:
 				s.Issues = append(s.Issues, "@projects "+strconv.Quote(p)+" is not a class of this ontology")
+			case retired[strings.ToLower(p)]:
+				s.Issues = append(s.Issues, "@projects "+strconv.Quote(p)+
+					" names a retired class; what is already placed stays, nothing new of it is")
 			}
 		}
 		for j := range s.Concepts {
@@ -312,7 +340,7 @@ func CheckSchemeReferences(schemes []OntologyScheme, classes []OntologyTerm, ins
 			if c.Focus == "" {
 				continue
 			}
-			_, ok, both := ResolveFocus(c.Focus, classes, instances)
+			t, ok, both := ResolveFocus(c.Focus, classes, instances)
 			switch {
 			case !ok:
 				c.Issues = append(c.Issues, "@focus "+strconv.Quote(c.Focus)+
@@ -320,6 +348,10 @@ func CheckSchemeReferences(schemes []OntologyScheme, classes []OntologyTerm, ins
 			case both:
 				c.Issues = append(c.Issues, "@focus "+strconv.Quote(c.Focus)+
 					" names both a class and an instance; the instance is used")
+			}
+			if ok && t.Retired {
+				c.Issues = append(c.Issues, "@focus "+strconv.Quote(c.Focus)+
+					" names a retired entry; no new focus statement is written")
 			}
 		}
 	}
@@ -385,7 +417,15 @@ func ParseRetention(s string) (time.Duration, bool) {
 func RenderSchemes(schemes []OntologyScheme) string {
 	var rendered []OntologyScheme
 	for _, s := range schemes {
-		if s.Render && len(s.Concepts) > 0 {
+		if !s.Render || s.EntryStatus != "" {
+			continue
+		}
+		// A retired concept is closed to new placements, so the prompt does not offer it.
+		// A scheme with none retired is appended as it is (byte-identical render).
+		if live := liveConcepts(s.Concepts); len(live) != len(s.Concepts) {
+			s.Concepts = live
+		}
+		if len(s.Concepts) > 0 {
 			rendered = append(rendered, s)
 		}
 	}

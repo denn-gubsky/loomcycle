@@ -111,7 +111,13 @@ func (d *Document) fileSchemeProposal(ctx context.Context, key sqlmem.ScopeKey, 
 	}
 	warnings = append(warnings, more...)
 	seg := memrank.MirrorSegment(p.Name)
+	if r := retiredProjectsRefusal(read, p.Header.Projects); r != nil {
+		return *r, nil
+	}
 	for _, s := range read.Schemes {
+		if memrank.MirrorSegment(s.Name) == seg && s.EntryStatus != "" {
+			return *retiredNameRefusal("the scheme " + s.Name), nil
+		}
 		if memrank.MirrorSegment(s.Name) == seg {
 			return errBusiness(op+": a scheme named "+s.Name+" is already declared",
 				"Propose its new concepts one by one with parent set to it, or pick another name."), nil
@@ -357,6 +363,9 @@ func (d *Document) AcceptSchemeProposal(ctx context.Context, scope, chunkID stri
 	if err := tagInForce(read, isScheme, self.parent, p.Name); err != nil {
 		return true, rep, fmt.Errorf("%w: %v", ErrSchemeProposalInvalid, err)
 	}
+	if r := retiredProjectsRefusal(read, p.Header.Projects); isScheme && r != nil {
+		return true, rep, fmt.Errorf("%w: @projects names a class retired since it was filed", ErrSchemeProposalInvalid)
+	}
 	rep.Warnings = warnings
 	flat := flattenProposed(p.Concepts)
 	if len(flat) != len(nodes) {
@@ -408,6 +417,9 @@ func tagInForce(read OntologyRead, isScheme bool, parentID, name string) error {
 	}
 	if parentTag == "" {
 		return nil // under a concept still proposed: nothing in force beside it
+	}
+	if retiredConceptChunks(read)[parentID] != "" {
+		return fmt.Errorf("its parent was retired since it was filed; nothing new is placed under a retired entry")
 	}
 	tag := parentTag + "/" + seg
 	for _, s := range read.Schemes {

@@ -113,10 +113,23 @@ func (d *Document) AdoptInstances(ctx context.Context, dryRun bool) (InstanceRep
 		if inst.RegistryKey != "" && !trusted {
 			st.Note = "its recorded key was not written by adoption and is ignored"
 		}
-		keys[st.Key] = true
+		keys[st.Key] = true // a retired instance's subject is kept, not orphaned
+		if inst.EntryStatus != "" {
+			// Retired (RFC FO 3.1a): its subject stays as it is — not adopted again, not
+			// renamed, and no new statement is written from it.
+			st.State, st.Note = "retired", "retired; its subject is kept and not adopted again"
+			rep.Instances = append(rep.Instances, st)
+			continue
+		}
 		existing, err := d.chunkIDByNaturalKey(ctx, key, st.Key)
 		if err != nil {
 			return rep, err
+		}
+		if existing == "" && class.EntryStatus != "" {
+			// A new instance of a retired class is a new write using it.
+			st.State, st.Note = "skipped", "its class "+class.Name+" is retired; a new instance of it is not adopted"
+			rep.Instances = append(rep.Instances, st)
+			continue
 		}
 		switch {
 		case existing != "":
@@ -395,6 +408,12 @@ func (d *Document) writeInstanceStatements(ctx context.Context, key sqlmem.Scope
 			rep.Statements++
 		}
 	}
+	retired := map[string]bool{}
+	for _, inst := range read.Instances {
+		if inst.EntryStatus != "" {
+			retired[strings.ToLower(inst.Name)] = true
+		}
+	}
 	for _, inst := range read.Instances {
 		from := roots[strings.ToLower(inst.Name)]
 		if from == "" {
@@ -410,6 +429,9 @@ func (d *Document) writeInstanceStatements(ctx context.Context, key sqlmem.Scope
 		}
 		for _, r := range inst.Relations {
 			to := roots[strings.ToLower(r.Target)]
+			if to == "" && retired[strings.ToLower(r.Target)] {
+				continue // the target is retired: what joins them stays, nothing new is written
+			}
 			if to == "" {
 				rep.Errors = append(rep.Errors, inst.Name+": @"+r.Kind+" "+r.Target+": no adopted instance has that name")
 				continue
@@ -476,6 +498,9 @@ func (d *Document) proposeInstance(ctx context.Context, key sqlmem.ScopeKey, msc
 	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
 		have = append(have, c.Name)
 		if strings.EqualFold(c.Name, class) {
+			if c.EntryStatus != "" {
+				return *retiredParentRefusal("the class " + c.Name), nil
+			}
 			declared = c.Name
 		}
 	}
@@ -485,6 +510,9 @@ func (d *Document) proposeInstance(ctx context.Context, key sqlmem.ScopeKey, msc
 			"Pass a declared class as parent."), nil
 	}
 	for _, inst := range read.Instances {
+		if strings.EqualFold(inst.Name, name) && inst.EntryStatus != "" {
+			return *retiredNameRefusal("the instance " + inst.Name), nil
+		}
 		if strings.EqualFold(inst.Name, name) {
 			return errBusiness("propose_entity: instance "+name+" is already declared", "Use it as it is."), nil
 		}

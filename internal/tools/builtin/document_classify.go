@@ -181,9 +181,13 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if tenantScope && docID == read.DocumentID {
 		return errValidation("classify: the ontology document is not classified", "Classify a document the ontology describes."), nil
 	}
+	// classify offers only what a new placement may use: no retired concept, instance
+	// or class (RFC GQ P2.1). Classes are dropped after the seed layering, so a retired
+	// class keeps a seed class of its name out.
+	read = forNewWrites(read)
 	classes := map[string]memrank.OntologyTerm{}
 	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
-		if c.IsDocumentClass {
+		if c.IsDocumentClass && c.EntryStatus == "" {
 			classes[strings.ToLower(c.Name)] = c
 		}
 	}
