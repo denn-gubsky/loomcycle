@@ -2,7 +2,6 @@ package http
 
 import (
 	"net/http/httptest"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -21,8 +20,8 @@ func httptestServerAt(url string) *httptest.Server { return &httptest.Server{URL
 // accident (RFC EZ §2).
 var aclUngovernedRoutes = map[string]bool{
 	"GET /healthz": true, "GET /v1/_me": true, "GET /v1/config": true,
-	"GET /v1/openapi.json": true, "GET /v1/openapi.yaml": true, "GET /v1/docs": true, "GET /v1/docs/": true, "GET /v1/docs/{file}": true,
-	"GET /ui": true, "GET /ui/": true, "POST /ui/session": true, "GET /ui/login-config.json": true, "GET /ui/logout": true, "POST /ui/logout": true,
+	"GET /v1/openapi.json": true, "GET /v1/openapi.yaml": true, "GET /v1/docs": true, "GET /v1/docs/{file}": true,
+	"GET /ui": true, "GET /ui/": true, "POST /ui/session": true,
 	// Signing out ends the caller's own session and runs before any
 	// principal exists (an expired session may still log out).
 	"POST /v1/_auth/logout": true,
@@ -70,40 +69,63 @@ var aclUngovernedRoutes = map[string]bool{
 
 var muxPatternRe = regexp.MustCompile(`mux\.(?:Handle|HandleFunc)\("([A-Z]+ )?([^"]+)"`)
 
+// RFC EZ P6: every route the server registers has exactly one row in the
+// route table, under the pattern it is registered with, and the table holds
+// no row for a route nobody registers. The table is what the scope, run-plane
+// and ACL gates read, so a route added without a row would be gated as no
+// route at all.
+func TestACLRoutes_EveryRegisteredRouteHasOneRow(t *testing.T) {
+	registered := map[string]bool{}
+	for _, p := range aclRegisteredPatterns(t) {
+		registered[p] = true
+	}
+	if len(registered) < 250 {
+		t.Fatalf("only %d registered patterns found; the census no longer reads the route files", len(registered))
+	}
+	rows := map[string]bool{}
+	for _, rt := range authz.HTTPRoutes() {
+		if rows[rt.Pattern] {
+			t.Errorf("%s has two rows", rt.Pattern)
+		}
+		rows[rt.Pattern] = true
+		if !registered[rt.Pattern] {
+			t.Errorf("row %s names a route nothing registers", rt.Pattern)
+		}
+	}
+	for p := range registered {
+		if !rows[p] {
+			t.Errorf("%s is registered but has no row in authz's route table", p)
+		}
+	}
+}
+
+// A route no ACL governs is one of aclUngovernedRoutes, each listed with why,
+// and every listed route is ungoverned: a row cannot drop its question
+// without that list saying so. Every governed row asks a catalog pair.
 func TestACLSurfaces_EveryRegisteredRouteIsGovernedOrListed(t *testing.T) {
-	src, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	seen := 0
-	for _, m := range muxPatternRe.FindAllStringSubmatch(string(src), -1) {
-		method := strings.TrimSpace(m[1])
-		pattern := m[2]
-		if method == "" {
-			method = "GET" // a method-less pattern serves every method; GET is the weakest question
+	listed := map[string]bool{}
+	for _, rt := range authz.HTTPRoutes() {
+		key := rt.Pattern
+		if !strings.Contains(key, " ") {
+			key = "GET " + key // a method-less pattern serves every method; GET is the weakest question
 		}
-		key := method + " " + pattern
-		if aclUngovernedRoutes[key] {
+		method, path, _ := strings.Cut(key, " ")
+		if !rt.Governed() {
+			listed[key] = true
+			if !aclUngovernedRoutes[key] {
+				t.Errorf("%s has no ACL question; give its row one or list it in aclUngovernedRoutes", rt.Pattern)
+			}
 			continue
 		}
-		// Placeholders become a plausible segment; `{path...}` becomes one
-		// segment too.
-		path := regexp.MustCompile(`\{[^}]+\}`).ReplaceAllString(pattern, "x")
-		path = strings.TrimSuffix(path, "/")
-		if path == "" {
-			path = "/"
-		}
-		seen++
-		s, ok := authz.HTTPSurface(method, path)
-		if !ok {
-			t.Errorf("%s %s (as %s) is registered but no ACL question governs it; map it in authz.HTTPSurface or list it in aclUngovernedRoutes", method, pattern, path)
-			continue
-		}
+		sample := regexp.MustCompile(`\{[^}]+\}`).ReplaceAllString(path, "x")
+		s, _ := rt.Question(method, sample)
 		if !authz.ValidVerb(s.Type, s.Action) {
-			t.Errorf("%s %s → %s %s is not a catalog pair", method, pattern, s.Action, s.Type)
+			t.Errorf("%s → %s %s is not a catalog pair", rt.Pattern, s.Action, s.Type)
 		}
 	}
-	if seen < 150 {
-		t.Fatalf("only %d routes seen; the census regexp no longer matches server.go", seen)
+	for key := range aclUngovernedRoutes {
+		if !listed[key] {
+			t.Errorf("%s is listed as ungoverned but its row asks a question (or it has no row)", key)
+		}
 	}
 }

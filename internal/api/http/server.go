@@ -3530,7 +3530,7 @@ func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 
 // ontologyPlanRoutes registers RFC GQ P1's plan: what changes to the ontology would
 // do, before any is made. It writes nothing, but its counts cover every scope of the
-// tenant: gated (requiredScopeFor) and carved out of the member path as the subject
+// tenant: gated (the route table, authz.HTTPRoute) and carved out of the member path as the subject
 // merge is; the connector checks the caller again.
 func (s *Server) ontologyPlanRoutes(mux *http.ServeMux) *http.ServeMux {
 	mux.Handle("POST /v1/_ontology/plan", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleOntologyPlan))))
@@ -3564,13 +3564,13 @@ func (s *Server) routes() *http.ServeMux {
 	// Routing view: per user_tier × tier, the resolved provider/model cascade
 	// (top → fallbacks). Tenant-readable (config cascade only); admin also gets
 	// live availability + the active-providers header. Scope-gated in
-	// requiredScopeFor.
+	// the route table (authz.HTTPRoute).
 	mux.Handle("GET /v1/_routing", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRouting))))
 	// The tenant ontology's operator surface: GET reports the gate + the effective
 	// (base ⊕ tenant) types, POST flips draft↔confirmed. Tenant-scoped — a tenant
 	// operator confirms its OWN tenant's ontology; the GET provisions the document
 	// on first reference so it can be authored before any run needs it. Authoring
-	// itself stays in the Path/Document browser. Scope-gated in requiredScopeFor.
+	// itself stays in the Path/Document browser. Scope-gated in the route table (authz.HTTPRoute).
 	mux.Handle("GET /v1/_tenants", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListTenants))))
 	mux.Handle("GET /v1/_users/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleInspectUser))))
 	mux.Handle("GET /v1/_erasure", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleErasureReport))))
@@ -3604,7 +3604,7 @@ func (s *Server) routes() *http.ServeMux {
 	// RFC BK P3: resident interactive sub-agent visibility + operator control.
 	// GET lists (tenant-scoped); POST close/cancel act on one (tenant-gated).
 	// Per-replica (the resident registry is in-process). Scope-gated in
-	// requiredScopeFor (ScopeTenant).
+	// the route table (authz.HTTPRoute) (ScopeTenant).
 	mux.Handle("GET /v1/_resident", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListResident))))
 	mux.Handle("POST /v1/_resident/{run_id}/close", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResidentClose))))
 	mux.Handle("POST /v1/_resident/{run_id}/cancel", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleResidentCancel))))
@@ -3626,10 +3626,10 @@ func (s *Server) routes() *http.ServeMux {
 	// so a UI can offer aliases in a model picker and store the alias on an
 	// agent/fork (which then tracks the operator's local override) instead of a
 	// concrete model. Non-secret global config; scope-gated to substrate:tenant
-	// in requiredScopeFor.
+	// in the route table (authz.HTTPRoute).
 	mux.Handle("GET /v1/_models", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListModels))))
 	// RFC BY: the user-facing runnable-agent catalog. Member-read gated
-	// (memberReadable -> runs:read in requiredScopeFor), so a delegated user
+	// (runs:read in the route table), so a delegated user
 	// token discovers the agents it may run without knowing names out of band;
 	// the handler tiers the result by the caller's access mode (bundled always,
 	// tenant only for a non-isolated caller, own reserved).
@@ -3661,7 +3661,7 @@ func (s *Server) routes() *http.ServeMux {
 	// update / delete are tenant-operator actions (substrate:tenant, admin
 	// also satisfies); the handlers derive the authoritative tenant from the
 	// principal (never the wire) and 404 cross-tenant. Scope-gated in
-	// requiredScopeFor (POST here; PATCH/DELETE via the /v1/_users/ prefix).
+	// the route table (authz.HTTPRoute) (POST here; PATCH/DELETE via the /v1/_users/ prefix).
 	mux.Handle("POST /v1/_users", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCreateUser))))
 	mux.Handle("PATCH /v1/_users/{subject}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUpdateUser))))
 	// RFC FA P1: the approval queue (pending → active). ScopeTenant via the
@@ -3679,7 +3679,7 @@ func (s *Server) routes() *http.ServeMux {
 	// delegation): the tenant is forced from the principal, scopes are derived
 	// from the user's access_mode, and list/revoke are confined to member tokens.
 	// All three are ScopeTenant via the /v1/_users/ prefix case in
-	// requiredScopeFor (a substrate:user member is auto-denied). The more
+	// the route table (authz.HTTPRoute) (a substrate:user member is auto-denied). The more
 	// specific token patterns win over GET/PATCH/DELETE /v1/_users/{subject}.
 	mux.Handle("POST /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleMintUserToken))))
 	mux.Handle("GET /v1/_users/{subject}/tokens", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListUserTokens))))
@@ -3697,7 +3697,7 @@ func (s *Server) routes() *http.ServeMux {
 	// links, password removal, login renames and the logins of a user. None
 	// accepts a password. A tenant operator manages its own tenant, an admin
 	// any, and an auth:manage credential any (authManageRoute admits it here
-	// and on the /v1/_users CRUD only). Scope-gated in requiredScopeFor.
+	// and on the /v1/_users CRUD only). Scope-gated in the route table (authz.HTTPRoute).
 	mux.Handle("POST /v1/_authgate/{gate}/invites", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateCreateInvite))))
 	mux.Handle("GET /v1/_authgate/{gate}/invites", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateListInvites))))
 	mux.Handle("DELETE /v1/_authgate/{gate}/invites/{id}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuthgateRevokeInvite))))
@@ -3795,13 +3795,13 @@ func (s *Server) routes() *http.ServeMux {
 	// /ui/audit page. Bearer-authed admin surface.
 	mux.Handle("GET /v1/_events", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListEvents))))
 	// RFC FZ Part E — the store-backed audit chain as JSONL. Not the run event
-	// log above. ScopeTenant (requiredScopeFor), carved out of the member path.
+	// log above. ScopeTenant (the route table, authz.HTTPRoute), carved out of the member path.
 	mux.Handle("GET /v1/_audit", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleAuditExport))))
 	mux.Handle("GET /v1/_usage", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUsageReport))))
 	mux.Handle("GET /v1/_usage/speed", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleUsageSpeed))))
 	// RFC BM — the data-retention view. Tenant-readable config; the cross-tenant
 	// purgeable counts + export dir are admin-only (stripped in the handler).
-	// Scope-gated to substrate:tenant in requiredScopeFor.
+	// Scope-gated to substrate:tenant in the route table (authz.HTTPRoute).
 	mux.Handle("GET /v1/_retention", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRetentionReport))))
 	// Timed overrides of an agent's no-trace mode (retention_override.go). An
 	// admin for any tenant, a tenant operator for its own; never a member.
@@ -3811,12 +3811,12 @@ func (s *Server) routes() *http.ServeMux {
 	// Instance configuration + the live provider/model/search cascade — the
 	// out-of-band twin of `Context op=capabilities`, sharing one probe
 	// (internal/capabilities) so the two cannot disagree. Any authenticated
-	// principal by default (requiredScopeFor's GET default); readable with NO
+	// principal by default (the route table's GET default); readable with NO
 	// bearer only under LOOMCYCLE_PUBLIC_CONFIG, which renders a narrowed public
 	// view. A presented-but-invalid bearer still 401s rather than downgrading.
 	mux.Handle("GET /v1/config", recoveryMiddleware(s.publicOrAuthMiddleware(http.HandlerFunc(s.handleConfig))))
 	// Repair memory rows stranded at the legacy "" tenant by the RFC BL tenant
-	// axis. substrate:admin via the /v1/_* catch-all in requiredScopeFor — it
+	// axis. substrate:admin via the /v1/_* default the route table keeps — it
 	// rewrites rows across every scope in one statement. dry_run defaults true,
 	// so a bare POST reports rather than writes. Reachable from the Maintenance page
 	// because the deployments most likely to be affected have no shell.
@@ -3835,37 +3835,37 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("POST /v1/_agentdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateAgentDef))))
 	mux.Handle("POST /v1/_skilldef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateSkillDef))))
 	// RFC AP Phase 2 TeamDef substrate. Bearer-authed; tenant-confined
-	// (ScopeTenant via isTenantConfinedDefPath) — the tool stamps the caller's
+	// (ScopeTenant in the route table) — the tool stamps the caller's
 	// authoritative tenant + opaque-404s cross-tenant reads. Same dispatch shape
 	// as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_teamdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateTeamDef))))
 	// HookDef substrate — reusable hook definitions. Tenant-confined like
-	// AgentDef (see isTenantConfinedDefPath).
+	// AgentDef (its row in the route table).
 	mux.Handle("POST /v1/_hookdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateHookDef))))
 	// v0.9.x dynamic MCP server registration. Bearer-authed; operator-
 	// admin-only (no per-agent surface). Same dispatch shape as the
 	// other two substrate admin endpoints.
 	mux.Handle("POST /v1/_mcpserverdef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateMCPServerDef))))
 	// RFC AH Phase 2a dynamic-volume substrate. Bearer-authed; tenant-
-	// confined (ScopeTenant via isTenantConfinedDefPath) — the tool stamps
+	// confined (ScopeTenant in the route table) — the tool stamps
 	// the caller's authoritative tenant + opaque-404s cross-tenant reads.
 	mux.Handle("POST /v1/_volumedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateVolumeDef))))
 	// RFC AL Path VFS + RFC AK Document — the two scope-aware primitives lifted
 	// to the wire (Plan 3 / RFC AK Phase 2). Bearer-authed; tenant-confined
-	// (ScopeTenant via isTenantConfinedDefPath) — the tools resolve scope from
+	// (ScopeTenant in the route table) — the tools resolve scope from
 	// the operator-trust ctx + stamp the caller's authoritative tenant, never
 	// the wire. Same dispatch shape as the other substrate admin endpoints.
 	mux.Handle("POST /v1/_path", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstratePath))))
 	mux.Handle("POST /v1/_document", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateDocument))))
 	s.documentFileRoutes(mux)
 	// RFC BE History tool — browse/search/annotate past chats. Tenant-confined
-	// (ScopeTenant via isTenantConfinedDefPath); the tool's own scope fold +
+	// (ScopeTenant in the route table); the tool's own scope fold +
 	// admin-gated `global` keep a tenant operator inside its own tenant.
 	mux.Handle("POST /v1/_history", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateHistory))))
 	mux.Handle("POST /v1/_evaluation", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateEvaluation))))
 	// RFC AR secure credential store (the Web UI tenant credentials page's
 	// ingress). Bearer-authed; tenant-confined (ScopeTenant via
-	// isTenantConfinedDefPath) — the tool derives scope_id from the operator-trust
+	// the route table) — the tool derives scope_id from the operator-trust
 	// ctx (the caller's authoritative tenant/subject), NEVER the wire. Uses the
 	// USER-aware ctx so a scope:"user" op keys on the principal's own subject, the
 	// same user-scope id an agent run for this principal uses. Same dispatch shape
@@ -3875,7 +3875,7 @@ func (s *Server) routes() *http.ServeMux {
 	// closed to members; keys and tenant come from the principal (s.Crypto).
 	mux.Handle("POST /v1/_crypto", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateCrypto))))
 	// RFC AH Phase 4 (Web UI) — two ADDITIVE read-only views of the volume
-	// universe. Tenant-confined (ScopeTenant via isTenantConfinedDefPath):
+	// universe. Tenant-confined (ScopeTenant in the route table):
 	// statics are shown to all (the shared bind floor), dynamic + ephemeral
 	// rows are filtered to the caller's authoritative tenant. No new runtime
 	// primitive — CRUD stays on POST /v1/_volumedef.
@@ -3957,7 +3957,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.Handle("GET /v1/_operatortokendef/names", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListOperatorTokenDefNames))))
 	// RFC AQ — read-only embedded preset/bundle + env-template introspection
 	// (the `loomcycle presets` / `env-template` CLI, web-reachable for the
-	// Presets page). Admin-gated via the /v1/_* default in requiredScopeFor.
+	// Presets page). Admin-gated via the route table.
 	mux.Handle("GET /v1/_presets", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleListPresets))))
 	mux.Handle("GET /v1/_presets/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleShowPreset))))
 	mux.Handle("GET /v1/_env_template", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleEnvTemplate))))

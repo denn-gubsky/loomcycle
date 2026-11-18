@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -236,7 +237,7 @@ func TestAgentOverridable_ScopeMatrix(t *testing.T) {
 		t.Error("the report must be on the run plane for GET only")
 	}
 	for _, p := range []string{"/v1/_agentdef/names", "/v1/_agentdef//overridable", "/v1/_agentdef/a/b/overridable", "/v1/_agentdef/a/overridable/x"} {
-		if isAgentOverridablePath(p) {
+		if rt, ok := authz.HTTPRoute("GET", p); ok && rt.Pattern == "GET /v1/_agentdef/{name}/overridable" {
 			t.Errorf("%s matched the overridable route", p)
 		}
 	}

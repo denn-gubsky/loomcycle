@@ -185,7 +185,7 @@ func (s *Server) candidateThroughput(provider, model string, admin bool) *routin
 	return rt
 }
 
-// handleRouting serves GET /v1/_routing. Tenant-readable (see requiredScopeFor):
+// handleRouting serves GET /v1/_routing. Tenant-readable (see the route table, authz.HTTPRoute):
 // every principal gets the cascade + live availability + the active-providers
 // header; a non-admin has last_error redacted, and a gate-restricted tenant sees
 // only the providers it can key itself.

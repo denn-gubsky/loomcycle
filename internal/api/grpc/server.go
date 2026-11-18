@@ -1068,235 +1068,19 @@ func (s *Server) callerIP(ctx context.Context) net.IP {
 // FullMethod is grpcMethodPrefix + "/" + RPC name.
 const grpcMethodPrefix = "/loomcycle.v1.Loomcycle/"
 
-// grpcConsumerScopes maps the NON-admin RPCs to their required scope.
-// Everything not listed here defaults to substrate:admin (deny-by-default
-// for a security gate — a newly-added admin/substrate RPC is protected even
-// if someone forgets to map it; the cost is that a new CONSUMER RPC must be
-// added here or it over-requires admin). Mirrors the HTTP requiredScopeFor
-// intent: run create/cancel/continue need runs:create; reads need runs:read;
-// the channel surface uses the channel scopes. Health is handled before this
-// check (it bypasses auth entirely).
-//
-// A substrate:tenant entry is also the member path (RFC CB, RFC EZ Q1): a
-// non-isolated principal without the scope reaches the RPC when its HTTP twin
-// is on the HTTP member path — see enforceScope and internal/api/memberpath.
-var grpcConsumerScopes = map[string]string{
-	"Run":              auth.ScopeRunsCreate,
-	"Continue":         auth.ScopeRunsCreate,
-	"RunInput":         auth.ScopeRunsCreate, // RFC AI — steering injects instructions (mutation)
-	"RetuneRun":        auth.ScopeRunsCreate, // changes a run's settings (mutation; mirrors POST .../retune)
-	"CancelTurn":       auth.ScopeRunsCreate, // RFC BH — turn-cancel is a run mutation (mirrors POST .../cancel)
-	"ReviewRun":        auth.ScopeRunsCreate, // RFC DJ — a verdict on a held run (mirrors POST .../review)
-	"ResolveInterrupt": auth.ScopeRunsCreate, // RFC BH — resolve/decline steers the run (mirrors POST .../resolve)
-	"StreamRun":        auth.ScopeRunsRead,   // RFC AI — pure read tail (mirrors handleRunStream)
-	"SpawnRunBatch":    auth.ScopeRunsCreate,
-	"CompactRun":       auth.ScopeRunsCreate,
-	// Deleting a run tree removes stored records: its own scope, as on HTTP.
-	// Not substrate:tenant-or-less by implication for a member or an isolated
-	// user; the connector checks it again and requires read access to the root.
-	"DeleteRunTree": auth.ScopeRunsDelete,
-	// RFC DI configured runs: creating, editing, starting and discarding a
-	// draft are run writes, the scope that creates a run (mirrors HTTP).
-	"CreateConfiguredRun": auth.ScopeRunsCreate,
-	"UpdateConfiguredRun": auth.ScopeRunsCreate,
-	"StartConfiguredRun":  auth.ScopeRunsCreate,
-	"DeleteConfiguredRun": auth.ScopeRunsCreate,
-	"ReplaySession":       auth.ScopeRunsCreate,
-	// A decision asked outside a run, and the models it may name: the scope that
-	// creates a run, which is what a caller would otherwise start to get one
-	// (mirrors POST /v1/_decide and GET /v1/_decide/models).
-	"Decide":              auth.ScopeRunsCreate,
-	"ListDecisionModels":  auth.ScopeRunsCreate,
-	"CancelAgent":         auth.ScopeRunsCreate,
-	"GetTranscript":       auth.ScopeRunsRead,
-	"GetAgent":            auth.ScopeRunsRead,
-	"GetRun":              auth.ScopeRunsRead,
-	"ListUserAgents":      auth.ScopeRunsRead,
-	"ListWalkRuns":        auth.ScopeRunsRead,
-	"ListChildRuns":       auth.ScopeRunsRead,
-	"StreamUserRunStates": auth.ScopeRunsRead,
-	"PublishChannel":      auth.ScopeChannelPublish,
-	"AckChannel":          auth.ScopeChannelPublish,
-	"SubscribeChannel":    auth.ScopeChannelRead,
-	"PeekChannel":         auth.ScopeChannelRead,
-	"ListChannels":        auth.ScopeChannelRead,
-	// The fan-in / fan-out twins of POST /v1/_channels/_await and _broadcast,
-	// which ask substrate:tenant (the member path admits a member). Unlike the
-	// per-channel RPCs above they have no /v1/users/{user_id}/channels twin, so
-	// an isolated user is refused them on HTTP; a channel scope here would let
-	// it through on gRPC. Unmapped, they defaulted to substrate:admin.
-	"AwaitChannels":     auth.ScopeTenant,
-	"BroadcastChannels": auth.ScopeTenant,
-	// RFC AV: the usage/cost report is tenant-readable (the handler tenant-scopes
-	// the aggregation), mirroring the HTTP /v1/_usage ScopeTenant gate.
-	"UsageReport": auth.ScopeTenant,
-	// Instance configuration. "" = ANY authenticated principal, which is the same
-	// gate GET /v1/config gets from requiredScopeFor's GET default — the report is
-	// self-narrowing (the handler emits only what the caller's own scopes allow),
-	// so a scope floor would deny a caller a view it is entitled to. It MUST be
-	// listed: an unmapped RPC defaults to substrate:admin, which would make the
-	// gRPC surface stricter than the HTTP one for no reason.
-	"Config": "",
-	// RFC AW: token-budget management. The handler tenant-scopes reads + confines
-	// writes to the caller's own tenant (operator-global + cross-tenant stay
-	// admin-only), mirroring the HTTP /v1/_limits ScopeTenant gate.
-	"TokenLimit": auth.ScopeTenant,
-	// The timed override of an agent's no-trace mode: an admin for any tenant,
-	// a tenant operator for its own. Its HTTP routes are carved out of the
-	// member path, so a member is refused here too; the connector checks the
-	// caller again.
-	"RetentionOverride": auth.ScopeTenant,
-	// A tenant's own trace export: an admin for any tenant, a tenant operator
-	// for its own. Its HTTP routes are carved out of the member path, so a
-	// member is refused here too; the connector checks the caller again.
-	"TenantTelemetry": auth.ScopeTenant,
-	// RFC FR P2: folding one ontology subject into another, as POST
-	// /v1/_ontology/subjects/merge gates it. Its route is carved out of the
-	// member path, so a member is refused here too; the connector checks the
-	// caller again.
-	"MergeSubjects": auth.ScopeTenant,
-	// RFC FS: the statement review queue, bulk rulings and their undo, as their
-	// routes gate them. NOT carved out of the member path: a member holding the
-	// access-control action review may rule; the connector decides on each
-	// statement.
-	"ListReviewQueue": auth.ScopeTenant,
-	"RuleStatements":  auth.ScopeTenant,
-	"RevertRuling":    auth.ScopeTenant,
-	"ListRulings":     auth.ScopeTenant,
-	// RFC FS P2: the review policy applied over the queue, as its route gates
-	// it; the connector admits only an operator.
-	"ApplyReviewPolicy": auth.ScopeTenant,
-	// RFC FR P4: binding a subject to a user, as POST
-	// /v1/_ontology/subjects/principal gates it; carved out of the member path
-	// like the merge, and checked again in the connector.
-	"BindSubjectPrincipal": auth.ScopeTenant,
-	// RFC GQ P1.2: planning ontology changes, as POST /v1/_ontology/plan gates
-	// it; carved out of the member path (its counts cover every user's scope of
-	// the tenant), and checked again in the connector.
-	"PlanOntology": auth.ScopeTenant,
-
-	// RFC BL P5 erasure. ScopeTenant, mirroring the HTTP gate: answering a
-	// data-subject request is the tenant operator's job, and both RPCs confine
-	// themselves to the caller's own tenant (there is no wire tenant field).
-	// The destructive half is guarded by dry_run defaulting true and confirm
-	// having to equal the subject — not by requiring a broader scope, which an
-	// admin token would satisfy anyway.
-	// Directory reads. users/inspect are ScopeTenant — everything they aggregate is
-	// already readable by this principal, and both take the tenant from the caller
-	// with no wire field. tenants is ScopeAdmin AND re-checked in the handler,
-	// because the LIST is cross-tenant information.
-	"DirectoryUsers":   auth.ScopeTenant,
-	"DirectoryInspect": auth.ScopeTenant,
-	"DirectoryTenants": auth.ScopeAdmin,
-
-	"ErasureReport":  auth.ScopeTenant,
-	"ErasureExecute": auth.ScopeTenant,
-	// A user's app sign-ins, as GET/DELETE /v1/_users/{subject}/app-sign-ins
-	// gate them (ScopeTenant, carved out of the member path), and the
-	// caller's own, open to any signed-in principal as /v1/_me/app-sign-ins.
-	"ListUserAppSignIns": auth.ScopeTenant,
-	"EndUserAppSignIn":   auth.ScopeTenant,
-	"ListMyAppSignIns":   "",
-	"EndMyAppSignIn":     "",
-	// RFC AF: the tenant-confined substrate plane — the 8 def families + hook
-	// management. ScopeTenant (substrate:admin still satisfies). substrateGRPCCtx
-	// stamps the principal's authoritative tenant on the def-tools, and the hook
-	// connector stamps + tenant-scopes register/list/delete, so a tenant operator
-	// authors ONLY its own surface.
-	"AgentDef":          auth.ScopeTenant,
-	"SkillDef":          auth.ScopeTenant,
-	"MCPServerDef":      auth.ScopeTenant,
-	"ScheduleDef":       auth.ScopeTenant,
-	"A2AServerCardDef":  auth.ScopeTenant,
-	"A2AAgentDef":       auth.ScopeTenant,
-	"WebhookDef":        auth.ScopeTenant,
-	"MemoryBackendDef":  auth.ScopeTenant,
-	"DocumentSourceDef": auth.ScopeTenant,
-	"ClientDef":         auth.ScopeTenant, // RFC FL app clients; confined like /v1/_clientdef
-	"VolumeDef":         auth.ScopeTenant,
-	// RFC AP TeamDef — team-workflow substrate. Same ScopeTenant posture as the
-	// other def families; the HTTP /v1/_teamdef route is tenant-confined too.
-	"TeamDef": auth.ScopeTenant,
-	// A team's own channels, read by team and local name: the posture of the
-	// HTTP routes under /v1/_teamdef/{team}/channels.
-	"ListTeamChannels":   auth.ScopeTenant,
-	"PeekTeamChannel":    auth.ScopeTenant,
-	"ReleaseTeamChannel": auth.ScopeTenant,
-	// HookDef — reusable hook definitions, authored like an AgentDef.
-	"HookDef": auth.ScopeTenant,
-	// Token minting, as POST /v1/_operatortokendef: a tenant operator reaches
-	// it only for its own tenant's metrics scrape tokens (the tool's grant,
-	// tools.OperatorTokenDefPolicyFor), and the twin route is carved out of
-	// the member path, so a member is refused here too.
-	"OperatorTokenDef": auth.ScopeTenant,
-	// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated tools
-	// lifted to the wire. Same ScopeTenant posture as VolumeDef.
-	"Path":     auth.ScopeTenant,
-	"Document": auth.ScopeTenant,
-	// RFC AR credential store. Route floor ScopeTenant (tenant operator + admin);
-	// RFC CN additionally admits an isolated substrate:user caller via the
-	// enforceScope self-service carve-out, confined to scope=user by the handler.
-	"CredentialDef": auth.ScopeTenant,
-	// RFC EP Crypto outside a run, mirroring POST /v1/_crypto. ScopeTenant,
-	// and its route is carved out of the member path; it is deliberately NOT in
-	// the credential self-service carve-out (a caller who can decrypt with the
-	// tenant's keys reads whatever the tenant sealed) nor on the run plane.
-	"Crypto": auth.ScopeTenant,
-	// RFC BE History — scope-aware chat browse/annotate. ScopeTenant route
-	// floor (a tenant operator may call it; a member on the member path); the
-	// cross-tenant `global` scope is admin-gated inside the tool, and a member
-	// is capped to its own chats (substrateGRPCCtx). The HTTP /v1/_history
-	// route also admits an isolated user (runs:read); this RPC does not.
-	"History": auth.ScopeTenant,
-	// The Memory tool outside a run (RFC CD Part D), tenant-confined like the
-	// /v1/_memory/* routes it parallels: scope and tenant come from the
-	// principal (substrateGRPCUserCtx), never the wire. Unmapped, it defaulted
-	// to substrate:admin, against its proto contract.
-	"Memory": auth.ScopeTenant,
-	// Evaluation outside a run: runs:read, as POST /v1/_evaluation and the MCP
-	// `evaluation` tool. The floor admits an isolated user; which ops it may use
-	// is tools.OffRunEvaluationPolicy (substrateGRPCCtx), not this gate.
-	"Evaluation": auth.ScopeRunsRead,
-	// RFC EZ access-control management, gated as the HTTP routes are: groups,
-	// lists and bindings are the tenant operator's (the routes' ScopeTenant +
-	// member carve-out, which the member path here reads through the twins),
-	// and any authenticated principal may ask the authz questions about
-	// itself ("" — the shared implementation confines a non-operator to its
-	// own subject). The shared implementation re-checks every one of these.
-	"GroupDef":   auth.ScopeTenant,
-	"AclDef":     auth.ScopeTenant,
-	"AclBinding": auth.ScopeTenant,
-	"Authz":      "",
-}
-
-// requiredScopeForRPC returns the scope a caller must hold for fullMethod.
-// Unknown / unmapped methods → substrate:admin (deny-by-default). This is
-// the gRPC analogue of the HTTP requiredScopeFor: PR2 stamped the principal
-// over gRPC but never enforced per-RPC scope, so any valid token could reach
-// every admin RPC (incl. OperatorTokenDef mint) — closed here.
-// grpcRunPlaneRPCs is the run plane on this transport: the whole of what a
-// credential with an agent allowlist may call. Decide is deliberately absent —
-// it reaches a model with no agent, so no allowlist can admit it — and so is
-// every definition, channel, memory and admin RPC.
-var grpcRunPlaneRPCs = map[string]bool{
-	"Run": true, "Continue": true, "SpawnRunBatch": true,
-	"RunInput": true, "RetuneRun": true, "CancelTurn": true, "ReviewRun": true,
-	"ResolveInterrupt": true, "CompactRun": true, "CancelAgent": true,
-	"CreateConfiguredRun": true, "UpdateConfiguredRun": true,
-	"StartConfiguredRun": true, "DeleteConfiguredRun": true,
-	"ReplaySession": true,
-	"StreamRun":     true, "GetTranscript": true, "GetAgent": true, "GetRun": true,
-	"ListUserAgents": true, "ListWalkRuns": true, "ListChildRuns": true,
-	"StreamUserRunStates": true,
-	"Config":              true,
-}
-
+// requiredScopeForRPC returns the scope a caller must hold for fullMethod: its
+// row in the shared route table (authz.GRPCRoute), and substrate:admin for an
+// RPC with no row, so a new RPC is protected until someone gives it one.
 func requiredScopeForRPC(fullMethod string) string {
-	name := strings.TrimPrefix(fullMethod, grpcMethodPrefix)
-	if sc, ok := grpcConsumerScopes[name]; ok {
-		return sc
-	}
-	return auth.ScopeAdmin
+	r, _ := authz.GRPCRoute(strings.TrimPrefix(fullMethod, grpcMethodPrefix))
+	return r.Scope
+}
+
+// rpcOnRunPlane reports whether fullMethod is on the run plane: the whole of
+// what a credential with an agent allowlist may call (authz.GRPCRoute).
+func rpcOnRunPlane(fullMethod string) bool {
+	r, _ := authz.GRPCRoute(strings.TrimPrefix(fullMethod, grpcMethodPrefix))
+	return r.RunPlane
 }
 
 // enforceScope rejects the call when a principal is stamped and lacks the
@@ -1312,7 +1096,7 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 	// A credential limited to certain agents is held to the run plane, however
 	// wide its scopes (auth.Restrictions.RunPlaneOnly). Default-deny: an RPC
 	// added later is refused to such a credential until it is listed.
-	if p.Restrictions.RunPlaneOnly() && !grpcRunPlaneRPCs[strings.TrimPrefix(fullMethod, grpcMethodPrefix)] {
+	if p.Restrictions.RunPlaneOnly() && !rpcOnRunPlane(fullMethod) {
 		return status.Error(codes.PermissionDenied, "this token is limited to starting and following runs of its allowed agents")
 	}
 	// RFC FA D16: a user-management credential reaches only the HTTP user

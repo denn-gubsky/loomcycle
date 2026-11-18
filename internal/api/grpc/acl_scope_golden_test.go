@@ -76,3 +76,21 @@ func TestACLScopeGolden_EveryRPCKeepsItsGate(t *testing.T) {
 		}
 	}
 }
+
+// RFC EZ P6: every RPC the service registers has a row in the route table,
+// and the table holds no row for an RPC the service does not register. An
+// RPC without a row would be held to substrate:admin and asked nothing.
+func TestACLRoutes_EveryRPCHasOneRow(t *testing.T) {
+	served := map[string]bool{}
+	for _, name := range serviceRPCs() {
+		served[name] = true
+		if _, ok := authz.GRPCRoute(name); !ok {
+			t.Errorf("%s is served but has no row in authz's RPC table", name)
+		}
+	}
+	for name := range authz.GRPCRoutes() {
+		if !served[name] {
+			t.Errorf("row %s names an RPC the service does not register", name)
+		}
+	}
+}

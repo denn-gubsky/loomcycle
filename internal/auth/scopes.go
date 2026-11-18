@@ -3,19 +3,22 @@ package auth
 import (
 	"fmt"
 	"slices"
+
+	"github.com/denn-gubsky/loomcycle/internal/authz"
 )
 
 // RFC L scope catalog — a CLOSED, documented set. Operators cannot
 // invent scope names (the runtime wouldn't enforce them), so create/
-// rotate validate every requested scope against this catalog. The
-// per-route required-scope map (which route demands which scope) lands
-// with the middleware in PR2; this file is only the vocabulary.
+// rotate validate every requested scope against this catalog. Which route,
+// RPC or MCP tool demands which scope is the route table in internal/authz
+// (RFC EZ P6), which also defines the values of the scopes it names; this
+// file is the vocabulary.
 
 const (
 	// ScopeAdmin is full operator power, including minting/rotating/
 	// retiring tokens (the OperatorTokenDef substrate). The create-time
 	// default so "single token, full power" is preserved.
-	ScopeAdmin = "substrate:admin"
+	ScopeAdmin = authz.ScopeAdmin
 
 	// ScopeTenant (RFC AF) is the TENANT-OPERATOR scope: full power WITHIN the
 	// principal's own tenant — runs, channels, and all substrate def-authoring /
@@ -25,7 +28,7 @@ const (
 	// hooks) author its own surface without holding ScopeAdmin (cross-tenant
 	// superuser). The per-route confinement is enforced in the handlers (the
 	// RFC L "principal-wins tenant" rule, extended from reads to writes).
-	ScopeTenant = "substrate:tenant"
+	ScopeTenant = authz.ScopeTenant
 
 	// ScopeUser (RFC BX P2b) is the ISOLATED-MEMBER scope: operate within the
 	// principal's own tenant but confined to the caller's OWN user-scope
@@ -39,10 +42,10 @@ const (
 	// be able to run + read their own runs.
 	ScopeUser = "substrate:user"
 
-	ScopeRunsCreate     = "runs:create"
-	ScopeRunsRead       = "runs:read"
-	ScopeChannelPublish = "channel:publish"
-	ScopeChannelRead    = "channel:read"
+	ScopeRunsCreate     = authz.ScopeRunsCreate
+	ScopeRunsRead       = authz.ScopeRunsRead
+	ScopeChannelPublish = authz.ScopeChannelPublish
+	ScopeChannelRead    = authz.ScopeChannelRead
 
 	// ScopeProvidersOperatorKey (RFC AX) gates whether a run may fall back to
 	// the operator's HOST provider API key. It is tenant-implied (below), so
@@ -58,7 +61,7 @@ const (
 	// and from GrantableUserScopes: a run's record is also the accounting trail
 	// of what a member's token spent, so a member or an isolated user removes
 	// runs only when an operator granted this scope at mint.
-	ScopeRunsDelete = "runs:delete"
+	ScopeRunsDelete = authz.ScopeRunsDelete
 
 	// ScopeLLMGateway gates the raw model endpoints: the LLM gateway and the
 	// OpenAI-compatible chat and embeddings shims. They reach a model with no
@@ -69,7 +72,7 @@ const (
 	// ISOLATED user's, which must be granted this scope by name. A sandboxed
 	// user is the one principal for whom "any model, any prompt" was never
 	// intended.
-	ScopeLLMGateway = "llm:gateway"
+	ScopeLLMGateway = authz.ScopeLLMGateway
 
 	// ScopeAuthManage (RFC FA D16) is the user-management credential of a
 	// website that runs its own sign-up: it reaches the password gate's
@@ -88,7 +91,7 @@ const (
 	// auth:manage it implies nothing and is minted alone (ValidateScopeSet);
 	// the route list is enforced by the HTTP gate (scimRoute), gRPC refuses
 	// it, and every other transport lacks the scopes it would need.
-	ScopeSCIMProvision = "scim:provision"
+	ScopeSCIMProvision = authz.ScopeSCIMProvision
 
 	// ScopeMetricsRead is a Prometheus scraper's credential: it reaches GET
 	// /metrics and nothing else. A scrape token sits in a file on a
@@ -111,7 +114,7 @@ const (
 )
 
 // scopeCatalog is the closed set — every entry is enforced by at least
-// one route in requiredScopeFor. A map for O(1) validation.
+// one route in the route table (authz.HTTPRoute). A map for O(1) validation.
 var scopeCatalog = map[string]struct{}{
 	ScopeAdmin:                {},
 	ScopeTenant:               {},

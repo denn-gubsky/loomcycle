@@ -768,7 +768,7 @@ func TestRequiredScopeFor_AudioRoutesAreRunsCreate(t *testing.T) {
 		if got := requiredScopeFor(method, p); got != "runs:create" {
 			t.Errorf("%s %s: %q", method, p, got)
 		}
-		if isGatewayRoute(p) || runPlaneRoute(method, p) {
+		if requiredScopeFor(method, p) == auth.ScopeLLMGateway || runPlaneRoute(method, p) {
 			t.Errorf("%s is on the raw model gateway or the run plane", p)
 		}
 	}

@@ -15,10 +15,12 @@ import (
 
 // RFC EZ P6 step 1: the frozen answers. Before the scope ceiling moved from
 // the hand-kept HTTP switches (requiredScopeFor, runPlaneRoute, the
-// HTTPSurface switch) into the one route table, every answer they gave was
-// recorded in testdata/acl_http_surface_golden.txt. The table must give the
-// same answer for every recorded request, so no route's scope, run-plane
-// membership or ACL question moved with it.
+// HTTPSurface switch) into the one route table (authz.HTTPRoute), every answer
+// they gave a request some route serves was recorded in
+// testdata/acl_http_surface_golden.txt, HEAD taking GET's answers as the mux
+// serves it with the GET handler. The table must give the same answer for
+// every recorded request, so no route's scope, run-plane membership or ACL
+// question moved with it.
 //
 // A deliberate change to a route's gate regenerates the file with
 //
@@ -30,7 +32,7 @@ var updateACLGolden = flag.Bool("update-acl-golden", false, "rewrite testdata/ac
 
 const aclGoldenFile = "testdata/acl_http_surface_golden.txt"
 
-var aclGoldenMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
+var aclGoldenMethods = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 
 // aclGoldenPaths is the request sample: every pattern the mux registers, with
 // its wildcards filled one and two segments deep; every path literal the gates
@@ -55,10 +57,12 @@ func aclGoldenPaths(t *testing.T) []string {
 	}
 	server := read("server.go")
 	wild := regexp.MustCompile(`\{[^}]+\}`)
-	for _, m := range muxPatternRe.FindAllStringSubmatch(server, -1) {
-		pattern := m[2]
+	for _, pattern := range aclRegisteredPatterns(t) {
+		if _, p, ok := strings.Cut(pattern, " "); ok {
+			pattern = p
+		}
 		add(wild.ReplaceAllString(pattern, "x"))
-		add(strings.ReplaceAll(wild.ReplaceAllString(pattern, "x"), "x", "x/y"))
+		add(wild.ReplaceAllString(pattern, "x/y"))
 		if strings.HasSuffix(pattern, "/") {
 			add(pattern + "x")
 			add(pattern + "x/y")
@@ -95,30 +99,80 @@ func aclGoldenPaths(t *testing.T) []string {
 	return out
 }
 
-// aclGoldenLine is one request's answers: the scope the route requires, its
-// run-plane membership, and the ACL question (or "-" for an ungoverned route).
-func aclGoldenLine(method, path string) string {
+// aclRegisteredPatterns is every literal pattern a route is registered under:
+// the HTTP server's own files and the webhook and A2A packages it mounts.
+func aclRegisteredPatterns(t *testing.T) []string {
+	t.Helper()
+	re := regexp.MustCompile(`\.Handle(?:Func)?\("([^"]+)"`)
+	var files []string
+	for _, g := range []string{"*.go", "../webhook/*.go", "../a2a/*.go"} {
+		m, err := filepath.Glob(g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, m...)
+	}
+	seen := map[string]bool{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range re.FindAllStringSubmatch(string(b), -1) {
+			if strings.Contains(m[1], "/") {
+				seen[m[1]] = true
+			}
+		}
+	}
+	// Registered from a computed pattern, which the regexp cannot read: the
+	// A2A extended card, behind the HTTP gates (a2a.Server.Mount's adminAuth).
+	seen["GET /.well-known/agent-card.json/extended"] = true
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// aclGoldenLine is one request's answers: the scope its route requires, its
+// run-plane membership, and its ACL question ("-" for an ungoverned route).
+// False for a request no route serves: the mux answers it 404 or 405 before
+// any gate runs.
+func aclGoldenLine(method, path string) (string, bool) {
+	rt, ok := authz.HTTPRoute(method, path)
+	if !ok {
+		return "", false
+	}
 	q := "-"
-	if s, ok := authz.HTTPSurface(method, path); ok {
+	if s, ok := rt.Question(method, path); ok {
 		q = s.Action + " " + s.Type + ":" + s.Name
 	}
-	scope := requiredScopeFor(method, path)
+	scope := rt.Scope
 	if scope == "" {
 		scope = "any"
 	}
-	return fmt.Sprintf("%s %s\t%s\t%t\t%s", method, path, scope, runPlaneRoute(method, path), q)
+	return fmt.Sprintf("%s %s\t%s\t%t\t%s", method, path, scope, rt.RunPlane, q), true
 }
 
 func TestACLScopeGolden_EveryRequestKeepsItsGate(t *testing.T) {
 	paths := aclGoldenPaths(t)
-	if len(paths) < 900 {
+	if len(paths) < 800 {
 		t.Fatalf("only %d sample paths; the sample no longer reads the sources", len(paths))
 	}
 	var got []string
 	for _, p := range paths {
 		for _, m := range aclGoldenMethods {
-			got = append(got, aclGoldenLine(m, p))
+			if line, ok := aclGoldenLine(m, p); ok {
+				got = append(got, line)
+			}
 		}
+	}
+	if len(got) < 500 {
+		t.Fatalf("only %d sampled requests reach a route; the sample no longer covers the routes", len(got))
 	}
 	if *updateACLGolden {
 		if err := os.MkdirAll(filepath.Dir(aclGoldenFile), 0o755); err != nil {
@@ -133,30 +187,25 @@ func TestACLScopeGolden_EveryRequestKeepsItsGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
-		key, _, _ := strings.Cut(line, "\t")
-		want[key] = line
+	// Every recorded request is asked again, so the file, not the sample,
+	// decides what is checked; a sampled request the file does not hold is a
+	// route nobody recorded.
+	recorded := map[string]bool{}
+	for _, w := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		key, _, _ := strings.Cut(w, "\t")
+		recorded[key] = true
+		method, path, _ := strings.Cut(key, " ")
+		now, ok := aclGoldenLine(method, path)
+		switch {
+		case !ok:
+			t.Errorf("recorded but no longer served: %s", w)
+		case now != w:
+			t.Errorf("gate moved:\n  was %s\n  now %s", w, now)
+		}
 	}
-	checked, bad := 0, 0
 	for _, line := range got {
-		key, _, _ := strings.Cut(line, "\t")
-		w, ok := want[key]
-		if !ok {
-			continue // a request the sample did not hold when the file was written
+		if key, _, _ := strings.Cut(line, "\t"); !recorded[key] {
+			t.Errorf("not recorded: %s (a new route? regenerate the file and review the diff)", line)
 		}
-		checked++
-		if w != line {
-			bad++
-			if bad <= 50 {
-				t.Errorf("gate moved:\n  was %s\n  now %s", w, line)
-			}
-		}
-	}
-	if bad > 50 {
-		t.Errorf("... and %d more", bad-50)
-	}
-	if checked < len(want)*9/10 {
-		t.Errorf("only %d of the %d recorded requests are still sampled; regenerate the file deliberately", checked, len(want))
 	}
 }

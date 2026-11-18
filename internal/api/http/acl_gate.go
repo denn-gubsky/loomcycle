@@ -110,7 +110,7 @@ func (s *Server) enrichPrincipal(ctx context.Context, p auth.Principal) auth.Pri
 // request.
 func (s *Server) aclGateHTTP(w http.ResponseWriter, r *http.Request, p auth.Principal) (context.Context, bool) {
 	ctx := r.Context()
-	surface, governed := authz.HTTPSurface(r.Method, r.URL.Path)
+	surface, governed := requestRoute(r).Question(r.Method, r.URL.Path)
 	if !governed {
 		return ctx, true
 	}

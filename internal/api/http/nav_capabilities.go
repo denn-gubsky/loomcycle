@@ -139,13 +139,14 @@ func navEffective(ctx context.Context, p auth.Principal) whoamiEffective {
 // here must not write an acl_denied audit row. An ACL set enforce mode
 // could not evaluate is a "no", as the request would be refused.
 func routeGatesAdmit(ctx context.Context, p auth.Principal, method, path string) bool {
-	if _, ok := scopeGate(p, method, path); !ok {
+	rt := routeAt(method, path)
+	if _, ok := scopeGate(p, rt, method, path); !ok {
 		return false
 	}
-	if confinedOffRoute(p, method, path) {
+	if confinedOffRoute(p, rt, method, path) {
 		return false
 	}
-	surface, governed := authz.HTTPSurface(method, path)
+	surface, governed := rt.Question(method, path)
 	if !governed {
 		return true
 	}

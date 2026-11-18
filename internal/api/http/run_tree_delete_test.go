@@ -465,12 +465,13 @@ func TestRequiredScopeFor_RunTreeDeleteRoutes(t *testing.T) {
 		{"DELETE", "/v1/runs/r_1", auth.ScopeRunsCreate},
 		{"DELETE", "/v1/runs/tree", auth.ScopeRunsCreate},
 		{"PATCH", "/v1/runs/r_1", auth.ScopeRunsCreate},
-		// Nothing else under these prefixes moved.
-		{"GET", "/v1/runs/r_1/tree", auth.ScopeRunsRead},
+		// No route serves these: a write is held to substrate:admin, a read
+		// to nothing (the mux answers 404 or 405 before any gate).
+		{"GET", "/v1/runs/r_1/tree", ""},
 		{"POST", "/v1/runs/r_1/tree", auth.ScopeAdmin},
 		{"DELETE", "/v1/runs/r_1/tree/x", auth.ScopeAdmin},
 		{"DELETE", "/v1/sessions/s_1/messages", auth.ScopeAdmin},
-		{"GET", "/v1/sessions/s_1", auth.ScopeRunsRead},
+		{"GET", "/v1/sessions/s_1", ""},
 	} {
 		if got := requiredScopeFor(c.method, c.path); got != c.want {
 			t.Errorf("requiredScopeFor(%s %s) = %q, want %q", c.method, c.path, got, c.want)
@@ -479,8 +480,8 @@ func TestRequiredScopeFor_RunTreeDeleteRoutes(t *testing.T) {
 	// The member bypass admits a non-isolated member to substrate:tenant
 	// routes. These two must never be among them.
 	for _, path := range []string{"/v1/runs/r_1/tree", "/v1/sessions/s_1"} {
-		if tenantMemberAccessible("DELETE", path) || userSelfServiceRoute("DELETE", path) || memberReadable(path) {
-			t.Errorf("DELETE %s is reachable without runs:delete (member bypass, self-service or member-read)", path)
+		if tenantMemberAccessible("DELETE", path) || userSelfServiceRoute("DELETE", path) {
+			t.Errorf("DELETE %s is reachable without runs:delete (member bypass or self-service)", path)
 		}
 	}
 }

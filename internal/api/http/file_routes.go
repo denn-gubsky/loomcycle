@@ -307,23 +307,3 @@ func isAttrChar(c byte) bool {
 	}
 	return strings.IndexByte("!#$&+-.^_`|~", c) >= 0
 }
-
-// isRunFileRoute matches the two routes above: POST /v1/runs/{run_id}/file,
-// and GET or HEAD /v1/runs/{run_id}/inbox/... . Both read a run.
-func isRunFileRoute(method, p string) bool {
-	rest, ok := strings.CutPrefix(p, "/v1/runs/")
-	if !ok {
-		return false
-	}
-	id, sub, _ := strings.Cut(rest, "/")
-	if id == "" {
-		return false
-	}
-	switch method {
-	case http.MethodPost:
-		return sub == "file"
-	case http.MethodGet, http.MethodHead:
-		return sub == "inbox" || strings.HasPrefix(sub, "inbox/")
-	}
-	return false
-}
