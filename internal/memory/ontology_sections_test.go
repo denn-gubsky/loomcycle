@@ -53,7 +53,7 @@ func TestSectionKind_OnlyTheFirstDirectiveDeclaresASection(t *testing.T) {
 		"@section instances\n@a Post\n":     SectionInstances,
 		"- `name` text\n@section classes\n": SectionClasses, // a field is not a directive (RFC: first DIRECTIVE line)
 		"@identity\n@section classes\n":     "",             // not the first directive
-		"@section rules\n":                  "",             // unknown kind → class (fail-open)
+		"@section rules\n":                  "",             // unknown kind → out of force (SectionIssue)
 		"no directives at all\n":            "",
 	}
 	for body, want := range cases {

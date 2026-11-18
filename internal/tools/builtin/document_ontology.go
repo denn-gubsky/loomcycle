@@ -129,6 +129,13 @@ type OntologyRead struct {
 	classChunks map[string]string
 }
 
+// sectionOutOfForce marks a root child whose first directive is `@section` with a kind
+// this build does not know. Its heading and every entry under it are out of force: a
+// section a later build adds (questions, measures) must not be read as classes by an
+// older replica, a restore into an older build or a syncing peer. Not a valid kind, so
+// it can never collide with a declared one.
+const sectionOutOfForce = "\x00out-of-force"
+
 // ontologyForKey is the reader proper: terms plus the document's confirmed status.
 //
 // Split out from OntologyTermsFromTree so the retrieval-side expansion can reuse it
@@ -231,9 +238,9 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 
 	// SECTION PRE-PASS (RFC FO §3.1). A root child whose first directive is
 	// `@section <kind>` is a section; anything else is a class, as before sections
-	// existed. At most one section of each kind: a second is reported and read the way
-	// it read before sections — as a class — so declaring sections can never take out of
-	// force a type that was in force.
+	// existed. A kind this build does not know (one a later build adds) is reported and
+	// its whole subtree is out of force, never read as classes. At most one section of
+	// each kind: a second is reported and read as a class, as before sections.
 	sectionOf := map[string]string{}     // chunk id → kind, for the sections that count
 	sectionChunks := map[string]string{} // kind → chunk id
 	var sections, issues []string
@@ -249,6 +256,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		body := bodyOf(c.id)
 		if iss := memrank.SectionIssue(body); iss != "" {
 			issues = append(issues, strconv.Quote(memrank.TrimOntologyName(c.title))+": "+iss)
+			sectionOf[c.id] = sectionOutOfForce
 		}
 		kind := memrank.SectionKind(body)
 		if kind == "" {
@@ -481,8 +489,9 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				}
 			}
 			review = &p
-		default:
-			// No directive: a class, exactly as before sections existed.
+		case "":
+			// No directive: a class, exactly as before sections existed. Anything else
+			// left here is sectionOutOfForce: nothing under it is read.
 			walk([]ontologyChunk{c}, rootID, "", 1, false)
 		}
 	}

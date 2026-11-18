@@ -159,8 +159,8 @@ func bulletDirectiveValue(line string) string {
 //
 // Only the FIRST directive counts, so a class whose body happens to mention @section
 // further down is not silently turned into a section. A @section naming an unknown kind
-// also yields "" — the RFC's fail-open reading is that the chunk stays a class — and
-// the caller reports it via SectionIssue.
+// also yields ""; SectionIssue reports it, and the reader takes such a chunk and its
+// whole subtree out of force rather than reading it as a class.
 func SectionKind(body string) string {
 	ds := ParseDirectives(body)
 	if len(ds) == 0 || ds[0].Name != "section" {
@@ -174,6 +174,8 @@ func SectionKind(body string) string {
 }
 
 // SectionIssue explains a first-line @section the build does not recognise, or "".
+// A non-empty result means the chunk and everything under it are out of force: a kind
+// a later build adds must not be read as classes by a build that does not know it.
 func SectionIssue(body string) string {
 	ds := ParseDirectives(body)
 	if len(ds) == 0 || ds[0].Name != "section" {
@@ -183,8 +185,7 @@ func SectionIssue(body string) string {
 	if isSectionKind(k) {
 		return ""
 	}
-	return "@section " + strconv.Quote(ds[0].Value) + " is not a section kind (want " +
-		joinComma(SectionKinds()) + "); this chunk is read as a class"
+	return "unknown section kind " + strconv.Quote(ds[0].Value) + ": its entries are not in force"
 }
 
 // Field types a typed field may declare.

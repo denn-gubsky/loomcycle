@@ -135,6 +135,35 @@ func TestOntology_SectionsOnlyDocumentDoesNotFallBackToFlatParsing(t *testing.T)
 	}
 }
 
+// TestOntology_UnknownSectionOnlyDocumentDoesNotFallBackToFlatParsing.
+//
+// A document whose only section is of a kind this build does not know yields nothing
+// in force from the tree read. The flat-Markdown fallback must not then read the
+// section's heading back in as an entity type; GET /v1/_ontology reports the issue.
+func TestOntology_UnknownSectionOnlyDocumentDoesNotFallBackToFlatParsing(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	replaceOntologyWithSections(t, s, mi, []ontologyTestChunk{
+		{title: "Questions", body: "@section questions\n", kids: []ontologyTestChunk{{title: "why-late"}}},
+	})
+	s.setOntologyStatus(t, mi.Tenant, meminject.OntologyConfirmedStatus, http.StatusOK)
+
+	terms, _, notes := s.tenantOntologyTerms(context.Background(), mi)
+	if len(terms) != 0 || len(notes) != 0 {
+		t.Errorf("an unknown-section-only document produced classes %v, notes %v", termNames(terms), notes)
+	}
+	prompt, _ := s.applyMemoryInjection(context.Background(), config.AgentDef{SystemPrompt: "{{memory:ontology}}"}, mi)
+	if strings.Contains(prompt.SystemPrompt, "Questions") || strings.Contains(prompt.SystemPrompt, "why-late") {
+		t.Errorf("an out-of-force section reached the prompt:\n%s", prompt.SystemPrompt)
+	}
+	got := s.getOntology(t, mi.Tenant)
+	if hasTerm(got.Terms, "Questions") || hasTerm(got.Terms, "why-late") || len(got.Sections) != 0 {
+		t.Errorf("GET /v1/_ontology terms = %v sections = %v", termNames(got.Terms), got.Sections)
+	}
+	if !strings.Contains(strings.Join(got.Notes, "\n"), `unknown section kind "questions"`) {
+		t.Errorf("GET /v1/_ontology notes = %q, want the unknown section reported", got.Notes)
+	}
+}
+
 // TestOntologyAPI_FlatDocumentResponseHasNoSectionFields.
 //
 // The provisioned template has no @section: none of the RFC FO fields may appear, so
