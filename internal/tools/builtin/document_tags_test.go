@@ -120,6 +120,13 @@ func TestDocumentTags_CoreBothTiers(t *testing.T) {
 // pgDocumentOrSkip builds a Document on the postgres SQL Memory tier, or skips.
 func pgDocumentOrSkip(t *testing.T) (*Document, context.Context) {
 	t.Helper()
+	return pgDocumentWithOrSkip(t, sqlmem.Config{})
+}
+
+// pgDocumentWithOrSkip is pgDocumentOrSkip with cfg's settings (the DSN and the
+// bounds are filled in).
+func pgDocumentWithOrSkip(t *testing.T, cfg sqlmem.Config) (*Document, context.Context) {
+	t.Helper()
 	dsn := os.Getenv("LOOMCYCLE_TEST_SQLMEM_PG_DSN")
 	if dsn == "" {
 		t.Skip("set LOOMCYCLE_TEST_SQLMEM_PG_DSN to run the postgres-tier parity half")
@@ -129,8 +136,8 @@ func pgDocumentOrSkip(t *testing.T) (*Document, context.Context) {
 		t.Fatalf("open raw: %v", err)
 	}
 	dropAllSqlmemScopes(t, raw)
-	mgr, err := sqlmem.NewPostgres(context.Background(),
-		sqlmem.Config{PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 1000})
+	cfg.PgDSN, cfg.StatementTimeoutMS, cfg.MaxRows = dsn, 30000, 1000
+	mgr, err := sqlmem.NewPostgres(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("NewPostgres: %v", err)
 	}

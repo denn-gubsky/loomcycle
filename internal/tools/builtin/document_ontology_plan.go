@@ -25,6 +25,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -96,6 +97,7 @@ type planRows struct {
 // writes nothing. ctx carries the tenant (the run identity) and the tenant-scope
 // grants; the caller decides who may ask (the connector admits operators only).
 func (d *Document) PlanOntology(ctx context.Context, changes []connector.OntologyChange) (connector.PlanOntologyResult, error) {
+	ctx = noWrites(ctx)
 	out := connector.PlanOntologyResult{Changes: []connector.OntologyPlannedChange{}, Issues: []string{}, NewIssues: []string{}}
 	if err := validatePlanChanges(changes); err != nil {
 		return out, err
@@ -109,28 +111,28 @@ func (d *Document) PlanOntology(ctx context.Context, changes []connector.Ontolog
 	}
 	docID, err := d.resolveOntologyID(ctx, key)
 	if err != nil {
-		return out, fmt.Errorf("ontology plan: %w", err)
+		return out, planReadErr(err)
 	}
 	if docID == "" {
 		return out, connector.WithMessage(connector.ErrOntologyPlanNotFound, "this tenant has no ontology document")
 	}
 	raw, err := d.ontologyFingerprint(ctx, key, docID)
 	if err != nil {
-		return out, fmt.Errorf("ontology plan: %w", err)
+		return out, planReadErr(err)
 	}
 	sum := sha256.Sum256([]byte(raw))
 	out.Fingerprint = hex.EncodeToString(sum[:])
 
 	before, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
-		return out, fmt.Errorf("ontology plan: %w", err)
+		return out, planReadErr(err)
 	}
 	if before.DocumentID == "" {
 		return out, connector.WithMessage(connector.ErrOntologyPlanNotFound, "this tenant has no ontology document")
 	}
 	rows, err := d.planChunkRows(ctx, key, before.DocumentID)
 	if err != nil {
-		return out, fmt.Errorf("ontology plan: %w", err)
+		return out, planReadErr(err)
 	}
 	entries := planEntries(before)
 	ov := newOntologyOverlay()
@@ -145,7 +147,7 @@ func (d *Document) PlanOntology(ctx context.Context, changes []connector.Ontolog
 
 	after, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, ov)
 	if err != nil {
-		return out, fmt.Errorf("ontology plan: %w", err)
+		return out, planReadErr(err)
 	}
 	had := map[string]bool{}
 	for _, s := range ontologyIssues(before) {
@@ -165,13 +167,24 @@ func (d *Document) PlanOntology(ctx context.Context, changes []connector.Ontolog
 
 	counted, skipped, complete, err := d.countPlanDependents(ctx, key, before, after, planned)
 	if err != nil {
-		return out, fmt.Errorf("ontology plan: %w", err)
+		return out, planReadErr(err)
 	}
 	out.ScopesCounted, out.ScopesSkipped, out.Complete = counted, skipped, complete
 	for _, p := range planned {
 		out.Changes = append(out.Changes, p.result())
 	}
 	return out, nil
+}
+
+// planReadErr is the plan's error for a failed read. A tenant scope whose document
+// tables are older than this runtime's schema is reported, not migrated: the plan
+// writes nothing, and any document write to the scope brings them up to date.
+func planReadErr(err error) error {
+	if schemaMissing(err) || errors.Is(err, sqlmem.ErrPlaneAbsent) {
+		return connector.WithMessage(connector.ErrOntologyPlanUnavailable,
+			"the tenant scope's document tables are not at this runtime's schema; a plan writes nothing, so it does not migrate them (any document write to the tenant scope does)")
+	}
+	return fmt.Errorf("ontology plan: %w", err)
 }
 
 // validatePlanChanges checks the request's shape; whether each entry exists is

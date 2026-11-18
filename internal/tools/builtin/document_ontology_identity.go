@@ -488,7 +488,7 @@ func (d *Document) resolveOntologyID(ctx context.Context, key sqlmem.ScopeKey) (
 	// ontology — only the operator can have put it there since the names were
 	// reserved — provided it still exists: a name left behind by a deleted document
 	// is not an ontology to record.
-	res, err := d.docSQL().Query(ctx, key, d.docSQL().Rebind(`SELECT id FROM documents WHERE id = ? LIMIT 1`), []any{atName})
+	res, err := d.sqlRead(ctx, key, `SELECT id FROM documents WHERE id = ? LIMIT 1`, []any{atName})
 	if schemaMissing(err) {
 		return "", nil
 	}
@@ -497,6 +497,9 @@ func (d *Document) resolveOntologyID(ctx context.Context, key sqlmem.ScopeKey) (
 	}
 	if len(res.Rows) == 0 {
 		return "", nil
+	}
+	if writesForbidden(ctx) {
+		return atName, nil // a read that must write nothing answers without recording
 	}
 	if err := d.recordRole(ctx, key, roleOntology, atName); err != nil {
 		// Still the answer for this call; the next resolve records it. The log
@@ -531,9 +534,9 @@ func (d *Document) documentAtName(ctx context.Context, key sqlmem.ScopeKey, cano
 // missing-table retry would provision: a scope from before document_roles answers
 // "no record" here.
 func (d *Document) recordedRole(ctx context.Context, key sqlmem.ScopeKey, role string) (string, error) {
-	res, err := d.docSQL().Query(ctx, key, d.docSQL().Rebind(
+	res, err := d.sqlRead(ctx, key,
 		`SELECT r.document_id FROM document_roles r JOIN documents doc ON doc.id = r.document_id
-		  WHERE r.role = ? LIMIT 1`), []any{role})
+		  WHERE r.role = ? LIMIT 1`, []any{role})
 	if schemaMissing(err) {
 		return "", nil
 	}

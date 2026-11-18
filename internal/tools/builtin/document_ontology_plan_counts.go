@@ -16,11 +16,12 @@ package builtin
 // would touch whoever may read it. Sample ids come from the tenant scope only, so a
 // plan never lists another user's documents (RFC GQ 9c).
 //
-// READS ONLY, AND NEVER PROVISIONS. Every query goes through planQuery, which reads a
-// table or column a scope never made as "nothing here" instead of provisioning the
-// scope (d.query re-ensures the schema on that error, which writes); a scope is read
-// only when its document plane exists. No transaction is opened: on SQLite a scope has
-// one connection.
+// READS ONLY, AND NEVER PROVISIONS. PlanOntology runs under noWrites, so every read
+// goes through sqlmem.Manager.QueryExisting (no provisioning DDL, no last-use stamp
+// that would keep a dormant scope from GC) and d.exec refuses. planQuery reads a table
+// or column a scope never made as "nothing here"; a scope is read only when a plane
+// holding its documents exists. No transaction is opened: on SQLite a scope has one
+// connection.
 //
 // CLASS NAMES MATCH CASE-INSENSITIVELY, as identity keys lower-case them: lower() over
 // the column against lower-cased names, and prefixes compared with substr — portable
@@ -145,7 +146,7 @@ func (p *plannedChange) add(name string, tenant bool, n int, byStatus map[string
 // planQuery is a read that never provisions: a table or column the scope never made is
 // an empty answer (nothing rests there), not a reason to create it.
 func (d *Document) planQuery(ctx context.Context, key sqlmem.ScopeKey, stmt string, args ...any) (*sqlmem.QueryResult, error) {
-	res, err := d.docSQL().Query(ctx, key, d.docSQL().Rebind(stmt), args)
+	res, err := d.sqlRead(ctx, key, stmt, args)
 	if schemaMissing(err) {
 		return &sqlmem.QueryResult{}, nil
 	}

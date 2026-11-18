@@ -2,11 +2,17 @@ package builtin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -292,27 +298,138 @@ func assertPlanCountsEqualDirectQueries(t *testing.T, d *Document, base context.
 }
 
 // TestOntologyPlan_WritesNothing — a plan of every op leaves the ontology's fingerprint,
-// every document table's row count in the tenant and user scopes, and the set of scopes
-// exactly as they were (RFC GQ check P1).
+// every document table's row count in the tenant and user scopes, the set of scopes,
+// and the scopes' own state exactly as they were (RFC GQ check P1). The plan runs in a
+// fresh process (a Manager that has provisioned and touched nothing) with scope GC on,
+// so a last-use stamp shows (sqlite: a file's mtime; postgres: a scope_access row) and
+// so does the provisioning DDL a first read per process runs on postgres (a role
+// setting changed behind its back is reset by it). The tenant scope has no role record,
+// so a resolve that migrates would write one.
 func TestOntologyPlan_WritesNothing(t *testing.T) {
 	t.Run("sqlite", func(t *testing.T) {
+		root := t.TempDir()
 		d, ctx, _ := documentFixture(t)
-		assertPlanWritesNothing(t, d, ctx)
-	})
-	t.Run("postgres", func(t *testing.T) {
-		d, ctx := pgDocumentOrSkip(t)
-		assertPlanWritesNothing(t, d, ctx)
-	})
-}
-
-func assertPlanWritesNothing(t *testing.T, d *Document, base context.Context) {
-	f := newPlanFixture(t, d, base)
-	f.populate()
-	snapshot := func() string {
-		docID, err := d.resolveOntologyID(f.op, f.tenantKey())
+		mgr, err := sqlmem.New(sqlmem.Config{Root: root})
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = mgr.Close() })
+		d.SqlMem = mgr
+		fresh, err := sqlmem.New(sqlmem.Config{Root: root, ScopeTTLMS: 3600_000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = fresh.Close() })
+		prepare, traces := sqliteScopeTraces(t, root)
+		assertPlanWritesNothing(t, d, ctx, fresh, prepare, traces)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		d, ctx := pgDocumentOrSkip(t)
+		dsn := os.Getenv("LOOMCYCLE_TEST_SQLMEM_PG_DSN")
+		fresh, err := sqlmem.NewPostgres(context.Background(),
+			sqlmem.Config{PgDSN: dsn, StatementTimeoutMS: 30000, MaxRows: 1000, ScopeTTLMS: 3600_000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = fresh.Close() })
+		raw, err := sql.Open("pgx", dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = raw.Close() })
+		prepare, traces := pgScopeTraces(t, raw)
+		assertPlanWritesNothing(t, d, ctx, fresh, prepare, traces)
+	})
+}
+
+// sqliteScopeTraces backdates every scope file and reports each file's mtime.
+func sqliteScopeTraces(t *testing.T, root string) (prepare func(), traces func() string) {
+	files := func() []string {
+		var out []string
+		_ = filepath.WalkDir(root, func(path string, e fs.DirEntry, err error) error {
+			if err == nil && !e.IsDir() && strings.HasSuffix(path, ".db") {
+				out = append(out, path)
+			}
+			return nil
+		})
+		sort.Strings(out)
+		return out
+	}
+	old := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	prepare = func() {
+		for _, f := range files() {
+			if err := os.Chtimes(f, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	traces = func() string {
+		var b strings.Builder
+		for _, f := range files() {
+			info, err := os.Stat(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fmt.Fprintf(&b, "%s=%d|", filepath.Base(f), info.ModTime().UnixNano())
+		}
+		return b.String()
+	}
+	return prepare, traces
+}
+
+// pgScopeTraces sets a role setting provisioning resets on every scope role, and
+// reports the roles' settings and the scope_access rows.
+func pgScopeTraces(t *testing.T, raw *sql.DB) (prepare func(), traces func() string) {
+	ctx := context.Background()
+	roles := func() []string {
+		rows, err := raw.QueryContext(ctx, `SELECT rolname FROM pg_roles WHERE rolname LIKE 'sqlmem\_%' ORDER BY rolname`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+	prepare = func() {
+		for _, r := range roles() {
+			if _, err := raw.ExecContext(ctx, `ALTER ROLE "`+r+`" SET work_mem TO '1MB'`); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	traces = func() string {
+		var b strings.Builder
+		for _, r := range roles() {
+			var cfg string
+			_ = raw.QueryRowContext(ctx, `SELECT coalesce(array_to_string(s.setconfig, ','), '')
+				FROM pg_db_role_setting s JOIN pg_roles r ON r.oid = s.setrole WHERE r.rolname = $1`, r).Scan(&cfg)
+			fmt.Fprintf(&b, "%s{%s}|", r, cfg)
+		}
+		var touched int
+		if err := raw.QueryRowContext(ctx, `SELECT count(*) FROM sqlmem_meta.scope_access`).Scan(&touched); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&b, "scope_access=%d", touched)
+		return b.String()
+	}
+	return prepare, traces
+}
+
+func assertPlanWritesNothing(t *testing.T, d *Document, base context.Context, fresh *sqlmem.Manager, prepare func(), traces func() string) {
+	f := newPlanFixture(t, d, base)
+	f.populate()
+	docID := mustOntologyID(t, d, f)
+	if _, err := d.docSQL().Exec(context.Background(), f.tenantKey(), `DELETE FROM document_roles`, nil, 0); err != nil {
+		t.Fatalf("drop the role record: %v", err)
+	}
+	snapshot := func() string {
 		fp, err := d.ontologyFingerprint(f.op, f.tenantKey(), docID)
 		if err != nil {
 			t.Fatal(err)
@@ -336,27 +453,41 @@ func assertPlanWritesNothing(t *testing.T, d *Document, base context.Context) {
 		return b.String()
 	}
 	was := snapshot()
-	if !strings.Contains(was, "tenant.chunk_edges=") || !strings.Contains(was, "user.documents=") {
-		t.Fatalf("the snapshot reads no tables: %s", was)
+	if !strings.Contains(was, "tenant.chunk_edges=") || !strings.Contains(was, "user.documents=") ||
+		!strings.Contains(was, "tenant.document_roles=0") {
+		t.Fatalf("the snapshot reads no tables, or the role record is still there: %s", was)
 	}
-	res := f.plan(
-		connector.OntologyChange{Op: connector.OntologyPlanDelete, Entry: f.entries["scheme:topics"]},
-		connector.OntologyChange{Op: connector.OntologyPlanRetire, Entry: f.entries["relation:filed_under"]},
-		connector.OntologyChange{Op: connector.OntologyPlanRename, Entry: f.entries["class:Provision"], Name: "Regulation"},
-		connector.OntologyChange{Op: connector.OntologyPlanMove, Entry: f.entries["class:Company"], Parent: f.entries["class:Provision"]},
-		connector.OntologyChange{Op: connector.OntologyPlanEdit, Entry: f.entries["relation:cites"], Body: "@functional\n@asymmetric\n"},
-		connector.OntologyChange{Op: connector.OntologyPlanDelete, Entry: f.entries["instance:Acme"]},
-	)
+	prepare()
+	wasTraces := traces()
+	planner := &Document{Store: d.Store, SqlMem: fresh, Bus: d.Bus}
+	changes := []connector.OntologyChange{
+		{Op: connector.OntologyPlanDelete, Entry: f.entries["scheme:topics"]},
+		{Op: connector.OntologyPlanRetire, Entry: f.entries["relation:filed_under"]},
+		{Op: connector.OntologyPlanRename, Entry: f.entries["class:Provision"], Name: "Regulation"},
+		{Op: connector.OntologyPlanMove, Entry: f.entries["class:Company"], Parent: f.entries["class:Provision"]},
+		{Op: connector.OntologyPlanEdit, Entry: f.entries["relation:cites"], Body: "@functional\n@asymmetric\n"},
+		{Op: connector.OntologyPlanDelete, Entry: f.entries["instance:Acme"]},
+	}
+	res, err := planner.PlanOntology(f.op, changes)
+	if err != nil {
+		t.Fatalf("PlanOntology: %v", err)
+	}
+	if now := traces(); now != wasTraces {
+		t.Errorf("the plan left a trace on the scopes (a last-use stamp or provisioning DDL):\nbefore %s\nafter  %s", wasTraces, now)
+	}
 	if now := snapshot(); now != was {
 		t.Errorf("the plan wrote:\nbefore %s\nafter  %s", was, now)
 	}
-	fp, _ := d.ontologyFingerprint(f.op, f.tenantKey(), mustOntologyID(t, d, f))
+	if !res.Complete || res.ScopesCounted < 2 {
+		t.Errorf("plan counted %d scopes, complete %v; want the user and agent scopes counted", res.ScopesCounted, res.Complete)
+	}
+	fp, _ := d.ontologyFingerprint(f.op, f.tenantKey(), docID)
 	if res.Fingerprint == "" || res.Fingerprint == fp || len(res.Fingerprint) != 64 {
 		t.Errorf("fingerprint %q: want the sha256 hex of the stored fingerprint, not the raw one", res.Fingerprint)
 	}
-	again := f.plan(connector.OntologyChange{Op: connector.OntologyPlanRetire, Entry: f.entries["relation:cites"]})
-	if again.Fingerprint != res.Fingerprint {
-		t.Errorf("two plans of an unchanged ontology have fingerprints %s and %s", res.Fingerprint, again.Fingerprint)
+	again, err := planner.PlanOntology(f.op, []connector.OntologyChange{{Op: connector.OntologyPlanRetire, Entry: f.entries["relation:cites"]}})
+	if err != nil || again.Fingerprint != res.Fingerprint {
+		t.Errorf("two plans of an unchanged ontology have fingerprints %s and %s (%v)", res.Fingerprint, again.Fingerprint, err)
 	}
 }
 
