@@ -383,3 +383,52 @@ func TestFB2_NotesBeforeTheTextAreKept(t *testing.T) {
 		t.Errorf("notes %v", rep.Notes)
 	}
 }
+
+// A legacy encoding decodes to more bytes than the file holds (Cyrillic in
+// windows-1251 is one byte, in UTF-8 two): what it decodes to is counted
+// and refused past its cap, as UTF-16's is.
+func TestFB2_DecodedTextOverTheCapIsRefused(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="windows-1251"?><FictionBook><body>`)
+	for b.Len() < 48<<10 {
+		b.WriteString("<p>Довгий рядок тексту книги.</p>")
+	}
+	b.WriteString(`</body></FictionBook>`)
+	raw, err := charmap.Windows1251.NewEncoder().Bytes([]byte(b.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Name: "b.fb2", fb2MaxDecoded: int64(len(raw)) + 8<<10}
+	_, err = FB2{}.Extract(context.Background(), bytes.NewReader(raw), int64(len(raw)), &memSink{}, opts)
+	if !IsRefused(err) || !strings.Contains(err.Error(), "decodes to more than") {
+		t.Errorf("windows-1251: err = %v, want a refusal", err)
+	}
+	u16, err := unicode.UTF16(unicode.LittleEndian, unicode.UseBOM).NewEncoder().Bytes([]byte(strings.Replace(b.String(), "windows-1251", "UTF-16", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.fb2MaxDecoded = int64(len(u16)) / 2
+	_, err = FB2{}.Extract(context.Background(), bytes.NewReader(u16), int64(len(u16)), &memSink{}, opts)
+	if !IsRefused(err) {
+		t.Errorf("UTF-16: err = %v, want a refusal", err)
+	}
+	var f FB2
+	if _, err := f.Extract(context.Background(), bytes.NewReader(raw), int64(len(raw)), &memSink{}, Options{}); err != nil {
+		t.Errorf("under the default cap: %v", err)
+	}
+}
+
+// One text node of most of the file is refused while it streams in, before
+// the decoder has built it into a token.
+func TestFB2_LongTextRunIsRefusedWhileItStreams(t *testing.T) {
+	for name, book := range map[string][]byte{
+		"text":      []byte(`<FictionBook><body><p>` + strings.Repeat("слово ", 40<<20/11) + `</p></body></FictionBook>`),
+		"comment":   []byte(`<FictionBook><!--` + strings.Repeat("c", 40<<20) + `--></FictionBook>`),
+		"attribute": []byte(`<FictionBook><body><p id="` + strings.Repeat("v", 40<<20) + `">x</p></body></FictionBook>`),
+	} {
+		wantRefusedUnder(t, name, 32<<20, func() error {
+			_, err := extractBytes(FB2{}, "long.fb2", book)
+			return err
+		})
+	}
+}

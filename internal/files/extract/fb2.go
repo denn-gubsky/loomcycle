@@ -59,6 +59,15 @@ const (
 	// only stops a value of megabytes being built first.
 	maxFB2MetaText   = MaxMetaString * 4
 	maxFB2Annotation = MaxMetaDescription * 4
+	// maxFB2Decoded caps the text a legacy encoding or UTF-16 decodes to:
+	// a byte of windows-1251 is up to three of UTF-8, so the file cap alone
+	// does not bound it.
+	maxFB2Decoded = 3 * maxFB2Bytes
+	// maxFB2Span caps one run of the stream between markup boundaries (a
+	// text node, a tag, a comment) as it streams in: the decoder builds each
+	// into one token, so a single node of most of the file would cost its
+	// decoded size at once. A paragraph is kilobytes.
+	maxFB2Span = 4 << 20
 )
 
 func (FB2) Match(mediaType, name string) bool {
@@ -245,6 +254,13 @@ func (b *fb2Book) read(src io.Reader) error {
 		in = transform.NewReader(br, unicode.UTF16(unicode.LittleEndian, unicode.ExpectBOM).NewDecoder())
 	}
 	var fail error
+	decoded := int64(maxFB2Decoded)
+	if b.opts.fb2MaxDecoded > 0 {
+		decoded = b.opts.fb2MaxDecoded
+	}
+	if utf16 {
+		in = &fb2Decoded{r: in, max: decoded}
+	}
 	g := &fb2Guard{r: in, runCap: fb2EncodedCap(b.maxPicture), maxPicture: b.maxPicture}
 	d := xml.NewDecoder(g)
 	d.Strict = true
@@ -259,7 +275,7 @@ func (b *fb2Book) read(src io.Reader) error {
 		case utf16 || bom8:
 			fail = refusedf("the book declares the %q encoding but begins with a Unicode byte order mark", cutLabel(label))
 		case fb2Encodings[l] != nil:
-			return fb2Encodings[l].NewDecoder().Reader(in), nil
+			return &fb2Decoded{r: fb2Encodings[l].NewDecoder().Reader(in), max: decoded}, nil
 		default:
 			fail = refusedf("the book is in the %q encoding, which is not read: UTF-8, UTF-16, windows-1250, windows-1251, windows-1252, koi8-r, koi8-u, iso-8859-1, iso-8859-2, iso-8859-5 and ibm866 are", cutLabel(label))
 		}
@@ -1075,6 +1091,7 @@ type fb2Guard struct {
 	run        int
 	runCap     int
 	maxPicture int
+	span       int // bytes since the last markup boundary
 }
 
 const (
@@ -1102,7 +1119,29 @@ func (g *fb2Guard) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// step reads one byte: the markup state it moves to, then the run it
+// belongs to. A run starts at each '<' and at the end of each piece of
+// markup; base64 inside a binary is counted against the picture cap instead.
 func (g *fb2Guard) step(c byte) error {
+	old := g.st
+	binaryText := g.binary && (old == gText || old == gCDATA)
+	if err := g.parse(c); err != nil {
+		return err
+	}
+	if g.st == gLt || (old != gText && g.st == gText) {
+		g.span = 0
+		return nil
+	}
+	if binaryText {
+		return nil
+	}
+	if g.span++; g.span > maxFB2Span {
+		return refusedf("a run of the book's text or markup is over %d bytes", maxFB2Span)
+	}
+	return nil
+}
+
+func (g *fb2Guard) parse(c byte) error {
 	switch g.st {
 	case gText:
 		if c == '<' {
@@ -1201,4 +1240,20 @@ func (g *fb2Guard) count() error {
 		return refusedf("a picture in the book is over %d bytes", g.maxPicture)
 	}
 	return nil
+}
+
+// fb2Decoded counts what a legacy encoding or UTF-16 decodes the book to,
+// and refuses it past max.
+type fb2Decoded struct {
+	r   io.Reader
+	n   int64
+	max int64
+}
+
+func (d *fb2Decoded) Read(p []byte) (int, error) {
+	n, err := d.r.Read(p)
+	if d.n += int64(n); d.n > d.max {
+		return 0, refusedf("the book decodes to more than %d bytes of text", d.max)
+	}
+	return n, err
 }

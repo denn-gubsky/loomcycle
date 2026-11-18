@@ -111,6 +111,8 @@ type Options struct {
 	pdfGridWork int
 	// fb2MaxPicture overrides the cap on one FB2 picture, for tests.
 	fb2MaxPicture int
+	// fb2MaxDecoded overrides the cap on an FB2 book's decoded text.
+	fb2MaxDecoded int64
 }
 
 // DefaultMaxRows is the row cap when Options.MaxRows is zero.
