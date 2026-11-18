@@ -11,6 +11,8 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
 // transcription.go — the top-level `transcription:` block and the per-agent
@@ -71,6 +73,10 @@ type OCRConfig struct {
 	// Rasterize is the helper that turns PDF pages into images for an
 	// image-only engine. Stored and validated here; run by the helper runner.
 	Rasterize *HelperCommand `yaml:"rasterize,omitempty"`
+	// DjVu are the DjVuLibre helpers that read a DjVu document's text layer
+	// when this process converts (RFC GV P3, D8). Unset, a DjVu is read only
+	// by conversion workers, which take their own.
+	DjVu *DjVuHelperConfig `yaml:"djvu,omitempty"`
 	// PromptTemplate replaces the fixed OCR instruction. Operator-only: nothing a
 	// model sends ever reaches it.
 	PromptTemplate string `yaml:"prompt_template"`
@@ -117,6 +123,22 @@ type STTConfig struct {
 	Media *HelperCommand `yaml:"media,omitempty"`
 }
 
+// DjVuHelperConfig is `transcription.ocr.djvu`. Text reads the text layer
+// of the pages asked for ({in}, {pages}: a list such as 1-3,7); Inspect runs
+// one of two fixed djvused scripts ({in}, {script}: print-outline or
+// print-meta), never text from a file or a caller. Rendering a page for OCR
+// (rasterize) comes with DjVu OCR and is refused until then.
+type DjVuHelperConfig struct {
+	Text    *HelperCommand `yaml:"text,omitempty"`
+	Inspect *HelperCommand `yaml:"inspect,omitempty"`
+}
+
+// The placeholders each DjVu helper takes.
+var (
+	DjVuTextPlaceholders    = []string{"in", "pages"}
+	DjVuInspectPlaceholders = []string{"in", "script"}
+)
+
 // HelperCommand is an operator-declared host command template. `{in}` is the
 // input file; the runner substitutes it and the other placeholders and runs the
 // command without a shell.
@@ -134,6 +156,9 @@ func stampHelperWrapper(c *Config) {
 	cmds := []*HelperCommand{}
 	if o := c.Transcription.OCR; o != nil {
 		cmds = append(cmds, o.Rasterize)
+		if o.DjVu != nil {
+			cmds = append(cmds, o.DjVu.Text, o.DjVu.Inspect)
+		}
 	}
 	if s := c.Transcription.STT; s != nil {
 		cmds = append(cmds, s.Media)
@@ -193,6 +218,18 @@ func (t TranscriptionConfig) Resolved() TranscriptionConfig {
 		if o.Rasterize != nil {
 			r := *o.Rasterize
 			o.Rasterize = &r
+		}
+		if o.DjVu != nil {
+			d := DjVuHelperConfig{}
+			if o.DjVu.Text != nil {
+				h := *o.DjVu.Text
+				d.Text = &h
+			}
+			if o.DjVu.Inspect != nil {
+				h := *o.DjVu.Inspect
+				d.Inspect = &h
+			}
+			o.DjVu = &d
 		}
 		o.Tier = orDefault(o.Tier, TranscriptionDefaultOCRTier)
 		o.Language = orDefault(o.Language, TranscriptionDefaultOCRLanguage)
@@ -317,6 +354,11 @@ func (c *Config) validateOCR(o *OCRConfig) error {
 	}
 	if o.Rasterize != nil {
 		if err := o.Rasterize.validate(place + ".rasterize"); err != nil {
+			return err
+		}
+	}
+	if o.DjVu != nil {
+		if err := o.DjVu.validate(place + ".djvu"); err != nil {
 			return err
 		}
 	}
@@ -483,6 +525,40 @@ func (h *HelperCommand) validate(place string) error {
 	return nil
 }
 
+// validate checks each DjVu helper the way the runner will read it, so a
+// broken one fails the load rather than the first book: its syntax, a
+// program name, and exactly the placeholders its job fills, all of them.
+func (d *DjVuHelperConfig) validate(place string) error {
+	if d.Text == nil {
+		return fmt.Errorf("%s.text is required when %s is set: the text helper is what reads a DjVu", place, place)
+	}
+	for _, h := range []struct {
+		name  string
+		cmd   *HelperCommand
+		holds []string
+	}{{"text", d.Text, DjVuTextPlaceholders}, {"inspect", d.Inspect, DjVuInspectPlaceholders}} {
+		if h.cmd == nil {
+			continue
+		}
+		key := place + "." + h.name
+		if strings.TrimSpace(h.cmd.Command) == "" {
+			return fmt.Errorf("%s.command is required when %s is set", key, key)
+		}
+		if err := helper.Validate(h.cmd.Command, h.holds); err != nil {
+			return fmt.Errorf("%s.command: %w", key, err)
+		}
+		if _, err := helper.Program(h.cmd.Command); err != nil {
+			return fmt.Errorf("%s.command: %w", key, err)
+		}
+		for _, p := range h.holds {
+			if !strings.Contains(h.cmd.Command, "{"+p+"}") {
+				return fmt.Errorf("%s.command must reference {%s}", key, p)
+			}
+		}
+	}
+	return nil
+}
+
 // --- strict decoding: the rest of the config decodes leniently, so a typo in
 // a cap (`max_page_per_run`) would load as "the default" without a word. These
 // blocks check their own keys, the way decision: does. ---
@@ -501,6 +577,19 @@ func (o *OCRConfig) UnmarshalYAML(n *yaml.Node) error {
 	}
 	if err := strictKeys(valueOf(n, "rasterize"), "transcription.ocr.rasterize", nil, reflect.TypeOf(HelperCommand{})); err != nil {
 		return err
+	}
+	if dj := valueOf(n, "djvu"); dj != nil {
+		if valueOf(dj, "rasterize") != nil {
+			return errors.New("transcription.ocr.djvu.rasterize: rendering DjVu pages for OCR is not available yet")
+		}
+		if err := strictKeys(dj, "transcription.ocr.djvu", nil, reflect.TypeOf(DjVuHelperConfig{})); err != nil {
+			return err
+		}
+		for _, k := range []string{"text", "inspect"} {
+			if err := strictKeys(valueOf(dj, k), "transcription.ocr.djvu."+k, nil, reflect.TypeOf(HelperCommand{})); err != nil {
+				return err
+			}
+		}
 	}
 	type plain OCRConfig
 	return n.Decode((*plain)(o))
