@@ -109,6 +109,8 @@ type Options struct {
 	pdfMaxDecode int64
 	// pdfGridWork overrides the PDF table search's work budget, for tests.
 	pdfGridWork int
+	// fb2MaxPicture overrides the cap on one FB2 picture, for tests.
+	fb2MaxPicture int
 }
 
 // DefaultMaxRows is the row cap when Options.MaxRows is zero.
@@ -206,7 +208,7 @@ func NewRegistry(ex ...Extractor) *Registry {
 
 // Default is the registry of the pure-Go extractors this package ships.
 func Default() *Registry {
-	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
+	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, FB2{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
 }
 
 // Register adds an extractor, tried before the ones already there, so a
