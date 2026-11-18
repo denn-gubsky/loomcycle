@@ -43,13 +43,50 @@ run can open (the default `user` needs a user id; otherwise pass `agent`).
   For a new scheme, its meaning.
 - `scope` — see above.
 
+## Changing or retiring an entry
+
+With `change`, the proposal is about an entry ALREADY in force — a class,
+relation kind, scheme, concept or instance — instead of a new one (RFC GQ
+P4.1). It is just as inert: the entry, every read and every run are unchanged
+until an operator accepts it.
+
+- `change` — `edit` or `retire`. A retired entry is not deleted: nothing new
+  may use it, and what already uses it stays readable.
+- `entry` (required with `change`) — the entry's chunk id from
+  `describe_ontology`, or its name (a concept's tag) when that names one entry;
+  add `section` to narrow a name. A section header, the root and a proposal are
+  not entries.
+- With `edit`, at least one of:
+  - `name` — its new name;
+  - `parent` — its new parent in its own section, by chunk id or name;
+  - `meaning` — its new meaning; any `@` line stays quoted text;
+  - `directives` — its COMPLETE new directive set: an object of directive name
+    to value — a string, `true` for a flag such as `symmetric`, or a list for a
+    directive that repeats (`alt`); `{}` clears them. Only the directives the
+    entry's section takes, checked as the section reads them; never `locked`.
+- `body` — your reason and evidence, as for any proposal.
+
+A retire names only `entry`. The proposal is filed under the entry's section,
+titled `edit: <name>` or `retire: <name>`, and the change travels as data in
+its fields (`change_proposal`), never in its text. Accepting one applies it to
+the entry in place, keeping its id; that comes with RFC GQ P4.2 — until then
+the operator's proposals route refuses to accept it, and rejecting works as for
+any proposal.
+
+Refused: an entry that is not in force; a retired entry (it is brought back by
+an operator clearing its status, not changed by a proposal); retiring one
+already retired; a new name or parent that is a retired entry, or a name
+another entry of the kind already has; an entry carrying `@locked`, or for a
+retire, rename or move one with a locked entry under it; a second open
+proposal of the same kind for the same entry.
+
 To file a published classification, use `import_scheme`, which reads a Markdown
 outline or SKOS and files the same kind of proposal.
 
 ## Returns
 
 `{proposed, chunk_id, parent_id, note}` — `note` says it is filed and not in
-force. A new scheme adds `concepts` (how many), `header`, `warnings` when
+force. A change or retire proposal adds `change`, the data it carries. A new scheme adds `concepts` (how many), `header`, `warnings` when
 something was changed to fit, and `carries_section: true` when the ontology
 has no Schemes section yet.
 
@@ -70,6 +107,16 @@ has no Schemes section yet.
   relation kinds are not used here; describe the relation in prose.
 - `propose_entity: <name> is a standard relation kind and already valid` — use
   it as it is.
+- `propose_entity: ... is not an entry in force ...` — pass an entry's chunk id
+  from `describe_ontology`.
+- `propose_entity: already_retired: ...` / `... exists and is retired ...` —
+  ask an operator to bring it back; do not propose a change to it.
+- `propose_entity: entry_locked: ...` — the entry is locked; only an operator
+  changes it.
+- `propose_entity: already_proposed: ...` — an open proposal of the same kind
+  exists for the entry; an operator decides.
+- `propose_entity: directives: ...` — a directive the section does not take, a
+  value its parser cannot use, or `locked`.
 
 ## Examples
 
@@ -105,6 +152,16 @@ A whole new scheme with its header and concepts, as one proposal:
 
 ```json
 {"op": "propose_entity", "section": "schemes", "name": "Aircraft systems", "body": "Chapters of the maintenance manuals.", "header": {"domain": "aircraft maintenance documentation", "projects": ["manual"], "origin": "generated"}, "concepts": [{"name": "Hydraulics", "notation": "29", "children": [{"name": "Pumps"}]}, {"name": "Avionics"}]}
+```
+
+A retirement, and a rename with a new directive set:
+
+```json
+{"op": "propose_entity", "change": "retire", "entry": "depends_on", "section": "relations", "body": "No statement of this kind in a year; gated_by covers it."}
+```
+
+```json
+{"op": "propose_entity", "change": "edit", "entry": "3f2e1d0c9b8a7f6e5d4c3b2a1f0e9d8c", "name": "oversees", "directives": {"functional": true, "domain": "person"}, "body": "The 2026 charter renames the relation."}
 ```
 
 A top-level type from an agent with no user on its run:
