@@ -297,10 +297,6 @@ type annotationScope struct {
 	// docTypes the member documents' types it has read.
 	plan     *nodeStatsPlan
 	docTypes map[string]string
-	// readList is the caller's read list when it limits reading (listRead says it
-	// was derived): the node records' withholding check.
-	readList *docReadList
-	listRead bool
 }
 
 // ontology is the tenant ontology in force, or nil without one.
@@ -1006,20 +1002,14 @@ func (d *Document) getAnnotation(ctx context.Context, key sqlmem.ScopeKey, mscop
 				continue
 			}
 		}
+		if isNodeAnnotationLevel(lvl) && !nodeRecordShown(rec) {
+			continue
+		}
 		stale, err := s.stale(ctx, rec)
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
 		rec.Stale = &stale
-		if isNodeAnnotationLevel(lvl) {
-			shown, reported, err := s.nodeRecordShown(ctx, acl, rec, stale)
-			if err != nil {
-				return errFrom(op+": "+err.Error(), err), nil
-			} else if !shown {
-				continue
-			}
-			rec.Stale = reported
-		}
 		out = append(out, rec)
 	}
 	return jsonResult(map[string]any{"annotations": out})
@@ -1137,26 +1127,15 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 		checked, truncated := 0, false
 		for _, r := range res.Rows {
 			rec := scanAnnotationRecord(r)
-			// A node record's staleness is not counted for a reader with read
-			// limits: nodeRecordShown says why.
-			countStale := !(limited && isNodeAnnotationLevel(rec.Level))
 			if limited {
 				if ok, err := acl.readable(ctx, rec.DocumentID); err != nil {
 					return errFrom(op+": "+err.Error(), err), nil
 				} else if !ok {
 					continue
 				}
-				if isNodeAnnotationLevel(rec.Level) {
-					stale, err := s.stale(ctx, rec)
-					if err != nil {
-						return errFrom(op+": "+err.Error(), err), nil
-					}
-					if shown, _, err := s.nodeRecordShown(ctx, acl, rec, stale); err != nil {
-						return errFrom(op+": "+err.Error(), err), nil
-					} else if !shown {
-						continue
-					}
-				}
+			}
+			if isNodeAnnotationLevel(rec.Level) && !nodeRecordShown(rec) {
+				continue
 			}
 			c := counts[rec.Level]
 			if c == nil {
@@ -1166,9 +1145,6 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 			c["total"]++
 			if rec.Manual {
 				c["manual"]++
-			}
-			if !countStale {
-				continue
 			}
 			if checked >= maxSummarizeStaleChecks {
 				truncated = true
@@ -1213,22 +1189,15 @@ func (d *Document) listAnnotations(ctx context.Context, key sqlmem.ScopeKey, msc
 	out := []annotationRecord{}
 	for _, r := range rows {
 		rec := scanAnnotationRecord(r)
+		if isNodeAnnotationLevel(rec.Level) && !nodeRecordShown(rec) {
+			continue
+		}
 		stale, err := s.stale(ctx, rec)
 		if err != nil {
 			return errFrom(op+": "+err.Error(), err), nil
 		}
 		rec.Stale = &stale
-		if isNodeAnnotationLevel(rec.Level) {
-			shown, reported, err := s.nodeRecordShown(ctx, acl, rec, stale)
-			if err != nil {
-				return errFrom(op+": "+err.Error(), err), nil
-			} else if !shown {
-				continue
-			}
-			rec.Stale = reported
-		}
-		// A record whose staleness the caller is not told never matches the filter.
-		if in.Stale && (rec.Stale == nil || !*rec.Stale) {
+		if in.Stale && !stale {
 			continue
 		}
 		out = append(out, rec)

@@ -50,9 +50,14 @@ package builtin
 //
 // members_sha256 is the hash of the documents a row is built from (count: the
 // period's members; share and unplaced: the period's basis; shift: the members up
-// to and including the period). A reader whose access rules limit it gets a row
-// only when it may read every one of them and the row was built from that same set
-// (document_measure_read.go): the rule node_stats applies to its statistics.
+// to and including the period).
+//
+// WHO IS COUNTED (RFC GM C8). The members are the node_stats plan's, so only
+// documents every member of the tenant may read; the basis (the things of the
+// projected classes) is narrowed the same way. Every reader then gets the same rows.
+// A row's inputs_sha256 carries unrestrictedFamily: rows stored before C8 were
+// counted over restricted documents too, stay stored, and are never read — not by a
+// reader, not by shown_at, not by the pass, which computes their points again.
 //
 // SQLite has one connection per scope: every read is made before the write
 // transaction opens.
@@ -89,8 +94,9 @@ const (
 
 // measurePointsDDL is RFC GM 6A.5's table, portable across both tiers. Beside the
 // RFC's columns: basis (the things a share is of), fallback_share (6A.2) and
-// members_sha256 (the read check). value_sum is DOUBLE PRECISION, not REAL: a
-// Postgres REAL is 4 bytes and would round a share. groups and sources are the
+// members_sha256 (the documents the row is built from). value_sum is DOUBLE
+// PRECISION, not REAL: a Postgres REAL is 4 bytes and would round a share. groups
+// and sources are the
 // declared measures' (P8); a built-in row writes 0. Section 6A.5's
 // ontology_version column is left out (owner, 2026-11-18): the root chunk's
 // revision does not change when an entry is edited (RFC GQ problem 4), so it says
@@ -163,8 +169,6 @@ type seriesPlan struct {
 	period map[string]string
 	// shiftOff says why shift is not computed here, "" when it is.
 	shiftOff string
-	// read is, per point, the documents its row is built from (for the read check).
-	read map[pointKey][]string
 }
 
 // SeriesReport is the series stage's part of node_stats' answer.
@@ -256,7 +260,7 @@ func seriesHash(k pointKey, extra string, lines []string) string {
 	for _, l := range lines {
 		fmt.Fprintf(h, "%s\n", l)
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return unrestrictedFamily + hex.EncodeToString(h.Sum(nil))
 }
 
 // withFallback adds a row's fallback share to its hash's extra line: the share is
@@ -319,7 +323,7 @@ func (d *Document) buildSeriesPlan(ctx context.Context, key sqlmem.ScopeKey, rea
 	if err != nil {
 		return nil, err
 	}
-	sp := &seriesPlan{period: map[string]string{}, read: map[pointKey][]string{}}
+	sp := &seriesPlan{period: map[string]string{}}
 	if p.model == "" {
 		sp.shiftOff = "shift needs the vector stage, which does not run here: " + p.note
 	}
@@ -333,7 +337,7 @@ func (d *Document) buildSeriesPlan(ctx context.Context, key sqlmem.ScopeKey, rea
 			ss := &seriesScheme{s: s, period: schemePeriod(s), projected: map[string]bool{}}
 			proj := projectedClasses(s.Projects, classes)
 			for id, sd := range docs {
-				if proj[sd.typ] && id != read.DocumentID {
+				if proj[sd.typ] && id != read.DocumentID && p.unrestricted.readable(id) {
 					ss.projected[id] = true
 				}
 			}
@@ -408,7 +412,7 @@ func (sp *seriesPlan) schemeRows(ss *seriesScheme, p *nodeStatsPlan, dates map[s
 		fb := fallbackShare(unplaced, dates)
 		sp.add(seriesRow{pointKey: k, value: float64(len(unplaced)), members: len(unplaced), basis: len(ids),
 			fallback: fb, inputs: seriesHash(k, withFallback("basis "+ss.basisHash[start], fb), unplaced),
-			readSH: ss.basisHash[start]}, ids)
+			readSH: ss.basisHash[start]})
 	}
 }
 
@@ -422,7 +426,7 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 		k := pointKey{measure: measureCount, node: n.ID, period: period, start: start}
 		fb := fallbackShare(ids, dates)
 		sp.add(seriesRow{pointKey: k, value: float64(len(ids)), members: len(ids), fallback: fb,
-			inputs: seriesHash(k, withFallback("", fb), ids), readSH: membersHash(ids)}, ids)
+			inputs: seriesHash(k, withFallback("", fb), ids), readSH: membersHash(ids)})
 		if ss != nil && len(ss.basis[start]) > 0 {
 			var in []string
 			for _, id := range ids {
@@ -435,7 +439,7 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 			sfb := fallbackShare(in, dates)
 			sp.add(seriesRow{pointKey: k, value: float64(len(in)) / float64(basis), members: len(in), basis: basis,
 				fallback: sfb, inputs: seriesHash(k, withFallback("basis "+ss.basisHash[start], sfb), in),
-				readSH: ss.basisHash[start]}, ss.basis[start])
+				readSH: ss.basisHash[start]})
 		}
 		if p.model != "" && len(ids) >= nodestats.MinMembers && len(earlier) >= nodestats.MinMembers {
 			k := pointKey{measure: measureShift, node: n.ID, period: period, start: start}
@@ -452,19 +456,20 @@ func (sp *seriesPlan) nodeRows(n statNode, ss *seriesScheme, period string, p *n
 			sort.Strings(all)
 			sp.add(seriesRow{pointKey: k, members: len(ids), fallback: fb,
 				inputs: seriesHash(k, withFallback("model "+p.model, fb), lines), readSH: membersHash(all),
-				periodIDs: ids, earlierIDs: append([]string{}, earlier...)}, all)
+				periodIDs: ids, earlierIDs: append([]string{}, earlier...)})
 		}
 		earlier = append(earlier, ids...)
 	}
 }
 
-func (sp *seriesPlan) add(r seriesRow, readIDs []string) {
+func (sp *seriesPlan) add(r seriesRow) {
 	sp.rows = append(sp.rows, r)
-	sp.read[r.pointKey] = readIDs
 }
 
 // loadMeasurePoints reads, per point, the latest stored row computed at or before
-// shownAt (0: the latest), of measures and nodes (nil: all). Keyset-paged.
+// shownAt (0: the latest), of measures and nodes (nil: all). Keyset-paged. Only rows
+// of unrestrictedFamily exist for it: an older row is never the latest, never a
+// past answer, never what the pass compares with.
 func (d *Document) loadMeasurePoints(ctx context.Context, key sqlmem.ScopeKey, shownAt int64, measures, nodes []string) (map[pointKey]storedPoint, error) {
 	if shownAt <= 0 {
 		shownAt = 1<<63 - 1
@@ -483,17 +488,19 @@ func (d *Document) loadMeasurePoints(ctx context.Context, key sqlmem.ScopeKey, s
 	stmt := `SELECT m.measure, m.node_id, m.period, m.period_start, m.value_sum, m.members, m.basis,
 			m.fallback_share, m.inputs_sha256, m.members_sha256, m.computed_at
 		FROM measure_points m
-		WHERE m.subject_id = '' AND m.computed_at <= ?` + filter + `
+		WHERE m.subject_id = '' AND m.computed_at <= ? AND m.inputs_sha256 LIKE ?` + filter + `
 		  AND (m.measure, m.node_id, m.period, m.period_start) > (?, ?, ?, ?)
 		  AND m.computed_at = (SELECT max(x.computed_at) FROM measure_points x
 		        WHERE x.measure = m.measure AND x.node_id = m.node_id AND x.subject_id = m.subject_id
-		          AND x.period = m.period AND x.period_start = m.period_start AND x.computed_at <= ?)
+		          AND x.period = m.period AND x.period_start = m.period_start AND x.computed_at <= ?
+		          AND x.inputs_sha256 LIKE ?)
 		ORDER BY m.measure, m.node_id, m.period, m.period_start LIMIT ?`
+	family := unrestrictedFamily + "%"
 	out := map[pointKey]storedPoint{}
 	var after pointKey
 	after.start = -1 << 63
 	for {
-		args := append(append([]any{shownAt}, fargs...), after.measure, after.node, after.period, after.start, shownAt, measurePointsPage)
+		args := append(append([]any{shownAt, family}, fargs...), after.measure, after.node, after.period, after.start, shownAt, family, measurePointsPage)
 		res, err := d.query(ctx, key, stmt, args...)
 		if err != nil {
 			return nil, err
@@ -671,7 +678,7 @@ func noVectorHash(inputs string, periodIDs, earlierIDs []string, vecs map[string
 		}
 		fmt.Fprint(h, "--\n")
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return unrestrictedFamily + hex.EncodeToString(h.Sum(nil))
 }
 
 // writeMeasurePoints appends rows in one transaction. ON CONFLICT DO NOTHING: two

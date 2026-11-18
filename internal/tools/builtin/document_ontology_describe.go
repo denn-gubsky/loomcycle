@@ -151,14 +151,15 @@ func (d *Document) describeOntology(ctx context.Context, withCounts, withStats b
 	out := describeOntologyRead(read)
 	d.describeInstanceSubjects(ctx, key, mscope, acl, read, &out)
 	d.describePolicy(ctx, read, &out)
-	// with_stats implies the counts: a node whose statistics are withheld still shows
-	// the members the caller may read.
+	// with_stats implies the counts: the counts are the caller's own (the documents it
+	// may read), the statistics and series every reader's (unrestricted documents
+	// only, RFC GM C8).
 	if withCounts || withStats {
 		d.describeCounts(ctx, key, acl, read, &out)
 	}
 	if withStats {
-		d.describeStats(ctx, key, acl, read, &out)
-		d.describeSeries(ctx, key, acl, read, &out)
+		d.describeStats(ctx, key, read, &out)
+		d.describeSeries(ctx, key, read, &out)
 	}
 	return jsonResult(out)
 }

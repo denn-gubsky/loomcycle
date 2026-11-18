@@ -961,7 +961,7 @@ func (b *boot) startDocumentProjectionSweeper() {
 	// The document projection (RFC FQ P2): off unless memory.projection asks.
 	startProjectionSweeper(bgCtx, cfg, storeIface, sqlMemMgr, b.embedder, advisoryLock)
 	// The taxonomy's node statistics (RFC GM P2.1): off unless memory.node_stats asks.
-	startNodeStatsSweeper(bgCtx, cfg, storeIface, sqlMemMgr, b.embedder, advisoryLock)
+	startNodeStatsSweeper(bgCtx, cfg, storeIface, sqlMemMgr, b.embedder, b.documentTool.Audience, advisoryLock)
 }
 
 // startChannelsSweeper starts the Channel tool TTL sweeper (and the idle

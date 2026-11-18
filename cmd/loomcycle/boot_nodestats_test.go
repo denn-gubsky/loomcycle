@@ -46,7 +46,7 @@ func TestNodeStatsSweeper_OffByDefault(t *testing.T) {
 		{"no store", on(true, "1h"), nil, false},
 		{"enabled with interval, no vectors", on(true, "1h"), base, true},
 	} {
-		if got := startNodeStatsSweeper(ctx, tc.cfg, tc.st, mgr, nil, nil); got != tc.want {
+		if got := startNodeStatsSweeper(ctx, tc.cfg, tc.st, mgr, nil, nil, nil); got != tc.want {
 			t.Errorf("%s: started = %v, want %v", tc.name, got, tc.want)
 		}
 	}
