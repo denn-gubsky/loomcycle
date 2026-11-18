@@ -27,6 +27,8 @@ type Store interface {
 	GroupsOfSubject(ctx context.Context, tenantID, subject string) ([]string, error)
 	GroupGraph(ctx context.Context, tenantID string) (map[string][]string, error)
 	AclBindingsFor(ctx context.Context, tenantID, subject string, groups []string, tokenDefID string) ([]store.AclBindingRow, error)
+	// AclBindingList is every binding of the tenant, for EveryMemberSets.
+	AclBindingList(ctx context.Context, tenantID string, includeRetired bool) ([]store.AclBindingRow, error)
 	AclDefGet(ctx context.Context, tenantID, name string) (store.AclDefRow, error)
 	AclVersion(ctx context.Context, tenantID string) (int64, error)
 }

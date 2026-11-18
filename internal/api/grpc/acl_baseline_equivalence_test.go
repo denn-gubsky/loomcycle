@@ -32,6 +32,9 @@ func (noACLRows) GroupGraph(context.Context, string) (map[string][]string, error
 func (noACLRows) AclBindingsFor(context.Context, string, string, []string, string) ([]store.AclBindingRow, error) {
 	return nil, nil
 }
+func (noACLRows) AclBindingList(context.Context, string, bool) ([]store.AclBindingRow, error) {
+	return nil, nil
+}
 func (noACLRows) AclDefGet(context.Context, string, string) (store.AclDefRow, error) {
 	return store.AclDefRow{}, &store.ErrNotFound{}
 }
