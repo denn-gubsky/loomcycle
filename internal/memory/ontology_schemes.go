@@ -38,8 +38,11 @@ type OntologyScheme struct {
 	Origin string `json:"origin,omitempty"`
 	// Source and Version are an adopted scheme's provenance: where it was published
 	// (text or a URL) and which edition of it this is.
-	Source   string            `json:"source,omitempty"`
-	Version  string            `json:"version,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Version string `json:"version,omitempty"`
+	// Period is the length of the periods the taxonomy's series are kept in (RFC GM
+	// 6A.1, D32): day, week or month; "" means the default, month.
+	Period   string            `json:"period,omitempty"`
 	Meaning  string            `json:"meaning,omitempty"`
 	Concepts []OntologyConcept `json:"concepts,omitempty"`
 	ChunkID  string            `json:"chunk_id,omitempty"`
@@ -94,8 +97,17 @@ const (
 	SchemeOriginGenerated = "generated"
 )
 
+// Series periods a scheme's @period may name (RFC GM 6A.1, D32). Month is the
+// default: P0 found month the only length that holds enough members per node on
+// the knowledge bases measured.
+const (
+	SchemePeriodDay   = "day"
+	SchemePeriodWeek  = "week"
+	SchemePeriodMonth = "month"
+)
+
 // ParseSchemeBody reads a scheme entry's body: @ordered, @render, the header (@domain,
-// @projects, @origin, @source, @version) and its prose.
+// @projects, @origin, @source, @version, @period) and its prose.
 //
 // Whether a @projects class exists is not known here — the classes are another
 // section — so CheckSchemeReferences reports that once the whole document is read.
@@ -129,6 +141,15 @@ func ParseSchemeBody(name, body string) OntologyScheme {
 			s.Source = singleValue(&s.Issues, d, s.Source, strings.TrimSpace(d.Value))
 		case "version":
 			s.Version = singleValue(&s.Issues, d, s.Version, strings.TrimSpace(d.Value))
+		case "period":
+			v := strings.ToLower(firstWord(d.Value))
+			switch v {
+			case SchemePeriodDay, SchemePeriodWeek, SchemePeriodMonth:
+				s.Period = singleValue(&s.Issues, d, s.Period, v)
+			default:
+				s.Issues = append(s.Issues, "@period "+strconv.Quote(d.Value)+" is not a period (want "+
+					SchemePeriodDay+", "+SchemePeriodWeek+" or "+SchemePeriodMonth+"); the default, month, applies")
+			}
 		case "section":
 		default:
 			s.Issues = append(s.Issues, directiveIssue(d.Name, "scheme"))

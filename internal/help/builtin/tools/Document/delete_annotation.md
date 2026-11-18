@@ -15,7 +15,9 @@ document needs no call here.
 - `document_id` — a document, for its `document` annotation.
 - `path` — the document's Path-tree name, instead of `document_id`; with
   `level: path`, the folder (its `_annotation` document is removed too).
-- `level` (required) — `branch`, `document` or `path`.
+- `level` (required) — `branch`, `document`, `path`, `scheme`, `concept` or
+  `class`. A node record whose node is no longer in force (retired, or its
+  ontology back in draft) is deleted by its chunk `id` and level.
 - `scope` — `tenant`.
 
 ## Returns

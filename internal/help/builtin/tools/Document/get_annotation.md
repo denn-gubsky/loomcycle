@@ -21,7 +21,12 @@ covers.
 - `document_id` — a document, for its `document` annotation.
 - `path` — the document's Path-tree name, instead of `document_id`; with
   `level: path`, the folder.
-- `level` — `branch`, `document` or `path`, to read only that one.
+- `level` — `branch`, `document`, `path`, `scheme`, `concept` or `class`, to
+  read only that one. A taxonomy node's record is shown only to a caller who
+  may read every member of the node (a `declared` one, which covers nothing,
+  to anyone who may read the ontology). A caller whose access-control rules
+  hide any document is not told a node record's `stale` (the field is left
+  out): its staleness could reveal a document filed under the node.
 - `scope` — `tenant`.
 
 ## Returns

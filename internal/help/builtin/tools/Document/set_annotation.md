@@ -53,7 +53,10 @@ overwritten by a driver.
 - `document_id` — a document, for its `document` annotation.
 - `path` — the document's Path-tree name, instead of `document_id`; with
   `level: path`, the folder, e.g. `/kb/policies` (`/` for the top).
-- `level` — `branch`, `document` or `path`. Default: what the chunk is.
+- `level` — `branch`, `document`, `path`, `scheme`, `concept` or `class` (a
+  node of a confirmed taxonomy, on its chunk; `name` may name a class).
+  Default: what the chunk is. A node record's `basis` (written, thin or
+  declared) is the case the node is in when it is written, set by the runtime.
 - `brief` (required) — at most 240 characters.
 - `abstract` (required) — at most 2000 characters.
 - `inputs_sha256` — the hash from `annotation_inputs`. Required unless

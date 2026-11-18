@@ -65,3 +65,26 @@ func TestResolveFocus_InstanceWinsOverAClassOfTheSameName(t *testing.T) {
 		t.Error("an unknown name resolved")
 	}
 }
+
+// TestOntology_SchemePeriodIsDayWeekOrMonth (RFC GM D32): @period takes day, week or
+// month; anything else is reported and the default applies; on a concept it is
+// misplaced.
+func TestOntology_SchemePeriodIsDayWeekOrMonth(t *testing.T) {
+	for _, p := range []string{"day", "Week", "month"} {
+		s := ParseSchemeBody("topics", "@period "+p+"\n")
+		if s.Period != strings.ToLower(p) || len(s.Issues) != 0 {
+			t.Errorf("@period %s: period %q, issues %v", p, s.Period, s.Issues)
+		}
+	}
+	if s := ParseSchemeBody("topics", "Topics.\n"); s.Period != "" {
+		t.Errorf("no @period: period %q, want empty (the default)", s.Period)
+	}
+	s := ParseSchemeBody("topics", "@period quarter\n")
+	if s.Period != "" || len(s.Issues) != 1 || !strings.Contains(s.Issues[0], `@period "quarter" is not a period`) {
+		t.Errorf("period %q, issues %v", s.Period, s.Issues)
+	}
+	c := ParseConceptBody("topics", "security", []string{"security"}, "@period week\n")
+	if len(c.Issues) != 1 || !strings.Contains(c.Issues[0], "@period is not a concept directive") {
+		t.Errorf("concept issues = %v", c.Issues)
+	}
+}

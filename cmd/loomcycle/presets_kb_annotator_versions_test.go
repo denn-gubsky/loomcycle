@@ -18,7 +18,7 @@ import (
 
 // annShippedVersions is the shipped CONFIG line the tests rewrite to raise one
 // level. A test that cannot find it fails rather than testing the shipped body.
-const annShippedVersions = "prompt_versions: { branch: 2, document: 2, path: 2 },"
+const annShippedVersions = "prompt_versions: { branch: 2, document: 2, path: 2, scheme: 1, concept: 1, class: 1 },"
 
 func annotatorWithVersions(t *testing.T, branch, document, path int) string {
 	t.Helper()
@@ -27,7 +27,7 @@ func annotatorWithVersions(t *testing.T, branch, document, path int) string {
 		t.Fatalf("kb/annotator's CONFIG has no single %q", annShippedVersions)
 	}
 	return strings.Replace(code, annShippedVersions,
-		fmt.Sprintf("prompt_versions: { branch: %d, document: %d, path: %d },", branch, document, path), 1)
+		fmt.Sprintf("prompt_versions: { branch: %d, document: %d, path: %d, scheme: 1, concept: 1, class: 1 },", branch, document, path), 1)
 }
 
 // annVersionCall is one annotation_inputs or set_annotation call the annotator made.
@@ -122,7 +122,7 @@ func TestKBAnnotator_SendsVersionTwoForEveryLevel(t *testing.T) {
 			}
 		}
 	}
-	want := map[string]any{"branch": float64(2), "document": float64(2), "path": float64(2)}
+	want := map[string]any{"branch": float64(2), "document": float64(2), "path": float64(2), "scheme": float64(1), "concept": float64(1), "class": float64(1)}
 	if got, _ := rep["prompt_versions"].(map[string]any); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("report prompt_versions = %v, want %v", rep["prompt_versions"], want)
 	}
