@@ -43,8 +43,8 @@ import (
 )
 
 // ontologyPlanScopeBudget bounds the time a plan spends on user and agent scopes. A
-// scope not reached in it is reported skipped, and the plan incomplete, rather than
-// the request timing out with nothing.
+// scope not reached or not finished in it is reported skipped, and the plan
+// incomplete, rather than the request timing out with nothing.
 const ontologyPlanScopeBudget = 20 * time.Second
 
 // countPlanDependents fills each change's counts. counted and skipped are the user and
@@ -69,21 +69,28 @@ func (d *Document) countPlanDependents(ctx context.Context, key sqlmem.ScopeKey,
 		}
 	}
 
-	scopes, err := d.SqlMem.ListScopes(ctx)
+	scopes, err := d.SqlMem.ListTenantScopes(ctx, key.Tenant)
 	if err != nil {
 		return 0, 0, false, err
 	}
-	deadline := time.Now().Add(ontologyPlanScopeBudget)
+	// The budget is a deadline on every read of the pass, not only a check between
+	// scopes: a slow scope is cut mid-count (and reported skipped), not finished.
+	budget := d.planScopeBudget
+	if budget <= 0 {
+		budget = ontologyPlanScopeBudget
+	}
+	sctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	for _, sk := range scopes {
-		// ListScopes spans every tenant: the comparison keeps another tenant's rows out.
+		// The listing is the tenant's; the comparison is belt-and-braces.
 		if sk.Tenant != key.Tenant || (sk.Scope != "user" && sk.Scope != "agent") {
 			continue
 		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
+		if sctx.Err() != nil {
 			skipped++
 			continue
 		}
-		at, ok, perr := d.planScopePlane(ctx, sk)
+		at, ok, perr := d.planScopePlane(sctx, sk)
 		if perr != nil {
 			skipped++
 			slog.WarnContext(ctx, "ontology plan: could not check a scope", "tenant", sk.Tenant, "scope", sk.Scope, "err", perr)
@@ -99,7 +106,7 @@ func (d *Document) countPlanDependents(ctx context.Context, key sqlmem.ScopeKey,
 			q := &plannedChange{classes: p.classes, kinds: p.kinds, tags: p.tags,
 				newlyFunctional: p.newlyFunctional, newlyAsymmetric: p.newlyAsymmetric,
 				counts: map[string]*connector.OntologyPlanCount{}}
-			if serr = d.countPlanNames(ctx, at, "", false, q); serr != nil {
+			if serr = d.countPlanNames(sctx, at, "", false, q); serr != nil {
 				break
 			}
 			scratch[i] = q.counts

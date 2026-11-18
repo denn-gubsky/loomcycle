@@ -723,3 +723,19 @@ func assertPlanCountsPreSplitScope(t *testing.T, d *Document, base context.Conte
 		t.Error("the plan moved the pre-split scope")
 	}
 }
+
+// TestOntologyPlan_ScopeBudgetCutsTheCountAndSaysSo — once the scope budget is spent,
+// the user and agent scopes left are reported skipped and the plan incomplete, with
+// nothing of them counted; the tenant scope's counts stand.
+func TestOntologyPlan_ScopeBudgetCutsTheCountAndSaysSo(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	f := newPlanFixture(t, d, ctx)
+	f.populate()
+	d.planScopeBudget = time.Nanosecond
+	res := f.plan(connector.OntologyChange{Op: connector.OntologyPlanRetire, Entry: f.entries["class:Provision"]})
+	got := planCount(t, res.Changes[0], "typed_documents")
+	if res.Complete || res.ScopesCounted != 0 || res.ScopesSkipped != 2 || got.OtherScopes != 0 || got.TenantScope != 3 {
+		t.Errorf("complete %v counted %d skipped %d, typed_documents %+v; want incomplete, both scopes skipped, the tenant's 3 counted",
+			res.Complete, res.ScopesCounted, res.ScopesSkipped, got)
+	}
+}

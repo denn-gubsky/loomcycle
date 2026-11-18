@@ -112,6 +112,10 @@ type Document struct {
 
 	// editions serialises the reimports of one work (see document_editions.go).
 	editions editionLocks
+
+	// planScopeBudget bounds an ontology plan's user and agent scope pass; zero is
+	// ontologyPlanScopeBudget. A test shortens it.
+	planScopeBudget time.Duration
 }
 
 func (d *Document) Name() string { return "Document" }
