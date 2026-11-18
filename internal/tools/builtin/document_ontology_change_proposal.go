@@ -50,8 +50,8 @@ const (
 	changeMaxDirectiveValues = 64
 	changeMaxDirectiveValue  = 1000
 	// lockedDirective is RFC FO 3.1a's @locked (RFC GQ D5). A proposal may neither set
-	// nor clear it, so it is refused here by name whether or not this build parses it.
-	lockedDirective = "locked"
+	// nor clear it, so it is refused here by name.
+	lockedDirective = memrank.LockedDirective
 )
 
 // changeDirectives are the directives an edit may set, per kind of entry: the names each
@@ -158,11 +158,7 @@ func (d *Document) proposeChange(ctx context.Context, in docInput) (tools.Result
 	if op == memrank.ChangeOpRetire || mark.Name != "" || mark.Parent != "" {
 		ids = tg.rows.subtree(e.ChunkID)
 	}
-	locked, err := d.lockedAmong(ctx, key, mscope, ids, tg.entries)
-	if err != nil {
-		return errFrom("propose_entity: "+err.Error(), err), nil
-	}
-	if locked != "" {
+	if locked := lockedAmong(ids, tg.entries); locked != "" {
 		return errBusiness("propose_entity: entry_locked: "+locked+" carries @locked, so no proposal may "+op+
 			" it (or an entry above it); only an operator's own edit removes the lock",
 			"Ask an operator; a proposal cannot set or clear @locked."), nil
@@ -548,27 +544,13 @@ func directiveNames(m map[string]bool) []string {
 	return out
 }
 
-// lockedAmong is the name of the first chunk of ids whose body declares @locked, "" for
-// none. Read from the bodies, so it holds before this build parses the directive.
-func (d *Document) lockedAmong(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, ids []string, entries map[string]planEntry) (string, error) {
-	for _, id := range ids {
-		if _, entry := entries[id]; !entry {
-			continue // a proposal or rejection under the entry: its text locks nothing
-		}
-		b, err := d.readBody(ctx, mscope, key, id)
-		if err != nil {
-			return "", err
-		}
-		for _, dir := range memrank.ParseDirectives(b.Body) {
-			if dir.Name == lockedDirective {
-				if e, ok := entries[id]; ok {
-					return strconv.Quote(e.Name), nil
-				}
-				return id, nil
-			}
-		}
+// lockedAmong is the quoted name of the first entry of ids that carries @locked, "" for
+// none. A proposal or rejection under the entry is not an entry: its text locks nothing.
+func lockedAmong(ids []string, entries map[string]planEntry) string {
+	if locked := lockedIn(ids, entries); len(locked) > 0 {
+		return strconv.Quote(locked[0].Name)
 	}
-	return "", nil
+	return ""
 }
 
 // fileChangeProposal writes the proposal chunk under the target's section.
