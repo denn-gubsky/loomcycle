@@ -35,7 +35,7 @@ IFS=,
 for part in $spec; do
 	lo=${part%-*}; hi=${part#*-}; n=$lo
 	while [ "$n" -le "$hi" ]; do
-		printf '(page 0 0 100 100 "Text of page %s, read by the stand-in for djvutxt.\\n")\n' "$n"
+		printf '(page 0 0 100 100 "Text of page %s, read by the stand-in for djvutxt, long enough to count as a text layer.\\n")\n' "$n"
 		n=$((n+1))
 	done
 done

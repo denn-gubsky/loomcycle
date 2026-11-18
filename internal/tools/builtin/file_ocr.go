@@ -313,6 +313,10 @@ type ocrUnit struct {
 // was transcribed before it stays in the pass.
 func (f *File) runOCR(ctx context.Context, c ocrCall, plan transcribe.Plan, fh io.ReaderAt, size int64, mediaType string, pages []int) *ocrPass {
 	p := &ocrPass{plan: plan, language: c.language, text: map[int]string{}}
+	if extract.IsDjVu(mediaType, "") {
+		p.err = errDjVuOCR
+		return p
+	}
 	run, tree, ok := f.ocrBudgetsFor(ctx, c.caps)
 	if !ok {
 		p.err = errors.New("this run has no inbox to count its pages against")
@@ -388,6 +392,11 @@ func (f *File) runOCR(ctx context.Context, c ocrCall, plan transcribe.Plan, fh i
 	return p
 }
 
+// errDjVuOCR refuses OCR of a DjVu document until its pages can be
+// rendered (RFC GV P4). A DjVu is never sent as it is: it is a book, not an
+// image a vision model reads.
+var errDjVuOCR = errors.New("OCR of DjVu pages is not available yet")
+
 // noOCRText stands for a page the engine returned nothing for.
 const noOCRText = "[no text]"
 
@@ -395,6 +404,10 @@ const noOCRText = "[no text]"
 // pages cut out as one PDF, or one page rendered to an image. A PDF cut over
 // the engine's request size is returned as two halves to send instead.
 func (f *File) ocrUnitFor(ctx context.Context, plan transcribe.Plan, fh io.ReaderAt, size int64, mediaType string, chunk []int, language string) (ocrUnit, [][]int, error) {
+	if extract.IsDjVu(mediaType, "") {
+		// Before "not a PDF, so an image": that would send the whole book.
+		return ocrUnit{}, nil, errDjVuOCR
+	}
 	if mediaType != "application/pdf" {
 		if plan.MaxUnitBytes > 0 && size > plan.MaxUnitBytes {
 			return ocrUnit{}, nil, fmt.Errorf("the image is %d bytes; one OCR request takes at most %d", size, plan.MaxUnitBytes)
@@ -612,6 +625,9 @@ func ocrFailure(p *ocrPass, ref string) tools.Result {
 // counting units by the same rule runOCR cuts by (a cut that turns out over
 // the request size would be split further).
 func (f *File) ocrDryRun(ctx context.Context, c ocrCall, plan transcribe.Plan, src, mediaType string, pages []int, lowYield []int) (tools.Result, error) {
+	if extract.IsDjVu(mediaType, "") {
+		return errBusiness("extract: "+errDjVuOCR.Error(), "Leave dry_run out: the DjVu's text layer is read without OCR."), nil
+	}
 	units := 0
 	switch {
 	case len(pages) == 0:
