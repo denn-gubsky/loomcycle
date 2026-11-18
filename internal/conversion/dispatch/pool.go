@@ -390,6 +390,17 @@ func (p poolClient) Render(ctx context.Context, bundle []byte, format string) ([
 		mediaType: "application/zip", format: format, maxOut: render.MaxOutput})
 }
 
+// DrawDiagram has a worker carrying the diagram helper draw a Mermaid
+// diagram as a PNG. The picture is untrusted like any worker output: the
+// caller holds it to render.DrawDiagrams' checks.
+func (p poolClient) DrawDiagram(ctx context.Context, src []byte) ([]byte, error) {
+	if len(src) == 0 || len(src) > render.MaxDiagramSource {
+		return nil, fmt.Errorf("%w: a diagram of %d bytes, not 1 to %d", render.ErrTooLarge, len(src), render.MaxDiagramSource)
+	}
+	return p.bytes(ctx, &job{kind: workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW, r: bytesReader(src), size: int64(len(src)),
+		mediaType: "text/vnd.mermaid", maxOut: render.MaxImage})
+}
+
 // ConvertMedia spools the worker's WAV into a file of the core's scratch
 // directory; closing the Spool removes it.
 func (p poolClient) ConvertMedia(ctx context.Context, r io.ReaderAt, size int64, mediaType, language string) (convert.Spool, error) {

@@ -1,9 +1,10 @@
 # Dockerfile.worker — goreleaser variant: the loomcycle binary as a conversion
 # worker (RFC GO, conversion.mode remote), with the helper programs the
 # conversions run: ffmpeg (a recording to a WAV for speech-to-text, speech to
-# Opus or MP3), poppler's pdftoppm (a PDF page to an image for OCR) and Typst
-# (a Document rendered as a PDF, RFC GR), with Noto Sans and Noto Sans Mono
-# for its text (Latin, Cyrillic, Greek).
+# Opus or MP3), poppler's pdftoppm (a PDF page to an image for OCR), Typst
+# (a Document rendered as a PDF, RFC GR), with Noto Sans, Noto Sans Mono and
+# Noto Serif for its text (Latin, Cyrillic, Greek), and merman (a Mermaid
+# diagram drawn as a picture, RFC GR P4d; no browser).
 #
 # A worker holds no provider key, no store connection and no volume: it dials
 # the runtime's worker endpoint (--dispatcher, or LOOMCYCLE_WORKER_DISPATCHER
@@ -19,7 +20,9 @@
 # Debian slim rather than distroless: ffmpeg and poppler bring shared
 # libraries. The same pre-built binary as Dockerfile.release (goreleaser
 # builds every arch; this only COPYs it) and the same nonroot uid 65532.
-FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+# Debian 13 (trixie), not 12: merman's release binary needs glibc 2.38 and
+# bookworm has 2.36 (RFC GR P4d).
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 
 # Typst is a pinned release, its archive checked against the sha256 GitHub
 # publishes for it, one per architecture. It never fetches a package: the
@@ -28,6 +31,11 @@ ARG TARGETARCH
 ARG TYPST_VERSION=0.15.1
 ARG TYPST_SHA256_AMD64=a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c
 ARG TYPST_SHA256_ARM64=5aa8d74a3d906e60ea12a66ac2f37f8eef1b14cbad7182a745e393a10c23dcee
+# merman-cli likewise: a pinned release, checked against its published
+# sha256. It reads a diagram's text and writes a PNG; it fetches nothing.
+ARG MERMAN_VERSION=0.9.3
+ARG MERMAN_SHA256_AMD64=e93dbf741319190d53107c4277b373d357dcdad3f4f7e50f114a51c9b682109b
+ARG MERMAN_SHA256_ARM64=afea2472d232d0642b430f1db03a8d216925fbad04144348c2fe0838069c7f54
 
 RUN set -eux; \
     apt-get update; \
@@ -46,6 +54,19 @@ RUN set -eux; \
     install -m 0644 "/tmp/typst-${triple}/LICENSE" /usr/share/doc/typst/LICENSE; \
     rm -rf /tmp/typst.tar.xz "/tmp/typst-${triple}"; \
     typst --version; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) mtriple=x86_64-unknown-linux-gnu; msum="${MERMAN_SHA256_AMD64}" ;; \
+        arm64) mtriple=aarch64-unknown-linux-gnu; msum="${MERMAN_SHA256_ARM64}" ;; \
+        *) echo "no merman pin for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/merman.tar.xz "https://github.com/Latias94/merman/releases/download/v${MERMAN_VERSION}/merman-cli-${mtriple}.tar.xz"; \
+    echo "${msum}  /tmp/merman.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/merman.tar.xz -C /tmp; \
+    install -m 0755 "/tmp/merman-cli-${mtriple}/merman-cli" /usr/local/bin/merman-cli; \
+    install -d /usr/share/doc/merman; \
+    install -m 0644 "/tmp/merman-cli-${mtriple}/LICENSE-MIT" "/tmp/merman-cli-${mtriple}/LICENSE-APACHE" "/tmp/merman-cli-${mtriple}/THIRD_PARTY_NOTICES.md" /usr/share/doc/merman/; \
+    rm -rf /tmp/merman.tar.xz "/tmp/merman-cli-${mtriple}"; \
+    merman-cli --version; \
     # Keep only the families a PDF names: Noto Sans and Noto Sans Mono
     # (D13), and Noto Serif for a house style that asks for it (RFC GR P4c).
     # The rest of the Noto set is some hundreds of MB this image does not need.

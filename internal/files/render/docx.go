@@ -111,7 +111,8 @@ func writeDOCX(ctx context.Context, w io.Writer, d *Doc, opts Options) error {
 	for i, im := range d.Images {
 		m := docxMedia{img: im, relID: "rImg" + strconv.Itoa(i+1), contentExt: imageExt[im.MediaType]}
 		if cfg, _, err := image.DecodeConfig(bytes.NewReader(im.Data)); err == nil && cfg.Width > 0 && cfg.Height > 0 {
-			m.w, m.h, m.ok = cfg.Width, cfg.Height, true
+			m.w, m.h = im.shown(cfg.Width, cfg.Height)
+			m.ok = true
 		}
 		x.media[im.Name] = m
 	}

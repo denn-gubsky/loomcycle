@@ -48,6 +48,10 @@ type Client interface {
 	// render.ErrUnsupported, render.ErrBadBundle and render.ErrTooLarge; a
 	// PDF with no typesetter is ErrNotConfigured or ErrNoHelper.
 	Render(ctx context.Context, bundle []byte, format string) ([]byte, error)
+	// DrawDiagram draws a Mermaid diagram's source as a PNG at twice its
+	// size with the diagram helper (RFC GR P4d). With no helper,
+	// ErrNotConfigured or ErrNoHelper.
+	DrawDiagram(ctx context.Context, src []byte) ([]byte, error)
 }
 
 // Spool is a converted file the caller reads at random and then closes; its
