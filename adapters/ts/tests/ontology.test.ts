@@ -100,3 +100,56 @@ describe("erasure bound subjects", () => {
     expect(rep.bound_subjects_withheld).toBe(1);
   });
 });
+
+describe("planOntology", () => {
+  const plan = {
+    tenant: "acme",
+    fingerprint: "a".repeat(64),
+    changes: [{
+      op: "delete",
+      entry: { chunk_id: "c1", name: "Provision", section: "classes", kind: "class" },
+      risk: "destroys",
+      counts: { typed_documents: { n: 3, effect: "orphaned", tenant_scope: 1, other_scopes: 2, sample: ["d1"] } },
+      subtree: [{ chunk_id: "c2", name: "Article", section: "classes", kind: "class" }],
+    }],
+    issues: [],
+    new_issues: [],
+    scopes_counted: 2,
+    scopes_skipped: 0,
+    complete: true,
+  };
+
+  it("posts changes and returns the plan", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(plan)]);
+    const res = await client.planOntology([
+      { op: "delete", entry: "c1" },
+      { op: "rename", entry: "c3", name: "refers_to" },
+    ]);
+    expect(res.changes[0]!.risk).toBe("destroys");
+    expect(res.changes[0]!.counts["typed_documents"]!.other_scopes).toBe(2);
+    expect(res.complete).toBe(true);
+
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe("http://test-loomcycle:8787/v1/_ontology/plan");
+    expect(call[1]!.method).toBe("POST");
+    expect(JSON.parse(call[1]!.body as string)).toEqual({
+      changes: [{ op: "delete", entry: "c1" }, { op: "rename", entry: "c3", name: "refers_to" }],
+    });
+  });
+
+  it("passes an admin's tenant focus as ?tenant=", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse(plan)]);
+    await client.planOntology([{ op: "retire", entry: "c1" }], { tenant: "globex" });
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/_ontology/plan?tenant=globex");
+  });
+
+  it("throws with the server's code on a refusal", async () => {
+    const { client } = makeClient([
+      jsonResponse({ code: "entry_not_found", error: "changes[0]: no in-force entry c9" }, 404),
+    ]);
+    const err = await client.planOntology([{ op: "retire", entry: "c9" }]).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(LoomcycleError);
+    expect((err as LoomcycleError).status).toBe(404);
+    expect((err as LoomcycleError).code).toBe("entry_not_found");
+  });
+});
