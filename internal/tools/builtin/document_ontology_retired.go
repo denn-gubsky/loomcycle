@@ -218,15 +218,16 @@ func copiedEdgeMethod(method string) bool {
 
 // retiredNewUseRefusal is retiredStatementRefusal for a statement that may revise
 // another (propose_statement with id). A revision replaces the statement it revises, so
-// what it shares with it is no new use (RFC FO 3.7 B2): only a kind or an end the
-// revision changes is checked.
+// what it shares with one IN FORCE is no new use (RFC FO 3.7 B2): only a kind or an end
+// the revision changes is checked. A base not in force (proposed, rejected, expired or
+// withheld by a judge) uses nothing yet, so its revision is checked in full.
 func (d *Document) retiredNewUseRefusal(ctx context.Context, key sqlmem.ScopeKey, kind, from, to, revisionOf string) (*tools.Result, error) {
 	if revisionOf != "" {
 		base, err := d.statementByID(ctx, key, revisionOf)
 		if err != nil {
 			return nil, err
 		}
-		if base != nil {
+		if statementInForce(base) {
 			if base.Kind == kind {
 				kind = ""
 			}
@@ -242,6 +243,12 @@ func (d *Document) retiredNewUseRefusal(ctx context.Context, key sqlmem.ScopeKey
 		return nil, nil
 	}
 	return d.retiredStatementRefusal(ctx, key, kind, from, to), nil
+}
+
+// statementInForce: asserted, not expired, and not withheld by a refuting verdict.
+func statementInForce(s *statementRow) bool {
+	return s != nil && s.Status == edgeStatusAsserted && s.ExpiredAt == nil &&
+		(s.VerdictConfidence == nil || *s.VerdictConfidence >= withholdBelowConfidence)
 }
 
 // retiredStatementRefusal refuses a NEW statement of a retired relation kind, or one

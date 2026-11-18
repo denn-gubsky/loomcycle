@@ -161,3 +161,30 @@ func TestOntologyConfirm_NoNewInstanceOfToARetiredClass(t *testing.T) {
 		}
 	}
 }
+
+// TestProposeStatement_RevisionOfAStatementNotInForceIsCheckedInFull: only a statement
+// in force is replaced by its revision, so only its revision shares its uses; a
+// revision of a proposed or a (policy-)rejected statement of a retired kind is a new
+// use, refused as a new statement would be.
+func TestProposeStatement_RevisionOfAStatementNotInForceIsCheckedInFull(t *testing.T) {
+	f := newRetiredFixture(t)
+	a, b, c := f.root("A"), f.root("B"), f.root("C")
+	asserted := f.must(map[string]any{"op": "link_chunks", "scope": "tenant", "from_id": a, "to_id": b, "kind": "supervises"})["id"].(string)
+	proposed := f.must(map[string]any{"op": "propose_statement", "scope": "tenant", "from_id": b, "to_id": c, "kind": "supervises"})["id"].(string)
+	rejected := f.must(map[string]any{"op": "propose_statement", "scope": "tenant", "from_id": c, "to_id": a, "kind": "supervises"})["id"].(string)
+	// A review policy's rejection is no tombstone, so its statement may be revised.
+	if err := f.d.exec(f.ctx, mustTenantKey(t, f.d, f.ctx), `UPDATE chunk_edges SET status = ?, ruled_by = ? WHERE id = ?`,
+		edgeStatusRejected, "policy:1@1", rejected); err != nil {
+		t.Fatal(err)
+	}
+	f.retire("supervises")
+	for _, id := range []string{proposed, rejected} {
+		if _, r := f.do(f.ctx, map[string]any{"op": "propose_statement", "scope": "tenant", "id": id, "confidence": 0.5}); !r.IsError ||
+			!strings.Contains(r.Text, "entry_retired") {
+			t.Errorf("a revision of %s: %q, want entry_retired", f.edgeStatus(id), r.Text)
+		}
+	}
+	if _, r := f.do(f.ctx, map[string]any{"op": "propose_statement", "scope": "tenant", "id": asserted, "confidence": 0.5}); r.IsError {
+		t.Errorf("a revision of the asserted statement: %s", r.Text)
+	}
+}
