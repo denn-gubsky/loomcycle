@@ -318,6 +318,9 @@ func (d *Document) resolvePlanChange(ctx context.Context, key sqlmem.ScopeKey, m
 		// whose domain names nothing) is the same for both until P2 gives retirement a
 		// status of its own.
 		ov.gone[e.ChunkID] = true
+		if ch.Op == connector.OntologyPlanRetire {
+			p.notes = append(p.notes, "the ontology after the change is read as if the entry and its subtree were gone; its dependents are kept")
+		}
 	case connector.OntologyPlanRename:
 		name := strings.TrimSpace(ch.Name)
 		ov.titles[e.ChunkID] = name
@@ -328,7 +331,7 @@ func (d *Document) resolvePlanChange(ctx context.Context, key sqlmem.ScopeKey, m
 			}
 		}
 		if e.Kind == planKindClass {
-			p.notes = append(p.notes, "a class rename is refused while anything rests on the class: stored types, identity and subject keys keep the old name until the rename job exists (RFC GQ P5)")
+			p.notes = append(p.notes, "a class rename with dependents is refused until the rename job exists (RFC GQ P5): stored types, identity and subject keys would keep the old name")
 		}
 	case connector.OntologyPlanMove:
 		parent := strings.TrimSpace(ch.Parent)
