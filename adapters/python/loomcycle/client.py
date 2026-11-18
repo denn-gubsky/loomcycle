@@ -2087,6 +2087,81 @@ class LoomcycleClient:
             "changed": resp.changed,
         }
 
+    async def plan_ontology(
+        self, changes: Sequence[Mapping[str, str]], *, tenant: str = ""
+    ) -> Mapping[str, Any]:
+        """Say what changes to the tenant ontology's entries would do before
+        any is made; writes nothing. Mirrors ``POST /v1/_ontology/plan``.
+
+        *changes* is 1 to 50 mappings ``{op, entry, name?, parent?, body?}``:
+        ``retire``, ``rename`` (needs ``name``), ``move`` (needs ``parent``),
+        ``edit`` (needs ``body``) or ``delete``, each ``entry`` a chunk id of
+        the ontology.
+
+        Returns ``{tenant, fingerprint, changes, issues, new_issues,
+        scopes_counted, scopes_skipped, complete}``; each change is ``{op,
+        entry, risk, counts, subtree, notes}`` with ``entry`` ``{chunk_id,
+        name, section, kind}`` and each count ``{n, effect, tenant_scope,
+        other_scopes, by_status, sample}`` — the same shape as the HTTP
+        route's JSON, with absent lists and maps empty.
+
+        For an admin or a tenant operator only; *tenant* is honored only for
+        an admin token. A refusal raises the error class its gRPC code maps
+        to, with the code (``invalid_body``, ``invalid_request``,
+        ``entry_not_found``, ``forbidden``, ``unavailable``) on its
+        ``.reason``."""
+        req = pb.PlanOntologyRequest(
+            tenant=tenant,
+            changes=[
+                pb.OntologyChange(
+                    op=c.get("op", ""),
+                    entry=c.get("entry", ""),
+                    name=c.get("name", ""),
+                    parent=c.get("parent", ""),
+                    body=c.get("body", ""),
+                )
+                for c in changes
+            ],
+        )
+        try:
+            resp = await self._stub.PlanOntology(req, metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+
+        def entry(e: Any) -> Mapping[str, Any]:
+            return {"chunk_id": e.chunk_id, "name": e.name, "section": e.section, "kind": e.kind}
+
+        def count(n: Any) -> Mapping[str, Any]:
+            return {
+                "n": n.n,
+                "effect": n.effect,
+                "tenant_scope": n.tenant_scope,
+                "other_scopes": n.other_scopes,
+                "by_status": dict(n.by_status),
+                "sample": list(n.sample),
+            }
+
+        return {
+            "tenant": resp.tenant,
+            "fingerprint": resp.fingerprint,
+            "changes": [
+                {
+                    "op": c.op,
+                    "entry": entry(c.entry),
+                    "risk": c.risk,
+                    "counts": {k: count(v) for k, v in c.counts.items()},
+                    "subtree": [entry(s) for s in c.subtree],
+                    "notes": list(c.notes),
+                }
+                for c in resp.changes
+            ],
+            "issues": list(resp.issues),
+            "new_issues": list(resp.new_issues),
+            "scopes_counted": resp.scopes_counted,
+            "scopes_skipped": resp.scopes_skipped,
+            "complete": resp.complete,
+        }
+
     async def list_review_queue(
         self,
         *,

@@ -154,3 +154,110 @@ async def test_bind_subject_principal_refusal_carries_the_code_as_reason():
         await _client(_Refusing()).bind_subject_principal("person:ada-lovelace", "u-ada")
     assert ei.value.reason == "binding_conflict"
     assert "person:ada-king" in str(ei.value)
+
+
+class _PlanStub:
+    def __init__(self):
+        self.req = None
+
+    async def PlanOntology(self, req, metadata=None):
+        self.req = req
+        return pb.PlanOntologyResponse(
+            tenant="acme",
+            fingerprint="f" * 64,
+            changes=[
+                pb.OntologyPlannedChange(
+                    op="delete",
+                    entry=pb.OntologyPlanEntry(chunk_id="c1", name="Provision", section="classes", kind="class"),
+                    risk="destroys",
+                    counts={
+                        "statements": pb.OntologyPlanCount(
+                            n=3, effect="destroyed", tenant_scope=2, other_scopes=1,
+                            by_status={"asserted": 3}, sample=["s1"],
+                        )
+                    },
+                    subtree=[pb.OntologyPlanEntry(chunk_id="c2", name="Article", section="classes", kind="class")],
+                    notes=["n"],
+                )
+            ],
+            issues=["i"],
+            scopes_counted=2,
+            complete=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_plan_ontology():
+    stub = _PlanStub()
+    got = await _client(stub).plan_ontology(
+        [{"op": "delete", "entry": "c1"}, {"op": "rename", "entry": "c3", "name": "refers_to"}],
+        tenant="globex",
+    )
+    assert stub.req.tenant == "globex"
+    assert [(c.op, c.entry, c.name) for c in stub.req.changes] == [
+        ("delete", "c1", ""),
+        ("rename", "c3", "refers_to"),
+    ]
+    assert got == {
+        "tenant": "acme",
+        "fingerprint": "f" * 64,
+        "changes": [
+            {
+                "op": "delete",
+                "entry": {"chunk_id": "c1", "name": "Provision", "section": "classes", "kind": "class"},
+                "risk": "destroys",
+                "counts": {
+                    "statements": {
+                        "n": 3,
+                        "effect": "destroyed",
+                        "tenant_scope": 2,
+                        "other_scopes": 1,
+                        "by_status": {"asserted": 3},
+                        "sample": ["s1"],
+                    }
+                },
+                "subtree": [{"chunk_id": "c2", "name": "Article", "section": "classes", "kind": "class"}],
+                "notes": ["n"],
+            }
+        ],
+        "issues": ["i"],
+        "new_issues": [],
+        "scopes_counted": 2,
+        "scopes_skipped": 0,
+        "complete": True,
+    }
+
+
+def _status_details(code: int, message: str, reason: str) -> bytes:
+    """A serialized google.rpc.Status carrying ErrorInfo{reason, domain:
+    loomcycle}, as the server sends it in grpc-status-details-bin."""
+
+    def field(num: int, payload: bytes) -> bytes:
+        # Length-delimited fields only; every length here is under 128.
+        assert len(payload) < 128
+        return bytes([num << 3 | 2, len(payload)]) + payload
+
+    info = field(1, reason.encode()) + field(2, b"loomcycle")
+    any_ = field(1, b"type.googleapis.com/google.rpc.ErrorInfo") + field(2, info)
+    return bytes([0x08, code]) + field(2, message.encode()) + field(3, any_)
+
+
+@pytest.mark.asyncio
+async def test_plan_ontology_refusal_carries_the_code_as_reason():
+    trailing = grpc.aio.Metadata()
+    trailing.add("grpc-status-details-bin", _status_details(5, "no in-force entry c9", "entry_not_found"))
+    err = grpc.aio.AioRpcError(
+        code=grpc.StatusCode.NOT_FOUND,
+        initial_metadata=grpc.aio.Metadata(),
+        trailing_metadata=trailing,
+        details="changes[0]: no in-force entry c9",
+        debug_error_string="",
+    )
+
+    class _Refusing:
+        async def PlanOntology(self, req, metadata=None):
+            raise err
+
+    with pytest.raises(LoomcycleError) as ei:
+        await _client(_Refusing()).plan_ontology([{"op": "retire", "entry": "c9"}])
+    assert ei.value.reason == "entry_not_found"
