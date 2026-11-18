@@ -437,3 +437,21 @@ func TestEPUB_DescriptionMarkupIsBoundedBeforeParse(t *testing.T) {
 		t.Errorf("a small description = %q", got)
 	}
 }
+
+// A book's element with millions of attributes is refused while its bytes
+// stream past, before the XML decoder builds the attribute list (about ten
+// times its bytes); a book is read as a stream, so no count runs ahead of
+// it over the whole file.
+func TestFB2_AttributeFloodRefusedBeforeDecode(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<FictionBook><body><p`)
+	for i := 0; b.Len() < 24<<20; i++ {
+		fmt.Fprintf(&b, ` a%d=""`, i)
+	}
+	b.WriteString(`>x</p></body></FictionBook>`)
+	book := []byte(b.String())
+	wantRefusedUnder(t, "attribute flood in a book", 1<<20, func() error {
+		_, err := extractBytes(FB2{}, "flood.fb2", book)
+		return err
+	})
+}
