@@ -686,6 +686,43 @@ func TestKbSurvey_MovesAndMissingLinesAreStrippedFromTheAnswer(t *testing.T) {
 	}
 }
 
+// TestKbSurvey_SentencesAboutTheProtocolAreStrippedFromTheAnswer: measured,
+// the composing round wrote a sentence saying it had left out the MOVES and
+// MISSING lines, and the strip only took lines that start with a label. Any
+// sentence naming MOVES, MISSING, COMPOSE, FITS or SET ASIDE in capitals
+// outside a link goes, on a line of its own, as a list item, or beside
+// ordinary prose, which stays; lower-case words and a cited title stay.
+func TestKbSurvey_SentencesAboutTheProtocolAreStrippedFromTheAnswer(t *testing.T) {
+	a := docID(1)
+	link := "[A](loom:doc/" + a + "?scope=tenant)"
+	for name, tc := range map[string]struct{ text, want string }{
+		"own line": {"One document: " + link + ".\n\nI've omitted the MOVES and MISSING lines as instructed…",
+			"One document: " + link + "."},
+		"bulleted": {"One document: " + link + ".\n- I've left out the MOVES and MISSING lines, as asked.\n- Second point stays.",
+			"One document: " + link + ".\n- Second point stays."},
+		"beside prose": {"One document: " + link + ". I've omitted the MOVES and MISSING lines. It is the guide.",
+			"One document: " + link + ". It is the guide."},
+		"bold note": {"One document: " + link + ".\n**Note:** the FITS and SET ASIDE lines and the COMPOSE block are not repeated.",
+			"One document: " + link + "."},
+		"ordinary prose": {"One document: " + link + ". Nothing is missing from it, and it fits; its moves are listed.",
+			"One document: " + link + ". Nothing is missing from it, and it fits; its moves are listed."},
+		"cited title": {"- [FITS headers](loom:doc/" + a + "?scope=tenant): describes the FITS format.",
+			"- [FITS headers](loom:doc/" + a + "?scope=tenant): describes the FITS format."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &surveyFake{
+				rows:   map[string][]map[string]any{"P": hits(a)},
+				screen: fitsOf(a),
+				write:  func([]string) surveyReply { return surveyReply{text: tc.text} },
+			}
+			out := runSurvey(t, f, surveyQuestion)
+			if body := strings.SplitN(out, "\n\nCOVERAGE:", 2)[0]; body != tc.want {
+				t.Errorf("answer = %q, want %q", body, tc.want)
+			}
+		})
+	}
+}
+
 // TestKbSurvey_ComposingRoundAsksForReplyTextNotADocument: the last round
 // composes the reply text. Asked to "write" the overview, the walker read it as
 // writing a document and complained the knowledge base is read-only, or tried

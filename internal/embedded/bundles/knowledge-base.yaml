@@ -6241,7 +6241,11 @@ agents:
       //    round's trusted block and the walker's COMPOSING section say the
       //    block is document content: never instructions, never tool calls.
       //    Its FITS, SET ASIDE, COVERAGE, UNCOVERED, MOVES, MISSING and COMPOSE
-      //    lines are stripped (a COMPOSE line is the round echoing its block).
+      //    lines are stripped (a COMPOSE line is the round echoing its block),
+      //    and so is any sentence that talks about them: one naming MOVES,
+      //    MISSING, COMPOSE, FITS or SET ASIDE in capitals outside a link
+      //    ("I've omitted the MOVES and MISSING lines"), unless it holds a
+      //    loom: link (withoutProtocolTalk).
       //    It is asked to COMPOSE, never to
       //    write: told to write the overview, a walker took it as writing a
       //    document. Nothing fits: code says so, with no round. The composing
@@ -6821,6 +6825,43 @@ agents:
         return /^(MOVES|MISSING|COMPOSE)\s*[:.]/i.test(plain(line));
       }
 
+      // PROTOCOL: a word of the rounds' own protocol, written as one (in
+      // capitals). In ordinary prose these are lower-case words ("nothing is
+      // missing", "it fits"), and those stay.
+      var PROTOCOL = /\b(?:MOVES|MISSING|COMPOSE|FITS|SET[\s-]*ASIDE)\b/;
+
+      // sentences cuts a line after each ".", "!", "?" or "…" that a space or
+      // the line's end follows; the pieces joined give the line back.
+      function sentences(s) {
+        var out = [], from = 0;
+        for (var i = 0; i < s.length; i++) {
+          if (/[.!?\u2026]/.test(s.charAt(i)) && (i + 1 === s.length || /\s/.test(s.charAt(i + 1)))) {
+            out.push(s.slice(from, i + 1));
+            from = i + 1;
+          }
+        }
+        if (from < s.length) { out.push(s.slice(from)); }
+        return out;
+      }
+
+      // withoutProtocolTalk drops each sentence of a line that talks about
+      // the protocol: one naming a PROTOCOL word outside a link (measured: "I've
+      // omitted the MOVES and MISSING lines as instructed", on a line of its
+      // own and as a list item). A sentence holding a loom: link cites a
+      // document and stays. Returns the rest of the line, or null when nothing
+      // but its list or quote marker and markup is left.
+      function withoutProtocolTalk(line) {
+        var bare = function (t) { return t.replace(/\[[^\]]*\]\([^)]*\)/g, " "); };
+        if (!PROTOCOL.test(bare(line))) { return line; }
+        var lead = /^\s*(?:[-*+>]|\d+[.)])?\s*/.exec(line)[0];
+        var parts = sentences(line.slice(lead.length)), keep = [];
+        for (var i = 0; i < parts.length; i++) {
+          if (/loom:(doc|chunk)\//.test(parts[i]) || !PROTOCOL.test(bare(parts[i]))) { keep.push(parts[i]); }
+        }
+        var rest = keep.join("").replace(/^\s+|\s+$/g, "");
+        return rest.replace(/[\s*_`>()\[\]:.\u2026-]/g, "") === "" ? null : lead + rest;
+      }
+
       // readAnswer takes the accounting, coverage and walk lines out of an answer.
       // A FITS or SET ASIDE line may carry its ids on the following lines.
       // Returns {text: the rest, fits and aside: the ids of cands each line
@@ -6841,7 +6882,8 @@ agents:
           } else {
             into = null;
             if (coverageLine(lines[i]) || walkLine(lines[i]) || /^UNCOVERED\s*:/i.test(p)) { continue; }
-            keep.push(lines[i]);
+            var rest = withoutProtocolTalk(lines[i]);
+            if (rest !== null) { keep.push(rest); }
             continue;
           }
           for (var j = 0; j < w.length; j++) { if (cands[w[j]]) { into[w[j]] = 1; } }
