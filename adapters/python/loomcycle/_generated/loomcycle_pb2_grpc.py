@@ -228,6 +228,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.BindSubjectPrincipalRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.BindSubjectPrincipalResponse.FromString,
                 _registered_method=True)
+        self.PlanOntology = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/PlanOntology',
+                request_serializer=loomcycle__pb2.PlanOntologyRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.PlanOntologyResponse.FromString,
+                _registered_method=True)
         self.ListReviewQueue = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/ListReviewQueue',
                 request_serializer=loomcycle__pb2.ListReviewQueueRequest.SerializeToString,
@@ -976,6 +981,27 @@ class LoomcycleServicer:
         principal_not_found, forbidden, invalid_request, unavailable).
 
         Mirrors POST /v1/_ontology/subjects/principal.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PlanOntology(self, request, context):
+        """PlanOntology reports what a set of changes to the tenant ontology's
+        entries (retire, rename, move, edit, delete) would do to what rests on
+        them, before any is made, and writes nothing: per change a risk class and
+        a count of each kind of dependent across the tenant scope and every user
+        and agent scope of the tenant, the ontology's issues as it would read
+        after the changes, and the fingerprint of the ontology it was computed
+        against.
+
+        Operator-only, as MergeSubjects: an admin (any tenant, via `tenant`) or a
+        tenant operator for its own. A request over 64 KiB is INVALID_ARGUMENT
+        invalid_body, as HTTP's body bound. A refusal carries a
+        google.rpc.ErrorInfo whose reason is the code HTTP returns
+        (invalid_request, forbidden, entry_not_found, unavailable).
+
+        Mirrors POST /v1/_ontology/plan.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1861,6 +1887,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.BindSubjectPrincipal,
                     request_deserializer=loomcycle__pb2.BindSubjectPrincipalRequest.FromString,
                     response_serializer=loomcycle__pb2.BindSubjectPrincipalResponse.SerializeToString,
+            ),
+            'PlanOntology': grpc.unary_unary_rpc_method_handler(
+                    servicer.PlanOntology,
+                    request_deserializer=loomcycle__pb2.PlanOntologyRequest.FromString,
+                    response_serializer=loomcycle__pb2.PlanOntologyResponse.SerializeToString,
             ),
             'ListReviewQueue': grpc.unary_unary_rpc_method_handler(
                     servicer.ListReviewQueue,
@@ -3168,6 +3199,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/BindSubjectPrincipal',
             loomcycle__pb2.BindSubjectPrincipalRequest.SerializeToString,
             loomcycle__pb2.BindSubjectPrincipalResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PlanOntology(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/PlanOntology',
+            loomcycle__pb2.PlanOntologyRequest.SerializeToString,
+            loomcycle__pb2.PlanOntologyResponse.FromString,
             options,
             channel_credentials,
             insecure,

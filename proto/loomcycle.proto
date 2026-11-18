@@ -338,6 +338,23 @@ service Loomcycle {
   // Mirrors POST /v1/_ontology/subjects/principal.
   rpc BindSubjectPrincipal(BindSubjectPrincipalRequest) returns (BindSubjectPrincipalResponse);
 
+  // PlanOntology reports what a set of changes to the tenant ontology's
+  // entries (retire, rename, move, edit, delete) would do to what rests on
+  // them, before any is made, and writes nothing: per change a risk class and
+  // a count of each kind of dependent across the tenant scope and every user
+  // and agent scope of the tenant, the ontology's issues as it would read
+  // after the changes, and the fingerprint of the ontology it was computed
+  // against.
+  //
+  // Operator-only, as MergeSubjects: an admin (any tenant, via `tenant`) or a
+  // tenant operator for its own. A request over 64 KiB is INVALID_ARGUMENT
+  // invalid_body, as HTTP's body bound. A refusal carries a
+  // google.rpc.ErrorInfo whose reason is the code HTTP returns
+  // (invalid_request, forbidden, entry_not_found, unavailable).
+  //
+  // Mirrors POST /v1/_ontology/plan.
+  rpc PlanOntology(PlanOntologyRequest) returns (PlanOntologyResponse);
+
   // ListReviewQueue lists a document scope's statements awaiting review
   // (proposed unless the filter names another status), narrowed by the queue
   // filters, newest first; or, with summarize, their counts grouped by kind,
@@ -2557,6 +2574,82 @@ message BindSubjectPrincipalResponse {
   string previous = 7;
   // False when the binding was already as asked.
   bool changed = 8;
+}
+
+// OntologyChange is one change a plan is asked about.
+message OntologyChange {
+  // retire | rename | move | edit | delete
+  string op = 1;
+  // The entry's chunk id.
+  string entry = 2;
+  // rename: the new name.
+  string name = 3;
+  // move: the new parent's chunk id (an entry of the same section, or the
+  // section).
+  string parent = 4;
+  // edit: the entry's new body.
+  string body = 5;
+}
+
+message PlanOntologyRequest {
+  // 1 to 50 changes, each against the ontology as it stands.
+  repeated OntologyChange changes = 1;
+  // Whose ontology. Only an admin may name a tenant; for anyone else it is
+  // the caller's own.
+  string tenant = 2;
+}
+
+// OntologyPlanEntry names an entry: its chunk, its name, its section
+// (classes, relations, schemes, instances) and what it is there (class,
+// relation, scheme, concept, instance).
+message OntologyPlanEntry {
+  string chunk_id = 1;
+  string name = 2;
+  string section = 3;
+  string kind = 4;
+}
+
+// OntologyPlanCount is one kind of dependent of a change. n is the whole
+// tenant: tenant_scope the part in the tenant scope, other_scopes the part in
+// user and agent scopes (counted, never listed). sample is up to five ids
+// from the tenant scope only.
+message OntologyPlanCount {
+  int32 n = 1;
+  // destroyed | orphaned | stale | kept
+  string effect = 2;
+  int32 tenant_scope = 3;
+  int32 other_scopes = 4;
+  map<string, int32> by_status = 5;
+  repeated string sample = 6;
+}
+
+message OntologyPlannedChange {
+  string op = 1;
+  OntologyPlanEntry entry = 2;
+  // destroys | stales | none
+  string risk = 3;
+  // Keyed by the kind of dependent (typed_documents, statements, ...).
+  map<string, OntologyPlanCount> counts = 4;
+  // The entries of the subtree that go with the entry.
+  repeated OntologyPlanEntry subtree = 5;
+  repeated string notes = 6;
+}
+
+message PlanOntologyResponse {
+  string tenant = 1;
+  // Identifies the ontology the plan was computed against.
+  string fingerprint = 2;
+  repeated OntologyPlannedChange changes = 3;
+  // The ontology's advisories as it would read after every change, and those
+  // of them it does not report now.
+  repeated string issues = 4;
+  repeated string new_issues = 5;
+  // User and agent scopes counted, and left out (a fault or the plan's time
+  // budget); complete is false when any was left out, and the other-scope
+  // counts are then a floor.
+  int32 scopes_counted = 6;
+  int32 scopes_skipped = 7;
+  bool complete = 8;
 }
 
 // ReviewQueueFilter narrows the review queue and selects what a bulk ruling
