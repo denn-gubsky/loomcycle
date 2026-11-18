@@ -62,6 +62,7 @@ type planEntry struct {
 	connector.OntologyPlanEntry
 	tag         string // concept: its mirror tag; scheme: its own tag segment
 	registryKey string // instance: the key its subject was adopted under
+	locked      bool   // its body carries @locked (document_ontology_locked.go)
 }
 
 // plannedChange is one change resolved against the ontology as read.
@@ -289,37 +290,37 @@ func (r planRows) subtree(id string) []string {
 // planEntries indexes the read's in-force entries by chunk id.
 func planEntries(r OntologyRead) map[string]planEntry {
 	out := map[string]planEntry{}
-	put := func(id, name, section, kind string) *planEntry {
+	put := func(id, name, section, kind string, locked bool) *planEntry {
 		if id == "" {
 			return nil
 		}
 		if _, dup := out[id]; dup {
 			return nil
 		}
-		e := planEntry{OntologyPlanEntry: connector.OntologyPlanEntry{ChunkID: id, Name: name, Section: section, Kind: kind}}
+		e := planEntry{OntologyPlanEntry: connector.OntologyPlanEntry{ChunkID: id, Name: name, Section: section, Kind: kind}, locked: locked}
 		out[id] = e
 		return &e
 	}
 	for _, t := range r.Terms {
-		put(r.classChunks[strings.ToLower(t.Name)], t.Name, memrank.SectionClasses, planKindClass)
+		put(r.classChunks[strings.ToLower(t.Name)], t.Name, memrank.SectionClasses, planKindClass, t.Locked)
 	}
 	for _, rel := range r.Relations {
-		put(rel.ChunkID, rel.Name, memrank.SectionRelations, planKindRelation)
+		put(rel.ChunkID, rel.Name, memrank.SectionRelations, planKindRelation, rel.Locked)
 	}
 	for _, s := range r.Schemes {
-		if e := put(s.ChunkID, s.Name, memrank.SectionSchemes, planKindScheme); e != nil {
+		if e := put(s.ChunkID, s.Name, memrank.SectionSchemes, planKindScheme, s.Locked); e != nil {
 			e.tag = memrank.MirrorTag(s.Name, nil)
 			out[s.ChunkID] = *e
 		}
 		for _, c := range s.Concepts {
-			if e := put(c.ChunkID, c.Name, memrank.SectionSchemes, planKindConcept); e != nil {
+			if e := put(c.ChunkID, c.Name, memrank.SectionSchemes, planKindConcept, c.Locked); e != nil {
 				e.tag = c.Tag
 				out[c.ChunkID] = *e
 			}
 		}
 	}
 	for _, in := range r.Instances {
-		if e := put(in.ChunkID, in.Name, memrank.SectionInstances, planKindInstance); e != nil {
+		if e := put(in.ChunkID, in.Name, memrank.SectionInstances, planKindInstance, in.Locked); e != nil {
 			e.registryKey = in.RegistryKey
 			out[in.ChunkID] = *e
 		}
@@ -347,6 +348,11 @@ func (d *Document) resolvePlanChange(ctx context.Context, key sqlmem.ScopeKey, m
 		}
 	}
 	p.collectNames()
+	// A lock refuses each op but an edit, on the entry and on any entry above a locked
+	// one (RFC GQ P2.3); the plan says so beside the counts, naming the locked entry.
+	if locked := lockedIn(p.subtree, entries); ch.Op != connector.OntologyPlanEdit && len(locked) > 0 {
+		p.notes = append(p.notes, lockedPlanNote(ch.Op, e, locked))
+	}
 
 	switch ch.Op {
 	case connector.OntologyPlanRetire, connector.OntologyPlanDelete:

@@ -172,6 +172,15 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 	// A class, relation or instance proposal is in force once its status clears, and
 	// the reader inherits nothing from its parent: one filed under an entry retired
 	// since, or named as a retired entry, would be a new use of it (RFC GQ P2.1).
+	// Nor can it bring a lock in: @locked is an operator's own edit of an entry (RFC GQ
+	// P2.3). One filed before the guard refused it is refused here; reject it, or accept
+	// it without the line and lock the entry in the editor.
+	if action == "accept" && meminject.DeclaresLocked(target.Body) {
+		writeJSONError(w, http.StatusConflict, "entry_locked",
+			"this proposal's body carries @locked, and a proposal cannot lock an entry; remove the line in the "+
+				"document editor, accept it, then lock the entry there")
+		return
+	}
 	if action == "accept" {
 		problem, perr := doc.RetiredProposalProblem(dctx, "tenant", chunkID)
 		if perr != nil {
