@@ -54,7 +54,10 @@ relations, grammars, schemes, instances, norm_classes, policy, review?, issues?}
   status of their own.
 - `version` — the ontology's version: the one stamped on facts and relations
   written under this vocabulary.
-- `sections` — the declared section kinds, in document order.
+- `sections` — the declared section kinds, in document order. A heading whose
+  first directive is `@section` with a kind this version does not know is not
+  listed, nothing under it is in force (no class, relation, concept or
+  instance), and `issues` names it.
 - `partial` — part of the document could not be read. Do not treat a missing
   entry as removed; read again.
 - `classes` — each `{name, parent?, source, kind, meaning?, fields?,
