@@ -4016,8 +4016,8 @@ func (d *Document) deleteChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			}
 			frontier = next
 		}
-		if recheck {
-			found, err := d.ontologyEntryGainedStatements(ctx, txnID, ids)
+		if len(recheck) > 0 {
+			found, err := d.ontologyEntryGainedStatements(ctx, txnID, recheck)
 			if err != nil {
 				return err
 			}

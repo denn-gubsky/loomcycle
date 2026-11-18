@@ -51,16 +51,16 @@ const ontologyDeleteNamed = 5
 // ontologyDeleteGuard is asked by every path that deletes chunks of a document in the
 // tenant scope. top is the chunk whose subtree goes ("" = the whole document). It
 // returns a refusal when the subtree holds an in-force entry of the tenant ontology
-// that has dependents. checked is true when the subtree held entries and none was in
-// use: the caller then re-asserts, inside its transaction, that none gained a
-// statement meanwhile.
-func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, docID, top string) (refused *tools.Result, checked bool) {
+// that has dependents. checked is the chunks of the entries' subtrees when the subtree
+// held entries and none was in use — exactly what the plan found no statement on: the
+// caller re-asserts, inside its transaction, that none gained one meanwhile.
+func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op, docID, top string) (refused *tools.Result, checked []string) {
 	if key.Scope != "tenant" {
-		return nil, false
+		return nil, nil
 	}
-	fail := func(err error) (*tools.Result, bool) {
+	fail := func(err error) (*tools.Result, []string) {
 		r := errFrom(op+": could not tell whether the ontology entries it would remove are in use, so nothing was deleted: "+err.Error(), err)
-		return &r, false
+		return &r, nil
 	}
 	rctx := noWrites(ctx)
 	ontID, err := d.resolveOntologyID(rctx, key)
@@ -68,7 +68,7 @@ func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey,
 		return fail(err)
 	}
 	if ontID == "" || ontID != docID {
-		return nil, false
+		return nil, nil
 	}
 	read, err := d.ontologyForKey(rctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
@@ -80,7 +80,7 @@ func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey,
 	}
 	tops := topEntries(rows, planEntries(read), top)
 	if len(tops) == 0 {
-		return nil, false // a proposal, a grammar, an empty section: no entry goes
+		return nil, nil // a proposal, a grammar, an empty section: no entry goes
 	}
 	var inUse []connector.OntologyPlannedChange
 	for start := 0; start < len(tops); start += ontologyPlanMaxChanges {
@@ -96,7 +96,7 @@ func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey,
 			r := errTransient(op+": "+entryHasDependentsCode+": the ontology entries this would remove could not be checked "+
 				"against every user and agent scope of the tenant in time ("+strconv.Itoa(plan.ScopesSkipped)+
 				" scope(s) not counted), so nothing was deleted", "Try again; if it keeps happening, retire the entry instead (status \"retired\").")
-			return &r, false
+			return &r, nil
 		}
 		for _, ch := range plan.Changes {
 			if ch.Risk == connector.OntologyRiskDestroys {
@@ -105,10 +105,13 @@ func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey,
 		}
 	}
 	if len(inUse) == 0 {
-		return nil, true
+		for _, t := range tops {
+			checked = append(checked, rows.subtree(t)...)
+		}
+		return nil, checked
 	}
 	r := entryInUseRefusal(op, top == "", inUse)
-	return &r, false
+	return &r, nil
 }
 
 // topEntries are the in-force entries of top's subtree that no other entry of it is
