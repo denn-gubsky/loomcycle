@@ -961,7 +961,16 @@ func (b *boot) startDocumentProjectionSweeper() {
 	// The document projection (RFC FQ P2): off unless memory.projection asks.
 	startProjectionSweeper(bgCtx, cfg, storeIface, sqlMemMgr, b.embedder, advisoryLock)
 	// The taxonomy's node statistics (RFC GM P2.1): off unless memory.node_stats asks.
-	startNodeStatsSweeper(bgCtx, cfg, storeIface, sqlMemMgr, b.embedder, b.documentTool.Audience, advisoryLock)
+	startNodeStatsSweeper(bgCtx, cfg, storeIface, sqlMemMgr, b.embedder, b.memberAudience(), advisoryLock)
+}
+
+// memberAudience is the access-control resolver the node statistics count by (RFC
+// GM C8): what wireAuth set on the Document tool. nil in a boot that built no tools.
+func (b *boot) memberAudience() builtin.MemberAudience {
+	if b.documentTool == nil {
+		return nil
+	}
+	return b.documentTool.Audience
 }
 
 // startChannelsSweeper starts the Channel tool TTL sweeper (and the idle
