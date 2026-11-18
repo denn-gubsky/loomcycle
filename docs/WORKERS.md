@@ -68,7 +68,7 @@ Each runtime replica keeps its own quarantine: a file that killed a worker is re
 
 ## Helper programs
 
-The worker image ships ffmpeg, poppler and Typst (with the Noto Sans and Noto Sans Mono fonts), and sets these commands:
+The worker image ships ffmpeg, poppler and Typst (with the Noto Sans, Noto Sans Mono and Noto Serif fonts; Noto Serif is for a house style that asks for serif type), and sets these commands:
 
 | Variable | Default in the image | The runtime setting it stands for |
 |---|---|---|

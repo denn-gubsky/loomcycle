@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -122,5 +123,24 @@ func TestFileRender_DocumentHookSeesTheStyleRead(t *testing.T) {
 	})
 	if _, _, res := renderHTML(t, f, hooked, map[string]any{"document": docID, "style": "/render/styles/house"}); !res.IsError || !strings.Contains(res.Text, "styles are frozen") {
 		t.Errorf("a hook refusing the style read let the render through: %s", res.Text)
+	}
+}
+
+// A render in another style, or in a later revision of the same style, is
+// made of something else: the render log never reuses one for the other.
+func TestRenderSourceHash_CoversTheStyle(t *testing.T) {
+	d := &render.NewBuilder("T").Doc
+	plain, _ := renderSourceHash(d, render.Options{})
+	st, err := render.ParseStyle(`{"loomcycle_style": 1}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Source = "doc1@1"
+	d.Style = st
+	v1, _ := renderSourceHash(d, render.Options{})
+	st.Source = "doc1@2"
+	v2, _ := renderSourceHash(d, render.Options{})
+	if plain == v1 || v1 == v2 {
+		t.Errorf("hashes plain=%s v1=%s v2=%s, want three different", plain, v1, v2)
 	}
 }
