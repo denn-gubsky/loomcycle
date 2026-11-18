@@ -195,6 +195,10 @@ func (d *Document) describeCounts(ctx context.Context, key sqlmem.ScopeKey, acl 
 			}
 		}
 	}
+	if err := d.describeUnplaced(ctx, key, list, read, counts, out); err != nil {
+		out.Partial = true
+		out.Issues = append(out.Issues, "with_counts: the unplaced counts could not be read; read again")
+	}
 	// A class's documents take in its subclasses' only where search type: widens to
 	// them (expandTypeFilter): in a confirmed ontology.
 	kids := map[string][]string{}

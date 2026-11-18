@@ -137,6 +137,10 @@ var docACLOps = map[string]docACLRule{
 	// it names: asked read on that document, as get_document is. It asks read on the
 	// ontology document itself before it shows any concept.
 	"effective_policy": {verb: "read", target: docACLDocument},
+	// memberships reports where the document it names is placed: asked read on that
+	// document, as get_document is. It asks read on the ontology document itself
+	// before it shows a class above the document's type or any taxonomy.
+	"memberships": {verb: "read", target: docACLDocument},
 	// extract_citations reads the document or chunk it names; resolving a citation
 	// asks read on the cited work through resolve_anchor.
 	"extract_citations": {verb: "read", target: docACLChunkOrDocument},

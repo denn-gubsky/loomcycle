@@ -1335,7 +1335,15 @@ The look: Noto Sans for text and headings, Noto Sans Mono for code; no title pag
 - PDF: an attached `loomcycle.json`;
 - Markdown: `export_md`'s own `<!-- loom: -->` comments and `loom-edges` trailer.
 
-The record is what lets `File op=import` of the file re-import onto the same document later. A record over 8 MiB refuses the render. It is refused with a Markdown file as the source, which has no document to record.
+A record over 8 MiB refuses the render. It is refused with a Markdown file as the source, which has no document to record.
+
+**Bringing it back.** A Word, ODT, HTML or PDF file rendered with `embed` can be edited (in Word or LibreOffice) and imported back:
+
+1. `File op=extract` finds the record and says so in `rendered_from`: `document_id`, `scope`, `title`, and `headings_matched`, how many of its headings it tied to the document's parts through the bookmarks or section ids the renderer wrote. A PDF names no heading's part.
+2. `File op=import` with `reimport: true` and `document` naming that document re-imports onto it, in its scope, as a new edition. Each tied heading is matched to its part by id first, so a section renamed and edited supersedes its part, keeping its links, rather than closing it beside a new one; the rest is matched by anchor and text as any reimport is.
+3. Without `reimport`, the file becomes a new document whose provenance records `rendered_from`.
+
+The record is part of someone's file, as untrusted as its text: it only confirms a target. The caller names the document, a file whose record names another is refused, the Document tool's write check and hooks apply to the named document, and `headings`, or a scope other than the document's, is refused with it.
 
 **Where it runs.** On the conversion workers when the server has them ([`WORKERS.md`](WORKERS.md)), else in the runtime's own process. Markdown, HTML, Word, ODT and EPUB need nothing installed. ODT and EPUB go only to a worker that writes them: with only older workers attached, such a render is refused at once, asking for the workers to be updated. A PDF needs Typst: the `loomcycle-worker` image carries a pinned release and the Noto fonts; a worker takes PDF renders when `typst` is on its `PATH` or `LOOMCYCLE_WORKER_WRITE_COMMAND` names another typesetter. In process, and for local workers, `typst` is run from the `PATH`. Without it, a PDF render answers that the server cannot write PDF; the other formats still work.
 
@@ -1343,7 +1351,7 @@ The record is what lets `File op=import` of the file re-import onto the same doc
 
 **The render log.** Every render of a document is a row of its scope's `document_renders`: a hash of what it was made of, the format and options, the output's sha256 and size, where it went (a volume reference, the inbox, or `download`) and who rendered it (the run, or the person). Never content. `get_document` shows the newest render per format, and `history` with `include: ["renders"]` lists them. A render into a volume is reused while an earlier one of the same content and options is still unchanged there. The log is deleted with its document and travels with `move_documents`. A person's download is also audited (`document_exported`, with format, scope and size), and the file is not served when that record cannot be written. Erasing a subject clears its name from the render log of the tenant's other scopes; the user's own scope goes with the user.
 
-Since #2658 (Markdown, HTML), #2659 (Word), #2663 (PDF), #2670 (downloads), #2706 (ODT, EPUB) and #2715 (embedded record) — `/loomcycle/rfcs/document-rendering`.
+Since #2658 (Markdown, HTML), #2659 (Word), #2663 (PDF), #2670 (downloads), #2706 (ODT, EPUB), #2715 (embedded record) and #2724 (bringing it back) — `/loomcycle/rfcs/document-rendering`.
 
 ## Classification — classify, accept_classification and memory.classifier
 
@@ -1638,6 +1646,20 @@ Here a document titled "Policy SEC-12 Password rotation" is classified `Policy` 
 - **After confirming:** `Document op=describe_ontology` returns the ontology as the runtime applies it. Read `sections` (every section you declared should be listed), `classes[]` (`kind` `document` or `chunk`, `fields` with inherited fields first, `directives` as declared or inherited, `norm` / `inherited_norm`, `memory_scope`, `meaning`, `issues`), `norm_classes`, `relations[]` (`source`, `issues`, `name_issue`), `grammars[]` (an `issue` means disabled), `schemes[].concepts[]` (`tag`, `rank`, `retention`, `acl`, `issues`), `instances[]` (`subject_chunk_id` once adopted, `issues`), `review` (`applied: false` means every proposal waits for a person) and the top-level `issues`. Every issue is advisory except a Review section's, which switches the policy off.
 - **How full it is:** `describe_ontology` with `with_counts: true` adds member counts over the documents the caller may read. Each concept gets `members` (documents with a live `subject` statement to it or to a concept below it, each counted once) and `members_by_class` (the same by the document's class); each scheme gets `members`; each class gets `documents` (documents of that class, and of its subclasses once the ontology is confirmed). Without the option the answer is unchanged. It needs the tenant scope; without it, or on a store fault, the answer carries an issue and no counts.
 - **On a real document:** `Document op=classify` with `write: "report"` shows which class's pattern matched (`steps[0].candidates`, each with the `quote` and where it matched), the fields and work key it would set, and the issuer, and writes nothing.
+
+### Node statistics — `node_stats` (RFC GM)
+
+Each node of the tenant's taxonomy — every concept of every scheme, and every document class — can carry statistics about the documents filed under it. `Document op=node_stats` keeps them; `describe_ontology` with `with_stats: true` reads them.
+
+**Members** are whole documents: a concept's are the documents with a live `subject` statement (or one of a narrower kind) to it or to a narrower concept, each counted once — the same documents `with_counts` counts and `search concept:<tag>` draws from; a class's are the documents of that type and, in a confirmed ontology, of its subclasses.
+
+**What is kept.** Every node gets its member counts. Where the store keeps vectors (Postgres with pgvector) and an embedder is configured, a node with at least three members that have a document-level annotation also gets a centroid of their annotation vectors (stored, never returned), its `spread` (mean cosine distance to the centroid), three `exemplars` (the members nearest it), three `siblings` (the nodes under the same parent nearest by centroid) and up to ten `terms` (words frequent in the members' briefs and abstracts and rare in the siblings'). Elsewhere a row keeps counts only, and the answer says why.
+
+**Staleness.** A row is stale when its node's definition (name, meaning line, place in the scheme), its member set, a member's annotation (its inputs or its text) or the embed model changed since it was computed. An ontology edit to another node marks nothing stale.
+
+**The op.** `node_stats {mode: report | compute, scheme?}` always works on the tenant scope. `report` (the default) lists every node with its status (`fresh`, `stale`, `missing`) and why, and writes nothing; `compute` recomputes the stale and missing nodes and removes rows of nodes no longer in force. It may be run by an operator, or by a code agent granted `statement_methods` that holds the tenant scope and may read every document in it — a node's figures are drawn from every member, so report and compute are gated alike. The background sweeper `memory.node_stats` (off by default; see the Configuration guide, 9p) runs the same compute on every tenant scope with an ontology.
+
+**Reading.** `describe_ontology with_stats: true` (which implies `with_counts`) adds `stats` to each concept and document class that has a stored row: `{members, members_with_vector, spread?, exemplars [{document_id, title}], siblings, terms, computed_at, stale}`. A caller with access-control rules sees a node's statistics only when it may read every current member and the stored member set is the current one; otherwise `stats` is `{withheld: <why>}` and the counts beside it are the documents that caller may read. Vectors and centroids are never returned by any op.
 
 ## Annotations — a brief and an abstract per section, document and folder (RFC GE)
 

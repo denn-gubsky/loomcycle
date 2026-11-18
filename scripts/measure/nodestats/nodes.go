@@ -90,6 +90,12 @@ func GradingMaterial(tax *Taxonomy, docs map[string]*Doc, members map[string][]s
 			continue
 		}
 		c, err := centroid(ms)
+		if errors.Is(err, nodestats.ErrDegenerate) {
+			// Members that cancel out give no direction: the node is
+			// reported without spread, exemplars or siblings, as Misfits
+			// skips it, rather than failing the whole measurement.
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("concept %s: %w", id, err)
 		}
@@ -311,8 +317,8 @@ const (
 // A created_at before the end of importedUntil's day (UTC) is reported as
 // DateImport; a zero importedUntil marks nothing so.
 func DocDate(d *Doc, importedUntil time.Time) (time.Time, string) {
-	if d.RootValidAt != 0 {
-		return time.Unix(0, d.RootValidAt).UTC(), DateValidAt
+	if d.RootValidAt != nil {
+		return time.Unix(0, *d.RootValidAt).UTC(), DateValidAt
 	}
 	if d.SourceUpdatedAt != "" {
 		if t, err := time.Parse(time.RFC3339, d.SourceUpdatedAt); err == nil {

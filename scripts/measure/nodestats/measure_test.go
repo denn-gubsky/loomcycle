@@ -283,6 +283,8 @@ func TestPercentile_NearestRank(t *testing.T) {
 	}
 }
 
+func ptr[T any](v T) *T { return &v }
+
 func testTaxonomy(t *testing.T) *Taxonomy {
 	t.Helper()
 	tax, err := NewTaxonomy([]Concept{
@@ -351,10 +353,12 @@ func TestDocDate_FollowsTheRFCOrder(t *testing.T) {
 		src  string
 		at   time.Time
 	}{
-		{"valid_at wins", Doc{RootValidAt: va.UnixNano(), SourceUpdatedAt: "2024-01-01T00:00:00Z", CreatedAt: ca.UnixNano()}, DateValidAt, va},
+		{"valid_at wins", Doc{RootValidAt: ptr(va.UnixNano()), SourceUpdatedAt: "2024-01-01T00:00:00Z", CreatedAt: ca.UnixNano()}, DateValidAt, va},
 		{"source next", Doc{SourceUpdatedAt: "2024-01-02T03:04:05Z", CreatedAt: ca.UnixNano()}, DateSourceUpd, time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)},
 		{"unparsable source falls to created_at", Doc{SourceUpdatedAt: "yesterday", CreatedAt: ca.UnixNano()}, DateCreatedAt, ca},
 		{"created_at last", Doc{CreatedAt: ca.UnixNano()}, DateCreatedAt, ca},
+		// valid_at = 0 is a real date (1970-01-01), not unset.
+		{"valid_at zero is a date", Doc{RootValidAt: ptr(int64(0)), SourceUpdatedAt: "2024-01-01T00:00:00Z", CreatedAt: ca.UnixNano()}, DateValidAt, time.Unix(0, 0).UTC()},
 	}
 	for _, tc := range cases {
 		at, src := DocDate(&tc.doc, time.Time{})
@@ -382,7 +386,7 @@ func TestDocDate_CreatedOnOrBeforeTheImportDayIsImportDated(t *testing.T) {
 		}
 	}
 	va := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	if _, src := DocDate(&Doc{RootValidAt: va.UnixNano(), CreatedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).UnixNano()}, day); src != DateValidAt {
+	if _, src := DocDate(&Doc{RootValidAt: ptr(va.UnixNano()), CreatedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).UnixNano()}, day); src != DateValidAt {
 		t.Errorf("a valid_at is never import-dated, got %s", src)
 	}
 }
@@ -513,5 +517,36 @@ func TestUnplaced_ExcludesOntologyAndVectorless(t *testing.T) {
 	got := Unplaced(docs, map[string][]string{"p": {"c"}})
 	if !sort.StringsAreSorted(got) || !reflect.DeepEqual(got, []string{"u1", "u2"}) {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// A concept whose members cancel out has no centroid: it is reported without
+// spread, exemplars or siblings, and the other concepts are still measured.
+func TestGradingMaterial_SkipsAConceptWhoseMembersCancel(t *testing.T) {
+	tax := testTaxonomy(t)
+	docs := map[string]*Doc{
+		"d1": {ID: "d1", DocVec: nodestats.Vector{1, 0}},
+		"d2": {ID: "d2", DocVec: nodestats.Vector{-1, 0}},
+		"d3": {ID: "d3", DocVec: nodestats.Vector{0, 1}},
+	}
+	members := tax.Members(map[string][]string{"d1": {"c12"}, "d2": {"c12"}, "d3": {"c11"}})
+	got, err := GradingMaterial(tax, docs, members)
+	if err != nil {
+		t.Fatalf("GradingMaterial: %v", err)
+	}
+	byID := map[string]NodeMaterial{}
+	for _, nm := range got {
+		byID[nm.ID] = nm
+	}
+	c12 := byID["c12"]
+	if c12.Count != 2 || c12.Spread != nil || c12.Exemplars != nil || c12.Siblings != nil {
+		t.Errorf("cancelling concept: %+v, want count 2 and no spread, exemplars or siblings", c12)
+	}
+	c11 := byID["c11"]
+	if c11.Spread == nil || len(c11.Exemplars) != 1 || c11.Siblings != nil {
+		t.Errorf("sibling concept: %+v, want a spread, one exemplar and no centroid-less sibling", c11)
+	}
+	if byID["t1"].Spread == nil {
+		t.Errorf("parent concept has no spread: %+v", byID["t1"])
 	}
 }

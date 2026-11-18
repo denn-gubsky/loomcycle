@@ -312,7 +312,7 @@ func TestDescribeOntology_WithoutCountsIsUnchanged(t *testing.T) {
 	if off := text(`{"op":"describe_ontology","with_counts":false}`); off != plain {
 		t.Errorf("with_counts:false differs from no argument:\n%s\n%s", off, plain)
 	}
-	for _, key := range []string{`"members"`, `"members_by_class"`, `"documents"`} {
+	for _, key := range []string{`"members"`, `"members_by_class"`, `"documents"`, `"unplaced"`} {
 		if strings.Contains(plain, key) {
 			t.Errorf("without with_counts the answer carries %s: %s", key, plain)
 		}
@@ -340,6 +340,7 @@ func stripCountFields(v any) {
 		delete(x, "members")
 		delete(x, "members_by_class")
 		delete(x, "documents")
+		delete(x, "unplaced")
 		for _, e := range x {
 			stripCountFields(e)
 		}

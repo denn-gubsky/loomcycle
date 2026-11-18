@@ -63,6 +63,10 @@ type extractSink struct {
 	notKept []string
 	// starts is where each page's Markdown begins (extract.PageSink).
 	starts map[int]int
+	// record and anchors are what a loomcycle-rendered file carried
+	// (extract.RecordSink, file_rendered.go).
+	record  []byte
+	anchors []headingAnchorAt
 }
 
 func (s *extractSink) StartPage(n int) {
@@ -306,8 +310,9 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	}
 
 	// ctx, not xctx: an OCR pass may well outlast the extraction's bound.
+	rendered := sink.rendered(md)
 	kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted, ExtractedFrom: from,
-		InferredHeadings: rep.InferredHeadings}, []byte(md))
+		InferredHeadings: rep.InferredHeadings, Rendered: rendered}, []byte(md))
 	if !kept.Kept {
 		return errBusiness("extract: the extracted text could not be kept: "+kept.Stub, "Free inbox space with op=rm or op=clear, then try again."), nil
 	}
@@ -341,6 +346,11 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	}
 	if len(sink.notKept) > 0 {
 		out["images_not_kept"] = sink.notKept
+	}
+	if rendered != nil {
+		// What op=import with reimport re-imports onto (RFC GR P4b).
+		out["rendered_from"] = map[string]any{"document_id": rendered.DocumentID, "scope": rendered.Scope, "title": rendered.Title,
+			"headings_matched": len(rendered.Headings)}
 	}
 	out["excerpt"] = fileContentBlock(kept.Record.Ref, excerpt, truncated)
 	return okJSONRaw(out)
@@ -481,11 +491,53 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	digest := hex.EncodeToString(sum[:])
 	origin := strings.TrimPrefix(sourceOrigin(ctx, r, rel, digest), "extract:")
 	prov, titleName, recorded := importFileProvenance(ctx, r, rel, digest)
-	// Headings the extraction that wrote this file inferred, while its bytes
-	// still hash to that extraction's record.
+	// Headings the extraction that wrote this file inferred, and the document
+	// it was rendered from, while its bytes still hash to that extraction's
+	// record.
 	inferredHeadings := 0
+	var rendered *inbox.Rendered
 	if rec, ok := recordFor(ctx, r, rel, digest); ok {
 		inferredHeadings = rec.InferredHeadings
+		rendered = rec.Rendered
+	}
+	documentID := ""
+	if in.Document != "" && (rendered == nil || !in.Reimport || in.WorkKey != "") {
+		return errValidation("import: document names the document a file loomcycle rendered is re-imported onto, with reimport and no work_key; this file carries no such record. Nothing was imported.",
+			"Drop document, or extract a file op=render wrote with metadata: embed."), nil
+	}
+	if rendered != nil {
+		if in.Reimport && in.WorkKey == "" {
+			// Onto the document the file was rendered from (D22), in its
+			// own scope; the Document tool asks for write on it there. The
+			// caller names it: the record is someone's file, and may confirm
+			// a target but never choose one (a run with wide write access
+			// would otherwise let a file's author pick what it overwrites).
+			if in.Document == "" {
+				return errValidation(fmt.Sprintf("import: the file was rendered from document %s; name it to re-import onto it. Nothing was imported.", rendered.DocumentID),
+					"Pass document: "+rendered.DocumentID+" (extract's rendered_from) if that is the document to update, or import without reimport to make a new one."), nil
+			}
+			if in.Document != rendered.DocumentID {
+				return errValidation(fmt.Sprintf("import: the file was rendered from document %s, not %s. Nothing was imported.", rendered.DocumentID, in.Document),
+					"Re-import a file onto the document it was rendered from, or import it as a new document."), nil
+			}
+			if len(in.Headings) > 0 {
+				return errValidation("import: headings cannot be given when re-importing a file loomcycle rendered: its headings are matched to the document's parts as they are. Nothing was imported.",
+					"Drop headings, or import it as a new document (no reimport)."), nil
+			}
+			if in.Scope != "" && in.Scope != rendered.Scope {
+				return errValidation(fmt.Sprintf("import: the file was rendered from a document of the %s scope, not %s. Nothing was imported.", rendered.Scope, in.Scope),
+					"Drop scope, or pass scope "+rendered.Scope+"."), nil
+			}
+			if scope != rendered.Scope {
+				scope = rendered.Scope
+				if res, ok := fileDocumentGrant(ctx, in, scope); !ok {
+					return res, nil
+				}
+			}
+			documentID = rendered.DocumentID
+		} else if !in.Reimport {
+			prov.fields[importFieldRenderedFrom] = map[string]any{"document_id": rendered.DocumentID, "scope": rendered.Scope}
+		}
 	}
 	if inferredHeadings > 0 && len(in.Headings) == 0 {
 		prov.fields[importFieldStructured] = map[string]any{"headings": inferredHeadings, "by": inferredHeadingsBy}
@@ -532,6 +584,11 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	// import. Image references are left to the reader below, which follows
 	// only the ones op=extract wrote.
 	md := extract.Neutralize(text, false)
+	if documentID != "" {
+		// After neutralising: these comments are the runtime's, from the
+		// extraction's own record, and the only ones the text keeps.
+		md = withChunkIDs(md, rendered.Headings)
+	}
 	md = withRootHeading(md, in.Title, fileTitle(titleName))
 	md = hoistExtractedImages(md)
 	release()
@@ -605,6 +662,11 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 // fields pass through unchanged: import_md checks them.
 func importMDCall(in fileInput, scope, md string) map[string]any {
 	call := map[string]any{"op": "import_md", "scope": scope, "markdown": md, "path": in.DocPath}
+	if in.Document != "" {
+		// The document a rendered file is re-imported onto: in the call the
+		// Document hooks judge, as in the one that writes.
+		call["document_id"] = in.Document
+	}
 	if in.Reimport {
 		call["reimport"] = true
 	}

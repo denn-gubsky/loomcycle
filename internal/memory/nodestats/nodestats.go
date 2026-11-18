@@ -222,8 +222,11 @@ type Centroid struct {
 // (the identity holds because cos(x_i, Unit) = x_i . Mean/|Mean| for unit
 // x_i). It is 0 when every member points the same way and approaches 1 as the
 // members scatter evenly. It needs no second pass over the members.
+//
+// When every member points one way, the normalised mean can round to a length
+// just above 1; the clamp keeps that rounding from reporting a negative spread.
 func (c Centroid) Spread() float64 {
-	return 1 - norm(c.Mean)
+	return math.Max(0, 1-norm(c.Mean))
 }
 
 // CentroidOf is the centroid of vecs.

@@ -44,6 +44,12 @@ type ontologyMemberCounts struct {
 	// schemes is index-aligned with the schemes counted: distinct documents about
 	// any concept of the scheme.
 	schemes []int
+	// schemeTypes is index-aligned with schemes: document type → the documents of
+	// that type about any concept of the scheme. An untyped document is in schemes
+	// only.
+	schemeTypes []map[string]int
+	// docSchemes: member document → the indexes of the schemes it is in.
+	docSchemes map[string]map[int]bool
 	// types: document type → documents of exactly that type (no subtypes).
 	types map[string]int
 }
@@ -61,7 +67,11 @@ func (d *Document) countOntologyMembers(ctx context.Context, key sqlmem.ScopeKey
 		concepts:     map[string]int{},
 		conceptTypes: map[string]map[string]int{},
 		schemes:      make([]int, len(schemes)),
+		schemeTypes:  make([]map[string]int, len(schemes)),
 		types:        map[string]int{},
+	}
+	for i := range out.schemeTypes {
+		out.schemeTypes[i] = map[string]int{}
 	}
 	if err := d.countDocumentTypes(ctx, key, readable, out.types); err != nil {
 		return out, err
@@ -84,12 +94,89 @@ func (d *Document) countOntologyMembers(ctx context.Context, key sqlmem.ScopeKey
 			out.conceptTypes[id][typ]++
 		}
 	}
-	for _, in := range m.docSchemes {
+	out.docSchemes = m.docSchemes
+	for docID, in := range m.docSchemes {
 		for i := range in {
 			out.schemes[i]++
+			if typ := m.docType[docID]; typ != "" {
+				out.schemeTypes[i][typ]++
+			}
 		}
 	}
 	return out, nil
+}
+
+// describeUnplaced sets each described scheme's unplaced: the documents of the
+// classes it projects (projectedClasses) that no live placement puts under any of
+// its concepts. Both sides come from counts, so a document is placed exactly when
+// it is a member by the with_counts rule, and readable exactly when it is counted.
+// The ontology document itself is never placed and is left out; the operational
+// types are left out by projectedClasses.
+func (d *Document) describeUnplaced(ctx context.Context, key sqlmem.ScopeKey, readable *docReadList,
+	read OntologyRead, counts ontologyMemberCounts, out *ontologyDescription) error {
+	ontologyType := ""
+	if read.DocumentID != "" && readable.readable(read.DocumentID) {
+		res, err := d.query(ctx, key, `SELECT type FROM documents WHERE id = ? LIMIT 1`, read.DocumentID)
+		if err != nil {
+			return err
+		}
+		if len(res.Rows) > 0 {
+			ontologyType = asStr(res.Rows[0][0])
+		}
+	}
+	for i := range out.Schemes {
+		n := 0
+		classes := projectedClasses(out.Schemes[i].Projects, out.Classes)
+		for name := range classes {
+			n += counts.types[name] - counts.schemeTypes[i][name]
+		}
+		if ontologyType != "" && classes[ontologyType] && !counts.docSchemes[read.DocumentID][i] {
+			n--
+		}
+		out.Schemes[i].Unplaced = &n
+	}
+	return nil
+}
+
+// projectedClasses is the names of the classes a scheme arranges: those @projects
+// names (matched case-insensitively, as CheckSchemeReferences matches them) and their
+// subclasses, or — without @projects — every document class. The operational
+// document types (an item or a run, never knowledge, which classify skips) are
+// never arranged.
+func projectedClasses(projects []string, classes []describedClass) map[string]bool {
+	byLower := map[string]string{}
+	kids := map[string][]string{}
+	var roots []string
+	for _, c := range classes {
+		byLower[strings.ToLower(c.Name)] = c.Name
+		if c.Parent != "" {
+			kids[strings.ToLower(c.Parent)] = append(kids[strings.ToLower(c.Parent)], c.Name)
+		}
+		if len(projects) == 0 && c.Kind == "document" {
+			roots = append(roots, c.Name)
+		}
+	}
+	for _, p := range projects {
+		if name, ok := byLower[strings.ToLower(p)]; ok {
+			roots = append(roots, name)
+		}
+	}
+	out := map[string]bool{}
+	for len(roots) > 0 {
+		name := roots[0]
+		roots = roots[1:]
+		if out[name] {
+			continue
+		}
+		out[name] = true
+		roots = append(roots, kids[strings.ToLower(name)]...)
+	}
+	for name := range out {
+		if memrank.IsOperationalDocumentType(name) {
+			delete(out, name)
+		}
+	}
+	return out
 }
 
 // conceptMembership is who the members of a scope's concepts are.

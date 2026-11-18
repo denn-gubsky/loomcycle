@@ -150,6 +150,13 @@ concept and class covers, counting only documents you may read:
   class (a document with no class is in `members` only). Absent when no member
   has a class.
 - each scheme gets `members` — the documents about any of its concepts, each once.
+- each scheme gets `unplaced` — the documents of the classes the scheme
+  projects (its `@projects` classes and their subclasses; without `@projects`,
+  every document class) that are under none of its concepts by the same rule
+  as `members`. A document with no class is never counted, and neither are the
+  ontology document itself and the operational types `classify` skips
+  (`SourceStub`, `SyncReport`, `Annotation`). Use it to see which taxonomy has
+  documents waiting to be placed; `memberships` shows where one document sits.
 - each class gets `documents` — the documents whose type (their root chunk's
   class) is that class and, in a confirmed ontology, one of its subclasses, as
   `search` with `type:` matches them. In a draft no subclass is included, since
@@ -179,10 +186,13 @@ and each document class whose statistics `node_stats` has stored, `stats`:
   since.
 
 Without a vector store (Postgres with pgvector) a stored row has counts only.
-Statistics are drawn from every member, so they are shown only when you may
-read every member of the node: otherwise `stats` is `{withheld: <why>}` and the
-counts beside it are the documents you may read. A node with no stored row has
-no `stats`. Vectors and centroids are never returned.
+Statistics are drawn from every member, so a reader with access-control
+limits sees them only when it may read every member of the node and the stored
+row was computed from its current members. Otherwise — and for a node with no
+stored row — `stats` is `{withheld: <reason>}`, one reason for every cause, so
+it does not tell which; the counts beside it are the documents you may read.
+For a reader without limits a node with no stored row has no `stats`. Vectors
+and centroids are never returned.
 
 ## Review rules
 

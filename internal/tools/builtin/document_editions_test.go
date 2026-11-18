@@ -822,3 +822,44 @@ func TestReimport_BodyReadFaultChangesNothing(t *testing.T) {
 		t.Errorf("a read fault wrote parts: %v %v", res, err)
 	}
 }
+
+// A part that names a held part by id (a rendered file's embedded record,
+// RFC GR P4b, D22) is that part even when its heading was renamed and its
+// text edited: superseded, keeping its lineage, rather than closed beside a
+// new, unrelated part. An id of another document matches nothing.
+func TestReimport_AnIDKeepsAPartWhoseHeadingAndTextBothChanged(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	out, r := docExec(t, d, ctx, `{"op":"import_md","scope":"user","markdown":"# Services\n\n## Basic\n\nNo test plan.\n\n## Standard\n\nA test plan.\n"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	docID := asStr(out["document_id"])
+	basic, _, _ := importedChunk(t, d, ctx, docID, "Basic")
+	standard, _, _ := importedChunk(t, d, ctx, docID, "Standard")
+	other, r := docExec(t, d, ctx, `{"op":"import_md","scope":"user","markdown":"# Other\n\n## Elsewhere\n\nx\n"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	elsewhere, _, _ := importedChunk(t, d, ctx, asStr(other["document_id"]), "Elsewhere")
+
+	md := "# Services\n\n## Basic\n<!-- loom: {\"id\":\"" + asStr(basic["id"]) + "\"} -->\n\nNo test plan.\n\n" +
+		"## Standard (MVP)\n<!-- loom: {\"id\":\"" + asStr(standard["id"]) + "\"} -->\n\nA detailed test plan.\n\n" +
+		"## Added\n<!-- loom: {\"id\":\"" + asStr(elsewhere["id"]) + "\"} -->\n\nNew.\n"
+	b, _ := json.Marshal(map[string]any{"op": "import_md", "scope": "user", "markdown": md, "reimport": true, "document_id": docID})
+	res, r := docExec(t, d, ctx, string(b))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	rep, _ := res["reimport"].(map[string]any)
+	if asInt(rep["unchanged"]) != 1 || asInt(rep["superseded"]) != 1 || asInt(rep["created"]) != 1 || asInt(rep["closed"]) != 0 {
+		t.Fatalf("reimport = %v, want 1 unchanged, 1 superseded, 1 created, 0 closed", rep)
+	}
+	now, _, _ := importedChunk(t, d, ctx, docID, "Standard (MVP)")
+	if now == nil || asStr(now["id"]) == asStr(standard["id"]) {
+		t.Fatalf("the edited part = %v", now)
+	}
+	edges, r := docExec(t, d, ctx, `{"op":"get_edges","scope":"user","document_id":"`+docID+`","kinds":["supersedes"],"include_retired":true}`)
+	if r.IsError || !strings.Contains(r.Text, asStr(standard["id"])) {
+		t.Errorf("no supersedes statement to the old part: %v %s", edges, r.Text)
+	}
+}

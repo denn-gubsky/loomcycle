@@ -135,7 +135,7 @@ func (f *File) InputSchema() json.RawMessage {
 			"title":         {"type": "string", "description": "import: the document's title. Default: the Markdown's first heading."},
 			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes. render: the document to render, by its Path-tree name."},
 			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import, render: the document store. Default user."},
-			"document":      {"type": "string", "description": "render: the id of the document to render. Pass exactly one of document, doc_path or path."},
+			"document":      {"type": "string", "description": "render: the id of the document to render. Pass exactly one of document, doc_path or path. import with reimport: the document a file loomcycle rendered is re-imported onto, which must be the one it was rendered from (extract's rendered_from)."},
 			"chunk":         {"type": "string", "description": "render: render only the part of the document under this chunk (a section id); its title becomes the file's title."},
 			"format":        {"type": "string", "enum": ["md", "html", "docx", "odt", "epub", "pdf"], "description": "render: the file to write. pdf (paged, typeset), docx (a Word document), odt (an OpenDocument text file), epub (an e-book), html (one self-contained page) or md (clean Markdown, its pictures as files in a folder beside it)."},
 			"toc":           {"type": "boolean", "description": "render: add a table of contents after the title. Default false."},
