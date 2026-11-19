@@ -12,6 +12,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 )
 
 // A volume image reference in import_md (RFC FF): `![alt](volume:<name>:<path>)`
@@ -86,23 +88,23 @@ func readVolumeBytes(ctx context.Context, r dataRef, max int64) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	resolved, err := resolveInsideRoot(root, r.path)
+	resolved, err := fsops.ResolveInsideRoot(root, r.path)
 	if err == nil {
-		err = outsideFence(fence, resolved)
+		err = fsops.OutsideFence(fence, resolved)
 	}
 	if err != nil {
 		return nil, err
 	}
-	vfs, err := openVolumeFS(root, fence)
+	vfs, err := fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		return nil, err
 	}
 	defer vfs.Close()
-	rel, err := vfs.rel(resolved)
+	rel, err := vfs.Rel(resolved)
 	if err != nil {
 		return nil, err
 	}
-	f, err := vfs.open(rel)
+	f, err := vfs.Open(rel)
 	if err != nil {
 		return nil, fmt.Errorf("no file at %s", r.raw)
 	}

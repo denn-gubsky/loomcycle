@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/hostenv"
 	"github.com/denn-gubsky/loomcycle/internal/procgroup"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -297,12 +298,12 @@ func fallbackCredNames(entries []string) []string {
 
 // fallbackHostCwd maps the sandbox working directory to a real host path. In rw
 // mode (the only mode fallback runs in) gbash roots the sandbox at "/" == the
-// host volume root, so a sandbox cwd of "/sub" is hostRoot/sub. resolveInsideRoot
-// re-validates containment (EvalSymlinks + relInsideRoot), so a path that
+// host volume root, so a sandbox cwd of "/sub" is hostRoot/sub. fsops.ResolveInsideRoot
+// re-validates containment (EvalSymlinks + fsops.RelInsideRoot), so a path that
 // escapes the volume is rejected rather than run on the host.
 func fallbackHostCwd(hostRoot, sandboxCwd string) (string, error) {
 	rel := strings.TrimPrefix(filepath.ToSlash(sandboxCwd), "/")
-	resolved, err := resolveInsideRoot(hostRoot, filepath.FromSlash(rel))
+	resolved, err := fsops.ResolveInsideRoot(hostRoot, filepath.FromSlash(rel))
 	if err != nil {
 		return "", fmt.Errorf("working directory %q escapes the volume: %w", sandboxCwd, err)
 	}

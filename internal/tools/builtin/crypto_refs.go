@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -190,24 +191,24 @@ func (c *Crypto) readRef(ctx context.Context, r dataRef, max int) ([]byte, tools
 		if err != nil {
 			return nil, errPermission(err.Error(), "Name a volume this agent has bound."), false
 		}
-		resolved, err := resolveInsideRoot(root, r.path)
+		resolved, err := fsops.ResolveInsideRoot(root, r.path)
 		if err == nil {
-			err = outsideFence(fence, resolved)
+			err = fsops.OutsideFence(fence, resolved)
 		}
 		if err != nil {
 			return nil, errPermission(err.Error(), ""), false
 		}
 		// Open through the volume's os.Root, as Read does (RFC ES #1).
-		vfs, err := openVolumeFS(root, fence)
+		vfs, err := fsops.OpenVolumeFS(root, fence)
 		if err != nil {
 			return nil, errPermission(err.Error(), ""), false
 		}
 		defer vfs.Close()
-		rel, err := vfs.rel(resolved)
+		rel, err := vfs.Rel(resolved)
 		if err != nil {
 			return nil, errPermission(err.Error(), ""), false
 		}
-		f, err := vfs.open(rel)
+		f, err := vfs.Open(rel)
 		if err != nil {
 			return nil, errNotFound(fmt.Sprintf("cannot open %s", r.raw), "Check the path."), false
 		}
@@ -282,9 +283,9 @@ func (c *Crypto) writeRef(ctx context.Context, r dataRef, data []byte) (tools.Re
 		if err != nil {
 			return errPermission(err.Error(), "Name a read-write volume this agent has bound."), false
 		}
-		target, err := resolveParentInsideRoot(root, r.path)
+		target, err := fsops.ResolveParentInsideRoot(root, r.path)
 		if err == nil {
-			err = outsideFence(fence, target)
+			err = fsops.OutsideFence(fence, target)
 		}
 		if err != nil {
 			return errPermission(err.Error(), ""), false
@@ -293,21 +294,21 @@ func (c *Crypto) writeRef(ctx context.Context, r dataRef, data []byte) (tools.Re
 		// rename, so a reader never sees half a file — both through the
 		// volume's os.Root (RFC ES #1). The file keeps the temp file's 0600
 		// mode, as Write's does.
-		vfs, err := openVolumeFS(root, fence)
+		vfs, err := fsops.OpenVolumeFS(root, fence)
 		if err != nil {
 			return errPermission(err.Error(), ""), false
 		}
 		defer vfs.Close()
-		rel, err := vfs.rel(target)
+		rel, err := vfs.Rel(target)
 		if err != nil {
 			return errPermission(err.Error(), ""), false
 		}
-		dir, err := vfs.openDir(filepath.Dir(rel))
+		dir, err := vfs.OpenDir(filepath.Dir(rel))
 		if err != nil {
 			return errTransient(fmt.Sprintf("writing %s failed", r.raw), "Try again."), false
 		}
 		defer dir.Close()
-		tmp, tmpName, err := createTemp(dir, ".loomcycle-crypto-")
+		tmp, tmpName, err := fsops.CreateTemp(dir, ".loomcycle-crypto-")
 		if err != nil {
 			return errTransient(fmt.Sprintf("writing %s failed", r.raw), "Try again."), false
 		}

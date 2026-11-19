@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -131,15 +132,15 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	// Resolve path — file must exist for replace+delete; for insert we
 	// also require an existing notebook (the tool creates cells, not
-	// notebooks). Use resolveInsideRoot which requires the path to
+	// notebooks). Use fsops.ResolveInsideRoot which requires the path to
 	// exist, matching Edit's posture.
 	target := args.FilePath
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(root, target)
 	}
-	resolved, rerr := resolveInsideRoot(root, target)
+	resolved, rerr := fsops.ResolveInsideRoot(root, target)
 	if rerr == nil {
-		rerr = outsideFence(fence, resolved)
+		rerr = fsops.OutsideFence(fence, resolved)
 	}
 	if rerr != nil {
 		return errResult(rerr.Error()), nil
@@ -154,25 +155,25 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	// opened via the volume's os.Root, so a directory swapped for a symlink
 	// after the check is refused rather than followed out of the volume
 	// (RFC ES #1).
-	vfs, err := openVolumeFS(root, fence)
+	vfs, err := fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
 	defer vfs.Close()
-	rel, err := vfs.rel(resolved)
+	rel, err := vfs.Rel(resolved)
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	dir, err := vfs.openDir(filepath.Dir(rel))
+	dir, err := vfs.OpenDir(filepath.Dir(rel))
 	if err != nil {
 		return errResult("stat: " + err.Error()), nil
 	}
 	defer dir.Close()
 	base := filepath.Base(rel)
 
-	f, err := vfs.openIn(dir, base)
+	f, err := vfs.OpenIn(dir, base)
 	if err != nil {
-		return errResult("stat: " + vfs.pathErr("open", rel, err).Error()), nil
+		return errResult("stat: " + vfs.PathErr("open", rel, err).Error()), nil
 	}
 	st, err := f.Stat()
 	if err != nil {
@@ -272,7 +273,7 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 
 	// Atomic write — tempfile in the same dir + rename. Same recipe
 	// as Write so cancellation leaves no trace at the target.
-	tmp, tmpName, err := createTemp(dir, ".loomcycle-nbedit-")
+	tmp, tmpName, err := fsops.CreateTemp(dir, ".loomcycle-nbedit-")
 	if err != nil {
 		return errResult("create tempfile: " + err.Error()), nil
 	}

@@ -1,16 +1,10 @@
 package builtin
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -24,19 +18,17 @@ import (
 //   - `[..]`character class (RE2-style brackets via filepath.Match)
 //   - `**`  matches zero or more segments — recursive
 //
-// `**` is the value-add over stdlib `filepath.Match`. Inline matcher
-// below (~30 LOC) keeps the binary self-contained — no doublestar dep.
+// `**` is the value-add over stdlib `filepath.Match`. The matcher in
+// internal/fsops (~30 LOC) keeps the binary self-contained — no doublestar dep.
 //
 // Sandbox model: same as Read — the root comes from the run's VolumePolicy
 // (RFC AH); an agent bound to no volume is refused. All paths resolved via
-// resolveInsideRoot — symlinks evaluated; refusal on root escape.
+// fsops.ResolveInsideRoot — symlinks evaluated; refusal on root escape.
 type Glob struct {
 	// MaxResults caps the result list so a model-issued `**` doesn't
 	// blow the context window. 0 = 100 default (matches Claude Code).
 	MaxResults int
 }
-
-const globDefaultMaxResults = 100
 
 func (g *Glob) Name() string { return "Glob" }
 
@@ -80,204 +72,11 @@ func (g *Glob) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if rootErr != nil {
 		return errResult(rootErr.Error()), nil
 	}
-	// Validate every pattern segment up-front. filepath.Match returns
-	// ErrBadPattern on malformed brackets etc.; without this pre-check
-	// each per-file Match() call would silently return non-match,
-	// leaving the agent with "no matches" instead of a clear error.
-	// `**` survives as a literal segment for doublestarMatch — Match()
-	// would also accept it as a no-op pattern against an empty string.
-	for _, seg := range strings.Split(args.Pattern, "/") {
-		if seg == "**" {
-			continue
-		}
-		if _, err := filepath.Match(seg, ""); err != nil {
-			return errResult(fmt.Sprintf("invalid glob pattern: %v", err)), nil
-		}
-	}
-
-	// The walk starts at a REAL path: WalkDir does not descend a root that is
-	// itself a symlink, so a volume whose root is one listed nothing. Matches
-	// are relative to the walk root, so the output is unchanged; declared is
-	// the same directory as the caller names it, for an absolute pattern.
-	declared := root
-	searchRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return errResult("sandbox root: " + err.Error()), nil
-	}
-	if args.Path != "" {
-		// Relative `path` is interpreted under the volume root; absolute
-		// paths flow through unchanged and get the same escape check.
-		// This matches Claude Code's "subpath under root" semantics
-		// without losing the absolute-path refusal for /etc & friends.
-		target := args.Path
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(root, target)
-		}
-		resolved, rerr := resolveInsideRoot(root, target)
-		if rerr == nil {
-			rerr = outsideFence(fence, resolved)
-		}
-		if rerr != nil {
-			return errResult(rerr.Error()), nil
-		}
-		declared, searchRoot = target, resolved
-	}
-
-	// The matcher compares pattern segments against walk-root-RELATIVE file
-	// paths. An absolute pattern's leading "/" splits to an empty first
-	// segment that never matches a relative path, so an absolute in-root
-	// pattern silently returned no matches (exp7 R1). Relativize it to the
-	// walk root; an absolute pattern pointing outside the root can't match
-	// anything in the sandbox.
-	pattern := args.Pattern
-	if filepath.IsAbs(pattern) {
-		rel, inRoot := relativizeToRoot(searchRoot, pattern)
-		if !inRoot {
-			rel, inRoot = relativizeToRoot(declared, pattern)
-		}
-		if !inRoot {
-			return emptyGlobResult(), nil
-		}
-		pattern = rel
-	}
-
-	maxResults := g.MaxResults
-	if maxResults <= 0 {
-		maxResults = globDefaultMaxResults
-	}
-
-	// Pre-compile the pattern into a segment slice so we don't re-split
-	// per file. `**` survives as a literal sentinel inside the segment
-	// matcher.
-	patSegments := strings.Split(pattern, "/")
-
-	type fileInfo struct {
-		rel   string
-		mtime int64
-	}
-	var matches []fileInfo
-
-	// The walk goes through an os.Root opened at the volume root, one
-	// directory handle at a time, so a directory swapped for a symlink
-	// mid-walk is skipped rather than listed from outside the volume, and the
-	// fence is skipped (RFC ES #1).
-	vfs, err := openVolumeFS(root, fence)
+	text, n, err := fsops.Glob(root, fence, fsops.GlobRequest{Pattern: args.Pattern, Path: args.Path, MaxResults: g.MaxResults})
 	if err != nil {
 		return errResult(err.Error()), nil
 	}
-	defer vfs.Close()
-	startRel, err := vfs.rel(searchRoot)
-	if err != nil {
-		return errResult(err.Error()), nil
-	}
-	vfs.walk(startRel, func(dir *os.Root, path string, d fs.DirEntry) {
-		// On Windows paths use `\`; normalise so the pattern language is
-		// `/`-only regardless of host OS.
-		rel := filepath.ToSlash(path)
-		relSegments := strings.Split(rel, "/")
-		if !doublestarMatch(patSegments, relSegments) {
-			return
-		}
-		info, statErr := dir.Lstat(d.Name())
-		var mt int64
-		if statErr == nil {
-			mt = info.ModTime().UnixNano()
-		}
-		matches = append(matches, fileInfo{rel: rel, mtime: mt})
-	})
-
-	// mtime DESC; tie-break on path ASC for determinism.
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].mtime != matches[j].mtime {
-			return matches[i].mtime > matches[j].mtime
-		}
-		return matches[i].rel < matches[j].rel
-	})
-
-	var out bytes.Buffer
-	truncated := false
-	for i, m := range matches {
-		if i >= maxResults {
-			truncated = true
-			break
-		}
-		out.WriteString(m.rel + "\n")
-	}
-	if truncated {
-		fmt.Fprintf(&out, "\n[truncated at max_results=%d; %d total matches]\n", maxResults, len(matches))
-	}
-	if out.Len() == 0 {
-		return emptyGlobResult(), nil
-	}
-	n := len(matches)
-	if truncated {
-		n = maxResults
-	}
-	return tools.Result{Text: out.String(), Count: &n}, nil
-}
-
-// relativizeToRoot converts an absolute glob pattern to one relative to root
-// (the walk root). Returns (rel, true) when the pattern sits inside root, or
-// ("", false) when it is the root itself or points outside it — in which case
-// it can match nothing in the sandbox. Glob metacharacters are preserved;
-// only the fixed leading directory prefix is stripped. filepath.Clean
-// collapses any `..` first, so a traversal-escaping pattern fails the prefix
-// check and yields false.
-func relativizeToRoot(root, pattern string) (string, bool) {
-	cleanRoot := filepath.Clean(root)
-	cleanPat := filepath.Clean(pattern)
-	if cleanPat == cleanRoot {
-		return "", false
-	}
-	prefix := cleanRoot + string(filepath.Separator)
-	if !strings.HasPrefix(cleanPat, prefix) {
-		return "", false
-	}
-	return filepath.ToSlash(cleanPat[len(prefix):]), true
-}
-
-// doublestarMatch matches a `/`-split pattern against a `/`-split
-// path. `**` matches zero or more segments. All other segments fall
-// through to stdlib filepath.Match (single-segment glob).
-//
-// Algorithm: backtracking DP over (pattern-index, path-index). Small
-// enough for typical agent workloads — patterns rarely exceed 5
-// segments and paths rarely exceed 10. If profiling ever flags this,
-// switch to memoised DP.
-func doublestarMatch(pat, path []string) bool {
-	// Empty pattern matches empty path only.
-	if len(pat) == 0 {
-		return len(path) == 0
-	}
-	if pat[0] == "**" {
-		// `**` consumes zero or more path segments. Try each prefix
-		// length until one matches the remaining pattern.
-		for i := 0; i <= len(path); i++ {
-			if doublestarMatch(pat[1:], path[i:]) {
-				return true
-			}
-		}
-		return false
-	}
-	if len(path) == 0 {
-		return false
-	}
-	ok, err := filepath.Match(pat[0], path[0])
-	if err != nil || !ok {
-		return false
-	}
-	return doublestarMatch(pat[1:], path[1:])
-}
-
-// emptyGlobResult is the no-match success. An empty list is a legitimate
-// ANSWER to "which files match this", not a failure, and the text says so
-// explicitly — "no matches" on its own is a fragment an agent can read either
-// way. Count is 0 rather than absent: absent means "this tool does not count",
-// which is a different statement.
-func emptyGlobResult() tools.Result {
-	n := 0
-	return tools.Result{
-		Text:  "no matches — the search completed successfully and no file matched the pattern\n",
-		Count: &n,
-	}
+	// Count is 0 rather than absent on no match: absent means "this tool does
+	// not count", which is a different statement.
+	return tools.Result{Text: text, Count: &n}, nil
 }

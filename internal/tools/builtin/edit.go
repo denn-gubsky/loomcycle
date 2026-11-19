@@ -3,11 +3,8 @@ package builtin
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"path/filepath"
-	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -65,107 +62,21 @@ func (e *Edit) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return tools.Result{Text: "path is required", IsError: true}, nil
 	}
 	if args.OldString == args.NewString {
-		return tools.Result{Text: "old_string and new_string must differ", IsError: true}, nil
+		return tools.Result{Text: fsops.ErrEditNoChange.Error(), IsError: true}, nil
 	}
 	root, fence, err := effectiveRoot(ctx, args.Volume, true)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
-
-	maxBytes := e.MaxBytes
-	if maxBytes == 0 {
-		maxBytes = 1 << 20
-	}
-
-	// Edit requires the file to exist, so we use resolveInsideRoot
-	// (Write would resolve the parent because the file may be new).
-	resolved, err := resolveInsideRoot(root, args.Path)
-	if err == nil {
-		err = outsideFence(fence, resolved)
-	}
+	out, err := fsops.Edit(ctx, root, fence, fsops.EditRequest{
+		Path:       args.Path,
+		OldString:  args.OldString,
+		NewString:  args.NewString,
+		ReplaceAll: args.ReplaceAll,
+		MaxBytes:   e.MaxBytes,
+	})
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
-
-	// Read and replace through one handle on the file's directory, opened
-	// via the volume's os.Root, so a directory swapped for a symlink after
-	// the check is refused rather than followed out of the volume (RFC ES #1).
-	vfs, err := openVolumeFS(root, fence)
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	defer vfs.Close()
-	rel, err := vfs.rel(resolved)
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	dir, err := vfs.openDir(filepath.Dir(rel))
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	defer dir.Close()
-	base := filepath.Base(rel)
-
-	f, err := vfs.openIn(dir, base)
-	if err != nil {
-		return tools.Result{Text: vfs.pathErr("open", rel, err).Error(), IsError: true}, nil
-	}
-	info, err := f.Stat()
-	if err != nil {
-		f.Close()
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	if info.Size() > maxBytes {
-		f.Close()
-		return tools.Result{Text: fmt.Sprintf("file size %d exceeds limit %d", info.Size(), maxBytes), IsError: true}, nil
-	}
-
-	body, err := io.ReadAll(f)
-	f.Close()
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-
-	count := strings.Count(string(body), args.OldString)
-	if count == 0 {
-		return tools.Result{Text: "old_string not found in file", IsError: true}, nil
-	}
-	if count > 1 && !args.ReplaceAll {
-		return tools.Result{Text: fmt.Sprintf("old_string occurs %d times; supply more context or set replace_all=true", count), IsError: true}, nil
-	}
-
-	var replaced string
-	if args.ReplaceAll {
-		replaced = strings.ReplaceAll(string(body), args.OldString, args.NewString)
-	} else {
-		replaced = strings.Replace(string(body), args.OldString, args.NewString, 1)
-	}
-
-	tmp, tmpName, err := createTemp(dir, ".loomcycle-edit-")
-	if err != nil {
-		return tools.Result{Text: "create tempfile: " + err.Error(), IsError: true}, nil
-	}
-	defer dir.Remove(tmpName)
-
-	if _, err := tmp.WriteString(replaced); err != nil {
-		tmp.Close()
-		return tools.Result{Text: "write tempfile: " + err.Error(), IsError: true}, nil
-	}
-	if err := tmp.Close(); err != nil {
-		return tools.Result{Text: "close tempfile: " + err.Error(), IsError: true}, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	if err := dir.Rename(tmpName, base); err != nil {
-		return tools.Result{Text: "rename: " + err.Error(), IsError: true}, nil
-	}
-	return tools.Result{Text: fmt.Sprintf("edited %s (%d replacement%s)", resolved, count, plural(count))}, nil
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
+	return tools.Result{Text: out}, nil
 }

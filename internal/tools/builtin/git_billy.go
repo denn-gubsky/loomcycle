@@ -18,6 +18,8 @@ import (
 
 	"github.com/go-git/go-billy/v5"
 	"golang.org/x/sys/unix"
+
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 )
 
 // volumeBilly is the billy.Filesystem the Git tool hands go-git, so every file
@@ -28,7 +30,7 @@ import (
 // carries the operation out of the volume.
 //
 // Every operation re-walks its parent directory from the volume root one
-// handle at a time (volumeFS.step), then acts on the final name through that
+// handle at a time (fsops.VolumeFS.Step), then acts on the final name through that
 // handle, never following a symlink there. Nothing in this filesystem follows
 // a symlink, so the targets git stores in them are inert here.
 //
@@ -36,7 +38,7 @@ import (
 // never the host root: go-git passes absolute paths for alternates, and
 // treating them as host paths would leave the volume.
 type volumeBilly struct {
-	v *volumeFS
+	v *fsops.VolumeFS
 	// prefix is the root of this filesystem: a clean, slash-separated path
 	// relative to the volume root, "." for the volume root itself.
 	prefix string
@@ -64,7 +66,7 @@ var (
 // names inside v (rel: a clean, symlink-free path relative to the volume
 // root; "" or "." = the volume root). v must stay open while the returned
 // filesystem is in use; the caller closes v. The directory must exist.
-func newVolumeBilly(v *volumeFS, rel string) (billy.Filesystem, error) {
+func newVolumeBilly(v *fsops.VolumeFS, rel string) (billy.Filesystem, error) {
 	if filepath.IsAbs(rel) {
 		return nil, fmt.Errorf("repository path %q must be relative to the volume root", rel)
 	}
@@ -117,14 +119,14 @@ func billyErr(op, name string, err error) error {
 }
 
 // dirAt opens the directory full names (relative to the volume root) through
-// the verified walk volumeFS.openDir does, creating missing components with
+// the verified walk fsops.VolumeFS.OpenDir does, creating missing components with
 // perm when create is set. name is the caller's path, for errors.
 func (b *volumeBilly) dirAt(op, name, full string, create bool) (*os.Root, error) {
 	return b.dirAtMode(op, name, full, create, gitDirMode)
 }
 
 func (b *volumeBilly) dirAtMode(op, name, full string, create bool, perm os.FileMode) (*os.Root, error) {
-	cur, err := b.v.step(b.v.root, ".")
+	cur, err := b.v.Step(b.v.Root(), ".")
 	if err != nil {
 		return nil, billyErr(op, name, err)
 	}
@@ -132,7 +134,7 @@ func (b *volumeBilly) dirAtMode(op, name, full string, create bool, perm os.File
 		if c == "." {
 			continue
 		}
-		next, err := b.v.step(cur, c)
+		next, err := b.v.Step(cur, c)
 		if create && errors.Is(err, fs.ErrNotExist) {
 			// Mkdirat never follows a symlink at c, and the step after it
 			// checks c is the directory just made, so a dangling or swapped
@@ -141,7 +143,7 @@ func (b *volumeBilly) dirAtMode(op, name, full string, create bool, perm os.File
 				cur.Close()
 				return nil, billyErr(op, name, merr)
 			}
-			next, err = b.v.step(cur, c)
+			next, err = b.v.Step(cur, c)
 		}
 		cur.Close()
 		if err != nil {
@@ -192,7 +194,7 @@ func openNoFollow(dir *os.Root, name string, flag int, perm os.FileMode) (*os.Fi
 }
 
 // openVerified opens the entry name inside dir without following a symlink
-// and checks, as volumeFS.openIn does, that it is still the entry the name
+// and checks, as fsops.VolumeFS.OpenIn does, that it is still the entry the name
 // holds and not the fence.
 func (b *volumeBilly) openVerified(dir *os.Root, name string, flag int, perm os.FileMode) (*os.File, error) {
 	f, err := openNoFollow(dir, name, flag, perm)
@@ -201,7 +203,7 @@ func (b *volumeBilly) openVerified(dir *os.Root, name string, flag int, perm os.
 	}
 	fi, err := f.Stat()
 	if err == nil {
-		err = b.v.sameEntry(dir, name, fi)
+		err = b.v.SameEntry(dir, name, fi)
 	}
 	if err != nil {
 		f.Close()
@@ -212,14 +214,14 @@ func (b *volumeBilly) openVerified(dir *os.Root, name string, flag int, perm os.
 
 // refuseFence refuses an operation that would move, remove or re-own the
 // fence itself. sameEntry guards what is opened; these act on the name. A
-// fence renamed away would no longer be where the next call's openVolumeFS
+// fence renamed away would no longer be where the next call's fsops.OpenVolumeFS
 // looks for it, leaving other runs' volumes reachable.
 func (b *volumeBilly) refuseFence(dir *os.Root, name string) error {
-	if b.v.fence == nil {
+	if b.v.Fence() == nil {
 		return nil
 	}
-	if fi, err := dir.Lstat(name); err == nil && os.SameFile(fi, b.v.fence) {
-		return errInFence
+	if fi, err := dir.Lstat(name); err == nil && os.SameFile(fi, b.v.Fence()) {
+		return fsops.ErrInFence
 	}
 	return nil
 }
@@ -374,7 +376,7 @@ func (b *volumeBilly) copyFile(src *os.Root, name string, dst *os.Root) (string,
 	if !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("%s is not a regular file", name)
 	}
-	out, tmpName, err := createTemp(dst, ".loomcycle-git-")
+	out, tmpName, err := fsops.CreateTemp(dst, ".loomcycle-git-")
 	if err != nil {
 		return "", err
 	}
@@ -413,7 +415,7 @@ func (b *volumeBilly) copySymlink(src *os.Root, name string, dst *os.Root) (stri
 	return "", errors.New("could not create a temporary symlink")
 }
 
-// tempName is a random name starting with prefix, made as createTemp makes
+// tempName is a random name starting with prefix, made as fsops.CreateTemp makes
 // its names.
 func tempName(prefix string) string {
 	var buf [8]byte
@@ -446,7 +448,7 @@ func (b *volumeBilly) Join(elem ...string) string { return filepath.Join(elem...
 // The file's Name is relative to this filesystem's root so go-git can pass it
 // back to Rename and Remove.
 func (b *volumeBilly) TempFile(dir, prefix string) (billy.File, error) {
-	// createTemp joins prefix into a name the handle resolves; a separator
+	// fsops.CreateTemp joins prefix into a name the handle resolves; a separator
 	// there would be a walk os.Root does on its own terms.
 	if prefix == ".." || strings.ContainsAny(prefix, "/\x00") {
 		return nil, &os.PathError{Op: "tempfile", Path: prefix, Err: errBillyPrefix}
@@ -460,11 +462,11 @@ func (b *volumeBilly) TempFile(dir, prefix string) (billy.File, error) {
 		return nil, err
 	}
 	defer d.Close()
-	f, name, err := createTemp(d, prefix)
+	f, name, err := fsops.CreateTemp(d, prefix)
 	if err == nil {
 		var fi os.FileInfo
 		if fi, err = f.Stat(); err == nil {
-			err = b.v.sameEntry(d, name, fi)
+			err = b.v.SameEntry(d, name, fi)
 		}
 		if err != nil {
 			f.Close()

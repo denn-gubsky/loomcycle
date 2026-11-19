@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
@@ -286,30 +287,30 @@ func (f *File) downloadToVolume(ctx context.Context, to dataRef, name string, ov
 	if strings.HasSuffix(toPath, "/") {
 		toPath += fileName
 	}
-	target, err := resolveParentInsideRoot(root, toPath)
+	target, err := fsops.ResolveParentInsideRoot(root, toPath)
 	if err == nil {
-		err = outsideFence(fence, target)
+		err = fsops.OutsideFence(fence, target)
 	}
 	if err != nil {
 		return errPermission("download: "+err.Error(), "Create the folder first, or name one that exists."), nil
 	}
-	dst, err := openVolumeFS(root, fence)
+	dst, err := fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		return errPermission("download: "+err.Error(), ""), nil
 	}
 	defer dst.Close()
-	rel, err := dst.rel(target)
+	rel, err := dst.Rel(target)
 	if err != nil {
 		return errPermission("download: "+err.Error(), ""), nil
 	}
-	dir, err := dst.openDir(filepath.Dir(rel))
+	dir, err := dst.OpenDir(filepath.Dir(rel))
 	if err != nil {
 		return errNotFound("download: the folder for "+to.raw+" does not exist", "Create it first, or name one that exists."), nil
 	}
 	defer dir.Close()
 	base := filepath.Base(rel)
 	if fi, err := dir.Lstat(base); err == nil && fi.IsDir() {
-		sub, err := dst.step(dir, base)
+		sub, err := dst.Step(dir, base)
 		if err != nil {
 			return errPermission("download: "+err.Error(), ""), nil
 		}
@@ -323,7 +324,7 @@ func (f *File) downloadToVolume(ctx context.Context, to dataRef, name string, ov
 	if fi, err := dir.Lstat(base); err == nil && (!fi.Mode().IsRegular() || !overwrite) {
 		return errBusiness(fmt.Sprintf("download: %s already exists", final.raw), "Pass overwrite: true to replace it, or choose another name."), nil
 	}
-	tmp, tmpName, err := createTemp(dir, ".loomcycle-download-")
+	tmp, tmpName, err := fsops.CreateTemp(dir, ".loomcycle-download-")
 	if err != nil {
 		return errTransient("download: "+err.Error(), "Try again."), nil
 	}
@@ -408,7 +409,7 @@ func (f *File) upload(ctx context.Context, raw json.RawMessage) (tools.Result, e
 		return res, nil
 	}
 	defer src.Close()
-	fh, err := src.open(rel)
+	fh, err := src.Open(rel)
 	if err != nil {
 		return errNotFound(fmt.Sprintf("upload: no file at %s", from.raw), "List the folder with op=ls."), nil
 	}

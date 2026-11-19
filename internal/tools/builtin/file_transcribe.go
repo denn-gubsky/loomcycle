@@ -143,7 +143,7 @@ func (f *File) transcribe(ctx context.Context, in fileInput) (tools.Result, erro
 		return res, nil
 	}
 	defer vfs.Close()
-	fh, err := vfs.open(rel)
+	fh, err := vfs.Open(rel)
 	if err != nil {
 		return errNotFound(fmt.Sprintf("transcribe: no file at %s", r.raw), "List the folder with op=ls."), nil
 	}

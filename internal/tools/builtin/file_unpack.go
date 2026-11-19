@@ -21,6 +21,7 @@ import (
 	"github.com/nwaples/rardecode/v2"
 
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
@@ -163,7 +164,7 @@ func (f *File) unpack(ctx context.Context, in fileInput) (tools.Result, error) {
 		return res, nil
 	}
 	defer vfs.Close()
-	fh, err := vfs.open(rel)
+	fh, err := vfs.Open(rel)
 	if err != nil {
 		return errNotFound(fmt.Sprintf("unpack: no file at %s", r.raw), "List the folder with op=ls."), nil
 	}
@@ -865,7 +866,7 @@ func (d *inboxDest) write(segs []string, r io.Reader, head []byte, display strin
 // run needs Write, and Write's hooks judge each file it writes.
 type volumeDest struct {
 	ctx    context.Context
-	vfs    *volumeFS
+	vfs    *fsops.VolumeFS
 	volume string
 	prefix string // volume:<name>:
 	base   string // the folder, relative to the volume root, slash-separated, ending in /
@@ -886,21 +887,21 @@ func (f *File) unpackVolumeDest(ctx context.Context, to string) (*volumeDest, to
 	if err != nil {
 		return nil, errPermission("unpack: "+err.Error(), "Name a read-write volume you are bound to."), false
 	}
-	resolved, err := resolveInsideRoot(root, r.path)
+	resolved, err := fsops.ResolveInsideRoot(root, r.path)
 	if err == nil {
-		err = outsideFence(fence, resolved)
+		err = fsops.OutsideFence(fence, resolved)
 	}
 	if err != nil {
 		return nil, errPermission("unpack: "+err.Error(), "Create the folder first, or name one that exists."), false
 	}
-	vfs, err := openVolumeFS(root, fence)
+	vfs, err := fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		return nil, errPermission("unpack: "+err.Error(), ""), false
 	}
-	rel, err := vfs.rel(resolved)
+	rel, err := vfs.Rel(resolved)
 	if err == nil {
 		var d *os.Root
-		if d, err = vfs.openDir(rel); err == nil {
+		if d, err = vfs.OpenDir(rel); err == nil {
 			d.Close()
 		}
 	}
@@ -931,7 +932,7 @@ func (d *volumeDest) write(segs []string, r io.Reader, head []byte, display stri
 	if res, ok := checkRefGrant(d.ctx, d.ref(d.base+path.Join(segs...)), true, FileToolName, "Unpack into the inbox"); !ok {
 		return unpackWritten{}, res.Text, nil
 	}
-	dir, err := d.vfs.openDir(strings.TrimSuffix(d.base, "/"))
+	dir, err := d.vfs.OpenDir(strings.TrimSuffix(d.base, "/"))
 	if err != nil {
 		return unpackWritten{}, "", err
 	}
@@ -941,7 +942,7 @@ func (d *volumeDest) write(segs []string, r io.Reader, head []byte, display stri
 			dir.Close()
 			return unpackWritten{}, "", err
 		}
-		next, err := d.vfs.step(dir, s)
+		next, err := d.vfs.Step(dir, s)
 		dir.Close()
 		if err != nil {
 			return unpackWritten{}, "", fmt.Errorf("%s is not a folder: %w", folder+s, err)
@@ -960,7 +961,7 @@ func (d *volumeDest) write(segs []string, r io.Reader, head []byte, display stri
 			return unpackWritten{}, res.Text, nil
 		}
 	}
-	tmp, tmpName, err := createTemp(dir, ".loomcycle-unpack-")
+	tmp, tmpName, err := fsops.CreateTemp(dir, ".loomcycle-unpack-")
 	if err != nil {
 		_ = dir.Remove(name)
 		return unpackWritten{}, "", err
