@@ -35,3 +35,30 @@ func TestOperatorTokenCreate_TenantMetricsFlagSendsTheMarker(t *testing.T) {
 		t.Errorf("payload without the flag = %v, want no tenant_metrics", got)
 	}
 }
+
+// --worker-shared sends the marker that makes a workspace worker serve every
+// tenant; without the flag the field is not sent at all.
+func TestOperatorTokenCreate_WorkerSharedFlagSendsTheMarker(t *testing.T) {
+	var got map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = nil
+		_ = json.Unmarshal(b, &got)
+		_, _ = w.Write([]byte(`{"def_id":"d"}`))
+	}))
+	defer ts.Close()
+	base := []string{"--target", ts.URL, "--token", "t", "--name", "pool", "--tenant", "ops", "--scopes", "workers:attach"}
+	var out, errb bytes.Buffer
+	if rc := runOperatorTokenCreate(append(base, "--worker-shared"), &out, &errb); rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, errb.String())
+	}
+	if got["worker_shared"] != true {
+		t.Errorf("payload with the flag = %v, want worker_shared true", got)
+	}
+	if rc := runOperatorTokenCreate(base, &out, &errb); rc != 0 {
+		t.Fatalf("rc=%d stderr=%s", rc, errb.String())
+	}
+	if _, sent := got["worker_shared"]; sent {
+		t.Errorf("payload without the flag = %v, want no worker_shared", got)
+	}
+}

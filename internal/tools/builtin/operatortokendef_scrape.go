@@ -85,8 +85,10 @@ func (s *OperatorTokenDef) execTenantScrape(ctx context.Context, tenant string, 
 func (s *OperatorTokenDef) createTenantScrape(ctx context.Context, tenant string, in operatorTokenDefInput) (tools.Result, error) {
 	// The rest of the input narrows runs, which a scrape token never starts,
 	// or binds an existing secret, which is the operator's migration.
+	// worker_shared is an admin's alone (RFC GW Q2): a worker serving every
+	// tenant is not a tenant's to mint.
 	if in.ImportToken != "" || in.Agents != nil || len(in.Surfaces) > 0 || in.Overrides != nil ||
-		in.Rate != nil || in.Retention != "" || in.DefID != "" || in.GraceSeconds != nil {
+		in.Rate != nil || in.Retention != "" || in.DefID != "" || in.GraceSeconds != nil || in.WorkerShared != nil {
 		return errResult("create: a tenant operator's scrape token takes only name, subject, scopes, tenant_id, tenant_metrics and ttl_seconds"), nil
 	}
 	if len(in.Scopes) != 1 || in.Scopes[0] != auth.ScopeMetricsRead {

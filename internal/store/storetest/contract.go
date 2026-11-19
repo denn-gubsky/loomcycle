@@ -35,6 +35,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/credential/credentialdef"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -14656,6 +14657,40 @@ func testOperatorTokenDefRetireAndCountAdmin(t *testing.T, s store.Store) {
 	}
 }
 
+// testOperatorTokenDefWorkerShared: a shared workspace-worker token (RFC GW
+// Q2) keeps its marker through the store, and a tenant-bound one keeps none,
+// so the principal the bearer resolves to says which tenants the worker
+// serves. The marker lives in the restrictions record, so no column carries
+// it.
+func testOperatorTokenDefWorkerShared(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	shared := mkOperatorTokenDef("ot-wk-shared", "wk-shared", "ops", "pool", "h-wk-shared", []string{auth.ScopeWorkersAttach})
+	rec, err := auth.MarshalRestrictions(auth.Restrictions{WorkerShared: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared.RestrictionsJSON = rec
+	bound := mkOperatorTokenDef("ot-wk-bound", "wk-bound", "acme", "worker-1", "h-wk-bound", []string{auth.ScopeWorkersAttach})
+	for _, r := range []store.OperatorTokenDefRow{shared, bound} {
+		if _, err := s.OperatorTokenDefCreate(ctx, r); err != nil {
+			t.Fatalf("create %s: %v", r.DefID, err)
+		}
+	}
+	for hash, want := range map[string]bool{"h-wk-shared": true, "h-wk-bound": false} {
+		got, err := s.OperatorTokenDefGetByTokenHash(ctx, hash)
+		if err != nil {
+			t.Fatalf("%s: %v", hash, err)
+		}
+		r, err := auth.ParseRestrictions(got.RestrictionsJSON)
+		if err != nil {
+			t.Fatalf("%s: restrictions %q: %v", hash, got.RestrictionsJSON, err)
+		}
+		if r.WorkerShared != want || len(got.AllowedScopes) != 1 || got.AllowedScopes[0] != auth.ScopeWorkersAttach {
+			t.Errorf("%s: worker_shared=%v scopes=%v, want %v [%s]", hash, r.WorkerShared, got.AllowedScopes, want, auth.ScopeWorkersAttach)
+		}
+	}
+}
+
 // testOperatorTokenDefExpiry: expires_at round-trips, an absent one stays
 // absent, and every "is this token alive" query treats an expired row as dead.
 func testOperatorTokenDefExpiry(t *testing.T, s store.Store) {
@@ -14690,6 +14725,9 @@ func testOperatorTokenDefExpiry(t *testing.T, s store.Store) {
 	if got, _ := s.OperatorTokenDefGetByTokenHash(ctx, "h-exp-restr"); !strings.Contains(got.RestrictionsJSON, `"agents"`) || !strings.Contains(got.RestrictionsJSON, `"score"`) {
 		t.Errorf("restrictions round-trip: got %q", got.RestrictionsJSON)
 	}
+	// A record carrying a marker this build knows reads back as written. Run
+	// from here rather than its own table row: Run is at its length cap.
+	testOperatorTokenDefWorkerShared(t, s)
 	if got, _ := s.OperatorTokenDefGet(ctx, "ot-exp-none"); got.RestrictionsJSON != "" {
 		t.Errorf("a token created without restrictions came back with %q", got.RestrictionsJSON)
 	}

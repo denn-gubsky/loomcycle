@@ -20,6 +20,11 @@ import (
 // credential confined by Agents may still reach. It never reaches past what an
 // unrestricted credential reaches, and Within holds it to the minter's own.
 //
+// WorkerShared is the exception to all of the above: it widens a worker token
+// from its own tenant to every tenant. Only an admin's mint sets it (the
+// tenant operator's mint path refuses the field), and CheckScopes holds it to
+// a workers:attach token, which reaches no API surface at all.
+//
 // The zero value restricts nothing, and is what every token minted before
 // restrictions existed carries.
 type Restrictions struct {
@@ -52,6 +57,14 @@ type Restrictions struct {
 	// for, so the tenant alone cannot say which view it gets; this does. Only
 	// a token whose scopes are exactly [metrics:read] may hold it (CheckScopes).
 	TenantMetrics bool `json:"tenant_metrics,omitempty"`
+	// WorkerShared, on a workers:attach token, makes the worker serve every
+	// tenant instead of its token's own (RFC GW §8, ruling Q2). Kept in this
+	// record rather than a column of its own because it is a mint-time
+	// attribute of one token kind, like TenantMetrics, and a build that does
+	// not know the key refuses the token (ParseRestrictions) instead of
+	// reading it as tenant-bound. Only a token whose scopes are exactly
+	// [workers:attach] may hold it (CheckScopes).
+	WorkerShared bool `json:"worker_shared,omitempty"`
 }
 
 // ParseRetention reads a retention setting as written on a mint surface:
@@ -220,15 +233,19 @@ var restrictedAgentNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,1
 
 // IsZero reports whether nothing is restricted.
 func (r Restrictions) IsZero() bool {
-	return len(r.Agents) == 0 && len(r.Surfaces) == 0 && r.Overrides == nil && r.Rate == nil && r.Retention == "" && !r.TenantMetrics
+	return len(r.Agents) == 0 && len(r.Surfaces) == 0 && r.Overrides == nil && r.Rate == nil && r.Retention == "" && !r.TenantMetrics && !r.WorkerShared
 }
 
 // CheckScopes refuses a record that does not fit the scopes of the token it
-// narrows. TenantMetrics confines a scrape and nothing else: on any other
-// token it would be stored, shown, and decide nothing.
+// narrows. TenantMetrics confines a scrape and WorkerShared widens a worker,
+// and nothing else: on any other token either would be stored, shown, and
+// decide nothing.
 func (r Restrictions) CheckScopes(scopes []string) error {
 	if r.TenantMetrics && !(len(scopes) == 1 && scopes[0] == ScopeMetricsRead) {
 		return fmt.Errorf("tenant_metrics applies only to a token whose scopes are exactly [%s]", ScopeMetricsRead)
+	}
+	if r.WorkerShared && !(len(scopes) == 1 && scopes[0] == ScopeWorkersAttach) {
+		return fmt.Errorf("worker_shared applies only to a token whose scopes are exactly [%s]", ScopeWorkersAttach)
 	}
 	return nil
 }
@@ -360,6 +377,9 @@ func knownSurface(s string) bool {
 //
 // Agents is the intersection; an empty one is an error, because an empty list
 // in this record means "unrestricted", the opposite of what it would be.
+//
+// WorkerShared is r's own and is never taken from the minter: it is not a
+// restriction to inherit, and a worker token mints nothing.
 func (r Restrictions) Within(minter Restrictions) (Restrictions, error) {
 	out := r
 	// A minter confined to its tenant's metrics mints nothing that reads more.
@@ -446,6 +466,9 @@ func (r Restrictions) Describe() string {
 	}
 	if r.TenantMetrics {
 		parts = append(parts, "tenant_metrics")
+	}
+	if r.WorkerShared {
+		parts = append(parts, "worker_shared")
 	}
 	return strings.Join(parts, " ")
 }

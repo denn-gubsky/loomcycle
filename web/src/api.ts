@@ -3360,6 +3360,8 @@ export function mintOperatorToken(req: {
   tenant_id: string;
   subject?: string;
   scopes?: string[];
+  // Only with scopes exactly ["workers:attach"]: the worker serves every tenant.
+  worker_shared?: boolean;
 }): Promise<OperatorTokenCreateResult> {
   return postOperatorToken<OperatorTokenCreateResult>({ op: "create", ...req });
 }
@@ -3414,7 +3416,16 @@ export const TOKEN_SCOPES = [
   // A Prometheus scraper's credential: GET /metrics and nothing else. The
   // runtime refuses it beside any other scope, so tick it alone.
   "metrics:read",
+  // A workspace worker's credential (RFC GW): it attaches a worker and reaches
+  // no API surface. Alone, like metrics:read. The worker serves the token's
+  // tenant, or every tenant when minted shared (WORKER_SHARED_SCOPE below).
+  "workers:attach",
 ] as const;
+
+// The scope whose token may be minted shared (worker_shared): a workspace
+// worker serving every tenant. The Tokens page is admin-only, and the runtime
+// refuses the flag from anyone else.
+export const WORKER_SHARED_SCOPE = "workers:attach";
 
 // ---- Routing view (GET /v1/_routing) ----
 // For each user_tier × tier, the ordered provider/model cascade a consumer

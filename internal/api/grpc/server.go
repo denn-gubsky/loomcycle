@@ -1112,6 +1112,11 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 	if auth.IsMetricsReader(p) {
 		return status.Error(codes.PermissionDenied, "a "+auth.ScopeMetricsRead+" token reaches only GET /metrics over HTTP")
 	}
+	// A workspace worker's credential attaches a worker and reaches no RPC
+	// of this service (RFC GW Q2).
+	if auth.IsWorkerAttacher(p) {
+		return status.Error(codes.PermissionDenied, "a "+auth.ScopeWorkersAttach+" token only attaches a workspace worker")
+	}
 	required := requiredScopeForRPC(fullMethod)
 	if required != "" && !auth.HasScope(p.Scopes, required) {
 		// RFC CB member path, as on HTTP (RFC EZ Q1): a NON-ISOLATED principal
