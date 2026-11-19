@@ -3,7 +3,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -16,8 +15,9 @@ import (
 
 // A runtime booted with workspace.mode remote serves the worker endpoint
 // even with conversion in process, a `loomcycle worker --role workspace`
-// holding a workers:attach token attaches to it, and one holding any other
-// bearer is refused and exits.
+// holding a workers:attach token attaches to it, and one holding a bearer
+// the runtime cannot verify is never attached (it keeps retrying: an
+// unresolved token is not a final refusal).
 func TestBoot_WorkspaceRemoteModeAttachesARealWorker(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and boots the binary; skipped in -short")
@@ -36,8 +36,8 @@ func TestBoot_WorkspaceRemoteModeAttachesARealWorker(t *testing.T) {
 	core := b.startOn(t, b.port, "LOOMCYCLE_TEST_WORKSPACE_WORKER_TOKEN="+workerToken)
 
 	root := filepath.Join(b.dir, "workspaces")
-	worker := func(token string) (*exec.Cmd, *lockedBuffer) {
-		cmd := exec.Command(b.bin, "worker", "--role", "workspace", "--dispatcher", endpoint, "--id", "boot1")
+	worker := func(token, id string) (*exec.Cmd, *lockedBuffer) {
+		cmd := exec.Command(b.bin, "worker", "--role", "workspace", "--dispatcher", endpoint, "--id", id)
 		cmd.Env = []string{
 			"HOME=" + filepath.Join(b.dir, "home"),
 			"PATH=/usr/bin:/bin",
@@ -54,22 +54,13 @@ func TestBoot_WorkspaceRemoteModeAttachesARealWorker(t *testing.T) {
 		return cmd, out
 	}
 
-	// A bearer the runtime does not know: refused for good.
-	bad, badOut := worker("not-a-token")
-	exited := make(chan error, 1)
-	go func() { exited <- bad.Wait() }()
-	select {
-	case err := <-exited:
-		var ee *exec.ExitError
-		if !errors.As(err, &ee) || ee.ExitCode() != 2 {
-			t.Fatalf("a refused worker exited %v, want status 2\n%s", err, badOut.String())
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatalf("a worker with a bad token kept running\n%s", badOut.String())
-	}
+	// A bearer the runtime does not know: never attached, still retrying.
+	bad, badOut := worker("not-a-token", "bad1")
+	exited := make(chan struct{})
+	go func() { _ = bad.Wait(); close(exited) }()
 
-	_, out := worker(workerToken)
-	want := "worker_id=tok:cfg:wsworker/boot1"
+	_, out := worker(workerToken, "boot1")
+	want := "worker_id=tenant:acme/boot1"
 	for deadline := time.Now().Add(30 * time.Second); !strings.Contains(core.out.String(), want); {
 		if time.Now().After(deadline) {
 			t.Fatalf("the worker did not attach\ncore:\n%s\nworker:\n%s", core.out.String(), out.String())
@@ -81,5 +72,13 @@ func TestBoot_WorkspaceRemoteModeAttachesARealWorker(t *testing.T) {
 	}
 	if _, err := os.Stat(root); err != nil {
 		t.Errorf("the worker made no root: %v", err)
+	}
+	if strings.Contains(core.out.String(), "tenant:acme/bad1") {
+		t.Errorf("a worker with an unknown bearer attached\n%s", core.out.String())
+	}
+	select {
+	case <-exited:
+		t.Errorf("a worker with an unknown bearer stopped; it should retry\n%s", badOut.String())
+	default:
 	}
 }

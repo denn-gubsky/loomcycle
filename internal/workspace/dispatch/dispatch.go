@@ -4,15 +4,17 @@
 // Do, which runs one op on a worker.
 //
 // A worker authenticates with an operator token holding only workers:attach
-// (auth.WorkerAttachment). Its id here is the token's identity joined to the
-// id it declares, so two tokens' workers never share an id, and an Op stream
-// is accepted only under the id its own token attached. The store's
+// (auth.WorkerAttachment). Its id here is what its token grants (its tenant,
+// or "shared") joined to the id it declares, so two tenants' workers never
+// share an id, a rotated token's worker keeps its id, and an Op stream is
+// accepted only when its own token grants that same id. The store's
 // worker-keyed queries are not tenant-scoped; this keying is what makes them
 // safe to use.
 package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -72,6 +74,9 @@ type Store interface {
 	WorkspaceListByWorker(ctx context.Context, workerID string, states ...store.WorkspaceState) ([]store.WorkspaceRow, error)
 	WorkspaceDelete(ctx context.Context, tenantID, id string) (bool, error)
 	WorkspaceCountActiveByWorker(ctx context.Context, workerID string) (int, error)
+	WorkspaceSetState(ctx context.Context, tenantID, id string, from, to store.WorkspaceState) (bool, error)
+	// GetRun reads a lost workspace's owner run at reconciliation.
+	GetRun(ctx context.Context, runID string) (store.Run, error)
 }
 
 // Options configure a Dispatcher.
@@ -223,8 +228,8 @@ func (d *Dispatcher) Stop() {
 }
 
 // authenticate resolves the stream's bearer and decides whether it may
-// attach a workspace worker. owner is the token's identity, the prefix of
-// every id its workers get.
+// attach a workspace worker. owner is what the token grants (grantKey), the
+// prefix of every id its workers get.
 func (d *Dispatcher) authenticate(ctx context.Context) (owner string, att auth.WorkerAttach, bearer string, err error) {
 	md, _ := metadata.FromIncomingContext(ctx)
 	vals := md.Get(workspace.MDAuthorization)
@@ -247,38 +252,44 @@ func (d *Dispatcher) authorize(ctx context.Context, bearer string) (owner string
 	}
 	p, ok := dp.resolve(ctx, bearer)
 	if !ok {
-		return "", att, status.Error(codes.Unauthenticated, "invalid bearer token")
+		// The resolver answers an unknown token and a store it could not
+		// read alike, so neither is final: Unavailable, which the worker
+		// retries with its backoff. A token that never resolves is refused
+		// at every attach and so never served; one that recovers attaches
+		// afresh. Only a principal that did resolve is refused for good.
+		return "", att, status.Error(codes.Unavailable, "the runtime could not verify this worker's token")
 	}
 	att, err = auth.WorkerAttachment(p)
 	if err != nil {
 		return "", att, status.Error(codes.PermissionDenied, err.Error())
 	}
-	return principalKey(p), att, nil
+	return grantKey(att), att, nil
 }
 
 // stillAuthorized decides an attached worker's bearer again. It must still
-// resolve, still be admitted by auth.WorkerAttachment, still be the same
-// token, and serve exactly the tenants it served at attach.
-func (d *Dispatcher) stillAuthorized(ctx context.Context, bearer, owner string, att auth.WorkerAttach) error {
-	o, a, err := d.authorize(ctx, bearer)
+// resolve, still be admitted by auth.WorkerAttachment, and still grant what
+// it granted at attach.
+func (d *Dispatcher) stillAuthorized(ctx context.Context, bearer, owner string) error {
+	o, _, err := d.authorize(ctx, bearer)
 	switch {
 	case err != nil:
 		return err
 	case o != owner:
-		return status.Error(codes.PermissionDenied, "the worker's token now names another token")
-	case a != att:
 		return status.Error(codes.PermissionDenied, "the worker's token now serves other tenants")
 	}
 	return nil
 }
 
-// principalKey is a token's identity: its OperatorTokenDef row, or, for a
-// principal declared in config, its tenant and subject. Never the bearer.
-func principalKey(p auth.Principal) string {
-	if p.TokenDefID != "" {
-		return "tok:" + p.TokenDefID
+// grantKey is what a worker token grants, the prefix of its workers' ids:
+// "tenant:<id>" for a tenant-bound worker, "shared" for a shared one. It
+// names the grant, not the token, so a rotated token's worker attaches under
+// the id it had and its workspaces' rows still name it; the tenant in it
+// keeps two tenants' workers from ever sharing an id.
+func grantKey(att auth.WorkerAttach) string {
+	if att.Shared {
+		return "shared"
 	}
-	return "cfg:" + p.TenantID + ":" + p.Subject
+	return "tenant:" + att.TenantID
 }
 
 // validDeclaredID reports whether a worker's own id is 1 to maxDeclaredID
@@ -362,10 +373,12 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 		select {
 		case <-recheck.C:
 			// The bearer is kept only for the life of this stream, never
-			// logged. A token that no longer resolves, is refused, names
-			// another token row, or serves another set of tenants ends the
-			// attachment; the worker reads the code as permanent.
-			if err := d.stillAuthorized(ctx, bearer, owner, att); err != nil {
+			// logged. A token that no longer resolves ends the attachment
+			// with Unavailable (the worker retries, and attaches only once
+			// it resolves again); one that is refused or now serves other
+			// tenants ends it with PermissionDenied, which the worker reads
+			// as final.
+			if err := d.stillAuthorized(ctx, bearer, owner); err != nil {
 				log.Warn("workspace worker's token no longer attaches it; detaching", "err", err)
 				gone = ErrWorkerRevoked
 				return err
@@ -437,7 +450,9 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 // reconcile compares what a worker holds with the store's rows for it and
 // returns the ids to remove: those released while it was away (releasing)
 // and those no row knows. A releasing row whose directory the worker no
-// longer holds is deleted at once; one it holds waits for its Removed. A
+// longer holds is deleted at once; one it holds waits for its Removed. A lost
+// row whose directory came back is ready again while its owner run lives,
+// and removed like a released one once that run has ended (recoverLost). A
 // store that cannot be read removes nothing: a directory is never removed on
 // a guess.
 func (d *Dispatcher) reconcile(ctx context.Context, w *worker, held []string, log *slog.Logger) []string {
@@ -452,7 +467,6 @@ func (d *Dispatcher) reconcile(ctx context.Context, w *worker, held []string, lo
 	}
 	onDisk := make(map[string]bool, len(held))
 	var remove []string
-	d.mu.Lock()
 	for _, id := range held {
 		onDisk[id] = true
 		r, known := byID[id]
@@ -460,11 +474,14 @@ func (d *Dispatcher) reconcile(ctx context.Context, w *worker, held []string, lo
 		case !known:
 			remove = append(remove, id)
 		case r.State == store.WorkspaceReleasing:
-			w.pending[id] = r
+			d.markPending(w, r)
 			remove = append(remove, id)
+		case r.State == store.WorkspaceLost:
+			if d.recoverLost(ctx, w, r, log) {
+				remove = append(remove, id)
+			}
 		}
 	}
-	d.mu.Unlock()
 	for _, r := range rows {
 		if r.State == store.WorkspaceReleasing && !onDisk[r.ID] {
 			d.deleteRow(ctx, r, log)
@@ -476,8 +493,42 @@ func (d *Dispatcher) reconcile(ctx context.Context, w *worker, held []string, lo
 	return remove
 }
 
-// confirmRemoved deletes the releasing rows whose directories the worker
-// says are gone. An id no Remove named is ignored.
+func (d *Dispatcher) markPending(w *worker, r store.WorkspaceRow) {
+	d.mu.Lock()
+	w.pending[r.ID] = r
+	d.mu.Unlock()
+}
+
+// recoverLost settles a lost row whose directory the worker came back with.
+// Its owner run still live: the row is ready again (a compare-and-set from
+// lost, so a sweeper that moved it meanwhile wins). Its owner run ended or
+// gone: the directory is to be removed and the row deleted once the worker
+// confirms, which recoverLost reports by returning true. A run that cannot
+// be read changes nothing until the next attach.
+func (d *Dispatcher) recoverLost(ctx context.Context, w *worker, r store.WorkspaceRow, log *slog.Logger) (remove bool) {
+	run, err := d.store().GetRun(ctx, r.OwnerRunID)
+	var nf *store.ErrNotFound
+	switch {
+	case errors.As(err, &nf):
+	case err != nil:
+		log.Warn("cannot read a lost workspace's owner run; settling it at the worker's next attach", "workspace_id", r.ID, "err", err)
+		return false
+	case !store.IsTerminalRunStatus(run.Status):
+		ok, err := d.store().WorkspaceSetState(ctx, r.TenantID, r.ID, store.WorkspaceLost, store.WorkspaceReady)
+		if err != nil {
+			log.Warn("cannot mark a returned workspace ready", "workspace_id", r.ID, "err", err)
+		} else if ok {
+			log.Info("a lost workspace came back with its worker", "workspace_id", r.ID)
+		}
+		return false
+	}
+	d.markPending(w, r)
+	return true
+}
+
+// confirmRemoved deletes the rows a Remove named (released, or lost with
+// their run ended) once the worker says their directories are gone. An id no
+// Remove named is ignored.
 func (d *Dispatcher) confirmRemoved(ctx context.Context, w *worker, ids []string, log *slog.Logger) {
 	var rows []store.WorkspaceRow
 	d.mu.Lock()
@@ -546,12 +597,13 @@ func (d *Dispatcher) Op(stream workspacepb.WorkspaceService_OpServer) error {
 	defer cancel()
 	s := &opStream{ops: make(chan *op, 1), ctx: ctx, cancel: cancel}
 	d.mu.Lock()
-	// The id is looked up under this stream's own token: a stream naming a
-	// worker another token attached finds nothing.
+	// The id is built from what this stream's own token grants: a stream
+	// naming a worker of another tenant (or a shared worker, from a tenant
+	// token) finds nothing.
 	w := d.workers[owner+"/"+ready.GetWorkerId()]
 	if w == nil {
 		d.mu.Unlock()
-		return status.Error(codes.PermissionDenied, "no worker of this token is attached under that id")
+		return status.Error(codes.PermissionDenied, "no worker this token grants is attached under that id")
 	}
 	select {
 	case <-w.lost:

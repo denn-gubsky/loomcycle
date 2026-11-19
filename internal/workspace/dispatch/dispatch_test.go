@@ -27,10 +27,9 @@ import (
 // good: the worker stops with ErrRefused, and nothing attaches.
 func TestAttach_RefusedTokensStopTheWorker(t *testing.T) {
 	for name, tok := range map[string]string{
-		"no workers:attach":         tokNoScope,
-		"an admin token":            tokAdmin,
-		"workers:attach and more":   tokMixed,
-		"a conversion worker token": tokConversion,
+		"no workers:attach":       tokNoScope,
+		"an admin token":          tokAdmin,
+		"workers:attach and more": tokMixed,
 	} {
 		t.Run(name, func(t *testing.T) {
 			d, target := core(t, newMemStore(), dispatch.Options{})
@@ -50,11 +49,13 @@ func TestAttach_RefusedTokensStopTheWorker(t *testing.T) {
 	}
 }
 
-// The refusal says which kind: an unknown bearer is Unauthenticated, a known
-// token that may not attach is PermissionDenied.
+// The refusal says which kind: a bearer that does not resolve is Unavailable
+// (the resolver cannot tell an unknown token from a store it could not
+// read, so the worker retries), a resolved token that may not attach is
+// PermissionDenied (final).
 func TestAttach_RefusalCodes(t *testing.T) {
 	_, target := core(t, newMemStore(), dispatch.Options{})
-	for tok, want := range map[string]codes.Code{tokConversion: codes.Unauthenticated, tokAdmin: codes.PermissionDenied, tokNoScope: codes.PermissionDenied} {
+	for tok, want := range map[string]codes.Code{tokConversion: codes.Unavailable, tokAdmin: codes.PermissionDenied, tokNoScope: codes.PermissionDenied} {
 		f := dialFake(t, target, tok)
 		_, err := f.hello(&workspacepb.Hello{WorkerId: "w1", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineHost})
 		if status.Code(err) != want {
@@ -400,7 +401,7 @@ func TestAttach_ATokenThatStopsHoldingDetachesTheWorker(t *testing.T) {
 		p    *auth.Principal
 		code codes.Code
 	}{
-		"revoked":                  {nil, codes.Unauthenticated},
+		"revoked":                  {nil, codes.Unavailable},
 		"re-bound to other tenant": {&rebound, codes.PermissionDenied},
 		"widened past the scope":   {&attachOnly, codes.PermissionDenied},
 	} {
@@ -411,7 +412,7 @@ func TestAttach_ATokenThatStopsHoldingDetachesTheWorker(t *testing.T) {
 			f.attach("f1")
 			f.heartbeat(20 * time.Millisecond)
 			s := f.stream("f1")
-			id := "tok:def-revocable/f1"
+			id := acmeID("f1")
 			waitAttached(t, d, id)
 			errc := make(chan error, 1)
 			go func() {
@@ -465,5 +466,101 @@ func TestAttach_ATokenThatStopsHoldingDetachesTheWorker(t *testing.T) {
 				t.Fatalf("a new stream after the revoke: %v", err)
 			}
 		})
+	}
+}
+
+// A token the core cannot verify (a resolver that fails, or a token
+// revoked) never stops the worker: it is detached, refused at every attach
+// while the token does not resolve, and served again only once it does.
+func TestAttach_AnUnverifiableTokenIsRetriedNeverServed(t *testing.T) {
+	const tok = "tok-flaky"
+	acme := principals[tokAcme]
+	acme.TokenDefID = "def-flaky"
+	setToken(t, tok, &acme)
+	d, target := core(t, newMemStore(), dispatch.Options{RecheckEvery: 50 * time.Millisecond})
+	_, done := realWorker(t, target, tok, "w1", worker.Options{IdleStreams: 1})
+	waitAttached(t, d, acmeID("w1"))
+
+	setToken(t, tok, nil) // the resolver now answers nothing for it
+	waitFor(t, "the worker to detach", func() bool { return len(d.Workers()) == 0 })
+	// Long enough for at least one re-attach attempt (the backoff starts at
+	// a second): it is refused, and the worker keeps going.
+	time.Sleep(2500 * time.Millisecond)
+	if n := len(d.Workers()); n != 0 {
+		t.Fatalf("%d workers attached on a token that does not resolve", n)
+	}
+	if err := d.Open(context.Background(), "acme", acmeID("w1"), "ws1"); !errors.Is(err, dispatch.ErrWorkerLost) {
+		t.Fatalf("an op while the token does not resolve: %v", err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("the worker stopped on a token the core could not verify: %v", err)
+	default:
+	}
+
+	setToken(t, tok, &acme) // the resolver recovers
+	waitAttached(t, d, acmeID("w1"))
+}
+
+// A worker's id names what its token grants, not the token: a worker that
+// comes back on a rotated token attaches under the id it had, its workspace
+// rows still name it, and reconciliation removes nothing of theirs.
+func TestAttach_ARotatedTokenKeepsTheWorkerAndItsWorkspaces(t *testing.T) {
+	id := acmeID("w1")
+	st := newMemStore(store.WorkspaceRow{ID: "ws1", TenantID: "acme", WorkerID: id, State: store.WorkspaceReady})
+	d, target := core(t, st, dispatch.Options{})
+	root := t.TempDir()
+	mkdirs(t, root, "ws1")
+	_, _, stop := stoppableWorker(t, target, tokAcme, "w1", worker.Options{Root: root, IdleStreams: 1})
+	waitAttached(t, d, id)
+	stop()
+	waitFor(t, "the first worker to detach", func() bool { return len(d.Workers()) == 0 })
+
+	realWorker(t, target, tokAcme2, "w1", worker.Options{Root: root, IdleStreams: 1})
+	waitAttached(t, d, id)
+	if ok, err := d.Status(context.Background(), "acme", id, "ws1"); err != nil || !ok {
+		t.Fatalf("the workspace after the rotation: status = %v, %v", ok, err)
+	}
+	if !st.has("ws1") || st.state("ws1") != store.WorkspaceReady {
+		t.Fatal("the workspace's row changed across the rotation")
+	}
+}
+
+// Two tokens of one grant cannot attach two workers of one name at once:
+// the second is refused AlreadyExists, which a worker retries.
+func TestAttach_ASecondWorkerOfTheSameIDIsRefused(t *testing.T) {
+	d, target := core(t, newMemStore(), dispatch.Options{})
+	realWorker(t, target, tokAcme, "w1", worker.Options{IdleStreams: 1})
+	waitAttached(t, d, acmeID("w1"))
+	f := dialFake(t, target, tokAcme2)
+	_, err := f.hello(&workspacepb.Hello{WorkerId: "w1", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineHost})
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("err = %v, want AlreadyExists", err)
+	}
+}
+
+// A lost workspace whose directory comes back with its worker is ready again
+// while its owner run lives; once that run has ended, or is gone, its
+// directory is removed and its row deleted.
+func TestAttach_ALostWorkspaceIsRecoveredOrRemovedByItsRun(t *testing.T) {
+	id := acmeID("w1")
+	lost := func(ws, run string) store.WorkspaceRow {
+		return store.WorkspaceRow{ID: ws, TenantID: "acme", WorkerID: id, OwnerRunID: run, State: store.WorkspaceLost}
+	}
+	st := newMemStore(lost("ws-live", "run-live"), lost("ws-done", "run-done"), lost("ws-gone", "run-gone"))
+	st.runs["run-live"] = store.RunRunning
+	st.runs["run-done"] = store.RunCompleted
+	d, target := core(t, st, dispatch.Options{})
+	root := t.TempDir()
+	mkdirs(t, root, "ws-live", "ws-done", "ws-gone")
+	realWorker(t, target, tokAcme, "w1", worker.Options{Root: root, IdleStreams: 1})
+	waitAttached(t, d, id)
+
+	waitFor(t, "the ended runs' workspaces to go", func() bool {
+		return !exists(filepath.Join(root, "ws-done")) && !exists(filepath.Join(root, "ws-gone")) && !st.has("ws-done") && !st.has("ws-gone")
+	})
+	waitFor(t, "the live run's workspace to be ready", func() bool { return st.state("ws-live") == store.WorkspaceReady })
+	if !exists(filepath.Join(root, "ws-live")) {
+		t.Fatal("the live run's workspace was removed")
 	}
 }

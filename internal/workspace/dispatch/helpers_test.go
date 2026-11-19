@@ -27,7 +27,9 @@ import (
 
 // The bearers the test resolver knows. None is a real token.
 const (
-	tokAcme    = "tok-acme-worker"
+	tokAcme = "tok-acme-worker"
+	// tokAcme2 is a second token of acme's grant: a rotation of tokAcme.
+	tokAcme2   = "tok-acme-worker-rotated"
 	tokOther   = "tok-other-worker"
 	tokShared  = "tok-shared-worker"
 	tokAdmin   = "tok-admin"
@@ -40,6 +42,7 @@ const (
 
 var principals = map[string]auth.Principal{
 	tokAcme:    {TenantID: "acme", Subject: "w-acme", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-acme"},
+	tokAcme2:   {TenantID: "acme", Subject: "w-acme", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-acme-2"},
 	tokOther:   {TenantID: "other", Subject: "w-other", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-other"},
 	tokShared:  {TenantID: "ops", Subject: "w-shared", Scopes: []string{auth.ScopeWorkersAttach}, TokenDefID: "def-shared", Restrictions: auth.Restrictions{WorkerShared: true}},
 	tokAdmin:   {TenantID: "ops", Subject: "admin", Scopes: []string{auth.ScopeAdmin}, TokenDefID: "def-admin"},
@@ -82,18 +85,20 @@ func setToken(t *testing.T, bearer string, p *auth.Principal) {
 }
 
 // The core-side ids of the workers the tests attach.
-func acmeID(declared string) string   { return "tok:def-acme/" + declared }
-func otherID(declared string) string  { return "tok:def-other/" + declared }
-func sharedID(declared string) string { return "tok:def-shared/" + declared }
+func acmeID(declared string) string   { return "tenant:acme/" + declared }
+func otherID(declared string) string  { return "tenant:other/" + declared }
+func sharedID(declared string) string { return "shared/" + declared }
 
-// memStore is the workspaces table in memory.
+// memStore is the workspaces table, and the runs a lost row's owner is read
+// from, in memory.
 type memStore struct {
 	mu   sync.Mutex
 	rows map[string]store.WorkspaceRow
+	runs map[string]store.RunStatus
 }
 
 func newMemStore(rows ...store.WorkspaceRow) *memStore {
-	m := &memStore{rows: map[string]store.WorkspaceRow{}}
+	m := &memStore{rows: map[string]store.WorkspaceRow{}, runs: map[string]store.RunStatus{}}
 	for _, r := range rows {
 		m.rows[r.ID] = r
 	}
@@ -146,6 +151,34 @@ func (m *memStore) WorkspaceCountActiveByWorker(_ context.Context, workerID stri
 	return n, nil
 }
 
+func (m *memStore) WorkspaceSetState(_ context.Context, tenantID, id string, from, to store.WorkspaceState) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[id]
+	if !ok || r.TenantID != tenantID || r.State != from {
+		return false, nil
+	}
+	r.State = to
+	m.rows[id] = r
+	return true, nil
+}
+
+func (m *memStore) GetRun(_ context.Context, runID string) (store.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.runs[runID]
+	if !ok {
+		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: runID}
+	}
+	return store.Run{ID: runID, Status: st}, nil
+}
+
+func (m *memStore) state(id string) store.WorkspaceState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rows[id].State
+}
+
 func (m *memStore) has(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -172,6 +205,13 @@ func core(t *testing.T, st dispatch.Store, opt dispatch.Options) (*dispatch.Disp
 // returns its root and a channel that receives Run's return.
 func realWorker(t *testing.T, target, token, id string, opt worker.Options) (string, <-chan error) {
 	t.Helper()
+	root, done, _ := stoppableWorker(t, target, token, id, opt)
+	return root, done
+}
+
+// stoppableWorker is realWorker with a stop that returns once Run has.
+func stoppableWorker(t *testing.T, target, token, id string, opt worker.Options) (string, <-chan error, func()) {
+	t.Helper()
 	if opt.Root == "" {
 		opt.Root = t.TempDir()
 	}
@@ -188,8 +228,9 @@ func realWorker(t *testing.T, target, token, id string, opt worker.Options) (str
 		defer close(finished)
 		done <- worker.Run(ctx, opt)
 	}()
-	t.Cleanup(func() { cancel(); <-finished })
-	return opt.Root, done
+	stop := func() { cancel(); <-finished }
+	t.Cleanup(stop)
+	return opt.Root, done, stop
 }
 
 // waitFor polls cond for up to 10s.
