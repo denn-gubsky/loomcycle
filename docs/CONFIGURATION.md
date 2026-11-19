@@ -3590,21 +3590,22 @@ Rows also carry `input_chars`, the characters text-to-speech and embedding calls
 
 ### DjVu books (`transcription.ocr.djvu`, RFC GV)
 
-`File op=extract` reads a DjVu book's text layer, its outline and its metadata through DjVuLibre's programs, `djvutxt` and `djvused`. Go reads only the file's container structure: the page count, which pages carry text, and whether the file is one the runtime will hand to a helper.
+`File op=extract` reads a DjVu book's text layer, its outline and its metadata through DjVuLibre's programs, `djvutxt` and `djvused`. With OCR it also renders the pages that need it with `ddjvu`. Go reads only the file's container structure: the page count, which pages carry text, and whether the file is one the runtime will hand to a helper.
 
 ```yaml
 transcription:
   ocr:
     djvu:
-      text:    { command: "djvutxt --detail=page --page={pages} {in}" }   # {in}, {pages} (e.g. 1-3,7)
-      inspect: { command: "djvused -e {script} {in}" }                   # {in}, {script}: print-outline | print-meta
+      text:      { command: "djvutxt --detail=page --page={pages} {in}" }               # {in}, {pages} (e.g. 1-3,7)
+      inspect:   { command: "djvused -e {script} {in}" }                               # {in}, {script}: print-outline | print-meta
+      rasterize: { command: "ddjvu -format=tiff -page={page} -size={size} {in} {out}" } # {in}, {page}, {size} (1568x1568), {out}
 ```
 
 - **Where it runs.**
-  - On a conversion worker the commands above are the defaults when the programs are on its `PATH`; the `loomcycle-worker` image carries `djvulibre-bin`. Such a worker carries the `djvu` label, and a DjVu extraction goes only to a worker that has it. A worker's own `LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND` / `LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND` replace them (§9n).
-  - In the server's own process DjVu is read only when this block sets `text` (RFC GV D8). The runtime writes no default here, because DjVuLibre is a C++ parser with a history of memory-safety bugs; a worker is the recommended place.
+  - On a conversion worker the commands above are the defaults when the programs are on its `PATH`; the `loomcycle-worker` image carries `djvulibre-bin`. Such a worker carries the `djvu` label, plus `djvu_render` when `ddjvu` is there, and a DjVu extraction goes only to a worker that has the labels it needs. A worker's own `LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND` / `_INSPECT_COMMAND` / `_RASTERIZE_COMMAND` replace them (§9n).
+  - In the server's own process DjVu is read only when this block sets `text`, and its pages are rendered only when it sets `rasterize` (RFC GV D8). The runtime writes no default here, because DjVuLibre is a C++ parser with a history of memory-safety bugs; a worker is the recommended place.
   - Without either, an extraction answers that this server cannot read DjVu.
-- **Checks.** Each command is checked at load: its placeholders must be the ones above, and it runs without a shell under `LOOMCYCLE_HELPER_WRAPPER`. `{script}` is always one of the two fixed scripts, never text from a file or a caller. `rasterize` (rendering pages for OCR) is refused by name until DjVu OCR ships.
+- **Checks.** Each command is checked at load: its placeholders must be the ones above, and it runs without a shell under `LOOMCYCLE_HELPER_WRAPPER`. `{script}` is always one of the two fixed scripts, never text from a file or a caller. Every placeholder is filled with the runtime's own numbers and scratch paths.
 - **What is refused before any helper runs.**
   - An indirect DjVu, whose pages are separate files.
   - A single page that includes another file (`INCL`, `NDIR`).
@@ -3618,8 +3619,15 @@ transcription:
   - A page with little or no text is listed in `low_yield_pages`, as a PDF's is.
   - Reading stops at the extraction's output cap.
   - The book's title, author, year and the rest come back as `metadata`.
-- **OCR of DjVu pages is not available yet.** An `ocr: auto|always` extract of a DjVu file reads the text layer only, and the file is never sent to a vision model as one picture.
-- **Known limit.** A whole large book still runs under the extraction's 60-second bound; read the first pages with `pages`.
+- **OCR of DjVu pages (RFC GV P4).**
+  - **Which pages:** with `ocr: auto` the pages below `ocr_min_chars_per_page` are rendered as the book is read; with `always`, every page read.
+  - **Rendering:** each page is rendered with `rasterize` into a 1568 px box, the vision engine's image edge, as TIFF. Its size is checked from the header before a pixel is decoded, and it goes on as PNG, one page per OCR call.
+  - **Budgets:** the run's and the run tree's page budgets are reserved before the extraction, and no more pages are rendered than were reserved. Bounds: 32 MiB per TIFF, 16 MiB per PNG, 128 MiB and 1,000 pages per extraction.
+  - **Result:** the agent's own `transcription.ocr_model` applies. The pages read replace the thin text under `## Page N`, below the outline headings.
+  - **Dry run:** renders nothing.
+  - **The book itself is never sent to a model.**
+  - **Without a renderer** (no worker with `djvu_render`, nothing configured in process): the text layer is still read, and the result says page OCR is not available here. A dry run reports `pages: 0` with a note.
+- **Known limit.** Rendering happens inside the extraction's 60-second bound, so one call renders about the first few dozen pages: enough for a book's opening, not a whole scanned book. A run's page reservation is held for that time, so a sibling run in the same tree may meet the page cap meanwhile.
 
 ## 9i. Speech — text-to-speech
 
@@ -4478,7 +4486,7 @@ conversion:
 What `local` does:
 
 - The runtime listens on a Unix socket in a private directory (mode 0700) and starts `local.workers` copies of itself as `loomcycle worker`. Each child has `GOMEMLIMIT` set from `local.memory_limit_mb`, and on Linux raises its own `oom_score_adj` to 1000, so that in a shared cgroup the kernel kills a worker before the runtime. A child exits when the runtime does.
-- A child gets a minimal environment: `PATH`, `HOME`, the temp-directory and locale variables, its token, its memory limit, and the runtime's helper command lines (`transcription.ocr.rasterize.command`, `transcription.ocr.djvu.text.command`, `transcription.ocr.djvu.inspect.command`, `transcription.stt.media.command`, `speech.encode.command`, `LOOMCYCLE_RENDER_PDF_COMMAND`, `LOOMCYCLE_RENDER_DIAGRAM_COMMAND`, and `LOOMCYCLE_HELPER_WRAPPER`). It holds no provider key, no store connection and no setting of the runtime's, and it is never given a path. The runtime keeps every grant, fence and inbox write, and sends the worker only the file's bytes, which it spools to its own temp directory.
+- A child gets a minimal environment: `PATH`, `HOME`, the temp-directory and locale variables, its token, its memory limit, and the runtime's helper command lines (`transcription.ocr.rasterize.command`, `transcription.ocr.djvu.text.command`, `transcription.ocr.djvu.inspect.command`, `transcription.ocr.djvu.rasterize.command`, `transcription.stt.media.command`, `speech.encode.command`, `LOOMCYCLE_RENDER_PDF_COMMAND`, `LOOMCYCLE_RENDER_DIAGRAM_COMMAND`, and `LOOMCYCLE_HELPER_WRAPPER`). It holds no provider key, no store connection and no setting of the runtime's, and it is never given a path. The runtime keeps every grant, fence and inbox write, and sends the worker only the file's bytes, which it spools to its own temp directory.
 - Everything that parses a file runs on the workers: `File op=extract`, the page cuts and page rendering of an OCR pass, the conversion of a recording for speech-to-text (the `File` tool and `/v1/audio/transcriptions`), the encoding of synthesized speech (`/v1/audio/speech`), the re-encoding of an image a vision model must have scaled, and the writing of a Document as a file (`File op=render` and the off-run export; a PDF is typeset by `LOOMCYCLE_WORKER_WRITE_COMMAND`, and ODT and EPUB go only to workers of a release that writes them), and the drawing of each Mermaid diagram in such a file as a picture (`LOOMCYCLE_WORKER_MERMAID_COMMAND`). The runtime still makes the model calls; a worker only converts.
 - A helper runs in the worker's scratch directory (`LOOMCYCLE_WORKER_SCRATCH`), not in the run's inbox, under the time bound the runtime sets for its job (`transcription.stt.timeout_s`, `speech.timeout_s`, two minutes for an OCR page). A `LOOMCYCLE_HELPER_WRAPPER` sandbox must keep that directory writable rather than the inbox root. A worker offers a helper's jobs only when the helper's program is found on its `PATH`; when no attached worker has it, the call is refused saying the program is not installed where the workers run. A change to a helper setting reaches the workers when they next start.
 - A worker that dies mid-job fails that one call, and the file is quarantined for `quarantine_ttl_s`: it is refused with "crashed the file converter" instead of being sent to the next worker. A dead child is started again with backoff (1 s, doubling to 30 s). With every worker busy, a call waits `queue_wait_s` and is then answered as a busy server the model may retry. With no worker attached at all, the call is refused. The runtime never falls back to converting in its own process.
