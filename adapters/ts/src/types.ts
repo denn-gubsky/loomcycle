@@ -4861,7 +4861,8 @@ export type DocumentToolInput = {
   written_before?: string;
   /** get_document / get_chunk / search / related / graph_recall / documents_summary /
    *  query_documents: add each row's nearest annotation as `summary`
-   *  ({level, brief, abstract?, stale?, chunk_id?}). */
+   *  ({level, brief, abstract?, stale?, chunk_id?}); a row that is a taxonomy node
+   *  (tenant scope) also gets `series`, its latest count, share and trend. */
   with_summary?: boolean;
   /** with_summary: the most abstract characters a response carries (default 2000, max 8000). */
   summary_chars?: number;

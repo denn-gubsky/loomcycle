@@ -12,7 +12,7 @@ right before `update_chunk` so the revision you pass is current.
 - `id` (required) — the **chunk** id. For a document's top chunk, use the
   `root_chunk_id` from `get_document`; a `document_id` here is "no such chunk".
 - `scope` — `user` (default), `agent` or `tenant`.
-- `with_summary` — add the nearest annotation at or above this chunk as `summary` (`{level, brief, abstract, stale?, chunk_id?}`; `chunk_id` names the ancestor it came from), and the document's own as `document_summary`.
+- `with_summary` — add the nearest annotation at or above this chunk as `summary` (`{level, brief, abstract, stale?, chunk_id?}`; `chunk_id` names the ancestor it came from), and the document's own as `document_summary`. On a taxonomy node's chunk (a concept or a document class, tenant scope) it also adds `series`: the node's latest count, share and trend from the built-in series, as `describe_ontology` `with_stats` gives it.
 - `summary_chars` — with `with_summary`, the most abstract characters the answer carries (default 2000, at most 8000).
 
 ## Returns

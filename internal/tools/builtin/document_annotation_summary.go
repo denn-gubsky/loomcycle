@@ -85,9 +85,12 @@ func (d *Document) attachAnnotations(ctx context.Context, key sqlmem.ScopeKey, m
 	if !plain && !(in.WithSummary && summaryOps[in.Op]) {
 		return res
 	}
-	// One cheap probe first: a scope with no annotations is left exactly as it was.
+	// One cheap probe first: a scope with no annotations is left exactly as it was,
+	// but for a taxonomy node's series (attachNodeSeries), which needs no record.
 	probe, err := d.query(ctx, key, `SELECT 1 FROM chunk_annotations LIMIT 1`)
-	if err != nil || len(probe.Rows) == 0 {
+	hasRecords := err == nil && len(probe.Rows) > 0
+	nodeSeries := in.WithSummary && summaryOps[in.Op] && mscope == store.MemoryScopeTenant
+	if !hasRecords && !nodeSeries {
 		return res
 	}
 	dec := json.NewDecoder(bytes.NewReader([]byte(res.Text)))
@@ -97,15 +100,20 @@ func (d *Document) attachAnnotations(ctx context.Context, key sqlmem.ScopeKey, m
 		return res
 	}
 	changed := false
-	if in.Op == "graph_snapshot" {
+	switch {
+	case !hasRecords:
+	case in.Op == "graph_snapshot":
 		changed = d.snapshotBriefs(ctx, key, body)
-	} else {
+	default:
 		if in.Op == "documents_summary" {
 			changed = d.documentBriefs(ctx, key, body)
 		}
 		if in.WithSummary {
 			changed = d.attachSummaries(ctx, key, mscope, in, body) || changed
 		}
+	}
+	if nodeSeries {
+		changed = d.attachNodeSeries(ctx, mscope, in.Op, body) || changed
 	}
 	if !changed {
 		return res
@@ -303,6 +311,11 @@ func (d *Document) attachSummaries(ctx context.Context, key sqlmem.ScopeKey, msc
 	}
 	changed := false
 	for _, r := range rows {
+		if sm, ok := r.m[r.field].(map[string]any); ok && isNodeAnnotationLevel(asStr(sm["level"])) {
+			// A taxonomy node found by the search leg keeps the node's own summary,
+			// not the ontology document's above it.
+			continue
+		}
 		rec, ok := nearestAnnotation(tree, recs, r.chunkID)
 		if !ok {
 			continue
