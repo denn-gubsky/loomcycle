@@ -75,7 +75,7 @@ func fileMCPSchema() json.RawMessage {
 const fileMCPDescription = "Inspect and manage the files a RUN's tools returned, kept in that run's inbox volume, from outside the run, without their bytes passing through you. " +
 	"Name the run with run_id (get_run and list_runs report it); the inbox belongs to the whole run tree, so a sub-run's id reaches its tree's inbox. " +
 	"Ops: stat (size, type, sha256 and origin of one file), ls (list the inbox or a folder of it), " +
-	"extract (turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, RTF, CSV, text or image file into Markdown in the inbox, its pictures kept as files, and return an excerpt; a book's own metadata comes back as metadata), " +
+	"extract (turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, CHM, RTF, CSV, text or image file into Markdown in the inbox, its pictures kept as files, and return an excerpt; a book's own metadata comes back as metadata), " +
 	"import (build a Document in YOUR own scopes from such a Markdown file, its pictures as image chunks), " +
 	"keep (copy a file into a read-write dynamic volume of your tenant: volume:<name>:<path>), rm (delete one file), clear (empty the inbox, or one folder of it), " +
 	"render (write a Document you may read — document or doc_path, in your own scopes — as pdf, docx, html or md into a read-write dynamic volume of your tenant, to: volume:<name>:<path>; it needs NO run_id), " +
