@@ -132,7 +132,9 @@ func (d *Document) unindexAnnotations(ctx context.Context, key sqlmem.ScopeKey, 
 		return
 	}
 	if len(levels) == 0 {
-		levels = []string{annotationLevelBranch, annotationLevelDocument, annotationLevelPath}
+		// Every level, the node levels too: a deleted ontology chunk's node row would
+		// otherwise stay in the node prefix's search window for good.
+		levels = append([]string{annotationLevelBranch, annotationLevelDocument, annotationLevelPath}, nodeAnnotationLevels...)
 	}
 	tenant, scopeID := direntTenant(ctx), annotationMemScopeID(mscope, key)
 	for _, c := range chunkIDs {

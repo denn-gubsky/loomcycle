@@ -469,6 +469,39 @@ func TestNodeAnnotationInputs_StatusNotOneWordCountsAsOther(t *testing.T) {
 	}
 }
 
+// TestNodeAnnotation_DeletedNodeChunkLeavesNoSearchRow — deleting a node's chunk
+// removes any search row of it, at every node level, as it removes a section's: a
+// row left in the node prefix would crowd that leg's window for good. (A node with
+// a record is refused deletion until the record goes, and delete_annotation drops
+// the row; this is the row a record is no longer there to account for.)
+func TestNodeAnnotation_DeletedNodeChunkLeavesNoSearchRow(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	f := newConceptFixture(t, d, base)
+	op := annOperator(f.operator)
+	law := f.concepts["rank/law"]
+	key, mscope, err := d.ontologyTenantKey(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeID := annotationMemScopeID(mscope, key)
+	if err := d.Store.MemorySet(op, direntTenant(op), mscope, scopeID, annotationKey(law, annotationLevelConcept), []byte(`{}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	row := func() bool {
+		_, err := d.Store.MemoryGet(op, direntTenant(op), mscope, scopeID, annotationKey(law, annotationLevelConcept))
+		return err == nil
+	}
+	if !row() {
+		t.Fatal("the row was not written, so this checks nothing")
+	}
+	if _, r := docExec(t, d, op, `{"op":"delete_chunk","scope":"tenant","id":"`+law+`"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	if row() {
+		t.Fatal("the deleted node's search row is still there")
+	}
+}
+
 // TestNodeSeries_ReadBuildsAtMostOneLightPlan — a with_summary read builds one node
 // statistics plan at most: a light one (no member documents, vectors or stored
 // statistics) for the series alone, and the search leg's own plan, reused, when a
