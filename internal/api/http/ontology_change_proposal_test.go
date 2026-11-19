@@ -74,43 +74,136 @@ func TestOntologyProposals_ChangeProposalIsListedWithItsChange(t *testing.T) {
 	}
 }
 
-// TestOntologyProposals_GenericAcceptCannotApplyAChangeProposal: accepting a change or
-// retire proposal on the route is refused (409) until P4.2 — the generic accept would
-// clear the proposal's own status and put "retire: Memo" in force as a class — even
-// when its mark no longer decodes; the proposal stays proposed and its target as it
-// was. Rejecting it works as for any proposal.
-func TestOntologyProposals_GenericAcceptCannotApplyAChangeProposal(t *testing.T) {
+// postProposal posts to the proposals route and returns the status and the body.
+func postProposal(t *testing.T, s *Server, tenant string, payload map[string]string) (int, map[string]any) {
+	t.Helper()
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/_ontology/proposals?tenant="+tenant, strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	s.handleOntologyProposal(rec, req)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
+}
+
+// TestOntologyProposals_AcceptAppliesAChangeProposalInPlace (RFC GQ P4.2): accepting a
+// retire and an edit applies each to the entry it names, keeping its chunk id; the
+// proposal is gone, the answer says what was applied, and the change is recorded.
+func TestOntologyProposals_AcceptAppliesAChangeProposalInPlace(t *testing.T) {
 	s, mi, exec := changeProposalFixture(t)
+	sink := &recordingSink{}
+	s.reviewAudit = sink
+	read := s.ontologyStateOrFail(t, mi.Tenant)
+	var supervisesID string
+	for _, rel := range read.Relations {
+		if rel.Name == "supervises" {
+			supervisesID = rel.ChunkID
+		}
+	}
 	retire := exec(map[string]any{"op": "propose_entity", "change": "retire", "entry": "Memo"})["chunk_id"].(string)
+	edit := exec(map[string]any{"op": "propose_entity", "change": "edit", "entry": "supervises", "section": "relations",
+		"name": "oversees"})["chunk_id"].(string)
+
+	after := s.postOntologyJSON(t, "/v1/_ontology/proposals", mi.Tenant, map[string]string{"chunk_id": retire, "action": "accept"}, http.StatusOK)
+	if after.ChangeAccepted == nil || after.ChangeAccepted.Op != meminject.ChangeOpRetire || after.ChangeAccepted.TargetName != "Memo" {
+		t.Errorf("change_accepted = %+v", after.ChangeAccepted)
+	}
+	after = s.postOntologyJSON(t, "/v1/_ontology/proposals", mi.Tenant, map[string]string{"chunk_id": edit, "action": "accept"}, http.StatusOK)
+	var renamed bool
+	for _, rel := range after.Relations {
+		renamed = renamed || (rel.Name == "oversees" && rel.ChunkID == supervisesID)
+	}
+	if !renamed {
+		t.Errorf("supervises was not renamed in place: %+v", after.Relations)
+	}
+	for _, term := range after.Terms {
+		if term.Name == "Memo" && term.EntryStatus != meminject.OntologyStatusRetired {
+			t.Errorf("Memo = %+v, want retired", term)
+		}
+		if strings.Contains(term.Name, ":") {
+			t.Errorf("a proposal was put in force as a class: %+v", term)
+		}
+	}
+	for _, p := range after.Proposals {
+		if p.ChunkID == retire || p.ChunkID == edit {
+			t.Errorf("an accepted proposal is still listed: %+v", p)
+		}
+	}
+	if len(sink.events) != 2 || sink.events[1].Action != "ontology_change_applied" || sink.events[1].OntologyProposalID != edit ||
+		sink.events[1].OntologyEntryID != supervisesID || sink.events[1].OntologyOp != meminject.ChangeOpEdit ||
+		sink.events[1].TargetName != "supervises" {
+		t.Errorf("audit = %+v", sink.events)
+	}
+}
+
+// TestOntologyProposals_TamperedChangeProposalIs422: a change proposal whose mark no
+// longer decodes is refused as invalid (422), never accepted the generic way; it stays
+// proposed and can still be rejected.
+func TestOntologyProposals_TamperedChangeProposalIs422(t *testing.T) {
+	s, mi, exec := changeProposalFixture(t)
 	edit := exec(map[string]any{"op": "propose_entity", "change": "edit", "entry": "Memo", "meaning": "A note."})["chunk_id"].(string)
-	// The operator's editor can break the mark; the route must still not accept it.
 	g := exec(map[string]any{"op": "get_chunk", "scope": "tenant", "id": edit})
 	exec(map[string]any{"op": "update_chunk", "scope": "tenant", "id": edit, "revision": g["revision"],
 		"fields": map[string]any{"change_proposal": "garbage"}})
-
-	for _, id := range []string{retire, edit} {
-		body, _ := json.Marshal(map[string]string{"chunk_id": id, "action": "accept"})
-		req := httptest.NewRequest(http.MethodPost, "/v1/_ontology/proposals?tenant="+mi.Tenant, strings.NewReader(string(body)))
-		rec := httptest.NewRecorder()
-		s.handleOntologyProposal(rec, req)
-		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "comes with P4.2") {
-			t.Errorf("accept %s = %d %s, want 409 naming P4.2", id, rec.Code, rec.Body.String())
-		}
-		if st, _ := exec(map[string]any{"op": "get_chunk", "scope": "tenant", "id": id})["status"].(string); st != meminject.OntologyStatusProposed {
-			t.Errorf("%s status = %q after a refused accept", id, st)
+	if code, out := postProposal(t, s, mi.Tenant, map[string]string{"chunk_id": edit, "action": "accept"}); code != http.StatusUnprocessableEntity || out["code"] != "invalid_proposal" {
+		t.Errorf("accept = %d %v, want 422 invalid_proposal", code, out)
+	}
+	if st, _ := exec(map[string]any{"op": "get_chunk", "scope": "tenant", "id": edit})["status"].(string); st != meminject.OntologyStatusProposed {
+		t.Errorf("status = %q after a refused accept", st)
+	}
+	for _, term := range s.ontologyStateOrFail(t, mi.Tenant).Terms {
+		if strings.Contains(term.Name, ":") {
+			t.Errorf("a refused accept put a class in force: %+v", term)
 		}
 	}
-	state := s.ontologyStateOrFail(t, mi.Tenant)
-	for _, term := range state.Terms {
-		if strings.Contains(term.Name, ":") || (term.Name == "Memo" && term.EntryStatus != "") {
-			t.Errorf("a refused accept changed the classes: %+v", term)
-		}
-	}
-
-	after := s.postOntologyJSON(t, "/v1/_ontology/proposals", mi.Tenant, map[string]string{"chunk_id": retire, "action": "reject"}, http.StatusOK)
+	after := s.postOntologyJSON(t, "/v1/_ontology/proposals", mi.Tenant, map[string]string{"chunk_id": edit, "action": "reject"}, http.StatusOK)
 	for _, p := range after.Proposals {
-		if p.ChunkID == retire && p.Status != meminject.OntologyStatusRejected {
+		if p.ChunkID == edit && p.Status != meminject.OntologyStatusRejected {
 			t.Errorf("rejected proposal = %+v", p)
 		}
+	}
+}
+
+// TestOntologyProposals_ChangeAcceptRefusalsCarryTheirCodes: a rename of a kind in use
+// needs the plan's fingerprint (409 plan_required, carrying it) and applies with it; a
+// class rename with dependents is 409 rename_job_pending whatever the fingerprint.
+func TestOntologyProposals_ChangeAcceptRefusalsCarryTheirCodes(t *testing.T) {
+	s, mi, exec := changeProposalFixture(t)
+	a := exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "Alice"})["root_chunk_id"]
+	b := exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "Bob"})["root_chunk_id"]
+	exec(map[string]any{"op": "link_chunks", "scope": "tenant", "from_id": a, "to_id": b, "kind": "supervises"})
+	exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "A memo", "type": "Memo"})
+	edit := exec(map[string]any{"op": "propose_entity", "change": "edit", "entry": "supervises", "section": "relations",
+		"name": "oversees"})["chunk_id"].(string)
+	rename := exec(map[string]any{"op": "propose_entity", "change": "edit", "entry": "Memo", "name": "Memorandum"})["chunk_id"].(string)
+
+	code, out := postProposal(t, s, mi.Tenant, map[string]string{"chunk_id": edit, "action": "accept"})
+	fp, _ := out["fingerprint"].(string)
+	if code != http.StatusConflict || out["code"] != "plan_required" || fp == "" {
+		t.Fatalf("accept without a plan = %d %v, want 409 plan_required with the fingerprint", code, out)
+	}
+	if code, out := postProposal(t, s, mi.Tenant, map[string]string{"chunk_id": rename, "action": "accept", "plan_fingerprint": fp}); code != http.StatusConflict || out["code"] != "rename_job_pending" {
+		t.Errorf("class rename = %d %v, want 409 rename_job_pending", code, out)
+	}
+	if code, out := postProposal(t, s, mi.Tenant, map[string]string{"chunk_id": edit, "action": "accept", "plan_fingerprint": fp}); code != http.StatusOK {
+		t.Errorf("accept with the fingerprint = %d %v", code, out)
+	}
+}
+
+// TestOntologyProposals_AddProposalStillAcceptsByItsStatus: an add proposal carries no
+// change mark and is accepted as before — its own status cleared, in force where it sits.
+func TestOntologyProposals_AddProposalStillAcceptsByItsStatus(t *testing.T) {
+	s, mi, exec := changeProposalFixture(t)
+	add := exec(map[string]any{"op": "propose_entity", "name": "Circular", "parent": "Memo"})["chunk_id"].(string)
+	after := s.postOntologyJSON(t, "/v1/_ontology/proposals", mi.Tenant, map[string]string{"chunk_id": add, "action": "accept"}, http.StatusOK)
+	if after.ChangeAccepted != nil {
+		t.Errorf("an add proposal was accepted as a change: %+v", after.ChangeAccepted)
+	}
+	var found bool
+	for _, term := range after.Terms {
+		found = found || term.Name == "Circular"
+	}
+	if !found {
+		t.Error("the accepted add proposal is not in force")
 	}
 }

@@ -163,6 +163,9 @@ type ontologyResponse struct {
 	// SchemeAccepted says what accepting a whole-scheme proposal put in force (RFC GM
 	// P3.1); set only on that accept.
 	SchemeAccepted *builtin.SchemeAcceptReport `json:"scheme_accepted,omitempty"`
+	// ChangeAccepted says what accepting a change or retire proposal applied to the
+	// entry it names (RFC GQ P4.2); set only on that accept.
+	ChangeAccepted *builtin.ChangeAcceptReport `json:"change_accepted,omitempty"`
 }
 
 // ontologyTenant is the tenant every ontology route reads and writes: an admin's

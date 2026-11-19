@@ -19,11 +19,11 @@ package builtin
 //
 // Inert three ways, as the scheme proposal is: the chunk is proposed, so every reader
 // skips it; nothing it would change is in a body; and the target is not touched. Only an
-// operator accepts, and accepting a change proposal comes with P4.2 (AcceptChangeProposal,
-// which re-checks every field here against the ontology as it then stands). Until then the
-// operator's proposals route refuses to accept one (ChangeProposalMarked), so the generic
-// accept — which clears the proposal's own status — can never put "retire: X" in force as
-// a class named that. Rejecting is the route's ordinary reject.
+// operator accepts, through AcceptChangeProposal (P4.2), which re-runs every check here
+// against the ontology as it then stands and applies the change to the target in place.
+// The operator's proposals route sends every marked chunk there (ChangeProposalMarked),
+// so the generic accept — which clears the proposal's own status — can never put
+// "retire: X" in force as a class named that. Rejecting is the route's ordinary reject.
 
 import (
 	"bytes"
