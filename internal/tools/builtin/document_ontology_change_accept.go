@@ -160,9 +160,14 @@ func (d *Document) AcceptChangeProposal(ctx context.Context, scope, chunkID, pla
 	}
 	rep = ChangeAcceptReport{Proposal: chunkID, Target: a.mark.Target, TargetName: a.mark.TargetName,
 		Kind: a.mark.Kind, Op: a.mark.Op}
-	fp, err := d.planChangeAccept(ctx, a, planFingerprint, &rep)
-	if err != nil {
-		return true, rep, err
+	// An edit that changes nothing (a meaning equal to the entry's own) has nothing to
+	// plan; it still goes through the revision-only update below, then the proposal goes.
+	rep.Risk, rep.Complete = connector.OntologyRiskNone, true
+	fp := strings.TrimSpace(planFingerprint)
+	if len(a.changes) > 0 {
+		if fp, err = d.planChangeAccept(ctx, a, planFingerprint, &rep); err != nil {
+			return true, rep, err
+		}
 	}
 	if err := d.applyChangeAccept(ctx, a, fp, &rep); err != nil {
 		return true, rep, err
@@ -233,7 +238,7 @@ func (d *Document) checkChangeAccept(ctx context.Context, key sqlmem.ScopeKey, m
 		return invalid("its target is gone")
 	}
 	a.tg, a.mark, a.revision = tg, mark, target.Revision
-	return a, d.composeChangeAccept(ctx, &a)
+	return a, d.composeChangeAccept(ctx, &a, target)
 }
 
 // changeInputOf is the propose_entity input a stored mark stands for.
@@ -276,8 +281,13 @@ func changeInputOf(m memrank.ProposedChange) (docInput, error) {
 	return in, nil
 }
 
-// composeChangeAccept sets what the update writes, and the changes it is planned as.
-func (d *Document) composeChangeAccept(ctx context.Context, a *changeAccept) error {
+// composeChangeAccept sets what the update writes, and the changes it is planned as:
+// every change the write makes, found as update_chunk's own gate finds them
+// (ontologyUpdatePlanRefusal), so nothing the write does is left out of the plan the
+// caller's fingerprint is checked against. target is the target's row as read before
+// the checks. An edit whose body cannot be planned (empty, or over the plan's size) is
+// refused. No changes at all is a no-op accept.
+func (d *Document) composeChangeAccept(ctx context.Context, a *changeAccept, target chunkRow) error {
 	m := a.mark
 	if m.Op == memrank.ChangeOpRetire {
 		a.changes = []connector.OntologyChange{{Op: connector.OntologyPlanRetire, Entry: m.Target}}
@@ -286,27 +296,43 @@ func (d *Document) composeChangeAccept(ctx context.Context, a *changeAccept) err
 	if m.Name != "" {
 		name := m.Name
 		a.title = &name
-		a.changes = append(a.changes, connector.OntologyChange{Op: connector.OntologyPlanRename, Entry: m.Target, Name: m.Name})
-	}
-	if m.Parent != "" {
-		a.changes = append(a.changes, connector.OntologyChange{Op: connector.OntologyPlanMove, Entry: m.Target, Parent: m.Parent})
-	}
-	if m.Meaning == "" && !m.SetsDirectives {
-		return nil
 	}
 	cur, err := d.readBody(ctx, a.mscope, a.key, m.Target)
 	if err != nil {
 		return err
 	}
-	body := composeChangeBody(m.Kind, cur.Body, m)
-	if body == cur.Body {
-		return nil
+	body := cur.Body
+	if m.Meaning != "" || m.SetsDirectives {
+		if next := composeChangeBody(m.Kind, cur.Body, m); next != cur.Body {
+			if strings.TrimSpace(next) == "" || len(next) > ontologyPlanMaxBody {
+				return fmt.Errorf("%w: the entry's new body would be empty or over %d bytes, which cannot be planned",
+					ErrChangeProposalInvalid, ontologyPlanMaxBody)
+			}
+			body = next
+			a.body = &body
+			a.changes = append(a.changes, connector.OntologyChange{Op: connector.OntologyPlanEdit, Entry: m.Target, Body: body})
+		}
 	}
-	a.body = &body
-	// An edit with an empty body cannot be planned; update_chunk's own gate plans what
-	// it redeclares (ontologyUpdatePlanRefusal), so the write is still gated.
-	if strings.TrimSpace(body) != "" && len(body) <= ontologyPlanMaxBody {
-		a.changes = append(a.changes, connector.OntologyChange{Op: connector.OntologyPlanEdit, Entry: m.Target, Body: body})
+	// The name the entry reads under after the write: its title, else its body's first
+	// heading. A changed name is a rename (Q4 applies to a class); none at all takes the
+	// entry out of the read, which is planned as a retire.
+	title := target.Title
+	if a.title != nil {
+		title = *a.title
+	}
+	name := memrank.TrimOntologyName(title)
+	if name == "" {
+		name = memrank.FirstHeadingName(body)
+	}
+	switch {
+	case name == a.tg.entry.Name:
+	case name == "":
+		a.changes = append(a.changes, connector.OntologyChange{Op: connector.OntologyPlanRetire, Entry: m.Target})
+	default:
+		a.changes = append([]connector.OntologyChange{{Op: connector.OntologyPlanRename, Entry: m.Target, Name: name}}, a.changes...)
+	}
+	if m.Parent != "" {
+		a.changes = append(a.changes, connector.OntologyChange{Op: connector.OntologyPlanMove, Entry: m.Target, Parent: m.Parent})
 	}
 	return nil
 }

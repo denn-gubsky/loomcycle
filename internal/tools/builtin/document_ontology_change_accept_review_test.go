@@ -1,6 +1,8 @@
 package builtin
 
 import (
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +48,50 @@ func TestAcceptChange_MeaningEditKeepsAnUntitledEntrysName(t *testing.T) {
 			t.Errorf("%s: the entry reads as %q after a meaning edit, want Annex; body %q", name, got, f.body(id))
 		}
 		f.change(f.ctx, "delete_chunk", id, nil)
+	}
+}
+
+// TestAcceptChange_UnplannableBodyIsInvalid: an edit whose composed body is empty (its
+// directives cleared from a body of nothing else) or over the plan's 32 KiB cannot be
+// planned, so it is refused as invalid and nothing is written — also beside a rename
+// that can be planned, whose fingerprint must not carry the body through unplanned.
+func TestAcceptChange_UnplannableBodyIsInvalid(t *testing.T) {
+	f := newAcceptFixture(t)
+	filedUnder, provision := f.chunk("filed_under"), f.chunk("Provision")
+	if r := f.change(f.ctx, "update_chunk", provision, map[string]any{"body": strings.Repeat("Long meaning. ", 2400)}); r.IsError {
+		t.Fatal(r.Text)
+	}
+	for name, v := range map[string]map[string]any{
+		"empty":    {"change": "edit", "entry": filedUnder, "name": "filed_in", "directives": map[string]any{}},
+		"oversize": {"change": "edit", "entry": provision, "name": "Clause", "directives": map[string]any{"memory_scope": "tenant"}},
+	} {
+		target := v["entry"].(string)
+		before := f.body(target)
+		p := f.file(v)
+		if _, err := f.accept(p, f.fingerprintNow()); !errors.Is(err, ErrChangeProposalInvalid) {
+			t.Errorf("%s: accept = %v, want ErrChangeProposalInvalid", name, err)
+		}
+		if f.body(target) != before || !f.exists(p) {
+			t.Errorf("%s: a refused accept wrote something", name)
+		}
+	}
+}
+
+// TestAcceptChange_EditThatChangesNothingStillAccepts: a proposed meaning equal to the
+// entry's own leaves nothing to plan; the accept writes no change and removes the
+// proposal rather than refusing it.
+func TestAcceptChange_EditThatChangesNothingStillAccepts(t *testing.T) {
+	f := newAcceptFixture(t)
+	provision := f.chunk("Provision")
+	if r := f.change(f.ctx, "update_chunk", provision, map[string]any{"body": "A clause of an act."}); r.IsError {
+		t.Fatal(r.Text)
+	}
+	p := f.file(map[string]any{"change": "edit", "entry": provision, "meaning": "A clause of an act."})
+	rep, err := f.accept(p, "")
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if f.exists(p) || f.body(provision) != "A clause of an act." || len(rep.Applied) != 0 {
+		t.Errorf("a no-op accept: proposal kept %v, body %q, applied %v", f.exists(p), f.body(provision), rep.Applied)
 	}
 }
