@@ -1,0 +1,1003 @@
+== read
+{
+ "instances": [
+  {
+   "name": "Acme",
+   "class": "organization",
+   "chunk_id": "<id>"
+  },
+  {
+   "name": "Globex",
+   "class": "organization",
+   "chunk_id": "<id>"
+  }
+ ],
+ "issues": null,
+ "proposals": null,
+ "relations": [
+  {
+   "name": "supervises",
+   "source": "tenant",
+   "chunk_id": "<id>"
+  },
+  {
+   "name": "co_supervises",
+   "parent": "supervises",
+   "source": "tenant",
+   "chunk_id": "<id>"
+  },
+  {
+   "name": "filed_under",
+   "range": [
+    "concept"
+   ],
+   "source": "tenant",
+   "chunk_id": "<id>"
+  }
+ ],
+ "schemes": [
+  {
+   "name": "topics",
+   "render": true,
+   "concepts": [
+    {
+     "scheme": "topics",
+     "name": "Risk Management",
+     "path": [
+      "Risk Management"
+     ],
+     "retention": "10y",
+     "tag": "topics/risk-management",
+     "chunk_id": "<id>"
+    },
+    {
+     "scheme": "topics",
+     "name": "outsourcing",
+     "path": [
+      "Risk Management",
+      "outsourcing"
+     ],
+     "parent": "Risk Management",
+     "tag": "topics/risk-management/outsourcing",
+     "chunk_id": "<id>"
+    },
+    {
+     "scheme": "topics",
+     "name": "Reporting",
+     "path": [
+      "Reporting"
+     ],
+     "tag": "topics/reporting",
+     "chunk_id": "<id>"
+    }
+   ],
+   "chunk_id": "<id>"
+  }
+ ],
+ "terms": [
+  {
+   "name": "Document",
+   "fields": [
+    "title"
+   ],
+   "source": "tenant",
+   "field_specs": [
+    {
+     "name": "title",
+     "type": "text"
+    }
+   ],
+   "document_class": true
+  },
+  {
+   "name": "Policy",
+   "fields": [
+    "topic"
+   ],
+   "source": "tenant",
+   "parent": "Document",
+   "field_specs": [
+    {
+     "name": "topic",
+     "type": "concept",
+     "range": "topics"
+    }
+   ],
+   "document_class": true
+  },
+  {
+   "name": "Internal Policy",
+   "fields": null,
+   "source": "tenant",
+   "parent": "Policy",
+   "document_class": true
+  },
+  {
+   "name": "Memo",
+   "fields": null,
+   "source": "tenant",
+   "parent": "Document",
+   "document_class": true
+  },
+  {
+   "name": "Provision",
+   "fields": null,
+   "source": "tenant"
+  },
+  {
+   "name": "event",
+   "fields": [
+    "name"
+   ],
+   "source": "tenant",
+   "field_specs": [
+    {
+     "name": "name",
+     "type": "text"
+    }
+   ]
+  }
+ ]
+}
+== describe_ontology
+{"exists":true,"document_id":"<id>","status":"confirmed","confirmed":true,"version":2,"sections":["classes","relations","schemes","instances"],"classes":[{"name":"Document","source":"tenant","kind":"document","fields":[{"name":"title","type":"text"}]},{"name":"Internal Policy","parent":"Policy","source":"tenant","kind":"document","fields":[{"name":"title","type":"text"},{"name":"topic","type":"concept","range":"topics"}]},{"name":"Memo","parent":"Document","source":"tenant","kind":"document","fields":[{"name":"title","type":"text"}]},{"name":"Policy","parent":"Document","source":"tenant","kind":"document","fields":[{"name":"title","type":"text"},{"name":"topic","type":"concept","range":"topics"}]},{"name":"Provision","source":"tenant","kind":"chunk"},{"name":"event","source":"tenant","kind":"chunk","fields":[{"name":"name","type":"text"}]},{"name":"fact","source":"base","kind":"chunk"},{"name":"location","source":"base","kind":"chunk"},{"name":"object","source":"base","kind":"chunk"},{"name":"organization","source":"base","kind":"chunk"},{"name":"person","source":"base","kind":"chunk"},{"name":"preference","source":"base","kind":"chunk"}],"relations":[{"name":"about","inverse":"described_by","meaning":"a fact is about this entity","source":"reserved"},{"name":"alternate_of","symmetric":true,"meaning":"the same content in another form or language","source":"base"},{"name":"amends","parent":"changes","inverse":"amended_by","qualifiers":[{"name":"mod_type","values":["substitution","insertion","repeal","renumbering","split","join"]},{"name":"effective_from"}],"discriminator":"mod_type","dated":true,"meaning":"changes the text of an act or provision","source":"base"},{"name":"applies","parent":"references","inverse":"applied_by","meaning":"puts another act or provision into practice","source":"base"},{"name":"attributed_to","inverse":"attributed","meaning":"the agent a claim or document is attributed to","source":"base"},{"name":"based_on","parent":"references","inverse":"basis_for","walk":true,"meaning":"is issued on the authority of another act","source":"base"},{"name":"broader","inverse":"narrower","meaning":"a concept is narrower than another (the scheme tree)","source":"base"},{"name":"changes","inverse":"changed_by","meaning":"alters another act or provision","source":"base"},{"name":"cites","parent":"references","inverse":"cited_by","walk":true,"meaning":"refers to another act or provision","source":"base"},{"name":"classified_as","inverse":"classifies","functional":true,"meaning":"the file-plan class this record is filed under","source":"base"},{"name":"close_match","symmetric":true,"meaning":"nearly the same concept in another scheme","source":"base"},{"name":"co_supervises","parent":"supervises","source":"tenant","chunk_id":"<id>"},{"name":"commences","parent":"changes","inverse":"commenced_by","meaning":"brings another act or provision into force","source":"base"},{"name":"conflicts_with","symmetric":true,"irreflexive":true,"meaning":"cannot both be followed","source":"base"},{"name":"conforms_to","inverse":"conformed_to_by","meaning":"meets a standard","source":"base"},{"name":"consolidates","inverse":"consolidated_by","meaning":"combines an act with its amendments","source":"base"},{"name":"corrects","inverse":"corrected_by","meaning":"fixes an error in another document","source":"base"},{"name":"defines","inverse":"defined_by","walk":true,"meaning":"gives the definition of a term","source":"base"},{"name":"derived_from","inverse":"source_of","meaning":"a fact or summary was distilled from this","source":"reserved"},{"name":"derogates_from","inverse":"derogated_by","qualifiers":[{"name":"scope"}],"walk":true,"meaning":"makes an exception to another provision","source":"base"},{"name":"duplicate_of","parent":"alternate_of","inverse":"duplicated_by","asymmetric":true,"irreflexive":true,"qualifiers":[{"name":"basis","values":["sha256","title"]}],"meaning":"a copy of another document with the same content","source":"base"},{"name":"elaborates","parent":"related","inverse":"elaborated_by","meaning":"gives detail to a general statement","source":"base"},{"name":"exact_match","symmetric":true,"transitive":true,"meaning":"the same concept in another scheme","source":"base"},{"name":"filed_under","range":["concept"],"source":"tenant","chunk_id":"<id>"},{"name":"focus","inverse":"focus_of","meaning":"the entity a concept is about","source":"base"},{"name":"generated_by","inverse":"generated","meaning":"the run or event that produced this","source":"base"},{"name":"holds","inverse":"held_by","dated":true,"meaning":"a person holds a post","source":"base"},{"name":"implements","parent":"applies","inverse":"implemented_by","qualifiers":[{"name":"coverage","values":["full","partial"]}],"walk":true,"meaning":"carries out a higher norm","source":"base"},{"name":"instance_of","inverse":"has_instance","meaning":"a thing is an instance of a class","source":"base"},{"name":"invalidated_by","inverse":"invalidated","meaning":"the event that ended this","source":"base"},{"name":"issued_by","inverse":"issued","meaning":"the organisation that issued a document","source":"base"},{"name":"member_of","inverse":"has_member","meaning":"an item of a collection","source":"base"},{"name":"mentions","inverse":"mentioned_in","meaning":"the text names this thing","source":"reserved"},{"name":"overrides","inverse":"overridden_by","asymmetric":true,"qualifiers":[{"name":"principle","values":["superior","specialis","posterior"]}],"walk":true,"meaning":"takes precedence over another provision","source":"base"},{"name":"part_of","inverse":"has_part","asymmetric":true,"meaning":"a part of a whole (the document tree itself is not written as edges)","source":"base"},{"name":"post_in","inverse":"has_post","meaning":"a post exists in a unit","source":"base"},{"name":"primary_source","parent":"derived_from","inverse":"primary_source_of","meaning":"the original source of a claim","source":"base"},{"name":"primary_topic","parent":"subject","inverse":"primary_topic_of","functional":true,"meaning":"the one concept this is chiefly about","source":"base"},{"name":"quoted_from","parent":"derived_from","inverse":"quoted_in","meaning":"takes words verbatim from a source","source":"base"},{"name":"references","inverse":"referenced_by","meaning":"a link written in the text","source":"reserved"},{"name":"related","symmetric":true,"meaning":"is related, without saying how","source":"base"},{"name":"repeals","parent":"changes","inverse":"repealed_by","meaning":"ends the force of another act or provision","source":"base"},{"name":"replaces","inverse":"replaced_by","meaning":"supersedes a non-legislative document","source":"base"},{"name":"reports_to","inverse":"manages","meaning":"a post reports to another post","source":"base"},{"name":"requires","parent":"references","inverse":"required_by","meaning":"needs a form or document to be carried out","source":"base"},{"name":"responsible_for","inverse":"responsibility_of","meaning":"a post or unit is responsible for a document or function","source":"base"},{"name":"revision_of","parent":"derived_from","inverse":"revised_by","meaning":"a later edition of a prior edition","source":"base"},{"name":"stricter_than","inverse":"looser_than","asymmetric":true,"transitive_within":"aspect","qualifiers":[{"name":"aspect"}],"meaning":"sets a stricter version of the same requirement","source":"base"},{"name":"sub_organization_of","inverse":"has_sub_organization","meaning":"a unit within an organisation","source":"base"},{"name":"subclass_of","inverse":"has_subclass","transitive":true,"meaning":"a class is a kind of another class","source":"base"},{"name":"subject","inverse":"subject_of","meaning":"what a document or fact is about","source":"base"},{"name":"supersedes","inverse":"superseded_by","asymmetric":true,"walk":true,"meaning":"a correction retires the earlier record","source":"reserved"},{"name":"supervises","source":"tenant","chunk_id":"<id>"},{"name":"supported_by","inverse":"supports","meaning":"a claim's evidence","source":"reserved"},{"name":"transposes","parent":"implements","inverse":"transposed_by","meaning":"brings a directive or standard into national law","source":"base"},{"name":"version_of","inverse":"has_version","functional":true,"meaning":"an edition of a work","source":"base"}],"grammars":[],"schemes":[{"name":"topics","render":true,"chunk_id":"<id>","concepts":[{"scheme":"topics","name":"Risk Management","path":["Risk Management"],"retention":"10y","tag":"topics/risk-management","chunk_id":"<id>","effective_retention":"10y"},{"scheme":"topics","name":"outsourcing","path":["Risk Management","outsourcing"],"parent":"Risk Management","tag":"topics/risk-management/outsourcing","chunk_id":"<id>","effective_retention":"10y","inherited_retention":true,"retention_from":"topics/risk-management"},{"scheme":"topics","name":"Reporting","path":["Reporting"],"tag":"topics/reporting","chunk_id":"<id>"}]}],"instances":[{"name":"Acme","class":"organization","chunk_id":"<id>"},{"name":"Globex","class":"organization","chunk_id":"<id>"}],"norm_classes":[],"policy":{"enforced":false,"note":"Reported only: no access is removed and nothing is deleted by age because of this policy yet. No access-control rules apply to this caller (open mode), so groups would not limit access here even once they are enforced.","open_mode":true}}
+== prompt
+# Entity types
+
+When you record an entity or a fact, use one of these types and fill the fields it lists.
+
+- **Provision**
+- **event** — name
+- **fact** — subject, predicate, object
+- **location** — name, kind, region
+- **object** — name, kind, identifier
+- **organization** — name, kind, domain
+- **person** — name, role, aliases
+- **preference** — category, statement, context, confidence
+
+# Relation kinds
+
+When you record how two things are related, name the relation with one of these kinds. If none of them fits, describe the relation in the sentence instead of inventing a kind. Give the kind as the fact's `relation`, with the other thing in `also_about`.
+A fact that states one: {"text": "...", "class": "...", "type": "...", "subject": "...", "also_about": ["..."], "relation": "<kind>"}
+
+- **co_supervises** — a kind of supervises
+- **filed_under** — anything → concept
+- **supervises**
+
+# Concept schemes
+
+When you say what something is about or how it is classified, use these concepts; an indented concept is narrower than the one above it.
+
+**topics**
+- Risk Management
+  - outsourcing
+- Reporting
+
+== instances
+{
+ "instances": [
+  {
+   "name": "Acme",
+   "class": "organization",
+   "key": "organization:acme",
+   "state": "pending"
+  },
+  {
+   "name": "Globex",
+   "class": "organization",
+   "key": "organization:globex",
+   "state": "pending"
+  }
+ ],
+ "adopted": 0,
+ "linked": 0,
+ "renamed": 0,
+ "statements": 0
+}
+== plan
+{
+ "tenant": "",
+ "fingerprint": "",
+ "changes": [
+  {
+   "op": "retire",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Policy",
+    "section": "classes",
+    "kind": "class"
+   },
+   "risk": "none",
+   "counts": {
+    "document_annotations": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "identity_keys": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "instances": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "projects": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "subject_keys": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "typed_chunks": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "typed_documents": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "Internal Policy",
+     "section": "classes",
+     "kind": "class"
+    }
+   ],
+   "notes": [
+    "the ontology after the change is read as if the entry and its subtree were gone; its dependents are kept"
+   ]
+  },
+  {
+   "op": "delete",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Policy",
+    "section": "classes",
+    "kind": "class"
+   },
+   "risk": "none",
+   "counts": {
+    "document_annotations": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "identity_keys": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "instances": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "projects": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "subject_keys": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "typed_chunks": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "typed_documents": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "Internal Policy",
+     "section": "classes",
+     "kind": "class"
+    }
+   ]
+  },
+  {
+   "op": "rename",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Policy",
+    "section": "classes",
+    "kind": "class"
+   },
+   "risk": "none",
+   "counts": {
+    "document_annotations": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "identity_keys": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "instances": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "projects": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "subject_keys": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "typed_chunks": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "typed_documents": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "Internal Policy",
+     "section": "classes",
+     "kind": "class"
+    }
+   ],
+   "notes": [
+    "a class rename with dependents is refused until the rename job exists (RFC GQ P5): stored types, identity and subject keys would keep the old name"
+   ]
+  },
+  {
+   "op": "retire",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "supervises",
+    "section": "relations",
+    "kind": "relation"
+   },
+   "risk": "none",
+   "counts": {
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "review_rules": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements_of_kind": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "co_supervises",
+     "section": "relations",
+     "kind": "relation"
+    }
+   ],
+   "notes": [
+    "the ontology after the change is read as if the entry and its subtree were gone; its dependents are kept"
+   ]
+  },
+  {
+   "op": "delete",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "supervises",
+    "section": "relations",
+    "kind": "relation"
+   },
+   "risk": "none",
+   "counts": {
+    "node_annotations": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "review_rules": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "statements_of_kind": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "co_supervises",
+     "section": "relations",
+     "kind": "relation"
+    }
+   ]
+  },
+  {
+   "op": "rename",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "supervises",
+    "section": "relations",
+    "kind": "relation"
+   },
+   "risk": "none",
+   "counts": {
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "review_rules": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "statements_of_kind": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "co_supervises",
+     "section": "relations",
+     "kind": "relation"
+    }
+   ]
+  },
+  {
+   "op": "retire",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Risk Management",
+    "section": "schemes",
+    "kind": "concept"
+   },
+   "risk": "none",
+   "counts": {
+    "concept_tags": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "members": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "outsourcing",
+     "section": "schemes",
+     "kind": "concept"
+    }
+   ],
+   "notes": [
+    "the ontology after the change is read as if the entry and its subtree were gone; its dependents are kept"
+   ]
+  },
+  {
+   "op": "delete",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Risk Management",
+    "section": "schemes",
+    "kind": "concept"
+   },
+   "risk": "none",
+   "counts": {
+    "concept_tags": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "members": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "outsourcing",
+     "section": "schemes",
+     "kind": "concept"
+    }
+   ]
+  },
+  {
+   "op": "rename",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Risk Management",
+    "section": "schemes",
+    "kind": "concept"
+   },
+   "risk": "none",
+   "counts": {
+    "concept_tags": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "members": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "outsourcing",
+     "section": "schemes",
+     "kind": "concept"
+    }
+   ]
+  },
+  {
+   "op": "retire",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "topics",
+    "section": "schemes",
+    "kind": "scheme"
+   },
+   "risk": "none",
+   "counts": {
+    "concept_tags": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "members": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "Risk Management",
+     "section": "schemes",
+     "kind": "concept"
+    },
+    {
+     "chunk_id": "<id>",
+     "name": "Reporting",
+     "section": "schemes",
+     "kind": "concept"
+    },
+    {
+     "chunk_id": "<id>",
+     "name": "outsourcing",
+     "section": "schemes",
+     "kind": "concept"
+    }
+   ],
+   "notes": [
+    "the ontology after the change is read as if the entry and its subtree were gone; its dependents are kept"
+   ]
+  },
+  {
+   "op": "delete",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "topics",
+    "section": "schemes",
+    "kind": "scheme"
+   },
+   "risk": "none",
+   "counts": {
+    "concept_tags": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "members": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "Risk Management",
+     "section": "schemes",
+     "kind": "concept"
+    },
+    {
+     "chunk_id": "<id>",
+     "name": "Reporting",
+     "section": "schemes",
+     "kind": "concept"
+    },
+    {
+     "chunk_id": "<id>",
+     "name": "outsourcing",
+     "section": "schemes",
+     "kind": "concept"
+    }
+   ]
+  },
+  {
+   "op": "rename",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "topics",
+    "section": "schemes",
+    "kind": "scheme"
+   },
+   "risk": "none",
+   "counts": {
+    "concept_tags": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "measure_points": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "members": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_stats": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    }
+   },
+   "subtree": [
+    {
+     "chunk_id": "<id>",
+     "name": "Risk Management",
+     "section": "schemes",
+     "kind": "concept"
+    },
+    {
+     "chunk_id": "<id>",
+     "name": "Reporting",
+     "section": "schemes",
+     "kind": "concept"
+    },
+    {
+     "chunk_id": "<id>",
+     "name": "outsourcing",
+     "section": "schemes",
+     "kind": "concept"
+    }
+   ]
+  },
+  {
+   "op": "retire",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Globex",
+    "section": "instances",
+    "kind": "instance"
+   },
+   "risk": "none",
+   "counts": {
+    "facts_about": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "subject": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    }
+   },
+   "notes": [
+    "the ontology after the change is read as if the entry and its subtree were gone; its dependents are kept"
+   ]
+  },
+  {
+   "op": "delete",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Globex",
+    "section": "instances",
+    "kind": "instance"
+   },
+   "risk": "none",
+   "counts": {
+    "facts_about": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "destroyed",
+     "tenant_scope": 0
+    },
+    "subject": {
+     "n": 0,
+     "effect": "orphaned",
+     "tenant_scope": 0
+    }
+   }
+  },
+  {
+   "op": "rename",
+   "entry": {
+    "chunk_id": "<id>",
+    "name": "Globex",
+    "section": "instances",
+    "kind": "instance"
+   },
+   "risk": "none",
+   "counts": {
+    "facts_about": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "node_annotations": {
+     "n": 0,
+     "effect": "stale",
+     "tenant_scope": 0
+    },
+    "statements": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    },
+    "subject": {
+     "n": 0,
+     "effect": "kept",
+     "tenant_scope": 0
+    }
+   }
+  }
+ ],
+ "issues": [],
+ "new_issues": [],
+ "scopes_counted": 1,
+ "scopes_skipped": 0,
+ "complete": true
+}

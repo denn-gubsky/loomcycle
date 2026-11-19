@@ -88,6 +88,9 @@ func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey,
 	if err != nil {
 		return fail(err)
 	}
+	if read.partial {
+		return lockReadPartial(op), nil
+	}
 	rows, err := d.planChunkRows(rctx, key, ontID)
 	if err != nil {
 		return fail(err)
@@ -105,7 +108,13 @@ func (d *Document) ontologyDeleteGuard(ctx context.Context, key sqlmem.ScopeKey,
 			check.statuses[id] = all[id]
 		}
 	}
-	tops := topEntries(rows, planEntries(read), top)
+	entries := planEntries(read)
+	// A lock refuses the delete whether or not anything rests on the entry (RFC GQ P2.3).
+	if locked := lockedIn(deletedChunks(rows, top), entries); len(locked) > 0 {
+		r := lockedRefusal(op, top, "deleted", locked)
+		return &r, nil
+	}
+	tops := topEntries(rows, entries, top)
 	if len(tops) == 0 {
 		return nil, check // a proposal, a grammar, an empty section: no entry goes
 	}
@@ -191,6 +200,9 @@ func (d *Document) ontologyMoveRefusal(ctx context.Context, key sqlmem.ScopeKey,
 	if err != nil {
 		return fail(err)
 	}
+	if before.partial {
+		return lockReadPartial("move_chunk")
+	}
 	ov := newOntologyOverlay()
 	ov.parents[row.ID] = newParent
 	after, err := d.ontologyForKey(rctx, key, store.MemoryScopeTenant, memrank.OntologyPath, ov)
@@ -202,6 +214,12 @@ func (d *Document) ontologyMoveRefusal(ctx context.Context, key sqlmem.ScopeKey,
 		return fail(err)
 	}
 	was, now := planEntries(before), planEntries(after)
+	// A lock refuses any move of the entry or of a chunk above it (RFC GQ P2.3), even
+	// one the reader would follow.
+	if locked := lockedIn(rows.subtree(row.ID), was); len(locked) > 0 {
+		r := lockedRefusal("move_chunk", row.ID, "moved", locked)
+		return &r
+	}
 	var lost []string
 	for _, id := range rows.subtree(row.ID) {
 		if e, ok := was[id]; ok {
@@ -316,6 +334,19 @@ func (d *Document) ontologyDeleteRecheck(ctx context.Context, txnID string, chec
 		return "", err
 	}
 	return "a statement was written to it", nil
+}
+
+// deletedChunks is every chunk a delete of top's subtree removes, breadth first; with
+// top "" the whole document.
+func deletedChunks(rows planRows, top string) []string {
+	if top != "" {
+		return rows.subtree(top)
+	}
+	var out []string
+	for _, root := range rows.kids[""] {
+		out = append(out, rows.subtree(root)...)
+	}
+	return out
 }
 
 // topEntries are the in-force entries of top's subtree that no other entry of it is

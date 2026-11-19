@@ -131,6 +131,11 @@ func (d *Document) guardOntologyWrite(ctx context.Context, key sqlmem.ScopeKey, 
 			return refusal(errPermission("an agent may not write the "+mk+" mark into an ontology chunk's fields; "+
 				"file the proposal with op=propose_entity (or import_scheme), which writes it", ""))
 		}
+		// Accepting would put the body in force as written: a lock is the operator's to
+		// write (RFC GQ P2.3).
+		if r := lockedProposalRefusal(op, in.Body); r != nil {
+			return r
+		}
 		// Held to propose_entity's rules (RFC GQ P2.1): nothing filed under a retired
 		// entry, and no proposal of a retired entry's name. Fails closed, like the rest.
 		r, err := d.retiredProposalRefusal(ctx, key, docID, self, in.ParentID, in.Title)

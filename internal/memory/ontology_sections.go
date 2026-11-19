@@ -91,6 +91,49 @@ var knownDirectives = map[string]bool{
 	"projects": true, "origin": true, "source": true, "focus": true, "period": true,
 	// instances
 	"a": true, "nesting": true,
+	// any entry of the four sections (RFC FO 3.1a)
+	LockedDirective: true,
+}
+
+// LockedDirective is @locked (RFC FO 3.1a, RFC GQ D5): a flag on an entry of the
+// classes, relations, schemes or instances section. A locked entry cannot be renamed,
+// moved, retired or deleted, and neither can any entry above it; only an operator's
+// own edit of its body adds or removes it. It does not freeze the entry's text.
+const LockedDirective = "locked"
+
+// lockedFlag reads one @locked line. A flag, so a value is refused rather than read
+// (as @norm's is): `@locked false` must never lock. Prose after a dash is a comment.
+func lockedFlag(d Directive, issues *[]string) bool {
+	if v := strings.TrimSpace(d.Value); v != "" && !strings.HasPrefix(v, "—") {
+		*issues = append(*issues, "@locked takes no value; ignored")
+		return false
+	}
+	return true
+}
+
+// BodyLocked reports whether an entry with this body is locked, as its parser reads
+// it: a @locked line with no value.
+func BodyLocked(body string) bool {
+	locked := false
+	for _, d := range ParseDirectives(body) {
+		if d.Name == LockedDirective {
+			var ignored []string
+			locked = lockedFlag(d, &ignored) || locked
+		}
+	}
+	return locked
+}
+
+// DeclaresLocked reports whether a body carries a @locked line, in either spelling. For
+// the places that must see the lock in text that is not read as an entry: a proposal's
+// body, and a section header's or the root's.
+func DeclaresLocked(body string) bool {
+	for _, d := range ParseDirectives(body) {
+		if d.Name == LockedDirective {
+			return true
+		}
+	}
+	return false
 }
 
 var bareDirectiveRe = regexp.MustCompile(`^@([A-Za-z_][A-Za-z0-9_]*)(?:\s+(.*))?$`)
@@ -365,6 +408,7 @@ type ClassDecl struct {
 	Annotate          string
 	Meaning           string
 	RenamedFrom       string
+	Locked            bool
 	Issues            []string
 }
 
@@ -387,6 +431,8 @@ func ParseClassBody(body string) ClassDecl {
 			// section is the section reader's; version is informational on the root.
 		case "identity":
 			d.TitleIdentity = true
+		case LockedDirective:
+			d.Locked = lockedFlag(dir, &d.Issues) || d.Locked
 		case "norm":
 			// A flag: a value is refused rather than read, so `@norm false` never marks a
 			// class a norm. Prose after a dash is a comment, as in the bullet spelling.

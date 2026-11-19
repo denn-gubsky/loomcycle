@@ -87,6 +87,10 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		if r := d.reservedRootWriteRefusal(ctx, key, "upsert_chunk", existing); r != nil {
 			return *r, nil
 		}
+		// An ontology entry changes through update_chunk, past its checks (RFC GQ P2.3).
+		if r := d.ontologyUpsertRefusal(ctx, key, existing); r != nil {
+			return *r, nil
+		}
 	}
 	// Re-typing a subject through its key is checked before anything is written and
 	// announced after. A type with a subject was already held to the entity types above.

@@ -42,6 +42,9 @@ type OntologyInstance struct {
 	// EntryStatus is "retired" for a retired instance: it keeps its adopted subject and
 	// is neither adopted again nor reported as orphaned.
 	EntryStatus string `json:"entry_status,omitempty"`
+	// Locked: the entry's body carries @locked (RFC FO 3.1a). Read before a relation
+	// directive, so `@locked` is never a statement of a kind named "locked".
+	Locked bool `json:"locked,omitempty"`
 }
 
 // ParseInstanceBody reads an instance entry's body. A directive that is not one of the
@@ -63,6 +66,8 @@ func ParseInstanceBody(name, body string) OntologyInstance {
 			}
 		case "nesting":
 			in.Nesting = firstWord(d.Value)
+		case LockedDirective:
+			in.Locked = lockedFlag(d, &in.Issues) || in.Locked
 		default:
 			if knownDirectives[d.Name] {
 				in.Issues = append(in.Issues, "@"+d.Name+" is not an instance directive; ignored")

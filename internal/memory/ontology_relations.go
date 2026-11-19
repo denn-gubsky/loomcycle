@@ -70,6 +70,8 @@ type OntologyRelation struct {
 	// stay readable and filters for a parent kind still expand to it, but no new
 	// statement may use it.
 	EntryStatus string `json:"entry_status,omitempty"`
+	// Locked: the entry's body carries @locked (RFC FO 3.1a).
+	Locked bool `json:"locked,omitempty"`
 }
 
 // relationDirectives are the directives a relation entry may carry. A class directive in
@@ -117,6 +119,8 @@ func ParseRelationBody(name, body string) OntologyRelation {
 			r.AutoAssert = true
 		case "renamed_from":
 			r.RenamedFrom = firstWord(d.Value)
+		case LockedDirective:
+			r.Locked = lockedFlag(d, &r.Issues) || r.Locked
 		default:
 			if knownDirectives[d.Name] {
 				r.Issues = append(r.Issues, "@"+d.Name+" is not a relation directive; ignored")

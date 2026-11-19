@@ -3636,6 +3636,8 @@ export interface OntologyTerm {
   issues?: string[];
   /** "retired" (RFC GQ): kept for reads, offered for no new write; absent when live. */
   entry_status?: "retired";
+  /** The entry carries @locked (RFC GQ P2.3): it cannot be renamed, moved, retired or deleted. */
+  locked?: boolean;
 }
 
 /** One typed field of a class (RFC FO). */
@@ -3755,6 +3757,8 @@ export interface OntologyConcept {
   issues?: string[];
   /** "retired" (RFC GQ): kept for reads, offered for no new write; absent when live. */
   entry_status?: "retired";
+  /** The entry carries @locked (RFC GQ P2.3): it cannot be renamed, moved, retired or deleted. */
+  locked?: boolean;
 }
 
 /** One concept scheme (RFC FO P1c). */
@@ -3768,6 +3772,8 @@ export interface OntologyScheme {
   issues?: string[];
   /** "retired" (RFC GQ): kept for reads, offered for no new write; absent when live. */
   entry_status?: "retired";
+  /** The entry carries @locked (RFC GQ P2.3): it cannot be renamed, moved, retired or deleted. */
+  locked?: boolean;
 }
 
 /** One instance's adoption state (RFC FO P1c-2). */
@@ -3779,6 +3785,8 @@ export interface OntologyInstanceState {
   /** retired: the instance is retired, its subject kept; skipped: its class is retired (RFC GQ P2.1). */
   state: "pending" | "adopted" | "linked" | "renamed" | "unchanged" | "error" | "retired" | "skipped";
   note?: string;
+  /** The instance's entry carries @locked (RFC GQ P2.3). */
+  locked?: boolean;
 }
 
 /** What instance adoption did, or (dry run) would do. */
@@ -3821,6 +3829,8 @@ export interface OntologyRelation {
   chunk_id?: string;
   /** "retired" (RFC GQ): kept for reads, offered for no new write; absent when live. */
   entry_status?: "retired";
+  /** The entry carries @locked (RFC GQ P2.3): it cannot be renamed, moved, retired or deleted. */
+  locked?: boolean;
 }
 
 export interface OntologyResponse {

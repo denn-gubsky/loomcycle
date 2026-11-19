@@ -46,6 +46,9 @@ type InstanceState struct {
 	// subject took it), renamed, unchanged, error.
 	State string `json:"state"`
 	Note  string `json:"note,omitempty"`
+	// Locked: the instance's entry carries @locked (RFC GQ P2.3), shown on the
+	// Ontology page beside its state.
+	Locked bool `json:"locked,omitempty"`
 }
 
 // InstanceReport is what adoption did (or, dry run, would do).
@@ -93,7 +96,7 @@ func (d *Document) AdoptInstances(ctx context.Context, dryRun bool) (InstanceRep
 	roots := map[string]string{} // instance name (lowercase) → subject root chunk
 	keys := map[string]bool{}
 	for _, inst := range read.Instances {
-		st := InstanceState{Name: inst.Name, Class: inst.Class}
+		st := InstanceState{Name: inst.Name, Class: inst.Class, Locked: inst.Locked}
 		class, declared := classes[strings.ToLower(inst.Class)]
 		if inst.Class == "" || !declared {
 			st.State = "error"

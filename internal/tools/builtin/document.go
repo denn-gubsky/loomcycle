@@ -3858,6 +3858,10 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 		}
 		retiring, retireSubtree = isOntology, sub
 	}
+	// RFC GQ P2.3: a locked entry, and any entry above one, keeps its name and section.
+	if refused := d.ontologyLockedUpdateRefusal(ctx, key, mscope, row, in, present); refused != nil {
+		return *refused, nil
+	}
 	// RFC GQ D3: out of force only by retirement (document_ontology_delete.go).
 	if _, has := present["status"]; has && memrank.IsInertEntityStatus(in.Status) && !memrank.IsInertEntityStatus(row.Status) {
 		if refused := d.ontologyDemotionRefusal(ctx, key, row); refused != nil {

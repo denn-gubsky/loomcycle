@@ -62,6 +62,7 @@ type planEntry struct {
 	connector.OntologyPlanEntry
 	tag         string // concept: its mirror tag; scheme: its own tag segment
 	registryKey string // instance: the key its subject was adopted under
+	locked      bool   // its body carries @locked (document_ontology_locked.go)
 }
 
 // plannedChange is one change resolved against the ontology as read.
@@ -83,6 +84,7 @@ type plannedChange struct {
 	// An edit's effect, from comparing the entry before and after it.
 	directivesChanged                bool
 	newlyFunctional, newlyAsymmetric bool
+	editRenames                      bool // the edit's body changes the entry's name
 	notes                            []string
 	counts                           map[string]*connector.OntologyPlanCount
 }
@@ -187,6 +189,12 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 		}
 		compareEditedEntry(before, alone, p)
+		if a, ok := planEntries(alone)[p.entry.ChunkID]; ok && a.Name != p.entry.Name {
+			p.editRenames = true // a body heading names an untitled entry
+		}
+	}
+	for _, p := range planned {
+		p.noteLock(entries, ov)
 	}
 
 	counted, skipped, complete, err := d.countPlanDependents(ctx, key, before, after, planned)
@@ -289,37 +297,43 @@ func (r planRows) subtree(id string) []string {
 // planEntries indexes the read's in-force entries by chunk id.
 func planEntries(r OntologyRead) map[string]planEntry {
 	out := map[string]planEntry{}
-	put := func(id, name, section, kind string) *planEntry {
+	put := func(id, name, section, kind string, locked bool) *planEntry {
 		if id == "" {
 			return nil
 		}
 		if _, dup := out[id]; dup {
 			return nil
 		}
-		e := planEntry{OntologyPlanEntry: connector.OntologyPlanEntry{ChunkID: id, Name: name, Section: section, Kind: kind}}
+		e := planEntry{OntologyPlanEntry: connector.OntologyPlanEntry{ChunkID: id, Name: name, Section: section, Kind: kind}, locked: locked}
 		out[id] = e
 		return &e
 	}
 	for _, t := range r.Terms {
-		put(r.classChunks[strings.ToLower(t.Name)], t.Name, memrank.SectionClasses, planKindClass)
+		// By the class's own chunk: a second in-force class of the same name is an entry
+		// too (its lock counts). classChunks is the fallback for a term built elsewhere.
+		id := t.ChunkID
+		if id == "" {
+			id = r.classChunks[strings.ToLower(t.Name)]
+		}
+		put(id, t.Name, memrank.SectionClasses, planKindClass, t.Locked)
 	}
 	for _, rel := range r.Relations {
-		put(rel.ChunkID, rel.Name, memrank.SectionRelations, planKindRelation)
+		put(rel.ChunkID, rel.Name, memrank.SectionRelations, planKindRelation, rel.Locked)
 	}
 	for _, s := range r.Schemes {
-		if e := put(s.ChunkID, s.Name, memrank.SectionSchemes, planKindScheme); e != nil {
+		if e := put(s.ChunkID, s.Name, memrank.SectionSchemes, planKindScheme, s.Locked); e != nil {
 			e.tag = memrank.MirrorTag(s.Name, nil)
 			out[s.ChunkID] = *e
 		}
 		for _, c := range s.Concepts {
-			if e := put(c.ChunkID, c.Name, memrank.SectionSchemes, planKindConcept); e != nil {
+			if e := put(c.ChunkID, c.Name, memrank.SectionSchemes, planKindConcept, c.Locked); e != nil {
 				e.tag = c.Tag
 				out[c.ChunkID] = *e
 			}
 		}
 	}
 	for _, in := range r.Instances {
-		if e := put(in.ChunkID, in.Name, memrank.SectionInstances, planKindInstance); e != nil {
+		if e := put(in.ChunkID, in.Name, memrank.SectionInstances, planKindInstance, in.Locked); e != nil {
 			e.registryKey = in.RegistryKey
 			out[in.ChunkID] = *e
 		}

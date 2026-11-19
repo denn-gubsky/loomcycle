@@ -465,6 +465,9 @@ func (d *Document) ontologyRetireSubtree(ctx context.Context, key sqlmem.ScopeKe
 	if err != nil {
 		return nil, true, nil, err
 	}
+	if read.partial {
+		return nil, true, lockReadPartial("update_chunk"), nil
+	}
 	for kind, id := range read.SectionChunks {
 		if id == row.ID {
 			r := errValidation("update_chunk: the "+kind+" section header cannot be retired",
@@ -484,7 +487,7 @@ func (d *Document) ontologyRetireSubtree(ctx context.Context, key sqlmem.ScopeKe
 	}
 	var out []string
 	seen := map[string]bool{row.ID: true}
-	frontier := []string{row.ID}
+	frontier, all := []string{row.ID}, []string{row.ID}
 	for len(frontier) > 0 {
 		var next []string
 		for _, id := range frontier {
@@ -493,7 +496,7 @@ func (d *Document) ontologyRetireSubtree(ctx context.Context, key sqlmem.ScopeKe
 					continue
 				}
 				seen[k.id] = true
-				next = append(next, k.id)
+				next, all = append(next, k.id), append(all, k.id)
 				// A proposal under the entry stays a proposal; one already retired keeps
 				// its own revision.
 				if !memrank.IsInertEntityStatus(k.status) && !memrank.IsRetiredEntityStatus(k.status) {
@@ -502,6 +505,11 @@ func (d *Document) ontologyRetireSubtree(ctx context.Context, key sqlmem.ScopeKe
 			}
 		}
 		frontier = next
+	}
+	// A locked entry is never retired, nor is any entry above one (RFC GQ P2.3).
+	if locked := lockedIn(all, planEntries(read)); len(locked) > 0 {
+		r := lockedRefusal("update_chunk", row.ID, "retired", locked)
+		return nil, true, &r, nil
 	}
 	return out, true, nil, nil
 }

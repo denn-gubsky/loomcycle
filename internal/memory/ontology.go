@@ -205,6 +205,12 @@ type OntologyTerm struct {
 	// live one. Named apart from `retired`, which already names a superseded fact in
 	// read results.
 	EntryStatus string `json:"entry_status,omitempty"`
+	// Locked: the class's body carries @locked (RFC FO 3.1a).
+	Locked bool `json:"locked,omitempty"`
+	// ChunkID is the class's own chunk in the tenant ontology ("" for a seed class).
+	// Not serialised: the wire names a class's chunk through class_chunks, by name;
+	// this tells apart two in-force classes that share a name.
+	ChunkID string `json:"-"`
 }
 
 // inheritableDirectives are the class directives a subclass takes from its ancestors

@@ -49,6 +49,9 @@ type OntologyScheme struct {
 	Issues   []string          `json:"issues,omitempty"`
 	// EntryStatus is "retired" for a retired scheme ("" when live).
 	EntryStatus string `json:"entry_status,omitempty"`
+	// Locked: the scheme's header carries @locked (RFC FO 3.1a). It locks the scheme
+	// entry; each concept carries its own.
+	Locked bool `json:"locked,omitempty"`
 }
 
 // OntologyConcept is one concept of a scheme.
@@ -84,6 +87,8 @@ type OntologyConcept struct {
 	// and its policy keep working for what is already placed under it; nothing new is
 	// placed there.
 	EntryStatus string `json:"entry_status,omitempty"`
+	// Locked: the concept's body carries @locked (RFC FO 3.1a).
+	Locked bool `json:"locked,omitempty"`
 }
 
 // SchemeMaxDepth bounds how many levels of concepts a scheme may hold below itself
@@ -161,6 +166,8 @@ func ParseSchemeBody(name, body string) OntologyScheme {
 					SchemePeriodDay+", "+SchemePeriodWeek+" or "+SchemePeriodMonth+"); the default, month, applies")
 			}
 		case "section":
+		case LockedDirective:
+			s.Locked = lockedFlag(d, &s.Issues) || s.Locked
 		default:
 			s.Issues = append(s.Issues, directiveIssue(d.Name, "scheme"))
 		}
@@ -245,6 +252,8 @@ func ParseConceptBody(scheme, name string, path []string, body string) OntologyC
 				c.Issues = append(c.Issues, "@acl given more than once; only the last ("+strconv.Quote(v)+") applies")
 			}
 			c.ACL = v
+		case LockedDirective:
+			c.Locked = lockedFlag(d, &c.Issues) || c.Locked
 		default:
 			c.Issues = append(c.Issues, directiveIssue(d.Name, "concept"))
 		}

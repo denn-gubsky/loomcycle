@@ -367,7 +367,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				Meaning:           decl.Meaning,
 				RenamedFrom:       decl.RenamedFrom,
 				Issues:            decl.Issues,
-				EntryStatus:       memrank.EntryStatusOf(c.status),
+				EntryStatus:       memrank.EntryStatusOf(c.status), Locked: decl.Locked, ChunkID: c.id,
 			})
 			if _, dup := classChunks[strings.ToLower(name)]; !dup {
 				classChunks[strings.ToLower(name)] = c.id
@@ -509,7 +509,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 			}
 		}
 	}
-	issues = append(issues, retiredIssues(kids, rootID, sectionOf, entityName, out, relations, instances, review)...)
+	issues = append(append(issues, retiredIssues(kids, rootID, sectionOf, entityName, out, relations, instances, review)...), lockedHeaderIssues(kids, rootID, sectionOf, bodyOf)...)
 	return OntologyRead{
 		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
 		Proposals: withChangeMarks(proposals, chunkOf), DocumentID: docID, RootChunkID: rootID,

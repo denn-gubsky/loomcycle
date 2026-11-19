@@ -21,9 +21,10 @@ const state: OntologyResponse = {
   terms: [
     { name: "Memo", source: "tenant" },
     { name: "Ticket", source: "tenant", entry_status: "retired" },
+    { name: "Ledger", source: "tenant", locked: true },
   ],
   effective: [],
-  class_chunks: { Memo: "c-memo", Ticket: "c-ticket" },
+  class_chunks: { Memo: "c-memo", Ticket: "c-ticket", Ledger: "c-ledger" },
 };
 
 const operator = { tenant_id: "t", subject: "ops", scopes: ["substrate:tenant"], is_admin: false, legacy: false } as Principal;
@@ -109,6 +110,16 @@ describe("OntologySection retire and delete", () => {
     const ticket = rowOf(mounted.el, "Ticket");
     expect(ticket.textContent).toContain("retired");
     expect(button(ticket, "retire")).toBeUndefined();
+  });
+
+  it("marks a locked class and offers neither retire nor delete on it (RFC GQ P2.3)", async () => {
+    stubServer([]);
+    mounted = await mount(operator);
+    const ledger = rowOf(mounted.el, "Ledger");
+    expect(ledger.textContent).toContain("· locked");
+    expect(button(ledger, "retire")).toBeUndefined();
+    expect(button(ledger, "delete")).toBeUndefined();
+    expect(rowOf(mounted.el, "Memo").textContent).not.toContain("locked");
   });
 
   it("retires through update_chunk at the chunk's current revision", async () => {
