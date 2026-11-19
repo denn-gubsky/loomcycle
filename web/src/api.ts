@@ -9,6 +9,7 @@
 
 import { apiError } from "./lib/apiError";
 import type { AclCatalog, EvaluationRequest, Rule } from "./lib/aclRules";
+import type { OntologyPlanResult } from "./lib/ontologyRetirePlan";
 
 export interface UserSummary {
   user_id: string;
@@ -3898,13 +3899,33 @@ export interface OntologyResponse {
 }
 
 /**
+ * Plan retiring an ontology entry (RFC GQ P1): what rests on it and the fingerprint
+ * the retire must carry. Writes nothing. POST /v1/_ontology/plan.
+ */
+export function planOntologyRetire(chunkId: string): Promise<OntologyPlanResult> {
+  return postJSON<OntologyPlanResult>(
+    "/v1/_ontology/plan",
+    JSON.stringify({ changes: [{ op: "retire", entry: chunkId }] }),
+  );
+}
+
+/**
  * Retire an ontology entry (RFC GQ D3, D4): its status becomes `retired`, which the
  * runtime carries to its subtree. What rests on it is kept and readable; no new write
- * may use it. The operator's update_chunk, at the chunk's current revision.
+ * may use it. The operator's update_chunk, at the chunk's current revision, with the
+ * fingerprint of a plan of the retire: an entry in use needs one (RFC GQ P2.4), and a
+ * refusal (409 plan_required / plan_stale) is thrown with its code.
  */
-export async function retireOntologyEntry(chunkId: string): Promise<OntologyResponse> {
+export async function retireOntologyEntry(chunkId: string, planFingerprint: string): Promise<OntologyResponse> {
   const chunk = await documentGetChunk(chunkId, "tenant");
-  await documentUpdateChunk(chunkId, chunk.revision, { status: "retired" }, "tenant");
+  await substratePost("/v1/_document", {
+    op: "update_chunk",
+    id: chunkId,
+    revision: chunk.revision,
+    scope: "tenant",
+    status: "retired",
+    plan_fingerprint: planFingerprint,
+  });
   return getOntology();
 }
 

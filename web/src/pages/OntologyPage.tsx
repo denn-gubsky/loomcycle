@@ -25,10 +25,12 @@ import {
   adoptOntologyType,
   deleteOntologyEntry,
   getOntology,
+  planOntologyRetire,
   retireOntologyEntry,
   resolveOntologyProposal,
   setOntologyStatus,
 } from "../api";
+import { retireWithPlan } from "../lib/ontologyRetirePlan";
 
 // The ontology page (/ontology): the tenant ontology's confirm gate and the
 // layered result, one section per tab.
@@ -121,7 +123,7 @@ function OntologyFieldSummary({ term, isLeaf }: { term: OntologyNode; isLeaf: bo
 // P2.2). Absent for a caller who may not change the ontology (a member).
 type EntryActions = {
   busy: boolean;
-  retire: (chunkId: string) => void;
+  retire: (chunkId: string, name: string) => void;
   remove: (chunkId: string, name: string) => void;
 };
 
@@ -169,7 +171,7 @@ function EntryControls({
               type="button"
               className="ghost-btn"
               disabled={actions.busy}
-              onClick={() => actions.retire(chunkId)}
+              onClick={() => actions.retire(chunkId, name)}
               title={`Retire "${name}": everything that uses it is kept; nothing new may use it`}
             >
               retire
@@ -743,7 +745,17 @@ export default function OntologySection() {
   const entryActions: EntryActions | undefined = decides
     ? {
         busy,
-        retire: (chunkId) => void act(() => retireOntologyEntry(chunkId)),
+        // RFC GQ P2.4: the retire is planned first; the operator confirms against the
+        // plan's counts and the retire carries its fingerprint. Declining re-reads.
+        retire: (chunkId, name) =>
+          void act(async () => {
+            const done = await retireWithPlan(name, {
+              plan: () => planOntologyRetire(chunkId),
+              retire: (fp) => retireOntologyEntry(chunkId, fp),
+              confirm: (text) => window.confirm(text),
+            });
+            return done ?? getOntology();
+          }),
         remove: (chunkId, name) => {
           if (!window.confirm(`Delete "${name}" and everything under it from the ontology?`)) return;
           void act(() => deleteOntologyEntry(chunkId));
