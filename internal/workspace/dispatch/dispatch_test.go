@@ -431,6 +431,20 @@ func TestAttach_ATokenThatStopsHoldingDetachesTheWorker(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("the op in flight outlived its worker's token")
 			}
+			// The core ends the op's stream too, so the worker stops it.
+			ended := make(chan error, 1)
+			go func() {
+				_, err := s.Recv()
+				ended <- err
+			}()
+			select {
+			case err := <-ended:
+				if err == nil {
+					t.Fatal("the op's stream carried another frame after the revoke")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the op's stream stayed open after the revoke")
+			}
 			waitFor(t, "the worker to detach", func() bool { return len(d.Workers()) == 0 })
 			if _, err := d.Place(context.Background(), dispatch.PlaceRequest{TenantID: "acme"}); dispatch.ClassOf(err) != workspace.ClassNoWorker {
 				t.Fatalf("place after the revoke: %v, want no_worker", err)
