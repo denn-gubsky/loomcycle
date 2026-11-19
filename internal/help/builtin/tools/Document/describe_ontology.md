@@ -62,10 +62,13 @@ relations, grammars, schemes, instances, norm_classes, policy, review?, issues?}
   entry as removed; read again.
 - `classes` — each `{name, parent?, source, kind, meaning?, fields?,
   title_identity?, norm?, inherited_norm?, directives?, memory_scope?,
-  renamed_from?, issues?}`.
+  renamed_from?, alt?, issues?}`.
   - `meaning` is the first prose line of the class's entry: what a thing of the
     class is.
   - `kind` is `document` for a document class, `chunk` otherwise.
+  - `alt` is the class's own other names, one `@alt` line each, as on a
+    concept: what people call a document of the class ("playbook" for a
+    `Runbook`). Not inherited.
   - `fields` is the complete typed field set, inherited fields first.
   - `directives` holds `identifier_pattern`, `title_pattern`, `anchor_grammar`,
     `citation_grammar`, `definitions`, `boilerplate`, `exclude` and `annotate`,

@@ -194,6 +194,9 @@ type OntologyTerm struct {
 	// one "a; b; c" list: what such a document is expected to state.
 	Annotate    string `json:"annotate,omitempty"`
 	RenamedFrom string `json:"renamed_from,omitempty"`
+	// Alt is the class's own other names (@alt), as a concept's: never inherited, since
+	// a subclass's documents are not called by its parent's names.
+	Alt []string `json:"alt,omitempty"`
 	// InheritedDirectives holds the class directives this class gets from its nearest
 	// declaring ancestor, keyed by directive name (Exclude joined with ", ").
 	InheritedDirectives map[string]string `json:"inherited_directives,omitempty"`

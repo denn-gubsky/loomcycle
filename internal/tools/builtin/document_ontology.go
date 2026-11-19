@@ -366,6 +366,7 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 				Annotate:          decl.Annotate,
 				Meaning:           decl.Meaning,
 				RenamedFrom:       decl.RenamedFrom,
+				Alt:               decl.Alt,
 				Issues:            decl.Issues,
 				EntryStatus:       memrank.EntryStatusOf(c.status),
 			})
