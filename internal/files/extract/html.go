@@ -423,7 +423,7 @@ type htmlState struct {
 }
 
 // htmlBody is the HTML walker's body-only mode, for a content document of a
-// book (EPUB, later MOBI). The book, not the document, has the title, so the
+// book (EPUB, MOBI). The book, not the document, has the title, so the
 // document's <title> is not written; a picture is a file of the book, so its
 // bytes are kept instead of a link written; and footnotes are taken out of
 // the flow for the book to list at its end.
@@ -443,6 +443,11 @@ type htmlBody struct {
 	// was one. Either may be nil.
 	noteRef func(a *html.Node) string
 	note    func(el *html.Node) bool
+	// ownRef, when set, names the picture an <img> points to by the
+	// book's own means rather than a file name (MOBI's recindex, KF8's
+	// kindle:embed URL), reporting false for one that uses none; the
+	// name is what picture takes.
+	ownRef func(img *html.Node) (string, bool)
 }
 
 // flush ends the paragraph being collected.
@@ -607,12 +612,22 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 // picture kept, when ref is a file of the book; a link, when it is a URL
 // (nothing is fetched); its alt text otherwise.
 func (h *htmlState) bookImage(ref, alt string, n *html.Node) (string, error) {
+	if h.body.ownRef != nil {
+		if own, ok := h.body.ownRef(n); ok {
+			return h.bookPicture(own, alt)
+		}
+	}
 	if ref == "" || strings.HasPrefix(strings.ToLower(ref), "data:") {
 		return altOnly(cleanAlt(alt)), nil
 	}
 	if hasScheme(ref) {
 		return imgLink(n), nil
 	}
+	return h.bookPicture(ref, alt)
+}
+
+// bookPicture is the Markdown for the picture the book holds under ref.
+func (h *htmlState) bookPicture(ref, alt string) (string, error) {
 	data, ok := h.body.picture(ref)
 	switch {
 	case !ok:
