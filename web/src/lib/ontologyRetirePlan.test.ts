@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "./apiError";
-import { retireConfirmText, retireWithPlan, type OntologyPlanResult } from "./ontologyRetirePlan";
+import { applyWithPlan, retireConfirmText, retireWithPlan, type OntologyPlanResult } from "./ontologyRetirePlan";
 
 function plan(fingerprint: string, n = 3): OntologyPlanResult {
   return {
@@ -76,5 +76,27 @@ describe("retireWithPlan", () => {
     const retire = vi.fn(async () => Promise.reject(locked));
     await expect(retireWithPlan("Memo", { plan: async () => plan("f"), retire, confirm: () => true })).rejects.toBe(locked);
     expect(retire).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("applyWithPlan", () => {
+  it("applies with the plan's fingerprint and re-plans once on plan_stale", async () => {
+    const plans = [plan("old"), plan("new")];
+    const apply = vi.fn(async (fp: string) => {
+      if (fp === "old") throw new ApiError("plan_stale", 409, "plan_stale");
+      return `accepted with ${fp}`;
+    });
+    const out = await applyWithPlan(() => "ok?", { plan: async () => plans.shift()!, apply, confirm: () => true });
+    expect(out).toBe("accepted with new");
+    expect(apply).toHaveBeenCalledTimes(2);
+  });
+
+  it("never retries a partially applied accept", async () => {
+    const partial = new ApiError("partially_applied", 409, "partially_applied");
+    const apply = vi.fn(async () => Promise.reject(partial));
+    await expect(applyWithPlan(() => "ok?", { plan: async () => plan("f"), apply, confirm: () => true })).rejects.toBe(
+      partial,
+    );
+    expect(apply).toHaveBeenCalledTimes(1);
   });
 });

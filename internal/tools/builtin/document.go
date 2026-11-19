@@ -128,6 +128,21 @@ type Document struct {
 	// write. A test moves the chunk there to prove the write is conditional on the
 	// parent the checks read. Nil in production.
 	beforeMoveWrite func()
+
+	// beforeAcceptWrite, when set, runs in AcceptChangeProposal after its checks and
+	// before its first write. A test edits the target there to prove the write is
+	// refused by the revision the checks read. Nil in production.
+	beforeAcceptWrite func()
+
+	// duringAcceptChecks, when set, runs in AcceptChangeProposal once the target's
+	// revision is read and before the checks. A test edits the target there to prove the
+	// write is pinned to the revision read before the checks. Nil in production.
+	duringAcceptChecks func()
+
+	// betweenAcceptWrites, when set, runs in AcceptChangeProposal after its update and
+	// before its move. A test writes to the ontology there to prove the move is refused
+	// when the ontology is not exactly what the update left. Nil in production.
+	betweenAcceptWrites func()
 }
 
 func (d *Document) Name() string { return "Document" }

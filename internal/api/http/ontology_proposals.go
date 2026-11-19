@@ -24,9 +24,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	meminject "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 )
@@ -41,6 +44,9 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		ChunkID string `json:"chunk_id"`
 		Action  string `json:"action"`
+		// PlanFingerprint is the fingerprint of a plan of a change proposal's change,
+		// needed to accept one the plan classes destroys or stales (RFC GQ P2.4, P4.2).
+		PlanFingerprint string `json:"plan_fingerprint"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body",
@@ -91,11 +97,18 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 			"no proposal with that chunk_id in this tenant's ontology")
 		return
 	}
+	if action == "accept" && target.Status != meminject.OntologyStatusProposed {
+		// Re-accepting a rejection would be a silent un-reject. Say what state it is in.
+		writeJSONError(w, http.StatusConflict, "not_pending",
+			fmt.Sprintf("that entity is %q, not %q — clear its status in the document editor if you meant to restore it",
+				target.Status, meminject.OntologyStatusProposed))
+		return
+	}
 	// A CHANGE OR RETIRE PROPOSAL (RFC GQ P4.1) names another entry; clearing its own
-	// status, which is all the accept below does, would put "retire: X" in force as an
-	// entry of that name and change nothing about X. Accepting one applies it to X in
-	// place, which is P4.2's; until then it is refused. Asked of the stored fields, not
-	// the read, so a mark that no longer decodes is refused too.
+	// status, which the generic accept below does, would put "retire: X" in force as an
+	// entry of that name and change nothing about X. It is applied to X in place (P4.2),
+	// or refused; never accepted the generic way. Asked of the stored fields, not the
+	// read, so a mark that no longer decodes is refused as invalid rather than accepted.
 	if action == "accept" {
 		marked, merr := doc.ChangeProposalMarked(dctx, "tenant", chunkID)
 		if merr != nil {
@@ -103,18 +116,9 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if marked || target.Change != nil {
-			writeJSONError(w, http.StatusConflict, "change_proposal_not_acceptable",
-				"accepting change proposals comes with P4.2 (RFC GQ): this proposal names another entry and cannot be "+
-					"accepted yet. Reject it, or make the change in the document editor.")
+			s.acceptChangeProposal(w, r, doc, dctx, tenant, chunkID, body.PlanFingerprint)
 			return
 		}
-	}
-	if action == "accept" && target.Status != meminject.OntologyStatusProposed {
-		// Re-accepting a rejection would be a silent un-reject. Say what state it is in.
-		writeJSONError(w, http.StatusConflict, "not_pending",
-			fmt.Sprintf("that entity is %q, not %q — clear its status in the document editor if you meant to restore it",
-				target.Status, meminject.OntologyStatusProposed))
-		return
 	}
 
 	// A SUBJECT PROPOSAL ACCEPTS DIFFERENTLY, because accepting it means something
@@ -202,6 +206,91 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.writeOntologyState(w, r.Context(), tenant)
+}
+
+// acceptChangeProposal applies a change or retire proposal to the entry it names (RFC
+// GQ P4.2) and answers with the ontology state and what was applied. Refusals: 422
+// invalid_proposal (the stored proposal fails its checks, or its mark is not the change
+// they rebuild); 409 entry_locked, rename_job_pending, target_changed, and plan_required
+// / plan_stale with the current fingerprint as a field of the body. Nothing is written
+// on a refusal. 409 partially_applied is not a refusal: the update was written and the
+// move was not; the body's `applied` says what was, and it is recorded. A change that
+// was applied is recorded (ontology_change_applied).
+func (s *Server) acceptChangeProposal(w http.ResponseWriter, r *http.Request, doc *builtin.Document, dctx context.Context,
+	tenant, chunkID, planFingerprint string) {
+	_, rep, err := doc.AcceptChangeProposal(dctx, "tenant", chunkID, planFingerprint)
+	if err != nil {
+		s.answerChangeAcceptError(w, r, tenant, rep, err)
+		return
+	}
+	s.recordOntologyChange(r, tenant, rep)
+	resp, err := s.ontologyState(r.Context(), tenant)
+	if err != nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "ontology_unavailable", err.Error())
+		return
+	}
+	resp.ChangeAccepted = &rep
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// answerChangeAcceptError answers a change accept that did not complete: a refusal that
+// wrote nothing, or a write that went part of the way (recorded, with what was applied).
+func (s *Server) answerChangeAcceptError(w http.ResponseWriter, r *http.Request, tenant string, rep builtin.ChangeAcceptReport, err error) {
+	var planRefusal *builtin.ChangePlanRefusal
+	switch {
+	case errors.Is(err, builtin.ErrChangePartiallyApplied):
+		s.recordOntologyChange(r, tenant, rep)
+		applied := rep.Applied
+		if applied == nil {
+			applied = []string{}
+		}
+		writeJSONErrorBody(w, http.StatusConflict, struct {
+			Code    string   `json:"code"`
+			Error   string   `json:"error"`
+			Applied []string `json:"applied"`
+		}{"partially_applied", err.Error(), applied})
+	case errors.As(err, &planRefusal):
+		writeJSONErrorBody(w, http.StatusConflict, struct {
+			Code        string `json:"code"`
+			Error       string `json:"error"`
+			Fingerprint string `json:"fingerprint"`
+		}{planRefusal.Code, planRefusal.Message, planRefusal.Fingerprint})
+	case errors.Is(err, builtin.ErrChangeProposalInvalid):
+		writeJSONError(w, http.StatusUnprocessableEntity, "invalid_proposal", err.Error())
+	case errors.Is(err, builtin.ErrChangeEntryLocked):
+		writeJSONError(w, http.StatusConflict, "entry_locked", err.Error())
+	case errors.Is(err, builtin.ErrChangeRenameJobPending):
+		writeJSONError(w, http.StatusConflict, "rename_job_pending", err.Error())
+	case errors.Is(err, builtin.ErrChangeTargetChanged):
+		writeJSONError(w, http.StatusConflict, "target_changed", err.Error())
+	case len(rep.Applied) > 0:
+		// Applied, then something after it failed (the proposal's removal): recorded, and
+		// the error says what is left to do.
+		s.recordOntologyChange(r, tenant, rep)
+		writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", err.Error())
+	default:
+		writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", err.Error())
+	}
+}
+
+// recordOntologyChange logs an applied change and writes its audit record. A failed
+// write is logged, not returned: the change is applied either way, and the entry's
+// revision history records it too.
+func (s *Server) recordOntologyChange(r *http.Request, tenant string, rep builtin.ChangeAcceptReport) {
+	slog.InfoContext(r.Context(), "ontology change applied", "tenant", tenant, "proposal", rep.Proposal,
+		"entry", rep.Target, "op", rep.Op, "applied", rep.Applied, "risk", rep.Risk)
+	if s.reviewAudit == nil {
+		return
+	}
+	ev := audit.Event{Action: "ontology_change_applied", TargetTenant: tenant, TargetName: rep.TargetName,
+		OntologyProposalID: rep.Proposal, OntologyEntryID: rep.Target, OntologyOp: rep.Op, OntologyApplied: rep.Applied,
+		OntologyPlanRisk: rep.Risk, OntologyPlanCounts: rep.Counts}
+	if p, ok := auth.PrincipalFromContext(r.Context()); ok {
+		ev.ActorTenant, ev.ActorSubject, ev.ActorTokenSuffix = p.TenantID, p.Subject, p.TokenSuffix
+	}
+	if err := s.reviewAudit.Record(ev); err != nil {
+		slog.ErrorContext(r.Context(), "audit: ontology change record failed", "proposal", rep.Proposal, "err", err)
+	}
 }
 
 // handleOntologyAdopt serves POST /v1/_ontology/adopt — take a copy of a standard type

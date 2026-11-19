@@ -16,21 +16,24 @@ import {
   type RelationNode,
 } from "../lib/ontologySections";
 import { proposedOutlineText } from "../lib/ontologyProposedScheme";
-import { proposedChangeText } from "../lib/ontologyProposedChange";
+import { changeConfirmText, changePlanChanges, proposedChangeText } from "../lib/ontologyProposedChange";
 import {
   OntologyProposal,
+  ProposedChange,
   ProposedSchemeView,
   OntologyResponse,
   OntologyTerm,
   adoptOntologyType,
   deleteOntologyEntry,
+  documentGetChunk,
   getOntology,
+  planOntologyChanges,
   planOntologyRetire,
   retireOntologyEntry,
   resolveOntologyProposal,
   setOntologyStatus,
 } from "../api";
-import { retireWithPlan } from "../lib/ontologyRetirePlan";
+import { applyWithPlan, retireWithPlan } from "../lib/ontologyRetirePlan";
 
 // The ontology page (/ontology): the tenant ontology's confirm gate and the
 // layered result, one section per tab.
@@ -737,6 +740,27 @@ export default function OntologySection() {
   // tombstone so a curator stops re-proposing it.
   const resolveProposal = (chunkId: string, action: "accept" | "reject") =>
     act(() => resolveOntologyProposal(chunkId, action));
+  // RFC GQ P4.2: a change or retire proposal is applied to the entry it names. The
+  // equivalent direct change is planned first (planning the proposal itself is P4.3),
+  // the operator confirms against the plan's counts, and the accept carries its
+  // fingerprint; a stale one re-plans once. A meaning-only edit has nothing to plan.
+  const acceptChange = (chunkId: string, change: ProposedChange) =>
+    act(async () => {
+      const targetBody = change.sets_directives
+        ? (await documentGetChunk(change.target, "tenant")).body
+        : undefined;
+      const changes = changePlanChanges(change, targetBody);
+      if (changes.length === 0) {
+        if (!window.confirm(changeConfirmText(change, null))) return getOntology();
+        return resolveOntologyProposal(chunkId, "accept");
+      }
+      const done = await applyWithPlan((plan) => changeConfirmText(change, plan), {
+        plan: () => planOntologyChanges(changes),
+        apply: (fp) => resolveOntologyProposal(chunkId, "accept", undefined, fp),
+        confirm: (text) => window.confirm(text),
+      });
+      return done ?? getOntology();
+    });
   const adopt = (name: string, section?: "relations") =>
     act(() => adoptOntologyType(name, undefined, section));
   const flip = (status: "confirmed" | "draft") => act(() => setOntologyStatus(status));
@@ -881,21 +905,17 @@ export default function OntologySection() {
                     {p.body && <pre className="ontology-evidence">{p.body.trim()}</pre>}
                     {p.scheme && <ProposedSchemeDetail scheme={p.scheme} />}
                     {p.change && <pre className="ontology-evidence">{proposedChangeText(p.change)}</pre>}
-                    {/* Accepting a change proposal applies it to the entry it names (RFC GQ
-                        P4.2, not built yet); the route refuses it, so it is not offered. */}
-                    {decides && p.change && (
-                      <p className="settings-muted">
-                        Accepting a change comes in a later release — reject it, or make the change in
-                        the document editor.
-                      </p>
-                    )}
                     {decides && (
                       <div className="settings-row-actions">
                         <button
                           type="button"
                           disabled={busy}
-                          hidden={!!p.change}
-                          onClick={() => void resolveProposal(p.chunk_id, "accept")}
+                          onClick={() => {
+                            const change = p.change;
+                            void (change
+                              ? acceptChange(p.chunk_id, change)
+                              : resolveProposal(p.chunk_id, "accept"));
+                          }}
                         >
                           accept
                         </button>

@@ -234,6 +234,20 @@ type Event struct {
 	MoveDocumentIDs []string       `json:"move_document_ids,omitempty"`
 	MoveCounts      map[string]int `json:"move_counts,omitempty"`
 
+	// --- Ontology change applied (Action = "ontology_change_applied") ---
+	//
+	// An operator accepted a change or retire proposal (RFC GQ P4.2): the
+	// change was applied to the entry it names and the proposal deleted, so
+	// this record and the entry's revision history are what remains of it.
+	// The entry's name travels in TargetName, its tenant in TargetTenant, the
+	// operator in the Actor fields. Ids, names and counts only.
+	OntologyProposalID string         `json:"ontology_proposal_id,omitempty"`
+	OntologyEntryID    string         `json:"ontology_entry_id,omitempty"`
+	OntologyOp         string         `json:"ontology_op,omitempty"`      // edit | retire
+	OntologyApplied    []string       `json:"ontology_applied,omitempty"` // retire, rename, move, edit
+	OntologyPlanRisk   string         `json:"ontology_plan_risk,omitempty"`
+	OntologyPlanCounts map[string]int `json:"ontology_plan_counts,omitempty"`
+
 	// --- Directory lookup (Action = "identity_lookup") ---
 	//
 	// A run, or a session on the MCP server, reading what the directory holds

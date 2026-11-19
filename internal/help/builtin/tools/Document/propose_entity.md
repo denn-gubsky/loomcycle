@@ -68,10 +68,17 @@ until an operator accepts it.
 
 A retire names only `entry`. The proposal is filed under the entry's section,
 titled `edit: <name>` or `retire: <name>`, and the change travels as data in
-its fields (`change_proposal`), never in its text. Accepting one applies it to
-the entry in place, keeping its id; this server cannot accept one yet — the
-operator's proposals route refuses it, and rejecting works as for any
-proposal.
+its fields (`change_proposal`), never in its text. An operator accepting one
+applies it to the entry in place, keeping its id: a retire retires the entry and
+everything under it; an edit renames it, moves it, and writes its body as the
+directives above the meaning (a class's field bullets stay as they are — a
+proposal never adds or removes a field). The change is checked again against
+the ontology as it then stands, and refused if the proposal no longer passes
+or was edited into something it would not pass. A class that something rests
+on is not renamed until the runtime can carry the new name through stored data;
+a relation or concept is. The accepted proposal is then deleted, and other open
+proposals of the same kind for the same entry are rejected. Rejecting works as
+for any proposal.
 
 Refused: an entry that is not in force; a retired entry (it is brought back by
 an operator clearing its status, not changed by a proposal); retiring one
