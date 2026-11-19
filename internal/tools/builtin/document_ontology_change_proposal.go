@@ -131,25 +131,66 @@ func (d *Document) proposeChange(ctx context.Context, in docInput) (tools.Result
 		return errFrom("propose_entity: "+err.Error(), err), nil
 	}
 	defer unlock()
-	tg, r, err := d.resolveChangeTarget(ctx, key, mscope, in)
+	tg, mark, refusal, err := d.checkChange(ctx, key, mscope, op, in)
 	if err != nil {
 		return errFrom("propose_entity: "+err.Error(), err), nil
 	}
+	if refusal != nil {
+		return refusal.res, nil
+	}
+	e := tg.entry
+	for _, p := range tg.read.Proposals {
+		if p.Change != nil && p.Status == memrank.OntologyStatusProposed && p.Change.Target == e.ChunkID && p.Change.Op == op {
+			return errBusiness("propose_entity: already_proposed: an open "+op+" proposal for "+strconv.Quote(e.Name)+
+				" exists ("+p.ChunkID+")", "Do not propose it again; an operator decides."), nil
+		}
+	}
+	return d.fileChangeProposal(ctx, key, mscope, tg, mark, in.Body)
+}
+
+// changeRefusal is why a change cannot be filed, or accepted: res is the refusal as
+// propose_entity answers it; locked and unavailable tell an accept which answer it is.
+type changeRefusal struct {
+	res         tools.Result
+	locked      bool // entry_locked: the entry, or one under it, carries @locked
+	unavailable bool // the ontology could not be read whole
+}
+
+// checkChange runs every check a change or retire proposal must pass against the
+// ontology as it reads now: the target is an entry in force and not retired (for a
+// retire, not already retired); an edit's name, parent, meaning and directives are
+// valid for its section; no lock stands in the way. It returns the target and the
+// change as filing records it. Filing calls it with the agent's input; accepting calls
+// it with the input rebuilt from the stored mark (document_ontology_change_accept.go),
+// so both run the same checks. The duplicate check is filing's own.
+func (d *Document) checkChange(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op string, in docInput) (changeTarget, memrank.ProposedChange, *changeRefusal, error) {
+	var mark memrank.ProposedChange
+	refuse := func(r *tools.Result) (changeTarget, memrank.ProposedChange, *changeRefusal, error) {
+		return changeTarget{}, mark, &changeRefusal{res: *r}, nil
+	}
+	if r := checkChangeShape(op, in); r != nil {
+		return refuse(r)
+	}
+	tg, r, err := d.resolveChangeTarget(ctx, key, mscope, in)
+	if err != nil {
+		return tg, mark, nil, err
+	}
 	if r != nil {
-		return *r, nil
+		return refuse(r)
 	}
 	e := tg.entry
 	if why := tg.retired[e.ChunkID]; why != "" {
 		if op == memrank.ChangeOpRetire {
-			return errBusiness("propose_entity: already_retired: "+why+" is already retired",
-				"Nothing to propose; an operator brings it back by clearing its status."), nil
+			res := errBusiness("propose_entity: already_retired: "+why+" is already retired",
+				"Nothing to propose; an operator brings it back by clearing its status.")
+			return refuse(&res)
 		}
-		return *retiredNameRefusal(why), nil
+		return refuse(retiredNameRefusal(why))
 	}
-	mark := memrank.ProposedChange{Op: op, Target: e.ChunkID, TargetName: e.Name, Section: e.Section, Kind: e.Kind}
+	mark = memrank.ProposedChange{Op: op, Target: e.ChunkID, TargetName: e.Name, Section: e.Section, Kind: e.Kind}
 	if op == memrank.ChangeOpEdit {
 		if r := tg.fillEdit(&mark, in); r != nil {
-			return *r, nil
+			return refuse(r)
 		}
 	}
 	// A lock refuses retiring, renaming or moving the entry and any ancestor of a locked
@@ -159,20 +200,15 @@ func (d *Document) proposeChange(ctx context.Context, in docInput) (tools.Result
 		ids = tg.rows.subtree(e.ChunkID)
 	}
 	if tg.read.partial {
-		return *lockReadPartial("propose_entity"), nil
+		return tg, mark, &changeRefusal{res: *lockReadPartial("propose_entity"), unavailable: true}, nil
 	}
 	if locked := lockedAmong(ids, tg.entries); locked != "" {
-		return errBusiness("propose_entity: entry_locked: "+locked+" carries @locked, so no proposal may "+op+
+		res := errBusiness("propose_entity: entry_locked: "+locked+" carries @locked, so no proposal may "+op+
 			" it (or an entry above it); only an operator's own edit removes the lock",
-			"Ask an operator; a proposal cannot set or clear @locked."), nil
+			"Ask an operator; a proposal cannot set or clear @locked.")
+		return tg, mark, &changeRefusal{res: res, locked: true}, nil
 	}
-	for _, p := range tg.read.Proposals {
-		if p.Change != nil && p.Status == memrank.OntologyStatusProposed && p.Change.Target == e.ChunkID && p.Change.Op == op {
-			return errBusiness("propose_entity: already_proposed: an open "+op+" proposal for "+strconv.Quote(e.Name)+
-				" exists ("+p.ChunkID+")", "Do not propose it again; an operator decides."), nil
-		}
-	}
-	return d.fileChangeProposal(ctx, key, mscope, tg, mark, in.Body)
+	return tg, mark, nil, nil
 }
 
 // checkChangeShape refuses what is malformed before anything is read.
