@@ -585,14 +585,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	if sc := shellCredentialsReport(c.Cfg, tools.PolicyOf(ctx).ShellCreds); sc != nil {
 		out["shell_credentials"] = sc
 	}
-	// The Git network operations this run may perform (RFC FB), so an agent
-	// can tell a refused clone or push from a broken remote. Always present:
-	// an empty list is the answer "local repository work only".
-	out["git_remote"] = tools.PolicyOf(ctx).GitRemote.Ops()
-	// What this run may do with workspaces (RFC GW), so an agent can tell a
-	// refused op from a broken worker. Always present: ops [] and open false
-	// is the answer "no workspace access".
-	out["workspace"] = tools.PolicyOf(ctx).Workspace.Report()
+	reportReachGrants(out, tools.PolicyOf(ctx))
 	// The statement grants this run holds, so an agent can tell before writing
 	// whether a rule: stamp is accepted, whether its tenant link_chunks is
 	// asserted (link) and whether it may remember. A run holding none is not
@@ -1518,4 +1511,15 @@ func shellCredentialsReport(cfg *config.Config, sc tools.ShellCredsPolicyValue) 
 		// (D6). Bash has no operator host allowlist to report.
 		"bashbox_fallback_withheld_env": nonNilStrings(sc.WithheldHostNames(cfg.Env.BashboxFallbackAllowedEnv, fallbackCredNames(cfg.Env.BashboxFallbackAllowedCreds))),
 	}
+}
+
+// reportReachGrants adds to op=self the grants that reach beyond the runtime:
+// the Git network operations the run may perform (RFC FB) and what it may do
+// with workspaces (RFC GW), so an agent can tell a refused call from a broken
+// remote or worker. Always present: an empty git_remote is the answer "local
+// repository work only", and workspace ops [] with open false is "no
+// workspace access".
+func reportReachGrants(out map[string]any, p tools.RunPolicy) {
+	out["git_remote"] = p.GitRemote.Ops()
+	out["workspace"] = p.Workspace.Report()
 }
