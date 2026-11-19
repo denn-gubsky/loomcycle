@@ -35,19 +35,38 @@ const refusal =
 
 type Call = { url: string; body?: Record<string, unknown> };
 
-function stubServer(calls: Call[]) {
+// stubServer answers each plan with the next fingerprint (fp1, fp2, …); an update
+// carrying a fingerprint listed in stale answers 409 plan_stale, as the runtime does
+// after another change to the ontology (RFC GQ P2.4).
+function stubServer(calls: Call[], stale: string[] = []) {
+  let plans = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
       calls.push({ url, body });
+      if (url.startsWith("/v1/_ontology/plan")) {
+        plans++;
+        const counts = { typed_documents: { n: plans + 2, effect: "stale", tenant_scope: plans + 2 } };
+        const entry = { chunk_id: "c-memo", name: "Memo", section: "classes", kind: "class" };
+        return new Response(
+          JSON.stringify({ fingerprint: `fp${plans}`, complete: true, changes: [{ op: "retire", entry, risk: "stales", counts }] }),
+          { status: 200 },
+        );
+      }
       if (url.startsWith("/v1/_ontology")) return new Response(JSON.stringify(state), { status: 200 });
       if (url.startsWith("/v1/_document")) {
         switch (body?.op) {
           case "get_chunk":
             return new Response(JSON.stringify({ id: body.id, revision: 3 }), { status: 200 });
           case "update_chunk":
+            if (stale.includes(String(body.plan_fingerprint))) {
+              return new Response(
+                JSON.stringify({ code: "plan_stale", error: "update_chunk: plan_stale: …", fingerprint: "fp-now" }),
+                { status: 409 },
+              );
+            }
             return new Response(JSON.stringify({ id: body.id, revision: 4 }), { status: 200 });
           case "delete_chunk":
             return new Response(JSON.stringify({ error: refusal }), { status: 400 });
@@ -122,15 +141,53 @@ describe("OntologySection retire and delete", () => {
     expect(rowOf(mounted.el, "Memo").textContent).not.toContain("locked");
   });
 
-  it("retires through update_chunk at the chunk's current revision", async () => {
+  it("plans the retire, shows its counts, and retires with the plan's fingerprint", async () => {
     const calls: Call[] = [];
     stubServer(calls);
+    const confirm = vi.fn((_text: string) => true);
+    vi.stubGlobal("confirm", confirm);
     mounted = await mount(operator);
     await act(async () => button(rowOf(mounted!.el, "Memo"), "retire")!.click());
     await settle();
+    expect(calls.find((c) => c.url.startsWith("/v1/_ontology/plan"))?.body).toEqual({
+      changes: [{ op: "retire", entry: "c-memo" }],
+    });
+    expect(confirm.mock.calls[0]?.[0]).toContain("typed documents: 3");
     const update = calls.find((c) => c.body?.op === "update_chunk");
-    expect(update?.body).toEqual({ op: "update_chunk", id: "c-memo", revision: 3, scope: "tenant", status: "retired" });
+    expect(update?.body).toEqual({
+      op: "update_chunk",
+      id: "c-memo",
+      revision: 3,
+      scope: "tenant",
+      status: "retired",
+      plan_fingerprint: "fp1",
+    });
     expect(mounted.el.querySelector(".settings-error")).toBeNull();
+  });
+
+  it("re-plans once when the retire answers plan_stale", async () => {
+    const calls: Call[] = [];
+    stubServer(calls, ["fp1"]);
+    const confirm = vi.fn((_text: string) => true);
+    vi.stubGlobal("confirm", confirm);
+    mounted = await mount(operator);
+    await act(async () => button(rowOf(mounted!.el, "Memo"), "retire")!.click());
+    await settle();
+    const sent = calls.filter((c) => c.body?.op === "update_chunk").map((c) => c.body?.plan_fingerprint);
+    expect(sent).toEqual(["fp1", "fp2"]);
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm.mock.calls[1]?.[0]).toContain("typed documents: 4");
+    expect(mounted.el.querySelector(".settings-error")).toBeNull();
+  });
+
+  it("retires nothing when the operator declines the plan", async () => {
+    const calls: Call[] = [];
+    stubServer(calls);
+    vi.stubGlobal("confirm", () => false);
+    mounted = await mount(operator);
+    await act(async () => button(rowOf(mounted!.el, "Memo"), "retire")!.click());
+    await settle();
+    expect(calls.some((c) => c.body?.op === "update_chunk")).toBe(false);
   });
 
   it("shows the runtime's refusal when deleting an entry in use", async () => {

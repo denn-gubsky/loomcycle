@@ -365,7 +365,8 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
       // The access-control conflicts carry a code, and their messages quote
       // caller-chosen names (a group called "session-ops"), which the
       // keyword matches below would misread.
-      if (opts.code !== undefined && ACL_CONFLICT_CODES.has(opts.code))
+      // So do a plan's refusals, whose messages quote entry names (RFC GQ P2.4).
+      if (opts.code !== undefined && (ACL_CONFLICT_CODES.has(opts.code) || ONTOLOGY_PLAN_CODES.has(opts.code)))
         throw new LoomcycleError(msg, opts);
       if (bodyLower.includes("already_pausing") || bodyLower.includes("already paused"))
         throw new AlreadyPausingError(msg, opts);
@@ -468,6 +469,10 @@ const ACL_CONFLICT_CODES: ReadonlySet<string> = new Set([
   "acl_exists",
   "acl_binding_exists",
 ]);
+
+/** The 409 codes of a destructive change to a tenant-ontology entry made without
+ *  a current plan's fingerprint; the body's `fingerprint` is the current one. */
+const ONTOLOGY_PLAN_CODES: ReadonlySet<string> = new Set(["plan_required", "plan_stale"]);
 
 /** aclReasons reads an `acl_denied` body's `reasons`, keeping only entries
  *  with the fields a reason always has: a proxy's or an older server's

@@ -412,6 +412,18 @@ func (s *Server) dispatchSubstrateCtxGuarded(
 		return
 	}
 
+	// A destructive change to the tenant ontology without a current plan's
+	// fingerprint (RFC GQ P2.4) is a conflict with the ontology's state: 409, with
+	// the refusal's code and the current fingerprint as fields of the body.
+	if code, ok := builtin.OntologyPlanRefusalCode(result.Text, result.ErrorInfo); result.IsError && ok {
+		env := map[string]any{}
+		_ = json.Unmarshal([]byte(result.Text), &env)
+		env["code"], env["tool"] = code, toolName
+		addErrorInfo(env, result.Text, result.ErrorInfo)
+		writeJSON(w, http.StatusConflict, env)
+		return
+	}
+
 	// A change refused because its audit record could not be written is
 	// the store being unavailable, not the caller's mistake.
 	if result.IsError && strings.HasPrefix(result.Text, tools.AuditUnavailablePrefix) {

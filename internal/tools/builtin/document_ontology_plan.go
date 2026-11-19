@@ -130,12 +130,9 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 	if docID == "" {
 		return out, connector.WithMessage(connector.ErrOntologyPlanNotFound, "this tenant has no ontology document")
 	}
-	raw, err := d.ontologyFingerprint(ctx, key, docID)
-	if err != nil {
+	if out.Fingerprint, err = d.ontologyPlanFingerprint(ctx, key, docID); err != nil {
 		return out, planReadErr(err)
 	}
-	sum := sha256.Sum256([]byte(raw))
-	out.Fingerprint = hex.EncodeToString(sum[:])
 
 	before, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
@@ -206,6 +203,18 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 		out.Changes = append(out.Changes, p.result())
 	}
 	return out, nil
+}
+
+// ontologyPlanFingerprint is the fingerprint a plan reports: sha256 of
+// ontologyFingerprint, in hex. A destructive change compares a caller's against it
+// (document_ontology_fingerprint.go).
+func (d *Document) ontologyPlanFingerprint(ctx context.Context, key sqlmem.ScopeKey, docID string) (string, error) {
+	raw, err := d.ontologyFingerprint(ctx, key, docID)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // planReadErr is the plan's error for a failed read. A tenant scope whose document

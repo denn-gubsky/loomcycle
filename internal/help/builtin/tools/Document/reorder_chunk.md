@@ -26,6 +26,8 @@ is a success, not an error, and repeating the call changes nothing.
 - `reorder_chunk: direction must be "up" or "down"`.
 - `reorder_chunk: no such chunk: ...` — the `id` is not in this scope.
 - In the tenant scope, the shared ontology document refuses edits from agents.
+  An operator's reorder of an ontology entry never needs a plan's fingerprint:
+  it changes no parent, and nothing stored depends on a sibling's position.
 
 ## Examples
 

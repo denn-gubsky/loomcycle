@@ -19,6 +19,13 @@ under the document's title.**
   `reorder_chunk` afterwards if the order matters.
 - `scope` — `user` (default), `agent` or `tenant`. See
   `{"op":"help","topic":"scopes"}`.
+- `plan_fingerprint` — moving an entry of the tenant ontology that something
+  rests on under another parent needs the `fingerprint` of a plan of the move
+  (`POST /v1/_ontology/plan`, `{"op": "move", "entry": ..., "parent": ...}`).
+  Without it the move is refused `plan_required`; with an old one,
+  `plan_stale`; each refusal carries the current fingerprint. A move the reader
+  does not see (under the same parent, or under a proposal beneath it) needs
+  none.
 
 ## Returns
 

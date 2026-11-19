@@ -126,7 +126,10 @@ func TestMoveChunk_TakingAnEntryOutOfTheOntologyIsRefused(t *testing.T) {
 	if text := f.deleteChunk(f.ctx, prop); !strings.Contains(text, `class "Memo"`) {
 		t.Errorf("delete of the proposal holding an entry in use: %q", text)
 	}
-	f.must(map[string]any{"op": "move_chunk", "scope": "tenant", "id": f.chunk("Reporting"), "new_parent_id": f.chunk("Risk Management")})
+	// Under Risk Management, Reporting would take its @retention: the plan says that
+	// stales, so the move carries a plan's fingerprint (RFC GQ P2.4).
+	f.must(map[string]any{"op": "move_chunk", "scope": "tenant", "id": f.chunk("Reporting"), "new_parent_id": f.chunk("Risk Management"),
+		"plan_fingerprint": f.planFingerprint(f.chunk("Reporting"))})
 }
 
 // TestOntologyDeleteRecheck_RefusesAChangedSubtree: what the guard read is re-asserted

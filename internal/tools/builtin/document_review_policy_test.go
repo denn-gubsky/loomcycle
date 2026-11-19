@@ -623,8 +623,9 @@ func TestApplyReviewPolicy_AutoAssertImpliesThePolicy(t *testing.T) {
 		}
 	}
 	g, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"tenant","id":"`+chunk+`"}`)
-	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"body":%q,"revision":%d}`,
-		chunk, g["body"].(string)+"\n@auto_assert\n", int(g["revision"].(float64)))); r.IsError {
+	// supervises has statements, so a directive edit needs a plan's fingerprint (RFC GQ P2.4).
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"body":%q,"revision":%d,"plan_fingerprint":%q}`,
+		chunk, g["body"].(string)+"\n@auto_assert\n", int(g["revision"].(float64)), ontologyFingerprintNow(t, d, ctx))); r.IsError {
 		t.Fatal(r.Text)
 	}
 	no, two := false, 2

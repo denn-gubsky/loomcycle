@@ -106,8 +106,9 @@ func TestMirrorSchemeTags_IsIdempotentAndFollowsARename(t *testing.T) {
 
 	// Rename the concept: the next mirror replaces the old tag, keeps keep-me.
 	g, _ := docExec(t, d, ctx, `{"op":"get_chunk","scope":"tenant","id":"`+out.ChunkID+`"}`)
-	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%d,"title":"Vendor Outsourcing"}`,
-		out.ChunkID, int(g["revision"].(float64)))); r.IsError {
+	// The concept carries a tag, so its rename needs a plan's fingerprint (RFC GQ P2.4).
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%d,"title":"Vendor Outsourcing","plan_fingerprint":%q}`,
+		out.ChunkID, int(g["revision"].(float64)), ontologyFingerprintNow(t, d, ctx))); r.IsError {
 		t.Fatal(r.Text)
 	}
 	if rep, _ := d.MirrorSchemeTags(ctx, false); rep.Removed != 1 || rep.Added != 1 {
