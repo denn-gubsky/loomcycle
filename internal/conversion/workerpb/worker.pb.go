@@ -689,6 +689,7 @@ type WorkerFrame struct {
 	//	*WorkerFrame_Done
 	//	*WorkerFrame_Record
 	//	*WorkerFrame_HeadingAnchor
+	//	*WorkerFrame_PageImage
 	Msg           isWorkerFrame_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -839,6 +840,15 @@ func (x *WorkerFrame) GetHeadingAnchor() *HeadingAnchor {
 	return nil
 }
 
+func (x *WorkerFrame) GetPageImage() *PageImage {
+	if x != nil {
+		if x, ok := x.Msg.(*WorkerFrame_PageImage); ok {
+			return x.PageImage
+		}
+	}
+	return nil
+}
+
 type isWorkerFrame_Msg interface {
 	isWorkerFrame_Msg()
 }
@@ -891,6 +901,10 @@ type WorkerFrame_HeadingAnchor struct {
 	HeadingAnchor *HeadingAnchor `protobuf:"bytes,12,opt,name=heading_anchor,json=headingAnchor,proto3,oneof"`
 }
 
+type WorkerFrame_PageImage struct {
+	PageImage *PageImage `protobuf:"bytes,13,opt,name=page_image,json=pageImage,proto3,oneof"`
+}
+
 func (*WorkerFrame_Ready) isWorkerFrame_Msg() {}
 
 func (*WorkerFrame_Accept) isWorkerFrame_Msg() {}
@@ -914,6 +928,8 @@ func (*WorkerFrame_Done) isWorkerFrame_Msg() {}
 func (*WorkerFrame_Record) isWorkerFrame_Msg() {}
 
 func (*WorkerFrame_HeadingAnchor) isWorkerFrame_Msg() {}
+
+func (*WorkerFrame_PageImage) isWorkerFrame_Msg() {}
 
 // Ready opens a Work stream: an idle slot of an attached worker.
 type Ready struct {
@@ -1223,6 +1239,70 @@ func (x *HeadingAnchor) GetName() string {
 	return ""
 }
 
+// A page rendered for OCR (RFC GV D7): one PNG of a page already written,
+// at most 1 MiB of it per frame, in order; last ends the page. Sent only
+// for a job whose ExtractOptions.page_images asked, after the page's text.
+// No reply: the worker goes on.
+type PageImage struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Page          int32                  `protobuf:"varint,1,opt,name=page,proto3" json:"page,omitempty"`
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	Last          bool                   `protobuf:"varint,3,opt,name=last,proto3" json:"last,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PageImage) Reset() {
+	*x = PageImage{}
+	mi := &file_worker_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PageImage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PageImage) ProtoMessage() {}
+
+func (x *PageImage) ProtoReflect() protoreflect.Message {
+	mi := &file_worker_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PageImage.ProtoReflect.Descriptor instead.
+func (*PageImage) Descriptor() ([]byte, []int) {
+	return file_worker_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *PageImage) GetPage() int32 {
+	if x != nil {
+		return x.Page
+	}
+	return 0
+}
+
+func (x *PageImage) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+func (x *PageImage) GetLast() bool {
+	if x != nil {
+		return x.Last
+	}
+	return false
+}
+
 // An image found in the document. Its bytes follow as image_chunk frames,
 // then image_end; the worker waits for ImageRef before writing more.
 type ImageBegin struct {
@@ -1239,7 +1319,7 @@ type ImageBegin struct {
 
 func (x *ImageBegin) Reset() {
 	*x = ImageBegin{}
-	mi := &file_worker_proto_msgTypes[15]
+	mi := &file_worker_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1251,7 +1331,7 @@ func (x *ImageBegin) String() string {
 func (*ImageBegin) ProtoMessage() {}
 
 func (x *ImageBegin) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[15]
+	mi := &file_worker_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1264,7 +1344,7 @@ func (x *ImageBegin) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImageBegin.ProtoReflect.Descriptor instead.
 func (*ImageBegin) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{15}
+	return file_worker_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ImageBegin) GetName() string {
@@ -1317,7 +1397,7 @@ type ImageEnd struct {
 
 func (x *ImageEnd) Reset() {
 	*x = ImageEnd{}
-	mi := &file_worker_proto_msgTypes[16]
+	mi := &file_worker_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1329,7 +1409,7 @@ func (x *ImageEnd) String() string {
 func (*ImageEnd) ProtoMessage() {}
 
 func (x *ImageEnd) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[16]
+	mi := &file_worker_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1342,7 +1422,7 @@ func (x *ImageEnd) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImageEnd.ProtoReflect.Descriptor instead.
 func (*ImageEnd) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{16}
+	return file_worker_proto_rawDescGZIP(), []int{17}
 }
 
 // At most 1 MiB of bytes.
@@ -1355,7 +1435,7 @@ type Chunk struct {
 
 func (x *Chunk) Reset() {
 	*x = Chunk{}
-	mi := &file_worker_proto_msgTypes[17]
+	mi := &file_worker_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1367,7 +1447,7 @@ func (x *Chunk) String() string {
 func (*Chunk) ProtoMessage() {}
 
 func (x *Chunk) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[17]
+	mi := &file_worker_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1380,7 +1460,7 @@ func (x *Chunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Chunk.ProtoReflect.Descriptor instead.
 func (*Chunk) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{17}
+	return file_worker_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *Chunk) GetData() []byte {
@@ -1403,7 +1483,7 @@ type Done struct {
 
 func (x *Done) Reset() {
 	*x = Done{}
-	mi := &file_worker_proto_msgTypes[18]
+	mi := &file_worker_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1415,7 +1495,7 @@ func (x *Done) String() string {
 func (*Done) ProtoMessage() {}
 
 func (x *Done) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[18]
+	mi := &file_worker_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1428,7 +1508,7 @@ func (x *Done) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Done.ProtoReflect.Descriptor instead.
 func (*Done) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{18}
+	return file_worker_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Done) GetReport() *Report {
@@ -1476,14 +1556,16 @@ type Report struct {
 	PageYields              []*PageYield           `protobuf:"bytes,12,rep,name=page_yields,json=pageYields,proto3" json:"page_yields,omitempty"`
 	// What a book says about itself (RFC GV D10); unset for a format that
 	// carries none, and from a worker of an earlier release.
-	Metadata      *BookMetadata `protobuf:"bytes,13,opt,name=metadata,proto3" json:"metadata,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Metadata *BookMetadata `protobuf:"bytes,13,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	// page_images was asked for and this worker cannot render pages.
+	PageImagesUnavailable bool `protobuf:"varint,14,opt,name=page_images_unavailable,json=pageImagesUnavailable,proto3" json:"page_images_unavailable,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *Report) Reset() {
 	*x = Report{}
-	mi := &file_worker_proto_msgTypes[19]
+	mi := &file_worker_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1495,7 +1577,7 @@ func (x *Report) String() string {
 func (*Report) ProtoMessage() {}
 
 func (x *Report) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[19]
+	mi := &file_worker_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1508,7 +1590,7 @@ func (x *Report) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Report.ProtoReflect.Descriptor instead.
 func (*Report) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{19}
+	return file_worker_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Report) GetFormat() string {
@@ -1602,6 +1684,13 @@ func (x *Report) GetMetadata() *BookMetadata {
 	return nil
 }
 
+func (x *Report) GetPageImagesUnavailable() bool {
+	if x != nil {
+		return x.PageImagesUnavailable
+	}
+	return false
+}
+
 // extract.BookMetadata. Every value is the file's own text, bounded by the
 // worker and again by the core.
 type BookMetadata struct {
@@ -1625,7 +1714,7 @@ type BookMetadata struct {
 
 func (x *BookMetadata) Reset() {
 	*x = BookMetadata{}
-	mi := &file_worker_proto_msgTypes[20]
+	mi := &file_worker_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1637,7 +1726,7 @@ func (x *BookMetadata) String() string {
 func (*BookMetadata) ProtoMessage() {}
 
 func (x *BookMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[20]
+	mi := &file_worker_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1650,7 +1739,7 @@ func (x *BookMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BookMetadata.ProtoReflect.Descriptor instead.
 func (*BookMetadata) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{20}
+	return file_worker_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *BookMetadata) GetTitle() string {
@@ -1754,7 +1843,7 @@ type BookIdentifier struct {
 
 func (x *BookIdentifier) Reset() {
 	*x = BookIdentifier{}
-	mi := &file_worker_proto_msgTypes[21]
+	mi := &file_worker_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1766,7 +1855,7 @@ func (x *BookIdentifier) String() string {
 func (*BookIdentifier) ProtoMessage() {}
 
 func (x *BookIdentifier) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[21]
+	mi := &file_worker_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1779,7 +1868,7 @@ func (x *BookIdentifier) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BookIdentifier.ProtoReflect.Descriptor instead.
 func (*BookIdentifier) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{21}
+	return file_worker_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *BookIdentifier) GetScheme() string {
@@ -1807,7 +1896,7 @@ type PageYield struct {
 
 func (x *PageYield) Reset() {
 	*x = PageYield{}
-	mi := &file_worker_proto_msgTypes[22]
+	mi := &file_worker_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1819,7 +1908,7 @@ func (x *PageYield) String() string {
 func (*PageYield) ProtoMessage() {}
 
 func (x *PageYield) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[22]
+	mi := &file_worker_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1832,7 +1921,7 @@ func (x *PageYield) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PageYield.ProtoReflect.Descriptor instead.
 func (*PageYield) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{22}
+	return file_worker_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *PageYield) GetPage() int32 {
@@ -1873,7 +1962,7 @@ type JobFrame struct {
 
 func (x *JobFrame) Reset() {
 	*x = JobFrame{}
-	mi := &file_worker_proto_msgTypes[23]
+	mi := &file_worker_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1885,7 +1974,7 @@ func (x *JobFrame) String() string {
 func (*JobFrame) ProtoMessage() {}
 
 func (x *JobFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[23]
+	mi := &file_worker_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1898,7 +1987,7 @@ func (x *JobFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobFrame.ProtoReflect.Descriptor instead.
 func (*JobFrame) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{23}
+	return file_worker_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *JobFrame) GetMsg() isJobFrame_Msg {
@@ -2011,7 +2100,7 @@ type JobStart struct {
 
 func (x *JobStart) Reset() {
 	*x = JobStart{}
-	mi := &file_worker_proto_msgTypes[24]
+	mi := &file_worker_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2023,7 +2112,7 @@ func (x *JobStart) String() string {
 func (*JobStart) ProtoMessage() {}
 
 func (x *JobStart) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[24]
+	mi := &file_worker_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2036,7 +2125,7 @@ func (x *JobStart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JobStart.ProtoReflect.Descriptor instead.
 func (*JobStart) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{24}
+	return file_worker_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *JobStart) GetJobId() string {
@@ -2118,14 +2207,18 @@ type ExtractOptions struct {
 	// P4b), so the worker may send Record and HeadingAnchor frames. Without
 	// it the worker sends neither: a dispatcher built before them would read
 	// one as a broken worker.
-	Records       bool `protobuf:"varint,4,opt,name=records,proto3" json:"records,omitempty"`
+	Records bool `protobuf:"varint,4,opt,name=records,proto3" json:"records,omitempty"`
+	// page_images asks a DjVu extraction to render the pages an OCR pass
+	// reads (RFC GV D7). Only a worker carrying the djvu_render label is sent
+	// it; one built before it would read the file and render nothing.
+	PageImages    *PageImages `protobuf:"bytes,5,opt,name=page_images,json=pageImages,proto3" json:"page_images,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExtractOptions) Reset() {
 	*x = ExtractOptions{}
-	mi := &file_worker_proto_msgTypes[25]
+	mi := &file_worker_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2137,7 +2230,7 @@ func (x *ExtractOptions) String() string {
 func (*ExtractOptions) ProtoMessage() {}
 
 func (x *ExtractOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[25]
+	mi := &file_worker_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2150,7 +2243,7 @@ func (x *ExtractOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtractOptions.ProtoReflect.Descriptor instead.
 func (*ExtractOptions) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{25}
+	return file_worker_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ExtractOptions) GetImages() bool {
@@ -2181,6 +2274,76 @@ func (x *ExtractOptions) GetRecords() bool {
 	return false
 }
 
+func (x *ExtractOptions) GetPageImages() *PageImages {
+	if x != nil {
+		return x.PageImages
+	}
+	return nil
+}
+
+// extract.PageImages: render every page read (always) or those whose text
+// layer holds under min_chars characters, at most max_pages of them, the
+// OCR budget the core reserved before the job.
+type PageImages struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Always        bool                   `protobuf:"varint,1,opt,name=always,proto3" json:"always,omitempty"`
+	MinChars      int32                  `protobuf:"varint,2,opt,name=min_chars,json=minChars,proto3" json:"min_chars,omitempty"`
+	MaxPages      int32                  `protobuf:"varint,3,opt,name=max_pages,json=maxPages,proto3" json:"max_pages,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PageImages) Reset() {
+	*x = PageImages{}
+	mi := &file_worker_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PageImages) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PageImages) ProtoMessage() {}
+
+func (x *PageImages) ProtoReflect() protoreflect.Message {
+	mi := &file_worker_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PageImages.ProtoReflect.Descriptor instead.
+func (*PageImages) Descriptor() ([]byte, []int) {
+	return file_worker_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *PageImages) GetAlways() bool {
+	if x != nil {
+		return x.Always
+	}
+	return false
+}
+
+func (x *PageImages) GetMinChars() int32 {
+	if x != nil {
+		return x.MinChars
+	}
+	return 0
+}
+
+func (x *PageImages) GetMaxPages() int32 {
+	if x != nil {
+		return x.MaxPages
+	}
+	return 0
+}
+
 type InputEnd struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -2189,7 +2352,7 @@ type InputEnd struct {
 
 func (x *InputEnd) Reset() {
 	*x = InputEnd{}
-	mi := &file_worker_proto_msgTypes[26]
+	mi := &file_worker_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2201,7 +2364,7 @@ func (x *InputEnd) String() string {
 func (*InputEnd) ProtoMessage() {}
 
 func (x *InputEnd) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[26]
+	mi := &file_worker_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2214,7 +2377,7 @@ func (x *InputEnd) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InputEnd.ProtoReflect.Descriptor instead.
 func (*InputEnd) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{26}
+	return file_worker_proto_rawDescGZIP(), []int{28}
 }
 
 // The reference the Markdown embeds for the image just sent; empty when the
@@ -2228,7 +2391,7 @@ type ImageRef struct {
 
 func (x *ImageRef) Reset() {
 	*x = ImageRef{}
-	mi := &file_worker_proto_msgTypes[27]
+	mi := &file_worker_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2240,7 +2403,7 @@ func (x *ImageRef) String() string {
 func (*ImageRef) ProtoMessage() {}
 
 func (x *ImageRef) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[27]
+	mi := &file_worker_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2253,7 +2416,7 @@ func (x *ImageRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImageRef.ProtoReflect.Descriptor instead.
 func (*ImageRef) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{27}
+	return file_worker_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ImageRef) GetRef() string {
@@ -2272,7 +2435,7 @@ type Cancel struct {
 
 func (x *Cancel) Reset() {
 	*x = Cancel{}
-	mi := &file_worker_proto_msgTypes[28]
+	mi := &file_worker_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2284,7 +2447,7 @@ func (x *Cancel) String() string {
 func (*Cancel) ProtoMessage() {}
 
 func (x *Cancel) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[28]
+	mi := &file_worker_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2297,7 +2460,7 @@ func (x *Cancel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Cancel.ProtoReflect.Descriptor instead.
 func (*Cancel) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{28}
+	return file_worker_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *Cancel) GetReason() CancelReason {
@@ -2335,7 +2498,7 @@ const file_worker_proto_rawDesc = "" +
 	"\rbuild_version\x18\x01 \x01(\tR\fbuildVersion\"\a\n" +
 	"\x05Drain\"\n" +
 	"\n" +
-	"\bShutdown\"\xd9\x05\n" +
+	"\bShutdown\"\x9a\x06\n" +
 	"\vWorkerFrame\x122\n" +
 	"\x05ready\x18\x01 \x01(\v2\x1a.loomcycle.worker.v1.ReadyH\x00R\x05ready\x125\n" +
 	"\x06accept\x18\x02 \x01(\v2\x1b.loomcycle.worker.v1.AcceptH\x00R\x06accept\x12/\n" +
@@ -2352,7 +2515,9 @@ const file_worker_proto_rawDesc = "" +
 	"\x04done\x18\n" +
 	" \x01(\v2\x19.loomcycle.worker.v1.DoneH\x00R\x04done\x125\n" +
 	"\x06record\x18\v \x01(\v2\x1b.loomcycle.worker.v1.RecordH\x00R\x06record\x12K\n" +
-	"\x0eheading_anchor\x18\f \x01(\v2\".loomcycle.worker.v1.HeadingAnchorH\x00R\rheadingAnchorB\x05\n" +
+	"\x0eheading_anchor\x18\f \x01(\v2\".loomcycle.worker.v1.HeadingAnchorH\x00R\rheadingAnchor\x12?\n" +
+	"\n" +
+	"page_image\x18\r \x01(\v2\x1e.loomcycle.worker.v1.PageImageH\x00R\tpageImageB\x05\n" +
 	"\x03msg\"$\n" +
 	"\x05Ready\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"\b\n" +
@@ -2366,7 +2531,11 @@ const file_worker_proto_rawDesc = "" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x12\n" +
 	"\x04last\x18\x02 \x01(\bR\x04last\"#\n" +
 	"\rHeadingAnchor\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"\x8f\x01\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"G\n" +
+	"\tPageImage\x12\x12\n" +
+	"\x04page\x18\x01 \x01(\x05R\x04page\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\x12\x12\n" +
+	"\x04last\x18\x03 \x01(\bR\x04last\"\x8f\x01\n" +
 	"\n" +
 	"ImageBegin\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
@@ -2386,7 +2555,7 @@ const file_worker_proto_rawDesc = "" +
 	"errorClass\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1d\n" +
 	"\n" +
-	"media_type\x18\x04 \x01(\tR\tmediaType\"\xdc\x03\n" +
+	"media_type\x18\x04 \x01(\tR\tmediaType\"\x94\x04\n" +
 	"\x06Report\x12\x16\n" +
 	"\x06format\x18\x01 \x01(\tR\x06format\x12\x14\n" +
 	"\x05chars\x18\x02 \x01(\x03R\x05chars\x12\x14\n" +
@@ -2402,7 +2571,8 @@ const file_worker_proto_rawDesc = "" +
 	"\x05notes\x18\v \x03(\tR\x05notes\x12?\n" +
 	"\vpage_yields\x18\f \x03(\v2\x1e.loomcycle.worker.v1.PageYieldR\n" +
 	"pageYields\x12=\n" +
-	"\bmetadata\x18\r \x01(\v2!.loomcycle.worker.v1.BookMetadataR\bmetadata\"\xa7\x03\n" +
+	"\bmetadata\x18\r \x01(\v2!.loomcycle.worker.v1.BookMetadataR\bmetadata\x126\n" +
+	"\x17page_images_unavailable\x18\x0e \x01(\bR\x15pageImagesUnavailable\"\xa7\x03\n" +
 	"\fBookMetadata\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\x12\x18\n" +
 	"\aauthors\x18\x02 \x03(\tR\aauthors\x12 \n" +
@@ -2447,12 +2617,19 @@ const file_worker_proto_rawDesc = "" +
 	"\x05pages\x18\b \x03(\x05R\x05pages\x12\x1a\n" +
 	"\blanguage\x18\t \x01(\tR\blanguage\x12\x16\n" +
 	"\x06format\x18\n" +
-	" \x01(\tR\x06format\"\x84\x01\n" +
+	" \x01(\tR\x06format\"\xc6\x01\n" +
 	"\x0eExtractOptions\x12\x16\n" +
 	"\x06images\x18\x01 \x01(\bR\x06images\x12\x19\n" +
 	"\bmax_rows\x18\x02 \x01(\x05R\amaxRows\x12%\n" +
 	"\x0einfer_headings\x18\x03 \x01(\bR\rinferHeadings\x12\x18\n" +
-	"\arecords\x18\x04 \x01(\bR\arecords\"\n" +
+	"\arecords\x18\x04 \x01(\bR\arecords\x12@\n" +
+	"\vpage_images\x18\x05 \x01(\v2\x1f.loomcycle.worker.v1.PageImagesR\n" +
+	"pageImages\"^\n" +
+	"\n" +
+	"PageImages\x12\x16\n" +
+	"\x06always\x18\x01 \x01(\bR\x06always\x12\x1b\n" +
+	"\tmin_chars\x18\x02 \x01(\x05R\bminChars\x12\x1b\n" +
+	"\tmax_pages\x18\x03 \x01(\x05R\bmaxPages\"\n" +
 	"\n" +
 	"\bInputEnd\"\x1c\n" +
 	"\bImageRef\x12\x10\n" +
@@ -2501,7 +2678,7 @@ func file_worker_proto_rawDescGZIP() []byte {
 }
 
 var file_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_worker_proto_goTypes = []any{
 	(ErrorClass)(0),           // 0: loomcycle.worker.v1.ErrorClass
 	(JobKind)(0),              // 1: loomcycle.worker.v1.JobKind
@@ -2521,20 +2698,22 @@ var file_worker_proto_goTypes = []any{
 	(*PageStart)(nil),         // 15: loomcycle.worker.v1.PageStart
 	(*Record)(nil),            // 16: loomcycle.worker.v1.Record
 	(*HeadingAnchor)(nil),     // 17: loomcycle.worker.v1.HeadingAnchor
-	(*ImageBegin)(nil),        // 18: loomcycle.worker.v1.ImageBegin
-	(*ImageEnd)(nil),          // 19: loomcycle.worker.v1.ImageEnd
-	(*Chunk)(nil),             // 20: loomcycle.worker.v1.Chunk
-	(*Done)(nil),              // 21: loomcycle.worker.v1.Done
-	(*Report)(nil),            // 22: loomcycle.worker.v1.Report
-	(*BookMetadata)(nil),      // 23: loomcycle.worker.v1.BookMetadata
-	(*BookIdentifier)(nil),    // 24: loomcycle.worker.v1.BookIdentifier
-	(*PageYield)(nil),         // 25: loomcycle.worker.v1.PageYield
-	(*JobFrame)(nil),          // 26: loomcycle.worker.v1.JobFrame
-	(*JobStart)(nil),          // 27: loomcycle.worker.v1.JobStart
-	(*ExtractOptions)(nil),    // 28: loomcycle.worker.v1.ExtractOptions
-	(*InputEnd)(nil),          // 29: loomcycle.worker.v1.InputEnd
-	(*ImageRef)(nil),          // 30: loomcycle.worker.v1.ImageRef
-	(*Cancel)(nil),            // 31: loomcycle.worker.v1.Cancel
+	(*PageImage)(nil),         // 18: loomcycle.worker.v1.PageImage
+	(*ImageBegin)(nil),        // 19: loomcycle.worker.v1.ImageBegin
+	(*ImageEnd)(nil),          // 20: loomcycle.worker.v1.ImageEnd
+	(*Chunk)(nil),             // 21: loomcycle.worker.v1.Chunk
+	(*Done)(nil),              // 22: loomcycle.worker.v1.Done
+	(*Report)(nil),            // 23: loomcycle.worker.v1.Report
+	(*BookMetadata)(nil),      // 24: loomcycle.worker.v1.BookMetadata
+	(*BookIdentifier)(nil),    // 25: loomcycle.worker.v1.BookIdentifier
+	(*PageYield)(nil),         // 26: loomcycle.worker.v1.PageYield
+	(*JobFrame)(nil),          // 27: loomcycle.worker.v1.JobFrame
+	(*JobStart)(nil),          // 28: loomcycle.worker.v1.JobStart
+	(*ExtractOptions)(nil),    // 29: loomcycle.worker.v1.ExtractOptions
+	(*PageImages)(nil),        // 30: loomcycle.worker.v1.PageImages
+	(*InputEnd)(nil),          // 31: loomcycle.worker.v1.InputEnd
+	(*ImageRef)(nil),          // 32: loomcycle.worker.v1.ImageRef
+	(*Cancel)(nil),            // 33: loomcycle.worker.v1.Cancel
 }
 var file_worker_proto_depIdxs = []int32{
 	4,  // 0: loomcycle.worker.v1.WorkerStatus.hello:type_name -> loomcycle.worker.v1.Hello
@@ -2547,35 +2726,37 @@ var file_worker_proto_depIdxs = []int32{
 	13, // 7: loomcycle.worker.v1.WorkerFrame.busy:type_name -> loomcycle.worker.v1.Busy
 	14, // 8: loomcycle.worker.v1.WorkerFrame.text:type_name -> loomcycle.worker.v1.Text
 	15, // 9: loomcycle.worker.v1.WorkerFrame.page_start:type_name -> loomcycle.worker.v1.PageStart
-	18, // 10: loomcycle.worker.v1.WorkerFrame.image_begin:type_name -> loomcycle.worker.v1.ImageBegin
-	20, // 11: loomcycle.worker.v1.WorkerFrame.image_chunk:type_name -> loomcycle.worker.v1.Chunk
-	19, // 12: loomcycle.worker.v1.WorkerFrame.image_end:type_name -> loomcycle.worker.v1.ImageEnd
-	20, // 13: loomcycle.worker.v1.WorkerFrame.output_chunk:type_name -> loomcycle.worker.v1.Chunk
-	21, // 14: loomcycle.worker.v1.WorkerFrame.done:type_name -> loomcycle.worker.v1.Done
+	19, // 10: loomcycle.worker.v1.WorkerFrame.image_begin:type_name -> loomcycle.worker.v1.ImageBegin
+	21, // 11: loomcycle.worker.v1.WorkerFrame.image_chunk:type_name -> loomcycle.worker.v1.Chunk
+	20, // 12: loomcycle.worker.v1.WorkerFrame.image_end:type_name -> loomcycle.worker.v1.ImageEnd
+	21, // 13: loomcycle.worker.v1.WorkerFrame.output_chunk:type_name -> loomcycle.worker.v1.Chunk
+	22, // 14: loomcycle.worker.v1.WorkerFrame.done:type_name -> loomcycle.worker.v1.Done
 	16, // 15: loomcycle.worker.v1.WorkerFrame.record:type_name -> loomcycle.worker.v1.Record
 	17, // 16: loomcycle.worker.v1.WorkerFrame.heading_anchor:type_name -> loomcycle.worker.v1.HeadingAnchor
-	22, // 17: loomcycle.worker.v1.Done.report:type_name -> loomcycle.worker.v1.Report
-	0,  // 18: loomcycle.worker.v1.Done.error_class:type_name -> loomcycle.worker.v1.ErrorClass
-	25, // 19: loomcycle.worker.v1.Report.page_yields:type_name -> loomcycle.worker.v1.PageYield
-	23, // 20: loomcycle.worker.v1.Report.metadata:type_name -> loomcycle.worker.v1.BookMetadata
-	24, // 21: loomcycle.worker.v1.BookMetadata.identifiers:type_name -> loomcycle.worker.v1.BookIdentifier
-	27, // 22: loomcycle.worker.v1.JobFrame.start:type_name -> loomcycle.worker.v1.JobStart
-	20, // 23: loomcycle.worker.v1.JobFrame.input_chunk:type_name -> loomcycle.worker.v1.Chunk
-	29, // 24: loomcycle.worker.v1.JobFrame.input_end:type_name -> loomcycle.worker.v1.InputEnd
-	30, // 25: loomcycle.worker.v1.JobFrame.image_ref:type_name -> loomcycle.worker.v1.ImageRef
-	31, // 26: loomcycle.worker.v1.JobFrame.cancel:type_name -> loomcycle.worker.v1.Cancel
-	1,  // 27: loomcycle.worker.v1.JobStart.kind:type_name -> loomcycle.worker.v1.JobKind
-	28, // 28: loomcycle.worker.v1.JobStart.extract:type_name -> loomcycle.worker.v1.ExtractOptions
-	2,  // 29: loomcycle.worker.v1.Cancel.reason:type_name -> loomcycle.worker.v1.CancelReason
-	3,  // 30: loomcycle.worker.v1.WorkerService.Attach:input_type -> loomcycle.worker.v1.WorkerStatus
-	10, // 31: loomcycle.worker.v1.WorkerService.Work:input_type -> loomcycle.worker.v1.WorkerFrame
-	6,  // 32: loomcycle.worker.v1.WorkerService.Attach:output_type -> loomcycle.worker.v1.DispatcherControl
-	26, // 33: loomcycle.worker.v1.WorkerService.Work:output_type -> loomcycle.worker.v1.JobFrame
-	32, // [32:34] is the sub-list for method output_type
-	30, // [30:32] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	18, // 17: loomcycle.worker.v1.WorkerFrame.page_image:type_name -> loomcycle.worker.v1.PageImage
+	23, // 18: loomcycle.worker.v1.Done.report:type_name -> loomcycle.worker.v1.Report
+	0,  // 19: loomcycle.worker.v1.Done.error_class:type_name -> loomcycle.worker.v1.ErrorClass
+	26, // 20: loomcycle.worker.v1.Report.page_yields:type_name -> loomcycle.worker.v1.PageYield
+	24, // 21: loomcycle.worker.v1.Report.metadata:type_name -> loomcycle.worker.v1.BookMetadata
+	25, // 22: loomcycle.worker.v1.BookMetadata.identifiers:type_name -> loomcycle.worker.v1.BookIdentifier
+	28, // 23: loomcycle.worker.v1.JobFrame.start:type_name -> loomcycle.worker.v1.JobStart
+	21, // 24: loomcycle.worker.v1.JobFrame.input_chunk:type_name -> loomcycle.worker.v1.Chunk
+	31, // 25: loomcycle.worker.v1.JobFrame.input_end:type_name -> loomcycle.worker.v1.InputEnd
+	32, // 26: loomcycle.worker.v1.JobFrame.image_ref:type_name -> loomcycle.worker.v1.ImageRef
+	33, // 27: loomcycle.worker.v1.JobFrame.cancel:type_name -> loomcycle.worker.v1.Cancel
+	1,  // 28: loomcycle.worker.v1.JobStart.kind:type_name -> loomcycle.worker.v1.JobKind
+	29, // 29: loomcycle.worker.v1.JobStart.extract:type_name -> loomcycle.worker.v1.ExtractOptions
+	30, // 30: loomcycle.worker.v1.ExtractOptions.page_images:type_name -> loomcycle.worker.v1.PageImages
+	2,  // 31: loomcycle.worker.v1.Cancel.reason:type_name -> loomcycle.worker.v1.CancelReason
+	3,  // 32: loomcycle.worker.v1.WorkerService.Attach:input_type -> loomcycle.worker.v1.WorkerStatus
+	10, // 33: loomcycle.worker.v1.WorkerService.Work:input_type -> loomcycle.worker.v1.WorkerFrame
+	6,  // 34: loomcycle.worker.v1.WorkerService.Attach:output_type -> loomcycle.worker.v1.DispatcherControl
+	27, // 35: loomcycle.worker.v1.WorkerService.Work:output_type -> loomcycle.worker.v1.JobFrame
+	34, // [34:36] is the sub-list for method output_type
+	32, // [32:34] is the sub-list for method input_type
+	32, // [32:32] is the sub-list for extension type_name
+	32, // [32:32] is the sub-list for extension extendee
+	0,  // [0:32] is the sub-list for field type_name
 }
 
 func init() { file_worker_proto_init() }
@@ -2605,8 +2786,9 @@ func file_worker_proto_init() {
 		(*WorkerFrame_Done)(nil),
 		(*WorkerFrame_Record)(nil),
 		(*WorkerFrame_HeadingAnchor)(nil),
+		(*WorkerFrame_PageImage)(nil),
 	}
-	file_worker_proto_msgTypes[23].OneofWrappers = []any{
+	file_worker_proto_msgTypes[24].OneofWrappers = []any{
 		(*JobFrame_Start)(nil),
 		(*JobFrame_InputChunk)(nil),
 		(*JobFrame_InputEnd)(nil),
@@ -2619,7 +2801,7 @@ func file_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_worker_proto_rawDesc), len(file_worker_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   29,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

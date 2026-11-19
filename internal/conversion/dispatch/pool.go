@@ -95,7 +95,8 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 		TimeoutMs: timeout.Milliseconds(), Language: j.language, Format: j.format}
 	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT {
 		_, records := j.sink.(extract.RecordSink)
-		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: wire.I32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings, Records: records}
+		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: wire.I32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings, Records: records,
+			PageImages: wire.PageImagesToWire(j.opts.PageImages)}
 	}
 	for _, p := range j.pages {
 		start.Pages = append(start.Pages, wire.I32(p))
@@ -183,6 +184,12 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 		// P4b); recordDone says its last frame came.
 		record     []byte
 		recordDone bool
+		// pageImg is a page rendered for OCR arriving in PageImage frames
+		// (RFC GV D7); pageImgs counts the pages and pageImgBytes their
+		// bytes, each bounded as the extractor bounds its own.
+		pageImg               []byte
+		pageImgPage, pageImgs int
+		pageImgBytes          int
 	)
 	maxOut := j.maxOut
 	if maxOut <= 0 {
@@ -256,6 +263,34 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 				}
 				if !sinkFull && sinkErr == nil {
 					rs.HeadingAnchor(m.HeadingAnchor.GetName())
+				}
+			case *workerpb.WorkerFrame_PageImage:
+				// Asked for only when the sink takes page images; one past
+				// the bounds the core asked for is a worker that does not
+				// follow the protocol.
+				pis, ok := j.sink.(extract.PageImageSink)
+				pi := m.PageImage
+				n := int(pi.GetPage())
+				if !ok || j.opts.PageImages == nil || n < 1 || (pageImg != nil && n != pageImgPage) ||
+					len(pageImg)+len(pi.GetData()) > extract.MaxDjVuPagePNG || pageImgBytes+len(pi.GetData()) > extract.MaxDjVuRenderedBytes {
+					return broke("page_image")
+				}
+				if pageImg == nil {
+					if pageImgs >= min(j.opts.PageImages.MaxPages, extract.MaxDjVuRenderedPages) {
+						return broke("page_image")
+					}
+					pageImgPage, pageImg = n, []byte{}
+				}
+				pageImg = append(pageImg, pi.GetData()...)
+				pageImgBytes += len(pi.GetData())
+				if pi.GetLast() {
+					pageImgs++
+					// After a max_chars cut too: the pages written before it
+					// are the ones OCR replaces.
+					if sinkErr == nil {
+						_ = pis.PageImage(n, pageImg)
+					}
+					pageImg = nil
 				}
 			case *workerpb.WorkerFrame_ImageBegin:
 				b := m.ImageBegin
@@ -349,12 +384,28 @@ func (p poolClient) Extract(ctx context.Context, mediaType string, r io.ReaderAt
 	if allPages {
 		j.pages, j.opts.Pages = nil, nil
 	}
+	// Page images go only to a DjVu worker that renders. With DjVu workers
+	// and none that renders (no ddjvu, or older), the book is read for its
+	// text and the report says rendering is not available here, as an
+	// in-process converter without a rasterize helper says it.
+	noRender := false
+	if opts.PageImages != nil {
+		switch {
+		case !wire.IsDjVuJob(mediaType, opts.Name):
+			j.opts.PageImages = nil
+		case !p.d.canRun(wire.LabelDjVu, wire.LabelDjVuRender) && p.d.canRun(wire.LabelDjVu):
+			j.opts.PageImages, noRender = nil, true
+		}
+	}
 	res, err := p.d.run(ctx, j)
 	if err != nil {
 		return extract.Report{}, err
 	}
 	if allPages {
 		res.report.Notes = append(res.report.Notes, "the pages asked for were not applied: the conversion workers are older than that option, so every page was read")
+	}
+	if noRender {
+		res.report.PageImagesUnavailable = true
 	}
 	return res.report, res.err
 }
@@ -482,7 +533,7 @@ func (d *Dispatcher) run(ctx context.Context, j *job) (result, error) {
 	j.id = strconv.FormatUint(d.jobs.Add(1), 10)
 	need := []string{wire.LabelForJob(j.kind, j.format)}
 	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT {
-		need = wire.ExtractLabels(j.mediaType, j.name, len(j.pages) > 0)
+		need = wire.ExtractLabels(j.mediaType, j.name, len(j.pages) > 0, j.opts.PageImages != nil)
 	}
 	free, ambiguous := maxFreeRetries, 1
 	for {

@@ -154,3 +154,22 @@ func TestReportFromWire_MetadataRoundTripsAndIsBounded(t *testing.T) {
 			len(m.Title), len(m.Authors), len(m.Description))
 	}
 }
+
+// TestPageImages_RoundTripAndCannotGoNegative: the ask for page images and
+// the report that rendering is unavailable cross the wire; counts a worker
+// reads are never negative.
+func TestPageImages_RoundTripAndCannotGoNegative(t *testing.T) {
+	in := &extract.PageImages{Always: true, MinChars: 40, MaxPages: 7}
+	if got := PageImagesFromWire(PageImagesToWire(in)); *got != *in {
+		t.Errorf("round trip = %+v, want %+v", *got, *in)
+	}
+	if PageImagesToWire(nil) != nil || PageImagesFromWire(nil) != nil {
+		t.Error("no ask became one")
+	}
+	if got := PageImagesFromWire(&workerpb.PageImages{MinChars: -5, MaxPages: -1}); got.MinChars != 0 || got.MaxPages != 0 {
+		t.Errorf("negative counts read as %+v", *got)
+	}
+	if r := ReportFromWire(ReportToWire(extract.Report{Format: "djvu", PageImagesUnavailable: true})); !r.PageImagesUnavailable {
+		t.Error("page_images_unavailable did not cross the wire")
+	}
+}

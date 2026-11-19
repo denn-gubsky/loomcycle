@@ -110,6 +110,10 @@ type Options struct {
 	// outline and metadata (RFC GV P3). The worker reads DjVu, and carries
 	// the djvu label, only when DjVuText's program resolves here.
 	DjVuText, DjVuInspect *convert.Helper
+	// DjVuRasterize renders DjVu pages for OCR inside an extraction (RFC
+	// GV P4). The worker carries the djvu_render label, and renders, only
+	// when its program resolves here.
+	DjVuRasterize *convert.Helper
 	// Images re-encodes images (vision.NewReencoder()); nil takes no image
 	// jobs.
 	Images convert.ImageReencoder
@@ -319,7 +323,7 @@ func labels(opt Options, log *slog.Logger) []string {
 	for _, h := range []struct {
 		label  string
 		helper *convert.Helper
-	}{{wire.LabelRender, opt.Rasterize}, {wire.LabelMedia, opt.Media}, {wire.LabelEncode, opt.Encode}, {wire.LabelWritePDF, opt.WritePDF}, {wire.LabelDraw, opt.Draw}, {wire.LabelDjVu, opt.DjVuText}} {
+	}{{wire.LabelRender, opt.Rasterize}, {wire.LabelMedia, opt.Media}, {wire.LabelEncode, opt.Encode}, {wire.LabelWritePDF, opt.WritePDF}, {wire.LabelDraw, opt.Draw}, {wire.LabelDjVu, opt.DjVuText}, {wire.LabelDjVuRender, opt.DjVuRasterize}} {
 		if h.helper == nil {
 			continue
 		}
@@ -594,7 +598,8 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 				pages = append(pages, int(n))
 			}
 			rep, jerr = p.Extract(jctx, start.GetMediaType(), in, size, sink,
-				extract.Options{Name: start.GetName(), Images: o.GetImages(), MaxRows: int(o.GetMaxRows()), InferHeadings: o.GetInferHeadings(), Pages: pages})
+				extract.Options{Name: start.GetName(), Images: o.GetImages(), MaxRows: int(o.GetMaxRows()), InferHeadings: o.GetInferHeadings(), Pages: pages,
+					PageImages: wire.PageImagesFromWire(o.GetPageImages())})
 		case workerpb.JobKind_JOB_KIND_PDF_SELECT_PAGES:
 			pages := make([]int, len(start.GetPages()))
 			for i, p := range start.GetPages() {
@@ -697,9 +702,13 @@ func (w *worker) converter(timeout time.Duration) *convert.InProcess {
 		// DjVu, as its labels told the dispatcher.
 		djvuText = nil
 	}
+	djvuRasterize := perCall(w.opt.DjVuRasterize)
+	if !w.has(wire.LabelDjVuRender) {
+		djvuRasterize = nil
+	}
 	return &convert.InProcess{
 		Rasterize: bound(w.opt.Rasterize), Media: bound(w.opt.Media), Encode: bound(w.opt.Encode), WritePDF: bound(w.opt.WritePDF), Draw: bound(w.opt.Draw),
-		DjVuText: djvuText, DjVuInspect: perCall(w.opt.DjVuInspect),
+		DjVuText: djvuText, DjVuInspect: perCall(w.opt.DjVuInspect), DjVuRasterize: djvuRasterize,
 		Images:          w.opt.Images,
 		MaxEncodedBytes: maxEncoded,
 		Scratch:         func(context.Context) (string, error) { return w.opt.Scratch, nil },
@@ -835,6 +844,22 @@ func (s *remoteSink) StartPage(n int) {
 	_ = s.send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_PageStart{PageStart: &workerpb.PageStart{Page: wire.I32(n)}}})
 }
 
+// PageImage sends a page rendered for OCR (RFC GV D7) in frames of at most
+// a chunk; the extractor calls it only for a job that asked.
+func (s *remoteSink) PageImage(n int, png []byte) error {
+	for {
+		k := min(len(png), wire.ChunkSize)
+		last := k == len(png)
+		if err := s.send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_PageImage{PageImage: &workerpb.PageImage{Page: wire.I32(n), Data: png[:k], Last: last}}}); err != nil {
+			return err
+		}
+		if last {
+			return nil
+		}
+		png = png[k:]
+	}
+}
+
 func (s *remoteSink) Image(img extract.Image) (string, error) {
 	if err := s.send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_ImageBegin{ImageBegin: &workerpb.ImageBegin{
 		Name: img.Name, MediaType: img.MediaType, Alt: img.Alt, Page: wire.I32(img.Page), Slide: wire.I32(img.Slide), Size: int64(len(img.Data)),
@@ -859,7 +884,7 @@ func (s *remoteSink) Image(img extract.Image) (string, error) {
 	}
 }
 
-var _ extract.PageSink = (*remoteSink)(nil)
+var _ extract.PageImageSink = (*remoteSink)(nil)
 
 // watchParent ends the worker when its parent process is gone (its parent
 // pid changes to the reaper's).

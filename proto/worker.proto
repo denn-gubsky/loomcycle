@@ -87,6 +87,7 @@ message WorkerFrame {
     Done done = 10;
     Record record = 11;
     HeadingAnchor heading_anchor = 12;
+    PageImage page_image = 13;
   }
 }
 
@@ -121,6 +122,16 @@ message Record {
 // The loomcycle anchor on the heading whose text comes next (RFC GR P4b).
 message HeadingAnchor {
   string name = 1;
+}
+
+// A page rendered for OCR (RFC GV D7): one PNG of a page already written,
+// at most 1 MiB of it per frame, in order; last ends the page. Sent only
+// for a job whose ExtractOptions.page_images asked, after the page's text.
+// No reply: the worker goes on.
+message PageImage {
+  int32 page = 1;
+  bytes data = 2;
+  bool last = 3;
 }
 
 // An image found in the document. Its bytes follow as image_chunk frames,
@@ -187,6 +198,8 @@ message Report {
   // What a book says about itself (RFC GV D10); unset for a format that
   // carries none, and from a worker of an earlier release.
   BookMetadata metadata = 13;
+  // page_images was asked for and this worker cannot render pages.
+  bool page_images_unavailable = 14;
 }
 
 // extract.BookMetadata. Every value is the file's own text, bounded by the
@@ -276,6 +289,19 @@ message ExtractOptions {
   // it the worker sends neither: a dispatcher built before them would read
   // one as a broken worker.
   bool records = 4;
+  // page_images asks a DjVu extraction to render the pages an OCR pass
+  // reads (RFC GV D7). Only a worker carrying the djvu_render label is sent
+  // it; one built before it would read the file and render nothing.
+  PageImages page_images = 5;
+}
+
+// extract.PageImages: render every page read (always) or those whose text
+// layer holds under min_chars characters, at most max_pages of them, the
+// OCR budget the core reserved before the job.
+message PageImages {
+  bool always = 1;
+  int32 min_chars = 2;
+  int32 max_pages = 3;
 }
 
 message InputEnd {}

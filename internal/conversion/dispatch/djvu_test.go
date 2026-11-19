@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/convert/djvutest"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"golang.org/x/image/tiff"
 )
 
 func djvuBook(t *testing.T) []byte {
@@ -103,22 +105,131 @@ func TestPool_DjVuOnAWorkerMatchesInProcess(t *testing.T) {
 
 func TestExtractLabels_DjVuNeedsTheDjVuWorker(t *testing.T) {
 	for _, c := range []struct {
-		mt, name string
-		pages    bool
-		want     []string
+		mt, name          string
+		pages, pageImages bool
+		want              []string
 	}{
-		{"application/pdf", "a.pdf", false, []string{wire.LabelExtract}},
-		{"application/pdf", "a.pdf", true, []string{wire.LabelExtract, wire.LabelExtractPages}},
-		{extract.DjVuMediaType, "", false, []string{wire.LabelDjVu}},
-		{"image/x-djvu", "", true, []string{wire.LabelDjVu, wire.LabelExtractPages}},
-		{"application/octet-stream", "scan.djvu", false, []string{wire.LabelDjVu}},
-		{"application/pdf", "misnamed.djvu", false, []string{wire.LabelExtract}},
+		{"application/pdf", "a.pdf", false, false, []string{wire.LabelExtract}},
+		{"application/pdf", "a.pdf", true, false, []string{wire.LabelExtract, wire.LabelExtractPages}},
+		{extract.DjVuMediaType, "", false, false, []string{wire.LabelDjVu}},
+		{"image/x-djvu", "", true, false, []string{wire.LabelDjVu, wire.LabelExtractPages}},
+		{"application/octet-stream", "scan.djvu", false, false, []string{wire.LabelDjVu}},
+		{"application/pdf", "misnamed.djvu", false, false, []string{wire.LabelExtract}},
+		{extract.DjVuMediaType, "", true, true, []string{wire.LabelDjVu, wire.LabelDjVuRender, wire.LabelExtractPages}},
+		{"application/pdf", "a.pdf", false, true, []string{wire.LabelExtract}},
 	} {
-		if got := wire.ExtractLabels(c.mt, c.name, c.pages); !reflect.DeepEqual(got, c.want) {
-			t.Errorf("ExtractLabels(%q, %q, %v) = %v, want %v", c.mt, c.name, c.pages, got, c.want)
+		if got := wire.ExtractLabels(c.mt, c.name, c.pages, c.pageImages); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("ExtractLabels(%q, %q, %v, %v) = %v, want %v", c.mt, c.name, c.pages, c.pageImages, got, c.want)
 		}
 	}
-	if !wire.HelperLabel(wire.LabelDjVu) {
-		t.Error("djvu is not a helper label")
+	if !wire.HelperLabel(wire.LabelDjVu) || !wire.HelperLabel(wire.LabelDjVuRender) {
+		t.Error("djvu or djvu_render is not a helper label")
 	}
+}
+
+// imgSink is a recSink that keeps the pages rendered for OCR.
+type imgSink struct {
+	recSink
+	pages  []int
+	images map[int][]byte
+}
+
+func (s *imgSink) PageImage(n int, b []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.images == nil {
+		s.images = map[int][]byte{}
+	}
+	s.pages = append(s.pages, n)
+	s.images[n] = b
+	return nil
+}
+
+func djvuRasterize() *convert.Helper {
+	return &convert.Helper{Key: convert.DjVuRasterizeHelperKey, Command: convert.DefaultDjVuRasterizeCommand}
+}
+
+// TestPool_DjVuPageImagesOnAWorkerMatchInProcess: an extraction that asks
+// for page images goes to the worker that renders, and its pages come back
+// as they come in this process: the same Markdown, the same pages, the same
+// PNGs, the same report. A page image larger than a gRPC message arrives
+// whole.
+func TestPool_DjVuPageImagesOnAWorkerMatchInProcess(t *testing.T) {
+	fake := djvutest.Install(t)
+	// A page of noise is a PNG over a chunk, so it crosses in several frames.
+	fake.SetPage(t, 2, noisyTIFF(t, 1200, 1200))
+	text, inspect := djvuHelpers()
+	d, target := pool(t, dispatch.Options{Configured: map[string]bool{wire.LabelDjVu: true, wire.LabelDjVuRender: true}})
+	helperWorker(t, target, "text-only", worker.Options{DjVuText: text, DjVuInspect: inspect})
+	helperWorker(t, target, "renders", worker.Options{DjVuText: text, DjVuInspect: inspect, DjVuRasterize: djvuRasterize()})
+	waitIdle(t, d, 2)
+	book := djvuBook(t)
+	here := &convert.InProcess{DjVuText: text, DjVuInspect: inspect, DjVuRasterize: djvuRasterize(), Scratch: func(context.Context) (string, error) { return t.TempDir(), nil }}
+	for _, pi := range []*extract.PageImages{{MinChars: 40, MaxPages: 5}, {Always: true, MinChars: 40, MaxPages: 2}} {
+		opts := extract.Options{Name: "book.djvu", PageImages: pi}
+		var want imgSink
+		wantRep, err := here.Extract(context.Background(), extract.DjVuMediaType, bytes.NewReader(book), int64(len(book)), &want, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			var got imgSink
+			gotRep, err := d.Client().Extract(context.Background(), extract.DjVuMediaType, bytes.NewReader(book), int64(len(book)), &got, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.md.String() != want.md.String() || !reflect.DeepEqual(got.pages, want.pages) || !reflect.DeepEqual(got.images, want.images) || !reflect.DeepEqual(gotRep, wantRep) {
+				t.Fatalf("%+v: pool pages %v %+v, in process pages %v %+v", *pi, got.pages, gotRep, want.pages, wantRep)
+			}
+		}
+		if len(want.pages) == 0 {
+			t.Fatalf("%+v: nothing was rendered", *pi)
+		}
+		if b := want.images[2]; len(b) <= wire.ChunkSize {
+			t.Fatalf("page 2's image is %d bytes, not over a frame", len(b))
+		}
+	}
+	if n := len(fake.Calls(t)); n == 0 {
+		t.Fatal("no helper ran")
+	}
+}
+
+// With DjVu workers and none that renders, the book is read for its text
+// and the report says page images are not available, as in this process
+// without a rasterize helper.
+func TestPool_DjVuWithoutARenderingWorkerSaysPageImagesAreUnavailable(t *testing.T) {
+	djvutest.Install(t)
+	text, inspect := djvuHelpers()
+	d, target := pool(t, dispatch.Options{Configured: map[string]bool{wire.LabelDjVu: true, wire.LabelDjVuRender: true}})
+	helperWorker(t, target, "text-only", worker.Options{DjVuText: text, DjVuInspect: inspect})
+	waitIdle(t, d, 1)
+	book := djvuBook(t)
+	var got imgSink
+	rep, err := d.Client().Extract(context.Background(), extract.DjVuMediaType, bytes.NewReader(book), int64(len(book)), &got,
+		extract.Options{Name: "book.djvu", PageImages: &extract.PageImages{MinChars: 40, MaxPages: 5}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.PageImagesUnavailable || len(got.pages) != 0 || !strings.Contains(got.md.String(), "Text of page 3") {
+		t.Fatalf("unavailable %v, pages %v\n%s", rep.PageImagesUnavailable, got.pages, got.md.String())
+	}
+}
+
+// noisyTIFF is a w×h page of noise: it does not compress, so its PNG is
+// larger than one frame.
+func noisyTIFF(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewGray(image.Rect(0, 0, w, h))
+	x := uint32(2463534242)
+	for i := range img.Pix {
+		x ^= x << 13
+		x ^= x >> 17
+		x ^= x << 5
+		img.Pix[i] = uint8(x)
+	}
+	var b bytes.Buffer
+	if err := tiff.Encode(&b, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
 }

@@ -101,6 +101,9 @@ type InProcess struct {
 	// DjVu; nil reads none here. DjVuInspect may be nil: the text is read
 	// without an outline or metadata.
 	DjVuText, DjVuInspect *Helper
+	// DjVuRasterize renders a DjVu page for OCR inside the extraction (RFC
+	// GV P4, D7); nil renders none, and an extraction that asks says so.
+	DjVuRasterize *Helper
 	// MaxEncodedBytes caps what the encoder may hand back; zero is no cap.
 	MaxEncodedBytes int64
 	// Scratch names the operator directory a helper job makes its scratch
