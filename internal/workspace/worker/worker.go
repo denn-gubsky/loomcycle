@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -230,9 +231,11 @@ func (w *worker) session(parent context.Context, conn *grpc.ClientConn, log *slo
 		WorkerId: w.opt.ID, ProtocolVersion: workspace.ProtocolVersion, BuildVersion: w.opt.BuildVersion,
 		Engine: w.opt.Engine, Toolchains: w.opt.Toolchains, Labels: w.opt.Labels,
 		Capacity: uint32(w.opt.Capacity), HeldWorkspaces: held, IdleStreams: uint32(w.opt.IdleStreams),
-	}}}); err != nil {
+	}}}); err != nil && !errors.Is(err, io.EOF) {
 		return err
 	}
+	// A Send that met io.EOF means the core already ended the stream, a
+	// refusal sent before it read the Hello; only Recv returns its status.
 	ctl, err := att.Recv()
 	if err != nil {
 		if refused(err) {

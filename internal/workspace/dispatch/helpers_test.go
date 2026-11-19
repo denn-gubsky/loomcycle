@@ -2,6 +2,8 @@ package dispatch_test
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -259,7 +261,9 @@ func (f *fakeWorker) hello(h *workspacepb.Hello) (*workspacepb.CoreControl, erro
 		return nil, err
 	}
 	f.att = att
-	if err := att.Send(&workspacepb.WorkerMessage{Msg: &workspacepb.WorkerMessage_Hello{Hello: h}}); err != nil {
+	// io.EOF from Send is the core having ended the stream already (a
+	// refusal before it read the Hello); Recv returns the status.
+	if err := att.Send(&workspacepb.WorkerMessage{Msg: &workspacepb.WorkerMessage_Hello{Hello: h}}); err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
 	return att.Recv()
