@@ -127,6 +127,14 @@ the Memory tool keeps them behind the Document tool's checks:
   listed without a semantic query. Each structured row carries the chunk's
   `updated_at` (unix ns), so a client holding a snapshot can tell what
   changed since.
+- **`query_documents`** lists whole documents (one row per root) by `type`,
+  `status`, `tag`, `title_contains`, `created_after` / `created_before` and
+  `under_path`, with `with_summary` for each row's brief. Its `type` filter,
+  like `search`, `related`, `query_chunks` and `list_facts`, includes the
+  type's subtypes under a confirmed tenant ontology and then reports
+  `type_expanded_to`; a sibling class is not a subtype, so a listing of one
+  kind names every class of that kind. Under a draft or missing ontology the
+  filter is the exact type.
 - **Dated content.** Any chunk can carry its own validity period: nullable
   `chunks.valid_at` / `chunks.invalid_at` (unix ns, half-open
   `[valid_at, invalid_at)`, NULL = unbounded on that side), set by
