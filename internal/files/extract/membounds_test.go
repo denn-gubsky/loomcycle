@@ -656,3 +656,42 @@ func (m *storedMOBI) ReadAt(p []byte, off int64) (int, error) {
 	}
 	return n, nil
 }
+
+// A piece table may point every piece at the same bytes: 2,000 pieces of
+// 64 KiB each would decode 128 MiB out of a file of 64 KiB of text. The
+// text decoded in one pass is capped (maxDOCText), and the reader holds a
+// paragraph piece at a time, not the text.
+func TestDOC_OverlappingPiecesAreBounded(t *testing.T) {
+	text := strings.Repeat("слово ", 32<<10/6)
+	pieces := make([]docTestPiece, 2000)
+	for i := range pieces {
+		pieces[i] = docTestPiece{text: text}
+	}
+	data := docTestSpec{pieces: pieces, samePlace: true}.build(t)
+	s := &rtfDiscardSink{}
+	var err error
+	peak := peakHeap(func() {
+		_, err = DOC{}.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), s, Options{Name: "o.doc"})
+	})
+	if !IsRefused(err) || !strings.Contains(err.Error(), "text is over") {
+		t.Fatalf("err = %v, want the decoded text refused at its cap", err)
+	}
+	if s.most > maxDOCPara+8<<10 {
+		t.Errorf("one write of %d bytes, want paragraph pieces of at most %d", s.most, maxDOCPara)
+	}
+	if c := ceiling(32 << 20); peak > c {
+		t.Errorf("peaked at %d MiB, want at most %d MiB", peak>>20, c>>20)
+	}
+}
+
+// A compound file whose directory chain loops is refused when it opens,
+// for little: the chain walk allocates its visited set and stops.
+func TestCFB_ChainLoopRefusalIsCheap(t *testing.T) {
+	c := buildCFB(t, cfbStreamSpec{"WordDocument", make([]byte, 8192)})
+	dirSec := uint32((c.dirAt - 512) / 512)
+	c.fatEntry(dirSec, dirSec)
+	wantRefusedUnder(t, "directory chain loop", 4<<20, func() error {
+		_, err := extractBytes(DOC{}, "loop.doc", c.data)
+		return err
+	})
+}

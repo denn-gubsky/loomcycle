@@ -118,8 +118,9 @@ type Options struct {
 	// InferHeadings promotes paragraphs that look like headings (a short
 	// line, bold, larger or coloured) to headings, drops a picture repeated
 	// three or more times as decoration, and collapses non-breaking spaces
-	// (RFC GB §6). DOCX and HTML read it; other formats ignore it. Off, the
-	// output is what it was before the option existed.
+	// (RFC GB §6). DOCX, HTML and EPUB read it; DOC infers headings only
+	// (it reads no pictures); other formats ignore it. Off, the output is
+	// what it was before the option existed.
 	InferHeadings bool
 	// Pages are the pages of a paged document to read, ascending and
 	// without repeats; empty reads every page. Only those pages are parsed,
@@ -259,7 +260,7 @@ func NewRegistry(ex ...Extractor) *Registry {
 
 // Default is the registry of the pure-Go extractors this package ships.
 func Default() *Registry {
-	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, FB2{}, RTF{}, MOBI{}, PalmDOC{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
+	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, FB2{}, RTF{}, DOC{}, MOBI{}, PalmDOC{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
 }
 
 // Register adds an extractor, tried before the ones already there, so a
