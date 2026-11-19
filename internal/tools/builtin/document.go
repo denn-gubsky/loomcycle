@@ -133,6 +133,11 @@ type Document struct {
 	// before its first write. A test edits the target there to prove the write is
 	// refused by the revision the checks read. Nil in production.
 	beforeAcceptWrite func()
+
+	// duringAcceptChecks, when set, runs in AcceptChangeProposal once the target's
+	// revision is read and before the checks. A test edits the target there to prove the
+	// write is pinned to the revision read before the checks. Nil in production.
+	duringAcceptChecks func()
 }
 
 func (d *Document) Name() string { return "Document" }

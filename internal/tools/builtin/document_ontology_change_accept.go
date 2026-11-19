@@ -41,6 +41,8 @@ package builtin
 // rename_job_pending until P5's rename job can carry it through stored rows (RFC GQ Q4);
 // relation and concept renames apply with the plan. A change the plan classes destroys or
 // stales needs the plan's fingerprint (P2.4, ontologyPlanGate), passed by the caller.
+// The writes carry the caller's fingerprint and never one the accept computed, so a
+// write the caller sent none for is planned again by update_chunk's own gate.
 //
 // A SECOND PROPOSAL. Filing serialises per replica only, so two open proposals for the
 // same target and op can exist. Accepting one marks the other open proposals with the
@@ -165,7 +167,7 @@ func (d *Document) AcceptChangeProposal(ctx context.Context, scope, chunkID, pla
 	rep.Risk, rep.Complete = connector.OntologyRiskNone, true
 	fp := strings.TrimSpace(planFingerprint)
 	if len(a.changes) > 0 {
-		if fp, err = d.planChangeAccept(ctx, a, planFingerprint, &rep); err != nil {
+		if err := d.planChangeAccept(ctx, a, fp, &rep); err != nil {
 			return true, rep, err
 		}
 	}
@@ -193,6 +195,18 @@ func (d *Document) checkChangeAccept(ctx context.Context, key sqlmem.ScopeKey, m
 	var stored memrank.ProposedChange
 	if json.Unmarshal(raw, &stored) != nil {
 		return invalid("its change_proposal mark does not decode")
+	}
+	// The target's revision is read BEFORE the checks and the write is pinned to it, so
+	// an edit of the target while the checks run is a revision conflict at the write.
+	target, ok, err := d.getChunkRow(ctx, key, strings.TrimSpace(stored.Target))
+	if err != nil {
+		return a, err
+	}
+	if !ok {
+		return invalid("its target is gone")
+	}
+	if d.duringAcceptChecks != nil {
+		d.duringAcceptChecks()
 	}
 	op := strings.ToLower(strings.TrimSpace(stored.Op))
 	in, err := changeInputOf(stored)
@@ -229,13 +243,6 @@ func (d *Document) checkChangeAccept(ctx context.Context, key sqlmem.ScopeKey, m
 	}
 	if memrank.TrimOntologyName(self.Title) != mark.Op+": "+mark.TargetName {
 		return invalid("its title is not the one filing gives it (" + strconv.Quote(mark.Op+": "+mark.TargetName) + ")")
-	}
-	target, ok, err := d.getChunkRow(ctx, key, mark.Target)
-	if err != nil {
-		return a, err
-	}
-	if !ok {
-		return invalid("its target is gone")
 	}
 	a.tg, a.mark, a.revision = tg, mark, target.Revision
 	return a, d.composeChangeAccept(ctx, &a, target)
@@ -403,16 +410,18 @@ func quoteMeaningText(text string) string {
 	return strings.Join(lines, "\n")
 }
 
-// planChangeAccept plans the accept's changes, refuses a class rename anything rests on
-// (Q4) and a destructive change without the current fingerprint (P2.4), and returns the
-// fingerprint the writes carry.
-func (d *Document) planChangeAccept(ctx context.Context, a changeAccept, given string, rep *ChangeAcceptReport) (string, error) {
+// planChangeAccept plans the accept's changes and refuses a class rename anything rests
+// on (Q4) and a destructive change without the current fingerprint (P2.4). The writes
+// carry the caller's fingerprint and nothing else: one minted here would let their own
+// gates skip planning (ontologyPlanGate's matching-fingerprint shortcut), so a write the
+// caller sent none for is planned again by the write itself.
+func (d *Document) planChangeAccept(ctx context.Context, a changeAccept, given string, rep *ChangeAcceptReport) error {
 	plan, err := d.planOntologyAt(ctx, a.key, a.mscope, a.changes)
 	if err != nil {
 		if errors.Is(err, connector.ErrOntologyPlanInvalid) || errors.Is(err, connector.ErrOntologyPlanNotFound) {
-			return "", fmt.Errorf("%w: the change cannot be planned: %v", ErrChangeProposalInvalid, err)
+			return fmt.Errorf("%w: the change cannot be planned: %v", ErrChangeProposalInvalid, err)
 		}
-		return "", err
+		return err
 	}
 	rep.Risk, rep.Complete = connector.OntologyRiskNone, plan.Complete
 	for _, ch := range plan.Changes {
@@ -433,18 +442,15 @@ func (d *Document) planChangeAccept(ctx context.Context, a changeAccept, given s
 			if what == "" {
 				what = "not every user and agent scope could be counted"
 			}
-			return "", fmt.Errorf("%w: renaming the class %s needs the rename job (RFC GQ P5), which carries the new name "+
+			return fmt.Errorf("%w: renaming the class %s needs the rename job (RFC GQ P5), which carries the new name "+
 				"through stored types, identity and subject keys; something rests on it (%s). Reject the proposal, or retire "+
 				"the class and declare the new one", ErrChangeRenameJobPending, strconv.Quote(a.mark.TargetName), what)
 		}
 	}
 	if r := d.ontologyPlanGate(ctx, a.key, a.mscope, "accept", a.tg.read.DocumentID, a.changes, given); r != nil {
-		return "", changeWriteError(*r)
+		return changeWriteError(*r)
 	}
-	if given = strings.TrimSpace(given); given != "" {
-		return given, nil
-	}
-	return plan.Fingerprint, nil
+	return nil
 }
 
 // applyChangeAccept writes the change to the target: one update at the checked

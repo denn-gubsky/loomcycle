@@ -95,3 +95,49 @@ func TestAcceptChange_EditThatChangesNothingStillAccepts(t *testing.T) {
 		t.Errorf("a no-op accept: proposal kept %v, body %q, applied %v", f.exists(p), f.body(provision), rep.Applied)
 	}
 }
+
+// TestAcceptChange_WithoutACallerFingerprintTheWriteIsPlannedAgain: an accept sent with
+// no fingerprint, of a rename nothing rested on when it was checked, is planned again by
+// the write itself: a statement of the kind written meanwhile (which leaves the
+// ontology, and so its fingerprint, as it was) makes it plan_required, and the kind
+// keeps its name. The accept never hands the write a fingerprint of its own.
+func TestAcceptChange_WithoutACallerFingerprintTheWriteIsPlannedAgain(t *testing.T) {
+	f := newAcceptFixture(t)
+	co := f.chunk("co_supervises")
+	p := f.file(map[string]any{"change": "edit", "entry": co, "name": "co_oversees"})
+	f.d.beforeAcceptWrite = func() {
+		f.d.beforeAcceptWrite = nil
+		a := f.must(map[string]any{"op": "create_document", "scope": "tenant", "title": "Carol"})["root_chunk_id"]
+		b := f.must(map[string]any{"op": "create_document", "scope": "tenant", "title": "Dan"})["root_chunk_id"]
+		f.must(map[string]any{"op": "link_chunks", "scope": "tenant", "from_id": a, "to_id": b, "kind": "co_supervises"})
+	}
+	_, err := f.accept(p, "")
+	var pr *ChangePlanRefusal
+	if !errors.As(err, &pr) || pr.Code != planRequiredCode {
+		t.Errorf("accept = %v, want plan_required from the write's own plan", err)
+	}
+	if f.entryName(co) != "co_supervises" || !f.exists(p) {
+		t.Error("the kind was renamed although a statement of it was written after the checks")
+	}
+}
+
+// TestAcceptChange_EditDuringTheChecksIsRefused: the target's revision is read before
+// the checks, so an edit of the target while they run is a revision conflict at the
+// write, not a change the accept builds on and overwrites.
+func TestAcceptChange_EditDuringTheChecksIsRefused(t *testing.T) {
+	f := newAcceptFixture(t)
+	provision := f.chunk("Provision")
+	p := f.file(map[string]any{"change": "edit", "entry": provision, "meaning": "From the proposal."})
+	f.d.duringAcceptChecks = func() {
+		f.d.duringAcceptChecks = nil
+		if r := f.change(f.ctx, "update_chunk", provision, map[string]any{"body": "Edited during the checks."}); r.IsError {
+			t.Fatal(r.Text)
+		}
+	}
+	if _, err := f.accept(p, f.fingerprintNow()); !errors.Is(err, ErrChangeTargetChanged) {
+		t.Errorf("accept = %v, want ErrChangeTargetChanged", err)
+	}
+	if got := f.body(provision); got != "Edited during the checks." || !f.exists(p) {
+		t.Errorf("target body %q, proposal kept %v", got, f.exists(p))
+	}
+}
