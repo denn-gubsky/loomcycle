@@ -27,13 +27,13 @@ import (
 // context it runs in, which holds that inbox as the tree's only ephemeral
 // volume and nothing the caller did not earn.
 
-// fileTwinOwnerOps are the ops that write: extract, rm and clear change the
-// run's inbox, and keep writes into one of the tenant's volumes. Only the
-// run's owner or an admin may make them; a tenant operator is the admin of
-// its own tenant's runs (fileTwinAdmin). Anyone else who may read the run
+// fileTwinOwnerOps are the ops that write: extract, unpack, rm and clear
+// change the run's inbox, and keep (and unpack with to) writes into one of
+// the tenant's volumes. Only the run's owner or an admin may make them; a
+// tenant operator is the admin of its own tenant's runs (fileTwinAdmin). Anyone else who may read the run
 // could otherwise empty, or fill, an inbox its run is still using, or write
 // (and with overwrite replace) files in volumes it has no write grant on.
-var fileTwinOwnerOps = map[string]bool{"extract": true, "rm": true, "clear": true, "keep": true}
+var fileTwinOwnerOps = map[string]bool{"extract": true, "unpack": true, "rm": true, "clear": true, "keep": true}
 
 // fileTwinArgs is the part of a twin call the File tool receives: the File
 // tool's own input, less download and upload's fields. Its json names, with
@@ -83,6 +83,9 @@ type fileTwinArgs struct {
 	Language   string `json:"language,omitempty"`
 	Metadata   string `json:"metadata,omitempty"`
 	Style      string `json:"style,omitempty"`
+	// unpack's filter and dry run; the File tool reads them.
+	All    bool `json:"all,omitempty"`
+	DryRun bool `json:"dry_run,omitempty"`
 }
 
 type fileTwinInput struct {
@@ -145,9 +148,9 @@ func decodeFileTwinInput(input json.RawMessage) (fileTwinInput, error) {
 //     dynamic root and the tree's root run id, and it is used only while the
 //     tree's record still names it. A finished tree's inbox was deleted with
 //     it, and the answer says so.
-//   - extract, rm, clear and keep need the run's owner (the principal whose
-//     subject is the run's user, in its tenant) or an admin, which a tenant
-//     operator is for a run of its own tenant.
+//   - extract, unpack, rm, clear and keep need the run's owner (the
+//     principal whose subject is the run's user, in its tenant) or an admin,
+//     which a tenant operator is for a run of its own tenant.
 //   - import builds the Document in the caller's own scopes, the ones the MCP
 //     document tool writes for this principal.
 //   - keep copies into a dynamic volume of the caller's tenant, by name, which
@@ -165,7 +168,12 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 				"Give the agent the File and HTTP tools and let the run do it."), nil
 		}
 		return fileTwinRefusal(tools.CategoryValidation, fmt.Sprintf("file: unknown op %q", in.Op),
-			"One of stat, ls, extract, import, keep, rm, clear, render."), nil
+			"One of stat, ls, extract, import, keep, rm, clear, render, unpack."), nil
+	}
+	// dry_run is offered here for unpack only: extract's and transcribe's
+	// dry runs price a model pass, which this surface does not run.
+	if in.DryRun && in.Op != "unpack" {
+		return fileTwinRefusal(tools.CategoryValidation, "file: dry_run is taken by unpack only here", "Drop dry_run."), nil
 	}
 	if in.Op == "render" {
 		return s.fileTwinRender(ctx, in)
@@ -385,6 +393,19 @@ func (s *Server) fileTwinCtx(ctx context.Context, in fileTwinInput, root, dir, d
 		granted = append(granted, "Write")
 		vols.Bindings = []tools.VolumeBinding{binding}
 		ctx = tools.WithOffRunVolumes(ctx)
+	case "unpack":
+		// Into the inbox it writes through the inbox writer and needs no
+		// volume; into a volume (to), the target keep takes, as keep does.
+		if strings.TrimSpace(in.To) == "" {
+			break
+		}
+		binding, res, ok := s.fileTwinVolumeTarget(ctx, "unpack", in.To, dynRoot, caller)
+		if !ok {
+			return nil, res, false
+		}
+		granted = append(granted, "Write")
+		vols.Bindings = []tools.VolumeBinding{binding}
+		ctx = tools.WithOffRunVolumes(ctx)
 	}
 	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
 		rp.Tools = granted
@@ -405,8 +426,8 @@ func (s *Server) fileTwinKeepTarget(ctx context.Context, to, dynRoot string, cal
 	return s.fileTwinVolumeTarget(ctx, "keep", to, dynRoot, caller)
 }
 
-// fileTwinVolumeTarget is fileTwinKeepTarget for op (keep or render), whose
-// name its refusals carry.
+// fileTwinVolumeTarget is fileTwinKeepTarget for op (keep, unpack or
+// render), whose name its refusals carry.
 func (s *Server) fileTwinVolumeTarget(ctx context.Context, op, to, dynRoot string, caller auth.Principal) (tools.VolumeBinding, connector.ToolResult, bool) {
 	tenant := caller.TenantID
 	refuse := func(cat tools.ErrorCategory, msg, next string) (tools.VolumeBinding, connector.ToolResult, bool) {

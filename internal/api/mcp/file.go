@@ -20,7 +20,7 @@ import (
 var fileMCPOverrides = map[string]string{
 	"run_id": `{"type": "string", "description": "The run whose inbox to use, as get_run and list_runs report it. A sub-run's id reaches its tree's inbox. Required for every op but render, which takes none."}`,
 	"from":   `{"type": "string", "description": "keep: the inbox file to copy, e.g. volume:inbox:documents/a.pdf."}`,
-	"to":     `{"type": "string", "description": "keep: where to copy it; render (required): the file to write. volume:<name>:<path>, in a read-write dynamic volume of your tenant (volumedef list shows them). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist."}`,
+	"to":     `{"type": "string", "description": "keep: where to copy it; render (required): the file to write; unpack: an existing folder to unpack into instead of volume:inbox:unpacked/<archive>/. volume:<name>:<path>, in a read-write dynamic volume of your tenant (volumedef list shows them). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist."}`,
 }
 
 // fileMCPSchema is the File builtin's input schema cut to the fields
@@ -78,9 +78,10 @@ const fileMCPDescription = "Inspect and manage the files a RUN's tools returned,
 	"extract (turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, RTF, CSV, text or image file into Markdown in the inbox, its pictures kept as files, and return an excerpt; a book's own metadata comes back as metadata), " +
 	"import (build a Document in YOUR own scopes from such a Markdown file, its pictures as image chunks), " +
 	"keep (copy a file into a read-write dynamic volume of your tenant: volume:<name>:<path>), rm (delete one file), clear (empty the inbox, or one folder of it), " +
-	"render (write a Document you may read — document or doc_path, in your own scopes — as pdf, docx, html or md into a read-write dynamic volume of your tenant, to: volume:<name>:<path>; it needs NO run_id). " +
-	"Paths are volume:inbox:<path>, or a bare path in the inbox; no other volume is reachable here except keep's and render's target. " +
-	"Works on a run you can read with get_run; another tenant's run is not found. extract, keep, rm and clear write, so only the run's owner or an admin may make them; a tenant operator counts as an admin for the runs of its own tenant. " +
+	"render (write a Document you may read — document or doc_path, in your own scopes — as pdf, docx, html or md into a read-write dynamic volume of your tenant, to: volume:<name>:<path>; it needs NO run_id), " +
+	"unpack (copy the files of a ZIP or RAR archive in the inbox into volume:inbox:unpacked/<archive>/, or with to a read-write dynamic volume folder of your tenant, keeping its folders: by default what extract reads plus archives inside it, listed and never opened; all: true for every file; dry_run lists without writing). " +
+	"Paths are volume:inbox:<path>, or a bare path in the inbox; no other volume is reachable here except keep's, unpack's and render's target. " +
+	"Works on a run you can read with get_run; another tenant's run is not found. extract, unpack, keep, rm and clear write, so only the run's owner or an admin may make them; a tenant operator counts as an admin for the runs of its own tenant. " +
 	"The inbox exists only while the run tree does: it is deleted when the run ends, so keep what must outlive it. Every call is strict: a field the tool does not take is refused. " +
 	"Do NOT use it to download or upload a URL: that needs a run's HTTP allowlist, so give the agent the File and HTTP tools instead. " +
 	"Do NOT use it to read a document's text whole: extract returns an excerpt, and import makes a document you read with the document tool."
