@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/text/encoding/charmap"
 )
@@ -732,5 +733,56 @@ func TestMOBI_UnknownEncodingAndCompressionAreRefused(t *testing.T) {
 	}
 	if _, err := extractBytes(MOBI{}, "b.mobi", palmDBOf("x", "DataPlkr", []byte("x"))); !IsRefused(err) {
 		t.Errorf("another Palm database: err = %v", err)
+	}
+}
+
+// Finding a KF8 file boundary is linear in the text: a block of nothing but
+// XML declarations, unclosed ones, doctypes or <html> tags is scanned once,
+// not once per candidate (each candidate used to rescan the block from its
+// start, so 4 MiB of declarations took minutes).
+func TestMOBI_KF8BoundaryScanIsLinear(t *testing.T) {
+	for name, unit := range map[string]string{"declarations": "<?xml?>", "unclosed": "<?xml ", "doctypes": "<!doctype x>", "html": "<html>"} {
+		b := []byte(strings.Repeat(unit, (4<<20)/len(unit)) + "<p>x</p><?xml?><html>")
+		done := make(chan int, 1)
+		go func() { done <- kf8NextFile(b, 1) }()
+		select {
+		case i := <-done:
+			if i < mobiMinBlock {
+				t.Errorf("%s: boundary at %d", name, i)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: 4 MiB took more than 10 s to scan", name)
+		}
+	}
+}
+
+// A CDIC record may not declare more phrases than maxHuffPhrases: the
+// dictionary's tables are sized by the phrase count.
+func TestMOBI_HuffCDICPhraseCountIsCapped(t *testing.T) {
+	h := &testHuff{}
+	h.add([]byte("a"), true)
+	cdic := h.cdicRecord()
+	binary.BigEndian.PutUint32(cdic[8:], maxHuffPhrases+1)
+	if _, err := loadHuff(context.Background(), h.huffRecord(), [][]byte{cdic}, maxHuffWork); !IsRefused(err) || !strings.Contains(err.Error(), "phrases") {
+		t.Errorf("a CDIC declaring %d phrases: err = %v, want a refusal", maxHuffPhrases+1, err)
+	}
+}
+
+// The HUFF/CDIC work of a whole book is bounded, not only each record's: a
+// book of many records of codes that expand to nothing is refused once
+// their codes together pass the book's budget.
+func TestMOBI_HuffCDICBookWorkIsBounded(t *testing.T) {
+	h := &testHuff{}
+	empty := h.add([]byte{}, true)
+	rec := bytes.Repeat(h.codes(empty), 4096)
+	r := mobiSpec{compression: palmHuffman, huff: h, text: bytes.Repeat([]byte("x"), 100*4096)}.records()
+	for i := 1; i <= 100; i++ {
+		r[i] = rec
+	}
+	binary.BigEndian.PutUint32(r[0][4:], 1000)
+	book := palmDBOf("Empty", "BOOKMOBI", r...)
+	_, err := MOBI{}.Extract(context.Background(), bytes.NewReader(book), int64(len(book)), &memSink{}, Options{palmMaxText: 16 << 10})
+	if !IsRefused(err) || !strings.Contains(err.Error(), "book's HUFF/CDIC") {
+		t.Errorf("100 records of empty codes under a 64 KiB work budget: err = %v, want a refusal", err)
 	}
 }

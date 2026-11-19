@@ -48,8 +48,8 @@ const (
 	// maxMOBIFontHeading is the longest text a MOBI 7 paragraph in a large
 	// font may have and still be read as a heading.
 	maxMOBIFontHeading = 120
-	// mobiMinBlock is the least MOBI 7 text a block holds before a page
-	// break ends it.
+	// mobiMinBlock is the least text a block holds before a page break
+	// (MOBI 7) or a file boundary (KF8) ends it.
 	mobiMinBlock = 64 << 10
 )
 
@@ -386,7 +386,9 @@ func (b *mobiBook) loadHuff() (*huffDict, error) {
 		}
 		cdics = append(cdics, c)
 	}
-	return loadHuff(huff, cdics)
+	// The book's decoding may do a few times the work its text cap
+	// allows: 4 MiB per record would let 65,535 records do 256 GiB.
+	return loadHuff(b.db.ctx, huff, cdics, 4*b.opts.maxPalmText())
 }
 
 // textFlowEnd is where a KF8 book's first flow, its text, ends: the FDST
@@ -555,57 +557,25 @@ func mobiPageBreak(b []byte, from int) int {
 	return indexFold(b, max(from, mobiMinBlock), "<mbp:pagebreak")
 }
 
-// kf8NextFile splits KF8 text where its next XHTML file's skeleton starts:
-// at an XML declaration, a doctype or an <html> tag, when the text before
-// it is more than another such header.
+// kf8NextFile splits KF8 text where an XHTML file's skeleton starts (an XML
+// declaration, a doctype or an <html> tag), the first one at least
+// mobiMinBlock into the block. Files after the first in a block parse into
+// its body, their heads adding nothing the walker writes. Each marker is
+// searched for once, from where the last search stopped, so the scan is
+// linear in the text however many markers it holds.
 func kf8NextFile(b []byte, from int) int {
-	for from < len(b) {
-		i := -1
-		for _, m := range []string{"<?xml", "<!doctype", "<html"} {
-			if j := indexFold(b, from, m); j >= 0 && (i < 0 || j < i) {
-				i = j
-			}
+	from = max(from, mobiMinBlock)
+	i := -1
+	for _, m := range []string{"<?xml", "<!doctype", "<html"} {
+		end := len(b)
+		if i >= 0 {
+			end = i // only an earlier match can win
 		}
-		if i < 0 {
-			return -1
+		if j := indexFold(b[:end], from, m); j >= 0 {
+			i = j
 		}
-		if i > 0 && !onlyFileHeader(b[:i]) {
-			return i
-		}
-		from = i + 1
 	}
-	return -1
-}
-
-// onlyFileHeader reports whether b holds nothing but whitespace, an XML
-// declaration, a doctype and the start of an <html> tag: the head of the
-// file a boundary would split.
-func onlyFileHeader(b []byte) bool {
-	for {
-		b = bytes.TrimLeft(b, " \t\r\n")
-		if len(b) == 0 {
-			return true
-		}
-		var end int
-		switch {
-		case len(b) >= 5 && bytes.EqualFold(b[:5], []byte("<?xml")):
-			end = bytes.Index(b, []byte("?>"))
-			if end >= 0 {
-				end += 2
-			}
-		case len(b) >= 9 && bytes.EqualFold(b[:9], []byte("<!doctype")):
-			end = bytes.IndexByte(b, '>')
-			if end >= 0 {
-				end++
-			}
-		default:
-			return false
-		}
-		if end < 0 {
-			return true // a header still open
-		}
-		b = b[end:]
-	}
+	return i
 }
 
 // mobiFontHeadings turns MOBI 7's headings back into headings. Mobipocket

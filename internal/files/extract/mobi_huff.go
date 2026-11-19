@@ -2,6 +2,7 @@ package extract
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 )
 
@@ -30,6 +31,9 @@ const (
 	// maxHuffCache caps the expanded phrases kept for reuse; past it a
 	// phrase is expanded again where it is used, under maxHuffWork.
 	maxHuffCache = 16 << 20
+	// maxHuffPhrases caps the phrases a dictionary declares: its tables
+	// are sized by the count (a real one holds some tens of thousands).
+	maxHuffPhrases = 1 << 18
 )
 
 // huffCode is one entry of the HUFF record's 256-entry table, indexed by a
@@ -42,7 +46,12 @@ type huffCode struct {
 }
 
 type huffDict struct {
-	first [256]huffCode
+	ctx context.Context
+	// work counts the codes read and bytes produced for the whole book,
+	// refused past maxWork: a per-record bound alone lets a book of many
+	// records multiply it.
+	work, maxWork int64
+	first         [256]huffCode
 	// minCode and maxCode are, by code length 1..32, the smallest and the
 	// largest code, left-aligned to 32 bits.
 	minCode, maxCode [33]uint64
@@ -55,8 +64,9 @@ type huffDict struct {
 	cached    int
 }
 
-// loadHuff reads the HUFF record and the CDIC records after it.
-func loadHuff(huff []byte, cdics [][]byte) (*huffDict, error) {
+// loadHuff reads the HUFF record and the CDIC records after it. The
+// book's decoding may do maxWork codes and bytes in all.
+func loadHuff(ctx context.Context, huff []byte, cdics [][]byte, maxWork int64) (*huffDict, error) {
 	if len(huff) < 24 || !bytes.Equal(huff[:4], []byte("HUFF")) {
 		return nil, refusedf("the book's HUFF record is not one")
 	}
@@ -65,7 +75,7 @@ func loadHuff(huff []byte, cdics [][]byte) (*huffDict, error) {
 	if firstAt+256*4 > int64(len(huff)) || limitsAt+64*4 > int64(len(huff)) {
 		return nil, refusedf("the book's HUFF tables run past the record")
 	}
-	d := &huffDict{}
+	d := &huffDict{ctx: ctx, maxWork: maxWork}
 	for i := range d.first {
 		v := binary.BigEndian.Uint32(huff[firstAt+int64(4*i):])
 		n := int(v & 0x1f)
@@ -106,6 +116,11 @@ func (d *huffDict) loadCDIC(c []byte) error {
 	bits := int(binary.BigEndian.Uint32(c[12:]))
 	if head < 16 || head > len(c) || bits < 1 || bits > 16 {
 		return refusedf("the book's CDIC header is not one this reader knows")
+	}
+	// Each record's own total bounds what it adds (below), so a cap on
+	// every declared total caps the dictionary.
+	if total < 0 || total > maxHuffPhrases {
+		return refusedf("the book's CDIC records declare %d phrases, more than %d", total, maxHuffPhrases)
 	}
 	n := min(1<<bits, total-len(d.phrases))
 	if n <= 0 || head+2*n > len(c) {
@@ -183,6 +198,14 @@ func (d *huffDict) unpack(out, data []byte, limit, depth int, work *int) ([]byte
 		// is bounded as well.
 		if *work += 1 + len(phrase); *work > maxHuffWork {
 			return nil, refusedf("a text record's HUFF/CDIC phrases expand past %d bytes", maxHuffWork)
+		}
+		if d.work += int64(1 + len(phrase)); d.work > d.maxWork {
+			return nil, refusedf("the book's HUFF/CDIC decoding passes %d codes and bytes", d.maxWork)
+		}
+		if d.work&0xfff == 0 {
+			if err := d.ctx.Err(); err != nil {
+				return nil, err
+			}
 		}
 		if len(out)-start+len(phrase) > limit {
 			return nil, refusedf("a text record decompresses past %d bytes", limit)

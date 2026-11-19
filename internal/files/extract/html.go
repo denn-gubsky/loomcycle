@@ -529,6 +529,9 @@ func (h *htmlState) walk(n *html.Node, depth int) error {
 				return err
 			}
 		case htmlSkip[tag]:
+		case h.body != nil && tag == "title":
+			// A book's later files in one block (KF8) put their <title> in
+			// the body; the book has the title.
 		case h.body != nil && tag == "a" && h.body.noteRef != nil && h.body.noteRef(c) != "":
 			h.text(h.body.noteRef(c))
 		case htmlHeadingLevel(tag) > 0:
