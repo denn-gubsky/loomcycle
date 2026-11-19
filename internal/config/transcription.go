@@ -126,17 +126,21 @@ type STTConfig struct {
 // DjVuHelperConfig is `transcription.ocr.djvu`. Text reads the text layer
 // of the pages asked for ({in}, {pages}: a list such as 1-3,7); Inspect runs
 // one of two fixed djvused scripts ({in}, {script}: print-outline or
-// print-meta), never text from a file or a caller. Rendering a page for OCR
-// (rasterize) comes with DjVu OCR and is refused until then.
+// print-meta), never text from a file or a caller. Rasterize renders one page
+// for OCR (RFC GV P4): {in}, {page} (a page number), {size} (the box the page
+// is fitted in, as WxH) and {out} (the TIFF it must write), every value the
+// runtime's own.
 type DjVuHelperConfig struct {
-	Text    *HelperCommand `yaml:"text,omitempty"`
-	Inspect *HelperCommand `yaml:"inspect,omitempty"`
+	Text      *HelperCommand `yaml:"text,omitempty"`
+	Inspect   *HelperCommand `yaml:"inspect,omitempty"`
+	Rasterize *HelperCommand `yaml:"rasterize,omitempty"`
 }
 
 // The placeholders each DjVu helper takes.
 var (
-	DjVuTextPlaceholders    = []string{"in", "pages"}
-	DjVuInspectPlaceholders = []string{"in", "script"}
+	DjVuTextPlaceholders      = []string{"in", "pages"}
+	DjVuInspectPlaceholders   = []string{"in", "script"}
+	DjVuRasterizePlaceholders = []string{"in", "page", "size", "out"}
 )
 
 // HelperCommand is an operator-declared host command template. `{in}` is the
@@ -157,7 +161,7 @@ func stampHelperWrapper(c *Config) {
 	if o := c.Transcription.OCR; o != nil {
 		cmds = append(cmds, o.Rasterize)
 		if o.DjVu != nil {
-			cmds = append(cmds, o.DjVu.Text, o.DjVu.Inspect)
+			cmds = append(cmds, o.DjVu.Text, o.DjVu.Inspect, o.DjVu.Rasterize)
 		}
 	}
 	if s := c.Transcription.STT; s != nil {
@@ -228,6 +232,10 @@ func (t TranscriptionConfig) Resolved() TranscriptionConfig {
 			if o.DjVu.Inspect != nil {
 				h := *o.DjVu.Inspect
 				d.Inspect = &h
+			}
+			if o.DjVu.Rasterize != nil {
+				h := *o.DjVu.Rasterize
+				d.Rasterize = &h
 			}
 			o.DjVu = &d
 		}
@@ -536,7 +544,7 @@ func (d *DjVuHelperConfig) validate(place string) error {
 		name  string
 		cmd   *HelperCommand
 		holds []string
-	}{{"text", d.Text, DjVuTextPlaceholders}, {"inspect", d.Inspect, DjVuInspectPlaceholders}} {
+	}{{"text", d.Text, DjVuTextPlaceholders}, {"inspect", d.Inspect, DjVuInspectPlaceholders}, {"rasterize", d.Rasterize, DjVuRasterizePlaceholders}} {
 		if h.cmd == nil {
 			continue
 		}
@@ -579,13 +587,10 @@ func (o *OCRConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if dj := valueOf(n, "djvu"); dj != nil {
-		if valueOf(dj, "rasterize") != nil {
-			return errors.New("transcription.ocr.djvu.rasterize: rendering DjVu pages for OCR is not available yet")
-		}
 		if err := strictKeys(dj, "transcription.ocr.djvu", nil, reflect.TypeOf(DjVuHelperConfig{})); err != nil {
 			return err
 		}
-		for _, k := range []string{"text", "inspect"} {
+		for _, k := range []string{"text", "inspect", "rasterize"} {
 			if err := strictKeys(valueOf(dj, k), "transcription.ocr.djvu."+k, nil, reflect.TypeOf(HelperCommand{})); err != nil {
 				return err
 			}

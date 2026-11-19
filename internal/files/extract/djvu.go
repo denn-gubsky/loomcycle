@@ -31,6 +31,9 @@ type DjVuHelpers interface {
 	// Open makes the document readable by the helpers, for the calls of
 	// one extraction; the session is closed when it ends.
 	Open(ctx context.Context, r io.ReaderAt, size int64) (DjVuSession, error)
+	// Renders reports whether a session can render pages (Render): the
+	// rasterize helper is configured here. Asked without opening one.
+	Renders() bool
 }
 
 // DjVuSession is one document open for the helpers.
@@ -42,6 +45,11 @@ type DjVuSession interface {
 	// Inspect runs the inspect helper (djvused -e) with script, which is
 	// always one of the two fixed scripts below.
 	Inspect(ctx context.Context, script DjVuScript, maxBytes int) (out []byte, cut bool, err error)
+	// Render runs the rasterize helper (ddjvu) over page, fitted in a
+	// maxSide × maxSide box, and returns the TIFF it wrote, at most
+	// maxBytes of it (a larger one is an error, never cut). ErrHelperUnavailable
+	// when no rasterize helper is configured.
+	Render(ctx context.Context, page, maxSide, maxBytes int) ([]byte, error)
 	Close() error
 }
 
@@ -112,6 +120,12 @@ func (e DjVu) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink,
 	x := &djvuExtract{e: e, r: r, size: size, info: info, rep: &rep, w: newWriter(ctx, sink, opts), batch: opts.djvuBatch()}
 	defer x.close()
 	err = x.run(opts)
+	if err == nil || errors.Is(err, ErrSinkFull) {
+		// After the text: the pages a cut kept are the pages OCR replaces.
+		if rerr := x.render(opts.PageImages); rerr != nil {
+			err = rerr
+		}
+	}
 	rep.finish(x.w)
 	x.notes()
 	return rep, err
@@ -138,6 +152,9 @@ type djvuExtract struct {
 	lowPages       []int
 	cutPages       []int
 	unreadPages    []int
+	// written are the pages whose Markdown the sink took, in order: the
+	// only pages rendering may choose.
+	written []int
 }
 
 type djvuPage struct {
@@ -366,6 +383,7 @@ func (x *djvuExtract) page(n int, p djvuPage) error {
 	if err := x.w.text("\n\n" + strings.Join(parts, "\n\n")); err != nil {
 		return err
 	}
+	x.written = append(x.written, n)
 	x.pagesRead++
 	return nil
 }

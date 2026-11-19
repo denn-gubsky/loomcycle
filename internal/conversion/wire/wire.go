@@ -64,22 +64,54 @@ const (
 	// needs DjVuLibre's djvutxt. A worker carries it when its text helper
 	// resolves.
 	LabelDjVu = "djvu"
+	// LabelDjVuRender is a DjVu extraction that renders pages for OCR (RFC
+	// GV P4, D7), which needs DjVuLibre's ddjvu. A worker carries it when
+	// its rasterize helper resolves; one built before it never does, so a
+	// job that asks for page images never reaches a worker that would
+	// ignore the ask.
+	LabelDjVuRender = "djvu_render"
 )
 
 // ExtractLabels are the labels an extract job needs, every one of them:
-// extract, or djvu for a DjVu document; and extract_pages when only some
-// pages are read. A file is DjVu as a worker's registry would find it: by
-// its media type, or by its name when no other extractor reads that type.
-func ExtractLabels(mediaType, name string, pages bool) []string {
+// extract, or djvu for a DjVu document (and djvu_render when it renders
+// pages for OCR); and extract_pages when only some pages are read. A file
+// is DjVu as a worker's registry would find it: by its media type, or by
+// its name when no other extractor reads that type.
+func ExtractLabels(mediaType, name string, pages, pageImages bool) []string {
 	need := []string{LabelExtract}
-	_, typed := extract.Default().For(mediaType, "")
-	if extract.IsDjVu(mediaType, "") || (!typed && extract.IsDjVu("", name)) {
+	if IsDjVuJob(mediaType, name) {
 		need = []string{LabelDjVu}
+		if pageImages {
+			need = append(need, LabelDjVuRender)
+		}
 	}
 	if pages {
 		need = append(need, LabelExtractPages)
 	}
 	return need
+}
+
+// IsDjVuJob reports whether an extract job of mediaType and name is a DjVu
+// document, as a worker's registry would find it.
+func IsDjVuJob(mediaType, name string) bool {
+	_, typed := extract.Default().For(mediaType, "")
+	return extract.IsDjVu(mediaType, "") || (!typed && extract.IsDjVu("", name))
+}
+
+// PageImagesToWire is the ask for pages rendered for OCR.
+func PageImagesToWire(p *extract.PageImages) *workerpb.PageImages {
+	if p == nil {
+		return nil
+	}
+	return &workerpb.PageImages{Always: p.Always, MinChars: I32(p.MinChars), MaxPages: I32(p.MaxPages)}
+}
+
+// PageImagesFromWire is the ask a worker reads, its counts never negative.
+func PageImagesFromWire(w *workerpb.PageImages) *extract.PageImages {
+	if w == nil {
+		return nil
+	}
+	return &extract.PageImages{Always: w.GetAlways(), MinChars: nonNeg(int(w.GetMinChars())), MaxPages: nonNeg(int(w.GetMaxPages()))}
 }
 
 // LabelFor is the label a job kind needs.
@@ -120,7 +152,7 @@ func LabelForJob(k workerpb.JobKind, format string) string {
 // HelperLabel reports whether a label stands for an operator helper program,
 // which a worker may lack while still running other jobs.
 func HelperLabel(label string) bool {
-	return label == LabelRender || label == LabelMedia || label == LabelEncode || label == LabelWritePDF || label == LabelDraw || label == LabelDjVu
+	return label == LabelRender || label == LabelMedia || label == LabelEncode || label == LabelWritePDF || label == LabelDraw || label == LabelDjVu || label == LabelDjVuRender
 }
 
 // KindName is a job kind's name in metrics and logs.
@@ -167,6 +199,7 @@ func ReportToWire(r extract.Report) *workerpb.Report {
 		w.PageYields = append(w.PageYields, &workerpb.PageYield{Page: I32(y.Page), Chars: I32(y.Chars), Unread: y.Unread})
 	}
 	w.Metadata = metadataToWire(r.Metadata)
+	w.PageImagesUnavailable = r.PageImagesUnavailable
 	return w
 }
 
@@ -240,6 +273,7 @@ func ReportFromWire(w *workerpb.Report) extract.Report {
 		r.PageYields = append(r.PageYields, extract.PageYield{Page: int(y.GetPage()), Chars: nonNeg(int(y.GetChars())), Unread: y.GetUnread()})
 	}
 	r.Metadata = metadataFromWire(w.GetMetadata())
+	r.PageImagesUnavailable = w.GetPageImagesUnavailable()
 	return r
 }
 

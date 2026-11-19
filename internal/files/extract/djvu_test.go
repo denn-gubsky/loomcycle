@@ -90,6 +90,9 @@ type fakeDjVu struct {
 	meta    string
 	fail    map[int]bool // pages whose presence in a call fails it
 	missing bool         // the helpers are not available
+	// render answers Render for a page as the rasterize helper would; nil
+	// is no rasterize helper (Renders is false).
+	render func(page, maxSide int) ([]byte, error)
 
 	mu    sync.Mutex
 	opens int

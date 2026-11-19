@@ -77,6 +77,12 @@ type extractSink struct {
 	maxChars int
 	chars    int
 	sampled  bool
+	// pageImages are a DjVu's pages rendered for OCR (PageImage,
+	// file_djvu_ocr.go), at most pageImageCap of them and pageImageBytes
+	// in all.
+	pageImages     map[int][]byte
+	pageImageCap   int
+	pageImageBytes int
 }
 
 func (s *extractSink) StartPage(n int) {
@@ -245,6 +251,9 @@ func (f *File) converter() convert.Client {
 		if in := op.DjVu.Inspect; in != nil {
 			p.DjVuInspect = &convert.Helper{Key: convert.DjVuInspectHelperKey, Command: in.Command, Wrapper: in.Wrapper, Timeout: convert.DjVuCallTimeout}
 		}
+		if rz := op.DjVu.Rasterize; rz != nil {
+			p.DjVuRasterize = &convert.Helper{Key: convert.DjVuRasterizeHelperKey, Command: rz.Command, Wrapper: rz.Wrapper, Timeout: convert.DjVuCallTimeout}
+		}
 	}
 	// A PDF render runs the operator's typesetter here, else Typst from
 	// PATH, as the workers do (RFC GR P2); where it is not installed the
@@ -353,10 +362,25 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	// behind other files is not this file's. The OCR pass below calls a model
 	// and cuts pages under slots of its own.
 	sink := &extractSink{ctx: ctx, dir: path.Join(inbox.DirExtracted, slug), origin: origin, maxChars: in.MaxChars}
+	// A DjVu's pages are rendered for OCR inside the extraction (RFC GV
+	// D7), within pages of the OCR budget reserved now. A dry run renders
+	// none, and still learns whether pages could be rendered here.
+	var pageImages *extract.PageImages
+	var hold *ocrHold
+	if djvu && oc.active() && f.ocrAvailable() {
+		pageImages = &extract.PageImages{Always: oc.mode == transcribe.OCRAlways, MinChars: oc.minChars}
+		if !in.DryRun {
+			if hold = f.holdDjVuPages(ctx, oc, fh, info.Size(), pages); hold != nil {
+				defer func() { hold.give(hold.held) }()
+				pageImages.MaxPages, sink.pageImageCap = hold.reserved, hold.reserved
+			}
+		}
+	}
 	// A dry run writes nothing, so it keeps no pictures either.
 	images := (in.Images == nil || *in.Images) && !in.DryRun
 	infer := in.Structure != nil && in.Structure.InferHeadings
-	rep, err := f.converter().Extract(ctx, mt, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows, InferHeadings: infer, Pages: pages})
+	rep, err := f.converter().Extract(ctx, mt, fh, info.Size(), sink, extract.Options{Name: name, Images: images, MaxRows: in.MaxRows, InferHeadings: infer, Pages: pages,
+		PageImages: pageImages})
 	if sink.sampled && err == nil {
 		// The converter finished on the very text that reached the limit.
 		err = extract.ErrSinkFull
@@ -408,15 +432,9 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	if rep.Format == "pdf" || rep.Format == "djvu" {
 		lowYield = lowYieldPages(rep, oc.minChars)
 	}
-	if rep.Format == "djvu" && oc.active() {
-		// Its thin pages are found (PageYields) but not rendered yet.
-		if low := lowYieldPages(rep, oc.minChars); len(low) > 0 {
-			rep.Notes = append(rep.Notes, errDjVuOCR.Error()+": the pages with little or no text layer were not read by the OCR model")
-		}
-	}
 	var pass *ocrPass
 	ocrSet := ocrPages(rep, oc)
-	if sink.sampled && rep.Format == "pdf" {
+	if sink.sampled && (rep.Format == "pdf" || rep.Format == "djvu") {
 		// The page whose text max_chars refused was parsed, so it has a
 		// yield, but none of its text was written: OCR has no place for it.
 		var written []int
@@ -427,15 +445,26 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 		}
 		ocrSet = written
 	}
+	noPageOCR := ""
+	if rep.Format == "djvu" && len(ocrSet) > 0 && rep.PageImagesUnavailable {
+		noPageOCR = djvuNoPageOCR
+		rep.Notes = append(rep.Notes, noPageOCR)
+		ocrSet = nil
+	}
 	if pages := ocrSet; len(pages) > 0 || in.DryRun {
 		var plan transcribe.Plan
+		planType := mt
+		if rep.Format == "djvu" {
+			// Its units are its pages, rendered as PNG.
+			planType = "image/png"
+		}
 		if len(pages) > 0 {
-			if plan, err = f.OCR.Engine.Plan(ctx, mt, oc.model); err != nil {
+			if plan, err = f.OCR.Engine.Plan(ctx, planType, oc.model); err != nil {
 				return errBusiness("extract: OCR cannot read "+r.raw+": "+err.Error(), "An operator configures the OCR model (transcription.ocr, or the agent's transcription.ocr_model)."), nil
 			}
 		}
 		if in.DryRun {
-			return f.ocrDryRun(ctx, oc, plan, r.raw, mt, pages, lowYield)
+			return f.ocrDryRun(ctx, oc, plan, r.raw, mt, pages, lowYield, noPageOCR)
 		}
 		starts := sink.starts
 		if rep.Format == "image" {
@@ -444,7 +473,11 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 				starts = map[int]int{1: i}
 			}
 		}
-		pass = f.runOCR(ctx, oc, plan, fh, info.Size(), mt, pages)
+		if rep.Format == "djvu" {
+			pass = f.runDjVuOCR(ctx, oc, plan, hold, sink.pageImages, pages)
+		} else {
+			pass = f.runOCR(ctx, oc, plan, fh, info.Size(), mt, pages)
+		}
 		md = spliceOCR(md, starts, pass)
 	}
 

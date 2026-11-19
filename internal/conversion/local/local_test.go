@@ -151,10 +151,12 @@ func TestChildEnv_CarriesTheCoresHelpers(t *testing.T) {
 // The core's DjVu helpers (transcription.ocr.djvu) reach its children, which
 // read DjVu with them; unset, a child is given none and takes its defaults.
 func TestChildEnv_CarriesTheDjVuHelpers(t *testing.T) {
-	env := childEnv(Options{Token: "tok", DjVuText: "djvutxt --detail=page --page={pages} {in}", DjVuInspect: "djvused -e {script} {in}"})
+	env := childEnv(Options{Token: "tok", DjVuText: "djvutxt --detail=page --page={pages} {in}", DjVuInspect: "djvused -e {script} {in}",
+		DjVuRasterize: "ddjvu -format=tiff -page={page} -size={size} {in} {out}"})
 	for _, want := range []string{
 		"LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND=djvutxt --detail=page --page={pages} {in}",
 		"LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND=djvused -e {script} {in}",
+		"LOOMCYCLE_WORKER_DJVU_RASTERIZE_COMMAND=ddjvu -format=tiff -page={page} -size={size} {in} {out}",
 	} {
 		if !slices.Contains(env, want) {
 			t.Errorf("child env lacks %q:\n%s", want, strings.Join(env, "\n"))

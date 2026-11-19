@@ -296,8 +296,8 @@ jobs:
           echo "$RUNNER_TEMP/merman-cli-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
 
       # A DjVu book's text layer is read with DjVuLibre's djvutxt and
-      # djvused (RFC GV P3), from Debian's djvulibre-bin as the worker image
-      # installs it. The DjVu tests skip where djvutxt is missing;
+      # djvused (RFC GV P3), and its pages rendered for OCR with ddjvu (P4),
+      # from Debian's djvulibre-bin as the worker image installs it. The DjVu tests skip where djvutxt is missing;
       # LOOMCYCLE_REQUIRE_DJVULIBRE makes that a failure here.
       - name: Read the DjVu fixtures with DjVuLibre
         env:
@@ -333,6 +333,10 @@ jobs:
           # It reads a DjVu's text layer in the image as built.
           docker run --rm -i --entrypoint sh ci-loomcycle-worker -c 'cat > /scratch/book.djvu && djvutxt --detail=page --page=3 /scratch/book.djvu' \
             < internal/files/extract/testdata/djvu/book.djvu | grep -q 'Третья страница'
+          # And renders a scanned page for OCR, as the default command does.
+          docker run --rm -i --entrypoint sh ci-loomcycle-worker -c 'cat > /scratch/scan.djvu && ddjvu -format=tiff -page=2 -size=1568x1568 /scratch/scan.djvu /scratch/page.tiff && cat /scratch/page.tiff' \
+            < internal/files/extract/testdata/djvu/scan.djvu > "$RUNNER_TEMP/page.tiff"
+          file "$RUNNER_TEMP/page.tiff" | grep -q 'TIFF image data'
           fonts="$(docker run --rm --entrypoint typst ci-loomcycle-worker fonts)"
           echo "$fonts"
           echo "$fonts" | grep -qx 'Noto Sans'

@@ -6,7 +6,7 @@
 # Noto Serif for its text (Latin, Cyrillic, Greek), merman (a Mermaid
 # diagram drawn as a picture, RFC GR P4d; no browser), and DjVuLibre's
 # djvutxt and djvused (a DjVu book's text layer, outline and metadata, RFC
-# GV P3).
+# GV P3) and ddjvu (its pages rendered for OCR, RFC GV P4).
 #
 # A worker holds no provider key, no store connection and no volume: it dials
 # the runtime's worker endpoint (--dispatcher, or LOOMCYCLE_WORKER_DISPATCHER
@@ -73,7 +73,7 @@ RUN set -eux; \
     # (D13), and Noto Serif for a house style that asks for it (RFC GR P4c).
     # The rest of the Noto set is some hundreds of MB this image does not need.
     find /usr/share/fonts/truetype/noto -type f ! -name 'NotoSans-*' ! -name 'NotoSansMono-*' ! -name 'NotoSerif-*' -delete; \
-    command -v djvutxt djvused; \
+    command -v djvutxt djvused ddjvu; \
     # curl stays: djvulibre-bin depends on it (Debian ships trixie's
     # 3.5.28-2.2, with the fix for CVE-2025-53367), and purging it would
     # take DjVuLibre with it. Nothing here runs it.

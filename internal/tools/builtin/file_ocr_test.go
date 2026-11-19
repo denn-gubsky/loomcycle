@@ -63,9 +63,11 @@ type fakeOCR struct {
 
 	mu    sync.Mutex
 	plans int
-	// models is the agent model each Plan was asked for ("" = the operator's).
-	models []string
-	units  []sentUnit
+	// models is the agent model each Plan was asked for ("" = the operator's),
+	// and planTypes the media type.
+	models    []string
+	planTypes []string
+	units     []sentUnit
 }
 
 type sentUnit struct {
@@ -74,14 +76,16 @@ type sentUnit struct {
 	maxTokens int
 	language  string
 	prompt    string
+	data      []byte
 }
 
 func (f *fakeOCR) Name() string                  { return "vision" }
 func (f *fakeOCR) Accepts(mediaType string) bool { return true }
-func (f *fakeOCR) Plan(_ context.Context, _, model string) (transcribe.Plan, error) {
+func (f *fakeOCR) Plan(_ context.Context, mediaType, model string) (transcribe.Plan, error) {
 	f.mu.Lock()
 	f.plans++
 	f.models = append(f.models, model)
+	f.planTypes = append(f.planTypes, mediaType)
 	f.mu.Unlock()
 	plan := f.plan
 	if model != "" {
@@ -102,7 +106,7 @@ func (f *fakeOCR) OCR(_ context.Context, plan transcribe.Plan, u transcribe.Unit
 		n = rep.Pages
 	}
 	f.mu.Lock()
-	f.units = append(f.units, sentUnit{mediaType: u.MediaType, pages: n, maxTokens: o.MaxTokens, language: o.Language, prompt: o.Prompt})
+	f.units = append(f.units, sentUnit{mediaType: u.MediaType, pages: n, maxTokens: o.MaxTokens, language: o.Language, prompt: o.Prompt, data: data})
 	call := len(f.units)
 	f.mu.Unlock()
 	if call == f.failOn {

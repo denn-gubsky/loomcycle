@@ -124,6 +124,21 @@ func (b *Budget) ReservePages(n int) error {
 	return nil
 }
 
+// ReserveUpToPages reserves as many of n pages as fit under the cap and
+// returns how many: a reservation made before work whose page count is only
+// known to be at most n (a DjVu's pages rendered for OCR, RFC GV D7). What
+// is not spent goes back with ReleasePages.
+func (b *Budget) ReserveUpToPages(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	k := min(n, max(b.pageLimit-b.pages, 0))
+	b.pages += k
+	return k
+}
+
 // ReleasePages gives back n pages a reservation took: one that a second
 // budget then refused, so a refused call holds nothing in either. More than
 // is held releases everything.

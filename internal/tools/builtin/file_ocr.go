@@ -133,7 +133,7 @@ func ocrPages(rep extract.Report, c ocrCall) []int {
 		return nil
 	case rep.Format == "image":
 		return []int{1}
-	case rep.Format != "pdf":
+	case rep.Format != "pdf" && rep.Format != "djvu":
 		return nil
 	case c.mode == transcribe.OCRAlways:
 		var all []int
@@ -355,47 +355,56 @@ func (f *File) runOCR(ctx context.Context, c ocrCall, plan transcribe.Plan, fh i
 			}
 			return p
 		}
-		unit, err := transcribe.NewUnit(bytes.NewReader(u.data), 0, int64(len(u.data)), u.mediaType)
-		if err != nil {
-			p.err = err
+		if !f.callOCR(ctx, p, plan, opts, u, run, tree) {
 			return p
-		}
-		unit.Pages = transcribe.PageRange{First: 1, Last: len(u.pages)}
-		opts.MaxTokens = op.MaxTokensPerPage * len(u.pages)
-		res, err := f.OCR.Engine.OCR(ctx, plan, unit, opts)
-		f.charge(ctx, p, res)
-		if err != nil {
-			// Pages go back only for a call that provably consumed nothing:
-			// refused before any request, with no usage. A call that reached
-			// the model may have been billed, and giving its pages back would
-			// let a retry loop pay again and again under the cap.
-			if !res.Reached && res.InputTokens == 0 && res.OutputTokens == 0 && res.ReportedCost == 0 {
-				run.ReleasePages(len(u.pages))
-				tree.ReleasePages(len(u.pages))
-			} else {
-				p.sent += len(u.pages)
-			}
-			p.callErr = err
-			return p
-		}
-		p.sent += len(u.pages)
-		p.units++
-		for i, orig := range u.pages {
-			t := noOCRText
-			if i < len(res.Pages) {
-				t = res.Pages[i].Text
-			}
-			p.text[orig] = t
-			p.done = append(p.done, orig)
 		}
 	}
 	return p
 }
 
-// errDjVuOCR refuses OCR of a DjVu document until its pages can be
-// rendered (RFC GV P4). A DjVu is never sent as it is: it is a book, not an
-// image a vision model reads.
-var errDjVuOCR = errors.New("OCR of DjVu pages is not available yet")
+// callOCR sends one unit, whose pages are reserved on run and tree, and
+// records what it read. It reports false when the pass must stop.
+func (f *File) callOCR(ctx context.Context, p *ocrPass, plan transcribe.Plan, opts transcribe.OCROptions, u ocrUnit, run, tree *transcribe.Budget) bool {
+	unit, err := transcribe.NewUnit(bytes.NewReader(u.data), 0, int64(len(u.data)), u.mediaType)
+	if err != nil {
+		p.err = err
+		return false
+	}
+	unit.Pages = transcribe.PageRange{First: 1, Last: len(u.pages)}
+	opts.MaxTokens = f.ocrConfig().MaxTokensPerPage * len(u.pages)
+	res, err := f.OCR.Engine.OCR(ctx, plan, unit, opts)
+	f.charge(ctx, p, res)
+	if err != nil {
+		// Pages go back only for a call that provably consumed nothing:
+		// refused before any request, with no usage. A call that reached
+		// the model may have been billed, and giving its pages back would
+		// let a retry loop pay again and again under the cap.
+		if !res.Reached && res.InputTokens == 0 && res.OutputTokens == 0 && res.ReportedCost == 0 {
+			run.ReleasePages(len(u.pages))
+			tree.ReleasePages(len(u.pages))
+		} else {
+			p.sent += len(u.pages)
+		}
+		p.callErr = err
+		return false
+	}
+	p.sent += len(u.pages)
+	p.units++
+	for i, orig := range u.pages {
+		t := noOCRText
+		if i < len(res.Pages) {
+			t = res.Pages[i].Text
+		}
+		p.text[orig] = t
+		p.done = append(p.done, orig)
+	}
+	return true
+}
+
+// errDjVuOCR refuses a DjVu document as an OCR unit. A DjVu is a book, not
+// an image a vision model reads: its pages are rendered inside the
+// extraction and sent one by one (runDjVuOCR), never the file itself.
+var errDjVuOCR = errors.New("a DjVu document is read by OCR page by page, from pages rendered as it is extracted, never sent whole")
 
 // noOCRText stands for a page the engine returned nothing for.
 const noOCRText = "[no text]"
@@ -489,12 +498,43 @@ func spliceOCR(md string, starts map[int]int, p *ocrPass) string {
 			end = at(pages[i+1])
 		}
 		if t, ok := p.text[n]; ok {
+			if kept := headingsBefore(md[at(n):end], n); kept != "" {
+				b.WriteString("\n\n" + kept)
+			}
 			fmt.Fprintf(&b, "\n\n## Page %d\n\n%s", n, demoteHeadings(t))
 			continue
 		}
 		b.WriteString(md[at(n):end])
 	}
 	return b.String()
+}
+
+// headingsBefore are the heading lines a page's Markdown opens with before
+// its own "## Page N": a DjVu's outline entries that point to the page (RFC
+// GV P3), which an OCR transcript replacing the page must not take with
+// it. A PDF page opens with its own heading, so it keeps nothing. The page
+// heading is the last of the opening run, since an outline entry may carry
+// the same words.
+func headingsBefore(span string, n int) string {
+	own := fmt.Sprintf("## Page %d", n)
+	var run []string
+	last := -1
+	for _, l := range strings.Split(span, "\n") {
+		if l == "" {
+			continue
+		}
+		if !strings.HasPrefix(l, "#") {
+			break
+		}
+		if l == own {
+			last = len(run)
+		}
+		run = append(run, l)
+	}
+	if last < 1 {
+		return ""
+	}
+	return strings.Join(run[:last], "\n\n")
 }
 
 // metaValue keeps a provenance value to characters that can neither split
@@ -624,13 +664,15 @@ func ocrFailure(p *ocrPass, ref string) tools.Result {
 // ocrDryRun answers what OCR would read and cost without calling the engine,
 // counting units by the same rule runOCR cuts by (a cut that turns out over
 // the request size would be split further).
-func (f *File) ocrDryRun(ctx context.Context, c ocrCall, plan transcribe.Plan, src, mediaType string, pages []int, lowYield []int) (tools.Result, error) {
-	if extract.IsDjVu(mediaType, "") {
-		return errBusiness("extract: "+errDjVuOCR.Error(), "Leave dry_run out: the DjVu's text layer is read without OCR."), nil
-	}
+//
+// A DjVu's units are its pages, one rendered image each; none is rendered
+// for the estimate. noPageOCR, when set, says no page can be rendered here.
+func (f *File) ocrDryRun(ctx context.Context, c ocrCall, plan transcribe.Plan, src, mediaType string, pages []int, lowYield []int, noPageOCR string) (tools.Result, error) {
 	units := 0
 	switch {
 	case len(pages) == 0:
+	case extract.IsDjVu(mediaType, ""):
+		units = len(pages)
 	case mediaType != "application/pdf":
 		units = 1
 	case plan.WholePDF:
@@ -652,6 +694,9 @@ func (f *File) ocrDryRun(ctx context.Context, c ocrCall, plan transcribe.Plan, s
 	}
 	if lowYield != nil {
 		res["low_yield_pages"] = lowYield
+	}
+	if noPageOCR != "" {
+		res["note"] = noPageOCR
 	}
 	info := &providers.TranscriptionInfo{
 		Ref: src, Purpose: transcribe.PurposeOCR, Engine: plan.Engine, Provider: plan.Provider, Model: plan.Model,

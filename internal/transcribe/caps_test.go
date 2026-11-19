@@ -225,3 +225,27 @@ func TestBudget_AddSecondsCountsPastTheCap(t *testing.T) {
 		t.Errorf("a reservation past the cap: %v", err)
 	}
 }
+
+// ReserveUpToPages takes what fits under the cap and no more, and what it
+// took goes back with ReleasePages.
+func TestBudget_ReserveUpToPagesTakesWhatFits(t *testing.T) {
+	b := NewBudget(Caps{MaxPagesPerRun: 5})
+	if got := b.ReserveUpToPages(3); got != 3 || b.Pages() != 3 {
+		t.Fatalf("first: got %d, holds %d", got, b.Pages())
+	}
+	if got := b.ReserveUpToPages(10); got != 2 || b.Pages() != 5 {
+		t.Fatalf("over the cap: got %d, holds %d", got, b.Pages())
+	}
+	if got := b.ReserveUpToPages(1); got != 0 || b.Pages() != 5 {
+		t.Fatalf("at the cap: got %d, holds %d", got, b.Pages())
+	}
+	for _, n := range []int{0, -3} {
+		if got := b.ReserveUpToPages(n); got != 0 {
+			t.Errorf("ReserveUpToPages(%d) = %d", n, got)
+		}
+	}
+	b.ReleasePages(4)
+	if b.Pages() != 1 {
+		t.Fatalf("after release: holds %d", b.Pages())
+	}
+}

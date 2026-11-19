@@ -85,9 +85,11 @@ func runWorker(args []string, stderr io.Writer) int {
 		Draw:         diagramHelper(wrapper),
 		DjVuText:     defaultedHelper("LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND", convert.DjVuTextProgram, convert.DefaultDjVuTextCommand, convert.DjVuTextHelperKey, wrapper),
 		DjVuInspect:  defaultedHelper("LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND", convert.DjVuInspectProgram, convert.DefaultDjVuInspectCommand, convert.DjVuInspectHelperKey, wrapper),
-		Images:       vision.NewReencoder(),
-		TLS:          tlsCfg,
-		Insecure:     os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1",
+		DjVuRasterize: defaultedHelper("LOOMCYCLE_WORKER_DJVU_RASTERIZE_COMMAND", convert.DjVuRasterizeProgram, convert.DefaultDjVuRasterizeCommand,
+			convert.DjVuRasterizeHelperKey, wrapper),
+		Images:   vision.NewReencoder(),
+		TLS:      tlsCfg,
+		Insecure: os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1",
 	})
 	switch {
 	case err == nil:
@@ -130,10 +132,10 @@ func diagramHelper(wrapper string) *convert.Helper {
 	return &convert.Helper{Key: convert.DiagramHelperKey, Command: cmd, Wrapper: wrapper}
 }
 
-// defaultedHelper is a DjVu helper (RFC GV P3): the operator's command from
-// env, else def when prog is installed here. With neither, the worker reads
-// no DjVu (the text helper) or reads it without an outline and metadata
-// (inspect).
+// defaultedHelper is a DjVu helper (RFC GV P3, P4): the operator's command
+// from env, else def when prog is installed here. With neither, the worker
+// reads no DjVu (the text helper), reads it without an outline and metadata
+// (inspect), or renders no page for OCR (rasterize).
 func defaultedHelper(env, prog, def, key, wrapper string) *convert.Helper {
 	cmd := strings.TrimSpace(os.Getenv(env))
 	if cmd == "" {

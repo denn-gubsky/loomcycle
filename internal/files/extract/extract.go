@@ -56,6 +56,31 @@ type PageSink interface {
 	StartPage(n int)
 }
 
+// PageImageSink is a PageSink that takes pages rendered for OCR (RFC GV
+// D7): PageImage(n, png) after page n's Markdown is written, page n as one
+// PNG no larger than Options.PageImages asked for. Only an extractor that
+// renders pages (DjVu) calls it, and only when Options.PageImages asks.
+type PageImageSink interface {
+	PageSink
+	PageImage(page int, png []byte) error
+}
+
+// PageImages asks a paged extractor that can render its pages (DjVu) to
+// render the pages an OCR pass will read, inside the extraction, so a large
+// book is read once (RFC GV D7). The caller has reserved MaxPages pages of
+// its OCR budget already; at most that many are rendered, in page order.
+type PageImages struct {
+	// Always renders every page read; otherwise only those whose text
+	// layer holds under MinChars characters, as an OCR pass in auto mode
+	// chooses them.
+	Always   bool
+	MinChars int
+	// MaxPages is the most pages rendered: the OCR budget reserved. Zero
+	// renders none, and still says whether rendering is available here
+	// (Report.PageImagesUnavailable), which a dry run reports.
+	MaxPages int
+}
+
 // RecordSink is a Sink told about the record a loomcycle-rendered file
 // carries (RFC GR P4b, D22): Record once, with the record's JSON as the file
 // holds it, before any heading; and HeadingAnchor just before a heading
@@ -102,6 +127,8 @@ type Options struct {
 	// read it; formats without pages ignore it. A page past the end is not
 	// read.
 	Pages []int
+	// PageImages, when set, asks for pages rendered for OCR (DjVu).
+	PageImages *PageImages
 
 	// limits overrides the archive bounds, and pdfMaxPages and pdfMaxDecode
 	// the PDF page and decode caps, for tests.
@@ -159,6 +186,10 @@ type Report struct {
 	// Metadata is what a book says about itself (RFC GV D10), nil for a
 	// format that carries none or a file that fills none of it.
 	Metadata *BookMetadata `json:"metadata,omitempty"`
+	// PageImagesUnavailable says Options.PageImages was asked for and this
+	// converter cannot render pages (no rasterize helper): the text layer
+	// is all there is, which the caller reports rather than fails on.
+	PageImagesUnavailable bool `json:"-"`
 }
 
 // PageYield is how much text one page's text layer gave.
