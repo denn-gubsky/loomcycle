@@ -195,7 +195,7 @@ The table says, for each area, what is set in which plane and what is inferred. 
 | MCP servers ([`MCP_INTEGRATION.md`](MCP_INTEGRATION.md)) | Gates: `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS`, `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` (both off by default), `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS` (on by default) | `mcp_servers:`, `local_api:` | none |
 | Hooks, interruptions and context plugins | none | `hooks:`, `interruption:`, `context_plugins:` | none |
 | Teams ([9o](#9o-teams-in-the-configuration-teams)) | none | `teams:` | none |
-| Speech, transcription and conversion ([9h](#9h-transcription--ocr-and-speech-to-text), [9i](#9i-speech--text-to-speech), [9n](#9n-conversion-workers-conversion)) | `LOOMCYCLE_AUDIO_MAX_INFLIGHT` | `transcription:`, `speech:`, `conversion:`, `worker_endpoint:` | none |
+| Speech, transcription and conversion ([9h](#9h-transcription--ocr-and-speech-to-text), [9i](#9i-speech--text-to-speech), [9n](#9n-conversion-workers-conversion)) | `LOOMCYCLE_AUDIO_MAX_INFLIGHT` | `transcription:`, `speech:`, `conversion:`, `worker_endpoint:`, `workspace:` | none |
 | Cluster ([`MULTI-REPLICA.md`](MULTI-REPLICA.md)) | `LOOMCYCLE_REPLICA_ID`, `LOOMCYCLE_REPLICAS_STALE_AFTER_MS`, `LOOMCYCLE_HEARTBEAT_STALE_MS` | none | Cluster mode is on when `LOOMCYCLE_REPLICA_ID` is set |
 
 A row with entries in both planes does not mean a setting is given twice: the two columns hold different settings of the same area. The few settings that do exist in both planes are listed next.
@@ -4487,7 +4487,7 @@ worker_endpoint:           # where workers of their own attach (modes remote and
   insecure: false          # serve off the loopback without TLS: only on a network the runtime and its workers alone share
 ```
 
-`worker_endpoint` is the endpoint every kind of worker attaches to, so it is a block of its own rather than part of `conversion`. Its keys were first written as `conversion.listen`, `conversion.tls` and `conversion.insecure`, and those still work: a value `worker_endpoint` leaves unset is taken from them, and a value both blocks set must be the same, or the runtime refuses to start and names both keys. The older keys are still accepted only in modes `remote` and `local+remote`. A `worker_endpoint` written in a mode that attaches no workers of its own is checked and logged as unused at startup. The server behind the endpoint holds each worker stream to a 1 MiB flow-control window and each worker connection to 8 MiB, and the workers dial with the same windows, so a slow reader on either side holds a bounded amount of the other's data.
+`worker_endpoint` is the endpoint every kind of worker attaches to, so it is a block of its own rather than part of `conversion`. Its keys were first written as `conversion.listen`, `conversion.tls` and `conversion.insecure`, and those still work: a value `worker_endpoint` leaves unset is taken from them, and a value both blocks set must be the same, or the runtime refuses to start and names both keys. The older keys are still accepted only in modes `remote` and `local+remote`. A `worker_endpoint` written while neither `conversion.mode` nor `workspace.mode` attaches workers of their own is checked and logged as unused at startup. The server behind the endpoint holds each worker stream to a 1 MiB flow-control window and each worker connection to 8 MiB, and the workers dial with the same windows, so a slow reader on either side holds a bounded amount of the other's data.
 
 What `local` does:
 
@@ -4532,6 +4532,38 @@ The worker reads these variables. In `local` mode the runtime sets them for its 
 | `LOOMCYCLE_HELPER_WRAPPER` | — | The sandbox every helper runs under, as for the runtime (§ transcription). |
 
 A worker reads its helper commands from its own environment and never from the dispatcher: a job says what to convert, never what to run.
+
+### Workspace workers (`workspace:`)
+
+A workspace worker (RFC GW) holds an agent's workspaces, directories in which it runs commands and works on files, out of the runtime's process. It attaches to the same `worker_endpoint` as conversion workers, on a service of its own. This release builds the worker, the protocol and the runtime's side of it; the `Workspace` tool that agents call arrives in the next release, so `workspace.mode: remote` attaches workers that no agent can use yet. [WORKERS.md](WORKERS.md#workspace-workers) has the short guide.
+
+```yaml
+worker_endpoint:
+  listen: 127.0.0.1:7788
+workspace:
+  mode: remote             # off (default) | remote. local is not available yet.
+  max_per_run: 4           # workspaces one run holds at once
+  max_per_tenant: 0        # a tenant's workspaces across its runs; 0 = unlimited
+  exec:
+    default_timeout_s: 120 # a command that names no timeout
+    max_timeout_s: 900     # the longest a command may ask for
+  lost_after_s: 300        # a worker away this long has its workspaces marked lost
+```
+
+Policy and tuning, so yaml only; unknown keys are refused. `remote` needs `worker_endpoint.listen` and opens the endpoint whatever `conversion.mode` is, so the "nothing listens" warning for an unused endpoint is not given then. An agent granted `workspace:` while `workspace.mode` is off is warned about at startup: every `Workspace` call would be refused.
+
+A workspace worker does not use the conversion worker's shared secret. It presents an operator token whose only scope is `workers:attach` (mint one with `OperatorTokenDef`); the runtime refuses the legacy `LOOMCYCLE_AUTH_TOKEN`, any `substrate:admin` token, a token with other scopes and a person's sign-in credential. A token bound to a tenant serves that tenant only; a token an admin minted with `worker_shared: true` serves every tenant. The runtime decides the token again every 60 seconds while the worker stays attached: a token revoked, rotated or bound to other tenants detaches its worker, and an op it is running fails with `worker_revoked`.
+
+The workspace worker reads these variables, beside `LOOMCYCLE_WORKER_DISPATCHER`, `LOOMCYCLE_WORKER_TOKEN` (here the `workers:attach` token) and the `LOOMCYCLE_WORKER_TLS_*` and `LOOMCYCLE_WORKER_INSECURE` settings above:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LOOMCYCLE_WORKSPACE_ROOT` | — (required) | The directory the worker makes its workspaces in, one directory per workspace, named by its id. Made with mode 0700 when missing. |
+| `LOOMCYCLE_WORKSPACE_ENGINE` | `host` | How commands run. Only `host` exists in this release: a command runs as the worker's own user, with no isolation, so use it only on a trusted machine. |
+| `LOOMCYCLE_WORKSPACE_CAPACITY` | 8 | The workspaces this worker holds at most, 1–10000. An open past it is refused, and the runtime places the workspace on another worker. |
+| `LOOMCYCLE_WORKSPACE_IDLE_STREAMS` | 16 | The idle op streams the worker keeps open for the runtime, 1–32. The runtime asks for more when it runs low. |
+
+`/metrics` adds `loomcycle_workspace_workers`, `loomcycle_workspace_ops_total{op,outcome}` (outcome `ok`, `cancelled` or an error class such as `worker_lost`) and `loomcycle_workspace_worker_deaths_total`.
 
 ## 9o. Teams in the configuration (`teams:`)
 
