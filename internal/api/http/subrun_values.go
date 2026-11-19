@@ -217,6 +217,7 @@ func recordInheritedPolicy(ctx context.Context, subRunCfg *runConfigRecord, pare
 	subRunCfg.Spawn.ToolModes = parentPolicy.ToolModes
 	subRunCfg.Spawn.ShellCredentials = shellCredsRecordOf(parentPolicy.ShellCreds)
 	subRunCfg.Spawn.GitRemote = parentPolicy.GitRemote.Ops()
+	subRunCfg.Spawn.Workspace = parentPolicy.Workspace.Grant()
 	// The offer the child passes on to its own children is its parent's
 	// (Inherit), which a resume cannot read off a parent ctx.
 	subRunCfg.Spawn.OfferedOverrides = offeredOverridesRecordOf(childPolicy.Overrides)

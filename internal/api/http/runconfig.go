@@ -654,6 +654,12 @@ type spawnRecord struct {
 	// a record written before the field means, since no run had a Git network
 	// grant before it existed.
 	GitRemote []string `json:"git_remote,omitempty"`
+	// Workspace is the parent run's workspace grant at spawn (RFC GW): what
+	// the child's own workspace was narrowed to. A resume narrows again
+	// against it. Absent means the parent had none, which is also what a
+	// record written before the field means, since no run had a workspace
+	// grant before it existed.
+	Workspace *config.AgentWorkspace `json:"workspace,omitempty"`
 	// OfferedOverrides is the override offer the child holds for its own
 	// children: its parent's, passed down unchanged (tools.RunPolicy.Inherit),
 	// so a grandchild of the offering run's definition takes that run's

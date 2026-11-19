@@ -318,6 +318,11 @@ export const agentDefRegistry: DefRegistry = {
     { key: "git_remote", label: "Git network", group: "Capabilities", type: "string-list",
       hint: "Which network operations the agent's Git tool may perform: fetch (clone, fetch, pull, ls_remote), and push alongside fetch. A sub-agent may do only what its parent also may.",
       placeholder: "fetch", unsetMeans: "none — local repositories only" },
+    // JSON, as an object: three keys of different shapes, and any other key
+    // is refused by the server.
+    { key: "workspace", label: "Workspace", group: "Capabilities", type: "json",
+      hint: "The agent's workspace grant, as a JSON object: ops (a list of read, write, exec), open (true lets it open workspaces of its own) and engine (host or container: the least isolating engine it accepts). A sub-agent holds only what its parent also holds.",
+      placeholder: '{"ops": ["read", "write", "exec"], "open": true}', unsetMeans: "no workspace access" },
     { key: "statement_methods", label: "Statement methods", group: "Capabilities", type: "string-list",
       hint: "What the agent's runs may do with document statements: rule (its code found the relation), extractor (a model it drives found it) and judge are for a code-js agent only; link asserts its tenant link_chunks instead of filing them for review; remember lets it call Document remember. A sub-agent holds only its own definition's methods.",
       placeholder: "rule", unsetMeans: "none" },

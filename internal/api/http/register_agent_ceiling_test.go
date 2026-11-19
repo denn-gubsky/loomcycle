@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -31,6 +32,7 @@ func TestRegisterAgent_AMemberIsHeldToTheCapabilityCeiling(t *testing.T) {
 		{"statement_methods", connector.RegisterAgentRequest{Provider: "code-js", StatementMethods: []string{"rule"}}},
 		{"evaluation_scopes", connector.RegisterAgentRequest{EvaluationScopes: []string{"submit_any"}}},
 		{"git_remote", connector.RegisterAgentRequest{GitRemote: []string{"fetch", "push"}}},
+		{"workspace", connector.RegisterAgentRequest{Workspace: &config.AgentWorkspace{Ops: []string{"exec"}}}},
 	} {
 		for who, ctx := range map[string]context.Context{"member": member, "operator": operator} {
 			req := c.req

@@ -454,6 +454,10 @@ type SubstrateAgentDef struct {
 	// would lose its network grant. Absent and [] both mean none, so a plain
 	// omitempty list is enough here.
 	GitRemote []string `json:"git_remote,omitempty"`
+	// Workspace mirrors config.AgentDef.Workspace (RFC GW). Kept in sync with
+	// builtin.mergedDef: dropped on the read, a stored agent would lose its
+	// workspace grant. nil grants nothing.
+	Workspace *config.AgentWorkspace `json:"workspace,omitempty"`
 	// StatementMethods mirrors config.AgentDef.StatementMethods. Kept in sync
 	// with builtin.mergedDef: dropped on the read, a stored code-js agent
 	// would stamp every relation it writes manual.
@@ -565,6 +569,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		ToolModes:              def.ToolModes,
 		ShellCredentials:       def.ShellCredentials,
 		GitRemote:              def.GitRemote,
+		Workspace:              def.Workspace.Clone(),
 		StatementMethods:       def.StatementMethods,
 		Interruption:           def.Interruption,
 		AgentDefScopes:         def.AgentDefScopes,
@@ -640,6 +645,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		ToolModes:             s.ToolModes,
 		ShellCredentials:      s.ShellCredentials,
 		GitRemote:             s.GitRemote,
+		Workspace:             s.Workspace.Clone(),
 		StatementMethods:      s.StatementMethods,
 		Interruption:          s.Interruption,
 		// F40: surface the capability gates to the policy layer so a

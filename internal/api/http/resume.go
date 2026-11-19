@@ -1314,6 +1314,23 @@ func resumedGitRemote(run store.Run, rec *spawnRecord, def config.AgentDef) *too
 	return &v
 }
 
+// resumedWorkspace is the workspace grant a resumed run gets back (RFC GW):
+// a top-level run its definition's (nil: agentRunPolicy reads it), and a
+// sub-run its definition's narrowed again to its recorded parent's, as
+// Inherit narrowed it live. A sub-run with no record fails CLOSED with no
+// workspace access, as resumedGitRemote does: its parent's grant is unknown,
+// and its own definition's is exactly the widening the narrowing prevents.
+func resumedWorkspace(run store.Run, rec *spawnRecord, def config.AgentDef) *tools.WorkspacePolicyValue {
+	if !isSubRun(run) {
+		return nil
+	}
+	v := tools.WorkspacePolicyValue{}
+	if rec != nil {
+		v = tools.NarrowWorkspace(tools.WorkspaceFor(rec.Workspace), tools.WorkspaceFor(def.Workspace))
+	}
+	return &v
+}
+
 // shellCredsRecordOf is the spawn record of a parent's shell-credential
 // narrowing: nil when it narrowed nothing, else its names (an empty list kept
 // as one, so a parent that allowed none is recorded as allowing none).
@@ -2291,6 +2308,7 @@ func (s *Server) resumedPolicySource(ctx context.Context, run store.Run, runCfg 
 		Crypto:            resumedCryptoPolicy(run, runCfg.Spawn, agentDef),
 		ShellCreds:        resumedShellCreds(run, runCfg.Spawn, agentDef),
 		GitRemote:         resumedGitRemote(run, runCfg.Spawn, agentDef),
+		Workspace:         resumedWorkspace(run, runCfg.Spawn, agentDef),
 		// A sub-run's parent read modes again, so it and the children it
 		// spawns are held to them after a resume as they were live.
 		ToolModes: resumedToolModes(run, runCfg.Spawn, agentDef),

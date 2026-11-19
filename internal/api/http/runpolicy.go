@@ -38,6 +38,10 @@ type runPolicySource struct {
 	// definition (a resumed sub-run's, narrowed again against its recorded
 	// parent). nil: its definition's git_remote (RFC FB).
 	GitRemote *tools.GitRemotePolicyValue
+	// Workspace, when set, is the run's workspace grant from outside its
+	// definition (a resumed sub-run's, narrowed again against its recorded
+	// parent). nil: its definition's workspace (RFC GW).
+	Workspace *tools.WorkspacePolicyValue
 	// Compaction and Context are the run's resolved compaction and
 	// layered-context settings.
 	Compaction *config.Compaction
@@ -125,6 +129,7 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 		Crypto:           src.Crypto,
 		ShellCreds:       shellCredsOf(def, src.ShellCreds),
 		GitRemote:        gitRemoteOf(def, src.GitRemote),
+		Workspace:        workspaceOf(def, src.Workspace),
 		StatementMethods: statementMethodsOf(def),
 		OperatorAuthored: def.OperatorAuthored,
 		ACL:              acl,
@@ -214,4 +219,13 @@ func gitRemoteOf(def config.AgentDef, given *tools.GitRemotePolicyValue) tools.G
 		return *given
 	}
 	return tools.GitRemoteFor(def.GitRemote)
+}
+
+// workspaceOf is a run's workspace grant: the one given from outside its
+// definition when there is one, else its definition's own.
+func workspaceOf(def config.AgentDef, given *tools.WorkspacePolicyValue) tools.WorkspacePolicyValue {
+	if given != nil {
+		return *given
+	}
+	return tools.WorkspaceFor(def.Workspace)
 }

@@ -65,6 +65,7 @@ func CheckRegisteredAgent(ctx context.Context, cfg *config.Config, st store.Stor
 		ToolModes:        req.ToolModes,
 		ShellCredentials: req.ShellCredentials,
 		GitRemote:        req.GitRemote,
+		Workspace:        req.Workspace,
 		StatementMethods: req.StatementMethods,
 	}, nil)
 }

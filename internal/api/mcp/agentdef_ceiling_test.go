@@ -290,7 +290,7 @@ func TestMCPMemberSession_AnUnreadableRuleSetGrantsNothing(t *testing.T) {
 	}
 }
 
-// The other fields a member may not grant: git remotes, schedule and a2a
+// The other fields a member may not grant: git remotes, workspaces, schedule and a2a
 // authoring scopes, and a history or SQL scope its own rules deny.
 func TestMCPMemberSession_RefusedFieldsItsRulesDoNotCover(t *testing.T) {
 	base := authz.Baselines()[authz.BaselineMember]
@@ -304,6 +304,7 @@ func TestMCPMemberSession_RefusedFieldsItsRulesDoNotCover(t *testing.T) {
 	tool, _, _, member := fyFixture(t, eff)
 	for i, c := range []struct{ field, overlay string }{
 		{"git_remote", `"git_remote":["fetch"]`},
+		{"workspace", `"workspace":{"ops":["read"]}`},
 		{"schedule_def_scopes", `"schedule_def_scopes":["any"]`},
 		{"a2a_agent_def_scopes", `"a2a_agent_def_scopes":["any"]`},
 		{"history_scope", `"history_scope":["tenant"]`},

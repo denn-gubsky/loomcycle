@@ -160,6 +160,10 @@ type Agent struct {
 	// config.AgentDef.GitRemote, RFC FB). Authority, not content: not part
 	// of the content hash.
 	GitRemote []string
+	// Workspace is the workspace grant (see config.AgentDef.Workspace, RFC
+	// GW). nil grants nothing. Authority, not content: not part of the
+	// content hash.
+	Workspace *AgentWorkspace
 	// StatementMethods is which methods a code-js agent may stamp on the
 	// relations it writes (see config.AgentDef.StatementMethods). Authority,
 	// not content: not part of the content hash.
@@ -196,6 +200,30 @@ type AgentInterruptionACL struct {
 	Enabled    bool     `json:"enabled,omitempty"     yaml:"enabled"`
 	Kinds      []string `json:"kinds,omitempty"       yaml:"kinds"`
 	MaxPending int      `json:"max_pending,omitempty" yaml:"max_pending"`
+}
+
+// AgentWorkspace mirrors config.AgentWorkspace locally so this package does
+// not import config. Its keys are checked strictly here, as config checks
+// them in yaml, so a Markdown agent cannot carry a key a later phase adds
+// (share, expose, …) that would be dropped on the way to config.
+type AgentWorkspace struct {
+	Ops    []string `yaml:"ops"`
+	Open   bool     `yaml:"open"`
+	Engine string   `yaml:"engine"`
+}
+
+func (w *AgentWorkspace) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			switch k := n.Content[i].Value; k {
+			case "ops", "open", "engine":
+			default:
+				return fmt.Errorf("workspace: unknown key %q (the block takes: engine, open, ops)", k)
+			}
+		}
+	}
+	type plain AgentWorkspace
+	return n.Decode((*plain)(w))
 }
 
 // Sampling mirrors config.Sampling locally so the agents package stays
@@ -510,6 +538,7 @@ type frontmatter struct {
 	ToolModes             map[string]string          `yaml:"tool_modes"`
 	ShellCredentials      *[]string                  `yaml:"shell_credentials"`
 	GitRemote             []string                   `yaml:"git_remote"`
+	Workspace             *AgentWorkspace            `yaml:"workspace"`
 	StatementMethods      []string                   `yaml:"statement_methods"`
 	Interruption          AgentInterruptionACL       `yaml:"interruption"` // F14: round-trips like channels
 	SystemPromptFile      string                     `yaml:"system_prompt_file"`
@@ -601,6 +630,7 @@ func parseAgent(raw []byte) (*Agent, error) {
 	a.ToolModes = fm.ToolModes
 	a.ShellCredentials = fm.ShellCredentials
 	a.GitRemote = fm.GitRemote
+	a.Workspace = fm.Workspace
 	a.StatementMethods = fm.StatementMethods
 	a.Interruption = fm.Interruption
 	a.SystemPromptFile = fm.SystemPromptFile

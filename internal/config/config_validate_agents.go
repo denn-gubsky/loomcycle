@@ -245,6 +245,7 @@ func validateAgentGrants(c *Config, name string, agent AgentDef) error {
 	c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
 	c.Warnings = append(c.Warnings, shellCredentialWarnings(name, agent, c.Env)...)
 	c.Warnings = append(c.Warnings, gitRemoteWarnings(name, agent, c.Env)...)
+	c.Warnings = append(c.Warnings, workspaceWarnings(name, agent)...)
 	if !c.Decision.Configured() {
 		for _, tool := range agent.Tools {
 			if tool == "Decision" {
@@ -377,6 +378,9 @@ func validateAgentGrants(c *Config, name string, agent AgentDef) error {
 		return fmt.Errorf("agent %q: %w", name, err)
 	}
 	if err := ValidateGitRemote(agent.GitRemote); err != nil {
+		return fmt.Errorf("agent %q: %w", name, err)
+	}
+	if err := ValidateAgentWorkspace(agent.Workspace); err != nil {
 		return fmt.Errorf("agent %q: %w", name, err)
 	}
 	if err := ValidateStatementMethods(agent.Provider, agent.StatementMethods); err != nil {

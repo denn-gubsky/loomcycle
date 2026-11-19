@@ -1902,6 +1902,10 @@ export interface RunSpec {
      *  the child's own `git_remote` was narrowed to, and is narrowed to again
      *  on resume. Absent: the parent had none. */
     git_remote?: Array<'fetch' | 'push'>;
+    /** The parent run's workspace grant at spawn (RFC GW): what the child's
+     *  own `workspace` was narrowed to, and is narrowed to again on resume.
+     *  Absent: the parent had none. */
+    workspace?: AgentWorkspaceGrant;
     /** The override offer the child passes on to its own children: its
      *  parent's, unchanged, so a resume offers what the live child did. Only
      *  a child of the offering run's definition (`def_id`, else `agent_name`)
@@ -6561,6 +6565,17 @@ export interface AgentRouting {
   switch_after_ms?: number;
 }
 
+/** An agent's `workspace:` grant (RFC GW). Any key not listed here is
+ *  refused. */
+export interface AgentWorkspaceGrant {
+  /** The operations the agent may perform in a workspace. */
+  ops?: Array<'read' | 'write' | 'exec'>;
+  /** Whether the agent may open workspaces of its own. */
+  open?: boolean;
+  /** The least isolating engine the agent accepts. Unset = any. */
+  engine?: '' | 'host' | 'container';
+}
+
 export interface AgentDefOverlay {
   provider?: string;
   model?: string;
@@ -6670,6 +6685,12 @@ export interface AgentDefOverlay {
    *  Held to the author's own grant; a sub-agent may perform an operation
    *  only when its parent run also may. */
   git_remote?: Array<'fetch' | 'push'>;
+  /** The agent's workspace grant (RFC GW): which operations it may perform
+   *  in a workspace, whether it may open workspaces of its own, and the least
+   *  isolating engine it accepts. Unset = no workspace access. Held to the
+   *  author's own grant; a sub-agent holds only the operations its parent run
+   *  also holds, opens only when both may, and takes the stricter engine. */
+  workspace?: AgentWorkspaceGrant;
   /** What the agent's runs may do with document statements. `'rule'` (its
    *  code found the relation), `'extractor'` (a model it drives found it) and
    *  `'judge'` (it records the judge's verdicts) are for `provider: 'code-js'`

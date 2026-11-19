@@ -100,7 +100,7 @@ const agentDefDescription = `Author, fork, promote, retire, and inspect agent de
 	`produces the DERIVED layer of agent-authored versions. Tools may be NARROWED ` +
 	`on forks but never WIDENED — operator-blessed root is the permanent capability ceiling. ` +
 	`Every other grant is held to what you hold yourself: memory_scopes, sql_scopes, history_scope, ` +
-	`core_blocks, volumes, channels, interruption, evaluation_scopes, crypto_scopes, git_remote, skills and the *_def_scopes must be within ` +
+	`core_blocks, volumes, channels, interruption, evaluation_scopes, crypto_scopes, git_remote, workspace, skills and the *_def_scopes must be within ` +
 	`your own (a fork may also keep what the forked version has). An unset memory_scopes or sql_scopes takes the ` +
 	`ordinary memory default; any other unset field is judged at its default (the operator's default volume, ` +
 	`the user's history, the question interruption kind, every skill), so set it explicitly when yours is narrower. ` +
@@ -1277,6 +1277,9 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	if err := config.ValidateGitRemote(ov.GitRemote); err != nil {
 		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
+	if err := config.ValidateAgentWorkspace(ov.Workspace); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
 	// Left as written ("none" or "default") so a fork can tell "say nothing"
 	// from "ask for the default"; buildDefinition turns it into the stored
 	// form.
@@ -1664,6 +1667,11 @@ type mergedDef struct {
 	// the author's own grant by ceilGitRemote, and a fork that does not send
 	// it keeps its parent's.
 	GitRemote []string `json:"git_remote,omitempty"`
+	// Workspace is the workspace grant (config.AgentDef.Workspace, RFC GW).
+	// nil grants nothing. Authority, not content: excluded from
+	// content_sha256, held to the author's own grant by ceilWorkspace, and a
+	// fork that does not send it keeps its parent's.
+	Workspace *config.AgentWorkspace `json:"workspace,omitempty"`
 	// StatementMethods is which methods a code-js agent may stamp on the
 	// relations it writes (config.AgentDef.StatementMethods). Absent and []
 	// both mean none. Authority, not content: excluded from content_sha256,
@@ -1914,6 +1922,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	if ov.GitRemote != nil {
 		d.GitRemote = ov.GitRemote
 	}
+	if ov.Workspace != nil {
+		d.Workspace = ov.Workspace.Clone()
+	}
 	if ov.StatementMethods != nil {
 		d.StatementMethods = ov.StatementMethods
 	}
@@ -2010,6 +2021,7 @@ var unhashedCapabilityTags = []string{
 	"tool_modes", // RFC GL: a read-only tool grant is authority, not content
 	"volume_def_scopes",
 	"volumes",
+	"workspace", // RFC GW: the workspace grant is authority, not content
 }
 
 // unhashedCapabilityFieldsMatch reports whether two definitions agree on every
@@ -2122,6 +2134,9 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		// RFC FB: a fork of a static agent keeps its Git network grant; it is
 		// authority the operator gave, not something the fork asks for.
 		GitRemote: s.GitRemote,
+		// RFC GW: a fork of a static agent keeps its workspace grant, as it
+		// keeps its Git network grant.
+		Workspace: s.Workspace.Clone(),
 		// A fork of a static code-js agent keeps the methods the operator let
 		// it stamp.
 		StatementMethods: s.StatementMethods,

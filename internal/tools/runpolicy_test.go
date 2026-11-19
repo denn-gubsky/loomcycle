@@ -211,6 +211,21 @@ var narrowAtMost = map[string]struct {
 		widerChild:    RunPolicy{GitRemote: GitRemotePolicyValue{Fetch: true, Push: true}},
 		widerOfParent: RunPolicy{GitRemote: GitRemotePolicyValue{Fetch: true}},
 	},
+	"Workspace": {
+		// Zero is "no workspace access", not "unbounded", as for GitRemote.
+		// The engine is a requirement: a child that grants anything requires
+		// at least what its parent requires.
+		atMost: func(c, p RunPolicy) bool {
+			cw, pw := c.Workspace, p.Workspace
+			if (cw.Read && !pw.Read) || (cw.Write && !pw.Write) || (cw.Exec && !pw.Exec) || (cw.Open && !pw.Open) {
+				return false
+			}
+			return !cw.Grants() || workspaceEngineRank(cw.Engine) >= workspaceEngineRank(pw.Engine)
+		},
+		wideOwn:       RunPolicy{Workspace: WorkspacePolicyValue{Read: true, Write: true, Exec: true, Open: true}},
+		widerChild:    RunPolicy{Workspace: WorkspacePolicyValue{Read: true, Write: true, Exec: true, Open: true}},
+		widerOfParent: RunPolicy{Workspace: WorkspacePolicyValue{Read: true, Engine: "container"}},
+	},
 	"FanoutCap": {
 		// A capped parent's child is capped no wider (0 would hand the
 		// width to a by-name lookup); an uncapped parent bounds nothing.
