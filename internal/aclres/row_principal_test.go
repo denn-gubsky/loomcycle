@@ -18,7 +18,7 @@ func TestRowPrincipal_TakesTheClassOfTheUserRow(t *testing.T) {
 func TestIsOperatorClass_OnlyAnUnconfinedTenantOperatorOrAdmin(t *testing.T) {
 	op := ClassKey(auth.Principal{Subject: "o", Scopes: []string{auth.ScopeTenant}})
 	confined := op + runPlaneSuffix
-	for key, want := range map[string]bool{"admin": true, op: true, confined: false, "member": false, "isolated": false, "authmanager": false, "": false} {
+	for key, want := range map[string]bool{"admin": true, op: true, confined: false, "member": false, "isolated": false, "authmanager": false, "workerattacher": false, "": false} {
 		if got := IsOperatorClass(key); got != want {
 			t.Errorf("IsOperatorClass(%q) = %v, want %v", key, got, want)
 		}

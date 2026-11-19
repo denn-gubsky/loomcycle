@@ -65,6 +65,8 @@ func eqClasses() []eqClass {
 		// A scraper's credential calls no tool: the gate and its baseline
 		// both refuse every one.
 		{name: "metrics-reader", scopes: []string{auth.ScopeMetricsRead}, maximal: true},
+		// Nor does a workspace worker's.
+		{name: "worker-attacher", scopes: []string{auth.ScopeWorkersAttach}, maximal: true},
 	}
 }
 
@@ -162,7 +164,7 @@ func TestACLBaseline_MCPToolsMatchTheLegacyGatePerClass(t *testing.T) {
 		// An isolated run-plane token reaches no meta-tool: its class list
 		// (self-service) and the run plane share none. A metrics reader
 		// reaches none by design.
-		if c.name != "isolated+runplane" && c.name != "metrics-reader" && admitted[c.name] == 0 {
+		if c.name != "isolated+runplane" && c.name != "metrics-reader" && c.name != "worker-attacher" && admitted[c.name] == 0 {
 			t.Errorf("class %s was admitted to no tool; the fixture is wrong", c.name)
 		}
 	}
@@ -171,5 +173,8 @@ func TestACLBaseline_MCPToolsMatchTheLegacyGatePerClass(t *testing.T) {
 	}
 	if admitted["metrics-reader"] != 0 {
 		t.Errorf("a metrics:read credential was admitted to %d tools, want none", admitted["metrics-reader"])
+	}
+	if admitted["worker-attacher"] != 0 {
+		t.Errorf("a workers:attach credential was admitted to %d tools, want none", admitted["worker-attacher"])
 	}
 }

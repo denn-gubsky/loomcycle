@@ -42,6 +42,10 @@ func TestClass(t *testing.T) {
 		"tenant":   {auth.Principal{Scopes: []string{auth.ScopeTenant}}, "tenant"},
 		"isolated": {auth.Principal{Scopes: []string{auth.ScopeUser}}, "isolated"},
 		"member":   {member("alice"), "member"},
+		// Before admin: a worker credential is held to its own list even if
+		// a scope set slipped past ValidateScopeSet.
+		"worker":       {auth.Principal{Scopes: []string{auth.ScopeWorkersAttach}}, "workerattacher"},
+		"admin+worker": {auth.Principal{Scopes: []string{auth.ScopeAdmin, auth.ScopeWorkersAttach}}, "workerattacher"},
 	} {
 		if got := Class(c.p); got != c.want {
 			t.Errorf("%s: Class = %q, want %q", name, got, c.want)

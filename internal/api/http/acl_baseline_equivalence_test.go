@@ -85,6 +85,8 @@ func eqClasses() []eqClass {
 		{name: "auth-manager", scopes: []string{auth.ScopeAuthManage}, maximal: true},
 		{name: "scim-provisioner", scopes: []string{auth.ScopeSCIMProvision}, maximal: true},
 		{name: "metrics-reader", scopes: []string{auth.ScopeMetricsRead}, maximal: true},
+		// A workspace worker's credential reaches no route by design.
+		{name: "worker-attacher", scopes: []string{auth.ScopeWorkersAttach}, maximal: true},
 	}
 }
 
@@ -382,9 +384,12 @@ func TestACLBaseline_HTTPRoutesMatchTheLegacyGatePerClass(t *testing.T) {
 	// The matrix must exercise something: every class is admitted somewhere,
 	// and the admin classes everywhere they can be.
 	for _, c := range classes {
-		if admitted[c.name] == 0 {
+		if c.name != "worker-attacher" && admitted[c.name] == 0 {
 			t.Errorf("class %s was admitted to no route; the fixture is not authenticating it", c.name)
 		}
+	}
+	if admitted["worker-attacher"] != 0 {
+		t.Errorf("a workers:attach credential was admitted to %d routes, want none", admitted["worker-attacher"])
 	}
 	if admitted["admin"] < len(routes)/2 || admitted["legacy"] < len(routes)/2 {
 		t.Errorf("admin admitted to %d and legacy to %d of %d routes; the fixture is wrong", admitted["admin"], admitted["legacy"], len(routes))

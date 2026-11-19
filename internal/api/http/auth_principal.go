@@ -166,6 +166,11 @@ func scopeGate(p auth.Principal, rt authz.Route, method, path string) (required 
 	if auth.IsMetricsReader(p) {
 		return auth.ScopeMetricsRead, metricsScrapeRoute(method, path)
 	}
+	// A workspace worker's credential reaches no route at all: it attaches
+	// to the worker endpoint, which is not on this mux (RFC GW Q2).
+	if auth.IsWorkerAttacher(p) {
+		return auth.ScopeWorkersAttach, false
+	}
 	// RFC FA P6: a SCIM credential reaches /scim/v2 and nothing else, and
 	// /scim/v2 is reserved to it — an admin or tenant token is refused
 	// there too: the SCIM tenant is the credential's own, and no other

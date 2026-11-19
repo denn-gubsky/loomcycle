@@ -27,6 +27,13 @@ const (
 	// Prometheus scrape's question and nothing else. The scope gate keeps it
 	// on GET /metrics; this list is what lets it through under enforce.
 	BaselineMetricsReader = "builtin:metrics-reader"
+	// BaselineWorkerAttacher is a workers:attach credential's list: a deny
+	// of every verb on every type. The token reaches no API surface (the
+	// scope gate refuses it everywhere, and the worker endpoint decides its
+	// attach by auth.WorkerAttachment, not by this list), and a deny rather
+	// than an empty allow means no list an operator binds to the worker's
+	// subject can open one either.
+	BaselineWorkerAttacher = "builtin:worker-attacher"
 )
 
 // BuiltinPrefix marks a baseline name.
@@ -46,6 +53,15 @@ func allowAll(types ...string) []Rule {
 			continue
 		}
 		rules = append(rules, Rule{Effect: Allow, Actions: verbs, Resources: []string{t + ":*"}})
+	}
+	return rules
+}
+
+// denyAll is allowAll with every rule a deny.
+func denyAll(types ...string) []Rule {
+	rules := allowAll(types...)
+	for i := range rules {
+		rules[i].Effect = Deny
 	}
 	return rules
 }
@@ -233,6 +249,9 @@ func Baselines() map[string]ACL {
 			Rules: []Rule{
 				{Effect: Allow, Actions: []string{"read"}, Resources: []string{"runtime:metrics"}},
 			}},
+		BaselineWorkerAttacher: {Name: BaselineWorkerAttacher,
+			Description: "workers:attach — a workspace worker's credential: nothing on any API surface",
+			Rules:       denyAll(everyType()...)},
 		BaselineRunPlane: {Name: BaselineRunPlane, Description: "a token limited to certain agents (RFC EF): the run plane only",
 			Rules: []Rule{
 				{Effect: Deny, Actions: []string{"author", "retire"}, Resources: []string{"def:*"}},

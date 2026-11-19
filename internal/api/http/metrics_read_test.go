@@ -169,7 +169,7 @@ func TestMetricsListenerHandler_ServesOnlyTheScrapeWithoutAuth(t *testing.T) {
 // (tenant, subject) is not that member's token: the tenant operator's member
 // surface neither lists, revokes nor cap-retires it.
 func TestUserTokens_LeaveSinglePurposeCredentialsSharingTheSubject(t *testing.T) {
-	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeAuthManage, auth.ScopeSCIMProvision} {
+	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeAuthManage, auth.ScopeSCIMProvision, auth.ScopeWorkersAttach} {
 		t.Run(scope, func(t *testing.T) {
 			s, st := tokenAuthServer(t, "legacy")
 			ctx := context.Background()
@@ -214,7 +214,7 @@ func TestUserTokens_LeaveSinglePurposeCredentialsSharingTheSubject(t *testing.T)
 // The machine-credential test reads one predicate, so a scope added to the
 // single-purpose list is covered by every member surface at once.
 func TestHoldsSinglePurposeScope_NamesEachConfinedCredential(t *testing.T) {
-	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeAuthManage, auth.ScopeSCIMProvision} {
+	for _, scope := range []string{auth.ScopeMetricsRead, auth.ScopeAuthManage, auth.ScopeSCIMProvision, auth.ScopeWorkersAttach} {
 		if !auth.HoldsSinglePurposeScope([]string{scope}) {
 			t.Errorf("%s is not a single-purpose scope", scope)
 		}

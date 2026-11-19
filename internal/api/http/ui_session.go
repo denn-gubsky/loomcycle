@@ -396,6 +396,15 @@ func (s *Server) handleUILogin(w http.ResponseWriter, r *http.Request) {
 			"a "+auth.ScopeMetricsRead+" token reaches only GET /metrics; it does not sign in to the Web UI")
 		return
 	}
+	// Nor is a workspace worker's: its token lives on a machine that runs
+	// model-chosen commands, and a session would be a cookie-borne copy.
+	if auth.IsWorkerAttacher(p) {
+		s.recordAuthEvent(audit.Event{Action: "auth_login_failed", AuthGate: cfgGate.Name, AuthReason: "worker_credential",
+			ActorTenant: p.TenantID, ActorSubject: p.Subject, SourceAddr: s.clientSource(r)})
+		writeJSONError(w, http.StatusForbidden, "worker_credential_refused",
+			"a "+auth.ScopeWorkersAttach+" token only attaches a workspace worker; it does not sign in to the Web UI")
+		return
+	}
 	// RFC FA §4: in strict mode a person signs in through a gate; a
 	// hand-minted per-user token is not a way in, only a gate-issued one.
 	if s.uiRefusesUserToken(r.Context(), p) {
