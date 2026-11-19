@@ -139,6 +139,20 @@ func (d *Document) planChangeProposal(ctx context.Context, key sqlmem.ScopeKey, 
 	return a.changes, nil, nil
 }
 
+// proposalResolveErr is the plan's refusal of a change a proposal stands for. The
+// proposal's checks ran on their own read of the ontology, the change is resolved
+// against the plan's earlier one, and an edit between the two can make it refuse the
+// entry or a move's parent. For a proposal item that is invalid_request naming the
+// proposal, as the accept would refuse it: entry_not_found means only "not an open
+// proposal". A direct change's refusal is returned as it is.
+func proposalResolveErr(it planItem, err error) error {
+	if it.proposal == "" || !(errors.Is(err, connector.ErrOntologyPlanNotFound) || errors.Is(err, connector.ErrOntologyPlanInvalid)) {
+		return err
+	}
+	return connector.WithMessage(connector.ErrOntologyPlanInvalid, "changes["+strconv.Itoa(it.index)+"]: proposal "+
+		strconv.Quote(it.proposal)+" cannot be accepted as it stands: "+err.Error())
+}
+
 // addProposalPlan is an add proposal's plan: a new entry, which nothing rests on.
 func addProposalPlan(p memrank.OntologyProposal) *connector.OntologyPlannedChange {
 	section := p.Section

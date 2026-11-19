@@ -177,6 +177,50 @@ func TestOntologyPlan_NotAProposalIsRefused(t *testing.T) {
 	}
 }
 
+// TestOntologyPlan_ProposalRefusedByThePlanIsInvalidNotNotFound (#2772 review): when a
+// proposal's checks pass on their own read but its composed change is refused against
+// the plan's earlier read — here the target is retired in that read and brought back
+// before the checks run — the refusal is invalid_request naming the proposal, never
+// entry_not_found, which means only "not an open proposal".
+func TestOntologyPlan_ProposalRefusedByThePlanIsInvalidNotNotFound(t *testing.T) {
+	f := newAcceptFixture(t)
+	filedUnder := f.chunk("filed_under")
+	id := f.file(map[string]any{"change": "retire", "entry": filedUnder})
+	f.retire("filed_under")
+	f.d.duringAcceptChecks = func() {
+		f.d.duringAcceptChecks = nil
+		if why := f.setStatus(f.ctx, filedUnder, ""); why != "" {
+			t.Errorf("bring filed_under back: %s", why)
+		}
+	}
+	_, err := f.d.PlanOntology(f.ctx, []connector.OntologyChange{proposalChange(id)})
+	if !errors.Is(err, connector.ErrOntologyPlanInvalid) || errors.Is(err, connector.ErrOntologyPlanNotFound) ||
+		!strings.Contains(err.Error(), id) {
+		t.Errorf("err = %v (code %q), want invalid_request naming proposal %s", err, connector.OntologyPlanCode(err), id)
+	}
+}
+
+// TestOntologyPlan_ProposalItemsRefusalIsInvalid: the mapping on its own — a not-found
+// or invalid refusal of a proposal's change is invalid_request naming the proposal; a
+// direct change's refusal, and a fault, pass through unchanged.
+func TestOntologyPlan_ProposalItemsRefusalIsInvalid(t *testing.T) {
+	notFound := connector.WithMessage(connector.ErrOntologyPlanNotFound, "changes[0]: \"c1\" is not an in-force entry")
+	invalid := connector.WithMessage(connector.ErrOntologyPlanInvalid, "changes[0]: parent is not allowed")
+	for _, err := range []error{notFound, invalid} {
+		got := proposalResolveErr(planItem{index: 0, proposal: "p1"}, err)
+		if connector.OntologyPlanCode(got) != "invalid_request" || !strings.Contains(got.Error(), `proposal "p1"`) {
+			t.Errorf("proposal item, %v → %v (code %q), want invalid_request naming p1", err, got, connector.OntologyPlanCode(got))
+		}
+		if got := proposalResolveErr(planItem{index: 0}, err); got != err {
+			t.Errorf("direct change, %v → %v, want it unchanged", err, got)
+		}
+	}
+	fault := errors.New("disk")
+	if got := proposalResolveErr(planItem{proposal: "p1"}, fault); got != fault {
+		t.Errorf("a fault → %v, want it unchanged", got)
+	}
+}
+
 // TestOntologyPlan_ProposalOnPostgres: the postgres twin — a proposal plans as the
 // direct change on that tier, and a rejected one is refused.
 func TestOntologyPlan_ProposalOnPostgres(t *testing.T) {

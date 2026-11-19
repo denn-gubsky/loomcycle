@@ -160,7 +160,7 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 		p, err := d.resolvePlanChange(ctx, key, mscope, it.index, it.change, before, rows, entries, ov)
 		if err != nil {
-			return out, err
+			return out, proposalResolveErr(it, err)
 		}
 		p.proposal = it.proposal
 		planned = append(planned, p)
