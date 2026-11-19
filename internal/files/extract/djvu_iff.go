@@ -140,6 +140,14 @@ func (w *djvuWalker) scan(off, end int64, depth int, leaf func(c djvuChunk) erro
 	return nil
 }
 
+// DjVuPageCount is the page count of the DjVu document in r, from its
+// container alone: no page is decoded and no helper runs. A caller that
+// reserves budget for the pages before an extraction counts them with it.
+func DjVuPageCount(r io.ReaderAt, size int64) (int, error) {
+	info, err := walkDjVu(r, size)
+	return info.pages, err
+}
+
 // walkDjVu reads the container of the DjVu file in r.
 func walkDjVu(r io.ReaderAt, size int64) (djvuInfo, error) {
 	var head [16]byte
