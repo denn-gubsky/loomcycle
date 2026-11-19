@@ -272,4 +272,25 @@ func TestOntologyEdit_FingerprintRefusedOnPostgres(t *testing.T) {
 	if r := f.change(f.ctx, "update_chunk", f.chunk("Provision"), map[string]any{"title": "Clause"}); r.IsError {
 		t.Errorf("rename of an entry nothing rests on: %s", r.Text)
 	}
+	// The #2766 review's SQL on this tier: the structure hash sees a re-parent, and
+	// move_chunk's conditional write applies a plain move and refuses one whose parent
+	// changed after its checks.
+	before := ontologyFingerprintNow(t, f.d, f.ctx)
+	if r := f.change(f.ctx, "move_chunk", f.chunk("Clause"), map[string]any{"new_parent_id": f.chunk("event")}); r.IsError {
+		t.Fatalf("move of an entry nothing rests on: %s", r.Text)
+	}
+	if ontologyFingerprintNow(t, f.d, f.ctx) == before {
+		t.Error("a move left the fingerprint as it was")
+	}
+	key := mustTenantKey(t, f.d, f.ctx)
+	event := f.chunk("event")
+	f.d.beforeMoveWrite = func() {
+		f.d.beforeMoveWrite = nil
+		if err := f.d.exec(f.ctx, key, `UPDATE chunks SET parent_id = ? WHERE id = ?`, f.chunk("Document"), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r := f.change(f.ctx, "move_chunk", event, map[string]any{"new_parent_id": f.chunk("Memorandum")}); !r.IsError {
+		t.Errorf("a move whose parent changed after its checks applied on postgres: %s", r.Text)
+	}
 }
