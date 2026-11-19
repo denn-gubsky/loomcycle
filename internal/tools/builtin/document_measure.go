@@ -179,6 +179,9 @@ type seriesPlan struct {
 	// period length, the periods they fall in.
 	restrictedAt     []int64
 	restrictedStarts map[string]map[int64]bool
+	// unplaced is, per scheme chunk and period start, the unplaced things the
+	// current state dates in it (sorted): the queue growth hands to grouping.
+	unplaced map[string]map[int64][]string
 }
 
 // SeriesReport is the series stage's part of node_stats' answer.
@@ -431,6 +434,13 @@ func (sp *seriesPlan) schemeRows(ss *seriesScheme, p *nodeStatsPlan, dates map[s
 				unplaced = append(unplaced, id)
 			}
 		}
+		if sp.unplaced == nil {
+			sp.unplaced = map[string]map[int64][]string{}
+		}
+		if sp.unplaced[ss.s.ChunkID] == nil {
+			sp.unplaced[ss.s.ChunkID] = map[int64][]string{}
+		}
+		sp.unplaced[ss.s.ChunkID][start] = unplaced
 		k := pointKey{measure: measureUnplaced, node: ss.s.ChunkID, period: ss.period, start: start}
 		fb := fallbackShare(unplaced, dates)
 		sp.readSH[k] = ss.basisHash[start]

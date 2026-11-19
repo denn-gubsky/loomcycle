@@ -4885,8 +4885,13 @@ export type DocumentToolInput = {
    *  placement, and its folders. Off by default. */
   with_memberships?: boolean;
   /** node_stats: "report" (the default) lists each node's status and writes
-   *  nothing; "compute" recomputes the stale and missing nodes. */
-  mode?: "report" | "compute";
+   *  nothing; "compute" recomputes the stale and missing nodes; "growth" reads
+   *  the stored series: concepts ranked by recent growth, quiet nodes, and each
+   *  scheme's unplaced periods rising first, writing nothing. */
+  mode?: "report" | "compute" | "growth";
+  /** node_stats mode growth: the periods counted as recent (default 6, at most
+   *  120); a node with members but none in them is quiet. */
+  quiet_periods?: number;
   /** node_stats / measure: only this scheme's concepts (measure unplaced: only
    *  this scheme). */
   scheme?: string;
