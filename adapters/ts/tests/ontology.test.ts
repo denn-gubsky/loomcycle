@@ -2,7 +2,7 @@
 // POST /v1/_ontology/subjects/principal.
 import { describe, expect, it } from "vitest";
 
-import { LoomcycleError } from "../src/index.js";
+import { LoomcycleError, SessionBusyError } from "../src/index.js";
 import { jsonResponse, makeClient } from "./helpers.js";
 
 const result = {
@@ -151,5 +151,29 @@ describe("planOntology", () => {
     expect(err).toBeInstanceOf(LoomcycleError);
     expect((err as LoomcycleError).status).toBe(404);
     expect((err as LoomcycleError).code).toBe("entry_not_found");
+  });
+});
+
+describe("a plan's refusal of a destructive ontology change", () => {
+  it("a 409 plan_required naming a class Session is not a SessionBusyError", async () => {
+    const { client } = makeClient([
+      jsonResponse(
+        {
+          code: "plan_required",
+          error:
+            'update_chunk: plan_required: something rests on what this changes: rename of class "Session" (typed_documents 2 stale); it needs the fingerprint of a plan of the change (plan_fingerprint). Nothing was changed.',
+          fingerprint: "ab12",
+          tool: "Document",
+        },
+        409,
+      ),
+    ]);
+    const err = await client
+      .document({ op: "update_chunk", scope: "tenant", id: "c1", revision: 2, title: "Sitting" })
+      .catch((x: unknown) => x);
+    expect(err).not.toBeInstanceOf(SessionBusyError);
+    expect(err).toBeInstanceOf(LoomcycleError);
+    expect((err as LoomcycleError).code).toBe("plan_required");
+    expect((err as LoomcycleError).status).toBe(409);
   });
 });
