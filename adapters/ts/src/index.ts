@@ -597,6 +597,7 @@ export type {
   // Inline code-js agent ingestion (v0.19.0, RFC J)
   AgentDefOverlay,
   AgentRouting,
+  AgentWorkspaceGrant,
   AgentChannelACL,
   AgentInterruptionACL,
   AgentDecision,

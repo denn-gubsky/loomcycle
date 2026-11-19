@@ -529,6 +529,8 @@ interface AgentDefBody {
   shell_credentials?: string[];
   // RFC FB: absent and [] both mean no Git network operation.
   git_remote?: string[];
+  // RFC GW: absent = no workspace access.
+  workspace?: { ops?: string[]; open?: boolean; engine?: string };
   // Only a code-js agent holds it; absent and [] both mean none.
   statement_methods?: string[];
   volumes?: string[];
@@ -611,6 +613,17 @@ function renderAgentDefinition(row: DefRow) {
   );
 }
 
+// workspaceGrantLines renders a workspace grant as the list the grants table
+// shows; undefined when it grants nothing, so an agent without one looks as
+// it did before.
+function workspaceGrantLines(w: AgentDefBody["workspace"]): string[] | undefined {
+  if (!w || (!(w.ops && w.ops.length) && !w.open)) return undefined;
+  const out = [...(w.ops ?? [])];
+  if (w.open) out.push("open");
+  if (w.engine) out.push(`engine: ${w.engine}`);
+  return out;
+}
+
 // AgentGrants answers "what is this agent allowed to reach?" — the question the
 // Library exists for and did not answer. Only non-empty gates render, so an
 // agent with none looks exactly as it did before.
@@ -624,6 +637,7 @@ function AgentGrants({ body }: { body: AgentDefBody }) {
     ["tool_modes", body.tool_modes && Object.entries(body.tool_modes).map(([tool, mode]) => `${tool}: ${mode}`)],
     ["shell_credentials", body.shell_credentials],
     ["git_remote", body.git_remote],
+    ["workspace", workspaceGrantLines(body.workspace)],
     ["statement_methods", body.statement_methods],
     ["volumes", body.volumes],
     ["agent_def_scopes", body.agent_def_scopes],
