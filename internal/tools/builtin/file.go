@@ -85,6 +85,9 @@ type File struct {
 	// DiagramCommand is LOOMCYCLE_RENDER_DIAGRAM_COMMAND, the Mermaid
 	// renderer here; empty is convert.DefaultDiagramCommand (merman-cli).
 	DiagramCommand string
+	// unpackLimits overrides op=unpack's bounds, for tests; nil is
+	// defaultUnpackLimits.
+	unpackLimits *unpackLimits
 }
 
 func (f *File) Name() string { return FileToolName }
@@ -101,7 +104,8 @@ func (f *File) Description() string {
 		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost; a VTT or SRT caption file becomes a timed transcript), " +
 		"transcribe (turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model, and return an excerpt; dry_run says how many minutes and what it would cost), " +
 		"import (build a Document from such a Markdown file, its pictures attached as image chunks), " +
-		"render (write a Document you may read, or a Markdown or HTML file, as a file to send: pdf, docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import). " +
+		"render (write a Document you may read, or a Markdown or HTML file, as a file to send: pdf, docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import), " +
+		"unpack (copy the files of a ZIP or RAR archive into volume:inbox:unpacked/<archive>/, or a read-write volume folder of yours with to, keeping its folders; by default only what extract reads and archives inside it (listed, not opened), all: true for every file; dry_run lists without writing; extract each file afterwards). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, or `volume:path` for your default volume; a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
 }
@@ -110,10 +114,10 @@ func (f *File) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render"]},
-			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox. render: a Markdown or HTML file to render instead of a document (its first # heading is the title)."},
+			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render", "unpack"]},
+			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; unpack: the ZIP or RAR archive; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox. render: a Markdown or HTML file to render instead of a document (its first # heading is the title)."},
 			"from":      {"type": "string", "description": "keep: the inbox file to copy. upload: the file to send, in the inbox or a volume you can Read."},
-			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name). render: the file to write in one of your read-write volumes (needs the Write tool); default volume:inbox:rendered/<title>.<format>."},
+			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name). render: the file to write in one of your read-write volumes (needs the Write tool); default volume:inbox:rendered/<title>.<format>. unpack: an existing folder of one of your read-write volumes to unpack into (needs the Write tool); default volume:inbox:unpacked/<archive>/."},
 			"overwrite": {"type": "boolean", "description": "keep, download, render: replace an existing file at to. Default false."},
 			"url":       {"type": "string", "description": "download, upload: the absolute http(s) URL. Its host must be on the HTTP allowlist."},
 			"headers":   {"type": "object", "additionalProperties": {"type": "string"}, "description": "download, upload: extra request headers. No credentials: an authorised URL carries its own."},
@@ -123,6 +127,7 @@ func (f *File) InputSchema() json.RawMessage {
 			"ranged":    {"type": "boolean", "description": "upload: send in chunks with Content-Range, as an upload session (Microsoft Graph) takes it. Default false: one request."},
 			"chunk_bytes": {"type": "integer", "minimum": 1, "description": "upload with ranged: chunk size, rounded down to a multiple of 327680 (320 KiB). Default 3932160 (3.75 MiB)."},
 			"recursive": {"type": "boolean", "description": "ls: list subfolders too."},
+			"all":       {"type": "boolean", "description": "unpack: write every regular file of the archive. Default false: only the formats extract reads (documents, books, DjVu, images, captions, text) and archives inside it."},
 			"prefix":    {"type": "string", "description": "clear: only this folder of the inbox (e.g. documents, web/example.com). Omit to empty the whole inbox."},
 			"images":        {"type": "boolean", "description": "extract: keep the document's pictures as files and link them from the Markdown. Default true."},
 			"max_rows":      {"type": "integer", "minimum": 0, "description": "extract: the rows of each spreadsheet or CSV table to keep, header included. Default 1000, at most 10000."},
@@ -137,7 +142,7 @@ func (f *File) InputSchema() json.RawMessage {
 			"vocabulary":    {"type": "string", "description": "transcribe: names and terms the recording uses, to help the model spell them (one line, at most 400 characters). Default: the operator's."},
 			"diarize":       {"type": "boolean", "description": "transcribe: label who speaks (Speaker 1, Speaker 2…), where the model can. Default: the operator's setting."},
 			"timestamps":    {"type": "string", "enum": ["segments", "none"], "description": "transcribe: segments (default) puts each passage's start time before it; none leaves times out."},
-			"dry_run":       {"type": "boolean", "description": "extract: say what OCR would read and cost (pages, calls, model, estimated tokens and cost) without running it or writing anything. transcribe: say how many minutes and requests it would take and what it would cost, without sending anything."},
+			"dry_run":       {"type": "boolean", "description": "extract: say what OCR would read and cost (pages, calls, model, estimated tokens and cost) without running it or writing anything. transcribe: say how many minutes and requests it would take and what it would cost, without sending anything. unpack: list what would be written and skipped, and why, writing nothing."},
 			"title":         {"type": "string", "description": "import: the document's title. Default: the Markdown's first heading."},
 			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes. render: the document to render, by its Path-tree name."},
 			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import, render: the document store. Default user."},
@@ -182,6 +187,8 @@ type fileInput struct {
 	Overwrite bool   `json:"overwrite"`
 	Recursive bool   `json:"recursive"`
 	Prefix    string `json:"prefix"`
+	// All makes unpack write every regular file, not only readable ones.
+	All bool `json:"all"`
 	// extract
 	Images       *bool `json:"images"`
 	MaxRows      int   `json:"max_rows"`
@@ -258,10 +265,12 @@ func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return f.importDoc(ctx, in)
 	case "render":
 		return f.renderOp(ctx, in)
+	case "unpack":
+		return f.unpack(ctx, in)
 	case "":
-		return errValidation("missing required field: op", "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import, render."), nil
+		return errValidation("missing required field: op", "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack."), nil
 	}
-	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import, render."), nil
+	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack."), nil
 }
 
 // fileRef parses a path argument: a volume reference, or a bare path that
