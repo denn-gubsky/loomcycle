@@ -149,6 +149,9 @@ type Options struct {
 	rtfMaxPicture int
 	// rtfMaxDecoded overrides the cap on an RTF document's decoded text.
 	rtfMaxDecoded int64
+	// docMaxInferText overrides the cap on what a DOC document's heading
+	// inference holds, for tests.
+	docMaxInferText int
 	// palmMaxText overrides the cap on a MOBI or PalmDOC book's
 	// decompressed text, for tests.
 	palmMaxText int64

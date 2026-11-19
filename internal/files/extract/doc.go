@@ -63,6 +63,10 @@ const (
 	maxDOCInferParas = 100_000
 	maxDOCInferText  = 16 << 20
 	maxDOCInferRun   = 2048
+	// docInferRunCost is what one formatting run is charged against
+	// maxDOCInferText beside its text: its fmtRun and its share of the
+	// slice holding it.
+	docInferRunCost = 64
 	// maxDOCProps caps a property set's properties, maxDOCPropString one
 	// string value.
 	maxDOCProps      = 1000
@@ -106,7 +110,10 @@ func (DOC) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, op
 	d := &docReader{
 		ctx: ctx, c: c, wd: wd, rep: &rep,
 		w: newWriter(ctx, sink, opts), title: title(opts.Name, "Document"),
-		pap: docPageCache{}, chp: docPageCache{},
+		pap: docPageCache{}, chp: docPageCache{}, maxInferText: maxDOCInferText,
+	}
+	if opts.docMaxInferText > 0 {
+		d.maxInferText = opts.docMaxInferText
 	}
 	if err := d.fib(); err != nil {
 		return rep, err
@@ -185,6 +192,7 @@ type docReader struct {
 	inferring             bool
 	inferParas            []inferPara
 	inferText             int
+	maxInferText          int
 	pictures, deepFields  int
 	droppedNotes, cutHead int
 	styleCache            map[int]runFmt

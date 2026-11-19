@@ -64,6 +64,9 @@ type docTestSpec struct {
 	// samePlace stores only the first piece's text: every piece is read
 	// from where the first one is, as a hostile piece table may say.
 	samePlace bool
+	// alternateBold gives the text character properties (a CHPX bin
+	// table and its pages) that turn bold on and off at every character.
+	alternateBold bool
 	extra     []cfbStreamSpec
 }
 
@@ -143,9 +146,45 @@ func (s docTestSpec) cfb(t testing.TB) *testCFB {
 	clx = append(clx, plc...)
 	binary.LittleEndian.PutUint32(wd[154+8*33:], 0)
 	binary.LittleEndian.PutUint32(wd[154+8*33+4:], uint32(len(clx)))
+	table := clx
+	if s.alternateBold {
+		// The text is one 8-bit piece from byte 1024; each FKP page holds
+		// 101 one-character runs, every other one bold (sprmCFBold 1).
+		textEnd := uint32(len(wd))
+		var aFC, pns []uint32
+		for len(wd)%512 != 0 {
+			wd = append(wd, 0)
+		}
+		for fc := uint32(1024); fc < textEnd; {
+			crun := min(101, int(textEnd-fc))
+			page := make([]byte, 512)
+			for j := 0; j <= crun; j++ {
+				binary.LittleEndian.PutUint32(page[4*j:], fc+uint32(j))
+			}
+			for j := 0; j < crun; j++ {
+				if j%2 == 1 {
+					page[4*(crun+1)+j] = 250
+				}
+			}
+			copy(page[500:], []byte{3, 0x35, 0x08, 1})
+			page[511] = byte(crun)
+			aFC = append(aFC, fc)
+			pns = append(pns, uint32(len(wd)/512))
+			wd = append(wd, page...)
+			fc += uint32(crun)
+		}
+		aFC = append(aFC, textEnd)
+		bte := []byte{}
+		for _, v := range append(aFC, pns...) {
+			bte = binary.LittleEndian.AppendUint32(bte, v)
+		}
+		binary.LittleEndian.PutUint32(wd[154+8*12:], uint32(len(table)))
+		binary.LittleEndian.PutUint32(wd[154+8*12+4:], uint32(len(bte)))
+		table = append(append([]byte(nil), table...), bte...)
+	}
 	streams := []cfbStreamSpec{{"WordDocument", wd}}
 	if !s.noTable {
-		streams = append(streams, cfbStreamSpec{"1Table", clx})
+		streams = append(streams, cfbStreamSpec{"1Table", table})
 	}
 	streams = append(streams, s.extra...)
 	return buildCFB(t, streams...)

@@ -695,3 +695,36 @@ func TestCFB_ChainLoopRefusalIsCheap(t *testing.T) {
 		return err
 	})
 }
+
+// Heading inference keeps each paragraph's runs of one formatting. A
+// document whose bold turns on and off at every character makes a run per
+// character, each costing far more than its one byte of text: the cap on
+// what inference holds counts the runs too, so such a document ends the
+// pass (no headings inferred) rather than holding a run per byte. The cap
+// is lowered here so a small file reaches it.
+func TestDOC_InferenceRunsCountAgainstItsCap(t *testing.T) {
+	text := strings.Repeat(strings.Repeat("a", 2000)+"\r", 100) // 200,100 runs
+	data := docTestSpec{pieces: []docTestPiece{{text: text, compressed: true}}, alternateBold: true}.build(t)
+	var rep Report
+	var err error
+	peak := peakHeap(func() {
+		rep, err = DOC{}.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), &rtfDiscardSink{},
+			Options{Name: "runs.doc", InferHeadings: true, docMaxInferText: 1 << 20})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(rep.Notes, "\n"), "headings were not inferred") {
+		t.Fatalf("notes %v: 200,000 one-character runs within 200 KiB of text were all held, uncounted", rep.Notes)
+	}
+	if c := ceiling(16 << 20); peak > c {
+		t.Errorf("peaked at %d MiB, want at most %d MiB", peak>>20, c>>20)
+	}
+	// The same text in one formatting is inferred as usual.
+	plain := docTestSpec{pieces: []docTestPiece{{text: text, compressed: true}}}.build(t)
+	rep, err = DOC{}.Extract(context.Background(), bytes.NewReader(plain), int64(len(plain)), &rtfDiscardSink{},
+		Options{Name: "plain.doc", InferHeadings: true, docMaxInferText: 1 << 20})
+	if err != nil || strings.Contains(strings.Join(rep.Notes, "\n"), "not inferred") {
+		t.Fatalf("one formatting: err %v, notes %v", err, rep.Notes)
+	}
+}

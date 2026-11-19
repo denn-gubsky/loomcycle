@@ -243,12 +243,16 @@ func (d *docReader) addInfer(s string, fc int64) error {
 	}
 	f := d.fmtAt(fc)
 	if len(d.runs) == 0 || d.runs[len(d.runs)-1].fmt != f {
+		// A run costs its struct and its string's header whatever its
+		// text: formatting that changes at every character must not hold
+		// many times the text the cap counts.
 		d.runs = append(d.runs, fmtRun{fmt: f})
+		d.inferText += docInferRunCost
 	}
 	d.runs[len(d.runs)-1].text += s
 	d.para.WriteString(s)
 	d.inferText += len(s)
-	if d.inferText > maxDOCInferText {
+	if d.inferText > d.maxInferText {
 		return errDOCInferFull
 	}
 	return nil
