@@ -28,3 +28,18 @@ func ClaimRegistration(ctx context.Context, limit int) bool {
 	h.tree.registered++
 	return true
 }
+
+// Remaining is what the run tree's inbox may still take before its cap, 0 on
+// a run with no inbox state. A producer that writes many files (File
+// op=unpack) bounds its whole batch by it up front; each capture still
+// checks the cap itself, so a figure that went stale meanwhile only stops
+// the batch later, never lets it pass the cap.
+func Remaining(ctx context.Context) int64 {
+	h, ok := from(ctx)
+	if !ok {
+		return 0
+	}
+	h.tree.mu.Lock()
+	defer h.tree.mu.Unlock()
+	return max(h.svc.maxTree()-h.tree.used, 0)
+}
