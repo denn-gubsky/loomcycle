@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -242,6 +243,50 @@ func FuzzRTF(f *testing.F) {
 	f.Add([]byte(`{\rtf1\ansi\ansicpg1251{\fonttbl{\f0\fcharset204 A;}}{\stylesheet{\s1 heading 1;}}\s1 T\par\trowd\intbl a\cell b\cell\row x}`))
 	f.Add([]byte(`{\rtf1{\pict\pngblip\bin4 {}\\}{\footnote{\*\x y}z}\b\i-12 \uc3\u-1? q`))
 	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, RTF{}, "f.rtf", data, false) })
+}
+
+func FuzzMOBI(f *testing.F) {
+	f.Add(mobi7Book(f, palmLZ77, 65001))
+	f.Add(mobi7Book(f, palmStored, 1252))
+	kf8 := `<?xml version="1.0"?><html><head><title>T</title></head><body aid="0"></body></html><h1>T</h1><p><img src="kindle:embed:0001"/>a</p>` +
+		`<?xml version="1.0"?><!DOCTYPE html><html><body></body></html><h2>Two</h2><p>b</p>`
+	f.Add(mobiSpec{text: []byte(kf8), version: 8, recordSize: 64, extraFlags: 3, pictures: [][]byte{tinyPNG(f)}, exth: []mobiEXTH{exth(503, "T")}}.build())
+	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, MOBI{}, "f.mobi", data, false) })
+}
+
+func FuzzPalmDOC(f *testing.F) {
+	text := []byte("A first line\nand a second.\n\nCafé \xe9 # x\n")
+	r0 := make([]byte, 16)
+	binary.BigEndian.PutUint16(r0, palmLZ77)
+	binary.BigEndian.PutUint32(r0[4:], uint32(len(text)))
+	binary.BigEndian.PutUint16(r0[8:], 2)
+	binary.BigEndian.PutUint16(r0[10:], 32)
+	f.Add(palmDBOf("Palm", "TEXtREAd", r0, lz77Compress(text[:32]), lz77Compress(text[32:])))
+	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, PalmDOC{}, "f.pdb", data, false) })
+}
+
+// FuzzHuffCDIC fuzzes the HUFF record, the CDIC record and the coded text
+// record of a book that is otherwise well formed, so the mutations reach
+// the dictionary decoder rather than the database's header checks.
+func FuzzHuffCDIC(f *testing.F) {
+	h := &testHuff{}
+	h.add(nil, false)
+	a := h.add([]byte("<p>a</p>"), true)
+	h.phrases[0] = h.codes(a, a)
+	coded := append(h.codes(0), h.encode([]byte("<p>words and more words</p>"))...)
+	f.Add(h.huffRecord(), h.cdicRecord(), coded)
+	f.Fuzz(func(t *testing.T, huff, cdic, text []byte) {
+		r := mobiSpec{compression: palmHuffman, huff: &testHuff{phrases: [][]byte{nil}, literal: []bool{true}}, text: []byte("x")}.records()
+		r[1], r[2], r[3] = text, huff, cdic
+		binary.BigEndian.PutUint32(r[0][4:], maxPalmTextOut)
+		// An empty record cannot be listed: offsets strictly increase.
+		for i := 1; i <= 3; i++ {
+			if len(r[i]) == 0 {
+				r[i] = []byte{0}
+			}
+		}
+		fuzzExtract(t, MOBI{}, "f.mobi", palmDBOf("F", "BOOKMOBI", r...), false)
+	})
 }
 
 func FuzzExtractHTML(f *testing.F) {

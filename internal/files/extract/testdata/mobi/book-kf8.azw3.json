@@ -1,0 +1,31 @@
+{
+  "format": "azw3",
+  "images": 1,
+  "metadata": {
+    "title": "The Lantern Ledger",
+    "authors": [
+      "Ada Quill",
+      "Ben Rowe"
+    ],
+    "language": "en",
+    "date": "2021-05-04T00:00:00+00:00",
+    "year": 2021,
+    "publisher": "Loom Test Press",
+    "identifiers": [
+      {
+        "scheme": "isbn",
+        "value": "9780000000002"
+      },
+      {
+        "scheme": "asin",
+        "value": "e744ee91-e1e7-4ae6-91e5-4caa7eb448ba"
+      }
+    ],
+    "subjects": [
+      "Fiction",
+      "Test Fixtures"
+    ],
+    "description": "A synthetic book for the MOBI reader's tests.",
+    "source_format": "azw3"
+  }
+}
