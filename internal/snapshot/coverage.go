@@ -302,6 +302,11 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "TTL-bound, run-scoped registrations"},
 	"ephemeral_volume_defs": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "run-bound scratch volumes"},
+	// A workspace's files live on a worker and never travel; its row (the
+	// pin) joins snapshots with durable workspaces in RFC GW P12. Until then
+	// a run restored elsewhere finds no workspace and its next op says so.
+	"workspaces": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "RFC GW P1 ruling Q5: workspace rows (the pin) join snapshots in P12; the files on a worker never do"},
 	// interrupts: a pending ask blocks inside tool dispatch, and a pause parks a
 	// run only at an iteration boundary, so a paused run cannot be waiting on
 	// one; everything else in the table is audit. Capture checks the

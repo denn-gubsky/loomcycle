@@ -76,6 +76,32 @@ func volumesSection() schemaPlan {
 			created_at  INTEGER NOT NULL,
 			PRIMARY KEY (root_run_id, name)
 		)`,
+		// RFC GW workspaces: a working directory on one worker, pinned to the
+		// run that opened it (owner_run_id), not to its run tree as an
+		// ephemeral volume is. The unique (owner_run_id, name) key is also the
+		// lookup for the run's own reads and the sweeper's join to runs; the
+		// (worker_id, state) and (tenant_id, state) indexes serve the capacity
+		// counts and the worker's reconciliation at attach. Mirrors postgres
+		// migration 0135.
+		`CREATE TABLE IF NOT EXISTS workspaces (
+			id             TEXT PRIMARY KEY,
+			tenant_id      TEXT NOT NULL DEFAULT '',
+			user_id        TEXT NOT NULL DEFAULT '',
+			name           TEXT NOT NULL,
+			worker_id      TEXT NOT NULL,
+			kind           TEXT NOT NULL DEFAULT 'general',
+			lifetime       TEXT NOT NULL DEFAULT 'ephemeral',
+			engine         TEXT NOT NULL DEFAULT '',
+			owner_run_id   TEXT NOT NULL,
+			owner_agent_id TEXT NOT NULL DEFAULT '',
+			root_run_id    TEXT NOT NULL DEFAULT '',
+			state          TEXT NOT NULL,
+			created_at     INTEGER NOT NULL,
+			updated_at     INTEGER NOT NULL,
+			UNIQUE (owner_run_id, name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS workspaces_by_worker ON workspaces (worker_id, state)`,
+		`CREATE INDEX IF NOT EXISTS workspaces_by_tenant ON workspaces (tenant_id, state)`,
 		// RFC L OSS multi-tenant authorization — bearer tokens bound to
 		// an authoritative principal (tenant_id + subject + allowed_scopes).
 		// NOT versioned/forkable: no version, no active pointer, no parent.

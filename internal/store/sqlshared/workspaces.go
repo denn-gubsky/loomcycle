@@ -1,0 +1,211 @@
+package sqlshared
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
+)
+
+// Workspace* implements store.WorkspaceStore (RFC GW) for both stores. See
+// internal/store/workspaces.go for the contract.
+
+// workspaceColNames is the column order scanWorkspace reads.
+var workspaceColNames = []string{"id", "tenant_id", "user_id", "name", "worker_id", "kind", "lifetime", "engine",
+	"owner_run_id", "owner_agent_id", "root_run_id", "state", "created_at", "updated_at"}
+
+var workspaceCols = workspaceColList("")
+
+// workspaceColList is the column list, each qualified by alias when one is
+// given (for a select that joins a table with columns of the same names).
+func workspaceColList(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return prefix + strings.Join(workspaceColNames, ", "+prefix)
+}
+
+func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
+	var (
+		r     store.WorkspaceRow
+		state string
+	)
+	if err := sc.Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.WorkerID, &r.Kind, &r.Lifetime, &r.Engine,
+		&r.OwnerRunID, &r.OwnerAgentID, &r.RootRunID, &state,
+		d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
+		return store.WorkspaceRow{}, err
+	}
+	r.State = store.WorkspaceState(state)
+	r.CreatedAt, r.UpdatedAt = r.CreatedAt.UTC(), r.UpdatedAt.UTC()
+	return r, nil
+}
+
+func collectWorkspaces(d Dialect, rows Rows) ([]store.WorkspaceRow, error) {
+	defer rows.Close()
+	out := []store.WorkspaceRow{}
+	for rows.Next() {
+		r, err := scanWorkspace(d, rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// WorkspaceCreate inserts a new row. It never upserts: a second open of one
+// name in one run is the caller's error to report, not a row to overwrite.
+func WorkspaceCreate(ctx context.Context, q Querier, row store.WorkspaceRow) (store.WorkspaceRow, error) {
+	if row.ID == "" || row.OwnerRunID == "" || row.Name == "" || row.WorkerID == "" {
+		return store.WorkspaceRow{}, fmt.Errorf("workspace create: id, owner_run_id, name and worker_id are required")
+	}
+	if row.State == "" {
+		row.State = store.WorkspaceOpening
+	}
+	if !row.State.IsValid() {
+		return store.WorkspaceRow{}, fmt.Errorf("workspace create: unknown state %q", row.State)
+	}
+	if row.Kind == "" {
+		row.Kind = store.WorkspaceKindGeneral
+	}
+	if row.Lifetime == "" {
+		row.Lifetime = store.WorkspaceLifetimeEphemeral
+	}
+	d := q.Dialect()
+	now := time.Now().UTC()
+	_, err := q.Exec(ctx, `INSERT INTO workspaces (`+workspaceCols+`)
+		VALUES (`+Placeholders(len(workspaceColNames))+`)`,
+		row.ID, row.TenantID, row.UserID, row.Name, row.WorkerID, row.Kind, row.Lifetime, row.Engine,
+		row.OwnerRunID, row.OwnerAgentID, row.RootRunID, string(row.State), d.TimeArg(now), d.TimeArg(now))
+	if IsUniqueViolation(err) {
+		return store.WorkspaceRow{}, &store.ErrConflict{Kind: "workspace", ID: row.Name}
+	}
+	if err != nil {
+		return store.WorkspaceRow{}, fmt.Errorf("workspace create: %w", err)
+	}
+	return WorkspaceGet(ctx, q, row.TenantID, row.ID)
+}
+
+func WorkspaceGet(ctx context.Context, q Querier, tenantID, id string) (store.WorkspaceRow, error) {
+	d := q.Dialect()
+	r, err := scanWorkspace(d, q.QueryRow(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE tenant_id = ? AND id = ?`, tenantID, id))
+	if err != nil {
+		return store.WorkspaceRow{}, NotFound(err, "workspace", id)
+	}
+	return r, nil
+}
+
+func WorkspaceGetByName(ctx context.Context, q Querier, tenantID, ownerRunID, name string) (store.WorkspaceRow, error) {
+	d := q.Dialect()
+	r, err := scanWorkspace(d, q.QueryRow(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE owner_run_id = ? AND name = ? AND tenant_id = ?`,
+		ownerRunID, name, tenantID))
+	if err != nil {
+		return store.WorkspaceRow{}, NotFound(err, "workspace", name)
+	}
+	return r, nil
+}
+
+func WorkspaceListByOwnerRun(ctx context.Context, q Querier, tenantID, ownerRunID string) ([]store.WorkspaceRow, error) {
+	d := q.Dialect()
+	rows, err := q.Query(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE owner_run_id = ? AND tenant_id = ? ORDER BY name`,
+		ownerRunID, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("workspace list by owner run: %w", err)
+	}
+	return collectWorkspaces(d, rows)
+}
+
+func WorkspaceListByWorker(ctx context.Context, q Querier, workerID string, states ...store.WorkspaceState) ([]store.WorkspaceRow, error) {
+	d := q.Dialect()
+	query := `SELECT ` + workspaceCols + ` FROM workspaces WHERE worker_id = ?`
+	args := []any{workerID}
+	if len(states) > 0 {
+		query += ` AND state IN (` + Placeholders(len(states)) + `)`
+		args = append(args, stateArgs(states)...)
+	}
+	rows, err := q.Query(ctx, query+` ORDER BY created_at, id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("workspace list by worker: %w", err)
+	}
+	return collectWorkspaces(d, rows)
+}
+
+// WorkspaceSetState is a compare-and-set on state: the WHERE names the state
+// the caller read, so a row another replica moved first is left alone.
+func WorkspaceSetState(ctx context.Context, q Querier, tenantID, id string, from, to store.WorkspaceState) (bool, error) {
+	if !to.IsValid() {
+		return false, fmt.Errorf("workspace set state: unknown state %q", to)
+	}
+	d := q.Dialect()
+	n, err := q.Exec(ctx,
+		`UPDATE workspaces SET state = ?, updated_at = ? WHERE tenant_id = ? AND id = ? AND state = ?`,
+		string(to), d.TimeArg(time.Now().UTC()), tenantID, id, string(from))
+	if err != nil {
+		return false, fmt.Errorf("workspace set state: %w", err)
+	}
+	return n > 0, nil
+}
+
+func WorkspaceDelete(ctx context.Context, q Querier, tenantID, id string) (bool, error) {
+	n, err := q.Exec(ctx, `DELETE FROM workspaces WHERE tenant_id = ? AND id = ?`, tenantID, id)
+	if err != nil {
+		return false, fmt.Errorf("workspace delete: %w", err)
+	}
+	return n > 0, nil
+}
+
+func WorkspaceCountActiveByWorker(ctx context.Context, q Querier, workerID string) (int, error) {
+	return countActiveWorkspaces(ctx, q, "worker_id", workerID)
+}
+
+func WorkspaceCountActiveByTenant(ctx context.Context, q Querier, tenantID string) (int, error) {
+	return countActiveWorkspaces(ctx, q, "tenant_id", tenantID)
+}
+
+// countActiveWorkspaces counts rows in store.WorkspaceActiveStates where col
+// (a fixed column name, never caller text) equals v.
+func countActiveWorkspaces(ctx context.Context, q Querier, col, v string) (int, error) {
+	args := append([]any{v}, stateArgs(store.WorkspaceActiveStates)...)
+	var n int
+	if err := q.QueryRow(ctx,
+		`SELECT COUNT(*) FROM workspaces WHERE `+col+` = ? AND state IN (`+Placeholders(len(store.WorkspaceActiveStates))+`)`,
+		args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("workspace count by %s: %w", col, err)
+	}
+	return n, nil
+}
+
+// WorkspaceSweepCandidates is modelled on EphemeralVolumeSweepCandidates but
+// keyed on the OWNER run, not the root run: a workspace is pinned to the run
+// that opened it (RFC GW §4.2), so a run beneath it still running holds
+// nothing, and the walk up parent_run_id that query needs is not here. The
+// paused/pausing filter is the same, for the same reason: a paused run is
+// parked, not ended, and resumes into its workspaces.
+func WorkspaceSweepCandidates(ctx context.Context, q Querier) ([]store.WorkspaceRow, error) {
+	d := q.Dialect()
+	rows, err := q.Query(ctx,
+		`SELECT `+workspaceColList("w")+`
+		 FROM workspaces w
+		 JOIN runs r ON r.id = w.owner_run_id
+		 WHERE r.status IN (`+Placeholders(len(store.TerminalRunStatuses))+`)
+		   AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing')
+		 ORDER BY w.created_at, w.id`, store.TerminalRunStatusArgs()...)
+	if err != nil {
+		return nil, fmt.Errorf("workspace sweep candidates: %w", err)
+	}
+	return collectWorkspaces(d, rows)
+}
+
+func stateArgs(states []store.WorkspaceState) []any {
+	out := make([]any, len(states))
+	for i, s := range states {
+		out[i] = string(s)
+	}
+	return out
+}

@@ -58,6 +58,10 @@ func TestLockKeyConstants_MatchInitFnv(t *testing.T) {
 	if LockKeyOntologyIdentityPass == 0 || LockKeyOntologyIdentityPass != fnvKey("ontology_identity_pass") {
 		t.Errorf("LockKeyOntologyIdentityPass drift")
 	}
+	if LockKeyWorkspaceSweeper == 0 || LockKeyWorkspaceSweeper != fnvKey("workspace_sweeper") ||
+		LockKeyWorkspaceSweeper == LockKeyEphemeralVolumeSweeper {
+		t.Errorf("LockKeyWorkspaceSweeper drift, or it shares the ephemeral volume sweeper's key")
+	}
 	// Its own key: sharing one makes each subsystem's tick starve the other's.
 	for name, k := range map[string]int64{"deadlink_gc": LockKeyDeadLinkGC, "memory_sweeper": LockKeyMemorySweeper,
 		"retention_sweeper": LockKeyRetentionSweeper} {

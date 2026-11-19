@@ -1844,6 +1844,7 @@ type Store interface {
 	AclStore
 	DirentStore
 	EphemeralVolumeStore
+	WorkspaceStore
 	ScheduleDefStore
 	ScheduleRunStateStore
 	A2ADefStore
