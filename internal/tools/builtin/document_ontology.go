@@ -689,8 +689,11 @@ var errNoOntology = errors.New("no ontology document")
 
 // ontologyFingerprint changes whenever anything the ontology read depends on changes:
 // which document is the ontology (its recorded id), its status (the confirm gate), and its
-// chunks — a count catches an add or delete, max(updated_at) a move, and sum(revision)
-// every body, title, type or status edit, since update_chunk bumps the revision on each.
+// chunks — a count catches an add or delete, sum(revision) every body, title, type or
+// status edit, since update_chunk bumps the revision on each, and the structure hash
+// (ontologyStructureHash) a move, which bumps no revision. max(updated_at) stays as a
+// second witness of a move; alone it misses one written in the same clock tick or under
+// a clock that went back. The cached read and a plan's fingerprint both key on this.
 func (d *Document) ontologyFingerprint(ctx context.Context, key sqlmem.ScopeKey, docID string) (string, error) {
 	res, err := d.query(ctx, key,
 		`SELECT coalesce(doc.status, ''), count(c.id), coalesce(max(c.updated_at), 0), coalesce(sum(c.revision), 0)
@@ -703,7 +706,11 @@ func (d *Document) ontologyFingerprint(ctx context.Context, key sqlmem.ScopeKey,
 		return docID + "|absent", nil
 	}
 	r := res.Rows[0]
-	return fmt.Sprintf("%s|%s|%d|%d|%d", docID, asStr(r[0]), asInt(r[1]), asInt64Val(r[2]), asInt64Val(r[3])), nil
+	structure, err := d.ontologyStructureHash(ctx, key, docID)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s|%s|%d|%d|%d|%s", docID, asStr(r[0]), asInt(r[1]), asInt64Val(r[2]), asInt64Val(r[3]), structure), nil
 }
 
 // asInt64Val reads a numeric cell as int64 (0 for NULL or non-numeric).

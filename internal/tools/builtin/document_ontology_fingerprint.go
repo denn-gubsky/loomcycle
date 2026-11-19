@@ -48,6 +48,8 @@ package builtin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -377,6 +379,30 @@ func (d *Document) ontologyPlanGate(ctx context.Context, key sqlmem.ScopeKey, ms
 	}
 	// The plan's own fingerprint: the one the caller would get by planning now.
 	return planFingerprintRefusal(op, given, planned, risky, complete)
+}
+
+// ontologyStructureHash is an order-independent hash of the ontology document's tree:
+// the sum, mod 2^64, of a hash of each (chunk id, parent id) pair. It changes when any
+// chunk is re-parented, whatever the clock says, and costs one indexed read of the
+// document's chunk rows. A read cut at the row cap says so ("cut"), so the fingerprint
+// stays deterministic; a plan of such an ontology is refused anyway (planChunkRows).
+func (d *Document) ontologyStructureHash(ctx context.Context, key sqlmem.ScopeKey, docID string) (string, error) {
+	res, err := d.query(ctx, key, `SELECT id, coalesce(parent_id, '') FROM chunks WHERE document_id = ?`, docID)
+	if err != nil {
+		return "", err
+	}
+	if res.Truncated {
+		return "cut", nil
+	}
+	var sum uint64
+	for _, r := range res.Rows {
+		if len(r) < 2 {
+			continue
+		}
+		h := sha256.Sum256([]byte(asStr(r[0]) + "\x00" + asStr(r[1])))
+		sum += binary.BigEndian.Uint64(h[:8])
+	}
+	return strconv.FormatUint(sum, 16), nil
 }
 
 // planGateError is the refusal when the change cannot be planned: the plan refuses it
