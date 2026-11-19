@@ -2938,6 +2938,7 @@ components:
         natural_key: { type: string }
         supersedes_id: { type: string }
         revision: { type: integer, description: "update_chunk optimistic concurrency / get_version target." }
+        plan_fingerprint: { type: string, description: "update_chunk / move_chunk on an entry of the tenant ontology that something rests on (RFC GQ P2.4): the fingerprint of a plan of the change (POST /v1/_ontology/plan). Needed to rename it, retire it, move it under another parent or change its directives; without it POST /v1/_document answers 409 plan_required, with one that is not current 409 plan_stale, each body carrying the current fingerprint. An edit of the meaning alone, and any change to an entry nothing rests on, needs none." }
         from_revision: { type: integer }
         to_revision: { type: integer }
         query: { type: string }

@@ -26,8 +26,33 @@ successful update adds 1 to the revision.
   world. Omit when unknown; a guessed instant is worse than none. Not
   recorded in the chunk's history (only body changes are).
 - `scope` — `user` (default), `agent` or `tenant`.
+- `plan_fingerprint` — only for an entry of the tenant ontology that something
+  rests on: the `fingerprint` of a plan of the change (see below).
 
 Leave a key out to keep its value. Moving a chunk is `move_chunk`, not this.
+
+## An entry of the tenant ontology: plan first
+
+Renaming an entry of the tenant ontology (its `title`, or its body's first
+heading when the title is empty), retiring it (`status` `retired`), or editing
+its body so its directives change (`@identity`, a relation characteristic such
+as `@functional` or `@asymmetric`, a policy directive) can leave stored rows
+naming what is no longer there. When the plan of that change says something
+rests on the entry (risk `stales` or `destroys`), the update needs the
+plan's fingerprint:
+
+1. Plan it: `POST /v1/_ontology/plan` (or the ontology tool's `plan` op) with
+   the change, e.g. `{"changes": [{"op": "retire", "entry": "<chunk id>"}]}`.
+   Read what it counts.
+2. Send the update with `plan_fingerprint` set to the plan's `fingerprint`.
+
+Without it the update is refused `plan_required`; with a fingerprint from
+before another change to the ontology, `plan_stale`. Either refusal's text is
+JSON — `{"code", "error", "fingerprint"}` — carrying the current fingerprint
+(over `POST /v1/_document`, a 409 with those fields), so plan again, check the
+counts, and resend. An edit of the meaning alone, and any change to an entry
+nothing rests on, needs no fingerprint. A locked entry answers `entry_locked`
+first: no fingerprint lifts a lock.
 
 **To rename a document**, `update_chunk` its root chunk's `title` (the root
 chunk id is `root_chunk_id` from `get_document`). `get_document`,
@@ -83,6 +108,10 @@ subject re-type that was not announced).
   with the ends you did not send kept as stored, would contain no instant.
 - `an agent may not modify the ontology document ...` — the tenant ontology is
   operator-only.
+- `{"code":"plan_required", ...}` / `{"code":"plan_stale", ...}` — a rename,
+  retire or directive change of an ontology entry something rests on needs the
+  fingerprint of a current plan; plan the change and resend with
+  `plan_fingerprint`.
 - `principal_binding_operator_only: update_chunk: the principal field is
   reserved ...` — resend `fields` without `principal` (or with exactly the
   stored value).
