@@ -355,41 +355,50 @@ func (f *File) runOCR(ctx context.Context, c ocrCall, plan transcribe.Plan, fh i
 			}
 			return p
 		}
-		unit, err := transcribe.NewUnit(bytes.NewReader(u.data), 0, int64(len(u.data)), u.mediaType)
-		if err != nil {
-			p.err = err
+		if !f.callOCR(ctx, p, plan, opts, u, run, tree) {
 			return p
-		}
-		unit.Pages = transcribe.PageRange{First: 1, Last: len(u.pages)}
-		opts.MaxTokens = op.MaxTokensPerPage * len(u.pages)
-		res, err := f.OCR.Engine.OCR(ctx, plan, unit, opts)
-		f.charge(ctx, p, res)
-		if err != nil {
-			// Pages go back only for a call that provably consumed nothing:
-			// refused before any request, with no usage. A call that reached
-			// the model may have been billed, and giving its pages back would
-			// let a retry loop pay again and again under the cap.
-			if !res.Reached && res.InputTokens == 0 && res.OutputTokens == 0 && res.ReportedCost == 0 {
-				run.ReleasePages(len(u.pages))
-				tree.ReleasePages(len(u.pages))
-			} else {
-				p.sent += len(u.pages)
-			}
-			p.callErr = err
-			return p
-		}
-		p.sent += len(u.pages)
-		p.units++
-		for i, orig := range u.pages {
-			t := noOCRText
-			if i < len(res.Pages) {
-				t = res.Pages[i].Text
-			}
-			p.text[orig] = t
-			p.done = append(p.done, orig)
 		}
 	}
 	return p
+}
+
+// callOCR sends one unit, whose pages are reserved on run and tree, and
+// records what it read. It reports false when the pass must stop.
+func (f *File) callOCR(ctx context.Context, p *ocrPass, plan transcribe.Plan, opts transcribe.OCROptions, u ocrUnit, run, tree *transcribe.Budget) bool {
+	unit, err := transcribe.NewUnit(bytes.NewReader(u.data), 0, int64(len(u.data)), u.mediaType)
+	if err != nil {
+		p.err = err
+		return false
+	}
+	unit.Pages = transcribe.PageRange{First: 1, Last: len(u.pages)}
+	opts.MaxTokens = f.ocrConfig().MaxTokensPerPage * len(u.pages)
+	res, err := f.OCR.Engine.OCR(ctx, plan, unit, opts)
+	f.charge(ctx, p, res)
+	if err != nil {
+		// Pages go back only for a call that provably consumed nothing:
+		// refused before any request, with no usage. A call that reached
+		// the model may have been billed, and giving its pages back would
+		// let a retry loop pay again and again under the cap.
+		if !res.Reached && res.InputTokens == 0 && res.OutputTokens == 0 && res.ReportedCost == 0 {
+			run.ReleasePages(len(u.pages))
+			tree.ReleasePages(len(u.pages))
+		} else {
+			p.sent += len(u.pages)
+		}
+		p.callErr = err
+		return false
+	}
+	p.sent += len(u.pages)
+	p.units++
+	for i, orig := range u.pages {
+		t := noOCRText
+		if i < len(res.Pages) {
+			t = res.Pages[i].Text
+		}
+		p.text[orig] = t
+		p.done = append(p.done, orig)
+	}
+	return true
 }
 
 // errDjVuOCR refuses OCR of a DjVu document until its pages can be
