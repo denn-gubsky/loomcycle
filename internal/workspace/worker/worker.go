@@ -14,9 +14,7 @@ package worker
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -61,7 +59,8 @@ type Options struct {
 	Target string
 	// Token is an operator token holding only workers:attach.
 	Token string
-	// ID names the worker to the core; default host-pid-random.
+	// ID names the worker to the core; default the host name, which must not
+	// change across restarts (defaultID).
 	ID           string
 	BuildVersion string
 	// Root is the directory the workspaces are made in.
@@ -156,13 +155,14 @@ func Run(ctx context.Context, opt Options) error {
 	}, w.session)
 }
 
+// defaultID is the host's name. It must stay the same across restarts: the
+// core keys a worker's workspace rows on it, and a worker that came back
+// under a new id would have every directory it holds read as unknown and
+// removed. Two workers on one host each need an --id of their own.
 func defaultID() string {
 	host, _ := os.Hostname()
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	id := fmt.Sprintf("%s-%d-%s", host, os.Getpid(), hex.EncodeToString(b))
 	// A hostname may carry characters the core refuses in an id.
-	out := []byte(id)
+	out := []byte(host)
 	for i, c := range out {
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '-', c == '_':
@@ -171,7 +171,10 @@ func defaultID() string {
 		}
 	}
 	if len(out) > 128 {
-		out = out[len(out)-128:]
+		out = out[:128]
+	}
+	if len(out) == 0 {
+		return "workspace-worker"
 	}
 	return string(out)
 }
