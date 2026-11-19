@@ -203,6 +203,12 @@ var (
 	// time, so two replicas do not recompute the same nodes in the same tick. Its
 	// own key, so it neither starves nor is starved by the projection sweeper.
 	LockKeyNodeStatsSweeper int64
+	// LockKeyWorkspaceSweeper gates the RFC GW sweep of workspaces whose
+	// owner run ended without the run-end release, and the marking of a gone
+	// worker's rows lost, so one replica per tick tells a worker to remove a
+	// directory. Its own key, apart from LockKeyEphemeralVolumeSweeper: the
+	// two sweeps share nothing, and a shared key lets one starve the other.
+	LockKeyWorkspaceSweeper int64
 )
 
 // TeamSubscriptionLockKey derives a team's subscription-sweep key from its
@@ -271,6 +277,7 @@ func init() {
 	LockKeyAuthLifecycleSweeper = fnvKey("auth_lifecycle_sweeper")
 	LockKeyProjectionSweeper = fnvKey("projection_sweeper")
 	LockKeyNodeStatsSweeper = fnvKey("node_stats_sweeper")
+	LockKeyWorkspaceSweeper = fnvKey("workspace_sweeper")
 	LockKeyOntologyIdentityPass = fnvKey("ontology_identity_pass")
 }
 
