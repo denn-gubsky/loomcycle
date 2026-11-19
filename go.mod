@@ -54,6 +54,7 @@ require (
 )
 
 require (
+	github.com/nwaples/rardecode/v2 v2.4.6
 	github.com/yuin/goldmark v1.8.7
 	go.opentelemetry.io/proto/otlp v1.11.0
 )

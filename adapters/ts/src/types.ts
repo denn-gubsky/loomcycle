@@ -338,17 +338,25 @@ export interface RunPromptResponse {
  *  path's; the fields are the tool's own, snake_case as on the wire. download
  *  and upload are not offered here: they need a run's HTTP allowlist. */
 export type RunFileInput = {
-  op: "stat" | "ls" | "extract" | "import" | "keep" | "rm" | "clear";
-  /** stat / ls / rm / extract / import: `volume:inbox:<path>`, or a bare path in the inbox. */
+  op: "stat" | "ls" | "extract" | "import" | "keep" | "rm" | "clear" | "unpack";
+  /** stat / ls / rm / extract / import: `volume:inbox:<path>`, or a bare path in the inbox.
+   *  unpack: the ZIP or RAR archive. */
   path?: string;
   /** keep: the inbox file to copy. */
   from?: string;
-  /** keep: `volume:<name>:<path>` in a read-write dynamic volume of your tenant. */
+  /** keep: `volume:<name>:<path>` in a read-write dynamic volume of your tenant.
+   *  unpack: an existing folder there to unpack into, instead of
+   *  `volume:inbox:unpacked/<archive>/`. */
   to?: string;
   overwrite?: boolean;
   recursive?: boolean;
   /** clear: one folder of the inbox to empty instead of all of it. */
   prefix?: string;
+  /** unpack: write every regular file, not only the formats extract reads
+   *  and archives inside the archive. */
+  all?: boolean;
+  /** unpack: list what would be written and skipped, writing nothing. */
+  dry_run?: boolean;
   images?: boolean;
   max_rows?: number;
   excerpt_chars?: number;

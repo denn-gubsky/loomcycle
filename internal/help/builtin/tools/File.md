@@ -43,14 +43,16 @@ When a file could not be kept, the line says why instead
 | `extract` | turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, RTF, DjVu, CSV, text, VTT/SRT caption or image file into Markdown in the inbox, its pictures kept as files; a recording is transcribed | `path`, `images`, `max_rows`, `excerpt_chars`, `pages`, `max_chars`, `structure` |
 | `transcribe` | turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model | `path`, `language`, `vocabulary`, `diarize`, `timestamps`, `dry_run` |
 | `import` | build a Document from a Markdown file, the pictures `extract` kept attached as image chunks | `path`, `title`, `doc_path`, `scope`, `tags` |
+| `unpack` | copy the files of a ZIP or RAR archive into `volume:inbox:unpacked/<archive>/` (or a volume folder), keeping its folders; by default only what `extract` reads and archives inside it | `path`, `to`, `all`, `dry_run` |
 
 A path is a reference: `volume:inbox:<path>`, `volume:<name>:<path>` for a
 volume you are bound to, or `volume:<path>` for your default volume. A bare
 path, with no `volume:`, names a file in the inbox.
 
 The inbox needs nothing but this tool. Another volume is reached with your own
-grants: `keep` writes only when you also hold Write, and `stat` or `ls` of a
-volume other than the inbox needs Read; both tools' hooks apply. `download`
+grants: `keep` (and `unpack` with `to`) writes only when you also hold
+Write, and `stat` or `ls` of a volume other than the inbox (or an `extract` or
+`unpack` of a file there) needs Read; both tools' hooks apply. `download`
 into a volume needs Write and `upload` from one needs Read in the same way;
 both are HTTP requests, so they need the HTTP tool as well (its hooks judge
 them) and reach only hosts on its allowlist.
