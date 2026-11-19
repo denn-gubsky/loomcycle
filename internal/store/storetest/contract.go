@@ -655,7 +655,6 @@ func Run(t *testing.T, factory Factory) {
 		{"OperatorTokenRehashAllIsAllOrNothing", testOperatorTokenRehashAllIsAllOrNothing},
 		{"OperatorTokenDefCountActiveAdminMatching", testOperatorTokenDefCountActiveAdminMatching},
 		{"OperatorTokenDefExpiry", testOperatorTokenDefExpiry},
-		{"OperatorTokenDefWorkerShared", testOperatorTokenDefWorkerShared},
 		{"OperatorTokenDefDeleteExpired", testOperatorTokenDefDeleteExpired},
 		{"OperatorTokenDefDeleteExpiredKeepsEachTenant", testOperatorTokenDefDeleteExpiredKeepsEachTenant},
 		// v1.x RFC E ScheduleDef runtime — sweeper-side state.
@@ -14726,6 +14725,9 @@ func testOperatorTokenDefExpiry(t *testing.T, s store.Store) {
 	if got, _ := s.OperatorTokenDefGetByTokenHash(ctx, "h-exp-restr"); !strings.Contains(got.RestrictionsJSON, `"agents"`) || !strings.Contains(got.RestrictionsJSON, `"score"`) {
 		t.Errorf("restrictions round-trip: got %q", got.RestrictionsJSON)
 	}
+	// A record carrying a marker this build knows reads back as written. Run
+	// from here rather than its own table row: Run is at its length cap.
+	testOperatorTokenDefWorkerShared(t, s)
 	if got, _ := s.OperatorTokenDefGet(ctx, "ot-exp-none"); got.RestrictionsJSON != "" {
 		t.Errorf("a token created without restrictions came back with %q", got.RestrictionsJSON)
 	}
