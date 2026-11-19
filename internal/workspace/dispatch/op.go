@@ -102,7 +102,7 @@ type result struct {
 // refusal comes back as an *OpError with the worker's output, if any, in the
 // Result.
 func (d *Dispatcher) Do(ctx context.Context, workerID string, req Request) (res Result, err error) {
-	defer func() { d.count(req.Op, outcome(err)) }()
+	defer func() { d.count(opLabel(req.Op), outcome(err)) }()
 	if !workspace.ValidID(req.WorkspaceID) {
 		return Result{}, &OpError{Class: workspace.ClassInvalid, Detail: "malformed workspace id"}
 	}
@@ -149,6 +149,20 @@ func (d *Dispatcher) Do(ctx context.Context, workerID string, req Request) (res 
 		o.done = make(chan result, 1)
 	}
 	return Result{}, &OpError{Class: workspace.ClassBusy, Detail: "the worker's streams kept ending"}
+}
+
+// opLabel is an op's name as a metric label: the name when it is a short
+// lower-case word, else "other", so no caller can grow the label set.
+func opLabel(name string) string {
+	if name == "" || len(name) > 32 {
+		return "other"
+	}
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; (c < 'a' || c > 'z') && c != '_' {
+			return "other"
+		}
+	}
+	return name
 }
 
 func outcome(err error) string {

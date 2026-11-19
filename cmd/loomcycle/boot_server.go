@@ -383,6 +383,12 @@ func (b *boot) wireServerCatalog() {
 		srv.SetExtractionStats(b.conversion.ExtractionStats)
 		srv.SetConversionStats(b.conversion.Stats)
 	}
+	if b.workspace != nil {
+		// RFC GW: workers are refused (Unavailable, retried) until the store
+		// and the server's token resolution exist; both do now.
+		b.workspace.Activate(storeIface, srv.ResolvePrincipal)
+		srv.SetWorkspaceStats(b.workspace.Stats)
+	}
 	srv.SetMCPPoolInspector(func(name string) json.RawMessage {
 		// Static yaml MCP servers live at the shared "" tenant in the
 		// (tenant, name)-keyed pool. The Library introspection endpoint

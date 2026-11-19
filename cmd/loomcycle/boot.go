@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
+	wsdispatch "github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
 
 	googlegrpc "google.golang.org/grpc"
 )
@@ -98,7 +99,12 @@ type boot struct {
 	fileTool          *builtin.File
 	// conversion is the conversion worker pool (RFC GO); nil in mode
 	// inprocess, where none is started.
-	conversion       *dispatch.Dispatcher
+	conversion *dispatch.Dispatcher
+	// workspace is the workspace worker dispatcher (RFC GW); nil while
+	// workspace.mode is off. workerSrv is the worker endpoint's server both
+	// dispatchers register on; nil when neither runs.
+	workspace        *wsdispatch.Dispatcher
+	workerSrv        *googlegrpc.Server
 	historyTool      *builtin.History
 	evaluationTool   *builtin.Evaluation
 	interruptionTool *builtin.Interruption

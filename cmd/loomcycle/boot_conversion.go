@@ -21,6 +21,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
+	wsdispatch "github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
 )
 
 // minWorkerToken is the shortest LOOMCYCLE_WORKER_TOKEN a worker endpoint on
@@ -34,9 +35,9 @@ const minWorkerToken = 32
 // in this process as before.
 //
 // Mode local: a Unix socket in a private directory, and conversion.local.workers
-// children of this binary that attach to it. Mode remote: a TCP endpoint on
-// conversion.listen that workers of their own attach to with
-// LOOMCYCLE_WORKER_TOKEN. local+remote: both, one pool. The children are
+// children of this binary that attach to it. Mode remote: workers of their
+// own attach with LOOMCYCLE_WORKER_TOKEN to the worker endpoint, which
+// serveWorkerEndpoint opens. local+remote: both, one pool. The children are
 // stopped, and the listeners closed, at shutdown.
 func (b *boot) startConversion() *dispatch.Dispatcher {
 	cv := b.cfg.Conversion.Resolved()
@@ -82,10 +83,10 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 		KindTimeouts:  h.timeouts,
 		Logger:        slog.Default(),
 	})
-	// The worker endpoint's server is built here rather than by the
-	// dispatcher, so another worker service (RFC GW) can be registered on
-	// the same endpoint; its flow-control windows apply to every service.
-	srv := grpc.NewServer(workerlink.ServerOptions()...)
+	// The worker endpoint's server is shared with the workspace service
+	// (RFC GW), registered on it before this; its flow-control windows apply
+	// to every service.
+	srv := b.workerServer()
 	d.Register(srv)
 	serve := func(l net.Listener) {
 		safego.Go(context.Background(), "conversion.dispatcher", func() {
@@ -100,23 +101,6 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 		closers      []func()
 		stopChildren = func() {}
 	)
-	if cv.RemoteWorkers() {
-		ep := b.cfg.ResolvedWorkerEndpoint()
-		l, err := net.Listen("tcp", ep.Listen)
-		if err != nil {
-			fatal("conversion: cannot open the worker endpoint", "listen", ep.Listen, "err", err)
-		}
-		if ep.TLS.Enabled() {
-			tc, err := workerlink.ServerTLS(ep.TLS.CertFile, ep.TLS.KeyFile, ep.TLS.ClientCAFile)
-			if err != nil {
-				fatal("worker_endpoint.tls: "+err.Error(), "listen", ep.Listen)
-			}
-			l = workerlink.TLSListener(l, tc)
-		}
-		serve(l)
-		closers = append(closers, func() { l.Close() })
-		slog.Info("conversion worker endpoint listening", "listen", ep.Listen, "tls", ep.TLS.Enabled(), "client_certs", ep.TLS.ClientCAFile != "")
-	}
 	if cv.LocalWorkers() {
 		serve(localL)
 		sup := local.Start(local.Options{
@@ -139,6 +123,67 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 		}
 	})
 	slog.Info("conversion pool started", "mode", cv.Mode)
+	return d
+}
+
+// workerServer is the worker endpoint's gRPC server, built on first use.
+// Every worker service registers on it before any listener serves it: the
+// workspace service (startWorkspace), then the conversion service
+// (startConversion), then the network listener (serveWorkerEndpoint).
+func (b *boot) workerServer() *grpc.Server {
+	if b.workerSrv == nil {
+		b.workerSrv = grpc.NewServer(workerlink.ServerOptions()...)
+		srv := b.workerSrv
+		// Registered first, so it runs after the services' own cleanups;
+		// a second Stop is a no-op.
+		b.addCleanup(srv.Stop)
+	}
+	return b.workerSrv
+}
+
+// serveWorkerEndpoint opens the worker endpoint on the network when
+// conversion.mode or workspace.mode attaches workers of their own, and serves
+// every service registered on it.
+func (b *boot) serveWorkerEndpoint() {
+	cv := b.cfg.Conversion.Resolved()
+	ws := b.cfg.Workspace.Resolved()
+	if b.workerSrv == nil || (!cv.RemoteWorkers() && !ws.RemoteWorkers()) {
+		return
+	}
+	ep := b.cfg.ResolvedWorkerEndpoint()
+	l, err := net.Listen("tcp", ep.Listen)
+	if err != nil {
+		fatal("cannot open the worker endpoint", "listen", ep.Listen, "err", err)
+	}
+	if ep.TLS.Enabled() {
+		tc, err := workerlink.ServerTLS(ep.TLS.CertFile, ep.TLS.KeyFile, ep.TLS.ClientCAFile)
+		if err != nil {
+			fatal("worker_endpoint.tls: "+err.Error(), "listen", ep.Listen)
+		}
+		l = workerlink.TLSListener(l, tc)
+	}
+	srv := b.workerSrv
+	safego.Go(context.Background(), "worker.endpoint", func() {
+		if err := srv.Serve(l); err != nil {
+			slog.Warn("worker endpoint stopped", "err", err, "addr", l.Addr().String())
+		}
+	})
+	b.addCleanup(func() { l.Close() })
+	slog.Info("worker endpoint listening", "listen", ep.Listen, "tls", ep.TLS.Enabled(), "client_certs", ep.TLS.ClientCAFile != "",
+		"conversion", cv.RemoteWorkers(), "workspace", ws.RemoteWorkers())
+}
+
+// startWorkspace registers the workspace worker service (RFC GW) on the
+// worker endpoint when workspace.mode is remote, and returns its dispatcher;
+// nil when off. It answers workers Unavailable until activateWorkspace gives
+// it the store and the token resolver, which exist only later in the boot.
+func (b *boot) startWorkspace() *wsdispatch.Dispatcher {
+	if !b.cfg.Workspace.Resolved().RemoteWorkers() {
+		return nil
+	}
+	d := wsdispatch.New(wsdispatch.Options{BuildVersion: buildVersion, Logger: slog.Default()})
+	d.Register(b.workerServer())
+	slog.Warn("workspace: serving workspace workers; the host engine runs an agent's commands as the worker's user, with no isolation")
 	return d
 }
 
