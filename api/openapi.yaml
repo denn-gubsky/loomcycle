@@ -624,6 +624,71 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "503": { description: "`unavailable`: no SQL Memory on this server." }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/_ontology/proposals:
+    post:
+      tags: [documents]
+      summary: Accept or reject a proposal to the tenant ontology.
+      description: |
+        Rejecting sets the proposal's status to `rejected` and keeps it as a
+        record. Accepting an add proposal clears its status, which puts it in
+        force where it sits; a whole-scheme proposal accepts with its concepts.
+        Accepting a change or retire proposal (RFC GQ P4.2) applies the change
+        to the entry it names, which keeps its chunk id: a retire sets its
+        status `retired` (its subtree with it); an edit writes the new name,
+        moves it under the new parent, and writes its body as the checked
+        directives above its meaning (a class's field bullets are never
+        changed by a proposal). The change is rebuilt from the proposal and
+        checked again against the ontology as it stands; the proposal is then
+        deleted, other open proposals of the same entry and op are rejected,
+        and the change is recorded in the audit log as
+        `ontology_change_applied`. A change that something rests on (the
+        plan's risk `destroys` or `stales`) needs `plan_fingerprint`, the
+        fingerprint of a current plan (POST /v1/_ontology/plan). For a tenant
+        operator (its own tenant) or an admin (`?tenant=` focuses another).
+      operationId: resolveOntologyProposal
+      parameters:
+        - name: tenant
+          in: query
+          required: false
+          description: An admin's focus on another tenant; ignored for anyone else.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [chunk_id, action]
+              properties:
+                chunk_id: { type: string, description: "The proposal's chunk id." }
+                action: { type: string, enum: [accept, reject] }
+                plan_fingerprint: { type: string, description: "accept of a change or retire proposal: the fingerprint of a plan of its change (POST /v1/_ontology/plan). Needed when something rests on what it changes; ignored otherwise." }
+      responses:
+        "200":
+          description: "The ontology's state after the action. On an accepted change proposal it carries `change_accepted` {proposal, target, target_name, kind, op, applied (retire, rename, move, edit), risk, counts, complete, superseded, warnings}; on an accepted whole scheme, `scheme_accepted`."
+          content: { application/json: { schema: { type: object } } }
+        "400":
+          description: "`invalid_body` or `invalid_action`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: "`not_a_proposal`: no proposal with that chunk id in this tenant's ontology."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: "`not_pending` (the proposal was already rejected); `entry_locked` (the entry, or one under it, carries @locked); `rename_job_pending` (renaming a class something rests on waits for the rename job, RFC GQ P5); `target_changed` (the entry was edited while the accept ran; nothing was applied, accept again); `entry_retired`; `plan_required` / `plan_stale` (the change needs the fingerprint of a current plan; the body's `fingerprint` is the current one)."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string }
+                  error: { type: string }
+                  fingerprint: { type: string, description: "plan_required / plan_stale: the fingerprint a plan reports now." }
+        "422":
+          description: "`invalid_proposal`: the proposal fails its checks against the ontology as it stands, or its stored change is not the one those checks rebuild (edited after filing, or forged). Nothing was written; reject it."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503": { description: "`ontology_unavailable`: no SQL Memory on this server." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /v1/_decide:
     post:
       tags: [decision]
