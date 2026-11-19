@@ -529,7 +529,9 @@ func (b *mobiBook) picture(ref string) ([]byte, bool) {
 	if !b.opts.Images {
 		return nil, false
 	}
-	i, err := strconv.ParseInt(strings.TrimPrefix(ref, "record:"), 10, 64)
+	// 32 bits: a record index is at most 65,535 (the PalmDB count is 16
+	// bits), and the bound below is checked before any conversion to int.
+	i, err := strconv.ParseInt(strings.TrimPrefix(ref, "record:"), 10, 32)
 	if err != nil || b.firstImage < 0 || i < b.firstImage || i >= int64(b.db.records()) {
 		return nil, false
 	}
