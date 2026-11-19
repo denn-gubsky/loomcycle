@@ -264,7 +264,7 @@ says is delivered to the caller and stored nowhere.
 
 ## A workspace worker's token
 
-A worker that runs agents' workspaces (RFC GW) attaches to the core with a
+A worker that runs agents' workspaces attaches to the core with a
 token holding `workers:attach` and nothing else. The token sits on a machine
 that runs model-chosen commands, so it is good for nothing but attaching: every
 HTTP route, gRPC RPC and MCP tool refuses it, it does not sign in to the Web
