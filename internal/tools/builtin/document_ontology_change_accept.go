@@ -25,13 +25,15 @@ package builtin
 // applied. A move-only edit sends a revision-only update first for the same reason. The
 // move follows, under the accept lock.
 //
-// THE BODY of an edit is the entry's directive lines, then its field bullets, then its
-// meaning. Directives: the proposal's set when it sets one (each a bare `@name value`
-// line), else the entry's own lines as they are. Field bullets (a class's "- `name`"):
-// ALWAYS the entry's own — they are declarations, and a change proposal carries no
-// field changes, so accepting one never adds or removes a field. A proposed meaning is
-// meaning text: its directive lines are quoted again (neutraliseDirectives, never
-// trusting that the mark's were) and so are its field-shaped bullets, which
+// THE BODY of an edit is the entry's naming heading, its directive lines, its field
+// bullets, then its meaning. The heading (the body's first, which names an entry with no
+// title) is ALWAYS the entry's own, so a new meaning never renames or unnames it.
+// Directives: the proposal's set when it sets one (each a bare `@name value` line), else
+// the entry's own lines as they are. Field bullets (a class's "- `name`"): ALWAYS the
+// entry's own — they are declarations, and a change proposal carries no field changes,
+// so accepting one never adds or removes a field. A proposed meaning is meaning text:
+// its directive lines are quoted again (neutraliseDirectives, never trusting that the
+// mark's were), and so are its field-shaped bullets and headings, which
 // neutraliseDirectives leaves alone. Without a proposed meaning the entry keeps its own.
 //
 // THE PLAN. The changes the accept makes are planned as the direct changes they are
@@ -309,18 +311,18 @@ func (d *Document) composeChangeAccept(ctx context.Context, a *changeAccept) err
 	return nil
 }
 
-// composeChangeBody is an edited entry's new body (see the file comment): directive
-// lines, then field bullets, then the meaning.
+// composeChangeBody is an edited entry's new body (see the file comment): the heading
+// that names an untitled entry, directive lines, field bullets, then the meaning.
 func composeChangeBody(kind, current string, m memrank.ProposedChange) string {
-	directives, fields, meaning := splitEntryBody(kind, current)
+	heading, directives, fields, meaning := splitEntryBody(kind, current)
 	if m.SetsDirectives {
 		directives = directiveLines(m.Directives)
 	}
 	if m.Meaning != "" {
-		meaning = quoteFieldBullets(neutraliseDirectives(strings.TrimSpace(m.Meaning)))
+		meaning = quoteMeaningText(neutraliseDirectives(strings.TrimSpace(m.Meaning)))
 	}
 	var parts []string
-	for _, p := range []string{directives, fields, meaning} {
+	for _, p := range []string{heading, directives, fields, meaning} {
 		if p = strings.TrimSpace(p); p != "" {
 			parts = append(parts, p)
 		}
@@ -328,18 +330,22 @@ func composeChangeBody(kind, current string, m memrank.ProposedChange) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// splitEntryBody splits an entry's body into the lines the reader takes as directives,
-// the lines it takes as a class's field bullets, and the rest (its meaning), each in
-// the body's order. It reads a line as memrank.ParseDirectives and ParseOntologyFields
-// do: a bullet whose first backticked token starts with @ is a directive wherever it
-// is; a bare @name line is one outside a fence or an indented block; a bullet with
-// another backticked token is a field of a class.
-func splitEntryBody(kind, body string) (directives, fields, meaning string) {
+// splitEntryBody splits an entry's body into the line that names it when it has no
+// title (its first heading, as memrank.FirstHeadingName finds it), the lines the reader
+// takes as directives, the lines it takes as a class's field bullets, and the rest (its
+// meaning), each in the body's order. The heading is kept apart so a new meaning never
+// renames or unnames an untitled entry. A line is read as memrank.ParseDirectives and
+// ParseOntologyFields do: a bullet whose first backticked token starts with @ is a
+// directive wherever it is; a bare @name line is one outside a fence or an indented
+// block; a bullet with another backticked token is a field of a class.
+func splitEntryBody(kind, body string) (heading, directives, fields, meaning string) {
 	var dl, fl, ml []string
 	inFence := false
 	for _, line := range strings.Split(body, "\n") {
 		t := strings.TrimSpace(line)
 		switch {
+		case heading == "" && memrank.FirstHeadingName(line) != "":
+			heading = line
 		case strings.HasPrefix(t, "```"):
 			inFence = !inFence
 			ml = append(ml, line)
@@ -353,17 +359,18 @@ func splitEntryBody(kind, body string) (directives, fields, meaning string) {
 			ml = append(ml, line)
 		}
 	}
-	return strings.Join(dl, "\n"), strings.Join(fl, "\n"), strings.Join(ml, "\n")
+	return heading, strings.Join(dl, "\n"), strings.Join(fl, "\n"), strings.Join(ml, "\n")
 }
 
-// quoteFieldBullets quotes each line of proposed meaning text that a class reader would
-// take as a field declaration ("- `name` …"), as neutraliseDirectives quotes directive
-// lines: a proposal's meaning never declares a field.
-func quoteFieldBullets(text string) string {
+// quoteMeaningText quotes each line of proposed meaning text that the reader would take
+// as a declaration rather than text, as neutraliseDirectives quotes directive lines: a
+// class field ("- `name` …") and a heading, which names an entry that has no title. A
+// proposal's meaning never declares a field or names an entry.
+func quoteMeaningText(text string) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
 		t := strings.TrimSpace(line)
-		if strings.HasPrefix(t, "- ") && len(memrank.ParseOntologyFields(t)) > 0 {
+		if (strings.HasPrefix(t, "- ") && len(memrank.ParseOntologyFields(t)) > 0) || memrank.FirstHeadingName(t) != "" {
 			lines[i] = "> " + t
 		}
 	}
