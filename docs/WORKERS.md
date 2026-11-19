@@ -113,11 +113,13 @@ LOOMCYCLE_WORKSPACE_ROOT=/var/lib/loomcycle/workspaces \
 loomcycle worker --role workspace
 ```
 
-The worker reports `python` and `node` when it finds them on its `PATH`. An admin token, the runtime's legacy secret and the conversion workers' `LOOMCYCLE_WORKER_TOKEN` are all refused, and the worker exits saying why. The runtime checks the token again every minute; a worker whose token is revoked is detached and exits.
+The worker reports `python` and `node` when it finds them on its `PATH`. A token that may not attach a worker (an admin token, the runtime's legacy secret, a token with other scopes) is refused, and the worker exits saying why. A token the runtime cannot verify, such as an unknown or revoked one, or one checked while the store is down, is refused for now: the worker logs it and retries with backoff, and is served only once the token verifies. The conversion workers' `LOOMCYCLE_WORKER_TOKEN` is not an operator token and never verifies. The runtime checks the token again every minute and detaches a worker whose token no longer holds.
+
+A worker is known by its token's grant and its own name (`--id`, by default the host name): `tenant:<tenant>/<name>` or `shared/<name>`. The name must stay the same across restarts, so that the worker keeps its workspaces; a worker that came back under another name would have the runtime remove every workspace on its disk as unknown. Two workers on one host each need an `--id` of their own.
 
 **The `host` engine has no isolation.** A command runs as the worker's user and can read anything that user can, the worker's own token included. Run it only on a machine you trust with every agent that may use it; isolated engines come in a later phase.
 
-When a worker attaches it lists the workspaces on its disk, and the runtime tells it which to delete: those released while it was away and those the runtime does not know. `/metrics` reports `loomcycle_workspace_workers`, `loomcycle_workspace_ops_total{op,outcome}` and `loomcycle_workspace_worker_deaths_total`.
+When a worker attaches it lists the workspaces on its disk, and the runtime tells it which to delete: those released while it was away, those the runtime does not know, and those marked lost whose run has ended. A lost workspace whose run is still going is put back in service. `/metrics` reports `loomcycle_workspace_workers`, `loomcycle_workspace_ops_total{op,outcome}` and `loomcycle_workspace_worker_deaths_total`.
 
 ## Versions
 
