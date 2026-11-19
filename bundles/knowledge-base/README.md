@@ -24,7 +24,7 @@ corpora, those were almost never right, so they are reported and not filed.
 `kb/search`, `kb/survey`, `kb/screen` and `kb/walker` only read: they hold
 `Document` (and the walker `Path`) in read mode (`tool_modes`), so the runtime
 refuses any write op before it runs, whatever a stored document tells the model
-to do. `kb/survey` hands `kb/screen` and the walker document and section ids only: a title, passage or brief is document text,
+to do. `kb/ask` holds `Document` read only too, with no memory or SQL scope, and its code calls only `describe_ontology`. `kb/survey` hands `kb/screen` and the walker document and section ids only: a title, passage or brief is document text,
 and is never pasted into a trusted prompt. The composing round's `BRIEFS` block
 is the one place document text reaches a child from code, and it goes as an
 untrusted block: the runtime fences it and escapes every spelling of `<`, and
