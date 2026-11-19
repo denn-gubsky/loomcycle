@@ -17,7 +17,7 @@ runtime does the reading; the file's bytes never pass through you.
 | EPUB (2 and 3) | the book title as `#`, each chapter in spine order with its own headings one level down (a chapter with none takes its contents-list label), footnotes as `[n]` listed under Notes, the cover and pictures kept; items marked non-linear come last under Supplementary. A book with DRM (an `encryption.xml` that encrypts anything but fonts) is refused |
 | FB2 (and `.fb2.zip`) | the book title as `#`, sections as headings one level down per level, epigraphs and quotes as block quotes, poems line by line, tables, note references as `[n]` listed under Notes; a picture is placed where it stands when its bytes come first, else marked `[picture N]` there and kept under Pictures at the end. Read in UTF-8, UTF-16 (with a byte order mark), windows-1250/1251/1252, koi8-r, koi8-u, iso-8859-1/2/5 or ibm866; any other encoding is refused by name. A zip of more than one file is refused as an archive to unpack first |
 | RTF (also one saved as `.doc`) | the title (`\info`'s, else the file name) as `#`, paragraphs with bold and italic, a paragraph with an outline level or a "heading N" style as a heading one level down, tables, a field's shown result, footnotes as `[n]` listed under Notes, PNG and JPEG pictures kept (WMF, EMF and others counted in `notes`); headers, footers and hidden text left out. `\'hh` bytes are read in code page 1250, 1251, 1252, 866, KOI8-R, KOI8-U or Mac Roman; a document whose bytes need any other is refused by name. A document is at most 64 MiB |
-| DjVu | its text layer, `## Page N` per page, after the book's outline headings; `pages` reads only those pages; a page with no text is listed in `low_yield_pages`. Read by DjVuLibre on a conversion worker, or in the server only where the operator configured it; OCR of DjVu pages is not available yet. A DjVu whose pages are separate files, or that includes other files, is refused |
+| DjVu | its text layer, `## Page N` per page, after the book's outline headings; `pages` reads only those pages; a page with no text is listed in `low_yield_pages`. Read by DjVuLibre on a conversion worker, or in the server only where the operator configured it. With OCR, its thin pages (or every page) are rendered and read like a scanned PDF's; where nothing can render DjVu pages, the result's notes say page OCR is not available and the text layer is kept. A DjVu whose pages are separate files, or that includes other files, is refused |
 | CSV, TSV | one table |
 | text, Markdown | the text; Markdown keeps its structure, without raw HTML or embedded images |
 | PNG, JPEG, GIF, WebP, BMP | a one-section Markdown file that embeds the image |
@@ -100,8 +100,9 @@ it, extract can read the text in pictures too. The runtime sends the pages to
 the model and writes what it reads into the Markdown; you never handle a
 page. Each page read costs a model call's tokens.
 
-- `ocr: "auto"` reads only the PDF pages in `low_yield_pages`: a typed letter
-  with a scanned annex has only the annex read. An image is read whole.
+- `ocr: "auto"` reads only the PDF or DjVu pages in `low_yield_pages`: a
+  typed letter with a scanned annex has only the annex read. An image is read
+  whole.
 - `ocr: "always"` reads every page, replacing the text layer.
 - `ocr: "never"` reads the text layer only; `low_yield_pages` still shows
   what reading would have covered.
@@ -114,13 +115,15 @@ its definition names one (`transcription.ocr_model`), else the operator's.
 
 A page that was read becomes `## Page N` followed by the text the model read,
 in place of the page's text layer and its picture; its headings sit under the
-page heading. A page the model found nothing on reads `[no text]`. A comment
+page heading. A DjVu's outline headings that open the page stay above it. A
+DjVu page is rendered as one picture while the book is read, and only as many
+pages as your run may still have read; the book itself is never sent. A page the model found nothing on reads `[no text]`. A comment
 under the title records the model and the pages read. Pages that were not
 read keep their text layer.
 
 `dry_run: true` reads no page and writes nothing: it answers how many pages
 and model calls it would take, which model, and the estimated tokens and
-cost. Use it on a long file before reading it.
+cost (a DjVu page is one call; none is rendered for the estimate). Use it on a long file before reading it.
 
 The pages a run may have read are capped. A call that would pass the cap is
 not made: the error names the cap, and the Markdown written so far, with the
@@ -191,7 +194,8 @@ cap), the model calls that answered, what they used, and `ok` or `partial`.
 A dry run returns `{dry_run, ocr, source, pages, page_numbers, units, engine,
 provider, model, est_tokens, est_input_tokens, est_output_tokens, est_cost,
 currency, low_yield_pages}` instead; the cost is left out when the model has
-no price.
+no price. For a DjVu that cannot have its pages rendered here, `note` says so
+and `pages` is 0.
 
 ## Errors
 
