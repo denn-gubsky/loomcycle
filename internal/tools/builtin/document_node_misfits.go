@@ -21,9 +21,9 @@ package builtin
 // edgeMethod, never from the wire.
 //
 // WHO MAY FILE. A rule: method is what review rules on a method prefix key on, so
-// filing is allowed only to a caller who could stamp a rule: method itself: an
-// operator, or a run whose statement_methods grant lists rule (misfitMayPropose).
-// node_stats' own gate also admits an extractor-only grant; such a run gets the
+// filing is allowed only to a run whose statement_methods grant lists rule (who
+// could stamp a rule: method itself), or to an operator, who rules on the tenant's
+// statements anyway (misfitMayPropose). node_stats' own gate also admits an extractor-only grant; such a run gets the
 // report and a refusal for propose. And the pass never makes a statement live:
 // every filing is proposeOnly, so the @auto_assert rule does not assert it, and
 // only the tenant's Review section can rule on it at filing (D17).
@@ -114,11 +114,20 @@ type NodeMisfitsReport struct {
 	// Proposed and Skipped count the outcomes (propose only).
 	Proposed int            `json:"proposed,omitempty"`
 	Skipped  map[string]int `json:"skipped,omitempty"`
+	// MembersSkipped: members whose stored vector could not be compared (zero,
+	// non-finite, or of another dimension), left out. Issues: sibling groups the
+	// comparison failed on, left out.
+	MembersSkipped int      `json:"members_skipped,omitempty"`
+	Issues         []string `json:"issues,omitempty"`
 }
 
 // misfitMayPropose reports whether the caller may file proposals stamped
-// rule:centroid: an operator, or a run granted the rule prefix — exactly who could
-// send propose_statement with a rule: method itself (stampStatementMethod).
+// rule:centroid: an operator, or a run whose statement_methods grant lists rule.
+// The run half is the rule stampStatementMethod applies to a wire method. The
+// operator half is wider than that check, which no operator passes (the operator
+// plane carries no statement_methods): it is admitted because an operator rules on
+// the tenant's statements anyway, so a rule:-stamped proposal gives it nothing it
+// could not do directly.
 func misfitMayPropose(ctx context.Context, key sqlmem.ScopeKey) bool {
 	return callerDecidesIn(ctx, key) || contains(tools.PolicyOf(ctx).StatementMethods, "rule")
 }
@@ -152,10 +161,8 @@ func (d *Document) NodeMisfits(ctx context.Context, key sqlmem.ScopeKey, read On
 		ans.Note = "misfits need the vector stage, which does not run here: " + p.note
 		return ans, nil
 	}
-	found, err := p.misfits()
-	if err != nil {
-		return ans, err
-	}
+	found, skipped, issues := p.misfits()
+	ans.MembersSkipped, ans.Issues = len(skipped), issues
 	names := map[string]string{}
 	for _, n := range p.nodes {
 		if n.Kind == nodeKindConcept {
@@ -184,9 +191,49 @@ func (d *Document) NodeMisfits(ctx context.Context, key sqlmem.ScopeKey, read On
 	return ans, nil
 }
 
+// misfitVectorDim is the dimension most of the plan's vectors have (ties: the
+// smaller): the one a misfit comparison uses. A vector of another dimension is a
+// stray (an embed of another configuration) and is left out, not compared.
+func (p *nodeStatsPlan) misfitVectorDim() int {
+	byDim := map[int]int{}
+	for _, v := range p.vecs {
+		byDim[len(v)]++
+	}
+	best, bestN := 0, 0
+	for dim, n := range byDim {
+		if n > bestN || (n == bestN && dim < best) {
+			best, bestN = dim, n
+		}
+	}
+	return best
+}
+
+// usableMisfitVector reports whether v can be compared: of dimension dim, every
+// component finite, not all zero. nodestats refuses anything else for the whole
+// call, so one bad stored vector would otherwise void every group's answer.
+func usableMisfitVector(v nodestats.Vector, dim int) bool {
+	if len(v) != dim || dim == 0 {
+		return false
+	}
+	nonZero := false
+	for _, x := range v {
+		f := float64(x)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return false
+		}
+		nonZero = nonZero || x != 0
+	}
+	return nonZero
+}
+
 // misfits compares each sibling group of the plan's concepts, largest margin first
-// (then node, then document, so the order is stable).
-func (p *nodeStatsPlan) misfits() ([]nodestats.Misfit, error) {
+// (then node, then document, so the order is stable). A member whose vector cannot
+// be compared is left out and returned in skipped; a group the comparison still
+// fails on is left out and named in issues, so one fault costs one group, as a
+// compute keeps a failing node's counts and goes on.
+func (p *nodeStatsPlan) misfits() (out []nodestats.Misfit, skipped []string, issues []string) {
+	dim := p.misfitVectorDim()
+	bad := map[string]bool{}
 	groups := map[string][]nodestats.Node{}
 	var order []string
 	for _, n := range p.nodes {
@@ -195,26 +242,34 @@ func (p *nodeStatsPlan) misfits() ([]nodestats.Misfit, error) {
 		}
 		node := nodestats.Node{ID: n.ID}
 		for _, id := range n.members {
-			if v, ok := p.vecs[id]; ok {
-				node.Members = append(node.Members, nodestats.Member{ID: id, Vec: v})
+			v, ok := p.vecs[id]
+			if !ok {
+				continue
 			}
+			if !usableMisfitVector(v, dim) {
+				bad[id] = true
+				continue
+			}
+			node.Members = append(node.Members, nodestats.Member{ID: id, Vec: v})
 		}
 		if _, seen := groups[n.group]; !seen {
 			order = append(order, n.group)
 		}
 		groups[n.group] = append(groups[n.group], node)
 	}
-	var out []nodestats.Misfit
 	for _, g := range order {
 		if len(groups[g]) < 2 {
 			continue
 		}
 		found, err := nodestats.Misfits(groups[g], nodestats.MisfitMargin, nodestats.MinMembers)
 		if err != nil {
-			return nil, err
+			_, parent, _ := strings.Cut(g, "\x00")
+			issues = append(issues, fmt.Sprintf("the concepts under %s were not compared: %v", parent, err))
+			continue
 		}
 		out = append(out, found...)
 	}
+	skipped = sortedSet(bad)
 	sort.SliceStable(out, func(i, j int) bool {
 		mi, mj := out[i].NearestSimilarity-out[i].OwnSimilarity, out[j].NearestSimilarity-out[j].OwnSimilarity
 		if mi != mj {
@@ -225,7 +280,7 @@ func (p *nodeStatsPlan) misfits() ([]nodestats.Misfit, error) {
 		}
 		return out[i].MemberID < out[j].MemberID
 	})
-	return out, nil
+	return out, skipped, issues
 }
 
 // proposeMisfits files the proposals, in the answer's order, until the cap.

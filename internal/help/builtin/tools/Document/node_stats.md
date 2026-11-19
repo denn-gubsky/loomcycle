@@ -82,7 +82,10 @@ tenant's Review section can rule on it when it is filed.
 
 It returns `{mode, scheme?, vectors, note?, embed_model?, margin,
 min_members, propose, cap?, count, misfits, truncated?, proposed?,
-skipped?}`: each misfit is `{document_id, title, node_id, node,
+skipped?, members_skipped?, issues?}`: `members_skipped` counts members whose
+stored vector could not be compared (all zero, not finite, or of another
+dimension), left out; `issues` names sibling groups the comparison failed on,
+left out while the rest are answered. Each misfit is `{document_id, title, node_id, node,
 nearest_node_id, nearest, own_similarity, nearest_similarity, margin,
 statement_id?, status?, skipped?, detail?}` (at most 200 listed; `count` is
 whole). `skipped` says why no proposal was filed: `rejected`, `exists`, `cap`,

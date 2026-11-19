@@ -273,6 +273,29 @@ func rejectAs(t *testing.T, d *Document, k *statsCorpus, by, id string) {
 	}
 }
 
+// TestMisfit_UnusableVectorIsSkippedNotFatal — a stored vector the comparison
+// cannot use (all zero, or of another dimension) leaves that member out and is
+// counted; the rest of the answer, and its proposals, still come.
+func TestMisfit_UnusableVectorIsSkippedNotFatal(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpus(t, d, base)
+	x1, _ := k.withStrays(t)
+	k.setVector(t, k.b1, []float32{0, 0, 0, 0}, "m1")
+	k.setVector(t, k.r1, []float32{0, 0, 1}, "m1")
+	ans := misfitsRun(t, d, k.f.operator, `{"op":"node_stats","mode":"misfits","propose":true}`)
+	if ans.MembersSkipped != 2 || len(ans.Issues) != 0 {
+		t.Errorf("members_skipped %d issues %v; want 2 and none", ans.MembersSkipped, ans.Issues)
+	}
+	if m := ans.of(t, x1); m.NearestNodeID != k.rm || m.StatementID == "" {
+		t.Errorf("x1 = %+v; want still a misfit, filed", m)
+	}
+	for _, m := range ans.Misfits {
+		if m.DocumentID == k.b1 || m.DocumentID == k.r1 {
+			t.Errorf("a skipped member is listed: %+v", m)
+		}
+	}
+}
+
 // TestMisfit_StoreWithoutVectorsReportsItCannotRun — on a store that keeps no
 // vectors the mode says why and lists nothing; with propose it files nothing.
 func TestMisfit_StoreWithoutVectorsReportsItCannotRun(t *testing.T) {
