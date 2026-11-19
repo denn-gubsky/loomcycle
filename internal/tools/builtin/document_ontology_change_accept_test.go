@@ -407,4 +407,15 @@ func TestAcceptChange_OnPostgres(t *testing.T) {
 	if f.chunk("oversees") != supervises || f.status(reporting) != memrank.OntologyStatusRetired || f.exists(edit) || f.exists(retire) {
 		t.Error("the accepts were not applied in place on postgres")
 	}
+	// An edit with a move: the move follows only when the fingerprint after the update
+	// is exactly what the update left, read from this tier's aggregates.
+	memo, provision := f.chunk("Memo"), f.chunk("Provision")
+	move := f.file(map[string]any{"change": "edit", "entry": memo, "meaning": "A short note.", "parent": provision})
+	rep, err := f.accept(move, f.fingerprintNow())
+	if err != nil {
+		t.Fatalf("accept edit with a move on postgres: %v", err)
+	}
+	if row, _, _ := f.d.getChunkRow(f.ctx, mustTenantKey(t, f.d, f.ctx), memo); row.ParentID != provision || len(rep.Applied) != 2 {
+		t.Errorf("edit with a move on postgres: parent %s applied %v", row.ParentID, rep.Applied)
+	}
 }
