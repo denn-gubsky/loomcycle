@@ -19,15 +19,12 @@ import (
 	"runtime"
 	"runtime/debug"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -38,6 +35,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
+	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 )
 
 const (
@@ -56,8 +54,6 @@ const (
 	maxEncoded     = 256 << 20
 	maxWAV         = 4 << 30
 	heartbeatEvery = 5 * time.Second
-	backoffMin     = time.Second
-	backoffMax     = 30 * time.Second
 	// endWait bounds how long a finished job's stream may take to close.
 	endWait = 10 * time.Second
 	// maxSlots is the dispatcher's own bound on a worker's slots.
@@ -77,7 +73,7 @@ type Options struct {
 	// 30 seconds.
 	ResolveEvery time.Duration
 	// TLS, when set, is used to dial every dispatcher that is not a Unix
-	// socket (ClientTLS).
+	// socket (workerlink.ClientTLS).
 	TLS *tls.Config
 	// Insecure allows dialling a dispatcher off this host without TLS. Off,
 	// such a dispatcher is refused: the worker would send the token, and
@@ -121,8 +117,9 @@ type Options struct {
 }
 
 // ErrRefused is a dispatcher refusing this worker for good (another protocol
-// version, a bad token): retrying cannot help.
-var ErrRefused = errors.New("worker: the dispatcher refused this worker")
+// version, a bad token): retrying cannot help. It is the link's own, so Run's
+// refusals and the link's (no TLS to a host off this one) are one error.
+var ErrRefused = workerlink.ErrRefused
 
 // Run serves the dispatcher until ctx ends, reconnecting with backoff.
 func Run(ctx context.Context, opt Options) error {
@@ -153,67 +150,15 @@ func Run(ctx context.Context, opt Options) error {
 		safego.Go(ctx, "conversion.worker.parent", func() { watchParent(ctx, opt.ParentPID, cancel) })
 	}
 
-	targets, err := parseTargets(opt.Target)
+	targets, err := workerlink.ParseTargets(opt.Target)
 	if err != nil {
 		return err
 	}
 	w := &worker{opt: opt, log: log, labels: labels(opt, log), freed: make(chan struct{})}
-	return w.serveTargets(ctx, targets)
-}
-
-// attach serves one dispatcher until ctx ends, reconnecting with backoff. It
-// returns ErrRefused when the dispatcher refuses this worker for good.
-// serverName is the name a TLS certificate is checked against when the
-// target is an address found by name.
-func (w *worker) attach(ctx context.Context, target, serverName string) error {
-	log := w.log.With("dispatcher", target)
-	creds := insecure.NewCredentials()
-	switch {
-	case strings.HasPrefix(target, "unix:"):
-	case w.opt.TLS != nil:
-		c := w.opt.TLS.Clone()
-		if c.ServerName == "" {
-			c.ServerName = serverName
-		}
-		creds = credentials.NewTLS(c)
-	case !w.opt.Insecure && !plaintextAllowed(target):
-		err := fmt.Errorf("%w: %s is off this host and no TLS is configured (set LOOMCYCLE_WORKER_TLS_CA, or LOOMCYCLE_WORKER_INSECURE=1 on a network only the runtime and its workers share)", ErrRefused, target)
-		log.Error("refusing to dial a dispatcher in the clear", "err", err)
-		return err
-	}
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
-	if err != nil {
-		// A target that cannot even be set up will not come right by
-		// retrying: count it as a refusal, so a worker left with nothing to
-		// serve stops and says why.
-		err = fmt.Errorf("%w: %s: %v", ErrRefused, target, err)
-		log.Error("cannot dial the dispatcher", "err", err)
-		return err
-	}
-	defer conn.Close()
-	client := workerpb.NewWorkerServiceClient(conn)
-	backoff := backoffMin
-	for {
-		start := time.Now()
-		err := w.session(ctx, client, log)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if errors.Is(err, ErrRefused) {
-			log.Error("the dispatcher refused this worker", "err", err)
-			return err
-		}
-		if time.Since(start) > time.Minute {
-			backoff = backoffMin
-		}
-		log.Warn("lost the dispatcher; reconnecting", "err", err, "in", backoff)
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(backoff):
-		}
-		backoff = min(backoff*2, backoffMax)
-	}
+	return workerlink.Serve(ctx, targets, workerlink.Options{
+		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
+		Name: "conversion.worker", Logger: log,
+	}, w.session)
 }
 
 type worker struct {
@@ -345,7 +290,8 @@ func (w *worker) outgoing(ctx context.Context) context.Context {
 }
 
 // session is one attachment: Hello, heartbeats, and a loop per slot.
-func (w *worker) session(parent context.Context, client workerpb.WorkerServiceClient, log *slog.Logger) error {
+func (w *worker) session(parent context.Context, conn *grpc.ClientConn, log *slog.Logger) error {
+	client := workerpb.NewWorkerServiceClient(conn)
 	ctx, cancel := context.WithCancel(w.outgoing(parent))
 	defer cancel()
 	att, err := client.Attach(ctx)
@@ -391,7 +337,7 @@ func (w *worker) session(parent context.Context, client workerpb.WorkerServiceCl
 					log.Warn("a work slot ended", "err", err)
 					select {
 					case <-ctx.Done():
-					case <-time.After(backoffMin):
+					case <-time.After(workerlink.BackoffMin):
 					}
 				}
 			}

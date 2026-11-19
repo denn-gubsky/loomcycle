@@ -18,6 +18,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
+	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 )
 
 // minWorkerToken is the shortest LOOMCYCLE_WORKER_TOKEN a worker endpoint on
@@ -98,11 +99,11 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 			fatal("conversion: cannot open the worker endpoint", "listen", cv.Listen, "err", err)
 		}
 		if cv.TLS.Enabled() {
-			tc, err := dispatch.ServerTLS(cv.TLS.CertFile, cv.TLS.KeyFile, cv.TLS.ClientCAFile)
+			tc, err := workerlink.ServerTLS(cv.TLS.CertFile, cv.TLS.KeyFile, cv.TLS.ClientCAFile)
 			if err != nil {
 				fatal("conversion.tls: "+err.Error(), "listen", cv.Listen)
 			}
-			l = dispatch.TLSListener(l, tc)
+			l = workerlink.TLSListener(l, tc)
 		}
 		serve(l)
 		closers = append(closers, func() { l.Close() })

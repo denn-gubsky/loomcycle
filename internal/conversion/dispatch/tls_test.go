@@ -19,6 +19,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/conversion/dispatch"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/worker"
+	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 )
 
 // testPKI is a CA, a server certificate for 127.0.0.1 and a client
@@ -71,7 +72,7 @@ func writePEM(t *testing.T, path, typ string, der []byte) {
 // tlsPool is a dispatcher serving TLS on a loopback listener.
 func tlsPool(t *testing.T, p testPKI, clientCA string) (*dispatch.Dispatcher, string) {
 	t.Helper()
-	cfg, err := dispatch.ServerTLS(p.serverCert, p.serverKey, clientCA)
+	cfg, err := workerlink.ServerTLS(p.serverCert, p.serverKey, clientCA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +81,7 @@ func tlsPool(t *testing.T, p testPKI, clientCA string) (*dispatch.Dispatcher, st
 		t.Fatal(err)
 	}
 	d := dispatch.New(dispatch.Options{Token: token})
-	go func() { _ = d.Serve(dispatch.TLSListener(l, cfg)) }()
+	go func() { _ = d.Serve(workerlink.TLSListener(l, cfg)) }()
 	t.Cleanup(d.Stop)
 	return d, l.Addr().String()
 }
@@ -89,7 +90,7 @@ func tlsPool(t *testing.T, p testPKI, clientCA string) (*dispatch.Dispatcher, st
 func TestWorker_AttachesOverTLS(t *testing.T) {
 	p := newPKI(t)
 	d, addr := tlsPool(t, p, "")
-	tc, err := worker.ClientTLS(p.ca, "", "", "")
+	tc, err := workerlink.ClientTLS(p.ca, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,13 +107,13 @@ func TestWorker_AttachesOverTLS(t *testing.T) {
 func TestDispatcher_MutualTLSRefusesAWorkerWithoutACertificate(t *testing.T) {
 	p := newPKI(t)
 	d, addr := tlsPool(t, p, p.ca)
-	noCert, _ := worker.ClientTLS(p.ca, "", "", "")
+	noCert, _ := workerlink.ClientTLS(p.ca, "", "", "")
 	helperWorker(t, addr, "no-cert", worker.Options{TLS: noCert})
 	time.Sleep(500 * time.Millisecond)
 	if n := d.Stats().Workers; n != 0 {
 		t.Fatalf("a worker with no client certificate attached (%d workers)", n)
 	}
-	withCert, err := worker.ClientTLS(p.ca, p.clientCert, p.clientKey, "")
+	withCert, err := workerlink.ClientTLS(p.ca, p.clientCert, p.clientKey, "")
 	if err != nil {
 		t.Fatal(err)
 	}
