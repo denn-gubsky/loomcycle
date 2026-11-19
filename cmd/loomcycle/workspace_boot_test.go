@@ -36,7 +36,8 @@ func TestBoot_WorkspaceRemoteModeAttachesARealWorker(t *testing.T) {
 	core := b.startOn(t, b.port, "LOOMCYCLE_TEST_WORKSPACE_WORKER_TOKEN="+workerToken)
 
 	root := filepath.Join(b.dir, "workspaces")
-	worker := func(token, id string) (*exec.Cmd, *lockedBuffer) {
+	// worker starts one; exited closes when it has, from the only Wait.
+	worker := func(token, id string) (exited <-chan struct{}, out *lockedBuffer) {
 		cmd := exec.Command(b.bin, "worker", "--role", "workspace", "--dispatcher", endpoint, "--id", id)
 		cmd.Env = []string{
 			"HOME=" + filepath.Join(b.dir, "home"),
@@ -45,19 +46,19 @@ func TestBoot_WorkspaceRemoteModeAttachesARealWorker(t *testing.T) {
 			"LOOMCYCLE_WORKSPACE_ROOT=" + root,
 			"LOOMCYCLE_WORKSPACE_IDLE_STREAMS=2",
 		}
-		out := &lockedBuffer{}
+		out = &lockedBuffer{}
 		cmd.Stdout, cmd.Stderr = out, out
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-		return cmd, out
+		done := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(done) }()
+		t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
+		return done, out
 	}
 
 	// A bearer the runtime does not know: never attached, still retrying.
-	bad, badOut := worker("not-a-token", "bad1")
-	exited := make(chan struct{})
-	go func() { _ = bad.Wait(); close(exited) }()
+	exited, badOut := worker("not-a-token", "bad1")
 
 	_, out := worker(workerToken, "boot1")
 	want := "worker_id=tenant:acme/boot1"
