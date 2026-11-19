@@ -3,13 +3,92 @@ package builtin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
+
+// TestGrowth_GonePointIsStaleAndNotRanked — a stored point the documents no longer
+// yield (its only member is now dated in another period) is counted stale and is
+// not ranked from: the old period's member no longer counts as "previous".
+func TestGrowth_GonePointIsStaleAndNotRanked(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newMeasureCorpus(t, d, base, conceptOntologyMD)
+	moved := k.doc(t, monthsAgo(3), k.rep)
+	k.doc(t, monthsAgo(0), k.rep)
+	k.compute(t)
+	if a := growthRun(t, d, k.f.operator, `{"op":"node_stats","mode":"growth","quiet_periods":2}`); a.candidate(t, k.rep).Previous != 1 || a.SeriesStale != 0 {
+		t.Fatalf("precondition = %+v", a.candidate(t, k.rep))
+	}
+	// Clear its date: it falls back to when it was stored, this month.
+	g := k.f.c.exec(map[string]any{"op": "get_chunk", "scope": "tenant", "id": k.roots[moved]})
+	k.f.c.exec(map[string]any{"op": "update_chunk", "scope": "tenant", "id": k.roots[moved], "valid_at": nil, "revision": g["revision"]})
+	ans := growthRun(t, d, k.f.operator, `{"op":"node_stats","mode":"growth","quiet_periods":2,"scheme":"topics"}`)
+	if c := ans.candidate(t, k.rep); c.Previous != 0 || c.Recent != 1 {
+		t.Errorf("reporting = recent %d previous %d; want 1 and 0 (the gone point not ranked, this month's still the stored 1)", c.Recent, c.Previous)
+	}
+	// Within topics. Stale: this month's count and unplaced basis (changed), the old month's count
+	// and unplaced basis (gone).
+	if ans.SeriesStale != 4 || ans.SeriesMissing != 0 || ans.Note == "" {
+		t.Errorf("series stale %d missing %d note %q; want 4, 0 and a note", ans.SeriesStale, ans.SeriesMissing, ans.Note)
+	}
+}
+
+// TestGrowth_FuturePeriodIsNotRecent — a member dated after the period holding now
+// counts in no window and is no last period: a node whose other members are old is
+// quiet, not a candidate.
+func TestGrowth_FuturePeriodIsNotRecent(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newMeasureCorpus(t, d, base, conceptOntologyMD)
+	k.doc(t, monthsAgo(5), k.rep)
+	k.doc(t, monthsAgo(-2), k.rep)
+	k.compute(t)
+	ans := growthRun(t, d, k.f.operator, `{"op":"node_stats","mode":"growth","quiet_periods":2}`)
+	for _, c := range ans.Candidates {
+		if c.NodeID == k.rep {
+			t.Errorf("a future-dated member made reporting a candidate: %+v", c)
+		}
+	}
+	var q *quietNode
+	for i := range ans.Quiet {
+		if ans.Quiet[i].NodeID == k.rep {
+			q = &ans.Quiet[i]
+		}
+	}
+	if q == nil || q.LastPeriod != monthsAgo(5).Format("2006-01") || q.PeriodsSince != 5 {
+		t.Errorf("reporting quiet = %+v; want last period five months ago", q)
+	}
+}
+
+// vectorListRefusingStore fails every vector read: a pass that needs no vector
+// must not read one.
+type vectorListRefusingStore struct{ *ftsStore }
+
+func (s *vectorListRefusingStore) MemoryEmbedListVectors(context.Context, string, store.MemoryScope, string, string, string, int) ([]store.MemoryEmbedRow, error) {
+	return nil, errors.New("a vector was read")
+}
+
+// TestGrowth_ReadsNoVector — growth uses counts only, so with an embedder set it
+// still reads no member vector (node_stats report, which does, fails here).
+func TestGrowth_ReadsNoVector(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newMeasureCorpus(t, d, base, conceptOntologyMD)
+	growthCorpus(t, k)
+	k.compute(t)
+	d.Store = &vectorListRefusingStore{d.Store.(*ftsStore)}
+	if _, res := docExec(t, d, k.f.operator, `{"op":"node_stats"}`); !res.IsError {
+		t.Fatal("precondition: a report reads vectors and fails on this store")
+	}
+	if ans := growthRun(t, d, k.f.operator, `{"op":"node_stats","mode":"growth","quiet_periods":2}`); len(ans.Candidates) == 0 {
+		t.Errorf("growth = %+v; want a ranking", ans)
+	}
+}
 
 // monthsAgo is the 10th of the month n months before now, at noon UTC: inside that
 // month whatever today's date.

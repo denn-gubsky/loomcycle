@@ -249,6 +249,14 @@ func (d *Document) nodeStatsVectorsNote() string {
 // buildNodeStatsPlan reads the nodes of read (only scheme's concepts when scheme is
 // set), their full membership, their member documents and the stored rows.
 func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string) (*nodeStatsPlan, error) {
+	return d.buildNodeStatsPlanOpts(ctx, key, read, scheme, false)
+}
+
+// buildNodeStatsPlanOpts is buildNodeStatsPlan; skipVectors reads no member vector,
+// for a caller that uses only membership and counts (node_stats mode growth). Such
+// a plan's node hashes do not match the stored rows': it must never compute or
+// judge freshness of node_stats rows.
+func (d *Document) buildNodeStatsPlanOpts(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string, skipVectors bool) (*nodeStatsPlan, error) {
 	if err := d.ensureSchema(ctx, key); err != nil {
 		return nil, err
 	}
@@ -306,7 +314,7 @@ func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, 
 	// The vectors are read here, not only when a pass computes: which members have
 	// one is part of every node's inputs hash. The memory tenant is the run
 	// identity's, as NodeStatsPass's tenant is (NodeStatsScopeKey stamps it).
-	if p.model != "" {
+	if p.model != "" && !skipVectors {
 		if _, err := d.loadNodeStatsVectors(ctx, key, direntTenant(ctx), p); errors.Is(err, store.ErrVectorUnsupported) {
 			p.model, p.note = "", "the store keeps no vectors (that needs Postgres with pgvector): only member counts are kept"
 		} else if err != nil {

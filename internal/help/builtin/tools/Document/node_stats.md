@@ -60,7 +60,8 @@ tenant scope.
 With `mode: growth` the call reads the series `compute` stored (the rows
 `measure` serves, so only documents every member of the tenant may read) and
 writes nothing. Windows are counted in each node's own period (its scheme's
-`@period`, else months), ending in the period that holds now:
+`@period`, else months), ending in the period that holds now; a member
+dated after it counts in no window:
 
 - `candidates` — the concepts with members dated in the last `quiet_periods`
   periods, ranked by `growth` (those members less the ones dated in the
@@ -78,7 +79,9 @@ A concept of an `@origin adopted` scheme, or one `@locked`, carries `fixed`
 (`adopted` or `locked`): growth beneath it may add local concepts, never
 rename or move it. A node with no stored series point is not judged;
 `series_stale` and `series_missing` count the count and unplaced points that
-are behind, and `note` says to run `compute` first. It needs no vectors.
+are behind (including a stored point whose period no member is dated in any
+more, which is not ranked from), and `note` says to run `compute` first. It
+needs no vectors and reads none.
 
 It returns `{mode, scheme?, quiet_periods, series_stale, series_missing,
 note?, candidates, quiet, unplaced, truncated?}`: a candidate is `{node_id,

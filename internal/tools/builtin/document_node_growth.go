@@ -147,7 +147,7 @@ func growthWindow(n int) (int, string) {
 func (d *Document) NodeGrowth(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string, window int, now int64) (NodeGrowthReport, error) {
 	ans := NodeGrowthReport{Mode: nodeStatsModeGrowth, Scheme: scheme, QuietPeriods: window,
 		Candidates: []growthNode{}, Quiet: []quietNode{}, Unplaced: []unplacedScheme{}}
-	p, err := d.buildNodeStatsPlan(ctx, key, read, scheme)
+	p, err := d.buildNodeStatsPlanOpts(ctx, key, read, scheme, true) // counts only: no vector is read
 	if err != nil {
 		return ans, err
 	}
@@ -159,19 +159,35 @@ func (d *Document) NodeGrowth(ctx context.Context, key sqlmem.ScopeKey, read Ont
 	if err != nil {
 		return ans, err
 	}
-	for _, r := range sp.rows {
+	// What a compute would append, as seriesDiff decides it: a point the state
+	// yields and the store lacks is missing; one it holds otherwise is stale, and so
+	// is a stored point the state no longer yields (its members are gone or dated
+	// elsewhere now), which compute overwrites with an empty row. stored holds
+	// count and unplaced only, so the diff's other measures are left out here.
+	_, due := sp.seriesDiff(stored)
+	for _, r := range due {
 		if r.measure != measureCount && r.measure != measureUnplaced {
 			continue
 		}
-		switch s, ok := stored[r.pointKey]; {
-		case !ok:
-			ans.SeriesMissing++
-		case s.inputs != r.inputs:
+		if _, ok := stored[r.pointKey]; ok {
 			ans.SeriesStale++
+		} else {
+			ans.SeriesMissing++
 		}
 	}
 	if ans.SeriesStale+ans.SeriesMissing > 0 {
 		ans.Note = "the stored series are behind the documents; run node_stats mode compute for a current ranking"
+	}
+	// A gone point says what held before its members left; none of it holds now,
+	// so it is not ranked from.
+	yielded := make(map[pointKey]bool, len(sp.rows))
+	for _, r := range sp.rows {
+		yielded[r.pointKey] = true
+	}
+	for k := range stored {
+		if !yielded[k] {
+			delete(stored, k)
+		}
 	}
 	sp.servable(stored)
 
@@ -200,6 +216,9 @@ func (d *Document) NodeGrowth(ctx context.Context, key sqlmem.ScopeKey, read Ont
 		last := int64(0)
 		hasLast := false
 		for start, v := range pts {
+			if start > cur {
+				continue // dated after the period holding now: not recent, not a last period
+			}
 			switch {
 			case start >= recentFrom:
 				recent += v
@@ -210,8 +229,8 @@ func (d *Document) NodeGrowth(ctx context.Context, key sqlmem.ScopeKey, read Ont
 				last, hasLast = start, true
 			}
 		}
-		if !hasLast {
-			continue
+		if !hasLast || len(n.members) == 0 {
+			continue // nothing dated up to now, or no member now: not judged
 		}
 		ci := info[n.ID]
 		switch {
@@ -219,7 +238,7 @@ func (d *Document) NodeGrowth(ctx context.Context, key sqlmem.ScopeKey, read Ont
 			ans.Candidates = append(ans.Candidates, growthNode{NodeID: n.ID, Name: n.Name, Tag: n.Tag, Scheme: ci.scheme,
 				Period: period, Members: len(n.members), Recent: recent, Previous: previous, Growth: recent - previous,
 				LastPeriod: periodLabel(last, period), Fixed: ci.fixed})
-		case recent == 0 && len(n.members) > 0:
+		case recent == 0:
 			ans.Quiet = append(ans.Quiet, quietNode{NodeID: n.ID, Kind: n.Kind, Name: n.Name, Tag: n.Tag, Scheme: ci.scheme,
 				Period: period, Members: len(n.members), LastPeriod: periodLabel(last, period),
 				PeriodsSince: periodsBetween(last, cur, period), Fixed: ci.fixed})
