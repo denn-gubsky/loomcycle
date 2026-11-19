@@ -179,18 +179,28 @@ func TestOntologyPlan_NotAProposalIsRefused(t *testing.T) {
 
 // TestOntologyPlan_ProposalRefusedByThePlanIsInvalidNotNotFound (#2772 review): when a
 // proposal's checks pass on their own read but its composed change is refused against
-// the plan's earlier read — here the target is retired in that read and brought back
-// before the checks run — the refusal is invalid_request naming the proposal, never
-// entry_not_found, which means only "not an open proposal".
+// the plan's earlier read, the refusal is invalid_request naming the proposal, never
+// entry_not_found, which means only "not an open proposal". Staged with a move: the
+// proposal moves Reporting under outsourcing; in the plan's read outsourcing sits under
+// Reporting (a cycle, refused), and is moved back before the proposal's checks read.
 func TestOntologyPlan_ProposalRefusedByThePlanIsInvalidNotNotFound(t *testing.T) {
 	f := newAcceptFixture(t)
-	filedUnder := f.chunk("filed_under")
-	id := f.file(map[string]any{"change": "retire", "entry": filedUnder})
-	f.retire("filed_under")
+	reporting, outsourcing, risk := f.chunk("Reporting"), f.chunk("outsourcing"), f.chunk("Risk Management")
+	id := f.file(map[string]any{"change": "edit", "entry": reporting, "parent": outsourcing})
+	moveUnder := func(parent string) string {
+		fp := ontologyFingerprintNow(t, f.d, f.ctx)
+		if r := f.change(f.ctx, "move_chunk", outsourcing, map[string]any{"new_parent_id": parent, "plan_fingerprint": fp}); r.IsError {
+			return refusalText(r)
+		}
+		return ""
+	}
+	if why := moveUnder(reporting); why != "" {
+		t.Fatalf("move outsourcing under Reporting: %s", why)
+	}
 	f.d.duringAcceptChecks = func() {
 		f.d.duringAcceptChecks = nil
-		if why := f.setStatus(f.ctx, filedUnder, ""); why != "" {
-			t.Errorf("bring filed_under back: %s", why)
+		if why := moveUnder(risk); why != "" {
+			t.Errorf("move outsourcing back: %s", why)
 		}
 	}
 	_, err := f.d.PlanOntology(f.ctx, []connector.OntologyChange{proposalChange(id)})
