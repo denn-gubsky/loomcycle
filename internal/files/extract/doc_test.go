@@ -67,7 +67,7 @@ type docTestSpec struct {
 	// alternateBold gives the text character properties (a CHPX bin
 	// table and its pages) that turn bold on and off at every character.
 	alternateBold bool
-	extra     []cfbStreamSpec
+	extra         []cfbStreamSpec
 }
 
 // docEncode8 is text in the compressed 8-bit form: Latin-1, but for the
