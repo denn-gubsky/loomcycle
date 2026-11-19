@@ -563,13 +563,14 @@ paths:
                   maxItems: 50
                   items:
                     type: object
-                    required: [op, entry]
+                    required: [op]
                     properties:
-                      op: { type: string, enum: [retire, rename, move, edit, delete] }
-                      entry: { type: string, description: "An in-force entry's chunk id (a class, relation, scheme, concept or instance)." }
+                      op: { type: string, enum: [retire, rename, move, edit, delete, proposal] }
+                      entry: { type: string, description: "Every op but proposal (required): an in-force entry's chunk id (a class, relation, scheme, concept or instance)." }
                       name: { type: string, description: "rename: the new name, one line, at most 200 characters." }
                       parent: { type: string, description: "move: the new parent — the entry's section, or an entry of it that can hold it." }
                       body: { type: string, description: "edit: the new body, at most 32 KiB." }
+                      id: { type: string, description: "proposal (required, and its only other field): an open proposal's chunk id. A change or retire proposal plans as the direct changes accepting it makes (retire; rename, edit, move), each carrying `proposal`; an add proposal plans as op `add`, risk `none`. The proposal is checked again as accepting it would be. Several proposals, with direct changes or without, are planned together: one fingerprint, the same as a plan of the direct changes." }
       responses:
         "200":
           description: The plan. Nothing was written.
@@ -610,17 +611,18 @@ paths:
                           type: array
                           items: { type: object }
                         notes: { type: array, items: { type: string } }
+                        proposal: { type: string, description: "The proposal's chunk id when the change is one accepting it makes; absent for a direct change." }
                   issues: { type: array, items: { type: string } }
                   new_issues: { type: array, items: { type: string } }
                   scopes_counted: { type: integer }
                   scopes_skipped: { type: integer }
                   complete: { type: boolean, description: "false when a user or agent scope was left out (a fault, or the time budget); the other-scope counts are then a floor." }
         "400":
-          description: "`invalid_body` (not JSON, an unknown field, over 64 KiB) or `invalid_request` (no changes, more than 50, an unknown op, a missing name, parent or body)."
+          description: "`invalid_body` (not JSON, an unknown field, over 64 KiB) or `invalid_request` (no changes, more than 50 — counting each proposal as the changes it makes — an unknown op, a missing name, parent, body or id, or a proposal that accepting would refuse as it stands: its mark is not the change the ontology now allows, or its entry is locked)."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "403": { description: "`forbidden`: not an admin or a tenant operator." }
         "404":
-          description: "`entry_not_found`: the tenant has no ontology, a change names no in-force entry, or a move names a parent that cannot hold the entry."
+          description: "`entry_not_found`: the tenant has no ontology, a change names no in-force entry, a move names a parent that cannot hold the entry, or a proposal id is not an open proposal of the tenant's ontology."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "503": { description: "`unavailable`: no SQL Memory on this server." }
         "401": { $ref: "#/components/responses/Unauthorized" }

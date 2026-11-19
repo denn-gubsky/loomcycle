@@ -32,7 +32,7 @@ func (s *Server) handleOntologyPlan(w http.ResponseWriter, r *http.Request) {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body",
-			"expected {\"changes\": [{\"op\": \"retire|rename|move|edit|delete\", \"entry\": \"<chunk id>\", …}]}, at most 64 KiB")
+			"expected {\"changes\": [{\"op\": \"retire|rename|move|edit|delete\", \"entry\": \"<chunk id>\", …} or {\"op\": \"proposal\", \"id\": \"<proposal chunk id>\"}]}, at most 64 KiB")
 		return
 	}
 	res, err := s.PlanOntology(r.Context(), connector.PlanOntologyRequest{

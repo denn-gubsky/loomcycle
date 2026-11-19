@@ -10180,9 +10180,9 @@ func (x *BindSubjectPrincipalResponse) GetChanged() bool {
 // OntologyChange is one change a plan is asked about.
 type OntologyChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// retire | rename | move | edit | delete
+	// retire | rename | move | edit | delete | proposal
 	Op string `protobuf:"bytes,1,opt,name=op,proto3" json:"op,omitempty"`
-	// The entry's chunk id.
+	// The entry's chunk id (every op but proposal).
 	Entry string `protobuf:"bytes,2,opt,name=entry,proto3" json:"entry,omitempty"`
 	// rename: the new name.
 	Name string `protobuf:"bytes,3,opt,name=name,proto3" json:"name,omitempty"`
@@ -10190,7 +10190,11 @@ type OntologyChange struct {
 	// section).
 	Parent string `protobuf:"bytes,4,opt,name=parent,proto3" json:"parent,omitempty"`
 	// edit: the entry's new body.
-	Body          string `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
+	Body string `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
+	// proposal: an open proposal's chunk id (its only other field). A change or
+	// retire proposal plans as the direct changes accepting it makes; an add
+	// proposal as op "add", risk none.
+	Id            string `protobuf:"bytes,6,opt,name=id,proto3" json:"id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10256,6 +10260,13 @@ func (x *OntologyChange) GetParent() string {
 func (x *OntologyChange) GetBody() string {
 	if x != nil {
 		return x.Body
+	}
+	return ""
+}
+
+func (x *OntologyChange) GetId() string {
+	if x != nil {
+		return x.Id
 	}
 	return ""
 }
@@ -10484,8 +10495,11 @@ type OntologyPlannedChange struct {
 	// Keyed by the kind of dependent (typed_documents, statements, ...).
 	Counts map[string]*OntologyPlanCount `protobuf:"bytes,4,rep,name=counts,proto3" json:"counts,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// The entries of the subtree that go with the entry.
-	Subtree       []*OntologyPlanEntry `protobuf:"bytes,5,rep,name=subtree,proto3" json:"subtree,omitempty"`
-	Notes         []string             `protobuf:"bytes,6,rep,name=notes,proto3" json:"notes,omitempty"`
+	Subtree []*OntologyPlanEntry `protobuf:"bytes,5,rep,name=subtree,proto3" json:"subtree,omitempty"`
+	Notes   []string             `protobuf:"bytes,6,rep,name=notes,proto3" json:"notes,omitempty"`
+	// The proposal's chunk id when the change is one accepting it makes; empty
+	// for a direct change.
+	Proposal      string `protobuf:"bytes,7,opt,name=proposal,proto3" json:"proposal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -10560,6 +10574,13 @@ func (x *OntologyPlannedChange) GetNotes() []string {
 		return x.Notes
 	}
 	return nil
+}
+
+func (x *OntologyPlannedChange) GetProposal() string {
+	if x != nil {
+		return x.Proposal
+	}
+	return ""
 }
 
 type PlanOntologyResponse struct {
@@ -18132,13 +18153,14 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x04path\x18\x05 \x01(\tR\x04path\x12\x1c\n" +
 	"\tprincipal\x18\x06 \x01(\tR\tprincipal\x12\x1a\n" +
 	"\bprevious\x18\a \x01(\tR\bprevious\x12\x18\n" +
-	"\achanged\x18\b \x01(\bR\achanged\"v\n" +
+	"\achanged\x18\b \x01(\bR\achanged\"\x86\x01\n" +
 	"\x0eOntologyChange\x12\x0e\n" +
 	"\x02op\x18\x01 \x01(\tR\x02op\x12\x14\n" +
 	"\x05entry\x18\x02 \x01(\tR\x05entry\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12\x16\n" +
 	"\x06parent\x18\x04 \x01(\tR\x06parent\x12\x12\n" +
-	"\x04body\x18\x05 \x01(\tR\x04body\"e\n" +
+	"\x04body\x18\x05 \x01(\tR\x04body\x12\x0e\n" +
+	"\x02id\x18\x06 \x01(\tR\x02id\"e\n" +
 	"\x13PlanOntologyRequest\x126\n" +
 	"\achanges\x18\x01 \x03(\v2\x1c.loomcycle.v1.OntologyChangeR\achanges\x12\x16\n" +
 	"\x06tenant\x18\x02 \x01(\tR\x06tenant\"p\n" +
@@ -18156,14 +18178,15 @@ const file_loomcycle_proto_rawDesc = "" +
 	"\x06sample\x18\x06 \x03(\tR\x06sample\x1a;\n" +
 	"\rByStatusEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\xe8\x02\n" +
+	"\x05value\x18\x02 \x01(\x05R\x05value:\x028\x01\"\x84\x03\n" +
 	"\x15OntologyPlannedChange\x12\x0e\n" +
 	"\x02op\x18\x01 \x01(\tR\x02op\x125\n" +
 	"\x05entry\x18\x02 \x01(\v2\x1f.loomcycle.v1.OntologyPlanEntryR\x05entry\x12\x12\n" +
 	"\x04risk\x18\x03 \x01(\tR\x04risk\x12G\n" +
 	"\x06counts\x18\x04 \x03(\v2/.loomcycle.v1.OntologyPlannedChange.CountsEntryR\x06counts\x129\n" +
 	"\asubtree\x18\x05 \x03(\v2\x1f.loomcycle.v1.OntologyPlanEntryR\asubtree\x12\x14\n" +
-	"\x05notes\x18\x06 \x03(\tR\x05notes\x1aZ\n" +
+	"\x05notes\x18\x06 \x03(\tR\x05notes\x12\x1a\n" +
+	"\bproposal\x18\a \x01(\tR\bproposal\x1aZ\n" +
 	"\vCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x1f.loomcycle.v1.OntologyPlanCountR\x05value:\x028\x01\"\xb0\x02\n" +

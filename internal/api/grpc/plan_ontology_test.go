@@ -115,6 +115,28 @@ func TestPlanOntology_RequestOverTheBoundIsRefused(t *testing.T) {
 	}
 }
 
+// A proposal item's id reaches the connector, and a planned change's proposal id
+// comes back (RFC GQ P4.3): the fields HTTP carries as id and proposal.
+func TestPlanOntology_ProposalIDRoundTrips(t *testing.T) {
+	mc := &mockConnector{planRes: connector.PlanOntologyResult{Changes: []connector.OntologyPlannedChange{
+		{Op: "retire", Risk: connector.OntologyRiskNone, Proposal: "p1", Entry: connector.OntologyPlanEntry{ChunkID: "c1"}},
+	}}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+	resp, err := client.PlanOntology(context.Background(), &loomcyclepb.PlanOntologyRequest{
+		Changes: []*loomcyclepb.OntologyChange{{Op: connector.OntologyPlanProposal, Id: "p1"}},
+	})
+	if err != nil {
+		t.Fatalf("PlanOntology: %v", err)
+	}
+	if got := mc.planReq.Changes; len(got) != 1 || got[0] != (connector.OntologyChange{Op: connector.OntologyPlanProposal, ID: "p1"}) {
+		t.Errorf("connector got %+v, want the proposal item with its id", got)
+	}
+	if c := resp.GetChanges(); len(c) != 1 || c[0].GetProposal() != "p1" {
+		t.Errorf("response changes = %+v, want proposal p1", c)
+	}
+}
+
 // Who may call it on this transport: an admin and a tenant operator. Its HTTP
 // route is carved out of the member path, so a member is refused here too; a
 // token limited to certain agents is refused whatever its scopes.

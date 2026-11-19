@@ -137,6 +137,16 @@ describe("planOntology", () => {
     });
   });
 
+  it("posts a proposal item by its id and returns the proposal it plans", async () => {
+    const proposed = { ...plan, changes: [{ ...plan.changes[0]!, op: "retire", proposal: "p1" }] };
+    const { client, fetchMock } = makeClient([jsonResponse(proposed)]);
+    const res = await client.planOntology([{ op: "proposal", id: "p1" }, { op: "retire", entry: "c1" }]);
+    expect(res.changes[0]!.proposal).toBe("p1");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({
+      changes: [{ op: "proposal", id: "p1" }, { op: "retire", entry: "c1" }],
+    });
+  });
+
   it("passes an admin's tenant focus as ?tenant=", async () => {
     const { client, fetchMock } = makeClient([jsonResponse(plan)]);
     await client.planOntology([{ op: "retire", entry: "c1" }], { tenant: "globex" });

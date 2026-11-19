@@ -2578,9 +2578,9 @@ message BindSubjectPrincipalResponse {
 
 // OntologyChange is one change a plan is asked about.
 message OntologyChange {
-  // retire | rename | move | edit | delete
+  // retire | rename | move | edit | delete | proposal
   string op = 1;
-  // The entry's chunk id.
+  // The entry's chunk id (every op but proposal).
   string entry = 2;
   // rename: the new name.
   string name = 3;
@@ -2589,6 +2589,10 @@ message OntologyChange {
   string parent = 4;
   // edit: the entry's new body.
   string body = 5;
+  // proposal: an open proposal's chunk id (its only other field). A change or
+  // retire proposal plans as the direct changes accepting it makes; an add
+  // proposal as op "add", risk none.
+  string id = 6;
 }
 
 message PlanOntologyRequest {
@@ -2633,6 +2637,9 @@ message OntologyPlannedChange {
   // The entries of the subtree that go with the entry.
   repeated OntologyPlanEntry subtree = 5;
   repeated string notes = 6;
+  // The proposal's chunk id when the change is one accepting it makes; empty
+  // for a direct change.
+  string proposal = 7;
 }
 
 message PlanOntologyResponse {

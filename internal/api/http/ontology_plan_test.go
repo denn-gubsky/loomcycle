@@ -151,6 +151,37 @@ func TestOntologyPlanRoute_TenantOperatorSeesOwnTenantOnly(t *testing.T) {
 	}
 }
 
+// TestOntologyPlanRoute_PlansAProposalByItsID (RFC GQ P4.3): the route takes {op:
+// proposal, id} — the body decoder admits id — and answers the direct change the
+// proposal stands for, naming the proposal; an id that is not an open proposal is 404
+// entry_not_found, and a proposal item with an entry is 400 invalid_request.
+func TestOntologyPlanRoute_PlansAProposalByItsID(t *testing.T) {
+	s, mi, exec := changeProposalFixture(t)
+	retire := exec(map[string]any{"op": "propose_entity", "change": "retire", "entry": "Memo"})["chunk_id"].(string)
+
+	code, out := s.postPlan(t, context.Background(), mi.Tenant, fmt.Sprintf(`{"changes":[{"op":"proposal","id":%q}]}`, retire))
+	if code != http.StatusOK {
+		t.Fatalf("plan of the proposal = %d %v, want 200", code, out)
+	}
+	changes, _ := out["changes"].([]any)
+	if len(changes) != 1 {
+		t.Fatalf("changes = %v", out["changes"])
+	}
+	c := changes[0].(map[string]any)
+	if c["op"] != connector.OntologyPlanRetire || c["proposal"] != retire || dig(c, "entry", "name") != "Memo" {
+		t.Errorf("planned change = %v, want the retire of Memo naming proposal %s", c, retire)
+	}
+
+	code, out = s.postPlan(t, context.Background(), mi.Tenant, `{"changes":[{"op":"proposal","id":"no-such-chunk"}]}`)
+	if code != http.StatusNotFound || out["code"] != "entry_not_found" {
+		t.Errorf("an unknown proposal = %d %v, want 404 entry_not_found", code, out)
+	}
+	code, out = s.postPlan(t, context.Background(), mi.Tenant, fmt.Sprintf(`{"changes":[{"op":"proposal","id":%q,"entry":%q}]}`, retire, retire))
+	if code != http.StatusBadRequest || out["code"] != "invalid_request" {
+		t.Errorf("a proposal with an entry = %d %v, want 400 invalid_request", code, out)
+	}
+}
+
 // TestOntologyPlanRoute_RefusalsCarryTheirCodes — a malformed body, too many changes
 // and an unknown field are 400 with their codes.
 func TestOntologyPlanRoute_RefusalsCarryTheirCodes(t *testing.T) {
@@ -190,7 +221,8 @@ func TestOpenAPISpec_PublishesTheOntologyPlanRoute(t *testing.T) {
 		t.Fatal("api/openapi.yaml has no POST /v1/_ontology/plan")
 	}
 	ops := dig(post, "requestBody", "content", "application/json", "schema", "properties", "changes", "items", "properties", "op", "enum")
-	want := []any{connector.OntologyPlanRetire, connector.OntologyPlanRename, connector.OntologyPlanMove, connector.OntologyPlanEdit, connector.OntologyPlanDelete}
+	want := []any{connector.OntologyPlanRetire, connector.OntologyPlanRename, connector.OntologyPlanMove, connector.OntologyPlanEdit,
+		connector.OntologyPlanDelete, connector.OntologyPlanProposal}
 	if fmt.Sprint(ops) != fmt.Sprint(want) {
 		t.Errorf("op enum = %v, want %v", ops, want)
 	}
