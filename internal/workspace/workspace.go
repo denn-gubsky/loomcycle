@@ -1,0 +1,121 @@
+// Package workspace holds what the two ends of the workspace worker protocol
+// (RFC GW, proto/workspace.proto) agree on: the protocol version, the op and
+// error-class names, the chunk size and the rule a workspace id must meet.
+// The core's dispatcher is internal/workspace/dispatch; the worker is
+// internal/workspace/worker.
+package workspace
+
+import "strings"
+
+// ProtocolVersion is the workspace worker protocol this build speaks. A
+// worker of another version is refused at attach (RFC GW §8).
+const ProtocolVersion = 1
+
+// ChunkSize bounds one Chunk frame's data, either way (RFC GW §8).
+const ChunkSize = 64 << 10
+
+// MDAuthorization is the metadata key a worker's bearer travels in.
+const MDAuthorization = "authorization"
+
+// The ops of this layer. Later phases add exec and the file ops without a
+// protocol change: an op is a name and JSON arguments.
+const (
+	// OpOpen makes the workspace's directory, refusing at capacity.
+	OpOpen = "open"
+	// OpRemove deletes the workspace's directory; absent is success.
+	OpRemove = "remove"
+	// OpStatus reports whether the workspace's directory exists.
+	OpStatus = "status"
+)
+
+// The error classes a worker answers an op with, in OpDone.error_class.
+const (
+	// ClassAtCapacity: the worker holds as many workspaces as it may. The
+	// core places the workspace on the next worker.
+	ClassAtCapacity = "at_capacity"
+	// ClassNotFound: the workspace is not on the worker's disk.
+	ClassNotFound = "not_found"
+	// ClassInvalid: the op's workspace id or arguments are malformed.
+	ClassInvalid = "invalid"
+	// ClassUnsupportedOp: the worker does not know the op.
+	ClassUnsupportedOp = "unsupported_op"
+	// ClassFailed: the op failed on the worker (a file system error).
+	ClassFailed = "failed"
+)
+
+// The error classes the core adds for an op that never reached a worker's
+// answer.
+const (
+	// ClassWorkerLost: the worker went away before the op finished.
+	ClassWorkerLost = "worker_lost"
+	// ClassNoWorker: no attached worker can take the op.
+	ClassNoWorker = "no_worker"
+	// ClassBusy: the worker kept no idle stream free long enough.
+	ClassBusy = "busy"
+	// ClassOutputTooLarge: the worker sent more output than the op's bound.
+	ClassOutputTooLarge = "output_too_large"
+	// ClassProtocol: the worker broke the protocol.
+	ClassProtocol = "protocol"
+)
+
+// KnownWorkerClasses are the classes a worker may answer with that the core
+// reports by name; any other is reported as ClassFailed, so a worker cannot
+// grow a metric's label set or put arbitrary text where a class is read.
+var KnownWorkerClasses = map[string]bool{
+	ClassAtCapacity: true, ClassNotFound: true, ClassInvalid: true, ClassUnsupportedOp: true, ClassFailed: true,
+}
+
+// The engines a worker may run commands under, weakest first.
+const (
+	EngineHost      = "host"
+	EngineContainer = "container"
+)
+
+// EngineRank orders engines by isolation; 0 is an engine this build does not
+// know, which satisfies no requirement.
+func EngineRank(engine string) int {
+	switch engine {
+	case EngineHost:
+		return 1
+	case EngineContainer:
+		return 2
+	}
+	return 0
+}
+
+// MaxIDLen bounds a workspace id.
+const MaxIDLen = 64
+
+// ValidID reports whether id may name a workspace's directory: 1 to MaxIDLen
+// characters of ASCII letters, digits, '-' and '_', not starting with '-'. It
+// is the whole of the check that keeps an op inside the worker's root, so it
+// admits no separator, no dot and nothing a shell or a path reads specially.
+func ValidID(id string) bool {
+	if id == "" || len(id) > MaxIDLen || strings.HasPrefix(id, "-") {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Stats is the core's view of the workspace workers, for /metrics.
+type Stats struct {
+	// Workers is the workers attached to this replica.
+	Workers int
+	// Ops counts ops by "op/outcome"; outcome is ok or an error class.
+	Ops map[string]uint64
+	// Deaths counts workers lost to missed heartbeats or with ops in flight.
+	Deaths uint64
+}
+
+// StatusAnswer is a status op's output.
+type StatusAnswer struct {
+	Exists bool `json:"exists"`
+}
