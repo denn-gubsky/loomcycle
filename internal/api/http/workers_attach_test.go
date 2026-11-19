@@ -12,7 +12,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 )
 
-const workerBearer = "worker-bearer"
+const attachBearer = "worker-attach-bearer" // test fixture, not a secret
 
 // RFC GW Q2: a workers:attach token sits on a machine that runs model-chosen
 // commands, so through the real authMiddleware it reaches NO route the mux
@@ -21,12 +21,12 @@ const workerBearer = "worker-bearer"
 func TestWorkersAttach_ReachesNoRoute(t *testing.T) {
 	for _, mode := range []*authz.Mode{nil, ptrMode(authz.ModeEnforce)} {
 		s, st := tokenAuthServer(t, "legacy-secret")
-		seedToken(t, st, workerBearer, "acme", "worker-1", []string{auth.ScopeWorkersAttach}, time.Time{})
+		seedToken(t, st, attachBearer, "acme", "worker-1", []string{auth.ScopeWorkersAttach}, time.Time{})
 		if mode != nil {
 			s.SetACLResolver(aclres.New(st, *mode, 0))
 		}
 		for _, r := range eqRoutes(t) {
-			reached, code := runMW(t, s, r.method, r.path, workerBearer)
+			reached, code := runMW(t, s, r.method, r.path, attachBearer)
 			if reached || code != http.StatusForbidden {
 				t.Errorf("mode %v: %s %s: reached=%v code=%d, want refused 403", mode, r.method, r.pattern, reached, code)
 			}
@@ -37,7 +37,7 @@ func TestWorkersAttach_ReachesNoRoute(t *testing.T) {
 			{"POST", "/v1/_mcp"}, {"POST", "/v1/chat/completions"}, {"POST", "/v1/_auth/token/revoke"},
 			{"POST", "/v1/_operatortokendef"},
 		} {
-			if reached, code := runMW(t, s, c.method, c.path, workerBearer); reached || code != http.StatusForbidden {
+			if reached, code := runMW(t, s, c.method, c.path, attachBearer); reached || code != http.StatusForbidden {
 				t.Errorf("mode %v: %s %s: reached=%v code=%d, want refused 403", mode, c.method, c.path, reached, code)
 			}
 		}
@@ -66,8 +66,8 @@ func TestOwnIdentityRequest_RefusesAWorkerAttacher(t *testing.T) {
 // with a reason, audited, and leaves no session behind.
 func TestUILogin_RefusesAWorkersAttachToken(t *testing.T) {
 	s, st, sink := sessionTestServer(t, "legacy-secret")
-	seedToken(t, st, workerBearer, "acme", "worker-1", []string{auth.ScopeWorkersAttach}, time.Time{})
-	rec := doLogin(t, s, loginReq(workerBearer))
+	seedToken(t, st, attachBearer, "acme", "worker-1", []string{auth.ScopeWorkersAttach}, time.Time{})
+	rec := doLogin(t, s, loginReq(attachBearer))
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "worker_credential_refused") {
 		t.Fatalf("status = %d body = %s, want 403 worker_credential_refused", rec.Code, rec.Body.String())
 	}
