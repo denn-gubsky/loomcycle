@@ -192,3 +192,33 @@ func TestFileImport_EditedExtractClaimsNoInference(t *testing.T) {
 		t.Errorf("provenance structured = %v, want none for an edited file", s)
 	}
 }
+
+// A Word 97–2003 document whose titles are a large bold line and a bold
+// line has them recovered as headings, and the result counts them, as a
+// DOCX does (RFC GX §4.2).
+func TestFileExtract_InferHeadingsReadsDOC(t *testing.T) {
+	f, ctx, _, _ := fileDocRun(t)
+	r := inboxRoot(t, ctx)
+	data, err := os.ReadFile("../../files/extract/testdata/doc/plain.doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := inbox.Capture(ctx, inbox.Item{Name: "plain.doc", Origin: "http"}, data)
+	out, res := fileOp(t, f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref, "structure": map[string]any{"infer_headings": true}})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if out["format"] != "doc" || out["inferred_headings"] != float64(2) || out["dropped_decorative_images"] != float64(0) {
+		t.Errorf("result = %v, want a doc with inferred_headings 2 and dropped_decorative_images 0", out)
+	}
+	if strings.Contains(anyString(out["notes"]), "not applied") {
+		t.Errorf("notes = %v, want the option applied", out["notes"])
+	}
+	md, err := os.ReadFile(r(asStr(out["ref"])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(md), "\n### A bold line\n") {
+		t.Errorf("the bold line is not a heading:\n%s", md)
+	}
+}
