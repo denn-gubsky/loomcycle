@@ -91,6 +91,9 @@ type RunPolicy struct {
 	// GitRemote is what the Git tool may do over the network (RFC FB). Zero:
 	// nothing, local repository work only.
 	GitRemote GitRemotePolicyValue
+	// Workspace is what the run may do with workspaces (RFC GW). Zero:
+	// nothing.
+	Workspace WorkspacePolicyValue
 	// StatementMethods is which statement methods the run may stamp on the
 	// relations it writes: "rule" and/or "extractor". Only a code-js agent
 	// is ever given any, because a rule-stamped relation claims code made
@@ -247,6 +250,7 @@ var inheritRules = map[string]inheritRule{
 	"Crypto":             ruleNarrow,  // the child's own scopes its parent also holds
 	"ShellCreds":         ruleNarrow,  // the credential names both the parent and the child allow (RFC EW)
 	"GitRemote":          ruleNarrow,  // each network op only when both the parent and the child allow it (RFC FB)
+	"Workspace":          ruleNarrow,  // ops and open only when both allow them, the stricter engine (RFC GW)
 	"StatementMethods":   ruleOwn,     // each agent's own: a child is code itself or stamps nothing
 	"OperatorAuthored":   ruleOwn,     //
 	"ACL":                ruleInherit, // the originating principal's set binds the whole tree (RFC EY)
@@ -305,6 +309,7 @@ func (p RunPolicy) Inherit(c ChildGrant) RunPolicy {
 		Crypto:            CryptoPolicyValue{Scopes: NarrowCryptoScopes(p.Crypto.Scopes, own.Crypto.Scopes)},
 		ShellCreds:        NarrowShellCreds(p.ShellCreds, own.ShellCreds),
 		GitRemote:         NarrowGitRemote(p.GitRemote, own.GitRemote),
+		Workspace:         NarrowWorkspace(p.Workspace, own.Workspace),
 		StatementMethods:  own.StatementMethods,
 		OperatorAuthored:  own.OperatorAuthored,
 		ACL:               p.ACL,
