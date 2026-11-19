@@ -60,12 +60,32 @@ export interface RetireSteps<T> {
 // retireWithPlan plans, asks, and retires with the plan's fingerprint. It returns null
 // when the operator declines. A plan_stale answer re-plans and asks again, once; any
 // other refusal, or a second stale one, is thrown with the server's message.
-export async function retireWithPlan<T>(name: string, steps: RetireSteps<T>): Promise<T | null> {
+export function retireWithPlan<T>(name: string, steps: RetireSteps<T>): Promise<T | null> {
+  return applyWithPlan((plan) => retireConfirmText(name, plan), {
+    plan: steps.plan,
+    apply: steps.retire,
+    confirm: steps.confirm,
+  });
+}
+
+export interface PlanSteps<T> {
+  plan: () => Promise<OntologyPlanResult>;
+  apply: (fingerprint: string) => Promise<T>;
+  confirm: (text: string) => boolean;
+}
+
+// applyWithPlan is retireWithPlan for any planned change (RFC GQ P4.2 accepts a change
+// proposal this way): plan, show confirmText of the plan, apply with its fingerprint,
+// and re-plan once on plan_stale.
+export async function applyWithPlan<T>(
+  confirmText: (plan: OntologyPlanResult) => string,
+  steps: PlanSteps<T>,
+): Promise<T | null> {
   for (let attempt = 0; ; attempt++) {
     const plan = await steps.plan();
-    if (!steps.confirm(retireConfirmText(name, plan))) return null;
+    if (!steps.confirm(confirmText(plan))) return null;
     try {
-      return await steps.retire(plan.fingerprint);
+      return await steps.apply(plan.fingerprint);
     } catch (e) {
       if (attempt === 0 && e instanceof ApiError && e.code === "plan_stale") continue;
       throw e;

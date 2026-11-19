@@ -10,6 +10,7 @@
 import { apiError } from "./lib/apiError";
 import type { AclCatalog, EvaluationRequest, Rule } from "./lib/aclRules";
 import type { OntologyPlanResult } from "./lib/ontologyRetirePlan";
+import type { OntologyPlanChange } from "./lib/ontologyProposedChange";
 
 export interface UserSummary {
   user_id: string;
@@ -3944,12 +3945,24 @@ export function resolveOntologyProposal(
   chunkId: string,
   action: "accept" | "reject",
   tenant?: string,
+  planFingerprint?: string,
 ): Promise<OntologyResponse> {
   const q = tenant ? `?tenant=${encodeURIComponent(tenant)}` : "";
-  return postJSON<OntologyResponse>(
-    `/v1/_ontology/proposals${q}`,
-    JSON.stringify({ chunk_id: chunkId, action }),
-  );
+  // plan_fingerprint: accepting a change or retire proposal something rests on needs
+  // a current plan's (RFC GQ P4.2); a refusal (409 plan_required / plan_stale) is
+  // thrown with its code.
+  const body = planFingerprint
+    ? { chunk_id: chunkId, action, plan_fingerprint: planFingerprint }
+    : { chunk_id: chunkId, action };
+  return postJSON<OntologyResponse>(`/v1/_ontology/proposals${q}`, JSON.stringify(body));
+}
+
+/**
+ * Plan direct changes to ontology entries (RFC GQ P1): what rests on them and the
+ * fingerprint a change must carry. Writes nothing. POST /v1/_ontology/plan.
+ */
+export function planOntologyChanges(changes: OntologyPlanChange[]): Promise<OntologyPlanResult> {
+  return postJSON<OntologyPlanResult>("/v1/_ontology/plan", JSON.stringify({ changes }));
 }
 
 /**
