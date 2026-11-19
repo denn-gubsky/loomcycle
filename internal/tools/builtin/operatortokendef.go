@@ -98,7 +98,8 @@ var operatorTokenNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 const operatorTokenDefDescription = `Mint, rotate, retire, and inspect operator auth tokens (see Context op=help topic=operator-tokens). ` +
 	`Each token binds a principal {tenant_id, subject, allowed_scopes}. ` +
 	`OPERATOR-ADMIN, except that a tenant operator may manage its own tenant's metrics scrape tokens ` +
-	`(scopes ["metrics:read"], always tenant_metrics). Operations: create, rotate, retire, get, list. ` +
+	`(scopes ["metrics:read"], always tenant_metrics). A workspace worker's token holds ["workers:attach"] alone ` +
+	`and serves its tenant_id, or every tenant with worker_shared (admin only). Operations: create, rotate, retire, get, list. ` +
 	`The token plaintext is shown ONCE on create/rotate and never again.`
 
 const operatorTokenDefInputSchema = `{
@@ -117,6 +118,7 @@ const operatorTokenDefInputSchema = `{
     "rate": {"type": "object", "description": "Optional (create). Bounds how often this token may start runs: {\"per_minute\": N, \"burst\": M}. burst is how many it may start at once from idle (default: per_minute). A start past the rate is refused with a time to wait. Omit to use the server's default, if it has one.", "properties": {"per_minute": {"type": "integer"}, "burst": {"type": "integer"}}, "required": ["per_minute"]},
     "retention": {"type": "string", "enum": ["none", "default"], "description": "Optional (create). \"none\" makes every run this token starts a no-trace run: its content is delivered to the caller and stored nowhere, and neither a request nor an agent can change that. Omit (or \"default\") to leave the mode to the request and the agent."},
     "tenant_metrics": {"type": "boolean", "description": "Optional (create, scopes exactly [\"metrics:read\"] only). true limits the scrape token to its own tenant's series on GET /metrics, with none of the whole runtime's. Omit for the full view. Always on for a token a tenant operator mints, which may not set it false."},
+    "worker_shared": {"type": "boolean", "description": "Optional (create, scopes exactly [\"workers:attach\"] only; admin only). true mints a SHARED workspace-worker token: the worker serves every tenant. Omit for a worker that serves only the token's tenant_id. A tenant operator cannot set it."},
     "grace_seconds": {"type": "integer", "description": "Rotation grace window override (rotate)."},
     "import_token": {"type": "string", "description": "Migration only (create): bind an existing secret (the legacy LOOMCYCLE_AUTH_TOKEN) instead of minting. Hashed, never echoed."}
   },
@@ -141,7 +143,11 @@ type operatorTokenDefInput struct {
 	// TenantMetrics is a pointer so a tenant operator's explicit false is
 	// refused rather than read as "omitted".
 	TenantMetrics *bool `json:"tenant_metrics,omitempty"`
-	GraceSeconds  *int  `json:"grace_seconds,omitempty"`
+	// WorkerShared mints a workers:attach token that serves every tenant
+	// (RFC GW Q2). Only the admin path reads it; the tenant operator's path
+	// refuses the field.
+	WorkerShared *bool `json:"worker_shared,omitempty"`
+	GraceSeconds *int  `json:"grace_seconds,omitempty"`
 	// ImportToken (Decision 10 migration) binds an existing secret —
 	// the legacy LOOMCYCLE_AUTH_TOKEN via `--copy-from-env` — instead of
 	// minting. Admin-only; the plaintext is hashed, never echoed.
@@ -313,6 +319,9 @@ func (s *OperatorTokenDef) execCreate(ctx context.Context, in operatorTokenDefIn
 	restrictions.Retention = retention
 	if in.TenantMetrics != nil {
 		restrictions.TenantMetrics = *in.TenantMetrics
+	}
+	if in.WorkerShared != nil {
+		restrictions.WorkerShared = *in.WorkerShared
 	}
 	if err := restrictions.Validate(in.Agents != nil); err != nil {
 		return errResult(fmt.Sprintf("create: %s", err)), nil
@@ -623,7 +632,7 @@ func heldToMinter(ctx context.Context, r auth.Restrictions) (auth.Restrictions, 
 // sameRestrictions reports whether a and b restrict the same things: the
 // same mode, the same rate (an unset burst reads as the per-minute rate), the
 // same overrides allowed, the same agents and the same surfaces, in any order,
-// and the same tenant confinement of a scrape.
+// the same tenant confinement of a scrape and the same reach of a worker.
 func sameRestrictions(a, b auth.Restrictions) bool {
 	sameSet := func(x, y []string) bool {
 		if len(x) != len(y) {
@@ -640,7 +649,7 @@ func sameRestrictions(a, b auth.Restrictions) bool {
 		}
 		return true
 	}
-	if a.Retention != b.Retention || a.TenantMetrics != b.TenantMetrics || !sameSet(a.Agents, b.Agents) || !sameSet(a.Surfaces, b.Surfaces) {
+	if a.Retention != b.Retention || a.TenantMetrics != b.TenantMetrics || a.WorkerShared != b.WorkerShared || !sameSet(a.Agents, b.Agents) || !sameSet(a.Surfaces, b.Surfaces) {
 		return false
 	}
 	if (a.Rate == nil) != (b.Rate == nil) || (a.Rate != nil &&
