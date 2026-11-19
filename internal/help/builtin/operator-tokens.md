@@ -50,7 +50,10 @@ provider's SCIM 2.0 credential: the `/scim/v2` service of the deployment's
 be a token's only scope), `metrics:read` (a Prometheus scraper's credential:
 `GET /metrics` and nothing else, no Web UI sign-in; it must be a token's only
 scope; an admin mints it, and a tenant operator may mint one for its own
-tenant — see "A tenant's scrape token" below). Every catalog scope is enforced by at least one route —
+tenant — see "A tenant's scrape token" below), `workers:attach` (a
+workspace worker's credential — see "A workspace worker's token" below; it
+reaches no API surface at all, and is enforced by the worker endpoint rather
+than by a route). Every other catalog scope is enforced by at least one route —
 operators can't invent scope names, and the catalog intentionally excludes
 scopes no route checks (a scope that enforces nothing is a false
 limitation). The default at create is `["substrate:admin"]`, so a first
@@ -258,6 +261,26 @@ says is delivered to the caller and stored nowhere.
 - The setting is fixed at mint and carried over by `rotate`.
 - See `loomcycle help no-trace-runs` for what a no-trace run keeps and
   what it cannot do.
+
+## A workspace worker's token
+
+A worker that runs agents' workspaces (RFC GW) attaches to the core with a
+token holding `workers:attach` and nothing else. The token sits on a machine
+that runs model-chosen commands, so it is good for nothing but attaching: every
+HTTP route, gRPC RPC and MCP tool refuses it, it does not sign in to the Web
+UI, and its access-control baseline (`builtin:worker-attacher`) denies every
+question.
+
+- **Tenant-bound** (the default): the worker serves the runs of the token's
+  `tenant_id` only. `create` with `scopes: ["workers:attach"]` and that tenant.
+- **Shared**: an admin adds `"worker_shared": true` (`--worker-shared` on
+  `operator-token create`, or the "shared worker" box on the Web UI's Tokens
+  page), and the worker serves every tenant. Refused on any other scope set,
+  and from a tenant operator.
+- An admin token and the legacy `LOOMCYCLE_AUTH_TOKEN` are refused at attach:
+  on a worker either would be the whole deployment. So is a person's sign-in
+  token.
+- A rotation keeps `worker_shared`.
 
 ## A tenant's scrape token
 

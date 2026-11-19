@@ -3,6 +3,7 @@ import {
   OperatorTokenCreateResult,
   OperatorTokenNameSummary,
   TOKEN_SCOPES,
+  WORKER_SHARED_SCOPE,
   listOperatorTokens,
   mintOperatorToken,
   retireOperatorToken,
@@ -30,6 +31,7 @@ export default function TokenManager() {
   const [tenantId, setTenantId] = useState("");
   const [subject, setSubject] = useState("");
   const [scopes, setScopes] = useState<string[]>(DEFAULT_SCOPES);
+  const [workerShared, setWorkerShared] = useState(false);
   const [busy, setBusy] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
 
@@ -77,6 +79,8 @@ export default function TokenManager() {
         tenant_id: tenantId.trim(),
         subject: subject.trim() || undefined,
         scopes,
+        // Sent only where it can apply; the runtime refuses it on any other set.
+        worker_shared: workerShared && scopes.includes(WORKER_SHARED_SCOPE) ? true : undefined,
       });
       setMinted(res);
       setCopied(false);
@@ -85,6 +89,7 @@ export default function TokenManager() {
       setName("");
       setSubject("");
       setScopes(DEFAULT_SCOPES);
+      setWorkerShared(false);
       await refresh();
     } catch (e) {
       setFormErr(e instanceof Error ? e.message : String(e));
@@ -237,6 +242,16 @@ export default function TokenManager() {
               <code>{s}</code>
             </label>
           ))}
+          {scopes.includes(WORKER_SHARED_SCOPE) && (
+            <label className="scope-check">
+              <input
+                type="checkbox"
+                checked={workerShared}
+                onChange={(e) => setWorkerShared(e.target.checked)}
+              />
+              shared worker <span className="settings-muted">— serves every tenant, not only this token's</span>
+            </label>
+          )}
         </fieldset>
         {formErr && <div className="settings-error">{formErr}</div>}
         <button type="submit" className="primary-btn" disabled={busy}>
