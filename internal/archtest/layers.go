@@ -146,6 +146,11 @@ var layers = []layer{
 			"internal/teamspec",
 			"internal/transcribe/helper",
 			"internal/turncancel",
+			// The link between the worker endpoint and the workers that
+			// attach to it (RFC GW): targets, reconnects, TLS and flow
+			// control, shared by every worker role. Over gRPC and safego
+			// only; the roles that use it sit in L5.
+			"internal/workerlink",
 		},
 		// RFC FE P2: the leaves internal/providers needs, as their own modules
 		// so the module that requires them can be one too (P3).
@@ -312,6 +317,7 @@ var allowedSideways = []subsystemEdge{
 	{"internal/projection", "internal/safego"},
 	{"internal/transcribe/helper", "internal/hostenv"},
 	{"internal/transcribe/helper", "internal/procgroup"},
+	{"internal/workerlink", "internal/safego"},
 
 	// L1
 	{"internal/decision", "internal/providers"},

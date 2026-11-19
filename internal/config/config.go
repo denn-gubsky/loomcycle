@@ -295,6 +295,11 @@ type Config struct {
 	// Absent, they run in process. Defaults are applied at use (Resolved).
 	Conversion ConversionConfig `yaml:"conversion,omitempty"`
 
+	// WorkerEndpoint is the `worker_endpoint:` block: the address and TLS of
+	// the endpoint workers of their own attach to (worker_endpoint.go). The
+	// conversion block's listen, tls and insecure are its older spelling.
+	WorkerEndpoint WorkerEndpointConfig `yaml:"worker_endpoint,omitempty"`
+
 	// Observability is the `observability:` block: settings of the trace
 	// export that belong in config rather than the OTEL_* environment
 	// (observability.go). Read at startup.

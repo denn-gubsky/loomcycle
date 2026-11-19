@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/conversion/worker"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
+	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 )
 
 // runWorker is `loomcycle worker` (RFC GO): a conversion worker that dials
@@ -166,5 +167,5 @@ func workerTLS() (*tls.Config, error) {
 	if ca == "system" {
 		ca = ""
 	}
-	return worker.ClientTLS(ca, cert, key, name)
+	return workerlink.ClientTLS(ca, cert, key, name)
 }

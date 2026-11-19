@@ -195,7 +195,7 @@ The table says, for each area, what is set in which plane and what is inferred. 
 | MCP servers ([`MCP_INTEGRATION.md`](MCP_INTEGRATION.md)) | Gates: `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS`, `LOOMCYCLE_MCP_ALLOW_DYNAMIC_STDIO` (both off by default), `LOOMCYCLE_MCP_ALLOW_PRIVATE_IPS` (on by default) | `mcp_servers:`, `local_api:` | none |
 | Hooks, interruptions and context plugins | none | `hooks:`, `interruption:`, `context_plugins:` | none |
 | Teams ([9o](#9o-teams-in-the-configuration-teams)) | none | `teams:` | none |
-| Speech, transcription and conversion ([9h](#9h-transcription--ocr-and-speech-to-text), [9i](#9i-speech--text-to-speech), [9n](#9n-conversion-workers-conversion)) | `LOOMCYCLE_AUDIO_MAX_INFLIGHT` | `transcription:`, `speech:`, `conversion:` | none |
+| Speech, transcription and conversion ([9h](#9h-transcription--ocr-and-speech-to-text), [9i](#9i-speech--text-to-speech), [9n](#9n-conversion-workers-conversion)) | `LOOMCYCLE_AUDIO_MAX_INFLIGHT` | `transcription:`, `speech:`, `conversion:`, `worker_endpoint:` | none |
 | Cluster ([`MULTI-REPLICA.md`](MULTI-REPLICA.md)) | `LOOMCYCLE_REPLICA_ID`, `LOOMCYCLE_REPLICAS_STALE_AFTER_MS`, `LOOMCYCLE_HEARTBEAT_STALE_MS` | none | Cluster mode is on when `LOOMCYCLE_REPLICA_ID` is set |
 
 A row with entries in both planes does not mean a setting is given twice: the two columns hold different settings of the same area. The few settings that do exist in both planes are listed next.
@@ -4471,18 +4471,22 @@ File conversion is the one kind of work whose memory is set by what someone put 
 ```yaml
 conversion:
   mode: local              # local (default on Linux) | inprocess (default elsewhere) | remote | local+remote
-  listen: ""               # remote modes: host:port of the worker endpoint, never the API port
-  tls:                     # required for a listen address off the loopback, unless insecure
-    cert_file: ""
-    key_file: ""
-    client_ca_file: ""     # optional: workers must present a certificate signed by it (mutual TLS)
-  insecure: false          # serve off the loopback without TLS: only on a network the runtime and its workers alone share
   queue_wait_s: 60         # how long a conversion waits for a free worker before a busy answer
   quarantine_ttl_s: 3600   # how long a file that killed a worker is refused
   local:
     workers: 2             # children kept running (1–64)
     memory_limit_mb: 1024  # each child's GOMEMLIMIT (at least 128)
+
+worker_endpoint:           # where workers of their own attach (modes remote and local+remote)
+  listen: ""               # host:port of the worker endpoint, never the API port
+  tls:                     # required for a listen address off the loopback, unless insecure
+    cert_file: ""
+    key_file: ""
+    client_ca_file: ""     # optional: workers must present a certificate signed by it (mutual TLS)
+  insecure: false          # serve off the loopback without TLS: only on a network the runtime and its workers alone share
 ```
+
+`worker_endpoint` is the endpoint every kind of worker attaches to, so it is a block of its own rather than part of `conversion`. Its keys were first written as `conversion.listen`, `conversion.tls` and `conversion.insecure`, and those still work: a value `worker_endpoint` leaves unset is taken from them, and a value both blocks set must be the same, or the runtime refuses to start and names both keys. The older keys are still accepted only in modes `remote` and `local+remote`. A `worker_endpoint` written in a mode that attaches no workers of its own is checked and logged as unused at startup. The server behind the endpoint holds each worker stream to a 1 MiB flow-control window and each worker connection to 8 MiB, and the workers dial with the same windows, so a slow reader on either side holds a bounded amount of the other's data.
 
 What `local` does:
 
@@ -4493,7 +4497,7 @@ What `local` does:
 - A worker that dies mid-job fails that one call, and the file is quarantined for `quarantine_ttl_s`: it is refused with "crashed the file converter" instead of being sent to the next worker. A dead child is started again with backoff (1 s, doubling to 30 s). With every worker busy, a call waits `queue_wait_s` and is then answered as a busy server the model may retry. With no worker attached at all, the call is refused. The runtime never falls back to converting in its own process.
 - `LOOMCYCLE_EXTRACT_CONCURRENCY` still bounds `op=import`; extraction is bounded by the workers. The `loomcycle_extractions_*` gauges then report the pool.
 
-`remote` listens on `listen` for workers that run as their own containers (the `loomcycle-worker` image) and sends every conversion to them; `local+remote` runs both kinds in one pool. A network endpoint needs `LOOMCYCLE_WORKER_TOKEN` of at least 32 characters in the runtime's environment, or the runtime refuses to start; local children then present the same token. An endpoint off the loopback needs `tls` (a certificate and key; with `client_ca_file`, workers must also present a certificate) or an explicit `insecure: true`. [WORKERS.md](WORKERS.md) is the guide to running remote workers.
+`remote` listens on `worker_endpoint.listen` for workers that run as their own containers (the `loomcycle-worker` image) and sends every conversion to them; `local+remote` runs both kinds in one pool. A network endpoint needs `LOOMCYCLE_WORKER_TOKEN` of at least 32 characters in the runtime's environment, or the runtime refuses to start; local children then present the same token. An endpoint off the loopback needs `worker_endpoint.tls` (a certificate and key; with `client_ca_file`, workers must also present a certificate) or an explicit `worker_endpoint.insecure: true`. [WORKERS.md](WORKERS.md) is the guide to running remote workers.
 
 `/metrics` adds `loomcycle_conversion_workers`, `_slots`, `_idle_slots`, `_inflight`, `_waiting`, `_quarantined_files`, and the counters `loomcycle_conversion_jobs_total{kind,outcome}`, `loomcycle_conversion_worker_deaths_total` and `loomcycle_conversion_worker_respawns_total`.
 
@@ -4510,7 +4514,7 @@ The worker reads these variables. In `local` mode the runtime sets them for its 
 |---|---|---|
 | `LOOMCYCLE_WORKER_TOKEN` | — | The secret a worker presents to the dispatcher, compared in constant time. In `local` mode the runtime makes a new one at each start and passes it to its children only. In `remote` and `local+remote` the runtime reads it too, and refuses to start without one of at least 32 characters. |
 | `LOOMCYCLE_WORKER_TLS_CA` | — | Turns TLS on for dispatchers that are not a Unix socket: the CA file the dispatcher's certificate is checked against, or `system` for the system roots. |
-| `LOOMCYCLE_WORKER_TLS_CERT`, `LOOMCYCLE_WORKER_TLS_KEY` | — | The worker's client certificate and key, for an endpoint with `conversion.tls.client_ca_file`. |
+| `LOOMCYCLE_WORKER_TLS_CERT`, `LOOMCYCLE_WORKER_TLS_KEY` | — | The worker's client certificate and key, for an endpoint with `worker_endpoint.tls.client_ca_file`. |
 | `LOOMCYCLE_WORKER_TLS_SERVER_NAME` | the host dialled (the name, for `dns:///`) | The name the dispatcher's certificate is checked against. |
 | `LOOMCYCLE_WORKER_INSECURE` | — | `1` lets a worker dial a dispatcher off its own host without TLS. Without it, and without TLS, such a dispatcher is refused. |
 | `LOOMCYCLE_WORKER_DISPATCHER` | — | The runtimes a worker attaches to when `--dispatcher` is not given: comma-separated `host:port`, `unix:///path`, or `dns:///name:port` for every address of a name, looked up again every 30 seconds. |

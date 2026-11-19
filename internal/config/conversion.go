@@ -5,7 +5,6 @@ import (
 	"net"
 	"reflect"
 	"runtime"
-	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -34,17 +33,13 @@ const (
 type ConversionConfig struct {
 	// Mode is inprocess (default), local, remote or local+remote.
 	Mode string `yaml:"mode,omitempty"`
-	// Listen is the host:port the worker endpoint listens on for workers
-	// of their own (modes remote and local+remote). Never the public port.
-	Listen string `yaml:"listen,omitempty"`
-	// TLS is the endpoint's certificate, and optionally the CA its workers'
-	// client certificates must be signed by. Required for a listen address
-	// off this host's loopback unless Insecure is set.
-	TLS ConversionTLSConfig `yaml:"tls,omitempty"`
-	// Insecure serves a listen address off the loopback without TLS: only
-	// for a network the runtime and its workers share and nothing else can
-	// read (a container-internal network, a WireGuard link).
-	Insecure bool `yaml:"insecure,omitempty"`
+	// Listen, TLS and Insecure are worker_endpoint's listen, tls and
+	// insecure written the older way, read only in modes remote and
+	// local+remote. A value worker_endpoint leaves unset is taken from here;
+	// one both blocks set must agree (Config.ResolvedWorkerEndpoint).
+	Listen   string                  `yaml:"listen,omitempty"`
+	TLS      WorkerEndpointTLSConfig `yaml:"tls,omitempty"`
+	Insecure bool                    `yaml:"insecure,omitempty"`
 	// QueueWaitS is how long a conversion waits for a free worker before the
 	// call is answered as a busy server. Default 60.
 	QueueWaitS int `yaml:"queue_wait_s,omitempty"`
@@ -54,18 +49,6 @@ type ConversionConfig struct {
 	// Local tunes mode local.
 	Local ConversionLocalConfig `yaml:"local,omitempty"`
 }
-
-// ConversionTLSConfig is `conversion.tls`.
-type ConversionTLSConfig struct {
-	CertFile string `yaml:"cert_file,omitempty"`
-	KeyFile  string `yaml:"key_file,omitempty"`
-	// ClientCAFile, when set, makes every worker present a client
-	// certificate signed by it (mutual TLS), on top of the token.
-	ClientCAFile string `yaml:"client_ca_file,omitempty"`
-}
-
-// Enabled reports whether a certificate is configured.
-func (t ConversionTLSConfig) Enabled() bool { return t.CertFile != "" || t.KeyFile != "" }
 
 // ConversionLocalConfig is `conversion.local`.
 type ConversionLocalConfig struct {
@@ -127,8 +110,10 @@ func (c ConversionConfig) RemoteWorkers() bool {
 	return c.Mode == ConversionRemote || c.Mode == ConversionLocalRemote
 }
 
-// validateConversion refuses a mode it does not know, a remote mode with no
-// worker endpoint or one on the runtime's own ports, and values out of range.
+// validateConversion refuses a mode it does not know, worker_endpoint and the
+// older conversion keys setting one value differently, a remote mode with no
+// worker endpoint or a bad one (validateWorkerEndpoint), and values out of
+// range.
 // Part of validate.
 func validateConversion(c *Config) error {
 	cv := c.Conversion
@@ -138,35 +123,31 @@ func validateConversion(c *Config) error {
 		return fmt.Errorf("conversion.mode: unknown mode %q (want %s, %s, %s or %s)", cv.Mode,
 			ConversionInProcess, ConversionLocal, ConversionRemote, ConversionLocalRemote)
 	}
-	if cv.RemoteWorkers() {
-		if cv.Listen == "" {
-			return fmt.Errorf("conversion.listen: mode %s needs the host:port workers attach to", cv.Mode)
+	ep, key, err := resolveWorkerEndpoint(c)
+	if err != nil {
+		return err
+	}
+	switch {
+	case cv.RemoteWorkers():
+		if ep.Listen == "" {
+			return fmt.Errorf("worker_endpoint.listen: conversion mode %s needs the host:port workers attach to", cv.Mode)
 		}
-		host, port, err := net.SplitHostPort(cv.Listen)
-		if n, perr := strconv.Atoi(port); err != nil || perr != nil || n < 1 || n > 65535 {
-			return fmt.Errorf("conversion.listen: %q is not a host:port", cv.Listen)
+		if err := validateWorkerEndpoint(c, ep, key); err != nil {
+			return err
 		}
-		for _, own := range []struct{ name, addr string }{
-			{"LOOMCYCLE_LISTEN_ADDR", c.Env.ListenAddr}, {"LOOMCYCLE_GRPC_ADDR", c.Env.GrpcAddr}, {"the metrics listener", c.Env.MetricsListenAddr},
-		} {
-			if own.addr == "" {
-				continue
-			}
-			if _, p, err := net.SplitHostPort(own.addr); err == nil && p == port && (host == "" || sameHost(host, own.addr)) {
-				return fmt.Errorf("conversion.listen: %s is the port of %s; the worker endpoint is never a public port", cv.Listen, own.name)
-			}
-		}
-		if cv.TLS.Enabled() && (cv.TLS.CertFile == "" || cv.TLS.KeyFile == "") {
-			return fmt.Errorf("conversion.tls: cert_file and key_file are set together")
-		}
-		if cv.TLS.ClientCAFile != "" && !cv.TLS.Enabled() {
-			return fmt.Errorf("conversion.tls.client_ca_file needs cert_file and key_file")
-		}
-		if !cv.TLS.Enabled() && !cv.Insecure && !loopbackHost(host) {
-			return fmt.Errorf("conversion.listen: %s is reachable off this host, and the endpoint carries every file sent for conversion: set conversion.tls (cert_file, key_file), or conversion.insecure: true on a network only the runtime and its workers share", cv.Listen)
-		}
-	} else if cv.Listen != "" || cv.TLS.Enabled() || cv.TLS.ClientCAFile != "" || cv.Insecure {
+	case cv.Listen != "" || cv.TLS != (WorkerEndpointTLSConfig{}) || cv.Insecure:
 		return fmt.Errorf("conversion.listen, tls and insecure: set only in mode %s or %s", ConversionRemote, ConversionLocalRemote)
+	case c.WorkerEndpoint.set():
+		// Nothing serves the endpoint yet in this mode; a later worker role
+		// will (RFC GW). Its values are still checked, so a mistake does not
+		// wait for the day they are used.
+		if ep.Listen == "" {
+			return fmt.Errorf("worker_endpoint.listen: the host:port workers attach to is required when the block is written")
+		}
+		if err := validateWorkerEndpoint(c, ep, key); err != nil {
+			return err
+		}
+		c.Warnings = append(c.Warnings, fmt.Sprintf("worker_endpoint is set, but conversion.mode %s attaches no workers of its own: nothing listens on %s", cv.Mode, ep.Listen))
 	}
 	if cv.QueueWaitS < 0 || cv.QuarantineTTLS < 0 {
 		return fmt.Errorf("conversion: queue_wait_s and quarantine_ttl_s may not be negative")
@@ -204,7 +185,7 @@ func (c *ConversionConfig) UnmarshalYAML(n *yaml.Node) error {
 	if err := strictKeys(valueOf(n, "local"), "conversion.local", nil, reflect.TypeOf(ConversionLocalConfig{})); err != nil {
 		return err
 	}
-	if err := strictKeys(valueOf(n, "tls"), "conversion.tls", nil, reflect.TypeOf(ConversionTLSConfig{})); err != nil {
+	if err := strictKeys(valueOf(n, "tls"), "conversion.tls", nil, reflect.TypeOf(WorkerEndpointTLSConfig{})); err != nil {
 		return err
 	}
 	type plain ConversionConfig

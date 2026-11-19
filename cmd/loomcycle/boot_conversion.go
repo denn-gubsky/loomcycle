@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/dispatch"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/local"
@@ -18,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
+	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 )
 
 // minWorkerToken is the shortest LOOMCYCLE_WORKER_TOKEN a worker endpoint on
@@ -79,34 +82,40 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 		KindTimeouts:  h.timeouts,
 		Logger:        slog.Default(),
 	})
+	// The worker endpoint's server is built here rather than by the
+	// dispatcher, so another worker service (RFC GW) can be registered on
+	// the same endpoint; its flow-control windows apply to every service.
+	srv := grpc.NewServer(workerlink.ServerOptions()...)
+	d.Register(srv)
 	serve := func(l net.Listener) {
 		safego.Go(context.Background(), "conversion.dispatcher", func() {
-			if err := d.Serve(l); err != nil {
+			if err := srv.Serve(l); err != nil {
 				slog.Warn("conversion dispatcher stopped", "err", err, "addr", l.Addr().String())
 			}
 		})
 	}
-	// closers end the listeners after the dispatcher stops; stopChildren
-	// runs before it, so no child is mid-job when its streams end.
+	// closers end the listeners after the server stops; stopChildren runs
+	// before it, so no child is mid-job when its streams end.
 	var (
 		closers      []func()
 		stopChildren = func() {}
 	)
 	if cv.RemoteWorkers() {
-		l, err := net.Listen("tcp", cv.Listen)
+		ep := b.cfg.ResolvedWorkerEndpoint()
+		l, err := net.Listen("tcp", ep.Listen)
 		if err != nil {
-			fatal("conversion: cannot open the worker endpoint", "listen", cv.Listen, "err", err)
+			fatal("conversion: cannot open the worker endpoint", "listen", ep.Listen, "err", err)
 		}
-		if cv.TLS.Enabled() {
-			tc, err := dispatch.ServerTLS(cv.TLS.CertFile, cv.TLS.KeyFile, cv.TLS.ClientCAFile)
+		if ep.TLS.Enabled() {
+			tc, err := workerlink.ServerTLS(ep.TLS.CertFile, ep.TLS.KeyFile, ep.TLS.ClientCAFile)
 			if err != nil {
-				fatal("conversion.tls: "+err.Error(), "listen", cv.Listen)
+				fatal("worker_endpoint.tls: "+err.Error(), "listen", ep.Listen)
 			}
-			l = dispatch.TLSListener(l, tc)
+			l = workerlink.TLSListener(l, tc)
 		}
 		serve(l)
 		closers = append(closers, func() { l.Close() })
-		slog.Info("conversion worker endpoint listening", "listen", cv.Listen, "tls", cv.TLS.Enabled(), "client_certs", cv.TLS.ClientCAFile != "")
+		slog.Info("conversion worker endpoint listening", "listen", ep.Listen, "tls", ep.TLS.Enabled(), "client_certs", ep.TLS.ClientCAFile != "")
 	}
 	if cv.LocalWorkers() {
 		serve(localL)
@@ -124,7 +133,7 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 	}
 	b.addCleanup(func() {
 		stopChildren()
-		d.Stop()
+		srv.Stop()
 		for _, c := range closers {
 			c()
 		}
