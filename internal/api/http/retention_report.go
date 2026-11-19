@@ -90,7 +90,7 @@ type sqlMemGCInfo struct {
 }
 
 // handleRetentionReport serves GET /v1/_retention — the read-only view of the
-// RFC BM data-retention sweeper. Tenant-readable config (see requiredScopeFor);
+// RFC BM data-retention sweeper. Tenant-readable config (see the route table, authz.HTTPRoute);
 // the purgeable counts + export_dir are stripped for a non-admin caller. 503 when
 // the server has no store (an empty/disabled report).
 func (s *Server) handleRetentionReport(w http.ResponseWriter, r *http.Request) {

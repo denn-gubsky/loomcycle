@@ -255,3 +255,81 @@ func TestFileExtract_FB2WorkerAndInProcessAgree(t *testing.T) {
 		t.Fatalf("the pool ran %v, want one extract", st.Jobs)
 	}
 }
+
+// An RTF document in windows-1251, saved under a .doc name, read through a
+// conversion worker gives what it gives in this process: the same text,
+// footnote, table and metadata. Its header, not its name, types it.
+func TestFileExtract_RTFWorkerAndInProcessAgree(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dispatch.New(dispatch.Options{Token: "tok"})
+	go func() { _ = d.Serve(l) }()
+	defer d.Stop()
+	wctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() {
+		_ = worker.Run(wctx, worker.Options{Target: l.Addr().String(), Token: "tok", ID: "w", Scratch: t.TempDir()})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for d.Stats().Idle == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the worker did not attach")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cp1251 := func(s string) string {
+		b, err := charmap.Windows1251.NewEncoder().Bytes([]byte(s))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out strings.Builder
+		for _, c := range b {
+			if c < 0x80 {
+				out.WriteByte(c)
+			} else {
+				fmt.Fprintf(&out, `\'%02x`, c)
+			}
+		}
+		return out.String()
+	}
+	doc := []byte(`{\rtf1\ansi\ansicpg1251\deff0{\fonttbl{\f0\fcharset204 Times;}}` +
+		`{\info{\title ` + cp1251("Война и мир") + `}{\author ` + cp1251("Лев Толстой") + `}{\creatim\yr1869\mo1\dy1}}` +
+		`\pard\outlinelevel0 ` + cp1251("Часть первая") + `\par` +
+		`\pard Eh bien, {\b mon prince}{\footnote ` + cp1251("Итак, князь.") + `}.\par` +
+		`\trowd\pard\intbl a\cell b\cell\row\pard\par}`)
+	extractDoc := func(f *File) (map[string]any, string) {
+		t.Helper()
+		r, ctx, _ := fileRun(t, inbox.Service{}, false)
+		kept := inbox.Capture(r.Ctx, inbox.Item{Name: "war.doc", MediaType: "application/msword", Origin: "http"}, doc)
+		if kept.Record.MediaType != "application/rtf" {
+			t.Fatalf("kept as %q", kept.Record.MediaType)
+		}
+		res, err := execFile(f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref})
+		if err != nil || res.IsError {
+			t.Fatalf("extract: %+v %v", res, err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+			t.Fatalf("result is not JSON: %v\n%s", err, res.Text)
+		}
+		return out, res.Text
+	}
+	here, hereText := extractDoc(&File{})
+	there, thereText := extractDoc(&File{Convert: d.Client()})
+	if hereText != thereText {
+		t.Fatalf("through the worker:\n%s\nin process:\n%s", thereText, hereText)
+	}
+	meta, _ := there["metadata"].(map[string]any)
+	if here["format"] != "rtf" || here["tables"] != float64(1) || meta["title"] != "Война и мир" || meta["year"] != float64(1869) ||
+		!strings.Contains(fmt.Sprint(meta["authors"]), "Лев Толстой") || meta["source_format"] != "rtf" {
+		t.Errorf("format %v, tables %v, metadata %v", here["format"], here["tables"], meta)
+	}
+	if !strings.Contains(thereText, "## Часть первая") || !strings.Contains(thereText, "**mon prince**[1]") || !strings.Contains(thereText, "Итак, князь.") {
+		t.Errorf("the heading, the run or the footnote was not read:\n%s", thereText)
+	}
+	if st := d.Stats(); st.Jobs["extract/ok"] != 1 {
+		t.Fatalf("the pool ran %v, want one extract", st.Jobs)
+	}
+}

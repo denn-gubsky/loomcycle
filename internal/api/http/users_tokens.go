@@ -20,7 +20,7 @@ package http
 //     cannot mint an operator/admin scope at all. An "inherit" token (RFC EY
 //     §8) re-derives them the same way on every request instead of once.
 //  3. The route is substrate:tenant (the /v1/_users/ prefix gate in
-//     requiredScopeFor), so a substrate:user member is auto-denied minting.
+//     the route table (authz.HTTPRoute)), so a substrate:user member is auto-denied minting.
 //  4. list / revoke operate ONLY on member tokens — a row that belongs to this
 //     (tenant, subject) AND holds no admin/tenant scope and no single-purpose
 //     scope (isDelegatedUserToken).

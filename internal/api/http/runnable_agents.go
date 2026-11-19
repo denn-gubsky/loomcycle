@@ -3,7 +3,7 @@ package http
 // runnable_agents.go — RFC BY: the user-facing runnable-agent catalog.
 // GET /v1/_runnable-agents answers "which agents can I run", tiered by access
 // mode, so a delegated user token can discover an agent without being told its
-// name out of band. Member-read gated (runs:read via memberReadable); the
+// name out of band. Member-read gated (runs:read in the route table); the
 // tiering is decided SERVER-SIDE from the authoritative users.access_mode row
 // (never the wire), with a hard isolation floor from the token scopes.
 

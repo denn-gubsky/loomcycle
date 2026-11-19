@@ -81,13 +81,14 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if required, admitted := scopeGate(p, r.Method, r.URL.Path); !admitted && !ownIdentityRequest(p, r) {
+		rt := requestRoute(r)
+		if required, admitted := scopeGate(p, rt, r.Method, r.URL.Path); !admitted && !ownIdentityRequest(p, r) {
 			writeScopeError(w, required, "insufficient scope")
 			return
 		}
 		// After the scope check, and independent of it: a credential limited
 		// to certain agents is held to the run plane however wide its scopes.
-		if confinedOffRoute(p, r.Method, r.URL.Path) {
+		if confinedOffRoute(p, rt, r.Method, r.URL.Path) {
 			writeJSONError(w, http.StatusForbidden, "restricted_token",
 				"this token is limited to starting and following runs of its allowed agents")
 			return
@@ -127,11 +128,32 @@ func requestTransport(r *http.Request, cookie bool) string {
 	return "http"
 }
 
+// requestRoute is the row of the route the mux served r under (r.Pattern), so
+// the gates judge the route whose handler will run, however the path is
+// spelled. A request that reached a handler outside the mux (a test calling
+// the middleware directly) is looked up by its method and path.
+func requestRoute(r *http.Request) authz.Route {
+	if rt, ok := authz.HTTPRouteByPattern(r.Pattern); ok {
+		return rt
+	}
+	return routeAt(r.Method, r.URL.Path)
+}
+
+// routeAt is the row of the route that serves method and path. A request no
+// route serves gets a row of its own: a write needs substrate:admin, a read
+// nothing, nothing is on the run plane and no ACL governs it.
+func routeAt(method, path string) authz.Route {
+	if rt, ok := authz.HTTPRoute(method, path); ok {
+		return rt
+	}
+	return authz.Route{Scope: authz.UnroutedScope(method)}
+}
+
 // scopeGate is the route's scope gate for an authenticated principal p: the
-// scope the route requires, and whether p is admitted — by holding it, or on
-// one of the paths below that admit a principal without it. It returns the
-// scope so the refusal can name it.
-func scopeGate(p auth.Principal, method, path string) (required string, admitted bool) {
+// scope route rt requires (its row in authz.HTTPRoutes), and whether p is
+// admitted — by holding it, or on one of the paths below that admit a
+// principal without it. It returns the scope so the refusal can name it.
+func scopeGate(p auth.Principal, rt authz.Route, method, path string) (required string, admitted bool) {
 	// RFC FA D16: a user-management credential reaches its route list and
 	// nothing else — not even the routes any authenticated principal may
 	// call. Checked first so no member, self-service or gateway path below
@@ -151,7 +173,7 @@ func scopeGate(p auth.Principal, method, path string) (required string, admitted
 	if auth.IsSCIMProvisioner(p) || scimRoute(path) {
 		return auth.ScopeSCIMProvision, auth.IsSCIMProvisioner(p) && scimRoute(path)
 	}
-	required = requiredScopeFor(method, path)
+	required = rt.Scope
 	if required == "" || auth.HasScope(p.Scopes, required) {
 		return required, true
 	}
@@ -166,7 +188,7 @@ func scopeGate(p auth.Principal, method, path string) (required string, admitted
 	// budget-write / erasure / hooks) are excluded by
 	// tenantMemberAccessible; and every such handler still confines a
 	// member to its own tenant via principalTenantScope / tenantFromCtx.
-	memberOK := tenantMemberAccessible(method, path) && !auth.IsIsolated(p, true)
+	memberOK := memberpath.Route(required, method, path) && !auth.IsIsolated(p, true)
 	// RFC CN: the user self-service surfaces (the credential store + the MCP
 	// transport) admit ANY authenticated principal that carries a subject —
 	// INCLUDING an isolated substrate:user user, who is otherwise held at the
@@ -190,10 +212,14 @@ func scopeGate(p auth.Principal, method, path string) (required string, admitted
 // is what the cross-transport parity test (internal/api/acltest) asks of every
 // gRPC RPC's HTTP twin; authMiddleware runs the same two functions.
 func RouteAdmits(p auth.Principal, method, path string) bool {
-	if _, admitted := scopeGate(p, method, path); !admitted {
+	return routeAdmits(p, routeAt(method, path), method, path)
+}
+
+func routeAdmits(p auth.Principal, rt authz.Route, method, path string) bool {
+	if _, admitted := scopeGate(p, rt, method, path); !admitted {
 		return false
 	}
-	return !confinedOffRoute(p, method, path)
+	return !confinedOffRoute(p, rt, method, path)
 }
 
 // admitPrincipalAgent refuses a top-level run of an agent the caller's token
@@ -257,18 +283,13 @@ func writeAgentNotAllowed(w http.ResponseWriter, err error) {
 	writeJSONError(w, http.StatusForbidden, "agent_not_allowed", err.Error())
 }
 
-// isGatewayRoute reports whether path is one of the raw model endpoints.
-func isGatewayRoute(path string) bool {
-	return path == "/v1/_llm/chat" || path == "/v1/chat/completions" || path == "/v1/embeddings"
-}
-
 // confinedOffRoute reports whether p's run-plane confinement keeps it off the
 // route: p is limited to certain agents, the route is not on the run plane,
 // and it is not an off-run surface p was granted (auth.Restrictions.Surfaces).
 // Every HTTP check of the confinement asks this, so the gate, the parity
 // helper and the whoami summary cannot disagree about a granted surface.
-func confinedOffRoute(p auth.Principal, method, path string) bool {
-	if !p.Restrictions.RunPlaneOnly() || runPlaneRoute(method, path) {
+func confinedOffRoute(p auth.Principal, rt authz.Route, method, path string) bool {
+	if !p.Restrictions.RunPlaneOnly() || rt.RunPlane {
 		return false
 	}
 	for _, surface := range offRunSurfacesOf(method, path) {
@@ -292,61 +313,6 @@ func offRunSurfacesOf(method, path string) []string {
 		return []string{auth.SurfaceSpeech, auth.SurfaceTranscription}
 	}
 	return nil
-}
-
-// runPlaneRoute reports whether a route belongs to the run plane: starting,
-// continuing, reading and controlling runs. It is the WHOLE of what a
-// credential with an agent allowlist may reach (auth.Restrictions.RunPlaneOnly
-// says why the rule is an allowlist and not a list of refusals), so a route
-// added later is refused to such a credential until someone decides it
-// belongs here.
-//
-// What is deliberately absent: every definition route, the team and schedule
-// triggers, the model gateways and the decision call (each reaches a model or
-// an agent with no allowlist in the way), channels, memory, documents, and
-// the credential store.
-func runPlaneRoute(method, path string) bool {
-	// Deleting a run tree or a session is not part of starting and following
-	// runs, and is off the run plane on gRPC and MCP too: a token limited to
-	// certain agents does not erase records, whatever scope it was given.
-	if method == http.MethodDelete && (strings.HasPrefix(path, "/v1/sessions/") ||
-		strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/tree")) {
-		return false
-	}
-	switch {
-	case path == "/v1/runs", path == "/v1/runs:batch", strings.HasPrefix(path, "/v1/runs/"):
-		return true
-	case strings.HasPrefix(path, "/v1/sessions/"):
-		return true
-	case path == "/v1/_runnable-agents", path == "/v1/_me", path == "/v1/config":
-		return method == http.MethodGet
-	// Which overrides a run of an agent may set. It is part of starting a run:
-	// a client-held token for one agent needs it to build the form it starts
-	// that agent with. It reveals nothing a run attempt would not — the
-	// override lock refuses before a run exists — and the handler applies the
-	// agent allowlist first, so the token learns nothing about other agents.
-	case isAgentOverridablePath(path):
-		return method == http.MethodGet
-	// A token retiring itself (`loomcycle logout`) is never an escalation, and
-	// a token limited to some agents must still be able to sign out.
-	case path == "/v1/_auth/token/revoke":
-		return method == http.MethodPost
-	case path == "/v1/_mcp":
-		// The MCP transport itself; the per-tool gate inside it applies the
-		// same rule to each tool (the MCP package's runPlaneTools).
-		return true
-	}
-	// /v1/agents/{agent_id} and its cancel are a run by its agent id;
-	// /v1/agents/{name}/channels is not.
-	if rest, ok := strings.CutPrefix(path, "/v1/agents/"); ok {
-		return !strings.Contains(rest, "/") || strings.HasSuffix(rest, "/cancel") && strings.Count(rest, "/") == 1
-	}
-	// A user's own runs and pending interrupts; not their channels.
-	if rest, ok := strings.CutPrefix(path, "/v1/users/"); ok && method == http.MethodGet {
-		_, tail, found := strings.Cut(rest, "/")
-		return found && (tail == "agents" || tail == "agents/stream" || tail == "interrupts")
-	}
-	return false
 }
 
 // tokenInvalidateTopic is the backplane channel for cross-replica auth
@@ -1288,496 +1254,6 @@ func requirePrincipalOwnsPathUser(ctx context.Context, pathUserID string) bool {
 	return pathUserID == p.Subject
 }
 
-// requiredScopeFor maps an HTTP (method, path) to the scope a caller
-// must hold. Empty string = any authenticated principal (no specific
-// scope). substrate:admin satisfies everything (see auth.HasScope), so
-// the default admin/legacy token works on every route; narrow tokens
-// get the specific gate. Conservative by design: ambiguous routes fall
-// through to "" rather than risk locking a legitimate narrow token out.
-func requiredScopeFor(method, path string) string {
-	switch {
-	// The raw model endpoints: the LLM gateway and the OpenAI-compatible
-	// shims. Not an admin surface, but not open to every principal either:
-	// see auth.ScopeLLMGateway. authMiddleware admits a non-isolated member
-	// without the scope (gatewayMemberOK).
-	case isGatewayRoute(path):
-		return auth.ScopeLLMGateway
-	// RFC FA P6: the SCIM service. scopeGate reserves it to a scim:provision
-	// credential before this switch; this is the scope its refusal names.
-	case scimRoute(path):
-		return auth.ScopeSCIMProvision
-	// Whoami — any authenticated principal must be able to learn its own
-	// identity (the Web UI's role source); a tenant token needs it too.
-	case path == "/v1/_me":
-		return ""
-	// The caller's own app sign-ins: any signed-in principal lists and ends
-	// its own (the handler answers for (tenant, subject) of the principal and
-	// nothing else), as it signs its own browser out.
-	case isMyAppSignInsPath(path):
-		return ""
-	// The /v1/_users collection, method-aware (RFC BX P2a):
-	//   - GET (list) — any authenticated principal; the handler tenant-scopes
-	//     the result (a tenant sees only its tenant's users; admin sees all /
-	//     can focus via ?tenant=). The UI's per-tenant workspace picker needs it.
-	//   - POST (create a first-class user) — a tenant-operator action; only a
-	//     substrate:tenant operator (or admin, which also satisfies) may
-	//     register a user. The handler stamps the authoritative principal tenant.
-	// PATCH/DELETE /v1/_users/{subject} (update / delete) fall through to the
-	// strings.HasPrefix(path, "/v1/_users/") case below, which already returns
-	// ScopeTenant — so all three mutating ops are tenant-operator-gated.
-	case path == "/v1/_users":
-		if method == http.MethodPost {
-			return auth.ScopeTenant
-		}
-		return ""
-	// RFC BY: user-facing READ surfaces — a delegated user's OWN chat history
-	// (/v1/_history) and the runnable-agent catalog (/v1/_runnable-agents).
-	// Gated member-read (runs:read) so a delegated user token reaches them —
-	// isolated users hold substrate:user (→ runs:read via userImplied) and
-	// tenant-mode users hold runs:read directly; tenant operators + admin also
-	// satisfy runs:read (see auth.HasScope). The HANDLERS do the real
-	// confinement: history is capped to [self, user] for a member
-	// (substrateAdminCtx), and discovery is tiered by the caller's
-	// users.access_mode. Keying on substrate:tenant would lock users out; keying
-	// on substrate:user would lock TENANT-MODE users out (they hold neither).
-	case memberReadable(path):
-		return auth.ScopeRunsRead
-	// Evaluation outside a run. runs:read is the floor every principal that may
-	// read a run holds — an isolated user included, which is why it is not
-	// substrate:tenant. The gate admits; it grants nothing: which ops the caller
-	// may use is tools.OffRunEvaluationPolicy (every op for a tenant operator or
-	// admin, submit_self for anyone else), the same grant as the Evaluation RPC
-	// and the MCP `evaluation` tool, which gate on runs:read too.
-	case path == "/v1/_evaluation":
-		return auth.ScopeRunsRead
-	// RFC BC: the client-tool host WebSocket. A client registers tools it runs on
-	// the user's own machine; the connection serves ONLY its own principal's runs
-	// (filed under (tenant, subject) from the bearer). Requires runs:create — you
-	// must be able to run agents to benefit, and it mirrors the steer /input gate.
-	// ScopeAdmin also satisfies it. RFC GJ: the ticket that opens it is gated
-	// the same, so a credential that could not open the socket mints nothing.
-	case path == "/v1/client-tools" || path == clientToolsTicketPath:
-		return auth.ScopeRunsCreate
-	// RFC AF: the tenant-confined substrate plane — def-authoring across the 8
-	// xxxDef families, INCLUDING /v1/_mcpserverdef (the "dynamic MCP tools
-	// ingestion" surface: a tenant registers an external MCP server and the
-	// runtime mounts its tools for the tenant's agents). ScopeTenant (ScopeAdmin
-	// also satisfies it). The handlers stamp the principal's authoritative tenant
-	// (dispatchSubstrate → RunIdentity) and 404 cross-tenant reads, so a tenant
-	// operator authors ONLY its own surface. DELIBERATELY EXCLUDES
-	// /v1/_operatortokendef (token minting has its own case below).
-	// /v1/_mcp (the loomcycle-as-MCP-server transport)
-	// now has its OWN ScopeTenant case below: RFC AG made it per-principal
-	// (mcpPrincipalCtx stamps the tenant + a per-tool gate withholds the admin
-	// meta-tools), so it no longer needs to be operator-only.
-	case isTenantConfinedDefPath(path):
-		return auth.ScopeTenant
-	// RFC EO §5.5: which per-run overrides a run of one agent may set. The
-	// def plane's posture — a tenant operator, and through the member path a
-	// non-isolated member, who could read the whole definition through
-	// POST /v1/_agentdef anyway. Listed explicitly because the def family
-	// above is exact-match, and the /v1/_* catch-all would pin it to admin.
-	// A token limited to certain agents reaches it too: see runPlaneRoute.
-	case isAgentOverridablePath(path):
-		return auth.ScopeTenant
-	// RFC AG Phase 2: the loomcycle-as-MCP-server HTTP transport. With Phase 0
-	// (mcpPrincipalCtx tenant/user stamp + the per-tool tools/call gate +
-	// tools/list filter) and Phase 1 (applyPrincipal on spawn) in place, the
-	// transport is per-principal and tenant-confined — a substrate:tenant token
-	// may OPEN an MCP session, and the per-tool gate INSIDE still withholds the
-	// admin-only meta-tools (mint / runtime-admin / snapshots). The route gate
-	// only decides "may open a session at all". ScopeAdmin also satisfies
-	// ScopeTenant (auth.HasScope), so admin sessions are unchanged.
-	case path == "/v1/_mcp":
-		return auth.ScopeTenant
-	// RFC AH Phase 4: the two read-only volume views (GET /v1/_volumes +
-	// /v1/_volumes/ephemeral). Same tenant-confined posture as the def plane —
-	// the handlers filter dynamic + ephemeral rows to the principal's
-	// authoritative tenant (statics are the shared bind floor, shown to all).
-	// ScopeTenant (ScopeAdmin also satisfies). Distinct from the
-	// isTenantConfinedDefPath set because these are GETs at /v1/_volumes(/...),
-	// not the /v1/_volumedef def-authoring route.
-	case path == "/v1/_volumes" || path == "/v1/_volumes/ephemeral":
-		return auth.ScopeTenant
-	// RFC AS Phase 1: the unified Library list views (agents / skills /
-	// mcp-servers). #575 tenant-scoped the HANDLERS (a substrate:tenant
-	// principal sees only its own tenant's substrate rows; operator-global
-	// statics excluded), but the routes stayed at the /v1/_* ScopeAdmin
-	// catch-all below — so a tenant token was 403'd at the gate before the
-	// scoped handler could run, leaving #575's tenant branch unreachable
-	// (and the Library invisible to a tenant operator). Grant ScopeTenant
-	// here so the reads are actually reachable; the handler still confines
-	// the result to the caller's tenant (ScopeAdmin also satisfies, so admin
-	// + ?tenant= focus is unchanged). GET-only views — the def-AUTHORING
-	// writes live at /v1/_agentdef etc. (isTenantConfinedDefPath, already
-	// ScopeTenant), not at this path. Mirrors the /v1/_*def/names posture.
-	case path == "/v1/_library/agents" || path == "/v1/_library/skills" || path == "/v1/_library/mcp-servers":
-		return auth.ScopeTenant
-	// The tenant ontology surface (GET state + POST the draft↔confirmed flip).
-	// ScopeTenant on BOTH methods: the ontology is one document per tenant, the
-	// handler derives that tenant from the principal (never the wire), and the same
-	// token can already write the same root-chunk status through /v1/_document
-	// update_chunk — so gating the write harder here would deny the intended actor
-	// without closing anything. ScopeAdmin also satisfies it (+ ?tenant= focus).
-	// RFC CA: /proposals (accept/reject) and /adopt sit with it. Same reasoning — one
-	// document per tenant, the tenant derived from the principal and never the wire —
-	// and both are strictly NARROWER than what this token can already do through
-	// /v1/_document, which is the point of having them as dedicated ops.
-	// RFC FY Part B: "this token" is a tenant operator's; a member reaches
-	// neither the writes here nor their effect through /v1/_document, so every
-	// POST here is carved out of the member path (memberpath.CarvedOut).
-	// RFC FR P2: /subjects/merge too — and, unlike the others, it is carved out of
-	// the member path (memberpath.CarvedOut): which of two subjects survives is
-	// the operator's decision, not a member's. RFC FR P4: /subjects/principal
-	// likewise — which person a subject is decides what an erasure finds; RFC GQ /plan, whose counts span every scope.
-	case path == "/v1/_ontology" || path == "/v1/_ontology/plan" ||
-		path == "/v1/_ontology/proposals" || path == "/v1/_ontology/adopt" ||
-		path == "/v1/_ontology/subjects/merge" || path == "/v1/_ontology/subjects/principal":
-		return auth.ScopeTenant
-	// RFC FS: the statement review queue, bulk rulings and their undo.
-	// ScopeTenant, and NOT carved out of the member path: a member holding the
-	// ACL `review` grant on a path may rule there. Who may rule on what is the
-	// connector's question (an operator, or a member with `review` on each
-	// statement's from-document), asked of every transport alike.
-	// The policy's application (apply_policy) is an operator's alone; the
-	// connector refuses a member, on every transport alike.
-	case path == "/v1/_statements/review" || path == "/v1/_statements/rule" || path == "/v1/_statements/revert" ||
-		path == "/v1/_statements/rulings" || path == "/v1/_statements/apply_policy" || path == "/v1/_statements/agreement":
-		return auth.ScopeTenant
-	// RFC AS: the Web UI schedules surface (list-all + per-def state / run-now /
-	// pause / resume). list-all is tenant-scoped (the handler filters substrate
-	// schedules to the caller's tenant; operator-global static crons stay
-	// admin-only); the per-def ops confine a substrate:tenant principal to its
-	// OWN tenant's schedule defs (opaque-404 cross-tenant + statics, which have
-	// no ScheduleDef row). ScopeAdmin also satisfies. The def-AUTHORING writes
-	// live at /v1/_scheduledef (isTenantConfinedDefPath, already ScopeTenant).
-	case strings.HasPrefix(path, "/v1/_schedules/"):
-		return auth.ScopeTenant
-	// RFC AS: the audit/event log. events carry no tenant column, but each is
-	// tied to a session (events.session_id NOT NULL) whose tenant_id is the
-	// event's tenant — so handleListEvents tenant-scopes the result (a tenant
-	// sees only its own tenant's events; admin sees all + the ?tenant= focus).
-	// ScopeAdmin also satisfies. Read-only GET.
-	case path == "/v1/_events":
-		return auth.ScopeTenant
-	// RFC FZ Part E: the audit chain export. Each chain is one tenant's;
-	// handleAuditExport confines a tenant operator to its own and lets an
-	// admin name one (none = the operator chain). Operator-only: carved out
-	// of the member path (memberpath.CarvedOut).
-	case path == "/v1/_audit":
-		return auth.ScopeTenant
-	// RFC AV: the usage/cost report. token_usage rows carry tenant_id, so
-	// handleUsageReport tenant-scopes the aggregation (a tenant operator sees
-	// only its own tenant's spend; admin sees all + the ?tenant= focus).
-	// ScopeAdmin also satisfies. Read-only GET. /v1/_usage/speed is its
-	// per-model timing summary, scoped the same way (RFC FM D6).
-	case path == "/v1/_usage", path == "/v1/_usage/speed":
-		return auth.ScopeTenant
-	// The per-subject erasure report (GET). Tenant-readable, and deliberately so:
-	// answering "what do you hold about this person" is the tenant OPERATOR's job
-	// — they are the controller for their own tenant's subjects — and requiring
-	// operator-admin would put a routine data-subject request behind a token that
-	// can read every OTHER tenant too. principalTenantScope confines the walk to
-	// the caller's tenant; admin additionally gets the ?tenant= focus.
-	//
-	// Not narrower than ScopeTenant despite reading across scopes: everything it
-	// counts is already listable by this principal through /v1/_usage,
-	// /v1/_credentialdef and the Path/Memory surfaces. It aggregates a view that
-	// is reachable today, rather than granting new reach.
-	//
-	// POST (the erasure itself) shares the gate for the same reason — executing a
-	// data-subject request is the same operator's job as answering one, and every
-	// plane it deletes is already deletable by this principal one call at a time.
-	// The protection against an accidental erasure is NOT the scope (an admin
-	// token would be no less able to do it): it is dry_run defaulting true via a
-	// *bool, and confirm having to equal subject on a live run.
-	// The per-subject aggregate view. ScopeTenant like the /v1/_users list it drills
-	// into: everything it aggregates is already readable by this principal through
-	// /v1/_usage, /v1/_limits and the memory surfaces, so it saves five calls
-	// without granting new reach. principalTenantScope confines it.
-	case strings.HasPrefix(path, "/v1/_users/"):
-		return auth.ScopeTenant
-	// RFC FA P2: the password gate's management API (invites, resets,
-	// credentials, logins) is the tenant operator's for its own tenant; admin
-	// for any. An auth:manage credential is admitted by authManageRoute
-	// before this switch. The handlers confine the tenant.
-	case strings.HasPrefix(path, authGateRoutePrefix):
-		return auth.ScopeTenant
-	// RFC EY P4: groups, ACL rule lists and bindings are the tenant
-	// operator's (admin focuses another tenant with ?tenant=); members are
-	// carved out below. The evaluate / explain / simulate questions are
-	// open to any authenticated principal: the handler confines a
-	// non-operator to its OWN subject's decisions.
-	case memberpath.IsACLManagementPath(path):
-		return auth.ScopeTenant
-	case strings.HasPrefix(path, "/v1/_authz/"):
-		return ""
-	// RFC FA P5: which gates a tenant's people must use is the deployment
-	// admin's decision, not the tenant's own.
-	case path == "/v1/_auth/tenant-policies", strings.HasPrefix(path, "/v1/_auth/tenant-policies/"):
-		return auth.ScopeAdmin
-	// RFC FA P2: a signed-in person's own account (password, authenticator).
-	// Any principal reaches the handler, which serves only a password-gate
-	// Web UI session and re-authenticates every change.
-	case strings.HasPrefix(path, "/v1/_auth/"):
-		return ""
-	// Tenant enumeration. ScopeAdmin, and the HANDLER re-checks: the counts are
-	// unremarkable but the LIST ITSELF is cross-tenant information, which is
-	// exactly what a tenant-confined principal must not learn.
-	case path == "/v1/_tenants":
-		return auth.ScopeAdmin
-	case path == "/v1/_erasure":
-		return auth.ScopeTenant
-	// RFC BM: the data-retention view. Tenant-readable so a tenant operator's UI
-	// can see whether retention is enabled + how it's tuned; the HANDLER strips
-	// the cross-tenant purgeable counts + the export dir for a non-admin caller
-	// (admin gets the full view). ScopeAdmin also satisfies. Read-only GET.
-	case path == "/v1/_retention", path == "/v1/_retention/overrides", isTenantTelemetryPath(path):
-		return auth.ScopeTenant
-	// RFC AW: the token-budget management surface (GET list + PUT upsert + DELETE).
-	// Tenant-readable/writable so a tenant operator manages its own tenant + user
-	// budgets; the handler enforces the operator-global + cross-tenant admin
-	// restriction (a scoped caller writing the operator scope or a foreign tenant
-	// gets 403). ScopeAdmin also satisfies. Mirrors /v1/_usage's posture.
-	case path == "/v1/_limits":
-		return auth.ScopeTenant
-	// Routing view (GET /v1/_routing). Tenant-readable so a tenant operator's UI
-	// can see the resolved model cascade per tier; the HANDLER strips the live
-	// provider reachability / infra detail for a non-admin caller (admin gets the
-	// full availability view). ScopeAdmin also satisfies. Read-only GET.
-	case path == "/v1/_routing":
-		return auth.ScopeTenant
-	// Configured model aliases (GET /v1/_models) — non-secret global config
-	// (provider + model names). Tenant-readable so a tenant operator's UI can
-	// offer aliases in a model picker + store the alias on a fork (so it tracks
-	// the operator's local override). Not tenant-scoped data (the alias map is
-	// global), so every authed caller sees the same set; ScopeAdmin also
-	// satisfies. Read-only GET.
-	case path == "/v1/_models":
-		return auth.ScopeTenant
-	// RFC BK P3 — resident interactive sub-agent visibility + operator control.
-	// GET /v1/_resident lists (tenant-scoped in the handler); POST
-	// /v1/_resident/{run_id}/close|cancel act on one (tenant-gated in the handler,
-	// opaque-404 cross-tenant). Tenant-readable/actionable so a tenant operator
-	// can see + reap its own runs' resident children; ScopeAdmin also satisfies.
-	case path == "/v1/_resident" || strings.HasPrefix(path, "/v1/_resident/"):
-		return auth.ScopeTenant
-	// repair-tenant rewrites memory rows across EVERY scope in one statement to
-	// re-stamp the legacy "" partition — a cross-tenant bulk rewrite that is not a
-	// tenant operator's authority even over its own tenant. It STAYS operator-admin.
-	// MUST precede the memory-family case below, which it would otherwise match on
-	// the /v1/_memory/ prefix.
-	case path == "/v1/_memory/repair-tenant":
-		return auth.ScopeAdmin
-	// The memory browse / search / embed-admin family (RFC BV). memory rows carry a
-	// tenant_id (RFC BL added the tenant axis), and every handler already sources
-	// the tenant from the authenticated principal (tenantFromCtx /
-	// principalTenantScope), never the wire — so a substrate:tenant operator is
-	// confined to its own tenant's memory and admin keeps its view. The routes were
-	// pinned to ScopeAdmin by the /v1/_* catch-all below, so a tenant token 403'd
-	// before the tenant-scoped handler ran (the same gap #575/#577 fixed for the
-	// Library). Grant ScopeTenant so the reads/writes are reachable; the handlers
-	// still confine. ScopeAdmin also satisfies. Note /v1/_memorybackenddef (a def
-	// family, already ScopeTenant via isTenantConfinedDefPath) does NOT match this
-	// prefix — it has no slash after "memory".
-	case strings.HasPrefix(path, "/v1/_memory/"):
-		return auth.ScopeTenant
-	// The document maintenance passes (re-index, unit generation, image
-	// descriptions) are the memory sweeps' twins on the Document side, and get
-	// the same posture. Each handler resolves its scope through browseCtx, which
-	// confines a substrate:tenant operator to its own tenant (another tenant's
-	// ?tenant= is an opaque 404), and the two that spend a model refuse an
-	// operator-key-restricted tenant first. Without this case the /v1/_*
-	// catch-all pinned them to ScopeAdmin, so a tenant operator could backfill
-	// its memory embeddings but not describe its own documents' images.
-	// Members stay refused: memberpath.CarvedOut lists all three. The
-	// projection (/v1/_document/project) is not opened here: it is not carved
-	// out of member access, so opening it would also widen a member's reach.
-	case memberpath.IsDocumentMaintenancePath(path):
-		return auth.ScopeTenant
-	// The channel admin family (list/create/patch/delete/purge/publish/
-	// subscribe/peek/ack/_await/_broadcast). channel_messages/_cursors/
-	// the channels def table now carry a tenant_id (migration 0066), and
-	// every handler sources the tenant from the authenticated principal
-	// (tenantFromCtx / principalTenantScope), never the wire — so a
-	// substrate:tenant operator is confined to its own tenant's channels
-	// (list filters by tenant; the `global` cross-tenant scope stays
-	// admin-only to create). The routes were pinned to ScopeAdmin by the
-	// /v1/_* catch-all below; grant ScopeTenant so they're reachable, the
-	// handlers still confine. ScopeAdmin also satisfies. (Matches the
-	// RFC BV memory re-gate above; closes the RFC AS channels carve-out.)
-	case strings.HasPrefix(path, "/v1/_channels"):
-		return auth.ScopeTenant
-	// A decision asked outside a run, and the list of models it may name. The
-	// scope that creates a run: a decision is what a caller would otherwise
-	// start a run to get, and it spends the same budget. Listed here because
-	// the /v1/_* catch-all below would pin both to ScopeAdmin, and a tenant
-	// token would be refused before the handler ran.
-	case path == "/v1/_decide" || path == "/v1/_decide/models":
-		return auth.ScopeRunsCreate
-	// RFC FK P3: read-aloud and transcription, and the info route that says
-	// how to call them. A chat user's call, so the scope that creates a run,
-	// NOT auth.ScopeLLMGateway: unlike the raw model endpoints (isGatewayRoute)
-	// these trust the caller with nothing but text, a recording, and a choice
-	// of language and voice from the operator's list — the engine, provider
-	// and model are the operator's. That is what lets an isolated user use
-	// them. The ACL asks `use gateway:speech` / `use gateway:transcription`
-	// (authz.HTTPSurface), and none is on the run plane, so a token limited to
-	// certain agents is refused.
-	case path == audioSpeechPath || path == audioTranscriptionsPath || path == speechInfoPath:
-		return auth.ScopeRunsCreate
-	// Token minting. A tenant operator reaches it only for its own tenant's
-	// metrics scrape tokens: the tool's grant (tools.OperatorTokenDefPolicyFor)
-	// confines it to those, and every other op and token stays the admin's.
-	// Carved out of the member path (memberpath.CarvedOut): handing out
-	// credentials is the operator's. The names listing stays admin, below.
-	case path == "/v1/_operatortokendef" && method == http.MethodPost:
-		return auth.ScopeTenant
-	// Everything else under /v1/_* is OPERATOR-admin: the token names
-	// listing, runtime admin (pause/resume/state/snapshots/metrics),
-	// resolver, cross-tenant user focus.
-	case strings.HasPrefix(path, "/v1/_"):
-		return auth.ScopeAdmin
-	// Prometheus scrape — operator surface, same posture as /v1/_metrics/*.
-	// A metrics:read credential is admitted by scopeGate before this switch.
-	case path == "/metrics":
-		return auth.ScopeAdmin
-	// Per-user channel surface (/v1/users/{id}/channels/...) — graduate the
-	// channel scopes. MUST precede the generic "/v1/users/" reads case below
-	// so peek resolves to channel:read, not runs:read, and the writes
-	// (publish/subscribe/ack) are not left at the any-authenticated default.
-	case strings.HasPrefix(path, "/v1/users/") && strings.Contains(path, "/channels/"):
-		if method == http.MethodGet {
-			return auth.ScopeChannelRead
-		}
-		return auth.ScopeChannelPublish
-	// Run creation (fresh run + session continuation message).
-	case method == http.MethodPost && path == "/v1/runs":
-		return auth.ScopeRunsCreate
-	// RFC Y fan-out spawns N runs in one call — same create scope as /v1/runs.
-	// Exact match (not the /v1/runs/ prefix), so it's not shadowed by the
-	// per-run write cases below.
-	case method == http.MethodPost && path == "/v1/runs:batch":
-		return auth.ScopeRunsCreate
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/sessions/") && strings.HasSuffix(path, "/messages"):
-		return auth.ScopeRunsCreate
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/sessions/") && strings.HasSuffix(path, "/replay"):
-		// RFC BJ Phase 4 — mints a new run (seed) under a target agent.
-		return auth.ScopeRunsCreate
-	// Cancel a run — a write on run state. (The real route is POST
-	// /v1/agents/{id}/cancel; the prior DELETE /v1/agents/ case matched no
-	// registered route, so cancel fell through to any-authenticated.)
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/agents/") && strings.HasSuffix(path, "/cancel"):
-		return auth.ScopeRunsCreate
-	// Human-in-the-loop interrupt: resolve is a run-state write, list a read.
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/resolve"):
-		return auth.ScopeRunsCreate
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/compact"):
-		return auth.ScopeRunsCreate
-	// Retune: a run-state write, same scope as steer / resolve / compact.
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/retune"):
-		return auth.ScopeRunsCreate
-	// Reading a run's own configuration is a READ, not a mutation.
-	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/config"):
-		return auth.ScopeRunsRead
-	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/effective-config"):
-		return auth.ScopeRunsRead
-	// RFC BH turn-cancel: stop the current turn of an interactive run + park it —
-	// a run-state mutation, same scope as steer/resolve/compact. Distinct path
-	// from whole-run cancel (POST /v1/agents/{id}/cancel). Without this case the
-	// POST /v1/runs/.../cancel would default-deny as ScopeAdmin below.
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/cancel"):
-		return auth.ScopeRunsCreate
-	// Operator steering / continuation input is a run-state MUTATION (it injects
-	// text into a live run), so it requires runs:create like cancel/resolve/
-	// compact — NOT the read scope. (exp7 I1: it previously fell through to the
-	// default empty arm, letting a read-only bearer steer a run.)
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/input"):
-		return auth.ScopeRunsCreate
-	// A review verdict decides whether a held run's answer stands — a run
-	// mutation like steering, at the same scope.
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/review"):
-		return auth.ScopeRunsCreate
-	// RFC DI D5: starting, editing and discarding a configured run are run
-	// writes, the same scope that creates one. PATCH / DELETE address the run
-	// itself (/v1/runs/{run_id}, no further segment).
-	case method == http.MethodPost && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/start"):
-		return auth.ScopeRunsCreate
-	// Deleting a run tree (DELETE /v1/runs/{run_id}/tree) or a session with its
-	// runs' descendants (DELETE /v1/sessions/{id}) removes stored records, so it
-	// has a scope of its own. It is NOT substrate:tenant on purpose: a route at
-	// that scope is opened to every non-isolated member by
-	// tenantMemberAccessible, and a member must not delete run records unless
-	// the scope was granted to its token. The handler additionally requires
-	// read access to the root.
-	case isRunTreeDeletePath(method, path):
-		return auth.ScopeRunsDelete
-	case (method == http.MethodPatch || method == http.MethodDelete) && strings.HasPrefix(path, "/v1/runs/") &&
-		!strings.Contains(strings.TrimPrefix(path, "/v1/runs/"), "/"):
-		return auth.ScopeRunsCreate
-	// Arming a team walk's breakpoints holds work back and releases it — a
-	// run-state mutation, same scope as steer/cancel/compact. Without this case
-	// the PUT falls through to the default-deny admin arm, which would lock a
-	// tenant operator out of debugging their own run. (The GET is covered by
-	// the runs-read case below.)
-	case method == http.MethodPut && strings.HasPrefix(path, "/v1/runs/") && strings.HasSuffix(path, "/breakpoints"):
-		return auth.ScopeRunsCreate
-	// The File twin and the inbox download read a run; the twin refuses its
-	// writing ops to all but the run's owner or an admin itself, as the MCP
-	// twin (runs:read too) does. Before the GET case below so HEAD and the
-	// POST land here.
-	case isRunFileRoute(method, path):
-		return auth.ScopeRunsRead
-	case method == http.MethodGet && strings.HasPrefix(path, "/v1/runs/"):
-		return auth.ScopeRunsRead
-	// Listing a team walk's runs. Exact match: without it the bare path falls
-	// to the any-authenticated GET default.
-	case method == http.MethodGet && path == "/v1/runs":
-		return auth.ScopeRunsRead
-	// Run / agent / session / user reads.
-	case method == http.MethodGet && (strings.HasPrefix(path, "/v1/agents/") ||
-		strings.HasPrefix(path, "/v1/users/") ||
-		strings.HasPrefix(path, "/v1/sessions/")):
-		return auth.ScopeRunsRead
-	default:
-		// Default-deny for unlisted MUTATING routes (v0.34.0 security review
-		// S2). The prior `return ""` shipped any unlisted route at
-		// any-authenticated — so a new state-changing endpoint added without a
-		// requiredScopeFor entry was silently reachable by a minimal-scope
-		// tenant token. A mutating method now requires ScopeAdmin by default;
-		// ScopeAdmin still satisfies every check (auth.HasScope), so the
-		// default/legacy admin token is unaffected and the safe failure
-		// direction for a forgotten route is over-restrict (a narrow token gets
-		// 403), never silent exposure. GET/HEAD reads keep the any-authenticated
-		// default — reads are tenant-gated per-handler (tenantVisible /
-		// sessionOwnershipOK), and the consumer LLM-gateway POSTs that are
-		// legitimately any-authenticated are explicit `return ""` cases above.
-		switch method {
-		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-			return auth.ScopeAdmin
-		}
-		return ""
-	}
-}
-
-// isRunTreeDeletePath matches the two run-tree delete routes exactly:
-// DELETE /v1/runs/{run_id}/tree and DELETE /v1/sessions/{id}. Exact, so the
-// draft discard (DELETE /v1/runs/{run_id}) keeps its own scope even for a run
-// whose id is the word "tree".
-func isRunTreeDeletePath(method, path string) bool {
-	if method != http.MethodDelete {
-		return false
-	}
-	if rest, ok := strings.CutPrefix(path, "/v1/runs/"); ok {
-		id, ok := strings.CutSuffix(rest, "/tree")
-		return ok && id != "" && !strings.Contains(id, "/")
-	}
-	if id, ok := strings.CutPrefix(path, "/v1/sessions/"); ok {
-		return id != "" && !strings.Contains(id, "/")
-	}
-	return false
-}
-
 // tenantMemberAccessible reports whether a NON-ISOLATED user token (a "tenant
 // member" — RFC CB) may reach this route despite lacking substrate:tenant. A
 // member already has whole-tenant DATA access inside a run (it is not isolated;
@@ -1791,7 +1267,7 @@ func isRunTreeDeletePath(method, path string) bool {
 // handlers still confines a member to its own tenant (principalTenantScope /
 // tenantFromCtx), so opening the gate here does not widen a member cross-tenant.
 func tenantMemberAccessible(method, path string) bool {
-	return memberpath.Route(requiredScopeFor(method, path), method, path)
+	return memberpath.Route(routeAt(method, path).Scope, method, path)
 }
 
 // userSelfServiceRoute marks the HTTP routes RFC CN opens for user SELF-SERVICE of
@@ -1818,11 +1294,6 @@ func userSelfServiceRoute(method, path string) bool {
 		return method == http.MethodPost || method == http.MethodDelete
 	}
 	return false
-}
-
-// isMyAppSignInsPath reports the /v1/_me/app-sign-ins routes.
-func isMyAppSignInsPath(path string) bool {
-	return path == "/v1/_me/app-sign-ins" || strings.HasPrefix(path, "/v1/_me/app-sign-ins/")
 }
 
 // authManageRoute is the whole reach of an auth:manage credential (RFC FA
@@ -1867,55 +1338,6 @@ func metricsScrapeRoute(method, path string) bool {
 	return path == "/metrics" && (method == http.MethodGet || method == http.MethodHead)
 }
 
-// isTenantConfinedDefPath matches the substrate def-authoring families that
-// RFC AF moves from operator-admin (ScopeAdmin) to the tenant-confined
-// ScopeTenant. The original 8 families each have two routes — POST
-// /v1/_<fam>def (all ops dispatch via the body's `op` field) and GET
-// /v1/_<fam>def/names — so exact matching is complete (there are no
-// /{name} sub-paths). The RFC AH Phase 2a VolumeDef family (added below) has
-// only the POST route (its `list` op dispatches via the body, not a GET
-// /names route). It DELIBERATELY EXCLUDES:
-//   - /v1/_operatortokendef — token minting has its own case in requiredScopeFor.
-//   - /v1/_mcp — handled by its OWN ScopeTenant case in requiredScopeFor (RFC AG
-//     Phase 2 made the MCP transport per-principal: mcpPrincipalCtx stamps the
-//     tenant, a per-tool gate withholds the admin meta-tools). It is NOT in this
-//     def-family helper because it is a transport, not a def family. Note
-//     /v1/_mcpserverdef (a def family, in the loop below) IS the tenant-confined
-//     "dynamic MCP tools ingestion" surface — it mounts an external MCP server's
-//     tools for the tenant, and is tenant-stamped.
-//   - runtime-admin / resolver / audit — keep ScopeAdmin via the /v1/_* catch-all.
-//
-// The def handlers confine a non-admin principal to its own tenant (write-stamp
-// + opaque-404), so opening these gates to ScopeTenant doesn't widen reach.
-// memberReadable reports whether path is a USER-FACING READ surface (RFC BY): a
-// route any member of a tenant may read — an end-user (isolated OR tenant-mode),
-// a tenant operator, or admin — with the HANDLER doing the real per-principal
-// confinement (own subject only for history; tiered by access mode for
-// discovery). requiredScopeFor gates these on runs:read, the honest floor every
-// such principal holds (auth.HasScope): substrate:user implies it (userImplied),
-// tenant-mode user tokens hold it directly, substrate:tenant implies it
-// (tenantImplied), and admin/legacy satisfy everything. It deliberately is NOT
-// substrate:tenant (which no delegated user holds) nor substrate:user (which a
-// tenant-mode user does not hold).
-func memberReadable(path string) bool {
-	switch path {
-	case "/v1/_history", "/v1/_runnable-agents":
-		return true
-	}
-	return false
-}
-
-// isAgentOverridablePath reports whether path is
-// /v1/_agentdef/{name}/overridable.
-func isAgentOverridablePath(path string) bool {
-	rest, ok := strings.CutPrefix(path, "/v1/_agentdef/")
-	if !ok {
-		return false
-	}
-	name, ok := strings.CutSuffix(rest, "/overridable")
-	return ok && name != "" && !strings.Contains(name, "/")
-}
-
 // isTeamChannelsPath reports whether path is one of the team-channel routes:
 // /v1/_teamdef/{team}/channels, or anything under it.
 func isTeamChannelsPath(path string) bool {
@@ -1931,85 +1353,4 @@ func isTeamChannelsPath(path string) bool {
 func isDocumentExportPath(path string) bool {
 	id, ok := strings.CutPrefix(path, "/v1/_document/export/")
 	return ok && id != "" && !strings.Contains(id, "/")
-}
-
-func isTenantConfinedDefPath(path string) bool {
-	// RFC BO — the image-asset serving GET lives UNDER /v1/_document with a
-	// variable {chunk_id} suffix, so it needs a prefix match (the family list
-	// below is exact-match). Same ScopeTenant posture as /v1/_document itself.
-	if strings.HasPrefix(path, "/v1/_document/asset/") {
-		return true
-	}
-	// RFC GR §4.4 — the off-run export, /v1/_document/export/{id}: the same
-	// ScopeTenant posture as the asset GET (member-readable; the handler reads
-	// as the caller and answers anything it may not read with an opaque 404).
-	if isDocumentExportPath(path) {
-		return true
-	}
-	// RFC CD Part C — the document change feed lives under /v1/_document with a
-	// /changes suffix, so (like the asset GET) it needs a prefix match; the
-	// family list below is exact-match. Same ScopeTenant posture as /v1/_document
-	// (and it is carved out of member access — see memberpath.CarvedOut).
-	if strings.HasPrefix(path, "/v1/_document/changes") {
-		return true
-	}
-	// A team's own channels are read under the team, with a variable
-	// {team} (and {name}) segment, so they need a prefix match too. Same
-	// ScopeTenant posture as /v1/_teamdef: the handlers confine a caller to
-	// teams its own tenant holds and answer another tenant's with not-found.
-	if isTeamChannelsPath(path) {
-		return true
-	}
-	for _, fam := range []string{
-		"/v1/_agentdef", "/v1/_skilldef", "/v1/_teamdef", "/v1/_mcpserverdef", "/v1/_scheduledef",
-		// HookDef — reusable hook definitions, authored like an AgentDef (a
-		// tenant's operators and its non-isolated members); the tool stamps the
-		// caller's tenant + opaque-404s cross-tenant.
-		"/v1/_hookdef",
-		"/v1/_webhookdef", "/v1/_memorybackenddef", "/v1/_a2aagentdef", "/v1/_a2aservercarddef",
-		// RFC CE — the DocumentSourceDef substrate write-stamps the caller's
-		// tenant + opaque-404s cross-tenant, exactly like _memorybackenddef, so
-		// it joins the ScopeTenant set. Without this it fell through to the
-		// /v1/_* ScopeAdmin catch-all, making the HTTP transport stricter than
-		// the gRPC/MCP ones (both grant ScopeTenant) and leaving the
-		// tenant-scoping in handleListDocumentSourceDefNames dead for tenant tokens.
-		"/v1/_documentsourcedef",
-		// RFC FL P0b — app clients: a tenant operator registers its own
-		// tenant's, an admin any tenant's (the implementation confines the
-		// tenant and opaque-404s another's). Carved out of member access.
-		"/v1/_clientdef",
-		// RFC AH Phase 2a — the dynamic-volume substrate is tenant-confined
-		// (write-stamps the caller's tenant + opaque-404s cross-tenant), so
-		// it joins the ScopeTenant set. No /names sub-path: the list op
-		// dispatches via the POST body, not a GET route.
-		"/v1/_volumedef",
-		// RFC AL Path VFS + RFC AK Document — scope-aware, tenant-isolated
-		// tools (resolve scope from the operator-trust ctx + tenant-stamp via
-		// RunIdentity). Same posture as _volumedef: ScopeTenant, no /names.
-		"/v1/_path", "/v1/_document",
-		// RFC FV — the reader's document feed: the same posture as /v1/_document
-		// (ScopeTenant, member-accessible, scope resolved from the principal).
-		// Unlike /v1/_document/changes above it is NOT carved out of member access.
-		"/v1/_document/feed",
-		// RFC BE History tool was here (ScopeTenant); RFC BY moved it to the
-		// member-read gate (memberReadable → runs:read) so a delegated USER token
-		// can read its OWN chats. The handler caps a member to [self, user]
-		// history scopes (substrateAdminCtx), so opening the gate does not widen a
-		// user's reach beyond its own subject.
-		// RFC AR secure credential store — scope-aware, tenant-isolated
-		// (scope_id derived from the operator-trust ctx's authoritative
-		// tenant/subject, never the wire; fail-closed without
-		// LOOMCYCLE_SECRET_KEY). Same posture as _path/_document: ScopeTenant,
-		// no /names route.
-		"/v1/_credentialdef",
-		// RFC EP P1b — Crypto operations outside a run, with the caller's tenant
-		// and own-subject keys (s.Crypto stamps them from the principal).
-		// Carved out of member access (memberpath.CarvedOut).
-		"/v1/_crypto",
-	} {
-		if path == fam || path == fam+"/names" {
-			return true
-		}
-	}
-	return false
 }

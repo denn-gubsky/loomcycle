@@ -15,7 +15,7 @@ import (
 //
 // Both reads are tenant-scoped from the AUTHORITATIVE principal stamped on
 // ctx by the auth middleware — NEVER a wire/query field. The scope gate
-// (requiredScopeFor → ScopeTenant for these GETs) gates them to the tenant
+// (the route table: ScopeTenant for these GETs) gates them to the tenant
 // operator; admin/legacy satisfies ScopeTenant. The DYNAMIC + EPHEMERAL rows
 // are filtered to the caller's tenant (opaque: a cross-tenant row is simply
 // absent, never a 403/404 oracle). STATIC volumes are operator-authored

@@ -11,7 +11,7 @@
 //
 // What this package does not decide: whether the caller is a member at all
 // (auth.IsIsolated, read by the caller), the scope each transport requires of a
-// route or an RPC (requiredScopeFor / grpcConsumerScopes), and the per-handler
+// route or an RPC (authz.HTTPRoute / authz.GRPCRoute), and the per-handler
 // confinement a member is held to once admitted (tenant, own subject).
 package memberpath
 
@@ -103,7 +103,7 @@ func CarvedOut(method, path string) bool {
 	// NOT member-accessible (locked decision): the feed exposes the tenant's
 	// write pattern (a metadata side-channel) and is operator observability, not
 	// member data. Both the /v1/_memory/ prefix (ScopeTenant) and the
-	// /v1/_document/changes route (ScopeTenant via isTenantConfinedDefPath) would
+	// /v1/_document/changes route (ScopeTenant in the route table) would
 	// otherwise be member-accessible; carve them out so a non-isolated member is
 	// refused.
 	case path == "/v1/_memory/changes" || path == "/v1/_document/changes":

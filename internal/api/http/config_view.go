@@ -146,7 +146,7 @@ func configViewFor(ctx context.Context) string {
 
 // handleConfig serves GET /v1/config. Reachable unauthenticated ONLY under
 // LOOMCYCLE_PUBLIC_CONFIG (see publicOrAuthMiddleware); otherwise any
-// authenticated principal, per requiredScopeFor's GET default.
+// authenticated principal, per the route table's GET default.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.buildConfig(r.Context(), configViewFor(r.Context())))
 }

@@ -237,6 +237,13 @@ func FuzzFB2(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, FB2{}, "f.fb2", data, true) })
 }
 
+func FuzzRTF(f *testing.F) {
+	f.Add([]byte(rtfText(f)))
+	f.Add([]byte(`{\rtf1\ansi\ansicpg1251{\fonttbl{\f0\fcharset204 A;}}{\stylesheet{\s1 heading 1;}}\s1 T\par\trowd\intbl a\cell b\cell\row x}`))
+	f.Add([]byte(`{\rtf1{\pict\pngblip\bin4 {}\\}{\footnote{\*\x y}z}\b\i-12 \uc3\u-1? q`))
+	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, RTF{}, "f.rtf", data, false) })
+}
+
 func FuzzExtractHTML(f *testing.F) {
 	for _, s := range []string{
 		`<!doctype html><html><head><title>Новини</title><script>x()</script></head><body><h1>Засідання</h1><p>Рішення: затвердити

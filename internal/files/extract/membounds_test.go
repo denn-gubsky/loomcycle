@@ -455,3 +455,106 @@ func TestFB2_AttributeFloodRefusedBeforeDecode(t *testing.T) {
 		return err
 	})
 }
+
+// rtfDiscardSink takes everything and keeps nothing but its size and the
+// largest write.
+type rtfDiscardSink struct{ n, most int }
+
+func (s *rtfDiscardSink) Text(md string) error {
+	s.n += len(md)
+	s.most = max(s.most, len(md))
+	return nil
+}
+
+func (s *rtfDiscardSink) Image(Image) (string, error) { return "", nil }
+
+// An RTF paragraph of tens of megabytes, plain, in runs of alternating
+// bold or in hard-broken lines, is written in pieces as it grows: the
+// reader holds at most a piece, never the paragraph, whatever the output
+// limit. No write is larger than a piece; the heap peak, which counts
+// garbage not yet collected and so varies run to run, stays well under
+// the paragraph's own size (holding it would cost twice that).
+func TestRTF_LongParagraphIsHeldInPiecesOnly(t *testing.T) {
+	const size = 48 << 20
+	for name, unit := range map[string]string{"plain": "word ", "runs": `\b a\b0 b`, "lines": `a\line `} {
+		doc := &repeatReaderAt{head: `{\rtf1 `, unit: unit, size: size}
+		s := &rtfDiscardSink{}
+		var err error
+		peak := peakHeap(func() {
+			_, err = RTF{}.Extract(context.Background(), doc, size, s, Options{Name: "p.rtf"})
+		})
+		if err != nil || s.n < size/4 {
+			t.Fatalf("%s: err %v, wrote %d bytes", name, err, s.n)
+		}
+		if s.most > maxRTFPara+8<<10 { // a piece ends after the text that reached the cap
+			t.Errorf("%s: one write of %d bytes, want pieces of at most %d", name, s.most, maxRTFPara)
+		}
+		if c := ceiling(48 << 20); peak > c {
+			t.Errorf("%s: a 48 MiB paragraph peaked at %d MiB, want at most %d MiB", name, peak>>20, c>>20)
+		}
+	}
+}
+
+// repeatReaderAt is a file of head and then unit over and over, made as it
+// is read, so a test's own input is not on the heap it measures.
+type repeatReaderAt struct {
+	head, unit string
+	size       int64
+}
+
+func (r *repeatReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	n := 0
+	for n < len(p) && off < r.size {
+		if off < int64(len(r.head)) {
+			p[n] = r.head[off]
+		} else {
+			p[n] = r.unit[(off-int64(len(r.head)))%int64(len(r.unit))]
+		}
+		n++
+		off++
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// Footnotes are the one text an RTF document holds until its end: each is
+// cut at maxRTFNote and all of them at maxRTFNoteBytes.
+func TestRTF_FootnotesAreHeldUnderTheirCaps(t *testing.T) {
+	unit := `x{\footnote ` + strings.Repeat("n", maxRTFNote) + `}`
+	doc := &repeatReaderAt{head: `{\rtf1 `, unit: unit, size: int64(7 + 200*len(unit))}
+	s := &rtfDiscardSink{}
+	var rep Report
+	var err error
+	peak := peakHeap(func() {
+		rep, err = RTF{}.Extract(context.Background(), doc, doc.size, s, Options{Name: "n.rtf"})
+	})
+	if err != nil || len(rep.Notes) != 1 || !strings.Contains(rep.Notes[0], "footnotes past") {
+		t.Fatalf("err %v, notes %v", err, rep.Notes)
+	}
+	if c := ceiling(48 << 20); peak > c {
+		t.Errorf("200 footnotes of 64 KiB peaked at %d MiB, want at most %d MiB", peak>>20, c>>20)
+	}
+}
+
+// An RTF table is written a row at a time and stops at the table caps: a
+// table of more rows than the cells cap writes no more than the cap.
+func TestRTF_TableRowsStopAtTheTableCaps(t *testing.T) {
+	doc := []byte(`{\rtf1 ` + strings.Repeat(`\trowd\intbl a\cell\row`, maxTableCells+5000) + `}`)
+	s := &rtfDiscardSink{}
+	rep, err := RTF{}.Extract(context.Background(), bytes.NewReader(doc), int64(len(doc)), s, Options{Name: "t.rtf"})
+	if err != nil || rep.Tables != 1 || len(rep.Notes) != 1 || !strings.Contains(rep.Notes[0], "table was cut") {
+		t.Fatalf("err %v, report %+v", err, rep)
+	}
+	if want := maxTableCells * len("\n| a |"); s.n > want+100 {
+		t.Errorf("wrote %d bytes, want at most about %d", s.n, want)
+	}
+	// One cell of a megabyte is cut at the cell cap.
+	big := []byte(`{\rtf1 \trowd\intbl ` + strings.Repeat("c", 1<<20) + `\cell\row}`)
+	s = &rtfDiscardSink{}
+	_, err = RTF{}.Extract(context.Background(), bytes.NewReader(big), int64(len(big)), s, Options{Name: "t.rtf"})
+	if err != nil || s.n > maxCellBytes+200 {
+		t.Errorf("a 1 MiB cell: err %v, wrote %d bytes", err, s.n)
+	}
+}

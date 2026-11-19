@@ -14,7 +14,7 @@ import (
 // handleDeleteRunTree deletes a run tree, or every run of a session with their
 // descendants. The operation — who may delete what, the walk, the tables — is
 // Connector.DeleteRunTree, shared with the HTTP routes and the RPC; the tool
-// gate (toolRequiredScope) has already required runs:delete.
+// gate (toolScope) has already required runs:delete.
 func handleDeleteRunTree(ctx context.Context, env *handlerEnv, args json.RawMessage) (*loommcp.CallToolResult, error) {
 	var p struct {
 		RunID     string `json:"run_id"`

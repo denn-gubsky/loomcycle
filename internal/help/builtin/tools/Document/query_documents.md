@@ -11,7 +11,11 @@ id. It returns documents, not chunks: to search inside them, use `search` or
 
 - `scope` — `user` (default), `agent` or `tenant`.
 - `under_path` — only documents named at or under this Path-tree path.
-- `type` — only documents of exactly this type (the root chunk's type).
+- `type` — only documents of this type (the root chunk's type). Under a
+  confirmed tenant ontology the filter also matches the more specific
+  subtypes of it, as on `search` and `query_chunks`; the result then carries
+  `type_expanded_to`. A sibling class is not a subtype: list it with its own
+  call.
 - `status` — only documents with exactly this status.
 - `tag` — only documents carrying exactly this tag (a document tag, not a chunk
   tag).
@@ -34,7 +38,8 @@ up to `limit`.
 ## Returns
 
 `{documents: [{document_id, title, root_chunk_id, created_at, updated_at,
-type?, status?}]}`. Timestamps are unix nanoseconds.
+type?, status?}], type_expanded_to?}`. Timestamps are unix nanoseconds.
+`type_expanded_to` is present when `type` was widened to its subtypes.
 
 ## Errors
 
