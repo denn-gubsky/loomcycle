@@ -2935,6 +2935,9 @@ transcription:
   ocr:
     engine: vision
     rasterize: { command: "pdftoppm -r 150 -png {in} {out_prefix}" }
+    djvu:
+      text: { command: "djvutxt --detail=page --page={pages} {in}" }
+      rasterize: { command: "ddjvu -format=tiff -page={page} -size={size} {in} {out}" }
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2946,6 +2949,9 @@ transcription:
 	}
 	if got := cfg.Transcription.OCR.Rasterize.Wrapper; got != wrap {
 		t.Errorf("rasterize wrapper = %q, want %q", got, wrap)
+	}
+	if got := cfg.Transcription.OCR.DjVu.Rasterize.Wrapper; got != wrap {
+		t.Errorf("djvu rasterize wrapper = %q, want %q", got, wrap)
 	}
 	for _, bad := range []string{"bwrap --ro-bind / / | tee", "bwrap {in} --"} {
 		t.Setenv("LOOMCYCLE_HELPER_WRAPPER", bad)
