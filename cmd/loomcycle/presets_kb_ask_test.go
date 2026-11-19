@@ -41,8 +41,13 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 	if ask.Provider != "code-js" || ask.Model != "" || ask.Tier != "" {
 		t.Errorf("kb/ask provider=%q model=%q tier=%q, want a code-js agent resolving no model", ask.Provider, ask.Model, ask.Tier)
 	}
-	if got := sorted(ask.Tools); got != "Agent,Decision" {
-		t.Errorf("kb/ask tools = %v, want exactly [Decision Agent]", ask.Tools)
+	if got := sorted(ask.Tools); got != "Agent,Decision,Document" {
+		t.Errorf("kb/ask tools = %v, want exactly [Decision Agent Document]", ask.Tools)
+	}
+	// Document reads the tenant ontology's classes (describe_ontology needs no tenant
+	// grant), read only, and nothing else: no scope reaches a document.
+	if ask.ToolModes["Document"] != "read" {
+		t.Errorf("kb/ask holds Document in mode %q, want read (tool_modes: %v)", ask.ToolModes["Document"], ask.ToolModes)
 	}
 	if len(ask.MemoryScopes) > 0 || len(ask.SqlScopes) > 0 {
 		t.Errorf("kb/ask declares scopes (memory=%v sql=%v) — it reads no document itself", ask.MemoryScopes, ask.SqlScopes)
@@ -301,6 +306,32 @@ type askFake struct {
 	noDecision bool
 	inputs     []map[string]any // each spawn's arguments, in order
 	decStates  []map[string]any // each Decision call's state, in order
+	// ontology is describe_ontology's answer; with it (or ontologyErr) the run holds
+	// a Document tool, without both it holds none, as the tests before it assume.
+	ontology    map[string]any
+	ontologyErr string
+	docCalls    []map[string]any // each Document call's arguments, in order
+}
+
+// askFakeDocument answers describe_ontology, and only that.
+type askFakeDocument struct{ f *askFake }
+
+func (d *askFakeDocument) Name() string                 { return "Document" }
+func (d *askFakeDocument) Description() string          { return "document (test double)" }
+func (d *askFakeDocument) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (d *askFakeDocument) Execute(_ context.Context, raw json.RawMessage) (tools.Result, error) {
+	var in map[string]any
+	_ = json.Unmarshal(raw, &in)
+	d.f.mu.Lock()
+	d.f.docCalls = append(d.f.docCalls, in)
+	d.f.mu.Unlock()
+	if in["op"] != "describe_ontology" {
+		return tools.Result{IsError: true, Text: "kb/ask may only describe the ontology, got " + string(raw)}, nil
+	}
+	if d.f.ontologyErr != "" {
+		return tools.Result{IsError: true, Text: d.f.ontologyErr}, nil
+	}
+	return okResult(d.f.ontology)
 }
 
 type askFakeDecision struct{ f *askFake }
@@ -384,6 +415,9 @@ func runAskSegments(t *testing.T, f *askFake, content []loop.PromptContentBlock,
 	set := []tools.Tool{&askFakeAgent{f: f}}
 	if !f.noDecision {
 		set = append(set, &askFakeDecision{f: f})
+	}
+	if f.ontology != nil || f.ontologyErr != "" {
+		set = append(set, &askFakeDocument{f: f})
 	}
 	ctx := tools.WithRunID(context.Background(), "run-ask")
 	res, err := loop.Run(ctx, loop.RunOptions{

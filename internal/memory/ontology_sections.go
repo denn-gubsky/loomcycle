@@ -409,7 +409,10 @@ type ClassDecl struct {
 	Meaning           string
 	RenamedFrom       string
 	Locked            bool
-	Issues            []string
+	// Alt is the class's other names, one @alt line each, as a concept's: what
+	// people call a document of the class ("playbook" for a Runbook).
+	Alt    []string
+	Issues []string
 }
 
 // ParseClassBody reads one class body: its fields and the class directives.
@@ -482,6 +485,14 @@ func ParseClassBody(body string) ClassDecl {
 			}
 		case "renamed_from":
 			d.RenamedFrom = firstWord(dir.Value)
+		case "alt":
+			// The whole value, as on a concept: a name may hold spaces ("design
+			// note"). An empty line says nothing and is reported.
+			if v := strings.TrimSpace(dir.Value); v != "" {
+				d.Alt = append(d.Alt, v)
+			} else {
+				d.Issues = append(d.Issues, "@alt names nothing; ignored")
+			}
 		case "annotate":
 			// The slots of the class's annotations, "a; b; c". Several lines are
 			// joined; an empty one says nothing and is reported.

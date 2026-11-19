@@ -127,6 +127,14 @@ the Memory tool keeps them behind the Document tool's checks:
   listed without a semantic query. Each structured row carries the chunk's
   `updated_at` (unix ns), so a client holding a snapshot can tell what
   changed since.
+- **`query_documents`** lists whole documents (one row per root) by `type`,
+  `status`, `tag`, `title_contains`, `created_after` / `created_before` and
+  `under_path`, with `with_summary` for each row's brief. Its `type` filter,
+  like `search`, `related`, `query_chunks` and `list_facts`, includes the
+  type's subtypes under a confirmed tenant ontology and then reports
+  `type_expanded_to`; a sibling class is not a subtype, so a listing of one
+  kind names every class of that kind. Under a draft or missing ontology the
+  filter is the exact type.
 - **Dated content.** Any chunk can carry its own validity period: nullable
   `chunks.valid_at` / `chunks.invalid_at` (unix ns, half-open
   `[valid_at, invalid_at)`, NULL = unbounded on that side), set by
@@ -1508,7 +1516,7 @@ Every directive this build reads. *Inherited* means a subclass takes its nearest
 | `@origin` | a scheme | `adopted` · `declared` · `generated` | — | reported: a published scheme taken over, one the tenant wrote, or one generated from the corpus | another value: ignored, issue |
 | `@source` · `@version` | a scheme | text or a URL · text | — | reported: an adopted scheme's provenance | on a scheme whose `@origin` is `declared` or `generated`: issue |
 | `@notation` | a concept | one word | no | shown with the concept in the prompt and `describe_ontology` | — |
-| `@alt` | a concept or an instance | a label (one per line) | no | concepts: shown in the prompt; instances: `classify` names an issuer by its name or any `@alt` | — |
+| `@alt` | a concept, an instance or a class | a name (one per line) | no | concepts: shown in the prompt; instances: `classify` names an issuer by its name or any `@alt`; classes: what people call a document of the class, reported by `describe_ontology` as the class's own `alt` (not inherited); `kb/ask` lists a kind by them | empty: ignored, issue |
 | `@exact_match` | a concept | a concept in another scheme | no | reported | — |
 | `@focus` | a concept | a class or instance name (the whole line) | no | confirming the ontology writes a `focus` statement (method `ontology`) from the concept's chunk to the class's entry, or to the subject an instance was adopted as; removing or changing it retires the statement; a live `focus` statement someone else wrote for the same pair is kept and stands for it (`scheme_focus.kept`) | names no class or instance: ignored, issue; names both: the instance is used, issue |
 | `@retention` | a concept (a file plan) | `90d`, `6w`, `18mo`, `10y` or a Go duration | no | reported on the Ontology page and in `describe_ontology`; **not enforced** | not a duration: ignored, issue |

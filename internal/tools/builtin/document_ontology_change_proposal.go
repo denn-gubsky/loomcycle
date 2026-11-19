@@ -60,7 +60,7 @@ const (
 // purpose: on a root child they would turn a class into a section.
 var changeDirectives = map[string]map[string]bool{
 	planKindClass: directiveSet("memory_scope", "identity", "norm", "identifier_pattern", "title_pattern", "definitions",
-		"boilerplate", "anchor_grammar", "citation_grammar", "exclude", "renamed_from", "annotate"),
+		"boilerplate", "anchor_grammar", "citation_grammar", "exclude", "renamed_from", "annotate", "alt"),
 	planKindRelation: directiveSet("inverse", "domain", "range", "symmetric", "asymmetric", "irreflexive", "transitive",
 		"transitive_within", "functional", "qualifiers", "discriminator", "dated", "walk", "auto_assert", "renamed_from"),
 	planKindScheme:   directiveSet("ordered", "render", "domain", "projects", "origin", "source", "version", "period"),
