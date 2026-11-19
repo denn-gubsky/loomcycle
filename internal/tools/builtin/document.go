@@ -143,6 +143,46 @@ type Document struct {
 	// before its move. A test writes to the ontology there to prove the move is refused
 	// when the ontology is not exactly what the update left. Nil in production.
 	betweenAcceptWrites func()
+
+	// onNodeStatsPlan, when set, runs each time a node statistics plan is built,
+	// with whether it is a series read's light plan. A test counts them to prove a
+	// with_summary call builds at most one, and a light one when that is enough.
+	// Nil in production.
+	onNodeStatsPlan func(light bool)
+}
+
+// nodePlanCache holds the one node statistics plan a with_summary read builds, so
+// the search leg's node check (annotationScope.nodePlan) and the series beside the
+// summary (attachNodeSeries) share it. Per call, in the call's context: never
+// shared across calls, and only reads install it.
+type nodePlanCache struct {
+	key  sqlmem.ScopeKey
+	plan *nodeStatsPlan
+	// full: built with stat docs, vectors and stored stats (buildNodeStatsPlan); a
+	// light plan (buildSeriesReadPlan) serves only a series read.
+	full bool
+}
+
+type nodePlanCacheKey struct{}
+
+func withNodePlanCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, nodePlanCacheKey{}, &nodePlanCache{})
+}
+
+// cachedNodePlan is the call's plan for key, if one was built: any plan when full
+// is false, else only a full one.
+func cachedNodePlan(ctx context.Context, key sqlmem.ScopeKey, full bool) *nodeStatsPlan {
+	c, _ := ctx.Value(nodePlanCacheKey{}).(*nodePlanCache)
+	if c == nil || c.plan == nil || c.key != key || (full && !c.full) {
+		return nil
+	}
+	return c.plan
+}
+
+func cacheNodePlan(ctx context.Context, key sqlmem.ScopeKey, p *nodeStatsPlan, full bool) {
+	if c, _ := ctx.Value(nodePlanCacheKey{}).(*nodePlanCache); c != nil && (c.plan == nil || full) {
+		c.key, c.plan, c.full = key, p, full
+	}
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -1037,6 +1077,9 @@ func (d *Document) executeGated(ctx context.Context, in docInput, raw json.RawMe
 	// The root of a reserved document is the operator's; same placement and reason.
 	if refused := d.reservedRootRefusal(ctx, key, in); refused != nil {
 		return *refused, nil
+	}
+	if in.WithSummary && summaryOps[in.Op] {
+		ctx = withNodePlanCache(ctx) // read ops only: one plan per call
 	}
 	res, err := d.dispatch(ctx, key, mscope, in, raw)
 	if err != nil {

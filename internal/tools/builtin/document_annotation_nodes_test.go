@@ -468,3 +468,41 @@ func TestNodeAnnotationInputs_StatusNotOneWordCountsAsOther(t *testing.T) {
 		t.Fatalf("member_statuses = %s, want 2 other and 1 done", got)
 	}
 }
+
+// TestNodeSeries_ReadBuildsAtMostOneLightPlan — a with_summary read builds one node
+// statistics plan at most: a light one (no member documents, vectors or stored
+// statistics) for the series alone, and the search leg's own plan, reused, when a
+// node hit needed one.
+func TestNodeSeries_ReadBuildsAtMostOneLightPlan(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpus(t, d, base)
+	op := k.f.operator
+	nodeStatsRun(t, d, op, computeAll)
+	d.Embedder = newFakeEmbedder("fake", "m1", "risk", "reporting", "filings", "vendor") // the corpus rows are 4-d
+	nodeWrite(t, d, op, "concept", k.rep, "Reporting filings")
+	var plans []bool
+	d.onNodeStatsPlan = func(light bool) { plans = append(plans, light) }
+	for _, tc := range []struct {
+		name, body string
+		light      bool
+	}{
+		{"get_chunk", `{"op":"get_chunk","scope":"tenant","id":"` + k.rep + `","with_summary":true}`, true},
+		{"search", `{"op":"search","scope":"tenant","query":"reporting filings","annotations":"only","annotation_levels":["concept"],"with_summary":true}`, false},
+	} {
+		plans = nil
+		out, r := docExec(t, d, op, tc.body)
+		if r.IsError {
+			t.Fatalf("%s: %s", tc.name, r.Text)
+		}
+		row := out
+		if rows := anyList(out["chunks"]); len(rows) > 0 {
+			row = rows[0].(map[string]any)
+		}
+		if row["series"] == nil {
+			t.Fatalf("%s: no series, so this checks nothing: %v", tc.name, row)
+		}
+		if len(plans) != 1 || plans[0] != tc.light {
+			t.Errorf("%s built plans %v (true = light); want exactly one, light=%v", tc.name, plans, tc.light)
+		}
+	}
+}

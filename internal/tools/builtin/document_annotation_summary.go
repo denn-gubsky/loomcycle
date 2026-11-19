@@ -89,7 +89,8 @@ func (d *Document) attachAnnotations(ctx context.Context, key sqlmem.ScopeKey, m
 	// but for a taxonomy node's series (attachNodeSeries), which needs no record.
 	probe, err := d.query(ctx, key, `SELECT 1 FROM chunk_annotations LIMIT 1`)
 	hasRecords := err == nil && len(probe.Rows) > 0
-	nodeSeries := in.WithSummary && summaryOps[in.Op] && mscope == store.MemoryScopeTenant
+	// The series probe, too, before the answer is decoded.
+	nodeSeries := in.WithSummary && summaryOps[in.Op] && mscope == store.MemoryScopeTenant && d.measurePointsStored(ctx)
 	if !hasRecords && !nodeSeries {
 		return res
 	}

@@ -541,13 +541,28 @@ func (d *Document) servableSeriesPoints(ctx context.Context, key sqlmem.ScopeKey
 	return stored, nil
 }
 
+// measurePointsStored is the cheap probe before any series work: most tenant
+// scopes keep no series (or no table yet).
+func (d *Document) measurePointsStored(ctx context.Context) bool {
+	key, _, err := d.ontologyTenantKey(ctx)
+	if err != nil {
+		return false
+	}
+	probe, err := d.query(ctx, key, `SELECT 1 FROM measure_points LIMIT 1`)
+	return err == nil && len(probe.Rows) > 0
+}
+
 // attachNodeSeries is with_summary's part of D31 (plan P4.3): a row that is a
 // taxonomy node — a concept, or a document class with an entry, of the confirmed
 // ontology, in the tenant scope — gets the node's series view beside its summary
 // as series, exactly the view describe_ontology with_stats gives it. Never written
 // into the summary, so a new period marks no record stale. A scope with no stored
 // point, an answer with no node row, and a reader the ontology document is not
-// readable to get nothing, so their answers are unchanged.
+// readable to get nothing, so their answers are unchanged. The caller has checked
+// that the tenant scope stores a series at all (measurePointsStored).
+//
+// One plan per call: the search leg's full plan when it built one, else a light
+// one (buildSeriesReadPlan) — never the member vectors a full plan reads.
 func (d *Document) attachNodeSeries(ctx context.Context, mscope store.MemoryScope, op string, body map[string]any) bool {
 	if mscope != store.MemoryScopeTenant {
 		return false
@@ -558,10 +573,6 @@ func (d *Document) attachNodeSeries(ctx context.Context, mscope store.MemoryScop
 	}
 	key, _, err := d.ontologyTenantKey(ctx)
 	if err != nil {
-		return false
-	}
-	// The cheap probe first: most scopes keep no series (or no table yet).
-	if probe, err := d.query(ctx, key, `SELECT 1 FROM measure_points LIMIT 1`); err != nil || len(probe.Rows) == 0 {
 		return false
 	}
 	read, ok := d.tenantOntologyRead(ctx)
@@ -578,12 +589,26 @@ func (d *Document) attachNodeSeries(ctx context.Context, mscope store.MemoryScop
 			}
 		}
 	}
-	for _, c := range describeOntologyRead(read).Classes {
-		if c.Kind != "document" {
+	// A class node is a chunk of the ontology document too: resolve the classes only
+	// when a row that is not a concept may be one (a row without document_id may).
+	classRow := false
+	for _, r := range rows {
+		if _, ok := byChunk[r.chunkID]; ok {
 			continue
 		}
-		if id := read.classChunkID(c.Name); id != "" {
-			byChunk[id] = nodeRef{node: c.Name, period: memrank.SchemePeriodMonth}
+		if doc, has := r.m["document_id"].(string); !has || doc == read.DocumentID {
+			classRow = true
+			break
+		}
+	}
+	if classRow {
+		for _, c := range describeOntologyRead(read).Classes {
+			if c.Kind != "document" {
+				continue
+			}
+			if id := read.classChunkID(c.Name); id != "" {
+				byChunk[id] = nodeRef{node: c.Name, period: memrank.SchemePeriodMonth}
+			}
 		}
 	}
 	var hit []summaryRow
@@ -603,9 +628,12 @@ func (d *Document) attachNodeSeries(ctx context.Context, mscope store.MemoryScop
 			return false
 		}
 	}
-	p, err := d.buildNodeStatsPlan(ctx, key, read, "")
-	if err != nil {
-		return false
+	p := cachedNodePlan(ctx, key, false)
+	if p == nil {
+		if p, err = d.buildSeriesReadPlan(ctx, key, read); err != nil {
+			return false
+		}
+		cacheNodePlan(ctx, key, p, false)
 	}
 	stored, err := d.servableSeriesPoints(ctx, key, read, p, dedupeStrings(ids))
 	if err != nil {

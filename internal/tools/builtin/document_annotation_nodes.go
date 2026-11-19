@@ -207,10 +207,15 @@ func (s *annotationScope) nodePlan(ctx context.Context) (*nodeStatsPlan, error) 
 	if onto == nil {
 		return nil, fmt.Errorf("no tenant ontology")
 	}
+	if p := cachedNodePlan(ctx, s.key, true); p != nil {
+		s.plan = p
+		return p, nil
+	}
 	p, err := s.d.buildNodeStatsPlan(ctx, s.key, *onto, "")
 	if err != nil {
 		return nil, err
 	}
+	cacheNodePlan(ctx, s.key, p, true)
 	s.plan = p
 	return p, nil
 }
