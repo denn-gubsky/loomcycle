@@ -75,4 +75,23 @@ describe("changeConfirmText", () => {
     expect(text).toContain("What rests on it: statements of kind: 2.");
     expect(text).not.toContain("review rules");
   });
+
+  it("counts one entry's dependents once when the proposal makes several changes of it", () => {
+    const memo = { chunk_id: "c-memo", name: "Memo", section: "classes", kind: "class" };
+    const other = { chunk_id: "c-other", name: "Note", section: "classes", kind: "class" };
+    const stale = { typed_documents: { n: 40, effect: "stale", tenant_scope: 40 } };
+    const text = changeConfirmText(
+      { ...base, op: "edit", name: "Letter", parent: "c-root" },
+      {
+        fingerprint: "f",
+        complete: true,
+        changes: [
+          { op: "rename", entry: memo, risk: "stales", counts: stale },
+          { op: "move", entry: memo, risk: "stales", counts: stale },
+          { op: "retire", entry: other, risk: "stales", counts: { typed_documents: { n: 5, effect: "stale", tenant_scope: 5 } } },
+        ],
+      },
+    );
+    expect(text).toContain("What rests on it: typed documents: 45.");
+  });
 });
