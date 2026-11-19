@@ -102,6 +102,15 @@ const (
 	// and every other transport refuse it.
 	ScopeMetricsRead = "metrics:read"
 
+	// ScopeWorkersAttach is a workspace worker's credential (RFC GW §8,
+	// ruling Q2): it attaches a worker to the core's worker endpoint and
+	// does nothing else. The token sits on a machine that runs model-chosen
+	// commands, where one of them can read it, so it must open no other
+	// surface: like metrics:read it implies nothing, is minted alone
+	// (ValidateScopeSet), and every API transport refuses it. Which tenants
+	// the worker serves is WorkerAttachment's answer, never HasScope's.
+	ScopeWorkersAttach = "workers:attach"
+
 	// NOTE: memory:read / memory:write are intentionally NOT in the
 	// catalog. They were inert — grantable but enforced by no route: the
 	// HTTP memory surface (/v1/_memory/*) is operator-admin, and
@@ -129,6 +138,9 @@ var scopeCatalog = map[string]struct{}{
 	ScopeAuthManage:           {},
 	ScopeSCIMProvision:        {},
 	ScopeMetricsRead:          {},
+	// Enforced by the worker endpoint (RFC GW P1), not by an API route: every
+	// API route refuses it.
+	ScopeWorkersAttach: {},
 }
 
 // tenantImplied is the set ScopeTenant satisfies. A tenant operator covers
@@ -182,10 +194,10 @@ func UnknownScopes(scopes []string) []string {
 // singlePurposeScopes are the scopes that each make a token a credential
 // confined to its own route list: minted alone, implying nothing, and never
 // a person's token.
-var singlePurposeScopes = []string{ScopeAuthManage, ScopeSCIMProvision, ScopeMetricsRead}
+var singlePurposeScopes = []string{ScopeAuthManage, ScopeSCIMProvision, ScopeMetricsRead, ScopeWorkersAttach}
 
 // HoldsSinglePurposeScope reports whether scopes contain any single-purpose
-// scope (auth:manage, scim:provision, metrics:read). Such a token is a
+// scope (auth:manage, scim:provision, metrics:read, workers:attach). Such a token is a
 // machine credential an operator minted: no member surface lists, revokes or
 // retires it, and it is never taken for a person's hand-minted token.
 func HoldsSinglePurposeScope(scopes []string) bool {
@@ -193,7 +205,8 @@ func HoldsSinglePurposeScope(scopes []string) bool {
 }
 
 // ValidateScopeSet refuses a scope set that combines auth:manage,
-// scim:provision or metrics:read with any other scope (RFC FA D16, P6).
+// scim:provision, metrics:read or workers:attach with any other scope (RFC FA
+// D16, P6; RFC GW Q2).
 // Callers check UnknownScopes first.
 func ValidateScopeSet(scopes []string) error {
 	for _, alone := range singlePurposeScopes {
@@ -224,6 +237,14 @@ func IsSCIMProvisioner(p Principal) bool {
 // admits such a principal only to GET /metrics.
 func IsMetricsReader(p Principal) bool {
 	return !p.Legacy && len(p.Scopes) > 0 && slices.Contains(p.Scopes, ScopeMetricsRead)
+}
+
+// IsWorkerAttacher reports whether p is a workspace worker's credential: it
+// holds workers:attach, which ValidateScopeSet keeps alone. Every API
+// transport refuses such a principal. It reads the scope itself, not HasScope:
+// substrate:admin satisfies every scope there, and an admin is not a worker.
+func IsWorkerAttacher(p Principal) bool {
+	return !p.Legacy && len(p.Scopes) > 0 && slices.Contains(p.Scopes, ScopeWorkersAttach)
 }
 
 // HasScope reports whether the granted set includes want. ScopeAdmin is a

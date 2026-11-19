@@ -288,3 +288,46 @@ func TestRestrictions_TenantMetricsRoundTripsThroughStorage(t *testing.T) {
 		t.Errorf("Describe = %q", r.Describe())
 	}
 }
+
+// worker_shared says which tenants a worker serves, and nothing else, so it
+// fits only a token whose scopes are exactly [workers:attach].
+func TestRestrictionsCheckScopes_WorkerSharedOnlyOnAWorkersAttachToken(t *testing.T) {
+	r := Restrictions{WorkerShared: true}
+	if err := r.CheckScopes([]string{ScopeWorkersAttach}); err != nil {
+		t.Errorf("[workers:attach]: %v, want accepted", err)
+	}
+	for _, scopes := range [][]string{nil, {ScopeTenant}, {ScopeAdmin}, {ScopeMetricsRead}, {ScopeWorkersAttach, ScopeRunsRead}} {
+		if err := r.CheckScopes(scopes); err == nil {
+			t.Errorf("%v: accepted, want refused", scopes)
+		}
+	}
+	if err := (Restrictions{}).CheckScopes([]string{ScopeWorkersAttach}); err != nil {
+		t.Errorf("a tenant-bound worker token: %v", err)
+	}
+}
+
+// The marker survives the stored form, a record holding only it is not the
+// zero record, and a minter's restrictions never add or drop it.
+func TestRestrictions_WorkerSharedRoundTripsThroughStorage(t *testing.T) {
+	r := Restrictions{WorkerShared: true}
+	if r.IsZero() {
+		t.Fatal("a record holding worker_shared reads as zero")
+	}
+	s, err := MarshalRestrictions(r)
+	if err != nil || s != `{"worker_shared":true}` {
+		t.Fatalf("stored %q, %v", s, err)
+	}
+	back, err := ParseRestrictions(s)
+	if err != nil || !back.WorkerShared {
+		t.Errorf("read back %+v, %v", back, err)
+	}
+	if !strings.Contains(r.Describe(), "worker_shared") {
+		t.Errorf("Describe = %q", r.Describe())
+	}
+	if held, err := r.Within(Restrictions{Retention: "none"}); err != nil || !held.WorkerShared {
+		t.Errorf("held to a minter: %+v, %v", held, err)
+	}
+	if held, err := (Restrictions{}).Within(Restrictions{WorkerShared: true}); err != nil || held.WorkerShared {
+		t.Errorf("a minter's worker_shared was passed on: %+v, %v", held, err)
+	}
+}
