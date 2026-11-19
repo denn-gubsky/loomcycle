@@ -140,7 +140,7 @@ func TestKnowledgeBaseBundle_SkipsTheRuntimesOperationalTypes(t *testing.T) {
 	cfg := knowledgeBaseConfig(t)
 	re := regexp.MustCompile(`var OPERATIONAL_DOCUMENT_TYPES = (\[[^\]]*\]);`)
 	want, _ := json.Marshal(memrank.OperationalDocumentTypes())
-	for _, name := range []string{"kb/linker", "kb/judge"} {
+	for _, name := range []string{"kb/linker", "kb/judge", "kb/ask"} {
 		m := re.FindStringSubmatch(cfg.Agents[name].Code)
 		if m == nil {
 			t.Errorf("%s declares no OPERATIONAL_DOCUMENT_TYPES", name)
