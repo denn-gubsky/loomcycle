@@ -87,6 +87,8 @@ type plannedChange struct {
 	editRenames                      bool // the edit's body changes the entry's name
 	notes                            []string
 	counts                           map[string]*connector.OntologyPlanCount
+	// proposal is the proposal this change stands for (op proposal), "" for a direct one.
+	proposal string
 }
 
 // planRows is the ontology document's chunk tree, every status included.
@@ -146,13 +148,21 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 		return out, planReadErr(err)
 	}
 	entries := planEntries(before)
+	items, err := d.expandPlanProposals(ctx, key, mscope, changes, before)
+	if err != nil {
+		return out, err
+	}
 	ov := newOntologyOverlay()
-	planned := make([]*plannedChange, 0, len(changes))
-	for i, ch := range changes {
-		p, err := d.resolvePlanChange(ctx, key, mscope, i, ch, before, rows, entries, ov)
+	planned := make([]*plannedChange, 0, len(items))
+	for _, it := range items {
+		if it.fixed != nil {
+			continue
+		}
+		p, err := d.resolvePlanChange(ctx, key, mscope, it.index, it.change, before, rows, entries, ov)
 		if err != nil {
 			return out, err
 		}
+		p.proposal = it.proposal
 		planned = append(planned, p)
 	}
 
@@ -199,8 +209,14 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 		return out, planReadErr(err)
 	}
 	out.ScopesCounted, out.ScopesSkipped, out.Complete = counted, skipped, complete
-	for _, p := range planned {
-		out.Changes = append(out.Changes, p.result())
+	next := 0
+	for _, it := range items {
+		if it.fixed != nil {
+			out.Changes = append(out.Changes, *it.fixed)
+			continue
+		}
+		out.Changes = append(out.Changes, planned[next].result())
+		next++
 	}
 	return out, nil
 }
@@ -240,6 +256,15 @@ func validatePlanChanges(changes []connector.OntologyChange) error {
 	}
 	for i, ch := range changes {
 		at := "changes[" + strconv.Itoa(i) + "]"
+		if ch.Op == connector.OntologyPlanProposal {
+			if strings.TrimSpace(ch.ID) == "" || ch.Entry != "" || ch.Name != "" || ch.Parent != "" || ch.Body != "" {
+				return connector.WithMessage(connector.ErrOntologyPlanInvalid, at+": proposal needs id (a proposal's chunk id) and nothing else")
+			}
+			continue
+		}
+		if ch.ID != "" {
+			return connector.WithMessage(connector.ErrOntologyPlanInvalid, at+": id is for op proposal only")
+		}
 		if strings.TrimSpace(ch.Entry) == "" {
 			return connector.WithMessage(connector.ErrOntologyPlanInvalid, at+": entry is required (an entry's chunk id)")
 		}
@@ -262,7 +287,7 @@ func validatePlanChanges(changes []connector.OntologyChange) error {
 			}
 		default:
 			return connector.WithMessage(connector.ErrOntologyPlanInvalid,
-				at+": unknown op "+strconv.Quote(ch.Op)+" (retire, rename, move, edit or delete)")
+				at+": unknown op "+strconv.Quote(ch.Op)+" (retire, rename, move, edit, delete or proposal)")
 		}
 	}
 	return nil
@@ -599,7 +624,7 @@ func entrySignature(r OntologyRead, e planEntry) string {
 // it, and its risk class — the worst effect any non-zero count has.
 func (p *plannedChange) result() connector.OntologyPlannedChange {
 	out := connector.OntologyPlannedChange{Op: p.in.Op, Entry: p.entry.OntologyPlanEntry, Risk: connector.OntologyRiskNone,
-		Counts: map[string]connector.OntologyPlanCount{}, Notes: p.notes}
+		Counts: map[string]connector.OntologyPlanCount{}, Notes: p.notes, Proposal: p.proposal}
 	for _, u := range p.under {
 		out.Subtree = append(out.Subtree, u.OntologyPlanEntry)
 	}
