@@ -289,6 +289,53 @@ func FuzzHuffCDIC(f *testing.F) {
 	})
 }
 
+func FuzzExtractCHM(f *testing.F) {
+	pages := map[string]string{
+		"a.htm": `<html><head><title>A</title></head><body><h1>A</h1><p>x <img src="pic.png"> <img src="ms-its:help.chm::/pic.png"></p></body></html>`,
+		"b.htm": `<html><head><meta charset="windows-1251"></head><body><p>` + "\xcf\xf0\xe8" + `</p></body></html>`,
+	}
+	f.Add(testCHM(pages, []string{"a.htm", "b.htm"}, chmPart{name: "/pic.png", data: tinyPNG(f), compressed: true}))
+	f.Add(chmSpec{parts: []chmPart{{name: "/#SYSTEM", data: chmSystemFile("", "a.htm", "T", 0x419, "t")}, {name: "/a.htm", data: []byte("<p>a</p>")}}}.build())
+	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, CHM{}, "help.chm", data, false) })
+}
+
+// FuzzExtractLZX feeds a stream to the LZX decoder directly, so mutations
+// reach its trees and matches instead of the CHM directory around them. It
+// holds the decoder to returning, within a small budget and without a
+// panic, whatever the stream.
+func FuzzExtractLZX(f *testing.F) {
+	s, _ := matchLZX(15, 4, 3, 0, false)
+	f.Add(s)
+	s, _ = prefixMatchLZX("abcdefghijklmnopqrstuvwxyz", 15, 8, 4, 5, true)
+	f.Add(s)
+	f.Add(bombLZX(15, 2, 1))
+	e := newLZXEnc(15)
+	e.header(true, 1<<20)
+	e.stored([]byte("odd"), 1, 1, 1)
+	f.Add(e.out)
+	f.Fuzz(func(t *testing.T, stream []byte) {
+		ctx, cancel := context.WithTimeout(context.Background(), fuzzContext)
+		defer cancel()
+		var budget int64
+		d, err := newLZXDecoder(ctx, bytes.NewReader(stream), 15, 2*lzxFrameSize, 0, 4*lzxFrameSize, &budget, 3*lzxFrameSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for {
+			fr, err := d.next()
+			if err != nil {
+				if !errors.Is(err, io.EOF) && !IsRefused(err) && ctx.Err() == nil {
+					t.Fatalf("not a refusal: %v", err)
+				}
+				return
+			}
+			if len(fr) > lzxFrameSize {
+				t.Fatalf("a frame of %d bytes", len(fr))
+			}
+		}
+	})
+}
+
 func FuzzExtractHTML(f *testing.F) {
 	for _, s := range []string{
 		`<!doctype html><html><head><title>Новини</title><script>x()</script></head><body><h1>Засідання</h1><p>Рішення: затвердити

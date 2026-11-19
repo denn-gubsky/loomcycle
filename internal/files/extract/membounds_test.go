@@ -656,3 +656,31 @@ func (m *storedMOBI) ReadAt(p []byte, off int64) (int, error) {
 	}
 	return n, nil
 }
+
+// A help file whose compressed section is an LZX bomb: each page of its
+// contents sits at the end of its own 4 MiB reset interval of one repeated
+// byte, so reading a page decompresses the interval before it. Reading
+// stops at the extraction's decompression cap (lowered here to 16 MiB)
+// with little held: a frame and the window, never an interval.
+func TestCHM_LZXExpansionBombIsRefused(t *testing.T) {
+	const interval = 4 << 20
+	const pages = 9
+	stream, frames := bombFramesLZX(15, pages*interval/lzxFrameSize, interval/lzxFrameSize)
+	parts := []chmPart{{name: "/#SYSTEM", data: chmSystemFile("toc.hhc", "p0.htm", "Bomb", 0x409, "bomb")}}
+	var names []string
+	var extra []chmEntry
+	for i := 0; i < pages; i++ {
+		n := fmt.Sprintf("p%d.htm", i)
+		names = append(names, n)
+		extra = append(extra, chmEntry{name: "/" + n, section: 1, offset: uint64((i+1)*interval - 1024), length: 1024})
+	}
+	parts = append(parts, chmPart{name: "/toc.hhc", data: chmTOC(names...)})
+	data := chmSpec{parts: parts, resetInterval: interval, lzx: stream, frames: frames, total: pages * interval, extra: extra}.build()
+	wantRefusedUnder(t, "LZX bomb", 4<<20, func() error {
+		_, err := CHM{}.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), &memSink{}, Options{Name: "bomb.chm", chmMaxDecompressed: 16 << 20})
+		if err != nil && !strings.Contains(err.Error(), errLZXBudget.Error()) {
+			t.Errorf("refused for another reason: %v", err)
+		}
+		return err
+	})
+}
