@@ -370,7 +370,9 @@ func (d *Document) setInstanceRegistryKey(ctx context.Context, key sqlmem.ScopeK
 	fb, _ := json.Marshal(fields)
 	rev := row.Revision
 	raw, _ := json.Marshal(map[string]any{"fields": json.RawMessage(fb), "revision": rev})
-	res, err := d.updateChunk(ctx, key, mscope, docInput{Scope: "tenant", ID: chunkID, Fields: fb, Revision: &rev}, raw)
+	// Adoption's own key is what the plan counts the subject by, so this write is not a
+	// change of it (RFC GQ P2.4); it replaces only a missing or untrusted key.
+	res, err := d.updateChunk(withInstanceKeyWrite(ctx), key, mscope, docInput{Scope: "tenant", ID: chunkID, Fields: fb, Revision: &rev}, raw)
 	if err != nil {
 		return err
 	}

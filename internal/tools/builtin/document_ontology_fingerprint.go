@@ -12,7 +12,14 @@ package builtin
 //     changes beyond the meaning (@identity, a relation characteristic such as
 //     @functional or @asymmetric, a policy directive — whatever the plan's
 //     entrySignature compares);
-//   - move_chunk taking it under another parent.
+//   - update_chunk changing or clearing an adopted instance's registry_key (in fields):
+//     the plan finds the instance's subject by it, so it is planned as a retire;
+//   - move_chunk taking it under another parent;
+//   - a change to a chunk that is not an entry — a section header whose body changes how
+//     the section is read, an unnamed wrapper retired, titled or moved, a header moved —
+//     planned as what it does to the entries under it: each one leaving the read or read
+//     as another kind is a retire, each one the reader places elsewhere a move
+//     (structuralPlanGate).
 //
 // The call carries plan_fingerprint, the fingerprint a plan reports (sha256 of
 // ontologyFingerprint, hex). Missing → plan_required; not the current one →
@@ -35,12 +42,19 @@ package builtin
 // the caller planned against this exact ontology.
 //
 // THE WINDOW. The check runs before the write, outside any transaction (on SQLite a
-// scope has one connection, and the plan reads every scope of the tenant). A change to
-// the ontology between the check and the write is not seen. The target chunk's own
-// revision guard still holds.
+// scope has one connection, and the plan reads every scope of the tenant). What closes
+// part of it: update_chunk's write is conditional on the revision it read, and
+// move_chunk's on the parent it read, so a concurrent change to the target chunk itself
+// is a conflict. What stays open: a change elsewhere in the ontology between the check
+// and the write (an ancestor of the new parent moved, another entry edited) is not
+// re-checked under a lock — the operator-against-operator race every ontology guard here
+// accepts. The fingerprint itself sees every write, re-parenting included
+// (ontologyStructureHash), so a plan made before such a change is stale afterwards.
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -93,9 +107,10 @@ func OntologyPlanRefusalCode(text string, info *tools.ErrorInfo) (string, bool) 
 func (d *Document) ontologyUpdatePlanRefusal(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, row chunkRow, in docInput, present map[string]json.RawMessage) *tools.Result {
 	_, hasTitle := present["title"]
 	_, hasBody := present["body"]
+	_, hasFields := present["fields"]
 	_, hasStatus := present["status"]
 	retiring := hasStatus && memrank.IsRetiredEntityStatus(in.Status) && !memrank.IsRetiredEntityStatus(row.Status)
-	if key.Scope != "tenant" || (!hasTitle && !hasBody && !retiring) {
+	if key.Scope != "tenant" || (!hasTitle && !hasBody && !hasFields && !retiring) {
 		return nil
 	}
 	fail := func(err error) *tools.Result {
@@ -107,26 +122,48 @@ func (d *Document) ontologyUpdatePlanRefusal(ctx context.Context, key sqlmem.Sco
 	if err != nil {
 		return fail(err)
 	}
-	if !ok {
-		return nil
+	if read.DocumentID == "" {
+		return nil // not the tenant ontology
 	}
 	if read.partial {
 		return lockReadPartial("update_chunk")
+	}
+	cur, err := d.readBody(rctx, mscope, key, row.ID)
+	if err != nil {
+		return fail(err)
+	}
+	// What the chunk will hold after the update: an edit is judged with the fields it
+	// writes, not the stored ones.
+	next := cur
+	if hasBody {
+		next.Body = in.Body
+	}
+	if hasFields {
+		next.Fields = in.Fields
+	}
+	if !ok {
+		// Not an entry (a section header, an unnamed wrapper, the root), but what the
+		// reader makes of the entries under it can still change.
+		ov := newOntologyOverlay()
+		if hasTitle {
+			ov.titles[row.ID] = in.Title
+		}
+		ov.bodies[row.ID] = next
+		if retiring {
+			ov.gone[row.ID] = true
+		}
+		return d.structuralPlanGate(ctx, key, mscope, "update_chunk", read, ov, row.ID, in.PlanFingerprint)
 	}
 	var changes []connector.OntologyChange
 	if retiring {
 		changes = append(changes, connector.OntologyChange{Op: connector.OntologyPlanRetire, Entry: e.ChunkID})
 	}
-	var cur chunkBody
-	if hasBody || hasTitle {
-		if cur, err = d.readBody(rctx, mscope, key, row.ID); err != nil {
-			return fail(err)
-		}
+	if registryKeyChanged(ctx, e, cur.Fields, in.Fields, hasFields) && !retiring {
+		// The plan finds an adopted instance's subject by this key; a changed or cleared
+		// key leaves the subject as a retirement leaves it.
+		changes = append(changes, connector.OntologyChange{Op: connector.OntologyPlanRetire, Entry: e.ChunkID})
 	}
-	body := cur.Body
-	if hasBody {
-		body = in.Body
-	}
+	body := next.Body
 	if hasTitle || hasBody {
 		title := row.Title
 		if hasTitle {
@@ -147,7 +184,7 @@ func (d *Document) ontologyUpdatePlanRefusal(ctx context.Context, key sqlmem.Sco
 		}
 	}
 	if hasBody && in.Body != cur.Body {
-		redeclares, err := d.editRedeclares(rctx, key, mscope, read, e, chunkBody{Body: in.Body, Fields: cur.Fields})
+		redeclares, err := d.editRedeclares(rctx, key, mscope, read, e, next)
 		if err != nil {
 			return fail(err)
 		}
@@ -158,38 +195,109 @@ func (d *Document) ontologyUpdatePlanRefusal(ctx context.Context, key sqlmem.Sco
 	return d.ontologyPlanGate(ctx, key, mscope, "update_chunk", read.DocumentID, changes, in.PlanFingerprint)
 }
 
-// ontologyMovePlanRefusal is move_chunk's check: a move of an in-force entry under
-// another parent, gated on the plan. Called after the lock and out-of-force checks.
-func (d *Document) ontologyMovePlanRefusal(ctx context.Context, key sqlmem.ScopeKey, row chunkRow, newParent, given string) *tools.Result {
-	if key.Scope != "tenant" || newParent == row.ParentID {
-		return nil
-	}
+// structuralPlanGate gates a change to chunk top (and so to everything under it) given as
+// an overlay: the ontology is read with the overlay applied, and each in-force entry of
+// top's subtree that the change takes out of the read, or reads as another kind or
+// section, is planned as a retire; one whose place in the reader's tree changes is
+// planned as a move (as a retire when its new place is not one a plan can name, such as
+// a chunk the change itself makes an entry). before is the ontology as read before the
+// change; a partial read on either side fails closed.
+func (d *Document) structuralPlanGate(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, op string,
+	before OntologyRead, ov *ontologyOverlay, top, given string) *tools.Result {
 	fail := func(err error) *tools.Result {
-		r := errFrom("move_chunk: could not tell whether the move needs a plan of the tenant ontology, so nothing was moved: "+err.Error(), err)
+		r := errFrom(op+": could not tell whether the change needs a plan of the tenant ontology, so nothing was changed: "+err.Error(), err)
 		return &r
 	}
 	rctx := noWrites(ctx)
-	read, e, ok, err := d.ontologyEntryOf(rctx, key, store.MemoryScopeTenant, row)
+	after, err := d.ontologyForKey(rctx, key, mscope, memrank.OntologyPath, ov)
 	if err != nil {
 		return fail(err)
 	}
-	if !ok {
-		return nil
+	if before.partial || after.partial {
+		return lockReadPartial(op)
 	}
-	rows, err := d.planChunkRows(rctx, key, read.DocumentID)
+	rows, err := d.planChunkRows(rctx, key, before.DocumentID)
 	if err != nil {
 		return fail(err)
 	}
-	// The reader places an entry under its nearest in-force ancestor (a proposal or a
-	// rejection in between is skipped), so the move is planned to that ancestor; a move
-	// that leaves it where the reader had it changes nothing stored.
-	entries := planEntries(read)
-	from, to := readerParent(read, rows, entries, row.ParentID), readerParent(read, rows, entries, newParent)
-	if from == to {
-		return nil
+	changes := structuralChanges(before, after, rows, ov, top)
+	return d.ontologyPlanGate(ctx, key, mscope, op, before.DocumentID, changes, given)
+}
+
+// structuralChanges lists the plan changes standing for what an overlay does to the
+// in-force entries of top's subtree (see structuralPlanGate).
+func structuralChanges(before, after OntologyRead, rows planRows, ov *ontologyOverlay, top string) []connector.OntologyChange {
+	was, now := planEntries(before), planEntries(after)
+	moved := planRows{parent: make(map[string]string, len(rows.parent))}
+	for id, p := range rows.parent {
+		moved.parent[id] = p
 	}
-	changes := []connector.OntologyChange{{Op: connector.OntologyPlanMove, Entry: e.ChunkID, Parent: to}}
-	return d.ontologyPlanGate(ctx, key, store.MemoryScopeTenant, "move_chunk", read.DocumentID, changes, given)
+	for id, p := range ov.parents {
+		moved.parent[id] = p
+	}
+	var out []connector.OntologyChange
+	for _, id := range rows.subtree(top) {
+		e, ok := was[id]
+		if !ok {
+			continue
+		}
+		retire := connector.OntologyChange{Op: connector.OntologyPlanRetire, Entry: id}
+		a, still := now[id]
+		if !still || a.Kind != e.Kind || a.Section != e.Section {
+			out = append(out, retire)
+			continue
+		}
+		// The reader places an entry under its nearest in-force ancestor (a proposal or
+		// an unnamed chunk in between is skipped), so a change that leaves that ancestor
+		// as it was changes nothing stored.
+		from := readerParent(before, rows, was, rows.parent[id])
+		to := readerParent(after, moved, now, moved.parent[id])
+		if from == to {
+			continue
+		}
+		inSubtree := map[string]bool{}
+		for _, s := range rows.subtree(id) {
+			inSubtree[s] = true
+		}
+		if planMoveParent("", e, to, before, was, inSubtree) != nil {
+			out = append(out, retire)
+			continue
+		}
+		out = append(out, connector.OntologyChange{Op: connector.OntologyPlanMove, Entry: id, Parent: to})
+	}
+	return out
+}
+
+// instanceKeyWrite marks the instance adoption's own write of an instance's
+// registry_key (setInstanceRegistryKey): the key it records is the one the plan counts
+// by, so that write is not a change of it.
+type instanceKeyWrite struct{}
+
+func withInstanceKeyWrite(ctx context.Context) context.Context {
+	return context.WithValue(ctx, instanceKeyWrite{}, true)
+}
+
+// registryKeyChanged reports whether an update changes or clears the registry_key an
+// in-force instance carries. A first key (none set) and adoption's own write are not.
+func registryKeyChanged(ctx context.Context, e planEntry, stored, next json.RawMessage, hasFields bool) bool {
+	if !hasFields || e.Kind != planKindInstance {
+		return false
+	}
+	if marked, _ := ctx.Value(instanceKeyWrite{}).(bool); marked {
+		return false
+	}
+	old, now := registryKeyOf(stored), registryKeyOf(next)
+	return old != "" && old != now
+}
+
+func registryKeyOf(fields json.RawMessage) string {
+	var f struct {
+		RegistryKey string `json:"registry_key"`
+	}
+	if len(fields) == 0 || json.Unmarshal(fields, &f) != nil {
+		return ""
+	}
+	return f.RegistryKey
 }
 
 // readerParent is the chunk the reader takes as the parent of an entry placed under id:
@@ -254,21 +362,52 @@ func (d *Document) ontologyPlanGate(ctx context.Context, key sqlmem.ScopeKey, ms
 	if given != "" && given == now {
 		return nil
 	}
-	plan, err := d.planOntologyAt(ctx, key, mscope, changes)
-	if err != nil {
-		return planGateError(op, err)
-	}
+	// A structural change can touch more entries than one plan takes: plan them in
+	// batches, as the delete guard does.
 	var risky []connector.OntologyPlannedChange
-	for _, ch := range plan.Changes {
-		if ch.Risk != connector.OntologyRiskNone {
-			risky = append(risky, ch)
+	complete, planned := true, now
+	for start := 0; start < len(changes); start += ontologyPlanMaxChanges {
+		plan, err := d.planOntologyAt(ctx, key, mscope, changes[start:min(start+ontologyPlanMaxChanges, len(changes))])
+		if err != nil {
+			return planGateError(op, err)
 		}
+		for _, ch := range plan.Changes {
+			if ch.Risk != connector.OntologyRiskNone {
+				risky = append(risky, ch)
+			}
+		}
+		complete = complete && plan.Complete
+		planned = plan.Fingerprint
 	}
-	if len(risky) == 0 && plan.Complete {
+	if len(risky) == 0 && complete {
 		return nil
 	}
 	// The plan's own fingerprint: the one the caller would get by planning now.
-	return planFingerprintRefusal(op, given, plan.Fingerprint, risky, plan.Complete)
+	return planFingerprintRefusal(op, given, planned, risky, complete)
+}
+
+// ontologyStructureHash is an order-independent hash of the ontology document's tree:
+// the sum, mod 2^64, of a hash of each (chunk id, parent id) pair. It changes when any
+// chunk is re-parented, whatever the clock says, and costs one indexed read of the
+// document's chunk rows. A read cut at the row cap says so ("cut"), so the fingerprint
+// stays deterministic; a plan of such an ontology is refused anyway (planChunkRows).
+func (d *Document) ontologyStructureHash(ctx context.Context, key sqlmem.ScopeKey, docID string) (string, error) {
+	res, err := d.query(ctx, key, `SELECT id, coalesce(parent_id, '') FROM chunks WHERE document_id = ?`, docID)
+	if err != nil {
+		return "", err
+	}
+	if res.Truncated {
+		return "cut", nil
+	}
+	var sum uint64
+	for _, r := range res.Rows {
+		if len(r) < 2 {
+			continue
+		}
+		h := sha256.Sum256([]byte(asStr(r[0]) + "\x00" + asStr(r[1])))
+		sum += binary.BigEndian.Uint64(h[:8])
+	}
+	return strconv.FormatUint(sum, 16), nil
 }
 
 // planGateError is the refusal when the change cannot be planned: the plan refuses it

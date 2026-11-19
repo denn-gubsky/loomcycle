@@ -123,6 +123,11 @@ type Document struct {
 	// planScopeBudget bounds an ontology plan's user and agent scope pass; zero is
 	// ontologyPlanScopeBudget. A test shortens it.
 	planScopeBudget time.Duration
+
+	// beforeMoveWrite, when set, runs in move_chunk after its checks and before its
+	// write. A test moves the chunk there to prove the write is conditional on the
+	// parent the checks read. Nil in production.
+	beforeMoveWrite func()
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -4233,13 +4238,11 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			cur = anc.ParentID
 		}
 	}
-	// RFC GQ D3: no entry leaves the ontology by a move (document_ontology_delete.go).
+	// RFC GQ D3: no entry leaves the ontology by a move (document_ontology_delete.go);
+	// P2.4: a move that changes where the reader places an entry something rests on
+	// needs a plan's fingerprint, judged on the same read.
 	if in.NewParentID != row.ParentID {
-		if refused := d.ontologyMoveRefusal(ctx, key, row, in.NewParentID); refused != nil {
-			return *refused, nil
-		}
-		// RFC GQ P2.4: an entry something rests on moves with a plan's fingerprint.
-		if refused := d.ontologyMovePlanRefusal(ctx, key, row, in.NewParentID, in.PlanFingerprint); refused != nil {
+		if refused := d.ontologyMoveRefusal(ctx, key, row, in.NewParentID, in.PlanFingerprint); refused != nil {
 			return *refused, nil
 		}
 	}
@@ -4247,10 +4250,28 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	if in.Position != nil {
 		pos = *in.Position
 	}
+	if d.beforeMoveWrite != nil {
+		d.beforeMoveWrite()
+	}
 	now := time.Now().UnixNano()
-	if err := d.exec(ctx, key, `UPDATE chunks SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?`,
-		nullIfEmpty(in.NewParentID), pos, now, in.ID); err != nil {
+	// The write is conditional on the parent the checks above read: a move that landed
+	// in between would otherwise be overwritten past them (the ontology checks judged a
+	// chunk under its old parent). NULL is matched with IS NULL, the same on both tiers.
+	stmt, args := `UPDATE chunks SET parent_id = ?, position = ?, updated_at = ? WHERE id = ? AND parent_id IS NULL`,
+		[]any{nullIfEmpty(in.NewParentID), pos, now, in.ID}
+	if row.ParentID != "" {
+		stmt, args = `UPDATE chunks SET parent_id = ?, position = ?, updated_at = ? WHERE id = ? AND parent_id = ?`, append(args, row.ParentID)
+	}
+	if writesForbidden(ctx) {
+		return errFrom("move_chunk: "+errNoWrites.Error(), errNoWrites), nil
+	}
+	moved, err := d.docSQL().Exec(ctx, key, d.docSQL().Rebind(stmt), args, 0)
+	if err != nil {
 		return errFrom("move_chunk: "+err.Error(), err), nil
+	}
+	if moved.RowsAffected == 0 {
+		return errBusiness("move_chunk: the chunk was moved or deleted since this call read it, so nothing was moved",
+			"Read it with op=get_chunk and send the move again; it is checked afresh."), nil
 	}
 	// Moving to a new parent changes the heading path of the chunk and everything under
 	// it. A reorder under the same parent changes only the position, which no index text
