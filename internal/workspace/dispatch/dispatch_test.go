@@ -205,7 +205,7 @@ func TestPlace_ChecksToolchainEngineAndCapacity(t *testing.T) {
 	if _, err := d.Place(ctx, dispatch.PlaceRequest{TenantID: "acme", Engine: workspace.EngineContainer}); dispatch.ClassOf(err) != workspace.ClassNoWorker {
 		t.Errorf("an engine stronger than the worker's: %v", err)
 	}
-	st.rows["ws1"] = store.WorkspaceRow{ID: "ws1", TenantID: "acme", WorkerID: acmeID("w1"), State: store.WorkspaceReady}
+	st.put(store.WorkspaceRow{ID: "ws1", TenantID: "acme", WorkerID: acmeID("w1"), State: store.WorkspaceReady})
 	if _, err := d.Place(ctx, dispatch.PlaceRequest{TenantID: "acme"}); dispatch.ClassOf(err) != workspace.ClassAtCapacity {
 		t.Errorf("a full worker: %v, want at_capacity", err)
 	}

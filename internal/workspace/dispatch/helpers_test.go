@@ -179,6 +179,14 @@ func (m *memStore) state(id string) store.WorkspaceState {
 	return m.rows[id].State
 }
 
+// put writes a row, under the lock: an attach's reconciliation reads the
+// table concurrently.
+func (m *memStore) put(r store.WorkspaceRow) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rows[r.ID] = r
+}
+
 func (m *memStore) has(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
