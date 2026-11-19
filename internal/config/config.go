@@ -300,6 +300,12 @@ type Config struct {
 	// conversion block's listen, tls and insecure are its older spelling.
 	WorkerEndpoint WorkerEndpointConfig `yaml:"worker_endpoint,omitempty"`
 
+	// Workspace is the `workspace:` block: whether the runtime serves
+	// workspaces on workers that attach to the worker endpoint (RFC GW,
+	// workspace.go). Absent, it serves none. Defaults are applied at use
+	// (Resolved).
+	Workspace WorkspaceConfig `yaml:"workspace,omitempty"`
+
 	// Observability is the `observability:` block: settings of the trace
 	// export that belong in config rather than the OTEL_* environment
 	// (observability.go). Read at startup.
@@ -7974,6 +7980,9 @@ func validate(c *Config) error {
 	if err := validateConversion(c); err != nil {
 		return err
 	}
+	if err := validateWorkspace(c); err != nil {
+		return err
+	}
 	for name, agent := range c.Agents {
 		if err := validateAgentRouting(c, name, agent, known, enabledSearch); err != nil {
 			return err
@@ -8525,13 +8534,17 @@ func gitRemoteWarnings(name string, a AgentDef, env Env) []string {
 }
 
 // workspaceWarnings advises on an agent's workspace grant (RFC GW), never
-// fatally: it reaches nothing on an agent without the Workspace tool.
-func workspaceWarnings(name string, a AgentDef) []string {
+// fatally: it reaches nothing on an agent without the Workspace tool, nor
+// while the runtime serves no workspaces (mode is workspace.mode, resolved).
+func workspaceWarnings(name string, a AgentDef, mode string) []string {
 	if !a.Workspace.Grants() {
 		return nil
 	}
 	if !slices.Contains(a.Tools, "Workspace") {
 		return []string{fmt.Sprintf("agent %q: workspace is set but Workspace is not in tools, so it allows nothing", name)}
+	}
+	if mode == WorkspaceModeOff {
+		return []string{fmt.Sprintf("agent %q: workspace is granted but workspace.mode is off, so every Workspace call is refused; set workspace.mode to serve workspaces", name)}
 	}
 	return nil
 }

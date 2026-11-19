@@ -119,7 +119,7 @@ func TestWorkspaceWarnings_AdviseAGrantWithoutTheTool(t *testing.T) {
 		{"no tool", AgentDef{Tools: []string{"Read"}, Workspace: &AgentWorkspace{Open: true}}, "Workspace is not in tools"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := strings.Join(workspaceWarnings("a", tc.def), "\n")
+			got := strings.Join(workspaceWarnings("a", tc.def, WorkspaceModeRemote), "\n")
 			if (tc.want == "") != (got == "") || !strings.Contains(got, tc.want) {
 				t.Errorf("advisory = %q, want %q", got, tc.want)
 			}
