@@ -43,6 +43,9 @@ type describedClass struct {
 	Directives  map[string]string `json:"directives,omitempty"`
 	MemoryScope string            `json:"memory_scope,omitempty"`
 	RenamedFrom string            `json:"renamed_from,omitempty"`
+	// Alt is the class's own other names (@alt), as an instance's: what people call a
+	// document of the class. Not inherited.
+	Alt []string `json:"alt,omitempty"`
 	// Meaning is the first prose line of the class's entry.
 	Meaning string   `json:"meaning,omitempty"`
 	Issues  []string `json:"issues,omitempty"`
@@ -269,7 +272,7 @@ func describeOntologyRead(read OntologyRead) ontologyDescription {
 		dc := describedClass{Name: c.Name, Parent: c.Parent, Source: c.Source, Kind: "chunk",
 			TitleIdentity: c.TitleIdentity || c.InheritedTitleIdentity,
 			Norm:          memrank.IsNorm(c), InheritedNorm: c.InheritedNorm,
-			MemoryScope: memrank.EffectiveMemoryScope(c), RenamedFrom: c.RenamedFrom, Meaning: c.Meaning,
+			MemoryScope: memrank.EffectiveMemoryScope(c), RenamedFrom: c.RenamedFrom, Alt: append([]string(nil), c.Alt...), Meaning: c.Meaning,
 			Issues: append([]string(nil), c.Issues...), EntryStatus: c.EntryStatus}
 		if c.IsDocumentClass {
 			dc.Kind = "document"
