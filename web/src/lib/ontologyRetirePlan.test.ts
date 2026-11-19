@@ -90,4 +90,13 @@ describe("applyWithPlan", () => {
     expect(out).toBe("accepted with new");
     expect(apply).toHaveBeenCalledTimes(2);
   });
+
+  it("never retries a partially applied accept", async () => {
+    const partial = new ApiError("partially_applied", 409, "partially_applied");
+    const apply = vi.fn(async () => Promise.reject(partial));
+    await expect(applyWithPlan(() => "ok?", { plan: async () => plan("f"), apply, confirm: () => true })).rejects.toBe(
+      partial,
+    );
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
 });

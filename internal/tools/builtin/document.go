@@ -138,6 +138,11 @@ type Document struct {
 	// revision is read and before the checks. A test edits the target there to prove the
 	// write is pinned to the revision read before the checks. Nil in production.
 	duringAcceptChecks func()
+
+	// betweenAcceptWrites, when set, runs in AcceptChangeProposal after its update and
+	// before its move. A test writes to the ontology there to prove the move is refused
+	// when the ontology is not exactly what the update left. Nil in production.
+	betweenAcceptWrites func()
 }
 
 func (d *Document) Name() string { return "Document" }

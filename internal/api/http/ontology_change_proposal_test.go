@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,5 +206,29 @@ func TestOntologyProposals_AddProposalStillAcceptsByItsStatus(t *testing.T) {
 	}
 	if !found {
 		t.Error("the accepted add proposal is not in force")
+	}
+}
+
+// TestOntologyProposals_PartiallyAppliedAcceptIsAnsweredAndRecorded: an accept whose
+// update was written and whose move was not is a 409 partially_applied naming what was
+// applied, not a refusal that promises nothing was written, and it is recorded.
+func TestOntologyProposals_PartiallyAppliedAcceptIsAnsweredAndRecorded(t *testing.T) {
+	s := &Server{}
+	sink := &recordingSink{}
+	s.reviewAudit = sink
+	rep := builtin.ChangeAcceptReport{Proposal: "p1", Target: "c1", TargetName: "Provision", Op: "edit", Applied: []string{"edit"}}
+	err := fmt.Errorf("%w: applied edit to \"Provision\", then the move was refused", builtin.ErrChangePartiallyApplied)
+	rec := httptest.NewRecorder()
+	s.answerChangeAcceptError(rec, httptest.NewRequest(http.MethodPost, "/v1/_ontology/proposals", nil), "t1", rep, err)
+	var out struct {
+		Code    string   `json:"code"`
+		Applied []string `json:"applied"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if rec.Code != http.StatusConflict || out.Code != "partially_applied" || len(out.Applied) != 1 || out.Applied[0] != "edit" {
+		t.Errorf("answer = %d %s", rec.Code, rec.Body.String())
+	}
+	if len(sink.events) != 1 || sink.events[0].Action != "ontology_change_applied" || sink.events[0].OntologyProposalID != "p1" {
+		t.Errorf("audit = %+v", sink.events)
 	}
 }

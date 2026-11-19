@@ -20,10 +20,12 @@ package builtin
 // WHAT IS WRITTEN goes through update_chunk and move_chunk, so every guard of a direct
 // edit applies (the retire cascade, the locks, the demotion and delete refusals, the
 // plan fingerprint). One update carries the title, the body and the status, at the
-// target's revision as read by the checks: a concurrent edit of the target between the
-// checks and the write is a revision conflict (ErrChangeTargetChanged), and nothing is
-// applied. A move-only edit sends a revision-only update first for the same reason. The
-// move follows, under the accept lock.
+// target's revision as read BEFORE the checks: a concurrent edit of the target while
+// they run is a revision conflict (ErrChangeTargetChanged), and nothing is applied. A
+// move-only edit sends a revision-only update first for the same reason. The move's
+// refusals are asked before anything is written; the move follows the update only when
+// the ontology is exactly what the update left, and if it then fails the accept is
+// ErrChangePartiallyApplied, which says what was written (applyChangeAccept).
 //
 // THE BODY of an edit is the entry's naming heading, its directive lines, its field
 // bullets, then its meaning. The heading (the body's first, which names an entry with no
@@ -52,6 +54,8 @@ package builtin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,6 +82,10 @@ var (
 	ErrChangeRenameJobPending = errors.New("rename_job_pending")
 	// ErrChangeTargetChanged: the target was edited between the checks and the write.
 	ErrChangeTargetChanged = errors.New("target_changed")
+	// ErrChangePartiallyApplied: the update was written, then the move was not. Unlike
+	// the errors above, something WAS written: it never wraps them, and the report's
+	// Applied says what.
+	ErrChangePartiallyApplied = errors.New("partially_applied")
 )
 
 // ChangePlanRefusal is a plan_required / plan_stale refusal of an accept: the change
@@ -453,27 +461,57 @@ func (d *Document) planChangeAccept(ctx context.Context, a changeAccept, given s
 	return nil
 }
 
-// applyChangeAccept writes the change to the target: one update at the checked
-// revision, then the move.
-func (d *Document) applyChangeAccept(ctx context.Context, a changeAccept, fp string, rep *ChangeAcceptReport) error {
+// applyChangeAccept writes the change to the target: one update at the revision read
+// before the checks, then the move. given is the caller's fingerprint, the only one any
+// write carries ("" when the caller sent none). rep.Applied names what was written, and
+// only once it was.
+//
+// The move's own refusals are asked BEFORE anything is written (ontologyMoveRefusal),
+// so a refusable move refuses the whole accept. Once the update is written, the move is
+// made only when the ontology is exactly what the update left (onlyOwnWrite): then the
+// caller's fingerprint, checked before the update, still covers it, and the move carries
+// the fingerprint the update produced. Anything else after the update — a write in
+// between, the move's conditional write failing — is ErrChangePartiallyApplied.
+func (d *Document) applyChangeAccept(ctx context.Context, a changeAccept, given string, rep *ChangeAcceptReport) error {
 	upd := map[string]any{"op": "update_chunk", "scope": "tenant", "id": a.mark.Target, "revision": a.revision,
-		"plan_fingerprint": fp}
+		"plan_fingerprint": given}
+	var parts []string
 	if a.mark.Op == memrank.ChangeOpRetire {
 		upd["status"] = memrank.OntologyStatusRetired
-		rep.Applied = append(rep.Applied, "retire")
+		parts = append(parts, "retire")
 	}
 	if a.title != nil {
 		upd["title"] = *a.title
-		rep.Applied = append(rep.Applied, "rename")
+		parts = append(parts, "rename")
 	}
 	if a.body != nil {
 		upd["body"] = *a.body
-		rep.Applied = append(rep.Applied, "edit")
+		parts = append(parts, "edit")
+	}
+	docID := a.tg.read.DocumentID
+	var before string
+	if a.mark.Parent != "" {
+		row, ok, err := d.getChunkRow(ctx, a.key, a.mark.Target)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: %s is gone", ErrChangeTargetChanged, strconv.Quote(a.mark.TargetName))
+		}
+		if r := d.ontologyMoveRefusal(ctx, a.key, row, a.mark.Parent, given); r != nil {
+			return changeWriteError(*r)
+		}
 	}
 	// A move-only edit still sends the update, carrying nothing but the revision: it is
 	// what refuses the accept when the target changed after the checks.
 	if d.beforeAcceptWrite != nil {
 		d.beforeAcceptWrite()
+	}
+	if a.mark.Parent != "" {
+		var err error
+		if before, err = d.ontologyFingerprint(noWrites(ctx), a.key, docID); err != nil {
+			return err
+		}
 	}
 	if r, err := d.execOpResult(ctx, upd); err != nil {
 		return err
@@ -484,26 +522,60 @@ func (d *Document) applyChangeAccept(ctx context.Context, a changeAccept, fp str
 		}
 		return changeWriteError(r)
 	}
+	rep.Applied = append(rep.Applied, parts...)
 	if a.mark.Parent == "" {
 		return nil
 	}
-	// The update moved the fingerprint; the move carries the one it left, which the
-	// checks above covered.
-	fp, err := d.ontologyPlanFingerprint(noWrites(ctx), a.key, a.tg.read.DocumentID)
+	partial := func(why string) error {
+		did := "nothing but its revision"
+		if len(rep.Applied) > 0 {
+			did = strings.Join(rep.Applied, ", ")
+		}
+		return fmt.Errorf("%w: applied %s to %s, then %s; the move was not made and the proposal stays (reject it, "+
+			"and move the entry in the editor)", ErrChangePartiallyApplied, did, strconv.Quote(a.mark.TargetName), why)
+	}
+	if d.betweenAcceptWrites != nil {
+		d.betweenAcceptWrites()
+	}
+	after, err := d.ontologyFingerprint(noWrites(ctx), a.key, docID)
 	if err != nil {
-		return err
+		return partial("the ontology could not be read: " + err.Error())
+	}
+	cur, ok, err := d.getChunkRow(ctx, a.key, a.mark.Target)
+	if err != nil || !ok || !onlyOwnWrite(before, after, int64(cur.Revision-a.revision)) {
+		return partial("the ontology changed between the update and the move")
+	}
+	moveFP := ""
+	if given != "" {
+		sum := sha256.Sum256([]byte(after))
+		moveFP = hex.EncodeToString(sum[:])
 	}
 	r, err := d.execOpResult(ctx, map[string]any{"op": "move_chunk", "scope": "tenant", "id": a.mark.Target,
-		"new_parent_id": a.mark.Parent, "plan_fingerprint": fp})
+		"new_parent_id": a.mark.Parent, "plan_fingerprint": moveFP})
 	if err != nil {
-		return err
+		return partial("the move failed: " + err.Error())
 	}
 	if r.IsError {
-		return fmt.Errorf("applied %s to %s, then the move failed (the proposal stays; reject it and move the entry in "+
-			"the editor): %w", strings.Join(rep.Applied, ", "), strconv.Quote(a.mark.TargetName), changeWriteError(r))
+		return partial("the move was refused: " + r.Text)
 	}
 	rep.Applied = append(rep.Applied, "move")
 	return nil
+}
+
+// onlyOwnWrite reports whether the ontology fingerprint after an update differs from the
+// one before only as that update makes it differ: the same document status, chunk count
+// and tree, and a revision sum moved by exactly the target's own revision step (revDelta).
+// Every other chunk write bumps a revision, adds or removes a chunk, or re-parents one,
+// so any of them in between shows. The latest updated_at is not compared: the update
+// moves it. The format is ontologyFingerprint's: doc|status|count|updated|revisions|tree.
+func onlyOwnWrite(before, after string, revDelta int64) bool {
+	b, a := strings.Split(before, "|"), strings.Split(after, "|")
+	if len(b) != 6 || len(a) != 6 || revDelta < 1 {
+		return false
+	}
+	bs, err1 := strconv.ParseInt(b[4], 10, 64)
+	as, err2 := strconv.ParseInt(a[4], 10, 64)
+	return err1 == nil && err2 == nil && a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[5] == b[5] && as-bs == revDelta
 }
 
 // changeWriteError is the accept's error for a refused write: a plan refusal keeps its

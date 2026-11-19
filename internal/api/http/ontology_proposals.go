@@ -213,39 +213,14 @@ func (s *Server) handleOntologyProposal(w http.ResponseWriter, r *http.Request) 
 // invalid_proposal (the stored proposal fails its checks, or its mark is not the change
 // they rebuild); 409 entry_locked, rename_job_pending, target_changed, and plan_required
 // / plan_stale with the current fingerprint as a field of the body. Nothing is written
-// on a refusal. A change that was applied is recorded (ontology_change_applied).
+// on a refusal. 409 partially_applied is not a refusal: the update was written and the
+// move was not; the body's `applied` says what was, and it is recorded. A change that
+// was applied is recorded (ontology_change_applied).
 func (s *Server) acceptChangeProposal(w http.ResponseWriter, r *http.Request, doc *builtin.Document, dctx context.Context,
 	tenant, chunkID, planFingerprint string) {
 	_, rep, err := doc.AcceptChangeProposal(dctx, "tenant", chunkID, planFingerprint)
-	var planRefusal *builtin.ChangePlanRefusal
-	switch {
-	case errors.As(err, &planRefusal):
-		writeJSONErrorBody(w, http.StatusConflict, struct {
-			Code        string `json:"code"`
-			Error       string `json:"error"`
-			Fingerprint string `json:"fingerprint"`
-		}{planRefusal.Code, planRefusal.Message, planRefusal.Fingerprint})
-		return
-	case errors.Is(err, builtin.ErrChangeProposalInvalid):
-		writeJSONError(w, http.StatusUnprocessableEntity, "invalid_proposal", err.Error())
-		return
-	case errors.Is(err, builtin.ErrChangeEntryLocked):
-		writeJSONError(w, http.StatusConflict, "entry_locked", err.Error())
-		return
-	case errors.Is(err, builtin.ErrChangeRenameJobPending):
-		writeJSONError(w, http.StatusConflict, "rename_job_pending", err.Error())
-		return
-	case errors.Is(err, builtin.ErrChangeTargetChanged):
-		writeJSONError(w, http.StatusConflict, "target_changed", err.Error())
-		return
-	case err != nil && len(rep.Applied) > 0:
-		// Applied, then something after it failed (the proposal's removal): recorded, and
-		// the error says what is left to do.
-		s.recordOntologyChange(r, tenant, rep)
-		writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", err.Error())
-		return
-	case err != nil:
-		writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", err.Error())
+	if err != nil {
+		s.answerChangeAcceptError(w, r, tenant, rep, err)
 		return
 	}
 	s.recordOntologyChange(r, tenant, rep)
@@ -256,6 +231,46 @@ func (s *Server) acceptChangeProposal(w http.ResponseWriter, r *http.Request, do
 	}
 	resp.ChangeAccepted = &rep
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// answerChangeAcceptError answers a change accept that did not complete: a refusal that
+// wrote nothing, or a write that went part of the way (recorded, with what was applied).
+func (s *Server) answerChangeAcceptError(w http.ResponseWriter, r *http.Request, tenant string, rep builtin.ChangeAcceptReport, err error) {
+	var planRefusal *builtin.ChangePlanRefusal
+	switch {
+	case errors.Is(err, builtin.ErrChangePartiallyApplied):
+		s.recordOntologyChange(r, tenant, rep)
+		applied := rep.Applied
+		if applied == nil {
+			applied = []string{}
+		}
+		writeJSONErrorBody(w, http.StatusConflict, struct {
+			Code    string   `json:"code"`
+			Error   string   `json:"error"`
+			Applied []string `json:"applied"`
+		}{"partially_applied", err.Error(), applied})
+	case errors.As(err, &planRefusal):
+		writeJSONErrorBody(w, http.StatusConflict, struct {
+			Code        string `json:"code"`
+			Error       string `json:"error"`
+			Fingerprint string `json:"fingerprint"`
+		}{planRefusal.Code, planRefusal.Message, planRefusal.Fingerprint})
+	case errors.Is(err, builtin.ErrChangeProposalInvalid):
+		writeJSONError(w, http.StatusUnprocessableEntity, "invalid_proposal", err.Error())
+	case errors.Is(err, builtin.ErrChangeEntryLocked):
+		writeJSONError(w, http.StatusConflict, "entry_locked", err.Error())
+	case errors.Is(err, builtin.ErrChangeRenameJobPending):
+		writeJSONError(w, http.StatusConflict, "rename_job_pending", err.Error())
+	case errors.Is(err, builtin.ErrChangeTargetChanged):
+		writeJSONError(w, http.StatusConflict, "target_changed", err.Error())
+	case len(rep.Applied) > 0:
+		// Applied, then something after it failed (the proposal's removal): recorded, and
+		// the error says what is left to do.
+		s.recordOntologyChange(r, tenant, rep)
+		writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", err.Error())
+	default:
+		writeJSONError(w, http.StatusInternalServerError, "ontology_write_failed", err.Error())
+	}
 }
 
 // recordOntologyChange logs an applied change and writes its audit record. A failed

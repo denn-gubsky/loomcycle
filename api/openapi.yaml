@@ -674,7 +674,7 @@ paths:
           description: "`not_a_proposal`: no proposal with that chunk id in this tenant's ontology."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409":
-          description: "`not_pending` (the proposal was already rejected); `entry_locked` (the entry, or one under it, carries @locked); `rename_job_pending` (renaming a class something rests on waits for the rename job, RFC GQ P5); `target_changed` (the entry was edited while the accept ran; nothing was applied, accept again); `entry_retired`; `plan_required` / `plan_stale` (the change needs the fingerprint of a current plan; the body's `fingerprint` is the current one)."
+          description: "`not_pending` (the proposal was already rejected); `entry_locked` (the entry, or one under it, carries @locked); `rename_job_pending` (renaming a class something rests on waits for the rename job, RFC GQ P5); `target_changed` (the entry was edited while the accept ran; nothing was applied, accept again); `entry_retired`; `plan_required` / `plan_stale` (the change needs the fingerprint of a current plan; the body's `fingerprint` is the current one). Each of these wrote nothing. `partially_applied` is the exception: the entry's update was written and its move was not (the ontology changed between them, or the move failed); the body's `applied` says what was written, the change is recorded, and the proposal stays — do not retry it; reject it and finish the move in the editor."
           content:
             application/json:
               schema:
@@ -683,6 +683,7 @@ paths:
                   code: { type: string }
                   error: { type: string }
                   fingerprint: { type: string, description: "plan_required / plan_stale: the fingerprint a plan reports now." }
+                  applied: { type: array, items: { type: string }, description: "partially_applied: what was written to the entry (retire, rename, edit)." }
         "422":
           description: "`invalid_proposal`: the proposal fails its checks against the ontology as it stands, or its stored change is not the one those checks rebuild (edited after filing, or forged). Nothing was written; reject it."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }

@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -121,6 +122,80 @@ func TestAcceptChange_WithoutACallerFingerprintTheWriteIsPlannedAgain(t *testing
 	}
 }
 
+// wantPartial asserts a partially applied accept: its own error, none of the
+// nothing-written refusals, and a report naming what was written.
+func wantPartial(t *testing.T, what string, rep ChangeAcceptReport, err error, applied []string) {
+	t.Helper()
+	var pr *ChangePlanRefusal
+	if !errors.Is(err, ErrChangePartiallyApplied) || errors.Is(err, ErrChangeProposalInvalid) ||
+		errors.Is(err, ErrChangeEntryLocked) || errors.Is(err, ErrChangeTargetChanged) || errors.As(err, &pr) {
+		t.Errorf("%s: accept = %v, want ErrChangePartiallyApplied alone", what, err)
+	}
+	if !reflect.DeepEqual(rep.Applied, applied) {
+		t.Errorf("%s: applied = %v, want %v", what, rep.Applied, applied)
+	}
+}
+
+// TestAcceptChange_MoveRefusedAfterTheUpdateIsPartiallyApplied: when the move fails
+// after the update was written, the accept says so — partially_applied, with what was
+// applied — and never answers with a refusal that promises nothing was written.
+func TestAcceptChange_MoveRefusedAfterTheUpdateIsPartiallyApplied(t *testing.T) {
+	f := newAcceptFixture(t)
+	provision, document, event := f.chunk("Provision"), f.chunk("Document"), f.chunk("event")
+	p := f.file(map[string]any{"change": "edit", "entry": provision, "meaning": "A clause.", "parent": document})
+	key := mustTenantKey(t, f.d, f.ctx)
+	f.d.beforeMoveWrite = func() {
+		f.d.beforeMoveWrite = nil
+		if err := f.d.exec(f.ctx, key, `UPDATE chunks SET parent_id = ? WHERE id = ?`, event, provision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rep, err := f.accept(p, f.fingerprintNow())
+	wantPartial(t, "move refused", rep, err, []string{"edit"})
+	if !f.exists(p) {
+		t.Error("the proposal was removed after a partial apply")
+	}
+}
+
+// TestAcceptChange_OntologyWriteBetweenUpdateAndMoveStopsTheMove: the move is made only
+// when the ontology is exactly what the accept's update left; a write to another entry
+// in between stops it (partially_applied), rather than the move carrying a fingerprint
+// that hides that write.
+func TestAcceptChange_OntologyWriteBetweenUpdateAndMoveStopsTheMove(t *testing.T) {
+	f := newAcceptFixture(t)
+	provision, document := f.chunk("Provision"), f.chunk("Document")
+	p := f.file(map[string]any{"change": "edit", "entry": provision, "meaning": "A clause.", "parent": document})
+	f.d.betweenAcceptWrites = func() {
+		f.d.betweenAcceptWrites = nil
+		if r := f.change(f.ctx, "update_chunk", f.chunk("Memo"), map[string]any{"body": "A short note."}); r.IsError {
+			t.Fatal(r.Text)
+		}
+	}
+	rep, err := f.accept(p, f.fingerprintNow())
+	wantPartial(t, "write between", rep, err, []string{"edit"})
+	if row, _, _ := f.d.getChunkRow(f.ctx, mustTenantKey(t, f.d, f.ctx), provision); row.ParentID == document {
+		t.Error("the move was made after another write to the ontology")
+	}
+}
+
+// TestAcceptChange_RefusedUpdateReportsNothingApplied: an update refused at the write
+// leaves the report's applied list empty, so nothing is recorded as applied.
+func TestAcceptChange_RefusedUpdateReportsNothingApplied(t *testing.T) {
+	f := newAcceptFixture(t)
+	provision := f.chunk("Provision")
+	p := f.file(map[string]any{"change": "edit", "entry": provision, "name": "Clause", "meaning": "A clause."})
+	f.d.beforeAcceptWrite = func() {
+		f.d.beforeAcceptWrite = nil
+		if r := f.change(f.ctx, "update_chunk", provision, map[string]any{"body": "Edited meanwhile."}); r.IsError {
+			t.Fatal(r.Text)
+		}
+	}
+	rep, err := f.accept(p, f.fingerprintNow())
+	if !errors.Is(err, ErrChangeTargetChanged) || len(rep.Applied) != 0 {
+		t.Errorf("accept = %v, applied %v; want target_changed with nothing applied", err, rep.Applied)
+	}
+}
+
 // TestAcceptChange_EditDuringTheChecksIsRefused: the target's revision is read before
 // the checks, so an edit of the target while they run is a revision conflict at the
 // write, not a change the accept builds on and overwrites.
@@ -139,5 +214,52 @@ func TestAcceptChange_EditDuringTheChecksIsRefused(t *testing.T) {
 	}
 	if got := f.body(provision); got != "Edited during the checks." || !f.exists(p) {
 		t.Errorf("target body %q, proposal kept %v", got, f.exists(p))
+	}
+}
+
+// TestAcceptChange_MoveOfAnEntryInUseCarriesTheUpdatesFingerprint: moving an entry
+// something rests on needs the caller's fingerprint, refused before anything is written
+// without it; with it the update and the move both apply, the move carrying the
+// fingerprint the update left.
+func TestAcceptChange_MoveOfAnEntryInUseCarriesTheUpdatesFingerprint(t *testing.T) {
+	f := newAcceptFixture(t)
+	memo, provision := f.chunk("Memo"), f.chunk("Provision")
+	p := f.file(map[string]any{"change": "edit", "entry": memo, "meaning": "A short note.", "parent": provision})
+	var pr *ChangePlanRefusal
+	if _, err := f.accept(p, ""); !errors.As(err, &pr) || pr.Code != planRequiredCode {
+		t.Errorf("accept without a fingerprint = %v, want plan_required", err)
+	}
+	if strings.Contains(f.body(memo), "A short note.") {
+		t.Error("a refused accept wrote the update")
+	}
+	rep, err := f.accept(p, f.fingerprintNow())
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	row, _, _ := f.d.getChunkRow(f.ctx, mustTenantKey(t, f.d, f.ctx), memo)
+	if row.ParentID != provision || !reflect.DeepEqual(rep.Applied, []string{"edit", "move"}) {
+		t.Errorf("parent %s applied %v", row.ParentID, rep.Applied)
+	}
+}
+
+// TestAcceptChange_EditWithAMoveAppliesBoth: an edit that also moves the entry writes
+// the update and then the move, with the caller's fingerprint and without one.
+func TestAcceptChange_EditWithAMoveAppliesBoth(t *testing.T) {
+	for name, withFP := range map[string]bool{"with a fingerprint": true, "without one": false} {
+		f := newAcceptFixture(t)
+		provision, document := f.chunk("Provision"), f.chunk("Document")
+		p := f.file(map[string]any{"change": "edit", "entry": provision, "meaning": "A clause.", "parent": document})
+		fp := ""
+		if withFP {
+			fp = f.fingerprintNow()
+		}
+		rep, err := f.accept(p, fp)
+		if err != nil {
+			t.Fatalf("%s: accept: %v", name, err)
+		}
+		row, _, _ := f.d.getChunkRow(f.ctx, mustTenantKey(t, f.d, f.ctx), provision)
+		if row.ParentID != document || !reflect.DeepEqual(rep.Applied, []string{"edit", "move"}) || f.exists(p) {
+			t.Errorf("%s: parent %s applied %v proposal kept %v", name, row.ParentID, rep.Applied, f.exists(p))
+		}
 	}
 }
