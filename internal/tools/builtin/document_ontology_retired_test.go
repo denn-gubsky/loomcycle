@@ -73,10 +73,15 @@ func (f *retiredFixture) setStatus(ctx context.Context, id, status string) strin
 	return ""
 }
 
+// retire is the operator's retire of an entry after planning it: it sends the plan's
+// fingerprint, which an entry something rests on needs (RFC GQ P2.4).
 func (f *retiredFixture) retire(title string) {
 	f.t.Helper()
-	if text := f.setStatus(f.ctx, f.chunk(title), memrank.OntologyStatusRetired); text != "" {
-		f.t.Fatalf("retire %s: %s", title, text)
+	id := f.chunk(title)
+	r := f.change(f.ctx, "update_chunk", id, map[string]any{"status": memrank.OntologyStatusRetired,
+		"plan_fingerprint": f.planFingerprint(id)})
+	if r.IsError {
+		f.t.Fatalf("retire %s: %s", title, r.Text)
 	}
 }
 

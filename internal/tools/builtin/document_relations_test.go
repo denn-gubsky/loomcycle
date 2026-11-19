@@ -289,8 +289,9 @@ func TestOntologyCache_ReusesTheParseUntilTheOntologyChanges(t *testing.T) {
 		}
 	}
 	g, _ := docExec(t, f.d, f.ctx, `{"op":"get_chunk","scope":"tenant","id":"`+provChunk+`"}`)
-	if _, r := docExec(t, f.d, f.ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%d,"body":"@anchor_grammar art\n- `+"`anchor`"+` anchor\n- `+"`number`"+` number\n"}`,
-		provChunk, int(g["revision"].(float64)))); r.IsError {
+	// Provision has typed chunks, so a directive edit needs a plan's fingerprint (RFC GQ P2.4).
+	if _, r := docExec(t, f.d, f.ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%d,"plan_fingerprint":%q,"body":"@anchor_grammar art\n- `+"`anchor`"+` anchor\n- `+"`number`"+` number\n"}`,
+		provChunk, int(g["revision"].(float64)), ontologyFingerprintNow(t, f.d, f.ctx))); r.IsError {
 		t.Fatalf("edit Provision: %s", r.Text)
 	}
 	r3, _ := f.d.tenantOntologyRead(f.ctx)

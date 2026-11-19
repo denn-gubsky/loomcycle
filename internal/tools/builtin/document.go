@@ -168,6 +168,7 @@ const documentInputSchema = `{
 		"skos_xml":    {"type": "string", "description": "import_scheme: a SKOS concept scheme in RDF/XML (skos:ConceptScheme, skos:Concept, prefLabel, altLabel, notation, definition or scopeNote, broader, narrower, topConceptOf, exactMatch), at most 2 MB. Turtle is not read. Pass this or markdown."},
 		"parent_id":   {"type": "string", "description": "create_chunk: the parent chunk. Omit it to add the chunk under the document's title (the root chunk)."},
 		"new_parent_id": {"type": "string", "description": "move_chunk: the new parent. Empty moves the chunk directly under the document's title (the root chunk)."},
+		"plan_fingerprint": {"type": "string", "description": "update_chunk / move_chunk on an entry of the tenant ontology that something rests on: the fingerprint of a plan of the change (POST /v1/_ontology/plan, or the ontology tool's plan op). Needed to rename it, retire it, move it under another parent or change its directives (identity, a relation characteristic, policy); refused plan_required without it and plan_stale when the ontology changed since the plan, each answer carrying the current fingerprint. An edit of the meaning alone, and any change to an entry nothing rests on, needs none."},
 		"after_id":    {"type": "string", "description": "create_chunk: insert the new chunk immediately AFTER this sibling (same parent; shifts later siblings). Overrides parent_id/position."},
 		"direction":   {"type": "string", "enum": ["up","down","pull","push","out","in","both"], "description": "get_edges: out (statements leaving the document), in (arriving) or both (default). graph_recall: follow relations out of (out), into (in) or both ways from (both, default) each chunk. reorder_chunk: move the chunk up or down within its current level. sync: pull (default) copies the peer document's keyed chunks into this one; push writes this document's keyed chunks up to the peer (reconciled by natural_key, carrying body/tags/hierarchy/manual-links; the losing side keeps the overwritten body in its history)."},
 		"type":        {"type": "string", "description": "Optional supertag-like chunk type. list_facts (browse the scope's facts — chunks that carry entity metadata — newest first, metadata only, no bodies): return only facts of this type. On list_facts, query_chunks, search and related the filter INCLUDES SUBTYPES — asking for a general type also returns the more specific kinds of it, so filter by the broadest type that still answers your question. The response reports type_expanded_to when this widened the filter."},
@@ -351,6 +352,10 @@ type docInput struct {
 	Propose     bool     `json:"propose,omitempty"`
 	ParentID    string   `json:"parent_id"`
 	NewParentID string   `json:"new_parent_id"`
+	// PlanFingerprint (update_chunk, move_chunk; RFC GQ P2.4) is the fingerprint of a
+	// plan of a destructive change to a tenant-ontology entry
+	// (document_ontology_fingerprint.go).
+	PlanFingerprint string `json:"plan_fingerprint,omitempty"`
 	// AfterID (create_chunk, RFC BP) inserts the new chunk immediately after this
 	// sibling — insert-and-shift, overriding parent_id/position. Direction
 	// (reorder_chunk) is "up" | "down".
@@ -3868,6 +3873,11 @@ func (d *Document) updateChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 			return *refused, nil
 		}
 	}
+	// RFC GQ P2.4: a rename, retire or re-declaration of an entry something rests on
+	// needs a plan's fingerprint; after the locks, so a locked entry answers entry_locked.
+	if refused := d.ontologyUpdatePlanRefusal(ctx, key, mscope, row, in, present); refused != nil {
+		return *refused, nil
+	}
 	// Claim the update ATOMICALLY first: the guarded bump only matches if the
 	// revision is still what we read. If a concurrent writer raced us, it
 	// matches 0 rows → conflict, and we bail BEFORE clobbering the body (the
@@ -4226,6 +4236,10 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 	// RFC GQ D3: no entry leaves the ontology by a move (document_ontology_delete.go).
 	if in.NewParentID != row.ParentID {
 		if refused := d.ontologyMoveRefusal(ctx, key, row, in.NewParentID); refused != nil {
+			return *refused, nil
+		}
+		// RFC GQ P2.4: an entry something rests on moves with a plan's fingerprint.
+		if refused := d.ontologyMovePlanRefusal(ctx, key, row, in.NewParentID, in.PlanFingerprint); refused != nil {
 			return *refused, nil
 		}
 	}
