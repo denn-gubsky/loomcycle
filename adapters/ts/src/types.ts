@@ -4778,7 +4778,8 @@ export type DocumentToolInput = {
    *  `title` (the same title once copy markers are stripped). Omitted = both. */
   basis?: ("sha256" | "title")[];
   /** find_duplicates: true files a `duplicate_of` proposal per pair; false (the
-   *  default) only reports. */
+   *  default) only reports. node_stats mode misfits: true files a `subject`
+   *  proposal (method rule:centroid) per misfit, at most `limit` per call. */
   propose?: boolean;
   /** search / related: never chunks of these documents (e.g. the document under
    *  review, so its own text is not found as evidence for itself). */
@@ -4885,8 +4886,10 @@ export type DocumentToolInput = {
    *  placement, and its folders. Off by default. */
   with_memberships?: boolean;
   /** node_stats: "report" (the default) lists each node's status and writes
-   *  nothing; "compute" recomputes the stale and missing nodes. */
-  mode?: "report" | "compute";
+   *  nothing; "compute" recomputes the stale and missing nodes; "misfits" lists
+   *  the documents nearer a sibling concept's centroid than their own, filing
+   *  `subject` proposals only with `propose`. */
+  mode?: "report" | "compute" | "misfits";
   /** node_stats / measure: only this scheme's concepts (measure unplaced: only
    *  this scheme). */
   scheme?: string;

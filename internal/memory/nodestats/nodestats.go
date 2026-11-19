@@ -43,6 +43,12 @@ const (
 	// SplitMinMembers is the fewest members a node needs before it is
 	// clustered for a split.
 	SplitMinMembers = 20
+	// MisfitMargin is how much nearer another node's centroid than its own a
+	// member must be before it is a misfit (RFC GM section 5.1). Set by the P0
+	// measurement of 2026-11-17: at 0.05 the development tenant's 206 placed
+	// documents gave 4 top-level and 18 leaf misfits, against 29 / 33 at 0.02.
+	// Specific to the embedding model and annotation prompt it was measured on.
+	MisfitMargin = 0.05
 )
 
 // Errors. Each is returned wrapped with the offending id or index.

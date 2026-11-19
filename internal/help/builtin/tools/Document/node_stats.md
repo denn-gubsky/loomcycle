@@ -1,6 +1,6 @@
 ---
 name: Document/node_stats
-description: "Document op=node_stats — report which taxonomy nodes (concepts and document classes) have stale statistics, or recompute them: member counts, and where the store keeps vectors, spread, exemplars, nearest siblings and distinctive terms. An operator's or a granted pass."
+description: "Document op=node_stats — report which taxonomy nodes (concepts and document classes) have stale statistics, or recompute them: member counts, and where the store keeps vectors, spread, exemplars, nearest siblings and distinctive terms; or list the misfits (documents nearer a sibling concept) and propose their placements. An operator's or a granted pass."
 ---
 `node_stats` keeps statistics for each node of the tenant's taxonomy: every
 concept of every scheme, and every document class. `describe_ontology` with
@@ -47,10 +47,41 @@ tenant scope.
 
 - `mode` — `report` (the default): every node with its status and why, writing
   nothing. `compute`: recompute the stale and missing nodes and store them;
-  rows of nodes no longer in force are removed.
+  rows of nodes no longer in force are removed. `misfits`: the misplaced
+  members (below), writing nothing unless `propose`.
 - `scheme` — only this scheme's concepts (by name). Without it, every concept
   and every document class; only then are rows of removed nodes reported and
   removed.
+- `propose` — mode `misfits` only: file a placement proposal per misfit.
+- `limit` — mode `misfits` with `propose`: the most proposals this call files
+  (default 20, at most 100).
+
+## Misfits
+
+With `mode: misfits` the call lists the **misfits**: member documents whose
+annotation vector is nearer a sibling concept's centroid than their own
+concept's (computed without them) by more than the margin, 0.05. Siblings are
+the concepts under the same broader concept, or a scheme's top level;
+document classes are not compared. It needs the vector stage: elsewhere
+`vectors` is false and `note` says why, and nothing is listed.
+
+It writes nothing unless `propose: true`. Then it files, largest margin
+first, a `subject` proposal from the document to the nearer concept, method
+`rule:centroid`, confidence the margin, the document's title as evidence,
+through `propose_statement` (so the review policy routes it). At most `limit`
+per call (default 20, at most 100). It never files a placement any reviewer
+rejected for that document (a person, a judge or a review policy), nor one
+already proposed or live. A proposal adds a topic: the document keeps the
+placement it has. Nothing here changes the ontology.
+
+It returns `{mode, scheme?, vectors, note?, embed_model?, margin,
+min_members, propose, cap?, count, misfits, truncated?, proposed?,
+skipped?}`: each misfit is `{document_id, title, node_id, node,
+nearest_node_id, nearest, own_similarity, nearest_similarity, margin,
+statement_id?, status?, skipped?, detail?}` (at most 200 listed; `count` is
+whole). `skipped` says why no proposal was filed: `rejected`, `exists`, `cap`,
+`duplicate` (a second misfit of the same document toward the same concept) or
+`refused:<code>`.
 
 ## Returns
 
@@ -77,7 +108,8 @@ fresh, stale, missing, computed, removed, series}`:
 
 ## Errors
 
-- `node_stats: mode "<x>" is not report or compute`.
+- `node_stats: mode "<x>" is not report, compute or misfits`.
+- `node_stats: propose is taken only with mode misfits`.
 - `node_stats: permission: …` — the caller is not an operator or a granted
   agent, lacks the tenant scope, or may not read every document of it.
 - `node_stats: no scheme "<x>" is in force`.
@@ -98,4 +130,14 @@ Recompute one scheme's concepts:
 
 ```json
 {"op": "node_stats", "mode": "compute", "scheme": "topics"}
+```
+
+File placement proposals for at most five misfits of one scheme:
+
+```json
+{"op": "node_stats", "mode": "misfits", "scheme": "topics", "propose": true, "limit": 5}
+```
+
+```json result
+{"mode": "misfits", "scheme": "topics", "vectors": true, "embed_model": "ollama/bge-m3", "margin": 0.05, "min_members": 3, "propose": true, "cap": 5, "count": 1, "misfits": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "Vendor exit plan", "node_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "node": "reporting", "nearest_node_id": "6f1d2c3b4a5e4f60718293a4b5c6d7e8", "nearest": "Risk Management", "own_similarity": 0.21, "nearest_similarity": 0.93, "margin": 0.72, "statement_id": "9e8d7c6b5a4f40312e1d0c9b8a7f6e5d", "status": "proposed"}], "proposed": 1, "skipped": {}}
 ```
