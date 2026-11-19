@@ -6155,10 +6155,16 @@ agents:
     # What a caller choosing an agent reads (list_agents, the Library).
     description: "Answers one question from the tenant knowledge base, with links to the documents. A question about a period (since a date or version, in a month or year) or asking to list documents of a kind or a status is answered from a full listing. Optional run metadata depth: quick (at most 30 documents considered, a short answer; also picked when the question says briefly, in short, a quick list or top N), standard (the default) or deep (more relations and guide sections followed). Ask for quick when you do not need a full overview."
     # The tool ceiling, and the whole of it: Decision asks the classifier
-    # question, Agent runs kb/classify, kb/search, kb/survey or kb/walker. It reads no
+    # question, Agent runs kb/classify, kb/search, kb/survey or kb/walker, and
+    # Document reads the tenant ontology's document classes (describe_ontology,
+    # one call, only for a question a listing rule could take). It reads no
     # document itself: each child opens the hits under the caller's own access
     # rules.
-    tools: [Decision, Agent]
+    tools: [Decision, Agent, Document]
+    # Read only: the runtime refuses every Document write op before it runs.
+    # describe_ontology reads the tenant ontology without a tenant grant, so
+    # no memory_scopes or sql_scopes are given.
+    tool_modes: {Document: read}
     # Deny-all skills and no Context, or the runtime auto-adds both.
     skills: [-*]
     disable_context: true
@@ -6300,16 +6306,35 @@ agents:
       // stored status, which only a listing call reaches in full. Both need a
       // question word or a list verb at the start of a clause (LIST_HEAD), so a
       // statement or a "how" question does not count.
-      // KINDS is a fixed vocabulary of document kinds, singular or plural: the
-      // stored types differ per tenant (the ontology names them, and kb/ask
-      // reads no document), so the walker maps the kind onto the stored types
-      // itself (LISTING_CLASSES). Generic "documents" is left out: "which
-      // documents do we have" is an overview of everything, not a kind.
+      // The kinds a question may ask for are the tenant ontology's document
+      // classes (readKinds): each class's name said as words ("DesignNote" is
+      // "design note", plural "design notes") and its @alt names. A kind
+      // resolves to its class and to every class whose name ends with it
+      // ("research" is Research and TechnicalResearch), and the walker's note
+      // names those classes (CLASSES), so the listing is by stored type.
+      // The root Document class never makes a listing: "which documents do we
+      // have" is an overview of everything, not a kind; nor do the
+      // operational types.
       var LIST_HEAD = /(?:^|[.,;:!?]\s*)\s*(?:which|what|list|name|show(?:\s+me)?|give\s+me|enumerate|how\s+many)\b/i;
-      var KINDS = "(?:rfcs?|design\\s+(?:notes?|docs?|documents?|proposals?)|designs?|(?:implementation\\s+)?plans?|" +
-        "(?:technical\\s+)?research(?:\\s+(?:notes?|papers?|documents?|docs?))?|guides?|how-?tos?|runbooks?|specs?|" +
-        "specifications?|proposals?|measurements?|reports?|papers?|publications?|notes?)";
-      // LISTING_STATUS: a kind with a stored status after it ("rfcs are still
+      // FALLBACK_KINDS is the vocabulary when the ontology names no kind (no
+      // ontology, a draft, a failed read, or no document class but the root),
+      // so routing never fails because of the ontology. Its kinds name no
+      // class: the walker maps them onto the stored types itself.
+      var FALLBACK_KINDS = ["rfc", "design note", "design doc", "design document", "design proposal", "design",
+        "implementation plan", "plan", "technical research", "research", "research note", "research paper",
+        "research document", "research doc", "guide", "how-to", "runbook", "spec", "specification", "proposal",
+        "measurement", "report", "paper", "publication", "note"];
+      // Words with no plural of their own: the bare word also lists ("which
+      // research do we have").
+      var MASS = { research: 1, documentation: 1, guidance: 1, information: 1 };
+      var OPERATIONAL_DOCUMENT_TYPES = ["SourceStub", "SyncReport", "Annotation"];
+      // Bounds on what an ontology adds to the patterns: a class name is a
+      // plain identifier (it is copied into the walker's note), at most
+      // MAX_CLASSES classes and MAX_ALT names a class, each name at most
+      // MAX_NAME characters.
+      var CLASS_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+      var MAX_CLASSES = 200, MAX_ALT = 10, MAX_NAME = 60;
+      // listingStatus: a kind with a stored status after it ("rfcs are still
       // drafts", "plans that are not done yet", "notes awaiting review") or
       // before it ("the draft plans", "confirmed rfcs"). A status word with no
       // kind ("what do we hold on draft handling", "when is a plan
@@ -6317,11 +6342,13 @@ agents:
       // X", "how do document statuses work"), stays with the cascade.
       var STATUS = "(?:(?:still\\s+|now\\s+|currently\\s+)?(?:not\\s+(?:yet\\s+)?)?(?:(?:a\\s+)?drafts?|in\\s+draft|" +
         "(?:in|under|awaiting|up\\s+for|for)\\s+review|confirmed|done|finished|shipped|completed?|unfinished))";
-      var LISTING_STATUS = new RegExp(
-        "\\b" + KINDS + "(?:\\s+(?:that|which))?\\s+(?:(?:are|is|were|was|remain|stay)\\s+" + STATUS + "|awaiting\\s+review|still\\s+in\\s+draft)\\b" +
-        "|\\b(?:draft|confirmed|done|finished|shipped|unfinished)\\s+" + KINDS + "\\b",
-        "i");
-      // LISTING_TYPE: every document of a kind, with nothing narrowing it:
+      function listingStatus(kinds) {
+        return new RegExp(
+          "\\b" + kinds + "(?:\\s+(?:that|which))?\\s+(?:(?:are|is|were|was|remain|stay)\\s+" + STATUS + "|awaiting\\s+review|still\\s+in\\s+draft)\\b" +
+          "|\\b(?:draft|confirmed|done|finished|shipped|unfinished)\\s+" + kinds + "\\b",
+          "i");
+      }
+      // listingType: every document of a kind, with nothing narrowing it:
       // "which implementation plans do we have", "list all design notes",
       // "what rfcs do we hold". Only a determiner may stand between the
       // question word and the kind (all, every, the, our, of), and only "do
@@ -6329,15 +6356,143 @@ agents:
       // with a topic ("which design notes cover the scheduler", "which plans
       // do we have for speech", "which security rfcs do we have") is a
       // question about the topic and stays with the cascade.
-      var KINDS_PL = "(?:rfcs|design\\s+(?:notes|docs|documents|proposals)|designs|(?:implementation\\s+)?plans|" +
-        "(?:technical\\s+)?research(?:\\s+(?:notes|papers|documents|docs))?|guides|how-?tos|runbooks|specs|" +
-        "specifications|proposals|measurements|reports|papers|publications|notes)";
-      var LISTING_TYPE = new RegExp(
-        LIST_HEAD.source + "\\s+(?:(?:of|all|every|the|our)\\s+)*" + KINDS_PL +
-        "(?:\\s+(?:(?:do|did)\\s+we\\s+(?:(?:still|currently)\\s+)?(?:have|hold|keep|store)|are\\s+there|exist|" +
-        "we\\s+(?:have|hold|keep|store)|(?:are\\s+)?(?:held|stored)))?" +
-        "(?=\\s*(?:[.?!,;:)]|$)|\\s+(?:and|or|now|today|currently|so\\s+far|yet|at\\s+all|in\\s+total)\\b)",
-        "i");
+      function listingType(kindsPlural) {
+        return new RegExp(
+          LIST_HEAD.source + "\\s+(?:(?:of|all|every|the|our)\\s+)*" + kindsPlural +
+          "(?:\\s+(?:(?:do|did)\\s+we\\s+(?:(?:still|currently)\\s+)?(?:have|hold|keep|store)|are\\s+there|exist|" +
+          "we\\s+(?:have|hold|keep|store)|(?:are\\s+)?(?:held|stored)))?" +
+          "(?=\\s*(?:[.?!,;:)]|$)|\\s+(?:and|or|now|today|currently|so\\s+far|yet|at\\s+all|in\\s+total)\\b)",
+          "i");
+      }
+
+      // spoken says a class name as words: "DesignNote" is "design note",
+      // "HTTPGuide" is "http guide", "How_To" is "how to".
+      function spoken(name) {
+        return String(name).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+          .replace(/[_\s-]+/g, " ").replace(/^\s+|\s+$/g, "").toLowerCase();
+      }
+
+      // kindKey is how two spellings of one kind are compared: lower case, no
+      // space or hyphen ("how-to", "how to" and "howto" are one).
+      function kindKey(s) { return String(s).toLowerCase().replace(/[\s-]+/g, ""); }
+
+      // plural of a kind's last word: rfc rfcs, policy policies, analysis
+      // analyses, index indexes; a MASS word stays as it is.
+      function plural(phrase) {
+        var m = /^(.*?)([a-z0-9]+)$/.exec(phrase);
+        if (!m) { return phrase; }
+        var w = m[2];
+        if (MASS[w]) { return phrase; }
+        if (/is$/.test(w)) { return m[1] + w.slice(0, -2) + "es"; }
+        if (/(?:s|x|z|ch|sh)$/.test(w)) { return phrase + "es"; }
+        if (/[^aeiou]y$/.test(w)) { return m[1] + w.slice(0, -1) + "ies"; }
+        return phrase + "s";
+      }
+
+      // kindTable turns kinds [{phrase, classes}] into the patterns and the
+      // lookup: entries by kindKey of each spoken form, the singular-or-plural
+      // pattern (any) and the plural one (pl; a MASS word's bare form too),
+      // each one capture group, longest first so "design note" wins over
+      // "note".
+      function kindTable(kinds) {
+        var byKey = {}, entries = [], any = [], pl = [], seen = {};
+        for (var i = 0; i < kinds.length; i++) {
+          var sg = kinds[i].phrase, p = plural(sg), k = kindKey(sg);
+          var e = byKey[k];
+          if (!e) {
+            e = { sg: sg, classes: [] };
+            byKey[k] = e; byKey[kindKey(p)] = e; entries.push(e);
+          }
+          for (var j = 0; j < kinds[i].classes.length; j++) {
+            if (e.classes.indexOf(kinds[i].classes[j]) < 0) { e.classes.push(kinds[i].classes[j]); }
+          }
+          if (!seen["s" + k]) { seen["s" + k] = 1; any.push(sg); if (p !== sg) { any.push(p); } pl.push(p); }
+        }
+        var pattern = function (list) {
+          var sorted = list.slice().sort(function (a, b) { return b.length - a.length; });
+          var out = [];
+          for (var n = 0; n < sorted.length; n++) {
+            var words = sorted[n].split(/[\s-]+/);
+            for (var w = 0; w < words.length; w++) { words[w] = words[w].replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&"); }
+            out.push(words.join("[\\s-]*"));
+          }
+          return "(" + out.join("|") + ")";
+        };
+        return { byKey: byKey, entries: entries, any: pattern(any), pl: pattern(pl) };
+      }
+
+      // FALLBACK is the fixed vocabulary's table, built once.
+      var FALLBACK = (function () {
+        var k = [];
+        for (var i = 0; i < FALLBACK_KINDS.length; i++) { k.push({ phrase: FALLBACK_KINDS[i], classes: [] }); }
+        return kindTable(k);
+      })();
+
+      // readKinds asks the tenant ontology for its document classes: one
+      // describe_ontology call. Returns the table of their kinds with each
+      // class's parent (parents, to drop a class another named class already
+      // covers), or FALLBACK when the call fails, the ontology is not
+      // confirmed, or it names no kind. It never throws.
+      function readKinds() {
+        if (typeof Document === "undefined") { return FALLBACK; }
+        var r;
+        try {
+          r = Document({ op: "describe_ontology" });
+          if (typeof r === "string") { r = JSON.parse(r); }
+        } catch (e) {
+          return FALLBACK;
+        }
+        if (!r || r.confirmed !== true || !(r.classes instanceof Array)) { return FALLBACK; }
+        var kinds = [], parents = {}, n = 0;
+        for (var i = 0; i < r.classes.length && n < MAX_CLASSES; i++) {
+          var c = r.classes[i];
+          if (!c || c.kind !== "document" || typeof c.name !== "string" || !CLASS_NAME.test(c.name)) { continue; }
+          parents[c.name] = typeof c.parent === "string" ? c.parent : "";
+          if (c.name.toLowerCase() === "document" || OPERATIONAL_DOCUMENT_TYPES.indexOf(c.name) >= 0) { continue; }
+          n++;
+          kinds.push({ phrase: spoken(c.name), classes: [c.name] });
+          var alt = c.alt instanceof Array ? c.alt : [];
+          for (var j = 0; j < alt.length && j < MAX_ALT; j++) {
+            var a = typeof alt[j] === "string" ? spoken(alt[j]) : "";
+            if (a && a.length <= MAX_NAME && kindKey(a) !== "document" && kindKey(a) !== "documents") {
+              kinds.push({ phrase: a, classes: [c.name] });
+            }
+          }
+        }
+        if (!kinds.length) { return FALLBACK; }
+        var t = kindTable(kinds);
+        t.parents = parents;
+        return t;
+      }
+
+      // resolveKind is the classes a matched kind names: its own entry's, and
+      // every class whose spoken name ends with the kind ("research" also
+      // names TechnicalResearch), less any class whose ancestor is named too
+      // (query_documents' type filter reaches it through the ancestor).
+      // FALLBACK names none.
+      function resolveKind(table, matched) {
+        var e = table.byKey[kindKey(matched)];
+        if (!e) { return []; }
+        var out = e.classes.slice();
+        for (var i = 0; i < table.entries.length; i++) {
+          var o = table.entries[i];
+          if (o !== e && o.sg.length > e.sg.length && o.sg.slice(-(e.sg.length + 1)) === " " + e.sg) {
+            for (var j = 0; j < o.classes.length; j++) {
+              if (out.indexOf(o.classes[j]) < 0) { out.push(o.classes[j]); }
+            }
+          }
+        }
+        var parents = table.parents || {}, keep = [];
+        for (var k = 0; k < out.length; k++) {
+          var covered = false, p = parents[out[k]], hops = 0;
+          while (p && hops++ < 16) {
+            if (out.indexOf(p) >= 0) { covered = true; break; }
+            p = parents[p];
+          }
+          if (!covered) { keep.push(out[k]); }
+        }
+        return keep;
+      }
       // DEPTH: how much the caller wants retrieved. Run metadata depth (quick,
       // standard or deep) wins; else QUICK in the question's own wording
       // ("briefly", "in short", "a quick list", "top 5") picks quick; else
@@ -6395,6 +6550,14 @@ agents:
       // the listing note.
       var LISTING_QUICK = "DEPTH: quick. The caller wants a short answer: one short line per document listed, and no " +
         "reading beyond the listings; still name every document listed.";
+      // classesLine names the ontology classes a listing's kind resolved to
+      // (resolveKind), after its note: query_documents' type matches a class
+      // name exactly as written, then widens it to its subtypes. Only names
+      // CLASS_NAME admits reach it, never a word of the question.
+      function classesLine(classes) {
+        return "CLASSES: " + classes.join(", ") + ". Pass each class name to type exactly as written, one listing per " +
+          "class; each includes the kinds under it.";
+      }
 
       // todayLine is the run's own date, for a period whose year the question
       // leaves out. Never a word of the question.
@@ -6462,7 +6625,7 @@ agents:
       }
 
       // walkerRule reads the question as data: is it dated (DATED, else
-      // DATED_RANGE) or a listing (LISTING_STATUS, else LISTING_TYPE)? The
+      // DATED_RANGE) or a listing (listingStatus, else listingType)? The
       // label names each rule that held, in that fixed order ("dated",
       // "listing", "dated+listing"), and the note is their fixed notes, in the
       // same order. Returns null when no rule holds.
@@ -6473,8 +6636,17 @@ agents:
         } else if (DATED_RANGE.test(question)) {
           labels.push("dated"); notes.push(DATED_RANGE_NOTE + "\n" + todayLine());
         }
-        if (LIST_HEAD.test(question) && LISTING_STATUS.test(question)) { listing = LISTING_STATUS_NOTE; }
-        else if (LISTING_TYPE.test(question)) { listing = LISTING_TYPE_NOTE; }
+        // The ontology is read only for a question a listing rule could take.
+        if (LIST_HEAD.test(question)) {
+          var t = readKinds(), m = listingStatus(t.any).exec(question), kind = "";
+          if (m) {
+            listing = LISTING_STATUS_NOTE; kind = m[1] || m[2];
+          } else if ((m = listingType(t.pl).exec(question))) {
+            listing = LISTING_TYPE_NOTE; kind = m[1];
+          }
+          var classes = listing ? resolveKind(t, kind) : [];
+          if (classes.length) { listing += "\n" + classesLine(classes); }
+        }
         if (listing) { labels.push("listing"); notes.push(listing); }
         if (!labels.length) { return null; }
         return { source: labels.join("+"), note: notes.join("\n\n"), listing: listing !== "" };
