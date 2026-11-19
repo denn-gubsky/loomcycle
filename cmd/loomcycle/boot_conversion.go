@@ -101,20 +101,21 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 		stopChildren = func() {}
 	)
 	if cv.RemoteWorkers() {
-		l, err := net.Listen("tcp", cv.Listen)
+		ep := b.cfg.ResolvedWorkerEndpoint()
+		l, err := net.Listen("tcp", ep.Listen)
 		if err != nil {
-			fatal("conversion: cannot open the worker endpoint", "listen", cv.Listen, "err", err)
+			fatal("conversion: cannot open the worker endpoint", "listen", ep.Listen, "err", err)
 		}
-		if cv.TLS.Enabled() {
-			tc, err := workerlink.ServerTLS(cv.TLS.CertFile, cv.TLS.KeyFile, cv.TLS.ClientCAFile)
+		if ep.TLS.Enabled() {
+			tc, err := workerlink.ServerTLS(ep.TLS.CertFile, ep.TLS.KeyFile, ep.TLS.ClientCAFile)
 			if err != nil {
-				fatal("conversion.tls: "+err.Error(), "listen", cv.Listen)
+				fatal("worker_endpoint.tls: "+err.Error(), "listen", ep.Listen)
 			}
 			l = workerlink.TLSListener(l, tc)
 		}
 		serve(l)
 		closers = append(closers, func() { l.Close() })
-		slog.Info("conversion worker endpoint listening", "listen", cv.Listen, "tls", cv.TLS.Enabled(), "client_certs", cv.TLS.ClientCAFile != "")
+		slog.Info("conversion worker endpoint listening", "listen", ep.Listen, "tls", ep.TLS.Enabled(), "client_certs", ep.TLS.ClientCAFile != "")
 	}
 	if cv.LocalWorkers() {
 		serve(localL)
