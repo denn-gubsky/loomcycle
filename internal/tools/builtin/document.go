@@ -123,6 +123,11 @@ type Document struct {
 	// planScopeBudget bounds an ontology plan's user and agent scope pass; zero is
 	// ontologyPlanScopeBudget. A test shortens it.
 	planScopeBudget time.Duration
+
+	// beforeMoveWrite, when set, runs in move_chunk after its checks and before its
+	// write. A test moves the chunk there to prove the write is conditional on the
+	// parent the checks read. Nil in production.
+	beforeMoveWrite func()
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -4233,19 +4238,20 @@ func (d *Document) moveChunk(ctx context.Context, key sqlmem.ScopeKey, in docInp
 			cur = anc.ParentID
 		}
 	}
-	// RFC GQ D3: no entry leaves the ontology by a move (document_ontology_delete.go).
+	// RFC GQ D3: no entry leaves the ontology by a move (document_ontology_delete.go);
+	// P2.4: a move that changes where the reader places an entry something rests on
+	// needs a plan's fingerprint, judged on the same read.
 	if in.NewParentID != row.ParentID {
-		if refused := d.ontologyMoveRefusal(ctx, key, row, in.NewParentID); refused != nil {
-			return *refused, nil
-		}
-		// RFC GQ P2.4: an entry something rests on moves with a plan's fingerprint.
-		if refused := d.ontologyMovePlanRefusal(ctx, key, row, in.NewParentID, in.PlanFingerprint); refused != nil {
+		if refused := d.ontologyMoveRefusal(ctx, key, row, in.NewParentID, in.PlanFingerprint); refused != nil {
 			return *refused, nil
 		}
 	}
 	pos := 0
 	if in.Position != nil {
 		pos = *in.Position
+	}
+	if d.beforeMoveWrite != nil {
+		d.beforeMoveWrite()
 	}
 	now := time.Now().UnixNano()
 	if err := d.exec(ctx, key, `UPDATE chunks SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?`,

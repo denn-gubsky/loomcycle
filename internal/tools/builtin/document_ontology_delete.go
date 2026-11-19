@@ -179,8 +179,9 @@ func (d *Document) ontologyDemotionRefusal(ctx context.Context, key sqlmem.Scope
 // grammar, past a depth the reader keeps. Such an entry reads as a non-entry, so a
 // delete would pass it (RFC GQ D3). Judged by reading the ontology with the move
 // applied in memory (the plan's overlay), so it is the reader's own rule, not a copy.
-// For every caller; fails closed.
-func (d *Document) ontologyMoveRefusal(ctx context.Context, key sqlmem.ScopeKey, row chunkRow, newParent string) *tools.Result {
+// For every caller; fails closed. A move that passes is then gated on a plan's
+// fingerprint (RFC GQ P2.4, given), on the same read.
+func (d *Document) ontologyMoveRefusal(ctx context.Context, key sqlmem.ScopeKey, row chunkRow, newParent, given string) *tools.Result {
 	if key.Scope != "tenant" {
 		return nil
 	}
@@ -229,7 +230,7 @@ func (d *Document) ontologyMoveRefusal(ctx context.Context, key sqlmem.ScopeKey,
 		}
 	}
 	if len(lost) == 0 {
-		return nil
+		return d.structuralPlanGate(ctx, key, store.MemoryScopeTenant, "move_chunk", before, ov, row.ID, given)
 	}
 	r := errValidation("move_chunk: the move would take "+strings.Join(lost, ", ")+" out of the tenant ontology (under "+
 		"a proposal, a rejection or a grammar, or past the depth the reader keeps), so nothing was moved; retire an entry instead",
