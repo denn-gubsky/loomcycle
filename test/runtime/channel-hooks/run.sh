@@ -112,7 +112,11 @@ DEC=$(curl -sS "${MCPH[@]}" -H "Mcp-Session-Id: $MCPSID" \
   "$BASE/v1/_mcp")
 echo "$DEC" | grep -q 'drop' || fail "no drop decision recorded: $DEC"
 echo "$DEC" | grep -q 'rewrite_body' || fail "no rewrite decision recorded: $DEC"
-api "$BASE/metrics" | grep -q 'loomcycle_channel_hooks_decisions_total{.*decision="drop"' || fail "/metrics has no drop counter"
+# Read /metrics whole before matching: under pipefail, grep -q quitting on the first
+# match makes curl fail writing the rest of a large page (curl: (23)) and the check
+# fail although the counter is there.
+METRICS=$(api "$BASE/metrics")
+grep -q 'loomcycle_channel_hooks_decisions_total{.*decision="drop"' <<<"$METRICS" || fail "/metrics has no drop counter"
 
 echo "[5b/7] a runtime channel carries hooks too"
 out=$(api -X POST "$BASE/v1/_channels" -d '{"name":"rt-inbox","scope":"global","hooks":{"channel_publish":["screen"]}}')
