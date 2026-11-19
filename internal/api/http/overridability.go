@@ -121,6 +121,9 @@ var agentDefOverridability = map[string]overridability{
 	// stamp can skip review, so a caller may not grant or move it per run.
 	// A sub-agent holds only its own definition's grant.
 	"StatementMethods": notOverridable,
+	// The workspace grant (RFC GW): what a run may execute and change on a
+	// worker. A sub-agent's narrowing is the spawn invariant, not an override.
+	"Workspace": notOverridable,
 	// The Git tool's network grant (RFC FB): authority over what leaves the
 	// host, like the key and credential grants above. A sub-agent's narrowing
 	// is the spawn invariant, not an override.

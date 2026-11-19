@@ -856,6 +856,9 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	if err := config.ValidateGitRemote(req.GitRemote); err != nil {
 		return connector.AgentDescriptor{}, err
 	}
+	if err := config.ValidateAgentWorkspace(req.Workspace); err != nil {
+		return connector.AgentDescriptor{}, err
+	}
 	if err := config.ValidateStatementMethods(req.Provider, req.StatementMethods); err != nil {
 		return connector.AgentDescriptor{}, err
 	}
@@ -904,6 +907,7 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 		ToolModes:        req.ToolModes,
 		ShellCredentials: req.ShellCredentials,
 		GitRemote:        req.GitRemote,
+		Workspace:        req.Workspace.Clone(),
 		StatementMethods: req.StatementMethods,
 	}
 	defJSON, err := json.Marshal(def)

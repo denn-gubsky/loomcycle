@@ -528,6 +528,9 @@ type RegisterAgentRequest struct {
 	// GitRemote is the Git tool's network grant (config.AgentDef.GitRemote,
 	// RFC FB): [fetch] or [fetch, push]. Absent or [] = none.
 	GitRemote []string `json:"git_remote,omitempty"`
+	// Workspace is the workspace grant (config.AgentDef.Workspace, RFC GW):
+	// {ops, open, engine}. Absent = none.
+	Workspace *config.AgentWorkspace `json:"workspace,omitempty"`
 	// StatementMethods is which methods a code-js agent may stamp on the
 	// document relations it writes (config.AgentDef.StatementMethods):
 	// [rule], [extractor] or both. Refused on any other provider. Absent or

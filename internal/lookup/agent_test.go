@@ -330,6 +330,7 @@ func TestAgent_DriftDetection(t *testing.T) {
 		"tool_modes":               true, // read-only tool grant, RFC GL (authority, not hashed)
 		"shell_credentials":        true, // RFC EW shell-credential narrowing (authority, not hashed)
 		"git_remote":               true, // RFC FB Git tool network grant (authority, not hashed)
+		"workspace":                true, // RFC GW workspace grant (authority, not hashed)
 		"statement_methods":        true, // relation methods a code-js agent may stamp (authority, not hashed)
 		"interruption":             true, // F14 — Interruption tool gate (enabled/kinds/max_pending)
 		// F40 — the *_def_scopes capability gates (substrate-def slice of the

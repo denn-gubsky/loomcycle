@@ -55,6 +55,7 @@ import (
 //	                         no rule can grant one. Unset without a shell tool.
 //	ceilInterruption         unset only: no plane stamps a member's policy
 //	ceilGitRemote            operator-grade: unset only
+//	ceilWorkspace            operator-grade: unset only (no workspace rule yet)
 //	ceilStatementMethods     operator-grade: unset only
 //	ceilDefScopes            operator-grade: unset only (every *_def_scopes)
 //	decisionAuthorityIssues  rules: use gateway:decide
@@ -83,6 +84,7 @@ var memberCeilingClass = map[string]string{
 	"ceilShellCreds":          "explicit [] with a shell tool",
 	"ceilInterruption":        "unset only",
 	"ceilGitRemote":           "operator-grade",
+	"ceilWorkspace":           "operator-grade",
 	"ceilStatementMethods":    "operator-grade",
 	"ceilDefScopes":           "operator-grade",
 	"decisionAuthorityIssues": "rules: use gateway:decide",
@@ -159,6 +161,7 @@ func (a *AgentDef) memberCeilingCtx(ctx context.Context, def mergedDef) context.
 		rp.ShellCreds = shell
 		rp.StatementMethods = nil
 		rp.GitRemote = tools.GitRemotePolicyValue{}
+		rp.Workspace = tools.WorkspacePolicyValue{}
 		rp.AgentDef = tools.AgentDefPolicyValue{}
 		rp.VolumeDef = tools.VolumeDefPolicyValue{}
 	})

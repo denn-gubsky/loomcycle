@@ -589,6 +589,10 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 	// can tell a refused clone or push from a broken remote. Always present:
 	// an empty list is the answer "local repository work only".
 	out["git_remote"] = tools.PolicyOf(ctx).GitRemote.Ops()
+	// What this run may do with workspaces (RFC GW), so an agent can tell a
+	// refused op from a broken worker. Always present: ops [] and open false
+	// is the answer "no workspace access".
+	out["workspace"] = tools.PolicyOf(ctx).Workspace.Report()
 	// The statement grants this run holds, so an agent can tell before writing
 	// whether a rule: stamp is accepted, whether its tenant link_chunks is
 	// asserted (link) and whether it may remember. A run holding none is not
