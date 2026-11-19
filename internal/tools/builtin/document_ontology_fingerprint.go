@@ -42,9 +42,14 @@ package builtin
 // the caller planned against this exact ontology.
 //
 // THE WINDOW. The check runs before the write, outside any transaction (on SQLite a
-// scope has one connection, and the plan reads every scope of the tenant). A change to
-// the ontology between the check and the write is not seen. The target chunk's own
-// revision guard still holds.
+// scope has one connection, and the plan reads every scope of the tenant). What closes
+// part of it: update_chunk's write is conditional on the revision it read, and
+// move_chunk's on the parent it read, so a concurrent change to the target chunk itself
+// is a conflict. What stays open: a change elsewhere in the ontology between the check
+// and the write (an ancestor of the new parent moved, another entry edited) is not
+// re-checked under a lock — the operator-against-operator race every ontology guard here
+// accepts. The fingerprint itself sees every write, re-parenting included
+// (ontologyStructureHash), so a plan made before such a change is stale afterwards.
 
 import (
 	"context"
