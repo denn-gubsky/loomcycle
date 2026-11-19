@@ -4910,8 +4910,9 @@ export type DocumentToolInput = {
   /** search: rank the annotations too — "include" fuses them with the passages,
    *  "only" answers from them alone (a question about the corpus as a whole). */
   annotations?: "none" | "include" | "only";
-  /** search with annotations: which levels to rank (default all). */
-  annotation_levels?: Array<"branch" | "document" | "path">;
+  /** search with annotations: which levels to rank (default branch, document and
+   *  path). A taxonomy node's level (scheme, concept, class) ranks only when named. */
+  annotation_levels?: Array<"branch" | "document" | "path" | "scheme" | "concept" | "class">;
   /** classify: "propose" (default) applies an unambiguous rule match and files the
    *  rest for review; "report" writes nothing. judge_statements: "rule"
    *  (default) or "recommend". */

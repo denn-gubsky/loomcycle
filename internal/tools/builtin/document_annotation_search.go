@@ -11,6 +11,13 @@ package builtin
 // the section, the document's root, the folder's _annotation document — taking
 // one slot per target as a derived unit does, and says which annotation found it.
 //
+// A taxonomy node's record (scheme, concept, class: RFC GM §6.1, plan P4.3) is
+// indexed too and ranks only when its level is named in annotation_levels: the
+// default levels stay branch, document and path, which kb/search and kb/walker rely
+// on. A declared record (a node with no member) gets no row and never ranks — a node
+// that holds nothing must not answer "what do we hold on X" — and a node record is
+// served only as get_annotation serves it (nodeRecordShown).
+//
 // The rows live in their own memory scope id beside the documents' (never in the
 // documents' keyspace), so no other search, listing, quota or fact surface of
 // Memory ever sees them, and nothing but this leg reads them. The record in SQL
@@ -47,7 +54,18 @@ func annotationMemScopeID(mscope store.MemoryScope, key sqlmem.ScopeKey) string 
 	return annotationMemScope
 }
 
-func annotationKey(chunkID, level string) string { return annotationKeyPrefix + chunkID + ":" + level }
+// annotationNodeKeyPrefix keys a taxonomy node's row. Its own prefix, not
+// annotationKeyPrefix plus a level, so a search at the default levels never fetches
+// node rows into its window only to drop them: a tenant with many concepts would
+// otherwise get a short page of documents and folders.
+const annotationNodeKeyPrefix = "doc.annotation.node:"
+
+func annotationKey(chunkID, level string) string {
+	if isNodeAnnotationLevel(level) {
+		return annotationNodeKeyPrefix + chunkID + ":" + level
+	}
+	return annotationKeyPrefix + chunkID + ":" + level
+}
 
 // annotationIndexHeader is the line the index text starts with, so a question
 // that names a class or a place finds its annotations too.
@@ -79,6 +97,11 @@ func (d *Document) indexAnnotation(ctx context.Context, key sqlmem.ScopeKey, msc
 	}
 	tenant, scopeID := direntTenant(ctx), annotationMemScopeID(mscope, key)
 	k := annotationKey(rec.ChunkID, rec.Level)
+	if rec.Basis == annotationBasisDeclared {
+		// A node rewritten declared (its last member left) drops the row it had.
+		_, _ = d.Store.MemoryDelete(ctx, tenant, mscope, scopeID, k)
+		return
+	}
 	text := d.annotationIndexHeader(ctx, key, rec) + "\n" + rec.Brief + "\n\n" + rec.Abstract
 	v, _ := json.Marshal(map[string]string{"chunk_id": rec.ChunkID, "level": rec.Level, "text": rec.Brief + "\n\n" + rec.Abstract})
 	if err := d.Store.MemorySet(ctx, tenant, mscope, scopeID, k, v, 0); err != nil {
@@ -144,17 +167,33 @@ func (d *Document) searchAnnotations(ctx context.Context, key sqlmem.ScopeKey, m
 	// doc.annotation:<chunk>:<level> is the chunk id, which is what both lists
 	// hold. The checks below stay, for a list over the cap (sent as none) and for a
 	// store that does not apply the lists.
-	sf := store.MemorySearchFilter{KeyPrefix: annotationKeyPrefix}
-	if filter != nil {
-		sf.IDs, sf.ExcludeIDs = filter.ids, filter.excludeIDs
+	var prefixes []string
+	if levels[annotationLevelBranch] || levels[annotationLevelDocument] || levels[annotationLevelPath] {
+		prefixes = append(prefixes, annotationKeyPrefix)
 	}
-	if aclList != nil {
-		sf.IDs, sf.ExcludeIDs = aclList.ids, aclList.excludeIDs
+	if levels[annotationLevelScheme] || levels[annotationLevelConcept] || levels[annotationLevelClass] {
+		prefixes = append(prefixes, annotationNodeKeyPrefix)
 	}
-	entries, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, annotationMemScopeID(mscope, key),
-		sf, vec[0], topK*3)
-	if err != nil {
-		return nil, err
+	// One query per prefix (the id segment the lists match is the text after the
+	// prefix), merged by score: the same query vector, so the scores compare.
+	var entries []store.MemorySearchEntry
+	for _, prefix := range prefixes {
+		sf := store.MemorySearchFilter{KeyPrefix: prefix}
+		if filter != nil {
+			sf.IDs, sf.ExcludeIDs = filter.ids, filter.excludeIDs
+		}
+		if aclList != nil {
+			sf.IDs, sf.ExcludeIDs = aclList.ids, aclList.excludeIDs
+		}
+		part, err := d.Store.MemoryEmbedSearch(ctx, direntTenant(ctx), mscope, annotationMemScopeID(mscope, key),
+			sf, vec[0], topK*3)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, part...)
+	}
+	if len(prefixes) > 1 {
+		sort.SliceStable(entries, func(i, j int) bool { return entries[i].Score > entries[j].Score })
 	}
 	type found struct {
 		chunk, level string
@@ -163,7 +202,7 @@ func (d *Document) searchAnnotations(ctx context.Context, key sqlmem.ScopeKey, m
 	var hits []found
 	var chunks []string
 	for _, e := range entries {
-		rest := strings.TrimPrefix(e.Key, annotationKeyPrefix)
+		rest := strings.TrimPrefix(strings.TrimPrefix(e.Key, annotationNodeKeyPrefix), annotationKeyPrefix)
 		i := strings.LastIndexByte(rest, ':')
 		if i <= 0 || !levels[rest[i+1:]] {
 			continue
@@ -193,11 +232,27 @@ func (d *Document) searchAnnotations(ctx context.Context, key sqlmem.ScopeKey, m
 	if aclList != nil {
 		inACL = allowed(aclList.ids, aclList.excludeIDs)
 	}
+	var nodes *annotationScope // read once, and only when a node record is a hit
 	var out []annotationHit
 	for _, h := range hits {
 		rec, ok := recs[h.chunk][h.level]
 		if !ok || !inFilter(h.chunk) || !inACL(h.chunk) {
 			continue
+		}
+		if isNodeAnnotationLevel(rec.Level) {
+			if rec.Basis == annotationBasisDeclared {
+				continue // a row left from before the node lost its members
+			}
+			if nodes == nil {
+				nodes = d.newAnnotationScope(key, mscope)
+			}
+			shown, err := nodes.nodeRecordShown(ctx, rec)
+			if err != nil {
+				return nil, err
+			}
+			if !shown {
+				continue
+			}
 		}
 		out = append(out, annotationHit{rec: rec, score: h.score})
 		if len(out) >= topK {
@@ -207,7 +262,8 @@ func (d *Document) searchAnnotations(ctx context.Context, key sqlmem.ScopeKey, m
 	return out, nil
 }
 
-// annotationLevelsOf validates annotation_levels; empty is every level.
+// annotationLevelsOf validates annotation_levels; empty is branch, document and
+// path. The node levels (scheme, concept, class) rank only when named.
 func annotationLevelsOf(levels []string) (map[string]bool, *tools.Result) {
 	out := map[string]bool{}
 	if len(levels) == 0 {
@@ -218,10 +274,11 @@ func annotationLevelsOf(levels []string) (map[string]bool, *tools.Result) {
 	}
 	for _, l := range levels {
 		switch l {
-		case annotationLevelBranch, annotationLevelDocument, annotationLevelPath:
+		case annotationLevelBranch, annotationLevelDocument, annotationLevelPath,
+			annotationLevelScheme, annotationLevelConcept, annotationLevelClass:
 			out[l] = true
 		default:
-			r := errValidation("search: annotation_levels takes branch, document and path", "")
+			r := errValidation("search: annotation_levels takes branch, document, path, scheme, concept and class", "")
 			return nil, &r
 		}
 	}

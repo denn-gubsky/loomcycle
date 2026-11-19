@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 )
 
 // Node annotations (RFC GM §4, D33; plan P4.2), against statsCorpus:
@@ -226,8 +228,9 @@ func TestNodeAnnotation_ClassIsAddressedByNameAndAStandardClassIsRefused(t *test
 }
 
 // TestSearch_DefaultLevelsReturnNoNodeAnnotations — a node annotation is never a
-// search hit by default: the leg's default levels are unchanged and node records get
-// no index row in this phase.
+// search hit by default: the leg's default levels stay branch, document and path
+// (kb/search and kb/walker rely on them), though the node's record is indexed and
+// ranks once its level is named.
 func TestSearch_DefaultLevelsReturnNoNodeAnnotations(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	f := newConceptFixture(t, d, base)
@@ -235,6 +238,7 @@ func TestSearch_DefaultLevelsReturnNoNodeAnnotations(t *testing.T) {
 	rm := f.concepts["topics/risk-management"]
 	doc := f.doc("tenant", "/kb/risk")
 	f.link("link_chunks", f.chunk("tenant", doc), rm, "subject")
+	// rm's one member makes its record thin, not declared: a record that is indexed.
 	// A document record, indexed as always, so the leg has something to return.
 	annWrite(t, d, op, `"document_id":"`+doc+`"`, "Risk note on outsourcing")
 	nodeWrite(t, d, op, "concept", rm, "Risk management outsourcing vendor")
@@ -264,6 +268,122 @@ func TestSearch_DefaultLevelsReturnNoNodeAnnotations(t *testing.T) {
 			t.Fatalf("annotations %s ranked no annotation at all, so it checks nothing: %v", mode, out)
 		}
 	}
+	// Not vacuous: the same query naming the level finds the node's record.
+	out, r := docExec(t, d, op, `{"op":"search","scope":"tenant","query":"risk note","annotations":"only","annotation_levels":["concept"],"limit":50}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	if rows := anyList(out["chunks"]); len(rows) == 0 || rows[0].(map[string]any)["chunk_id"] != rm {
+		t.Fatalf("annotation_levels [concept] did not rank the node: %v", out)
+	}
+}
+
+// TestSearch_ConceptLevelRanksTheTopic — a question about a topic, asked at the
+// concept level, ranks the concept's own record first, and the row is the node's
+// chunk with the node's summary and, with with_summary, its series beside it.
+func TestSearch_ConceptLevelRanksTheTopic(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpus(t, d, base)
+	op := k.f.operator
+	// The series (every member dated now), then an embedder of four tokens: the
+	// corpus rows are 4-d.
+	nodeStatsRun(t, d, op, computeAll)
+	d.Embedder = newFakeEmbedder("fake", "m1", "risk", "reporting", "filings", "vendor")
+	nodeWrite(t, d, op, "concept", k.rm, "Risk management and vendor oversight")
+	nodeWrite(t, d, op, "concept", k.rep, "Reporting filings")
+	// The ontology document's own record: the nearest annotation above a node's
+	// chunk, which with_summary must not put in place of the node's.
+	read, _ := d.tenantOntologyRead(op)
+	annWrite(t, d, op, `"document_id":"`+read.DocumentID+`"`, "The tenant ontology")
+	for _, tc := range []struct{ name, body string }{
+		{"only", `{"op":"search","scope":"tenant","query":"reporting filings","annotations":"only","annotation_levels":["concept"]}`},
+		// Both key prefixes, merged by score. (Not "include": the fake vector store
+		// refuses the passages' 2-d rows under this 4-d embedder.)
+		{"mixed", `{"op":"search","scope":"tenant","query":"reporting filings","annotations":"only","annotation_levels":["document","concept"],"limit":20}`},
+	} {
+		rows := searchRows(t, d, op, tc.body)
+		var topic map[string]any
+		for _, r := range rows {
+			if ma, _ := r["matched_annotation"].(map[string]any); ma != nil && ma["level"] == "concept" {
+				topic = r
+				break
+			}
+		}
+		if topic == nil || topic["chunk_id"] != k.rep {
+			t.Fatalf("%s: the first concept hit = %v, want Reporting (%s); rows %v", tc.name, topic, k.rep, rows)
+		}
+		if tc.name == "only" && rows[0]["chunk_id"] != k.rep {
+			t.Fatalf("only: first row = %v, want Reporting", rows[0])
+		}
+	}
+	// with_summary keeps the node's own summary and serves its series beside it.
+	rows := searchRows(t, d, op, `{"op":"search","scope":"tenant","query":"reporting filings","annotations":"only","annotation_levels":["concept"],"with_summary":true}`)
+	sm, _ := rows[0]["summary"].(map[string]any)
+	if rows[0]["chunk_id"] != k.rep || sm["level"] != "concept" || sm["brief"] != "Reporting filings" {
+		t.Fatalf("with_summary: first row = %v, want Reporting's own concept summary", rows[0])
+	}
+	if s, _ := rows[0]["series"].(map[string]any); s == nil || s["count"] != float64(3) {
+		t.Fatalf("with_summary: series = %v, want Reporting's three members counted", rows[0]["series"])
+	}
+	if strings.Contains(fmt.Sprint(sm), "trend") || strings.Contains(fmt.Sprint(sm), "count") {
+		t.Fatalf("the series was written into the summary: %v", sm)
+	}
+}
+
+// TestSearch_DeclaredAnnotationNeverRanks — a node with no member holds nothing, so
+// its declared record gets no index row, and a row left behind from before is not
+// ranked either; a written node in the same search is.
+func TestSearch_DeclaredAnnotationNeverRanks(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpus(t, d, base)
+	d.Embedder = newFakeEmbedder("fake", "m1", "risk", "compliance", "filings", "vendor") // the corpus rows are 4-d
+	op := k.f.operator
+	comp := k.f.concepts["file-plan/compliance"]
+	if rec := nodeWrite(t, d, op, "concept", comp, ""); rec["basis"] != "declared" {
+		t.Fatalf("record = %v, want basis declared", rec)
+	}
+	nodeWrite(t, d, op, "concept", k.rm, "Risk management compliance filings")
+	key, mscope, err := d.ontologyTenantKey(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopeID := annotationMemScopeID(mscope, key)
+	if _, err := d.Store.MemoryGet(op, direntTenant(op), mscope, scopeID, annotationKey(comp, annotationLevelConcept)); err == nil {
+		t.Fatal("the declared record has an index row")
+	}
+	search := func() []map[string]any {
+		return searchRows(t, d, op, `{"op":"search","scope":"tenant","query":"compliance filings","annotations":"only","annotation_levels":["concept"],"limit":20}`)
+	}
+	check := func(when string) {
+		rows := search()
+		ranked := false
+		for _, r := range rows {
+			if r["chunk_id"] == comp {
+				t.Fatalf("%s: the declared node ranked: %v", when, r)
+			}
+			ranked = ranked || r["chunk_id"] == k.rm
+		}
+		if !ranked {
+			t.Fatalf("%s: the written node did not rank either, so this checks nothing: %v", when, rows)
+		}
+	}
+	check("no row")
+	// A row left from before the node lost its members: written straight to the store.
+	rec := annotationRecord{ChunkID: comp, Level: annotationLevelConcept, Brief: "Compliance filings", Abstract: "compliance filings"}
+	text := "[annotation · concept] Compliance\ncompliance filings compliance filings"
+	vec, err := d.Embedder.Embed(op, []string{text})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2 := annotationKey(rec.ChunkID, rec.Level)
+	if err := d.Store.MemorySet(op, direntTenant(op), mscope, scopeID, k2, []byte(`{}`), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Store.MemoryEmbedSet(op, direntTenant(op), mscope, scopeID, k2, store.MemoryEmbedding{Provider: "fake", Model: "m1",
+		Dimension: len(vec[0]), Vector: vec[0], EmbedText: text, CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	check("a left-over row")
 }
 
 // TestNodeAnnotation_OtherLevelsReadAsBefore — a section or document record carries
