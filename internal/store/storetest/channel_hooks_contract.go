@@ -446,13 +446,15 @@ func testChannelHookGCRemovesOrphans(t *testing.T, s store.Store) {
 	ctx := context.Background()
 	publishAwaitingHook(t, s, "hk-gc", `"keep"`, nil)
 	publishAwaitingHook(t, s, "hk-gc", `"expire"`, func(m *store.ChannelMessage) {
-		m.ExpiresAt = time.Now().Add(150 * time.Millisecond)
+		// Long enough that a slow runner still claims it before it expires:
+		// at 150ms the Postgres job claimed after expiry and saw 1 of 2.
+		m.ExpiresAt = time.Now().Add(2 * time.Second)
 	})
 	now := time.Now()
 	if w, _ := s.ChannelHookClaim(ctx, "a", now, now.Add(time.Minute), 10); len(w) != 2 {
 		t.Fatalf("claim: %d, want 2", len(w))
 	}
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(2200 * time.Millisecond)
 	if _, err := s.ChannelSweepExpired(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
