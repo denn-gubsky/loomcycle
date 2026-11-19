@@ -1,4 +1,4 @@
-package builtin
+package fsops
 
 import (
 	"bufio"
@@ -8,58 +8,60 @@ import (
 	"fmt"
 	"io"
 	"unicode/utf8"
-
-	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// defaultReadScanBytes is how far a line-range read looks into a file to
-// count its lines when Read.MaxScanBytes is unset.
-const defaultReadScanBytes = 64 << 20
+// DefaultReadScanBytes is how far a line-range read looks into a file to
+// count its lines when LineWindow.MaxScan is unset.
+const DefaultReadScanBytes = 64 << 20
 
-// defaultReadSeekBytes is how far a line-range read goes to reach its first
-// line when Read.MaxSeekBytes is unset. Without it an offset past the end of
+// DefaultReadSeekBytes is how far a line-range read goes to reach its first
+// line when LineWindow.MaxSeek is unset. Without it an offset past the end of
 // a multi-gigabyte file read the whole file on every call.
-const defaultReadSeekBytes = 1 << 30
+const DefaultReadSeekBytes = 1 << 30
 
 // readBinarySniffBytes is the prefix checked for a NUL byte, the same test
 // Grep uses to skip a binary file.
 const readBinarySniffBytes = 8 * 1024
 
-// lineWindow is one line-range request: lines offset..offset+limit-1, under a
+// ErrBinaryLineRange is a line-range read of a file that looks binary (a NUL
+// byte in its first 8 KiB). A line range reads text only.
+var ErrBinaryLineRange = errors.New("this looks like a binary file; a line range reads text only")
+
+// LineWindow is one line-range request: lines Offset..Offset+Limit-1, under a
 // byte limit for the returned text and a scan limit for counting the file.
-type lineWindow struct {
-	offset   int   // first line, from 1
-	limit    int   // 0 = to the end of the file
-	numbers  bool  // prefix each line with its number
-	maxBytes int64 // limit on the returned lines
-	maxScan  int64 // limit on bytes read to count lines; 0 = default
-	maxSeek  int64 // limit on bytes read to reach offset; 0 = default
+// The caller validates Offset >= 1 and Limit >= 0.
+type LineWindow struct {
+	Offset   int   // first line, from 1
+	Limit    int   // 0 = to the end of the file
+	Numbers  bool  // prefix each line with its number
+	MaxBytes int64 // limit on the returned lines
+	MaxScan  int64 // limit on bytes read to count lines; 0 = DefaultReadScanBytes
+	MaxSeek  int64 // limit on bytes read to reach Offset; 0 = DefaultReadSeekBytes
 }
 
-// readLines returns the requested lines of r, whole lines only, followed by
+// ReadLines returns the requested lines of r, whole lines only, followed by
 // one status line that says which lines were returned, how many the file has,
 // and where to continue when the byte limit cut the result short.
 //
-// The file is streamed, never held whole: the lines before the window are
-// counted and dropped, the window is kept up to maxBytes, and the rest is
-// counted so the status line can give the total. The scan limit stops only
-// that last count; the seek limit stops the way to the window, and by
-// default is far larger, so a range past the scan limit is still returned.
-// Both, and ctx, are checked inside a line as well as between lines, so one
-// long line with no newline cannot get past them.
-func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
-	maxScan := w.maxScan
+// Bounds: the file is streamed, never held whole. The lines before the window
+// are counted and dropped (at most MaxSeek bytes), the window is kept up to
+// MaxBytes, and the rest is counted (at most MaxScan bytes) so the status line
+// can give the total. Both limits, and ctx, are checked inside a line as well
+// as between lines, so one long line with no newline cannot get past them.
+//
+// Errors: ErrBinaryLineRange, ctx's error, or r's.
+func ReadLines(ctx context.Context, r io.Reader, w LineWindow) (string, error) {
+	maxScan := w.MaxScan
 	if maxScan <= 0 {
-		maxScan = defaultReadScanBytes
+		maxScan = DefaultReadScanBytes
 	}
-	maxSeek := w.maxSeek
+	maxSeek := w.MaxSeek
 	if maxSeek <= 0 {
-		maxSeek = defaultReadSeekBytes
+		maxSeek = DefaultReadSeekBytes
 	}
 	br := bufio.NewReaderSize(r, 64*1024)
 	if head, _ := br.Peek(readBinarySniffBytes); bytes.IndexByte(head, 0) >= 0 {
-		return errBusiness("Read: this looks like a binary file; a line range reads text only",
-			"Call Read without offset, limit and line_numbers to get the file's bytes.")
+		return "", ErrBinaryLineRange
 	}
 
 	var (
@@ -76,7 +78,7 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 	// The window is compared as a distance from offset, never as
 	// offset+limit: a limit near the largest int wraps that sum negative.
 	wanted := func(n int) bool {
-		return next == 0 && n >= w.offset && (w.limit == 0 || n-w.offset < w.limit)
+		return next == 0 && n >= w.Offset && (w.Limit == 0 || n-w.Offset < w.Limit)
 	}
 
 	for {
@@ -87,7 +89,7 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 			kept    []byte
 			lineLen int64
 			keep    = wanted(lineNo + 1)
-			before  = lineNo+1 < w.offset // still on the way to the window
+			before  = lineNo+1 < w.Offset // still on the way to the window
 			eof     bool
 			stopped bool
 		)
@@ -100,7 +102,7 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 		}
 		for {
 			if err := ctx.Err(); err != nil {
-				return tools.Result{Text: err.Error(), IsError: true}
+				return "", err
 			}
 			if !keep && scanned >= stopAt {
 				stopped = true
@@ -109,7 +111,7 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 			piece, err := br.ReadSlice('\n')
 			lineLen += int64(len(piece))
 			scanned += int64(len(piece))
-			if keep && int64(len(kept)) <= w.maxBytes {
+			if keep && int64(len(kept)) <= w.MaxBytes {
 				kept = append(kept, piece...)
 			}
 			if errors.Is(err, bufio.ErrBufferFull) {
@@ -117,7 +119,7 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 			}
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
-					return tools.Result{Text: err.Error(), IsError: true}
+					return "", err
 				}
 				eof = true
 			}
@@ -139,12 +141,12 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 
 		if keep {
 			prefix := ""
-			if w.numbers {
+			if w.Numbers {
 				prefix = fmt.Sprintf("%6d\t", lineNo)
 			}
 			need := int64(len(prefix)) + lineLen
 			switch {
-			case int64(out.Len())+need <= w.maxBytes:
+			case int64(out.Len())+need <= w.MaxBytes:
 				out.WriteString(prefix)
 				out.Write(kept)
 				if first == 0 {
@@ -155,7 +157,7 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 				// The first wanted line alone is over the limit. Returning
 				// nothing would leave the caller no way past it, so return
 				// what fits, cut between characters, and say so.
-				room := w.maxBytes - int64(len(prefix))
+				room := w.MaxBytes - int64(len(prefix))
 				if room < 0 {
 					room = 0
 				}
@@ -179,10 +181,10 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 		total = fmt.Sprintf("more than %d", lineNo)
 	}
 	if seekCut {
-		return tools.Result{Text: fmt.Sprintf("[no lines: line %d is past the first %d bytes of the file, which is as far as Read goes to find a line; the file has %s lines]\n", w.offset, maxSeek, total)}
+		return fmt.Sprintf("[no lines: line %d is past the first %d bytes of the file, which is as far as Read goes to find a line; the file has %s lines]\n", w.Offset, maxSeek, total), nil
 	}
 	if first == 0 {
-		return tools.Result{Text: fmt.Sprintf("[no lines: the file has %s lines]\n", total)}
+		return fmt.Sprintf("[no lines: the file has %s lines]\n", total), nil
 	}
 	if b := out.Bytes(); len(b) > 0 && b[len(b)-1] != '\n' {
 		out.WriteByte('\n') // the status line always starts on its own line
@@ -190,10 +192,10 @@ func readLines(ctx context.Context, r io.Reader, w lineWindow) tools.Result {
 	out.WriteString(longNote)
 	status := fmt.Sprintf("[lines %d-%d of %s", first, last, total)
 	if next != 0 {
-		status += fmt.Sprintf("; cut at %s, continue with offset %d", byteLimitLabel(w.maxBytes), next)
+		status += fmt.Sprintf("; cut at %s, continue with offset %d", byteLimitLabel(w.MaxBytes), next)
 	}
 	out.WriteString(status + "]\n")
-	return tools.Result{Text: out.String()}
+	return out.String(), nil
 }
 
 // cutOnRuneBoundary returns the longest prefix of b that is at most n bytes

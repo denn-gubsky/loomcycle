@@ -109,6 +109,9 @@ var layers = []layer{
 			// Documents written back into files (RFC GR): the render model and
 			// its writers, pure over a tree the core builds.
 			"internal/files/render",
+			// The file tools' operations on a given root (RFC GW P1): stdlib
+			// only, so a workspace worker runs them without the tools package.
+			"internal/fsops",
 			"internal/gitsource",
 			// The help corpus embedded in the binary and its pure parsers (RFC
 			// GL P4): data only, so config can validate {{help:<topic>}}

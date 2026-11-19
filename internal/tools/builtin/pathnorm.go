@@ -9,7 +9,7 @@ import (
 // Path normalization for the RFC AL Path primitive. Canonical form: slash-
 // rooted, no "..", no empty segments, case-sensitive, segment chars
 // [a-zA-Z0-9._-] (no spaces, no inner slashes), <=64 segments, <=1024 chars.
-// This is the logical-path analog of sandbox.go's relInsideRoot host-path
+// This is the logical-path analog of fsops.RelInsideRoot host-path
 // confinement — a crafted path can't escape its (tenant, scope) tree because
 // ".." is rejected outright rather than resolved.
 

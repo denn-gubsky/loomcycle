@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource"
 	"github.com/denn-gubsky/loomcycle/internal/gitsource/gitrepo"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -37,7 +38,7 @@ import (
 //
 // What keeps each guarantee:
 //
-//   - The worktree and .git are read and written through volumeFS (an
+//   - The worktree and .git are read and written through fsops.VolumeFS (an
 //     os.Root walked one verified component at a time), never by path
 //     string, so a symlink swap cannot carry a write out of the volume.
 //   - The URL dialled is the one validated here: https, a host the operator
@@ -336,12 +337,12 @@ func (g *Git) Execute(ctx context.Context, input json.RawMessage) (tools.Result,
 // repository directory's path relative to its root, and takes that
 // repository's lock. create makes the directory when it is missing (init,
 // clone). The caller calls release, which unlocks and closes vfs.
-func (g *Git) repoDir(ctx context.Context, in gitInput, needWrite, create bool) (vfs *volumeFS, rel string, release func(), res tools.Result, ok bool) {
+func (g *Git) repoDir(ctx context.Context, in gitInput, needWrite, create bool) (vfs *fsops.VolumeFS, rel string, release func(), res tools.Result, ok bool) {
 	vfs, rel, res, ok = g.repoDirUnlocked(ctx, in, needWrite, create)
 	if !ok {
 		return nil, "", nil, res, false
 	}
-	unlock, err := g.lockRepo(ctx, filepath.Join(vfs.dir, rel))
+	unlock, err := g.lockRepo(ctx, filepath.Join(vfs.Dir(), rel))
 	if err != nil {
 		vfs.Close()
 		return nil, "", nil, gitRefusal("timeout", "waiting for another Git operation on this repository"), false
@@ -349,7 +350,7 @@ func (g *Git) repoDir(ctx context.Context, in gitInput, needWrite, create bool) 
 	return vfs, rel, func() { unlock(); vfs.Close() }, tools.Result{}, true
 }
 
-func (g *Git) repoDirUnlocked(ctx context.Context, in gitInput, needWrite, create bool) (vfs *volumeFS, rel string, res tools.Result, ok bool) {
+func (g *Git) repoDirUnlocked(ctx context.Context, in gitInput, needWrite, create bool) (vfs *fsops.VolumeFS, rel string, res tools.Result, ok bool) {
 	root, fence, err := effectiveRoot(ctx, in.Volume, needWrite)
 	if err != nil {
 		return nil, "", gitRefusal("volume_refused", err.Error()), false
@@ -360,21 +361,21 @@ func (g *Git) repoDirUnlocked(ctx context.Context, in gitInput, needWrite, creat
 	}
 	var resolved string
 	if create {
-		resolved, err = resolveParentInsideRoot(root, target)
+		resolved, err = fsops.ResolveParentInsideRoot(root, target)
 	} else {
-		resolved, err = resolveInsideRoot(root, target)
+		resolved, err = fsops.ResolveInsideRoot(root, target)
 	}
 	if err == nil {
-		err = outsideFence(fence, resolved)
+		err = fsops.OutsideFence(fence, resolved)
 	}
 	if err != nil {
 		return nil, "", gitRefusal("invalid_argument", err.Error()), false
 	}
-	vfs, err = openVolumeFS(root, fence)
+	vfs, err = fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		return nil, "", gitRefusal("volume_refused", err.Error()), false
 	}
-	rel, err = vfs.rel(resolved)
+	rel, err = vfs.Rel(resolved)
 	if err != nil {
 		vfs.Close()
 		return nil, "", gitRefusal("invalid_argument", err.Error()), false
@@ -904,7 +905,7 @@ func (g *Git) network(ctx context.Context, in gitInput, kind gitOpKind) tools.Re
 			if err != nil {
 				return refuse(gitLocalRefusal(err))
 			}
-			unlock, err := g.lockRepo(ctx, filepath.Join(vfs.dir, rel, filepath.FromSlash(path)))
+			unlock, err := g.lockRepo(ctx, filepath.Join(vfs.Dir(), rel, filepath.FromSlash(path)))
 			if err != nil {
 				return deny("timeout", "waiting for another Git operation on the submodule")
 			}

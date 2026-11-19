@@ -3,9 +3,8 @@ package builtin
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"path/filepath"
 
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -62,66 +61,9 @@ func (w *Write) Execute(ctx context.Context, input json.RawMessage) (tools.Resul
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
-
-	maxBytes := w.MaxBytes
-	if maxBytes == 0 {
-		maxBytes = 1 << 20
-	}
-	if int64(len(args.Content)) > maxBytes {
-		return tools.Result{Text: fmt.Sprintf("content exceeds %d bytes (got %d)", maxBytes, len(args.Content)), IsError: true}, nil
-	}
-
-	target, err := resolveParentInsideRoot(root, args.Path)
-	if err == nil {
-		err = outsideFence(fence, target)
-	}
+	out, err := fsops.Write(ctx, root, fence, args.Path, args.Content, w.MaxBytes)
 	if err != nil {
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
-
-	// Every step goes through the volume's os.Root and the parent's
-	// directory handle, not by path string, so a directory swapped for a
-	// symlink after the check cannot carry the write out of the volume
-	// (RFC ES #1).
-	vfs, err := openVolumeFS(root, fence)
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	defer vfs.Close()
-	rel, err := vfs.rel(target)
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	dir, err := vfs.openDir(filepath.Dir(rel))
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	defer dir.Close()
-
-	// Tempfile in the same directory so the rename is intra-filesystem
-	// (cross-filesystem rename is not atomic).
-	tmp, tmpName, err := createTemp(dir, ".loomcycle-write-")
-	if err != nil {
-		return tools.Result{Text: "create tempfile: " + err.Error(), IsError: true}, nil
-	}
-	// On any failure path, remove the temp file. After successful rename
-	// the temp name no longer exists, so the Remove is a no-op.
-	defer dir.Remove(tmpName)
-
-	if _, err := tmp.WriteString(args.Content); err != nil {
-		tmp.Close()
-		return tools.Result{Text: "write tempfile: " + err.Error(), IsError: true}, nil
-	}
-	if err := tmp.Close(); err != nil {
-		return tools.Result{Text: "close tempfile: " + err.Error(), IsError: true}, nil
-	}
-	// Honour ctx cancellation BEFORE the visible rename so a cancelled
-	// call leaves no trace at the target.
-	if err := ctx.Err(); err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	if err := dir.Rename(tmpName, filepath.Base(rel)); err != nil {
-		return tools.Result{Text: "rename: " + err.Error(), IsError: true}, nil
-	}
-	return tools.Result{Text: fmt.Sprintf("wrote %d bytes to %s", len(args.Content), target)}, nil
+	return tools.Result{Text: out}, nil
 }

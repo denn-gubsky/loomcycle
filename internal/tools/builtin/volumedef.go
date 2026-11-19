@@ -12,6 +12,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
@@ -752,7 +753,7 @@ func (v *VolumeDef) checkScopeForName(ctx context.Context, name string) error {
 //     A non-existent target is a no-op success (removed=false): the
 //     directory is already gone.
 //  2. The resolved path must be STRICTLY inside the dynamic root
-//     (relInsideRoot), and NOT equal the dynamic root OR the expectedParent
+//     (fsops.RelInsideRoot), and NOT equal the dynamic root OR the expectedParent
 //     dir itself (you can never RemoveAll an operator-blessed root or a
 //     shared parent like the tenant / _ephemeral dir).
 //  3. The resolved path must carry the expectedParent/ prefix — belt-and-
@@ -777,7 +778,7 @@ func fencedRemoveAll(dynRoot, expectedParent, target, who string) (removed bool,
 		}
 		return false, fmt.Errorf("resolve path: %w", err)
 	}
-	if err := relInsideRoot(rootResolved, target, resolved); err != nil {
+	if err := fsops.RelInsideRoot(rootResolved, target, resolved); err != nil {
 		slog.Warn("volumedef: fenced delete REFUSED", "who", who, "err", err, "path", target)
 		return false, fmt.Errorf("refusing to delete %q — it does not resolve strictly inside the dynamic root", resolved)
 	}
@@ -797,16 +798,16 @@ func fencedRemoveAll(dynRoot, expectedParent, target, who string) (removed bool,
 	// walks to the parent one directory handle at a time and refuses a step
 	// that is no longer the real directory the path named; RemoveAll inside
 	// that handle never follows a symlink.
-	vfs, err := openVolumeFS(rootResolved, "")
+	vfs, err := fsops.OpenVolumeFS(rootResolved, "")
 	if err != nil {
 		return false, fmt.Errorf("dynamic root: %w", err)
 	}
 	defer vfs.Close()
-	parentRel, err := vfs.rel(filepath.Dir(resolved))
+	parentRel, err := vfs.Rel(filepath.Dir(resolved))
 	if err != nil {
 		return false, err
 	}
-	dir, err := vfs.openDir(parentRel)
+	dir, err := vfs.OpenDir(parentRel)
 	if err != nil {
 		slog.Warn("volumedef: fenced delete REFUSED", "who", who, "err", err, "path", target)
 		return false, fmt.Errorf("refusing to delete %q: %w", resolved, err)

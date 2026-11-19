@@ -19,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
@@ -240,8 +241,8 @@ func (j *renderJob) fromFile(ctx context.Context) (tools.Result, error) {
 // htmlMarkdown reads an HTML file into Markdown through the converter, as
 // op=extract does, keeping nothing in the inbox: an <img> becomes a link to
 // its source, which a render then leaves out, as it never fetches.
-func (j *renderJob) htmlMarkdown(ctx context.Context, vfs *volumeFS, rel string, r dataRef) (string, tools.Result, bool) {
-	fh, err := vfs.open(rel)
+func (j *renderJob) htmlMarkdown(ctx context.Context, vfs *fsops.VolumeFS, rel string, r dataRef) (string, tools.Result, bool) {
+	fh, err := vfs.Open(rel)
 	if err != nil {
 		return "", errNotFound(fmt.Sprintf("render: no file at %s", r.raw), "List the folder with op=ls."), false
 	}
@@ -493,7 +494,7 @@ func readVolumeIfDigest(ctx context.Context, r dataRef, digest string, size int6
 		return nil, false
 	}
 	defer vfs.Close()
-	fh, err := vfs.open(rel)
+	fh, err := vfs.Open(rel)
 	if err != nil {
 		return nil, false
 	}
@@ -635,30 +636,30 @@ func writeVolumeBytes(ctx context.Context, op string, to dataRef, name string, d
 	if strings.HasSuffix(toPath, "/") {
 		toPath += name
 	}
-	target, err := resolveParentInsideRoot(root, toPath)
+	target, err := fsops.ResolveParentInsideRoot(root, toPath)
 	if err == nil {
-		err = outsideFence(fence, target)
+		err = fsops.OutsideFence(fence, target)
 	}
 	if err != nil {
 		return "", errPermission(op+": "+err.Error(), "Create the folder first, or name one that exists."), false
 	}
-	dst, err := openVolumeFS(root, fence)
+	dst, err := fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		return "", errPermission(op+": "+err.Error(), ""), false
 	}
 	defer dst.Close()
-	rel, err := dst.rel(target)
+	rel, err := dst.Rel(target)
 	if err != nil {
 		return "", errPermission(op+": "+err.Error(), ""), false
 	}
-	dir, err := dst.openDir(filepath.Dir(rel))
+	dir, err := dst.OpenDir(filepath.Dir(rel))
 	if err != nil {
 		return "", errNotFound(op+": the folder for "+to.raw+" does not exist", "Create it first, or name one that exists."), false
 	}
 	defer dir.Close()
 	base := filepath.Base(rel)
 	if fi, err := dir.Lstat(base); err == nil && fi.IsDir() {
-		sub, err := dst.step(dir, base)
+		sub, err := dst.Step(dir, base)
 		if err != nil {
 			return "", errPermission(op+": "+err.Error(), ""), false
 		}
@@ -674,7 +675,7 @@ func writeVolumeBytes(ctx context.Context, op string, to dataRef, name string, d
 			return "", errBusiness(fmt.Sprintf("%s: %s already exists", op, final.raw), "Pass overwrite: true to replace it, or choose another name."), false
 		}
 	}
-	tmp, tmpName, err := createTemp(dir, ".loomcycle-"+op+"-")
+	tmp, tmpName, err := fsops.CreateTemp(dir, ".loomcycle-"+op+"-")
 	if err != nil {
 		return "", errTransient(op+": "+err.Error(), "Try again."), false
 	}
@@ -702,23 +703,23 @@ func ensureVolumeFolder(ctx context.Context, op string, r dataRef) (tools.Result
 	if err != nil {
 		return errPermission(op+": "+err.Error(), "Name a read-write volume you are bound to."), false
 	}
-	target, err := resolveParentInsideRoot(root, r.path)
+	target, err := fsops.ResolveParentInsideRoot(root, r.path)
 	if err == nil {
-		err = outsideFence(fence, target)
+		err = fsops.OutsideFence(fence, target)
 	}
 	if err != nil {
 		return errPermission(op+": "+err.Error(), "Create the folder first, or name one that exists."), false
 	}
-	dst, err := openVolumeFS(root, fence)
+	dst, err := fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		return errPermission(op+": "+err.Error(), ""), false
 	}
 	defer dst.Close()
-	rel, err := dst.rel(target)
+	rel, err := dst.Rel(target)
 	if err != nil {
 		return errPermission(op+": "+err.Error(), ""), false
 	}
-	dir, err := dst.openDir(filepath.Dir(rel))
+	dir, err := dst.OpenDir(filepath.Dir(rel))
 	if err != nil {
 		return errNotFound(op+": the folder for "+r.raw+" does not exist", "Create it first, or name one that exists."), false
 	}

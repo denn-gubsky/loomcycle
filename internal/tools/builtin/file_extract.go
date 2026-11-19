@@ -24,6 +24,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/fence"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe"
@@ -312,7 +313,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 		return res, nil
 	}
 	defer vfs.Close()
-	fh, err := vfs.open(rel)
+	fh, err := vfs.Open(rel)
 	if err != nil {
 		return errNotFound(fmt.Sprintf("extract: no file at %s", r.raw), "List the folder with op=ls."), nil
 	}
@@ -927,8 +928,8 @@ func fileDocumentGrant(ctx context.Context, in fileInput, scope string) (tools.R
 
 // readMarkdown reads the file to import: UTF-8 text, at most
 // fileImportMaxBytes.
-func readMarkdown(vfs *volumeFS, rel string, r dataRef) ([]byte, tools.Result, bool) {
-	fh, err := vfs.open(rel)
+func readMarkdown(vfs *fsops.VolumeFS, rel string, r dataRef) ([]byte, tools.Result, bool) {
+	fh, err := vfs.Open(rel)
 	if err != nil {
 		return nil, errNotFound(fmt.Sprintf("import: no file at %s", r.raw), "List the folder with op=ls."), false
 	}

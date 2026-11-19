@@ -17,6 +17,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
@@ -292,7 +293,7 @@ func fileRef(s string) (dataRef, error) {
 
 // openRef resolves a reference to its volume, checks it lies inside it, and
 // opens the volume for the call. rel is the path relative to the volume root.
-func openRef(ctx context.Context, r dataRef, write bool) (vfs *volumeFS, rel string, res tools.Result, ok bool) {
+func openRef(ctx context.Context, r dataRef, write bool) (vfs *fsops.VolumeFS, rel string, res tools.Result, ok bool) {
 	if inboxMissing(ctx, r) {
 		return nil, "", errNotFound("nothing has been kept in this run's inbox yet", "A file a tool returns lands there; until one does, the inbox does not exist."), false
 	}
@@ -308,18 +309,18 @@ func openRef(ctx context.Context, r dataRef, write bool) (vfs *volumeFS, rel str
 	if err != nil {
 		return nil, "", errPermission(err.Error(), "Name a volume you are bound to; Context op=self lists them."), false
 	}
-	resolved, err := resolveInsideRoot(root, r.path)
+	resolved, err := fsops.ResolveInsideRoot(root, r.path)
 	if err == nil {
-		err = outsideFence(fence, resolved)
+		err = fsops.OutsideFence(fence, resolved)
 	}
 	if err != nil {
 		return nil, "", errPermission(err.Error(), ""), false
 	}
-	vfs, err = openVolumeFS(root, fence)
+	vfs, err = fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		return nil, "", errPermission(err.Error(), ""), false
 	}
-	rel, err = vfs.rel(resolved)
+	rel, err = vfs.Rel(resolved)
 	if err != nil {
 		vfs.Close()
 		return nil, "", errPermission(err.Error(), ""), false
@@ -345,7 +346,7 @@ func (f *File) stat(ctx context.Context, in fileInput) (tools.Result, error) {
 		return res, nil
 	}
 	defer vfs.Close()
-	fh, err := vfs.open(rel)
+	fh, err := vfs.Open(rel)
 	if err != nil {
 		return errNotFound(fmt.Sprintf("stat: no file at %s", r.raw), "List the folder with op=ls."), nil
 	}
@@ -438,7 +439,7 @@ func (f *File) ls(ctx context.Context, in fileInput) (tools.Result, error) {
 		entries = append(entries, e)
 	}
 	if in.Recursive {
-		vfs.walk(rel, func(dir *os.Root, p string, d fs.DirEntry) {
+		vfs.Walk(rel, func(dir *os.Root, p string, d fs.DirEntry) {
 			if hiddenPath(p) {
 				return
 			}
@@ -449,7 +450,7 @@ func (f *File) ls(ctx context.Context, in fileInput) (tools.Result, error) {
 			add(filepath.ToSlash(p), d, size)
 		})
 	} else {
-		dir, err := vfs.openDir(rel)
+		dir, err := vfs.OpenDir(rel)
 		if err != nil {
 			return errNotFound(fmt.Sprintf("ls: no folder at %s", r.raw), "List its parent."), nil
 		}
@@ -516,7 +517,7 @@ func (f *File) keep(ctx context.Context, in fileInput) (tools.Result, error) {
 		return res, nil
 	}
 	defer src.Close()
-	in1, err := src.open(srcRel)
+	in1, err := src.Open(srcRel)
 	if err != nil {
 		return errNotFound(fmt.Sprintf("keep: no file at %s", from.raw), "List the inbox with op=ls."), nil
 	}
@@ -534,23 +535,23 @@ func (f *File) keep(ctx context.Context, in fileInput) (tools.Result, error) {
 	if strings.HasSuffix(toPath, "/") {
 		toPath += filepath.Base(srcRel)
 	}
-	target, err := resolveParentInsideRoot(root, toPath)
+	target, err := fsops.ResolveParentInsideRoot(root, toPath)
 	if err == nil {
-		err = outsideFence(fence, target)
+		err = fsops.OutsideFence(fence, target)
 	}
 	if err != nil {
 		return errPermission("keep: "+err.Error(), "Create the folder first, or name one that exists."), nil
 	}
-	dst, err := openVolumeFS(root, fence)
+	dst, err := fsops.OpenVolumeFS(root, fence)
 	if err != nil {
 		return errPermission("keep: "+err.Error(), ""), nil
 	}
 	defer dst.Close()
-	rel, err := dst.rel(target)
+	rel, err := dst.Rel(target)
 	if err != nil {
 		return errPermission("keep: "+err.Error(), ""), nil
 	}
-	dir, err := dst.openDir(filepath.Dir(rel))
+	dir, err := dst.OpenDir(filepath.Dir(rel))
 	if err != nil {
 		return errNotFound("keep: the folder for "+in.To+" does not exist", "Create it first, or name one that exists."), nil
 	}
@@ -559,7 +560,7 @@ func (f *File) keep(ctx context.Context, in fileInput) (tools.Result, error) {
 	if fi, err := dir.Lstat(name); err == nil {
 		if fi.IsDir() {
 			// An existing folder: keep the file's own name inside it.
-			sub, err := dst.step(dir, name)
+			sub, err := dst.Step(dir, name)
 			if err != nil {
 				return errPermission("keep: "+err.Error(), ""), nil
 			}
@@ -579,7 +580,7 @@ func (f *File) keep(ctx context.Context, in fileInput) (tools.Result, error) {
 			return errBusiness(fmt.Sprintf("keep: %s already exists", refPrefix(to)+filepath.ToSlash(rel)), "Pass overwrite: true to replace it, or choose another name."), nil
 		}
 	}
-	tmp, tmpName, err := createTemp(dir, ".loomcycle-keep-")
+	tmp, tmpName, err := fsops.CreateTemp(dir, ".loomcycle-keep-")
 	if err != nil {
 		return errTransient("keep: "+err.Error(), "Try again."), nil
 	}
@@ -621,7 +622,7 @@ func (f *File) rm(ctx context.Context, in fileInput) (tools.Result, error) {
 		return res, nil
 	}
 	defer vfs.Close()
-	dir, err := vfs.openDir(filepath.Dir(rel))
+	dir, err := vfs.OpenDir(filepath.Dir(rel))
 	if err != nil {
 		return errNotFound(fmt.Sprintf("rm: no file at %s", r.raw), "List the inbox with op=ls."), nil
 	}
@@ -652,25 +653,25 @@ func (f *File) clear(ctx context.Context, in fileInput) (tools.Result, error) {
 	}
 	defer vfs.Close()
 	var files, bytes int64
-	vfs.walk(rel, func(dir *os.Root, p string, d fs.DirEntry) {
+	vfs.Walk(rel, func(dir *os.Root, p string, d fs.DirEntry) {
 		if fi, err := dir.Lstat(filepath.Base(p)); err == nil && fi.Mode().IsRegular() {
 			files++
 			bytes += fi.Size()
 		}
 	})
 	if rel == "." || rel == "" {
-		d, err := vfs.root.Open(".")
+		d, err := vfs.Root().Open(".")
 		if err != nil {
 			return errTransient("clear: "+err.Error(), "Try again."), nil
 		}
 		ents, _ := d.ReadDir(-1)
 		d.Close()
 		for _, e := range ents {
-			if err := vfs.root.RemoveAll(e.Name()); err != nil {
+			if err := vfs.Root().RemoveAll(e.Name()); err != nil {
 				return errTransient("clear: "+err.Error(), "Try again."), nil
 			}
 		}
-	} else if err := vfs.root.RemoveAll(rel); err != nil {
+	} else if err := vfs.Root().RemoveAll(rel); err != nil {
 		return errTransient("clear: "+err.Error(), "Try again."), nil
 	}
 	inbox.Forget(ctx, rel)

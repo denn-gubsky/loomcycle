@@ -5,9 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
+	"errors"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -88,57 +89,30 @@ func (r *Read) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return tools.Result{Text: err.Error(), IsError: true}, nil
 	}
 
-	resolved, err := resolveInsideRoot(root, args.Path)
-	if err == nil {
-		err = outsideFence(fence, resolved)
-	}
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-
-	maxBytes := r.MaxBytes
-	if maxBytes == 0 {
-		maxBytes = 256 * 1024
-	}
-
-	// Open through the volume's os.Root, not by the resolved path string, so
-	// a directory swapped for a symlink after the check is refused rather
-	// than followed out of the volume (RFC ES #1).
-	vfs, err := openVolumeFS(root, fence)
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	defer vfs.Close()
-	rel, err := vfs.rel(resolved)
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	f, err := vfs.open(rel)
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
-	}
-	defer f.Close()
-
+	req := fsops.ReadRequest{Path: args.Path, MaxBytes: r.MaxBytes}
 	if lineMode {
-		w := lineWindow{offset: 1, numbers: args.LineNumbers, maxBytes: maxBytes, maxScan: r.MaxScanBytes, maxSeek: r.MaxSeekBytes}
+		w := fsops.LineWindow{Offset: 1, Numbers: args.LineNumbers, MaxScan: r.MaxScanBytes, MaxSeek: r.MaxSeekBytes}
 		if args.Offset != nil {
-			w.offset = *args.Offset
+			w.Offset = *args.Offset
 		}
 		if args.Limit != nil {
-			w.limit = *args.Limit
+			w.Limit = *args.Limit
 		}
-		return readLines(ctx, f, w), nil
+		req.Lines = &w
 	}
+	return readResult(fsops.Read(ctx, root, fence, req)), nil
+}
 
-	// Read up to maxBytes. io.ReadAll over a LimitReader handles a short read
-	// (a single os.File.Read may legally return fewer bytes than requested —
-	// e.g. on a FIFO/device, a network FS, or a >1 GiB read) and treats EOF as
-	// success — replacing the prior single f.Read + the fragile
-	// err.Error() == "EOF" string compare (which breaks on a wrapped EOF). A
-	// file larger than maxBytes is bounded to exactly maxBytes.
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes))
-	if err != nil {
-		return tools.Result{Text: err.Error(), IsError: true}, nil
+// readResult renders what fsops.Read returned as the tool's result. A line
+// range over a binary file is a business refusal with a way out; any other
+// failure is the error's text.
+func readResult(text string, err error) tools.Result {
+	if errors.Is(err, fsops.ErrBinaryLineRange) {
+		return errBusiness("Read: this looks like a binary file; a line range reads text only",
+			"Call Read without offset, limit and line_numbers to get the file's bytes.")
 	}
-	return tools.Result{Text: string(data)}, nil
+	if err != nil {
+		return tools.Result{Text: err.Error(), IsError: true}
+	}
+	return tools.Result{Text: text}
 }
