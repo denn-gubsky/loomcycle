@@ -98,6 +98,11 @@ type mobiSpec struct {
 	fdst                   uint32
 	textRecordsOverride    int
 	extraRecordsBeforeText [][]byte
+	// skelIndex, fragIndex and ncxIndex are a KF8 book's index records,
+	// placed after the pictures and named by the header.
+	skelIndex, fragIndex, ncxIndex [][]byte
+	// fdstRecord, when set, is placed after them as the flow table.
+	fdstRecord []byte
 }
 
 // records builds the book's records: record 0, the text records, the
@@ -155,6 +160,20 @@ func (s mobiSpec) records() [][]byte {
 	if s.firstImageOverride != 0 {
 		firstImage = s.firstImageOverride
 	}
+	indexAt := func(recs0 *[][]byte, ix [][]byte) uint32 {
+		if len(ix) == 0 {
+			return mobiNone
+		}
+		at := uint32(len(*recs0))
+		*recs0 = append(*recs0, ix...)
+		return at
+	}
+	skelAt := indexAt(&recs, s.skelIndex)
+	fragAt := indexAt(&recs, s.fragIndex)
+	ncxAt := indexAt(&recs, s.ncxIndex)
+	if s.fdstRecord != nil {
+		s.fdst = indexAt(&recs, [][]byte{s.fdstRecord})
+	}
 	textLen := len(s.text)
 	if s.textLength != 0 {
 		textLen = s.textLength
@@ -164,7 +183,7 @@ func (s mobiSpec) records() [][]byte {
 	if s.textRecordsOverride != 0 {
 		nText = s.textRecordsOverride
 	}
-	const hl = 232
+	const hl = 248
 	r0 := make([]byte, 16+hl)
 	binary.BigEndian.PutUint16(r0[0:], s.compression)
 	binary.BigEndian.PutUint32(r0[4:], uint32(textLen))
@@ -186,6 +205,11 @@ func (s mobiSpec) records() [][]byte {
 	}
 	binary.BigEndian.PutUint32(r0[0xc0:], fdst)
 	binary.BigEndian.PutUint16(r0[0xf2:], s.extraFlags)
+	binary.BigEndian.PutUint32(r0[0xf4:], ncxAt)
+	binary.BigEndian.PutUint32(r0[0xf8:], fragAt)
+	binary.BigEndian.PutUint32(r0[0xfc:], skelAt)
+	binary.BigEndian.PutUint32(r0[0x100:], mobiNone)
+	binary.BigEndian.PutUint32(r0[0x104:], mobiNone)
 	if len(s.exth) > 0 {
 		binary.BigEndian.PutUint32(r0[0x80:], 0x40)
 		var body []byte

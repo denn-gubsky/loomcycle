@@ -20,7 +20,8 @@ conv() {
     --title="The Lantern Ledger" --authors="Ada Quill & Ben Rowe" \
     --publisher="Loom Test Press" --isbn=9780000000002 --language=en \
     --pubdate=2021-05-04 --tags="Fiction,Test Fixtures" \
-    --comments="A synthetic book for the MOBI reader's tests."
+    --comments="A synthetic book for the MOBI reader's tests." \
+    --level1-toc="//*[name()='h2' or @class='chapter']" --max-toc-links=0
 }
 conv book-mobi7.mobi --mobi-file-type=old
 conv book-kf8.azw3
