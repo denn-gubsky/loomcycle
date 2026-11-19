@@ -178,6 +178,7 @@ class _PlanStub:
                     },
                     subtree=[pb.OntologyPlanEntry(chunk_id="c2", name="Article", section="classes", kind="class")],
                     notes=["n"],
+                    proposal="p1",
                 )
             ],
             issues=["i"],
@@ -190,13 +191,18 @@ class _PlanStub:
 async def test_plan_ontology():
     stub = _PlanStub()
     got = await _client(stub).plan_ontology(
-        [{"op": "delete", "entry": "c1"}, {"op": "rename", "entry": "c3", "name": "refers_to"}],
+        [
+            {"op": "delete", "entry": "c1"},
+            {"op": "rename", "entry": "c3", "name": "refers_to"},
+            {"op": "proposal", "id": "p1"},
+        ],
         tenant="globex",
     )
     assert stub.req.tenant == "globex"
-    assert [(c.op, c.entry, c.name) for c in stub.req.changes] == [
-        ("delete", "c1", ""),
-        ("rename", "c3", "refers_to"),
+    assert [(c.op, c.entry, c.name, c.id) for c in stub.req.changes] == [
+        ("delete", "c1", "", ""),
+        ("rename", "c3", "refers_to", ""),
+        ("proposal", "", "", "p1"),
     ]
     assert got == {
         "tenant": "acme",
@@ -218,6 +224,7 @@ async def test_plan_ontology():
                 },
                 "subtree": [{"chunk_id": "c2", "name": "Article", "section": "classes", "kind": "class"}],
                 "notes": ["n"],
+                "proposal": "p1",
             }
         ],
         "issues": ["i"],

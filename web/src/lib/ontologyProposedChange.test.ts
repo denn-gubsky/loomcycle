@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changeConfirmText, changePlanChanges, proposedChangeText } from "./ontologyProposedChange";
+import { changeConfirmText, proposedChangeText } from "./ontologyProposedChange";
 
 const base = {
   target: "c1",
@@ -50,35 +50,6 @@ describe("proposedChangeText", () => {
   });
 });
 
-describe("changePlanChanges", () => {
-  it("plans a retire as a retire of the target", () => {
-    expect(changePlanChanges({ ...base, op: "retire" })).toEqual([{ op: "retire", entry: "c1" }]);
-  });
-
-  it("plans an edit as its rename, move and directive edit", () => {
-    const changes = changePlanChanges(
-      {
-        ...base,
-        op: "edit",
-        name: "oversees",
-        parent: "c2",
-        sets_directives: true,
-        directives: [{ name: "functional" }],
-      },
-      "@dated\n- `@walk`\nOne person oversees another.",
-    );
-    expect(changes).toEqual([
-      { op: "rename", entry: "c1", name: "oversees" },
-      { op: "move", entry: "c1", parent: "c2" },
-      { op: "edit", entry: "c1", body: "@functional\n\nOne person oversees another." },
-    ]);
-  });
-
-  it("has nothing to plan for a meaning-only edit", () => {
-    expect(changePlanChanges({ ...base, op: "edit", meaning: "A new meaning." }, "@dated")).toEqual([]);
-  });
-});
-
 describe("changeConfirmText", () => {
   it("names the change and what rests on it, summed over the planned changes", () => {
     const text = changeConfirmText(
@@ -103,5 +74,24 @@ describe("changeConfirmText", () => {
     expect(text).toContain("rename supervises to oversees");
     expect(text).toContain("What rests on it: statements of kind: 2.");
     expect(text).not.toContain("review rules");
+  });
+
+  it("counts one entry's dependents once when the proposal makes several changes of it", () => {
+    const memo = { chunk_id: "c-memo", name: "Memo", section: "classes", kind: "class" };
+    const other = { chunk_id: "c-other", name: "Note", section: "classes", kind: "class" };
+    const stale = { typed_documents: { n: 40, effect: "stale", tenant_scope: 40 } };
+    const text = changeConfirmText(
+      { ...base, op: "edit", name: "Letter", parent: "c-root" },
+      {
+        fingerprint: "f",
+        complete: true,
+        changes: [
+          { op: "rename", entry: memo, risk: "stales", counts: stale },
+          { op: "move", entry: memo, risk: "stales", counts: stale },
+          { op: "retire", entry: other, risk: "stales", counts: { typed_documents: { n: 5, effect: "stale", tenant_scope: 5 } } },
+        ],
+      },
+    );
+    expect(text).toContain("What rests on it: typed documents: 45.");
   });
 });

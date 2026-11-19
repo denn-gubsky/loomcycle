@@ -2096,14 +2096,17 @@ class LoomcycleClient:
         *changes* is 1 to 50 mappings ``{op, entry, name?, parent?, body?}``:
         ``retire``, ``rename`` (needs ``name``), ``move`` (needs ``parent``),
         ``edit`` (needs ``body``) or ``delete``, each ``entry`` a chunk id of
-        the ontology.
+        the ontology; or ``{"op": "proposal", "id": <chunk id>}``, an open
+        proposal, planned as the direct changes accepting it makes (an add
+        proposal as op ``add``, risk ``none``), together with the rest.
 
         Returns ``{tenant, fingerprint, changes, issues, new_issues,
         scopes_counted, scopes_skipped, complete}``; each change is ``{op,
-        entry, risk, counts, subtree, notes}`` with ``entry`` ``{chunk_id,
-        name, section, kind}`` and each count ``{n, effect, tenant_scope,
-        other_scopes, by_status, sample}`` — the same shape as the HTTP
-        route's JSON, with absent lists and maps empty.
+        entry, risk, counts, subtree, notes, proposal}`` with ``entry``
+        ``{chunk_id, name, section, kind}``, ``proposal`` the proposal's chunk
+        id ("" for a direct change), and each count ``{n, effect,
+        tenant_scope, other_scopes, by_status, sample}`` — the same shape as
+        the HTTP route's JSON, with absent strings, lists and maps empty.
 
         For an admin or a tenant operator only; *tenant* is honored only for
         an admin token. A refusal raises the error class its gRPC code maps
@@ -2119,6 +2122,7 @@ class LoomcycleClient:
                     name=c.get("name", ""),
                     parent=c.get("parent", ""),
                     body=c.get("body", ""),
+                    id=c.get("id", ""),
                 )
                 for c in changes
             ],
@@ -2152,6 +2156,7 @@ class LoomcycleClient:
                     "counts": {k: count(v) for k, v in c.counts.items()},
                     "subtree": [entry(s) for s in c.subtree],
                     "notes": list(c.notes),
+                    "proposal": c.proposal,
                 }
                 for c in resp.changes
             ],

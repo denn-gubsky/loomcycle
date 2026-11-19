@@ -38,7 +38,7 @@ type Call = { url: string; body?: Record<string, unknown> };
 // stubServer answers each plan with the next fingerprint (fp1, fp2, …); an update
 // carrying a fingerprint listed in stale answers 409 plan_stale, as the runtime does
 // after another change to the ontology (RFC GQ P2.4).
-function stubServer(calls: Call[], stale: string[] = []) {
+function stubServer(calls: Call[], stale: string[] = [], ontology: OntologyResponse = state) {
   let plans = 0;
   vi.stubGlobal(
     "fetch",
@@ -55,7 +55,7 @@ function stubServer(calls: Call[], stale: string[] = []) {
           { status: 200 },
         );
       }
-      if (url.startsWith("/v1/_ontology")) return new Response(JSON.stringify(state), { status: 200 });
+      if (url.startsWith("/v1/_ontology")) return new Response(JSON.stringify(ontology), { status: 200 });
       if (url.startsWith("/v1/_document")) {
         switch (body?.op) {
           case "get_chunk":
@@ -218,5 +218,62 @@ describe("OntologySection retire and delete", () => {
     mounted = await mount(member);
     expect(mounted.el.querySelectorAll("li button").length).toBe(0);
     expect(rowOf(mounted.el, "Ticket").textContent).toContain("retired");
+  });
+});
+
+describe("OntologySection change proposal accept (RFC GQ P4.3)", () => {
+  let mounted: { root: Root; el: HTMLElement } | null = null;
+  afterEach(() => {
+    if (mounted) act(() => mounted!.root.unmount());
+    mounted?.el.remove();
+    mounted = null;
+    vi.unstubAllGlobals();
+  });
+
+  const withProposal: OntologyResponse = {
+    ...state,
+    proposals: [
+      {
+        chunk_id: "p-retire",
+        name: "retire: Memo",
+        status: "proposed",
+        change: { op: "retire", target: "c-memo", target_name: "Memo", section: "classes", kind: "class" },
+      },
+    ],
+  };
+
+  function acceptButton(el: HTMLElement): HTMLButtonElement {
+    const b = Array.from(el.querySelectorAll("button")).find((x) => x.textContent === "accept");
+    if (!b) throw new Error("no accept button");
+    return b;
+  }
+
+  it("plans the proposal by its id, shows the counts, and accepts with the plan's fingerprint", async () => {
+    const calls: Call[] = [];
+    stubServer(calls, [], withProposal);
+    const confirm = vi.fn((_text: string) => true);
+    vi.stubGlobal("confirm", confirm);
+    mounted = await mount(operator);
+    await act(async () => acceptButton(mounted!.el).click());
+    await settle();
+    expect(calls.find((c) => c.url.startsWith("/v1/_ontology/plan"))?.body).toEqual({
+      changes: [{ op: "proposal", id: "p-retire" }],
+    });
+    expect(confirm.mock.calls[0]?.[0]).toContain("typed documents: 3");
+    expect(calls.find((c) => c.url.startsWith("/v1/_ontology/proposals"))?.body).toEqual({
+      chunk_id: "p-retire",
+      action: "accept",
+      plan_fingerprint: "fp1",
+    });
+  });
+
+  it("accepts nothing when the operator declines the plan", async () => {
+    const calls: Call[] = [];
+    stubServer(calls, [], withProposal);
+    vi.stubGlobal("confirm", () => false);
+    mounted = await mount(operator);
+    await act(async () => acceptButton(mounted!.el).click());
+    await settle();
+    expect(calls.some((c) => c.url.startsWith("/v1/_ontology/proposals"))).toBe(false);
   });
 });

@@ -102,3 +102,31 @@ func TestOntologyTool_PlanAsksItsRoutesQuestion(t *testing.T) {
 		t.Errorf("ontology plan asks %+v, its route %+v; want read document on both", q, route)
 	}
 }
+
+// ontology op=plan takes a proposal item {op: proposal, id} — its schema names id, and
+// the decoder that refuses unknown keys admits it — and hands it to the connector as
+// it is (RFC GQ P4.3).
+func TestOntologyTool_PlanPassesAProposalItem(t *testing.T) {
+	mc := &mockConnector{planRes: connector.PlanOntologyResult{Changes: []connector.OntologyPlannedChange{{Op: "retire", Proposal: "p1"}}}}
+	res, err := handleOntology(context.Background(), &handlerEnv{connector: mc}, json.RawMessage(`{"op":"plan","changes":[{"op":"proposal","id":"p1"}]}`))
+	if err != nil || res.IsError {
+		t.Fatalf("plan: %v %+v", err, res)
+	}
+	want := []connector.OntologyChange{{Op: connector.OntologyPlanProposal, ID: "p1"}}
+	if !reflect.DeepEqual(mc.planReq.Changes, want) {
+		t.Errorf("connector got %+v, want %+v", mc.planReq.Changes, want)
+	}
+	if !strings.Contains(res.Content[0].Text, `"proposal":"p1"`) {
+		t.Errorf("result %s does not name the proposal", res.Content[0].Text)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(ontologyToolSchema), &schema); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := schema["properties"].(map[string]any)["changes"].(map[string]any)["items"].(map[string]any)
+	props, _ := items["properties"].(map[string]any)
+	ops, _ := props["op"].(map[string]any)["enum"].([]any)
+	if _, ok := props["id"]; !ok || !reflect.DeepEqual(items["required"], []any{"op"}) || len(ops) == 0 || ops[len(ops)-1] != connector.OntologyPlanProposal {
+		t.Errorf("changes items schema %v: want id, op proposal, and only op required", items)
+	}
+}

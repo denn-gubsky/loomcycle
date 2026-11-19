@@ -2315,9 +2315,13 @@ export interface BindSubjectPrincipalResult {
   changed: boolean;
 }
 
-/** One change {@link LoomcycleClient.planOntology} is asked about. `entry` is
- *  an in-force entry of the tenant ontology by its chunk id. */
-export interface OntologyChange {
+/** One change {@link LoomcycleClient.planOntology} is asked about: a direct
+ *  change of an entry, or an open proposal by its chunk id. */
+export type OntologyChange = OntologyEntryChange | OntologyProposalChange;
+
+/** A direct change. `entry` is an in-force entry of the tenant ontology by its
+ *  chunk id. */
+export interface OntologyEntryChange {
   op: "retire" | "rename" | "move" | "edit" | "delete";
   entry: string;
   /** rename: the new name, one line. */
@@ -2326,6 +2330,15 @@ export interface OntologyChange {
   parent?: string;
   /** edit: the entry's new body, at most 32 KiB. */
   body?: string;
+}
+
+/** An open proposal of the tenant ontology, by its chunk id (RFC GQ P4.3). A
+ *  change or retire proposal plans as the direct changes accepting it makes,
+ *  each naming it in `proposal`; an add proposal plans as op `add`, risk
+ *  `none`. Planned together with the request's other changes. */
+export interface OntologyProposalChange {
+  op: "proposal";
+  id: string;
 }
 
 /** An entry of the ontology as a plan names it. */
@@ -2361,6 +2374,9 @@ export interface OntologyPlannedChange {
   /** The entries of the subtree that go with the entry. */
   subtree?: OntologyPlanEntry[];
   notes?: string[];
+  /** The proposal's chunk id when the change is one accepting it makes;
+   *  absent for a direct change. */
+  proposal?: string;
 }
 
 /** Result of {@link LoomcycleClient.planOntology}. It wrote nothing. */

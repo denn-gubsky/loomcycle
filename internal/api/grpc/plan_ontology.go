@@ -28,7 +28,7 @@ func (s *Server) PlanOntology(ctx context.Context, req *loomcyclepb.PlanOntology
 	changes := make([]connector.OntologyChange, 0, len(req.GetChanges()))
 	for _, c := range req.GetChanges() {
 		changes = append(changes, connector.OntologyChange{
-			Op: c.GetOp(), Entry: c.GetEntry(), Name: c.GetName(), Parent: c.GetParent(), Body: c.GetBody(),
+			Op: c.GetOp(), Entry: c.GetEntry(), Name: c.GetName(), Parent: c.GetParent(), Body: c.GetBody(), ID: c.GetId(),
 		})
 	}
 	// HTTP's body bound, measured on the JSON HTTP would carry: protobuf writes a
@@ -75,7 +75,7 @@ func planOntologyToProto(res connector.PlanOntologyResult) *loomcyclepb.PlanOnto
 	}
 	for _, c := range res.Changes {
 		pc := &loomcyclepb.OntologyPlannedChange{
-			Op: c.Op, Entry: planEntryToProto(c.Entry), Risk: c.Risk, Notes: c.Notes,
+			Op: c.Op, Entry: planEntryToProto(c.Entry), Risk: c.Risk, Notes: c.Notes, Proposal: c.Proposal,
 		}
 		if len(c.Counts) > 0 {
 			pc.Counts = make(map[string]*loomcyclepb.OntologyPlanCount, len(c.Counts))

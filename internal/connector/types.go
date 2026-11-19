@@ -1464,6 +1464,13 @@ const (
 	OntologyPlanMove   = "move"
 	OntologyPlanEdit   = "edit"
 	OntologyPlanDelete = "delete"
+	// OntologyPlanProposal plans an open proposal of the ontology by its chunk
+	// id (OntologyChange.ID): a change or retire proposal as the direct changes
+	// accepting it makes, an add proposal as OntologyPlanAdd.
+	OntologyPlanProposal = "proposal"
+	// OntologyPlanAdd is the op a plan reports for an add proposal: accepting
+	// it puts a new entry in force, which nothing stored rests on (risk none).
+	OntologyPlanAdd = "add"
 )
 
 // OntologyPlanMaxRequestBytes bounds one plan request on every transport, measured
@@ -1497,13 +1504,15 @@ const (
 // OntologyChange is one change a plan is asked about. Entry is an in-force entry
 // of the tenant ontology by its chunk id. Name is a rename's new name, Parent a
 // move's new parent (an entry of the same section, or the section itself), Body
-// an edit's new body.
+// an edit's new body. ID is, for op proposal only, an open proposal's chunk id;
+// such a change carries no other field.
 type OntologyChange struct {
 	Op     string `json:"op"`
 	Entry  string `json:"entry"`
 	Name   string `json:"name,omitempty"`
 	Parent string `json:"parent,omitempty"`
 	Body   string `json:"body,omitempty"`
+	ID     string `json:"id,omitempty"`
 }
 
 // PlanOntologyRequest asks what a set of changes would do to the tenant
@@ -1548,6 +1557,9 @@ type OntologyPlannedChange struct {
 	// Notes say what the counts cannot: a rename the runtime cannot yet
 	// carry through, a body edit that changes only the meaning.
 	Notes []string `json:"notes,omitempty"`
+	// Proposal is the proposal's chunk id when the change is one accepting it
+	// makes (op proposal); absent for a direct change.
+	Proposal string `json:"proposal,omitempty"`
 }
 
 // PlanOntologyResult is a plan. It wrote nothing. Fingerprint identifies the

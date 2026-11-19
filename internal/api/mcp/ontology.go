@@ -28,13 +28,14 @@ const ontologyToolDescription = "Operator actions on the tenant ontology. " +
 	"Returns {tenant, document_id, root_chunk_id, natural_key, path, principal, previous, changed}. " +
 	"op=plan says what changes to the ontology's entries WOULD do before any is made, and writes nothing: pass changes, 1 to 50 of {op, entry, name?, parent?, body?}, " +
 	"where op is retire, rename (needs name), move (needs parent: an entry of the same section, or the section), edit (needs body: the entry's new body) or delete, and entry is the entry's chunk id (from describe_ontology or the ontology document). " +
+	"A change may instead be {op: proposal, id}: an open proposal by its chunk id. A change or retire proposal plans as the direct changes accepting it makes (each carrying proposal: the id), checked again as accepting would; an add proposal plans as op add, risk none. Proposals and direct changes in one call are planned together, under one fingerprint. " +
 	"Per change it returns the entry, a risk (destroys: stored rows would be lost; stales: rows would need rework; none), counts of each kind of dependent across the tenant scope and every user and agent scope of the tenant ({n, effect, tenant_scope, other_scopes, by_status, sample}: sample ids from the tenant scope only), the subtree that goes with it and notes. " +
 	"Returns {tenant, fingerprint, changes, issues, new_issues, scopes_counted, scopes_skipped, complete}: issues are the ontology's advisories as it would read after every change, new_issues those it does not report now, and complete is false when some scope was not counted (the other-scope counts are then a floor). " +
 	"The fingerprint names the ontology the plan was computed against. " +
 	"For an admin or a tenant operator only, holding write on the subject's document for merge_subjects (both documents) and bind_principal; plan reads the whole tenant. The tenant is your own unless you are an admin and pass another. " +
 	"A refusal is {code, error}. merge_subjects: same_subject, not_a_subject, subject_not_in_scope, already_merged, principal_conflict, forbidden, merge_conflict. " +
 	"bind_principal: subject_not_found, not_a_subject, binding_conflict (names the subject that holds the binding), principal_not_found, forbidden, invalid_request, unavailable. " +
-	"plan: invalid_request, invalid_body (over 64 KiB), entry_not_found (no in-force entry by that id, or no ontology), forbidden, unavailable. " +
+	"plan: invalid_request (also a proposal accepting would refuse as it stands), invalid_body (over 64 KiB), entry_not_found (no in-force entry by that id, no open proposal by that id, or no ontology), forbidden, unavailable. " +
 	"Do NOT use it to rename a subject or change its type — edit the subject's document with the document tool."
 
 // ontologyToolSchema is the `ontology` tool's input schema.
@@ -49,10 +50,11 @@ const ontologyToolSchema = `{
 		"principal": {"type": "string", "description": "bind_principal: the user's subject id in the tenant, or \"\" to clear the binding. Required: leaving it out does not clear."},
 		"changes":   {"type": "array", "minItems": 1, "maxItems": 50, "description": "plan: the changes to plan, each against the ontology as it stands.", "items": {
 			"type": "object",
-			"required": ["op", "entry"],
+			"required": ["op"],
 			"properties": {
-				"op":     {"type": "string", "enum": ["retire", "rename", "move", "edit", "delete"]},
-				"entry":  {"type": "string", "description": "The entry's chunk id."},
+				"op":     {"type": "string", "enum": ["retire", "rename", "move", "edit", "delete", "proposal"]},
+				"entry":  {"type": "string", "description": "Every op but proposal (required): the entry's chunk id."},
+				"id":     {"type": "string", "description": "proposal (required, nothing else with it): an open proposal's chunk id."},
 				"name":   {"type": "string", "description": "rename: the new name, one line."},
 				"parent": {"type": "string", "description": "move: the new parent's chunk id (an entry of the same section, or the section)."},
 				"body":   {"type": "string", "description": "edit: the entry's new body (its meaning and directives), at most 32 KiB."}
@@ -119,7 +121,7 @@ func handleOntology(ctx context.Context, env *handlerEnv, args json.RawMessage) 
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(&changes); err != nil {
 				return ontologyRefusal("plan", "invalid_body",
-					fmt.Errorf(`expected changes: [{"op": "retire|rename|move|edit|delete", "entry": "<chunk id>", …}]: %w`, err)), nil
+					fmt.Errorf(`expected changes: [{"op": "retire|rename|move|edit|delete", "entry": "<chunk id>", …} or {"op": "proposal", "id": "<proposal chunk id>"}]: %w`, err)), nil
 			}
 		}
 		res, err := env.connector.PlanOntology(ctx, connector.PlanOntologyRequest{Tenant: p.Tenant, Changes: changes})

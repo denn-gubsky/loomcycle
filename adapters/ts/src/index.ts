@@ -291,6 +291,8 @@ export type {
   SubjectRef,
   BindSubjectPrincipalResult,
   OntologyChange,
+  OntologyEntryChange,
+  OntologyProposalChange,
   OntologyPlanEntry,
   OntologyPlanCount,
   OntologyPlannedChange,
