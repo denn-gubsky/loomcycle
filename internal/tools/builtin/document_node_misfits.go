@@ -17,8 +17,16 @@ package builtin
 // at most `limit` proposals per call (default misfitProposalCap), largest margin
 // first, each through propose_statement, so the access-control question, the
 // rejection tombstone and the review policy apply exactly as to any proposal. The
-// method is the runtime's own (D11): no agent is granted rule:centroid, and the
-// pass stamps it on the unexported edgeMethod, never from the wire.
+// method is the runtime's own (D11): the pass stamps it on the unexported
+// edgeMethod, never from the wire.
+//
+// WHO MAY FILE. A rule: method is what review rules on a method prefix key on, so
+// filing is allowed only to a caller who could stamp a rule: method itself: an
+// operator, or a run whose statement_methods grant lists rule (misfitMayPropose).
+// node_stats' own gate also admits an extractor-only grant; such a run gets the
+// report and a refusal for propose. And the pass never makes a statement live:
+// every filing is proposeOnly, so the @auto_assert rule does not assert it, and
+// only the tenant's Review section can rule on it at filing (D17).
 //
 // NEVER AGAIN. A placement any reviewer rejected — a person, a bulk ruling, a judge
 // or a review policy — is not proposed again for that document, nor one that an
@@ -47,6 +55,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/memory/nodestats"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 const (
@@ -105,6 +114,13 @@ type NodeMisfitsReport struct {
 	// Proposed and Skipped count the outcomes (propose only).
 	Proposed int            `json:"proposed,omitempty"`
 	Skipped  map[string]int `json:"skipped,omitempty"`
+}
+
+// misfitMayPropose reports whether the caller may file proposals stamped
+// rule:centroid: an operator, or a run granted the rule prefix — exactly who could
+// send propose_statement with a rule: method itself (stampStatementMethod).
+func misfitMayPropose(ctx context.Context, key sqlmem.ScopeKey) bool {
+	return callerDecidesIn(ctx, key) || contains(tools.PolicyOf(ctx).StatementMethods, "rule")
 }
 
 // misfitCap is the proposal cap a call asks for: limit, bounded, else the default.
@@ -274,7 +290,7 @@ func (d *Document) proposeMisfit(ctx context.Context, p *nodeStatsPlan, m *nodeM
 	conf := math.Min(1, math.Max(0, m.Margin))
 	in := docInput{
 		Op: "propose_statement", Scope: "tenant", FromID: root, ToID: m.NearestNodeID, Kind: "subject",
-		Confidence: &conf, edgeMethod: misfitMethod,
+		Confidence: &conf, edgeMethod: misfitMethod, proposeOnly: true,
 		Attributes: map[string]any{"misfit_of": m.NodeID, "margin": m.Margin,
 			"own_similarity": m.OwnSimilarity, "nearest_similarity": m.NearestSimilarity},
 		Evidence: misfitEvidence(root, rootTitle),

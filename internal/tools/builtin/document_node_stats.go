@@ -575,6 +575,10 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 		return errPermission(nodeStatsOp+": permission: only an operator, or a code agent granted statement_methods, runs node statistics",
 			"Ask an operator to run it, or to grant this agent statement_methods. describe_ontology with_stats reads what is stored."), nil
 	}
+	if in.Propose && !misfitMayPropose(ctx, key) {
+		return errPermission(nodeStatsOp+": method_not_granted: filing misfit proposals stamps "+misfitMethod+", and this agent may not stamp rule: statements",
+			"Omit propose to read the misfits, or ask an operator to file them or to grant this agent rule in statement_methods."), nil
+	}
 	// Every member's text and vector goes into a node's figures, so the pass must be
 	// able to read every document of the scope.
 	list, err := d.readableDocList(ctx, d.newDocACL(ctx, key))

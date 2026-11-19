@@ -1508,8 +1508,8 @@ func (d *Document) proposeStatement(ctx context.Context, key sqlmem.ScopeKey, ms
 	// Not for a competing proposal (id): asserting it would set a second live
 	// statement beside the one it revises. Not beside a Review section, which is
 	// the whole policy — nor when the ontology could not be read, which rules
-	// nothing.
-	if inForce && !section && len(w.evidence) > 0 && w.revisionOf == "" && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
+	// nothing. Not for a runtime pass's proposal (proposeOnly).
+	if inForce && !section && !in.proposeOnly && len(w.evidence) > 0 && w.revisionOf == "" && d.autoAssertKind(ctx, w.kind) && strings.HasPrefix(in.edgeMethod, "rule:") {
 		allChunks := true
 		for _, ev := range w.evidence {
 			if ev.ChunkID == "" {

@@ -74,6 +74,12 @@ rejected for that document (a person, a judge or a review policy), nor one
 already proposed or live. A proposal adds a topic: the document keeps the
 placement it has. Nothing here changes the ontology.
 
+Filing is for an operator, or a run granted `rule` in `statement_methods` —
+whoever could stamp a `rule:` method itself; any other caller gets
+`method_not_granted` for `propose` and may still read the misfits. Every
+filing lands `proposed`: `@auto_assert` never asserts it, and only the
+tenant's Review section can rule on it when it is filed.
+
 It returns `{mode, scheme?, vectors, note?, embed_model?, margin,
 min_members, propose, cap?, count, misfits, truncated?, proposed?,
 skipped?}`: each misfit is `{document_id, title, node_id, node,

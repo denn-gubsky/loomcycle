@@ -9,7 +9,69 @@ import (
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/memory/nodestats"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
+
+// TestMisfit_ProposingNeedsTheRuleGrant — filing stamps rule:centroid, so only a
+// caller who could stamp a rule: method itself may file: an operator, or a run
+// granted rule. A run node_stats admits on an extractor grant alone still reads
+// the misfits, and is refused propose with nothing filed.
+func TestMisfit_ProposingNeedsTheRuleGrant(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpus(t, d, base)
+	x1, _ := k.withStrays(t)
+	run := func(sm ...string) context.Context {
+		return tools.WithRunID(tools.WithRunPolicy(base, tools.RunPolicy{
+			Tools:            []string{"*"},
+			Memory:           tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}},
+			SqlMem:           tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}},
+			StatementMethods: sm,
+		}), "run-misfits")
+	}
+	extractor := run("extractor")
+	if rep := misfitsRun(t, d, extractor, `{"op":"node_stats","mode":"misfits"}`); rep.Count == 0 {
+		t.Fatalf("an extractor-granted run reads no misfit: %+v", rep)
+	}
+	_, res := docExec(t, d, extractor, `{"op":"node_stats","mode":"misfits","propose":true}`)
+	if !res.IsError || !strings.Contains(res.Text, "method_not_granted") {
+		t.Errorf("an extractor-granted run filed: %s", res.Text)
+	}
+	if n := len(centroidProposals(t, d, k.f.operator)); n != 0 {
+		t.Fatalf("the refused call filed %d proposals", n)
+	}
+	ruled := misfitsRun(t, d, run("rule"), `{"op":"node_stats","mode":"misfits","propose":true,"limit":1}`)
+	if ruled.Proposed != 1 || ruled.of(t, x1).Status != edgeStatusProposed {
+		t.Errorf("a rule-granted run = %+v; want x1 filed", ruled)
+	}
+}
+
+// subjectAutoAssertMD is conceptOntologyMD with subject declared @auto_assert and
+// no Review section: a rule-made subject proposal with chunk evidence would be
+// written asserted by the legacy rule.
+var subjectAutoAssertMD = strings.Replace(conceptOntologyMD,
+	"## Relations\n@section relations\n\n", "## Relations\n@section relations\n\n### subject\n@auto_assert\n\n", 1)
+
+// TestMisfit_FiledPlacementStaysProposedWithoutAReviewRule — the pass never makes a
+// placement live itself: with subject @auto_assert and no Review section (where a
+// rule: proposal with title evidence is otherwise written asserted), what it files
+// is proposed.
+func TestMisfit_FiledPlacementStaysProposedWithoutAReviewRule(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newStatsCorpusMD(t, d, base, subjectAutoAssertMD)
+	if pf, ok := d.reviewPolicyInForce(k.f.operator); !ok || pf.section || !d.autoAssertKind(k.f.operator, "subject") {
+		t.Fatalf("precondition: subject @auto_assert with no Review section: %+v %v", pf, ok)
+	}
+	x1, _ := k.withStrays(t)
+	ans := misfitsRun(t, d, k.f.operator, `{"op":"node_stats","mode":"misfits","propose":true}`)
+	if m := ans.of(t, x1); m.StatementID == "" || m.Status != edgeStatusProposed {
+		t.Errorf("x1 = %+v; want filed proposed", m)
+	}
+	for _, s := range centroidProposals(t, d, k.f.operator) {
+		if s.Status != edgeStatusProposed {
+			t.Errorf("statement %s filed %s", s.ID, s.Status)
+		}
+	}
+}
 
 // misfitDoc adds a Document under concept with an annotation vector vec, as
 // newStatsCorpus's documents are made, and returns its id.

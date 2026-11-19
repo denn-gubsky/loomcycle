@@ -548,8 +548,14 @@ type docInput struct {
 	// canvas) writes it, or the wire Method once it passed the grant check.
 	// UNEXPORTED: a caller must not name how its own link was made.
 	edgeMethod string
-	Position   *int `json:"position"`
-	Revision   *int `json:"revision"`
+	// proposeOnly: propose_statement never writes the statement asserted through
+	// the @auto_assert rule; only the tenant's Review section may rule on it at
+	// filing. Set by a runtime pass that stamps its own rule: method (node_stats
+	// mode misfits), so the stamp is never what makes a statement live.
+	// UNEXPORTED, never from the wire.
+	proposeOnly bool
+	Position    *int `json:"position"`
+	Revision    *int `json:"revision"`
 	// FromRevision / ToRevision select the two body-change revisions to diff (RFC
 	// BS Phase 3a). Pointers so an omitted bound is distinguishable from a value
 	// (the log is 1-based, so 0 is never a real revision, but the pointer keeps the
