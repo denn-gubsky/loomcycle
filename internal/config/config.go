@@ -2359,6 +2359,13 @@ type AgentDef struct {
 	// content_sha256.
 	GitRemote []string `yaml:"git_remote"`
 
+	// Workspace is the agent's workspace grant (RFC GW): which operations it
+	// may perform in a workspace, whether it may open its own, and the least
+	// isolating engine it accepts. nil grants nothing. A sub-agent holds what
+	// both it and its parent run hold. Not per-run overridable. Authority, not
+	// content: not part of content_sha256.
+	Workspace *AgentWorkspace `yaml:"workspace"`
+
 	// StatementMethods is which methods the agent may stamp on the document
 	// relations it writes: "rule" (code found it) and/or "extractor" (a
 	// model it drives found it). A run then names its method per write
@@ -6394,6 +6401,7 @@ func agentFromDiscovered(d *agents.Agent) AgentDef {
 		ToolModes:        d.ToolModes,
 		ShellCredentials: (*CredentialNames)(d.ShellCredentials),
 		GitRemote:        d.GitRemote,
+		Workspace:        workspaceFromDiscovered(d.Workspace),
 		StatementMethods: d.StatementMethods,
 		// F14: an MD-declared `interruption:` block now flows to config
 		// (parity with channels) so it takes effect at runtime AND the
@@ -6634,6 +6642,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if override.GitRemote != nil {
 		out.GitRemote = override.GitRemote
+	}
+	if override.Workspace != nil {
+		out.Workspace = override.Workspace.Clone()
 	}
 	if override.HistoryScope != nil {
 		out.HistoryScope = override.HistoryScope
@@ -6916,7 +6927,7 @@ func looksLikeAnOverrideOnly(a AgentDef) bool {
 	}
 	return len(a.MemoryScopes) > 0 || len(a.SqlScopes) > 0 || len(a.HistoryScope) > 0 ||
 		len(a.Volumes) > 0 || len(a.EvaluationScopes) > 0 || len(a.CryptoScopes) > 0 ||
-		a.ShellCredentials != nil || len(a.GitRemote) > 0 || len(a.StatementMethods) > 0
+		a.ShellCredentials != nil || len(a.GitRemote) > 0 || a.Workspace.Grants() || len(a.StatementMethods) > 0
 }
 
 // sqlScopeNames renders validSqlScopes for an error message. Derived from the
@@ -8506,6 +8517,27 @@ func gitRemoteWarnings(name string, a AgentDef, env Env) []string {
 		out = append(out, fmt.Sprintf("agent %q: git_remote lists push but LOOMCYCLE_GIT_PUSH_HOSTS is empty, so every push will be refused", name))
 	}
 	return out
+}
+
+// workspaceWarnings advises on an agent's workspace grant (RFC GW), never
+// fatally: it reaches nothing on an agent without the Workspace tool.
+func workspaceWarnings(name string, a AgentDef) []string {
+	if !a.Workspace.Grants() {
+		return nil
+	}
+	if !slices.Contains(a.Tools, "Workspace") {
+		return []string{fmt.Sprintf("agent %q: workspace is set but Workspace is not in tools, so it allows nothing", name)}
+	}
+	return nil
+}
+
+// workspaceFromDiscovered converts a Markdown agent's workspace grant (the
+// agents package cannot import config, so it keeps its own copy of the shape).
+func workspaceFromDiscovered(w *agents.AgentWorkspace) *AgentWorkspace {
+	if w == nil {
+		return nil
+	}
+	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Engine: w.Engine}
 }
 
 // NetPolicy is the operator's private-address policy (netguard.Policy), the
