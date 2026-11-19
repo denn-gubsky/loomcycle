@@ -1,42 +1,12 @@
 import type { ProposedChange } from "../api";
 import type { OntologyPlanResult } from "./ontologyRetirePlan";
 
-/** One change the plan route takes (POST /v1/_ontology/plan). */
-export interface OntologyPlanChange {
-  op: "retire" | "rename" | "move" | "edit";
-  entry: string;
-  name?: string;
-  parent?: string;
-  body?: string;
-}
-
-// changePlanChanges is the direct change a change proposal stands for, as the plan route
-// takes it (RFC GQ P4.2; planning a proposal itself is P4.3): a retire; a rename, a move;
-// and, when it sets directives, an edit whose body is the new directive lines above the
-// entry's own other lines (targetBody, its current body). That body is for the plan
-// only: the meaning does not change what a plan counts, and the runtime composes and
-// plans the body it writes itself. An empty list means nothing to plan (a meaning-only
-// edit).
-export function changePlanChanges(c: ProposedChange, targetBody?: string): OntologyPlanChange[] {
-  if (c.op === "retire") return [{ op: "retire", entry: c.target }];
-  const out: OntologyPlanChange[] = [];
-  if (c.name) out.push({ op: "rename", entry: c.target, name: c.name });
-  if (c.parent) out.push({ op: "move", entry: c.target, parent: c.parent });
-  if (c.sets_directives && targetBody !== undefined) {
-    const directives = (c.directives ?? []).map((d) => `@${d.name}${d.value ? " " + d.value : ""}`);
-    const rest = targetBody.split("\n").filter((line) => !isDirectiveLine(line));
-    const body = [directives.join("\n"), rest.join("\n").trim()].filter((p) => p !== "").join("\n\n");
-    if (body.trim() !== "") out.push({ op: "edit", entry: c.target, body });
-  }
-  return out;
-}
-
-// isDirectiveLine is a line the ontology reader takes as a directive: a bare `@name`
-// line, or a bullet whose first backticked token starts with @.
-function isDirectiveLine(line: string): boolean {
-  const t = line.trim();
-  return t.startsWith("@") || /^- [^`]*`@/.test(t);
-}
+/** One change the plan route takes (POST /v1/_ontology/plan): a direct change of an
+ *  entry, or an open proposal by its chunk id (RFC GQ P4.3), which the runtime plans as
+ *  the direct changes accepting it makes. */
+export type OntologyPlanChange =
+  | { op: "retire" | "rename" | "move" | "edit"; entry: string; name?: string; parent?: string; body?: string }
+  | { op: "proposal"; id: string };
 
 // changeConfirmText is what the operator reads before accepting a change proposal: the
 // change, and what the plan found resting on it.

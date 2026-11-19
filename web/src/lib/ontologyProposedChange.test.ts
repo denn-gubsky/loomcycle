@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changeConfirmText, changePlanChanges, proposedChangeText } from "./ontologyProposedChange";
+import { changeConfirmText, proposedChangeText } from "./ontologyProposedChange";
 
 const base = {
   target: "c1",
@@ -47,35 +47,6 @@ describe("proposedChangeText", () => {
         directives: [],
       }),
     ).toBe("directives: none (clears them)");
-  });
-});
-
-describe("changePlanChanges", () => {
-  it("plans a retire as a retire of the target", () => {
-    expect(changePlanChanges({ ...base, op: "retire" })).toEqual([{ op: "retire", entry: "c1" }]);
-  });
-
-  it("plans an edit as its rename, move and directive edit", () => {
-    const changes = changePlanChanges(
-      {
-        ...base,
-        op: "edit",
-        name: "oversees",
-        parent: "c2",
-        sets_directives: true,
-        directives: [{ name: "functional" }],
-      },
-      "@dated\n- `@walk`\nOne person oversees another.",
-    );
-    expect(changes).toEqual([
-      { op: "rename", entry: "c1", name: "oversees" },
-      { op: "move", entry: "c1", parent: "c2" },
-      { op: "edit", entry: "c1", body: "@functional\n\nOne person oversees another." },
-    ]);
-  });
-
-  it("has nothing to plan for a meaning-only edit", () => {
-    expect(changePlanChanges({ ...base, op: "edit", meaning: "A new meaning." }, "@dated")).toEqual([]);
   });
 });
 

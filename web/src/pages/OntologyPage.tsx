@@ -16,7 +16,7 @@ import {
   type RelationNode,
 } from "../lib/ontologySections";
 import { proposedOutlineText } from "../lib/ontologyProposedScheme";
-import { changeConfirmText, changePlanChanges, proposedChangeText } from "../lib/ontologyProposedChange";
+import { changeConfirmText, proposedChangeText } from "../lib/ontologyProposedChange";
 import {
   OntologyProposal,
   ProposedChange,
@@ -25,7 +25,6 @@ import {
   OntologyTerm,
   adoptOntologyType,
   deleteOntologyEntry,
-  documentGetChunk,
   getOntology,
   planOntologyChanges,
   planOntologyRetire,
@@ -741,21 +740,13 @@ export default function OntologySection() {
   const resolveProposal = (chunkId: string, action: "accept" | "reject") =>
     act(() => resolveOntologyProposal(chunkId, action));
   // RFC GQ P4.2: a change or retire proposal is applied to the entry it names. The
-  // equivalent direct change is planned first (planning the proposal itself is P4.3),
-  // the operator confirms against the plan's counts, and the accept carries its
-  // fingerprint; a stale one re-plans once. A meaning-only edit has nothing to plan.
+  // proposal itself is planned first (P4.3: the runtime plans the direct changes
+  // accepting it makes, as the accept does), the operator confirms against the plan's
+  // counts, and the accept carries its fingerprint; a stale one re-plans once.
   const acceptChange = (chunkId: string, change: ProposedChange) =>
     act(async () => {
-      const targetBody = change.sets_directives
-        ? (await documentGetChunk(change.target, "tenant")).body
-        : undefined;
-      const changes = changePlanChanges(change, targetBody);
-      if (changes.length === 0) {
-        if (!window.confirm(changeConfirmText(change, null))) return getOntology();
-        return resolveOntologyProposal(chunkId, "accept");
-      }
       const done = await applyWithPlan((plan) => changeConfirmText(change, plan), {
-        plan: () => planOntologyChanges(changes),
+        plan: () => planOntologyChanges([{ op: "proposal", id: chunkId }]),
         apply: (fp) => resolveOntologyProposal(chunkId, "accept", undefined, fp),
         confirm: (text) => window.confirm(text),
       });
