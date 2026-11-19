@@ -29,6 +29,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
+	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 )
 
 // Defaults for Options left zero.
@@ -162,20 +163,28 @@ func New(opt Options) *Dispatcher {
 		workers: map[string]*worker{}, quarantine: map[string]time.Time{}, outcomes: map[string]uint64{}}
 }
 
-// Serve serves the worker endpoint on l until Stop. It serves the two worker
-// RPCs and nothing else.
+// Register adds the conversion worker service to srv. The runtime builds the
+// worker endpoint's server itself, so that another worker service (RFC GW)
+// can share the endpoint, and serves it.
+func (d *Dispatcher) Register(srv grpc.ServiceRegistrar) {
+	workerpb.RegisterWorkerServiceServer(srv, d)
+}
+
+// Serve serves the conversion worker service alone on l, on a server of its
+// own built as the runtime builds the endpoint's, until Stop: an endpoint for
+// tests and harnesses that need nothing else on it.
 func (d *Dispatcher) Serve(l net.Listener) error {
 	d.mu.Lock()
 	if d.srv == nil {
-		d.srv = grpc.NewServer()
-		workerpb.RegisterWorkerServiceServer(d.srv, d)
+		d.srv = grpc.NewServer(workerlink.ServerOptions()...)
+		d.Register(d.srv)
 	}
 	srv := d.srv
 	d.mu.Unlock()
 	return srv.Serve(l)
 }
 
-// Stop ends every worker stream and the listener.
+// Stop ends every worker stream and the listener of a Serve.
 func (d *Dispatcher) Stop() {
 	d.mu.Lock()
 	srv := d.srv

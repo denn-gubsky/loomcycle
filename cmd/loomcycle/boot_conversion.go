@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/dispatch"
 	"github.com/denn-gubsky/loomcycle/internal/conversion/local"
@@ -80,15 +82,20 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 		KindTimeouts:  h.timeouts,
 		Logger:        slog.Default(),
 	})
+	// The worker endpoint's server is built here rather than by the
+	// dispatcher, so another worker service (RFC GW) can be registered on
+	// the same endpoint; its flow-control windows apply to every service.
+	srv := grpc.NewServer(workerlink.ServerOptions()...)
+	d.Register(srv)
 	serve := func(l net.Listener) {
 		safego.Go(context.Background(), "conversion.dispatcher", func() {
-			if err := d.Serve(l); err != nil {
+			if err := srv.Serve(l); err != nil {
 				slog.Warn("conversion dispatcher stopped", "err", err, "addr", l.Addr().String())
 			}
 		})
 	}
-	// closers end the listeners after the dispatcher stops; stopChildren
-	// runs before it, so no child is mid-job when its streams end.
+	// closers end the listeners after the server stops; stopChildren runs
+	// before it, so no child is mid-job when its streams end.
 	var (
 		closers      []func()
 		stopChildren = func() {}
@@ -125,7 +132,7 @@ func (b *boot) startConversion() *dispatch.Dispatcher {
 	}
 	b.addCleanup(func() {
 		stopChildren()
-		d.Stop()
+		srv.Stop()
 		for _, c := range closers {
 			c()
 		}

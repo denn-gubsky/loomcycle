@@ -277,7 +277,7 @@ func (l *link) attach(ctx context.Context, target, serverName string) error {
 		log.Error("refusing to dial a dispatcher in the clear", "err", err)
 		return err
 	}
-	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
+	conn, err := grpc.NewClient(target, append(DialOptions(), grpc.WithTransportCredentials(creds))...)
 	if err != nil {
 		// A target that cannot even be set up will not come right by
 		// retrying: count it as a refusal, so a worker left with nothing to
