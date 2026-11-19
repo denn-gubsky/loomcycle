@@ -45,9 +45,38 @@ var principals = map[string]auth.Principal{
 	tokMixed:   {TenantID: "acme", Subject: "u", Scopes: []string{auth.ScopeWorkersAttach, auth.ScopeRunsCreate}, TokenDefID: "def-mixed"},
 }
 
+// principalsMu guards principals: a test revokes or re-binds a token while
+// the dispatcher resolves it.
+var principalsMu sync.Mutex
+
 func resolve(_ context.Context, bearer string) (auth.Principal, bool) {
+	principalsMu.Lock()
+	defer principalsMu.Unlock()
 	p, ok := principals[bearer]
 	return p, ok
+}
+
+// setToken makes bearer resolve to p (or to nothing, revoked, when p is
+// nil) until the test ends.
+func setToken(t *testing.T, bearer string, p *auth.Principal) {
+	t.Helper()
+	principalsMu.Lock()
+	old, had := principals[bearer]
+	if p == nil {
+		delete(principals, bearer)
+	} else {
+		principals[bearer] = *p
+	}
+	principalsMu.Unlock()
+	t.Cleanup(func() {
+		principalsMu.Lock()
+		defer principalsMu.Unlock()
+		if had {
+			principals[bearer] = old
+		} else {
+			delete(principals, bearer)
+		}
+	})
 }
 
 // The core-side ids of the workers the tests attach.

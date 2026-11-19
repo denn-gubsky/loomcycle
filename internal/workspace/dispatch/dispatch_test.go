@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
@@ -381,3 +382,74 @@ func (c *countingZeros) Read(p []byte) (int, error) {
 }
 
 var _ io.Reader = (*countingZeros)(nil)
+
+// A worker whose token stops attaching it while it is attached is detached
+// within the re-check interval: its op in flight fails worker_revoked, it is
+// no longer placed, its attachment ends with a refusal the worker treats as
+// permanent, and a new Op stream on the token is refused.
+func TestAttach_ATokenThatStopsHoldingDetachesTheWorker(t *testing.T) {
+	const tok = "tok-revocable"
+	acme := principals[tokAcme]
+	acme.TokenDefID = "def-revocable"
+	rebound := acme
+	rebound.TenantID = "other"
+	attachOnly := acme
+	attachOnly.Scopes = append([]string{}, acme.Scopes...)
+	attachOnly.Scopes = append(attachOnly.Scopes, "runs:create")
+	for name, change := range map[string]struct {
+		p    *auth.Principal
+		code codes.Code
+	}{
+		"revoked":                  {nil, codes.Unauthenticated},
+		"re-bound to other tenant": {&rebound, codes.PermissionDenied},
+		"widened past the scope":   {&attachOnly, codes.PermissionDenied},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setToken(t, tok, &acme)
+			d, target := core(t, newMemStore(), dispatch.Options{RecheckEvery: 50 * time.Millisecond})
+			f := dialFake(t, target, tok)
+			f.attach("f1")
+			f.heartbeat(20 * time.Millisecond)
+			s := f.stream("f1")
+			id := "tok:def-revocable/f1"
+			waitAttached(t, d, id)
+			errc := make(chan error, 1)
+			go func() {
+				_, err := d.Do(context.Background(), id, dispatch.Request{TenantID: "acme", WorkspaceID: "ws1", Op: workspace.OpStatus})
+				errc <- err
+			}()
+			if _, err := s.Recv(); err != nil { // the OpStart; never answered
+				t.Fatal(err)
+			}
+
+			setToken(t, tok, change.p)
+			select {
+			case err := <-errc:
+				if !errors.Is(err, dispatch.ErrWorkerRevoked) {
+					t.Fatalf("the op in flight: %v, want worker_revoked", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the op in flight outlived its worker's token")
+			}
+			waitFor(t, "the worker to detach", func() bool { return len(d.Workers()) == 0 })
+			if _, err := d.Place(context.Background(), dispatch.PlaceRequest{TenantID: "acme"}); dispatch.ClassOf(err) != workspace.ClassNoWorker {
+				t.Fatalf("place after the revoke: %v, want no_worker", err)
+			}
+			// The attachment ends with a code the worker reads as final.
+			for {
+				_, err := f.att.Recv()
+				if err == nil {
+					continue
+				}
+				if status.Code(err) != change.code {
+					t.Fatalf("attach ended with %v, want %s", err, change.code)
+				}
+				break
+			}
+			// A new stream on the token is refused on its own bearer.
+			if _, err := f.stream("f1").Recv(); status.Code(err) != change.code {
+				t.Fatalf("a new stream after the revoke: %v", err)
+			}
+		})
+	}
+}

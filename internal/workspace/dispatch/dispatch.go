@@ -40,6 +40,10 @@ const (
 	DefaultHeartbeatTimeout = 15 * time.Second
 	DefaultStreamWait       = 30 * time.Second
 	DefaultMaxOutput        = 8 << 20
+	// DefaultRecheckEvery is how often an attached worker's bearer is
+	// resolved and decided again, so a revoked, rotated or re-bound token
+	// stops serving within it rather than when the connection next drops.
+	DefaultRecheckEvery = 60 * time.Second
 	// maxDeclaredID bounds the id a worker declares.
 	maxDeclaredID = 128
 	// maxCapacity bounds the workspaces a worker may say it holds at most.
@@ -82,7 +86,10 @@ type Options struct {
 	StreamWait time.Duration
 	// MaxOutput bounds the output of an op that names no bound of its own.
 	MaxOutput int64
-	Logger    *slog.Logger
+	// RecheckEvery is how often an attached worker's token is checked
+	// again; zero is DefaultRecheckEvery. A test seam, not a setting.
+	RecheckEvery time.Duration
+	Logger       *slog.Logger
 }
 
 // Dispatcher is the workspace worker service and the registry behind it.
@@ -114,14 +121,22 @@ type worker struct {
 	ctl chan *workspacepb.CoreControl
 	// lost is closed when the worker detaches.
 	lost chan struct{}
+	// gone is the error an op in flight fails with once lost is closed:
+	// ErrWorkerLost, or ErrWorkerRevoked when its token stopped holding.
+	// Set under Dispatcher.mu before lost closes.
+	gone *OpError
 
 	// Under Dispatcher.mu.
 	idle      []*opStream // oldest first
 	waiters   []chan *opStream
 	inFlight  int
-	requested int // streams asked for with OpenStreams, not yet arrived
+	diedMidOp bool // an op's stream broke before its answer
+	requested int  // streams asked for with OpenStreams, not yet arrived
 	// pending are the releasing rows a Remove named, awaiting Removed.
 	pending map[string]store.WorkspaceRow
+	// streams are every Op stream of the worker, idle or busy, so a detach
+	// can end them all.
+	streams map[*opStream]struct{}
 }
 
 // opStream is one Op stream: idle until an op is handed to it.
@@ -143,6 +158,9 @@ type deps struct {
 // New builds a dispatcher. It answers every worker Unavailable until
 // Activate.
 func New(opt Options) *Dispatcher {
+	if opt.RecheckEvery <= 0 {
+		opt.RecheckEvery = DefaultRecheckEvery
+	}
 	if opt.HeartbeatTimeout <= 0 {
 		opt.HeartbeatTimeout = DefaultHeartbeatTimeout
 	}
@@ -207,18 +225,27 @@ func (d *Dispatcher) Stop() {
 // authenticate resolves the stream's bearer and decides whether it may
 // attach a workspace worker. owner is the token's identity, the prefix of
 // every id its workers get.
-func (d *Dispatcher) authenticate(ctx context.Context) (owner string, att auth.WorkerAttach, err error) {
-	dp := d.deps.Load()
-	if dp == nil {
-		return "", att, status.Error(codes.Unavailable, "the runtime is starting")
-	}
+func (d *Dispatcher) authenticate(ctx context.Context) (owner string, att auth.WorkerAttach, bearer string, err error) {
 	md, _ := metadata.FromIncomingContext(ctx)
 	vals := md.Get(workspace.MDAuthorization)
 	const pfx = "Bearer "
 	if len(vals) != 1 || len(vals[0]) <= len(pfx) || !strings.EqualFold(vals[0][:len(pfx)], pfx) {
-		return "", att, status.Error(codes.Unauthenticated, "missing bearer token")
+		return "", att, "", status.Error(codes.Unauthenticated, "missing bearer token")
 	}
-	p, ok := dp.resolve(ctx, vals[0][len(pfx):])
+	bearer = vals[0][len(pfx):]
+	owner, att, err = d.authorize(ctx, bearer)
+	return owner, att, bearer, err
+}
+
+// authorize resolves bearer and decides whether it may attach a workspace
+// worker: at attach, on every Op stream, and again every RecheckEvery while
+// a worker stays attached.
+func (d *Dispatcher) authorize(ctx context.Context, bearer string) (owner string, att auth.WorkerAttach, err error) {
+	dp := d.deps.Load()
+	if dp == nil {
+		return "", att, status.Error(codes.Unavailable, "the runtime is starting")
+	}
+	p, ok := dp.resolve(ctx, bearer)
 	if !ok {
 		return "", att, status.Error(codes.Unauthenticated, "invalid bearer token")
 	}
@@ -227,6 +254,22 @@ func (d *Dispatcher) authenticate(ctx context.Context) (owner string, att auth.W
 		return "", att, status.Error(codes.PermissionDenied, err.Error())
 	}
 	return principalKey(p), att, nil
+}
+
+// stillAuthorized decides an attached worker's bearer again. It must still
+// resolve, still be admitted by auth.WorkerAttachment, still be the same
+// token, and serve exactly the tenants it served at attach.
+func (d *Dispatcher) stillAuthorized(ctx context.Context, bearer, owner string, att auth.WorkerAttach) error {
+	o, a, err := d.authorize(ctx, bearer)
+	switch {
+	case err != nil:
+		return err
+	case o != owner:
+		return status.Error(codes.PermissionDenied, "the worker's token now names another token")
+	case a != att:
+		return status.Error(codes.PermissionDenied, "the worker's token now serves other tenants")
+	}
+	return nil
 }
 
 // principalKey is a token's identity: its OperatorTokenDef row, or, for a
@@ -261,7 +304,7 @@ func validDeclaredID(id string) bool {
 // heartbeating, and reconciles what it holds against the store.
 func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) error {
 	ctx := stream.Context()
-	owner, att, err := d.authenticate(ctx)
+	owner, att, bearer, err := d.authenticate(ctx)
 	if err != nil {
 		return err
 	}
@@ -283,7 +326,8 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 	log := d.log.With("worker_id", w.id)
 	log.Info("workspace worker attached", "engine", w.engine, "capacity", w.capacity, "shared", att.Shared, "tenant", att.TenantID)
 	died := false
-	defer func() { d.detach(w, died) }()
+	gone := ErrWorkerLost
+	defer func() { d.detach(w, died, gone) }()
 
 	if err := stream.Send(&workspacepb.CoreControl{Msg: &workspacepb.CoreControl_Welcome{Welcome: &workspacepb.Welcome{BuildVersion: d.opt.BuildVersion}}}); err != nil {
 		return err
@@ -312,8 +356,20 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 	})
 	t := time.NewTimer(d.opt.HeartbeatTimeout)
 	defer t.Stop()
+	recheck := time.NewTicker(d.opt.RecheckEvery)
+	defer recheck.Stop()
 	for {
 		select {
+		case <-recheck.C:
+			// The bearer is kept only for the life of this stream, never
+			// logged. A token that no longer resolves, is refused, names
+			// another token row, or serves another set of tenants ends the
+			// attachment; the worker reads the code as permanent.
+			if err := d.stillAuthorized(ctx, bearer, owner, att); err != nil {
+				log.Warn("workspace worker's token no longer attaches it; detaching", "err", err)
+				gone = ErrWorkerRevoked
+				return err
+			}
 		case m := <-in:
 			t.Reset(d.opt.HeartbeatTimeout)
 			if r := m.GetRemoved(); r != nil {
@@ -362,7 +418,7 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 		tools: map[string]bool{}, labels: append([]string(nil), h.GetLabels()...),
 		capacity: min(max(int(h.GetCapacity()), 1), maxCapacity),
 		ctl:      make(chan *workspacepb.CoreControl, 16), lost: make(chan struct{}),
-		pending: map[string]store.WorkspaceRow{},
+		pending: map[string]store.WorkspaceRow{}, streams: map[*opStream]struct{}{},
 	}
 	for _, t := range h.GetToolchains() {
 		w.tools[t] = true
@@ -443,19 +499,23 @@ func (d *Dispatcher) deleteRow(ctx context.Context, r store.WorkspaceRow, log *s
 	}
 }
 
-// detach removes a worker, ends its idle streams and tells the ops waiting
-// for one of its streams that it is gone.
-func (d *Dispatcher) detach(w *worker, died bool) {
+// detach removes a worker, ends every one of its streams and tells the ops
+// waiting for one of them that it is gone; gone is what an op in flight
+// fails with.
+func (d *Dispatcher) detach(w *worker, died bool, gone *OpError) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.workers[w.id] == w {
 		delete(d.workers, w.id)
 	}
-	if died || w.inFlight > 0 {
+	if died || w.inFlight > 0 || w.diedMidOp {
 		d.deaths++
 	}
+	w.gone = gone
 	close(w.lost)
-	for _, s := range w.idle {
+	// Every stream, busy ones too: an op in flight on a worker whose token
+	// was revoked must not finish there.
+	for s := range w.streams {
 		s.cancel()
 	}
 	w.idle = nil
@@ -470,7 +530,7 @@ func (d *Dispatcher) detach(w *worker, died bool) {
 // Op holds one idle stream of an attached worker until an op is handed to
 // it, runs that op on the stream, and ends.
 func (d *Dispatcher) Op(stream workspacepb.WorkspaceService_OpServer) error {
-	owner, _, err := d.authenticate(stream.Context())
+	owner, _, _, err := d.authenticate(stream.Context())
 	if err != nil {
 		return err
 	}
@@ -493,13 +553,21 @@ func (d *Dispatcher) Op(stream workspacepb.WorkspaceService_OpServer) error {
 		d.mu.Unlock()
 		return status.Error(codes.PermissionDenied, "no worker of this token is attached under that id")
 	}
+	select {
+	case <-w.lost:
+		d.mu.Unlock()
+		return status.Error(codes.PermissionDenied, "the worker is no longer attached")
+	default:
+	}
 	s.w = w
+	w.streams[s] = struct{}{}
 	w.requested = max(w.requested-1, 0)
 	d.offerLocked(s)
 	d.mu.Unlock()
 	defer func() {
 		d.mu.Lock()
 		d.dropIdleLocked(s)
+		delete(w.streams, s)
 		d.mu.Unlock()
 	}()
 
@@ -508,7 +576,7 @@ func (d *Dispatcher) Op(stream workspacepb.WorkspaceService_OpServer) error {
 		if o == nil {
 			return ctx.Err()
 		}
-		o.done <- d.serve(ctx, stream, o)
+		o.done <- d.serve(ctx, stream, w, o)
 		return nil
 	case <-ctx.Done():
 		d.mu.Lock()
@@ -569,8 +637,9 @@ func (d *Dispatcher) acquire(ctx context.Context, w *worker) (*opStream, error) 
 	d.mu.Lock()
 	select {
 	case <-w.lost:
+		gone := w.gone
 		d.mu.Unlock()
-		return nil, ErrWorkerLost
+		return nil, gone
 	default:
 	}
 	if len(w.idle) > 0 {
@@ -592,7 +661,10 @@ func (d *Dispatcher) acquire(ctx context.Context, w *worker) (*opStream, error) 
 	select {
 	case s := <-wt:
 		if s == nil {
-			return nil, ErrWorkerLost
+			d.mu.Lock()
+			gone := w.gone
+			d.mu.Unlock()
+			return nil, gone
 		}
 		return s, nil
 	case <-ctx.Done():

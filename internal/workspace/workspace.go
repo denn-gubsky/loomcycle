@@ -48,6 +48,9 @@ const (
 const (
 	// ClassWorkerLost: the worker went away before the op finished.
 	ClassWorkerLost = "worker_lost"
+	// ClassWorkerRevoked: the worker was detached because its token no
+	// longer attaches it.
+	ClassWorkerRevoked = "worker_revoked"
 	// ClassNoWorker: no attached worker can take the op.
 	ClassNoWorker = "no_worker"
 	// ClassBusy: the worker kept no idle stream free long enough.

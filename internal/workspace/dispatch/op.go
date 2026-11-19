@@ -40,6 +40,11 @@ func (e *OpError) Is(target error) bool {
 // unknown.
 var ErrWorkerLost = &OpError{Class: workspace.ClassWorkerLost, Detail: "the worker went away before the op finished"}
 
+// ErrWorkerRevoked is an op whose worker was detached because its token no
+// longer attaches it (revoked, rotated, re-bound to other tenants). Whether
+// the op took effect is unknown.
+var ErrWorkerRevoked = &OpError{Class: workspace.ClassWorkerRevoked, Detail: "the worker's token no longer attaches it"}
+
 // ClassOf is err's class: an OpError's own, "" for nil, and failed for any
 // other error.
 func ClassOf(err error) string {
@@ -129,7 +134,9 @@ func (d *Dispatcher) Do(ctx context.Context, workerID string, req Request) (res 
 		select {
 		case r = <-o.done:
 		case <-w.lost:
-			r = result{err: ErrWorkerLost}
+			d.mu.Lock()
+			r = result{err: w.gone}
+			d.mu.Unlock()
 		case <-ctx.Done():
 			r = result{err: ctx.Err()}
 		}
@@ -156,7 +163,7 @@ func outcome(err error) string {
 
 // serve runs o on the stream. Every send happens on this goroutine; a second
 // one only receives.
-func (d *Dispatcher) serve(ctx context.Context, stream workspacepb.WorkspaceService_OpServer, o *op) result {
+func (d *Dispatcher) serve(ctx context.Context, stream workspacepb.WorkspaceService_OpServer, w *worker, o *op) result {
 	req := o.req
 	if err := stream.Send(&workspacepb.OpToWorker{Msg: &workspacepb.OpToWorker_Start{Start: &workspacepb.OpStart{
 		WorkspaceId: req.WorkspaceID, Op: req.Op, Args: req.Args, HasInput: req.Input != nil,
@@ -206,13 +213,24 @@ func (d *Dispatcher) serve(ctx context.Context, stream workspacepb.WorkspaceServ
 				return result{err: &OpError{Class: workspace.ClassProtocol, Detail: "an unexpected frame on an op stream"}}
 			}
 		case <-recvErr:
-			return result{err: ErrWorkerLost}
+			return d.lostMidOp(w)
 		case <-o.ctx.Done():
 			return result{err: o.ctx.Err()}
 		case <-ctx.Done():
-			return result{err: ErrWorkerLost}
+			// The connection dropped, or a detach ended the stream.
+			return d.lostMidOp(w)
 		}
 	}
+}
+
+// lostMidOp records that an op's stream broke before its answer: the worker
+// died, whether or not its attachment has ended yet, and its detach counts
+// the death once.
+func (d *Dispatcher) lostMidOp(w *worker) result {
+	d.mu.Lock()
+	w.diedMidOp = true
+	d.mu.Unlock()
+	return result{err: ErrWorkerLost}
 }
 
 // sendInput streams the op's input in chunks of at most ChunkSize, each in a
