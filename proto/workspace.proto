@@ -1,0 +1,148 @@
+// The workspace worker protocol (RFC GW §8). Internal: not part of the public
+// API, not in the adapters, and served only on the worker endpoint, beside the
+// conversion worker protocol (proto/worker.proto), never on the public gRPC
+// port.
+//
+// Workers dial the core; the core never dials a worker. A worker holds one
+// Attach stream per core (its registration, heartbeats and the core's control
+// messages) and a pool of idle Op streams. An Op stream carries exactly one op
+// and then ends.
+//
+// An op names a workspace by its id and carries its arguments as JSON, so a
+// later op (exec, the file ops) needs no change here. It never carries a
+// tenant, a run, a user or a credential: the core checks those before it
+// sends anything.
+syntax = "proto3";
+
+package loomcycle.workspace.v1;
+
+option go_package = "github.com/denn-gubsky/loomcycle/internal/workspace/workspacepb;workspacepb";
+
+service WorkspaceService {
+  // Attach registers a worker: the first frame is Hello, then heartbeats and
+  // Removed answers. The core answers Welcome, then sends control messages,
+  // or ends the stream with a status saying why it refuses the worker.
+  rpc Attach(stream WorkerMessage) returns (stream CoreControl);
+  // Op is one idle stream of an attached worker: the first frame is Ready,
+  // and the stream waits until the core sends an OpStart.
+  rpc Op(stream OpFromWorker) returns (stream OpToWorker);
+}
+
+// ---- Attach ----
+
+// What a worker sends on its Attach stream.
+message WorkerMessage {
+  oneof msg {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    Removed removed = 3;
+  }
+}
+
+message Hello {
+  // The worker's own name. The core keys the worker by its token and this
+  // name together, so two tokens' workers never share an id.
+  string worker_id = 1;
+  uint32 protocol_version = 2;
+  string build_version = 3;
+  // The engine commands run under: host, container.
+  string engine = 4;
+  // The toolchains found on the worker (python, node).
+  repeated string toolchains = 5;
+  repeated string labels = 6;
+  // The workspaces the worker holds at most.
+  uint32 capacity = 7;
+  // The workspace ids on the worker's disk.
+  repeated string held_workspaces = 8;
+  // The idle Op streams the worker keeps open by itself.
+  uint32 idle_streams = 9;
+}
+
+message Heartbeat {
+  // The workspaces the worker holds now.
+  uint32 held = 1;
+}
+
+// Removed answers Remove: the ids whose directories are gone (removed now,
+// or absent already).
+message Removed {
+  repeated string workspace_ids = 1;
+}
+
+// What the core sends on an Attach stream.
+message CoreControl {
+  oneof msg {
+    Welcome welcome = 1;
+    OpenStreams open_streams = 2;
+    Remove remove = 3;
+  }
+}
+
+message Welcome {
+  string build_version = 1;
+}
+
+// OpenStreams: open n more Op streams; the core runs low on idle ones. Each
+// carries one op and is not reopened.
+message OpenStreams {
+  uint32 n = 1;
+}
+
+// Remove: delete these workspaces' directories, then answer Removed.
+message Remove {
+  repeated string workspace_ids = 1;
+}
+
+// ---- Op ----
+
+// What a worker sends on an Op stream.
+message OpFromWorker {
+  oneof msg {
+    Ready ready = 1;
+    // At most 64 KB of the op's output.
+    Chunk output = 2;
+    OpDone done = 3;
+  }
+}
+
+// Ready opens an Op stream: an idle stream of an attached worker.
+message Ready {
+  string worker_id = 1;
+}
+
+message Chunk {
+  bytes data = 1;
+}
+
+message OpDone {
+  // The op's exit code, for an op that runs a command; 0 otherwise.
+  int32 exit_code = 1;
+  // Empty when the op succeeded; otherwise a short class the core maps to
+  // a tool error (at_capacity, not_found, invalid, unsupported_op, failed,
+  // and those later ops add).
+  string error_class = 2;
+  // A human-readable reason, bounded by the core.
+  string error_detail = 3;
+}
+
+// What the core sends on an Op stream.
+message OpToWorker {
+  oneof msg {
+    OpStart start = 1;
+    // At most 64 KB of the op's input.
+    Chunk input = 2;
+    InputEnd input_end = 3;
+  }
+}
+
+message OpStart {
+  string workspace_id = 1;
+  // open, remove, status, and those later phases add.
+  string op = 2;
+  // The op's arguments as a JSON object; empty for none.
+  bytes args = 3;
+  // Whether input chunks follow; InputEnd ends them.
+  bool has_input = 4;
+}
+
+message InputEnd {}

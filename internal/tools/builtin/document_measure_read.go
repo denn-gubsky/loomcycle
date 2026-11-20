@@ -22,6 +22,7 @@ import (
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -494,17 +495,11 @@ func (d *Document) describeSeries(ctx context.Context, key sqlmem.ScopeKey, read
 		out.Partial = true
 		out.Issues = append(out.Issues, "with_stats: the series could not be read; read again")
 	}
-	sp, err := d.buildSeriesPlan(ctx, key, read, "", p)
+	stored, err := d.servableSeriesPoints(ctx, key, read, p, nil)
 	if err != nil {
 		fail()
 		return
 	}
-	stored, err := d.loadMeasurePoints(ctx, key, 0, []string{measureCount, measureShare, measureUnplaced}, nil)
-	if err != nil {
-		fail()
-		return
-	}
-	sp.servable(stored)
 	if len(stored) == 0 {
 		return
 	}
@@ -521,6 +516,138 @@ func (d *Document) describeSeries(ctx context.Context, key sqlmem.ScopeKey, read
 			out.Classes[i].Series = seriesView(out.Classes[i].Name, "", memrank.SchemePeriodMonth, stored)
 		}
 	}
+}
+
+// servableSeriesPoints is the latest stored count, share and unplaced points of
+// nodes (nil: every node) that a read may serve: measure's rule
+// (seriesPlan.servable), which describe_ontology and with_summary serve through
+// too, so no second access rule exists for a series.
+func (d *Document) servableSeriesPoints(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, p *nodeStatsPlan, nodes []string) (map[pointKey]storedPoint, error) {
+	sp, err := d.buildSeriesPlan(ctx, key, read, "", p)
+	if err != nil {
+		return nil, err
+	}
+	measures := []string{measureCount, measureShare, measureUnplaced}
+	var stored map[pointKey]storedPoint
+	if nodes == nil {
+		stored, err = d.loadMeasurePoints(ctx, key, 0, measures, nil)
+	} else {
+		stored, err = d.loadMeasurePointsBatched(ctx, key, 0, measures, nodes)
+	}
+	if err != nil {
+		return nil, err
+	}
+	sp.servable(stored)
+	return stored, nil
+}
+
+// measurePointsStored is the cheap probe before any series work: most tenant
+// scopes keep no series (or no table yet).
+func (d *Document) measurePointsStored(ctx context.Context) bool {
+	key, _, err := d.ontologyTenantKey(ctx)
+	if err != nil {
+		return false
+	}
+	probe, err := d.query(ctx, key, `SELECT 1 FROM measure_points LIMIT 1`)
+	return err == nil && len(probe.Rows) > 0
+}
+
+// attachNodeSeries is with_summary's part of D31 (plan P4.3): a row that is a
+// taxonomy node — a concept, or a document class with an entry, of the confirmed
+// ontology, in the tenant scope — gets the node's series view beside its summary
+// as series, exactly the view describe_ontology with_stats gives it. Never written
+// into the summary, so a new period marks no record stale. A scope with no stored
+// point, an answer with no node row, and a reader the ontology document is not
+// readable to get nothing, so their answers are unchanged. The caller has checked
+// that the tenant scope stores a series at all (measurePointsStored).
+//
+// One plan per call: the search leg's full plan when it built one, else a light
+// one (buildSeriesReadPlan) — never the member vectors a full plan reads.
+func (d *Document) attachNodeSeries(ctx context.Context, mscope store.MemoryScope, op string, body map[string]any) bool {
+	if mscope != store.MemoryScopeTenant {
+		return false
+	}
+	rows := summaryRows(op, body)
+	if len(rows) == 0 {
+		return false
+	}
+	key, _, err := d.ontologyTenantKey(ctx)
+	if err != nil {
+		return false
+	}
+	read, ok := d.tenantOntologyRead(ctx)
+	if !ok || !read.Confirmed {
+		return false
+	}
+	type nodeRef struct{ node, schemeID, period string }
+	byChunk := map[string]nodeRef{}
+	for _, s := range read.Schemes {
+		per := schemePeriod(s)
+		for _, c := range s.Concepts {
+			if c.ChunkID != "" && c.Tag != "" {
+				byChunk[c.ChunkID] = nodeRef{node: c.ChunkID, schemeID: s.ChunkID, period: per}
+			}
+		}
+	}
+	// A class node is a chunk of the ontology document too: resolve the classes only
+	// when a row that is not a concept may be one (a row without document_id may).
+	classRow := false
+	for _, r := range rows {
+		if _, ok := byChunk[r.chunkID]; ok {
+			continue
+		}
+		if doc, has := r.m["document_id"].(string); !has || doc == read.DocumentID {
+			classRow = true
+			break
+		}
+	}
+	if classRow {
+		for _, c := range describeOntologyRead(read).Classes {
+			if c.Kind != "document" {
+				continue
+			}
+			if id := read.classChunkID(c.Name); id != "" {
+				byChunk[id] = nodeRef{node: c.Name, period: memrank.SchemePeriodMonth}
+			}
+		}
+	}
+	var hit []summaryRow
+	var ids []string
+	for _, r := range rows {
+		if n, ok := byChunk[r.chunkID]; ok {
+			hit = append(hit, r)
+			ids = append(ids, n.node, n.schemeID)
+		}
+	}
+	if len(hit) == 0 {
+		return false
+	}
+	// As measure asks: a node is a part of the ontology document. Fail closed.
+	if acl := d.newDocACL(ctx, key); read.DocumentID != "" && acl != nil {
+		if r, err := acl.document(ctx, measureOp, "read", read.DocumentID); err != nil || r != nil {
+			return false
+		}
+	}
+	p := cachedNodePlan(ctx, key, false)
+	if p == nil {
+		if p, err = d.buildSeriesReadPlan(ctx, key, read); err != nil {
+			return false
+		}
+		cacheNodePlan(ctx, key, p, false)
+	}
+	stored, err := d.servableSeriesPoints(ctx, key, read, p, dedupeStrings(ids))
+	if err != nil {
+		return false
+	}
+	changed := false
+	for _, r := range hit {
+		n := byChunk[r.chunkID]
+		if v := seriesView(n.node, n.schemeID, n.period, stored); v != nil {
+			r.m["series"] = v
+			changed = true
+		}
+	}
+	return changed
 }
 
 // seriesView is node's view from stored; schemeID names its scheme's unplaced rows

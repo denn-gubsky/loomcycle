@@ -618,3 +618,129 @@ func TestMeasure_NodeOfAnotherSchemeIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// chunkWithSummary is get_chunk on id, with or without with_summary, as ctx: the
+// decoded answer and its text.
+func chunkWithSummary(t *testing.T, d *Document, ctx context.Context, id string, withSummary bool) (map[string]any, string) {
+	t.Helper()
+	out, res := docExec(t, d, ctx, fmt.Sprintf(`{"op":"get_chunk","scope":"tenant","id":%q,"with_summary":%v}`, id, withSummary))
+	if res.IsError {
+		t.Fatalf("get_chunk %s: %s", id, res.Text)
+	}
+	return out, res.Text
+}
+
+func seriesOfRow(m map[string]any) map[string]any {
+	s, _ := m["series"].(map[string]any)
+	return s
+}
+
+// TestNodeAnnotation_NewPeriodMarksNothingStale — the trend is served beside a
+// node's summary, never written into it (RFC GM D31): a member re-dated into a new
+// period moves the series to that period while the node's record stays fresh.
+func TestNodeAnnotation_NewPeriodMarksNothingStale(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		k := newMeasureCorpus(t, d, ctx, conceptOntologyMD)
+		m1 := k.doc(t, day(2026, 6, 3), k.rep)
+		k.doc(t, day(2026, 6, 4), k.rep)
+		k.doc(t, day(2026, 6, 5), k.rep)
+		k.compute(t)
+		op := k.f.operator
+		if rec := nodeWrite(t, d, op, "concept", k.rep, "Reporting"); rec["basis"] != "written" {
+			t.Fatalf("record = %v, want basis written", rec)
+		}
+		row, _ := chunkWithSummary(t, d, k.f.reader, k.rep, true)
+		if s := seriesOfRow(row); s == nil || s["latest"] != "2026-06" || s["count"] != float64(3) {
+			t.Fatalf("series before = %v, want June with 3", row["series"])
+		}
+		k.date(t, m1, day(2026, 7, 2)) // a new period, the same members
+		k.compute(t)
+		if in := nodeInputs(t, d, op, "concept", k.rep); in["stale"] != false {
+			t.Fatalf("a new period marked the node's record stale: %v", in["stale"])
+		}
+		recs := nodeRecords(t, d, k.f.reader, "concept", k.rep)
+		if len(recs) != 1 || recs[0].(map[string]any)["stale"] == true {
+			t.Fatalf("record after the new period = %v, want it served and fresh", recs)
+		}
+		row, _ = chunkWithSummary(t, d, k.f.reader, k.rep, true)
+		s := seriesOfRow(row)
+		tr, _ := s["trend"].(map[string]any)
+		if s["latest"] != "2026-07" || s["count"] != float64(1) || tr["previous"] != "2026-06" || tr["previous_count"] != float64(2) {
+			t.Fatalf("series after = %v, want July 1 against June 2", s)
+		}
+	})
+}
+
+// TestWithSummary_NodeSeriesIsByteIdenticalWhenUnused — a store with no series, and
+// every call without with_summary, answer byte for byte as before; only a node's
+// row under with_summary gains series.
+func TestWithSummary_NodeSeriesIsByteIdenticalWhenUnused(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		k := newMeasureCorpus(t, d, ctx, conceptOntologyMD)
+		doc := k.doc(t, day(2026, 6, 3), k.rep)
+		k.doc(t, day(2026, 6, 4), k.rep)
+		r := k.f.reader
+		_, plain := chunkWithSummary(t, d, r, k.rep, false)
+		_, summary := chunkWithSummary(t, d, r, k.rep, true)
+		if plain != summary {
+			t.Fatalf("with no series and no annotation, with_summary changed the answer:\n%s\n%s", plain, summary)
+		}
+		_, docPlain := chunkWithSummary(t, d, r, k.roots[doc], false)
+		_, describe := docExec(t, d, r, `{"op":"describe_ontology"}`)
+		k.compute(t)
+		after := func(id string, withSummary bool) string {
+			_, s := chunkWithSummary(t, d, r, id, withSummary)
+			return s
+		}
+		_, describeAfter := docExec(t, d, r, `{"op":"describe_ontology"}`)
+		for _, tc := range []struct{ name, before, after string }{
+			{"get_chunk on the node", plain, after(k.rep, false)},
+			{"get_chunk on a member", docPlain, after(k.roots[doc], false)},
+			{"get_chunk on a member with_summary", docPlain, after(k.roots[doc], true)},
+			{"describe_ontology", describe.Text, describeAfter.Text},
+		} {
+			if tc.before != tc.after {
+				t.Errorf("%s changed once a series was stored:\n%s\n%s", tc.name, tc.before, tc.after)
+			}
+		}
+		if row, _ := chunkWithSummary(t, d, r, k.rep, true); seriesOfRow(row) == nil {
+			t.Fatalf("with_summary on the node carries no series, so this checks nothing: %v", row)
+		}
+	})
+}
+
+// TestWithSummary_NodeSeriesWithheldAsMeasureWithholds — a point counted over a
+// document restricted since is left out of the node's series exactly as measure
+// leaves it out (seriesPlan.servable), for every reader, until the next pass.
+func TestWithSummary_NodeSeriesWithheldAsMeasureWithholds(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		k := newMeasureCorpus(t, d, ctx, conceptOntologyMD)
+		k.doc(t, day(2026, 6, 3), k.rep) // /kb/m1
+		k.doc(t, day(2026, 6, 4), k.rep) // /kb/m2
+		k.doc(t, day(2026, 5, 4), k.rep) // /kb/m3: May, untouched by the rule
+		k.compute(t)
+		if row, _ := chunkWithSummary(t, d, k.f.reader, k.rep, true); seriesOfRow(row)["latest"] != "2026-06" {
+			t.Fatalf("series before the rule = %v, want June", row["series"])
+		}
+		restrictForSome(t, d, "/kb/m2")
+		limited := denying(t, k.f.reader, "/kb/m2")
+		latestOf := func(ctx context.Context) string {
+			pts := measureRun(t, d, ctx, fmt.Sprintf(`{"op":"measure","measure":"count","node":%q}`, k.rep)).node(t, k.rep).Points
+			if len(pts) == 0 {
+				return ""
+			}
+			return pts[len(pts)-1].Label
+		}
+		for _, reader := range []context.Context{k.f.reader, limited} {
+			row, _ := chunkWithSummary(t, d, reader, k.rep, true)
+			if s := seriesOfRow(row); s["latest"] != "2026-05" || s["latest"] != latestOf(reader) {
+				t.Errorf("before the pass: series %v; want May, as measure answers (%s)", s, latestOf(reader))
+			}
+		}
+		k.compute(t)
+		row, _ := chunkWithSummary(t, d, limited, k.rep, true)
+		if s := seriesOfRow(row); s["latest"] != "2026-06" || s["count"] != float64(1) {
+			t.Errorf("after the pass: series %v; want June counting m1 alone", s)
+		}
+	})
+}

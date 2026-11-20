@@ -138,16 +138,18 @@ func validateConversion(c *Config) error {
 	case cv.Listen != "" || cv.TLS != (WorkerEndpointTLSConfig{}) || cv.Insecure:
 		return fmt.Errorf("conversion.listen, tls and insecure: set only in mode %s or %s", ConversionRemote, ConversionLocalRemote)
 	case c.WorkerEndpoint.set():
-		// Nothing serves the endpoint yet in this mode; a later worker role
-		// will (RFC GW). Its values are still checked, so a mistake does not
-		// wait for the day they are used.
+		// Conversion attaches no workers of its own in this mode; workspace
+		// workers (RFC GW) may. The values are checked either way, so a
+		// mistake does not wait for the day they are used.
 		if ep.Listen == "" {
 			return fmt.Errorf("worker_endpoint.listen: the host:port workers attach to is required when the block is written")
 		}
 		if err := validateWorkerEndpoint(c, ep, key); err != nil {
 			return err
 		}
-		c.Warnings = append(c.Warnings, fmt.Sprintf("worker_endpoint is set, but conversion.mode %s attaches no workers of its own: nothing listens on %s", cv.Mode, ep.Listen))
+		if !c.Workspace.RemoteWorkers() {
+			c.Warnings = append(c.Warnings, fmt.Sprintf("worker_endpoint is set, but neither conversion.mode %s nor workspace.mode attaches workers of their own: nothing listens on %s", cv.Mode, ep.Listen))
+		}
 	}
 	if cv.QueueWaitS < 0 || cv.QuarantineTTLS < 0 {
 		return fmt.Errorf("conversion: queue_wait_s and quarantine_ttl_s may not be negative")

@@ -5,7 +5,9 @@ import (
 	"cmp"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -65,8 +67,11 @@ type mobiHeader struct {
 	encoding, version                       uint32
 	fullName                                []byte
 	firstImage, huffRecord, huffCount, fdst uint32
-	extraFlags                              uint16
-	exth                                    []mobiEXTH
+	// ncx, frag and skel are a KF8 header's contents, fragment and
+	// skeleton indexes.
+	ncx, frag, skel uint32
+	extraFlags      uint16
+	exth            []mobiEXTH
 }
 
 type mobiEXTH struct {
@@ -99,6 +104,9 @@ func parseMOBIHeader(rec0 []byte) (*mobiHeader, error) {
 		huffRecord:  u32(0x70),
 		huffCount:   u32(0x74),
 		fdst:        u32(0xc0),
+		ncx:         u32(0xf4),
+		frag:        u32(0xf8),
+		skel:        u32(0xfc),
 	}
 	if hl >= 0xe4 && 0xf4 <= end {
 		h.extraFlags = binary.BigEndian.Uint16(rec0[0xf2:])
@@ -258,6 +266,9 @@ func (MOBI) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 	if err := b.openText(); err != nil {
 		return rep, err
 	}
+	if err := b.openIndexes(); err != nil {
+		return rep, err
+	}
 	b.title = title(opts.Name, "Book")
 	if rep.Metadata != nil && rep.Metadata.Title != "" {
 		b.title = rep.Metadata.Title
@@ -289,6 +300,11 @@ type mobiBook struct {
 	// text the HTML parser could not read.
 	pictures, skippedPictures, unreadable int
 	pictureBytes                          int64
+	// notes are the book's footnotes, nil when they cannot be told (a
+	// KF8 book without its fragment index); kf8Tabs its files and
+	// fragments, nil for MOBI 7.
+	notes   *mobiNotes
+	kf8Tabs *kf8Tables
 }
 
 // findKF8 switches a hybrid file to its KF8 part: EXTH 121 names the KF8
@@ -417,8 +433,55 @@ func (b *mobiBook) textFlowEnd() (int64, bool) {
 	return int64(end), true
 }
 
-// run writes the title, then the text a block at a time; a write the sink
-// refuses ends the book there, and no record past that block is read.
+// openIndexes reads what the footnotes and the contents labels need: for
+// MOBI 7 nothing; for KF8 the skeleton and fragment indexes, then the
+// contents (NCX). An index that cannot be read is left out with a note:
+// the text does not need it.
+func (b *mobiBook) openIndexes() error {
+	if !b.kf8 {
+		b.notes = newMOBINotes(nil)
+		return nil
+	}
+	skel, ok1 := b.indexRecord(b.h.skel)
+	frag, ok2 := b.indexRecord(b.h.frag)
+	if !ok1 || !ok2 {
+		return nil
+	}
+	t, err := readKF8Tables(b.db, skel, frag)
+	var refused *RefusedError
+	if errors.As(err, &refused) {
+		b.rep.note("the book's skeleton and fragment indexes were not read (%s): its footnotes and contents labels were not used", refused.Reason)
+		return nil
+	} else if err != nil {
+		return err
+	}
+	b.kf8Tabs, b.notes = t, newMOBINotes(t)
+	if ncx, ok := b.indexRecord(b.h.ncx); ok {
+		err := t.addLabels(b.db, ncx)
+		if errors.As(err, &refused) {
+			for i := range t.files {
+				t.files[i].label = ""
+			}
+			b.rep.note("the book's contents index was not read (%s): its parts without a heading have none", refused.Reason)
+		} else if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// indexRecord is the record a header's index field names, relative to the
+// part's record 0; false for none or one outside the book.
+func (b *mobiBook) indexRecord(rel uint32) (int, bool) {
+	if rel == mobiNone || rel == 0 || int64(rel) >= int64(b.db.records()-b.base) {
+		return 0, false
+	}
+	return b.base + int(rel), true
+}
+
+// run writes the title, then the text a block at a time, then the notes; a
+// write the sink refuses ends the book there, and no record past that
+// block is read.
 func (b *mobiBook) run() error {
 	if err := b.emit(heading(1, b.title)); err != nil {
 		return err
@@ -428,14 +491,39 @@ func (b *mobiBook) run() error {
 		split = kf8NextFile
 	}
 	for {
+		start := b.text.taken
 		chunk, err := b.text.chunk(split)
-		if err != nil || chunk == nil {
+		if err != nil {
 			return err
 		}
-		if err := b.block(chunk); err != nil {
+		if chunk == nil {
+			return b.writeNotes()
+		}
+		if err := b.block(chunk, start); err != nil {
 			return err
 		}
 	}
+}
+
+// writeNotes lists the footnotes the text referred to, in the order of
+// their numbers.
+func (b *mobiBook) writeNotes() error {
+	if b.notes == nil {
+		return nil
+	}
+	nums := b.notes.list()
+	if len(nums) == 0 {
+		return nil
+	}
+	if err := b.emit(heading(2, "Notes")); err != nil {
+		return err
+	}
+	for _, n := range nums {
+		if err := b.emit(paragraph("[" + strconv.Itoa(n) + "] " + b.notes.text[n])); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (b *mobiBook) emit(md string) error {
@@ -446,10 +534,48 @@ func (b *mobiBook) emit(md string) error {
 	return b.w.text(md)
 }
 
-// block reads one block of the book's HTML through the walker's body-only
-// mode and writes it. A block the parser cannot read is skipped with a
-// note; a refusal (a block past the parser's bounds) refuses the book.
-func (b *mobiBook) block(chunk []byte) error {
+// block writes one block of the book's text, at text offset start. A KF8
+// file with a contents label is read on its own, so the label can stand
+// as its heading when it has none (as an EPUB document's contents label
+// does); the rest of the block is read as one.
+func (b *mobiBook) block(chunk []byte, start int64) error {
+	if b.kf8Tabs == nil {
+		return b.part(chunk, start, "")
+	}
+	end := start + int64(len(chunk))
+	files := b.kf8Tabs.files
+	i := sort.Search(len(files), func(i int) bool { return files[i].start >= start })
+	from := start
+	for ; i < len(files) && files[i].start < end; i++ {
+		f := files[i]
+		if f.label == "" {
+			continue
+		}
+		if f.start > from {
+			if err := b.part(chunk[from-start:f.start-start], from, ""); err != nil {
+				return err
+			}
+		}
+		to := min(f.end, end)
+		if err := b.part(chunk[f.start-start:to-start], f.start, f.label); err != nil {
+			return err
+		}
+		from = to
+	}
+	if from < end {
+		return b.part(chunk[from-start:], from, "")
+	}
+	return nil
+}
+
+// part reads text of the book's HTML, at text offset start, through the
+// walker's body-only mode and writes it, label the heading it is given
+// when it has none. Text the parser cannot read is skipped with a note; a
+// refusal (text past the parser's bounds) refuses the book.
+func (b *mobiBook) part(chunk []byte, start int64, label string) error {
+	if b.notes != nil {
+		chunk = b.notes.mark(chunk, start)
+	}
 	if b.h.encoding == 1252 {
 		chunk = decodeCP1252(chunk)
 	} else if !utf8.Valid(chunk) {
@@ -466,11 +592,17 @@ func (b *mobiBook) block(chunk []byte) error {
 	if !b.kf8 {
 		mobiFontHeadings(doc)
 	}
-	h := &htmlState{w: b.w, rep: b.rep, body: &htmlBody{
+	body := &htmlBody{
 		title:   b.title,
+		label:   label,
 		picture: b.picture,
 		ownRef:  b.pictureRef,
-	}}
+	}
+	if b.notes != nil {
+		b.notes.register(doc)
+		body.noteRef, body.note = b.notes.ref, b.notes.take
+	}
+	h := &htmlState{w: b.w, rep: b.rep, body: body}
 	if err := h.page(doc, maxCSSWork); err != nil {
 		return err
 	}
@@ -488,6 +620,9 @@ func (b *mobiBook) noteSkips() {
 	}
 	if b.unreadable > 0 {
 		b.rep.note("%d blocks of the book's text could not be read and were skipped", b.unreadable)
+	}
+	if b.notes != nil && b.notes.dropped > 0 {
+		b.rep.note("%d notes past %d bytes of notes were left out", b.notes.dropped, maxMOBINoteBytes)
 	}
 }
 

@@ -331,6 +331,8 @@ pg-logs:
 PROTO_OUT_DIR := internal/api/grpc/loomcyclepb
 # The conversion worker protocol (RFC GO): internal, not in the adapters.
 WORKER_PROTO_OUT_DIR := internal/conversion/workerpb
+# The workspace worker protocol (RFC GW): internal too.
+WORKSPACE_PROTO_OUT_DIR := internal/workspace/workspacepb
 proto:
 	@if ! command -v protoc >/dev/null 2>&1; then \
 		echo "protoc not found; install via your package manager (e.g. brew install protobuf)"; \
@@ -356,7 +358,15 @@ proto:
 		--go-grpc_opt=paths=source_relative \
 		--proto_path=proto \
 		proto/worker.proto
-	@echo "regenerated $(PROTO_OUT_DIR)/*.pb.go and $(WORKER_PROTO_OUT_DIR)/*.pb.go"
+	mkdir -p $(WORKSPACE_PROTO_OUT_DIR)
+	protoc \
+		--go_out=$(WORKSPACE_PROTO_OUT_DIR) \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=$(WORKSPACE_PROTO_OUT_DIR) \
+		--go-grpc_opt=paths=source_relative \
+		--proto_path=proto \
+		proto/workspace.proto
+	@echo "regenerated $(PROTO_OUT_DIR)/*.pb.go, $(WORKER_PROTO_OUT_DIR)/*.pb.go and $(WORKSPACE_PROTO_OUT_DIR)/*.pb.go"
 
 proto-deps:
 	go install google.golang.org/protobuf/cmd/protoc-gen-go@latest

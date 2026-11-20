@@ -249,12 +249,31 @@ func (d *Document) nodeStatsVectorsNote() string {
 // buildNodeStatsPlan reads the nodes of read (only scheme's concepts when scheme is
 // set), their full membership, their member documents and the stored rows.
 func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string) (*nodeStatsPlan, error) {
+	return d.buildNodeStatsPlanFor(ctx, key, read, scheme, false)
+}
+
+// buildSeriesReadPlan is the plan a read of the stored series checks its points
+// against (buildSeriesPlan, servable): the nodes, their members and the
+// unrestricted list, and nothing else — no member documents, no vectors (every
+// member's, on pgvector), no stored statistics. Its model is empty, so the series
+// plan adds no shift row (the only kind built from vectors); a shift point's
+// servable check needs only its member set, which this plan has.
+func (d *Document) buildSeriesReadPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead) (*nodeStatsPlan, error) {
+	return d.buildNodeStatsPlanFor(ctx, key, read, "", true)
+}
+
+func (d *Document) buildNodeStatsPlanFor(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string, light bool) (*nodeStatsPlan, error) {
+	if d.onNodeStatsPlan != nil {
+		d.onNodeStatsPlan(light)
+	}
 	if err := d.ensureSchema(ctx, key); err != nil {
 		return nil, err
 	}
 	p := &nodeStatsPlan{docs: map[string]*statDoc{}, stored: map[string]storedNodeStats{}}
 	var err error
-	if p.note = d.nodeStatsVectorsNote(); p.note == "" {
+	if light {
+		p.note = "a series read builds no vector stage"
+	} else if p.note = d.nodeStatsVectorsNote(); p.note == "" {
 		p.model = d.projectionModel()
 	}
 	var schemes []memrank.OntologyScheme
@@ -293,6 +312,9 @@ func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, 
 			return nil, err
 		}
 		p.nodes = append(p.nodes, classes...)
+	}
+	if light {
+		return p, nil
 	}
 	all := map[string]bool{}
 	for _, n := range p.nodes {
@@ -555,9 +577,13 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if mode == "" {
 		mode = nodeStatsModeReport
 	}
-	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute {
-		return errValidation(fmt.Sprintf("%s: mode %q is not report or compute", nodeStatsOp, mode),
-			"Pass mode: report to see what is stale, compute to recompute it."), nil
+	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute && mode != nodeStatsModeMisfits {
+		return errValidation(fmt.Sprintf("%s: mode %q is not report, compute or misfits", nodeStatsOp, mode),
+			"Pass mode: report to see what is stale, compute to recompute it, misfits to list the misplaced members."), nil
+	}
+	if in.Propose && mode != nodeStatsModeMisfits {
+		return errValidation(nodeStatsOp+": propose is taken only with mode misfits",
+			"Pass mode: misfits with propose to file placement proposals, or omit propose."), nil
 	}
 	key, _, err := d.ontologyTenantKey(ctx)
 	if err != nil {
@@ -570,6 +596,10 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if !callerDecidesIn(ctx, key) && !HasStatementMethodGrant(ctx) {
 		return errPermission(nodeStatsOp+": permission: only an operator, or a code agent granted statement_methods, runs node statistics",
 			"Ask an operator to run it, or to grant this agent statement_methods. describe_ontology with_stats reads what is stored."), nil
+	}
+	if in.Propose && !misfitMayPropose(ctx, key) {
+		return errPermission(nodeStatsOp+": method_not_granted: filing misfit proposals stamps "+misfitMethod+", and this agent may not stamp rule: statements",
+			"Omit propose to read the misfits, or ask an operator to file them or to grant this agent rule in statement_methods."), nil
 	}
 	// Every member's text and vector goes into a node's figures, so the pass must be
 	// able to read every document of the scope.
@@ -590,6 +620,13 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if in.Scheme != "" && !schemeInForce(read, in.Scheme) {
 		return errValidation(fmt.Sprintf("%s: no scheme %q is in force", nodeStatsOp, in.Scheme),
 			"Name a scheme from describe_ontology's schemes, or omit scheme for every node."), nil
+	}
+	if mode == nodeStatsModeMisfits {
+		mis, err := d.NodeMisfits(ctx, key, read, in.Scheme, in.Propose, in.Limit)
+		if err != nil {
+			return errFrom(nodeStatsOp+": "+err.Error(), err), nil
+		}
+		return jsonResult(mis)
 	}
 	ans, err := d.NodeStatsPass(ctx, key, direntTenant(ctx), read, in.Scheme, mode == nodeStatsModeCompute)
 	if err != nil {

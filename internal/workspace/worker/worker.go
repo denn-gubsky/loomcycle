@@ -1,0 +1,358 @@
+// Package worker is `loomcycle worker --role workspace` (RFC GW §4.1, §8): a
+// process that holds workspaces as directories under a root of its own,
+// attaches to the core's worker endpoint, keeps a pool of idle Op streams
+// open for the core to use, and runs the ops it is handed.
+//
+// It loads no config, opens no store and holds no provider key. An op names a
+// workspace by id; the id is the directory's name, checked so it can never
+// leave the root (workspace.ValidID). Which run or tenant a workspace belongs
+// to is the core's business, never the worker's.
+//
+// This layer runs open, remove and status. The commands and file ops arrive
+// with the Workspace tool.
+package worker
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+
+	"github.com/denn-gubsky/loomcycle/internal/safego"
+	"github.com/denn-gubsky/loomcycle/internal/workerlink"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/workspacepb"
+)
+
+// Defaults and bounds.
+const (
+	DefaultCapacity    = 8
+	DefaultIdleStreams = 16
+	// MaxIdleStreams bounds the idle streams a worker keeps by itself (RFC
+	// GW §8).
+	MaxIdleStreams = 32
+	// maxExtraStreams bounds the one-op streams OpenStreams adds at once.
+	maxExtraStreams = 64
+	// maxInput bounds an op's input on this layer, whose ops take none.
+	maxInput       = 1 << 20
+	heartbeatEvery = 5 * time.Second
+	// endWait bounds how long a finished op's stream may take to close.
+	endWait = 10 * time.Second
+)
+
+// Options configure a workspace worker.
+type Options struct {
+	// Target is the dispatchers to attach to (workerlink.ParseTargets).
+	Target string
+	// Token is an operator token holding only workers:attach.
+	Token string
+	// ID names the worker to the core; default the host name, which must not
+	// change across restarts (defaultID).
+	ID           string
+	BuildVersion string
+	// Root is the directory the workspaces are made in.
+	Root string
+	// Engine runs commands; only host exists in this release.
+	Engine string
+	// Capacity is the workspaces held at most; default DefaultCapacity.
+	Capacity int
+	// IdleStreams is the idle Op streams kept open; default 16, at most 32.
+	IdleStreams int
+	// Toolchains are reported to the core; nil detects python and node on
+	// PATH (DetectToolchains).
+	Toolchains []string
+	Labels     []string
+	TLS        *tls.Config
+	Insecure   bool
+	// Resolve and ResolveEvery are workerlink's.
+	Resolve      func(ctx context.Context, host string) ([]string, error)
+	ResolveEvery time.Duration
+	Logger       *slog.Logger
+}
+
+// ErrRefused is the core refusing this worker for good: a token that may not
+// attach a worker, another protocol version.
+var ErrRefused = workerlink.ErrRefused
+
+// DetectToolchains reports python and node when each is found on PATH.
+func DetectToolchains() []string {
+	var out []string
+	if _, err := exec.LookPath("python3"); err == nil {
+		out = append(out, "python")
+	} else if _, err := exec.LookPath("python"); err == nil {
+		out = append(out, "python")
+	}
+	if _, err := exec.LookPath("node"); err == nil {
+		out = append(out, "node")
+	}
+	return out
+}
+
+// Run serves the dispatchers until ctx ends, reconnecting with backoff.
+func Run(ctx context.Context, opt Options) error {
+	if opt.Token == "" {
+		return errors.New("workspace worker: LOOMCYCLE_WORKER_TOKEN is not set")
+	}
+	if opt.Target == "" {
+		return errors.New("workspace worker: no dispatcher address (--dispatcher)")
+	}
+	if opt.Root == "" {
+		return errors.New("workspace worker: LOOMCYCLE_WORKSPACE_ROOT is not set")
+	}
+	if opt.Engine == "" {
+		opt.Engine = workspace.EngineHost
+	}
+	if opt.Engine != workspace.EngineHost {
+		return fmt.Errorf("workspace worker: engine %q is not available in this release (want host)", opt.Engine)
+	}
+	if opt.Capacity <= 0 {
+		opt.Capacity = DefaultCapacity
+	}
+	if opt.IdleStreams <= 0 {
+		opt.IdleStreams = DefaultIdleStreams
+	}
+	opt.IdleStreams = min(opt.IdleStreams, MaxIdleStreams)
+	if opt.Toolchains == nil {
+		opt.Toolchains = DetectToolchains()
+	}
+	if opt.ID == "" {
+		opt.ID = defaultID()
+	}
+	if opt.Logger == nil {
+		opt.Logger = slog.Default()
+	}
+	root, err := filepath.Abs(opt.Root)
+	if err != nil {
+		return fmt.Errorf("workspace worker: the root: %w", err)
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return fmt.Errorf("workspace worker: making the root: %w", err)
+	}
+	opt.Root = root
+	targets, err := workerlink.ParseTargets(opt.Target)
+	if err != nil {
+		return err
+	}
+	log := opt.Logger.With("component", "workspace-worker", "worker_id", opt.ID)
+	log.Warn("the host engine runs commands as this process's user, with no isolation; use it only on a trusted machine", "root", root)
+	w := &worker{opt: opt, log: log}
+	return workerlink.Serve(ctx, targets, workerlink.Options{
+		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
+		Name: "workspace.worker", Logger: log,
+	}, w.session)
+}
+
+// defaultID is the host's name. It must stay the same across restarts: the
+// core keys a worker's workspace rows on it, and a worker that came back
+// under a new id would have every directory it holds read as unknown and
+// removed. Two workers on one host each need an --id of their own.
+func defaultID() string {
+	host, _ := os.Hostname()
+	// A hostname may carry characters the core refuses in an id.
+	out := []byte(host)
+	for i, c := range out {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '-', c == '_':
+		default:
+			out[i] = '-'
+		}
+	}
+	if len(out) > 128 {
+		out = out[:128]
+	}
+	if len(out) == 0 {
+		return "workspace-worker"
+	}
+	return string(out)
+}
+
+type worker struct {
+	opt Options
+	log *slog.Logger
+	// mu serialises open's capacity check with the directory it makes.
+	mu sync.Mutex
+	// extra counts the one-op streams OpenStreams opened and still open.
+	extra atomic.Int32
+}
+
+func (w *worker) outgoing(ctx context.Context) context.Context {
+	return metadata.AppendToOutgoingContext(ctx, workspace.MDAuthorization, "Bearer "+w.opt.Token)
+}
+
+// held lists the workspace directories under the root.
+func (w *worker) held() ([]string, error) {
+	ents, err := os.ReadDir(w.opt.Root)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range ents {
+		if e.IsDir() && workspace.ValidID(e.Name()) {
+			out = append(out, e.Name())
+		}
+	}
+	return out, nil
+}
+
+// refused reports whether a status from the core says retrying cannot help.
+func refused(err error) bool {
+	switch status.Code(err) {
+	case codes.Unauthenticated, codes.PermissionDenied, codes.FailedPrecondition, codes.InvalidArgument:
+		return true
+	}
+	return false
+}
+
+// session is one attachment: Hello, Welcome, heartbeats, the core's control
+// messages, and the idle Op streams.
+func (w *worker) session(parent context.Context, conn *grpc.ClientConn, log *slog.Logger) error {
+	client := workspacepb.NewWorkspaceServiceClient(conn)
+	ctx, cancel := context.WithCancel(w.outgoing(parent))
+	defer cancel()
+	held, err := w.held()
+	if err != nil {
+		return fmt.Errorf("listing the workspaces on disk: %w", err)
+	}
+	att, err := client.Attach(ctx)
+	if err != nil {
+		return err
+	}
+	if err := att.Send(&workspacepb.WorkerMessage{Msg: &workspacepb.WorkerMessage_Hello{Hello: &workspacepb.Hello{
+		WorkerId: w.opt.ID, ProtocolVersion: workspace.ProtocolVersion, BuildVersion: w.opt.BuildVersion,
+		Engine: w.opt.Engine, Toolchains: w.opt.Toolchains, Labels: w.opt.Labels,
+		Capacity: uint32(w.opt.Capacity), HeldWorkspaces: held, IdleStreams: uint32(w.opt.IdleStreams),
+	}}}); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	// A Send that met io.EOF means the core already ended the stream, a
+	// refusal sent before it read the Hello; only Recv returns its status.
+	ctl, err := att.Recv()
+	if err != nil {
+		if refused(err) {
+			return fmt.Errorf("%w: %v", ErrRefused, status.Convert(err).Message())
+		}
+		return err
+	}
+	if b := ctl.GetWelcome().GetBuildVersion(); b != w.opt.BuildVersion {
+		log.Warn("the dispatcher runs another build", "dispatcher_build", b, "build", w.opt.BuildVersion)
+	}
+	log.Info("attached to the dispatcher", "engine", w.opt.Engine, "capacity", w.opt.Capacity, "toolchains", w.opt.Toolchains, "held", len(held))
+
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	defer cancel()
+	for range w.opt.IdleStreams {
+		wg.Add(1)
+		safego.Go(ctx, "workspace.worker.stream", func() {
+			defer wg.Done()
+			for ctx.Err() == nil {
+				if err := w.serveOne(ctx, client); err != nil && ctx.Err() == nil {
+					log.Warn("an op stream ended", "err", err)
+					select {
+					case <-ctx.Done():
+					case <-time.After(workerlink.BackoffMin):
+					}
+				}
+			}
+		})
+	}
+
+	// Control messages arrive on a goroutine of their own; every Send on the
+	// Attach stream happens below, on this one.
+	// It is in wg itself, so the Adds it makes for extra streams never race
+	// the Wait above with the count at zero.
+	removes := make(chan []string, 4)
+	errc := make(chan error, 1)
+	wg.Add(1)
+	safego.Go(ctx, "workspace.worker.control", func() {
+		defer wg.Done()
+		for {
+			m, err := att.Recv()
+			if err != nil {
+				errc <- err
+				return
+			}
+			switch {
+			case m.GetRemove() != nil:
+				select {
+				case removes <- m.GetRemove().GetWorkspaceIds():
+				case <-ctx.Done():
+					return
+				}
+			case m.GetOpenStreams() != nil:
+				w.openExtra(ctx, client, &wg, int(m.GetOpenStreams().GetN()), log)
+			}
+		}
+	})
+	t := time.NewTicker(heartbeatEvery)
+	defer t.Stop()
+	for {
+		select {
+		case err := <-errc:
+			return err
+		case ids := <-removes:
+			gone := w.removeAll(ids, log)
+			if err := att.Send(&workspacepb.WorkerMessage{Msg: &workspacepb.WorkerMessage_Removed{Removed: &workspacepb.Removed{WorkspaceIds: gone}}}); err != nil {
+				return err
+			}
+		case <-t.C:
+			n, _ := w.held()
+			if err := att.Send(&workspacepb.WorkerMessage{Msg: &workspacepb.WorkerMessage_Heartbeat{Heartbeat: &workspacepb.Heartbeat{Held: uint32(len(n))}}}); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// openExtra opens n streams that each carry one op, within maxExtraStreams.
+func (w *worker) openExtra(ctx context.Context, client workspacepb.WorkspaceServiceClient, wg *sync.WaitGroup, n int, log *slog.Logger) {
+	for range n {
+		if w.extra.Add(1) > maxExtraStreams {
+			w.extra.Add(-1)
+			return
+		}
+		wg.Add(1)
+		safego.Go(ctx, "workspace.worker.extra-stream", func() {
+			defer wg.Done()
+			defer w.extra.Add(-1)
+			if err := w.serveOne(ctx, client); err != nil && ctx.Err() == nil {
+				log.Warn("an extra op stream ended", "err", err)
+			}
+		})
+	}
+}
+
+// removeAll removes the directories of ids the core named, and returns the
+// ids now gone. An id that is not a workspace id is never touched.
+func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
+	var gone []string
+	for _, id := range ids {
+		if !workspace.ValidID(id) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(w.opt.Root, id)); err != nil {
+			log.Warn("cannot remove a workspace the dispatcher released", "workspace_id", id, "err", err)
+			continue
+		}
+		gone = append(gone, id)
+	}
+	if len(gone) > 0 {
+		log.Info("removed workspaces released while away", "count", len(gone))
+	}
+	return gone
+}

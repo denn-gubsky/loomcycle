@@ -22,7 +22,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 )
 
-// runWorker is `loomcycle worker` (RFC GO): a conversion worker that dials
+// runWorker is `loomcycle worker` (RFC GO): by default a conversion worker that dials
 // the dispatcher and runs the conversions it is handed. It loads no config,
 // opens no store and holds no provider key; the core it serves keeps every
 // file's path and grant to itself and sends only bytes. Its helper commands
@@ -36,7 +36,16 @@ func runWorker(args []string, stderr io.Writer) int {
 	id := fs.String("id", "", "this worker's name to the dispatcher (default host-pid-random)")
 	parentPID := fs.Int("parent-pid", 0, "exit when this process is no longer the parent (set by the core for its children)")
 	oomAdj := fs.Int("oom-score-adj", 0, "on Linux, raise this process's OOM score to this value (the core sets 1000 for its children)")
+	role := fs.String("role", "conversion", "what this worker does: conversion (convert files) or workspace (hold workspaces and run their ops, RFC GW)")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	switch *role {
+	case "conversion":
+	case "workspace":
+		return runWorkspaceWorker(*dispatcher, *id, stderr)
+	default:
+		fmt.Fprintf(stderr, "loomcycle worker: --role %q: want conversion or workspace\n", *role)
 		return 2
 	}
 	slots := 1

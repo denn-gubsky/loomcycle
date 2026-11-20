@@ -44,6 +44,7 @@ import (
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/throughput"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
 )
 
 // MetricsListenerHandler is the handler of the separate metrics listener
@@ -191,6 +192,9 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 	writeExtractionGauges(w, replicaLabels, s.extractionStats)
 	if s.conversionStats != nil {
 		writeConversionMetrics(w, replicaLabels, s.conversionStats())
+	}
+	if s.workspaceStats != nil {
+		writeWorkspaceMetrics(w, replicaLabels, s.workspaceStats())
 	}
 	writeLaneGauges(w, replicaLabels, s.callSched.Stats())
 
@@ -751,6 +755,27 @@ func writeConversionMetrics(w io.Writer, replicaLabels string, st convert.PoolSt
 	for _, k := range keys {
 		kind, outcome, _ := strings.Cut(k, "/")
 		fmt.Fprintf(w, "loomcycle_conversion_jobs_total%s %d\n", mergeLabels(replicaLabels, map[string]string{"kind": kind, "outcome": outcome}), st.Jobs[k])
+	}
+	fmt.Fprintln(w)
+}
+
+// writeWorkspaceMetrics reports the workspace workers (RFC GW): those
+// attached, ops by op and outcome, and workers lost. An outcome is ok,
+// cancelled or an error class from a closed set (workspace.Class*), so a
+// worker cannot grow the label set.
+func writeWorkspaceMetrics(w io.Writer, replicaLabels string, st workspace.Stats) {
+	writeGauge(w, "loomcycle_workspace_workers", "Workspace workers attached to this replica.", replicaLabels, float64(st.Workers))
+	fmt.Fprintf(w, "# HELP loomcycle_workspace_worker_deaths_total Workspace workers lost to missed heartbeats or with an op in flight.\n# TYPE loomcycle_workspace_worker_deaths_total counter\nloomcycle_workspace_worker_deaths_total%s %d\n\n", replicaLabels, st.Deaths)
+	keys := make([]string, 0, len(st.Ops))
+	for k := range st.Ops {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintln(w, "# HELP loomcycle_workspace_ops_total Workspace ops on this replica, by op and outcome (ok, cancelled, or an error class such as worker_lost).")
+	fmt.Fprintln(w, "# TYPE loomcycle_workspace_ops_total counter")
+	for _, k := range keys {
+		op, outcome, _ := strings.Cut(k, "/")
+		fmt.Fprintf(w, "loomcycle_workspace_ops_total%s %d\n", mergeLabels(replicaLabels, map[string]string{"op": op, "outcome": outcome}), st.Ops[k])
 	}
 	fmt.Fprintln(w)
 }
