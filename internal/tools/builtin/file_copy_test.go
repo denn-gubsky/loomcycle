@@ -535,7 +535,7 @@ func TestFileWorkspace_OpsWithoutWorkspaceSupportRefuseTheReference(t *testing.T
 	f.open(t, "w")
 	f.wsPut(t, "w", "a.docx", "x")
 	for _, in := range []map[string]any{
-		{"op": "extract", "path": "workspace:w:a.docx"},
+		{"op": "transcribe", "path": "workspace:w:a.docx"},
 		{"op": "unpack", "path": "workspace:w:a.docx"},
 		{"op": "keep", "from": "workspace:w:a.docx", "to": "volume:docs:a.docx"},
 	} {
@@ -544,8 +544,8 @@ func TestFileWorkspace_OpsWithoutWorkspaceSupportRefuseTheReference(t *testing.T
 			t.Errorf("%v was not refused", in)
 		}
 	}
-	_, res := f.exec(t, f.ctx, map[string]any{"op": "extract", "path": "workspace:w:a.docx"})
-	wantFileRefusal(t, "extract", res, "workspace reference")
+	_, res := f.exec(t, f.ctx, map[string]any{"op": "unpack", "path": "workspace:w:a.docx"})
+	wantFileRefusal(t, "unpack", res, "workspace reference")
 
 	c, _, cctx := cryptoFixture(t, "user")
 	cctx = tools.UpdateRunPolicy(cctx, func(p *tools.RunPolicy) {
