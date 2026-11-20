@@ -313,6 +313,9 @@ func (b *boot) bindStoreToTools() {
 			DiskQuotaBytes: ws.DiskQuotaMB << 20, CopyMaxFiles: ws.Copy.MaxFiles, CopyMaxBytes: ws.Copy.MaxBytes,
 		}, slog.Default())
 		b.workspaceTool.Manager = b.workspaces
+		// File reaches workspaces by reference (RFC GW P2) through the same
+		// bookkeeping, so the same pin and grant hold.
+		b.fileTool.Workspaces = b.workspaces
 	}
 }
 
