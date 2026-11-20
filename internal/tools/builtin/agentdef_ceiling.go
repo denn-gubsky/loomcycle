@@ -55,7 +55,8 @@ import (
 // inject_tool_guide, memory_protocol, memory_roots), and `internal`, which
 // nothing reads off a runtime-authored definition (Config.InternalAgentNames
 // is static-only). Hooks have their own gate (checkHooks); code_body runs only
-// through the agent's own tools, which the tools ceiling bounds.
+// through the agent's own tools, which the tools ceiling bounds, and a fork
+// that changes it keeps none of the forked version's grants (forkChangesCode).
 
 // checkCapabilityCeiling refuses a definition granting a capability its author
 // does not hold. base is the stored version a fork is made from (nil at
@@ -777,6 +778,47 @@ func ceilDefScopes(ctx context.Context, name string, def mergedDef, base *merged
 		if bad {
 			return refuseCapability(g.field, v, false, held, scopeUnion(g.ceil, g.baseVal))
 		}
+	}
+	return nil
+}
+
+// forkChangesCode reports whether a fork changes the code a code-js agent
+// runs: a different code_body, or a switch into or out of code-js (out of it,
+// the author's prompt runs where the code did). Model agents are not judged
+// here: a rewritten prompt keeping the lineage's grants is the documented
+// fork contract.
+func (a *AgentDef) forkChangesCode(def, base mergedDef) bool {
+	codeJS, baseCodeJS := a.isCodeJS(def.Provider), a.isCodeJS(base.Provider)
+	return codeJS != baseCodeJS || (codeJS && def.Code != base.Code)
+}
+
+// isCodeJS reports whether provider executes a code body: the code-js
+// provider itself, or a configured provider served by its driver.
+func (a *AgentDef) isCodeJS(provider string) bool {
+	if provider == config.CodeJSProvider {
+		return true
+	}
+	if a.Cfg == nil || provider == "" {
+		return false
+	}
+	p, ok := a.Cfg.Providers[provider]
+	return ok && p.Driver == config.CodeJSProvider
+}
+
+// forkerToolsCeiling holds a fork that changes the code to the forker's own
+// tools, as create holds a new agent; the lineage root no longer bounds it.
+// Inside a run only: the operator plane is not narrowed, and a member's call
+// is held to its own tools by checkCapabilityCeiling (memberToolsCeiling).
+func forkerToolsCeiling(ctx context.Context, def mergedDef) error {
+	if tools.IsOffRunPlane(ctx) || len(def.Tools) == 0 {
+		return nil
+	}
+	callerTools := tools.PolicyOf(ctx).Tools
+	if callerTools == nil {
+		return fmt.Errorf("caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening")
+	}
+	if err := assertToolsSubset(def.Tools, callerTools); err != nil {
+		return fmt.Errorf("%w; a fork that changes the code is held to this agent's own tools — narrow tools, or ask an operator to author this agent", err)
 	}
 	return nil
 }
