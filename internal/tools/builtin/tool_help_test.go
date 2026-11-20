@@ -89,10 +89,17 @@ func TestToolHelpArticles_CoverEveryOperation(t *testing.T) {
 	set := bundledHelp(t)
 	byName := censusByName(t)
 	for name, tl := range byName {
+		ops := tools.SchemaEnum(tl.InputSchema(), "op")
+		// Section articles are not operations and are left out of OpsOf; they
+		// belong only on a tool with no op to document. Checked before the
+		// tool-article gate, so a section filed without its tool article is
+		// still refused.
+		for _, p := range set.SectionsOnOpTool(name, ops) {
+			t.Errorf("%s: %s", name, p)
+		}
 		if _, ok := set.ToolArticle(name); !ok {
 			continue
 		}
-		ops := tools.SchemaEnum(tl.InputSchema(), "op")
 		for _, op := range ops {
 			if !set.Has(name + "/" + op) {
 				t.Errorf("%s has an article but no article for op %q (add tools/%s/%s.md)", name, op, name, op)
