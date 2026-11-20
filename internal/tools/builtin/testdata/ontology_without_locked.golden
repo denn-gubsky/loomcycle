@@ -425,9 +425,6 @@ When you say what something is about or how it is classified, use these concepts
      "section": "classes",
      "kind": "class"
     }
-   ],
-   "notes": [
-    "a class rename with dependents is refused until the rename job exists (RFC GQ P5): stored types, identity and subject keys would keep the old name"
    ]
   },
   {

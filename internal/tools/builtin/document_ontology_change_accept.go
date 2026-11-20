@@ -444,15 +444,8 @@ func (d *Document) planChangeAccept(ctx context.Context, a changeAccept, given s
 				rep.Counts[name] += c.N
 			}
 		}
-		if ch.Op == connector.OntologyPlanRename && a.mark.Kind == planKindClass &&
-			(ch.Risk != connector.OntologyRiskNone || !plan.Complete) {
-			what := affectedCounts(ch)
-			if what == "" {
-				what = "not every user and agent scope could be counted"
-			}
-			return fmt.Errorf("%w: renaming the class %s needs the rename job (RFC GQ P5), which carries the new name "+
-				"through stored types, identity and subject keys; something rests on it (%s). Reject the proposal, or retire "+
-				"the class and declare the new one", ErrChangeRenameJobPending, strconv.Quote(a.mark.TargetName), what)
+		if why, pending := renameJobPending(ch, plan.Complete); pending {
+			return fmt.Errorf("%w: %s. Reject the proposal, or retire the class and declare the new one", ErrChangeRenameJobPending, why)
 		}
 	}
 	if r := d.ontologyPlanGate(ctx, a.key, a.mscope, "accept", a.tg.read.DocumentID, a.changes, given); r != nil {

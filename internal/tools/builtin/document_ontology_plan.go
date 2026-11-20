@@ -12,8 +12,8 @@ package builtin
 //
 //   - destroys — a delete: rows keyed by a chunk id of the entry's subtree go with it,
 //     and rows keyed by its name are left naming nothing (RFC GQ 9c counts both);
-//   - stales   — a rename, move or retirement with dependents, or an edit of the
-//     entry's directives (identity, characteristics, policy) with dependents;
+//   - stales   — a rename, move or retirement with dependents, or an edit of any of
+//     the entry's directives with dependents;
 //   - none     — nothing stored rests on what the change touches, or the edit changes
 //     only the meaning (D2: such edits stay direct).
 //
@@ -84,7 +84,8 @@ type plannedChange struct {
 	// An edit's effect, from comparing the entry before and after it.
 	directivesChanged                bool
 	newlyFunctional, newlyAsymmetric bool
-	editRenames                      bool // the edit's body changes the entry's name
+	editRenames                      bool   // the edit's body changes the entry's name
+	newName                          string // the name it gives, when editRenames
 	notes                            []string
 	counts                           map[string]*connector.OntologyPlanCount
 	// proposal is the proposal this change stands for (op proposal), "" for a direct one.
@@ -197,7 +198,7 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 		compareEditedEntry(before, alone, p)
 		if a, ok := planEntries(alone)[p.entry.ChunkID]; ok && a.Name != p.entry.Name {
-			p.editRenames = true // a body heading names an untitled entry
+			p.editRenames, p.newName = true, a.Name // a body heading names an untitled entry
 		}
 	}
 	for _, p := range planned {
@@ -215,7 +216,25 @@ func (d *Document) planOntologyAt(ctx context.Context, key sqlmem.ScopeKey, msco
 			out.Changes = append(out.Changes, *it.fixed)
 			continue
 		}
-		out.Changes = append(out.Changes, planned[next].result())
+		p := planned[next]
+		ch := p.result()
+		if p.in.Op == connector.OntologyPlanEdit && p.editRenames && p.entry.Kind == planKindClass {
+			// The body's heading renames an untitled class: update_chunk plans that as a
+			// rename, so the plan says whether the rename job would refuse it.
+			implied := connector.OntologyChange{Op: connector.OntologyPlanRename, Entry: p.entry.ChunkID, Name: p.newName}
+			rp, err := d.planOntologyAt(ctx, key, mscope, []connector.OntologyChange{implied})
+			if err != nil {
+				return out, err
+			}
+			if len(rp.Changes) == 1 {
+				if why, pending := renameJobPending(rp.Changes[0], rp.Complete); pending {
+					ch.Notes = append(ch.Notes[:len(ch.Notes):len(ch.Notes)], renameJobPendingNote("edit (its heading renames the class)", why))
+				}
+			}
+		} else if why, pending := renameJobPending(ch, out.Complete); pending {
+			ch.Notes = append(ch.Notes[:len(ch.Notes):len(ch.Notes)], renameJobPendingNote("rename", why))
+		}
+		out.Changes = append(out.Changes, ch)
 		next++
 	}
 	return out, nil
@@ -414,9 +433,6 @@ func (d *Document) resolvePlanChange(ctx context.Context, key sqlmem.ScopeKey, m
 				p.notes = append(p.notes, "another "+e.Kind+" is already named "+strconv.Quote(other.Name))
 				break
 			}
-		}
-		if e.Kind == planKindClass {
-			p.notes = append(p.notes, "a class rename with dependents is refused until the rename job exists (RFC GQ P5): stored types, identity and subject keys would keep the old name")
 		}
 	case connector.OntologyPlanMove:
 		parent := strings.TrimSpace(ch.Parent)
@@ -652,11 +668,10 @@ func (p *plannedChange) result() connector.OntologyPlannedChange {
 	return out
 }
 
-// planEffects is what each op does to each kind of dependent; a pair not listed is
-// kept. editDirectives is an edit that changes more than the meaning (an edit of the
-// meaning alone keeps everything, D2).
-const editDirectives = "edit-directives"
-
+// planEffects is what each op but edit does to each kind of dependent; a pair not
+// listed is kept. An edit is planEffect's own rule: one of the meaning alone keeps
+// everything (D2), and one that changes any directive stales everything that rests on
+// the entry (the owner's ruling of 2026-11-20).
 var planEffects = map[string]map[string]string{
 	// Rows keyed by a chunk id of the subtree: a delete removes them.
 	"statements":       {connector.OntologyPlanDelete: connector.OntologyEffectDestroyed, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale},
@@ -667,20 +682,19 @@ var planEffects = map[string]map[string]string{
 	"node_stats":     {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale},
 	"measure_points": {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale},
 	// Rows keyed by a class name.
-	"typed_documents":      {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale, editDirectives: connector.OntologyEffectStale},
-	"typed_chunks":         {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale, editDirectives: connector.OntologyEffectStale},
-	"identity_keys":        {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale, editDirectives: connector.OntologyEffectStale},
+	"typed_documents":      {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale},
+	"typed_chunks":         {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale},
+	"identity_keys":        {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale},
 	"subject_keys":         {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale},
-	"document_annotations": {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, editDirectives: connector.OntologyEffectStale},
+	"document_annotations": {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned},
 	"instances":            {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale},
 	"projects":             {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale},
 	// Rows keyed by a relation kind.
-	"statements_of_kind":    {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale, editDirectives: connector.OntologyEffectStale},
-	"characteristic_breaks": {editDirectives: connector.OntologyEffectStale},
-	"review_rules":          {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale},
+	"statements_of_kind": {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale},
+	"review_rules":       {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale},
 	// Rows keyed by a concept's tag path.
 	"concept_tags":   {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale, connector.OntologyPlanRename: connector.OntologyEffectStale, connector.OntologyPlanMove: connector.OntologyEffectStale},
-	"policy_changes": {connector.OntologyPlanMove: connector.OntologyEffectStale, editDirectives: connector.OntologyEffectStale},
+	"policy_changes": {connector.OntologyPlanMove: connector.OntologyEffectStale},
 	// An instance's adopted subject and what is said about it.
 	"subject":     {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale},
 	"facts_about": {connector.OntologyPlanDelete: connector.OntologyEffectOrphaned, connector.OntologyPlanRetire: connector.OntologyEffectStale},
@@ -690,10 +704,14 @@ var planEffects = map[string]map[string]string{
 func planEffect(name string, p *plannedChange) string {
 	op := p.in.Op
 	if op == connector.OntologyPlanEdit {
+		// Any directive, not only @identity or a relation characteristic: what a
+		// directive changes for the rows resting on the entry (how they are read,
+		// placed, rendered or checked) is not something the plan can tell apart, so
+		// the operator plans every such change (RFC GQ ruling of 2026-11-20).
 		if !p.directivesChanged {
 			return connector.OntologyEffectKept
 		}
-		op = editDirectives
+		return connector.OntologyEffectStale
 	}
 	// A concept's statistics and series are keyed by its chunk id, so a rename keeps
 	// them; a class's are keyed by its name, so a rename leaves them under the old one.

@@ -113,7 +113,7 @@ func TestOntologyEdit_RenameWithoutPlanIsRefused(t *testing.T) {
 	memo, reporting, supervises := f.chunk("Memo"), f.chunk("Reporting"), f.chunk("supervises")
 	fp := f.planFingerprint(memo)
 	for name, ctx := range map[string]context.Context{"operator": f.ctx, "admin": adminCtx(f.ctx)} {
-		wantPlanRefusal(t, name+" rename Memo", f.change(ctx, "update_chunk", memo, map[string]any{"title": "Memorandum"}), planRequiredCode, fp)
+		wantPlanRefusal(t, name+" rename supervises", f.change(ctx, "update_chunk", supervises, map[string]any{"title": "oversees"}), planRequiredCode, fp)
 		wantPlanRefusal(t, name+" retire Reporting", f.change(ctx, "update_chunk", reporting, map[string]any{"status": memrank.OntologyStatusRetired}), planRequiredCode, fp)
 		wantPlanRefusal(t, name+" move Memo", f.change(ctx, "move_chunk", memo, map[string]any{"new_parent_id": f.chunk("Provision")}), planRequiredCode, fp)
 		wantPlanRefusal(t, name+" make supervises functional", f.change(ctx, "update_chunk", supervises, map[string]any{"body": "@functional"}), planRequiredCode, fp)
@@ -169,7 +169,7 @@ func TestOntologyEdit_FreshFingerprintApplies(t *testing.T) {
 		what, op, id string
 		fields       map[string]any
 	}{
-		{"rename Memo", "update_chunk", memo, map[string]any{"title": "Memorandum"}},
+		{"rename supervises", "update_chunk", f.chunk("supervises"), map[string]any{"title": "oversees"}},
 		{"move Memo", "move_chunk", memo, map[string]any{"new_parent_id": f.chunk("Provision")}},
 		{"make supervises functional", "update_chunk", f.chunk("supervises"), map[string]any{"body": "@functional"}},
 		{"retire Reporting", "update_chunk", f.chunk("Reporting"), map[string]any{"status": memrank.OntologyStatusRetired}},
@@ -180,11 +180,11 @@ func TestOntologyEdit_FreshFingerprintApplies(t *testing.T) {
 			t.Fatalf("%s with a fresh fingerprint: %s", s.what, r.Text)
 		}
 	}
-	if termParent(t, f.read(), "Memorandum") != "Provision" {
-		t.Errorf("Memorandum's parent = %q, want Provision", termParent(t, f.read(), "Memorandum"))
+	if termParent(t, f.read(), "Memo") != "Provision" {
+		t.Errorf("Memo's parent = %q, want Provision", termParent(t, f.read(), "Memo"))
 	}
-	if !relationByName(f.read(), "supervises").Functional {
-		t.Error("supervises is not functional")
+	if !relationByName(f.read(), "oversees").Functional {
+		t.Error("oversees is not functional")
 	}
 }
 
@@ -262,11 +262,11 @@ func TestOntologyEdit_FingerprintRefusedOnPostgres(t *testing.T) {
 	d, base := pgDocumentOrSkip(t)
 	f := &retiredFixture{t: t, d: d, ctx: operatorCtx(installTenantOntology(t, d, base, retiredOntologyMD, memrank.OntologyConfirmedStatus))}
 	seedFingerprintDependents(f)
-	memo := f.chunk("Memo")
+	memo, supervises := f.chunk("Memo"), f.chunk("supervises")
 	fp := f.planFingerprint(memo)
-	wantPlanRefusal(t, "rename Memo", f.change(f.ctx, "update_chunk", memo, map[string]any{"title": "Memorandum"}), planRequiredCode, fp)
-	wantPlanRefusal(t, "rename Memo, stale", f.change(f.ctx, "update_chunk", memo, map[string]any{"title": "Memorandum", "plan_fingerprint": strings.Repeat("0", 64)}), planStaleCode, fp)
-	if r := f.change(f.ctx, "update_chunk", memo, map[string]any{"title": "Memorandum", "plan_fingerprint": fp}); r.IsError {
+	wantPlanRefusal(t, "rename supervises", f.change(f.ctx, "update_chunk", supervises, map[string]any{"title": "oversees"}), planRequiredCode, fp)
+	wantPlanRefusal(t, "rename supervises, stale", f.change(f.ctx, "update_chunk", supervises, map[string]any{"title": "oversees", "plan_fingerprint": strings.Repeat("0", 64)}), planStaleCode, fp)
+	if r := f.change(f.ctx, "update_chunk", supervises, map[string]any{"title": "oversees", "plan_fingerprint": fp}); r.IsError {
 		t.Fatalf("rename with the fingerprint: %s", r.Text)
 	}
 	if r := f.change(f.ctx, "update_chunk", f.chunk("Provision"), map[string]any{"title": "Clause"}); r.IsError {
@@ -290,7 +290,7 @@ func TestOntologyEdit_FingerprintRefusedOnPostgres(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if r := f.change(f.ctx, "move_chunk", event, map[string]any{"new_parent_id": f.chunk("Memorandum")}); !r.IsError {
+	if r := f.change(f.ctx, "move_chunk", event, map[string]any{"new_parent_id": memo}); !r.IsError {
 		t.Errorf("a move whose parent changed after its checks applied on postgres: %s", r.Text)
 	}
 }
