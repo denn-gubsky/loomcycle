@@ -118,6 +118,15 @@ class YamlSubsetTest(unittest.TestCase):
         self.assertEqual(drive._scalar("[owner's view, access control]"), ["owner's view", "access control"])
         self.assertEqual(drive._scalar("['a, b', it's]"), ["a, b", "it's"])
 
+    def test_comment_after_plain_scalar_with_apostrophe_is_stripped(self):
+        self.assertEqual(drive._strip_comment("confidence: owner's call  # a note"), "confidence: owner's call")
+        self.assertEqual(drive._strip_comment("- it's here # note"), "- it's here")
+        self.assertEqual(drive._strip_comment("aliases: [owner's view, x] # note"), "aliases: [owner's view, x]")
+        # A quoted scalar still keeps its #.
+        self.assertEqual(drive._strip_comment("gold_notes: 'a # b' # c"), "gold_notes: 'a # b'")
+        self.assertEqual(drive._strip_comment("x: 'it''s # in' # out"), "x: 'it''s # in'")
+        self.assertEqual(drive._strip_comment('- "a # b"  # c'), '- "a # b"')
+
 
 class TopicMatchTest(unittest.TestCase):
     TOPIC = {"name": "security and access control", "aliases": ["security", "access control", "authz"]}

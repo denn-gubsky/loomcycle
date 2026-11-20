@@ -66,16 +66,29 @@ def load_questions(path):
 GOLD_KEYS = {"id", "kind", "text", "gold", "also", "gold_notes", "confidence", "gold_topics"}
 
 
+def _scalar_starts_at(s, i):
+    # A quote opens a quoted scalar only where a scalar starts: at the line's
+    # start or after `: `, `- `, `[` or `,`. Elsewhere (owner's) it is text.
+    prev = s[:i].rstrip()
+    return (prev == "" or prev == "-" or prev.endswith(" -") or
+            prev.endswith(":") or prev.endswith("[") or prev.endswith(","))
+
+
 def _strip_comment(s):
     q = None
-    for i, c in enumerate(s):
+    i = 0
+    while i < len(s):
+        c = s[i]
         if q:
-            if c == q:
+            if c == q == "'" and s[i + 1:i + 2] == "'":
+                i += 1  # '' is an escaped quote, not the close
+            elif c == q:
                 q = None
-        elif c in "'\"":
+        elif c in "'\"" and _scalar_starts_at(s, i):
             q = c
         elif c == "#" and (i == 0 or s[i - 1] in " \t"):
             return s[:i].rstrip()
+        i += 1
     return s.rstrip()
 
 
