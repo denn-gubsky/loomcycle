@@ -1790,8 +1790,11 @@ type AgentDef struct {
 	// for prompts that don't fit inline — long .md files with
 	// frontmatter, etc. The frontmatter is loaded verbatim; if you
 	// want to strip it, use SystemPrompt + a preprocessor.
-	SystemPromptFile string   `yaml:"system_prompt_file"`
-	Tools            []string `yaml:"tools"`
+	SystemPromptFile string `yaml:"system_prompt_file"`
+	// Tools is the agent's tool allowlist: exact names and trailing-* globs.
+	// An entry "-Name" instead removes a tool the runtime adds by default
+	// (DefaultTools); read it only through SplitTools.
+	Tools []string `yaml:"tools"`
 	// Skills lists skill names (each = a subdirectory under
 	// LOOMCYCLE_SKILLS_ROOT containing SKILL.md) whose bodies are
 	// concatenated onto SystemPrompt at config-load. Approach A in
@@ -5662,6 +5665,9 @@ func AddContextToolDefault(def *AgentDef) {
 	if def.DisableContext {
 		return
 	}
+	if _, removed := SplitTools(def.Tools); ToolRemoved("Context", removed) {
+		return
+	}
 	for _, t := range def.Tools {
 		// Case-insensitive match. An operator's lowercase
 		// `tools: [context]` is a typo, not an explicit
@@ -5676,6 +5682,85 @@ func AddContextToolDefault(def *AgentDef) {
 	// A fresh slice: def.Tools may share its backing array with a stored or
 	// cached definition, which an in-place append would write through.
 	def.Tools = append(append([]string(nil), def.Tools...), "Context")
+}
+
+// DefaultTools are the tools the runtime adds to an agent's tools by default,
+// and so the only names a "-Name" entry in tools may remove. Skill is not one:
+// its auto-add is governed by the skills allowlist (`skills: [-*]`).
+func DefaultTools() []string { return []string{"Context"} }
+
+// SplitTools separates an agent's tools into the grants (names and globs, as
+// written) and the removals: the names of the "-Name" entries, without the
+// minus. Every reader of a tools list goes through this rather than parsing
+// the minus itself, so the one rule cannot drift between them. A removal is
+// applied after the grants are matched, so tools: ["*", "-Context"] does not
+// grant Context.
+func SplitTools(tools []string) (grants, removed []string) {
+	for _, t := range tools {
+		if name, ok := strings.CutPrefix(t, "-"); ok {
+			removed = append(removed, name)
+			continue
+		}
+		grants = append(grants, t)
+	}
+	return grants, removed
+}
+
+// ToolRemoved reports whether removed (from SplitTools) removes the tool name.
+// Case-insensitive, as the Context default-add matches an explicit listing.
+func ToolRemoved(name string, removed []string) bool {
+	for _, r := range removed {
+		if strings.EqualFold(r, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// WithRemovals returns tools with every removal entry of from that tools does
+// not already carry appended, so a definition derived from another (a fork of
+// its lineage root, a stored version over its static base) cannot drop the
+// other's removal by restating its tools without it. It returns tools itself
+// when nothing is added, so a definition without removals is unchanged.
+func WithRemovals(tools, from []string) []string {
+	_, have := SplitTools(tools)
+	_, want := SplitTools(from)
+	var add []string
+	for _, name := range want {
+		if !ToolRemoved(name, have) {
+			add = append(add, "-"+name)
+			have = append(have, name)
+		}
+	}
+	if len(add) == 0 {
+		return tools
+	}
+	// A fresh slice: tools may share its backing array with a stored definition.
+	return append(append([]string(nil), tools...), add...)
+}
+
+// ValidateToolRemovals refuses a "-Name" entry in tools that names no default
+// tool. Only removals are judged: an ordinary name stays unvalidated, as it
+// always was. Removing a tool the runtime does not add would do nothing, so
+// the entry is refused rather than stored to look like a gate.
+func ValidateToolRemovals(tools []string) error {
+	_, removed := SplitTools(tools)
+	for _, name := range removed {
+		if strings.EqualFold(name, "Skill") {
+			return fmt.Errorf("tools: `-%s`: the Skill tool is not removed in tools; `skills: [-*]` turns it off", name)
+		}
+		known := false
+		for _, d := range DefaultTools() {
+			if strings.EqualFold(name, d) {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return fmt.Errorf("tools: `-%s`: only a default tool (%s) can be removed; leave it out instead", name, strings.Join(DefaultTools(), ", "))
+		}
+	}
+	return nil
 }
 
 // validateVolumes checks the top-level `volumes:` map (RFC AH Phase 1)

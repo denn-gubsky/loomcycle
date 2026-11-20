@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1693,6 +1694,125 @@ agents:
 	}
 	if count != 1 {
 		t.Errorf("Context appears %d times; want exactly 1", count)
+	}
+}
+
+// ---- RFC GY: a "-Name" entry in tools removes a default tool ----
+
+// loadAgentTools loads a one-agent config and returns that agent's tools.
+func loadAgentTools(t *testing.T, agentYAML string) ([]string, error) {
+	t.Helper()
+	yamlPath := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(yamlPath, []byte(`
+defaults: { provider: anthropic, model: claude-sonnet-4-6 }
+agents:
+  a:
+    model: claude-sonnet-4-6
+`+agentYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(yamlPath)
+	if err != nil {
+		return nil, err
+	}
+	return cfg.Agents["a"].Tools, nil
+}
+
+func grantsContext(tools []string) bool {
+	grants, _ := SplitTools(tools)
+	for _, g := range grants {
+		if strings.EqualFold(g, "Context") {
+			return true
+		}
+	}
+	return false
+}
+
+// Twin of TestContextAutoAddedToTools: the removal entry stops the default-add
+// and is kept as written.
+func TestContextAutoAddSkippedWhenRemoved(t *testing.T) {
+	got, err := loadAgentTools(t, "    tools: [Read, -Context]\n")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if grantsContext(got) {
+		t.Errorf("Context auto-added despite -Context; got %v", got)
+	}
+	if !slices.Contains(got, "-Context") {
+		t.Errorf("the -Context entry was not kept as written; got %v", got)
+	}
+}
+
+// Twin of TestContextAutoAddSkippedWhenDisabled: both opt-outs together still
+// add nothing.
+func TestContextAutoAddSkippedWhenRemovedAndDisabled(t *testing.T) {
+	got, err := loadAgentTools(t, "    tools: [Read, -Context]\n    disable_context: true\n")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if grantsContext(got) {
+		t.Errorf("Context auto-added; got %v", got)
+	}
+}
+
+// Twin of TestContextNotDoubleAddedCaseInsensitive: the removal matches the
+// default tool's name in any case.
+func TestContextAutoAddSkippedWhenRemovedCaseInsensitive(t *testing.T) {
+	got, err := loadAgentTools(t, "    tools: [Read, -context]\n")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if grantsContext(got) {
+		t.Errorf("Context auto-added despite -context; got %v", got)
+	}
+}
+
+// Twin of TestContextNotDoubleAdded: a removal alone grants nothing and adds
+// no Context.
+func TestContextAutoAddSkippedWhenOnlyRemovalListed(t *testing.T) {
+	got, err := loadAgentTools(t, "    tools: [-Context]\n    skills: [-*]\n")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if grants, _ := SplitTools(got); len(grants) != 0 {
+		t.Errorf("grants = %v; want none", grants)
+	}
+}
+
+func TestToolRemoval_NonDefaultToolRefusedAtLoad(t *testing.T) {
+	for _, tc := range []struct{ entry, want string }{
+		{"-Read", "only a default tool"},
+		{"-Skill", "skills: [-*]"},
+		{"-Context*", "only a default tool"},
+		{"-", "only a default tool"},
+	} {
+		_, err := loadAgentTools(t, "    tools: [Read, \""+tc.entry+"\"]\n")
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "`"+tc.entry+"`") {
+			t.Errorf("%s: err = %v; want a refusal naming the entry and %q", tc.entry, err, tc.want)
+		}
+	}
+}
+
+func TestSplitTools_SeparatesRemovalsFromGrants(t *testing.T) {
+	grants, removed := SplitTools([]string{"*", "-Context", "mcp__x__*"})
+	if !slices.Equal(grants, []string{"*", "mcp__x__*"}) || !slices.Equal(removed, []string{"Context"}) {
+		t.Errorf("SplitTools = %v, %v", grants, removed)
+	}
+	if !ToolRemoved("Context", []string{"context"}) || ToolRemoved("Read", []string{"Context"}) {
+		t.Error("ToolRemoved: want a case-insensitive name match")
+	}
+}
+
+func TestWithRemovals_KeepsTheOthersRemovalOnce(t *testing.T) {
+	if got := WithRemovals([]string{"Read"}, []string{"Read", "-Context"}); !slices.Equal(got, []string{"Read", "-Context"}) {
+		t.Errorf("WithRemovals = %v", got)
+	}
+	if got := WithRemovals([]string{"Read", "-context"}, []string{"-Context"}); !slices.Equal(got, []string{"Read", "-context"}) {
+		t.Errorf("WithRemovals duplicated a removal: %v", got)
+	}
+	in := []string{"Read"}
+	if got := WithRemovals(in, []string{"Read", "Write"}); &got[0] != &in[0] {
+		t.Error("WithRemovals copied a list it did not change")
 	}
 }
 

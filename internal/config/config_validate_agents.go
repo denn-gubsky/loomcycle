@@ -242,6 +242,9 @@ func validateAgentGrants(c *Config, name string, agent AgentDef) error {
 	// Channel/channels, Interruption/interruption.enabled). Accumulated and
 	// logged once at boot, never fatal — an operator may legitimately list a
 	// tool they haven't gated yet.
+	if err := ValidateToolRemovals(agent.Tools); err != nil {
+		return fmt.Errorf("agent %q: %w", name, err)
+	}
 	c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
 	c.Warnings = append(c.Warnings, shellCredentialWarnings(name, agent, c.Env)...)
 	c.Warnings = append(c.Warnings, gitRemoteWarnings(name, agent, c.Env)...)
