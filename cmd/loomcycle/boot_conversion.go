@@ -185,13 +185,14 @@ func (b *boot) startWorkspace() *wsdispatch.Dispatcher {
 		return nil
 	}
 	opt := wsdispatch.Options{BuildVersion: buildVersion, Logger: slog.Default()}
-	var token string
+	var token, tenant, why string
 	if ws.LocalWorker() {
 		var err error
 		if token, err = local.NewToken(); err != nil {
 			fatal("workspace: cannot make the local worker's token", "err", err)
 		}
-		opt.LocalToken, opt.LocalTenant = token, ws.Local.Tenant
+		tenant, why = b.cfg.WorkspaceLocalTenant()
+		opt.LocalToken, opt.LocalTenant = token, tenant
 	}
 	d := wsdispatch.New(opt)
 	if ws.RemoteWorkers() {
@@ -199,7 +200,7 @@ func (b *boot) startWorkspace() *wsdispatch.Dispatcher {
 		slog.Warn("workspace: serving workspace workers; the host engine runs an agent's commands as the worker's user, with no isolation")
 	}
 	if ws.LocalWorker() {
-		b.startLocalWorkspace(d, token, ws.Local.Tenant)
+		b.startLocalWorkspace(d, token, tenant, why)
 	}
 	return d
 }

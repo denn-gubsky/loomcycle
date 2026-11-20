@@ -229,13 +229,13 @@ func checkWorkspaces(r *doctorRun, cfg configForDoctor) {
 	case config.WorkspaceModeOff:
 		r.pass("Workspaces", "workspace.mode off — no workspaces are served")
 	case config.WorkspaceModeLocal:
-		r.warn("Workspaces", fmt.Sprintf("workspace.mode local — the runtime starts one workspace worker as its child, serving tenant %q from %s. "+
+		r.warn("Workspaces", fmt.Sprintf("workspace.mode local — the runtime starts one workspace worker as its child, serving tenant %q (%s) from %s. "+
 			"Its host engine runs agents' commands as the runtime's own user with no isolation: a command can read the data directory, "+
 			"the secrets files and the runtime's environment, provider keys included. Use it only on a machine where the agents are trusted. %s",
-			ws.LocalTenant, ws.LocalRoot, live))
+			ws.LocalTenant, ws.LocalTenantWhy, ws.LocalRoot, live))
 	case config.WorkspaceModeLocalRemote:
-		r.warn("Workspaces", fmt.Sprintf("workspace.mode local+remote — a local worker serving tenant %q from %s, and workers of their own on %s. "+
-			"The local worker's host engine runs commands as the runtime's own user with no isolation. %s", ws.LocalTenant, ws.LocalRoot, ws.Endpoint, live))
+		r.warn("Workspaces", fmt.Sprintf("workspace.mode local+remote — a local worker serving tenant %q (%s) from %s, and workers of their own on %s. "+
+			"The local worker's host engine runs commands as the runtime's own user with no isolation. %s", ws.LocalTenant, ws.LocalTenantWhy, ws.LocalRoot, ws.Endpoint, live))
 	default:
 		r.pass("Workspaces", fmt.Sprintf("workspace.mode %s — workers attach on %s with a workers:attach token; %s", ws.Mode, ws.Endpoint, live))
 	}
@@ -385,9 +385,10 @@ type configForDoctor interface {
 type DoctorWorkspaces struct {
 	// Mode is workspace.mode, resolved: off, local, remote or local+remote.
 	Mode string
-	// LocalTenant and LocalRoot are the local worker's tenant and
-	// directory; empty unless the mode starts it.
-	LocalTenant, LocalRoot string
+	// LocalTenant and LocalRoot are the local worker's tenant ("" in open
+	// mode) and directory, LocalTenantWhy why that tenant; empty unless the
+	// mode starts it.
+	LocalTenant, LocalTenantWhy, LocalRoot string
 	// Endpoint is the worker endpoint's listen address when the mode
 	// attaches workers of their own.
 	Endpoint string

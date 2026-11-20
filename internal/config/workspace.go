@@ -25,11 +25,10 @@ const (
 	// WorkspaceModeLocalRemote is both: the local child, and workers of
 	// their own on the worker endpoint.
 	WorkspaceModeLocalRemote = "local+remote"
-	// DefaultWorkspaceLocalTenant is the tenant the local worker serves when
-	// workspace.local.tenant is not written: the tenant the legacy
-	// LOOMCYCLE_AUTH_TOKEN runs under, and the one an open-mode console
-	// reports.
-	DefaultWorkspaceLocalTenant = "default"
+	// LegacyTenant is the tenant every run carries under the legacy
+	// LOOMCYCLE_AUTH_TOKEN, whatever its request names (the synthetic
+	// principal the API resolves that secret to).
+	LegacyTenant = "default"
 )
 
 // WorkspaceConfig is the `workspace:` block: whether the runtime serves
@@ -56,7 +55,7 @@ type WorkspaceConfig struct {
 // serves, and where it keeps its workspaces.
 type WorkspaceLocalConfig struct {
 	// Tenant is the tenant whose runs may open workspaces on the local
-	// worker. Default DefaultWorkspaceLocalTenant.
+	// worker. Unset, Config.WorkspaceLocalTenant works it out.
 	Tenant string `yaml:"tenant,omitempty"`
 	// Root is the directory the local worker makes its workspaces in.
 	// Default <LOOMCYCLE_DATA_DIR>/workspaces (Config.WorkspaceLocalRoot).
@@ -96,9 +95,6 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	if w.LostAfterS == 0 {
 		w.LostAfterS = DefaultWorkspaceLostAfterS
 	}
-	if w.Local.Tenant == "" {
-		w.Local.Tenant = DefaultWorkspaceLocalTenant
-	}
 	return w
 }
 
@@ -114,6 +110,46 @@ func (w WorkspaceConfig) LocalWorker() bool {
 
 // Serves reports whether the mode serves workspaces at all.
 func (w WorkspaceConfig) Serves() bool { return w.LocalWorker() || w.RemoteWorkers() }
+
+// WorkspaceLocalTenant is the one tenant the local workspace worker serves,
+// and a few words on why. workspace.local.tenant when written; otherwise the
+// tenant a run on this install carries when its request names none, which is
+// how a single-user install runs:
+//
+//   - under the legacy LOOMCYCLE_AUTH_TOKEN, LegacyTenant: the API resolves
+//     that secret to a principal of tenant "default" and ignores the wire
+//     tenant_id;
+//   - with no authentication configured (open mode), the empty tenant: no
+//     principal is stamped and a run keeps the tenant_id its request names,
+//     none meaning "" (the dispatcher serves "" on the local worker only);
+//   - with config principals and no legacy secret, their tenant when they
+//     all share one; with several, LegacyTenant, and the operator should
+//     write workspace.local.tenant (the reason says so).
+//
+// A token minted into the store is not seen here (config loads before the
+// store): an install whose runs carry a minted token's tenant writes
+// workspace.local.tenant.
+func (c *Config) WorkspaceLocalTenant() (tenant, why string) {
+	if t := c.Workspace.Local.Tenant; t != "" {
+		return t, "workspace.local.tenant"
+	}
+	if c.Env.AuthToken != "" {
+		return LegacyTenant, "the legacy LOOMCYCLE_AUTH_TOKEN runs every run under tenant " + LegacyTenant
+	}
+	if len(c.Principals) == 0 {
+		return "", "no authentication is configured (open mode): a run that names no tenant_id has the empty tenant"
+	}
+	tenants := map[string]bool{}
+	for _, p := range c.Principals {
+		tenants[p.Tenant] = true
+	}
+	if len(tenants) == 1 {
+		for t := range tenants {
+			return t, "every config principal is of tenant " + t
+		}
+	}
+	return LegacyTenant, "config principals of several tenants; set workspace.local.tenant to the one whose runs use the local worker"
+}
 
 // WorkspaceLocalRoot is where the local workspace worker keeps its
 // workspaces: workspace.local.root, else a directory of the data dir, so they

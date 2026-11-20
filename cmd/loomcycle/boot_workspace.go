@@ -27,12 +27,13 @@ var localWorkspacePassEnv = []string{"LOOMCYCLE_WORKSPACE_CAPACITY", "LOOMCYCLE_
 // startLocalWorkspace starts workspace.mode local (RFC GW D9): one child
 // `loomcycle worker --role workspace` on a Unix socket in a private (0700)
 // directory, presenting a per-boot token the dispatcher accepts on that
-// socket only, as a worker serving tenant alone. The socket has a gRPC
+// socket only, as a worker serving tenant alone (Config.WorkspaceLocalTenant;
+// why is its reason, logged). The socket has a gRPC
 // server of its own, which serves nothing but the workspace service, so the
 // token never reaches the network endpoint's. The child is restarted with
 // backoff, exits when this process does (--parent-pid), and is stopped at
 // shutdown before the socket closes.
-func (b *boot) startLocalWorkspace(d *wsdispatch.Dispatcher, token, tenant string) {
+func (b *boot) startLocalWorkspace(d *wsdispatch.Dispatcher, token, tenant, why string) {
 	bin, err := os.Executable()
 	if err != nil {
 		fatal("workspace: cannot find this binary to start the local worker", "err", err)
@@ -67,5 +68,5 @@ func (b *boot) startLocalWorkspace(d *wsdispatch.Dispatcher, token, tenant strin
 	// directory, the config and secrets files, and on Linux this process's
 	// own environment (/proc/<pid>/environ), provider keys included.
 	slog.Warn("workspace: mode local runs every agent's workspace commands on this host as this runtime's own user, with no isolation and no network restriction: a command can read anything this user can, including the runtime's data directory, its config and secrets files, and its environment with the provider keys. Use it only on a machine where the agents are trusted",
-		"tenant", tenant, "root", root)
+		"tenant", tenant, "tenant_from", why, "root", root)
 }

@@ -139,3 +139,45 @@ func shortTempDir(t *testing.T) string {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
 }
+
+// In open mode a run that names no tenant carries the empty tenant. The
+// local worker configured for it is placed for, and runs ops of, the empty
+// tenant; no other tenant reaches it.
+func TestLocal_TheLocalWorkerServesTheEmptyTenantOfAnOpenModeInstall(t *testing.T) {
+	d, _, unix := localCore(t, "")
+	realWorker(t, unix, tokLocal, "local", worker.Options{IdleStreams: 2})
+	id := "local:/local"
+	waitAttached(t, d, id)
+	ctx := context.Background()
+	got, err := d.Place(ctx, dispatch.PlaceRequest{TenantID: ""})
+	if err != nil || len(got) != 1 || got[0] != id {
+		t.Fatalf("Place(empty tenant) = %v, %v; want the local worker", got, err)
+	}
+	if !d.Attached(id, "") || d.Attached(id, "acme") {
+		t.Fatal("the local worker of the empty tenant must serve it and no other")
+	}
+	if err := d.Open(ctx, "", id, "ws1"); err != nil {
+		t.Fatalf("Open for the empty tenant: %v", err)
+	}
+	if err := d.Open(ctx, "acme", id, "ws2"); err == nil {
+		t.Fatal("an op of another tenant ran on the local worker")
+	}
+}
+
+// The empty tenant is never placed on a network worker, a tenant-bound or a
+// shared one, even while the local worker serves it: the exception is the
+// local worker's alone.
+func TestPlace_ANetworkWorkerIsNeverPlacedForTheEmptyTenant(t *testing.T) {
+	d, tcp, _ := localCore(t, "acme")
+	realWorker(t, tcp, tokAcme, "w1", worker.Options{IdleStreams: 1})
+	waitAttached(t, d, acmeID("w1"))
+	if got, err := d.Place(context.Background(), dispatch.PlaceRequest{TenantID: ""}); err == nil {
+		t.Fatalf("Place(empty tenant) = %v on a network worker", got)
+	}
+	if d.Attached(acmeID("w1"), "") {
+		t.Fatal("a network worker reports serving the empty tenant")
+	}
+	if err := d.Open(context.Background(), "", acmeID("w1"), "ws1"); err == nil {
+		t.Fatal("an op of the empty tenant ran on a network worker")
+	}
+}

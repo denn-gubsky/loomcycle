@@ -92,7 +92,8 @@ func (r *realConfig) Workspaces() DoctorWorkspaces {
 	ws := r.cfg.Workspace.Resolved()
 	out := DoctorWorkspaces{Mode: ws.Mode, InertGrants: r.cfg.InertWorkspaceGrants()}
 	if ws.LocalWorker() {
-		out.LocalTenant, out.LocalRoot = ws.Local.Tenant, r.cfg.WorkspaceLocalRoot()
+		out.LocalTenant, out.LocalTenantWhy = r.cfg.WorkspaceLocalTenant()
+		out.LocalRoot = r.cfg.WorkspaceLocalRoot()
 	}
 	if ws.RemoteWorkers() {
 		out.Endpoint = r.cfg.ResolvedWorkerEndpoint().Listen

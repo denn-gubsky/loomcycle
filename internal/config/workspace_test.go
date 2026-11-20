@@ -13,8 +13,7 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := cfg.Workspace.Resolved()
-	want := WorkspaceConfig{Mode: WorkspaceModeOff, MaxPerRun: 4, Exec: WorkspaceExecConfig{DefaultTimeoutS: 120, MaxTimeoutS: 900}, LostAfterS: 300,
-		Local: WorkspaceLocalConfig{Tenant: "default"}}
+	want := WorkspaceConfig{Mode: WorkspaceModeOff, MaxPerRun: 4, Exec: WorkspaceExecConfig{DefaultTimeoutS: 120, MaxTimeoutS: 900}, LostAfterS: 300}
 	if got != want {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
@@ -29,8 +28,7 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := WorkspaceConfig{Mode: WorkspaceModeRemote, MaxPerRun: 2, MaxPerTenant: 10, Exec: WorkspaceExecConfig{DefaultTimeoutS: 30, MaxTimeoutS: 60}, LostAfterS: 90,
-		Local: WorkspaceLocalConfig{Tenant: "default"}}
+	want := WorkspaceConfig{Mode: WorkspaceModeRemote, MaxPerRun: 2, MaxPerTenant: 10, Exec: WorkspaceExecConfig{DefaultTimeoutS: 30, MaxTimeoutS: 60}, LostAfterS: 90}
 	if got := cfg.Workspace.Resolved(); got != want {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
@@ -72,8 +70,8 @@ func TestWorkspaceConfig_RefusesWhatItCannotServe(t *testing.T) {
 }
 
 // Mode local needs no worker endpoint: the runtime starts its worker on a
-// private socket. It serves the default tenant from a directory of the data
-// dir unless the block says otherwise.
+// private socket, keeping its workspaces in a directory of the data dir
+// unless the block says otherwise.
 func TestWorkspaceConfig_LocalNeedsNoEndpointAndHasDefaults(t *testing.T) {
 	cfg, err := loadConversion(t, "conversion:\n  mode: inprocess\nworkspace:\n  mode: local\n")
 	if err != nil {
@@ -82,9 +80,6 @@ func TestWorkspaceConfig_LocalNeedsNoEndpointAndHasDefaults(t *testing.T) {
 	ws := cfg.Workspace.Resolved()
 	if !ws.LocalWorker() || ws.RemoteWorkers() || !ws.Serves() {
 		t.Fatalf("mode local: local=%v remote=%v serves=%v", ws.LocalWorker(), ws.RemoteWorkers(), ws.Serves())
-	}
-	if ws.Local.Tenant != DefaultWorkspaceLocalTenant {
-		t.Fatalf("tenant = %q, want %q", ws.Local.Tenant, DefaultWorkspaceLocalTenant)
 	}
 	if want := filepath.Join(cfg.Env.DataDir, "workspaces"); cfg.WorkspaceLocalRoot() != want {
 		t.Fatalf("root = %q, want %q", cfg.WorkspaceLocalRoot(), want)
@@ -98,6 +93,27 @@ func TestWorkspaceConfig_LocalNeedsNoEndpointAndHasDefaults(t *testing.T) {
 	ws = cfg.Workspace.Resolved()
 	if !ws.LocalWorker() || !ws.RemoteWorkers() || ws.Local.Tenant != "acme" || cfg.WorkspaceLocalRoot() != "/srv/ws" {
 		t.Fatalf("local+remote: %+v root %q", ws, cfg.WorkspaceLocalRoot())
+	}
+}
+
+// Unset, the local worker serves the tenant a run of this install carries
+// when its request names none: "" in open mode, "default" under the legacy
+// secret, the principals' one tenant; written, what is written.
+func TestWorkspaceLocalTenant_IsTheTenantARunWithNoneNamedCarries(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"open mode", Config{}, ""},
+		{"legacy secret", Config{Env: Env{AuthToken: "s"}}, "default"},
+		{"one principal tenant", Config{Principals: map[string]PrincipalDef{"a": {Tenant: "acme"}, "b": {Tenant: "acme"}}}, "acme"},
+		{"principals of two tenants", Config{Principals: map[string]PrincipalDef{"a": {Tenant: "acme"}, "b": {Tenant: "zed"}}}, "default"},
+		{"written", Config{Env: Env{AuthToken: "s"}, Workspace: WorkspaceConfig{Local: WorkspaceLocalConfig{Tenant: "lab"}}}, "lab"},
+	} {
+		if got, why := c.cfg.WorkspaceLocalTenant(); got != c.want || why == "" {
+			t.Errorf("%s: tenant = %q (%q), want %q", c.name, got, why, c.want)
+		}
 	}
 }
 
