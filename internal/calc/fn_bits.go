@@ -73,13 +73,17 @@ func radixArg(a args, i int) (int, *Error) {
 	return int(r), nil
 }
 
-func fnBase(_ *evaluator, a args) (val, *Error) {
+func fnBase(e *evaluator, a args) (val, *Error) {
 	x, err := a.integer(0)
 	if err != nil {
 		return nil, err
 	}
 	r, err := radixArg(a, 1)
 	if err != nil {
+		return nil, err
+	}
+	// Up to one digit per bit: charge by size, as intResult does.
+	if err := e.charge(x.BitLen()/bitStepCost, a.pos); err != nil {
 		return nil, err
 	}
 	return x.Text(r), nil
