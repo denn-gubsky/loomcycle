@@ -577,13 +577,13 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if mode == "" {
 		mode = nodeStatsModeReport
 	}
-	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute && mode != nodeStatsModeMisfits && mode != nodeStatsModeGrowth {
-		return errValidation(fmt.Sprintf("%s: mode %q is not report, compute, misfits or growth", nodeStatsOp, mode),
-			"Pass mode: report to see what is stale, compute to recompute it, misfits to list the misplaced members, growth to rank growth and list quiet nodes."), nil
+	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute && mode != nodeStatsModeMisfits && mode != nodeStatsModeGrowth && mode != nodeStatsModeSplit {
+		return errValidation(fmt.Sprintf("%s: mode %q is not report, compute, misfits, growth or split", nodeStatsOp, mode),
+			"Pass mode: report to see what is stale, compute to recompute it, misfits to list the misplaced members, growth to rank growth and list quiet nodes, split to list split, unplaced-grouping and merge candidates."), nil
 	}
-	if in.Propose && mode != nodeStatsModeMisfits {
-		return errValidation(nodeStatsOp+": propose is taken only with mode misfits",
-			"Pass mode: misfits with propose to file placement proposals, or omit propose."), nil
+	if in.Propose && mode != nodeStatsModeMisfits && mode != nodeStatsModeSplit {
+		return errValidation(nodeStatsOp+": propose is taken only with mode misfits or split",
+			"Pass mode: misfits or split with propose to file proposals, or omit propose."), nil
 	}
 	if in.QuietPeriods != 0 && mode != nodeStatsModeGrowth {
 		return errValidation(nodeStatsOp+": quiet_periods is taken only with mode growth",
@@ -604,6 +604,10 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if !callerDecidesIn(ctx, key) && !HasStatementMethodGrant(ctx) {
 		return errPermission(nodeStatsOp+": permission: only an operator, or a code agent granted statement_methods, runs node statistics",
 			"Ask an operator to run it, or to grant this agent statement_methods. describe_ontology with_stats reads what is stored."), nil
+	}
+	if in.Propose && mode == nodeStatsModeSplit && !misfitMayPropose(ctx, key) {
+		return errPermission(nodeStatsOp+": method_not_granted: filing split, unplaced-grouping and merge proposals is an operator's, or a run's granted rule in statement_methods, as filing misfit proposals is",
+			"Omit propose to read the candidates, or ask an operator to file them or to grant this agent rule in statement_methods."), nil
 	}
 	if in.Propose && !misfitMayPropose(ctx, key) {
 		return errPermission(nodeStatsOp+": method_not_granted: filing misfit proposals stamps "+misfitMethod+", and this agent may not stamp rule: statements",
@@ -635,6 +639,13 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 			return errFrom(nodeStatsOp+": "+err.Error(), err), nil
 		}
 		return jsonResult(g)
+	}
+	if mode == nodeStatsModeSplit {
+		sp, err := d.NodeSplit(ctx, key, read, in.Scheme, in.Propose, in.Limit)
+		if err != nil {
+			return errFrom(nodeStatsOp+": "+err.Error(), err), nil
+		}
+		return jsonResult(sp)
 	}
 	if mode == nodeStatsModeMisfits {
 		mis, err := d.NodeMisfits(ctx, key, read, in.Scheme, in.Propose, in.Limit)

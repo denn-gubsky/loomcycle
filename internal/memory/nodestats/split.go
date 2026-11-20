@@ -1,6 +1,7 @@
 package nodestats
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -135,6 +136,12 @@ type SplitResult struct {
 // pairwise silhouette costs O(n^2 x dimension) — a node may hold thousands of
 // members.
 func Split(members []Member, opts SplitOptions) (SplitResult, error) {
+	return split(context.Background(), members, opts)
+}
+
+// split is Split, stopping with ctx's error between Lloyd iterations once ctx is
+// done: a node of thousands of high-dimensional members takes seconds.
+func split(ctx context.Context, members []Member, opts SplitOptions) (SplitResult, error) {
 	if err := opts.validate(); err != nil {
 		return SplitResult{}, err
 	}
@@ -151,8 +158,11 @@ func Split(members []Member, opts SplitOptions) (SplitResult, error) {
 	var bestCenters [][]float64
 	for k := opts.KMin; k <= opts.KMax && k <= len(us); k++ {
 		rng := rand.New(rand.NewPCG(opts.Seed, uint64(k)))
-		labels, centers, err := kmeans(us, k, rng, opts.MaxIterations)
+		labels, centers, err := kmeans(ctx, us, k, rng, opts.MaxIterations)
 		if err != nil {
+			if ctx.Err() != nil {
+				return SplitResult{}, ctx.Err()
+			}
 			continue
 		}
 		s := silhouette(us, labels, centers)
@@ -219,7 +229,7 @@ func stability(us [][]float64, ref []int, k int, opts SplitOptions) (float64, in
 			sub[i] = us[p]
 			refSub[i] = ref[p]
 		}
-		labels, _, err := kmeans(sub, k, rng, opts.MaxIterations)
+		labels, _, err := kmeans(context.Background(), sub, k, rng, opts.MaxIterations)
 		if err != nil {
 			continue
 		}
@@ -234,7 +244,7 @@ func stability(us [][]float64, ref []int, k int, opts SplitOptions) (float64, in
 
 // kmeans is spherical k-means over unit vectors. It fails with ErrDegenerate
 // when the points hold fewer than k distinct directions.
-func kmeans(us [][]float64, k int, rng *rand.Rand, maxIter int) ([]int, [][]float64, error) {
+func kmeans(ctx context.Context, us [][]float64, k int, rng *rand.Rand, maxIter int) ([]int, [][]float64, error) {
 	n := len(us)
 	if n < k {
 		return nil, nil, ErrTooFewMembers
@@ -279,6 +289,9 @@ func kmeans(us [][]float64, k int, rng *rand.Rand, maxIter int) ([]int, [][]floa
 	// The loop ends on an assignment pass, so the labels returned are each
 	// member's nearest of the centres returned.
 	for it := 0; ; it++ {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		changed := false
 		for i, u := range us {
 			bl, bs := 0, math.Inf(-1)
