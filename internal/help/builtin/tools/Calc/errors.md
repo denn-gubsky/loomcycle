@@ -1,0 +1,135 @@
+---
+name: Calc/errors
+kind: section
+description: "Calc errors — every error code a refused call returns, what it means, and what to change before you call again."
+---
+A refused call returns `{"error": <code>, "detail": …, "hint": …, "pos": …}`.
+`detail` says what went wrong, `hint` (when present) what to write instead,
+and `pos` (when present) is the byte offset in `expr` where it went wrong.
+Fix the expression and call again; sending the same call again fails the same
+way. Never fall back to working the number out yourself: the refusal tells
+you what to change.
+
+## Fix the expression
+
+### syntax
+The expression is not well formed: a missing `)` or `,`, an operator that
+does not exist (`**`), a number run into a name (`2x`), `=` where `==` was
+meant, or chained comparisons (`a < b < c`). Read `hint`, fix the spot at
+`pos`, and see the common mistakes in `Calc/language`.
+
+### unknown_name
+A name that is neither assigned, a var nor a constant. Check the spelling,
+assign it first, or pass it in `vars`. `hint` lists close names.
+
+### unknown_function
+No built-in or defined function has that name. `hint` names the one to use
+(`ln` → `log`, `nCr` → `binomial`) or close names. Define your own with
+`f(x) = …` before calling it.
+
+### arity
+The function got the wrong number of arguments. `hint` shows its signature.
+
+### type
+A value of the wrong kind: a string in arithmetic, a number where a list or
+a function is needed, a float where an exact integer is needed (`factor`,
+`gcd`, `binomial` …), `*` or `/` between two lists, a number divided by a
+list, or a power of a list. For lists use `.*`, `./`, `.^`; for an integer
+argument compute it exactly.
+
+### index
+An index that does not exist: `v[0]`, a negative index, past `len(v)`, or not
+a whole number. Indexing starts at 1.
+
+### shape
+Two lists combined element by element have different lengths. Make them the
+same length, or index the part you need.
+
+### reserved_name
+You assigned to a built-in function name (`sum = …`), a constant (`pi`) or a
+keyword (`if`, `and` …), in `expr` or as a var name. Pick another name, e.g.
+`total`.
+
+### recursion
+A function calls itself. Use a closed form (`n!`, `fib(n)`), or `reduce` /
+`product` over a range.
+
+### bad_var
+A var cannot be used: its name is not a valid name, or its value is `null`
+or an object. Pass numbers, strings, booleans or lists; send each field of an
+object as its own var.
+
+### bad_request
+The arguments are not the documented shape: `expr` missing or not a string,
+`digits` outside 1 to 1000, an argument the tool does not take.
+
+### empty
+`expr` holds no statement. Write an expression.
+
+## Fix the mathematics
+
+### domain
+The function is not defined there: `sqrt` or `log` of a negative number, a
+fractional power of a negative number, `asin(2)`, `min([])`, `modinv` of
+numbers that are not coprime. There are no complex numbers. Check the inputs.
+
+### division_by_zero
+A division, `%`, `mod` or `rem` by zero, or zero to a negative power. Guard
+it: `if(d == 0, 0, n / d)`.
+
+### overflow
+A float result is too large for 64 bits: `exp(1000)`, `gamma(200)`. Work in
+logarithms (`lgamma`, `log`) or keep the computation exact.
+
+### too_large
+An exact number would pass 16,384 bits, or an argument is over a function's
+cap (`isprime` and `nextprime` near 2^1024, `factor` and `divisors` at 2^64,
+`modpow` at 4,096 bits). Use a float on purpose (`2.0^x` is still exact;
+`exp(x * log(2))` is not) or a smaller problem.
+
+## Make the work smaller
+
+### list_too_long
+A list, or all the lists nested in one value, would hold more than 1,000,000
+elements. Shrink the range or split the work.
+
+### step_limit
+The evaluation needed more than 1,000,000 steps. Use a closed form (`sum(1:n)`
+is `n*(n+1)/2`), smaller ranges, or several calls.
+
+### time_limit
+The evaluation ran past 2 seconds. Same remedies as `step_limit`; huge exact
+numbers are the usual cause.
+
+### too_deep
+Brackets nest more than 200 levels deep, or functions call each other more
+than 64 deep. Flatten the expression with intermediate names.
+
+### expr_too_long
+`expr` is over 16 KB. Pass the data in `vars` and keep `expr` for the
+formula.
+
+### vars_too_large
+The vars total over 1 MB. Pass less data, or split it over several calls.
+
+### canceled
+The run stopped while the call was evaluating. Call again if the run
+continues.
+
+## Examples
+
+A float where an exact integer is needed:
+
+```json
+{"expr": "binomial(10.5, 2)"}
+```
+
+Result: error type
+
+Guarding a division:
+
+```json
+{"expr": "if(visits == 0, 0, round(100 * orders / visits, 1))", "vars": {"orders": 0, "visits": 0}}
+```
+
+Result: 0
