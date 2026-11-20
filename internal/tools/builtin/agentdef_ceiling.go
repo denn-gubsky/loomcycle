@@ -832,7 +832,7 @@ func forkerToolsCeiling(ctx context.Context, def mergedDef) error {
 	if callerTools == nil {
 		return fmt.Errorf("caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening")
 	}
-	if err := assertToolsSubset(def.Tools, callerTools); err != nil {
+	if err := assertToolsSubset(toolGrants(def.Tools), callerTools); err != nil {
 		return fmt.Errorf("%w; a fork that changes the code is held to this agent's own tools — narrow tools, or ask an operator to author this agent", err)
 	}
 	return nil

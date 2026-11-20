@@ -839,7 +839,11 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	if len(req.SystemPrompt) > 64*1024 {
 		return connector.AgentDescriptor{}, fmt.Errorf("system_prompt exceeds 64KB cap")
 	}
-	if len(req.Tools) == 0 {
+	if err := config.ValidateToolRemovals(req.Tools); err != nil {
+		return connector.AgentDescriptor{}, err
+	}
+	// A "-Name" removal alone grants nothing, so it is the empty list here.
+	if grants, _ := config.SplitTools(req.Tools); len(grants) == 0 {
 		return connector.AgentDescriptor{}, fmt.Errorf("tools required (default-deny model)")
 	}
 	// The same rule operator yaml and AgentDef create/fork apply: a stored

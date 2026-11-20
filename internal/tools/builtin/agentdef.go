@@ -496,7 +496,7 @@ func (a *AgentDef) gateNewDef(ctx context.Context, policy tools.AgentDefPolicyVa
 		if callerTools == nil {
 			return mergedDef{}, nil, fmt.Errorf("%s: caller's effective tools not on ctx (runtime misconfiguration); refuse rather than risk silent widening", op)
 		}
-		if err := assertToolsSubset(def.Tools, callerTools); err != nil {
+		if err := assertToolsSubset(toolGrants(def.Tools), callerTools); err != nil {
 			return mergedDef{}, nil, fmt.Errorf("%s: %s", op, err)
 		}
 	}
@@ -758,9 +758,12 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err != nil {
 		return errResult(fmt.Sprintf("fork: resolve root: %s", err)), nil
 	}
-	if err := assertToolsSubset(def.Tools, root); err != nil {
+	// A removal narrows, so only the grants are held to the root; and the
+	// root's own removals stay, whatever tools this fork restates.
+	if err := assertToolsSubset(toolGrants(def.Tools), root); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
+	def.Tools = config.WithRemovals(def.Tools, root)
 	// The capability fields: within what the forker holds, or what the version
 	// it forks already held — so a fork that only rewrites the prompt keeps the
 	// lineage's grants, and none can add one its author lacks. The parent, not
@@ -1172,6 +1175,12 @@ func (a *AgentDef) buildDefinition(ctx context.Context, name, parentJSON string,
 			}
 		}
 		modesSent = ov.ToolModes != nil
+		// Authoring only, like the help placeholders above: a stored body is
+		// read through decodeAgentOverlay on every resolve, and there a
+		// removal that names no default tool only fails to remove anything.
+		if err := config.ValidateToolRemovals(ov.Tools); err != nil {
+			return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+		}
 		// Authoring only: a stored definition carrying it still loads and is
 		// denied by it (descendantsRefusal), so forking it keeps working once
 		// the value is replaced.
@@ -1430,6 +1439,13 @@ func assertToolsSubset(proposed, root []string) error {
 		}
 	}
 	return nil
+}
+
+// toolGrants is the grants of a tools list, its "-Name" removals left out: a
+// removal only narrows, so no tools ceiling has to cover it.
+func toolGrants(list []string) []string {
+	grants, _ := config.SplitTools(list)
+	return grants
 }
 
 // toolCoveredByRoot reports whether a single proposed tool entry is within the

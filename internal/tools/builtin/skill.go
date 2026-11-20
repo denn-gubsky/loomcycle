@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/skillmatch"
 	"github.com/denn-gubsky/loomcycle/internal/skills"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -438,10 +439,13 @@ func skillToolsExceedingAgent(skillTools, agentTools, agentPatterns []string) []
 			agentSet[t] = true
 		}
 	}
+	// A tool the agent's "-Name" entry removes is not the agent's, whatever
+	// glob would cover it.
+	grants, removed := config.SplitTools(agentPatterns)
 	var widening []string
 	for _, t := range skillTools {
 		if len(agentPatterns) > 0 {
-			if !toolCoveredByRoot(t, agentPatterns) {
+			if !toolCoveredByRoot(t, grants) || config.ToolRemoved(t, removed) {
 				widening = append(widening, t)
 			}
 			continue

@@ -2781,9 +2781,10 @@ func (s *Server) childVolumePolicy(ctx context.Context, parentVol tools.VolumePo
 // list never carries the Context default (that is applied when a definition is
 // resolved, not written), so a pinned sub-run used to lose Context even when
 // its base had it. The base's disable_context survives the overlay, so an
-// opt-out still holds.
+// opt-out still holds, and so do the base's "-Name" removals in tools.
 func pinnedSubAgentDef(base config.AgentDef, definition json.RawMessage) config.AgentDef {
 	def := applyAgentDefOverlay(base, definition)
+	def.Tools = config.WithRemovals(def.Tools, base.Tools)
 	config.AddContextToolDefault(&def)
 	return def
 }
@@ -9393,9 +9394,12 @@ func toolNames(ts []tools.Tool) []string {
 }
 
 // filterTools applies the agent + caller allowlists to the registered builtins.
-// Glob suffixes ("mcp__brave-search__*") work via internal/tools/policy.
+// Glob suffixes ("mcp__brave-search__*") work via internal/tools/policy. The
+// agent's "-Name" removals are applied after the match, so a glob that covers
+// a removed default tool does not grant it.
 func filterTools(all []tools.Tool, agentAllowed, callerAllowed []string) []tools.Tool {
-	if len(agentAllowed) == 0 {
+	grants, removed := config.SplitTools(agentAllowed)
+	if len(grants) == 0 {
 		return nil
 	}
 	available := make([]string, 0, len(all))
@@ -9404,9 +9408,12 @@ func filterTools(all []tools.Tool, agentAllowed, callerAllowed []string) []tools
 		available = append(available, t.Name())
 		byName[t.Name()] = t
 	}
-	allowed := policy.Apply(available, agentAllowed, callerAllowed)
+	allowed := policy.Apply(available, grants, callerAllowed)
 	out := make([]tools.Tool, 0, len(allowed))
 	for _, name := range allowed {
+		if config.ToolRemoved(name, removed) {
+			continue
+		}
 		if t, ok := byName[name]; ok {
 			out = append(out, t)
 		}
