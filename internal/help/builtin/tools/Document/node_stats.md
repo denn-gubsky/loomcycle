@@ -172,7 +172,9 @@ merge, most alike first.
 **No model checks a group here.** A group is meant to be proposed only when a model
 grouping of the things' subtopic labels finds it too; `node_stats` makes no
 model call, so `model_check` says so and each group lists the documents that
-step reads. The generation agent runs it and files what both find.
+step reads. No shipped agent runs that check yet, so a group filed with
+`propose` has been checked by no model; each filing says so, and an operator
+rules on it.
 
 It writes nothing unless `propose: true`. Then it files, in the answer's order
 and at most `limit` per call, through `propose_entity` (every check of that op
@@ -228,8 +230,8 @@ fresh, stale, missing, computed, removed, series}`:
 
 - `node_stats: mode "<x>" is not report, compute, misfits, growth or split`.
 - `node_stats: propose is taken only with mode misfits or split`.
-- `node_stats: method_not_granted: …` — mode `split` with `propose` from a run not
-  granted `rule`.
+- `node_stats: method_not_granted: …` — mode `misfits` or `split` with `propose`
+  from a run not granted `rule`.
 - `node_stats: quiet_periods is taken only with mode growth`; `quiet_periods must be 1 to 120`.
 - `node_stats: permission: …` — the caller is not an operator or a granted
   agent, lacks the tenant scope, or may not read every document of it.
