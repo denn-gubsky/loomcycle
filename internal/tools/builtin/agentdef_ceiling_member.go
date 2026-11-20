@@ -187,7 +187,8 @@ func holdsShellTool(names []string) bool {
 // plane's wildcard tools ceiling is the plane's, not the member's.
 func memberToolsCeiling(ctx context.Context, def mergedDef) error {
 	eff := memberCeilingSet(ctx)
-	for _, t := range def.Tools {
+	// Only the grants: a "-Name" removal narrows, and is no tool to ask about.
+	for _, t := range toolGrants(def.Tools) {
 		if !authz.Grants(ctx, eff, "invoke", authz.ResourceForTool(t)) {
 			return fmt.Errorf("tools: %q is not a tool you may use yourself. A new agent can only be granted authority its author holds: "+
 				"remove it, or ask an operator to author this agent", t)

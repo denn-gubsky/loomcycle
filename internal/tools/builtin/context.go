@@ -982,7 +982,7 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 			Tier:     def.Tier,
 			Model:    def.Model,
 			Provider: def.Provider,
-			Tools:    len(def.Tools),
+			Tools:    len(toolGrants(def.Tools)), // a "-Name" removal is no tool held
 		}
 		// Active def_id from the v0.8.5 substrate. Best-effort — if
 		// Store is nil or no active row, we omit the field. Non-
