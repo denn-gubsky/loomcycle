@@ -45,6 +45,25 @@ const (
 	// ClassRefused: the worker will not run the command, such as one whose
 	// program the operator did not list.
 	ClassRefused = "refused"
+	// ClassOverQuota: the write would pass the workspace's disk quota, or a
+	// command already took it past (the workspace is marked full until a
+	// measurement finds it under again). Nothing was written.
+	ClassOverQuota = "workspace_over_quota"
+	// ClassPathNotFound: the file or folder the op names is not in the
+	// workspace (the workspace itself is: that is ClassNotFound).
+	ClassPathNotFound = "path_not_found"
+	// ClassExists: the target is already there and the op did not ask to
+	// overwrite it.
+	ClassExists = "exists"
+	// ClassSizeMismatch: a put's input carried other than its declared size.
+	// Nothing was written.
+	ClassSizeMismatch = "size_mismatch"
+	// ClassCopyLimit: a folder copy passes the file count or byte total it
+	// may copy; the detail names which. Nothing was written.
+	ClassCopyLimit = "copy_limit"
+	// ClassNotRegular: the op names a FIFO, a socket or a device, which the
+	// worker never opens.
+	ClassNotRegular = "not_regular_file"
 )
 
 // The error classes the core adds for an op that never reached a worker's
@@ -70,6 +89,7 @@ const (
 // grow a metric's label set or put arbitrary text where a class is read.
 var KnownWorkerClasses = map[string]bool{
 	ClassAtCapacity: true, ClassNotFound: true, ClassInvalid: true, ClassUnsupportedOp: true, ClassFailed: true, ClassRefused: true,
+	ClassOverQuota: true, ClassPathNotFound: true, ClassExists: true, ClassSizeMismatch: true, ClassCopyLimit: true, ClassNotRegular: true,
 }
 
 // The engines a worker may run commands under, weakest first.

@@ -70,8 +70,13 @@ type Request struct {
 	// Input, when set, is streamed to the worker in chunks after OpStart.
 	Input io.Reader
 	// MaxOutput bounds the output kept; zero is Options.MaxOutput. A worker
-	// that sends more fails the op with output_too_large.
+	// that sends more fails the op with output_too_large. For Stream, zero
+	// is no bound but the caller's writer.
 	MaxOutput int64
+	// InputSize is, for Stream, the exact number of bytes its reader
+	// carries. Stream sends no more, and ends the op without InputEnd when
+	// the reader holds fewer or more, so the worker keeps nothing of it.
+	InputSize int64
 }
 
 // Result is a finished op's answer.
@@ -86,6 +91,9 @@ type op struct {
 	req  Request
 	max  int64
 	done chan result // buffered 1
+	// stream is set for an op Stream runs: its input and output are the
+	// caller's reader and writer, never held whole here.
+	stream *streamIO
 }
 
 type result struct {
@@ -103,24 +111,39 @@ type result struct {
 // Result.
 func (d *Dispatcher) Do(ctx context.Context, workerID string, req Request) (res Result, err error) {
 	defer func() { d.count(opLabel(req.Op), outcome(err)) }()
-	if !workspace.ValidID(req.WorkspaceID) {
-		return Result{}, &OpError{Class: workspace.ClassInvalid, Detail: "malformed workspace id"}
-	}
-	d.mu.Lock()
-	w := d.workers[workerID]
-	d.mu.Unlock()
-	if w == nil {
-		return Result{}, ErrWorkerLost
-	}
-	if !w.servesTenant(req.TenantID) {
-		// Placement never puts a workspace here; a row naming this worker
-		// for another tenant is a bug or a forgery, and nothing is sent.
-		return Result{}, &OpError{Class: workspace.ClassNoWorker, Detail: "the worker does not serve this tenant"}
+	w, err := d.target(workerID, req)
+	if err != nil {
+		return Result{}, err
 	}
 	o := &op{ctx: ctx, req: req, max: req.MaxOutput, done: make(chan result, 1)}
 	if o.max <= 0 {
 		o.max = d.opt.MaxOutput
 	}
+	return d.runOp(ctx, w, o)
+}
+
+// target is the attached worker an op for req may run on.
+func (d *Dispatcher) target(workerID string, req Request) (*worker, error) {
+	if !workspace.ValidID(req.WorkspaceID) {
+		return nil, &OpError{Class: workspace.ClassInvalid, Detail: "malformed workspace id"}
+	}
+	d.mu.Lock()
+	w := d.workers[workerID]
+	d.mu.Unlock()
+	if w == nil {
+		return nil, ErrWorkerLost
+	}
+	if !w.servesTenant(req.TenantID) {
+		// Placement never puts a workspace here; a row naming this worker
+		// for another tenant is a bug or a forgery, and nothing is sent.
+		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: "the worker does not serve this tenant"}
+	}
+	return w, nil
+}
+
+// runOp hands o to one of w's streams and waits for its answer, running it
+// again on another stream when nothing of it reached the worker.
+func (d *Dispatcher) runOp(ctx context.Context, w *worker, o *op) (Result, error) {
 	for range maxFreeRetries + 1 {
 		s, err := d.acquire(ctx, w)
 		if err != nil {
@@ -178,6 +201,9 @@ func outcome(err error) string {
 // serve runs o on the stream. Every send happens on this goroutine; a second
 // one only receives.
 func (d *Dispatcher) serve(ctx context.Context, stream workspacepb.WorkspaceService_OpServer, w *worker, o *op) result {
+	if o.stream != nil {
+		return d.serveStream(ctx, stream, w, o)
+	}
 	req := o.req
 	if err := stream.Send(&workspacepb.OpToWorker{Msg: &workspacepb.OpToWorker_Start{Start: &workspacepb.OpStart{
 		WorkspaceId: req.WorkspaceID, Op: req.Op, Args: req.Args, HasInput: req.Input != nil,
@@ -299,7 +325,21 @@ func doneResult(dn *workspacepb.OpDone, out []byte) result {
 // Open makes workspace id's directory on the worker. An at_capacity answer
 // means the caller places it on the next worker.
 func (d *Dispatcher) Open(ctx context.Context, tenantID, workerID, id string) error {
-	_, err := d.Do(ctx, workerID, Request{TenantID: tenantID, WorkspaceID: id, Op: workspace.OpOpen})
+	return d.OpenWith(ctx, tenantID, workerID, id, workspace.OpenArgs{})
+}
+
+// OpenWith is Open with the workspace's settings, its disk quota (RFC GW
+// P2); zero values are the worker's defaults.
+func (d *Dispatcher) OpenWith(ctx context.Context, tenantID, workerID, id string, args workspace.OpenArgs) error {
+	req := Request{TenantID: tenantID, WorkspaceID: id, Op: workspace.OpOpen}
+	if args != (workspace.OpenArgs{}) {
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return err
+		}
+		req.Args = raw
+	}
+	_, err := d.Do(ctx, workerID, req)
 	return err
 }
 

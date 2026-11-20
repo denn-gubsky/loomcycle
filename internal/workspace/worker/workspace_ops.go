@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,18 +46,24 @@ func (w *worker) inWorkspace(ctx context.Context, dir, op string, args, input []
 	var a answer
 	switch op {
 	case workspace.OpExec:
-		a = w.exec(ctx, real, raw)
+		a = w.execInQuota(ctx, filepath.Base(dir), real, raw)
 	case workspace.OpRead:
 		a = readOp(ctx, real, raw)
 	case workspace.OpWrite:
 		var in workspace.WriteArgs
 		if a = decodeArgs(raw, &in); a.class == "" {
-			a = textAnswer(fsops.Write(ctx, real, "", in.Path, in.Content, 0))
+			a = w.inQuota(ctx, filepath.Base(dir), real, in.Path, func(*fsops.VolumeFS, *os.Root, string, os.FileInfo) int64 { return int64(len(in.Content)) }, func() answer {
+				return textAnswer(fsops.Write(ctx, real, "", in.Path, in.Content, 0))
+			})
 		}
 	case workspace.OpEdit:
 		var in workspace.EditArgs
 		if a = decodeArgs(raw, &in); a.class == "" {
-			a = textAnswer(fsops.Edit(ctx, real, "", fsops.EditRequest{Path: in.Path, OldString: in.OldString, NewString: in.NewString, ReplaceAll: in.ReplaceAll}))
+			a = w.inQuota(ctx, filepath.Base(dir), real, in.Path, func(v *fsops.VolumeFS, parent *os.Root, base string, fi os.FileInfo) int64 {
+				return editGrowth(v, parent, base, fi, in)
+			}, func() answer {
+				return textAnswer(fsops.Edit(ctx, real, "", fsops.EditRequest{Path: in.Path, OldString: in.OldString, NewString: in.NewString, ReplaceAll: in.ReplaceAll}))
+			})
 		}
 	case workspace.OpGlob:
 		var in workspace.GlobArgs
@@ -195,4 +202,160 @@ func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
 	out, _ := json.Marshal(workspace.ExecAnswer{ExitCode: res.ExitCode, Output: strings.ToValidUTF8(string(res.Output), string(utf8.RuneError)),
 		Truncated: res.Truncated, TimedOut: res.TimedOut})
 	return answer{output: out, exit: int32(res.ExitCode)}
+}
+
+// execInQuota runs a command unless the workspace is marked full, then
+// measures the workspace again (RFC GW P2, ruling Q2): a command may write
+// past the quota while it runs, and the next write or command is refused
+// until a measurement finds it back under.
+func (w *worker) execInQuota(ctx context.Context, id, real string, raw []byte) answer {
+	v, err := fsops.OpenVolumeFS(real, "")
+	if err != nil {
+		return refuse(workspace.ClassFailed, "opening the workspace: %v", err)
+	}
+	defer v.Close()
+	u, release, err := w.writeLock(ctx, id, v)
+	if err != nil {
+		return refuse(workspace.ClassFailed, "%v", err)
+	}
+	full := u.full.Load()
+	snap := u.snapshot()
+	release()
+	if full {
+		about := ""
+		if snap.Estimate {
+			about = " (at least: the count is an estimate)"
+		}
+		return refuse(workspace.ClassOverQuota, "the workspace holds %d bytes%s, over its quota of %d; remove files before running another command", snap.UsedBytes, about, snap.QuotaBytes)
+	}
+	a := w.exec(ctx, real, raw)
+	// Measured even when the core stopped waiting: the command may have
+	// written before it was killed.
+	mctx := context.WithoutCancel(ctx)
+	if u, release, err := w.writeLock(mctx, id, v); err == nil {
+		w.measureLocked(mctx, u, v)
+		release()
+	}
+	return a
+}
+
+// inQuota runs a write or an edit of the Workspace tool under the
+// workspace's write lock (ruling Q2: they are writes): refused with
+// workspace_over_quota when the workspace is marked full or when need bytes
+// more would pass its quota, nothing written; after it, the count moves by
+// the change in size of the entry the op changed.
+//
+// The entry is found the way the op changes it and never through a link:
+// a link anywhere on the path is refused (a write onto a link would replace
+// the link while a measure through it counted its target, and an edit
+// through one would change the target: either way the count would drift),
+// and a FIFO, socket or device is refused unopened, so nothing here can
+// block while the lock is held.
+func (w *worker) inQuota(ctx context.Context, id, real, path string, need func(v *fsops.VolumeFS, parent *os.Root, base string, fi os.FileInfo) int64, do func() answer) answer {
+	v, err := fsops.OpenVolumeFS(real, "")
+	if err != nil {
+		return refuse(workspace.ClassFailed, "opening the workspace: %v", err)
+	}
+	defer v.Close()
+	u, release, err := w.writeLock(ctx, id, v)
+	if err != nil {
+		return refuse(workspace.ClassFailed, "%v", err)
+	}
+	defer release()
+	if bad := u.admit(0); bad != nil {
+		return *bad
+	}
+	rel, bad := writePath(real, path)
+	if bad != nil {
+		return *bad
+	}
+	parent, err := openDir(v, filepath.Dir(rel), false)
+	var nf errPathNotFound
+	if errors.As(err, &nf) {
+		// The op fails on a missing folder; should it not, the count is
+		// measured afresh.
+		a := do()
+		if a.class == "" {
+			w.measureLocked(ctx, u, v)
+		}
+		return a
+	}
+	if err != nil {
+		return classify(err, "%q", path)
+	}
+	defer parent.Close()
+	base := filepath.Base(rel)
+	fi, err := lstatIn(parent, base)
+	switch {
+	case err != nil:
+		return classify(err, "%q", path)
+	case fi != nil && fi.Mode()&os.ModeSymlink != 0:
+		return refuse(workspace.ClassInvalid, "%q %v; write and edit do not go through links", path, errLink)
+	case fi != nil && fi.Mode()&(os.ModeNamedPipe|os.ModeSocket|os.ModeDevice|os.ModeCharDevice|os.ModeIrregular) != 0:
+		return refuse(workspace.ClassNotRegular, "%q %v", path, fsops.ErrNotRegular)
+	}
+	before := entrySize(fi)
+	if bad := u.admit(max(need(v, parent, base, fi), 0)); bad != nil {
+		return *bad
+	}
+	a := do()
+	if a.class == "" {
+		after, _ := lstatIn(parent, base)
+		// after is at least 0, so the count drops by no more than the
+		// entry held before the op.
+		u.used = max(u.used+entrySize(after)-before, 0)
+		w.settleLocked(ctx, u, v)
+	}
+	return a
+}
+
+// writePath is path relative to the workspace's real root, cleaned; an
+// absolute path is accepted inside the root, as the file tools accept it.
+func writePath(real, path string) (string, *answer) {
+	p := path
+	if filepath.IsAbs(p) {
+		r, err := filepath.Rel(real, filepath.Clean(p))
+		if err != nil {
+			return "", refusal(workspace.ClassInvalid, "path %q is outside the workspace", path)
+		}
+		p = r
+	}
+	p = filepath.Clean(p)
+	if p == "." || p == ".." || strings.HasPrefix(p, ".."+string(filepath.Separator)) {
+		return "", refusal(workspace.ClassInvalid, "path %q is outside the workspace", path)
+	}
+	return p, nil
+}
+
+// entrySize is what the quota counts for an entry: a regular file's size, a
+// link's own size (never its target's), nothing for anything else.
+func entrySize(fi os.FileInfo) int64 {
+	if fi != nil && (fi.Mode().IsRegular() || fi.Mode()&os.ModeSymlink != 0) {
+		return fi.Size()
+	}
+	return 0
+}
+
+// editGrowth is how many bytes an edit adds to its file: the replacements
+// it would make times the growth of each. An edit that will fail (no file,
+// no match, over the edit cap) adds nothing; fsops.Edit refuses it. The
+// file is opened through fsops, which never opens a FIFO or a device.
+func editGrowth(v *fsops.VolumeFS, parent *os.Root, base string, fi os.FileInfo, in workspace.EditArgs) int64 {
+	if fi == nil || !fi.Mode().IsRegular() || fi.Size() > fsops.DefaultEditMaxBytes {
+		return 0
+	}
+	f, err := v.OpenIn(parent, base)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	body, err := io.ReadAll(io.LimitReader(f, fsops.DefaultEditMaxBytes))
+	if err != nil {
+		return 0
+	}
+	_, n, err := fsops.Replace(string(body), in.OldString, in.NewString, in.ReplaceAll)
+	if err != nil {
+		return 0
+	}
+	return int64(n) * int64(len(in.NewString)-len(in.OldString))
 }

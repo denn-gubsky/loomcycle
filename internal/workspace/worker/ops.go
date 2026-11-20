@@ -47,6 +47,9 @@ func (w *worker) serveOne(ctx context.Context, client workspacepb.WorkspaceServi
 	if start == nil {
 		return errors.New("the first op frame was not OpStart")
 	}
+	if streamOp(start.GetOp()) {
+		return w.serveStream(ctx, sctx, cancel, stream, start)
+	}
 	var (
 		a     answer
 		input []byte
@@ -59,10 +62,20 @@ func (w *worker) serveOne(ctx context.Context, client workspacepb.WorkspaceServi
 			a = refuse(workspace.ClassInvalid, "%v", err)
 		}
 	}
-	// The core sends nothing more until it ends the stream, which it does
-	// when it has the answer or gives up on the op (its caller cancelled, or
-	// the run ended). A receive that ends cancels the op, so a command the
-	// core no longer waits for is killed rather than left running.
+	done := watchEnd(sctx, cancel, stream)
+	if a.class == "" {
+		a = w.run(sctx, start, input)
+	}
+	return finish(ctx, stream, a, done)
+}
+
+// watchEnd receives until the core ends the stream, discarding what comes.
+// The core sends nothing more once the op's input has ended, until it ends
+// the stream, which it does when it has the answer or gives up on the op
+// (its caller cancelled, or the run ended). A receive that ends cancels the
+// op, so a command the core no longer waits for is killed rather than left
+// running. done closes when it returns.
+func watchEnd(sctx context.Context, cancel context.CancelFunc, stream workspacepb.WorkspaceService_OpClient) <-chan struct{} {
 	done := make(chan struct{})
 	safego.Go(sctx, "workspace.worker.stream-end", func() {
 		defer close(done)
@@ -73,17 +86,18 @@ func (w *worker) serveOne(ctx context.Context, client workspacepb.WorkspaceServi
 			}
 		}
 	})
-	if a.class == "" {
-		a = w.run(sctx, start, input)
-	}
+	return done
+}
+
+// finish sends the answer and waits for the core to end the stream, so the
+// answer is read before this side's cancel resets it.
+func finish(ctx context.Context, stream workspacepb.WorkspaceService_OpClient, a answer, done <-chan struct{}) error {
 	if err := sendAnswer(stream, a); err != nil {
 		return err
 	}
 	if err := stream.CloseSend(); err != nil {
 		return err
 	}
-	// Wait for the core to end the stream, so the answer is read before
-	// this side's cancel resets it.
 	select {
 	case <-done:
 	case <-time.After(endWait):
@@ -148,11 +162,12 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 	dir := filepath.Join(w.opt.Root, id)
 	switch start.GetOp() {
 	case workspace.OpOpen:
-		return w.open(dir)
+		return w.open(id, dir, start.GetArgs())
 	case workspace.OpRemove:
 		if err := os.RemoveAll(dir); err != nil {
 			return refuse(workspace.ClassFailed, "removing the workspace: %v", err)
 		}
+		w.dropQuota(id)
 		return answer{}
 	case workspace.OpStatus:
 		st, err := os.Lstat(dir)
@@ -164,21 +179,38 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		return answer{output: out}
 	case workspace.OpExec, workspace.OpRead, workspace.OpWrite, workspace.OpEdit, workspace.OpGlob, workspace.OpGrep:
 		return w.inWorkspace(ctx, dir, start.GetOp(), start.GetArgs(), input)
+	case workspace.OpFStat, workspace.OpFList, workspace.OpMkdir, workspace.OpFRemove,
+		workspace.OpStage, workspace.OpCommit, workspace.OpDiscard, workspace.OpCopyLocal:
+		dir, real, a := w.workspaceDir(id)
+		if a.class == "" {
+			a = w.fileOp(ctx, id, real, start.GetOp(), start.GetArgs())
+		}
+		return hidePaths(a, false, real, dir)
 	}
 	return refuse(workspace.ClassUnsupportedOp, "this worker does not run %q", start.GetOp())
 }
 
-// open makes the workspace's directory. One already there is success, so a
+// open makes the workspace's directory and records the disk quota its
+// arguments name (none: the default). One already there is success, so a
 // retried open is harmless; a new one past capacity is refused, and the core
 // places it elsewhere.
-func (w *worker) open(dir string) answer {
+func (w *worker) open(id, dir string, raw []byte) answer {
+	var in workspace.OpenArgs
+	if len(raw) > 0 {
+		if a := decodeArgs(raw, &in); a.class != "" {
+			return a
+		}
+	}
+	if in.DiskQuotaBytes < 0 || in.DiskQuotaBytes > workspace.MaxDiskQuotaBytes {
+		return refuse(workspace.ClassInvalid, "disk_quota_bytes must be from 1 to %d", int64(workspace.MaxDiskQuotaBytes))
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if st, err := os.Lstat(dir); err == nil {
 		if !st.IsDir() {
 			return refuse(workspace.ClassFailed, "the workspace's name is taken by something that is not a directory")
 		}
-		return answer{}
+		return w.recordQuota(id, in.DiskQuotaBytes)
 	}
 	held, err := w.held()
 	if err != nil {
@@ -189,6 +221,22 @@ func (w *worker) open(dir string) answer {
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		return refuse(workspace.ClassFailed, "making the workspace: %v", err)
+	}
+	if a := w.recordQuota(id, in.DiskQuotaBytes); a.class != "" {
+		_ = os.Remove(dir)
+		return a
+	}
+	return answer{}
+}
+
+// recordQuota keeps an open's quota; zero leaves what is recorded (or the
+// default) as it is, which is what a core that sends no quota expects.
+func (w *worker) recordQuota(id string, quota int64) answer {
+	if quota == 0 {
+		return answer{}
+	}
+	if err := w.setLimit(id, quota); err != nil {
+		return refuse(workspace.ClassFailed, "recording the workspace's quota: %v", err)
 	}
 	return answer{}
 }
