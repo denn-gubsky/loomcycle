@@ -19,7 +19,7 @@ import (
 // the core sends. Like the conversion worker it loads no config, opens no
 // store and holds no provider key; its token is an operator token holding
 // only workers:attach.
-func runWorkspaceWorker(dispatcher, id string, stderr io.Writer) int {
+func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) int {
 	capacity, err := envCount("LOOMCYCLE_WORKSPACE_CAPACITY", 1, 10000)
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
@@ -48,6 +48,7 @@ func runWorkspaceWorker(dispatcher, id string, stderr io.Writer) int {
 		// must not change the token.
 		Token:        strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TOKEN")),
 		ID:           id,
+		ParentPID:    parentPID,
 		BuildVersion: buildVersion,
 		Root:         strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ROOT")),
 		Engine:       strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ENGINE")),

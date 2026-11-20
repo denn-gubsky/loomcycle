@@ -40,10 +40,17 @@ func runWorker(args []string, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	if *oomAdj != 0 && runtime.GOOS == "linux" {
+		// Raising one's own score needs no privilege; a failure only means
+		// the kernel weighs this worker like any other process.
+		if err := os.WriteFile("/proc/self/oom_score_adj", []byte(strconv.Itoa(*oomAdj)), 0o600); err != nil {
+			slog.Warn("worker could not raise its OOM score", "err", err)
+		}
+	}
 	switch *role {
 	case "conversion":
 	case "workspace":
-		return runWorkspaceWorker(*dispatcher, *id, stderr)
+		return runWorkspaceWorker(*dispatcher, *id, *parentPID, stderr)
 	default:
 		fmt.Fprintf(stderr, "loomcycle worker: --role %q: want conversion or workspace\n", *role)
 		return 2
@@ -56,13 +63,6 @@ func runWorker(args []string, stderr io.Writer) int {
 			return 2
 		}
 		slots = n
-	}
-	if *oomAdj != 0 && runtime.GOOS == "linux" {
-		// Raising one's own score needs no privilege; a failure only means
-		// the kernel weighs this worker like any other process.
-		if err := os.WriteFile("/proc/self/oom_score_adj", []byte(strconv.Itoa(*oomAdj)), 0o600); err != nil {
-			slog.Warn("conversion worker could not raise its OOM score", "err", err)
-		}
 	}
 	wrapper := strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
 	helperFrom := func(env, key string) *convert.Helper {

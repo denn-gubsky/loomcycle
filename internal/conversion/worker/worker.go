@@ -147,7 +147,7 @@ func Run(ctx context.Context, opt Options) error {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
 		defer cancel()
-		safego.Go(ctx, "conversion.worker.parent", func() { watchParent(ctx, opt.ParentPID, cancel) })
+		safego.Go(ctx, "conversion.worker.parent", func() { workerlink.WatchParent(ctx, opt.ParentPID, cancel) })
 	}
 
 	targets, err := workerlink.ParseTargets(opt.Target)
@@ -831,24 +831,6 @@ func (s *remoteSink) Image(img extract.Image) (string, error) {
 }
 
 var _ extract.PageImageSink = (*remoteSink)(nil)
-
-// watchParent ends the worker when its parent process is gone (its parent
-// pid changes to the reaper's).
-func watchParent(ctx context.Context, pid int, cancel context.CancelFunc) {
-	t := time.NewTicker(time.Second)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if os.Getppid() != pid {
-				cancel()
-				return
-			}
-		}
-	}
-}
 
 func defaultID() string {
 	host, _ := os.Hostname()

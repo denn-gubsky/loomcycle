@@ -65,7 +65,11 @@ type Options struct {
 	Token string
 	// ID names the worker to the core; default the host name, which must not
 	// change across restarts (defaultID).
-	ID           string
+	ID string
+	// ParentPID, when set, ends the worker once its parent is gone: the
+	// runtime sets it on the worker it starts as its child (workspace.mode
+	// local).
+	ParentPID    int
 	BuildVersion string
 	// Root is the directory the workspaces are made in.
 	Root string
@@ -154,6 +158,12 @@ func Run(ctx context.Context, opt Options) error {
 		return err
 	}
 	log := opt.Logger.With("component", "workspace-worker", "worker_id", opt.ID)
+	if opt.ParentPID > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		safego.Go(ctx, "workspace.worker.parent", func() { workerlink.WatchParent(ctx, opt.ParentPID, cancel) })
+	}
 	log.Warn("the host engine runs commands as this process's user, with no isolation; use it only on a trusted machine", "root", root)
 	w := &worker{opt: opt, log: log, engine: &engine.Host{Commands: opt.Commands}}
 	defer w.engine.Close()

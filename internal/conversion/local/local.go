@@ -1,12 +1,14 @@
-// Package local runs conversion workers as children of the core (RFC GO §5.7,
-// conversion.mode: local): copies of the same binary, started with
-// `worker`, attached over a Unix socket in a private directory, each with a
-// soft memory limit and, on Linux, the highest OOM score, so that in a shared
-// cgroup the kernel kills a worker before the core. A child that exits is
-// started again with backoff.
+// Package local runs workers as children of the core: conversion workers
+// (RFC GO §5.7, conversion.mode: local) and the workspace worker (RFC GW
+// D9, workspace.mode: local). Children are copies of the same binary,
+// started with `worker`, attached over a Unix socket in a private directory,
+// each with a soft memory limit and, on Linux, the highest OOM score, so that
+// in a shared cgroup the kernel kills a worker before the core. A child that
+// exits is started again with backoff.
 //
 // A child gets a minimal environment: no provider key, no store connection,
-// no setting of the core's. It needs none to convert bytes.
+// no setting of the core's. It needs none to convert bytes or to hold a
+// workspace.
 package local
 
 import (
@@ -67,6 +69,15 @@ type Options struct {
 	// helpers (transcription.ocr.djvu, RFC GV P3, P4). Empty leaves a child
 	// its defaults, djvutxt, djvused and ddjvu from PATH.
 	DjVuText, DjVuInspect, DjVuRasterize string
+	// Role is the children's `worker --role`; empty starts conversion
+	// workers.
+	Role string
+	// ID, when set, is the --id of the one child, the same on every start:
+	// a workspace worker's id keys the rows of the workspaces it holds, so a
+	// restarted child must come back under it. Workers is then 1.
+	ID string
+	// Env are more variables every child gets.
+	Env []string
 	// OnRespawn is called each time a child is started again.
 	OnRespawn func()
 	Logger    *slog.Logger
@@ -85,13 +96,13 @@ func Listen() (l net.Listener, socket string, cleanup func(), err error) {
 	// away): only this user reaches the socket inside it.
 	dir, err := os.MkdirTemp(base, "lc-w-")
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("conversion: worker socket directory: %w", err)
+		return nil, "", nil, fmt.Errorf("worker socket directory: %w", err)
 	}
 	socket = filepath.Join(dir, "d.sock")
 	l, err = net.Listen("unix", socket)
 	if err != nil {
 		os.RemoveAll(dir)
-		return nil, "", nil, fmt.Errorf("conversion: worker socket: %w", err)
+		return nil, "", nil, fmt.Errorf("worker socket: %w", err)
 	}
 	return l, socket, func() { l.Close(); os.RemoveAll(dir) }, nil
 }
@@ -119,16 +130,28 @@ func Start(opt Options) *Supervisor {
 	if opt.Logger == nil {
 		opt.Logger = slog.Default()
 	}
+	workers := max(opt.Workers, 1)
+	if opt.ID != "" {
+		workers = 1
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Supervisor{cancel: cancel, pids: map[int]int{}}
-	for i := range max(opt.Workers, 1) {
+	for i := range workers {
 		s.wg.Add(1)
-		safego.Go(ctx, "conversion.supervise", func() {
+		safego.Go(ctx, "worker.supervise", func() {
 			defer s.wg.Done()
-			s.supervise(ctx, opt, i, opt.Logger.With("component", "conversion-supervisor", "child", i))
+			s.supervise(ctx, opt, i, opt.Logger.With("component", "worker-supervisor", "role", opt.role(), "child", i))
 		})
 	}
 	return s
+}
+
+// role is the children's role, for the log.
+func (o Options) role() string {
+	if o.Role == "" {
+		return "conversion"
+	}
+	return o.Role
 }
 
 // Stop asks every child to exit, kills one that does not within a few
@@ -159,9 +182,9 @@ func (s *Supervisor) supervise(ctx context.Context, opt Options, n int, log *slo
 		if time.Since(started) >= stableAfter {
 			backoff = backoffMin
 		}
-		log.Warn("conversion worker exited; starting another", "err", err, "in", backoff)
+		log.Warn("local worker exited; starting another", "err", err, "in", backoff)
 		if backoff == backoffMax {
-			log.Error("conversion worker is crash-looping", "err", err)
+			log.Error("local worker is crash-looping", "err", err)
 		}
 		backoff = min(backoff*2, backoffMax)
 	}
@@ -170,12 +193,8 @@ func (s *Supervisor) supervise(ctx context.Context, opt Options, n int, log *slo
 // runChild starts one child and waits for it to exit, or stops it when ctx
 // ends.
 func (s *Supervisor) runChild(ctx context.Context, opt Options, n int) error {
-	// #nosec G204 -- Binary is this process's own executable (os.Executable at boot), and every argument is made here: the socket path of a directory this process created, its own pid and a fixed id; nothing comes from a run, a file or a caller
-	cmd := exec.Command(opt.Binary, "worker",
-		"--dispatcher", "unix://"+opt.Socket,
-		"--parent-pid", strconv.Itoa(os.Getpid()),
-		"--oom-score-adj", "1000",
-		"--id", fmt.Sprintf("local-%d-%d", os.Getpid(), n))
+	// #nosec G204 -- Binary is this process's own executable (os.Executable at boot), and every argument is made here (childArgs): the socket path of a directory this process created, its own pid, a fixed role and id; nothing comes from a run, a file or a caller
+	cmd := exec.Command(opt.Binary, childArgs(opt, n)...)
 	cmd.Env = childEnv(opt)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -191,7 +210,7 @@ func (s *Supervisor) runChild(ctx context.Context, opt Options, n int) error {
 		s.mu.Unlock()
 	}()
 	done := make(chan error, 1)
-	safego.Go(ctx, "conversion.child.wait", func() { done <- cmd.Wait() })
+	safego.Go(ctx, "worker.child.wait", func() { done <- cmd.Wait() })
 	select {
 	case err := <-done:
 		return err
@@ -207,6 +226,23 @@ func (s *Supervisor) runChild(ctx context.Context, opt Options, n int) error {
 		_ = cmd.Process.Kill()
 		return <-done
 	}
+}
+
+// childArgs are child n's arguments.
+func childArgs(opt Options, n int) []string {
+	id := opt.ID
+	if id == "" {
+		id = fmt.Sprintf("local-%d-%d", os.Getpid(), n)
+	}
+	args := []string{"worker",
+		"--dispatcher", "unix://" + opt.Socket,
+		"--parent-pid", strconv.Itoa(os.Getpid()),
+		"--oom-score-adj", "1000",
+		"--id", id}
+	if opt.Role != "" {
+		args = append(args, "--role", opt.Role)
+	}
+	return args
 }
 
 func childEnv(opt Options) []string {
@@ -235,5 +271,5 @@ func childEnv(opt Options) []string {
 	if opt.MemoryLimitMB > 0 {
 		env = append(env, fmt.Sprintf("GOMEMLIMIT=%dMiB", opt.MemoryLimitMB))
 	}
-	return env
+	return append(env, opt.Env...)
 }

@@ -166,3 +166,27 @@ func TestChildEnv_CarriesTheDjVuHelpers(t *testing.T) {
 		t.Errorf("unset DjVu helpers were passed:\n%s", env)
 	}
 }
+
+// A workspace child is started with its role and the fixed id it was given,
+// the same on every start, so the workspaces it holds stay its own across a
+// restart; a conversion child keeps the per-process id and no role.
+func TestChildArgs_CarryTheRoleAndAFixedID(t *testing.T) {
+	ws := strings.Join(childArgs(Options{Socket: "/s", Role: "workspace", ID: "local"}, 0), " ")
+	for _, want := range []string{"worker ", "--dispatcher unix:///s", "--id local", "--role workspace", "--parent-pid "} {
+		if !strings.Contains(ws, want) {
+			t.Errorf("workspace child args %q lack %q", ws, want)
+		}
+	}
+	cv := strings.Join(childArgs(Options{Socket: "/s"}, 1), " ")
+	if strings.Contains(cv, "--role") || !strings.Contains(cv, "--id local-") || !strings.HasSuffix(cv, "-1") {
+		t.Errorf("conversion child args = %q, want a per-process id and no role", cv)
+	}
+}
+
+// Env reaches a child after its own variables.
+func TestChildEnv_CarriesTheExtraVariables(t *testing.T) {
+	env := childEnv(Options{Token: "tok", Env: []string{"LOOMCYCLE_WORKSPACE_ROOT=/data/workspaces"}})
+	if !slices.Contains(env, "LOOMCYCLE_WORKSPACE_ROOT=/data/workspaces") {
+		t.Fatalf("child env lacks the extra variable:\n%s", strings.Join(env, "\n"))
+	}
+}
