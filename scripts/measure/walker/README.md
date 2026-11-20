@@ -18,13 +18,65 @@ after the first run; add a new id.
 
 ### Gold
 
-Each question has an empty `gold` list. Before the first run an operator fills
-it with the ids of the documents a complete answer names, from a listing of
-the store rather than from either arm's answers (so neither arm defines what
-is right): `query_documents` by `under_path` and `type`, `search` with
-`facets`, and reading the briefs. A question whose gold cannot be agreed stays
-empty and is reported without recall. Record who filled it and when in the
-commit that adds the ids.
+Each question in `questions.yaml` keeps an empty `gold` list: the gold names
+documents of a real tenant and **never enters this repo**. It lives in a
+separate gold file outside the tree (for example
+`~/work/loomcycle-internal/gm-p7/gold.yaml`) and is passed with `--gold PATH`;
+the driver merges it into the questions by id.
+
+An operator fills it before the first run from a listing of the store rather
+than from either arm's answers (so neither arm defines what is right):
+`query_documents` by `under_path` and `type`, `search` with `facets`, and
+reading the briefs. Record who filled it and when in the gold file itself
+(`gold_notes`).
+
+The gold file has `questions.yaml`'s shape; per question id:
+
+```yaml
+questions:
+  - id: q01
+    gold: [<document id>, ...]   # the documents a complete answer names
+    also: [<document id>, ...]   # optional: fine to cite, never required
+    confidence: high             # optional, free text
+    gold_notes: |                # optional, free text
+      Who filled it, when, from which listing.
+  - id: q13
+    gold_topics:                 # optional: score on topics, not documents
+      - name: access control     # q13 asks about "security": that word
+        aliases: [authz, permissions]   # must not be a name or alias here
+      - name: sandboxing
+```
+
+The driver refuses an id that `questions.yaml` does not have (and a duplicate
+id or an unknown key), and warns on every question left without gold; such a
+question is reported without recall. The file is read by a small YAML subset
+parser (block mappings and lists, `[a, b]` flow lists, quoted scalars, `|`/`>`
+blocks, comments); anything else is an error.
+
+### Topic gold
+
+A question whose gold entry has `gold_topics` (owner ruling) is scored on
+whether the answer **names** each topic: a case-insensitive, word-boundary
+match of the topic's name or any alias (`authz` does not match `authzx`;
+the words of a multi-word name may be split by any whitespace). Its recall is
+topics named / topics listed. It may carry no document gold; if it does, the
+document scores are kept on the run as `doc_recall` / `doc_precision` but do
+not enter the summary. This suits `area` questions, whose answer is a grouping
+by topic rather than a list of documents.
+
+Rules and limits of the match:
+
+- **A topic's name and aliases must not occur in the question's own text.** An
+  answer that restates the question would name such a topic for free. The
+  driver warns at `--gold` load about every topic that does, marks it
+  unscorable and leaves it out of the recall (the run lists it under
+  `topics_unscorable`); fix the gold rather than rely on that.
+- **The longest match wins.** Where one topic's matched term lies inside a
+  longer matched term of another topic ("access" inside "access control"),
+  only the longer topic counts for that span; a separate mention of the
+  shorter term still counts.
+- **Negation is not understood**: "we hold nothing on sandboxing" names
+  sandboxing. Read the answers of a surprising score.
 
 ## The arms
 
@@ -49,26 +101,46 @@ is a third arm if wanted.
 
 ```sh
 export LOOMCYCLE_TOKEN=...        # an operator token of the tenant; never printed
-python3 -I scripts/measure/walker/drive.py --dry-run \
+GOLD=~/work/loomcycle-internal/gm-p7/gold.yaml   # outside the repo
+python3 -I scripts/measure/walker/drive.py --dry-run --gold "$GOLD" \
   --arm tax=kb/walker --arm notax=kb/walker-notax
 python3 -I scripts/measure/walker/drive.py \
-  --base-url https://<host> \
+  --base-url https://<host> --gold "$GOLD" \
   --arm tax=kb/walker --arm notax=kb/walker-notax \
   --provider anthropic --model <haiku model id> \
   --runs 3 --budget-usd 5 --out <directory outside the repo>
 ```
 
 It writes `runs.jsonl` (one line per run: answer text, tool calls by op,
-token usage, cost, score) and `summary.json` (per arm and kind). The driver
-stops before a run that could take the spend past `--budget-usd` (a run is assumed to cost at most $0.04). `--score-only` rescores an
-existing `runs.jsonl`, e.g. after the gold is filled.
+token usage, cost, score) and `summary.json`. The driver stops before a run
+that could take the spend past `--budget-usd` (a run is assumed to cost at
+most $0.04). `--dry-run` also counts the questions scored on documents and on
+topics. `--score-only` rescores an existing `runs.jsonl` against `--gold`
+(required: without it the driver refuses rather than replace `summary.json`
+with one that has no recall), e.g. after the gold is filled or corrected;
+`--arm` is not needed. It writes
+the rescored runs to `runs.scored.jsonl` beside it and leaves `runs.jsonl`
+untouched.
+
+## Running the tests
+
+```sh
+python3 -I -m unittest discover -s scripts/measure/walker -p 'test_*.py'
+```
+
+Standard library only, no network; the fixtures use synthetic ids.
 
 ## What is scored
 
-Per run: the documents cited (`loom:doc/<id>` links), recall and precision
-against the gold, the `COVERAGE` line, whether `place` and `measure` were
-called, tool calls, cost. Per arm and kind: mean recall, mean documents cited,
-share of runs reporting `complete`, failed runs, spend. The P7 moves pass if
+Per run: the metric kind (`docs`, `topics`, or none without gold), the
+documents cited (`loom:doc/<id>` links), recall against the gold (documents,
+or topics named), precision for documents (`gold` and `also` both count as
+correct citations), the `COVERAGE` line, whether `place` and `measure` were
+called, tool calls, cost. `summary.json` holds `rows` per arm, question kind
+and metric kind (mean recall, mean documents cited, share of runs reporting
+`complete`, failed runs, spend), and `by_metric`: the arms' mean recall side
+by side, separately for document recall and topic recall, which are never
+averaged together. The P7 moves pass if
 `tax` raises mean recall on `overview` and `area` without lowering it on any
 kind by more than the spread between its own three runs, and answers
 `changed` questions with dated material at least as often. A `changed`
