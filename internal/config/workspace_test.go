@@ -112,3 +112,21 @@ func TestWorkspaceWarnings_AdviseAGrantWhileTheModeIsOff(t *testing.T) {
 		t.Errorf("mode remote: advisory = %q, want none", got)
 	}
 }
+
+// The agents whose grant allows nothing are named, sorted: one without the
+// tool whatever the mode, every granted one while the mode is off.
+func TestInertWorkspaceGrants_NamesTheAgentsWhoseGrantAllowsNothing(t *testing.T) {
+	grant := &AgentWorkspace{Ops: []string{"exec"}, Open: true}
+	cfg := &Config{Agents: map[string]AgentDef{
+		"zed":     {Tools: []string{"Read"}, Workspace: grant},
+		"builder": {Tools: []string{"Workspace"}, Workspace: grant},
+		"plain":   {Tools: []string{"Workspace"}},
+	}}
+	if got := strings.Join(cfg.InertWorkspaceGrants(), ","); got != "builder,zed" {
+		t.Errorf("mode off: inert = %q, want builder,zed", got)
+	}
+	cfg.Workspace.Mode = WorkspaceModeLocal
+	if got := strings.Join(cfg.InertWorkspaceGrants(), ","); got != "zed" {
+		t.Errorf("mode local: inert = %q, want zed", got)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -150,6 +151,21 @@ func validateWorkspace(c *Config) error {
 		return fmt.Errorf("workspace.exec.default_timeout_s (%d) is over max_timeout_s (%d)", r.Exec.DefaultTimeoutS, r.Exec.MaxTimeoutS)
 	}
 	return nil
+}
+
+// InertWorkspaceGrants names, sorted, the agents whose workspace grant
+// reaches nothing: Workspace is not in their tools, or workspace.mode is off.
+// The same agents workspaceWarnings advises on at load.
+func (c *Config) InertWorkspaceGrants() []string {
+	mode := c.Workspace.Resolved().Mode
+	var out []string
+	for name, a := range c.Agents {
+		if len(workspaceWarnings(name, a, mode)) > 0 {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {

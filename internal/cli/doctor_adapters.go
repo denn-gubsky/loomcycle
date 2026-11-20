@@ -88,6 +88,18 @@ func (r *realConfig) EdgeGateProbes() []DoctorEdgeProbe {
 	return edgeGateProbes(r.cfg.ResolvedAuth.Gates)
 }
 
+func (r *realConfig) Workspaces() DoctorWorkspaces {
+	ws := r.cfg.Workspace.Resolved()
+	out := DoctorWorkspaces{Mode: ws.Mode, InertGrants: r.cfg.InertWorkspaceGrants()}
+	if ws.LocalWorker() {
+		out.LocalTenant, out.LocalRoot = ws.Local.Tenant, r.cfg.WorkspaceLocalRoot()
+	}
+	if ws.RemoteWorkers() {
+		out.Endpoint = r.cfg.ResolvedWorkerEndpoint().Listen
+	}
+	return out
+}
+
 func (r *realConfig) TokenHasher() (auth.TokenHasher, error) { return r.cfg.Env.TokenHasher() }
 
 func (r *realConfig) HostShellEnabled() bool {
