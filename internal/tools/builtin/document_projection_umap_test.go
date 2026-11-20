@@ -199,8 +199,12 @@ func TestUMAPProjection_NewChunkPlacedWithoutRefit(t *testing.T) {
 }
 
 // TestUMAPProjection_RefitKeepsTheArrangement — a forced refit of unchanged data
-// starts from the previous map and is aligned to it: chunks move under a tenth of
-// the map's RMS radius on average.
+// starts from the previous map and is aligned to it: chunks move well under the
+// map's RMS radius on average. The fit's seed comes from the scope key, and the
+// test's scope ids are random per run, so the displacement is a spread, not one
+// number: 120 local runs (SQLite and Postgres) gave 0.029–0.085, and CI reached
+// 0.117 and 0.119 (#2782, #2802). Two unrelated layouts move points about a whole
+// radius, so 0.15 still tells a kept arrangement from a fresh one.
 func TestUMAPProjection_RefitKeepsTheArrangement(t *testing.T) {
 	projectionBothTiers(t, func(t *testing.T, d *Document, vs *vectorStore, ctx context.Context) {
 		umapOn(d, nil)
@@ -231,8 +235,8 @@ func TestUMAPProjection_RefitKeepsTheArrangement(t *testing.T) {
 		disp /= float64(len(a))
 		radius = math.Sqrt(radius / float64(len(a)))
 		t.Logf("refit displacement %.3f of the RMS radius", disp/radius)
-		if disp/radius >= 0.1 {
-			t.Fatalf("a refit of unchanged data moved chunks %.3f of the radius on average, want < 0.1", disp/radius)
+		if disp/radius >= 0.15 {
+			t.Fatalf("a refit of unchanged data moved chunks %.3f of the radius on average, want < 0.15", disp/radius)
 		}
 	})
 }
