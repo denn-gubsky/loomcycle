@@ -30,6 +30,11 @@ func runWorkspaceWorker(dispatcher, id string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 		return 2
 	}
+	commands, err := workspaceCommands(os.Getenv("LOOMCYCLE_WORKSPACE_COMMANDS"))
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
+		return 2
+	}
 	tlsCfg, err := workerTLS()
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
@@ -48,6 +53,7 @@ func runWorkspaceWorker(dispatcher, id string, stderr io.Writer) int {
 		Engine:       strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ENGINE")),
 		Capacity:     capacity,
 		IdleStreams:  streams,
+		Commands:     commands,
 		TLS:          tlsCfg,
 		Insecure:     os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1",
 	})
@@ -74,4 +80,23 @@ func envCount(env string, lo, hi int) (int, error) {
 		return 0, fmt.Errorf("%s: %q is not a whole number from %d to %d", env, v, lo, hi)
 	}
 	return n, nil
+}
+
+// workspaceCommands reads LOOMCYCLE_WORKSPACE_COMMANDS: a comma-separated list
+// of the programs an exec may start with; empty allows any. A name holding
+// whitespace or a path separator could never match a command's first word,
+// so it is refused rather than silently allowing nothing.
+func workspaceCommands(v string) ([]string, error) {
+	var out []string
+	for _, name := range strings.Split(v, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if strings.ContainsAny(name, " \t/") {
+			return nil, fmt.Errorf("LOOMCYCLE_WORKSPACE_COMMANDS: %q is not a program name", name)
+		}
+		out = append(out, name)
+	}
+	return out, nil
 }

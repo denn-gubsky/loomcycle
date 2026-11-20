@@ -147,8 +147,8 @@ func TestDo_OpenStatusRemoveOnARealWorker(t *testing.T) {
 	if ok, err := d.Status(ctx, "acme", id, "ws1"); err != nil || ok || exists(filepath.Join(root, "ws1")) {
 		t.Fatalf("after remove: status = %v, %v", ok, err)
 	}
-	if _, err := d.Do(ctx, id, dispatch.Request{TenantID: "acme", WorkspaceID: "ws1", Op: "exec"}); dispatch.ClassOf(err) != workspace.ClassUnsupportedOp {
-		t.Fatalf("an op this layer lacks: %v, want unsupported_op", err)
+	if _, err := d.Do(ctx, id, dispatch.Request{TenantID: "acme", WorkspaceID: "ws1", Op: "launch"}); dispatch.ClassOf(err) != workspace.ClassUnsupportedOp {
+		t.Fatalf("an op the worker lacks: %v, want unsupported_op", err)
 	}
 	if _, err := d.Do(ctx, id, dispatch.Request{TenantID: "acme", WorkspaceID: "../x", Op: workspace.OpOpen}); dispatch.ClassOf(err) != workspace.ClassInvalid {
 		t.Fatalf("a malformed id: %v, want invalid", err)

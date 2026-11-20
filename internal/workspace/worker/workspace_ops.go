@@ -1,0 +1,194 @@
+package worker
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/denn-gubsky/loomcycle/internal/fsops"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
+)
+
+// maxExecTimeout bounds the timeout an exec op may carry. The core decides
+// the timeout from the operator's workspace.exec bounds; this only keeps a
+// malformed op from holding a command for ever.
+const maxExecTimeout = 24 * time.Hour
+
+// inWorkspace runs a command or a file op in the workspace whose directory is
+// dir. The file ops are the file tools' own code (fsops) with the workspace
+// as the root and no fence: the workspace is the whole of what the op may
+// reach, and fsops refuses `..`, an absolute path elsewhere and a symlink out
+// of it.
+func (w *worker) inWorkspace(ctx context.Context, dir, op string, args, input []byte) answer {
+	st, err := os.Lstat(dir)
+	if err != nil || !st.IsDir() {
+		return refuse(workspace.ClassNotFound, "the workspace is not on this worker")
+	}
+	// fsops resolves only the root; the workspace's real path is derived
+	// from the worker's root and the id, and used to keep the worker's own
+	// disk layout out of what the op returns.
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return refuse(workspace.ClassFailed, "reading the workspace: %v", err)
+	}
+	raw := args
+	if len(raw) == 0 {
+		raw = input
+	}
+	var a answer
+	switch op {
+	case workspace.OpExec:
+		a = w.exec(ctx, real, raw)
+	case workspace.OpRead:
+		a = readOp(ctx, real, raw)
+	case workspace.OpWrite:
+		var in workspace.WriteArgs
+		if a = decodeArgs(raw, &in); a.class == "" {
+			a = textAnswer(fsops.Write(ctx, real, "", in.Path, in.Content, 0))
+		}
+	case workspace.OpEdit:
+		var in workspace.EditArgs
+		if a = decodeArgs(raw, &in); a.class == "" {
+			a = textAnswer(fsops.Edit(ctx, real, "", fsops.EditRequest{Path: in.Path, OldString: in.OldString, NewString: in.NewString, ReplaceAll: in.ReplaceAll}))
+		}
+	case workspace.OpGlob:
+		var in workspace.GlobArgs
+		if a = decodeArgs(raw, &in); a.class == "" {
+			a = countedAnswer(fsops.Glob(real, "", fsops.GlobRequest{Pattern: in.Pattern, Path: in.Path}))
+		}
+	case workspace.OpGrep:
+		var in workspace.GrepArgs
+		if a = decodeArgs(raw, &in); a.class == "" {
+			a = countedAnswer(fsops.Grep(real, "", fsops.GrepRequest{
+				Pattern: in.Pattern, Path: in.Path, Glob: in.Glob, OutputMode: in.OutputMode,
+				CaseInsensitive: in.CaseInsensitive, Multiline: in.Multiline, HeadLimit: in.HeadLimit,
+				Before: in.Before, After: in.After, Context: in.Context,
+			}))
+		}
+	default:
+		return refuse(workspace.ClassUnsupportedOp, "this worker does not run %q", op)
+	}
+	if op != workspace.OpExec {
+		a = hidePaths(a, real, dir)
+	}
+	return a
+}
+
+// decodeArgs decodes an op's arguments strictly: an argument the op does not
+// take is refused, not dropped, as the Read tool refuses one.
+func decodeArgs(raw []byte, into any) answer {
+	if len(raw) == 0 {
+		return refuse(workspace.ClassInvalid, "the op has no arguments")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(into); err != nil {
+		return refuse(workspace.ClassInvalid, "arguments: %v", err)
+	}
+	return answer{}
+}
+
+func readOp(ctx context.Context, root string, raw []byte) answer {
+	var in workspace.ReadArgs
+	if a := decodeArgs(raw, &in); a.class != "" {
+		return a
+	}
+	if in.Offset != nil && *in.Offset < 1 {
+		return refuse(workspace.ClassInvalid, "offset must be 1 or more (lines are counted from 1)")
+	}
+	if in.Limit != nil && *in.Limit < 1 {
+		return refuse(workspace.ClassInvalid, "limit must be 1 or more")
+	}
+	req := fsops.ReadRequest{Path: in.Path}
+	if in.Offset != nil || in.Limit != nil || in.LineNumbers {
+		win := fsops.LineWindow{Offset: 1, Numbers: in.LineNumbers}
+		if in.Offset != nil {
+			win.Offset = *in.Offset
+		}
+		if in.Limit != nil {
+			win.Limit = *in.Limit
+		}
+		req.Lines = &win
+	}
+	text, err := fsops.Read(ctx, root, "", req)
+	if errors.Is(err, fsops.ErrBinaryLineRange) {
+		return refuse(workspace.ClassInvalid, "this looks like a binary file; a line range reads text only: read it without offset, limit and line_numbers")
+	}
+	return textAnswer(text, err)
+}
+
+func textAnswer(text string, err error) answer {
+	if err != nil {
+		return refuse(workspace.ClassFailed, "%v", err)
+	}
+	out, _ := json.Marshal(workspace.FileAnswer{Text: text})
+	return answer{output: out}
+}
+
+func countedAnswer(text string, n int, err error) answer {
+	if err != nil {
+		return refuse(workspace.ClassFailed, "%v", err)
+	}
+	out, _ := json.Marshal(workspace.FileAnswer{Text: text, Count: &n})
+	return answer{output: out}
+}
+
+// hidePaths rewrites the workspace's absolute path out of an answer, so a
+// result reads relative to the workspace and does not tell the agent where
+// the worker keeps it. It is presentation, not confinement.
+func hidePaths(a answer, dirs ...string) answer {
+	strip := func(s string) string {
+		for _, d := range dirs {
+			s = strings.ReplaceAll(s, d+string(filepath.Separator), "")
+			s = strings.ReplaceAll(s, d, ".")
+		}
+		return s
+	}
+	a.detail = strip(a.detail)
+	if len(a.output) > 0 {
+		var fa workspace.FileAnswer
+		if json.Unmarshal(a.output, &fa) == nil {
+			fa.Text = strip(fa.Text)
+			a.output, _ = json.Marshal(fa)
+		}
+	}
+	return a
+}
+
+func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
+	var in workspace.ExecArgs
+	if a := decodeArgs(raw, &in); a.class != "" {
+		return a
+	}
+	if in.TimeoutMS <= 0 || time.Duration(in.TimeoutMS)*time.Millisecond > maxExecTimeout {
+		return refuse(workspace.ClassInvalid, "timeout_ms must be from 1 to %d", maxExecTimeout.Milliseconds())
+	}
+	dir := root
+	if in.Cwd != "" {
+		d, err := fsops.ResolveInsideRoot(root, in.Cwd)
+		if err != nil {
+			return hidePaths(refuse(workspace.ClassInvalid, "cwd: %v", err), root)
+		}
+		if st, err := os.Stat(d); err != nil || !st.IsDir() {
+			return refuse(workspace.ClassInvalid, "cwd: %q is not a directory in the workspace", in.Cwd)
+		}
+		dir = d
+	}
+	res, err := w.engine.Exec(ctx, engine.ExecRequest{Dir: dir, Command: in.Command, Timeout: time.Duration(in.TimeoutMS) * time.Millisecond})
+	switch {
+	case errors.Is(err, engine.ErrRefused):
+		return refuse(workspace.ClassRefused, "%v", err)
+	case err != nil:
+		return refuse(workspace.ClassFailed, "%v", err)
+	}
+	out, _ := json.Marshal(workspace.ExecAnswer{ExitCode: res.ExitCode, Output: strings.ToValidUTF8(string(res.Output), string(utf8.RuneError)),
+		Truncated: res.Truncated, TimedOut: res.TimedOut})
+	return answer{output: out, exit: int32(res.ExitCode)}
+}
