@@ -56,8 +56,11 @@ const (
 	// documents' stored statuses (RFC GM P6). An earlier version's inputs, and so
 	// its hash, are exactly what they were.
 	folderContextPromptVersion = 3
-	// maxFolderSiblings bounds how many sibling folders one request names.
-	maxFolderSiblings = 10
+	// maxFolderSiblings bounds how many sibling folders one request names, and
+	// maxFolderSiblingChecks how many it looks at to find them (some may be left
+	// out for access, or moved).
+	maxFolderSiblings      = 10
+	maxFolderSiblingChecks = 3 * maxFolderSiblings
 )
 
 // migrateAnnotationFolders adds the folder a path record is of and the documents
@@ -175,15 +178,17 @@ type folderInputs struct {
 	// change reaches the folder through its document's own annotation. Exemplars are
 	// typical covered documents with their brief and abstract. Siblings are the
 	// folders beside this one, each with its brief, so the brief can say what sets
-	// this folder apart; SiblingsMore counts those past maxFolderSiblings.
+	// this folder apart, at most maxFolderSiblings.
 	MemberStatuses []folderCount     `json:"member_statuses,omitempty"`
 	Exemplars      []nodeMemberBrief `json:"exemplars,omitempty"`
 	Siblings       []folderSibling   `json:"siblings,omitempty"`
-	SiblingsMore   int               `json:"siblings_more,omitempty"`
 	// drawsOn is the documents the siblings' briefs were written from. The stored
 	// record is withheld from a reader who may not read every one of them, as from
 	// one who may not read a covered document (setFolderAnnotation).
 	drawsOn []string
+	// shownSiblings digests the siblings shown (record, brief, documents); it ends
+	// the inputs hash after folderSiblingsSep.
+	shownSiblings string
 }
 
 // folderSibling is a folder beside the one annotated, as its request names it.
@@ -513,7 +518,7 @@ func (s *annotationScope) folderInputsFor(ctx context.Context, canonical string,
 	}
 	var exemplarTerms, siblingTerms []string
 	if promptVersion >= folderContextPromptVersion {
-		if exemplarTerms, siblingTerms, err = s.folderContext(ctx, &in, canonical, docName, types, statuses); err != nil {
+		if exemplarTerms, siblingTerms, err = s.folderContext(ctx, &in, canonical, docName, types, statuses, roots); err != nil {
 			return in, err
 		}
 	}
@@ -548,7 +553,24 @@ func (s *annotationScope) folderInputsFor(ctx context.Context, canonical string,
 	}
 	raw, _ := json.Marshal(canon)
 	in.InputsSHA256 = sha256Hex(string(raw))
+	if in.shownSiblings != "" {
+		in.InputsSHA256 += folderSiblingsSep + in.shownSiblings
+	}
 	return in, nil
+}
+
+// folderSiblingsSep ends a folder hash's staleness part and starts the digest of
+// the siblings its request showed (folderContext). set_annotation compares the
+// whole hash, so a write is refused when a shown sibling changed since the inputs
+// were read: the record is then withheld on the documents its text came from.
+// Staleness compares only the part before it (folderHashBase), so a sibling's
+// rewrite never makes the folders beside it stale.
+const folderSiblingsSep = "/s:"
+
+// folderHashBase is the staleness part of a folder's inputs hash.
+func folderHashBase(h string) string {
+	base, _, _ := strings.Cut(h, folderSiblingsSep)
+	return base
 }
 
 // folderContext fills what a folder's request carries from
@@ -570,9 +592,11 @@ func (s *annotationScope) folderInputsFor(ctx context.Context, canonical string,
 // stale each other in turn on every pass, so a prompt version bump would never
 // settle, and hashing their names would make a first pass over new sibling
 // folders write each twice (an earlier one goes stale when a later one gets its
-// first record). What the hash does carry is the names of the siblings LEFT OUT
-// for access (sibTerms): a sibling restricted since the write makes the folder
-// stale, so it is written again without that sibling's brief.
+// first record). What the hash does carry is the record ids of the siblings LEFT
+// OUT for access (sibTerms; ids, not names, since the hash is returned to the
+// caller): a sibling restricted since the write makes the folder stale, so it is
+// written again without that sibling's brief. The shown siblings are digested
+// after folderSiblingsSep, which only a write compares.
 //
 // Access (RFC GM C8, D8). A typical document is a covered one, so the record's
 // existing rule — shown only to a reader who may read every covered document —
@@ -581,7 +605,7 @@ func (s *annotationScope) folderInputsFor(ctx context.Context, canonical string,
 // those documents are added to what the stored record is withheld on (drawsOn),
 // so a sibling document restricted after the write withholds the record until it
 // is written again without it.
-func (s *annotationScope) folderContext(ctx context.Context, in *folderInputs, canonical string, docName, types, statuses map[string]string) (exTerms, sibTerms []string, err error) {
+func (s *annotationScope) folderContext(ctx context.Context, in *folderInputs, canonical string, docName, types, statuses, roots map[string]string) (exTerms, sibTerms []string, err error) {
 	d, key := s.d, s.key
 	st := map[string]int{}
 	for _, id := range in.Covers {
@@ -599,8 +623,11 @@ func (s *annotationScope) folderContext(ctx context.Context, in *folderInputs, c
 	}
 
 	if len(in.Covers) > 0 {
-		docs := map[string]*statDoc{}
-		if err := d.loadStatDocs(ctx, key, in.Covers, docs, d.tableHasColumn(ctx, key, "chunk_annotations", "tier")); err != nil {
+		tierCol := d.tableHasColumn(ctx, key, "chunk_annotations", "tier")
+		// Which covered documents carry a usable document annotation: ids and tier
+		// only, so a folder over every document of the scope reads no annotation text.
+		annotated, err := s.annotatedRoots(ctx, in.Covers, roots, tierCol)
+		if err != nil {
 			return nil, nil, err
 		}
 		classCount := map[string]int{}
@@ -617,7 +644,7 @@ func (s *annotationScope) folderContext(ctx context.Context, in *folderInputs, c
 		// is never a typical document (C9).
 		var cands []string
 		for _, id := range in.Covers {
-			if sd := docs[id]; sd != nil && sd.annotated && !sd.metadataOnly {
+			if annotated[id] {
 				cands = append(cands, id)
 			}
 		}
@@ -650,8 +677,16 @@ func (s *annotationScope) folderContext(ctx context.Context, in *folderInputs, c
 				picked = append(picked, id)
 			}
 		}
+		docs := map[string]*statDoc{}
+		s.exemplarTextLoads += len(picked)
+		if err := d.loadStatDocs(ctx, key, picked, docs, tierCol); err != nil {
+			return nil, nil, err
+		}
 		for _, id := range picked {
 			sd := docs[id]
+			if sd == nil {
+				continue
+			}
 			m := nodeMemberBrief{DocumentID: id, Title: sd.title, Class: types[id], Brief: sd.brief, Abstract: sd.abstract}
 			in.Exemplars = append(in.Exemplars, m)
 			exTerms = append(exTerms, id+":"+sha256Hex(m.Title+"\x00"+m.Class+"\x00"+m.Brief+"\x00"+m.Abstract))
@@ -662,12 +697,17 @@ func (s *annotationScope) folderContext(ctx context.Context, in *folderInputs, c
 		return exTerms, nil, nil
 	}
 	parentPrefix := dirPrefix(in.Parent)
-	res, err := d.query(ctx, key, `SELECT `+annotationSelectCols+annotationFrom+` WHERE a.level = ? AND a.folder IS NOT NULL`, annotationLevelPath)
+	// Only the folders directly beside this one: the parent's prefix, and no '/'
+	// after it. A record whose folder is under no parent here is never read.
+	like := escapeLike(parentPrefix, '!')
+	res, err := d.query(ctx, key, `SELECT `+annotationSelectCols+annotationFrom+` WHERE a.level = ? AND a.folder LIKE ? ESCAPE '!' AND a.folder NOT LIKE ? ESCAPE '!' AND a.folder <> ?`,
+		annotationLevelPath, like+"%", like+"%/%", canonical)
 	if err != nil {
 		return nil, nil, err
 	}
 	var sibs []annotationRecord
 	for _, r := range res.Rows {
+		s.siblingRows++
 		rec := scanAnnotationRecord(r)
 		name, ok := strings.CutPrefix(rec.Folder, parentPrefix)
 		if !ok || name == "" || strings.Contains(name, "/") || rec.Folder == canonical ||
@@ -677,10 +717,16 @@ func (s *annotationScope) folderContext(ctx context.Context, in *folderInputs, c
 		sibs = append(sibs, rec)
 	}
 	sort.Slice(sibs, func(i, j int) bool { return sibs[i].Folder < sibs[j].Folder })
-	var draws []string
-	for _, rec := range sibs {
+	var draws, shown []string
+	for i, rec := range sibs {
+		// Stop once the request is full, or after a bounded number of checks: each
+		// is two name lookups and an access check over the sibling's documents.
+		if len(in.Siblings) == maxFolderSiblings || i == maxFolderSiblingChecks {
+			break
+		}
 		// The record's folder is where it was written; a folder moved since carries
 		// its record elsewhere, so only one still at its name counts.
+		s.siblingChecks++
 		t, err := d.folderTargetOf(ctx, key, rec.Folder)
 		if err != nil {
 			return nil, nil, err
@@ -694,18 +740,58 @@ func (s *annotationScope) folderContext(ctx context.Context, in *folderInputs, c
 			return nil, nil, err
 		}
 		if !ok {
-			sibTerms = append(sibTerms, name)
-			continue
-		}
-		if len(in.Siblings) == maxFolderSiblings {
-			in.SiblingsMore++
+			// By its record's id, never its name: the hash is returned to the caller,
+			// and a folder name is short enough to guess.
+			sibTerms = append(sibTerms, rec.ChunkID)
 			continue
 		}
 		in.Siblings = append(in.Siblings, folderSibling{Name: name, Brief: rec.Brief})
 		draws = append(draws, rec.covers...)
+		covers := append([]string(nil), rec.covers...)
+		sort.Strings(covers)
+		shown = append(shown, rec.ChunkID+":"+sha256Hex(rec.Brief)+":"+sha256Hex(strings.Join(covers, ",")))
 	}
 	in.drawsOn = draws
+	if len(shown) > 0 {
+		in.shownSiblings = sha256Hex(strings.Join(shown, "\n"))
+	}
 	return exTerms, sibTerms, nil
+}
+
+// annotatedRoots reports which of ids carry a document annotation that may be a
+// typical document: one written from the document's content, not metadata-only
+// (C9). It reads ids and tier only, never annotation text.
+func (s *annotationScope) annotatedRoots(ctx context.Context, ids []string, roots map[string]string, tierCol bool) (map[string]bool, error) {
+	docOfRoot := map[string]string{}
+	var rootIDs []string
+	for _, id := range ids {
+		if r := roots[id]; r != "" {
+			docOfRoot[r] = id
+			rootIDs = append(rootIDs, r)
+		}
+	}
+	tier := `''`
+	if tierCol {
+		tier = `coalesce(tier, '')`
+	}
+	out := map[string]bool{}
+	for start := 0; start < len(rootIDs); start += nodeStatsDocBatch {
+		ph, args := inPlaceholders(rootIDs[start:min(start+nodeStatsDocBatch, len(rootIDs))])
+		res, err := s.d.query(ctx, s.key, `SELECT chunk_id, `+tier+` FROM chunk_annotations
+			WHERE level = '`+annotationLevelDocument+`' AND chunk_id IN (`+ph+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		if res.Truncated {
+			return nil, fmt.Errorf("folder annotation: an annotation batch was cut short")
+		}
+		for _, r := range res.Rows {
+			if asStr(r[1]) != "metadata" {
+				out[docOfRoot[asStr(r[0])]] = true
+			}
+		}
+	}
+	return out, nil
 }
 
 // everyMemberReads reports whether every member of the tenant may read every one
@@ -841,7 +927,7 @@ func (d *Document) folderAnnotationInputs(ctx context.Context, key sqlmem.ScopeK
 		}
 	}
 	if rec != nil {
-		stale := rec.InputsSHA256 != got.InputsSHA256
+		stale := folderHashBase(rec.InputsSHA256) != folderHashBase(got.InputsSHA256)
 		rec.Stale = &stale
 		got.Record, got.Stale = rec, stale
 	}

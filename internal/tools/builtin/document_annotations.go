@@ -301,6 +301,10 @@ type annotationScope struct {
 	// when a folder's request first asks (nil list: all of them).
 	unrestricted     *docReadList
 	unrestrictedRead bool
+	// The work a folder's request did, counted so tests can pin its bounds: the
+	// documents whose annotation text it loaded, the sibling records it read and
+	// the siblings whose place and access it checked.
+	exemplarTextLoads, siblingRows, siblingChecks int
 }
 
 // ontology is the tenant ontology in force, or nil without one.
@@ -664,7 +668,7 @@ func (s *annotationScope) stale(ctx context.Context, rec annotationRecord) (bool
 		if err != nil {
 			return false, err
 		}
-		return in.InputsSHA256 != rec.InputsSHA256, nil
+		return folderHashBase(in.InputsSHA256) != folderHashBase(rec.InputsSHA256), nil
 	}
 	t, ok, err := s.targetOf(ctx, rec.ChunkID, rec.Level)
 	if err != nil || !ok {

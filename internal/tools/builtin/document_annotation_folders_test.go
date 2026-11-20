@@ -662,3 +662,91 @@ func TestFolderAnnotation_SiblingRestrictedSinceWithholdsTheRecord(t *testing.T)
 		t.Fatalf("member get_annotation after the rewrite = %v", got)
 	}
 }
+
+// folderScopeInputs computes a folder's inputs through a fresh annotation scope
+// and returns the scope, whose counters say what the computation loaded.
+func folderScopeInputs(t *testing.T, d *Document, ctx context.Context, folder string) (folderInputs, *annotationScope) {
+	t.Helper()
+	key, mscope, err := d.resolveScope(ctx, "tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := d.newAnnotationScope(key, mscope)
+	in, err := s.folderInputsFor(ctx, folder, folderContextPromptVersion, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in, s
+}
+
+// TestFolderAnnotation_ExemplarTextIsLoadedOnlyForTheChosen — a folder's request
+// is recomputed on every stale check: it loads the annotation text of its typical
+// documents only, never of every document it covers.
+func TestFolderAnnotation_ExemplarTextIsLoadedOnlyForTheChosen(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := annOperator(base)
+	folderSiblingCorpus(t, d, ctx)
+	in, s := folderScopeInputs(t, d, ctx, "/kb")
+	if len(in.Covers) != 5 || len(in.Exemplars) != 3 {
+		t.Fatalf("precondition: covers %d exemplars %d, want 5 and 3", len(in.Covers), len(in.Exemplars))
+	}
+	if s.exemplarTextLoads != 3 {
+		t.Fatalf("loaded the annotation text of %d documents, want only the 3 typical ones", s.exemplarTextLoads)
+	}
+}
+
+// TestFolderAnnotation_SiblingWorkIsBounded — a folder reads only the records of
+// the folders beside it, not every folder record of the scope, and checks no
+// sibling past the ones it names.
+func TestFolderAnnotation_SiblingWorkIsBounded(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := annOperator(base)
+	const n = maxFolderSiblings + 3
+	for i := 1; i <= n; i++ {
+		folder := fmt.Sprintf("/kb/s%02d", i)
+		out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_document","scope":"tenant","title":"Doc %d","path":%q,"type":"Guide"}`, i, folder+"/doc"))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		annWrite(t, d, ctx, `"document_id":"`+out["document_id"].(string)+`"`, fmt.Sprintf("About document %d", i))
+		folderWriteAt(t, d, ctx, folder, fmt.Sprintf("Folder number %d of the sample set", i), folderContextPromptVersion)
+	}
+	// Records outside /kb/'s children: the folder itself and the root.
+	folderWriteAt(t, d, ctx, "/kb", "The whole sample knowledge base", folderContextPromptVersion)
+	folderWriteAt(t, d, ctx, "/", "The root of the sample knowledge base", folderContextPromptVersion)
+	in, s := folderScopeInputs(t, d, ctx, "/kb/s01")
+	if len(in.Siblings) != maxFolderSiblings {
+		t.Fatalf("siblings = %d, want %d", len(in.Siblings), maxFolderSiblings)
+	}
+	if s.siblingRows != n-1 {
+		t.Errorf("read %d folder records, want only the %d siblings", s.siblingRows, n-1)
+	}
+	if s.siblingChecks != maxFolderSiblings {
+		t.Errorf("checked %d siblings, want the %d it names", s.siblingChecks, maxFolderSiblings)
+	}
+}
+
+// TestFolderAnnotation_SiblingRewrittenBetweenReadAndWriteIsRefused — the brief a
+// driver writes was written from the siblings annotation_inputs showed: a sibling
+// rewritten in between refuses the write, so the stored record is withheld on the
+// documents of the siblings its text came from.
+func TestFolderAnnotation_SiblingRewrittenBetweenReadAndWriteIsRefused(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := annOperator(base)
+	folderSiblingCorpus(t, d, ctx)
+	in := folderInputsAt(t, d, ctx, "/kb/products", folderContextPromptVersion)
+	if _, r := docExec(t, d, ctx, `{"op":"delete_annotation","scope":"tenant","level":"path","path":"/kb/legal"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	_, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_annotation","scope":"tenant","level":"path","path":"/kb/products","prompt_version":%d,"brief":"Product guides set apart from the legal terms","abstract":"a","inputs_sha256":%q}`,
+		folderContextPromptVersion, in["inputs_sha256"]))
+	if !r.IsError || !strings.Contains(r.Text, "annotation_inputs_changed") {
+		t.Fatalf("write after a shown sibling went = %+v, want annotation_inputs_changed", r)
+	}
+	// The sibling's change alone does not make the stored record stale.
+	folderWriteAt(t, d, ctx, "/kb/products", "Product guides set apart from support", folderContextPromptVersion)
+	folderWriteAt(t, d, ctx, "/kb/services", "Support plans, written once more for the test", folderContextPromptVersion)
+	if folderRecordStale(t, d, ctx, "/kb/products") {
+		t.Fatal("a sibling's rewrite made /kb/products stale")
+	}
+}
