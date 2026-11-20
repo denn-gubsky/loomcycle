@@ -3,8 +3,12 @@ package builtin
 // document_node_split.go — split, unplaced grouping and merge candidates (RFC GM §5.2,
 // §5.3, §2C step 5, plan P5.2): Document op=node_stats mode split.
 //
-//   - splits: each concept with at least nodestats.SplitMinMembers members that have
-//     a vector is clustered (k-means, k 2 to 4). A group is a candidate only when it
+//   - splits: each concept with at least nodestats.SplitMinMembers DIRECT members
+//     that have a vector — documents placed on it that none of its narrower concepts
+//     holds (§2C step 5: "things assigned to it but to none of its children") — is
+//     clustered (k-means, k 2 to 4). Members roll up, so clustering the whole
+//     subtree would find the existing narrower concepts again and propose them
+//     under new names. A group is a candidate only when it
 //     RECURS: nodestats.RecurringGroups re-clusters seeded subsamples and keeps a
 //     group every run finds again. A candidate is a proposed narrower concept under
 //     the node (§5.2); the node keeps its id, its members and its rolled-up series.
@@ -44,6 +48,11 @@ package builtin
 // scheme), is never proposed for retiring, renaming or moving: a merge that would retire
 // one is reported with fixed and never filed. A local concept may still be added under it.
 //
+// COST. Each clustering is five k-means runs over up to splitClusterCap vectors. A
+// call clusters at most splitClusterBudget nodes and schemes within splitTimeBudget,
+// stops with the caller's context, and says so (truncated, note) when the budget
+// ends it; scheme narrows a call to cover the rest.
+//
 // Like misfits, the mode needs the vector stage (Postgres with pgvector and an
 // embedder); elsewhere it says so and lists nothing. The same input gives the same
 // answer: every random draw is seeded with splitSeed.
@@ -53,9 +62,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
+	"unicode"
 	"unicode/utf8"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
@@ -81,6 +93,10 @@ const (
 	splitSeed = 1
 	// splitNameTerms is how many distinctive terms make a suggested name.
 	splitNameTerms = 3
+	// splitClusterBudget bounds the clusterings (nodes and schemes) one call runs;
+	// splitTimeBudget the time they may take.
+	splitClusterBudget = 100
+	splitTimeBudget    = 2 * time.Minute
 
 	// unplacedFarSimilarity: an unplaced thing whose cosine similarity to its group's
 	// centre is below it stays unplaced, and a group whose nearest concept is below it
@@ -137,11 +153,13 @@ type splitNode struct {
 	Name   string `json:"name"`
 	Tag    string `json:"tag"`
 	Scheme string `json:"scheme"`
-	// Members is its member count; Clustered the members with a vector that were
-	// clustered (at most splitClusterCap).
+	// Members is its member count (narrower concepts' included); Clustered the direct
+	// members with a vector that were clustered (at most splitClusterCap).
 	Members   int     `json:"members"`
 	Clustered int     `json:"clustered"`
 	Spread    float64 `json:"spread"`
+	// Direct: the members no narrower concept holds, the ones clustered.
+	Direct int `json:"direct"`
 	// Fixed: adopted or locked. A narrower local concept may still be added under it.
 	Fixed string `json:"fixed,omitempty"`
 	// K is the clustering's k; Groups the recurring groups, NotRecurring how many of
@@ -249,6 +267,33 @@ type splitState struct {
 	// centroids of the in-force concepts with at least MinMembers usable vectors.
 	centroids map[string]nodestats.Centroid
 	bad       map[string]bool
+	// budget is the clusterings left; clusterCtx ends with the time budget or the
+	// caller's context.
+	budget     int
+	clusterCtx context.Context
+}
+
+// errSplitBudget ends a call's clustering when its budget is spent.
+var errSplitBudget = errors.New("node_stats split: the clustering budget is spent")
+
+// recur runs one clustering against the budget. A spent budget, or the time budget
+// ending, is errSplitBudget; the caller's own cancellation is its error.
+func (s *splitState) recur(ctx context.Context, members []nodestats.Member) (nodestats.RecurResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nodestats.RecurResult{}, err
+	}
+	if s.budget <= 0 || s.clusterCtx.Err() != nil {
+		return nodestats.RecurResult{}, errSplitBudget
+	}
+	s.budget--
+	res, err := nodestats.RecurringGroups(s.clusterCtx, members, nodestats.DefaultRecurOptions(splitSeed))
+	if err != nil && ctx.Err() == nil && s.clusterCtx.Err() != nil {
+		return res, errSplitBudget
+	}
+	if err != nil && ctx.Err() != nil {
+		return res, ctx.Err()
+	}
+	return res, err
 }
 
 // usable is the member's vector when it can be clustered (of dim, finite, not zero).
@@ -290,8 +335,14 @@ func (d *Document) NodeSplit(ctx context.Context, key sqlmem.ScopeKey, read Onto
 	}
 	// The dimension is the most common over members and unplaced things alike: a new
 	// scheme may have no member with a vector, and its unplaced things are all there is.
+	budget := d.splitClusterBudget
+	if budget <= 0 {
+		budget = splitClusterBudget
+	}
+	clusterCtx, cancel := context.WithTimeout(ctx, splitTimeBudget)
+	defer cancel()
 	s := &splitState{p: p, dim: commonDim(p.vecs, uvecs), concepts: map[string]splitConcept{},
-		centroids: map[string]nodestats.Centroid{}, bad: map[string]bool{}}
+		centroids: map[string]nodestats.Centroid{}, bad: map[string]bool{}, budget: budget, clusterCtx: clusterCtx}
 	info := growthConceptInfo(read)
 	if read.Confirmed {
 		for _, sc := range read.Schemes {
@@ -318,14 +369,56 @@ func (d *Document) NodeSplit(ctx context.Context, key sqlmem.ScopeKey, read Onto
 			}
 		}
 	}
+	// Each concept's narrower concepts' members, by the concept's tag: what its
+	// direct members exclude. A concept's members already hold its whole subtree.
+	under := map[string]map[string]bool{}
 	for _, n := range p.nodes {
-		if c, ok := s.concepts[n.ID]; ok && n.Kind == nodeKindConcept && !c.retired {
-			if sn, ok := s.splitNode(n, c, &ans); ok {
-				ans.Splits = append(ans.Splits, sn)
+		if i := strings.LastIndex(n.Tag, "/"); n.Kind == nodeKindConcept && i >= 0 {
+			parent := n.Tag[:i]
+			if under[parent] == nil {
+				under[parent] = map[string]bool{}
+			}
+			for _, id := range n.members {
+				under[parent][id] = true
 			}
 		}
 	}
-	s.groupUnplaced(read, queues, uvecs, &ans)
+	stopped := false
+	for _, n := range p.nodes {
+		c, ok := s.concepts[n.ID]
+		if !ok || n.Kind != nodeKindConcept || c.retired {
+			continue
+		}
+		var direct []string
+		for _, id := range n.members {
+			if !under[c.tag][id] {
+				direct = append(direct, id)
+			}
+		}
+		sn, ok, err := s.splitNode(ctx, n, c, direct, &ans)
+		if errors.Is(err, errSplitBudget) {
+			stopped = true
+			break
+		}
+		if err != nil {
+			return ans, err
+		}
+		if ok {
+			ans.Splits = append(ans.Splits, sn)
+		}
+	}
+	if !stopped {
+		if err := s.groupUnplaced(ctx, read, queues, uvecs, &ans); errors.Is(err, errSplitBudget) {
+			stopped = true
+		} else if err != nil {
+			return ans, err
+		}
+	}
+	if stopped {
+		ans.Truncated = true
+		ans.Note = fmt.Sprintf("stopped at the clustering budget (%d clusterings or %s): what is listed was found before it; pass scheme to cover the rest",
+			budget, splitTimeBudget)
+	}
 	ans.Merges = s.merges()
 	ans.MembersSkipped = len(s.bad)
 	if propose {
@@ -341,31 +434,35 @@ func (d *Document) NodeSplit(ctx context.Context, key sqlmem.ScopeKey, read Onto
 	return ans, nil
 }
 
-// splitNode clusters one concept's members. ok is false when the concept is too small
-// or the clustering kept fewer than two groups (no split).
-func (s *splitState) splitNode(n statNode, c splitConcept, ans *NodeSplitReport) (splitNode, bool) {
+// splitNode clusters one concept's direct members. ok is false when there are too
+// few or the clustering kept fewer than two groups (no split); err is the budget's
+// or the context's end.
+func (s *splitState) splitNode(ctx context.Context, n statNode, c splitConcept, direct []string, ans *NodeSplitReport) (splitNode, bool, error) {
 	var members []nodestats.Member
-	for _, id := range n.members {
+	for _, id := range direct {
 		if v, ok := s.usable(s.p.vecs, id); ok {
 			members = append(members, nodestats.Member{ID: id, Vec: v})
 		}
 	}
 	if len(members) < nodestats.SplitMinMembers {
-		return splitNode{}, false
+		return splitNode{}, false, nil
 	}
 	if len(members) > splitClusterCap {
 		members = members[:splitClusterCap]
 	}
-	res, err := nodestats.RecurringGroups(members, nodestats.DefaultRecurOptions(splitSeed))
+	res, err := s.recur(ctx, members)
+	if errors.Is(err, errSplitBudget) || ctx.Err() != nil {
+		return splitNode{}, false, err
+	}
 	if err != nil {
 		ans.Issues = append(ans.Issues, fmt.Sprintf("%s was not clustered: %v", c.tag, err))
-		return splitNode{}, false
+		return splitNode{}, false, nil
 	}
 	if len(res.Reference.Groups) < 2 {
-		return splitNode{}, false
+		return splitNode{}, false, nil
 	}
 	sn := splitNode{NodeID: n.ID, Name: c.name, Tag: c.tag, Scheme: c.scheme, Members: len(n.members),
-		Clustered: len(members), Fixed: c.fixed, K: res.Reference.K, Groups: []splitGroup{},
+		Direct: len(direct), Clustered: len(members), Fixed: c.fixed, K: res.Reference.K, Groups: []splitGroup{},
 		NotRecurring: len(res.Reference.Groups) - len(res.Groups)}
 	if cen, ok := s.centroids[n.ID]; ok {
 		sn.Spread = cen.Spread()
@@ -380,7 +477,7 @@ func (s *splitState) splitNode(n statNode, c splitConcept, ans *NodeSplitReport)
 		sg.Recurrence, sg.Runs, sg.ParentID, sg.Parent = g.Recurrence, res.Runs, n.ID, c.tag
 		sn.Groups = append(sn.Groups, sg)
 	}
-	return sn, true
+	return sn, true, nil
 }
 
 // others is every member list of all but the i-th, plus extra: the texts a group's
@@ -475,14 +572,24 @@ func suggestedName(terms []string, exemplars []splitDoc) string {
 	if len(terms) > 0 {
 		return strings.Join(terms[:min(splitNameTerms, len(terms))], " ")
 	}
-	if len(exemplars) > 0 && strings.TrimSpace(exemplars[0].Title) != "" {
-		t := strings.TrimSpace(exemplars[0].Title)
-		if utf8.RuneCountInString(t) > ontologyPlanMaxName {
-			t, _ = cutRunes(t, ontologyPlanMaxName)
+	if len(exemplars) > 0 {
+		if t := oneLineName(exemplars[0].Title); t != "" {
+			return t
 		}
-		return t
 	}
 	return "unnamed group"
+}
+
+// oneLineName is a document title made fit for an entry name: every control
+// character (a line break included) a space, runs of spaces one, a leading '#' (a
+// heading marker) dropped, at most ontologyPlanMaxName characters.
+func oneLineName(title string) string {
+	t := strings.Join(strings.FieldsFunc(title, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }), " ")
+	t = strings.TrimSpace(strings.TrimLeft(t, "#"))
+	if utf8.RuneCountInString(t) > ontologyPlanMaxName {
+		t, _ = cutRunes(t, ontologyPlanMaxName)
+	}
+	return strings.TrimSpace(t)
 }
 
 // groupKey is a group's name across calls: the first 16 hex of the hash of its sorted
@@ -553,7 +660,7 @@ func commonDim(sets ...map[string]nodestats.Vector) int {
 }
 
 // groupUnplaced groups each scheme's unplaced queue (loadUnplaced).
-func (s *splitState) groupUnplaced(read OntologyRead, queues map[string][]string, vecs map[string]nodestats.Vector, ans *NodeSplitReport) {
+func (s *splitState) groupUnplaced(ctx context.Context, read OntologyRead, queues map[string][]string, vecs map[string]nodestats.Vector, ans *NodeSplitReport) error {
 	for _, sc := range read.Schemes {
 		q, ok := queues[sc.ChunkID]
 		if !ok {
@@ -571,11 +678,14 @@ func (s *splitState) groupUnplaced(read OntologyRead, queues map[string][]string
 		}
 		ug.Clustered = len(members)
 		if len(members) >= nodestats.SplitMinMembers {
+			if err := s.groupScheme(ctx, sc, members, &ug, ans); err != nil {
+				return err
+			}
 			ug.Grouped = true
-			s.groupScheme(sc, members, &ug, ans)
 		}
 		ans.Unplaced = append(ans.Unplaced, ug)
 	}
+	return nil
 }
 
 func toSet(ids []string) map[string]bool {
@@ -632,8 +742,11 @@ func unplacedQueue(sp *seriesPlan, schemeID string) []string {
 // members at least unplacedFarSimilarity alike to its centre and is filed under the
 // nearest concept of the scheme that near, else at its top; every other member stays
 // unplaced.
-func (s *splitState) groupScheme(sc memrank.OntologyScheme, members []nodestats.Member, ug *unplacedGrouping, ans *NodeSplitReport) {
-	res, err := nodestats.RecurringGroups(members, nodestats.DefaultRecurOptions(splitSeed))
+func (s *splitState) groupScheme(ctx context.Context, sc memrank.OntologyScheme, members []nodestats.Member, ug *unplacedGrouping, ans *NodeSplitReport) error {
+	res, err := s.recur(ctx, members)
+	if errors.Is(err, errSplitBudget) || ctx.Err() != nil {
+		return err
+	}
 	if err != nil {
 		ans.Issues = append(ans.Issues, fmt.Sprintf("the unplaced things of %s were not grouped: %v", sc.Name, err))
 		res = nodestats.RecurResult{}
@@ -711,6 +824,7 @@ func (s *splitState) groupScheme(sc memrank.OntologyScheme, members []nodestats.
 	if len(ug.StaysUnplaced) > splitListCap {
 		ug.StaysUnplaced, ug.StaysTruncated = ug.StaysUnplaced[:splitListCap], true
 	}
+	return nil
 }
 
 // nearestCentroid is the index of the centroid of cs most like c and the similarity;
@@ -729,8 +843,11 @@ func nearestCentroid(c nodestats.Centroid, cs []nodestats.Centroid) (int, float6
 	return best, bestSim
 }
 
-// merges is every pair of sibling concepts whose centroids are at least
-// mergeSimilarity alike, most alike first; each concept is retired by at most one.
+// merges is the pairs of sibling concepts whose centroids are at least
+// mergeSimilarity alike, most alike first, each concept in at most one pair: in a
+// chain A~B~C, keeping B into C and then A into B would file a retire into a concept
+// another proposal retires. A pair left out comes back on the pass after the first
+// is ruled on.
 func (s *splitState) merges() []mergeCandidate {
 	groups := map[string][]string{}
 	for _, n := range s.p.nodes {
@@ -767,13 +884,13 @@ func (s *splitState) merges() []mergeCandidate {
 		}
 		return out[i].Tag+out[i].IntoTag < out[j].Tag+out[j].IntoTag
 	})
-	retired := map[string]bool{}
+	used := map[string]bool{}
 	kept := out[:0]
 	for _, m := range out {
-		if retired[m.NodeID] {
+		if used[m.NodeID] || used[m.IntoID] {
 			continue
 		}
-		retired[m.NodeID] = true
+		used[m.NodeID], used[m.IntoID] = true, true
 		kept = append(kept, m)
 	}
 	return kept

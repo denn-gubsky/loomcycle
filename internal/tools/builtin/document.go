@@ -149,6 +149,11 @@ type Document struct {
 	// with_summary call builds at most one, and a light one when that is enough.
 	// Nil in production.
 	onNodeStatsPlan func(light bool)
+
+	// splitClusterBudget, when positive, replaces the clusterings one node_stats
+	// mode split call may run (document_node_split.go). A test lowers it to reach the
+	// budget with a small corpus. Zero in production.
+	splitClusterBudget int
 }
 
 // nodePlanCache holds the one node statistics plan a with_summary read builds, so

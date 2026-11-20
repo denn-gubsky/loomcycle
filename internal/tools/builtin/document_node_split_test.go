@@ -475,6 +475,114 @@ func TestSplit_AdoptedOrLockedConceptIsNeverRetired(t *testing.T) {
 	}
 }
 
+// TestSplit_ANodeWithANarrowerConceptIsSplitOverItsDirectMembers — Risk Management
+// rolls up outsourcing's documents. Its split clusters only the documents placed on
+// it that outsourcing does not hold: outsourcing's two topics are proposed under
+// outsourcing, never again under Risk Management, and Risk Management's own two
+// topics are proposed under it.
+func TestSplit_ANodeWithANarrowerConceptIsSplitOverItsDirectMembers(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newSplitCorpus(t, d, base, conceptOntologyMD)
+	filing, templates := k.twoTopics(t, "", k.out, nil)
+	inOut := map[string]bool{}
+	for _, id := range append(append([]string{}, filing...), templates...) {
+		inOut[id] = true
+	}
+	var own []string
+	for i := 0; i < 11; i++ {
+		e := float32(i%4) * 0.05
+		own = append(own, k.doc(t, "", "liquidity buffer", []float32{1, e, 0, 0}, k.rm, time.Time{}),
+			k.doc(t, "", "cyber incident", []float32{e, 1, 0, 0}, k.rm, time.Time{}))
+	}
+	ans := splitRun(t, d, k.f.operator, `{"op":"node_stats","mode":"split","scheme":"topics"}`)
+	out := ans.split(t, k.out)
+	if len(out.Groups) != 2 {
+		t.Errorf("outsourcing = %+v; want its two topics", out)
+	}
+	rm := ans.split(t, k.rm)
+	if rm.Members <= rm.Direct || rm.Clustered != rm.Direct {
+		t.Errorf("Risk Management members %d direct %d clustered %d; want only the direct ones clustered", rm.Members, rm.Direct, rm.Clustered)
+	}
+	if len(rm.Groups) != 2 {
+		t.Fatalf("Risk Management = %+v; want its own two topics", rm)
+	}
+	for _, g := range rm.Groups {
+		for _, m := range g.Documents {
+			if inOut[m.DocumentID] {
+				t.Errorf("Risk Management's group %s holds outsourcing's document %s", g.Name, m.DocumentID)
+			}
+		}
+	}
+	groupOf(t, rm.Groups, own[0])
+	groupOf(t, rm.Groups, own[1])
+}
+
+// TestSplit_ClusteringStopsAtItsBudget — a call clusters at most its budget of nodes
+// and schemes; past it the answer says it stopped (truncated, note) and lists what it
+// found before.
+func TestSplit_ClusteringStopsAtItsBudget(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	k := newSplitCorpus(t, d, base, conceptOntologyMD)
+	k.twoTopics(t, "", k.rep, nil)
+	k.twoTopics(t, "", k.law, nil)
+	if full := splitRun(t, d, k.f.operator, `{"op":"node_stats","mode":"split"}`); len(full.Splits) != 2 || full.Truncated {
+		t.Fatalf("precondition: two splits within the default budget: %+v", full)
+	}
+	d.splitClusterBudget = 1
+	ans := splitRun(t, d, k.f.operator, `{"op":"node_stats","mode":"split","propose":true}`)
+	if !ans.Truncated || !strings.Contains(ans.Note, "budget") || len(ans.Splits) != 1 || ans.Proposed != 2 {
+		t.Errorf("answer = truncated %v note %q splits %d proposed %d; want stopped after one split, its two groups filed",
+			ans.Truncated, ans.Note, len(ans.Splits), ans.Proposed)
+	}
+}
+
+// TestSplit_AMergeChainRetiresIntoNoRetiredConcept — three sibling concepts A~B and
+// B~C alike enough to merge (A and C not): only one merge is listed, so no retire is
+// filed into a concept another retire would remove.
+func TestSplit_AMergeChainRetiresIntoNoRetiredConcept(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	md := strings.Replace(conceptOntologyMD, "#### reporting\n\n### file-plan",
+		"#### reporting\n\n#### chain a\n\n#### chain b\n\n#### chain c\n\n### file-plan", 1)
+	k := newSplitCorpus(t, d, base, md)
+	at := func(rad float64) []float32 { return []float32{0, float32(math.Cos(rad)), 0, float32(math.Sin(rad))} }
+	for n, c := range map[int]string{3: "topics/chain-a", 4: "topics/chain-b", 5: "topics/chain-c"} {
+		rad := map[int]float64{3: 0, 4: 0.25, 5: 0.5}[n]
+		for i := 0; i < n; i++ {
+			k.doc(t, "", "chain "+c, at(rad), k.f.concepts[c], time.Time{})
+		}
+	}
+	ans := splitRun(t, d, k.f.operator, `{"op":"node_stats","mode":"split","propose":true}`)
+	if len(ans.Merges) != 1 {
+		t.Fatalf("merges = %+v; want one of the chain's two pairs", ans.Merges)
+	}
+	m := ans.Merges[0]
+	if m.ProposalID == "" || !(m.NodeID == k.f.concepts["topics/chain-a"] || m.NodeID == k.f.concepts["topics/chain-b"]) {
+		t.Errorf("merge = %+v", m)
+	}
+	retires := 0
+	for _, p := range ontologyProposals(t, d, k.f.operator) {
+		if p.Change != nil {
+			retires++
+		}
+	}
+	if retires != 1 {
+		t.Errorf("%d retire proposals filed, want 1", retires)
+	}
+}
+
+// TestSplit_SuggestedNameFromATitleIsOneLine — a group with no distinctive terms is
+// named from its first exemplar's title, made one line with no control characters
+// and no heading marker.
+func TestSplit_SuggestedNameFromATitleIsOneLine(t *testing.T) {
+	got := suggestedName(nil, []splitDoc{{Title: "# Board\r\nminutes\x07  2026"}})
+	if got != "Board minutes 2026" {
+		t.Errorf("name = %q, want %q", got, "Board minutes 2026")
+	}
+	if got := suggestedName(nil, []splitDoc{{Title: " \n\t"}}); got != "unnamed group" {
+		t.Errorf("an empty title gives %q, want unnamed group", got)
+	}
+}
+
 // TestSplit_StoreWithoutVectorsReportsItCannotRun — on a store that keeps no vectors
 // the mode says why, lists nothing and files nothing.
 func TestSplit_StoreWithoutVectorsReportsItCannotRun(t *testing.T) {
