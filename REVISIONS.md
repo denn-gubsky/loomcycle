@@ -8,6 +8,52 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.162.0
+
+*`File op=extract` reads the rest of a book library: MOBI, AZW3 and PalmDOC (with footnotes and contents labels), Word 97–2003 DOC and compiled HTML Help (CHM), all in pure Go, and a DjVu book's scanned pages are read by OCR. `File op=unpack` takes the files out of ZIP and RAR archives (RFC GV, RFC GX). A destructive change to an ontology entry in use needs a plan's fingerprint, an entry can be `@locked`, and an operator can plan and accept change and retire proposals (RFC GQ). Node statistics find misfit placements, growth and quiet nodes, and split, merge and new-concept candidates, a node's annotation is searchable, and `kb/taxonomist` proposes taxonomies (RFC GM). The groundwork for workspace workers is in, not usable yet (RFC GW P1).*
+
+The v1.162 line: #2762 to #2791.
+- `@loomcycle/client` 1.162.0: the `unpack` input on `RunFileInput`, `OntologyProposalChange` for `planOntology`, and `AgentWorkspaceGrant`. The Python adapter moves to 1.162.0 (tag `python-v1.162.0`) for proposal items in `plan_ontology`.
+- One numbered migration: Postgres `0135_workspaces` (SQLite creates the same table). One new Go dependency: `github.com/nwaples/rardecode/v2` v2.4.6 (BSD-2-Clause, pure Go).
+- The conversion worker protocol gains page images (`ExtractOptions.page_images`, `WorkerFrame.page_image`, `Report.page_images_unavailable`). A new `proto/workspace.proto` (`loomcycle.workspace.v1`) is the workspace worker protocol. gRPC `OntologyChange` gains `id` and `OntologyPlannedChange` gains `proposal`.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **Update the conversion workers with this release (#2767).** The worker image's DjVuLibre now must carry `ddjvu`, which renders DjVu pages for OCR; a worker that has it carries the `djvu_render` label. Without such a worker a DjVu book's text layer is still read, and the result says page OCR is not available. In process, `transcription.ocr.djvu.rasterize` is now accepted (it was refused by name).
+- **A destructive ontology change needs a plan (#2766, #2769).** `update_chunk` and `move_chunk` on the tenant ontology now refuse a rename, retire, move or re-declaration that a plan says destroys or stales stored data, unless the call carries `plan_fingerprint` from a plan made against the current ontology (`POST /v1/_ontology/plan` or the `ontology` tool's `plan`). This applies to the operator plane and admins too; the Web UI's ontology editor plans first. Scripts that edit in-use entries directly must plan first.
+- **`@locked` (#2762, #2789).** A locked entry, and everything under it, cannot be renamed, moved, retired or deleted by anyone (`entry_locked`). Accepting an `@origin adopted` scheme now locks its concepts, so retiring or renaming an adopted scheme means removing `@locked` from its concepts first.
+- **A class rename with dependents is refused** with 409 `rename_job_pending` when accepted from a proposal (#2771), until the rename job exists.
+- **The worker endpoint has its own block (#2776).** `worker_endpoint: {listen, tls, insecure}` is new; `conversion.listen`, `conversion.tls` and `conversion.insecure` are still read and fill what it leaves unset. Two different values for one setting refuse the boot. The endpoint now uses 1 MiB stream and 8 MiB connection flow-control windows.
+- **Workspace workers are not usable yet (RFC GW P1, #2775–#2779, #2784, #2788).** The `Workspace` tool refuses every op until a workspace worker is attached, and the local mode and the guide come in the next PR. A token with `workers:attach` must hold no other scope. A shared worker on the `host` engine is refused at attach.
+
+### Files (RFC GV: #2767, #2770, #2773, #2785; RFC GX: #2786, #2787)
+
+- **DjVu OCR.** With OCR on, the thin pages (`auto`) or every page read (`always`) are rendered by `ddjvu` while the book is read, one picture per page within the run's page budget reserved before the extraction, and read by the vision model like a PDF page. The book itself is never sent. A dry run renders nothing.
+- **MOBI, AZW, AZW3, PRC and PalmDOC**, read in pure Go: PalmDOC LZ77 and HUFF/CDIC decompression, a file holding MOBI 7 and KF8 read from its KF8 part, EXTH metadata, pictures. Footnotes become `[n]` under Notes, and a KF8 part with no heading takes its contents label. A book with DRM is refused.
+- **Word 97–2003 DOC** (and simple Word 6/95), read in pure Go from the OLE2 compound file: text, heading styles, tables, footnotes and endnotes, field results, and the document properties as `metadata`. An encrypted, obfuscated or fast-saved Word 6/95 file is refused by name, and so is a compound file that is not a Word document. `infer_headings` works on DOC.
+- **CHM**, read in pure Go with an LZX decoder written from [MS-PATCH]: topics in contents order through the HTML reader, each decompressed from the reset point before it, pictures only from the file itself.
+- **`File op=unpack`** copies a ZIP or RAR 4/5 archive's files into `unpacked/<archive>/` in the inbox, or into a read-write volume with `to`. By default it takes the formats `extract` reads plus nested archives (written, never opened); `all` takes every file and `dry_run` lists without writing. Each file records the archive it came from. Encrypted and multi-volume RARs are refused.
+- **Bounds**, each with a test that fails without it: record offsets, decompression per record and per book, HUFF/CDIC nesting, phrase count and total work, the KF8 boundary scan made linear, CDIC phrase cap, KF8 index sizes; compound-file chain loops and directory cycles, pieces, paragraphs and the formatting runs heading inference holds; LZX Huffman tables, matches, per-reset and total expansion; unpack's entry counts, sizes, ratio and directory size. The book readers' fuzz targets now run in CI.
+
+### Ontology (RFC GQ: #2762, #2766, #2769, #2771, #2772, #2780)
+
+- **`@locked`** on any tenant-ontology entry, honoured on every path.
+- **A plan's fingerprint** before a change that destroys or stales stored data; the review fixes (#2769) also gate section headers, wrapper chunks and `fields`.
+- **Accepting a change or retire proposal** applies it to the target in place, keeping its chunk id, through every guard (#2771).
+- **Planning a proposal:** a plan takes `{"op": "proposal", "id": …}` and plans what accepting it would do (#2772); the Web UI accepts with that plan's fingerprint.
+
+### Classification graph and knowledge base (RFC GM: #2781, #2782, #2783, #2789, #2790, #2791; kb #2763, #2768)
+
+- **`node_stats` modes.** `misfits` finds documents nearer a sibling concept's centroid and, with `propose`, files `rule:centroid` placements, never one a reviewer rejected. `growth` ranks growing concepts, lists quiet nodes, and shows where the unplaced share rose. `split` (#2791) lists concepts whose direct members form recurring groups, groups of unplaced documents, and sibling concepts alike enough to merge; with `propose` it files inert add proposals and GQ retire proposals, never for an adopted or locked concept. Its similarity thresholds are not yet measured: measure them before turning `propose` on.
+- **Node annotations in search** (`annotation_levels` `scheme`, `concept`, `class`), and a node's series beside its summary.
+- **`kb/taxonomist`** (knowledge-base bundle) proposes taxonomies from the corpus's document briefs; it reports by default.
+- **kb/ask** routes period, status and kind listings to the walker; listing kinds come from the tenant ontology, and a class may name its other names with `@alt`.
+
+### Workspace workers groundwork (RFC GW P1: #2775, #2776, #2777, #2778, #2779, #2784, #2788)
+
+- The `workers:attach` scope, the shared worker endpoint, the file tools' operations in `internal/fsops`, the `workspace` agent field, the `workspaces` table, the worker protocol, dispatcher and worker role, and the `Workspace` tool with the `host` engine and run-end release. Not usable until P1's last PR.
+
 ## What's in v1.161.0
 
 *`File op=extract` reads books: EPUB, FB2 (and a `.fb2.zip` holding one book), RTF, and a DjVu book's text layer. It returns what a book says about itself as `metadata` (RFC GV). An agent can name its own OCR model. In the tenant ontology an entry is retired instead of deleted, a delete of an entry something rests on is refused, an agent can propose changing or retiring an entry, and the change plan is on every transport (RFC GQ).*
