@@ -92,6 +92,9 @@ var layers = []layer{
 			"internal/authz",
 			"internal/awsauth",
 			"internal/breakpoints",
+			// The expression evaluator behind the Calc tool (RFC GY P1):
+			// stdlib only, so the tool wrapper above it owns all I/O.
+			"internal/calc",
 			"internal/cancel",
 			"internal/concurrency",
 			// The conversion seam and its in-process runner (RFC GO): bytes in,
