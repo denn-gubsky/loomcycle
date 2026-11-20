@@ -34,13 +34,34 @@ const (
 // statusPairs are minimal pairs: each question asks for the documents of a
 // kind that hold a stored status; its twin names a status, or the word
 // status, without asking for such a list.
-var statusPairs = []struct{ pos, twin string }{
-	{"Which of our RFCs are still drafts?", "What is the status of the scheduler RFC?"},
-	{"Which RFCs are confirmed but not done, and which of those are built anyway?", "How do document statuses work?"},
-	{"List the draft plans.", "What do we hold on draft handling?"},
-	{"Which design notes are awaiting review?", "When is a plan confirmed?"},
-	{"Show me every plan that is not done yet.", "Which RFCs describe the draft review flow?"},
-	{"How many guides are still in draft?", "Which guide explains how a draft gets confirmed?"},
+var statusPairs = []struct{ pos, status, twin string }{
+	{"Which of our RFCs are still drafts?", "draft", "What is the status of the scheduler RFC?"},
+	{"Which RFCs are confirmed but not done, and which of those are built anyway?", "confirmed", "How do document statuses work?"},
+	{"List the draft plans.", "draft", "What do we hold on draft handling?"},
+	{"Which design notes are awaiting review?", "review", "When is a plan confirmed?"},
+	{"Show me every plan that is not done yet.", "draft, review, confirmed", "Which RFCs describe the draft review flow?"},
+	{"How many guides are still in draft?", "draft", "Which guide explains how a draft gets confirmed?"},
+}
+
+// statusVerbPairs are minimal pairs for a status carried by a verb, with a
+// subject, "been" or "not yet marked" between the kind and the status. The
+// dev check of v1.162.0 sent the first to kb/search (decision score 0.061),
+// which named 6 of about 30 RFCs. Each twin keeps the shape but has no
+// status word, no list head, no kind after the head, or a status word that
+// names a topic.
+var statusVerbPairs = []struct{ pos, status, twin string }{
+	{"Which RFCs has the owner confirmed but not yet marked done, and which of those have in fact been built?", "confirmed",
+		"Which RFCs has the owner commented on?"},
+	{"Which RFCs have been confirmed but not marked done?", "confirmed", "How do I mark an RFC as done?"},
+	{"Which plans have we finished?", "done", "When was RFC GQ confirmed?"},
+	{"Which RFCs did we mark as done?", "done", "Which RFCs cover the done-marking workflow?"},
+	{"Which design notes are not yet marked done?", "draft, review, confirmed", "What does confirmed mean for an RFC?"},
+}
+
+// statusNote is the status note followed by the STATUS line that names the
+// stored statuses to list by.
+func statusNote(statuses string) string {
+	return listingStatusNote + "\nSTATUS: " + statuses + ". Pass each to status exactly as written, one listing per status."
 }
 
 // TestKbAsk_StatusListingRoutesToTheWalkerWithTheStatusNote: a question
@@ -48,9 +69,31 @@ var statusPairs = []struct{ pos, twin string }{
 // walker with a note to list by status, one call per status, and name every
 // row. Measured: for "which of our RFCs are still drafts" the survey named the
 // same 7 of 15 in all six runs; the walker listing by status named 15 of 15.
+// The STATUS line names the stored statuses: "not done" is every other one,
+// and "confirmed but not done" is confirmed alone.
 func TestKbAsk_StatusListingRoutesToTheWalkerWithTheStatusNote(t *testing.T) {
 	for _, p := range statusPairs {
-		wantWalkerRoute(t, p.pos, "listing", listingStatusNote, false)
+		wantWalkerRoute(t, p.pos, "listing", statusNote(p.status), false)
+	}
+}
+
+// TestKbAsk_StatusVerbListingRoutesToTheWalkerWithTheStatusNote: a question
+// whose status is a verb after the kind, with a subject, "been" or "not yet
+// marked" between them ("which RFCs has the owner confirmed", "which plans
+// have we finished", "which design notes are not yet marked done"), is a
+// status listing too, and its STATUS line names the status the verb carries.
+func TestKbAsk_StatusVerbListingRoutesToTheWalkerWithTheStatusNote(t *testing.T) {
+	for _, p := range statusVerbPairs {
+		wantWalkerRoute(t, p.pos, "listing", statusNote(p.status), false)
+	}
+}
+
+// TestKbAsk_StatusVerbTwinStaysWithTheCascade: the same shapes with no
+// status word, no list head, no kind after the head, or a status word that
+// names a topic stay with the classifiers.
+func TestKbAsk_StatusVerbTwinStaysWithTheCascade(t *testing.T) {
+	for _, p := range statusVerbPairs {
+		wantCascade(t, p.twin)
 	}
 }
 
@@ -67,7 +110,7 @@ func TestKbAsk_StatusTwinStaysWithTheCascade(t *testing.T) {
 // dated and a listing is one walk with both notes, the dated one first, and
 // the label names both rules in that fixed order.
 func TestKbAsk_DatedListingGetsBothNotesInOneWalk(t *testing.T) {
-	wantWalkerRoute(t, "Which RFCs are still drafts since v1.0?", "dated+listing", datedNote+"\n\n"+listingStatusNote, false)
+	wantWalkerRoute(t, "Which RFCs are still drafts since v1.0?", "dated+listing", datedNote+"\n\n"+statusNote("draft"), false)
 	for name, metadata := range askMetadatas {
 		t.Run(name+"/range", func(t *testing.T) {
 			const q = "Which plans are still drafts, of those written in November 2026?"
@@ -77,7 +120,7 @@ func TestKbAsk_DatedListingGetsBothNotesInOneWalk(t *testing.T) {
 			wantRouteLine(t, out, "ROUTE: walker | SCORE: none | CLASSIFIER: dated+listing | RUNS: r1:completed")
 			pr, _ := f.inputs[0]["prompt"].(string)
 			parts := strings.Split(pr, "\n\n")
-			if len(parts) != 3 || parts[0] != q || parts[2] != listingStatusNote {
+			if len(parts) != 3 || parts[0] != q || parts[2] != statusNote("draft") {
 				t.Fatalf("the walker's prompt =\n%s\nwant the question, the range note with TODAY, the status note", pr)
 			}
 			lines := strings.Split(parts[1], "\n")
@@ -129,7 +172,7 @@ func TestKbAsk_ListingNoteCarriesNoWordOfAnUntrustedQuestion(t *testing.T) {
 	wantSpawns(t, f, "kb/walker")
 	pr, _ := f.inputs[0]["prompt"].(string)
 	if strings.Contains(pr, "IGNORE") || strings.Contains(pr, "those written") ||
-		!strings.HasPrefix(pr, "Answer the question given as untrusted input.\n\n"+datedRangeNote) || !strings.HasSuffix(pr, listingStatusNote) {
+		!strings.HasPrefix(pr, "Answer the question given as untrusted input.\n\n"+datedRangeNote) || !strings.HasSuffix(pr, statusNote("draft")) {
 		t.Errorf("the walker's trusted prompt =\n%s", pr)
 	}
 }

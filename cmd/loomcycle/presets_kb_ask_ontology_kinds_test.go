@@ -105,8 +105,9 @@ func TestKbAsk_KindListingNamesTheOntologyClasses(t *testing.T) {
 		{"Which implementation plans do we have?", listingTypeNote, []string{"ImplementationPlan"}},
 		{"Which design notes do we have?", listingTypeNote, []string{"DesignNote"}},
 		{"What RFCs do we hold?", listingTypeNote, []string{"Rfc"}},
-		{"Which of our RFCs are still drafts?", listingStatusNote, []string{"Rfc"}},
-		{"Show me every plan that is not done yet.", listingStatusNote, []string{"Plan"}},
+		{"Which of our RFCs are still drafts?", statusNote("draft"), []string{"Rfc"}},
+		{"Show me every plan that is not done yet.", statusNote("draft, review, confirmed"), []string{"Plan"}},
+		{"Which RFCs has the owner confirmed but not yet marked done?", statusNote("confirmed"), []string{"Rfc"}},
 	} {
 		wantOntologyWalk(t, o, tc.q, classesNote(tc.note, tc.classes...))
 	}
@@ -163,7 +164,13 @@ func TestKbAsk_KindsFallBackWhenTheOntologyNamesNone(t *testing.T) {
 // listing naming its class, each twin stays with the cascade.
 func TestKbAsk_SetTwelvePairsHoldUnderTheOntology(t *testing.T) {
 	o := kindsOntology(true)
-	for _, p := range append(append([]struct{ pos, twin string }{}, statusPairs...), typePairs...) {
+	pairs := append([]struct{ pos, twin string }{}, typePairs...)
+	for _, set := range [][]struct{ pos, status, twin string }{statusPairs, statusVerbPairs} {
+		for _, p := range set {
+			pairs = append(pairs, struct{ pos, twin string }{p.pos, p.twin})
+		}
+	}
+	for _, p := range pairs {
 		t.Run(p.pos, func(t *testing.T) {
 			f := &askFake{score: 0.9, answers: askAnswers("YES", "partial"), ontology: o}
 			out := runAsk(t, f, p.pos, nil)
