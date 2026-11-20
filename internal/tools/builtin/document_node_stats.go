@@ -577,13 +577,21 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if mode == "" {
 		mode = nodeStatsModeReport
 	}
-	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute && mode != nodeStatsModeMisfits {
-		return errValidation(fmt.Sprintf("%s: mode %q is not report, compute or misfits", nodeStatsOp, mode),
-			"Pass mode: report to see what is stale, compute to recompute it, misfits to list the misplaced members."), nil
+	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute && mode != nodeStatsModeMisfits && mode != nodeStatsModeGrowth {
+		return errValidation(fmt.Sprintf("%s: mode %q is not report, compute, misfits or growth", nodeStatsOp, mode),
+			"Pass mode: report to see what is stale, compute to recompute it, misfits to list the misplaced members, growth to rank growth and list quiet nodes."), nil
 	}
 	if in.Propose && mode != nodeStatsModeMisfits {
 		return errValidation(nodeStatsOp+": propose is taken only with mode misfits",
 			"Pass mode: misfits with propose to file placement proposals, or omit propose."), nil
+	}
+	if in.QuietPeriods != 0 && mode != nodeStatsModeGrowth {
+		return errValidation(nodeStatsOp+": quiet_periods is taken only with mode growth",
+			"Pass mode: growth with quiet_periods, or omit quiet_periods."), nil
+	}
+	window, why := growthWindow(in.QuietPeriods)
+	if why != "" {
+		return errValidation(nodeStatsOp+": "+why, "Pass a number of periods, or omit it for the default."), nil
 	}
 	key, _, err := d.ontologyTenantKey(ctx)
 	if err != nil {
@@ -620,6 +628,13 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if in.Scheme != "" && !schemeInForce(read, in.Scheme) {
 		return errValidation(fmt.Sprintf("%s: no scheme %q is in force", nodeStatsOp, in.Scheme),
 			"Name a scheme from describe_ontology's schemes, or omit scheme for every node."), nil
+	}
+	if mode == nodeStatsModeGrowth {
+		g, err := d.NodeGrowth(ctx, key, read, in.Scheme, window, growthNow())
+		if err != nil {
+			return errFrom(nodeStatsOp+": "+err.Error(), err), nil
+		}
+		return jsonResult(g)
 	}
 	if mode == nodeStatsModeMisfits {
 		mis, err := d.NodeMisfits(ctx, key, read, in.Scheme, in.Propose, in.Limit)
