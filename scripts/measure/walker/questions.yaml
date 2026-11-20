@@ -1,0 +1,110 @@
+# RFC GM P7 measurement — overview questions for kb/walker, with and without
+# the taxonomy moves. Written for this measurement and not used to tune any
+# prompt: neither the walker nor kb/ask has seen them. Do not edit a question
+# after the first run; add a new id instead, so runs stay comparable.
+#
+# kind:
+#   overview  "what do we have on X": the answer lists documents.
+#   area      "what is in this part of the corpus": the answer groups by topic.
+#   changed   "what changed / is new in X": the answer needs dates or series.
+#
+# gold: the documents an answer should name, filled by an operator from a
+# listing of the store BEFORE the first run (see README.md, "Gold"), as
+# document ids. Empty until then; the driver scores only questions with gold.
+questions:
+  - id: q01
+    kind: overview
+    text: What do we have on routing a question to the right answering agent?
+    gold: []
+  - id: q02
+    kind: overview
+    text: Which documents describe how agents are kept from reading files outside their volumes?
+    gold: []
+  - id: q03
+    kind: overview
+    text: What material do we hold on cost attribution and token budgets?
+    gold: []
+  - id: q04
+    kind: overview
+    text: What is written about resuming a paused run on another instance?
+    gold: []
+  - id: q05
+    kind: overview
+    text: What do we have on importing documents from outside sources?
+    gold: []
+  - id: q06
+    kind: overview
+    text: Which documents cover speech, transcription or text to speech?
+    gold: []
+  - id: q07
+    kind: overview
+    text: What do we hold on sign-in, tokens and who may call what?
+    gold: []
+  - id: q08
+    kind: overview
+    text: What has been written about compacting a long conversation?
+    gold: []
+  - id: q09
+    kind: overview
+    text: Which documents deal with the review of proposed relations between documents?
+    gold: []
+  - id: q10
+    kind: overview
+    text: What do we have on reading e-books and other document formats?
+    gold: []
+  - id: q11
+    kind: overview
+    text: What is there on scheduled runs and inbound webhooks?
+    gold: []
+  - id: q12
+    kind: overview
+    text: What do we hold about the knowledge base's own summaries of sections and folders?
+    gold: []
+  - id: q13
+    kind: area
+    text: What is in our material on security, grouped by subject?
+    gold: []
+  - id: q14
+    kind: area
+    text: Give me an overview of everything about the ontology and classification, by topic.
+    gold: []
+  - id: q15
+    kind: area
+    text: What areas does our documentation on deployment cover?
+    gold: []
+  - id: q16
+    kind: area
+    text: What kinds of documents do we have about the Web UI, and on which subjects?
+    gold: []
+  - id: q17
+    kind: area
+    text: Which topics does the material on multi-tenancy fall under?
+    gold: []
+  - id: q18
+    kind: area
+    text: What is in the research and measurement documents, by subject?
+    gold: []
+  - id: q19
+    kind: changed
+    text: What changed in the knowledge-base work over the last month?
+    gold: []
+  - id: q20
+    kind: changed
+    text: Which subjects have new documents since the start of November 2026?
+    gold: []
+  - id: q21
+    kind: changed
+    text: What is new on taxonomies and node statistics recently?
+    gold: []
+  - id: q22
+    kind: changed
+    text: Which topics grew the most in the last two months, and what was added to them?
+    gold: []
+  - id: q23
+    kind: overview
+    text: What do we have on running agents in a sandbox?
+    gold: []
+  - id: q24
+    kind: area
+    text: What does the corpus hold on providers and models, grouped by subject?
+    gold: []
