@@ -7493,11 +7493,22 @@ agents:
       // with a topic ("which design notes cover the scheduler", "which plans
       // do we have for speech", "which security rfcs do we have") is a
       // question about the topic and stays with the cascade.
+      // What we wrote counts as what we have ("which plans have we written",
+      // "did we write", "we wrote", "have been written"): only with "we" as
+      // the subject or in the passive, so "which plans has the owner
+      // written" stays with the cascade, and a period after the verb ("did
+      // we write in November 2026") is not the end of the clause, so such a
+      // question is dated, not a listing of the whole kind.
+      var AUTHORED = "(?:written|made|created|drafted|produced|authored|published)";
+      var AUTHORED_PAST = "(?:wrote|made|created|drafted|produced|authored|published)";
+      var AUTHOR = "(?:write|make|create|draft|produce|author|publish)";
       function listingType(kindsPlural) {
         return new RegExp(
           LIST_HEAD.source + "\\s+(?:(?:of|all|every|the|our)\\s+)*" + kindsPlural +
           "(?:\\s+(?:(?:do|did)\\s+we\\s+(?:(?:still|currently)\\s+)?(?:have|hold|keep|store)|are\\s+there|exist|" +
-          "we\\s+(?:have|hold|keep|store)|(?:are\\s+)?(?:held|stored)))?" +
+          "we\\s+(?:have|hold|keep|store)|(?:are\\s+)?(?:held|stored)|" +
+          "have\\s+we\\s+" + AUTHORED + "|did\\s+we\\s+" + AUTHOR + "|we\\s+(?:have\\s+" + AUTHORED + "|" + AUTHORED_PAST + ")|" +
+          "(?:have|has)\\s+been\\s+" + AUTHORED + "))?" +
           "(?=\\s*(?:[.?!,;:)]|$)|\\s+(?:and|or|now|today|currently|so\\s+far|yet|at\\s+all|in\\s+total)\\b)",
           "i");
       }
