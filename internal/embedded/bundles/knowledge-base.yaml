@@ -6184,8 +6184,8 @@ agents:
     # MAINTENANCE PLUMBING. The pass's session holds tenant briefs in its tool
     # results, and each writer child's session the briefs it was shown.
     internal: true
-    # A generate pass is runs x batches + 1 model calls (7 for 379 briefs and
-    # three runs); one call on a cloud model took 44-71 s in the measurement.
+    # A generate pass is runs x batches + 1 model calls (5 for 379 briefs: two
+    # batches, two runs); one call on a cloud model took 44-71 s when measured.
     run_timeout_seconds: 1800
     code: |
       // kb/taxonomist — proposes taxonomies (concept schemes) for the tenant
@@ -6203,8 +6203,10 @@ agents:
       //            first batch of briefs, then an update request per further
       //            batch. Several runs start at different batches, because one
       //            generation is not a taxonomy (the corpus does not settle on
-      //            one split); a review request then keeps the concepts that
-      //            recur in at least half the runs and checks the result.
+      //            one split); runs are clamped to the number of batches, so
+      //            no two runs see the same order. A review request then keeps
+      //            the concepts that recur in at least half the runs and checks
+      //            the result (with one run it only checks).
       //            write "propose" (the default) files it with propose_entity as
       //            one inert proposal with @origin generated; write "none" only
       //            reports its outline.
@@ -6246,8 +6248,24 @@ agents:
         max_siblings: 25,
         max_domains: 5,
         // Characters of a request that are the writer's system prompt, counted
-        // into the estimate (its length, rounded up).
-        system_prompt_chars: 4200
+        // into the estimate (its length, rounded up), and an allowance for the
+        // request's own trusted text around the data.
+        system_prompt_chars: 4200,
+        request_text_chars: 1500,
+        // The characters one concept of a scheme is counted at when a request
+        // carries a scheme: a name, a meaning, an excludes line and the JSON.
+        concept_chars: 400,
+        // The writer's window and output cap (kb/taxonomy-writer's
+        // max_context_tokens and max_tokens; a test keeps them in step), and
+        // the characters a token is counted at: low on purpose (briefs measured
+        // about 3.8), so a request that might overflow is refused before it is
+        // sent rather than cut after it is paid for.
+        window_tokens: 131072,
+        output_tokens: 32768,
+        chars_per_token: 3,
+        // The most proposed (and rejected) ontology chunks read to find a
+        // whole-scheme proposal of the same name (query_chunks' maximum).
+        proposal_scan: 1000
       };
 
       var DEFAULTS = {
@@ -6342,8 +6360,10 @@ agents:
           o.write = v.write;
         }
         if (v.scheme !== undefined) {
-          if (!isLine(v.scheme, CONFIG.max_name_chars)) { return { error: "scheme must be a name of one line, at most 80 characters" }; }
-          o.scheme = v.scheme.trim();
+          if (!isLine(v.scheme, CONFIG.max_name_chars) || cleanName(v.scheme) === "") {
+            return { error: "scheme must be a name of one line, at most 80 characters, not starting with # or @, with a letter or digit" };
+          }
+          o.scheme = cleanName(v.scheme);
         }
         if (v.domain !== undefined) {
           if (!isLine(v.domain, CONFIG.max_domain_chars)) { return { error: "domain must be one line, at most 300 characters" }; }
@@ -6397,7 +6417,7 @@ agents:
           calls: { made: 0, estimated_chars: 0 }, model_failures: 0, failures_in_a_row: 0, parse_errors: 0,
           cut: 0, failed_batches: 0, dropped: {},
           usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-          models: [], runs_ids: [],
+          models: [], runs_ids: [], runs: 0, requests: null, proposal_status: "", proposal_check: "",
           domains: null, candidates: null, scheme: null, proposal: null
         };
       }
@@ -6466,14 +6486,47 @@ agents:
         }
         if (st.opts.mode === "generate") {
           if (!on.exists) { st.status = "no_ontology"; return false; }
+          // propose_entity compares names by their tag segment and refuses a
+          // scheme in force (retired included) and any whole-scheme proposal
+          // already filed, pending or decided. Both are checked here, before a
+          // model call is spent on a scheme that could not be filed.
+          var seg = mirrorSegment(st.opts.scheme);
           for (var s = 0; s < on.schemes.length; s++) {
-            if (on.schemes[s].name.toLowerCase() === st.opts.scheme.toLowerCase()) {
+            if (mirrorSegment(on.schemes[s].name) === seg) {
               st.status = "scheme_exists";
               return false;
             }
           }
+          var filed = schemeProposalStatus(st, seg);
+          if (filed !== "") {
+            st.status = "scheme_proposed";
+            st.proposal_status = filed;
+            return false;
+          }
         }
         return true;
+      }
+
+      // schemeProposalStatus is the status (proposed or rejected) of a
+      // whole-scheme proposal in the ontology document whose name has segment
+      // seg, or "". describe_ontology lists no proposal, so the proposed and
+      // rejected chunks are listed, and each whose title matches is read: a
+      // whole-scheme proposal carries the scheme_proposal mark in its fields,
+      // which a concept or class proposal of the same name does not.
+      function schemeProposalStatus(st, seg) {
+        var statuses = ["proposed", "rejected"];
+        for (var i = 0; i < statuses.length; i++) {
+          var r = call(st, { op: "query_chunks", document_id: st.ontology.document_id, status: statuses[i],
+                             limit: CONFIG.proposal_scan });
+          var cs = isPlainObject(r) && isArray(r.chunks) ? r.chunks : [];
+          if (cs.length >= CONFIG.proposal_scan) { st.proposal_check = "partial"; }
+          for (var j = 0; j < cs.length; j++) {
+            if (!isPlainObject(cs[j]) || !isID(cs[j].id) || mirrorSegment(cs[j].title) !== seg) { continue; }
+            var c = call(st, { op: "get_chunk", id: cs[j].id });
+            if (isPlainObject(c) && isPlainObject(c.fields) && c.fields.scheme_proposal !== undefined) { return statuses[i]; }
+          }
+        }
+        return "";
       }
 
       function classNamed(st, name) {
@@ -6580,21 +6633,56 @@ agents:
         for (var b = 0; b < nb; b++) {
           st.batches.push(st.briefs.slice(Math.floor(b * n / nb), Math.floor((b + 1) * n / nb)));
         }
-        st.planned.generate_calls = st.opts.runs * nb + 1;
+        // A run starts at its own batch, so a run beyond the number of batches
+        // would meet the same briefs in the same order as an earlier one, and
+        // agreement between them would measure only the model's sampling. So
+        // runs are clamped to the batches; a corpus of one batch gets one
+        // generation, and the review still checks it.
+        st.runs = Math.min(st.opts.runs, nb);
+        st.planned.generate_calls = st.runs * nb + 1;
+        st.requests = requestSizes(st);
         if (st.opts.mode === "report") {
           st.calls.estimated_chars = estimate(st);
         }
       }
 
       // estimate is what a generate pass would send: each batch once per run,
-      // a scheme beside every update, the candidates to the review.
+      // a scheme beside every update, every run's scheme to the review (one
+      // review always), each scheme counted at max_concepts concepts.
       function estimate(st) {
         var chars = 0;
-        for (var b = 0; b < st.batches.length; b++) { chars += briefsText(st.batches[b]).length * st.opts.runs; }
-        var schemeChars = st.opts.max_concepts * 300;
-        chars += schemeChars * st.opts.runs * (st.batches.length - 1 + (st.opts.runs > 1 ? 1 : 0));
-        chars += (CONFIG.system_prompt_chars + 1500) * st.planned.generate_calls;
+        for (var b = 0; b < st.batches.length; b++) { chars += briefsText(st.batches[b]).length * st.runs; }
+        var schemeChars = st.opts.max_concepts * CONFIG.concept_chars;
+        chars += schemeChars * st.runs * (st.batches.length - 1);
+        chars += schemeChars * st.runs;
+        chars += (CONFIG.system_prompt_chars + CONFIG.request_text_chars) * st.planned.generate_calls;
         return chars;
+      }
+
+      // requestSizes is the largest single request each mode would send, at
+      // its worst (every scheme at max_concepts), against what the writer's
+      // window leaves for input once its output cap is set aside.
+      function requestSizes(st) {
+        var fixed = CONFIG.system_prompt_chars + CONFIG.request_text_chars;
+        var batchMax = 0;
+        for (var b = 0; b < st.batches.length; b++) { batchMax = Math.max(batchMax, briefsText(st.batches[b]).length); }
+        var schemeChars = st.opts.max_concepts * CONFIG.concept_chars;
+        var largest = batchMax + fixed;
+        if (st.batches.length > 1) { largest = Math.max(largest, batchMax + schemeChars + fixed); }
+        largest = Math.max(largest, schemeChars * st.runs + fixed);
+        return {
+          largest_chars: largest,
+          domains_chars: briefsText(domainsSample(st)).length + fixed,
+          limit_chars: (CONFIG.window_tokens - CONFIG.output_tokens) * CONFIG.chars_per_token
+        };
+      }
+
+      // domainsSample is batch_size briefs spread evenly over the corpus.
+      function domainsSample(st) {
+        var n = st.briefs.length, k = Math.min(n, st.opts.batch_size);
+        var sample = [];
+        for (var i = 0; i < k; i++) { sample.push(st.briefs[Math.floor(i * n / k)]); }
+        return sample;
       }
 
       // ------------------------------------------------------------------ requests
@@ -6684,9 +6772,8 @@ agents:
       // ------------------------------------------------------------------ domains
 
       function domainsPass(st) {
-        var n = st.briefs.length, k = Math.min(n, st.opts.batch_size);
-        var sample = [];
-        for (var i = 0; i < k; i++) { sample.push(st.briefs[Math.floor(i * n / k)]); }
+        if (st.requests.domains_chars > st.requests.limit_chars) { st.status = "input_too_large"; return; }
+        var sample = domainsSample(st);
         var prompt = "REQUEST: domains\n\n" +
           "CLASSES (the kinds of thing the ontology already declares):\n" + classesLine(st) + "\n\n" +
           "SCHEMES IN FORCE (do not propose these again):\n" + schemesLine(st) + "\n\n" +
@@ -6701,8 +6788,8 @@ agents:
           if (!isPlainObject(t)) { bump(st.dropped, "malformed"); continue; }
           var name = cleanName(t.name);
           var domain = oneLine(t.domain, CONFIG.max_domain_chars);
-          if (name === "" || domain === "" || seen[name.toLowerCase()]) { bump(st.dropped, "malformed"); continue; }
-          seen[name.toLowerCase()] = true;
+          if (name === "" || domain === "" || seen[mirrorSegment(name)]) { bump(st.dropped, "malformed"); continue; }
+          seen[mirrorSegment(name)] = true;
           var projects = [], unknown = 0;
           var ps = isArray(t.projects) ? t.projects : [];
           for (var p = 0; p < ps.length && p < 20; p++) {
@@ -6713,7 +6800,7 @@ agents:
           var row = { name: name, domain: domain, projects: projects, why: oneLine(t.why, CONFIG.max_meaning_chars) };
           if (unknown > 0) { row.unknown_classes_dropped = unknown; }
           for (var s = 0; s < st.ontology.schemes.length; s++) {
-            if (st.ontology.schemes[s].name.toLowerCase() === name.toLowerCase()) { row.exists = true; }
+            if (mirrorSegment(st.ontology.schemes[s].name) === mirrorSegment(name)) { row.exists = true; }
           }
           out.push(row);
         }
@@ -6728,10 +6815,14 @@ agents:
           st.status = "budget_refused";
           return;
         }
+        if (st.requests.largest_chars > st.requests.limit_chars) {
+          st.status = "input_too_large";
+          return;
+        }
         var nb = st.batches.length;
         var candidates = [];
         st.candidates = [];
-        for (var r = 0; r < st.opts.runs; r++) {
+        for (var r = 0; r < st.runs; r++) {
           // Run r starts at batch r (mod the batch count), so each run meets
           // the corpus in a different order.
           var scheme = null, failed = 0;
@@ -6761,16 +6852,19 @@ agents:
           if (scheme !== null) { candidates.push(scheme); }
         }
         if (candidates.length === 0) { st.status = "generate_failed"; return; }
-        var need = Math.ceil(st.opts.runs / 2);
+        var need = Math.ceil(st.runs / 2);
         var blocks = [];
         for (var c = 0; c < candidates.length; c++) {
           blocks.push(data("CANDIDATE " + (c + 1), JSON.stringify({ concepts: candidates[c] })));
         }
         var rv = ask(st, "REQUEST: review\n\n" + schemeLines(st) + "\n\n" +
-          "The untrusted data blocks are " + candidates.length + " candidate schemes for this domain, each as JSON, " +
-          "written independently from the same documents in a different order." +
-          (candidates.length > 1 ? "\nKEEP: a concept that appears, under any wording, in at least " + Math.min(need, candidates.length) +
-            " of the " + candidates.length + " candidates." : "\nKEEP: every concept that passes the checks."),
+          (candidates.length > 1 ?
+            "The untrusted data blocks are " + candidates.length + " candidate schemes for this domain, each as JSON, " +
+            "written independently from the same documents met in a different order." +
+            "\nKEEP: a concept that appears, under any wording, in at least " + Math.min(need, candidates.length) +
+            " of the " + candidates.length + " candidates." :
+            "The untrusted data block is the one candidate scheme for this domain, as JSON." +
+            "\nKEEP: every concept that passes the checks."),
           blocks);
         var final = rv === null ? null : conceptTree(st, rv.concepts);
         if (final === null) { st.status = "review_failed"; return; }
@@ -6824,7 +6918,7 @@ agents:
       // conceptTree reads a reply's concept list as DATA: each concept a name
       // of one line, a meaning and an excludes line within their lengths,
       // children only above the depth asked for, at most max_siblings per
-      // level and max_concepts in all, no name twice. What does not fit is
+      // level and max_concepts in all, no tag segment twice. What does not fit is
       // dropped and counted; an empty result is null.
       function conceptTree(st, raw) {
         if (!isArray(raw)) { st.parse_errors++; return null; }
@@ -6841,9 +6935,9 @@ agents:
           if (!isPlainObject(c)) { bump(st.dropped, "malformed"); continue; }
           var name = cleanName(c.name);
           if (name === "") { bump(st.dropped, "malformed"); continue; }
-          if (seen[name.toLowerCase()]) { bump(st.dropped, "duplicate"); continue; }
+          if (seen[mirrorSegment(name)]) { bump(st.dropped, "duplicate"); continue; }
           if (out.length >= CONFIG.max_siblings || total.n >= st.opts.max_concepts) { bump(st.dropped, "over_limit"); continue; }
-          seen[name.toLowerCase()] = true;
+          seen[mirrorSegment(name)] = true;
           total.n++;
           var node = { name: name, meaning: oneLine(c.meaning, CONFIG.max_meaning_chars),
                        excludes: oneLine(c.excludes, CONFIG.max_excludes_chars), children: [] };
@@ -6859,11 +6953,34 @@ agents:
         return out;
       }
 
+      // cleanName is a name folded onto one line, or "" for one propose_entity
+      // would refuse (memory.SchemeProposal.Check): empty, over-long, starting
+      // with # (a heading marker the reader trims) or @ (a directive), or with
+      // an empty tag segment. Stricter than the runtime in one way: a name of
+      // ASCII punctuation alone ("-", "...") has a segment the runtime would
+      // take, and is dropped here as no name at all. Control characters (C0, DEL,
+      // C1) and U+FEFF become spaces first, so JavaScript's \s and Go's
+      // unicode.IsSpace fold the same characters.
       function cleanName(v) {
         if (typeof v !== "string") { return ""; }
-        var t = v.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-        if (t === "" || t.length > CONFIG.max_name_chars || t.charAt(0) === "@") { return ""; }
+        var t = v.replace(/[\u0000-\u001f\u007f-\u009f\ufeff]+/g, " ").replace(/\s+/g, " ").trim();
+        if (t === "" || t.length > CONFIG.max_name_chars || t.charAt(0) === "@" || t.charAt(0) === "#") { return ""; }
+        if (mirrorSegment(t) === "" || !/[0-9A-Za-z\u00c0-\uffff]/.test(t)) { return ""; }
         return t;
+      }
+
+      // mirrorSegment is memory.MirrorSegment: lowercase, "/" as a space, the
+      // words joined with "-". The runtime builds a concept's tag from it and
+      // refuses two names with one segment.
+      function mirrorSegment(s) {
+        var t = String(s === undefined || s === null ? "" : s)
+          .replace(/[\u0000-\u001f\u007f-\u009f\ufeff]+/g, " ").trim().toLowerCase().split("/").join(" ");
+        var words = t.split(/\s+/);
+        var out = [];
+        for (var i = 0; i < words.length; i++) {
+          if (words[i] !== "") { out.push(words[i]); }
+        }
+        return out.join("-");
       }
 
       function count(cs) {
@@ -6912,6 +7029,13 @@ agents:
         };
         if (st.failure !== "") { out.failure = st.failure; }
         if (st.unknown_projects.length > 0) { out.unknown_classes = st.unknown_projects; }
+        if (st.proposal_status !== "") { out.proposal_status = st.proposal_status; }
+        if (st.proposal_check !== "") { out.proposal_check = st.proposal_check; }
+        if (st.requests !== null) {
+          out.requests = st.requests;
+          out.runs_used = st.runs;
+          if (st.runs < st.opts.runs) { out.runs_clamped = true; }
+        }
         if (st.opts.mode === "report") { return out; }
         out.budget = { max_calls: st.opts.max_calls };
         out.model_failures = st.model_failures;
@@ -7001,9 +7125,14 @@ agents:
     tier: middle
     effort: low
     max_tokens: 32768
-    # A request carries about 200 briefs (~60,000 characters with titles) and,
-    # for an update or a review, the scheme(s) so far.
-    max_context_tokens: 65536
+    # A request carries about 200 briefs (~70,000 characters with titles) and,
+    # for an update or a review, the scheme(s) so far: a review of three runs
+    # at 150 concepts is about 180,000 more. kb/taxonomist refuses a request
+    # whose worst case would not fit this window less the output cap
+    # (input_too_large), and its CONFIG.window_tokens must equal this value.
+    # On a cloud model it can only lower the model's window; on a local model
+    # it sets the context size the model is loaded with.
+    max_context_tokens: 131072
     system_prompt: |
       You help build a classification of a knowledge base: concept schemes
       (taxonomies) that arrange its documents by topic. You see only one-line
