@@ -141,8 +141,9 @@ With `mode: split` the call clusters (k-means, k from 2 to 4) and reports three
 kinds of candidate. It needs the vector stage: elsewhere `vectors` is false,
 `note` says why, and nothing is listed.
 
-- `splits` — each concept with at least 20 members that have a vector, whose
-  clustering kept two groups or more. A group is listed only when it
+- `splits` — each concept with at least 20 **direct** members that have a
+  vector (documents placed on it that none of its narrower concepts holds:
+  those are already arranged), whose clustering kept two groups or more. A group is listed only when it
   **recurs**: the members are clustered again four times, each time a random
   80% of them with another seed, and every run must find a group holding
   three quarters of the group's members it saw. `not_recurring` counts the
@@ -163,7 +164,10 @@ kinds of candidate. It needs the vector stage: elsewhere `vectors` is false,
 Each group carries a suggested `name` (its first distinctive terms, against
 the other groups), its `terms`, `exemplars`, and its `documents` with titles
 and briefs, nearest the centre first (at most 50). The thresholds are not
-measured yet and depend on the embedding model.
+measured yet and depend on the embedding model. A call runs at most 100
+clusterings within two minutes; past that it stops, sets `truncated` and says
+so in `note` — pass `scheme` to cover the rest. Each concept is in at most one
+merge, most alike first.
 
 **No model checks a group here.** A group is meant to be proposed only when a model
 grouping of the things' subtopic labels finds it too; `node_stats` makes no
@@ -186,7 +190,7 @@ still be added under it. Filing is for an operator, or a run granted `rule` in
 It returns `{mode, scheme?, vectors, note?, embed_model?, min_members, runs,
 recur_min, jaccard, far_similarity, merge_similarity, model_check, propose,
 cap?, splits, unplaced, merges, proposed?, skipped?, members_skipped?,
-issues?, truncated?}`: a split `{node_id, name, tag, scheme, members,
+issues?, truncated?}`: a split `{node_id, name, tag, scheme, members, direct,
 clustered, spread, fixed?, k, groups, not_recurring}`; an unplaced grouping
 `{scheme, scheme_id, things, clustered, truncated?, grouped, groups,
 not_recurring, stays_unplaced, stays_truncated?}`; a group `{key, name, terms,
@@ -224,7 +228,8 @@ fresh, stale, missing, computed, removed, series}`:
 
 - `node_stats: mode "<x>" is not report, compute, misfits, growth or split`.
 - `node_stats: propose is taken only with mode misfits or split`.
-- `node_stats: method_not_granted: …` — `propose` from a run not granted `rule`.
+- `node_stats: method_not_granted: …` — mode `split` with `propose` from a run not
+  granted `rule`.
 - `node_stats: quiet_periods is taken only with mode growth`; `quiet_periods must be 1 to 120`.
 - `node_stats: permission: …` — the caller is not an operator or a granted
   agent, lacks the tenant scope, or may not read every document of it.
@@ -275,5 +280,5 @@ List the split and merge candidates of one scheme, writing nothing:
 ```
 
 ```json result
-{"mode": "split", "scheme": "topics", "vectors": true, "embed_model": "ollama/bge-m3", "min_members": 20, "runs": 5, "recur_min": 5, "jaccard": 0.75, "far_similarity": 0.5, "merge_similarity": 0.95, "model_check": "not run: node_stats makes no model call. A group is meant to be proposed only when a model grouping of the things' subtopic labels finds it too; each group lists the documents that step reads", "propose": false, "splits": [{"node_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "name": "reporting", "tag": "topics/reporting", "scheme": "topics", "members": 24, "clustered": 24, "spread": 0.41, "k": 2, "groups": [{"key": "3f2a1b0c9d8e7f6a", "name": "xbrl template taxonomy", "terms": ["xbrl", "template", "taxonomy"], "members": 12, "recurrence": 5, "runs": 5, "parent_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "parent": "topics/reporting", "exemplars": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "XBRL filing templates", "similarity": 0.99}], "documents": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "XBRL filing templates", "brief": "The XBRL templates for the annual filing.", "similarity": 0.99}]}], "not_recurring": 0}], "unplaced": [], "merges": [{"node_id": "8b3f4e5d6c7a4182930415b6c7d8e9f0", "name": "auditing", "tag": "topics/auditing", "into_id": "9c4a5f6e7d8b4293a41526c7d8e9f0a1", "into": "audit", "into_tag": "topics/audit", "similarity": 0.97, "members": 3, "into_members": 4}]}
+{"mode": "split", "scheme": "topics", "vectors": true, "embed_model": "ollama/bge-m3", "min_members": 20, "runs": 5, "recur_min": 5, "jaccard": 0.75, "far_similarity": 0.5, "merge_similarity": 0.95, "model_check": "not run: node_stats makes no model call. A group is meant to be proposed only when a model grouping of the things' subtopic labels finds it too; each group lists the documents that step reads", "propose": false, "splits": [{"node_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "name": "reporting", "tag": "topics/reporting", "scheme": "topics", "members": 24, "direct": 24, "clustered": 24, "spread": 0.41, "k": 2, "groups": [{"key": "3f2a1b0c9d8e7f6a", "name": "xbrl template taxonomy", "terms": ["xbrl", "template", "taxonomy"], "members": 12, "recurrence": 5, "runs": 5, "parent_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "parent": "topics/reporting", "exemplars": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "XBRL filing templates", "similarity": 0.99}], "documents": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "XBRL filing templates", "brief": "The XBRL templates for the annual filing.", "similarity": 0.99}]}], "not_recurring": 0}], "unplaced": [], "merges": [{"node_id": "8b3f4e5d6c7a4182930415b6c7d8e9f0", "name": "auditing", "tag": "topics/auditing", "into_id": "9c4a5f6e7d8b4293a41526c7d8e9f0a1", "into": "audit", "into_tag": "topics/audit", "similarity": 0.97, "members": 3, "into_members": 4}]}
 ```
