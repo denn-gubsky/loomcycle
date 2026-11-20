@@ -30,7 +30,8 @@ var designDocCite = regexp.MustCompile(`\bRFC[ -][A-Z]{1,2}\b`)
 
 // Lint returns the authoring-rule problems with t, independent of any tool's
 // schema: examples are mandatory where a model needs them, an operation
-// article's examples call that operation, and no design-doc citations. Nil
+// article's examples call that operation, a section article has an example
+// calling its tool, and no design-doc citations. Nil
 // means clean. The bundled corpus is held to this by tests; an operator
 // article that fails it still loads, with the problems logged.
 //
@@ -45,12 +46,27 @@ func (s *Set) Lint(t *Topic) []string {
 	if err != nil {
 		return append(probs, err.Error())
 	}
-	// A tool article with operation articles is an index; its examples live one
-	// level down. Every other tool article, and every operation article, is where
-	// a model lands to learn the call, so it must show one.
-	needsExample := t.IsOpArticle() || (t.Tool != "" && len(s.OpsOf(t.Tool)) == 0)
+	// A tool article with operation or section articles is an index; its
+	// examples live one level down. Every other tool article, and every operation
+	// or section article, is where a model lands to learn the call, so it must
+	// show one.
+	isChild := t.IsOpArticle() || t.IsSectionArticle()
+	isIndex := len(s.OpsOf(t.Tool)) > 0 || len(s.SectionsOf(t.Tool)) > 0
+	needsExample := isChild || (t.Tool != "" && !isIndex)
 	if needsExample && len(exs) == 0 {
 		probs = append(probs, "no call example (add a ```json block under a `## Examples` heading)")
+	}
+	// A section has no op to check, but its examples must still call its own
+	// tool: a section whose only examples call another tool teaches nothing
+	// about this one.
+	if t.IsSectionArticle() && len(exs) > 0 {
+		calls := false
+		for _, ex := range exs {
+			calls = calls || ex.Tool == t.Tool
+		}
+		if !calls {
+			probs = append(probs, fmt.Sprintf("no example calls %s (a section article's examples show calls to its own tool)", t.Tool))
+		}
 	}
 	if t.IsOpArticle() {
 		for _, ex := range exs {
