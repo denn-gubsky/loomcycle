@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
@@ -452,7 +453,13 @@ func (w *worker) copyLocalOp(ctx context.Context, id string, v *fsops.VolumeFS, 
 		return refuse(workspace.ClassFailed, "opening the source workspace: %v", err)
 	}
 	defer sv.Close()
-	plan, a := listCopy(ctx, sv, srcRel, in.MaxFiles, in.MaxBytes)
+	var plan copyPlan
+	var a *answer
+	if in.Listed {
+		plan, a = listedCopy(sv, srcRel, in)
+	} else {
+		plan, a = listCopy(ctx, sv, srcRel, in.MaxFiles, in.MaxBytes)
+	}
 	if a != nil {
 		return *a
 	}
@@ -489,8 +496,54 @@ type copyFile struct {
 	size int64
 }
 
+// listedCopy plans a folder copy of exactly the files the core listed and
+// judged: what a command added since is not among them, so it is never
+// copied. The bounds are checked again here, a listed path is checked as
+// any op path is, and copyOne refuses a file that is no longer the
+// regular file of the size listed.
+func listedCopy(sv *fsops.VolumeFS, srcRel string, in workspace.CopyLocalArgs) (copyPlan, *answer) {
+	plan := copyPlan{dir: true, exact: true}
+	if len(in.Files) > in.MaxFiles {
+		return plan, refusal(workspace.ClassCopyLimit, "the folder holds more than %d files, the most a copy may move (workspace.copy.max_files)", in.MaxFiles)
+	}
+	d, err := openDir(sv, srcRel, false)
+	if err != nil {
+		x := classify(err, "copy from %q", filepath.ToSlash(srcRel))
+		return plan, &x
+	}
+	d.Close()
+	dirs := map[string]bool{}
+	for _, f := range in.Files {
+		rel, bad := opPath(f.Path, false)
+		if bad != nil {
+			return plan, bad
+		}
+		if f.Size < 0 || (in.MaxFileBytes > 0 && f.Size > in.MaxFileBytes) {
+			return plan, refusal(workspace.ClassCopyLimit, "%q is %d bytes, over the %d a file may be", f.Path, f.Size, in.MaxFileBytes)
+		}
+		plan.files = append(plan.files, copyFile{rel: rel, size: f.Size})
+		plan.bytes += f.Size
+		if plan.bytes > in.MaxBytes {
+			return plan, refusal(workspace.ClassCopyLimit, "the folder holds more than %d bytes, the most a copy may move (workspace.copy.max_bytes)", in.MaxBytes)
+		}
+		for p := filepath.Dir(rel); p != "."; p = filepath.Dir(p) {
+			dirs[p] = true
+		}
+	}
+	for p := range dirs {
+		plan.dirs = append(plan.dirs, p)
+	}
+	// Parents before children: copyFiles makes each with create, but a
+	// stable order keeps the stage's layout deterministic.
+	slices.Sort(plan.dirs)
+	return plan, nil
+}
+
 type copyPlan struct {
-	dir     bool
+	dir bool
+	// exact: each file must still be a regular file of exactly its listed
+	// size (a listed copy), not merely at least that long.
+	exact   bool
 	files   []copyFile
 	dirs    []string // folders to make, empty ones included
 	bytes   int64
@@ -598,14 +651,14 @@ func copyFiles(ctx context.Context, sv, v *fsops.VolumeFS, srcRel, stage string,
 		if !plan.dir {
 			src = srcRel
 		}
-		if a := copyOne(sv, v, src, filepath.Join(stage, f.rel), f.size); a != nil {
+		if a := copyOne(sv, v, src, filepath.Join(stage, f.rel), f.size, plan.exact); a != nil {
 			return a
 		}
 	}
 	return nil
 }
 
-func copyOne(sv, v *fsops.VolumeFS, src, dst string, size int64) *answer {
+func copyOne(sv, v *fsops.VolumeFS, src, dst string, size int64, exact bool) *answer {
 	sp, err := openDir(sv, filepath.Dir(src), false)
 	if err != nil {
 		x := classify(err, "copying %q", filepath.ToSlash(src))
@@ -618,6 +671,13 @@ func copyOne(sv, v *fsops.VolumeFS, src, dst string, size int64) *answer {
 		return &x
 	}
 	defer in.Close()
+	if exact {
+		// OpenIn refused a link and a special file; a file of another
+		// size is not the one that was listed and judged.
+		if fi, err := in.Stat(); err != nil || fi.Size() != size {
+			return refusal(workspace.ClassFailed, "%q changed since it was listed", filepath.ToSlash(src))
+		}
+	}
 	dp, err := openDir(v, filepath.Dir(dst), true)
 	if err != nil {
 		x := classify(err, "copying %q", filepath.ToSlash(src))

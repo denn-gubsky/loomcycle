@@ -8,8 +8,10 @@ listed.
 
 ## Arguments
 
-- `path` — the folder: a reference such as `volume:inbox:documents` or
-  `volume:docs:board`; default the inbox's root.
+- `path` — the folder: a reference such as `volume:inbox:documents`,
+  `volume:docs:board` or `workspace:build:out` (`workspace:build:` is the
+  workspace's root, and needs the `read` workspace grant); default the
+  inbox's root.
 - `recursive` — list the files in every subfolder too (folders themselves are
   then not listed).
 
@@ -19,6 +21,8 @@ listed.
 `media_type` and `origin` are given for files the runtime kept. At most 1000
 entries are returned; `truncated` says there were more. Before anything has
 been kept the inbox does not exist and `entries` is empty, with a `note`.
+In a workspace, folders are listed too (`dir: true`), and a link or another
+non-regular file carries `type` (`link` or `other`): `copy` skips those.
 
 ## Examples
 

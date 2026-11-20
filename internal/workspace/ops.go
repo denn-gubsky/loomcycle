@@ -261,6 +261,22 @@ type CopyLocalArgs struct {
 	Overwrite     bool   `json:"overwrite,omitempty"`
 	MaxFiles      int    `json:"max_files"`
 	MaxBytes      int64  `json:"max_bytes"`
+	// Listed makes the copy of a folder exactly Files: the regular files
+	// the core listed and judged, at paths relative to FromPath, each of
+	// its listed size. Nothing else under FromPath is copied, and a listed
+	// file now missing, not a regular file, a link, or of another size
+	// refuses the copy with nothing placed. Without it the worker lists
+	// the folder itself.
+	Listed bool            `json:"listed,omitempty"`
+	Files  []CopyLocalFile `json:"files,omitempty"`
+	// MaxFileBytes, when positive, bounds each listed file.
+	MaxFileBytes int64 `json:"max_file_bytes,omitempty"`
+}
+
+// CopyLocalFile is one file of a listed copy_local.
+type CopyLocalFile struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
 }
 
 // CopyAnswer is a copy_local op's output.

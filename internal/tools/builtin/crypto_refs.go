@@ -36,6 +36,10 @@ const (
 	refVolume   refKind = "volume"
 	refMemory   refKind = "memory"
 	refDocument refKind = "document"
+	// refWorkspace is a file or folder in a workspace pinned to the calling
+	// run (RFC GW §5.1). Only the File tool reaches one; every other user of
+	// a reference refuses it (checkRefGrant).
+	refWorkspace refKind = "workspace"
 )
 
 // dataRef is a parsed `from` / `to` reference.
@@ -47,6 +51,9 @@ type dataRef struct {
 	scope   string // memory, document: agent | user | tenant
 	key     string // memory: the key
 	chunkID string // document: the chunk id
+	// workspace is the workspace's name (workspace kind); path is then
+	// relative to its root, as written ("" is the root).
+	workspace string
 }
 
 var refVolumeNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -57,6 +64,7 @@ var refVolumeNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 //	volume:<name>:<path>     a file on the named volume
 //	memory:<scope>/<key>     a Memory key
 //	document:<scope>/<id>    a Document chunk's body
+//	workspace:<name>:<path>  a file or folder in the run's workspace <name>
 //
 // For volume, a leading segment that is a valid volume name and contains no
 // "/" before a ":" is the volume; so volume:./a:b names a file "a:b".
@@ -64,7 +72,7 @@ func parseDataRef(s string) (dataRef, error) {
 	r := dataRef{raw: s}
 	kind, rest, ok := strings.Cut(s, ":")
 	if !ok || rest == "" {
-		return r, errors.New("a reference is volume:<path>, memory:<scope>/<key> or document:<scope>/<chunk_id>")
+		return r, errors.New("a reference is volume:<path>, memory:<scope>/<key>, document:<scope>/<chunk_id> or workspace:<name>:<path>")
 	}
 	switch refKind(kind) {
 	case refVolume:
@@ -93,8 +101,10 @@ func parseDataRef(s string) (dataRef, error) {
 		} else {
 			r.chunkID = id
 		}
+	case refWorkspace:
+		return parseWorkspaceRef(r, rest)
 	default:
-		return r, fmt.Errorf("unknown reference kind %q (use volume, memory or document)", kind)
+		return r, fmt.Errorf("unknown reference kind %q (use volume, memory, document or workspace)", kind)
 	}
 	return r, nil
 }
@@ -131,6 +141,13 @@ func checkRefAllowed(ctx context.Context, r dataRef, write bool) (tools.Result, 
 // reference: via names the asking tool (its hooks see it), and instead is
 // the alternative the refusal offers.
 func checkRefGrant(ctx context.Context, r dataRef, write bool, via, instead string) (tools.Result, bool) {
+	// A workspace is reached through its own grant and hooks (file_ref.go),
+	// and only by the ops that take one; anything else that parsed one is
+	// refused here rather than judged as some other tool's reference.
+	if r.kind == refWorkspace {
+		return errValidation(fmt.Sprintf("%s: %s does not take a workspace reference here", r.raw, via),
+			instead+", or copy the file into the inbox first with File op=copy."), false
+	}
 	// Off a run no agent definition chose the volumes, so a reference is
 	// refused unless the transport itself authorized the volume it names
 	// (the File twin's keep and render target). Memory and Document

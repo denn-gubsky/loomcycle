@@ -162,6 +162,15 @@ func (s *Server) File(ctx context.Context, input json.RawMessage) (connector.Too
 	if err != nil {
 		return fileTwinRefusal(tools.CategoryValidation, "file: invalid input: "+err.Error(), "Pass a JSON object with run_id, op and the op's own fields."), nil
 	}
+	// A workspace belongs to a run, and is reached only from inside it (RFC
+	// GW P2 §3.2): refused here before any op is looked at, whatever field
+	// names it. The File tool refuses one off a run too.
+	for _, v := range []string{in.Path, in.From, in.To} {
+		if strings.HasPrefix(strings.TrimSpace(v), "workspace:") {
+			return fileTwinRefusal(tools.CategoryValidation, "file: workspace references are not available here: a workspace belongs to the run that opened it",
+				"Copy the file out with File op=copy inside that run, into its inbox or a volume."), nil
+		}
+	}
 	if !slices.Contains(connector.FileTwinOps, in.Op) {
 		if in.Op == "download" || in.Op == "upload" {
 			return fileTwinRefusal(tools.CategoryValidation, "file: "+in.Op+" is not available here: it needs a run's HTTP host policy",
