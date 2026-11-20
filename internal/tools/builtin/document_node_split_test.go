@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"reflect"
 	"sort"
 	"strings"
@@ -79,13 +80,33 @@ func (k *splitCorpus) twoTopics(t *testing.T, typ, concept string, date func(int
 	return filing, templates
 }
 
-// ring adds 24 documents spread evenly round a circle, placed under concept: k-means
-// partitions them, but differently for each seed and sample, so no group recurs.
-func (k *splitCorpus) ring(t *testing.T, concept string) {
+// noiseDim is the dimension noise is drawn in: high enough that it has no structure
+// k-means can find again.
+const noiseDim = 32
+
+// noise adds n documents whose vectors are isotropic Gaussian noise in noiseDim
+// dimensions (a fixed draw), placed under concept, and widens every vector of the
+// corpus to noiseDim (zeros after its own), so they are all compared.
+//
+// Not points round a circle: arcs of a circle are structure k-means can find, and
+// whether a group of them recurs depends on the member order, which follows the
+// documents' random ids — about 1.5% of orders recurred, so the test flaked. Noise
+// of 40 in 32 dimensions recurred under none of 1000 orders (nodestats probe,
+// 2026-11-20).
+func (k *splitCorpus) noise(t *testing.T, n int, concept string) {
 	t.Helper()
-	for i := 0; i < 24; i++ {
-		a := float64(i) * 2 * math.Pi / 24
-		k.doc(t, "", "statute clause", []float32{0, float32(math.Cos(a)), 0, float32(math.Sin(a))}, concept, time.Time{})
+	rng := rand.New(rand.NewPCG(7, 7))
+	for i := 0; i < n; i++ {
+		v := make([]float32, noiseDim)
+		for j := range v {
+			v[j] = float32(rng.NormFloat64())
+		}
+		k.doc(t, "", "statute clause", v, concept, time.Time{})
+	}
+	for doc, v := range k.vecs {
+		if len(v) < noiseDim {
+			k.setVector(t, doc, append(append([]float32{}, v...), make([]float32, noiseDim-len(v))...), "m1")
+		}
 	}
 }
 
@@ -150,14 +171,14 @@ func ontologyProposals(t *testing.T, d *Document, ctx context.Context) []memrank
 
 // TestSplit_OnlyARecurringGroupIsProposed — reporting holds two clear topics, which
 // every re-clustering finds again: both are proposed as narrower concepts of
-// reporting, named from their distinctive terms. Law holds documents spread round a
-// circle: k-means splits them, but no group recurs, so the split is reported with
-// its groups not recurring and nothing is proposed under Law.
+// reporting, named from their distinctive terms. Law holds noise: k-means splits it,
+// but no group recurs whatever the documents' ids, so the split is reported with its
+// groups not recurring and nothing is proposed under Law.
 func TestSplit_OnlyARecurringGroupIsProposed(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	k := newSplitCorpus(t, d, base, conceptOntologyMD)
 	filing, templates := k.twoTopics(t, "", k.rep, nil)
-	k.ring(t, k.law)
+	k.noise(t, 40, k.law)
 	ans := splitRun(t, d, k.f.operator, `{"op":"node_stats","mode":"split","propose":true}`)
 	if !ans.Vectors || ans.Runs != nodestats.RecurRuns || ans.RecurMin != nodestats.RecurMin || ans.ModelCheck == "" {
 		t.Errorf("answer header = %+v", ans)
@@ -495,9 +516,28 @@ func TestSplit_ANodeWithANarrowerConceptIsSplitOverItsDirectMembers(t *testing.T
 			k.doc(t, "", "cyber incident", []float32{e, 1, 0, 0}, k.rm, time.Time{}))
 	}
 	ans := splitRun(t, d, k.f.operator, `{"op":"node_stats","mode":"split","scheme":"topics"}`)
+	// outsourcing also holds the corpus's a1..a3, a real third topic of three (near
+	// (1,0,0,0)). Whether k=3 beats k=2 on silhouette depends on the member order,
+	// which follows the documents' random ids, so a third group of exactly those may
+	// be listed too: the two topics must be, and no group may mix them.
 	out := ans.split(t, k.out)
-	if len(out.Groups) != 2 {
-		t.Errorf("outsourcing = %+v; want its two topics", out)
+	if gf, gt := groupOf(t, out.Groups, filing[0]), groupOf(t, out.Groups, templates[0]); gf.Key == gt.Key ||
+		gf.Recurrence != nodestats.RecurRuns || gt.Recurrence != nodestats.RecurRuns {
+		t.Errorf("outsourcing = %+v; want its two topics, each recurring", out)
+	}
+	if len(out.Groups) == 3 {
+		corpus := map[string]bool{k.a1: true, k.a2: true, k.a3: true}
+		for _, g := range out.Groups {
+			if g.Members == 3 {
+				for _, m := range g.Documents {
+					if !corpus[m.DocumentID] {
+						t.Errorf("outsourcing's third group holds %s, not one of a1..a3", m.DocumentID)
+					}
+				}
+			}
+		}
+	} else if len(out.Groups) != 2 {
+		t.Errorf("outsourcing = %+v; want its two topics (and at most a1..a3 as a third)", out)
 	}
 	rm := ans.split(t, k.rm)
 	if rm.Members <= rm.Direct || rm.Clustered != rm.Direct {
