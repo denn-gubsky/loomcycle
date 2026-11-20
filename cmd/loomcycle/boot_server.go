@@ -388,6 +388,9 @@ func (b *boot) wireServerCatalog() {
 		// and the server's token resolution exist; both do now.
 		b.workspace.Activate(storeIface, srv.ResolvePrincipal)
 		srv.SetWorkspaceStats(b.workspace.Stats)
+		if b.workspaces != nil {
+			srv.SetWorkspaces(b.workspaces)
+		}
 	}
 	srv.SetMCPPoolInspector(func(name string) json.RawMessage {
 		// Static yaml MCP servers live at the shared "" tenant in the

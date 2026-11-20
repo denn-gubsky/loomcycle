@@ -17,8 +17,9 @@ const ChunkSize = 64 << 10
 // MDAuthorization is the metadata key a worker's bearer travels in.
 const MDAuthorization = "authorization"
 
-// The ops of this layer. Later phases add exec and the file ops without a
-// protocol change: an op is a name and JSON arguments.
+// The ops the core's bookkeeping sends. The Workspace tool's ops are in
+// ops.go; an op is a name and JSON arguments, so new ones need no protocol
+// change.
 const (
 	// OpOpen makes the workspace's directory, refusing at capacity.
 	OpOpen = "open"
@@ -41,6 +42,9 @@ const (
 	ClassUnsupportedOp = "unsupported_op"
 	// ClassFailed: the op failed on the worker (a file system error).
 	ClassFailed = "failed"
+	// ClassRefused: the worker will not run the command, such as one whose
+	// program the operator did not list.
+	ClassRefused = "refused"
 )
 
 // The error classes the core adds for an op that never reached a worker's
@@ -65,7 +69,7 @@ const (
 // reports by name; any other is reported as ClassFailed, so a worker cannot
 // grow a metric's label set or put arbitrary text where a class is read.
 var KnownWorkerClasses = map[string]bool{
-	ClassAtCapacity: true, ClassNotFound: true, ClassInvalid: true, ClassUnsupportedOp: true, ClassFailed: true,
+	ClassAtCapacity: true, ClassNotFound: true, ClassInvalid: true, ClassUnsupportedOp: true, ClassFailed: true, ClassRefused: true,
 }
 
 // The engines a worker may run commands under, weakest first.

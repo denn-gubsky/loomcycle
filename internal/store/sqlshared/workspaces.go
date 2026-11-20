@@ -186,18 +186,50 @@ func countActiveWorkspaces(ctx context.Context, q Querier, col, v string) (int, 
 // that opened it (RFC GW §4.2), so a run beneath it still running holds
 // nothing, and the walk up parent_run_id that query needs is not here. The
 // paused/pausing filter is the same, for the same reason: a paused run is
-// parked, not ended, and resumes into its workspaces.
+// parked, not ended, and resumes into its workspaces. A row whose owner run
+// row is gone (a deleted run tree) has an owner that can never run again, so
+// it is a candidate too: the LEFT JOIN finds no run for it.
 func WorkspaceSweepCandidates(ctx context.Context, q Querier) ([]store.WorkspaceRow, error) {
 	d := q.Dialect()
 	rows, err := q.Query(ctx,
 		`SELECT `+workspaceColList("w")+`
 		 FROM workspaces w
-		 JOIN runs r ON r.id = w.owner_run_id
-		 WHERE r.status IN (`+Placeholders(len(store.TerminalRunStatuses))+`)
-		   AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing')
+		 LEFT JOIN runs r ON r.id = w.owner_run_id
+		 WHERE r.id IS NULL
+		    OR (r.status IN (`+Placeholders(len(store.TerminalRunStatuses))+`)
+		        AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing'))
 		 ORDER BY w.created_at, w.id`, store.TerminalRunStatusArgs()...)
 	if err != nil {
 		return nil, fmt.Errorf("workspace sweep candidates: %w", err)
+	}
+	return collectWorkspaces(d, rows)
+}
+
+// WorkspaceTouchByWorker stamps updated_at on a worker's active rows: the
+// dispatcher's mark, every replica it is attached to, that the worker is
+// there (WorkspaceListStale).
+func WorkspaceTouchByWorker(ctx context.Context, q Querier, workerID string) (int, error) {
+	d := q.Dialect()
+	args := append([]any{d.TimeArg(time.Now().UTC()), workerID}, stateArgs(store.WorkspaceActiveStates)...)
+	n, err := q.Exec(ctx,
+		`UPDATE workspaces SET updated_at = ? WHERE worker_id = ? AND state IN (`+Placeholders(len(store.WorkspaceActiveStates))+`)`,
+		args...)
+	if err != nil {
+		return 0, fmt.Errorf("workspace touch by worker: %w", err)
+	}
+	return int(n), nil
+}
+
+// WorkspaceListStale returns the active rows not touched since before, oldest
+// first.
+func WorkspaceListStale(ctx context.Context, q Querier, before time.Time) ([]store.WorkspaceRow, error) {
+	d := q.Dialect()
+	args := append([]any{d.TimeArg(before.UTC())}, stateArgs(store.WorkspaceActiveStates)...)
+	rows, err := q.Query(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE updated_at < ? AND state IN (`+Placeholders(len(store.WorkspaceActiveStates))+`)
+		 ORDER BY updated_at, id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("workspace list stale: %w", err)
 	}
 	return collectWorkspaces(d, rows)
 }

@@ -517,6 +517,9 @@ type Server struct {
 	// workspaceStats reads the workspace worker dispatcher (RFC GW) for
 	// /metrics; nil while workspace.mode is off.
 	workspaceStats func() workspace.Stats
+	// workspaces releases a run's workspaces when it ends (RFC GW); nil
+	// while workspace.mode is off.
+	workspaces workspaceReleaser
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -1216,6 +1219,16 @@ func (s *Server) SetConversionStats(f func() convert.PoolStats) { s.conversionSt
 // SetWorkspaceStats wires the workspace worker dispatcher into /metrics (RFC
 // GW). Boot wiring only.
 func (s *Server) SetWorkspaceStats(f func() workspace.Stats) { s.workspaceStats = f }
+
+// workspaceReleaser is what the run end needs of the workspace bookkeeping
+// (internal/workspace/lifecycle.Manager).
+type workspaceReleaser interface {
+	ReleaseRun(ctx context.Context, runID string) error
+}
+
+// SetWorkspaces gives the server the workspace bookkeeping, so a run's
+// workspaces are released when it ends (RFC GW). Boot wiring only.
+func (s *Server) SetWorkspaces(w workspaceReleaser) { s.workspaces = w }
 
 // SetConverter sends this server's own conversions (the /v1/audio routes'
 // media conversion and encoding, OCR and describe-images re-encoding) to the
@@ -8752,6 +8765,14 @@ func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context
 	// fault here must never fail the run — the TTL is still the backstop it always
 	// was. A run holding no lease frees 0 rows, which is the ordinary case.
 	defer s.releaseConsolidationLease(runID)
+	// RFC GW: release the workspaces THIS run opened. A workspace is pinned
+	// to the run that opened it, not to the tree, so like the lease above it
+	// is keyed on the run's own id and not gated on IsTopLevel: a sub-agent,
+	// a team member, a resident, a scheduled or a resumed run each ends
+	// here. A run parked for input or paused is still inside its loop and
+	// does not reach this; one whose paused park ends on shutdown does, and
+	// ReleaseRun keeps a paused run's workspaces for its resume.
+	defer s.releaseWorkspacesForRun(runID)
 	// RFC BK: close any resident interactive sub-agents this run opened — the
 	// backstop for a parent that completes/errors without closing them itself. A
 	// parent CANCEL already cascades to them (they register with ParentAgentID);
@@ -8932,6 +8953,22 @@ func (s *Server) finishRunCancelled(_ context.Context, runID string, res loop.Ru
 	}
 	s.publishRunState(meta, "cancelled", reason, "")
 	s.observeRunEnd(meta, store.RunCancelled, reason, "", res.FinalText)
+}
+
+// releaseWorkspacesForRun removes the workspaces runID opened: from the
+// worker's disk and the store, or, with the worker away, marked releasing
+// for its next attach. Best-effort: a fault is logged and left to the
+// sweeper, never a failure of the run.
+func (s *Server) releaseWorkspacesForRun(runID string) {
+	if s.workspaces == nil || runID == "" {
+		return
+	}
+	// Its own deadline: the run's context is already over here.
+	bg, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := s.workspaces.ReleaseRun(bg, runID); err != nil {
+		slog.Warn("workspace release at run end failed; the sweeper retries", "run_id", runID, "err", err)
+	}
 }
 
 // releaseConsolidationLease frees the memory-cursor lease owned by runID, if it

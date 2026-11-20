@@ -102,9 +102,9 @@ In both cases, never publish the endpoint's port.
 
 ## Workspace workers
 
-The same endpoint serves a second kind of worker (RFC GW): one that holds workspaces, directories where an agent runs commands and works on files, away from the runtime. This release ships the worker and its protocol; the `Workspace` tool agents call comes in the next one, with a full guide.
+The same endpoint serves a second kind of worker (RFC GW): one that holds workspaces, directories where an agent runs commands and works on files, away from the runtime. Agents use them through the `Workspace` tool ([TOOLS.md](TOOLS.md)); a workspace belongs to the run that opened it and is removed from the worker's disk when that run ends. Set `LOOMCYCLE_WORKSPACE_COMMANDS` on the worker to limit which programs a command may start with.
 
-Turn it on in the runtime's yaml with `workspace: {mode: remote}` and a `worker_endpoint` (see [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace)). Mint the worker a token whose only scope is `workers:attach`; for a worker that serves every tenant, an admin mints it with `worker_shared: true`. Then run, on the worker's machine:
+Turn it on in the runtime's yaml with `workspace: {mode: remote}` and a `worker_endpoint` (see [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace)). Mint the worker a token whose only scope is `workers:attach`, bound to the tenant it serves. A worker that serves every tenant is minted by an admin with `worker_shared: true`, and it must run an isolating engine: a shared worker on the `host` engine is refused at attach and exits, because there one tenant's commands could reach every other tenant's workspaces on its disk. Until the container engine arrives (RFC GW P3), shared workspace workers cannot be used; run one tenant-bound worker per tenant. Then run, on the worker's machine:
 
 ```sh
 LOOMCYCLE_WORKER_DISPATCHER=runtime.internal:7788 \

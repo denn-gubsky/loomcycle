@@ -1787,12 +1787,13 @@ func (s *Server) InterruptionResolve(ctx context.Context, req connector.Interrup
 
 // --- Helpers ---
 
-// stripPrivilegedTools removes Bash/Bashbox/Write/Edit from the requested
+// stripPrivilegedTools removes Bash/Bashbox/Write/Edit/Workspace from the requested
 // tools when the operator hasn't opted into privileged-tool
 // dynamic registration. Default-deny matches v0.8.7 / v0.8.8 pattern.
 // Bashbox is here because it is registered on every server: without this a
 // registered agent would get a shell, and whatever host commands the operator
-// allowlisted for its fallback, by naming it.
+// allowlisted for its fallback, by naming it. Workspace runs commands on a
+// worker's host engine, so it is a shell too (RFC GW).
 func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	if allowPrivileged {
 		return append([]string(nil), requested...)
@@ -1800,7 +1801,7 @@ func stripPrivilegedTools(requested []string, allowPrivileged bool) []string {
 	out := make([]string, 0, len(requested))
 	for _, t := range requested {
 		switch t {
-		case "Bash", "Bashbox", "Write", "Edit":
+		case "Bash", "Bashbox", "Write", "Edit", "Workspace":
 			continue
 		default:
 			out = append(out, t)

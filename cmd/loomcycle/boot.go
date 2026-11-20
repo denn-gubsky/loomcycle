@@ -35,6 +35,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/tools/mcp"
 	wsdispatch "github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 
 	googlegrpc "google.golang.org/grpc"
 )
@@ -103,8 +104,12 @@ type boot struct {
 	// workspace is the workspace worker dispatcher (RFC GW); nil while
 	// workspace.mode is off. workerSrv is the worker endpoint's server both
 	// dispatchers register on; nil when neither runs.
-	workspace        *wsdispatch.Dispatcher
-	workerSrv        *googlegrpc.Server
+	workspace *wsdispatch.Dispatcher
+	workerSrv *googlegrpc.Server
+	// workspaceTool is the Workspace tool; workspaces is its bookkeeping
+	// (RFC GW), nil while workspace.mode is off or there is no store.
+	workspaceTool    *builtin.Workspace
+	workspaces       *lifecycle.Manager
 	historyTool      *builtin.History
 	evaluationTool   *builtin.Evaluation
 	interruptionTool *builtin.Interruption

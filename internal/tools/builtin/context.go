@@ -826,7 +826,7 @@ func sideEffectClassFor(name string) string {
 	// State mutations.
 	case "Write", "Edit":
 		return "filesystem"
-	case "Bash", "Agent":
+	case "Bash", "Agent", "Workspace":
 		return "privileged"
 	case "Memory", "Channel", "AgentDef", "Evaluation":
 		// These have op-discriminated surfaces; some ops are pure

@@ -47,16 +47,34 @@ func (w *worker) serveOne(ctx context.Context, client workspacepb.WorkspaceServi
 	if start == nil {
 		return errors.New("the first op frame was not OpStart")
 	}
-	var a answer
+	var (
+		a     answer
+		input []byte
+	)
 	if start.GetHasInput() {
-		// No op of this layer reads input; it is drained, within a bound,
-		// so the core's sends end, and the op is refused if it overflows.
-		if err := drainInput(stream); err != nil {
+		// The input is read to its end whatever its size, so the core's
+		// sends finish; an op whose input is over the bound is refused.
+		input, err = readInput(stream)
+		if err != nil {
 			a = refuse(workspace.ClassInvalid, "%v", err)
 		}
 	}
+	// The core sends nothing more until it ends the stream, which it does
+	// when it has the answer or gives up on the op (its caller cancelled, or
+	// the run ended). A receive that ends cancels the op, so a command the
+	// core no longer waits for is killed rather than left running.
+	done := make(chan struct{})
+	safego.Go(sctx, "workspace.worker.stream-end", func() {
+		defer close(done)
+		defer cancel()
+		for {
+			if _, err := stream.Recv(); err != nil {
+				return
+			}
+		}
+	})
 	if a.class == "" {
-		a = w.run(start)
+		a = w.run(sctx, start, input)
 	}
 	if err := sendAnswer(stream, a); err != nil {
 		return err
@@ -66,15 +84,6 @@ func (w *worker) serveOne(ctx context.Context, client workspacepb.WorkspaceServi
 	}
 	// Wait for the core to end the stream, so the answer is read before
 	// this side's cancel resets it.
-	done := make(chan struct{})
-	safego.Go(sctx, "workspace.worker.stream-end", func() {
-		defer close(done)
-		for {
-			if _, err := stream.Recv(); err != nil {
-				return
-			}
-		}
-	})
 	select {
 	case <-done:
 	case <-time.After(endWait):
@@ -83,23 +92,33 @@ func (w *worker) serveOne(ctx context.Context, client workspacepb.WorkspaceServi
 	return nil
 }
 
-func drainInput(stream workspacepb.WorkspaceService_OpClient) error {
-	var n int
+// readInput reads the op's input up to InputEnd. Past maxInput it keeps
+// reading and discards, then reports the overflow.
+func readInput(stream workspacepb.WorkspaceService_OpClient) ([]byte, error) {
+	var (
+		buf  []byte
+		over bool
+	)
 	for {
 		f, err := stream.Recv()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		switch {
 		case f.GetInput() != nil:
-			n += len(f.GetInput().GetData())
-			if n > maxInput {
-				return fmt.Errorf("the op's input is over %d bytes", maxInput)
+			data := f.GetInput().GetData()
+			if over || len(buf)+len(data) > maxInput {
+				over, buf = true, nil
+				continue
 			}
+			buf = append(buf, data...)
 		case f.GetInputEnd() != nil:
-			return nil
+			if over {
+				return nil, fmt.Errorf("the op's input is over %d bytes", maxInput)
+			}
+			return buf, nil
 		default:
-			return errors.New("an unexpected frame in the op's input")
+			return nil, errors.New("an unexpected frame in the op's input")
 		}
 	}
 }
@@ -119,8 +138,8 @@ func sendAnswer(stream workspacepb.WorkspaceService_OpClient, a answer) error {
 	}}})
 }
 
-// run runs one op of this layer.
-func (w *worker) run(start *workspacepb.OpStart) answer {
+// run runs one op. input is the op's input, nil when it has none.
+func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []byte) answer {
 	id := start.GetWorkspaceId()
 	if !workspace.ValidID(id) {
 		return refuse(workspace.ClassInvalid, "malformed workspace id")
@@ -143,6 +162,8 @@ func (w *worker) run(start *workspacepb.OpStart) answer {
 		}
 		out, _ := json.Marshal(workspace.StatusAnswer{Exists: exists})
 		return answer{output: out}
+	case workspace.OpExec, workspace.OpRead, workspace.OpWrite, workspace.OpEdit, workspace.OpGlob, workspace.OpGrep:
+		return w.inWorkspace(ctx, dir, start.GetOp(), start.GetArgs(), input)
 	}
 	return refuse(workspace.ClassUnsupportedOp, "this worker does not run %q", start.GetOp())
 }

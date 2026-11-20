@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 )
@@ -21,6 +22,7 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"CountsOnlyActiveRows":                  testWorkspaceCountsOnlyActiveRows,
 		"AnotherTenantSeesNothing":              testWorkspaceAnotherTenantSeesNothing,
 		"SweepCandidatesAreEndedOwnersOnly":     testWorkspaceSweepCandidatesAreEndedOwnersOnly,
+		"TouchKeepsAWorkersRowsFromGoingStale":  testWorkspaceTouchKeepsAWorkersRowsFromGoingStale,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)
@@ -302,6 +304,10 @@ func testWorkspaceSweepCandidatesAreEndedOwnersOnly(t *testing.T, s store.Store)
 	for i, owner := range []string{done, running, paused, pausing, endedSub, liveSub} {
 		createWorkspace(t, s, mkWorkspace("ws_"+string(rune('a'+i)), "acme", owner, "work", "w1"))
 	}
+	// An owner whose run row is gone (its tree was deleted) can never run
+	// again: its workspace is swept like an ended one's.
+	const gone = "run-deleted"
+	createWorkspace(t, s, mkWorkspace("ws_orphan", "acme", gone, "work", "w1"))
 
 	cands, err := s.WorkspaceSweepCandidates(ctx)
 	if err != nil {
@@ -312,7 +318,7 @@ func testWorkspaceSweepCandidatesAreEndedOwnersOnly(t *testing.T, s store.Store)
 		got[c.OwnerRunID] = c
 	}
 	for owner, want := range map[string]bool{
-		done: true, endedSub: true,
+		done: true, endedSub: true, gone: true,
 		running: false, paused: false, pausing: false, liveSub: false,
 	} {
 		if _, in := got[owner]; in != want {
@@ -321,5 +327,52 @@ func testWorkspaceSweepCandidatesAreEndedOwnersOnly(t *testing.T, s store.Store)
 	}
 	if c := got[done]; c.TenantID != "acme" || c.WorkerID != "w1" {
 		t.Errorf("candidate row = %+v; want the whole row (tenant, worker) for the release", c)
+	}
+}
+
+// testWorkspaceTouchKeepsAWorkersRowsFromGoingStale: the stale list is the
+// active rows not touched since a time; a touch moves a worker's active rows
+// out of it and leaves its released and lost rows, and other workers' rows,
+// as they were.
+func testWorkspaceTouchKeepsAWorkersRowsFromGoingStale(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	before := time.Now().Add(-time.Second)
+	createWorkspace(t, s, mkWorkspace("ws_1", "acme", "run-1", "a", "w1"))
+	createWorkspace(t, s, mkWorkspace("ws_2", "acme", "run-1", "b", "w1"))
+	createWorkspace(t, s, mkWorkspace("ws_3", "other", "run-2", "a", "w2"))
+	createWorkspace(t, s, mkWorkspace("ws_4", "acme", "run-1", "c", "w1"))
+	if ok, err := s.WorkspaceSetState(ctx, "acme", "ws_2", store.WorkspaceOpening, store.WorkspaceReady); err != nil || !ok {
+		t.Fatalf("ready: %v %v", ok, err)
+	}
+	if ok, err := s.WorkspaceSetState(ctx, "acme", "ws_4", store.WorkspaceOpening, store.WorkspaceReleasing); err != nil || !ok {
+		t.Fatalf("releasing: %v %v", ok, err)
+	}
+	if got, err := s.WorkspaceListStale(ctx, before); err != nil || len(got) != 0 {
+		t.Fatalf("stale before any row was written = %v, %v; want none", workspaceIDs(got), err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	mid := time.Now()
+	time.Sleep(20 * time.Millisecond)
+	got, err := s.WorkspaceListStale(ctx, mid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Oldest first by updated_at, which ws_2's move to ready bumped.
+	if ids := workspaceIDs(got); !sameIDs(ids, []string{"ws_1", "ws_3", "ws_2"}) {
+		t.Fatalf("stale = %v, want the three active rows", ids)
+	}
+	n, err := s.WorkspaceTouchByWorker(ctx, "w1")
+	if err != nil || n != 2 {
+		t.Fatalf("touch w1 = %d, %v; want its 2 active rows", n, err)
+	}
+	got, err = s.WorkspaceListStale(ctx, mid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := workspaceIDs(got); !sameIDs(ids, []string{"ws_3"}) {
+		t.Errorf("stale after touching w1 = %v, want only w2's row", ids)
+	}
+	if r, err := s.WorkspaceGet(ctx, "acme", "ws_4"); err != nil || r.State != store.WorkspaceReleasing || !r.UpdatedAt.Before(mid) {
+		t.Errorf("a releasing row = %+v, %v; want it untouched", r, err)
 	}
 }

@@ -57,6 +57,8 @@ func TestNoRunPolicy_EveryGrantGatedToolRefuses(t *testing.T) {
 			`{"op":"create","name":"minted","overlay":{"system_prompt":"x","history_scope":["-*"]}}`, true},
 		{"Interruption ask", &Interruption{Store: st}, `{"op":"ask","question":"ok?"}`, false},
 		{"Evaluation submit", &Evaluation{Store: st}, `{"op":"submit","score":1}`, false},
+		// Its grant-first order is TestWorkspace_EveryOpChecksTheGrantFirst's.
+		{"Workspace open", &Workspace{}, `{"op":"open","name":"work"}`, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

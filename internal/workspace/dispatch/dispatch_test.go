@@ -147,8 +147,8 @@ func TestDo_OpenStatusRemoveOnARealWorker(t *testing.T) {
 	if ok, err := d.Status(ctx, "acme", id, "ws1"); err != nil || ok || exists(filepath.Join(root, "ws1")) {
 		t.Fatalf("after remove: status = %v, %v", ok, err)
 	}
-	if _, err := d.Do(ctx, id, dispatch.Request{TenantID: "acme", WorkspaceID: "ws1", Op: "exec"}); dispatch.ClassOf(err) != workspace.ClassUnsupportedOp {
-		t.Fatalf("an op this layer lacks: %v, want unsupported_op", err)
+	if _, err := d.Do(ctx, id, dispatch.Request{TenantID: "acme", WorkspaceID: "ws1", Op: "launch"}); dispatch.ClassOf(err) != workspace.ClassUnsupportedOp {
+		t.Fatalf("an op the worker lacks: %v, want unsupported_op", err)
 	}
 	if _, err := d.Do(ctx, id, dispatch.Request{TenantID: "acme", WorkspaceID: "../x", Op: workspace.OpOpen}); dispatch.ClassOf(err) != workspace.ClassInvalid {
 		t.Fatalf("a malformed id: %v, want invalid", err)
@@ -181,7 +181,13 @@ func TestPlace_ATenantWorkerServesOnlyItsTenant(t *testing.T) {
 		t.Fatal("another tenant's op reached the worker")
 	}
 
-	realWorker(t, target, tokShared, "s1", worker.Options{IdleStreams: 1})
+	// A shared worker must run an isolating engine (a host one is refused at
+	// attach), which no real worker of this release does: a fake one.
+	shared := dialFake(t, target, tokShared)
+	if _, err := shared.hello(&workspacepb.Hello{WorkerId: "s1", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineContainer, Capacity: 4}); err != nil {
+		t.Fatal(err)
+	}
+	shared.heartbeat(time.Second)
 	waitAttached(t, d, sharedID("s1"))
 	if got, err := d.Place(ctx, dispatch.PlaceRequest{TenantID: "other"}); err != nil || len(got) != 1 || got[0] != sharedID("s1") {
 		t.Fatalf("place for another tenant with a shared worker = %v, %v", got, err)
@@ -563,4 +569,50 @@ func TestAttach_ALostWorkspaceIsRecoveredOrRemovedByItsRun(t *testing.T) {
 	if !exists(filepath.Join(root, "ws-live")) {
 		t.Fatal("the live run's workspace was removed")
 	}
+}
+
+// On the host engine every command runs as the worker's user over the
+// worker's whole disk, so a shared worker on it would let one tenant's
+// command reach another tenant's workspaces. Such an attachment is refused
+// for good, and the worker stops; a shared worker on an isolating engine,
+// and a tenant-bound host worker, attach.
+func TestAttach_ASharedHostWorkerIsRefused(t *testing.T) {
+	d, target := core(t, newMemStore(), dispatch.Options{})
+	_, done := realWorker(t, target, tokShared, "s1", worker.Options{})
+	select {
+	case err := <-done:
+		if !errors.Is(err, worker.ErrRefused) || !strings.Contains(err.Error(), "isolating engine") {
+			t.Fatalf("Run = %v, want ErrRefused naming the engine", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a shared host worker kept trying; the refusal must stop it")
+	}
+	f := dialFake(t, target, tokShared)
+	_, err := f.hello(&workspacepb.Hello{WorkerId: "s2", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineHost, Capacity: 4})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("shared + host: err = %v, want PermissionDenied", err)
+	}
+	if n := len(d.Workers()); n != 0 {
+		t.Fatalf("%d workers attached", n)
+	}
+
+	iso := dialFake(t, target, tokShared)
+	if _, err := iso.hello(&workspacepb.Hello{WorkerId: "s3", ProtocolVersion: workspace.ProtocolVersion, Engine: workspace.EngineContainer, Capacity: 4}); err != nil {
+		t.Fatalf("shared + container: %v, want attached", err)
+	}
+	iso.heartbeat(time.Second)
+	waitAttached(t, d, sharedID("s3"))
+	realWorker(t, target, tokAcme, "w1", worker.Options{IdleStreams: 1})
+	waitAttached(t, d, acmeID("w1"))
+}
+
+// An attached worker's rows are marked as seen at attach and with each
+// recheck, so the sweeper on any replica can tell a live worker's
+// workspaces from those of one that went away.
+func TestAttach_MarksTheWorkersWorkspacesAsSeen(t *testing.T) {
+	st := newMemStore(store.WorkspaceRow{ID: "ws1", TenantID: "acme", WorkerID: acmeID("w1"), State: store.WorkspaceReady})
+	d, target := core(t, st, dispatch.Options{RecheckEvery: 50 * time.Millisecond})
+	realWorker(t, target, tokAcme, "w1", worker.Options{IdleStreams: 1})
+	waitAttached(t, d, acmeID("w1"))
+	waitFor(t, "two touches", func() bool { return st.touched() >= 2 })
 }

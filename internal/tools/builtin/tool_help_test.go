@@ -26,7 +26,7 @@ func builtinToolCensus() []tools.Tool {
 		&Evaluation{}, &File{}, &Git{}, &Glob{}, &Grep{}, &HTTP{}, &History{}, &HookDef{}, &Identity{}, &Interruption{}, &MCPServerDef{},
 		&Memory{}, &MemoryBackendDef{}, &NotebookEdit{}, &OperatorTokenDef{}, &Path{}, &Read{},
 		&Recall{}, &ScheduleDef{}, &SkillDef{}, &SkillTool{}, &TeamDef{}, &VolumeDef{},
-		&WebFetch{}, &WebSearch{}, &WebhookDef{}, &Write{},
+		&WebFetch{}, &WebSearch{}, &WebhookDef{}, &Workspace{}, &Write{},
 	}
 }
 

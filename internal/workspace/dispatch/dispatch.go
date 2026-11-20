@@ -77,6 +77,9 @@ type Store interface {
 	WorkspaceSetState(ctx context.Context, tenantID, id string, from, to store.WorkspaceState) (bool, error)
 	// GetRun reads a lost workspace's owner run at reconciliation.
 	GetRun(ctx context.Context, runID string) (store.Run, error)
+	// WorkspaceTouchByWorker marks a worker's active rows as seen, so the
+	// sweeper, on whichever replica, does not mark them lost.
+	WorkspaceTouchByWorker(ctx context.Context, workerID string) (int, error)
 }
 
 // Options configure a Dispatcher.
@@ -343,6 +346,7 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 	if err := stream.Send(&workspacepb.CoreControl{Msg: &workspacepb.CoreControl_Welcome{Welcome: &workspacepb.Welcome{BuildVersion: d.opt.BuildVersion}}}); err != nil {
 		return err
 	}
+	d.touch(ctx, w, log)
 	if rm := d.reconcile(ctx, w, held, log); len(rm) > 0 {
 		if err := stream.Send(&workspacepb.CoreControl{Msg: &workspacepb.CoreControl_Remove{Remove: &workspacepb.Remove{WorkspaceIds: rm}}}); err != nil {
 			return err
@@ -383,6 +387,7 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 				gone = ErrWorkerRevoked
 				return err
 			}
+			d.touch(ctx, w, log)
 		case m := <-in:
 			t.Reset(d.opt.HeartbeatTimeout)
 			if r := m.GetRemoved(); r != nil {
@@ -420,6 +425,11 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 	if workspace.EngineRank(h.GetEngine()) == 0 {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "unknown engine %q", h.GetEngine())
 	}
+	if !engineServes(att, h.GetEngine()) {
+		// The principal resolved and is a shared worker's: a definite
+		// refusal, which the worker reads as final.
+		return nil, nil, status.Error(codes.PermissionDenied, "a shared worker must use an isolating engine; the host engine can serve one tenant only")
+	}
 	if len(h.GetToolchains()) > maxListed || len(h.GetLabels()) > maxListed || len(h.GetHeldWorkspaces()) > maxHeld {
 		return nil, nil, status.Error(codes.InvalidArgument, "the Hello lists too many toolchains, labels or workspaces")
 	}
@@ -445,6 +455,16 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 		}
 	}
 	return w, held, nil
+}
+
+// engineServes reports whether a worker on engine may hold workspaces for the
+// tenants att grants. On the host engine every command runs as the worker's
+// own user over the worker's whole disk, so the workspaces of every tenant it
+// served would be open to each tenant's commands: a host worker serves one
+// tenant only, and a shared worker needs an engine that isolates one
+// workspace from another.
+func engineServes(att auth.WorkerAttach, engine string) bool {
+	return !att.Shared || workspace.EngineRank(engine) > workspace.EngineRank(workspace.EngineHost)
 }
 
 // reconcile compares what a worker holds with the store's rows for it and
@@ -491,6 +511,16 @@ func (d *Dispatcher) reconcile(ctx context.Context, w *worker, held []string, lo
 		log.Info("removing workspaces released or unknown while the worker was away", "count", len(remove))
 	}
 	return remove
+}
+
+// touch records that the worker is attached here, on its active rows: a
+// replica sees only its own attachments, so the sweeper's lost check reads
+// this mark, which every replica the worker attaches to keeps fresh. It runs
+// at attach and with each recheck (RecheckEvery); a fault waits for the next.
+func (d *Dispatcher) touch(ctx context.Context, w *worker, log *slog.Logger) {
+	if _, err := d.store().WorkspaceTouchByWorker(ctx, w.id); err != nil {
+		log.Warn("cannot mark the worker's workspaces as seen", "err", err)
+	}
 }
 
 func (d *Dispatcher) markPending(w *worker, r store.WorkspaceRow) {
@@ -783,7 +813,9 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 	var matched []cand
 	d.mu.Lock()
 	for _, w := range d.workers {
-		if !w.serves.Serves(req.TenantID) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
+		// engineServes is checked at attach too; again here so a shared
+		// host worker can never be handed a workspace, whatever let it in.
+		if !w.serves.Serves(req.TenantID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
 			continue
 		}
 		ok := true

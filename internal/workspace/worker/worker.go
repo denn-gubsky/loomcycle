@@ -8,8 +8,10 @@
 // leave the root (workspace.ValidID). Which run or tenant a workspace belongs
 // to is the core's business, never the worker's.
 //
-// This layer runs open, remove and status. The commands and file ops arrive
-// with the Workspace tool.
+// It runs open, remove and status for the core's bookkeeping, and for the
+// Workspace tool a command (exec, through an engine.Engine) and the file
+// tools' operations on the workspace's directory (read, write, edit, glob,
+// grep, through internal/fsops).
 package worker
 
 import (
@@ -34,6 +36,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/workspacepb"
 )
 
@@ -46,8 +49,9 @@ const (
 	MaxIdleStreams = 32
 	// maxExtraStreams bounds the one-op streams OpenStreams adds at once.
 	maxExtraStreams = 64
-	// maxInput bounds an op's input on this layer, whose ops take none.
-	maxInput       = 1 << 20
+	// maxInput bounds an op's input: the arguments of a write or an edit,
+	// whose 1 MiB file body may grow up to six times as JSON.
+	maxInput       = 8 << 20
 	heartbeatEvery = 5 * time.Second
 	// endWait bounds how long a finished op's stream may take to close.
 	endWait = 10 * time.Second
@@ -74,9 +78,12 @@ type Options struct {
 	// Toolchains are reported to the core; nil detects python and node on
 	// PATH (DetectToolchains).
 	Toolchains []string
-	Labels     []string
-	TLS        *tls.Config
-	Insecure   bool
+	// Commands, when not empty, are the programs an exec may start with
+	// (LOOMCYCLE_WORKSPACE_COMMANDS); see engine.Host.Commands.
+	Commands []string
+	Labels   []string
+	TLS      *tls.Config
+	Insecure bool
 	// Resolve and ResolveEvery are workerlink's.
 	Resolve      func(ctx context.Context, host string) ([]string, error)
 	ResolveEvery time.Duration
@@ -148,7 +155,8 @@ func Run(ctx context.Context, opt Options) error {
 	}
 	log := opt.Logger.With("component", "workspace-worker", "worker_id", opt.ID)
 	log.Warn("the host engine runs commands as this process's user, with no isolation; use it only on a trusted machine", "root", root)
-	w := &worker{opt: opt, log: log}
+	w := &worker{opt: opt, log: log, engine: &engine.Host{Commands: opt.Commands}}
+	defer w.engine.Close()
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
 		Name: "workspace.worker", Logger: log,
@@ -180,8 +188,9 @@ func defaultID() string {
 }
 
 type worker struct {
-	opt Options
-	log *slog.Logger
+	opt    Options
+	log    *slog.Logger
+	engine engine.Engine
 	// mu serialises open's capacity check with the directory it makes.
 	mu sync.Mutex
 	// extra counts the one-op streams OpenStreams opened and still open.

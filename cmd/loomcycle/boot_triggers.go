@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/scheduler"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
 
 // startPauseAndResume wires the pause manager (cluster-wide when
@@ -505,6 +506,7 @@ const (
 	metricsSweepInterval         = 15 * time.Minute
 	dynamicAgentSweepInterval    = 15 * time.Minute
 	ephemeralVolumeSweepInterval = 60 * time.Second
+	workspaceSweepInterval       = 60 * time.Second
 )
 
 // startSessionGC starts the session-lock map GC and the resident
@@ -598,6 +600,29 @@ func (b *boot) startVolumeAndAgentSweepers() {
 				}
 			})
 		slog.Info("ephemeral_volumes: sweeper enabled", "interval", ephemeralVolumeSweepInterval, "dynamic_root", dynRoot)
+	}
+
+	// RFC GW workspace sweeper. The run-end release is the primary path;
+	// this releases what runs that ended without it left (a core killed
+	// mid-run), and the workspaces of runs whose row is gone, and marks lost
+	// the workspaces of a worker no replica has seen for lost_after_s.
+	// Cluster-gated: one replica per tick.
+	if wsm := b.workspaces; wsm != nil {
+		goAdvisoryGatedSweeper(bgCtx, workspaceSweepInterval, advisoryLock, coord.LockKeyWorkspaceSweeper, "workspaces",
+			func(ctx context.Context) { sweepWorkspaces(ctx, wsm) })
+		slog.Info("workspaces: sweeper enabled", "interval", workspaceSweepInterval)
+	}
+}
+
+// sweepWorkspaces is one tick of the workspace sweeper.
+func sweepWorkspaces(ctx context.Context, m *lifecycle.Manager) {
+	if n, err := m.Sweep(ctx); err != nil {
+		slog.Error("workspaces sweep: list candidates failed", "err", err)
+	} else if n > 0 {
+		slog.Info("workspaces sweep: released workspaces of ended runs", "count", n)
+	}
+	if _, err := m.MarkLost(ctx); err != nil {
+		slog.Error("workspaces sweep: lost check failed", "err", err)
 	}
 }
 
