@@ -21,12 +21,14 @@ the same way:
   `exemplars` (up to three typical covered documents with their brief and
   abstract: of the commonest classes, one per sub-folder before a second from
   any) and `siblings` (the folders beside it that have an annotation, with
-  their briefs; `siblings_more` counts those past ten). A sibling is named
-  only when every member of the tenant may read the documents its annotation
-  was written from, and those documents are added to what the folder's stored
-  annotation is withheld on. Siblings are not hashed, so a sibling's rewrite
-  makes nothing stale; only a sibling left out for access is. Below version 3
-  the answer and its hash are unchanged;
+  their briefs, at most ten, by name). A sibling is named only when every
+  member of the tenant may read the documents its annotation was written from,
+  and those documents are added to what the folder's stored annotation is
+  withheld on. Siblings do not make a folder stale: a sibling's rewrite marks
+  nothing, only a sibling left out for access does. The shown siblings are
+  digested at the end of `inputs_sha256` (after `/s:`), so `set_annotation`
+  refuses a write when one changed since the inputs were read. Below version
+  3 the answer and its hash are unchanged;
 - a node of a confirmed taxonomy (`scheme`, `concept`, or `class` for a
   document class the ontology declares): see "Taxonomy nodes" below.
 

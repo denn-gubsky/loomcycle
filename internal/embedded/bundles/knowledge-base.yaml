@@ -5813,7 +5813,6 @@ agents:
           sibs.push(oneLine(ss[s].name, CONFIG.max_title_chars) + "/ — brief: " +
             (typeof ss[s].brief === "string" && ss[s].brief !== "" ? oneLine(ss[s].brief, CONFIG.max_brief_chars) : "(none yet)"));
         }
-        if (typeof in1.siblings_more === "number" && in1.siblings_more > 0) { sibs.push("(" + in1.siblings_more + " more)"); }
         var material = [above, parts.join("\n"), rels.join("\n"), docs.join("\n"), sibs.join("\n")];
         var fAbove = fence("above", material), fParts = fence("parts", material), fRel = fence("relations", material),
             fDocs = fence("documents", material), fSibs = fence("neighbours", material);
