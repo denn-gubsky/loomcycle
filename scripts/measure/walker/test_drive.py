@@ -205,6 +205,25 @@ class ScoreOnlyTest(unittest.TestCase):
         self.assertIn(("tax", "area", "topics"), metrics)
 
 
+    def test_score_only_without_gold_refuses_and_keeps_summary(self):
+        tmp = tempfile.mkdtemp()
+        qpath = os.path.join(tmp, "questions.yaml")
+        with open(qpath, "w", encoding="utf-8") as f:
+            f.write(QUESTIONS)
+        out = os.path.join(tmp, "out")
+        os.makedirs(out)
+        with open(os.path.join(out, "runs.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(_run("tax", "q01", "overview", "x")) + "\n")
+        with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
+            f.write("previous")
+        with self.assertRaises(SystemExit) as cm, contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            drive.main(["--questions", qpath, "--out", out, "--score-only"])
+        self.assertNotIn(cm.exception.code, (0, None))
+        with open(os.path.join(out, "summary.json"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "previous")
+
+
 class DryRunTest(unittest.TestCase):
     def test_dry_run_counts_metrics_and_sends_nothing(self):
         tmp = tempfile.mkdtemp()

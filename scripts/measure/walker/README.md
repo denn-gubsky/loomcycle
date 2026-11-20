@@ -102,7 +102,9 @@ token usage, cost, score) and `summary.json`. The driver stops before a run
 that could take the spend past `--budget-usd` (a run is assumed to cost at
 most $0.04). `--dry-run` also counts the questions scored on documents and on
 topics. `--score-only` rescores an existing `runs.jsonl` against `--gold`
-(e.g. after the gold is filled or corrected; `--arm` is not needed), writes
+(required: without it the driver refuses rather than replace `summary.json`
+with one that has no recall), e.g. after the gold is filled or corrected;
+`--arm` is not needed. It writes
 the rescored runs to `runs.scored.jsonl` beside it and leaves `runs.jsonl`
 untouched.
 

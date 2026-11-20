@@ -444,6 +444,10 @@ def main(argv=None):
                 merge_gold(qs, f.read(), warn=lambda m: print(m, file=sys.stderr))
         except (OSError, ValueError) as e:
             sys.exit(f"--gold {a.gold}: {e}")
+    elif a.score_only:
+        # Rescoring without gold would only replace a scored summary.json with
+        # one that has no recall at all.
+        sys.exit("--score-only needs --gold")
     else:
         print("no --gold: runs are scored without recall", file=sys.stderr)
     arms = [x.split("=", 1) for x in a.arm]
