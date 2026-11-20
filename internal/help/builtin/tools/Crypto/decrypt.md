@@ -9,7 +9,8 @@ JWE.
 
 - `ciphertext` — exactly as `encrypt` returned it.
 - `from` — read the ciphertext from a store instead: `volume:<path>`,
-  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`. Give `ciphertext`
+  `memory:<scope>/<key>`, `document:<scope>/<chunk_id>` or
+  `workspace:<name>:<path>`. Give `ciphertext`
   or `from`, not both.
 - `key`, `cred` or `run` — the key. An envelope made with a crypto key names
   its key, so you may omit all three. A ciphertext made with a `cred` or `run`

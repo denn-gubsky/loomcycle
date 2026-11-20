@@ -39,7 +39,7 @@ When a file could not be kept, the line says why instead
 | `keep` | copy an inbox file into one of your read-write volumes | `from`, `to`, `overwrite` |
 | `rm` | delete one inbox file, or a file or folder of a workspace | `path` |
 | `clear` | empty the inbox or one folder of it (`prefix`), or a folder of a workspace (`path`) | `prefix`, `path` |
-| `download` | GET a URL into the inbox, or into one of your volumes | `url`, `to`, `headers`, `max_bytes` |
+| `download` | GET a URL into the inbox, one of your volumes or a workspace | `url`, `to`, `headers`, `max_bytes` |
 | `upload` | send a file to a URL, whole or in ranges for an upload session | `from`, `url`, `method`, `ranged`, `chunk_bytes` |
 | `extract` | turn a DOCX, DOC, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, CHM, RTF, DjVu, CSV, text, VTT/SRT caption or image file into Markdown in the inbox, its pictures kept as files; a recording is transcribed | `path`, `images`, `max_rows`, `excerpt_chars`, `pages`, `max_chars`, `structure` |
 | `transcribe` | turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model | `path`, `language`, `vocabulary`, `diarize`, `timestamps`, `dry_run` |
@@ -64,8 +64,10 @@ them) and reach only hosts on its allowlist.
 
 A workspace (the `Workspace` tool) is a directory on a workspace worker that
 belongs to the run that opened it. `stat`, `ls`, `copy`, `rm` and `clear` take
-a workspace reference; the bytes stream through the runtime and never through
-you. The other ops do not take one yet: `copy` the file into the inbox first.
+a workspace reference, and so do `import` (a Markdown file in a workspace),
+`download` (`to`) and `upload` (`from`); the bytes stream through the runtime
+and never through you. The other ops do not take one yet: `copy` the file into
+the inbox first. The Crypto tool's `from` and `to` take one too.
 
 - A workspace reference needs your agent's `workspace` grant: `read` to read
   from a workspace, `write` to copy into it or remove from it. You need this
