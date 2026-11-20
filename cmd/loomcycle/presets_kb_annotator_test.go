@@ -421,8 +421,9 @@ func TestKBAnnotator_RefusesBadInput(t *testing.T) {
 }
 
 // TestKnowledgeBaseBundle_AnnotatorAuthority pins what the annotator may do:
-// reach documents, spawn one tool-less writer and read (never ack) the ingest
-// queue, under the annotate grant alone. The writer can do nothing at all.
+// reach the tenant's documents, spawn one tool-less writer and read (never
+// ack) the ingest queue, under the annotate grant and the tenant scope alone.
+// The writer can do nothing at all.
 func TestKnowledgeBaseBundle_AnnotatorAuthority(t *testing.T) {
 	cfg := knowledgeBaseConfig(t)
 	a, ok := cfg.Agents["kb/annotator"]
@@ -443,8 +444,12 @@ func TestKnowledgeBaseBundle_AnnotatorAuthority(t *testing.T) {
 	if len(a.Channels.Publish) != 0 || strings.Join(a.Channels.Subscribe, ",") != "documents/ingested" {
 		t.Errorf("kb/annotator channels = %+v, want subscribe documents/ingested only", a.Channels)
 	}
-	if len(a.MemoryScopes) > 0 || len(a.SqlScopes) > 0 {
-		t.Errorf("kb/annotator declares scopes (memory=%v sql=%v) — the tenant grants are the operator's to add", a.MemoryScopes, a.SqlScopes)
+	// It ships with exactly the tenant scope on both planes (owner ruling
+	// 2026-11-20, reversing RFC GE §6): annotations are kept for the tenant
+	// scope only, and without the grants the static agent skipped the tenant
+	// as unreadable. No other scope: its input refuses any scope but tenant.
+	if strings.Join(a.MemoryScopes, ",") != "tenant" || strings.Join(a.SqlScopes, ",") != "tenant" {
+		t.Errorf("kb/annotator scopes memory=%v sql=%v, want exactly [tenant] for both", a.MemoryScopes, a.SqlScopes)
 	}
 	if !a.Internal || !a.DisableContext || !containsString(a.Skills, "-*") || strings.TrimSpace(a.SystemPrompt) != "" {
 		t.Errorf("kb/annotator must be internal, context- and skill-less, with no system prompt: %+v", a)

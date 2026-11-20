@@ -4732,6 +4732,16 @@ agents:
     # per part, Channel reads the ingest queue. No Memory, no Path, no Bash, no
     # network tool.
     tools: [Document, Agent, Channel]
+    # The two tenant scopes ship here (owner ruling 2026-11-20, reversing RFC
+    # GE §6, which left them to an operator overlay): annotations are kept for
+    # the tenant scope only and the pass reads and annotates the tenant
+    # corpus, and the overlay was a per-deployment step that, when missed,
+    # left the static agent skipping the tenant ("skipped unreadable"). The
+    # pass's input refuses any other scope; its writes are the annotate
+    # grant's (set_annotation, delete_annotation of its own records, the
+    # lease) and nothing else. kb/annotate stays without any grant.
+    memory_scopes: [tenant]
+    sql_scopes: [tenant]
     # The ingest queue only, and only to read it: the annotator never acks it.
     channels:
       subscribe: [documents/ingested]
@@ -6213,7 +6223,7 @@ agents:
     # statement and no annotation. No tool_modes: read mode would refuse
     # propose_entity, which is a write op however inert what it files.
     #
-    # The two tenant scopes ship here, unlike kb/annotator's (owner ruling
+    # The two tenant scopes ship here, as for kb/annotator (owner rulings
     # 2026-11-20): the briefs are read in the tenant scope, and the one write
     # the body makes is propose_entity, an inert proposal an operator accepts
     # or rejects. Without them the pass stops at its first read with status

@@ -12,7 +12,7 @@ corpora, those were almost never right, so they are reported and not filed.
 | `kb/verdict` | your `low` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one bounded relation verdict per call, for L4 only |
 | `kb/judge` | `code-js` | `Document`, `Agent`; `statement_methods: [judge]` | rules on the proposals the review policy routes to the judge (see [The judge](#the-judge)) |
 | `kb/judge-verdict` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one verdict per proposal: accept, reject or unsure, a confidence and one sentence |
-| `kb/annotator` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested`, read only); `statement_methods: [annotate]` | writes the annotations of the tenant knowledge base (see [Annotations](#annotations)) |
+| `kb/annotator` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested`, read only); tenant scope; `statement_methods: [annotate]` | writes the annotations of the tenant knowledge base (see [Annotations](#annotations)) |
 | `kb/annotate` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one part in, `{brief, abstract, language}` out |
 | `kb/taxonomist` | `code-js` | `Document`, `Agent`; tenant scope; no `statement_methods` | proposes taxonomies (concept schemes) from the document briefs, filed as one inert proposal (see [Taxonomies](#taxonomies)) |
 | `kb/taxonomy-writer` | your `middle` tier, `effort: low`, `max_tokens: 32768`, `max_context_tokens: 131072` | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one domains, generate, update or review request in, one JSON object out |
@@ -688,13 +688,12 @@ rather than spend its budget on a provider that is down; a single failure
 leaves its part stale and the pass goes on), `lease_lost` or `failed`.
 
 **Grants and a schedule.** Annotations are kept for the tenant scope only, so
-the annotator needs both tenant grants, added in your own layer:
+the annotator ships with both tenant grants (`memory_scopes: [tenant]`,
+`sql_scopes: [tenant]`); you add nothing for them in your own layer. Its
+writes stay those of the `annotate` grant above. Add the ingest channel and a
+schedule:
 
 ```yaml
-agents:
-  kb/annotator:
-    memory_scopes: [tenant]
-    sql_scopes: [tenant]
 channels:
   documents/ingested: {scope: tenant}   # where tenant documents announce themselves
 scheduled_runs:
@@ -790,7 +789,7 @@ returns (1000), so a proposal of the same name may not have been found; filing
 would then be refused at the end.
 
 **Grants.** The briefs are in the tenant scope, so the taxonomist ships with
-both tenant grants (`memory_scopes: [tenant]`, `sql_scopes: [tenant]`); unlike
+both tenant grants (`memory_scopes: [tenant]`, `sql_scopes: [tenant]`); as for
 the annotator, you add nothing in your own layer. It holds `Document` in full
 mode only because `propose_entity` is a write op; its code calls
 `describe_ontology`, `list_annotations`, `documents_summary`, `query_chunks`
