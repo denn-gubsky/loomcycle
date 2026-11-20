@@ -1,0 +1,2 @@
+go test fuzz v1
+string("g = h -> h(h); g(g)")

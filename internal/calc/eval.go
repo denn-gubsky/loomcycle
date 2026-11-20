@@ -1,0 +1,538 @@
+package calc
+
+import (
+	"context"
+	"errors"
+	"math/rand/v2"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+type evaluator struct {
+	ctx       context.Context
+	steps     int
+	nextCheck int
+	funcs     map[string]*builtin
+	global    *scope
+	assigned  []string
+	rng       *rand.Rand
+	calls     []*fnVal
+	// sizes caches each list value's expanded size (see size).
+	sizes map[listKey]int
+}
+
+// listKey identifies a list value. Lists are never mutated once built, so
+// the first element's address and the length name one list.
+type listKey struct {
+	first *val
+	n     int
+}
+
+// size is the number of values nested in v, every level counted and a
+// shared list counted once per place it appears, saturating just past
+// MaxListLen. Checking it whenever a list is produced bounds every later
+// walk of the value (exactness, shape, rendering, keys, equality):
+// otherwise `b = [a, a]` repeated doubles the expanded size per statement
+// for a constant number of steps.
+func (e *evaluator) size(v val) int {
+	l, ok := v.([]val)
+	if !ok || len(l) == 0 {
+		return 0
+	}
+	k := listKey{first: &l[0], n: len(l)}
+	if s, ok := e.sizes[k]; ok {
+		return s
+	}
+	s := 0
+	for _, x := range l {
+		s += 1 + e.size(x)
+		if s > MaxListLen {
+			s = MaxListLen + 1
+			break
+		}
+	}
+	e.sizes[k] = s
+	return s
+}
+
+func (e *evaluator) checkSize(v val, pos int) *Error {
+	if e.size(v) > MaxListLen {
+		return errf(codeListTooLong, pos, "the list holds more than %d values, counting the elements of nested lists", MaxListLen).
+			withHint("a list nested twice counts twice; build a smaller structure or summarise it first")
+	}
+	return nil
+}
+
+// charge counts n steps and, every ctxCheckEvery steps, polls ctx so a
+// deadline or a cancel stops evaluation promptly.
+func (e *evaluator) charge(n int, pos int) *Error {
+	e.steps += n
+	if e.steps > MaxSteps {
+		return errf(codeStepLimit, pos, "evaluation took more than %d steps", MaxSteps).
+			withHint("shrink the ranges or lists, or split the work into several calls")
+	}
+	if e.steps >= e.nextCheck {
+		e.nextCheck = e.steps + ctxCheckEvery
+		if err := e.ctx.Err(); err != nil {
+			return ctxErr(err, pos)
+		}
+	}
+	return nil
+}
+
+// poll checks ctx every ctxCheckEvery iterations of a loop whose steps
+// were charged up front in bulk, so a long range or unique still stops
+// promptly on a deadline.
+func (e *evaluator) poll(i int, pos int) *Error {
+	if i%ctxCheckEvery != ctxCheckEvery-1 {
+		return nil
+	}
+	if err := e.ctx.Err(); err != nil {
+		return ctxErr(err, pos)
+	}
+	return nil
+}
+
+func ctxErr(err error, pos int) *Error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errf(codeTimeLimit, pos, "evaluation ran past its time limit (%s at most)", MaxWall)
+	}
+	return errf(codeCanceled, pos, "evaluation was canceled")
+}
+
+// aliases are names from other languages a model reaches for; the error
+// for them names the function to use.
+var aliases = map[string]string{
+	"ln": "log", "arcsin": "asin", "arccos": "acos", "arctan": "atan",
+	"choose": "binomial", "nCr": "binomial", "comb": "binomial", "fact": "factorial",
+	"length": "len", "size": "len",
+}
+
+// eval evaluates n and refuses a list result over the size bound. Every
+// value reaches a later walk through here: arguments, function bodies,
+// statements and looked-up vars.
+func (e *evaluator) eval(n node, sc *scope) (val, *Error) {
+	v, err := e.evalNode(n, sc)
+	if err != nil {
+		return nil, err
+	}
+	if _, isList := v.([]val); isList {
+		if err := e.checkSize(v, n.position()); err != nil {
+			return nil, err
+		}
+	}
+	return v, nil
+}
+
+func (e *evaluator) evalNode(n node, sc *scope) (val, *Error) {
+	if err := e.charge(1, n.position()); err != nil {
+		return nil, err
+	}
+	switch n := n.(type) {
+	case *numLit:
+		return n.v, nil
+	case *strLit:
+		return n.s, nil
+	case *boolLit:
+		return n.v, nil
+	case *identN:
+		return e.lookup(n.name, n.p, sc)
+	case *unaryN:
+		return e.evalUnary(n, sc)
+	case *binaryN:
+		return e.evalBinary(n, sc)
+	case *factN:
+		x, err := e.eval(n.x, sc)
+		if err != nil {
+			return nil, err
+		}
+		return e.callBuiltin(e.funcs["factorial"], []val{x}, n.p)
+	case *callN:
+		return e.evalCall(n, sc)
+	case *indexN:
+		return e.evalIndex(n, sc)
+	case *listN:
+		items := make([]val, 0, len(n.items))
+		for _, it := range n.items {
+			v, err := e.eval(it, sc)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, v)
+		}
+		return items, nil
+	case *rangeN:
+		return e.evalRange(n, sc)
+	case *lambdaN:
+		return &fnVal{params: n.params, body: n.body, env: sc}, nil
+	case *assignN:
+		v, err := e.eval(n.x, sc)
+		if err != nil {
+			return nil, err
+		}
+		if f, ok := v.(*fnVal); ok && f.builtin == nil && f.name == "" {
+			// Name the lambda so errors and the rendered result say f(x).
+			named := *f
+			named.name = n.name
+			v = &named
+		}
+		e.assign(n.name, v)
+		return v, nil
+	case *defineN:
+		f := &fnVal{name: n.name, params: n.params, body: n.body, env: e.global}
+		e.assign(n.name, f)
+		return f, nil
+	}
+	return nil, errf(codeSyntax, n.position(), "unsupported expression")
+}
+
+func (e *evaluator) assign(name string, v val) {
+	if !contains(e.assigned, name) {
+		e.assigned = append(e.assigned, name)
+	}
+	e.global.vars[name] = v
+}
+
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *evaluator) lookup(name string, pos int, sc *scope) (val, *Error) {
+	if v, ok := sc.lookup(name); ok {
+		return v, nil
+	}
+	if c, ok := constants[name]; ok {
+		return floatNum(c), nil
+	}
+	if b, ok := e.funcs[name]; ok {
+		return &fnVal{name: name, builtin: b}, nil
+	}
+	err := errf(codeUnknownName, pos, "unknown name %s", name)
+	if s := suggest(name, e.knownNames(sc)); len(s) > 0 {
+		err.Hint = "did you mean " + strings.Join(s, ", ") + "?"
+	} else {
+		err.Hint = "assign it first (`" + name + " = ...`) or pass it in vars"
+	}
+	return nil, err
+}
+
+func (e *evaluator) knownNames(sc *scope) []string {
+	var names []string
+	for s := sc; s != nil; s = s.parent {
+		for k := range s.vars {
+			names = append(names, k)
+		}
+	}
+	for k := range constants {
+		names = append(names, k)
+	}
+	for k := range e.funcs {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (e *evaluator) evalUnary(n *unaryN, sc *scope) (val, *Error) {
+	x, err := e.eval(n.x, sc)
+	if err != nil {
+		return nil, err
+	}
+	if n.op == "not" {
+		b, ok := x.(bool)
+		if !ok {
+			return nil, errf(codeType, n.p, "not needs a boolean, got a %s", typeName(x))
+		}
+		return !b, nil
+	}
+	if n.op == "+" {
+		if _, ok := x.(num); ok {
+			return x, nil
+		}
+		if _, ok := x.([]val); ok {
+			return x, nil
+		}
+		return nil, errf(codeType, n.p, "unary + needs a number, got a %s", typeName(x))
+	}
+	return e.arith("-", exactInt64(0), x, n.p)
+}
+
+func (e *evaluator) evalBinary(n *binaryN, sc *scope) (val, *Error) {
+	l, err := e.eval(n.l, sc)
+	if err != nil {
+		return nil, err
+	}
+	if n.op == "and" || n.op == "or" {
+		lb, ok := l.(bool)
+		if !ok {
+			return nil, errf(codeType, n.p, "%s needs booleans, got a %s on the left", n.op, typeName(l)).
+				withHint("compare first, e.g. `x > 0 and y > 0`")
+		}
+		// Short-circuit: the right side is not evaluated when the left
+		// decides, so `x != 0 and 1/x > 2` is safe.
+		if n.op == "and" && !lb || n.op == "or" && lb {
+			return lb, nil
+		}
+		r, err := e.eval(n.r, sc)
+		if err != nil {
+			return nil, err
+		}
+		rb, ok := r.(bool)
+		if !ok {
+			return nil, errf(codeType, n.p, "%s needs booleans, got a %s on the right", n.op, typeName(r))
+		}
+		return rb, nil
+	}
+	r, err := e.eval(n.r, sc)
+	if err != nil {
+		return nil, err
+	}
+	if cmpOps[n.op] {
+		return e.compare(n.op, l, r, n.p)
+	}
+	return e.arith(n.op, l, r, n.p)
+}
+
+func (e *evaluator) evalCall(n *callN, sc *scope) (val, *Error) {
+	var f *fnVal
+	if id, ok := n.fn.(*identN); ok {
+		if id.name == "if" {
+			return e.evalIf(n, sc)
+		}
+		v, found := sc.lookup(id.name)
+		switch {
+		case found:
+			fv, ok := v.(*fnVal)
+			if !ok {
+				return nil, errf(codeType, n.p, "%s is a %s, not a function", id.name, typeName(v)).
+					withHint("no implicit multiplication: write `" + id.name + "*(...)`")
+			}
+			f = fv
+		case e.funcs[id.name] != nil:
+			f = &fnVal{name: id.name, builtin: e.funcs[id.name]}
+		default:
+			return nil, e.unknownFunc(id.name, id.p, sc)
+		}
+	} else {
+		v, err := e.eval(n.fn, sc)
+		if err != nil {
+			return nil, err
+		}
+		fv, ok := v.(*fnVal)
+		if !ok {
+			return nil, errf(codeType, n.p, "a %s cannot be called", typeName(v)).
+				withHint("no implicit multiplication: write `*` before `(`")
+		}
+		f = fv
+	}
+	argv := make([]val, 0, len(n.args))
+	for _, a := range n.args {
+		v, err := e.eval(a, sc)
+		if err != nil {
+			return nil, err
+		}
+		argv = append(argv, v)
+	}
+	return e.call(f, argv, n.p)
+}
+
+func (e *evaluator) unknownFunc(name string, pos int, sc *scope) *Error {
+	err := errf(codeUnknownFunc, pos, "unknown function %s", name)
+	if a, ok := aliases[name]; ok {
+		return err.withHint("use " + a)
+	}
+	var names []string
+	for k := range e.funcs {
+		names = append(names, k)
+	}
+	for s := sc; s != nil; s = s.parent {
+		for k, v := range s.vars {
+			if _, ok := v.(*fnVal); ok {
+				names = append(names, k)
+			}
+		}
+	}
+	if s := suggest(name, names); len(s) > 0 {
+		err.Hint = "did you mean " + strings.Join(s, ", ") + "?"
+	} else {
+		err.Hint = "define it first, e.g. `" + name + "(x) = ...`"
+	}
+	return err
+}
+
+func (e *evaluator) evalIf(n *callN, sc *scope) (val, *Error) {
+	if len(n.args) != 3 {
+		return nil, errf(codeArity, n.p, "if takes 3 arguments, got %d", len(n.args)).withHint("if(cond, a, b)")
+	}
+	c, err := e.eval(n.args[0], sc)
+	if err != nil {
+		return nil, err
+	}
+	b, ok := c.(bool)
+	if !ok {
+		return nil, errf(codeType, n.p, "the condition of if must be a boolean, got a %s", typeName(c)).
+			withHint("compare, e.g. `if(x > 0, x, -x)`")
+	}
+	if b {
+		return e.eval(n.args[1], sc)
+	}
+	return e.eval(n.args[2], sc)
+}
+
+// call applies f to already-evaluated arguments.
+func (e *evaluator) call(f *fnVal, argv []val, pos int) (val, *Error) {
+	if err := e.charge(1, pos); err != nil {
+		return nil, err
+	}
+	if f.builtin != nil {
+		return e.callBuiltin(f.builtin, argv, pos)
+	}
+	if len(argv) != len(f.params) {
+		return nil, errf(codeArity, pos, "%s takes %d argument(s), got %d", fnLabel(f), len(f.params), len(argv)).
+			withHint(fnSignature(f))
+	}
+	for _, c := range e.calls {
+		if c == f {
+			return nil, recursionErr(fnLabel(f), pos)
+		}
+	}
+	if len(e.calls) >= MaxCallDepth {
+		return nil, errf(codeTooDeep, pos, "functions call each other more than %d deep", MaxCallDepth)
+	}
+	local := &scope{vars: make(map[string]val, len(argv)), parent: f.env}
+	for i, p := range f.params {
+		local.vars[p] = argv[i]
+	}
+	e.calls = append(e.calls, f)
+	v, err := e.eval(f.body, local)
+	e.calls = e.calls[:len(e.calls)-1]
+	return v, err
+}
+
+func fnLabel(f *fnVal) string {
+	if f.name != "" {
+		return f.name
+	}
+	return "the lambda"
+}
+
+func fnSignature(f *fnVal) string {
+	if f.builtin != nil {
+		return f.builtin.sig
+	}
+	name := f.name
+	if name == "" {
+		return "(" + strings.Join(f.params, ", ") + ") -> ..."
+	}
+	return name + "(" + strings.Join(f.params, ", ") + ")"
+}
+
+func (e *evaluator) callBuiltin(b *builtin, argv []val, pos int) (val, *Error) {
+	if len(argv) < b.min || b.max >= 0 && len(argv) > b.max {
+		return nil, errf(codeArity, pos, "%s takes %s, got %d", b.name, arityText(b), len(argv)).withHint(b.sig)
+	}
+	if b.name == "if" {
+		// Reached only when `if` is passed as a value; its arguments are
+		// already evaluated, so it is eager here.
+		c, ok := argv[0].(bool)
+		if !ok {
+			return nil, errf(codeType, pos, "the condition of if must be a boolean, got a %s", typeName(argv[0]))
+		}
+		if c {
+			return argv[1], nil
+		}
+		return argv[2], nil
+	}
+	if b.vec && len(argv) > 0 {
+		if l, ok := argv[0].([]val); ok {
+			out := make([]val, 0, len(l))
+			for _, x := range l {
+				if err := e.charge(1, pos); err != nil {
+					return nil, err
+				}
+				sub := append([]val{x}, argv[1:]...)
+				v, err := e.callBuiltin(b, sub, pos)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, v)
+			}
+			return out, nil
+		}
+	}
+	return b.fn(e, args{v: argv, pos: pos, name: b.name})
+}
+
+func arityText(b *builtin) string {
+	switch {
+	case b.max < 0:
+		return pluralArgs(b.min, "at least ")
+	case b.min == b.max:
+		return pluralArgs(b.min, "")
+	default:
+		return pluralArgs(b.min, "") + " to " + pluralArgs(b.max, "")
+	}
+}
+
+func pluralArgs(n int, prefix string) string {
+	s := prefix + strconv.Itoa(n) + " argument"
+	if n != 1 {
+		s += "s"
+	}
+	return s
+}
+
+func (e *evaluator) evalIndex(n *indexN, sc *scope) (val, *Error) {
+	x, err := e.eval(n.x, sc)
+	if err != nil {
+		return nil, err
+	}
+	idx, err := e.eval(n.idx, sc)
+	if err != nil {
+		return nil, err
+	}
+	l, ok := x.([]val)
+	if !ok {
+		return nil, errf(codeType, n.p, "only a list can be indexed, got a %s", typeName(x))
+	}
+	if il, ok := idx.([]val); ok {
+		if err := e.charge(len(il), n.p); err != nil {
+			return nil, err
+		}
+		out := make([]val, 0, len(il))
+		for _, iv := range il {
+			v, err := pick(l, iv, n.p)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		return out, nil
+	}
+	return pick(l, idx, n.p)
+}
+
+func pick(l []val, idx val, pos int) (val, *Error) {
+	in, ok := idx.(num)
+	if !ok {
+		return nil, errf(codeType, pos, "an index must be a number, got a %s", typeName(idx))
+	}
+	i, ok := smallInt(in, int64(MaxListLen)+1)
+	if !ok {
+		return nil, errf(codeIndex, pos, "index %s is not a whole number in range", fmtArg(in))
+	}
+	switch {
+	case i == 0:
+		return nil, errf(codeIndex, pos, "index 0 does not exist").withHint("indexing starts at 1: v[1] is the first element")
+	case i < 0 || int(i) > len(l):
+		return nil, errf(codeIndex, pos, "index %d is out of range for a list of %d", i, len(l)).
+			withHint("valid indexes are 1 to len(v)")
+	}
+	return l[i-1], nil
+}

@@ -1,0 +1,2 @@
+go test fuzz v1
+string("range(0, 1, 10^-6)")
