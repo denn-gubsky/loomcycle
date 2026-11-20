@@ -110,9 +110,18 @@ type WorkspaceStore interface {
 	// WorkspaceActiveStates, across workers: what max_per_tenant bounds.
 	WorkspaceCountActiveByTenant(ctx context.Context, tenantID string) (int, error)
 	// WorkspaceSweepCandidates returns the rows, any state, whose owner run
-	// is terminal and not paused or pausing: the sweeper's work list for runs
-	// that ended without the run-end release. A paused run is parked, not
-	// ended, and keeps its workspaces for its resume. A row whose owner run
-	// row is gone is not returned.
+	// is terminal and not paused or pausing, or whose owner run row no longer
+	// exists: the sweeper's work list for runs that ended without the run-end
+	// release. A paused run is parked, not ended, and keeps its workspaces for
+	// its resume.
 	WorkspaceSweepCandidates(ctx context.Context) ([]WorkspaceRow, error)
+	// WorkspaceTouchByWorker sets updated_at to now on the worker's rows in
+	// WorkspaceActiveStates and returns how many. A replica the worker is
+	// attached to calls it now and then, so a row a live worker holds never
+	// looks abandoned to WorkspaceListStale, whichever replica asks.
+	WorkspaceTouchByWorker(ctx context.Context, workerID string) (int, error)
+	// WorkspaceListStale returns the rows, every tenant, in
+	// WorkspaceActiveStates whose updated_at is before the given time, oldest
+	// first: those of a worker no replica has seen since then.
+	WorkspaceListStale(ctx context.Context, before time.Time) ([]WorkspaceRow, error)
 }

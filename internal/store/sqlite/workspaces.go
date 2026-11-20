@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/store/sqlshared"
@@ -48,4 +49,12 @@ func (s *Store) WorkspaceCountActiveByTenant(ctx context.Context, tenantID strin
 
 func (s *Store) WorkspaceSweepCandidates(ctx context.Context) ([]store.WorkspaceRow, error) {
 	return sqlshared.WorkspaceSweepCandidates(ctx, s.shared())
+}
+
+func (s *Store) WorkspaceTouchByWorker(ctx context.Context, workerID string) (int, error) {
+	return sqlshared.WorkspaceTouchByWorker(ctx, s.shared(), workerID)
+}
+
+func (s *Store) WorkspaceListStale(ctx context.Context, before time.Time) ([]store.WorkspaceRow, error) {
+	return sqlshared.WorkspaceListStale(ctx, s.shared(), before)
 }
