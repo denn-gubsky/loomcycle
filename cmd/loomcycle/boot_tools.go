@@ -418,12 +418,16 @@ func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
 		Extractions: extract.NewLimiter(cfg.Env.ExtractConcurrency), HelperWrapper: cfg.Env.HelperWrapper,
 		PDFCommand: cfg.Env.RenderPDFCommand, DiagramCommand: cfg.Env.RenderDiagramCommand,
 		ScratchDir: conversionSpoolDir(cfg)}
+	// RFC GW: the workspace worker service registers on the worker endpoint
+	// first; every service is on the server before a listener serves it.
+	b.workspace = b.startWorkspace()
 	// RFC GO: with conversion.mode local, extraction runs in worker
 	// processes this boot starts; mode inprocess starts nothing.
 	if d := b.startConversion(); d != nil {
 		b.conversion = d
 		fileTool.Convert = d.Client()
 	}
+	b.serveWorkerEndpoint()
 	b.allTools = append(b.allTools, fileTool)
 
 	// RFC FB — the Git tool: repository work inside bound volumes through
