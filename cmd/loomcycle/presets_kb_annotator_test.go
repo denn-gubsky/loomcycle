@@ -582,10 +582,16 @@ func TestKBAnnotator_DocumentRequestCarriesItsStoredStatus(t *testing.T) {
 
 	var docReq string
 	for _, p := range f.prompts {
-		if strings.Contains(p, "LEVEL: a whole document") {
+		switch {
+		case strings.Contains(p, "LEVEL: a whole document"):
 			docReq = p
-		} else if strings.Contains(p, "STATUS:") {
-			t.Errorf("a request other than the document's carries a STATUS line:\n%s", p)
+		case strings.Contains(p, "LEVEL: a folder of documents"):
+			// A folder counts its documents' statuses (RFC GM P6).
+			if !strings.Contains(p, "\nSTATUS: 1 done\n") {
+				t.Errorf("a folder's request lacks its documents' statuses:\n%s", p)
+			}
+		case strings.Contains(p, "STATUS:"):
+			t.Errorf("a section's request carries a STATUS line:\n%s", p)
 		}
 	}
 	if !strings.Contains(docReq, "\nSTATUS: done\n") {

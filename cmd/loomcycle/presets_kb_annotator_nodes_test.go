@@ -180,12 +180,12 @@ func TestNodeAnnotation_RequestCarriesMemberStatusCounts(t *testing.T) {
 // read current to the shipped body.
 func TestKBAnnotator_ExistingLevelsKeepTheirVersions(t *testing.T) {
 	shipped := knowledgeBaseConfig(t).Agents["kb/annotator"].Code
-	if !strings.Contains(shipped, "prompt_versions: { branch: 2, document: 2, path: 2, ") {
+	if !strings.Contains(shipped, "prompt_versions: { branch: 2, document: 2, path: 3, ") {
 		t.Fatal("the shipped body changed an existing level's prompt version")
 	}
 	d, author, driver := annRealDocument(t)
 	a := seedAnnDoc(t, d, author, "Widget guide", "/kb/widgets/guide")
-	before := strings.Replace(shipped, annShippedVersions, "prompt_versions: { branch: 2, document: 2, path: 2 },", 1)
+	before := strings.Replace(shipped, annShippedVersions, "prompt_versions: { branch: 2, document: 2, path: 3 },", 1)
 	f := &annFake{reply: annStableReply}
 	in := fmt.Sprintf(`{"mode":"document","document_id":%q,"write":"annotate"}`, a.doc)
 	if rep := runAnnotatorWith(t, d, before, driver, f, in); annCount(rep, "writes") != 6 {
