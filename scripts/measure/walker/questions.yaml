@@ -8,9 +8,10 @@
 #   area      "what is in this part of the corpus": the answer groups by topic.
 #   changed   "what changed / is new in X": the answer needs dates or series.
 #
-# gold: the documents an answer should name, filled by an operator from a
-# listing of the store BEFORE the first run (see README.md, "Gold"), as
-# document ids. Empty until then; the driver scores only questions with gold.
+# gold: stays empty HERE. The gold (document ids, or gold_topics) names a real
+# tenant's documents and lives in a gold file outside the repo, passed with
+# --gold and merged by id (see README.md, "Gold"); the driver scores only
+# questions with gold.
 questions:
   - id: q01
     kind: overview
