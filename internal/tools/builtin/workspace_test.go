@@ -28,12 +28,18 @@ type wsFixture struct {
 
 func newWSFixture(t *testing.T, l lifecycle.Limits) *wsFixture {
 	t.Helper()
+	return newWSFixtureWith(t, l, worker.Options{Capacity: 10})
+}
+
+// newWSFixtureWith is newWSFixture with the worker's options.
+func newWSFixtureWith(t *testing.T, l lifecycle.Limits, opt worker.Options) *wsFixture {
+	t.Helper()
 	st, err := storesqlite.Open(filepath.Join(t.TempDir(), "ws.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	h := workspacetest.Start(t, st, "acme", worker.Options{Capacity: 10})
+	h := workspacetest.Start(t, st, "acme", opt)
 	sess, err := st.CreateSession(context.Background(), "acme", "a", "alice")
 	if err != nil {
 		t.Fatal(err)

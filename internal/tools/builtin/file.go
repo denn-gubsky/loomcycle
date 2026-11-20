@@ -20,6 +20,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
 
 // FileToolName is the File tool's name in an agent's `tools:` list.
@@ -89,6 +90,10 @@ type File struct {
 	// unpackLimits overrides op=unpack's bounds, for tests; nil is
 	// defaultUnpackLimits.
 	unpackLimits *unpackLimits
+	// Workspaces is the workspace bookkeeping (RFC GW) workspace references
+	// reach; nil while workspace.mode is off, which refuses them. Bound at
+	// boot with the Workspace tool's.
+	Workspaces *lifecycle.Manager
 }
 
 func (f *File) Name() string { return FileToolName }
@@ -97,9 +102,10 @@ func (f *File) Description() string {
 	return "Inspect and manage files the runtime kept for this run, without their bytes passing through you. " +
 		"A file a tool returns (an MCP attachment or image, a binary download) is kept in your run's inbox volume and you see a line like " +
 		"`[file: volume:inbox:documents/report.pdf · application/pdf · 1.8 MiB · sha256:… · from …]` instead of its bytes. " +
-		"Ops: stat (size, type, sha256 and origin of one file), ls (list the inbox or a folder of a volume), " +
+		"Ops: stat (size, type, sha256 and origin of one file), ls (list the inbox or a folder of a volume or a workspace), " +
+		"copy (copy a file or a folder between the inbox, your volumes and your workspaces: from, to, overwrite), " +
 		"keep (copy a file out of the inbox into one of your read-write volumes, since the inbox is deleted when the run ends), " +
-		"rm (delete one inbox file), clear (empty the inbox, or one folder of it), " +
+		"rm (delete one inbox file, or a file or folder of a workspace), clear (empty the inbox, or one folder of it; or a workspace folder with path), " +
 		"download (GET a URL into the inbox, or a volume; needs the HTTP tool and its allowlist), upload (PUT or POST a volume file to a URL, whole or in ranges for an upload session), " +
 		"extract (turn a DOCX, DOC, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, CHM, RTF, CSV, text or image file into Markdown in the inbox, with its pictures as files, and return an excerpt; a book's own metadata (title, authors, identifiers, ...) comes back as metadata; " +
 		"where your agent is allowed OCR, scanned pages and images are read by the OCR model, and dry_run says what that would cost; a VTT or SRT caption file becomes a timed transcript), " +
@@ -107,7 +113,7 @@ func (f *File) Description() string {
 		"import (build a Document from such a Markdown file, its pictures attached as image chunks), " +
 		"render (write a Document you may read, or a Markdown or HTML file, as a file to send: pdf, docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import), " +
 		"unpack (copy the files of a ZIP or RAR archive into volume:inbox:unpacked/<archive>/, or a read-write volume folder of yours with to, keeping its folders; by default only what extract reads and archives inside it (listed, not opened), all: true for every file; dry_run lists without writing; extract each file afterwards). " +
-		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, or `volume:path` for your default volume; a bare path means the inbox. " +
+		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, `volume:path` for your default volume, or `workspace:<name>:path` in a workspace this run opened (stat, ls, copy, rm and clear take one); a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
 }
 
@@ -115,11 +121,11 @@ func (f *File) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":        {"type": "string", "enum": ["stat", "ls", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render", "unpack"]},
-			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; unpack: the ZIP or RAR archive; ls: the folder (default volume:inbox:). A volume reference, or a bare path in the inbox. render: a Markdown or HTML file to render instead of a document (its first # heading is the title)."},
-			"from":      {"type": "string", "description": "keep: the inbox file to copy. upload: the file to send, in the inbox or a volume you can Read."},
-			"to":        {"type": "string", "description": "keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name). render: the file to write in one of your read-write volumes (needs the Write tool); default volume:inbox:rendered/<title>.<format>. unpack: an existing folder of one of your read-write volumes to unpack into (needs the Write tool); default volume:inbox:unpacked/<archive>/."},
-			"overwrite": {"type": "boolean", "description": "keep, download, render: replace an existing file at to. Default false."},
+			"op":        {"type": "string", "enum": ["stat", "ls", "copy", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render", "unpack"]},
+			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; unpack: the ZIP or RAR archive; ls: the folder (default volume:inbox:). A volume reference, a workspace reference (in a run: stat, ls, rm, and clear's folder), or a bare path in the inbox. render: a Markdown or HTML file to render instead of a document (its first # heading is the title)."},
+			"from":      {"type": "string", "description": "copy: the file or folder to copy, in the inbox, a volume or a workspace (workspace:<name>:<path>). keep: the inbox file to copy. upload: the file to send, in the inbox or a volume you can Read."},
+			"to":        {"type": "string", "description": "copy: where to copy it, in the inbox, a read-write volume or a workspace; a path ending in / (or an existing folder) keeps the source's name. keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name). render: the file to write in one of your read-write volumes (needs the Write tool); default volume:inbox:rendered/<title>.<format>. unpack: an existing folder of one of your read-write volumes to unpack into (needs the Write tool); default volume:inbox:unpacked/<archive>/."},
+			"overwrite": {"type": "boolean", "description": "copy, keep, download, render: replace an existing file at to (copy: merge into an existing folder). Default false."},
 			"url":       {"type": "string", "description": "download, upload: the absolute http(s) URL. Its host must be on the HTTP allowlist."},
 			"headers":   {"type": "object", "additionalProperties": {"type": "string"}, "description": "download, upload: extra request headers. No credentials: an authorised URL carries its own."},
 			"max_bytes": {"type": "integer", "minimum": 1, "description": "download: refuse a file larger than this. Default and ceiling: the per-file limit."},
@@ -268,20 +274,22 @@ func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return f.renderOp(ctx, in)
 	case "unpack":
 		return f.unpack(ctx, in)
+	case "copy":
+		return f.copy(ctx, in)
 	case "":
-		return errValidation("missing required field: op", "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack."), nil
+		return errValidation("missing required field: op", "One of stat, ls, copy, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack."), nil
 	}
-	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack."), nil
+	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, copy, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack."), nil
 }
 
-// fileRef parses a path argument: a volume reference, or a bare path that
-// names a file in the inbox.
+// fileRef parses a path argument: a volume or workspace reference, or a bare
+// path that names a file in the inbox.
 func fileRef(s string) (dataRef, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return dataRef{}, errors.New("no path given")
 	}
-	if !strings.HasPrefix(s, "volume:") {
+	if !strings.HasPrefix(s, "volume:") && !strings.HasPrefix(s, "workspace:") {
 		return dataRef{raw: inbox.Ref(s), kind: refVolume, volume: inbox.Name, path: s}, nil
 	}
 	r, err := parseDataRef(s)
@@ -294,6 +302,9 @@ func fileRef(s string) (dataRef, error) {
 // openRef resolves a reference to its volume, checks it lies inside it, and
 // opens the volume for the call. rel is the path relative to the volume root.
 func openRef(ctx context.Context, r dataRef, write bool) (vfs *fsops.VolumeFS, rel string, res tools.Result, ok bool) {
+	if r.kind != refVolume {
+		return nil, "", notOnWorkspace(r), false
+	}
 	if inboxMissing(ctx, r) {
 		return nil, "", errNotFound("nothing has been kept in this run's inbox yet", "A file a tool returns lands there; until one does, the inbox does not exist."), false
 	}
@@ -340,6 +351,9 @@ func (f *File) stat(ctx context.Context, in fileInput) (tools.Result, error) {
 	r, err := fileRef(in.Path)
 	if err != nil {
 		return errValidation("stat: "+err.Error(), "Pass path, e.g. volume:inbox:documents/a.pdf."), nil
+	}
+	if r.kind == refWorkspace {
+		return f.statWorkspace(ctx, r)
 	}
 	vfs, rel, res, ok := openRef(ctx, r, false)
 	if !ok {
@@ -399,6 +413,9 @@ type fileEntry struct {
 	MediaType string `json:"media_type,omitempty"`
 	Dir       bool   `json:"dir,omitempty"`
 	Origin    string `json:"origin,omitempty"`
+	// Type marks an entry of a workspace listing that is a link or another
+	// non-regular file, which a copy skips.
+	Type string `json:"type,omitempty"`
 }
 
 func (f *File) ls(ctx context.Context, in fileInput) (tools.Result, error) {
@@ -409,6 +426,9 @@ func (f *File) ls(ctx context.Context, in fileInput) (tools.Result, error) {
 	r, err := fileRef(p)
 	if err != nil {
 		return errValidation("ls: "+err.Error(), "Pass path, e.g. volume:inbox:documents."), nil
+	}
+	if r.kind == refWorkspace {
+		return f.lsWorkspace(ctx, r, in.Recursive)
 	}
 	if inboxMissing(ctx, r) {
 		return okJSON(map[string]any{"path": r.raw, "entries": []fileEntry{}, "note": "nothing has been kept in this run's inbox yet"})
@@ -614,6 +634,9 @@ func (f *File) rm(ctx context.Context, in fileInput) (tools.Result, error) {
 	if err != nil {
 		return errValidation("rm: "+err.Error(), "Pass path, e.g. volume:inbox:documents/a.pdf."), nil
 	}
+	if r.kind == refWorkspace {
+		return f.rmWorkspace(ctx, r)
+	}
 	if r.volume != inbox.Name {
 		return errValidation("rm: only a file in the inbox can be removed here", "Remove a file of your own volumes with the tool that wrote it."), nil
 	}
@@ -642,6 +665,19 @@ func (f *File) rm(ctx context.Context, in fileInput) (tools.Result, error) {
 }
 
 func (f *File) clear(ctx context.Context, in fileInput) (tools.Result, error) {
+	// A workspace folder is named by path, the inbox's by prefix. Any other
+	// path is refused rather than ignored: ignored, it would empty the
+	// whole inbox for a call that meant one folder of it.
+	if p := strings.TrimSpace(in.Path); p != "" {
+		if !strings.HasPrefix(p, "workspace:") || in.Prefix != "" {
+			return errValidation("clear: path names a folder of a workspace", "Empty a folder of the inbox with prefix, e.g. prefix: images."), nil
+		}
+		r, err := parseDataRef(p)
+		if err != nil {
+			return errValidation("clear: "+err.Error(), "Pass path, e.g. workspace:build:out."), nil
+		}
+		return f.clearWorkspace(ctx, r)
+	}
 	prefix := strings.Trim(strings.TrimSpace(in.Prefix), "/")
 	if prefix == "" {
 		prefix = "."
