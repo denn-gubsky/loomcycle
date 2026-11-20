@@ -1,6 +1,7 @@
 package nodestats
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/rand/v2"
@@ -93,13 +94,16 @@ type RecurResult struct {
 // Each run chooses its own k: a group recurs whatever the partition around it,
 // which is the question a proposal asks ("is this one topic?"), not whether the
 // whole partition is stable.
-func RecurringGroups(members []Member, opts RecurOptions) (RecurResult, error) {
+//
+// It stops with ctx's error once ctx is done, checked between runs and between
+// Lloyd iterations.
+func RecurringGroups(ctx context.Context, members []Member, opts RecurOptions) (RecurResult, error) {
 	if err := opts.validate(); err != nil {
 		return RecurResult{}, err
 	}
 	so := opts.Split
 	so.StabilityRuns = 0
-	ref, err := Split(members, so)
+	ref, err := split(ctx, members, so)
 	if err != nil {
 		return RecurResult{}, err
 	}
@@ -122,7 +126,10 @@ func RecurringGroups(members []Member, opts RecurOptions) (RecurResult, error) {
 		}
 		rs := so
 		rs.Seed, rs.MinNodeMembers = seed, rs.KMin
-		sr, err := Split(sub, rs)
+		sr, err := split(ctx, sub, rs)
+		if ctx.Err() != nil {
+			return RecurResult{}, ctx.Err()
+		}
 		if err != nil {
 			continue
 		}

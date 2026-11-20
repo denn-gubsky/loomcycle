@@ -1,6 +1,7 @@
 package nodestats
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -11,7 +12,7 @@ import (
 // noise is partitioned differently by each seed, so none of its groups recurs.
 func TestRecurringGroups_ObviousClustersRecurAndNoiseDoesNot(t *testing.T) {
 	ms := twoClusters(12)
-	res, err := RecurringGroups(ms, DefaultRecurOptions(1))
+	res, err := RecurringGroups(context.Background(), ms, DefaultRecurOptions(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +34,7 @@ func TestRecurringGroups_ObviousClustersRecurAndNoiseDoesNot(t *testing.T) {
 	// (2-means splits them along the sample's widest direction for most seeds).
 	for _, n := range []int{60, 200} {
 		for seed := uint64(0); seed < 10; seed++ {
-			nz, err := RecurringGroups(noise(n, 16), DefaultRecurOptions(seed))
+			nz, err := RecurringGroups(context.Background(), noise(n, 16), DefaultRecurOptions(seed))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -50,11 +51,11 @@ func TestRecurringGroups_ObviousClustersRecurAndNoiseDoesNot(t *testing.T) {
 // TestRecurringGroups_SameSeedSameAnswer — the result is a function of the input
 // and the seed.
 func TestRecurringGroups_SameSeedSameAnswer(t *testing.T) {
-	a, err := RecurringGroups(noise(40, 8), DefaultRecurOptions(3))
+	a, err := RecurringGroups(context.Background(), noise(40, 8), DefaultRecurOptions(3))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _ := RecurringGroups(noise(40, 8), DefaultRecurOptions(3))
+	b, _ := RecurringGroups(context.Background(), noise(40, 8), DefaultRecurOptions(3))
 	if !reflect.DeepEqual(a, b) {
 		t.Errorf("two calls differ:\n%+v\n%+v", a, b)
 	}
@@ -71,12 +72,22 @@ func TestRecurringGroups_RefusesBadOptions(t *testing.T) {
 	} {
 		o := DefaultRecurOptions(1)
 		mod(&o)
-		if _, err := RecurringGroups(ms, o); !errors.Is(err, ErrInvalidArgument) {
+		if _, err := RecurringGroups(context.Background(), ms, o); !errors.Is(err, ErrInvalidArgument) {
 			t.Errorf("%+v: err %v, want ErrInvalidArgument", o, err)
 		}
 	}
-	if _, err := RecurringGroups(ms[:3], DefaultRecurOptions(1)); !errors.Is(err, ErrTooFewMembers) {
+	if _, err := RecurringGroups(context.Background(), ms[:3], DefaultRecurOptions(1)); !errors.Is(err, ErrTooFewMembers) {
 		t.Errorf("three members: err %v, want ErrTooFewMembers", err)
+	}
+}
+
+// TestRecurringGroups_StopsWhenTheContextIsDone — a cancelled context stops the
+// clustering with its error instead of running every run to the end.
+func TestRecurringGroups_StopsWhenTheContextIsDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := RecurringGroups(ctx, twoClusters(12), DefaultRecurOptions(1)); !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
 	}
 }
 
