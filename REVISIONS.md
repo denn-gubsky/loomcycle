@@ -8,6 +8,37 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.163.0
+
+*Workspace workers are usable on one machine: `workspace.mode: local` starts a workspace worker beside the runtime, with an operator guide and `loomcycle doctor` checks (RFC GW P1). `kb/walker` walks the taxonomy, a new `Document op=place` says where a set of documents sits, and search facets compare a topic's share with the corpus (RFC GM P7). Folder annotations see exemplars and sibling folders (RFC GM P6). A CHM help file whose Russian pages name no encoding is read correctly (RFC GX).*
+
+The v1.163 line: #2793 to #2799.
+- `@loomcycle/client` 1.163.0: `place`, `min_share`, search facets' `baseline` and `DocumentSearchFacetValue`. The Python adapter is unchanged and stays 1.162.0.
+- No numbered migration, no new Go dependency, no wire change outside the Document tool's new op and options.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **`workspace.mode: local` runs commands as the runtime's own user (#2796).** The child worker can read the data directory, the secrets files and the environment, provider keys included; boot logs a warning saying so. Use it only on a machine you would give the agent anyway. The default stays off, and a shared worker on the `host` engine is still refused. See `docs/WORKSPACES.md`.
+- **Folder annotations at `prompt_version` 3 (#2793)** carry `member_statuses`, `exemplars` and `siblings` in their inputs; versions below 3 are byte-identical.
+
+### Workspaces (RFC GW P1 PR 8: #2796)
+
+- `workspace.mode: local` and `local+remote`: one child `loomcycle worker --role workspace` on a private 0700 socket with a per-boot token, restarted with backoff and stopped at shutdown. `workspace.local.tenant` and `workspace.local.root` choose whose runs it serves and where workspaces live.
+- `loomcycle doctor` reports the mode and names agents whose `workspace` grant is inert.
+- The guide is in the store at `/loomcycle/docs/workspaces` and exported to `docs/WORKSPACES.md`. An end-to-end runtime test runs in CI.
+
+### Classification graph and knowledge base (RFC GM: #2793, #2794, #2798; kb #2797)
+
+- **`Document op=place`** names, per taxonomy and for the class tree, the lowest node covering most of a set of documents or of a query's hits. **`lineage` `with_memberships`** adds a chunk's class chain and concept chains. **Search facets `baseline: true`** add each value's corpus share and a capped log ratio, so a topic the hits are about stands out from one that is merely large.
+- **kb/walker** climbs a hit's topics, reads a topic's other members, places a set and answers "what changed" from the stored series.
+- **Folder annotations** see up to three exemplars and the sibling folders' briefs, so sibling folders' briefs can say what sets each apart.
+- **kb/ask** routes "which RFCs has the owner confirmed" to a status listing (#2797).
+
+### Files (RFC GX: #2799)
+
+- A CHM page or contents file that names no encoding and is Cyrillic text is read as windows-1251 or KOI8-R even when the file's language is English (a Russian help file compiled on English Windows); such a file reports no `language`. A frame page's `<noframes>` fallback is left out instead of written as escaped markup, in CHM and HTML. Found by a field sample of v1.162.0 on the book library.
+
 ## What's in v1.162.0
 
 *`File op=extract` reads the rest of a book library: MOBI, AZW3 and PalmDOC (with footnotes and contents labels), Word 97–2003 DOC and compiled HTML Help (CHM), all in pure Go, and a DjVu book's scanned pages are read by OCR. `File op=unpack` takes the files out of ZIP and RAR archives (RFC GV, RFC GX). A destructive change to an ontology entry in use needs a plan's fingerprint, an entry can be `@locked`, and an operator can plan and accept change and retire proposals (RFC GQ). Node statistics find misfit placements, growth and quiet nodes, and split, merge and new-concept candidates, a node's annotation is searchable, and `kb/taxonomist` proposes taxonomies (RFC GM). The groundwork for workspace workers is in, not usable yet (RFC GW P1).*
