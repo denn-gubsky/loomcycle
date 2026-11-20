@@ -86,6 +86,9 @@ func (CHM) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, op
 	}
 	b.w = newWriter(ctx, sink, opts)
 	err = b.run()
+	if b.cyrillic > 0 && rep.Metadata != nil {
+		rep.Metadata.Language = ""
+	}
 	b.noteSkips()
 	rep.finish(b.w)
 	return rep, err
@@ -530,10 +533,16 @@ func (f *chmFile) system() (chmSystem, error) {
 		s.cp = rtfCodePages[l.cp]
 	}
 	str := func(v []byte) string {
-		if utf8.Valid(v) || s.cp == nil {
+		cp := s.cp
+		if !utf8.Valid(v) && westernOrNone(cp) {
+			if c := cyrillicCodePage(v, 1); c != nil {
+				cp = c
+			}
+		}
+		if utf8.Valid(v) || cp == nil {
 			return string(bytes.ToValidUTF8(v, []byte("�")))
 		}
-		out, err := s.cp.NewDecoder().Bytes(v)
+		out, err := cp.NewDecoder().Bytes(v)
 		if err != nil {
 			return ""
 		}
@@ -578,6 +587,8 @@ type chmBook struct {
 	badCharset            []string // the first few encodings, each once
 	badPages              int
 	guessedCharset        int
+	cyrillic              int    // unmarked pages read as Cyrillic against the file's Western language
+	cyrillicName          string // the code page they were read in
 	skippedPictures, deep int
 	tocCut                bool
 }
@@ -591,6 +602,9 @@ func (b *chmBook) noteSkips() {
 	}
 	if b.badPages > 0 {
 		b.rep.note("%d pages in an encoding that is not read (%s) were skipped", b.badPages, strings.Join(b.badCharset, ", "))
+	}
+	if b.cyrillic > 0 {
+		b.rep.note("%d of its pages (or its contents file) name no encoding and are Cyrillic text, read as %s; the file's language (LCID %#04x) is not what its pages are in, so no language is reported", b.cyrillic, b.cyrillicName, b.sys.lcid)
 	}
 	if b.guessedCharset > 0 {
 		b.rep.note("%d pages name no encoding and the file's language gives none: they were read as windows-1252", b.guessedCharset)
@@ -713,7 +727,7 @@ func (b *chmBook) topic(p, label string, level int) error {
 		b.unreadable++
 		return nil
 	}
-	data, ok := b.decode(data)
+	data, ok := b.decode(data, 3)
 	if !ok {
 		return nil
 	}
@@ -750,9 +764,13 @@ func (b *chmBook) topic(p, label string, level int) error {
 }
 
 // decode returns a page as UTF-8: in the encoding its <meta> names, else as
-// UTF-8 when it is valid UTF-8, else in the code page of the file's
-// language. A page in an encoding not on the fixed list is skipped.
-func (b *chmBook) decode(data []byte) ([]byte, bool) {
+// UTF-8 when it is valid UTF-8, else as windows-1251 or KOI8-R when it is
+// Cyrillic text and the file's language is Western or unknown, else in the
+// code page of the file's language. A page in an encoding not on the fixed
+// list is skipped.
+// minRuns is how many Cyrillic runs make unmarked text Cyrillic
+// (cyrillicCodePage): a page has many words, the contents file's names few.
+func (b *chmBook) decode(data []byte, minRuns int) ([]byte, bool) {
 	var enc encoding.Encoding
 	if label := chmMetaCharset(data); label != "" {
 		switch {
@@ -771,6 +789,12 @@ func (b *chmBook) decode(data []byte) ([]byte, bool) {
 		}
 	} else if utf8.Valid(data) {
 		return data, true
+	} else if c := cyrillicCodePage(data, minRuns); c != nil && westernOrNone(b.sys.cp) {
+		// A Russian help file compiled on English Windows says its
+		// language is English and names no encoding on its pages.
+		enc = c
+		b.cyrillic++
+		b.cyrillicName = c.String()
 	} else if enc = b.sys.cp; enc == nil {
 		b.guessedCharset++
 		enc = charmap.Windows1252
@@ -966,7 +990,7 @@ func (b *chmBook) contents() ([]chmTOCEntry, error) {
 		b.unreadable++
 		return nil, nil
 	}
-	data, ok := b.decode(data)
+	data, ok := b.decode(data, 1)
 	if !ok {
 		return nil, nil
 	}
@@ -1042,4 +1066,46 @@ func (b *chmBook) parseTOC(data []byte) []chmTOCEntry {
 			out = append(out, e)
 		}
 	}
+}
+
+// westernOrNone reports whether a help file's own code page is windows-1252
+// or unknown: the cases where its unmarked pages may still be Cyrillic.
+func westernOrNone(cp encoding.Encoding) bool {
+	return cp == nil || cp == encoding.Encoding(charmap.Windows1252)
+}
+
+// cyrillicCodePage reports which single-byte Cyrillic code page unmarked
+// text is in, or nil when it does not look Cyrillic. In windows-1251 and
+// KOI8-R every Cyrillic letter is a byte at or above 0xC0, so Russian text
+// is full of runs of such bytes; Western text in windows-1252 has accented
+// letters one or two at a time between ASCII ones. minRuns runs of four or
+// more such bytes make it Cyrillic. Lower case, which most text is, is
+// 0xE0-0xFF in windows-1251 and 0xC0-0xDF in KOI8-R.
+func cyrillicCodePage(b []byte, minRuns int) *charmap.Charmap {
+	runs, n, lower, upper := 0, 0, 0, 0
+	for _, c := range b {
+		if c >= 0xC0 {
+			n++
+			if c >= 0xE0 {
+				lower++
+			} else {
+				upper++
+			}
+			continue
+		}
+		if n >= 4 {
+			runs++
+		}
+		n = 0
+	}
+	if n >= 4 {
+		runs++
+	}
+	if runs < minRuns {
+		return nil
+	}
+	if lower >= upper {
+		return charmap.Windows1251
+	}
+	return charmap.KOI8R
 }
