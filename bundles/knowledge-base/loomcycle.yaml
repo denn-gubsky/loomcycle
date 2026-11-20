@@ -5721,6 +5721,28 @@ agents:
         return ids.join("; ");
       }
 
+      // statusCounts renders a request's STATUS line from member status counts.
+      // The line sits outside the fenced material, and a status is free text any
+      // writer of a member sets: only one-word statuses (STATUS_SHAPE, as the
+      // document request) are named; the rest, and those past max, are counted
+      // as other.
+      function statusCounts(list, max) {
+        var out = [];
+        var other = 0;
+        var xs = isArray(list) ? list : [];
+        for (var i = 0; i < xs.length; i++) {
+          var x = xs[i];
+          if (!isPlainObject(x) || typeof x.count !== "number") { continue; }
+          if (typeof x.name === "string" && x.name !== "other" && STATUS_SHAPE.test(x.name) && out.length < max) {
+            out.push(x.count + " " + x.name);
+          } else {
+            other += x.count;
+          }
+        }
+        if (other > 0) { out.push(other + " other"); }
+        return out.join(", ");
+      }
+
       // folderRequestText renders a folder's request.
       function folderRequestText(st, in1) {
         var above = isPlainObject(in1.above) && typeof in1.above.abstract === "string" ? in1.above.abstract : "";
@@ -5804,26 +5826,6 @@ agents:
           for (var i = 0; i < xs.length && i < max; i++) {
             if (isPlainObject(xs[i]) && typeof xs[i].count === "number") { out.push(xs[i].count + " " + oneLine(xs[i].name, 80)); }
           }
-          return out.join(", ");
-        };
-        // The STATUS line sits outside the fenced material, and a status is free
-        // text any writer of a member sets: only one-word statuses (STATUS_SHAPE,
-        // as the document request) are named; the rest, and those past max, are
-        // counted as other.
-        var statusCounts = function (list, max) {
-          var out = [];
-          var other = 0;
-          var xs = isArray(list) ? list : [];
-          for (var i = 0; i < xs.length; i++) {
-            var x = xs[i];
-            if (!isPlainObject(x) || typeof x.count !== "number") { continue; }
-            if (typeof x.name === "string" && x.name !== "other" && STATUS_SHAPE.test(x.name) && out.length < max) {
-              out.push(x.count + " " + x.name);
-            } else {
-              other += x.count;
-            }
-          }
-          if (other > 0) { out.push(other + " other"); }
           return out.join(", ");
         };
         var narrower = [];
