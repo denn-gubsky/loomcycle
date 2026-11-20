@@ -197,3 +197,43 @@ func TestWorkspaceOps_AFilesTextIsNotRewritten(t *testing.T) {
 		t.Errorf("read = %q, want the file's text %q", got, body)
 	}
 }
+
+// Ruling Q2: the Workspace tool's write and edit are writes. In a workspace
+// marked full both are refused with workspace_over_quota while read still
+// works; a write or an edit that would pass the quota is refused with
+// nothing written.
+func TestWorkspaceOps_WriteAndEditHonourTheQuota(t *testing.T) {
+	w, root := newTestWorker(t)
+	ws := filepath.Join(root, "ws1")
+	if err := w.setLimit("ws1", 1000); err != nil {
+		t.Fatal(err)
+	}
+	if a := runOp(t, w, workspace.OpWrite, workspace.WriteArgs{Path: "a.txt", Content: "hello"}); a.class != "" {
+		t.Fatalf("a write within the quota: %s %s", a.class, a.detail)
+	}
+	if a := runOp(t, w, workspace.OpWrite, workspace.WriteArgs{Path: "big.txt", Content: strings.Repeat("x", 2000)}); a.class != workspace.ClassOverQuota {
+		t.Errorf("a write past the quota = %q %s, want workspace_over_quota", a.class, a.detail)
+	}
+	if _, err := os.Lstat(filepath.Join(ws, "big.txt")); err == nil {
+		t.Error("the refused write left its file")
+	}
+	if a := runOp(t, w, workspace.OpEdit, workspace.EditArgs{Path: "a.txt", OldString: "hello", NewString: strings.Repeat("y", 2000)}); a.class != workspace.ClassOverQuota {
+		t.Errorf("an edit growing past the quota = %q %s, want workspace_over_quota", a.class, a.detail)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "a.txt")); string(b) != "hello" {
+		t.Errorf("the refused edit changed the file: %q", b)
+	}
+	// A command writes past the quota; the workspace is then full.
+	if a := runOp(t, w, workspace.OpExec, workspace.ExecArgs{Command: "head -c 3000 /dev/zero > past", TimeoutMS: 5000}); a.class != "" {
+		t.Fatalf("exec: %s %s", a.class, a.detail)
+	}
+	if a := runOp(t, w, workspace.OpWrite, workspace.WriteArgs{Path: "b.txt", Content: "x"}); a.class != workspace.ClassOverQuota {
+		t.Errorf("a write in a full workspace = %q, want workspace_over_quota", a.class)
+	}
+	if a := runOp(t, w, workspace.OpEdit, workspace.EditArgs{Path: "a.txt", OldString: "hello", NewString: "h"}); a.class != workspace.ClassOverQuota {
+		t.Errorf("an edit in a full workspace = %q, want workspace_over_quota", a.class)
+	}
+	if got := fileText(t, runOp(t, w, workspace.OpRead, workspace.ReadArgs{Path: "a.txt"})); !strings.Contains(got, "hello") {
+		t.Errorf("a read in a full workspace = %q", got)
+	}
+}

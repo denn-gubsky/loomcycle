@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,12 +52,16 @@ func (w *worker) inWorkspace(ctx context.Context, dir, op string, args, input []
 	case workspace.OpWrite:
 		var in workspace.WriteArgs
 		if a = decodeArgs(raw, &in); a.class == "" {
-			a = textAnswer(fsops.Write(ctx, real, "", in.Path, in.Content, 0))
+			a = w.inQuota(ctx, filepath.Base(dir), real, in.Path, func(*fsops.VolumeFS) int64 { return int64(len(in.Content)) }, func() answer {
+				return textAnswer(fsops.Write(ctx, real, "", in.Path, in.Content, 0))
+			})
 		}
 	case workspace.OpEdit:
 		var in workspace.EditArgs
 		if a = decodeArgs(raw, &in); a.class == "" {
-			a = textAnswer(fsops.Edit(ctx, real, "", fsops.EditRequest{Path: in.Path, OldString: in.OldString, NewString: in.NewString, ReplaceAll: in.ReplaceAll}))
+			a = w.inQuota(ctx, filepath.Base(dir), real, in.Path, func(v *fsops.VolumeFS) int64 { return editGrowth(v, real, in) }, func() answer {
+				return textAnswer(fsops.Edit(ctx, real, "", fsops.EditRequest{Path: in.Path, OldString: in.OldString, NewString: in.NewString, ReplaceAll: in.ReplaceAll}))
+			})
 		}
 	case workspace.OpGlob:
 		var in workspace.GlobArgs
@@ -230,4 +235,87 @@ func (w *worker) execInQuota(ctx context.Context, id, real string, raw []byte) a
 		release()
 	}
 	return a
+}
+
+// inQuota runs a write or an edit of the Workspace tool under the
+// workspace's write lock (ruling Q2: they are writes): refused with
+// workspace_over_quota when the workspace is marked full or when need bytes
+// more would pass its quota, nothing written; after it, the count moves by
+// the file's change in size.
+func (w *worker) inQuota(ctx context.Context, id, real, path string, need func(*fsops.VolumeFS) int64, do func() answer) answer {
+	v, err := fsops.OpenVolumeFS(real, "")
+	if err != nil {
+		return refuse(workspace.ClassFailed, "opening the workspace: %v", err)
+	}
+	defer v.Close()
+	u, release, err := w.writeLock(ctx, id, v)
+	if err != nil {
+		return refuse(workspace.ClassFailed, "%v", err)
+	}
+	defer release()
+	if bad := u.admit(max(need(v), 0)); bad != nil {
+		return *bad
+	}
+	before := fileSize(v, real, path)
+	a := do()
+	if a.class == "" {
+		u.used = max(u.used+fileSize(v, real, path)-before, 0)
+		w.settleLocked(ctx, u, v)
+	}
+	return a
+}
+
+// fileSize is the size of the regular file path names in the workspace, 0
+// when there is none; for the count only, so a path the op will refuse
+// counts 0.
+func fileSize(v *fsops.VolumeFS, real, path string) int64 {
+	resolved, err := fsops.ResolveInsideRoot(real, path)
+	if err != nil {
+		return 0
+	}
+	rel, err := v.Rel(resolved)
+	if err != nil {
+		return 0
+	}
+	f, err := v.Open(rel)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() {
+		return 0
+	}
+	return st.Size()
+}
+
+// editGrowth is how many bytes an edit adds to its file: the replacements
+// it would make times the growth of each. An edit that will fail (no file,
+// no match, over the edit cap) adds nothing; fsops.Edit refuses it.
+func editGrowth(v *fsops.VolumeFS, real string, in workspace.EditArgs) int64 {
+	if fileSize(v, real, in.Path) > fsops.DefaultEditMaxBytes {
+		return 0
+	}
+	resolved, err := fsops.ResolveInsideRoot(real, in.Path)
+	if err != nil {
+		return 0
+	}
+	rel, err := v.Rel(resolved)
+	if err != nil {
+		return 0
+	}
+	f, err := v.Open(rel)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	body, err := io.ReadAll(io.LimitReader(f, fsops.DefaultEditMaxBytes))
+	if err != nil {
+		return 0
+	}
+	_, n, err := fsops.Replace(string(body), in.OldString, in.NewString, in.ReplaceAll)
+	if err != nil {
+		return 0
+	}
+	return int64(n) * int64(len(in.NewString)-len(in.OldString))
 }
