@@ -94,8 +94,10 @@ func setConceptBody(t *testing.T, d *Document, ctx context.Context, chunkID, bod
 	if r.IsError {
 		t.Fatal(r.Text)
 	}
-	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%d,"body":%q}`,
-		chunkID, int(g["revision"].(float64)), body)); r.IsError {
+	// Planned: changing a directive of an entry something rests on needs the current
+	// plan's fingerprint (RFC GQ ruling of 2026-11-20).
+	if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"update_chunk","scope":"tenant","id":%q,"revision":%d,"body":%q,"plan_fingerprint":%q}`,
+		chunkID, int(g["revision"].(float64)), body, ontologyFingerprintNow(t, d, ctx))); r.IsError {
 		t.Fatal(r.Text)
 	}
 }

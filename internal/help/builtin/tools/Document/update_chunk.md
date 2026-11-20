@@ -35,11 +35,12 @@ Leave a key out to keep its value. Moving a chunk is `move_chunk`, not this.
 
 Renaming an entry of the tenant ontology (its `title`, or its body's first
 heading when the title is empty), retiring it (`status` `retired`), or editing
-its body so its directives change (`@identity`, a relation characteristic such
-as `@functional` or `@asymmetric`, a policy directive) can leave stored rows
-naming what is no longer there. When the plan of that change says something
-rests on the entry (risk `stales` or `destroys`), the update needs the
-plan's fingerprint:
+its body so any of its directives changes (`@identity`, `@alt`, `@notation`,
+`@focus`, a relation characteristic such as `@functional`, a policy directive,
+`@locked` — every directive its section reads) can leave stored rows naming
+or read by what is no longer there. When the plan of that change says
+something rests on the entry (risk `stales` or `destroys`), the update needs
+the plan's fingerprint:
 
 1. Plan it: `POST /v1/_ontology/plan` (or the ontology tool's `plan` op) with
    the change, e.g. `{"changes": [{"op": "retire", "entry": "<chunk id>"}]}`.
@@ -53,6 +54,15 @@ JSON — `{"code", "error", "fingerprint"}` — carrying the current fingerprint
 counts, and resend. An edit of the meaning alone, and any change to an entry
 nothing rests on, needs no fingerprint. A locked entry answers `entry_locked`
 first: no fingerprint lifts a lock.
+
+**A class something rests on is not renamed**, by its title or by its body's
+heading, with or without a fingerprint: the update is refused
+`rename_job_pending` until the runtime can carry the new name through the
+stored types, identity keys and subject keys that hold the old one. Keep the
+name, or retire the class and declare the new name as a new class. A class
+nothing rests on, a relation kind and a concept still rename (with the plan's
+fingerprint when something rests on them). The plan of such a rename carries a
+note starting `rename_job_pending:`.
 
 **To rename a document**, `update_chunk` its root chunk's `title` (the root
 chunk id is `root_chunk_id` from `get_document`). `get_document`,
@@ -112,6 +122,9 @@ subject re-type that was not announced).
   retire or directive change of an ontology entry something rests on needs the
   fingerprint of a current plan; plan the change and resend with
   `plan_fingerprint`.
+- `update_chunk: rename_job_pending: renaming the class "<name>" needs the
+  rename job ...` — the class is in use; no fingerprint lets the rename
+  through yet. Keep its name, or retire it and declare a new class.
 - `principal_binding_operator_only: update_chunk: the principal field is
   reserved ...` — resend `fields` without `principal` (or with exactly the
   stored value).

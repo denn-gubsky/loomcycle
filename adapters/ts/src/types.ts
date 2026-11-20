@@ -4589,9 +4589,11 @@ export type DocumentToolInput = {
   new_parent_id?: string;
   /** update_chunk / move_chunk on an entry of the tenant ontology that something
    *  rests on: the fingerprint of a plan of the change (`planOntology`). A rename,
-   *  retire, move under another parent or directive change without it is refused
-   *  409 `plan_required`; with one that is not current, 409 `plan_stale`. Each
-   *  refusal carries the current `fingerprint` (RFC GQ P2.4). */
+   *  retire, move under another parent or change of any directive without it is
+   *  refused 409 `plan_required`; with one that is not current, 409 `plan_stale`.
+   *  Each refusal carries the current `fingerprint` (RFC GQ P2.4). A class something
+   *  rests on is not renamed at all until the rename job exists: 422, with
+   *  `rename_job_pending` in the error, whatever the fingerprint. */
   plan_fingerprint?: string;
   type?: string;
   body?: string;
