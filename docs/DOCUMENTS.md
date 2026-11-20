@@ -1869,7 +1869,7 @@ Siblings do not make a folder stale: a sibling's rewrite marks nothing, only a s
 
 **The ontology's say.** `@annotate the problem; the decisions taken; …` on a class names the slots its annotations fill (inherited; `describe_ontology` reports `directives.annotate` and each class's `meaning`, its first prose line). The ontology root field `annotation_language` enforces one language for every annotation; otherwise each document's own is detected.
 
-**Who writes them.** The knowledge-base bundle's `kb/annotator` (code-js) with `kb/annotate` (tier `middle`, no tools), bottom-up and only for what changed; run `write: report` first for the call and prompt-character estimate. See `/loomcycle/docs/knowledge-base-bundle` (Annotations) and the RFC at `/loomcycle/rfcs/annotations`.
+**Who writes them.** The knowledge-base bundle's `kb/annotator` (code-js) with `kb/annotate` (tier `middle`, no tools), bottom-up and only for what changed; run `write: report` first for the call and prompt-character estimate. `kb/annotator` ships with `memory_scopes: [tenant]` and `sql_scopes: [tenant]`, so the operator adds nothing in their own layer; its writes are those of the `annotate` grant. See `/loomcycle/docs/knowledge-base-bundle` (Annotations) and the RFC at `/loomcycle/rfcs/annotations`.
 
 ## Caveats
 

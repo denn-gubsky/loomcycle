@@ -460,8 +460,8 @@ func TestKnowledgeBaseBundle_TaxonomistAuthority(t *testing.T) {
 		t.Errorf("kb/taxonomist grants methods=%v modes=%v, want none", a.StatementMethods, a.ToolModes)
 	}
 	// It ships with exactly the tenant scope on both planes (owner ruling
-	// 2026-11-20), unlike kb/annotator, whose grants the operator adds: the
-	// briefs are tenant-scoped and its one write is an inert proposal.
+	// 2026-11-20), as kb/annotator does: the briefs are tenant-scoped and its
+	// one write is an inert proposal.
 	if strings.Join(a.MemoryScopes, ",") != "tenant" || strings.Join(a.SqlScopes, ",") != "tenant" {
 		t.Errorf("kb/taxonomist scopes memory=%v sql=%v, want exactly [tenant] for both", a.MemoryScopes, a.SqlScopes)
 	}
