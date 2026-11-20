@@ -297,6 +297,10 @@ type annotationScope struct {
 	// docTypes the member documents' types it has read.
 	plan     *nodeStatsPlan
 	docTypes map[string]string
+	// unrestricted is the documents every member of the tenant may read, read once
+	// when a folder's request first asks (nil list: all of them).
+	unrestricted     *docReadList
+	unrestrictedRead bool
 }
 
 // ontology is the tenant ontology in force, or nil without one.

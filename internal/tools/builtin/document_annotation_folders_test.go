@@ -323,3 +323,224 @@ func TestFolderAnnotation_ItsFolderIsWhereItIsNamed(t *testing.T) {
 		t.Fatalf("folder = %q, %v; want /kb/products", folder, err)
 	}
 }
+
+// --- RFC GM P6: typical documents, sibling folders and member statuses ---
+
+// folderSiblingCorpus is seedFolderCorpus with two sibling folders of
+// /kb/products, each carrying its own record, and a done document.
+func folderSiblingCorpus(t *testing.T, d *Document, ctx context.Context) (folderCorpus, string) {
+	t.Helper()
+	c := seedFolderCorpus(t, d, ctx)
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Support plan","path":"/kb/services/support","type":"Guide","status":"done"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	support := out["document_id"].(string)
+	annWrite(t, d, ctx, `"document_id":"`+support+`"`, "About the support plan")
+	out, r = docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Terms","path":"/kb/legal/terms","type":"Policy"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	annWrite(t, d, ctx, `"document_id":"`+out["document_id"].(string)+`"`, "About the terms")
+	folderWriteAt(t, d, ctx, "/kb/services", "Support plans and the services offered to customers", folderContextPromptVersion)
+	folderWriteAt(t, d, ctx, "/kb/legal", "Legal terms and conditions that govern every sale", folderContextPromptVersion)
+	return c, support
+}
+
+func folderInputsAt(t *testing.T, d *Document, ctx context.Context, folder string, version int) map[string]any {
+	t.Helper()
+	in, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"annotation_inputs","scope":"tenant","level":"path","path":%q,"prompt_version":%d}`, folder, version))
+	if r.IsError {
+		t.Fatalf("annotation_inputs %s: %s", folder, r.Text)
+	}
+	return in
+}
+
+func folderWriteAt(t *testing.T, d *Document, ctx context.Context, folder, brief string, version int) map[string]any {
+	t.Helper()
+	in := folderInputsAt(t, d, ctx, folder, version)
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"set_annotation","scope":"tenant","level":"path","path":%q,"brief":%q,"abstract":%q,"inputs_sha256":%q,"prompt_version":%d}`,
+		folder, brief, "What "+folder+" holds.", in["inputs_sha256"], version))
+	if r.IsError {
+		t.Fatalf("set_annotation %s: %s", folder, r.Text)
+	}
+	return out["annotation"].(map[string]any)
+}
+
+func folderRecordStale(t *testing.T, d *Document, ctx context.Context, folder string) bool {
+	t.Helper()
+	got, r := docExec(t, d, ctx, `{"op":"get_annotation","scope":"tenant","level":"path","path":"`+folder+`"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	a := got["annotations"].([]any)
+	if len(a) != 1 {
+		t.Fatalf("get_annotation %s = %v, want one record", folder, got)
+	}
+	return a[0].(map[string]any)["stale"] == true
+}
+
+func exemplarTitles(in map[string]any) []string {
+	var out []string
+	ex, _ := in["exemplars"].([]any)
+	for _, e := range ex {
+		out = append(out, e.(map[string]any)["title"].(string))
+	}
+	return out
+}
+
+// TestFolderAnnotation_ContextVersionCarriesExemplarsSiblingsAndStatuses — from
+// the folder context prompt version on, a folder's request names its typical
+// documents (with their abstracts), its sibling folders with their briefs, and
+// its documents' stored statuses.
+func TestFolderAnnotation_ContextVersionCarriesExemplarsSiblingsAndStatuses(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		ctx := annOperator(base)
+		folderSiblingCorpus(t, d, ctx)
+		in := folderInputsAt(t, d, ctx, "/kb/products", folderContextPromptVersion)
+		raw, _ := json.Marshal(in["siblings"])
+		if string(raw) != `[{"brief":"Legal terms and conditions that govern every sale","name":"legal"},{"brief":"Support plans and the services offered to customers","name":"services"}]` {
+			t.Errorf("siblings = %s", raw)
+		}
+		ex, _ := in["exemplars"].([]any)
+		for _, e := range ex {
+			if a, _ := e.(map[string]any)["abstract"].(string); a == "" {
+				t.Errorf("exemplar %v has no abstract", e)
+			}
+		}
+		// The folder's majority class first, then by name.
+		if got := fmt.Sprint(exemplarTitles(in)); got != "[Gadget guide Widget guide Pricing]" {
+			t.Errorf("exemplars = %v", got)
+		}
+		raw, _ = json.Marshal(in["member_statuses"])
+		if string(raw) != `[{"count":3,"name":"none"}]` {
+			t.Errorf("member_statuses = %s", raw)
+		}
+		// /kb: one typical document from each sub-folder before a second from any.
+		in = folderInputsAt(t, d, ctx, "/kb", folderContextPromptVersion)
+		if got := fmt.Sprint(exemplarTitles(in)); got != "[Gadget guide Support plan Terms]" {
+			t.Errorf("/kb exemplars = %v", got)
+		}
+		raw, _ = json.Marshal(in["member_statuses"])
+		if string(raw) != `[{"count":4,"name":"none"},{"count":1,"name":"done"}]` {
+			t.Errorf("/kb member_statuses = %s", raw)
+		}
+		if _, ok := in["siblings"]; ok {
+			t.Errorf("/kb has no sibling folder, got %v", in["siblings"])
+		}
+	})
+}
+
+// TestFolderAnnotation_EarlierVersionInputsAreUnchanged — below the folder context
+// version the request and its hash are what they were: no new field, and a sibling
+// folder's record changes nothing.
+func TestFolderAnnotation_EarlierVersionInputsAreUnchanged(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := annOperator(base)
+	seedFolderCorpus(t, d, ctx)
+	before := folderInputsAt(t, d, ctx, "/kb/products", 2)
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Terms","path":"/kb/legal/terms","type":"Policy"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	annWrite(t, d, ctx, `"document_id":"`+out["document_id"].(string)+`"`, "About the terms")
+	folderWriteAt(t, d, ctx, "/kb/legal", "Legal terms", 2)
+	after := folderInputsAt(t, d, ctx, "/kb/products", 2)
+	for _, k := range []string{"exemplars", "siblings", "siblings_more", "member_statuses"} {
+		if _, ok := after[k]; ok {
+			t.Errorf("version 2 inputs carry %s: %v", k, after[k])
+		}
+	}
+	if before["inputs_sha256"] != after["inputs_sha256"] {
+		t.Fatalf("a sibling's record changed a version 2 hash: %v -> %v", before["inputs_sha256"], after["inputs_sha256"])
+	}
+}
+
+// TestFolderAnnotation_SiblingRewriteMarksNothingStale — a sibling's brief is shown
+// but not hashed (its name is): siblings rewritten in turn never make each other
+// stale, so a version bump rewrites each folder once. A new sibling does.
+func TestFolderAnnotation_SiblingRewriteMarksNothingStale(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := annOperator(base)
+	folderSiblingCorpus(t, d, ctx)
+	folderWriteAt(t, d, ctx, "/kb/products", "Product guides", folderContextPromptVersion)
+	folderWriteAt(t, d, ctx, "/kb/services", "Support services, rewritten", folderContextPromptVersion)
+	folderWriteAt(t, d, ctx, "/kb/legal", "Legal terms, rewritten", folderContextPromptVersion)
+	for _, f := range []string{"/kb/products", "/kb/services", "/kb/legal"} {
+		if folderRecordStale(t, d, ctx, f) {
+			t.Fatalf("a sibling's rewrite made %s stale", f)
+		}
+	}
+	out, r := docExec(t, d, ctx, `{"op":"create_document","scope":"tenant","title":"Hiring","path":"/kb/people/hiring","type":"Guide"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	annWrite(t, d, ctx, `"document_id":"`+out["document_id"].(string)+`"`, "About hiring")
+	folderWriteAt(t, d, ctx, "/kb/people", "People", folderContextPromptVersion)
+	if !folderRecordStale(t, d, ctx, "/kb/products") {
+		t.Fatal("a new sibling folder left /kb/products current")
+	}
+}
+
+// TestFolderAnnotation_ExemplarRewriteMarksTheFolderStale — a typical document's
+// abstract is in the request, so its rewrite is in the hash.
+func TestFolderAnnotation_ExemplarRewriteMarksTheFolderStale(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	ctx := annOperator(base)
+	_, support := folderSiblingCorpus(t, d, ctx)
+	folderWriteAt(t, d, ctx, "/kb", "The knowledge base", folderContextPromptVersion)
+	if folderRecordStale(t, d, ctx, "/kb") {
+		t.Fatal("precondition: /kb is current")
+	}
+	annWrite(t, d, ctx, `"document_id":"`+support+`"`, "About the support plan, again")
+	if !folderRecordStale(t, d, ctx, "/kb") {
+		t.Fatal("rewriting a typical document left /kb current")
+	}
+}
+
+// TestFolderAnnotation_RestrictedSiblingIsLeftOut — a sibling folder holding a
+// document some member of the tenant may not read is not named (RFC GM C8): the
+// folder's own readers need not be able to read it.
+func TestFolderAnnotation_RestrictedSiblingIsLeftOut(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, base context.Context) {
+		ctx := annOperator(base)
+		folderSiblingCorpus(t, d, ctx)
+		restrictForSome(t, d, "/kb/legal/terms")
+		in := folderInputsAt(t, d, ctx, "/kb/products", folderContextPromptVersion)
+		raw, _ := json.Marshal(in["siblings"])
+		if string(raw) != `[{"brief":"Support plans and the services offered to customers","name":"services"}]` {
+			t.Fatalf("siblings = %s, want legal left out", raw)
+		}
+	})
+}
+
+// TestFolderAnnotation_SiblingRestrictedSinceWithholdsTheRecord — a record written
+// from a sibling's brief is withheld from a reader who may not read that sibling's
+// documents, until it is written again without the sibling.
+func TestFolderAnnotation_SiblingRestrictedSinceWithholdsTheRecord(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	op := annOperator(base)
+	folderSiblingCorpus(t, d, op)
+	folderWriteAt(t, d, op, "/kb/products", "Product guides", folderContextPromptVersion)
+	member := tenantDocCtx(base, aclSet(t, authz.Rule{Effect: authz.Deny, Actions: []string{"read"},
+		Resources: []string{"document:tenant:/kb/legal/terms"}}))
+	got, r := docExec(t, d, member, `{"op":"get_annotation","scope":"tenant","level":"path","path":"/kb/products"}`)
+	if r.IsError || len(got["annotations"].([]any)) != 0 {
+		t.Fatalf("member get_annotation = %v %s, want nothing: the record drew on /kb/legal", got, r.Text)
+	}
+	got, _ = docExec(t, d, tenantDocCtx(base, nil), `{"op":"get_annotation","scope":"tenant","level":"path","path":"/kb/products"}`)
+	if len(got["annotations"].([]any)) != 1 {
+		t.Fatalf("a reader with no rule: get_annotation = %v", got)
+	}
+	// Restricted for some members: the hash moves, and the rewrite leaves legal out
+	// and is shown to that member again.
+	restrictForSome(t, d, "/kb/legal/terms")
+	if !folderRecordStale(t, d, op, "/kb/products") {
+		t.Fatal("restricting a sibling's document left /kb/products current")
+	}
+	folderWriteAt(t, d, op, "/kb/products", "Product guides", folderContextPromptVersion)
+	got, _ = docExec(t, d, member, `{"op":"get_annotation","scope":"tenant","level":"path","path":"/kb/products"}`)
+	if len(got["annotations"].([]any)) != 1 {
+		t.Fatalf("member get_annotation after the rewrite = %v", got)
+	}
+}
