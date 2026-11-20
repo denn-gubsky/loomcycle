@@ -49,6 +49,19 @@ type WorkspaceConfig struct {
 	// LostAfterS is how long a worker may be away before its workspaces are
 	// marked lost. Default 300.
 	LostAfterS int `yaml:"lost_after_s,omitempty"`
+	// DiskQuotaMB bounds what one workspace may hold on its worker's disk,
+	// in MiB (RFC GW P2). Default 2048; at most 16 TiB.
+	DiskQuotaMB int64 `yaml:"disk_quota_mb,omitempty"`
+	// Copy bounds a folder copy into or out of a workspace.
+	Copy WorkspaceCopyConfig `yaml:"copy,omitempty"`
+}
+
+// WorkspaceCopyConfig is `workspace.copy`: the most a folder copy may move.
+type WorkspaceCopyConfig struct {
+	// MaxFiles is the files a folder copy may hold. Default 2000.
+	MaxFiles int `yaml:"max_files,omitempty"`
+	// MaxBytes is the bytes a folder copy may hold. Default 1 GiB.
+	MaxBytes int64 `yaml:"max_bytes,omitempty"`
 }
 
 // WorkspaceLocalConfig is `workspace.local`: the one tenant the local worker
@@ -76,6 +89,15 @@ const (
 	DefaultWorkspaceExecTimeoutS   = 120
 	DefaultWorkspaceExecMaxTimeout = 900
 	DefaultWorkspaceLostAfterS     = 300
+	DefaultWorkspaceDiskQuotaMB    = 2048
+	DefaultWorkspaceCopyMaxFiles   = 2000
+	DefaultWorkspaceCopyMaxBytes   = 1 << 30
+	// MaxWorkspaceDiskQuotaMB is 16 TiB in MiB.
+	MaxWorkspaceDiskQuotaMB = 16 << 20
+	// maxWorkspaceCopyFiles and maxWorkspaceCopyBytes bound what the copy
+	// bounds may be set to.
+	maxWorkspaceCopyFiles = 1_000_000
+	maxWorkspaceCopyBytes = 16 << 40
 )
 
 // Resolved is the block with its defaults filled in.
@@ -94,6 +116,15 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.LostAfterS == 0 {
 		w.LostAfterS = DefaultWorkspaceLostAfterS
+	}
+	if w.DiskQuotaMB == 0 {
+		w.DiskQuotaMB = DefaultWorkspaceDiskQuotaMB
+	}
+	if w.Copy.MaxFiles == 0 {
+		w.Copy.MaxFiles = DefaultWorkspaceCopyMaxFiles
+	}
+	if w.Copy.MaxBytes == 0 {
+		w.Copy.MaxBytes = DefaultWorkspaceCopyMaxBytes
 	}
 	return w
 }
@@ -182,6 +213,15 @@ func validateWorkspace(c *Config) error {
 	if w.MaxPerRun < 0 || w.MaxPerTenant < 0 || w.LostAfterS < 0 || w.Exec.DefaultTimeoutS < 0 || w.Exec.MaxTimeoutS < 0 {
 		return errors.New("workspace: max_per_run, max_per_tenant, lost_after_s and the exec timeouts may not be negative")
 	}
+	if w.DiskQuotaMB < 0 || w.DiskQuotaMB > MaxWorkspaceDiskQuotaMB {
+		return fmt.Errorf("workspace.disk_quota_mb: %d is out of range (1 to %d, 16 TiB)", w.DiskQuotaMB, MaxWorkspaceDiskQuotaMB)
+	}
+	if w.Copy.MaxFiles < 0 || w.Copy.MaxFiles > maxWorkspaceCopyFiles {
+		return fmt.Errorf("workspace.copy.max_files: %d is out of range (1 to %d)", w.Copy.MaxFiles, maxWorkspaceCopyFiles)
+	}
+	if w.Copy.MaxBytes < 0 || w.Copy.MaxBytes > maxWorkspaceCopyBytes {
+		return fmt.Errorf("workspace.copy.max_bytes: %d is out of range (1 to %d, 16 TiB)", w.Copy.MaxBytes, int64(maxWorkspaceCopyBytes))
+	}
 	r := w.Resolved()
 	if r.Exec.DefaultTimeoutS > r.Exec.MaxTimeoutS {
 		return fmt.Errorf("workspace.exec.default_timeout_s (%d) is over max_timeout_s (%d)", r.Exec.DefaultTimeoutS, r.Exec.MaxTimeoutS)
@@ -212,6 +252,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "local"), "workspace.local", nil, reflect.TypeOf(WorkspaceLocalConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "copy"), "workspace.copy", nil, reflect.TypeOf(WorkspaceCopyConfig{})); err != nil {
 		return err
 	}
 	type plain WorkspaceConfig

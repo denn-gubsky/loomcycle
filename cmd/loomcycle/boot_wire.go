@@ -310,6 +310,7 @@ func (b *boot) bindStoreToTools() {
 		ws := b.cfg.Workspace.Resolved()
 		b.workspaces = lifecycle.New(b.workspace, storeIface, lifecycle.Limits{
 			MaxPerRun: ws.MaxPerRun, MaxPerTenant: ws.MaxPerTenant, LostAfter: time.Duration(ws.LostAfterS) * time.Second,
+			DiskQuotaBytes: ws.DiskQuotaMB << 20, CopyMaxFiles: ws.Copy.MaxFiles, CopyMaxBytes: ws.Copy.MaxBytes,
 		}, slog.Default())
 		b.workspaceTool.Manager = b.workspaces
 	}
