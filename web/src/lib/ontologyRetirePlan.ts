@@ -77,12 +77,27 @@ export interface PlanSteps<T> {
 // applyWithPlan is retireWithPlan for any planned change (RFC GQ P4.2 accepts a change
 // proposal this way): plan, show confirmText of the plan, apply with its fingerprint,
 // and re-plan once on plan_stale.
+// plannedRefusal is the plan's note of a change no fingerprint lets through
+// (rename_job_pending), or null.
+export function plannedRefusal(plan: OntologyPlanResult): string | null {
+  for (const ch of plan.changes) {
+    const note = (ch.notes ?? []).find((n) => n.startsWith("rename_job_pending:"));
+    if (note) return note;
+  }
+  return null;
+}
+
 export async function applyWithPlan<T>(
   confirmText: (plan: OntologyPlanResult) => string,
   steps: PlanSteps<T>,
 ): Promise<T | null> {
   for (let attempt = 0; ; attempt++) {
     const plan = await steps.plan();
+    // A change the runtime refuses whatever the fingerprint (a class something rests on
+    // renamed before RFC GQ P5's rename job exists) is shown as the refusal it is, not
+    // offered for confirmation.
+    const refused = plannedRefusal(plan);
+    if (refused) throw new Error(refused);
     if (!steps.confirm(confirmText(plan))) return null;
     try {
       return await steps.apply(plan.fingerprint);

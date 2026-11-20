@@ -91,6 +91,22 @@ describe("applyWithPlan", () => {
     expect(apply).toHaveBeenCalledTimes(2);
   });
 
+  it("shows a rename_job_pending plan note as the refusal, without asking or applying", async () => {
+    const p = plan("f");
+    p.changes[0] = {
+      ...p.changes[0],
+      op: "rename",
+      notes: ['rename_job_pending: renaming the class "Memo" needs the rename job (RFC GQ P5)'],
+    };
+    const apply = vi.fn(async () => "applied");
+    const confirm = vi.fn(() => true);
+    await expect(applyWithPlan(() => "ok?", { plan: async () => p, apply, confirm })).rejects.toThrow(
+      /rename_job_pending: renaming the class "Memo"/,
+    );
+    expect(confirm).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
   it("never retries a partially applied accept", async () => {
     const partial = new ApiError("partially_applied", 409, "partially_applied");
     const apply = vi.fn(async () => Promise.reject(partial));
