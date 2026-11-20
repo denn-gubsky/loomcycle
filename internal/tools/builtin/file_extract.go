@@ -28,6 +28,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
 )
 
 // File op=extract and op=import (RFC FF): a document kept in a volume becomes
@@ -637,9 +638,26 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	if res, ok := fileDocumentGrant(ctx, in, scope); !ok {
 		return res, nil
 	}
-	vfs, rel, res, ok := openRef(ctx, r, false)
-	if !ok {
-		return res, nil
+	// A workspace file (RFC GW P2) is read through its workspace grant and
+	// hook; any other through its volume, as before.
+	var ws *workspaceLoc
+	var vfs *fsops.VolumeFS
+	var rel string
+	if r.kind == refWorkspace {
+		l, res, ok := f.workspaceLoc(ctx, r, false, FileToolName)
+		if !ok {
+			return res, nil
+		}
+		if res, ok := l.hook(ctx, wsHookRead); !ok {
+			return res, nil
+		}
+		ws, rel = l, l.path
+	} else {
+		v, p, res, ok := openRef(ctx, r, false)
+		if !ok {
+			return res, nil
+		}
+		vfs, rel = v, p
 	}
 	// Reading the file and rewriting its text (headings, neutralizing,
 	// pictures hoisted) are passes over up to fileImportMaxBytes of someone
@@ -647,12 +665,22 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	// them is not.
 	release, err := f.extractSlot(ctx)
 	if err != nil {
-		vfs.Close()
+		if vfs != nil {
+			vfs.Close()
+		}
 		return slotBusy(ctx, "import", f.slotWait)
 	}
 	defer release()
-	b, res, ok := readMarkdown(vfs, rel, r)
-	vfs.Close()
+	var b []byte
+	var wsInfo workspace.FileInfo
+	var res tools.Result
+	var ok bool
+	if ws != nil {
+		b, wsInfo, res, ok = readWorkspaceMarkdown(ctx, ws, r)
+	} else {
+		b, res, ok = readMarkdown(vfs, rel, r)
+		vfs.Close()
+	}
 	if !ok {
 		return res, nil
 	}
@@ -671,6 +699,10 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 	digest := hex.EncodeToString(sum[:])
 	origin := strings.TrimPrefix(sourceOrigin(ctx, r, rel, digest), "extract:")
 	prov, titleName, recorded := importFileProvenance(ctx, r, rel, digest)
+	if ws != nil {
+		origin = "workspace:" + ws.name
+		prov = workspaceImportProvenance(ctx, ws, wsInfo, b)
+	}
 	// Headings the extraction that wrote this file inferred, and the document
 	// it was rendered from, while its bytes still hash to that extraction's
 	// record.
@@ -770,11 +802,20 @@ func (f *File) importDoc(ctx context.Context, in fileInput) (tools.Result, error
 		md = withChunkIDs(md, rendered.Headings)
 	}
 	md = withRootHeading(md, in.Title, fileTitle(titleName))
-	md = hoistExtractedImages(md)
+	// Relative image links of a workspace file name images in the same
+	// workspace, which are imported with it (RFC GW P2 §3.4).
+	var wsImages map[string]bool
+	if ws != nil {
+		md, wsImages = workspaceImageLinks(md, ws.name, rel)
+	}
+	md = hoistImages(md, wsImages)
 	release()
 
 	call, _ := json.Marshal(importMDCall(in, scope, md))
 	ictx := withImportProvenance(withVolumeImageFields(withVolumeAssetReader(ctx, readExtractedImage), extractedImageFields), prov)
+	if ws != nil {
+		ictx = withWorkspaceImageReader(ictx, workspaceImageReader(ws, wsImages))
+	}
 	out, err := f.Docs.Execute(ictx, call)
 	if err != nil {
 		return tools.Result{}, err
@@ -1035,7 +1076,11 @@ func withRootHeading(md, titleArg, fallback string) string {
 // and op=extract writes a picture in place, inside a section's text. A line
 // that is exactly one extracted image, in a section that holds more than it,
 // moves to a sub-heading after the section's text. Fenced code is left alone.
-func hoistExtractedImages(md string) string {
+func hoistExtractedImages(md string) string { return hoistImages(md, nil) }
+
+// hoistImages is hoistExtractedImages that also moves the workspace image
+// references in ws (an import from a workspace wrote them).
+func hoistImages(md string, ws map[string]bool) string {
 	lines := strings.Split(md, "\n")
 	var out, raw, body, images []string
 	level := 0
@@ -1054,7 +1099,7 @@ func hoistExtractedImages(md string) string {
 			out = append(out, body...)
 			for _, img := range images {
 				n++
-				alt, _, _ := classifyVolumeImage(img)
+				alt, _, _ := classifyImportImage(img)
 				h := strings.Join(strings.Fields(alt), " ")
 				if h == "" {
 					h = fmt.Sprintf("Image %d", n)
@@ -1091,8 +1136,8 @@ func hoistExtractedImages(md string) string {
 			continue
 		}
 		raw = append(raw, l)
-		if _, ref, ok := classifyVolumeImage(l); ok && strings.TrimSpace(l) == l {
-			if r, err := parseDataRef(ref); err == nil && isExtractedRef(r) {
+		if _, ref, ok := classifyImportImage(l); ok && strings.TrimSpace(l) == l {
+			if r, err := parseDataRef(ref); err == nil && (isExtractedRef(r) || (r.kind == refWorkspace && ws[ref])) {
 				images = append(images, l)
 				continue
 			}
@@ -1138,6 +1183,9 @@ func sourceTag(origin string) string {
 			return "source/volume/" + s
 		}
 		return "source/volume"
+	case "workspace":
+		// Not per name: a workspace's name is the run's own and short-lived.
+		return "source/workspace"
 	}
 	return "source/file"
 }

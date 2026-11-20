@@ -23,6 +23,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/cryptoops"
 	"github.com/denn-gubsky/loomcycle/internal/kms"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
 
 // Crypto is the in-run cryptography tool (RFC EP): encrypt, decrypt, sign,
@@ -57,6 +58,11 @@ type Crypto struct {
 	// KMS reaches keys held in an external KMS (shared with CredentialDef).
 	// Nil: such a key is refused.
 	KMS *KMSAccess
+	// Workspaces is the workspace bookkeeping a workspace:<name>:<path>
+	// from or to reaches (RFC GW P2 §3.4), under the run's workspace grant
+	// and the Workspace pre-hooks (via "Crypto"). Nil: such a reference is
+	// refused.
+	Workspaces *lifecycle.Manager
 
 	budget runBudget
 	stats  cryptoStats
@@ -115,8 +121,8 @@ const cryptoInputSchema = `{
     "mac":        {"type": "string", "description": "verify_mac: the MAC to check, hex or base64."},
     "signature":  {"type": "string", "description": "verify: a raw signature (base64) or a JWS token (pass the token here and leave data empty)."},
     "public_key": {"type": "string", "description": "verify: a PEM or JWK public key, in place of key, for a signer whose key this deployment does not hold. encrypt: a PEM or JWK X25519 or RSA public key to encrypt to (the result is a JWE only that key's holder can open)."},
-    "from":       {"type": "string", "description": "Read the op's input from a store instead of plaintext, ciphertext or data: volume:<path> (or volume:<name>:<path>), memory:<scope>/<key>, document:<scope>/<chunk_id>. Needs the matching tool (Read, Memory, Document)."},
-    "to":         {"type": "string", "description": "encrypt, decrypt, rewrap: write the result there instead of returning it, so it never passes through you. Same forms as from; a volume needs Write."},
+    "from":       {"type": "string", "description": "Read the op's input from a store instead of plaintext, ciphertext or data: volume:<path> (or volume:<name>:<path>), memory:<scope>/<key>, document:<scope>/<chunk_id>, workspace:<name>:<path> (a workspace this run opened). Needs the matching tool (Read, Memory, Document), or for a workspace the workspace grant."},
+    "to":         {"type": "string", "description": "encrypt, decrypt, rewrap: write the result there instead of returning it, so it never passes through you. Same forms as from; a volume needs Write, a workspace the workspace grant write."},
     "password":   {"type": "string", "description": "hash_password, verify_password: the password. Masked from the stored transcript."},
     "password_hash": {"type": "string", "description": "verify_password: the stored hash, as hash_password returned it."},
     "digits":     {"type": "integer", "description": "totp: code length, 6 to 8 (default 6)."},

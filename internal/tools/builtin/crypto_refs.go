@@ -142,8 +142,9 @@ func checkRefAllowed(ctx context.Context, r dataRef, write bool) (tools.Result, 
 // the alternative the refusal offers.
 func checkRefGrant(ctx context.Context, r dataRef, write bool, via, instead string) (tools.Result, bool) {
 	// A workspace is reached through its own grant and hooks (file_ref.go),
-	// and only by the ops that take one; anything else that parsed one is
-	// refused here rather than judged as some other tool's reference.
+	// and only by the File ops and the Crypto from/to that take one, which
+	// resolve it themselves; anything else that parsed one is refused here
+	// rather than judged as some other tool's reference.
 	if r.kind == refWorkspace {
 		return errValidation(fmt.Sprintf("%s: %s does not take a workspace reference here", r.raw, via),
 			instead+", or copy the file into the inbox first with File op=copy."), false
@@ -290,6 +291,9 @@ func (c *Crypto) readRef(ctx context.Context, r dataRef, max int) ([]byte, tools
 // Memory and Document hold text, so bytes that are not valid UTF-8 are
 // refused there.
 func (c *Crypto) writeRef(ctx context.Context, r dataRef, data []byte) (tools.Result, bool) {
+	if r.kind == refWorkspace {
+		return c.writeWorkspaceRef(ctx, r, data)
+	}
 	if r.kind != refVolume && !utf8.Valid(data) {
 		return errValidation(fmt.Sprintf("%s holds text, and this is binary data", r.raw),
 			"Write it to a volume instead, or decrypt without to and ask for output_encoding base64."), false
@@ -436,7 +440,11 @@ func (c *Crypto) readFrom(ctx context.Context, in cryptoInput) (cryptoInput, too
 		if err != nil {
 			return in, errValidation("to: "+err.Error(), ""), false
 		}
-		if res, ok := checkRefAllowed(ctx, r, true); !ok {
+		if r.kind == refWorkspace {
+			if _, _, res, ok := c.cryptoWorkspaceLoc(ctx, r, true); !ok {
+				return in, res, false
+			}
+		} else if res, ok := checkRefAllowed(ctx, r, true); !ok {
 			return in, res, false
 		}
 	}
@@ -454,8 +462,10 @@ func (c *Crypto) readFrom(ctx context.Context, in cryptoInput) (cryptoInput, too
 	if err != nil {
 		return in, errValidation("from: "+err.Error(), ""), false
 	}
-	if res, ok := checkRefAllowed(ctx, r, false); !ok {
-		return in, res, false
+	if r.kind != refWorkspace {
+		if res, ok := checkRefAllowed(ctx, r, false); !ok {
+			return in, res, false
+		}
 	}
 	limit := c.MaxBytes
 	if limit <= 0 {
@@ -464,7 +474,14 @@ func (c *Crypto) readFrom(ctx context.Context, in cryptoInput) (cryptoInput, too
 	if field == "ciphertext" {
 		limit = limit/3*4 + 1024 // a ciphertext is text: base64 or an envelope
 	}
-	b, res, ok := c.readRef(ctx, r, limit)
+	var b []byte
+	var res tools.Result
+	if r.kind == refWorkspace {
+		// The workspace grant and hook are judged here (RFC GW P2 §3.4).
+		b, res, ok = c.readWorkspaceRef(ctx, r, limit)
+	} else {
+		b, res, ok = c.readRef(ctx, r, limit)
+	}
 	if !ok {
 		return in, res, false
 	}

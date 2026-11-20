@@ -6310,6 +6310,7 @@ func (d *Document) importMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		return errValidation("import_md: missing required field: markdown", "Pass `markdown`, the document text with at least one '# Heading'."), nil
 	}
 	chunks, edges := parseLoomMarkdown(in.Markdown)
+	markWorkspaceImages(ctx, chunks)
 	if len(chunks) == 0 {
 		return errValidation("import_md: no headings found — a document needs at least one '# Heading'", ""), nil
 	}

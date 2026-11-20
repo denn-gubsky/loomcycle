@@ -528,8 +528,7 @@ func containsCall[T comparable](s []T, v T) bool {
 	return false
 }
 
-// The ops that do not take a workspace reference yet refuse one plainly,
-// and Crypto refuses one for its from and to.
+// The ops that do not take a workspace reference yet refuse one plainly.
 func TestFileWorkspace_OpsWithoutWorkspaceSupportRefuseTheReference(t *testing.T) {
 	f := newFCFixture(t, inbox.Service{}, lifecycle.Limits{})
 	f.open(t, "w")
@@ -546,16 +545,6 @@ func TestFileWorkspace_OpsWithoutWorkspaceSupportRefuseTheReference(t *testing.T
 	}
 	_, res := f.exec(t, f.ctx, map[string]any{"op": "extract", "path": "workspace:w:a.docx"})
 	wantFileRefusal(t, "extract", res, "workspace reference")
-
-	c, _, cctx := cryptoFixture(t, "user")
-	cctx = tools.UpdateRunPolicy(cctx, func(p *tools.RunPolicy) {
-		p.Tools = append(p.Tools, "Crypto", "Workspace")
-		p.Workspace = wsFull
-	})
-	for _, body := range []string{`{"op":"hash","from":"workspace:w:a.docx"}`, `{"op":"encrypt","key":"k","plaintext":"x","to":"workspace:w:out"}`} {
-		_, res := cryptoExec(t, c, cctx, body)
-		wantFileRefusal(t, body, res, "does not take a workspace reference")
-	}
 }
 
 func TestParseDataRef_WorkspaceForms(t *testing.T) {

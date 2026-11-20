@@ -29,7 +29,7 @@ import (
 // workspace's file is ever held whole in memory.
 //
 // The ops that need a file on the core's disk (extract, transcribe, unpack,
-// render, upload) still reach the inbox and volumes through openRef and
+// render) still reach the inbox and volumes through openRef and
 // refuse a workspace reference (notOnWorkspace) until the PRs that move
 // their conversions onto the workspace's worker.
 
