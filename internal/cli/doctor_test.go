@@ -37,6 +37,14 @@ type stubConfig struct {
 	embedder       *DoctorEmbedder
 	embedderErr    error
 	edgeProbes     []DoctorEdgeProbe
+	workspaces     DoctorWorkspaces
+}
+
+func (s *stubConfig) Workspaces() DoctorWorkspaces {
+	if s.workspaces.Mode == "" {
+		return DoctorWorkspaces{Mode: config.WorkspaceModeOff}
+	}
+	return s.workspaces
 }
 
 func (s *stubConfig) EdgeGateProbes() []DoctorEdgeProbe { return s.edgeProbes }
@@ -615,5 +623,50 @@ func TestDoctor_FindsAPresetsAndConfigDirStack(t *testing.T) {
 	}
 	if !strings.Contains(out, "[PASS]  Config parses") {
 		t.Errorf("doctor did not load the stack:\n%s", out)
+	}
+}
+
+// doctor reports workspace.mode, says plainly that local mode runs commands
+// with no isolation, says it cannot see the attached workers, and names the
+// agents whose workspace grant allows nothing.
+func TestDoctor_ReportsTheWorkspaceModeAndInertGrants(t *testing.T) {
+	for _, c := range []struct {
+		ws         DoctorWorkspaces
+		want       []string
+		wantNot    []string
+		wantPassed bool
+	}{
+		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeOff}, want: []string{"[PASS]  Workspaces", "workspace.mode off"}, wantNot: []string{"Workspace grants"}},
+		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeLocal, LocalTenant: "default", LocalRoot: "/data/workspaces"},
+			want: []string{"[WARN]  Workspaces", "workspace.mode local", `tenant "default"`, "/data/workspaces", "no isolation", "provider keys", "configuration only"}},
+		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeRemote, Endpoint: "0.0.0.0:7788"},
+			want: []string{"[PASS]  Workspaces", "0.0.0.0:7788", "workers:attach", "configuration only"}},
+		{ws: DoctorWorkspaces{Mode: config.WorkspaceModeOff, InertGrants: []string{"builder", "tester"}},
+			want: []string{"[WARN]  Workspace grants", "2 agents", "builder, tester"}},
+	} {
+		t.Run(c.ws.Mode+strings.Join(c.ws.InertGrants, ","), func(t *testing.T) {
+			withTempHome(t)
+			withStubLoader(t, &stubConfig{backend: "sqlite", dataDir: t.TempDir(), listen: freePort(t), workspaces: c.ws})
+			configDir := filepath.Join(os.Getenv("HOME"), ".config", "loomcycle")
+			if err := os.MkdirAll(configDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(configDir, "loomcycle.yaml"), []byte("placeholder"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			RunDoctor(nil, &stdout, &stderr)
+			out := stdout.String()
+			for _, w := range c.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("missing %q in:\n%s", w, out)
+				}
+			}
+			for _, w := range c.wantNot {
+				if strings.Contains(out, w) {
+					t.Errorf("unexpected %q in:\n%s", w, out)
+				}
+			}
+		})
 	}
 }

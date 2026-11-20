@@ -112,7 +112,7 @@ func (d *Dispatcher) Do(ctx context.Context, workerID string, req Request) (res 
 	if w == nil {
 		return Result{}, ErrWorkerLost
 	}
-	if !w.serves.Serves(req.TenantID) {
+	if !w.servesTenant(req.TenantID) {
 		// Placement never puts a workspace here; a row naming this worker
 		// for another tenant is a bug or a forgery, and nothing is sent.
 		return Result{}, &OpError{Class: workspace.ClassNoWorker, Detail: "the worker does not serve this tenant"}

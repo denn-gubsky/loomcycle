@@ -191,6 +191,8 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 		r.pass("Listen address", fmt.Sprintf("%s (bindable)", listenAddr))
 	}
 
+	checkWorkspaces(r, cfg)
+
 	// Agent capability gates. doctor inspected no agents at all before this,
 	// so the most common "why is my agent not doing that" — a tool granted with
 	// no gate behind it — went unmentioned by the command an operator runs
@@ -214,6 +216,33 @@ func RunDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// checkWorkspaces reports workspace.mode (RFC GW) and the agents whose
+// workspace grant is inert. doctor runs without the server, so it reports the
+// configuration only: which workers are attached is the running server's
+// to say (the loomcycle_workspace_workers metric, or its log).
+func checkWorkspaces(r *doctorRun, cfg configForDoctor) {
+	ws := cfg.Workspaces()
+	const live = "doctor reads the configuration only; the attached workers are the running server's loomcycle_workspace_workers metric"
+	switch ws.Mode {
+	case config.WorkspaceModeOff:
+		r.pass("Workspaces", "workspace.mode off — no workspaces are served")
+	case config.WorkspaceModeLocal:
+		r.warn("Workspaces", fmt.Sprintf("workspace.mode local — the runtime starts one workspace worker as its child, serving tenant %q (%s) from %s. "+
+			"Its host engine runs agents' commands as the runtime's own user with no isolation: a command can read the data directory, "+
+			"the secrets files and the runtime's environment, provider keys included. Use it only on a machine where the agents are trusted. %s",
+			ws.LocalTenant, ws.LocalTenantWhy, ws.LocalRoot, live))
+	case config.WorkspaceModeLocalRemote:
+		r.warn("Workspaces", fmt.Sprintf("workspace.mode local+remote — a local worker serving tenant %q (%s) from %s, and workers of their own on %s. "+
+			"The local worker's host engine runs commands as the runtime's own user with no isolation. %s", ws.LocalTenant, ws.LocalTenantWhy, ws.LocalRoot, ws.Endpoint, live))
+	default:
+		r.pass("Workspaces", fmt.Sprintf("workspace.mode %s — workers attach on %s with a workers:attach token; %s", ws.Mode, ws.Endpoint, live))
+	}
+	if len(ws.InertGrants) > 0 {
+		r.warn("Workspace grants", fmt.Sprintf("%d %s with a workspace grant that allows nothing (Workspace not in tools, or workspace.mode off): %s",
+			len(ws.InertGrants), plural(len(ws.InertGrants), "agent"), strings.Join(ws.InertGrants, ", ")))
+	}
 }
 
 // doctorRun accumulates PASS/WARN/FAIL counts as the checks run and
@@ -348,6 +377,23 @@ type configForDoctor interface {
 	// EdgeGateProbes lists the endpoints the configured header and awsiam
 	// sign-in gates reach at sign-in time (RFC FA P3).
 	EdgeGateProbes() []DoctorEdgeProbe
+	// Workspaces is the workspace block (RFC GW) as doctor reports it.
+	Workspaces() DoctorWorkspaces
+}
+
+// DoctorWorkspaces is the workspace configuration doctor reports.
+type DoctorWorkspaces struct {
+	// Mode is workspace.mode, resolved: off, local, remote or local+remote.
+	Mode string
+	// LocalTenant and LocalRoot are the local worker's tenant ("" in open
+	// mode) and directory, LocalTenantWhy why that tenant; empty unless the
+	// mode starts it.
+	LocalTenant, LocalTenantWhy, LocalRoot string
+	// Endpoint is the worker endpoint's listen address when the mode
+	// attaches workers of their own.
+	Endpoint string
+	// InertGrants are the agents whose workspace grant reaches nothing.
+	InertGrants []string
 }
 
 // DoctorEmbedder is the configured memory embedder, as doctor reports it.

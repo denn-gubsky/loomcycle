@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -16,7 +17,7 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 	if got != want {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
-	if got.RemoteWorkers() {
+	if got.RemoteWorkers() || got.LocalWorker() || got.Serves() {
 		t.Fatal("an absent block attaches workers")
 	}
 }
@@ -49,7 +50,10 @@ func TestWorkspaceConfig_RemoteModeUsesTheEndpointWithoutTheUnusedWarning(t *tes
 
 func TestWorkspaceConfig_RefusesWhatItCannotServe(t *testing.T) {
 	for _, c := range []struct{ block, want string }{
-		{"workspace:\n  mode: local\n", "local is not available in this release"},
+		{"workspace:\n  mode: remote+local\n", `unknown mode "remote+local"`},
+		{"workspace:\n  mode: remote\n  local:\n    tenant: acme\n", "starts no local worker"},
+		{"workspace:\n  mode: local\n  local:\n    tenants: [acme]\n", `unknown key "tenants"`},
+		{"conversion:\n  mode: inprocess\nworkspace:\n  mode: local+remote\n", "workspace mode local+remote needs the host:port"},
 		{"workspace:\n  mode: cloud\n", `unknown mode "cloud"`},
 		{"conversion:\n  mode: inprocess\nworkspace:\n  mode: remote\n", "workspace mode remote needs the host:port"},
 		{"workspace:\n  mode: off\n  max_per_run: -1\n", "may not be negative"},
@@ -65,6 +69,54 @@ func TestWorkspaceConfig_RefusesWhatItCannotServe(t *testing.T) {
 	}
 }
 
+// Mode local needs no worker endpoint: the runtime starts its worker on a
+// private socket, keeping its workspaces in a directory of the data dir
+// unless the block says otherwise.
+func TestWorkspaceConfig_LocalNeedsNoEndpointAndHasDefaults(t *testing.T) {
+	cfg, err := loadConversion(t, "conversion:\n  mode: inprocess\nworkspace:\n  mode: local\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := cfg.Workspace.Resolved()
+	if !ws.LocalWorker() || ws.RemoteWorkers() || !ws.Serves() {
+		t.Fatalf("mode local: local=%v remote=%v serves=%v", ws.LocalWorker(), ws.RemoteWorkers(), ws.Serves())
+	}
+	if want := filepath.Join(cfg.Env.DataDir, "workspaces"); cfg.WorkspaceLocalRoot() != want {
+		t.Fatalf("root = %q, want %q", cfg.WorkspaceLocalRoot(), want)
+	}
+
+	cfg, err = loadConversion(t, "conversion:\n  mode: inprocess\nworker_endpoint:\n  listen: 127.0.0.1:7788\n"+
+		"workspace:\n  mode: local+remote\n  local:\n    tenant: acme\n    root: /srv/ws\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws = cfg.Workspace.Resolved()
+	if !ws.LocalWorker() || !ws.RemoteWorkers() || ws.Local.Tenant != "acme" || cfg.WorkspaceLocalRoot() != "/srv/ws" {
+		t.Fatalf("local+remote: %+v root %q", ws, cfg.WorkspaceLocalRoot())
+	}
+}
+
+// Unset, the local worker serves the tenant a run of this install carries
+// when its request names none: "" in open mode, "default" under the legacy
+// secret, the principals' one tenant; written, what is written.
+func TestWorkspaceLocalTenant_IsTheTenantARunWithNoneNamedCarries(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"open mode", Config{}, ""},
+		{"legacy secret", Config{Env: Env{AuthToken: "s"}}, "default"},
+		{"one principal tenant", Config{Principals: map[string]PrincipalDef{"a": {Tenant: "acme"}, "b": {Tenant: "acme"}}}, "acme"},
+		{"principals of two tenants", Config{Principals: map[string]PrincipalDef{"a": {Tenant: "acme"}, "b": {Tenant: "zed"}}}, "default"},
+		{"written", Config{Env: Env{AuthToken: "s"}, Workspace: WorkspaceConfig{Local: WorkspaceLocalConfig{Tenant: "lab"}}}, "lab"},
+	} {
+		if got, why := c.cfg.WorkspaceLocalTenant(); got != c.want || why == "" {
+			t.Errorf("%s: tenant = %q (%q), want %q", c.name, got, why, c.want)
+		}
+	}
+}
+
 // A grant on an agent holding the tool still reaches nothing while the
 // runtime serves no workspaces: advised at boot, never refused.
 func TestWorkspaceWarnings_AdviseAGrantWhileTheModeIsOff(t *testing.T) {
@@ -74,5 +126,23 @@ func TestWorkspaceWarnings_AdviseAGrantWhileTheModeIsOff(t *testing.T) {
 	}
 	if got := workspaceWarnings("a", def, WorkspaceModeRemote); len(got) != 0 {
 		t.Errorf("mode remote: advisory = %q, want none", got)
+	}
+}
+
+// The agents whose grant allows nothing are named, sorted: one without the
+// tool whatever the mode, every granted one while the mode is off.
+func TestInertWorkspaceGrants_NamesTheAgentsWhoseGrantAllowsNothing(t *testing.T) {
+	grant := &AgentWorkspace{Ops: []string{"exec"}, Open: true}
+	cfg := &Config{Agents: map[string]AgentDef{
+		"zed":     {Tools: []string{"Read"}, Workspace: grant},
+		"builder": {Tools: []string{"Workspace"}, Workspace: grant},
+		"plain":   {Tools: []string{"Workspace"}},
+	}}
+	if got := strings.Join(cfg.InertWorkspaceGrants(), ","); got != "builder,zed" {
+		t.Errorf("mode off: inert = %q, want builder,zed", got)
+	}
+	cfg.Workspace.Mode = WorkspaceModeLocal
+	if got := strings.Join(cfg.InertWorkspaceGrants(), ","); got != "zed" {
+		t.Errorf("mode local: inert = %q, want zed", got)
 	}
 }

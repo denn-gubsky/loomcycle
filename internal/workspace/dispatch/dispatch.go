@@ -10,6 +10,10 @@
 // accepted only when its own token grants that same id. The store's
 // worker-keyed queries are not tenant-scoped; this keying is what makes them
 // safe to use.
+//
+// The worker the runtime starts as its own child (workspace.mode local)
+// attaches on a private Unix socket with a per-boot token instead
+// (RegisterLocal); its id is "local:<tenant>/<id>".
 package dispatch
 
 import (
@@ -97,7 +101,15 @@ type Options struct {
 	// RecheckEvery is how often an attached worker's token is checked
 	// again; zero is DefaultRecheckEvery. A test seam, not a setting.
 	RecheckEvery time.Duration
-	Logger       *slog.Logger
+	// LocalToken is the per-boot token of the worker the runtime starts as
+	// its own child (workspace.mode local). It is accepted only on a stream
+	// a RegisterLocal server serves, the runtime's private Unix socket, and
+	// refused everywhere else; empty when there is no local worker.
+	LocalToken string
+	// LocalTenant is the one tenant the local worker serves
+	// (workspace.local.tenant).
+	LocalTenant string
+	Logger      *slog.Logger
 }
 
 // Dispatcher is the workspace worker service and the registry behind it.
@@ -121,6 +133,8 @@ type worker struct {
 	id       string // the core's id: the token's identity and the declared id
 	declared string
 	serves   auth.WorkerAttach
+	// local is the runtime's own child, attached on its private socket.
+	local    bool
 	engine   string
 	tools    map[string]bool
 	labels   []string
@@ -206,6 +220,49 @@ func (d *Dispatcher) Register(srv grpc.ServiceRegistrar) {
 	workspacepb.RegisterWorkspaceServiceServer(srv, d)
 }
 
+// RegisterLocal adds the workspace service to srv, the server of the
+// runtime's private socket, for the local worker alone: every stream it
+// serves is authenticated against LocalToken, never the token resolver.
+func (d *Dispatcher) RegisterLocal(srv grpc.ServiceRegistrar) {
+	workspacepb.RegisterWorkspaceServiceServer(srv, localService{d: d})
+}
+
+// localKey marks the context of a stream the private socket serves. Only
+// localService sets it, and only RegisterLocal registers localService, so a
+// stream from the network endpoint can never carry it.
+type localKey struct{}
+
+func isLocal(ctx context.Context) bool { return ctx.Value(localKey{}) != nil }
+
+// localService is the workspace service on the private socket: the
+// dispatcher's own, each stream's context marked as local.
+type localService struct {
+	workspacepb.UnimplementedWorkspaceServiceServer
+	d *Dispatcher
+}
+
+func (l localService) Attach(s workspacepb.WorkspaceService_AttachServer) error {
+	return l.d.Attach(localAttach{s, context.WithValue(s.Context(), localKey{}, true)})
+}
+
+func (l localService) Op(s workspacepb.WorkspaceService_OpServer) error {
+	return l.d.Op(localOp{s, context.WithValue(s.Context(), localKey{}, true)})
+}
+
+type localAttach struct {
+	workspacepb.WorkspaceService_AttachServer
+	ctx context.Context
+}
+
+func (s localAttach) Context() context.Context { return s.ctx }
+
+type localOp struct {
+	workspacepb.WorkspaceService_OpServer
+	ctx context.Context
+}
+
+func (s localOp) Context() context.Context { return s.ctx }
+
 // Serve serves the workspace service alone on l, on a server of its own
 // built as the runtime builds the endpoint's, until Stop: for tests and
 // harnesses.
@@ -252,6 +309,22 @@ func (d *Dispatcher) authorize(ctx context.Context, bearer string) (owner string
 	dp := d.deps.Load()
 	if dp == nil {
 		return "", att, status.Error(codes.Unavailable, "the runtime is starting")
+	}
+	// The local worker's token is compared, in constant time, only on the
+	// private socket, and the socket takes no other: a token that reached
+	// the network could never attach there, and a network token, whatever
+	// tenant it grants, could never take the local worker's id ("local:..."
+	// is no grantKey) or its Op streams.
+	local := d.opt.LocalToken != "" && auth.CompareBearer(bearer, d.opt.LocalToken)
+	if isLocal(ctx) {
+		if !local {
+			return "", att, status.Error(codes.PermissionDenied, "the runtime's private worker socket accepts only its local worker's token")
+		}
+		att = auth.WorkerAttach{TenantID: d.opt.LocalTenant}
+		return "local:" + d.opt.LocalTenant, att, nil
+	}
+	if local {
+		return "", att, status.Error(codes.PermissionDenied, "the local worker's token is accepted only on the runtime's private socket")
 	}
 	p, ok := dp.resolve(ctx, bearer)
 	if !ok {
@@ -330,6 +403,7 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 	if err != nil {
 		return err
 	}
+	w.local = isLocal(ctx)
 	d.mu.Lock()
 	if _, dup := d.workers[w.id]; dup {
 		d.mu.Unlock()
@@ -455,6 +529,25 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 		}
 	}
 	return w, held, nil
+}
+
+// servesTenant reports whether w may be given a workspace or an op of
+// tenant. It is the one place the decision is made: placement, Attached and
+// Do all ask it.
+//
+// The empty tenant is what a run carries on an install with no
+// authentication (open mode) when its request names none. Only the local
+// worker, the runtime's own child on its private socket, configured for the
+// empty tenant (workspace.local.tenant resolved to ""), serves it: such an
+// install is a single user's, and its local worker is the one meant for it.
+// A network worker never serves it, tenant-bound or shared: its token names
+// a tenant, and an empty tenant reaching it would mean a run with no
+// tenant's identity was handed to a machine some tenant's token attached.
+func (w *worker) servesTenant(tenant string) bool {
+	if tenant == "" {
+		return w.local && !w.serves.Shared && w.serves.TenantID == ""
+	}
+	return w.serves.Serves(tenant)
 }
 
 // engineServes reports whether a worker on engine may hold workspaces for the
@@ -803,9 +896,6 @@ type PlaceRequest struct {
 // at_capacity. An error is an *OpError of class no_worker or at_capacity, or
 // the store's.
 func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, error) {
-	if req.TenantID == "" {
-		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: "a workspace is placed for a tenant"}
-	}
 	type cand struct {
 		id        string
 		used, cap int
@@ -815,7 +905,7 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 	for _, w := range d.workers {
 		// engineServes is checked at attach too; again here so a shared
 		// host worker can never be handed a workspace, whatever let it in.
-		if !w.serves.Serves(req.TenantID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
+		if !w.servesTenant(req.TenantID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
 			continue
 		}
 		ok := true
@@ -828,7 +918,11 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 	}
 	d.mu.Unlock()
 	if len(matched) == 0 {
-		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: "no attached workspace worker serves this tenant with the toolchains and engine asked"}
+		detail := "no attached workspace worker serves this tenant with the toolchains and engine asked"
+		if req.TenantID == "" {
+			detail = "the run has no tenant, and only a local worker configured for the empty tenant (workspace.mode local, workspace.local.tenant unset, no authentication) serves one"
+		}
+		return nil, &OpError{Class: workspace.ClassNoWorker, Detail: detail}
 	}
 	var free []cand
 	for _, c := range matched {
@@ -865,7 +959,7 @@ func (d *Dispatcher) Attached(workerID, tenant string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w := d.workers[workerID]
-	return w != nil && w.serves.Serves(tenant)
+	return w != nil && w.servesTenant(tenant)
 }
 
 // WorkerInfo is one attached worker as its Hello described it.
