@@ -269,6 +269,10 @@ var layers = []layer{
 			// tool drives; its engines will call providers and lanes.
 			"internal/transcribe",
 			"internal/wiring",
+			// Workspace workers (RFC GW): the protocol's shared names, the
+			// core's dispatcher and the worker role. Above the store and the
+			// auth decision the dispatcher reads.
+			"internal/workspace",
 		},
 	},
 	{

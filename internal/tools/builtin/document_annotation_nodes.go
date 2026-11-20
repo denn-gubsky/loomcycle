@@ -39,8 +39,11 @@ package builtin
 // (D31): a new period marks no node stale. A non-exemplar member's text is not in it,
 // so editing one marks nothing stale until the statistics pick a new exemplar.
 //
-// NOT INDEXED. Node annotations get no search index row in this phase, so no search
-// returns them; P4.3 adds the opt-in search leg (RFC GM §6.1, §7).
+// INDEXED, OPT-IN (P4.3, RFC GM §6.1). A written or thin record gets a search index
+// row under its own key prefix and ranks only when search names its level in
+// annotation_levels; a declared one gets none (document_annotation_search.go). The
+// node's trend from the built-in series is served beside its summary, never written
+// into it (D31, attachNodeSeries), so a new period marks no record stale.
 
 import (
 	"context"
@@ -204,10 +207,15 @@ func (s *annotationScope) nodePlan(ctx context.Context) (*nodeStatsPlan, error) 
 	if onto == nil {
 		return nil, fmt.Errorf("no tenant ontology")
 	}
+	if p := cachedNodePlan(ctx, s.key, true); p != nil {
+		s.plan = p
+		return p, nil
+	}
 	p, err := s.d.buildNodeStatsPlan(ctx, s.key, *onto, "")
 	if err != nil {
 		return nil, err
 	}
+	cacheNodePlan(ctx, s.key, p, true)
 	s.plan = p
 	return p, nil
 }
@@ -844,7 +852,8 @@ func (d *Document) nodeAnnotationInputsOp(ctx context.Context, s *annotationScop
 }
 
 // setNodeAnnotation writes a node's record. Its basis is the case the node is in
-// now, whoever wrote the text. It gets no search index row (P4.3).
+// now, whoever wrote the text. It is indexed for the search leg unless declared
+// (P4.3, document_annotation_search.go).
 func (d *Document) setNodeAnnotation(ctx context.Context, s *annotationScope, t annotationTarget, in docInput, brief, abstract string) (tools.Result, error) {
 	const op = "set_annotation"
 	if r := d.nodeAnnotationsReadEverything(ctx, op, s.key); r != nil {
@@ -894,6 +903,7 @@ func (d *Document) setNodeAnnotation(ctx context.Context, s *annotationScope, t 
 		return errFrom(op+": "+err.Error(), err), nil
 	}
 	rec := recs[t.chunk.ID][t.level]
+	d.indexAnnotation(ctx, s.key, s.mscope, rec)
 	notStale := false
 	rec.Stale = &notStale
 	return annotationWriteResult(ctx, rec, nil)

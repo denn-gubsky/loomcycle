@@ -74,6 +74,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/vision"
 	"github.com/denn-gubsky/loomcycle/internal/turncancel"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
 
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"go.opentelemetry.io/otel/trace"
@@ -513,6 +514,9 @@ type Server struct {
 	// conversionStats reads the conversion worker pool (RFC GO) for
 	// /metrics; nil in conversion mode inprocess, where there is none.
 	conversionStats func() convert.PoolStats
+	// workspaceStats reads the workspace worker dispatcher (RFC GW) for
+	// /metrics; nil while workspace.mode is off.
+	workspaceStats func() workspace.Stats
 
 	// metricsSampler is the v0.8.x process-resource sampler.
 	// Nil = the /v1/_metrics/* endpoints return 503. Set via
@@ -1208,6 +1212,10 @@ func (s *Server) SetExtractionStats(f func() (limit, inFlight, waiting int)) { s
 // SetConversionStats wires the conversion worker pool into /metrics (RFC GO
 // §5.10).
 func (s *Server) SetConversionStats(f func() convert.PoolStats) { s.conversionStats = f }
+
+// SetWorkspaceStats wires the workspace worker dispatcher into /metrics (RFC
+// GW). Boot wiring only.
+func (s *Server) SetWorkspaceStats(f func() workspace.Stats) { s.workspaceStats = f }
 
 // SetConverter sends this server's own conversions (the /v1/audio routes'
 // media conversion and encoding, OCR and describe-images re-encoding) to the

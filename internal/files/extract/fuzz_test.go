@@ -251,6 +251,10 @@ func FuzzMOBI(f *testing.F) {
 	kf8 := `<?xml version="1.0"?><html><head><title>T</title></head><body aid="0"></body></html><h1>T</h1><p><img src="kindle:embed:0001"/>a</p>` +
 		`<?xml version="1.0"?><!DOCTYPE html><html><body></body></html><h2>Two</h2><p>b</p>`
 	f.Add(mobiSpec{text: []byte(kf8), version: 8, recordSize: 64, extraFlags: 3, pictures: [][]byte{tinyPNG(f)}, exth: []mobiEXTH{exth(503, "T")}}.build())
+	// Footnotes and contents labels: a KF8 book with its skeleton,
+	// fragment and contents indexes, and a MOBI 7 book of filepos notes.
+	f.Add(kf8NotesBook(f).build())
+	f.Add(mobiSpec{text: []byte(mobi7Linked(f, `<p>A<sup>@r@<a filepos=#n#>1</a></sup> b.</p>@n@<p><a filepos=#r#>1</a> Note.</p>`)), extraFlags: 3}.build())
 	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, MOBI{}, "f.mobi", data, false) })
 }
 

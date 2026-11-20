@@ -100,6 +100,27 @@ In both cases, never publish the endpoint's port.
 
 `/metrics` reports `loomcycle_conversion_workers`, `_slots`, `_idle_slots`, `_inflight`, `_waiting`, `_quarantined_files`, `loomcycle_conversion_jobs_total{kind,outcome}`, `loomcycle_conversion_worker_deaths_total` and `loomcycle_conversion_worker_respawns_total`. A rising `outcome="crashed"` count is files killing workers; `outcome="busy"` is callers turned away after `queue_wait_s` with every worker occupied; `outcome="no_worker"` is calls made while no worker was attached.
 
+## Workspace workers
+
+The same endpoint serves a second kind of worker (RFC GW): one that holds workspaces, directories where an agent runs commands and works on files, away from the runtime. This release ships the worker and its protocol; the `Workspace` tool agents call comes in the next one, with a full guide.
+
+Turn it on in the runtime's yaml with `workspace: {mode: remote}` and a `worker_endpoint` (see [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace)). Mint the worker a token whose only scope is `workers:attach`; for a worker that serves every tenant, an admin mints it with `worker_shared: true`. Then run, on the worker's machine:
+
+```sh
+LOOMCYCLE_WORKER_DISPATCHER=runtime.internal:7788 \
+LOOMCYCLE_WORKER_TOKEN=<the workers:attach token> \
+LOOMCYCLE_WORKSPACE_ROOT=/var/lib/loomcycle/workspaces \
+loomcycle worker --role workspace
+```
+
+The worker reports `python` and `node` when it finds them on its `PATH`. A token that may not attach a worker (an admin token, the runtime's legacy secret, a token with other scopes) is refused, and the worker exits saying why. A token the runtime cannot verify, such as an unknown or revoked one, or one checked while the store is down, is refused for now: the worker logs it and retries with backoff, and is served only once the token verifies. The conversion workers' `LOOMCYCLE_WORKER_TOKEN` is not an operator token and never verifies. The runtime checks the token again every minute and detaches a worker whose token no longer holds.
+
+A worker is known by its token's grant and its own name (`--id`, by default the host name): `tenant:<tenant>/<name>` or `shared/<name>`. The name must stay the same across restarts, so that the worker keeps its workspaces; a worker that came back under another name would have the runtime remove every workspace on its disk as unknown. Two workers on one host each need an `--id` of their own.
+
+**The `host` engine has no isolation.** A command runs as the worker's user and can read anything that user can, the worker's own token included. Run it only on a machine you trust with every agent that may use it; isolated engines come in a later phase.
+
+When a worker attaches it lists the workspaces on its disk, and the runtime tells it which to delete: those released while it was away, those the runtime does not know, and those marked lost whose run has ended. A lost workspace whose run is still going is put back in service. `/metrics` reports `loomcycle_workspace_workers`, `loomcycle_workspace_ops_total{op,outcome}` and `loomcycle_workspace_worker_deaths_total`.
+
 ## Versions
 
 A runtime refuses a worker that speaks another worker protocol and logs a warning for a worker of another build. Upgrade the runtime and the workers together; a worker that is refused exits with a message naming both versions.

@@ -246,6 +246,7 @@ type palmText struct {
 	limit, maxText int64
 	next           int   // records read so far
 	total          int64 // bytes decoded so far
+	taken          int64 // bytes handed out by chunk so far
 	buf            []byte
 }
 
@@ -327,6 +328,7 @@ func (t *palmText) chunk(split func(b []byte, from int) int) ([]byte, error) {
 func (t *palmText) take(n int) []byte {
 	out := append([]byte(nil), t.buf[:n]...)
 	t.buf = append(t.buf[:0], t.buf[n:]...)
+	t.taken += int64(n)
 	return out
 }
 
