@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.162) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.163) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,15 +212,13 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.162.0) finishes reading a book library:
-`File op=extract` also reads MOBI/AZW3, Word 97–2003 DOC and compiled HTML
-Help (CHM), OCRs a DjVu book's scanned pages, and `File op=unpack` takes the
-books out of ZIP and RAR archives. A destructive change to an ontology entry
-in use now needs a plan's fingerprint, and an entry can be `@locked`. Read the
-upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.163.0) makes workspace workers usable on one
+machine (`workspace.mode: local`, with a guide), lets the knowledge-base walker
+walk the taxonomy and place a set of documents, and reads Russian CHM files
+that name no encoding. Read the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.161.0 read EPUB, FB2, RTF and a DjVu book's text layer, returned
-a book's own metadata, and retired ontology entries instead of deleting them.
+Before it, v1.162.0 finished reading a book library: MOBI/AZW3, Word 97–2003
+DOC, CHM, DjVu OCR, and `File op=unpack` for ZIP and RAR archives.
 
 Before that, v1.155.0 rendered a Document back into a file: `File op=render`
 writes Markdown, HTML, Word or PDF (typeset by Typst in the conversion
