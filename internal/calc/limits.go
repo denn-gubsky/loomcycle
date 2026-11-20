@@ -55,6 +55,9 @@ const (
 	maxPrimeBits = 1024
 	// maxModBits bounds modpow's modulus and exponent for the same reason.
 	maxModBits = 4096
+	// maxKeyBytes bounds the comparison keys one unique call builds: a
+	// 900 KB string repeated twenty times costs few steps but 18 MB of keys.
+	maxKeyBytes = 16 << 20
 	// maxRoundPlaces bounds the n of round(x, n) and friends.
 	maxRoundPlaces = 1000
 )

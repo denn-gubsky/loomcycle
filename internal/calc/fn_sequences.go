@@ -230,45 +230,67 @@ func fnReverse(e *evaluator, a args) (val, *Error) {
 	return out, nil
 }
 
+// keyBuf builds one key at a time and counts every byte written across
+// all the keys of one call, so the call can be refused at maxKeyBytes
+// however few steps those bytes cost.
+type keyBuf struct {
+	b    strings.Builder
+	used int
+}
+
+func (k *keyBuf) write(s string, a args) *Error {
+	k.used += len(s)
+	if k.used > maxKeyBytes {
+		return errf(codeTooLarge, a.pos, "%s: comparing these values would build more than %d bytes of keys", a.name, maxKeyBytes).
+			withHint("compare smaller values, or fewer of them")
+	}
+	k.b.WriteString(s)
+	return nil
+}
+
+// ceilDiv is ceil(n/d) for n >= 0.
+func ceilDiv(n, d int) int { return (n + d - 1) / d }
+
 // valueKey writes a canonical text for equality under ==: a float and an
-// exact number with the same value share a key, as they compare equal. It
-// charges one step per value written and one per bitStepCost bits of a
-// number, since a key serialises nested lists and every digit. A function
-// has no value to compare and is refused.
-func (e *evaluator) valueKey(b *strings.Builder, v val, a args) *Error {
+// exact number with the same value share a key, as they compare equal. A
+// key serialises nested lists and every digit, so each value written costs
+// one step plus one per bitStepCost bits of a number (at least one) or
+// bytes of a quoted string. A function has no value to compare and is
+// refused.
+func (e *evaluator) valueKey(k *keyBuf, v val, a args) *Error {
 	if err := e.charge(1, a.pos); err != nil {
 		return err
 	}
 	switch v := v.(type) {
 	case num:
 		r := v.rat()
-		if err := e.charge(ratBits(r)/bitStepCost, a.pos); err != nil {
+		if err := e.charge(max(1, ceilDiv(ratBits(r), bitStepCost)), a.pos); err != nil {
 			return err
 		}
-		b.WriteString("n")
-		b.WriteString(r.RatString())
+		return k.write("n"+r.RatString(), a)
 	case string:
-		if err := e.charge(len(v)/bitStepCost, a.pos); err != nil {
+		q := strconv.Quote(v)
+		if err := e.charge(1+ceilDiv(len(q), bitStepCost), a.pos); err != nil {
 			return err
 		}
-		b.WriteString("s")
-		b.WriteString(strconv.Quote(v))
+		return k.write("s"+q, a)
 	case bool:
-		b.WriteString("b")
-		b.WriteString(strconv.FormatBool(v))
+		return k.write("b"+strconv.FormatBool(v), a)
 	case []val:
-		b.WriteString("[")
+		if err := k.write("[", a); err != nil {
+			return err
+		}
 		for _, x := range v {
-			if err := e.valueKey(b, x, a); err != nil {
+			if err := e.valueKey(k, x, a); err != nil {
 				return err
 			}
-			b.WriteString(",")
+			if err := k.write(",", a); err != nil {
+				return err
+			}
 		}
-		b.WriteString("]")
-	default:
-		return errf(codeType, a.pos, "%s: functions cannot be compared", a.name)
+		return k.write("]", a)
 	}
-	return nil
+	return errf(codeType, a.pos, "%s: functions cannot be compared", a.name)
 }
 
 func fnUnique(e *evaluator, a args) (val, *Error) {
@@ -278,15 +300,15 @@ func fnUnique(e *evaluator, a args) (val, *Error) {
 	}
 	seen := make(map[string]bool, len(l))
 	out := []val{}
-	var b strings.Builder
+	var k keyBuf
 	for _, x := range l {
-		b.Reset()
-		if err := e.valueKey(&b, x, a); err != nil {
+		k.b.Reset()
+		if err := e.valueKey(&k, x, a); err != nil {
 			return nil, err
 		}
-		k := b.String()
-		if !seen[k] {
-			seen[k] = true
+		key := k.b.String()
+		if !seen[key] {
+			seen[key] = true
 			out = append(out, x)
 		}
 	}

@@ -2,9 +2,54 @@ package calc
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestKeyCost_StringsChargeAtLeastOneStepAndKeyBytesAreCapped: a short
+// string's key must cost more than the element visit (its quoted bytes
+// are written), and one unique call may not build more than maxKeyBytes
+// of keys however few steps they cost.
+func TestKeyCost_StringsChargeAtLeastOneStepAndKeyBytesAreCapped(t *testing.T) {
+	short := make([]string, 110_000)
+	for i := range short {
+		short[i] = "s" + strconv.FormatInt(int64(i), 36) // a letter first: a numeric string would decode as a number
+	}
+	long := strings.Repeat("x", 900_000)
+	enc := func(v any) json.RawMessage {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	cases := []struct {
+		expr string
+		vars map[string]json.RawMessage
+		code errCode
+	}{
+		// 110k distinct short strings, keyed six times: one step per
+		// element would be 660k, under the limit.
+		{"[" + strings.TrimSuffix(strings.Repeat("len(unique(s)), ", 6), ", ") + "]",
+			map[string]json.RawMessage{"s": enc(short)}, codeStepLimit},
+		// 20 copies of a 900 KB string: 18 MB of keys for ~35k steps.
+		{"len(unique([" + strings.TrimSuffix(strings.Repeat("l, ", 20), ", ") + "]))",
+			map[string]json.RawMessage{"l": enc(long)}, codeTooLarge},
+	}
+	for _, c := range cases {
+		start := time.Now()
+		_, err := evalWithin(context.Background(), Request{Expr: c.expr, Vars: c.vars}, time.Minute)
+		if err == nil || err.Code != string(c.code) {
+			t.Errorf("%.60s: err = %v, want %s", c.expr, err, c.code)
+		}
+		if d := time.Since(start); d > 10*time.Second {
+			t.Errorf("%.60s: took %v", c.expr, d)
+		}
+	}
+}
 
 // TestKeyCost_UniqueChargesNestedAndBigValues: unique serializes every
 // nested element and every number's digits, so its step charge must
@@ -13,8 +58,10 @@ func TestKeyCost_UniqueChargesNestedAndBigValues(t *testing.T) {
 	for _, expr := range []string{
 		// 990 references to one 1,000-element list: ~990k values to key.
 		"a = 1:1000; l = map(1:990, i -> a); [unique(l), unique(l)]",
-		// 20,000 distinct 16,000-bit numbers: each key is ~4,800 digits.
-		"x = 2^16000; l = map(1:20000, i -> x + i); len(unique(l))",
+		// 3,000 distinct 16,000-bit numbers keyed ten times: each key is
+		// ~4,800 digits (14.5 MB a call, under maxKeyBytes), so the steps
+		// must run out.
+		"x = 2^16000; l = map(1:3000, i -> x + i); [" + strings.TrimSuffix(strings.Repeat("len(unique(l)), ", 10), ", ") + "]",
 	} {
 		start := time.Now()
 		_, err := evalWithin(context.Background(), Request{Expr: expr}, time.Minute)
