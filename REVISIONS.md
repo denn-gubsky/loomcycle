@@ -10,9 +10,9 @@ For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
 ## What's in v1.162.0
 
-*`File op=extract` reads the rest of a book library: MOBI, AZW3 and PalmDOC (with footnotes and contents labels), Word 97–2003 DOC and compiled HTML Help (CHM), all in pure Go, and a DjVu book's scanned pages are read by OCR. `File op=unpack` takes the files out of ZIP and RAR archives (RFC GV, RFC GX). A destructive change to an ontology entry in use needs a plan's fingerprint, an entry can be `@locked`, and an operator can plan and accept change and retire proposals (RFC GQ). Node statistics find misfit placements, growth and quiet nodes, a node's annotation is searchable, and `kb/taxonomist` proposes taxonomies (RFC GM). The groundwork for workspace workers is in, not usable yet (RFC GW P1).*
+*`File op=extract` reads the rest of a book library: MOBI, AZW3 and PalmDOC (with footnotes and contents labels), Word 97–2003 DOC and compiled HTML Help (CHM), all in pure Go, and a DjVu book's scanned pages are read by OCR. `File op=unpack` takes the files out of ZIP and RAR archives (RFC GV, RFC GX). A destructive change to an ontology entry in use needs a plan's fingerprint, an entry can be `@locked`, and an operator can plan and accept change and retire proposals (RFC GQ). Node statistics find misfit placements, growth and quiet nodes, and split, merge and new-concept candidates, a node's annotation is searchable, and `kb/taxonomist` proposes taxonomies (RFC GM). The groundwork for workspace workers is in, not usable yet (RFC GW P1).*
 
-The v1.162 line: #2762 to #2790.
+The v1.162 line: #2762 to #2791.
 - `@loomcycle/client` 1.162.0: the `unpack` input on `RunFileInput`, `OntologyProposalChange` for `planOntology`, and `AgentWorkspaceGrant`. The Python adapter moves to 1.162.0 (tag `python-v1.162.0`) for proposal items in `plan_ontology`.
 - One numbered migration: Postgres `0135_workspaces` (SQLite creates the same table). One new Go dependency: `github.com/nwaples/rardecode/v2` v2.4.6 (BSD-2-Clause, pure Go).
 - The conversion worker protocol gains page images (`ExtractOptions.page_images`, `WorkerFrame.page_image`, `Report.page_images_unavailable`). A new `proto/workspace.proto` (`loomcycle.workspace.v1`) is the workspace worker protocol. gRPC `OntologyChange` gains `id` and `OntologyPlannedChange` gains `proposal`.
@@ -43,9 +43,9 @@ The v1.162 line: #2762 to #2790.
 - **Accepting a change or retire proposal** applies it to the target in place, keeping its chunk id, through every guard (#2771).
 - **Planning a proposal:** a plan takes `{"op": "proposal", "id": …}` and plans what accepting it would do (#2772); the Web UI accepts with that plan's fingerprint.
 
-### Classification graph and knowledge base (RFC GM: #2781, #2782, #2783, #2789, #2790; kb #2763, #2768)
+### Classification graph and knowledge base (RFC GM: #2781, #2782, #2783, #2789, #2790, #2791; kb #2763, #2768)
 
-- **`node_stats` modes.** `misfits` finds documents nearer a sibling concept's centroid and, with `propose`, files `rule:centroid` placements, never one a reviewer rejected. `growth` ranks growing concepts, lists quiet nodes, and shows where the unplaced share rose.
+- **`node_stats` modes.** `misfits` finds documents nearer a sibling concept's centroid and, with `propose`, files `rule:centroid` placements, never one a reviewer rejected. `growth` ranks growing concepts, lists quiet nodes, and shows where the unplaced share rose. `split` (#2791) lists concepts whose direct members form recurring groups, groups of unplaced documents, and sibling concepts alike enough to merge; with `propose` it files inert add proposals and GQ retire proposals, never for an adopted or locked concept. Its similarity thresholds are not yet measured: measure them before turning `propose` on.
 - **Node annotations in search** (`annotation_levels` `scheme`, `concept`, `class`), and a node's series beside its summary.
 - **`kb/taxonomist`** (knowledge-base bundle) proposes taxonomies from the corpus's document briefs; it reports by default.
 - **kb/ask** routes period, status and kind listings to the walker; listing kinds come from the tenant ontology, and a class may name its other names with `@alt`.
