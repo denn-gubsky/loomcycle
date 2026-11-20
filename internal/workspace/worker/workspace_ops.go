@@ -45,7 +45,7 @@ func (w *worker) inWorkspace(ctx context.Context, dir, op string, args, input []
 	var a answer
 	switch op {
 	case workspace.OpExec:
-		a = w.exec(ctx, real, raw)
+		a = w.execInQuota(ctx, filepath.Base(dir), real, raw)
 	case workspace.OpRead:
 		a = readOp(ctx, real, raw)
 	case workspace.OpWrite:
@@ -195,4 +195,39 @@ func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
 	out, _ := json.Marshal(workspace.ExecAnswer{ExitCode: res.ExitCode, Output: strings.ToValidUTF8(string(res.Output), string(utf8.RuneError)),
 		Truncated: res.Truncated, TimedOut: res.TimedOut})
 	return answer{output: out, exit: int32(res.ExitCode)}
+}
+
+// execInQuota runs a command unless the workspace is marked full, then
+// measures the workspace again (RFC GW P2, ruling Q2): a command may write
+// past the quota while it runs, and the next write or command is refused
+// until a measurement finds it back under.
+func (w *worker) execInQuota(ctx context.Context, id, real string, raw []byte) answer {
+	v, err := fsops.OpenVolumeFS(real, "")
+	if err != nil {
+		return refuse(workspace.ClassFailed, "opening the workspace: %v", err)
+	}
+	defer v.Close()
+	u, release, err := w.writeLock(ctx, id, v)
+	if err != nil {
+		return refuse(workspace.ClassFailed, "%v", err)
+	}
+	full := u.full.Load()
+	snap := u.snapshot()
+	release()
+	if full {
+		about := ""
+		if snap.Estimate {
+			about = " (at least: the count is an estimate)"
+		}
+		return refuse(workspace.ClassOverQuota, "the workspace holds %d bytes%s, over its quota of %d; remove files before running another command", snap.UsedBytes, about, snap.QuotaBytes)
+	}
+	a := w.exec(ctx, real, raw)
+	// Measured even when the core stopped waiting: the command may have
+	// written before it was killed.
+	mctx := context.WithoutCancel(ctx)
+	if u, release, err := w.writeLock(mctx, id, v); err == nil {
+		w.measureLocked(mctx, u, v)
+		release()
+	}
+	return a
 }

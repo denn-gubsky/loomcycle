@@ -86,8 +86,11 @@ type Options struct {
 	// (LOOMCYCLE_WORKSPACE_COMMANDS); see engine.Host.Commands.
 	Commands []string
 	Labels   []string
-	TLS      *tls.Config
-	Insecure bool
+	// MeasureBudget bounds the walk that counts a workspace's bytes for its
+	// quota; past it the count is an estimate. Zero is 10 s.
+	MeasureBudget time.Duration
+	TLS           *tls.Config
+	Insecure      bool
 	// Resolve and ResolveEvery are workerlink's.
 	Resolve      func(ctx context.Context, host string) ([]string, error)
 	ResolveEvery time.Duration
@@ -167,6 +170,7 @@ func Run(ctx context.Context, opt Options) error {
 	log.Warn("the host engine runs commands as this process's user, with no isolation; use it only on a trusted machine", "root", root)
 	w := &worker{opt: opt, log: log, engine: &engine.Host{Commands: opt.Commands}}
 	defer w.engine.Close()
+	w.cleanWork()
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
 		Name: "workspace.worker", Logger: log,
@@ -203,6 +207,8 @@ type worker struct {
 	engine engine.Engine
 	// mu serialises open's capacity check with the directory it makes.
 	mu sync.Mutex
+	// quotas is each workspace's disk count and write lock.
+	quotas quotas
 	// extra counts the one-op streams OpenStreams opened and still open.
 	extra atomic.Int32
 }
@@ -368,6 +374,7 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 			log.Warn("cannot remove a workspace the dispatcher released", "workspace_id", id, "err", err)
 			continue
 		}
+		w.dropQuota(id)
 		gone = append(gone, id)
 	}
 	if len(gone) > 0 {
