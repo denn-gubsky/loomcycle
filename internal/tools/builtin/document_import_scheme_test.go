@@ -406,4 +406,9 @@ func TestOntologySchemes_WholeSchemeProposalOnPostgres(t *testing.T) {
 	if s == nil || len(s.Concepts) != 5 || s.Origin != "adopted" {
 		t.Fatalf("scheme on postgres = %#v", s)
 	}
+	for _, c := range s.Concepts {
+		if !c.Locked {
+			t.Errorf("adopted concept %s not locked on postgres", c.Tag)
+		}
+	}
 }
