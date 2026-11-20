@@ -7445,6 +7445,44 @@ agents:
           "|\\b(?:draft|confirmed|done|finished|shipped|unfinished)\\s+" + kinds + "\\b",
           "i");
       }
+      // listingStatusVerb: a list head and a kind, then in the same clause an
+      // auxiliary, an optional subject, an optional "not (yet)" or "been",
+      // and the status as a verb, alone ("which rfcs has the owner confirmed",
+      // "which plans have we finished") or after mark, make or set ("which
+      // rfcs did we mark as done", "which design notes are not yet marked
+      // done"). No status word ("which rfcs has the owner commented on"), no
+      // list head and kind ("how do I mark an rfc as done", "when was rfc X
+      // confirmed"), or a status word inside a topic ("which rfcs cover the
+      // done-marking workflow") stays with the cascade. A bare one-word
+      // subject is never one of the words after it, so "not" and "been" keep
+      // their meaning.
+      var STATUS_VERB = "(?:confirmed|done|finished|shipped|completed?)";
+      var STATUS_SUBJECT = "(?:(?:the|our|my|your|an?)\\s+[a-z]+(?:\\s+[a-z]+)?|" +
+        "(?!(?:not|never|yet|already|been|being|now|still|mark(?:ed)?|made|make|set|" + STATUS_VERB + ")\\b)[a-z]+)";
+      function listingStatusVerb(kinds) {
+        return new RegExp(
+          LIST_HEAD.source + "\\s+(?:(?:of|all|every|the|our)\\s+)*" + kinds +
+          "\\s+(?:has|have|had|did|do|does|are|is|were|was)(?:n['\u2019]t)?(?:\\s+" + STATUS_SUBJECT + ")?" +
+          "(?:\\s+(?:not|never))?(?:\\s+(?:yet|already|still|been|being|now))*" +
+          "\\s+(?:(?:mark(?:ed)?|made|make|set)\\s+(?:(?:as|to)\\s+)?" + STATUS + "|" + STATUS_VERB + ")(?![\\w-])",
+          "i");
+      }
+      // storedStatuses reads the statuses a status listing's match asks for,
+      // as the stored values (draft, review, confirmed, done): the last status
+      // word in it, or every other status when it is negated ("not done",
+      // "unfinished"). Only the match is read, so in "confirmed but not done"
+      // the status is confirmed, which a done document never holds. The
+      // values come from this fixed list, never a word of the question.
+      var STORED_STATUSES = ["draft", "review", "confirmed", "done"];
+      function storedStatuses(text) {
+        var re = /\b(drafts?|review|confirmed|done|finished|shipped|completed?|unfinished)\b/gi, w, base = "";
+        while ((w = re.exec(text))) { base = w[1].toLowerCase(); }
+        if (!base) { return []; }
+        var neg = base === "unfinished" || /\b(?:not|never)\b|n['\u2019]t\b/i.test(text);
+        base = /^draft/.test(base) ? "draft" : base === "review" || base === "confirmed" ? base : "done";
+        if (!neg) { return [base]; }
+        return STORED_STATUSES.filter(function (s) { return s !== base; });
+      }
       // listingType: every document of a kind, with nothing narrowing it:
       // "which implementation plans do we have", "list all design notes",
       // "what rfcs do we hold". Only a determiner may stand between the
@@ -7647,6 +7685,12 @@ agents:
       // the listing note.
       var LISTING_QUICK = "DEPTH: quick. The caller wants a short answer: one short line per document listed, and no " +
         "reading beyond the listings; still name every document listed.";
+      // statusLine names the stored statuses a status listing lists by
+      // (storedStatuses), after its note and before its classes.
+      function statusLine(statuses) {
+        return "STATUS: " + statuses.join(", ") + ". Pass each to status exactly as written, one listing per status.";
+      }
+
       // classesLine names the ontology classes a listing's kind resolved to
       // (resolveKind), after its note: query_documents' type matches a class
       // name exactly as written, then widens it to its subtypes. Only names
@@ -7735,9 +7779,13 @@ agents:
         }
         // The ontology is read only for a question a listing rule could take.
         if (LIST_HEAD.test(question)) {
-          var t = readKinds(), m = listingStatus(t.any).exec(question), kind = "";
+          var t = readKinds(), m = listingStatus(t.any).exec(question) || listingStatusVerb(t.any).exec(question), kind = "";
           if (m) {
             listing = LISTING_STATUS_NOTE; kind = m[1] || m[2];
+            // The kind is taken out first: a class may be named with a
+            // status word ("review note").
+            var statuses = storedStatuses(m[0].split(kind).join(" "));
+            if (statuses.length) { listing += "\n" + statusLine(statuses); }
           } else if ((m = listingType(t.pl).exec(question))) {
             listing = LISTING_TYPE_NOTE; kind = m[1];
           }
