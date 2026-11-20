@@ -225,7 +225,9 @@ func copyVolumeTarget(ctx context.Context, r dataRef, base string) (fileLoc, too
 		l.Close()
 		return nil, res, false
 	}
-	if e.Type == workspace.EntryDir {
+	// A "/" target already took the source's name: what is there now is the
+	// place itself (a folder a merge goes into), not one to step inside.
+	if e.Type == workspace.EntryDir && !strings.HasSuffix(r.path, "/") {
 		l.rel = filepath.Join(l.rel, base)
 	}
 	final := dataRef{raw: l.Ref(), kind: refVolume, volume: r.volume, path: filepath.ToSlash(l.rel)}
@@ -291,9 +293,6 @@ func (f *File) copyOnWorker(ctx context.Context, src, dst fileLoc, overwrite boo
 // arrive in a stage; a refusal there discards the stage, so nothing is
 // left either way. Links and special files are skipped and named.
 func (f *File) copyFolder(ctx context.Context, src, dst fileLoc, overwrite bool) (tools.Result, error) {
-	if res, done := f.copyOnWorker(ctx, src, dst, overwrite); done {
-		return res, nil
-	}
 	maxFiles, maxBytes := f.copyBounds()
 	entries, truncated, res, ok := src.Walk(ctx, maxFiles)
 	if !ok {
@@ -329,6 +328,24 @@ func (f *File) copyFolder(ctx context.Context, src, dst fileLoc, overwrite bool)
 			return errBusiness(fmt.Sprintf("copy: %s holds %d bytes, more than the %d the run's inbox has left; nothing was copied", src.Ref(), total, left),
 				"Remove files from the inbox with op=rm or op=clear, or copy less."), nil
 		}
+	}
+	// Each file is judged on its own source and target path before anything
+	// is written: a hook (or a grant) that refuses one path must not be
+	// passed by copying the folder that holds it. The folder itself was
+	// judged when the two places were resolved. At most max_files entries.
+	for _, e := range files {
+		if res, ok := src.Judge(ctx, e.Path, false); !ok {
+			return prefixed("copy", res), nil
+		}
+		if res, ok := dst.Judge(ctx, e.Path, true); !ok {
+			return prefixed("copy", res), nil
+		}
+	}
+	// Two workspaces on one worker: the worker copies, after the same
+	// listing was judged. It lists the folder again itself, so a file a
+	// command adds in between is copied unjudged; the bounds still hold.
+	if res, done := f.copyOnWorker(ctx, src, dst, overwrite); done {
+		return res, nil
 	}
 	if res, ok := dst.CreateFolder(ctx, src, files, overwrite); !ok {
 		return prefixed("copy", res), nil

@@ -600,3 +600,73 @@ func TestFileClear_APathThatIsNotAWorkspaceIsRefusedAndTheInboxStays(t *testing.
 		t.Errorf("the inbox file is gone: %v", err)
 	}
 }
+
+// A hook that refuses one file inside a folder refuses the whole folder
+// copy, before anything is written: each entry is judged on its own source
+// and target path, not only the folder's. Volume to workspace (a Read hook
+// on the source file, a Workspace write hook on the target file),
+// workspace to volume, workspace to workspace on one worker (the worker's
+// own copy) and on two, and an overwrite merge.
+func TestFileCopy_AHookOnOneFileInsideAFolderRefusesTheWholeCopy(t *testing.T) {
+	deny := func(ctx context.Context, tool, p string) context.Context {
+		return tools.WithHookPreCheck(ctx, func(_ context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+			var in struct{ Path string }
+			_ = json.Unmarshal(input, &in)
+			if name == tool && in.Path == p {
+				return tools.Result{Text: "denied " + p, IsError: true}, false
+			}
+			return tools.Result{}, true
+		})
+	}
+	setup := func(t *testing.T, opt worker.Options, second bool) *fcFixture {
+		f := newFCFixtureWith(t, inbox.Service{}, lifecycle.Limits{}, opt)
+		if second {
+			f.ws.h.AddWorker("w2", 1)
+		}
+		f.open(t, "a")
+		f.open(t, "b")
+		writeFiles(t, f.docs, map[string]string{"src/ok.txt": "ok", "src/secrets/key.txt": "k"})
+		f.wsPut(t, "a", "src/ok.txt", "ok")
+		f.wsPut(t, "a", "src/secrets/key.txt", "k")
+		return f
+	}
+	for _, c := range []struct {
+		name       string
+		opt        worker.Options
+		second     bool
+		from, to   string
+		tool, path string
+		overwrite  bool
+		written    func(f *fcFixture) bool
+	}{
+		{"volume->workspace, Read hook on the source", worker.Options{Capacity: 10}, false, "volume:docs:src", "workspace:b:dst", "Read", "src/secrets/key.txt", false,
+			func(f *fcFixture) bool { return f.wsHas(t, "b", "dst") }},
+		{"volume->workspace, Workspace hook on the target", worker.Options{Capacity: 10}, false, "volume:docs:src", "workspace:b:dst", "Workspace", "dst/secrets/key.txt", false,
+			func(f *fcFixture) bool { return f.wsHas(t, "b", "dst") }},
+		{"workspace->volume, Workspace hook on the source", worker.Options{Capacity: 10}, false, "workspace:a:src", "volume:docs:dst", "Workspace", "src/secrets/key.txt", false,
+			func(f *fcFixture) bool { _, err := os.Stat(filepath.Join(f.docs, "dst")); return err == nil }},
+		{"workspace->volume, Write hook on the target", worker.Options{Capacity: 10}, false, "workspace:a:src", "volume:docs:dst", "Write", "dst/secrets/key.txt", false,
+			func(f *fcFixture) bool { _, err := os.Stat(filepath.Join(f.docs, "dst")); return err == nil }},
+		{"workspace->workspace, one worker", worker.Options{Capacity: 10}, false, "workspace:a:src", "workspace:b:dst", "Workspace", "dst/secrets/key.txt", false,
+			func(f *fcFixture) bool { return f.wsHas(t, "b", "dst") }},
+		{"workspace->workspace, two workers", worker.Options{Capacity: 1}, true, "workspace:a:src", "workspace:b:dst", "Workspace", "src/secrets/key.txt", false,
+			func(f *fcFixture) bool { return f.wsHas(t, "b", "dst") }},
+		{"overwrite merge into a volume folder", worker.Options{Capacity: 10}, false, "workspace:a:src", "volume:docs:./", "Write", "src/secrets/key.txt", true,
+			func(f *fcFixture) bool {
+				return readFile(t, filepath.Join(f.docs, "src", "ok.txt")) != "OLD" || readFile(t, filepath.Join(f.docs, "src", "secrets", "key.txt")) != "OLDK"
+			}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := setup(t, c.opt, c.second)
+			if c.overwrite {
+				// The merge target holds other bytes, which a refused merge must leave.
+				writeFiles(t, f.docs, map[string]string{"src/ok.txt": "OLD", "src/secrets/key.txt": "OLDK"})
+			}
+			_, res := f.exec(t, deny(f.ctx, c.tool, c.path), map[string]any{"op": "copy", "from": c.from, "to": c.to, "overwrite": c.overwrite})
+			wantFileRefusal(t, c.name, res, "denied "+c.path)
+			if c.written(f) {
+				t.Errorf("%s: something was written after the refusal", c.name)
+			}
+		})
+	}
+}

@@ -87,6 +87,16 @@ func (l *workspaceLoc) hook(ctx context.Context, op string) (tools.Result, bool)
 
 func (l *workspaceLoc) Ref() string { return wsRef(l.name, l.path) }
 
+// Judge runs the Workspace hooks on one entry under the place; the grant
+// was checked when the place was resolved and covers every path in it.
+func (l *workspaceLoc) Judge(ctx context.Context, rel string, write bool) (tools.Result, bool) {
+	op := wsHookRead
+	if write {
+		op = wsHookWrite
+	}
+	return l.child(rel).hook(ctx, op)
+}
+
 func (l *workspaceLoc) Close() {}
 
 func (l *workspaceLoc) child(name string) *workspaceLoc {

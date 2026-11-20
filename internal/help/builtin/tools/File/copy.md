@@ -34,7 +34,9 @@ older form of inbox to volume.
 Grants: a workspace needs your `workspace` grant (`read` to copy from it,
 `write` to copy into it); a volume needs Read to copy from and Write to copy
 into a read-write one; the inbox is the run's own. The operator's hooks
-judge the final path.
+judge the final path, and for a folder every file's own source and target
+path too: one file a hook refuses refuses the whole copy, before anything
+is written.
 
 ## Arguments
 

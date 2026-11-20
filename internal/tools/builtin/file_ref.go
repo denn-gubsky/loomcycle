@@ -83,6 +83,10 @@ type fileLoc interface {
 	CreateFolder(ctx context.Context, src fileLoc, files []locEntry, overwrite bool) (tools.Result, bool)
 	// Remove removes the file or folder at the place.
 	Remove(ctx context.Context) (locRemoved, tools.Result, bool)
+	// Judge checks the grant and runs the pre-hooks for reading (write
+	// false) or writing the entry at rel under the place, as a call naming
+	// that path would be judged. A folder copy asks it of every file.
+	Judge(ctx context.Context, rel string, write bool) (tools.Result, bool)
 	Close()
 }
 
@@ -470,6 +474,19 @@ func (l *volumeLoc) captureFolder(ctx context.Context, src fileLoc, files []locE
 		kept = append(kept, w.inboxPath)
 	}
 	return tools.Result{}, true
+}
+
+// Judge asks a volume's Read or Write grant and hooks about one entry. The
+// inbox is the run's own: no grant or hook judges it, as for every File op
+// on it.
+func (l *volumeLoc) Judge(ctx context.Context, rel string, write bool) (tools.Result, bool) {
+	if l.inbox {
+		return tools.Result{}, true
+	}
+	p := filepath.ToSlash(filepath.Join(l.rel, filepath.FromSlash(rel)))
+	r := dataRef{raw: refPrefix(l.r) + p, kind: refVolume, volume: l.r.volume, path: p}
+	instead := "Copy the folder without that file"
+	return checkRefGrant(ctx, r, write, FileToolName, instead)
 }
 
 // Remove is not offered on a volume or the inbox here: op=rm and op=clear
