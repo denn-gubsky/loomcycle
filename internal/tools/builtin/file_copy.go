@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -242,7 +243,7 @@ func (f *File) copyFile(ctx context.Context, src, dst fileLoc, e locEntry, overw
 	if maxFile := inbox.MaxFileBytes(ctx); e.Size > maxFile {
 		return errValidation(fmt.Sprintf("copy: %s is %d bytes, over the per-file limit of %d (LOOMCYCLE_FILE_MAX_BYTES); nothing was copied", src.Ref(), e.Size, maxFile), ""), nil
 	}
-	if res, done := f.copyOnWorker(ctx, src, dst, overwrite); done {
+	if res, done := f.copyOnWorker(ctx, src, dst, overwrite, nil); done {
 		return res, nil
 	}
 	rc, res, ok := src.Open(ctx, ".")
@@ -264,14 +265,23 @@ func (f *File) copyFile(ctx context.Context, src, dst fileLoc, e locEntry, overw
 // copyOnWorker copies between two workspaces of the run on one worker,
 // which does it itself: the bytes never cross to the core. done is false
 // when they are on two workers (or either end is not a workspace), and the
-// caller streams the copy through the core instead.
-func (f *File) copyOnWorker(ctx context.Context, src, dst fileLoc, overwrite bool) (tools.Result, bool) {
+// caller streams the copy through the core instead. For a folder, files is
+// the list the core judged, and the worker copies exactly those files.
+func (f *File) copyOnWorker(ctx context.Context, src, dst fileLoc, overwrite bool, files []locEntry) (tools.Result, bool) {
 	s, ok1 := src.(*workspaceLoc)
 	d, ok2 := dst.(*workspaceLoc)
 	if !ok1 || !ok2 {
 		return tools.Result{}, false
 	}
-	ans, err := f.Workspaces.CopyLocal(ctx, s.o, lifecycle.CopyLocalRequest{From: s.name, FromPath: s.path, To: d.name, ToPath: d.path, Overwrite: overwrite})
+	req := lifecycle.CopyLocalRequest{From: s.name, FromPath: s.path, To: d.name, ToPath: d.path, Overwrite: overwrite}
+	if files != nil {
+		req.Files = make([]workspace.CopyLocalFile, 0, len(files))
+		for _, e := range files {
+			req.Files = append(req.Files, workspace.CopyLocalFile{Path: e.Path, Size: e.Size})
+		}
+		req.MaxFileBytes = inbox.MaxFileBytes(ctx)
+	}
+	ans, err := f.Workspaces.CopyLocal(ctx, s.o, req)
 	if errors.Is(err, lifecycle.ErrNotSameWorker) {
 		return tools.Result{}, false
 	}
@@ -341,10 +351,16 @@ func (f *File) copyFolder(ctx context.Context, src, dst fileLoc, overwrite bool)
 			return prefixed("copy", res), nil
 		}
 	}
-	// Two workspaces on one worker: the worker copies, after the same
-	// listing was judged. It lists the folder again itself, so a file a
-	// command adds in between is copied unjudged; the bounds still hold.
-	if res, done := f.copyOnWorker(ctx, src, dst, overwrite); done {
+	if f.afterListing != nil {
+		f.afterListing()
+	}
+	// Two workspaces on one worker: the worker copies exactly the files
+	// judged here, so a file a command adds after the listing is not
+	// copied, and a listed one that changed refuses the copy.
+	if res, done := f.copyOnWorker(ctx, src, dst, overwrite, listedFiles(files)); done {
+		if len(skipped) > 0 && !res.IsError {
+			res = withSkipped(res, skipped)
+		}
 		return res, nil
 	}
 	if res, ok := dst.CreateFolder(ctx, src, files, overwrite); !ok {
@@ -356,4 +372,26 @@ func (f *File) copyFolder(ctx context.Context, src, dst fileLoc, overwrite bool)
 		out["note"] = "links and special files are not copied"
 	}
 	return okJSON(out)
+}
+
+// listedFiles makes an empty listing a list (copy nothing), never "no list".
+func listedFiles(files []locEntry) []locEntry {
+	if files == nil {
+		return []locEntry{}
+	}
+	return files
+}
+
+// withSkipped adds the links and special files the core's listing left out
+// to a worker copy's answer: the worker copied only the list, so it saw
+// none of them.
+func withSkipped(res tools.Result, skipped []string) tools.Result {
+	var out map[string]any
+	if json.Unmarshal([]byte(res.Text), &out) != nil {
+		return res
+	}
+	out["skipped"] = skipped
+	out["note"] = "links and special files are not copied"
+	r, _ := okJSON(out)
+	return r
 }

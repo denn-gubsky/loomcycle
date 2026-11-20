@@ -580,3 +580,50 @@ func TestQuota_AWalkOutOfTimeIsAnEstimate(t *testing.T) {
 		t.Errorf("usage = %+v, want an estimate", ans.Usage)
 	}
 }
+
+// A listed copy_local copies exactly the listed files: one not in the list
+// stays behind, and a listed path out of the folder, a file over the
+// per-file bound, and a listed file whose size changed are refused with
+// nothing placed.
+func TestCopyLocal_AListedCopyCopiesExactlyTheList(t *testing.T) {
+	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
+	o := f.run(t, "alice")
+	src := f.open(t, o, "src")
+	dst := f.open(t, o, "dst")
+	ctx := context.Background()
+	sd, dd := f.h.Dir(src.ID), f.h.Dir(dst.ID)
+	for p, body := range map[string]string{"dir/a.txt": "aa", "dir/deep/b.txt": "bbb", "dir/extra.txt": "x"} {
+		_ = os.MkdirAll(filepath.Join(sd, filepath.Dir(p)), 0o755)
+		if err := os.WriteFile(filepath.Join(sd, p), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := []workspace.CopyLocalFile{{Path: "a.txt", Size: 2}, {Path: "deep/b.txt", Size: 3}}
+	ans, err := f.m.CopyLocal(ctx, o, CopyLocalRequest{From: "src", FromPath: "dir", To: "dst", ToPath: "out", Files: list})
+	if err != nil || ans.Files != 2 || ans.Bytes != 5 {
+		t.Fatalf("listed copy = %+v, %v", ans, err)
+	}
+	if _, err := os.Stat(filepath.Join(dd, "out", "extra.txt")); err == nil {
+		t.Error("a file not in the list was copied")
+	}
+	for i, c := range []struct {
+		files   []workspace.CopyLocalFile
+		maxFile int64
+	}{
+		{[]workspace.CopyLocalFile{{Path: "../one.txt", Size: 1}}, 0},
+		{[]workspace.CopyLocalFile{{Path: "deep/b.txt", Size: 3}}, 2},
+		{[]workspace.CopyLocalFile{{Path: "a.txt", Size: 1}}, 0},
+		{[]workspace.CopyLocalFile{{Path: "gone.txt", Size: 1}}, 0},
+	} {
+		to := "refused" + strconv.Itoa(i)
+		if _, err := f.m.CopyLocal(ctx, o, CopyLocalRequest{From: "src", FromPath: "dir", To: "dst", ToPath: to, Files: c.files, MaxFileBytes: c.maxFile}); err == nil {
+			t.Errorf("case %d: %+v was copied", i, c.files)
+		}
+		if _, err := os.Stat(filepath.Join(dd, to)); err == nil {
+			t.Errorf("case %d: %s was placed", i, to)
+		}
+	}
+	if len(workEntries(t, f, dst.ID)) != 0 {
+		t.Errorf("stages left: %v", workEntries(t, f, dst.ID))
+	}
+}

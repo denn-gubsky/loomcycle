@@ -94,6 +94,10 @@ type File struct {
 	// reach; nil while workspace.mode is off, which refuses them. Bound at
 	// boot with the Workspace tool's.
 	Workspaces *lifecycle.Manager
+	// afterListing, for tests, runs once a folder copy has listed and
+	// judged its files and before anything is copied: where a command
+	// writing into the source would land.
+	afterListing func()
 }
 
 func (f *File) Name() string { return FileToolName }

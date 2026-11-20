@@ -148,3 +148,68 @@ func TestFileCopy_A100MiBWorkspaceFileToAVolumeKeepsTheHeapSmall(t *testing.T) {
 		t.Errorf("the heap grew by %.1f MiB, over %d MiB", growth, bound)
 	}
 }
+
+// A same-worker folder copy copies exactly the files the core listed and
+// judged: a file a command adds after the listing is not copied, and a
+// listed file replaced by a link, or grown, refuses the copy with nothing
+// committed. Without the list the worker would re-list the folder and copy
+// what no hook saw.
+func TestFileCopy_TheWorkerCopiesOnlyTheListedFiles(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		change func(t *testing.T, dir string)
+		refuse bool
+	}{
+		{"a file added after the listing", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "src", "late.txt"), []byte("late"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"a listed file replaced by a link", func(t *testing.T, dir string) {
+			p := filepath.Join(dir, "src", "sub", "b.txt")
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("../a.txt", p); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"a listed file grown", func(t *testing.T, dir string) {
+			fh, err := os.OpenFile(filepath.Join(dir, "src", "a.txt"), os.O_APPEND|os.O_WRONLY, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = fh.WriteString(" and much more")
+			fh.Close()
+		}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFCFixture(t, inbox.Service{}, lifecycle.Limits{})
+			f.open(t, "a")
+			f.open(t, "b")
+			f.wsPut(t, "a", "src/a.txt", "alpha")
+			f.wsPut(t, "a", "src/sub/b.txt", "bravo")
+			dir := f.wsDir(t, "a")
+			f.file.afterListing = func() { c.change(t, dir) }
+			out, res := f.exec(t, f.ctx, map[string]any{"op": "copy", "from": "workspace:a:src", "to": "workspace:b:dst"})
+			if c.refuse {
+				if !res.IsError {
+					t.Fatalf("copy = %v, want a refusal", out)
+				}
+				if f.wsHas(t, "b", "dst") {
+					t.Error("a refused copy committed dst")
+				}
+				return
+			}
+			if res.IsError {
+				t.Fatalf("copy: %s", res.Text)
+			}
+			if f.wsHas(t, "b", "dst/late.txt") || out["files"] != float64(2) {
+				t.Errorf("the late file was copied: %v", out)
+			}
+			if got, _ := f.wsGet(t, "b", "dst/sub/b.txt"); got != "bravo" {
+				t.Errorf("dst/sub/b.txt = %q", got)
+			}
+		})
+	}
+}

@@ -19,8 +19,10 @@ older form of inbox to volume.
   name inside it. Otherwise `to` is the new name.
 - `overwrite` is off by default: a copy onto an existing file or folder is
   refused. With `overwrite: true` a file is replaced at once, never left half
-  written, and a folder is merged into file by file. The inbox never
-  replaces a file: a name already taken there gets a numbered variant.
+  written, and a folder is merged into file by file. The inbox is a store
+  of captures and never replaces a file, `overwrite` or not: a name already
+  taken there gets a numbered variant (`report-2.pdf`), and the answer's
+  `ref` says which.
 - A folder is copied whole or not at all. It is listed first, and refused
   before anything is written when it holds more files or bytes than the
   operator allows (`workspace.copy.max_files`, `workspace.copy.max_bytes`),
@@ -29,7 +31,10 @@ older form of inbox to volume.
   nothing. Links and special files in a folder are not copied; the answer
   names them in `skipped`.
 - Two workspaces on the same worker are copied by that worker
-  (`same_worker: true`); otherwise the bytes pass through the runtime.
+  (`same_worker: true`), exactly the files the runtime listed and checked:
+  a file added after the listing is not copied, and one that changed (now a
+  link, or another size) refuses the copy. Otherwise the bytes pass through
+  the runtime.
 
 Grants: a workspace needs your `workspace` grant (`read` to copy from it,
 `write` to copy into it); a volume needs Read to copy from and Write to copy

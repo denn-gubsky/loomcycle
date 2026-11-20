@@ -181,6 +181,11 @@ type CopyLocalRequest struct {
 	From, FromPath string
 	To, ToPath     string
 	Overwrite      bool
+	// Files, when not nil, is the folder's exact file list, as the caller
+	// listed and judged it (workspace.CopyLocalArgs.Listed); MaxFileBytes
+	// bounds each of them.
+	Files        []workspace.CopyLocalFile
+	MaxFileBytes int64
 }
 
 // CopyLocal copies a file or a folder from one of the run's workspaces to
@@ -203,6 +208,7 @@ func (m *Manager) CopyLocal(ctx context.Context, o Owner, req CopyLocalRequest) 
 	err = m.callRow(ctx, to, workspace.OpCopyLocal, workspace.CopyLocalArgs{
 		FromWorkspace: from.ID, FromPath: req.FromPath, Path: req.ToPath, Overwrite: req.Overwrite,
 		MaxFiles: m.limits.CopyMaxFiles, MaxBytes: m.limits.CopyMaxBytes,
+		Listed: req.Files != nil, Files: req.Files, MaxFileBytes: req.MaxFileBytes,
 	}, &out)
 	return out, err
 }
