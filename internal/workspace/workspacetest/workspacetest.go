@@ -30,6 +30,7 @@ type Harness struct {
 	t        *testing.T
 	target   string
 	opt      worker.Options
+	tenant   string
 	stop     func()
 }
 
@@ -61,7 +62,7 @@ func Start(t *testing.T, st dispatch.Store, tenant string, opt worker.Options) *
 		opt.IdleStreams = 4
 	}
 	opt.Target, opt.Token, opt.ID, opt.Insecure = l.Addr().String(), token, "w1", true
-	h := &Harness{D: d, Root: opt.Root, WorkerID: "tenant:" + tenant + "/w1", t: t, target: opt.Target, opt: opt}
+	h := &Harness{D: d, Root: opt.Root, WorkerID: "tenant:" + tenant + "/w1", t: t, target: opt.Target, opt: opt, tenant: tenant}
 	h.StartWorker()
 	return h
 }
@@ -80,6 +81,37 @@ func (h *Harness) StartWorker() {
 	h.stop = func() { cancel(); <-finished }
 	h.t.Cleanup(h.StopWorker)
 	h.WaitAttached(true)
+}
+
+// AddWorker attaches a second worker for the same tenant, on a root of its
+// own, holding at most capacity workspaces, and waits until it is attached.
+// It returns the core's id for it; the worker stops with the test. With
+// the first worker's capacity bounded too, opens spill from one to the
+// other, which is how a test puts two workspaces on two workers.
+func (h *Harness) AddWorker(id string, capacity int) string {
+	h.t.Helper()
+	opt := h.opt
+	opt.ID, opt.Root, opt.Capacity = id, h.t.TempDir(), capacity
+	workerID := "tenant:" + h.tenant + "/" + id
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan struct{})
+	safego.Go(ctx, "workspacetest.worker2", func() {
+		defer close(finished)
+		_ = worker.Run(ctx, opt)
+	})
+	h.t.Cleanup(func() { cancel(); <-finished })
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		for _, w := range h.D.Workers() {
+			if w.ID == workerID {
+				return workerID
+			}
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("timed out waiting for worker %s", id)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // StopWorker stops the worker and waits until the dispatcher has let it go.

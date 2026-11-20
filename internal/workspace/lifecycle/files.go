@@ -169,6 +169,13 @@ func (m *Manager) Discard(ctx context.Context, o Owner, name, stage string) erro
 	return m.call(ctx, o, name, workspace.OpDiscard, workspace.DiscardArgs{Stage: stage}, nil)
 }
 
+// CopyLimits are the operator's folder-copy bounds (workspace.copy), which
+// a copy that does not run on one worker (File op=copy through the core)
+// applies itself.
+func (m *Manager) CopyLimits() (maxFiles int, maxBytes int64) {
+	return m.limits.CopyMaxFiles, m.limits.CopyMaxBytes
+}
+
 // CopyLocalRequest is a copy between two of the run's workspaces.
 type CopyLocalRequest struct {
 	From, FromPath string
