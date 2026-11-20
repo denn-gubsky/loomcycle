@@ -60,7 +60,7 @@ python3 -I scripts/measure/walker/drive.py \
 
 It writes `runs.jsonl` (one line per run: answer text, tool calls by op,
 token usage, cost, score) and `summary.json` (per arm and kind). The driver
-stops when the spend reaches `--budget-usd`. `--score-only` rescores an
+stops before a run that could take the spend past `--budget-usd` (a run is assumed to cost at most $0.04). `--score-only` rescores an
 existing `runs.jsonl`, e.g. after the gold is filled.
 
 ## What is scored

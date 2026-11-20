@@ -183,25 +183,27 @@ def main():
     else:
         token = os.environ.get(a.token_env, "")
         spent = 0.0
+        # Interleave arms and repeats so drift on the server hits both alike.
+        plan = [(rep, q, arm, agent) for rep in range(a.runs) for q in qs for arm, agent in arms]
         with open(path, "a", encoding="utf-8") as f:
-            # Interleave arms and repeats so drift on the server hits both alike.
-            for rep in range(a.runs):
-                for q in qs:
-                    for arm, agent in arms:
-                        if spent >= a.budget_usd:
-                            print(f"budget ${a.budget_usd} reached; stopping", file=sys.stderr)
-                            break
-                        rec = run_once(a.base_url, token, agent, q["text"], a.provider, a.model, a.timeout)
-                        rec.update({"arm": arm, "agent": agent, "question": q["id"], "kind": q["kind"], "rep": rep})
-                        rec["cost_usd"] = round(cost(rec), 6)
-                        rec["score"] = score(q, rec)
-                        spent += rec["cost_usd"]
-                        f.write(json.dumps(rec) + "\n")
-                        f.flush()
-                        rows.append(rec)
-                        print(f"{q['id']} {arm} rep{rep}: {rec['stop']} calls={rec['tool_calls']} "
-                              f"docs={rec['score']['cited_documents']} ${rec['cost_usd']:.4f} total ${spent:.2f}",
-                              file=sys.stderr)
+            for rep, q, arm, agent in plan:
+                # Stop BEFORE a run that could take the spend past the budget: a
+                # run costs at most RUN_COST_CEILING.
+                if spent + RUN_COST_CEILING > a.budget_usd:
+                    print(f"budget ${a.budget_usd}: ${spent:.2f} spent, the next run could pass it; stopping",
+                          file=sys.stderr)
+                    break
+                rec = run_once(a.base_url, token, agent, q["text"], a.provider, a.model, a.timeout)
+                rec.update({"arm": arm, "agent": agent, "question": q["id"], "kind": q["kind"], "rep": rep})
+                rec["cost_usd"] = round(cost(rec), 6)
+                rec["score"] = score(q, rec)
+                spent += rec["cost_usd"]
+                f.write(json.dumps(rec) + "\n")
+                f.flush()
+                rows.append(rec)
+                print(f"{q['id']} {arm} rep{rep}: {rec['stop']} calls={rec['tool_calls']} "
+                      f"docs={rec['score']['cited_documents']} ${rec['cost_usd']:.4f} total ${spent:.2f}",
+                      file=sys.stderr)
     summary = summarise(rows)
     with open(os.path.join(a.out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
