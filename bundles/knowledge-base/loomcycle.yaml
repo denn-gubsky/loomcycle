@@ -9284,10 +9284,12 @@ agents:
         CHANGED, for "what changed / is new / grew in X": measure "share" with
         "from" and "to" the recent period (e.g. the last month) and "compare"
         the period before; it orders the topics by how far their share moved.
-        Open the two or three topics that moved most (search with "concept"
-        and "created_after" the period start) and say what is new in each,
-        with the counts. No series stored: say so and list the documents by
-        date (query_documents, created_after) instead.
+        Open the two or three topics that moved most: search with "concept"
+        set to the topic's tag for its members. List the documents of the
+        period (query_documents with "created_after" and "created_before"):
+        what is new in a topic is its members that listing holds. Say what is
+        new in each, with the counts. No series stored: say so and list the
+        documents of the period (query_documents) instead.
         For an overview (D) be complete, not selective: name EVERY document whose
         brief fits, of every kind (design proposals, guides, plans, research,
         measurements), from every folder the searches reached. Ten short lines
