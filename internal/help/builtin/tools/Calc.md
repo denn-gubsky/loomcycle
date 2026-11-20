@@ -14,8 +14,8 @@ and a 30-digit integer keeps all 30 digits.
   your head and do not estimate: a model's mental arithmetic is wrong often
   enough to matter, and this call is cheap.
 - **Use it to check** a figure you were given before you rely on it.
-- **Not for statistics, finance, date or unit functions**: there are none.
-  Write the formula: a mean is `sum(v) / len(v)`.
+- **There are no statistics, finance, date or unit functions.** Write the
+  formula from the operators: a mean is `sum(v) / len(v)`.
 - **Not for algebra.** It evaluates numbers; it does not solve equations or
   simplify formulas.
 
