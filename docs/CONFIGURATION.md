@@ -4535,7 +4535,7 @@ A worker reads its helper commands from its own environment and never from the d
 
 ### Workspace workers (`workspace:`)
 
-A workspace worker (RFC GW) holds an agent's workspaces, directories in which it runs commands and works on files, out of the runtime's process. It attaches to the same `worker_endpoint` as conversion workers, on a service of its own. This release builds the worker, the protocol and the runtime's side of it; the `Workspace` tool that agents call arrives in the next release, so `workspace.mode: remote` attaches workers that no agent can use yet. [WORKERS.md](WORKERS.md#workspace-workers) has the short guide.
+A workspace worker (RFC GW) holds an agent's workspaces, directories in which it runs commands and works on files, out of the runtime's process. It attaches to the same `worker_endpoint` as conversion workers, on a service of its own. Agents use it through the `Workspace` tool ([TOOLS.md](TOOLS.md)), with a per-agent `workspace:` grant. A workspace belongs to the run that opened it and is removed when that run ends; a sweeper every 60 seconds removes what runs that ended without the release left (a runtime killed mid-run, a deleted run tree), and marks `lost` the workspaces of a worker no replica has seen for `lost_after_s` (at least 180 seconds: an attached worker's workspaces are marked as seen every 60). The `host` engine is **not a sandbox**: a command runs as the worker's OS user, with no isolation. [WORKERS.md](WORKERS.md#workspace-workers) has the short guide.
 
 ```yaml
 worker_endpoint:
@@ -4562,6 +4562,7 @@ The workspace worker reads these variables, beside `LOOMCYCLE_WORKER_DISPATCHER`
 | `LOOMCYCLE_WORKSPACE_ENGINE` | `host` | How commands run. Only `host` exists in this release: a command runs as the worker's own user, with no isolation, so use it only on a trusted machine. |
 | `LOOMCYCLE_WORKSPACE_CAPACITY` | 8 | The workspaces this worker holds at most, 1–10000. An open past it is refused, and the runtime places the workspace on another worker. |
 | `LOOMCYCLE_WORKSPACE_IDLE_STREAMS` | 16 | The idle op streams the worker keeps open for the runtime, 1–32. The runtime asks for more when it runs low. |
+| `LOOMCYCLE_WORKSPACE_COMMANDS` | — (any) | Comma-separated program names a workspace command may start with, e.g. `python3,node,npm`. Set, a command must be one simple command whose first word is listed: shell control characters (`; & \| < > $ ( )`, backquote, newline) are refused, so `python3 x; rm -rf ~` does not run `rm`. It names programs, not what they do: a listed interpreter runs any code it is given. **Not a sandbox** — the host engine runs every command as the worker's user with no isolation; this only narrows which programs are started. |
 
 `/metrics` adds `loomcycle_workspace_workers`, `loomcycle_workspace_ops_total{op,outcome}` (outcome `ok`, `cancelled` or an error class such as `worker_lost`) and `loomcycle_workspace_worker_deaths_total`.
 
