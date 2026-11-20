@@ -148,6 +148,11 @@ var docACLOps = map[string]docACLRule{
 	// document, as get_document is. It asks read on the ontology document itself
 	// before it shows a class above the document's type or any taxonomy.
 	"memberships": {verb: "read", target: docACLDocument},
+	// place names many documents, or a query: it asks read on each document itself
+	// and answers one the caller may not read as one that does not exist; a query's
+	// hits come from search, which ranks only what the caller may read
+	// (document_place.go).
+	"place": {verb: "read", target: docACLListing},
 	// extract_citations reads the document or chunk it names; resolving a citation
 	// asks read on the cited work through resolve_anchor.
 	"extract_citations": {verb: "read", target: docACLChunkOrDocument},

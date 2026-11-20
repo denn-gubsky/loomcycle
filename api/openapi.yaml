@@ -2971,6 +2971,7 @@ components:
             - measure
             - effective_policy
             - memberships
+            - place
             - extract_citations
             - classify
             - accept_classification
@@ -3035,7 +3036,9 @@ components:
         include_color_scheme: { type: boolean, description: "get_document / documents_summary / graph_snapshot: return each document's color_scheme. Defaults to true on this route and over gRPC; an in-run or MCP call leaves the palette out unless it sends true." }
         with_counts: { type: boolean, description: "describe_ontology: also count the documents the caller may read in the tenant scope — members and members_by_class on each concept (documents at or under it, each once), members and unplaced (documents of its projected classes under none of its concepts) on each scheme, documents on each class (with its subclasses in a confirmed ontology). Off by default; without it the answer is unchanged." }
         with_stats: { type: boolean, description: "describe_ontology: what with_counts gives, plus each concept's and document class's stored node statistics as stats {members, members_with_vector, spread, exemplars, siblings, terms, computed_at, stale} — only when stored and the caller may read every member; otherwise stats {withheld}. Off by default; without it the answer is unchanged." }
-        with_memberships: { type: boolean, description: "get_document: also return memberships — what op=memberships answers for the document: its class chain, its concepts per taxonomy with each placement, and its folders. Off by default; without it the answer is unchanged." }
+        with_memberships: { type: boolean, description: "get_document: also return memberships — what op=memberships answers for the document: its class chain, its concepts per taxonomy with each placement, and its folders. lineage: also return memberships {classes, concepts} — the chunk's document's class chain and, per taxonomy, each concept it is placed under live with the broader concepts up to the scheme's top, nearest first, each node with its brief. Off by default; without it the answer is unchanged." }
+        baseline: { type: boolean, description: "search with facets: each facet value also carries corpus (the readable documents of the scope with the value), share, corpus_share and log_ratio (capped at ±3); adds corpus_documents. Off by default." }
+        min_share: { type: number, description: "place: the share of the documents a node must cover to be named (default 0.6, above 0 and at most 1; not strict)." }
         mode: { type: string, enum: [report, compute, misfits, growth, split], description: "node_stats: report (the default) lists each node's status and writes nothing; compute recomputes the stale and missing nodes; misfits lists the documents nearer a sibling concept's centroid than their own, filing subject proposals only with propose; growth reads the stored series and ranks concepts by recent growth, lists quiet nodes and each scheme's unplaced periods (rising first), writing nothing; split lists recurring groups of a concept's members and of a scheme's unplaced things (candidate new concepts) and sibling concepts to merge, filing proposals only with propose." }
         quiet_periods: { type: integer, description: "node_stats mode growth: the periods counted as recent (default 6, at most 120); a node with members but none dated in them is quiet." }
         scheme: { type: string, description: "node_stats / measure: only this scheme's concepts (by name; measure unplaced: only this scheme)." }

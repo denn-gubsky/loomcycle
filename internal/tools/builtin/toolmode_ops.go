@@ -106,6 +106,7 @@ var documentOpModes = map[string]opRead{
 	"measure":               readOp,
 	"effective_policy":      readOp,
 	"memberships":           readOp,
+	"place":                 readOp,
 	"extract_citations":     readOp,
 	"classify":              {read: true, writes: func(in docInput) bool { return in.Write != classifyWriteReport }},
 	"accept_classification": writeOp,

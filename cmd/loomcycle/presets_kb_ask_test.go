@@ -225,6 +225,13 @@ func TestKnowledgeBaseBundle_AnsweringPromptsRenderTheCallFormsTheyName(t *testi
 		form{`"op":"search"`, `"facets":`, `"facet_window":`},
 		form{`"op":"query_documents"`, `"type":`},
 		form{`"op":"query_documents"`, `"under_path":`},
+		// The taxonomy moves (RFC GM P7): the concept chain, enter by topic,
+		// weigh the counts, place the hits, what changed.
+		form{`"op":"lineage"`, `"with_memberships":true`},
+		form{`"op":"search"`, `"annotation_levels":["concept"]`},
+		form{`"op":"search"`, `"baseline":true`},
+		form{`"op":"place"`, `"query":`},
+		form{`"op":"measure"`, `"compare":`},
 	)
 	for name, forms := range map[string][]form{"kb/search": searchForms, "kb/walker": walkerForms} {
 		prompt := cfg.Agents[name].SystemPrompt

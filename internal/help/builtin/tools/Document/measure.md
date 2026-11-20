@@ -52,6 +52,9 @@ again.
 ## Arguments
 
 - `measure` — required: `count`, `share`, `shift` or `unplaced`.
+- `scope` — taken, and changes nothing: the series are the tenant's taxonomy's
+  whatever the scope (an agent that passes `"scope": "tenant"` on every call
+  may pass it here too).
 - `node` — one node: a concept by its chunk id or tag, or a document class by
   its name. Without it, every node the series is kept for. Not taken with
   `unplaced`.
@@ -109,5 +112,5 @@ A concept's monthly count:
 What grew and what shrank in August against July, in the topics scheme:
 
 ```json
-{"op": "measure", "measure": "share", "scheme": "topics", "from": 1785542400000000000, "to": 1788220800000000000, "compare": {"from": 1782864000000000000, "to": 1785542400000000000}}
+{"op": "measure", "scope": "tenant", "measure": "share", "scheme": "topics", "from": 1785542400000000000, "to": 1788220800000000000, "compare": {"from": 1782864000000000000, "to": 1785542400000000000}}
 ```

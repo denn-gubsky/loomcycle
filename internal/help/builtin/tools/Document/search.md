@@ -68,6 +68,8 @@ as the user store, search both, in two calls.
   matches" below.
 - `facet_window` — with `facets`, how many of the chunks nearest your query the
   counts cover: default 100, at most 500 (a larger value is lowered to 500).
+- `baseline` — with `facets`, `true` also gives each value its weight in the
+  whole corpus. See "Counting what matches" below.
 - `with_summary` — add each hit's nearest annotation as `summary` (`{level, brief, abstract?, stale?, chunk_id?}`): the brief on every hit, the abstract on the hits of the first five documents, within `summary_chars` (default 2000).
 - `annotations` — `none` (default), `include` or `only`. Rank the
   annotations too: the brief and abstract written for sections, documents and
@@ -183,6 +185,18 @@ reported complete.
   read it. When the ontology cannot be read, `concept` is left out and
   `concept_error` says so; the hits and the other facets are still returned.
 
+With `baseline: true` each value also carries `corpus` (the documents you may
+read in the scope that have the value), `share` (`count` / `documents_counted`),
+`corpus_share` (`corpus` / `corpus_documents`) and `log_ratio` (ln of `share`
+over `corpus_share`, smoothed, capped at ±3), and the block gains
+`corpus_documents`. A value far more common among the matches than in the
+corpus (a large positive `log_ratio`) names what the matches are about: a
+topic holding 2% of the corpus and 60% of the matches. A large count with a
+`log_ratio` near 0 is only a large value. `corpus` is counted by the value's own
+rule (a concept: the documents placed on it directly, as the count is) over
+the whole scope, not the search's filter, and as of now. `baseline` is refused
+without `facets`.
+
 Each list is most documents first, then by value, at most 50 values. Read the
 spread before the hits: many documents in several folders means the question
 needs more than the top hits; one document holding every match means read that
@@ -255,6 +269,7 @@ caption (and its description, once one exists).
 - `search: unknown facet "…"` — pass any of `type`, `folder`, `concept`.
 - `search: facet_window must be positive` / `search: facet_window is taken with
   facets` — omit `facet_window` for the default, or add `facets`.
+- `search: baseline is taken with facets` — add `facets` or drop `baseline`.
 - `search: facets count passages and are not taken with annotations "only"` —
   drop `facets`, or use `annotations: "include"`.
 
@@ -382,4 +397,19 @@ hits. Narrow the count to one folder with `under_path` and a larger window:
 
 ```json
 {"op": "search", "query": "outsourcing of critical functions", "scope": "tenant", "under_path": "/board", "facets": ["type"], "facet_window": 300}
+```
+
+Which topics the material is ABOUT, not only which are large: weigh each count
+against the whole corpus with `baseline` (a large positive `log_ratio` names
+the subject):
+
+```json
+{"op": "search", "query": "outsourcing of critical functions", "scope": "tenant", "facets": ["concept", "type"], "baseline": true}
+```
+
+Enter by topic: rank the taxonomy's topics themselves for a question about an
+area (a node's row carries its member count in `series` with `with_summary`):
+
+```json
+{"op": "search", "query": "outsourcing of critical functions", "scope": "tenant", "annotations": "only", "annotation_levels": ["concept"], "with_summary": true}
 ```
