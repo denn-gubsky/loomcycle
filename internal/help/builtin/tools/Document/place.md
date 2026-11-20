@@ -21,8 +21,9 @@ go to the node covering more documents, then the name.
 
 - `document_ids` — the documents to place, at most 50. Or:
 - `query` — place the documents of the top hits of a `search` for this text
-  (each document once, in rank order); `limit` hits, default 10, at most 50.
-  Pass exactly one of `document_ids` and `query`.
+  (each document once, in rank order). Pass exactly one of `document_ids`
+  and `query`.
+- `limit` — with `query`, how many hits: default 10, at most 50.
 - `min_share` — the share of the documents a node must cover, default `0.6`,
   above 0 and at most 1. Not strict: 0.6 of five documents is three.
 - `scope` — `user` (default), `agent` or `tenant`.
