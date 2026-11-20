@@ -3,9 +3,11 @@ package http
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
 // applyAgentDefOverlay is the helper that merges an agent_defs row's
@@ -314,5 +316,42 @@ func TestPinnedSubAgentDef_KeepsTheContextDefault(t *testing.T) {
 	optedOut := pinnedSubAgentDef(config.AgentDef{Tools: []string{"Read"}, DisableContext: true}, stored)
 	if want := []string{"Read", "Memory"}; !reflect.DeepEqual(optedOut.Tools, want) {
 		t.Errorf("disable_context on the base must survive the pin: tools = %v, want %v", optedOut.Tools, want)
+	}
+}
+
+// TestPinnedSubAgentDef_KeepsTheBaseToolRemoval: the base's "-Context" holds
+// over a stored version whose tools do not repeat it, as disable_context does,
+// and over a stored "*" that would otherwise match Context.
+func TestPinnedSubAgentDef_KeepsTheBaseToolRemoval(t *testing.T) {
+	base := config.AgentDef{Tools: []string{"Read", "-Context"}}
+	for _, stored := range []string{`{"tools": ["Read", "Memory"]}`, `{"tools": ["*"]}`} {
+		got := pinnedSubAgentDef(base, json.RawMessage(stored))
+		names := toolNames(filterTools(fakeToolsNamed("Read", "Memory", "Context"), got.Tools, nil))
+		if slices.Contains(names, "Context") {
+			t.Errorf("stored %s: run tools %v (def tools %v) hold Context despite the base's -Context", stored, names, got.Tools)
+		}
+	}
+}
+
+func fakeToolsNamed(names ...string) []tools.Tool {
+	out := make([]tools.Tool, 0, len(names))
+	for _, n := range names {
+		out = append(out, namedTool{n})
+	}
+	return out
+}
+
+// TestFilterTools_RemovalAppliesAfterTheGlob: tools ["*", "-Context"] grants
+// every tool but Context, and a removal alone grants nothing.
+func TestFilterTools_RemovalAppliesAfterTheGlob(t *testing.T) {
+	all := fakeToolsNamed("Read", "Context", "Memory")
+	if got := toolNames(filterTools(all, []string{"*", "-Context"}, nil)); !reflect.DeepEqual(got, []string{"Read", "Memory"}) {
+		t.Errorf(`["*", "-Context"] = %v, want [Read Memory]`, got)
+	}
+	if got := toolNames(filterTools(all, []string{"Read", "Context", "-context"}, nil)); !reflect.DeepEqual(got, []string{"Read"}) {
+		t.Errorf("an explicit Context under -context = %v, want [Read]", got)
+	}
+	if got := filterTools(all, []string{"-Context"}, nil); len(got) != 0 {
+		t.Errorf(`["-Context"] = %v, want none`, toolNames(got))
 	}
 }
