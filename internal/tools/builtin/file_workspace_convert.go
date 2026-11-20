@@ -192,6 +192,13 @@ func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pa
 		if !ok {
 			return res, nil
 		}
+		// The files the extraction writes are judged too: the Markdown,
+		// named as the worker names it, and the pictures' folder.
+		for _, p := range []string{extractSlug(l.path) + ".md", "images"} {
+			if res, ok := to.child(p).hook(ctx, wsHookWrite); !ok {
+				return res, nil
+			}
+		}
 		same, err := l.m.SameWorker(ctx, l.o, l.name, to.name)
 		if err != nil {
 			return prefixed("extract", workspaceRefError(err, to.name)), nil
@@ -212,7 +219,7 @@ func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pa
 				out["images_not_kept"] = ans.NotKept
 			}
 			out["note"] = "the text was written in the workspace and not read here; read it with Workspace op=read, or import it with File op=import"
-			return f.extractWorkspaceAnswer(in, ans, "", out, oc)
+			return f.extractWorkspaceAnswer(in, ans, out, oc)
 		}
 		w := &wsFolderOut{l: to, overwrite: in.Overwrite}
 		md, ans, res, ok = f.extractStreamed(ctx, l, info, args, r, w)
@@ -240,12 +247,12 @@ func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pa
 	}
 	excerpt, truncated := cutRunes(md, excerptChars)
 	out["excerpt"] = fileContentBlock(out["ref"].(string), excerpt, truncated)
-	return f.extractWorkspaceAnswer(in, ans, md, out, oc)
+	return f.extractWorkspaceAnswer(in, ans, out, oc)
 }
 
 // extractWorkspaceAnswer finishes extract's answer from the worker's: the
 // report's fields, and the pages OCR would read.
-func (f *File) extractWorkspaceAnswer(in fileInput, ans workspace.ConvertExtractAnswer, md string, out map[string]any, oc ocrCall) (tools.Result, error) {
+func (f *File) extractWorkspaceAnswer(in fileInput, ans workspace.ConvertExtractAnswer, out map[string]any, oc ocrCall) (tools.Result, error) {
 	var rep extract.Report
 	_ = json.Unmarshal(ans.Report, &rep)
 	if ans.Cut && !ans.Sampled {
@@ -274,7 +281,6 @@ func (f *File) extractWorkspaceAnswer(in fileInput, ans workspace.ConvertExtract
 		out["ocr"] = map[string]any{"pages_needing_ocr": pages,
 			"note": "OCR does not run on a file in a workspace yet; copy it into the inbox with File op=copy and extract it there to read these pages"}
 	}
-	_ = md
 	return okJSONRaw(out)
 }
 
@@ -360,15 +366,21 @@ func (f *File) extractStreamed(ctx context.Context, l *workspaceLoc, info worksp
 	if ans.Cut || ans.Sampled {
 		md += "\n\n[the rest of the document was not extracted]"
 	}
-	slug := inbox.SanitizeName(strings.TrimSuffix(path.Base(l.path), path.Ext(l.path)))
-	if slug == "" {
-		slug = "document"
-	}
-	if res, ok := w.text(ctx, slug, md); !ok {
+	if res, ok := w.text(ctx, extractSlug(l.path), md); !ok {
 		w.abort(ctx)
 		return "", ans, res, false
 	}
 	return md, ans, tools.Result{}, true
+}
+
+// extractSlug is the name an extraction's Markdown takes after its
+// source, as the worker names it.
+func extractSlug(p string) string {
+	slug := inbox.SanitizeName(strings.TrimSuffix(path.Base(p), path.Ext(p)))
+	if slug == "" {
+		return "document"
+	}
+	return slug
 }
 
 // wsInboxOut keeps a streamed extraction in the inbox, as op=extract keeps

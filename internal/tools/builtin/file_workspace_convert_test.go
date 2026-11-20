@@ -258,6 +258,8 @@ func TestFileExtract_GrantsAndHooksRefuseBeforeAnyConversion(t *testing.T) {
 	wantFileRefusal(t, "source hook", res, "not this one")
 	_, res = f.exec(t, hooked("out"), map[string]any{"op": "extract", "path": "workspace:w:m.docx", "to": "workspace:w:out"})
 	wantFileRefusal(t, "target hook", res, "not this one")
+	_, res = f.exec(t, hooked("out/m.md"), map[string]any{"op": "extract", "path": "workspace:w:m.docx", "to": "workspace:w:out"})
+	wantFileRefusal(t, "target file hook", res, "not this one")
 	_, res = f.exec(t, hooked("m.docx"), map[string]any{"op": "render", "path": "workspace:w:m.docx", "format": "md"})
 	wantFileRefusal(t, "render source hook", res, "not this one")
 	if n := cv.extracts.Load(); n != 0 || f.wsHas(t, "w", "out") {
