@@ -75,8 +75,11 @@ func (w *worker) inWorkspace(ctx context.Context, dir, op string, args, input []
 	default:
 		return refuse(workspace.ClassUnsupportedOp, "this worker does not run %q", op)
 	}
+	// Only text the runtime wrote is rewritten: a refusal's detail, and the
+	// result line of a write or an edit. A file's own text (read, grep) is
+	// returned as it is, even where it holds the path.
 	if op != workspace.OpExec {
-		a = hidePaths(a, real, dir)
+		a = hidePaths(a, op == workspace.OpWrite || op == workspace.OpEdit, real, dir)
 	}
 	return a
 }
@@ -140,10 +143,11 @@ func countedAnswer(text string, n int, err error) answer {
 	return answer{output: out}
 }
 
-// hidePaths rewrites the workspace's absolute path out of an answer, so a
-// result reads relative to the workspace and does not tell the agent where
-// the worker keeps it. It is presentation, not confinement.
-func hidePaths(a answer, dirs ...string) answer {
+// hidePaths rewrites the workspace's absolute path out of an answer's detail,
+// and out of its output text when inOutput, so a result reads relative to
+// the workspace and does not tell the agent where the worker keeps it. It is
+// presentation, not confinement: a command can still print its directory.
+func hidePaths(a answer, inOutput bool, dirs ...string) answer {
 	strip := func(s string) string {
 		for _, d := range dirs {
 			s = strings.ReplaceAll(s, d+string(filepath.Separator), "")
@@ -152,7 +156,7 @@ func hidePaths(a answer, dirs ...string) answer {
 		return s
 	}
 	a.detail = strip(a.detail)
-	if len(a.output) > 0 {
+	if inOutput && len(a.output) > 0 {
 		var fa workspace.FileAnswer
 		if json.Unmarshal(a.output, &fa) == nil {
 			fa.Text = strip(fa.Text)
@@ -174,7 +178,7 @@ func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
 	if in.Cwd != "" {
 		d, err := fsops.ResolveInsideRoot(root, in.Cwd)
 		if err != nil {
-			return hidePaths(refuse(workspace.ClassInvalid, "cwd: %v", err), root)
+			return hidePaths(refuse(workspace.ClassInvalid, "cwd: %v", err), false, root)
 		}
 		if st, err := os.Stat(d); err != nil || !st.IsDir() {
 			return refuse(workspace.ClassInvalid, "cwd: %q is not a directory in the workspace", in.Cwd)

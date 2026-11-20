@@ -183,3 +183,17 @@ func TestWorkspaceOps_AMissingWorkspaceIsNotFound(t *testing.T) {
 		t.Errorf("class = %q, want not_found", a.class)
 	}
 }
+
+// A file's own text is returned as it is, even where it holds the
+// workspace's path: only the runtime's own lines are rewritten.
+func TestWorkspaceOps_AFilesTextIsNotRewritten(t *testing.T) {
+	w, root := newTestWorker(t)
+	dir, _ := filepath.EvalSymlinks(filepath.Join(root, "ws1"))
+	body := "cwd was " + dir + "/sub\n"
+	if err := os.WriteFile(filepath.Join(root, "ws1", "note.txt"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := fileText(t, runOp(t, w, workspace.OpRead, workspace.ReadArgs{Path: "note.txt"})); got != body {
+		t.Errorf("read = %q, want the file's text %q", got, body)
+	}
+}
