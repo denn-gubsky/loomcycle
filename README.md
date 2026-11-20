@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.163) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.164) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,13 +212,14 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.163.0) makes workspace workers usable on one
-machine (`workspace.mode: local`, with a guide), lets the knowledge-base walker
-walk the taxonomy and place a set of documents, and reads Russian CHM files
-that name no encoding. Read the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.164.0) stops an in-run fork that changes an agent's
+code from keeping grants its author lacks, plans every directive change of an
+ontology entry in use, and gives workspace workers streamed file transfer and a
+disk quota. Read the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.162.0 finished reading a book library: MOBI/AZW3, Word 97–2003
-DOC, CHM, DjVu OCR, and `File op=unpack` for ZIP and RAR archives.
+Before it, v1.163.0 made workspace workers usable on one machine
+(`workspace.mode: local`), let the knowledge-base walker walk the taxonomy and
+place a set of documents, and read Russian CHM files that name no encoding.
 
 Before that, v1.155.0 rendered a Document back into a file: `File op=render`
 writes Markdown, HTML, Word or PDF (typeset by Typst in the conversion
