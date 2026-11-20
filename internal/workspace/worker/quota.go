@@ -17,11 +17,15 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 )
 
-// quotaDir holds each workspace's disk quota, one file per id, beside the
-// workspaces in the worker's root and so out of every workspace's reach (an
-// agent's command could otherwise raise its own). Its name is not a
-// workspace id, so held() never lists it.
-const quotaDir = ".loomcycle-quota"
+// quotaSuffix names the file beside a workspace's directory, in the
+// worker's root, that holds its disk quota: <id>.quota. Beside the
+// directory and so out of the workspace's reach (a command could otherwise
+// raise its own quota, and the container engine mounts only the
+// directory). A file, so held() and anything else that counts the root's
+// directories as workspaces never sees it.
+const quotaSuffix = ".quota"
+
+func (w *worker) quotaFile(id string) string { return filepath.Join(w.opt.Root, id+quotaSuffix) }
 
 // defaultMeasureBudget bounds the walk that counts a workspace's bytes. Past
 // it the count is what the walk reached, marked as an estimate.
@@ -80,15 +84,11 @@ func (q *quotas) forget(id string) {
 // setLimit records a quota an open named, on disk and in a usage already
 // made.
 func (w *worker) setLimit(id string, limit int64) error {
-	dir := filepath.Join(w.opt.Root, quotaDir)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp := filepath.Join(dir, id+".tmp")
+	tmp := w.quotaFile(id) + ".tmp"
 	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(limit, 10)), 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, filepath.Join(dir, id)); err != nil {
+	if err := os.Rename(tmp, w.quotaFile(id)); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
@@ -104,7 +104,7 @@ func (w *worker) setLimit(id string, limit int64) error {
 // limitOf is id's quota as its open recorded it; a workspace opened with
 // none (or before quotas existed) has the default.
 func (w *worker) limitOf(id string) int64 {
-	b, err := os.ReadFile(filepath.Join(w.opt.Root, quotaDir, id))
+	b, err := os.ReadFile(w.quotaFile(id))
 	if err != nil {
 		return workspace.DefaultDiskQuotaBytes
 	}
@@ -118,7 +118,7 @@ func (w *worker) limitOf(id string) int64 {
 // dropQuota forgets a removed workspace's quota.
 func (w *worker) dropQuota(id string) {
 	w.quotas.forget(id)
-	_ = os.Remove(filepath.Join(w.opt.Root, quotaDir, id))
+	_ = os.Remove(w.quotaFile(id))
 }
 
 func (w *worker) usageOf(id string) *usage {
@@ -286,13 +286,15 @@ func (w *worker) cleanWork() {
 		}
 		r.Close()
 	}
-	ents, err := os.ReadDir(filepath.Join(w.opt.Root, quotaDir))
+	ents, err := os.ReadDir(w.opt.Root)
 	if err != nil {
 		return
 	}
 	for _, e := range ents {
-		if !keep[e.Name()] {
-			_ = os.Remove(filepath.Join(w.opt.Root, quotaDir, e.Name()))
+		name := strings.TrimSuffix(e.Name(), ".tmp")
+		id, ok := strings.CutSuffix(name, quotaSuffix)
+		if ok && !e.IsDir() && workspace.ValidID(id) && (!keep[id] || name != e.Name()) {
+			_ = os.Remove(filepath.Join(w.opt.Root, e.Name()))
 		}
 	}
 }

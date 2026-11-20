@@ -255,7 +255,7 @@ func TestCleanWork_RemovesWhatAKilledWorkerLeft(t *testing.T) {
 	if w.limitOf("ws1") != 100 {
 		t.Error("a held workspace's quota was dropped")
 	}
-	if _, err := os.Lstat(filepath.Join(root, quotaDir, "gone")); err == nil {
+	if _, err := os.Lstat(filepath.Join(root, "gone"+quotaSuffix)); err == nil {
 		t.Error("the quota of a workspace no longer there survived")
 	}
 }
@@ -273,8 +273,11 @@ func TestOpen_KeepsTheQuotaOutsideTheWorkspace(t *testing.T) {
 	if w.limitOf("ws9") != 12345 {
 		t.Errorf("the open's quota = %d", w.limitOf("ws9"))
 	}
-	if _, err := os.Stat(filepath.Join(root, "ws9", quotaDir)); err == nil {
-		t.Error("the quota is kept inside the workspace")
+	if _, err := os.Stat(filepath.Join(root, "ws9"+quotaSuffix)); err != nil {
+		t.Errorf("the quota is not kept beside the workspace: %v", err)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(root, "ws9")); len(ents) != 0 {
+		t.Errorf("the open put %d entries in the workspace", len(ents))
 	}
 	for _, raw := range []string{`{"disk_quota_bytes":-1}`, `{"disk_quota_bytes":17592186044417}`, `{"quota":1}`} {
 		if a := w.run(context.Background(), &workspacepb.OpStart{WorkspaceId: "ws8", Op: workspace.OpOpen, Args: []byte(raw)}, nil); a.class != workspace.ClassInvalid {
@@ -282,7 +285,7 @@ func TestOpen_KeepsTheQuotaOutsideTheWorkspace(t *testing.T) {
 		}
 	}
 	mustOK(t, w.run(context.Background(), &workspacepb.OpStart{WorkspaceId: "ws9", Op: workspace.OpRemove}, nil), "remove")
-	if _, err := os.Stat(filepath.Join(root, quotaDir, "ws9")); err == nil {
+	if _, err := os.Stat(filepath.Join(root, "ws9"+quotaSuffix)); err == nil {
 		t.Error("the removed workspace's quota survived")
 	}
 }
