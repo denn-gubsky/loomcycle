@@ -51,7 +51,7 @@ questions:
   - id: q02
     gold_topics:
       - name: security and access control
-        aliases: [security, access control, authz]
+        aliases: [access control, authz]
       - name: sandboxing
       - secrets
 """
@@ -79,7 +79,7 @@ class GoldMergeTest(unittest.TestCase):
         self.assertEqual(q1["gold_notes"], "Filled from a listing; # is text here.\nSecond line.")
         self.assertEqual(q2["gold"], [])
         self.assertEqual(q2["gold_topics"], [
-            {"name": "security and access control", "aliases": ["security", "access control", "authz"]},
+            {"name": "security and access control", "aliases": ["access control", "authz"]},
             {"name": "sandboxing", "aliases": []},
             {"name": "secrets", "aliases": []},
         ])
@@ -102,6 +102,23 @@ class GoldMergeTest(unittest.TestCase):
             drive.merge_gold(self.qs, "questions:\n  - id: q01\n  - id: q01\n")
         with self.assertRaisesRegex(ValueError, "unknown keys"):
             drive.merge_gold(self.qs, "questions:\n  - id: q01\n    gould: [x]\n")
+
+    def test_topic_named_in_question_text_is_warned_and_unscorable(self):
+        warnings = []
+        gold = ("questions:\n  - id: q02\n    gold_topics:\n"
+                "      - name: access control\n        aliases: [Security]\n"
+                "      - name: sandboxing\n")
+        drive.merge_gold(self.qs, gold, warn=warnings.append)
+        topics = self.qs[1]["gold_topics"]
+        self.assertTrue(topics[0].get("unscorable"))
+        self.assertFalse(topics[1].get("unscorable"))
+        self.assertTrue(any("q02" in w and "access control" in w for w in warnings), warnings)
+        # The unscorable topic leaves the denominator: the answer restating
+        # the question earns nothing for it.
+        s = drive.score(self.qs[1], {"text": "On security: sandboxing.", "tools": {}})
+        self.assertEqual(s["recall"], 1.0)
+        self.assertEqual(s["topics_named"], ["sandboxing"])
+        self.assertEqual(s["topics_unscorable"], ["access control"])
 
     def test_main_refuses_gold_file_with_unknown_id(self):
         gold = os.path.join(self.tmp, "gold.yaml")
@@ -141,6 +158,18 @@ class TopicMatchTest(unittest.TestCase):
     def test_topic_alias_matches_only_on_word_boundary(self):
         self.assertFalse(drive.topic_named("the authzx module and xauthz", self.TOPIC))
         self.assertFalse(drive.topic_named("insecurity", {"name": "security", "aliases": []}))
+
+    def test_shorter_topic_inside_longer_topic_match_counts_only_the_longer(self):
+        q = {"id": "q", "gold": [], "gold_topics": [
+            {"name": "access control", "aliases": []},
+            {"name": "access", "aliases": ["control"]},
+        ]}
+        s = drive.score(q, {"text": "We hold notes on access control.", "tools": {}})
+        self.assertEqual(s["topics_named"], ["access control"])
+        self.assertEqual(s["recall"], 0.5)
+        # A separate mention of the shorter term still counts.
+        s = drive.score(q, {"text": "Access control, and access logs.", "tools": {}})
+        self.assertEqual(s["topics_named"], ["access control", "access"])
 
     def test_topic_name_with_regex_characters_is_literal(self):
         t = {"name": "c++ (native)", "aliases": []}

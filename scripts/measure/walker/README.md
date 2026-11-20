@@ -42,8 +42,8 @@ questions:
       Who filled it, when, from which listing.
   - id: q13
     gold_topics:                 # optional: score on topics, not documents
-      - name: security and access control
-        aliases: [security, access control, authz]
+      - name: access control     # q13 asks about "security": that word
+        aliases: [authz, permissions]   # must not be a name or alias here
       - name: sandboxing
 ```
 
@@ -63,6 +63,20 @@ topics named / topics listed. It may carry no document gold; if it does, the
 document scores are kept on the run as `doc_recall` / `doc_precision` but do
 not enter the summary. This suits `area` questions, whose answer is a grouping
 by topic rather than a list of documents.
+
+Rules and limits of the match:
+
+- **A topic's name and aliases must not occur in the question's own text.** An
+  answer that restates the question would name such a topic for free. The
+  driver warns at `--gold` load about every topic that does, marks it
+  unscorable and leaves it out of the recall (the run lists it under
+  `topics_unscorable`); fix the gold rather than rely on that.
+- **The longest match wins.** Where one topic's matched term lies inside a
+  longer matched term of another topic ("access" inside "access control"),
+  only the longer topic counts for that span; a separate mention of the
+  shorter term still counts.
+- **Negation is not understood**: "we hold nothing on sandboxing" names
+  sandboxing. Read the answers of a surprising score.
 
 ## The arms
 

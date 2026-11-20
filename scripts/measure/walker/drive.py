@@ -267,6 +267,14 @@ def merge_gold(qs, text, warn=None):
         q["gold"] = _str_list(e.get("gold"), qid + " gold")
         q["also"] = _str_list(e.get("also"), qid + " also")
         q["gold_topics"] = _topics(e.get("gold_topics"), qid + " gold_topics")
+        for t in q["gold_topics"]:
+            # An answer that restates its question would name such a topic for
+            # free, so the topic cannot be scored on this question.
+            if topic_spans(q.get("text") or "", t):
+                t["unscorable"] = True
+                if warn:
+                    warn(f"warning: {qid}: topic {t['name']!r} (name or alias) occurs in the question "
+                         "text; it is not scored")
         for k in ("gold_notes", "confidence"):
             if e.get(k) is not None:
                 q[k] = e[k]
@@ -277,18 +285,38 @@ def merge_gold(qs, text, warn=None):
     return qs
 
 
-def topic_named(text, topic):
-    """True when text names the topic or one of its aliases: case-insensitive,
-    on word boundaries (so "authz" does not match "authzx"), with any run of
-    whitespace between the words of a multi-word name."""
+def topic_spans(text, topic):
+    """The (start, end) spans where text names the topic or one of its
+    aliases: case-insensitive, on word boundaries (so "authz" does not match
+    "authzx"), with any run of whitespace between the words of a multi-word
+    name."""
+    spans = []
     for term in [topic["name"]] + list(topic.get("aliases") or []):
         words = term.split()
         if not words:
             continue
         pat = r"(?<!\w)" + r"\s+".join(re.escape(w) for w in words) + r"(?!\w)"
-        if re.search(pat, text, re.IGNORECASE):
-            return True
-    return False
+        spans += [m.span() for m in re.finditer(pat, text, re.IGNORECASE)]
+    return spans
+
+
+def topic_named(text, topic):
+    return bool(topic_spans(text, topic))
+
+
+def named_topics(text, topics):
+    """The names of the topics the text names, where a match lying inside a
+    LONGER match of another topic does not count: "access control" names that
+    topic, not also a topic "access". Every topic's matches compete,
+    unscorable ones included, since the longer term is what the text says."""
+    spans = [(i, s) for i, t in enumerate(topics) for s in topic_spans(text, t)]
+
+    def inside_longer(i, s):
+        return any(j != i and o[0] <= s[0] and s[1] <= o[1] and o[1] - o[0] > s[1] - s[0]
+                   for j, o in spans)
+
+    hit = {i for i, s in spans if not inside_longer(i, s)}
+    return [t["name"] for i, t in enumerate(topics) if i in hit]
 
 
 def run_once(base, token, agent, prompt, provider, model, timeout):
@@ -373,11 +401,15 @@ def score(q, rec):
         # Owner ruling: a question with gold_topics is scored on the topics its
         # answer names, whatever document gold it also carries (kept beside it
         # as doc_recall/doc_precision, outside the summary).
-        named = [t["name"] for t in topics if topic_named(rec["text"], t)]
+        # A topic named in the question text itself is left out (see
+        # merge_gold); if every topic is, the question has no recall.
+        scorable = [t for t in topics if not t.get("unscorable")]
+        named = [n for n in named_topics(rec["text"], topics) if n in {t["name"] for t in scorable}]
         out["metric"] = "topics"
-        out["recall"] = len(named) / len(topics)
+        out["recall"] = len(named) / len(scorable) if scorable else None
         out["topics_named"] = named
-        out["topics_missed"] = [t["name"] for t in topics if t["name"] not in named]
+        out["topics_missed"] = [t["name"] for t in scorable if t["name"] not in named]
+        out["topics_unscorable"] = [t["name"] for t in topics if t.get("unscorable")]
         if doc_scores:
             out["doc_recall"] = doc_scores["recall"]
             out["doc_precision"] = doc_scores["precision"]
