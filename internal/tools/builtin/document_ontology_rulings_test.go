@@ -249,3 +249,26 @@ func TestOntologyPlan_DirectiveAndRenameRulingsOnPostgres(t *testing.T) {
 		t.Errorf("rename of a concept with a fingerprint: %s", r.Text)
 	}
 }
+
+// TestOntologyFingerprint_DirectiveEditOfASecondSameNamedClassNeedsAPlan: of two
+// in-force classes whose names differ only in case, the second is an entry of its own,
+// and a directive edit of it, with something resting on it, needs a plan like any
+// other: its signature is read by its own chunk, not by the chunk its name maps to.
+func TestOntologyFingerprint_DirectiveEditOfASecondSameNamedClassNeedsAPlan(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	md := "# Tenant Ontology\n\n## Classes\n@section classes\n\n### Document\n- `title` text\n\n#### Memo\n\n#### memo\n"
+	f := &retiredFixture{t: t, d: d, ctx: operatorCtx(installTenantOntology(t, d, base, md, memrank.OntologyConfirmedStatus))}
+	f.must(map[string]any{"op": "create_document", "scope": "tenant", "title": "A memo", "type": "memo"})
+	second := f.chunk("memo")
+	if _, ok := planEntries(f.read())[second]; !ok {
+		t.Fatal("the second class is not an entry of its own")
+	}
+	plan, err := f.d.PlanOntology(f.ctx, []connector.OntologyChange{{Op: connector.OntologyPlanEdit, Entry: second, Body: "@alt note"}})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if got := plan.Changes[0].Risk; got != connector.OntologyRiskStales {
+		t.Errorf("plan of @alt on the second class: risk %q, want stales (%+v)", got, plan.Changes[0])
+	}
+	wantPlanRefusal(t, "@alt on the second class", f.change(f.ctx, "update_chunk", second, map[string]any{"body": "@alt note"}), planRequiredCode, plan.Fingerprint)
+}

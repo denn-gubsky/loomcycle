@@ -597,7 +597,15 @@ func entrySignature(r OntologyRead, e planEntry) string {
 	switch e.Kind {
 	case planKindClass:
 		for _, t := range r.Terms {
-			if r.classChunks[strings.ToLower(t.Name)] == e.ChunkID {
+			// By the class's own chunk, as planEntries keys it: classChunks maps a
+			// lower-cased name to the FIRST class holding it, so a second class whose
+			// name differs only in case would read as no class and every edit of it as
+			// meaning-only. classChunks is the fallback for a term built elsewhere.
+			id := t.ChunkID
+			if id == "" {
+				id = r.classChunks[strings.ToLower(t.Name)]
+			}
+			if id == e.ChunkID {
 				t.Meaning, t.Issues, t.MemoryScopeIssue = "", nil, ""
 				v = t
 				break
