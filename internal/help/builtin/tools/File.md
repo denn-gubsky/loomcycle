@@ -65,7 +65,10 @@ them) and reach only hosts on its allowlist.
 A workspace (the `Workspace` tool) is a directory on a workspace worker that
 belongs to the run that opened it. `stat`, `ls`, `copy`, `rm` and `clear` take
 a workspace reference; the bytes stream through the runtime and never through
-you. The other ops do not take one yet: `copy` the file into the inbox first.
+you. `extract` and `render` read a file in a workspace on that workspace's
+worker, where it is converted: the file never leaves it, and the result goes
+into a workspace (`to`) or the inbox (see File/extract, File/render). The
+other ops do not take one yet: `copy` the file into the inbox first.
 
 - A workspace reference needs your agent's `workspace` grant: `read` to read
   from a workspace, `write` to copy into it or remove from it. You need this
