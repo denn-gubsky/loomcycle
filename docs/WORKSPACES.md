@@ -68,7 +68,7 @@ For a single trusted machine, `workspace.mode: local` has the runtime start one 
 workspace:
   mode: local
   local:
-    tenant: default        # the one tenant it serves (default "default")
+    tenant: acme           # optional: the one tenant it serves (default: see below)
     root: /srv/loomcycle/workspaces   # default <LOOMCYCLE_DATA_DIR>/workspaces
 ```
 
@@ -76,7 +76,13 @@ The runtime starts `loomcycle worker --role workspace` as its child on a Unix so
 
 **It runs every command as the runtime's own user, with no isolation.** The child's environment is scrubbed and a command sees only `PATH`, but it runs as the same user: it can read the runtime's data directory and database, its config and secrets files, and on Linux the runtime's environment through `/proc`, provider keys included. The boot log says so, and so does `loomcycle doctor`. Use local mode only where you trust every agent that may use it.
 
-The local worker serves **one tenant**. With the legacy `LOOMCYCLE_AUTH_TOKEN` a run's tenant is `default`, the default. With minted tokens, set `workspace.local.tenant` to the tenant whose runs should use it. In open mode (no authentication) a run's tenant is the `tenant_id` its request names, and a run that names none has no tenant and cannot open a workspace: send `"tenant_id": "default"`.
+The local worker serves **one tenant**. With `workspace.local.tenant` unset it serves the tenant a run on this install carries when its request names none, worked out at boot (the boot log and `loomcycle doctor` name it and say why):
+
+- **Open mode** (no `LOOMCYCLE_AUTH_TOKEN`, no config principals): a run keeps the `tenant_id` its request names, and one that names none has the empty tenant. The local worker serves the empty tenant, so a run needs no `tenant_id` at all. Only the local worker ever serves the empty tenant; a network worker never does.
+- **The legacy `LOOMCYCLE_AUTH_TOKEN`**: every run is of tenant `default`, whatever its request names, and the local worker serves `default`.
+- **Config principals without the legacy token**: their tenant when they all share one; with several, `default`, and you should write `workspace.local.tenant`.
+
+Tokens minted into the store are not seen at boot. If your runs carry a minted token's tenant (including once an admin token has turned an open-mode install into an authenticated one), write `workspace.local.tenant`.
 
 `mode: local+remote` runs both: the local worker for its tenant, and remote workers on the endpoint.
 
@@ -156,7 +162,7 @@ A command and everything it started is killed at its timeout. Its output is kept
 |---|---|---|
 | `workspaces_off` | `workspace.mode` is off, or the runtime has no store. | Set `workspace.mode`. |
 | `not_granted` | The agent's grant does not allow the op. | Widen its `workspace` grant (Context op=self shows it). |
-| `no_worker` | No attached worker serves the run's tenant with that toolchain and engine; or the run has no tenant (open mode without `tenant_id`). | Check the worker attached (its log, `loomcycle_workspace_workers`), its tenant, and that it reported the toolchain. |
+| `no_worker` | No attached worker serves the run's tenant with that toolchain and engine. A run with no tenant (open mode, no `tenant_id`) is served only by a local worker whose tenant resolved to the empty one. | Check the worker attached (its log, `loomcycle_workspace_workers`), its tenant (the boot log and `loomcycle doctor` name the local worker's), and that it reported the toolchain. |
 | `at_capacity` | Every worker that could take it is full. | Release workspaces, or raise the worker's capacity. |
 | `limit` | The run or the tenant holds as many workspaces as allowed. | `release` one, or raise `max_per_run` / `max_per_tenant`. |
 | `not_found` | This run has no workspace of that name. Another run's workspace is reported the same way. | Open it in this run. |
@@ -176,4 +182,4 @@ A command and everything it started is killed at its timeout. Its output is kept
 
 **Leftover directories.** On attach the worker lists the workspaces on its disk, and the runtime tells it which to delete: those released while it was away, those it does not know, and lost ones whose run has ended. A sweeper every 60 seconds releases the workspaces of runs that ended without the release (a runtime killed mid-run).
 
-**`loomcycle doctor`** reports `workspace.mode` and the agents whose grant does nothing. It reads the configuration only; which workers are attached is the running server's `loomcycle_workspace_workers` metric and its log (`workspace worker attached`).
+**`loomcycle doctor`** reports `workspace.mode`, the local worker's tenant and why, and the agents whose grant does nothing. It reads the configuration only; which workers are attached is the running server's `loomcycle_workspace_workers` metric and its log (`workspace worker attached`).
