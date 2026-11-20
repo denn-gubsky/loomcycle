@@ -748,6 +748,11 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	if err := a.checkHooks(ctx, in.Name, def, parent.Definition); err != nil {
 		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
+	// Before the ceilings: a body nothing could run is refused for that,
+	// whoever would hold it.
+	if err := a.validateInlineCode("fork", def); err != nil {
+		return errResult(err.Error()), nil
+	}
 	// Tools ceiling enforcement — fork may narrow, never widen.
 	root, err := a.resolveToolsRoot(ctx, in.Name, parent)
 	if err != nil {
@@ -762,11 +767,21 @@ func (a *AgentDef) execFork(ctx context.Context, policy tools.AgentDefPolicyValu
 	// the lineage root, because the parent is itself operator-authored or
 	// passed this gate, so no version holds more than an operator or one of
 	// its authors did.
-	if err := a.checkCapabilityCeiling(ctx, in.Name, def, decodeBase(parent.Definition)); err != nil {
-		return errResult(fmt.Sprintf("fork: %s", err)), nil
+	base := decodeBase(parent.Definition)
+	// Except when the fork changes the code that runs. The forked version's
+	// grants were given to its code; new code under them would be the forker's
+	// code holding authority the forker lacks (an in-run author with only
+	// AgentDef rights replacing a bundled KB agent's body and keeping its
+	// tenant Document reach). Such a fork is judged as a create is: every
+	// grant, the tools included, against the forker's own.
+	if a.forkChangesCode(def, *base) {
+		base = nil
+		if err := forkerToolsCeiling(ctx, def); err != nil {
+			return errResult(fmt.Sprintf("fork: %s", err)), nil
+		}
 	}
-	if err := a.validateInlineCode("fork", def); err != nil {
-		return errResult(err.Error()), nil
+	if err := a.checkCapabilityCeiling(ctx, in.Name, def, base); err != nil {
+		return errResult(fmt.Sprintf("fork: %s", err)), nil
 	}
 
 	def.normalize()
