@@ -498,3 +498,28 @@ func TestMetricsListenerHandler_OmitsUserSeriesTheAuthenticatedRouteShows(t *tes
 		t.Errorf("the open listener dropped a substrate series:\n%s", body)
 	}
 }
+
+// The Calc tool's refusals reach /metrics by error code once boot wires the
+// counter; unwired, the family is absent.
+func TestMetricsProm_CalcRefusalsReportedByErrorCode(t *testing.T) {
+	srv := newMetricsPromServer(t, false)
+	scrape := func() string {
+		rec := httptest.NewRecorder()
+		srv.handleMetricsProm(rec, httptest.NewRequest("GET", "/metrics", nil))
+		return rec.Body.String()
+	}
+	if body := scrape(); strings.Contains(body, "loomcycle_calc_refusals_total") {
+		t.Error("unwired: the calc family is rendered")
+	}
+	srv.SetCalcStats(func() map[string]uint64 { return map[string]uint64{"syntax": 3, "domain": 1} })
+	body := scrape()
+	for _, line := range []string{
+		"# TYPE loomcycle_calc_refusals_total counter",
+		`loomcycle_calc_refusals_total{error="domain"} 1`,
+		`loomcycle_calc_refusals_total{error="syntax"} 3`,
+	} {
+		if !strings.Contains(body, line+"\n") {
+			t.Errorf("wired: missing %q", line)
+		}
+	}
+}

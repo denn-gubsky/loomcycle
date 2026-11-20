@@ -95,6 +95,7 @@ type boot struct {
 	gitTool           *builtin.Git
 	credentialDefTool *builtin.CredentialDef
 	cryptoTool        *builtin.Crypto
+	calcTool          *builtin.Calc
 	pathTool          *builtin.Path
 	documentTool      *builtin.Document
 	fileTool          *builtin.File

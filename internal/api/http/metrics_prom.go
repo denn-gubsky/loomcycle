@@ -244,6 +244,24 @@ func (s *Server) renderMetricsProm(w http.ResponseWriter, view promView) {
 		fmt.Fprintln(w)
 	}
 
+	// Calc tool refusals, by error code. The label set is bounded by the
+	// evaluator's closed list of codes; never model text.
+	if s.calcStats != nil {
+		st := s.calcStats()
+		codes := make([]string, 0, len(st))
+		for k := range st {
+			codes = append(codes, k)
+		}
+		sort.Strings(codes)
+		fmt.Fprintln(w, "# HELP loomcycle_calc_refusals_total Calc tool calls refused on this replica, by error code.")
+		fmt.Fprintln(w, "# TYPE loomcycle_calc_refusals_total counter")
+		for _, k := range codes {
+			labels := mergeLabels(replicaLabels, map[string]string{"error": k})
+			fmt.Fprintf(w, "loomcycle_calc_refusals_total%s %d\n", labels, st[k])
+		}
+		fmt.Fprintln(w)
+	}
+
 	// Access-control sets that could not be read (RFC FY Part E): in compat
 	// mode each dropped the stored denies for its request.
 	fmt.Fprintln(w, "# HELP loomcycle_acl_resolution_failures_total Requests whose access-control rules could not be read on this replica; in compat mode each ran with only its class baseline's denies.")
