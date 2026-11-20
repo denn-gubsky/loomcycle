@@ -338,7 +338,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	djvu := extract.IsDjVu(mt, "")
 	if _, ok := extract.Default().For(mt, name); !ok && !djvu {
 		return errValidation(fmt.Sprintf("extract: cannot extract text from %s (%s)", r.raw, mt),
-			"Extract reads DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, CHM, PalmDOC, RTF, CSV and TSV, text, Markdown, VTT and SRT captions, and images; op=transcribe reads audio and video."), nil
+			"Extract reads DOCX, Word 97–2003 DOC, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, PalmDOC, CHM, RTF, CSV and TSV, text, Markdown, VTT and SRT captions, and images; op=transcribe reads audio and video."), nil
 	}
 	sum := sha256.New()
 	if _, err := io.Copy(sum, io.NewSectionReader(fh, 0, info.Size())); err != nil {
@@ -421,7 +421,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	}
 	inferred := infer && inferFormats[rep.Format]
 	if infer && !inferred {
-		rep.Notes = append(rep.Notes, fmt.Sprintf("structure.infer_headings reads DOCX, HTML and EPUB; it was not applied to %s", rep.Format))
+		rep.Notes = append(rep.Notes, fmt.Sprintf("structure.infer_headings reads DOCX, DOC, HTML and EPUB; it was not applied to %s", rep.Format))
 	}
 	md := sink.md.String()
 	if cut {
@@ -1164,7 +1164,7 @@ type ExtractStructure struct {
 }
 
 // inferFormats are the extract formats structure.infer_headings reads.
-var inferFormats = map[string]bool{"docx": true, "html": true, "epub": true}
+var inferFormats = map[string]bool{"docx": true, "doc": true, "html": true, "epub": true}
 
 // inferredHeadingsBy is the provenance structured.by of headings an
 // extraction inferred.

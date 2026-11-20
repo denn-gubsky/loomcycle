@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+ xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
+ xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+ xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+ xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+ xmlns:dc="http://purl.org/dc/elements/1.1/"
+ xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0"
+ office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.text">
+ <office:meta>
+  <dc:title>The Lantern Ledger</dc:title>
+  <dc:subject>Harbour accounts</dc:subject>
+  <dc:description>A synthetic report for the DOC reader's tests.</dc:description>
+  <meta:initial-creator>Ada Quill</meta:initial-creator>
+  <dc:creator>Ada Quill</dc:creator>
+  <meta:keyword>lanterns</meta:keyword>
+  <meta:keyword>ledgers</meta:keyword>
+  <meta:creation-date>2021-03-04T10:00:00</meta:creation-date>
+ </office:meta>
+ <office:body>
+  <office:text>
+   <text:h text:style-name="Heading_20_1" text:outline-level="1">Opening the books</text:h>
+   <text:p text:style-name="Text_20_body">The harbour kept its accounts in a ledger of lanterns<text:note text:id="ftn1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p text:style-name="Footnote">Every lantern had a number.</text:p></text:note-body></text:note>, one for each ship.</text:p>
+   <text:p text:style-name="Text_20_body"># Not a heading, and a line<text:line-break/>broken by hand.</text:p>
+   <text:h text:style-name="Heading_20_2" text:outline-level="2">The tally</text:h>
+   <table:table table:name="Tally">
+    <table:table-column table:number-columns-repeated="3"/>
+    <table:table-row>
+     <table:table-cell office:value-type="string"><text:p>Ship</text:p></table:table-cell>
+     <table:table-cell office:value-type="string"><text:p>Lanterns</text:p></table:table-cell>
+     <table:table-cell office:value-type="string"><text:p>Note</text:p></table:table-cell>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell office:value-type="string"><text:p>Gull</text:p></table:table-cell>
+     <table:table-cell office:value-type="string"><text:p>12</text:p></table:table-cell>
+     <table:table-cell office:value-type="string"><text:p>a|b</text:p><text:p>two lines</text:p></table:table-cell>
+    </table:table-row>
+    <table:table-row>
+     <table:table-cell office:value-type="string"><text:p>Heron</text:p></table:table-cell>
+     <table:table-cell office:value-type="string"><text:p>7</text:p></table:table-cell>
+     <table:table-cell office:value-type="string"><text:p/></table:table-cell>
+    </table:table-row>
+   </table:table>
+   <text:p text:style-name="Text_20_body">This page is page <text:page-number text:select-page="current">1</text:page-number> of the ledger.</text:p>
+   <text:h text:style-name="Heading_20_3" text:outline-level="3">Closing</text:h>
+   <text:p text:style-name="Text_20_body">The ledger closed at dusk<text:note text:id="edn1" text:note-class="endnote"><text:note-citation>i</text:note-citation><text:note-body><text:p text:style-name="Endnote">Dusk was at six.</text:p></text:note-body></text:note> with a café toast.</text:p>
+  </office:text>
+ </office:body>
+</office:document>

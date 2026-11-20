@@ -209,6 +209,11 @@ func settleMediaType(declared string, head []byte, name string) string {
 	if (generic(mt) || mt == chmType) && chmHeader(head) {
 		return chmType
 	}
+	// A Word template (.dot) shares its extension with Graphviz's text
+	// files: only an OLE2 compound file named so is Word's (RFC GX §4.1).
+	if generic(mt) && strings.ToLower(fileExt(name)) == ".dot" && bytes.HasPrefix(head, oleSignature) {
+		return "application/msword"
+	}
 	// An FB2 book is XML to a sniffer and often to its producer too.
 	if (generic(mt) || mt == "text/xml" || mt == "application/xml") && fictionBook(head) {
 		return fb2Type
@@ -245,6 +250,11 @@ func settleMediaType(declared string, head []byte, name string) string {
 	}
 	return sniffed
 }
+
+// oleSignature begins an OLE2 compound file: a Word 97–2003 document, and
+// also a spreadsheet, a deck or a mail message, so the bytes alone never
+// type a file Word's.
+var oleSignature = []byte("\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1")
 
 // djvuType is a DjVu document's media type; image/x-djvu is its older name.
 const djvuType = "image/vnd.djvu"

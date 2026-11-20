@@ -1,6 +1,6 @@
 ---
 name: Document/node_stats
-description: "Document op=node_stats — report which taxonomy nodes (concepts and document classes) have stale statistics, or recompute them: member counts, and where the store keeps vectors, spread, exemplars, nearest siblings and distinctive terms; or list the misfits (documents nearer a sibling concept) and propose their placements. An operator's or a granted pass."
+description: "Document op=node_stats — report which taxonomy nodes (concepts and document classes) have stale statistics, or recompute them: member counts, and where the store keeps vectors, spread, exemplars, nearest siblings and distinctive terms; or list the misfits (documents nearer a sibling concept) and propose their placements; or rank concepts by recent growth and list quiet nodes. An operator's or a granted pass."
 ---
 `node_stats` keeps statistics for each node of the tenant's taxonomy: every
 concept of every scheme, and every document class. `describe_ontology` with
@@ -48,13 +48,16 @@ tenant scope.
 - `mode` — `report` (the default): every node with its status and why, writing
   nothing. `compute`: recompute the stale and missing nodes and store them;
   rows of nodes no longer in force are removed. `misfits`: the misplaced
-  members (below), writing nothing unless `propose`.
+  members (below), writing nothing unless `propose`. `growth`: growth, quiet
+  nodes and unplaced periods from the stored series (below), writing nothing.
 - `scheme` — only this scheme's concepts (by name). Without it, every concept
   and every document class; only then are rows of removed nodes reported and
   removed.
 - `propose` — mode `misfits` only: file a placement proposal per misfit.
 - `limit` — mode `misfits` with `propose`: the most proposals this call files
   (default 20, at most 100).
+- `quiet_periods` — mode `growth` only: how many periods count as recent
+  (default 6, at most 120).
 
 ## Misfits
 
@@ -92,6 +95,43 @@ whole). `skipped` says why no proposal was filed: `rejected`, `exists`, `cap`,
 `duplicate` (a second misfit of the same document toward the same concept) or
 `refused:<code>`.
 
+## Growth
+
+With `mode: growth` the call reads the series `compute` stored (the rows
+`measure` serves, so only documents every member of the tenant may read) and
+writes nothing. Windows are counted in each node's own period (its scheme's
+`@period`, else months), ending in the period that holds now; a member
+dated after it counts in no window:
+
+- `candidates` — the concepts with members dated in the last `quiet_periods`
+  periods, ranked by `growth` (those members less the ones dated in the
+  `quiet_periods` periods before), then by `recent`, then by size. These are
+  where narrower concepts are most likely needed.
+- `quiet` — concepts and document classes with members but none dated in the
+  recent window, with `last_period` and `periods_since`. Reported only:
+  nothing retires a node.
+- `unplaced` — per scheme, the periods of its unplaced series, those whose
+  unplaced share rose over the period before (`rising`) first, then the rest,
+  most recent first. A rising period lists its unplaced `documents` (at most
+  50): the things to group first.
+
+A concept of an `@origin adopted` scheme, or one `@locked`, carries `fixed`
+(`adopted` or `locked`): growth beneath it may add local concepts, never
+rename or move it. A node with no stored series point is not judged;
+`series_stale` and `series_missing` count the count and unplaced points that
+are behind (including a stored point whose period no member is dated in any
+more, which is not ranked from), and `note` says to run `compute` first. It
+needs no vectors and reads none.
+
+It returns `{mode, scheme?, quiet_periods, series_stale, series_missing,
+note?, candidates, quiet, unplaced, truncated?}`: a candidate is `{node_id,
+name, tag, scheme, period, members, recent, previous, growth, last_period,
+fixed?}`; a quiet node `{node_id, kind, name, tag?, scheme?, period, members,
+last_period, periods_since, fixed?}`; a scheme `{scheme, scheme_id, period,
+periods}` with each period `{label, period_start, unplaced, basis, share,
+previous_share?, rising, documents?, documents_truncated?}`. Each list holds at
+most 200.
+
 ## Returns
 
 `{mode, scheme?, vectors, note?, embed_model?, min_members, nodes, orphans?,
@@ -117,8 +157,9 @@ fresh, stale, missing, computed, removed, series}`:
 
 ## Errors
 
-- `node_stats: mode "<x>" is not report, compute or misfits`.
+- `node_stats: mode "<x>" is not report, compute, misfits or growth`.
 - `node_stats: propose is taken only with mode misfits`.
+- `node_stats: quiet_periods is taken only with mode growth`; `quiet_periods must be 1 to 120`.
 - `node_stats: permission: …` — the caller is not an operator or a granted
   agent, lacks the tenant scope, or may not read every document of it.
 - `node_stats: no scheme "<x>" is in force`.
@@ -149,4 +190,14 @@ File placement proposals for at most five misfits of one scheme:
 
 ```json result
 {"mode": "misfits", "scheme": "topics", "vectors": true, "embed_model": "ollama/bge-m3", "margin": 0.05, "min_members": 3, "propose": true, "cap": 5, "count": 1, "misfits": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "Vendor exit plan", "node_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "node": "reporting", "nearest_node_id": "6f1d2c3b4a5e4f60718293a4b5c6d7e8", "nearest": "Risk Management", "own_similarity": 0.21, "nearest_similarity": 0.93, "margin": 0.72, "statement_id": "9e8d7c6b5a4f40312e1d0c9b8a7f6e5d", "status": "proposed"}], "proposed": 1, "skipped": {}}
+```
+
+Rank one scheme's concepts by growth over the last three months:
+
+```json
+{"op": "node_stats", "mode": "growth", "scheme": "topics", "quiet_periods": 3}
+```
+
+```json result
+{"mode": "growth", "scheme": "topics", "quiet_periods": 3, "series_stale": 0, "series_missing": 0, "candidates": [{"node_id": "6f1d2c3b4a5e4f60718293a4b5c6d7e8", "name": "Risk Management", "tag": "topics/risk-management", "scheme": "topics", "period": "month", "members": 12, "recent": 5, "previous": 1, "growth": 4, "last_period": "2026-11"}], "quiet": [{"node_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "kind": "concept", "name": "reporting", "tag": "topics/reporting", "scheme": "topics", "period": "month", "members": 4, "last_period": "2026-03", "periods_since": 8}], "unplaced": [{"scheme": "topics", "scheme_id": "5e0c1b2a39484f5e6d7c8b9a0f1e2d3c", "period": "month", "periods": [{"label": "2026-10", "period_start": 1790812800000000000, "unplaced": 6, "basis": 9, "share": 0.6667, "previous_share": 0.25, "rising": true, "documents": ["0a1b2c3d4e5f60718293a4b5c6d7e8f9"]}]}]}
 ```

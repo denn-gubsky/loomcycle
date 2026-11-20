@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -243,6 +244,20 @@ func FuzzRTF(f *testing.F) {
 	f.Add([]byte(`{\rtf1\ansi\ansicpg1251{\fonttbl{\f0\fcharset204 A;}}{\stylesheet{\s1 heading 1;}}\s1 T\par\trowd\intbl a\cell b\cell\row x}`))
 	f.Add([]byte(`{\rtf1{\pict\pngblip\bin4 {}\\}{\footnote{\*\x y}z}\b\i-12 \uc3\u-1? q`))
 	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtract(t, RTF{}, "f.rtf", data, false) })
+}
+
+func FuzzDOC(f *testing.F) {
+	for _, name := range []string{"report.doc", "cyrillic.doc"} {
+		if b, err := os.ReadFile("testdata/doc/" + name); err == nil {
+			f.Add(b)
+		}
+	}
+	f.Add(docTestSpec{pieces: []docTestPiece{
+		{text: "A \x13 PAGE \x143\x15 b\rc\x07d\x07\x07", compressed: true},
+		{text: "\u201cq\u201d\x0bline\r"},
+	}}.build(f))
+	f.Add(word6Doc(f, []byte("Word 95 text\r"), 104, 0x0409, 0))
+	f.Fuzz(func(t *testing.T, data []byte) { fuzzExtractBoth(t, DOC{}, "f.doc", data, false) })
 }
 
 func FuzzMOBI(f *testing.F) {

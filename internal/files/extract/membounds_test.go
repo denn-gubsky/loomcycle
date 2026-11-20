@@ -684,3 +684,75 @@ func TestCHM_LZXExpansionBombIsRefused(t *testing.T) {
 		return err
 	})
 }
+
+// A piece table may point every piece at the same bytes: 2,000 pieces of
+// 64 KiB each would decode 128 MiB out of a file of 64 KiB of text. The
+// text decoded in one pass is capped (maxDOCText), and the reader holds a
+// paragraph piece at a time, not the text.
+func TestDOC_OverlappingPiecesAreBounded(t *testing.T) {
+	text := strings.Repeat("слово ", 32<<10/6)
+	pieces := make([]docTestPiece, 2000)
+	for i := range pieces {
+		pieces[i] = docTestPiece{text: text}
+	}
+	data := docTestSpec{pieces: pieces, samePlace: true}.build(t)
+	s := &rtfDiscardSink{}
+	var err error
+	peak := peakHeap(func() {
+		_, err = DOC{}.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), s, Options{Name: "o.doc"})
+	})
+	if !IsRefused(err) || !strings.Contains(err.Error(), "text is over") {
+		t.Fatalf("err = %v, want the decoded text refused at its cap", err)
+	}
+	if s.most > maxDOCPara+8<<10 {
+		t.Errorf("one write of %d bytes, want paragraph pieces of at most %d", s.most, maxDOCPara)
+	}
+	if c := ceiling(32 << 20); peak > c {
+		t.Errorf("peaked at %d MiB, want at most %d MiB", peak>>20, c>>20)
+	}
+}
+
+// A compound file whose directory chain loops is refused when it opens,
+// for little: the chain walk allocates its visited set and stops.
+func TestCFB_ChainLoopRefusalIsCheap(t *testing.T) {
+	c := buildCFB(t, cfbStreamSpec{"WordDocument", make([]byte, 8192)})
+	dirSec := uint32((c.dirAt - 512) / 512)
+	c.fatEntry(dirSec, dirSec)
+	wantRefusedUnder(t, "directory chain loop", 4<<20, func() error {
+		_, err := extractBytes(DOC{}, "loop.doc", c.data)
+		return err
+	})
+}
+
+// Heading inference keeps each paragraph's runs of one formatting. A
+// document whose bold turns on and off at every character makes a run per
+// character, each costing far more than its one byte of text: the cap on
+// what inference holds counts the runs too, so such a document ends the
+// pass (no headings inferred) rather than holding a run per byte. The cap
+// is lowered here so a small file reaches it.
+func TestDOC_InferenceRunsCountAgainstItsCap(t *testing.T) {
+	text := strings.Repeat(strings.Repeat("a", 2000)+"\r", 100) // 200,100 runs
+	data := docTestSpec{pieces: []docTestPiece{{text: text, compressed: true}}, alternateBold: true}.build(t)
+	var rep Report
+	var err error
+	peak := peakHeap(func() {
+		rep, err = DOC{}.Extract(context.Background(), bytes.NewReader(data), int64(len(data)), &rtfDiscardSink{},
+			Options{Name: "runs.doc", InferHeadings: true, docMaxInferText: 1 << 20})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(rep.Notes, "\n"), "headings were not inferred") {
+		t.Fatalf("notes %v: 200,000 one-character runs within 200 KiB of text were all held, uncounted", rep.Notes)
+	}
+	if c := ceiling(16 << 20); peak > c {
+		t.Errorf("peaked at %d MiB, want at most %d MiB", peak>>20, c>>20)
+	}
+	// The same text in one formatting is inferred as usual.
+	plain := docTestSpec{pieces: []docTestPiece{{text: text, compressed: true}}}.build(t)
+	rep, err = DOC{}.Extract(context.Background(), bytes.NewReader(plain), int64(len(plain)), &rtfDiscardSink{},
+		Options{Name: "plain.doc", InferHeadings: true, docMaxInferText: 1 << 20})
+	if err != nil || strings.Contains(strings.Join(rep.Notes, "\n"), "not inferred") {
+		t.Fatalf("one formatting: err %v, notes %v", err, rep.Notes)
+	}
+}

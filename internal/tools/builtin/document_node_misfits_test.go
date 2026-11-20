@@ -317,7 +317,7 @@ func TestMisfit_InputAndAccessAreChecked(t *testing.T) {
 	for body, want := range map[string]string{
 		`{"op":"node_stats","propose":true}`:                   "propose is taken only with mode misfits",
 		`{"op":"node_stats","mode":"compute","propose":true}`:  "propose is taken only with mode misfits",
-		`{"op":"node_stats","mode":"nope"}`:                    "is not report, compute or misfits",
+		`{"op":"node_stats","mode":"nope"}`:                    "is not report, compute, misfits or growth",
 		`{"op":"node_stats","mode":"misfits","scheme":"nope"}`: `no scheme "nope" is in force`,
 	} {
 		_, res := docExec(t, d, k.f.operator, body)
