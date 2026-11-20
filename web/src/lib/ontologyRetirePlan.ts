@@ -74,9 +74,6 @@ export interface PlanSteps<T> {
   confirm: (text: string) => boolean;
 }
 
-// applyWithPlan is retireWithPlan for any planned change (RFC GQ P4.2 accepts a change
-// proposal this way): plan, show confirmText of the plan, apply with its fingerprint,
-// and re-plan once on plan_stale.
 // plannedRefusal is the plan's note of a change no fingerprint lets through
 // (rename_job_pending), or null.
 export function plannedRefusal(plan: OntologyPlanResult): string | null {
@@ -87,6 +84,9 @@ export function plannedRefusal(plan: OntologyPlanResult): string | null {
   return null;
 }
 
+// applyWithPlan is retireWithPlan for any planned change (RFC GQ P4.2 accepts a change
+// proposal this way): plan, show confirmText of the plan, apply with its fingerprint,
+// and re-plan once on plan_stale.
 export async function applyWithPlan<T>(
   confirmText: (plan: OntologyPlanResult) => string,
   steps: PlanSteps<T>,
