@@ -9197,7 +9197,8 @@ agents:
         B. Specific fact: a detail that one passage states (a number, a name, a
            default, yes or no).
         C. General: a definition, a policy, a rule, "how do we do X".
-        D. Overview: "what do we have on X", "what is in this area".
+        D. Overview: "what do we have on X", "what is in this area", and
+           "what changed (is new, grew) in X" (Step 4, CHANGED).
 
       Step 2. Enter.
         A, B: search the passages with summaries attached (search, with_summary).
@@ -9212,12 +9213,17 @@ agents:
               list the folders the hits and the counts point to.
         If the question names a topic or a kind of document that the ontology
         declares, add it as a filter (concept, type).
+        D, when the ontology declares topics: add "baseline": true to the
+        facets search, and also enter by topic: search the topics' own
+        summaries (annotations: only, annotation_levels ["concept"]).
         The facet counts say how wide the material is. documents_counted is how
         many documents match; folder says where they are: walk every folder
         that holds matching documents, not only the folders of the top hits;
         type and concept say which kinds and topics are in it. If "complete" is not
         true, there is more beyond the counted window: widen (Step 4, WIDEN)
-        before you answer.
+        before you answer. With "baseline", a value's log_ratio says how much
+        more common it is among the matches than in the whole knowledge base:
+        above 1, the material is ABOUT it; near 0, it is only a large area.
 
       Step 3. Read for the fact (B, and every detail you state in C).
         1. Open in full (get_chunk) the passage that answers the EXACT question:
@@ -9263,6 +9269,25 @@ agents:
         that contains most of them (a hit's path, or its lineage, names its
         folders) and read its summary. If the hits share no folder below the
         root, say the material is spread out and name the areas.
+        TOPIC, when the ontology declares topics (concepts):
+        - UP into the topics: lineage with "with_memberships": true also gives
+          the hit's classes and each topic chain it is placed under, nearest
+          first, each with its brief.
+        - SIDEWAYS by topic: search with "concept" set to a topic's tag reads
+          that topic's other members.
+        - PLACE by topic: place with the question as "query" (or the hits'
+          "document_ids") names the lowest topic and class holding most of
+          the hits, with its brief. No node: the hits are spread; name the
+          topics they fall under instead.
+        For an overview (D), report by topic: group the documents under the
+        topics place and the concept counts name, each topic with its count.
+        CHANGED, for "what changed / is new / grew in X": measure "share" with
+        "from" and "to" the recent period (e.g. the last month) and "compare"
+        the period before; it orders the topics by how far their share moved.
+        Open the two or three topics that moved most (search with "concept"
+        and "created_after" the period start) and say what is new in each,
+        with the counts. No series stored: say so and list the documents by
+        date (query_documents, created_after) instead.
         For an overview (D) be complete, not selective: name EVERY document whose
         brief fits, of every kind (design proposals, guides, plans, research,
         measurements), from every folder the searches reached. Ten short lines
@@ -9307,7 +9332,7 @@ agents:
         you did not cover, with the counts, e.g.
           UNCOVERED: examined 12 of 31 counted documents; not reached: folder /x (9), type guide (6)
         End with two lines:
-        MOVES: the moves you used, from: search, read, up, down, sideways, place.
+        MOVES: the moves you used, from: search, read, up, down, sideways, place, topic, changed.
         MISSING: an OPERATION you wanted and the tools did not offer, or "none".
         (Do not list here what you chose not to read.)
 
@@ -9325,8 +9350,18 @@ agents:
       "facet_window" (WIDEN).
       {{help:Document/search}}
 
-      Step up from a hit to its sections, document and folders (UP, PLACE):
+      Step up from a hit to its sections, document and folders (UP, PLACE),
+      and with "with_memberships" into its classes and topics (TOPIC):
       {{help:Document/lineage}}
+
+      Where a query's top hits, or a set of documents, sit in the topics and
+      classes (TOPIC, PLACE by topic): the forms with "query" and with
+      "document_ids".
+      {{help:Document/place}}
+
+      Which topics moved between two periods (CHANGED): the form with
+      "compare".
+      {{help:Document/measure}}
 
       Read one passage in full: the form with "with_summary".
       {{help:Document/get_chunk}}

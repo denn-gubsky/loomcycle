@@ -398,3 +398,18 @@ hits. Narrow the count to one folder with `under_path` and a larger window:
 ```json
 {"op": "search", "query": "outsourcing of critical functions", "scope": "tenant", "under_path": "/board", "facets": ["type"], "facet_window": 300}
 ```
+
+Which topics the material is ABOUT, not only which are large: weigh each count
+against the whole corpus with `baseline` (a large positive `log_ratio` names
+the subject):
+
+```json
+{"op": "search", "query": "outsourcing of critical functions", "scope": "tenant", "facets": ["concept", "type"], "baseline": true}
+```
+
+Enter by topic: rank the taxonomy's topics themselves for a question about an
+area (a node's row carries its member count in `series` with `with_summary`):
+
+```json
+{"op": "search", "query": "outsourcing of critical functions", "scope": "tenant", "annotations": "only", "annotation_levels": ["concept"], "with_summary": true}
+```
