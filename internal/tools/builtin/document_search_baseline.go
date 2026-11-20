@@ -12,11 +12,11 @@ package builtin
 //   - type: the document's own type (facetRootTypes), counted by countDocumentTypes;
 //   - folder: the parent folder of a Path name the caller may read (facetFolders),
 //     counted from the folder's own entries;
-//   - concept: the concept a chunk of the document is about directly (facetConcepts)
-//     — in the tenant scope a live subject statement to that concept, by the
-//     with_counts membership rule (eachConceptMember); elsewhere a tag whose deepest
-//     concept is the value. Never the closure: a facet value is the concept the
-//     statement names, so its baseline is too.
+//   - concept: the concept a chunk in force of the document is about directly
+//     (facetConcepts at now) — in the tenant scope a live subject statement to
+//     that concept, elsewhere a tag whose deepest concept is the value. Never the
+//     closure: a facet value is the concept the statement names, so its baseline
+//     is too.
 //
 // Assumption: the corpus side counts what is in force now. A search with as_of
 // counts its facets as of that moment and its baseline as of now; on a corpus
@@ -25,13 +25,18 @@ package builtin
 //
 // ACCESS (RFC GM §7). Every corpus number is over documents the caller may read
 // (readableDocList), as every facet count is: a count over hidden documents would
-// tell the caller they exist and what they are about. Only the values the facet
+// tell the caller they exist and what they are about. The reader's list goes into
+// each count query and the counts are grouped (countReadableGrouped), so hidden
+// documents never take rows under the operator's cap either. Only the values the facet
 // already lists (at most facetValuesCap each) are counted, so the baseline names
 // nothing the facet did not.
 
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
+	"time"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -154,7 +159,11 @@ func (d *Document) corpusCounts(ctx context.Context, key sqlmem.ScopeKey, b *fac
 	return nil, false, fmt.Errorf("baseline: unknown facet %q", kind)
 }
 
-// conceptCorpusCounts is corpusCounts for the concept facet.
+// conceptCorpusCounts is corpusCounts for the concept facet, by facetConcepts' rule
+// at now: in the tenant scope a live subject statement (or a narrower kind) to the
+// concept itself from a chunk in force; elsewhere a tag on a chunk in force whose
+// deepest concept is the value. Each count is one grouped query per reader
+// partition (countReadableGrouped), so a hidden document never takes a row.
 func (d *Document) conceptCorpusCounts(ctx context.Context, key sqlmem.ScopeKey, b *facetBaseline,
 	values []facetValue, schemes []memrank.OntologyScheme) (map[string]int, bool, error) {
 	out := map[string]int{}
@@ -162,6 +171,7 @@ func (d *Document) conceptCorpusCounts(ctx context.Context, key sqlmem.ScopeKey,
 	for _, v := range values {
 		want[v.Value] = true
 	}
+	chunkLive, cargs := asOfClause(time.Now().UnixNano())
 	if key.Scope == "tenant" {
 		tagOf := map[string]string{}
 		var ids []string
@@ -173,24 +183,25 @@ func (d *Document) conceptCorpusCounts(ctx context.Context, key sqlmem.ScopeKey,
 				}
 			}
 		}
-		docs := map[string]map[string]bool{} // tag → documents
-		err := d.eachConceptMember(ctx, key, ids, func(conceptID, docID, _ string) {
-			tag := tagOf[conceptID]
-			if tag == "" || !b.list.readable(docID) {
-				return
-			}
-			if docs[tag] == nil {
-				docs[tag] = map[string]bool{}
-			}
-			docs[tag][docID] = true
-		})
+		if len(ids) == 0 {
+			return out, false, nil
+		}
+		kinds, _ := d.expandKindFilter(ctx, []string{"subject"})
+		kph, kargs := inPlaceholders(kinds)
+		iph, iargs := inPlaceholders(ids)
+		live, largs := statementVisibility{}.clause()
+		stmt := `SELECT e.to_id, COUNT(DISTINCT c.document_id) FROM chunk_edges e JOIN chunks c ON c.id = e.from_id
+		          LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
+		          WHERE e.kind IN (` + kph + `) AND e.to_id IN (` + iph + `) AND ` + live + ` AND ` + chunkLive + `%s
+		          GROUP BY e.to_id`
+		byID, capped, err := d.countReadableGrouped(ctx, key, b.list, stmt, append(append(append(kargs, iargs...), largs...), cargs...))
 		if err != nil {
 			return nil, false, err
 		}
-		for tag, ds := range docs {
-			out[tag] = len(ds)
+		for id, n := range byID {
+			out[tagOf[id]] += n
 		}
-		return out, false, nil
+		return out, capped, nil
 	}
 	var all []string
 	for _, s := range schemes {
@@ -200,20 +211,75 @@ func (d *Document) conceptCorpusCounts(ctx context.Context, key sqlmem.ScopeKey,
 	}
 	capped := false
 	for _, v := range values {
-		res, err := d.query(ctx, key, `SELECT DISTINCT c.document_id, t.tag FROM chunk_tags t JOIN chunks c ON c.id = t.chunk_id
-			 WHERE t.tag = ? OR t.tag LIKE ? ESCAPE '!'`, v.Value, escapeLike(v.Value+"/", '!')+"%")
+		// The tags whose deepest concept is v: v and the tags under it, less those
+		// under a narrower concept (deepestConceptTag, written as SQL).
+		cond := `(t.tag = ? OR t.tag LIKE ? ESCAPE '!')`
+		args := []any{v.Value, escapeLike(v.Value+"/", '!') + "%"}
+		for _, c := range all {
+			if strings.HasPrefix(c, v.Value+"/") {
+				cond += ` AND NOT (t.tag = ? OR t.tag LIKE ? ESCAPE '!')`
+				args = append(args, c, escapeLike(c+"/", '!')+"%")
+			}
+		}
+		stmt := `SELECT '', COUNT(DISTINCT c.document_id) FROM chunk_tags t JOIN chunks c ON c.id = t.chunk_id
+		          LEFT JOIN chunk_memory_meta m ON m.chunk_id = c.id
+		          WHERE ` + cond + ` AND ` + chunkLive + `%s`
+		n, cut, err := d.countReadableGrouped(ctx, key, b.list, stmt, append(args, cargs...))
 		if err != nil {
 			return nil, false, err
 		}
-		capped = capped || res.Truncated
-		seen := map[string]bool{}
-		for _, r := range res.Rows {
-			doc := asStr(r[0])
-			if !seen[doc] && b.list.readable(doc) && deepestConceptTag(all, asStr(r[1])) == v.Value {
-				seen[doc] = true
-			}
+		capped = capped || cut
+		out[v.Value] = n[""]
+	}
+	return out, capped, nil
+}
+
+// countReadableGrouped runs stmt — a grouped count of (key, distinct documents)
+// whose `%s` takes a document filter at the end of its WHERE — over the documents
+// list leaves readable, as countDocumentTypes counts types: the whole scope less the
+// hidden documents when the bare scope is readable, else the readable documents
+// alone, in batches. The batches partition documents, so their distinct counts add
+// up. The reader's list is in the query, so a hidden document never takes one of
+// the rows the operator's cap allows; capped says a grouped answer was cut anyway.
+func (d *Document) countReadableGrouped(ctx context.Context, key sqlmem.ScopeKey, list *docReadList, stmt string, args []any) (map[string]int, bool, error) {
+	out := map[string]int{}
+	capped := false
+	run := func(filter string, fargs []any, sign int) error {
+		res, err := d.query(ctx, key, fmt.Sprintf(stmt, filter), append(append([]any{}, args...), fargs...)...)
+		if err != nil {
+			return err
 		}
-		out[v.Value] = len(seen)
+		capped = capped || res.Truncated
+		for _, r := range res.Rows {
+			if len(r) < 2 {
+				return fmt.Errorf("baseline: a row of %d columns", len(r))
+			}
+			out[asStr(r[0])] += sign * asInt(r[1])
+		}
+		return nil
+	}
+	if list == nil || list.unnamedReadable {
+		if err := run("", nil, 1); err != nil {
+			return nil, false, err
+		}
+	}
+	if list == nil || len(list.differs) == 0 {
+		return out, capped, nil
+	}
+	docs := make([]string, 0, len(list.differs))
+	for id := range list.differs {
+		docs = append(docs, id)
+	}
+	sort.Strings(docs)
+	sign := 1 // the listed documents are the readable ones
+	if list.unnamedReadable {
+		sign = -1 // the listed documents are hidden
+	}
+	for start := 0; start < len(docs); start += facetDocBatch {
+		ph, dargs := inPlaceholders(docs[start:min(start+facetDocBatch, len(docs))])
+		if err := run(` AND c.document_id IN (`+ph+`)`, dargs, sign); err != nil {
+			return nil, false, err
+		}
 	}
 	return out, capped, nil
 }

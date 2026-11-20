@@ -462,13 +462,33 @@ func TestDocumentSearchFacets_BaselineAbsentLeavesTheAnswerUnchanged(t *testing.
 // narrower one's), the rule its facet count follows; it covers the whole scope, not
 // the search's filter.
 func TestDocumentSearchFacets_BaselineCountsConceptsByTheFacetsRule(t *testing.T) {
-	d, base, _ := documentFixture(t)
+	t.Run("sqlite", func(t *testing.T) {
+		d, ctx, _ := documentFixture(t)
+		assertBaselineConcepts(t, d, ctx)
+	})
+	t.Run("postgres", func(t *testing.T) {
+		d, ctx := pgDocumentOrSkip(t)
+		assertBaselineConcepts(t, d, ctx)
+	})
+}
+
+func assertBaselineConcepts(t *testing.T, d *Document, base context.Context) {
 	f := newConceptFixture(t, d, base)
 	rm := f.concepts["topics/risk-management"]
 	a := f.doc("tenant", "/kb/a")
 	f.link("link_chunks", f.chunk("tenant", a), rm, "subject")
 	f.link("link_chunks", f.chunk("tenant", f.doc("tenant", "/other/b")), rm, "subject")
 	f.link("link_chunks", f.chunk("tenant", f.doc("tenant", "/other/c")), f.concepts["topics/risk-management/outsourcing"], "subject")
+	// A chunk whose life ended (an edition closed it) says nothing now: the facet
+	// does not count it, and neither does the corpus.
+	closed := f.chunk("tenant", f.doc("tenant", "/other/closed"))
+	f.link("link_chunks", closed, rm, "subject")
+	closeChunk := func(scope, id string) {
+		t.Helper()
+		f.c.exec(map[string]any{"op": "update_chunk", "scope": scope, "id": id, "valid_at": 1000, "invalid_at": 2000,
+			"revision": f.c.exec(map[string]any{"op": "get_chunk", "scope": scope, "id": id})["revision"]})
+	}
+	closeChunk("tenant", closed)
 
 	_, text := f.search(f.reader, map[string]any{"scope": "tenant", "under_path": "/kb", "facets": []string{"concept"}, "baseline": true})
 	var out map[string]any
@@ -497,6 +517,7 @@ func TestDocumentSearchFacets_BaselineCountsConceptsByTheFacetsRule(t *testing.T
 	f.chunk("user", f.doc("user", "/kb/u1"), "topics/risk-management")
 	f.chunk("user", f.doc("user", "/other/u2"), "topics/risk-management/undeclared")
 	f.chunk("user", f.doc("user", "/other/u3"), "topics/risk-management/outsourcing")
+	closeChunk("user", f.chunk("user", f.doc("user", "/other/u4"), "topics/risk-management"))
 	_, text = f.search(f.reader, map[string]any{"scope": "user", "under_path": "/kb", "facets": []string{"concept"}, "baseline": true})
 	out = nil
 	_ = json.Unmarshal([]byte(text), &out)
