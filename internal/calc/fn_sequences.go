@@ -232,13 +232,25 @@ func fnReverse(e *evaluator, a args) (val, *Error) {
 
 // valueKey writes a canonical text for equality under ==: a float and an
 // exact number with the same value share a key, as they compare equal. It
-// reports false for a function, which has no value to compare.
-func valueKey(b *strings.Builder, v val) bool {
+// charges one step per value written and one per bitStepCost bits of a
+// number, since a key serialises nested lists and every digit. A function
+// has no value to compare and is refused.
+func (e *evaluator) valueKey(b *strings.Builder, v val, a args) *Error {
+	if err := e.charge(1, a.pos); err != nil {
+		return err
+	}
 	switch v := v.(type) {
 	case num:
+		r := v.rat()
+		if err := e.charge(ratBits(r)/bitStepCost, a.pos); err != nil {
+			return err
+		}
 		b.WriteString("n")
-		b.WriteString(v.rat().RatString())
+		b.WriteString(r.RatString())
 	case string:
+		if err := e.charge(len(v)/bitStepCost, a.pos); err != nil {
+			return err
+		}
 		b.WriteString("s")
 		b.WriteString(strconv.Quote(v))
 	case bool:
@@ -247,16 +259,16 @@ func valueKey(b *strings.Builder, v val) bool {
 	case []val:
 		b.WriteString("[")
 		for _, x := range v {
-			if !valueKey(b, x) {
-				return false
+			if err := e.valueKey(b, x, a); err != nil {
+				return err
 			}
 			b.WriteString(",")
 		}
 		b.WriteString("]")
 	default:
-		return false
+		return errf(codeType, a.pos, "%s: functions cannot be compared", a.name)
 	}
-	return true
+	return nil
 }
 
 func fnUnique(e *evaluator, a args) (val, *Error) {
@@ -264,19 +276,13 @@ func fnUnique(e *evaluator, a args) (val, *Error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := e.charge(len(l), a.pos); err != nil {
-		return nil, err
-	}
 	seen := make(map[string]bool, len(l))
 	out := []val{}
 	var b strings.Builder
-	for i, x := range l {
-		if err := e.poll(i, a.pos); err != nil {
-			return nil, err
-		}
+	for _, x := range l {
 		b.Reset()
-		if !valueKey(&b, x) {
-			return nil, errf(codeType, a.pos, "unique: functions cannot be compared")
+		if err := e.valueKey(&b, x, a); err != nil {
+			return nil, err
 		}
 		k := b.String()
 		if !seen[k] {
