@@ -253,13 +253,16 @@ func removeTree(ctx context.Context, v *fsops.VolumeFS, rel string) (files int, 
 		walkTree(v, dir, "", func(_ *os.Root, _ string, fi os.FileInfo) bool {
 			if fi.Mode().IsRegular() {
 				files++
-				bytes += fi.Size()
 			}
+			bytes += entrySize(fi)
 			return ctx.Err() == nil
 		}, nil)
 		dir.Close()
-	} else if fi.Mode().IsRegular() {
-		files, bytes = 1, fi.Size()
+	} else {
+		bytes = entrySize(fi)
+		if fi.Mode().IsRegular() {
+			files = 1
+		}
 	}
 	// os.Root's RemoveAll removes a link as a link and never leaves the
 	// folder it was opened at.
@@ -410,9 +413,8 @@ func placeFile(v *fsops.VolumeFS, src, rel string, overwrite bool) (freed int64,
 			return 0, refusal(workspace.ClassExists, "%q is a folder", filepath.ToSlash(rel))
 		case !overwrite:
 			return 0, refusal(workspace.ClassExists, "%q is already there; ask to overwrite it", filepath.ToSlash(rel))
-		case fi.Mode().IsRegular():
-			freed = fi.Size()
 		}
+		freed = entrySize(fi)
 	}
 	if err := v.Root().Rename(src, rel); err != nil {
 		x := refuse(workspace.ClassFailed, "placing %q: %v", filepath.ToSlash(rel), err)
@@ -523,7 +525,7 @@ func listCopy(ctx context.Context, sv *fsops.VolumeFS, srcRel string, maxFiles i
 		plan.bytes = fi.Size()
 		return plan, nil
 	case !fi.IsDir():
-		return plan, refusal(workspace.ClassInvalid, "%q is neither a file nor a folder", filepath.ToSlash(srcRel))
+		return plan, refusal(workspace.ClassNotRegular, "%q %v", filepath.ToSlash(srcRel), fsops.ErrNotRegular)
 	}
 	plan.dir = true
 	dir, err := sv.Step(parent, base)
@@ -541,7 +543,8 @@ func listCopy(ctx context.Context, sv *fsops.VolumeFS, srcRel string, maxFiles i
 			return true
 		}
 		switch {
-		case fi.Mode()&os.ModeSymlink != 0:
+		case fi.Mode()&os.ModeSymlink != 0, !fi.IsDir() && !fi.Mode().IsRegular():
+			// Links, and FIFOs, sockets and devices, are not copied.
 			if len(plan.skipped) < workspace.MaxSkippedNamed {
 				plan.skipped = append(plan.skipped, filepath.ToSlash(p))
 			}

@@ -237,3 +237,44 @@ func TestWorkspaceOps_WriteAndEditHonourTheQuota(t *testing.T) {
 		t.Errorf("a read in a full workspace = %q", got)
 	}
 }
+
+// A link cannot make the count drop: write and edit never go through a link
+// (refused), and the size they measure is what they change, so after the
+// attempt a put that would pass the quota is still refused.
+func TestWorkspaceOps_ALinkCannotLowerTheQuotaCount(t *testing.T) {
+	w, root := newTestWorker(t)
+	ws := filepath.Join(root, "ws1")
+	if err := w.setLimit("ws1", 1000); err != nil {
+		t.Fatal(err)
+	}
+	if a := runOp(t, w, workspace.OpWrite, workspace.WriteArgs{Path: "big.bin", Content: strings.Repeat("b", 900)}); a.class != "" {
+		t.Fatalf("write big.bin: %s %s", a.class, a.detail)
+	}
+	if err := os.Symlink("big.bin", filepath.Join(ws, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(ws, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("sub", filepath.Join(ws, "dlink")); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		op   string
+		args any
+	}{
+		{workspace.OpWrite, workspace.WriteArgs{Path: "link", Content: "x"}},
+		{workspace.OpEdit, workspace.EditArgs{Path: "link", OldString: strings.Repeat("b", 900), NewString: "x"}},
+		{workspace.OpWrite, workspace.WriteArgs{Path: "dlink/f", Content: "x"}},
+	} {
+		if a := runOp(t, w, c.op, c.args); a.class == "" {
+			t.Errorf("%s through a link succeeded", c.op)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "big.bin")); len(b) != 900 {
+		t.Errorf("big.bin changed through the link: %d bytes", len(b))
+	}
+	if a := runOp(t, w, workspace.OpWrite, workspace.WriteArgs{Path: "more", Content: strings.Repeat("m", 200)}); a.class != workspace.ClassOverQuota {
+		t.Errorf("a write past the quota after the link tricks = %q %s, want workspace_over_quota", a.class, a.detail)
+	}
+}

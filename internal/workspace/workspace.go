@@ -61,6 +61,9 @@ const (
 	// ClassCopyLimit: a folder copy passes the file count or byte total it
 	// may copy; the detail names which. Nothing was written.
 	ClassCopyLimit = "copy_limit"
+	// ClassNotRegular: the op names a FIFO, a socket or a device, which the
+	// worker never opens.
+	ClassNotRegular = "not_regular_file"
 )
 
 // The error classes the core adds for an op that never reached a worker's
@@ -86,7 +89,7 @@ const (
 // grow a metric's label set or put arbitrary text where a class is read.
 var KnownWorkerClasses = map[string]bool{
 	ClassAtCapacity: true, ClassNotFound: true, ClassInvalid: true, ClassUnsupportedOp: true, ClassFailed: true, ClassRefused: true,
-	ClassOverQuota: true, ClassPathNotFound: true, ClassExists: true, ClassSizeMismatch: true, ClassCopyLimit: true,
+	ClassOverQuota: true, ClassPathNotFound: true, ClassExists: true, ClassSizeMismatch: true, ClassCopyLimit: true, ClassNotRegular: true,
 }
 
 // The engines a worker may run commands under, weakest first.

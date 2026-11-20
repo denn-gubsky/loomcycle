@@ -125,6 +125,8 @@ func classify(err error, format string, args ...any) answer {
 	switch {
 	case errors.As(err, &nf):
 		return refuse(workspace.ClassPathNotFound, "%s: %v", msg, err)
+	case errors.Is(err, fsops.ErrNotRegular):
+		return refuse(workspace.ClassNotRegular, "%s: %v", msg, err)
 	case errors.Is(err, errLink), errors.Is(err, errNotFolder), errors.Is(err, fsops.ErrPathChanged):
 		return refuse(workspace.ClassInvalid, "%s: %v", msg, err)
 	}

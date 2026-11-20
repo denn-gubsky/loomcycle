@@ -236,8 +236,10 @@ func getOp(ctx context.Context, real string, raw []byte, stream workspacepb.Work
 		return refuse(workspace.ClassPathNotFound, "%q is not in the workspace", in.Path)
 	case fi.Mode()&os.ModeSymlink != 0:
 		return refuse(workspace.ClassInvalid, "%q %v", in.Path, errLink)
+	case fi.IsDir():
+		return refuse(workspace.ClassInvalid, "%q is a folder", in.Path)
 	case !fi.Mode().IsRegular():
-		return refuse(workspace.ClassInvalid, "%q is not a file", in.Path)
+		return refuse(workspace.ClassNotRegular, "%q %v", in.Path, fsops.ErrNotRegular)
 	}
 	f, err := v.OpenIn(parent, base)
 	if err != nil {

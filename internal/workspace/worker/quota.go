@@ -201,10 +201,7 @@ func treeSize(ctx context.Context, v *fsops.VolumeFS, rel string, deadline time.
 		return 0, true
 	}
 	if !fi.IsDir() {
-		if fi.Mode().IsRegular() {
-			return fi.Size(), true
-		}
-		return 0, true
+		return entrySize(fi), true
 	}
 	dir, err := v.Step(parent, base)
 	if err != nil {
@@ -217,9 +214,7 @@ func treeSize(ctx context.Context, v *fsops.VolumeFS, rel string, deadline time.
 			complete = false
 			return false
 		}
-		if fi.Mode().IsRegular() {
-			n += fi.Size()
-		}
+		n += entrySize(fi)
 		return true
 	}, nil)
 	return n, complete

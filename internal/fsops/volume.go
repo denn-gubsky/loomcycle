@@ -40,6 +40,10 @@ var (
 	// ErrPathChanged is a path component that is no longer the entry the
 	// checked path named: a symlink swapped in, or a different file.
 	ErrPathChanged = errors.New("the path changed while it was being opened; try again")
+	// ErrNotRegular is a FIFO, a socket or a device: never opened, since a
+	// blocking open of a FIFO waits for a writer for ever (and holds
+	// whatever lock its caller holds), and reading a device has no end.
+	ErrNotRegular = errors.New("not a regular file (a FIFO, a socket or a device), so it is not opened")
 	// ErrInFence is a path that reaches the fence.
 	ErrInFence = errors.New("the path is inside the directory that holds dynamic and ephemeral volumes; name that volume in the \"volume\" argument instead")
 )
@@ -179,13 +183,23 @@ func (v *VolumeFS) Open(rel string) (*os.File, error) {
 	return f, nil
 }
 
-// OpenIn opens name inside dir for reading.
+// OpenIn opens name inside dir for reading: a regular file or a directory.
+// A FIFO, a socket or a device is refused with ErrNotRegular: checked before
+// the open, and the open itself is non-blocking with the check repeated on
+// the opened handle, so an entry swapped for a FIFO in between is refused
+// too rather than waited on.
 func (v *VolumeFS) OpenIn(dir *os.Root, name string) (*os.File, error) {
-	f, err := dir.Open(name)
+	if fi, err := dir.Lstat(name); err == nil && special(fi.Mode()) {
+		return nil, ErrNotRegular
+	}
+	f, err := dir.OpenFile(name, os.O_RDONLY|nonBlock, 0)
 	if err != nil {
 		return nil, err
 	}
 	fi, err := f.Stat()
+	if err == nil && special(fi.Mode()) {
+		err = ErrNotRegular
+	}
 	if err == nil {
 		err = v.SameEntry(dir, name, fi)
 	}
@@ -267,4 +281,10 @@ func (v *VolumeFS) walkDir(dir *os.Root, prefix string, fn func(dir *os.Root, pa
 		v.walkDir(sub, p, fn)
 		sub.Close()
 	}
+}
+
+// special reports a mode that is neither a regular file, a directory nor a
+// symlink.
+func special(m os.FileMode) bool {
+	return m&(os.ModeNamedPipe|os.ModeSocket|os.ModeDevice|os.ModeCharDevice|os.ModeIrregular) != 0
 }
