@@ -35,7 +35,7 @@ func TestSharing_DoublingListsAreRefusedAtConstruction(t *testing.T) {
 		"zip":                "reduce(1:60, (acc, i) -> zip([acc, acc], [acc, acc]), 1)",
 		"index gather":       "reduce(1:60, (acc, i) -> [acc][[1, 1]], 1)",
 		"user function":      "d(v) = [v, v]; d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(1))))))))))))))))))))))))",
-		"shared then joined": "a = 1:200000; [a, a, a, a, a, a]",
+		"shared then joined": "a = 1:2000; b = map(1:300, i -> a); [b, b]",
 	} {
 		start := time.Now()
 		_, err := Eval(context.Background(), Request{Expr: expr})
