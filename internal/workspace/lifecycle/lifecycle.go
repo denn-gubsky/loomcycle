@@ -1,0 +1,421 @@
+// Package lifecycle is the core's bookkeeping of workspaces (RFC GW §4.2,
+// §8): opening one on a worker for a run, finding a run's own, running an op
+// in one, and releasing them when the run ends, when the run asks, or when
+// the sweeper finds a run that ended without the release.
+//
+// The pin is here. Every lookup is keyed on the tenant AND the owner run, so
+// a run reaches only the workspaces it opened: a sibling, a child, a parent,
+// another user's run of the same tenant get "not found", the same answer as
+// for a name nobody uses.
+package lifecycle
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"time"
+
+	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
+)
+
+// Store is what the manager reads and writes: the workspaces table, and runs
+// for the run-end release's pause check.
+type Store interface {
+	store.WorkspaceStore
+	GetRun(ctx context.Context, runID string) (store.Run, error)
+}
+
+// Limits are the operator's workspace bounds (config workspace:, resolved).
+type Limits struct {
+	MaxPerRun    int
+	MaxPerTenant int // 0: unlimited
+	// LostAfter is how long a worker may go unseen by every replica before
+	// its workspaces are marked lost.
+	LostAfter time.Duration
+}
+
+// Manager is the core's workspace bookkeeping over one dispatcher.
+type Manager struct {
+	disp   *dispatch.Dispatcher
+	store  Store
+	limits Limits
+	log    *slog.Logger
+	now    func() time.Time
+}
+
+// New builds a manager. A zero MaxPerRun is 1: a run that may open
+// workspaces may open at least one.
+func New(d *dispatch.Dispatcher, st Store, l Limits, log *slog.Logger) *Manager {
+	if l.MaxPerRun <= 0 {
+		l.MaxPerRun = 1
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Manager{disp: d, store: st, limits: l, log: log.With("component", "workspaces"), now: time.Now}
+}
+
+// Owner is the run asking: who a workspace is for and who may use it.
+type Owner struct {
+	TenantID, UserID string
+	RunID            string // the pin
+	AgentID          string
+	RootRunID        string
+}
+
+// The errors the manager answers with; the tool turns each into a class.
+var (
+	// ErrNotFound: no workspace of this name belongs to the run. Also the
+	// answer for one that belongs to another run, so a run cannot learn
+	// another's workspaces exist.
+	ErrNotFound = errors.New("no workspace of that name belongs to this run")
+	// ErrLimit: a max_per_run or max_per_tenant bound.
+	ErrLimit = errors.New("workspace limit reached")
+	// ErrInvalidName: a name the tool may not use.
+	ErrInvalidName = errors.New("invalid workspace name")
+	// ErrNotReady: the workspace is not ready (opening, releasing or lost).
+	ErrNotReady = errors.New("the workspace is not ready")
+)
+
+// MaxNameLen bounds a workspace's name.
+const MaxNameLen = 64
+
+// ValidName reports whether name may name a workspace: 1 to MaxNameLen ASCII
+// letters, digits, '.', '-' and '_', starting with a letter or a digit. A
+// name is the agent's label and never reaches a path (the worker's
+// directory is the id), but it is printed back to the model and to logs, so
+// it is kept plain.
+func ValidName(name string) bool {
+	if name == "" || len(name) > MaxNameLen {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		alnum := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+		if !alnum && (i == 0 || (c != '.' && c != '-' && c != '_')) {
+			return false
+		}
+	}
+	return true
+}
+
+// newID mints a workspace id: what the worker's directory is named.
+func newID() (string, error) {
+	var b [12]byte
+	if _, err := io.ReadFull(rand.Reader, b[:]); err != nil {
+		return "", err
+	}
+	return "ws_" + hex.EncodeToString(b[:]), nil
+}
+
+// OpenRequest is what an open asks for.
+type OpenRequest struct {
+	Name string
+	// Toolchains the worker must carry, all of them.
+	Toolchains []string
+	// Engine is the least isolating engine accepted; "" accepts any.
+	Engine string
+}
+
+// Open opens a workspace named req.Name for the run. A ready workspace of
+// that name the run already holds is returned as it is, so a repeated open
+// is harmless. Otherwise it is placed on a worker, its row written as
+// opening, the directory made, and the row moved to ready; on any failure
+// what was made is removed and the row deleted.
+func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.WorkspaceRow, error) {
+	if !ValidName(req.Name) {
+		return store.WorkspaceRow{}, fmt.Errorf("%w: 1 to %d letters, digits, '.', '-' or '_', starting with a letter or digit", ErrInvalidName, MaxNameLen)
+	}
+	if r, err := m.Get(ctx, o, req.Name); err == nil {
+		if r.State == store.WorkspaceReady {
+			return r, nil
+		}
+		return store.WorkspaceRow{}, fmt.Errorf("%w: %q is %s", ErrNotReady, req.Name, r.State)
+	} else if !errors.Is(err, ErrNotFound) {
+		return store.WorkspaceRow{}, err
+	}
+	cands, err := m.disp.Place(ctx, dispatch.PlaceRequest{TenantID: o.TenantID, UserID: o.UserID, Toolchains: req.Toolchains, Engine: req.Engine})
+	if err != nil {
+		return store.WorkspaceRow{}, err
+	}
+	engines := map[string]string{}
+	for _, w := range m.disp.Workers() {
+		engines[w.ID] = w.Engine
+	}
+	var lastErr error
+	for _, workerID := range cands {
+		row, err := m.openOn(ctx, o, req.Name, workerID, engines[workerID])
+		if err == nil {
+			return row, nil
+		}
+		if dispatch.ClassOf(err) != workspace.ClassAtCapacity {
+			return store.WorkspaceRow{}, err
+		}
+		lastErr = err
+	}
+	return store.WorkspaceRow{}, lastErr
+}
+
+// openOn opens the workspace on one worker. The bounds are checked after the
+// row is written, counting it: two opens racing on two replicas each see the
+// other's row, so neither passes a bound both together would break (both may
+// be refused, never both admitted).
+func (m *Manager) openOn(ctx context.Context, o Owner, name, workerID, engine string) (store.WorkspaceRow, error) {
+	id, err := newID()
+	if err != nil {
+		return store.WorkspaceRow{}, fmt.Errorf("workspace id: %w", err)
+	}
+	row, err := m.store.WorkspaceCreate(ctx, store.WorkspaceRow{
+		ID: id, TenantID: o.TenantID, UserID: o.UserID, Name: name, WorkerID: workerID, Engine: engine,
+		OwnerRunID: o.RunID, OwnerAgentID: o.AgentID, RootRunID: o.RootRunID, State: store.WorkspaceOpening,
+	})
+	if err != nil {
+		var conflict *store.ErrConflict
+		if errors.As(err, &conflict) {
+			return store.WorkspaceRow{}, fmt.Errorf("%w: %q is being opened by another call", ErrNotReady, name)
+		}
+		return store.WorkspaceRow{}, err
+	}
+	undo := func() { m.deleteRow(row) }
+	if err := m.checkLimits(ctx, o); err != nil {
+		undo()
+		return store.WorkspaceRow{}, err
+	}
+	if err := m.disp.Open(ctx, o.TenantID, workerID, id); err != nil {
+		// The directory may have been made before the error (a worker lost
+		// mid-op): remove it if the worker is still here; if not, its next
+		// attach finds a directory no row knows and removes it.
+		if dispatch.ClassOf(err) != workspace.ClassAtCapacity {
+			m.removeQuietly(row)
+		}
+		undo()
+		return store.WorkspaceRow{}, err
+	}
+	ok, err := m.store.WorkspaceSetState(ctx, o.TenantID, id, store.WorkspaceOpening, store.WorkspaceReady)
+	if err != nil || !ok {
+		m.removeQuietly(row)
+		undo()
+		if err == nil {
+			err = fmt.Errorf("%w: the workspace was released while it opened", ErrNotReady)
+		}
+		return store.WorkspaceRow{}, err
+	}
+	row.State = store.WorkspaceReady
+	return row, nil
+}
+
+func (m *Manager) checkLimits(ctx context.Context, o Owner) error {
+	rows, err := m.store.WorkspaceListByOwnerRun(ctx, o.TenantID, o.RunID)
+	if err != nil {
+		return err
+	}
+	active := 0
+	for _, r := range rows {
+		if r.State == store.WorkspaceOpening || r.State == store.WorkspaceReady {
+			active++
+		}
+	}
+	if active > m.limits.MaxPerRun {
+		return fmt.Errorf("%w: a run holds at most %d workspaces (workspace.max_per_run); release one first", ErrLimit, m.limits.MaxPerRun)
+	}
+	if m.limits.MaxPerTenant > 0 {
+		n, err := m.store.WorkspaceCountActiveByTenant(ctx, o.TenantID)
+		if err != nil {
+			return err
+		}
+		if n > m.limits.MaxPerTenant {
+			return fmt.Errorf("%w: the tenant holds its %d workspaces (workspace.max_per_tenant)", ErrLimit, m.limits.MaxPerTenant)
+		}
+	}
+	return nil
+}
+
+// Get returns the run's workspace of this name. The lookup is keyed on the
+// tenant and the owner run, so it is the pin: another run's workspace of the
+// same name is not found.
+func (m *Manager) Get(ctx context.Context, o Owner, name string) (store.WorkspaceRow, error) {
+	if o.RunID == "" || !ValidName(name) {
+		return store.WorkspaceRow{}, ErrNotFound
+	}
+	r, err := m.store.WorkspaceGetByName(ctx, o.TenantID, o.RunID, name)
+	var nf *store.ErrNotFound
+	if errors.As(err, &nf) {
+		return store.WorkspaceRow{}, ErrNotFound
+	}
+	if err != nil {
+		return store.WorkspaceRow{}, err
+	}
+	// The query asks for both already; this keeps a store that ever got it
+	// wrong from widening the pin.
+	if r.OwnerRunID != o.RunID || r.TenantID != o.TenantID {
+		return store.WorkspaceRow{}, ErrNotFound
+	}
+	return r, nil
+}
+
+// List returns the run's own workspaces.
+func (m *Manager) List(ctx context.Context, o Owner) ([]store.WorkspaceRow, error) {
+	if o.RunID == "" {
+		return []store.WorkspaceRow{}, nil
+	}
+	return m.store.WorkspaceListByOwnerRun(ctx, o.TenantID, o.RunID)
+}
+
+// Do runs one op in a ready workspace of the run.
+func (m *Manager) Do(ctx context.Context, r store.WorkspaceRow, req dispatch.Request) (dispatch.Result, error) {
+	if r.State != store.WorkspaceReady {
+		return dispatch.Result{}, fmt.Errorf("%w: %q is %s", ErrNotReady, r.Name, r.State)
+	}
+	req.TenantID, req.WorkspaceID = r.TenantID, r.ID
+	return m.disp.Do(ctx, r.WorkerID, req)
+}
+
+// Status reports whether the workspace's directory is on its worker.
+func (m *Manager) Status(ctx context.Context, r store.WorkspaceRow) (bool, error) {
+	return m.disp.Status(ctx, r.TenantID, r.WorkerID, r.ID)
+}
+
+// Release removes a workspace: its directory from the worker and then its
+// row. A worker that is not attached here, or that fails the remove, leaves
+// the row releasing, and the worker's next attach removes the directory and
+// the row (dispatch's reconciliation).
+func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
+	if r.State != store.WorkspaceReleasing {
+		ok, err := m.store.WorkspaceSetState(ctx, r.TenantID, r.ID, r.State, store.WorkspaceReleasing)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			// Another caller moved it first (a sweep, a concurrent release);
+			// read it again and let that path finish.
+			cur, err := m.store.WorkspaceGet(ctx, r.TenantID, r.ID)
+			var nf *store.ErrNotFound
+			if errors.As(err, &nf) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if cur.State != store.WorkspaceReleasing {
+				return fmt.Errorf("workspace %s moved to %s during its release", r.ID, cur.State)
+			}
+		}
+	}
+	if !m.disp.Attached(r.WorkerID, r.TenantID) {
+		return nil
+	}
+	if err := m.disp.Remove(ctx, r.TenantID, r.WorkerID, r.ID); err != nil {
+		m.log.Warn("cannot remove a released workspace; its worker's next attach removes it", "workspace_id", r.ID, "err", err)
+		return nil
+	}
+	_, err := m.store.WorkspaceDelete(ctx, r.TenantID, r.ID)
+	return err
+}
+
+// ReleaseRun releases every workspace runID holds, unless the run is paused
+// or pausing (parked to be resumed, here or elsewhere, into its
+// workspaces). Called when a run ends, keyed on the run's own id.
+func (m *Manager) ReleaseRun(ctx context.Context, runID string) error {
+	if runID == "" {
+		return nil
+	}
+	run, err := m.store.GetRun(ctx, runID)
+	var nf *store.ErrNotFound
+	switch {
+	case errors.As(err, &nf):
+		return nil
+	case err != nil:
+		return err
+	case run.PauseState == store.PauseStatePaused || run.PauseState == store.PauseStatePausing:
+		return nil
+	}
+	rows, err := m.store.WorkspaceListByOwnerRun(ctx, run.TenantID, runID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, r := range rows {
+		errs = append(errs, m.Release(ctx, r))
+	}
+	return errors.Join(errs...)
+}
+
+// Sweep releases the workspaces of runs that ended without the run-end
+// release (a core killed mid-run, a release that failed), and of runs whose
+// row is gone. It returns how many it released.
+func (m *Manager) Sweep(ctx context.Context) (int, error) {
+	rows, err := m.store.WorkspaceSweepCandidates(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rows {
+		if r.State == store.WorkspaceReleasing && !m.disp.Attached(r.WorkerID, r.TenantID) {
+			continue // the worker's next attach finishes it
+		}
+		if err := m.Release(ctx, r); err != nil {
+			m.log.Warn("sweep: cannot release a workspace", "workspace_id", r.ID, "err", err)
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// minLostAfter keeps the lost bound well above how often an attached
+// worker's rows are touched (dispatch.DefaultRecheckEvery, 60 s): a smaller
+// lost_after_s would mark a live worker's workspaces lost between touches.
+const minLostAfter = 3 * dispatch.DefaultRecheckEvery
+
+// MarkLost marks lost the active workspaces whose worker no replica has seen
+// for LostAfter: their rows were not touched since. A worker attached to
+// this replica is skipped whatever its rows say (its next touch is due). A
+// lost workspace whose worker comes back is put back in service at attach if
+// its run still lives.
+func (m *Manager) MarkLost(ctx context.Context) (int, error) {
+	after := max(m.limits.LostAfter, minLostAfter)
+	rows, err := m.store.WorkspaceListStale(ctx, m.now().Add(-after))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range rows {
+		if m.disp.Attached(r.WorkerID, r.TenantID) {
+			continue
+		}
+		ok, err := m.store.WorkspaceSetState(ctx, r.TenantID, r.ID, r.State, store.WorkspaceLost)
+		if err != nil {
+			m.log.Warn("cannot mark a workspace lost", "workspace_id", r.ID, "err", err)
+			continue
+		}
+		if ok {
+			n++
+		}
+	}
+	if n > 0 {
+		m.log.Warn("workspaces marked lost: their worker has not been seen", "count", n, "after", after)
+	}
+	return n, nil
+}
+
+func (m *Manager) removeQuietly(r store.WorkspaceRow) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := m.disp.Remove(ctx, r.TenantID, r.WorkerID, r.ID); err != nil {
+		m.log.Warn("cannot remove a workspace that failed to open; its worker's next attach removes it", "workspace_id", r.ID, "err", err)
+	}
+}
+
+func (m *Manager) deleteRow(r store.WorkspaceRow) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := m.store.WorkspaceDelete(ctx, r.TenantID, r.ID); err != nil {
+		m.log.Warn("cannot delete a workspace's row", "workspace_id", r.ID, "err", err)
+	}
+}

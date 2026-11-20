@@ -605,3 +605,14 @@ func TestAttach_ASharedHostWorkerIsRefused(t *testing.T) {
 	realWorker(t, target, tokAcme, "w1", worker.Options{IdleStreams: 1})
 	waitAttached(t, d, acmeID("w1"))
 }
+
+// An attached worker's rows are marked as seen at attach and with each
+// recheck, so the sweeper on any replica can tell a live worker's
+// workspaces from those of one that went away.
+func TestAttach_MarksTheWorkersWorkspacesAsSeen(t *testing.T) {
+	st := newMemStore(store.WorkspaceRow{ID: "ws1", TenantID: "acme", WorkerID: acmeID("w1"), State: store.WorkspaceReady})
+	d, target := core(t, st, dispatch.Options{RecheckEvery: 50 * time.Millisecond})
+	realWorker(t, target, tokAcme, "w1", worker.Options{IdleStreams: 1})
+	waitAttached(t, d, acmeID("w1"))
+	waitFor(t, "two touches", func() bool { return st.touched() >= 2 })
+}

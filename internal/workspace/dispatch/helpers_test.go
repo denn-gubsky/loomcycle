@@ -95,6 +95,8 @@ type memStore struct {
 	mu   sync.Mutex
 	rows map[string]store.WorkspaceRow
 	runs map[string]store.RunStatus
+	// touches counts WorkspaceTouchByWorker calls.
+	touches int
 }
 
 func newMemStore(rows ...store.WorkspaceRow) *memStore {
@@ -171,6 +173,27 @@ func (m *memStore) GetRun(_ context.Context, runID string) (store.Run, error) {
 		return store.Run{}, &store.ErrNotFound{Kind: "run", ID: runID}
 	}
 	return store.Run{ID: runID, Status: st}, nil
+}
+
+func (m *memStore) WorkspaceTouchByWorker(_ context.Context, workerID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for id, r := range m.rows {
+		if r.WorkerID == workerID && (r.State == store.WorkspaceOpening || r.State == store.WorkspaceReady) {
+			r.UpdatedAt = time.Now()
+			m.rows[id] = r
+			n++
+		}
+	}
+	m.touches++
+	return n, nil
+}
+
+func (m *memStore) touched() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.touches
 }
 
 func (m *memStore) state(id string) store.WorkspaceState {

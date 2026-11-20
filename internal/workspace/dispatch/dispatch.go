@@ -77,6 +77,9 @@ type Store interface {
 	WorkspaceSetState(ctx context.Context, tenantID, id string, from, to store.WorkspaceState) (bool, error)
 	// GetRun reads a lost workspace's owner run at reconciliation.
 	GetRun(ctx context.Context, runID string) (store.Run, error)
+	// WorkspaceTouchByWorker marks a worker's active rows as seen, so the
+	// sweeper, on whichever replica, does not mark them lost.
+	WorkspaceTouchByWorker(ctx context.Context, workerID string) (int, error)
 }
 
 // Options configure a Dispatcher.
@@ -343,6 +346,7 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 	if err := stream.Send(&workspacepb.CoreControl{Msg: &workspacepb.CoreControl_Welcome{Welcome: &workspacepb.Welcome{BuildVersion: d.opt.BuildVersion}}}); err != nil {
 		return err
 	}
+	d.touch(ctx, w, log)
 	if rm := d.reconcile(ctx, w, held, log); len(rm) > 0 {
 		if err := stream.Send(&workspacepb.CoreControl{Msg: &workspacepb.CoreControl_Remove{Remove: &workspacepb.Remove{WorkspaceIds: rm}}}); err != nil {
 			return err
@@ -383,6 +387,7 @@ func (d *Dispatcher) Attach(stream workspacepb.WorkspaceService_AttachServer) er
 				gone = ErrWorkerRevoked
 				return err
 			}
+			d.touch(ctx, w, log)
 		case m := <-in:
 			t.Reset(d.opt.HeartbeatTimeout)
 			if r := m.GetRemoved(); r != nil {
@@ -506,6 +511,16 @@ func (d *Dispatcher) reconcile(ctx context.Context, w *worker, held []string, lo
 		log.Info("removing workspaces released or unknown while the worker was away", "count", len(remove))
 	}
 	return remove
+}
+
+// touch records that the worker is attached here, on its active rows: a
+// replica sees only its own attachments, so the sweeper's lost check reads
+// this mark, which every replica the worker attaches to keeps fresh. It runs
+// at attach and with each recheck (RecheckEvery); a fault waits for the next.
+func (d *Dispatcher) touch(ctx context.Context, w *worker, log *slog.Logger) {
+	if _, err := d.store().WorkspaceTouchByWorker(ctx, w.id); err != nil {
+		log.Warn("cannot mark the worker's workspaces as seen", "err", err)
+	}
 }
 
 func (d *Dispatcher) markPending(w *worker, r store.WorkspaceRow) {
