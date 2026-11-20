@@ -8,6 +8,46 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.164.0
+
+*Security: an in-run AgentDef fork that changes an agent's code no longer keeps grants its author lacks (#2803). The ontology now plans every directive change of an entry in use, and refuses renaming a class in use (RFC GQ rulings, #2802). `kb/taxonomist` ships with its tenant scopes (#2801). Workspace workers stream files in and out and keep a disk quota (RFC GW P2, #2804).*
+
+The v1.164 line: #2801 to #2806.
+- `@loomcycle/client` 1.164.0: comment changes only (the ontology plan rules). The Python adapter is unchanged and stays 1.162.0.
+- No numbered migration, no new Go dependency, no proto change.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **A fork that changes code is judged like a create (#2803).** An in-run `AgentDef op=fork` that changes a code-js agent's `code_body`, or switches it into or out of code-js (decided on the provider the run resolves, after `models:` aliases and `defaults.provider`), must hold to the forking run's own `tools` and capability grants (memory, SQL, volumes, channels, credentials, workspace, statement methods and the rest), or it is refused naming the field. A fork that leaves the code alone keeps the lineage's grants as before. Operator-plane and member-plane forks are unchanged. A fork stored before this release that already holds more than its author can still be promoted; review in-run forks of code agents if your tenants let agents author definitions.
+- **Directive edits of an entry in use need a plan (#2802).** Any change to an ontology entry's directives (`@alt`, `@notation`, `@focus`, `@period`, `@domain`, `@render`, `@retention`, `@locked`, …) when something rests on the entry plans as `stales` and needs `plan_fingerprint` on `update_chunk`; a change of the meaning alone still needs none.
+- **A class in use is not renamed directly (#2802).** `update_chunk` refuses a new title (or, for an untitled class, a new first heading) of a class something rests on with `rename_job_pending`, with or without a fingerprint (422 on `POST /v1/_document`), as accepting a change proposal already did. Keep the name, or retire the class and declare a new one. Relations, concepts and classes nothing rests on rename as before.
+- **`kb/taxonomist` declares `memory_scopes` and `sql_scopes` `[tenant]` (#2801).** Remove an operator overlay that added them; it is no longer needed.
+- **Workspaces have a disk quota (#2804):** `workspace.disk_quota_mb` (default 2048) per workspace, and `workspace.copy.max_files` / `workspace.copy.max_bytes` for copies between workspaces. A workspace over its quota refuses writes and commands with `workspace_over_quota` until files are removed.
+
+### Security and agent definitions (#2803)
+
+- `forkChangesCode` treats any byte difference in `code_body`, and any switch into or out of code-js on the resolved provider, as changed code; the capability ceilings then use no base, and a new `forkerToolsCeiling` holds `tools` to the forker's own. Found by the fresh review of #2801: without it, an in-run author holding AgentDef rights could fork `kb/taxonomist`, replace its code and keep whole-Document and tenant scopes.
+
+### Ontology (RFC GQ rulings: #2802)
+
+- `planEffect` stales every count of an edit that changes any directive. A class's plan signature is read by its own chunk, so two classes that differ only in case are planned apart.
+- A shared `renameJobPending` decides the class-rename refusal for `update_chunk` and for accepting a change proposal; plans carry a `rename_job_pending:` note for a class in use. The Ontology page shows the refusal before the confirm.
+
+### Knowledge base (#2801, #2806)
+
+- `kb/taxonomist` ships with tenant memory and SQL scopes; its authority test pins exactly those, no statement methods and no tool modes.
+- `scripts/measure/walker/drive.py` reads its gold from a file outside the repo (`--gold`) and scores overview questions on the topics an answer names (`gold_topics`), separately from document recall.
+
+### Workspaces (RFC GW P2 PR 1: #2804)
+
+- Worker ops `fstat`, `fls`, `get`, `put` (streamed raw bytes, checked size, written through a temporary file), `mkdir`, `fremove`, `stage` / `commit` / `discard`, and `copy_local` between two workspaces on one worker. Paths are checked before anything is opened and walked one folder at a time, refusing links.
+- The core's `Stream` carries an op's input and output one chunk at a time under gRPC flow control. A per-workspace quota is kept by the worker and re-measured after every command.
+
+### Tests
+
+- A UMAP refit test's tolerance widened to its measured spread (#2805).
+
 ## What's in v1.163.0
 
 *Workspace workers are usable on one machine: `workspace.mode: local` starts a workspace worker beside the runtime, with an operator guide and `loomcycle doctor` checks (RFC GW P1). `kb/walker` walks the taxonomy, a new `Document op=place` says where a set of documents sits, and search facets compare a topic's share with the corpus (RFC GM P7). Folder annotations see exemplars and sibling folders (RFC GM P6). A CHM help file whose Russian pages name no encoding is read correctly (RFC GX).*
