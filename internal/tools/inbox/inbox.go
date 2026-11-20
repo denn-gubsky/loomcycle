@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
+	"github.com/denn-gubsky/loomcycle/internal/files/filenames"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -313,8 +314,8 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 	if name == "" {
 		name = SanitizeName(it.Fallback)
 	}
-	mt := settleMediaType(it.MediaType, head, name)
-	name = withExtension(name, mt)
+	mt := filenames.Sniff(it.MediaType, head, name)
+	name = filenames.WithExtension(name, mt)
 
 	dir := it.Dir
 	if dir == "" {
@@ -642,7 +643,7 @@ func humanBytes(n int64) string {
 // reserveName creates an empty file under dir with name or the first free
 // name-<n> variant, O_EXCL, and returns its path relative to the root.
 func reserveName(ir *os.Root, dir, name string) (string, error) {
-	ext := fileExt(name)
+	ext := filenames.FileExt(name)
 	stem := strings.TrimSuffix(name, ext)
 	for i := 1; i <= 1000; i++ {
 		cand := name

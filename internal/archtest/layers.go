@@ -109,6 +109,9 @@ var layers = []layer{
 			"internal/errkind",
 			"internal/fence",
 			"internal/files/extract",
+			// How a kept file is named and typed (RFC GW P2): stdlib only, so
+			// the inbox and the conversion and workspace workers share it.
+			"internal/files/filenames",
 			// Documents written back into files (RFC GR): the render model and
 			// its writers, pure over a tree the core builds.
 			"internal/files/render",
