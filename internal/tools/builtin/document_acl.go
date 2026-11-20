@@ -132,7 +132,8 @@ var docACLOps = map[string]docACLRule{
 	"describe_ontology": {verb: "read", target: docACLListing},
 	// node_stats reads every document of the tenant scope whatever the call's scope:
 	// it refuses a caller whose rules hide any of them itself, and writes only the
-	// node_stats table, never a document (document_node_stats.go).
+	// node_stats table, never a document (document_node_stats.go). Each proposal
+	// mode misfits files asks what propose_statement asks (document_node_misfits.go).
 	"node_stats": {verb: "read", target: docACLListing},
 	// measure reads the series stored beside the documents; it asks read on the
 	// ontology document itself. The series are computed from the documents every

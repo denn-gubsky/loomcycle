@@ -77,7 +77,7 @@ var unstampedWriters = map[string]struct {
 	"internal/memory/backends/inprocess/inprocess.go:(*Backend).Delete":                   {1, "generic k/v delete: carries the stamp its caller put on ctx (the Memory tool's execDelete stamps a fact body's document)"},
 	"internal/scheduler/dispatch.go:(*Scheduler).dispatchMemorySet":                       {1, "an operator-declared on_complete memory.set key; not a document write"},
 	"internal/tools/builtin/document_copy.go:(*Document).copyDocumentBodies":              {1, "a derived unit (doc.unit:), which is not a chunk body"},
-	"internal/tools/builtin/document_annotation_search.go:(*Document).indexAnnotation":    {1, "an annotation's search row (doc.annotation:) in its own scope id, not a chunk body"},
+	"internal/tools/builtin/document_annotation_search.go:(*Document).indexAnnotation":    {2, "an annotation's search row (doc.annotation: / doc.annotation.node:, written or, for a declared node record, deleted) in its own scope id, not a chunk body"},
 	"internal/tools/builtin/document_annotation_search.go:(*Document).unindexAnnotations": {1, "an annotation's search row (doc.annotation:) in its own scope id, not a chunk body"},
 	"internal/tools/builtin/document_deadlink.go:(*Document).ReconcileDeadLinks":          {2, "derived units, and ORPHAN bodies whose chunk row is gone — no document can be named, and its deletion already sent the frames"},
 	"internal/tools/builtin/document_units.go:(*Document).ReplaceUnits":                   {2, "derived units (doc.unit:), not chunk bodies"},

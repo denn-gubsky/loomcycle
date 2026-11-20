@@ -3,6 +3,7 @@ package extract
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -557,4 +558,101 @@ func TestRTF_TableRowsStopAtTheTableCaps(t *testing.T) {
 	if err != nil || s.n > maxCellBytes+200 {
 		t.Errorf("a 1 MiB cell: err %v, wrote %d bytes", err, s.n)
 	}
+}
+
+// huffBomb is a book whose one text record expands each phrase into two
+// copies of the next, 30 deep, over a 1 KiB literal: 2^30 KiB unbounded.
+func huffBomb() []byte {
+	h := &testHuff{}
+	const depth = 30
+	for i := 0; i < depth; i++ {
+		h.add(nil, false)
+	}
+	h.add(bytes.Repeat([]byte("a"), 1024), true)
+	for i := 0; i < depth; i++ {
+		h.phrases[i] = h.codes(i+1, i+1)
+	}
+	r := mobiSpec{compression: palmHuffman, huff: h, text: []byte("x")}.records()
+	r[1] = h.codes(0)
+	binary.BigEndian.PutUint32(r[0][4:], 4096)
+	return palmDBOf("Bomb", "BOOKMOBI", r...)
+}
+
+func TestMOBI_HuffCDICExpansionBombIsRefused(t *testing.T) {
+	bomb := huffBomb()
+	wantRefusedUnder(t, "HUFF/CDIC expansion bomb", 4<<20, func() error {
+		_, err := extractBytes(MOBI{}, "bomb.mobi", bomb)
+		if err != nil && !strings.Contains(err.Error(), "decompresses past") {
+			t.Errorf("refused for another reason: %v", err)
+		}
+		return err
+	})
+}
+
+// A MOBI book's text is held a block at a time: 60 MiB of text, read to
+// the end, peaks far under its own size.
+func TestMOBI_TextIsHeldABlockAtATime(t *testing.T) {
+	const records = 15 << 8 // 3,840 records of 16 KiB: 60 MiB
+	unit := []byte(strings.Repeat("<p>"+strings.Repeat("word ", 800)+"</p>", 4))
+	unit = append(unit, bytes.Repeat([]byte(" "), 16<<10-len(unit))...)
+	book := newStoredMOBI(unit, records)
+	s := &rtfDiscardSink{}
+	var err error
+	peak := peakHeap(func() {
+		_, err = MOBI{}.Extract(context.Background(), book, book.size, s, Options{Name: "big.mobi"})
+	})
+	if err != nil || s.n < 50<<20 {
+		t.Fatalf("err %v, wrote %d bytes", err, s.n)
+	}
+	if c := ceiling(32 << 20); peak > c {
+		t.Errorf("60 MiB of text peaked at %d MiB, want at most %d MiB", peak>>20, c>>20)
+	}
+}
+
+// storedMOBI is a MOBI book of n stored text records, each unit, made as it
+// is read, so the test's own input is not on the heap it measures.
+type storedMOBI struct {
+	head []byte // the database header, record list and record 0
+	unit []byte
+	size int64
+}
+
+func newStoredMOBI(unit []byte, n int) *storedMOBI {
+	r0 := mobiSpec{text: []byte("x"), compression: palmStored}.records()[0]
+	binary.BigEndian.PutUint32(r0[4:], uint32(n*len(unit)))
+	binary.BigEndian.PutUint16(r0[8:], uint16(n))
+	binary.BigEndian.PutUint16(r0[10:], uint16(min(len(unit), 0xffff)))
+	head := make([]byte, palmHeaderSize)
+	copy(head, "Big")
+	copy(head[60:], "BOOKMOBI")
+	binary.BigEndian.PutUint16(head[76:], uint16(n+1))
+	off := palmHeaderSize + 8*(n+1)
+	for i := 0; i <= n; i++ {
+		head = binary.BigEndian.AppendUint32(head, uint32(off))
+		head = binary.BigEndian.AppendUint32(head, uint32(i))
+		if i == 0 {
+			off += len(r0)
+		} else {
+			off += len(unit)
+		}
+	}
+	head = append(head, r0...)
+	return &storedMOBI{head: head, unit: unit, size: int64(len(head) + n*len(unit))}
+}
+
+func (m *storedMOBI) ReadAt(p []byte, off int64) (int, error) {
+	n := 0
+	for n < len(p) && off < m.size {
+		if off < int64(len(m.head)) {
+			p[n] = m.head[off]
+		} else {
+			p[n] = m.unit[(off-int64(len(m.head)))%int64(len(m.unit))]
+		}
+		n++
+		off++
+	}
+	if n < len(p) {
+		return n, io.EOF
+	}
+	return n, nil
 }

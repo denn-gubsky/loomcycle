@@ -115,6 +115,13 @@ var extTypes = map[string]string{
 
 	".rtf": rtfType,
 
+	// Palm database books (RFC GV §4.4); the bytes say which a .prc is.
+	".mobi": mobiType,
+	".azw":  mobiType,
+	".azw3": mobiType,
+	".prc":  mobiType,
+	".pdb":  palmDocType,
+
 	// Recordings whose bytes a sniffer does not know (FLAC, a bare AAC)
 	// or knows only as a generic container.
 	".m4a":  "audio/mp4",
@@ -139,6 +146,8 @@ var typeExts = map[string]string{
 	fb2Type:                         ".fb2",
 	fb2ZipType:                      ".fb2.zip",
 	rtfType:                         ".rtf",
+	mobiType:                        ".mobi",
+	palmDocType:                     ".pdb",
 	"application/msword":            ".doc",
 	"application/vnd.ms-excel":      ".xls",
 	"application/vnd.ms-powerpoint": ".ppt",
@@ -180,6 +189,12 @@ func settleMediaType(declared string, head []byte, name string) string {
 	// over both.
 	if (generic(mt) || mt == rtfType || mt == "application/msword") && rtfHeader(head) {
 		return rtfType
+	}
+	// A MOBI book or a PalmDOC text says which it is at offset 60, where a
+	// sniffer does not look; its producer seldom declares more than a
+	// generic type or one of Amazon's.
+	if kind := palmKind(head); kind != "" && (generic(mt) || amazonEbook[mt] || mt == mobiType || mt == palmDocType) {
+		return kind
 	}
 	// An FB2 book is XML to a sniffer and often to its producer too.
 	if (generic(mt) || mt == "text/xml" || mt == "application/xml") && fictionBook(head) {
@@ -281,6 +296,37 @@ const rtfType = "application/rtf"
 // UTF-8 byte order mark if there is one.
 func rtfHeader(head []byte) bool {
 	return bytes.HasPrefix(bytes.TrimPrefix(head, []byte("\xEF\xBB\xBF")), []byte(`{\rtf`))
+}
+
+// The Palm database types (RFC GV §4.1): a MOBI, AZW, AZW3 or PRC book,
+// and a PalmDOC e-text.
+const (
+	mobiType    = "application/x-mobipocket-ebook"
+	palmDocType = "application/x-palm-database"
+)
+
+// amazonEbook are the types Amazon's tools declare for a Kindle book; the
+// bytes say whether it is one this reader reads (KFX and Topaz are not).
+var amazonEbook = map[string]bool{
+	"application/vnd.amazon.ebook":       true,
+	"application/vnd.amazon.mobi8-ebook": true,
+	"application/x-mobi8-ebook":          true,
+}
+
+// palmKind is the type of the Palm database head begins, by the type and
+// creator at offset 60: BOOKMOBI is a MOBI book, TEXtREAd a PalmDOC text;
+// "" for anything else.
+func palmKind(head []byte) string {
+	if len(head) < 68 {
+		return ""
+	}
+	switch string(head[60:68]) {
+	case "BOOKMOBI":
+		return mobiType
+	case "TEXtREAd":
+		return palmDocType
+	}
+	return ""
 }
 
 // fileExt is a name's extension: path.Ext, except that a zipped FB2 book's

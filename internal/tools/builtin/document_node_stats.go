@@ -249,20 +249,31 @@ func (d *Document) nodeStatsVectorsNote() string {
 // buildNodeStatsPlan reads the nodes of read (only scheme's concepts when scheme is
 // set), their full membership, their member documents and the stored rows.
 func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string) (*nodeStatsPlan, error) {
-	return d.buildNodeStatsPlanOpts(ctx, key, read, scheme, false)
+	return d.buildNodeStatsPlanFor(ctx, key, read, scheme, false)
 }
 
-// buildNodeStatsPlanOpts is buildNodeStatsPlan; skipVectors reads no member vector,
-// for a caller that uses only membership and counts (node_stats mode growth). Such
-// a plan's node hashes do not match the stored rows': it must never compute or
-// judge freshness of node_stats rows.
-func (d *Document) buildNodeStatsPlanOpts(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string, skipVectors bool) (*nodeStatsPlan, error) {
+// buildSeriesReadPlan is the plan a read of the stored series checks its points
+// against (buildSeriesPlan, servable): the nodes, their members and the
+// unrestricted list, and nothing else — no member documents, no vectors (every
+// member's, on pgvector), no stored statistics. Its model is empty, so the series
+// plan adds no shift row (the only kind built from vectors); a shift point's
+// servable check needs only its member set, which this plan has.
+func (d *Document) buildSeriesReadPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead) (*nodeStatsPlan, error) {
+	return d.buildNodeStatsPlanFor(ctx, key, read, "", true)
+}
+
+func (d *Document) buildNodeStatsPlanFor(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string, light bool) (*nodeStatsPlan, error) {
+	if d.onNodeStatsPlan != nil {
+		d.onNodeStatsPlan(light)
+	}
 	if err := d.ensureSchema(ctx, key); err != nil {
 		return nil, err
 	}
 	p := &nodeStatsPlan{docs: map[string]*statDoc{}, stored: map[string]storedNodeStats{}}
 	var err error
-	if p.note = d.nodeStatsVectorsNote(); p.note == "" {
+	if light {
+		p.note = "a series read builds no vector stage"
+	} else if p.note = d.nodeStatsVectorsNote(); p.note == "" {
 		p.model = d.projectionModel()
 	}
 	var schemes []memrank.OntologyScheme
@@ -302,6 +313,9 @@ func (d *Document) buildNodeStatsPlanOpts(ctx context.Context, key sqlmem.ScopeK
 		}
 		p.nodes = append(p.nodes, classes...)
 	}
+	if light {
+		return p, nil
+	}
 	all := map[string]bool{}
 	for _, n := range p.nodes {
 		for _, id := range n.members {
@@ -314,7 +328,7 @@ func (d *Document) buildNodeStatsPlanOpts(ctx context.Context, key sqlmem.ScopeK
 	// The vectors are read here, not only when a pass computes: which members have
 	// one is part of every node's inputs hash. The memory tenant is the run
 	// identity's, as NodeStatsPass's tenant is (NodeStatsScopeKey stamps it).
-	if p.model != "" && !skipVectors {
+	if p.model != "" {
 		if _, err := d.loadNodeStatsVectors(ctx, key, direntTenant(ctx), p); errors.Is(err, store.ErrVectorUnsupported) {
 			p.model, p.note = "", "the store keeps no vectors (that needs Postgres with pgvector): only member counts are kept"
 		} else if err != nil {
@@ -563,9 +577,13 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if mode == "" {
 		mode = nodeStatsModeReport
 	}
-	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute && mode != nodeStatsModeGrowth {
-		return errValidation(fmt.Sprintf("%s: mode %q is not report, compute or growth", nodeStatsOp, mode),
-			"Pass mode: report to see what is stale, compute to recompute it, growth to rank growth and list quiet nodes."), nil
+	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute && mode != nodeStatsModeMisfits && mode != nodeStatsModeGrowth {
+		return errValidation(fmt.Sprintf("%s: mode %q is not report, compute, misfits or growth", nodeStatsOp, mode),
+			"Pass mode: report to see what is stale, compute to recompute it, misfits to list the misplaced members, growth to rank growth and list quiet nodes."), nil
+	}
+	if in.Propose && mode != nodeStatsModeMisfits {
+		return errValidation(nodeStatsOp+": propose is taken only with mode misfits",
+			"Pass mode: misfits with propose to file placement proposals, or omit propose."), nil
 	}
 	if in.QuietPeriods != 0 && mode != nodeStatsModeGrowth {
 		return errValidation(nodeStatsOp+": quiet_periods is taken only with mode growth",
@@ -586,6 +604,10 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if !callerDecidesIn(ctx, key) && !HasStatementMethodGrant(ctx) {
 		return errPermission(nodeStatsOp+": permission: only an operator, or a code agent granted statement_methods, runs node statistics",
 			"Ask an operator to run it, or to grant this agent statement_methods. describe_ontology with_stats reads what is stored."), nil
+	}
+	if in.Propose && !misfitMayPropose(ctx, key) {
+		return errPermission(nodeStatsOp+": method_not_granted: filing misfit proposals stamps "+misfitMethod+", and this agent may not stamp rule: statements",
+			"Omit propose to read the misfits, or ask an operator to file them or to grant this agent rule in statement_methods."), nil
 	}
 	// Every member's text and vector goes into a node's figures, so the pass must be
 	// able to read every document of the scope.
@@ -613,6 +635,13 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 			return errFrom(nodeStatsOp+": "+err.Error(), err), nil
 		}
 		return jsonResult(g)
+	}
+	if mode == nodeStatsModeMisfits {
+		mis, err := d.NodeMisfits(ctx, key, read, in.Scheme, in.Propose, in.Limit)
+		if err != nil {
+			return errFrom(nodeStatsOp+": "+err.Error(), err), nil
+		}
+		return jsonResult(mis)
 	}
 	ans, err := d.NodeStatsPass(ctx, key, direntTenant(ctx), read, in.Scheme, mode == nodeStatsModeCompute)
 	if err != nil {

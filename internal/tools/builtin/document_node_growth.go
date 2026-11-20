@@ -147,7 +147,7 @@ func growthWindow(n int) (int, string) {
 func (d *Document) NodeGrowth(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string, window int, now int64) (NodeGrowthReport, error) {
 	ans := NodeGrowthReport{Mode: nodeStatsModeGrowth, Scheme: scheme, QuietPeriods: window,
 		Candidates: []growthNode{}, Quiet: []quietNode{}, Unplaced: []unplacedScheme{}}
-	p, err := d.buildNodeStatsPlanOpts(ctx, key, read, scheme, true) // counts only: no vector is read
+	p, err := d.buildNodeStatsPlanFor(ctx, key, read, scheme, true) // light: counts only, no vector is read
 	if err != nil {
 		return ans, err
 	}

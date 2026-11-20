@@ -148,6 +148,16 @@ type Options struct {
 	rtfMaxPicture int
 	// rtfMaxDecoded overrides the cap on an RTF document's decoded text.
 	rtfMaxDecoded int64
+	// palmMaxText overrides the cap on a MOBI or PalmDOC book's
+	// decompressed text, for tests.
+	palmMaxText int64
+}
+
+func (o Options) maxPalmText() int64 {
+	if o.palmMaxText > 0 {
+		return o.palmMaxText
+	}
+	return maxPalmText
 }
 
 // DefaultMaxRows is the row cap when Options.MaxRows is zero.
@@ -249,7 +259,7 @@ func NewRegistry(ex ...Extractor) *Registry {
 
 // Default is the registry of the pure-Go extractors this package ships.
 func Default() *Registry {
-	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, FB2{}, RTF{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
+	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, FB2{}, RTF{}, MOBI{}, PalmDOC{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
 }
 
 // Register adds an extractor, tried before the ones already there, so a

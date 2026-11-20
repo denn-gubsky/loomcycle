@@ -331,7 +331,7 @@ func TestGrowth_InputAndAccessAreChecked(t *testing.T) {
 		`{"op":"node_stats","quiet_periods":3}`:                   "quiet_periods is taken only with mode growth",
 		`{"op":"node_stats","mode":"growth","quiet_periods":-1}`:  "quiet_periods must be 1 to 120",
 		`{"op":"node_stats","mode":"growth","quiet_periods":121}`: "quiet_periods must be 1 to 120",
-		`{"op":"node_stats","mode":"nope"}`:                       "is not report, compute or growth",
+		`{"op":"node_stats","mode":"nope"}`:                       "is not report, compute, misfits or growth",
 	} {
 		_, res := docExec(t, d, k.f.operator, body)
 		if !res.IsError || !strings.Contains(res.Text, want) {

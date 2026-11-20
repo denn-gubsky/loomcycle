@@ -1659,6 +1659,73 @@ Here a document titled "Policy SEC-12 Password rotation" is classified `Policy` 
 - **How full it is:** `describe_ontology` with `with_counts: true` adds member counts over the documents the caller may read. Each concept gets `members` (documents with a live `subject` statement to it or to a concept below it, each counted once) and `members_by_class` (the same by the document's class); each scheme gets `members`; each class gets `documents` (documents of that class, and of its subclasses once the ontology is confirmed). Without the option the answer is unchanged. It needs the tenant scope; without it, or on a store fault, the answer carries an issue and no counts.
 - **On a real document:** `Document op=classify` with `write: "report"` shows which class's pattern matched (`steps[0].candidates`, each with the `quote` and where it matched), the fields and work key it would set, and the issuer, and writes nothing.
 
+### Retiring, deleting and changing an entry (RFC GQ)
+
+An entry of the tenant ontology (a class, relation kind, scheme, concept or instance) is **retired, not deleted**, while anything rests on it.
+
+**Retiring.** Set the entry's status to `retired` with `update_chunk`, or use **retire** on the Ontology page. Retiring an entry also retires every live entry under it, in the same change. A retired entry stays in the read: `describe_ontology` and `GET /v1/_ontology` mark it `entry_status: "retired"`, and the Ontology page shows `· retired`. What already uses it stays readable and keeps its retention and access policy. Nothing new may use it:
+- no new document or entity of the class;
+- no new statement of the relation kind, or to the concept or instance;
+- no new placement under the concept, and no tag write of its concept tag;
+- `classify` does not offer it, and the extraction prompt leaves a retired class out;
+- no new `@projects` or `@focus` names it.
+
+To bring an entry back, clear its status in the document editor. A new proposal that uses a retired entry's name is refused and points there. The root and the section headers cannot be retired. `retired` is a reserved status word.
+
+**Deleting.** A delete that would remove an entry in use is refused for every caller, the operator and an admin included, with `entry_has_dependents`. The refusal names each entry in use with its counts (for example `concept "Reporting" (members 1, statements 1)`) and ends "Retire it instead." "In use" is the ontology plan's own answer for a delete (`POST /v1/_ontology/plan`, op `delete`). Every row the delete would destroy or leave naming nothing counts:
+- statements to the entry or anything under it;
+- documents and chunks typed with a class or subclass, in any scope of the tenant;
+- identity and subject keys, concept memberships and concept tags;
+- node statistics, series and annotations;
+- an instance's adopted subject, schemes whose `@projects` names a class, and review rules that name the entry.
+
+The rule covers `delete_chunk` on an entry or on a parent of one, and `delete_document` of the ontology itself. Other ways of taking an entry in use out of force are refused as well:
+- `update_chunk` to `proposed` or `rejected` (retire instead);
+- `move_chunk` that takes it out of the ontology read (under a grammar, for example);
+- `supersede_chunk` or a Memory `supersede` of an ontology chunk;
+- `import_md` with `reimport` onto the ontology, which would replace changed entries under new ids. Plain `import_md` there still only adds.
+
+The retention prune never deletes ontology chunks. An entry nothing rests on, a proposal, a grammar and an empty section can still be deleted. If the check cannot count every user and agent scope in time, the delete is refused and can be retried.
+
+**Proposing a change to an entry in force.** `propose_entity` with `change` files a proposal about an entry the ontology already has, instead of a new one:
+- `change: "retire"` asks that nothing new may use the entry, while what already uses it stays readable.
+- `change: "edit"` carries any of a new `name`, a new `parent` (by chunk id or name, in the entry's own section), a new `meaning`, and `directives`. `directives` is the entry's complete new directive set as an object: a string value, `true` for a flag, a list for a directive that repeats, and `{}` to clear them. A `null` counts as absent. For an instance, its relation lines (`@<kind> <target>`) belong in the set too.
+
+Name the entry with `entry`: its chunk id from `describe_ontology`, or a name or concept tag that names exactly one entry (`section` narrows it). A section header, the root and another proposal are not entries.
+
+Like every proposal it is inert. It is filed under the entry's section as `edit: <name>` or `retire: <name>`. Its text is the filer's reason, with every directive line quoted, and what it would change travels as data in its fields (`change_proposal`). The Ontology page and `GET /v1/_ontology` list it with that data. Accepting one applies it to the entry in place and keeps the entry's id (see "Accepting a change or retire proposal" in the next section). Rejecting works as for any proposal. Only `propose_entity` writes a proposal's marks: an agent's raw `create_chunk` or `upsert_chunk` that carries one is refused.
+
+Refused when filed:
+- an entry not in force;
+- a retired entry (an operator brings it back by clearing its status; a proposal does not), or retiring one already retired;
+- a new name or parent that is a retired entry;
+- a name another entry of that kind already has (under the new parent, for a concept), or a standard relation kind's name;
+- a directive the section does not take, a value it cannot use, or a reference to a retired entry;
+- `@locked` in either direction; a locked entry; and, for a retire, rename or move, an entry with a locked one under it;
+- a second open proposal of the same kind for the same entry.
+
+### Locking, planning and accepting a change (RFC GQ)
+
+**Locking an entry (`@locked`).** Put `@locked` on its own line in the body of an entry of the Classes, Relations, Schemes or Instances section; the bullet spelling `` - `@locked` `` also works. The entry then cannot be renamed, moved, retired or deleted by anyone, the operator included, whether or not anything uses it. Neither can any entry above it, because each of those changes would carry the locked entry with it. A refused change answers `entry_locked` and names the locked entry, and an ontology plan notes a planned change that the lock would refuse. The lock does not freeze the text: you can still edit the entry's meaning and its other directives. Only an operator adds or removes the lock, by editing the entry's body directly. A proposal can never carry it: `propose_entity` quotes the line, a change proposal refuses it, and a proposal whose body carries it cannot be accepted. `@locked` takes no value. On a section header or on the ontology's root it is reported as an issue and locks nothing. A seed class or relation kind has no entry until it is adopted, so adopt it before locking it. The Ontology page marks a locked entry "· locked" and offers neither retire nor delete on it.
+
+**A plan's fingerprint before a change that stales or destroys.** Some changes to an entry can leave stored data pointing at something that has changed. These are: renaming it (its title, or its body's first heading when the title is empty), retiring it, moving it under another parent, or editing its body so its directives change (`@identity`, a relation characteristic such as `@functional` or `@asymmetric`, a policy directive). When something rests on the entry, such a change applies only against a plan of the current ontology. First plan the change with `POST /v1/_ontology/plan` (or the ontology tool's `plan` op) and read what it stales or destroys. Then send the same `update_chunk` or `move_chunk` with `plan_fingerprint` set to the plan's `fingerprint`. Without it the change is refused with `plan_required`. If the ontology changed after you planned, the change is refused with `plan_stale`. Both refusals carry the current fingerprint (on `POST /v1/_document` as a 409 with `code`, `error` and `fingerprint`), so plan again, check the counts and resend. Some changes need no fingerprint: an edit of the meaning alone, any change to an entry nothing rests on, a reorder, and a move the reader can't see. A locked entry answers `entry_locked` first, and no fingerprint lifts a lock. The Ontology page's retire button does all of this for you: it plans the retire, shows the counts, and retires with the fingerprint.
+
+**Accepting a change or retire proposal.** An operator accepts a change or retire proposal from the Ontology page, or with `POST /v1/_ontology/proposals` (`"action": "accept"`). The change is applied to the entry the proposal names, and the entry keeps its chunk id:
+- a retire retires the entry and everything under it;
+- an edit renames it, moves it under the new parent, and writes its body as the proposed directives above its meaning. A class's field bullets are never changed by a proposal.
+
+Before anything is written, the change is rebuilt from the proposal and checked again against the ontology as it stands. The accept is refused with 422 `invalid_proposal` if the entry has been retired since, the new name is taken, or the proposal was edited into something filing would refuse. It is refused with 409 `entry_locked` if a lock is in the way, and with 409 `target_changed` if the entry was edited while the accept ran.
+
+A change something rests on needs the fingerprint of a current plan in `plan_fingerprint`. Without one the answer is 409 `plan_required`, or `plan_stale` for an old one, and each carries the current fingerprint.
+
+**Planning a proposal.** Send a proposal to the plan by its id: `{"op": "proposal", "id": "<proposal chunk id>"}` in `changes`, on any transport (HTTP, the ontology tool, gRPC `PlanOntology`, the TS and Python clients). A change or retire proposal is checked as the accept checks it and planned as the changes it stands for; each planned change names the proposal in `proposal`. An add proposal plans as `add` with risk `none`. Several proposals, and direct changes beside them, are planned together under one fingerprint. An id that is not an open proposal of the tenant's ontology (unknown, already accepted or rejected, an entry in force, another tenant's) is refused with `entry_not_found`, the same answer for each. A proposal the accept would refuse is refused with `invalid_request` and the reason. The Ontology page plans the proposal you accept this way, shows what rests on the entry, and accepts with the plan's fingerprint.
+
+Renaming a class that anything rests on is refused with `rename_job_pending` until the runtime can carry the new name through stored data. Relations and concepts are renamed with the plan.
+
+Once the change is applied, the proposal is deleted. Any other open proposal of the same kind for the same entry is rejected, with a note saying which proposal was accepted. The change is recorded in the audit log as `ontology_change_applied`, along with the entry's own revision history.
+
+If the entry was updated but could not then be moved (another write landed in between, or the move failed), the answer is 409 `partially_applied`, listing what was written. The change is recorded and the proposal stays: reject it and finish the move in the editor.
+
 ### Node statistics — `node_stats` (RFC GM)
 
 Each node of the tenant's taxonomy — every concept of every scheme, and every document class — can carry statistics about the documents filed under it. `Document op=node_stats` keeps them; `describe_ontology` with `with_stats: true` reads them.
