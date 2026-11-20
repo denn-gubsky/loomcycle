@@ -4779,7 +4779,9 @@ export type DocumentToolInput = {
   basis?: ("sha256" | "title")[];
   /** find_duplicates: true files a `duplicate_of` proposal per pair; false (the
    *  default) only reports. node_stats mode misfits: true files a `subject`
-   *  proposal (method rule:centroid) per misfit, at most `limit` per call. */
+   *  proposal (method rule:centroid) per misfit, at most `limit` per call.
+   *  node_stats mode split: true files each recurring group as a proposed
+   *  concept and each merge as a retire proposal, at most `limit` per call. */
   propose?: boolean;
   /** search / related: never chunks of these documents (e.g. the document under
    *  review, so its own text is not found as evidence for itself). */
@@ -4891,8 +4893,11 @@ export type DocumentToolInput = {
    *  the documents nearer a sibling concept's centroid than their own, filing
    *  `subject` proposals only with `propose`; "growth" reads
    *  the stored series: concepts ranked by recent growth, quiet nodes, and each
-   *  scheme's unplaced periods rising first, writing nothing. */
-  mode?: "report" | "compute" | "misfits" | "growth";
+   *  scheme's unplaced periods rising first, writing nothing; "split" lists
+   *  the groups of a concept's members, and of a scheme's unplaced things, that
+   *  recur when clustered again (candidate new concepts) and sibling concepts to
+   *  merge, filing proposals only with `propose`. */
+  mode?: "report" | "compute" | "misfits" | "growth" | "split";
   /** node_stats mode growth: the periods counted as recent (default 6, at most
    *  120); a node with members but none in them is quiet. */
   quiet_periods?: number;
