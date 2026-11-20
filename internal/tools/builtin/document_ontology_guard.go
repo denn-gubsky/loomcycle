@@ -31,6 +31,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	memrank "github.com/denn-gubsky/loomcycle/internal/memory"
 	"github.com/denn-gubsky/loomcycle/internal/sqlmem"
@@ -326,6 +327,11 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 	if name == "" {
 		return errValidation("propose_entity: name is required — it becomes the entity type's name", ""), nil
 	}
+	// A name is one line: a line break or another control character would reach the
+	// ontology document as a heading title (fillEdit refuses the same for a rename).
+	if strings.IndexFunc(name, unicode.IsControl) >= 0 {
+		return errValidation("propose_entity: name is one line with no control characters", "Pass the name alone, on one line."), nil
+	}
 	if len(in.Body) > proposalBodyMax {
 		return errValidation(fmt.Sprintf("propose_entity: body is %d bytes, over the %d-byte limit — "+
 			"keep the evidence to counts and a few examples", len(in.Body), proposalBodyMax), ""), nil
@@ -335,6 +341,14 @@ func (d *Document) proposeEntity(ctx context.Context, in docInput) (tools.Result
 	if err != nil {
 		return errBusiness("propose_entity: "+err.Error(), "This deployment has no SQL Memory; ask an operator to enable it."), nil
 	}
+	// The read, the duplicate checks and the filing run under the lock change and
+	// retire proposals take (proposeChange), so two identical add proposals filed at
+	// once — two passes of node_stats split, say — file one. In-process only.
+	unlock, err := d.editions.lock(ctx, key, "ontology_change_proposal", memrank.OntologyPath)
+	if err != nil {
+		return errFrom("propose_entity: "+err.Error(), err), nil
+	}
+	defer unlock()
 	read, err := d.ontologyForKey(ctx, key, mscope, memrank.OntologyPath, nil)
 	if err != nil {
 		return errFrom("propose_entity: "+err.Error(), err), nil
