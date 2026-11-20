@@ -420,6 +420,11 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 	if workspace.EngineRank(h.GetEngine()) == 0 {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "unknown engine %q", h.GetEngine())
 	}
+	if !engineServes(att, h.GetEngine()) {
+		// The principal resolved and is a shared worker's: a definite
+		// refusal, which the worker reads as final.
+		return nil, nil, status.Error(codes.PermissionDenied, "a shared worker must use an isolating engine; the host engine can serve one tenant only")
+	}
 	if len(h.GetToolchains()) > maxListed || len(h.GetLabels()) > maxListed || len(h.GetHeldWorkspaces()) > maxHeld {
 		return nil, nil, status.Error(codes.InvalidArgument, "the Hello lists too many toolchains, labels or workspaces")
 	}
@@ -445,6 +450,16 @@ func (d *Dispatcher) admit(owner string, att auth.WorkerAttach, h *workspacepb.H
 		}
 	}
 	return w, held, nil
+}
+
+// engineServes reports whether a worker on engine may hold workspaces for the
+// tenants att grants. On the host engine every command runs as the worker's
+// own user over the worker's whole disk, so the workspaces of every tenant it
+// served would be open to each tenant's commands: a host worker serves one
+// tenant only, and a shared worker needs an engine that isolates one
+// workspace from another.
+func engineServes(att auth.WorkerAttach, engine string) bool {
+	return !att.Shared || workspace.EngineRank(engine) > workspace.EngineRank(workspace.EngineHost)
 }
 
 // reconcile compares what a worker holds with the store's rows for it and
@@ -783,7 +798,9 @@ func (d *Dispatcher) Place(ctx context.Context, req PlaceRequest) ([]string, err
 	var matched []cand
 	d.mu.Lock()
 	for _, w := range d.workers {
-		if !w.serves.Serves(req.TenantID) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
+		// engineServes is checked at attach too; again here so a shared
+		// host worker can never be handed a workspace, whatever let it in.
+		if !w.serves.Serves(req.TenantID) || !engineServes(w.serves, w.engine) || workspace.EngineRank(w.engine) < workspace.EngineRank(req.Engine) {
 			continue
 		}
 		ok := true
