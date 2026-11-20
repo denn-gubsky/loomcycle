@@ -6213,12 +6213,14 @@ agents:
     # statement and no annotation. No tool_modes: read mode would refuse
     # propose_entity, which is a write op however inert what it files.
     #
-    # No scopes here, as for kb/annotator: the briefs are read in the tenant
-    # scope, and a tenant Document grant is a tenant write grant, so the
-    # operator adds memory_scopes: [tenant] and sql_scopes: [tenant] in their
-    # own layer (README, "Taxonomies"). Without them the pass stops at its
-    # first read with status unreadable.
+    # The two tenant scopes ship here, unlike kb/annotator's (owner ruling
+    # 2026-11-20): the briefs are read in the tenant scope, and the one write
+    # the body makes is propose_entity, an inert proposal an operator accepts
+    # or rejects. Without them the pass stops at its first read with status
+    # unreadable. kb/taxonomy-writer stays without any grant.
     tools: [Document, Agent]
+    memory_scopes: [tenant]
+    sql_scopes: [tenant]
     skills: [-*]
     disable_context: true
     # MAINTENANCE PLUMBING. The pass's session holds tenant briefs in its tool
