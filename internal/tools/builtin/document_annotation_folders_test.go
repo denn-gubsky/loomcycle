@@ -514,6 +514,118 @@ func TestFolderAnnotation_RestrictedSiblingIsLeftOut(t *testing.T) {
 	})
 }
 
+// confinedAnnDriver is an annotating run whose own rules deny it paths.
+func confinedAnnDriver(t *testing.T, base context.Context, paths ...string) context.Context {
+	t.Helper()
+	var res []string
+	for _, p := range paths {
+		res = append(res, "document:tenant:"+p)
+	}
+	return tools.WithRunPolicy(base, tools.RunPolicy{
+		Memory:           tools.MemoryPolicyValue{AllowedScopes: []string{"tenant"}},
+		SqlMem:           tools.SqlMemPolicyValue{AllowedScopes: []string{"tenant"}},
+		StatementMethods: []string{annotationGrant},
+		ACL: aclSet(t,
+			authz.Rule{Effect: authz.Allow, Actions: []string{"read", "write", "link", "propose"}, Resources: []string{"document:tenant"}},
+			authz.Rule{Effect: authz.Deny, Actions: []string{"read"}, Resources: res}),
+	})
+}
+
+// folderOpsDirect runs annotation_inputs or set_annotation at level path past the
+// op's access gate, as a caller the gate let through would reach it.
+func folderOpsDirect(t *testing.T, d *Document, ctx context.Context, op string, in docInput) tools.Result {
+	t.Helper()
+	key, mscope, err := d.resolveScope(ctx, "tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Op, in.Level = op, annotationLevelPath
+	var res tools.Result
+	if op == "annotation_inputs" {
+		res, err = d.folderAnnotationInputs(ctx, key, mscope, in)
+	} else {
+		res, err = d.setFolderAnnotation(ctx, key, mscope, in, "A brief long enough to stand as it is written", "An abstract.")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+// TestFolderAnnotation_InputsAreGatedOnTheWholeScope — a caller with a read deny on
+// any document of the scope is refused annotation_inputs at level path before any
+// folder is read: the op asks about the whole scope, and a deny naming one instance
+// refuses that question (authz DecideScope). set_annotation asks write, so its own
+// covers check (TestFolderAnnotation_InputsNeedEverySiblingDocument) is what holds.
+func TestFolderAnnotation_InputsAreGatedOnTheWholeScope(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	op := annOperator(base)
+	folderSiblingCorpus(t, d, op)
+	drv := confinedAnnDriver(t, base, "/kb/legal/terms")
+	for _, q := range []string{
+		fmt.Sprintf(`{"op":"annotation_inputs","scope":"tenant","level":"path","path":"/kb/products","prompt_version":%d}`, folderContextPromptVersion),
+	} {
+		_, r := docExec(t, d, drv, q)
+		if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryPermission || strings.Contains(r.Text, "Legal terms") {
+			t.Errorf("%s = %+v, want a permission refusal naming nothing", q, r)
+		}
+	}
+}
+
+// TestFolderAnnotation_InputsNeedEverySiblingDocument — past the scope gate, a
+// caller who may not read a document a named sibling's brief was written from may
+// neither read the folder's inputs (they show that brief) nor write its annotation,
+// even where every member of the tenant may read it.
+func TestFolderAnnotation_InputsNeedEverySiblingDocument(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	op := annOperator(base)
+	folderSiblingCorpus(t, d, op)
+	drv := confinedAnnDriver(t, base, "/kb/legal/terms")
+	for _, which := range []string{"annotation_inputs", "set_annotation"} {
+		r := folderOpsDirect(t, d, drv, which, docInput{Path: "/kb/products", PromptVersion: folderContextPromptVersion, InputsSHA256: "x"})
+		if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryPermission || strings.Contains(r.Text, "Legal terms") {
+			t.Errorf("%s = %+v, want a permission refusal naming nothing", which, r)
+		}
+	}
+	// set_annotation asks write of the scope, which the read deny does not refuse:
+	// through the tool, with the current hash, its covers check still refuses it.
+	cur := folderInputsAt(t, d, op, "/kb/products", folderContextPromptVersion)
+	_, r := docExec(t, d, drv, fmt.Sprintf(`{"op":"set_annotation","scope":"tenant","level":"path","path":"/kb/products","prompt_version":%d,"brief":"A brief long enough to stand as it is written","abstract":"a","inputs_sha256":%q}`,
+		folderContextPromptVersion, cur["inputs_sha256"]))
+	if !r.IsError || r.Error == nil || r.Error.Category != tools.CategoryPermission {
+		t.Errorf("set_annotation through the tool = %+v, want a permission refusal", r)
+	}
+	// The earlier version names no sibling: the same caller reads it.
+	if r := folderOpsDirect(t, d, drv, "annotation_inputs", docInput{Path: "/kb/products", PromptVersion: 2}); r.IsError {
+		t.Fatalf("version 2 inputs refused: %s", r.Text)
+	}
+}
+
+// TestFolderAnnotation_InputsWithholdARecordDrawnOnUnreadableDocuments — the stored
+// record annotation_inputs returns beside the current inputs is the caller's only if
+// it may read every document that record was withheld on, not only today's.
+func TestFolderAnnotation_InputsWithholdARecordDrawnOnUnreadableDocuments(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	op := annOperator(base)
+	folderSiblingCorpus(t, d, op)
+	folderWriteAt(t, d, op, "/kb/products", "Product guides drawn beside the legal folder", folderContextPromptVersion)
+	// legal loses its record: today's inputs name no sibling drawn on terms, but the
+	// stored record was written from legal's brief.
+	if _, r := docExec(t, d, op, `{"op":"delete_annotation","scope":"tenant","level":"path","path":"/kb/legal"}`); r.IsError {
+		t.Fatal(r.Text)
+	}
+	drv := confinedAnnDriver(t, base, "/kb/legal/terms")
+	r := folderOpsDirect(t, d, drv, "annotation_inputs", docInput{Path: "/kb/products", PromptVersion: folderContextPromptVersion})
+	if r.IsError {
+		t.Fatalf("annotation_inputs: %s", r.Text)
+	}
+	var in map[string]any
+	_ = json.Unmarshal([]byte(r.Text), &in)
+	if in["record"] != nil || strings.Contains(r.Text, "Product guides drawn") || in["stale"] != true {
+		t.Fatalf("inputs = %s, want no record and stale", r.Text)
+	}
+}
+
 // TestFolderAnnotation_SiblingRestrictedSinceWithholdsTheRecord — a record written
 // from a sibling's brief is withheld from a reader who may not read that sibling's
 // documents, until it is written again without the sibling.

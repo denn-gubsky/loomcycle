@@ -813,9 +813,11 @@ func (d *Document) folderAnnotationInputs(ctx context.Context, key sqlmem.ScopeK
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
 	}
-	// A folder's inputs name and describe every document below it: they are read
-	// only by a caller who may read all of them, as the annotation itself is.
-	if refused := folderCoversRefusal(ctx, op, acl, got.Covers); refused != nil {
+	// A folder's inputs name and describe every document below it, and show the
+	// briefs of the siblings they name: they are read only by a caller who may read
+	// all of those documents, as the annotation itself is. (A read deny on any
+	// document already refuses this op at the scope gate; this holds without it.)
+	if refused := folderCoversRefusal(ctx, op, acl, withheldOn(got.Covers, got.drawsOn)); refused != nil {
 		return *refused, nil
 	}
 	got.Stale = true
@@ -826,6 +828,16 @@ func (d *Document) folderAnnotationInputs(ctx context.Context, key sqlmem.ScopeK
 	rec, err := d.folderRecord(ctx, key, t)
 	if err != nil {
 		return errFrom(op+": "+err.Error(), err), nil
+	}
+	// The stored record may have been written from documents today's inputs no
+	// longer reach (a sibling since gone, a document moved out): it is the caller's
+	// only if it may read everything the record is withheld on.
+	if rec != nil {
+		if ok, err := coversReadable(ctx, acl, rec.covers); err != nil {
+			return errFrom(op+": "+err.Error(), err), nil
+		} else if !ok {
+			rec = nil
+		}
 	}
 	if rec != nil {
 		stale := rec.InputsSHA256 != got.InputsSHA256
@@ -849,7 +861,7 @@ func (d *Document) setFolderAnnotation(ctx context.Context, key sqlmem.ScopeKey,
 	if len(cur.Covers) == 0 {
 		return errValidation(op+": "+canonical+" holds no document to annotate", "Annotate a folder that holds documents."), nil
 	}
-	if refused := folderCoversRefusal(ctx, op, d.newDocACL(ctx, key), cur.Covers); refused != nil {
+	if refused := folderCoversRefusal(ctx, op, d.newDocACL(ctx, key), withheldOn(cur.Covers, cur.drawsOn)); refused != nil {
 		return *refused, nil
 	}
 	if in.InputsSHA256 != "" && in.InputsSHA256 != cur.InputsSHA256 {
