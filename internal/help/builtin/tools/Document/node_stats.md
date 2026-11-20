@@ -1,6 +1,6 @@
 ---
 name: Document/node_stats
-description: "Document op=node_stats — report which taxonomy nodes (concepts and document classes) have stale statistics, or recompute them: member counts, and where the store keeps vectors, spread, exemplars, nearest siblings and distinctive terms; or list the misfits (documents nearer a sibling concept) and propose their placements; or rank concepts by recent growth and list quiet nodes. An operator's or a granted pass."
+description: "Document op=node_stats — report which taxonomy nodes (concepts and document classes) have stale statistics, or recompute them: member counts, and where the store keeps vectors, spread, exemplars, nearest siblings and distinctive terms; or list the misfits (documents nearer a sibling concept) and propose their placements; or rank concepts by recent growth and list quiet nodes; or list the groups that recur when a concept's members or a scheme's unplaced things are clustered again, and sibling concepts to merge, and propose them. An operator's or a granted pass."
 ---
 `node_stats` keeps statistics for each node of the tenant's taxonomy: every
 concept of every scheme, and every document class. `describe_ontology` with
@@ -50,12 +50,15 @@ tenant scope.
   rows of nodes no longer in force are removed. `misfits`: the misplaced
   members (below), writing nothing unless `propose`. `growth`: growth, quiet
   nodes and unplaced periods from the stored series (below), writing nothing.
+  `split`: split, unplaced-grouping and merge candidates (below), writing
+  nothing unless `propose`.
 - `scheme` — only this scheme's concepts (by name). Without it, every concept
   and every document class; only then are rows of removed nodes reported and
   removed.
-- `propose` — mode `misfits` only: file a placement proposal per misfit.
-- `limit` — mode `misfits` with `propose`: the most proposals this call files
-  (default 20, at most 100).
+- `propose` — mode `misfits`: file a placement proposal per misfit. Mode
+  `split`: file each candidate as a proposal.
+- `limit` — with `propose`: the most proposals this call files (mode
+  `misfits`: default 20, at most 100; mode `split`: default 10, at most 50).
 - `quiet_periods` — mode `growth` only: how many periods count as recent
   (default 6, at most 120).
 
@@ -132,6 +135,72 @@ periods}` with each period `{label, period_start, unplaced, basis, share,
 previous_share?, rising, documents?, documents_truncated?}`. Each list holds at
 most 200.
 
+## Split
+
+With `mode: split` the call clusters (k-means, k from 2 to 4) and reports three
+kinds of candidate. It needs the vector stage: elsewhere `vectors` is false,
+`note` says why, and nothing is listed.
+
+- `splits` — each concept with at least 20 **direct** members that have a
+  vector (documents placed on it that none of its narrower concepts holds:
+  those are already arranged), whose clustering kept two groups or more. A group is listed only when it
+  **recurs**: the members are clustered again four times, each time a random
+  80% of them with another seed, and every run must find a group holding
+  three quarters of the group's members it saw. `not_recurring` counts the
+  groups that did not; they are never proposed. Each group would be a
+  narrower concept of the node; the node keeps its id, its members and its
+  rolled-up series.
+- `unplaced` — per scheme, the things it projects that none of its concepts
+  holds, those of periods whose unplaced share rose first (at most 2000),
+  grouped the same way when there are at least 20. A thing whose similarity
+  to its group's centre is below 0.5 stays unplaced, and so does every thing
+  of a group that does not recur: `stays_unplaced` lists them. A group goes
+  under the scheme's concept whose centroid is nearest, when at least 0.5
+  alike (`parent_similarity`), else at the top of the scheme.
+- `merges` — sibling concepts whose centroids are at least 0.95 alike: the one
+  with fewer members (`node_id`) would be retired into the other
+  (`into_id`). Each concept is retired by at most one candidate.
+
+Each group carries a suggested `name` (its first distinctive terms, against
+the other groups), its `terms`, `exemplars`, and its `documents` with titles
+and briefs, nearest the centre first (at most 50). The thresholds are not
+measured yet and depend on the embedding model. A call runs at most 100
+clusterings within two minutes; past that it stops, sets `truncated` and says
+so in `note` — pass `scheme` to cover the rest. Each concept is in at most one
+merge, most alike first.
+
+**No model checks a group here.** A group is meant to be proposed only when a model
+grouping of the things' subtopic labels finds it too; `node_stats` makes no
+model call, so `model_check` says so and each group lists the documents that
+step reads. The generation agent runs it and files what both find.
+
+It writes nothing unless `propose: true`. Then it files, in the answer's order
+and at most `limit` per call, through `propose_entity` (every check of that op
+applies, and every filing is inert until an operator accepts it): each group
+as a proposed concept under its parent (`section: schemes`), its body saying
+where it came from and that no model checked it; each merge as a retire
+proposal of the smaller concept (`change: retire`), its body naming the
+concept it merges into. The operator plans a retire proposal by its id before
+accepting it. Moving documents under a new concept is never filed: they can be
+placed only once it is in force. A concept of an `@origin adopted` scheme, or
+one `@locked`, is `fixed` and never proposed for retiring; a local concept may
+still be added under it. Filing is for an operator, or a run granted `rule` in
+`statement_methods`, as for misfits.
+
+It returns `{mode, scheme?, vectors, note?, embed_model?, min_members, runs,
+recur_min, jaccard, far_similarity, merge_similarity, model_check, propose,
+cap?, splits, unplaced, merges, proposed?, skipped?, members_skipped?,
+issues?, truncated?}`: a split `{node_id, name, tag, scheme, members, direct,
+clustered, spread, fixed?, k, groups, not_recurring}`; an unplaced grouping
+`{scheme, scheme_id, things, clustered, truncated?, grouped, groups,
+not_recurring, stays_unplaced, stays_truncated?}`; a group `{key, name, terms,
+members, recurrence, runs, parent_id, parent, parent_similarity?, exemplars,
+documents, documents_truncated?, proposal_id?, skipped?, detail?}`; a merge
+`{node_id, name, tag, into_id, into, into_tag, similarity, members,
+into_members, fixed?, proposal_id?, skipped?, detail?}`. `skipped` says why
+nothing was filed: `exists` (an open proposal of that name under that parent),
+`rejected`, `duplicate`, `fixed`, `cap` or `refused:<code>`.
+
 ## Returns
 
 `{mode, scheme?, vectors, note?, embed_model?, min_members, nodes, orphans?,
@@ -157,8 +226,10 @@ fresh, stale, missing, computed, removed, series}`:
 
 ## Errors
 
-- `node_stats: mode "<x>" is not report, compute, misfits or growth`.
-- `node_stats: propose is taken only with mode misfits`.
+- `node_stats: mode "<x>" is not report, compute, misfits, growth or split`.
+- `node_stats: propose is taken only with mode misfits or split`.
+- `node_stats: method_not_granted: …` — mode `split` with `propose` from a run not
+  granted `rule`.
 - `node_stats: quiet_periods is taken only with mode growth`; `quiet_periods must be 1 to 120`.
 - `node_stats: permission: …` — the caller is not an operator or a granted
   agent, lacks the tenant scope, or may not read every document of it.
@@ -200,4 +271,14 @@ Rank one scheme's concepts by growth over the last three months:
 
 ```json result
 {"mode": "growth", "scheme": "topics", "quiet_periods": 3, "series_stale": 0, "series_missing": 0, "candidates": [{"node_id": "6f1d2c3b4a5e4f60718293a4b5c6d7e8", "name": "Risk Management", "tag": "topics/risk-management", "scheme": "topics", "period": "month", "members": 12, "recent": 5, "previous": 1, "growth": 4, "last_period": "2026-11"}], "quiet": [{"node_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "kind": "concept", "name": "reporting", "tag": "topics/reporting", "scheme": "topics", "period": "month", "members": 4, "last_period": "2026-03", "periods_since": 8}], "unplaced": [{"scheme": "topics", "scheme_id": "5e0c1b2a39484f5e6d7c8b9a0f1e2d3c", "period": "month", "periods": [{"label": "2026-10", "period_start": 1790812800000000000, "unplaced": 6, "basis": 9, "share": 0.6667, "previous_share": 0.25, "rising": true, "documents": ["0a1b2c3d4e5f60718293a4b5c6d7e8f9"]}]}]}
+```
+
+List the split and merge candidates of one scheme, writing nothing:
+
+```json
+{"op": "node_stats", "mode": "split", "scheme": "topics"}
+```
+
+```json result
+{"mode": "split", "scheme": "topics", "vectors": true, "embed_model": "ollama/bge-m3", "min_members": 20, "runs": 5, "recur_min": 5, "jaccard": 0.75, "far_similarity": 0.5, "merge_similarity": 0.95, "model_check": "not run: node_stats makes no model call. A group is meant to be proposed only when a model grouping of the things' subtopic labels finds it too; each group lists the documents that step reads", "propose": false, "splits": [{"node_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "name": "reporting", "tag": "topics/reporting", "scheme": "topics", "members": 24, "direct": 24, "clustered": 24, "spread": 0.41, "k": 2, "groups": [{"key": "3f2a1b0c9d8e7f6a", "name": "xbrl template taxonomy", "terms": ["xbrl", "template", "taxonomy"], "members": 12, "recurrence": 5, "runs": 5, "parent_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "parent": "topics/reporting", "exemplars": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "XBRL filing templates", "similarity": 0.99}], "documents": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "XBRL filing templates", "brief": "The XBRL templates for the annual filing.", "similarity": 0.99}]}], "not_recurring": 0}], "unplaced": [], "merges": [{"node_id": "8b3f4e5d6c7a4182930415b6c7d8e9f0", "name": "auditing", "tag": "topics/auditing", "into_id": "9c4a5f6e7d8b4293a41526c7d8e9f0a1", "into": "audit", "into_tag": "topics/audit", "similarity": 0.97, "members": 3, "into_members": 4}]}
 ```

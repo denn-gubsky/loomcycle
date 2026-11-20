@@ -390,17 +390,19 @@ func (d *Document) proposeConcept(ctx context.Context, key sqlmem.ScopeKey, msco
 		return errValidation("propose_entity: a concept needs a parent — the scheme or the broader concept it belongs under",
 			"Pass parent: a scheme name (e.g. topics), a concept name, or a concept tag (topics/risk-management)."), nil
 	}
-	var parentChunk, parentTag string
+	// parentName is the resolved parent's name: what a proposal's Parent reads (the
+	// nearest in-force ancestor's name), whether the call named it by name or by tag.
+	var parentChunk, parentTag, parentName string
 	var have []string
 	parentRetired := false
 	for _, s := range read.Schemes {
 		have = append(have, s.Name)
 		if parentChunk == "" && (s.Name == want || memrank.MirrorTag(s.Name, nil) == want) {
-			parentChunk, parentTag, parentRetired = s.ChunkID, memrank.MirrorTag(s.Name, nil), s.EntryStatus != ""
+			parentChunk, parentTag, parentName, parentRetired = s.ChunkID, memrank.MirrorTag(s.Name, nil), s.Name, s.EntryStatus != ""
 		}
 		for _, c := range s.Concepts {
 			if parentChunk == "" && (c.Tag == want || strings.EqualFold(c.Name, want)) {
-				parentChunk, parentTag, parentRetired = c.ChunkID, c.Tag, c.EntryStatus != ""
+				parentChunk, parentTag, parentName, parentRetired = c.ChunkID, c.Tag, c.Name, c.EntryStatus != ""
 			}
 		}
 	}
@@ -423,7 +425,7 @@ func (d *Document) proposeConcept(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 	}
 	for _, p := range read.Proposals {
-		if p.Section == memrank.SectionSchemes && strings.EqualFold(p.Name, name) && p.Parent == want {
+		if p.Section == memrank.SectionSchemes && strings.EqualFold(p.Name, name) && strings.EqualFold(p.Parent, parentName) {
 			return errBusiness("propose_entity: concept "+name+" is already "+p.Status+" — an operator has seen it",
 				"Do not propose it again; an operator decides."), nil
 		}
