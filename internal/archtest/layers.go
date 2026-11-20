@@ -411,6 +411,10 @@ var allowedSideways = []subsystemEdge{
 	// The Workspace tool (RFC GW) opens and uses workspaces through the
 	// core's bookkeeping and dispatcher; nothing in workspace imports tools.
 	{"internal/tools/builtin", "internal/workspace"},
+	// A workspace worker converts its workspaces' files in a conversion
+	// child it supervises (RFC GW D34); conversion knows nothing of
+	// workspaces.
+	{"internal/workspace", "internal/conversion"},
 	{"internal/wiring", "internal/lanegate"},
 	{"internal/wiring", "internal/providerbuild"},
 

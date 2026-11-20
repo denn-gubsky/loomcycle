@@ -54,6 +54,18 @@ type WorkspaceConfig struct {
 	DiskQuotaMB int64 `yaml:"disk_quota_mb,omitempty"`
 	// Copy bounds a folder copy into or out of a workspace.
 	Copy WorkspaceCopyConfig `yaml:"copy,omitempty"`
+	// Convert configures the conversion child of the local worker.
+	Convert WorkspaceConvertConfig `yaml:"convert,omitempty"`
+}
+
+// WorkspaceConvertConfig is `workspace.convert`: the conversion child a
+// workspace worker converts its workspaces' files in (RFC GW D34). It reaches
+// the local worker only; a worker of its own reads
+// LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB from its environment, as it
+// loads no config.
+type WorkspaceConvertConfig struct {
+	// MemoryLimitMB is the child's memory limit in MiB. Default 1024.
+	MemoryLimitMB int `yaml:"memory_limit_mb,omitempty"`
 }
 
 // WorkspaceCopyConfig is `workspace.copy`: the most a folder copy may move.
@@ -92,6 +104,10 @@ const (
 	DefaultWorkspaceDiskQuotaMB    = 2048
 	DefaultWorkspaceCopyMaxFiles   = 2000
 	DefaultWorkspaceCopyMaxBytes   = 1 << 30
+	DefaultWorkspaceConvertMemMB   = 1024
+	// The bounds of workspace.convert.memory_limit_mb.
+	minWorkspaceConvertMemMB = 64
+	maxWorkspaceConvertMemMB = 1 << 20
 	// MaxWorkspaceDiskQuotaMB is 16 TiB in MiB.
 	MaxWorkspaceDiskQuotaMB = 16 << 20
 	// maxWorkspaceCopyFiles and maxWorkspaceCopyBytes bound what the copy
@@ -125,6 +141,9 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Copy.MaxBytes == 0 {
 		w.Copy.MaxBytes = DefaultWorkspaceCopyMaxBytes
+	}
+	if w.Convert.MemoryLimitMB == 0 {
+		w.Convert.MemoryLimitMB = DefaultWorkspaceConvertMemMB
 	}
 	return w
 }
@@ -222,6 +241,9 @@ func validateWorkspace(c *Config) error {
 	if w.Copy.MaxBytes < 0 || w.Copy.MaxBytes > maxWorkspaceCopyBytes {
 		return fmt.Errorf("workspace.copy.max_bytes: %d is out of range (1 to %d, 16 TiB)", w.Copy.MaxBytes, int64(maxWorkspaceCopyBytes))
 	}
+	if m := w.Convert.MemoryLimitMB; m != 0 && (m < minWorkspaceConvertMemMB || m > maxWorkspaceConvertMemMB) {
+		return fmt.Errorf("workspace.convert.memory_limit_mb: %d is out of range (%d to %d)", m, minWorkspaceConvertMemMB, maxWorkspaceConvertMemMB)
+	}
 	r := w.Resolved()
 	if r.Exec.DefaultTimeoutS > r.Exec.MaxTimeoutS {
 		return fmt.Errorf("workspace.exec.default_timeout_s (%d) is over max_timeout_s (%d)", r.Exec.DefaultTimeoutS, r.Exec.MaxTimeoutS)
@@ -255,6 +277,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "copy"), "workspace.copy", nil, reflect.TypeOf(WorkspaceCopyConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "convert"), "workspace.convert", nil, reflect.TypeOf(WorkspaceConvertConfig{})); err != nil {
 		return err
 	}
 	type plain WorkspaceConfig

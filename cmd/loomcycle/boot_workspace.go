@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -50,7 +51,23 @@ func (b *boot) startLocalWorkspace(d *wsdispatch.Dispatcher, token, tenant, why 
 			slog.Warn("workspace: the local worker's socket stopped", "err", err)
 		}
 	})
-	env := []string{"LOOMCYCLE_WORKSPACE_ROOT=" + root}
+	env := []string{"LOOMCYCLE_WORKSPACE_ROOT=" + root,
+		fmt.Sprintf("LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB=%d", b.cfg.Workspace.Resolved().Convert.MemoryLimitMB)}
+	// The worker's conversion child (RFC GW D34) runs the helper commands
+	// this runtime's own conversions run, so a workspace's file converts
+	// as an inbox file does here.
+	h := conversionHelpers(b.cfg)
+	for _, kv := range [][2]string{
+		{"LOOMCYCLE_WORKER_RASTERIZE_COMMAND", h.rasterize}, {"LOOMCYCLE_WORKER_MEDIA_COMMAND", h.media},
+		{"LOOMCYCLE_WORKER_ENCODE_COMMAND", h.encode}, {"LOOMCYCLE_WORKER_WRITE_COMMAND", b.cfg.Env.RenderPDFCommand},
+		{"LOOMCYCLE_WORKER_MERMAID_COMMAND", b.cfg.Env.RenderDiagramCommand}, {"LOOMCYCLE_HELPER_WRAPPER", b.cfg.Env.HelperWrapper},
+		{"LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND", h.djvuText}, {"LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND", h.djvuInspect},
+		{"LOOMCYCLE_WORKER_DJVU_RASTERIZE_COMMAND", h.djvuRasterize},
+	} {
+		if kv[1] != "" {
+			env = append(env, kv[0]+"="+kv[1])
+		}
+	}
 	for _, k := range localWorkspacePassEnv {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)

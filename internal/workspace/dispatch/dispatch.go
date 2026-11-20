@@ -972,7 +972,10 @@ type WorkerInfo struct {
 	Shared     bool
 	Engine     string
 	Toolchains []string
-	Capacity   int
+	// Labels are the conversion labels the worker reported: the helpers
+	// its conversion child has (RFC GW D34).
+	Labels   []string
+	Capacity int
 }
 
 // Workers lists the workers attached to this replica, by id.
@@ -980,7 +983,8 @@ func (d *Dispatcher) Workers() []WorkerInfo {
 	d.mu.Lock()
 	out := make([]WorkerInfo, 0, len(d.workers))
 	for _, w := range d.workers {
-		info := WorkerInfo{ID: w.id, Declared: w.declared, TenantID: w.serves.TenantID, Shared: w.serves.Shared, Engine: w.engine, Capacity: w.capacity}
+		info := WorkerInfo{ID: w.id, Declared: w.declared, TenantID: w.serves.TenantID, Shared: w.serves.Shared, Engine: w.engine, Capacity: w.capacity,
+			Labels: append([]string(nil), w.labels...)}
 		for t := range w.tools {
 			info.Toolchains = append(info.Toolchains, t)
 		}
