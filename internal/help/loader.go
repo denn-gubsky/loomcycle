@@ -74,13 +74,32 @@ type Topic struct {
 	Tool string
 	// Op is the operation an operation article documents ("" otherwise).
 	Op string
+	// Section is the part of a tool a SECTION ARTICLE documents ("" otherwise):
+	// tools/<Tool>/<section>.md whose frontmatter says `kind: section`. It is for
+	// a tool with no `op` argument whose help is still too long for one article
+	// (a calculator's finance functions, its date functions), so its examples
+	// call the tool without naming an operation.
+	Section string
+
+	// kind is the frontmatter `kind:` value, checked by parseTopic and read only
+	// by the loader, which alone knows whether the file's location allows it.
+	kind string
 }
+
+// kindSection is the frontmatter `kind:` of a section article. A file with no
+// `kind:` keeps loading as it always has.
+const kindSection = "section"
 
 // IsOpArticle reports whether t documents ONE operation of a tool. Operation
 // articles are reachable by name and by search but are kept out of the topic
 // index, which would otherwise be hundreds of entries long; their tool
 // article lists them instead (see Set.OpsOf).
 func (t *Topic) IsOpArticle() bool { return t != nil && t.Op != "" }
+
+// IsSectionArticle reports whether t documents one section of a tool that has
+// no operations. Like an operation article it stays out of the topic index and
+// is listed by its tool (see Set.SectionsOf).
+func (t *Topic) IsSectionArticle() bool { return t != nil && t.Section != "" }
 
 // Set is a name→Topic registry.
 type Set struct {
@@ -179,11 +198,12 @@ func (s *Set) All() []*Topic {
 }
 
 // IndexNames returns the names the topic INDEX shows: every topic except
-// operation articles, sorted. Those are reached through their tool article.
+// operation and section articles, sorted. Those are reached through their tool
+// article.
 func (s *Set) IndexNames() []string {
 	var out []string
 	for _, n := range s.Names() {
-		if !s.topics[n].IsOpArticle() {
+		if t := s.topics[n]; !t.IsOpArticle() && !t.IsSectionArticle() {
 			out = append(out, n)
 		}
 	}
@@ -206,6 +226,39 @@ func (s *Set) OpsOf(tool string) []*Topic {
 	return out
 }
 
+// SectionsOf returns the section articles of tool, sorted by section. Kept apart
+// from OpsOf because a section is not an operation: nothing in a call names it,
+// so it must never be checked against, or offered as, a value of `op`.
+func (s *Set) SectionsOf(tool string) []*Topic {
+	if s == nil {
+		return nil
+	}
+	var out []*Topic
+	for _, t := range s.topics {
+		if t.IsSectionArticle() && t.Tool == tool {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Section < out[j].Section })
+	return out
+}
+
+// SectionsOnOpTool returns a problem for each section article of tool when the
+// tool's schema offers operations (schemaOps, its `op` enum). A tool with
+// operations documents them in operation articles, which the op check holds to
+// the schema; a section there would be help no call can be matched against.
+// The help package does not hold tool schemas, so the caller passes the enum.
+func (s *Set) SectionsOnOpTool(tool string, schemaOps []string) []string {
+	if len(schemaOps) == 0 {
+		return nil
+	}
+	var probs []string
+	for _, t := range s.SectionsOf(tool) {
+		probs = append(probs, fmt.Sprintf("%s is a section article, but %s has operations (%s); document them as operation articles", t.Name, tool, strings.Join(schemaOps, ", ")))
+	}
+	return probs
+}
+
 // ToolArticle returns the article for the tool named exactly `tool`. Unlike Get
 // it neither folds case nor consults aliases: a tool name is a precise
 // identifier, and a feature topic that happens to share a word with a tool must
@@ -215,7 +268,7 @@ func (s *Set) ToolArticle(tool string) (*Topic, bool) {
 		return nil, false
 	}
 	t, ok := s.topics[tool]
-	if !ok || t.Tool != tool || t.IsOpArticle() {
+	if !ok || t.Tool != tool || t.IsOpArticle() || t.IsSectionArticle() {
 		return nil, false
 	}
 	return t, true
@@ -233,10 +286,11 @@ func (s *Set) Has(name string) bool {
 }
 
 // toolsDir is the subdirectory, under both the bundled corpus and an operator's
-// LOOMCYCLE_HELP_ROOT, that holds tool and operation articles:
+// LOOMCYCLE_HELP_ROOT, that holds tool, operation and section articles:
 //
 //	tools/<Tool>.md       → topic "<Tool>"       (tool article)
 //	tools/<Tool>/<op>.md  → topic "<Tool>/<op>"  (operation article)
+//	tools/<Tool>/<s>.md   → topic "<Tool>/<s>"   (section article, `kind: section`)
 const toolsDir = "tools"
 
 // LoadSet builds the topic registry. First loads bundled defaults
@@ -280,6 +334,9 @@ func LoadSet(root string) (*Set, error) {
 		}
 		nameFromFile := strings.TrimSuffix(e.Name(), ".md")
 		t, err := parseTopic(data, nameFromFile, "")
+		if err == nil {
+			err = refuseKindOutsideToolDir(t)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("parse bundled %s: %w", e.Name(), err)
 		}
@@ -338,6 +395,9 @@ func LoadSet(root string) (*Set, error) {
 		}
 		nameFromFile := strings.TrimSuffix(e.Name(), ".md")
 		t, err := parseTopic(data, nameFromFile, path)
+		if err == nil {
+			err = refuseKindOutsideToolDir(t)
+		}
 		if err != nil {
 			// Soft-skip per the doc-comment contract: one malformed
 			// operator topic must not kill the runtime. Bundled
@@ -431,16 +491,19 @@ func joinRel(base, rel string) string {
 	return base + "/" + rel
 }
 
-// loadToolArticles reads tools/<Tool>.md and tools/<Tool>/<op>.md. The name,
-// Tool and Op all come from the file's location, and the frontmatter name must
-// agree, as for every topic. onErr decides whether a bad file is fatal (the
-// bundled corpus) or skipped (an operator directory).
+// loadToolArticles reads tools/<Tool>.md and tools/<Tool>/<name>.md. The name,
+// Tool and Op (or Section) all come from the file's location, and the
+// frontmatter name must agree, as for every topic; the frontmatter only chooses
+// whether a file under tools/<Tool>/ is an operation or a section. onErr decides
+// whether a bad file is fatal (the bundled corpus) or skipped (an operator
+// directory).
 func loadToolArticles(fsys dirFS, pathPrefix string, add func(*Topic), onErr func(string, error) error) error {
 	entries, err := fsys.ReadDir("")
 	if err != nil {
 		return onErr("", err)
 	}
-	load := func(rel, name, tool, op string) error {
+	// child is the stem of a file under tools/<Tool>/, "" for tools/<Tool>.md.
+	load := func(rel, name, tool, child string) error {
 		data, err := fsys.ReadFile(rel)
 		if err != nil {
 			return onErr(rel, err)
@@ -453,7 +516,17 @@ func loadToolArticles(fsys dirFS, pathPrefix string, add func(*Topic), onErr fun
 		if err != nil {
 			return onErr(rel, err)
 		}
-		t.Tool, t.Op = tool, op
+		t.Tool = tool
+		switch {
+		case child == "":
+			if err := refuseKindOutsideToolDir(t); err != nil {
+				return onErr(rel, err)
+			}
+		case t.kind == kindSection:
+			t.Section = child
+		default:
+			t.Op = child
+		}
 		add(t)
 		return nil
 	}
@@ -511,6 +584,7 @@ func parseTopic(data []byte, nameFromFile, path string) (*Topic, error) {
 		Name        string   `yaml:"name"`
 		Description string   `yaml:"description"`
 		Aliases     []string `yaml:"aliases"`
+		Kind        string   `yaml:"kind"`
 	}
 	if err := yaml.Unmarshal([]byte(fmText), &fm); err != nil {
 		return nil, fmt.Errorf("frontmatter yaml: %w", err)
@@ -524,11 +598,26 @@ func parseTopic(data []byte, nameFromFile, path string) (*Topic, error) {
 	if fm.Description == "" {
 		return nil, fmt.Errorf("frontmatter missing `description:`")
 	}
+	// Refused rather than ignored: a misspelt kind would otherwise load a section
+	// as an operation article and fail later, far from the typo.
+	if fm.Kind != "" && fm.Kind != kindSection {
+		return nil, fmt.Errorf("frontmatter `kind: %s` is unknown (the only kind is %q)", fm.Kind, kindSection)
+	}
 	return &Topic{
 		Name:        fm.Name,
 		Description: fm.Description,
 		Content:     body,
 		Path:        path,
 		Aliases:     fm.Aliases,
+		kind:        fm.Kind,
 	}, nil
+}
+
+// refuseKindOutsideToolDir refuses `kind:` on a file that is not under
+// tools/<Tool>/: a section belongs to a tool, and only the location names one.
+func refuseKindOutsideToolDir(t *Topic) error {
+	if t.kind != "" {
+		return fmt.Errorf("frontmatter `kind: %s` applies only to an article under tools/<Tool>/", t.kind)
+	}
+	return nil
 }
