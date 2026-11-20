@@ -1829,7 +1829,7 @@ One generation is not a taxonomy: on one corpus five generations agreed only par
 
 **What is enforced in code.** Briefs, titles and every scheme a model wrote go to the writer as untrusted data blocks, never in its trusted prompt. A reply is data: a concept is kept only with a one-line name of at most 80 characters that `propose_entity` would take, at most 25 siblings, no duplicate tag segment, and no deeper than `depth`; the rest is dropped and counted. The report carries ids, counts, the proposed names and token usage, never a brief.
 
-**Grants.** The briefs are in the tenant scope, so the operator adds `memory_scopes: [tenant]` and `sql_scopes: [tenant]` for `kb/taxonomist` in their own layer. It needs no `statement_methods`: filing a scheme proposal takes none. Once a generated scheme is accepted and documents are placed under it, `node_stats` keeps its statistics and its upkeep modes read it (see the sections above).
+**Grants.** The briefs are in the tenant scope, so `kb/taxonomist` ships with `memory_scopes: [tenant]` and `sql_scopes: [tenant]`; the operator adds nothing in their own layer. It needs no `statement_methods`: filing a scheme proposal takes none. Once a generated scheme is accepted and documents are placed under it, `node_stats` keeps its statistics and its upkeep modes read it (see the sections above).
 
 ## Annotations — a brief and an abstract per section, document and folder (RFC GE)
 

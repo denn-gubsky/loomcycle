@@ -107,7 +107,7 @@ func newTaxFixture(t *testing.T, guides, notes int) *taxFixture {
 	d, author, _, op := annRealDocumentOp(t)
 	withRealOntology(t, d, author, taxOntologyMD)
 	base := tools.WithRunIdentity(context.Background(), tools.RunIdentityValue{AgentID: "a", UserID: "u1", TenantID: "tnt"})
-	// The taxonomist's own grants as an operator layer gives them: Document and
+	// The taxonomist's own grants as the bundle ships them: Document and
 	// Agent, the two tenant scopes, and no statement method.
 	driver := tools.WithRunID(tools.WithAgentName(tools.WithRunPolicy(base, tools.RunPolicy{
 		Tools:  []string{"Document", "Agent"},
@@ -440,8 +440,8 @@ func TestKBTaxonomist_RefusesBadInput(t *testing.T) {
 
 // TestKnowledgeBaseBundle_TaxonomistAuthority pins what the taxonomist may do:
 // read briefs and the ontology, spawn one tool-less writer, and file through
-// propose_entity, with no statement method, no scope of its own and no other
-// write op in its body. The writer can do nothing at all.
+// propose_entity, with no statement method, the tenant scope on both planes
+// and no other write op in its body. The writer can do nothing at all.
 func TestKnowledgeBaseBundle_TaxonomistAuthority(t *testing.T) {
 	cfg := knowledgeBaseConfig(t)
 	a, ok := cfg.Agents["kb/taxonomist"]
@@ -456,9 +456,14 @@ func TestKnowledgeBaseBundle_TaxonomistAuthority(t *testing.T) {
 	if strings.Join(got, ",") != "Agent,Document" {
 		t.Errorf("kb/taxonomist tools = %v, want exactly [Document Agent]", a.Tools)
 	}
-	if len(a.StatementMethods) > 0 || len(a.MemoryScopes) > 0 || len(a.SqlScopes) > 0 || len(a.ToolModes) > 0 {
-		t.Errorf("kb/taxonomist grants methods=%v memory=%v sql=%v modes=%v — the tenant scopes are the operator's to add",
-			a.StatementMethods, a.MemoryScopes, a.SqlScopes, a.ToolModes)
+	if len(a.StatementMethods) > 0 || len(a.ToolModes) > 0 {
+		t.Errorf("kb/taxonomist grants methods=%v modes=%v, want none", a.StatementMethods, a.ToolModes)
+	}
+	// It ships with exactly the tenant scope on both planes (owner ruling
+	// 2026-11-20), unlike kb/annotator, whose grants the operator adds: the
+	// briefs are tenant-scoped and its one write is an inert proposal.
+	if strings.Join(a.MemoryScopes, ",") != "tenant" || strings.Join(a.SqlScopes, ",") != "tenant" {
+		t.Errorf("kb/taxonomist scopes memory=%v sql=%v, want exactly [tenant] for both", a.MemoryScopes, a.SqlScopes)
 	}
 	if !a.Internal || !a.DisableContext || !containsString(a.Skills, "-*") || strings.TrimSpace(a.SystemPrompt) != "" {
 		t.Errorf("kb/taxonomist must be internal, context- and skill-less, with no system prompt: %+v", a)
