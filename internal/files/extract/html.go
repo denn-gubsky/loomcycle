@@ -490,6 +490,9 @@ func (h *htmlState) promote() {
 var htmlSkip = map[string]bool{
 	"script": true, "style": true, "noscript": true, "template": true, "head": true,
 	"iframe": true, "object": true, "svg": true, "math": true, "form": true, "button": true, "select": true, "textarea": true,
+	// A frameset page's fallback for browsers without frames is raw text
+	// to the parser, so it would be written as escaped markup.
+	"noframes": true,
 }
 
 var htmlBlock = map[string]bool{
