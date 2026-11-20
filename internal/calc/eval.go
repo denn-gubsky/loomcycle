@@ -18,6 +18,50 @@ type evaluator struct {
 	assigned  []string
 	rng       *rand.Rand
 	calls     []*fnVal
+	// sizes caches each list value's expanded size (see size).
+	sizes map[listKey]int
+}
+
+// listKey identifies a list value. Lists are never mutated once built, so
+// the first element's address and the length name one list.
+type listKey struct {
+	first *val
+	n     int
+}
+
+// size is the number of values nested in v, every level counted and a
+// shared list counted once per place it appears, saturating just past
+// MaxListLen. Checking it whenever a list is produced bounds every later
+// walk of the value (exactness, shape, rendering, keys, equality):
+// otherwise `b = [a, a]` repeated doubles the expanded size per statement
+// for a constant number of steps.
+func (e *evaluator) size(v val) int {
+	l, ok := v.([]val)
+	if !ok || len(l) == 0 {
+		return 0
+	}
+	k := listKey{first: &l[0], n: len(l)}
+	if s, ok := e.sizes[k]; ok {
+		return s
+	}
+	s := 0
+	for _, x := range l {
+		s += 1 + e.size(x)
+		if s > MaxListLen {
+			s = MaxListLen + 1
+			break
+		}
+	}
+	e.sizes[k] = s
+	return s
+}
+
+func (e *evaluator) checkSize(v val, pos int) *Error {
+	if e.size(v) > MaxListLen {
+		return errf(codeListTooLong, pos, "the list holds more than %d values, counting the elements of nested lists", MaxListLen).
+			withHint("a list nested twice counts twice; build a smaller structure or summarise it first")
+	}
+	return nil
 }
 
 // charge counts n steps and, every ctxCheckEvery steps, polls ctx so a
@@ -65,7 +109,23 @@ var aliases = map[string]string{
 	"length": "len", "size": "len",
 }
 
+// eval evaluates n and refuses a list result over the size bound. Every
+// value reaches a later walk through here: arguments, function bodies,
+// statements and looked-up vars.
 func (e *evaluator) eval(n node, sc *scope) (val, *Error) {
+	v, err := e.evalNode(n, sc)
+	if err != nil {
+		return nil, err
+	}
+	if _, isList := v.([]val); isList {
+		if err := e.checkSize(v, n.position()); err != nil {
+			return nil, err
+		}
+	}
+	return v, nil
+}
+
+func (e *evaluator) evalNode(n node, sc *scope) (val, *Error) {
 	if err := e.charge(1, n.position()); err != nil {
 		return nil, err
 	}

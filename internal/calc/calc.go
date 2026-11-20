@@ -106,6 +106,7 @@ func evalWithin(ctx context.Context, req Request, wall time.Duration) (Response,
 		funcs:  builtinIndex,
 		global: &scope{vars: map[string]val{}},
 		rng:    newRNG(req.Seed),
+		sizes:  map[listKey]int{},
 	}
 	if err := decodeVars(req.Vars, e.global.vars); err != nil {
 		return Response{}, err
