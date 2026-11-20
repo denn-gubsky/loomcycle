@@ -2,6 +2,7 @@ package inbox
 
 import (
 	"bytes"
+	"encoding/binary"
 	"mime"
 	"net/http"
 	"net/url"
@@ -122,6 +123,9 @@ var extTypes = map[string]string{
 	".prc":  mobiType,
 	".pdb":  palmDocType,
 
+	// Compiled HTML Help (RFC GX §4.1).
+	".chm": chmType,
+
 	// Recordings whose bytes a sniffer does not know (FLAC, a bare AAC)
 	// or knows only as a generic container.
 	".m4a":  "audio/mp4",
@@ -148,6 +152,7 @@ var typeExts = map[string]string{
 	rtfType:                         ".rtf",
 	mobiType:                        ".mobi",
 	palmDocType:                     ".pdb",
+	chmType:                         ".chm",
 	"application/msword":            ".doc",
 	"application/vnd.ms-excel":      ".xls",
 	"application/vnd.ms-powerpoint": ".ppt",
@@ -195,6 +200,14 @@ func settleMediaType(declared string, head []byte, name string) string {
 	// generic type or one of Amazon's.
 	if kind := palmKind(head); kind != "" && (generic(mt) || amazonEbook[mt] || mt == mobiType || mt == palmDocType) {
 		return kind
+	}
+	// A compiled help file is bytes to a sniffer; its ITSF header says
+	// what it is.
+	if mt == "application/x-chm" {
+		mt = chmType
+	}
+	if (generic(mt) || mt == chmType) && chmHeader(head) {
+		return chmType
 	}
 	// A Word template (.dot) shares its extension with Graphviz's text
 	// files: only an OLE2 compound file named so is Word's (RFC GX §4.1).
@@ -337,6 +350,15 @@ func palmKind(head []byte) string {
 		return palmDocType
 	}
 	return ""
+}
+
+// chmType is a compiled HTML Help file's type (RFC GX §4.1).
+const chmType = "application/vnd.ms-htmlhelp"
+
+// chmHeader reports whether head begins a compiled help file the CHM
+// reader reads: "ITSF" and version 3.
+func chmHeader(head []byte) bool {
+	return len(head) >= 8 && string(head[:4]) == "ITSF" && binary.LittleEndian.Uint32(head[4:]) == 3
 }
 
 // fileExt is a name's extension: path.Ext, except that a zipped FB2 book's

@@ -1,6 +1,6 @@
 ---
 name: File/extract
-description: "File op=extract — turn a DOCX, DOC, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, RTF, DjVu, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
+description: "File op=extract — turn a DOCX, DOC, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, CHM, RTF, DjVu, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
 ---
 `extract` reads a document the runtime kept (or one in a volume you can Read)
 and writes its text as Markdown to `volume:inbox:extracted/<name>.md`. The
@@ -18,6 +18,7 @@ runtime does the reading; the file's bytes never pass through you.
 | EPUB (2 and 3) | the book title as `#`, each chapter in spine order with its own headings one level down (a chapter with none takes its contents-list label), footnotes as `[n]` listed under Notes, the cover and pictures kept; items marked non-linear come last under Supplementary. A book with DRM (an `encryption.xml` that encrypts anything but fonts) is refused |
 | FB2 (and `.fb2.zip`) | the book title as `#`, sections as headings one level down per level, epigraphs and quotes as block quotes, poems line by line, tables, note references as `[n]` listed under Notes; a picture is placed where it stands when its bytes come first, else marked `[picture N]` there and kept under Pictures at the end. Read in UTF-8, UTF-16 (with a byte order mark), windows-1250/1251/1252, koi8-r, koi8-u, iso-8859-1/2/5 or ibm866; any other encoding is refused by name. A zip of more than one file is refused as an archive to unpack first |
 | MOBI, AZW, AZW3, PRC | the book title as `#`, its text with the book's own headings one level down (a MOBI 7 book's headings, written as large bold lines, are read back as headings; a KF8 part with none takes its contents label), lists and tables, footnotes as `[n]` listed under Notes, pictures kept; a file holding both a MOBI 7 and a KF8 book is read from its KF8 part. A book with DRM is refused. Text in windows-1252 or UTF-8; PalmDOC, HUFF/CDIC or no compression; a book's text is at most 64 MiB. `pages` does not apply |
+| CHM (compiled HTML Help) | the help file's title as `#`, then its topics in table-of-contents order, each once, through the HTML reader: a topic's own headings one level down, a topic with none headed by its contents name at its depth in the contents, a contents entry with no page of its own as a heading over its entries; pictures the file holds kept, any other picture (another file, a URL) left as a link, never fetched. Pages not in the contents are not read; a file with no contents is read from its default topic, then its pages in directory order. A page's encoding is its `<meta>` charset, else the file's language's code page (windows-1250/1251/1252); a page in another encoding is skipped and named in `notes`. LZX-compressed; at most 256 MiB decompressed and 64 MiB of pages. `pages` does not apply |
 | PalmDOC (`.pdb`) | the title as `#` (the file's own name for itself) and its text, a paragraph per block of lines |
 | RTF (also one saved as `.doc`) | the title (`\info`'s, else the file name) as `#`, paragraphs with bold and italic, a paragraph with an outline level or a "heading N" style as a heading one level down, tables, a field's shown result, footnotes as `[n]` listed under Notes, PNG and JPEG pictures kept (WMF, EMF and others counted in `notes`); headers, footers and hidden text left out. `\'hh` bytes are read in code page 1250, 1251, 1252, 866, KOI8-R, KOI8-U or Mac Roman; a document whose bytes need any other is refused by name. A document is at most 64 MiB |
 | DjVu | its text layer, `## Page N` per page, after the book's outline headings; `pages` reads only those pages; a page with no text is listed in `low_yield_pages`. Read by DjVuLibre on a conversion worker, or in the server only where the operator configured it. With OCR, its thin pages (or every page) are rendered and read like a scanned PDF's; where nothing can render DjVu pages, the result's notes say page OCR is not available and the text layer is kept. A DjVu whose pages are separate files, or that includes other files, is refused |
@@ -185,7 +186,8 @@ subject and keywords, `description` from its comment; MOBI and AZW3:
 (ISBN, ASIN), `subjects`, `description`; PalmDOC: `title`; DOC: `title`,
 `authors`, `date` and `year` from its creation time, `subjects` from its
 subject and keywords, `description` from its comments, `publisher` from its
-company), each value
+company; CHM: `title`,
+`language`), each value
 bounded and untrusted text like the rest. With
 `structure.infer_headings` on a DOCX, DOC, HTML or EPUB file, `inferred_headings` and
 `dropped_decorative_images` are given, zero included.

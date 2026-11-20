@@ -101,7 +101,7 @@ func (h *htmlState) page(doc *html.Node, cssBudget int) error {
 	if h.body != nil && h.body.label != "" && !hasHeading(body, 0) {
 		// A book's chapter that is only styled paragraphs still gets the
 		// heading its contents entry gives it.
-		h.blocks = append(h.blocks, heading(2, h.body.label))
+		h.blocks = append(h.blocks, heading(max(2, h.body.labelLevel), h.body.label))
 	}
 	if err := h.walk(body, 0); err != nil {
 		return err
@@ -434,6 +434,9 @@ type htmlBody struct {
 	// label is the heading a document with none of its own is given: the
 	// book's contents entry for it.
 	label string
+	// labelLevel is the level of label's heading: 2 when unset, deeper for
+	// a topic deeper in a help file's contents (CHM).
+	labelLevel int
 	// picture returns the bytes of the picture a document names by a
 	// relative reference; false when the book holds none by that name, and
 	// true with no bytes for one already written (the cover).

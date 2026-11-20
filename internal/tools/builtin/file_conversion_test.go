@@ -459,3 +459,65 @@ func TestFileExtract_DOCWorkerAndInProcessAgree(t *testing.T) {
 		t.Fatalf("the pool ran %v, want one extract", st.Jobs)
 	}
 }
+
+// A compiled help file kept with no name or type is typed by its ITSF
+// header and reads the same through a conversion worker as in this
+// process: its topics in contents order, its picture and its metadata
+// (RFC GX §4.3).
+func TestFileExtract_CHMWorkerAndInProcessAgree(t *testing.T) {
+	help, err := os.ReadFile(filepath.Join("..", "..", "files", "extract", "testdata", "chm", "book.chm"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dispatch.New(dispatch.Options{Token: "tok"})
+	go func() { _ = d.Serve(l) }()
+	defer d.Stop()
+	wctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() {
+		_ = worker.Run(wctx, worker.Options{Target: l.Addr().String(), Token: "tok", ID: "w", Scratch: t.TempDir()})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for d.Stats().Idle == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the worker did not attach")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	extractHelp := func(f *File) (map[string]any, string) {
+		t.Helper()
+		r, ctx, _ := fileRun(t, inbox.Service{}, false)
+		kept := inbox.Capture(r.Ctx, inbox.Item{Fallback: "help", MediaType: "application/octet-stream", Origin: "http"}, help)
+		if kept.Record.MediaType != "application/vnd.ms-htmlhelp" {
+			t.Fatalf("kept as %q", kept.Record.MediaType)
+		}
+		res, err := execFile(f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref})
+		if err != nil || res.IsError {
+			t.Fatalf("extract: %+v %v", res, err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil {
+			t.Fatalf("result is not JSON: %v\n%s", err, res.Text)
+		}
+		return out, res.Text
+	}
+	here, hereText := extractHelp(&File{})
+	there, thereText := extractHelp(&File{Convert: d.Client()})
+	if hereText != thereText {
+		t.Fatalf("through the worker:\n%s\nin process:\n%s", thereText, hereText)
+	}
+	meta, _ := there["metadata"].(map[string]any)
+	if here["format"] != "chm" || here["images"] != float64(2) || meta["title"] != "The Lantern Help" || meta["language"] != "en" || meta["source_format"] != "chm" {
+		t.Errorf("format %v, images %v, metadata %v", here["format"], here["images"], meta)
+	}
+	if !strings.Contains(thereText, "Страница на кириллице") {
+		t.Errorf("the windows-1251 page was not read:\n%s", thereText)
+	}
+	if st := d.Stats(); st.Jobs["extract/ok"] != 1 {
+		t.Fatalf("the pool ran %v, want one extract", st.Jobs)
+	}
+}

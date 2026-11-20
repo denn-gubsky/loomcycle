@@ -155,6 +155,9 @@ type Options struct {
 	// palmMaxText overrides the cap on a MOBI or PalmDOC book's
 	// decompressed text, for tests.
 	palmMaxText int64
+	// chmMaxDecompressed overrides the cap on what a help file's LZX
+	// section decompresses to over one extraction, for tests.
+	chmMaxDecompressed int64
 }
 
 func (o Options) maxPalmText() int64 {
@@ -263,7 +266,7 @@ func NewRegistry(ex ...Extractor) *Registry {
 
 // Default is the registry of the pure-Go extractors this package ships.
 func Default() *Registry {
-	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, FB2{}, RTF{}, DOC{}, MOBI{}, PalmDOC{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
+	return NewRegistry(DOCX{}, XLSX{}, PPTX{}, ODT{}, EPUB{}, FB2{}, RTF{}, DOC{}, MOBI{}, PalmDOC{}, CHM{}, PDF{}, HTML{}, CSV{}, Captions{}, Text{}, ImageFile{})
 }
 
 // Register adds an extractor, tried before the ones already there, so a
