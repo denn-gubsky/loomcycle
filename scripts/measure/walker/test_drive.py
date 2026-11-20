@@ -113,6 +113,12 @@ class GoldMergeTest(unittest.TestCase):
         self.assertIn("unknown question id q99", str(cm.exception.code))
 
 
+class YamlSubsetTest(unittest.TestCase):
+    def test_flow_list_apostrophe_inside_item_keeps_items_apart(self):
+        self.assertEqual(drive._scalar("[owner's view, access control]"), ["owner's view", "access control"])
+        self.assertEqual(drive._scalar("['a, b', it's]"), ["a, b", "it's"])
+
+
 class TopicMatchTest(unittest.TestCase):
     TOPIC = {"name": "security and access control", "aliases": ["security", "access control", "authz"]}
 

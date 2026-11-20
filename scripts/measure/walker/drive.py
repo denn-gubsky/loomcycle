@@ -93,12 +93,21 @@ def _scalar(s):
         if not s.endswith("]"):
             raise ValueError("a flow list must close on its own line: " + s)
         items, cur, q = [], "", None
-        for c in s[1:-1]:
+        body = s[1:-1]
+        i = 0
+        while i < len(body):
+            c = body[i]
+            i += 1
             if q:
                 cur += c
-                if c == q:
+                if c == q == "'" and body[i:i + 1] == "'":
+                    cur += "'"  # '' is an escaped quote, not the close
+                    i += 1
+                elif c == q:
                     q = None
-            elif c in "'\"":
+            elif c in "'\"" and not cur.strip():
+                # A quote opens a quoted item only where the item starts: the
+                # apostrophe in [owner's view, x] is text.
                 q = c
                 cur += c
             elif c == ",":
