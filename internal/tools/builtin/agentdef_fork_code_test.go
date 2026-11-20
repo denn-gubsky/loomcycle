@@ -174,3 +174,120 @@ func TestAgentDefFork_ChangedCodeIsHeldToTheAuthorOnEveryCapability(t *testing.T
 		})
 	}
 }
+
+// A code agent need not spell provider code-js: an empty provider resolves
+// through a `models:` alias, or the defaults, as the run resolves it. Such a
+// lineage is code too, and a fork changing its code_body keeps no base grant.
+func TestAgentDefFork_AliasResolvedCodeJSChangedCodeDoesNotInheritBaseGrants(t *testing.T) {
+	for _, how := range []string{"alias", "defaults"} {
+		t.Run(how, func(t *testing.T) {
+			tool, ctx := forkCodeFixture(t)
+			static := tool.Cfg.Agents["sdlc/taxo"]
+			static.Provider = ""
+			if how == "alias" {
+				tool.Cfg.Models = map[string]config.ModelRef{"taxo-code": {Provider: config.CodeJSProvider, Model: "sdlc/taxo"}}
+				static.Model = "taxo-code"
+			} else {
+				tool.Cfg.Defaults = config.Defaults{Provider: config.CodeJSProvider}
+			}
+			tool.Cfg.Agents["sdlc/taxo"] = static
+			wantRefused(t, forkPromote(t, tool, ctx, "sdlc/taxo", `{"code_body":`+mustJSON(forkNewCode)+`,"tools":["Read"],"sql_scopes":["agent"]}`),
+				"changed-code fork of a "+how+"-resolved code agent", "memory_scopes:")
+			if res := forkPromote(t, tool, ctx, "sdlc/taxo", `{"sampling":{"temperature":0.2}}`); res.IsError {
+				t.Fatalf("same-code fork of a %s-resolved code agent refused: %s", how, res.Text)
+			}
+		})
+	}
+}
+
+// Switching an alias-resolved code agent to a model alias, code untouched,
+// stops the code running and starts the author's prompt: a change of code.
+func TestAgentDefFork_AliasSwitchOutOfCodeJSDoesNotInheritBaseGrants(t *testing.T) {
+	tool, ctx := forkCodeFixture(t)
+	tool.Cfg.Models = map[string]config.ModelRef{
+		"taxo-code": {Provider: config.CodeJSProvider, Model: "sdlc/taxo"},
+		"chat":      {Provider: "anthropic", Model: "claude-haiku-4-5"},
+	}
+	static := tool.Cfg.Agents["sdlc/taxo"]
+	static.Provider, static.Model = "", "taxo-code"
+	tool.Cfg.Agents["sdlc/taxo"] = static
+	wantRefused(t, forkPromote(t, tool, ctx, "sdlc/taxo", `{"model":"chat","system_prompt":"do as told","tools":["Read"],"sql_scopes":["agent"]}`),
+		"alias switch out of code-js", "memory_scopes:")
+}
+
+// Any byte change of code_body is a change of code, whatever the provider:
+// a body the resolver does not run today may run under a later route.
+func TestAgentDefFork_CodeBodyChangeOnAModelAgentDoesNotInheritBaseGrants(t *testing.T) {
+	tool, ctx := forkCodeFixture(t)
+	static := tool.Cfg.Agents["sdlc/taxo"]
+	static.Provider, static.Code = "anthropic", ""
+	tool.Cfg.Agents["sdlc/taxo"] = static
+	wantRefused(t, forkPromote(t, tool, ctx, "sdlc/taxo", `{"code_body":`+mustJSON(forkNewCode)+`,"tools":["Read"],"sql_scopes":["agent"]}`),
+		"code_body added to a model agent", "memory_scopes:")
+}
+
+// The ceilings ceilingCases does not reach. Each base grant is refused to a
+// changed-code fork by an author holding less, and kept by a same-code fork.
+func TestAgentDefFork_ChangedCodeIsHeldToTheAuthorOnShellWorkspaceAndReadReach(t *testing.T) {
+	cases := []struct {
+		field, base, fork, refusedAs string
+		policy                       func(context.Context) context.Context
+	}{
+		{field: "shell_credentials", base: `{"shell_credentials":["A","B"]}`, refusedAs: "shell_credentials:",
+			policy: func(ctx context.Context) context.Context {
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+					rp.ShellCreds = tools.ShellCredsPolicyValue{Set: true, Names: []string{"A"}}
+				})
+			}},
+		{field: "workspace", base: `{"workspace":{"ops":["read","write"]}}`, refusedAs: "workspace.ops:",
+			policy: func(ctx context.Context) context.Context {
+				return tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) { rp.Workspace = tools.WorkspacePolicyValue{Read: true} })
+			}},
+		// The base's memory_scopes are read reach for a core block: a fork may
+		// add a block at a scope the base reads, but not with new code.
+		{field: "memory read reach", base: `{"memory_scopes":["agent","tenant"]}`,
+			fork: `,"memory_scopes":["agent"],"core_blocks":[{"label":"brief","scope":"tenant"}]`, refusedAs: "core_blocks:",
+			policy: func(ctx context.Context) context.Context { return ctx }},
+	}
+	for _, c := range cases {
+		t.Run(c.field, func(t *testing.T) {
+			tool, base := ceilingFixture(t)
+			tool.Cfg.Providers = map[string]config.ProviderConfig{config.CodeJSProvider: {}}
+			var overlay map[string]any
+			if err := json.Unmarshal([]byte(c.base), &overlay); err != nil {
+				t.Fatalf("base overlay: %v", err)
+			}
+			overlay["provider"] = config.CodeJSProvider
+			overlay["model"] = "sdlc/case"
+			overlay["code_body"] = forkOrigCode
+			opOverlay, _ := json.Marshal(overlay)
+			op := operatorPlane(context.Background())
+			op = tools.UpdateRunPolicy(op, func(rp *tools.RunPolicy) { rp.AgentDef = tools.AgentDefPolicyValue{Scopes: []string{"any"}} })
+			if res := agentDefOp(t, tool, op, "create", "sdlc/case", string(opOverlay)); res.IsError {
+				t.Fatalf("operator create: %s", res.Text)
+			}
+			ctx := c.policy(base)
+			wantRefused(t, agentDefOp(t, tool, ctx, "fork", "sdlc/case", `{"code_body":`+mustJSON(forkNewCode)+c.fork+`}`),
+				"changed-code fork keeping "+c.field, c.refusedAs)
+			if res := agentDefOp(t, tool, ctx, "fork", "sdlc/case", `{"sampling":{"temperature":0.2}`+c.fork+`}`); res.IsError {
+				t.Fatalf("same-code fork keeping %s refused: %s", c.field, res.Text)
+			}
+		})
+	}
+}
+
+// tool_modes does not take the base: an author holding a tool in read mode
+// may not give it whole whether the fork changes the code or not, so there is
+// no lineage grant here for a same-code fork to keep.
+func TestAgentDefFork_ToolModesHeldToTheAuthorEitherWay(t *testing.T) {
+	tool, ctx := forkCodeFixture(t)
+	ctx = tools.UpdateRunPolicy(ctx, func(rp *tools.RunPolicy) {
+		rp.Tools = []string{"Read", "Document"}
+		rp.ToolModes = map[string]string{"Document": config.ToolModeRead}
+	})
+	narrow := `"memory_scopes":["agent"],"sql_scopes":["agent"]`
+	wantRefused(t, forkPromote(t, tool, ctx, "sdlc/taxo", `{"code_body":`+mustJSON(forkNewCode)+`,`+narrow+`}`),
+		"changed-code fork keeping Document whole", "tool_modes:")
+	wantRefused(t, forkPromote(t, tool, ctx, "sdlc/taxo", `{`+narrow+`}`),
+		"same-code fork keeping Document whole", "tool_modes:")
+}

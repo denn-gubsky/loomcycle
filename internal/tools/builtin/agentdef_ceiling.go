@@ -782,14 +782,29 @@ func ceilDefScopes(ctx context.Context, name string, def mergedDef, base *merged
 	return nil
 }
 
-// forkChangesCode reports whether a fork changes the code a code-js agent
-// runs: a different code_body, or a switch into or out of code-js (out of it,
-// the author's prompt runs where the code did). Model agents are not judged
-// here: a rewritten prompt keeping the lineage's grants is the documented
-// fork contract.
+// forkChangesCode reports whether a fork changes the code that runs: any
+// byte change of code_body, whatever the provider (fail closed: a body the
+// route does not run today may run under a later one), or a switch into or
+// out of code-js (out of it, the author's prompt runs where the code did).
+// Code-js is decided on the provider the run resolves, not the raw field. A
+// model agent's rewritten prompt is not judged here: keeping the lineage's
+// grants is the documented fork contract.
 func (a *AgentDef) forkChangesCode(def, base mergedDef) bool {
-	codeJS, baseCodeJS := a.isCodeJS(def.Provider), a.isCodeJS(base.Provider)
-	return codeJS != baseCodeJS || (codeJS && def.Code != base.Code)
+	return def.Code != base.Code || a.isCodeJS(a.resolvedProvider(def)) != a.isCodeJS(a.resolvedProvider(base))
+}
+
+// resolvedProvider is the provider a run of d resolves to, the way
+// config.ResolveAgentDefModel resolves it: the def's own, else the one its
+// `models:` alias names, else the defaults.
+func (a *AgentDef) resolvedProvider(d mergedDef) string {
+	if a.Cfg == nil {
+		return d.Provider
+	}
+	provider, _, _ := config.ExpandModelAlias(a.Cfg.Models, d.Provider, d.Model)
+	if provider == "" {
+		provider = a.Cfg.Defaults.Provider
+	}
+	return provider
 }
 
 // isCodeJS reports whether provider executes a code body: the code-js
