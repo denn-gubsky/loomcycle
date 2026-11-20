@@ -1,6 +1,6 @@
 ---
 name: File/extract
-description: "File op=extract — turn a DOCX, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, RTF, DjVu, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
+description: "File op=extract — turn a DOCX, DOC, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, RTF, DjVu, CSV, text or image file into Markdown in the inbox, its pictures kept as files, scans and images read by OCR where allowed, and return an excerpt."
 ---
 `extract` reads a document the runtime kept (or one in a volume you can Read)
 and writes its text as Markdown to `volume:inbox:extracted/<name>.md`. The
@@ -9,6 +9,7 @@ runtime does the reading; the file's bytes never pass through you.
 | Type | What you get |
 |---|---|
 | DOCX | the title as `#`, Word headings one level below it, paragraphs, lists, tables as Markdown tables, pictures in place |
+| DOC (Word 97–2003, `.doc`, `.dot`) | the title (the document's properties', else a first Heading 1, else the file name) as `#`, Heading 1–9 paragraphs one level below it, paragraphs, tables, a field's shown result, footnotes and endnotes as `[n]` listed under Notes; pictures and drawn objects counted in `notes`, headers, footers, comments, macros and embedded objects left out. A simple Word 6/95 document is read as text in its language's code page (1250, 1251 or 1252); one saved with fast save, an older one, an encrypted one, and a compound file that holds no Word document (a spreadsheet, a deck, a mail message) are refused by name. A document is at most 64 MiB |
 | ODT | the same as DOCX, for OpenDocument text (LibreOffice, Word's ODT export); deleted tracked changes and comments left out, footnotes marked `[n]` and listed under `## Notes` at the end |
 | XLSX | a `##` section per sheet with one table of its cell values (what the sheet last computed, not formulas), the first `max_rows` rows, then `[+N rows omitted]` |
 | PPTX | `## Slide N — <title>` per slide in presentation order, its text and tables, pictures in place, speaker notes as a quote |
@@ -50,8 +51,9 @@ most 2000 pages are read.
 Some editors export headings as formatting rather than heading styles: a
 section title is a 14pt coloured line, a sub-section a lone bold line. Such
 a document extracts as one long section. `structure: {"infer_headings":
-true}` recovers the outline, for DOCX, HTML and EPUB only (any other format is
-extracted as usual, and `notes` says the option was not applied).
+true}` recovers the outline, for DOCX, DOC, HTML and EPUB only (any other
+format is extracted as usual, and `notes` says the option was not applied;
+DOC reads no pictures, so only its headings are recovered).
 
 A paragraph becomes a heading when it is one line of at most 120
 characters, does not end with `.`, `,` or `;`, is not in a list or table
@@ -180,9 +182,12 @@ is what a book says about itself (EPUB and FB2: `title`, `authors`, `translators
 `authors`, `date` and `year` from its creation time, `subjects` from its
 subject and keywords, `description` from its comment; MOBI and AZW3:
 `title`, `authors`, `language`, `date`, `year`, `publisher`, `identifiers`
-(ISBN, ASIN), `subjects`, `description`; PalmDOC: `title`), each value
+(ISBN, ASIN), `subjects`, `description`; PalmDOC: `title`; DOC: `title`,
+`authors`, `date` and `year` from its creation time, `subjects` from its
+subject and keywords, `description` from its comments, `publisher` from its
+company), each value
 bounded and untrusted text like the rest. With
-`structure.infer_headings` on a DOCX, HTML or EPUB file, `inferred_headings` and
+`structure.infer_headings` on a DOCX, DOC, HTML or EPUB file, `inferred_headings` and
 `dropped_decorative_images` are given, zero included.
 `yield_chars_per_page` is given when the page count is known; a low value
 means the pages are mostly pictures (a scan) rather than text.

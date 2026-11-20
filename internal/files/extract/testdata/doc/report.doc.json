@@ -1,0 +1,19 @@
+{
+  "format": "doc",
+  "tables": 1,
+  "metadata": {
+    "title": "The Lantern Ledger",
+    "authors": [
+      "Ada Quill"
+    ],
+    "date": "2021-03-04",
+    "year": 2021,
+    "subjects": [
+      "Harbour accounts",
+      "lanterns",
+      "ledgers"
+    ],
+    "description": "A synthetic report for the DOC reader's tests.",
+    "source_format": "doc"
+  }
+}
