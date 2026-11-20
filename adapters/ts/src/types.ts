@@ -4862,7 +4862,8 @@ export type DocumentToolInput = {
   written_before?: string;
   /** get_document / get_chunk / search / related / graph_recall / documents_summary /
    *  query_documents: add each row's nearest annotation as `summary`
-   *  ({level, brief, abstract?, stale?, chunk_id?}). */
+   *  ({level, brief, abstract?, stale?, chunk_id?}); a row that is a taxonomy node
+   *  (tenant scope) also gets `series`, its latest count, share and trend. */
   with_summary?: boolean;
   /** with_summary: the most abstract characters a response carries (default 2000, max 8000). */
   summary_chars?: number;
@@ -4912,8 +4913,9 @@ export type DocumentToolInput = {
   /** search: rank the annotations too — "include" fuses them with the passages,
    *  "only" answers from them alone (a question about the corpus as a whole). */
   annotations?: "none" | "include" | "only";
-  /** search with annotations: which levels to rank (default all). */
-  annotation_levels?: Array<"branch" | "document" | "path">;
+  /** search with annotations: which levels to rank (default branch, document and
+   *  path). A taxonomy node's level (scheme, concept, class) ranks only when named. */
+  annotation_levels?: Array<"branch" | "document" | "path" | "scheme" | "concept" | "class">;
   /** classify: "propose" (default) applies an unambiguous rule match and files the
    *  rest for review; "report" writes nothing. judge_statements: "rule"
    *  (default) or "recommend". */

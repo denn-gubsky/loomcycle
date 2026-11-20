@@ -249,12 +249,31 @@ func (d *Document) nodeStatsVectorsNote() string {
 // buildNodeStatsPlan reads the nodes of read (only scheme's concepts when scheme is
 // set), their full membership, their member documents and the stored rows.
 func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string) (*nodeStatsPlan, error) {
+	return d.buildNodeStatsPlanFor(ctx, key, read, scheme, false)
+}
+
+// buildSeriesReadPlan is the plan a read of the stored series checks its points
+// against (buildSeriesPlan, servable): the nodes, their members and the
+// unrestricted list, and nothing else — no member documents, no vectors (every
+// member's, on pgvector), no stored statistics. Its model is empty, so the series
+// plan adds no shift row (the only kind built from vectors); a shift point's
+// servable check needs only its member set, which this plan has.
+func (d *Document) buildSeriesReadPlan(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead) (*nodeStatsPlan, error) {
+	return d.buildNodeStatsPlanFor(ctx, key, read, "", true)
+}
+
+func (d *Document) buildNodeStatsPlanFor(ctx context.Context, key sqlmem.ScopeKey, read OntologyRead, scheme string, light bool) (*nodeStatsPlan, error) {
+	if d.onNodeStatsPlan != nil {
+		d.onNodeStatsPlan(light)
+	}
 	if err := d.ensureSchema(ctx, key); err != nil {
 		return nil, err
 	}
 	p := &nodeStatsPlan{docs: map[string]*statDoc{}, stored: map[string]storedNodeStats{}}
 	var err error
-	if p.note = d.nodeStatsVectorsNote(); p.note == "" {
+	if light {
+		p.note = "a series read builds no vector stage"
+	} else if p.note = d.nodeStatsVectorsNote(); p.note == "" {
 		p.model = d.projectionModel()
 	}
 	var schemes []memrank.OntologyScheme
@@ -293,6 +312,9 @@ func (d *Document) buildNodeStatsPlan(ctx context.Context, key sqlmem.ScopeKey, 
 			return nil, err
 		}
 		p.nodes = append(p.nodes, classes...)
+	}
+	if light {
+		return p, nil
 	}
 	all := map[string]bool{}
 	for _, n := range p.nodes {

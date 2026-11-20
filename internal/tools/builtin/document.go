@@ -143,6 +143,46 @@ type Document struct {
 	// before its move. A test writes to the ontology there to prove the move is refused
 	// when the ontology is not exactly what the update left. Nil in production.
 	betweenAcceptWrites func()
+
+	// onNodeStatsPlan, when set, runs each time a node statistics plan is built,
+	// with whether it is a series read's light plan. A test counts them to prove a
+	// with_summary call builds at most one, and a light one when that is enough.
+	// Nil in production.
+	onNodeStatsPlan func(light bool)
+}
+
+// nodePlanCache holds the one node statistics plan a with_summary read builds, so
+// the search leg's node check (annotationScope.nodePlan) and the series beside the
+// summary (attachNodeSeries) share it. Per call, in the call's context: never
+// shared across calls, and only reads install it.
+type nodePlanCache struct {
+	key  sqlmem.ScopeKey
+	plan *nodeStatsPlan
+	// full: built with stat docs, vectors and stored stats (buildNodeStatsPlan); a
+	// light plan (buildSeriesReadPlan) serves only a series read.
+	full bool
+}
+
+type nodePlanCacheKey struct{}
+
+func withNodePlanCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, nodePlanCacheKey{}, &nodePlanCache{})
+}
+
+// cachedNodePlan is the call's plan for key, if one was built: any plan when full
+// is false, else only a full one.
+func cachedNodePlan(ctx context.Context, key sqlmem.ScopeKey, full bool) *nodeStatsPlan {
+	c, _ := ctx.Value(nodePlanCacheKey{}).(*nodePlanCache)
+	if c == nil || c.plan == nil || c.key != key || (full && !c.full) {
+		return nil
+	}
+	return c.plan
+}
+
+func cacheNodePlan(ctx context.Context, key sqlmem.ScopeKey, p *nodeStatsPlan, full bool) {
+	if c, _ := ctx.Value(nodePlanCacheKey{}).(*nodePlanCache); c != nil && (c.plan == nil || full) {
+		c.key, c.plan, c.full = key, p, full
+	}
 }
 
 func (d *Document) Name() string { return "Document" }
@@ -210,7 +250,7 @@ const documentInputSchema = `{
 		"stale":       {"type": "boolean", "description": "list_annotations: only annotations whose target changed since they were written."},
 		"written_before": {"type": "string", "description": "list_annotations: only annotations written before this RFC 3339 time."},
 		"annotations": {"type": "string", "enum": ["none","include","only"], "description": "search: rank the corpus's annotations too — the brief and abstract of sections, documents and folders. include fuses them with the passages, one row per target; only answers from them alone, the shape of a question about the corpus as a whole (\"what do we have on X\", \"what does this folder hold\"). A row found this way carries matched_annotation {level, text} and summary; a folder's row is its _annotation document, with folder. Default none."},
-		"annotation_levels": {"type": "array", "items": {"type": "string", "enum": ["branch","document","path"]}, "description": "search with annotations: which levels to rank (default all), e.g. [\"path\", \"document\"] for a corpus question."},
+		"annotation_levels": {"type": "array", "items": {"type": "string", "enum": ["branch","document","path","scheme","concept","class"]}, "description": "search with annotations: which levels to rank (default branch, document and path), e.g. [\"path\", \"document\"] for a corpus question. A taxonomy node's annotation (scheme, concept, class) ranks only when its level is named, e.g. [\"concept\"] to find the topics on X; a node with no member never ranks."},
 		"with_counts": {"type": "boolean", "description": "describe_ontology: also count the documents you may read in the tenant scope — each concept's members (documents at or under it, each once: what search concept:<tag> can return) and members_by_class (split by the document's class), each scheme's members and unplaced (the documents of the classes it projects, or of every document class without @projects, under none of its concepts), and each class's documents (of that type and, in a confirmed ontology, its subclasses', as search type: matches). Off by default; without it the answer is unchanged."},
 		"with_stats": {"type": "boolean", "description": "describe_ontology: what with_counts gives, plus each concept's and each document class's stored node statistics as stats {members, members_with_vector, spread, exemplars [{document_id, title}], siblings (names), terms, computed_at, stale, recomputing?} where node_stats has stored them (recomputing: the members changed since, so only today's members count is served until the next pass), and series {period, latest, count, share?, fallback_share, trend {previous, previous_count, previous_share?, change}} from the built-in series — both computed only from the documents every member of the tenant may read, and the same for every reader. Off by default; without it the answer is unchanged."},
 		"with_memberships": {"type": "boolean", "description": "get_document: also return memberships — what op=memberships answers for the document: its class chain, its concepts per taxonomy with each placement, and its folders. Off by default; without it the answer is unchanged."},
@@ -222,7 +262,7 @@ const documentInputSchema = `{
 		"to": {"type": "integer", "description": "measure: only periods starting before this instant (unix nanos, exclusive)."},
 		"shown_at": {"type": "integer", "description": "measure: read the series as stored at this moment (unix nanos): rows are never overwritten, so a past reading is answerable. Default: the latest."},
 		"compare": {"type": "object", "properties": {"from": {"type": "integer"}, "to": {"type": "integer"}}, "description": "measure share: the baseline range {from, to} (unix nanos). Returns the concepts ordered by the capped log-ratio of their share in from..to against the baseline, largest move first."},
-		"with_summary": {"type": "boolean", "description":"get_document / get_chunk / search / related / graph_recall / documents_summary / query_documents: add each row's annotation as summary {level, brief, abstract?, stale?} — the nearest one at or above the row's chunk. The abstract is added for the target of get_document / get_chunk, the first five documents of a search or related page and the seeds of graph_recall, within summary_chars. A row with no annotation has no summary."},
+		"with_summary": {"type": "boolean", "description":"get_document / get_chunk / search / related / graph_recall / documents_summary / query_documents: add each row's annotation as summary {level, brief, abstract?, stale?} — the nearest one at or above the row's chunk. The abstract is added for the target of get_document / get_chunk, the first five documents of a search or related page and the seeds of graph_recall, within summary_chars. A row with no annotation has no summary. A row that is a taxonomy node (a concept or a document class, tenant scope) also carries series — its latest count, share and trend from the built-in series, as describe_ontology with_stats gives it — beside the summary, never in it."},
 		"summary_chars": {"type": "integer", "description": "with_summary: the most abstract characters a response carries in all (default 2000, at most 8000); rows past it keep their brief only."},
 		"include_color_scheme": {"type": "boolean", "description": "get_document / documents_summary / graph_snapshot: also return each document's display palette (color_scheme). Off by default; you rarely need it."},
 		"body_chars": {"type": "integer", "description": "annotation_inputs: how much of the target's own text to return (default 6000, at most 20000). graph_recall: how much of each chunk's text to return. Omit it and chunks that are not facts (clauses, sections, notes) carry the first 600 characters as body, while facts stay title-only because their title is the claim. 0 = titles only, the cheapest structural walk. N (at most 4000) = up to N characters on every row, facts included. A cut body ends on a word and is marked body_truncated; budget_chars counts body characters too."},
@@ -1043,6 +1083,9 @@ func (d *Document) executeGated(ctx context.Context, in docInput, raw json.RawMe
 	// The root of a reserved document is the operator's; same placement and reason.
 	if refused := d.reservedRootRefusal(ctx, key, in); refused != nil {
 		return *refused, nil
+	}
+	if in.WithSummary && summaryOps[in.Op] {
+		ctx = withNodePlanCache(ctx) // read ops only: one plan per call
 	}
 	res, err := d.dispatch(ctx, key, mscope, in, raw)
 	if err != nil {

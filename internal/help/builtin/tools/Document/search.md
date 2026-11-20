@@ -76,7 +76,12 @@ as the user store, search both, in two calls.
   whole. A row found this way carries `matched_annotation: {level, text}` and
   `summary`; a folder's row is its `_annotation` document, with `folder`.
 - `annotation_levels` — with `annotations`, the levels to rank: any of
-  `branch`, `document`, `path` (default all).
+  `branch`, `document`, `path` (the default is these three), and the taxonomy
+  levels `scheme`, `concept`, `class`, which rank only when named — e.g.
+  `["concept"]` to find the topics a question is about. A hit on a node is its
+  chunk in the ontology document; a node with no member never ranks. With
+  `with_summary`, a concept's or a document class's row also carries `series`:
+  its latest count, share and trend, as `describe_ontology` `with_stats` gives it.
 - `summary_chars` — with `with_summary`, the most abstract characters the answer carries (default 2000, at most 8000).
 
 ## Aiming the search
