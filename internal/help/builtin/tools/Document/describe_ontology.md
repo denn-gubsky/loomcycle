@@ -317,7 +317,8 @@ Maintenance topics, by system.
   (document, entity or fact classes; subclasses included). Without it, every
   document class.
 - `@origin adopted|declared|generated` — a published scheme taken over, one
-  the tenant wrote, or one generated from the corpus.
+  the tenant wrote, or one generated from the corpus. Accepting a proposed
+  adopted scheme writes `@locked` on each of its concepts.
 - `@source <text or URL>` and `@version <text>` — an adopted scheme's
   provenance.
 - `@period day|week|month` — the period the scheme's series are kept in (see

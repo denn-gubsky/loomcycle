@@ -380,14 +380,47 @@ func (d *Document) AcceptSchemeProposal(ctx context.Context, scope, chunkID stri
 			return true, rep, err
 		}
 	}
+	// An adopted scheme's concepts are a published classification's: accepting locks
+	// each one (RFC GM P5, RFC GQ @locked), so no one renames, moves, retires or deletes
+	// it until an operator takes the line out. The proposal never carries the line (a
+	// proposal cannot); this accept, an operator's action, writes it from the checked
+	// origin. The scheme entry gets no lock of its own: its locked concepts already
+	// hold it (a lock holds every entry above it).
+	adopted := p.Header.Origin == memrank.SchemeOriginAdopted
+	if !isScheme {
+		adopted = adoptedAbove(read, byID, self.parent)
+	}
 	for i, n := range nodes {
-		if err := d.acceptProposalChunk(ctx, n, flat[i].Directives(), conceptProposalField); err != nil {
+		dirs := flat[i].Directives()
+		if adopted {
+			dirs = append(dirs, "@"+memrank.LockedDirective)
+		}
+		if err := d.acceptProposalChunk(ctx, n, dirs, conceptProposalField); err != nil {
 			return true, rep, fmt.Errorf("accepted %d of %d concepts, then: %w; the rest stay proposed and "+
 				"can be accepted one by one", rep.Concepts, len(nodes), err)
 		}
 		rep.Concepts++
 	}
 	return true, rep, nil
+}
+
+// adoptedAbove reports whether the nearest in-force scheme or concept at or above
+// parentID belongs to an @origin adopted scheme. A chunk still proposed is passed over
+// to its own parent; with nothing in force above, it is not adopted.
+func adoptedAbove(read OntologyRead, byID map[string]proposalNode, parentID string) bool {
+	for id, hops := parentID, 0; id != "" && hops <= len(byID); id, hops = byID[id].parent, hops+1 {
+		for _, s := range read.Schemes {
+			if s.ChunkID == id {
+				return s.Origin == memrank.SchemeOriginAdopted
+			}
+			for _, c := range s.Concepts {
+				if c.ChunkID == id {
+					return c.Origin == memrank.SchemeOriginAdopted
+				}
+			}
+		}
+	}
+	return false
 }
 
 // tagInForce refuses what would put a mirror tag in force twice: a scheme whose name's
