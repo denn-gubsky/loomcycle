@@ -10,6 +10,10 @@
 // accepted only when its own token grants that same id. The store's
 // worker-keyed queries are not tenant-scoped; this keying is what makes them
 // safe to use.
+//
+// The worker the runtime starts as its own child (workspace.mode local)
+// attaches on a private Unix socket with a per-boot token instead
+// (RegisterLocal); its id is "local:<tenant>/<id>".
 package dispatch
 
 import (
@@ -97,7 +101,15 @@ type Options struct {
 	// RecheckEvery is how often an attached worker's token is checked
 	// again; zero is DefaultRecheckEvery. A test seam, not a setting.
 	RecheckEvery time.Duration
-	Logger       *slog.Logger
+	// LocalToken is the per-boot token of the worker the runtime starts as
+	// its own child (workspace.mode local). It is accepted only on a stream
+	// a RegisterLocal server serves, the runtime's private Unix socket, and
+	// refused everywhere else; empty when there is no local worker.
+	LocalToken string
+	// LocalTenant is the one tenant the local worker serves
+	// (workspace.local.tenant).
+	LocalTenant string
+	Logger      *slog.Logger
 }
 
 // Dispatcher is the workspace worker service and the registry behind it.
@@ -206,6 +218,49 @@ func (d *Dispatcher) Register(srv grpc.ServiceRegistrar) {
 	workspacepb.RegisterWorkspaceServiceServer(srv, d)
 }
 
+// RegisterLocal adds the workspace service to srv, the server of the
+// runtime's private socket, for the local worker alone: every stream it
+// serves is authenticated against LocalToken, never the token resolver.
+func (d *Dispatcher) RegisterLocal(srv grpc.ServiceRegistrar) {
+	workspacepb.RegisterWorkspaceServiceServer(srv, localService{d: d})
+}
+
+// localKey marks the context of a stream the private socket serves. Only
+// localService sets it, and only RegisterLocal registers localService, so a
+// stream from the network endpoint can never carry it.
+type localKey struct{}
+
+func isLocal(ctx context.Context) bool { return ctx.Value(localKey{}) != nil }
+
+// localService is the workspace service on the private socket: the
+// dispatcher's own, each stream's context marked as local.
+type localService struct {
+	workspacepb.UnimplementedWorkspaceServiceServer
+	d *Dispatcher
+}
+
+func (l localService) Attach(s workspacepb.WorkspaceService_AttachServer) error {
+	return l.d.Attach(localAttach{s, context.WithValue(s.Context(), localKey{}, true)})
+}
+
+func (l localService) Op(s workspacepb.WorkspaceService_OpServer) error {
+	return l.d.Op(localOp{s, context.WithValue(s.Context(), localKey{}, true)})
+}
+
+type localAttach struct {
+	workspacepb.WorkspaceService_AttachServer
+	ctx context.Context
+}
+
+func (s localAttach) Context() context.Context { return s.ctx }
+
+type localOp struct {
+	workspacepb.WorkspaceService_OpServer
+	ctx context.Context
+}
+
+func (s localOp) Context() context.Context { return s.ctx }
+
 // Serve serves the workspace service alone on l, on a server of its own
 // built as the runtime builds the endpoint's, until Stop: for tests and
 // harnesses.
@@ -252,6 +307,22 @@ func (d *Dispatcher) authorize(ctx context.Context, bearer string) (owner string
 	dp := d.deps.Load()
 	if dp == nil {
 		return "", att, status.Error(codes.Unavailable, "the runtime is starting")
+	}
+	// The local worker's token is compared, in constant time, only on the
+	// private socket, and the socket takes no other: a token that reached
+	// the network could never attach there, and a network token, whatever
+	// tenant it grants, could never take the local worker's id ("local:..."
+	// is no grantKey) or its Op streams.
+	local := d.opt.LocalToken != "" && auth.CompareBearer(bearer, d.opt.LocalToken)
+	if isLocal(ctx) {
+		if !local {
+			return "", att, status.Error(codes.PermissionDenied, "the runtime's private worker socket accepts only its local worker's token")
+		}
+		att = auth.WorkerAttach{TenantID: d.opt.LocalTenant}
+		return "local:" + d.opt.LocalTenant, att, nil
+	}
+	if local {
+		return "", att, status.Error(codes.PermissionDenied, "the local worker's token is accepted only on the runtime's private socket")
 	}
 	p, ok := dp.resolve(ctx, bearer)
 	if !ok {
