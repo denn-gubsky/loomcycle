@@ -1,0 +1,2 @@
+go test fuzz v1
+string("v = 1:1000; sum(v ./ 3)")

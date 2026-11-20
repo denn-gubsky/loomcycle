@@ -1,0 +1,2 @@
+go test fuzz v1
+string("reduce(1:20, (a, b) -> a * b / gcd(a, b))")
