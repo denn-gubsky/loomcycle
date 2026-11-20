@@ -530,10 +530,10 @@ func (s *annotationScope) folderInputsFor(ctx context.Context, canonical string,
 		Concept       string   `json:"concept,omitempty"`
 		// Empty below folderContextPromptVersion, so an earlier version's hash is
 		// unchanged.
-		Exemplars []string `json:"exemplars,omitempty"`
-		Siblings  []string `json:"siblings,omitempty"`
+		Exemplars       []string `json:"exemplars,omitempty"`
+		SiblingsLeftOut []string `json:"siblings_left_out,omitempty"`
 	}{V: annotationCanonVersion, Level: annotationLevelPath, Path: canonical, Language: in.Language,
-		PromptVersion: promptVersion, Children: terms, Exemplars: exemplarTerms, Siblings: siblingTerms}
+		PromptVersion: promptVersion, Children: terms, Exemplars: exemplarTerms, SiblingsLeftOut: siblingTerms}
 	if in.ConceptName != "" {
 		canon.Concept = in.ConceptName + "\x00" + in.ConceptMeaning
 	}
@@ -565,10 +565,14 @@ func (s *annotationScope) folderInputsFor(ctx context.Context, canonical string,
 // documents) before a second from any; the siblings are the folders beside this
 // one that have a record, by name.
 //
-// A sibling's NAME is hashed, its brief is not. The brief is a hint at what to
-// set this folder apart from; hashing it would make siblings stale each other in
-// turn on every pass, and a prompt version bump would never settle. A new
-// sibling, or one that leaves the request, does make the folder stale.
+// The siblings are a hint at what to set this folder apart from, not what it
+// holds, so the hash leaves them out: hashing their briefs would make siblings
+// stale each other in turn on every pass, so a prompt version bump would never
+// settle, and hashing their names would make a first pass over new sibling
+// folders write each twice (an earlier one goes stale when a later one gets its
+// first record). What the hash does carry is the names of the siblings LEFT OUT
+// for access (sibTerms): a sibling restricted since the write makes the folder
+// stale, so it is written again without that sibling's brief.
 //
 // Access (RFC GM C8, D8). A typical document is a covered one, so the record's
 // existing rule — shown only to a reader who may read every covered document —
@@ -684,24 +688,21 @@ func (s *annotationScope) folderContext(ctx context.Context, in *folderInputs, c
 		if t.root != rec.ChunkID {
 			continue
 		}
+		_, name, _ := splitPath(rec.Folder)
 		ok, err := s.everyMemberReads(ctx, rec.covers)
 		if err != nil {
 			return nil, nil, err
 		}
 		if !ok {
+			sibTerms = append(sibTerms, name)
 			continue
 		}
 		if len(in.Siblings) == maxFolderSiblings {
 			in.SiblingsMore++
 			continue
 		}
-		_, name, _ := splitPath(rec.Folder)
 		in.Siblings = append(in.Siblings, folderSibling{Name: name, Brief: rec.Brief})
-		sibTerms = append(sibTerms, name)
 		draws = append(draws, rec.covers...)
-	}
-	if in.SiblingsMore > 0 {
-		sibTerms = append(sibTerms, "+"+strconv.Itoa(in.SiblingsMore))
 	}
 	in.drawsOn = draws
 	return exTerms, sibTerms, nil

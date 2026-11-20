@@ -456,9 +456,10 @@ func TestFolderAnnotation_EarlierVersionInputsAreUnchanged(t *testing.T) {
 	}
 }
 
-// TestFolderAnnotation_SiblingRewriteMarksNothingStale — a sibling's brief is shown
-// but not hashed (its name is): siblings rewritten in turn never make each other
-// stale, so a version bump rewrites each folder once. A new sibling does.
+// TestFolderAnnotation_SiblingRewriteMarksNothingStale — a sibling is shown but not
+// hashed: siblings rewritten in turn never make each other stale, so a version bump
+// rewrites each folder once, and a sibling's first record does not make the folders
+// beside it stale either (a first pass writes each folder once).
 func TestFolderAnnotation_SiblingRewriteMarksNothingStale(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	ctx := annOperator(base)
@@ -477,8 +478,13 @@ func TestFolderAnnotation_SiblingRewriteMarksNothingStale(t *testing.T) {
 	}
 	annWrite(t, d, ctx, `"document_id":"`+out["document_id"].(string)+`"`, "About hiring")
 	folderWriteAt(t, d, ctx, "/kb/people", "People", folderContextPromptVersion)
-	if !folderRecordStale(t, d, ctx, "/kb/products") {
-		t.Fatal("a new sibling folder left /kb/products current")
+	if folderRecordStale(t, d, ctx, "/kb/products") {
+		t.Fatal("a new sibling folder's first record made /kb/products stale")
+	}
+	// It is named the next time /kb/products is written.
+	in := folderInputsAt(t, d, ctx, "/kb/products", folderContextPromptVersion)
+	if raw, _ := json.Marshal(in["siblings"]); !strings.Contains(string(raw), `"name":"people"`) {
+		t.Fatalf("siblings = %s, want people named", raw)
 	}
 }
 
