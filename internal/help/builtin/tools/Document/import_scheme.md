@@ -16,7 +16,12 @@ scope your run can open (the default `user` needs a user id; otherwise pass
 The scheme's header says it is adopted: `@origin adopted`, with `@source` and
 `@version` from `header`. Every concept of an adopted scheme reports
 `origin: "adopted"` in `describe_ontology`, so a later pass knows not to rename
-or move it.
+or move it. Accepting also writes `@locked` on every concept (not on the
+scheme entry), so no one — the operator included — renames, moves, retires or
+deletes one until an operator removes the line in the editor. A lock holds
+every entry above it, so the scheme itself cannot be renamed or retired while a
+concept of it is locked. Its text stays editable, and a local concept can still
+be added under an adopted one.
 
 ## Two inputs
 
@@ -106,7 +111,7 @@ The proposal is listed with the ontology's proposals as one entry with a
 accepts it with `POST /v1/_ontology/proposals` (`{"chunk_id": …, "action":
 "accept"}`) or on the Ontology page. Accepting checks the stored data again,
 writes the header and each concept's notation, alternative labels and exact
-match as directives, and puts the scheme and every concept in force, each
+match as directives, adds `@locked` to each concept, and puts the scheme and every concept in force, each
 keeping its chunk id. Rejecting keeps the scheme as a tombstone and changes
 nothing in force.
 
