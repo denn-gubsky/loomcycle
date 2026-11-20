@@ -227,5 +227,13 @@ func (d *Document) lineage(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 	if pathsTruncated {
 		out["paths_truncated"] = true
 	}
+	if in.WithMemberships {
+		// The class and concept chains (document_lineage_concepts.go).
+		mem, err := d.lineageMembershipsOf(ctx, key, docID)
+		if err != nil {
+			return errFrom(op+": memberships: "+err.Error(), err), nil
+		}
+		out["memberships"] = mem
+	}
 	return jsonResult(out)
 }

@@ -42,6 +42,7 @@ var documentReadOnlyOps = map[string]func(documentReadOnlyCall) bool{
 	"describe_ontology":  nil,
 	"effective_policy":   nil,
 	"memberships":        nil,
+	"place":              nil,
 	"extract_citations":  nil,
 	"query_chunks":       nil,
 	"list_tags":          nil,

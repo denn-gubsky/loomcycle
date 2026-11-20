@@ -59,12 +59,20 @@ var searchFacetKinds = []string{"type", "folder", "concept"}
 type facetValue struct {
 	Value string `json:"value"`
 	Count int    `json:"count"`
+	// The baseline (baseline: true only, document_search_baseline.go): the readable
+	// documents of the scope with the value, the value's share of the counted
+	// documents and of the corpus, and the capped log-ratio of the two.
+	Corpus      *int     `json:"corpus,omitempty"`
+	Share       *float64 `json:"share,omitempty"`
+	CorpusShare *float64 `json:"corpus_share,omitempty"`
+	LogRatio    *float64 `json:"log_ratio,omitempty"`
 }
 
 // facetRequest is a call's normalised facets argument; nil when none was asked.
 type facetRequest struct {
-	kinds  []string
-	window int
+	kinds    []string
+	window   int
+	baseline bool
 }
 
 // normaliseFacets checks facets / facet_window before any work. An empty list is
@@ -87,6 +95,10 @@ func normaliseFacets(in docInput) (*facetRequest, *tools.Result) {
 		seen[f] = true
 	}
 	if len(seen) == 0 {
+		if in.Baseline {
+			r := errValidation("search: baseline is taken with facets", `Add facets, e.g. ["concept"], or drop baseline.`)
+			return nil, &r
+		}
 		if in.FacetWindow != 0 {
 			r := errValidation("search: facet_window is taken with facets", `Add facets, e.g. ["type","folder"], or drop facet_window.`)
 			return nil, &r
@@ -97,7 +109,7 @@ func normaliseFacets(in docInput) (*facetRequest, *tools.Result) {
 		r := errValidation("search: facet_window must be positive", fmt.Sprintf("Omit it for %d, or pass at most %d.", facetWindowDefault, store.MemoryEmbedKeysMax))
 		return nil, &r
 	}
-	req := &facetRequest{window: facetWindowDefault}
+	req := &facetRequest{window: facetWindowDefault, baseline: in.Baseline}
 	if in.FacetWindow > 0 {
 		req.window = min(in.FacetWindow, store.MemoryEmbedKeysMax)
 	}
@@ -242,9 +254,17 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 	out := map[string]any{"facet_window": fr.window, "chunks_counted": len(counted), "documents_counted": len(docs), "complete": complete}
 
 	var truncated []string
+	var base *facetBaseline
+	if fr.baseline {
+		if base, err = d.newFacetBaseline(ctx, key, acl); err != nil {
+			return nil, fmt.Errorf("baseline: %w", err)
+		}
+		out["corpus_documents"] = max(base.total, len(docs))
+	}
 	for _, kind := range fr.kinds {
 		var byDoc map[string][]string
 		var capped bool
+		var schemes []memrank.OntologyScheme
 		switch kind {
 		case "type":
 			byDoc, capped, err = d.facetRootTypes(ctx, key, docs)
@@ -253,7 +273,8 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 		case "concept":
 			// A fault reading the ontology leaves the concept counts out, with the
 			// reason, and keeps the search and the other facets.
-			schemes, serr := d.readableSchemes(ctx)
+			var serr error
+			schemes, serr = d.readableSchemes(ctx)
 			if serr != nil {
 				slog.WarnContext(ctx, "document: search facets: ontology read failed", "err", serr)
 				out["concept_error"] = "the tenant ontology could not be read, so concepts were not counted"
@@ -265,6 +286,16 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 			return nil, fmt.Errorf("%s: %w", kind, err)
 		}
 		values, cut := facetCounts(byDoc)
+		if base != nil {
+			corpus, cutBase, err := d.corpusCounts(ctx, key, base, kind, values, schemes)
+			if err != nil {
+				return nil, fmt.Errorf("%s baseline: %w", kind, err)
+			}
+			if cutBase {
+				base.truncated = append(base.truncated, kind)
+			}
+			base.apply(values, corpus, len(docs))
+		}
 		out[kind] = values
 		if cut || capped {
 			truncated = append(truncated, kind)
@@ -272,6 +303,9 @@ func (d *Document) searchFacets(ctx context.Context, key sqlmem.ScopeKey, mscope
 	}
 	if len(truncated) > 0 {
 		out["truncated"] = truncated
+	}
+	if base != nil && len(base.truncated) > 0 {
+		out["baseline_truncated"] = base.truncated
 	}
 	return out, nil
 }

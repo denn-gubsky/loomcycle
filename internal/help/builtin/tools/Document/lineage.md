@@ -15,6 +15,8 @@ bodies; to read text, call `get_chunk` on the id you choose.
 - `id` (required) — the **chunk** id. A document's `root_chunk_id` asks about
   the document itself (no sections); a `document_id` here is "no such chunk".
 - `scope` — `user` (default), `agent` or `tenant`.
+- `with_memberships` — `true` also returns `memberships`: where the chunk's
+  document sits in the tenant ontology (below).
 
 ## Returns
 
@@ -46,6 +48,31 @@ What you are shown follows your access: a folder you could not list with Path
 `ls` is left out of the chain, and a folder's brief is left out when you may
 not read every document it covers (the folder itself stays).
 
+## The concept chain
+
+With `with_memberships: true` the answer also carries:
+
+```
+memberships: {
+  classes:  [{name, chunk_id?, brief?}, …],
+  concepts: [{scheme: {name, chunk_id?, brief?},
+              chain: [{name, tag, chunk_id, brief?}, …]}, …],
+  issues?: […]}
+```
+
+- `classes` — the document's class chain: its own type first, then each
+  broader class up to the root.
+- `concepts` — one chain per concept the document is placed under (a live
+  placement, as `memberships` lists it; proposals are left out), the placed
+  concept first and then each broader concept up to the top of its taxonomy.
+  A concept that is only above another placement is part of that chain.
+
+Step from a chain to the other members of a concept with `search` and
+`concept` set to its tag. Without `with_memberships` the answer is unchanged.
+Classes above the document's own type and the chains are the ontology's text:
+a caller who may not read the ontology document gets the own type alone and an
+issue. A node's brief needs the `tenant` scope.
+
 ## Errors
 
 - `lineage: missing required field: id`.
@@ -53,6 +80,12 @@ not read every document it covers (the folder itself stays).
   another scope. A chunk you may not read is refused as `get_chunk` refuses it.
 
 ## Examples
+
+Step up from a hit into the taxonomies that hold its document (the concept chain):
+
+```json
+{"op": "lineage", "scope": "tenant", "id": "5d8e2f1a0b9c4d3e7f6a5b4c3d2e1f00", "with_memberships": true}
+```
 
 Step up from a search hit to its section, document and folders:
 

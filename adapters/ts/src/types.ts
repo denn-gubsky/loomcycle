@@ -4531,6 +4531,8 @@ export type DocumentToolInput = {
     | "measure"
     | "effective_policy"
     | "memberships"
+    // The lowest node of each view covering most of a set (RFC GM P7).
+    | "place"
     | "extract_citations"
     | "classify"
     | "accept_classification"
@@ -4708,6 +4710,10 @@ export type DocumentToolInput = {
   /** search with `facets`: how many of the nearest chunks the counts cover
    *  (default 100, at most 500). */
   facet_window?: number;
+  /** search with `facets`: each value also carries `corpus`, `share`,
+   *  `corpus_share` and `log_ratio` against the readable corpus of the scope,
+   *  and the block gains `corpus_documents`. Off by default. */
+  baseline?: boolean;
   /** related: a chunk whose neighbours BY RELATION to return as `linked`. */
   related_to?: string;
   /** import_md: the markdown is a new edition of document_id / work_key. */
@@ -4886,8 +4892,14 @@ export type DocumentToolInput = {
   with_stats?: boolean;
   /** get_document: also return `memberships` — what op=memberships answers for
    *  the document: its class chain, its concepts per taxonomy with each
-   *  placement, and its folders. Off by default. */
+   *  placement, and its folders. lineage: also return `memberships` {classes,
+   *  concepts} — the chunk's document's class chain and, per taxonomy, each
+   *  concept it is placed under live with the broader concepts up to the
+   *  scheme's top, nearest first, each node with its brief. Off by default. */
   with_memberships?: boolean;
+  /** place: the share of the documents a node must cover to be named (default
+   *  0.6, above 0 and at most 1; not strict). */
+  min_share?: number;
   /** node_stats: "report" (the default) lists each node's status and writes
    *  nothing; "compute" recomputes the stale and missing nodes; "misfits" lists
    *  the documents nearer a sibling concept's centroid than their own, filing
@@ -5261,7 +5273,18 @@ export type DocumentSearchHit = {
 };
 
 /** One value of a search facet and how many documents in the window have it. */
-export type DocumentSearchFacetValue = { value: string; count: number };
+export type DocumentSearchFacetValue = {
+  value: string;
+  count: number;
+  /** With `baseline`: the readable documents of the scope with the value. */
+  corpus?: number;
+  /** With `baseline`: count / documents_counted. */
+  share?: number;
+  /** With `baseline`: corpus / corpus_documents. */
+  corpus_share?: number;
+  /** With `baseline`: ln(share / corpus_share), smoothed, capped at ±3. */
+  log_ratio?: number;
+};
 
 /** The `facets` block of `document({op:"search", facets})` — present ONLY when
  *  `facets` was passed, with a list for each facet asked. Counts are distinct
@@ -5290,6 +5313,10 @@ export type DocumentSearchFacets = {
   /** True when the counts cover every matching chunk; false when more may lie
    *  beyond the window (or the server's index is approximate). */
   complete: boolean;
+  /** With `baseline`: the readable documents of the scope. */
+  corpus_documents?: number;
+  /** With `baseline`: the facets whose corpus counts a store read cut short. */
+  baseline_truncated?: Array<"type" | "folder" | "concept">;
 };
 
 /** Response of `document({op:"search"})` — narrow a {@link DocumentToolResponse}
