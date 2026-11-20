@@ -237,14 +237,14 @@ func validateAgentMemory(c *Config, name string, agent AgentDef) error {
 // memory backend, channels and the tool grants. Part of validate's agents
 // loop.
 func validateAgentGrants(c *Config, name string, agent AgentDef) error {
+	if err := ValidateToolRemovals(agent.Tools); err != nil {
+		return fmt.Errorf("agent %q: %w", name, err)
+	}
 	// Non-fatal: "tool in tools but its capability gate is unset"
 	// advisories (Memory/memory_scopes, Evaluation/evaluation_scopes,
 	// Channel/channels, Interruption/interruption.enabled). Accumulated and
 	// logged once at boot, never fatal — an operator may legitimately list a
 	// tool they haven't gated yet.
-	if err := ValidateToolRemovals(agent.Tools); err != nil {
-		return fmt.Errorf("agent %q: %w", name, err)
-	}
 	c.Warnings = append(c.Warnings, agentGateWarnings(name, agent)...)
 	c.Warnings = append(c.Warnings, shellCredentialWarnings(name, agent, c.Env)...)
 	c.Warnings = append(c.Warnings, gitRemoteWarnings(name, agent, c.Env)...)
