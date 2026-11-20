@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -12,11 +13,12 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := cfg.Workspace.Resolved()
-	want := WorkspaceConfig{Mode: WorkspaceModeOff, MaxPerRun: 4, Exec: WorkspaceExecConfig{DefaultTimeoutS: 120, MaxTimeoutS: 900}, LostAfterS: 300}
+	want := WorkspaceConfig{Mode: WorkspaceModeOff, MaxPerRun: 4, Exec: WorkspaceExecConfig{DefaultTimeoutS: 120, MaxTimeoutS: 900}, LostAfterS: 300,
+		Local: WorkspaceLocalConfig{Tenant: "default"}}
 	if got != want {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
-	if got.RemoteWorkers() {
+	if got.RemoteWorkers() || got.LocalWorker() || got.Serves() {
 		t.Fatal("an absent block attaches workers")
 	}
 }
@@ -27,7 +29,8 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := WorkspaceConfig{Mode: WorkspaceModeRemote, MaxPerRun: 2, MaxPerTenant: 10, Exec: WorkspaceExecConfig{DefaultTimeoutS: 30, MaxTimeoutS: 60}, LostAfterS: 90}
+	want := WorkspaceConfig{Mode: WorkspaceModeRemote, MaxPerRun: 2, MaxPerTenant: 10, Exec: WorkspaceExecConfig{DefaultTimeoutS: 30, MaxTimeoutS: 60}, LostAfterS: 90,
+		Local: WorkspaceLocalConfig{Tenant: "default"}}
 	if got := cfg.Workspace.Resolved(); got != want {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
@@ -49,7 +52,10 @@ func TestWorkspaceConfig_RemoteModeUsesTheEndpointWithoutTheUnusedWarning(t *tes
 
 func TestWorkspaceConfig_RefusesWhatItCannotServe(t *testing.T) {
 	for _, c := range []struct{ block, want string }{
-		{"workspace:\n  mode: local\n", "local is not available in this release"},
+		{"workspace:\n  mode: remote+local\n", `unknown mode "remote+local"`},
+		{"workspace:\n  mode: remote\n  local:\n    tenant: acme\n", "starts no local worker"},
+		{"workspace:\n  mode: local\n  local:\n    tenants: [acme]\n", `unknown key "tenants"`},
+		{"conversion:\n  mode: inprocess\nworkspace:\n  mode: local+remote\n", "workspace mode local+remote needs the host:port"},
 		{"workspace:\n  mode: cloud\n", `unknown mode "cloud"`},
 		{"conversion:\n  mode: inprocess\nworkspace:\n  mode: remote\n", "workspace mode remote needs the host:port"},
 		{"workspace:\n  mode: off\n  max_per_run: -1\n", "may not be negative"},
@@ -62,6 +68,36 @@ func TestWorkspaceConfig_RefusesWhatItCannotServe(t *testing.T) {
 		if _, err := loadConversion(t, c.block); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%q: err = %v, want one saying %q", c.block, err, c.want)
 		}
+	}
+}
+
+// Mode local needs no worker endpoint: the runtime starts its worker on a
+// private socket. It serves the default tenant from a directory of the data
+// dir unless the block says otherwise.
+func TestWorkspaceConfig_LocalNeedsNoEndpointAndHasDefaults(t *testing.T) {
+	cfg, err := loadConversion(t, "conversion:\n  mode: inprocess\nworkspace:\n  mode: local\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws := cfg.Workspace.Resolved()
+	if !ws.LocalWorker() || ws.RemoteWorkers() || !ws.Serves() {
+		t.Fatalf("mode local: local=%v remote=%v serves=%v", ws.LocalWorker(), ws.RemoteWorkers(), ws.Serves())
+	}
+	if ws.Local.Tenant != DefaultWorkspaceLocalTenant {
+		t.Fatalf("tenant = %q, want %q", ws.Local.Tenant, DefaultWorkspaceLocalTenant)
+	}
+	if want := filepath.Join(cfg.Env.DataDir, "workspaces"); cfg.WorkspaceLocalRoot() != want {
+		t.Fatalf("root = %q, want %q", cfg.WorkspaceLocalRoot(), want)
+	}
+
+	cfg, err = loadConversion(t, "conversion:\n  mode: inprocess\nworker_endpoint:\n  listen: 127.0.0.1:7788\n"+
+		"workspace:\n  mode: local+remote\n  local:\n    tenant: acme\n    root: /srv/ws\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws = cfg.Workspace.Resolved()
+	if !ws.LocalWorker() || !ws.RemoteWorkers() || ws.Local.Tenant != "acme" || cfg.WorkspaceLocalRoot() != "/srv/ws" {
+		t.Fatalf("local+remote: %+v root %q", ws, cfg.WorkspaceLocalRoot())
 	}
 }
 

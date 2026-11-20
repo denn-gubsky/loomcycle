@@ -305,7 +305,7 @@ func (b *boot) bindStoreToTools() {
 	interruptionTool.Store = storeIface
 	mcpServerDefTool.Store = storeIface
 	// RFC GW: the workspace bookkeeping needs the dispatcher (workspace.mode
-	// remote) and the store; without either the tool refuses every op.
+	// not off) and the store; without either the tool refuses every op.
 	if b.workspace != nil && storeIface != nil {
 		ws := b.cfg.Workspace.Resolved()
 		b.workspaces = lifecycle.New(b.workspace, storeIface, lifecycle.Limits{

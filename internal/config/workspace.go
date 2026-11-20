@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 
 	"gopkg.in/yaml.v3"
@@ -16,18 +17,28 @@ const (
 	// WorkspaceModeRemote listens on the worker endpoint for workspace
 	// workers that run as their own processes.
 	WorkspaceModeRemote = "remote"
-	// WorkspaceModeLocal is a workspace worker started as a child of the
-	// runtime. It arrives with RFC GW P1's last step and is refused until
-	// then.
+	// WorkspaceModeLocal starts one workspace worker as a child of the
+	// runtime, on a private Unix socket, serving workspace.local.tenant
+	// (RFC GW D9).
 	WorkspaceModeLocal = "local"
+	// WorkspaceModeLocalRemote is both: the local child, and workers of
+	// their own on the worker endpoint.
+	WorkspaceModeLocalRemote = "local+remote"
+	// DefaultWorkspaceLocalTenant is the tenant the local worker serves when
+	// workspace.local.tenant is not written: the tenant the legacy
+	// LOOMCYCLE_AUTH_TOKEN runs under, and the one an open-mode console
+	// reports.
+	DefaultWorkspaceLocalTenant = "default"
 )
 
 // WorkspaceConfig is the `workspace:` block: whether the runtime serves
 // workspaces on workers (RFC GW), and its bounds. Policy and tuning, so yaml
 // only (RFC GN). Resolved fills its defaults.
 type WorkspaceConfig struct {
-	// Mode is off (default) or remote.
+	// Mode is off (default), local, remote or local+remote.
 	Mode string `yaml:"mode,omitempty"`
+	// Local configures the worker of mode local.
+	Local WorkspaceLocalConfig `yaml:"local,omitempty"`
 	// MaxPerRun bounds the workspaces one run holds at once. Default 4.
 	MaxPerRun int `yaml:"max_per_run,omitempty"`
 	// MaxPerTenant bounds a tenant's workspaces across its runs; 0 is
@@ -38,6 +49,17 @@ type WorkspaceConfig struct {
 	// LostAfterS is how long a worker may be away before its workspaces are
 	// marked lost. Default 300.
 	LostAfterS int `yaml:"lost_after_s,omitempty"`
+}
+
+// WorkspaceLocalConfig is `workspace.local`: the one tenant the local worker
+// serves, and where it keeps its workspaces.
+type WorkspaceLocalConfig struct {
+	// Tenant is the tenant whose runs may open workspaces on the local
+	// worker. Default DefaultWorkspaceLocalTenant.
+	Tenant string `yaml:"tenant,omitempty"`
+	// Root is the directory the local worker makes its workspaces in.
+	// Default <LOOMCYCLE_DATA_DIR>/workspaces (Config.WorkspaceLocalRoot).
+	Root string `yaml:"root,omitempty"`
 }
 
 // WorkspaceExecConfig is `workspace.exec`.
@@ -73,24 +95,49 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	if w.LostAfterS == 0 {
 		w.LostAfterS = DefaultWorkspaceLostAfterS
 	}
+	if w.Local.Tenant == "" {
+		w.Local.Tenant = DefaultWorkspaceLocalTenant
+	}
 	return w
 }
 
 // RemoteWorkers reports whether the mode listens for workspace workers.
-func (w WorkspaceConfig) RemoteWorkers() bool { return w.Mode == WorkspaceModeRemote }
+func (w WorkspaceConfig) RemoteWorkers() bool {
+	return w.Mode == WorkspaceModeRemote || w.Mode == WorkspaceModeLocalRemote
+}
 
-// validateWorkspace refuses a mode it does not know (and local, not built
-// yet), a remote mode with no worker endpoint, and values out of range. The
-// endpoint's own values are validateConversion's, which runs first. Part of
-// validate.
+// LocalWorker reports whether the mode starts the local workspace worker.
+func (w WorkspaceConfig) LocalWorker() bool {
+	return w.Mode == WorkspaceModeLocal || w.Mode == WorkspaceModeLocalRemote
+}
+
+// Serves reports whether the mode serves workspaces at all.
+func (w WorkspaceConfig) Serves() bool { return w.LocalWorker() || w.RemoteWorkers() }
+
+// WorkspaceLocalRoot is where the local workspace worker keeps its
+// workspaces: workspace.local.root, else a directory of the data dir, so they
+// survive a restart of the runtime and the next attach reconciles them.
+func (c *Config) WorkspaceLocalRoot() string {
+	if r := c.Workspace.Local.Root; r != "" {
+		return r
+	}
+	return filepath.Join(c.Env.DataDir, "workspaces")
+}
+
+// validateWorkspace refuses a mode it does not know, a remote mode with no
+// worker endpoint, a local block for a mode that starts no local worker, and
+// values out of range. The endpoint's own values are validateConversion's,
+// which runs first. Part of validate.
 func validateWorkspace(c *Config) error {
 	w := c.Workspace
 	switch w.Mode {
-	case "", WorkspaceModeOff, WorkspaceModeRemote:
-	case WorkspaceModeLocal:
-		return errors.New("workspace.mode: local is not available in this release; run a workspace worker of its own (`loomcycle worker --role workspace`) and set mode: remote")
+	case "", WorkspaceModeOff, WorkspaceModeRemote, WorkspaceModeLocal, WorkspaceModeLocalRemote:
 	default:
-		return fmt.Errorf("workspace.mode: unknown mode %q (want %s or %s)", w.Mode, WorkspaceModeOff, WorkspaceModeRemote)
+		return fmt.Errorf("workspace.mode: unknown mode %q (want %s, %s, %s or %s)", w.Mode,
+			WorkspaceModeOff, WorkspaceModeLocal, WorkspaceModeRemote, WorkspaceModeLocalRemote)
+	}
+	if w.Local != (WorkspaceLocalConfig{}) && !w.LocalWorker() {
+		return fmt.Errorf("workspace.local: set, but workspace.mode %q starts no local worker (want %s or %s)", w.Mode, WorkspaceModeLocal, WorkspaceModeLocalRemote)
 	}
 	if w.RemoteWorkers() && c.ResolvedWorkerEndpoint().Listen == "" {
 		return fmt.Errorf("worker_endpoint.listen: workspace mode %s needs the host:port workers attach to", w.Mode)
@@ -110,6 +157,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "exec"), "workspace.exec", nil, reflect.TypeOf(WorkspaceExecConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "local"), "workspace.local", nil, reflect.TypeOf(WorkspaceLocalConfig{})); err != nil {
 		return err
 	}
 	type plain WorkspaceConfig

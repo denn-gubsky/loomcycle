@@ -173,17 +173,34 @@ func (b *boot) serveWorkerEndpoint() {
 		"conversion", cv.RemoteWorkers(), "workspace", ws.RemoteWorkers())
 }
 
-// startWorkspace registers the workspace worker service (RFC GW) on the
-// worker endpoint when workspace.mode is remote, and returns its dispatcher;
-// nil when off. It answers workers Unavailable until activateWorkspace gives
-// it the store and the token resolver, which exist only later in the boot.
+// startWorkspace builds the workspace dispatcher (RFC GW) when workspace.mode
+// serves workspaces, and returns it; nil when off. In mode remote (and
+// local+remote) it registers on the worker endpoint; in mode local (and
+// local+remote) it starts the local worker on a private socket
+// (startLocalWorkspace). It answers workers Unavailable until the boot
+// activates it with the store and the token resolver, which exist only later.
 func (b *boot) startWorkspace() *wsdispatch.Dispatcher {
-	if !b.cfg.Workspace.Resolved().RemoteWorkers() {
+	ws := b.cfg.Workspace.Resolved()
+	if !ws.Serves() {
 		return nil
 	}
-	d := wsdispatch.New(wsdispatch.Options{BuildVersion: buildVersion, Logger: slog.Default()})
-	d.Register(b.workerServer())
-	slog.Warn("workspace: serving workspace workers; the host engine runs an agent's commands as the worker's user, with no isolation")
+	opt := wsdispatch.Options{BuildVersion: buildVersion, Logger: slog.Default()}
+	var token string
+	if ws.LocalWorker() {
+		var err error
+		if token, err = local.NewToken(); err != nil {
+			fatal("workspace: cannot make the local worker's token", "err", err)
+		}
+		opt.LocalToken, opt.LocalTenant = token, ws.Local.Tenant
+	}
+	d := wsdispatch.New(opt)
+	if ws.RemoteWorkers() {
+		d.Register(b.workerServer())
+		slog.Warn("workspace: serving workspace workers; the host engine runs an agent's commands as the worker's user, with no isolation")
+	}
+	if ws.LocalWorker() {
+		b.startLocalWorkspace(d, token, ws.Local.Tenant)
+	}
 	return d
 }
 
