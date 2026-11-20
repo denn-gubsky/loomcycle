@@ -402,6 +402,9 @@ var allowedSideways = []subsystemEdge{
 	// The File tool drives OCR (RFC FG): it cuts, reserves and records while
 	// an engine makes one call. transcribe imports nothing of tools.
 	{"internal/tools/builtin", "internal/transcribe"},
+	// The Workspace tool (RFC GW) opens and uses workspaces through the
+	// core's bookkeeping and dispatcher; nothing in workspace imports tools.
+	{"internal/tools/builtin", "internal/workspace"},
 	{"internal/wiring", "internal/lanegate"},
 	{"internal/wiring", "internal/providerbuild"},
 

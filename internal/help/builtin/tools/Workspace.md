@@ -1,0 +1,64 @@
+---
+name: Workspace
+description: "Workspace tool — open a directory on a workspace worker, run shell commands and file operations in it; it belongs to your run and is deleted when the run ends."
+---
+The `Workspace` tool gives you a **workspace**: a directory on a workspace
+worker, a machine apart from the runtime, where you can run shell commands
+(`exec`) and read and change files (`read`, `write`, `edit`, `glob`, `grep`).
+Use it for work that needs a real shell and toolchains such as Python and
+Node. For files you keep, use your volumes and the Read, Write and Edit tools.
+
+## What you may do
+
+Your agent's grant decides which operations work: `open` needs the grant to
+open workspaces; `exec` needs `exec`; `write` and `edit` need `write`;
+`read`, `glob`, `grep`, `list` and `status` need `read`. Anything else is
+refused with `not_granted`. Context op=self shows your grant.
+
+## Lifetime
+
+A workspace belongs to the run that opened it, by its `name`. No other run
+can see or use it, not even a sub-agent you start or another run of the same
+user: to them it does not exist. It is deleted, files and all, when your run
+ends; a run that is paused or waiting for input keeps it. Copy out anything
+you need to keep with `read` before you finish, or `release` it early.
+
+## Not a sandbox
+
+Commands run on the worker's host engine, as the worker's own user, with no
+isolation from the worker's machine. The environment holds only `PATH`; a
+command and everything it started is killed at its timeout; output is kept
+up to 1 MiB.
+
+## Operations
+
+| op | What it does | Main arguments |
+|---|---|---|
+| `open` | open (or return) a workspace of this run | `name`, `toolchain` |
+| `list` | this run's workspaces | — |
+| `status` | its state, and whether its directory is on the worker | `name` |
+| `release` | delete it now | `name` |
+| `exec` | run a shell command in it | `name`, `command`, `cwd`, `timeout_s` |
+| `read` | a file's text | `name`, `path`, `offset`, `limit`, `line_numbers` |
+| `write` | create or replace a file whole | `name`, `path`, `content` |
+| `edit` | replace exact text in a file | `name`, `path`, `old_string`, `new_string`, `replace_all` |
+| `glob` | find files by name | `name`, `pattern`, `path` |
+| `grep` | search file contents | `name`, `pattern`, `path`, `glob`, `output_mode`, ... |
+
+The file operations take the same arguments as the Read, Write, Edit, Glob
+and Grep tools, without `volume`, and paths are relative to the workspace.
+`..`, an absolute path elsewhere and a symlink out of the workspace are
+refused. An argument an operation does not take is refused.
+
+## Errors
+
+Every refusal is `{"error": <class>, "detail": ...}`:
+
+- `not_granted` — your grant does not allow the operation.
+- `not_found` — this run has no workspace of that name.
+- `limit` — the run or the tenant holds as many workspaces as allowed.
+- `no_worker`, `at_capacity` — no attached worker can take a new workspace.
+- `worker_lost` — the worker went away during the call; whether it took
+  effect is unknown, and the workspace may be gone.
+- `workspaces_off` — this runtime serves no workspaces.
+- `refused` — the worker will not run that command.

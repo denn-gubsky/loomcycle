@@ -442,6 +442,16 @@ func (b *boot) buildToolsFiles(httpTool *builtin.HTTP) {
 	}
 	b.allTools = append(b.allTools, gitTool)
 
+	// RFC GW — the Workspace tool: workspaces on workers, pinned to the run
+	// that opens them. Its bookkeeping is bound with the store; while
+	// workspace.mode is off every op is refused.
+	ws := cfg.Workspace.Resolved()
+	b.workspaceTool = &builtin.Workspace{
+		ExecDefault: time.Duration(ws.Exec.DefaultTimeoutS) * time.Second,
+		ExecMax:     time.Duration(ws.Exec.MaxTimeoutS) * time.Second,
+	}
+	b.allTools = append(b.allTools, b.workspaceTool)
+
 	// RFC AR — the CredentialDef tool (secure per-tenant credential store).
 	// Engine (store + Sealer) is late-bound below, once the store + the master
 	// key (LOOMCYCLE_SECRET_KEY) are available. In-loop with tenant/user/agent

@@ -23,7 +23,7 @@ var buildToolsCatalog = []string{
 	"Read", "Write", "Edit", "Grep", "Glob", "NotebookEdit", "HTTP", "WebFetch",
 	"WebSearch", "Bash", "Bashbox", "Skill", "Memory", "Recall", "Channel",
 	"AgentDef", "SkillDef", "TeamDef", "VolumeDef", "File", "Git",
-	"CredentialDef", "Crypto", "Path", "Document", "History", "Evaluation",
+	"Workspace", "CredentialDef", "Crypto", "Path", "Document", "History", "Evaluation",
 	"Interruption", "Context", "Identity",
 }
 

@@ -20,6 +20,7 @@ import (
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/wiring"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
 
 // wireMemory is boot phase 6, first part: hand the open store to the
@@ -303,6 +304,15 @@ func (b *boot) bindStoreToTools() {
 	contextTool.Embedder = embedder
 	interruptionTool.Store = storeIface
 	mcpServerDefTool.Store = storeIface
+	// RFC GW: the workspace bookkeeping needs the dispatcher (workspace.mode
+	// remote) and the store; without either the tool refuses every op.
+	if b.workspace != nil && storeIface != nil {
+		ws := b.cfg.Workspace.Resolved()
+		b.workspaces = lifecycle.New(b.workspace, storeIface, lifecycle.Limits{
+			MaxPerRun: ws.MaxPerRun, MaxPerTenant: ws.MaxPerTenant, LostAfter: time.Duration(ws.LostAfterS) * time.Second,
+		}, slog.Default())
+		b.workspaceTool.Manager = b.workspaces
+	}
 }
 
 // loadMCPRegistry loads the stored MCP server defs into the dynamic
