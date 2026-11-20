@@ -38,7 +38,22 @@ type Limits struct {
 	// LostAfter is how long a worker may go unseen by every replica before
 	// its workspaces are marked lost.
 	LostAfter time.Duration
+	// DiskQuotaBytes is each workspace's disk quota, sent to its worker at
+	// open; zero is the worker's default (workspace.DefaultDiskQuotaBytes).
+	DiskQuotaBytes int64
+	// CopyMaxFiles and CopyMaxBytes bound a folder copy
+	// (workspace.copy.max_files, max_bytes); zero is DefaultCopyMaxFiles and
+	// DefaultCopyMaxBytes.
+	CopyMaxFiles int
+	CopyMaxBytes int64
 }
+
+// The folder-copy bounds of a Limits that names none: config
+// workspace.copy's defaults.
+const (
+	DefaultCopyMaxFiles = 2000
+	DefaultCopyMaxBytes = 1 << 30
+)
 
 // Manager is the core's workspace bookkeeping over one dispatcher.
 type Manager struct {
@@ -54,6 +69,12 @@ type Manager struct {
 func New(d *dispatch.Dispatcher, st Store, l Limits, log *slog.Logger) *Manager {
 	if l.MaxPerRun <= 0 {
 		l.MaxPerRun = 1
+	}
+	if l.CopyMaxFiles <= 0 {
+		l.CopyMaxFiles = DefaultCopyMaxFiles
+	}
+	if l.CopyMaxBytes <= 0 {
+		l.CopyMaxBytes = DefaultCopyMaxBytes
 	}
 	if log == nil {
 		log = slog.Default()
@@ -187,7 +208,7 @@ func (m *Manager) openOn(ctx context.Context, o Owner, name, workerID, engine st
 		undo()
 		return store.WorkspaceRow{}, err
 	}
-	if err := m.disp.Open(ctx, o.TenantID, workerID, id); err != nil {
+	if err := m.disp.OpenWith(ctx, o.TenantID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes}); err != nil {
 		// The directory may have been made before the error (a worker lost
 		// mid-op): remove it if the worker is still here; if not, its next
 		// attach finds a directory no row knows and removes it.
