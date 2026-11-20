@@ -134,6 +134,7 @@ func (d *Dispatcher) receiveOutput(stream workspacepb.WorkspaceService_OpServer,
 				return result{err: fmt.Errorf("workspace: writing the op's output: %w", err)}
 			}
 			n += int64(len(data))
+			d.countOutput(o.req.Op, len(data))
 		case f.GetDone() != nil:
 			return doneResult(f.GetDone(), nil)
 		default:

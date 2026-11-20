@@ -126,6 +126,8 @@ type Dispatcher struct {
 	workers map[string]*worker
 	ops     map[string]uint64
 	deaths  uint64
+	// outBytes counts the output bytes received, by op label.
+	outBytes map[string]uint64
 }
 
 // worker is one attached worker, as its Hello described it.
@@ -1000,11 +1002,25 @@ func (d *Dispatcher) Workers() []WorkerInfo {
 func (d *Dispatcher) Stats() workspace.Stats {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	st := workspace.Stats{Workers: len(d.workers), Ops: make(map[string]uint64, len(d.ops)), Deaths: d.deaths}
+	st := workspace.Stats{Workers: len(d.workers), Ops: make(map[string]uint64, len(d.ops)), Deaths: d.deaths,
+		OutputBytes: make(map[string]uint64, len(d.outBytes))}
 	for k, v := range d.ops {
 		st.Ops[k] = v
 	}
+	for k, v := range d.outBytes {
+		st.OutputBytes[k] = v
+	}
 	return st
+}
+
+// countOutput adds n bytes received for op.
+func (d *Dispatcher) countOutput(op string, n int) {
+	d.mu.Lock()
+	if d.outBytes == nil {
+		d.outBytes = map[string]uint64{}
+	}
+	d.outBytes[opLabel(op)] += uint64(n)
+	d.mu.Unlock()
 }
 
 func (d *Dispatcher) count(opName, outcome string) {

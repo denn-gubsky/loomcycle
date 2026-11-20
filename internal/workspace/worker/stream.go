@@ -15,10 +15,13 @@ import (
 )
 
 // streamOp reports whether op carries a file's bytes on the stream itself
-// (get as its output, put as its input) and so is served by serveStream,
+// (get and the conversions as their output, put as its input) and so is
+// served by serveStream,
 // which never holds the file whole: serveOne would read all of the input
 // first and collect all of the output.
-func streamOp(op string) bool { return op == workspace.OpGet || op == workspace.OpPut }
+func streamOp(op string) bool {
+	return op == workspace.OpGet || op == workspace.OpPut || isConvertOp(op)
+}
 
 // serveStream runs a get or a put on its stream. A put reads its input
 // frame by frame into a temporary file; a get sends its output frame by
@@ -35,6 +38,9 @@ func (w *worker) serveStream(ctx, sctx context.Context, cancel context.CancelFun
 	done := watchEnd(sctx, cancel, stream)
 	if a.class == "" && start.GetOp() == workspace.OpGet {
 		a = getOp(sctx, real, start.GetArgs(), stream)
+	}
+	if a.class == "" && isConvertOp(start.GetOp()) {
+		a = w.convertOp(sctx, id, real, start, stream)
 	}
 	return finish(ctx, stream, hidePaths(a, false, real, dir), done)
 }
