@@ -38,7 +38,14 @@ type statsCorpus struct {
 
 func newStatsCorpus(t *testing.T, d *Document, base context.Context) *statsCorpus {
 	t.Helper()
-	f := newConceptFixture(t, d, base)
+	return newStatsCorpusMD(t, d, base, conceptOntologyMD)
+}
+
+// newStatsCorpusMD is newStatsCorpus over the ontology text md, which must declare
+// the concepts conceptOntologyMD does.
+func newStatsCorpusMD(t *testing.T, d *Document, base context.Context, md string) *statsCorpus {
+	t.Helper()
+	f := newConceptFixtureMD(t, d, base, md)
 	k := &statsCorpus{f: f, d: d, vecs: map[string][]float32{}, briefs: map[string]string{}, docs: map[string]string{},
 		rm: f.concepts["topics/risk-management"], out: f.concepts["topics/risk-management/outsourcing"],
 		rep: f.concepts["topics/reporting"], law: f.concepts["rank/law"]}
