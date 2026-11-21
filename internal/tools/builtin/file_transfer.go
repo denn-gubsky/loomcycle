@@ -205,12 +205,26 @@ func (f *File) download(ctx context.Context, raw json.RawMessage) (tools.Result,
 	to := dataRef{raw: inbox.Ref("."), kind: refVolume, volume: inbox.Name, path: "."}
 	if strings.TrimSpace(in.To) != "" {
 		r, err := fileRef(in.To)
-		if err != nil || r.kind != refVolume {
-			return errValidation("download: to must be a volume reference", "Pass to, e.g. volume:docs:reports/ — or omit it for the inbox."), nil
+		if err != nil || (r.kind != refVolume && r.kind != refWorkspace) {
+			return errValidation("download: to must be a volume or workspace reference", "Pass to, e.g. volume:docs:reports/ or workspace:build:in/ — or omit it for the inbox."), nil
 		}
 		to = r
 	}
-	if to.volume == inbox.Name {
+	var wsTo *workspaceLoc
+	var wsJudged bool
+	if to.kind == refWorkspace {
+		// The workspace's write grant and pin now, and the hook on a file
+		// target; a folder target's hook runs once the response names the
+		// file (downloadToWorkspace).
+		l, res, ok := f.workspaceLoc(ctx, to, true, FileToolName)
+		if !ok {
+			return prefixed("download", res), nil
+		}
+		if wsJudged, res, ok = workspaceDownloadTarget(ctx, l, to); !ok {
+			return res, nil
+		}
+		wsTo = l
+	} else if to.volume == inbox.Name {
 		if !inbox.Available(ctx) {
 			return errBusiness("download: this run has no inbox to keep files in", "Pass to: a read-write volume of yours."), nil
 		}
@@ -246,6 +260,9 @@ func (f *File) download(ctx context.Context, raw json.RawMessage) (tools.Result,
 	name := responseFileName(resp)
 	origin := "download:" + u.Hostname()
 
+	if wsTo != nil {
+		return f.downloadToWorkspace(ctx, wsTo, wsJudged, to, name, in.Overwrite, body, resp, shown, limit)
+	}
 	if to.volume == inbox.Name {
 		// The URL is recorded without its query (inbox.Record.URL), so an
 		// import of the file can link back to it without keeping a credential.
@@ -404,26 +421,41 @@ func (f *File) upload(ctx context.Context, raw json.RawMessage) (tools.Result, e
 		return res, nil
 	}
 	shown := displayURL(u)
-	src, rel, res, ok := openRef(ctx, from, false)
-	if !ok {
-		return res, nil
+	// The file is read at random (ranged sends, the type sniffed from its
+	// head): a volume's through its open file, a workspace's (RFC GW P2)
+	// through ranged gets, never copied to the core.
+	var fh io.ReaderAt
+	var size int64
+	var digest, fileName string
+	if from.kind == refWorkspace {
+		ra, info, res, ok := f.uploadSource(ctx, from)
+		if !ok {
+			return res, nil
+		}
+		fh, size, digest, fileName = ra, info.Size, info.SHA256, path.Base(info.Path)
+	} else {
+		src, rel, res, ok := openRef(ctx, from, false)
+		if !ok {
+			return res, nil
+		}
+		defer src.Close()
+		file, err := src.Open(rel)
+		if err != nil {
+			return errNotFound(fmt.Sprintf("upload: no file at %s", from.raw), "List the folder with op=ls."), nil
+		}
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return errValidation(fmt.Sprintf("upload: %s is not a file", from.raw), ""), nil
+		}
+		size = info.Size()
+		sum := sha256.New()
+		if _, err := io.Copy(sum, io.NewSectionReader(file, 0, size)); err != nil {
+			return errTransient(fmt.Sprintf("upload: reading %s failed", from.raw), "Try again."), nil
+		}
+		fh, digest, fileName = file, hex.EncodeToString(sum.Sum(nil)), info.Name()
 	}
-	defer src.Close()
-	fh, err := src.Open(rel)
-	if err != nil {
-		return errNotFound(fmt.Sprintf("upload: no file at %s", from.raw), "List the folder with op=ls."), nil
-	}
-	defer fh.Close()
-	info, err := fh.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return errValidation(fmt.Sprintf("upload: %s is not a file", from.raw), ""), nil
-	}
-	size := info.Size()
-	sum := sha256.New()
-	if _, err := io.Copy(sum, io.NewSectionReader(fh, 0, size)); err != nil {
-		return errTransient(fmt.Sprintf("upload: reading %s failed", from.raw), "Try again."), nil
-	}
-	body := map[string]any{"from": from.raw, "size": size, "sha256": hex.EncodeToString(sum.Sum(nil))}
+	body := map[string]any{"from": from.raw, "size": size, "sha256": digest}
 	if res, ok := f.httpHook(ctx, "upload", method, u, in.Headers, body); !ok {
 		return res, nil
 	}
@@ -447,9 +479,9 @@ func (f *File) upload(ctx context.Context, raw json.RawMessage) (tools.Result, e
 		if up.contentType == "" {
 			head := make([]byte, 512)
 			n, _ := fh.ReadAt(head, 0)
-			up.contentType = inbox.Sniff("", head[:n], info.Name())
+			up.contentType = inbox.Sniff("", head[:n], fileName)
 		}
-		status, sent, reply, err = up.single(ctx, fh, size)
+		status, sent, reply, err = up.single(ctx, io.NewSectionReader(fh, 0, size), size)
 	}
 	if err != nil {
 		return errBusiness(fmt.Sprintf("upload: %s: %s", shown, err.Error()), "Check that the URL's host is allowed and the URL still valid."), nil

@@ -50,6 +50,12 @@ type workspaceLoc struct {
 // workspace grant are checked here, before anything reaches the worker; the
 // hook is judged separately (hook), on the final path.
 func (f *File) workspaceLoc(ctx context.Context, r dataRef, write bool, via string) (*workspaceLoc, tools.Result, bool) {
+	return resolveWorkspaceLoc(ctx, f.Workspaces, r, write, via)
+}
+
+// resolveWorkspaceLoc is workspaceLoc for any tool holding the bookkeeping m
+// (File, Crypto): via names the asking tool, which the run must hold.
+func resolveWorkspaceLoc(ctx context.Context, m *lifecycle.Manager, r dataRef, write bool, via string) (*workspaceLoc, tools.Result, bool) {
 	if tools.IsOffRunPlane(ctx) || tools.RunID(ctx) == "" {
 		return nil, errPermission(r.raw+": a workspace belongs to a run, and this call has none",
 			"Use the reference inside the run that opened the workspace."), false
@@ -66,12 +72,12 @@ func (f *File) workspaceLoc(ctx context.Context, r dataRef, write bool, via stri
 		return nil, errPermission(fmt.Sprintf("%s: this agent's workspace grant does not allow %s", r.raw, need),
 			"Ask an operator to add "+need+" to the agent's workspace.ops."), false
 	}
-	if f.Workspaces == nil {
+	if m == nil {
 		return nil, errBusiness(r.raw+": this runtime serves no workspaces (workspace.mode is off)", ""), false
 	}
 	ident := tools.RunIdentity(ctx)
 	o := lifecycle.Owner{TenantID: ident.TenantID, UserID: ident.UserID, RunID: tools.RunID(ctx), AgentID: ident.AgentID, RootRunID: ident.RootRunID}
-	return &workspaceLoc{m: f.Workspaces, o: o, name: r.workspace, path: wsClean(r.path), via: via}, tools.Result{}, true
+	return &workspaceLoc{m: m, o: o, name: r.workspace, path: wsClean(r.path), via: via}, tools.Result{}, true
 }
 
 // hook runs the run's Workspace pre-hooks on the call this reference stands

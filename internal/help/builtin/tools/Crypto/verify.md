@@ -10,7 +10,8 @@ description: "Crypto op=verify — check a signature or a JWS token with a key t
   leave `data` empty: the payload is inside it and is returned.
 - `data` — the signed data, for a raw signature.
 - `from` — read the data from a store instead: `volume:<path>`,
-  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`.
+  `memory:<scope>/<key>`, `document:<scope>/<chunk_id>` or
+  `workspace:<name>:<path>`.
 - One of:
   - `key`, `cred` or `run` — a key the runtime holds. For a signing key its
     public half is used; every usable version of a crypto key is tried.

@@ -1,6 +1,6 @@
 ---
 name: File/import
-description: "File op=import — build a Document from a Markdown file in a volume, such as one extract wrote, with its pictures attached as image chunks."
+description: "File op=import — build a Document from a Markdown file in a volume or a workspace, such as one extract wrote, with its pictures attached as image chunks."
 ---
 `import` reads a Markdown file and builds a Document from it, as the Document
 tool's `import_md` does: headings become the chunk hierarchy. The runtime
@@ -28,6 +28,18 @@ was captured (`captured_from`, `captured_at`) and by which run. Its text is
 marked as imported, so it is found by document search and is never treated
 as something you learned. A document whose text has no heading is titled
 after the file's name.
+
+**From a workspace.** `path` may name a Markdown file in a workspace this run
+opened (`workspace:<name>:<path>`), which needs your agent's `workspace` grant
+`read` and passes the `Workspace` hooks as `{op: "read", name, path, via:
+"File"}`. Its `provenance` records `captured_from: "workspace:<name>"`, the
+workspace's id (`workspace_id`), this run (`run_id`), the file's name and
+sha256, and the document is tagged `source/workspace`. A picture the file
+links to by a relative path, on a line of its own (`![Chart](img/chart.png)`),
+is read from the same workspace, relative to the file's folder, and attached
+as an image chunk: at most 64, each within the image limit, each judged by the
+`Workspace` hooks. A link with `..`, an absolute path, a URL, a link or a
+special file stays text and is counted in `skipped`.
 
 Give `source` to keep a link back to where the file lives: the item's web
 link — a SharePoint file's `webUrl`, an email's `webLink` — never a download
@@ -85,7 +97,8 @@ and the scope must be one your Document grants allow.
 
 ## Arguments
 
-- `path` — the Markdown file, e.g. `volume:inbox:extracted/minutes.md`.
+- `path` — the Markdown file, e.g. `volume:inbox:extracted/minutes.md` or
+  `workspace:build:out/report.md`.
 - `title` — the document's title. Default: the file's first heading.
 - `doc_path` — where to name the document in the Path tree, e.g.
   `/board/2026/minutes`.
@@ -213,6 +226,19 @@ Import the protocol extract wrote, named in the board's folder:
 {"document_id": "d2adb0dc0731a5a6f019fc808854ea28", "root_chunk_id": "1f38094d118618fa34c8c0873e06a704",
  "chunks": 7, "image_chunks": 1, "skipped": 0, "source": "mcp:ms365/get-attachment",
  "tags": ["board", "source/mcp/ms365", "untrusted"]}
+```
+
+Import the report a script wrote in a workspace, with its charts:
+
+```json
+{"op": "import", "path": "workspace:build:out/report.md", "doc_path": "/reports/2026/q3"}
+```
+
+```json result
+{"document_id": "4e1a…", "root_chunk_id": "9b07…", "chunks": 6, "image_chunks": 2, "skipped": 0, "source": "workspace:build",
+ "provenance": {"origin": "import", "file": "report.md", "media_type": "text/markdown", "sha256": "c51e…", "captured_from": "workspace:build",
+                "captured_at": "2026-11-20T09:14:02Z", "run_id": "run_8d1…", "workspace_id": "ws_3f2…"},
+ "tags": ["source/workspace", "untrusted"]}
 ```
 
 Import a law whose articles are only numbered, each article a heading (the

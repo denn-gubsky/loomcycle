@@ -11,7 +11,8 @@ description: "Crypto op=sign — sign data with an Ed25519, ECDSA P-256, RSA-PSS
 - `data` (required) — what to sign. Text, or base64 with
   `input_encoding: "base64"`. For a JWS it becomes the token's payload.
 - `from` — read the data from a store instead: `volume:<path>`,
-  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`.
+  `memory:<scope>/<key>`, `document:<scope>/<chunk_id>` or
+  `workspace:<name>:<path>`.
 - `format` — `raw` (default for signing keys: a base64 signature) or `jws` (a
   compact JWS token, the only form for an HMAC key). The token's algorithm
   comes from the key: EdDSA, ES256, PS256, HS256 or HS512.

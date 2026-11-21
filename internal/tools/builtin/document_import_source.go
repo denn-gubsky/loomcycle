@@ -54,9 +54,13 @@ const (
 	importFieldCapturedFrom = "captured_from"
 	importFieldCapturedAt   = "captured_at"
 	importFieldRunID        = "run_id"
-	importFieldSourceURL    = "source_url"
-	importFieldSourceKind   = "source_kind"
-	importFieldSourceTitle  = "source_title"
+	// importFieldWorkspaceID is the workspace a document imported from a
+	// workspace file was read out of (RFC GW P2 §3.4); captured_from names
+	// it as workspace:<name>, which another run may reuse.
+	importFieldWorkspaceID = "workspace_id"
+	importFieldSourceURL   = "source_url"
+	importFieldSourceKind  = "source_kind"
+	importFieldSourceTitle = "source_title"
 	// importFieldSourceRevision / importFieldSourceUpdatedAt are the source's
 	// own revision (doc:r12) and update time (RFC 3339, UTC), for a source
 	// that keeps changing (RFC GB §5).
@@ -78,7 +82,7 @@ const (
 // importProvenanceFields are those fields, in the order they are shown.
 var importProvenanceFields = []string{
 	importFieldOrigin, importFieldFile, importFieldMediaType, importFieldSHA256,
-	importFieldCapturedFrom, importFieldCapturedAt, importFieldRunID,
+	importFieldCapturedFrom, importFieldCapturedAt, importFieldRunID, importFieldWorkspaceID,
 	importFieldSourceURL, importFieldSourceKind, importFieldSourceTitle,
 	importFieldSourceRevision, importFieldSourceUpdatedAt, importFieldSourceStatus,
 	importFieldStructured, importFieldRenderedFrom,
