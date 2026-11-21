@@ -235,12 +235,15 @@ func (f *File) converter() convert.Client {
 	}
 	p := &convert.InProcess{Extractions: f.Extractions, SlotWait: f.slotWait, ExtractTimeout: fileExtractTimeout,
 		Scratch: func(ctx context.Context) (string, error) {
-			if !inbox.Available(ctx) && tools.RunID(ctx) == "" {
-				// Off-run (an export): no inbox to work in.
-				return cmp.Or(f.ScratchDir, os.TempDir()), nil
+			// The run's inbox is the scratch root when it is bound. It is not
+			// for an off-run export, for a run with no dynamic_root volume,
+			// or for a run that has kept no file yet (the inbox is made at
+			// the first one); a render into a volume or a workspace must not
+			// fail for that, so it works in the conversion spool.
+			if root, _, err := effectiveRoot(ctx, inbox.Name, false); err == nil {
+				return root, nil
 			}
-			root, _, err := effectiveRoot(ctx, inbox.Name, false)
-			return root, err
+			return cmp.Or(f.ScratchDir, os.TempDir()), nil
 		}}
 	if op := f.ocrConfig(); op != nil && op.Rasterize != nil {
 		p.Rasterize = &convert.Helper{Key: "transcription.ocr.rasterize", Command: op.Rasterize.Command, Wrapper: op.Rasterize.Wrapper, Timeout: ocrRasterizeTimeout}
