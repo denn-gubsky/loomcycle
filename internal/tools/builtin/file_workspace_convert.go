@@ -169,11 +169,12 @@ func readEntry(h *tar.Header, r io.Reader, max int64) ([]byte, error) {
 // ---- extract ----
 
 // extractWorkspace extracts a file in a workspace on its worker: into a
-// folder of a workspace (to), or into the inbox as op=extract writes. No
-// OCR runs here yet: the pages that would need it are reported.
+// folder of a workspace (to), or into the inbox as op=extract writes. OCR
+// runs as for any file, its pages cut on the worker and its model called
+// here (file_workspace_ocr.go).
 func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pages []int, excerptChars int, oc ocrCall) (tools.Result, error) {
 	if in.DryRun {
-		return errValidation("extract: dry_run estimates an OCR pass, which a file in a workspace does not get yet", "Extract it without dry_run, or copy it into the inbox first."), nil
+		return errValidation("extract: dry_run is not available for a file in a workspace", "Extract it without dry_run, or copy it into the inbox with File op=copy to estimate an OCR pass first."), nil
 	}
 	l, info, res, ok := f.wsConvertSource(ctx, "extract", r)
 	if !ok {
@@ -186,6 +187,7 @@ func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pa
 	}
 	var ans workspace.ConvertExtractAnswer
 	var md string
+	var pass *ocrPass
 	out := map[string]any{"source": r.raw}
 	if strings.TrimSpace(in.To) != "" {
 		to, res, ok := f.wsConvertTarget(ctx, "extract", in.To)
@@ -219,10 +221,14 @@ func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pa
 				out["images_not_kept"] = ans.NotKept
 			}
 			out["note"] = "the text was written in the workspace and not read here; read it with Workspace op=read, or import it with File op=import"
-			return f.extractWorkspaceAnswer(in, ans, out, oc)
+			pass, res, ok := f.wsOCRInto(ctx, oc, l, info, to, ans, r.raw)
+			if !ok {
+				return res, nil
+			}
+			return f.extractWorkspaceAnswer(ctx, in, ans, out, oc, pass, r.raw)
 		}
 		w := &wsFolderOut{l: to, overwrite: in.Overwrite}
-		md, ans, res, ok = f.extractStreamed(ctx, l, info, args, r, w)
+		md, ans, res, ok = f.extractStreamed(ctx, l, info, args, r, w, f.wsOCRSplice(ctx, oc, l, info, r.raw, false, &pass))
 		if !ok {
 			return res, nil
 		}
@@ -236,7 +242,7 @@ func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pa
 				"Pass to as a folder in a workspace, or ask an operator to configure the run's inbox."), nil
 		}
 		w := &wsInboxOut{ctx: ctx, origin: "extract:workspace:" + l.name}
-		md, ans, res, ok = f.extractStreamed(ctx, l, info, args, r, w)
+		md, ans, res, ok = f.extractStreamed(ctx, l, info, args, r, w, f.wsOCRSplice(ctx, oc, l, info, r.raw, true, &pass))
 		if !ok {
 			return res, nil
 		}
@@ -247,14 +253,22 @@ func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pa
 	}
 	excerpt, truncated := cutRunes(md, excerptChars)
 	out["excerpt"] = fileContentBlock(out["ref"].(string), excerpt, truncated)
-	return f.extractWorkspaceAnswer(in, ans, out, oc)
+	return f.extractWorkspaceAnswer(ctx, in, ans, out, oc, pass, r.raw)
 }
 
 // extractWorkspaceAnswer finishes extract's answer from the worker's: the
-// report's fields, and the pages OCR would read.
-func (f *File) extractWorkspaceAnswer(in fileInput, ans workspace.ConvertExtractAnswer, out map[string]any, oc ocrCall) (tools.Result, error) {
-	var rep extract.Report
-	_ = json.Unmarshal(ans.Report, &rep)
+// report's fields, and the OCR pass (reported as an event, and as the
+// call's failure when it stopped), or the pages OCR would read.
+func (f *File) extractWorkspaceAnswer(ctx context.Context, in fileInput, ans workspace.ConvertExtractAnswer, out map[string]any, oc ocrCall, pass *ocrPass, src string) (tools.Result, error) {
+	if pass != nil {
+		ref, _ := out["ref"].(string)
+		tools.EventEmitter(ctx)(pass.event(ctx, src, ref))
+		if pass.failure() != nil {
+			return ocrFailure(pass, ref), nil
+		}
+		out["ocr"] = pass.summary(oc.mode)
+	}
+	rep := wsReport(ans)
 	if ans.Cut && !ans.Sampled {
 		rep.Notes = append(rep.Notes, fmt.Sprintf("the text was cut at %d bytes", fileExtractMaxMarkdown))
 	}
@@ -277,11 +291,27 @@ func (f *File) extractWorkspaceAnswer(in fileInput, ans workspace.ConvertExtract
 			out["low_yield_pages"] = low
 		}
 	}
-	if pages := ocrPages(rep, oc); len(pages) > 0 && oc.mode != transcribe.OCRNever {
+	if pages := ocrPages(rep, oc); pass == nil && len(pages) > 0 && oc.mode != transcribe.OCRNever {
+		// Only a DjVu book's pages are not read here: they are rendered
+		// inside its extraction, which a workspace's worker does not ask
+		// for yet.
 		out["ocr"] = map[string]any{"pages_needing_ocr": pages,
-			"note": "OCR does not run on a file in a workspace yet; copy it into the inbox with File op=copy and extract it there to read these pages"}
+			"note": "OCR of a DjVu book in a workspace is not available yet; copy it into the inbox with File op=copy and extract it there to read these pages"}
 	}
 	return okJSONRaw(out)
+}
+
+// wsReport is the extraction's report as the worker sent it, its page
+// yields (which the report's JSON leaves out) included. What a worker
+// sent is not trusted: a yield list past the pages a PDF read is cut.
+func wsReport(ans workspace.ConvertExtractAnswer) extract.Report {
+	var rep extract.Report
+	_ = json.Unmarshal(ans.Report, &rep)
+	var yields []extract.PageYield
+	if json.Unmarshal(ans.PageYields, &yields) == nil {
+		rep.PageYields = yields[:min(len(yields), extract.MaxPDFPages)]
+	}
+	return rep
 }
 
 // extractOut is where a streamed extraction's images and Markdown go.
@@ -294,9 +324,14 @@ type extractOut interface {
 	abort(ctx context.Context)
 }
 
+// extractSplice writes OCR text into a streamed extraction's Markdown
+// before it is kept (wsOCRSplice); it sees the Markdown as the worker sent
+// it, so the page offsets hold.
+type extractSplice func(md string, ans workspace.ConvertExtractAnswer) (string, tools.Result, bool)
+
 // extractStreamed runs the extraction with its result streamed back, and
-// writes it through w.
-func (f *File) extractStreamed(ctx context.Context, l *workspaceLoc, info workspace.FileInfo, args *workspace.ConvertExtractArgs, r dataRef, w extractOut) (string, workspace.ConvertExtractAnswer, tools.Result, bool) {
+// writes it through w, after splice.
+func (f *File) extractStreamed(ctx context.Context, l *workspaceLoc, info workspace.FileInfo, args *workspace.ConvertExtractArgs, r dataRef, w extractOut, splice extractSplice) (string, workspace.ConvertExtractAnswer, tools.Result, bool) {
 	var ans workspace.ConvertExtractAnswer
 	args.ImageMark = newImageMark()
 	links := map[string]string{}
@@ -356,6 +391,11 @@ func (f *File) extractStreamed(ctx context.Context, l *workspaceLoc, info worksp
 			return "", ans, wsConvertError("extract", r.raw, err, l), false
 		}
 		return "", ans, errTransient("extract: "+err.Error(), "Try again."), false
+	}
+	md, res, ok := splice(md, ans)
+	if !ok {
+		w.abort(ctx)
+		return "", ans, res, false
 	}
 	// Every image's mark becomes the reference it was kept at; a mark of
 	// an image not kept leaves an empty link, as a sink that keeps nothing

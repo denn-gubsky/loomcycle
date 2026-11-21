@@ -384,8 +384,10 @@ func (a *ConvertExtractArgs) Target() *ConvertTarget { return &a.To }
 // ConvertExtractAnswer is a convert_extract op's answer.
 type ConvertExtractAnswer struct {
 	MediaType string `json:"media_type"`
-	// Report is extract.Report as JSON.
-	Report json.RawMessage `json:"report"`
+	// Report is extract.Report as JSON; PageYields its PageYields, which
+	// that JSON leaves out and OCR needs to pick its pages.
+	Report     json.RawMessage `json:"report"`
+	PageYields json.RawMessage `json:"page_yields,omitempty"`
 	// Cut: the text stopped at MaxChars (Sampled) or MaxMarkdown.
 	Sampled bool `json:"sampled,omitempty"`
 	Cut     bool `json:"cut,omitempty"`

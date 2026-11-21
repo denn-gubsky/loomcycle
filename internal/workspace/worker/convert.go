@@ -350,7 +350,11 @@ func extractAnswer(src *convertSource, sink *mdSink, rep extract.Report) (worksp
 	if err != nil {
 		return workspace.ConvertExtractAnswer{}, refusal(workspace.ClassFailed, "encoding the report: %v", err)
 	}
-	return workspace.ConvertExtractAnswer{MediaType: src.mt, Report: raw, Sampled: sink.sampled, Cut: sink.cut, PageStarts: sink.starts}, nil
+	yields, err := json.Marshal(rep.PageYields)
+	if err != nil {
+		return workspace.ConvertExtractAnswer{}, refusal(workspace.ClassFailed, "encoding the report: %v", err)
+	}
+	return workspace.ConvertExtractAnswer{MediaType: src.mt, Report: raw, PageYields: yields, Sampled: sink.sampled, Cut: sink.cut, PageStarts: sink.starts}, nil
 }
 
 func writeTarFile(tw *tar.Writer, name string, data []byte) error {
