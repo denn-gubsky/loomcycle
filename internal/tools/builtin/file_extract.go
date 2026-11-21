@@ -486,7 +486,7 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 		if rep.Format == "djvu" {
 			pass = f.runDjVuOCR(ctx, oc, plan, hold, sink.pageImages, pages)
 		} else {
-			pass = f.runOCR(ctx, oc, plan, fh, info.Size(), mt, pages)
+			pass = f.runOCR(ctx, oc, plan, mt, pages, f.fileUnits(plan, fh, info.Size(), mt, oc.language))
 		}
 		md = spliceOCR(md, starts, pass)
 	}

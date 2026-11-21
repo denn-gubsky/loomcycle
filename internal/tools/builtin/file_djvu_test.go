@@ -57,7 +57,7 @@ func TestOCR_DjVuIsNeverSentAsAnImageUnit(t *testing.T) {
 		t.Errorf("ocrUnitFor: %v, want errDjVuOCR", err)
 	}
 	c, _, _ := x.f.ocrRequest(x.ctx, fileInput{})
-	if p := x.f.runOCR(x.ctx, c, plan, bytes.NewReader(scan), int64(len(scan)), extract.DjVuMediaType, []int{1, 2, 3}); !errors.Is(p.err, errDjVuOCR) || len(p.done) != 0 {
+	if p := x.f.runOCR(x.ctx, c, plan, extract.DjVuMediaType, []int{1, 2, 3}, x.f.fileUnits(plan, bytes.NewReader(scan), int64(len(scan)), extract.DjVuMediaType, "")); !errors.Is(p.err, errDjVuOCR) || len(p.done) != 0 {
 		t.Errorf("runOCR: err %v, done %v", p.err, p.done)
 	}
 	if n := len(x.engine.sent()); n != 0 {
