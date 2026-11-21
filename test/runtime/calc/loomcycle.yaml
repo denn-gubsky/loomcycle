@@ -1,0 +1,47 @@
+# test/runtime/calc — the Calc default end to end. Calc is added to every
+# agent when a run resolves its tools, unless the agent's tools remove it
+# with "-Calc". Every agent here is code-js (no LLM, no provider key); the
+# mock provider is declared only so boot has a valid default provider.
+provider_priority: [mock]
+tiers:
+  middle:
+    - { provider: mock, model: mock-generic }
+
+channels:
+  # calcresume waits on this channel so the driver can pause the runtime
+  # while the run is mid-flight. Nothing is ever published to it.
+  calc-hold:
+    scope: user
+    default_ttl: 60
+    max_messages: 10
+    semantic: queue
+
+agents:
+  # No tools list at all: Calc arrives only as the resolution-time default.
+  calcflow:
+    provider: code-js
+    description: "Calls Calc without naming it, and reads Context op=agents."
+
+  # Removes the default: a run of it has no Calc binding.
+  nocalc:
+    provider: code-js
+    description: "Holds no Calc."
+    tools: [-Calc]
+
+  # A parent that names only Agent; its child names nothing.
+  calcparent:
+    provider: code-js
+    description: "Spawns calcchild and reports what the child computed."
+    tools: [Agent]
+  calcchild:
+    provider: code-js
+    description: "A sub-agent that calls Calc without naming it."
+
+  # Paused mid-run, killed, and resumed by the next boot: its second Calc
+  # call runs on the toolset the resume rebuilds from the definition.
+  calcresume:
+    provider: code-js
+    description: "Calls Calc before and after a pause the runtime is restarted across."
+    tools: [Channel]
+    channels:
+      subscribe: [calc-hold]
