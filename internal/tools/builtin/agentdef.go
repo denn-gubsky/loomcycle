@@ -1434,6 +1434,13 @@ func assertToolsSubset(proposed, root []string) error {
 		}
 	}
 	for _, t := range proposed {
+		// A resolution-time default tool (Calc) is held by every agent unless
+		// its tools remove it, so it is within any ceiling though the ceiling's
+		// stored list never names it; a removal the root carries still holds
+		// over a fork (execFork's WithRemovals).
+		if config.IsResolvedDefaultTool(t) {
+			continue
+		}
 		if !toolCoveredByRoot(t, root) {
 			return fmt.Errorf("Tools cannot widen — %q is not in the operator-blessed root %v", t, root)
 		}

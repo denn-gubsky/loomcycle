@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -467,6 +468,40 @@ func TestAgent_RetiredActivePointerFallsThroughToStatic(t *testing.T) {
 	}
 	if got.SystemPrompt != "STATIC-BASE" {
 		t.Errorf("resolved %q, want the STATIC base (a retired def must never be served)", got.SystemPrompt)
+	}
+}
+
+// RFC GY P1 PR 9a: a tenant version of a static agent, forked before the
+// operator added "-Calc" or "-Context" to the yaml, picks the removal up when
+// it is resolved, as it picks up the operator's other restrictions. The stored
+// version is not rewritten; Calc itself is never in a resolved list (it is
+// added where the run's toolset is built).
+func TestAgent_TenantVersionKeepsTheStaticAgentsToolRemovals(t *testing.T) {
+	stale, err := json.Marshal(lookup.SubstrateAgentDef{SystemPrompt: "p", Tools: []string{"Read"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := &stubStore{defs: map[string]store.AgentDefRow{
+		stubKey("acme", "worker"): {DefID: "def_w", Name: "worker", TenantID: "acme", Version: 1, Definition: stale},
+	}}
+	cfg := &config.Config{Agents: map[string]config.AgentDef{
+		"worker": {SystemPrompt: "static", Tools: []string{"Read", "-Calc", "-Context"}},
+	}}
+	got, ok := lookup.Agent(context.Background(), ss, cfg, "acme", "worker")
+	if !ok || got.SystemPrompt != "p" {
+		t.Fatalf("fixture: the tenant version did not resolve (ok=%v, prompt %q)", ok, got.SystemPrompt)
+	}
+	_, removed := config.SplitTools(got.Tools)
+	if !config.ToolRemoved("Calc", removed) || !config.ToolRemoved("Context", removed) {
+		t.Errorf("tools = %v; want the static agent's -Calc and -Context carried over", got.Tools)
+	}
+	if slices.Contains(config.EffectiveTools(got.Tools), "Calc") {
+		t.Errorf("effective tools %v hold Calc despite the operator's -Calc", config.EffectiveTools(got.Tools))
+	}
+	// Without a static agent of that name nothing is carried.
+	got, _ = lookup.Agent(context.Background(), ss, &config.Config{}, "acme", "worker")
+	if _, removed := config.SplitTools(got.Tools); len(removed) != 0 {
+		t.Errorf("tools = %v; want no removal without a static base", got.Tools)
 	}
 }
 
