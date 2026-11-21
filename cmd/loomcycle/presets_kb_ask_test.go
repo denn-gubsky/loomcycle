@@ -191,6 +191,38 @@ func TestKnowledgeBaseBundle_WalkerPromptForbidsStoppingBeforeCoverage(t *testin
 	}
 }
 
+// TestKnowledgeBaseBundle_WalkerKeepsOnlyTheChangedTaxonomyMove pins the owner
+// ruling of 2026-11-21: a measurement of the RFC GM P7 walker (Haiku, 24
+// questions, 3 runs) found the topic moves made overview answers worse (fewer
+// documents cited, most documents unplaced) while "what changed" got better.
+// The walker keeps the CHANGED move and no topic move: no concept chain, no
+// place op, no facet baseline, no topic entry. The runtime keeps all of them.
+func TestKnowledgeBaseBundle_WalkerKeepsOnlyTheChangedTaxonomyMove(t *testing.T) {
+	p := knowledgeBaseConfig(t).Agents["kb/walker"].SystemPrompt
+	for _, want := range []string{
+		"CHANGED, for \"what changed",
+		"{{help:Document/measure}}",
+		"MOVES: the moves you used, from: search, read, up, down, sideways, place, changed.",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("kb/walker prompt lacks %q", want)
+		}
+	}
+	for _, gone := range []string{
+		"TOPIC,",
+		"topic, changed",
+		"with_memberships",
+		"{{help:Document/place}}",
+		"\"baseline\"",
+		"annotation_levels [\"concept\"]",
+		"report by topic",
+	} {
+		if strings.Contains(p, gone) {
+			t.Errorf("kb/walker prompt still carries %q, a topic move the owner removed", gone)
+		}
+	}
+}
+
 // TestKnowledgeBaseBundle_AnsweringPromptsRenderTheCallFormsTheyName renders the
 // help part of the kb/search and kb/walker prompts the way a run assembles them
 // (the topics a prompt names, each rendered from the embedded help corpus, then
@@ -225,12 +257,8 @@ func TestKnowledgeBaseBundle_AnsweringPromptsRenderTheCallFormsTheyName(t *testi
 		form{`"op":"search"`, `"facets":`, `"facet_window":`},
 		form{`"op":"query_documents"`, `"type":`},
 		form{`"op":"query_documents"`, `"under_path":`},
-		// The taxonomy moves (RFC GM P7): the concept chain, enter by topic,
-		// weigh the counts, place the hits, what changed.
-		form{`"op":"lineage"`, `"with_memberships":true`},
-		form{`"op":"search"`, `"annotation_levels":["concept"]`},
-		form{`"op":"search"`, `"baseline":true`},
-		form{`"op":"place"`, `"query":`},
+		// The one taxonomy move the walker keeps (RFC GM P7, trimmed
+		// 2026-11-21): what changed between two periods.
 		form{`"op":"measure"`, `"compare":`},
 	)
 	for name, forms := range map[string][]form{"kb/search": searchForms, "kb/walker": walkerForms} {
