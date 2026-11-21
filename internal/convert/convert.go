@@ -1,8 +1,9 @@
 // Package convert is the one seam every file conversion the runtime does
 // passes through (RFC GO): extracting a document's text, cutting pages out of
 // a PDF, rendering a page for OCR, turning a recording into a WAV, encoding
-// synthesized speech, re-encoding an image a model refused, and writing a
-// Document back out as a file (RFC GR).
+// synthesized speech, re-encoding an image a model refused, writing a
+// Document back out as a file (RFC GR), and unpacking an archive in a
+// workspace (RFC GW D34).
 //
 // These are the jobs whose memory a hostile or merely large file decides, so
 // they are the ones a deployment may want out of the core's process. A Client
@@ -20,6 +21,7 @@ import (
 	"io"
 
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/unpack"
 )
 
 // Client runs conversion jobs.
@@ -52,6 +54,11 @@ type Client interface {
 	// size with the diagram helper (RFC GR P4d). With no helper,
 	// ErrNotConfigured or ErrNoHelper.
 	DrawDiagram(ctx context.Context, src []byte) ([]byte, error)
+	// Unpack walks a ZIP or RAR archive under opt's bounds and writes what
+	// it keeps to out as an unpack tar (unpack.WriteTar), which the caller
+	// reads with an unpack.Replayer (RFC GW D34). An archive refused whole
+	// is an *unpack.Refusal, with nothing written.
+	Unpack(ctx context.Context, r io.ReaderAt, size int64, opt unpack.Options, out io.Writer) error
 }
 
 // Spool is a converted file the caller reads at random and then closes; its

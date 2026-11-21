@@ -17,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
+	"github.com/denn-gubsky/loomcycle/internal/files/unpack"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
@@ -54,6 +55,13 @@ type job struct {
 	// outFile, when set, takes the output instead of memory: a converted
 	// recording can be larger than the core should hold.
 	outFile *os.File
+	// outW, when set, takes the output as it comes: an unpack's tar is
+	// streamed on, never held.
+	outW io.Writer
+	// unpack is an archive_unpack job's options.
+	unpack unpack.Options
+	// timeout, when set, bounds the job in place of its kind's bound.
+	timeout time.Duration
 	done    chan result // buffered 1
 }
 
@@ -91,12 +99,18 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 	log := d.log.With("job_id", j.id, "worker_id", s.w.id, "kind", wire.KindName(j.kind))
 
 	timeout := d.timeoutFor(j.kind)
+	if j.timeout > 0 {
+		timeout = j.timeout
+	}
 	start := &workerpb.JobStart{JobId: j.id, Kind: j.kind, InputSize: j.size, MediaType: j.mediaType, Name: j.name,
 		TimeoutMs: timeout.Milliseconds(), Language: j.language, Format: j.format}
 	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT {
 		_, records := j.sink.(extract.RecordSink)
 		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: wire.I32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings, Records: records,
 			PageImages: wire.PageImagesToWire(j.opts.PageImages)}
+	}
+	if j.kind == workerpb.JobKind_JOB_KIND_ARCHIVE_UNPACK {
+		start.Unpack = wire.UnpackToWire(j.unpack)
 	}
 	for _, p := range j.pages {
 		start.Pages = append(start.Pages, wire.I32(p))
@@ -332,12 +346,21 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 					return result{err: fmt.Errorf("convert: the %s output is over its %d-byte bound", wire.KindName(j.kind), maxOut),
 						accepted: true, delivered: res.delivered}
 				}
-				if j.outFile != nil {
+				switch {
+				case j.outW != nil:
+					// Once the caller has taken output, the job cannot run
+					// again elsewhere.
+					res.delivered = true
+					if _, err := j.outW.Write(data); err != nil {
+						cancel(workerpb.CancelReason_CANCEL_REASON_CALLER)
+						return result{err: fmt.Errorf("conversion output: %w", err), accepted: true, delivered: true}
+					}
+				case j.outFile != nil:
 					if _, err := j.outFile.WriteAt(data, outSize); err != nil {
 						cancel(workerpb.CancelReason_CANCEL_REASON_CALLER)
 						return result{err: fmt.Errorf("conversion output: %w", err), accepted: true}
 					}
-				} else {
+				default:
 					out = append(out, data...)
 				}
 				outSize += int64(len(data))
@@ -484,6 +507,27 @@ func (p poolClient) ConvertMedia(ctx context.Context, r io.ReaderAt, size int64,
 		return nil, err
 	}
 	return &fileSpool{File: f, size: res.outSize}, nil
+}
+
+// Bounds of an unpack's tar beyond the bytes it inflates: a header (its
+// path and the archive's name for it in a PAX record) and padding per file,
+// and the answer.
+const (
+	unpackEntryOverhead = 16 << 10
+	unpackAnswerBound   = 16 << 20
+)
+
+// Unpack has a worker carrying the unpack label walk an archive, its tar
+// streamed to out as it comes. The walk ends itself at unpack.Timeout; the
+// job's bound leaves it the time to send what it kept.
+func (p poolClient) Unpack(ctx context.Context, r io.ReaderAt, size int64, opt unpack.Options, out io.Writer) error {
+	maxOut := max(opt.Budget, 0) + int64(opt.Limits.Written+2)*unpackEntryOverhead + unpackAnswerBound
+	res, err := p.d.run(ctx, &job{kind: workerpb.JobKind_JOB_KIND_ARCHIVE_UNPACK, r: r, size: size, mediaType: "application/octet-stream",
+		unpack: opt, outW: out, maxOut: maxOut, timeout: unpack.Timeout + time.Minute})
+	if err != nil {
+		return err
+	}
+	return res.err
 }
 
 // bytes runs a job whose answer is its output bytes.

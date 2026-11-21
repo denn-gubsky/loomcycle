@@ -16,6 +16,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
+	"github.com/denn-gubsky/loomcycle/internal/files/unpack"
 	"github.com/denn-gubsky/loomcycle/internal/transcribe/helper"
 )
 
@@ -634,4 +635,23 @@ func (p *InProcess) DrawDiagram(ctx context.Context, src []byte) ([]byte, error)
 	}
 	defer fh.Close()
 	return io.ReadAll(io.LimitReader(fh, render.MaxImage))
+}
+
+// Unpack walks an archive into an unpack tar under an extraction slot: it
+// inflates the archive's entries, which is extraction work of the same
+// budget. Each entry is spooled in the scratch directory when one is set,
+// else the system's temporary directory.
+func (p *InProcess) Unpack(ctx context.Context, r io.ReaderAt, size int64, opt unpack.Options, out io.Writer) error {
+	release, err := p.slot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	scratch := ""
+	if p.Scratch != nil {
+		if scratch, err = p.Scratch(ctx); err != nil {
+			return err
+		}
+	}
+	return unpack.WriteTar(ctx, r, size, opt, scratch, out)
 }

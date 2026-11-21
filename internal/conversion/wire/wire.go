@@ -14,6 +14,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
+	"github.com/denn-gubsky/loomcycle/internal/files/unpack"
 )
 
 // ProtocolVersion is the worker protocol this build speaks. A worker whose
@@ -70,6 +71,11 @@ const (
 	// job that asks for page images never reaches a worker that would
 	// ignore the ask.
 	LabelDjVuRender = "djvu_render"
+	// LabelUnpack is an archive unpacked under File op=unpack's bounds (RFC
+	// GW D34). Every worker built since carries it; one built before never
+	// does, so an unpack job never reaches a worker that would not know
+	// the kind.
+	LabelUnpack = "unpack"
 )
 
 // ExtractLabels are the labels an extract job needs, every one of them:
@@ -131,6 +137,8 @@ func LabelFor(k workerpb.JobKind) string {
 		return LabelWrite
 	case workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW:
 		return LabelDraw
+	case workerpb.JobKind_JOB_KIND_ARCHIVE_UNPACK:
+		return LabelUnpack
 	}
 	return LabelExtract
 }
@@ -174,6 +182,8 @@ func KindName(k workerpb.JobKind) string {
 		return "document_render"
 	case workerpb.JobKind_JOB_KIND_DIAGRAM_DRAW:
 		return "diagram_draw"
+	case workerpb.JobKind_JOB_KIND_ARCHIVE_UNPACK:
+		return "archive_unpack"
 	}
 	return "unknown"
 }
@@ -280,9 +290,14 @@ func ReportFromWire(w *workerpb.Report) extract.Report {
 // ErrorToWire classifies a job's error for Done.
 func ErrorToWire(err error) (workerpb.ErrorClass, string) {
 	var refused *extract.RefusedError
+	var unpackRefused *unpack.Refusal
 	switch {
 	case err == nil:
 		return workerpb.ErrorClass_ERROR_CLASS_NONE, ""
+	// An archive unpack will not read keeps its reason, which the caller
+	// shows after the archive's name.
+	case errors.As(err, &unpackRefused):
+		return workerpb.ErrorClass_ERROR_CLASS_REFUSED, unpackRefused.Reason
 	case errors.Is(err, extract.ErrSinkFull):
 		return workerpb.ErrorClass_ERROR_CLASS_SINK_FULL, ""
 	case errors.Is(err, extract.ErrUnsupported):
@@ -325,6 +340,9 @@ func ErrorFromWire(kind workerpb.JobKind, class workerpb.ErrorClass, msg string)
 		case workerpb.ErrorClass_ERROR_CLASS_REFUSED:
 			return remoteErrorOf(render.ErrTooLarge, msg)
 		}
+	}
+	if kind == workerpb.JobKind_JOB_KIND_ARCHIVE_UNPACK && class == workerpb.ErrorClass_ERROR_CLASS_REFUSED {
+		return &unpack.Refusal{Reason: msg}
 	}
 	switch class {
 	case workerpb.ErrorClass_ERROR_CLASS_NONE:
@@ -401,4 +419,27 @@ func I32(n int) int32 {
 		return math.MinInt32
 	}
 	return int32(n)
+}
+
+// UnpackToWire is an unpack job's options.
+func UnpackToWire(o unpack.Options) *workerpb.UnpackOptions {
+	return &workerpb.UnpackOptions{All: o.All, DryRun: o.DryRun, MaxListed: I32(o.Limits.Listed), MaxWritten: I32(o.Limits.Written),
+		MaxTotal: o.Limits.Total, Budget: o.Budget, PerFile: o.PerFile}
+}
+
+// UnpackFromWire is the options a worker walks under: each bound at most
+// unpack.DefaultLimits', and a bound not given is the default. perFile is
+// the worker's own input bound, which no entry may pass either.
+func UnpackFromWire(w *workerpb.UnpackOptions, perFile int64) unpack.Options {
+	d := unpack.DefaultLimits
+	bounded := func(v, def int64) int64 {
+		if v <= 0 || v > def {
+			return def
+		}
+		return v
+	}
+	lim := unpack.Limits{Listed: int(bounded(int64(w.GetMaxListed()), int64(d.Listed))), Written: int(bounded(int64(w.GetMaxWritten()), int64(d.Written))),
+		Total: bounded(w.GetMaxTotal(), d.Total), Ratio: d.Ratio, RatioFree: d.RatioFree}
+	return unpack.Options{Limits: lim, PerFile: bounded(w.GetPerFile(), perFile), Budget: min(max(w.GetBudget(), 0), lim.Total),
+		All: w.GetAll(), DryRun: w.GetDryRun()}
 }
