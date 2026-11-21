@@ -15,7 +15,7 @@ corpora, those were almost never right, so they are reported and not filed.
 | `kb/annotator` | `code-js` | `Document`, `Agent`, `Channel` (subscribe `documents/ingested`, read only); tenant scope; `statement_methods: [annotate]` | writes the annotations of the tenant knowledge base (see [Annotations](#annotations)) |
 | `kb/annotate` | your `middle` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one part in, `{brief, abstract, language}` out |
 | `kb/taxonomist` | `code-js` | `Document`, `Agent`; tenant scope; no `statement_methods` | proposes taxonomies (concept schemes) from the document briefs, filed as one inert proposal (see [Taxonomies](#taxonomies)) |
-| `kb/taxonomy-writer` | your `middle` tier, `effort: low`, `max_tokens: 32768`, `max_context_tokens: 131072` | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one domains, generate, update or review request in, one JSON object out |
+| `kb/taxonomy-writer` | your `middle` tier, `effort: low`, `max_tokens: 32768`, `max_context_tokens: 131072` | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one domains, generate, update, align or review request in, one JSON object out |
 | `kb/ask` | `code-js` | `Decision`, `Agent`, `Document` (read; `describe_ontology` only, no scopes) | the entry point for a question about the tenant knowledge base. A question bounded by a date or a version ("since v1.0", "since 9 November", "opened after 2026-11-09", "in the last 10 days") goes straight to `kb/walker` with no classifier asked and a fixed note to list the documents by creation date (`query_documents` `created_after`), which the survey's searches cannot filter by; it reports `CLASSIFIER: dated`. "since" with no date or version after it ("since when", "since the tool is read-only") does not count. So does a question naming a period by both ends ("in November 2026", "during March", "in 2026", "between 1 May and 1 June 2026"), with a note to bound both ends (`created_after` the start, `created_before` the first instant after the period), a month with no year read as the latest such month that has begun (the walker says which year it took), and a `TODAY: <date> (UTC).` line, the run's own date, after it; a month or a year alone needs "in" or "during" before it and the end of the clause after it, so "what may change", "the march of versions" and "in May release notes" do not count. A question asking to list the documents of a kind by stored status ("which of our RFCs are still drafts", "which RFCs are confirmed but not done", "the draft plans", or with the status as a verb after a subject: "which RFCs has the owner confirmed", "which plans have we finished", "which design notes are not yet marked done") or every document of a kind ("which implementation plans do we have", "list all design notes", or by what we wrote: "which plans have we written", "which RFCs did we draft", "which guides have been published", never with another subject: "which plans has the owner written" does not count) also goes to `kb/walker`, reported as `CLASSIFIER: listing`, with a fixed note to list with `query_documents` by status (one call per status asked, named on a `STATUS: <statuses>.` line: "not done" is every other status, and "confirmed but not done" is `confirmed` alone) or by type, `limit` 1000, to list every class of the kind the ontology declares (the type filter includes subtypes, never a sibling class), and to name every row. The kinds are the tenant ontology's document classes, read with one `describe_ontology` call and only for a question that starts a clause with a question word or a list verb: each class's name said as words (`DesignNote` is "design note", plural "design notes"; `Rfc` is "rfc") and each of its `@alt` names ("playbook" for a `Runbook`). A kind resolves to its class and to every class whose name ends with it ("research" is `Research` and `TechnicalResearch`), less a class whose ancestor is also named, and the note ends with a `CLASSES: <names>.` line naming them, to pass to `type` exactly as written. The root `Document` class and the operational types (`SourceStub`, `SyncReport`, `Annotation`) never make a listing. With no confirmed ontology, a failed read, or no document class but the root, kb/ask uses a fixed list instead (RFCs, design notes, designs, implementation plans, research, guides, how-tos, runbooks, specs, proposals, measurements, reports, papers, publications, notes) and the note names no class. A kind narrowed by a topic ("which design notes cover the scheduler", "which plans do we have for speech"), the status of one document, and "what do we hold on X" do not count. A question that is both dated and a listing is one walk with both notes, reported as `CLASSIFIER: dated+listing`. Depth `quick` on a listing shortens each line, never the list. Otherwise it asks whether the question wants an overview. A question asking for *the* overview, guide, walkthrough or full picture of one thing ("give me the full picture of how X is put together") is a known item and goes to `kb/search` with no classifier asked, unless it also asks for the list ("everything", "all", "documents", "what do we hold"); its partial search answer stays with search. Otherwise a Decision call first (0.5 or more: yes; 0.1 or less: no), then `kb/classify` for a score in between or a failed call (run metadata `classifier: agent` asks `kb/classify` only). An overview runs `kb/survey`, anything else `kb/search`; a `COVERAGE: partial` search goes on to `kb/walker` with the ids found, unless the Decision score was 0.1 or less or `kb/classify` said no with no Decision score beside it, and so does a search that did not complete. A question given as untrusted input is passed to each child by reference, still untrusted. A walker's answer (the dated or listing route, or the walk after a search) is returned without its `MOVES:`, `MISSING:` and `COMPOSE:` lines or any sentence about them, the same strip `kb/survey` applies. Optional run metadata `depth` (`quick`, `standard`, `deep`; see [Retrieval depth](#retrieval-depth)) says how much to retrieve. Ends with `ROUTE: … \| SCORE: … \| CLASSIFIER: … \| RUNS: …`, then `\| DEPTH: <depth> (caller\|wording)` when the depth is not standard |
 | `kb/classify` | your `low` tier | none (`tools: []`, `skills: [-*]`, `disable_context: true`) | one question in, `YES` or `NO` out; an unreadable answer counts as an overview |
 | `kb/search` | your `middle` tier | `Document`; tenant scope | flat search with summaries; ends with `COVERAGE: complete` or `COVERAGE: partial` |
@@ -729,9 +729,9 @@ nothing else and changes nothing in force.
 
 | `mode` | model calls | does |
 |---|---|---|
-| `report` (default) | none | reads the briefs and the ontology and counts what a pass would send: `batches`, `runs_used`, `calls.planned_domains`, `calls.planned_generate`, `calls.estimated_chars` (the characters a `generate` pass would send, an upper bound: every scheme in an update or a review is counted at `max_concepts` concepts of 400 characters) and `requests` (the largest single request, against the writer's limit). **Run this first** |
+| `report` (default) | none | reads the briefs and the ontology and counts what a pass would send: `batches`, `runs_used`, `calls.planned_domains`, `calls.planned_generate`, `calls.estimated_chars` (the characters a `generate` pass would send, an upper bound: every scheme in an update, the align request or the review is counted at `max_concepts` concepts of 400 characters) and `requests` (the largest single request, against the writer's limit). **Run this first** |
 | `domains` | 1 | one request over a spread sample of `batch_size` briefs: three to five taxonomies worth building, each with a `name`, a one-line `domain`, the declared classes it would arrange (`projects`; a class the ontology does not declare is dropped and counted) and `why`. One already in force is marked `exists`. **Reported only**: an operator picks which to generate |
-| `generate` | runs x batches + 1 | builds the scheme named by `scheme`, for the one-line `domain`. The briefs are cut into batches of about `batch_size`. Each run asks a generate request over its first batch and an update request per further batch, run `r` starting at batch `r`, so each run meets the corpus in a different order. `runs` is clamped to the number of batches (`runs_used`, `runs_clamped`): a further run would meet the same briefs in the same order as an earlier one, and agreeing with it would show nothing. The code then keeps the concepts a majority of the runs hold (see **Recurrence** below; with one run, a corpus of one batch, all of them), and a review request names each kept concept by one of its wordings, merges overlapping siblings and checks the shape; whatever the review adds is dropped. With `write: "propose"` (the default) the result is filed through `propose_entity` as **one whole-scheme proposal** with `@origin generated`, `@domain` and `@projects`: inert until an operator accepts or rejects it in the Ontology page. `write: "none"` reports the outline and files nothing |
+| `generate` | `runs_used` x batches + 1 (review) + 1 (align, when `runs_used` is 2 or more; not made when fewer than two runs produce a scheme) | builds the scheme named by `scheme`, for the one-line `domain`. The briefs are cut into batches of about `batch_size`. Each run asks a generate request over its first batch and an update request per further batch, run `r` starting at batch `r`, so each run meets the corpus in a different order. `runs` is clamped to the number of batches (`runs_used`, `runs_clamped`): a further run would meet the same briefs in the same order as an earlier one, and agreeing with it would show nothing. With two runs or more, an align request groups the runs' concepts that mean the same topic, however worded; the code checks the groups and keeps those a majority of the runs hold (see **Recurrence** below; with one run (`runs: 1`, or a corpus of one batch) all of them, and no align request), and a review request names each kept concept by one of its wordings, merges overlapping siblings and checks the shape; whatever the review adds is dropped. With `write: "propose"` (the default) the result is filed through `propose_entity` as **one whole-scheme proposal** with `@origin generated`, `@domain` and `@projects`: inert until an operator accepts or rejects it in the Ontology page. `write: "none"` reports the outline and files nothing |
 
 One generation is not a taxonomy: measured on one corpus, five generations
 agreed only partly on the top-level split (pairwise adjusted Rand index 0.44
@@ -741,8 +741,33 @@ briefs) gets one generation.
 
 **Recurrence.** Which concepts recur is counted in code, not asked of the
 model: asked to keep what recurs, the review unioned the runs (on one corpus,
-runs of 66 and 91 concepts came back as 102, overlaps kept). A concept is
-matched across runs by its own key, wherever a run puts it: the name's tag
+runs of 66 and 91 concepts came back as 102, overlaps kept). Matching by
+wording alone is too literal the other way: on the same corpus two runs of 110
+and 105 concepts kept 21, losing central topics both runs found under other
+words (`runs and agents` and `agent runs and tools`; `deployment` and
+`configuration` against `deployment and configuration`; `documents` and
+`search and retrieval`). So with two runs or more one **align** request shows
+the writer every run's concepts, each with an id (`r1.c7`: run 1, its seventh
+concept), its name, meaning and parent's id, as untrusted data, and asks for
+groups of concepts from different runs that mean one topic
+(`{"groups": [{"name", "member_ids", "parent_group"}]}`), including one run's
+split siblings against another's single concept. The reply is a proposal,
+checked in code: a member must be an id the request held (`unknown_id`) and is
+used once in the whole reply (`reused_id`); two members of one run must be
+siblings the group merges (`not_siblings`); a group's name must be one of its
+members' names, or the most common member name is used (`invented_name`), so
+the model cannot add a topic; an entry with no `member_ids` list is
+`malformed`, one left with no member `empty`. A group counts the distinct
+runs among its members and is kept when that is a majority (`below_need`
+otherwise: a group of one run's concepts never recurs). Every concept no kept
+group holds is then matched by its own key as below, so concepts the runs
+worded alike stay matched though the align reply left them out; one whose
+key is already a wording of a kept group joins that group (and adds its
+runs) rather than standing beside it under the same wording. When the
+align call fails, its reply holds no `groups` list, or its request would not
+fit the writer's window (it is measured before it is sent, not refused), the
+pass falls back to matching every concept by key and reports `align_failed`.
+A concept is matched by key across runs wherever a run puts it: the name's tag
 segment, each word without its punctuation and made singular, `and`, `of`,
 `the` and the like left out and the rest sorted (`Memory recall` and
 `memory-recall`, `hooks and lifecycle events` and `lifecycle events and
@@ -753,20 +778,29 @@ written the same, case aside. A concept is kept when a **majority** of the
 runs that produced a scheme hold it: two of two, two of three, three of four
 or five. "At least half" would keep one run of two, the union again. A run
 that produced no scheme lowers the majority (two of three runs left need
-two; one left keeps everything), and `runs_failed` says so. The kept tree
-puts each concept under its nearest kept ancestor in the first run that
-names it (its parent when kept, else the next one up, else the top level),
-never deeper than `depth`. The review is shown only the kept set (`KEEP`,
-each concept with every wording the runs used) and its reply is held to it
-before any cap is applied: a concept whose key is kept is that concept, under
-whichever of its names the review chose; one whose key is not kept is dropped
-and counted (its kept children take its place); each key is kept once. So the
+two; one left keeps everything, with no align request), and `runs_failed`
+says so. The kept tree puts an aligned group under its `parent_group` when
+that group is kept (else under the nearest kept group up the reply's
+`parent_group` chain), and otherwise each concept under its nearest kept
+ancestor in the first run that names it (its parent when kept, else the next
+one up, else the top level), never deeper than `depth`. The review is shown
+only the kept set (`KEEP`, each concept with every wording the runs used) and
+its reply is held to it before any cap is applied: a concept named by any
+wording of a kept concept is that concept, under whichever of its names the
+review chose; one whose key no kept concept holds is dropped and counted (its
+kept children take its place); each kept concept is kept once. So the
 scheme filed is never larger than the kept set, and a concept the review
 added cannot push a kept one past the sibling cap. The report's `recurrence`
 gives `need` (runs a concept must be in), `runs_with_scheme`, `runs_failed`,
 `per_run` (`[{run, concepts}]` for each run that produced a scheme), `kept`,
-`not_recurring`, `added_by_review` and `kept_missing` (kept concepts the
-review's scheme left out, for example by merging two under a new name).
+`not_recurring` (concepts matched by key that too few runs hold),
+`added_by_review`, `kept_missing` (kept concepts the review's scheme left
+out, for example by merging two under a new name), `align` (`done`,
+`failed`, `too_large` or `one_run`), `align_failed`, `aligned_groups` (groups
+that passed the checks), `kept_groups` (of those, the ones kept),
+`kept_by_key` (concepts kept by key matching), `merged_into_aligned` (key
+matches that joined a kept group of the same wording) and
+`dropped_by_check` (the counts above).
 
 Other input: `projects` (class names: only documents of those classes and
 their subclasses are read, and the scheme's `@projects` is set to them; an
@@ -859,6 +893,7 @@ it judges, capped by `max_verdict_calls`. `kb/annotator` spends one
 capped by `max_calls`; a first pass over a corpus is about one call per
 annotated section plus one per document, and `write: report` prints the
 estimate before you spend it. `kb/taxonomist` spends one `kb/taxonomy-writer`
-call (tier `middle`) per request: one in `domains`, `runs` x batches + 1 in
-`generate` (5 for 379 briefs at the defaults: two batches, so two runs), capped by `max_calls`; `report`
+call (tier `middle`) per request: one in `domains`, `runs_used` x batches + 1
+(review) + 1 (align, when `runs_used` is 2 or more) in `generate` (6 for 379
+briefs at the defaults: two batches, so two runs), capped by `max_calls`; `report`
 prints the plan first. Nothing is scheduled unless you add a schedule.
