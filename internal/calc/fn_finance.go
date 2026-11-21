@@ -7,14 +7,9 @@ import "math"
 // rate is the rate per period, and when is 0 for payments at the end of
 // each period, 1 for the beginning. pmt, fv, pv and npv are rational in
 // their inputs, so they go through numOp and stay exact for exact inputs
-// and a whole number of periods. nper needs a logarithm and periodrate and
+// and a whole number of periods. nper needs a logarithm and rate and
 // irr a root-finder, so those three are floats; a root-finder that does
 // not converge refuses, it never returns its last guess.
-//
-// The Excel names RATE and the argument names rate/pv/fv clash: a function
-// name cannot be assigned, and `rate = 0.05` is what a model writes first.
-// So the rate solver is periodrate, and the signatures name their
-// arguments with words that are not function names.
 var financeFuncs = []builtin{
 	{name: "pmt", sig: "pmt(rate, n, present, future?, when?)", section: SecFinance, min: 3, max: 5, fn: fnPmt,
 		summary: "the payment per period that pays off present (to future) in n periods"},
@@ -24,7 +19,7 @@ var financeFuncs = []builtin{
 		summary: "the present value of n payments (and a final future amount)"},
 	{name: "nper", sig: "nper(rate, payment, present, future?, when?)", section: SecFinance, min: 3, max: 5, fn: fnNper,
 		summary: "the number of periods payment takes to go from present to future"},
-	{name: "periodrate", sig: "periodrate(n, payment, present, future?, when?, guess?)", section: SecFinance, min: 3, max: 6, fn: fnPeriodRate,
+	{name: "rate", sig: "rate(n, payment, present, future?, when?, guess?)", section: SecFinance, min: 3, max: 6, fn: fnRate,
 		summary: "the rate per period of an annuity (Excel's RATE); a float"},
 	{name: "npv", sig: "npv(rate, flows)", section: SecFinance, min: 2, max: 2, fn: fnNpv,
 		summary: "net present value, the first flow discounted one period (as Excel's NPV)"},
@@ -41,7 +36,7 @@ var financeFuncs = []builtin{
 }
 
 const (
-	// solverIterations bounds Newton's method in periodrate and irr, and
+	// solverIterations bounds Newton's method in rate and irr, and
 	// bisectIterations irr's fallback; each iteration of irr also charges
 	// one step per flow.
 	solverIterations = 100
@@ -216,7 +211,7 @@ func annuity(r, n, pmt, pv, fv, w float64) (f, df, size float64) {
 	return f, df, size
 }
 
-func fnPeriodRate(e *evaluator, a args) (val, *Error) {
+func fnRate(e *evaluator, a args) (val, *Error) {
 	n, payment, present, future, w, err := annuityArgs(a)
 	if err != nil {
 		return nil, err
@@ -226,7 +221,7 @@ func fnPeriodRate(e *evaluator, a args) (val, *Error) {
 		return nil, err
 	}
 	if n.sign() <= 0 {
-		return nil, errf(codeDomain, a.pos, "periodrate: n must be above zero, got %s", fmtArg(n))
+		return nil, errf(codeDomain, a.pos, "rate: n must be above zero, got %s", fmtArg(n))
 	}
 	nf, pf, vf, ff, wf := n.float(), payment.float(), present.float(), future.float(), w.float()
 	f := func(r float64) (float64, float64, float64) { return annuity(r, nf, pf, vf, ff, wf) }
@@ -234,9 +229,9 @@ func fnPeriodRate(e *evaluator, a args) (val, *Error) {
 		if err != nil {
 			return nil, err
 		}
-		return checkFloat(r, a.pos, "periodrate")
+		return checkFloat(r, a.pos, "rate")
 	}
-	return nil, errf(codeDomain, a.pos, "periodrate: no rate solves these cash flows (the search from %s did not converge)", fmtArg(guess)).
+	return nil, errf(codeDomain, a.pos, "rate: no rate solves these cash flows (the search from %s did not converge)", fmtArg(guess)).
 		withHint("check the signs (money paid out negative, received positive); if a rate should exist, pass a guess near it")
 }
 

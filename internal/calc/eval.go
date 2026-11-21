@@ -107,7 +107,7 @@ var aliases = map[string]string{
 	"ln": "log", "arcsin": "asin", "arccos": "acos", "arctan": "atan",
 	"choose": "binomial", "nCr": "binomial", "comb": "binomial", "fact": "factorial",
 	"length": "len", "size": "len",
-	"rate": "periodrate", "ptp": "spread", "average": "mean", "avg": "mean",
+	"ptp": "spread", "average": "mean", "avg": "mean",
 	"std": "stdev", "stddev": "stdev",
 }
 

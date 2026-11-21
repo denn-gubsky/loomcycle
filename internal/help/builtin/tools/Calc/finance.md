@@ -1,7 +1,7 @@
 ---
 name: Calc/finance
 kind: section
-description: "Calc finance — loan payments, future and present value, number of periods and the rate of an annuity (pmt, fv, pv, nper, periodrate), net present value and internal rate of return, compound growth, CAGR and percentages, with the spreadsheet sign convention."
+description: "Calc finance — loan payments, future and present value, number of periods and the rate of an annuity (pmt, fv, pv, nper, rate), net present value and internal rate of return, compound growth, CAGR and percentages, with the spreadsheet sign convention."
 ---
 The finance functions follow the spreadsheet conventions (Excel,
 LibreOffice). Read these two rules before any call:
@@ -16,9 +16,8 @@ LibreOffice). Read these two rules before any call:
 `when` is `0` (the default) for payments at the end of each period, `1` for
 payments at the beginning. `future` and `present` default to 0. `pmt`, `fv`,
 `pv` and `npv` stay **exact** when every input is exact and `n` is a whole
-number (round once with `round(x, 2)`); `nper`, `periodrate`, `irr` and `cagr`
-give a float. Excel's `RATE` is `periodrate` here, so that `rate` stays free
-as a name.
+number (round once with `round(x, 2)`); `nper`, `rate`, `irr` and `cagr`
+give a float.
 
 ## Examples — a loan and an investment
 
@@ -68,13 +67,13 @@ the signs).
 
 Example: `round(nper(0.01, -100, -1000, 10000, 1), 2)` gives `59.67`.
 
-### periodrate(n, payment, present, future?, when?, guess?)
+### rate(n, payment, present, future?, when?, guess?)
 The rate per period at which `n` payments take `present` to `future`
 (Excel's `RATE`). Found by Newton's method from `guess` (default 0.1); when
 no rate solves it, or the search does not converge, the call is refused, never
 answered approximately. Multiply by 12 for an annual rate of monthly periods.
 
-Example: `round(periodrate(48, -200, 8000) * 12, 4)` gives `0.0924`.
+Example: `round(rate(48, -200, 8000) * 12, 4)` gives `0.0924`.
 
 ## Cash flows
 
@@ -131,6 +130,15 @@ Comparing two projects by net present value at 8%, with the outlay today:
 ```
 
 Result: [11368.29, 5087.89]
+
+A variable named `rate` beside a call to `rate`: the annual rate a lender
+charges on a 20,000 car loan at 470 a month for four years:
+
+```json
+{"expr": "rate = rate(48, -470, 20000); round(rate * 12 * 100, 2)"}
+```
+
+Result: 6.03
 
 A series with no sign change has no rate of return:
 

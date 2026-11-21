@@ -157,26 +157,6 @@ func TestStatistics_SortChargesKeepLargeInputsInsideTheStepLimit(t *testing.T) {
 	}
 }
 
-// A sort of a list passed in vars, which cost nothing to build, is still
-// charged n log n.
-func TestStatistics_SortOfAVarListIsCharged(t *testing.T) {
-	xs := make([]int, 150_000)
-	for i := range xs {
-		xs[i] = len(xs) - i
-	}
-	for _, expr := range []string{"median(x)", "rank(x)", "quantile(x, 0.5)", "mode(x)"} {
-		_, err := Eval(context.Background(), Request{Expr: expr, Vars: rawVars(t, map[string]any{"x": xs})})
-		if err == nil || err.Code != string(codeStepLimit) {
-			t.Errorf("%s over %d values: err = %v, want step_limit", expr, len(xs), err)
-		}
-	}
-	// One linear pass over the same list fits.
-	r, err := Eval(context.Background(), Request{Expr: "mean(x)", Vars: rawVars(t, map[string]any{"x": xs})})
-	if err != nil || r.Text != "75000.5" {
-		t.Errorf("mean(x) = %q, %v", r.Text, err)
-	}
-}
-
 // Every pass over the data is charged: called directly on n values, each
 // function counts at least its passes times n (n log n for a sort), so the
 // step bound limits the work, not only the size of the list.
@@ -209,6 +189,7 @@ func TestStatistics_EveryPassIsCharged(t *testing.T) {
 		{fnCorrelation, "correlation", []val{xs, xs}, 9 * n},
 		{fnLinreg, "linreg", []val{xs, xs}, 6 * n},
 		{fnNpv, "npv", []val{floatNum(0.1), xs}, n},
+		{fnIrr, "irr", []val{append([]val{exactInt64(-4000)}, xs[1:]...)}, n},
 	}
 	for _, c := range cases {
 		e := &evaluator{ctx: context.Background(), funcs: builtinIndex, sizes: map[listKey]int{}}

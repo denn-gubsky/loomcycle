@@ -87,7 +87,7 @@ The arguments are not the documented shape: `expr` missing or not a string,
 The function is not defined there: `sqrt` or `log` of a negative number, a
 fractional power of a negative number, `asin(2)`, `min([])`, `modinv` of
 numbers that are not coprime, a sample `variance` of one value, an `irr` or
-`periodrate` with no rate that solves the flows. There are no complex numbers.
+`rate` with no rate that solves the flows. There are no complex numbers.
 Check the inputs; for the finance functions, check the signs.
 
 ### division_by_zero
