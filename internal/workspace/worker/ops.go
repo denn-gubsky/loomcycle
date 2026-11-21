@@ -47,6 +47,9 @@ func (w *worker) serveOne(ctx context.Context, client workspacepb.WorkspaceServi
 	if start == nil {
 		return errors.New("the first op frame was not OpStart")
 	}
+	if w.opt.Observe != nil {
+		w.opt.Observe(start.GetOp(), start.GetArgs())
+	}
 	if streamOp(start.GetOp()) {
 		return w.serveStream(ctx, sctx, cancel, stream, start)
 	}
@@ -179,6 +182,12 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		return answer{output: out}
 	case workspace.OpExec, workspace.OpRead, workspace.OpWrite, workspace.OpEdit, workspace.OpGlob, workspace.OpGrep:
 		return w.inWorkspace(ctx, dir, start.GetOp(), start.GetArgs(), input)
+	case workspace.OpMDSplice:
+		dir, real, a := w.workspaceDir(id)
+		if a.class == "" {
+			a = w.mdSpliceOp(ctx, id, real, start.GetArgs(), input)
+		}
+		return hidePaths(a, false, real, dir)
 	case workspace.OpFStat, workspace.OpFList, workspace.OpMkdir, workspace.OpFRemove,
 		workspace.OpStage, workspace.OpCommit, workspace.OpDiscard, workspace.OpCopyLocal:
 		dir, real, a := w.workspaceDir(id)

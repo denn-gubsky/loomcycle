@@ -42,7 +42,7 @@ When a file could not be kept, the line says why instead
 | `download` | GET a URL into the inbox, one of your volumes or a workspace | `url`, `to`, `headers`, `max_bytes` |
 | `upload` | send a file to a URL, whole or in ranges for an upload session | `from`, `url`, `method`, `ranged`, `chunk_bytes` |
 | `extract` | turn a DOCX, DOC, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, CHM, RTF, DjVu, CSV, text, VTT/SRT caption or image file into Markdown in the inbox, its pictures kept as files; a recording is transcribed | `path`, `images`, `max_rows`, `excerpt_chars`, `pages`, `max_chars`, `structure` |
-| `transcribe` | turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model | `path`, `language`, `vocabulary`, `diarize`, `timestamps`, `dry_run` |
+| `transcribe` | turn an audio or video recording into a timed Markdown transcript in the inbox (or a workspace) with the speech-to-text model | `path`, `to`, `language`, `vocabulary`, `diarize`, `timestamps`, `dry_run` |
 | `import` | build a Document from a Markdown file, the pictures `extract` kept attached as image chunks | `path`, `title`, `doc_path`, `scope`, `tags` |
 | `unpack` | copy the files of a ZIP or RAR archive into `volume:inbox:unpacked/<archive>/` (or a volume folder), keeping its folders; by default only what `extract` reads and archives inside it | `path`, `to`, `all`, `dry_run` |
 
@@ -66,10 +66,11 @@ A workspace (the `Workspace` tool) is a directory on a workspace worker that
 belongs to the run that opened it. `stat`, `ls`, `copy`, `rm` and `clear` take
 a workspace reference, and so do `import` (a Markdown file in a workspace),
 `download` (`to`) and `upload` (`from`); the bytes stream through the runtime
-and never through you. `extract` and `render` read a file in a workspace on
-that workspace's worker, where it is converted: the file never leaves it, and
-the result goes into a workspace (`to`) or the inbox (see File/extract,
-File/render). The other ops do not take one yet: `copy` the file into the
+and never through you. `extract`, `transcribe` and `render` read a file in a
+workspace on that workspace's worker, where it is converted: the file never
+leaves it, only what an OCR or speech-to-text model must read reaches the
+runtime, and the result goes into a workspace (`to`) or the inbox (see
+File/extract, File/transcribe, File/render). The other ops do not take one yet: `copy` the file into the
 inbox first. The Crypto tool's `from` and `to` take one too.
 
 - A workspace reference needs your agent's `workspace` grant: `read` to read
