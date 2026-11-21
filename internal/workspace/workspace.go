@@ -90,6 +90,8 @@ const (
 var KnownWorkerClasses = map[string]bool{
 	ClassAtCapacity: true, ClassNotFound: true, ClassInvalid: true, ClassUnsupportedOp: true, ClassFailed: true, ClassRefused: true,
 	ClassOverQuota: true, ClassPathNotFound: true, ClassExists: true, ClassSizeMismatch: true, ClassCopyLimit: true, ClassNotRegular: true,
+	ClassHelperMissing: true, ClassConversionCrashed: true, ClassConversionUnsupported: true, ClassConversionFailed: true,
+	ClassConversionBusy: true, ClassSourceChanged: true,
 }
 
 // The engines a worker may run commands under, weakest first.
@@ -140,6 +142,9 @@ type Stats struct {
 	Ops map[string]uint64
 	// Deaths counts workers lost to missed heartbeats or with ops in flight.
 	Deaths uint64
+	// OutputBytes counts the bytes workers sent the core, by op: what
+	// crossed from a worker (RFC GW D34 keeps a converted file on it).
+	OutputBytes map[string]uint64
 }
 
 // StatusAnswer is a status op's output.

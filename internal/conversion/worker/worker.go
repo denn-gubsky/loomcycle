@@ -154,7 +154,7 @@ func Run(ctx context.Context, opt Options) error {
 	if err != nil {
 		return err
 	}
-	w := &worker{opt: opt, log: log, labels: labels(opt, log), freed: make(chan struct{})}
+	w := &worker{opt: opt, log: log, labels: Labels(opt, log), freed: make(chan struct{})}
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
 		Name: "conversion.worker", Logger: log,
@@ -254,13 +254,13 @@ func (w *worker) waitFree(ctx context.Context) error {
 // has reports whether this worker carries label.
 func (w *worker) has(label string) bool { return slices.Contains(w.labels, label) }
 
-// labels are what this worker can run: extraction, page cuts and document
+// Labels are what a worker of opt can run: extraction, page cuts and document
 // writes always, images when it has a re-encoder, and each helper's jobs
 // (PDF renders among them) when the helper's program resolves on this host
 // (RFC GO §5.3). A helper
 // that does not is logged, not fatal: the worker still serves everything
 // else.
-func labels(opt Options, log *slog.Logger) []string {
+func Labels(opt Options, log *slog.Logger) []string {
 	out := []string{wire.LabelExtract, wire.LabelExtractPages, wire.LabelPDF, wire.LabelWrite, wire.LabelWriteBook}
 	if opt.Images != nil {
 		out = append(out, wire.LabelImage)

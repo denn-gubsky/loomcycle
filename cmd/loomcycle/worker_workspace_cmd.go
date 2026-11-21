@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
 
+	convworker "github.com/denn-gubsky/loomcycle/internal/conversion/worker"
 	wsworker "github.com/denn-gubsky/loomcycle/internal/workspace/worker"
 )
 
@@ -35,11 +37,17 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) 
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 		return 2
 	}
+	convertMem, err := envCount("LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB", 64, 1<<20)
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
+		return 2
+	}
 	tlsCfg, err := workerTLS()
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 		return 2
 	}
+	child, labels := workspaceConvertChild(convertMem)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	err = wsworker.Run(ctx, wsworker.Options{
@@ -55,6 +63,8 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) 
 		Capacity:     capacity,
 		IdleStreams:  streams,
 		Commands:     commands,
+		ConvertChild: child,
+		Labels:       labels,
 		TLS:          tlsCfg,
 		Insecure:     os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1",
 	})
@@ -67,6 +77,28 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) 
 	}
 	fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 	return 1
+}
+
+// workspaceConvertChild is the conversion child a workspace worker starts
+// (RFC GW D34): this binary, run as a conversion worker with the helper
+// commands of this process's environment, and the labels it will report.
+// nil when this binary cannot be found: the worker then converts nothing.
+func workspaceConvertChild(memoryLimitMB int) (*wsworker.ConvertChild, []string) {
+	bin, err := os.Executable()
+	if err != nil {
+		slog.Warn("workspace worker: cannot find this binary; it converts no workspace file", "err", err)
+		return nil, nil
+	}
+	env := func(k string) string { return strings.TrimSpace(os.Getenv(k)) }
+	child := &wsworker.ConvertChild{
+		Binary: bin, MemoryLimitMB: memoryLimitMB,
+		Rasterize: env("LOOMCYCLE_WORKER_RASTERIZE_COMMAND"), Media: env("LOOMCYCLE_WORKER_MEDIA_COMMAND"),
+		Encode: env("LOOMCYCLE_WORKER_ENCODE_COMMAND"), WritePDF: env("LOOMCYCLE_WORKER_WRITE_COMMAND"),
+		Draw: env("LOOMCYCLE_WORKER_MERMAID_COMMAND"), Wrapper: env("LOOMCYCLE_HELPER_WRAPPER"),
+		DjVuText: env("LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND"), DjVuInspect: env("LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND"),
+		DjVuRasterize: env("LOOMCYCLE_WORKER_DJVU_RASTERIZE_COMMAND"),
+	}
+	return child, convworker.Labels(workerHelpers(), slog.Default())
 }
 
 // envCount reads a whole number from lo to hi from env; 0 when unset (the

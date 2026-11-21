@@ -452,6 +452,14 @@ type Connector interface {
 	// a deployment that declares none.
 	DecisionModels(ctx context.Context) (list DecisionModelList, ok bool)
 
+	// Calc evaluates an expression for a caller outside any run, with the
+	// in-run `Calc` tool's input (expr, vars, digits, seed), output and
+	// refusals. It is a pure function: no tenant data is read or written.
+	// Each call takes one unit from the calling principal's run rate, as
+	// Crypto does; a refused rate is an error matching runner.ErrRateLimited.
+	// Reachable via the LoomCycle MCP meta-tool `calc`.
+	Calc(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// MCPServerDef — v0.9.x dynamic MCP server registration substrate.
 	// Op-discriminated (create / fork / get / list / promote / retire
 	// / rediscover / verify). Operator-admin-only: NOT auto-attached

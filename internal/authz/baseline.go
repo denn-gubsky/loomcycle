@@ -97,7 +97,7 @@ var memberMCPTools = []string{
 	"memorybackenddef", "documentsourcedef", "volumedef", "credentialdef", "authz",
 	"memory", "channel", "channeldef", "path", "document", "history", "decision",
 	"evaluation", "context", "interruption_resolve", "publish_channel", "subscribe_channel",
-	"peek_channel", "ack_channel", "stream_user_run_states", "identity", "file",
+	"peek_channel", "ack_channel", "stream_user_run_states", "identity", "file", "calc",
 	// review: reaching the tool is not ruling; each statement asks the
 	// member's `review` grant, which no member baseline holds.
 	"review",
@@ -203,7 +203,7 @@ func Baselines() map[string]ACL {
 				// enforce mode reach tools the scope gate refuses. Without these
 				// enforce refused the session and every tool on it.
 				{Effect: Allow, Actions: []string{"use"}, Resources: []string{"transport:mcp"}},
-				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"mcp-tool:credentialdef", "mcp-tool:evaluation", "mcp-tool:authz"}},
+				{Effect: Allow, Actions: []string{"invoke"}, Resources: []string{"mcp-tool:credentialdef", "mcp-tool:evaluation", "mcp-tool:authz", "mcp-tool:calc"}},
 				{Effect: Allow, Actions: []string{"read", "write", "recall"}, Resources: []string{"memory:user", "memory:agent"}},
 				{Effect: Allow, Actions: []string{"read", "write"}, Resources: []string{"sqlmem:user", "sqlmem:agent"}},
 				{Effect: Allow, Actions: []string{"read", "write", "delete", "link", "propose"}, Resources: []string{"document:user", "document:agent"}},
