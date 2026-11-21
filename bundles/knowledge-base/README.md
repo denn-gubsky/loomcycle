@@ -742,19 +742,31 @@ briefs) gets one generation.
 **Recurrence.** Which concepts recur is counted in code, not asked of the
 model: asked to keep what recurs, the review unioned the runs (on one corpus,
 runs of 66 and 91 concepts came back as 102, overlaps kept). A concept is
-matched across runs by its key, the name's tag segment with its words made
-singular, `and`, `of`, `the` and the like left out and the rest sorted
-(`Memory recall` and `memory-recall`, `hooks and lifecycle events` and
-`lifecycle events and hooks` are one), under its parents' keys, so a kept
-child always has a kept parent. It is kept when a **majority** of the runs
-hold it: two of two, two of three, three of four or five. "At least half"
-would keep one run of two, the union again. The review is shown only the kept
-set (`KEEP`, each concept with every wording the runs used) and its result is
-held to it: a concept whose key is not kept is dropped and counted (its kept
-children take its place), and each key is kept once, so the scheme filed is
-never larger than the kept set. The report's `recurrence` gives `need` (runs
-a concept must be in), `per_run` (each run's concept count), `kept`,
-`not_recurring` and `added_by_review`.
+matched across runs by its own key, wherever a run puts it: the name's tag
+segment, each word without its punctuation and made singular, `and`, `of`,
+`the` and the like left out and the rest sorted (`Memory recall` and
+`memory-recall`, `hooks and lifecycle events` and `lifecycle events and
+hooks`, `search (web)` and `web search`, `movies` and `movie` are one; `news`
+and `new`, `notes` and `not` are not). Only plain ASCII words are made
+singular; a word in another script (Cyrillic, say) matches when it is
+written the same, case aside. A concept is kept when a **majority** of the
+runs that produced a scheme hold it: two of two, two of three, three of four
+or five. "At least half" would keep one run of two, the union again. A run
+that produced no scheme lowers the majority (two of three runs left need
+two; one left keeps everything), and `runs_failed` says so. The kept tree
+puts each concept under its nearest kept ancestor in the first run that
+names it (its parent when kept, else the next one up, else the top level),
+never deeper than `depth`. The review is shown only the kept set (`KEEP`,
+each concept with every wording the runs used) and its reply is held to it
+before any cap is applied: a concept whose key is kept is that concept, under
+whichever of its names the review chose; one whose key is not kept is dropped
+and counted (its kept children take its place); each key is kept once. So the
+scheme filed is never larger than the kept set, and a concept the review
+added cannot push a kept one past the sibling cap. The report's `recurrence`
+gives `need` (runs a concept must be in), `runs_with_scheme`, `runs_failed`,
+`per_run` (`[{run, concepts}]` for each run that produced a scheme), `kept`,
+`not_recurring`, `added_by_review` and `kept_missing` (kept concepts the
+review's scheme left out, for example by merging two under a new name).
 
 Other input: `projects` (class names: only documents of those classes and
 their subclasses are read, and the scheme's `@projects` is set to them; an

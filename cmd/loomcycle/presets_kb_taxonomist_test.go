@@ -640,20 +640,48 @@ func taxConcepts(cs ...taxC) string {
 }
 
 // taxPerRun is a writer that answers every generate and update request of
-// run r with runs[r] and the review with review. The taxonomist calls it in
-// sequence, so the counter needs no lock.
-func taxPerRun(runs []string, review string) *taxFake {
-	run := -1
-	return &taxFake{reply: func(_ int, kind string, _ taxSpawn) (string, string) {
-		switch kind {
-		case "generate":
-			run++
-			return "completed", runs[run]
-		case "update":
-			return "completed", runs[run]
+// run r with runs[r] and the review with review. A run makes nb requests
+// (one per batch) whether they parse or not, so the request number names the
+// run.
+func taxPerRun(nb int, runs []string, review string) *taxFake {
+	return &taxFake{reply: func(n int, kind string, _ taxSpawn) (string, string) {
+		if kind == "review" {
+			return "completed", review
 		}
-		return "completed", review
+		return "completed", runs[(n-1)/nb]
 	}}
+}
+
+// taxNoScheme is a run reply that is no concept tree: the run produces no scheme.
+const taxNoScheme = `{"concepts":"none"}`
+
+// taxKeepOutline lists the names (the first wording of each) of the KEEP
+// block a review request carried, children indented under their parent.
+func taxKeepOutline(t *testing.T, block string) []string {
+	t.Helper()
+	var keep struct {
+		Concepts []map[string]any `json:"concepts"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(block, "KEEP\n")), &keep); err != nil {
+		t.Fatalf("KEEP block: %v\n%s", err, block)
+	}
+	var out []string
+	var walk func(cs []any, indent string)
+	walk = func(cs []any, indent string) {
+		for _, c := range cs {
+			m := c.(map[string]any)
+			out = append(out, indent+m["names"].([]any)[0].(string))
+			if ch, ok := m["children"].([]any); ok {
+				walk(ch, indent+"  ")
+			}
+		}
+	}
+	var top []any
+	for _, c := range keep.Concepts {
+		top = append(top, c)
+	}
+	walk(top, "")
+	return out
 }
 
 // taxOutlineNames lists a write-none report's outline names, children
@@ -690,7 +718,7 @@ func TestKBTaxonomist_ReviewKeepsOnlyRecurringConcepts(t *testing.T) {
 	}
 	review := taxConcepts(taxLeaf("memory recall", taxLeaf("vector search")), taxLeaf("lifecycle events and hooks"),
 		taxLeaf("only in run one"), taxLeaf("invented by the review"))
-	fake := taxPerRun(runs, review)
+	fake := taxPerRun(3, runs, review)
 	rep := runTaxonomist(t, f, fake, `{"mode":"generate","scheme":"care","domain":"Care.","batch_size":20,"runs":3,"write":"none"}`)
 	if rep["status"] != "complete" || taxNum(rep, "runs_used") != 3 || len(fake.spawns) != 10 {
 		t.Fatalf("generate = %v with %d requests, want complete over 3 runs and 10 requests", rep, len(fake.spawns))
@@ -699,9 +727,9 @@ func TestKBTaxonomist_ReviewKeepsOnlyRecurringConcepts(t *testing.T) {
 		t.Errorf("outline = %q, want only the three recurring concepts", got)
 	}
 	rc, _ := rep["recurrence"].(map[string]any)
-	if fmt.Sprint(rc["per_run"]) != "[4 4 2]" || rc["need"] != float64(2) || rc["kept"] != float64(3) ||
+	if fmt.Sprint(rc["per_run"]) != "[map[concepts:4 run:1] map[concepts:4 run:2] map[concepts:2 run:3]]" || rc["need"] != float64(2) || rc["kept"] != float64(3) ||
 		rc["not_recurring"] != float64(3) || rc["added_by_review"] != float64(2) {
-		t.Errorf("recurrence = %v, want per_run [4 4 2], need 2, kept 3, not_recurring 3, added_by_review 2", rc)
+		t.Errorf("recurrence = %v, want per_run 4, 4, 2 by run, need 2, kept 3, not_recurring 3, added_by_review 2", rc)
 	}
 	// The review is told the kept set and nothing else.
 	rv := fake.spawns[9]
@@ -728,7 +756,7 @@ func TestKBTaxonomist_TwoRunsKeepOnlyWhatBothHold(t *testing.T) {
 		taxConcepts(taxLeaf("search provider"), taxLeaf("hooks")),
 	}
 	review := taxConcepts(taxLeaf("search providers"), taxLeaf("web search and fetch"), taxLeaf("run specs"), taxLeaf("hooks"))
-	fake := taxPerRun(runs, review)
+	fake := taxPerRun(2, runs, review)
 	rep := runTaxonomist(t, f, fake, `{"mode":"generate","scheme":"care","domain":"Care.","batch_size":20,"runs":2}`)
 	if taxNum(rep, "runs_used") != 2 || len(fake.spawns) != 5 {
 		t.Fatalf("generate = %v with %d requests, want 2 runs and 5 requests", rep, len(fake.spawns))
@@ -743,7 +771,7 @@ func TestKBTaxonomist_TwoRunsKeepOnlyWhatBothHold(t *testing.T) {
 	}
 	// Two runs that share nothing leave nothing to review: no review is asked.
 	g := newTaxFixture(t, 30, 0)
-	fake = taxPerRun([]string{taxConcepts(taxLeaf("alpha")), taxConcepts(taxLeaf("beta"))}, review)
+	fake = taxPerRun(2, []string{taxConcepts(taxLeaf("alpha")), taxConcepts(taxLeaf("beta"))}, review)
 	rep = runTaxonomist(t, g, fake, `{"mode":"generate","scheme":"care","domain":"Care.","batch_size":20,"runs":2}`)
 	if rep["status"] != "nothing_recurs" || len(fake.spawns) != 4 || rep["proposal"] != nil {
 		t.Errorf("disjoint runs = %v with %d requests, want nothing_recurs after the 4 run requests, nothing filed", rep, len(fake.spawns))
@@ -755,7 +783,7 @@ func TestKBTaxonomist_TwoRunsKeepOnlyWhatBothHold(t *testing.T) {
 // cannot add one.
 func TestKBTaxonomist_OneRunSkipsRecurrenceButNotTheReviewGuard(t *testing.T) {
 	f := newTaxFixture(t, 10, 0)
-	fake := taxPerRun([]string{taxConcepts(taxLeaf("installation", taxLeaf("unpacking")), taxLeaf("maintenance"))},
+	fake := taxPerRun(1, []string{taxConcepts(taxLeaf("installation", taxLeaf("unpacking")), taxLeaf("maintenance"))},
 		taxConcepts(taxLeaf("installation", taxLeaf("unpacking")), taxLeaf("maintenance"), taxLeaf("added by the review")))
 	rep := runTaxonomist(t, f, fake, `{"mode":"generate","scheme":"care","domain":"Care.","runs":1,"write":"none"}`)
 	if got := strings.Join(taxOutlineNames(rep), ","); rep["status"] != "complete" || got != "installation,  unpacking,maintenance" {
@@ -764,5 +792,115 @@ func TestKBTaxonomist_OneRunSkipsRecurrenceButNotTheReviewGuard(t *testing.T) {
 	if taxNum(rep, "recurrence", "need") != 1 || taxNum(rep, "recurrence", "kept") != 3 ||
 		taxNum(rep, "recurrence", "not_recurring") != 0 || taxNum(rep, "recurrence", "added_by_review") != 1 {
 		t.Errorf("recurrence = %v, want need 1, kept 3, not_recurring 0, added_by_review 1", rep["recurrence"])
+	}
+}
+
+// TestKBTaxonomist_RecurrenceMatchesAConceptUnderAnyParent: a concept every
+// run holds recurs whatever parent or level each run gives it. It sits under
+// its nearest kept ancestor in the first run that names it, and never deeper
+// than depth.
+func TestKBTaxonomist_RecurrenceMatchesAConceptUnderAnyParent(t *testing.T) {
+	f := newTaxFixture(t, 30, 0)
+	runs := []string{
+		taxConcepts(taxLeaf("memory", taxLeaf("vector search")), taxLeaf("tools", taxLeaf("web search"))),
+		taxConcepts(taxLeaf("memory"), taxLeaf("vector search"), taxLeaf("integrations", taxLeaf("web search"))),
+	}
+	review := taxConcepts(taxLeaf("memory", taxLeaf("vector search")), taxLeaf("web search"))
+	fake := taxPerRun(2, runs, review)
+	rep := runTaxonomist(t, f, fake, `{"mode":"generate","scheme":"care","domain":"Care.","batch_size":20,"runs":2,"write":"none"}`)
+	if got := strings.Join(taxKeepOutline(t, fake.spawns[4].untrusted[0]), ","); got != "memory,  vector search,web search" {
+		t.Errorf("KEEP = %q, want vector search under memory (kept in run 1) and web search at the top (its parents are not kept)", got)
+	}
+	if got := strings.Join(taxOutlineNames(rep), ","); rep["status"] != "complete" || got != "memory,  vector search,web search" {
+		t.Errorf("outline = %q (%v), want the three concepts both runs hold", got, rep["status"])
+	}
+	if taxNum(rep, "recurrence", "kept") != 3 || taxNum(rep, "recurrence", "not_recurring") != 2 || taxNum(rep, "recurrence", "added_by_review") != 0 {
+		t.Errorf("recurrence = %v, want kept 3, not_recurring 2 (tools, integrations), added_by_review 0", rep["recurrence"])
+	}
+
+	// agents is a child of platform in run 1; in run 2 it is top-level with
+	// its own child sandbox. sandbox's nearest kept ancestor, agents, already
+	// sits at depth 2, so sandbox goes beside it under platform.
+	g := newTaxFixture(t, 45, 0)
+	runs = []string{
+		taxConcepts(taxLeaf("platform", taxLeaf("agents"))),
+		taxConcepts(taxLeaf("agents", taxLeaf("sandbox"))),
+		taxConcepts(taxLeaf("platform"), taxLeaf("agents", taxLeaf("sandbox"))),
+	}
+	fake = taxPerRun(3, runs, taxConcepts(taxLeaf("platform", taxLeaf("agents"), taxLeaf("sandbox"))))
+	runTaxonomist(t, g, fake, `{"mode":"generate","scheme":"care","domain":"Care.","batch_size":20,"runs":3,"write":"none"}`)
+	if got := strings.Join(taxKeepOutline(t, fake.spawns[9].untrusted[0]), ","); got != "platform,  agents,  sandbox" {
+		t.Errorf("KEEP = %q, want agents and sandbox under platform, two levels deep at most", got)
+	}
+}
+
+// TestKBTaxonomist_ReviewGuardRunsBeforeTheCaps: concepts the review adds
+// are dropped before the sibling cap is applied, so they cannot push a kept
+// concept out; a kept concept the review renames is reported as kept_missing.
+func TestKBTaxonomist_ReviewGuardRunsBeforeTheCaps(t *testing.T) {
+	f := newTaxFixture(t, 10, 0)
+	var added []taxC
+	for i := 1; i <= 25; i++ {
+		added = append(added, taxLeaf(fmt.Sprintf("invented %02d", i)))
+	}
+	review := taxConcepts(append(added, taxLeaf("alpha"), taxLeaf("beta"), taxLeaf("gamma renamed"))...)
+	fake := taxPerRun(1, []string{taxConcepts(taxLeaf("alpha"), taxLeaf("beta"), taxLeaf("gamma"))}, review)
+	rep := runTaxonomist(t, f, fake, `{"mode":"generate","scheme":"care","domain":"Care.","runs":1,"write":"none"}`)
+	if got := strings.Join(taxOutlineNames(rep), ","); rep["status"] != "complete" || got != "alpha,beta" {
+		t.Fatalf("outline = %q (%v), want alpha and beta: 25 added siblings must not cap them out", got, rep["status"])
+	}
+	if taxNum(rep, "recurrence", "added_by_review") != 26 || taxNum(rep, "recurrence", "kept_missing") != 1 {
+		t.Errorf("recurrence = %v, want added_by_review 26 and kept_missing 1 (gamma)", rep["recurrence"])
+	}
+	if d, _ := rep["dropped"].(map[string]any); d["over_limit"] != nil {
+		t.Errorf("dropped = %v, want nothing over the limit", d)
+	}
+}
+
+// TestKBTaxonomist_FailedRunsLowerTheMajority: the majority is of the runs
+// that produced a scheme, and the report says how many did and which.
+func TestKBTaxonomist_FailedRunsLowerTheMajority(t *testing.T) {
+	f := newTaxFixture(t, 45, 0)
+	a, b, c := taxConcepts(taxLeaf("alpha"), taxLeaf("beta")), taxConcepts(taxLeaf("alpha"), taxLeaf("gamma")), taxConcepts(taxLeaf("alpha"), taxLeaf("beta"), taxLeaf("gamma"))
+	in := `{"mode":"generate","scheme":"care","domain":"Care.","batch_size":20,"runs":3,"write":"none"}`
+
+	rep := runTaxonomist(t, f, taxPerRun(3, []string{a, taxNoScheme, b}, c), in)
+	rc, _ := rep["recurrence"].(map[string]any)
+	if got := strings.Join(taxOutlineNames(rep), ","); got != "alpha" || rc["need"] != float64(2) ||
+		rc["runs_with_scheme"] != float64(2) || rc["runs_failed"] != float64(1) ||
+		fmt.Sprint(rc["per_run"]) != "[map[concepts:2 run:1] map[concepts:2 run:3]]" {
+		t.Errorf("one failed run: outline %q, recurrence %v; want alpha, need 2 of the 2 runs with a scheme, per_run runs 1 and 3", got, rc)
+	}
+
+	rep = runTaxonomist(t, f, taxPerRun(3, []string{a, taxNoScheme, taxNoScheme}, c), in)
+	rc, _ = rep["recurrence"].(map[string]any)
+	if got := strings.Join(taxOutlineNames(rep), ","); got != "alpha,beta" || rc["need"] != float64(1) ||
+		rc["runs_with_scheme"] != float64(1) || rc["runs_failed"] != float64(2) {
+		t.Errorf("two failed runs: outline %q, recurrence %v; want alpha and beta, need 1", got, rc)
+	}
+}
+
+// TestKBTaxonomist_ConceptKeysFoldFormsNotWords: a key folds plurals,
+// punctuation and word order, and leaves distinct words apart: news is not
+// new, notes not not, rates not rat. A non-ASCII name folds case only.
+func TestKBTaxonomist_ConceptKeysFoldFormsNotWords(t *testing.T) {
+	f := newTaxFixture(t, 30, 0)
+	runs := []string{
+		taxConcepts(taxLeaf("news"), taxLeaf("notes"), taxLeaf("rates"), taxLeaf("movies"), taxLeaf("lenses"),
+			taxLeaf("statuses"), taxLeaf("search (web)"), taxLeaf("Поиск документов")),
+		taxConcepts(taxLeaf("new"), taxLeaf("not"), taxLeaf("rat"), taxLeaf("movie"), taxLeaf("lens"),
+			taxLeaf("status"), taxLeaf("web search"), taxLeaf("поиск-документов")),
+	}
+	review := taxConcepts(taxLeaf("movies"), taxLeaf("lens"), taxLeaf("status"), taxLeaf("web search"), taxLeaf("поиск документов"))
+	fake := taxPerRun(2, runs, review)
+	rep := runTaxonomist(t, f, fake, `{"mode":"generate","scheme":"care","domain":"Care.","batch_size":20,"runs":2,"write":"none"}`)
+	if got := strings.Join(taxKeepOutline(t, fake.spawns[4].untrusted[0]), ","); got != "movies,lenses,statuses,search (web),Поиск документов" {
+		t.Errorf("KEEP = %q, want movie(s), lens(es), status(es), web search and the Cyrillic name", got)
+	}
+	if taxNum(rep, "recurrence", "kept") != 5 || taxNum(rep, "recurrence", "not_recurring") != 6 {
+		t.Errorf("recurrence = %v, want kept 5, not_recurring 6 (news, new, notes, not, rates, rat)", rep["recurrence"])
+	}
+	if got := strings.Join(taxOutlineNames(rep), ","); got != "movies,lens,status,web search,поиск документов" {
+		t.Errorf("outline = %q, want the five review names", got)
 	}
 }
