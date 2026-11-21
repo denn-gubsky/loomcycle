@@ -386,7 +386,7 @@ func TestOntologist_HasWhatItNeedsAndNothingMore(t *testing.T) {
 			"tenant here would hand a curator the authority the narrow propose op exists to avoid",
 			agent.MemoryScopes, agent.SqlScopes)
 	}
-	if len(agent.Tools) != 1 || agent.Tools[0] != "Document" {
+	if held := heldTools(agent); len(held) != 1 || held[0] != "Document" {
 		t.Errorf("tools = %v, want exactly [Document]", agent.Tools)
 	}
 	if agent.Tier == "" {

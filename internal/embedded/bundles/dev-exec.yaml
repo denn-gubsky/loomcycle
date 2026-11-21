@@ -28,7 +28,7 @@ agents:
     description: "Deterministically run a caller's command envelope in the isolated sandbox (open/write/exec/read/close) — zero-token, no LLM (RFC J). Optional browser passthrough."
     # Globs expand against the connected servers at run time; mcp__sandbox__* is the
     # core surface, mcp__browser__* an optional add-on when a browser server is up.
-    tools: [mcp__sandbox__*, mcp__browser__*]
+    tools: [mcp__sandbox__*, mcp__browser__*, -Calc]
     code: |
       // dev/exec (RFC J code-js) — a DETERMINISTIC sandbox command executor. The
       // caller sends a JSON "command envelope" as the run prompt; this runs it via

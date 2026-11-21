@@ -1320,7 +1320,7 @@ func TestKnowledgeBaseBundle_ScreenHoldsOnlyReadWithAShortPrompt(t *testing.T) {
 	if !ok {
 		t.Fatalf("kb/screen not registered (agents: %v)", agentNames(cfg))
 	}
-	if strings.Join(a.Tools, ",") != "Document" || a.ToolModes["Document"] != "read" {
+	if strings.Join(heldTools(a), ",") != "Document" || a.ToolModes["Document"] != "read" {
 		t.Errorf("kb/screen tools = %v modes = %v, want exactly [Document] held read only", a.Tools, a.ToolModes)
 	}
 	if strings.Join(a.MemoryScopes, ",") != "tenant" || strings.Join(a.SqlScopes, ",") != "tenant" {

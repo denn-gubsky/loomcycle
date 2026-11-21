@@ -7482,6 +7482,11 @@ export interface LibraryEntry<T = unknown> {
    *  this agent starts with — the resolved provider's window, lowered by
    *  the agent's own max_context_tokens. Omitted when unknown. */
   context_window?: number;
+  /** /v1/_library/agents only: the tools a run of this agent holds — its
+   *  definition's list with the default tools the runtime adds (Context,
+   *  Calc) unless the list removes them (`-Calc`). The definition bodies
+   *  keep the list as written. Omitted when the agent does not resolve. */
+  effective_tools?: string[];
   /** Static-side definition body. Omitted when in_static is false
    *  (dynamic-only entries have no static body — query the substrate
    *  via AgentDef/SkillDef/MCPServerDef tools to fetch the active

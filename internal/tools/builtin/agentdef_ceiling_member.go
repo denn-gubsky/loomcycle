@@ -8,6 +8,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -189,6 +190,12 @@ func memberToolsCeiling(ctx context.Context, def mergedDef) error {
 	eff := memberCeilingSet(ctx)
 	// Only the grants: a "-Name" removal narrows, and is no tool to ask about.
 	for _, t := range toolGrants(def.Tools) {
+		// Every agent holds a resolution-time default (Calc) unless it removes
+		// it, so naming one grants nothing new; the member's ACL still narrows
+		// it out of a run's toolset (NarrowToolsByACL).
+		if config.IsResolvedDefaultTool(t) {
+			continue
+		}
 		if !authz.Grants(ctx, eff, "invoke", authz.ResourceForTool(t)) {
 			return fmt.Errorf("tools: %q is not a tool you may use yourself. A new agent can only be granted authority its author holds: "+
 				"remove it, or ask an operator to author this agent", t)

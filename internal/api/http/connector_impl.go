@@ -940,14 +940,15 @@ func (s *Server) RegisterAgent(ctx context.Context, req connector.RegisterAgentR
 	}
 
 	desc := connector.AgentDescriptor{
-		Name:        req.Name,
-		Source:      "dynamic",
-		Tools:       allowedTools,
-		Tier:        req.Tier,
-		Provider:    req.Provider,
-		Model:       req.Model,
-		Description: req.Description,
-		CreatedAt:   &createdAt,
+		Name:           req.Name,
+		Source:         "dynamic",
+		Tools:          allowedTools,
+		EffectiveTools: effectiveAgentTools(def),
+		Tier:           req.Tier,
+		Provider:       req.Provider,
+		Model:          req.Model,
+		Description:    req.Description,
+		CreatedAt:      &createdAt,
 	}
 	if !expiresAt.IsZero() {
 		desc.ExpiresAt = &expiresAt
@@ -983,12 +984,13 @@ func (s *Server) ListAgents(ctx context.Context, includeDynamic bool) ([]connect
 	out := make([]connector.AgentDescriptor, 0, len(s.cfg().Agents)+8)
 	for name, def := range s.cfg().Agents {
 		out = append(out, connector.AgentDescriptor{
-			Name:     name,
-			Source:   "static",
-			Tools:    append([]string(nil), def.Tools...),
-			Tier:     def.Tier,
-			Provider: def.Provider,
-			Model:    def.Model,
+			Name:           name,
+			Source:         "static",
+			Tools:          append([]string(nil), def.Tools...),
+			EffectiveTools: effectiveAgentTools(def),
+			Tier:           def.Tier,
+			Provider:       def.Provider,
+			Model:          def.Model,
 		})
 	}
 	if includeDynamic && s.store != nil {
@@ -1000,13 +1002,14 @@ func (s *Server) ListAgents(ctx context.Context, includeDynamic bool) ([]connect
 			var def config.AgentDef
 			_ = json.Unmarshal(row.Definition, &def) // best-effort; we still surface name/description on parse failure
 			desc := connector.AgentDescriptor{
-				Name:        row.Name,
-				Source:      "dynamic",
-				Tools:       def.Tools,
-				Tier:        def.Tier,
-				Provider:    def.Provider,
-				Model:       def.Model,
-				Description: row.Description,
+				Name:           row.Name,
+				Source:         "dynamic",
+				Tools:          def.Tools,
+				EffectiveTools: effectiveAgentTools(def),
+				Tier:           def.Tier,
+				Provider:       def.Provider,
+				Model:          def.Model,
+				Description:    row.Description,
 			}
 			c := row.CreatedAt
 			desc.CreatedAt = &c
@@ -1018,6 +1021,15 @@ func (s *Server) ListAgents(ctx context.Context, includeDynamic bool) ([]connect
 		}
 	}
 	return out, nil
+}
+
+// effectiveAgentTools is the tools list a run of def resolves to, for a
+// listing: the Context default a runtime definition gets when it is read (a
+// no-op on a loaded static one, which has it already) and the resolution-time
+// defaults filterTools adds. def is a copy; neither add writes through.
+func effectiveAgentTools(def config.AgentDef) []string {
+	config.AddContextToolDefault(&def)
+	return config.EffectiveTools(def.Tools)
 }
 
 // --- 3. Builtin tool wrappers ---

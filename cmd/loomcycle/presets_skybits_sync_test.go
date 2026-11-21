@@ -59,7 +59,7 @@ func TestSkybitsBundle_ToolCeilingsAreExactlyTheReadSet(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s not registered (agents: %v)", name, agentNames(cfg))
 		}
-		if got := sortedTools(a.Tools); got != strings.Join(tools, ",") {
+		if got := sortedTools(heldTools(a)); got != strings.Join(tools, ",") {
 			t.Errorf("%s tools = %v, want exactly %v", name, a.Tools, tools)
 		}
 		for _, tool := range a.Tools {

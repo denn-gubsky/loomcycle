@@ -53,7 +53,7 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + a bound **rw** volume    |
 | `Bashbox`   | Always registered; needs a bound volume (**ro or rw** — a true in-process sandbox). Stripped from an agent registered through MCP `register_agent` unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`, like `Bash`, `Write` and `Edit` |
 | `Agent`     | Always registered (server-internal); per-agent `tools` controls who can spawn. |
-| `Calc`      | Always registered; needs nothing configured. Per-agent `tools:[Calc]` (not added by default). Pure: no state, no I/O. See [The `Calc` tool](#the-calc-tool--exact-arithmetic) below. |
+| `Calc`      | Always registered; needs nothing configured. On for every agent by default (added when a run's tools are resolved, never written into a stored definition); `tools: [..., -Calc]` removes it. Pure: no state, no I/O. See [The `Calc` tool](#the-calc-tool--exact-arithmetic) below. |
 | `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` map, or the `skill_defs` substrate). Auto-added to every agent that may use a skill (RFC BA); loads bodies on demand. Gated by the agent's `skills:` pattern allowlist. |
 | `SkillDef`  | Always registered (v0.8.22). Authoring gated by the agent's `skills:` pattern allowlist (RFC BA — empty = allow all, `-*` = deny all); no extra env var. Storage shared with the rest of the substrate. |
 | `VolumeDef` | Always registered (RFC AH Phase 2a/2b). Per-agent `volume_def_scopes:` YAML gate (default-deny) for create/delete/purge; get/list are tenant-scoped reads. `create {ephemeral:true}` provisions a run-scoped volume auto-purged at top-level-run completion; with a `source: {git: …}` it holds one commit of a repository, fetched by the runtime (needs `source:git` in `volume_def_scopes` and `LOOMCYCLE_GIT_SOURCE_HOSTS`). Requires a static volume marked `dynamic_root: true`. Storage shared with the rest of the substrate. |
@@ -194,7 +194,7 @@ Since #2051 (Phase 1) and #2053 (Phase 2) of RFC FB, `/loomcycle/rfcs/git-tool`.
 
 ### The `Calc` tool — exact arithmetic
 
-`Calc` evaluates a math expression so an agent does not do arithmetic in its head. An agent gets it by listing it: `tools: [Calc]` (it is not added to agents by default). The call is `{expr, vars?, digits?, seed?}`: `expr` is one or more statements (`;` or newlines), the last one's value is the result; `vars` binds data (a JSON number or a numeric string is exact); `digits` sets the significant digits of an approximate or non-terminating result (default 15); `seed` makes the random functions repeatable. It returns `{result, type, exact, fraction?, assigned?, text, shape?, truncated?}`.
+`Calc` evaluates a math expression so an agent does not do arithmetic in its head. Every agent has it by default; `tools: [..., -Calc]` removes it (do that for a single-purpose agent that never calculates: its description and schema cost about 300–330 input tokens per model call). The default is added when a run's tools are resolved and never written into a stored definition, so no content hash changed when it became one. The call is `{expr, vars?, digits?, seed?}`: `expr` is one or more statements (`;` or newlines), the last one's value is the result; `vars` binds data (a JSON number or a numeric string is exact); `digits` sets the significant digits of an approximate or non-terminating result (default 15); `seed` makes the random functions repeatable. It returns `{result, type, exact, fraction?, assigned?, text, shape?, truncated?}`.
 
 - **Exact by default.** Literals are exact fractions (`0.1 + 0.2` is `0.3`), and `+ - * /`, integer powers, rounding and the integer functions keep a result exact. Roots, fractional powers, logarithms, trigonometry and the special functions give a 64-bit float, and `exact` says which the result is.
 - **The language.** Power is `^`, `%` is modulo, indexing starts at 1, `.*` `./` `.^` work element by element on lists, `f(x) = …` and `x -> …` define functions (no recursion), `a:b` is a range. Functions: rounding, roots and logarithms, trigonometry, gamma/erf/Bessel, combinatorics, primes and factoring, modular arithmetic, bits and bases, list functions (`map`/`filter`/`reduce`/`sort`/…) and random draws.
@@ -358,7 +358,7 @@ agents:
     tools: [Read]         # only reads files
 ```
 
-If you forget `tools`, the agent gets zero tools. The startup log will warn:
+If you forget `tools`, the agent gets only the default tools (`Context` and `Calc`). If it removes those too (`disable_context: true` and `tools: [-Calc]`), it gets zero tools and the startup log will warn:
 
 ```
 note: agent "myagent" has no tools — it will see zero tools (intentional default-deny; add tools to its YAML to expose tools)

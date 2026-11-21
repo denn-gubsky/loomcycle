@@ -174,7 +174,7 @@ agents:
     # written as typed, linked chunks so a graph walk can reach them. It is added
     # rather than swapped in — the k/v rows stay the recall path, and the entity
     # graph is what k/v cannot express (relations between facts).
-    tools: [Memory, History, Agent, Context, Document]
+    tools: [Memory, History, Agent, Context, Document, -Calc]
     # Deny-all skills: the runtime auto-adds the Skill tool to every agent that
     # does not deny all skills, so dropping an allowlist alone leaves the tool in
     # place. A code agent has no use for it — it reads no prompt.
@@ -3955,11 +3955,11 @@ agents:
     # get wrong, no multi-step state to lose, no large tool schema to truncate —
     # all three of which are documented failure modes of the agent this replaces.
     #
-    # NO TOOLS AT ALL, and it takes three declarations to mean it: `tools: []` is
-    # default-deny, `skills: [-*]` suppresses the auto-added Skill tool, and
+    # NO TOOLS AT ALL, and it takes three declarations to mean it: `tools: [-Calc]`
+    # grants nothing and drops the Calc default, `skills: [-*]` suppresses the auto-added Skill tool, and
     # `disable_context: true` suppresses the auto-added Context tool. Any one of
     # them missing and this agent silently regains a tool it has no use for.
-    tools: []
+    tools: [-Calc]
     skills: [-*]
     disable_context: true
     # MAINTENANCE PLUMBING — see the consolidator's `internal:` note. These
@@ -4124,10 +4124,10 @@ agents:
     # on chunk ids the consolidator already holds — so this agent cannot mark a fact
     # whatever it is told by the text it is reading. Its input is untrusted twice
     # over: the claims are model-authored and the quotes are copied out of user
-    # conversation. Three declarations are needed to mean "no tools": `tools: []` is
-    # default-deny, `skills: [-*]` suppresses the auto-added Skill tool, and
+    # conversation. Three declarations are needed to mean "no tools": `tools: [-Calc]`
+    # grants nothing and drops the Calc default, `skills: [-*]` suppresses the auto-added Skill tool, and
     # `disable_context: true` suppresses the auto-added Context tool.
-    tools: []
+    tools: [-Calc]
     skills: [-*]
     disable_context: true
     # MAINTENANCE PLUMBING — one session per batch, same as the extractor's children.
@@ -4228,13 +4228,14 @@ agents:
     # untrusted twice over — both claims are model-authored text derived from user
     # conversation — and every write in this pipeline is issued by the consolidator
     # against a fixed vocabulary. Three declarations are needed to mean "no tools":
-    # `tools: []` is default-deny, `skills: [-*]` suppresses the auto-added Skill
+    # `tools: [-Calc]` grants nothing and drops the Calc default, `skills: [-*]`
+    # suppresses the auto-added Skill
     # tool, `disable_context: true` suppresses the auto-added Context tool.
     #
     # Today it cannot cause a write at all: detection reports and nothing more. The
     # tool-less declarations are here from the start anyway, because the phase that
     # acts on these verdicts must not have to add them under pressure.
-    tools: []
+    tools: [-Calc]
     skills: [-*]
     disable_context: true
     internal: true
@@ -4301,7 +4302,7 @@ agents:
     # `type` field altogether rather than pick a wrong one, and a taxonomy nobody
     # types against gains nothing from richer subtypes. Check how many of your
     # stored facts carry a type before investing in a curation pass.
-    tools: [Document]
+    tools: [Document, -Calc]
     skills: [-*]
     disable_context: true
     internal: true

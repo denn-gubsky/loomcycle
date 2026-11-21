@@ -215,7 +215,7 @@ agents:
     # no Bash, no network tool, no credentials. "Report mode writes nothing" is held by the body (every write
     # goes through one function that report mode turns into a count) and by a
     # test that runs the pass and records every op it issues.
-    tools: [Document, Agent, Channel, Context]
+    tools: [Document, Agent, Channel, Context, -Calc]
     # The ingest and subject queues only, and only to read and ack them. No
     # publish grant.
     channels:
@@ -3987,14 +3987,14 @@ agents:
     # The ONLY model call in the pass, and deliberately the smallest surface: one
     # passage and a few candidates in, a JSON array out.
     #
-    # NO TOOLS AT ALL, and it takes three declarations to mean it: `tools: []` is
-    # default-deny, `skills: [-*]` suppresses the auto-added Skill tool, and
+    # NO TOOLS AT ALL, and it takes three declarations to mean it: `tools: [-Calc]`
+    # grants nothing and drops the Calc default, `skills: [-*]` suppresses the auto-added Skill tool, and
     # `disable_context: true` suppresses the auto-added Context tool. No memory
     # grants either. Its input is store text — anyone who can write a document in
     # the corpus authors part of this prompt — so its reply is only ever DATA the
     # linker validates: a declared kind, two quotes that must occur verbatim, a
     # confidence. It can name no other chunk and write nothing.
-    tools: []
+    tools: [-Calc]
     skills: [-*]
     disable_context: true
     # MAINTENANCE PLUMBING — one session per chunk judged, each holding store text.
@@ -4049,7 +4049,7 @@ agents:
     # The tool ceiling, and the whole of it: Document reads what a reviewer
     # would see and records the verdicts, Agent spawns the one model call per
     # proposal. No Channel, no Memory, no Path, no Bash, no network tool.
-    tools: [Document, Agent]
+    tools: [Document, Agent, -Calc]
     # The judge grant: its runs may record verdicts through judge_statements,
     # which rules only on what the tenant's review policy routes to the judge,
     # at or above that rule's floor. It stamps no method and maintains nothing.
@@ -4675,13 +4675,13 @@ agents:
 
   kb/judge-verdict:
     # The ONE model call of the judge pass: one proposed relation in, one verdict
-    # out. NO TOOLS AT ALL (tools: [], skills: [-*], disable_context: true) and no
+    # out. NO TOOLS AT ALL (tools: [-Calc], skills: [-*], disable_context: true) and no
     # memory grants. Its input is store text — anyone who can write a document in
     # the corpus authors part of this prompt — so its reply is only DATA the judge
     # validates, and the runtime decides what the verdict may do: it can rule only
     # on a proposal the review policy routes to the judge, above the policy's
     # floor, and a sample of its acceptances goes to a person.
-    tools: []
+    tools: [-Calc]
     skills: [-*]
     disable_context: true
     internal: true
@@ -4731,7 +4731,7 @@ agents:
     # written from and writes its annotation, Agent spawns the one model call
     # per part, Channel reads the ingest queue. No Memory, no Path, no Bash, no
     # network tool.
-    tools: [Document, Agent, Channel]
+    tools: [Document, Agent, Channel, -Calc]
     # The two tenant scopes ship here (owner ruling 2026-11-20, reversing RFC
     # GE §6, which left them to an operator overlay): annotations are kept for
     # the tenant scope only and the pass reads and annotates the tenant
@@ -6117,7 +6117,7 @@ agents:
     # given no tool, no skill and no context, so a text that tells it to do
     # something has nothing to do it with; the driver validates the reply as
     # data and writes only to the part it asked about.
-    tools: []
+    tools: [-Calc]
     skills: [-*]
     disable_context: true
     internal: true
@@ -6228,7 +6228,7 @@ agents:
     # the body makes is propose_entity, an inert proposal an operator accepts
     # or rejects. Without them the pass stops at its first read with status
     # unreadable. kb/taxonomy-writer stays without any grant.
-    tools: [Document, Agent]
+    tools: [Document, Agent, -Calc]
     memory_scopes: [tenant]
     sql_scopes: [tenant]
     skills: [-*]
@@ -7350,7 +7350,7 @@ agents:
     # context, so a brief that tells it to do something has nothing to do it
     # with; kb/taxonomist reads the reply as data and is the only one that
     # files anything.
-    tools: []
+    tools: [-Calc]
     skills: [-*]
     disable_context: true
     internal: true
@@ -9305,10 +9305,10 @@ agents:
 
   kb/classify:
     # The second opinion of kb/ask's classifier: one question in, YES or NO out.
-    # NO TOOLS AT ALL (tools: [], skills: [-*], disable_context: true) and no
+    # NO TOOLS AT ALL (tools: [-Calc], skills: [-*], disable_context: true) and no
     # memory grants: the question is caller text, and the reply is only DATA
     # kb/ask reads for the YES or NO on its last line.
-    tools: []
+    tools: [-Calc]
     skills: [-*]
     disable_context: true
     internal: true
@@ -9395,7 +9395,7 @@ agents:
     # both turns of every round, ten or more rounds per survey. The calls it
     # makes are written out in each round's prompt by kb/survey's code, so no
     # call samples here.
-    tools: [Document]
+    tools: [Document, -Calc]
     skills: [-*]
     disable_context: true
     # The tenant knowledge base, read only: the runtime refuses every Document

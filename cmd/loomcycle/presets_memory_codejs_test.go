@@ -2360,7 +2360,7 @@ func TestExtractor_HasNoToolsAtAll(t *testing.T) {
 	if !ok {
 		t.Fatalf("memory/extractor not registered (agents: %v)", agentNames(cfg))
 	}
-	if len(agent.Tools) != 0 {
+	if len(heldTools(agent)) != 0 {
 		t.Errorf("memory/extractor holds %v — it must have no tools; check skills:[-*] and disable_context:true, which suppress the auto-added Skill and Context tools", agent.Tools)
 	}
 	if !containsString(agent.Skills, "-*") {
@@ -4536,7 +4536,7 @@ func TestJudge_CannotWriteAnything(t *testing.T) {
 	if !ok {
 		t.Fatalf("memory/judge not registered (agents: %v)", agentNames(cfg))
 	}
-	if len(judge.Tools) != 0 {
+	if len(heldTools(judge)) != 0 {
 		t.Errorf("the judge holds tools %v — every verdict must be written by the caller", judge.Tools)
 	}
 	if !judge.DisableContext {

@@ -89,7 +89,7 @@ export const agentDefRegistry: DefRegistry = {
 
     // ---- Tools & access ----
     { key: "tools", label: "Tools", group: "Tools & access", type: "string-list",
-      hint: "Which tools this agent may call. An EMPTY list grants no tools at all; patterns like mcp__server__* are allowed.",
+      hint: "Which tools this agent may call; patterns like mcp__server__* are allowed. Every agent also gets the default tools Context and Calc: an entry -Name removes one (-Context, -Calc). An EMPTY list grants only those defaults.",
       placeholder: "Read", unsetMeans: "inherits the parent def" },
     { key: "skills", label: "Skills", group: "Tools & access", type: "string-list",
       hint: "Skill names whose bodies are concatenated onto the system prompt. Use -* to drop the auto-added Skill tool.",

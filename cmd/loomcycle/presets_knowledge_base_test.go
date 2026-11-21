@@ -47,7 +47,7 @@ func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 	// layer's wall clock). Memory, Path, Bash and every network tool are absent by
 	// construction; listing them as denials as well makes the failure message name
 	// the capability that crept in.
-	got := append([]string(nil), linker.Tools...)
+	got := heldTools(linker)
 	sort.Strings(got)
 	if strings.Join(got, ",") != "Agent,Channel,Context,Document" {
 		t.Errorf("kb/linker tools = %v, want exactly [Document Agent Channel Context]", linker.Tools)
@@ -113,7 +113,7 @@ func TestKnowledgeBaseBundle_Validates(t *testing.T) {
 		t.Fatalf("kb/verdict not registered (agents: %v)", agentNames(cfg))
 	}
 	// Three declarations mean "no tools"; dropping any one silently re-arms a tool.
-	if len(verdict.Tools) != 0 {
+	if len(heldTools(verdict)) != 0 {
 		t.Errorf("kb/verdict holds %v — it must have no tools", verdict.Tools)
 	}
 	if !containsString(verdict.Skills, "-*") {

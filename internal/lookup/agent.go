@@ -152,6 +152,12 @@ func keepStaticOverrideLock(cfg *config.Config, name string, def *config.AgentDe
 	if static.Retention == retentionmode.None {
 		def.Retention = retentionmode.None
 	}
+	// The operator's "-Name" tools removals (-Context, -Calc) hold over the
+	// tenant's version the same way: a fork keeps its root's removals when it
+	// is written (execFork), but a version forked before the operator added one
+	// would otherwise keep the default tool. Applied here, at resolution, so no
+	// stored version or its content hash changes.
+	def.Tools = config.WithRemovals(def.Tools, static.Tools)
 	// The operator's read modes (tool_modes) hold over the tenant's version
 	// too, a read mode winning: a version forked before the operator added
 	// one would otherwise hold the tool whole.
@@ -696,6 +702,8 @@ func NormalizeAgentDef(def *config.AgentDef) {
 	//    the help the dispatcher derives from holding it. Applied here, at
 	//    resolve time, rather than written into the stored definition: the
 	//    stored tools list is the fork ceiling and is content-identifying.
+	//    Calc, the other default tool, is not added here: it is added where a
+	//    run's toolset is built (config.EffectiveTools), for static agents too.
 	config.AddContextToolDefault(def)
 }
 

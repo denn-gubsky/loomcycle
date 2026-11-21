@@ -9403,8 +9403,13 @@ func toolNames(ts []tools.Tool) []string {
 // Glob suffixes ("mcp__brave-search__*") work via internal/tools/policy. The
 // agent's "-Name" removals are applied after the match, so a glob that covers
 // a removed default tool does not grant it.
+//
+// It is also where a resolution-time default tool (Calc) joins the agent's
+// list (config.EffectiveTools): every run's toolset (fresh, resumed, sub-run,
+// pinned version, team-local, registered) is built here, and no stored or
+// hashed tools list carries it. A caller's tools list still narrows it away.
 func filterTools(all []tools.Tool, agentAllowed, callerAllowed []string) []tools.Tool {
-	grants, removed := config.SplitTools(agentAllowed)
+	grants, removed := config.SplitTools(config.EffectiveTools(agentAllowed))
 	if len(grants) == 0 {
 		return nil
 	}

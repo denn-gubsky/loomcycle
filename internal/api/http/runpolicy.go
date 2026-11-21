@@ -91,8 +91,10 @@ func (s *Server) agentRunPolicy(ctx context.Context, def config.AgentDef, name s
 	memScopes := tools.NarrowScopesByACL(ctx, acl, "memory", tools.EffectiveMemoryScopes(ctx, def.MemoryScopes))
 	sqlScopes := tools.NarrowScopesByACL(ctx, acl, "sqlmem", tools.EffectiveSqlScopes(ctx, def.SqlScopes))
 	return tools.RunPolicy{
-		Tools:             toolNames(src.Tools),
-		ToolPatterns:      def.Tools, // raw globs for the Skill subset check
+		Tools: toolNames(src.Tools),
+		// Raw globs for the Skill subset check, with the resolution-time default
+		// tools filterTools adds, so a skill needing Calc does not widen.
+		ToolPatterns:      config.EffectiveTools(def.Tools),
 		ToolModes:         tools.NarrowToolModes(src.ToolModes, def.ToolModes),
 		Hosts:             src.Hosts,
 		Volumes:           tools.NarrowVolumesByACL(ctx, acl, src.Volumes),

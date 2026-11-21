@@ -237,3 +237,36 @@ agents:
 		t.Errorf("distinct agents must hash differently, both got %s", a)
 	}
 }
+
+// RFC GY P1 PR 9a: Calc is a default tool added only when a run resolves its
+// tools, never into the hashed list. An agent hashes the same whether or not
+// it could hold Calc, so no content hash changed when Calc became a default:
+// [Read] hashes as [Read, Context] (load's Context add) and not as a list
+// that carries Calc.
+func TestRunHashAgent_ConfigModeDoesNotHashCalc(t *testing.T) {
+	hash := func(tools string) string {
+		t.Helper()
+		yamlPath := filepath.Join(t.TempDir(), "loomcycle.yaml")
+		body := "defaults:\n  provider: anthropic\n  model: claude-sonnet-4-6\nagents:\n  researcher:\n    tools: " + tools + "\n    skills: [-*]\n    system_prompt: be thorough\n"
+		if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		if code := RunHash([]string{"agent", "--config", yamlPath, "researcher"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("RunHash %s exit %d; stderr=%s", tools, code, stderr.String())
+		}
+		return strings.TrimSpace(stdout.String())
+	}
+	plain := hash("[Read]")
+	if got := hash("[Read, Context]"); got != plain {
+		t.Errorf("[Read] hashes %s, [Read, Context] %s; want equal", plain, got)
+	}
+	if got := hash("[Read, Context, Calc]"); got == plain {
+		t.Error("[Read] hashes as a list carrying Calc: Calc was written into the hashed tools")
+	}
+	// Pinned from main before this change (Calc not yet a default tool): an unchanged
+	// static agent keeps its hash across the upgrade.
+	if want := "sha256:02c456b74d9539afc1579157ceb5934f115c787c2dbe379fe63733a892306924"; plain != want {
+		t.Errorf("[Read] hashes %s, want %s (the pre-Calc hash)", plain, want)
+	}
+}

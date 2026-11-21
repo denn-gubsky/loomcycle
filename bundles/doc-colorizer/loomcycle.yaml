@@ -28,7 +28,7 @@ agents:
   doc/colorizer:
     provider: code-js
     description: "Deterministically stamp color_enabled + color_scheme on every Document root chunk under a Path subtree (no LLM, RFC J)."
-    tools: [Path, Document]
+    tools: [Path, Document, -Calc]
     memory_scopes: [user] # Document chunk bodies live in Memory
     sql_scopes: [user]    # Document structure lives in SQL Memory
     code: |
