@@ -45,7 +45,7 @@ var helperPrograms = map[string]string{
 // isConvertOp reports whether op is a conversion op.
 func isConvertOp(op string) bool {
 	return op == workspace.OpConvertExtract || op == workspace.OpConvertRenderHTML ||
-		op == workspace.OpConvertRasterize || op == workspace.OpConvertMedia
+		op == workspace.OpConvertRasterize || op == workspace.OpConvertMedia || op == workspace.OpConvertUnpack
 }
 
 // convertOp runs one conversion op on workspace id (real is its real path).
@@ -67,6 +67,12 @@ func (w *worker) convertOp(ctx context.Context, id, real string, start *workspac
 			return a
 		}
 		return w.renderHTMLOp(ctx, real, in, out)
+	case workspace.OpConvertUnpack:
+		var in workspace.ConvertUnpackArgs
+		if a := decodeArgs(start.GetArgs(), &in); a.class != "" {
+			return a
+		}
+		return w.unpackOp(ctx, real, in, out)
 	case workspace.OpConvertRasterize:
 		var in workspace.ConvertRasterizeArgs
 		if a := decodeArgs(start.GetArgs(), &in); a.class != "" {

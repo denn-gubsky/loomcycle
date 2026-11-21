@@ -76,7 +76,7 @@ func rar5Record(typ uint64, data []byte) []byte {
 
 // rar5Archive writes a RAR 5 archive storing ents.
 func rar5Archive(o rarOpts, ents ...rarEnt) []byte {
-	out := []byte(rar5Signature)
+	out := []byte("Rar!\x1a\x07\x01\x00")
 	if o.encryptedHeaders {
 		enc := append(rarVintBytes(0), rarVintBytes(0)...)
 		enc = append(enc, 15)
@@ -146,7 +146,7 @@ func rar4Block(typ byte, flags uint16, fields []byte) []byte {
 
 // rar4Archive writes a RAR 4 archive storing ents.
 func rar4Archive(o rarOpts, ents ...rarEnt) []byte {
-	out := []byte(rar4Signature)
+	out := []byte("Rar!\x1a\x07\x00")
 	var aflags uint16
 	if o.volume {
 		aflags |= 0x0001

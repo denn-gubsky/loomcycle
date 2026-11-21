@@ -44,7 +44,7 @@ When a file could not be kept, the line says why instead
 | `extract` | turn a DOCX, DOC, ODT, XLSX, PPTX, PDF, HTML, EPUB, FB2, MOBI, AZW3, CHM, RTF, DjVu, CSV, text, VTT/SRT caption or image file into Markdown in the inbox, its pictures kept as files; a recording is transcribed | `path`, `images`, `max_rows`, `excerpt_chars`, `pages`, `max_chars`, `structure` |
 | `transcribe` | turn an audio or video recording into a timed Markdown transcript in the inbox (or a workspace) with the speech-to-text model | `path`, `to`, `language`, `vocabulary`, `diarize`, `timestamps`, `dry_run` |
 | `import` | build a Document from a Markdown file, the pictures `extract` kept attached as image chunks | `path`, `title`, `doc_path`, `scope`, `tags` |
-| `unpack` | copy the files of a ZIP or RAR archive into `volume:inbox:unpacked/<archive>/` (or a volume folder), keeping its folders; by default only what `extract` reads and archives inside it | `path`, `to`, `all`, `dry_run` |
+| `unpack` | copy the files of a ZIP or RAR archive into `volume:inbox:unpacked/<archive>/` (or a volume folder, or a workspace folder for an archive in a workspace), keeping its folders; by default only what `extract` reads and archives inside it | `path`, `to`, `all`, `dry_run`, `overwrite` |
 
 A path is a reference: `volume:inbox:<path>`, `volume:<name>:<path>` for a
 volume you are bound to, `volume:<path>` for your default volume, or
@@ -70,7 +70,9 @@ and never through you. `extract`, `transcribe` and `render` read a file in a
 workspace on that workspace's worker, where it is converted: the file never
 leaves it, only what an OCR or speech-to-text model must read reaches the
 runtime, and the result goes into a workspace (`to`) or the inbox (see
-File/extract, File/transcribe, File/render). The other ops do not take one yet: `copy` the file into the
+File/extract, File/transcribe, File/render). `unpack` of an archive in a
+workspace runs there too; its files go into a workspace folder, a volume or
+the inbox (see File/unpack). The other ops do not take one yet: `copy` the file into the
 inbox first. The Crypto tool's `from` and `to` take one too.
 
 - A workspace reference needs your agent's `workspace` grant: `read` to read

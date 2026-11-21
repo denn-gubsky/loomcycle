@@ -308,8 +308,9 @@ const (
 	// (ConvertTar*); into a workspace, its answer is ConvertExtractAnswer.
 	OpConvertExtract = "convert_extract"
 	// OpConvertUnpack unpacks a ZIP or RAR archive under the unpack bounds
-	// of File op=unpack. Streamed back, its output is a tar of the entries
-	// written then ConvertTarAnswer; into a workspace, its answer is
+	// of File op=unpack. Streamed back, its output is the unpack tar of
+	// internal/files/unpack; into a workspace, its files are left in a
+	// stage the core commits once it has judged each, and its answer is
 	// ConvertUnpackAnswer.
 	OpConvertUnpack = "convert_unpack"
 	// OpConvertRenderHTML reads an HTML file into the Markdown File
@@ -336,6 +337,10 @@ const (
 	// ClassSourceChanged: the source no longer hashes to the digest the
 	// core named.
 	ClassSourceChanged = "source_changed"
+	// ClassUnpackRefused: the archive is not one unpack reads, or is
+	// refused whole (encrypted, multi-volume, damaged before any file);
+	// the detail is the reason, worded to follow the archive's name.
+	ClassUnpackRefused = "unpack_refused"
 )
 
 // ConvertTarget is where a conversion's result goes on the worker.
@@ -408,19 +413,15 @@ type ConvertExtractAnswer struct {
 // The entries of a conversion's tar, streamed back. Each image of an
 // extraction is an entry "image-<n>" with its metadata in PAX records
 // (ConvertPAX*); the Markdown is "text.md"; the last entry is the answer.
-// An unpack's entries are "entry/<path>", each the sanitised path it was
-// unpacked to.
 const (
-	ConvertTarImage    = "image-"
-	ConvertTarText     = "text.md"
-	ConvertTarAnswer   = "answer.json"
-	ConvertTarEntry    = "entry/"
-	ConvertPAXName     = "LOOMCYCLE.name"
-	ConvertPAXType     = "LOOMCYCLE.media_type"
-	ConvertPAXAlt      = "LOOMCYCLE.alt"
-	ConvertPAXPage     = "LOOMCYCLE.page"
-	ConvertPAXSlide    = "LOOMCYCLE.slide"
-	ConvertPAXOriginal = "LOOMCYCLE.original"
+	ConvertTarImage  = "image-"
+	ConvertTarText   = "text.md"
+	ConvertTarAnswer = "answer.json"
+	ConvertPAXName   = "LOOMCYCLE.name"
+	ConvertPAXType   = "LOOMCYCLE.media_type"
+	ConvertPAXAlt    = "LOOMCYCLE.alt"
+	ConvertPAXPage   = "LOOMCYCLE.page"
+	ConvertPAXSlide  = "LOOMCYCLE.slide"
 )
 
 // ConvertRenderHTMLArgs are a convert_render_html op's arguments.
@@ -433,6 +434,38 @@ type ConvertRenderHTMLArgs struct {
 
 // Target is where the result goes: always back to the core.
 func (a *ConvertRenderHTMLArgs) Target() *ConvertTarget { return &a.To }
+
+// ConvertUnpackArgs are a convert_unpack op's arguments: the bounds and
+// choices of File op=unpack (unpack.Options).
+type ConvertUnpackArgs struct {
+	ConvertSource
+	All        bool  `json:"all,omitempty"`
+	DryRun     bool  `json:"dry_run,omitempty"`
+	MaxListed  int   `json:"max_listed"`
+	MaxWritten int   `json:"max_written"`
+	MaxTotal   int64 `json:"max_total"`
+	// Budget is what this unpack may inflate, at most MaxTotal.
+	Budget  int64 `json:"budget"`
+	PerFile int64 `json:"per_file"`
+	// To, into a workspace, is where the stage is made. To.Path names the
+	// folder the core will commit it at; the stage is committed by the
+	// core, once it has judged every file in it.
+	To ConvertTarget `json:"to"`
+}
+
+// Target is where the result goes.
+func (a *ConvertUnpackArgs) Target() *ConvertTarget { return &a.To }
+
+// ConvertUnpackAnswer is a convert_unpack op's answer into a workspace.
+// Stage holds the files, at the Result's written paths; the core commits
+// it, or discards it. A walk that stopped at a bound leaves no stage.
+type ConvertUnpackAnswer struct {
+	Stage  string `json:"stage,omitempty"`
+	Format string `json:"format"`
+	// Result is unpack.Result as JSON, its written refs paths relative to
+	// the stage.
+	Result json.RawMessage `json:"result"`
+}
 
 // The byte halves of OCR and speech-to-text on a workspace's file (RFC GW
 // D34). A model call needs a provider key, which never reaches a worker, so

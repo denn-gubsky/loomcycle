@@ -259,6 +259,11 @@ enum JobKind {
   // A Mermaid diagram's source to a PNG, with the diagram helper (RFC GR
   // P4d).
   JOB_KIND_DIAGRAM_DRAW = 8;
+  // A ZIP or RAR archive unpacked under File op=unpack's bounds (RFC GW
+  // D34), its files sent back as output chunks of one tar (the format of
+  // internal/files/unpack). Only a worker carrying the unpack label is sent
+  // one; a worker built before it never carries it.
+  JOB_KIND_ARCHIVE_UNPACK = 9;
 }
 
 message JobStart {
@@ -278,6 +283,22 @@ message JobStart {
   // audio_encode: the format to encode to (mp3, opus, ...).
   // document_render: the format to render to (md, html).
   string format = 10;
+  // archive_unpack: the walk's bounds and choices.
+  UnpackOptions unpack = 11;
+}
+
+// unpack.Options of an archive_unpack job: the bounds File op=unpack walks
+// an archive under. The worker holds each to the default bound at most.
+message UnpackOptions {
+  bool all = 1;
+  bool dry_run = 2;
+  int32 max_listed = 3;
+  int32 max_written = 4;
+  // max_total is the most bytes a walk inflates; budget what this one may,
+  // at most max_total (the inbox's free space lowers it).
+  int64 max_total = 5;
+  int64 budget = 6;
+  int64 per_file = 7;
 }
 
 message ExtractOptions {

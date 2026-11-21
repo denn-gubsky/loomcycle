@@ -17,6 +17,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/unpack"
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
@@ -88,8 +89,8 @@ type File struct {
 	// renderer here; empty is convert.DefaultDiagramCommand (merman-cli).
 	DiagramCommand string
 	// unpackLimits overrides op=unpack's bounds, for tests; nil is
-	// defaultUnpackLimits.
-	unpackLimits *unpackLimits
+	// unpack.DefaultLimits.
+	unpackLimits *unpack.Limits
 	// Workspaces is the workspace bookkeeping (RFC GW) workspace references
 	// reach; nil while workspace.mode is off, which refuses them. Bound at
 	// boot with the Workspace tool's.
@@ -126,10 +127,10 @@ func (f *File) InputSchema() json.RawMessage {
 		"type": "object",
 		"properties": {
 			"op":        {"type": "string", "enum": ["stat", "ls", "copy", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render", "unpack"]},
-			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; unpack: the ZIP or RAR archive; ls: the folder (default volume:inbox:). A volume reference, a workspace reference (in a run: stat, ls, rm, import, extract, transcribe, and clear's folder), or a bare path in the inbox. render: a Markdown or HTML file to render instead of a document (its first # heading is the title), also in a workspace."},
+			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; unpack: the ZIP or RAR archive; ls: the folder (default volume:inbox:). A volume reference, a workspace reference (in a run: stat, ls, rm, import, extract, transcribe, unpack, and clear's folder), or a bare path in the inbox. render: a Markdown or HTML file to render instead of a document (its first # heading is the title), also in a workspace."},
 			"from":      {"type": "string", "description": "copy: the file or folder to copy, in the inbox, a volume or a workspace (workspace:<name>:<path>). keep: the inbox file to copy. upload: the file to send, in the inbox, a volume you can Read or a workspace."},
-			"to":        {"type": "string", "description": "copy: where to copy it, in the inbox, a read-write volume or a workspace; a path ending in / (or an existing folder) keeps the source's name. keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool; a workspace (workspace:<name>:<path>) needs the workspace grant write. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name), or, for a recording in a workspace, a file or folder of a workspace (workspace:<name>:<path>). render: the file to write in one of your read-write volumes (needs the Write tool) or workspaces; default volume:inbox:rendered/<title>.<format>. extract of a file in a workspace: a folder of a workspace to write <name>.md and images/ into; default the inbox. unpack: an existing folder of one of your read-write volumes to unpack into (needs the Write tool); default volume:inbox:unpacked/<archive>/."},
-			"overwrite": {"type": "boolean", "description": "copy, keep, download, render, transcribe (to a workspace): replace an existing file at to (copy: merge into an existing folder). Default false."},
+			"to":        {"type": "string", "description": "copy: where to copy it, in the inbox, a read-write volume or a workspace; a path ending in / (or an existing folder) keeps the source's name. keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool; a workspace (workspace:<name>:<path>) needs the workspace grant write. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name), or, for a recording in a workspace, a file or folder of a workspace (workspace:<name>:<path>). render: the file to write in one of your read-write volumes (needs the Write tool) or workspaces; default volume:inbox:rendered/<title>.<format>. extract of a file in a workspace: a folder of a workspace to write <name>.md and images/ into; default the inbox. unpack: an existing folder of one of your read-write volumes to unpack into (needs the Write tool), or for an archive in a workspace a workspace folder (unpacked whole or not at all); default volume:inbox:unpacked/<archive>/."},
+			"overwrite": {"type": "boolean", "description": "copy, keep, download, render, transcribe (to a workspace): replace an existing file at to (copy, and unpack into a workspace: merge into an existing folder). Default false."},
 			"url":       {"type": "string", "description": "download, upload: the absolute http(s) URL. Its host must be on the HTTP allowlist."},
 			"headers":   {"type": "object", "additionalProperties": {"type": "string"}, "description": "download, upload: extra request headers. No credentials: an authorised URL carries its own."},
 			"max_bytes": {"type": "integer", "minimum": 1, "description": "download: refuse a file larger than this. Default and ceiling: the per-file limit."},

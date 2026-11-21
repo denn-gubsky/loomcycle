@@ -128,6 +128,11 @@ const (
 	// A Mermaid diagram's source to a PNG, with the diagram helper (RFC GR
 	// P4d).
 	JobKind_JOB_KIND_DIAGRAM_DRAW JobKind = 8
+	// A ZIP or RAR archive unpacked under File op=unpack's bounds (RFC GW
+	// D34), its files sent back as output chunks of one tar (the format of
+	// internal/files/unpack). Only a worker carrying the unpack label is sent
+	// one; a worker built before it never carries it.
+	JobKind_JOB_KIND_ARCHIVE_UNPACK JobKind = 9
 )
 
 // Enum value maps for JobKind.
@@ -142,6 +147,7 @@ var (
 		6: "JOB_KIND_IMAGE_REENCODE",
 		7: "JOB_KIND_DOCUMENT_RENDER",
 		8: "JOB_KIND_DIAGRAM_DRAW",
+		9: "JOB_KIND_ARCHIVE_UNPACK",
 	}
 	JobKind_value = map[string]int32{
 		"JOB_KIND_UNSPECIFIED":      0,
@@ -153,6 +159,7 @@ var (
 		"JOB_KIND_IMAGE_REENCODE":   6,
 		"JOB_KIND_DOCUMENT_RENDER":  7,
 		"JOB_KIND_DIAGRAM_DRAW":     8,
+		"JOB_KIND_ARCHIVE_UNPACK":   9,
 	}
 )
 
@@ -2093,7 +2100,9 @@ type JobStart struct {
 	Language string `protobuf:"bytes,9,opt,name=language,proto3" json:"language,omitempty"`
 	// audio_encode: the format to encode to (mp3, opus, ...).
 	// document_render: the format to render to (md, html).
-	Format        string `protobuf:"bytes,10,opt,name=format,proto3" json:"format,omitempty"`
+	Format string `protobuf:"bytes,10,opt,name=format,proto3" json:"format,omitempty"`
+	// archive_unpack: the walk's bounds and choices.
+	Unpack        *UnpackOptions `protobuf:"bytes,11,opt,name=unpack,proto3" json:"unpack,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2198,6 +2207,109 @@ func (x *JobStart) GetFormat() string {
 	return ""
 }
 
+func (x *JobStart) GetUnpack() *UnpackOptions {
+	if x != nil {
+		return x.Unpack
+	}
+	return nil
+}
+
+// unpack.Options of an archive_unpack job: the bounds File op=unpack walks
+// an archive under. The worker holds each to the default bound at most.
+type UnpackOptions struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	All        bool                   `protobuf:"varint,1,opt,name=all,proto3" json:"all,omitempty"`
+	DryRun     bool                   `protobuf:"varint,2,opt,name=dry_run,json=dryRun,proto3" json:"dry_run,omitempty"`
+	MaxListed  int32                  `protobuf:"varint,3,opt,name=max_listed,json=maxListed,proto3" json:"max_listed,omitempty"`
+	MaxWritten int32                  `protobuf:"varint,4,opt,name=max_written,json=maxWritten,proto3" json:"max_written,omitempty"`
+	// max_total is the most bytes a walk inflates; budget what this one may,
+	// at most max_total (the inbox's free space lowers it).
+	MaxTotal      int64 `protobuf:"varint,5,opt,name=max_total,json=maxTotal,proto3" json:"max_total,omitempty"`
+	Budget        int64 `protobuf:"varint,6,opt,name=budget,proto3" json:"budget,omitempty"`
+	PerFile       int64 `protobuf:"varint,7,opt,name=per_file,json=perFile,proto3" json:"per_file,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnpackOptions) Reset() {
+	*x = UnpackOptions{}
+	mi := &file_worker_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnpackOptions) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnpackOptions) ProtoMessage() {}
+
+func (x *UnpackOptions) ProtoReflect() protoreflect.Message {
+	mi := &file_worker_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnpackOptions.ProtoReflect.Descriptor instead.
+func (*UnpackOptions) Descriptor() ([]byte, []int) {
+	return file_worker_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *UnpackOptions) GetAll() bool {
+	if x != nil {
+		return x.All
+	}
+	return false
+}
+
+func (x *UnpackOptions) GetDryRun() bool {
+	if x != nil {
+		return x.DryRun
+	}
+	return false
+}
+
+func (x *UnpackOptions) GetMaxListed() int32 {
+	if x != nil {
+		return x.MaxListed
+	}
+	return 0
+}
+
+func (x *UnpackOptions) GetMaxWritten() int32 {
+	if x != nil {
+		return x.MaxWritten
+	}
+	return 0
+}
+
+func (x *UnpackOptions) GetMaxTotal() int64 {
+	if x != nil {
+		return x.MaxTotal
+	}
+	return 0
+}
+
+func (x *UnpackOptions) GetBudget() int64 {
+	if x != nil {
+		return x.Budget
+	}
+	return 0
+}
+
+func (x *UnpackOptions) GetPerFile() int64 {
+	if x != nil {
+		return x.PerFile
+	}
+	return 0
+}
+
 type ExtractOptions struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Images        bool                   `protobuf:"varint,1,opt,name=images,proto3" json:"images,omitempty"`
@@ -2218,7 +2330,7 @@ type ExtractOptions struct {
 
 func (x *ExtractOptions) Reset() {
 	*x = ExtractOptions{}
-	mi := &file_worker_proto_msgTypes[26]
+	mi := &file_worker_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2230,7 +2342,7 @@ func (x *ExtractOptions) String() string {
 func (*ExtractOptions) ProtoMessage() {}
 
 func (x *ExtractOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[26]
+	mi := &file_worker_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2243,7 +2355,7 @@ func (x *ExtractOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtractOptions.ProtoReflect.Descriptor instead.
 func (*ExtractOptions) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{26}
+	return file_worker_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ExtractOptions) GetImages() bool {
@@ -2295,7 +2407,7 @@ type PageImages struct {
 
 func (x *PageImages) Reset() {
 	*x = PageImages{}
-	mi := &file_worker_proto_msgTypes[27]
+	mi := &file_worker_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2307,7 +2419,7 @@ func (x *PageImages) String() string {
 func (*PageImages) ProtoMessage() {}
 
 func (x *PageImages) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[27]
+	mi := &file_worker_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2320,7 +2432,7 @@ func (x *PageImages) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PageImages.ProtoReflect.Descriptor instead.
 func (*PageImages) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{27}
+	return file_worker_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *PageImages) GetAlways() bool {
@@ -2352,7 +2464,7 @@ type InputEnd struct {
 
 func (x *InputEnd) Reset() {
 	*x = InputEnd{}
-	mi := &file_worker_proto_msgTypes[28]
+	mi := &file_worker_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2364,7 +2476,7 @@ func (x *InputEnd) String() string {
 func (*InputEnd) ProtoMessage() {}
 
 func (x *InputEnd) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[28]
+	mi := &file_worker_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2377,7 +2489,7 @@ func (x *InputEnd) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InputEnd.ProtoReflect.Descriptor instead.
 func (*InputEnd) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{28}
+	return file_worker_proto_rawDescGZIP(), []int{29}
 }
 
 // The reference the Markdown embeds for the image just sent; empty when the
@@ -2391,7 +2503,7 @@ type ImageRef struct {
 
 func (x *ImageRef) Reset() {
 	*x = ImageRef{}
-	mi := &file_worker_proto_msgTypes[29]
+	mi := &file_worker_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2403,7 +2515,7 @@ func (x *ImageRef) String() string {
 func (*ImageRef) ProtoMessage() {}
 
 func (x *ImageRef) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[29]
+	mi := &file_worker_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2416,7 +2528,7 @@ func (x *ImageRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImageRef.ProtoReflect.Descriptor instead.
 func (*ImageRef) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{29}
+	return file_worker_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ImageRef) GetRef() string {
@@ -2435,7 +2547,7 @@ type Cancel struct {
 
 func (x *Cancel) Reset() {
 	*x = Cancel{}
-	mi := &file_worker_proto_msgTypes[30]
+	mi := &file_worker_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2447,7 +2559,7 @@ func (x *Cancel) String() string {
 func (*Cancel) ProtoMessage() {}
 
 func (x *Cancel) ProtoReflect() protoreflect.Message {
-	mi := &file_worker_proto_msgTypes[30]
+	mi := &file_worker_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2460,7 +2572,7 @@ func (x *Cancel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Cancel.ProtoReflect.Descriptor instead.
 func (*Cancel) Descriptor() ([]byte, []int) {
-	return file_worker_proto_rawDescGZIP(), []int{30}
+	return file_worker_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *Cancel) GetReason() CancelReason {
@@ -2602,7 +2714,7 @@ const file_worker_proto_rawDesc = "" +
 	"\tinput_end\x18\x03 \x01(\v2\x1d.loomcycle.worker.v1.InputEndH\x00R\binputEnd\x12<\n" +
 	"\timage_ref\x18\x04 \x01(\v2\x1d.loomcycle.worker.v1.ImageRefH\x00R\bimageRef\x125\n" +
 	"\x06cancel\x18\x05 \x01(\v2\x1b.loomcycle.worker.v1.CancelH\x00R\x06cancelB\x05\n" +
-	"\x03msg\"\xcd\x02\n" +
+	"\x03msg\"\x89\x03\n" +
 	"\bJobStart\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x120\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1c.loomcycle.worker.v1.JobKindR\x04kind\x12\x1d\n" +
@@ -2617,7 +2729,18 @@ const file_worker_proto_rawDesc = "" +
 	"\x05pages\x18\b \x03(\x05R\x05pages\x12\x1a\n" +
 	"\blanguage\x18\t \x01(\tR\blanguage\x12\x16\n" +
 	"\x06format\x18\n" +
-	" \x01(\tR\x06format\"\xc6\x01\n" +
+	" \x01(\tR\x06format\x12:\n" +
+	"\x06unpack\x18\v \x01(\v2\".loomcycle.worker.v1.UnpackOptionsR\x06unpack\"\xca\x01\n" +
+	"\rUnpackOptions\x12\x10\n" +
+	"\x03all\x18\x01 \x01(\bR\x03all\x12\x17\n" +
+	"\adry_run\x18\x02 \x01(\bR\x06dryRun\x12\x1d\n" +
+	"\n" +
+	"max_listed\x18\x03 \x01(\x05R\tmaxListed\x12\x1f\n" +
+	"\vmax_written\x18\x04 \x01(\x05R\n" +
+	"maxWritten\x12\x1b\n" +
+	"\tmax_total\x18\x05 \x01(\x03R\bmaxTotal\x12\x16\n" +
+	"\x06budget\x18\x06 \x01(\x03R\x06budget\x12\x19\n" +
+	"\bper_file\x18\a \x01(\x03R\aperFile\"\xc6\x01\n" +
 	"\x0eExtractOptions\x12\x16\n" +
 	"\x06images\x18\x01 \x01(\bR\x06images\x12\x19\n" +
 	"\bmax_rows\x18\x02 \x01(\x05R\amaxRows\x12%\n" +
@@ -2646,7 +2769,7 @@ const file_worker_proto_rawDesc = "" +
 	"\x17ERROR_CLASS_UNSUPPORTED\x10\x05\x12\x19\n" +
 	"\x15ERROR_CLASS_CANCELLED\x10\x06\x12\x15\n" +
 	"\x11ERROR_CLASS_INPUT\x10\a\x12\x1e\n" +
-	"\x1aERROR_CLASS_NOT_CONFIGURED\x10\b*\xfe\x01\n" +
+	"\x1aERROR_CLASS_NOT_CONFIGURED\x10\b*\x9b\x02\n" +
 	"\aJobKind\x12\x18\n" +
 	"\x14JOB_KIND_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10JOB_KIND_EXTRACT\x10\x01\x12\x1d\n" +
@@ -2656,7 +2779,8 @@ const file_worker_proto_rawDesc = "" +
 	"\x15JOB_KIND_AUDIO_ENCODE\x10\x05\x12\x1b\n" +
 	"\x17JOB_KIND_IMAGE_REENCODE\x10\x06\x12\x1c\n" +
 	"\x18JOB_KIND_DOCUMENT_RENDER\x10\a\x12\x19\n" +
-	"\x15JOB_KIND_DIAGRAM_DRAW\x10\b*d\n" +
+	"\x15JOB_KIND_DIAGRAM_DRAW\x10\b\x12\x1b\n" +
+	"\x17JOB_KIND_ARCHIVE_UNPACK\x10\t*d\n" +
 	"\fCancelReason\x12\x1d\n" +
 	"\x19CANCEL_REASON_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17CANCEL_REASON_SINK_FULL\x10\x01\x12\x18\n" +
@@ -2678,7 +2802,7 @@ func file_worker_proto_rawDescGZIP() []byte {
 }
 
 var file_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_worker_proto_goTypes = []any{
 	(ErrorClass)(0),           // 0: loomcycle.worker.v1.ErrorClass
 	(JobKind)(0),              // 1: loomcycle.worker.v1.JobKind
@@ -2709,11 +2833,12 @@ var file_worker_proto_goTypes = []any{
 	(*PageYield)(nil),         // 26: loomcycle.worker.v1.PageYield
 	(*JobFrame)(nil),          // 27: loomcycle.worker.v1.JobFrame
 	(*JobStart)(nil),          // 28: loomcycle.worker.v1.JobStart
-	(*ExtractOptions)(nil),    // 29: loomcycle.worker.v1.ExtractOptions
-	(*PageImages)(nil),        // 30: loomcycle.worker.v1.PageImages
-	(*InputEnd)(nil),          // 31: loomcycle.worker.v1.InputEnd
-	(*ImageRef)(nil),          // 32: loomcycle.worker.v1.ImageRef
-	(*Cancel)(nil),            // 33: loomcycle.worker.v1.Cancel
+	(*UnpackOptions)(nil),     // 29: loomcycle.worker.v1.UnpackOptions
+	(*ExtractOptions)(nil),    // 30: loomcycle.worker.v1.ExtractOptions
+	(*PageImages)(nil),        // 31: loomcycle.worker.v1.PageImages
+	(*InputEnd)(nil),          // 32: loomcycle.worker.v1.InputEnd
+	(*ImageRef)(nil),          // 33: loomcycle.worker.v1.ImageRef
+	(*Cancel)(nil),            // 34: loomcycle.worker.v1.Cancel
 }
 var file_worker_proto_depIdxs = []int32{
 	4,  // 0: loomcycle.worker.v1.WorkerStatus.hello:type_name -> loomcycle.worker.v1.Hello
@@ -2741,22 +2866,23 @@ var file_worker_proto_depIdxs = []int32{
 	25, // 22: loomcycle.worker.v1.BookMetadata.identifiers:type_name -> loomcycle.worker.v1.BookIdentifier
 	28, // 23: loomcycle.worker.v1.JobFrame.start:type_name -> loomcycle.worker.v1.JobStart
 	21, // 24: loomcycle.worker.v1.JobFrame.input_chunk:type_name -> loomcycle.worker.v1.Chunk
-	31, // 25: loomcycle.worker.v1.JobFrame.input_end:type_name -> loomcycle.worker.v1.InputEnd
-	32, // 26: loomcycle.worker.v1.JobFrame.image_ref:type_name -> loomcycle.worker.v1.ImageRef
-	33, // 27: loomcycle.worker.v1.JobFrame.cancel:type_name -> loomcycle.worker.v1.Cancel
+	32, // 25: loomcycle.worker.v1.JobFrame.input_end:type_name -> loomcycle.worker.v1.InputEnd
+	33, // 26: loomcycle.worker.v1.JobFrame.image_ref:type_name -> loomcycle.worker.v1.ImageRef
+	34, // 27: loomcycle.worker.v1.JobFrame.cancel:type_name -> loomcycle.worker.v1.Cancel
 	1,  // 28: loomcycle.worker.v1.JobStart.kind:type_name -> loomcycle.worker.v1.JobKind
-	29, // 29: loomcycle.worker.v1.JobStart.extract:type_name -> loomcycle.worker.v1.ExtractOptions
-	30, // 30: loomcycle.worker.v1.ExtractOptions.page_images:type_name -> loomcycle.worker.v1.PageImages
-	2,  // 31: loomcycle.worker.v1.Cancel.reason:type_name -> loomcycle.worker.v1.CancelReason
-	3,  // 32: loomcycle.worker.v1.WorkerService.Attach:input_type -> loomcycle.worker.v1.WorkerStatus
-	10, // 33: loomcycle.worker.v1.WorkerService.Work:input_type -> loomcycle.worker.v1.WorkerFrame
-	6,  // 34: loomcycle.worker.v1.WorkerService.Attach:output_type -> loomcycle.worker.v1.DispatcherControl
-	27, // 35: loomcycle.worker.v1.WorkerService.Work:output_type -> loomcycle.worker.v1.JobFrame
-	34, // [34:36] is the sub-list for method output_type
-	32, // [32:34] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	30, // 29: loomcycle.worker.v1.JobStart.extract:type_name -> loomcycle.worker.v1.ExtractOptions
+	29, // 30: loomcycle.worker.v1.JobStart.unpack:type_name -> loomcycle.worker.v1.UnpackOptions
+	31, // 31: loomcycle.worker.v1.ExtractOptions.page_images:type_name -> loomcycle.worker.v1.PageImages
+	2,  // 32: loomcycle.worker.v1.Cancel.reason:type_name -> loomcycle.worker.v1.CancelReason
+	3,  // 33: loomcycle.worker.v1.WorkerService.Attach:input_type -> loomcycle.worker.v1.WorkerStatus
+	10, // 34: loomcycle.worker.v1.WorkerService.Work:input_type -> loomcycle.worker.v1.WorkerFrame
+	6,  // 35: loomcycle.worker.v1.WorkerService.Attach:output_type -> loomcycle.worker.v1.DispatcherControl
+	27, // 36: loomcycle.worker.v1.WorkerService.Work:output_type -> loomcycle.worker.v1.JobFrame
+	35, // [35:37] is the sub-list for method output_type
+	33, // [33:35] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_worker_proto_init() }
@@ -2801,7 +2927,7 @@ func file_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_worker_proto_rawDesc), len(file_worker_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   31,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

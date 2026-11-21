@@ -254,14 +254,14 @@ func (w *worker) waitFree(ctx context.Context) error {
 // has reports whether this worker carries label.
 func (w *worker) has(label string) bool { return slices.Contains(w.labels, label) }
 
-// Labels are what a worker of opt can run: extraction, page cuts and document
-// writes always, images when it has a re-encoder, and each helper's jobs
+// Labels are what a worker of opt can run: extraction, page cuts, document
+// writes and archive unpacks always, images when it has a re-encoder, and each helper's jobs
 // (PDF renders among them) when the helper's program resolves on this host
 // (RFC GO §5.3). A helper
 // that does not is logged, not fatal: the worker still serves everything
 // else.
 func Labels(opt Options, log *slog.Logger) []string {
-	out := []string{wire.LabelExtract, wire.LabelExtractPages, wire.LabelPDF, wire.LabelWrite, wire.LabelWriteBook}
+	out := []string{wire.LabelExtract, wire.LabelExtractPages, wire.LabelPDF, wire.LabelWrite, wire.LabelWriteBook, wire.LabelUnpack}
 	if opt.Images != nil {
 		out = append(out, wire.LabelImage)
 	}
@@ -594,6 +594,10 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 			if data, jerr = readAll(in, size); jerr == nil {
 				out, jerr = p.DrawDiagram(jctx, data)
 			}
+		case workerpb.JobKind_JOB_KIND_ARCHIVE_UNPACK:
+			// The tar streams as it is made: an archive's files are never
+			// held whole here.
+			jerr = p.Unpack(jctx, in, size, wire.UnpackFromWire(start.GetUnpack(), w.opt.MaxInput), &outputWriter{send: send})
 		default:
 			jerr = fmt.Errorf("this worker does not run %s jobs", start.GetKind())
 		}
@@ -615,6 +619,23 @@ func (w *worker) runJob(ctx context.Context, stream workerpb.WorkerService_WorkC
 	}
 	class, msg := wire.ErrorToWire(jerr)
 	return received, sendDone(send, rep, mediaType, class, msg)
+}
+
+// outputWriter sends what is written as output chunks of at most a chunk,
+// each a buffer of its own: gRPC may read a message after Send returns, and
+// the writer's caller reuses its buffer.
+type outputWriter struct {
+	send func(*workerpb.WorkerFrame) error
+}
+
+func (o *outputWriter) Write(p []byte) (int, error) {
+	for off := 0; off < len(p); off += wire.ChunkSize {
+		data := append([]byte(nil), p[off:min(off+wire.ChunkSize, len(p))]...)
+		if err := o.send(&workerpb.WorkerFrame{Msg: &workerpb.WorkerFrame_OutputChunk{OutputChunk: &workerpb.Chunk{Data: data}}}); err != nil {
+			return off, err
+		}
+	}
+	return len(p), nil
 }
 
 // formatName is what an encode's format may be: it names the encoder's

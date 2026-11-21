@@ -533,17 +533,9 @@ func TestFileWorkspace_OpsWithoutWorkspaceSupportRefuseTheReference(t *testing.T
 	f := newFCFixture(t, inbox.Service{}, lifecycle.Limits{})
 	f.open(t, "w")
 	f.wsPut(t, "w", "a.docx", "x")
-	for _, in := range []map[string]any{
-		{"op": "unpack", "path": "workspace:w:a.docx"},
-		{"op": "keep", "from": "workspace:w:a.docx", "to": "volume:docs:a.docx"},
-	} {
-		_, res := f.exec(t, f.ctx, in)
-		if !res.IsError {
-			t.Errorf("%v was not refused", in)
-		}
-	}
-	_, res := f.exec(t, f.ctx, map[string]any{"op": "unpack", "path": "workspace:w:a.docx"})
-	wantFileRefusal(t, "unpack", res, "workspace reference")
+	// keep stays inbox to volume (copy is the general form), and says so.
+	_, res := f.exec(t, f.ctx, map[string]any{"op": "keep", "from": "workspace:w:a.docx", "to": "volume:docs:a.docx"})
+	wantFileRefusal(t, "keep", res, "from must be a file in the inbox")
 }
 
 func TestParseDataRef_WorkspaceForms(t *testing.T) {

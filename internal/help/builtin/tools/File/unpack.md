@@ -16,7 +16,8 @@ and 5) are read; 7z, tar, gzip and the rest are refused.
 - `path` — the archive, e.g. `volume:inbox:documents/library.zip`.
 - `to` — unpack into an existing folder of one of your read-write volumes
   instead, e.g. `volume:books:library/`. This needs the Write tool, and
-  Write's hooks are asked about every file written.
+  Write's hooks are asked about every file written. For an archive in a
+  workspace, `to` may also be a folder of a workspace (see below).
 - `all` — write every regular file. Default false: only the formats `extract`
   reads (documents, books, DjVu, images, captions, text), plus archives inside
   the archive. A recording is not among them; `all` writes it.
@@ -58,6 +59,25 @@ stays and is reported, and `stopped` names the bound.
 A RAR that is encrypted, has encrypted headers, or is one volume of several
 is refused, as is a RAR whose dictionary is over 64 MiB.
 
+## An archive in a workspace
+
+`path` may name an archive in a workspace of this run
+(`workspace:<name>:<path>`, the workspace grant `read`). It is unpacked on
+that workspace's worker, in its file converter, under the same rules and
+bounds; the archive never leaves the worker.
+
+- With no `to`, or a volume folder as `to`, the files go to the inbox or the
+  volume as above.
+- With `to` a folder of a workspace (`workspace:<name>:<folder>`, the grant
+  `write`), the archive goes in whole or not at all: the folder is made
+  holding the files (`overwrite: true` merges them into one already there),
+  a bound reached while inflating writes nothing, the workspace's disk quota
+  counts every file, and the operator's `Workspace` hooks are asked about
+  every file's final path before any is placed, one refusal refusing the
+  unpack. Into a workspace on the same worker the files never leave it.
+- An archive that crashes the converter is refused in that workspace for a
+  while.
+
 ## Returns
 
 `{archive, format, to, written: [{ref, name, size, media_type}], skipped:
@@ -72,7 +92,8 @@ the counts are complete.
 - The file is not a ZIP or RAR archive, or a RAR is encrypted or multi-volume.
 - Every extraction slot is busy: try again in a minute.
 - `to` is not a folder of a read-write volume you are bound to, or you do not
-  hold Write.
+  hold Write; or, into a workspace, the folder exists (pass `overwrite`), the
+  quota would be passed, a bound was reached, or a hook refused a file.
 - The archive is outside the inbox and you do not hold Read.
 
 ## Examples

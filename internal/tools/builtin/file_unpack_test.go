@@ -17,6 +17,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/unpack"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 )
@@ -442,8 +443,8 @@ func TestUnpack_TotalLimitStopsKeepingWhatWasWritten(t *testing.T) {
 	page := bytes.Repeat([]byte("x"), 1000)
 	arc := zipArchive(t, zipEnt{name: "1.txt", body: page}, zipEnt{name: "2.txt", body: page}, zipEnt{name: "3.txt", body: page}, zipEnt{name: "4.txt", body: page})
 	ctx, ref, _ := unpackRun(t, inbox.Service{}, arc, "pages.zip")
-	lim := defaultUnpackLimits
-	lim.total = 2500
+	lim := unpack.DefaultLimits
+	lim.Total = 2500
 	out, res := unpackExec(t, &File{unpackLimits: &lim}, ctx, map[string]any{"op": "unpack", "path": ref})
 	if res.IsError {
 		t.Fatal(res.Text)
@@ -481,8 +482,8 @@ func TestUnpack_ExpansionBombIsRefused(t *testing.T) {
 	// they come, and the walk stops.
 	rar := rar5Archive(rarOpts{}, rarEnt{name: "grows.txt", body: bytes.Repeat([]byte("y"), 500), unknownSize: true})
 	ctx, ref, _ = unpackRun(t, inbox.Service{}, rar, "grows.rar")
-	lim := defaultUnpackLimits
-	lim.ratio, lim.ratioFree = 0, 100
+	lim := unpack.DefaultLimits
+	lim.Ratio, lim.RatioFree = 0, 100
 	out, res = unpackExec(t, &File{unpackLimits: &lim}, ctx, map[string]any{"op": "unpack", "path": ref})
 	if res.IsError {
 		t.Fatal(res.Text)
@@ -499,14 +500,14 @@ func TestUnpack_EntryAndWriteLimits(t *testing.T) {
 	}
 	arc := zipArchive(t, ents...)
 	ctx, ref, _ := unpackRun(t, inbox.Service{}, arc, "five.zip")
-	lim := defaultUnpackLimits
-	lim.listed = 3
+	lim := unpack.DefaultLimits
+	lim.Listed = 3
 	out, _ := unpackExec(t, &File{unpackLimits: &lim}, ctx, map[string]any{"op": "unpack", "path": ref})
 	if count(out, "listed") != 3 || count(out, "written") != 3 || !strings.Contains(out["stopped"].(string), "entry limit") {
 		t.Errorf("entry limit: %v", out)
 	}
-	lim = defaultUnpackLimits
-	lim.written = 2
+	lim = unpack.DefaultLimits
+	lim.Written = 2
 	out, _ = unpackExec(t, &File{unpackLimits: &lim}, ctx, map[string]any{"op": "unpack", "path": ref, "dry_run": true})
 	if count(out, "written") != 2 || !strings.Contains(out["stopped"].(string), "write limit") {
 		t.Errorf("write limit: %v", out)
@@ -578,13 +579,13 @@ func TestUnpack_SolidRARChargesSkippedEntries(t *testing.T) {
 		}
 		inflated[solid] = count(out, "bytes_inflated")
 	}
-	if inflated[false] != unpackHead+len(unpackText) || inflated[true] != len(blob)+len(unpackText) {
+	if inflated[false] != unpack.Head+len(unpackText) || inflated[true] != len(blob)+len(unpackText) {
 		t.Errorf("inflated = %v", inflated)
 	}
 	// And the budget holds over it: the skipped entry alone spends it.
 	ctx, ref, _ := unpackRun(t, inbox.Service{}, rar5Archive(rarOpts{solid: true}, ents...), "s.rar")
-	lim := defaultUnpackLimits
-	lim.total = 10000
+	lim := unpack.DefaultLimits
+	lim.Total = 10000
 	out, _ := unpackExec(t, &File{unpackLimits: &lim}, ctx, map[string]any{"op": "unpack", "path": ref})
 	if s, _ := out["stopped"].(string); !strings.Contains(s, "total limit") || count(out, "written") != 0 {
 		t.Errorf("solid over budget: %v", out)
@@ -645,51 +646,6 @@ func TestUnpack_CancelledCallReturnsItsError(t *testing.T) {
 	}
 }
 
-func TestUnpack_ZipDirectoryTooLargeIsRefusedBeforeLoading(t *testing.T) {
-	arc := zipArchive(t, zipEnt{name: "a.txt", body: unpackText})
-	// Claim more records than the walk will load, in the end record.
-	i := bytes.LastIndex(arc, []byte("PK\x05\x06"))
-	arc[i+10], arc[i+11] = 0xfe, 0xff // 65534
-	if n, ok := zipDirectoryRecords(bytes.NewReader(arc), int64(len(arc))); !ok || n != 65534 {
-		t.Fatalf("records = %d %v", n, ok)
-	}
-	u := &unpacker{ctx: context.Background(), lim: defaultUnpackLimits}
-	if err := u.walkZip(bytes.NewReader(zip64Claim(t, arc)), int64(len(zip64Claim(t, arc)))); err == nil || !strings.Contains(err.Error(), "more than") {
-		t.Errorf("walk = %v", err)
-	}
-}
-
-// zip64Claim appends a zip64 end record and locator claiming 200,000
-// records before arc's end record, whose count is set to 0xFFFF.
-func zip64Claim(t *testing.T, arc []byte) []byte {
-	t.Helper()
-	i := bytes.LastIndex(arc, []byte("PK\x05\x06"))
-	out := append([]byte(nil), arc[:i]...)
-	off := len(out)
-	rec := append([]byte("PK\x06\x06"), le64(44)...)
-	rec = append(rec, 45, 0, 45, 0)
-	rec = append(rec, make([]byte, 8)...) // disk numbers
-	rec = append(rec, le64(200000)...)
-	rec = append(rec, le64(200000)...)
-	rec = append(rec, make([]byte, 16)...) // directory size and offset
-	out = append(out, rec...)
-	loc := append([]byte("PK\x06\x07"), make([]byte, 4)...)
-	loc = append(loc, le64(uint64(off))...)
-	loc = append(loc, 1, 0, 0, 0)
-	out = append(out, loc...)
-	end := append([]byte(nil), arc[i:]...)
-	end[10], end[11] = 0xff, 0xff
-	return append(out, end...)
-}
-
-func le64(v uint64) []byte {
-	b := make([]byte, 8)
-	for i := range b {
-		b[i] = byte(v >> (8 * i))
-	}
-	return b
-}
-
 // deflated is raw deflate of b, for a zip entry written with CreateRaw.
 func deflated(t testing.TB, b []byte) []byte {
 	t.Helper()
@@ -739,5 +695,15 @@ func TestUnpack_DamageAfterWritesKeepsThem(t *testing.T) {
 	}
 	if got := refsOf(out, "written"); strings.Join(got, ",") != "volume:inbox:unpacked/broken/a.txt" || !strings.Contains(out["stopped"].(string), "could not be read") {
 		t.Errorf("answer = %v", out)
+	}
+}
+
+// The rule unpack leaves recordings out by is the transcription pass's own:
+// the walk sits below that pass, so it keeps a copy, held equal here.
+func TestUnpack_RecordingRuleIsTheTranscriptionPasses(t *testing.T) {
+	for _, mt := range []string{"audio/mpeg", "audio/x-m4a", "video/mp4", "application/ogg", "application/pdf", "text/plain", "image/png", "application/octet-stream", "audiobook/x"} {
+		if unpack.IsRecording(mt) != isRecording(mt) {
+			t.Errorf("%s: unpack says %v, transcription %v", mt, unpack.IsRecording(mt), isRecording(mt))
+		}
 	}
 }
