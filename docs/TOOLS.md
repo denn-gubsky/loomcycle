@@ -53,7 +53,7 @@ Each built-in is registered into the dispatcher at process startup but **refuses
 | `Bash`      | `LOOMCYCLE_BASH_ENABLED=1` + a bound **rw** volume    |
 | `Bashbox`   | Always registered; needs a bound volume (**ro or rw** — a true in-process sandbox). Stripped from an agent registered through MCP `register_agent` unless `LOOMCYCLE_MCP_ALLOW_PRIVILEGED_TOOLS=1`, like `Bash`, `Write` and `Edit` |
 | `Agent`     | Always registered (server-internal); per-agent `tools` controls who can spawn. |
-| `Calc`      | Always registered; needs nothing configured. On for every agent by default (added when a run's tools are resolved, never written into a stored definition); `tools: [..., -Calc]` removes it. Pure: no state, no I/O. See [The `Calc` tool](#the-calc-tool--exact-arithmetic) below. |
+| `Calc`      | Always registered; needs nothing configured. On for every agent by default (added when a run's tools are resolved, never written into a stored definition); `tools: [..., -Calc]` removes it. Pure: no state, no I/O. See [The `Calc` tool](#the-calc-tool--exact-arithmetic) below and the guide, [CALC.md](CALC.md). |
 | `Skill`     | `LOOMCYCLE_SKILLS_ROOT=/path/to/skills` (or skills inlined per-agent via YAML `skills:` map, or the `skill_defs` substrate). Auto-added to every agent that may use a skill (RFC BA); loads bodies on demand. Gated by the agent's `skills:` pattern allowlist. |
 | `SkillDef`  | Always registered (v0.8.22). Authoring gated by the agent's `skills:` pattern allowlist (RFC BA — empty = allow all, `-*` = deny all); no extra env var. Storage shared with the rest of the substrate. |
 | `VolumeDef` | Always registered (RFC AH Phase 2a/2b). Per-agent `volume_def_scopes:` YAML gate (default-deny) for create/delete/purge; get/list are tenant-scoped reads. `create {ephemeral:true}` provisions a run-scoped volume auto-purged at top-level-run completion; with a `source: {git: …}` it holds one commit of a repository, fetched by the runtime (needs `source:git` in `volume_def_scopes` and `LOOMCYCLE_GIT_SOURCE_HOSTS`). Requires a static volume marked `dynamic_root: true`. Storage shared with the rest of the substrate. |
@@ -201,6 +201,7 @@ Since #2051 (Phase 1) and #2053 (Phase 2) of RFC FB, `/loomcycle/rfcs/git-tool`.
 - **Bounded.** Each call is held to fixed limits — 16 KB of expression, 1 MB of vars, 1,000,000 steps, 2 seconds, 16,384-bit exact numbers, 1,000,000 list elements, 64 KB of output — that no setting raises.
 - **Refusals** are `{"error", "detail", "hint", "pos"}` with a category: a malformed expression is `validation` (fix and resend), a domain error or a limit is `business`. `/metrics` counts them in `loomcycle_calc_refusals_total{error}`.
 - The language, every function, every error code and every limit are documented for the model in `Context op=help topic=Calc` and its sections (`Calc/language`, `Calc/numbers`, `Calc/elementary`, `Calc/integers`, `Calc/sequences`, `Calc/errors`, `Calc/limits`); a test runs every example in them.
+- The guide is [CALC.md](CALC.md): the language, each section with examples, the limits, the MCP `calc` meta-tool, and when to remove Calc from an agent. Recipes by task (tax, shares, loans, deadlines, checking totals) are the help topic `calculations`.
 
 ### The `Identity` tool — the tenant directory
 
