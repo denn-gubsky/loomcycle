@@ -1,6 +1,6 @@
 ---
 name: Calc
-description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists and unit conversion; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
+description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics and finance; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
 ---
 The `Calc` tool evaluates a math expression and returns the answer, exactly
 where it can be exact. Decimals are exact fractions, so `0.1 + 0.2` is `0.3`
@@ -14,8 +14,7 @@ and a 30-digit integer keeps all 30 digits.
   your head and do not estimate: a model's mental arithmetic is wrong often
   enough to matter, and this call is cheap.
 - **Use it to check** a figure you were given before you rely on it.
-- **There are no statistics, finance or date functions.** Write the
-  formula from the operators: a mean is `sum(v) / len(v)`.
+- **There are no date functions.** Write the formula from the operators.
 - **Not for algebra.** It evaluates numbers; it does not solve equations or
   simplify formulas.
 
@@ -101,6 +100,10 @@ topic=Calc/<section>`:
   `unique`, `count`, `zip`, and the random functions with `seed`.
 - `Calc/units` — `convert` between units of length, mass, time,
   temperature, volume, energy, data size and more; prefixes and compounds.
+- `Calc/statistics` — mean, median, mode, variance and standard deviation
+  (sample or population), quantiles, ranks, correlation, regression.
+- `Calc/finance` — loan payments, future and present value, NPV, IRR,
+  compound growth, percentages; the sign convention.
 - `Calc/errors` — every error code and what to change.
 - `Calc/limits` — the bounds on one call.
 

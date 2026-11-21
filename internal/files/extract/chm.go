@@ -772,7 +772,7 @@ func (b *chmBook) topic(p, label string, level int) error {
 // (cyrillicCodePage): a page has many words, the contents file's names few.
 func (b *chmBook) decode(data []byte, minRuns int) ([]byte, bool) {
 	var enc encoding.Encoding
-	if label := chmMetaCharset(data); label != "" {
+	if label := htmlMetaCharset(data); label != "" {
 		switch {
 		case label == "utf-8" || label == "utf8":
 			return bytes.ToValidUTF8(data, []byte("�")), true
@@ -804,49 +804,6 @@ func (b *chmBook) decode(data []byte, minRuns int) ([]byte, bool) {
 		return bytes.ToValidUTF8(data, []byte("�")), true
 	}
 	return out, true
-}
-
-// chmMetaCharset is the encoding a page's <meta charset> or http-equiv
-// Content-Type names in its first 4 KiB, lower-cased; "" when none.
-func chmMetaCharset(data []byte) string {
-	z := html.NewTokenizer(bytes.NewReader(data[:min(len(data), 4096)]))
-	for {
-		switch z.Next() {
-		case html.ErrorToken:
-			return ""
-		case html.StartTagToken, html.SelfClosingTagToken:
-			name, hasAttr := z.TagName()
-			switch string(name) {
-			case "body":
-				return ""
-			case "meta":
-			default:
-				continue
-			}
-			var charset, content string
-			for hasAttr {
-				var k, v []byte
-				k, v, hasAttr = z.TagAttr()
-				switch strings.ToLower(string(k)) {
-				case "charset":
-					charset = string(v)
-				case "content":
-					content = string(v)
-				}
-			}
-			if charset == "" {
-				if i := strings.Index(strings.ToLower(content), "charset="); i >= 0 {
-					charset = content[i+len("charset="):]
-					if j := strings.IndexAny(charset, "; "); j >= 0 {
-						charset = charset[:j]
-					}
-				}
-			}
-			if c := strings.ToLower(strings.Trim(strings.TrimSpace(charset), `"'`)); c != "" {
-				return c
-			}
-		}
-	}
 }
 
 // resolve resolves a reference a page in dir makes to a file of this help
@@ -1072,40 +1029,4 @@ func (b *chmBook) parseTOC(data []byte) []chmTOCEntry {
 // or unknown: the cases where its unmarked pages may still be Cyrillic.
 func westernOrNone(cp encoding.Encoding) bool {
 	return cp == nil || cp == encoding.Encoding(charmap.Windows1252)
-}
-
-// cyrillicCodePage reports which single-byte Cyrillic code page unmarked
-// text is in, or nil when it does not look Cyrillic. In windows-1251 and
-// KOI8-R every Cyrillic letter is a byte at or above 0xC0, so Russian text
-// is full of runs of such bytes; Western text in windows-1252 has accented
-// letters one or two at a time between ASCII ones. minRuns runs of four or
-// more such bytes make it Cyrillic. Lower case, which most text is, is
-// 0xE0-0xFF in windows-1251 and 0xC0-0xDF in KOI8-R.
-func cyrillicCodePage(b []byte, minRuns int) *charmap.Charmap {
-	runs, n, lower, upper := 0, 0, 0, 0
-	for _, c := range b {
-		if c >= 0xC0 {
-			n++
-			if c >= 0xE0 {
-				lower++
-			} else {
-				upper++
-			}
-			continue
-		}
-		if n >= 4 {
-			runs++
-		}
-		n = 0
-	}
-	if n >= 4 {
-		runs++
-	}
-	if runs < minRuns {
-		return nil
-	}
-	if lower >= upper {
-		return charmap.Windows1251
-	}
-	return charmap.KOI8R
 }

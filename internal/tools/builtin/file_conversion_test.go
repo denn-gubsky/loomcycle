@@ -521,3 +521,59 @@ func TestFileExtract_CHMWorkerAndInProcessAgree(t *testing.T) {
 		t.Fatalf("the pool ran %v, want one extract", st.Jobs)
 	}
 }
+
+// A windows-1251 page that names no encoding, kept under a .txt name as old
+// Russian books often are, killed its conversion worker: its text reached
+// the wire as invalid UTF-8, which a protobuf string cannot hold, and the
+// dispatcher quarantined a readable file as a crasher (three library books
+// in a field sample). Through a worker it now reads as it does in process.
+func TestFileExtract_LegacyHTMLThroughAWorkerIsRead(t *testing.T) {
+	text, err := charmap.Windows1251.NewEncoder().String("Б.П.Никитин. Развивающие игры. Глава первая о том, как играть с детьми.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := []byte("<html><head><title>" + text[:24] + "</title></head><body><pre>" + text + "</pre></body></html>")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dispatch.New(dispatch.Options{Token: "tok"})
+	go func() { _ = d.Serve(l) }()
+	defer d.Stop()
+	wctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() {
+		_ = worker.Run(wctx, worker.Options{Target: l.Addr().String(), Token: "tok", ID: "w", Scratch: t.TempDir()})
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for d.Stats().Idle == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the worker did not attach")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	extractPage := func(f *File) string {
+		t.Helper()
+		r, ctx, _ := fileRun(t, inbox.Service{}, false)
+		kept := inbox.Capture(r.Ctx, inbox.Item{Name: "nikitindev.txt", MediaType: "application/octet-stream", Origin: "http"}, page)
+		if kept.Record.MediaType != "text/html" {
+			t.Fatalf("kept as %q", kept.Record.MediaType)
+		}
+		res, err := execFile(f, ctx, map[string]any{"op": "extract", "path": kept.Record.Ref})
+		if err != nil || res.IsError {
+			t.Fatalf("extract: %+v %v", res, err)
+		}
+		return res.Text
+	}
+	here := extractPage(&File{})
+	there := extractPage(&File{Convert: d.Client()})
+	if here != there {
+		t.Fatalf("through the worker:\n%s\nin process:\n%s", there, here)
+	}
+	if !strings.Contains(there, "Развивающие игры") {
+		t.Errorf("the page was not decoded:\n%s", there)
+	}
+	if st := d.Stats(); st.Jobs["extract/ok"] != 1 {
+		t.Fatalf("the pool ran %v, want one extract that did not kill its worker", st.Jobs)
+	}
+}

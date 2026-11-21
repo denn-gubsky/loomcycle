@@ -54,7 +54,8 @@ worker. With `to` a workspace reference, the transcript is written there: a
 file (`.md` is added when missing), or a folder (a path ending in `/`, or
 one already there) where it takes the recording's name. Without `to`, or
 with a plain name, it goes to the inbox. A transcript written into a
-workspace records the engine, the minutes and the language, not the model.
+workspace records the engine, the provider, the model, the minutes and the
+language, as one in the inbox does.
 
 - It needs your agent's `workspace` grant: `read` for the recording,
   `write` for a workspace `to`; the `Workspace` hooks judge both paths,

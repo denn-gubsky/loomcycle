@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"strings"
@@ -31,7 +32,25 @@ func (HTML) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 // parameter, so a test can reach it with a small page.
 func extractHTML(ctx context.Context, r io.ReaderAt, size int64, sink Sink, opts Options, cssBudget int) (Report, error) {
 	rep := Report{Format: "html"}
-	doc, err := parseHTMLPage(ctx, r, size)
+	if size > maxHTMLBytes {
+		return rep, refusedf("the page is over %d bytes", maxHTMLBytes)
+	}
+	// Read once, under the extraction's deadline: the count and the parse
+	// then work on the decoded copy.
+	raw, err := io.ReadAll(&ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, size)})
+	if err != nil {
+		return rep, err
+	}
+	data, note, err := decodeHTMLPage(raw)
+	if err != nil {
+		return rep, err
+	}
+	if note != "" {
+		rep.note("%s", note)
+	}
+	// A page in a single-byte code page grows as it is decoded, so the
+	// size cap was applied to the file and the parse takes what it gives.
+	doc, err := parseHTMLBytes(ctx, data)
 	if err != nil {
 		return rep, err
 	}
@@ -74,6 +93,16 @@ func parseHTMLPage(ctx context.Context, r io.ReaderAt, size int64) (*html.Node, 
 		return nil, err
 	}
 	return html.Parse(&ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, size)})
+}
+
+// parseHTMLBytes is parseHTMLPage for a page already read and decoded: the
+// same counting before the parse, without the file's size cap.
+func parseHTMLBytes(ctx context.Context, data []byte) (*html.Node, error) {
+	r := bytes.NewReader(data)
+	if err := countHTML(ctx, &ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, int64(len(data)))}); err != nil {
+		return nil, err
+	}
+	return html.Parse(&ctxReader{ctx: ctx, r: io.NewSectionReader(r, 0, int64(len(data)))})
 }
 
 // page walks the page's body into h.blocks.

@@ -14,7 +14,7 @@ runtime does the reading; the file's bytes never pass through you.
 | XLSX | a `##` section per sheet with one table of its cell values (what the sheet last computed, not formulas), the first `max_rows` rows, then `[+N rows omitted]` |
 | PPTX | `## Slide N — <title>` per slide in presentation order, its text and tables, pictures in place, speaker notes as a quote |
 | PDF | `## Page N` per page, its text read row by row from the top; its JPEG and JPEG 2000 pictures after the text, copied as they are (pictures stored as raw pixels are left out and counted in `notes`) |
-| HTML | headings, paragraphs, lists and tables; an image becomes a link to where it points, nothing is fetched |
+| HTML | headings, paragraphs, lists and tables; an image becomes a link to where it points, nothing is fetched. Its `<meta>` charset is honoured (an encoding outside the FB2 list is refused by name); a page naming none that is not UTF-8 is decoded as a text file is |
 | EPUB (2 and 3) | the book title as `#`, each chapter in spine order with its own headings one level down (a chapter with none takes its contents-list label), footnotes as `[n]` listed under Notes, the cover and pictures kept; items marked non-linear come last under Supplementary. A book with DRM (an `encryption.xml` that encrypts anything but fonts) is refused |
 | FB2 (and `.fb2.zip`) | the book title as `#`, sections as headings one level down per level, epigraphs and quotes as block quotes, poems line by line, tables, note references as `[n]` listed under Notes; a picture is placed where it stands when its bytes come first, else marked `[picture N]` there and kept under Pictures at the end. Read in UTF-8, UTF-16 (with a byte order mark), windows-1250/1251/1252, koi8-r, koi8-u, iso-8859-1/2/5 or ibm866; any other encoding is refused by name. A zip of more than one file is refused as an archive to unpack first |
 | MOBI, AZW, AZW3, PRC | the book title as `#`, its text with the book's own headings one level down (a MOBI 7 book's headings, written as large bold lines, are read back as headings; a KF8 part with none takes its contents label), lists and tables, footnotes as `[n]` listed under Notes, pictures kept; a file holding both a MOBI 7 and a KF8 book is read from its KF8 part. A book with DRM is refused. Text in windows-1252 or UTF-8; PalmDOC, HUFF/CDIC or no compression; a book's text is at most 64 MiB. `pages` does not apply |
@@ -23,7 +23,7 @@ runtime does the reading; the file's bytes never pass through you.
 | RTF (also one saved as `.doc`) | the title (`\info`'s, else the file name) as `#`, paragraphs with bold and italic, a paragraph with an outline level or a "heading N" style as a heading one level down, tables, a field's shown result, footnotes as `[n]` listed under Notes, PNG and JPEG pictures kept (WMF, EMF and others counted in `notes`); headers, footers and hidden text left out. `\'hh` bytes are read in code page 1250, 1251, 1252, 866, KOI8-R, KOI8-U or Mac Roman; a document whose bytes need any other is refused by name. A document is at most 64 MiB |
 | DjVu | its text layer, `## Page N` per page, after the book's outline headings; `pages` reads only those pages; a page with no text is listed in `low_yield_pages`. Read by DjVuLibre on a conversion worker, or in the server only where the operator configured it. With OCR, its thin pages (or every page) are rendered and read like a scanned PDF's; where nothing can render DjVu pages, the result's notes say page OCR is not available and the text layer is kept. A DjVu whose pages are separate files, or that includes other files, is refused |
 | CSV, TSV | one table |
-| text, Markdown | the text; Markdown keeps its structure, without raw HTML or embedded images |
+| text, Markdown | the text; Markdown keeps its structure, without raw HTML or embedded images. Text that is not UTF-8 is decoded, not refused: UTF-16 with a byte order mark, Cyrillic in windows-1251, KOI8-R or CP866 (recognised by its words), else windows-1252; `notes` names the code page. A file holding a NUL or many control characters is refused as not text |
 | PNG, JPEG, GIF, WebP, BMP | a one-section Markdown file that embeds the image |
 | VTT, SRT captions | a timed transcript: a section per ten minutes, `**Speaker** [hh:mm:ss] text` paragraphs, a speaker from each WebVTT voice tag (a Teams meeting's transcript reads this way, with no speech model) |
 | audio, video | handed to `transcribe` (see File/transcribe): the speech-to-text model writes the transcript |
@@ -161,7 +161,7 @@ excerpt.
   OCR model; the file itself never leaves the worker. With `to` on the same
   worker, the worker writes the OCR text into the Markdown in the workspace
   and only the text crosses; its provenance line there names the engine,
-  not the model. A DjVu book is not read by OCR here yet: its pages that
+  the provider and the model, as in the inbox. A DjVu book is not read by OCR here yet: its pages that
   would need it are listed in `ocr.pages_needing_ocr`; copy it into the
   inbox to read them. `dry_run` is refused, and a recording is not
   transcribed here (use `transcribe`).

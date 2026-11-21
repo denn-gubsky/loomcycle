@@ -213,7 +213,7 @@ func (f *File) transcribeFile(ctx context.Context, call sttCall, r dataRef, rel 
 	}
 	name := filepath.Base(rel)
 	slug := transcriptSlug(call, name)
-	return f.finishSTT(ctx, call, pass, r, name, plan.MediaType, true, func(md string) (string, tools.Result, bool) {
+	return f.finishSTT(ctx, call, pass, r, name, plan.MediaType, func(md string) (string, tools.Result, bool) {
 		return f.keepTranscript(ctx, slug, md, origin)
 	})
 }
@@ -296,15 +296,14 @@ func (f *File) keepTranscript(ctx context.Context, slug, md, origin string) (str
 
 // finishSTT writes what the pass transcribed (also a partial pass) through
 // keep, reports the pass, and answers the call. name is the recording's
-// file name; withModel false leaves the provider and the model out of the
-// transcript's provenance line (it is written into a workspace).
-func (f *File) finishSTT(ctx context.Context, call sttCall, p *sttpass.Pass, r dataRef, name, mt string, withModel bool,
+// file name.
+func (f *File) finishSTT(ctx context.Context, call sttCall, p *sttpass.Pass, r dataRef, name, mt string,
 	keep func(md string) (string, tools.Result, bool)) (tools.Result, error) {
 	ref := ""
 	var excerpt string
 	var truncated bool
 	if p.Done > 0 {
-		md := f.sttMarkdown(ctx, call, p, name, withModel)
+		md := f.sttMarkdown(ctx, call, p, name)
 		var res tools.Result
 		var ok bool
 		if ref, res, ok = keep(md); !ok {
@@ -333,7 +332,7 @@ func round1(x float64) float64 { return float64(int64(x*10+0.5)) / 10 }
 // sttMarkdown renders the transcript: provenance under the title, a section
 // per chunk_minutes, speaker labels when the engine gave them, each segment's
 // start unless timestamps are off. Bounded like an extraction's Markdown.
-func (f *File) sttMarkdown(ctx context.Context, call sttCall, p *sttpass.Pass, name string, withModel bool) string {
+func (f *File) sttMarkdown(ctx context.Context, call sttCall, p *sttpass.Pass, name string) string {
 	segs := transcribe.Merge(p.Pieces, p.Results)
 	cues := make([]extract.TranscriptCue, len(segs))
 	for i, s := range segs {
@@ -342,9 +341,6 @@ func (f *File) sttMarkdown(ctx context.Context, call sttCall, p *sttpass.Pass, n
 	language := call.opts.Language
 	meta := fmt.Sprintf("stt engine=%s provider=%s model=%s minutes=%.1f language=%s",
 		metaValue(p.Plan.Engine), metaValue(p.Plan.Provider), metaValue(p.Plan.Model), p.Seconds/60, metaValue(language))
-	if !withModel {
-		meta = fmt.Sprintf("stt engine=%s minutes=%.1f language=%s", metaValue(p.Plan.Engine), p.Seconds/60, metaValue(language))
-	}
 	if p.Speakers && len(p.Pieces) > 1 {
 		meta += " speakers=per-section"
 	}

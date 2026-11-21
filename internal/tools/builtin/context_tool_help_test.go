@@ -175,7 +175,7 @@ func TestContextHelp_ToolArticleListsItsSections(t *testing.T) {
 		t.Errorf("Calc/errors lists children: %v", sec)
 	}
 
-	_, res := callContext(t, c, context.Background(), `{"op":"help","topic":"Calc/finance"}`)
+	_, res := callContext(t, c, context.Background(), `{"op":"help","topic":"Calc/no-such-section"}`)
 	if !res.IsError || !strings.Contains(res.Text, "Calc documents: ") || !strings.Contains(res.Text, "Calc/language") {
 		t.Errorf("missing section = %q, want an error naming Calc's sections", res.Text)
 	}
