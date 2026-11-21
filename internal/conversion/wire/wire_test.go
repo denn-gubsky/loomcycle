@@ -13,6 +13,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
 	"github.com/denn-gubsky/loomcycle/internal/files/render"
+	"google.golang.org/protobuf/proto"
 )
 
 // A value past int32 is clamped on the wire, never wrapped into another one.
@@ -171,5 +172,26 @@ func TestPageImages_RoundTripAndCannotGoNegative(t *testing.T) {
 	}
 	if r := ReportFromWire(ReportToWire(extract.Report{Format: "djvu", PageImagesUnavailable: true})); !r.PageImagesUnavailable {
 		t.Error("page_images_unavailable did not cross the wire")
+	}
+}
+
+// A protobuf string must be UTF-8: a report whose note or metadata holds
+// any other byte does not marshal, and the worker's stream ends as if the
+// job had killed it. What a worker sends is made UTF-8 first.
+func TestReportToWire_InvalidUTF8StillMarshals(t *testing.T) {
+	bad := "caf\xe9 \xd0\xe0\xe7"
+	if _, err := proto.Marshal(&workerpb.Report{Notes: []string{bad}}); err == nil {
+		t.Fatal("premise: protobuf marshals a string that is not UTF-8")
+	}
+	w := ReportToWire(extract.Report{Format: "html", Notes: []string{"ok", bad},
+		Metadata: &extract.BookMetadata{Title: bad, Authors: []string{bad}, Identifiers: []extract.BookIdentifier{{Scheme: "isbn", Value: bad}}}})
+	if _, err := proto.Marshal(w); err != nil {
+		t.Fatalf("the report does not marshal: %v", err)
+	}
+	if w.GetNotes()[0] != "ok" || !utf8.ValidString(w.GetNotes()[1]) || !strings.HasPrefix(w.GetNotes()[1], "caf") {
+		t.Errorf("notes %q", w.GetNotes())
+	}
+	if _, err := proto.Marshal(&workerpb.Text{Markdown: UTF8Text(bad)}); err != nil {
+		t.Fatalf("UTF8Text left invalid bytes: %v", err)
 	}
 }

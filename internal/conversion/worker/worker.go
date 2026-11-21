@@ -750,6 +750,7 @@ func (s *remoteSink) Text(md string) error {
 	if s.full.Load() {
 		return extract.ErrSinkFull
 	}
+	md = wire.UTF8Text(md)
 	for len(md) > 0 {
 		n := min(len(md), wire.ChunkSize)
 		// Cut on a rune boundary.
