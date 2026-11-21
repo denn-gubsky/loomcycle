@@ -85,6 +85,24 @@ type result struct {
 
 var errProtocol = errors.New("the worker broke the protocol")
 
+// jobStart is the frame that hands j to a worker, under timeout.
+func jobStart(j *job, timeout time.Duration) *workerpb.JobStart {
+	start := &workerpb.JobStart{JobId: j.id, Kind: j.kind, InputSize: j.size, MediaType: j.mediaType, Name: j.name,
+		TimeoutMs: timeout.Milliseconds(), Language: j.language, Format: j.format}
+	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT {
+		_, records := j.sink.(extract.RecordSink)
+		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: wire.I32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings, Records: records,
+			PageImages: wire.PageImagesToWire(j.opts.PageImages)}
+	}
+	if j.kind == workerpb.JobKind_JOB_KIND_ARCHIVE_UNPACK {
+		start.Unpack = wire.UnpackToWire(j.unpack)
+	}
+	for _, p := range j.pages {
+		start.Pages = append(start.Pages, wire.I32(p))
+	}
+	return start
+}
+
 // serve runs j on the slot's stream. Every send happens on this goroutine;
 // a second one only receives.
 func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_WorkServer, s *slot, j *job) (res result) {
@@ -102,19 +120,7 @@ func (d *Dispatcher) serve(ctx context.Context, stream workerpb.WorkerService_Wo
 	if j.timeout > 0 {
 		timeout = j.timeout
 	}
-	start := &workerpb.JobStart{JobId: j.id, Kind: j.kind, InputSize: j.size, MediaType: j.mediaType, Name: j.name,
-		TimeoutMs: timeout.Milliseconds(), Language: j.language, Format: j.format}
-	if j.kind == workerpb.JobKind_JOB_KIND_EXTRACT {
-		_, records := j.sink.(extract.RecordSink)
-		start.Extract = &workerpb.ExtractOptions{Images: j.opts.Images, MaxRows: wire.I32(j.opts.MaxRows), InferHeadings: j.opts.InferHeadings, Records: records,
-			PageImages: wire.PageImagesToWire(j.opts.PageImages)}
-	}
-	if j.kind == workerpb.JobKind_JOB_KIND_ARCHIVE_UNPACK {
-		start.Unpack = wire.UnpackToWire(j.unpack)
-	}
-	for _, p := range j.pages {
-		start.Pages = append(start.Pages, wire.I32(p))
-	}
+	start := jobStart(j, timeout)
 	if err := stream.Send(&workerpb.JobFrame{Msg: &workerpb.JobFrame_Start{Start: start}}); err != nil {
 		return result{retry: true}
 	}
