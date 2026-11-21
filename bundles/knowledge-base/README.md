@@ -731,13 +731,30 @@ nothing else and changes nothing in force.
 |---|---|---|
 | `report` (default) | none | reads the briefs and the ontology and counts what a pass would send: `batches`, `runs_used`, `calls.planned_domains`, `calls.planned_generate`, `calls.estimated_chars` (the characters a `generate` pass would send, an upper bound: every scheme in an update or a review is counted at `max_concepts` concepts of 400 characters) and `requests` (the largest single request, against the writer's limit). **Run this first** |
 | `domains` | 1 | one request over a spread sample of `batch_size` briefs: three to five taxonomies worth building, each with a `name`, a one-line `domain`, the declared classes it would arrange (`projects`; a class the ontology does not declare is dropped and counted) and `why`. One already in force is marked `exists`. **Reported only**: an operator picks which to generate |
-| `generate` | runs x batches + 1 | builds the scheme named by `scheme`, for the one-line `domain`. The briefs are cut into batches of about `batch_size`. Each run asks a generate request over its first batch and an update request per further batch, run `r` starting at batch `r`, so each run meets the corpus in a different order. `runs` is clamped to the number of batches (`runs_used`, `runs_clamped`): a further run would meet the same briefs in the same order as an earlier one, and agreeing with it would show nothing. A review request then gets every run's scheme and keeps the concepts that recur in at least half the runs, under the clearest wording, and checks that siblings do not overlap; with one run (a corpus of one batch) it only checks. With `write: "propose"` (the default) the result is filed through `propose_entity` as **one whole-scheme proposal** with `@origin generated`, `@domain` and `@projects`: inert until an operator accepts or rejects it in the Ontology page. `write: "none"` reports the outline and files nothing |
+| `generate` | runs x batches + 1 | builds the scheme named by `scheme`, for the one-line `domain`. The briefs are cut into batches of about `batch_size`. Each run asks a generate request over its first batch and an update request per further batch, run `r` starting at batch `r`, so each run meets the corpus in a different order. `runs` is clamped to the number of batches (`runs_used`, `runs_clamped`): a further run would meet the same briefs in the same order as an earlier one, and agreeing with it would show nothing. The code then keeps the concepts a majority of the runs hold (see **Recurrence** below; with one run, a corpus of one batch, all of them), and a review request names each kept concept by one of its wordings, merges overlapping siblings and checks the shape; whatever the review adds is dropped. With `write: "propose"` (the default) the result is filed through `propose_entity` as **one whole-scheme proposal** with `@origin generated`, `@domain` and `@projects`: inert until an operator accepts or rejects it in the Ontology page. `write: "none"` reports the outline and files nothing |
 
 One generation is not a taxonomy: measured on one corpus, five generations
 agreed only partly on the top-level split (pairwise adjusted Rand index 0.44
 to 0.59). That is why `generate` runs up to three times by default, one run
 per batch, and keeps what recurs. A corpus of one batch (up to `batch_size`
 briefs) gets one generation.
+
+**Recurrence.** Which concepts recur is counted in code, not asked of the
+model: asked to keep what recurs, the review unioned the runs (on one corpus,
+runs of 66 and 91 concepts came back as 102, overlaps kept). A concept is
+matched across runs by its key, the name's tag segment with its words made
+singular, `and`, `of`, `the` and the like left out and the rest sorted
+(`Memory recall` and `memory-recall`, `hooks and lifecycle events` and
+`lifecycle events and hooks` are one), under its parents' keys, so a kept
+child always has a kept parent. It is kept when a **majority** of the runs
+hold it: two of two, two of three, three of four or five. "At least half"
+would keep one run of two, the union again. The review is shown only the kept
+set (`KEEP`, each concept with every wording the runs used) and its result is
+held to it: a concept whose key is not kept is dropped and counted (its kept
+children take its place), and each key is kept once, so the scheme filed is
+never larger than the kept set. The report's `recurrence` gives `need` (runs
+a concept must be in), `per_run` (each run's concept count), `kept`,
+`not_recurring` and `added_by_review`.
 
 Other input: `projects` (class names: only documents of those classes and
 their subclasses are read, and the scheme's `@projects` is set to them; an
@@ -778,12 +795,12 @@ estimated_chars}}`, plus in `domains` and `generate`: `model_failures`,
 `parse_errors`, `cut` (replies stopped at the output cap), `dropped`, `usage`
 (tokens summed over the writer's runs), `models`, `runs` (the writer's run
 ids), and `domains`, or `candidates` (per run: its concepts and top-level
-names), `scheme` and `proposal: {filed, chunk_id, concepts}` (or `refusal`).
+names), `recurrence`, `scheme` and `proposal: {filed, chunk_id, concepts}` (or `refusal`).
 `status` is `complete`, `refused`, `unreadable` (a read failed, e.g. no tenant
 grant), `empty` (no briefs), `no_ontology`, `unknown_class`, `scheme_exists`,
 `scheme_proposed`, `budget_refused`, `input_too_large`, `budget_stopped`,
 `provider_unavailable`, `domains_failed`, `generate_failed` (no run produced a
-scheme), `review_failed`, `filing_refused` or `failed`. `proposal_check:
+scheme), `nothing_recurs` (no concept is held by a majority of the runs; no review is asked), `review_failed`, `filing_refused` or `failed`. `proposal_check:
 partial` says the ontology held more proposed or rejected chunks than one read
 returns (1000), so a proposal of the same name may not have been found; filing
 would then be refused at the end.
