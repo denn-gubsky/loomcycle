@@ -64,13 +64,6 @@ func runWorker(args []string, stderr io.Writer) int {
 		}
 		slots = n
 	}
-	wrapper := strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
-	helperFrom := func(env, key string) *convert.Helper {
-		if cmd := strings.TrimSpace(os.Getenv(env)); cmd != "" {
-			return &convert.Helper{Key: key, Command: cmd, Wrapper: wrapper}
-		}
-		return nil
-	}
 	tlsCfg, err := workerTLS()
 	if err != nil {
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
@@ -78,29 +71,15 @@ func runWorker(args []string, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	err = worker.Run(ctx, worker.Options{
-		Target: *dispatcher,
-		// Trimmed as the runtime trims it: a secret file's trailing newline
-		// must not make two equal tokens differ.
-		Token:        strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TOKEN")),
-		Slots:        slots,
-		Scratch:      os.Getenv("LOOMCYCLE_WORKER_SCRATCH"),
-		ID:           *id,
-		BuildVersion: buildVersion,
-		ParentPID:    *parentPID,
-		Rasterize:    helperFrom("LOOMCYCLE_WORKER_RASTERIZE_COMMAND", "transcription.ocr.rasterize"),
-		Media:        helperFrom("LOOMCYCLE_WORKER_MEDIA_COMMAND", "transcription.stt.media"),
-		Encode:       helperFrom("LOOMCYCLE_WORKER_ENCODE_COMMAND", "speech.encode"),
-		WritePDF:     pdfHelper(wrapper),
-		Draw:         diagramHelper(wrapper),
-		DjVuText:     defaultedHelper("LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND", convert.DjVuTextProgram, convert.DefaultDjVuTextCommand, convert.DjVuTextHelperKey, wrapper),
-		DjVuInspect:  defaultedHelper("LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND", convert.DjVuInspectProgram, convert.DefaultDjVuInspectCommand, convert.DjVuInspectHelperKey, wrapper),
-		DjVuRasterize: defaultedHelper("LOOMCYCLE_WORKER_DJVU_RASTERIZE_COMMAND", convert.DjVuRasterizeProgram, convert.DefaultDjVuRasterizeCommand,
-			convert.DjVuRasterizeHelperKey, wrapper),
-		Images:   vision.NewReencoder(),
-		TLS:      tlsCfg,
-		Insecure: os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1",
-	})
+	opt := workerHelpers()
+	opt.Target = *dispatcher
+	// Trimmed as the runtime trims it: a secret file's trailing newline
+	// must not make two equal tokens differ.
+	opt.Token = strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKER_TOKEN"))
+	opt.Slots, opt.Scratch, opt.ID = slots, os.Getenv("LOOMCYCLE_WORKER_SCRATCH"), *id
+	opt.BuildVersion, opt.ParentPID = buildVersion, *parentPID
+	opt.TLS, opt.Insecure = tlsCfg, os.Getenv("LOOMCYCLE_WORKER_INSECURE") == "1"
+	err = worker.Run(ctx, opt)
 	switch {
 	case err == nil:
 		return 0
@@ -110,6 +89,32 @@ func runWorker(args []string, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 	return 1
+}
+
+// workerHelpers are a conversion worker's helpers and image re-encoder,
+// from this process's environment. A workspace worker reads the same ones
+// to report the labels of the conversion child it starts (RFC GW D34): the
+// child is this binary, started with this environment.
+func workerHelpers() worker.Options {
+	wrapper := strings.TrimSpace(os.Getenv("LOOMCYCLE_HELPER_WRAPPER"))
+	helperFrom := func(env, key string) *convert.Helper {
+		if cmd := strings.TrimSpace(os.Getenv(env)); cmd != "" {
+			return &convert.Helper{Key: key, Command: cmd, Wrapper: wrapper}
+		}
+		return nil
+	}
+	return worker.Options{
+		Rasterize:   helperFrom("LOOMCYCLE_WORKER_RASTERIZE_COMMAND", "transcription.ocr.rasterize"),
+		Media:       helperFrom("LOOMCYCLE_WORKER_MEDIA_COMMAND", "transcription.stt.media"),
+		Encode:      helperFrom("LOOMCYCLE_WORKER_ENCODE_COMMAND", "speech.encode"),
+		WritePDF:    pdfHelper(wrapper),
+		Draw:        diagramHelper(wrapper),
+		DjVuText:    defaultedHelper("LOOMCYCLE_WORKER_DJVU_TEXT_COMMAND", convert.DjVuTextProgram, convert.DefaultDjVuTextCommand, convert.DjVuTextHelperKey, wrapper),
+		DjVuInspect: defaultedHelper("LOOMCYCLE_WORKER_DJVU_INSPECT_COMMAND", convert.DjVuInspectProgram, convert.DefaultDjVuInspectCommand, convert.DjVuInspectHelperKey, wrapper),
+		DjVuRasterize: defaultedHelper("LOOMCYCLE_WORKER_DJVU_RASTERIZE_COMMAND", convert.DjVuRasterizeProgram, convert.DefaultDjVuRasterizeCommand,
+			convert.DjVuRasterizeHelperKey, wrapper),
+		Images: vision.NewReencoder(),
+	}
 }
 
 // pdfHelper is the PDF render helper (RFC GR P2): the operator's

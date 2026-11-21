@@ -247,6 +247,7 @@ func (d *Dispatcher) serve(ctx context.Context, stream workspacepb.WorkspaceServ
 					return result{err: &OpError{Class: workspace.ClassOutputTooLarge, Detail: fmt.Sprintf("the worker sent more than %d bytes", o.max)}}
 				}
 				out = append(out, data...)
+				d.countOutput(req.Op, len(data))
 			case f.GetDone() != nil:
 				return doneResult(f.GetDone(), out)
 			default:

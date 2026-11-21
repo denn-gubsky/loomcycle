@@ -46,6 +46,10 @@ type Limits struct {
 	// DefaultCopyMaxBytes.
 	CopyMaxFiles int
 	CopyMaxBytes int64
+	// ConvertQuarantine is how long a file that crashed a worker's
+	// conversion child is refused for its workspace
+	// (conversion.quarantine_ttl_s); zero is DefaultConvertQuarantine.
+	ConvertQuarantine time.Duration
 }
 
 // The folder-copy bounds of a Limits that names none: config
@@ -62,6 +66,8 @@ type Manager struct {
 	limits Limits
 	log    *slog.Logger
 	now    func() time.Time
+	// quarantine is the files that crashed a workspace's conversion child.
+	quarantine quarantine
 }
 
 // New builds a manager. A zero MaxPerRun is 1: a run that may open
@@ -75,6 +81,9 @@ func New(d *dispatch.Dispatcher, st Store, l Limits, log *slog.Logger) *Manager 
 	}
 	if l.CopyMaxBytes <= 0 {
 		l.CopyMaxBytes = DefaultCopyMaxBytes
+	}
+	if l.ConvertQuarantine <= 0 {
+		l.ConvertQuarantine = DefaultConvertQuarantine
 	}
 	if log == nil {
 		log = slog.Default()

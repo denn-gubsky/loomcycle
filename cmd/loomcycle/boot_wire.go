@@ -311,6 +311,7 @@ func (b *boot) bindStoreToTools() {
 		b.workspaces = lifecycle.New(b.workspace, storeIface, lifecycle.Limits{
 			MaxPerRun: ws.MaxPerRun, MaxPerTenant: ws.MaxPerTenant, LostAfter: time.Duration(ws.LostAfterS) * time.Second,
 			DiskQuotaBytes: ws.DiskQuotaMB << 20, CopyMaxFiles: ws.Copy.MaxFiles, CopyMaxBytes: ws.Copy.MaxBytes,
+			ConvertQuarantine: time.Duration(b.cfg.Conversion.Resolved().QuarantineTTLS) * time.Second,
 		}, slog.Default())
 		b.workspaceTool.Manager = b.workspaces
 		// File reaches workspaces by reference (RFC GW P2) through the same

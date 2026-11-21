@@ -33,6 +33,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
@@ -85,7 +86,17 @@ type Options struct {
 	// Commands, when not empty, are the programs an exec may start with
 	// (LOOMCYCLE_WORKSPACE_COMMANDS); see engine.Host.Commands.
 	Commands []string
-	Labels   []string
+	// Labels are the conversion labels (conversion/wire.Label*) of the
+	// helpers this worker's conversion child has, reported at attach: what
+	// a workspace's file can be converted to here (RFC GW D34). A worker
+	// that converts nothing reports none.
+	Labels []string
+	// Convert runs the conversions of a workspace's files. nil starts the
+	// conversion child ConvertChild describes; with neither, the worker
+	// converts nothing and refuses the convert ops.
+	Convert convert.Client
+	// ConvertChild is the conversion child to start when Convert is nil.
+	ConvertChild *ConvertChild
 	// MeasureBudget bounds the walk that counts a workspace's bytes for its
 	// quota; past it the count is an estimate. Zero is 10 s.
 	MeasureBudget time.Duration
@@ -168,6 +179,18 @@ func Run(ctx context.Context, opt Options) error {
 		safego.Go(ctx, "workspace.worker.parent", func() { workerlink.WatchParent(ctx, opt.ParentPID, cancel) })
 	}
 	log.Warn("the host engine runs commands as this process's user, with no isolation; use it only on a trusted machine", "root", root)
+	if opt.Convert == nil && opt.ConvertChild != nil {
+		c, stop, err := startConverter(opt.BuildVersion, opt.ConvertChild, log)
+		if err != nil {
+			log.Warn("cannot start the conversion child; this worker converts no workspace file", "err", err)
+		} else {
+			defer stop()
+			opt.Convert = c
+		}
+	}
+	if opt.Convert == nil {
+		opt.Labels = nil
+	}
 	w := &worker{opt: opt, log: log, engine: &engine.Host{Commands: opt.Commands}}
 	defer w.engine.Close()
 	w.cleanWork()
