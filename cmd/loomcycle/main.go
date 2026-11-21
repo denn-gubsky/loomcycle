@@ -31,6 +31,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	// The IANA zone database, embedded (430 KB of binary) so that a minimal
+	// image with no /usr/share/zoneinfo (distroless static) resolves
+	// "Europe/Kyiv" exactly as a full host does: Calc's tz(), the
+	// scheduler's cron zones and ACL time conditions all call
+	// time.LoadLocation. The host's database still wins where it exists.
+	_ "time/tzdata"
 
 	"github.com/denn-gubsky/loomcycle/internal/agents"
 	"github.com/denn-gubsky/loomcycle/internal/concurrency"
