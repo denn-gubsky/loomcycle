@@ -94,3 +94,38 @@ func TestHTML_UnreadEncodingIsRefusedByName(t *testing.T) {
 		t.Fatalf("err = %v, want a refusal naming shift_jis", err)
 	}
 }
+
+// An English DOS text whose only 8-bit bytes are box-drawing lines (CP437
+// 0xC4, "─", eighty in a row) was read as KOI8-R: 0xC4 is a lower-case
+// Cyrillic letter there, so the line counted as a run of Cyrillic letters
+// (a library file, Natural_Bug_Sprays_For_Plants_1993.txt). A run of one
+// byte repeated is no word, and a text of English words with a few
+// Cyrillic-looking runs is not Russian: it is read as DOS code page 437.
+func TestText_EnglishDOSTextWithBoxLinesIsNotCyrillic(t *testing.T) {
+	line := strings.Repeat("\xc4", 80)
+	var b strings.Builder
+	for i := 0; i < 20; i++ {
+		b.WriteString("FIDONET TOPICS (9:2500/0) \xc4\xc4\xc4\xc4\xc4\xc4\xc4\xc4 SURVIVAL\r\n" + line + "\r\n")
+		b.WriteString("Most gardeners realize that all manner of bugs are a fundamental part of nature.\r\n")
+	}
+	s, rep := run(t, Text{}, []byte(b.String()), Options{Name: "bugs.txt"})
+	md := s.md.String()
+	if strings.ContainsAny(md, "абвгдежзийклмнопрстуфхцчшщъыьэюя") {
+		t.Fatalf("English text read as Cyrillic:\n%.400s", md)
+	}
+	if !strings.Contains(md, "────") || !strings.Contains(strings.Join(rep.Notes, "\n"), "437") {
+		t.Errorf("notes %q; want the box lines read as CP437:\n%.400s", rep.Notes, md)
+	}
+}
+
+// Russian DOS text keeps its box-drawing frame and its CP866 letters.
+func TestText_RussianDOSTextWithAFrameIsCP866(t *testing.T) {
+	text := "╔══════════════════════════════════╗\n║ Данное художественное произведение ║\n╚══════════════════════════════════╝\n" + ruText
+	s, rep := run(t, Text{}, []byte(cp(t, charmap.CodePage866, text)), Options{Name: "orange.txt"})
+	if md := s.md.String(); !strings.Contains(md, "Данное художественное произведение") || !strings.Contains(md, "Мальчик шёл") {
+		t.Fatalf("got:\n%s", md)
+	}
+	if !strings.Contains(strings.Join(rep.Notes, "\n"), "866") {
+		t.Errorf("notes %q", rep.Notes)
+	}
+}
