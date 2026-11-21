@@ -169,6 +169,10 @@ var tenantConfinableTools = map[string]bool{
 	// caller's own principal. It spends tokens, so it additionally needs the
 	// scope that creates a run (toolScope).
 	"decision": true,
+	// calc: a pure function of its arguments — it reads and writes no tenant's
+	// data — so there is nothing to confine. No scope by name: each call takes
+	// one unit of the token's run rate in the connector, as crypto does.
+	"calc": true,
 
 	// Per-run / per-user — tenant inherited; the underlying tool applies its
 	// own own-subject / cross-tenant-404 gate.
@@ -231,6 +235,9 @@ var userSelfServiceTools = map[string]bool{
 	// The grant, not this list, holds it to submit_self
 	// (tools.OffRunEvaluationPolicy), and the tool to its own runs.
 	"evaluation": true,
+	// calc: a pure function, held to the token's run rate like every caller's
+	// call; it reaches no data, so an isolated user loses nothing by it.
+	"calc": true,
 }
 
 // toolScope is the scope a principal must hold to list and call a tool, ON
@@ -596,6 +603,7 @@ const defFamilyOps = "one route; the definition operation asks author, retire or
 // mcpToolsWithoutTwin are the meta-tools no HTTP route mirrors.
 var mcpToolsWithoutTwin = map[string]string{
 	"authz":    "the access questions are ungoverned on every transport (POST /v1/_authz/*)",
+	"calc":     "a pure function; its HTTP route arrives with the HTTP transport (P4)",
 	"context":  "the caller's own identity and reach; no route",
 	"identity": "the directory questions ask read or manage principal per call",
 }
