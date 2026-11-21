@@ -8,6 +8,41 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.165.0
+
+*Every agent gets `Calc`, exact arithmetic with units, dates, statistics and finance (RFC GY P1). Workspace files can be copied, imported, converted, OCR'd, transcribed and unpacked on their own worker (RFC GW P2). `kb/taxonomist` keeps only the concepts that recur across its runs, and `kb/walker` keeps only the "what changed" taxonomy move (RFC GM follow-ups). Legacy-encoded text and HTML are read.*
+
+The v1.165 line: #2808 to #2829.
+- `@loomcycle/client` 1.165.0: `effective_tools` on a Library agent. The Python adapter is unchanged and stays 1.162.0.
+- No numbered migration, no new Go dependency. The core-to-worker protocol (`proto/worker.proto`) gains additive messages; the public wire is unchanged apart from the new `calc` MCP meta-tool and `effective_tools`.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **Every agent gets the `Calc` tool (#2829).** It is added when an agent is resolved, never written into a stored or hashed `tools` list, so no content hash changes. Its description and schema add roughly 300–330 input tokens to each model call of an agent that keeps it (cached after the first call where the provider caches tools). Remove it with `tools: [..., -Calc]`. A `-Name` entry is valid only for a default tool (`Context`, `Calc`); any other is refused at load, AgentDef create/fork and `register_agent` (#2813). The bundled single-purpose workers remove it.
+- **The bundled `kb/annotator` declares `memory_scopes` and `sql_scopes` `[tenant]` (#2811)**, as `kb/taxonomist` does since v1.164.0. Remove an operator overlay that added them.
+- **`kb/walker` drops the topic, `place`, facet-baseline and concept-chain moves (#2818)** after a measurement showed them lowering overview recall (0.226 against 0.310) while most documents are unplaced; it keeps the "what changed" move (`measure share` and `compare`), which helped. The runtime keeps `place`, `baseline` and `with_memberships`.
+- **`kb/taxonomist` keeps a concept only when a strict majority of its runs produced it (#2819):** 2 of 2, 2 of 3, 3 of 4. With two runs the earlier rule kept their union. A pass where nothing recurs ends `nothing_recurs` without the review call, and the review can no longer add concepts.
+
+### Calc (RFC GY P1: #2810, #2812, #2813, #2816, #2817, #2820–#2824, #2829)
+
+- `Calc {expr, vars?, digits?, seed?}` evaluates one expression exactly: rationals and big integers, decimal rounding, lists and functions. Sections for statistics and finance (`mean`, `stdev`, `linreg`, `pmt`, `irr`, `npv` …), unit conversion (`convert`, `convertdelta`, `units`), and dates and times with the zone database embedded. Variables and built-in functions live in separate namespaces, so `rate = 0.05` works.
+- Help is split into section articles (`Calc/finance`, `Calc/dates` …), a new article kind for tools without an `op`.
+- The `calc` MCP meta-tool runs the same evaluator outside a run, charged to the token's run rate. A refusal is counted in `loomcycle_calc_refusals_total{error}`.
+
+### Workspaces (RFC GW P2: #2809, #2814, #2815, #2825, #2826, #2828)
+
+- `workspace:<name>:<path>` references in the File tool: `copy` between the inbox, volumes and workspaces, streamed; `import`, `download`, `upload`, and Crypto on workspace files.
+- `extract`, `render`, OCR, `transcribe` and `unpack` of a workspace file run on that workspace's worker, in a conversion child it supervises. No provider key reaches a worker; the result names the model in its provenance (#2826).
+
+### Files (#2827)
+
+- Text and HTML in windows-1251, KOI8-R, CP866 or Latin-1 that name no encoding are detected and decoded; an HTML page's declared charset is honoured. A conversion worker never sends invalid UTF-8.
+
+### Knowledge base (#2808, #2811, #2818, #2819)
+
+- `kb/ask` routes "which plans have we written" to a kind listing (#2808).
+
 ## What's in v1.164.0
 
 *Security: an in-run AgentDef fork that changes an agent's code no longer keeps grants its author lacks (#2803). The ontology now plans every directive change of an entry in use, and refuses renaming a class in use (RFC GQ rulings, #2802). `kb/taxonomist` ships with its tenant scopes (#2801). Workspace workers stream files in and out and keep a disk quota (RFC GW P2, #2804).*
