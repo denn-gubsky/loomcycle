@@ -433,7 +433,7 @@ func TestKnowledgeBaseBundle_AnnotatorAuthority(t *testing.T) {
 	if a.Provider != "code-js" || a.Model != "" || a.Tier != "" {
 		t.Errorf("kb/annotator provider/model/tier = %q/%q/%q, want code-js with no model", a.Provider, a.Model, a.Tier)
 	}
-	got := append([]string(nil), a.Tools...)
+	got := heldTools(a)
 	sortStrings(got)
 	if strings.Join(got, ",") != "Agent,Channel,Document" {
 		t.Errorf("kb/annotator tools = %v, want exactly [Document Agent Channel]", a.Tools)
@@ -464,7 +464,7 @@ func TestKnowledgeBaseBundle_AnnotatorAuthority(t *testing.T) {
 	if !ok {
 		t.Fatal("kb/annotate not registered")
 	}
-	if len(w.Tools) != 0 || !containsString(w.Skills, "-*") || !w.DisableContext || !w.Internal || w.Tier != "middle" || w.Model != "" {
+	if len(heldTools(w)) != 0 || !containsString(w.Skills, "-*") || !w.DisableContext || !w.Internal || w.Tier != "middle" || w.Model != "" {
 		t.Errorf("kb/annotate must be tool-less, skill-less, context-less, internal, tier middle: %+v", w)
 	}
 	if len(w.MemoryScopes) > 0 || len(w.SqlScopes) > 0 || len(w.StatementMethods) > 0 {

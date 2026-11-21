@@ -579,7 +579,7 @@ func (f *skyFake) toolsFor(name string) []tools.Tool {
 		"HTTP": &skyNoTool{name: "HTTP"},
 	}
 	var out []tools.Tool
-	for _, n := range f.cfg.Agents[name].Tools {
+	for _, n := range heldTools(f.cfg.Agents[name]) {
 		if strings.HasPrefix(n, "mcp__skybits__") {
 			out = append(out, &skyTool{f: f, name: strings.TrimPrefix(n, "mcp__skybits__")})
 			continue

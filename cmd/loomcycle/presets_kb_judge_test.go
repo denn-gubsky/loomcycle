@@ -28,7 +28,7 @@ func TestKBJudge_BundleShape(t *testing.T) {
 	if j.Provider != "code-js" || j.Model != "" || j.Tier != "" {
 		t.Errorf("kb/judge provider %q model %q tier %q, want code-js and nothing resolved", j.Provider, j.Model, j.Tier)
 	}
-	got := append([]string(nil), j.Tools...)
+	got := heldTools(j)
 	sort.Strings(got)
 	if strings.Join(got, ",") != "Agent,Document" {
 		t.Errorf("kb/judge tools = %v, want exactly [Document Agent]", j.Tools)
@@ -56,7 +56,7 @@ func TestKBJudge_BundleShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("kb/judge-verdict not registered")
 	}
-	if len(v.Tools) != 0 || !containsString(v.Skills, "-*") || !v.DisableContext || !v.Internal {
+	if len(heldTools(v)) != 0 || !containsString(v.Skills, "-*") || !v.DisableContext || !v.Internal {
 		t.Errorf("kb/judge-verdict tools %v skills %v disable_context %v internal %v — it must hold nothing", v.Tools, v.Skills, v.DisableContext, v.Internal)
 	}
 	if len(v.MemoryScopes) > 0 || len(v.SqlScopes) > 0 || len(v.HistoryScope) > 0 || len(v.StatementMethods) > 0 {

@@ -55,7 +55,7 @@ agents:
     # manifest in SQL Memory) and Agent (skybits/import, which the body alone
     # spawns: the agent definition cannot name the child). No Skybits write
     # tool, no network tool, no File.
-    tools: [mcp__skybits__find_documents, mcp__skybits__list_tags, mcp__skybits__list_jobs, Document, Path, Memory, Agent]
+    tools: [mcp__skybits__find_documents, mcp__skybits__list_tags, mcp__skybits__list_jobs, Document, Path, Memory, Agent, -Calc]
     # mark_source, the lease and the rule:skybits-duplicates proposals all ask
     # for this grant.
     statement_methods: [rule]
@@ -1003,7 +1003,7 @@ agents:
     # transcribe, import, rm), HTTP (File download goes through it), Document,
     # Path, Memory (its manifest row) and Agent (skybits/structure, which the
     # body alone spawns). No Skybits write tool.
-    tools: [mcp__skybits__outline_document, mcp__skybits__document_history, mcp__skybits__start_export, mcp__skybits__get_job, mcp__skybits__list_jobs, mcp__skybits__get_file_url, File, HTTP, Document, Path, Memory, Agent]
+    tools: [mcp__skybits__outline_document, mcp__skybits__document_history, mcp__skybits__start_export, mcp__skybits__get_job, mcp__skybits__list_jobs, mcp__skybits__get_file_url, File, HTTP, Document, Path, Memory, Agent, -Calc]
     # OCR is used on image files only (the body asks for it per call; every
     # other extract says ocr: never). Speech-to-text for recordings, at most
     # 120 minutes per child run; the parent also passes what is left of its own
@@ -1565,11 +1565,12 @@ agents:
       function uniq(a) { var s = {}, o = []; a.forEach(function (x) { if (!s[x]) { s[x] = true; o.push(x); } }); return o; }
   skybits/structure:
     description: "Return the heading outline of one extracted document as JSON, from its numbered lines (no tools)."
-    # NO TOOLS AT ALL: `tools: []` is default-deny, `skills: [-*]` suppresses
+    # NO TOOLS AT ALL: `tools: [-Calc]` grants nothing and drops the Calc default,
+    # `skills: [-*]` suppresses
     # the auto-added Skill tool and `disable_context: true` the Context tool. Its
     # input is document text — anyone who can edit a Skybits document writes
     # part of it — so its reply is only DATA the import validates line by line.
-    tools: []
+    tools: [-Calc]
     skills: [-*]
     disable_context: true
     # MAINTENANCE PLUMBING — one session per document, holding its text.

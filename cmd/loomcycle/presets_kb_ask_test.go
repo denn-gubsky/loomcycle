@@ -120,7 +120,7 @@ func TestKnowledgeBaseBundle_AnsweringAgentsHoldOnlyTheirTools(t *testing.T) {
 	if !ok {
 		t.Fatalf("kb/classify not registered (agents: %v)", agentNames(cfg))
 	}
-	if len(cl.Tools) != 0 || !containsString(cl.Skills, "-*") || !cl.DisableContext {
+	if len(heldTools(cl)) != 0 || !containsString(cl.Skills, "-*") || !cl.DisableContext {
 		t.Errorf("kb/classify must have no tools at all (tools=%v skills=%v disable_context=%v)", cl.Tools, cl.Skills, cl.DisableContext)
 	}
 	if len(cl.MemoryScopes) > 0 || len(cl.SqlScopes) > 0 {
