@@ -46,9 +46,11 @@ Two lists combined element by element have different lengths. Make them the
 same length, or index the part you need.
 
 ### reserved_name
-You assigned to a built-in function name (`sum = …`), a constant (`pi`) or a
-keyword (`if`, `and` …), in `expr` or as a var name. Pick another name, e.g.
-`total`.
+You used a constant (`pi`, `e`, `tau`, `phi`) or a keyword (`if`, `and` …) as
+a name: assigned to it, defined a function or a parameter with it, or passed
+it as a var name. Pick another name, e.g. `rate_e`. Built-in function names
+are not reserved: `sum = 10` is a variable and `sum([1, 2])` still calls the
+built-in.
 
 ### recursion
 A function calls itself. Use a closed form (`n!`, `fib(n)`), or `reduce` /
