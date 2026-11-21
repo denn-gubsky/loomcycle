@@ -44,7 +44,8 @@ var helperPrograms = map[string]string{
 
 // isConvertOp reports whether op is a conversion op.
 func isConvertOp(op string) bool {
-	return op == workspace.OpConvertExtract || op == workspace.OpConvertRenderHTML
+	return op == workspace.OpConvertExtract || op == workspace.OpConvertRenderHTML ||
+		op == workspace.OpConvertRasterize || op == workspace.OpConvertMedia
 }
 
 // convertOp runs one conversion op on workspace id (real is its real path).
@@ -66,6 +67,18 @@ func (w *worker) convertOp(ctx context.Context, id, real string, start *workspac
 			return a
 		}
 		return w.renderHTMLOp(ctx, real, in, out)
+	case workspace.OpConvertRasterize:
+		var in workspace.ConvertRasterizeArgs
+		if a := decodeArgs(start.GetArgs(), &in); a.class != "" {
+			return a
+		}
+		return w.rasterizeOp(ctx, real, in, out)
+	case workspace.OpConvertMedia:
+		var in workspace.ConvertMediaArgs
+		if a := decodeArgs(start.GetArgs(), &in); a.class != "" {
+			return a
+		}
+		return w.mediaOp(ctx, real, in, out)
 	}
 	return refuse(workspace.ClassUnsupportedOp, "this worker does not run %q", start.GetOp())
 }
@@ -401,6 +414,8 @@ func (w *worker) extractInto(ctx context.Context, in workspace.ConvertExtractArg
 		return *a
 	}
 	ans.Markdown, ans.Images, ans.NotKept, ans.Usage = path.Join(in.To.Path, md), written, notKept, &usage
+	sum := sha256.Sum256([]byte(text))
+	ans.MarkdownSHA256 = hex.EncodeToString(sum[:])
 	return jsonAnswer(ans)
 }
 
