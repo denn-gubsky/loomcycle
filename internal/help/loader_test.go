@@ -26,6 +26,7 @@ func TestLoadSet_BundledOnly(t *testing.T) {
 		"adding-capabilities",
 		"agent-teams",
 		"bashbox",
+		"calculations",
 		"channel-admin",
 		"client-tools",
 		"code-agents",

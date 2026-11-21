@@ -234,6 +234,65 @@ func resultAfterFence(lines []string, open int) (string, bool) {
 	return "", false
 }
 
+// The `calculations` recipes topic is held to the same rule as the Calc
+// articles: every call in it runs through the tool and gives the result the
+// topic prints. It is a feature topic, not a Calc article, so its fences name
+// the tool (```json tool=Calc).
+func TestCalculationsRecipes_EveryCallGivesItsResult(t *testing.T) {
+	set := bundledHelp(t)
+	topic, ok := set.Get("calculations")
+	if !ok || topic.Name != "calculations" {
+		t.Fatal("no calculations topic")
+	}
+	exs, err := topic.Examples()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(topic.Content, "\n")
+	n := 0
+	for _, ex := range exs {
+		if ex.Tool != "Calc" {
+			t.Errorf("calculations line %d: example calls %s; every recipe is a Calc call", ex.Line, ex.Tool)
+			continue
+		}
+		want, ok := resultAfterFence(lines, ex.Line)
+		if !ok {
+			t.Errorf("calculations line %d: the example is not followed by a \"Result: …\" line", ex.Line)
+			continue
+		}
+		n++
+		if got := runCalcExample(t, ex.Input); got != want {
+			t.Errorf("calculations line %d: %s\n  topic says: %s\n  tool gives: %s", ex.Line, ex.Input, want, got)
+		}
+	}
+	// One call per recipe; fewer means the parser lost some (a fence outside
+	// the `## Examples` section is not an example).
+	if n < 12 {
+		t.Fatalf("only %d recipe calls checked, want at least 12", n)
+	}
+	if w := len(strings.Fields(topic.Content)); w > 1500 {
+		t.Errorf("calculations is %d words, over its 1500-word budget", w)
+	}
+}
+
+// The recipes are reachable from the words a model asks with, and from the
+// Calc article; no alias takes a name another topic answers to.
+func TestCalculationsRecipes_AliasesResolveAndCalcPointsThere(t *testing.T) {
+	set := bundledHelp(t)
+	for _, name := range []string{"calculations", "math", "Calculator", "arithmetic"} {
+		if topic, ok := set.Get(name); !ok || topic.Name != "calculations" {
+			t.Errorf("Get(%q) does not resolve to calculations", name)
+		}
+	}
+	if topic, ok := set.Get("calc"); !ok || topic.Name != "Calc" {
+		t.Error(`Get("calc") must stay the Calc tool article`)
+	}
+	art, _ := set.ToolArticle("Calc")
+	if !strings.Contains(art.Content, "topic=calculations") {
+		t.Error("the Calc article does not point to the calculations recipes")
+	}
+}
+
 // (d) The articles stay within their size budgets.
 func TestCalcHelp_ArticlesStayWithinTheirWordBudgets(t *testing.T) {
 	for _, topic := range calcArticles(t, bundledHelp(t)) {

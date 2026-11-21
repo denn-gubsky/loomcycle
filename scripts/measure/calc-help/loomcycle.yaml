@@ -1,0 +1,51 @@
+# scripts/measure/calc-help — the server config for the Calc help measurement.
+#
+# One measured agent, calc-measure, holding only Calc and Context (Skill is
+# switched off with skills: [-*]). Both arms run this one definition; each run
+# names its provider and model (drive.py --provider/--model). The definition
+# pins Haiku rather than routing by tier: a per-run model on a pinned agent
+# may be any model the named provider serves, while on a tier agent it must
+# be one of the tier's candidates. A pinned agent has no tier cascade, so a
+# run cannot fall back to another provider part-way (drive.py also records
+# the model each run reports and flags a mismatch).
+#
+# calc-plumbing is a code-js agent for the no-cost dry run: it reads a help
+# topic, makes one refused Calc call and one good one, and answers 0.3 to
+# every task. It proves the requests, the SSE parsing and the scoring; it
+# measures nothing.
+#
+# Providers come from the environment: ANTHROPIC_API_KEY for the anthropic
+# arm, OLLAMA_BASE_URL for ollama-local (built in, keyless), and
+# LOOMCYCLE_MOCK_ENABLED=1 for the mock dry run.
+provider_priority: [anthropic, ollama-local, mock]
+tiers:
+  middle:
+    - { provider: anthropic, model: claude-haiku-5-5 }
+
+agents:
+  calc-measure:
+    provider: anthropic
+    model: claude-haiku-5-5
+    description: "Answers a question that needs a calculation; the Calc help measurement agent."
+    tools: [Context]
+    skills: [-*]
+    system_prompt: |
+      You answer questions that need a calculation. Use the Calc tool for every
+      number you compute; do not compute in your head. If you are unsure how
+      to write a Calc expression, read its help with the Context tool
+      (op=help).
+
+      End your reply with one final line of the form
+
+      ANSWER: <value>
+
+      where <value> is only the answer: a number (digits, an optional sign
+      and decimal point; no thousands separators, currency symbols, units or
+      percent sign), a date as YYYY-MM-DD, a fraction as a/b, true or false,
+      or a single word.
+
+  calc-plumbing:
+    provider: code-js
+    description: "Dry-run stand-in for calc-measure; measures nothing."
+    tools: [Context]
+    skills: [-*]

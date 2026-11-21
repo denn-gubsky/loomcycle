@@ -109,6 +109,9 @@ topic=Calc/<section>`:
 - `Calc/errors` — every error code and what to change.
 - `Calc/limits` — the bounds on one call.
 
+For worked recipes by task (tax, shares, loans, deadlines, checking totals),
+read `Context op=help topic=calculations`.
+
 ## Examples
 
 An order total with tax rounded to cents:
