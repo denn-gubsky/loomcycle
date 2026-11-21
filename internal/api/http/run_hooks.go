@@ -77,7 +77,7 @@ func (s *Server) resolveRunHooks(ctx context.Context, agentName string, def conf
 	// A caller's own additions must name tools this agent has; inherited ones
 	// were checked against the parent's, and a child without the tool simply
 	// never fires them.
-	if err := requested.Validate(def.Tools); err != nil {
+	if err := requested.Validate(config.EffectiveTools(def.Tools)); err != nil {
 		return hooks.FailedSet(fmt.Errorf("the run's hooks: %w", err))
 	}
 	if err := requested.RefuseCredentials(); err != nil {

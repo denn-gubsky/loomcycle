@@ -750,7 +750,9 @@ func (b *boot) logToolPosture() {
 	// do anything. We log per-agent rather than once so the operator sees
 	// which definitions are affected.
 	for name, def := range cfg.Agents {
-		if grants, _ := config.SplitTools(def.Tools); len(grants) == 0 {
+		// The effective tools: an agent the yaml gives nothing still holds the
+		// resolution-time defaults (Calc) unless it removes them.
+		if grants, _ := config.SplitTools(config.EffectiveTools(def.Tools)); len(grants) == 0 {
 			// Message kept verbatim: docs/TOOLS.md quotes it.
 			slog.Info(fmt.Sprintf("note: agent %q has no tools — it will see zero tools (intentional default-deny; add tools to its YAML to expose tools)", name), "agent", name)
 		}
