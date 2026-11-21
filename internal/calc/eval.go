@@ -312,17 +312,19 @@ func (e *evaluator) evalCall(n *callN, sc *scope) (val, *Error) {
 		if id.name == "if" {
 			return e.evalIf(n, sc)
 		}
+		// Variables and functions are separate namespaces: a call takes
+		// the user's function of that name, else the built-in, so a
+		// variable `sum = 10` leaves sum([1, 2]) working.
 		v, found := sc.lookup(id.name)
+		fv, isFn := v.(*fnVal)
 		switch {
-		case found:
-			fv, ok := v.(*fnVal)
-			if !ok {
-				return nil, errf(codeType, n.p, "%s is a %s, not a function", id.name, typeName(v)).
-					withHint("no implicit multiplication: write `" + id.name + "*(...)`")
-			}
+		case found && isFn:
 			f = fv
 		case e.funcs[id.name] != nil:
 			f = &fnVal{name: id.name, builtin: e.funcs[id.name]}
+		case found:
+			return nil, errf(codeType, n.p, "%s is a %s, not a function", id.name, typeName(v)).
+				withHint("no implicit multiplication: write `" + id.name + "*(...)`")
 		default:
 			return nil, e.unknownFunc(id.name, id.p, sc)
 		}

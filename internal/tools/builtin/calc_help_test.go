@@ -41,6 +41,7 @@ var calcSectionArticle = map[string]string{
 	calc.SecSequences:  "Calc/sequences",
 	calc.SecRandom:     "Calc/sequences",
 	calc.SecDates:      "Calc/dates",
+	calc.SecUnits:      "Calc/units",
 }
 
 // calcEntryHeading is a `### ` heading that presents a function: a lower-case

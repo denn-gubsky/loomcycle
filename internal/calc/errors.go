@@ -54,6 +54,8 @@ const (
 	codeTooDeep        errCode = "too_deep"
 	codeEmptyStatement errCode = "empty"
 	codeBadDate        errCode = "bad_date"
+	codeUnknownUnit    errCode = "unknown_unit"
+	codeDimension      errCode = "dimension"
 )
 
 var allCodes = [...]errCode{
@@ -63,6 +65,7 @@ var allCodes = [...]errCode{
 	codeExprTooLong, codeVarsTooLarge, codeStepLimit, codeTimeLimit,
 	codeCanceled, codeListTooLong, codeTooDeep, codeEmptyStatement,
 	codeBadDate,
+	codeUnknownUnit, codeDimension,
 }
 
 // ErrorCodes returns every code an Error may carry, sorted.

@@ -1,6 +1,9 @@
 package workspace
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // The ops the Workspace tool sends (RFC GW P1): a command, and the five file
 // operations of the Read, Write, Edit, Glob and Grep tools run by the worker
@@ -291,3 +294,137 @@ type CopyAnswer struct {
 
 // MaxSkippedNamed bounds the skipped links a copy names.
 const MaxSkippedNamed = 100
+
+// The conversion ops (RFC GW D34): a workspace's file is converted on its
+// worker, in the conversion child the worker supervises, and never crosses
+// to the core. The source is opened as get opens one (a regular file, no
+// link on its path) and must still hash to SHA256, the digest the core
+// checked its quarantine with. The result goes into a workspace on the same
+// worker (To.Workspace, through a stage committed in one rename), or
+// streams back as the op's output (To.Workspace empty).
+const (
+	// OpConvertExtract extracts a file's text layer and embedded images,
+	// as File op=extract does. Streamed back, its output is a tar
+	// (ConvertTar*); into a workspace, its answer is ConvertExtractAnswer.
+	OpConvertExtract = "convert_extract"
+	// OpConvertUnpack unpacks a ZIP or RAR archive under the unpack bounds
+	// of File op=unpack. Streamed back, its output is a tar of the entries
+	// written then ConvertTarAnswer; into a workspace, its answer is
+	// ConvertUnpackAnswer.
+	OpConvertUnpack = "convert_unpack"
+	// OpConvertRenderHTML reads an HTML file into the Markdown File
+	// op=render typesets; it always streams back, its output the
+	// Markdown.
+	OpConvertRenderHTML = "convert_render_html"
+)
+
+// The classes a conversion op adds.
+const (
+	// ClassHelperMissing: the worker's conversion child lacks the helper
+	// program the conversion needs; the detail names it.
+	ClassHelperMissing = "conversion_helper_missing"
+	// ClassConversionCrashed: the file killed the conversion child. The
+	// core quarantines it for that workspace.
+	ClassConversionCrashed = "conversion_crashed"
+	// ClassConversionUnsupported: nothing reads the file's type.
+	ClassConversionUnsupported = "conversion_unsupported"
+	// ClassConversionFailed: the file could not be read as its type, or
+	// the conversion ran out of time.
+	ClassConversionFailed = "conversion_failed"
+	// ClassConversionBusy: the conversion child stayed busy.
+	ClassConversionBusy = "conversion_busy"
+	// ClassSourceChanged: the source no longer hashes to the digest the
+	// core named.
+	ClassSourceChanged = "source_changed"
+)
+
+// ConvertTarget is where a conversion's result goes on the worker.
+type ConvertTarget struct {
+	// Workspace is the id of a workspace on this worker (the source's own
+	// or another); empty streams the result back.
+	Workspace string `json:"workspace,omitempty"`
+	// Path is the folder the result is placed at in Workspace.
+	Path      string `json:"path,omitempty"`
+	Overwrite bool   `json:"overwrite,omitempty"`
+}
+
+// ConvertSource is the file a conversion reads.
+type ConvertSource struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	// MaxBytes, when positive, refuses a larger source.
+	MaxBytes int64 `json:"max_bytes,omitempty"`
+}
+
+// ConvertExtractArgs are a convert_extract op's arguments: extract.Options
+// as File op=extract passes them.
+type ConvertExtractArgs struct {
+	ConvertSource
+	Images        bool  `json:"images,omitempty"`
+	MaxRows       int   `json:"max_rows,omitempty"`
+	InferHeadings bool  `json:"infer_headings,omitempty"`
+	Pages         []int `json:"pages,omitempty"`
+	MaxChars      int   `json:"max_chars,omitempty"`
+	// MaxMarkdown bounds the Markdown, in bytes; past it the text is cut.
+	MaxMarkdown int `json:"max_markdown"`
+	// ImageMark, streamed back, is what an image's place in the Markdown is
+	// written as: ImageMark, the image's number in the tar, and ImageMarkEnd.
+	// The core replaces each with the reference it keeps the image at. A
+	// random mark per call is one the file's own text cannot hold.
+	ImageMark string        `json:"image_mark,omitempty"`
+	To        ConvertTarget `json:"to"`
+}
+
+// ImageMarkEnd closes an image mark.
+const ImageMarkEnd = "~"
+
+// Target is where the result goes.
+func (a *ConvertExtractArgs) Target() *ConvertTarget { return &a.To }
+
+// ConvertExtractAnswer is a convert_extract op's answer.
+type ConvertExtractAnswer struct {
+	MediaType string `json:"media_type"`
+	// Report is extract.Report as JSON.
+	Report json.RawMessage `json:"report"`
+	// Cut: the text stopped at MaxChars (Sampled) or MaxMarkdown.
+	Sampled bool `json:"sampled,omitempty"`
+	Cut     bool `json:"cut,omitempty"`
+	// PageStarts is where each page's Markdown begins, in bytes.
+	PageStarts map[int]int `json:"page_starts,omitempty"`
+	// Into a workspace: the Markdown file's path and the images', relative
+	// to the workspace root.
+	Markdown string   `json:"markdown,omitempty"`
+	Images   []string `json:"images,omitempty"`
+	// NotKept names images not written, at most ten.
+	NotKept []string `json:"not_kept,omitempty"`
+	Usage   *Usage   `json:"usage,omitempty"`
+}
+
+// The entries of a conversion's tar, streamed back. Each image of an
+// extraction is an entry "image-<n>" with its metadata in PAX records
+// (ConvertPAX*); the Markdown is "text.md"; the last entry is the answer.
+// An unpack's entries are "entry/<path>", each the sanitised path it was
+// unpacked to.
+const (
+	ConvertTarImage    = "image-"
+	ConvertTarText     = "text.md"
+	ConvertTarAnswer   = "answer.json"
+	ConvertTarEntry    = "entry/"
+	ConvertPAXName     = "LOOMCYCLE.name"
+	ConvertPAXType     = "LOOMCYCLE.media_type"
+	ConvertPAXAlt      = "LOOMCYCLE.alt"
+	ConvertPAXPage     = "LOOMCYCLE.page"
+	ConvertPAXSlide    = "LOOMCYCLE.slide"
+	ConvertPAXOriginal = "LOOMCYCLE.original"
+)
+
+// ConvertRenderHTMLArgs are a convert_render_html op's arguments.
+type ConvertRenderHTMLArgs struct {
+	ConvertSource
+	MaxMarkdown int `json:"max_markdown"`
+	// To is never set: the Markdown always streams back.
+	To ConvertTarget `json:"-"`
+}
+
+// Target is where the result goes: always back to the core.
+func (a *ConvertRenderHTMLArgs) Target() *ConvertTarget { return &a.To }

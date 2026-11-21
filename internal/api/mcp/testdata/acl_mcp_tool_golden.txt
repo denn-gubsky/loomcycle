@@ -5,6 +5,7 @@ aclbinding	substrate:tenant	false
 acldef	substrate:tenant	false
 agentdef	-	false
 authz	-	false
+calc	-	false
 cancel_run	runs:create	true
 channel	-	false
 channeldef	-	false

@@ -305,6 +305,14 @@ func (f *File) extract(ctx context.Context, in fileInput) (tools.Result, error) 
 	if !ok {
 		return res, nil
 	}
+	if r.kind == refWorkspace {
+		// A workspace's file is extracted on its worker (RFC GW D34).
+		return f.extractWorkspace(ctx, in, r, pages, excerptChars, oc)
+	}
+	if strings.HasPrefix(strings.TrimSpace(in.To), "workspace:") {
+		return errValidation("extract: to a workspace takes a file in a workspace, where it is extracted on the workspace's worker",
+			"Copy the file into the workspace with File op=copy first, or leave to out to extract into the inbox."), nil
+	}
 	if !inbox.Available(ctx) {
 		return errBusiness("extract: this run cannot keep files, so there is nowhere to write the extracted text",
 			"An operator must configure a dynamic_root volume for the run's inbox."), nil

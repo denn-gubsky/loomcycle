@@ -34,6 +34,8 @@ var errorCases = map[errCode]Request{
 	codeTooDeep:        {Expr: strings.Repeat("(", MaxDepth+1) + "1" + strings.Repeat(")", MaxDepth+1)},
 	codeEmptyStatement: {Expr: ""},
 	codeBadDate:        {Expr: `date("11/12/2026")`},
+	codeUnknownUnit:    {Expr: `convert(1, "furlong", "m")`},
+	codeDimension:      {Expr: `convert(1, "kg", "m")`},
 	// time_limit and canceled need a context; see their own tests.
 }
 

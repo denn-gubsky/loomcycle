@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -22,6 +23,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
 )
 
 // File op=render (RFC GR §4.3): a Document — or a Markdown file — written as
@@ -71,7 +73,7 @@ func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error)
 	default:
 		return errValidation("render: metadata must be none or embed", ""), nil
 	}
-	dest, res, ok := renderDestination(ctx, in)
+	dest, res, ok := renderDestination(ctx, f, in)
 	if !ok {
 		return res, nil
 	}
@@ -89,14 +91,17 @@ func (f *File) renderOp(ctx context.Context, in fileInput) (tools.Result, error)
 }
 
 // renderDest is where a render goes: the inbox (to empty), a volume file,
-// or (download) back to an off-run caller (Export).
+// a workspace file (ws), or (download) back to an off-run caller (Export).
 type renderDest struct {
 	toVolume bool
 	to       dataRef
 	download bool
+	// ws is the workspace place to names, the write grant checked; the
+	// hook judges the final path when it is known (deliver).
+	ws *workspaceLoc
 }
 
-func renderDestination(ctx context.Context, in fileInput) (renderDest, tools.Result, bool) {
+func renderDestination(ctx context.Context, f *File, in fileInput) (renderDest, tools.Result, bool) {
 	if strings.TrimSpace(in.To) == "" {
 		if !inbox.Available(ctx) {
 			return renderDest{}, errBusiness("render: this run cannot keep files, so there is nowhere to write the file",
@@ -105,8 +110,15 @@ func renderDestination(ctx context.Context, in fileInput) (renderDest, tools.Res
 		return renderDest{}, tools.Result{}, true
 	}
 	to, err := parseDataRef(strings.TrimSpace(in.To))
+	if err == nil && to.kind == refWorkspace {
+		l, res, ok := f.workspaceLoc(ctx, to, true, FileToolName)
+		if !ok {
+			return renderDest{}, prefixed("render", res), false
+		}
+		return renderDest{to: to, ws: l}, tools.Result{}, true
+	}
 	if err != nil || to.kind != refVolume {
-		return renderDest{}, errValidation("render: to must be a volume reference", "Pass to, e.g. volume:reports:2026/minutes.html, or leave it out to write to the inbox."), false
+		return renderDest{}, errValidation("render: to must be a volume or workspace reference", "Pass to, e.g. volume:reports:2026/minutes.html or workspace:work:in/minutes.md, or leave it out to write to the inbox."), false
 	}
 	if to.volume == inbox.Name {
 		return renderDest{}, errValidation("render: to is in the inbox; leave to out to write there", ""), false
@@ -134,6 +146,8 @@ type renderJob struct {
 	logo      []byte
 	logoMT    string
 	styleNote string
+	// wsTarget is the workspace path a render to a workspace writes.
+	wsTarget string
 }
 
 func (j *renderJob) options() render.Options {
@@ -202,6 +216,15 @@ func (j *renderJob) fromFile(ctx context.Context) (tools.Result, error) {
 	if err != nil {
 		return errValidation("render: "+err.Error(), "Pass path, e.g. volume:inbox:extracted/report.md."), nil
 	}
+	if r.kind == refWorkspace {
+		// A workspace's HTML file is read into Markdown on its worker (RFC
+		// GW D34); its Markdown is read through a bounded stream.
+		text, name, res, ok := j.f.workspaceMarkdown(ctx, r)
+		if !ok {
+			return res, nil
+		}
+		return j.fromMarkdown(ctx, text, name)
+	}
 	vfs, rel, res, ok := openRef(ctx, r, false)
 	if !ok {
 		return res, nil
@@ -229,7 +252,12 @@ func (j *renderJob) fromFile(ctx context.Context) (tools.Result, error) {
 		}
 		text = string(b)
 	}
-	title, body := splitMarkdownTitle(text, fileTitle(path.Base(filepath.ToSlash(rel))))
+	return j.fromMarkdown(ctx, text, filepath.ToSlash(rel))
+}
+
+// fromMarkdown renders a Markdown text read from the file at name.
+func (j *renderJob) fromMarkdown(ctx context.Context, text, name string) (tools.Result, error) {
+	title, body := splitMarkdownTitle(text, fileTitle(path.Base(name)))
 	bld := render.NewBuilder(title)
 	bld.Doc.Date, bld.Doc.Language = j.date, j.in.Language
 	bld.Pictures = extractedPictures(ctx)
@@ -336,6 +364,14 @@ func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Rep
 	if stem == "" {
 		stem = "document"
 	}
+	var wsFile *workspaceLoc
+	if j.dest.ws != nil {
+		var res tools.Result
+		var ok bool
+		if wsFile, stem, res, ok = j.workspaceFile(ctx, stem); !ok {
+			return res, nil
+		}
+	}
 	if j.dest.toVolume {
 		if s := strings.TrimSuffix(path.Base(j.dest.to.path), path.Ext(j.dest.to.path)); !strings.HasSuffix(j.dest.to.path, "/") && s != "" {
 			stem = s
@@ -349,7 +385,7 @@ func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Rep
 		return renderRefusal(err), nil
 	}
 
-	if log != nil && !j.dest.download && (j.format != render.FormatMarkdown || len(doc.Images) == 0) {
+	if log != nil && !j.dest.download && j.dest.ws == nil && (j.format != render.FormatMarkdown || len(doc.Images) == 0) {
 		if out, ok := j.reuse(ctx, log, sourceSHA, optsJSON, src, rep); ok {
 			return out, nil
 		}
@@ -411,6 +447,12 @@ func (j *renderJob) deliver(ctx context.Context, doc *render.Doc, rep render.Rep
 			return res, nil
 		}
 		destination = ref
+	} else if wsFile != nil {
+		w, res, ok := wsFile.Create(ctx, int64(len(data)), bytes.NewReader(data), j.in.Overwrite)
+		if !ok {
+			return prefixed("render", res), nil
+		}
+		ref, destination = w.Ref, w.Ref
 	} else {
 		kept := inbox.Capture(ctx, inbox.Item{Name: stem + "." + j.format, MediaType: render.MediaType(j.format),
 			Origin: renderOrigin(src), Dir: renderInboxDir}, data)
@@ -513,6 +555,24 @@ func readVolumeIfDigest(ctx context.Context, r dataRef, digest string, size int6
 func (j *renderJob) writeImages(ctx context.Context, doc *render.Doc, stem string) (map[string]string, []string, tools.Result, bool) {
 	paths := map[string]string{}
 	var refs []string
+	if j.dest.ws != nil {
+		// Beside the file in the workspace: <its folder>/<stem>/<name>.
+		dir := *j.dest.ws
+		dir.path = wsClean(path.Join(path.Dir(j.wsTarget), stem))
+		for _, im := range doc.Images {
+			img := dir.child(im.Name)
+			if res, ok := img.hook(ctx, wsHookWrite); !ok {
+				return nil, nil, res, false
+			}
+			w, res, ok := img.Create(ctx, int64(len(im.Data)), bytes.NewReader(im.Data), j.in.Overwrite)
+			if !ok {
+				return nil, nil, prefixed("render", res), false
+			}
+			paths[im.Name] = stem + "/" + im.Name
+			refs = append(refs, w.Ref)
+		}
+		return paths, refs, tools.Result{}, true
+	}
 	if !j.dest.toVolume {
 		dir := path.Join(renderInboxDir, stem)
 		for _, im := range doc.Images {
@@ -545,6 +605,33 @@ func (j *renderJob) writeImages(ctx context.Context, doc *render.Doc, stem strin
 		refs = append(refs, ref)
 	}
 	return paths, refs, tools.Result{}, true
+}
+
+// workspaceFile is the workspace file a render writes: to itself, or
+// <stem>.<format> inside it when it ends in "/" or names a folder. The
+// workspace's write hook judges the final path; its stem names the
+// pictures' folder beside it.
+func (j *renderJob) workspaceFile(ctx context.Context, stem string) (*workspaceLoc, string, tools.Result, bool) {
+	l := j.dest.ws
+	target := l
+	if strings.HasSuffix(j.dest.to.path, "/") || l.path == "." {
+		target = l.child(stem + "." + j.format)
+	} else {
+		e, res, ok := l.Stat(ctx)
+		if !ok {
+			return nil, "", prefixed("render", res), false
+		}
+		if e.Type == workspace.EntryDir {
+			target = l.child(stem + "." + j.format)
+		} else if s := strings.TrimSuffix(path.Base(l.path), path.Ext(l.path)); s != "" {
+			stem = s
+		}
+	}
+	if res, ok := target.hook(ctx, wsHookWrite); !ok {
+		return nil, "", res, false
+	}
+	j.wsTarget = target.path
+	return target, stem, tools.Result{}, true
 }
 
 // renderSourceHash is the hash of what a render is made of: the tree and the

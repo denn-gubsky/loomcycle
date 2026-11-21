@@ -24,8 +24,9 @@ rounded). Years run from 1 to 9999.
 - `today()` and `now()` read the server clock (once per call), so their
   answer changes from day to day. For a repeatable answer pass the date in
   `vars`.
-- Names such as `day`, `month`, `year` and `second` are functions and cannot
-  be assigned; write `d1`, `start`, `due`.
+- A variable may share a function's name: after `year = 2026`,
+  `date(year, 1, 1)` reads the variable and `year(d)` still calls the
+  function.
 
 ## Making dates
 
@@ -255,3 +256,11 @@ A meeting time in New York:
 ```
 
 Result: Fri 09:30
+
+A variable named like a date function, beside the function itself:
+
+```json
+{"expr": "year = 2026; days = date(year, 12, 31) - date(year, 11, 21); [days, year(date(\"2027-03-01\"))]"}
+```
+
+Result: [40, 2027]

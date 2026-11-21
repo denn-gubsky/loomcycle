@@ -366,6 +366,7 @@ func TestFunctions_TableIsCompleteAndConsistent(t *testing.T) {
 		SecRandom:     "random randint randnormal shuffle sample",
 		SecControl:    "if",
 		SecDates:      "date datetime today now tz addmonths addyears eomonth datediff age yearfrac workdays addworkdays xnpv xirr year month day weekday isoweek dayofyear quarter daysinmonth isleap hour minute second datefmt",
+		SecUnits:      "convert convertdelta units",
 	}
 	got := map[string][]string{}
 	for _, f := range fs {

@@ -126,6 +126,8 @@ type Dispatcher struct {
 	workers map[string]*worker
 	ops     map[string]uint64
 	deaths  uint64
+	// outBytes counts the output bytes received, by op label.
+	outBytes map[string]uint64
 }
 
 // worker is one attached worker, as its Hello described it.
@@ -972,7 +974,10 @@ type WorkerInfo struct {
 	Shared     bool
 	Engine     string
 	Toolchains []string
-	Capacity   int
+	// Labels are the conversion labels the worker reported: the helpers
+	// its conversion child has (RFC GW D34).
+	Labels   []string
+	Capacity int
 }
 
 // Workers lists the workers attached to this replica, by id.
@@ -980,7 +985,8 @@ func (d *Dispatcher) Workers() []WorkerInfo {
 	d.mu.Lock()
 	out := make([]WorkerInfo, 0, len(d.workers))
 	for _, w := range d.workers {
-		info := WorkerInfo{ID: w.id, Declared: w.declared, TenantID: w.serves.TenantID, Shared: w.serves.Shared, Engine: w.engine, Capacity: w.capacity}
+		info := WorkerInfo{ID: w.id, Declared: w.declared, TenantID: w.serves.TenantID, Shared: w.serves.Shared, Engine: w.engine, Capacity: w.capacity,
+			Labels: append([]string(nil), w.labels...)}
 		for t := range w.tools {
 			info.Toolchains = append(info.Toolchains, t)
 		}
@@ -996,11 +1002,25 @@ func (d *Dispatcher) Workers() []WorkerInfo {
 func (d *Dispatcher) Stats() workspace.Stats {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	st := workspace.Stats{Workers: len(d.workers), Ops: make(map[string]uint64, len(d.ops)), Deaths: d.deaths}
+	st := workspace.Stats{Workers: len(d.workers), Ops: make(map[string]uint64, len(d.ops)), Deaths: d.deaths,
+		OutputBytes: make(map[string]uint64, len(d.outBytes))}
 	for k, v := range d.ops {
 		st.Ops[k] = v
 	}
+	for k, v := range d.outBytes {
+		st.OutputBytes[k] = v
+	}
 	return st
+}
+
+// countOutput adds n bytes received for op.
+func (d *Dispatcher) countOutput(op string, n int) {
+	d.mu.Lock()
+	if d.outBytes == nil {
+		d.outBytes = map[string]uint64{}
+	}
+	d.outBytes[opLabel(op)] += uint64(n)
+	d.mu.Unlock()
 }
 
 func (d *Dispatcher) count(opName, outcome string) {

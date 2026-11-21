@@ -45,6 +45,9 @@ var mcpWrapperSchemas = map[string]string{
 	"history":           historyInputSchema,
 	"identity":          identityInputSchema,
 	"decision":          decisionInputSchema,
+	// Calc builds its schema in InputSchema (its digits bound is a constant of
+	// internal/calc), so the entry is that method's output, not a const.
+	"calc": string((&Calc{}).InputSchema()),
 }
 
 // MCPWrapperInputSchema returns the canonical input schema for the

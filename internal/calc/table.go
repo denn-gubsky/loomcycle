@@ -51,7 +51,7 @@ type builtin struct {
 // the package initialises without a cycle.
 var sections = [][]builtin{
 	controlFuncs, elementaryFuncs, trigFuncs, specialFuncs,
-	integerFuncs, bitFuncs, sequenceFuncs, randomFuncs,
+	integerFuncs, bitFuncs, sequenceFuncs, randomFuncs, unitFuncs,
 	dateFuncs,
 }
 
@@ -68,7 +68,8 @@ func indexBuiltins() map[string]*builtin {
 }
 
 // controlFuncs holds the special forms. `if` is evaluated lazily by the
-// evaluator; the entry is here for help, arity and the reserved-name check.
+// evaluator; the entry is here for help and arity (the name is reserved as
+// a keyword).
 var controlFuncs = []builtin{
 	{name: "if", sig: "if(cond, a, b)", section: SecControl, min: 3, max: 3,
 		summary: "a when cond is true, else b; only the chosen branch is evaluated"},
@@ -78,7 +79,7 @@ var controlFuncs = []builtin{
 // by name.
 func Functions() []FuncInfo {
 	order := map[string]int{}
-	for i, s := range []string{SecControl, SecElementary, SecTrig, SecSpecial, SecIntegers, SecBits, SecSequences, SecRandom, SecDates} {
+	for i, s := range []string{SecControl, SecElementary, SecTrig, SecSpecial, SecIntegers, SecBits, SecSequences, SecRandom, SecUnits, SecDates} {
 		order[s] = i
 	}
 	var out []FuncInfo
@@ -202,9 +203,13 @@ func suggest(name string, names []string) []string {
 		}
 		return cs[i].s < cs[j].s
 	})
+	// A name can be both a variable and a built-in (separate namespaces),
+	// so names may repeat; the sort puts repeats next to each other.
 	var out []string
-	for i := 0; i < len(cs) && i < 3; i++ {
-		out = append(out, cs[i].s)
+	for i := 0; i < len(cs) && len(out) < 3; i++ {
+		if len(out) == 0 || out[len(out)-1] != cs[i].s {
+			out = append(out, cs[i].s)
+		}
 	}
 	return out
 }
