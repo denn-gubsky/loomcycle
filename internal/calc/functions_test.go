@@ -365,6 +365,7 @@ func TestFunctions_TableIsCompleteAndConsistent(t *testing.T) {
 		SecSequences:  "range map filter reduce sort reverse unique count any all zip sum product len",
 		SecRandom:     "random randint randnormal shuffle sample",
 		SecControl:    "if",
+		SecUnits:      "convert convertdelta units",
 	}
 	got := map[string][]string{}
 	for _, f := range fs {

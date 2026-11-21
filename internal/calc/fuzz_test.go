@@ -30,6 +30,7 @@ var fuzzSeeds = []string{
 	"[bitand(6, 3), bitor(6, 3), bitxor(6, 3), bitnot(6), shl(1, 4), shr(16, 2), base(255, 16), frombase(\"ff\", 16)]",
 	"[random(), randint(1, 6), randnormal(0, 1), shuffle([1, 2]), sample([1, 2, 3], 2)]",
 	"9^9^9", "2x", "2 ** 3", "if(x = 1, 2, 3)", "f(x) = f(x)", "[1][0]", "sqrt(-1)", "1/0",
+	"[convert(5, \"mi\", \"km\"), convertdelta(1, \"degC/s\", \"K/min\"), units(), units(\"angle\")]",
 	"factorial(10^6)", "((((1))))", "x -> y -> x + y", "# comment\n1",
 }
 

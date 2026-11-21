@@ -59,6 +59,19 @@ A var cannot be used: its name is not a valid name, or its value is `null`
 or an object. Pass numbers, strings, booleans or lists; send each field of an
 object as its own var.
 
+### unknown_unit
+A unit string `convert` or `convertdelta` cannot read: a name not in the
+table, a wrong case (`Km`, `mb` — units are case-sensitive), a prefix on a
+unit that takes none (`kmi`), or a malformed compound (`m2`, `km//h`). Also a
+dimension name `units` does not know. `hint` lists close names; see
+`Calc/units`.
+
+### dimension
+The two units of a conversion measure different things (`kg` to `m`, `lb` to
+`lbf`), or `convert` met `degC` or `degF` inside a compound. `detail` names
+both dimensions. Pick a unit of the same dimension; for a temperature rate or
+difference use `convertdelta`.
+
 ### bad_request
 The arguments are not the documented shape: `expr` missing or not a string,
 `digits` outside 1 to 1000, an argument the tool does not take.

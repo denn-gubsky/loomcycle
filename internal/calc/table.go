@@ -50,7 +50,7 @@ type builtin struct {
 // the package initialises without a cycle.
 var sections = [][]builtin{
 	controlFuncs, elementaryFuncs, trigFuncs, specialFuncs,
-	integerFuncs, bitFuncs, sequenceFuncs, randomFuncs,
+	integerFuncs, bitFuncs, sequenceFuncs, randomFuncs, unitFuncs,
 }
 
 var builtinIndex = indexBuiltins()
@@ -76,7 +76,7 @@ var controlFuncs = []builtin{
 // by name.
 func Functions() []FuncInfo {
 	order := map[string]int{}
-	for i, s := range []string{SecControl, SecElementary, SecTrig, SecSpecial, SecIntegers, SecBits, SecSequences, SecRandom} {
+	for i, s := range []string{SecControl, SecElementary, SecTrig, SecSpecial, SecIntegers, SecBits, SecSequences, SecRandom, SecUnits} {
 		order[s] = i
 	}
 	var out []FuncInfo
