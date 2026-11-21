@@ -115,6 +115,9 @@ var layers = []layer{
 			// Documents written back into files (RFC GR): the render model and
 			// its writers, pure over a tree the core builds.
 			"internal/files/render",
+			// An archive's walk under File op=unpack's bounds (RFC GW D34):
+			// the core and a workspace worker's conversion child share it.
+			"internal/files/unpack",
 			// The file tools' operations on a given root (RFC GW P1): stdlib
 			// only, so a workspace worker runs them without the tools package.
 			"internal/fsops",
@@ -324,6 +327,9 @@ var allowedSideways = []subsystemEdge{
 	{"internal/concurrency", "internal/safego"},
 	{"internal/convert", "internal/files/extract"},
 	{"internal/convert", "internal/files/render"},
+	{"internal/convert", "internal/files/unpack"},
+	{"internal/files/unpack", "internal/files/extract"},
+	{"internal/files/unpack", "internal/files/filenames"},
 	{"internal/convert", "internal/transcribe/helper"},
 	{"internal/kms", "internal/awsauth"},
 	{"internal/logging", "internal/redact"},

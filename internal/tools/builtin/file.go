@@ -17,6 +17,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/unpack"
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
@@ -88,8 +89,8 @@ type File struct {
 	// renderer here; empty is convert.DefaultDiagramCommand (merman-cli).
 	DiagramCommand string
 	// unpackLimits overrides op=unpack's bounds, for tests; nil is
-	// defaultUnpackLimits.
-	unpackLimits *unpackLimits
+	// unpack.DefaultLimits.
+	unpackLimits *unpack.Limits
 	// Workspaces is the workspace bookkeeping (RFC GW) workspace references
 	// reach; nil while workspace.mode is off, which refuses them. Bound at
 	// boot with the Workspace tool's.
