@@ -1,0 +1,405 @@
+# The Calc help measurement task set. Never edit a task after the first run;
+# add a new id instead.
+#
+# Each task: id, section, prompt (a question as a user would put it, never a
+# Calc expression), answer (a JSON value: a number, or a string holding a
+# fraction "a/b", a date YYYY-MM-DD or a word, or a boolean), tolerance
+# ("exact", "abs:<x>" or "rel:<x>") and check.
+#
+# check is how the answer was computed, INDEPENDENTLY of loomcycle: a Python
+# expression over Fraction (F), Decimal (D), math, statistics (st), datetime
+# (date, timedelta) and the small helpers defined in test_drive.py (rhu =
+# round half up, workdays, addworkdays, addmonths, isprime, fib, irr by
+# bisection). test_drive.py evaluates every check and requires the answer to
+# match it under the task's own tolerance. No answer was read off Calc.
+#
+# Every value is a JSON scalar on one line, so drive.py reads this file with
+# a line parser and no YAML library.
+tasks:
+  # --- elementary and trigonometric ---
+  - id: e01
+    section: elementary
+    prompt: "What is 17.5% of 2,340?"
+    answer: 409.5
+    tolerance: "exact"
+    check: "F(2340) * F('17.5') / 100"
+  - id: e02
+    section: elementary
+    prompt: "What is the square root of 2, to 10 decimal places?"
+    answer: 1.4142135624
+    tolerance: "abs:1e-10"
+    check: "rhu(math.sqrt(2), 10)"
+  - id: e03
+    section: elementary
+    prompt: "What is 3.7 raised to the power 4.2? Round to 4 decimal places."
+    answer: 243.471
+    tolerance: "abs:1e-4"
+    check: "rhu(3.7 ** 4.2, 4)"
+  - id: e04
+    section: elementary
+    prompt: "What is the natural logarithm of 1000, to 6 decimal places?"
+    answer: 6.907755
+    tolerance: "abs:1e-6"
+    check: "rhu(math.log(1000), 6)"
+  - id: e05
+    section: elementary
+    prompt: "A 6 m ladder leans against a wall, making a 72 degree angle with the ground. How high up the wall does its top reach, in metres to 3 decimal places?"
+    answer: 5.706
+    tolerance: "abs:1e-3"
+    check: "rhu(6 * math.sin(math.radians(72)), 3)"
+  - id: e06
+    section: elementary
+    prompt: "What is cos(35°) + sin(55°)? Give 6 decimal places."
+    answer: 1.638304
+    tolerance: "abs:1e-6"
+    check: "rhu(math.cos(math.radians(35)) + math.sin(math.radians(55)), 6)"
+  - id: e07
+    section: elementary
+    prompt: "What is 1/3 + 1/7 + 1/21, as a fraction in lowest terms?"
+    answer: "11/21"
+    tolerance: "exact"
+    check: "F(1, 3) + F(1, 7) + F(1, 21)"
+  - id: e08
+    section: elementary
+    prompt: "What is 2 to the power 64, exactly?"
+    answer: 18446744073709551616
+    tolerance: "exact"
+    check: "2 ** 64"
+
+  # --- integers ---
+  - id: i01
+    section: integers
+    prompt: "What is 20 factorial?"
+    answer: 2432902008176640000
+    tolerance: "exact"
+    check: "math.factorial(20)"
+  - id: i02
+    section: integers
+    prompt: "In how many ways can a committee of 5 be chosen from 23 people?"
+    answer: 33649
+    tolerance: "exact"
+    check: "math.comb(23, 5)"
+  - id: i03
+    section: integers
+    prompt: "What is the greatest common divisor of 462 and 1071?"
+    answer: 21
+    tolerance: "exact"
+    check: "math.gcd(462, 1071)"
+  - id: i04
+    section: integers
+    prompt: "What is the least common multiple of 12, 18 and 30?"
+    answer: 180
+    tolerance: "exact"
+    check: "math.lcm(12, 18, 30)"
+  - id: i05
+    section: integers
+    prompt: "Is 1,000,003 a prime number? Answer true or false."
+    answer: true
+    tolerance: "exact"
+    check: "isprime(1000003)"
+  - id: i06
+    section: integers
+    prompt: "What is the 50th Fibonacci number, counting the first two as 1 and 1?"
+    answer: 12586269025
+    tolerance: "exact"
+    check: "fib(50)"
+  - id: i07
+    section: integers
+    prompt: "What is the remainder when 7 to the power 222 is divided by 1000?"
+    answer: 49
+    tolerance: "exact"
+    check: "pow(7, 222, 1000)"
+  - id: i08
+    section: integers
+    prompt: "What is the sum of the distinct prime factors of 2310?"
+    answer: 28
+    tolerance: "exact"
+    check: "sum(p for p in range(2, 2311) if 2310 % p == 0 and isprime(p))"
+
+  # --- sequences ---
+  - id: s01
+    section: sequences
+    prompt: "What is the sum of all whole numbers from 1 to 1000 that are divisible by 3 or by 5?"
+    answer: 234168
+    tolerance: "exact"
+    check: "sum(n for n in range(1, 1001) if n % 3 == 0 or n % 5 == 0)"
+  - id: s02
+    section: sequences
+    prompt: "What is the sum of the squares of the first 25 positive integers?"
+    answer: 5525
+    tolerance: "exact"
+    check: "sum(n * n for n in range(1, 26))"
+  - id: s03
+    section: sequences
+    prompt: "What is 1/1² + 1/2² + 1/3² + ... + 1/100²? Give 6 decimal places."
+    answer: 1.634984
+    tolerance: "abs:1e-6"
+    check: "rhu(sum(F(1, n * n) for n in range(1, 101)), 6)"
+  - id: s04
+    section: sequences
+    prompt: "How many whole numbers from 1 to 500 inclusive are perfect squares or perfect cubes (or both)?"
+    answer: 27
+    tolerance: "exact"
+    check: "len(set(n * n for n in range(1, 23) if n * n <= 500) | set(n ** 3 for n in range(1, 8) if n ** 3 <= 500))"
+  - id: s05
+    section: sequences
+    prompt: "Here are some readings: 14, 3, 22, 9, 3, 17, 22, 5. What is the sum of the distinct values?"
+    answer: 70
+    tolerance: "exact"
+    check: "sum(set([14, 3, 22, 9, 3, 17, 22, 5]))"
+  - id: s06
+    section: sequences
+    prompt: "What is the product of the first 10 odd positive numbers?"
+    answer: 654729075
+    tolerance: "exact"
+    check: "math.prod(range(1, 20, 2))"
+  - id: s07
+    section: sequences
+    prompt: "A geometric sequence starts at 3 and each term is 1.5 times the previous one. What is the sum of its first 12 terms, to 2 decimal places?"
+    answer: 772.48
+    tolerance: "abs:0.01"
+    check: "rhu(sum(3 * F(3, 2) ** k for k in range(12)), 2)"
+
+  # --- units ---
+  - id: u01
+    section: units
+    prompt: "A marathon is 26.2 miles. How many kilometres is that, to 3 decimal places?"
+    answer: 42.165
+    tolerance: "abs:1e-3"
+    check: "rhu(F('26.2') * F('1.609344'), 3)"
+  - id: u02
+    section: units
+    prompt: "My oven is set to 350 °F. What is that in Celsius, to one decimal place?"
+    answer: 176.7
+    tolerance: "abs:0.05"
+    check: "rhu((F(350) - 32) * F(5, 9), 1)"
+  - id: u03
+    section: units
+    prompt: "How many US gallons are in 50 litres? Give 3 decimal places."
+    answer: 13.209
+    tolerance: "abs:1e-3"
+    check: "rhu(F(50) / F('3.785411784'), 3)"
+  - id: u04
+    section: units
+    prompt: "My car does 34 miles per US gallon. What is its fuel consumption in litres per 100 km, to 2 decimal places?"
+    answer: 6.92
+    tolerance: "abs:0.01"
+    check: "rhu(100 * F('3.785411784') / (34 * F('1.609344')), 2)"
+  - id: u05
+    section: units
+    prompt: "How many seconds are there in 3.5 days?"
+    answer: 302400
+    tolerance: "exact"
+    check: "F('3.5') * 24 * 3600"
+  - id: u06
+    section: units
+    prompt: "A file is 2.5 GiB. How many megabytes (decimal MB, 10^6 bytes) is that?"
+    answer: 2684.35456
+    tolerance: "exact"
+    check: "F('2.5') * 2 ** 30 / 10 ** 6"
+  - id: u07
+    section: units
+    prompt: "What is 120 km/h in metres per second, to 3 decimal places?"
+    answer: 33.333
+    tolerance: "abs:1e-3"
+    check: "rhu(F(120000, 3600), 3)"
+  - id: u08
+    section: units
+    prompt: "One bag of rice weighs 5 kg and another weighs 11 lb. How many grams heavier is the heavier bag, to the nearest gram?"
+    answer: 10
+    tolerance: "abs:0.5"
+    check: "rhu(5000 - 11 * F('453.59237'), 0)"
+
+  # --- statistics ---
+  - id: t01
+    section: statistics
+    prompt: "What is the mean of 23, 29, 20, 32, 23, 21, 33 and 25?"
+    answer: 25.75
+    tolerance: "exact"
+    check: "st.mean([F(x) for x in [23, 29, 20, 32, 23, 21, 33, 25]])"
+  - id: t02
+    section: statistics
+    prompt: "What is the median of 7, 3, 9, 12, 5 and 8?"
+    answer: 7.5
+    tolerance: "exact"
+    check: "st.median([7, 3, 9, 12, 5, 8])"
+  - id: t03
+    section: statistics
+    prompt: "Six measurements of a rod in mm: 10.2, 9.8, 10.5, 10.1, 9.9, 10.4. What is their sample standard deviation, to 4 decimal places?"
+    answer: 0.2739
+    tolerance: "abs:1e-4"
+    check: "rhu(st.stdev([F(x) for x in ['10.2', '9.8', '10.5', '10.1', '9.9', '10.4']]), 4)"
+  - id: t04
+    section: statistics
+    prompt: "What is the population variance of 3, 7, 7 and 19?"
+    answer: 36
+    tolerance: "exact"
+    check: "st.pvariance([F(x) for x in [3, 7, 7, 19]])"
+  - id: t05
+    section: statistics
+    prompt: "What is the Pearson correlation between x = 1, 2, 3, 4, 5, 6 and y = 2.1, 3.9, 6.2, 7.8, 10.1, 12.2? Give 4 decimal places."
+    answer: 0.9991
+    tolerance: "abs:1e-4"
+    check: "rhu(st.correlation([1, 2, 3, 4, 5, 6], [2.1, 3.9, 6.2, 7.8, 10.1, 12.2]), 4)"
+  - id: t06
+    section: statistics
+    prompt: "Fit a least-squares straight line through the points (1, 3), (2, 5), (3, 6), (4, 9) and (5, 11). What is its slope, to 2 decimal places?"
+    answer: 2
+    tolerance: "abs:0.005"
+    check: "rhu(st.linear_regression([1, 2, 3, 4, 5], [3, 5, 6, 9, 11]).slope, 2)"
+  - id: t07
+    section: statistics
+    prompt: "What is the 90th percentile of 15, 20, 35, 40 and 50, using linear interpolation between data points (as Excel's PERCENTILE.INC does)?"
+    answer: 46
+    tolerance: "abs:1e-9"
+    check: "st.quantiles([15, 20, 35, 40, 50], n=10, method='inclusive')[8]"
+  - id: t08
+    section: statistics
+    prompt: "A student scored 85 on homework (weight 2), 92 on the project (weight 3) and 78 on the exam (weight 5). What is the weighted average?"
+    answer: 83.6
+    tolerance: "exact"
+    check: "F(85 * 2 + 92 * 3 + 78 * 5, 2 + 3 + 5)"
+
+  # --- finance ---
+  - id: f01
+    section: finance
+    prompt: "What is the monthly payment on a $300,000, 30-year mortgage at 6.75% a year, compounded monthly? Round to the cent."
+    answer: 1945.79
+    tolerance: "abs:0.01"
+    check: "rhu(300000 * (F('0.0675') / 12) / (1 - 1 / (1 + F('0.0675') / 12) ** 360), 2)"
+  - id: f02
+    section: finance
+    prompt: "I invest $10,000 at 5% a year, compounded monthly, for 10 years. What is it worth at the end, to the cent?"
+    answer: 16470.09
+    tolerance: "abs:0.01"
+    check: "rhu(10000 * (1 + F('0.05') / 12) ** 120, 2)"
+  - id: f03
+    section: finance
+    prompt: "Revenue grew from 1.2 million to 2.05 million over 4 years. What is the compound annual growth rate, as a percentage to 2 decimal places?"
+    answer: 14.33
+    tolerance: "abs:0.005"
+    check: "rhu(((2.05 / 1.2) ** (1 / 4) - 1) * 100, 2)"
+  - id: f04
+    section: finance
+    prompt: "A project costs $50,000 today and returns $15,000, $18,000, $20,000 and $12,000 at the ends of years 1 to 4. What is its net present value at an 8% discount rate, to the cent?"
+    answer: 4017.99
+    tolerance: "abs:0.01"
+    check: "rhu(-50000 + sum(F(cf) / F('1.08') ** t for t, cf in enumerate([15000, 18000, 20000, 12000], 1)), 2)"
+  - id: f05
+    section: finance
+    prompt: "An investment of $25,000 pays back $7,000, $8,000, $9,000 and $6,000 at the ends of the next four years. What is its internal rate of return, as a percentage to 2 decimal places?"
+    answer: 7.81
+    tolerance: "abs:0.005"
+    check: "rhu(irr([-25000, 7000, 8000, 9000, 6000]) * 100, 2)"
+  - id: f06
+    section: finance
+    prompt: "How much must I save at the end of every month to have $50,000 in 8 years, if savings earn 4% a year compounded monthly? Round to the cent."
+    answer: 442.8
+    tolerance: "abs:0.01"
+    check: "rhu(50000 * (F('0.04') / 12) / ((1 + F('0.04') / 12) ** 96 - 1), 2)"
+  - id: f07
+    section: finance
+    prompt: "What is the present value of $1,000 paid at the end of each year for 15 years, at 6% a year? Round to the cent."
+    answer: 9712.25
+    tolerance: "abs:0.01"
+    check: "rhu(1000 * (1 - 1 / F('1.06') ** 15) / F('0.06'), 2)"
+  - id: f08
+    section: finance
+    prompt: "A $25,000 car loan at 7.2% a year (compounded monthly) is repaid monthly over 5 years. Rounding the monthly payment to the cent, what is the total interest paid over the loan?"
+    answer: 4843.4
+    tolerance: "abs:0.01"
+    check: "rhu(rhu(25000 * (F('0.072') / 12) / (1 - 1 / (1 + F('0.072') / 12) ** 60), 2) * 60 - 25000, 2)"
+
+  # --- dates ---
+  - id: d01
+    section: dates
+    prompt: "How many days are there from 15 March 2026 to 2 November 2026?"
+    answer: 232
+    tolerance: "exact"
+    check: "(date(2026, 11, 2) - date(2026, 3, 15)).days"
+  - id: d02
+    section: dates
+    prompt: "What date is 90 days after 21 November 2026?"
+    answer: "2027-02-19"
+    tolerance: "exact"
+    check: "(date(2026, 11, 21) + timedelta(days=90)).isoformat()"
+  - id: d03
+    section: dates
+    prompt: "How many weekdays (Monday to Friday) are there from Monday 23 November 2026 to Friday 18 December 2026, counting both days?"
+    answer: 20
+    tolerance: "exact"
+    check: "workdays(date(2026, 11, 23), date(2026, 12, 18), [])"
+  - id: d04
+    section: dates
+    prompt: "What day of the week was 20 July 1969?"
+    answer: "Sunday"
+    tolerance: "exact"
+    check: "('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')[date(1969, 7, 20).weekday()]"
+  - id: d05
+    section: dates
+    prompt: "An invoice dated 31 January 2026 is due one calendar month later; if that month has no such day, it is due on the month's last day. What is the due date?"
+    answer: "2026-02-28"
+    tolerance: "exact"
+    check: "addmonths(date(2026, 1, 31), 1).isoformat()"
+  - id: d06
+    section: dates
+    prompt: "Someone was born on 15 June 1988. How old are they, in whole years, on 14 June 2026?"
+    answer: 37
+    tolerance: "exact"
+    check: "2026 - 1988 - (1 if (6, 14) < (6, 15) else 0)"
+  - id: d07
+    section: dates
+    prompt: "What is the ISO week number of 1 January 2027?"
+    answer: 53
+    tolerance: "exact"
+    check: "date(2027, 1, 1).isocalendar()[1]"
+  - id: d08
+    section: dates
+    prompt: "What is the date 10 working days (Monday to Friday) after Thursday 17 December 2026, if 25 December 2026 and 1 January 2027 are holidays?"
+    answer: "2027-01-04"
+    tolerance: "exact"
+    check: "addworkdays(date(2026, 12, 17), 10, [date(2026, 12, 25), date(2027, 1, 1)]).isoformat()"
+
+  # --- word problems, several steps ---
+  - id: w01
+    section: word
+    prompt: "Our restaurant bill is $184.60, of which $170.00 is before tax. We tip 18% of the pre-tax amount and split the bill plus the tip evenly among 4 people. How much does each person pay, to the cent?"
+    answer: 53.8
+    tolerance: "abs:0.01"
+    check: "rhu((F('184.60') + F('170.00') * F('0.18')) / 4, 2)"
+  - id: w02
+    section: word
+    prompt: "A tank fills at 12 litres a minute and drains at 4.5 litres a minute at the same time. Starting empty, how many minutes until it holds 900 litres?"
+    answer: 120
+    tolerance: "exact"
+    check: "F(900) / (12 - F('4.5'))"
+  - id: w03
+    section: word
+    prompt: "I buy 3 shirts at $24.99 and 2 pairs of trousers at $49.50, get 10% off the total, then pay 7% sales tax on the discounted total. Rounding the discounted total and the tax to the cent, what do I pay?"
+    answer: 167.53
+    tolerance: "abs:0.01"
+    check: "rhu(F('0.9') * (3 * F('24.99') + 2 * F('49.50')), 2) + rhu(rhu(F('0.9') * (3 * F('24.99') + 2 * F('49.50')), 2) * F('0.07'), 2)"
+  - id: w04
+    section: word
+    prompt: "I ran 10 km in 47 minutes 30 seconds. What was my average pace in minutes per mile, to 2 decimal places?"
+    answer: 7.64
+    tolerance: "abs:0.01"
+    check: "rhu(F('47.5') / (10 / F('1.609344')), 2)"
+  - id: w05
+    section: word
+    prompt: "A recipe for 6 people uses 450 g of flour. How many ounces of flour do I need for 10 people, to one decimal place?"
+    answer: 26.5
+    tolerance: "abs:0.05"
+    check: "rhu(F(450) * 10 / 6 / F('28.349523125'), 1)"
+  - id: w06
+    section: word
+    prompt: "My salary is 4,250 a month this year and rises by 3.5% every January. How much do I earn in total over the next 5 years (this year included), to the cent, without rounding the monthly amounts?"
+    answer: 273485.76
+    tolerance: "rel:1e-6"
+    check: "rhu(sum(12 * 4250 * F('1.035') ** k for k in range(5)), 2)"
+  - id: w07
+    section: word
+    prompt: "A room has walls 4.2 m and 3.6 m long (two of each) and is 2.7 m high. Leaving out a 1.9 m² door and a 2.4 m² window, how many litres of paint do two coats need, if a litre covers 11 m²? Give 2 decimal places."
+    answer: 6.88
+    tolerance: "abs:0.01"
+    check: "rhu((2 * (F('4.2') + F('3.6')) * F('2.7') - F('1.9') - F('2.4')) * 2 / 11, 2)"
