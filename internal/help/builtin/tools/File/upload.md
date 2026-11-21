@@ -1,6 +1,6 @@
 ---
 name: File/upload
-description: "File op=upload — send a file from the inbox or one of your volumes to a URL, in one request or in ranges for an upload session."
+description: "File op=upload — send a file from the inbox, one of your volumes or a workspace to a URL, in one request or in ranges for an upload session."
 ---
 `upload` sends a file's bytes to a URL without them passing through you: the
 runtime reads the file and makes the request. It is how a file reaches a
@@ -16,7 +16,12 @@ URL's query, and any URL's query in the server's reply, as `?…`.
 ## Arguments
 
 - `from` — the file: `volume:inbox:<path>` (or a bare path in the inbox), or
-  `volume:<name>:<path>` in one of your volumes, which needs the Read tool.
+  `volume:<name>:<path>` in one of your volumes, which needs the Read tool,
+  or `workspace:<name>:<path>` in a workspace this run opened, which needs
+  your agent's `workspace` grant `read` (not Read) and passes the `Workspace`
+  hooks as `{op: "read", name, path, via: "File"}`. A workspace's file is
+  read in ranges from its worker as it is sent, never copied to the runtime
+  first.
 - `url` — the absolute `http` or `https` URL to send it to, exactly as the
   service gave it: when you take it from JSON (an upload session's
   `uploadUrl`), the value only, without the quote marks around it.
@@ -43,6 +48,8 @@ range again.
 - The host is not on the allowlist, or resolves to a private address the
   operator did not exempt.
 - `from` is in a volume and you do not hold Read, or there is no file there.
+- `from` is in a workspace and your grant lacks `read`, a `Workspace` hook
+  refused, or no workspace of that name is this run's.
 - The server answered with an error status (the result says which, with its
   reply): an upload URL may have expired.
 - A ranged upload did not finish within a bounded number of requests.
@@ -66,6 +73,12 @@ Upload the extracted minutes to a Graph upload session, in ranges:
 ```
 
 Send a small file in one PUT:
+
+Send a report a script built in a workspace:
+
+```json
+{"op": "upload", "from": "workspace:build:out/report.pdf", "url": "https://storage.example.com/bucket/report.pdf?X-Amz-Signature=…", "content_type": "application/pdf"}
+```
 
 ```json
 {"op": "upload", "from": "volume:docs:notes.txt", "url": "https://storage.example.com/bucket/notes.txt?X-Amz-Signature=…", "content_type": "text/plain"}

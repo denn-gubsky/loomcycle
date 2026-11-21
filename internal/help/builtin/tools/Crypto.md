@@ -94,11 +94,18 @@ record or field. A JWE carries no context.
 - `volume:<path>` — a file on your default volume (`volume:<name>:<path>` for
   another bound volume); needs `Read` to read and `Write` to write;
 - `memory:<scope>/<key>` — a Memory key; needs `Memory`;
-- `document:<scope>/<chunk_id>` — a document chunk's body; needs `Document`.
+- `document:<scope>/<chunk_id>` — a document chunk's body; needs `Document`;
+- `workspace:<name>:<path>` — a file in a workspace this run opened; needs
+  your agent's `workspace` grant (`read` for `from`, `write` for `to`), not
+  the `Workspace` tool. The operator's `Workspace` hooks judge it as
+  `{op: read|write, name, path, via: "Crypto"}`, and only the run that opened
+  the workspace reaches it. A `to` there replaces the file and counts against
+  the workspace's disk quota.
 
 You get the same access you would have with those tools, no more. With `to`,
 the result says where the output went and how many bytes, never the content.
-Memory and document chunks hold text, so binary output goes to a volume.
+Memory and document chunks hold text, so binary output goes to a volume or a
+workspace.
 
 ## Keeping a decrypted value out of storage
 

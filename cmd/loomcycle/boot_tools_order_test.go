@@ -21,7 +21,7 @@ var buildToolsStepOrder = []string{
 // order.
 var buildToolsCatalog = []string{
 	"Read", "Write", "Edit", "Grep", "Glob", "NotebookEdit", "HTTP", "WebFetch",
-	"WebSearch", "Bash", "Bashbox", "Skill", "Memory", "Recall", "Channel",
+	"WebSearch", "Bash", "Bashbox", "Skill", "Calc", "Memory", "Recall", "Channel",
 	"AgentDef", "SkillDef", "TeamDef", "VolumeDef", "File", "Git",
 	"Workspace", "CredentialDef", "Crypto", "Path", "Document", "History", "Evaluation",
 	"Interruption", "Context", "Identity",

@@ -70,11 +70,6 @@ func crossedSince(before, after map[string]uint64) (total uint64, byOp map[strin
 	return total, byOp
 }
 
-func (f *fcFixture) wsPutBytes(t *testing.T, name, p string, data []byte) {
-	t.Helper()
-	f.wsPut(t, name, p, string(data))
-}
-
 // A PDF, a DOCX and an EPUB in a workspace are extracted into a folder of
 // the same workspace on its worker: the text and the pictures land there,
 // and none of the source's bytes cross to the core (no get ran, and all

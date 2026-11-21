@@ -43,6 +43,63 @@ func classifyVolumeImage(body string) (alt, ref string, ok bool) {
 	return m[1], m[2], true
 }
 
+// A workspace image reference, `![alt](workspace:<name>:<path>)` as a
+// chunk's whole body, is attached only by an import the File tool makes from
+// a workspace file (RFC GW P2 §3.4): File rewrites the file's relative image
+// links into these and supplies the reader (withWorkspaceImageReader), which
+// follows only the references it wrote. Without that reader the form is
+// ordinary text, as it always was.
+var mdWorkspaceImageRe = regexp.MustCompile(`^!\[([^\]\n\r]*)\]\((workspace:[^\s()<>]+)\)$`)
+
+// classifyImportImage is classifyVolumeImage that also reports a workspace
+// image reference.
+func classifyImportImage(body string) (alt, ref string, ok bool) {
+	if alt, ref, ok := classifyVolumeImage(body); ok {
+		return alt, ref, true
+	}
+	m := mdWorkspaceImageRe.FindStringSubmatch(strings.TrimSpace(body))
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], m[2], true
+}
+
+type workspaceImageReaderKey struct{}
+
+// withWorkspaceImageReader lets the File tool's import from a workspace
+// attach the images its file links to. Unexported, like the volume reader.
+func withWorkspaceImageReader(ctx context.Context, fn volumeAssetReader) context.Context {
+	return context.WithValue(ctx, workspaceImageReaderKey{}, fn)
+}
+
+func workspaceImageReaderFrom(ctx context.Context) (volumeAssetReader, bool) {
+	fn, ok := ctx.Value(workspaceImageReaderKey{}).(volumeAssetReader)
+	return fn, ok && fn != nil
+}
+
+// markWorkspaceImages makes each chunk whose whole body is a workspace image
+// reference an image chunk to attach, as the parser does for a volume one;
+// only when the import has a workspace image reader.
+func markWorkspaceImages(ctx context.Context, chunks []mdChunk) {
+	if _, ok := workspaceImageReaderFrom(ctx); !ok {
+		return
+	}
+	for i := range chunks {
+		c := &chunks[i]
+		if c.assetRef != "" || c.assetData != "" {
+			continue
+		}
+		m := mdWorkspaceImageRe.FindStringSubmatch(strings.TrimSpace(c.body))
+		if m == nil {
+			continue
+		}
+		if c.typ == "" {
+			c.typ = "image"
+		}
+		c.body, c.assetRef = m[1], m[2]
+	}
+}
+
 // volumeAssetReader reads at most max bytes of a volume file for import_md;
 // over max is an error. Errors are model-facing reasons.
 type volumeAssetReader func(ctx context.Context, r dataRef, max int64) ([]byte, error)
@@ -232,16 +289,27 @@ func mergeChunkFields(fields json.RawMessage, set map[string]any) json.RawMessag
 // readVolumeImage reads one volume image within the import's byte budget.
 func (d *Document) readVolumeImage(ctx context.Context, ref string, l *volumeImageLoader) loadedImage {
 	r, err := parseDataRef(ref)
-	if err != nil || r.kind != refVolume {
+	if err != nil {
+		return loadedImage{err: "not a volume reference"}
+	}
+	read := documentVolumeRead
+	switch r.kind {
+	case refVolume:
+		if fn, ok := ctx.Value(volumeAssetReaderKey{}).(volumeAssetReader); ok && fn != nil {
+			read = fn
+		}
+	case refWorkspace:
+		fn, ok := workspaceImageReaderFrom(ctx)
+		if !ok {
+			return loadedImage{err: "not a volume reference"}
+		}
+		read = fn
+	default:
 		return loadedImage{err: "not a volume reference"}
 	}
 	remaining := int64(maxImportVolumeImageBytes) - l.bytes
 	if remaining <= 0 {
 		return loadedImage{err: fmt.Sprintf("an import reads at most %d bytes of volume images", maxImportVolumeImageBytes)}
-	}
-	read := documentVolumeRead
-	if fn, ok := ctx.Value(volumeAssetReaderKey{}).(volumeAssetReader); ok && fn != nil {
-		read = fn
 	}
 	limit := int64(d.maxAssetBytes())
 	if remaining < limit {

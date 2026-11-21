@@ -376,6 +376,7 @@ func (b *boot) wireServerCatalog() {
 	// marshals into the substrate-mirror shape ({name, description,
 	// input_schema}) so the wire stays uniform across static + dynamic.
 	srv.SetCryptoStats(cryptoTool.Stats) // RFC EP: loomcycle_crypto_ops_total
+	srv.SetCalcStats(b.calcTool.RefusalStats)
 	// RFC FZ Part B: the File tool's extraction budget, loomcycle_extractions_*.
 	srv.SetExtractionStats(b.fileTool.ExtractionStats)
 	if b.conversion != nil {

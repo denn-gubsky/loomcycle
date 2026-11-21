@@ -14,7 +14,8 @@ system expects on a webhook you send it.
   `input_encoding: "base64"`. A single changed byte, such as a re-serialized
   JSON body, gives a different MAC.
 - `from` — read the data from a store instead: `volume:<path>`,
-  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`.
+  `memory:<scope>/<key>`, `document:<scope>/<chunk_id>` or
+  `workspace:<name>:<path>`.
 - `output_encoding` — `hex` (default) or `base64`.
 
 ## Returns

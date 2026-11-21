@@ -508,6 +508,9 @@ type Server struct {
 	// cryptoStats reads the Crypto tool's op counters ("<op>|<outcome>" →
 	// count) for /metrics; nil when not wired.
 	cryptoStats func() map[string]uint64
+	// calcStats reads the Calc tool's refusal counters (error code → count)
+	// for /metrics; nil when not wired.
+	calcStats func() map[string]uint64
 	// extractionStats reads the File tool's extraction budget (the slots,
 	// those in flight and the calls waiting) for /metrics; nil when not wired.
 	extractionStats func() (limit, inFlight, waiting int)
@@ -1207,6 +1210,9 @@ func (s *Server) SetChannelHookStats(f func() channelhooks.Stats) { s.channelHoo
 // SetCryptoStats wires the Crypto tool's op counters into /metrics. Boot
 // wiring only.
 func (s *Server) SetCryptoStats(f func() map[string]uint64) { s.cryptoStats = f }
+
+// SetCalcStats wires the Calc tool's refusal counters into /metrics.
+func (s *Server) SetCalcStats(f func() map[string]uint64) { s.calcStats = f }
 
 // SetExtractionStats wires the File tool's extraction budget into /metrics.
 // Boot wiring only.

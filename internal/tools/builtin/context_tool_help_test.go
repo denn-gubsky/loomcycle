@@ -143,6 +143,56 @@ func TestContextDoc_ReturnsTheToolsArticle(t *testing.T) {
 	}
 }
 
+// A tool with no op lists its section articles: op=help on its article returns
+// them under sections, op=doc as section_topics, and a topic that does not
+// exist names them.
+func TestContextHelp_ToolArticleListsItsSections(t *testing.T) {
+	set, err := help.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Context{Help: set, Tools: []tools.Tool{&Calc{}}}
+	out, _ := callContext(t, c, context.Background(), `{"op":"help","topic":"Calc"}`)
+	secs, _ := out["sections"].([]any)
+	if len(secs) == 0 || out["operations"] != nil {
+		t.Fatalf("sections = %v, operations = %v; want Calc's sections and no operations", out["sections"], out["operations"])
+	}
+	var names []string
+	for _, s := range secs {
+		e := s.(map[string]any)
+		if e["description"] == "" {
+			t.Errorf("section %v has no description", e)
+		}
+		names = append(names, e["topic"].(string))
+	}
+	if got := strings.Join(names, ","); !strings.Contains(got, "Calc/errors") || !strings.Contains(got, "Calc/language") {
+		t.Errorf("sections = %s", got)
+	}
+
+	// A section article is not an index: it lists nothing.
+	sec, _ := callContext(t, c, context.Background(), `{"op":"help","topic":"Calc/errors"}`)
+	if sec["sections"] != nil || sec["operations"] != nil {
+		t.Errorf("Calc/errors lists children: %v", sec)
+	}
+
+	_, res := callContext(t, c, context.Background(), `{"op":"help","topic":"Calc/finance"}`)
+	if !res.IsError || !strings.Contains(res.Text, "Calc documents: ") || !strings.Contains(res.Text, "Calc/language") {
+		t.Errorf("missing section = %q, want an error naming Calc's sections", res.Text)
+	}
+
+	ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Tools: []string{"Calc", "Context"}})
+	doc, res := callContext(t, c, ctx, `{"op":"doc","name":"Calc"}`)
+	if res.IsError {
+		t.Fatalf("op=doc: %s", res.Text)
+	}
+	if st, _ := doc["section_topics"].([]any); len(st) != len(secs) || doc["operation_topics"] != nil {
+		t.Errorf("op=doc section_topics = %v, operation_topics = %v", doc["section_topics"], doc["operation_topics"])
+	}
+	if doc["side_effect_class"] != "pure" {
+		t.Errorf("Calc side_effect_class = %v, want pure", doc["side_effect_class"])
+	}
+}
+
 func joinAny(v any) string {
 	arr, _ := v.([]any)
 	s := make([]string, 0, len(arr))

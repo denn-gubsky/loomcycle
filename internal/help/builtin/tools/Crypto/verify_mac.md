@@ -11,7 +11,8 @@ partner's webhook signature header.
   `hmac-sha512` key it was made with.
 - `data` (required) — the exact bytes that were MACed, as received.
 - `from` — read the data from a store instead: `volume:<path>`,
-  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`.
+  `memory:<scope>/<key>`, `document:<scope>/<chunk_id>` or
+  `workspace:<name>:<path>`.
 - `mac` (required) — the MAC to check, hex or base64. Strip any prefix such
   as `sha256=` first.
 

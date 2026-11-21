@@ -237,6 +237,11 @@ func (b *boot) buildToolsCore(httpTool *builtin.HTTP) {
 	}
 	skillTool := &builtin.SkillTool{Set: skillSet}
 	b.allTools = append(b.allTools, skillTool)
+	// Calc is pure: no state, no I/O, no grant beyond the agent's tools list.
+	// Not added to agents by default; an agent opts in with tools: [Calc].
+	calcTool := &builtin.Calc{}
+	b.allTools = append(b.allTools, calcTool)
+	b.calcTool = calcTool
 	b.searchRegistry = searchRegistry
 	b.searchResolver = searchResolver
 	b.searchHostKeys = searchHostKeys

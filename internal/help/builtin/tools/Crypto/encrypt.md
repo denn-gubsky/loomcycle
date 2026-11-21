@@ -19,7 +19,8 @@ encryptions of the same text differ. It works three ways:
 - `plaintext` — what to encrypt. Text, or base64 bytes with
   `input_encoding: "base64"`. It is never stored in the transcript.
 - `from` — read the plaintext from a store instead: `volume:<path>`,
-  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`. Give `plaintext` or
+  `memory:<scope>/<key>`, `document:<scope>/<chunk_id>` or
+  `workspace:<name>:<path>`. Give `plaintext` or
   `from`, not both.
 - `to` — write the ciphertext to a store instead of returning it.
 - `input_encoding` — `text` (default) or `base64`.
@@ -48,4 +49,10 @@ and holds no ciphertext.
 
 ```json
 {"op": "encrypt", "key": "archive-key", "from": "volume:reports/q3.csv", "to": "volume:reports/q3.csv.lcx"}
+```
+
+Encrypt a file a script wrote in a workspace, next to it:
+
+```json
+{"op": "encrypt", "key": "archive-key", "from": "workspace:build:out/export.csv", "to": "workspace:build:out/export.csv.lcx"}
 ```

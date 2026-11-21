@@ -834,7 +834,7 @@ func sideEffectClassFor(name string) string {
 		// Without per-op classification we conservatively pick "state"
 		// — operators reading the catalog see "this might mutate."
 		return "state"
-	case "Context", "Skill":
+	case "Context", "Skill", "Calc":
 		return "pure"
 	}
 	if strings.HasPrefix(name, "mcp__") {
@@ -884,6 +884,15 @@ func (c *Context) execDoc(ctx context.Context, in contextInput) (tools.Result, e
 			if len(ops) > 0 {
 				out["operation_topics"] = ops
 				out["hint"] = fmt.Sprintf("Read one operation, with examples, via op=help topic=<name>, e.g. topic=%s.", ops[0])
+			}
+			// A tool with no op splits its help into sections instead.
+			var secs []string
+			for _, s := range c.Help.SectionsOf(t.Name()) {
+				secs = append(secs, s.Name)
+			}
+			if len(secs) > 0 {
+				out["section_topics"] = secs
+				out["hint"] = fmt.Sprintf("Read one section, with examples, via op=help topic=<name>, e.g. topic=%s.", secs[0])
 			}
 		}
 		return okJSON(out)
@@ -1306,6 +1315,9 @@ func (c *Context) execHelp(ctx context.Context, in contextInput) (tools.Result, 
 				for _, o := range c.Help.OpsOf(art.Tool) {
 					ops = append(ops, o.Name)
 				}
+				for _, s := range c.Help.SectionsOf(art.Tool) {
+					ops = append(ops, s.Name)
+				}
 				return errNotFound(fmt.Sprintf("help: topic %q not found; %s documents: %s", in.Topic, art.Tool, strings.Join(ops, ", ")), ""), nil
 			}
 		}
@@ -1317,19 +1329,26 @@ func (c *Context) execHelp(ctx context.Context, in contextInput) (tools.Result, 
 		"content":     t.Content,
 		"source":      t.Source,
 	}
-	// A tool article is an index of its operations; the list comes from what is
-	// loaded, so it cannot name an article that does not exist.
-	if t.Tool != "" && !t.IsOpArticle() {
+	// A tool article is an index of its operations, or of its sections for a
+	// tool with no op; the lists come from what is loaded, so they cannot name an
+	// article that does not exist.
+	if t.Tool != "" && !t.IsOpArticle() && !t.IsSectionArticle() {
 		type opEntry struct {
 			Topic       string `json:"topic"`
 			Description string `json:"description"`
 		}
-		var ops []opEntry
+		var ops, secs []opEntry
 		for _, o := range c.Help.OpsOf(t.Tool) {
 			ops = append(ops, opEntry{Topic: o.Name, Description: o.Description})
 		}
 		if len(ops) > 0 {
 			resp["operations"] = ops
+		}
+		for _, s := range c.Help.SectionsOf(t.Tool) {
+			secs = append(secs, opEntry{Topic: s.Name, Description: s.Description})
+		}
+		if len(secs) > 0 {
+			resp["sections"] = secs
 		}
 	}
 	return okJSON(resp)

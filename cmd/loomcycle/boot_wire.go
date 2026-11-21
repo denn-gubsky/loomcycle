@@ -317,6 +317,9 @@ func (b *boot) bindStoreToTools() {
 		// File reaches workspaces by reference (RFC GW P2) through the same
 		// bookkeeping, so the same pin and grant hold.
 		b.fileTool.Workspaces = b.workspaces
+		// Crypto's from and to take workspace references too (RFC GW P2
+		// §3.4), under the same pin, grant and hooks.
+		b.cryptoTool.Workspaces = b.workspaces
 	}
 }
 

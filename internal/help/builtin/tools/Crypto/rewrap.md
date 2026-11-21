@@ -11,7 +11,8 @@ after the key was rotated, so the old version can be retired.
 - `ciphertext` (required) — a ciphertext made with a crypto key (`key`).
   Ciphertexts made with `cred` or `run` keys have no versions to move between.
 - `from` — read the ciphertext from a store instead: `volume:<path>`,
-  `memory:<scope>/<key>` or `document:<scope>/<chunk_id>`.
+  `memory:<scope>/<key>`, `document:<scope>/<chunk_id>` or
+  `workspace:<name>:<path>`.
 - `to` — write the new ciphertext to a store instead of returning it.
 - `key` — needed only for a `raw` ciphertext or a JWE; an envelope names its
   key.
