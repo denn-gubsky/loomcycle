@@ -1,19 +1,18 @@
 # Workspaces
 
-A **workspace** is a directory on a *workspace worker*, a process apart from the runtime, where an agent runs shell commands and works on files through the `Workspace` tool. It is for work that needs a real shell and real toolchains (Python, Node): run a script, build something, test it, read the result. This guide covers what workspaces are in this release (RFC GW, phase 1), how to run a worker, the agent grant, the tool, its limits, and what its refusals mean.
+A **workspace** is a directory on a *workspace worker*, a process apart from the runtime, where an agent runs shell commands and works on files through the `Workspace` tool. It is for work that needs a real shell and real toolchains (Python, Node): run a script, build something, test it, read the result. The `File` tool moves files in and out of a workspace and converts them there, by reference, so a file's bytes never pass through the model. This guide covers what workspaces are in this release (RFC GW, phases 1 and 2), how to run a worker, the agent grant, the tool, moving and converting files, its limits, and what its refusals mean.
 
 ## What a workspace is, and what it is not
 
-**What it is.** An agent granted `workspace` opens a workspace by name, runs commands in it (`exec`), reads and changes its files (`read`, `write`, `edit`, `glob`, `grep`) and may `release` it. A workspace belongs to the **run that opened it**: no other run sees it, not a sub-agent of that run, not a sibling of the same tree, not another run of the same user. It is deleted, files and all, when that run ends, however it ends (completed, failed, cancelled). A run that is paused or parked waiting for input keeps it. If the runtime dies mid-run, a sweeper and the worker's next attach remove what is left.
+**What it is.** An agent granted `workspace` opens a workspace by name, runs commands in it (`exec`), reads and changes its files (`read`, `write`, `edit`, `glob`, `grep`) and may `release` it. With the `File` tool it copies files and folders in and out of it, converts files inside it, imports a Markdown file from it as a Document and renders a Document into it (see "Moving files" and "Converting files in a workspace"). A workspace belongs to the **run that opened it**: no other run sees it, not a sub-agent of that run, not a sibling of the same tree, not another run of the same user. It is deleted, files and all, when that run ends, however it ends (completed, failed, cancelled). A run that is paused or parked waiting for input keeps it. If the runtime dies mid-run, a sweeper and the worker's next attach remove what is left.
 
-**What it is not, yet.** Phase 1 has the `host` engine only, and leaves several things to later phases:
+**What it is not, yet.** Phases 1 and 2 have the `host` engine only, and leave several things to later phases:
 
-- **No isolation.** On the `host` engine a command runs as the worker's own OS user. It can read and write anything that user can, including the worker's token, and in `local` mode the runtime's data directory, config and secrets files and environment. It is not a sandbox. The container engine, which isolates, is a later phase.
-- **No managed network.** Phase 1 grants or routes no network for a workspace. On the `host` engine nothing blocks it either: a command has whatever network the worker's machine has. Do not rely on either.
-- **No file transfer** other than `write` and `read`. The `File` tool does not reach workspaces yet; copy what you need out with `read` before the run ends.
-- **No disk quota.** A workspace can fill the worker's disk; `workspace.max_per_run` and `max_per_tenant` bound how many there are, not their size.
-- **No durable, git or shared workspaces.** Every workspace is ephemeral, empty when opened and gone when its run ends, and owned by one run.
-- **Not on loomcycle's MCP server.** A workspace is pinned to a run, and an MCP session has none.
+- **No isolation.** On the `host` engine a command runs as the worker's own OS user. It can read and write anything that user can, including the worker's token, and in `local` mode the runtime's data directory, config and secrets files and environment. It is not a sandbox. The `container` engine, which isolates, is phase 3.
+- **No managed network.** No network is granted or routed for a workspace. On the `host` engine nothing blocks it either: a command has whatever network the worker's machine has. Do not rely on either.
+- **No hard disk limit under a command.** The disk quota stops what `File` and the `Workspace` tool write before a byte is written, but a command's own writes are only measured after it ends (see "The disk quota"). One command can pass the quota while it runs; the next step is stopped. The `container` engine (phase 3) can put a file-system limit under it.
+- **No durable, git or shared workspaces.** Every workspace is ephemeral, empty when opened and gone when its run ends, and owned by one run. A reference into another agent's workspace (`workspace:<name>@<agent_id>:<path>`) comes with sharing, phase 8; checking a Document out into a workspace and committing it back, phase 7.
+- **Not on loomcycle's MCP server.** A workspace is pinned to a run, and an MCP session has none: the MCP `file` tool refuses a workspace reference.
 
 ## Running a remote worker
 
@@ -141,6 +140,79 @@ A worked example: an agent writes a script, runs it and reads what it wrote.
 
 The read returns `144`. When the run ends, the workspace is deleted. A command that exits non-zero, or times out (`"timed_out": true`), is returned as a failed call with its output, as the Bash tool does.
 
+## Moving files
+
+The `File` tool reaches a workspace through a **reference**, `workspace:<name>:<path>`: a file or folder in a workspace this run opened (`workspace:<name>:` is its root). The bytes stream between the worker and the runtime, never through the model, which sees only where they went.
+
+| op | On a workspace |
+|---|---|
+| `stat`, `ls` | size, type and sha256 of a file; the files of a folder |
+| `copy` | a file or a folder between the inbox, a volume and a workspace, either way, or between two workspaces of the run |
+| `rm`, `clear` | remove a file or a folder; empty a folder |
+| `import` | build a Document from a Markdown file in the workspace |
+| `render` | write a Document (or a Markdown or HTML file) into the workspace with `to` |
+| `download`, `upload` | GET a URL into the workspace (`to`); send a file from it (`from`) |
+| `extract`, `transcribe`, `unpack` | convert a file in the workspace, on its worker (next section) |
+
+The `Crypto` tool's `from` and `to` take a workspace reference too. `keep` stays inbox to volume; `copy` is the general form.
+
+**Grants and hooks.** A workspace reference needs the agent's `workspace` grant, not the `Workspace` tool and not the Read and Write grants that govern volumes: `read` to read from a workspace, `write` to write into it or remove from it. The operator's `Workspace` pre-hooks judge every use as a `Workspace` call `{op: read|write|remove, name, path, via: "File"}` (or `via: "Crypto"`), on the final path, after a folder target is expanded. For a folder copy every file's own source and target path is judged before anything is written, and one refusal refuses the whole copy. Only the run that opened the workspace reaches it: another run's workspace answers "not found", and a run without the grant, or with `read` only and a write target, is refused before a byte moves.
+
+**Copy.** A `to` ending in `/`, or naming a folder that exists, gets the source's name inside it; otherwise `to` is the new name. A folder target in a volume must already exist.
+
+- **A folder is copied all or nothing.** It is listed first and refused before anything is written when it holds more files or bytes than the operator allows (`workspace.copy.max_files`, default 2000; `workspace.copy.max_bytes`, default 1 GiB), when one of its files passes the per-file limit (`LOOMCYCLE_FILE_MAX_BYTES`), or when the target's quota or the inbox's budget would be passed. The refusal (`copy_limit: …`) names the bound. Into a workspace or a volume the folder is written to a hidden staging folder and renamed into place at once, so a failed copy leaves nothing; into the inbox each file is captured and, on failure, the ones already written are forgotten. Links and special files are not copied, and the answer names them in `skipped`.
+- **`overwrite`** is off by default: a copy onto an existing file or folder is refused. With `overwrite: true` a file is replaced at once, never left half written, and a folder is merged into file by file.
+- **The inbox is never overwritten.** It is a store of captures: a name already taken there gets a numbered variant (`report-2.pdf`), `overwrite` or not, and the answer's `ref` says which.
+- **Two workspaces of the run on one worker** are copied by that worker (`same_worker: true`), exactly the files the runtime listed and checked; on two workers the bytes pass through the runtime.
+
+**`rm` and `clear`.** `rm workspace:<name>:<path>` removes a file or a folder with what it holds; `clear` with `path` empties a folder. Both need `write`, give the space back to the workspace's quota, and never remove the workspace's root: release the workspace with `Workspace op=release`.
+
+**Import.** A Document imported from a workspace records where it came from, and the agent cannot set or change it: `captured_from: "workspace:<name>"`, the workspace's id (`workspace_id`), the run (`run_id`), the file's name and sha256. It is tagged `source/workspace` and `untrusted`. Pictures the Markdown links by a relative path inside the same workspace are attached as image chunks (at most 64, each within the image limit); any other link stays text.
+
+The data pass RFC GW §11 describes is these ops in a row: render a Document into a workspace as Markdown, run a script over it, import the result as a new Document, render that as a PDF into a volume.
+
+```json
+{"op": "render", "document": "56f3…", "format": "md", "to": "workspace:data:in/source.md"}
+{"op": "exec", "name": "data", "command": "python3 rewrite.py"}
+{"op": "import", "path": "workspace:data:out/result.md", "doc_path": "/reports/result"}
+{"op": "render", "document": "bb4f…", "format": "pdf", "to": "volume:reports:result.pdf"}
+```
+
+(The second call is the `Workspace` tool; the others are `File`.)
+
+### The disk quota
+
+Each workspace has a disk quota, `workspace.disk_quota_mb` (default 2048, up to 16 TiB), sent to the worker when the workspace is opened and kept by it. The worker counts a workspace's bytes by walking it the first time it is written in a session, bounded in time (past the bound the count is an estimate, and its refusals say so), and keeps the count as files are written and removed.
+
+- **Before a write.** A write that would pass the quota is refused with `workspace_over_quota` before a byte is written: a `File` copy, render, download, unpack or extract into the workspace, a folder commit, a `Crypto` output, and the `Workspace` tool's `write` (its content's size) and `edit` (what it adds). A refused write leaves no partial file.
+- **After a command.** What a command writes is not stopped while it runs. After every `exec` the worker measures the workspace again; one found over its quota is marked **full**. While it is full, further writes (by `File`, `Crypto` and the `Workspace` tool) and the next `exec` are refused with `workspace_over_quota`, and reading, listing, `rm` and `clear` still work, so the agent can clean up and go on. The mark clears when a measurement finds the workspace under its quota again: after an `rm` or a `clear`, or at the next check.
+
+## Converting files in a workspace
+
+A file in a workspace is converted in the workspace's own space, on its worker, never pulled across to the runtime to be converted (RFC GW D34). A file in the inbox or a volume is still converted by the runtime's conversion workers (RFC GO), as before.
+
+**Where it runs.** The workspace worker starts a **conversion child** of its own at start: the same binary run as a conversion worker, on a private socket, with a memory limit (`workspace.convert.memory_limit_mb` for the local worker, `LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` on a remote one; default 1024). It is never the worker's supervisor and never the agent's command session. A file that crashes the child fails that one call; the worker and its workspaces go on, and the child is started again.
+
+**What runs there.**
+
+- `extract` of a file in a workspace: its text layer and pictures. With `to` a folder of a workspace, the Markdown and its `images/` are written there and the result carries no excerpt; on the same worker neither the file nor the text leaves it. Without `to`, the Markdown goes to the inbox, with an excerpt.
+- `unpack` of an archive in a workspace, into a folder of a workspace (all or nothing, every file counted against the quota and judged by the `Workspace` hooks), a volume or the inbox, under the usual unpack limits.
+- `render` of an HTML file in a workspace: the HTML is read on the worker and only its Markdown comes back to be typeset.
+- the byte work of OCR and transcription (below).
+
+A Document rendered into a workspace is still typeset where the runtime converts files: the runtime builds the bundle from the store, and only the finished file streams into the workspace. `import` and a Markdown `render` read the Markdown through a bounded stream (32 MiB); nothing is converted.
+
+**OCR and transcription are split.** They call a model with a provider key, and a key never reaches a worker. The worker does the byte work in its child and sends back only what the model reads; the runtime calls the model, under the run's page and minute caps, and records the usage.
+
+- `extract` with OCR: the worker extracts the text layer and cuts out (or renders to PNG) only the pages that need OCR; those page images go to the runtime, which calls the OCR model. With the Markdown in a workspace on the same worker, only the OCR text comes back to be written into it.
+- `transcribe`: the worker converts the recording to the audio the speech-to-text model takes (ffmpeg); only that audio reaches the runtime, which calls the model and writes the transcript where `to` says.
+
+No op the runtime sends a worker names the provider or the model in its arguments, and no provider key or credential ever reaches it. The provenance line of Markdown written into a workspace names the engine, the provider and the model, as one in the inbox does: a model's name is not a secret.
+
+**Helper programs.** The child reads every format loomcycle reads in pure Go. Helper programs are used when they are on the worker's `PATH`: poppler (`pdftoppm`, to render a page for an OCR model that reads images), ffmpeg (recordings), DjVuLibre (DjVu), Typst. The worker reports what its child has when it attaches, and a conversion that needs a missing helper is refused with `conversion_helper_missing`, naming the program to install where the worker runs. On `host` workers that is whatever each machine has, so a file that converts on one worker can be refused on another; the loomcycle-worker image carries them all. OCR of a DjVu book in a workspace is not done yet: its pages that need it are reported; copy it into the inbox to read them.
+
+**Quarantine.** A file that crashed the conversion child is refused, by its sha256, in that workspace for `conversion.quarantine_ttl_s`, with a message saying it crashed the converter; other files and other workspaces are unaffected. The worker checks the file still hashes to what the runtime checked before it converts it, and never follows a link.
+
 ## Limits
 
 | Setting | Default | What it bounds |
@@ -150,9 +222,13 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 | `workspace.exec.default_timeout_s` | 120 | A command that names no `timeout_s`. |
 | `workspace.exec.max_timeout_s` | 900 | The longest `timeout_s` a command may ask for. |
 | `workspace.lost_after_s` | 300 | How long a worker may be away before its workspaces are marked `lost`. |
+| `workspace.disk_quota_mb` | 2048 | What one workspace may hold on its worker's disk (1 MiB to 16 TiB); see "The disk quota". |
+| `workspace.copy.max_files` | 2000 | The files one folder copy may move. |
+| `workspace.copy.max_bytes` | 1 GiB | The bytes one folder copy may move. |
+| `workspace.convert.memory_limit_mb` | 1024 | The local worker's conversion child (`LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` on a remote worker). |
 | worker capacity | 8 | Workspaces a worker holds (`LOOMCYCLE_WORKSPACE_CAPACITY`). |
 
-A command and everything it started is killed at its timeout. Its output is kept up to 1 MiB. `write` takes a file of up to 1 MiB; `read` returns what the Read tool would.
+A command and everything it started is killed at its timeout. Its output is kept up to 1 MiB. `write` takes a file of up to 1 MiB; `read` returns what the Read tool would. A file `File` moves is bounded by `LOOMCYCLE_FILE_MAX_BYTES` (64 MiB), as any file it handles.
 
 ## Troubleshooting
 
@@ -169,10 +245,13 @@ A command and everything it started is killed at its timeout. Its output is kept
 | `not_ready` | The workspace is opening, being released, or `lost`. | See `lost` below. |
 | `lost` | The workspace's directory is no longer on its worker. | Open a new one. |
 | `refused` | The worker will not run the command (`LOOMCYCLE_WORKSPACE_COMMANDS`). | Use a listed program, or widen the list. |
+| `workspace_over_quota` | The write would pass the workspace's disk quota, or the workspace is marked full after a command. | Remove files (`rm`, `clear`, or a command), then go on; or raise `workspace.disk_quota_mb`. |
 | `invalid_argument` | The runtime refused the call: an unknown op, an argument the op does not take, a missing one, a bad timeout. | Fix the call. |
 | `invalid`, `failed` | The worker refused the arguments (a path or `cwd` out of the workspace, a malformed argument) or a file system operation failed. | Read the detail. |
 | `busy`, `output_too_large` | The worker had no free stream in time; the op sent more output than its bound. | Retry; narrow the op. |
 | `cancelled` | The run was cancelled before the worker answered. | — |
+
+**`File` on a workspace.** The `File` tool's refusals name the op and say why: `this run has no workspace named …` (open it first; only the run that opened it reaches it), `… already exists` (pass `overwrite: true`), `copy_limit: …` (a folder over `workspace.copy.max_files` or `max_bytes`, named; nothing was copied), `workspace_over_quota: …`, `conversion_helper_missing` (the worker lacks the program named; install it where the worker runs), and a file that crashed the workspace's converter, refused in that workspace for `conversion.quarantine_ttl_s`.
 
 **`worker_lost`.** The worker went away during the call (killed, restarted, its connection dropped). Whether the op took effect is unknown, and the workspace may be gone. The run itself goes on; the agent can check with `status`, or open a new workspace. `worker_revoked` is the same, when the operator retired or re-bound the worker's token.
 
@@ -180,6 +259,6 @@ A command and everything it started is killed at its timeout. Its output is kept
 
 **A worker that keeps reconnecting.** A token the runtime cannot verify (unknown, revoked, retired, or checked while the store was down) is never final: the worker logs `could not verify this worker's token` and retries with backoff, and is served only once the token verifies again. A token that verifies but may not attach a worker (an admin token, the legacy secret, a token with other scopes, a shared token on the host engine) is refused for good, and the worker exits saying why. The runtime checks an attached worker's token again every minute, and detaches it when the token no longer holds.
 
-**Leftover directories.** On attach the worker lists the workspaces on its disk, and the runtime tells it which to delete: those released while it was away, those it does not know, and lost ones whose run has ended. A sweeper every 60 seconds releases the workspaces of runs that ended without the release (a runtime killed mid-run).
+**Leftover directories.** On attach the worker lists the workspaces on its disk, and the runtime tells it which to delete: those released while it was away, those it does not know, and lost ones whose run has ended. Staging folders a copy left behind are removed at release and when the worker starts. A sweeper every 60 seconds releases the workspaces of runs that ended without the release (a runtime killed mid-run).
 
 **`loomcycle doctor`** reports `workspace.mode`, the local worker's tenant and why, and the agents whose grant does nothing. It reads the configuration only; which workers are attached is the running server's `loomcycle_workspace_workers` metric and its log (`workspace worker attached`).
