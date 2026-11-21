@@ -4056,6 +4056,7 @@ bounded by a 1 s timeout).
 | `loomcycle_memory_consolidation_lag_seconds` | `backend` | Now minus the watermark (the newest settled chat folded in) that the latest consolidation pass left its target at. Passes run only for targets with new work, so it also grows on an idle system and stays high just after a catch-up: it is a backlog only while `loomcycle_memory_consolidation_pending` is above 0 (the shipped alert asks for both). |
 | `loomcycle_memory_consolidation_pending` | `backend` | Consolidation targets with work at the latest fan-out. |
 | `loomcycle_token_budget_used_ratio` | `tenant`, `period` | A tenant's month-to-date use of its token budget (`period="month"`): of the hard limit, else the soft one. Only tenants with a tenant budget. |
+| `loomcycle_calc_refusals_total` | `error` | `Calc` tool calls refused, by error code (`syntax`, `domain`, `step_limit`, … — the codes `Context op=help topic=Calc/errors` lists, a closed set). A series appears with its first refusal. A high `syntax` or `type` rate means agents write expressions the language does not take; `step_limit` or `time_limit`, that they compute by brute force. |
 
 A run, a user, a session or (by default) an agent is never a label. A
 `model` label (on the token, cost, provider-request and model-call series,

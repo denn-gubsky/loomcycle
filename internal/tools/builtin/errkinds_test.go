@@ -32,6 +32,8 @@ var classifiedToolFiles = []string{
 	"history.go", "history_content_search.go", "history_page.go", "history_window.go",
 	// Decision
 	"decision.go",
+	// Calc
+	"calc.go",
 	// Path, Channel, Context, Agent, Skill
 	"pathtool.go", "channel.go", "context.go", "context_capabilities.go", "context_guide.go", "context_identity.go", "agent.go", "skill.go",
 	// Identity
