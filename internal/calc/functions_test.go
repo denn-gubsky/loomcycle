@@ -366,6 +366,8 @@ func TestFunctions_TableIsCompleteAndConsistent(t *testing.T) {
 		SecRandom:     "random randint randnormal shuffle sample",
 		SecControl:    "if",
 		SecUnits:      "convert convertdelta units",
+		SecStatistics: "mean median mode spread geomean harmmean wmean variance stdev zscore quantile percentile rank cumsum cumprod diff covariance correlation linreg",
+		SecFinance:    "pmt fv pv nper rate npv irr compound cagr pct pctchange",
 	}
 	got := map[string][]string{}
 	for _, f := range fs {
