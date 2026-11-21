@@ -345,3 +345,16 @@ func TestFileUnpack_ADryRunIntoAWorkspaceWritesNothing(t *testing.T) {
 		t.Errorf("answer %v", out)
 	}
 }
+
+// A file in a workspace that is not an archive is refused as an inbox
+// file's would be, with the walk's own reason.
+func TestFileUnpack_AWorkspaceFileThatIsNotAnArchiveIsRefusedWithItsReason(t *testing.T) {
+	f, _ := unpackFixture(t, inbox.Service{}, lifecycle.Limits{}, 10)
+	f.open(t, "w")
+	f.wsPutBytes(t, "w", "a.gz", []byte("\x1f\x8b\x08\x00rest of it"))
+	_, res := f.exec(t, f.ctx, map[string]any{"op": "unpack", "path": "workspace:w:a.gz", "to": "workspace:w:out"})
+	wantFileRefusal(t, "gzip", res, "unpack: workspace:w:a.gz is not a ZIP or RAR archive (a gzip file)")
+	if f.wsHas(t, "w", "out") {
+		t.Error("a refused unpack wrote")
+	}
+}
