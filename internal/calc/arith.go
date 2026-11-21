@@ -23,6 +23,11 @@ func (e *evaluator) arith(op string, l, r val, pos int) (val, *Error) {
 	}
 	ll, lList := l.([]val)
 	rl, rList := r.([]val)
+	if !lList && !rList && (isTime(l) || isTime(r)) {
+		return e.timeArith(op, l, r, pos)
+	}
+	// A list of dates broadcasts like a list of numbers: d + [0, 7, 14].
+	lok, rok = lok || isTime(l), rok || isTime(r)
 	if !(lList || lok) || !(rList || rok) {
 		return nil, errf(codeType, pos, "cannot apply %s to a %s and a %s", op, typeName(l), typeName(r))
 	}
@@ -218,7 +223,9 @@ func (e *evaluator) pow(a, b num, pos int) (val, *Error) {
 }
 
 // compare implements == != < <= > >=. Equality works on any two values
-// (different types are unequal); ordering needs two numbers or two strings.
+// (different types are unequal, but a date meets a datetime only after an
+// explicit conversion); ordering needs two numbers, two strings, two dates
+// or two datetimes.
 func (e *evaluator) compare(op string, l, r val, pos int) (val, *Error) {
 	if op == "==" || op == "!=" {
 		eq, err := e.equal(l, r, pos)
@@ -241,6 +248,11 @@ func (e *evaluator) compare(op string, l, r val, pos int) (val, *Error) {
 			return nil, errf(codeType, pos, "cannot order a string and a %s", typeName(r))
 		}
 		c = cmpString(lv, rv)
+	case dateVal, timeVal:
+		var err *Error
+		if c, err = cmpTime(l, r, pos); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, errf(codeType, pos, "%s cannot be ordered with %s", typeName(l), op).
 			withHint("to compare lists element by element use map or zip, e.g. all(map(zip(a, b), p -> p[1] < p[2]))")
@@ -280,6 +292,12 @@ func (e *evaluator) equal(l, r val, pos int) (bool, *Error) {
 	case bool:
 		rv, ok := r.(bool)
 		return ok && lv == rv, nil
+	case dateVal, timeVal:
+		if !isTime(r) {
+			return false, nil
+		}
+		c, err := cmpTime(l, r, pos)
+		return c == 0, err
 	case []val:
 		rv, ok := r.([]val)
 		if !ok || len(lv) != len(rv) {

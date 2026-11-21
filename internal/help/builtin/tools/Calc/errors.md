@@ -34,8 +34,9 @@ The function got the wrong number of arguments. `hint` shows its signature.
 A value of the wrong kind: a string in arithmetic, a number where a list or
 a function is needed, a float where an exact integer is needed (`factor`,
 `gcd`, `binomial` …), `*` or `/` between two lists, a number divided by a
-list, or a power of a list. For lists use `.*`, `./`, `.^`; for an integer
-argument compute it exactly.
+list, or a power of a list; a date meeting a datetime, or a date in `*`. For
+lists use `.*`, `./`, `.^`; for an integer argument compute it exactly; for
+dates convert with `date(dt)` or `datetime(d)`.
 
 ### index
 An index that does not exist: `v[0]`, a negative index, past `len(v)`, or not
@@ -81,14 +82,22 @@ The arguments are not the documented shape: `expr` missing or not a string,
 ### empty
 `expr` holds no statement. Write an expression.
 
+### bad_date
+A date, time or zone the tool cannot read: anything but ISO 8601
+(`"2026-11-20"`, `"2026-11-20T14:30:00Z"`), an ambiguous `11/12/2026`, an
+unknown zone name (use an IANA name such as `"Europe/Kyiv"`), or an unclosed `[`
+in a `datefmt` pattern. `hint` shows the form to write. See `Calc/dates`.
+
 ## Fix the mathematics
 
 ### domain
 The function is not defined there: `sqrt` or `log` of a negative number, a
 fractional power of a negative number, `asin(2)`, `min([])`, `modinv` of
-numbers that are not coprime, a sample `variance` of one value, an `irr` or
-`rate` with no rate that solves the flows. There are no complex numbers.
-Check the inputs; for the finance functions, check the signs.
+numbers that are not coprime, a sample `variance` of one value, a day the
+month lacks (`date(2026, 2, 30)`), an unknown `datediff` unit or `yearfrac`
+basis, an `irr`, `rate` or `xirr` with no rate that solves the flows. There
+are no complex numbers. Check the inputs; for the finance functions, check
+the signs.
 
 ### division_by_zero
 A division, `%`, `mod` or `rem` by zero, or zero to a negative power. Guard
@@ -96,7 +105,8 @@ it: `if(d == 0, 0, n / d)`.
 
 ### overflow
 A float result is too large for 64 bits: `exp(1000)`, `gamma(200)`. Work in
-logarithms (`lgamma`, `log`) or keep the computation exact.
+logarithms (`lgamma`, `log`) or keep the computation exact. For dates: a
+result outside the years 1 to 9999.
 
 ### too_large
 An exact number would pass 16,384 bits, or an argument is over a function's

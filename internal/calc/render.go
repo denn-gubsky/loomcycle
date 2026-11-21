@@ -193,6 +193,10 @@ func renderText(w *capWriter, v val, digits int, top bool) {
 		w.write("]")
 	case *fnVal:
 		w.write(fnDescribe(v))
+	case dateVal:
+		w.write(v.String())
+	case timeVal:
+		w.write(v.String())
 	}
 }
 
@@ -221,12 +225,17 @@ func toJSON(v val, digits int) any {
 		return out
 	case *fnVal:
 		return fnDescribe(v)
+	case dateVal:
+		return v.String()
+	case timeVal:
+		return v.String()
 	}
 	return nil
 }
 
-// allExact reports whether v holds at least one number and every number
-// in it is exact.
+// allExact reports whether v holds at least one number or date and every
+// number in it is exact. A date or datetime counts as exact: it is held to
+// the day or the nanosecond, never rounded.
 func allExact(v val) bool {
 	seen, ok := exactWalk(v)
 	return seen && ok
@@ -236,6 +245,8 @@ func exactWalk(v val) (seen, ok bool) {
 	switch v := v.(type) {
 	case num:
 		return true, v.exact()
+	case dateVal, timeVal:
+		return true, true
 	case []val:
 		ok = true
 		for _, x := range v {

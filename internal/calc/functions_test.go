@@ -365,6 +365,7 @@ func TestFunctions_TableIsCompleteAndConsistent(t *testing.T) {
 		SecSequences:  "range map filter reduce sort reverse unique count any all zip sum product len",
 		SecRandom:     "random randint randnormal shuffle sample",
 		SecControl:    "if",
+		SecDates:      "date datetime today now tz addmonths addyears eomonth datediff age yearfrac workdays addworkdays xnpv xirr year month day weekday isoweek dayofyear quarter daysinmonth isleap hour minute second datefmt",
 		SecUnits:      "convert convertdelta units",
 		SecStatistics: "mean median mode spread geomean harmmean wmean variance stdev zscore quantile percentile rank cumsum cumprod diff covariance correlation linreg",
 		SecFinance:    "pmt fv pv nper rate npv irr compound cagr pct pctchange",

@@ -53,6 +53,7 @@ const (
 	codeListTooLong    errCode = "list_too_long"
 	codeTooDeep        errCode = "too_deep"
 	codeEmptyStatement errCode = "empty"
+	codeBadDate        errCode = "bad_date"
 	codeUnknownUnit    errCode = "unknown_unit"
 	codeDimension      errCode = "dimension"
 )
@@ -63,6 +64,7 @@ var allCodes = [...]errCode{
 	codeShape, codeRecursion, codeReservedName, codeBadRequest, codeBadVar,
 	codeExprTooLong, codeVarsTooLarge, codeStepLimit, codeTimeLimit,
 	codeCanceled, codeListTooLong, codeTooDeep, codeEmptyStatement,
+	codeBadDate,
 	codeUnknownUnit, codeDimension,
 }
 
