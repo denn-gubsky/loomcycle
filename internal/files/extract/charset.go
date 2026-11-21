@@ -29,33 +29,88 @@ var cyrillicCandidates = []*charmap.Charmap{charmap.Windows1251, charmap.KOI8R, 
 // one of these code pages its letters come out as upper case, box drawing
 // or punctuation instead. Western text in windows-1252 has its accented
 // letters one or two at a time between ASCII ones, so it makes no runs.
-// minRuns runs make the text Cyrillic.
+// A run counts only when it holds three or more different bytes: a DOS
+// box-drawing line (CP437 0xC4 eighty times) decodes as one Cyrillic
+// letter repeated in KOI8-R, and is no word. minRuns runs make the text
+// Cyrillic, and only when they are not outnumbered four to one by words of
+// ASCII letters: English text with a few such lines is not Russian.
 func cyrillicCodePage(b []byte, minRuns int) *charmap.Charmap {
 	var best *charmap.Charmap
 	bestRuns := 0
 	for _, cm := range cyrillicCandidates {
 		runs, n := 0, 0
+		var seen [256]bool
+		distinct := 0
+		end := func() {
+			if n >= 4 && distinct >= 3 {
+				runs++
+			}
+			n, distinct = 0, 0
+			seen = [256]bool{}
+		}
 		for _, c := range b {
 			if c >= 0x80 && cyrillicLower(cm.DecodeByte(c)) {
 				n++
+				if !seen[c] {
+					seen[c] = true
+					distinct++
+				}
 				continue
 			}
-			if n >= 4 {
-				runs++
-			}
-			n = 0
+			end()
 		}
-		if n >= 4 {
-			runs++
-		}
+		end()
 		if runs > bestRuns {
 			best, bestRuns = cm, runs
 		}
 	}
-	if bestRuns < minRuns {
+	if bestRuns < minRuns || bestRuns*4 < asciiWords(b) {
 		return nil
 	}
 	return best
+}
+
+// asciiWords counts runs of four or more ASCII letters outside markup
+// tags, so an HTML page's or contents file's element and attribute names
+// are not taken for English words.
+func asciiWords(b []byte) int {
+	words, n := 0, 0
+	inTag := false
+	for _, c := range b {
+		switch {
+		case c == '<':
+			inTag = true
+		case c == '>':
+			inTag = false
+		}
+		if !inTag && (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
+			n++
+			continue
+		}
+		if n >= 4 {
+			words++
+		}
+		n = 0
+	}
+	if n >= 4 {
+		words++
+	}
+	return words
+}
+
+// dosBoxDrawing reports whether most of a text's 8-bit bytes are CP437's
+// line and box drawing (0xB0-0xDF), as an English DOS text's frames are.
+func dosBoxDrawing(b []byte) bool {
+	high, box := 0, 0
+	for _, c := range b {
+		if c >= 0x80 {
+			high++
+			if c >= 0xB0 && c <= 0xDF {
+				box++
+			}
+		}
+	}
+	return high > 0 && box*5 >= high*4
 }
 
 func cyrillicLower(r rune) bool {
@@ -82,12 +137,16 @@ func utf16BOM(b []byte) ([]byte, string, bool) {
 }
 
 // decodeUnmarked decodes 8-bit text that names no encoding and is not
-// UTF-8: Cyrillic when it reads as Cyrillic, else windows-1252, the
-// default the web and Windows gave such text. It returns the code page
-// used.
+// UTF-8: Cyrillic when it reads as Cyrillic; DOS code page 437 when its
+// 8-bit bytes are mostly box drawing; else windows-1252, the default the
+// web and Windows gave such text. It returns the code page used.
 func decodeUnmarked(b []byte) ([]byte, string) {
 	enc := cyrillicCodePage(b, 3)
-	if enc == nil {
+	switch {
+	case enc != nil:
+	case dosBoxDrawing(b):
+		enc = charmap.CodePage437
+	default:
 		enc = charmap.Windows1252
 	}
 	out, err := enc.NewDecoder().Bytes(b)
