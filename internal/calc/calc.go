@@ -185,7 +185,7 @@ func decodeVars(vars map[string]json.RawMessage, dst map[string]val) *Error {
 		if !isIdentifier(name) {
 			return errf(codeBadVar, -1, "var name %q is not a valid name", name).withHint("names are letters, digits and _, starting with a letter or _")
 		}
-		if err := checkAssignable(name, -1); err != nil {
+		if err := checkName(name, -1); err != nil {
 			return err
 		}
 		dec := json.NewDecoder(bytes.NewReader(vars[name]))
