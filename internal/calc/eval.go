@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type evaluator struct {
@@ -20,6 +21,12 @@ type evaluator struct {
 	calls     []*fnVal
 	// sizes caches each list value's expanded size (see size).
 	sizes map[listKey]int
+	// now is the clock today() and now() read (Request.Now); nowAt is its
+	// one reading for this evaluation (see clock).
+	now   func() time.Time
+	nowAt time.Time
+	// zones caches tz()'s time.LoadLocation, which reads a file per call.
+	zones map[string]*time.Location
 }
 
 // listKey identifies a list value. Lists are never mutated once built, so

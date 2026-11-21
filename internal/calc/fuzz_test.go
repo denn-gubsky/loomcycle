@@ -31,6 +31,9 @@ var fuzzSeeds = []string{
 	"[random(), randint(1, 6), randnormal(0, 1), shuffle([1, 2]), sample([1, 2, 3], 2)]",
 	"9^9^9", "2x", "2 ** 3", "if(x = 1, 2, 3)", "f(x) = f(x)", "[1][0]", "sqrt(-1)", "1/0",
 	"factorial(10^6)", "((((1))))", "x -> y -> x + y", "# comment\n1",
+	`d = date("2026-01-31"); [addmonths(d, 1), eomonth(d, 1), d + 30, date(2026, 3, 1) - d, weekday(d), datefmt(d, "D MMM YYYY")]`,
+	`t = tz(datetime("2026-03-29T00:30:00Z"), "Europe/Kyiv"); [t + 3600, hour(t), datediff(date(t), date("2027-01-01"), "months")]`,
+	`[workdays(date("2026-11-01"), date("2026-11-30")), addworkdays(date("2026-11-20"), 5), yearfrac(date("2026-01-01"), date("2026-07-01"), "act/act")]`,
 }
 
 func FuzzParse(f *testing.F) {

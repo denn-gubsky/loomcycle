@@ -36,6 +36,9 @@ type Request struct {
 	Digits int `json:"digits,omitempty"`
 	// Seed makes random functions reproducible.
 	Seed *int64 `json:"seed,omitempty"`
+	// Now is the clock today() and now() read; nil means time.Now. A test
+	// pins it; a caller wanting a repeatable answer passes the date in vars.
+	Now func() time.Time `json:"-"`
 }
 
 // Response is a successful evaluation.
@@ -45,7 +48,9 @@ type Response struct {
 	// are arrays, a function is its signature. Nil when Truncated cut the
 	// result's text.
 	Result any `json:"result"`
-	// Type is number, string, boolean, list or function.
+	// Type is number, string, boolean, list, function, date or datetime.
+	// A date renders as "2026-11-20", a datetime as RFC 3339 in UTC (or in
+	// the zone tz() gave it).
 	Type string `json:"type"`
 	// Exact is true when every number in the result is exact.
 	Exact bool `json:"exact"`
@@ -107,6 +112,10 @@ func evalWithin(ctx context.Context, req Request, wall time.Duration) (Response,
 		global: &scope{vars: map[string]val{}},
 		rng:    newRNG(req.Seed),
 		sizes:  map[listKey]int{},
+		now:    req.Now,
+	}
+	if e.now == nil {
+		e.now = time.Now
 	}
 	if err := decodeVars(req.Vars, e.global.vars); err != nil {
 		return Response{}, err

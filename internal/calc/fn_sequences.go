@@ -186,15 +186,19 @@ func fnSort(e *evaluator, a args) (val, *Error) {
 		return nil, err
 	}
 	// Check the key types up front: the comparator cannot return an error.
-	allNum, allStr := true, true
+	allNum, allStr, allDate, allTime := true, true, true, true
 	for _, k := range keys {
 		_, isNum := k.(num)
 		_, isStr := k.(string)
+		_, isDate := k.(dateVal)
+		_, isTime := k.(timeVal)
 		allNum = allNum && isNum
 		allStr = allStr && isStr
+		allDate = allDate && isDate
+		allTime = allTime && isTime
 	}
-	if !allNum && !allStr {
-		return nil, errf(codeType, a.pos, "sort needs all numbers or all strings").
+	if !allNum && !allStr && !allDate && !allTime {
+		return nil, errf(codeType, a.pos, "sort needs all numbers, all strings, all dates or all datetimes").
 			withHint("to sort lists or by a field, pass a key, e.g. sort(v, p -> p[2])")
 	}
 	idx := make([]int, len(l))
@@ -203,8 +207,13 @@ func fnSort(e *evaluator, a args) (val, *Error) {
 	}
 	sort.SliceStable(idx, func(i, j int) bool {
 		ki, kj := keys[idx[i]], keys[idx[j]]
-		if allNum {
+		switch {
+		case allNum:
 			return cmpNum(ki.(num), kj.(num)) < 0
+		case allDate:
+			return ki.(dateVal).days < kj.(dateVal).days
+		case allTime:
+			return ki.(timeVal).t.Before(kj.(timeVal).t)
 		}
 		return ki.(string) < kj.(string)
 	})
@@ -276,6 +285,11 @@ func (e *evaluator) valueKey(k *keyBuf, v val, a args) *Error {
 		return k.write("s"+q, a)
 	case bool:
 		return k.write("b"+strconv.FormatBool(v), a)
+	case dateVal:
+		return k.write("d"+strconv.FormatInt(v.days, 10), a)
+	case timeVal:
+		// The instant, not the zone: tz() changes how it reads, not what it is.
+		return k.write("t"+strconv.FormatInt(v.t.Unix(), 10)+"."+strconv.Itoa(v.t.Nanosecond()), a)
 	case []val:
 		if err := k.write("[", a); err != nil {
 			return err

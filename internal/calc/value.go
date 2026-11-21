@@ -5,7 +5,8 @@ import (
 	"math/big"
 )
 
-// A value is one of: num, string, bool, []val (a list), *fnVal. Lists are
+// A value is one of: num, string, bool, []val (a list), *fnVal, dateVal,
+// timeVal (see datetime.go). Lists are
 // never mutated after they are built; every operation returns a new one.
 type val any
 
@@ -155,6 +156,10 @@ func typeName(v val) string {
 		return "list"
 	case *fnVal:
 		return "function"
+	case dateVal:
+		return "date"
+	case timeVal:
+		return "datetime"
 	}
 	return "unknown"
 }
