@@ -1126,6 +1126,9 @@ func TestKBTaxonomist_AlignedGroupsArePlacedUnderKeptParents(t *testing.T) {
 	)
 	fake := taxAligned(2, runs, align, taxConcepts(taxLeaf("platform")))
 	rep := runTaxonomist(t, f, fake, `{"mode":"generate","scheme":"care","domain":"Care.","batch_size":20,"runs":2,"write":"none"}`)
+	if got := strings.Join(fake.kinds(), ","); got != "generate,update,generate,update,align,review" {
+		t.Fatalf("requests = %s, want the align request before the review", got)
+	}
 	if got := strings.Join(taxKeepOutline(t, fake.spawns[5].untrusted[0]), ","); got != "platform,  runs and agents,  storage,  sandbox,beta,  alpha" {
 		t.Errorf("KEEP = %q, want runs and agents, storage and sandbox under platform, and the alpha/beta cycle cut once", got)
 	}
