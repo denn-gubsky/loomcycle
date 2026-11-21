@@ -68,6 +68,12 @@ type LibraryEntry struct {
 	// max_context_tokens. Agents only; omitted when the window is unknown or
 	// the agent does not resolve to a provider right now.
 	ContextWindow int `json:"context_window,omitempty"`
+	// EffectiveTools is the tools a run of this agent resolves to, in the
+	// caller's view of it: the definition's list with the default tools the
+	// runtime adds (Context, Calc) unless the list removes them. The static
+	// definition and the stored versions keep the list as written; this shows
+	// a default they do not name. Agents only; omitted when it does not resolve.
+	EffectiveTools []string `json:"effective_tools,omitempty"`
 }
 
 // libraryListResponse is the envelope returned by all three handlers.
@@ -130,7 +136,7 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 			windowTenant = sub.TenantID
 		}
 		entry.Source = deriveSource(entry.InStatic, entry.InSubstrate)
-		entry.ContextWindow = s.agentContextWindow(r.Context(), windowTenant, name)
+		entry.ContextWindow, entry.EffectiveTools = s.libraryAgentView(r.Context(), windowTenant, name)
 		entries = append(entries, entry)
 		seen[name] = struct{}{}
 	}
@@ -138,7 +144,7 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 		if _, ok := seen[name]; ok {
 			continue
 		}
-		entries = append(entries, LibraryEntry{
+		entry := LibraryEntry{
 			Name:             name,
 			Source:           deriveSource(false, true),
 			InSubstrate:      true,
@@ -148,8 +154,9 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 			LastUpdated:      sub.LastUpdated,
 			LiveVersionCount: sub.LiveVersionCount,
 			ActiveRetired:    sub.ActiveRetired,
-			ContextWindow:    s.agentContextWindow(r.Context(), sub.TenantID, name),
-		})
+		}
+		entry.ContextWindow, entry.EffectiveTools = s.libraryAgentView(r.Context(), sub.TenantID, name)
+		entries = append(entries, entry)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	writeJSONOK(w, libraryListResponse{Entries: entries})
@@ -170,12 +177,8 @@ func (s *Server) handleListLibraryAgents(w http.ResponseWriter, r *http.Request)
 // tier with no operator-key restriction would — the same read-only projection
 // ResolveAgentProvider makes; a run started under another user tier or a
 // per-run max_context_tokens can get a different window.
-func (s *Server) agentContextWindow(ctx context.Context, tenantID, name string) int {
+func (s *Server) agentContextWindow(ctx context.Context, tenantID, name string, def config.AgentDef) int {
 	if s.providers == nil {
-		return 0
-	}
-	def, ok := s.lookupAgent(ctx, tenantID, name)
-	if !ok {
 		return 0
 	}
 	providerID, _, _, err := s.resolveAgentDef(withReportOnlyResolution(ctx), def, tenantID, "", name, "", false)
@@ -187,6 +190,18 @@ func (s *Server) agentContextWindow(ctx context.Context, tenantID, name string) 
 		return 0
 	}
 	return loop.StartWindow(p, def.MaxContextTokens)
+}
+
+// libraryAgentView is what the Library shows of the named agent as tenantID
+// resolves it: its context window (agentContextWindow) and its effective tools
+// (the resolved definition's tools with the resolution-time defaults). Both
+// zero when the agent does not resolve. One lookup serves both.
+func (s *Server) libraryAgentView(ctx context.Context, tenantID, name string) (int, []string) {
+	def, ok := s.lookupAgent(ctx, tenantID, name)
+	if !ok {
+		return 0, nil
+	}
+	return s.agentContextWindow(ctx, tenantID, name, def), config.EffectiveTools(def.Tools)
 }
 
 // handleListLibrarySkills serves GET /v1/_library/skills.

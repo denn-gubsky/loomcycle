@@ -132,3 +132,55 @@ agents:
 			got[0].Provider, got[0].Model)
 	}
 }
+
+// RFC GY P1 PR 9a: the listing shows the tools a run holds, Calc included
+// though the yaml does not name it; the JSON keeps the yaml's list in `tools`
+// and adds `effective_tools`.
+func TestRunAgentsList_ShowsTheEffectiveToolsWithCalc(t *testing.T) {
+	path := writeTempConfig(t, `
+defaults:
+  provider: anthropic
+  model: claude-sonnet-4-6
+agents:
+  plain:
+    system_prompt: "p"
+    tools: [Read]
+    skills: [-*]
+  lean:
+    system_prompt: "p"
+    tools: [Read, -Calc]
+    skills: [-*]
+`)
+	var stdout, stderr bytes.Buffer
+	if rc := RunAgents([]string{"list", "--config", path}, &stdout, &stderr); rc != 0 {
+		t.Fatalf("rc=%d, stderr=%q", rc, stderr.String())
+	}
+	for _, want := range []string{"tools        : Read,Context,Calc\n", "tools        : Read,-Calc,Context\n"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout missing %q\n--- got ---\n%s", want, stdout.String())
+		}
+	}
+	stdout.Reset()
+	if rc := RunAgents([]string{"list", "--json", "--config", path}, &stdout, &stderr); rc != 0 {
+		t.Fatalf("rc=%d, stderr=%q", rc, stderr.String())
+	}
+	var got []struct {
+		Name           string   `json:"name"`
+		Tools          []string `json:"tools"`
+		EffectiveTools []string `json:"effective_tools"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON (%v):\n%s", err, stdout.String())
+	}
+	by := map[string][]string{}
+	for _, a := range got {
+		by[a.Name+".tools"] = a.Tools
+		by[a.Name+".effective"] = a.EffectiveTools
+	}
+	if strings.Join(by["plain.tools"], ",") != "Read,Context" || strings.Join(by["plain.effective"], ",") != "Read,Context,Calc" {
+		t.Errorf("plain: tools %v, effective_tools %v", by["plain.tools"], by["plain.effective"])
+	}
+	if strings.Join(by["lean.effective"], ",") != "Read,-Calc,Context" {
+		t.Errorf("lean: effective_tools %v; want no Calc", by["lean.effective"])
+	}
+}

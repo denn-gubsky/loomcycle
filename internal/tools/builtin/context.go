@@ -991,7 +991,9 @@ func (c *Context) execAgents(ctx context.Context, in contextInput) (tools.Result
 			Tier:     def.Tier,
 			Model:    def.Model,
 			Provider: def.Provider,
-			Tools:    len(toolGrants(def.Tools)), // a "-Name" removal is no tool held
+			// The effective tools a run resolves (with Calc unless removed); a
+			// "-Name" removal is no tool held.
+			Tools: len(toolGrants(config.EffectiveTools(def.Tools))),
 		}
 		// Active def_id from the v0.8.5 substrate. Best-effort — if
 		// Store is nil or no active row, we omit the field. Non-

@@ -556,6 +556,11 @@ type AgentDescriptor struct {
 	Description string     `json:"description,omitempty"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"` // dynamic only
 	CreatedAt   *time.Time `json:"created_at,omitempty"` // dynamic only
+
+	// EffectiveTools is Tools as a run resolves them: with the default tools
+	// the runtime adds (Context, Calc) unless the list removes them, so a
+	// default the stored list does not name is not invisible.
+	EffectiveTools []string `json:"effective_tools,omitempty"`
 }
 
 // --- Pause/Resume/Snapshot types (real in v0.8.18) ---
