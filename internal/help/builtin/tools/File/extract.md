@@ -155,13 +155,22 @@ excerpt.
 
 - It needs your agent's `workspace` grant: `read` for the file, `write` for
   `to`; the `Workspace` hooks judge both paths. A link is never followed.
-- OCR does not run on a file in a workspace yet. The pages that would need
-  it are listed in `ocr.pages_needing_ocr`; copy the file into the inbox and
-  extract it there to read them. `dry_run` is refused, and a recording is
-  not transcribed.
+- OCR runs as for any file, under the same rules, model and caps. The
+  worker cuts or renders the pages that need it and sends only those page
+  images (or, for a picture, the picture) to the runtime, which calls the
+  OCR model; the file itself never leaves the worker. With `to` on the same
+  worker, the worker writes the OCR text into the Markdown in the workspace
+  and only the text crosses; its provenance line there names the engine,
+  not the model. A DjVu book is not read by OCR here yet: its pages that
+  would need it are listed in `ocr.pages_needing_ocr`; copy it into the
+  inbox to read them. `dry_run` is refused, and a recording is not
+  transcribed here (use `transcribe`).
 - `conversion_helper_missing`: the workspace's worker lacks the program the
-  file needs (DjVuLibre for a DjVu); the refusal names it, for an operator to
-  install where the worker runs.
+  file needs (poppler's `pdftoppm` to render a page for an OCR model that
+  reads images, DjVuLibre for a DjVu); the refusal names it, for an operator
+  to install where the worker runs. A page renderer missing mid-pass stops
+  OCR, as other failures do: the error is the JSON object with `ref` and
+  `status`, and the text layer is kept.
 - A file that crashed the workspace's converter is refused in that workspace
   for a while (the operator's quarantine time); the worker and the
   workspace go on.

@@ -93,9 +93,11 @@ in a `datefmt` pattern. `hint` shows the form to write. See `Calc/dates`.
 ### domain
 The function is not defined there: `sqrt` or `log` of a negative number, a
 fractional power of a negative number, `asin(2)`, `min([])`, `modinv` of
-numbers that are not coprime, a day the month lacks (`date(2026, 2, 30)`),
-an unknown `datediff` unit or `yearfrac` basis, an `xirr` no rate solves.
-There are no complex numbers. Check the inputs.
+numbers that are not coprime, a sample `variance` of one value, a day the
+month lacks (`date(2026, 2, 30)`), an unknown `datediff` unit or `yearfrac`
+basis, an `irr`, `rate` or `xirr` with no rate that solves the flows. There
+are no complex numbers. Check the inputs; for the finance functions, check
+the signs.
 
 ### division_by_zero
 A division, `%`, `mod` or `rem` by zero, or zero to a negative power. Guard

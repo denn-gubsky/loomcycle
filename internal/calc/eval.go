@@ -114,6 +114,8 @@ var aliases = map[string]string{
 	"ln": "log", "arcsin": "asin", "arccos": "acos", "arctan": "atan",
 	"choose": "binomial", "nCr": "binomial", "comb": "binomial", "fact": "factorial",
 	"length": "len", "size": "len",
+	"ptp": "spread", "average": "mean", "avg": "mean",
+	"std": "stdev", "stddev": "stdev",
 }
 
 // eval evaluates n and refuses a list result over the size bound. Every

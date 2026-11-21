@@ -154,3 +154,39 @@ func (m *Manager) Convert(ctx context.Context, o Owner, req ConvertRequest, out 
 	}
 	return decodeAnswer(req.Op, buf.Bytes(), into)
 }
+
+// maxSpliceInput bounds an md_splice's input: what a worker reads of an op's
+// input before it runs it.
+const maxSpliceInput = 8 << 20
+
+// ErrSpliceTooLarge refuses OCR text over what one md_splice carries.
+var ErrSpliceTooLarge = fmt.Errorf("the OCR text is over the %d MiB one splice carries", maxSpliceInput>>20)
+
+// SpliceMarkdown writes OCR text into a Markdown file in the run's
+// workspace name, on its worker (workspace.OpMDSplice): the file must still
+// have args.SHA256, and is replaced in one rename. Only in crosses to the
+// worker; the Markdown never leaves it.
+func (m *Manager) SpliceMarkdown(ctx context.Context, o Owner, name string, args workspace.MDSpliceArgs, in workspace.MDSpliceInput) (workspace.MDSpliceAnswer, error) {
+	var out workspace.MDSpliceAnswer
+	r, err := m.ready(ctx, o, name)
+	if err != nil {
+		return out, err
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return out, err
+	}
+	body, err := json.Marshal(in)
+	if err != nil {
+		return out, err
+	}
+	if len(body) > maxSpliceInput {
+		return out, ErrSpliceTooLarge
+	}
+	res, err := m.disp.Do(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, WorkspaceID: r.ID, Op: workspace.OpMDSplice, Args: raw,
+		Input: bytes.NewReader(body), MaxOutput: maxAnswer})
+	if err != nil {
+		return out, err
+	}
+	return out, decodeAnswer(workspace.OpMDSplice, res.Output, &out)
+}

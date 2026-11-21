@@ -28,7 +28,7 @@ func (c *Calc) Name() string { return "Calc" }
 // words as they land.
 func (c *Calc) Description() string {
 	return strings.TrimSpace(`
-Evaluate math exactly: arithmetic, rounding, powers and roots, logarithms, trigonometry, combinatorics, primes, lists, dates and unit conversion. Use it for every calculation instead of working it out yourself. ` + "`expr`" + ` is one or more statements; the last one is the result. Pass data in ` + "`vars`" + `. Power is ` + "`^`" + `, ` + "`%`" + ` is modulo, indexing starts at 1, ` + "`.*`" + ` multiplies lists element by element. For the functions, read ` + "`Context op=help topic=Calc`" + ` first.`)
+Evaluate math exactly: arithmetic, rounding, powers and roots, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, finance and dates. Use it for every calculation instead of working it out yourself. ` + "`expr`" + ` is one or more statements; the last one is the result. Pass data in ` + "`vars`" + `. Power is ` + "`^`" + `, ` + "`%`" + ` is modulo, indexing starts at 1, ` + "`.*`" + ` multiplies lists element by element. For the functions, read ` + "`Context op=help topic=Calc`" + ` first.`)
 }
 
 const calcExprDescription = "Statements separated by `;` or newlines; the last one's value is the result. Example: `subtotal = 1249.99 * 3; tax = round(subtotal * 0.2, 2); subtotal + tax`."

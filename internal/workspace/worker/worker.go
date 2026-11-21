@@ -100,8 +100,12 @@ type Options struct {
 	// MeasureBudget bounds the walk that counts a workspace's bytes for its
 	// quota; past it the count is an estimate. Zero is 10 s.
 	MeasureBudget time.Duration
-	TLS           *tls.Config
-	Insecure      bool
+	// Observe, when set, is called with each op's name and arguments as
+	// the op arrives. A test seam, not a setting: it is how a test sees
+	// everything the core asked this worker.
+	Observe  func(op string, args []byte)
+	TLS      *tls.Config
+	Insecure bool
 	// Resolve and ResolveEvery are workerlink's.
 	Resolve      func(ctx context.Context, host string) ([]string, error)
 	ResolveEvery time.Duration

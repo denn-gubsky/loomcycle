@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sort"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -16,6 +15,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
+	"github.com/denn-gubsky/loomcycle/internal/files/ocrsplice"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
@@ -308,10 +308,22 @@ type ocrUnit struct {
 	pages     []int
 }
 
+// ocrUnitSource builds the unit for a chunk of pages, or returns the chunk
+// cut in two to send instead (ocrUnitFor). A file on the core's disk is cut
+// here; a file in a workspace is cut on its worker (wsOCRUnits).
+type ocrUnitSource func(ctx context.Context, chunk []int) (ocrUnit, [][]int, error)
+
+// fileUnits is the unit source of a file this process can read.
+func (f *File) fileUnits(plan transcribe.Plan, fh io.ReaderAt, size int64, mediaType, language string) ocrUnitSource {
+	return func(ctx context.Context, chunk []int) (ocrUnit, [][]int, error) {
+		return f.ocrUnitFor(ctx, plan, fh, size, mediaType, chunk, language)
+	}
+}
+
 // runOCR sends the pages to the engine, unit by unit, reserving each unit's
 // pages before its call. It stops at the first cap, failure or refusal; what
 // was transcribed before it stays in the pass.
-func (f *File) runOCR(ctx context.Context, c ocrCall, plan transcribe.Plan, fh io.ReaderAt, size int64, mediaType string, pages []int) *ocrPass {
+func (f *File) runOCR(ctx context.Context, c ocrCall, plan transcribe.Plan, mediaType string, pages []int, units ocrUnitSource) *ocrPass {
 	p := &ocrPass{plan: plan, language: c.language, text: map[int]string{}}
 	if extract.IsDjVu(mediaType, "") {
 		p.err = errDjVuOCR
@@ -337,7 +349,7 @@ func (f *File) runOCR(ctx context.Context, c ocrCall, plan transcribe.Plan, fh i
 	for len(queue) > 0 {
 		chunk := queue[0]
 		queue = queue[1:]
-		u, split, err := f.ocrUnitFor(ctx, plan, fh, size, mediaType, chunk, c.language)
+		u, split, err := units(ctx, chunk)
 		if err != nil {
 			p.err = err
 			return p
@@ -479,62 +491,21 @@ func pageListText(pages []int) string {
 // (cut at the offsets the extractor reported), keeps every other page as it
 // was, and puts a provenance line under the title.
 func spliceOCR(md string, starts map[int]int, p *ocrPass) string {
-	if len(p.done) == 0 || len(starts) == 0 {
+	if len(p.done) == 0 {
 		return md
 	}
-	pages := make([]int, 0, len(starts))
-	for n := range starts {
-		pages = append(pages, n)
-	}
-	sort.Ints(pages)
-	at := func(n int) int { return min(starts[n], len(md)) }
-	var b strings.Builder
-	b.WriteString(md[:at(pages[0])])
-	fmt.Fprintf(&b, "\n\n<!-- loom: ocr engine=%s provider=%s model=%s pages=%d language=%s -->",
-		metaValue(p.plan.Engine), metaValue(p.plan.Provider), metaValue(p.plan.Model), len(p.done), metaValue(p.language))
-	for i, n := range pages {
-		end := len(md)
-		if i+1 < len(pages) {
-			end = at(pages[i+1])
-		}
-		if t, ok := p.text[n]; ok {
-			if kept := headingsBefore(md[at(n):end], n); kept != "" {
-				b.WriteString("\n\n" + kept)
-			}
-			fmt.Fprintf(&b, "\n\n## Page %d\n\n%s", n, demoteHeadings(t))
-			continue
-		}
-		b.WriteString(md[at(n):end])
-	}
-	return b.String()
+	return ocrsplice.Splice(md, starts, p.text, p.header(true))
 }
 
-// headingsBefore are the heading lines a page's Markdown opens with before
-// its own "## Page N": a DjVu's outline entries that point to the page (RFC
-// GV P3), which an OCR transcript replacing the page must not take with
-// it. A PDF page opens with its own heading, so it keeps nothing. The page
-// heading is the last of the opening run, since an outline entry may carry
-// the same words.
-func headingsBefore(span string, n int) string {
-	own := fmt.Sprintf("## Page %d", n)
-	var run []string
-	last := -1
-	for _, l := range strings.Split(span, "\n") {
-		if l == "" {
-			continue
-		}
-		if !strings.HasPrefix(l, "#") {
-			break
-		}
-		if l == own {
-			last = len(run)
-		}
-		run = append(run, l)
+// header is the pass's provenance comment. withModel false leaves out the
+// provider and the model: Markdown written into a workspace is on its
+// worker, which never learns which model a run's key paid for (RFC GW D34).
+func (p *ocrPass) header(withModel bool) string {
+	if !withModel {
+		return fmt.Sprintf("<!-- loom: ocr engine=%s pages=%d language=%s -->", metaValue(p.plan.Engine), len(p.done), metaValue(p.language))
 	}
-	if last < 1 {
-		return ""
-	}
-	return strings.Join(run[:last], "\n\n")
+	return fmt.Sprintf("<!-- loom: ocr engine=%s provider=%s model=%s pages=%d language=%s -->",
+		metaValue(p.plan.Engine), metaValue(p.plan.Provider), metaValue(p.plan.Model), len(p.done), metaValue(p.language))
 }
 
 // metaValue keeps a provenance value to characters that can neither split
@@ -556,33 +527,6 @@ func metaValue(s string) string {
 		return "none"
 	}
 	return b.String()
-}
-
-// demoteHeadings puts a transcript's headings two levels down, under its
-// "## Page N", so a page's "# Title" does not become a section of the
-// document beside the pages. Fenced code is left as it is.
-func demoteHeadings(md string) string {
-	lines := strings.Split(md, "\n")
-	var fenceChar byte
-	fenceRun := 0
-	for i, l := range lines {
-		if c, run := mdFenceDelim(l); run > 0 {
-			switch {
-			case fenceRun == 0:
-				fenceChar, fenceRun = c, run
-			case c == fenceChar && run >= fenceRun:
-				fenceRun = 0
-			}
-			continue
-		}
-		if fenceRun > 0 {
-			continue
-		}
-		if m := mdHeadingRe.FindStringSubmatch(l); m != nil {
-			lines[i] = strings.Repeat("#", min(len(m[1])+2, 6)) + " " + m[2]
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // ---- results and events ----

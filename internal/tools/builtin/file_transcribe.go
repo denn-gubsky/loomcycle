@@ -50,6 +50,10 @@ type sttCall struct {
 	timestamps bool
 	dryRun     bool
 	out        string // the transcript's file name in extracted/, "" for the source's
+	// wsTo is a workspace target (workspace:<name>:<path>), written with
+	// overwrite; only a recording in a workspace takes one.
+	wsTo      string
+	overwrite bool
 }
 
 func (f *File) sttAvailable() bool {
@@ -112,7 +116,9 @@ func (f *File) sttRequest(ctx context.Context, in fileInput) (sttCall, tools.Res
 	default:
 		return c, errValidation("transcribe: timestamps must be segments or none", ""), false
 	}
-	if in.To != "" {
+	if to := strings.TrimSpace(in.To); strings.HasPrefix(to, "workspace:") {
+		c.wsTo, c.overwrite = to, in.Overwrite
+	} else if in.To != "" {
 		name := inbox.SanitizeName(strings.TrimSuffix(strings.TrimSpace(in.To), ".md"))
 		if name == "" {
 			return c, errValidation("transcribe: to must be a file name", "Pass a name such as board-call; the transcript goes to volume:inbox:extracted/<name>.md."), false
@@ -133,6 +139,14 @@ func (f *File) transcribe(ctx context.Context, in fileInput) (tools.Result, erro
 	call, res, ok := f.sttRequest(ctx, in)
 	if !ok {
 		return res, nil
+	}
+	if r.kind == refWorkspace {
+		// Converted on its workspace's worker (RFC GW D34).
+		return f.transcribeWorkspace(ctx, call, r)
+	}
+	if call.wsTo != "" {
+		return errValidation("transcribe: to a workspace takes a recording in a workspace, where it is converted on the workspace's worker",
+			"Copy the recording into the workspace with File op=copy first, or name the transcript in the inbox."), nil
 	}
 	if !inbox.Available(ctx) {
 		return errBusiness("transcribe: this run cannot keep files, so there is nowhere to write the transcript",
@@ -197,7 +211,11 @@ func (f *File) transcribeFile(ctx context.Context, call sttCall, r dataRef, rel 
 	} else {
 		pass = sttpass.Failed(plan, errors.New("this run has no inbox to count its minutes against"))
 	}
-	return f.finishSTT(ctx, call, pass, r, rel, plan.MediaType, origin)
+	name := filepath.Base(rel)
+	slug := transcriptSlug(call, name)
+	return f.finishSTT(ctx, call, pass, r, name, plan.MediaType, true, func(md string) (string, tools.Result, bool) {
+		return f.keepTranscript(ctx, slug, md, origin)
+	})
 }
 
 // sttPrepareRefusal words a recording the pass would not plan.
@@ -255,28 +273,44 @@ func (f *File) sttBudgetsFor(ctx context.Context, caps transcribe.Caps) (run, tr
 
 // ---- the transcript ----
 
-// finishSTT writes what the pass transcribed (also a partial pass) to the
-// inbox, reports the pass, and answers the call.
-func (f *File) finishSTT(ctx context.Context, call sttCall, p *sttpass.Pass, r dataRef, rel, mt, origin string) (tools.Result, error) {
-	name := filepath.Base(rel)
+// transcriptSlug is the transcript's name: to, else the recording's.
+func transcriptSlug(call sttCall, name string) string {
+	slug := call.out
+	if slug == "" {
+		slug = inbox.SanitizeName(strings.TrimSuffix(name, path.Ext(name)))
+	}
+	if slug == "" {
+		slug = "recording"
+	}
+	return slug
+}
+
+// keepTranscript keeps a transcript in the inbox's extracted/.
+func (f *File) keepTranscript(ctx context.Context, slug, md, origin string) (string, tools.Result, bool) {
+	kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted}, []byte(md))
+	if !kept.Kept {
+		return "", errBusiness("transcribe: the transcript could not be kept: "+kept.Stub, "Free inbox space with op=rm or op=clear, then try again."), false
+	}
+	return kept.Record.Ref, tools.Result{}, true
+}
+
+// finishSTT writes what the pass transcribed (also a partial pass) through
+// keep, reports the pass, and answers the call. name is the recording's
+// file name; withModel false leaves the provider and the model out of the
+// transcript's provenance line (it is written into a workspace).
+func (f *File) finishSTT(ctx context.Context, call sttCall, p *sttpass.Pass, r dataRef, name, mt string, withModel bool,
+	keep func(md string) (string, tools.Result, bool)) (tools.Result, error) {
 	ref := ""
 	var excerpt string
 	var truncated bool
 	if p.Done > 0 {
-		md := f.sttMarkdown(ctx, call, p, name)
-		slug := call.out
-		if slug == "" {
-			slug = inbox.SanitizeName(strings.TrimSuffix(name, path.Ext(name)))
-		}
-		if slug == "" {
-			slug = "recording"
-		}
-		kept := inbox.Capture(ctx, inbox.Item{Name: slug + ".md", MediaType: "text/markdown", Origin: origin, Dir: inbox.DirExtracted}, []byte(md))
-		if !kept.Kept {
+		md := f.sttMarkdown(ctx, call, p, name, withModel)
+		var res tools.Result
+		var ok bool
+		if ref, res, ok = keep(md); !ok {
 			tools.EventEmitter(ctx)(sttEvent(ctx, p, r.raw, ""))
-			return errBusiness("transcribe: the transcript could not be kept: "+kept.Stub, "Free inbox space with op=rm or op=clear, then try again."), nil
+			return res, nil
 		}
-		ref = kept.Record.Ref
 		excerpt, truncated = cutRunes(md, fileExcerptChars)
 	}
 	tools.EventEmitter(ctx)(sttEvent(ctx, p, r.raw, ref))
@@ -299,7 +333,7 @@ func round1(x float64) float64 { return float64(int64(x*10+0.5)) / 10 }
 // sttMarkdown renders the transcript: provenance under the title, a section
 // per chunk_minutes, speaker labels when the engine gave them, each segment's
 // start unless timestamps are off. Bounded like an extraction's Markdown.
-func (f *File) sttMarkdown(ctx context.Context, call sttCall, p *sttpass.Pass, name string) string {
+func (f *File) sttMarkdown(ctx context.Context, call sttCall, p *sttpass.Pass, name string, withModel bool) string {
 	segs := transcribe.Merge(p.Pieces, p.Results)
 	cues := make([]extract.TranscriptCue, len(segs))
 	for i, s := range segs {
@@ -308,6 +342,9 @@ func (f *File) sttMarkdown(ctx context.Context, call sttCall, p *sttpass.Pass, n
 	language := call.opts.Language
 	meta := fmt.Sprintf("stt engine=%s provider=%s model=%s minutes=%.1f language=%s",
 		metaValue(p.Plan.Engine), metaValue(p.Plan.Provider), metaValue(p.Plan.Model), p.Seconds/60, metaValue(language))
+	if !withModel {
+		meta = fmt.Sprintf("stt engine=%s minutes=%.1f language=%s", metaValue(p.Plan.Engine), p.Seconds/60, metaValue(language))
+	}
 	if p.Speakers && len(p.Pieces) > 1 {
 		meta += " speakers=per-section"
 	}
