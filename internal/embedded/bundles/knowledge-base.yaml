@@ -6938,6 +6938,7 @@ agents:
         st.recurrence = { need: need, runs_with_scheme: candidates.length, runs_failed: st.runs - candidates.length,
                           per_run: st.recurrence_runs, kept: 0, not_recurring: 0, added_by_review: 0, kept_missing: 0,
                           align: "", align_failed: false, aligned_groups: 0, kept_groups: 0, kept_by_key: 0,
+                          merged_into_aligned: 0,
                           dropped_by_check: {} };
         var runNums = [];
         for (var rn = 0; rn < st.recurrence_runs.length; rn++) { runNums.push(st.recurrence_runs[rn].run); }
@@ -7111,7 +7112,7 @@ agents:
             if (name !== "") { bump(d, "invented_name"); }
             chosen = commonName(members);
           }
-          out.push({ members: members, name: chosen, runs: runs, parentName: cleanName(raw.parent_group),
+          out.push({ members: members, name: chosen, runs: runs, cands: cands, parentName: cleanName(raw.parent_group),
                      kept: false, state: 0, node: null });
         }
         rc.aligned_groups = out.length;
@@ -7176,8 +7177,32 @@ agents:
           kg.members.push(n);
           if (!hasOwn(kg.cands, n.cand)) { kg.cands[n.cand] = true; kg.runs++; }
         }
+        // A key group whose key is already a wording of a kept align group
+        // is that group: kept beside it, the two would share a wording (one
+        // tag segment), and conceptTree would drop one of them after the
+        // review. Its concepts join the align group and add their runs. A
+        // name's segment fixes its key, so matching keys covers segments.
+        var alignedByKey = {};
+        for (var b = 0; b < groups.length; b++) {
+          for (var bm = 0; bm < groups[b].members.length; bm++) {
+            var bk = groups[b].members[bm].key;
+            if (!hasOwn(alignedByKey, bk)) { alignedByKey[bk] = groups[b]; }
+          }
+        }
         for (var k = 0; k < keyGroups.length; k++) {
           var g = keyGroups[k];
+          var into = hasOwn(alignedByKey, g.members[0].key) ? alignedByKey[g.members[0].key] : null;
+          if (into !== null) {
+            for (var jm = 0; jm < g.members.length; jm++) {
+              var mm = g.members[jm];
+              mm.group = into;
+              into.members.push(mm);
+              if (!hasOwn(into.cands, mm.cand)) { into.cands[mm.cand] = true; into.runs++; }
+            }
+            into.members.sort(function (x, y) { return x.order - y.order; });
+            rc.merged_into_aligned++;
+            continue;
+          }
           if (g.runs < need) { rc.not_recurring++; continue; }
           g.kept = true;
           groups.push(g);

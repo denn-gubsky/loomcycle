@@ -1136,3 +1136,32 @@ func TestKBTaxonomist_AlignedGroupsArePlacedUnderKeptParents(t *testing.T) {
 		t.Errorf("generate = %v, want complete with the 5 groups the review left out reported", rep)
 	}
 }
+
+// TestKBTaxonomist_KeyMatchMergesIntoAnAlignedGroupOfTheSameWording: a
+// concept the align reply left out whose key is a wording of a kept aligned
+// group joins that group rather than forming a second concept of the same
+// wording, which conceptTree would drop by tag segment and report as
+// kept_missing.
+func TestKBTaxonomist_KeyMatchMergesIntoAnAlignedGroupOfTheSameWording(t *testing.T) {
+	f := newTaxFixture(t, 45, 0)
+	runs := []string{
+		taxConcepts(taxLeaf("Agents")),
+		taxConcepts(taxLeaf("agent runs"), taxLeaf("platform", taxLeaf("agents"))),
+		taxConcepts(taxLeaf("agents")),
+	}
+	align := taxGroups(taxG{Name: "Agents", MemberIDs: []string{"r1.c1", "r2.c1"}})
+	fake := taxAligned(3, runs, align, taxConcepts(taxLeaf("Agents")))
+	rep := runTaxonomist(t, f, fake, `{"mode":"generate","scheme":"care","domain":"Care.","batch_size":20,"runs":3,"write":"none"}`)
+	if got := strings.Join(fake.kinds(), ","); got != "generate,update,update,generate,update,update,generate,update,update,align,review" {
+		t.Fatalf("requests = %s", got)
+	}
+	keep := fake.spawns[10].untrusted[0]
+	if got := strings.Join(taxKeepOutline(t, keep), ","); got != "Agents" || !strings.Contains(keep, `"runs":3`) {
+		t.Errorf("KEEP = %q (%s), want one Agents concept held by all 3 runs", got, keep)
+	}
+	rc, _ := rep["recurrence"].(map[string]any)
+	if rep["status"] != "complete" || rc["kept"] != float64(1) || rc["kept_groups"] != float64(1) || rc["kept_by_key"] != float64(0) ||
+		rc["merged_into_aligned"] != float64(1) || rc["kept_missing"] != float64(0) {
+		t.Errorf("recurrence = %v (%v), want 1 kept group, the key match merged into it, nothing missing", rc, rep["status"])
+	}
+}
