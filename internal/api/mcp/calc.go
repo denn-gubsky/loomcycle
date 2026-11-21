@@ -23,6 +23,12 @@ import (
 // wording moves and this no longer matches.
 const calcHelpInRun = "Context op=help topic=Calc"
 
+// calcToolDescriptor is the `calc` entry of tools/list. The schema is the
+// builtin's own, through the wrapper table.
+func calcToolDescriptor() loommcp.ToolDescriptor {
+	return loommcp.ToolDescriptor{Name: "calc", Description: calcDescription(), InputSchema: builtinSchema("calc")}
+}
+
 // calcDescription is the `calc` tool's description: the Calc builtin's own,
 // so the two cannot drift, with the help pointer rewritten for this transport
 // and what a caller with no run needs to know: what it pays, and what the tool

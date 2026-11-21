@@ -106,7 +106,7 @@ func filterProps(fragment string, keep []string) string {
 // builtin wrappers (memory, channel, agentdef, skilldef, evaluation, context)
 // whose inner `op` field already discriminates the operation.
 func toolDescriptors() []loommcp.ToolDescriptor {
-	return append(append(baseToolDescriptors(), aclToolDescriptors()...), clientDefToolDescriptor(), telemetryToolDescriptor())
+	return append(append(baseToolDescriptors(), aclToolDescriptors()...), clientDefToolDescriptor(), telemetryToolDescriptor(), calcToolDescriptor())
 }
 
 func baseToolDescriptors() []loommcp.ToolDescriptor {
@@ -559,11 +559,6 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 			Name:        "decision",
 			Description: decisionDescription(),
 			InputSchema: builtinSchema("decision"),
-		},
-		{
-			Name:        "calc",
-			Description: calcDescription(),
-			InputSchema: builtinSchema("calc"),
 		},
 		{
 			Name:        "history",
