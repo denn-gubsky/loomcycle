@@ -13,8 +13,16 @@
 #   - in open mode (no authentication) a run that names no tenant_id, so
 #     carries the empty tenant, opens, uses and releases a workspace on the
 #     local worker, which serves that tenant when workspace.local.tenant is
-#     unset.
-# Needs python3 on PATH (the workspace runs it); skips cleanly without it.
+#     unset;
+#   - the data pass (RFC GW P2): a Document rendered into a workspace as
+#     Markdown, rewritten there by a Python script, imported back as a new
+#     Document whose provenance names the workspace, its id and the run,
+#     rendered into a volume (PDF where Typst is on PATH, else DOCX); a PDF
+#     copied in from the volume and extracted inside the workspace; a folder
+#     copied out to the volume and a file removed — with no file's bytes in
+#     any tool result of the stored transcript.
+# Needs python3 on PATH (the workspace runs it, and it writes the PDF
+# fixture); the whole suite skips cleanly without it.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -38,6 +46,8 @@ TOKEN="test-token-$(date +%s)"
 BASE="http://127.0.0.1:$PORT"
 DATA="$(cd "$TEST_DIR" && pwd -P)/data"
 ROOT="$DATA/workspaces"
+VOL="$(cd "$TEST_DIR" && pwd -P)/vol"
+mkdir -p "$VOL"
 fail() { echo "FAIL ✗ — $1"; exit 1; }
 
 sse_text() {
@@ -50,7 +60,7 @@ for line in sys.stdin:
 post_run() {
   curl -fsS -N -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     -H "Accept: text/event-stream" -d @- "$BASE/v1/runs" <<JSON > "$1"
-{"agent":"$2","user_id":"ws-user","segments":[{"role":"user","content":[{"type":"trusted-text","text":"go"}]}]}
+{"agent":"$2","user_id":"ws-user","segments":[{"role":"user","content":[{"type":"trusted-text","text":"${3:-go}"}]}]}
 JSON
 }
 admin() { curl -fsS -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "$2" "$BASE$1"; }
@@ -64,6 +74,87 @@ wait_until() {
 }
 no_workspaces() { [[ -z "$(workspaces)" ]]; }
 
+# data_pass runs wsdata (the RFC GW P2 data pass) and checks what it left: the
+# agent's own report, the stored transcript, the volume and the worker's disk.
+data_pass() {
+  local fmt=pdf
+  if ! command -v typst >/dev/null 2>&1; then
+    fmt=docx
+    echo "      typst is not on PATH: the result is rendered as DOCX instead of PDF"
+  fi
+  # A one-page PDF with a text layer, written by hand so the suite needs no
+  # PDF tool. Its text carries a marker no tool result may show.
+  python3 -I - "$VOL/fixture.pdf" <<'PY'
+import sys
+content = b"BT /F1 18 Tf 72 720 Td (EXTRACTMARKER fixture page) Tj ET"
+objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+out, offs = bytearray(b"%PDF-1.4\n"), []
+for i, o in enumerate(objs, 1):
+    offs.append(len(out))
+    out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+xref = len(out)
+out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+for o in offs:
+    out += b"%010d 00000 n \n" % o
+out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+open(sys.argv[1], "wb").write(out)
+PY
+  # copy into a volume needs the target folder to exist.
+  mkdir -p "$VOL/kept"
+  post_run "$TEST_DIR/data.sse" wsdata "$fmt"
+  local R; R=$(sse_text "$TEST_DIR/data.sse")
+  echo "      $R"
+  grep -q '^event: error$' "$TEST_DIR/data.sse" && fail "an EventError appeared on the data-pass stream: $(cat "$TEST_DIR/data.sse")"
+  for want in "state=ready" "exit=0" "render_md=workspace:data:in/source.md" \
+      "captured_from=workspace:data " "tag_ws=true" "import_doc=yes" \
+      "render_out=volume:work:result.$fmt" "copied_in=workspace:data:pdf/fixture.pdf" \
+      "extracted=workspace:data:out/extracted/fixture.md" "kept=volume:work:kept/out/3" \
+      "removed=workspace:data:out/notes.txt"; do
+    echo "$R" | grep -q -- "$want" || fail "wsdata: want '$want' in: $R"
+  done
+  # The provenance names this workspace (its directory on the worker is its
+  # id, which the script printed) and this run.
+  local ws_dir ws_id run_id want_run
+  ws_dir=$(echo "$R" | sed -n 's/.*ws_dir=\([^ ]*\).*/\1/p')
+  ws_id=$(echo "$R" | sed -n 's/.*workspace_id=\([^ ]*\).*/\1/p')
+  run_id=$(echo "$R" | sed -n 's/.*run_id=\([^ ]*\).*/\1/p')
+  [[ "$ws_id" == ws_* && "$ws_id" == "$ws_dir" ]] || fail "provenance workspace_id '$ws_id' is not the workspace's id '$ws_dir'"
+  want_run=$(sqlite3 "$DATA/loomcycle.db" "SELECT id FROM runs ORDER BY started_at DESC LIMIT 1;")
+  [[ -n "$run_id" && "$run_id" == "$want_run" ]] || fail "provenance run_id '$run_id' is not the run's id '$want_run'"
+  local size; size=$(echo "$R" | sed -n 's/.*extracted_size=\([0-9]*\).*/\1/p')
+  [[ "${size:-0}" -gt 0 ]] || fail "the extracted Markdown is not in the workspace (stat size '$size')"
+
+  echo "      the stored transcript carries no file's bytes"
+  local n_results
+  n_results=$(sqlite3 "$DATA/loomcycle.db" "SELECT count(*) FROM events WHERE run_id='$run_id' AND type='tool_result';")
+  [[ "$n_results" -ge 12 ]] || fail "only $n_results tool results stored for the data-pass run; the check below would prove nothing"
+  sqlite3 "$DATA/loomcycle.db" "SELECT CAST(payload AS TEXT) FROM events WHERE run_id='$run_id';" > "$TEST_DIR/data-events.txt"
+  # A tool_result event repeats its call's input; only its text is the result.
+  sqlite3 "$DATA/loomcycle.db" "SELECT json_extract(CAST(payload AS TEXT), '$.text') FROM events WHERE run_id='$run_id' AND type='tool_result';" > "$TEST_DIR/data-results.txt"
+  ! grep -aq "DATAPASS_REWRITTEN_42" "$TEST_DIR/data-events.txt" || fail "the script's marker reached the transcript"
+  ! grep -aq "EXTRACTMARKER" "$TEST_DIR/data-events.txt" || fail "the PDF's text reached the transcript"
+  ! grep -aq "%PDF" "$TEST_DIR/data-results.txt" || fail "a PDF's bytes reached a tool result"
+  ! grep -aq "The workspace keeps the files" "$TEST_DIR/data-results.txt" || fail "the Document's text reached a tool result"
+
+  echo "      the volume holds the render and the copied folder; the Document holds the rewrite"
+  case "$fmt" in
+    pdf)  [[ "$(head -c 5 "$VOL/result.pdf")" == "%PDF-" ]] || fail "volume:work:result.pdf is not a PDF" ;;
+    docx) [[ "$(head -c 2 "$VOL/result.docx")" == "PK" ]] || fail "volume:work:result.docx is not a DOCX"
+          unzip -p "$VOL/result.docx" word/document.xml | grep -q "DATAPASS_REWRITTEN_42" || fail "the DOCX lacks the script's marker" ;;
+  esac
+  grep -q "DATAPASS_REWRITTEN_42" "$VOL/kept/out/result.md" || fail "the folder copied out lacks the rewritten Markdown"
+  grep -q "scratch" "$VOL/kept/out/notes.txt" || fail "the folder copied out lacks notes.txt"
+  grep -q "EXTRACTMARKER" "$VOL/kept/out/extracted/fixture.md" || fail "the Markdown extracted in the workspace lacks the PDF's text"
+  grep -rlaq "DATAPASS_REWRITTEN_42" "$DATA/sqlmem" || fail "the imported Document's text is not in SQL Memory"
+
+  echo "      the run's end released the workspace"
+  wait_until 10 no_workspaces || fail "workspace directories left after the data pass ended: $(workspaces)"
+}
+
 # The legacy LOOMCYCLE_AUTH_TOKEN runs under tenant "default", the tenant the
 # local worker serves by default.
 cat > "$TEST_DIR/loomcycle.yaml" <<YAML
@@ -75,6 +166,8 @@ conversion:
   mode: inprocess
 workspace:
   mode: local
+volumes:
+  work: { path: "$VOL", mode: rw }
 agents:
   wsflow:
     provider: code-js
@@ -86,9 +179,15 @@ agents:
     description: "A workspace held across a runtime pause."
     tools: [Workspace]
     workspace: { ops: [read, write, exec], open: true }
+  wsdata:
+    provider: code-js
+    description: "The data pass: Document to workspace, a script, back to a Document, out to a volume."
+    tools: [Workspace, File, Document, Read, Write]
+    workspace: { ops: [read, write, exec], open: true }
+    volumes: [work]
 YAML
 
-echo "[1/6] build + boot (workspace.mode local)"
+echo "[1/7] build + boot (workspace.mode local)"
 go build -o bin/loomcycle ./cmd/loomcycle
 env -i PATH="$PATH" HOME="$TEST_DIR/home" \
 LOOMCYCLE_MOCK_ENABLED=1 \
@@ -108,7 +207,7 @@ done
 grep -q "workspace: mode local runs every agent's workspace commands" "$TEST_DIR/boot.log" || fail "boot log does not warn that local mode has no isolation"
 wait_until 15 grep -q "workspace worker attached.*worker_id=local:default/local" "$TEST_DIR/boot.log" || fail "the local worker did not attach"
 
-echo "[2/6] wsflow: open, write square.py, run it, read out.txt"
+echo "[2/7] wsflow: open, write square.py, run it, read out.txt"
 post_run "$TEST_DIR/flow.sse" wsflow
 R=$(sse_text "$TEST_DIR/flow.sse")
 echo "      $R"
@@ -116,10 +215,10 @@ for want in "state=ready" "engine=host" "exit=0" "printed=squared_12" "result=14
   echo "$R" | grep -q -- "$want" || fail "wsflow: want '$want' in: $R"
 done
 
-echo "[3/6] the run's end released the workspace: its directory is gone"
+echo "[3/7] the run's end released the workspace: its directory is gone"
 wait_until 10 no_workspaces || fail "workspace directories left after the run ended: $(workspaces)"
 
-echo "[4/6] wspause: a run paused mid-run keeps its workspace"
+echo "[4/7] wspause: a run paused mid-run keeps its workspace"
 post_run "$TEST_DIR/pause.sse" wspause &
 RUNPID=$!
 started() { compgen -G "$ROOT/*/started" >/dev/null; }
@@ -149,13 +248,16 @@ if grep -q '^event: error$' "$TEST_DIR/flow.sse" "$TEST_DIR/pause.sse"; then
   fail "an EventError appeared on a run stream"
 fi
 
-echo "[5/6] the local worker exits when the runtime is killed"
+echo "[5/7] the data pass: Document → workspace → script → Document → volume"
+data_pass
+
+echo "[6/7] the local worker exits when the runtime is killed"
 CHILD=$(pgrep -P "$PID" -f "role workspace" || true)
 [[ -n "$CHILD" ]] || fail "no local workspace worker is running under the runtime"
 kill -9 "$PID"; wait "$PID" 2>/dev/null || true; PID=""
 gone() { ! kill -0 "$CHILD" 2>/dev/null; }
 wait_until 10 gone || fail "the local worker (pid $CHILD) outlived the runtime"
-echo "[6/6] open mode: a run that names no tenant opens, uses and releases a workspace"
+echo "[7/7] open mode: a run that names no tenant opens, uses and releases a workspace"
 OPEN_PORT=18952
 OPEN_BASE="http://127.0.0.1:$OPEN_PORT"
 OPEN_DATA="$(cd "$TEST_DIR" && pwd -P)/open-data"
