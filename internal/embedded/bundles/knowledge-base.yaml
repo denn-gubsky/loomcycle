@@ -6256,9 +6256,10 @@ agents:
       //            batch. Several runs start at different batches, because one
       //            generation is not a taxonomy (the corpus does not settle on
       //            one split); runs are clamped to the number of batches, so
-      //            no two runs see the same order. A review request then keeps
-      //            the concepts that recur in at least half the runs and checks
-      //            the result (with one run it only checks).
+      //            no two runs see the same order. The code then keeps the
+      //            concepts a majority of the runs hold (with one run, all of
+      //            them), and a review request words, merges and checks that
+      //            kept set; anything the review adds is dropped.
       //            write "propose" (the default) files it with propose_entity as
       //            one inert proposal with @origin generated; write "none" only
       //            reports its outline.
@@ -6271,6 +6272,10 @@ agents:
       //     DATA: a concept tree is kept only within its shape and lengths
       //     (names on one line, at most max_concepts concepts, depth at most
       //     2), and anything else counts as a parse error.
+      //   * which concepts recur is counted here, not asked of the review: a
+      //     concept (its name's own key, wherever a run puts it) is kept when a
+      //     majority of the runs with a scheme hold it, and the review's result keeps only
+      //     concepts of that kept set, each once, so it is never larger.
       //   * the only write is propose_entity, once, at the end of a generate
       //     pass with write "propose". What it files is inert until an operator
       //     accepts it; nothing in force changes.
@@ -6470,7 +6475,7 @@ agents:
           cut: 0, failed_batches: 0, dropped: {},
           usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
           models: [], runs_ids: [], runs: 0, requests: null, proposal_status: "", proposal_check: "",
-          domains: null, candidates: null, scheme: null, proposal: null
+          domains: null, candidates: null, recurrence: null, recurrence_runs: [], scheme: null, proposal: null
         };
       }
 
@@ -6901,31 +6906,210 @@ agents:
           }
           st.candidates.push({ run: r + 1, failed_batches: failed, concepts: scheme === null ? 0 : count(scheme),
                                top_level: scheme === null ? [] : names(scheme) });
-          if (scheme !== null) { candidates.push(scheme); }
+          if (scheme !== null) {
+            candidates.push(scheme);
+            st.recurrence_runs.push({ run: r + 1, concepts: count(scheme) });
+          }
         }
         if (candidates.length === 0) { st.status = "generate_failed"; return; }
-        var need = Math.ceil(st.runs / 2);
-        var blocks = [];
-        for (var c = 0; c < candidates.length; c++) {
-          blocks.push(data("CANDIDATE " + (c + 1), JSON.stringify({ concepts: candidates[c] })));
-        }
+        // Recurrence is decided here, not by the review: asked to keep what
+        // recurs, a model unioned the runs (66 and 91 concepts became 102).
+        // A concept is kept when a majority of the runs that produced a
+        // scheme hold it. "At least half" would be one run of two, the union
+        // again; for an odd number of runs the two rules agree. A run that
+        // failed lowers the majority (two of three runs with a scheme need two,
+        // one needs one, and then everything is kept); runs_failed says so.
+        var need = Math.min(Math.floor(st.runs / 2) + 1, candidates.length);
+        var rec = recurrence(candidates, need, st.opts.depth);
+        st.recurrence = { need: need, runs_with_scheme: candidates.length, runs_failed: st.runs - candidates.length,
+                          per_run: st.recurrence_runs, kept: rec.kept, not_recurring: rec.not_recurring,
+                          added_by_review: 0, kept_missing: 0 };
+        if (rec.concepts.length === 0) { st.status = "nothing_recurs"; return; }
         var rv = ask(st, "REQUEST: review\n\n" + schemeLines(st) + "\n\n" +
-          (candidates.length > 1 ?
-            "The untrusted data blocks are " + candidates.length + " candidate schemes for this domain, each as JSON, " +
-            "written independently from the same documents met in a different order." +
-            "\nKEEP: a concept that appears, under any wording, in at least " + Math.min(need, candidates.length) +
-            " of the " + candidates.length + " candidates." :
-            "The untrusted data block is the one candidate scheme for this domain, as JSON." +
-            "\nKEEP: every concept that passes the checks."),
-          blocks);
-        var final = rv === null ? null : conceptTree(st, rv.concepts);
+          "The untrusted data block is KEEP, as JSON: the " + rec.kept + " concepts held by at least " + need +
+          " of the " + candidates.length + (candidates.length > 1 ? " candidate schemes" : " candidate scheme") +
+          " written for this domain, each with the wordings the candidates used (names) and its children." +
+          "\nReturn these concepts and no other: a concept or a name KEEP does not hold is dropped.",
+          [data("KEEP", JSON.stringify({ concepts: keepView(rec.concepts) }))]);
+        if (rv !== null && !isArray(rv.concepts)) { st.parse_errors++; }
+        // The guard runs on the raw reply, before conceptTree's sibling and
+        // total caps: a concept the review added must not take a capped slot
+        // and push a kept one out.
+        var only = rv === null ? [] : onlyKept(st, rv.concepts, rec.keys, {});
+        var final = only.length === 0 ? null : conceptTree(st, only);
         if (final === null) { st.status = "review_failed"; return; }
+        var have = {};
+        keysOf(final, have);
+        for (var kk in rec.keys) {
+          if (hasOwn(rec.keys, kk) && !hasOwn(have, kk)) { st.recurrence.kept_missing++; }
+        }
         st.scheme = { name: st.opts.scheme, concepts: count(final), top_level: names(final) };
         if (st.opts.write === "none") {
           st.scheme.outline = outline(final);
           return;
         }
         file(st, final);
+      }
+
+      // ------------------------------------------------------------------ recurrence
+
+      // KEY_STOP_WORDS leave a concept's key, so "hooks and lifecycle events"
+      // and "lifecycle events and hooks" are one concept.
+      var KEY_STOP_WORDS = { a: true, an: true, and: true, the: true, of: true, or: true, to: true, "for": true, "in": true, "&": true };
+
+      // KEY_PUNCT is the punctuation a key word loses: ASCII, Latin-1, general
+      // and CJK punctuation, so "search (web)" is "search web".
+      var KEY_PUNCT = /[\u0000-/:-@[-`{-¿ -⁯　-〿]+/g;
+
+      // KEY_WORDS_KEPT end in s and are not plurals.
+      var KEY_WORDS_KEPT = { news: true, lens: true, series: true, species: true, status: true, physics: true,
+                             mathematics: true, economics: true, politics: true, ethics: true, analytics: true,
+                             statistics: true, logistics: true, linguistics: true };
+
+      // conceptKey is the key two runs' wordings of one concept share: the
+      // name's tag segment (mirrorSegment, which also folds case), each word
+      // without its punctuation and made singular, the stop words left out and
+      // the rest sorted.
+      function conceptKey(name) {
+        var seg = mirrorSegment(name);
+        var ws = seg.split("-"), out = [];
+        for (var i = 0; i < ws.length; i++) {
+          var w = ws[i].replace(KEY_PUNCT, "");
+          if (w === "" || KEY_STOP_WORDS[w] === true) { continue; }
+          out.push(stem(w));
+        }
+        if (out.length === 0) { return seg; }
+        out.sort();
+        return out.join("-");
+      }
+
+      // stem folds an English plural, the same way for both forms of a word:
+      // a final s goes (not from a word of four letters or fewer, nor after
+      // ss, us or is, nor from a word in KEY_WORDS_KEPT), then a final e (when
+      // four letters stay, so "notes" is never "not"), then a final y after a
+      // consonant becomes i. So "movies" and "movie" are "movi", "categories"
+      // and "category" "categori", "caches" and "cache" "cach", "statuses" and
+      // "status" "status". A word that is not plain ASCII letters (Cyrillic,
+      // say) is left as it is: only its case is folded, by mirrorSegment.
+      function stem(w) {
+        if (!/^[a-z]+$/.test(w) || w.length <= 3 || KEY_WORDS_KEPT[w] === true) { return w; }
+        var s = w;
+        if (s.length > 4 && /s$/.test(s) && !/(ss|us|is)$/.test(s)) { s = s.slice(0, -1); }
+        if (s.length >= 5 && /e$/.test(s)) { s = s.slice(0, -1); }
+        if (s.length > 3 && /[^aeiou]y$/.test(s)) { s = s.slice(0, -1) + "i"; }
+        return s;
+      }
+
+      // recurrence keeps the concepts held by at least need candidates. A
+      // concept is its own key, counted at most once per run wherever the run
+      // puts it, so a concept every run holds recurs though the runs give it
+      // differently worded parents or another level. The kept tree is built
+      // in the order the runs first name each concept: there it goes under its
+      // nearest kept ancestor in that run (its parent when kept, else the next
+      // one up, else the top level), and never below maxDepth, climbing to that
+      // ancestor's own parent when it sits at the bottom level. Each kept
+      // concept carries the first run's meaning and excludes, every wording the
+      // runs used, and the number of runs that held it. keys is the kept keys,
+      // which the review's result is held to.
+      function recurrence(candidates, need, maxDepth) {
+        var counts = {}, order = [];
+        for (var c = 0; c < candidates.length; c++) { countKeys(candidates[c], counts, order, {}); }
+        var roots = [], byKey = {}, keys = {}, notKept = 0;
+        for (var i = 0; i < order.length; i++) {
+          if (counts[order[i]] >= need) { keys[order[i]] = true; } else { notKept++; }
+        }
+        for (var r = 0; r < candidates.length; r++) { place(candidates[r], [], roots, byKey, keys, counts, maxDepth); }
+        return { concepts: roots, keys: keys, kept: order.length - notKept, not_recurring: notKept };
+      }
+
+      function countKeys(cs, counts, order, seen) {
+        for (var i = 0; i < cs.length; i++) {
+          var k = conceptKey(cs[i].name);
+          if (!hasOwn(seen, k)) {
+            seen[k] = true;
+            if (!hasOwn(counts, k)) { counts[k] = 0; order.push(k); }
+            counts[k]++;
+          }
+          countKeys(cs[i].children, counts, order, seen);
+        }
+      }
+
+      // place walks one run in order. An ancestor is visited before its
+      // descendants, so a kept ancestor is already placed when a descendant
+      // looks for it; and each node gets its parent once, so the tree has no
+      // cycle.
+      function place(cs, ancestors, roots, byKey, keys, counts, maxDepth) {
+        for (var i = 0; i < cs.length; i++) {
+          var k = conceptKey(cs[i].name);
+          if (hasOwn(keys, k)) {
+            if (!hasOwn(byKey, k)) {
+              var into = null;
+              for (var a = ancestors.length - 1; a >= 0 && into === null; a--) {
+                if (hasOwn(byKey, ancestors[a])) { into = byKey[ancestors[a]]; }
+              }
+              while (into !== null && into.depth >= maxDepth) { into = into.parent; }
+              var node = { names: [cs[i].name], runs: counts[k], meaning: cs[i].meaning, excludes: cs[i].excludes,
+                           children: [], depth: into === null ? 1 : into.depth + 1, parent: into };
+              byKey[k] = node;
+              (into === null ? roots : into.children).push(node);
+            } else if (byKey[k].names.indexOf(cs[i].name) < 0) {
+              byKey[k].names.push(cs[i].name);
+            }
+          }
+          place(cs[i].children, ancestors.concat([k]), roots, byKey, keys, counts, maxDepth);
+        }
+      }
+
+      function keysOf(cs, into) {
+        for (var i = 0; i < cs.length; i++) {
+          into[conceptKey(cs[i].name)] = true;
+          keysOf(cs[i].children, into);
+        }
+      }
+
+      function keepView(ks) {
+        var out = [];
+        for (var i = 0; i < ks.length; i++) {
+          out.push({ names: ks[i].names, runs: ks[i].runs, meaning: ks[i].meaning, excludes: ks[i].excludes,
+                     children: keepView(ks[i].children) });
+        }
+        return out;
+      }
+
+      // onlyKept holds the review's raw reply to the kept set, before any cap:
+      // a concept whose key is kept is that kept concept, under whichever of
+      // the names the review chose; a concept whose key is not kept is dropped
+      // and counted, and so is a second concept with a key already met; the
+      // kept children of either take its place. A concept that is not an
+      // object or has no name propose_entity would take is dropped as
+      // malformed, as conceptTree would. The result has each kept key at most
+      // once, so it is never larger than the kept set; conceptTree then checks
+      // its shape and caps it.
+      function onlyKept(st, raw, keys, seen) {
+        var out = [];
+        if (!isArray(raw)) { return out; }
+        for (var i = 0; i < raw.length; i++) {
+          var c = raw[i];
+          if (!isPlainObject(c)) { bump(st.dropped, "malformed"); continue; }
+          var name = cleanName(c.name);
+          if (name === "") { bump(st.dropped, "malformed"); continue; }
+          var k = conceptKey(name);
+          var ok = hasOwn(keys, k) && !hasOwn(seen, k);
+          if (ok) {
+            seen[k] = true;
+          } else if (hasOwn(keys, k)) {
+            bump(st.dropped, "duplicate");
+          } else {
+            st.recurrence.added_by_review++;
+          }
+          var children = onlyKept(st, c.children, keys, seen);
+          if (ok) {
+            out.push({ name: name, meaning: c.meaning, excludes: c.excludes, children: children });
+          } else {
+            for (var j = 0; j < children.length; j++) { out.push(children[j]); }
+          }
+        }
+        return out;
       }
 
       // file is the pass's only write: one propose_entity call, inert until an
@@ -7103,6 +7287,7 @@ agents:
           out.failed_batches = st.failed_batches;
           out.write = st.opts.write;
         }
+        if (st.recurrence !== null) { out.recurrence = st.recurrence; }
         if (st.scheme !== null) { out.scheme = st.scheme; }
         if (st.proposal !== null) { out.proposal = st.proposal; }
         return out;
@@ -7228,12 +7413,19 @@ agents:
       batch. Return the whole revised scheme.
 
       ## REQUEST: review
-      The data blocks are candidate schemes written independently for the
-      same DOMAIN. Return one scheme: a concept KEEP says to keep, under the
-      clearest of its wordings, and nothing else. Then check it: no two
-      siblings overlap, no concept is a kind of document rather than a topic,
-      every concept has a meaning and an excludes line, names are short and
-      consistent in form, and children sit under the right parent.
+      The KEEP data block holds the concepts that candidate schemes written
+      independently for the same DOMAIN agree on, as JSON: each with the
+      wordings the candidates used (names), the number of candidates that
+      held it (runs), a meaning, an excludes line and its children. Return
+      one scheme made only of these concepts:
+      - name each concept by the clearest of its names, written exactly;
+      - merge two siblings that cover the same thing, or where one is a part
+        of the other, into one of them under one of its names;
+      - move a child under the parent it belongs to;
+      - leave out a concept that is a kind of document rather than a topic;
+      - give each concept a meaning and an excludes line that tell it from
+        its siblings, and keep names short and consistent in form.
+      Never add a concept or a name KEEP does not hold: it is dropped.
 
       ## A concept
       - name: short, lowercase, at most 80 characters, unique in the whole
