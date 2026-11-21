@@ -696,6 +696,8 @@ func NormalizeAgentDef(def *config.AgentDef) {
 	//    the help the dispatcher derives from holding it. Applied here, at
 	//    resolve time, rather than written into the stored definition: the
 	//    stored tools list is the fork ceiling and is content-identifying.
+	//    Calc, the other default tool, is not added here: it is added where a
+	//    run's toolset is built (config.EffectiveTools), for static agents too.
 	config.AddContextToolDefault(def)
 }
 

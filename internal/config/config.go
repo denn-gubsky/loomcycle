@@ -1566,9 +1566,12 @@ func ValidateAgentHooks(a AgentDef) error {
 	if err := a.ToolHooks.Validate(); err != nil {
 		return err
 	}
+	// EffectiveTools: a resolution-time default (Calc) is a tool the agent has
+	// though its list does not name it.
+	held := EffectiveTools(a.Tools)
 	for tool := range a.ToolHooks {
 		found := false
-		for _, t := range a.Tools {
+		for _, t := range held {
 			if t == tool {
 				found = true
 				break
@@ -5660,7 +5663,9 @@ func addContextToolDefaults(cfg *Config) {
 // exported because an agent defined at runtime never passes through config
 // load: the runtime resolver (lookup.NormalizeAgentDef) calls this too, so a
 // runtime-created agent gets the tool a yaml agent gets, by the same rule.
-// Idempotent.
+// Idempotent. Calc, the other default tool, deliberately does not follow this
+// path: it is added at resolution only (EffectiveTools), so it never enters a
+// static agent's hashed list as Context does here.
 func AddContextToolDefault(def *AgentDef) {
 	if def.DisableContext {
 		return
@@ -5686,8 +5691,67 @@ func AddContextToolDefault(def *AgentDef) {
 
 // DefaultTools are the tools the runtime adds to an agent's tools by default,
 // and so the only names a "-Name" entry in tools may remove. Skill is not one:
-// its auto-add is governed by the skills allowlist (`skills: [-*]`).
-func DefaultTools() []string { return []string{"Context"} }
+// its auto-add is governed by the skills allowlist (`skills: [-*]`). They are
+// added at two different points: Context into the tools list itself (at
+// config load and when a runtime definition is read, AddContextToolDefault),
+// the rest only when a run's toolset is resolved (EffectiveTools).
+func DefaultTools() []string { return []string{"Context", "Calc"} }
+
+// resolvedDefaultTools are the default tools added only at resolution, never
+// written into a tools list that is stored, hashed or used as a fork ceiling:
+// an agent's tools are content-identifying, so a default added there would
+// change the hash of every existing definition the version it ships in.
+// Context predates this and keeps its load/read add.
+func resolvedDefaultTools() []string { return []string{"Calc"} }
+
+// IsResolvedDefaultTool reports whether name is a default tool added at
+// resolution (EffectiveTools). Every agent holds one unless its tools remove
+// it, so a tools ceiling treats it as held: listing it explicitly widens
+// nothing the agent would not have had.
+func IsResolvedDefaultTool(name string) bool {
+	for _, d := range resolvedDefaultTools() {
+		if name == d {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveTools is an agent's tools as a run resolves them: the list itself,
+// plus each resolution-time default tool (Calc) the list neither removes nor
+// already grants. It is the one place that default is added — a run's toolset
+// (filterTools), the patterns a skill is checked against, the hooks a run may
+// name and the listings all call it — and it is never written back, so no
+// stored definition or content hash carries it. It returns tools itself when
+// nothing is added.
+func EffectiveTools(tools []string) []string {
+	grants, removed := SplitTools(tools)
+	var add []string
+	for _, d := range resolvedDefaultTools() {
+		if ToolRemoved(d, removed) || grantsByName(grants, d) {
+			continue
+		}
+		add = append(add, d)
+	}
+	if len(add) == 0 {
+		return tools
+	}
+	// A fresh slice: tools may share its backing array with a stored or cached
+	// definition, which an in-place append would write through.
+	return append(append([]string(nil), tools...), add...)
+}
+
+// grantsByName reports whether grants already covers name: listed as is, or
+// by a trailing-* pattern (the glob the tool policy honours). Only to keep
+// EffectiveTools from restating a tool; a duplicate would grant nothing more.
+func grantsByName(grants []string, name string) bool {
+	for _, g := range grants {
+		if g == name || (strings.HasSuffix(g, "*") && strings.HasPrefix(name, g[:len(g)-1])) {
+			return true
+		}
+	}
+	return false
+}
 
 // SplitTools separates an agent's tools into the grants (names and globs, as
 // written) and the removals: the names of the "-Name" entries, without the

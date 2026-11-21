@@ -1816,6 +1816,71 @@ func TestWithRemovals_KeepsTheOthersRemovalOnce(t *testing.T) {
 	}
 }
 
+// RFC GY P1 PR 9a: Calc is a default tool, so "-Calc" is a removal load accepts.
+func TestToolRemoval_CalcAcceptedAtLoad(t *testing.T) {
+	got, err := loadAgentTools(t, "    tools: [Read, -Calc]\n")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !slices.Contains(got, "-Calc") {
+		t.Errorf("the -Calc entry was not kept as written; got %v", got)
+	}
+}
+
+// Calc is added at resolution only: config load never writes it into an
+// agent's tools, so the list a static agent is hashed and bootstrapped from is
+// the one its yaml wrote (plus Context, as before).
+func TestCalcNotAddedToToolsAtLoad(t *testing.T) {
+	got, err := loadAgentTools(t, "    tools: [Read]\n    skills: [-*]\n")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !slices.Equal(got, []string{"Read", "Context"}) {
+		t.Errorf("tools after load = %v; want [Read Context] — Calc must not be written into a loaded list", got)
+	}
+}
+
+func TestEffectiveTools_AddsCalcUnlessRemovedOrGranted(t *testing.T) {
+	for _, tc := range []struct {
+		in, want []string
+	}{
+		{nil, []string{"Calc"}},
+		{[]string{"Read", "Context"}, []string{"Read", "Context", "Calc"}},
+		{[]string{"Read", "-Calc"}, []string{"Read", "-Calc"}},
+		{[]string{"Read", "-calc"}, []string{"Read", "-calc"}},
+		{[]string{"*", "-Calc"}, []string{"*", "-Calc"}},
+		{[]string{"*"}, []string{"*"}},
+		{[]string{"Calc", "Read"}, []string{"Calc", "Read"}},
+		{[]string{"Ca*"}, []string{"Ca*"}},
+	} {
+		if got := EffectiveTools(tc.in); !slices.Equal(got, tc.want) {
+			t.Errorf("EffectiveTools(%v) = %v; want %v", tc.in, got, tc.want)
+		}
+	}
+	in := make([]string, 1, 4)
+	in[0] = "Read"
+	got := EffectiveTools(in)
+	got[0] = "Changed"
+	if in[0] != "Read" {
+		t.Error("EffectiveTools wrote through the caller's backing array")
+	}
+	unchanged := []string{"Read", "-Calc"}
+	if got := EffectiveTools(unchanged); &got[0] != &unchanged[0] {
+		t.Error("EffectiveTools copied a list it did not change")
+	}
+}
+
+// A tool hook on Calc names a tool the agent has, though its list does not.
+func TestValidateAgentHooks_CalcHookAcceptedWithoutListingIt(t *testing.T) {
+	hook := hooks.ToolHooks{"Calc": {hooks.PhasePre: {{Ref: "calc-audit"}}}}
+	if err := ValidateAgentHooks(AgentDef{Tools: []string{"Read"}, ToolHooks: hook}); err != nil {
+		t.Errorf("a Calc hook was refused on an agent that holds Calc by default: %v", err)
+	}
+	if err := ValidateAgentHooks(AgentDef{Tools: []string{"Read", "-Calc"}, ToolHooks: hook}); err == nil {
+		t.Error("a Calc hook was accepted on an agent that removes Calc")
+	}
+}
+
 // TestHistoryScopeValidation: an out-of-set value is rejected (RFC BE closed set
 // is self/user/tenant/global + the legacy "any" alias).
 func TestHistoryScopeValidation(t *testing.T) {
