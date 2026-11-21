@@ -29,8 +29,10 @@ import (
 // model exactly as for a file in the inbox (the same plan, the agent's
 // ocr_model, the run's page and minute caps, the ledger). Markdown the
 // worker wrote into a workspace stays there: the core sends only the OCR
-// text (md_splice). Nothing sent to a worker names the provider or the
-// model, not even the provenance line written into the workspace.
+// text (md_splice). No op's arguments name the provider or the model, and
+// no provider key or credential ever reaches a worker. The provenance line
+// written into the workspace does name the provider and the model, as a
+// result in the inbox does (a model's name is not a secret).
 
 // ---- OCR ----
 
@@ -115,10 +117,9 @@ func (f *File) wsOCRPass(ctx context.Context, oc ocrCall, l *workspaceLoc, info 
 }
 
 // wsOCRSplice is the splice of a streamed extraction: the pass runs once
-// the text layer is in, and its text goes in place of its pages. withModel
-// false (the result goes into a workspace) leaves the provider and the
-// model out of the provenance line. The pass is left in *pass.
-func (f *File) wsOCRSplice(ctx context.Context, oc ocrCall, l *workspaceLoc, info workspace.FileInfo, src string, withModel bool, pass **ocrPass) extractSplice {
+// the text layer is in, and its text goes in place of its pages. The pass
+// is left in *pass.
+func (f *File) wsOCRSplice(ctx context.Context, oc ocrCall, l *workspaceLoc, info workspace.FileInfo, src string, pass **ocrPass) extractSplice {
 	return func(md string, ans workspace.ConvertExtractAnswer) (string, tools.Result, bool) {
 		p, res, ok := f.wsOCRPass(ctx, oc, l, info, ans, src)
 		if !ok || p == nil {
@@ -132,7 +133,7 @@ func (f *File) wsOCRSplice(ctx context.Context, oc ocrCall, l *workspaceLoc, inf
 		if isImageReport(ans) {
 			starts = ocrsplice.ImageStarts(md)
 		}
-		return ocrsplice.Splice(md, starts, p.text, p.header(withModel)), tools.Result{}, true
+		return ocrsplice.Splice(md, starts, p.text, p.header()), tools.Result{}, true
 	}
 }
 
@@ -158,7 +159,7 @@ func (f *File) wsOCRInto(ctx context.Context, oc ocrCall, l *workspaceLoc, info 
 	if p == nil || len(p.done) == 0 {
 		return p, tools.Result{}, true
 	}
-	in := workspace.MDSpliceInput{Header: p.header(false), PageStarts: ans.PageStarts, Image: isImageReport(ans), Pages: p.text}
+	in := workspace.MDSpliceInput{Header: p.header(), PageStarts: ans.PageStarts, Image: isImageReport(ans), Pages: p.text}
 	if _, err := l.m.SpliceMarkdown(ctx, l.o, to.name, workspace.MDSpliceArgs{Path: ans.Markdown, SHA256: ans.MarkdownSHA256}, in); err != nil {
 		// The pages were read and paid for; the Markdown keeps its text
 		// layer. done stays, so the event counts what was spent.
@@ -269,5 +270,5 @@ func (f *File) transcribeWorkspace(ctx context.Context, call sttCall, r dataRef)
 	}
 	// The recording's type as its name says: the worker typed it from its
 	// bytes, which this process never reads.
-	return f.finishSTT(ctx, call, pass, r, name, inbox.Sniff("", nil, name), to == nil, keep)
+	return f.finishSTT(ctx, call, pass, r, name, inbox.Sniff("", nil, name), keep)
 }
