@@ -1821,7 +1821,7 @@ A tenant with no topic scheme can have one proposed from its own documents. The 
 |---|---|---|
 | `report` (default) | none | counts the briefs, batches and planned calls, and estimates the characters a `generate` pass would send. Run this first |
 | `domains` | 1 | over a spread sample of briefs, three to five taxonomies worth building, each with a `name`, a one-line `domain`, the declared classes it would arrange (`projects`) and `why`. Reported only; one already in force is marked `exists` |
-| `generate` | runs × batches + 1 | builds the scheme named by `scheme` for the given `domain`. Each run meets the batches in a different order; a final review keeps the concepts that recur in at least half the runs. With `write: "propose"` (the default) it files one proposal with `@origin generated`, `@domain` and `@projects`; `write: "none"` reports the outline and files nothing |
+| `generate` | runs × batches + 2 (one run: 2) | builds the scheme named by `scheme` for the given `domain`. Each run meets the batches in a different order; with two runs or more an align request groups the runs' concepts that mean the same topic however worded, the code checks those groups and keeps the concepts a majority of the runs hold, and a final review words and merges that kept set (see the bundle README, "Recurrence"). With `write: "propose"` (the default) it files one proposal with `@origin generated`, `@domain` and `@projects`; `write: "none"` reports the outline and files nothing |
 
 One generation is not a taxonomy: on one corpus five generations agreed only partly on the top-level split (pairwise adjusted Rand index 0.44 to 0.59), which is why `generate` runs up to three times by default and keeps what recurs.
 
