@@ -494,16 +494,15 @@ func spliceOCR(md string, starts map[int]int, p *ocrPass) string {
 	if len(p.done) == 0 {
 		return md
 	}
-	return ocrsplice.Splice(md, starts, p.text, p.header(true))
+	return ocrsplice.Splice(md, starts, p.text, p.header())
 }
 
-// header is the pass's provenance comment. withModel false leaves out the
-// provider and the model: Markdown written into a workspace is on its
-// worker, which never learns which model a run's key paid for (RFC GW D34).
-func (p *ocrPass) header(withModel bool) string {
-	if !withModel {
-		return fmt.Sprintf("<!-- loom: ocr engine=%s pages=%d language=%s -->", metaValue(p.plan.Engine), len(p.done), metaValue(p.language))
-	}
+// header is the pass's provenance comment. It names the provider and the
+// model wherever the result is written, a workspace included: a model's
+// name is not a secret (the run reads it through Context op=self), and a
+// result reads the same wherever it lands (owner, 2026-11-21). What never
+// reaches a worker is a provider key or a credential.
+func (p *ocrPass) header() string {
 	return fmt.Sprintf("<!-- loom: ocr engine=%s provider=%s model=%s pages=%d language=%s -->",
 		metaValue(p.plan.Engine), metaValue(p.plan.Provider), metaValue(p.plan.Model), len(p.done), metaValue(p.language))
 }

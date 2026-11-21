@@ -228,7 +228,7 @@ func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pa
 			return f.extractWorkspaceAnswer(ctx, in, ans, out, oc, pass, r.raw)
 		}
 		w := &wsFolderOut{l: to, overwrite: in.Overwrite}
-		md, ans, res, ok = f.extractStreamed(ctx, l, info, args, r, w, f.wsOCRSplice(ctx, oc, l, info, r.raw, false, &pass))
+		md, ans, res, ok = f.extractStreamed(ctx, l, info, args, r, w, f.wsOCRSplice(ctx, oc, l, info, r.raw, &pass))
 		if !ok {
 			return res, nil
 		}
@@ -242,7 +242,7 @@ func (f *File) extractWorkspace(ctx context.Context, in fileInput, r dataRef, pa
 				"Pass to as a folder in a workspace, or ask an operator to configure the run's inbox."), nil
 		}
 		w := &wsInboxOut{ctx: ctx, origin: "extract:workspace:" + l.name}
-		md, ans, res, ok = f.extractStreamed(ctx, l, info, args, r, w, f.wsOCRSplice(ctx, oc, l, info, r.raw, true, &pass))
+		md, ans, res, ok = f.extractStreamed(ctx, l, info, args, r, w, f.wsOCRSplice(ctx, oc, l, info, r.raw, &pass))
 		if !ok {
 			return res, nil
 		}

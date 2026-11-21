@@ -117,7 +117,7 @@ func sentBytes(units []sentUnit) (n uint64) {
 // the OCR text in place of its pages: the PDF's bytes never cross to the
 // core, only the rendered pages the model reads do, and the Markdown does
 // not cross at all (the worker splices the text into it). The provenance
-// line written there names no provider and no model.
+// line written there names the provider and the model, as in the inbox.
 func TestFileExtract_AScannedPDFInAWorkspaceGetsItsOCRTextInTheWorkspace(t *testing.T) {
 	x := newWSOCRFixture(t, ocrLabels, config.OCRConfig{Language: "uk"}, config.STTConfig{})
 	pdf := scannedPDF(t, 2)
@@ -141,13 +141,10 @@ func TestFileExtract_AScannedPDFInAWorkspaceGetsItsOCRTextInTheWorkspace(t *test
 		}
 	}
 	md, ok := x.wsGet(t, "w", strings.TrimPrefix(asStr(out["ref"]), "workspace:w:"))
-	for _, want := range []string{"<!-- loom: ocr engine=vision pages=2 language=uk -->", "## Page 1\n\nocr call 1 page 1", "## Page 2\n\nocr call 2 page 1"} {
+	for _, want := range []string{"<!-- loom: ocr engine=vision provider=anthropic model=claude-x pages=2 language=uk -->", "## Page 1\n\nocr call 1 page 1", "## Page 2\n\nocr call 2 page 1"} {
 		if !ok || !strings.Contains(md, want) {
 			t.Errorf("missing %q in the workspace's Markdown:\n%s", want, md)
 		}
-	}
-	if strings.Contains(md, "claude-x") || strings.Contains(md, "anthropic") {
-		t.Errorf("the workspace's Markdown names the model:\n%s", md)
 	}
 	ocr, _ := out["ocr"].(map[string]any)
 	if ocr["status"] != "ok" || ocr["model"] != "claude-x" || out["excerpt"] != nil {
@@ -220,8 +217,8 @@ func TestFileTranscribe_ARecordingInAWorkspaceIsTranscribedFromItsConvertedAudio
 		var md string
 		if strings.HasPrefix(ref, "workspace:") {
 			md, _ = x.wsGet(t, "w", strings.TrimPrefix(ref, "workspace:w:"))
-			if strings.Contains(md, "large-v3") || strings.Contains(md, "whisper-local") {
-				t.Errorf("the workspace's transcript names the model:\n%s", md)
+			if !strings.Contains(md, "provider=whisper-local model=large-v3") {
+				t.Errorf("the workspace's transcript does not name its model:\n%s", md)
 			}
 		} else {
 			md = readFile(t, filepath.Join(x.inboxRoot(t), strings.TrimPrefix(ref, "volume:inbox:")))
@@ -280,9 +277,11 @@ func TestFileWorkspaceOCR_ThePageAndMinuteBoundsHold(t *testing.T) {
 	}
 }
 
-// No provider key, provider name, model name or credential reaches the
-// worker: every op it was asked, with its arguments, is checked, and so is
-// every file the run wrote into the workspace.
+// No provider key, provider name, model name or credential is in any op's
+// arguments to the worker. The files the run wrote into the workspace name
+// the provider and the model in their provenance line, as a result in the
+// inbox does (a model's name is not a secret), and never a key or a
+// credential.
 func TestFileWorkspaceOCR_NoProviderOrModelReachesTheWorker(t *testing.T) {
 	x := newWSOCRFixture(t, ocrLabels, config.OCRConfig{Language: "uk"}, config.STTConfig{ChunkMinutes: 1})
 	x.ctx = tools.UpdateRunPolicy(x.ctx, func(p *tools.RunPolicy) {
@@ -313,20 +312,26 @@ func TestFileWorkspaceOCR_NoProviderOrModelReachesTheWorker(t *testing.T) {
 			}
 		}
 	}
-	for _, p := range []string{"notes/call.md"} {
-		md, _ := x.wsGet(t, "w", p)
-		for _, s := range secrets[:6] {
-			if strings.Contains(md, s) {
-				t.Errorf("%s holds %q", p, s)
-			}
+	inFiles := []string{"api_key", "credential", "bearer"}
+	md, _ := x.wsGet(t, "w", "notes/call.md")
+	if !strings.Contains(md, "provider=whisper-local model=large-v3") {
+		t.Errorf("notes/call.md does not name its model:\n%s", md)
+	}
+	for _, s := range inFiles {
+		if strings.Contains(strings.ToLower(md), s) {
+			t.Errorf("notes/call.md holds %q", s)
 		}
 	}
 	ls, _ := x.ws.tool.Manager.ListFiles(context.Background(), x.owner(), "w", workspace.FListArgs{Path: "out", Recursive: true})
 	for _, e := range ls.Entries {
 		if strings.HasSuffix(e.Path, ".md") {
 			md, _ := x.wsGet(t, "w", e.Path)
-			for _, s := range secrets[:6] {
-				if strings.Contains(md, s) {
+			// The agent's ocr_model picked the model, so the line names it.
+			if !strings.Contains(md, "provider=ollama-local model=secret-ocr-alias") {
+				t.Errorf("%s does not name its model:\n%s", e.Path, md)
+			}
+			for _, s := range inFiles {
+				if strings.Contains(strings.ToLower(md), s) {
 					t.Errorf("%s holds %q", e.Path, s)
 				}
 			}
@@ -398,7 +403,7 @@ func TestFileExtract_AnImageInAWorkspaceGetsItsOCRTextAfterItsTitle(t *testing.T
 		t.Fatalf("the engine got %+v", sent)
 	}
 	md, _ := x.wsGet(t, "w", strings.TrimPrefix(asStr(out["ref"]), "workspace:w:"))
-	if !strings.Contains(md, "<!-- loom: ocr engine=vision pages=1") || !strings.Contains(md, "## Page 1\n\nocr call 1 page 1") {
+	if !strings.Contains(md, "<!-- loom: ocr engine=vision provider=anthropic model=claude-x pages=1") || !strings.Contains(md, "## Page 1\n\nocr call 1 page 1") {
 		t.Errorf("the Markdown:\n%s", md)
 	}
 }

@@ -161,7 +161,7 @@ excerpt.
   OCR model; the file itself never leaves the worker. With `to` on the same
   worker, the worker writes the OCR text into the Markdown in the workspace
   and only the text crosses; its provenance line there names the engine,
-  not the model. A DjVu book is not read by OCR here yet: its pages that
+  the provider and the model, as in the inbox. A DjVu book is not read by OCR here yet: its pages that
   would need it are listed in `ocr.pages_needing_ocr`; copy it into the
   inbox to read them. `dry_run` is refused, and a recording is not
   transcribed here (use `transcribe`).
