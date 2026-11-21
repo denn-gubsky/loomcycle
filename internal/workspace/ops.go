@@ -389,8 +389,10 @@ func (a *ConvertExtractArgs) Target() *ConvertTarget { return &a.To }
 // ConvertExtractAnswer is a convert_extract op's answer.
 type ConvertExtractAnswer struct {
 	MediaType string `json:"media_type"`
-	// Report is extract.Report as JSON.
-	Report json.RawMessage `json:"report"`
+	// Report is extract.Report as JSON; PageYields its PageYields, which
+	// that JSON leaves out and OCR needs to pick its pages.
+	Report     json.RawMessage `json:"report"`
+	PageYields json.RawMessage `json:"page_yields,omitempty"`
 	// Cut: the text stopped at MaxChars (Sampled) or MaxMarkdown.
 	Sampled bool `json:"sampled,omitempty"`
 	Cut     bool `json:"cut,omitempty"`
@@ -400,6 +402,9 @@ type ConvertExtractAnswer struct {
 	// to the workspace root.
 	Markdown string   `json:"markdown,omitempty"`
 	Images   []string `json:"images,omitempty"`
+	// MarkdownSHA256 is the Markdown file's digest as written, which an
+	// md_splice of its pages names.
+	MarkdownSHA256 string `json:"markdown_sha256,omitempty"`
 	// NotKept names images not written, at most ten.
 	NotKept []string `json:"not_kept,omitempty"`
 	Usage   *Usage   `json:"usage,omitempty"`
@@ -460,4 +465,88 @@ type ConvertUnpackAnswer struct {
 	// Result is unpack.Result as JSON, its written refs paths relative to
 	// the stage.
 	Result json.RawMessage `json:"result"`
+}
+
+// The byte halves of OCR and speech-to-text on a workspace's file (RFC GW
+// D34). A model call needs a provider key, which never reaches a worker, so
+// the worker does the byte work in its conversion child and the core calls
+// the model: convert_rasterize sends the pages OCR reads, convert_media the
+// recording as the speech-to-text WAV, and md_splice writes the core's OCR
+// text into Markdown that stays in the workspace. None of their arguments
+// names a provider, a model or a credential.
+const (
+	// OpConvertRasterize cuts pages of a PDF in the workspace out as one
+	// PDF, or renders one page to a PNG; for an image it sends the image.
+	// Its output is the bytes, at most MaxUnit of them.
+	OpConvertRasterize = "convert_rasterize"
+	// OpConvertMedia converts a recording into the PCM WAV the
+	// speech-to-text pass cuts. Its output is the WAV.
+	OpConvertMedia = "convert_media"
+	// OpMDSplice writes OCR text into a Markdown file in place of the pages
+	// it read. Its input is MDSpliceInput as JSON; its answer
+	// MDSpliceAnswer.
+	OpMDSplice = "md_splice"
+)
+
+// ClassUnitTooLarge: what convert_rasterize made is over its MaxUnit; the
+// core sends fewer pages at a time, or reports the page too large.
+const ClassUnitTooLarge = "unit_too_large"
+
+// ConvertRasterizeArgs are a convert_rasterize op's arguments.
+type ConvertRasterizeArgs struct {
+	ConvertSource
+	// Pages are the PDF's pages, counted from 1; an image is page 1.
+	Pages []int `json:"pages"`
+	// Render renders the one page in Pages to a PNG; otherwise the pages
+	// are cut out as a PDF.
+	Render bool `json:"render,omitempty"`
+	// Language is the OCR language hint the rasteriser may take (ISO 639-1
+	// codes joined by +).
+	Language string `json:"language,omitempty"`
+	// MaxUnit bounds the output, in bytes.
+	MaxUnit int64 `json:"max_unit"`
+	// To is never set: the unit always streams back.
+	To ConvertTarget `json:"-"`
+}
+
+// Target is where the result goes: always back to the core.
+func (a *ConvertRasterizeArgs) Target() *ConvertTarget { return &a.To }
+
+// ConvertMediaArgs are a convert_media op's arguments.
+type ConvertMediaArgs struct {
+	ConvertSource
+	// Language is the spoken language hint the media helper may take.
+	Language string `json:"language,omitempty"`
+	// To is never set: the WAV always streams back.
+	To ConvertTarget `json:"-"`
+}
+
+// Target is where the result goes: always back to the core.
+func (a *ConvertMediaArgs) Target() *ConvertTarget { return &a.To }
+
+// MDSpliceArgs are an md_splice op's arguments: the Markdown file, and the
+// sha256 it had when its page offsets were reported, which it must still
+// have.
+type MDSpliceArgs struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+// MDSpliceInput is an md_splice op's input.
+type MDSpliceInput struct {
+	// Header is the provenance comment written before the first page.
+	Header string `json:"header"`
+	// PageStarts is where each page's Markdown begins, in bytes; Image
+	// takes the one page of an image's Markdown to start after its title.
+	PageStarts map[int]int `json:"page_starts,omitempty"`
+	Image      bool        `json:"image,omitempty"`
+	// Pages is the OCR text of each page it replaces.
+	Pages map[int]string `json:"pages"`
+}
+
+// MDSpliceAnswer is an md_splice op's answer.
+type MDSpliceAnswer struct {
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+	Usage
 }

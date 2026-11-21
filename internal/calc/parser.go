@@ -198,7 +198,7 @@ func (p *parser) statement() (node, *Error) {
 	eq := p.next()
 	switch lhs := x.(type) {
 	case *identN:
-		if err := checkAssignable(lhs.name, lhs.p); err != nil {
+		if err := checkName(lhs.name, lhs.p); err != nil {
 			return nil, err
 		}
 		rhs, err := p.expr()
@@ -206,7 +206,7 @@ func (p *parser) statement() (node, *Error) {
 			return nil, err
 		}
 		if lam, ok := rhs.(*lambdaN); ok && callsName(lam.body, lhs.name) {
-			return nil, recursionErr(lhs.name, lhs.p)
+			return nil, selfCallErr(lhs.name, lhs.p)
 		}
 		return &assignN{p: start.pos, name: lhs.name, x: rhs}, nil
 	case *callN:
@@ -218,7 +218,7 @@ func (p *parser) statement() (node, *Error) {
 		if perr != nil {
 			return nil, perr
 		}
-		if err := checkAssignable(id.name, id.p); err != nil {
+		if err := checkName(id.name, id.p); err != nil {
 			return nil, err
 		}
 		body, err := p.expr()
@@ -226,7 +226,7 @@ func (p *parser) statement() (node, *Error) {
 			return nil, err
 		}
 		if callsName(body, id.name) {
-			return nil, recursionErr(id.name, id.p)
+			return nil, selfCallErr(id.name, id.p)
 		}
 		return &defineN{p: start.pos, name: id.name, params: params, body: body}, nil
 	}
@@ -239,6 +239,20 @@ func recursionErr(name string, pos int) *Error {
 		withHint("use a closed form, or map/reduce over a range, e.g. reduce(1:n, (a, b) -> a*b)")
 }
 
+// selfCallErr is recursionErr for a definition whose body calls its own
+// name. Inside the user's own sum, sum(...) is the user's sum (a call
+// takes the user's function first), so a model that meant the built-in
+// is told to rename. Kept apart from recursionErr, which the builtin
+// table reaches through call, so builtinIndex is not an init cycle.
+func selfCallErr(name string, pos int) *Error {
+	if _, ok := builtinIndex[name]; ok {
+		return errf(codeRecursion, pos, "%s calls itself; recursion is not supported", name).
+			withHint("your " + name + " shadows the built-in " + name +
+				" for calls, also inside its own body; give yours another name, e.g. my_" + name)
+	}
+	return recursionErr(name, pos)
+}
+
 func paramNames(args []node) ([]string, *Error) {
 	names := make([]string, 0, len(args))
 	seen := map[string]bool{}
@@ -248,7 +262,7 @@ func paramNames(args []node) ([]string, *Error) {
 			return nil, errf(codeSyntax, a.position(), "a function parameter must be a name").
 				withHint("define as `f(x, y) = x + y`; use `==` to compare")
 		}
-		if err := checkParam(id.name, id.p); err != nil {
+		if err := checkName(id.name, id.p); err != nil {
 			return nil, err
 		}
 		if seen[id.name] {
@@ -260,22 +274,14 @@ func paramNames(args []node) ([]string, *Error) {
 	return names, nil
 }
 
-// checkParam refuses keywords and constants as parameter names; a
-// parameter may shadow a builtin function name inside its own body.
-func checkParam(name string, pos int) *Error {
+// checkName refuses keywords and constants as the name of a variable, a
+// function, a parameter or a var. A built-in function name is allowed:
+// variables and functions are separate namespaces (evalCall), and the
+// constants stay reserved because a silently rebound `e` or `pi` gives
+// wrong math with no error.
+func checkName(name string, pos int) *Error {
 	if keywords[name] || isConstant(name) {
 		return errf(codeReservedName, pos, "%s is reserved and cannot be a name", name)
-	}
-	return nil
-}
-
-func checkAssignable(name string, pos int) *Error {
-	if err := checkParam(name, pos); err != nil {
-		return err
-	}
-	if _, ok := builtinIndex[name]; ok {
-		return errf(codeReservedName, pos, "%s is a built-in function and cannot be reassigned", name).
-			withHint("pick another name, e.g. my_" + name)
 	}
 	return nil
 }
@@ -594,7 +600,7 @@ func (p *parser) primary() (node, *Error) {
 			return nil, errf(codeSyntax, t.pos, "`%s` needs an operand before it", t.s)
 		}
 		if n := p.peekAt(1); n.kind == tOp && n.s == "->" {
-			if err := checkParam(t.s, t.pos); err != nil {
+			if err := checkName(t.s, t.pos); err != nil {
 				return nil, err
 			}
 			p.i += 2

@@ -21,7 +21,7 @@ corpora, those were almost never right, so they are reported and not filed.
 | `kb/search` | your `middle` tier | `Document`; tenant scope | flat search with summaries; ends with `COVERAGE: complete` or `COVERAGE: partial` |
 | `kb/survey` | `code-js` | `Document` (read), `Agent`; tenant scope | the path for overview questions. Code gathers the candidate documents (a passage search, a summary search, a mixed search, two searches per clause of the question, then one hop of relations from the 60 highest-weighted), ranks them (a search list counts 2, a top-10 hit 1 more, a relation 1) and keeps the top 120. A document of 15 or more live chunks is a large guide: its hit sections are candidates beside it, at most 6 per guide, each picked best match first (the best rank a hit in them held in any gather search), never by weight. `kb/screen` screens the candidates' ids, never their text: the documents first, in slices of 12, then the sections of documents that did not fit, at most 60 best match first, in slices of 20 beside the documents' retries (the matching sections of a fitting document, at most 60, are not screened: they are linked beside it in the answer); five rounds at a time (`max_concurrent_children: 5`), each given the exact read calls for its slice's ids (one `documents_summary` call, one `get_annotation` call per section), reading their briefs and replying with only a `FITS:` and a `SET ASIDE:` line. A round that did not complete, stopped at the output cap, or lacks either line counts as failed and nothing it said is used; its slice (and any ids a good round left out) is screened once more as two halves, never a third time. One more `kb/walker` round then composes the reply from the ids that fit, given only those ids, each fitting document's matching sections to link under it, each fitting document's stored type and status (one-word labels code reads with `documents_summary`; the stored status overrides a brief that names an older one), and the briefs themselves, which code reads (`documents_summary` in calls of at most 24 ids, one `get_annotation` per section) and hands over as data in an untrusted block of their own (`BRIEFS`, one row per id, each row at most 1,200 characters and an even share of 48,000 for the block), so the round makes no call to compose; its `MOVES:`, `MISSING:` and `COMPOSE:` lines are stripped with the accounting lines, and so is any sentence that talks about them (one naming `MOVES`, `MISSING`, `COMPOSE`, `FITS` or `SET ASIDE` in capitals outside a link, unless it cites a document), while the rest of its line stays; if nothing fits, code says so with no composing round, and if the composing round fails, code lists the fitting documents and sections as links. Code adds its own coverage line: `COVERAGE: complete` only when every candidate was sorted, no document was cut by its cap nor a section by either cap of 60, no guide had matching sections past its limit of 6, the size count did not fail, and at least as many candidates were kept as the passage search's facet window counted documents (`documents_counted`); else `COVERAGE: partial` and `UNCOVERED: <n> candidates not screened; <m> beyond the cap of 120`, with `; <j> sections beyond their cap of 60`, `; <g> matching sections beyond the per-guide limit of 6` or `; the sections were not counted` when that is why, and `; the passage search counted <c> documents and <k> were kept` when fewer were kept, or `; the searches may not have reached every matching document` when the search reported no count; sections never count toward the documents kept. The caps above are depth `standard`; [Retrieval depth](#retrieval-depth) gives the others. Ends with `SURVEY: candidates … (cut …) \| sections … (cut …, over guide limit …, document fits …) \| slices … \| failed slices … \| rounds … \| depth … \| RUNS: …`, where a run cut by the output cap shows as `<run>:completed/max_tokens`. A gather step that fails or finds nothing falls back to a plain walk, reported partial |
 | `kb/screen` | your `middle` tier | `Document` (read); tenant scope | sorts one slice of `kb/survey`'s candidates by their briefs and replies with only the `FITS:` and `SET ASIDE:` lines; a short prompt of its own, so a screening round does not carry the walker's |
-| `kb/walker` | your `middle` tier | `Document`, `Path`; tenant scope | composes `kb/survey`'s reply from the ids that fit; without a list, walks the document tree by its summaries (the fallback after a partial search) and, where the ontology declares topics, the taxonomy: up a hit's topic chain (`lineage` `with_memberships`), to a topic's other members (`search` `concept`), where the hits sit together (`place`), which topics the matches are about (`search` facets `baseline`), and what changed between two periods (`measure` `compare`) |
+| `kb/walker` | your `middle` tier | `Document`, `Path`; tenant scope | composes `kb/survey`'s reply from the ids that fit; without a list, walks the document tree by its summaries (the fallback after a partial search) and, for "what changed (is new, grew) in X" where the ontology declares topics, measures which topics' share moved between two periods (`measure` `compare`), then reads the members of the two or three that moved most (`search` `concept`) that the period's dated listing (`query_documents` `created_after`/`created_before`) holds; with no series stored, the dated listing alone |
 
 `kb/search`, `kb/survey`, `kb/screen` and `kb/walker` only read: they hold
 `Document` (and the walker `Path`) in read mode (`tool_modes`), so the runtime
@@ -731,13 +731,42 @@ nothing else and changes nothing in force.
 |---|---|---|
 | `report` (default) | none | reads the briefs and the ontology and counts what a pass would send: `batches`, `runs_used`, `calls.planned_domains`, `calls.planned_generate`, `calls.estimated_chars` (the characters a `generate` pass would send, an upper bound: every scheme in an update or a review is counted at `max_concepts` concepts of 400 characters) and `requests` (the largest single request, against the writer's limit). **Run this first** |
 | `domains` | 1 | one request over a spread sample of `batch_size` briefs: three to five taxonomies worth building, each with a `name`, a one-line `domain`, the declared classes it would arrange (`projects`; a class the ontology does not declare is dropped and counted) and `why`. One already in force is marked `exists`. **Reported only**: an operator picks which to generate |
-| `generate` | runs x batches + 1 | builds the scheme named by `scheme`, for the one-line `domain`. The briefs are cut into batches of about `batch_size`. Each run asks a generate request over its first batch and an update request per further batch, run `r` starting at batch `r`, so each run meets the corpus in a different order. `runs` is clamped to the number of batches (`runs_used`, `runs_clamped`): a further run would meet the same briefs in the same order as an earlier one, and agreeing with it would show nothing. A review request then gets every run's scheme and keeps the concepts that recur in at least half the runs, under the clearest wording, and checks that siblings do not overlap; with one run (a corpus of one batch) it only checks. With `write: "propose"` (the default) the result is filed through `propose_entity` as **one whole-scheme proposal** with `@origin generated`, `@domain` and `@projects`: inert until an operator accepts or rejects it in the Ontology page. `write: "none"` reports the outline and files nothing |
+| `generate` | runs x batches + 1 | builds the scheme named by `scheme`, for the one-line `domain`. The briefs are cut into batches of about `batch_size`. Each run asks a generate request over its first batch and an update request per further batch, run `r` starting at batch `r`, so each run meets the corpus in a different order. `runs` is clamped to the number of batches (`runs_used`, `runs_clamped`): a further run would meet the same briefs in the same order as an earlier one, and agreeing with it would show nothing. The code then keeps the concepts a majority of the runs hold (see **Recurrence** below; with one run, a corpus of one batch, all of them), and a review request names each kept concept by one of its wordings, merges overlapping siblings and checks the shape; whatever the review adds is dropped. With `write: "propose"` (the default) the result is filed through `propose_entity` as **one whole-scheme proposal** with `@origin generated`, `@domain` and `@projects`: inert until an operator accepts or rejects it in the Ontology page. `write: "none"` reports the outline and files nothing |
 
 One generation is not a taxonomy: measured on one corpus, five generations
 agreed only partly on the top-level split (pairwise adjusted Rand index 0.44
 to 0.59). That is why `generate` runs up to three times by default, one run
 per batch, and keeps what recurs. A corpus of one batch (up to `batch_size`
 briefs) gets one generation.
+
+**Recurrence.** Which concepts recur is counted in code, not asked of the
+model: asked to keep what recurs, the review unioned the runs (on one corpus,
+runs of 66 and 91 concepts came back as 102, overlaps kept). A concept is
+matched across runs by its own key, wherever a run puts it: the name's tag
+segment, each word without its punctuation and made singular, `and`, `of`,
+`the` and the like left out and the rest sorted (`Memory recall` and
+`memory-recall`, `hooks and lifecycle events` and `lifecycle events and
+hooks`, `search (web)` and `web search`, `movies` and `movie` are one; `news`
+and `new`, `notes` and `not` are not). Only plain ASCII words are made
+singular; a word in another script (Cyrillic, say) matches when it is
+written the same, case aside. A concept is kept when a **majority** of the
+runs that produced a scheme hold it: two of two, two of three, three of four
+or five. "At least half" would keep one run of two, the union again. A run
+that produced no scheme lowers the majority (two of three runs left need
+two; one left keeps everything), and `runs_failed` says so. The kept tree
+puts each concept under its nearest kept ancestor in the first run that
+names it (its parent when kept, else the next one up, else the top level),
+never deeper than `depth`. The review is shown only the kept set (`KEEP`,
+each concept with every wording the runs used) and its reply is held to it
+before any cap is applied: a concept whose key is kept is that concept, under
+whichever of its names the review chose; one whose key is not kept is dropped
+and counted (its kept children take its place); each key is kept once. So the
+scheme filed is never larger than the kept set, and a concept the review
+added cannot push a kept one past the sibling cap. The report's `recurrence`
+gives `need` (runs a concept must be in), `runs_with_scheme`, `runs_failed`,
+`per_run` (`[{run, concepts}]` for each run that produced a scheme), `kept`,
+`not_recurring`, `added_by_review` and `kept_missing` (kept concepts the
+review's scheme left out, for example by merging two under a new name).
 
 Other input: `projects` (class names: only documents of those classes and
 their subclasses are read, and the scheme's `@projects` is set to them; an
@@ -778,12 +807,12 @@ estimated_chars}}`, plus in `domains` and `generate`: `model_failures`,
 `parse_errors`, `cut` (replies stopped at the output cap), `dropped`, `usage`
 (tokens summed over the writer's runs), `models`, `runs` (the writer's run
 ids), and `domains`, or `candidates` (per run: its concepts and top-level
-names), `scheme` and `proposal: {filed, chunk_id, concepts}` (or `refusal`).
+names), `recurrence`, `scheme` and `proposal: {filed, chunk_id, concepts}` (or `refusal`).
 `status` is `complete`, `refused`, `unreadable` (a read failed, e.g. no tenant
 grant), `empty` (no briefs), `no_ontology`, `unknown_class`, `scheme_exists`,
 `scheme_proposed`, `budget_refused`, `input_too_large`, `budget_stopped`,
 `provider_unavailable`, `domains_failed`, `generate_failed` (no run produced a
-scheme), `review_failed`, `filing_refused` or `failed`. `proposal_check:
+scheme), `nothing_recurs` (no concept is held by a majority of the runs; no review is asked), `review_failed`, `filing_refused` or `failed`. `proposal_check:
 partial` says the ontology held more proposed or rejected chunks than one read
 returns (1000), so a proposal of the same name may not have been found; filing
 would then be refused at the end.

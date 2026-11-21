@@ -71,19 +71,20 @@ func handleCrypto(ctx context.Context, env *handlerEnv, args json.RawMessage) (*
 	res, err := env.connector.Crypto(mcpPrincipalCtx(ctx), args)
 	if err != nil {
 		if errors.Is(err, runner.ErrRateLimited) {
-			return cryptoRateSpent(err), nil
+			return runRateSpent("crypto", err), nil
 		}
 		return toolErrFrom("crypto", err), nil
 	}
 	return toolResultFromConnector(res), nil
 }
 
-// cryptoRateSpent renders a refused rate. The refusal's own text speaks of
-// starting runs, which is what the rate is named for; a crypto caller started
-// none, so the text says which rate it spent. The classification is the
-// shared one (retryable), with the wait the refusal carries as the hint.
-func cryptoRateSpent(err error) *loommcp.CallToolResult {
-	msg := "crypto: this token's rate is spent (each call takes one from the token's run rate)"
+// runRateSpent renders a refused rate for a run-less tool that takes one unit
+// of the token's run rate per call (crypto, calc). The refusal's own text
+// speaks of starting runs, which is what the rate is named for; such a caller
+// started none, so the text says which rate it spent. The classification is
+// the shared one (retryable), with the wait the refusal carries as the hint.
+func runRateSpent(tool string, err error) *loommcp.CallToolResult {
+	msg := tool + ": this token's rate is spent (each call takes one from the token's run rate)"
 	var rd interface{ RetryDelay() time.Duration }
 	var wait time.Duration
 	if errors.As(err, &rd) {

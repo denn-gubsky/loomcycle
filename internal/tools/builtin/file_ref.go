@@ -28,11 +28,11 @@ import (
 // the call ends. Each implementation streams: neither a volume's nor a
 // workspace's file is ever held whole in memory.
 //
-// extract and render convert a workspace's file on its worker
-// (file_workspace_convert.go, RFC GW D34). The ops that still need a file on
-// the core's disk (transcribe, unpack) reach the inbox and volumes through
-// openRef and refuse a workspace reference (notOnWorkspace) until their
-// conversions move onto the workspace's worker too.
+// extract, transcribe and render convert a workspace's file on its worker
+// (file_workspace_convert.go, file_workspace_ocr.go, RFC GW D34). The ops
+// that still need a file on the core's disk (unpack) reach the inbox and
+// volumes through openRef and refuse a workspace reference (notOnWorkspace)
+// until their conversions move onto the workspace's worker too.
 
 // locEntry is one entry at or under a place.
 type locEntry struct {

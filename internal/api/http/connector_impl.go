@@ -1143,6 +1143,19 @@ func (s *Server) Identity(ctx context.Context, input json.RawMessage) (connector
 	return s.dispatchBuiltin(ctx, "Identity", input)
 }
 
+// Calc evaluates one expression with the Calc tool, outside any run. The tool
+// is pure, so nothing about the caller reaches it; the caller's principal
+// only pays: one unit of the token's run rate per call, as Crypto takes, so
+// a client in a loop is bounded the same way on every run-less tool.
+func (s *Server) Calc(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if p, ok := auth.PrincipalFromContext(ctx); ok {
+		if err := s.AdmitRunRate(ctx, p); err != nil {
+			return connector.ToolResult{}, err
+		}
+	}
+	return s.dispatchBuiltin(ctx, "Calc", input)
+}
+
 // MCPServerDef dispatches to the v0.9.x dynamic MCP-server-registration
 // substrate tool. The tool is NOT in the per-agent dispatcher (operator-
 // admin-only) — dispatchBuiltinDirect looks it up via the dedicated
