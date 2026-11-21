@@ -111,8 +111,16 @@ func (Text) Extract(ctx context.Context, r io.ReaderAt, size int64, sink Sink, o
 		return rep, err
 	}
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
-	if !utf8.Valid(data) {
-		return rep, refusedf("the file is not UTF-8 text")
+	if dec, name, ok := utf16BOM(data); ok {
+		data = dec
+		rep.note("the file is %s", name)
+	} else if !utf8.Valid(data) {
+		if binaryText(data) {
+			return rep, refusedf("the file is not text")
+		}
+		var name string
+		data, name = decodeUnmarked(data)
+		rep.note("the file names no encoding and is not UTF-8: it was read as %s", name)
 	}
 	text := normalizeNewlines(string(data))
 	w := newWriter(ctx, sink, opts)

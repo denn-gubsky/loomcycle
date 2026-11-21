@@ -229,13 +229,19 @@ func (c *cancelAfterReader) ReadAt(p []byte, off int64) (int, error) {
 
 func TestHTML_ParseStopsAtTheDeadline(t *testing.T) {
 	// Few elements (the page walk would never reach its context check) and
-	// many bytes: whichever pass is reading when the deadline comes, the count
-	// before the parse or the parse itself, stops within a read.
+	// many bytes. The page is read once, to be decoded, and that read stops
+	// within a read when the deadline comes; the count and the parse work on
+	// the decoded copy and stop at the deadline too.
 	page := []byte("<p>" + strings.Repeat("word ", (6<<20)/5) + "</p>")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := parseHTMLBytes(ctx, page); !errors.Is(err, context.Canceled) {
+		t.Fatalf("parse after the deadline: err = %v, want the context's error", err)
+	}
 	for _, c := range []struct {
 		name  string
 		after int64
-	}{{"while counting", 64 << 10}, {"while parsing", int64(len(page)) + 64<<10}} {
+	}{{"while reading", 64 << 10}} {
 		t.Run(c.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

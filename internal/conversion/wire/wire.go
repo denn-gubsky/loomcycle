@@ -9,6 +9,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/conversion/workerpb"
 	"github.com/denn-gubsky/loomcycle/internal/convert"
@@ -190,10 +191,10 @@ const (
 // ReportToWire is the report a worker sends.
 func ReportToWire(r extract.Report) *workerpb.Report {
 	w := &workerpb.Report{
-		Format: r.Format, Chars: int64(r.Chars), Pages: I32(r.Pages), Sheets: I32(r.Sheets),
+		Format: UTF8Text(r.Format), Chars: int64(r.Chars), Pages: I32(r.Pages), Sheets: I32(r.Sheets),
 		Slides: I32(r.Slides), Tables: I32(r.Tables), Images: I32(r.Images),
 		YieldCharsPerPage: r.YieldCharsPerPage, InferredHeadings: I32(r.InferredHeadings),
-		DroppedDecorativeImages: I32(r.DroppedDecorativeImages), Notes: r.Notes,
+		DroppedDecorativeImages: I32(r.DroppedDecorativeImages), Notes: utf8Texts(r.Notes),
 	}
 	for _, y := range r.PageYields {
 		w.PageYields = append(w.PageYields, &workerpb.PageYield{Page: I32(y.Page), Chars: I32(y.Chars), Unread: y.Unread})
@@ -208,12 +209,13 @@ func metadataToWire(m *extract.BookMetadata) *workerpb.BookMetadata {
 		return nil
 	}
 	w := &workerpb.BookMetadata{
-		Title: m.Title, Authors: m.Authors, Translators: m.Translators, Language: m.Language, Date: m.Date,
-		Year: I32(m.Year), Publisher: m.Publisher, Series: m.Series, SeriesIndex: m.SeriesIndex,
-		Subjects: m.Subjects, Description: m.Description, SourceFormat: m.SourceFormat,
+		Title: UTF8Text(m.Title), Authors: utf8Texts(m.Authors), Translators: utf8Texts(m.Translators),
+		Language: UTF8Text(m.Language), Date: UTF8Text(m.Date), Year: I32(m.Year), Publisher: UTF8Text(m.Publisher),
+		Series: UTF8Text(m.Series), SeriesIndex: m.SeriesIndex, Subjects: utf8Texts(m.Subjects),
+		Description: UTF8Text(m.Description), SourceFormat: UTF8Text(m.SourceFormat),
 	}
 	for _, id := range m.Identifiers {
-		w.Identifiers = append(w.Identifiers, &workerpb.BookIdentifier{Scheme: id.Scheme, Value: id.Value})
+		w.Identifiers = append(w.Identifiers, &workerpb.BookIdentifier{Scheme: UTF8Text(id.Scheme), Value: UTF8Text(id.Value)})
 	}
 	return w
 }
@@ -401,4 +403,29 @@ func I32(n int) int32 {
 		return math.MinInt32
 	}
 	return int32(n)
+}
+
+// UTF8Text is s with any byte that is not UTF-8 replaced. A protobuf
+// string must be UTF-8: a frame holding anything else fails to marshal,
+// its stream ends, and the dispatcher reads that as the job killing its
+// worker, quarantining a readable file. Text an extractor produced is
+// passed through this before it is sent.
+func UTF8Text(s string) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	return strings.ToValidUTF8(s, "\uFFFD")
+}
+
+func utf8Texts(ss []string) []string {
+	for i, s := range ss {
+		if !utf8.ValidString(s) {
+			out := append([]string(nil), ss...)
+			for j := i; j < len(out); j++ {
+				out[j] = UTF8Text(out[j])
+			}
+			return out
+		}
+	}
+	return ss
 }
