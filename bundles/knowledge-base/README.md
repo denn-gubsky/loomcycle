@@ -731,7 +731,7 @@ nothing else and changes nothing in force.
 |---|---|---|
 | `report` (default) | none | reads the briefs and the ontology and counts what a pass would send: `batches`, `runs_used`, `calls.planned_domains`, `calls.planned_generate`, `calls.estimated_chars` (the characters a `generate` pass would send, an upper bound: every scheme in an update, the align request or the review is counted at `max_concepts` concepts of 400 characters) and `requests` (the largest single request, against the writer's limit). **Run this first** |
 | `domains` | 1 | one request over a spread sample of `batch_size` briefs: three to five taxonomies worth building, each with a `name`, a one-line `domain`, the declared classes it would arrange (`projects`; a class the ontology does not declare is dropped and counted) and `why`. One already in force is marked `exists`. **Reported only**: an operator picks which to generate |
-| `generate` | runs x batches + 2 (one run: 2) | builds the scheme named by `scheme`, for the one-line `domain`. The briefs are cut into batches of about `batch_size`. Each run asks a generate request over its first batch and an update request per further batch, run `r` starting at batch `r`, so each run meets the corpus in a different order. `runs` is clamped to the number of batches (`runs_used`, `runs_clamped`): a further run would meet the same briefs in the same order as an earlier one, and agreeing with it would show nothing. With two runs or more, an align request groups the runs' concepts that mean the same topic, however worded; the code checks the groups and keeps those a majority of the runs hold (see **Recurrence** below; with one run, a corpus of one batch, all of them, and no align request), and a review request names each kept concept by one of its wordings, merges overlapping siblings and checks the shape; whatever the review adds is dropped. With `write: "propose"` (the default) the result is filed through `propose_entity` as **one whole-scheme proposal** with `@origin generated`, `@domain` and `@projects`: inert until an operator accepts or rejects it in the Ontology page. `write: "none"` reports the outline and files nothing |
+| `generate` | `runs_used` x batches + 1 (review) + 1 (align, when `runs_used` is 2 or more; not made when fewer than two runs produce a scheme) | builds the scheme named by `scheme`, for the one-line `domain`. The briefs are cut into batches of about `batch_size`. Each run asks a generate request over its first batch and an update request per further batch, run `r` starting at batch `r`, so each run meets the corpus in a different order. `runs` is clamped to the number of batches (`runs_used`, `runs_clamped`): a further run would meet the same briefs in the same order as an earlier one, and agreeing with it would show nothing. With two runs or more, an align request groups the runs' concepts that mean the same topic, however worded; the code checks the groups and keeps those a majority of the runs hold (see **Recurrence** below; with one run (`runs: 1`, or a corpus of one batch) all of them, and no align request), and a review request names each kept concept by one of its wordings, merges overlapping siblings and checks the shape; whatever the review adds is dropped. With `write: "propose"` (the default) the result is filed through `propose_entity` as **one whole-scheme proposal** with `@origin generated`, `@domain` and `@projects`: inert until an operator accepts or rejects it in the Ontology page. `write: "none"` reports the outline and files nothing |
 
 One generation is not a taxonomy: measured on one corpus, five generations
 agreed only partly on the top-level split (pairwise adjusted Rand index 0.44
@@ -761,7 +761,9 @@ the model cannot add a topic; an entry with no `member_ids` list is
 runs among its members and is kept when that is a majority (`below_need`
 otherwise: a group of one run's concepts never recurs). Every concept no kept
 group holds is then matched by its own key as below, so concepts the runs
-worded alike stay matched though the align reply left them out. When the
+worded alike stay matched though the align reply left them out; one whose
+key is already a wording of a kept group joins that group (and adds its
+runs) rather than standing beside it under the same wording. When the
 align call fails, its reply holds no `groups` list, or its request would not
 fit the writer's window (it is measured before it is sent, not refused), the
 pass falls back to matching every concept by key and reports `align_failed`.
@@ -796,8 +798,9 @@ gives `need` (runs a concept must be in), `runs_with_scheme`, `runs_failed`,
 out, for example by merging two under a new name), `align` (`done`,
 `failed`, `too_large` or `one_run`), `align_failed`, `aligned_groups` (groups
 that passed the checks), `kept_groups` (of those, the ones kept),
-`kept_by_key` (concepts kept by key matching) and `dropped_by_check` (the
-counts above).
+`kept_by_key` (concepts kept by key matching), `merged_into_aligned` (key
+matches that joined a kept group of the same wording) and
+`dropped_by_check` (the counts above).
 
 Other input: `projects` (class names: only documents of those classes and
 their subclasses are read, and the scheme's `@projects` is set to them; an
@@ -890,6 +893,7 @@ it judges, capped by `max_verdict_calls`. `kb/annotator` spends one
 capped by `max_calls`; a first pass over a corpus is about one call per
 annotated section plus one per document, and `write: report` prints the
 estimate before you spend it. `kb/taxonomist` spends one `kb/taxonomy-writer`
-call (tier `middle`) per request: one in `domains`, `runs` x batches + 1 in
-`generate`, plus one align request when there are two runs or more (6 for 379 briefs at the defaults: two batches, so two runs), capped by `max_calls`; `report`
+call (tier `middle`) per request: one in `domains`, `runs_used` x batches + 1
+(review) + 1 (align, when `runs_used` is 2 or more) in `generate` (6 for 379
+briefs at the defaults: two batches, so two runs), capped by `max_calls`; `report`
 prints the plan first. Nothing is scheduled unless you add a schedule.
