@@ -126,7 +126,8 @@ def to_number(raw):
     when raw holds no number."""
     if raw is None:
         return None
-    s = GROUPED.sub(lambda m: m.group(1).replace(",", ""), raw)
+    # Currency symbols go first, so "-$4.50" keeps its sign.
+    s = GROUPED.sub(lambda m: m.group(1).replace(",", ""), re.sub(r"[$€£¥]", "", raw))
     m = NUMBER.search(s)
     if not m:
         return None
@@ -147,8 +148,8 @@ def is_correct(task, raw):
         return False
     want = task["answer"]
     if isinstance(want, bool):
-        word = raw.strip().lower()
-        return word in (("true", "yes") if want else ("false", "no"))
+        first = re.match(r"[a-z]+", raw.strip().lower())  # "Yes, it is prime" -> yes
+        return bool(first) and first.group(0) in (("true", "yes") if want else ("false", "no"))
     if isinstance(want, str) and ISO_DATE.fullmatch(want):
         m = ISO_DATE.search(raw)
         return bool(m) and m.group(1) == want

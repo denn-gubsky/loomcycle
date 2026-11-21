@@ -189,7 +189,8 @@ class AnswerTest(unittest.TestCase):
     def test_to_number_reads_money_percent_grouping_and_fractions(self):
         cases = {"$1,234.50": Fraction("1234.5"), "15.5%": Fraction("15.5"), "11/21": Fraction(11, 21),
                  "-15959.95": Fraction("-15959.95"), "about 3 km": Fraction(3), "1e-3": Fraction(1, 1000),
-                 "2,432,902,008,176,640,000": Fraction(2432902008176640000), ".5": Fraction(1, 2)}
+                 "2,432,902,008,176,640,000": Fraction(2432902008176640000), ".5": Fraction(1, 2),
+                 "-$1,234.50": Fraction("-1234.5"), "€ 12.40": Fraction("12.4")}
         for raw, want in cases.items():
             self.assertEqual(drive.to_number(raw), want, raw)
         self.assertIsNone(drive.to_number("none"))
@@ -217,7 +218,9 @@ class AnswerTest(unittest.TestCase):
         self.assertTrue(drive.is_correct({"answer": "Sunday", "tolerance": "exact"}, "sunday."))
         self.assertFalse(drive.is_correct({"answer": "Sunday", "tolerance": "exact"}, "Monday"))
         self.assertTrue(drive.is_correct({"answer": True, "tolerance": "exact"}, "Yes"))
+        self.assertTrue(drive.is_correct({"answer": True, "tolerance": "exact"}, "Yes, it is prime"))
         self.assertFalse(drive.is_correct({"answer": True, "tolerance": "exact"}, "false"))
+        self.assertFalse(drive.is_correct({"answer": True, "tolerance": "exact"}, "not prime"))
 
 
 def sse(*events):
