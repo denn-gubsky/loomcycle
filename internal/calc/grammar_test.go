@@ -162,7 +162,6 @@ func TestGrammar_LambdasAndDefinitions(t *testing.T) {
 		t.Errorf("definition result = %q (%s)", r.Text, r.Type)
 	}
 	mustFail(t, "f(x, y) = x; f(1)", codeArity)
-	mustFail(t, "sqrt = 3", codeReservedName)
 	mustFail(t, "pi = 3", codeReservedName)
 	mustFail(t, "f(2) = 3", codeSyntax)
 	mustFail(t, "f(x, x) = x", codeSyntax)
@@ -280,4 +279,70 @@ func TestGrammar_StringsAndEscapes(t *testing.T) {
 	mustFail(t, "1 $ 2", codeSyntax)
 	mustFail(t, "", codeEmptyStatement)
 	mustFail(t, " ; \n ", codeEmptyStatement)
+}
+
+// Variables and functions live in separate namespaces: a name followed by
+// `(` is a call, which takes the user's function of that name if there is
+// one and the built-in otherwise; a bare name is the user's variable.
+func TestGrammar_VariableNamedLikeABuiltinKeepsTheBuiltinCallable(t *testing.T) {
+	checkTexts(t, []textCase{
+		{"sum = 10; sum", "10"},
+		{"count = 3; count + 1", "4"},
+		{"min = 2; max = 5; max - min", "3"},
+		{"log = 7; log * 2", "14"},
+		{"sum = 10; sum([1, 2]) + sum", "13"},
+		{"count = 3; count([1, 2, 3, 4], x -> x > 1) * count", "9"},
+		{"min = 2; min([5, min, 9])", "2"},
+		{"log = 100; log(log, 10)", "2"},
+		{"sum = [1, 2, 3]; sum(sum)", "6"},
+		{"rate = 0.05; rate * 2", "0.1"},
+		// A parameter named like a built-in does not hide the built-in call.
+		{"f(sum) = sum([sum, 1]); f(4)", "5"},
+	})
+	// A name that is both a variable and a built-in is suggested once.
+	if e := mustFail(t, "sum = 1; sun", codeUnknownName); strings.Count(e.Hint, "sum") != 1 {
+		t.Errorf("hint = %q, want one sum", e.Hint)
+	}
+	r := mustEval(t, "sum = 10; total = sum([1, 2]) + sum")
+	if _, ok := r.Assigned["sum"]; !ok || len(r.Assigned) != 2 {
+		t.Errorf("assigned = %v, want sum and total", r.Assigned)
+	}
+}
+
+func TestGrammar_UserFunctionShadowsTheBuiltinForCalls(t *testing.T) {
+	checkTexts(t, []textCase{
+		{"sum(a, b) = a * b; sum(3, 4)", "12"},
+		{"count = x -> x + 100; count(1)", "101"},
+		{"log(x) = x - 1; map([1, 2], log)", "[0, 1]"},
+		// Defined after use in the same expression: the call before the
+		// definition took the built-in, the one after takes the user's.
+		{"a = sum([1, 2]); sum(x) = 0; a + sum(5)", "3"},
+	})
+}
+
+func TestGrammar_UserFunctionNamedLikeABuiltinCallingThatNameIsRecursion(t *testing.T) {
+	for _, expr := range []string{
+		"sum(x) = sum(x) * 2",
+		"sum = x -> sum(x) * 2",
+	} {
+		e := mustFail(t, expr, codeRecursion)
+		if !strings.Contains(e.Hint, "built-in sum") {
+			t.Errorf("%q: hint = %q, want it to name the shadowed built-in", expr, e.Hint)
+		}
+	}
+}
+
+func TestGrammar_KeywordsAndConstantsStayReserved(t *testing.T) {
+	for _, name := range []string{"if", "pi", "e", "tau", "phi"} {
+		for _, expr := range []string{name + " = 3", name + "(x) = x", "f(" + name + ") = 1"} {
+			mustFail(t, expr, codeReservedName)
+		}
+	}
+	// The other keywords are operators or literals: they cannot even parse
+	// as a name, so any refusal is right; an evaluation is not.
+	for _, name := range []string{"true", "false", "and", "or", "not"} {
+		if _, err := evalText(t, name+" = 3"); err == nil {
+			t.Errorf("Eval(%q) succeeded, want a refusal", name+" = 3")
+		}
+	}
 }

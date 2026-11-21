@@ -238,7 +238,8 @@ func TestNumbers_BadVarsAreRefused(t *testing.T) {
 		{map[string]string{"x": `1 2`}, codeBadVar},
 		{map[string]string{"1x": `1`}, codeBadVar},
 		{map[string]string{"pi": `1`}, codeReservedName},
-		{map[string]string{"sqrt": `1`}, codeReservedName},
+		{map[string]string{"e": `1`}, codeReservedName},
+		{map[string]string{"if": `1`}, codeReservedName},
 		{map[string]string{"x": strings.Repeat("[", 40) + strings.Repeat("]", 40)}, codeBadVar},
 		{map[string]string{"x": `1e9999999`}, codeTooLarge},
 	}
@@ -251,6 +252,20 @@ func TestNumbers_BadVarsAreRefused(t *testing.T) {
 		if err == nil || err.Code != string(c.code) {
 			t.Errorf("vars %v: err = %v, want %s", c.vars, err, c.code)
 		}
+	}
+}
+
+func TestNumbers_VarNamedLikeABuiltinIsAVariable(t *testing.T) {
+	req := Request{
+		Expr: "sum(sum) / count + max",
+		Vars: rawVars(t, map[string]any{"sum": []int{1, 2, 3}, "count": 2, "max": 1}),
+	}
+	r, err := Eval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if r.Text != "4" {
+		t.Errorf("text = %q, want 4", r.Text)
 	}
 }
 
