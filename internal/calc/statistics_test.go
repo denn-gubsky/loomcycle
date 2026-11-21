@@ -3,6 +3,7 @@ package calc
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // checkExact evaluates each expression and asserts its text and that the
@@ -149,11 +150,18 @@ func TestStatistics_RefusesEmptyMismatchedAndDegenerateInput(t *testing.T) {
 // cannot buy unbounded sort work: 100,000 values cost 100,000 steps to
 // build but 1.7 million to sort, and are refused at step_limit before the
 // sort runs.
+//
+// It runs under a minute-long wall, not the 2 s one: under -race on a loaded
+// machine building the range alone can pass 2 s, and the call then ends in
+// time_limit before the charge is reached. The step limit is what is tested.
 func TestStatistics_SortChargesKeepLargeInputsInsideTheStepLimit(t *testing.T) {
 	for _, expr := range []string{
 		"median(1:100000)", "rank(1:100000)", "mode(1:100000)", "percentile(1:100000, 50)",
 	} {
-		mustFail(t, expr, codeStepLimit)
+		_, err := evalWithin(context.Background(), Request{Expr: expr}, time.Minute)
+		if err == nil || err.Code != string(codeStepLimit) {
+			t.Errorf("%s: err = %v, want step_limit", expr, err)
+		}
 	}
 }
 
