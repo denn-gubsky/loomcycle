@@ -154,6 +154,15 @@ Fuel economy from miles per gallon to litres per 100 km:
 
 Result: 7.84
 
+A variable may share a function's name — `units` here is a count, and
+`units(...)` still lists units:
+
+```json
+{"expr": "units = 3; [units * convert(1, \"lb\", \"kg\"), len(units(\"temperature\"))]"}
+```
+
+Result: [1.36077711, 4]
+
 A force is not a mass:
 
 ```json
