@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -56,5 +57,26 @@ func handleCalc(ctx context.Context, env *handlerEnv, args json.RawMessage) (*lo
 		}
 		return toolErrFrom("calc", err), nil
 	}
-	return toolResultFromConnector(res), nil
+	return toolResultFromConnector(calcRefusalForMCP(res)), nil
+}
+
+// calcRefusalHelpInRun is the help pointer a Calc refusal names as its next
+// step when the error carries no hint of its own. Like calcHelpInRun it names
+// the in-run Context tool, which an MCP client does not have;
+// TestCalcMCP_RefusalPointsAtTheContextTool fails if the builtin's wording
+// moves and this no longer matches.
+const calcRefusalHelpInRun = "Read Context op=help topic=Calc/errors"
+
+// calcRefusalForMCP rewrites a refusal's help pointer for this transport, as
+// calcDescription rewrites the description's. The run's own text is left as
+// the builtin wrote it; only the copy sent over MCP changes.
+func calcRefusalForMCP(res connector.ToolResult) connector.ToolResult {
+	if res.ErrorInfo == nil || !strings.Contains(res.ErrorInfo.Description, calcRefusalHelpInRun) {
+		return res
+	}
+	info := *res.ErrorInfo
+	info.Description = strings.Replace(info.Description, calcRefusalHelpInRun,
+		"Call the `context` tool with {\"op\": \"help\", \"topic\": \"Calc/errors\"}", 1)
+	res.ErrorInfo = &info
+	return res
 }

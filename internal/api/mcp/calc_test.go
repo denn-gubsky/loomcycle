@@ -125,3 +125,44 @@ func TestCalcMCP_DescriptionPointsAtTheContextTool(t *testing.T) {
 		t.Errorf("the calc description does not point at the context meta-tool: %s", desc)
 	}
 }
+
+// TestCalcMCP_RefusalPointsAtTheContextTool — a refusal with no hint of its
+// own names `Context op=help topic=Calc/errors` as its next step; over MCP it
+// must name the `context` meta-tool. The refusal comes from the real builtin,
+// so this fails if its wording moves away from calcRefusalHelpInRun.
+func TestCalcMCP_RefusalPointsAtTheContextTool(t *testing.T) {
+	var refusal connector.ToolResult
+	for _, expr := range []string{"", "1/0", "2x", "nosuchfunction(1)", "1+"} {
+		in, _ := json.Marshal(map[string]string{"expr": expr})
+		r, _ := (&builtin.Calc{}).Execute(context.Background(), in)
+		if r.IsError && r.Error != nil && strings.Contains(r.Error.Description, calcRefusalHelpInRun) {
+			refusal = connector.ToolResult{Text: r.Text, IsError: true, ErrorInfo: r.Error}
+			break
+		}
+	}
+	if refusal.ErrorInfo == nil {
+		t.Fatalf("no Calc refusal names %q any more; update calcRefusalHelpInRun", calcRefusalHelpInRun)
+	}
+	inRun := refusal.ErrorInfo.Description
+	cc := &calcCapturingConnector{mockConnector: &mockConnector{}, result: refusal}
+	srv := New(Config{Connector: cc, Logger: discardLogger()})
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "bob"})
+	resps, _ := driveServerCtx(t, srv, ctx, calcCallFrame)
+	if len(resps) != 1 || resps[0].Error != nil {
+		t.Fatalf("responses = %+v, want one tool result", resps)
+	}
+	var res loommcp.CallToolResult
+	if err := json.Unmarshal(resps[0].Result, &res); err != nil {
+		t.Fatal(err)
+	}
+	var se loommcp.StructuredError
+	if err := json.Unmarshal(res.StructuredContent, &se); err != nil {
+		t.Fatalf("structured content %s: %v", res.StructuredContent, err)
+	}
+	if strings.Contains(se.Description, "Context op=help") || !strings.Contains(se.Description, "the `context` tool with {\"op\": \"help\", \"topic\": \"Calc/errors\"}") {
+		t.Errorf("the refusal's next step over MCP is %q; want it to name the context meta-tool", se.Description)
+	}
+	if refusal.ErrorInfo.Description != inRun {
+		t.Errorf("the rewrite changed the connector's own result: %q", refusal.ErrorInfo.Description)
+	}
+}
