@@ -26,8 +26,10 @@ again (with `to`, copied there).
 
 - `document` — the id of the document to render.
 - `doc_path` — or the document's name in the Path tree, e.g. `/board/2026/minutes`.
-- `path` — or a Markdown or HTML file in the inbox or a volume; its first `#`
-  heading is the title. An HTML file is read as `extract` reads it: its text,
+- `path` — or a Markdown or HTML file in the inbox, a volume or a workspace;
+  its first `#` heading is the title. An HTML file in a workspace is read on
+  the workspace's worker, so it never leaves it; only its Markdown comes
+  back to be typeset. An HTML file is read as `extract` reads it: its text,
   headings, lists and tables, with an `<img>` kept as a link to its source.
   A picture a Markdown file names is embedded only when `extract` wrote it
   (`volume:inbox:extracted/…`), as `import` follows them; a path it names to
@@ -42,8 +44,13 @@ again (with `to`, copied there).
   `epub` (an e-book: a page per top-level section, a contents list, pictures
   inside it), `html` (one self-contained page, pictures inside it) or `md`
   (clean Markdown, its pictures as files in a folder beside it).
-- `to` — a file in one of your read-write volumes. Its folder must exist.
-  Default: `volume:inbox:rendered/<title>.<format>`.
+- `to` — a file in one of your read-write volumes (its folder must exist),
+  or in one of your workspaces (`workspace:<name>:<path>`; a path ending in
+  `/`, or naming a folder, takes `<title>.<format>` inside it; it needs your
+  `workspace` grant's `write`, and the `Workspace` hooks judge the final
+  path). A Markdown render's pictures go in a folder beside it. Default:
+  `volume:inbox:rendered/<title>.<format>`. A render into a workspace is never
+  reused from an earlier one.
 - `overwrite` — replace a file already at `to`. Default false.
 - `toc` — add a table of contents after the title.
 - `title_page` — put the title on a page of its own.
@@ -80,6 +87,9 @@ also returns `image_refs`, the pictures written beside it.
 - The document or chunk is not there, or not readable to you.
 - `to` names the inbox, a read-only volume or one you are not bound to, or a
   file that exists without `overwrite`.
+- An HTML `path` in a workspace: `conversion_helper_missing` (the workspace's
+  worker cannot convert it, the helper named), or the file crashed the
+  workspace's converter and is refused in that workspace for a while.
 - `format` is `pdf` and the server has no typesetter (Typst) where it
   converts files: render as `docx`, or ask an operator.
 - The file would pass 64 MiB, or a PDF 2000 pages: render a part of the

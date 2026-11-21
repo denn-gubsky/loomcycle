@@ -70,8 +70,18 @@ by element must have the same length.
   `sq = x -> x * x`.
 - A function may call another one but never itself: there is no recursion.
   Use a closed form, or `reduce` over a range.
-- You cannot assign to a built-in function name (`sum`), a constant (`pi`) or
-  a keyword (`and`, `or`, `not`, `true`, `false`, `if`).
+- Variables and functions have separate names. A name followed by `(` is a
+  call: it calls your function of that name if you defined one (`f(x) = …`,
+  or a variable holding a lambda), otherwise the built-in. A name without `(`
+  is your variable. So `rate`, `sum`, `count`, `min` or `log` are fine
+  variable names, in `expr` and in `vars`: `sum = 10; sum([1, 2]) + sum`
+  gives 13. A variable holding a number does not hide the built-in function.
+- Defining your own function with a built-in's name replaces the built-in for
+  calls, also inside your function's own body: `sum(x) = sum(x) * 2` is a
+  self-call and refused as recursion. Give yours another name.
+- You cannot assign to a constant (`pi`, `e`, `tau`, `phi`) or a keyword
+  (`and`, `or`, `not`, `true`, `false`, `if`), or use one as a parameter: a
+  silently changed `e` would give wrong results with no error.
 
 ## Ranges and indexing
 
@@ -131,6 +141,14 @@ Data passed in `vars`, filtered with a lambda:
 ```
 
 Result: 430.5
+
+A variable named like a built-in function; the call still takes the built-in:
+
+```json
+{"expr": "rate = 0.05; sum = 1000; count = 3; sum * (1 + rate) ^ count + sum([1, 2])"}
+```
+
+Result: 1160.625
 
 `%` is modulo, so a percentage is written as a fraction:
 

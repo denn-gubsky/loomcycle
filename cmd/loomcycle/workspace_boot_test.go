@@ -68,6 +68,17 @@ func TestBoot_WorkspaceRemoteModeAttachesARealWorker(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	// The worker runs its conversion child (RFC GW D34): this binary as a
+	// conversion worker, attached to the worker's private dispatcher.
+	for deadline := time.Now().Add(30 * time.Second); !strings.Contains(out.String(), "conversion worker attached"); {
+		if time.Now().After(deadline) {
+			t.Fatalf("the worker's conversion child did not attach\nworker:\n%s", out.String())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !strings.Contains(out.String(), "conversion child started") {
+		t.Errorf("the worker did not report its conversion child\n%s", out.String())
+	}
 	if !strings.Contains(core.out.String(), "worker endpoint listening") {
 		t.Errorf("the core did not report the endpoint\n%s", core.out.String())
 	}

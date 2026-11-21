@@ -66,8 +66,11 @@ A workspace (the `Workspace` tool) is a directory on a workspace worker that
 belongs to the run that opened it. `stat`, `ls`, `copy`, `rm` and `clear` take
 a workspace reference, and so do `import` (a Markdown file in a workspace),
 `download` (`to`) and `upload` (`from`); the bytes stream through the runtime
-and never through you. The other ops do not take one yet: `copy` the file into
-the inbox first. The Crypto tool's `from` and `to` take one too.
+and never through you. `extract` and `render` read a file in a workspace on
+that workspace's worker, where it is converted: the file never leaves it, and
+the result goes into a workspace (`to`) or the inbox (see File/extract,
+File/render). The other ops do not take one yet: `copy` the file into the
+inbox first. The Crypto tool's `from` and `to` take one too.
 
 - A workspace reference needs your agent's `workspace` grant: `read` to read
   from a workspace, `write` to copy into it or remove from it. You need this

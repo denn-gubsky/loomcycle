@@ -40,6 +40,7 @@ var calcSectionArticle = map[string]string{
 	calc.SecBits:       "Calc/integers",
 	calc.SecSequences:  "Calc/sequences",
 	calc.SecRandom:     "Calc/sequences",
+	calc.SecUnits:      "Calc/units",
 	calc.SecStatistics: "Calc/statistics",
 	calc.SecFinance:    "Calc/finance",
 }

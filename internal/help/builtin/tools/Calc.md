@@ -1,6 +1,6 @@
 ---
 name: Calc
-description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, statistics and finance; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
+description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics and finance; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
 ---
 The `Calc` tool evaluates a math expression and returns the answer, exactly
 where it can be exact. Decimals are exact fractions, so `0.1 + 0.2` is `0.3`
@@ -9,13 +9,12 @@ and a 30-digit integer keeps all 30 digits.
 ## When to use it — and when not
 
 - **Use it for every number you compute**: totals, tax, discounts,
-  percentages, averages, interest, unit prices, conversions you know the
-  factor of, counting and probability, primes. Do not work a number out in
+  percentages, averages, interest, unit prices, unit conversions,
+  counting and probability, primes. Do not work a number out in
   your head and do not estimate: a model's mental arithmetic is wrong often
   enough to matter, and this call is cheap.
 - **Use it to check** a figure you were given before you rely on it.
-- **There are no date or unit functions.** Write the formula from the
-  operators and a factor you know.
+- **There are no date functions.** Write the formula from the operators.
 - **Not for algebra.** It evaluates numbers; it does not solve equations or
   simplify formulas.
 
@@ -99,6 +98,8 @@ topic=Calc/<section>`:
   factoring, modular arithmetic, bits and number bases.
 - `Calc/sequences` — `range`, `sum`, `map`/`filter`/`reduce`, `sort`,
   `unique`, `count`, `zip`, and the random functions with `seed`.
+- `Calc/units` — `convert` between units of length, mass, time,
+  temperature, volume, energy, data size and more; prefixes and compounds.
 - `Calc/statistics` — mean, median, mode, variance and standard deviation
   (sample or population), quantiles, ranks, correlation, regression.
 - `Calc/finance` — loan payments, future and present value, NPV, IRR,
