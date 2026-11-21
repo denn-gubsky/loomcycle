@@ -222,6 +222,10 @@ func (p *Replayer) entry(h *tar.Header, r io.Reader) error {
 	return nil
 }
 
+// Stopped reports a write that failed: Result is then what was written
+// before it, however the stream itself ended.
+func (p *Replayer) Stopped() bool { return p.stopped }
+
 // Result is the walk's result as the receiver kept it: the walk's own
 // counts, notes and skips, with the files the receiver wrote (and the ones
 // it skipped) in place of what the walk sent. After a failed write it is

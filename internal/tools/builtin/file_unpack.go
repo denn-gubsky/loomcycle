@@ -47,6 +47,9 @@ func (f *File) unpack(ctx context.Context, in fileInput) (tools.Result, error) {
 	if f.unpackLimits != nil {
 		lim = *f.unpackLimits
 	}
+	if r.kind == refWorkspace {
+		return f.unpackWorkspace(ctx, in, r, lim)
+	}
 	vfs, rel, res, ok := openRef(ctx, r, false)
 	if !ok {
 		return res, nil
