@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -181,23 +182,68 @@ func TestFileDownload_IntoAWorkspaceWritesTheFile(t *testing.T) {
 		t.Errorf("the workspace holds %d bytes, want the body", len(got))
 	}
 
-	// No Content-Length: a flushed, chunked response.
-	chunked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(binaryPDF[:10])
-		w.(http.Flusher).Flush()
-		_, _ = w.Write(binaryPDF[10:])
-	}))
-	t.Cleanup(chunked.Close)
-	f.file.ScratchDir = t.TempDir()
+	// No Content-Length: a flushed, chunked response. It streams into the
+	// workspace with an unknown size; the core's scratch directory and its
+	// temp directory are paths that do not exist, so a spool on the core
+	// would fail the download.
+	chunked := chunkedServer(t, binaryPDF)
+	gone := filepath.Join(t.TempDir(), "gone")
+	f.file.ScratchDir = filepath.Join(gone, "scratch")
+	t.Setenv("TMPDIR", filepath.Join(gone, "tmp"))
 	out, res = f.exec(t, f.ctx, map[string]any{"op": "download", "url": chunked.URL + "/b.pdf", "to": "workspace:w:b.pdf"})
 	if res.IsError {
 		t.Fatalf("chunked download: %s", res.Text)
 	}
-	if got, _ := f.wsGet(t, "w", "b.pdf"); got != string(binaryPDF) || out["size"] != float64(len(binaryPDF)) {
+	if got, _ := f.wsGet(t, "w", "b.pdf"); got != string(binaryPDF) || out["size"] != float64(len(binaryPDF)) || out["sha256"] != bytesSHA256(binaryPDF) {
 		t.Errorf("chunked: %v, %d bytes in the workspace", out, len(got))
 	}
-	if ents, _ := os.ReadDir(f.file.ScratchDir); len(ents) != 0 {
-		t.Errorf("the spool was left: %v", ents)
+	if _, err := os.Stat(gone); !os.IsNotExist(err) {
+		t.Errorf("the download made %s: %v", gone, err)
+	}
+}
+
+// chunkedServer answers body with no Content-Length: flushed after its
+// first bytes, so the response is chunked.
+func chunkedServer(t *testing.T, body []byte) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body[:min(10, len(body))])
+		w.(http.Flusher).Flush()
+		_, _ = w.Write(body[min(10, len(body)):])
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// A chunked download past max_bytes is refused as over the limit, leaves
+// nothing, and holds no quota back: a download of the whole quota goes
+// through after it.
+func TestFileDownload_ChunkedIntoAWorkspacePastMaxBytesLeavesNothing(t *testing.T) {
+	f, _ := ioFixture(t, lifecycle.Limits{DiskQuotaBytes: 4000})
+	big := chunkedServer(t, bytes.Repeat([]byte("q"), 3000))
+	_, res := f.exec(t, f.ctx, map[string]any{"op": "download", "url": big.URL + "/big.bin", "to": "workspace:w:big.bin", "max_bytes": 2000})
+	wantFileRefusal(t, "chunked download past max_bytes", res, "over the limit of 2000")
+	ls, res := f.exec(t, f.ctx, map[string]any{"op": "ls", "path": "workspace:w:", "recursive": true})
+	if res.IsError || len(ls["entries"].([]any)) != 0 {
+		t.Errorf("after a refused download the workspace holds %v %s", ls, res.Text)
+	}
+	all := chunkedServer(t, bytes.Repeat([]byte("a"), 4000))
+	out, res := f.exec(t, f.ctx, map[string]any{"op": "download", "url": all.URL + "/all.bin", "to": "workspace:w:all.bin", "max_bytes": 4000})
+	if res.IsError || out["size"] != float64(4000) {
+		t.Fatalf("a download of the whole quota after a refused one: %v %s", out, res.Text)
+	}
+}
+
+// A chunked download whose limit the workspace's quota cannot hold is
+// refused as over the quota, and leaves nothing.
+func TestFileDownload_ChunkedIntoAWorkspaceOverTheQuotaLeavesNothing(t *testing.T) {
+	f, _ := ioFixture(t, lifecycle.Limits{DiskQuotaBytes: 1000})
+	srv := chunkedServer(t, bytes.Repeat([]byte("q"), 100))
+	_, res := f.exec(t, f.ctx, map[string]any{"op": "download", "url": srv.URL + "/small.bin", "to": "workspace:w:small.bin", "max_bytes": 1001})
+	wantFileRefusal(t, "chunked download over quota", res, workspace.ClassOverQuota)
+	ls, res := f.exec(t, f.ctx, map[string]any{"op": "ls", "path": "workspace:w:", "recursive": true})
+	if res.IsError || len(ls["entries"].([]any)) != 0 {
+		t.Errorf("after a refused download the workspace holds %v %s", ls, res.Text)
 	}
 }
 

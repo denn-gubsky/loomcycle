@@ -1,6 +1,6 @@
 ---
 name: File
-description: "File tool — the files a run's tools returned, kept in the run's inbox volume: inspect them, list them, copy files and folders between the inbox, your volumes and your workspaces, remove them; download a URL into it and upload a file to a URL."
+description: "File tool — the files a run's tools returned, kept in the run's inbox volume: inspect them, list them, copy files and folders between the inbox, your volumes and your workspaces, remove them; convert files in workspaces (extract, render, unpack, transcribe); download a URL into it and upload a file to a URL."
 ---
 A tool call is text, so a file cannot reach you as one: base64 is too long to
 hold, too easy to corrupt, and unreadable anyway. When a tool returns a file —
@@ -84,6 +84,10 @@ inbox first. The Crypto tool's `from` and `to` take one too.
   call from outside a run, gets "not found" or a refusal.
 - `rm` and `clear` never remove the workspace's root: release the workspace
   with `Workspace op=release`.
+- A `download` into a workspace whose response does not give its size needs
+  room in the workspace's quota for its whole limit (`max_bytes`, else the
+  per-file limit) before it starts; pass a smaller `max_bytes` when the
+  workspace is nearly full.
 
 Do not use this tool to read a file's text: Read a text file, and do not ask
 for a file's base64.
