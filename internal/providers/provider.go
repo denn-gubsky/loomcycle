@@ -502,6 +502,9 @@ func RequestHasImage(req Request) bool {
 // when its provider cannot carry them inside the tool result itself, so the
 // model can tell which call they answer.
 func ToolPicturesLead(c ContentBlock) string {
+	if c.ToolName == "" {
+		return "Pictures returned by tool call " + c.ToolUseID + ":"
+	}
 	return "Pictures returned by tool call " + c.ToolUseID + " (" + c.ToolName + "):"
 }
 

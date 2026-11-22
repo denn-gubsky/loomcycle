@@ -5402,6 +5402,7 @@ func executePendingTools(
 	parallelism int,
 	hookDispatcher *hooks.Dispatcher,
 	hookIdent hooks.Identity,
+	vision visionGate,
 	emit func(providers.Event),
 ) []providers.ContentBlock {
 	if len(pending) == 0 {
@@ -5480,6 +5481,7 @@ func executePendingTools(
 	results := make([]providers.ContentBlock, len(pending))
 	for r := range resCh {
 		r.res = markInterrupted(ctx, r.res)
+		r.res = vision.admit(r.res)
 		// Emit in completion order so the SSE consumer sees each
 		// tool's result the moment it's done.
 		// Render ONCE, before both uses. The emitted event is what gets
@@ -5487,12 +5489,14 @@ func executePendingTools(
 		// block from that persisted Text — so prefixing only the block below
 		// would make the same tool call read differently before and after a
 		// resume, silently dropping the classification on replay.
-		text := renderToolResultText(r.res)
+		text := renderToolResultText(r.res) + pictureNotes(r.res.Images)
+		pictures := imageParts(r.res.Images)
 		ev := providers.Event{
-			Type:    providers.EventToolResult,
-			ToolUse: &providers.ToolUse{ID: r.tu.ID, Name: r.tu.Name, Input: r.tu.Input},
-			Text:    text,
-			IsError: r.res.IsError,
+			Type:       providers.EventToolResult,
+			ToolUse:    &providers.ToolUse{ID: r.tu.ID, Name: r.tu.Name, Input: r.tu.Input},
+			Text:       text,
+			IsError:    r.res.IsError,
+			ToolImages: pictures,
 
 			ContentNotRetained: r.notRetained,
 			ContentNotCaptured: r.notCaptured,
@@ -5517,6 +5521,7 @@ func executePendingTools(
 			ToolName:  r.tu.Name,
 			Text:      text,
 			IsError:   r.res.IsError,
+			Images:    pictures,
 
 			NotRetained: r.notRetained,
 			NotCaptured: r.notCaptured,
@@ -5813,17 +5818,11 @@ func validateImageSegments(segs []PromptSegment) error {
 }
 
 // messagesHaveImage reports whether any assembled message (prior-turn or
-// fresh) carries an image content block — the signal the loop uses to decide
-// whether the vision capability gate applies for this run.
+// fresh) carries an image — an image block, or a tool's picture inside a
+// tool_result — the signal the loop uses to decide whether the vision
+// capability gate applies for this run.
 func messagesHaveImage(messages []providers.Message) bool {
-	for _, m := range messages {
-		for _, c := range m.Content {
-			if c.Type == "image" {
-				return true
-			}
-		}
-	}
-	return false
+	return providers.RequestHasImage(providers.Request{Messages: messages})
 }
 
 // FlattenContent is the public version of flattenContent for callers that
