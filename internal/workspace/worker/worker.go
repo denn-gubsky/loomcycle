@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/kernel"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/workspacepb"
 )
 
@@ -197,6 +198,10 @@ func Run(ctx context.Context, opt Options) error {
 	}
 	w := &worker{opt: opt, log: log, engine: &engine.Host{Commands: opt.Commands}}
 	defer w.engine.Close()
+	// The kernels die with the worker; the next cell after it comes back
+	// says kernel_restarted (RFC GW §5.7).
+	w.kernels = kernel.NewManager(kernel.Options{Engine: w.engine, DriverDir: filepath.Join(root, driversDir), MarkDir: root, Logger: log})
+	defer w.kernels.Close()
 	w.cleanWork()
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
@@ -232,6 +237,8 @@ type worker struct {
 	opt    Options
 	log    *slog.Logger
 	engine engine.Engine
+	// kernels are the workspaces' interpreters; nil runs none.
+	kernels *kernel.Manager
 	// mu serialises open's capacity check with the directory it makes.
 	mu sync.Mutex
 	// quotas is each workspace's disk count and write lock.
@@ -397,6 +404,7 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 		if !workspace.ValidID(id) {
 			continue
 		}
+		w.kernels.Drop(id)
 		if err := os.RemoveAll(filepath.Join(w.opt.Root, id)); err != nil {
 			log.Warn("cannot remove a workspace the dispatcher released", "workspace_id", id, "err", err)
 			continue

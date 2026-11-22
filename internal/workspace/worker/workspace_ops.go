@@ -209,6 +209,12 @@ func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
 // past the quota while it runs, and the next write or command is refused
 // until a measurement finds it back under.
 func (w *worker) execInQuota(ctx context.Context, id, real string, raw []byte) answer {
+	return w.commandInQuota(ctx, id, real, func() answer { return w.exec(ctx, real, raw) })
+}
+
+// commandInQuota runs run, a command or a kernel's cell, as execInQuota
+// describes.
+func (w *worker) commandInQuota(ctx context.Context, id, real string, run func() answer) answer {
 	v, err := fsops.OpenVolumeFS(real, "")
 	if err != nil {
 		return refuse(workspace.ClassFailed, "opening the workspace: %v", err)
@@ -228,7 +234,7 @@ func (w *worker) execInQuota(ctx context.Context, id, real string, raw []byte) a
 		}
 		return refuse(workspace.ClassOverQuota, "the workspace holds %d bytes%s, over its quota of %d; remove files before running another command", snap.UsedBytes, about, snap.QuotaBytes)
 	}
-	a := w.exec(ctx, real, raw)
+	a := run()
 	// Measured even when the core stopped waiting: the command may have
 	// written before it was killed.
 	mctx := context.WithoutCancel(ctx)

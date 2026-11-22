@@ -550,3 +550,60 @@ type MDSpliceAnswer struct {
 	SHA256 string `json:"sha256"`
 	Usage
 }
+
+// The interpreter ops (RFC GW §5.7): a cell run in a kernel that stays
+// alive in the workspace and keeps its variables, and the kernel's reset.
+// The cell's code travels as the op's input, as a write's body does.
+const (
+	OpRunCell     = "run_cell"
+	OpResetKernel = "reset_kernel"
+)
+
+// ClassKernelUnavailable: the worker cannot start the kernel asked for (no
+// interpreter on its PATH, no driver); the detail says why.
+const ClassKernelUnavailable = "kernel_unavailable"
+
+// RunCellArgs are a run_cell op's input. TimeoutMS and GraceMS are decided
+// by the core from the operator's settings; the worker refuses one that is
+// not positive.
+type RunCellArgs struct {
+	Code      string `json:"code"`
+	Kernel    string `json:"kernel"`
+	TimeoutMS int64  `json:"timeout_ms"`
+	GraceMS   int64  `json:"grace_ms"`
+}
+
+// RunCellAnswer is a run_cell op's output: the cell's output in the order it
+// was written, its last value, its error, the pictures it left (paths in the
+// workspace), and how it ended.
+type RunCellAnswer struct {
+	Kernel         string   `json:"kernel"`
+	ExecutionCount int      `json:"execution_count"`
+	Output         string   `json:"output"`
+	Value          *string  `json:"value,omitempty"`
+	Error          string   `json:"error,omitempty"`
+	Pictures       []string `json:"pictures,omitempty"`
+	Truncated      bool     `json:"truncated,omitempty"`
+	Interrupted    bool     `json:"interrupted,omitempty"`
+	TimedOut       bool     `json:"timed_out,omitempty"`
+	// KernelKilled: the cell did not stop when interrupted, and the kernel
+	// was killed; KernelDied: it exited by itself. Either way its variables
+	// are gone.
+	KernelKilled bool `json:"kernel_killed,omitempty"`
+	KernelDied   bool `json:"kernel_died,omitempty"`
+	// KernelRestarted: this cell ran in a new kernel because the one before
+	// died (killed, crashed, its worker restarted), not because of a reset.
+	KernelRestarted bool `json:"kernel_restarted,omitempty"`
+}
+
+// ResetKernelArgs are a reset_kernel op's arguments.
+type ResetKernelArgs struct {
+	Kernel string `json:"kernel"`
+}
+
+// ResetKernelAnswer is a reset_kernel op's output: Stopped is false when no
+// kernel was running.
+type ResetKernelAnswer struct {
+	Kernel  string `json:"kernel"`
+	Stopped bool   `json:"stopped"`
+}

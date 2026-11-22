@@ -263,8 +263,12 @@ func (m *Manager) Reset(ctx context.Context, id, kind string) (bool, error) {
 }
 
 // Drop kills workspace id's kernels and forgets them: the workspace is
-// being removed. A cell running in one ends as killed.
+// being removed. A cell running in one ends as killed. Drop, Close and
+// Clean do nothing on a nil Manager, a worker that runs no kernels.
 func (m *Manager) Drop(id string) {
+	if m == nil {
+		return
+	}
 	m.mu.Lock()
 	var gone []*slot
 	for key, s := range m.slots {
@@ -287,6 +291,9 @@ func (m *Manager) Drop(id string) {
 // Close kills every kernel; the worker is stopping. The markers stay, so
 // the next cell after a restart says kernel_restarted.
 func (m *Manager) Close() {
+	if m == nil {
+		return
+	}
 	m.mu.Lock()
 	m.closed = true
 	slots := m.slots
@@ -302,6 +309,9 @@ func (m *Manager) Close() {
 // Clean removes the markers of workspaces not in keep: what a worker that
 // was killed while removing one left.
 func (m *Manager) Clean(keep map[string]bool) {
+	if m == nil {
+		return
+	}
 	ents, err := os.ReadDir(m.opt.MarkDir)
 	if err != nil {
 		return

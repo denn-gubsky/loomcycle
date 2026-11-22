@@ -46,4 +46,3 @@ func TestKernel_ACellThatIgnoresTheInterruptIsKilledAndTheNextCellSaysRestarted(
 		t.Errorf("the cell after the restarted one says restarted again")
 	}
 }
-

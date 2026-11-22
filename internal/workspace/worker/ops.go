@@ -167,6 +167,8 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 	case workspace.OpOpen:
 		return w.open(id, dir, start.GetArgs())
 	case workspace.OpRemove:
+		// Its kernels first: a kernel is a process working in the folder.
+		w.kernels.Drop(id)
 		if err := os.RemoveAll(dir); err != nil {
 			return refuse(workspace.ClassFailed, "removing the workspace: %v", err)
 		}
@@ -182,6 +184,18 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		return answer{output: out}
 	case workspace.OpExec, workspace.OpRead, workspace.OpWrite, workspace.OpEdit, workspace.OpGlob, workspace.OpGrep:
 		return w.inWorkspace(ctx, dir, start.GetOp(), start.GetArgs(), input)
+	case workspace.OpRunCell, workspace.OpResetKernel:
+		dir, real, a := w.workspaceDir(id)
+		if a.class == "" {
+			raw := start.GetArgs()
+			if len(raw) == 0 {
+				raw = input
+			}
+			a = w.kernelOp(ctx, id, real, start.GetOp(), raw)
+		}
+		// A kernel that failed to start reports its stderr, which can name
+		// the drivers' folder in the worker's root.
+		return hidePaths(a, false, real, dir, w.opt.Root)
 	case workspace.OpMDSplice:
 		dir, real, a := w.workspaceDir(id)
 		if a.class == "" {
