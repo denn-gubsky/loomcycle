@@ -343,6 +343,30 @@ jobs:
           echo "$fonts" | grep -qx 'Noto Sans Mono'
           echo "$fonts" | grep -qx 'Noto Serif'
 
+      # The workspace session image (RFC GW P3) is built only at release too.
+      # Build it here and run it the way the container engine runs a session:
+      # read-only root, no capabilities, no network, a non-root user, the
+      # workspace bind-mounted at /workspace. Every toolchain and library it
+      # promises must work there with nothing downloaded.
+      - name: Build the workspace session image and run it as a session
+        run: |
+          set -euo pipefail
+          docker buildx build --load --platform linux/amd64 -f Dockerfile.workspace -t ci-loomcycle-workspace .
+          ws="$(mktemp -d)"
+          chmod 0777 "$ws"
+          session() {
+            docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges \
+              --network none --user 65532:65532 --tmpfs /tmp:rw,size=64m \
+              -v "$ws:/workspace" ci-loomcycle-workspace sh -c "$1"
+          }
+          session 'python3 -c "import numpy, pandas, matplotlib, openpyxl, docx, pypdf, PIL, lxml, yaml"'
+          session 'python3 -c "import matplotlib.pyplot as p; p.plot([1, 2]); p.savefig(\"/workspace/chart.png\")"'
+          file "$ws/chart.png" | grep -q 'PNG image data'
+          session 'node -e "require(\"express\")"'
+          session 'esbuild --version && pip --version && npm --version && git --version && typst --version'
+          session 'pdftoppm -v && ffmpeg -version >/dev/null && command -v djvutxt ddjvu'
+          session 'python3 -m venv /workspace/venv && /workspace/venv/bin/python -c "print(1)"'
+
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core
     # runner it took ~15 min, set by internal/api/http and

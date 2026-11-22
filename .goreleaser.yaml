@@ -433,6 +433,52 @@ dockers:
       - "--label=org.opencontainers.image.licenses=Apache-2.0"
     goarch: arm64
 
+  # loomcycle-workspace — the session image of a workspace worker on the
+  # container engine (RFC GW P3, Dockerfile.workspace). It holds no loomcycle
+  # binary (the binary goreleaser puts in the build context is not copied):
+  # the engine runs one container of it per workspace. Minor releases only;
+  # it does not follow the runtime's patches.
+  - id: loomcycle-workspace-amd64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-workspace:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-workspace:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace:latest-amd64"
+    dockerfile: Dockerfile.workspace
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=loomcycle-workspace"
+      - "--label=org.opencontainers.image.description=loomcycle workspace session image (RFC GW): Python 3, Node.js, git, document helpers and a fixed library set, run by a workspace worker's container engine"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: amd64
+  - id: loomcycle-workspace-arm64
+    ids:
+      - loomcycle
+    image_templates:
+      - "denngubsky/loomcycle-workspace:{{ .Version }}-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace:{{ .Version }}-arm64"
+      - "denngubsky/loomcycle-workspace:latest-arm64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace:latest-arm64"
+    dockerfile: Dockerfile.workspace
+    use: buildx
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=loomcycle-workspace"
+      - "--label=org.opencontainers.image.description=loomcycle workspace session image (RFC GW): Python 3, Node.js, git, document helpers and a fixed library set, run by a workspace worker's container engine"
+      - "--label=org.opencontainers.image.url=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.source=https://github.com/denn-gubsky/loomcycle"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
+    goarch: arm64
+
 
 # docker_manifests joins per-arch images into one multi-arch manifest
 # the operator pulls with `docker pull denngubsky/loomcycle:vX.Y.Z`
@@ -476,6 +522,14 @@ docker_manifests:
     image_templates:
       - "denngubsky/loomcycle-worker:latest-amd64"
       - "denngubsky/loomcycle-worker:latest-arm64"
+  - name_template: "denngubsky/loomcycle-workspace:{{ .Version }}"
+    image_templates:
+      - "denngubsky/loomcycle-workspace:{{ .Version }}-amd64"
+      - "denngubsky/loomcycle-workspace:{{ .Version }}-arm64"
+  - name_template: "denngubsky/loomcycle-workspace:latest"
+    image_templates:
+      - "denngubsky/loomcycle-workspace:latest-amd64"
+      - "denngubsky/loomcycle-workspace:latest-arm64"
 
   # ── GHCR mirror ──
   - name_template: "ghcr.io/denn-gubsky/loomcycle:{{ .Version }}"
@@ -510,3 +564,11 @@ docker_manifests:
     image_templates:
       - "ghcr.io/denn-gubsky/loomcycle-worker:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-worker:latest-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-workspace:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-workspace:{{ .Version }}-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/denn-gubsky/loomcycle-workspace:latest"
+    image_templates:
+      - "ghcr.io/denn-gubsky/loomcycle-workspace:latest-amd64"
+      - "ghcr.io/denn-gubsky/loomcycle-workspace:latest-arm64"
