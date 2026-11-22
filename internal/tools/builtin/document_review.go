@@ -553,6 +553,18 @@ func (d *Document) selectForRuling(ctx context.Context, key sqlmem.ScopeKey, req
 	if none {
 		return 0, nil, nil, nil
 	}
+	if req.Action == rulingActionDemote {
+		// A demote by filter counts and selects only what it may demote. Left to
+		// demoteRefusal, the person's and the operator's statements — most of a
+		// tenant's asserted rows — would fill each call's max and stay asserted,
+		// so every later call would select the same rows and never progress.
+		// This is demoteRefusal in SQL, failing closed on sync: whether a synced
+		// statement is a person's lives in its attributes, so none is selected
+		// here (name one by id to demote it).
+		where = append(where, "e.expired_at IS NULL", "e.operator_ruled_at IS NULL",
+			"NOT (e.method = ? AND COALESCE(e.run_id, '') = '')", "e.method <> ?")
+		args = append(args, edgeMethodManual, edgeMethodSync)
+	}
 	cond := strings.Join(where, " AND ")
 	res, err := d.query(ctx, key, `SELECT COUNT(*) FROM chunk_edges e LEFT JOIN chunks cf ON cf.id = e.from_id LEFT JOIN chunks ct ON ct.id = e.to_id WHERE `+cond, args...)
 	if err != nil {
@@ -836,7 +848,8 @@ func demoteRefusal(s *statementRow) (code, msg string) {
 // prior fields, the audit of what the ruling took out of force), then the
 // write maintain_statement demote makes — status proposed and the reason on
 // judged_at / judge_reason / judged_by — compare-and-set on the statement
-// still being live and asserted. A failure is the item's alone.
+// still being live, asserted and not ruled on by an operator. A failure is
+// the item's alone.
 func (d *Document) demoteOne(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rulingID, reason string, c reviewCandidate) (connector.RulingItem, bool) {
 	item := connector.RulingItem{ID: c.s.ID}
 	if err := d.exec(ctx, key, `INSERT INTO statement_ruling_items (ruling_id, edge_id, prior, fingerprint) VALUES (?, ?, ?, '')`,
@@ -844,7 +857,9 @@ func (d *Document) demoteOne(ctx context.Context, key sqlmem.ScopeKey, mscope st
 		item.Error, item.Message = "failed", "the ruling could not be recorded, so the statement was not demoted: "+err.Error()
 		return item, false
 	}
-	n, err := d.execCount(ctx, key, `UPDATE chunk_edges SET status = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE `+statementLiveCAS,
+	// The operator's ruling is checked again at the write: one made after the
+	// selection is a human decision this demote must not undo.
+	n, err := d.execCount(ctx, key, `UPDATE chunk_edges SET status = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE `+statementLiveCAS+` AND operator_ruled_at IS NULL`,
 		edgeStatusProposed, time.Now().UnixNano(), reason, judgedByForVerdict(ctx), c.s.ID, edgeStatusAsserted)
 	if err != nil || n == 0 {
 		if derr := d.exec(ctx, key, `DELETE FROM statement_ruling_items WHERE ruling_id = ? AND edge_id = ?`, rulingID, c.s.ID); derr != nil {

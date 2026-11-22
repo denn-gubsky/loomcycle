@@ -157,7 +157,8 @@ func TestStatementReviewAPI_DemoteIsAnOperatorsAuditedAct(t *testing.T) {
 		t.Errorf("a demote without a reason = %d %v, want 400 invalid_request", code, body)
 	}
 	before := len(sink.events)
-	out := s.ruleBoth(t, op, map[string]any{"action": "demote", "reason": "recheck the citations", "filter": map[string]any{}})
+	// Named by ids, so each is reported: a filter selects neither.
+	out := s.ruleBoth(t, op, map[string]any{"action": "demote", "reason": "recheck the citations", "ids": []string{seed.board, seed.kb}})
 	if out["matched"] != float64(2) || out["ruled"] != float64(0) || out["failed"] != float64(2) {
 		t.Errorf("demote of an operator's acceptances = %v, want both reported and left", out)
 	}

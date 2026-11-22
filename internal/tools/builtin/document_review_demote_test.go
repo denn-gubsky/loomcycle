@@ -111,7 +111,13 @@ func TestBulkDemote_LeavesAPersonsStatementAlone(t *testing.T) {
 		if s := tenantEdge(t, d, op, manual); s["status"] != edgeStatusAsserted || s["method"] != edgeMethodManual {
 			t.Fatalf("the person's link = %v, want asserted manual", s)
 		}
-		req := connector.RuleStatementsRequest{Action: rulingActionDemote, Reason: "recheck", Filter: &connector.ReviewQueueFilter{}}
+		// By filter, neither is selected: matched counts only what may be demoted.
+		byFilter := connector.RuleStatementsRequest{Action: rulingActionDemote, Reason: "recheck", Filter: &connector.ReviewQueueFilter{}}
+		if dry := ruleDry(t, d, op, byFilter, RuleAsOperator); dry.Matched != 1 || dry.ToRule != 1 || dry.Failed != 0 {
+			t.Errorf("demote by filter dry run = %+v, want only the machine's statement matched", dry)
+		}
+		// By ids, each is reported, in the dry run as in the real call.
+		req := connector.RuleStatementsRequest{Action: rulingActionDemote, Reason: "recheck", IDs: []string{c.cites, c.repeals, manual}}
 		want := map[string]string{c.repeals: "statement_operator_ruled", manual: "statement_manual"}
 		check := func(what string, res connector.RuleStatementsResult) {
 			t.Helper()
@@ -141,6 +147,64 @@ func TestBulkDemote_LeavesAPersonsStatementAlone(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The newest asserted statements are an operator's: a demote by filter, max 1
+// at a time, still works through the machine's ones beneath them and then
+// finds nothing, rather than selecting the operator's on every call.
+func TestBulkDemote_SuccessiveCallsProgressPastTheOperatorsStatements(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	c := seedReviewCorpus(t, d, base)
+	op := reviewOperatorCtx(base, nil)
+	assertAsAMachine(t, d, op, c.cites, c.repeals)
+	for _, id := range []string{c.elaborates, c.judged} {
+		if _, r := docExec(t, d, op, `{"op":"accept_statement","scope":"tenant","id":"`+id+`"}`); r.IsError {
+			t.Fatal(r.Text)
+		}
+	}
+	req := connector.RuleStatementsRequest{Action: rulingActionDemote, Reason: "recheck", Filter: &connector.ReviewQueueFilter{}, Max: 1}
+	for i, want := range []string{c.repeals, c.cites} {
+		res := ruleReal(t, d, op, req, RuleAsOperator)
+		if res.Ruled != 1 || res.Failed != 0 || len(res.Items) != 1 || res.Items[0].ID != want {
+			t.Fatalf("call %d = %+v, want %s demoted", i+1, res, want)
+		}
+	}
+	if dry := ruleDry(t, d, op, req, RuleAsOperator); dry.Matched != 0 {
+		t.Errorf("after both are demoted the filter matches %d, want 0", dry.Matched)
+	}
+	for _, id := range []string{c.elaborates, c.judged} {
+		if s := tenantEdge(t, d, op, id); s["status"] != edgeStatusAsserted {
+			t.Errorf("the operator's %s = %v, want still asserted", id, s["status"])
+		}
+	}
+}
+
+// An operator's ruling made after the selection is checked again at the
+// write: the demote reports the statement changed and leaves it.
+func TestBulkDemote_AnOperatorRulingAfterTheSelectionIsLeft(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	c := seedReviewCorpus(t, d, base)
+	op := reviewOperatorCtx(base, nil)
+	assertAsAMachine(t, d, op, c.cites)
+	key, mscope, err := d.resolveScope(op, "tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := d.statementByID(op, key, c.cites)
+	if err != nil || s == nil {
+		t.Fatalf("read %s: %v", c.cites, err)
+	}
+	// Selected as a machine's; an operator rules on it before the write.
+	if err := d.exec(op, key, `UPDATE chunk_edges SET operator_ruled_at = ? WHERE id = ?`, int64(1), c.cites); err != nil {
+		t.Fatal(err)
+	}
+	item, ok := d.demoteOne(op, key, mscope, "ruling-1", "recheck", reviewCandidate{s: *s})
+	if ok || item.Error != rulingChanged {
+		t.Errorf("demote after an operator's ruling = %+v ok %v, want %s", item, ok, rulingChanged)
+	}
+	if got := tenantEdge(t, d, op, c.cites); got["status"] != edgeStatusAsserted {
+		t.Errorf("%s = %v, want still asserted", c.cites, got["status"])
+	}
 }
 
 func TestBulkDemote_RefusedToAReviewerAndInsideARun(t *testing.T) {
