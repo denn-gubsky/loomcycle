@@ -137,6 +137,39 @@ func TestStatementReviewAPI_RulingAndRevertWriteOneAuditRecordEach(t *testing.T)
 	}
 }
 
+// A bulk demote (RFC GM P3.3) is an operator's audited act: a member is
+// refused even holding review, and the real call writes one audit record with
+// action demote. The seed's statements are a person's, accepted by the
+// operator, so the demote reports each and demotes none.
+func TestStatementReviewAPI_DemoteIsAnOperatorsAuditedAct(t *testing.T) {
+	s, mi := ontologyFixture(t)
+	sink := &recordingSink{}
+	s.SetStatementReviewAudit(sink)
+	seed := seedReviewQueue(t, s, mi)
+	op := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: mi.Tenant, Subject: "ops", Scopes: []string{auth.ScopeTenant}})
+	s.ruleBoth(t, op, map[string]any{"action": "accept", "ids": []string{seed.board, seed.kb}})
+
+	reviewer := reviewMember(t, mi.Tenant, authz.Rule{Effect: authz.Allow, Actions: []string{"review"}, Resources: []string{"document:tenant:/**"}})
+	if code, body := s.postReview(t, reviewer, "/v1/_statements/rule", map[string]any{"action": "demote", "reason": "x", "filter": map[string]any{}}); code != http.StatusForbidden || body["code"] != "forbidden" {
+		t.Errorf("a reviewer's demote = %d %v, want 403 forbidden", code, body)
+	}
+	if code, body := s.postReview(t, op, "/v1/_statements/rule", map[string]any{"action": "demote", "filter": map[string]any{}}); code != http.StatusBadRequest || body["code"] != "invalid_request" {
+		t.Errorf("a demote without a reason = %d %v, want 400 invalid_request", code, body)
+	}
+	before := len(sink.events)
+	out := s.ruleBoth(t, op, map[string]any{"action": "demote", "reason": "recheck the citations", "filter": map[string]any{}})
+	if out["matched"] != float64(2) || out["ruled"] != float64(0) || out["failed"] != float64(2) {
+		t.Errorf("demote of an operator's acceptances = %v, want both reported and left", out)
+	}
+	if len(sink.events) != before+1 {
+		t.Fatalf("audit records = %d, want one more for the demote", len(sink.events)-before)
+	}
+	if ev := sink.events[before]; ev.Action != "statement_ruling" || ev.RulingAction != "demote" || ev.RulingReason != "recheck the citations" ||
+		ev.RulingID != out["ruling_id"] || ev.RulingCounts["matched"] != 2 || ev.ActorSubject != "ops" {
+		t.Errorf("demote audit record = %+v", ev)
+	}
+}
+
 func TestStatementReviewAPI_MemberRulesOnlyWhereItHoldsReview(t *testing.T) {
 	s, mi := ontologyFixture(t)
 	seed := seedReviewQueue(t, s, mi)

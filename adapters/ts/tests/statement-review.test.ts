@@ -60,6 +60,13 @@ describe("ruleStatements", () => {
     expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ action: "reject", ids: ["s1", "s2"], reason: "wrong act", tenant: "globex" });
   });
 
+  it("demotes live statements by a filter, with a reason", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ ...dry, action: "demote" })]);
+    const res = await client.ruleStatements("demote", { filter: { method: "rule:place" } }, { reason: "misplaced" });
+    expect(res.action).toBe("demote");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ action: "demote", filter: { method: "rule:place" }, reason: "misplaced" });
+  });
+
   it("throws with the server's code when the queue changed", async () => {
     const { client } = makeClient([jsonResponse({ code: "queue_changed", error: "the selection now matches 3 statements, not the 2 expected" }, 409)]);
     const err = await client.ruleStatements("accept", { filter: {} }, { dryRun: false, expectCount: 2 }).catch((e: unknown) => e);

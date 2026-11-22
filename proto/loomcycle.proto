@@ -2748,14 +2748,15 @@ message ListReviewQueueResponse {
 message RuleStatementsRequest {
   string tenant = 1;
   string scope = 2;
-  // accept or reject.
+  // accept, reject or demote (live asserted statements back to proposed;
+  // an operator only).
   string action = 3;
   // The statements by id, or by filter (has_filter selects the filter, so
   // an empty filter — the whole queue — can be named).
   repeated string ids = 4;
   ReviewQueueFilter filter = 5;
   bool has_filter = 6;
-  // Required for reject.
+  // Required for reject and demote.
   string reason = 7;
   // Unset = a dry run.
   optional bool dry_run = 8;
