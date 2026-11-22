@@ -1809,7 +1809,7 @@ Once documents are placed under concepts, an agent can move through the taxonomy
 
 **What is withheld.** Every count in these moves is over documents the caller may read. In `place`, an id you may not read is answered exactly as a missing one, in `not_found`. Classes above a document's own type, concept chains, taxonomies and node ids are the ontology's text: a caller who may not read the ontology document gets the own type alone and an issue saying why. Node briefs need the `tenant` scope, and a node hit or brief is shown only where `get_annotation` would show it.
 
-The knowledge-base bundle's `kb/walker` uses all of these where the ontology declares topics: up a hit's chain, to a topic's members, `place` for where hits sit together, baselines for what the matches are about, and `measure` `compare` for "what changed in X".
+The knowledge-base bundle's `kb/walker` uses only `measure` with `compare`, for "what changed in X": a measurement (2026-11-20) found its topic, `place` and baseline moves lowered overview recall while most documents were still unplaced, so they were taken out of its prompt. The ops themselves stay for any agent to call.
 
 ### Proposing a taxonomy from the corpus — `kb/taxonomist`
 
