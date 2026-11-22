@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -237,7 +238,15 @@ func (c *Container) Probe(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("container engine: starting a session of %s: %w", c.opt.Image, err)
 	}
-	return strings.Fields(string(out)), nil
+	// Only the two names the probe prints are taken: the image's own output
+	// (a login banner, an entrypoint's chatter) never becomes a label.
+	tc := []string{}
+	for _, f := range strings.Fields(string(out)) {
+		if (f == "python" || f == "node") && !slices.Contains(tc, f) {
+			tc = append(tc, f)
+		}
+	}
+	return tc, nil
 }
 
 // Reconcile removes every session of this worker: at start, those a crash
