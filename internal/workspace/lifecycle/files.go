@@ -114,7 +114,10 @@ func (m *Manager) GetFile(ctx context.Context, o Owner, name string, args worksp
 // PutFile writes exactly args.Size bytes of in to args.Path (in a stage,
 // with args.Stage), streamed: the worker writes them to a temporary file
 // and renames it into place only when all arrived; otherwise nothing is
-// left. The quota is checked for args.Size before a byte is sent.
+// left. The quota is checked for args.Size before a byte is sent. With
+// args.Size workspace.PutSizeUnknown, in is read to its end, at most
+// args.MaxBytes of it, which the quota is checked for instead; nothing of
+// in is read before the worker has admitted the put.
 func (m *Manager) PutFile(ctx context.Context, o Owner, name string, args workspace.PutArgs, in io.Reader) (workspace.PutAnswer, error) {
 	var out workspace.PutAnswer
 	r, err := m.ready(ctx, o, name)
@@ -127,7 +130,7 @@ func (m *Manager) PutFile(ctx context.Context, o Owner, name string, args worksp
 	}
 	var buf bytes.Buffer
 	_, err = m.disp.Stream(ctx, r.WorkerID, dispatch.Request{TenantID: r.TenantID, WorkspaceID: r.ID, Op: workspace.OpPut, Args: raw,
-		MaxOutput: maxAnswer, InputSize: args.Size}, in, &buf)
+		MaxOutput: maxAnswer, InputSize: args.Size, MaxInput: args.MaxBytes}, in, &buf)
 	if err != nil {
 		return out, err
 	}

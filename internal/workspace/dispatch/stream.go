@@ -16,6 +16,16 @@ import (
 type streamIO struct {
 	in  io.Reader
 	out io.Writer
+	// admitted, for an input of unknown length, is closed when the worker
+	// sends the empty output chunk that admits the op.
+	admitted     chan struct{}
+	admittedOnce sync.Once
+}
+
+func (s *streamIO) admit() {
+	if s.admitted != nil {
+		s.admittedOnce.Do(func() { close(s.admitted) })
+	}
 }
 
 // errStreamBroke is the receive side seeing the op's stream end.
@@ -23,7 +33,8 @@ var errStreamBroke = errors.New("the op stream ended")
 
 // Stream runs one op whose bytes are too large to hold (RFC GW P2: get and
 // put): in, when not nil, is sent to the worker as the op's input, exactly
-// req.InputSize bytes of it, and the worker's output is written to out as
+// req.InputSize bytes of it (or, of unknown size, at most req.MaxInput once
+// the worker has admitted it), and the worker's output is written to out as
 // it arrives. Neither is ever held whole: each moves one chunk at a time,
 // and gRPC's flow control holds the sender back when the other side reads
 // slowly, so a slow out slows the worker rather than filling memory.
@@ -39,7 +50,11 @@ func (d *Dispatcher) Stream(ctx context.Context, workerID string, req Request, i
 	if req.Input != nil {
 		return Result{}, &OpError{Class: workspace.ClassInvalid, Detail: "Stream takes its input as in, not Request.Input"}
 	}
-	if in != nil && req.InputSize < 0 {
+	unsized := in != nil && req.InputSize == workspace.PutSizeUnknown
+	switch {
+	case unsized && req.MaxInput <= 0:
+		return Result{}, &OpError{Class: workspace.ClassInvalid, Detail: "an input of unknown size needs a maximum"}
+	case in != nil && req.InputSize < 0 && !unsized:
 		return Result{}, &OpError{Class: workspace.ClassInvalid, Detail: "a negative input size"}
 	}
 	w, err := d.target(workerID, req)
@@ -49,7 +64,11 @@ func (d *Dispatcher) Stream(ctx context.Context, workerID string, req Request, i
 	if out == nil {
 		out = io.Discard
 	}
-	o := &op{ctx: ctx, req: req, max: req.MaxOutput, done: make(chan result, 1), stream: &streamIO{in: in, out: out}}
+	sio := &streamIO{in: in, out: out}
+	if unsized {
+		sio.admitted = make(chan struct{})
+	}
+	o := &op{ctx: ctx, req: req, max: req.MaxOutput, done: make(chan result, 1), stream: sio}
 	return d.runOp(ctx, w, o)
 }
 
@@ -86,7 +105,11 @@ func (d *Dispatcher) serveStream(ctx context.Context, stream workspacepb.Workspa
 		})
 	})
 	if sio.in != nil {
-		if r, ok := sendSized(stream, o, resc); !ok {
+		send := sendSized
+		if sio.admitted != nil {
+			send = sendUnsized
+		}
+		if r, ok := send(stream, o, resc); !ok {
 			return d.settle(w, r)
 		}
 	}
@@ -121,6 +144,12 @@ func (d *Dispatcher) receiveOutput(stream workspacepb.WorkspaceService_OpServer,
 		switch {
 		case f.GetOutput() != nil:
 			data := f.GetOutput().GetData()
+			if len(data) == 0 {
+				// The worker admitting an input of unknown size; no
+				// answer has an empty chunk.
+				o.stream.admit()
+				continue
+			}
 			if len(data) > workspace.ChunkSize {
 				return result{err: &OpError{Class: workspace.ClassProtocol, Detail: "an output chunk over 64 KB"}}
 			}
@@ -183,6 +212,52 @@ func sendSized(stream workspacepb.WorkspaceService_OpServer, o *op, resc <-chan 
 		case rerr == io.EOF || rerr == io.ErrUnexpectedEOF:
 			return mismatch(fmt.Sprintf("the input held %d bytes, not its declared %d", sent, size)), false
 		case rerr != nil:
+			return result{err: fmt.Errorf("workspace: reading the op's input: %w", rerr)}, false
+		}
+	}
+	if err := stream.Send(&workspacepb.OpToWorker{Msg: &workspacepb.OpToWorker_InputEnd{InputEnd: &workspacepb.InputEnd{}}}); err != nil {
+		return result{err: errStreamBroke}, false
+	}
+	return result{}, true
+}
+
+// sendUnsized sends an input of unknown length once the worker has
+// admitted it, chunk by chunk to the reader's end, then InputEnd; past
+// MaxInput bytes it ends the op with size_mismatch. ok is as sendSized's.
+func sendUnsized(stream workspacepb.WorkspaceService_OpServer, o *op, resc <-chan result) (result, bool) {
+	select {
+	case <-o.stream.admitted:
+	case r := <-resc:
+		return r, false
+	case <-o.ctx.Done():
+		return result{err: o.ctx.Err()}, false
+	}
+	in, maxIn := o.stream.in, o.req.MaxInput
+	var sent int64
+	for {
+		if err := o.ctx.Err(); err != nil {
+			return result{err: err}, false
+		}
+		select {
+		case r := <-resc:
+			return r, false
+		default:
+		}
+		buf := make([]byte, workspace.ChunkSize)
+		n, rerr := io.ReadFull(in, buf)
+		if sent+int64(n) > maxIn {
+			return mismatch(fmt.Sprintf("the input holds more than its maximum %d bytes", maxIn)), false
+		}
+		if n > 0 {
+			if err := stream.Send(&workspacepb.OpToWorker{Msg: &workspacepb.OpToWorker_Input{Input: &workspacepb.Chunk{Data: buf[:n]}}}); err != nil {
+				return result{err: errStreamBroke}, false
+			}
+			sent += int64(n)
+		}
+		if rerr == io.EOF || rerr == io.ErrUnexpectedEOF {
+			break
+		}
+		if rerr != nil {
 			return result{err: fmt.Errorf("workspace: reading the op's input: %w", rerr)}, false
 		}
 	}
