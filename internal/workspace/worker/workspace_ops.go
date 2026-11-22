@@ -173,7 +173,7 @@ func hidePaths(a answer, inOutput bool, dirs ...string) answer {
 	return a
 }
 
-func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
+func (w *worker) exec(ctx context.Context, id, root string, raw []byte) answer {
 	var in workspace.ExecArgs
 	if a := decodeArgs(raw, &in); a.class != "" {
 		return a
@@ -192,7 +192,7 @@ func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
 		}
 		dir = d
 	}
-	res, err := w.engine.Exec(ctx, engine.ExecRequest{Dir: dir, Command: in.Command, Timeout: time.Duration(in.TimeoutMS) * time.Millisecond})
+	res, err := w.engine.Exec(ctx, engine.ExecRequest{Workspace: id, Root: root, Dir: dir, Command: in.Command, Timeout: time.Duration(in.TimeoutMS) * time.Millisecond})
 	switch {
 	case errors.Is(err, engine.ErrRefused):
 		return refuse(workspace.ClassRefused, "%v", err)
@@ -228,7 +228,7 @@ func (w *worker) execInQuota(ctx context.Context, id, real string, raw []byte) a
 		}
 		return refuse(workspace.ClassOverQuota, "the workspace holds %d bytes%s, over its quota of %d; remove files before running another command", snap.UsedBytes, about, snap.QuotaBytes)
 	}
-	a := w.exec(ctx, real, raw)
+	a := w.exec(ctx, id, real, raw)
 	// Measured even when the core stopped waiting: the command may have
 	// written before it was killed.
 	mctx := context.WithoutCancel(ctx)

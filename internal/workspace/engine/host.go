@@ -85,6 +85,9 @@ func (h *Host) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
 	return res, nil
 }
 
+// Forget has nothing to end: a host command does not outlive its exec.
+func (h *Host) Forget(context.Context, string) error { return nil }
+
 func (h *Host) Close() error { return nil }
 
 // capped keeps the first max bytes written to it and counts the rest. Both

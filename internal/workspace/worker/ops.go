@@ -167,6 +167,9 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 	case workspace.OpOpen:
 		return w.open(id, dir, start.GetArgs())
 	case workspace.OpRemove:
+		if err := w.engine.Forget(ctx, id); err != nil {
+			return refuse(workspace.ClassFailed, "ending the workspace's session: %v", err)
+		}
 		if err := os.RemoveAll(dir); err != nil {
 			return refuse(workspace.ClassFailed, "removing the workspace: %v", err)
 		}
