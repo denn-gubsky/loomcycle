@@ -97,6 +97,7 @@ from .errors import (
     AgentIDInUseError,
     BackpressureError,
     AuthError,
+    CalcError,
     UnavailableError,
     # v0.8.18 — pause/snapshot typed errors.
     PauseNotConfiguredError,
@@ -143,6 +144,7 @@ __all__ = [
     "AgentIDInUseError",
     "BackpressureError",
     "AuthError",
+    "CalcError",
     "UnavailableError",
     # v0.8.18 additions.
     "PauseNotConfiguredError",
