@@ -806,6 +806,46 @@ try {
 }
 ```
 
+### Calc
+
+Evaluate math exactly with the Calc tool, outside a run: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, lists, units, statistics, matrices, finance and dates. It is a pure function of its input — it reads and writes no stored data. Any token may call it except one held to the run plane (403), and each call takes one from the token's run rate (429, `RateLimitedError` with `retryAfterMs`). See the server's [Calc guide](../../docs/CALC.md) for the language.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `calc(input: CalcInput)` | `Promise<CalcResult>` | `{expr, vars?, digits?, seed?}` → `{result, type, exact, text, fraction?, assigned?, shape?, truncated?}`. Mirrors `POST /v1/_calc`. |
+
+```ts
+const r = await client.calc({ expr: "subtotal = 1249.99 * 3; round(subtotal * 1.2, 2)" });
+console.log(r.text, r.exact); // "4499.96" true
+
+await client.calc({ expr: "sum(xs)", vars: { xs: [1, 2, "0.1"] } }); // text "3.1", exact: a numeric string stays exact
+```
+
+- **Read `text` for the digits.** `result` has been through `JSON.parse`, so an integer past 2^53 (`2^70`) or a decimal past 17 significant digits comes back rounded; `text` (and `fraction`, the exact `n/d` of a non-terminating result) does not.
+- `from` and `to` (data by reference) need a run and are refused outside one.
+
+A refusal of the expression throws `CalcError` whatever its status, with the tool's error code on `e.code`:
+
+| Field | Meaning |
+|---|---|
+| `e.code` | The tool's code: `syntax`, `unknown_function`, `unknown_name`, `domain`, `division_by_zero`, `step_limit`, … (help topic `Calc/errors`). |
+| `e.message` / `e.detail` | What went wrong. |
+| `e.hint` | What to write instead, when the tool knows. |
+| `e.pos` | The offset in `expr` where it went wrong, when it is one place. |
+| `e.category` | `validation` (400: fix the call), `business` (422: the mathematics or a limit refused a well-formed call; resending fails the same way), `transient` (503: send it again). |
+| `e.retryable` | The server's own answer; true only for a transient refusal. |
+
+```ts
+try {
+  await client.calc({ expr: "2 ** 3" });
+} catch (e) {
+  if (e instanceof CalcError) console.error(e.code, e.hint, e.pos); // syntax "power is `^`, e.g. `2^10`" 2
+  else throw e;
+}
+```
+
+A call refused before the tool ran — an empty or oversized body, a spent run rate, a run-plane token — raises the class its status maps to (see [Errors](#errors)).
+
 ### Speech: read-aloud and transcription
 
 Read a reply aloud, or turn a recording into text, on the deployment's own speech engines. No run is involved; each engine request is charged to the caller and the caller's hard token budget is checked first. A chat user may call them (the scope is `runs:create`, and access control asks `use gateway:speech` / `use gateway:transcription`); a token limited to certain agents may not.

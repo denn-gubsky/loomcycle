@@ -273,7 +273,7 @@ func TestExecutePendingTools_EventAndBlockCarryTheSameText(t *testing.T) {
 		context.Background(),
 		tools.NewDispatcher([]tools.Tool{tool}),
 		[]providers.ToolUse{{ID: "tu-1", Name: "failer", Input: json.RawMessage(`{}`)}},
-		1, nil, hooks.Identity{},
+		1, nil, hooks.Identity{}, visionGate{},
 		func(ev providers.Event) { emitted = append(emitted, ev) },
 	)
 
@@ -322,7 +322,7 @@ func TestExecutePendingTools_TheFailedEventCarriesItsErrorInfo(t *testing.T) {
 		context.Background(),
 		tools.NewDispatcher([]tools.Tool{tool}),
 		[]providers.ToolUse{{ID: "tu-1", Name: "failer", Input: json.RawMessage(`{}`)}},
-		1, nil, hooks.Identity{},
+		1, nil, hooks.Identity{}, visionGate{},
 		func(ev providers.Event) { emitted = append(emitted, ev) },
 	)
 	var ev *providers.Event
@@ -355,7 +355,7 @@ func TestExecutePendingTools_UnclassifiedIsUnchangedOnBothPaths(t *testing.T) {
 		context.Background(),
 		tools.NewDispatcher([]tools.Tool{tool}),
 		[]providers.ToolUse{{ID: "tu-1", Name: "failer", Input: json.RawMessage(`{}`)}},
-		1, nil, hooks.Identity{},
+		1, nil, hooks.Identity{}, visionGate{},
 		func(ev providers.Event) { emitted = append(emitted, ev) },
 	)
 	if blocks[0].Text != raw {
@@ -413,7 +413,7 @@ func runFailerThrough(t *testing.T, hd *hooks.Dispatcher) string {
 		context.Background(),
 		tools.NewDispatcher([]tools.Tool{&classifiedTool{res: transientFailure()}}),
 		[]providers.ToolUse{{ID: "tu-1", Name: "failer", Input: json.RawMessage(`{}`)}},
-		1, hd, hooks.Identity{},
+		1, hd, hooks.Identity{}, visionGate{},
 		func(providers.Event) {},
 	)
 	if len(blocks) != 1 {

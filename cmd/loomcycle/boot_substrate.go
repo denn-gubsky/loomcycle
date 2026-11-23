@@ -161,6 +161,10 @@ func (b *boot) wireAuth() {
 		b.oauthMgr.SetAudit(auditSink)
 		// RFC FB: every Git network operation.
 		b.gitTool.Audit = auditSink
+		// RFC GW P8: every workspace share, unshare and use through a share.
+		if b.workspaces != nil {
+			b.workspaces.SetAudit(auditSink)
+		}
 	}
 	// Subject erasure shares the same sink — but NOT the same posture: with no
 	// audit sink, erasure REFUSES rather than proceeding unrecorded. It is the

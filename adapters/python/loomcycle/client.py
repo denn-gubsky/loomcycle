@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import decimal
 import json
 from dataclasses import dataclass
 from typing import (
@@ -52,6 +53,7 @@ from .errors import (
     AlreadyPausingError,
     AuthError,
     BackpressureError,
+    CalcError,
     InvalidArgumentError,
     LoomcycleError,
     NotPausedError,
@@ -692,6 +694,58 @@ class LoomcycleClient:
                 for m in resp.models
             ],
         }
+
+    async def calc(
+        self,
+        expr: str,
+        *,
+        vars: Optional[Mapping[str, Any]] = None,  # noqa: A002 - the tool's field name
+        digits: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> Mapping[str, Any]:
+        """Evaluate math exactly with the Calc tool, outside a run (RFC GY):
+        arithmetic, rounding, powers, logarithms, trigonometry, combinatorics,
+        lists, units, statistics, matrices, finance and dates. A pure function
+        of its input: it reads and writes no stored data. Over the ``Calc``
+        RPC, the twin of ``POST /v1/_calc``.
+
+        ``expr`` is one or more statements separated by ``;`` or newlines; the
+        last one's value is the result. ``vars`` binds names before
+        evaluation: a number, a numeric string (exact — a ``Decimal`` is sent
+        as one), a string, a boolean or a list. ``digits`` sets the
+        significant digits of an approximate or non-terminating result
+        (default 15); ``seed`` makes the random functions repeatable. The
+        tool's ``from`` / ``to`` need a run and are refused outside one.
+
+        Returns the tool's result: ``{"result", "type", "exact", "text"}``
+        plus, when they apply, ``fraction`` (the exact ``"n/d"`` of a
+        non-terminating result), ``assigned``, ``shape`` and ``truncated``.
+        An integer ``result`` is exact; a decimal one is a ``float``, so read
+        ``text`` for its exact digits.
+
+        A refusal of the expression raises :class:`CalcError` (``.reason`` the
+        tool's code, ``.hint``, ``.pos``, ``.category``). Any token may call it
+        except one held to the run plane (``PERMISSION_DENIED``); each call
+        takes one from the token's run rate, and a spent rate raises
+        :class:`BackpressureError` with ``reason == "rate_limited"``. A
+        ``vars`` value that is not JSON-serializable raises
+        :class:`InvalidArgumentError` before any call."""
+        body: dict = {"expr": expr}
+        if vars is not None:
+            body["vars"] = vars
+        if digits is not None:
+            body["digits"] = digits
+        if seed is not None:
+            body["seed"] = seed
+        try:
+            data = json.dumps(body, allow_nan=False, default=_calc_json_default).encode("utf-8")
+        except (TypeError, ValueError) as e:
+            raise InvalidArgumentError("calc: the input is not JSON-serializable: %s" % e) from e
+        try:
+            resp = await self._stub.Calc(pb.CalcRequest(input_json=data), metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_calc_from_grpc(e)
+        return json.loads(resp.result_json)
 
     async def get_transcript(self, session_id: str) -> Sequence[Mapping[str, Any]]:
         """Read the full event log for a session. Each entry is a
@@ -3657,6 +3711,53 @@ def _decision_json(what: str, value: Any) -> bytes:
         raise InvalidArgumentError("decide: %s is not JSON-serializable: %s" % (what, e)) from e
 
 
+# The gRPC codes internal/api/grpc/calc.go gives a refusal the tool made, by
+# its category: validation, business, transient.
+_CALC_REFUSAL_CODES = frozenset(
+    {grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.FAILED_PRECONDITION, grpc.StatusCode.UNAVAILABLE}
+)
+
+
+def _calc_json_default(value: Any) -> Any:
+    """Encode a ``Decimal`` in a Calc input as the numeric string the tool
+    keeps exact; a float would be rounded on the way. Anything else is not
+    JSON, as ``json.dumps`` would say."""
+    if isinstance(value, decimal.Decimal) and value.is_finite():
+        return str(value)
+    raise TypeError("Object of type %s is not JSON serializable" % type(value).__name__)
+
+
+def _raise_calc_from_grpc(err: grpc.aio.AioRpcError) -> "None":
+    """Raise a failed Calc call. A refusal the tool made carries its category
+    in the ErrorInfo's metadata (internal/api/grpc/calc.go) and raises
+    ``CalcError``; anything else was refused before the tool ran and maps like
+    every other RPC. Always raises."""
+    info = _error_info(err)
+    # The code as well as the category: a spent run rate's ErrorInfo carries a
+    # category too (transient), but it is RESOURCE_EXHAUSTED, not the tool's.
+    if (
+        info is not None
+        and err.code() in _CALC_REFUSAL_CODES
+        and info[1].get("category") in ("validation", "business", "transient")
+    ):
+        reason, meta = info
+        pos: Optional[int] = None
+        try:
+            pos = int(meta["pos"]) if "pos" in meta else None
+        except ValueError:
+            pos = None
+        raise CalcError(
+            err.details() or str(err),
+            code=err.code(),
+            reason=reason,
+            hint=meta.get("hint") or None,
+            pos=pos,
+            category=meta["category"],
+            retryable=meta.get("is_retryable") == "true",
+        ) from err
+    _raise_from_grpc(err)
+
+
 def _retention_override_entry(o: "pb.RetentionOverrideEntry") -> Mapping[str, Any]:
     return {
         "tenant": o.tenant,
@@ -4356,15 +4457,26 @@ _ERROR_INFO_TYPE_URL = "type.googleapis.com/google.rpc.ErrorInfo"
 
 def _error_reason(err: Any) -> Optional[str]:
     """The ``reason`` of the ``google.rpc.ErrorInfo`` a failed call carries in
-    its status details, or ``None`` when it carries none.
+    its status details, or ``None`` when it carries none (see
+    ``_error_info``)."""
+    info = _error_info(err)
+    return info[0] if info is not None else None
+
+
+def _error_info(err: Any) -> Optional[Tuple[str, Mapping[str, str]]]:
+    """``(reason, metadata)`` of the first ``google.rpc.ErrorInfo`` with a
+    reason that a failed call carries in its status details, or ``None`` when
+    it carries none.
 
     The details ride the ``grpc-status-details-bin`` trailer as a serialized
-    ``google.rpc.Status``. Its two messages are read off the wire here because
+    ``google.rpc.Status``. Its messages are read off the wire here because
     their generated classes ship in ``googleapis-common-protos``, which this
-    package does not depend on, and three fields do not justify adding it:
+    package does not depend on, and a few fields do not justify adding it:
 
         Status    { repeated google.protobuf.Any details = 3; }
-        ErrorInfo { string reason = 1; }
+        ErrorInfo { string reason = 1; map<string, string> metadata = 3; }
+
+    (A map field is a repeated entry message ``{key = 1; value = 2}``.)
 
     A trailer that does not parse yields ``None``: decorating an error must
     never replace it with a different one.
@@ -4382,9 +4494,16 @@ def _error_reason(err: Any) -> Optional[str]:
                 packed = any_pb2.Any.FromString(detail)
                 if packed.type_url != _ERROR_INFO_TYPE_URL:
                     continue
+                reason = ""
+                metadata = {}
                 for field, raw in _length_delimited_fields(packed.value):
-                    if field == 1 and raw:
-                        return raw.decode("utf-8")
+                    if field == 1:
+                        reason = raw.decode("utf-8")
+                    elif field == 3:
+                        entry = dict(_length_delimited_fields(raw))
+                        metadata[entry.get(1, b"").decode("utf-8")] = entry.get(2, b"").decode("utf-8")
+                if reason:
+                    return reason, metadata
     except Exception:  # noqa: BLE001 - see the docstring: never mask the error
         return None
     return None

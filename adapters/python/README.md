@@ -126,6 +126,7 @@ All methods are coroutine methods on `LoomcycleClient`.
 | `resolve_probe()` | `dict` | v0.8.0 — resolver provider/model availability matrix. |
 | `decide(state, questions, model="")` | `dict` | Ask a decision model typed questions (`choice` / `noul` / `score`) about `state`. `{model, provider, served_model, answers, usage}`; each answer is a dict under its question's name. See [Decision models](#decision-models). |
 | `list_decision_models()` | `dict` | The decision models a `decide` call may name, and the default: `{"default": str, "models": [{name, provider, model, limits}]}`. |
+| `calc(expr, vars=None, digits=None, seed=None)` | `dict` | Evaluate math exactly with the Calc tool, outside a run, over the `Calc` RPC: `{result, type, exact, text, fraction?, assigned?, shape?, truncated?}`. A refusal raises `CalcError` (`.reason`, `.hint`, `.pos`, `.category`). See [Calc](#calc). |
 | `agent_def(input)` / `skill_def(input)` | `dict` | Substrate AgentDef / SkillDef tool; op-discriminated body. |
 | `mcp_server_def` / `schedule_def` / `a2a_server_card_def` / `a2a_agent_def` / `webhook_def` / `memory_backend_def` / `operator_token_def` `(input)` | `dict` | v0.8.0 — the rest of the substrate-def family; same shape + `SubstrateToolRefusedError` contract. |
 | `client_def(input)` | `dict` | RFC FL — the apps that sign people in through this server's gates, over the `ClientDef` RPC; op-discriminated (create / update / get / list / retire / verify), `client` holds the same fields as a config `auth.clients` entry. A tenant operator registers its own tenant's apps, an admin any tenant's; config clients are read only. Same `SubstrateToolRefusedError` contract. The sign-in flow itself is the TypeScript adapter's. |
@@ -235,6 +236,48 @@ except LoomcycleError as e:
         raise
 ```
 
+## Calc
+
+`calc(expr, vars=None, digits=None, seed=None)` evaluates math exactly with
+the Calc tool, outside a run, over the `Calc` RPC (the twin of
+`POST /v1/_calc`): arithmetic, rounding, powers, logarithms, trigonometry,
+combinatorics, lists, units, statistics, matrices, finance and dates. It
+reads and writes no stored data. Any token may call it except one held to the
+run plane; each call takes one from the token's run rate (a spent rate raises
+`BackpressureError` with `.reason == "rate_limited"`, retryable). See the
+server's [Calc guide](../../docs/CALC.md) for the language.
+
+```python
+from decimal import Decimal
+from loomcycle import CalcError
+
+r = await client.calc("subtotal = 1249.99 * 3; round(subtotal * 1.2, 2)")
+print(r["text"], r["exact"])  # 4499.96 True
+
+r = await client.calc("sum(xs)", vars={"xs": [1, 2, Decimal("0.1")]})  # text "3.1", exact
+
+try:
+    await client.calc("2 ** 3")
+except CalcError as e:
+    print(e.reason, e.hint, e.pos, e.category)  # syntax power is `^`, e.g. `2^10` 2 validation
+```
+
+It returns the tool's result: `{"result", "type", "exact", "text"}` plus,
+when they apply, `fraction` (the exact `"n/d"` of a non-terminating result),
+`assigned`, `shape` and `truncated`. An integer `result` is exact; a decimal
+one is decoded as a `float`, so read `text` for its exact digits. A `Decimal`
+in `vars` is sent as a numeric string, which the tool keeps exact. `from` and
+`to` (data by reference) need a run and are refused outside one.
+
+A refusal of the expression raises `CalcError`: `.reason` is the tool's code
+(`syntax`, `unknown_function`, `domain`, `step_limit`, …; help topic
+`Calc/errors`), `.message` (also `.detail`) what went wrong, `.hint` what to
+write instead, `.pos` the offset in `expr`, `.category` `validation` (fix the
+call), `business` (the mathematics or a limit refused it; resending fails the
+same way) or `transient` (send it again), and `.retryable` the server's own
+answer. A call refused before the tool ran (empty input, the rate, the token)
+raises the class its gRPC code maps to.
+
 ## Errors
 
 Every method translates gRPC error codes to typed Python exceptions:
@@ -255,6 +298,7 @@ Every method translates gRPC error codes to typed Python exceptions:
 | `FAILED_PRECONDITION` (already pausing) | `AlreadyPausingError` (v0.8.18) |
 | `FAILED_PRECONDITION` (not paused) | `NotPausedError` (v0.8.18) |
 | `FAILED_PRECONDITION` (snapshot version) | `SnapshotVersionError` (v0.8.18) |
+| `INVALID_ARGUMENT` / `FAILED_PRECONDITION` / `UNAVAILABLE` from `calc()`, the tool's refusal | `CalcError` (see [Calc](#calc)) |
 | `INVALID_ARGUMENT` / `INTERNAL` / other | `LoomcycleError` |
 
 All exceptions inherit from `LoomcycleError` and preserve the

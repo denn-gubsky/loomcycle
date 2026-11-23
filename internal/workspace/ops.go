@@ -192,12 +192,23 @@ type GetArgs struct {
 // PutArgs are a put op's arguments. Size is exactly the bytes the input
 // carries: a put that receives fewer or more is refused (size_mismatch) and
 // leaves nothing. With Stage, Path is inside that staging folder.
+//
+// Size PutSizeUnknown is an input whose length nobody knows ahead (a
+// download whose response gave none), bounded by MaxBytes, which it
+// requires (and which a known size may not carry). The worker admits
+// MaxBytes against the quota before it reads a byte, refuses an input past
+// it (size_mismatch) leaving nothing, and counts the bytes that came. A
+// worker older than this form refuses it (invalid), never writes it.
 type PutArgs struct {
 	Path      string `json:"path"`
 	Size      int64  `json:"size"`
+	MaxBytes  int64  `json:"max_bytes,omitempty"`
 	Stage     string `json:"stage,omitempty"`
 	Overwrite bool   `json:"overwrite,omitempty"`
 }
+
+// PutSizeUnknown is PutArgs.Size for an input of unknown length.
+const PutSizeUnknown = -1
 
 // PutAnswer is a put op's output.
 type PutAnswer struct {

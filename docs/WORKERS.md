@@ -140,7 +140,7 @@ The worker refuses to start with this engine as root (its sessions would run as 
 
 | Variable | Default | |
 |---|---|---|
-| `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` | — (required) | The session image. It needs `/bin/sh`; the workspace session image carries Python, Node.js and the helpers. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` | — (required) | The session image: `denngubsky/loomcycle-workspace:<version>` (or `ghcr.io/denn-gubsky/loomcycle-workspace:<version>`), the workspace session image, published with each minor release after v1.165.0; use the runtime's own version (below). Any image with `/bin/sh` works. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_RUNTIME` | the daemon's | The OCI runtime: `runc`, `runsc` (gVisor), a Kata runtime, or any name the daemon knows. gVisor or Kata put a kernel boundary under each session. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_CLI` | `docker` | The container command. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_MEMORY_MB` | 2048 | A session's memory, 64–1048576 MiB; no swap beyond it. |
@@ -168,7 +168,7 @@ So a workspace worker that should OCR scans and transcribe recordings needs popp
 
 ### The workspace session image
 
-`denngubsky/loomcycle-workspace` (and `ghcr.io/denn-gubsky/loomcycle-workspace`), built from `Dockerfile.workspace`, is the image a workspace's commands run in when the worker runs the `container` engine (`LOOMCYCLE_WORKSPACE_ENGINE=container`, RFC GW P3): one container of it per workspace, with a read-only root, no capabilities, no network and the workspace at `/workspace`. It is not the worker's own image: it holds no loomcycle binary, and the worker's conversions still run in the worker's conversion child above, not in it. It is published at each minor release, for amd64 and arm64.
+`denngubsky/loomcycle-workspace` (and `ghcr.io/denn-gubsky/loomcycle-workspace`), built from `Dockerfile.workspace`, is the image a workspace's commands run in when the worker runs the `container` engine (`LOOMCYCLE_WORKSPACE_ENGINE=container`, RFC GW P3): one container of it per workspace, with a read-only root, no capabilities, no network and the workspace at `/workspace`. It is not the worker's own image: it holds no loomcycle binary, and the worker's conversions still run in the worker's conversion child above, not in it. It is published at each minor release after v1.165.0, for amd64 and arm64, tagged with the release's version and `latest`; set `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` to the tag of the runtime's own version, so a session has what that release's guides promise.
 
 It carries what a general workspace needs without a download (RFC GW §4.4):
 

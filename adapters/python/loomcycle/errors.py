@@ -219,6 +219,51 @@ class SnapshotVersionError(LoomcycleError):
     Server returns gRPC FailedPrecondition for both subcases."""
 
 
+class CalcError(LoomcycleError):
+    """Raised by ``calc`` when the Calc tool refused the expression (RFC GY):
+    a syntax error, an unknown name, a domain error such as ``sqrt(-1)``, a
+    limit. The same class name the TypeScript client raises.
+
+    * ``reason`` is the tool's error code (``syntax``, ``unknown_function``,
+      ``domain``, ``step_limit``, …; the help topic ``Calc/errors`` lists
+      them) and ``message`` (also ``detail``) what went wrong;
+    * ``hint`` is what to write instead and ``pos`` the offset in ``expr``
+      where it went wrong, each ``None`` when the tool gave none;
+    * ``category`` is ``validation`` (fix the call; gRPC ``INVALID_ARGUMENT``),
+      ``business`` (the mathematics or a limit refused a well-formed call, so
+      resending it fails the same way; ``FAILED_PRECONDITION``) or
+      ``transient`` (send it again; ``UNAVAILABLE``), and ``code`` the gRPC
+      status code;
+    * ``retryable`` is the server's own answer.
+
+    A call refused before the tool ran (empty input, a spent run rate, a
+    run-plane token) is not a CalcError: it raises the class its gRPC code
+    maps to, as on every RPC."""
+
+    def __init__(
+        self,
+        message: str,
+        code: Optional[Any] = None,
+        *,
+        reason: Optional[str] = None,
+        hint: Optional[str] = None,
+        pos: Optional[int] = None,
+        category: Optional[str] = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message, code=code)
+        self.reason = reason
+        self.detail = message
+        self.hint = hint
+        self.pos = pos
+        self.category = category
+        self._retryable = retryable
+
+    @property
+    def retryable(self) -> bool:
+        return self._retryable
+
+
 class SubstrateToolRefusedError(LoomcycleError):
     """Raised by ``agent_def`` / ``skill_def`` when the in-process
     substrate tool refused the call (scope deny, empty body,

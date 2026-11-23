@@ -261,6 +261,23 @@ type Event struct {
 	IdentityRunID   string `json:"identity_run_id,omitempty"`
 	IdentityAgent   string `json:"identity_agent,omitempty"`
 
+	// --- Workspace sharing (RFC GW P8; Action = "workspace_share" |
+	// "workspace_unshare" | "workspace_share_use") ---
+	//
+	// A share or an unshare an owner made, and every tool call a peer made
+	// through a share: the workspace, both runs and the access. The
+	// workspace's name travels in TargetName as `workspace:<name>`, its
+	// tenant in TargetTenant, the caller (the owner, or for a use the peer)
+	// in the Actor fields. Ids and names only, never a file's content.
+	WorkspaceID           string `json:"workspace_id,omitempty"`
+	WorkspaceOwnerRunID   string `json:"workspace_owner_run_id,omitempty"`
+	WorkspaceOwnerAgentID string `json:"workspace_owner_agent_id,omitempty"`
+	WorkspacePeerRunID    string `json:"workspace_peer_run_id,omitempty"`
+	WorkspacePeerAgentID  string `json:"workspace_peer_agent_id,omitempty"`
+	WorkspaceAccess       string `json:"workspace_access,omitempty"` // read | read_write
+	// WorkspaceOp is a use's operation and tool, e.g. "read via File".
+	WorkspaceOp string `json:"workspace_op,omitempty"`
+
 	// --- Dropped observations (Action = "audit_events_dropped") ---
 	//
 	// The store-backed stream queues observation events (refusals, denials,

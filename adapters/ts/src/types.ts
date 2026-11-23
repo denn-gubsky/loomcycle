@@ -6616,6 +6616,9 @@ export interface AgentWorkspaceGrant {
   ops?: Array<'read' | 'write' | 'exec'>;
   /** Whether the agent may open workspaces of its own. */
   open?: boolean;
+  /** Whether the agent may share a workspace it owns with another run of
+   *  the same user (RFC GW P8). It hands over only operations it holds. */
+  share?: boolean;
   /** The least isolating engine the agent accepts. Unset = any. */
   engine?: '' | 'host' | 'container';
 }
@@ -8550,6 +8553,69 @@ export interface DecisionModelsResponse {
   default: string;
   models: DecisionModel[];
 }
+
+// ---- Calc outside a run (RFC GY P4b) ----
+
+/** Body of {@link LoomcycleClient.calc}: the Calc tool's input, as
+ *  `POST /v1/_calc` takes it. The tool's `from` and `to` (data by reference)
+ *  need a run and are refused outside one, so they are not here. */
+export interface CalcInput {
+  /** One or more statements separated by `;` or newlines; the last one's
+   *  value is the result, e.g. `"subtotal = 1249.99 * 3; round(subtotal * 1.2, 2)"`. */
+  expr: string;
+  /** Names bound before evaluation: a number, a numeric string (kept exact,
+   *  e.g. `"0.1"`), a string, a boolean or a list. */
+  vars?: Record<string, unknown>;
+  /** Significant digits for an approximate or non-terminating result
+   *  (default 15). */
+  digits?: number;
+  /** Makes the random functions repeatable. */
+  seed?: number;
+}
+
+/** What a Calc result is. Later evaluator phases add kinds, so the type stays
+ *  open to other strings. */
+export type CalcValueType =
+  | "number"
+  | "string"
+  | "boolean"
+  | "list"
+  | "function"
+  | "date"
+  | "datetime"
+  | (string & {});
+
+/** A successful {@link LoomcycleClient.calc}: the tool's own result. */
+export interface CalcResult {
+  /** The value as JSON: numbers, strings, booleans, arrays for lists, a
+   *  function's signature. A number here has passed through `JSON.parse`,
+   *  so an integer past 2^53 or a decimal past 17 significant digits is
+   *  rounded; read `text` (and `fraction`) for the exact digits. `null` when
+   *  `truncated` cut it. */
+  result: unknown;
+  type: CalcValueType;
+  /** True when every number in the result is exact (no rounding happened). */
+  exact: boolean;
+  /** The exact value `"n/d"` of a non-terminating exact number, whose `text`
+   *  is rounded to `digits`. */
+  fraction?: string;
+  /** Each name the expression assigned or defined, in the same form as
+   *  `result`. */
+  assigned?: Record<string, unknown>;
+  /** The result rendered for reading, with every exact digit. */
+  text: string;
+  /** The dimensions of a list result: `[n]`, or `[n, m]`. */
+  shape?: number[];
+  /** Set when the rendered output passed the size limit: `text` is cut and
+   *  the values that did not fit are `null`. */
+  truncated?: boolean;
+}
+
+/** How a Calc refusal is classed (`errorCategory` on the HTTP body):
+ *  `validation` — fix the call; `business` — the mathematics or a limit
+ *  refused a well-formed call, so resending it fails the same way;
+ *  `transient` — sending it again may work. */
+export type CalcErrorCategory = "validation" | "business" | "transient";
 
 // ---- Speech: read-aloud and transcription outside a run (RFC FK P3) ----
 

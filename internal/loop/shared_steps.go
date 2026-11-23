@@ -120,7 +120,7 @@ func endedMidTurnEvent(ctx context.Context) providers.Event {
 // run parks at its next boundary.
 func dispatchInterruptible(ctx context.Context, opts *RunOptions, pending []providers.ToolUse, parallelism int, hookIdent hooks.Identity, emit func(providers.Event)) []providers.ContentBlock {
 	ctx, stopInterrupt := interruptibleTools(ctx, opts.PauseGate)
-	blocks := executePendingTools(ctx, opts.Dispatcher, pending, parallelism, opts.Hooks, hookIdent, emit)
+	blocks := executePendingTools(ctx, opts.Dispatcher, pending, parallelism, opts.Hooks, hookIdent, visionGateFor(opts), emit)
 	stopInterrupt()
 	return blocks
 }

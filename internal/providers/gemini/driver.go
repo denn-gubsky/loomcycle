@@ -451,6 +451,10 @@ func buildRequestBody(req providers.Request) ([]byte, error) {
 // ordering is preserved so the wire roundtrips faithfully.
 func flattenMessageContent(msg providers.Message) ([]wirePart, error) {
 	var out []wirePart
+	// A tool's pictures (RFC GW §5.8) follow every function response of the
+	// turn, each call's led by a text part naming it: the function responses
+	// stay together, as the model's function calls were.
+	var toolPictures []wirePart
 	for _, c := range msg.Content {
 		switch c.Type {
 		case "text":
@@ -476,9 +480,15 @@ func flattenMessageContent(msg providers.Message) ([]wirePart, error) {
 				Name:     c.ToolName,
 				Response: respBody,
 			}})
+			if len(c.Images) > 0 {
+				toolPictures = append(toolPictures, wirePart{Text: providers.ToolPicturesLead(c)})
+				for _, im := range c.Images {
+					toolPictures = append(toolPictures, wirePart{InlineData: &wireInlineData{MimeType: im.MediaType, Data: im.Data}})
+				}
+			}
 		}
 	}
-	return out, nil
+	return append(out, toolPictures...), nil
 }
 
 // geminiEffortBudget translates loomcycle's effort hint into a

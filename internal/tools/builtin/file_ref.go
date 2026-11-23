@@ -107,8 +107,14 @@ func parseWorkspaceRef(r dataRef, rest string) (dataRef, error) {
 	if !ok {
 		return r, errors.New("a workspace reference is workspace:<name>:<path>")
 	}
-	if strings.Contains(name, "@") {
-		return r, errors.New("a reference into another agent's workspace (name@agent) is not supported")
+	// workspace:<name>@<agent id>:<path> names a workspace another run
+	// shared with this one (RFC GW P8); the manager checks the share.
+	full := name
+	if ws, agent, shared := lifecycle.SplitShared(name); shared {
+		if !validRefAgentID(agent) {
+			return r, fmt.Errorf("workspace reference %q: the part after @ is the owner's agent id", name)
+		}
+		name = ws
 	}
 	if !lifecycle.ValidName(name) {
 		return r, fmt.Errorf("workspace name %q: 1 to 64 letters, digits, '.', '-' or '_', starting with a letter or digit", name)
@@ -121,8 +127,24 @@ func parseWorkspaceRef(r dataRef, rest string) (dataRef, error) {
 			return r, fmt.Errorf("workspace path %q: `..` is not allowed", p)
 		}
 	}
-	r.kind, r.workspace, r.path = refWorkspace, name, p
+	r.kind, r.workspace, r.path = refWorkspace, full, p
 	return r, nil
+}
+
+// validRefAgentID bounds the agent id of a shared workspace's reference:
+// 1 to 128 printable ASCII characters, none of which ends the reference
+// (':') or reads as whitespace. It is matched against stored ids, never
+// used as a path.
+func validRefAgentID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; c <= ' ' || c > '~' || c == ':' || c == '@' {
+			return false
+		}
+	}
+	return true
 }
 
 // wsClean is a workspace path cleaned: "." for the root.

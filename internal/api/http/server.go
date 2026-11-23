@@ -75,6 +75,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/turncancel"
 	"github.com/denn-gubsky/loomcycle/internal/webui"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
 	"go.opentelemetry.io/otel/trace"
@@ -1226,10 +1227,12 @@ func (s *Server) SetConversionStats(f func() convert.PoolStats) { s.conversionSt
 // GW). Boot wiring only.
 func (s *Server) SetWorkspaceStats(f func() workspace.Stats) { s.workspaceStats = f }
 
-// workspaceReleaser is what the run end needs of the workspace bookkeeping
+// workspaceReleaser is what the run end and a spawn need of the workspace bookkeeping
 // (internal/workspace/lifecycle.Manager).
 type workspaceReleaser interface {
 	ReleaseRun(ctx context.Context, runID string) error
+	// Share makes a spawn's workspace shares with its child (RFC GW P8).
+	Share(ctx context.Context, o lifecycle.Owner, name string, p lifecycle.Peer, access string) (store.WorkspaceRow, error)
 }
 
 // SetWorkspaces gives the server the workspace bookkeeping, so a run's
@@ -1604,6 +1607,9 @@ func (s *Server) newDispatcher(allowedTools []tools.Tool, toolModes map[string]s
 	// category, retryability and next step the transports give it.
 	d.SetErrorClassifier(errclassify.CategoryOf)
 	d.SetPanicCounter(s.toolPanics)
+	// A tool's picture over the edge is scaled by the server's re-encoder,
+	// in a conversion worker when there are any (RFC GW §5.8).
+	d.SetImageReencoder(s.imageReencoder)
 	// Every caller builds a RUN's dispatcher, whose history of help reads and
 	// hints is what gates a help hint on a failed call.
 	d.EnableHelpHints()
@@ -5372,6 +5378,7 @@ func replayTranscript(events []store.Event) []providers.Message {
 					ToolUseID:   pe.ToolUse.ID,
 					Text:        pe.Text,
 					IsError:     pe.IsError,
+					Images:      storedToolImages(ev.Payload),
 					NotCaptured: storedNotCaptured(ev.Payload),
 				})
 			}
@@ -5957,6 +5964,12 @@ func (s *Server) makeRecordingEmit(ctx context.Context, runID string, rid tools.
 			// its transcript (replayTranscript) must not capture it either.
 			payload = withNotCapturedMark(payload)
 		}
+		// A tool's pictures are kept beside the event (never on the live
+		// wire), so a rebuilt conversation sends the model the same ones. A
+		// no-trace run's marker above keeps nothing, pictures included.
+		if err == nil && !ev.ContentNotRetained && len(ev.ToolImages) > 0 {
+			payload = withToolImages(payload, ev.ToolImages)
+		}
 		if err == nil {
 			if err := s.store.AppendEvent(ctx, runID, string(ev.Type), payload); err != nil {
 				slog.Error("store: AppendEvent failed", "run_id", runID, "type", ev.Type, "err", err)
@@ -6397,6 +6410,13 @@ func (s *Server) runSubRun(ctx context.Context, name, systemExtra, prompt, defID
 		return "", nil, "", err
 	}
 	defer prep.cleanup()
+	// The spawn's workspace shares (RFC GW P8) are made now: the child's run
+	// exists, and its first turn has not begun. One that cannot be made
+	// fails the child before that turn.
+	if err := s.shareSpawnWorkspaces(ctx, prep.RunID, prep.AgentID); err != nil {
+		s.finishRunWithCancel(ctx, prep.SteerCtx, prep.RunID, loop.RunResult{}, err, prep.Meta)
+		return "", nil, prep.RunID, err
+	}
 	if hold != nil {
 		hold.runID = prep.RunID
 		// Verdict-only: makeSteerEntry gives it no close func.

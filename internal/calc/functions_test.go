@@ -357,19 +357,21 @@ func TestFunctions_TableIsCompleteAndConsistent(t *testing.T) {
 	}
 	// The functions this PR promises, by section.
 	want := map[string]string{
-		SecElementary: "abs sign sqrt cbrt exp expm1 log log10 log2 log1p pow hypot floor ceil round roundeven trunc mod rem min max clamp",
-		SecTrig:       "sin cos tan asin acos atan atan2 sec csc cot sinh cosh tanh asinh acosh atanh deg rad",
-		SecSpecial:    "gamma lgamma beta erf erfc erfinv erfcinv j0 j1 jn y0 y1 yn",
-		SecIntegers:   "factorial binomial permutations gcd lcm isprime nextprime factor divisors modpow modinv fib",
-		SecBits:       "bitand bitor bitxor bitnot shl shr base frombase",
-		SecSequences:  "range map filter reduce sort reverse unique count any all zip sum product len",
-		SecRandom:     "random randint randnormal shuffle sample",
-		SecControl:    "if",
-		SecDates:      "date datetime today now tz addmonths addyears eomonth datediff age yearfrac workdays addworkdays xnpv xirr year month day weekday isoweek dayofyear quarter daysinmonth isleap hour minute second datefmt",
-		SecUnits:      "convert convertdelta units",
-		SecStatistics: "mean median mode spread geomean harmmean wmean variance stdev zscore quantile percentile rank cumsum cumprod diff covariance correlation linreg",
-		SecFinance:    "pmt fv pv nper rate npv irr compound cagr pct pctchange",
-		SecMatrices:   "zeros ones identity diag reshape hstack vstack linspace transpose size dot cross kron trace det matrank norm cond inv pinv solve lstsq lu qr cholesky eig svd",
+		SecElementary:    "abs sign sqrt cbrt exp expm1 log log10 log2 log1p pow hypot floor ceil round roundeven trunc mod rem min max clamp",
+		SecTrig:          "sin cos tan asin acos atan atan2 sec csc cot sinh cosh tanh asinh acosh atanh deg rad",
+		SecSpecial:       "gamma lgamma beta erf erfc erfinv erfcinv j0 j1 jn y0 y1 yn",
+		SecIntegers:      "factorial binomial permutations gcd lcm isprime nextprime factor divisors modpow modinv fib",
+		SecBits:          "bitand bitor bitxor bitnot shl shr base frombase",
+		SecSequences:     "range map filter reduce sort reverse unique count any all zip sum product len",
+		SecRandom:        "random randint randnormal shuffle sample",
+		SecControl:       "if",
+		SecDates:         "date datetime today now tz addmonths addyears eomonth datediff age yearfrac workdays addworkdays xnpv xirr year month day weekday isoweek dayofyear quarter daysinmonth isleap hour minute second datefmt",
+		SecUnits:         "convert convertdelta units",
+		SecStatistics:    "mean median mode spread geomean harmmean wmean variance stdev zscore quantile percentile rank cumsum cumprod diff covariance correlation linreg",
+		SecFinance:       "pmt fv pv nper rate npv irr compound cagr pct pctchange",
+		SecCalculus:      "integrate deriv root minimize polyfit polyval interp",
+		SecDistributions: "normpdf normcdf norminv tpdf tcdf tinv chi2pdf chi2cdf chi2inv fpdf fcdf finv exppdf expcdf expinv unifpdf unifcdf unifinv binompdf binomcdf poisspdf poisscdf",
+		SecMatrices:      "zeros ones identity diag reshape hstack vstack linspace transpose size dot cross kron trace det matrank norm cond inv pinv solve lstsq lu qr cholesky eig svd",
 	}
 	got := map[string][]string{}
 	for _, f := range fs {

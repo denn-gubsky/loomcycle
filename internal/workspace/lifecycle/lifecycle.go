@@ -19,16 +19,19 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
 )
 
 // Store is what the manager reads and writes: the workspaces table, and runs
-// for the run-end release's pause check.
+// for the run-end release's pause check and a share's runs.
 type Store interface {
 	store.WorkspaceStore
 	GetRun(ctx context.Context, runID string) (store.Run, error)
+	// GetRunByAgentID resolves the run a share names (RFC GW P8).
+	GetRunByAgentID(ctx context.Context, agentID string) (store.Run, error)
 }
 
 // Limits are the operator's workspace bounds (config workspace:, resolved).
@@ -68,6 +71,9 @@ type Manager struct {
 	now    func() time.Time
 	// quarantine is the files that crashed a workspace's conversion child.
 	quarantine quarantine
+	// audit records shares and uses through them (SetAudit); nil records
+	// nothing.
+	audit audit.Sink
 }
 
 // New builds a manager. A zero MaxPerRun is 1: a run that may open
