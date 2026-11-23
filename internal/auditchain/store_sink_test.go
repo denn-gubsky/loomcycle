@@ -346,6 +346,9 @@ func TestStoreSink_OneTenantsFloodDropsNoOtherTenantsObservations(t *testing.T) 
 	if !auditchain.IsObservation("git_submodule_update") {
 		t.Error("git_submodule_update is written at once; it is a fetch, queued like git_fetch")
 	}
+	if !auditchain.IsObservation("workspace_egress") {
+		t.Error("workspace_egress is written at once; it is one line per request out, queued like git_fetch")
+	}
 }
 
 // failingSummaryAppender refuses every drop-summary row; other appends wait
