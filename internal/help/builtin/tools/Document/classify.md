@@ -34,6 +34,13 @@ three steps, each reported in `steps`:
    then the children of each one the model says yes to, at most 12 calls. It
    answers the most specific yes on each branch: a child said yes stands for
    its parent, and a parent whose children were all said no is kept itself.
+   In the tenant scope, where the store keeps vectors, the document has a
+   document annotation and `node_stats compute` has stored the concepts'
+   definition vectors, the tree is not walked: the 20 concepts nearest the
+   document (by definition and, where stored, by centroid, taken in turn) are
+   asked in one call, and the step lists them as `nearest` (`{concept, tag,
+   chunk_id, definition?, centroid?}`, each a similarity). A concept said yes
+   with a narrower one also said yes is left out.
 
 A draft ontology classifies nothing.
 

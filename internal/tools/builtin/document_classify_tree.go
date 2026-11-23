@@ -50,7 +50,13 @@ func inForceConcepts(read OntologyRead) []memrank.OntologyConcept {
 // the most specific concepts said yes on each branch: a child said yes stands for its
 // parent (a concept filter on the parent finds it anyway), and a parent said yes whose
 // children were all said no is kept itself.
+//
+// Where the document could be compared with the concepts by vector (cd.nearest), the
+// nearest are asked in one request instead (document_concept_candidates.go).
 func (d *Document) classifyConceptTree(ctx context.Context, read OntologyRead, cd classifyDoc) ([]classifyConcept, classifyStep) {
+	if len(cd.nearest) > 0 {
+		return d.classifyConceptCandidates(ctx, cd)
+	}
 	step := classifyStep{Step: "model", Candidates: []classifyCandidate{}}
 	all := inForceConcepts(read)
 	children := map[string][]memrank.OntologyConcept{}

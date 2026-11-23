@@ -317,7 +317,7 @@ func TestMisfit_InputAndAccessAreChecked(t *testing.T) {
 	for body, want := range map[string]string{
 		`{"op":"node_stats","propose":true}`:                   "propose is taken only with mode misfits",
 		`{"op":"node_stats","mode":"compute","propose":true}`:  "propose is taken only with mode misfits",
-		`{"op":"node_stats","mode":"nope"}`:                    "is not report, compute, misfits, growth or split",
+		`{"op":"node_stats","mode":"nope"}`:                    "is not report, compute, misfits, growth, split or assign",
 		`{"op":"node_stats","mode":"misfits","scheme":"nope"}`: `no scheme "nope" is in force`,
 	} {
 		_, res := docExec(t, d, k.f.operator, body)
@@ -337,7 +337,9 @@ func TestNodeStats_AnswerIsUnchangedWithoutMisfitOptions(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	k := newStatsCorpus(t, d, base)
 	k.withStrays(t)
+	// Only an explicit mode compute reports the concept definitions it refreshed (RFC GM P3.3).
 	want := "computed,embed_model,fresh,min_members,missing,mode,nodes,removed,series,stale,vectors"
+	wantCompute := "computed,definitions,embed_model,fresh,min_members,missing,mode,nodes,removed,series,stale,vectors"
 	for _, body := range []string{`{"op":"node_stats"}`, computeAll} {
 		_, res := docExec(t, d, k.f.operator, body)
 		if res.IsError {
@@ -352,8 +354,12 @@ func TestNodeStats_AnswerIsUnchangedWithoutMisfitOptions(t *testing.T) {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
-		if got := strings.Join(keys, ","); got != want {
-			t.Errorf("%s: fields %s, want %s", body, got, want)
+		w := want
+		if body == computeAll {
+			w = wantCompute
+		}
+		if got := strings.Join(keys, ","); got != w {
+			t.Errorf("%s: fields %s, want %s", body, got, w)
 		}
 	}
 	if n := len(centroidProposals(t, d, k.f.operator)); n != 0 {
