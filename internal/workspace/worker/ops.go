@@ -177,8 +177,20 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		if err := os.RemoveAll(dir); err != nil {
 			return refuse(workspace.ClassFailed, "removing the workspace: %v", err)
 		}
+		// Its checkpoints go with it (RFC GW §5.4).
+		if err := w.dropCheckpoints(id); err != nil {
+			return refuse(workspace.ClassFailed, "removing the workspace's checkpoints: %v", err)
+		}
 		w.dropQuota(id)
 		return answer{}
+	case workspace.OpFork:
+		return hidePaths(w.forkOp(ctx, id, dir, start.GetArgs()), false, dir, w.opt.Root)
+	case workspace.OpCheckpoint, workspace.OpCheckpoints, workspace.OpDeleteCheckpoint, workspace.OpRestore:
+		dir, real, a := w.workspaceDir(id)
+		if a.class == "" {
+			a = w.checkpointOps(ctx, id, dir, real, start.GetOp(), start.GetArgs())
+		}
+		return hidePaths(a, false, real, dir, w.opt.Root)
 	case workspace.OpStatus:
 		st, err := os.Lstat(dir)
 		exists := err == nil && st.IsDir()

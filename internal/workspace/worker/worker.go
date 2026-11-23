@@ -200,7 +200,12 @@ func Run(ctx context.Context, opt Options) error {
 	if opt.Convert == nil {
 		opt.Labels = nil
 	}
-	w := &worker{opt: opt, log: log, engine: eng}
+	// The checkpoint mechanism is the disk's, probed once and reported as a
+	// label (RFC GW §5.4).
+	mech := probeMechanism(root)
+	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech)
+	log.Info("checkpoints are recorded by this mechanism", "mechanism", mech)
+	w := &worker{opt: opt, log: log, engine: eng, mech: mech}
 	// The kernels die with the worker; the next cell after it comes back
 	// says kernel_restarted (RFC GW §5.7). A host worker writes the drivers
 	// it carries into its root; a session image carries its own copies
@@ -295,6 +300,9 @@ type worker struct {
 	quotas quotas
 	// extra counts the one-op streams OpenStreams opened and still open.
 	extra atomic.Int32
+	// mech is the checkpoint mechanism probed at start (RFC GW §5.4);
+	// empty copies.
+	mech string
 }
 
 func (w *worker) outgoing(ctx context.Context) context.Context {
@@ -464,6 +472,10 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 		}
 		if err := os.RemoveAll(filepath.Join(w.opt.Root, id)); err != nil {
 			log.Warn("cannot remove a workspace the dispatcher released", "workspace_id", id, "err", err)
+			continue
+		}
+		if err := w.dropCheckpoints(id); err != nil {
+			log.Warn("cannot remove the checkpoints of a workspace the dispatcher released", "workspace_id", id, "err", err)
 			continue
 		}
 		w.dropQuota(id)

@@ -153,6 +153,7 @@ One tool, `Workspace`, with an `op`:
 | `exec` | run a shell command in it (`/bin/sh -c`) | `name`, `command`, `cwd`, `timeout_s` |
 | `run_cell` | run code in an interpreter that keeps its variables between calls | `name`, `code`, `kernel` (`python` or `node`), `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
+| `checkpoint`, `checkpoints`, `restore`, `delete_checkpoint`, `fork` | record the files, put them back, open a copy; see "Checkpoints and forks" | `name`, `label`, `checkpoint`, `as` |
 | `view` | return a picture in it to the model as an image | `name`, `path` |
 | `start` | run a command that keeps running after the call, a server (see Servers) | `name`, `command`, `cwd`, `port` |
 | `stop` | end a server and what it started | `name`, `server` |
@@ -204,6 +205,35 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **One cell at a time** per interpreter: a second call waits for the first.
 - **The quota.** A cell is a command: it is refused with `workspace_over_quota` while the workspace is marked full, and the workspace is measured after it.
 - **How it runs.** Each interpreter is a small driver of ours (one Python file, one Node file, carried in the binary and written into the worker's root for the `host` engine) that the worker starts through its engine and speaks JSON lines with. A cell runs inside the driver's process and can write to that stream itself; the worker reads it with a bounded reader and takes a frame only as the current cell's own output, under a fresh id per cell, so a forged frame changes nothing but that cell's result.
+
+## Checkpoints and forks
+
+`checkpoint` records a workspace's files on its worker, installed packages included, and answers an id; `restore` puts them back; `fork` opens a second workspace from a checkpoint or from the present files (RFC GW §5.4, P6).
+
+```json
+{"op": "checkpoint", "name": "py", "label": "packages installed"}
+```
+```json
+{"id": "ck_3f9a1c0e5b7d2a64", "label": "packages installed", "bytes": 48213, "files": 37, "mechanism": "clone", "usage": {"used_bytes": 48213, "quota_bytes": 2147483648, "checkpoint_bytes": 48213}}
+```
+```json
+{"op": "fork", "name": "py", "as": "py-b", "checkpoint": "ck_3f9a1c0e5b7d2a64"}
+```
+
+| op | What it does | Grant | Arguments |
+|---|---|---|---|
+| `checkpoint` | record the workspace's files | `write` | `name`, `label` |
+| `checkpoints` | its checkpoints, newest first | `read` | `name` |
+| `restore` | put the files back to a checkpoint | `write` | `name`, `checkpoint` |
+| `delete_checkpoint` | remove a checkpoint and free its room | `write` | `name`, `checkpoint` |
+| `fork` | open a new workspace of the run as a copy | `open` | `name`, `as`, `checkpoint` |
+
+- **Files only.** An interpreter's variables and a running command are not in a checkpoint. `checkpoint` leaves them running; a command still writing may leave a file half written in the checkpoint. `restore` stops the workspace's interpreters and its session first (a server, a background command), and the next cell or command starts them new; the checkpoint stays, to restore again.
+- **The quota.** A checkpoint counts its full size against the workspace's `disk_quota_mb`, beside the workspace's files, whatever the mechanism shares on disk: a clone or a reflink stops sharing as soon as either side is rewritten, so a checkpoint is never a way round the quota. A checkpoint that does not fit, and a restore whose files do not fit beside the checkpoints held, are refused with `workspace_over_quota`; `delete_checkpoint` makes room. A workspace holds at most `workspace.checkpoint.max_per_workspace` checkpoints (default 8; past it `checkpoint_limit`).
+- **A fork is a workspace like any other:** the caller's own, on the original's worker (refused with `at_capacity` when that worker is full), with its own session and the operator's disk quota (a source that does not fit is refused, nothing made), counted against `max_per_run` and `max_per_tenant`. It starts with no checkpoints, no shares, no interpreter, and no record of Documents checked out into the original: check them out again to commit from the fork. A workspace shared with the run cannot be forked; an agent whose `workspace.engine` is stronger than the original's engine cannot fork it.
+- **How the worker records one.** It probes its disk at start and picks the first mechanism that works, reported as the label `checkpoint:<mechanism>` and in every answer: `clone` (a whole-folder clone on APFS, macOS), `reflink` (each file shares its blocks: xfs with reflink, btrfs, bcachefs), else `copy` (each file copied; a checkpoint or a fork then takes its full size on disk and seconds for a large tree). Never hard links. A worker that serves fan-outs wants a disk with reflinks. Links are copied as links, never followed; a pipe, a socket or a device is left out and named in `skipped`.
+- **Where checkpoints live.** In the worker's root, beside the workspaces (`.loomcycle-checkpoints/<workspace id>/`), never inside one: no command or file op reaches them. They go with their workspace, and a worker's start removes what an interrupted checkpoint left.
+- **The `host` engine has no fixed path.** A fork's Python environment would still name the original's folder, so its `pip` would install into the original. On `host` the worker rewrites the paths in each environment's `pyvenv.cfg` and the text files of its `bin/`, and names them in the answer's `rewritten`. The `container` engine mounts every workspace at `/workspace`, so nothing needs it.
 
 ## Servers
 
@@ -411,6 +441,7 @@ A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so
 | `workspace.copy.max_bytes` | 1 GiB | The bytes one folder copy may move. |
 | `workspace.checkout.max_documents` | 500 | The documents one `File op=checkout` writes. |
 | `workspace.checkout.max_bytes` | 256 MiB | The bytes one checkout writes. |
+| `workspace.checkpoint.max_per_workspace` | 8 | The checkpoints one workspace holds (1 to 100); each also counts against its disk quota. |
 | `workspace.convert.memory_limit_mb` | 1024 | The local worker's conversion child (`LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` on a remote worker). |
 | worker capacity | 8 | Workspaces a worker holds (`LOOMCYCLE_WORKSPACE_CAPACITY`). |
 
@@ -432,7 +463,10 @@ A command and everything it started is killed at its timeout. Its output is kept
 | `lost` | The workspace's directory is no longer on its worker. | Open a new one. |
 | `refused` | The worker will not run the command (`LOOMCYCLE_WORKSPACE_COMMANDS`). | Use a listed program, or widen the list. |
 | `kernel_unavailable` | The worker cannot start the interpreter `run_cell` asked for: no `python3` or `node` on its `PATH`. | Install it on the worker, or use the other kernel. |
-| `workspace_over_quota` | The write would pass the workspace's disk quota, or the workspace is marked full after a command. | Remove files (`rm`, `clear`, or a command), then go on; or raise `workspace.disk_quota_mb`. |
+| `workspace_over_quota` | The write, checkpoint, restore or fork would pass a disk quota (checkpoints count against their workspace's), or the workspace is marked full after a command. | Remove files (`rm`, `clear`, or a command) or checkpoints (`delete_checkpoint`), then go on; or raise `workspace.disk_quota_mb`. |
+| `checkpoint_limit` | The workspace holds as many checkpoints as `workspace.checkpoint.max_per_workspace` allows. | `delete_checkpoint` one. |
+| `checkpoint_not_found` | The workspace has no checkpoint of that id. | `checkpoints` lists them. |
+| `exists` | A `fork`'s `as` names a workspace the run already holds. | Fork as another name. |
 | `invalid_argument` | The runtime refused the call: an unknown op, an argument the op does not take, a missing one, a bad timeout. | Fix the call. |
 | `invalid`, `failed` | The worker refused the arguments (a path or `cwd` out of the workspace, a malformed argument) or a file system operation failed. | Read the detail. |
 | `busy`, `output_too_large` | The worker had no free stream in time; the op sent more output than its bound. | Retry; narrow the op. |

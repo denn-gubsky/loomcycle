@@ -67,6 +67,15 @@ type WorkspaceConfig struct {
 	// MCP configures Workspace on loomcycle's MCP server (RFC GW D35): off
 	// unless enabled.
 	MCP WorkspaceMCPConfig `yaml:"mcp,omitempty"`
+	// Checkpoint bounds a workspace's checkpoints (RFC GW §5.4).
+	Checkpoint WorkspaceCheckpointConfig `yaml:"checkpoint,omitempty"`
+}
+
+// WorkspaceCheckpointConfig is `workspace.checkpoint`. A checkpoint's size
+// counts against its workspace's disk quota; this bounds their number.
+type WorkspaceCheckpointConfig struct {
+	// MaxPerWorkspace is the checkpoints one workspace may hold. Default 8.
+	MaxPerWorkspace int `yaml:"max_per_workspace,omitempty"`
 }
 
 // WorkspaceMCPConfig is `workspace.mcp`: the `workspace` tool of loomcycle's
@@ -160,6 +169,9 @@ const (
 	DefaultWorkspaceCheckoutDocs   = 500
 	DefaultWorkspaceCheckoutBytes  = 256 << 20
 	DefaultWorkspaceKernelGraceS   = 5
+	DefaultWorkspaceCheckpoints    = 8
+	// maxWorkspaceCheckpoints bounds workspace.checkpoint.max_per_workspace.
+	maxWorkspaceCheckpoints = 100
 	// maxWorkspaceKernelGraceS bounds workspace.kernel.interrupt_grace_seconds.
 	maxWorkspaceKernelGraceS = 300
 	// The bounds of workspace.convert.memory_limit_mb.
@@ -213,6 +225,9 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Kernel.InterruptGraceSeconds == 0 {
 		w.Kernel.InterruptGraceSeconds = DefaultWorkspaceKernelGraceS
+	}
+	if w.Checkpoint.MaxPerWorkspace == 0 {
+		w.Checkpoint.MaxPerWorkspace = DefaultWorkspaceCheckpoints
 	}
 	w.Egress = w.Egress.Resolved()
 	if len(w.MCP.Ops) == 0 {
@@ -332,6 +347,9 @@ func validateWorkspace(c *Config) error {
 	if g := w.Kernel.InterruptGraceSeconds; g < 0 || g > maxWorkspaceKernelGraceS {
 		return fmt.Errorf("workspace.kernel.interrupt_grace_seconds: %d is out of range (1 to %d)", g, maxWorkspaceKernelGraceS)
 	}
+	if c := w.Checkpoint.MaxPerWorkspace; c < 0 || c > maxWorkspaceCheckpoints {
+		return fmt.Errorf("workspace.checkpoint.max_per_workspace: %d is out of range (1 to %d)", c, maxWorkspaceCheckpoints)
+	}
 	for _, op := range w.MCP.Ops {
 		switch op {
 		case WorkspaceOpRead, WorkspaceOpWrite, WorkspaceOpExec:
@@ -387,6 +405,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "kernel"), "workspace.kernel", nil, reflect.TypeOf(WorkspaceKernelConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "checkpoint"), "workspace.checkpoint", nil, reflect.TypeOf(WorkspaceCheckpointConfig{})); err != nil {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "mcp"), "workspace.mcp", nil, reflect.TypeOf(WorkspaceMCPConfig{})); err != nil {
