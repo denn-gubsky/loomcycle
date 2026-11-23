@@ -15,7 +15,9 @@ import type { Compartment, Extension } from "@codemirror/state";
 // An edit calls `onChange`; a new `value` from outside replaces the content
 // without echoing back as an edit.
 
-export type EditorLanguage = "json" | "yaml" | "text";
+// markdown is GitHub-flavoured (tables, task lists, strikethrough): the
+// explorer's chunk editor writes the same Markdown its viewer renders.
+export type EditorLanguage = "json" | "yaml" | "markdown" | "text";
 
 export interface EditorDiagnostic {
   /** Offsets into `value`. */
@@ -62,6 +64,7 @@ type CM = {
   language: typeof import("@codemirror/language");
   json: typeof import("@codemirror/lang-json");
   yaml: typeof import("@codemirror/lang-yaml");
+  markdown: typeof import("@codemirror/lang-markdown");
   highlight: typeof import("@lezer/highlight");
 };
 
@@ -76,10 +79,11 @@ function loadCodeMirror() {
     import("@codemirror/language"),
     import("@codemirror/lang-json"),
     import("@codemirror/lang-yaml"),
+    import("@codemirror/lang-markdown"),
     import("@lezer/highlight"),
-  ]).then(([{ basicSetup }, view, state, lint, language, json, yaml, highlight]) => ({
+  ]).then(([{ basicSetup }, view, state, lint, language, json, yaml, markdown, highlight]) => ({
     basicSetup,
-    cm: { view, state, lint, language, json, yaml, highlight },
+    cm: { view, state, lint, language, json, yaml, markdown, highlight },
   }));
   // A failed load is retried by the next editor that mounts.
   loading.catch(() => {
@@ -281,6 +285,7 @@ export function CodeEditor({
 function languageExtension(cm: CM, language: EditorLanguage): Extension {
   if (language === "json") return cm.json.json();
   if (language === "yaml") return cm.yaml.yaml();
+  if (language === "markdown") return cm.markdown.markdown({ base: cm.markdown.markdownLanguage });
   return [];
 }
 
