@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -77,6 +78,28 @@ type ContainerOptions struct {
 	MaxOutput int
 	// Commands are the programs a command may start with, as for Host.
 	Commands []string
+	// Egress, when set, gives each session a way out through the worker
+	// (RFC GW §6.3); nil keeps a session with no network at all.
+	Egress *ContainerEgress
+}
+
+// ContainerEgress configures a session's egress: a network of its own with
+// no route out, shared only with a gateway that answers as "egress" and
+// forwards to the worker over a Unix socket of that workspace alone.
+type ContainerEgress struct {
+	// Dir is where the worker keeps one socket directory per workspace, as
+	// the worker sees it. Short: a socket's path is limited to about 100
+	// bytes.
+	Dir string
+	// HostDir is Dir as the container daemon sees it, when the two differ;
+	// empty is Dir.
+	HostDir string
+	// Image is the gateway's image, which needs python3; empty is the
+	// session image.
+	Image string
+	// Handler answers a workspace's requests; nil answers every one with
+	// 503.
+	Handler func(workspace string) http.Handler
 }
 
 // Container runs each workspace's commands in a container of its own, its
