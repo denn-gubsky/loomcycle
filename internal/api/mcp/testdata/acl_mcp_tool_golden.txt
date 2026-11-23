@@ -21,6 +21,7 @@ delete_run_tree	runs:delete	false
 delete_snapshot	-	false
 document	-	false
 documentsourcedef	-	false
+egressroutedef	substrate:tenant	false
 erasure	substrate:tenant	false
 evaluation	runs:read	false
 export_snapshot	-	false

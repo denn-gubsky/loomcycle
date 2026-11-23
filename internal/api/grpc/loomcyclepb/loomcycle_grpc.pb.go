@@ -109,6 +109,7 @@ const (
 	Loomcycle_ClientDef_FullMethodName            = "/loomcycle.v1.Loomcycle/ClientDef"
 	Loomcycle_OperatorTokenDef_FullMethodName     = "/loomcycle.v1.Loomcycle/OperatorTokenDef"
 	Loomcycle_VolumeDef_FullMethodName            = "/loomcycle.v1.Loomcycle/VolumeDef"
+	Loomcycle_EgressRouteDef_FullMethodName       = "/loomcycle.v1.Loomcycle/EgressRouteDef"
 	Loomcycle_TeamDef_FullMethodName              = "/loomcycle.v1.Loomcycle/TeamDef"
 	Loomcycle_HookDef_FullMethodName              = "/loomcycle.v1.Loomcycle/HookDef"
 	Loomcycle_Path_FullMethodName                 = "/loomcycle.v1.Loomcycle/Path"
@@ -694,6 +695,14 @@ type LoomcycleClient interface {
 	// Same SubstrateRequest body shape (op-discriminated input_json +
 	// is_error tool refusals in the response).
 	VolumeDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
+	// EgressRouteDef dispatches to the RFC GW P4 tenant egress routes: the
+	// upstream URLs a tenant's workspaces may reach as http://egress/<name>/.
+	// Mirrors POST /v1/_egressroutedef. TENANT-CONFINED (ScopeTenant): the tool
+	// stamps the caller's authoritative tenant + opaque-404s cross-tenant reads.
+	// Flat like VolumeDef: create / get / list / delete. Not an in-run tool: no
+	// agent may write a route. Same SubstrateRequest/Response body shape
+	// (is_error carries tool refusals).
+	EgressRouteDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error)
 	// TeamDef dispatches to the RFC AP team-workflow substrate. Mirrors
 	// POST /v1/_teamdef. TENANT-CONFINED (ScopeTenant, like AgentDef/SkillDef):
 	// the tool stamps the caller's authoritative tenant + opaque-404s
@@ -1597,6 +1606,16 @@ func (c *loomcycleClient) VolumeDef(ctx context.Context, in *SubstrateRequest, o
 	return out, nil
 }
 
+func (c *loomcycleClient) EgressRouteDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SubstrateResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_EgressRouteDef_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *loomcycleClient) TeamDef(ctx context.Context, in *SubstrateRequest, opts ...grpc.CallOption) (*SubstrateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SubstrateResponse)
@@ -2405,6 +2424,14 @@ type LoomcycleServer interface {
 	// Same SubstrateRequest body shape (op-discriminated input_json +
 	// is_error tool refusals in the response).
 	VolumeDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
+	// EgressRouteDef dispatches to the RFC GW P4 tenant egress routes: the
+	// upstream URLs a tenant's workspaces may reach as http://egress/<name>/.
+	// Mirrors POST /v1/_egressroutedef. TENANT-CONFINED (ScopeTenant): the tool
+	// stamps the caller's authoritative tenant + opaque-404s cross-tenant reads.
+	// Flat like VolumeDef: create / get / list / delete. Not an in-run tool: no
+	// agent may write a route. Same SubstrateRequest/Response body shape
+	// (is_error carries tool refusals).
+	EgressRouteDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error)
 	// TeamDef dispatches to the RFC AP team-workflow substrate. Mirrors
 	// POST /v1/_teamdef. TENANT-CONFINED (ScopeTenant, like AgentDef/SkillDef):
 	// the tool stamps the caller's authoritative tenant + opaque-404s
@@ -2774,6 +2801,9 @@ func (UnimplementedLoomcycleServer) OperatorTokenDef(context.Context, *Substrate
 }
 func (UnimplementedLoomcycleServer) VolumeDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VolumeDef not implemented")
+}
+func (UnimplementedLoomcycleServer) EgressRouteDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EgressRouteDef not implemented")
 }
 func (UnimplementedLoomcycleServer) TeamDef(context.Context, *SubstrateRequest) (*SubstrateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TeamDef not implemented")
@@ -4118,6 +4148,24 @@ func _Loomcycle_VolumeDef_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Loomcycle_EgressRouteDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SubstrateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).EgressRouteDef(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_EgressRouteDef_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).EgressRouteDef(ctx, req.(*SubstrateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Loomcycle_TeamDef_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SubstrateRequest)
 	if err := dec(in); err != nil {
@@ -4817,6 +4865,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VolumeDef",
 			Handler:    _Loomcycle_VolumeDef_Handler,
+		},
+		{
+			MethodName: "EgressRouteDef",
+			Handler:    _Loomcycle_EgressRouteDef_Handler,
 		},
 		{
 			MethodName: "TeamDef",

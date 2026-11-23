@@ -159,6 +159,12 @@ var handlersByName = map[string]toolHandler{
 	"volumedef": wrapBuiltin("volumedef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.VolumeDef(ctx, in)
 	}),
+	// egressroutedef: RFC GW P4 — the egress routes a tenant writes for its
+	// workspaces. Tenant from ctx (operatorCtx → RunIdentity), never the wire;
+	// substrate:tenant by name. ops: create/get/list/delete.
+	"egressroutedef": wrapBuiltin("egressroutedef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.EgressRouteDef(ctx, in)
+	}),
 	// RFC AR — secure per-tenant credential store. Tenant/user identity from the
 	// principal ctx (RFC AG mcpPrincipalCtx), never the wire; get/list metadata
 	// only. ops: create/get/list/delete. RFC CN confines an isolated substrate:user

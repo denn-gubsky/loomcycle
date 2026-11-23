@@ -674,6 +674,15 @@ service Loomcycle {
   // is_error tool refusals in the response).
   rpc VolumeDef(SubstrateRequest) returns (SubstrateResponse);
 
+  // EgressRouteDef dispatches to the RFC GW P4 tenant egress routes: the
+  // upstream URLs a tenant's workspaces may reach as http://egress/<name>/.
+  // Mirrors POST /v1/_egressroutedef. TENANT-CONFINED (ScopeTenant): the tool
+  // stamps the caller's authoritative tenant + opaque-404s cross-tenant reads.
+  // Flat like VolumeDef: create / get / list / delete. Not an in-run tool: no
+  // agent may write a route. Same SubstrateRequest/Response body shape
+  // (is_error carries tool refusals).
+  rpc EgressRouteDef(SubstrateRequest) returns (SubstrateResponse);
+
   // TeamDef dispatches to the RFC AP team-workflow substrate. Mirrors
   // POST /v1/_teamdef. TENANT-CONFINED (ScopeTenant, like AgentDef/SkillDef):
   // the tool stamps the caller's authoritative tenant + opaque-404s

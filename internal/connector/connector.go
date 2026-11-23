@@ -565,6 +565,14 @@ type Connector interface {
 	// dispatch through this single Connector method.
 	VolumeDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// EgressRouteDef — RFC GW P4: the egress routes a tenant writes for its
+	// workspaces. Op-discriminated (create / get / list / delete), flat like
+	// VolumeDef. TENANT-CONFINED (ScopeTenant) and NOT an in-run tool: no agent
+	// may widen its own way out. Reachable via POST /v1/_egressroutedef, the
+	// gRPC EgressRouteDef RPC, the MCP meta-tool `egressroutedef` and the
+	// adapters — all dispatch through this single Connector method.
+	EgressRouteDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// CredentialDef — RFC AR secure per-tenant credential store. Op-discriminated
 	// (create / get / list / delete). TENANT-CONFINED (ScopeTenant): the tool
 	// stamps the caller's authoritative tenant, and for scope=user the caller's

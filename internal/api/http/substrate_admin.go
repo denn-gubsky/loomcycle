@@ -153,6 +153,13 @@ func (s *Server) handleSubstrateVolumeDef(w http.ResponseWriter, r *http.Request
 	s.dispatchSubstrate(w, r, "VolumeDef", s.VolumeDef)
 }
 
+// handleSubstrateEgressRouteDef serves POST /v1/_egressroutedef (RFC GW P4):
+// a tenant operator's egress routes. Same dispatch shape as the other
+// substrate endpoints; the tool takes the tenant from the operator-trust ctx.
+func (s *Server) handleSubstrateEgressRouteDef(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSubstrate(w, r, "EgressRouteDef", s.EgressRouteDef)
+}
+
 // handleSubstratePath serves POST /v1/_path.
 // RFC AL Path VFS. Bearer-authed; no per-tool scope policy (gated by
 // tools; substrateAdminUserCtx grants the ["*"] tool ceiling). Uses

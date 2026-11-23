@@ -1105,6 +1105,20 @@ func (s *Server) VolumeDef(ctx context.Context, input json.RawMessage) (connecto
 	return s.dispatchBuiltin(ctx, "VolumeDef", input)
 }
 
+// EgressRouteDef dispatches to the RFC GW P4 tenant egress-route tool. NOT in
+// the per-agent dispatcher (s.tools): no agent may write a route, so it has a
+// dedicated slot like HookDef. See SetEgressRouteDefTool for wiring.
+func (s *Server) EgressRouteDef(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if s.egressRouteDefTool == nil {
+		return connector.ToolResult{}, fmt.Errorf("EgressRouteDef: not configured (no tool wired via SetEgressRouteDefTool)")
+	}
+	res, err := s.execBuiltin(ctx, s.egressRouteDefTool, input)
+	if err != nil {
+		return connector.ToolResult{}, err
+	}
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError, Count: res.Count, ErrorInfo: res.Error}, nil
+}
+
 // CredentialDef dispatches to the RFC AR secure credential store tool. In the
 // per-agent dispatcher (s.tools), so it routes through dispatchBuiltin; what the
 // MCP `credentialdef` meta-tool + in-band calls reach. Tenant/user identity comes

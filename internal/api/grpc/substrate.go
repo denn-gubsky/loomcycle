@@ -415,6 +415,13 @@ func (s *Server) VolumeDef(ctx context.Context, req *loomcyclepb.SubstrateReques
 	})
 }
 
+// EgressRouteDef serves the RFC GW P4 EgressRouteDef gRPC RPC — the egress
+// routes a tenant writes. Same shape as the other substrate RPCs;
+// tenant-confined (ScopeTenant) with tenant authority enforced in the tool.
+func (s *Server) EgressRouteDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {
+	return s.dispatchSubstrateRPC(ctx, "EgressRouteDef", req, s.connector.EgressRouteDef)
+}
+
 // HookDef serves the HookDef gRPC RPC — reusable hook definitions. Same shape
 // as the other substrate RPCs; tenant-confined like AgentDef.
 func (s *Server) HookDef(ctx context.Context, req *loomcyclepb.SubstrateRequest) (*loomcyclepb.SubstrateResponse, error) {

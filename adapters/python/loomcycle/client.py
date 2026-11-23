@@ -1214,6 +1214,20 @@ class LoomcycleClient:
         path. Mirror of :meth:`agent_def`."""
         return await self._dispatch_substrate("VolumeDef", input)
 
+    async def egress_route_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Invoke the EgressRouteDef tool — the egress routes this tenant's
+        workspaces may reach the network through, as
+        ``http://egress/<name>/`` in a session (RFC GW P4). Op-discriminated:
+        ``create`` (``name``, ``url``, optional ``methods`` — default GET,
+        HEAD — ``credential`` as ``"$cred:<name>"``, ``auth``, ``header``),
+        ``get`` (``name``), ``list``, ``delete`` (``name``). ``get`` and
+        ``list`` mark a route with a write method ``"writes": True``. Tenant
+        operators only (``substrate:tenant``); off unless the operator sets
+        ``workspace.egress.tenant_routes``. A credential must be a tenant
+        credential whose ``allowed_urls`` cover the route's URL. Mirror of
+        :meth:`agent_def`; same error contract."""
+        return await self._dispatch_substrate("EgressRouteDef", input)
+
     async def team_def(self, input: Mapping[str, Any]) -> Mapping[str, Any]:
         """Invoke the TeamDef substrate tool — agent-team workflow graphs
         (RFC AP). Op-discriminated: create / fork / get / list / retire /

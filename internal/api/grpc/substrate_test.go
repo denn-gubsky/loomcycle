@@ -26,43 +26,46 @@ import (
 type substrateMock struct {
 	mockConnector
 
-	gotAgentDefInput      json.RawMessage
-	gotSkillDefInput      json.RawMessage
-	gotScheduleDefInput   json.RawMessage
-	gotVolumeDefInput     json.RawMessage
-	gotTeamDefInput       json.RawMessage
-	gotHookDefInput       json.RawMessage
-	gotPathInput          json.RawMessage
-	gotDocumentInput      json.RawMessage
-	gotHistoryInput       json.RawMessage
-	gotMemoryInput        json.RawMessage
-	gotCredentialDefInput json.RawMessage
-	gotCryptoInput        json.RawMessage
+	gotAgentDefInput       json.RawMessage
+	gotSkillDefInput       json.RawMessage
+	gotScheduleDefInput    json.RawMessage
+	gotVolumeDefInput      json.RawMessage
+	gotEgressRouteDefInput json.RawMessage
+	gotTeamDefInput        json.RawMessage
+	gotHookDefInput        json.RawMessage
+	gotPathInput           json.RawMessage
+	gotDocumentInput       json.RawMessage
+	gotHistoryInput        json.RawMessage
+	gotMemoryInput         json.RawMessage
+	gotCredentialDefInput  json.RawMessage
+	gotCryptoInput         json.RawMessage
 
-	agentDefResult      connector.ToolResult
-	skillDefResult      connector.ToolResult
-	scheduleDefResult   connector.ToolResult
-	volumeDefResult     connector.ToolResult
-	teamDefResult       connector.ToolResult
-	hookDefResult       connector.ToolResult
-	pathResult          connector.ToolResult
-	documentResult      connector.ToolResult
-	historyResult       connector.ToolResult
-	memoryResult        connector.ToolResult
-	credentialDefResult connector.ToolResult
-	cryptoResult        connector.ToolResult
+	agentDefResult       connector.ToolResult
+	skillDefResult       connector.ToolResult
+	scheduleDefResult    connector.ToolResult
+	volumeDefResult      connector.ToolResult
+	egressRouteDefResult connector.ToolResult
+	teamDefResult        connector.ToolResult
+	hookDefResult        connector.ToolResult
+	pathResult           connector.ToolResult
+	documentResult       connector.ToolResult
+	historyResult        connector.ToolResult
+	memoryResult         connector.ToolResult
+	credentialDefResult  connector.ToolResult
+	cryptoResult         connector.ToolResult
 
-	agentDefErr      error
-	skillDefErr      error
-	scheduleDefErr   error
-	volumeDefErr     error
-	teamDefErr       error
-	pathErr          error
-	documentErr      error
-	historyErr       error
-	memoryErr        error
-	credentialDefErr error
-	cryptoErr        error
+	agentDefErr       error
+	skillDefErr       error
+	scheduleDefErr    error
+	volumeDefErr      error
+	egressRouteDefErr error
+	teamDefErr        error
+	pathErr           error
+	documentErr       error
+	historyErr        error
+	memoryErr         error
+	credentialDefErr  error
+	cryptoErr         error
 }
 
 func (m *substrateMock) CredentialDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -113,6 +116,11 @@ func (m *substrateMock) ScheduleDef(_ context.Context, in json.RawMessage) (conn
 func (m *substrateMock) VolumeDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	m.gotVolumeDefInput = in
 	return m.volumeDefResult, m.volumeDefErr
+}
+
+func (m *substrateMock) EgressRouteDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	m.gotEgressRouteDefInput = in
+	return m.egressRouteDefResult, m.egressRouteDefErr
 }
 
 func (m *substrateMock) TeamDef(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -534,6 +542,7 @@ type realToolConnector struct {
 	skillTool    *builtin.SkillDef
 	scheduleTool *builtin.ScheduleDef
 	volumeTool   *builtin.VolumeDef
+	egressTool   *builtin.EgressRouteDef
 }
 
 func (c *realToolConnector) SkillDef(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
@@ -548,6 +557,11 @@ func (c *realToolConnector) ScheduleDef(ctx context.Context, in json.RawMessage)
 
 func (c *realToolConnector) VolumeDef(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	res, err := c.volumeTool.Execute(ctx, in)
+	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, err
+}
+
+func (c *realToolConnector) EgressRouteDef(ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+	res, err := c.egressTool.Execute(ctx, in)
 	return connector.ToolResult{Text: res.Text, IsError: res.IsError}, err
 }
 
@@ -654,6 +668,33 @@ func TestGrpcSubstrate_VolumeDefCtxSynthesis(t *testing.T) {
 	}
 	if resp.GetIsError() {
 		t.Errorf("is_error = true with output_json = %s — gRPC ctx synthesis didn't grant VolumeDef scope=[any]", resp.GetOutputJson())
+	}
+}
+
+// The EgressRouteDef RPC reaches the tool off-run: the tool refuses any call
+// with a run on ctx (no agent may write a route), so a gRPC ctx that looked
+// like a run's would make the RPC useless. A route created over gRPC lists.
+func TestGrpcEgressRouteDef_CreatesAndListsOffRun(t *testing.T) {
+	st, err := storesqlite.Open(":memory:")
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cfg := &config.Config{}
+	cfg.Workspace.Egress.TenantRoutes = true
+	mc := &realToolConnector{egressTool: &builtin.EgressRouteDef{Store: st, Cfg: cfg}}
+	client, cleanup := startTestServerWithConnector(t, mc)
+	defer cleanup()
+
+	resp, err := client.EgressRouteDef(context.Background(), &loomcyclepb.SubstrateRequest{
+		InputJson: []byte(`{"op":"create","name":"crm","url":"https://api.crm.example/v2/","methods":["GET","POST"]}`),
+	})
+	if err != nil || resp.GetIsError() {
+		t.Fatalf("create: err=%v output=%s", err, resp.GetOutputJson())
+	}
+	resp, err = client.EgressRouteDef(context.Background(), &loomcyclepb.SubstrateRequest{InputJson: []byte(`{"op":"list"}`)})
+	if err != nil || resp.GetIsError() || !strings.Contains(string(resp.GetOutputJson()), `"writes":true`) {
+		t.Fatalf("list: err=%v output=%s; want crm with writes true", err, resp.GetOutputJson())
 	}
 }
 

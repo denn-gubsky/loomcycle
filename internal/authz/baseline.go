@@ -86,9 +86,9 @@ func mcpTools(names ...string) []string {
 }
 
 // memberMCPTools is what the per-tool gate admits a non-isolated member to:
-// the tenant-confinable tools less the ten that need substrate:tenant by
+// the tenant-confinable tools less the eleven that need substrate:tenant by
 // name (retention_override, telemetry, crypto, groupdef, acldef, aclbinding,
-// clientdef, ontology, erasure, operatortokendef).
+// clientdef, ontology, erasure, operatortokendef, egressroutedef).
 var memberMCPTools = []string{
 	"spawn_run", "spawn_runs", "cancel_run", "get_run", "compact_run", "retune_run", "review_run",
 	"configured_run", "list_runs", "delete_run_tree", "register_agent", "unregister_agent", "list_agents",
@@ -112,7 +112,7 @@ var memberMCPTools = []string{
 // workspace worker, so a member reaches it only when an operator grants it
 // `invoke mcp-tool:workspace` through an access-control list (RFC GW P9,
 // D-P9-13 as ruled by the owner on 2026-11-23).
-var tenantMCPTools = append([]string{"retention_override", "telemetry", "crypto", "groupdef", "acldef", "aclbinding", "clientdef", "ontology", "erasure", "operatortokendef", "workspace"}, memberMCPTools...)
+var tenantMCPTools = append([]string{"retention_override", "telemetry", "crypto", "groupdef", "acldef", "aclbinding", "clientdef", "ontology", "erasure", "operatortokendef", "egressroutedef", "workspace"}, memberMCPTools...)
 
 // selfTokenRule is every user's say over its own credentials (RFC FA P5):
 // approving a device login, which mints a token for the approver themselves

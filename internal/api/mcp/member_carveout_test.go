@@ -58,6 +58,7 @@ var mcpHTTPTwin = map[string]struct{ method, path, noTwin string }{
 	"aclbinding":             {method: http.MethodPost, path: "/v1/_aclbinding"},
 	"authz":                  {method: http.MethodPost, path: "/v1/_authz/evaluation"},
 	"clientdef":              {method: http.MethodPost, path: "/v1/_clientdef"},
+	"egressroutedef":         {method: http.MethodPost, path: "/v1/_egressroutedef"},
 	"memory":                 {method: http.MethodPost, path: "/v1/_memory/search"},
 	"channel":                {method: http.MethodPost, path: "/v1/_channels"},
 	"channeldef":             {method: http.MethodPost, path: "/v1/_channels"},

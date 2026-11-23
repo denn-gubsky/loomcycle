@@ -9801,6 +9801,45 @@ export interface AppClientConfig {
   restrictions?: Record<string, unknown>;
 }
 
+/** A method an egress route may allow (RFC GW P4). */
+export type EgressRouteMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
+
+/** The body of `POST /v1/_egressroutedef` (RFC GW P4): a tenant operator's
+ *  egress routes, the upstream URLs its workspaces may reach as
+ *  `http://egress/<name>/`. Flat like VolumeDef: no fork, no promote. */
+export interface EgressRouteDefInput {
+  op: "create" | "get" | "list" | "delete";
+  /** create/get/delete: a lowercase letter, then up to 62 lowercase letters,
+   *  digits or `-`. */
+  name?: string;
+  /** create: https, no user, query or fragment, canonical, ending in `/`. */
+  url?: string;
+  /** create: default `["GET", "HEAD"]`. */
+  methods?: EgressRouteMethod[];
+  /** create: a stored tenant credential, `"$cred:<name>"`, restricted
+   *  (allowed_urls) to URLs covering `url`. Never a literal secret. */
+  credential?: string;
+  /** create: how the credential is sent; `bearer` by default. */
+  auth?: "bearer" | "basic" | "header";
+  /** create with `auth: "header"`: the header the credential is sent in. */
+  header?: string;
+}
+
+/** One egress route as `get` and `list` report it. */
+export interface EgressRouteView {
+  name: string;
+  url: string;
+  methods: EgressRouteMethod[];
+  /** True when a method may change something upstream (not GET, HEAD or
+   *  OPTIONS). */
+  writes: boolean;
+  credential?: string;
+  auth?: "bearer" | "basic" | "header";
+  header?: string;
+  created_by?: string;
+  created_at: string;
+}
+
 /** The body of `POST /v1/_clientdef`. */
 export interface ClientDefInput {
   op: "create" | "update" | "get" | "list" | "retire" | "verify";

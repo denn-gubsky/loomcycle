@@ -325,6 +325,7 @@ import type {
   AppClientConfig,
   AppClientEntry,
   ClientDefInput,
+  EgressRouteDefInput,
   ClientDefListResponse,
   ClientDefNamesResponse,
   ClientDefRecord,
@@ -3477,6 +3478,30 @@ export class LoomcycleClient {
     opts?: { signal?: AbortSignal },
   ): Promise<SubstrateToolResponse> {
     return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_volumedef", input, opts);
+  }
+
+  // ---- Workspace egress routes (RFC GW P4) ----
+
+  /** Invoke the EgressRouteDef tool over HTTP: the routes this tenant's
+   *  workspaces may reach the network through (`http://egress/<name>/…` in a
+   *  session). Tenant operators only (`substrate:tenant`); the runtime stamps
+   *  the caller's tenant and opaque-404s another tenant's route. Off unless
+   *  the operator sets `workspace.egress.tenant_routes`.
+   *
+   *  - `create` — `{op, name, url, methods?, credential?, auth?, header?}`.
+   *    A credential must be a tenant credential whose `allowed_urls` cover
+   *    `url`. A held name is refused: replace a route by delete, then create.
+   *  - `get` / `list` — each route as an {@link EgressRouteView}, with
+   *    `writes: true` when a method may change something upstream.
+   *  - `delete` — `{op, name}`.
+   *
+   *  Raises {@link SubstrateToolRefusedError} on a refusal (tenant routes off,
+   *  host not allowed, operator route name, credential not covering). */
+  async egressRouteDef(
+    input: EgressRouteDefInput,
+    opts?: { signal?: AbortSignal },
+  ): Promise<SubstrateToolResponse> {
+    return postJSON<SubstrateToolResponse>(this.ctx, "/v1/_egressroutedef", input, opts);
   }
 
   // ---- App clients (RFC FL ClientDef) ----

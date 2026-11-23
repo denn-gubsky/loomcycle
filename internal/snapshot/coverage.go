@@ -300,6 +300,12 @@ var tableCoverageMap = map[string]tableCoverage{
 		Reason: "advisory hook progress owned by the source; the target re-decides held messages"},
 	"dynamic_agents": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "TTL-bound, run-scoped registrations"},
+	// RFC GW P4: a tenant's egress routes. Carrying them needs a section and
+	// a restore that re-applies the target's operator ceiling (tenant_routes,
+	// tenant_hosts, operator route names); until that follow-up a restored
+	// tenant re-creates its routes.
+	"egress_route_defs": {Kind: coverOmitted, Backends: onBoth,
+		Reason: "tenant egress routes must pass the target's operator ceiling again; snapshot section is a follow-up"},
 	"ephemeral_volume_defs": {Kind: coverOmitted, Backends: onBoth,
 		Reason: "run-bound scratch volumes"},
 	// A workspace's files live on a worker and never travel; its row (the
