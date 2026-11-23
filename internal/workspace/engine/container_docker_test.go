@@ -258,3 +258,42 @@ func (s *session) sessionStarted() string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// A server's command (RFC GW §5.3) runs in the session and outlives the
+// call that started it: it answers inside the session's own network, and
+// Kill ends it there, not only the CLI client.
+func TestContainer_AServerRunsInTheSessionUntilKilled(t *testing.T) {
+	s := newSession(t)
+	dir := s.workspace("ws1")
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hi from the session"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.e.Start(context.Background(), engine.StartRequest{Workspace: "ws1", Root: dir, Dir: dir,
+		Command: "echo booting; httpd -f -p 127.0.0.1:8080 -h " + engine.WorkspaceMount})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetch := "wget -q -T 2 -O - http://127.0.0.1:8080/hello.txt"
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		res := s.exec("ws1", fetch, 10*time.Second)
+		if res.ExitCode == 0 && strings.Contains(string(res.Output), "hi from the session") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server never answered: %+v", res)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if err := p.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.Done():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the killed server's client did not return")
+	}
+	if res := s.exec("ws1", fetch, 10*time.Second); res.ExitCode == 0 {
+		t.Errorf("the server still answers after Kill: %q", res.Output)
+	}
+}

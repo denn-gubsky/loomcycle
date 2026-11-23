@@ -211,6 +211,8 @@ func Run(ctx context.Context, opt Options) error {
 	}
 	w.kernels = kernel.NewManager(kopt)
 	defer w.kernels.Close()
+	// The servers die with the worker, before the engine closes.
+	defer w.servers.Close()
 	w.cleanWork()
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
@@ -285,6 +287,8 @@ type worker struct {
 	engine engine.Engine
 	// kernels are the workspaces' interpreters; nil runs none.
 	kernels *kernel.Manager
+	// servers are the workspaces' long-lived commands (RFC GW §5.3).
+	servers servers
 	// mu serialises open's capacity check with the directory it makes.
 	mu sync.Mutex
 	// quotas is each workspace's disk count and write lock.
@@ -451,6 +455,7 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 			continue
 		}
 		w.kernels.Drop(id)
+		w.servers.Drop(id)
 		// The session first, so nothing still running writes into the
 		// directory while it is removed.
 		if err := w.engine.Forget(context.Background(), id); err != nil {

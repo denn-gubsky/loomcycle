@@ -7,6 +7,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 )
@@ -70,8 +71,36 @@ type StartRequest struct {
 	Dir string
 	// Argv is the program and its arguments; no shell reads it.
 	Argv []string
+	// Command, instead of Argv, is a shell command line a model wrote: a
+	// workspace's server (RFC GW §5.3). The engine checks it against the
+	// operator's command list exactly as Exec does, so start cannot run
+	// what exec refuses, and runs it with /bin/sh -c, its standard error
+	// joined to its standard output.
+	Command string
 	// Env is what the engine adds to its own scrubbed environment.
 	Env []string
+}
+
+// serverShell runs a StartRequest's Command ($1) with its standard error on
+// its standard output, so a server's log is one stream in the order written.
+const serverShell = `exec 2>&1; eval "$1"`
+
+// startArgv is the program Start runs for req: Argv as it is, or Command
+// through the shell once commands (the operator's list) allows it.
+func startArgv(commands []string, req StartRequest) ([]string, error) {
+	if req.Command == "" {
+		if len(req.Argv) == 0 {
+			return nil, fmt.Errorf("%w: an empty program", ErrRefused)
+		}
+		return req.Argv, nil
+	}
+	if len(req.Argv) != 0 {
+		return nil, errors.New("start: both a program and a command")
+	}
+	if err := allowed(commands, req.Command); err != nil {
+		return nil, err
+	}
+	return []string{"/bin/sh", "-c", serverShell, "sh", req.Command}, nil
 }
 
 // Process is a program Start started.
