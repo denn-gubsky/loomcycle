@@ -106,7 +106,7 @@ func filterProps(fragment string, keep []string) string {
 // builtin wrappers (memory, channel, agentdef, skilldef, evaluation, context)
 // whose inner `op` field already discriminates the operation.
 func toolDescriptors() []loommcp.ToolDescriptor {
-	return append(append(baseToolDescriptors(), aclToolDescriptors()...), clientDefToolDescriptor(), telemetryToolDescriptor(), calcToolDescriptor())
+	return append(append(baseToolDescriptors(), aclToolDescriptors()...), clientDefToolDescriptor(), egressRouteDefToolDescriptor(), telemetryToolDescriptor(), calcToolDescriptor())
 }
 
 func baseToolDescriptors() []loommcp.ToolDescriptor {
@@ -518,11 +518,6 @@ func baseToolDescriptors() []loommcp.ToolDescriptor {
 			Name:        "volumedef",
 			Description: "Provision a filesystem VOLUME an agent can read and write \u2014 the storage behind the Read, Write, Edit, Glob and Grep tools. Ops: create, get, list, delete, purge, set_mode. Unlike the other def tools these are HANDLES, not versions: there is no fork and no promote, and create/delete simply add and remove. Confined to your own tenant: rows are stamped from your token, and another tenant's def reads back as not-found rather than forbidden. You supply a NAME and a MODE only \u2014 never a host path. The runtime derives the location inside an operator-blessed parent, so a volume cannot be pointed at arbitrary storage. delete and purge are NOT the same and the difference is unrecoverable: delete unmaps the volume and LEAVES the files; purge removes the row AND deletes the directory tree. set_mode makes a run's ephemeral volume read-only and works only from inside that run, so a call from here is refused; the same goes for create with a git source, which fills a run's ephemeral volume. Do NOT use it to read or write file contents \u2014 that is the Read and Write tools, once an agent is bound to the volume.",
 			InputSchema: builtinSchema("volumedef"),
-		},
-		{
-			Name:        "egressroutedef",
-			Description: "Write the EGRESS ROUTES your tenant's workspaces may reach the network through: a workspace has no network but these, and a script in it calls http://egress/<name>/<path>. Ops: create, get, list, delete. A route is a name, an https upstream URL ending in /, the methods allowed (default GET, HEAD; a route with a write method lists as writes: true) and optionally a stored credential ($cred:<name>) the runtime adds on the way out, so no secret enters the workspace. Off unless the operator turns tenant routes on, and bounded by the operator's host list. A credential must be a tenant credential whose allowed_urls cover the route's URL. A route cannot take the name of an operator's route. Flat, like volumedef: no fork or promote; replace a route by delete then create. Confined to your own tenant, and to tenant operators: a member token will not see this tool, and no agent can write a route. Do NOT use it to give an agent a route: that is the agent definition's workspace.egress grant (agentdef), which names routes written here or by the operator; and do NOT use it to store the secret itself — that is credentialdef.",
-			InputSchema: builtinSchema("egressroutedef"),
 		},
 		{
 			// Keep this op list in step with the tool's `op` enum:

@@ -3576,6 +3576,15 @@ func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 	return mux
 }
 
+// egressRouteDefRoutes registers RFC GW P4's EgressRouteDef: the egress routes
+// a tenant writes for its workspaces. Tenant operators only (ScopeTenant in the
+// route table, carved out of the member path); the tool stamps the caller's
+// tenant. Here, beside routes, so the route censuses that read this file see it.
+func (s *Server) egressRouteDefRoutes(mux *http.ServeMux) *http.ServeMux {
+	mux.Handle("POST /v1/_egressroutedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateEgressRouteDef))))
+	return mux
+}
+
 // ontologyPlanRoutes registers RFC GQ P1's plan: what changes to the ontology would
 // do, before any is made. It writes nothing, but its counts cover every scope of the
 // tenant: gated (the route table, authz.HTTPRoute) and carved out of the member path as the subject
@@ -3898,9 +3907,6 @@ func (s *Server) routes() *http.ServeMux {
 	// confined (ScopeTenant in the route table) — the tool stamps
 	// the caller's authoritative tenant + opaque-404s cross-tenant reads.
 	mux.Handle("POST /v1/_volumedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateVolumeDef))))
-	// RFC GW P4 — the egress routes a tenant writes. Tenant operators only
-	// (ScopeTenant in the route table); the tool stamps the caller's tenant.
-	mux.Handle("POST /v1/_egressroutedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateEgressRouteDef))))
 	// RFC AL Path VFS + RFC AK Document — the two scope-aware primitives lifted
 	// to the wire (Plan 3 / RFC AK Phase 2). Bearer-authed; tenant-confined
 	// (ScopeTenant in the route table) — the tools resolve scope from
@@ -4294,7 +4300,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return s.ontologyPlanRoutes(s.tenantTelemetryRoutes(mux))
+	return s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux)))
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount

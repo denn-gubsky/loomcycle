@@ -509,10 +509,6 @@ func Run(t *testing.T, factory Factory) {
 		{"VolumeDefDelete", testVolumeDefDelete},
 		{"VolumeDefList", testVolumeDefList},
 		{"VolumeDefCreateUpdatesDefinition", testVolumeDefCreateUpdatesDefinition},
-		// RFC GW P4 — tenant-written egress routes, flat (tenant, name) rows.
-		{"EgressRouteDefCreateReadsBackEveryField", testEgressRouteDefCreateReadsBackEveryField},
-		{"EgressRouteDefCreateRefusesAHeldName", testEgressRouteDefCreateRefusesAHeldName},
-		{"EgressRouteDefTenantsDoNotSeeEachOther", testEgressRouteDefTenantsDoNotSeeEachOther},
 		// RFC EY access control — ACL rule lists, groups, bindings, version.
 		{"AclDefPutGetVersionAndRetire", testAclDefPutGetVersionAndRetire},
 		{"AclDefRefusesInvalidRulesAndBuiltinNames", testAclDefRefusesInvalidRulesAndBuiltinNames},

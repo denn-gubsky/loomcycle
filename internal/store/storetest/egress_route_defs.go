@@ -11,6 +11,24 @@ import (
 
 // RFC GW P4 — the egress routes a tenant writes (store.EgressRouteDefStore).
 
+// RunEgressRouteDefs asserts the egress_route_defs contract against a backend,
+// each case on a fresh store from factory. Its own runner beside Run, as
+// RunWorkspaces is, so Run stays in its length budget.
+func RunEgressRouteDefs(t *testing.T, factory Factory) {
+	t.Helper()
+	for name, fn := range map[string]func(*testing.T, store.Store){
+		"CreateReadsBackEveryField": testEgressRouteDefCreateReadsBackEveryField,
+		"CreateRefusesAHeldName":    testEgressRouteDefCreateRefusesAHeldName,
+		"TenantsDoNotSeeEachOther":  testEgressRouteDefTenantsDoNotSeeEachOther,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, cleanup := factory(t)
+			defer cleanup()
+			fn(t, s)
+		})
+	}
+}
+
 func mkEgressRoute(tenant, name, url string) store.EgressRouteDefRow {
 	return store.EgressRouteDefRow{TenantID: tenant, Name: name, URL: url, Methods: []string{"GET", "POST"},
 		Credential: "$cred:crm", Auth: "header", Header: "X-Api-Key", CreatedBy: "alice"}
