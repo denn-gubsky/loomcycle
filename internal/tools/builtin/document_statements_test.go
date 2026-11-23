@@ -446,6 +446,76 @@ func TestMarkdownRoundTrip_KeepsStatements(t *testing.T) {
 	}
 }
 
+// The export_md trailer carries only statements still in force. An expired or a
+// judge-refuted statement left in it came back from import_md as a fresh, live
+// statement (method import), because the envelope has no field for either state.
+// A proposed statement is still carried, its status in the envelope.
+func TestMarkdownRoundTrip_LeavesOutExpiredAndRefutedStatements(t *testing.T) {
+	d, ctx, _ := documentFixture(t)
+	f := newMaintFixture(t, d, ctx)
+	key, _, _ := d.resolveScope(ctx, "user")
+
+	expired := f.seed(t, f.a, f.b, "cites", "rule:citation", edgeStatusAsserted, 0)
+	if _, r := f.maintain(t, operatorCtx(ctx), expired, "expire", `,"reason":"withdrawn"`); r.IsError {
+		t.Fatalf("expire: %s", r.Text)
+	}
+	refuted := f.seed(t, f.a, f.c, "cites", "rule:citation", edgeStatusAsserted, 0)
+	if err := d.exec(ctx, key, `UPDATE chunk_edges SET verdict_confidence = 0.05, judged_at = 1, judged_by = 'judge', judge_reason = 'no' WHERE id = ?`, refuted); err != nil {
+		t.Fatal(err)
+	}
+	f.seed(t, f.b, f.c, "cites", "rule:citation", edgeStatusProposed, 0)
+	f.seed(t, f.b, f.a, "cites", "rule:citation", edgeStatusAsserted, 0)
+
+	out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"export_md","scope":"user","document_id":%q}`, f.doc))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	md := out["markdown"].(string)
+	for _, gone := range []string{f.a + " -> " + f.b + " [cites]", f.a + " -> " + f.c + " [cites]"} {
+		if strings.Contains(md, gone) {
+			t.Errorf("trailer carries a retired statement %q:\n%s", gone, md)
+		}
+	}
+	if !strings.Contains(md, f.b+" -> "+f.c+` [cites] {"status":"proposed"`) {
+		t.Errorf("trailer lost the proposed statement or its status:\n%s", md)
+	}
+	if !strings.Contains(md, f.b+" -> "+f.a+" [cites]") {
+		t.Errorf("trailer lost the asserted statement:\n%s", md)
+	}
+
+	imp, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"import_md","scope":"user","markdown":%q}`, md))
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	// Chunk ids change on import, so compare by the chunks' titles.
+	byTitles := func(docID string) map[string]string {
+		q, err := d.query(ctx, key, `SELECT fc.title, tc.title, e.status FROM chunk_edges e
+			JOIN chunks fc ON fc.id = e.from_id JOIN chunks tc ON tc.id = e.to_id
+			WHERE fc.document_id = ? AND e.kind = 'cites'`, docID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]string{}
+		for _, row := range q.Rows {
+			m[asStr(row[0])+" -> "+asStr(row[1])] = asStr(row[2])
+		}
+		return m
+	}
+	title := func(id string) string {
+		q, err := d.query(ctx, key, `SELECT title FROM chunks WHERE id = ?`, id)
+		if err != nil || len(q.Rows) != 1 {
+			t.Fatalf("title of %s: %v", id, err)
+		}
+		return asStr(q.Rows[0][0])
+	}
+	a, b, c := title(f.a), title(f.b), title(f.c)
+	want := map[string]string{b + " -> " + c: edgeStatusProposed, b + " -> " + a: edgeStatusAsserted}
+	got := byTitles(imp["document_id"].(string))
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("imported statements = %v, want %v", got, want)
+	}
+}
+
 // The dead-link sweep collects evidence whose statement is gone.
 func TestDeadLink_CollectsOrphanEvidence(t *testing.T) {
 	d, ctx, _ := documentFixture(t)
