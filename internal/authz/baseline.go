@@ -97,7 +97,7 @@ var memberMCPTools = []string{
 	"memorybackenddef", "documentsourcedef", "volumedef", "credentialdef", "authz",
 	"memory", "channel", "channeldef", "path", "document", "history", "decision",
 	"evaluation", "context", "interruption_resolve", "publish_channel", "subscribe_channel",
-	"peek_channel", "ack_channel", "stream_user_run_states", "identity", "file", "calc",
+	"peek_channel", "ack_channel", "stream_user_run_states", "identity", "file", "calc", "workspace",
 	// review: reaching the tool is not ruling; each statement asks the
 	// member's `review` grant, which no member baseline holds.
 	"review",

@@ -230,6 +230,9 @@ var handlersByName = map[string]toolHandler{
 	// The Calc tool outside a run; the connector charges each call to the
 	// token's run rate (calc.go).
 	"calc": handleCalc,
+	// workspace: the Workspace tool outside a run, owned by the session's
+	// token identity (RFC GW D35; workspace.go).
+	"workspace": handleWorkspace,
 
 	// Pause/Resume (v0.8.17 primitives; exposed via Connector in v0.8.18)
 	"pause_runtime":     handlePauseRuntime,

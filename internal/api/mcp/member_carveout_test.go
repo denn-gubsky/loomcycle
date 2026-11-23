@@ -68,6 +68,7 @@ var mcpHTTPTwin = map[string]struct{ method, path, noTwin string }{
 	"decision":               {method: http.MethodPost, path: "/v1/_decide"},
 	"evaluation":             {method: http.MethodPost, path: "/v1/_evaluation"},
 	"calc":                   {method: http.MethodPost, path: "/v1/_calc"},
+	"workspace":              {noTwin: "no HTTP route offers a workspace outside a run (RFC GW D35)"},
 	"context":                {noTwin: "reads the session's own identity and policies; no route returns them"},
 	"interruption_resolve":   {method: http.MethodPost, path: "/v1/runs/r/interrupts/i/resolve"},
 	"publish_channel":        {method: http.MethodPost, path: "/v1/users/u/channels/c/publish"},

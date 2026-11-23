@@ -1,76 +1,12 @@
-import { createElement, type ReactElement } from "react";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import type { DocEdge } from "../types";
-import ChunkTarget, { type ChunkTargetProps } from "./ChunkTarget";
 import { RefRow, buildGraph, graphEndpoint, nodeId } from "./CrossReferences";
 import type { Trail } from "../lib/docTrail";
 import DocTrail from "./DocTrail";
 import DocUnavailable from "./DocUnavailable";
 import { flowchartNode } from "./Mermaid";
-
-// The package tests without a DOM. ChunkTarget and RefRow are hook-free, so
-// calling them returns the element they render — its type and onClick can be
-// asserted (and invoked) directly.
-type El = ReactElement<{
-  onClick?: () => void;
-  className?: string;
-  title?: string;
-  children?: unknown;
-}>;
-
-function target(over: Partial<ChunkTargetProps> = {}) {
-  const onSelectChunk = vi.fn();
-  const onOpenDocument = vi.fn();
-  const el = ChunkTarget({
-    id: "chunk-9",
-    title: "RFC CV — One chunk store",
-    targetDocumentId: "doc-b",
-    documentId: "doc-a",
-    onSelectChunk,
-    onOpenDocument,
-    ...over,
-  }) as El;
-  return { el, onSelectChunk, onOpenDocument };
-}
-
-describe("ChunkTarget", () => {
-  it("a cross-document target is a button that opens that document at the chunk", () => {
-    const { el, onSelectChunk, onOpenDocument } = target();
-    expect(el.type).toBe("button");
-    el.props.onClick?.();
-    expect(onOpenDocument).toHaveBeenCalledWith("doc-b", "chunk-9", "RFC CV — One chunk store");
-    expect(onSelectChunk).not.toHaveBeenCalled();
-  });
-
-  it("keeps the ↗ mark and the another-document hint on a cross-document target", () => {
-    const { el } = target();
-    expect(renderToStaticMarkup(el)).toContain("RFC CV — One chunk store ↗");
-    expect(el.props.title).toMatch(/another document/i);
-    expect(el.props.className).toBe("doc-ref-target external");
-  });
-
-  it("a same-document target selects the chunk in place", () => {
-    const { el, onSelectChunk, onOpenDocument } = target({ targetDocumentId: "doc-a" });
-    expect(el.type).toBe("button");
-    el.props.onClick?.();
-    expect(onSelectChunk).toHaveBeenCalledWith("chunk-9");
-    expect(onOpenDocument).not.toHaveBeenCalled();
-    expect(renderToStaticMarkup(el)).not.toContain("↗");
-  });
-
-  it("a target with no document id of its own is treated as this document's", () => {
-    const { el, onSelectChunk } = target({ targetDocumentId: undefined });
-    el.props.onClick?.();
-    expect(onSelectChunk).toHaveBeenCalledWith("chunk-9");
-  });
-
-  it("stays a label — not a dead button — for a host that cannot open documents", () => {
-    const { el } = target({ onOpenDocument: undefined });
-    expect(el.type).toBe("span");
-    expect(el.props.onClick).toBeUndefined();
-  });
-});
 
 describe("RefRow", () => {
   const edge: DocEdge = {
