@@ -118,53 +118,6 @@
   font-size: var(--lc-text-xs);
 }
 
-/* ---- tree skeleton (Path tree + chunk tree) ---- */
-.loomcycle-explorer .tree {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.loomcycle-explorer .tree .children {
-  list-style: none;
-  margin: 0;
-  margin-left: 14px;
-  padding: 0;
-  padding-left: 12px;
-  border-left: 1px dashed var(--border);
-}
-.loomcycle-explorer .node {
-  margin: 2px 0;
-}
-/* Both explorer tree views (path rows + chunk rows) lay a row out as a
-   caret + a single name affordance — a flex line, not the agents-tree grid. */
-.loomcycle-explorer .node .row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 6px 8px;
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-.loomcycle-explorer .tree-caret {
-  background: transparent;
-  border: none;
-  color: var(--fg-soft);
-  cursor: pointer;
-  width: 14px;
-  height: 14px;
-  font-size: 10px;
-  padding: 0;
-  user-select: none;
-  line-height: 1;
-}
-.loomcycle-explorer .tree-caret:disabled {
-  cursor: default;
-  opacity: 0.35;
-}
-.loomcycle-explorer .tree-caret:hover:not(:disabled) {
-  color: var(--accent);
-}
 
 /* ============================================================
    Splitter
@@ -376,7 +329,7 @@
   overflow: hidden;
   flex: 1;
 }
-.loomcycle-explorer .paths-view .left > .tree,
+.loomcycle-explorer .paths-view .left > .etree,
 .loomcycle-explorer .paths-view .left > .empty {
   flex: 1;
   overflow: auto;
@@ -468,30 +421,123 @@
   font-size: var(--lc-text-sm);
   border-bottom: 1px solid var(--border);
 }
-.loomcycle-explorer .path-link {
+/* RFC GZ — the explorer's tree row, shared by the Path tree and the chunk
+   outline (components/TreeRow). It has its own classes, not the agent-run
+   tree's .tree / .node .row, so neither tree can restyle the other. One line,
+   one height, on a fixed grid: indent x depth | caret | icon | name | marks.
+   Kept in step with web/src/styles.css. */
+.loomcycle-explorer .etree {
+  --etree-indent: 16px;
+}
+.loomcycle-explorer .etree,
+.loomcycle-explorer .etree-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.loomcycle-explorer .etree-node {
+  margin: 0;
+  outline: none;
+}
+.loomcycle-explorer .etree-row {
+  /* Defaults; a row sets its own depth and tint inline. */
+  --etree-depth: 0;
+  --etree-tint: transparent;
+  display: grid;
+  grid-template-columns: 16px 16px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 calc(4px + var(--etree-depth) * var(--etree-indent));
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: var(--lc-text-sm, 13px);
+  cursor: pointer;
+  user-select: none;
+  /* A coloured row's wash: --etree-tint is the only thing its inline style
+     sets, so the hover and selected layers below always show. */
+  background-image: linear-gradient(to right, var(--etree-tint), transparent 75%);
+}
+.loomcycle-explorer .etree-row:hover {
+  background-color: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+/* Selected is its own layer above the tint and the hover, and does not depend
+   on the tree having focus. */
+.loomcycle-explorer .etree-node[aria-selected="true"] > .etree-row {
+  background-color: color-mix(in srgb, var(--accent) 24%, transparent);
+  font-weight: 600;
+}
+.loomcycle-explorer .etree-node:focus-visible > .etree-row {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.loomcycle-explorer .etree-caret {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  background: transparent;
-  border: none;
-  color: var(--fg);
-  cursor: pointer;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   padding: 0;
-  font: inherit;
-  text-align: left;
-  min-width: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-soft);
+  cursor: pointer;
 }
-.loomcycle-explorer .path-link:hover .path-name {
+.loomcycle-explorer .etree-caret svg {
+  transition: transform 0.1s ease;
+}
+.loomcycle-explorer .etree-caret[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.loomcycle-explorer .etree-caret:disabled {
+  cursor: inherit;
+}
+.loomcycle-explorer .etree-caret:hover:not(:disabled) {
   color: var(--accent);
 }
-.loomcycle-explorer .path-kind-icon {
-  font-size: 14px;
-  line-height: 1;
+.loomcycle-explorer .etree-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-soft);
 }
-.loomcycle-explorer .path-name {
+.loomcycle-explorer .etree-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Type and status as compact marks at the right edge; the full labels are in
+   each mark's title. */
+.loomcycle-explorer .etree-marks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  font-weight: 400;
+}
+.loomcycle-explorer .etree-mark-type {
+  font-size: var(--lc-text-xs, 12px);
+  color: var(--fg-soft);
+  text-decoration: none;
+}
+.loomcycle-explorer .etree-mark-status {
+  --etree-dot: var(--fg-muted);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--etree-dot);
+}
+.loomcycle-explorer .etree-mark-link {
+  display: inline-flex;
+  color: var(--fg-soft);
+}
+.loomcycle-explorer .etree-mark-link svg {
+  width: 12px;
+  height: 12px;
 }
 .loomcycle-explorer .path-implicit {
   font-size: var(--lc-text-xs);
@@ -501,7 +547,8 @@
 }
 /* A directory's trailing status / "load more" row (the tree lists lazily). */
 .loomcycle-explorer .path-status {
-  padding: 2px 8px;
+  --etree-depth: 0;
+  padding: 2px 8px 2px calc(26px + var(--etree-depth) * var(--etree-indent, 16px));
   font-size: var(--lc-text-xs);
 }
 .loomcycle-explorer .path-err {
@@ -720,8 +767,8 @@
   outline: none;
 }
 
-/* Id + copy affordance (IdCopy): the document id in the toolbar, the selected
-   chunk id in the content head, and a compact copy on every chunk-tree row.
+/* Id + copy affordance (IdCopy): the document id in the toolbar, and the selected
+   chunk id in the content head.
    Lets an operator grab the exact id for an external workflow (n8n over the
    MCP/HTTP API). */
 .loomcycle-explorer .id-copy {
@@ -768,17 +815,6 @@
 }
 .loomcycle-explorer .id-copy-btn.id-copy-error {
   color: var(--failed);
-}
-/* On a chunk-tree row the copy sits at the far right and stays faint until the
-   row is hovered/selected, so the tree keeps its clean scan-line. */
-.loomcycle-explorer .node .row .id-copy-btn {
-  margin-left: auto;
-  opacity: 0.4;
-}
-.loomcycle-explorer .node .row:hover .id-copy-btn,
-.loomcycle-explorer .node.selected .row .id-copy-btn,
-.loomcycle-explorer .node .row .id-copy-btn:focus-visible {
-  opacity: 1;
 }
 .loomcycle-explorer .doc-mode-toggle {
   display: inline-flex;
@@ -914,27 +950,6 @@
 .loomcycle-explorer .doc-empty-body {
   color: var(--fg-soft);
   font-style: italic;
-}
-.loomcycle-explorer .chunk-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  background: transparent;
-  border: none;
-  color: var(--fg);
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-  text-align: left;
-  min-width: 0;
-}
-.loomcycle-explorer .chunk-link:hover .chunk-title {
-  color: var(--accent);
-}
-.loomcycle-explorer .chunk-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .loomcycle-explorer .chunk-badge {
   font-size: var(--lc-text-xs);
@@ -1185,11 +1200,6 @@
 /* ============================================================
    RFC BN P4 — cross-reference links + relationship graph
    ============================================================ */
-.loomcycle-explorer .chunk-link-badge {
-  font-size: 0.85em;
-  line-height: 1;
-  opacity: 0.85;
-}
 .loomcycle-explorer .doc-refs {
   margin-top: 14px;
   padding-top: 12px;
@@ -1779,11 +1789,6 @@
 /* ============================================================
    RFC BO — image & diagram chunks
    ============================================================ */
-.loomcycle-explorer .chunk-type-icon {
-  font-size: 0.9em;
-  line-height: 1;
-  margin-right: 2px;
-}
 .loomcycle-explorer .doc-image {
   margin: 0;
   text-align: center;
@@ -2011,19 +2016,4 @@
 .loomcycle-explorer .annotation-err {
   color: var(--failed);
   font-size: var(--lc-text-xs);
-}
-/* A Path row with a brief wraps it onto a second line inside the row box,
-   indented past the caret. */
-.loomcycle-explorer .path-row:has(.path-brief) {
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
-.loomcycle-explorer .path-brief {
-  flex-basis: 100%;
-  padding-left: 22px;
-  color: var(--fg-muted);
-  font-size: var(--lc-text-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

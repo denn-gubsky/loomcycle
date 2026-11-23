@@ -47,7 +47,7 @@ import TransferModal from "./components/TransferModal";
 import type { TransferRequest } from "./lib/transfer";
 import Splitter from "./components/Splitter";
 import DocumentViewerBody from "./components/DocumentViewerBody";
-import PathTree, { buildLazyTree, type PathNode } from "./components/PathTree";
+import PathTree, { buildLazyTree, isAnnotationEntry, type PathNode } from "./components/PathTree";
 
 // PathExplorer is the embeddable Path VFS console (RFC AL): the unified dirent
 // tree with directory + document CRUD, and an inline DocumentViewer for document
@@ -440,6 +440,8 @@ function PathExplorerBody({
     [tree, selectedPath],
   );
   const rootErr = dirs.get("")?.error;
+  const selectedAnnotation =
+    selected?.kind === "directory" ? selected.children.find(isAnnotationEntry) : undefined;
 
   // Whether the selected directory has its own dirent or exists only through its
   // descendants. A one-level listing reports both as `directory`, so this asks
@@ -906,6 +908,15 @@ function PathExplorerBody({
                   </>
                 )}
               </dl>
+              {/* The folder's `_annotation` document has no row of its own in
+                  the tree (RFC GZ); it opens from here. */}
+              {selectedAnnotation && (
+                <div className="paths-detail-actions">
+                  <button type="button" onClick={() => setSelected(selectedAnnotation.fullPath)}>
+                    open the folder's annotation
+                  </button>
+                </div>
+              )}
               {mutable ? (
                 <div className="paths-detail-actions">
                   <button type="button" onClick={renameSelected}>

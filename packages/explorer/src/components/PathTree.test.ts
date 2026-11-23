@@ -4,7 +4,7 @@ import { describe, it, expect } from "vitest";
 import type { DirListing } from "../lib/lazyPathTree";
 import type { PathEntry } from "../types";
 import type { DocSummary } from "../lib/colorScheme";
-import PathTree, { buildLazyTree, type PathTreeProps } from "./PathTree";
+import PathTree, { buildLazyTree, nodeBrief, type PathTreeProps } from "./PathTree";
 
 const dir = (full_path: string): PathEntry => ({
   name: full_path.slice(full_path.lastIndexOf("/") + 1),
@@ -84,10 +84,10 @@ describe("PathTree", () => {
     const html = render(dirs, ["/a"]);
     const rowOf = (name: string) => {
       const i = html.indexOf(`>${name}<`);
-      return html.slice(html.lastIndexOf('<li class="node path-node', i), i);
+      return html.slice(html.lastIndexOf('<li class="etree-node path-node', i), i);
     };
     expect(rowOf("b")).toContain("kind-document");
-    expect(rowOf("b")).toContain("📄");
+    expect(rowOf("b")).toContain("etree-svg-document");
     expect(rowOf("b")).toContain('aria-expanded="false"');
     expect(rowOf("b")).not.toContain("disabled");
     expect(rowOf("leaf")).toContain("disabled");
@@ -148,13 +148,50 @@ describe("PathTree", () => {
       ["gf", sum("gf")],
     ]);
     const html = render(dirs, ["/rfcs"], summaries);
-    // The folder row carries its _annotation's brief; the _annotation row does
-    // not repeat it.
-    expect(html.match(/Design records for the runtime\./g)?.length).toBe(2); // the line + the tooltip
-    expect(html).toContain('<span class="path-brief">Design records for the runtime.</span>');
-    expect(html).toContain('<span class="path-brief">Annotations at every level.</span>');
-    // A document without a record gets no line, and an unlisted folder no brief.
-    expect(html.match(/class="path-brief"/g)?.length).toBe(2);
-    expect(html).toContain("📝");
+    // The folder's tooltip carries its _annotation's brief, a document's its
+    // own; neither is a second line any more.
+    expect(html).toContain('title="/rfcs\nDesign records for the runtime."');
+    expect(html).toContain('title="/rfcs/ge\nAnnotations at every level."');
+    expect(html).toContain('title="/rfcs/gf"');
+    expect(html).not.toContain("path-brief");
+  });
+
+  it("leaves a folder's _annotation entry out of its rows while the folder keeps its brief", () => {
+    const dirs = new Map([
+      ["", listing([dir("/rfcs")])],
+      ["/rfcs", listing([{ ...doc("/rfcs/_annotation"), resource_ref: { document_id: "ann" } }, doc("/rfcs/ge")])],
+    ]);
+    const summaries = new Map([
+      ["ann", { document_id: "ann", title: "ann", color_enabled: false, brief: "Design records." } as DocSummary],
+    ]);
+    const tree = buildLazyTree(dirs);
+    // The entry is still in the built tree, which is where the brief comes from.
+    expect(tree[0].children.map((n) => n.name)).toContain("_annotation");
+    expect(nodeBrief(tree[0], summaries)).toBe("Design records.");
+    const html = render(dirs, ["/rfcs"], summaries);
+    expect(html).not.toContain(">_annotation<");
+    expect(html).not.toContain("etree-svg-annotation");
+    expect(html).toContain(">ge<");
+    expect(html).toContain('title="/rfcs\nDesign records."');
+  });
+
+  it("says a folder holding only its _annotation is empty", () => {
+    const dirs = new Map([
+      ["", listing([dir("/rfcs")])],
+      ["/rfcs", listing([doc("/rfcs/_annotation")])],
+    ]);
+    expect(render(dirs, ["/rfcs"])).toContain(">empty<");
+  });
+
+  it("draws type and status as compact marks with the full labels in their titles", () => {
+    const dirs = new Map([["", listing([{ ...doc("/plan"), resource_ref: { document_id: "p" } }])]]);
+    const summaries = new Map([
+      ["p", { document_id: "p", title: "p", color_enabled: false, type: "Research", status: "draft" } as DocSummary],
+    ]);
+    const html = render(dirs, [], summaries);
+    expect(html).toContain('title="type: Research"');
+    expect(html).toContain(">rese</abbr>");
+    expect(html).toContain('title="status: draft"');
+    expect(html).not.toContain("chunk-badge");
   });
 });
