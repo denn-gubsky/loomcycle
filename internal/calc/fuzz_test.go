@@ -50,6 +50,10 @@ var fuzzSeeds = []string{
 	"[sqrt(-1 + 0i), exp(pi * 1i), log(-1 + 0i, 2), sin(1i), acosh(0.5 + 0i), round(1.25 - 2.5i, 1), pow(1i, 1i), 0i^0]",
 	"i = 4; [2*i, 2i, 2in, 2pi, .5i, 2.i, 0x1i, 2e3i, [1i, 2] .* [2, 3i], sum([1i, 2]), unique([1i, 1i])]",
 	"[polyroots([1, 0, 1]), polyroots([3.2, 2, 1]), eig([[1, -1], [1, 1]]), eig([[0, 1], [0, 0]]), 1i < 2, sort([1i])]",
+	`t = csv("r,m,a\nEU,jan,1.5\nUS,jan,\nEU,feb,2"); [t.a, t[2], t[2].a, t["r"], t[[3, 1]], size(t), sum(t.a), t.a * 2, count(t.a)]`,
+	`t = csv("r,m,a\nEU,jan,1.5\nUS,jan,\nEU,feb,2"); [where(t, r -> r.a > 1), addcol(t, "b", r -> r.a * 2), sort(t, "a", "desc"), head(t, 1), tail(t)]`,
+	`t = csv("r,m,a\nEU,jan,1.5\nUS,jan,\nEU,feb,2"); [groupby(t, ["r", "m"], "n", count, "s", g -> sum(g.a)), pivot(t, "r", "m", g -> mean(g.a)), totals(t), describe(t)]`,
+	`a = csv("k;x\n1;\"p;q\"\n2;y", ";"); b = csv("k,z\n1,5\n1,6\n,7"); [join(a, b, "k"), leftjoin(a, b, ["k"]), isempty(b[3].k), t.x, a.]`,
 }
 
 func FuzzParse(f *testing.F) {

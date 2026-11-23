@@ -48,6 +48,12 @@ type listKey struct {
 // otherwise `b = [a, a]` repeated doubles the expanded size per statement
 // for a constant number of steps.
 func (e *evaluator) size(v val) int {
+	switch x := v.(type) {
+	case *tableVal:
+		return x.cells()
+	case rowVal:
+		return len(x.t.names)
+	}
 	l, ok := v.([]val)
 	if !ok || len(l) == 0 {
 		return 0
@@ -176,6 +182,12 @@ func (e *evaluator) evalNode(n node, sc *scope) (val, *Error) {
 			return nil, err
 		}
 		return e.callBuiltin(e.funcs["transpose"], []val{x}, n.p)
+	case *memberN:
+		x, err := e.eval(n.x, sc)
+		if err != nil {
+			return nil, err
+		}
+		return e.member(x, n.name, n.p)
 	case *allN:
 		return nil, errf(codeSyntax, n.p, "a lone `:` means every row or column, and only inside brackets").
 			withHint("A[i, :] is row i, A[:, j] is column j")
@@ -479,12 +491,22 @@ func (e *evaluator) callBuiltin(b *builtin, argv []val, pos int) (val, *Error) {
 		}
 		return argv[2], nil
 	}
+	if skipsEmpty[b.name] && !(b.name == "count" && len(argv) > 1) {
+		argv = dropEmpty(argv, b.max < 0)
+	}
 	if b.vec && len(argv) > 0 {
+		if isEmpty(argv[0]) {
+			return empty, nil
+		}
 		if l, ok := argv[0].([]val); ok {
 			out := make([]val, 0, len(l))
 			for _, x := range l {
 				if err := e.charge(1, pos); err != nil {
 					return nil, err
+				}
+				if isEmpty(x) {
+					out = append(out, empty)
+					continue
 				}
 				sub := append([]val{x}, argv[1:]...)
 				v, err := e.callBuiltin(b, sub, pos)
@@ -533,6 +555,14 @@ func (e *evaluator) evalIndex(n *indexN, sc *scope) (val, *Error) {
 	rows, rowAll, err := e.evalSelector(n.idx, sc)
 	if err != nil {
 		return nil, err
+	}
+	switch x.(type) {
+	case *tableVal, rowVal:
+		if rowAll || n.col != nil {
+			return nil, errf(codeIndex, n.p, "a %s takes one index", typeName(x)).
+				withHint("t[i] is row i, t[\"name\"] a column, t[i].name one cell")
+		}
+		return e.indexTable(x, rows, n.p)
 	}
 	l, ok := x.([]val)
 	if !ok {
@@ -627,4 +657,56 @@ func pick(l []val, idx val, pos int) (val, *Error) {
 			withHint("valid indexes are 1 to len(v)")
 	}
 	return l[i-1], nil
+}
+
+// skipsEmpty names the aggregates, which skip the empty cells of a table
+// column (and empty arguments): sum(t.price) adds the prices there are.
+// Functions that pair or order elements (wmean, covariance, rank, cumsum)
+// refuse an empty cell instead, since dropping one would misalign the rest.
+var skipsEmpty = map[string]bool{
+	"sum": true, "product": true, "mean": true, "median": true, "mode": true,
+	"spread": true, "geomean": true, "harmmean": true, "variance": true,
+	"stdev": true, "quantile": true, "percentile": true, "min": true,
+	"max": true, "count": true,
+}
+
+// dropEmpty removes the empty cells of a list first argument and, for a
+// variadic aggregate, empty arguments; arguments left with no data become
+// one empty list, so mean(empty) says "of an empty list".
+func dropEmpty(argv []val, variadic bool) []val {
+	if len(argv) == 0 {
+		return argv
+	}
+	out := argv
+	if l, ok := argv[0].([]val); ok && hasEmpty(l) {
+		kept := make([]val, 0, len(l))
+		for _, x := range l {
+			if !isEmpty(x) {
+				kept = append(kept, x)
+			}
+		}
+		out = append([]val{kept}, argv[1:]...)
+	}
+	if variadic && hasEmpty(out) {
+		kept := make([]val, 0, len(out))
+		for _, x := range out {
+			if !isEmpty(x) {
+				kept = append(kept, x)
+			}
+		}
+		if len(kept) == 0 {
+			kept = []val{[]val{}}
+		}
+		out = kept
+	}
+	return out
+}
+
+func hasEmpty(l []val) bool {
+	for _, x := range l {
+		if isEmpty(x) {
+			return true
+		}
+	}
+	return false
 }

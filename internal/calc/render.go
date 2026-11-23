@@ -177,8 +177,7 @@ func renderText(w *capWriter, v val, digits int, top bool) {
 			w.write(v)
 			return
 		}
-		q, _ := json.Marshal(v)
-		w.write(string(q))
+		writeQuoted(w, v)
 	case bool:
 		w.write(strconv.FormatBool(v))
 	case []val:
@@ -199,6 +198,12 @@ func renderText(w *capWriter, v val, digits int, top bool) {
 		w.write(v.String())
 	case timeVal:
 		w.write(v.String())
+	case emptyVal:
+		w.write("null")
+	case *tableVal:
+		renderTableJSON(w, v, digits)
+	case rowVal:
+		renderRowJSON(w, v, digits)
 	}
 }
 
@@ -233,8 +238,12 @@ func toJSON(v val, digits int) any {
 		return v.String()
 	case timeVal:
 		return v.String()
+	case *tableVal:
+		return tableJSON(v, digits)
+	case rowVal:
+		return rowJSON(v, digits)
 	}
-	return nil
+	return nil // emptyVal: JSON null
 }
 
 // allExact reports whether v holds at least one number or date and every
@@ -253,6 +262,16 @@ func exactWalk(v val) (seen, ok bool) {
 		return true, false
 	case dateVal, timeVal:
 		return true, true
+	case *tableVal:
+		ok = true
+		for _, c := range v.cols {
+			s, o := exactWalk(c)
+			seen = seen || s
+			ok = ok && o
+		}
+		return seen, ok
+	case rowVal:
+		return exactWalk(v.t.cellsOf(v.i))
 	case []val:
 		ok = true
 		for _, x := range v {
@@ -269,6 +288,9 @@ func exactWalk(v val) (seen, ok bool) {
 // list, [n, m] for a list of n lists of m, and so on; ragged nesting stops
 // at the last regular level.
 func shape(v val) []int {
+	if t, ok := v.(*tableVal); ok {
+		return []int{t.rows(), len(t.names)}
+	}
 	l, ok := v.([]val)
 	if !ok {
 		return nil

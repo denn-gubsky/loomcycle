@@ -15,21 +15,21 @@ var sequenceFuncs = []builtin{
 	{name: "range", sig: "range(a, b, step?)", section: SecSequences, min: 2, max: 3, fn: fnRange,
 		summary: "the list a, a+step, ... up to b inclusive; same as a:b or a:step:b"},
 	{name: "len", sig: "len(v)", section: SecSequences, min: 1, max: 1, fn: fnLen,
-		summary: "number of elements of a list, or characters of a string"},
+		summary: "number of elements of a list, characters of a string, or rows of a table"},
 	{name: "map", sig: "map(v, f)", section: SecSequences, min: 2, max: 2, fn: fnMap,
 		summary: "the list of f(x) for each element x"},
 	{name: "filter", sig: "filter(v, pred)", section: SecSequences, min: 2, max: 2, fn: fnFilter,
 		summary: "the elements x of v where pred(x) is true"},
 	{name: "reduce", sig: "reduce(v, f, init?)", section: SecSequences, min: 2, max: 3, fn: fnReduce,
 		summary: "fold v with f(acc, x), starting from init or the first element"},
-	{name: "sort", sig: "sort(v, key?)", section: SecSequences, min: 1, max: 2, fn: fnSort,
-		summary: "v ascending (numbers or strings), optionally by key(x); stable"},
+	{name: "sort", sig: "sort(v, key?) or sort(t, column, order?)", section: SecSequences, min: 1, max: 3, fn: fnSort,
+		summary: `v ascending (numbers or strings), optionally by key(x); a table by a column, "asc" or "desc"; stable`},
 	{name: "reverse", sig: "reverse(v)", section: SecSequences, min: 1, max: 1, fn: fnReverse,
 		summary: "v in reverse order"},
 	{name: "unique", sig: "unique(v)", section: SecSequences, min: 1, max: 1, fn: fnUnique,
 		summary: "v without repeats, first occurrences kept in order"},
 	{name: "count", sig: "count(v, pred_or_value?)", section: SecSequences, min: 1, max: 2, fn: fnCount,
-		summary: "number of elements, of elements where pred(x) holds, or equal to a value"},
+		summary: "number of elements (not empty cells), of elements where pred(x) holds, or equal to a value; rows of a table"},
 	{name: "any", sig: "any(v, pred?)", section: SecSequences, min: 1, max: 2, fn: anyAll(true),
 		summary: "whether some element is true (or satisfies pred)"},
 	{name: "all", sig: "all(v, pred?)", section: SecSequences, min: 1, max: 2, fn: anyAll(false),
@@ -66,8 +66,12 @@ func fnLen(_ *evaluator, a args) (val, *Error) {
 		return exactInt64(int64(len(v))), nil
 	case string:
 		return exactInt64(int64(utf8.RuneCountInString(v))), nil
+	case *tableVal:
+		return exactInt64(int64(v.rows())), nil
+	case rowVal:
+		return exactInt64(int64(len(v.t.names))), nil
 	}
-	return nil, errf(codeType, a.pos, "len needs a list or a string, got a %s", typeName(a.v[0]))
+	return nil, errf(codeType, a.pos, "len needs a list, a string or a table, got a %s", typeName(a.v[0]))
 }
 
 // listAndFn finds the list and the function among the first two
@@ -165,6 +169,16 @@ func sortCost(n int) int {
 }
 
 func fnSort(e *evaluator, a args) (val, *Error) {
+	if _, ok := a.v[0].(*tableVal); ok {
+		if len(a.v) == 1 {
+			return nil, errf(codeArity, a.pos, "sort of a table needs the column to sort by").withHint(`sort(t, "total", "desc")`)
+		}
+		return sortTable(e, a)
+	}
+	if len(a.v) == 3 {
+		return nil, errf(codeArity, a.pos, "sort of a list takes 1 or 2 arguments, got 3").
+			withHint("sort(v) or sort(v, key); sort(t, column, order) is for a table")
+	}
 	l, err := a.list(0)
 	if err != nil {
 		return nil, err
@@ -293,6 +307,8 @@ func (e *evaluator) valueKey(k *keyBuf, v val, a args) *Error {
 		return k.write("s"+q, a)
 	case bool:
 		return k.write("b"+strconv.FormatBool(v), a)
+	case emptyVal:
+		return k.write("e", a)
 	case dateVal:
 		return k.write("d"+strconv.FormatInt(v.days, 10), a)
 	case timeVal:
@@ -312,7 +328,7 @@ func (e *evaluator) valueKey(k *keyBuf, v val, a args) *Error {
 		}
 		return k.write("]", a)
 	}
-	return errf(codeType, a.pos, "%s: functions cannot be compared", a.name)
+	return errf(codeType, a.pos, "%s: a %s cannot be compared here", a.name, typeName(v))
 }
 
 func fnUnique(e *evaluator, a args) (val, *Error) {
@@ -338,6 +354,9 @@ func fnUnique(e *evaluator, a args) (val, *Error) {
 }
 
 func fnCount(e *evaluator, a args) (val, *Error) {
+	if t, ok := a.v[0].(*tableVal); ok {
+		return countRows(e, t, a)
+	}
 	l, err := a.list(0)
 	if err != nil {
 		return nil, err

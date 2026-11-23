@@ -1,6 +1,6 @@
 ---
 name: Calc
-description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, probability distributions, numeric calculus, matrices and linear algebra, complex numbers, finance and dates; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
+description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, probability distributions, numeric calculus, matrices and linear algebra, complex numbers, finance, dates and tables; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
 ---
 The `Calc` tool evaluates a math expression and returns the answer, exactly
 where it can be exact. Decimals are exact fractions, so `0.1 + 0.2` is `0.3`
@@ -21,12 +21,14 @@ and a 30-digit integer keeps all 30 digits.
 
 - `expr` (required) — one or more statements separated by `;` or newlines.
   The last one's value is the result.
-- `vars` — names bound before evaluation: numbers, strings, booleans or
-  lists. A JSON number is exact (`0.1` is 1/10). A string holding a number
+- `vars` — names bound before evaluation: numbers, strings, booleans,
+  lists or tables (`Calc/tables`). A JSON number is exact (`0.1` is 1/10). A string holding a number
   (`"19.99"`, `"1_000"`) is that number; any other string stays a string.
 - `digits` — significant digits for an approximate result or a fraction that
   does not terminate; 1 to 1000, default 15.
 - `seed` — an integer that makes the random functions repeatable.
+- `format` — `json` (default), `markdown` or `csv`: how a table or matrix
+  result is written in `text`.
 
 No other argument is accepted, and there is no `op`.
 
@@ -41,12 +43,14 @@ No other argument is accepted, and there is no `op`.
 - `result` — the value as JSON; `text` — the same, written for reading.
   Quote `text` when you report the number.
 - `type` — `number`, `complex`, `string`, `boolean`, `list`, `function`,
-  `date` or `datetime`. A complex result is `{"re", "im"}`.
+  `date`, `datetime`, `table`, `row` or `empty`. A complex result is
+  `{"re", "im"}`, a table `{"columns", "rows"}`.
 - `exact` — `true` when every number in the result is exact.
 - `fraction` — for an exact result whose decimals do not end, the exact
   value: `"1/3"`.
 - `assigned` — every name the expression assigned or defined.
-- `shape` — for a list: `[n]`, or `[n, m]` for n lists of m.
+- `shape` — for a list: `[n]`, or `[n, m]` for n lists of m; for a table
+  `[rows, columns]`.
 - `truncated` — `true` when the output passed 64 KB and was cut.
 
 A refused call returns `{"error", "detail", "hint", "pos"}`; `Calc/errors`
@@ -116,6 +120,8 @@ topic=Calc/<section>`:
   complex arithmetic and functions, the roots of a polynomial.
 - `Calc/finance` — loan payments, future and present value, NPV, IRR,
   compound growth, percentages; the sign convention.
+- `Calc/tables` — tables from `vars` or CSV, columns `t.price`, empty
+  cells, `where`, `groupby`, `pivot`, `join`, `describe`.
 - `Calc/dates` — dates and datetimes, day arithmetic, months, working days,
   day-count bases, `xnpv`/`xirr`, time zones, formatting.
 - `Calc/errors` — every error code and what to change.

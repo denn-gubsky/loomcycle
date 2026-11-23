@@ -3157,7 +3157,8 @@ components:
       additionalProperties: false
       properties:
         expr: { type: string, description: "One or more statements separated by `;` or newlines; the last one is the result." }
-        vars: { type: object, additionalProperties: true, description: "Names bound before evaluation: a number, a numeric string (exact), a string, a boolean or a list." }
+        vars: { type: object, additionalProperties: true, description: "Names bound before evaluation: a number, a numeric string (exact), a string, a boolean, a list, or a table ({\"columns\": [...], \"rows\": [[...]]} or an array of objects)." }
+        format: { type: string, enum: [json, markdown, csv], description: "How a table or matrix result is written in `text` (default json)." }
         digits: { type: integer, minimum: 1, description: "Significant digits for an approximate or non-terminating result (default 15)." }
         seed: { type: integer, description: "Makes the random functions repeatable." }
     CalcError:

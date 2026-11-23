@@ -8575,13 +8575,17 @@ export interface CalcInput {
    *  value is the result, e.g. `"subtotal = 1249.99 * 3; round(subtotal * 1.2, 2)"`. */
   expr: string;
   /** Names bound before evaluation: a number, a numeric string (kept exact,
-   *  e.g. `"0.1"`), a string, a boolean or a list. */
+   *  e.g. `"0.1"`), a string, a boolean, a list, or a table
+   *  (`{columns: [...], rows: [[...]]}` or an array of objects). */
   vars?: Record<string, unknown>;
   /** Significant digits for an approximate or non-terminating result
    *  (default 15). */
   digits?: number;
   /** Makes the random functions repeatable. */
   seed?: number;
+  /** How a table or matrix result is written in `text`: `json` (the
+   *  default), `markdown` or `csv`. `result` is the same in every format. */
+  format?: "json" | "markdown" | "csv";
 }
 
 /** What a Calc result is. Later evaluator phases add kinds, so the type stays
@@ -8595,12 +8599,15 @@ export type CalcValueType =
   | "function"
   | "date"
   | "datetime"
+  | "table"
+  | "row"
+  | "empty"
   | (string & {});
 
 /** A successful {@link LoomcycleClient.calc}: the tool's own result. */
 export interface CalcResult {
   /** The value as JSON: numbers, strings, booleans, arrays for lists, a
-   *  complex number as `{re, im}`, a function's signature. A number here has passed through `JSON.parse`,
+   *  complex number as `{re, im}`, a table as `{columns, rows}`, a function's signature. A number here has passed through `JSON.parse`,
    *  so an integer past 2^53 or a decimal past 17 significant digits is
    *  rounded; read `text` (and `fraction`) for the exact digits. `null` when
    *  `truncated` cut it. */
@@ -8616,7 +8623,8 @@ export interface CalcResult {
   assigned?: Record<string, unknown>;
   /** The result rendered for reading, with every exact digit. */
   text: string;
-  /** The dimensions of a list result: `[n]`, or `[n, m]`. */
+  /** The dimensions of a list result: `[n]`, or `[n, m]`; a table's is
+   *  `[rows, columns]`. */
   shape?: number[];
   /** Set when the rendered output passed the size limit: `text` is cut and
    *  the values that did not fit are `null`. */

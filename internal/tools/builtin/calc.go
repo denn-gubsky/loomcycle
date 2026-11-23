@@ -34,7 +34,7 @@ func (c *Calc) Name() string { return "Calc" }
 // words as they land.
 func (c *Calc) Description() string {
 	return strings.TrimSpace(`
-Evaluate math exactly: arithmetic, rounding, powers and roots, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics and probability, integrals and roots, matrices, complex numbers, finance and dates. Use it for every calculation instead of working it out yourself. ` + "`expr`" + ` is one or more statements; the last one is the result. Pass data in ` + "`vars`" + `. Power is ` + "`^`" + `, ` + "`%`" + ` is modulo, indexing starts at 1, ` + "`.*`" + ` multiplies lists element by element. For the functions, read ` + "`Context op=help topic=Calc`" + ` first.`)
+Evaluate math exactly: arithmetic, rounding, powers and roots, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics and probability, integrals and roots, matrices, complex numbers, finance, dates and tables. Use it for every calculation instead of working it out yourself. ` + "`expr`" + ` is one or more statements; the last one is the result. Pass data in ` + "`vars`" + `. Power is ` + "`^`" + `, ` + "`%`" + ` is modulo, indexing starts at 1, ` + "`.*`" + ` multiplies lists element by element. For the functions, read ` + "`Context op=help topic=Calc`" + ` first.`)
 }
 
 const calcExprDescription = "Statements separated by `;` or newlines; the last one's value is the result. Example: `subtotal = 1249.99 * 3; tax = round(subtotal * 0.2, 2); subtotal + tax`."
@@ -45,7 +45,9 @@ func (c *Calc) InputSchema() json.RawMessage {
 		"properties": map[string]any{
 			"expr": map[string]any{"type": "string", "description": calcExprDescription},
 			"vars": map[string]any{"type": "object",
-				"description": "Names bound before evaluation: a number, a numeric string (exact), a string, a boolean or a list."},
+				"description": "Names bound before evaluation: a number, a numeric string (exact), a string, a boolean, a list, or a table ({\"columns\": [...], \"rows\": [[...]]} or an array of objects)."},
+			"format": map[string]any{"type": "string", "enum": []string{calc.FormatJSON, calc.FormatMarkdown, calc.FormatCSV},
+				"description": "How a table or matrix result is written in `text` (default json)."},
 			"digits": map[string]any{"type": "integer", "minimum": 1, "maximum": calc.MaxDigits,
 				"description": "Significant digits for an approximate or non-terminating result (default 15)."},
 			"seed": map[string]any{"type": "integer",
@@ -62,6 +64,7 @@ type calcInput struct {
 	Vars   map[string]json.RawMessage `json:"vars"`
 	Digits int                        `json:"digits"`
 	Seed   *int64                     `json:"seed"`
+	Format string                     `json:"format"`
 }
 
 func (c *Calc) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
@@ -71,14 +74,14 @@ func (c *Calc) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 	if err := dec.Decode(&in); err != nil {
 		c.stats.count("bad_request")
 		return calcRefusal(&calc.Error{Code: "bad_request", Detail: "the arguments are not the documented shape: " + err.Error(), Pos: -1,
-			Hint: "pass `expr` (a string), and optionally `vars` (an object), `digits` and `seed` (integers)"}), nil
+			Hint: "pass `expr` (a string), and optionally `vars` (an object), `digits` and `seed` (integers) and `format` (json, markdown or csv)"}), nil
 	}
 	if in.Expr == nil {
 		c.stats.count("bad_request")
 		return calcRefusal(&calc.Error{Code: "bad_request", Detail: "expr is required", Pos: -1,
 			Hint: "pass the expression as `expr`, e.g. {\"expr\": \"2 + 2\"}"}), nil
 	}
-	resp, cerr := calc.Eval(ctx, calc.Request{Expr: *in.Expr, Vars: in.Vars, Digits: in.Digits, Seed: in.Seed, Gate: c.Gate})
+	resp, cerr := calc.Eval(ctx, calc.Request{Expr: *in.Expr, Vars: in.Vars, Digits: in.Digits, Seed: in.Seed, Format: in.Format, Gate: c.Gate})
 	if cerr != nil {
 		c.stats.count(cerr.Code)
 		// A canceled evaluation is the run ending, not a refusal of the
@@ -118,6 +121,7 @@ var calcCategory = map[string]tools.ErrorCategory{
 	"bad_date":         tools.CategoryValidation,
 	"unknown_unit":     tools.CategoryValidation,
 	"dimension":        tools.CategoryValidation,
+	"column":           tools.CategoryValidation,
 	"domain":           tools.CategoryBusiness,
 	"division_by_zero": tools.CategoryBusiness,
 	"overflow":         tools.CategoryBusiness,

@@ -32,6 +32,9 @@ var ops = [...]string{
 	"->", "==", "!=", "<=", ">=", ".*", "./", ".^",
 	"+", "-", "*", "/", "^", "%", "!", "<", ">", "=",
 	"(", ")", "[", "]", ",", ":",
+	// Member access, t.price: a column of a table or a cell of a row. After
+	// the dotted operators above, so `.*` is still one token.
+	".",
 	// The postfix transpose, A'. Strings use double quotes, so a single
 	// quote has no other meaning; a model's 'text' is refused by the parser
 	// with a hint.
