@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -138,7 +137,7 @@ func (f *File) checkoutExportOf(ctx context.Context, op, scope, docID string) (m
 // documentHook runs the run's Document pre-hooks on the call File makes for
 // it, less any text, as {op, scope, ..., via: File}.
 func documentHook(ctx context.Context, op string, call map[string]any) (tools.Result, bool) {
-	c := make(map[string]any, len(call)+1)
+	c := map[string]any{}
 	for k, v := range call {
 		c[k] = v
 	}
@@ -357,12 +356,14 @@ func (f *File) writeCheckout(ctx context.Context, l *workspaceLoc, scope, root s
 				Reason: fmt.Sprintf("past the %d bytes one checkout writes (workspace.checkout.max_bytes)", maxBytes)})
 			continue
 		}
-		if _, err := l.m.PutFile(ctx, l.o, l.name, workspace.PutArgs{Path: p.rel, Size: size, Stage: stage}, strings.NewReader(md)); err != nil {
+		// The file's digest is the worker's, of the bytes it wrote: the one a
+		// commit's fstat compares with.
+		put, err := l.m.PutFile(ctx, l.o, l.name, workspace.PutArgs{Path: p.rel, Size: size, Stage: stage}, strings.NewReader(md))
+		if err != nil {
 			return prefixed(op, copyReadError(err)), nil
 		}
 		total += size
-		sum := sha256.Sum256([]byte(md))
-		man.Files = append(man.Files, checkoutFile{Path: p.rel, DocumentID: p.id, DocPath: p.docPath, Revision: rev, SHA256: hex.EncodeToString(sum[:])})
+		man.Files = append(man.Files, checkoutFile{Path: p.rel, DocumentID: p.id, DocPath: p.docPath, Revision: rev, SHA256: put.SHA256})
 	}
 	mb, _ := json.MarshalIndent(man, "", "  ")
 	if _, err := l.m.PutFile(ctx, l.o, l.name, workspace.PutArgs{Path: checkoutManifestRel, Size: int64(len(mb)), Stage: stage}, bytes.NewReader(mb)); err != nil {
