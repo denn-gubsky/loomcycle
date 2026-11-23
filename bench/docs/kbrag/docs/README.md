@@ -19,32 +19,33 @@ rules are `scripts/measure/walker/drive.py`'s. PREREG Amendment 2 fixes the desi
 | `questions.py` | loads the `p7`, `waves` and `known` sets from gold files outside the repo |
 | `forks.py` | record / fork kb agents to Haiku (names without a tenant overlay only) / check / restore |
 | `register.py` | the rag-lc helper `kbrag/search-rr` (`agents/search-rr.json`): create / show / retire |
-| `darms.py` | runs the arms; spend, deadline and provider guards; resumable |
+| `study.py` | **the driver**: fork → preflight → scored runs → retries → restore + verify (in a `finally`, also on SIGTERM/SIGHUP) → judge → analysis |
+| `preflight.py` | refuses to run unless every model-backed kb agent resolves to Haiku and the helper is active |
+| `darms.py` | runs the arms; spend, deadline, provider, kb-on-Haiku, rag-lc-broken and preflight guards; resumable |
 | `djudge.py` | the blind Haiku judge |
 | `danalyze.py` | scores, H1/H2, instrument checks, cost → `<root>/summary.json` |
 | `probe.py`, `gold_prep.py` | read-only listings used while looking for gold |
 
-Run order (single-line commands):
+Preparation (single-line commands):
 
     python3 -I bench/docs/kbrag/docs/inventory.py
     python3 -I bench/docs/kbrag/docs/export.py
     python3 -I bench/docs/kbrag/docs/ragext_docs.py build
     python3 -I bench/docs/kbrag/docs/known_items.py --n 30
     python3 -I bench/docs/kbrag/docs/forks.py --record
-    python3 -I bench/docs/kbrag/docs/forks.py --apply
-    python3 -I bench/docs/kbrag/docs/register.py create
-    python3 -I bench/docs/kbrag/docs/darms.py --out /home/denn/workspace/kbrag-work/docs/study --sets p7 --reps 3 --workers 4
-    python3 -I bench/docs/kbrag/docs/darms.py --out /home/denn/workspace/kbrag-work/docs/study --sets waves,known --reps 1 --workers 4
-    python3 -I bench/docs/kbrag/docs/darms.py --out /home/denn/workspace/kbrag-work/docs/study --sets p7 --reps 3 --retry-failed
-    python3 -I bench/docs/kbrag/docs/forks.py --restore
-    python3 -I bench/docs/kbrag/docs/register.py retire
-    python3 -I bench/docs/kbrag/docs/forks.py --check
-    python3 -I bench/docs/kbrag/docs/djudge.py --out /home/denn/workspace/kbrag-work/docs/study
-    python3 -I bench/docs/kbrag/docs/danalyze.py --out /home/denn/workspace/kbrag-work/docs/study
 
-**Restore, if a run died and left the forks active** (they shadow the bundle agents for every
-run in the tenant): `forks.py --restore` retires every def this harness made (logged in
-`<work>/forks.json`) and checks that each name resolves as before; `register.py retire` retires
-the helper. Both are idempotent.
+The study, one driver, detached; it does every remaining step in order (Amendment 3):
+
+    nohup setsid python3 -I bench/docs/kbrag/docs/study.py --out /home/denn/workspace/kbrag-work/docs/study --key-prefix kbrag-docs-study2 > /home/denn/workspace/kbrag-work/docs/logs/driver.log 2>&1 &
+
+Its step log is `<out>/driver.jsonl`. Never infer the driver's progress from a PID file; read
+that log. Stop it with `kill <driver pid>` (SIGTERM): it stops the runner in flight, then
+restores and verifies the tenant.
+
+**Restore, if the driver was SIGKILLed and left the fork active** (it shadows the bundle
+walker for every run in the tenant): `forks.py --restore` retires every def this harness made
+(logged in `<work>/forks.json`), `register.py retire` retires the helper, and
+`forks.py --verify-restored` exits 0 only when every kb name resolves as before the study and
+the helper is inactive. All are idempotent.
 
 Tests (offline): `python3 -I -m unittest discover -s bench/docs/kbrag/docs/tests`

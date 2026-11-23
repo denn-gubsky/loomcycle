@@ -19,18 +19,30 @@ Resumable: an (arm, qid, rep) whose latest row is ok is skipped; --retry-failed 
 failed one once (PREREG check 8). Idempotency keys are prefixed by the root's name, so a
 smoke root never hands its runs to the study root.
 """
-import argparse, datetime, json, os, random, re, sys, threading, time
+import argparse, datetime, hashlib, json, os, random, re, sys, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(1, os.path.dirname(HERE))
-import dconfig, dprompts, questions  # noqa: E402
+import dconfig, dprompts, preflight, questions  # noqa: E402
 import common  # noqa: E402  (../common.py: Usage, citations, run_jobs, jsonl io)
 from common import Usage  # noqa: E402
 
 
 class Stop(Exception):
-    pass
+    """A guard stopped the runner. code: 2 spend cap or deadline, 3 a routing violation
+    (a model outside the policy, or a kb agent not on Haiku, or rag-lc's search broken),
+    4 the preflight failed."""
+
+    def __init__(self, msg, code=2):
+        super().__init__(msg)
+        self.code = code
+
+
+# rag-lc's search must work from the first rows: any of the first EARLY rag-lc rows of an
+# invocation that failed or was not reranked stops the runner, and so do BAD_STREAK bad rows in
+# a row later on (the 2026-11-23 incident would otherwise have written failed rows for hours).
+EARLY, BAD_STREAK = 5, 3
 
 
 def iso(t=None):
@@ -102,10 +114,26 @@ def tree(lc, run_id, usage, row):
         row["status"], row["error"] = "failed", "tree_usage: %s" % str(e)[:300]
 
 
+def safe_id(qid):
+    """A question id in the server's key charset, made unique by a short hash of the original
+    (wave 12's twin ids carry an apostrophe: T1' must not become T1)."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", qid) + "-" + hashlib.sha256(qid.encode("utf-8")).hexdigest()[:6]
+
+
 def key(ctx, arm, q, rep, attempt):
-    # The server takes [A-Za-z0-9:._-] only; wave 12's twin ids carry an apostrophe (T1').
-    qid = re.sub(r"[^A-Za-z0-9:._-]", "p", q["id"])
-    return "%s:%s:%s:%d" % (ctx["prefix"], arm, qid, rep) + (":a%d" % attempt if attempt > 1 else "")
+    return "%s:%s:%s:%d" % (ctx["prefix"], arm, safe_id(q["id"]), rep) + (":a%d" % attempt if attempt > 1 else "")
+
+
+def kb_tree_violations(tree_rows):
+    """Model-backed kb/* runs in a kb tree not served by Haiku: the incident's signature
+    (kb/walker fell back to its static tier when the fork was retired mid-study)."""
+    return sorted({(r.get("agent"), r.get("provider"), r.get("model")) for r in tree_rows or []
+                   if (r.get("agent") or "").startswith("kb/") and r.get("provider") not in ("code-js", "", None)
+                   and (r.get("provider"), r.get("model")) != preflight.HAIKU})
+
+
+def raglc_bad(row):
+    return row["status"] != "ok" or (row.get("retrieval") or {}).get("reranked") is not True
 
 
 def arm_kb(lc, corpus, q, rep, attempt, usage, row, ctx):
@@ -167,10 +195,13 @@ ARM_FN = {"kb": arm_kb, "rag-lc": arm_raglc, "rag-ext": arm_ragext}
 # --- the runner --------------------------------------------------------------------
 
 class Runner:
-    def __init__(self, lc, corpus, qs, *, arms, out, budget, baseline, workers, retry_failed, deadline, log=print):
+    def __init__(self, lc, corpus, qs, *, arms, out, budget, baseline, workers, retry_failed, deadline, log=print,
+                 key_prefix=None, preflight_fn=None):
         self.lc, self.corpus, self.qs, self.arms = lc, corpus, qs, list(arms)
         self.dir = os.path.join(out, "runs")
-        self.prefix = "kbrag-docs-" + os.path.basename(os.path.abspath(out))
+        self.prefix = key_prefix or "kbrag-docs-" + os.path.basename(os.path.abspath(out))
+        self.preflight_fn = preflight_fn
+        self.raglc_seen, self.raglc_streak = 0, 0
         self.budget, self.baseline, self.workers = budget, baseline, workers
         self.retry_failed, self.deadline, self.log = retry_failed, deadline, log
         self.rows = {a: common.read_jsonl(self.path(a)) for a in dconfig.ARMS}
@@ -235,7 +266,7 @@ class Runner:
         bad = [p for p in bad if not (common.config.allowed(*p) or p[1].startswith("bge-m3"))]
         if bad:
             self.event("provider_violation", source="usage ledger", served=bad)
-            raise Stop("PROVIDER VIOLATION in the usage ledger since %s: %s" % (since, bad))
+            raise Stop("PROVIDER VIOLATION in the usage ledger since %s: %s" % (since, bad), 3)
 
     def one(self, arm, qid, rep, attempt):
         q = self.qs[qid]
@@ -255,16 +286,37 @@ class Runner:
         bad = usage.violations()
         if bad:
             row["status"], row["error"] = "provider_violation", "served by %s" % bad
+        kbbad = kb_tree_violations(row.get("tree")) if arm == "kb" else []
+        if kbbad:
+            bad = bad or kbbad
+            row["status"], row["error"] = "provider_violation", "kb agents not on Haiku: %s" % kbbad
         with self.lock:
             common.append_jsonl(self.path(arm), row)
             self.rows[arm].append(row)
         if bad:
             self.event("provider_violation", arm=arm, qid=qid, rep=rep, served=row["served"])
-            raise Stop("PROVIDER VIOLATION on %s %s rep %d: %s" % (arm, qid, rep, row["error"]))
+            raise Stop("PROVIDER VIOLATION on %s %s rep %d: %s" % (arm, qid, rep, row["error"]), 3)
+        if arm == "rag-lc":
+            with self.lock:
+                self.raglc_seen += 1
+                self.raglc_streak = self.raglc_streak + 1 if raglc_bad(row) else 0
+                early = self.raglc_seen <= EARLY and raglc_bad(row)
+                if early or self.raglc_streak >= BAD_STREAK:
+                    self.event("raglc_broken", qid=qid, rep=rep, error=row["error"])
+                    raise Stop("RAG-LC BROKEN: search failed or not reranked (%s %s rep %d: %s)"
+                               % (arm, qid, rep, row["error"] or "reranked=%s" % row["retrieval"].get("reranked")), 3)
         return row
+
+    def check_tenant(self):
+        if self.preflight_fn:
+            p = self.preflight_fn()
+            if p:
+                self.event("preflight_failed", problems=p)
+                raise Stop("PREFLIGHT FAILED: %s" % "; ".join(p), 4)
 
     def run(self, plan):
         started = iso()
+        self.check_tenant()
         jobs = self.jobs(plan)
         self.event("start", arms=self.arms, jobs=len(jobs), workers=self.workers)
         self.version("start")
@@ -285,6 +337,7 @@ class Runner:
                 if n["n"] % 20 == 0:
                     self.log("%s %d/%d runs; tenant increase $%.4f" % (iso(), n["n"], len(jobs), self.lc.spend() - self.baseline))
                     self.ledger_guard(started)
+                    self.check_tenant()
 
         try:
             common.run_jobs(jobs, job, self.workers)
@@ -325,6 +378,8 @@ def main():
     ap.add_argument("--retry-failed", action="store_true")
     ap.add_argument("--budget-usd", type=float, default=dconfig.BUDGET_USD)
     ap.add_argument("--deadline")
+    ap.add_argument("--key-prefix", help="idempotency-key namespace (default: kbrag-docs-<root name>)")
+    ap.add_argument("--no-preflight", action="store_true", help="smoke only: skip the tenant routing check")
     a = ap.parse_args()
     import dlc
     dlc.assert_tenant()
@@ -340,12 +395,13 @@ def main():
     deadline = datetime.datetime.fromisoformat(a.deadline.replace("Z", "+00:00")) if a.deadline else None
     r = Runner(dlc, Corpus(), qs, arms=[x for x in a.arms.split(",") if x], out=a.out, budget=a.budget_usd,
                baseline=base, workers=a.workers, retry_failed=a.retry_failed, deadline=deadline,
-               log=lambda s: print(s, flush=True))
+               log=lambda s: print(s, flush=True), key_prefix=a.key_prefix,
+               preflight_fn=None if a.no_preflight else (lambda: preflight.check(dlc)))
     try:
         n = r.run(plan(qs, reps))
     except Stop as e:
         print("STOPPED: %s" % e, flush=True)
-        sys.exit(2)
+        sys.exit(e.code)
     print("done: %d runs" % n, flush=True)
 
 

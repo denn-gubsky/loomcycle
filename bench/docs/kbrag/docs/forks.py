@@ -4,6 +4,7 @@
     python3 -I bench/docs/kbrag/docs/forks.py --apply     # fork + promote, ONLY names with no tenant overlay
     python3 -I bench/docs/kbrag/docs/forks.py --check     # what serves each name now, diff vs static
     python3 -I bench/docs/kbrag/docs/forks.py --restore   # retire every def --apply made; statics back
+    python3 -I bench/docs/kbrag/docs/forks.py --verify-restored   # exit 0 iff every name is as before and the helper inactive
 
 A promoted tenant fork shadows the bundle agent for EVERY run in the tenant (other people's
 and scheduled ones too) while it is active, so the window is kept short and --restore is run
@@ -86,11 +87,20 @@ def snapshot():
 def main():
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
-    for x in ("record", "apply", "check", "restore"):
-        g.add_argument("--" + x, action="store_true")
+    for x in ("record", "apply", "check", "restore", "verify_restored"):
+        g.add_argument("--" + x.replace("_", "-"), dest=x, action="store_true")
     a = ap.parse_args()
     dlc.assert_tenant()
     st = load()
+    if a.verify_restored:
+        # Every kb name resolves as before the study, and the rag-lc helper is not active.
+        snap = snapshot()
+        diff = {n: (st["before"]["state"][n]["active_def_id"], snap[n]["active_def_id"]) for n in NAMES
+                if snap[n]["active_def_id"] != st["before"]["state"][n]["active_def_id"]}
+        helper = [e for e in dlc.get("/v1/_library/agents")["entries"] if e["name"] == dconfig.RAGLC_AGENT]
+        hact = helper[0].get("active_def_id") if helper else None
+        print(json.dumps({"kb_names_differing_from_before": diff, "helper_active": hact, "at": now()}))
+        sys.exit(0 if not diff and not hact else 1)
     if a.record or a.check:
         snap = snapshot()
         if a.record:

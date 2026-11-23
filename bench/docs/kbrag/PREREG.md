@@ -411,3 +411,57 @@ $0.002–0.006; about $16 for all runs and the judge. Other users' runs in the t
 also raise the ledger; the per-row token estimate is kept beside it.
 
 Nothing else changes.
+
+## Amendment 3 — 2026-11-23 07:25 UTC, Study D, incident and resume
+
+**What happened.** The scored runs of Amendment 2 started at 07:00 UTC. A follow-up script,
+meant to restore the tenant after the last run, waited on the wrong process: it took a
+short-lived wrapper's PID for the runner's and concluded at 07:15:42 that the runs had ended.
+It retired the `kb/walker` fork at **07:15:43** (the walker resolved to its static tier,
+`ollama-local`/`qwen3.6`, from then on) and started the judge while runs were in flight. Its
+retire of the rag-lc helper silently did nothing (the script read the wrong key of the
+AgentDef listing); the helper stayed active until it was retired by hand at **07:19:38**. The
+orchestrator killed every Study D process at 07:16:38–07:16:49. Separately, the three wave-12
+question ids that carry an apostrophe made idempotency keys the server refuses (HTTP 400), and
+three p7 rep-0 rows (kb q04, kb q08, rag-lc q08) had failed earlier: a runner restart at 07:00
+disconnected their streams, the server cancelled them, and their keys replayed the cancelled
+runs. No run tree was found served by anything but Haiku, `ollama-local`, code-js or the
+embedder, and no scored row records a non-Haiku kb agent.
+
+**Windows.** First: `kb/walker` fork `def_6d0b431adb12fb12` active 06:51:13 → 07:15:43; helper
+`def_915664b3d21f0619` active 06:51:14 → 07:19:38. At 07:19:39 the tenant was verified as before
+the study (every kb name resolves to the def it had before; the helper inactive). The second
+window opens when the driver below re-creates both, and closes when it restores them; its
+times are in the results.
+
+**Rows kept and quarantined.** Rule: a run row is kept if and only if its status is ok, it
+ended (start + wall time) no later than 07:15:43, every model-backed `kb/*` run in its tree
+(kb rows) was served by `anthropic`/`claude-haiku-5-5`, and (rag-lc rows) its search was
+reranked. Everything else moved to `study/quarantine/` with the reason, never deleted. Kept:
+kb 18, rag-lc 19, rag-ext 22, all `p7` rep 0. Quarantined: kb 4 (q04 and q08 cancelled, q06
+ended 07:16:04, one wave-12 key refusal), rag-lc 3 (q08 cancelled, q06 ended 07:15:44, one key
+refusal), rag-ext 0. The premature judge rows and analysis are quarantined too. The cancelled
+and refused rows are failures of the harness, not of an arm; their questions are run afresh
+as attempt 1 (check 8 is read on the resumed rows).
+
+**Defects fixed** (`bench/docs/kbrag/docs/`, with tests in `tests/test_guards.py`):
+1. One driver, `study.py`, runs every step in sequence in its own foreground: route
+   `kb/walker` to Haiku and create the helper, then preflight + scored runs per set, retry
+   passes, then restore + verify in a `finally` that SIGTERM and SIGHUP reach (a runner still
+   going is stopped first), then judge and analysis. Nothing is inferred from a PID file.
+   `forks.py --verify-restored` and `register.py retire` now fail loudly when the tenant is not
+   as before.
+2. Idempotency keys map the question id to `[A-Za-z0-9._-]` plus a short hash of the
+   original id; the resumed study uses a new key prefix, `kbrag-docs-study2`, so no
+   cancelled or refused run can be replayed.
+3. Guards: a kb row whose tree holds a model-backed `kb/*` run not served by Haiku is a
+   violation and stops the runner; a failed or unreranked rag-lc search among the first five
+   of an invocation, or three in a row later, stops it; a preflight (every model-backed kb
+   agent resolves to Haiku, the helper is active) runs before each set and every 20 runs, and
+   a failure stops it.
+
+**Resume.** Same design, same order: `p7` at 3 runs per arm first (the kept rows count), then
+`waves` and `known` at 1 run per arm, retry passes, restore + verify, judge, analysis. The cap
+is unchanged: a $19 increase over the 06:34 baseline ($36.792425); about $0.75 is spent.
+
+Nothing else changes.

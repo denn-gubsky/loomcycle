@@ -31,9 +31,16 @@ def spec():
 
 
 def live(name):
+    # AgentDef list answers {"name", "versions": [...]}; reading other keys (as ../register_agents.py
+    # does) saw no version at all, so `retire` retired nothing on 2026-11-23 (Amendment 3).
     r = dlc.agentdef("list", name=name)
-    rows = r.get("defs") or r.get("agent_defs") or r.get("items") or []
+    rows = r.get("versions") or r.get("defs") or r.get("agent_defs") or r.get("items") or []
     return [d for d in rows if not d.get("retired") and not d.get("shared")]
+
+
+def active(name):
+    e = [x for x in dlc.get("/v1/_library/agents")["entries"] if x["name"] == name]
+    return e[0].get("active_def_id") if e else None
 
 
 def main():
@@ -58,7 +65,12 @@ def main():
                 dlc.agentdef("retire", def_id=d["def_id"], retired=True)
                 st["log"].append({"at": now(), "op": "retire", "def_id": d["def_id"]})
                 print("retired", d["def_id"])
-        print("live versions now:", [d.get("def_id") for d in live(s["name"])])
+        left = [d.get("def_id") for d in live(s["name"])]
+        print("live versions now:", left, "active:", active(s["name"]))
+        if left or active(s["name"]):
+            with open(STATE, "w") as f:
+                json.dump(st, f, indent=1)
+            sys.exit(1)
     with open(STATE, "w") as f:
         json.dump(st, f, indent=1)
 
