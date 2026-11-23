@@ -74,8 +74,11 @@ type Options struct {
 	BuildVersion string
 	// Root is the directory the workspaces are made in.
 	Root string
-	// Engine runs commands; only host exists in this release.
+	// Engine runs commands: host (the default) or container.
 	Engine string
+	// Container configures the container engine. The worker fills its
+	// user (its own uid:gid), worker key and commands.
+	Container engine.ContainerOptions
 	// Capacity is the workspaces held at most; default DefaultCapacity.
 	Capacity int
 	// IdleStreams is the idle Op streams kept open; default 16, at most 32.
@@ -144,8 +147,8 @@ func Run(ctx context.Context, opt Options) error {
 	if opt.Engine == "" {
 		opt.Engine = workspace.EngineHost
 	}
-	if opt.Engine != workspace.EngineHost {
-		return fmt.Errorf("workspace worker: engine %q is not available in this release (want host)", opt.Engine)
+	if opt.Engine != workspace.EngineHost && opt.Engine != workspace.EngineContainer {
+		return fmt.Errorf("workspace worker: engine %q is not one this worker runs (want host or container)", opt.Engine)
 	}
 	if opt.Capacity <= 0 {
 		opt.Capacity = DefaultCapacity
@@ -154,9 +157,6 @@ func Run(ctx context.Context, opt Options) error {
 		opt.IdleStreams = DefaultIdleStreams
 	}
 	opt.IdleStreams = min(opt.IdleStreams, MaxIdleStreams)
-	if opt.Toolchains == nil {
-		opt.Toolchains = DetectToolchains()
-	}
 	if opt.ID == "" {
 		opt.ID = defaultID()
 	}
@@ -182,7 +182,11 @@ func Run(ctx context.Context, opt Options) error {
 		defer cancel()
 		safego.Go(ctx, "workspace.worker.parent", func() { workerlink.WatchParent(ctx, opt.ParentPID, cancel) })
 	}
-	log.Warn("the host engine runs commands as this process's user, with no isolation; use it only on a trusted machine", "root", root)
+	eng, err := newEngine(ctx, &opt, log)
+	if err != nil {
+		return err
+	}
+	defer eng.Close()
 	if opt.Convert == nil && opt.ConvertChild != nil {
 		c, stop, err := startConverter(opt.BuildVersion, opt.ConvertChild, log)
 		if err != nil {
@@ -195,13 +199,49 @@ func Run(ctx context.Context, opt Options) error {
 	if opt.Convert == nil {
 		opt.Labels = nil
 	}
-	w := &worker{opt: opt, log: log, engine: &engine.Host{Commands: opt.Commands}}
-	defer w.engine.Close()
+	w := &worker{opt: opt, log: log, engine: eng}
 	w.cleanWork()
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
 		Name: "workspace.worker", Logger: log,
 	}, w.session)
+}
+
+// newEngine makes the engine opt names and fills opt.Toolchains when it is
+// nil: on host, what the machine's PATH has; on container, what the session
+// image has, found by starting one session under the same confinement. The
+// container engine also removes the sessions a previous run of this worker
+// left.
+func newEngine(ctx context.Context, opt *Options, log *slog.Logger) (engine.Engine, error) {
+	if opt.Engine == workspace.EngineHost {
+		log.Warn("the host engine runs commands as this process's user, with no isolation; use it only on a trusted machine", "root", opt.Root)
+		if opt.Toolchains == nil {
+			opt.Toolchains = DetectToolchains()
+		}
+		return &engine.Host{Commands: opt.Commands}, nil
+	}
+	co := opt.Container
+	// The session runs as this process's user: files the worker writes and
+	// files a command writes then have one owner. NewContainer refuses root.
+	co.User = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	co.WorkerKey = engine.WorkerKey(opt.ID, opt.Root)
+	co.Commands = opt.Commands
+	c, err := engine.NewContainer(co)
+	if err != nil {
+		return nil, fmt.Errorf("workspace worker: %w", err)
+	}
+	tc, err := c.Probe(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("workspace worker: %w", err)
+	}
+	if opt.Toolchains == nil {
+		opt.Toolchains = tc
+	}
+	if err := c.Reconcile(ctx); err != nil {
+		return nil, fmt.Errorf("workspace worker: %w", err)
+	}
+	log.Info("commands run in a container per workspace", "image", co.Image, "runtime", co.Runtime, "toolchains", opt.Toolchains)
+	return c, nil
 }
 
 // defaultID is the host's name. It must stay the same across restarts: the
@@ -395,6 +435,12 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 	var gone []string
 	for _, id := range ids {
 		if !workspace.ValidID(id) {
+			continue
+		}
+		// The session first, so nothing still running writes into the
+		// directory while it is removed.
+		if err := w.engine.Forget(context.Background(), id); err != nil {
+			log.Warn("cannot end the session of a workspace the dispatcher released", "workspace_id", id, "err", err)
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(w.opt.Root, id)); err != nil {

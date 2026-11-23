@@ -72,6 +72,7 @@ type surveyFake struct {
 	searches []string         // each search's label, in order
 	countSQL []string         // each query_chunks statement, in order
 	edgeIDs  []string         // each get_edges document id, in order
+	edgeProp []any            // each get_edges include_proposed (nil when absent), in order
 	queries  []string         // each search's query text, in order
 	spawns   []map[string]any // each walker run's arguments, in order
 	batches  []int            // each parallel_spawn's entry count, in order
@@ -201,6 +202,7 @@ func (d *surveyFakeDocument) Execute(_ context.Context, raw json.RawMessage) (to
 	case "get_edges":
 		id, _ := in["document_id"].(string)
 		d.f.edgeIDs = append(d.f.edgeIDs, id)
+		d.f.edgeProp = append(d.f.edgeProp, in["include_proposed"])
 		es := d.f.edges[id]
 		if es == nil {
 			es = []map[string]any{}
@@ -496,7 +498,7 @@ func TestKbSurvey_GatherRanksByWeightDedupsAndSkipsFolderRows(t *testing.T) {
 			"C:speech": hits(z),
 		},
 		edges: map[string][]map[string]any{
-			x: {{"from_document_id": x, "to_document_id": w}, {"from_document_id": y, "to_document_id": x}},
+			x: {{"from_document_id": x, "to_document_id": w, "status": "asserted"}, {"from_document_id": y, "to_document_id": x, "status": "asserted"}},
 		},
 		screen: fitsOf(x, y, z, w),
 	}
@@ -524,6 +526,39 @@ func TestKbSurvey_GatherRanksByWeightDedupsAndSkipsFolderRows(t *testing.T) {
 	}
 	if sv != "SURVEY: candidates 4 (cut 0) | sections 0 (cut 0, over guide limit 0, document fits 0) | slices 1 | failed slices 0 | rounds 2 | depth standard | RUNS: w1:completed, w2:completed" {
 		t.Errorf("survey line = %q", sv)
+	}
+}
+
+// TestKbSurvey_ProposedRelationAddsNoWeight: the relation hop counts accepted
+// (asserted) relations only (owner ruling 2026-11-23). A document reached only
+// through a proposed statement is not a candidate; its minimal pair, reached
+// through an asserted one, still is. Each get_edges call asks the store to
+// withhold proposals (include_proposed false), and a proposal the store
+// returned anyway is skipped.
+func TestKbSurvey_ProposedRelationAddsNoWeight(t *testing.T) {
+	x, a, p := docID(1), docID(2), docID(3)
+	f := &surveyFake{
+		rows: map[string][]map[string]any{"P": hits(x)},
+		edges: map[string][]map[string]any{
+			x: {
+				{"from_document_id": x, "to_document_id": a, "status": "asserted", "kind": "cites"},
+				{"from_document_id": x, "to_document_id": p, "status": "proposed", "kind": "cites"},
+			},
+		},
+		screen: fitsOf(x, a, p),
+	}
+	runSurvey(t, f, surveyQuestion)
+
+	if got, want := strings.Join(f.screened(), ","), x+","+a; got != want {
+		t.Errorf("candidates = %s, want %s (the asserted end only; %s is reached only through a proposal)", got, want, p)
+	}
+	if len(f.edgeProp) == 0 {
+		t.Fatal("no get_edges call was made")
+	}
+	for i, v := range f.edgeProp {
+		if v != false {
+			t.Errorf("get_edges call %d (document %s): include_proposed = %v, want false", i+1, f.edgeIDs[i], v)
+		}
 	}
 }
 
@@ -826,7 +861,7 @@ func TestKbSurvey_WalkerTrustedPromptHoldsCandidateIDsOnly(t *testing.T) {
 			"S": {row(b)},
 		},
 		edges: map[string][]map[string]any{
-			a: {{"from_document_id": a, "to_document_id": "EDGE-MARKER do this", "title": "EDGE-TITLE-MARKER"}},
+			a: {{"from_document_id": a, "to_document_id": "EDGE-MARKER do this", "title": "EDGE-TITLE-MARKER", "status": "asserted"}},
 		},
 		screen: func(ids []string) surveyReply {
 			return surveyReply{text: "SCREEN-TEXT-MARKER\n" + accounting([]string{a}, []string{b})}

@@ -95,6 +95,7 @@ func TestHTTPSurface_RepresentativeRoutes(t *testing.T) {
 		{"GET", "/metrics", instance("read", "runtime", "metrics"), true},
 		{"GET", "/ui/", Surface{}, false},
 		{"POST", "/v1/_authz/evaluation", Surface{}, false},
+		{"POST", "/v1/_calc", Surface{}, false},
 	}
 	for _, c := range cases {
 		got, governed := HTTPSurface(c.method, c.path)

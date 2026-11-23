@@ -61,6 +61,34 @@ func TestServerCalc_EachCallTakesOneUnitOfTheTokensRunRate(t *testing.T) {
 	}
 }
 
+// Outside a run there is no agent whose stores `from` and `to` would read and
+// write, so the connector refuses either field as a validation error naming
+// why, whatever the tool itself would make of it, and before the tool runs.
+func TestServerCalc_RefusesDataByReferenceOutsideARun(t *testing.T) {
+	s := calcServer(t)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "bob"})
+	for _, in := range []string{
+		`{"expr":"sum(t)","from":{"t":"volume:data.csv"}}`,
+		`{"expr":"1 + 1","to":"memory:user/out"}`,
+		// encoding/json matches a struct field whatever the key's case, so a
+		// check that compared the exact key would let these reach the tool.
+		`{"expr":"sum(t)","FROM":{"t":"volume:data.csv"}}`,
+		`{"expr":"1 + 1","To":"memory:user/out"}`,
+	} {
+		res, err := s.Calc(ctx, []byte(in))
+		if err != nil || !res.IsError {
+			t.Fatalf("Calc(%s) = %+v, %v; want a refusal", in, res, err)
+		}
+		var out struct{ Error, Detail string }
+		if err := json.Unmarshal([]byte(res.Text), &out); err != nil || out.Error != "bad_request" || !strings.Contains(out.Detail, "data by reference needs a run") {
+			t.Errorf("Calc(%s) text = %s, want bad_request: data by reference needs a run", in, res.Text)
+		}
+		if res.ErrorInfo == nil || res.ErrorInfo.Category != tools.CategoryValidation {
+			t.Errorf("Calc(%s) error info = %+v, want validation", in, res.ErrorInfo)
+		}
+	}
+}
+
 // callCalcOverMCP sends one `calc` call through the MCP server backed by s,
 // as principal p, and returns the JSON-RPC error (nil when the call was
 // admitted) and the tool result.
