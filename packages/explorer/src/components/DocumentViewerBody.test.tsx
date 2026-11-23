@@ -29,7 +29,9 @@ function fakeData() {
   const documentExportFile = vi.fn().mockResolvedValue({ blob: new Blob(["x"]), filename: "Architecture.pdf" });
   const documentReorderChunk = vi.fn().mockResolvedValue({});
   const data = {
-    documentQueryChunks: vi.fn().mockResolvedValue({ chunks: rows }),
+    // A fresh list per read, as the runtime sends: a reload reads every body again.
+    documentQueryChunks: vi.fn(() => Promise.resolve({ chunks: [...rows] })),
+    documentHistory: vi.fn().mockResolvedValue({ revisions: [] }),
     documentGet: vi.fn().mockResolvedValue({ document_id: DOC, root_chunk_id: ROOT, type: "spec", status: "draft" }),
     documentGetChunk: vi.fn((cid: string) => Promise.resolve(detail(rows.find((r) => r.id === cid)!))),
     documentGetEdges: vi.fn().mockResolvedValue({ edges: [] }),
@@ -49,6 +51,7 @@ let mounted: { root: Root; el: HTMLElement } | null = null;
 let writeText: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  localStorage.clear();
   writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
   vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
@@ -66,6 +69,11 @@ afterEach(() => {
 });
 
 async function mount(data: ExplorerDataLayer, props: Partial<DocumentViewerBodyProps> = {}) {
+  if (mounted) {
+    act(() => mounted!.root.unmount());
+    mounted.el.remove();
+    mounted = null;
+  }
   const el = document.createElement("div");
   document.body.appendChild(el);
   const root = createRoot(el);
@@ -79,6 +87,10 @@ async function mount(data: ExplorerDataLayer, props: Partial<DocumentViewerBodyP
 
 const sections = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLElement>(".doc-chunk"));
 const menuButton = (el: HTMLElement) => el.querySelector<HTMLButtonElement>(".doc-more-button")!;
+const rail = (el: HTMLElement, panel: string) =>
+  Array.from(el.querySelectorAll<HTMLButtonElement>(".doc-rail-button")).find((b) =>
+    b.getAttribute("aria-label")!.startsWith(panel),
+  )!;
 const menuItems = (el: HTMLElement) => Array.from(el.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
 async function pick(el: HTMLElement, label: string) {
   act(() => menuButton(el).click());
@@ -234,19 +246,136 @@ describe("DocumentViewerBody", () => {
     expect(writeText).toHaveBeenLastCalledWith(DETAIL);
   });
 
-  it("keeps annotation, references and classification closed until asked for", async () => {
+  it("TestDocumentViewerBody_SidePanelsAreClosedUntilARailIconOpensOne", async () => {
     const el = await mount(fakeData().data);
+    expect(el.querySelector(".doc-side")).toBeNull();
+    // The interim header toggles and the panel under the header are gone.
+    expect(el.querySelector(".doc-panel-toggles")).toBeNull();
     expect(el.querySelector(".doc-panel")).toBeNull();
-    const toggle = (label: string) =>
-      Array.from(el.querySelectorAll<HTMLButtonElement>(".doc-panel-toggles button")).find((b) =>
-        b.textContent!.startsWith(label),
-      )!;
-    act(() => toggle("references").click());
-    expect(el.querySelector(".doc-panel .doc-links-pane")).not.toBeNull();
-    act(() => toggle("references").click());
-    expect(el.querySelector(".doc-panel")).toBeNull();
-    act(() => toggle("classification").click());
-    expect(el.querySelector(".doc-panel")!.textContent).toContain("classify this document");
+    act(() => rail(el, "references").click());
+    expect(el.querySelector(".doc-side .doc-links-pane")).not.toBeNull();
+    expect(rail(el, "references").getAttribute("aria-pressed")).toBe("true");
+    act(() => rail(el, "references").click());
+    expect(el.querySelector(".doc-side")).toBeNull();
+    act(() => rail(el, "classification").click());
+    expect(el.querySelector(".doc-side")!.textContent).toContain("classify this document");
+  });
+
+  it("TestDocumentViewerBody_RailShowsCountsAndOneSidePanelAtATime", async () => {
+    const f = fakeData();
+    const edge = (to: string, kind: string) => ({ from_id: ROOT, to_id: to, kind, from_document_id: DOC, to_document_id: DOC });
+    (f.data as unknown as { documentGetEdges: unknown }).documentGetEdges = vi
+      .fn()
+      .mockResolvedValue({ edges: [edge(INTRO, "cites"), edge(OUTRO, "defines"), { ...edge(DETAIL, "x"), from_id: DETAIL }] });
+    (f.data as unknown as { documentAcceptClassification: unknown }).documentAcceptClassification = vi.fn();
+    (f.data as unknown as { documentGetChunk: unknown }).documentGetChunk = vi.fn((cid: string) => {
+      const d = detail(rows.find((r) => r.id === cid)!);
+      return Promise.resolve(
+        cid === ROOT ? { ...d, fields: { classification: { proposed_type: "Rfc", proposed_tags: ["a", "b"] } } } : d,
+      );
+    });
+    const el = await mount(f.data);
+    // References: the current chunk's (the root's) references and relations.
+    await vi.waitFor(() => expect(rail(el, "references").getAttribute("aria-label")).toBe("references, 2 on this chunk"));
+    expect(rail(el, "references").querySelector(".doc-rail-count")!.textContent).toBe("2");
+    // Classification: what waits for a ruling — the type and two tags.
+    expect(rail(el, "classification").getAttribute("aria-label")).toBe("classification, 3 waiting for review");
+    expect(rail(el, "history")).not.toBeNull();
+    // One panel at a time.
+    act(() => rail(el, "references").click());
+    act(() => rail(el, "history").click());
+    expect(el.querySelectorAll(".doc-side").length).toBe(1);
+    expect(el.querySelector(".doc-side")!.getAttribute("aria-label")).toBe("history panel");
+    expect(rail(el, "references").getAttribute("aria-pressed")).toBe("false");
+    // Its own edge control closes it.
+    act(() => el.querySelector<HTMLButtonElement>(".doc-side .pane-collapse")!.click());
+    expect(el.querySelector(".doc-side")).toBeNull();
+  });
+
+  it("TestDocumentViewerBody_ClassificationRailIsQuietWithNothingPending", async () => {
+    const el = await mount(fakeData().data);
+    expect(rail(el, "classification").getAttribute("aria-label")).toBe("classification, nothing waiting");
+    expect(rail(el, "classification").querySelector(".doc-rail-count")).toBeNull();
+  });
+
+  it("TestDocumentViewerBody_OpenPanelIsRememberedPerBrowser", async () => {
+    const f = fakeData();
+    let el = await mount(f.data);
+    act(() => rail(el, "references").click());
+    expect(localStorage.getItem("loomcycle.explorer.panel")).toBe("references");
+    el = await mount(f.data);
+    expect(el.querySelector(".doc-side .doc-links-pane")).not.toBeNull();
+    act(() => rail(el, "references").click());
+    el = await mount(f.data);
+    expect(el.querySelector(".doc-side")).toBeNull();
+  });
+
+  it("TestDocumentViewerBody_OutlineCollapsesToARailWithItsCountAndRestores", async () => {
+    const f = fakeData();
+    let el = await mount(f.data);
+    const outlinePane = () => el.querySelector<HTMLElement>(".doc-split > .splitter-left")!;
+    expect(outlinePane().hidden).toBe(false);
+    act(() => el.querySelector<HTMLButtonElement>(".doc-chunktree .pane-collapse")!.click());
+    expect(outlinePane().hidden).toBe(true);
+    const railButton = el.querySelector<HTMLButtonElement>(".doc-split > .pane-rail .pane-rail-button")!;
+    expect(railButton.getAttribute("aria-label")).toBe("Show the chunk outline, 4 chunks");
+    expect(railButton.querySelector(".pane-rail-count")!.textContent).toBe("4");
+    expect(localStorage.getItem("loomcycle.explorer.collapsed.outline")).toBe("1");
+    // Remembered across a remount.
+    el = await mount(f.data);
+    expect(outlinePane().hidden).toBe(true);
+    act(() => el.querySelector<HTMLButtonElement>(".doc-split > .pane-rail .pane-rail-button")!.click());
+    expect(outlinePane().hidden).toBe(false);
+    expect(localStorage.getItem("loomcycle.explorer.collapsed.outline")).toBe("0");
+    // A double-click on the divider folds it too, and "{" toggles it.
+    act(() => {
+      el.querySelector(".doc-split > .splitter-handle")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    });
+    expect(outlinePane().hidden).toBe(true);
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "{", bubbles: true }));
+    });
+    expect(outlinePane().hidden).toBe(false);
+    // "]" opens the side panel.
+    act(() => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "]", bubbles: true }));
+    });
+    expect(el.querySelector(".doc-side")).not.toBeNull();
+  });
+
+  it("TestDocumentViewerBody_ScrollThatIsNotThePinsLetsGoOfTheHeldChunk", async () => {
+    const el = await mount(fakeData().data);
+    const page = el.querySelector<HTMLElement>(".doc-page")!;
+    const target = el.querySelector<HTMLElement>(`[data-chunk-id="${DETAIL}"]`)!;
+    // The chunk sits `offset` px down the page; where it is on screen follows
+    // the page's scroll.
+    let offset = 600;
+    vi.spyOn(page, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 100, 600, 400));
+    vi.spyOn(target, "getBoundingClientRect").mockImplementation(
+      () => new DOMRect(0, 100 + offset - page.scrollTop, 600, 80),
+    );
+    const outlineRow = Array.from(el.querySelectorAll<HTMLElement>(".chunk-tree .etree-row")).find(
+      (r) => r.querySelector(".etree-name")!.textContent === "Detail",
+    )!;
+    act(() => outlineRow.click());
+    expect(page.scrollTop).toBe(592);
+    // The pin's own scroll does not let go: a reload that moves the chunk
+    // down brings the page after it.
+    act(() => {
+      page.dispatchEvent(new Event("scroll"));
+    });
+    offset = 900;
+    await pick(el, "reload");
+    await vi.waitFor(() => expect(page.scrollTop).toBe(892));
+    // A scroll that fires no wheel, touch, key or press (a scrollbar drag, a
+    // script) does: the next reload leaves the page where the reader put it.
+    page.scrollTop = 40;
+    act(() => {
+      page.dispatchEvent(new Event("scroll"));
+    });
+    await pick(el, "reload");
+    await vi.waitFor(() => expect(el.querySelectorAll(".doc-chunk .md").length).toBe(rows.length));
+    expect(page.scrollTop).toBe(40);
   });
 });
 
