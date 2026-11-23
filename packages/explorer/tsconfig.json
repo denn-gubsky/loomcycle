@@ -19,7 +19,14 @@
     "noUncheckedSideEffectImports": true,
     "skipLibCheck": true,
 
-    "types": ["vite/client", "node"]
+    "types": ["vite/client", "node"],
+
+    // @loomcycle/code-editor is a sibling package, checked from its source
+    // (as web does) so a change to it and its use here land in one commit.
+    "paths": {
+      "@loomcycle/code-editor": ["../code-editor/src/index.ts"],
+      "@loomcycle/code-editor/styles.css": ["../code-editor/src/styles.css"]
+    }
   },
-  "include": ["src", "vite.config.lib.ts"]
+  "include": ["src", "vite.config.lib.ts", "vitest.config.ts"]
 }
