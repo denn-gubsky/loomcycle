@@ -25,7 +25,7 @@ const SecComplex = "complex"
 
 // complexArgHint is the refusal hint for a real operation whose answer is
 // not a real number.
-const complexArgHint = "the answer is not a real number; for the complex value pass a complex argument, e.g. x + 0i"
+const complexArgHint = "the answer is not a real number; where a function takes complex numbers (Calc/complex), pass a complex argument such as x + 0i"
 
 // complexRealOnlyHint is the hint a function that takes real numbers gives
 // when it meets a complex one.
@@ -157,6 +157,11 @@ func (e *evaluator) complexPow(a complex128, r val, pos int) (val, *Error) {
 					z *= sq
 				}
 				sq *= sq
+			}
+			if cmplx.IsNaN(z) || cmplx.IsInf(z) {
+				// Squaring past float64 range gives Inf, and Inf times a
+				// zero part NaN: either way the power overflowed.
+				return nil, errf(codeOverflow, pos, "the power overflows a 64-bit float")
 			}
 			if neg {
 				z = 1 / z
@@ -358,6 +363,14 @@ func sortComplex(zs []complex128) []int {
 // companion matrix, NumPy's method. Leading zeros are dropped; trailing
 // zeros are roots at 0, found without the matrix.
 func fnPolyroots(e *evaluator, a args) (val, *Error) {
+	if l, ok := a.v[0].([]val); ok {
+		for _, x := range l {
+			if isComplex(x) {
+				return nil, errf(codeType, a.pos, "polyroots takes real coefficients, got a complex one").
+					withHint("the roots are found in real arithmetic; a polynomial with complex coefficients is not supported")
+			}
+		}
+	}
 	p, err := numList(a, 0)
 	if err != nil {
 		return nil, err

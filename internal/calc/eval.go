@@ -494,10 +494,10 @@ func (e *evaluator) callBuiltin(b *builtin, argv []val, pos int) (val, *Error) {
 			return out, nil
 		}
 	}
-	if v, handled, err := e.complexCall(b, argv, pos); handled {
-		return v, err
+	v, handled, err := e.complexCall(b, argv, pos)
+	if !handled {
+		v, err = b.fn(e, args{v: argv, pos: pos, name: b.name})
 	}
-	v, err := b.fn(e, args{v: argv, pos: pos, name: b.name})
 	if err != nil {
 		complexHint(err)
 	}
