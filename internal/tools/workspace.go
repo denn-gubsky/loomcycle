@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"slices"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 )
@@ -17,6 +18,11 @@ type WorkspacePolicyValue struct {
 	// Share lets the run share a workspace it owns with another run of its
 	// user (RFC GW §5.2), handing over no more than it holds itself.
 	Share bool
+	// Egress names the routes a workspace the run opens may reach the
+	// network through (RFC GW §6.3). It bounds what open records; alone it
+	// grants nothing, so Grants does not count it. Never aliased with a
+	// definition's list.
+	Egress []string
 	// Engine is the least isolating engine the run accepts: "" (any),
 	// config.WorkspaceEngineHost or config.WorkspaceEngineContainer.
 	Engine string
@@ -44,7 +50,7 @@ func WorkspaceFor(w *config.AgentWorkspace) WorkspacePolicyValue {
 	if !w.Grants() {
 		return WorkspacePolicyValue{}
 	}
-	v := WorkspacePolicyValue{Open: w.Open, Share: w.Share, Engine: w.Engine}
+	v := WorkspacePolicyValue{Open: w.Open, Share: w.Share, Engine: w.Engine, Egress: slices.Clone(w.Egress)}
 	for _, op := range w.Ops {
 		switch op {
 		case config.WorkspaceOpRead:
@@ -95,8 +101,9 @@ func (v WorkspacePolicyValue) AcceptsEngineRequirement(requirement string) bool 
 
 // NarrowWorkspace is a spawned child's policy: each operation only when both
 // its parent run and its own definition allow it, open and share only when
-// both may, and the stricter of the two engine requirements. A side that grants nothing
-// leaves the child nothing.
+// both may, the routes both list (in the order of the child's list), and the
+// stricter of the two engine requirements. A side that grants nothing leaves
+// the child nothing.
 func NarrowWorkspace(parent, own WorkspacePolicyValue) WorkspacePolicyValue {
 	out := WorkspacePolicyValue{
 		Read:  parent.Read && own.Read,
@@ -107,6 +114,11 @@ func NarrowWorkspace(parent, own WorkspacePolicyValue) WorkspacePolicyValue {
 	}
 	if !out.Grants() {
 		return WorkspacePolicyValue{}
+	}
+	for _, r := range own.Egress {
+		if slices.Contains(parent.Egress, r) {
+			out.Egress = append(out.Egress, r)
+		}
 	}
 	out.Engine = parent.Engine
 	if workspaceEngineRank(own.Engine) > workspaceEngineRank(parent.Engine) {
@@ -138,13 +150,14 @@ func (v WorkspacePolicyValue) Grant() *config.AgentWorkspace {
 	if !v.Grants() {
 		return nil
 	}
-	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Share: v.Share, Engine: v.Engine}
+	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Share: v.Share, Egress: slices.Clone(v.Egress), Engine: v.Engine}
 }
 
 // Report is the policy for Context op=self. Always present: ops [] and open
-// false is the answer "no workspace access".
+// false is the answer "no workspace access", and egress [] no routes.
 func (v WorkspacePolicyValue) Report() map[string]any {
-	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "engine": v.Engine}
+	egress := append([]string{}, v.Egress...)
+	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "egress": egress, "engine": v.Engine}
 }
 
 // SpawnWorkspaceShare is one of a spawn's `workspaces` (RFC GW §5.2): a

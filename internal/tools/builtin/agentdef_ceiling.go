@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -498,19 +499,30 @@ func ceilGitRemote(ctx context.Context, def mergedDef, base *mergedDef, held str
 // ---- workspace ----
 
 // ceilWorkspace holds workspace to the author's own run's grant (RFC GW). A
-// block that grants nothing is within every ceiling. Otherwise each operation,
-// open and share must be held by the author's run (already narrowed by its parent,
-// for a sub-agent) or by the forked version, and the engine requirement may
-// be no weaker than the weakest of theirs. The ceiling is that union, as for
-// git_remote; a side that grants nothing adds nothing to it, so a forked
-// version without the grant cannot loosen the author's engine requirement.
+// block that grants nothing is within every ceiling, except for its routes.
+// Otherwise each operation, open, share and route must be held by the
+// author's run (already narrowed by its parent, for a sub-agent) or by the
+// forked version, and the engine requirement may be no weaker than the
+// weakest of theirs. The ceiling is that union, as for git_remote; a side
+// that grants nothing adds nothing to it, so a forked version without the
+// grant cannot loosen the author's engine requirement or lend its routes.
+//
+// Routes are held even on a block that grants nothing: stored, they would
+// otherwise be kept by a later fork that adds ops, judged against a union
+// with this version, by an author that never held them.
 func ceilWorkspace(ctx context.Context, def mergedDef, base *mergedDef, held string) error {
-	if !def.Workspace.Grants() {
+	if def.Workspace == nil {
 		return nil
 	}
 	ceiling := tools.PolicyOf(ctx).Workspace
 	if base != nil {
 		ceiling = unionWorkspace(ceiling, tools.WorkspaceFor(base.Workspace))
+	}
+	if err := subsetCeiling("workspace.egress", def.Workspace.Egress, false, held, ceiling.Egress); err != nil {
+		return err
+	}
+	if !def.Workspace.Grants() {
+		return nil
 	}
 	if err := subsetCeiling("workspace.ops", def.Workspace.Ops, false, held, ceiling.Ops()); err != nil {
 		return err
@@ -531,9 +543,10 @@ func ceilWorkspace(ctx context.Context, def mergedDef, base *mergedDef, held str
 	return nil
 }
 
-// unionWorkspace is the wider of two grants, for a ceiling: the operations
-// open and share either holds, and the weaker engine requirement — of the sides
-// that grant anything, since a side granting nothing names no requirement.
+// unionWorkspace is the wider of two grants, for a ceiling: the operations,
+// open, share and routes either holds, and the weaker engine requirement — of
+// the sides that grant anything, since a side granting nothing names no
+// requirement.
 func unionWorkspace(a, b tools.WorkspacePolicyValue) tools.WorkspacePolicyValue {
 	switch {
 	case !a.Grants():
@@ -544,6 +557,12 @@ func unionWorkspace(a, b tools.WorkspacePolicyValue) tools.WorkspacePolicyValue 
 	out := tools.WorkspacePolicyValue{
 		Read: a.Read || b.Read, Write: a.Write || b.Write, Exec: a.Exec || b.Exec,
 		Open: a.Open || b.Open, Share: a.Share || b.Share, Engine: b.Engine,
+		Egress: slices.Clone(a.Egress),
+	}
+	for _, r := range b.Egress {
+		if !slices.Contains(out.Egress, r) {
+			out.Egress = append(out.Egress, r)
+		}
 	}
 	if a.AcceptsEngineRequirement(b.Engine) {
 		out.Engine = a.Engine

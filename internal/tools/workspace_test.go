@@ -36,7 +36,7 @@ func TestRunPolicy_WorkspaceNarrowsForAChild(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := RunPolicy{Workspace: c.parent}.Inherit(ChildGrant{Own: RunPolicy{Workspace: c.own}}).Workspace
-			if got != c.want {
+			if !reflect.DeepEqual(got, c.want) {
 				t.Errorf("got %+v, want %+v", got, c.want)
 			}
 		})
@@ -62,16 +62,20 @@ func TestWorkspaceFor_ReadsTheBlockAndGrantRoundTrips(t *testing.T) {
 		{"read and share", &config.AgentWorkspace{Ops: []string{"read"}, Share: true}, WorkspacePolicyValue{Read: true, Share: true}, []string{"read"}},
 		// share hands over only ops the agent holds: with none it grants nothing.
 		{"share alone", &config.AgentWorkspace{Share: true}, WorkspacePolicyValue{}, []string{}},
+		// RFC GW P4: egress bounds the workspaces the agent opens.
+		{"open with routes", &config.AgentWorkspace{Open: true, Egress: []string{"pypi", "npm"}},
+			WorkspacePolicyValue{Open: true, Egress: []string{"pypi", "npm"}}, []string{}},
+		{"egress alone", &config.AgentWorkspace{Egress: []string{"pypi"}}, WorkspacePolicyValue{}, []string{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := WorkspaceFor(c.in)
-			if got != c.want {
+			if !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("WorkspaceFor(%+v) = %+v, want %+v", c.in, got, c.want)
 			}
 			if ops := got.Ops(); ops == nil || !reflect.DeepEqual(ops, c.wantOps) {
 				t.Errorf("Ops() = %#v, want %#v", ops, c.wantOps)
 			}
-			if back := WorkspaceFor(got.Grant()); back != got {
+			if back := WorkspaceFor(got.Grant()); !reflect.DeepEqual(back, got) {
 				t.Errorf("WorkspaceFor(Grant()) = %+v, want %+v", back, got)
 			}
 			if got.Grant() == nil && got.Grants() {
@@ -99,5 +103,38 @@ func TestWorkspacePolicyValue_AcceptsEngineAtLeastTheRequirement(t *testing.T) {
 		if got := (WorkspacePolicyValue{Exec: true, Engine: c.req}).AcceptsEngine(c.engine); got != c.want {
 			t.Errorf("requirement %q, engine %q: got %v, want %v", c.req, c.engine, got, c.want)
 		}
+	}
+}
+
+// RFC GW §6.3, §7: a child holds only the routes both it and its parent
+// list, in the order of its own list; a side that lists none leaves the child
+// none; and a child left with no workspace access keeps no routes.
+func TestWorkspacePolicy_ChildEgressIsTheIntersection(t *testing.T) {
+	open := func(routes ...string) WorkspacePolicyValue {
+		return WorkspacePolicyValue{Read: true, Open: true, Egress: routes}
+	}
+	for _, c := range []struct {
+		name        string
+		parent, own WorkspacePolicyValue
+		want        []string
+	}{
+		{"both list the same", open("pypi", "npm"), open("pypi", "npm"), []string{"pypi", "npm"}},
+		{"the child's order", open("npm", "crm", "pypi"), open("pypi", "npm"), []string{"pypi", "npm"}},
+		{"a route only the child lists is dropped", open("pypi"), open("pypi", "crm"), []string{"pypi"}},
+		{"a route only the parent lists is not gained", open("pypi", "crm"), open("pypi"), []string{"pypi"}},
+		{"a parent with no routes passes none on", open(), open("pypi"), nil},
+		{"a child that lists none takes none", open("pypi"), open(), nil},
+		{"nothing shared", open("crm"), open("pypi"), nil},
+		{"no workspace access keeps no routes", WorkspacePolicyValue{Egress: []string{"pypi"}}, open("pypi"), nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := NarrowWorkspace(c.parent, c.own).Egress
+			if len(got) != len(c.want) || (len(got) > 0 && !reflect.DeepEqual(got, c.want)) {
+				t.Errorf("egress = %#v, want %#v", got, c.want)
+			}
+			if len(got) > 0 && len(c.own.Egress) > 0 && &got[0] == &c.own.Egress[0] {
+				t.Error("the child's list aliases its definition's")
+			}
+		})
 	}
 }
