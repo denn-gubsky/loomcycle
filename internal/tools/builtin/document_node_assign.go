@@ -14,14 +14,22 @@ package builtin
 // one read that shows what the margin rule would do before any placement is made.
 //
 // PROPOSALS ONLY (D17, owner ruling 2026-11-20: every placement stays a proposal).
-// With propose, a ranking whose margin is at least its level's threshold, and whose
-// nearest concept the document is not already placed under, is filed as a `subject`
-// proposal with method rule:centroid and confidence = the margin (at most 1), exactly
-// as misfits files: proposeOnly (the @auto_assert rule never asserts it), at most
+// With propose, a ranking whose margin is at least its level's threshold, of a
+// document placed under none of the concepts compared at that level, is filed as a
+// `subject` proposal with method rule:assign and confidence = the margin (at most
+// 1), as misfits files: proposeOnly (the @auto_assert rule never asserts it), at most
 // limit per call, never a placement any reviewer rejected nor one already proposed or
 // live, only by an operator or a run granted rule. Nothing here makes a placement
-// live: only a review rule the tenant writes on method rule:centroid could, through
+// live: only a review rule the tenant writes on method rule:assign could, through
 // the existing review policy at filing.
+//
+// A document already placed under a compared concept is never filed at that level,
+// even when a sibling is nearer by more than the threshold (owner ruling
+// 2026-11-23): a second, contradicting sibling placement is misfits' question, which
+// weighs the placement the document has. Its own method keeps a review rule tuned
+// for one mode's margins off the other's proposals; rule:assign is not a prefix of
+// rule:centroid nor the reverse, so the review tool's method filter (a prefix)
+// selects one mode's proposals alone too.
 //
 // THRESHOLDS. margins sets one per level; the default is 0.03 at level 2 only (P0's
 // margin check: 98% within a parent at 39% coverage) and nothing at level 1, where
@@ -58,6 +66,9 @@ import (
 
 const (
 	nodeStatsModeAssign = "assign"
+	// assignMethod is the method of every proposal the mode files (owner ruling
+	// 2026-11-23: not misfits' rule:centroid, whose margin measures another thing).
+	assignMethod = "rule:assign"
 
 	// assignPageDefault / assignPageMax bound the documents one report page lists.
 	assignPageDefault = 50
@@ -94,7 +105,9 @@ type assignRanking struct {
 	// or through a narrower one). Absent when it is placed under none of the
 	// compared concepts: there is nothing to agree with.
 	Agrees *bool `json:"agrees,omitempty"`
-	// Threshold is the level's; Eligible marks a ranking the propose form would file.
+	// Threshold is the level's; Eligible marks a ranking the propose form would file:
+	// at or over the threshold, the document placed under none of the compared
+	// concepts.
 	Threshold *float64 `json:"threshold,omitempty"`
 	Eligible  bool     `json:"eligible,omitempty"`
 	// With propose: the outcome, as misfits reports it.
@@ -317,7 +330,9 @@ func (a *assignPass) rank(doc string, s memrank.OntologyScheme) []assignRanking 
 		if t, ok := a.margins[st.level]; ok {
 			thr := t
 			rk.Threshold = &thr
-			rk.Eligible = rk.Margin >= t && !a.member[doc][nearest.id]
+			// Placed under a compared concept: either the nearest (nothing to add)
+			// or a sibling (a contradicting placement, left to misfits).
+			rk.Eligible = rk.Margin >= t && !placed
 		}
 		out = append(out, rk)
 		for _, id := range a.groups[group] {
@@ -706,12 +721,12 @@ func rootDocs(roots map[string]string) map[string]*statDoc {
 }
 
 // proposeAssignment files one placement. Confidence is the margin (at most 1): the
-// signal P0 measured, which a tenant review rule on method rule:centroid reads.
+// signal P0 measured, which a tenant review rule on method rule:assign reads.
 func (d *Document) proposeAssignment(ctx context.Context, root, rootTitle string, pr *assignProposal) {
 	conf := math.Min(1, math.Max(0, pr.Margin))
 	in := docInput{
 		Op: "propose_statement", Scope: "tenant", FromID: root, ToID: pr.Nearest.NodeID, Kind: "subject",
-		Confidence: &conf, edgeMethod: misfitMethod, proposeOnly: true,
+		Confidence: &conf, edgeMethod: assignMethod, proposeOnly: true,
 		Attributes: map[string]any{"assigned_by": nodeStatsModeAssign, "level": pr.Level, "margin": pr.Margin,
 			"nearest_similarity": pr.Nearest.Similarity, "second": pr.Second.NodeID, "second_similarity": pr.Second.Similarity},
 		Evidence: misfitEvidence(root, rootTitle),

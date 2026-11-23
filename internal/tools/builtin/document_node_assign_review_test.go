@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -125,4 +126,51 @@ func filedKeys(m map[string]statementRow) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestAssign_DocumentPlacedUnderASiblingIsNotFiled — a document already placed
+// under a compared concept is not filed at that level even when a sibling is
+// nearer by more than the threshold: a second, contradicting placement is misfits'
+// question. The ranking is still reported, disagreeing; a document placed under
+// none of the compared concepts is filed as before.
+func TestAssign_DocumentPlacedUnderASiblingIsNotFiled(t *testing.T) {
+	d, base, _ := documentFixture(t)
+	a := newAssignCorpus(t, d, base, assignOntologyMD)
+	sib := a.doc(t, "/kb/sib", []float32{1, 0.02, 0, 0}, a.two) // nearest Alpha One, placed under Alpha Two
+	free := a.doc(t, "/kb/free", []float32{1, 0.02, 0, 0}, a.alpha)
+
+	rep := assignRun(t, d, a.f.operator, `{"op":"node_stats","mode":"assign","limit":200,"margins":{"2":0}}`)
+	r := rep.docOf(t, sib).at(t, 2)
+	if r.Nearest.NodeID != a.one || r.Agrees == nil || *r.Agrees || r.Eligible {
+		t.Errorf("sib level 2 = %+v; want nearest Alpha One, disagreeing, not eligible", r)
+	}
+	if r := rep.docOf(t, free).at(t, 2); r.Nearest.NodeID != a.one || !r.Eligible {
+		t.Errorf("free level 2 = %+v; want nearest Alpha One, eligible", r)
+	}
+
+	assignRun(t, d, a.f.operator, `{"op":"node_stats","mode":"assign","propose":true,"margins":{"2":0}}`)
+	got := filedKeys(assignedStatements(t, d, a.f.operator))
+	if want := []string{a.docs[free] + "->" + a.one}; !reflect.DeepEqual(got, want) {
+		t.Errorf("filed = %v; want only %v", got, want)
+	}
+}
+
+// TestAssign_AMisfitsReviewRuleDoesNotRuleOnAssignProposals — assign files under
+// its own method, so a Review rule written for misfits' rule:centroid leaves its
+// proposals alone, and one written for rule:assign rules on them.
+func TestAssign_AMisfitsReviewRuleDoesNotRuleOnAssignProposals(t *testing.T) {
+	for _, tc := range []struct {
+		method, want string
+	}{{misfitMethod, edgeStatusProposed}, {assignMethod, edgeStatusAsserted}} {
+		t.Run(tc.method, func(t *testing.T) {
+			d, base, _ := documentFixture(t)
+			md := assignOntologyMD + "\n## Review\n@section review\n- accept kind:subject method:" + tc.method + "\n- human *\n"
+			a := newAssignCorpus(t, d, base, md)
+			p1 := a.doc(t, "/kb/p1", []float32{1, 0.02, 0, 0}, a.alpha)
+			rep := assignRun(t, d, a.f.operator, `{"op":"node_stats","mode":"assign","propose":true}`)
+			if len(rep.Proposals) != 1 || rep.Proposals[0].DocumentID != p1 || rep.Proposals[0].Status != tc.want {
+				t.Errorf("proposals = %+v; want p1 %s", rep.Proposals, tc.want)
+			}
+		})
+	}
 }

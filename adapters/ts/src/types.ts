@@ -4791,8 +4791,9 @@ export type DocumentToolInput = {
    *  node_stats mode split: true files each recurring group as a proposed
    *  concept and each merge as a retire proposal, at most `limit` per call.
    *  node_stats mode assign: true files a `subject` proposal (method
-   *  rule:centroid, confidence the margin) per ranking that clears its level's
-   *  margin, at most `limit` per call; nothing is made live. */
+   *  rule:assign, confidence the margin) per ranking that clears its level's
+   *  margin, for a document placed under none of the concepts compared, at most
+   *  `limit` per call; nothing is made live. */
   propose?: boolean;
   /** search / related: never chunks of these documents (e.g. the document under
    *  review, so its own text is not found as evidence for itself). */
