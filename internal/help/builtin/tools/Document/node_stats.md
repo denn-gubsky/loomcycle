@@ -214,7 +214,7 @@ nothing was filed: `exists` (an open proposal of that name under that parent),
 
 ## Assign
 
-With `mode: assign` the call compares each document a scheme arranges (of the
+With `mode: assign` the call compares each document an in-force scheme arranges (of the
 classes its `@projects` names, or every document class) with the centroids of
 one level's concepts at a time, and reads off the **nearest**, the **second**
 and the **margin** between them (nearest less second). The unit is the whole
@@ -222,7 +222,8 @@ document: its document-level annotation vector. Level 1 compares the scheme's
 top concepts. A lower level compares the children of a concept the document is
 placed under live, or of the nearest concept one level up when that ranking
 cleared its threshold. A comparison needs at least two concepts with a
-centroid (three members with a vector each). A document that is a member of a
+centroid (three members with a vector each). A retired concept is never
+compared: it takes no new placement. A document that is a member of a
 concept is compared with that concept's centroid without itself, so its own
 pull does not make it agree. It needs the vector stage, as misfits does.
 
@@ -233,7 +234,8 @@ is placed under) and its rankings; and per level, over every document
 compared, how often the nearest agrees with a live placement, in margin
 buckets of 0.01 (`buckets`) and at or above each bucket's lower bound
 (`at_least`). A ranking is judged (`agrees` present) only when the document is
-placed under one of the compared concepts. `created_after` keeps only the
+placed under one of the compared concepts; a placement under a concept left out
+of the comparison (too few members with a vector) is not judged. `created_after` keeps only the
 documents created after that instant: a held-out set, to check a threshold on
 documents placed after it was chosen.
 
@@ -241,7 +243,8 @@ A level's **threshold** is set by `margins`, keyed by the level as a string:
 the default is `{"2": 0.03}`, so level 1 has none. A ranking is `eligible`
 when its margin is at least its level's threshold and the document is not
 already placed under the nearest concept. With `propose: true` each eligible
-ranking, largest margin first, is filed as a `subject` proposal to the nearest
+ranking, largest margin first, is filed (only the most specific one when a
+document is eligible at two levels of a scheme, since a placement rolls up) as a `subject` proposal to the nearest
 concept, method `rule:centroid`, confidence the margin, the document's title as
 evidence, at most `limit` per call (default 20, at most 100), never one any
 reviewer rejected nor one already proposed or live. Who may file is as for

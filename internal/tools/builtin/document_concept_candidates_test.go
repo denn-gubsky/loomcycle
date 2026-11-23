@@ -80,8 +80,17 @@ func TestClassify_CandidatesNarrowWhatTheModelIsAsked(t *testing.T) {
 	a := f.classify(f.ctx, "tenant", docID, nil)
 
 	names := stub.askedNames()
-	if len(names) != 1 || len(names[0]) > memrank.ClassifyMaxConcepts || names[0][0] != "Alpha3" || names[0][1] != "Gamma" {
-		t.Fatalf("asked %v; want one request, Alpha3 then Gamma first", names)
+	// The 29-concept vocabulary all has definitions, so the request is full: the
+	// cap holds, and each concept is asked once though both lists name it.
+	if len(names) != 1 || len(names[0]) != memrank.ClassifyMaxConcepts || names[0][0] != "Alpha3" || names[0][1] != "Gamma" {
+		t.Fatalf("asked %v; want one request of %d, Alpha3 then Gamma first", names, memrank.ClassifyMaxConcepts)
+	}
+	once := map[string]bool{}
+	for _, n := range names[0] {
+		if once[n] {
+			t.Errorf("%s asked twice in %v", n, names[0])
+		}
+		once[n] = true
 	}
 	step := modelStep(a)
 	if step == nil || len(step.Nearest) != len(names[0]) || step.Nearest[0].Concept != "Alpha3" || step.Nearest[0].Definition == nil || *step.Nearest[0].Definition < 0.999 {
@@ -168,5 +177,30 @@ func TestClassify_CandidatesIncludeTheNearestCentroids(t *testing.T) {
 	}
 	if got := conceptNames(a.Concepts); strings.Join(got, ",") != "Beta7" {
 		t.Errorf("concepts = %v; want Beta7", got)
+	}
+}
+
+// TestNodeDefinitions_ARowWithNoConceptIsRemoved — a stored definition whose
+// concept no longer exists is deleted by the next compute and counted, so
+// classify never offers a concept that is gone.
+func TestNodeDefinitions_ARowWithNoConceptIsRemoved(t *testing.T) {
+	f := newCandidateFixture(t)
+	f.computeDefinitions()
+	key, _, err := f.d.ontologyTenantKey(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.docSQL().Exec(f.ctx, key, f.d.SqlMem.Rebind(`INSERT INTO node_definitions
+		(node_id, def_sha256, embed_model, vector, computed_at) SELECT 'ghost', def_sha256, embed_model, vector, computed_at
+		FROM node_definitions LIMIT 1`), nil, 0); err != nil {
+		t.Fatalf("plant: %v", err)
+	}
+	ans := nodeStatsRun(t, f.d, f.ctx, computeAll)
+	if ans.Definitions == nil || ans.Definitions.Removed != 1 {
+		t.Fatalf("definitions = %+v; want the ghost removed", ans.Definitions)
+	}
+	res, err := f.d.query(f.ctx, key, `SELECT COUNT(*) FROM node_definitions WHERE node_id = 'ghost'`)
+	if err != nil || asStr(res.Rows[0][0]) != "0" {
+		t.Errorf("ghost row still stored: %v %v", res, err)
 	}
 }

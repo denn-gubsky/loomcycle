@@ -303,9 +303,12 @@ func (a *assignPass) rank(doc string, s memrank.OntologyScheme) []assignRanking 
 			Nearest: assignNode{NodeID: nearest.id, Node: nearest.name, Tag: nearest.tag, Similarity: scores[0].Score},
 			Second:  assignNode{NodeID: second.id, Node: second.name, Tag: second.tag, Similarity: scores[1].Score},
 			Margin:  scores[0].Score - scores[1].Score}
+		// Judged only against the concepts actually compared: one dropped by the
+		// ranker (too few members with a vector) cannot be the nearest, so a
+		// document placed under it would always count as disagreeing.
 		placed := false
-		for _, id := range a.groups[group] {
-			placed = placed || a.member[doc][id]
+		for _, sc := range scores {
+			placed = placed || a.member[doc][sc.ID]
 		}
 		if placed {
 			agrees := a.member[doc][nearest.id]
@@ -385,7 +388,7 @@ func (d *Document) NodeAssign(ctx context.Context, key sqlmem.ScopeKey, read Ont
 				levels[rk.Level] = lv
 			}
 			lv.count(rk)
-			if rk.Eligible {
+			if rk.Eligible && !narrowerEligible(rk, rankings) {
 				eligible = append(eligible, assignProposal{DocumentID: doc, Title: a.titles[doc], assignRanking: rk})
 			}
 		}
@@ -542,11 +545,21 @@ func (d *Document) assignPlan(ctx context.Context, key sqlmem.ScopeKey, read Ont
 	a := &assignPassResult{assignPass: assignPass{p: p, titles: map[string]string{}, roots: map[string]string{},
 		member: map[string]map[string]bool{}, members: map[string][]string{}, concept: map[string]assignConcept{},
 		groups: map[string][]string{}, rankers: map[string]*nodestats.Ranker{}, margins: margins}}
+	// Only in-force concepts and schemes are compared: a retired concept takes no
+	// new placement (propose_statement refuses it), so ranking it would only file
+	// refused proposals and hide the live runner-up.
+	live := forNewWrites(read)
+	inForce := map[string]bool{}
+	for _, c := range inForceConcepts(live) {
+		inForce[c.ChunkID] = true
+	}
 	for _, n := range p.nodes {
 		if n.Kind != nodeKindConcept {
 			continue
 		}
-		a.groups[n.group] = append(a.groups[n.group], n.ID)
+		if inForce[n.ID] {
+			a.groups[n.group] = append(a.groups[n.group], n.ID)
+		}
 		a.members[n.ID] = n.members
 		for _, m := range n.members {
 			if a.member[m] == nil {
@@ -568,7 +581,7 @@ func (d *Document) assignPlan(ctx context.Context, key sqlmem.ScopeKey, read Ont
 	}
 	classes := describeOntologyRead(read).Classes
 	docsBy := map[string][]memrank.OntologyScheme{}
-	for _, s := range read.Schemes {
+	for _, s := range live.Schemes {
 		if in.Scheme != "" && s.Name != in.Scheme {
 			continue
 		}
@@ -721,4 +734,19 @@ func (d *Document) proposeAssignment(ctx context.Context, root, rootTitle string
 	}
 	_ = json.Unmarshal([]byte(res.Text), &out)
 	pr.StatementID, pr.Status = out.ID, out.Status
+}
+
+// narrowerEligible says whether another eligible ranking of the same document in
+// the same scheme names a concept below rk's nearest. Placement rolls up, so only
+// the most specific is filed, as classify keeps only the narrowest concept.
+func narrowerEligible(rk assignRanking, rankings []assignRanking) bool {
+	if rk.Nearest.Tag == "" {
+		return false
+	}
+	for _, o := range rankings {
+		if o.Eligible && o.Scheme == rk.Scheme && strings.HasPrefix(o.Nearest.Tag, rk.Nearest.Tag+"/") {
+			return true
+		}
+	}
+	return false
 }
