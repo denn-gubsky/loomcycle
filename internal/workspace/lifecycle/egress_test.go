@@ -275,3 +275,22 @@ func TestOperatorRoutes_ResolvesDefaultsAndTheCredentialName(t *testing.T) {
 		t.Fatalf("routes = %+v\nwant %+v", got, want)
 	}
 }
+
+// A fork (RFC GW P6) may send requests out through exactly the routes its
+// source may: the same owner opened the source within its grant, and the
+// fork is that owner's too.
+func TestFork_CarriesTheSourcesEgressRoutes(t *testing.T) {
+	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
+	o := f.run(t, "alice")
+	src, err := f.m.Open(context.Background(), o, OpenRequest{Name: "work", Toolchains: []string{"python"}, Egress: []string{"pypi", "pypi-files"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork, _, err := f.m.Fork(context.Background(), o, src, "work-b", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(fork.Egress, []string{"pypi", "pypi-files"}) {
+		t.Fatalf("the fork's egress = %v, want the source's", fork.Egress)
+	}
+}
