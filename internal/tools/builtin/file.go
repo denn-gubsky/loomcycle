@@ -117,6 +117,8 @@ func (f *File) Description() string {
 		"transcribe (turn an audio or video recording into a timed Markdown transcript in the inbox with the speech-to-text model, and return an excerpt; dry_run says how many minutes and what it would cost), " +
 		"import (build a Document from such a Markdown file, its pictures attached as image chunks), " +
 		"render (write a Document you may read, or a Markdown or HTML file, as a file to send: pdf, docx (Word), html or md, into volume:inbox:rendered/ or a volume of yours; the reverse of import), " +
+		"checkout (write the documents you may read under a Path folder (under_path), or named by id (documents), into a new workspace folder as Markdown files laid out as the Path tree is, with a manifest .loom/checkout.json; for a script to change), " +
+		"commit (bring a checkout's folder back: dry_run (the default) reports each file unchanged, changed, new, missing or conflict; dry_run false imports each changed file as a new edition and each new .md file as a new document, never deletes, and refuses a file whose document changed in the store since), " +
 		"unpack (copy the files of a ZIP or RAR archive into volume:inbox:unpacked/<archive>/, or a read-write volume folder of yours with to, keeping its folders; by default only what extract reads and archives inside it (listed, not opened), all: true for every file; dry_run lists without writing; extract each file afterwards). " +
 		"Paths are references: `volume:inbox:documents/a.pdf`, `volume:<name>:path`, `volume:path` for your default volume, or `workspace:<name>:path` in a workspace this run opened (stat, ls, copy, rm and clear take one); a bare path means the inbox. " +
 		"Do NOT use it to read a file's text — use Read for a text file; and do not ask for a file's base64, which you could neither hold nor write back."
@@ -126,10 +128,10 @@ func (f *File) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":        {"type": "string", "enum": ["stat", "ls", "copy", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render", "unpack"]},
+			"op":        {"type": "string", "enum": ["stat", "ls", "copy", "keep", "rm", "clear", "download", "upload", "extract", "transcribe", "import", "render", "unpack", "checkout", "commit"]},
 			"path":      {"type": "string", "description": "stat, rm, extract, transcribe, import: the file; unpack: the ZIP or RAR archive; ls: the folder (default volume:inbox:). A volume reference, a workspace reference (in a run: stat, ls, rm, import, extract, transcribe, unpack, and clear's folder), or a bare path in the inbox. render: a Markdown or HTML file to render instead of a document (its first # heading is the title), also in a workspace."},
-			"from":      {"type": "string", "description": "copy: the file or folder to copy, in the inbox, a volume or a workspace (workspace:<name>:<path>). keep: the inbox file to copy. upload: the file to send, in the inbox, a volume you can Read or a workspace."},
-			"to":        {"type": "string", "description": "copy: where to copy it, in the inbox, a read-write volume or a workspace; a path ending in / (or an existing folder) keeps the source's name. keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool; a workspace (workspace:<name>:<path>) needs the workspace grant write. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name), or, for a recording in a workspace, a file or folder of a workspace (workspace:<name>:<path>). render: the file to write in one of your read-write volumes (needs the Write tool) or workspaces; default volume:inbox:rendered/<title>.<format>. extract of a file in a workspace: a folder of a workspace to write <name>.md and images/ into; default the inbox. unpack: an existing folder of one of your read-write volumes to unpack into (needs the Write tool), or for an archive in a workspace a workspace folder (unpacked whole or not at all); default volume:inbox:unpacked/<archive>/."},
+			"from":      {"type": "string", "description": "copy: the file or folder to copy, in the inbox, a volume or a workspace (workspace:<name>:<path>). keep: the inbox file to copy. upload: the file to send, in the inbox, a volume you can Read or a workspace. commit: the folder a checkout wrote, workspace:<name>:<folder>/."},
+			"to":        {"type": "string", "description": "copy: where to copy it, in the inbox, a read-write volume or a workspace; a path ending in / (or an existing folder) keeps the source's name. keep: where to copy it, in one of your read-write volumes (needs the Write tool). A path ending in / (or an existing folder) keeps the file's name. Its folder must exist. download: where to save it — default the inbox; a volume of yours needs the Write tool; a workspace (workspace:<name>:<path>) needs the workspace grant write. transcribe: the transcript's name in volume:inbox:extracted/ (default: the recording's name), or, for a recording in a workspace, a file or folder of a workspace (workspace:<name>:<path>). render: the file to write in one of your read-write volumes (needs the Write tool) or workspaces; default volume:inbox:rendered/<title>.<format>. extract of a file in a workspace: a folder of a workspace to write <name>.md and images/ into; default the inbox. unpack: an existing folder of one of your read-write volumes to unpack into (needs the Write tool), or for an archive in a workspace a workspace folder (unpacked whole or not at all); default volume:inbox:unpacked/<archive>/. checkout: a new folder of a workspace to write the documents into, workspace:<name>:<folder>/ (it must not exist; needs the workspace grant write)."},
 			"overwrite": {"type": "boolean", "description": "copy, keep, download, render, transcribe (to a workspace): replace an existing file at to (copy, and unpack into a workspace: merge into an existing folder). Default false."},
 			"url":       {"type": "string", "description": "download, upload: the absolute http(s) URL. Its host must be on the HTTP allowlist."},
 			"headers":   {"type": "object", "additionalProperties": {"type": "string"}, "description": "download, upload: extra request headers. No credentials: an authorised URL carries its own."},
@@ -154,10 +156,12 @@ func (f *File) InputSchema() json.RawMessage {
 			"vocabulary":    {"type": "string", "description": "transcribe: names and terms the recording uses, to help the model spell them (one line, at most 400 characters). Default: the operator's."},
 			"diarize":       {"type": "boolean", "description": "transcribe: label who speaks (Speaker 1, Speaker 2…), where the model can. Default: the operator's setting."},
 			"timestamps":    {"type": "string", "enum": ["segments", "none"], "description": "transcribe: segments (default) puts each passage's start time before it; none leaves times out."},
-			"dry_run":       {"type": "boolean", "description": "extract: say what OCR would read and cost (pages, calls, model, estimated tokens and cost) without running it or writing anything. transcribe: say how many minutes and requests it would take and what it would cost, without sending anything. unpack: list what would be written and skipped, and why, writing nothing."},
+			"dry_run":       {"type": "boolean", "description": "extract: say what OCR would read and cost (pages, calls, model, estimated tokens and cost) without running it or writing anything. transcribe: say how many minutes and requests it would take and what it would cost, without sending anything. unpack: list what would be written and skipped, and why, writing nothing. commit: report what a commit would do, file by file, writing nothing; default TRUE for commit — pass false to commit."},
 			"title":         {"type": "string", "description": "import: the document's title. Default: the Markdown's first heading."},
 			"doc_path":      {"type": "string", "description": "import: where to name the document in the Path tree, e.g. /board/2026/minutes. render: the document to render, by its Path-tree name."},
-			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import, render: the document store. Default user."},
+			"scope":         {"type": "string", "enum": ["agent", "user", "tenant"], "description": "import, render, checkout: the document store. Default user."},
+			"under_path":    {"type": "string", "description": "checkout: take every document you may read named under this Path folder, e.g. /kb/policies; each is written at its name relative to it, as <name>.md."},
+			"documents":     {"type": "array", "items": {"type": "string"}, "description": "checkout: take these documents, by id, instead of under_path; each is written at its Path name, as <name>.md."},
 			"document":      {"type": "string", "description": "render: the id of the document to render. Pass exactly one of document, doc_path or path. import with reimport: the document a file loomcycle rendered is re-imported onto, which must be the one it was rendered from (extract's rendered_from)."},
 			"chunk":         {"type": "string", "description": "render: render only the part of the document under this chunk (a section id); its title becomes the file's title."},
 			"format":        {"type": "string", "enum": ["md", "html", "docx", "odt", "epub", "pdf"], "description": "render: the file to write. pdf (paged, typeset), docx (a Word document), odt (an OpenDocument text file), epub (an e-book), html (one self-contained page) or md (clean Markdown, its pictures as files in a folder beside it)."},
@@ -247,6 +251,11 @@ type fileInput struct {
 	// Style is the house style a render is written in: a Path of the
 	// tenant's tree, or none (RFC GR P4c); "" is the tenant default.
 	Style string `json:"style"`
+	// checkout (file_checkout.go): the documents to take, by Path folder or
+	// by id. commit reads its dry_run from the raw input (true unless
+	// false is given).
+	UnderPath string   `json:"under_path"`
+	Documents []string `json:"documents"`
 }
 
 func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result, error) {
@@ -281,10 +290,14 @@ func (f *File) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return f.unpack(ctx, in)
 	case "copy":
 		return f.copy(ctx, in)
+	case "checkout":
+		return f.checkout(ctx, in)
+	case "commit":
+		return f.commit(ctx, in, input)
 	case "":
-		return errValidation("missing required field: op", "One of stat, ls, copy, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack."), nil
+		return errValidation("missing required field: op", "One of stat, ls, copy, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack, checkout, commit."), nil
 	}
-	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, copy, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack."), nil
+	return errValidation(fmt.Sprintf("unknown op %q", in.Op), "One of stat, ls, copy, keep, rm, clear, download, upload, extract, transcribe, import, render, unpack, checkout, commit."), nil
 }
 
 // fileRef parses a path argument: a volume or workspace reference, or a bare

@@ -54,6 +54,9 @@ type WorkspaceConfig struct {
 	DiskQuotaMB int64 `yaml:"disk_quota_mb,omitempty"`
 	// Copy bounds a folder copy into or out of a workspace.
 	Copy WorkspaceCopyConfig `yaml:"copy,omitempty"`
+	// Checkout bounds File op=checkout of Documents into a workspace (RFC
+	// GW P7).
+	Checkout WorkspaceCheckoutConfig `yaml:"checkout,omitempty"`
 	// Convert configures the conversion child of the local worker.
 	Convert WorkspaceConvertConfig `yaml:"convert,omitempty"`
 	// Kernel configures the persistent interpreters (RFC GW §5.7).
@@ -86,6 +89,16 @@ type WorkspaceCopyConfig struct {
 	MaxBytes int64 `yaml:"max_bytes,omitempty"`
 }
 
+// WorkspaceCheckoutConfig is `workspace.checkout`: the most one checkout of
+// Documents into a workspace writes. What passes either bound is left out
+// and listed, never cut part way through a document.
+type WorkspaceCheckoutConfig struct {
+	// MaxDocuments is the documents one checkout writes. Default 500.
+	MaxDocuments int `yaml:"max_documents,omitempty"`
+	// MaxBytes is the bytes one checkout writes. Default 256 MiB.
+	MaxBytes int64 `yaml:"max_bytes,omitempty"`
+}
+
 // WorkspaceLocalConfig is `workspace.local`: the one tenant the local worker
 // serves, and where it keeps its workspaces.
 type WorkspaceLocalConfig struct {
@@ -115,6 +128,8 @@ const (
 	DefaultWorkspaceCopyMaxFiles   = 2000
 	DefaultWorkspaceCopyMaxBytes   = 1 << 30
 	DefaultWorkspaceConvertMemMB   = 1024
+	DefaultWorkspaceCheckoutDocs   = 500
+	DefaultWorkspaceCheckoutBytes  = 256 << 20
 	DefaultWorkspaceKernelGraceS   = 5
 	// maxWorkspaceKernelGraceS bounds workspace.kernel.interrupt_grace_seconds.
 	maxWorkspaceKernelGraceS = 300
@@ -127,6 +142,9 @@ const (
 	// bounds may be set to.
 	maxWorkspaceCopyFiles = 1_000_000
 	maxWorkspaceCopyBytes = 16 << 40
+	// maxWorkspaceCheckoutDocs bounds what workspace.checkout.max_documents
+	// may be set to; max_bytes shares the copy bound's 16 TiB.
+	maxWorkspaceCheckoutDocs = 100_000
 )
 
 // Resolved is the block with its defaults filled in.
@@ -157,6 +175,12 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Convert.MemoryLimitMB == 0 {
 		w.Convert.MemoryLimitMB = DefaultWorkspaceConvertMemMB
+	}
+	if w.Checkout.MaxDocuments == 0 {
+		w.Checkout.MaxDocuments = DefaultWorkspaceCheckoutDocs
+	}
+	if w.Checkout.MaxBytes == 0 {
+		w.Checkout.MaxBytes = DefaultWorkspaceCheckoutBytes
 	}
 	if w.Kernel.InterruptGraceSeconds == 0 {
 		w.Kernel.InterruptGraceSeconds = DefaultWorkspaceKernelGraceS
@@ -256,6 +280,12 @@ func validateWorkspace(c *Config) error {
 	}
 	if w.Copy.MaxBytes < 0 || w.Copy.MaxBytes > maxWorkspaceCopyBytes {
 		return fmt.Errorf("workspace.copy.max_bytes: %d is out of range (1 to %d, 16 TiB)", w.Copy.MaxBytes, int64(maxWorkspaceCopyBytes))
+	}
+	if w.Checkout.MaxDocuments < 0 || w.Checkout.MaxDocuments > maxWorkspaceCheckoutDocs {
+		return fmt.Errorf("workspace.checkout.max_documents: %d is out of range (1 to %d)", w.Checkout.MaxDocuments, maxWorkspaceCheckoutDocs)
+	}
+	if w.Checkout.MaxBytes < 0 || w.Checkout.MaxBytes > maxWorkspaceCopyBytes {
+		return fmt.Errorf("workspace.checkout.max_bytes: %d is out of range (1 to %d, 16 TiB)", w.Checkout.MaxBytes, int64(maxWorkspaceCopyBytes))
 	}
 	if m := w.Convert.MemoryLimitMB; m != 0 && (m < minWorkspaceConvertMemMB || m > maxWorkspaceConvertMemMB) {
 		return fmt.Errorf("workspace.convert.memory_limit_mb: %d is out of range (%d to %d)", m, minWorkspaceConvertMemMB, maxWorkspaceConvertMemMB)

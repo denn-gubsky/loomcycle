@@ -316,6 +316,32 @@ agents:
 
 Not yet: `connect` (a share's reach to a workspace's exposed ports) arrives with servers; a share asking for it is refused.
 
+## Documents as a working tree
+
+A set of Documents can be checked out into a workspace as Markdown files, changed there by a script or by hand, and committed back as new editions (RFC GW P7). A bulk edit of a knowledge base becomes a script and a dry run.
+
+```json
+{"op": "checkout", "under_path": "/kb/policies", "scope": "tenant", "to": "workspace:work:policies/"}
+```
+
+- **What is written.** Each Document you may read under `under_path` (or each one named by id in `documents`), at its Path name relative to it, as `<name>.md`: `/kb/policies/travel` is `travel.md`. The text is `Document op=export_md`'s round-trip form of the parts in force: each part's id, type and status in a `<!-- loom: … -->` line, the relations at the end. A part a later edition closed is not written.
+- **The manifest.** `.loom/checkout.json` lists each file's document id, the document's revision when taken (a fingerprint of its text, relations aside) and the sha256 of the file as written. It is for people and scripts to read; the runtime keeps its own record of the checkout.
+- **All or nothing.** The folder must not exist; it appears whole or not at all.
+- **Bounds.** `workspace.checkout.max_documents` (500) and `workspace.checkout.max_bytes` (256 MiB). What passes either is left out and listed in `left_out` with the bound named; so is a document with no Path name, and one over the 32 MiB a commit reads back.
+
+```json
+{"op": "commit", "from": "workspace:work:policies/"}
+```
+
+- **The dry run is the default.** Each file is reported unchanged, changed (lines added and removed), new, missing, conflict or ignored. Pass `dry_run: false` to commit.
+- **Changed** files become new editions (`import_md` with `reimport`): unchanged parts keep their ids and relations, changed parts are superseded, nothing is deleted. **New** `.md` files become new Documents at the Path their place maps to, under the checkout's `under_path`; a checkout of named `documents` takes no new file. **Missing** files do nothing: a commit never deletes a Document.
+- **Conflicts** are refused and listed while the rest go through: the Document changed in the store after the checkout, it is no longer named at the file's path, or a new file's path already names a Document.
+- **The text is a script's.** Its `<!-- loom -->` metadata and relations block are dropped (ids, types and relations come from the store), the rest is neutralised as every import is, and pictures are attached only as `data:` URLs. Each edition's provenance names the workspace, the run and the checkout, and the Document is tagged `source/workspace` and `untrusted`.
+- **The manifest chooses nothing.** It is in the workspace, where a command can rewrite it, so a commit goes by the runtime's own record of the checkout. A manifest whose scope, root or files no longer match that record is refused whole. The record is kept in the process that took the checkout: a commit asked on another replica, or after the runtime restarted, finds none and is refused whole, nothing written; check the documents out again.
+- **After a real commit** the record and the manifest are updated for what was committed, so the next commit finds those files unchanged.
+- **Only in a workspace the run owns.** checkout and commit refuse a shared workspace's name (`<name>@<agent id>`): the record is the owner's, and a share hands over file reads and writes only.
+- **Grants.** checkout: the Document tool and the scope's read grants, the `workspace` grant `write`. commit: the Document tool and the scope's write grants (tenant scope: `tenant` in both `memory_scopes` and `sql_scopes`), the `workspace` grant `read`, and `write` for a real commit, which updates the manifest. The `Document` hooks judge every Document call either op makes (the exports, the lookups, each import, its tags), the `Workspace` hooks each file, all before anything is written: one refusal refuses the whole call.
+
 ## Limits
 
 | Setting | Default | What it bounds |
@@ -329,6 +355,8 @@ Not yet: `connect` (a share's reach to a workspace's exposed ports) arrives with
 | `workspace.disk_quota_mb` | 2048 | What one workspace may hold on its worker's disk (1 MiB to 16 TiB); see "The disk quota". |
 | `workspace.copy.max_files` | 2000 | The files one folder copy may move. |
 | `workspace.copy.max_bytes` | 1 GiB | The bytes one folder copy may move. |
+| `workspace.checkout.max_documents` | 500 | The documents one `File op=checkout` writes. |
+| `workspace.checkout.max_bytes` | 256 MiB | The bytes one checkout writes. |
 | `workspace.convert.memory_limit_mb` | 1024 | The local worker's conversion child (`LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` on a remote worker). |
 | worker capacity | 8 | Workspaces a worker holds (`LOOMCYCLE_WORKSPACE_CAPACITY`). |
 

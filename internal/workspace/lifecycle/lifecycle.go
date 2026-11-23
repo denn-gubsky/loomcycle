@@ -49,6 +49,11 @@ type Limits struct {
 	// DefaultCopyMaxBytes.
 	CopyMaxFiles int
 	CopyMaxBytes int64
+	// CheckoutMaxDocuments and CheckoutMaxBytes bound File op=checkout of
+	// Documents into a workspace (workspace.checkout); zero is
+	// DefaultCheckoutMaxDocuments and DefaultCheckoutMaxBytes.
+	CheckoutMaxDocuments int
+	CheckoutMaxBytes     int64
 	// ConvertQuarantine is how long a file that crashed a worker's
 	// conversion child is refused for its workspace
 	// (conversion.quarantine_ttl_s); zero is DefaultConvertQuarantine.
@@ -60,6 +65,10 @@ type Limits struct {
 const (
 	DefaultCopyMaxFiles = 2000
 	DefaultCopyMaxBytes = 1 << 30
+	// The checkout bounds of a Limits that names none: config
+	// workspace.checkout's defaults.
+	DefaultCheckoutMaxDocuments = 500
+	DefaultCheckoutMaxBytes     = 256 << 20
 )
 
 // Manager is the core's workspace bookkeeping over one dispatcher.
@@ -71,6 +80,8 @@ type Manager struct {
 	now    func() time.Time
 	// quarantine is the files that crashed a workspace's conversion child.
 	quarantine quarantine
+	// checkouts are the records of File op=checkout (checkouts.go).
+	checkouts checkouts
 	// audit records shares and uses through them (SetAudit); nil records
 	// nothing.
 	audit audit.Sink
@@ -87,6 +98,12 @@ func New(d *dispatch.Dispatcher, st Store, l Limits, log *slog.Logger) *Manager 
 	}
 	if l.CopyMaxBytes <= 0 {
 		l.CopyMaxBytes = DefaultCopyMaxBytes
+	}
+	if l.CheckoutMaxDocuments <= 0 {
+		l.CheckoutMaxDocuments = DefaultCheckoutMaxDocuments
+	}
+	if l.CheckoutMaxBytes <= 0 {
+		l.CheckoutMaxBytes = DefaultCheckoutMaxBytes
 	}
 	if l.ConvertQuarantine <= 0 {
 		l.ConvertQuarantine = DefaultConvertQuarantine
@@ -322,6 +339,9 @@ func (m *Manager) Status(ctx context.Context, r store.WorkspaceRow) (bool, error
 // the row releasing, and the worker's next attach removes the directory and
 // the row (dispatch's reconciliation).
 func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
+	// Its checkouts go with it, whatever the release's outcome: no commit
+	// can be asked of a workspace being released.
+	m.checkouts.forget(r.ID)
 	if r.State != store.WorkspaceReleasing {
 		ok, err := m.store.WorkspaceSetState(ctx, r.TenantID, r.ID, r.State, store.WorkspaceReleasing)
 		if err != nil {
