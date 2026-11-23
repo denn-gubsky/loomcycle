@@ -158,7 +158,7 @@ func (m *Manager) Run(ctx context.Context, id string, req Request) (Result, erro
 		s.k, s.n = nil, 0
 		restarted := m.marked(id, req.Kind)
 		req.Workspace = id
-	k, err := m.startKernel(ctx, req)
+		k, err := m.startKernel(ctx, req)
 		if err != nil {
 			return Result{}, err
 		}
