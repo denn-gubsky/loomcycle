@@ -61,14 +61,14 @@ A worker is known by its token's grant and its name (`--id`, by default the host
 
 ## The container engine
 
-With `LOOMCYCLE_WORKSPACE_ENGINE=container` a worker runs each workspace's commands in a container of its own, the workspace's **session** (phase 3). The worker drives a container daemon through its command line (`docker`, or `podman`); the session image is the operator's (`LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE`, required).
+With `LOOMCYCLE_WORKSPACE_ENGINE=container` a worker runs each workspace's commands in a container of its own, the workspace's **session** (phase 3). The worker drives a container daemon through its command line (`docker`, or `podman`); its session image is `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` (required). The published one, `denngubsky/loomcycle-workspace:<version>` (each minor release after v1.165.0), carries Python 3 with pip and venv, Node.js with npm, git, the document and media helpers, and a fixed set of data, document and chart libraries ([WORKERS.md](WORKERS.md#the-workspace-session-image) lists them); use the tag of the runtime's own version.
 
 ```sh
 LOOMCYCLE_WORKER_DISPATCHER=runtime.internal:7788 \
 LOOMCYCLE_WORKER_TOKEN=<the workers:attach token> \
 LOOMCYCLE_WORKSPACE_ROOT=/var/lib/loomcycle/workspaces \
 LOOMCYCLE_WORKSPACE_ENGINE=container \
-LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE=<the session image> \
+LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE=denngubsky/loomcycle-workspace:<version> \
 loomcycle worker --role workspace
 ```
 
@@ -87,7 +87,7 @@ A session starts at a workspace's first command and stays for the next ones, so 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` | — (required) | The session image; it needs `/bin/sh`. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` | — (required) | The session image: `denngubsky/loomcycle-workspace:<version>`, or any image with `/bin/sh`. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_RUNTIME` | the daemon's | `runc`, `runsc` (gVisor) or a Kata runtime: gVisor and Kata put a kernel boundary under each session. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_CLI` | `docker` | The container command. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_MEMORY_MB` | 2048 | A session's memory. |
