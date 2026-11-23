@@ -2367,50 +2367,6 @@ button.primary:disabled {
   background: var(--accent);
 }
 
-/* StackSplitter (@loomcycle/explorer): the same handle on its side, between a
- * chunk's text (top) and its links (bottom) in the document viewer. The
- * package's own styles.css carries the scoped twin for external hosts. */
-.stack-splitter {
-  display: grid;
-  flex: 1;
-  min-height: 0;
-}
-.stack-splitter.dragging {
-  user-select: none;
-  cursor: row-resize;
-}
-.stack-splitter > .stack-splitter-pane {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.stack-splitter > .stack-splitter-handle {
-  cursor: row-resize;
-  position: relative;
-  z-index: 1;
-}
-.stack-splitter > .stack-splitter-handle::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 2px;
-  height: 2px;
-  background: var(--border);
-  transition: background 80ms ease;
-}
-.stack-splitter > .stack-splitter-handle:hover::before,
-.stack-splitter.dragging > .stack-splitter-handle::before {
-  background: var(--accent);
-}
-/* The links side scrolls on its own, as the text does above it. */
-.doc-links-pane {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-
 /* v0.8.21 Audit view — cross-session paginated event log. */
 .audit-view {
   display: flex;
@@ -5461,6 +5417,20 @@ a.login-btn {
   flex-direction: column;
   min-height: 0;
   height: 100%;
+  /* RFC GZ — the explorer's one type scale, five sizes: meta (marks,
+     revisions, the path), ui (rows, buttons, menus, panels, code), body (the
+     document's text), and two heading sizes. Kept in step with the package's
+     scoped sheet. */
+  --ex-text-meta: var(--lc-text-xs);
+  --ex-text-ui: var(--lc-text-sm);
+  --ex-text-body: 15px;
+  --ex-text-h3: var(--lc-text-md);
+  --ex-text-h2: var(--lc-text-lg);
+  font-size: var(--ex-text-ui);
+}
+/* Controls take the scale, not the browser's own 13.33px. */
+.loomcycle-explorer :is(button, input, select, textarea) {
+  font: inherit;
 }
 .paths-view {
   height: 100%;
@@ -5863,21 +5833,13 @@ a.login-btn {
  * /documents/:id deep-link page. Reuses the .tree skeleton + .modal-* anchors.
  * ─────────────────────────────────────────────────────────────────────────── */
 
-/* When a document is selected in the Path console, the right pane is a slim
- * action bar + the viewer filling the rest. */
+/* When a document is selected in the Path console, the right pane is the
+ * followed-links trail (when there is one) + the viewer filling the rest. */
 .paths-doc {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-.paths-doc-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
 }
 .paths-doc-path {
   font-family: var(--lc-font-mono, monospace);
@@ -5925,96 +5887,235 @@ a.login-btn {
   flex-direction: column;
   min-height: 0;
 }
-.doc-toolbar {
+/* RFC GZ — the document's one header line: path, title, marks, the panel
+   toggles, edit and the "more" menu. Nothing wraps; the path and the title
+   give way first. */
+.doc-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 8px 4px 12px;
   border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
 }
-.doc-title {
-  font-size: var(--lc-text-base, 14px);
+.doc-header-path {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
+  color: var(--fg-soft);
+  font-size: var(--ex-text-meta);
 }
-.doc-toolbar-actions {
+.doc-header-path .paths-doc-path {
+  font-size: inherit;
+  word-break: normal;
+}
+.doc-header-path::after {
+  content: "›";
+  margin-left: 8px;
+}
+.doc-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--ex-text-body);
+  font-weight: 600;
+  line-height: 1.3;
+}
+.doc-header > .etree-marks {
+  margin-left: 0;
+  flex: none;
+}
+.doc-header-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   margin-left: auto;
+  flex: none;
 }
-.doc-toolbar-actions button {
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--fg);
+.doc-header-note {
+  color: var(--fg-soft);
+  font-size: var(--ex-text-meta);
+  margin-right: 6px;
+}
+.doc-panel-toggles {
+  display: flex;
+  gap: 2px;
+  margin-right: 6px;
+}
+.doc-header-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid transparent;
   border-radius: 4px;
+  background: transparent;
+  color: var(--fg-soft);
   cursor: pointer;
 }
-.doc-toolbar-actions button:hover {
-  border-color: var(--accent);
+.doc-header-actions button:hover:not(:disabled) {
+  background: var(--bg-soft);
+  color: var(--fg);
 }
-/* RFC GR P3 — the toolbar's one download menu (explorer DownloadMenu): a
-   button, and a small pop-up list of formats under it. Kept in step with the
-   package's scoped copy in packages/explorer/src/styles.css. */
-.doc-download-menu {
+.doc-header-actions button[aria-pressed="true"] {
+  background: var(--bg-soft);
+  border-color: var(--border);
+  color: var(--fg);
+}
+.doc-header-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+/* Edit is the one primary action, so it stays highlighted: a fixed light
+   amber fill with dark text, readable in both themes. */
+.doc-header-actions button.doc-edit,
+.doc-chunk-bar button.doc-chunk-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #f8c58c;
+  border-color: #eeac62;
+  color: #3d2408;
+  font-weight: 600;
+}
+.doc-chunk-bar button.doc-chunk-edit {
+  padding: 0 8px;
+}
+.doc-header-actions button.doc-edit:hover:not(:disabled),
+.doc-chunk-bar button.doc-chunk-edit:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.doc-panel-count {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--border);
+  color: var(--fg);
+  font-size: var(--ex-text-meta);
+  line-height: 16px;
+  text-align: center;
+}
+.doc-panel-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--running);
+}
+
+/* The "more" menu (components/MoreMenu): the header's last button, a list of
+   grouped items under it. Delete is set apart in the danger colour. */
+.doc-more-menu {
   position: relative;
 }
-.doc-toolbar-actions .doc-download-menu > button:disabled {
-  cursor: default;
-  opacity: 0.7;
+.doc-header-actions .doc-more-button {
+  width: 32px;
+  justify-content: center;
+  padding: 0;
 }
-.doc-download-list {
+.doc-header-actions .doc-more-button[aria-busy="true"] {
+  width: auto;
+  padding: 0 8px;
+}
+.doc-more-list {
   position: absolute;
   top: calc(100% + 4px);
   right: 0;
   z-index: 30;
-  min-width: 170px;
+  min-width: 200px;
+  max-height: 70vh;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 4px;
   display: flex;
   flex-direction: column;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
 }
-.doc-toolbar-actions .doc-download-list button {
+.doc-more-group {
+  display: flex;
+  flex-direction: column;
+}
+.doc-more-rule {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+.doc-header-actions .doc-more-list button {
+  height: auto;
   padding: 5px 10px;
   border: none;
-  border-radius: 3px;
-  background: transparent;
+  border-radius: 4px;
   color: var(--fg);
   text-align: left;
   white-space: nowrap;
 }
-.doc-toolbar-actions .doc-download-list button:hover,
-.doc-toolbar-actions .doc-download-list button:focus {
+.doc-header-actions .doc-more-list button:hover,
+.doc-header-actions .doc-more-list button:focus {
   background: var(--bg-soft);
   color: var(--accent);
   outline: none;
 }
-.doc-mode-toggle {
-  display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  overflow: hidden;
+.doc-header-actions .doc-more-list button.danger {
+  color: var(--danger);
 }
-.doc-mode-toggle button {
-  padding: 4px 10px;
+.doc-header-actions .doc-more-list button[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The interim panels (annotation, references, classification): closed by
+   default; one open at a time, under the header, scrolling on its own. */
+.doc-panel {
+  position: relative;
+  flex: 0 1 auto;
+  max-height: 40%;
+  overflow: auto;
+  padding: 8px 40px 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+.doc-panel-close {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
   border: none;
-  background: var(--bg);
+  border-radius: 4px;
+  background: transparent;
   color: var(--fg-soft);
   cursor: pointer;
 }
-.doc-mode-toggle button.active {
-  background: var(--accent);
-  color: white;
+.doc-panel-close:hover {
+  color: var(--fg);
+  background: var(--bg);
 }
-/* The tree | chunk split is a Splitter (grid columns + a draggable handle that
-   draws the border). The single row is bounded so each pane scrolls on its own. */
+.doc-panel-heading {
+  margin: 4px 0;
+  font-size: var(--ex-text-meta);
+  font-weight: 600;
+  color: var(--fg-soft);
+}
+.doc-links-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* The outline | page split is a Splitter (grid columns + a draggable handle
+   that draws the border). The single row is bounded so each pane scrolls on
+   its own. */
 .doc-split {
   flex: 1;
   min-height: 0;
@@ -6023,109 +6124,220 @@ a.login-btn {
 .doc-chunktree {
   flex: 1;
   overflow: auto;
-  padding: 8px;
+  padding: 8px 4px;
   min-height: 0;
 }
-.doc-content {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+
+/* The page: the whole document in one scroll, set for reading — 15px on a 24px
+   line, about 70 characters a line. The space below the last chunk lets it
+   scroll to the top, so the outline can follow it there. */
+.doc-page {
+  height: 100%;
   min-height: 0;
+  overflow: auto;
+  padding: 16px 24px 40vh;
+  outline: none;
 }
-.doc-content-head {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
+.doc-article {
+  max-width: 70ch;
+  margin: 0 auto;
+  font-size: var(--ex-text-body);
+  line-height: 24px;
 }
-.doc-content-head h3 {
-  margin: 0 0 6px;
-  font-size: var(--lc-text-base, 14px);
+.doc-chunk {
+  position: relative;
+  padding: 2px 0;
 }
-.doc-content-meta {
+/* The chunk the reader is on: a rule in the margin, as the outline's row. */
+.doc-chunk.current::before {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.6;
+}
+.doc-chunk-title {
+  margin: 28px 0 8px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+h2.doc-chunk-title {
+  font-size: var(--ex-text-h2);
+}
+h3.doc-chunk-title {
+  font-size: var(--ex-text-h3);
+}
+h4.doc-chunk-title,
+h5.doc-chunk-title,
+h6.doc-chunk-title {
+  font-size: var(--ex-text-body);
+}
+.doc-chunk-loading {
+  color: var(--fg-muted);
+  font-size: var(--ex-text-meta);
+  margin: 4px 0;
+}
+.doc-chunk-source {
+  font-size: var(--ex-text-ui);
+  line-height: 20px;
+  white-space: pre-wrap;
+}
+
+/* A chunk's action bar, at its top right: shown on hover, or while anything in
+   the chunk has the keyboard focus (so tabbing into it shows it). */
+.doc-chunk-bar {
+  position: absolute;
+  top: 0;
+  right: -8px;
+  z-index: 2;
   display: flex;
-  gap: 6px;
   align-items: center;
-  margin-bottom: 6px;
-}
-.chunk-rev {
-  font-size: var(--lc-text-xs, 11px);
-  color: var(--fg-soft);
-}
-.doc-content-controls {
-  display: flex;
-  flex-wrap: wrap; /* a narrow pane (the splitter allows one) wraps, never clips */
-  align-items: center;
-  gap: 6px 12px;
-}
-/* Direct-child only, so the nested .doc-mode-toggle keeps its segmented look. */
-.doc-content-controls > button {
-  padding: 4px 12px;
+  gap: 2px;
+  height: 28px;
+  padding: 0 4px 0 8px;
   border: 1px solid var(--border);
+  border-radius: 6px;
   background: var(--bg);
-  color: var(--fg);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  font-size: var(--ex-text-meta);
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 80ms ease;
+}
+.doc-chunk:hover > .doc-chunk-bar,
+.doc-chunk:focus-within > .doc-chunk-bar {
+  opacity: 1;
+  pointer-events: auto;
+}
+.doc-chunk-bar .etree-marks {
+  margin-left: 0;
+}
+.doc-chunk-rev {
+  color: var(--fg-soft);
+  margin: 0 4px;
+}
+.doc-chunk-bar .chunk-tag {
+  font-size: var(--ex-text-meta);
+}
+.doc-chunk-bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  border: 1px solid transparent;
   border-radius: 4px;
+  background: transparent;
+  color: var(--fg-soft);
   cursor: pointer;
 }
-/* RFC BP — up/down reorder + delete controls. */
-.doc-content-controls > button:disabled {
+.doc-chunk-bar button.doc-chunk-icon {
+  width: 24px;
+  padding: 0;
+}
+.doc-chunk-bar button:hover:not(:disabled) {
+  background: var(--bg-soft);
+  color: var(--fg);
+}
+.doc-chunk-bar button[aria-pressed="true"] {
+  color: var(--accent);
+}
+.doc-chunk-bar button:disabled {
   opacity: 0.4;
   cursor: default;
 }
-.doc-content-controls > button.danger {
-  color: var(--danger);
-  border-color: var(--danger);
+.doc-chunk-bar button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
-/* Edit is the main action on a chunk, so it is filled orange to stand out from
-   the outlined controls. One soft light orange in both themes (the light
-   theme's --running is a dim amber that reads as brown on a filled button). */
-.doc-content-controls > button.chunk-edit {
-  background: #f8c58c;
-  border-color: #eeac62;
-  color: #3d2408;
-  font-weight: 600;
+
+/* The page's Markdown on the reading scale: the body's size and line, then
+   two heading sizes and code a step down. */
+.doc-article .md {
+  font-size: inherit;
+  line-height: inherit;
 }
-.doc-content-controls > button.chunk-edit:hover {
-  filter: brightness(1.08);
+.doc-article .md h1,
+.doc-article .md h2 {
+  font-size: var(--ex-text-h2);
 }
-/* The chunks above the selected one: an Up button to the parent, then a crumb
-   per level back to the root. Reuses the document trail's crumb styles. */
-.chunk-ancestry {
+.doc-article .md h3 {
+  font-size: var(--ex-text-h3);
+}
+.doc-article .md h4,
+.doc-article .md h5,
+.doc-article .md h6 {
+  font-size: var(--ex-text-body);
+}
+.doc-article .md code,
+.doc-article .md table {
+  font-size: var(--ex-text-ui);
+}
+.doc-article .md-pre {
+  line-height: 20px;
+  /* Code keeps its lines (a diagram drawn in text); a long one scrolls. */
+  white-space: pre;
+}
+
+/* Chunk editor: the dialog takes the window; the body editor takes what is
+   left of it, the fields editor a fixed share. */
+.modal.chunk-editor {
+  max-width: 960px;
+  width: 94vw;
+  height: 90vh;
+  max-height: 90vh;
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-bottom: 6px;
-  font-size: var(--lc-text-sm, 13px);
+  flex-direction: column;
+  overflow: hidden;
+}
+.chunk-editor-row {
+  display: flex;
+  gap: 12px;
+}
+.chunk-editor-row .path-field {
+  flex: 1;
   min-width: 0;
 }
-.chunk-ancestry-up {
-  flex: none;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 8px;
-  cursor: pointer;
-}
-/* A deep chunk in a narrow pane wraps its crumbs onto more lines rather than
-   cutting every title to a few letters (each crumb still caps at 28ch). */
-.chunk-ancestry .doc-trail-list {
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
-.chunk-ancestry-up:hover {
-  border-color: var(--accent);
-}
-.chunk-ancestry button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 2px;
-}
-/* The selected-chunk view (chunk body OR assembled markdown) scrolls
-   independently of the fixed head — both modes can be long. */
-.doc-content-body {
+.chunk-editor-main {
   flex: 1;
-  overflow: auto;
   min-height: 0;
-  padding: 14px;
+  display: flex;
+  gap: 12px;
+}
+.chunk-editor-body,
+.chunk-editor-preview {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  margin-bottom: 12px;
+}
+.chunk-editor-preview .chunk-mermaid-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.chunk-editor-body > .loomcycle-code-editor {
+  flex: 1;
+  min-height: 160px;
+}
+.chunk-editor-fields {
+  flex: 0 0 auto;
+  margin-bottom: 0;
+}
+.chunk-editor-fields > .loomcycle-code-editor {
+  height: 110px;
+}
+.chunk-fields-error {
+  color: var(--danger);
+  font-size: var(--ex-text-meta);
+}
+.chunk-editor .loomcycle-code-editor {
+  --lc-ce-font-size: var(--ex-text-ui);
 }
 .doc-empty-body {
   color: var(--fg-soft);
@@ -6171,22 +6383,6 @@ a.login-btn {
 }
 .chunk-badge.chunk-status {
   border-style: dashed;
-}
-
-/* Chunk editor modal extras. */
-.modal.chunk-editor {
-  max-width: 720px;
-  width: 92vw;
-}
-.chunk-editor-row {
-  display: flex;
-  gap: 12px;
-}
-.chunk-editor-row .path-field {
-  flex: 1;
-}
-.chunk-body-input {
-  font-family: var(--lc-font-mono, monospace);
 }
 
 /* Minimal Markdown renderer output. */
@@ -6296,11 +6492,6 @@ a.login-btn {
 /* ───────────────────────────────────────────────────────────────────────────
  * RFC AM Phase 3 — Document Assistant panel (a steered doc/manager run).
  * ─────────────────────────────────────────────────────────────────────────── */
-.doc-toolbar-actions button.active {
-  background: var(--accent);
-  color: white;
-  border-color: var(--accent);
-}
 .doc-assistant {
   flex: 0 0 auto;
   max-height: 45%;

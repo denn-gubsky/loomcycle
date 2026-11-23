@@ -66,6 +66,11 @@ export interface DocumentChunkTreeProps {
   // RFC BN P4: chunk ids that have at least one cross-reference edge — those
   // rows get a link mark. Unset → no marks.
   linkedIds?: Set<string>;
+  // The document's own type and status (RFC GZ): a row marks its type or status
+  // only where it differs from the document's, so a uniform document's outline
+  // carries no marks at all. Unset → every row marks what it has.
+  documentType?: string;
+  documentStatus?: string;
 }
 
 export default function DocumentChunkTree({
@@ -76,6 +81,8 @@ export default function DocumentChunkTree({
   scheme,
   documentColor,
   linkedIds,
+  documentType,
+  documentStatus,
 }: DocumentChunkTreeProps) {
   const [expanded, setExpanded] = useState<Map<string, boolean>>(() => new Map());
   const toggle = useCallback((id: string) => {
@@ -140,6 +147,8 @@ export default function DocumentChunkTree({
           documentColor={documentColor}
           isRoot
           linkedIds={linkedIds}
+          documentType={documentType}
+          documentStatus={documentStatus}
         />
       ))}
     </ul>
@@ -173,6 +182,8 @@ interface NodeProps {
   // A top-level node: the document's root chunk, i.e. the document itself.
   isRoot?: boolean;
   linkedIds?: Set<string>;
+  documentType?: string;
+  documentStatus?: string;
   depth: number;
   // The id of the tree's one tab stop.
   tabStop?: string;
@@ -188,6 +199,8 @@ function ChunkTreeNode({
   documentColor,
   isRoot = false,
   linkedIds,
+  documentType,
+  documentStatus,
   depth,
   tabStop,
 }: NodeProps) {
@@ -195,6 +208,8 @@ function ChunkTreeNode({
   const isOpen = expanded.get(node.row.id) !== false; // default-expanded
   const isSelected = selectedId === node.row.id;
   const icon = isRoot ? "document" : typeIcon(node.row.type);
+  const type = node.row.type !== documentType ? node.row.type : undefined;
+  const status = node.row.status !== documentStatus ? node.row.status : undefined;
   return (
     <TreeItem
       className="chunk-node"
@@ -210,9 +225,9 @@ function ChunkTreeNode({
       title={node.row.title}
       marks={
         <TreeMarks
-          type={node.row.type}
-          status={node.row.status}
-          statusColor={statusDotColor(node.row.status, tintScheme ?? undefined)}
+          type={type}
+          status={status}
+          statusColor={statusDotColor(status, tintScheme ?? undefined)}
           extra={
             linkedIds?.has(node.row.id) ? (
               <span className="etree-mark etree-mark-link" role="img" title="Has cross-reference links" aria-label="linked">
@@ -236,6 +251,8 @@ function ChunkTreeNode({
               tintScheme={tintScheme}
               documentColor={documentColor}
               linkedIds={linkedIds}
+              documentType={documentType}
+              documentStatus={documentStatus}
               depth={depth + 1}
               tabStop={tabStop}
             />

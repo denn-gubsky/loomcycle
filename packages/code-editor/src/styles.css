@@ -157,6 +157,14 @@
 .loomcycle-code-editor .tok-labelName,
 .loomcycle-code-editor .tok-typeName { color: var(--_ce-meta); }
 .loomcycle-code-editor .tok-invalid { color: var(--_ce-meta); text-decoration: underline wavy; }
+/* Markdown: structure by weight more than by colour, so prose stays readable. */
+.loomcycle-code-editor .tok-heading { color: var(--_ce-key); font-weight: 600; }
+.loomcycle-code-editor .tok-strong { font-weight: 600; }
+.loomcycle-code-editor .tok-emphasis { font-style: italic; }
+.loomcycle-code-editor .tok-strikethrough { text-decoration: line-through; }
+.loomcycle-code-editor .tok-link,
+.loomcycle-code-editor .tok-url { color: var(--_ce-string); }
+.loomcycle-code-editor .tok-monospace { color: var(--_ce-number); }
 
 /* StructuredEditor: toolbar above, the editor, a parse error below. */
 .loomcycle-structured-editor {

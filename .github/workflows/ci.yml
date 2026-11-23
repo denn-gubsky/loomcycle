@@ -1104,6 +1104,19 @@ jobs:
       - name: Test @loomcycle/library
         working-directory: packages/library
         run: npm run typecheck && npm test
+      # @loomcycle/code-editor (RFC FW, the shared JSON/YAML editor) is consumed
+      # from SOURCE the same way. Its tests hold the YAML refusals (aliases,
+      # tags, duplicate keys) that make pasted text safe to save, and mount the
+      # real CodeMirror editor under jsdom.
+      # Installed before @loomcycle/explorer: the explorer edits chunks in this
+      # editor and its typecheck and tests compile this package's SOURCE, so its
+      # CodeMirror deps must already be in packages/code-editor/node_modules.
+      - name: Install @loomcycle/code-editor deps
+        working-directory: packages/code-editor
+        run: npm ci
+      - name: Test @loomcycle/code-editor
+        working-directory: packages/code-editor
+        run: npm run typecheck && npm test
       # @loomcycle/explorer (RFC AZ) is consumed from SOURCE via a Vite alias
       # the same way — install its react / @loomcycle/client deps before the web
       # steps (packages/explorer/node_modules is gitignored → absent on checkout).
@@ -1152,16 +1165,6 @@ jobs:
         run: npm ci
       - name: Test @loomcycle/universe
         working-directory: packages/universe
-        run: npm run typecheck && npm test
-      # @loomcycle/code-editor (RFC FW, the shared JSON/YAML editor) is consumed
-      # from SOURCE the same way. Its tests hold the YAML refusals (aliases,
-      # tags, duplicate keys) that make pasted text safe to save, and mount the
-      # real CodeMirror editor under jsdom.
-      - name: Install @loomcycle/code-editor deps
-        working-directory: packages/code-editor
-        run: npm ci
-      - name: Test @loomcycle/code-editor
-        working-directory: packages/code-editor
         run: npm run typecheck && npm test
       - run: npm ci
       - run: npm run typecheck
