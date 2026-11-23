@@ -85,7 +85,7 @@ var importProvenanceFields = []string{
 	importFieldCapturedFrom, importFieldCapturedAt, importFieldRunID, importFieldWorkspaceID,
 	importFieldSourceURL, importFieldSourceKind, importFieldSourceTitle,
 	importFieldSourceRevision, importFieldSourceUpdatedAt, importFieldSourceStatus,
-	importFieldStructured, importFieldRenderedFrom,
+	importFieldStructured, importFieldRenderedFrom, importFieldCheckout,
 }
 
 // ImportSource is the link to where an imported document came from, as the
@@ -210,6 +210,10 @@ type importProvenance struct {
 	// (a download's URL, kind other). A re-import holds what was named to
 	// the stored source, and keeps the stored value of what was not.
 	urlGiven, kindGiven, titleGiven bool
+	// onNative makes a re-import give a document no import made (one written
+	// in the store) this provenance too: File op=commit's edition is a
+	// script's text, and says where it came from (RFC GW P7).
+	onNative bool
 }
 
 type importProvenanceCtxKey struct{}
@@ -469,6 +473,9 @@ func (d *Document) reimportProvenance(ctx context.Context, key sqlmem.ScopeKey, 
 	}
 	stored := d.importedProvenance(ctx, mscope, key, rootID, cb)
 	if stored == nil {
+		if prov.onNative {
+			return prov.fields, "", nil, nil
+		}
 		return nil, "", nil, nil
 	}
 	storedKind, _ = stored[importFieldSourceKind].(string)
@@ -522,7 +529,11 @@ func (d *Document) reviseProvenance(ctx context.Context, key sqlmem.ScopeKey, ms
 	if bumped.RowsAffected == 0 {
 		return false, errProvenanceConflict
 	}
-	if err := d.putBody(ctx, mscope, key, rootID, row.Type, cb.Body, cb.Fields, "", next); err != nil {
+	// The root's origin is an import's: it already is for an imported
+	// document, and a commit from a workspace onto a document written in the
+	// store makes it one (reimportProvenance's onNative), so its text is
+	// served as a document and its provenance shown.
+	if err := d.putBody(ctx, mscope, key, rootID, row.Type, cb.Body, cb.Fields, store.OriginImport, next); err != nil {
 		return false, err
 	}
 	return true, d.recordRevisionProvenance(ctx, key, rootID, row.Revision+1, cb.Body, nextRaw)

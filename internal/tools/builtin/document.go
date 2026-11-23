@@ -806,6 +806,13 @@ type docInput struct {
 	// styleRead asks export_md for a style document's parts (RFC GR P4c,
 	// render_style.go); set only in process.
 	styleRead *styleRequest
+	// checkout asks export_md for File op=checkout and commit's form of a
+	// document (RFC GW P7, document_checkout.go); set only in process.
+	checkout *checkoutExport
+	// checkoutList asks query_documents for the documents a checkout takes
+	// and their Path names, or who is named at given paths
+	// (document_checkout.go); set only in process.
+	checkoutList *checkoutListRequest
 }
 
 // docSchemaDDL is portable across SQL Memory's sqlite + postgres tiers: BIGINT
@@ -5865,6 +5872,10 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	if err != nil {
 		return errFrom("export_md: "+err.Error(), err), nil
 	}
+	if in.checkout != nil {
+		// What a reimport reconciles against, and only that (RFC GW P7).
+		roots, byParent = inForceTree(roots, byParent, time.Now().UnixNano())
+	}
 	includeMeta := in.IncludeMetadata == nil || *in.IncludeMetadata
 
 	// An imported document's provenance (its root's fields) is in the result
@@ -5890,6 +5901,10 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 		b.WriteString(head + "\n\n" + line + "\n" + rest)
 	}
 
+	// The checkout's revision is the text before the relations: see
+	// checkoutFingerprint.
+	contentSum := checkoutFingerprint(b.String())
+
 	// Edges trailer — the free-form graph edges originating from this document's
 	// chunks (parent-child is the hierarchy above, not an edge). Metadata-only:
 	// a clean export (include_metadata=false) omits it.
@@ -5906,6 +5921,13 @@ func (d *Document) exportMD(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	out := map[string]any{"markdown": b.String(), "document_id": docID, "title": title}
 	if prov != nil {
 		out["provenance"] = prov
+	}
+	if in.checkout != nil {
+		paths, err := d.documentPathNames(ctx, key, docID)
+		if err != nil {
+			return errFrom("export_md: paths: "+err.Error(), err), nil
+		}
+		out["content_sha256"], out["paths"] = contentSum, paths
 	}
 	return jsonResult(out)
 }
@@ -7181,6 +7203,9 @@ func (d *Document) listTags(ctx context.Context, key sqlmem.ScopeKey, in docInpu
 // would shorten the answer, telling the caller hidden documents exist. A caller
 // the set limits nothing keeps the one query.
 func (d *Document) queryDocuments(ctx context.Context, key sqlmem.ScopeKey, in docInput) (tools.Result, error) {
+	if in.checkoutList != nil {
+		return d.checkoutListing(ctx, key, in)
+	}
 	limit := in.Limit
 	if limit <= 0 || limit > 1000 {
 		limit = 100
