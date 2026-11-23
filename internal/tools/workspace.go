@@ -10,6 +10,9 @@ import "github.com/denn-gubsky/loomcycle/internal/config"
 type WorkspacePolicyValue struct {
 	Read, Write, Exec bool
 	Open              bool
+	// Share lets the run share a workspace it owns with another run of its
+	// user (RFC GW §5.2), handing over no more than it holds itself.
+	Share bool
 	// Engine is the least isolating engine the run accepts: "" (any),
 	// config.WorkspaceEngineHost or config.WorkspaceEngineContainer.
 	Engine string
@@ -37,7 +40,7 @@ func WorkspaceFor(w *config.AgentWorkspace) WorkspacePolicyValue {
 	if !w.Grants() {
 		return WorkspacePolicyValue{}
 	}
-	v := WorkspacePolicyValue{Open: w.Open, Engine: w.Engine}
+	v := WorkspacePolicyValue{Open: w.Open, Share: w.Share, Engine: w.Engine}
 	for _, op := range w.Ops {
 		switch op {
 		case config.WorkspaceOpRead:
@@ -87,8 +90,8 @@ func (v WorkspacePolicyValue) AcceptsEngineRequirement(requirement string) bool 
 }
 
 // NarrowWorkspace is a spawned child's policy: each operation only when both
-// its parent run and its own definition allow it, open only when both may,
-// and the stricter of the two engine requirements. A side that grants nothing
+// its parent run and its own definition allow it, open and share only when
+// both may, and the stricter of the two engine requirements. A side that grants nothing
 // leaves the child nothing.
 func NarrowWorkspace(parent, own WorkspacePolicyValue) WorkspacePolicyValue {
 	out := WorkspacePolicyValue{
@@ -96,6 +99,7 @@ func NarrowWorkspace(parent, own WorkspacePolicyValue) WorkspacePolicyValue {
 		Write: parent.Write && own.Write,
 		Exec:  parent.Exec && own.Exec,
 		Open:  parent.Open && own.Open,
+		Share: parent.Share && own.Share,
 	}
 	if !out.Grants() {
 		return WorkspacePolicyValue{}
@@ -130,11 +134,11 @@ func (v WorkspacePolicyValue) Grant() *config.AgentWorkspace {
 	if !v.Grants() {
 		return nil
 	}
-	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Engine: v.Engine}
+	return &config.AgentWorkspace{Ops: v.Ops(), Open: v.Open, Share: v.Share, Engine: v.Engine}
 }
 
 // Report is the policy for Context op=self. Always present: ops [] and open
 // false is the answer "no workspace access".
 func (v WorkspacePolicyValue) Report() map[string]any {
-	return map[string]any{"ops": v.Ops(), "open": v.Open, "engine": v.Engine}
+	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "engine": v.Engine}
 }

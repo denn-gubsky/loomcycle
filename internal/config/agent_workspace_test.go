@@ -1,6 +1,8 @@
 package config
 
 import (
+	"github.com/denn-gubsky/loomcycle/internal/agents"
+
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -23,8 +25,8 @@ func TestLoad_WorkspaceReachesTheAgent(t *testing.T) {
 	}{
 		{"absent", "", nil},
 		{"read only", "    workspace: {ops: [read]}\n", &AgentWorkspace{Ops: []string{"read"}}},
-		{"everything", "    workspace:\n      ops: [read, write, exec]\n      open: true\n      engine: container\n",
-			&AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true, Engine: "container"}},
+		{"everything", "    workspace:\n      ops: [read, write, exec]\n      open: true\n      share: true\n      engine: container\n",
+			&AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true, Share: true, Engine: "container"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := loadYAMLString(t, workspaceYAMLHead+tc.field)
@@ -39,7 +41,7 @@ func TestLoad_WorkspaceReachesTheAgent(t *testing.T) {
 }
 
 // An unknown or repeated operation, an unknown engine, and any key a later
-// phase adds (share, expose, egress, …) are refused at load, naming the
+// phase adds (connect, expose, egress, …) are refused at load, naming the
 // agent and what is wrong.
 func TestLoad_RefusesAnInvalidWorkspace(t *testing.T) {
 	for _, tc := range []struct {
@@ -49,7 +51,7 @@ func TestLoad_RefusesAnInvalidWorkspace(t *testing.T) {
 		{"unknown op", "    workspace: {ops: [read, run]}\n", []string{`"coder"`, "workspace.ops[1]", `"run"`}},
 		{"duplicate op", "    workspace: {ops: [exec, exec]}\n", []string{`"coder"`, "workspace.ops[1]", "twice"}},
 		{"unknown engine", "    workspace: {ops: [read], engine: vm}\n", []string{`"coder"`, "workspace.engine", `"vm"`}},
-		{"share", "    workspace: {ops: [read], share: true}\n", []string{"workspace", `unknown key "share"`}},
+		{"connect", "    workspace: {ops: [read], connect: true}\n", []string{"workspace", `unknown key "connect"`}},
 		{"expose", "    workspace: {ops: [read], expose: [8080]}\n", []string{"workspace", `unknown key "expose"`}},
 		{"egress", "    workspace: {ops: [read], egress: [pypi]}\n", []string{"workspace", `unknown key "egress"`}},
 	} {
@@ -91,13 +93,13 @@ func TestValidateAgentWorkspace_RefusesUnknownAndRepeatedValues(t *testing.T) {
 // yaml one: a key a later phase adds is refused, not dropped.
 func TestAgentWorkspace_JSONRefusesUnknownKeys(t *testing.T) {
 	var w AgentWorkspace
-	if err := json.Unmarshal([]byte(`{"ops":["read"],"open":true,"engine":"host"}`), &w); err != nil {
+	if err := json.Unmarshal([]byte(`{"ops":["read"],"open":true,"share":true,"engine":"host"}`), &w); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(w, AgentWorkspace{Ops: []string{"read"}, Open: true, Engine: "host"}) {
+	if !reflect.DeepEqual(w, AgentWorkspace{Ops: []string{"read"}, Open: true, Share: true, Engine: "host"}) {
 		t.Errorf("decoded %+v", w)
 	}
-	for _, in := range []string{`{"ops":["read"],"share":true}`, `{"connect":["x"]}`, `{"templates":[]}`} {
+	for _, in := range []string{`{"ops":["read"],"expose":true}`, `{"connect":["x"]}`, `{"templates":[]}`} {
 		var w AgentWorkspace
 		if err := json.Unmarshal([]byte(in), &w); err == nil || !strings.Contains(err.Error(), "unknown field") {
 			t.Errorf("%s: err = %v, want an unknown field refusal", in, err)
@@ -161,5 +163,29 @@ func TestMergeAgentDef_WorkspaceOverlayReplacesOrKeeps(t *testing.T) {
 	}
 	if got := mergeAgentDef(base, AgentDef{}).Workspace; !reflect.DeepEqual(got, base.Workspace) {
 		t.Errorf("an overlay without the field gave %+v, want the base's", got)
+	}
+}
+
+// A Markdown agent's workspace reaches config through a field-by-field copy
+// (workspaceFromDiscovered): every key the mirror holds must arrive, or a
+// key added to both (as share was, RFC GW P8) is silently dropped.
+func TestWorkspaceFromDiscovered_CarriesEveryKey(t *testing.T) {
+	mirror := reflect.TypeOf(agents.AgentWorkspace{})
+	own := reflect.TypeOf(AgentWorkspace{})
+	if mirror.NumField() != own.NumField() {
+		t.Fatalf("agents.AgentWorkspace has %d fields, config.AgentWorkspace %d: add the new key to both and to workspaceFromDiscovered", mirror.NumField(), own.NumField())
+	}
+	in := &agents.AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Engine: "container"}
+	got := workspaceFromDiscovered(in)
+	want := &AgentWorkspace{Ops: []string{"read", "write"}, Open: true, Share: true, Engine: "container"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("workspaceFromDiscovered = %+v, want %+v", got, want)
+	}
+	// Every field of the full value is set, so a field the copy skips shows.
+	v := reflect.ValueOf(*want)
+	for i := 0; i < v.NumField(); i++ {
+		if v.Field(i).IsZero() {
+			t.Fatalf("test value leaves %s unset; set it so the copy is checked", own.Field(i).Name)
+		}
 	}
 }
