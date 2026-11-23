@@ -243,6 +243,11 @@ func TestPolyroots_MatchesNumPyRoots(t *testing.T) {
 		{"round(polyroots([0, 0, 1, -1]), 12)", "[1]"},
 		{"polyroots([2])", "[]"},
 	})
+	for alias, name := range map[string]string{"real(1i)": "re", "imag(1i)": "im", "angle(1i)": "arg", "roots([1, 1])": "polyroots"} {
+		if e := mustFail(t, alias, codeUnknownFunc); e.Hint != "use "+name {
+			t.Errorf("%s: hint %q, want use %s", alias, e.Hint, name)
+		}
+	}
 	mustFail(t, "polyroots([0, 0])", codeDomain)
 	mustFail(t, "polyroots([])", codeDomain)
 	e := mustFail(t, "polyroots([1, 1i])", codeType)
