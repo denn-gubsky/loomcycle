@@ -71,10 +71,27 @@ type WorkspaceRow struct {
 	State     WorkspaceState
 	// Shares are the runs the owner shared the workspace with (RFC GW §5.2),
 	// in the order they were made. Never nil on a row read back.
-	Shares    []WorkspaceShare
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Shares []WorkspaceShare
+	// OwnerKind is who holds the pin: WorkspaceOwnerRun (OwnerRunID is the
+	// run) or WorkspaceOwnerPrincipal (RFC GW D35: a session of loomcycle's
+	// MCP server; OwnerRunID is the principal's pin key, which no run id
+	// can be). Empty on a write is a run.
+	OwnerKind string
+	// OpenedToken is the token definition that opened a principal's
+	// workspace: its end releases it. Empty for a run's.
+	OpenedToken string
+	// LastUsedAt is when an op last reached a principal's workspace (its
+	// idle release); the open stamps it. Not kept for a run's.
+	LastUsedAt time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
+
+// The owner kinds of a workspace (RFC GW D35).
+const (
+	WorkspaceOwnerRun       = "run"
+	WorkspaceOwnerPrincipal = "principal"
+)
 
 // The accesses a share gives (RFC GW §5.2, D20).
 const (
@@ -128,11 +145,12 @@ type WorkspaceStore interface {
 	// WorkspaceCountActiveByTenant counts a tenant's rows in
 	// WorkspaceActiveStates, across workers: what max_per_tenant bounds.
 	WorkspaceCountActiveByTenant(ctx context.Context, tenantID string) (int, error)
-	// WorkspaceSweepCandidates returns the rows, any state, whose owner run
-	// is terminal and not paused or pausing, or whose owner run row no longer
-	// exists: the sweeper's work list for runs that ended without the run-end
-	// release. A paused run is parked, not ended, and keeps its workspaces for
-	// its resume.
+	// WorkspaceSweepCandidates returns the run-owned rows, any state, whose
+	// owner run is terminal and not paused or pausing, or whose owner run row
+	// no longer exists: the sweeper's work list for runs that ended without
+	// the run-end release. A paused run is parked, not ended, and keeps its
+	// workspaces for its resume. A principal's row is never one: it has no
+	// run (WorkspaceListPrincipalOwned is its pass).
 	WorkspaceSweepCandidates(ctx context.Context) ([]WorkspaceRow, error)
 	// WorkspaceTouchByWorker sets updated_at to now on the worker's rows in
 	// WorkspaceActiveStates and returns how many. A replica the worker is
@@ -156,4 +174,10 @@ type WorkspaceStore interface {
 	// WorkspaceListSharedWith returns the tenant's rows whose shares name
 	// the run, every state, ordered by name.
 	WorkspaceListSharedWith(ctx context.Context, tenantID, runID string) ([]WorkspaceRow, error)
+	// WorkspaceListPrincipalOwned returns every principal-owned row, every
+	// tenant and state, oldest first: the work list of the release rule for
+	// workspaces opened over the MCP server (RFC GW D35).
+	WorkspaceListPrincipalOwned(ctx context.Context) ([]WorkspaceRow, error)
+	// WorkspaceTouchUsed sets the tenant's row's last_used_at to at.
+	WorkspaceTouchUsed(ctx context.Context, tenantID, id string, at time.Time) error
 }
