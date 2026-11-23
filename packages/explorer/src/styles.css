@@ -298,13 +298,6 @@
   overflow: hidden;
   flex: 1;
 }
-.loomcycle-explorer .paths-view .left > .etree,
-.loomcycle-explorer .paths-view .left > .empty {
-  flex: 1;
-  overflow: auto;
-  min-height: 0;
-  padding: 8px 10px;
-}
 .loomcycle-explorer .paths-toolbar {
   display: flex;
   align-items: center;
@@ -451,7 +444,7 @@
   --etree-depth: 0;
   --etree-tint: transparent;
   display: grid;
-  grid-template-columns: 16px 16px minmax(0, 1fr) auto;
+  grid-template-columns: 16px 16px minmax(0, 1fr) auto auto;
   align-items: center;
   column-gap: 6px;
   height: 28px;
@@ -714,6 +707,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* The breadcrumb is a block; its separator follows it on the line. */
+  display: flex;
+  align-items: center;
   color: var(--fg-soft);
   font-size: var(--ex-text-meta);
 }
@@ -752,11 +748,6 @@
   font-size: var(--ex-text-meta);
   margin-right: 6px;
 }
-.loomcycle-explorer .doc-panel-toggles {
-  display: flex;
-  gap: 2px;
-  margin-right: 6px;
-}
 .loomcycle-explorer .doc-header-actions button {
   display: inline-flex;
   align-items: center;
@@ -771,11 +762,6 @@
 }
 .loomcycle-explorer .doc-header-actions button:hover:not(:disabled) {
   background: var(--bg-soft);
-  color: var(--fg);
-}
-.loomcycle-explorer .doc-header-actions button[aria-pressed="true"] {
-  background: var(--bg-soft);
-  border-color: var(--border);
   color: var(--fg);
 }
 .loomcycle-explorer .doc-header-actions button:disabled {
@@ -800,22 +786,6 @@
 .loomcycle-explorer .doc-header-actions button.doc-edit:hover:not(:disabled),
 .loomcycle-explorer .doc-chunk-bar button.doc-chunk-edit:hover:not(:disabled) {
   filter: brightness(1.08);
-}
-.loomcycle-explorer .doc-panel-count {
-  min-width: 16px;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--border);
-  color: var(--fg);
-  font-size: var(--ex-text-meta);
-  line-height: 16px;
-  text-align: center;
-}
-.loomcycle-explorer .doc-panel-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--running);
 }
 
 /* The "more" menu (components/MoreMenu): the header's last button, a list of
@@ -881,33 +851,6 @@
   cursor: default;
 }
 
-/* The interim panels (annotation, references, classification): closed by
-   default; one open at a time, under the header, scrolling on its own. */
-.loomcycle-explorer .doc-panel {
-  position: relative;
-  flex: 0 1 auto;
-  max-height: 40%;
-  overflow: auto;
-  padding: 8px 40px 8px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-soft);
-}
-.loomcycle-explorer .doc-panel-close {
-  position: absolute;
-  top: 4px;
-  right: 8px;
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--fg-soft);
-  cursor: pointer;
-}
-.loomcycle-explorer .doc-panel-close:hover {
-  color: var(--fg);
-  background: var(--bg);
-}
 .loomcycle-explorer .doc-panel-heading {
   margin: 4px 0;
   font-size: var(--ex-text-meta);
@@ -931,7 +874,7 @@
 .loomcycle-explorer .doc-chunktree {
   flex: 1;
   overflow: auto;
-  padding: 8px 4px;
+  padding: 2px 4px 8px;
   min-height: 0;
 }
 
@@ -942,6 +885,7 @@
   height: 100%;
   min-height: 0;
   overflow: auto;
+  overflow-anchor: none;
   padding: 16px 24px 40vh;
   outline: none;
 }
@@ -2188,4 +2132,476 @@
 .loomcycle-explorer .annotation-err {
   color: var(--failed);
   font-size: var(--lc-text-xs);
+}
+
+/* ============================================================
+   RFC GZ phase 3 — collapsible panes, the side panels and their rail, the
+   annotation card, the breadcrumb, and the Path tree's search and filter.
+   Kept in step with the other sheet (web/src/styles.css and the package's
+   scoped styles.css).
+   ============================================================ */
+/* A hidden pane leaves the grid (the Splitter keeps it mounted), so a
+   collapsed pane's rail takes its column. */
+.loomcycle-explorer .splitter > .splitter-pane[hidden],
+.loomcycle-explorer .splitter > .splitter-handle[hidden] {
+  display: none;
+}
+.loomcycle-explorer .paths-console {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+/* A collapsed pane: one button with the pane's icon and its count. */
+.loomcycle-explorer .pane-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 32px;
+  padding: 6px 0;
+  min-height: 0;
+}
+.loomcycle-explorer .paths-view > .pane-rail {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-soft);
+  margin-right: 6px;
+}
+.loomcycle-explorer .doc-split > .pane-rail {
+  border-right: 1px solid var(--border);
+}
+.loomcycle-explorer .pane-rail-button,
+.loomcycle-explorer .doc-rail-button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 28px;
+  padding: 6px 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-soft);
+  cursor: pointer;
+}
+.loomcycle-explorer .pane-rail-button:hover,
+.loomcycle-explorer .doc-rail-button:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+.loomcycle-explorer .pane-rail-count,
+.loomcycle-explorer .doc-rail-count {
+  font-size: var(--ex-text-meta);
+  line-height: 1;
+}
+/* A pane's head: its name, its count, and the control that folds it. */
+.loomcycle-explorer .pane-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  flex: none;
+  padding: 0 2px 0 8px;
+  color: var(--fg-soft);
+  font-size: var(--ex-text-meta);
+  font-weight: 600;
+}
+.loomcycle-explorer .pane-head-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+.loomcycle-explorer .pane-head-count {
+  font-weight: 400;
+}
+.loomcycle-explorer .pane-head .pane-collapse {
+  margin-left: auto;
+}
+.loomcycle-explorer .pane-collapse,
+.loomcycle-explorer .paths-find-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-soft);
+  cursor: pointer;
+}
+.loomcycle-explorer .pane-collapse:hover,
+.loomcycle-explorer .paths-find-close:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+.loomcycle-explorer .paths-toolbar-actions button.pane-collapse,
+.loomcycle-explorer .paths-toolbar-actions button.paths-find-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  padding: 0;
+}
+.loomcycle-explorer .paths-toolbar-actions button.pane-collapse {
+  border-color: transparent;
+  background: transparent;
+}
+.loomcycle-explorer .paths-toolbar-actions button.paths-find-toggle[aria-pressed="true"] {
+  border-color: var(--accent);
+}
+.loomcycle-explorer .pane-rail-button:focus-visible,
+.loomcycle-explorer .doc-rail-button:focus-visible,
+.loomcycle-explorer .pane-collapse:focus-visible,
+.loomcycle-explorer .paths-find-close:focus-visible,
+.loomcycle-explorer .doc-crumbs-folder:focus-visible,
+.loomcycle-explorer .doc-crumbs-current:focus-visible,
+.loomcycle-explorer .doc-ref-target:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.loomcycle-explorer .paths-view .left > .paths-tree-box {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 8px 10px;
+}
+
+/* The Path tree's search and filter line, under the header. */
+.loomcycle-explorer .paths-find {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.loomcycle-explorer .paths-find-mode {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.loomcycle-explorer .paths-find-mode button {
+  padding: 2px 8px;
+  border: none;
+  background: var(--bg);
+  color: var(--fg-soft);
+  cursor: pointer;
+}
+.loomcycle-explorer .paths-find-mode button + button {
+  border-left: 1px solid var(--border);
+}
+.loomcycle-explorer .paths-find-mode button.active {
+  background: var(--bg-soft);
+  color: var(--fg);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.loomcycle-explorer .paths-find .paths-find-input {
+  flex: 1 1 120px;
+  min-width: 0;
+  height: 26px;
+  padding: 2px 8px;
+}
+.loomcycle-explorer .paths-find .paths-find-select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 130px;
+  height: 26px;
+  padding: 2px 4px;
+}
+.loomcycle-explorer .paths-find-note {
+  order: 10;
+  flex: 1 0 100%;
+  color: var(--fg-soft);
+  font-size: var(--ex-text-meta);
+}
+.loomcycle-explorer .paths-find-count {
+  color: var(--fg);
+  margin-right: 8px;
+}
+.loomcycle-explorer .etree-row.search-hit {
+  box-shadow: inset 2px 0 0 var(--running);
+}
+.loomcycle-explorer .etree-row.search-current {
+  outline: 1px solid var(--running);
+  outline-offset: -1px;
+}
+/* A folder's document count (RFC HA): empty until the runtime sends one. */
+.loomcycle-explorer .etree-count {
+  margin-left: 6px;
+  color: var(--fg-soft);
+  font-size: var(--ex-text-meta);
+  font-weight: 400;
+}
+.loomcycle-explorer .etree-count:empty {
+  display: none;
+}
+
+/* The folder's detail pane: its card, in place. */
+.loomcycle-explorer .paths-detail-card {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  max-width: 70ch;
+}
+
+/* The document body: the outline | page split, the open side panel, and the
+   rail of panel icons at the right edge. */
+.loomcycle-explorer .doc-body {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+.loomcycle-explorer .doc-body > .doc-split {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: auto;
+}
+.loomcycle-explorer .doc-side {
+  flex: 0 0 360px;
+  max-width: 45%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-soft);
+}
+.loomcycle-explorer .doc-side-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 12px 12px;
+}
+.loomcycle-explorer .doc-rail {
+  flex: 0 0 36px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0;
+  border-left: 1px solid var(--border);
+}
+.loomcycle-explorer .doc-rail-button {
+  border: 1px solid transparent;
+}
+.loomcycle-explorer .doc-rail-button[aria-pressed="true"] {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.loomcycle-explorer .doc-rail-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--running);
+}
+.loomcycle-explorer .doc-chunktree > .pane-head {
+  margin: 0 0 4px;
+}
+/* Connections and the relationship graph are sections of the references
+   panel: each opens from a heading-like toggle, not a browser button. */
+.loomcycle-explorer .doc-graph-toggle,
+.loomcycle-explorer .doc-conn-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 0;
+  border: none;
+  background: none;
+  color: var(--fg-soft);
+  font: inherit;
+  font-size: var(--ex-text-meta);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.loomcycle-explorer .doc-graph-toggle:hover,
+.loomcycle-explorer .doc-conn-toggle:hover {
+  color: var(--accent);
+}
+.loomcycle-explorer .doc-graph-toggle:focus-visible,
+.loomcycle-explorer .doc-conn-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The breadcrumb: where the document is filed, each folder a button. */
+.loomcycle-explorer .doc-crumbs {
+  min-width: 0;
+}
+.loomcycle-explorer .doc-crumbs-list {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+.loomcycle-explorer .doc-crumbs-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.loomcycle-explorer .doc-crumbs-item:last-child {
+  flex-shrink: 0;
+  max-width: 60%;
+}
+.loomcycle-explorer .doc-crumbs-item + .doc-crumbs-item::before {
+  content: "/";
+  margin: 0 3px;
+  color: var(--fg-muted);
+}
+.loomcycle-explorer .doc-crumbs-folder,
+.loomcycle-explorer .doc-crumbs-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 3px;
+}
+.loomcycle-explorer .doc-crumbs-folder {
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: var(--fg-soft);
+  font: inherit;
+  cursor: pointer;
+}
+.loomcycle-explorer .doc-crumbs-folder:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.loomcycle-explorer .doc-crumbs-current {
+  color: var(--fg);
+}
+
+/* The annotation card. Fixed, so a scrolling pane never clips it; placed by
+   the component under (or over) what it describes. */
+.loomcycle-explorer .ex-card {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 200;
+  min-width: 180px;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  font-size: var(--ex-text-ui);
+  line-height: 1.45;
+  pointer-events: none;
+  animation: ex-card-in 100ms ease-out;
+}
+@keyframes ex-card-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.loomcycle-explorer .ex-card-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.loomcycle-explorer .ex-card-meta,
+.loomcycle-explorer .ex-card-path,
+.loomcycle-explorer .ex-card-loading {
+  color: var(--fg-soft);
+  font-size: var(--ex-text-meta);
+}
+.loomcycle-explorer .ex-card-path {
+  overflow-wrap: anywhere;
+}
+.loomcycle-explorer .ex-card-stale {
+  color: var(--running);
+}
+.loomcycle-explorer .ex-card-brief,
+.loomcycle-explorer .ex-card-abstract,
+.loomcycle-explorer .ex-card-loading {
+  margin: 6px 0 0;
+}
+.loomcycle-explorer .ex-card-abstract {
+  color: var(--fg-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Narrow: one pane at a time in the console, the side panel over the body
+   (below 960px of document, panel-over),
+   the header on two lines (where the document is, then what it is). */
+.loomcycle-explorer .paths-console.narrow .paths-toolbar {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.loomcycle-explorer .paths-console.narrow .paths-view > .pane-rail {
+  margin-right: 4px;
+}
+.loomcycle-explorer .doc-viewer.panel-over .doc-side {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 36px;
+  z-index: 20;
+  width: min(360px, calc(100% - 36px));
+  max-width: none;
+  box-shadow: -6px 0 16px rgba(0, 0, 0, 0.2);
+}
+.loomcycle-explorer .doc-viewer.narrow .doc-header {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+.loomcycle-explorer .doc-viewer.narrow .doc-header-path {
+  flex: 1 0 100%;
+  max-width: 100%;
+}
+.loomcycle-explorer .doc-viewer.narrow .doc-header-path::after {
+  content: none;
+}
+.loomcycle-explorer .doc-viewer.narrow .doc-edit-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.loomcycle-explorer .doc-viewer.narrow .doc-page {
+  padding: 12px 14px 40vh;
+}
+.loomcycle-explorer .doc-viewer.narrow .doc-chunk-bar {
+  right: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loomcycle-explorer .ex-card {
+    animation: none;
+  }
+  .loomcycle-explorer .etree-caret svg,
+  .loomcycle-explorer .doc-chunk-bar,
+  .loomcycle-explorer .splitter > .splitter-handle::before {
+    transition: none;
+  }
 }

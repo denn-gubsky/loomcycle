@@ -1,5 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import type { DirListing, DirMap } from "../lib/lazyPathTree";
+import type { PathEntry } from "../types";
+import type { CardSpec } from "./AnnotationCard";
 import { ANNOTATION_ENTRY } from "../lib/annotation";
 import {
   docColor,
@@ -28,6 +30,10 @@ export interface PathNode {
   // listing is this node's children's load state; undefined = never listed
   // (and always undefined for a node that cannot be opened).
   listing?: DirListing;
+  // documents: how many documents the reader may open under this folder, when
+  // the runtime's listing says (RFC HA). Never worked out here from the
+  // folders that happen to be open — that number would be wrong.
+  documents?: number;
   children: PathNode[];
 }
 
@@ -42,12 +48,14 @@ export function buildLazyTree(dirs: DirMap, dir = ""): PathNode[] {
     // directory) from recursing forever.
     const hasChildren = e.kind !== "directory" && e.has_children === true;
     const opens = (e.kind === "directory" || hasChildren) && e.full_path.startsWith(`${dir}/`);
+    const documents = folderDocuments(e);
     return {
       name: e.name,
       fullPath: e.full_path,
       kind: e.kind,
       resourceRef: e.resource_ref,
       ...(hasChildren ? { hasChildren } : {}),
+      ...(documents !== undefined ? { documents } : {}),
       listing: opens ? dirs.get(e.full_path) : undefined,
       children: opens ? buildLazyTree(dirs, e.full_path) : [],
     };
@@ -59,6 +67,16 @@ export function buildLazyTree(dirs: DirMap, dir = ""): PathNode[] {
     return a.name.localeCompare(b.name);
   });
   return nodes;
+}
+
+// folderDocuments reads a folder entry's document count when the runtime
+// sends one (RFC HA's `documents` on a listing entry). The capability is
+// detected from the field itself, so an older runtime simply leaves the slot
+// empty.
+export function folderDocuments(e: PathEntry): number | undefined {
+  if (e.kind !== "directory") return undefined;
+  const n = (e as PathEntry & { documents?: unknown }).documents;
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 // The icon of each entry kind; an unknown kind draws as a document.
@@ -74,7 +92,7 @@ export function isAnnotationEntry(node: Pick<PathNode, "kind" | "name">): boolea
   return node.kind === "document" && node.name === ANNOTATION_ENTRY;
 }
 
-// nodeBrief is a row's brief (shown in its tooltip): a document's own, and for
+// nodeBrief is a row's brief (shown in its card): a document's own, and for
 // a folder the brief of its `_annotation` document — known only once the
 // folder has been listed, which is when its children's summaries arrive. No
 // extra call is made for it.
@@ -102,6 +120,22 @@ export interface PathTreeProps {
   // RFC BN: per-document display metadata keyed by document_id, used to color a
   // document row + badge its type/status. Unset → neutral rows (prior behavior).
   summaries?: Map<string, DocSummary>;
+  // Search (RFC GZ): the rows whose names match, and the one the search is on.
+  searchHits?: ReadonlySet<string>;
+  searchCurrent?: string;
+}
+
+// nodeCard is a row's annotation card: what the tree already knows — the
+// document summaries it loads, and a folder's brief from its `_annotation`.
+export function nodeCard(node: PathNode, summaries?: Map<string, DocSummary>): CardSpec {
+  const summary = documentSummaryOf(node, summaries);
+  return {
+    title: summary?.title || node.name,
+    type: node.kind === "directory" ? "folder" : summary?.type,
+    status: summary?.status,
+    path: node.fullPath,
+    brief: nodeBrief(node, summaries),
+  };
 }
 
 export default function PathTree(props: PathTreeProps) {
@@ -193,7 +227,7 @@ function ListingRows({
 
 // documentSummaryOf returns the summary for a `document` node (by its dirent's
 // document_id), or undefined for a non-document node / missing summary.
-function documentSummaryOf(node: PathNode, summaries?: Map<string, DocSummary>): DocSummary | undefined {
+export function documentSummaryOf(node: PathNode, summaries?: Map<string, DocSummary>): DocSummary | undefined {
   if (node.kind !== "document" || !summaries) return undefined;
   const ref = node.resourceRef as { document_id?: string } | undefined;
   return ref?.document_id ? summaries.get(ref.document_id) : undefined;
@@ -218,7 +252,8 @@ function isDrawn(nodes: PathNode[], expanded: ReadonlySet<string>, path: string)
 }
 
 function PathTreeNode(props: { node: PathNode; depth: number; tabStop?: string } & PathTreeProps) {
-  const { node, depth, tabStop, expanded, onToggle, selectedPath, onSelect, summaries } = props;
+  const { node, depth, tabStop, expanded, onToggle, selectedPath, onSelect, summaries, searchHits, searchCurrent } =
+    props;
   // A directory opens, and so does a document with names beneath it (RFC GC):
   // its caret lists them while the row still opens the document. Children are
   // unknown until listed, so the caret is live even before then.
@@ -226,12 +261,25 @@ function PathTreeNode(props: { node: PathNode; depth: number; tabStop?: string }
   const isOpen = isDir && expanded.has(node.fullPath);
   const isSelected = selectedPath === node.fullPath;
   const summary = documentSummaryOf(node, summaries);
-  const brief = nodeBrief(node, summaries);
   const scheme = summary ? effectiveScheme(summary.color_scheme) : undefined;
   const coloured = !!summary?.color_enabled;
+  const hit = searchHits?.has(node.fullPath);
   return (
     <TreeItem
       className={`path-node kind-${node.kind}`}
+      rowClassName={
+        searchCurrent === node.fullPath ? "search-hit search-current" : hit ? "search-hit" : undefined
+      }
+      card={nodeCard(node, summaries)}
+      count={
+        // The slot is on every folder row and stays empty until the runtime
+        // sends a count (RFC HA).
+        node.kind === "directory" ? (
+          <span className="etree-count" aria-label={node.documents !== undefined ? `${node.documents} documents` : undefined}>
+            {node.documents}
+          </span>
+        ) : undefined
+      }
       depth={depth}
       expandable={isDir}
       expanded={isOpen}
@@ -241,9 +289,9 @@ function PathTreeNode(props: { node: PathNode; depth: number; tabStop?: string }
       tabbable={node.fullPath === tabStop}
       icon={<TreeIcon kind={isAnnotationEntry(node) ? "annotation" : (KIND_ICON[node.kind] ?? "document")} />}
       name={node.name}
-      title={brief ? `${node.fullPath}\n${brief}` : node.fullPath}
       marks={
         <TreeMarks
+          bare
           type={summary?.type}
           status={summary?.status}
           statusColor={statusDotColor(summary?.status, coloured ? scheme : undefined)}
