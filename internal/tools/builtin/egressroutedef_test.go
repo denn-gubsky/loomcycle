@@ -206,3 +206,28 @@ func TestEgressRouteDef_AMemberCannotWriteARoute(t *testing.T) {
 	ctx = auth.WithPrincipal(ctx, auth.Principal{TenantID: "acme", Subject: "bob", Scopes: []string{auth.ScopeUser}})
 	wantRouteRefused(t, tool, ctx, `{"op":"create","name":"crm","url":"https://api.crm.example/"}`, auth.ScopeTenant)
 }
+
+// Security review: tenant_hosts names hosts, not ports, so a port would let a
+// tenant route reach a service on a listed host the operator never approved.
+// A tenant route uses only 443, with or without a host list; an explicit :443
+// is the same URL and is stored without it.
+func TestEgressRouteDef_CreateRefusesAPortOtherThan443(t *testing.T) {
+	for _, eg := range []config.WorkspaceEgressConfig{
+		{TenantRoutes: true, TenantHosts: []string{"api.crm.example"}},
+		tenantRoutesOn,
+	} {
+		tool := egressRouteFixture(t, eg, nil)
+		ctx := routeOperatorCtx("acme")
+		wantRouteRefused(t, tool, ctx, `{"op":"create","name":"admin","url":"https://api.crm.example:8443/"}`, "port")
+		out, text, isErr := runRoute(t, tool, ctx, `{"op":"create","name":"explicit","url":"https://api.crm.example:443/v2/"}`)
+		if isErr {
+			t.Fatalf("hosts=%v: an explicit :443 refused: %s", eg.TenantHosts, text)
+		}
+		if got := out["route"].(map[string]any)["url"]; got != "https://api.crm.example/v2/" {
+			t.Errorf("hosts=%v: stored url = %v, want it without :443", eg.TenantHosts, got)
+		}
+		if _, text, isErr := runRoute(t, tool, ctx, `{"op":"create","name":"plain","url":"https://api.crm.example/v2/"}`); isErr {
+			t.Fatalf("hosts=%v: no port refused: %s", eg.TenantHosts, text)
+		}
+	}
+}

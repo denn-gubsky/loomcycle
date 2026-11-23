@@ -148,7 +148,11 @@ func (e *EgressRouteDef) execCreate(ctx context.Context, tenant string, in egres
 	if _, taken := eg.Routes[in.Name]; taken {
 		return errResult(fmt.Sprintf("EgressRouteDef create: %q is the name of an operator's route; choose another", in.Name)), nil
 	}
-	route := config.EgressRoute{URL: in.URL, Methods: in.Methods, Credential: in.Credential, Auth: in.Auth, Header: in.Header}
+	routeURL, msg := tenantRouteURL(in.URL)
+	if msg != "" {
+		return errResult("EgressRouteDef create: " + msg), nil
+	}
+	route := config.EgressRoute{URL: routeURL, Methods: in.Methods, Credential: in.Credential, Auth: in.Auth, Header: in.Header}
 	// One validator with the operator's yaml routes, so a route refused there
 	// is not kept by a runtime write.
 	if err := config.ValidateEgressRoute(route); err != nil {
@@ -176,6 +180,30 @@ func (e *EgressRouteDef) execCreate(ctx context.Context, tenant string, in egres
 		return tools.Result{}, fmt.Errorf("EgressRouteDef create: %w", err)
 	}
 	return jsonResult(map[string]any{"route": egressRouteView(row)})
+}
+
+// tenantRouteURL holds a tenant route to port 443. tenant_hosts names hosts,
+// not ports, so another port would reach a service on a listed (or, with no
+// list, any public) host that the operator never approved; the RFC allows a
+// tenant no other port. An explicit ":443" is the same URL and is dropped, so
+// the stored URL is the canonical form an operator route is held to.
+func tenantRouteURL(raw string) (string, string) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw, "" // config.ValidateEgressRoute refuses it with its reason
+	}
+	switch u.Port() {
+	case "":
+		return raw, ""
+	case "443":
+		prefix := u.Scheme + "://" + u.Host
+		if !strings.HasPrefix(raw, prefix) {
+			return raw, ""
+		}
+		return u.Scheme + "://" + strings.TrimSuffix(u.Host, ":443") + strings.TrimPrefix(raw, prefix), ""
+	default:
+		return raw, fmt.Sprintf("url: port %s is not allowed; a tenant route uses https on port 443 only", u.Port())
+	}
 }
 
 // tenantHostRefusal applies workspace.egress.tenant_hosts (D31): when set,
