@@ -94,11 +94,13 @@ func TestWorkspaceMCP_TheSubjectOwnsItAndExecIsTheOperatorsToGrant(t *testing.T)
 	if text, isErr := wsMCPCall(t, f, alice, `{"op":"exec","name":"w","command":"echo hi"}`); !isErr || !strings.Contains(text, "not_granted") {
 		t.Errorf("exec with the default ops: %s", text)
 	}
-	// Ops of a run are refused by name.
-	for _, in := range []string{`{"op":"share","name":"w","with":"x","access":"read"}`, `{"op":"run_cell","name":"w","code":"1"}`, `{"op":"read","name":"w@someone","path":"a.txt"}`} {
-		if text, isErr := wsMCPCall(t, f, alice, in); !isErr || !(strings.Contains(text, "not_over_mcp") || strings.Contains(text, "not_granted")) {
-			t.Errorf("%s: %s, want refused", in, text)
-		}
+	// A shared name is a run's to reach, never a session's.
+	if text, isErr := wsMCPCall(t, f, alice, `{"op":"read","name":"w@someone","path":"a.txt"}`); !isErr || !strings.Contains(text, "not_over_mcp") {
+		t.Errorf("a shared name: %s, want not_over_mcp", text)
+	}
+	// share needs a grant a session never holds.
+	if text, isErr := wsMCPCall(t, f, alice, `{"op":"share","name":"w","with":"x","access":"read"}`); !isErr || !strings.Contains(text, "not_granted") {
+		t.Errorf("share: %s, want not_granted", text)
 	}
 	execOK := wsMCPFixture(t, config.WorkspaceMCPConfig{Enabled: true, Ops: []string{"read", "exec"}})
 	if text, isErr := wsMCPCall(t, execOK, alice, `{"op":"open","name":"w"}`); isErr {
@@ -109,5 +111,9 @@ func TestWorkspaceMCP_TheSubjectOwnsItAndExecIsTheOperatorsToGrant(t *testing.T)
 	}
 	if text, isErr := wsMCPCall(t, execOK, alice, `{"op":"write","name":"w","path":"b.txt","content":"x"}`); !isErr || !strings.Contains(text, "not_granted") {
 		t.Errorf("write without write listed: %s", text)
+	}
+	// An interpreter is a run's, even with exec granted.
+	if text, isErr := wsMCPCall(t, execOK, alice, `{"op":"run_cell","name":"w","code":"1"}`); !isErr || !strings.Contains(text, "not_over_mcp") {
+		t.Errorf("run_cell over MCP: %s, want not_over_mcp", text)
 	}
 }
