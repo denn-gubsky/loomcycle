@@ -18,7 +18,7 @@
  * to raise typed errors via `raiseFromResponse`.
  */
 
-import type { AuthzReason } from "./types.js";
+import type { AuthzReason, CalcErrorCategory } from "./types.js";
 
 export class LoomcycleError extends Error {
   readonly status?: number;
@@ -484,6 +484,56 @@ export class ChannelCursorRegressionError extends LoomcycleError {
   constructor(message: string, opts?: { status?: number; bodyText?: string; code?: string }) {
     super(message, opts);
     this.name = "ChannelCursorRegressionError";
+  }
+}
+
+/** CalcError — raised by `client.calc()` when the Calc tool refused the
+ *  expression (RFC GY): a syntax error, an unknown name, a domain error such
+ *  as `sqrt(-1)`, a limit. `code` is the tool's error code (`syntax`,
+ *  `unknown_function`, `domain`, `step_limit`, …; the help topic
+ *  `Calc/errors` lists them), `hint` what to write instead, `pos` the offset
+ *  in `expr` where it went wrong, and `category` whether to fix the call
+ *  (`validation`, HTTP 400), give up on it (`business`, 422) or send it
+ *  again (`transient`, 503). `retryable` is the server's own answer.
+ *
+ *  A refusal made before the tool ran (an empty or oversized body, a spent
+ *  run rate, a token held to the run plane) is not a CalcError: it raises
+ *  the class its status maps to, as on every route. */
+export class CalcError extends LoomcycleError {
+  /** What went wrong (the body's `detail`; also the message). */
+  readonly detail?: string;
+  /** What to write instead, when the tool knows. */
+  readonly hint?: string;
+  /** The offset in `expr` where it went wrong, when it is one place. */
+  readonly pos?: number;
+  readonly category?: CalcErrorCategory;
+  readonly #retryable: boolean;
+
+  constructor(
+    message: string,
+    opts?: {
+      status?: number;
+      bodyText?: string;
+      code?: string;
+      detail?: string;
+      hint?: string;
+      pos?: number;
+      category?: CalcErrorCategory;
+      retryable?: boolean;
+    },
+  ) {
+    super(message, opts);
+    this.name = "CalcError";
+    this.detail = opts?.detail;
+    this.hint = opts?.hint;
+    this.pos = opts?.pos;
+    this.category = opts?.category;
+    this.#retryable = opts?.retryable ?? false;
+  }
+
+  /** The server's `isRetryable`: true only for a transient refusal. */
+  override get retryable(): boolean {
+    return this.#retryable;
   }
 }
 
