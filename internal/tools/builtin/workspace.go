@@ -32,8 +32,12 @@ type Workspace struct {
 	// Manager is nil while workspace.mode is off: every op is refused.
 	Manager *lifecycle.Manager
 	// ExecDefault and ExecMax are workspace.exec.default_timeout_s and
-	// max_timeout_s; zero is config's default.
+	// max_timeout_s; zero is config's default. They bound a cell too.
 	ExecDefault, ExecMax time.Duration
+	// KernelGrace is workspace.kernel.interrupt_grace_seconds: how long an
+	// interrupted cell has to stop before its kernel is killed. Zero is
+	// config's default.
+	KernelGrace time.Duration
 }
 
 func (w *Workspace) Name() string { return "Workspace" }
@@ -41,7 +45,8 @@ func (w *Workspace) Name() string { return "Workspace" }
 func (w *Workspace) Description() string {
 	return "Open a workspace — a directory on a workspace worker, away from the runtime — and run shell commands and file operations in it. " +
 		"Pick the operation with `op`: open (`name`, optional `toolchain`), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
-		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`). " +
+		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
+		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"A workspace belongs to the run that opened it and is deleted when that run ends; copy out what you need to keep with read. " +
 		"Commands run on the worker's host engine as the worker's user with no isolation: it is not a sandbox, and has no network guarantees either way. " +
 		"Use this for work that needs a real shell and toolchains (python, node); use Read/Write/Edit on your volumes for files you keep. " +
@@ -52,12 +57,14 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","run_cell","reset_kernel"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it."},
 			"toolchain":        {"type": "string", "enum": ["python","node"], "description": "open: the toolchain the worker must have. Omit for a general workspace, on a worker with both."},
 			"command":          {"type": "string", "description": "exec: a shell command line, run with /bin/sh -c."},
 			"cwd":              {"type": "string", "description": "exec: the directory to start in, relative to the workspace (default its root)."},
-			"timeout_s":        {"type": "integer", "minimum": 1, "description": "exec: seconds before the command and everything it started are killed. Default and ceiling are the operator's."},
+			"timeout_s":        {"type": "integer", "minimum": 1, "description": "exec: seconds before the command and everything it started are killed; run_cell: seconds before the cell is interrupted. Default and ceiling are the operator's."},
+			"code":             {"type": "string", "description": "run_cell: the code to run, up to 1 MiB. The last expression's value is returned."},
+			"kernel":           {"type": "string", "enum": ["python","node"], "description": "run_cell, reset_kernel: the interpreter (default python)."},
 			"path":             {"type": "string", "description": "read/write/edit: the file; glob/grep: the directory to search. Relative to the workspace."},
 			"content":          {"type": "string", "description": "write: the whole new file, up to 1 MiB."},
 			"old_string":       {"type": "string", "description": "edit: the exact text to replace; unique unless replace_all."},
@@ -84,16 +91,18 @@ func (w *Workspace) InputSchema() json.RawMessage {
 // another op takes is refused, as a misspelt one is: silently dropping it
 // would do something the caller did not ask for.
 var workspaceOpArgs = map[string][]string{
-	"open":    {"name", "toolchain"},
-	"release": {"name"},
-	"list":    {},
-	"status":  {"name"},
-	"exec":    {"name", "command", "cwd", "timeout_s"},
-	"read":    {"name", "path", "offset", "limit", "line_numbers"},
-	"write":   {"name", "path", "content"},
-	"edit":    {"name", "path", "old_string", "new_string", "replace_all"},
-	"glob":    {"name", "pattern", "path"},
-	"grep":    {"name", "pattern", "path", "glob", "output_mode", "case_insensitive", "multiline", "head_limit", "-A", "-B", "-C"},
+	"open":         {"name", "toolchain"},
+	"release":      {"name"},
+	"list":         {},
+	"status":       {"name"},
+	"exec":         {"name", "command", "cwd", "timeout_s"},
+	"read":         {"name", "path", "offset", "limit", "line_numbers"},
+	"write":        {"name", "path", "content"},
+	"edit":         {"name", "path", "old_string", "new_string", "replace_all"},
+	"glob":         {"name", "pattern", "path"},
+	"grep":         {"name", "pattern", "path", "glob", "output_mode", "case_insensitive", "multiline", "head_limit", "-A", "-B", "-C"},
+	"run_cell":     {"name", "code", "kernel", "timeout_s"},
+	"reset_kernel": {"name", "kernel"},
 }
 
 // workspaceOpGrant is the grant each op needs: an operation of the run's
@@ -104,6 +113,8 @@ var workspaceOpGrant = map[string]string{
 	"open": "open", "release": "any", "list": config.WorkspaceOpRead, "status": config.WorkspaceOpRead,
 	"exec": config.WorkspaceOpExec, "read": config.WorkspaceOpRead, "glob": config.WorkspaceOpRead, "grep": config.WorkspaceOpRead,
 	"write": config.WorkspaceOpWrite, "edit": config.WorkspaceOpWrite,
+	// A cell runs code as a command does (RFC GW §5.7: grants exec).
+	"run_cell": config.WorkspaceOpExec, "reset_kernel": config.WorkspaceOpExec,
 }
 
 type workspaceInput struct {
@@ -130,6 +141,8 @@ type workspaceInput struct {
 	After           int    `json:"-A"`
 	Before          int    `json:"-B"`
 	Context         int    `json:"-C"`
+	Code            string `json:"code"`
+	Kernel          string `json:"kernel"`
 }
 
 // workspaceRefusal is a failure the model sees: a class and a detail.
@@ -207,6 +220,10 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return workspaceOK(out), nil
 	case "exec":
 		return w.exec(ctx, row, in), nil
+	case "run_cell":
+		return w.runCell(ctx, row, in), nil
+	case "reset_kernel":
+		return w.resetKernel(ctx, row, in), nil
 	}
 	return w.fileOp(ctx, row, in), nil
 }
@@ -307,7 +324,9 @@ func (w *Workspace) list(ctx context.Context, o lifecycle.Owner) tools.Result {
 	return res
 }
 
-func (w *Workspace) exec(ctx context.Context, row store.WorkspaceRow, in workspaceInput) tools.Result {
+// timeout is a command's or a cell's timeout: timeout_s within the
+// operator's ceiling, else the operator's default.
+func (w *Workspace) timeout(in workspaceInput) (time.Duration, *tools.Result) {
 	def, ceiling := w.ExecDefault, w.ExecMax
 	if def <= 0 {
 		def = config.DefaultWorkspaceExecTimeoutS * time.Second
@@ -320,7 +339,16 @@ func (w *Workspace) exec(ctx context.Context, row store.WorkspaceRow, in workspa
 		timeout = time.Duration(in.TimeoutS) * time.Second
 	}
 	if in.TimeoutS < 0 || timeout > ceiling {
-		return workspaceRefusal("invalid_argument", fmt.Sprintf("timeout_s must be from 1 to %d", int(ceiling/time.Second)))
+		r := workspaceRefusal("invalid_argument", fmt.Sprintf("timeout_s must be from 1 to %d", int(ceiling/time.Second)))
+		return 0, &r
+	}
+	return timeout, nil
+}
+
+func (w *Workspace) exec(ctx context.Context, row store.WorkspaceRow, in workspaceInput) tools.Result {
+	timeout, bad := w.timeout(in)
+	if bad != nil {
+		return *bad
 	}
 	if strings.TrimSpace(in.Command) == "" {
 		return workspaceRefusal("invalid_argument", "exec needs command")
