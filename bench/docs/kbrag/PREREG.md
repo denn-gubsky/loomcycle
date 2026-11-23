@@ -479,3 +479,39 @@ failed row stays as attempt 1 and the retry pass reruns it; the embedder answere
 08:09. The same driver is started again for `waves`, `known` and the retry passes (a third
 window, same precautions; `p7` is already complete and is not rerun). Tenant spend increase
 so far $2.68. Nothing else changes.
+
+## Amendment 5 — 2026-11-23 12:57 UTC, Study C, after the analysis (post-hoc, changes no verdict)
+
+Study C only, written after `analyze.py` produced its result (11:46 UTC). It records what
+happened and changes no verdict.
+
+**The check failed.** Instrument check 1 (same corpus) failed by the letter. `rag-ext`
+indexed 652 documents and the tenant's `query_documents` listing, less `SourceStub`,
+`SyncReport` and `Annotation`, held 653 (0 indexed only, 1 listed only). As pre-registered,
+this voids H3 and H4, and `analyze.py` reports both as void.
+
+**Why.** The one extra document is `15443a640b2228b0056a975a5e336d84`, which the operator
+identified as the tenant's housekeeping document "Deployment Context" at
+`/memory/tenant_root`. It existed before ingestion, it is untyped, and it is not a
+ConditionalQA page. Amendment 0 lists the operational types the check drops, and this
+document has none, so the filter kept it. The failure is a defect of the check's filter. It
+is not a difference in the pages the arms searched.
+
+**What was verified, from the study's files only (no server call):**
+- The annotation smoke at 2026-11-22 20:42 UTC already lists the document. It was skipped as `entity_or_memory_tree`, as it was again on every annotation pass. At that point the tenant held only the smoke pages, so the document predates the bulk ingestion.
+- The document id appears in none of the 4,000 run rows (all arms, all reps): no citation and no answer text.
+- All 20,000 hits of `rag-lc`'s 1,000 searches map to ConditionalQA sections, so none is this document.
+- No `kb` answer cites it.
+- What cannot be verified: whether a `kb` sub-search saw it. `kb/ask` cannot be restricted, and its internal search results are not recorded.
+- Check 2's denominator (653) also included the document. Without it, coverage would be 652 of 652.
+
+**The verdict stays void.** The confidence intervals are reported as descriptive results
+only: kb − rag-lc −0.0419 [−0.0762, −0.0072] and kb − rag-ext −0.0469 [−0.0798,
+−0.0137]. Each would have read "does not hold" had the check passed. Neither the verdict
+nor the analysis is recomputed.
+
+**What a rerun of the check would need.** The filter must also drop the tenant's untyped
+system documents under `/memory`, as Study D's Amendment 2 §4 already does for its corpus.
+That change is not made for this study.
+
+Nothing else changes.
