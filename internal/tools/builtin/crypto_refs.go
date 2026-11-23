@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
-	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -271,13 +270,14 @@ func (c refStores) readRef(ctx context.Context, r dataRef, max int) ([]byte, too
 		if err != nil {
 			return nil, errPermission(err.Error(), "Use a scope in this agent's memory_scopes."), false
 		}
-		entry, err := m.backend(ctx).Get(ctx, scope, scopeID, r.key)
-		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
-				return nil, errNotFound(fmt.Sprintf("%s is not set", r.raw), ""), false
-			}
-			return nil, errFrom(fmt.Sprintf("reading %s failed", r.raw), err), false
+		// Memory's own get, with its document read rules: a row the caller
+		// may not read is refused, or reads as missing, as op=get answers.
+		entry, found, res, ok := m.gatedGet(ctx, scope, scopeID, r.key)
+		if !ok {
+			return nil, res, false
+		}
+		if !found {
+			return nil, errNotFound(fmt.Sprintf("%s is not set", r.raw), ""), false
 		}
 		// A JSON string is its text; any other JSON value is read as written.
 		b := []byte(entry.Value)

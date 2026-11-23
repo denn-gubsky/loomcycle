@@ -1246,27 +1246,12 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 	if in.Key == "" {
 		return errValidation("get: missing required field: key (or path)", "Pass key, or the path it was registered at."), nil
 	}
-	if res, refused := m.gateTenantDocumentGet(ctx, scope, scopeID, in.Key); refused {
+	entry, found, res, ok := m.gatedGet(ctx, scope, scopeID, in.Key)
+	if !ok {
 		return res, nil
 	}
-	// A row of a document the caller's access-control set denies it reading
-	// reads as a missing one, so the answer does not say the row exists: the
-	// rule Document op=search and this tool's search apply, by key, so a fact
-	// homed in a chunk and a derived unit go with the prose.
-	held, err := unreadableDocumentKeys(ctx, m.hitReader(), scope, scopeID, []string{in.Key})
-	if err != nil {
-		return errFrom("get: access control: "+err.Error(), err), nil
-	}
-	if held[in.Key] {
+	if !found {
 		return okJSON(map[string]any{"value": nil, "expires_at": nil})
-	}
-	entry, err := m.backend(ctx).Get(ctx, scope, scopeID, in.Key)
-	if err != nil {
-		var nf *store.ErrNotFound
-		if errors.As(err, &nf) {
-			return okJSON(map[string]any{"value": nil, "expires_at": nil})
-		}
-		return errFrom(fmt.Sprintf("get: %s", err), err), nil
 	}
 	out := map[string]any{
 		"value":      entry.Value,
@@ -1276,6 +1261,37 @@ func (m *Memory) execGet(ctx context.Context, scope store.MemoryScope, scopeID s
 		out["provenance"] = m.provenanceView(ctx, scope, scopeID, in.Key)
 	}
 	return okJSON(out)
+}
+
+// gatedGet reads one key under the rules op=get applies, and is the only read by
+// key that may hand a row out: op=get and every data reference (Crypto's and
+// Calc's memory: from) go through it, so the rules cannot drift apart again.
+// A tenant document row needs the tenant document read grant (refused, ok
+// false). A row of a document the caller's access-control set denies it
+// reading is reported as missing (found false), so the answer does not say the
+// row exists: the rule Document op=search and this tool's search apply, by
+// key, so a fact homed in a chunk and a derived unit go with the prose. ok
+// false carries the refusal or the error to return.
+func (m *Memory) gatedGet(ctx context.Context, scope store.MemoryScope, scopeID, key string) (entry store.MemoryEntry, found bool, res tools.Result, ok bool) {
+	if res, refused := m.gateTenantDocumentGet(ctx, scope, scopeID, key); refused {
+		return entry, false, res, false
+	}
+	held, err := unreadableDocumentKeys(ctx, m.hitReader(), scope, scopeID, []string{key})
+	if err != nil {
+		return entry, false, errFrom("get: access control: "+err.Error(), err), false
+	}
+	if held[key] {
+		return entry, false, tools.Result{}, true
+	}
+	entry, err = m.backend(ctx).Get(ctx, scope, scopeID, key)
+	if err != nil {
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return entry, false, tools.Result{}, true
+		}
+		return entry, false, errFrom(fmt.Sprintf("get: %s", err), err), false
+	}
+	return entry, true, tools.Result{}, true
 }
 
 // provenanceView renders a fact's recorded origin plus whether that origin is
