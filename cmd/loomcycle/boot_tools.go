@@ -515,6 +515,10 @@ func (b *boot) buildToolsDocument() {
 	// Document through these tools' own scope checks.
 	cryptoTool.Memory = memoryTool
 	cryptoTool.Docs = documentTool
+	// RFC GY P3b — a Calc `from` / `to` reference reaches the same stores the
+	// same way.
+	b.calcTool.Memory = memoryTool
+	b.calcTool.Docs = documentTool
 	// RFC FF: File op=import builds a document through the Document tool.
 	fileTool.Docs = documentTool
 	// RFC FI P3: Memory search / recall resolve their document filters

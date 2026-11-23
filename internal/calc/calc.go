@@ -47,8 +47,20 @@ type Request struct {
 	Now func() time.Time `json:"-"`
 	// Gate is the process-wide bound on heavy matrix operations (see
 	// NewGate): one built at boot and shared by every call, so a burst of
-	// large solves cannot take every core. Nil means no gating.
+	// large solves cannot take every core. Nil means no gating. Loading Data
+	// takes one slot too.
 	Gate *semaphore.Weighted `json:"-"`
+	// Data binds names to data read by reference (the Calc tool's `from`),
+	// after Vars: a table from CSV, TSV or the first Markdown table, or what
+	// JSON holds. It is data, never expression text. All sources together
+	// are held to MaxRefSources, MaxRefBytes and MaxRefCells.
+	Data map[string]Data `json:"-"`
+	// Write, when set (json, markdown or csv), renders the whole result in
+	// that format into Response.Written, up to MaxRefBytes, for the caller
+	// to store (the tool's `to`). The response then carries only the
+	// result's type, exactness and shape: no Result, Text, Fraction or
+	// Assigned.
+	Write string `json:"-"`
 }
 
 // NewGate returns the gate for Request.Gate: one slot per core the Go
@@ -89,6 +101,9 @@ type Response struct {
 	// Truncated is set when the rendered output passed MaxOutputBytes: Text
 	// is cut there and the values that did not fit are null.
 	Truncated bool `json:"truncated,omitempty"`
+	// Written is the whole result rendered in Request.Write's format, set
+	// only when Write is.
+	Written []byte `json:"-"`
 }
 
 // Eval evaluates req. It returns within MaxWall, sooner if ctx ends.
@@ -121,6 +136,9 @@ func evalWithin(ctx context.Context, req Request, wall time.Duration) (Response,
 	if !validFormat(req.Format) {
 		return Response{}, errf(codeBadRequest, -1, "format %q is not json, markdown or csv", req.Format)
 	}
+	if req.Write != "" && !validFormat(req.Write) {
+		return Response{}, errf(codeBadRequest, -1, "write format %q is not json, markdown or csv", req.Write)
+	}
 	ctx, cancel := context.WithTimeout(ctx, wall)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -145,6 +163,9 @@ func evalWithin(ctx context.Context, req Request, wall time.Duration) (Response,
 	if err := decodeVars(req.Vars, e.global.vars); err != nil {
 		return Response{}, err
 	}
+	if err := e.loadData(req.Data, req.Vars); err != nil {
+		return Response{}, err
+	}
 	var last val
 	for _, s := range stmts {
 		v, err := e.eval(s, e.global)
@@ -152,6 +173,9 @@ func evalWithin(ctx context.Context, req Request, wall time.Duration) (Response,
 			return Response{}, err
 		}
 		last = v
+	}
+	if req.Write != "" {
+		return written(last, digits, req.Write)
 	}
 	return e.respond(last, digits, req.Format), nil
 }
@@ -273,11 +297,11 @@ func fromJSON(name string, x any, depth int) (val, *Error) {
 		return x, nil
 	case jsonObj:
 		if depth == 0 {
-			return tableFromObject(name, x)
+			return tableFromObject(name, x, MaxTableCells)
 		}
 	case []any:
 		if depth == 0 && allRecords(x) {
-			return tableFromRecords(name, x)
+			return tableFromRecords(name, x, MaxTableCells)
 		}
 		if len(x) > MaxListLen {
 			return nil, errf(codeListTooLong, -1, "var %s has %d elements; the limit is %d", name, len(x), MaxListLen)
