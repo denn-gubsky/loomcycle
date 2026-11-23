@@ -1,0 +1,78 @@
+# Dockerfile.workspace — the default session image of a workspace worker on
+# the container engine (RFC GW §4.3, §4.4, D27). It is the image a
+# workspace's commands run in, not the worker's: the worker supervisor
+# (`loomcycle worker --role workspace` with LOOMCYCLE_WORKSPACE_ENGINE=container)
+# starts one container of it per workspace, with a read-only root, every
+# capability dropped, no network, and the workspace mounted at /workspace.
+# So it carries no loomcycle binary and no token, and nothing in it is a
+# service: the engine runs `sleep infinity` under --init and execs commands.
+#
+# What a general workspace needs without asking for a toolchain (D27):
+# Python 3 with pip and venv, Node.js with npm, and git for local work. Then
+# the helper programs a script over a document reaches for: poppler-utils,
+# ffmpeg, DjVuLibre and Typst (the same Typst pin as Dockerfile.worker), with
+# Noto Sans, Noto Sans Mono and Noto Serif. merman is left out: it draws
+# Mermaid for the conversion worker's render, which runs in the supervisor's
+# conversion child (D34), never in a session.
+#
+# The fixed library set (RFC GW §4.4), so the usual pass needs no network:
+# for Python numpy, pandas, matplotlib, openpyxl, python-docx, pypdf,
+# Pillow, lxml and PyYAML; for Node express (a web server) and esbuild (a
+# bundler). Every one comes from Debian's archive, so the build downloads
+# nothing from PyPI or npm and the whole set is pinned by the base digest
+# and Debian's signatures (RFC GW P3 plan, O11). Anything else an agent
+# installs goes into its workspace (a venv, node_modules) through egress
+# routes (P4), never into this image.
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+
+# Typst is a pinned release, its archive checked against the sha256 GitHub
+# publishes for it, one per architecture (as in Dockerfile.worker).
+ARG TARGETARCH
+ARG TYPST_VERSION=0.15.1
+ARG TYPST_SHA256_AMD64=a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c
+ARG TYPST_SHA256_ARM64=5aa8d74a3d906e60ea12a66ac2f37f8eef1b14cbad7182a745e393a10c23dcee
+
+RUN set -eux; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates curl xz-utils git \
+        python3 python3-pip python3-venv nodejs npm \
+        poppler-utils ffmpeg djvulibre-bin fonts-noto-core fonts-noto-mono \
+        python3-numpy python3-pandas python3-matplotlib python3-openpyxl python3-docx \
+        python3-pypdf python3-pil python3-lxml python3-yaml \
+        node-express esbuild; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) triple=x86_64-unknown-linux-musl; sum="${TYPST_SHA256_AMD64}" ;; \
+        arm64) triple=aarch64-unknown-linux-musl; sum="${TYPST_SHA256_ARM64}" ;; \
+        *) echo "no Typst pin for ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/typst.tar.xz "https://github.com/typst/typst/releases/download/v${TYPST_VERSION}/typst-${triple}.tar.xz"; \
+    echo "${sum}  /tmp/typst.tar.xz" | sha256sum -c -; \
+    tar -xJf /tmp/typst.tar.xz -C /tmp; \
+    install -m 0755 "/tmp/typst-${triple}/typst" /usr/local/bin/typst; \
+    install -d /usr/share/doc/typst; \
+    install -m 0644 "/tmp/typst-${triple}/LICENSE" /usr/share/doc/typst/LICENSE; \
+    rm -rf /tmp/typst.tar.xz "/tmp/typst-${triple}"; \
+    typst --version; \
+    # Keep only the font families a PDF names (as in Dockerfile.worker).
+    find /usr/share/fonts/truetype/noto -type f ! -name 'NotoSans-*' ! -name 'NotoSansMono-*' ! -name 'NotoSerif-*' -delete; \
+    command -v python3 pip3 node npm esbuild git pdftoppm ffmpeg djvutxt ddjvu; \
+    # curl stays: djvulibre-bin depends on it (see Dockerfile.worker).
+    apt-get purge -y --auto-remove xz-utils; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    groupadd --gid 65532 nonroot; \
+    useradd --uid 65532 --gid 65532 --no-create-home --home-dir /workspace \
+        --shell /bin/sh nonroot; \
+    install -d -m 0755 /workspace
+
+# matplotlib draws without a display, and its config and font cache go to
+# the workspace: the root is read-only in a session, and HOME is /workspace.
+ENV MPLBACKEND=Agg \
+    HOME=/workspace
+
+# The engine runs a session as the worker supervisor's own uid; this is
+# the default for running the image by hand.
+USER 65532:65532
+WORKDIR /workspace
+CMD ["sleep", "infinity"]
