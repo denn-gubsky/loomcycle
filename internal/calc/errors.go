@@ -58,6 +58,7 @@ const (
 	codeDimension      errCode = "dimension"
 	codeNoConvergence  errCode = "no_convergence"
 	codeColumn         errCode = "column"
+	codeBadData        errCode = "bad_data"
 )
 
 var allCodes = [...]errCode{
@@ -68,6 +69,7 @@ var allCodes = [...]errCode{
 	codeCanceled, codeListTooLong, codeTooDeep, codeEmptyStatement,
 	codeBadDate,
 	codeUnknownUnit, codeDimension, codeNoConvergence, codeColumn,
+	codeBadData,
 }
 
 // ErrorCodes returns every code an Error may carry, sorted.

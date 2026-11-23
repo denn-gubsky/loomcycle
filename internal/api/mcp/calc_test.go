@@ -126,6 +126,33 @@ func TestCalcMCP_DescriptionPointsAtTheContextTool(t *testing.T) {
 	}
 }
 
+// TestCalcMCP_DescriptionOffersNoDataByReference — `from` and `to` need a run,
+// so the meta-tool, which has none and refuses them, offers them neither in
+// its description nor in its schema, while the in-run tool offers both. Fails
+// if the builtin's sentence moves away from builtin.CalcDataByReference.
+func TestCalcMCP_DescriptionOffersNoDataByReference(t *testing.T) {
+	inRun := (&builtin.Calc{}).Description()
+	if !strings.Contains(inRun, ", "+builtin.CalcDataByReference) {
+		t.Fatalf("the Calc builtin's description no longer contains %q", builtin.CalcDataByReference)
+	}
+	desc := calcToolDescriptor().Description
+	if strings.Contains(desc, "`from`") || strings.Contains(desc, "`to`") {
+		t.Errorf("the calc meta-tool offers data by reference: %s", desc)
+	}
+	var schema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(calcToolDescriptor().InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema.Properties["expr"] == nil || schema.Properties["from"] != nil || schema.Properties["to"] != nil {
+		t.Errorf("the calc meta-tool's schema properties: %v", schema.Properties)
+	}
+	if !strings.Contains(string((&builtin.Calc{}).InputSchema()), `"from"`) {
+		t.Error("the in-run Calc schema lost from")
+	}
+}
+
 // TestCalcMCP_RefusalPointsAtTheContextTool — a refusal with no hint of its
 // own names `Context op=help topic=Calc/errors` as its next step; over MCP it
 // must name the `context` meta-tool. The refusal comes from the real builtin,
