@@ -201,7 +201,7 @@ func TestRead_NamedVolumeResolvesUnderItsRootAndRejectsEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res.IsError || !strings.Contains(res.Text, "escapes sandbox") {
+	if !res.IsError || !strings.Contains(res.Text, "escapes the volume") {
 		t.Fatalf("`..` escape from volume a must be rejected, got Text=%q IsError=%v", res.Text, res.IsError)
 	}
 }

@@ -12,7 +12,11 @@ import (
 
 func evalData(t *testing.T, expr string, data map[string]Data) (Response, *Error) {
 	t.Helper()
-	return Eval(context.Background(), Request{Expr: expr, Data: data})
+	// These push up to MaxRefCells cells through the parsers; under -race on a
+	// loaded CI runner that can pass the 2 s call limit, so the wall is a
+	// minute here, as for the other big-input tests. The tests of the limit
+	// itself call evalWithin with their own short wall.
+	return evalWithin(context.Background(), Request{Expr: expr, Data: data}, time.Minute)
 }
 
 func mustData(t *testing.T, expr string, data map[string]Data) Response {

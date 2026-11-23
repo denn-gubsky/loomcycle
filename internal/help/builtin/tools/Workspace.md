@@ -13,7 +13,8 @@ Node. For files you keep, use your volumes and the Read, Write and Edit tools.
 ## What you may do
 
 Your agent's grant decides which operations work: `open` needs the grant to
-open workspaces; `exec`, `run_cell` and `reset_kernel` need `exec`; `write`
+open workspaces; `exec`, `run_cell`, `reset_kernel`, `start`, `stop` and
+`logs` need `exec`; `write`
 and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need
 `read`; `share` and `unshare` need the grant to share. Anything else is
 refused with `not_granted`. Context op=self shows your grant.
@@ -45,6 +46,9 @@ up to 1 MiB.
 | `exec` | run a shell command in it | `name`, `command`, `cwd`, `timeout_s` |
 | `run_cell` | run Python or Node code in an interpreter that keeps its variables | `name`, `code`, `kernel`, `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
+| `start` | run a command that keeps running after the call (a server); returns its id | `name`, `command`, `cwd`, `port` |
+| `stop` | end a server and what it started | `name`, `server` |
+| `logs` | a server's latest output, or the list of servers | `name`, `server`, `tail_bytes` |
 | `read` | a file's text | `name`, `path`, `offset`, `limit`, `line_numbers` |
 | `view` | look at a picture (PNG, JPEG, GIF, WebP) | `name`, `path` |
 | `write` | create or replace a file whole | `name`, `path`, `content` |

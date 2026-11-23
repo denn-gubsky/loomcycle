@@ -629,3 +629,45 @@ func TestProxy_RefusesAPathAnUpstreamCouldReadAsAnotherPath(t *testing.T) {
 		_ = readAll(t, resp)
 	}
 }
+
+// npm asks for a scoped package as @scope%2fname in one segment. The owner
+// ruled (O15, 2026-11-23) that this exact form passes: %2f only in the FIRST
+// segment, only when it starts with @, and the scope and the name each pass
+// the segment rules once split. Every other encoded slash stays refused.
+func TestProxy_PassesAnNpmScopedNameOnlyInItsOwnForm(t *testing.T) {
+	up := newUpstream(t, nil)
+	p, _ := newTestProxy(t, nil, nil)
+	g := grantOf(Route{Name: "npm", URL: up.routeURL("")})
+	for _, c := range []struct{ path, want string }{
+		{"@types%2fnode", "/@types%2fnode"},
+		{"@types%2Fnode", "/@types%2Fnode"},
+		{"@babel%2fcore/-/core-7.0.0.tgz", "/@babel%2fcore/-/core-7.0.0.tgz"},
+	} {
+		resp, err := do(t, p, g, Request{Route: "npm", Path: c.path})
+		if err != nil {
+			t.Errorf("%q: %v", c.path, err)
+			continue
+		}
+		_ = readAll(t, resp)
+		if got := up.last().RequestURI; got != c.want {
+			t.Errorf("%q reached upstream as %q, want %q", c.path, got, c.want)
+		}
+	}
+	hits := up.hits.Load()
+	for _, path := range []string{
+		"a/@types%2fnode", "x/%2fy", "@types/node%2fx", // a later segment
+		"types%2fnode", "a%2fb", "%2f@x", // a first segment not starting with @
+		"@a%2f..", "@a%2F..", "@%2f", "@%2fnode", "@a%2f", "@a%2f.", "@..%2fx", "@a%2fb%2fc", "@a%2f%2e%2e",
+		"@a%5cb", "@a%2f%252e",
+	} {
+		_, err := do(t, p, g, Request{Route: "npm", Path: path})
+		if err == nil {
+			t.Errorf("%q: no refusal", path)
+			continue
+		}
+		wantRefusal(t, err, http.StatusForbidden)
+	}
+	if up.hits.Load() != hits {
+		t.Fatalf("a refused path reached upstream")
+	}
+}
