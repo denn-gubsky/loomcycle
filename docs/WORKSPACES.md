@@ -138,7 +138,7 @@ agents:
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec` needs `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop` and `logs` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## The tool
 
@@ -155,6 +155,9 @@ One tool, `Workspace`, with an `op`:
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
 | `checkpoint`, `checkpoints`, `restore`, `delete_checkpoint`, `fork` | record the files, put them back, open a copy; see "Checkpoints and forks" | `name`, `label`, `checkpoint`, `as` |
 | `view` | return a picture in it to the model as an image | `name`, `path` |
+| `start` | run a command that keeps running after the call, a server (see Servers) | `name`, `command`, `cwd`, `port` |
+| `stop` | end a server and what it started | `name`, `server` |
+| `logs` | a server's latest output, or the list of servers | `name`, `server`, `tail_bytes` |
 | `read`, `write`, `edit`, `glob`, `grep` | the file tools' operations, relative to the workspace | as the Read, Write, Edit, Glob and Grep tools, without `volume` |
 
 `..`, an absolute path elsewhere and a symlink out of the workspace are refused, on the worker. An argument an op does not take is refused.
@@ -231,6 +234,25 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **How the worker records one.** It probes its disk at start and picks the first mechanism that works, reported as the label `checkpoint:<mechanism>` and in every answer: `clone` (a whole-folder clone on APFS, macOS), `reflink` (each file shares its blocks: xfs with reflink, btrfs, bcachefs), else `copy` (each file copied; a checkpoint or a fork then takes its full size on disk and seconds for a large tree). Never hard links. A worker that serves fan-outs wants a disk with reflinks. Links are copied as links, never followed; a pipe, a socket or a device is left out and named in `skipped`.
 - **Where checkpoints live.** In the worker's root, beside the workspaces (`.loomcycle-checkpoints/<workspace id>/`), never inside one: no command or file op reaches them. They go with their workspace, and a worker's start removes what an interrupted checkpoint left.
 - **The `host` engine has no fixed path.** A fork's Python environment would still name the original's folder, so its `pip` would install into the original. On `host` the worker rewrites the paths in each environment's `pyvenv.cfg` and the text files of its `bin/`, and names them in the answer's `rewritten`. The `container` engine mounts every workspace at `/workspace`, so nothing needs it.
+
+## Servers
+
+`start` runs a command that keeps running after the call: a web server, a file watcher, anything that does not end by itself (RFC GW §5.3). `exec` stays what it is, one command and one result. Servers need the `exec` grant, as commands do; a share never reaches them.
+
+```json
+{"op": "start", "name": "site", "command": "python3 -m http.server 8000", "port": 8000}
+```
+```json
+{"server": "srv-1", "command": "python3 -m http.server 8000", "port": 8000, "running": true, "started_at": "2026-11-23T20:00:00Z"}
+```
+
+- **The answer.** `server` is the id `stop` and `logs` take (`srv-1`, `srv-2`, ...). The call waits half a second: a server that ended in that time (a typo, a port in use) is a failed call carrying its output.
+- **`stop {name, server}`** kills the server and every process it started (its process group); `stopped` is false when it had ended by itself.
+- **`logs {name, server?, tail_bytes?}`** returns a server's latest output, standard output and standard error in the order written (default 64 KiB, at most 256 KiB), or, without `server`, lists the workspace's servers with their state.
+- **Limits.** At most 4 servers run in one workspace at once; the latest 256 KiB of each one's output is kept. A server is a command for the quota: `start` is refused with `workspace_over_quota` while the workspace is marked full.
+- **The command list.** A worker whose operator lists its commands (`LOOMCYCLE_WORKSPACE_COMMANDS`) holds `start` to the list exactly as `exec`: a command that `exec` refuses, `start` refuses.
+- **When it ends.** With `stop`, with the workspace's release, when the owning run ends, when the worker removes the workspace at attach (released or marked lost while it was away), and when the worker stops. Nothing of a server survives a worker restart or a snapshot.
+- **Who reaches its port.** In a `container` session no one but the session: the session has no network, and a server listens on its own loopback. Pages served to a user, and requests from an agent, come with exposure (RFC GW P9, later PRs). On the `host` engine every process of the worker shares one loopback, so a port is not isolated from the worker's other workspaces; the host engine is for a trusted single-tenant install.
 
 ## Looking at a picture
 

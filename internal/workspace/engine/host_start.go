@@ -19,15 +19,17 @@ const stderrTail = 4 << 10
 
 // Start starts req.Argv as a child of the worker in its own process group,
 // with the scrubbed environment plus req.Env. The operator's command list
-// does not apply: the worker starts only the kernel drivers it carries, and
-// a kernel runs code as exec runs commands, so it is the same grant.
+// does not apply to Argv: the worker starts only the kernel drivers it
+// carries, and a kernel runs code as exec runs commands, so it is the same
+// grant. It applies to req.Command, a server's command line, as to Exec.
 func (h *Host) Start(ctx context.Context, req StartRequest) (Process, error) {
-	if len(req.Argv) == 0 {
-		return nil, fmt.Errorf("%w: an empty program", ErrRefused)
+	argv, err := startArgv(h.Commands, req)
+	if err != nil {
+		return nil, err
 	}
 	// Not CommandContext: the program outlives the call that started it.
-	// #nosec G204 -- the worker names the program (a kernel driver it carries and the workspace's interpreter); the agent's code reaches it as data on stdin
-	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
+	// #nosec G204 -- the worker names the program (a kernel driver it carries and the workspace's interpreter, or /bin/sh for a server's command, checked against the operator's list as exec's is)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = req.Dir
 	cmd.Env = append(hostenv.Scrubbed(nil), req.Env...)
 	stdin, err := cmd.StdinPipe()
@@ -41,7 +43,7 @@ func (h *Host) Start(ctx context.Context, req StartRequest) (Process, error) {
 	tail := &tailBuffer{max: stderrTail}
 	cmd.Stderr = tail
 	if err := procgroup.StartInOwnGroup(cmd); err != nil {
-		return nil, fmt.Errorf("starting %s: %w", req.Argv[0], err)
+		return nil, fmt.Errorf("starting %s: %w", argv[0], err)
 	}
 	p := &hostProcess{cmd: cmd, stdin: stdin, stdout: stdout, tail: tail, done: make(chan struct{})}
 	safego.Go(context.WithoutCancel(ctx), "workspace.engine.host-wait", func() {

@@ -93,6 +93,7 @@ var KnownWorkerClasses = map[string]bool{
 	ClassHelperMissing: true, ClassConversionCrashed: true, ClassConversionUnsupported: true, ClassConversionFailed: true,
 	ClassConversionBusy: true, ClassSourceChanged: true, ClassUnitTooLarge: true, ClassUnpackRefused: true,
 	ClassKernelUnavailable: true, ClassCheckpointLimit: true, ClassCheckpointNotFound: true,
+	ClassServerLimit: true, ClassServerNotFound: true,
 }
 
 // The engines a worker may run commands under, weakest first.

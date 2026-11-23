@@ -167,8 +167,10 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 	case workspace.OpOpen:
 		return w.open(id, dir, start.GetArgs())
 	case workspace.OpRemove:
-		// Its kernels first: a kernel is a process working in the folder.
+		// Its kernels and servers first: each is a process working in the
+		// folder.
 		w.kernels.Drop(id)
+		w.servers.Drop(id)
 		if err := w.engine.Forget(ctx, id); err != nil {
 			return refuse(workspace.ClassFailed, "ending the workspace's session: %v", err)
 		}
@@ -210,6 +212,14 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 		}
 		// A kernel that failed to start reports its stderr, which can name
 		// the drivers' folder in the worker's root.
+		return hidePaths(a, false, real, dir, w.opt.Root)
+	case workspace.OpServerStart, workspace.OpServerStop, workspace.OpServerLogs:
+		dir, real, a := w.workspaceDir(id)
+		if a.class == "" {
+			a = w.serverOp(ctx, id, real, start.GetOp(), start.GetArgs())
+		}
+		// A server's output is returned as it is; only a refusal's detail
+		// is the runtime's text.
 		return hidePaths(a, false, real, dir, w.opt.Root)
 	case workspace.OpMDSplice:
 		dir, real, a := w.workspaceDir(id)

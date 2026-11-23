@@ -48,6 +48,7 @@ func (w *Workspace) Description() string {
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
+		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers. " +
 		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write) and unshare (`name`, `with`). " +
 		"checkpoint (`name`, optional `label`) records the workspace's files and answers an id; checkpoints lists them; restore (`name`, `checkpoint`) puts the files back and stops its interpreters and commands; delete_checkpoint frees one; fork (`name`, `as`, optional `checkpoint`) opens a second workspace of yours as a copy. Checkpoints count against the workspace's disk quota. " +
 		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, view, glob and grep on it, and write and edit with read_write; never exec or run_cell. " +
@@ -61,13 +62,16 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","checkpoint","checkpoints","restore","delete_checkpoint","fork","view"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view","start","stop","logs","checkpoint","checkpoints","restore","delete_checkpoint","fork"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
 			"toolchain":        {"type": "string", "enum": ["python","node"], "description": "open: the toolchain the worker must have. Omit for a general workspace, on a worker with both."},
-			"command":          {"type": "string", "description": "exec: a shell command line, run with /bin/sh -c."},
-			"cwd":              {"type": "string", "description": "exec: the directory to start in, relative to the workspace (default its root)."},
+			"command":          {"type": "string", "description": "exec, start: a shell command line, run with /bin/sh -c."},
+			"cwd":              {"type": "string", "description": "exec, start: the directory to start in, relative to the workspace (default its root)."},
+			"port":             {"type": "integer", "minimum": 1, "maximum": 65535, "description": "start: the port the server listens on, recorded with it."},
+			"server":           {"type": "string", "description": "stop, logs: the server's id, as start returned it (srv-1, ...)."},
+			"tail_bytes":       {"type": "integer", "minimum": 1, "description": "logs with server: how much of its latest output to return (default 65536, at most 262144)."},
 			"timeout_s":        {"type": "integer", "minimum": 1, "description": "exec: seconds before the command and everything it started are killed; run_cell: seconds before the cell is interrupted. Default and ceiling are the operator's."},
 			"code":             {"type": "string", "description": "run_cell: the code to run, up to 1 MiB. The last expression's value is returned."},
 			"kernel":           {"type": "string", "enum": ["python","node"], "description": "run_cell, reset_kernel: the interpreter (default python)."},
@@ -119,6 +123,9 @@ var workspaceOpArgs = map[string][]string{
 	"delete_checkpoint": {"name", "checkpoint"},
 	"fork":              {"name", "as", "checkpoint"},
 	"view":              {"name", "path"},
+	"start":             {"name", "command", "cwd", "port"},
+	"stop":              {"name", "server"},
+	"logs":              {"name", "server", "tail_bytes"},
 	// connect is taken only to be refused by name: it arrives with servers
 	// (RFC GW P9).
 	"share":   {"name", "with", "access", "connect"},
@@ -157,6 +164,9 @@ var workspaceOpGrant = map[string]string{
 	"write": config.WorkspaceOpWrite, "edit": config.WorkspaceOpWrite,
 	// A cell runs code as a command does (RFC GW §5.7: grants exec).
 	"run_cell": config.WorkspaceOpExec, "reset_kernel": config.WorkspaceOpExec,
+	// A server is a command that keeps running (RFC GW §7: exec covers
+	// servers); its output is a command's, so reading it is exec's too.
+	"start": config.WorkspaceOpExec, "stop": config.WorkspaceOpExec, "logs": config.WorkspaceOpExec,
 	// share needs the share grant and what it hands over: checked in share.
 	"share": "share", "unshare": "share",
 	// A checkpoint and a restore change what the workspace holds; a fork
@@ -197,6 +207,9 @@ type workspaceInput struct {
 	Label           string `json:"label"`
 	Checkpoint      string `json:"checkpoint"`
 	As              string `json:"as"`
+	Port            int    `json:"port"`
+	Server          string `json:"server"`
+	TailBytes       int    `json:"tail_bytes"`
 }
 
 // workspaceRefusal is a failure the model sees: a class and a detail.
@@ -307,6 +320,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return w.fork(ctx, owner, pol, row, in), nil
 	case "view":
 		return w.view(ctx, owner, in), nil
+	case "start", "stop", "logs":
+		return w.serverOp(ctx, row, in), nil
 	}
 	return w.fileOp(ctx, row, in), nil
 }
