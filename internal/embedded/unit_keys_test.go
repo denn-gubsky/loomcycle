@@ -27,6 +27,7 @@ var unitTopLevelKeys = map[string]bool{
 	"mcp_servers": true, // sandbox: the sidecar's MCP endpoint its agents call
 	"metrics":     true, // server: the process sampler
 	"auth":        true, // only the sub-keys in unitAuthKeys
+	"workspace":   true, // only workspace.egress.routes, see unitWorkspaceProblems
 }
 
 // unitAuthKeys are the `auth:` sub-keys a unit may set, each with the one
@@ -71,10 +72,86 @@ func TestUnits_EveryUnitSetsOnlyKeysAPresetMayCarry(t *testing.T) {
 				}
 			}
 		}
+		if node, ok := tree["workspace"]; ok {
+			bad = append(bad, unitWorkspaceProblems(&node)...)
+		}
 		sort.Strings(bad)
 		if len(bad) > 0 {
 			t.Errorf("%s sets %s: not a key a unit built into the binary may carry (see unitTopLevelKeys before widening)", name, strings.Join(bad, ", "))
 		}
+	}
+}
+
+// unitWorkspaceProblems is what a unit's `workspace:` block may not carry. A
+// unit may declare egress routes (RFC GW §6.3: the `workspace` preset's
+// public registries), each a url and nothing else. Everything else is the
+// operator's: workspace.mode (workspaces at all), the tenant ceiling
+// (egress.tenant_routes, tenant_hosts), limits, and a route's methods and
+// credential, since a route that writes or carries a credential decides
+// where a person's data or secret may go.
+func unitWorkspaceProblems(n *yaml.Node) []string {
+	var ws map[string]yaml.Node
+	if err := n.Decode(&ws); err != nil {
+		return []string{"workspace (not a mapping)"}
+	}
+	var bad []string
+	for key, sub := range ws {
+		if key != "egress" {
+			bad = append(bad, "workspace."+key)
+			continue
+		}
+		var eg map[string]yaml.Node
+		if err := sub.Decode(&eg); err != nil {
+			bad = append(bad, "workspace.egress (not a mapping)")
+			continue
+		}
+		for ekey, routesNode := range eg {
+			if ekey != "routes" {
+				bad = append(bad, "workspace.egress."+ekey)
+				continue
+			}
+			var routes map[string]map[string]any
+			if err := routesNode.Decode(&routes); err != nil {
+				bad = append(bad, "workspace.egress.routes (not a mapping of routes)")
+				continue
+			}
+			for name, r := range routes {
+				for rkey := range r {
+					if rkey != "url" {
+						bad = append(bad, "workspace.egress.routes."+name+"."+rkey)
+					}
+				}
+			}
+		}
+	}
+	return bad
+}
+
+// The workspace check must be able to fail: each thing it refuses is caught,
+// and the preset's shape passes.
+func TestUnits_TheWorkspaceCheckAllowsOnlyRouteURLs(t *testing.T) {
+	var n yaml.Node
+	if err := yaml.Unmarshal([]byte(`
+mode: local
+egress:
+  tenant_routes: true
+  tenant_hosts: [a.example]
+  limits: {max_bytes: 1}
+  routes:
+    ok: {url: "https://a.example/"}
+    crm: {url: "https://b.example/", methods: [POST], credential: "$cred:x", auth: header, header: X-Key}
+`), &n); err != nil {
+		t.Fatal(err)
+	}
+	bad := unitWorkspaceProblems(n.Content[0])
+	sort.Strings(bad)
+	want := []string{
+		"workspace.egress.limits", "workspace.egress.routes.crm.auth", "workspace.egress.routes.crm.credential",
+		"workspace.egress.routes.crm.header", "workspace.egress.routes.crm.methods",
+		"workspace.egress.tenant_hosts", "workspace.egress.tenant_routes", "workspace.mode",
+	}
+	if !reflect.DeepEqual(bad, want) {
+		t.Errorf("refused %v, want %v", bad, want)
 	}
 }
 

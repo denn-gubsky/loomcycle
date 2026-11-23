@@ -163,7 +163,8 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 	// Likewise it may push by its definition while its parent may only fetch:
 	// live it only fetches, and a resume must not hand push back. And it may
 	// write, open and accept the host engine while its parent may only read
-	// and exec, in containers: a resume must not hand the rest back.
+	// and exec, in containers: a resume must not hand the rest back. Of its
+	// routes it holds only the two its parent holds too (RFC GW P4).
 	childShellCreds := config.CredentialNames{"DEPLOY_KEY", "NPM_TOKEN"}
 	recallOn := true
 	def := config.AgentDef{
@@ -174,7 +175,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		CryptoScopes:          []string{"run", "user"},
 		ShellCredentials:      &childShellCreds,
 		GitRemote:             []string{"fetch", "push"},
-		Workspace:             &config.AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true, Engine: "host"},
+		Workspace:             &config.AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true, Egress: []string{"pypi", "crm", "npm"}, Engine: "host"},
 		Compaction:            &config.Compaction{TargetPercentage: &target},
 		// Recall is granted by the setting, not listed in tools, and the
 		// caller's rules deny it: live and resumed must both withhold it.
@@ -198,7 +199,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		Crypto:            tools.CryptoPolicyValue{Scopes: []string{"run"}},
 		ShellCreds:        tools.ShellCredsPolicyValue{Set: true, Names: []string{"GITHUB_TOKEN", "NPM_TOKEN"}},
 		GitRemote:         tools.GitRemotePolicyValue{Fetch: true},
-		Workspace:         tools.WorkspacePolicyValue{Read: true, Exec: true, Engine: "container"},
+		Workspace:         tools.WorkspacePolicyValue{Read: true, Exec: true, Egress: []string{"npm", "pypi"}, Engine: "container"},
 		EphemeralWritable: false, // read-only, which the child keeps
 		Compaction:        &config.Compaction{KeepLastN: &keep},
 		// The parent is the same definition, so its interruption narrowing
@@ -247,7 +248,7 @@ func TestResume_SubRunPolicyMatchesItsLiveSpawn(t *testing.T) {
 		!slices.Equal(live.Crypto.Scopes, []string{"run"}) || live.EphemeralWritable ||
 		!live.ShellCreds.Set || !slices.Equal(live.ShellCreds.Names, []string{"NPM_TOKEN"}) ||
 		live.GitRemote != (tools.GitRemotePolicyValue{Fetch: true}) ||
-		live.Workspace != (tools.WorkspacePolicyValue{Read: true, Exec: true, Engine: "container"}) ||
+		!reflect.DeepEqual(live.Workspace, tools.WorkspacePolicyValue{Read: true, Exec: true, Egress: []string{"pypi", "npm"}, Engine: "container"}) ||
 		live.Compaction == nil || live.Compaction.KeepLastN != nil ||
 		live.ACL == nil || !slices.Equal(live.ACLRemovedTools, []string{"Agent", "Recall"}) || len(live.Memory.AllowedScopes) != 0 {
 		t.Fatalf("fixture: the live child's policy is not the one this test is built around: %+v", live)

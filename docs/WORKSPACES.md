@@ -138,7 +138,7 @@ agents:
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec`, `run_cell`, `reset_kernel`, `start`, `stop` and `logs` need `exec`; `write` and `edit` need `write`; `read`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop` and `logs` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## The tool
 
@@ -153,6 +153,7 @@ One tool, `Workspace`, with an `op`:
 | `exec` | run a shell command in it (`/bin/sh -c`) | `name`, `command`, `cwd`, `timeout_s` |
 | `run_cell` | run code in an interpreter that keeps its variables between calls | `name`, `code`, `kernel` (`python` or `node`), `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
+| `view` | return a picture in it to the model as an image | `name`, `path` |
 | `start` | run a command that keeps running after the call, a server (see Servers) | `name`, `command`, `cwd`, `port` |
 | `stop` | end a server and what it started | `name`, `server` |
 | `logs` | a server's latest output, or the list of servers | `name`, `server`, `tail_bytes` |
@@ -222,6 +223,23 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **The command list.** A worker whose operator lists its commands (`LOOMCYCLE_WORKSPACE_COMMANDS`) holds `start` to the list exactly as `exec`: a command that `exec` refuses, `start` refuses.
 - **When it ends.** With `stop`, with the workspace's release, when the owning run ends, when the worker removes the workspace at attach (released or marked lost while it was away), and when the worker stops. Nothing of a server survives a worker restart or a snapshot.
 - **Who reaches its port.** In a `container` session no one but the session: the session has no network, and a server listens on its own loopback. Pages served to a user, and requests from an agent, come with exposure (RFC GW P9, later PRs). On the `host` engine every process of the worker shares one loopback, so a port is not isolated from the worker's other workspaces; the host engine is for a trusted single-tenant install.
+
+## Looking at a picture
+
+`view` returns a picture from the workspace to the model as an image, so an agent can look at what it made: a chart, a rendered page, a diagram (RFC GW §5.8). It needs the `read` grant and works on a workspace shared with the run through either kind of share, since it only reads.
+
+```json
+{"op": "view", "name": "py", "path": ".loom/cells/cell-3-1.png"}
+```
+```json
+{"bytes": 48213, "name": "py", "path": ".loom/cells/cell-3-1.png"}
+```
+
+- **What it sends.** A PNG, JPEG, GIF or WebP, its type read from the file, not its name. A picture over 1568 pixels on its long side is scaled down first; one whose decoding would take too much memory, judged from its header, is refused. Scaling runs in a conversion worker when the runtime has any. The tool's text gains a line naming the picture's type, size and pixels.
+- **Bounds.** The file may be at most 20 MiB (`too_large` otherwise); a picture as sent at most 3,750,000 bytes.
+- **A model that cannot see images.** The picture is not sent and the call fails saying so; the run goes on. The same applies to any tool that returns a picture.
+- **Kept with the run.** The picture is stored with the run's transcript, so a resumed run shows the model the same picture. The live event carries only the line naming it.
+- **Not yet:** `screenshot`, which loads a page of the workspace's own server in a headless browser, arrives with servers (RFC GW P9) and a worker image that carries a browser.
 
 ## Moving files
 
@@ -321,7 +339,7 @@ agents:
  "workspaces": [{"name": "build", "access": "read"}]}
 ```
 
-**Using one.** The peer names the workspace `<name>@<owner agent id>`; its `Workspace op=list` shows it under `shared_with_me`. With `read` it may use `Workspace read`, `glob` and `grep` on it, and `File` ops that read from `workspace:<name>@<agent id>:<path>` (copy out, stat, ls, extract, import). `read_write` adds `File` writes into it and `Workspace write` and `edit`.
+**Using one.** The peer names the workspace `<name>@<owner agent id>`; its `Workspace op=list` shows it under `shared_with_me`. With `read` it may use `Workspace read`, `view`, `glob` and `grep` on it, and `File` ops that read from `workspace:<name>@<agent id>:<path>` (copy out, stat, ls, extract, import). `read_write` adds `File` writes into it and `Workspace write` and `edit`.
 
 **What a share never allows:** `exec`, a release, a status, and sharing it on. Commands in a workspace are its owner's alone, so two agents never race in one session.
 

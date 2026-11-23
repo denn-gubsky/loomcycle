@@ -6631,6 +6631,10 @@ export interface AgentWorkspaceGrant {
   /** Whether the agent may share a workspace it owns with another run of
    *  the same user (RFC GW P8). It hands over only operations it holds. */
   share?: boolean;
+  /** The egress routes a workspace the agent opens may reach the network
+   *  through, by name (RFC GW P4), e.g. `["pypi", "pypi-files"]`. Unset =
+   *  none. A sub-agent holds only the names its parent also holds. */
+  egress?: string[];
   /** The least isolating engine the agent accepts. Unset = any. */
   engine?: '' | 'host' | 'container';
 }

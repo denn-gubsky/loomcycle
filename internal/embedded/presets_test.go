@@ -26,6 +26,7 @@ func TestUnits_RegistryShape(t *testing.T) {
 		"loomboard":      "preset",
 		"personal":       "preset",
 		"server":         "preset",
+		"workspace":      "preset",
 		"document-agent": "bundle",
 		"agent-teams":    "bundle",
 		"team-examples":  "bundle",
