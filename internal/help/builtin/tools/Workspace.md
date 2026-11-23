@@ -34,11 +34,21 @@ isolation from the worker's machine. The environment holds only `PATH`; a
 command and everything it started is killed at its timeout; output is kept
 up to 1 MiB.
 
+## The network
+
+A workspace reaches the network only through the egress routes it was
+opened with (`open`'s `egress`), each a name the operator gave an upstream:
+a command calls `http://egress/<route>/<path>` and the runtime sends the
+request on, adding the route's credential itself, so no secret is ever in
+the workspace. A route the workspace does not hold, a method the route does
+not allow, or a path that leaves the route is answered 403 with a one-line
+reason.
+
 ## Operations
 
 | op | What it does | Main arguments |
 |---|---|---|
-| `open` | open (or return) a workspace of this run | `name`, `toolchain` |
+| `open` | open (or return) a workspace of this run | `name`, `toolchain`, `egress` |
 | `list` | this run's workspaces | — |
 | `status` | its state, and whether its directory is on the worker | `name` |
 | `release` | delete it now | `name` |
