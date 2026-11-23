@@ -636,6 +636,13 @@ type Server struct {
 	// SetHookDefTool.
 	hookDefTool tools.Tool
 
+	// egressRouteDefTool is the EgressRouteDef tool (RFC GW P4, a tenant's
+	// egress routes). Dedicated slot, NOT in s.tools — no agent may write a
+	// route. Reached via Connector.EgressRouteDef + POST /v1/_egressroutedef +
+	// the MCP meta-tool `egressroutedef` + the gRPC EgressRouteDef RPC. Nil =
+	// those surfaces return "not configured". Set via SetEgressRouteDefTool.
+	egressRouteDefTool tools.Tool
+
 	// a2aServerCardDefTool + a2aAgentDefTool are the v1.x RFC G A2A
 	// substrate tools. Same operator-admin-only posture as
 	// scheduleDefTool — NOT in s.tools, reached via Connector +
@@ -1322,6 +1329,13 @@ func (s *Server) SetScheduleDefTool(t tools.Tool) {
 // refuse with "not configured".
 func (s *Server) SetHookDefTool(t tools.Tool) {
 	s.hookDefTool = t
+}
+
+// SetEgressRouteDefTool wires the EgressRouteDef tool. Without this call,
+// Connector.EgressRouteDef + POST /v1/_egressroutedef + the gRPC RPC + the MCP
+// meta-tool all refuse with "not configured".
+func (s *Server) SetEgressRouteDefTool(t tools.Tool) {
+	s.egressRouteDefTool = t
 }
 
 // SetTeamDefTool wires the RFC AP TeamDef substrate tool. Without this call,
@@ -3562,6 +3576,15 @@ func (s *Server) tenantTelemetryRoutes(mux *http.ServeMux) *http.ServeMux {
 	return mux
 }
 
+// egressRouteDefRoutes registers RFC GW P4's EgressRouteDef: the egress routes
+// a tenant writes for its workspaces. Tenant operators only (ScopeTenant in the
+// route table, carved out of the member path); the tool stamps the caller's
+// tenant. Here, beside routes, so the route censuses that read this file see it.
+func (s *Server) egressRouteDefRoutes(mux *http.ServeMux) *http.ServeMux {
+	mux.Handle("POST /v1/_egressroutedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateEgressRouteDef))))
+	return mux
+}
+
 // ontologyPlanRoutes registers RFC GQ P1's plan: what changes to the ontology would
 // do, before any is made. It writes nothing, but its counts cover every scope of the
 // tenant: gated (the route table, authz.HTTPRoute) and carved out of the member path as the subject
@@ -4277,7 +4300,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return s.ontologyPlanRoutes(s.tenantTelemetryRoutes(mux))
+	return s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux)))
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount

@@ -18,6 +18,22 @@ func volumesSection() schemaPlan {
 			updated_at  INTEGER NOT NULL,
 			PRIMARY KEY (tenant_id, name)
 		)`,
+		// RFC GW P4 — the egress routes a tenant writes (EgressRouteDef).
+		// Flat like volume_defs; methods is a JSON list. Mirrors postgres
+		// migration 0137.
+		`CREATE TABLE IF NOT EXISTS egress_route_defs (
+			tenant_id   TEXT NOT NULL DEFAULT '',
+			name        TEXT NOT NULL,
+			url         TEXT NOT NULL,
+			methods     TEXT NOT NULL,
+			credential  TEXT NOT NULL DEFAULT '',
+			auth        TEXT NOT NULL DEFAULT '',
+			header      TEXT NOT NULL DEFAULT '',
+			created_by  TEXT NOT NULL DEFAULT '',
+			created_at  INTEGER NOT NULL,
+			updated_at  INTEGER NOT NULL,
+			PRIMARY KEY (tenant_id, name)
+		)`,
 		// RFC AR CredentialDef — the secure per-tenant credential store. Flat
 		// (tenant_id, scope, scope_id, name) key; definition holds ONLY sealed
 		// ciphertext (inline backend, see internal/credential) or an external
@@ -97,6 +113,10 @@ func volumesSection() schemaPlan {
 			root_run_id    TEXT NOT NULL DEFAULT '',
 			state          TEXT NOT NULL,
 			shares         TEXT NOT NULL DEFAULT '[]',
+			owner_kind     TEXT NOT NULL DEFAULT 'run',
+			opened_token   TEXT NOT NULL DEFAULT '',
+			last_used_at   INTEGER NOT NULL DEFAULT 0,
+			egress         TEXT NOT NULL DEFAULT '[]',
 			created_at     INTEGER NOT NULL,
 			updated_at     INTEGER NOT NULL,
 			UNIQUE (owner_run_id, name)

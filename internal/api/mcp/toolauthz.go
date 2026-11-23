@@ -153,6 +153,11 @@ var tenantConfinableTools = map[string]bool{
 	// also needs substrate:tenant by name (toolScope), as its HTTP
 	// route keeps members out.
 	"clientdef": true,
+	// egressroutedef (RFC GW P4): the tool stamps the tenant from the
+	// principal and opaque-404s another tenant's route. It needs
+	// substrate:tenant by name (toolScope): a route says where a tenant's
+	// workspaces may send data, which is its operators' call, not a member's.
+	"egressroutedef": true,
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,
@@ -173,6 +178,12 @@ var tenantConfinableTools = map[string]bool{
 	// data — so there is nothing to confine. No scope by name: each call takes
 	// one unit of the token's run rate in the connector, as crypto does.
 	"calc": true,
+	// workspace: a workspace opened here is the session principal's own,
+	// keyed on its tenant and subject (RFC GW D35); the connector refuses a
+	// principal with neither and takes the scope that creates a run
+	// (toolScope). A member needs an operator's grant on top
+	// (operatorGrantedTools).
+	"workspace": true,
 
 	// Per-run / per-user — tenant inherited; the underlying tool applies its
 	// own own-subject / cross-tenant-404 gate.
@@ -520,6 +531,7 @@ var mcpToolTwins = map[string]mcpToolTwin{
 	"documentsourcedef": {Method: "POST", Path: "/v1/_documentsourcedef"},
 	"volumedef":         {Method: "POST", Path: "/v1/_volumedef"},
 	"clientdef":         {Method: "POST", Path: "/v1/_clientdef"},
+	"egressroutedef":    {Method: "POST", Path: "/v1/_egressroutedef"},
 	"operatortokendef":  {Method: "POST", Path: "/v1/_operatortokendef"},
 	"credentialdef":     {Method: "POST", Path: "/v1/_credentialdef"},
 	"crypto":            {Method: "POST", Path: "/v1/_crypto"},
@@ -596,6 +608,7 @@ var mcpOpsInBody = map[string]string{
 	"documentsourcedef": defFamilyOps,
 	"volumedef":         defFamilyOps,
 	"clientdef":         defFamilyOps,
+	"egressroutedef":    defFamilyOps,
 }
 
 const defFamilyOps = "one route; the definition operation asks author, retire or read of the definition each op names"
@@ -603,10 +616,11 @@ const defFamilyOps = "one route; the definition operation asks author, retire or
 // mcpToolsWithoutTwin are the meta-tools no governed HTTP route mirrors: none
 // exists, or the one that does asks no access question (authz, calc).
 var mcpToolsWithoutTwin = map[string]string{
-	"authz":    "the access questions are ungoverned on every transport (POST /v1/_authz/*)",
-	"calc":     "a pure function asks no access question on any transport (POST /v1/_calc, the Calc RPC)",
-	"context":  "the caller's own identity and reach; no route",
-	"identity": "the directory questions ask read or manage principal per call",
+	"authz":     "the access questions are ungoverned on every transport (POST /v1/_authz/*)",
+	"calc":      "a pure function asks no access question on any transport (POST /v1/_calc, the Calc RPC)",
+	"context":   "the caller's own identity and reach; no route",
+	"identity":  "the directory questions ask read or manage principal per call",
+	"workspace": "no HTTP route offers a workspace outside a run; the tool holds its owner's pin per call",
 }
 
 func principalMayCallTool(ctx context.Context, toolName string) bool {
@@ -644,8 +658,23 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	if auth.IsIsolated(p, ok) {
 		return userSelfServiceTools[toolName]
 	}
+	if operatorGrantedTools[toolName] && !auth.HasScope(p.Scopes, auth.ScopeTenant) {
+		// A member holds it only by an operator's explicit grant: an allow
+		// rule, never the compat fallback that answers an unmatched question
+		// with the scope gate's.
+		s := authz.MCPToolSurface(toolName)
+		if !authz.Grants(ctx, p.Effective, s.Action, s.Resource(p.TenantID)) {
+			return false
+		}
+	}
 	return tenantConfinableTools[toolName]
 }
+
+// operatorGrantedTools are tenant-confinable tools a tenant operator reaches
+// by its scope and a member only through an access-control list that allows
+// it `invoke mcp-tool:<name>`. workspace runs commands on a workspace worker
+// (RFC GW P9, D-P9-13 as ruled by the owner on 2026-11-23).
+var operatorGrantedTools = map[string]bool{"workspace": true}
 
 // scopeNeededFor names the scope a refused principal lacks for toolName, for
 // the refusal's text: the tool's own required scope when that is what failed,

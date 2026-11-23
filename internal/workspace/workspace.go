@@ -8,8 +8,10 @@ package workspace
 import "strings"
 
 // ProtocolVersion is the workspace worker protocol this build speaks. A
-// worker of another version is refused at attach (RFC GW §8).
-const ProtocolVersion = 1
+// worker of another version is refused at attach (RFC GW §8). 2 added the
+// worker-to-core Egress stream (RFC GW P4): an older worker has no way out
+// for its sessions, and an older core refuses the stream as unimplemented.
+const ProtocolVersion = 2
 
 // ChunkSize bounds one Chunk frame's data, either way (RFC GW §8).
 const ChunkSize = 64 << 10
@@ -92,7 +94,8 @@ var KnownWorkerClasses = map[string]bool{
 	ClassOverQuota: true, ClassPathNotFound: true, ClassExists: true, ClassSizeMismatch: true, ClassCopyLimit: true, ClassNotRegular: true,
 	ClassHelperMissing: true, ClassConversionCrashed: true, ClassConversionUnsupported: true, ClassConversionFailed: true,
 	ClassConversionBusy: true, ClassSourceChanged: true, ClassUnitTooLarge: true, ClassUnpackRefused: true,
-	ClassKernelUnavailable: true,
+	ClassKernelUnavailable: true, ClassCheckpointLimit: true, ClassCheckpointNotFound: true,
+	ClassServerLimit: true, ClassServerNotFound: true,
 }
 
 // The engines a worker may run commands under, weakest first.

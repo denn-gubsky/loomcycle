@@ -11,6 +11,7 @@ import {
   dataLayerFromClient,
   type ExplorerDataLayer,
 } from "../lib/dataLayer";
+import { CardCacheProvider } from "./AnnotationCard";
 
 // ExplorerDataSource is the data-source contract shared by both public roots
 // (<PathExplorer> / <DocumentViewer>). Provide exactly one; precedence is
@@ -71,7 +72,10 @@ export function ExplorerRoot({
   }
   return (
     <div className="loomcycle-explorer" {...themeAttr}>
-      <ExplorerDataProvider value={dataLayer}>{children}</ExplorerDataProvider>
+      <ExplorerDataProvider value={dataLayer}>
+        {/* The annotation cards' briefs, read once per session. */}
+        <CardCacheProvider>{children}</CardCacheProvider>
+      </ExplorerDataProvider>
     </div>
   );
 }

@@ -11,7 +11,8 @@ worker whether its directory is still there.
 
 ## Returns
 
-`{name, state, engine, exists}`; `exists` only for a `ready` workspace.
+`{name, state, engine, egress?, exists}`; `egress` lists its routes when it
+has any; `exists` only for a `ready` workspace.
 
 ## Errors
 

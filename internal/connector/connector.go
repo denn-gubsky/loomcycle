@@ -462,6 +462,16 @@ type Connector interface {
 	// Reachable via the LoomCycle MCP meta-tool `calc`.
 	Calc(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// Workspace runs the in-run `Workspace` tool for a caller outside any
+	// run, with its input and output (RFC GW D35). The workspaces belong to
+	// the calling principal's token identity, its tenant and subject, not to
+	// a run; they are released when the principal releases them, when idle
+	// or old past the operator's bounds, or when the opening token ends. Off
+	// unless the operator sets workspace.mcp.enabled; the principal needs a
+	// tenant, a subject and runs:create, and each call takes one unit of its
+	// run rate. Reachable via the LoomCycle MCP meta-tool `workspace`.
+	Workspace(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
 	// MCPServerDef — v0.9.x dynamic MCP server registration substrate.
 	// Op-discriminated (create / fork / get / list / promote / retire
 	// / rediscover / verify). Operator-admin-only: NOT auto-attached
@@ -554,6 +564,14 @@ type Connector interface {
 	// MCP meta-tool `volumedef`, and the TS adapter's client.volumeDef() — all
 	// dispatch through this single Connector method.
 	VolumeDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
+
+	// EgressRouteDef — RFC GW P4: the egress routes a tenant writes for its
+	// workspaces. Op-discriminated (create / get / list / delete), flat like
+	// VolumeDef. TENANT-CONFINED (ScopeTenant) and NOT an in-run tool: no agent
+	// may widen its own way out. Reachable via POST /v1/_egressroutedef, the
+	// gRPC EgressRouteDef RPC, the MCP meta-tool `egressroutedef` and the
+	// adapters — all dispatch through this single Connector method.
+	EgressRouteDef(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
 	// CredentialDef — RFC AR secure per-tenant credential store. Op-discriminated
 	// (create / get / list / delete). TENANT-CONFINED (ScopeTenant): the tool

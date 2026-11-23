@@ -15,7 +15,8 @@ import (
 
 // wireSubstrateTools hands the server the substrate def tools that are not
 // agent-available (MCPServerDef, ScheduleDef, HookDef, the A2A defs,
-// WebhookDef, MemoryBackendDef, DocumentSourceDef) and the TeamDef tool.
+// WebhookDef, MemoryBackendDef, DocumentSourceDef, EgressRouteDef) and the
+// TeamDef tool.
 func (b *boot) wireSubstrateTools() {
 	cfg := b.cfg
 	teamDefTool := b.teamDefTool
@@ -128,6 +129,16 @@ func (b *boot) wireSubstrateTools() {
 		PeerCredentials:     peerCreds,
 		MaxDefinitionBytes:  builtin.AgentDefMaxDefinitionBytes,
 		MaxDescriptionBytes: builtin.DefMaxDescriptionBytes,
+	})
+
+	// RFC GW P4 — the egress routes a tenant writes. NOT in allTools: no
+	// agent may write a route (RFC GW §6.3). Reached via
+	// Connector.EgressRouteDef + POST /v1/_egressroutedef + the gRPC RPC + the
+	// MCP meta-tool. Creation reads credential metadata only.
+	srv.SetEgressRouteDefTool(&builtin.EgressRouteDef{
+		Store:       storeIface,
+		Cfg:         cfg,
+		Credentials: credEngine,
 	})
 
 	b.hookDefTool = hookDefTool

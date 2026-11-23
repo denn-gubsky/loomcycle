@@ -393,6 +393,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
                 _registered_method=True)
+        self.EgressRouteDef = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/EgressRouteDef',
+                request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.SubstrateResponse.FromString,
+                _registered_method=True)
         self.TeamDef = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/TeamDef',
                 request_serializer=loomcycle__pb2.SubstrateRequest.SerializeToString,
@@ -1459,6 +1464,19 @@ class LoomcycleServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def EgressRouteDef(self, request, context):
+        """EgressRouteDef dispatches to the RFC GW P4 tenant egress routes: the
+        upstream URLs a tenant's workspaces may reach as http://egress/<name>/.
+        Mirrors POST /v1/_egressroutedef. TENANT-CONFINED (ScopeTenant): the tool
+        stamps the caller's authoritative tenant + opaque-404s cross-tenant reads.
+        Flat like VolumeDef: create / get / list / delete. Not an in-run tool: no
+        agent may write a route. Same SubstrateRequest/Response body shape
+        (is_error carries tool refusals).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def TeamDef(self, request, context):
         """TeamDef dispatches to the RFC AP team-workflow substrate. Mirrors
         POST /v1/_teamdef. TENANT-CONFINED (ScopeTenant, like AgentDef/SkillDef):
@@ -2080,6 +2098,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
             ),
             'VolumeDef': grpc.unary_unary_rpc_method_handler(
                     servicer.VolumeDef,
+                    request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
+                    response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
+            ),
+            'EgressRouteDef': grpc.unary_unary_rpc_method_handler(
+                    servicer.EgressRouteDef,
                     request_deserializer=loomcycle__pb2.SubstrateRequest.FromString,
                     response_serializer=loomcycle__pb2.SubstrateResponse.SerializeToString,
             ),
@@ -4123,6 +4146,33 @@ class Loomcycle:
             request,
             target,
             '/loomcycle.v1.Loomcycle/VolumeDef',
+            loomcycle__pb2.SubstrateRequest.SerializeToString,
+            loomcycle__pb2.SubstrateResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EgressRouteDef(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/EgressRouteDef',
             loomcycle__pb2.SubstrateRequest.SerializeToString,
             loomcycle__pb2.SubstrateResponse.FromString,
             options,

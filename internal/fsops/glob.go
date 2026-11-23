@@ -73,7 +73,7 @@ func Glob(root, fence string, req GlobRequest) (string, int, error) {
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(root, target)
 		}
-		resolved, rerr := resolveUnder(rootResolved, target)
+		resolved, rerr := resolveUnderShown(rootResolved, target, req.Path)
 		if rerr == nil {
 			rerr = OutsideFence(fence, resolved)
 		}

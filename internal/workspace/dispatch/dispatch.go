@@ -120,6 +120,8 @@ type Dispatcher struct {
 	log *slog.Logger
 	// deps are the store and the token resolver, set by Activate.
 	deps atomic.Pointer[deps]
+	// egress answers the Egress streams (SetEgress); nil refuses them.
+	egress atomic.Pointer[EgressFunc]
 
 	mu      sync.Mutex
 	srv     *grpc.Server
@@ -250,6 +252,17 @@ func (l localService) Attach(s workspacepb.WorkspaceService_AttachServer) error 
 func (l localService) Op(s workspacepb.WorkspaceService_OpServer) error {
 	return l.d.Op(localOp{s, context.WithValue(s.Context(), localKey{}, true)})
 }
+
+func (l localService) Egress(s workspacepb.WorkspaceService_EgressServer) error {
+	return l.d.Egress(localEgress{s, context.WithValue(s.Context(), localKey{}, true)})
+}
+
+type localEgress struct {
+	workspacepb.WorkspaceService_EgressServer
+	ctx context.Context
+}
+
+func (s localEgress) Context() context.Context { return s.ctx }
 
 type localAttach struct {
 	workspacepb.WorkspaceService_AttachServer
@@ -625,12 +638,24 @@ func (d *Dispatcher) markPending(w *worker, r store.WorkspaceRow) {
 }
 
 // recoverLost settles a lost row whose directory the worker came back with.
-// Its owner run still live: the row is ready again (a compare-and-set from
+// A principal's row (opened over the MCP server) is ready again. Its owner
+// run still live: the row is ready again (a compare-and-set from
 // lost, so a sweeper that moved it meanwhile wins). Its owner run ended or
 // gone: the directory is to be removed and the row deleted once the worker
 // confirms, which recoverLost reports by returning true. A run that cannot
 // be read changes nothing until the next attach.
 func (d *Dispatcher) recoverLost(ctx context.Context, w *worker, r store.WorkspaceRow, log *slog.Logger) (remove bool) {
+	if r.OwnerKind == store.WorkspaceOwnerPrincipal {
+		// No run owns it (RFC GW D35): it comes back into service, and the
+		// principal release pass decides when it ends, as for one never lost.
+		// Read as a run, its pin key names no run row, and it would be removed.
+		if ok, err := d.store().WorkspaceSetState(ctx, r.TenantID, r.ID, store.WorkspaceLost, store.WorkspaceReady); err != nil {
+			log.Warn("cannot mark a returned workspace ready", "workspace_id", r.ID, "err", err)
+		} else if ok {
+			log.Info("a lost workspace came back with its worker", "workspace_id", r.ID)
+		}
+		return false
+	}
 	run, err := d.store().GetRun(ctx, r.OwnerRunID)
 	var nf *store.ErrNotFound
 	switch {

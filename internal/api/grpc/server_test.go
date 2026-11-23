@@ -999,6 +999,9 @@ func (m *mockConnector) OperatorTokenDef(context.Context, json.RawMessage) (conn
 func (m *mockConnector) VolumeDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) EgressRouteDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *mockConnector) CredentialDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
@@ -1039,6 +1042,9 @@ func (m *mockConnector) DecisionModels(context.Context) (connector.DecisionModel
 	return connector.DecisionModelList{}, false
 }
 func (m *mockConnector) Calc(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+func (m *mockConnector) Workspace(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
 

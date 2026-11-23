@@ -305,7 +305,7 @@ func fallbackHostCwd(hostRoot, sandboxCwd string) (string, error) {
 	rel := strings.TrimPrefix(filepath.ToSlash(sandboxCwd), "/")
 	resolved, err := fsops.ResolveInsideRoot(hostRoot, filepath.FromSlash(rel))
 	if err != nil {
-		return "", fmt.Errorf("working directory %q escapes the volume: %w", sandboxCwd, err)
+		return "", fmt.Errorf("working directory %q: %w", sandboxCwd, err)
 	}
 	return resolved, nil
 }

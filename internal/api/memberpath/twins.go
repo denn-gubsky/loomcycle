@@ -116,6 +116,7 @@ var twins = map[string][]Twin{
 	"ClientDef":         {{Method: http.MethodPost, Path: "/v1/_clientdef"}},
 	"OperatorTokenDef":  {{Method: http.MethodPost, Path: "/v1/_operatortokendef"}},
 	"VolumeDef":         {{Method: http.MethodPost, Path: "/v1/_volumedef"}},
+	"EgressRouteDef":    {{Method: http.MethodPost, Path: "/v1/_egressroutedef"}},
 	"TeamDef":           {{Method: http.MethodPost, Path: "/v1/_teamdef"}},
 	"HookDef":           {{Method: http.MethodPost, Path: "/v1/_hookdef"}},
 	// The scope-aware tools outside a run.

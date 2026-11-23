@@ -159,6 +159,12 @@ var handlersByName = map[string]toolHandler{
 	"volumedef": wrapBuiltin("volumedef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
 		return c.VolumeDef(ctx, in)
 	}),
+	// egressroutedef: RFC GW P4 — the egress routes a tenant writes for its
+	// workspaces. Tenant from ctx (operatorCtx → RunIdentity), never the wire;
+	// substrate:tenant by name. ops: create/get/list/delete.
+	"egressroutedef": wrapBuiltin("egressroutedef", func(c connector.Connector, ctx context.Context, in json.RawMessage) (connector.ToolResult, error) {
+		return c.EgressRouteDef(ctx, in)
+	}),
 	// RFC AR — secure per-tenant credential store. Tenant/user identity from the
 	// principal ctx (RFC AG mcpPrincipalCtx), never the wire; get/list metadata
 	// only. ops: create/get/list/delete. RFC CN confines an isolated substrate:user
@@ -224,6 +230,9 @@ var handlersByName = map[string]toolHandler{
 	// The Calc tool outside a run; the connector charges each call to the
 	// token's run rate (calc.go).
 	"calc": handleCalc,
+	// workspace: the Workspace tool outside a run, owned by the session's
+	// token identity (RFC GW D35; workspace.go).
+	"workspace": handleWorkspace,
 
 	// Pause/Resume (v0.8.17 primitives; exposed via Connector in v0.8.18)
 	"pause_runtime":     handlePauseRuntime,

@@ -162,6 +162,44 @@ func TestCalcHelp_EntrySignaturesMatchTheTable(t *testing.T) {
 	}
 }
 
+// calcSignatureSpan is a backticked `name(args)` with no quoted text: a
+// signature, not a call such as `date("2026-11-23")`.
+var calcSignatureSpan = regexp.MustCompile("`([a-z][a-z0-9_]*)\\(([^`\"]*)\\)`")
+
+// The Calc tool article's "Most-used functions" block repeats signatures
+// outside any entry heading, so (b) does not see them; each must still be the
+// table's, argument order and optional markers included.
+func TestCalcHelp_MostUsedSignaturesMatchTheTable(t *testing.T) {
+	sigs := map[string]string{}
+	for _, f := range calc.Functions() {
+		sigs[f.Name] = f.Signature
+	}
+	art, _ := bundledHelp(t).ToolArticle("Calc")
+	_, block, ok := strings.Cut(art.Content, "## Most-used functions\n")
+	if !ok {
+		t.Fatal("the Calc article has no \"Most-used functions\" block")
+	}
+	if i := strings.Index(block, "\n## "); i >= 0 {
+		block = block[:i]
+	}
+	n := 0
+	for _, m := range calcSignatureSpan.FindAllStringSubmatch(block, -1) {
+		span := strings.Trim(m[0], "`")
+		want, ok := sigs[m[1]]
+		if !ok {
+			t.Errorf("Most-used functions: %s is not a Calc function", span)
+			continue
+		}
+		n++
+		if span != want {
+			t.Errorf("Most-used functions: %s, the table's signature is %s", span, want)
+		}
+	}
+	if n < 10 {
+		t.Errorf("only %d signatures found in the Most-used functions block", n)
+	}
+}
+
 // runCalcExample runs one call through the tool and returns what it gave, in
 // the form an expected result is written: the text, or "error <code>".
 func runCalcExample(t *testing.T, input json.RawMessage) string {

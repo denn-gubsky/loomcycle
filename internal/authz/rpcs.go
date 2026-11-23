@@ -162,6 +162,7 @@ var grpcRPCs = map[string]RPC{
 	"DocumentSourceDef": rpc(ScopeTenant, false, q("read", "def", "documentsource/*")),
 	"ClientDef":         rpc(ScopeTenant, false, q("read", "def", "client/*")),
 	"VolumeDef":         rpc(ScopeTenant, false, q("read", "def", "volume/*")),
+	"EgressRouteDef":    rpc(ScopeTenant, false, q("read", "def", "egressroute/*")),
 	"TeamDef":           rpc(ScopeTenant, false, q("read", "def", "team/*")),
 	"HookDef":           rpc(ScopeTenant, false, q("read", "def", "hook/*")),
 	// Token minting, as POST /v1/_operatortokendef: a tenant operator only
@@ -276,6 +277,9 @@ var mcpToolRows = map[string]MCPTool{
 	// A decision outside a run spends tokens: the scope POST /v1/_decide
 	// requires. Off the run plane: a model call with no agent.
 	"decision": {ScopeRunsCreate, false},
+	// A workspace outside a run runs commands on a worker (RFC GW D35): the
+	// scope that creates a run. Off the run plane: no agent.
+	"workspace": {ScopeRunsCreate, false},
 	// Evaluation: the floor POST /v1/_evaluation gates on.
 	"evaluation": {ScopeRunsRead, false},
 	// The operator's controls, kept from a tenant's members as their routes
@@ -292,4 +296,7 @@ var mcpToolRows = map[string]MCPTool{
 	"aclbinding":         {ScopeTenant, false},
 	"clientdef":          {ScopeTenant, false},
 	"operatortokendef":   {ScopeTenant, false},
+	// Where a tenant's workspaces may send data (RFC GW §6.3): its
+	// operators', never a member's.
+	"egressroutedef": {ScopeTenant, false},
 }

@@ -225,6 +225,9 @@ func (m *httpMockConnector) OperatorTokenDef(context.Context, json.RawMessage) (
 func (m *httpMockConnector) VolumeDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }
+func (m *httpMockConnector) EgressRouteDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
 func (m *httpMockConnector) CredentialDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }
@@ -265,6 +268,9 @@ func (m *httpMockConnector) DecisionModels(context.Context) (connector.DecisionM
 	return connector.DecisionModelList{}, false
 }
 func (m *httpMockConnector) Calc(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, errors.New("not implemented")
+}
+func (m *httpMockConnector) Workspace(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }
 

@@ -43,6 +43,13 @@ export interface SplitterProps {
   // Give the left pane the whole width. The right pane stays MOUNTED (hidden),
   // so whatever it holds keeps its state for when it comes back.
   hideRight?: boolean;
+  // Give the right pane the whole width, the mirror of hideRight: the left
+  // pane stays mounted (hidden), and `leftRail` — when given — takes a narrow
+  // column in its place (a collapsed pane's rail).
+  hideLeft?: boolean;
+  leftRail?: ReactNode;
+  // A double-click on the divider (RFC GZ: one of the ways a pane collapses).
+  onHandleDoubleClick?: () => void;
 }
 
 const HANDLE_WIDTH = 6;
@@ -55,6 +62,9 @@ export default function Splitter({
   storageKey,
   className,
   hideRight = false,
+  hideLeft = false,
+  leftRail,
+  onHandleDoubleClick,
 }: SplitterProps) {
   const restore = (): number => {
     if (storageKey) {
@@ -119,14 +129,23 @@ export default function Splitter({
         // from a wider host (the document viewer is both a full page and a pane
         // inside the Path console) or a since-narrowed window — so CSS clamps it
         // again against the container as it is now.
+        // A hidden pane is not a grid item, so a hidden left pane leaves the
+        // rail (when there is one) in the first column.
         gridTemplateColumns: hideRight
           ? "1fr 0 0"
-          : `min(${leftWidth}px, calc(100% - ${minRightWidth + HANDLE_WIDTH}px)) ${HANDLE_WIDTH}px 1fr`,
+          : hideLeft
+            ? leftRail
+              ? "auto 1fr"
+              : "1fr"
+            : `min(${leftWidth}px, calc(100% - ${minRightWidth + HANDLE_WIDTH}px)) ${HANDLE_WIDTH}px 1fr`,
       }}
     >
-      <div className="splitter-pane splitter-left">{children[0]}</div>
+      <div className="splitter-pane splitter-left" hidden={hideLeft && !hideRight}>
+        {children[0]}
+      </div>
+      {hideLeft && !hideRight && leftRail}
       <div
-        hidden={hideRight}
+        hidden={hideRight || hideLeft}
         className="splitter-handle"
         role="separator"
         aria-orientation="vertical"
@@ -135,6 +154,7 @@ export default function Splitter({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onDoubleClick={onHandleDoubleClick}
       />
       <div className="splitter-pane splitter-right" hidden={hideRight}>
         {children[1]}

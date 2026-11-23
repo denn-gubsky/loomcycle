@@ -13,9 +13,12 @@ Node. For files you keep, use your volumes and the Read, Write and Edit tools.
 ## What you may do
 
 Your agent's grant decides which operations work: `open` needs the grant to
-open workspaces; `exec`, `run_cell` and `reset_kernel` need `exec`; `write`
+open workspaces; `exec`, `run_cell`, `reset_kernel`, `start`, `stop` and
+`logs` need `exec`; `write`
 and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need
-`read`; `share` and `unshare` need the grant to share. Anything else is
+`read`; `share` and `unshare` need the grant to share; `checkpoint`,
+`restore` and `delete_checkpoint` need `write`, `checkpoints` needs `read`,
+and `fork` needs the grant to open workspaces. Anything else is
 refused with `not_granted`. Context op=self shows your grant.
 
 ## Lifetime
@@ -34,17 +37,30 @@ isolation from the worker's machine. The environment holds only `PATH`; a
 command and everything it started is killed at its timeout; output is kept
 up to 1 MiB.
 
+## The network
+
+A workspace reaches the network only through the egress routes it was
+opened with (`open`'s `egress`), each a name the operator gave an upstream:
+a command calls `http://egress/<route>/<path>` and the runtime sends the
+request on, adding the route's credential itself, so no secret is ever in
+the workspace. A route the workspace does not hold, a method the route does
+not allow, or a path that leaves the route is answered 403 with a one-line
+reason.
+
 ## Operations
 
 | op | What it does | Main arguments |
 |---|---|---|
-| `open` | open (or return) a workspace of this run | `name`, `toolchain` |
+| `open` | open (or return) a workspace of this run | `name`, `toolchain`, `egress` |
 | `list` | this run's workspaces | — |
 | `status` | its state, and whether its directory is on the worker | `name` |
 | `release` | delete it now | `name` |
 | `exec` | run a shell command in it | `name`, `command`, `cwd`, `timeout_s` |
 | `run_cell` | run Python or Node code in an interpreter that keeps its variables | `name`, `code`, `kernel`, `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
+| `start` | run a command that keeps running after the call (a server); returns its id | `name`, `command`, `cwd`, `port` |
+| `stop` | end a server and what it started | `name`, `server` |
+| `logs` | a server's latest output, or the list of servers | `name`, `server`, `tail_bytes` |
 | `read` | a file's text | `name`, `path`, `offset`, `limit`, `line_numbers` |
 | `view` | look at a picture (PNG, JPEG, GIF, WebP) | `name`, `path` |
 | `write` | create or replace a file whole | `name`, `path`, `content` |
@@ -53,11 +69,28 @@ up to 1 MiB.
 | `grep` | search file contents | `name`, `pattern`, `path`, `glob`, `output_mode`, ... |
 | `share` | let another run of your user read, or read and write, its files | `name`, `with`, `access` |
 | `unshare` | end a share | `name`, `with` |
+| `checkpoint` | record its files to come back to | `name`, `label` |
+| `checkpoints` | its checkpoints, newest first | `name` |
+| `restore` | put its files back to a checkpoint; stops its interpreters and commands | `name`, `checkpoint` |
+| `delete_checkpoint` | remove a checkpoint and free its room | `name`, `checkpoint` |
+| `fork` | open a second workspace as a copy of it, or of a checkpoint | `name`, `as`, `checkpoint` |
 
 The file operations take the same arguments as the Read, Write, Edit, Glob
 and Grep tools, without `volume`, and paths are relative to the workspace.
 `..`, an absolute path elsewhere and a symlink out of the workspace are
 refused. An argument an operation does not take is refused.
+
+## Checkpoints and forks
+
+A checkpoint records a workspace's files, installed packages included, on
+its worker; `restore` puts them back. Files only: an interpreter's
+variables and a running command are not in it, and a restore stops them.
+A checkpoint counts its full size against the workspace's disk quota, and a
+workspace holds a bounded number (8 unless the operator says otherwise):
+delete the ones you no longer need. `fork` opens a second workspace of your
+run from the present files or a checkpoint; it is yours like any other, has
+its own quota, and starts with no checkpoints and no shares. See
+Workspace/checkpoint and Workspace/fork.
 
 ## A workspace shared with you
 
@@ -84,3 +117,6 @@ Every refusal is `{"error": <class>, "detail": ...}`:
   effect is unknown, and the workspace may be gone.
 - `workspaces_off` — this runtime serves no workspaces.
 - `refused` — the worker will not run that command.
+- `workspace_over_quota` — the write, checkpoint, restore or fork would pass
+  a disk quota (checkpoints count against their workspace's).
+- `checkpoint_limit`, `checkpoint_not_found` — see Workspace/checkpoint.

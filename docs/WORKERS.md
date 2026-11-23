@@ -119,6 +119,8 @@ The worker reports `python` and `node` when it finds them on its `PATH`. A token
 
 A worker is known by its token's grant and its own name (`--id`, by default the host name): `tenant:<tenant>/<name>` or `shared/<name>`. The name must stay the same across restarts, so that the worker keeps its workspaces; a worker that came back under another name would have the runtime remove every workspace on its disk as unknown. Two workers on one host each need an `--id` of their own.
 
+**A workspace's way out.** A workspace reaches the network only through named egress routes (RFC GW §6.3), and only through the runtime: the worker carries each request a session sends to `http://egress/<route>/<path>` to the runtime on an `Egress` stream over its own connection, and the runtime decides from the workspace's record which routes it holds, builds the upstream request, adds any credential and streams the answer back. The worker holds no route's URL and never a credential. The runtime accepts such a stream only from the token that attached the worker, for a workspace that is ready on that worker. [WORKSPACES.md](WORKSPACES.md) describes the routes.
+
 **The `host` engine has no isolation.** A command runs as the worker's user and can read anything that user can, the worker's own token included. Run it only on a machine you trust with every agent that may use it; for anything else use the `container` engine.
 
 ### The container engine
@@ -183,4 +185,4 @@ Every package comes from Debian's archive (trixie), so building the image downlo
 
 ## Versions
 
-A runtime refuses a worker that speaks another worker protocol and logs a warning for a worker of another build. Upgrade the runtime and the workers together; a worker that is refused exits with a message naming both versions.
+A runtime refuses a worker that speaks another worker protocol (the workspace worker protocol is at version 2 since the egress stream) and logs a warning for a worker of another build. Upgrade the runtime and the workers together; a worker that is refused exits with a message naming both versions.

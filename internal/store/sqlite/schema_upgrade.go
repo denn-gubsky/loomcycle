@@ -345,6 +345,15 @@ func columnsSection2() schemaPlan {
 		// A workspace's shares (RFC GW P8); none for every row before.
 		// Mirrors postgres 0136.
 		`ALTER TABLE workspaces ADD COLUMN shares TEXT NOT NULL DEFAULT '[]'`,
+		// A workspace's owner kind, the token that opened a principal's
+		// workspace, and when it was last used (RFC GW P9, D35); a run's,
+		// for every row before. Mirrors postgres 0139.
+		`ALTER TABLE workspaces ADD COLUMN owner_kind TEXT NOT NULL DEFAULT 'run'`,
+		`ALTER TABLE workspaces ADD COLUMN opened_token TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE workspaces ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0`,
+		// The routes a workspace may send requests out through (RFC GW
+		// P4); none for every row before. Mirrors postgres 0140.
+		`ALTER TABLE workspaces ADD COLUMN egress TEXT NOT NULL DEFAULT '[]'`,
 	}}
 }
 
@@ -375,6 +384,10 @@ func indexesSection() schemaPlan {
 		// before an index names it; partial, so untimed history costs nothing.
 		`CREATE INDEX IF NOT EXISTS token_usage_timing      ON token_usage(provider, model, ts) WHERE duration_ms IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS sessions_by_user        ON sessions(user_id)     WHERE user_id IS NOT NULL`,
+		// RFC GW P9: the principal-owned workspaces the release pass walks.
+		// Here, after addColumns, so an upgraded DB has owner_kind first.
+		// Mirrors postgres 0139.
+		`CREATE INDEX IF NOT EXISTS workspaces_by_owner_kind ON workspaces(owner_kind, state)`,
 		// v0.8.5: facets cost retros + experiment audits by which
 		// agent_def_id the run actually ran against. Partial index
 		// keeps it small — only DB-resolved runs have a non-NULL value.

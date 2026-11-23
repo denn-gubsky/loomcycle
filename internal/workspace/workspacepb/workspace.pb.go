@@ -1036,6 +1036,468 @@ func (*InputEnd) Descriptor() ([]byte, []int) {
 	return file_workspace_proto_rawDescGZIP(), []int{14}
 }
 
+// What a worker sends on an Egress stream: EgressStart, then, when it has a
+// body, the body's chunks and InputEnd.
+type EgressFromWorker struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Msg:
+	//
+	//	*EgressFromWorker_Start
+	//	*EgressFromWorker_Body
+	//	*EgressFromWorker_BodyEnd
+	Msg           isEgressFromWorker_Msg `protobuf_oneof:"msg"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EgressFromWorker) Reset() {
+	*x = EgressFromWorker{}
+	mi := &file_workspace_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EgressFromWorker) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EgressFromWorker) ProtoMessage() {}
+
+func (x *EgressFromWorker) ProtoReflect() protoreflect.Message {
+	mi := &file_workspace_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EgressFromWorker.ProtoReflect.Descriptor instead.
+func (*EgressFromWorker) Descriptor() ([]byte, []int) {
+	return file_workspace_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *EgressFromWorker) GetMsg() isEgressFromWorker_Msg {
+	if x != nil {
+		return x.Msg
+	}
+	return nil
+}
+
+func (x *EgressFromWorker) GetStart() *EgressStart {
+	if x != nil {
+		if x, ok := x.Msg.(*EgressFromWorker_Start); ok {
+			return x.Start
+		}
+	}
+	return nil
+}
+
+func (x *EgressFromWorker) GetBody() *Chunk {
+	if x != nil {
+		if x, ok := x.Msg.(*EgressFromWorker_Body); ok {
+			return x.Body
+		}
+	}
+	return nil
+}
+
+func (x *EgressFromWorker) GetBodyEnd() *InputEnd {
+	if x != nil {
+		if x, ok := x.Msg.(*EgressFromWorker_BodyEnd); ok {
+			return x.BodyEnd
+		}
+	}
+	return nil
+}
+
+type isEgressFromWorker_Msg interface {
+	isEgressFromWorker_Msg()
+}
+
+type EgressFromWorker_Start struct {
+	Start *EgressStart `protobuf:"bytes,1,opt,name=start,proto3,oneof"`
+}
+
+type EgressFromWorker_Body struct {
+	// At most 64 KB of the request body.
+	Body *Chunk `protobuf:"bytes,2,opt,name=body,proto3,oneof"`
+}
+
+type EgressFromWorker_BodyEnd struct {
+	BodyEnd *InputEnd `protobuf:"bytes,3,opt,name=body_end,json=bodyEnd,proto3,oneof"`
+}
+
+func (*EgressFromWorker_Start) isEgressFromWorker_Msg() {}
+
+func (*EgressFromWorker_Body) isEgressFromWorker_Msg() {}
+
+func (*EgressFromWorker_BodyEnd) isEgressFromWorker_Msg() {}
+
+// EgressStart describes the session's request. It names no URL and no
+// credential: the core maps route and path onto the route's URL itself.
+type EgressStart struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId    string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	WorkspaceId string                 `protobuf:"bytes,2,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
+	// The route's name: the first path segment of http://egress/<route>/….
+	Route  string `protobuf:"bytes,3,opt,name=route,proto3" json:"route,omitempty"`
+	Method string `protobuf:"bytes,4,opt,name=method,proto3" json:"method,omitempty"`
+	// The rest of the session's request target after "/<route>/", as sent
+	// (still escaped), with its query.
+	Path    string    `protobuf:"bytes,5,opt,name=path,proto3" json:"path,omitempty"`
+	Headers []*Header `protobuf:"bytes,6,rep,name=headers,proto3" json:"headers,omitempty"`
+	// Whether body chunks follow; InputEnd ends them.
+	HasBody bool `protobuf:"varint,7,opt,name=has_body,json=hasBody,proto3" json:"has_body,omitempty"`
+	// The body's length, -1 when unknown.
+	ContentLength int64 `protobuf:"varint,8,opt,name=content_length,json=contentLength,proto3" json:"content_length,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EgressStart) Reset() {
+	*x = EgressStart{}
+	mi := &file_workspace_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EgressStart) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EgressStart) ProtoMessage() {}
+
+func (x *EgressStart) ProtoReflect() protoreflect.Message {
+	mi := &file_workspace_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EgressStart.ProtoReflect.Descriptor instead.
+func (*EgressStart) Descriptor() ([]byte, []int) {
+	return file_workspace_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *EgressStart) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+func (x *EgressStart) GetWorkspaceId() string {
+	if x != nil {
+		return x.WorkspaceId
+	}
+	return ""
+}
+
+func (x *EgressStart) GetRoute() string {
+	if x != nil {
+		return x.Route
+	}
+	return ""
+}
+
+func (x *EgressStart) GetMethod() string {
+	if x != nil {
+		return x.Method
+	}
+	return ""
+}
+
+func (x *EgressStart) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *EgressStart) GetHeaders() []*Header {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *EgressStart) GetHasBody() bool {
+	if x != nil {
+		return x.HasBody
+	}
+	return false
+}
+
+func (x *EgressStart) GetContentLength() int64 {
+	if x != nil {
+		return x.ContentLength
+	}
+	return 0
+}
+
+type Header struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Header) Reset() {
+	*x = Header{}
+	mi := &file_workspace_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Header) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Header) ProtoMessage() {}
+
+func (x *Header) ProtoReflect() protoreflect.Message {
+	mi := &file_workspace_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Header.ProtoReflect.Descriptor instead.
+func (*Header) Descriptor() ([]byte, []int) {
+	return file_workspace_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *Header) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Header) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+// What the core sends on an Egress stream: EgressHead, the response body's
+// chunks, then EgressDone.
+type EgressToWorker struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Msg:
+	//
+	//	*EgressToWorker_Head
+	//	*EgressToWorker_Body
+	//	*EgressToWorker_Done
+	Msg           isEgressToWorker_Msg `protobuf_oneof:"msg"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EgressToWorker) Reset() {
+	*x = EgressToWorker{}
+	mi := &file_workspace_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EgressToWorker) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EgressToWorker) ProtoMessage() {}
+
+func (x *EgressToWorker) ProtoReflect() protoreflect.Message {
+	mi := &file_workspace_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EgressToWorker.ProtoReflect.Descriptor instead.
+func (*EgressToWorker) Descriptor() ([]byte, []int) {
+	return file_workspace_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *EgressToWorker) GetMsg() isEgressToWorker_Msg {
+	if x != nil {
+		return x.Msg
+	}
+	return nil
+}
+
+func (x *EgressToWorker) GetHead() *EgressHead {
+	if x != nil {
+		if x, ok := x.Msg.(*EgressToWorker_Head); ok {
+			return x.Head
+		}
+	}
+	return nil
+}
+
+func (x *EgressToWorker) GetBody() *Chunk {
+	if x != nil {
+		if x, ok := x.Msg.(*EgressToWorker_Body); ok {
+			return x.Body
+		}
+	}
+	return nil
+}
+
+func (x *EgressToWorker) GetDone() *EgressDone {
+	if x != nil {
+		if x, ok := x.Msg.(*EgressToWorker_Done); ok {
+			return x.Done
+		}
+	}
+	return nil
+}
+
+type isEgressToWorker_Msg interface {
+	isEgressToWorker_Msg()
+}
+
+type EgressToWorker_Head struct {
+	Head *EgressHead `protobuf:"bytes,1,opt,name=head,proto3,oneof"`
+}
+
+type EgressToWorker_Body struct {
+	// At most 64 KB of the response body.
+	Body *Chunk `protobuf:"bytes,2,opt,name=body,proto3,oneof"`
+}
+
+type EgressToWorker_Done struct {
+	Done *EgressDone `protobuf:"bytes,3,opt,name=done,proto3,oneof"`
+}
+
+func (*EgressToWorker_Head) isEgressToWorker_Msg() {}
+
+func (*EgressToWorker_Body) isEgressToWorker_Msg() {}
+
+func (*EgressToWorker_Done) isEgressToWorker_Msg() {}
+
+// EgressHead is the answer's status and headers. A request the core refuses
+// is answered here too, as an HTTP answer with a one-line reason as body.
+type EgressHead struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        int32                  `protobuf:"varint,1,opt,name=status,proto3" json:"status,omitempty"`
+	Headers       []*Header              `protobuf:"bytes,2,rep,name=headers,proto3" json:"headers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EgressHead) Reset() {
+	*x = EgressHead{}
+	mi := &file_workspace_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EgressHead) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EgressHead) ProtoMessage() {}
+
+func (x *EgressHead) ProtoReflect() protoreflect.Message {
+	mi := &file_workspace_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EgressHead.ProtoReflect.Descriptor instead.
+func (*EgressHead) Descriptor() ([]byte, []int) {
+	return file_workspace_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *EgressHead) GetStatus() int32 {
+	if x != nil {
+		return x.Status
+	}
+	return 0
+}
+
+func (x *EgressHead) GetHeaders() []*Header {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+// EgressDone ends the answer. error is empty when the body was passed whole;
+// otherwise a short reason the body was cut (the byte budget, the upstream
+// failing midway), never a URL or a credential.
+type EgressDone struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EgressDone) Reset() {
+	*x = EgressDone{}
+	mi := &file_workspace_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EgressDone) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EgressDone) ProtoMessage() {}
+
+func (x *EgressDone) ProtoReflect() protoreflect.Message {
+	mi := &file_workspace_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EgressDone.ProtoReflect.Descriptor instead.
+func (*EgressDone) Descriptor() ([]byte, []int) {
+	return file_workspace_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *EgressDone) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 var File_workspace_proto protoreflect.FileDescriptor
 
 const file_workspace_proto_rawDesc = "" +
@@ -1099,10 +1561,40 @@ const file_workspace_proto_rawDesc = "" +
 	"\x04args\x18\x03 \x01(\fR\x04args\x12\x1b\n" +
 	"\thas_input\x18\x04 \x01(\bR\bhasInput\"\n" +
 	"\n" +
-	"\bInputEnd2\xc0\x01\n" +
+	"\bInputEnd\"\xca\x01\n" +
+	"\x10EgressFromWorker\x12;\n" +
+	"\x05start\x18\x01 \x01(\v2#.loomcycle.workspace.v1.EgressStartH\x00R\x05start\x123\n" +
+	"\x04body\x18\x02 \x01(\v2\x1d.loomcycle.workspace.v1.ChunkH\x00R\x04body\x12=\n" +
+	"\bbody_end\x18\x03 \x01(\v2 .loomcycle.workspace.v1.InputEndH\x00R\abodyEndB\x05\n" +
+	"\x03msg\"\x8b\x02\n" +
+	"\vEgressStart\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\x12!\n" +
+	"\fworkspace_id\x18\x02 \x01(\tR\vworkspaceId\x12\x14\n" +
+	"\x05route\x18\x03 \x01(\tR\x05route\x12\x16\n" +
+	"\x06method\x18\x04 \x01(\tR\x06method\x12\x12\n" +
+	"\x04path\x18\x05 \x01(\tR\x04path\x128\n" +
+	"\aheaders\x18\x06 \x03(\v2\x1e.loomcycle.workspace.v1.HeaderR\aheaders\x12\x19\n" +
+	"\bhas_body\x18\a \x01(\bR\ahasBody\x12%\n" +
+	"\x0econtent_length\x18\b \x01(\x03R\rcontentLength\"2\n" +
+	"\x06Header\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\"\xc0\x01\n" +
+	"\x0eEgressToWorker\x128\n" +
+	"\x04head\x18\x01 \x01(\v2\".loomcycle.workspace.v1.EgressHeadH\x00R\x04head\x123\n" +
+	"\x04body\x18\x02 \x01(\v2\x1d.loomcycle.workspace.v1.ChunkH\x00R\x04body\x128\n" +
+	"\x04done\x18\x03 \x01(\v2\".loomcycle.workspace.v1.EgressDoneH\x00R\x04doneB\x05\n" +
+	"\x03msg\"^\n" +
+	"\n" +
+	"EgressHead\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\x05R\x06status\x128\n" +
+	"\aheaders\x18\x02 \x03(\v2\x1e.loomcycle.workspace.v1.HeaderR\aheaders\"\"\n" +
+	"\n" +
+	"EgressDone\x12\x14\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error2\xa0\x02\n" +
 	"\x10WorkspaceService\x12X\n" +
 	"\x06Attach\x12%.loomcycle.workspace.v1.WorkerMessage\x1a#.loomcycle.workspace.v1.CoreControl(\x010\x01\x12R\n" +
-	"\x02Op\x12$.loomcycle.workspace.v1.OpFromWorker\x1a\".loomcycle.workspace.v1.OpToWorker(\x010\x01BMZKgithub.com/denn-gubsky/loomcycle/internal/workspace/workspacepb;workspacepbb\x06proto3"
+	"\x02Op\x12$.loomcycle.workspace.v1.OpFromWorker\x1a\".loomcycle.workspace.v1.OpToWorker(\x010\x01\x12^\n" +
+	"\x06Egress\x12(.loomcycle.workspace.v1.EgressFromWorker\x1a&.loomcycle.workspace.v1.EgressToWorker(\x010\x01BMZKgithub.com/denn-gubsky/loomcycle/internal/workspace/workspacepb;workspacepbb\x06proto3"
 
 var (
 	file_workspace_proto_rawDescOnce sync.Once
@@ -1116,23 +1608,29 @@ func file_workspace_proto_rawDescGZIP() []byte {
 	return file_workspace_proto_rawDescData
 }
 
-var file_workspace_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_workspace_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_workspace_proto_goTypes = []any{
-	(*WorkerMessage)(nil), // 0: loomcycle.workspace.v1.WorkerMessage
-	(*Hello)(nil),         // 1: loomcycle.workspace.v1.Hello
-	(*Heartbeat)(nil),     // 2: loomcycle.workspace.v1.Heartbeat
-	(*Removed)(nil),       // 3: loomcycle.workspace.v1.Removed
-	(*CoreControl)(nil),   // 4: loomcycle.workspace.v1.CoreControl
-	(*Welcome)(nil),       // 5: loomcycle.workspace.v1.Welcome
-	(*OpenStreams)(nil),   // 6: loomcycle.workspace.v1.OpenStreams
-	(*Remove)(nil),        // 7: loomcycle.workspace.v1.Remove
-	(*OpFromWorker)(nil),  // 8: loomcycle.workspace.v1.OpFromWorker
-	(*Ready)(nil),         // 9: loomcycle.workspace.v1.Ready
-	(*Chunk)(nil),         // 10: loomcycle.workspace.v1.Chunk
-	(*OpDone)(nil),        // 11: loomcycle.workspace.v1.OpDone
-	(*OpToWorker)(nil),    // 12: loomcycle.workspace.v1.OpToWorker
-	(*OpStart)(nil),       // 13: loomcycle.workspace.v1.OpStart
-	(*InputEnd)(nil),      // 14: loomcycle.workspace.v1.InputEnd
+	(*WorkerMessage)(nil),    // 0: loomcycle.workspace.v1.WorkerMessage
+	(*Hello)(nil),            // 1: loomcycle.workspace.v1.Hello
+	(*Heartbeat)(nil),        // 2: loomcycle.workspace.v1.Heartbeat
+	(*Removed)(nil),          // 3: loomcycle.workspace.v1.Removed
+	(*CoreControl)(nil),      // 4: loomcycle.workspace.v1.CoreControl
+	(*Welcome)(nil),          // 5: loomcycle.workspace.v1.Welcome
+	(*OpenStreams)(nil),      // 6: loomcycle.workspace.v1.OpenStreams
+	(*Remove)(nil),           // 7: loomcycle.workspace.v1.Remove
+	(*OpFromWorker)(nil),     // 8: loomcycle.workspace.v1.OpFromWorker
+	(*Ready)(nil),            // 9: loomcycle.workspace.v1.Ready
+	(*Chunk)(nil),            // 10: loomcycle.workspace.v1.Chunk
+	(*OpDone)(nil),           // 11: loomcycle.workspace.v1.OpDone
+	(*OpToWorker)(nil),       // 12: loomcycle.workspace.v1.OpToWorker
+	(*OpStart)(nil),          // 13: loomcycle.workspace.v1.OpStart
+	(*InputEnd)(nil),         // 14: loomcycle.workspace.v1.InputEnd
+	(*EgressFromWorker)(nil), // 15: loomcycle.workspace.v1.EgressFromWorker
+	(*EgressStart)(nil),      // 16: loomcycle.workspace.v1.EgressStart
+	(*Header)(nil),           // 17: loomcycle.workspace.v1.Header
+	(*EgressToWorker)(nil),   // 18: loomcycle.workspace.v1.EgressToWorker
+	(*EgressHead)(nil),       // 19: loomcycle.workspace.v1.EgressHead
+	(*EgressDone)(nil),       // 20: loomcycle.workspace.v1.EgressDone
 }
 var file_workspace_proto_depIdxs = []int32{
 	1,  // 0: loomcycle.workspace.v1.WorkerMessage.hello:type_name -> loomcycle.workspace.v1.Hello
@@ -1147,15 +1645,25 @@ var file_workspace_proto_depIdxs = []int32{
 	13, // 9: loomcycle.workspace.v1.OpToWorker.start:type_name -> loomcycle.workspace.v1.OpStart
 	10, // 10: loomcycle.workspace.v1.OpToWorker.input:type_name -> loomcycle.workspace.v1.Chunk
 	14, // 11: loomcycle.workspace.v1.OpToWorker.input_end:type_name -> loomcycle.workspace.v1.InputEnd
-	0,  // 12: loomcycle.workspace.v1.WorkspaceService.Attach:input_type -> loomcycle.workspace.v1.WorkerMessage
-	8,  // 13: loomcycle.workspace.v1.WorkspaceService.Op:input_type -> loomcycle.workspace.v1.OpFromWorker
-	4,  // 14: loomcycle.workspace.v1.WorkspaceService.Attach:output_type -> loomcycle.workspace.v1.CoreControl
-	12, // 15: loomcycle.workspace.v1.WorkspaceService.Op:output_type -> loomcycle.workspace.v1.OpToWorker
-	14, // [14:16] is the sub-list for method output_type
-	12, // [12:14] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	16, // 12: loomcycle.workspace.v1.EgressFromWorker.start:type_name -> loomcycle.workspace.v1.EgressStart
+	10, // 13: loomcycle.workspace.v1.EgressFromWorker.body:type_name -> loomcycle.workspace.v1.Chunk
+	14, // 14: loomcycle.workspace.v1.EgressFromWorker.body_end:type_name -> loomcycle.workspace.v1.InputEnd
+	17, // 15: loomcycle.workspace.v1.EgressStart.headers:type_name -> loomcycle.workspace.v1.Header
+	19, // 16: loomcycle.workspace.v1.EgressToWorker.head:type_name -> loomcycle.workspace.v1.EgressHead
+	10, // 17: loomcycle.workspace.v1.EgressToWorker.body:type_name -> loomcycle.workspace.v1.Chunk
+	20, // 18: loomcycle.workspace.v1.EgressToWorker.done:type_name -> loomcycle.workspace.v1.EgressDone
+	17, // 19: loomcycle.workspace.v1.EgressHead.headers:type_name -> loomcycle.workspace.v1.Header
+	0,  // 20: loomcycle.workspace.v1.WorkspaceService.Attach:input_type -> loomcycle.workspace.v1.WorkerMessage
+	8,  // 21: loomcycle.workspace.v1.WorkspaceService.Op:input_type -> loomcycle.workspace.v1.OpFromWorker
+	15, // 22: loomcycle.workspace.v1.WorkspaceService.Egress:input_type -> loomcycle.workspace.v1.EgressFromWorker
+	4,  // 23: loomcycle.workspace.v1.WorkspaceService.Attach:output_type -> loomcycle.workspace.v1.CoreControl
+	12, // 24: loomcycle.workspace.v1.WorkspaceService.Op:output_type -> loomcycle.workspace.v1.OpToWorker
+	18, // 25: loomcycle.workspace.v1.WorkspaceService.Egress:output_type -> loomcycle.workspace.v1.EgressToWorker
+	23, // [23:26] is the sub-list for method output_type
+	20, // [20:23] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_workspace_proto_init() }
@@ -1183,13 +1691,23 @@ func file_workspace_proto_init() {
 		(*OpToWorker_Input)(nil),
 		(*OpToWorker_InputEnd)(nil),
 	}
+	file_workspace_proto_msgTypes[15].OneofWrappers = []any{
+		(*EgressFromWorker_Start)(nil),
+		(*EgressFromWorker_Body)(nil),
+		(*EgressFromWorker_BodyEnd)(nil),
+	}
+	file_workspace_proto_msgTypes[18].OneofWrappers = []any{
+		(*EgressToWorker_Head)(nil),
+		(*EgressToWorker_Body)(nil),
+		(*EgressToWorker_Done)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workspace_proto_rawDesc), len(file_workspace_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -158,6 +158,9 @@ var errNoChange = errors.New("no change")
 // updateShares rewrites the shares of the run's own ready workspace by
 // compare-and-set, reading again when another call moved them first.
 func (m *Manager) updateShares(ctx context.Context, o Owner, name string, edit func([]store.WorkspaceShare) ([]store.WorkspaceShare, error)) (store.WorkspaceRow, error) {
+	if o.IsPrincipal() {
+		return store.WorkspaceRow{}, ErrPrincipalOwner
+	}
 	for range 5 {
 		row, err := m.Get(ctx, o, name)
 		if err != nil {
@@ -188,7 +191,8 @@ func (m *Manager) updateShares(ctx context.Context, o Owner, name string, edit f
 // nothing of workspaces not shared with it.
 func (m *Manager) resolveShared(ctx context.Context, o Owner, ref string, write bool) (store.WorkspaceRow, store.WorkspaceShare, error) {
 	name, ownerAgent, _ := SplitShared(ref)
-	if o.RunID == "" || o.UserID == "" || ownerAgent == "" || !ValidName(name) {
+	// Shares are between runs (D19): a principal holds none.
+	if o.IsPrincipal() || o.RunID == "" || o.UserID == "" || ownerAgent == "" || !ValidName(name) {
 		return store.WorkspaceRow{}, store.WorkspaceShare{}, ErrNotFound
 	}
 	rows, err := m.store.WorkspaceListByOwnerAgent(ctx, o.TenantID, ownerAgent, name)
@@ -249,7 +253,7 @@ type SharedWithRun struct {
 // whose owners have not ended.
 func (m *Manager) SharedWith(ctx context.Context, o Owner) ([]SharedWithRun, error) {
 	out := []SharedWithRun{}
-	if o.RunID == "" || o.UserID == "" {
+	if o.IsPrincipal() || o.RunID == "" || o.UserID == "" {
 		return out, nil
 	}
 	rows, err := m.store.WorkspaceListSharedWith(ctx, o.TenantID, o.RunID)

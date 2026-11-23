@@ -200,7 +200,12 @@ func Run(ctx context.Context, opt Options) error {
 	if opt.Convert == nil {
 		opt.Labels = nil
 	}
-	w := &worker{opt: opt, log: log, engine: eng}
+	// The checkpoint mechanism is the disk's, probed once and reported as a
+	// label (RFC GW §5.4).
+	mech := probeMechanism(root)
+	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech)
+	log.Info("checkpoints are recorded by this mechanism", "mechanism", mech)
+	w := &worker{opt: opt, log: log, engine: eng, mech: mech}
 	// The kernels die with the worker; the next cell after it comes back
 	// says kernel_restarted (RFC GW §5.7). A host worker writes the drivers
 	// it carries into its root; a session image carries its own copies
@@ -211,6 +216,8 @@ func Run(ctx context.Context, opt Options) error {
 	}
 	w.kernels = kernel.NewManager(kopt)
 	defer w.kernels.Close()
+	// The servers die with the worker, before the engine closes.
+	defer w.servers.Close()
 	w.cleanWork()
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
@@ -285,12 +292,20 @@ type worker struct {
 	engine engine.Engine
 	// kernels are the workspaces' interpreters; nil runs none.
 	kernels *kernel.Manager
+	// servers are the workspaces' long-lived commands (RFC GW §5.3).
+	servers servers
 	// mu serialises open's capacity check with the directory it makes.
 	mu sync.Mutex
 	// quotas is each workspace's disk count and write lock.
 	quotas quotas
 	// extra counts the one-op streams OpenStreams opened and still open.
 	extra atomic.Int32
+	// links are the attached connections a session's request out is sent
+	// to the core on (egress_client.go).
+	links egressLinks
+	// mech is the checkpoint mechanism probed at start (RFC GW §5.4);
+	// empty copies.
+	mech string
 }
 
 func (w *worker) outgoing(ctx context.Context) context.Context {
@@ -355,6 +370,8 @@ func (w *worker) session(parent context.Context, conn *grpc.ClientConn, log *slo
 		log.Warn("the dispatcher runs another build", "dispatcher_build", b, "build", w.opt.BuildVersion)
 	}
 	log.Info("attached to the dispatcher", "engine", w.opt.Engine, "capacity", w.opt.Capacity, "toolchains", w.opt.Toolchains, "held", len(held))
+	// While attached, this connection can carry the sessions' requests out.
+	defer w.links.add(client)()
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -451,6 +468,7 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 			continue
 		}
 		w.kernels.Drop(id)
+		w.servers.Drop(id)
 		// The session first, so nothing still running writes into the
 		// directory while it is removed.
 		if err := w.engine.Forget(context.Background(), id); err != nil {
@@ -459,6 +477,10 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 		}
 		if err := os.RemoveAll(filepath.Join(w.opt.Root, id)); err != nil {
 			log.Warn("cannot remove a workspace the dispatcher released", "workspace_id", id, "err", err)
+			continue
+		}
+		if err := w.dropCheckpoints(id); err != nil {
+			log.Warn("cannot remove the checkpoints of a workspace the dispatcher released", "workspace_id", id, "err", err)
 			continue
 		}
 		w.dropQuota(id)

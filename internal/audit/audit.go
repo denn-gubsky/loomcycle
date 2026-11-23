@@ -278,6 +278,22 @@ type Event struct {
 	// WorkspaceOp is a use's operation and tool, e.g. "read via File".
 	WorkspaceOp string `json:"workspace_op,omitempty"`
 
+	// --- Workspace egress (RFC GW P4; Action = "workspace_egress") ---
+	//
+	// One request a workspace's session sent out through a credentialed or
+	// tenant-written route (RFC GW §6.3): the route, the method, the path
+	// under the route without its query, the status (the upstream's, or the
+	// refusal's), the body bytes that passed both ways, and a refusal's
+	// reason. The workspace travels in WorkspaceID, its owner run in
+	// WorkspaceOwnerRunID, its tenant in TargetTenant. Never a query, a
+	// header, a body or a credential.
+	EgressRoute   string `json:"egress_route,omitempty"`
+	EgressMethod  string `json:"egress_method,omitempty"`
+	EgressPath    string `json:"egress_path,omitempty"`
+	EgressStatus  int    `json:"egress_status,omitempty"`
+	EgressBytes   int64  `json:"egress_bytes,omitempty"`
+	EgressRefused string `json:"egress_refused,omitempty"`
+
 	// --- Dropped observations (Action = "audit_events_dropped") ---
 	//
 	// The store-backed stream queues observation events (refusals, denials,
