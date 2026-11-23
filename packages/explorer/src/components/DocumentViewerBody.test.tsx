@@ -310,6 +310,25 @@ describe("DocumentViewerBody", () => {
     expect(el.querySelector(".doc-side")).toBeNull();
   });
 
+  it("TestDocumentViewerBody_RememberedPanelStaysClosedWhereItWouldCoverTheBody", async () => {
+    // A viewer too narrow to seat a panel beside the body lays it over the page.
+    const real = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("doc-viewer") ? new DOMRect(0, 0, 500, 800) : real.call(this);
+    });
+    localStorage.setItem("loomcycle.explorer.panel", "references");
+    const el = await mount(fakeData().data);
+    expect(el.querySelector(".doc-viewer")!.classList.contains("panel-over")).toBe(true);
+    // Left open on an earlier visit: not reopened over the page, and still remembered.
+    expect(el.querySelector(".doc-side")).toBeNull();
+    expect(localStorage.getItem("loomcycle.explorer.panel")).toBe("references");
+    // Its own icon opens it, rather than clearing the remembered choice.
+    act(() => rail(el, "references").click());
+    expect(el.querySelector(".doc-side .doc-links-pane")).not.toBeNull();
+    act(() => rail(el, "references").click());
+    expect(el.querySelector(".doc-side")).toBeNull();
+  });
+
   it("TestDocumentViewerBody_OutlineCollapsesToARailWithItsCountAndRestores", async () => {
     const f = fakeData();
     let el = await mount(f.data);

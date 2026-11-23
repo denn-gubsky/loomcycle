@@ -92,6 +92,10 @@ const TREE_KEY = "loomcycle.explorer.collapsed.paths";
 // Below this width the console shows one pane at a time: the tree, or what it
 // opened, with the other folded to its rail.
 const NARROW_PX = 720;
+// The Path tree's width until the reader drags it. Narrow enough that the
+// document beside it, with its outline open, still reads at close to its
+// measure on a laptop-width window.
+const TREE_WIDTH_PX = 320;
 
 // joinPath appends a leaf segment to a canonical parent dir ("" = root).
 function joinPath(dir: string, name: string): string {
@@ -916,7 +920,7 @@ function PathExplorerBody({
       <div className={`paths-console${narrow ? " narrow" : ""}`} ref={consoleRef}>
         <Splitter
           className={starsOn ? "paths-view paths-view--stars" : "paths-view"}
-          defaultLeftWidth={starsOn ? 720 : 420}
+          defaultLeftWidth={starsOn ? 720 : TREE_WIDTH_PX}
           minLeftWidth={280}
           minRightWidth={300}
           storageKey={starsOn ? "loomcycle.explorer.split.stars" : "loomcycle.explorer.split.paths"}

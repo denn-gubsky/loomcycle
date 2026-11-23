@@ -153,8 +153,11 @@ const OUTLINE_KEY = "loomcycle.explorer.collapsed.outline";
 // the body instead of pushing it.
 const NARROW_PX = 640;
 // Below this width an open side panel lies over the body: pushing it would
-// leave the outline and the text too little room to read.
+// leave the text too little room to read. The open outline takes its own
+// share first, so with it showing the panel needs a wider viewer to sit beside
+// the body.
 const OVERLAY_PX = 960;
+const OVERLAY_WITH_OUTLINE_PX = 1200;
 
 export default function DocumentViewerBody({
   documentId,
@@ -228,15 +231,27 @@ export default function DocumentViewerBody({
   const [docAnnotations, setDocAnnotations] = useState<Annotation[]>([]);
   const [chunkAnnotations, setChunkAnnotations] = useState<Annotation[]>([]);
   const [annotationReload, setAnnotationReload] = useState(0);
-  const [panel, setPanel] = usePersistedChoice<Panel>(PANEL_KEY, PANELS);
+  const [panel, setPanelStored] = usePersistedChoice<Panel>(PANEL_KEY, PANELS);
+  // Whether the reader has opened or closed a panel on this visit. A panel
+  // only remembered from an earlier visit is not reopened over the body.
+  // State, not a ref: picking the remembered panel leaves the stored choice
+  // unchanged, and the view must still redraw to show it.
+  const [panelTouched, setPanelTouched] = useState(false);
+  const setPanel = useCallback(
+    (v: Panel | null | ((cur: Panel | null) => Panel | null)) => {
+      setPanelTouched(true);
+      setPanelStored(v);
+    },
+    [setPanelStored],
+  );
   const [outlineCollapsed, setOutlineCollapsed] = usePersistedFlag(OUTLINE_KEY);
   // On a narrow body the outline is a rail unless the reader opens it, and
   // then it takes the width until a chunk is picked.
   const viewerRef = useRef<HTMLDivElement>(null);
   const narrow = useNarrow(viewerRef, NARROW_PX);
-  const overlay = useNarrow(viewerRef, OVERLAY_PX);
   const [narrowOutline, setNarrowOutline] = useState(false);
   const outlineHidden = narrow ? !narrowOutline : outlineCollapsed;
+  const overlay = useNarrow(viewerRef, outlineHidden ? OVERLAY_PX : OVERLAY_WITH_OUTLINE_PX);
   const setOutlineHidden = useCallback(
     (hide: boolean) => (narrow ? setNarrowOutline(!hide) : setOutlineCollapsed(hide)),
     [narrow, setOutlineCollapsed],
@@ -918,7 +933,6 @@ export default function DocumentViewerBody({
     [data, documentId, scope, browse, rootTitle],
   );
 
-  const togglePanel = (p: Panel) => setPanel((cur) => (cur === p ? null : p));
   const classifyOffered = !!data.documentClassify || classificationPending;
   // The rail: every panel this document can show. A panel remembered from
   // another document that this one does not offer stays closed here.
@@ -928,7 +942,12 @@ export default function DocumentViewerBody({
     ...(classifyOffered ? (["classification"] as const) : []),
     "history",
   ];
-  const openPanel = panel && offered.includes(panel) ? panel : null;
+  // Laid over the body, a panel opens only when the reader asks for it here:
+  // one left open on a wide screen would otherwise cover the page on a phone.
+  const openPanel = panel && offered.includes(panel) && (!overlay || panelTouched) ? panel : null;
+  // Toggles against what is SHOWN, so the icon of a remembered panel that was
+  // left closed opens it instead of clearing it.
+  const togglePanel = (p: Panel) => setPanel(openPanel === p ? null : p);
 
   // Keyboard: "{" folds the outline, "]" the side panel (the last one open,
   // else references). The Path console takes "[" for its tree.
