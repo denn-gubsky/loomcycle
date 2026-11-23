@@ -1,12 +1,14 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { DirListing, DirMap } from "../lib/lazyPathTree";
 import { ANNOTATION_ENTRY } from "../lib/annotation";
 import {
   docColor,
   effectiveScheme,
-  tintStyle,
+  rowTint,
+  statusDotColor,
   type DocSummary,
 } from "../lib/colorScheme";
+import { TreeIcon, TreeItem, TreeMarks, treeKeyDown, type TreeIconKind } from "./TreeRow";
 
 // PathTree renders the RFC AL dirent tree from per-directory listings (see
 // lib/lazyPathTree): a directory's children exist only once it has been opened
@@ -59,23 +61,20 @@ export function buildLazyTree(dirs: DirMap, dir = ""): PathNode[] {
   return nodes;
 }
 
-const KIND_ICON: Record<string, string> = {
-  directory: "📁",
-  document: "📄",
-  volume_mount: "💾",
-  memory_entry: "🧠",
+// The icon of each entry kind; an unknown kind draws as a document.
+const KIND_ICON: Record<string, TreeIconKind> = {
+  directory: "folder",
+  document: "document",
+  volume_mount: "volume",
+  memory_entry: "memory",
 };
-
-// A folder's annotation document gets its own icon, so it reads as the
-// folder's description rather than one more document in it.
-const ANNOTATION_ICON = "📝";
 
 // isAnnotationEntry: the reserved `_annotation` document of a folder.
 export function isAnnotationEntry(node: Pick<PathNode, "kind" | "name">): boolean {
   return node.kind === "document" && node.name === ANNOTATION_ENTRY;
 }
 
-// nodeBrief is the brief a row shows under its name: a document's own, and for
+// nodeBrief is a row's brief (shown in its tooltip): a document's own, and for
 // a folder the brief of its `_annotation` document — known only once the
 // folder has been listed, which is when its children's summaries arrive. No
 // extra call is made for it.
@@ -121,10 +120,14 @@ export default function PathTree(props: PathTreeProps) {
       </div>
     );
   }
+  const top = visibleChildren(tree);
+  // One tab stop: the selected row while it is drawn, else the first row.
+  const tabStop =
+    props.selectedPath && isDrawn(top, props.expanded, props.selectedPath) ? props.selectedPath : top[0]?.fullPath;
   return (
-    <ul className="tree path-tree">
-      {tree.map((n) => (
-        <PathTreeNode key={n.fullPath} node={n} {...props} />
+    <ul className="etree path-tree" role="tree" aria-label="Path tree" onKeyDown={treeKeyDown}>
+      {top.map((n) => (
+        <PathTreeNode key={n.fullPath} node={n} depth={0} tabStop={tabStop} {...props} />
       ))}
       <ListingRows dir="" listing={root} {...props} />
     </ul>
@@ -137,19 +140,24 @@ export default function PathTree(props: PathTreeProps) {
 function ListingRows({
   dir,
   listing,
+  depth,
   onLoadMore,
   onRetry,
-}: { dir: string; listing?: DirListing } & PathTreeProps) {
+}: { dir: string; listing?: DirListing; depth?: number } & PathTreeProps) {
   const rows: ReactNode[] = [];
+  // Indented as the directory's children are (the root's rows at depth 0).
+  const indent = { "--etree-depth": depth === undefined ? 0 : depth + 1 } as CSSProperties;
+  // A folder holding only its `_annotation` draws no child row, so it reads empty.
+  const shown = listing ? listing.entries.filter((e) => !isAnnotationEntry(e)).length : 0;
   if (!listing || (listing.loading && listing.entries.length === 0)) {
     rows.push(
-      <li key="status" className="node path-status">
+      <li key="status" className="path-status" role="none" style={indent}>
         <span className="path-implicit">loading…</span>
       </li>,
     );
   } else if (listing.error) {
     rows.push(
-      <li key="status" className="node path-status">
+      <li key="status" className="path-status" role="none" style={indent}>
         {/* The root's failure is already the banner above the tree. */}
         {dir !== "" && <span className="path-err">failed to load: {listing.error}</span>}{" "}
         <button type="button" className="path-more" onClick={() => onRetry(dir)}>
@@ -157,16 +165,16 @@ function ListingRows({
         </button>
       </li>,
     );
-  } else if (listing.loaded && listing.entries.length === 0 && dir !== "") {
+  } else if (listing.loaded && shown === 0 && !listing.nextCursor && dir !== "") {
     rows.push(
-      <li key="status" className="node path-status">
+      <li key="status" className="path-status" role="none" style={indent}>
         <span className="path-implicit">empty</span>
       </li>,
     );
   }
   if (listing?.nextCursor && !listing.error) {
     rows.push(
-      <li key="more" className="node path-status">
+      <li key="more" className="path-status" role="none" style={indent}>
         <button
           type="button"
           className="path-more"
@@ -191,60 +199,66 @@ function documentSummaryOf(node: PathNode, summaries?: Map<string, DocSummary>):
   return ref?.document_id ? summaries.get(ref.document_id) : undefined;
 }
 
-function PathTreeNode(props: { node: PathNode } & PathTreeProps) {
-  const { node, expanded, onToggle, selectedPath, onSelect, summaries } = props;
+// visibleChildren drops a folder's `_annotation` entry from the rows drawn: its
+// brief is the folder's (nodeBrief reads it from the built tree, so the entry
+// stays in the tree and only its row is left out).
+function visibleChildren(nodes: PathNode[]): PathNode[] {
+  return nodes.filter((n) => !isAnnotationEntry(n));
+}
+
+// isDrawn: whether the row for `path` is rendered — it exists, is not a hidden
+// `_annotation` entry, and every directory above it is open.
+function isDrawn(nodes: PathNode[], expanded: ReadonlySet<string>, path: string): boolean {
+  for (const n of visibleChildren(nodes)) {
+    if (n.fullPath === path) return true;
+    const open = (n.kind === "directory" || n.hasChildren === true) && expanded.has(n.fullPath);
+    if (open && path.startsWith(`${n.fullPath}/`) && isDrawn(n.children, expanded, path)) return true;
+  }
+  return false;
+}
+
+function PathTreeNode(props: { node: PathNode; depth: number; tabStop?: string } & PathTreeProps) {
+  const { node, depth, tabStop, expanded, onToggle, selectedPath, onSelect, summaries } = props;
   // A directory opens, and so does a document with names beneath it (RFC GC):
-  // its caret lists them while its name still opens the document. Children are
+  // its caret lists them while the row still opens the document. Children are
   // unknown until listed, so the caret is live even before then.
   const isDir = node.kind === "directory" || node.hasChildren === true;
   const isOpen = isDir && expanded.has(node.fullPath);
   const isSelected = selectedPath === node.fullPath;
   const summary = documentSummaryOf(node, summaries);
   const brief = nodeBrief(node, summaries);
-  const rowStyle =
-    summary && summary.color_enabled
-      ? tintStyle(docColor(summary.type, summary.status, effectiveScheme(summary.color_scheme)))
-      : undefined;
+  const scheme = summary ? effectiveScheme(summary.color_scheme) : undefined;
+  const coloured = !!summary?.color_enabled;
   return (
-    <li className={`node path-node kind-${node.kind} ${isSelected ? "selected" : ""}`}>
-      <div className="row path-row" style={rowStyle}>
-        <button
-          type="button"
-          className="tree-caret"
-          aria-label={isOpen ? "collapse" : "expand"}
-          aria-expanded={isDir ? isOpen : undefined}
-          disabled={!isDir}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (isDir) onToggle(node.fullPath);
-          }}
-        >
-          {isDir ? (isOpen ? "▼" : "▶") : "·"}
-        </button>
-        <button
-          type="button"
-          className="path-link"
-          onClick={() => onSelect(node)}
-          title={brief ? `${node.fullPath}\n${brief}` : node.fullPath}
-        >
-          <span className="path-kind-icon" aria-hidden>
-            {isAnnotationEntry(node) ? ANNOTATION_ICON : (KIND_ICON[node.kind] ?? "•")}
-          </span>
-          <span className="path-name">{node.name}</span>
-          {summary?.type && <span className="chunk-badge">{summary.type}</span>}
-          {summary?.status && <span className="chunk-badge chunk-status">{summary.status}</span>}
-        </button>
-        {/* The brief wraps onto its own line inside the row box. */}
-        {brief && <span className="path-brief">{brief}</span>}
-      </div>
-      {isOpen && (
-        <ul className="children path-children">
-          {node.children.map((c) => (
-            <PathTreeNode key={c.fullPath} {...props} node={c} />
+    <TreeItem
+      className={`path-node kind-${node.kind}`}
+      depth={depth}
+      expandable={isDir}
+      expanded={isOpen}
+      onToggle={() => onToggle(node.fullPath)}
+      selected={isSelected}
+      onSelect={() => onSelect(node)}
+      tabbable={node.fullPath === tabStop}
+      icon={<TreeIcon kind={isAnnotationEntry(node) ? "annotation" : (KIND_ICON[node.kind] ?? "document")} />}
+      name={node.name}
+      title={brief ? `${node.fullPath}\n${brief}` : node.fullPath}
+      marks={
+        <TreeMarks
+          type={summary?.type}
+          status={summary?.status}
+          statusColor={statusDotColor(summary?.status, coloured ? scheme : undefined)}
+        />
+      }
+      style={coloured && scheme ? rowTint(docColor(summary?.type, summary?.status, scheme)) : undefined}
+    >
+      {isOpen ? (
+        <>
+          {visibleChildren(node.children).map((c) => (
+            <PathTreeNode key={c.fullPath} {...props} node={c} depth={depth + 1} />
           ))}
           <ListingRows {...props} dir={node.fullPath} listing={node.listing} />
-        </ul>
-      )}
-    </li>
+        </>
+      ) : undefined}
+    </TreeItem>
   );
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ChunkRow } from "../types";
-import { chunkRowStyle, effectiveScheme, type ColorScheme } from "../lib/colorScheme";
-import IdCopy from "./IdCopy";
+import { chunkRowTint, effectiveScheme, statusDotColor, type ColorScheme } from "../lib/colorScheme";
+import { TreeIcon, TreeItem, TreeMarks, treeKeyDown, type TreeIconKind } from "./TreeRow";
 
 // DocumentChunkTree renders a document's chunk hierarchy (RFC AK), built from
 // the flat query_chunks list by parent_id + position. A single expand Map owned
@@ -32,12 +32,13 @@ export function buildChunkTree(chunks: ChunkRow[]): ChunkNode[] {
   return roots;
 }
 
-// typeIcon returns a small glyph for a media chunk type (RFC BO) so the tree
-// distinguishes image / diagram chunks at a glance; "" for a plain text chunk.
-function typeIcon(type: string | undefined): string {
-  if (type === "image") return "🖼";
-  if (type === "mermaid") return "📊";
-  return "";
+// typeIcon returns the icon for a media chunk type (RFC BO) so the tree
+// distinguishes image / diagram chunks at a glance; undefined for a plain text
+// chunk, whose icon cell stays empty (the cell keeps its width, so titles align).
+function typeIcon(type: string | undefined): TreeIconKind | undefined {
+  if (type === "image") return "image";
+  if (type === "mermaid") return "diagram";
+  return undefined;
 }
 
 // findChunkNode locates a node by id within a chunk forest.
@@ -60,10 +61,10 @@ export interface DocumentChunkTreeProps {
   scheme?: ColorScheme;
   // The document's own colour (docColor of its type + status). Its row at the
   // top of the tree wears it, and a chunk with no status colour of its own a
-  // lighter wash of it (chunkRowStyle). Unset → status colours only.
+  // lighter wash of it (chunkRowTint). Unset → status colours only.
   documentColor?: string;
   // RFC BN P4: chunk ids that have at least one cross-reference edge — those
-  // tiles get a 🔗 badge. Unset → no badges.
+  // rows get a link mark. Unset → no marks.
   linkedIds?: Set<string>;
 }
 
@@ -113,12 +114,24 @@ export default function DocumentChunkTree({
       </div>
     );
   }
+  // One tab stop: the selected row while it is drawn (every chunk above it
+  // open), else the first row.
+  const selectedDrawn =
+    !!selectedId &&
+    (tree.some((n) => n.row.id === selectedId) ||
+      (() => {
+        const parents = ancestorIds(tree, selectedId);
+        return parents.length > 0 && parents.every((id) => expanded.get(id) !== false);
+      })());
+  const tabStop = selectedDrawn ? selectedId : tree[0].row.id;
   return (
-    <ul className="tree chunk-tree">
+    <ul className="etree chunk-tree" role="tree" aria-label="Chunk outline" onKeyDown={treeKeyDown}>
       {tree.map((n) => (
         <ChunkTreeNode
           key={n.row.id}
           node={n}
+          depth={0}
+          tabStop={tabStop}
           expanded={expanded}
           toggle={toggle}
           selectedId={selectedId}
@@ -160,6 +173,9 @@ interface NodeProps {
   // A top-level node: the document's root chunk, i.e. the document itself.
   isRoot?: boolean;
   linkedIds?: Set<string>;
+  depth: number;
+  // The id of the tree's one tab stop.
+  tabStop?: string;
 }
 
 function ChunkTreeNode({
@@ -172,55 +188,44 @@ function ChunkTreeNode({
   documentColor,
   isRoot = false,
   linkedIds,
+  depth,
+  tabStop,
 }: NodeProps) {
   const hasChildren = node.children.length > 0;
   const isOpen = expanded.get(node.row.id) !== false; // default-expanded
   const isSelected = selectedId === node.row.id;
-  const rowStyle = chunkRowStyle({ status: node.row.status, isRoot, documentColor, scheme: tintScheme });
-  const hasLink = linkedIds?.has(node.row.id);
+  const icon = isRoot ? "document" : typeIcon(node.row.type);
   return (
-    <li className={`node chunk-node ${isSelected ? "selected" : ""}`}>
-      <div className="row chunk-row" style={rowStyle}>
-        <button
-          type="button"
-          className="tree-caret"
-          aria-label={isOpen ? "collapse" : "expand"}
-          disabled={!hasChildren}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (hasChildren) toggle(node.row.id);
-          }}
-        >
-          {hasChildren ? (isOpen ? "▼" : "▶") : "·"}
-        </button>
-        <button
-          type="button"
-          className="chunk-link"
-          onClick={() => onSelect(node)}
-          title={node.row.title}
-        >
-          {typeIcon(node.row.type) && (
-            <span className="chunk-type-icon" aria-hidden>
-              {typeIcon(node.row.type)}
-            </span>
-          )}
-          <span className="chunk-title">{node.row.title || "(untitled)"}</span>
-          {node.row.type && <span className="chunk-badge">{node.row.type}</span>}
-          {node.row.status && <span className="chunk-badge chunk-status">{node.row.status}</span>}
-          {hasLink && (
-            <span className="chunk-link-badge" title="Has cross-reference links" aria-label="linked">
-              🔗
-            </span>
-          )}
-        </button>
-        {/* Per-chunk copy id — a sibling of the tile button (not nested, which
-            would be invalid), so any chunk's id can be grabbed for an external
-            workflow without selecting it first. */}
-        <IdCopy value={node.row.id} compact title={`Copy chunk id: ${node.row.id}`} />
-      </div>
-      {hasChildren && isOpen && (
-        <ul className="children chunk-children">
-          {node.children.map((c) => (
+    <TreeItem
+      className="chunk-node"
+      depth={depth}
+      expandable={hasChildren}
+      expanded={isOpen}
+      onToggle={() => toggle(node.row.id)}
+      selected={isSelected}
+      onSelect={() => onSelect(node)}
+      tabbable={node.row.id === tabStop}
+      icon={icon ? <TreeIcon kind={icon} /> : undefined}
+      name={node.row.title || "(untitled)"}
+      title={node.row.title}
+      marks={
+        <TreeMarks
+          type={node.row.type}
+          status={node.row.status}
+          statusColor={statusDotColor(node.row.status, tintScheme ?? undefined)}
+          extra={
+            linkedIds?.has(node.row.id) ? (
+              <span className="etree-mark etree-mark-link" role="img" title="Has cross-reference links" aria-label="linked">
+                <TreeIcon kind="link" />
+              </span>
+            ) : undefined
+          }
+        />
+      }
+      style={chunkRowTint({ status: node.row.status, isRoot, documentColor, scheme: tintScheme })}
+    >
+      {hasChildren
+        ? node.children.map((c) => (
             <ChunkTreeNode
               key={c.row.id}
               node={c}
@@ -231,10 +236,11 @@ function ChunkTreeNode({
               tintScheme={tintScheme}
               documentColor={documentColor}
               linkedIds={linkedIds}
+              depth={depth + 1}
+              tabStop={tabStop}
             />
-          ))}
-        </ul>
-      )}
-    </li>
+          ))
+        : undefined}
+    </TreeItem>
   );
 }

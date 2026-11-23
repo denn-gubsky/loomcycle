@@ -172,15 +172,71 @@ export function washStyle(color: string | undefined): CSSProperties | undefined 
 // chunk) wears the document's colour, as its Path-tree row does; any other
 // chunk its status colour (chunk.<status>), else — unless the scheme turns it
 // off — a lighter wash of the document's colour. scheme null = colouring off.
-export function chunkRowStyle(opts: {
+export function chunkRowStyle(opts: ChunkRowColorOpts): CSSProperties | undefined {
+  const c = chunkRowColor(opts);
+  if (!c) return undefined;
+  return c.wash ? washStyle(c.color) : tintStyle(c.color);
+}
+
+interface ChunkRowColorOpts {
   status: string | undefined;
   isRoot: boolean;
   documentColor: string | undefined;
   scheme: ColorScheme | null;
-}): CSSProperties | undefined {
+}
+
+// parseable keeps a colour only when it can be turned into a tint, so a
+// fallback chain skips an unparseable value as tintStyle's undefined did.
+function parseable(color: string | undefined): string | undefined {
+  return color && hexToTint(color) ? color : undefined;
+}
+
+// chunkRowColor decides WHICH colour a chunk-tree row wears and whether it is
+// the full tint or the lighter inherited wash. chunkRowStyle (the flat tile)
+// and chunkRowTint (the tree row's gradient) both render from it, so the two
+// can never disagree about which rows are coloured.
+function chunkRowColor(opts: ChunkRowColorOpts): { color: string; wash: boolean } | undefined {
   const { status, isRoot, documentColor, scheme } = opts;
   if (!scheme) return undefined;
-  if (isRoot) return tintStyle(documentColor) ?? tintStyle(chunkColor(status, scheme));
-  return tintStyle(chunkColor(status, scheme)) ?? (chunkInheritsDocColor(scheme) ? washStyle(documentColor) : undefined);
+  if (isRoot) {
+    const c = parseable(documentColor) ?? parseable(chunkColor(status, scheme));
+    return c ? { color: c, wash: false } : undefined;
+  }
+  const own = parseable(chunkColor(status, scheme));
+  if (own) return { color: own, wash: false };
+  const inherited = chunkInheritsDocColor(scheme) ? parseable(documentColor) : undefined;
+  return inherited ? { color: inherited, wash: true } : undefined;
+}
+
+// A tree row's colour is a gradient that fades out to the right, so it starts
+// stronger than the flat tile wash to read as clearly at the row's left edge.
+const ROW_TINT_ALPHA = 0.3;
+// The wash a chunk inherits from its document. Half the full tint faded out to
+// nothing in the outline, so it sits closer to it.
+const ROW_WASH_ALPHA = 0.22;
+
+// rowTint is the inline style for a coloured explorer tree row (the shared
+// .etree-row). It sets only the --etree-tint custom property: the stylesheet
+// paints the gradient from it and layers hover and selection above it, so an
+// inline colour can never hide the selected state. wash = the lighter tint a
+// chunk inherits from its document.
+export function rowTint(color: string | undefined, wash = false): CSSProperties | undefined {
+  if (!color) return undefined;
+  const tint = hexToTint(color, wash ? ROW_WASH_ALPHA : ROW_TINT_ALPHA);
+  return tint ? ({ "--etree-tint": tint } as CSSProperties) : undefined;
+}
+
+// chunkRowTint is chunkRowStyle's decision rendered as a tree-row gradient.
+export function chunkRowTint(opts: ChunkRowColorOpts): CSSProperties | undefined {
+  const c = chunkRowColor(opts);
+  return c ? rowTint(c.color, c.wash) : undefined;
+}
+
+// statusDotColor is the colour of a row's compact status mark: the status's
+// chunk.<status> colour in the given palette, else in the default palette,
+// else undefined (the stylesheet's neutral dot).
+export function statusDotColor(status: string | undefined, scheme?: ColorScheme): string | undefined {
+  if (!status) return undefined;
+  return (scheme ? parseable(chunkColor(status, scheme)) : undefined) ?? parseable(chunkColor(status, DEFAULT_SCHEME));
 }
 
