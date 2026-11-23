@@ -5,7 +5,14 @@
     "declaration": true,
     "emitDeclarationOnly": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // The declarations import @loomcycle/code-editor as the installed package,
+    // not the sibling source the type check maps it to (that source lies
+    // outside rootDir). `npm run typecheck` checks the source; this step only
+    // emits, so it does not check again against the published editor, which
+    // can be a release behind the sibling.
+    "paths": {},
+    "noCheck": true
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
