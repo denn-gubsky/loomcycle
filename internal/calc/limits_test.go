@@ -37,6 +37,7 @@ var errorCases = map[errCode]Request{
 	codeUnknownUnit:    {Expr: `convert(1, "furlong", "m")`},
 	codeDimension:      {Expr: `convert(1, "kg", "m")`},
 	codeNoConvergence:  {Expr: "integrate(x -> 1/x, 0, 1)"},
+	codeColumn:         {Expr: `t = csv("a,b\n1,2"); t.c`},
 	// time_limit and canceled need a context; see their own tests.
 }
 

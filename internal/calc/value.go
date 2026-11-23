@@ -162,6 +162,12 @@ func typeName(v val) string {
 		return "date"
 	case timeVal:
 		return "datetime"
+	case *tableVal:
+		return "table"
+	case rowVal:
+		return "row"
+	case emptyVal:
+		return "empty"
 	}
 	return "unknown"
 }

@@ -343,6 +343,9 @@ func fnTranspose(e *evaluator, a args) (val, *Error) {
 }
 
 func fnSize(_ *evaluator, a args) (val, *Error) {
+	if t, ok := a.v[0].(*tableVal); ok {
+		return []val{exactInt64(int64(t.rows())), exactInt64(int64(len(t.names)))}, nil
+	}
 	if _, ok := a.v[0].([]val); !ok {
 		return nil, errf(codeType, a.pos, "size needs a list or a matrix, got a %s", typeName(a.v[0])).
 			withHint("len(s) counts the characters of a string")
