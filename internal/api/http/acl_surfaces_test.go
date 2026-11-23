@@ -61,6 +61,9 @@ var aclUngovernedRoutes = map[string]bool{
 	// The evaluate / explain / simulate questions are answered FOR a subject
 	// and confined to it by the handler; they are not themselves governed.
 	"POST /v1/_authz/evaluation": true, "POST /v1/_authz/evaluations": true, "POST /v1/_authz/explain": true, "POST /v1/_authz/simulate": true,
+	// RFC GY P4a: Calc outside a run is a pure function that reaches no
+	// stored data; any principal but a run-plane one, no question.
+	"POST /v1/_calc": true,
 	// RFC FK P3: the voice controls' info. The route admits any runs:create
 	// caller; the handler asks each audio route's own question and shows a
 	// direction only to a caller who may use it.

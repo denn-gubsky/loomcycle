@@ -15,7 +15,7 @@ import (
 // to its own subject by the shared implementation, as POST /v1/_authz/* is
 // on HTTP) and the caller's own app sign-ins (as GET/DELETE
 // /v1/_me/app-sign-ins).
-var grpcUngovernedRPCs = map[string]bool{"Health": true, "Config": true, "Authz": true,
+var grpcUngovernedRPCs = map[string]bool{"Health": true, "Config": true, "Authz": true, "Calc": true,
 	"ListMyAppSignIns": true, "EndMyAppSignIn": true}
 
 // serviceRPCs is every RPC the generated service registers, unary and

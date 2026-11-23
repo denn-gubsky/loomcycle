@@ -143,7 +143,7 @@ These tools need a scope of their own:
 
 The remaining tenant-confinable tools have no scope of their own: the definition tools, `register_agent` / `unregister_agent` / `list_agents`, `memory`, `channel`, `path`, `document`, `history`, `evaluation`, `context`, `identity`, `erasure` and `calc`.
 
-`calc` is a pure function — it reads and writes nothing in the deployment — so every token reaches it, an isolated `substrate:user` token included, with one exception: a token limited to certain agents may call only the run tools, and `calc` is not one. Each call takes one from the token's run rate, as `crypto` does; past it the call is a failed, retryable tool result that says when to retry.
+`calc` is a pure function — it reads and writes nothing in the deployment — so every token reaches it, an isolated `substrate:user` token included, with one exception: a token limited to certain agents may call only the run tools, and `calc` is not one. Each call takes one from the token's run rate, as `crypto` does; past it the call is a failed, retryable tool result that says when to retry. Its HTTP twin is `POST /v1/_calc` and its gRPC twin the `Calc` RPC: the same callers, the same charge and the same answers (see [CALC.md](CALC.md#calc-outside-a-run-mcp-http-and-grpc)).
 
 A tool the token may not call is left out of `tools/list`, and a call to it is refused with `-32001`, naming the scope it needs. `teamdef` stays listed for a member; an operation it may not run is refused the same way, naming the operation and the scope. So a tool that is "missing" from a session is usually a scope, not a broken runtime. A token minted with `runs:create` alone can start a run and cannot read it back; mint `runs:create` and `runs:read` together for day-to-day use.
 

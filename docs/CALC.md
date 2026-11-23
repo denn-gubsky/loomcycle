@@ -16,7 +16,7 @@ state, no I/O, no configuration, no provider key.
 - [Exact or approximate](#exact-or-approximate)
 - [The sections](#the-sections)
 - [The limits](#the-limits)
-- [Calc outside a run: the MCP `calc` meta-tool](#calc-outside-a-run-the-mcp-calc-meta-tool)
+- [Calc outside a run: MCP, HTTP and gRPC](#calc-outside-a-run-mcp-http-and-grpc)
 - [Removing Calc from an agent](#removing-calc-from-an-agent)
 - [The help a model reads](#the-help-a-model-reads)
 
@@ -148,7 +148,7 @@ steps where `sum(1:n)` costs `n`. `Calc/limits` has the details.
 
 Calc evaluates numbers. It does not solve equations or simplify formulas.
 
-## Calc outside a run: the MCP `calc` meta-tool
+## Calc outside a run: MCP, HTTP and gRPC
 
 The MCP server (`/v1/_mcp`, and `loomcycle mcp`) offers `calc`: the same
 input, result and refusals as the in-run tool, for a client with no run — for
@@ -158,6 +158,21 @@ it, an isolated `substrate:user` token included, except a token limited to
 certain agents (which may call only the run tools). Each call takes one unit
 of the token's run rate; past it the call is a retryable failure that says
 when to retry. See [MCP_SERVER.md](MCP_SERVER.md).
+
+The same evaluator is `POST /v1/_calc` over HTTP and the `Calc` RPC over gRPC,
+with the same callers and the same run-rate charge. Over HTTP the body is the
+tool's input and a 200 its result; a refusal carries the tool's error code in
+`code`, with `detail`, `hint`, `pos` and its category, and is `400` for a
+validation refusal and `422` for a business one (`429` with `Retry-After` past
+the rate). Over gRPC `input_json` and `result_json` carry the same JSON, and a
+refusal is `INVALID_ARGUMENT` or `FAILED_PRECONDITION` with the code as the
+`ErrorInfo` reason. On every transport outside a run, `from` and `to` are
+refused: there is no agent whose stores they would reach.
+
+```bash
+curl -s -X POST "$LOOMCYCLE/v1/_calc" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"expr": "0.1 + 0.2"}'
+```
 
 ## Removing Calc from an agent
 

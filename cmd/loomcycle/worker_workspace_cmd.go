@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 
 	convworker "github.com/denn-gubsky/loomcycle/internal/conversion/worker"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
 	wsworker "github.com/denn-gubsky/loomcycle/internal/workspace/worker"
 )
 
@@ -47,6 +49,11 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) 
 		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
 		return 2
 	}
+	container, err := workspaceContainerOptions()
+	if err != nil {
+		fmt.Fprintf(stderr, "loomcycle worker: %v\n", err)
+		return 2
+	}
 	child, labels := workspaceConvertChild(convertMem)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -60,6 +67,7 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) 
 		BuildVersion: buildVersion,
 		Root:         strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ROOT")),
 		Engine:       strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ENGINE")),
+		Container:    container,
 		Capacity:     capacity,
 		IdleStreams:  streams,
 		Commands:     commands,
@@ -99,6 +107,42 @@ func workspaceConvertChild(memoryLimitMB int) (*wsworker.ConvertChild, []string)
 		DjVuRasterize: env("LOOMCYCLE_WORKER_DJVU_RASTERIZE_COMMAND"),
 	}
 	return child, convworker.Labels(workerHelpers(), slog.Default())
+}
+
+// workspaceContainerOptions reads the container engine's settings
+// (LOOMCYCLE_WORKSPACE_CONTAINER_*, RFC GW P3). They are read whatever the
+// engine, so a malformed one fails the start rather than a later switch to
+// the engine; the engine checks the image and the runtime itself.
+func workspaceContainerOptions() (engine.ContainerOptions, error) {
+	env := func(k string) string { return strings.TrimSpace(os.Getenv(k)) }
+	mem, err := envCount("LOOMCYCLE_WORKSPACE_CONTAINER_MEMORY_MB", 64, 1<<20)
+	if err != nil {
+		return engine.ContainerOptions{}, err
+	}
+	pids, err := envCount("LOOMCYCLE_WORKSPACE_CONTAINER_PIDS", 16, 1<<22)
+	if err != nil {
+		return engine.ContainerOptions{}, err
+	}
+	tmp, err := envCount("LOOMCYCLE_WORKSPACE_CONTAINER_TMP_MB", 1, 1<<20)
+	if err != nil {
+		return engine.ContainerOptions{}, err
+	}
+	var cpus float64
+	if v := env("LOOMCYCLE_WORKSPACE_CONTAINER_CPUS"); v != "" {
+		cpus, err = strconv.ParseFloat(v, 64)
+		if err != nil || cpus < 0.01 || cpus > 1024 {
+			return engine.ContainerOptions{}, fmt.Errorf("LOOMCYCLE_WORKSPACE_CONTAINER_CPUS: %q is not a number of CPUs from 0.01 to 1024", v)
+		}
+	}
+	hostRoot := env("LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT")
+	if hostRoot != "" && !filepath.IsAbs(hostRoot) {
+		return engine.ContainerOptions{}, fmt.Errorf("LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT: %q is not an absolute path", hostRoot)
+	}
+	return engine.ContainerOptions{
+		CLI: env("LOOMCYCLE_WORKSPACE_CONTAINER_CLI"), Image: env("LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE"),
+		Runtime: env("LOOMCYCLE_WORKSPACE_CONTAINER_RUNTIME"), HostRoot: hostRoot,
+		MemoryMB: int64(mem), CPUs: cpus, Pids: int64(pids), TmpMB: int64(tmp),
+	}, nil
 }
 
 // envCount reads a whole number from lo to hi from env; 0 when unset (the

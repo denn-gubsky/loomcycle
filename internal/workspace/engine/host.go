@@ -33,34 +33,11 @@ type Host struct {
 	Commands []string
 }
 
-// shellControl are the characters that let one command line run a second
-// program, or the first one's output be redirected anywhere.
-const shellControl = ";&|<>`$()\n\r"
-
-func (h *Host) allowed(command string) error {
-	if len(h.Commands) == 0 {
-		return nil
-	}
-	if strings.ContainsAny(command, shellControl) {
-		return fmt.Errorf("%w: the operator lists the commands this worker runs, so a command may not use any of ; & | < > ` $ ( ) or a newline", ErrRefused)
-	}
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return fmt.Errorf("%w: an empty command", ErrRefused)
-	}
-	for _, c := range h.Commands {
-		if fields[0] == c {
-			return nil
-		}
-	}
-	return fmt.Errorf("%w: %q is not one of the commands this worker runs (%s)", ErrRefused, fields[0], strings.Join(h.Commands, ", "))
-}
-
 func (h *Host) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
 	if strings.TrimSpace(req.Command) == "" {
 		return ExecResult{}, fmt.Errorf("%w: an empty command", ErrRefused)
 	}
-	if err := h.allowed(req.Command); err != nil {
+	if err := allowed(h.Commands, req.Command); err != nil {
 		return ExecResult{}, err
 	}
 	if req.Timeout <= 0 {
@@ -107,6 +84,9 @@ func (h *Host) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
 	}
 	return res, nil
 }
+
+// Forget has nothing to end: a host command does not outlive its exec.
+func (h *Host) Forget(context.Context, string) error { return nil }
 
 func (h *Host) Close() error { return nil }
 

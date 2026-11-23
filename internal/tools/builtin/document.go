@@ -667,7 +667,10 @@ type docInput struct {
 	// bodyOrigin, so the tool's JSON input can never supply it — the id is the
 	// caller's to pass, the provenance is the server's to decide.
 	pendingProv *store.MemoryProvenance
-	Confidence  *float64 `json:"confidence"`
+	// newSource is true when upsert_chunk checked this write's source_chunk_id
+	// against a live chunk. UNEXPORTED like pendingProv: only that check sets it.
+	newSource  bool
+	Confidence *float64 `json:"confidence"`
 	// Class is 'derived' | 'evidential' — the retention-exemption signal.
 	Class string `json:"class"`
 

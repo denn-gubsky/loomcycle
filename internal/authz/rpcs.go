@@ -102,6 +102,10 @@ var grpcRPCs = map[string]RPC{
 	"Decide":             rpc(ScopeRunsCreate, false, q("use", "gateway", "decide")),
 	"ListDecisionModels": rpc(ScopeRunsCreate, false, q("use", "gateway", "decide")),
 
+	// The Calc tool outside a run, as POST /v1/_calc: any principal, off the
+	// run plane, no question (a pure function that reaches no stored data).
+	"Calc": rpcOpen("", false),
+
 	// The per-user channel surface, as /v1/users/{user_id}/channels/*.
 	"PublishChannel":   rpc(ScopeChannelPublish, false, typeLevel("publish", "channel")),
 	"AckChannel":       rpc(ScopeChannelPublish, false, typeLevel("ack", "channel")),
