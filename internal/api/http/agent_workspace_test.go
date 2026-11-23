@@ -88,10 +88,10 @@ func TestRunOnce_WorkspaceNarrowsFromParentToSubAgent(t *testing.T) {
 	if len(probe.seen) != 2 {
 		t.Fatalf("probe calls = %d, want 2 (parent and child)", len(probe.seen))
 	}
-	if got := probe.seen[0]; got != want {
+	if got := probe.seen[0]; !reflect.DeepEqual(got, want) {
 		t.Errorf("parent's workspace = %+v, want %+v", got, want)
 	}
-	if got := probe.seen[1]; got != want {
+	if got := probe.seen[1]; !reflect.DeepEqual(got, want) {
 		t.Errorf("child's workspace = %+v, want %+v (its own narrowed to the parent's)", got, want)
 	}
 
@@ -112,7 +112,7 @@ func TestRunOnce_WorkspaceNarrowsFromParentToSubAgent(t *testing.T) {
 	if !ok || rec.Spawn == nil {
 		t.Fatalf("child run has no spawn record: %s", child.RunConfig)
 	}
-	if got := tools.WorkspaceFor(rec.Spawn.Workspace); got != want {
+	if got := tools.WorkspaceFor(rec.Spawn.Workspace); !reflect.DeepEqual(got, want) {
 		t.Errorf("recorded parent workspace = %+v, want %+v", got, want)
 	}
 }
@@ -122,7 +122,7 @@ func TestRunOnce_WorkspaceNarrowsFromParentToSubAgent(t *testing.T) {
 // narrowed again to the recorded parent's. A record without the field means
 // the parent had none, and a sub-run with no record fails closed.
 func TestResumedWorkspace_NarrowsAgainAndFailsClosedWithoutARecord(t *testing.T) {
-	def := config.AgentDef{Workspace: &config.AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true}}
+	def := config.AgentDef{Workspace: &config.AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true, Egress: []string{"pypi", "crm"}}}
 	top := store.Run{ID: "r1"}
 	sub := store.Run{ID: "r2", ParentRunID: "r1"}
 	for _, tc := range []struct {
@@ -136,8 +136,16 @@ func TestResumedWorkspace_NarrowsAgainAndFailsClosedWithoutARecord(t *testing.T)
 			&spawnRecord{Workspace: &config.AgentWorkspace{Ops: []string{"read"}, Engine: "container"}},
 			&tools.WorkspacePolicyValue{Read: true, Engine: "container"}},
 		{"sub-run of a parent holding everything", sub,
-			&spawnRecord{Workspace: &config.AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true}},
-			&tools.WorkspacePolicyValue{Read: true, Write: true, Exec: true, Open: true}},
+			&spawnRecord{Workspace: &config.AgentWorkspace{Ops: []string{"read", "write", "exec"}, Open: true, Egress: []string{"crm", "pypi"}}},
+			&tools.WorkspacePolicyValue{Read: true, Write: true, Exec: true, Open: true, Egress: []string{"pypi", "crm"}}},
+		// RFC GW P4: the routes are narrowed again too, never widened by the
+		// definition to routes the parent did not hold.
+		{"sub-run of a parent holding one route", sub,
+			&spawnRecord{Workspace: &config.AgentWorkspace{Ops: []string{"read"}, Open: true, Egress: []string{"pypi", "npm"}}},
+			&tools.WorkspacePolicyValue{Read: true, Open: true, Egress: []string{"pypi"}}},
+		{"sub-run of a parent holding no route", sub,
+			&spawnRecord{Workspace: &config.AgentWorkspace{Ops: []string{"read"}, Open: true}},
+			&tools.WorkspacePolicyValue{Read: true, Open: true}},
 		{"sub-run whose parent had none", sub, &spawnRecord{}, &tools.WorkspacePolicyValue{}},
 		{"sub-run with no record fails closed", sub, nil, &tools.WorkspacePolicyValue{}},
 	} {
@@ -152,19 +160,20 @@ func TestResumedWorkspace_NarrowsAgainAndFailsClosedWithoutARecord(t *testing.T)
 // The spawn record carries the parent's grant through JSON: what is written
 // reads back as the same grant, and "none" is not written at all.
 func TestSpawnRecord_WorkspaceRoundTripsAndNoneIsNotWritten(t *testing.T) {
-	for _, in := range []tools.WorkspacePolicyValue{{}, {Read: true}, {Read: true, Write: true, Exec: true, Open: true, Engine: "container"}} {
+	for _, in := range []tools.WorkspacePolicyValue{{}, {Read: true}, {Read: true, Write: true, Exec: true, Open: true, Engine: "container"},
+		{Read: true, Open: true, Egress: []string{"pypi", "npm"}}} {
 		raw, err := json.Marshal(spawnRecord{Workspace: in.Grant()})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if in == (tools.WorkspacePolicyValue{}) && strings.Contains(string(raw), "workspace") {
+		if !in.Grants() && strings.Contains(string(raw), "workspace") {
 			t.Errorf("a parent with none wrote %s", raw)
 		}
 		var back spawnRecord
 		if err := json.Unmarshal(raw, &back); err != nil {
 			t.Fatal(err)
 		}
-		if got := tools.WorkspaceFor(back.Workspace); got != in {
+		if got := tools.WorkspaceFor(back.Workspace); !reflect.DeepEqual(got, in) {
 			t.Errorf("round trip of %+v gave %+v (%s)", in, got, raw)
 		}
 	}
@@ -188,7 +197,7 @@ func TestRegisterAgent_WorkspaceRoundTrip(t *testing.T) {
 	defer cancel()
 
 	for name, declared := range map[string]*config.AgentWorkspace{
-		"dyn-all":  {Ops: []string{"read", "write", "exec"}, Open: true, Engine: "container"},
+		"dyn-all":  {Ops: []string{"read", "write", "exec"}, Open: true, Egress: []string{"pypi", "npm"}, Engine: "container"},
 		"dyn-read": {Ops: []string{"read"}},
 		"dyn-none": nil,
 	} {
@@ -207,7 +216,8 @@ func TestRegisterAgent_WorkspaceRoundTrip(t *testing.T) {
 		}
 	}
 
-	for _, bad := range []*config.AgentWorkspace{{Ops: []string{"run"}}, {Ops: []string{"read"}, Engine: "vm"}} {
+	for _, bad := range []*config.AgentWorkspace{{Ops: []string{"run"}}, {Ops: []string{"read"}, Engine: "vm"},
+		{Ops: []string{"read"}, Open: true, Egress: []string{"Bad_Name"}}} {
 		if _, err := srv.RegisterAgent(ctx, connector.RegisterAgentRequest{
 			Name: "dyn-bad", SystemPrompt: "code", Tools: []string{"Read"}, Provider: "stub", Model: "stub-model",
 			Workspace: bad,

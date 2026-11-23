@@ -138,7 +138,7 @@ agents:
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec` needs `exec`; `write` and `edit` need `write`; `read`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec` needs `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## The tool
 
@@ -154,6 +154,7 @@ One tool, `Workspace`, with an `op`:
 | `run_cell` | run code in an interpreter that keeps its variables between calls | `name`, `code`, `kernel` (`python` or `node`), `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
 | `checkpoint`, `checkpoints`, `restore`, `delete_checkpoint`, `fork` | record the files, put them back, open a copy; see "Checkpoints and forks" | `name`, `label`, `checkpoint`, `as` |
+| `view` | return a picture in it to the model as an image | `name`, `path` |
 | `read`, `write`, `edit`, `glob`, `grep` | the file tools' operations, relative to the workspace | as the Read, Write, Edit, Glob and Grep tools, without `volume` |
 
 `..`, an absolute path elsewhere and a symlink out of the workspace are refused, on the worker. An argument an op does not take is refused.
@@ -230,6 +231,23 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **How the worker records one.** It probes its disk at start and picks the first mechanism that works, reported as the label `checkpoint:<mechanism>` and in every answer: `clone` (a whole-folder clone on APFS, macOS), `reflink` (each file shares its blocks: xfs with reflink, btrfs, bcachefs), else `copy` (each file copied; a checkpoint or a fork then takes its full size on disk and seconds for a large tree). Never hard links. A worker that serves fan-outs wants a disk with reflinks. Links are copied as links, never followed; a pipe, a socket or a device is left out and named in `skipped`.
 - **Where checkpoints live.** In the worker's root, beside the workspaces (`.loomcycle-checkpoints/<workspace id>/`), never inside one: no command or file op reaches them. They go with their workspace, and a worker's start removes what an interrupted checkpoint left.
 - **The `host` engine has no fixed path.** A fork's Python environment would still name the original's folder, so its `pip` would install into the original. On `host` the worker rewrites the paths in each environment's `pyvenv.cfg` and the text files of its `bin/`, and names them in the answer's `rewritten`. The `container` engine mounts every workspace at `/workspace`, so nothing needs it.
+
+## Looking at a picture
+
+`view` returns a picture from the workspace to the model as an image, so an agent can look at what it made: a chart, a rendered page, a diagram (RFC GW §5.8). It needs the `read` grant and works on a workspace shared with the run through either kind of share, since it only reads.
+
+```json
+{"op": "view", "name": "py", "path": ".loom/cells/cell-3-1.png"}
+```
+```json
+{"bytes": 48213, "name": "py", "path": ".loom/cells/cell-3-1.png"}
+```
+
+- **What it sends.** A PNG, JPEG, GIF or WebP, its type read from the file, not its name. A picture over 1568 pixels on its long side is scaled down first; one whose decoding would take too much memory, judged from its header, is refused. Scaling runs in a conversion worker when the runtime has any. The tool's text gains a line naming the picture's type, size and pixels.
+- **Bounds.** The file may be at most 20 MiB (`too_large` otherwise); a picture as sent at most 3,750,000 bytes.
+- **A model that cannot see images.** The picture is not sent and the call fails saying so; the run goes on. The same applies to any tool that returns a picture.
+- **Kept with the run.** The picture is stored with the run's transcript, so a resumed run shows the model the same picture. The live event carries only the line naming it.
+- **Not yet:** `screenshot`, which loads a page of the workspace's own server in a headless browser, arrives with servers (RFC GW P9) and a worker image that carries a browser.
 
 ## Moving files
 
@@ -329,7 +347,7 @@ agents:
  "workspaces": [{"name": "build", "access": "read"}]}
 ```
 
-**Using one.** The peer names the workspace `<name>@<owner agent id>`; its `Workspace op=list` shows it under `shared_with_me`. With `read` it may use `Workspace read`, `glob` and `grep` on it, and `File` ops that read from `workspace:<name>@<agent id>:<path>` (copy out, stat, ls, extract, import). `read_write` adds `File` writes into it and `Workspace write` and `edit`.
+**Using one.** The peer names the workspace `<name>@<owner agent id>`; its `Workspace op=list` shows it under `shared_with_me`. With `read` it may use `Workspace read`, `view`, `glob` and `grep` on it, and `File` ops that read from `workspace:<name>@<agent id>:<path>` (copy out, stat, ls, extract, import). `read_write` adds `File` writes into it and `Workspace write` and `edit`.
 
 **What a share never allows:** `exec`, a release, a status, and sharing it on. Commands in a workspace are its owner's alone, so two agents never race in one session.
 

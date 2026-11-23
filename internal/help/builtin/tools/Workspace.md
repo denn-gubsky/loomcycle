@@ -5,7 +5,8 @@ description: "Workspace tool — open a directory on a workspace worker, run she
 The `Workspace` tool gives you a **workspace**: a directory on a workspace
 worker, a machine apart from the runtime, where you can run shell commands
 (`exec`), run code in an interpreter that keeps its variables (`run_cell`),
-and read and change files (`read`, `write`, `edit`, `glob`, `grep`).
+read and change files (`read`, `write`, `edit`, `glob`, `grep`), and look at
+pictures it holds (`view`).
 Use it for work that needs a real shell and toolchains such as Python and
 Node. For files you keep, use your volumes and the Read, Write and Edit tools.
 
@@ -13,7 +14,7 @@ Node. For files you keep, use your volumes and the Read, Write and Edit tools.
 
 Your agent's grant decides which operations work: `open` needs the grant to
 open workspaces; `exec`, `run_cell` and `reset_kernel` need `exec`; `write`
-and `edit` need `write`; `read`, `glob`, `grep`, `list` and `status` need
+and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need
 `read`; `share` and `unshare` need the grant to share; `checkpoint`,
 `restore` and `delete_checkpoint` need `write`, `checkpoints` needs `read`,
 and `fork` needs the grant to open workspaces. Anything else is
@@ -47,6 +48,7 @@ up to 1 MiB.
 | `run_cell` | run Python or Node code in an interpreter that keeps its variables | `name`, `code`, `kernel`, `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
 | `read` | a file's text | `name`, `path`, `offset`, `limit`, `line_numbers` |
+| `view` | look at a picture (PNG, JPEG, GIF, WebP) | `name`, `path` |
 | `write` | create or replace a file whole | `name`, `path`, `content` |
 | `edit` | replace exact text in a file | `name`, `path`, `old_string`, `new_string`, `replace_all` |
 | `glob` | find files by name | `name`, `pattern`, `path` |
@@ -80,7 +82,7 @@ Workspace/checkpoint and Workspace/fork.
 
 Another run of your user may share one of its workspaces with you. `list`
 shows it under `shared_with_me`, named `<name>@<its agent id>`. Pass that as
-`name` to `read`, `glob` and `grep`, and with a `read_write` share to `write`
+`name` to `read`, `view`, `glob` and `grep`, and with a `read_write` share to `write`
 and `edit`. Nothing else takes it: a share never lets you run a command,
 release the workspace or share it on. In `File` it is
 `workspace:<name>@<agent id>:<path>`. Your own grant still applies.

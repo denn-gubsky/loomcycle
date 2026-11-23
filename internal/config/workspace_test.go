@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -16,8 +17,9 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 	want := WorkspaceConfig{Mode: WorkspaceModeOff, MaxPerRun: 4, Exec: WorkspaceExecConfig{DefaultTimeoutS: 120, MaxTimeoutS: 900}, LostAfterS: 300,
 		DiskQuotaMB: 2048, Copy: WorkspaceCopyConfig{MaxFiles: 2000, MaxBytes: 1 << 30},
 		Checkout: WorkspaceCheckoutConfig{MaxDocuments: 500, MaxBytes: 256 << 20}, Convert: WorkspaceConvertConfig{MemoryLimitMB: 1024},
-		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 5}, Checkpoint: WorkspaceCheckpointConfig{MaxPerWorkspace: 8}}
-	if got != want {
+		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 5}, Checkpoint: WorkspaceCheckpointConfig{MaxPerWorkspace: 8},
+		Egress: WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}}}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
 	if got.RemoteWorkers() || got.LocalWorker() || got.Serves() {
@@ -36,8 +38,9 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 	want := WorkspaceConfig{Mode: WorkspaceModeRemote, MaxPerRun: 2, MaxPerTenant: 10, Exec: WorkspaceExecConfig{DefaultTimeoutS: 30, MaxTimeoutS: 60}, LostAfterS: 90,
 		DiskQuotaMB: 16 << 20, Copy: WorkspaceCopyConfig{MaxFiles: 50, MaxBytes: 4096},
 		Checkout: WorkspaceCheckoutConfig{MaxDocuments: 20, MaxBytes: 9000}, Convert: WorkspaceConvertConfig{MemoryLimitMB: 512},
-		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 12}, Checkpoint: WorkspaceCheckpointConfig{MaxPerWorkspace: 3}}
-	if got := cfg.Workspace.Resolved(); got != want {
+		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 12}, Checkpoint: WorkspaceCheckpointConfig{MaxPerWorkspace: 3},
+		Egress: WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}}}
+	if got := cfg.Workspace.Resolved(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
 }

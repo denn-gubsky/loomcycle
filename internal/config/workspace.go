@@ -61,6 +61,9 @@ type WorkspaceConfig struct {
 	Convert WorkspaceConvertConfig `yaml:"convert,omitempty"`
 	// Kernel configures the persistent interpreters (RFC GW §5.7).
 	Kernel WorkspaceKernelConfig `yaml:"kernel,omitempty"`
+	// Egress is the named routes a workspace reaches the network through
+	// (RFC GW §6.3).
+	Egress WorkspaceEgressConfig `yaml:"egress,omitempty"`
 	// Checkpoint bounds a workspace's checkpoints (RFC GW §5.4).
 	Checkpoint WorkspaceCheckpointConfig `yaml:"checkpoint,omitempty"`
 }
@@ -200,6 +203,7 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	if w.Checkpoint.MaxPerWorkspace == 0 {
 		w.Checkpoint.MaxPerWorkspace = DefaultWorkspaceCheckpoints
 	}
+	w.Egress = w.Egress.Resolved()
 	return w
 }
 
@@ -310,6 +314,9 @@ func validateWorkspace(c *Config) error {
 	}
 	if c := w.Checkpoint.MaxPerWorkspace; c < 0 || c > maxWorkspaceCheckpoints {
 		return fmt.Errorf("workspace.checkpoint.max_per_workspace: %d is out of range (1 to %d)", c, maxWorkspaceCheckpoints)
+	}
+	if err := validateWorkspaceEgress(w.Egress); err != nil {
+		return err
 	}
 	r := w.Resolved()
 	if r.Exec.DefaultTimeoutS > r.Exec.MaxTimeoutS {
