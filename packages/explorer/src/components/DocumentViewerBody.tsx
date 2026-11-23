@@ -37,12 +37,16 @@ import ColorSchemeEditor from "./ColorSchemeEditor";
 import Connections from "./Connections";
 import CrossReferences from "./CrossReferences";
 import DocUnavailable from "./DocUnavailable";
-import HistoryModal from "./HistoryModal";
+import HistoryModal, { HistoryView } from "./HistoryModal";
 import Markdown from "./Markdown";
 import MermaidDiagram from "./Mermaid";
 import MoreMenu, { type MoreMenuItem } from "./MoreMenu";
 import Splitter from "./Splitter";
 import { TreeMarks } from "./TreeRow";
+import { CollapseButton, PaneIcon, PaneRail, type PaneIconKind } from "./Pane";
+import { CardScopeContext, useButtonCard, type CardScope, type CardSpec } from "./AnnotationCard";
+import { shortcutApplies, usePersistedChoice, usePersistedFlag } from "../lib/persisted";
+import { useNarrow } from "../lib/useNarrow";
 
 // imageAlt derives an image chunk's alt text: the fields.alt override, else the
 // chunk title, else a generic label (RFC BO).
@@ -66,8 +70,9 @@ const DETAIL_BATCH = 8;
 // outline's current row. Each chunk carries its own action bar (on hover or
 // keyboard focus).
 //
-// The annotation, references and classification surfaces wait here, closed by
-// default, behind toggles in the header, until they get their side panels.
+// The annotation, references, classification and history panels open one at a
+// time beside the body, from a rail of icons at its right edge that shows a
+// count or a dot for each. The outline collapses to a rail of its own.
 //
 // This is the context-consuming body: it reads the injected ExplorerDataLayer
 // via useExplorerData() and is embedded by both the standalone <DocumentViewer>
@@ -130,8 +135,29 @@ export interface DocumentViewerBodyProps {
   };
 }
 
-// The interim panels (RFC GZ phase 2): one open at a time, closed by default.
-type Panel = "annotation" | "references" | "classification";
+// The side panels (RFC GZ): one open at a time, closed by default, the choice
+// remembered per browser.
+type Panel = "annotation" | "references" | "classification" | "history";
+const PANELS: readonly Panel[] = ["annotation", "references", "classification", "history"];
+const PANEL_LABEL: Record<Panel, string> = {
+  annotation: "annotation",
+  references: "references",
+  classification: "classification",
+  history: "history",
+};
+
+// Where the layout is remembered, beside the splitter widths.
+const PANEL_KEY = "loomcycle.explorer.panel";
+const OUTLINE_KEY = "loomcycle.explorer.collapsed.outline";
+// Below this width the outline folds to its rail and a side panel overlays
+// the body instead of pushing it.
+const NARROW_PX = 640;
+// Below this width an open side panel lies over the body: pushing it would
+// leave the text too little room to read. The open outline takes its own
+// share first, so with it showing the panel needs a wider viewer to sit beside
+// the body.
+const OVERLAY_PX = 960;
+const OVERLAY_WITH_OUTLINE_PX = 1200;
 
 export default function DocumentViewerBody({
   documentId,
@@ -205,7 +231,31 @@ export default function DocumentViewerBody({
   const [docAnnotations, setDocAnnotations] = useState<Annotation[]>([]);
   const [chunkAnnotations, setChunkAnnotations] = useState<Annotation[]>([]);
   const [annotationReload, setAnnotationReload] = useState(0);
-  const [panel, setPanel] = useState<Panel | null>(null);
+  const [panel, setPanelStored] = usePersistedChoice<Panel>(PANEL_KEY, PANELS);
+  // Whether the reader has opened or closed a panel on this visit. A panel
+  // only remembered from an earlier visit is not reopened over the body.
+  // State, not a ref: picking the remembered panel leaves the stored choice
+  // unchanged, and the view must still redraw to show it.
+  const [panelTouched, setPanelTouched] = useState(false);
+  const setPanel = useCallback(
+    (v: Panel | null | ((cur: Panel | null) => Panel | null)) => {
+      setPanelTouched(true);
+      setPanelStored(v);
+    },
+    [setPanelStored],
+  );
+  const [outlineCollapsed, setOutlineCollapsed] = usePersistedFlag(OUTLINE_KEY);
+  // On a narrow body the outline is a rail unless the reader opens it, and
+  // then it takes the width until a chunk is picked.
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const narrow = useNarrow(viewerRef, NARROW_PX);
+  const [narrowOutline, setNarrowOutline] = useState(false);
+  const outlineHidden = narrow ? !narrowOutline : outlineCollapsed;
+  const overlay = useNarrow(viewerRef, outlineHidden ? OVERLAY_PX : OVERLAY_WITH_OUTLINE_PX);
+  const setOutlineHidden = useCallback(
+    (hide: boolean) => (narrow ? setNarrowOutline(!hide) : setOutlineCollapsed(hide)),
+    [narrow, setOutlineCollapsed],
+  );
   const [downloading, setDownloading] = useState<string | undefined>(undefined);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -230,12 +280,17 @@ export default function DocumentViewerBody({
   // it loads and moves it — until the reader scrolls the page themselves.
   const pageRef = useRef<HTMLDivElement>(null);
   const pinRef = useRef<string | null>(null);
+  // Where the page was last scrolled to on the pin's behalf: a scroll that
+  // ends anywhere else came from the reader (or a script), whatever moved it.
+  const pinnedTop = useRef<number | null>(null);
   const [pinSeq, setPinSeq] = useState(0);
   const goTo = useCallback((id: string | undefined) => {
     if (!id) return;
     pinRef.current = id;
     setSelectedId(id);
     setPinSeq((n) => n + 1);
+    // On a narrow body the outline was laid over the page to pick from.
+    setNarrowOutline(false);
   }, []);
 
   const tree = useMemo(() => buildChunkTree(chunks), [chunks]);
@@ -428,10 +483,14 @@ export default function DocumentViewerBody({
     }
     setRootFields(rootDetail.fields);
   }, [data, documentId, rootDetail]);
-  const classificationPending = useMemo(
-    () => (data.documentAcceptClassification ? !!pendingClassification(rootFields) : false),
-    [data, rootFields],
-  );
+  // How many classification items wait for a ruling: the proposed type, each
+  // proposed tag, each proposed statement. 0 → nothing pending.
+  const pendingCount = useMemo(() => {
+    if (!data.documentAcceptClassification) return 0;
+    const p = pendingClassification(rootFields);
+    return p ? (p.proposedType ? 1 : 0) + p.proposedTags.length + p.statementCount : 0;
+  }, [data, rootFields]);
+  const classificationPending = pendingCount > 0;
 
   // The document's annotation, read from its root chunk. Best-effort: a failed
   // read shows no annotation rather than an error over the document.
@@ -572,7 +631,6 @@ export default function DocumentViewerBody({
     setRootFields(undefined);
     setDocAnnotations([]);
     setChunkAnnotations([]);
-    setPanel(null);
   }, [documentId, scope]);
 
   // Scroll the page to the held chunk — on a pick, and again as the bodies
@@ -586,37 +644,63 @@ export default function DocumentViewerBody({
     if (!el) return;
     const top = el.getBoundingClientRect().top - page.getBoundingClientRect().top + page.scrollTop;
     page.scrollTop = Math.max(0, top - 8);
+    pinnedTop.current = page.scrollTop;
   }, [pinSeq, details, flat]);
 
   // The reader's own scrolling lets go of the held chunk; from then on the
-  // chunk at the top of the page is the current one.
+  // chunk at the top of the page is the current one. Wheel, touch, keys and
+  // a press say so at once; a scroll that fires none of them (a scrollbar
+  // drag, a host's script) says so by ending somewhere the pin did not put the
+  // page. The pin's own scroll lands where it was told, so it never lets go of
+  // itself.
   useEffect(() => {
     const page = pageRef.current;
     if (!page) return;
     const release = () => {
       pinRef.current = null;
+      pinnedTop.current = null;
+    };
+    const onScroll = () => {
+      if (pinRef.current === null) return;
+      const at = pinnedTop.current;
+      if (at === null || Math.abs(page.scrollTop - at) > 2) {
+        release();
+        followRef.current(); // the outline takes up the reading position
+      }
     };
     const opts = { passive: true } as const;
     page.addEventListener("wheel", release, opts);
     page.addEventListener("touchstart", release, opts);
     page.addEventListener("keydown", release);
     page.addEventListener("pointerdown", release);
+    page.addEventListener("scroll", onScroll, opts);
     return () => {
       page.removeEventListener("wheel", release);
       page.removeEventListener("touchstart", release);
       page.removeEventListener("keydown", release);
       page.removeEventListener("pointerdown", release);
+      page.removeEventListener("scroll", onScroll);
     };
   }, [unavailable]);
 
   // The outline follows the reading position: the current chunk is the first
   // whose section crosses the top third of the page. One observer for every
   // section, so a long document costs nothing while it is not scrolled.
+  // followRef recomputes the current chunk from what the observer last saw —
+  // for a pin let go by a scroll that crossed no section boundary.
+  const followRef = useRef<() => void>(() => {});
   useEffect(() => {
     const page = pageRef.current;
     if (!page || typeof IntersectionObserver === "undefined" || flat.length === 0) return;
     const order = new Map(flat.map((f, i) => [f.row.id, i]));
     const visible = new Set<string>();
+    const follow = () => {
+      if (pinRef.current) return;
+      let best: string | undefined;
+      for (const id of visible) if (best === undefined || order.get(id)! < order.get(best)!) best = id;
+      if (best) setSelectedId((cur) => (cur === best ? cur : best));
+    };
+    followRef.current = follow;
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
@@ -625,15 +709,15 @@ export default function DocumentViewerBody({
           if (e.isIntersecting) visible.add(id);
           else visible.delete(id);
         }
-        if (pinRef.current) return;
-        let best: string | undefined;
-        for (const id of visible) if (best === undefined || order.get(id)! < order.get(best)!) best = id;
-        if (best) setSelectedId((cur) => (cur === best ? cur : best));
+        follow();
       },
       { root: page, rootMargin: "0px 0px -66% 0px", threshold: 0 },
     );
     page.querySelectorAll<HTMLElement>("[data-chunk-id]").forEach((el) => io.observe(el));
-    return () => io.disconnect();
+    return () => {
+      io.disconnect();
+      followRef.current = () => {};
+    };
   }, [flat]);
 
   const onSelect = useCallback((n: ChunkNode) => goTo(n.row.id), [goTo]);
@@ -849,8 +933,53 @@ export default function DocumentViewerBody({
     [data, documentId, scope, browse, rootTitle],
   );
 
-  const togglePanel = (p: Panel) => setPanel((cur) => (cur === p ? null : p));
   const classifyOffered = !!data.documentClassify || classificationPending;
+  // The rail: every panel this document can show. A panel remembered from
+  // another document that this one does not offer stays closed here.
+  const offered: Panel[] = [
+    ...(annotationOffered ? (["annotation"] as const) : []),
+    "references",
+    ...(classifyOffered ? (["classification"] as const) : []),
+    "history",
+  ];
+  // Laid over the body, a panel opens only when the reader asks for it here:
+  // one left open on a wide screen would otherwise cover the page on a phone.
+  const openPanel = panel && offered.includes(panel) && (!overlay || panelTouched) ? panel : null;
+  // Toggles against what is SHOWN, so the icon of a remembered panel that was
+  // left closed opens it instead of clearing it.
+  const togglePanel = (p: Panel) => setPanel(openPanel === p ? null : p);
+
+  // Keyboard: "{" folds the outline, "]" the side panel (the last one open,
+  // else references). The Path console takes "[" for its tree.
+  const lastPanel = useRef<Panel>("references");
+  if (openPanel) lastPanel.current = openPanel;
+  const keysRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keysRef.current = (e: KeyboardEvent) => {
+    if (unavailable || !shortcutApplies(e, viewerRef.current)) return;
+    if (e.key === "{") {
+      setOutlineHidden(!outlineHidden);
+    } else if (e.key === "]") {
+      setPanel(openPanel ? null : offered.includes(lastPanel.current) ? lastPanel.current : "references");
+    } else return;
+    e.preventDefault();
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keysRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // The rail's annotation icon carries the document's card.
+  const docCard: CardSpec = {
+    title: rootTitle,
+    type: docType,
+    status: docStatus,
+    brief: documentBrief?.brief,
+    abstract: documentBrief?.abstract,
+    stale: documentBrief?.stale || undefined,
+  };
+  const annotationStale = docAnnotations.some((a) => a.stale);
+  const cardScope = useMemo<CardScope>(() => ({ data, scope, browse }), [data, scope, browse]);
 
   // Everything on the document that is not "edit" (RFC GZ). The chunk actions
   // act on the current chunk — the one picked or scrolled to — as the toolbar's
@@ -990,289 +1119,303 @@ export default function DocumentViewerBody({
   ];
 
   return (
-    <div className="doc-viewer">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/gif,image/webp"
-        style={{ display: "none" }}
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          e.target.value = ""; // allow re-selecting the same file
-          if (f) void addImageFile(f);
-        }}
-      />
-      <div className="doc-header" style={headerTint}>
-        {pathLabel && <span className="doc-header-path">{pathLabel}</span>}
-        <h1 className="doc-title" title={rootTitle}>
-          {rootTitle}
-        </h1>
-        <TreeMarks type={docType} status={docStatus} statusColor={statusDotColor(docStatus, tintScheme)} />
-        <div className="doc-header-actions">
-          {copied && (
-            <span className="doc-header-note" role="status">
-              {copied}
-            </span>
-          )}
-          {!unavailable && (
-            <div className="doc-panel-toggles" role="group" aria-label="Panels">
-              {annotationOffered && (
-                <button
-                  type="button"
-                  aria-pressed={panel === "annotation"}
-                  aria-controls="doc-panel"
-                  onClick={() => togglePanel("annotation")}
-                  title="The document's annotation, and the current chunk's"
-                >
-                  annotation
-                </button>
-              )}
-              <button
-                type="button"
-                aria-pressed={panel === "references"}
-                aria-controls="doc-panel"
-                onClick={() => togglePanel("references")}
-                title="The current chunk's references, the relationship graph and connections"
-              >
-                references{refCount > 0 && <span className="doc-panel-count">{refCount}</span>}
-              </button>
-              {classifyOffered && (
-                <button
-                  type="button"
-                  aria-pressed={panel === "classification"}
-                  aria-controls="doc-panel"
-                  onClick={() => togglePanel("classification")}
-                  title={classificationPending ? "A classification is waiting for review" : "Classification"}
-                >
-                  classification{classificationPending && <span className="doc-panel-dot" aria-label="pending" />}
-                </button>
-              )}
-            </div>
-          )}
-          <button
-            type="button"
-            className="doc-edit"
-            onClick={() => rootDetail && setEditing(rootDetail)}
-            disabled={!rootDetail}
-            title="Edit the document's title, type, status and opening text"
-          >
-            <BarIcon kind="edit" />
-            edit
-          </button>
-          <MoreMenu groups={menuGroups} busy={downloading} label="Document actions" />
+    <CardScopeContext.Provider value={cardScope}>
+      <div className={`doc-viewer${narrow ? " narrow" : ""}${overlay ? " panel-over" : ""}`} ref={viewerRef}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = ""; // allow re-selecting the same file
+            if (f) void addImageFile(f);
+          }}
+        />
+        <div className="doc-header" style={headerTint}>
+          {pathLabel && <div className="doc-header-path">{pathLabel}</div>}
+          <h1 className="doc-title" title={rootTitle}>
+            {rootTitle}
+          </h1>
+          <TreeMarks type={docType} status={docStatus} statusColor={statusDotColor(docStatus, tintScheme)} />
+          <div className="doc-header-actions">
+            {copied && (
+              <span className="doc-header-note" role="status">
+                {copied}
+              </span>
+            )}
+            <button
+              type="button"
+              className="doc-edit"
+              onClick={() => rootDetail && setEditing(rootDetail)}
+              disabled={!rootDetail}
+              title="Edit the document's title, type, status and opening text"
+            >
+              <BarIcon kind="edit" />
+              <span className="doc-edit-label">edit</span>
+            </button>
+            <MoreMenu groups={menuGroups} busy={downloading} label="Document actions" />
+          </div>
         </div>
-      </div>
-      {err && <div className="paths-err">{err}</div>}
-      {!unavailable && panel && (
-        <div className="doc-panel" id="doc-panel" role="region" aria-label={panel}>
-          <button type="button" className="doc-panel-close" onClick={() => setPanel(null)} aria-label="Close the panel">
-            ×
-          </button>
-          {panel === "annotation" && rootChunkId && (
-            <>
-              <div className="doc-annotation">
-                <h2 className="doc-panel-heading">Document</h2>
-                <AnnotationBrief record={documentBrief} />
-                <AnnotationPanel
-                  key={rootChunkId}
-                  records={docAnnotations}
-                  newLevel={annotationLevelFor(true)}
-                  onSave={saveAnnotation?.(rootChunkId)}
-                  onRegenerate={regenerateAnnotation?.(rootChunkId)}
+        {err && <div className="paths-err">{err}</div>}
+        {unavailable ? (
+          <DocUnavailable documentId={documentId} scope={scope} detail={loadErr ?? undefined} />
+        ) : (
+          <div className="doc-body">
+            {/* The outline | page border is draggable and its width remembered
+                per browser; the outline also folds to a rail with its count. */}
+            <Splitter
+              className="doc-split"
+              defaultLeftWidth={240}
+              minLeftWidth={160}
+              minRightWidth={320}
+              storageKey="loomcycle.explorer.split.doc"
+              hideLeft={outlineHidden}
+              hideRight={narrow && !outlineHidden}
+              onHandleDoubleClick={() => setOutlineHidden(true)}
+              leftRail={
+                <PaneRail
+                  side="left"
+                  label="chunk outline"
+                  icon="outline"
+                  count={chunks.length}
+                  countLabel={chunks.length === 1 ? "chunk" : "chunks"}
+                  shortcut="{"
+                  onExpand={() => setOutlineHidden(false)}
                 />
-              </div>
-              {selectedId && selectedId !== rootChunkId && (
-                <div className="doc-annotation">
-                  <h2 className="doc-panel-heading">{currentTitle}</h2>
-                  <AnnotationBrief record={selectedAnnotations[0]} />
-                  <AnnotationPanel
-                    key={selectedId}
-                    records={selectedAnnotations}
-                    newLevel={annotationLevelFor(false)}
-                    onSave={saveAnnotation?.(selectedId)}
-                    onRegenerate={regenerateAnnotation?.(selectedId)}
-                  />
+              }
+            >
+              <div className="doc-chunktree">
+                <div className="pane-head">
+                  <span className="pane-head-label">Outline</span>
+                  <span className="pane-head-count">{chunks.length}</span>
+                  <CollapseButton label="chunk outline" side="left" shortcut="{" onClick={() => setOutlineHidden(true)} />
                 </div>
-              )}
-            </>
-          )}
-          {panel === "references" && (
-            <div className="doc-links-pane">
-              {edges.length === 0 && <p className="doc-refs-empty">This document has no links.</p>}
-              <CrossReferences
-                edges={edges}
-                incomplete={edgesIncomplete}
-                documentId={documentId}
-                selectedId={selectedId}
-                onSelectChunk={goTo}
-                onOpenDocument={onOpenDocument ? openDocument : undefined}
-                onRuleStatement={ruleStatement}
-              />
-              {/* RFC BS — backlinks / related / unlinked mentions for the current
-                  chunk, lazily fetched when its section is expanded. */}
-              <Connections
-                documentId={documentId}
-                selectedId={selectedId}
-                scope={scope}
-                browse={browse}
-                onSelectChunk={goTo}
-                onOpenDocument={onOpenDocument ? openDocument : undefined}
-                refreshKey={edgesReload}
-                review={review}
-              />
-            </div>
-          )}
-          {panel === "classification" &&
-            (classifyKey === 0 && !classificationPending ? (
-              <div className="doc-classify">
-                <p className="doc-classify-hint">Nothing is waiting for review.</p>
-                {data.documentClassify && (
-                  <button type="button" onClick={() => setClassifyKey((n) => n + 1)}>
-                    classify this document
-                  </button>
+                {loading && chunks.length === 0 ? (
+                  <div className="empty">
+                    <p>Loading…</p>
+                  </div>
+                ) : (
+                  <DocumentChunkTree
+                    tree={tree}
+                    selectedId={selectedId}
+                    onSelect={onSelect}
+                    colorEnabled={colorEnabled}
+                    scheme={meta?.color_scheme}
+                    documentColor={documentColor}
+                    linkedIds={linkedIds}
+                    documentType={docType}
+                    documentStatus={docStatus}
+                  />
                 )}
               </div>
-            ) : (
-              <Classification
-                key={`${scope}:${documentId}`}
-                documentId={documentId}
-                scope={scope}
-                browse={browse}
-                rootFields={rootFields}
-                requestKey={classifyKey}
-                onClose={() => setClassifyKey(0)}
-                onChanged={refresh}
-              />
-            ))}
-        </div>
-      )}
-      {unavailable ? (
-        <DocUnavailable documentId={documentId} scope={scope} detail={loadErr ?? undefined} />
-      ) : (
-        // The outline/page border is draggable; the width is remembered per browser.
-        <Splitter
-          className="doc-split"
-          defaultLeftWidth={240}
-          minLeftWidth={160}
-          minRightWidth={320}
-          storageKey="loomcycle.explorer.split.doc"
-        >
-          <div className="doc-chunktree">
-            {loading && chunks.length === 0 ? (
-              <div className="empty">
-                <p>Loading…</p>
+              <div className="doc-page" ref={pageRef} tabIndex={-1}>
+                <article className="doc-article" aria-label={rootTitle}>
+                  {flat.map(({ row, depth }) => (
+                    <ChunkSection
+                      key={row.id}
+                      row={row}
+                      depth={depth}
+                      detail={details.get(row.id)}
+                      error={detailErrs.get(row.id)}
+                      current={row.id === selectedId}
+                      source={sourceOpen.has(row.id)}
+                      statusColor={statusDotColor(row.status, tintScheme)}
+                      scope={scope}
+                      browse={browse}
+                      onPick={pickChunk}
+                      onToggleSource={toggleSource}
+                      onEdit={setEditing}
+                      onHistory={setHistoryFor}
+                      onCopyId={copyChunkId}
+                    />
+                  ))}
+                </article>
               </div>
-            ) : (
-              <DocumentChunkTree
-                tree={tree}
-                selectedId={selectedId}
-                onSelect={onSelect}
-                colorEnabled={colorEnabled}
-                scheme={meta?.color_scheme}
-                documentColor={documentColor}
-                linkedIds={linkedIds}
-                documentType={docType}
-                documentStatus={docStatus}
-              />
+            </Splitter>
+            {openPanel && (
+              <aside className="doc-side" id="doc-side" aria-label={`${PANEL_LABEL[openPanel]} panel`}>
+                <div className="pane-head">
+                  <span className="pane-head-label">{PANEL_LABEL[openPanel]}</span>
+                  <CollapseButton label={`${PANEL_LABEL[openPanel]} panel`} side="right" shortcut="]" onClick={() => setPanel(null)} />
+                </div>
+                <div className="doc-side-body">
+                  {openPanel === "annotation" && rootChunkId && (
+                    <>
+                      <div className="doc-annotation">
+                        <h2 className="doc-panel-heading">Document</h2>
+                        <AnnotationBrief record={documentBrief} />
+                        <AnnotationPanel
+                          key={rootChunkId}
+                          records={docAnnotations}
+                          newLevel={annotationLevelFor(true)}
+                          onSave={saveAnnotation?.(rootChunkId)}
+                          onRegenerate={regenerateAnnotation?.(rootChunkId)}
+                        />
+                      </div>
+                      {selectedId && selectedId !== rootChunkId && (
+                        <div className="doc-annotation">
+                          <h2 className="doc-panel-heading">{currentTitle}</h2>
+                          <AnnotationBrief record={selectedAnnotations[0]} />
+                          <AnnotationPanel
+                            key={selectedId}
+                            records={selectedAnnotations}
+                            newLevel={annotationLevelFor(false)}
+                            onSave={saveAnnotation?.(selectedId)}
+                            onRegenerate={regenerateAnnotation?.(selectedId)}
+                          />
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {openPanel === "references" && (
+                    <div className="doc-links-pane">
+                      {edges.length === 0 && <p className="doc-refs-empty">This document has no links.</p>}
+                      <CrossReferences
+                        edges={edges}
+                        incomplete={edgesIncomplete}
+                        documentId={documentId}
+                        selectedId={selectedId}
+                        onSelectChunk={goTo}
+                        onOpenDocument={onOpenDocument ? openDocument : undefined}
+                        onRuleStatement={ruleStatement}
+                      />
+                      {/* RFC BS — backlinks / related / unlinked mentions for the
+                          current chunk, lazily fetched when its section opens. */}
+                      <Connections
+                        documentId={documentId}
+                        selectedId={selectedId}
+                        scope={scope}
+                        browse={browse}
+                        onSelectChunk={goTo}
+                        onOpenDocument={onOpenDocument ? openDocument : undefined}
+                        refreshKey={edgesReload}
+                        review={review}
+                      />
+                    </div>
+                  )}
+                  {openPanel === "classification" &&
+                    (classifyKey === 0 && !classificationPending ? (
+                      <div className="doc-classify">
+                        <p className="doc-classify-hint">Nothing is waiting for review.</p>
+                        {data.documentClassify && (
+                          <button type="button" onClick={() => setClassifyKey((n) => n + 1)}>
+                            classify this document
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <Classification
+                        key={`${scope}:${documentId}`}
+                        documentId={documentId}
+                        scope={scope}
+                        browse={browse}
+                        rootFields={rootFields}
+                        requestKey={classifyKey}
+                        onClose={() => setClassifyKey(0)}
+                        onChanged={refresh}
+                      />
+                    ))}
+                  {openPanel === "history" &&
+                    (selectedId ? (
+                      <>
+                        <h2 className="doc-panel-heading">{currentTitle}</h2>
+                        <HistoryView key={selectedId} chunkId={selectedId} scope={scope} browse={browse} />
+                      </>
+                    ) : (
+                      <p className="doc-empty-body">Select a chunk to see its history.</p>
+                    ))}
+                </div>
+              </aside>
             )}
-          </div>
-          <div className="doc-page" ref={pageRef} tabIndex={-1}>
-            <article className="doc-article" aria-label={rootTitle}>
-              {flat.map(({ row, depth }) => (
-                <ChunkSection
-                  key={row.id}
-                  row={row}
-                  depth={depth}
-                  detail={details.get(row.id)}
-                  error={detailErrs.get(row.id)}
-                  current={row.id === selectedId}
-                  source={sourceOpen.has(row.id)}
-                  statusColor={statusDotColor(row.status, tintScheme)}
-                  scope={scope}
-                  browse={browse}
-                  onPick={pickChunk}
-                  onToggleSource={toggleSource}
-                  onEdit={setEditing}
-                  onHistory={setHistoryFor}
-                  onCopyId={copyChunkId}
+            <nav className="doc-rail" aria-label="Panels">
+              {offered.map((p) => (
+                <RailButton
+                  key={p}
+                  panel={p}
+                  open={openPanel === p}
+                  onClick={() => togglePanel(p)}
+                  count={p === "references" ? refCount : p === "classification" ? pendingCount : undefined}
+                  dot={p === "annotation" && annotationStale}
+                  card={p === "annotation" ? docCard : undefined}
                 />
               ))}
-            </article>
+            </nav>
           </div>
-        </Splitter>
-      )}
-      {assistantOpen && renderAssistant && (
-        <div className="doc-assistant">
-          {renderAssistant({
-            documentId,
-            scope,
-            subject: principal?.subject,
-            // Pass the viewer's own reload so the injected assistant can refresh
-            // the outline + page after a turn mutates the document.
-            onChanged: refresh,
-          })}
-        </div>
-      )}
-      {editing && (
-        <ChunkEditorModal
-          chunk={editing}
-          scope={scope}
-          browse={browse}
-          onClose={() => setEditing(null)}
-          onSaved={refresh}
-        />
-      )}
-      {retyping && (
-        <SubjectTypeModal
-          chunk={retyping}
-          scope={scope}
-          browse={browse}
-          onClose={() => setRetyping(null)}
-          onSaved={refresh}
-        />
-      )}
-      {historyFor && (
-        <HistoryModal
-          chunkId={historyFor.id}
-          chunkTitle={historyFor.title}
-          scope={scope}
-          browse={browse}
-          onClose={() => setHistoryFor(null)}
-        />
-      )}
-      {colorsOpen && rootChunkId && (
-        <ColorSchemeEditor
-          documentId={documentId}
-          rootChunkId={rootChunkId}
-          docType={meta?.type}
-          docStatus={meta?.status}
-          chunkStatuses={chunkStatuses}
-          scope={scope}
-          browse={browse}
-          onClose={() => setColorsOpen(false)}
-          onSaved={refresh}
-        />
-      )}
-      {confirmDelete && selectedDetail && (
-        <div className="modal-overlay" onClick={() => setConfirmDelete(false)}>
-          <div className="modal chunk-delete-confirm" onClick={(e) => e.stopPropagation()}>
-            <h3>Delete chunk</h3>
-            <p className="modal-context">
-              Delete “{selectedDetail.title || "(untitled)"}” and all of its sub-chunks? This
-              cannot be undone.
-            </p>
-            <div className="modal-buttons">
-              <button type="button" onClick={() => setConfirmDelete(false)}>
-                cancel
-              </button>
-              <button type="button" className="danger" onClick={() => void deleteSelected()}>
-                delete
-              </button>
+        )}
+        {assistantOpen && renderAssistant && (
+          <div className="doc-assistant">
+            {renderAssistant({
+              documentId,
+              scope,
+              subject: principal?.subject,
+              // Pass the viewer's own reload so the injected assistant can refresh
+              // the outline + page after a turn mutates the document.
+              onChanged: refresh,
+            })}
+          </div>
+        )}
+        {editing && (
+          <ChunkEditorModal
+            chunk={editing}
+            scope={scope}
+            browse={browse}
+            onClose={() => setEditing(null)}
+            onSaved={refresh}
+          />
+        )}
+        {retyping && (
+          <SubjectTypeModal
+            chunk={retyping}
+            scope={scope}
+            browse={browse}
+            onClose={() => setRetyping(null)}
+            onSaved={refresh}
+          />
+        )}
+        {historyFor && (
+          <HistoryModal
+            chunkId={historyFor.id}
+            chunkTitle={historyFor.title}
+            scope={scope}
+            browse={browse}
+            onClose={() => setHistoryFor(null)}
+          />
+        )}
+        {colorsOpen && rootChunkId && (
+          <ColorSchemeEditor
+            documentId={documentId}
+            rootChunkId={rootChunkId}
+            docType={meta?.type}
+            docStatus={meta?.status}
+            chunkStatuses={chunkStatuses}
+            scope={scope}
+            browse={browse}
+            onClose={() => setColorsOpen(false)}
+            onSaved={refresh}
+          />
+        )}
+        {confirmDelete && selectedDetail && (
+          <div className="modal-overlay" onClick={() => setConfirmDelete(false)}>
+            <div className="modal chunk-delete-confirm" onClick={(e) => e.stopPropagation()}>
+              <h3>Delete chunk</h3>
+              <p className="modal-context">
+                Delete “{selectedDetail.title || "(untitled)"}” and all of its sub-chunks? This
+                cannot be undone.
+              </p>
+              <div className="modal-buttons">
+                <button type="button" onClick={() => setConfirmDelete(false)}>
+                  cancel
+                </button>
+                <button type="button" className="danger" onClick={() => void deleteSelected()}>
+                  delete
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </CardScopeContext.Provider>
   );
 }
 
@@ -1381,6 +1524,64 @@ const ChunkSection = memo(function ChunkSection({
     </section>
   );
 });
+
+const RAIL_ICON: Record<Panel, PaneIconKind> = {
+  annotation: "annotation",
+  references: "references",
+  classification: "classification",
+  history: "history",
+};
+
+// RailButton opens one side panel. Its label says what its count counts, so
+// a screen reader hears "references, 3" rather than a bare number; a quiet
+// count (0) is not drawn.
+function RailButton({
+  panel,
+  open,
+  onClick,
+  count,
+  dot,
+  card,
+}: {
+  panel: Panel;
+  open: boolean;
+  onClick: () => void;
+  count?: number;
+  dot?: boolean;
+  card?: CardSpec;
+}) {
+  const c = useButtonCard(card);
+  const what =
+    panel === "references"
+      ? `${count ?? 0} on this chunk`
+      : panel === "classification"
+        ? count
+          ? `${count} waiting for review`
+          : "nothing waiting"
+        : panel === "annotation" && dot
+          ? "out of date"
+          : undefined;
+  return (
+    <>
+      <button
+        type="button"
+        className={`doc-rail-button${count ? " counted" : ""}`}
+        aria-pressed={open}
+        aria-controls={open ? "doc-side" : undefined}
+        aria-label={`${PANEL_LABEL[panel]}${what ? `, ${what}` : ""}`}
+        title={card ? undefined : PANEL_LABEL[panel]}
+        aria-keyshortcuts={open ? "]" : undefined}
+        onClick={onClick}
+        {...c.props}
+      >
+        <PaneIcon kind={RAIL_ICON[panel]} />
+        {count ? <span className="doc-rail-count">{count}</span> : null}
+        {dot && <span className="doc-rail-dot" aria-hidden="true" />}
+      </button>
+      {c.card}
+    </>
+  );
+}
 
 // The chunk bar's icons, drawn like the tree icons so they follow the theme.
 function BarIcon({ kind }: { kind: "source" | "history" | "copy" | "edit" }) {

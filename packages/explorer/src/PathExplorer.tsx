@@ -46,8 +46,29 @@ import TransferModal from "./components/TransferModal";
 import type { TransferRequest } from "./lib/transfer";
 import Splitter from "./components/Splitter";
 import DocumentViewerBody from "./components/DocumentViewerBody";
-import PathTree, { buildLazyTree, isAnnotationEntry, type PathNode } from "./components/PathTree";
+import PathTree, {
+  buildLazyTree,
+  documentSummaryOf,
+  isAnnotationEntry,
+  nodeCard,
+  type PathNode,
+} from "./components/PathTree";
 import CreateMenu from "./components/CreateMenu";
+import Breadcrumb from "./components/Breadcrumb";
+import { CollapseButton, PaneIcon, PaneRail } from "./components/Pane";
+import { CardBody, documentCard, type CardSpec } from "./components/AnnotationCard";
+import { shortcutApplies, usePersistedFlag } from "./lib/persisted";
+import { useNarrow } from "./lib/useNarrow";
+import {
+  NO_FILTER,
+  coverageLabel,
+  filterActive,
+  filterChoices,
+  filterTree,
+  findCoverage,
+  searchListed,
+  type TreeFilter,
+} from "./lib/treeFind";
 
 // PathExplorer is the embeddable Path VFS console (RFC AL): the unified dirent
 // tree with directory + document CRUD, and an inline DocumentViewer for document
@@ -65,6 +86,16 @@ import CreateMenu from "./components/CreateMenu";
 const NAME_RE = /^[A-Za-z0-9._-]+$/;
 
 const SCOPES: PathScope[] = ["user", "agent", "tenant"];
+
+// Where the tree's collapsed state is remembered, beside its splitter width.
+const TREE_KEY = "loomcycle.explorer.collapsed.paths";
+// Below this width the console shows one pane at a time: the tree, or what it
+// opened, with the other folded to its rail.
+const NARROW_PX = 720;
+// The Path tree's width until the reader drags it. Narrow enough that the
+// document beside it, with its outline open, still reads at close to its
+// measure on a laptop-width window.
+const TREE_WIDTH_PX = 320;
 
 // joinPath appends a leaf segment to a canonical parent dir ("" = root).
 function joinPath(dir: string, name: string): string {
@@ -297,6 +328,19 @@ function PathExplorerBody({
   }, []);
   const [maximized, setMaximized] = useState(false);
   const [navReload, setNavReload] = useState(0);
+
+  // The tree pane collapses to a rail (RFC GZ), remembered per browser. On a
+  // narrow console one pane shows at a time: the tree while the reader picks,
+  // then what they picked, with the tree on its rail.
+  const consoleRef = useRef<HTMLDivElement>(null);
+  const narrow = useNarrow(consoleRef, NARROW_PX);
+  const [treeCollapsed, setTreeCollapsed] = usePersistedFlag(TREE_KEY);
+  const [narrowTree, setNarrowTree] = useState(() => !pathProp);
+  const treeHidden = narrow ? !narrowTree : treeCollapsed && !starsOn;
+  const setTreeHidden = useCallback(
+    (hide: boolean) => (narrow ? setNarrowTree(!hide) : setTreeCollapsed(hide)),
+    [narrow, setTreeCollapsed],
+  );
   useEffect(() => {
     if (renderNavigator && navigatorProp) setNavMode(navigatorProp);
     // Only a change of the request switches; a reader's later toggle stands.
@@ -409,6 +453,25 @@ function PathExplorerBody({
 
   const tree = useMemo(() => buildLazyTree(dirs), [dirs]);
 
+  // Search and filter (RFC GZ): a second header line, closed until the search
+  // icon or "/" opens it. Both cover the folders already listed (findCoverage).
+  const [findOpen, setFindOpen] = useState(false);
+  const [findMode, setFindMode] = useState<"search" | "filter">("search");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<TreeFilter>(NO_FILTER);
+  const [hitAt, setHitAt] = useState(0);
+  const findInput = useRef<HTMLInputElement>(null);
+  const coverage = findCoverage(dirs.get(""));
+  const filtering = findOpen && findMode === "filter" && filterActive(filter);
+  const filtered = useMemo(
+    () => (filtering ? filterTree(tree, filter, summaries) : undefined),
+    [filtering, tree, filter, summaries],
+  );
+  const choices = useMemo(
+    () => (findOpen && findMode === "filter" ? filterChoices(tree, summaries) : { types: [], statuses: [] }),
+    [findOpen, findMode, tree, summaries],
+  );
+
   // refresh re-lists the root and every open directory, then re-reveals the
   // selection (it may have been on a page the reload folded away).
   const refresh = useCallback(async () => {
@@ -481,6 +544,53 @@ function PathExplorerBody({
     return selected.kind === "directory" ? selected.fullPath : parentPathOf(selected.fullPath);
   }, [selected]);
   const currentDirLabel = currentDir || "/";
+
+  // Search runs under the selected folder, else the whole tree. The base is
+  // taken when the search line opens, so stepping onto a match (which may be
+  // selected later) does not move the ground under the search.
+  const [searchBase, setSearchBase] = useState("");
+  const searching = findOpen && findMode === "search" && query.trim() !== "";
+  const hits = useMemo(
+    () => (searching ? searchListed(tree, searchBase, query) : []),
+    [searching, tree, searchBase, query],
+  );
+  const hitSet = useMemo(() => new Set(hits.map((h) => h.fullPath)), [hits]);
+  const current = hits.length > 0 ? hits[Math.min(hitAt, hits.length - 1)] : undefined;
+  // Every folder above the match the search is on opens, so it is drawn.
+  useEffect(() => {
+    if (!current) return;
+    const above = ancestorsOf(current.fullPath).filter((d) => d !== "");
+    setExpanded((prev) => {
+      if (above.every((d) => prev.has(d))) return prev;
+      const next = new Set(prev);
+      above.forEach((d) => next.add(d));
+      return next;
+    });
+  }, [current]);
+  const treeBox = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!current) return;
+    const row = treeBox.current?.querySelector<HTMLElement>(".etree-row.search-current");
+    row?.scrollIntoView?.({ block: "nearest" });
+  }, [current, expanded]);
+
+  const openFind = useCallback(() => {
+    setSearchBase(selected?.kind === "directory" ? selected.fullPath : "");
+    setFindOpen(true);
+    setHitAt(0);
+    // Focus after the line renders.
+    setTimeout(() => findInput.current?.focus(), 0);
+  }, [selected]);
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    setQuery("");
+    setFilter(NO_FILTER);
+    setHitAt(0);
+  }, []);
+  const step = (by: number) => {
+    if (hits.length === 0) return;
+    setHitAt((i) => (((Math.min(i, hits.length - 1) + by) % hits.length) + hits.length) % hits.length);
+  };
 
 
   const newFolder = useCallback(() => {
@@ -744,181 +854,369 @@ function PathExplorerBody({
   const viewIsSelected =
     !!view?.path && selected?.kind === "document" && selected.fullPath === view.path;
 
+  // A pick in the tree. On a narrow console a document takes the screen and
+  // the tree goes to its rail; a folder keeps the tree, to browse on.
+  const pick = useCallback(
+    (n: PathNode) => {
+      setSelected(n.fullPath);
+      if (narrow && n.kind !== "directory") setNarrowTree(false);
+    },
+    [narrow, setSelected],
+  );
+
+  // A breadcrumb segment selects its folder and shows it in the tree.
+  const revealFolder = useCallback(
+    (folder: string) => {
+      setSelected(folder);
+      // Open the folder too, so it is listed and shows what it holds.
+      setExpanded((prev) => (prev.has(folder) ? prev : new Set(prev).add(folder)));
+      setTreeHidden(false);
+      if (navMode === "stars") setNavMode("tree");
+    },
+    [setSelected, setTreeHidden, navMode, setNavMode],
+  );
+
+  // A breadcrumb segment's card: a folder's from the tree (its _annotation's
+  // brief), the document's from the summaries the tree loaded, else read by id.
+  const crumbCard = useCallback(
+    (segment: string, isDocument: boolean): CardSpec | undefined => {
+      const node = findNode(tree, segment);
+      if (!isDocument) return node ? nodeCard(node, summaries) : { title: segment.slice(segment.lastIndexOf("/") + 1), type: "folder", path: segment };
+      if (!view?.documentId) return undefined;
+      const s = node ? documentSummaryOf(node, summaries) : undefined;
+      return documentCard(
+        view.documentId,
+        s?.title || view.title || segment.slice(segment.lastIndexOf("/") + 1),
+        { data, scope, browse },
+        s ? { type: s.type, status: s.status, brief: s.brief ?? "" } : undefined,
+      );
+    },
+    [tree, summaries, view?.documentId, view?.title, data, scope, browse],
+  );
+
+  // Keyboard: "[" folds the tree, "/" opens the search line.
+  const keysRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keysRef.current = (e: KeyboardEvent) => {
+    if (!shortcutApplies(e, consoleRef.current)) return;
+    if (e.key === "[" && !starsOn) setTreeHidden(!treeHidden);
+    else if (e.key === "/" && !starsOn) {
+      setTreeHidden(false);
+      openFind();
+    } else return;
+    e.preventDefault();
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => keysRef.current(e);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // The folder's annotation: its `_annotation` document's summary is the
+  // folder's card, shown as the detail pane's content.
+  const folderCard = selected?.kind === "directory" ? nodeCard(selected, summaries) : undefined;
+
   return (
     <>
-      <Splitter
-        className={starsOn ? "paths-view paths-view--stars" : "paths-view"}
-        defaultLeftWidth={starsOn ? 720 : 420}
-        minLeftWidth={280}
-        minRightWidth={300}
-        storageKey={starsOn ? "loomcycle.explorer.split.stars" : "loomcycle.explorer.split.paths"}
-        hideRight={starsOn && maximized}
-      >
-        <div className="left">
-          <div className="paths-toolbar">
-            {/* One line (RFC GZ): scope, tree/stars, one "+" menu, reload. The
-                subject is the topbar's, and the folder a new item goes into is
-                named by the create dialog. */}
-            <div className="paths-scope" role="group" aria-label="Scope">
-              {SCOPES.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  aria-pressed={scope === s}
-                  className={scope === s ? "active" : undefined}
-                  onClick={() => setScope(s)}
-                  title={`Browse the ${s} scope`}
-                >
-                  {s}
+      <div className={`paths-console${narrow ? " narrow" : ""}`} ref={consoleRef}>
+        <Splitter
+          className={starsOn ? "paths-view paths-view--stars" : "paths-view"}
+          defaultLeftWidth={starsOn ? 720 : TREE_WIDTH_PX}
+          minLeftWidth={280}
+          minRightWidth={300}
+          storageKey={starsOn ? "loomcycle.explorer.split.stars" : "loomcycle.explorer.split.paths"}
+          hideRight={(starsOn && maximized) || (narrow && !treeHidden)}
+          hideLeft={treeHidden}
+          onHandleDoubleClick={starsOn ? undefined : () => setTreeHidden(true)}
+          leftRail={
+            <PaneRail
+              side="left"
+              label="Path tree"
+              icon="tree"
+              shortcut="["
+              onExpand={() => setTreeHidden(false)}
+            />
+          }
+        >
+          <div className="left">
+            <div className="paths-toolbar">
+              {/* One line (RFC GZ): scope, tree/stars, search, one "+" menu,
+                  reload, and the edge's collapse control. The subject is the
+                  topbar's, and the folder a new item goes into is named by the
+                  create dialog. */}
+              <div className="paths-scope" role="group" aria-label="Scope">
+                {SCOPES.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    aria-pressed={scope === s}
+                    className={scope === s ? "active" : undefined}
+                    onClick={() => setScope(s)}
+                    title={`Browse the ${s} scope`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+              {renderNavigator && (
+                <div className="paths-nav-switch" role="group" aria-label="Navigator">
+                  <button
+                    type="button"
+                    aria-pressed={!starsOn}
+                    className={!starsOn ? "active" : undefined}
+                    onClick={() => setNavMode("tree")}
+                    title="Browse the Path tree"
+                  >
+                    tree
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={starsOn}
+                    className={starsOn ? "active" : undefined}
+                    onClick={() => setNavMode("stars")}
+                    title="Browse the scope as a 3D star map"
+                  >
+                    stars
+                  </button>
+                </div>
+              )}
+              <div className="paths-toolbar-actions">
+                {!starsOn && (
+                  <button
+                    type="button"
+                    className="paths-find-toggle"
+                    aria-pressed={findOpen}
+                    aria-controls="paths-find"
+                    aria-keyshortcuts="/"
+                    onClick={() => (findOpen ? closeFind() : openFind())}
+                    title="Search and filter the tree (/)"
+                    aria-label="Search and filter the tree"
+                  >
+                    <PaneIcon kind="search" />
+                  </button>
+                )}
+                {!starsOn && <CreateMenu dir={currentDirLabel} onNewFolder={newFolder} onNewDocument={newDocument} />}
+                <button type="button" onClick={() => void refresh()} title="Reload the tree" aria-label="Reload the tree">
+                  ↻
                 </button>
-              ))}
+                {!starsOn && (
+                  <CollapseButton label="Path tree" side="left" shortcut="[" onClick={() => setTreeHidden(true)} />
+                )}
+              </div>
             </div>
-            {renderNavigator && (
-              <div className="paths-nav-switch" role="group" aria-label="Navigator">
-                <button
-                  type="button"
-                  aria-pressed={!starsOn}
-                  className={!starsOn ? "active" : undefined}
-                  onClick={() => setNavMode("tree")}
-                  title="Browse the Path tree"
-                >
-                  tree
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={starsOn}
-                  className={starsOn ? "active" : undefined}
-                  onClick={() => setNavMode("stars")}
-                  title="Browse the scope as a 3D star map"
-                >
-                  stars
+            {findOpen && !starsOn && (
+              <div className="paths-find" id="paths-find" role="search">
+                <div className="paths-find-mode" role="group" aria-label="Search or filter">
+                  {(["search", "filter"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      aria-pressed={findMode === m}
+                      className={findMode === m ? "active" : undefined}
+                      onClick={() => {
+                        setFindMode(m);
+                        setHitAt(0);
+                      }}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  ref={findInput}
+                  className="paths-find-input"
+                  type="search"
+                  value={findMode === "search" ? query : filter.name}
+                  placeholder={findMode === "search" ? "Find a name" : "Name"}
+                  aria-label={findMode === "search" ? "Find a name in the tree" : "Filter by name"}
+                  aria-describedby="paths-find-note"
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (findMode === "search") {
+                      setQuery(v);
+                      setHitAt(0);
+                    } else setFilter((f) => ({ ...f, name: v }));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      closeFind();
+                    } else if (e.key === "Enter" && findMode === "search") {
+                      e.preventDefault();
+                      step(e.shiftKey ? -1 : 1);
+                    }
+                  }}
+                />
+                {findMode === "filter" && (
+                  <>
+                    <select
+                      className="paths-find-select"
+                      value={filter.type}
+                      aria-label="Filter by type"
+                      onChange={(e) => setFilter((f) => ({ ...f, type: e.target.value }))}
+                    >
+                      <option value="">any type</option>
+                      {choices.types.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      className="paths-find-select"
+                      value={filter.status}
+                      aria-label="Filter by status"
+                      onChange={(e) => setFilter((f) => ({ ...f, status: e.target.value }))}
+                    >
+                      <option value="">any status</option>
+                      {choices.statuses.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
+                <span className="paths-find-note" id="paths-find-note" role="status">
+                  {findMode === "search" && query.trim() !== "" && (
+                    <span className="paths-find-count">
+                      {hits.length === 0 ? "no match" : `${Math.min(hitAt, hits.length - 1) + 1} of ${hits.length}`}
+                    </span>
+                  )}
+                  {coverageLabel(findMode, coverage)}
+                  {findMode === "search" && searchBase !== "" && ` under ${searchBase}`}
+                </span>
+                <button type="button" className="paths-find-close" onClick={closeFind} aria-label="Close search">
+                  <PaneIcon kind="close" />
                 </button>
               </div>
             )}
-            <div className="paths-toolbar-actions">
-              {!starsOn && <CreateMenu dir={currentDirLabel} onNewFolder={newFolder} onNewDocument={newDocument} />}
-              <button type="button" onClick={() => void refresh()} title="Reload the tree" aria-label="Reload the tree">
-                ↻
-              </button>
-            </div>
+            {(err || rootErr) && <div className="paths-err">{err || rootErr}</div>}
+            {starsOn && renderNavigator ? (
+              <div className="paths-navigator">{renderNavigator(navigatorCtx)}</div>
+            ) : (
+              <div className="paths-tree-box" ref={treeBox}>
+                <PathTree
+                  tree={filtered ? filtered.tree : tree}
+                  root={dirs.get("")}
+                  expanded={filtered ? new Set([...expanded, ...filtered.open]) : expanded}
+                  onToggle={toggle}
+                  onLoadMore={loadMore}
+                  onRetry={retry}
+                  selectedPath={selectedPath}
+                  onSelect={pick}
+                  summaries={summaries}
+                  searchHits={searching ? hitSet : undefined}
+                  searchCurrent={current?.fullPath}
+                />
+              </div>
+            )}
           </div>
-          {(err || rootErr) && <div className="paths-err">{err || rootErr}</div>}
-          {starsOn && renderNavigator ? (
-            <div className="paths-navigator">{renderNavigator(navigatorCtx)}</div>
-          ) : (
-            <PathTree
-              tree={tree}
-              root={dirs.get("")}
-              expanded={expanded}
-              onToggle={toggle}
-              onLoadMore={loadMore}
-              onRetry={retry}
-              selectedPath={selectedPath}
-              onSelect={(n) => setSelected(n.fullPath)}
-              summaries={summaries}
-            />
-          )}
-        </div>
-        <div className="right">
-          {view ? (
-            <div className="paths-doc">
-              <DocTrail trail={trail} onJump={jumpToCrumb} />
-              {/* Keyed on the trail depth: every step along the trail changes it,
-                  so the viewer remounts and lands on that step's chunk. A plain
-                  tree selection (depth 0) keeps the viewer mounted, as before. */}
-              <DocumentViewerBody
-                key={trail.length}
-                documentId={view.documentId}
-                scope={scope}
-                titleHint={view.title}
-                browse={browse}
-                principal={principal}
-                renderAssistant={renderAssistant}
-                initialChunkId={view.chunkId ?? focusForView?.chunkId}
-                onOpenDocument={openDocument}
-                onTitle={onDocTitle}
-                onChunkSelect={(chunkId) => setLiveChunk({ documentId: view.documentId, chunkId })}
-                focusChunk={focusForView}
-                onRegenerateAnnotation={onRegenerateAnnotation}
-                canEditAnnotations={canEditAnnotations}
-                onAnnotationChanged={() => void refresh()}
-                pathLabel={
-                  view.path ? (
-                    <code className="paths-doc-path" title={view.path}>
-                      {view.path}
-                    </code>
-                  ) : (
-                    <span
-                      className="paths-doc-path paths-doc-unfiled"
-                      title="Opened by id — no entry for this document was found in the Path tree"
-                    >
-                      <em>not in the tree</em>
-                    </span>
-                  )
-                }
-                documentActions={
-                  viewIsSelected
-                    ? {
-                        rename: renameSelected,
-                        transfer: canTransfer ? transferSelected : undefined,
-                        delete: deleteSelected,
-                      }
-                    : undefined
-                }
-              />
-            </div>
-          ) : selected ? (
-            <div className="paths-detail">
-              <h2>
-                <span className="paths-detail-kind">{selected.kind}</span>
-                <code>{selected.fullPath}</code>
-              </h2>
-              <dl className="paths-detail-meta">
-                <dt>scope</dt>
-                <dd>{scope}</dd>
-                {storedLabel && (
-                  <>
-                    <dt>stored</dt>
-                    <dd>{storedLabel}</dd>
-                  </>
+          <div className="right">
+            {view ? (
+              <div className="paths-doc">
+                <DocTrail trail={trail} onJump={jumpToCrumb} />
+                {/* Keyed on the trail depth: every step along the trail changes it,
+                    so the viewer remounts and lands on that step's chunk. A plain
+                    tree selection (depth 0) keeps the viewer mounted, as before. */}
+                <DocumentViewerBody
+                  key={trail.length}
+                  documentId={view.documentId}
+                  scope={scope}
+                  titleHint={view.title}
+                  browse={browse}
+                  principal={principal}
+                  renderAssistant={renderAssistant}
+                  initialChunkId={view.chunkId ?? focusForView?.chunkId}
+                  onOpenDocument={openDocument}
+                  onTitle={onDocTitle}
+                  onChunkSelect={(chunkId) => setLiveChunk({ documentId: view.documentId, chunkId })}
+                  focusChunk={focusForView}
+                  onRegenerateAnnotation={onRegenerateAnnotation}
+                  canEditAnnotations={canEditAnnotations}
+                  onAnnotationChanged={() => void refresh()}
+                  pathLabel={
+                    view.path ? (
+                      <Breadcrumb path={view.path} onFolder={revealFolder} cardFor={crumbCard} />
+                    ) : (
+                      <span
+                        className="paths-doc-path paths-doc-unfiled"
+                        title="Opened by id — no entry for this document was found in the Path tree"
+                      >
+                        <em>not in the tree</em>
+                      </span>
+                    )
+                  }
+                  documentActions={
+                    viewIsSelected
+                      ? {
+                          rename: renameSelected,
+                          transfer: canTransfer ? transferSelected : undefined,
+                          delete: deleteSelected,
+                        }
+                      : undefined
+                  }
+                />
+              </div>
+            ) : selected ? (
+              <div className="paths-detail">
+                <h2>
+                  <span className="paths-detail-kind">{selected.kind}</span>
+                  <code>{selected.fullPath}</code>
+                </h2>
+                {/* A folder's content is its card (RFC GZ): its _annotation's
+                    brief, read from the tree, never a row of its own. */}
+                {folderCard && (
+                  <div className="paths-detail-card">
+                    <CardBody info={{ ...folderCard, path: undefined }} />
+                  </div>
                 )}
-              </dl>
-              {/* The folder's `_annotation` document has no row of its own in
-                  the tree (RFC GZ); it opens from here. */}
-              {selectedAnnotation && (
-                <div className="paths-detail-actions">
-                  <button type="button" onClick={() => setSelected(selectedAnnotation.fullPath)}>
-                    open the folder's annotation
-                  </button>
-                </div>
-              )}
-              {mutable ? (
-                <div className="paths-detail-actions">
-                  <button type="button" onClick={renameSelected}>
-                    rename / move
-                  </button>
-                  {canTransfer && (
-                    <button type="button" onClick={transferSelected} title="Copy or move to another scope">
-                      copy / move to…
-                    </button>
+                <dl className="paths-detail-meta">
+                  <dt>scope</dt>
+                  <dd>{scope}</dd>
+                  {storedLabel && (
+                    <>
+                      <dt>stored</dt>
+                      <dd>{storedLabel}</dd>
+                    </>
                   )}
-                  <button type="button" className="danger" onClick={deleteSelected}>
-                    delete
-                  </button>
-                </div>
-              ) : (
-                <p className="paths-readonly">
-                  Read-only — {selected.kind} entries are managed by their own tool.
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="empty">
-              <p>Select a path on the left, or create a folder / document.</p>
-            </div>
-          )}
-        </div>
-      </Splitter>
+                </dl>
+                {mutable ? (
+                  <div className="paths-detail-actions">
+                    <button type="button" onClick={renameSelected}>
+                      rename / move
+                    </button>
+                    {canTransfer && (
+                      <button type="button" onClick={transferSelected} title="Copy or move to another scope">
+                        copy / move to…
+                      </button>
+                    )}
+                    {selectedAnnotation && (
+                      <button
+                        type="button"
+                        onClick={() => setSelected(selectedAnnotation.fullPath)}
+                        title="Open the folder's annotation document to edit it"
+                      >
+                        edit folder annotation
+                      </button>
+                    )}
+                    <button type="button" className="danger" onClick={deleteSelected}>
+                      delete
+                    </button>
+                  </div>
+                ) : (
+                  <p className="paths-readonly">
+                    Read-only — {selected.kind} entries are managed by their own tool.
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="empty">
+                <p>Select a path on the left, or create a folder / document.</p>
+              </div>
+            )}
+          </div>
+        </Splitter>
+      </div>
       {modal && <PromptModal state={modal} onClose={() => setModal(null)} />}
       {transfer && (
         <TransferModal

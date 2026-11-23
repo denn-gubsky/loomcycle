@@ -15,7 +15,7 @@ import (
 
 // workspaceColNames is the column order scanWorkspace reads.
 var workspaceColNames = []string{"id", "tenant_id", "user_id", "name", "worker_id", "kind", "lifetime", "engine",
-	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "egress", "created_at", "updated_at"}
+	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "owner_kind", "opened_token", "last_used_at", "egress", "created_at", "updated_at"}
 
 var workspaceCols = workspaceColList("")
 
@@ -37,8 +37,8 @@ func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 		egress string
 	)
 	if err := sc.Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.WorkerID, &r.Kind, &r.Lifetime, &r.Engine,
-		&r.OwnerRunID, &r.OwnerAgentID, &r.RootRunID, &state, &shares, &egress,
-		d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
+		&r.OwnerRunID, &r.OwnerAgentID, &r.RootRunID, &state, &shares, &r.OwnerKind, &r.OpenedToken,
+		d.TimeDest(&r.LastUsedAt), &egress, d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
 		return store.WorkspaceRow{}, err
 	}
 	r.State = store.WorkspaceState(state)
@@ -52,7 +52,7 @@ func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 	if err := json.Unmarshal([]byte(egress), &r.Egress); err != nil || r.Egress == nil {
 		r.Egress = []string{}
 	}
-	r.CreatedAt, r.UpdatedAt = r.CreatedAt.UTC(), r.UpdatedAt.UTC()
+	r.CreatedAt, r.UpdatedAt, r.LastUsedAt = r.CreatedAt.UTC(), r.UpdatedAt.UTC(), r.LastUsedAt.UTC()
 	return r, nil
 }
 
@@ -87,12 +87,19 @@ func WorkspaceCreate(ctx context.Context, q Querier, row store.WorkspaceRow) (st
 	if row.Lifetime == "" {
 		row.Lifetime = store.WorkspaceLifetimeEphemeral
 	}
+	if row.OwnerKind == "" {
+		row.OwnerKind = store.WorkspaceOwnerRun
+	}
+	if row.OwnerKind != store.WorkspaceOwnerRun && row.OwnerKind != store.WorkspaceOwnerPrincipal {
+		return store.WorkspaceRow{}, fmt.Errorf("workspace create: unknown owner kind %q", row.OwnerKind)
+	}
 	d := q.Dialect()
 	now := time.Now().UTC()
 	_, err := q.Exec(ctx, `INSERT INTO workspaces (`+workspaceCols+`)
 		VALUES (`+Placeholders(len(workspaceColNames))+`)`,
 		row.ID, row.TenantID, row.UserID, row.Name, row.WorkerID, row.Kind, row.Lifetime, row.Engine,
-		row.OwnerRunID, row.OwnerAgentID, row.RootRunID, string(row.State), encodeShares(row.Shares), encodeEgress(row.Egress), d.TimeArg(now), d.TimeArg(now))
+		row.OwnerRunID, row.OwnerAgentID, row.RootRunID, string(row.State), encodeShares(row.Shares),
+		row.OwnerKind, row.OpenedToken, d.TimeArg(now), encodeEgress(row.Egress), d.TimeArg(now), d.TimeArg(now))
 	if IsUniqueViolation(err) {
 		return store.WorkspaceRow{}, &store.ErrConflict{Kind: "workspace", ID: row.Name}
 	}
@@ -208,9 +215,10 @@ func WorkspaceSweepCandidates(ctx context.Context, q Querier) ([]store.Workspace
 		`SELECT `+workspaceColList("w")+`
 		 FROM workspaces w
 		 LEFT JOIN runs r ON r.id = w.owner_run_id
-		 WHERE r.id IS NULL
+		 WHERE w.owner_kind = 'run'
+		   AND (r.id IS NULL
 		    OR (r.status IN (`+Placeholders(len(store.TerminalRunStatuses))+`)
-		        AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing'))
+		        AND COALESCE(r.pause_state, 'running') NOT IN ('paused', 'pausing')))
 		 ORDER BY w.created_at, w.id`, store.TerminalRunStatusArgs()...)
 	if err != nil {
 		return nil, fmt.Errorf("workspace sweep candidates: %w", err)
@@ -349,4 +357,23 @@ func stateArgs(states []store.WorkspaceState) []any {
 		out[i] = string(s)
 	}
 	return out
+}
+
+func WorkspaceListPrincipalOwned(ctx context.Context, q Querier) ([]store.WorkspaceRow, error) {
+	d := q.Dialect()
+	rows, err := q.Query(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE owner_kind = ? ORDER BY created_at, id`, store.WorkspaceOwnerPrincipal)
+	if err != nil {
+		return nil, fmt.Errorf("workspace list principal owned: %w", err)
+	}
+	return collectWorkspaces(d, rows)
+}
+
+func WorkspaceTouchUsed(ctx context.Context, q Querier, tenantID, id string, at time.Time) error {
+	d := q.Dialect()
+	if _, err := q.Exec(ctx, `UPDATE workspaces SET last_used_at = ? WHERE tenant_id = ? AND id = ?`,
+		d.TimeArg(at.UTC()), tenantID, id); err != nil {
+		return fmt.Errorf("workspace touch used: %w", err)
+	}
+	return nil
 }
