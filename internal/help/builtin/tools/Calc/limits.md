@@ -37,6 +37,9 @@ brackets (see `Calc/errors`), except the output bound, which cuts the result.
   125,000,000). Reading or writing a matrix costs a step per element. Large
   matrix operations from every caller share a pool of one slot per processor
   core; waiting for a slot counts against the 2 seconds (`time_limit`).
+- **Numeric methods** (`no_convergence`): `integrate` evaluates its function
+  at most 15,000 times, `deriv` 20, `root` and `minimize` 500 each; every
+  evaluation costs its steps as well.
 - **Nesting: 200 levels** of brackets, lists and lambdas, and **64 levels**
   of one function calling another (`too_deep`). Name the intermediate values.
 - **Digits: 1 to 1,000** (`bad_request`). A float shows at most about 17

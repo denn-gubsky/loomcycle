@@ -369,6 +369,7 @@ func TestFunctions_TableIsCompleteAndConsistent(t *testing.T) {
 		SecUnits:         "convert convertdelta units",
 		SecStatistics:    "mean median mode spread geomean harmmean wmean variance stdev zscore quantile percentile rank cumsum cumprod diff covariance correlation linreg",
 		SecFinance:       "pmt fv pv nper rate npv irr compound cagr pct pctchange",
+		SecCalculus:      "integrate deriv root minimize polyfit polyval interp",
 		SecDistributions: "normpdf normcdf norminv tpdf tcdf tinv chi2pdf chi2cdf chi2inv fpdf fcdf finv exppdf expcdf expinv unifpdf unifcdf unifinv binompdf binomcdf poisspdf poisscdf",
 		SecMatrices:      "zeros ones identity diag reshape hstack vstack linspace transpose size dot cross kron trace det matrank norm cond inv pinv solve lstsq lu qr cholesky eig svd",
 	}

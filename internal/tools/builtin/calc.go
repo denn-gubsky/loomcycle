@@ -127,6 +127,7 @@ var calcCategory = map[string]tools.ErrorCategory{
 	"step_limit":       tools.CategoryBusiness,
 	"time_limit":       tools.CategoryBusiness,
 	"empty":            tools.CategoryBusiness,
+	"no_convergence":   tools.CategoryBusiness,
 	// Reached only when the evaluation was canceled but the caller's ctx was
 	// not (Execute hands the loop ctx.Err() otherwise): resending may work.
 	"canceled": tools.CategoryTransient,

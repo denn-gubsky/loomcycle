@@ -44,6 +44,7 @@ var calcSectionArticle = map[string]string{
 	calc.SecUnits:         "Calc/units",
 	calc.SecStatistics:    "Calc/statistics",
 	calc.SecDistributions: "Calc/distributions",
+	calc.SecCalculus:      "Calc/calculus",
 	calc.SecMatrices:      "Calc/matrices",
 	calc.SecFinance:       "Calc/finance",
 }

@@ -43,6 +43,9 @@ var fuzzSeeds = []string{
 	"[normpdf(1), normcdf(1, 0, 2), norminv(0.9), tpdf(1, 3), tcdf(1, 3), tinv(0.9, 3), chi2pdf(1, 2), chi2cdf(1, 2), chi2inv(0.5, 2)]",
 	"[fpdf(1, 2, 3), fcdf(1, 2, 3), finv(0.5, 2, 3), exppdf(1, 2), expcdf(1, 2), expinv(0.5, 2), unifpdf(1, 0, 2), unifcdf(1, 0, 2), unifinv(0.5, 0, 2)]",
 	"[binompdf(3, 10, 0.3), binomcdf(3, 10, 0.3), poisspdf(2, 4), poisscdf(2, 4), norminv(1), binompdf(11, 10, 0.5)]",
+	"[integrate(x -> x^2, 0, 1), integrate(sin, 1, 0), deriv(exp, 1), root(x -> x^2 - 2, 0, 2), minimize(cos, 0, 6)]",
+	"f(x) = 1 / x; [integrate(f, 0, 1), deriv(x -> if(x > 0, 1, 0), 0), root(f, 1, 2), minimize(x -> x, 1, 1)]",
+	"p = polyfit([0, 1, 2, 3], [1, 2, 5, 10], 2); [p, polyval(p, [4, 5]), interp([1.5, 2], [1, 2, 3], [1, 4, 9])]",
 }
 
 func FuzzParse(f *testing.F) {
