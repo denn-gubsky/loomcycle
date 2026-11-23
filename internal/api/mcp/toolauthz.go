@@ -600,10 +600,11 @@ var mcpOpsInBody = map[string]string{
 
 const defFamilyOps = "one route; the definition operation asks author, retire or read of the definition each op names"
 
-// mcpToolsWithoutTwin are the meta-tools no HTTP route mirrors.
+// mcpToolsWithoutTwin are the meta-tools no governed HTTP route mirrors: none
+// exists, or the one that does asks no access question (authz, calc).
 var mcpToolsWithoutTwin = map[string]string{
 	"authz":    "the access questions are ungoverned on every transport (POST /v1/_authz/*)",
-	"calc":     "a pure function; its HTTP route arrives with the HTTP transport (P4)",
+	"calc":     "a pure function asks no access question on any transport (POST /v1/_calc, the Calc RPC)",
 	"context":  "the caller's own identity and reach; no route",
 	"identity": "the directory questions ask read or manage principal per call",
 }

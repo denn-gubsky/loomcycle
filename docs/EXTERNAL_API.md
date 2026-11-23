@@ -83,6 +83,15 @@ generated client covers the whole surface below.
   about state you supply, and `GET /v1/_decide/models` lists the models a call
   may name with their limits. Both need the `runs:create` scope, not
   `substrate:tenant`. See [DECISION-MODELS.md](DECISION-MODELS.md).
+- **Calc:** `POST /v1/_calc` evaluates one expression with the `Calc` tool —
+  exact arithmetic, statistics, finance, units and dates — outside a run. The
+  body is the tool's input (`expr`, `vars`, `digits`, `seed`) and a 200 is its
+  result. Any token may call it, a member or an isolated `substrate:user`
+  included, except one limited to certain agents. A validation refusal is
+  `400`, a business one (`domain`, `step_limit`, ...) `422`, each carrying the
+  tool's error code, hint and category; `from` and `to` need a run and are
+  refused. Each call takes one from the token's run rate (`429` past it). See
+  [CALC.md](CALC.md).
 - **Crypto (op-dispatch):** `POST /v1/_crypto` encrypts, decrypts, signs,
   verifies, MACs and makes one-time codes with keys the runtime holds; the body
   is the `Crypto` tool's input (plus an admin-only `tenant`), and key material is
