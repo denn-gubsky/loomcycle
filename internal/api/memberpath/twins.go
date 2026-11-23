@@ -51,6 +51,7 @@ var twins = map[string][]Twin{
 	"Decide":             {{Method: http.MethodPost, Path: "/v1/_decide"}},
 	"ListDecisionModels": {{Method: http.MethodGet, Path: "/v1/_decide/models"}},
 	"Config":             {{Method: http.MethodGet, Path: "/v1/config"}},
+	"Calc":               {{Method: http.MethodPost, Path: "/v1/_calc"}},
 	// Usage, budgets, retention, the directory, erasure.
 	"UsageReport": {{Method: http.MethodGet, Path: "/v1/_usage"}},
 	"TokenLimit": {

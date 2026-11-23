@@ -453,6 +453,27 @@ service Loomcycle {
   // Mirrors GET /v1/_decide/models.
   rpc ListDecisionModels(ListDecisionModelsRequest) returns (ListDecisionModelsResponse);
 
+  // Calc evaluates one expression with the Calc tool outside a run (RFC GY):
+  // exact decimal arithmetic, statistics, finance, units and dates, the same
+  // input, result and refusals as the in-run tool. The input and the result
+  // are the tool's own JSON, carried as bytes, so a new tool field needs no
+  // proto change.
+  //
+  // Any authenticated token may call it except one limited to certain agents
+  // (the run plane): it is a pure function and reads no stored data. Each
+  // call takes one unit of the token's run rate; a spent rate is
+  // RESOURCE_EXHAUSTED with RetryInfo. Data by reference (`from`, `to`) needs
+  // a run and is refused.
+  //
+  // A refusal carries google.rpc.ErrorInfo whose reason is the tool's error
+  // code (syntax, domain, ...) and whose metadata holds category,
+  // is_retryable, hint and pos: INVALID_ARGUMENT for a validation refusal
+  // (fix the call), FAILED_PRECONDITION for a business one (the mathematics
+  // or a limit refused a well-formed call), UNAVAILABLE for a transient one.
+  //
+  // Mirrors POST /v1/_calc.
+  rpc Calc(CalcRequest) returns (CalcResponse);
+
   // Health is the liveness probe. Returns build identifier + uptime.
   //
   // Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -3528,6 +3549,18 @@ message BroadcastChannelsResponse {
 
 // DecideRequest is one call: every question is answered about the same state.
 //
+// CalcRequest is the Calc tool's input JSON (expr, and optionally vars,
+// digits, seed), as UTF-8 bytes.
+message CalcRequest {
+  bytes input_json = 1;
+}
+
+// CalcResponse is the Calc tool's result JSON (result, exact, type, text,
+// ...), as UTF-8 bytes. A refusal is a gRPC status, never this message.
+message CalcResponse {
+  bytes result_json = 1;
+}
+
 // The free-form parts (state, each question's criteria) are JSON carried as
 // UTF-8 bytes, like SubstrateRequest.input_json, so they reach the model
 // exactly as sent.

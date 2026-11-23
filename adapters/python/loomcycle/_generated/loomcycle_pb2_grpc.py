@@ -268,6 +268,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.ListDecisionModelsRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.ListDecisionModelsResponse.FromString,
                 _registered_method=True)
+        self.Calc = channel.unary_unary(
+                '/loomcycle.v1.Loomcycle/Calc',
+                request_serializer=loomcycle__pb2.CalcRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.CalcResponse.FromString,
+                _registered_method=True)
         self.Health = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/Health',
                 request_serializer=loomcycle__pb2.HealthRequest.SerializeToString,
@@ -1133,6 +1138,31 @@ class LoomcycleServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Calc(self, request, context):
+        """Calc evaluates one expression with the Calc tool outside a run (RFC GY):
+        exact decimal arithmetic, statistics, finance, units and dates, the same
+        input, result and refusals as the in-run tool. The input and the result
+        are the tool's own JSON, carried as bytes, so a new tool field needs no
+        proto change.
+
+        Any authenticated token may call it except one limited to certain agents
+        (the run plane): it is a pure function and reads no stored data. Each
+        call takes one unit of the token's run rate; a spent rate is
+        RESOURCE_EXHAUSTED with RetryInfo. Data by reference (`from`, `to`) needs
+        a run and is refused.
+
+        A refusal carries google.rpc.ErrorInfo whose reason is the tool's error
+        code (syntax, domain, ...) and whose metadata holds category,
+        is_retryable, hint and pos: INVALID_ARGUMENT for a validation refusal
+        (fix the call), FAILED_PRECONDITION for a business one (the mathematics
+        or a limit refused a well-formed call), UNAVAILABLE for a transient one.
+
+        Mirrors POST /v1/_calc.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Health(self, request, context):
         """Health is the liveness probe. Returns build identifier + uptime.
 
@@ -1927,6 +1957,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     servicer.ListDecisionModels,
                     request_deserializer=loomcycle__pb2.ListDecisionModelsRequest.FromString,
                     response_serializer=loomcycle__pb2.ListDecisionModelsResponse.SerializeToString,
+            ),
+            'Calc': grpc.unary_unary_rpc_method_handler(
+                    servicer.Calc,
+                    request_deserializer=loomcycle__pb2.CalcRequest.FromString,
+                    response_serializer=loomcycle__pb2.CalcResponse.SerializeToString,
             ),
             'Health': grpc.unary_unary_rpc_method_handler(
                     servicer.Health,
@@ -3415,6 +3450,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/ListDecisionModels',
             loomcycle__pb2.ListDecisionModelsRequest.SerializeToString,
             loomcycle__pb2.ListDecisionModelsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Calc(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/loomcycle.v1.Loomcycle/Calc',
+            loomcycle__pb2.CalcRequest.SerializeToString,
+            loomcycle__pb2.CalcResponse.FromString,
             options,
             channel_credentials,
             insecure,

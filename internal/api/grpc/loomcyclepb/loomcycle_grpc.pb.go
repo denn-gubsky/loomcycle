@@ -84,6 +84,7 @@ const (
 	Loomcycle_ApplyReviewPolicy_FullMethodName    = "/loomcycle.v1.Loomcycle/ApplyReviewPolicy"
 	Loomcycle_Decide_FullMethodName               = "/loomcycle.v1.Loomcycle/Decide"
 	Loomcycle_ListDecisionModels_FullMethodName   = "/loomcycle.v1.Loomcycle/ListDecisionModels"
+	Loomcycle_Calc_FullMethodName                 = "/loomcycle.v1.Loomcycle/Calc"
 	Loomcycle_Health_FullMethodName               = "/loomcycle.v1.Loomcycle/Health"
 	Loomcycle_Config_FullMethodName               = "/loomcycle.v1.Loomcycle/Config"
 	Loomcycle_PauseRuntime_FullMethodName         = "/loomcycle.v1.Loomcycle/PauseRuntime"
@@ -524,6 +525,26 @@ type LoomcycleClient interface {
 	//
 	// Mirrors GET /v1/_decide/models.
 	ListDecisionModels(ctx context.Context, in *ListDecisionModelsRequest, opts ...grpc.CallOption) (*ListDecisionModelsResponse, error)
+	// Calc evaluates one expression with the Calc tool outside a run (RFC GY):
+	// exact decimal arithmetic, statistics, finance, units and dates, the same
+	// input, result and refusals as the in-run tool. The input and the result
+	// are the tool's own JSON, carried as bytes, so a new tool field needs no
+	// proto change.
+	//
+	// Any authenticated token may call it except one limited to certain agents
+	// (the run plane): it is a pure function and reads no stored data. Each
+	// call takes one unit of the token's run rate; a spent rate is
+	// RESOURCE_EXHAUSTED with RetryInfo. Data by reference (`from`, `to`) needs
+	// a run and is refused.
+	//
+	// A refusal carries google.rpc.ErrorInfo whose reason is the tool's error
+	// code (syntax, domain, ...) and whose metadata holds category,
+	// is_retryable, hint and pos: INVALID_ARGUMENT for a validation refusal
+	// (fix the call), FAILED_PRECONDITION for a business one (the mathematics
+	// or a limit refused a well-formed call), UNAVAILABLE for a transient one.
+	//
+	// Mirrors POST /v1/_calc.
+	Calc(ctx context.Context, in *CalcRequest, opts ...grpc.CallOption) (*CalcResponse, error)
 	// Health is the liveness probe. Returns build identifier + uptime.
 	//
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -1320,6 +1341,16 @@ func (c *loomcycleClient) ListDecisionModels(ctx context.Context, in *ListDecisi
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListDecisionModelsResponse)
 	err := c.cc.Invoke(ctx, Loomcycle_ListDecisionModels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *loomcycleClient) Calc(ctx context.Context, in *CalcRequest, opts ...grpc.CallOption) (*CalcResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CalcResponse)
+	err := c.cc.Invoke(ctx, Loomcycle_Calc_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -2205,6 +2236,26 @@ type LoomcycleServer interface {
 	//
 	// Mirrors GET /v1/_decide/models.
 	ListDecisionModels(context.Context, *ListDecisionModelsRequest) (*ListDecisionModelsResponse, error)
+	// Calc evaluates one expression with the Calc tool outside a run (RFC GY):
+	// exact decimal arithmetic, statistics, finance, units and dates, the same
+	// input, result and refusals as the in-run tool. The input and the result
+	// are the tool's own JSON, carried as bytes, so a new tool field needs no
+	// proto change.
+	//
+	// Any authenticated token may call it except one limited to certain agents
+	// (the run plane): it is a pure function and reads no stored data. Each
+	// call takes one unit of the token's run rate; a spent rate is
+	// RESOURCE_EXHAUSTED with RetryInfo. Data by reference (`from`, `to`) needs
+	// a run and is refused.
+	//
+	// A refusal carries google.rpc.ErrorInfo whose reason is the tool's error
+	// code (syntax, domain, ...) and whose metadata holds category,
+	// is_retryable, hint and pos: INVALID_ARGUMENT for a validation refusal
+	// (fix the call), FAILED_PRECONDITION for a business one (the mathematics
+	// or a limit refused a well-formed call), UNAVAILABLE for a transient one.
+	//
+	// Mirrors POST /v1/_calc.
+	Calc(context.Context, *CalcRequest) (*CalcResponse, error)
 	// Health is the liveness probe. Returns build identifier + uptime.
 	//
 	// Mirrors GET /healthz (which is unauthenticated on the HTTP side;
@@ -2648,6 +2699,9 @@ func (UnimplementedLoomcycleServer) Decide(context.Context, *DecideRequest) (*De
 }
 func (UnimplementedLoomcycleServer) ListDecisionModels(context.Context, *ListDecisionModelsRequest) (*ListDecisionModelsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListDecisionModels not implemented")
+}
+func (UnimplementedLoomcycleServer) Calc(context.Context, *CalcRequest) (*CalcResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Calc not implemented")
 }
 func (UnimplementedLoomcycleServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
@@ -3610,6 +3664,24 @@ func _Loomcycle_ListDecisionModels_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(LoomcycleServer).ListDecisionModels(ctx, req.(*ListDecisionModelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Loomcycle_Calc_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CalcRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(LoomcycleServer).Calc(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Loomcycle_Calc_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(LoomcycleServer).Calc(ctx, req.(*CalcRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -4645,6 +4717,10 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListDecisionModels",
 			Handler:    _Loomcycle_ListDecisionModels_Handler,
+		},
+		{
+			MethodName: "Calc",
+			Handler:    _Loomcycle_Calc_Handler,
 		},
 		{
 			MethodName: "Health",
