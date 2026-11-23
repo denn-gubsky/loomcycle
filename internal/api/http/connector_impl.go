@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -1176,16 +1177,24 @@ func (s *Server) Calc(ctx context.Context, input json.RawMessage) (connector.Too
 }
 
 // calcRefuseDataByReference refuses a Calc input naming `from` or `to`, in the
-// tool's own refusal shape (code bad_request, a validation error). Input that
-// is not a JSON object passes through: the tool reports it in its own words.
+// tool's own refusal shape (code bad_request, a validation error). Keys match
+// whatever their case, because encoding/json binds the tool's struct fields
+// that way: an exact-key check would let {"FROM": ...} reach the tool. Input
+// that is not a JSON object passes through: the tool reports it in its own
+// words.
 func calcRefuseDataByReference(input json.RawMessage) (connector.ToolResult, bool) {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(input, &fields) != nil {
 		return connector.ToolResult{}, false
 	}
-	_, from := fields["from"]
-	_, to := fields["to"]
-	if !from && !to {
+	byReference := false
+	for k := range fields {
+		if strings.EqualFold(k, "from") || strings.EqualFold(k, "to") {
+			byReference = true
+			break
+		}
+	}
+	if !byReference {
 		return connector.ToolResult{}, false
 	}
 	const hint = "pass the data inline in `vars`, or call Calc from inside a run, where `from` and `to` reach the agent's stores"
