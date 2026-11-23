@@ -167,6 +167,31 @@ describe("explorer tree rows", () => {
     expect(onSelect.mock.calls.map(([n]) => n.row.id)).toEqual(["b"]);
   });
 
+  it("marks a chunk's type and status only where they differ from the document's", () => {
+    const typed = [
+      { ...chunk("root", "Doc"), type: "spec", status: "draft" },
+      { ...chunk("a", "Same", "root", 0), type: "spec", status: "draft" },
+      { ...chunk("b", "Done", "root", 1), type: "spec", status: "done" },
+      { ...chunk("c", "Note", "root", 2), type: "note", status: "draft" },
+    ];
+    const el = mount(
+      createElement(DocumentChunkTree, {
+        tree: buildChunkTree(typed),
+        onSelect: () => {},
+        documentType: "spec",
+        documentStatus: "draft",
+      }),
+    );
+    const marks = (name: string) => ({
+      type: rowOf(el, name).querySelector(".etree-mark-type")?.textContent ?? null,
+      status: rowOf(el, name).querySelector(".etree-mark-status")?.getAttribute("aria-label") ?? null,
+    });
+    expect(marks("Doc")).toEqual({ type: null, status: null });
+    expect(marks("Same")).toEqual({ type: null, status: null });
+    expect(marks("Done")).toEqual({ type: null, status: "status done" });
+    expect(marks("Note")).toEqual({ type: "note", status: null });
+  });
+
   it("folds a chunk from its caret without selecting it", () => {
     const onSelect = vi.fn();
     const el = mount(createElement(DocumentChunkTree, { tree: buildChunkTree(chunks), onSelect }));
