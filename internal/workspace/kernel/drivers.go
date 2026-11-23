@@ -72,6 +72,7 @@ func WriteDrivers(dir string) (Drivers, error) {
 }
 
 func same(path string, body []byte) bool {
+	// #nosec G304 -- path is the worker's own drivers folder joined with a fixed file name (WriteDrivers), never input from an op
 	b, err := os.ReadFile(path)
 	return err == nil && string(b) == string(body)
 }
