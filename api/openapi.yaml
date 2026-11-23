@@ -47,6 +47,8 @@ tags:
     description: Decision models — typed questions about supplied state, answered with probabilities.
   - name: speech
     description: Read-aloud and transcription outside a run, on the operator's speech engines.
+  - name: calc
+    description: Exact arithmetic, statistics, finance, units and dates with the Calc evaluator, outside a run.
   - name: crypto
     description: Encrypt, decrypt, sign, verify, MAC and one-time codes with keys the runtime holds.
   - name: oauth
@@ -352,6 +354,83 @@ paths:
         "422": { $ref: "#/components/responses/ToolRefused" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  /v1/_calc:
+    post:
+      tags: [calc]
+      summary: Evaluate one expression with the Calc tool, outside a run.
+      description: |
+        The `Calc` tool for a caller with no run: exact decimal arithmetic,
+        rounding, powers, logarithms, trigonometry, combinatorics, lists,
+        units, statistics, finance and dates. The body is the tool's input and
+        a 200 is the tool's own result. It is a pure function of its
+        arguments: it reads and writes no stored data.
+
+        **Who.** Any authenticated token, including a tenant's members and an
+        isolated `substrate:user` token, except one limited to certain agents
+        (the run plane), which is refused `403`.
+
+        **Data by reference.** `from` and `to` need a run (there is no agent
+        whose stores they would reach) and are refused `400` here.
+
+        **Refusals.** A refusal names the tool's error code in `code`, what
+        went wrong in `error` (and `detail`), what to write instead in `hint`,
+        the offset in `expr` in `pos`, and its category. A validation refusal
+        (fix the call) is `400`; a business one (the mathematics or a limit
+        refused a well-formed call, such as `domain` or `step_limit`) is
+        `422`; a transient one is `503`.
+
+        **Limits.** Each call takes one from the token's run rate, when the
+        token has one (`429` with `Retry-After`).
+      operationId: calc
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CalcToolInput" }
+            example: { expr: "0.1 + 0.2" }
+      responses:
+        "200":
+          description: The tool's JSON result.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+              example: { result: 0.3, exact: true, type: number, text: "0.3" }
+        "400":
+          description: A validation refusal, or a body that is empty or not JSON (`bad_request`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CalcError" }
+              examples:
+                syntax:
+                  value:
+                    code: syntax
+                    error: "unexpected `*`"
+                    detail: "unexpected `*`"
+                    hint: "power is `^`, e.g. 2^3"
+                    pos: 2
+                    errorCategory: validation
+                    isRetryable: false
+                    description: "power is `^`, e.g. 2^3"
+        "422":
+          description: A business refusal.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CalcError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429":
+          description: "`rate_limited`: the token's rate is spent. Retry after `Retry-After` seconds."
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: A transient refusal; sending the same call again may succeed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CalcError" }
   /v1/_crypto:
     post:
       tags: [crypto]
@@ -3068,6 +3147,34 @@ components:
         resource_too: { type: boolean }
         with_summary: { type: boolean, description: "ls (tenant scope): add each entry's annotation as summary." }
         summary_chars: { type: integer, description: "ls with_summary: the most abstract characters the page carries." }
+    # CalcToolInput mirrors the Calc tool's InputSchema() less the fields a
+    # caller with no run may not send (`from`, `to`); its properties are
+    # drift-tested against the live tool schema (internal/api/http/openapi_test.go).
+    CalcToolInput:
+      type: object
+      required: [expr]
+      additionalProperties: false
+      properties:
+        expr: { type: string, description: "One or more statements separated by `;` or newlines; the last one is the result." }
+        vars: { type: object, additionalProperties: true, description: "Names bound before evaluation: a number, a numeric string (exact), a string, a boolean or a list." }
+        digits: { type: integer, minimum: 1, description: "Significant digits for an approximate or non-terminating result (default 15)." }
+        seed: { type: integer, description: "Makes the random functions repeatable." }
+    CalcError:
+      description: |
+        A refused Calc call: the `Error` envelope with the tool's error code in
+        `code` and its detail in `error`, plus the refusal's own fields. A
+        refusal made before the tool ran (an empty body) carries the envelope
+        alone.
+      allOf:
+        - $ref: "#/components/schemas/Error"
+        - type: object
+          properties:
+            detail: { type: string, description: "What went wrong." }
+            hint: { type: string, description: "What to write instead." }
+            pos: { type: integer, description: "The offset in `expr` where it went wrong." }
+            errorCategory: { type: string, enum: [transient, validation, business] }
+            isRetryable: { type: boolean }
+            description: { type: string, description: "The next step for the caller." }
     # CryptoToolInput mirrors the Crypto tool's InputSchema() plus the operator
     # API's `tenant`; its properties and enums are drift-tested against the
     # live tool schema (internal/api/http/openapi_test.go).

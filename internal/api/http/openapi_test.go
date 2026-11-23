@@ -98,6 +98,37 @@ func TestOpenAPISpec_CryptoInputMatchesTool(t *testing.T) {
 	}
 }
 
+// TestOpenAPISpec_CalcInputMatchesTool guards drift between POST /v1/_calc in
+// the spec and the Calc tool's input, which the route forwards the body to:
+// the same fields, less the data-by-reference ones a caller with no run may
+// not send, and the same required set and enums.
+func TestOpenAPISpec_CalcInputMatchesTool(t *testing.T) {
+	var tool struct {
+		Properties map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal((&builtin.Calc{}).InputSchema(), &tool); err != nil {
+		t.Fatalf("parse the Calc tool's InputSchema: %v", err)
+	}
+	offRun := []string{}
+	for _, k := range specKeys(tool.Properties) {
+		if k != "from" && k != "to" {
+			offRun = append(offRun, k)
+		}
+	}
+	spec := specSchemas(t)["CalcToolInput"]
+	props := specMap(spec["properties"])
+	assertSameSet(t, "CalcToolInput properties", offRun, specKeys(props))
+	assertSameSet(t, "CalcToolInput required", tool.Required, specStrings(spec["required"]))
+	for name, p := range tool.Properties {
+		if len(p.Enum) > 0 && name != "from" && name != "to" {
+			assertSameSet(t, "CalcToolInput."+name+" enum", p.Enum, specStrings(specMap(props[name])["enum"]))
+		}
+	}
+}
+
 // TestOpenAPIHandlers_Serve exercises the HTTP serve path (the handlers read
 // only the embedded spec, not Server state, so a zero-value Server suffices).
 func TestOpenAPIHandlers_Serve(t *testing.T) {
