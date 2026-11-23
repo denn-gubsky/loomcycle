@@ -35,6 +35,11 @@ var fuzzSeeds = []string{
 	`d = date("2026-01-31"); [addmonths(d, 1), eomonth(d, 1), d + 30, date(2026, 3, 1) - d, weekday(d), datefmt(d, "D MMM YYYY")]`,
 	`t = tz(datetime("2026-03-29T00:30:00Z"), "Europe/Kyiv"); [t + 3600, hour(t), datediff(date(t), date("2027-01-01"), "months")]`,
 	`[workdays(date("2026-11-01"), date("2026-11-30")), addworkdays(date("2026-11-20"), 5), yearfrac(date("2026-01-01"), date("2026-07-01"), "act/act")]`,
+	"A = [[2, 1], [1, 3]]; [A * A', A[1, :], A[:, 2], A * [1, 2], [1, 2] * A, A .* A, size(A)]",
+	"A = [[4, 1], [1, 3]]; [inv(A), det(A), solve(A, [1, 2]), lstsq(A, [1, 2]), pinv(A), matrank(A), cond(A), norm(A, 2)]",
+	"A = [[4, 1], [1, 3]]; [lu(A), qr(A), cholesky(A), eig(A), svd(A), trace(A), kron(A, A)]",
+	"[zeros(2, 2), ones(2), identity(2), diag([1, 2]), reshape(1:4, 2, 2), hstack([1], [2]), vstack([1], [2]), linspace(0, 1, 3)]",
+	"[dot([1, 2], [3, 4]), cross([1, 0, 0], [0, 1, 0]), mean([[1, 2], [3, 4]]), [1, 2]']",
 }
 
 func FuzzParse(f *testing.F) {

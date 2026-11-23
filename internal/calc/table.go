@@ -26,6 +26,7 @@ const (
 	SecSequences  = "sequences"
 	SecRandom     = "random"
 	SecStatistics = "statistics"
+	SecMatrices   = "matrices"
 	SecFinance    = "finance"
 	SecDates      = "dates"
 )
@@ -54,7 +55,7 @@ type builtin struct {
 var sections = [][]builtin{
 	controlFuncs, elementaryFuncs, trigFuncs, specialFuncs,
 	integerFuncs, bitFuncs, sequenceFuncs, randomFuncs, unitFuncs,
-	statisticsFuncs, financeFuncs,
+	statisticsFuncs, matrixFuncs, financeFuncs,
 	dateFuncs,
 }
 
@@ -82,7 +83,7 @@ var controlFuncs = []builtin{
 // by name.
 func Functions() []FuncInfo {
 	order := map[string]int{}
-	for i, s := range []string{SecControl, SecElementary, SecTrig, SecSpecial, SecIntegers, SecBits, SecSequences, SecRandom, SecUnits, SecStatistics, SecFinance, SecDates} {
+	for i, s := range []string{SecControl, SecElementary, SecTrig, SecSpecial, SecIntegers, SecBits, SecSequences, SecRandom, SecUnits, SecStatistics, SecMatrices, SecFinance, SecDates} {
 		order[s] = i
 	}
 	var out []FuncInfo

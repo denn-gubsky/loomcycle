@@ -48,17 +48,22 @@ or `[ ]` does not end a statement, so a long list can span lines.
 | 7 | `*` `/` `%` `.*` `./` | `%` is modulo, the sign of the right side |
 | 8 | unary `-` `+` | `-2^2` is `-4`, as on paper |
 | 9 | `^` `.^` | power, right-associative: `2^3^2` is `2^9` |
-| 10 | `f(x)`, `v[i]`, `n!` | call, index, factorial |
+| 10 | `f(x)`, `v[i]`, `A[i, j]`, `n!`, `A'` | call, index, factorial, transpose |
 
 Parentheses group as usual. A range binds looser than arithmetic, so `1:n+1`
 is `1` to `n+1`.
 
 **Lists.** `+` and `-` work element by element, and a number on either side
 is applied to every element: `[1, 2, 3] + 1` is `[2, 3, 4]`. `*` multiplies a
-list by a number and `/` divides it by one. For anything else — `*` or `/`
-between two lists, a number divided by a list, a power with a list in it —
-write the element-wise operator: `.*`, `./`, `.^`. Two lists combined element
-by element must have the same length.
+list by a number and `/` divides it by one. For anything else — `/` between
+two lists, a number divided by a list, a power with a list in it — write the
+element-wise operator: `.*`, `./`, `.^`. Two lists combined element by
+element must have the same length, two matrices the same shape.
+
+**Matrices.** A list of rows of the same length is a matrix. `*` between two
+matrices, or a matrix and a vector, is the matrix product; between two plain
+vectors it is refused (write `dot(a, b)` or `.*`). The postfix `'` is the
+transpose: `A'`. See `Calc/matrices`.
 
 ## Names, assignment and your own functions
 
@@ -89,7 +94,9 @@ by element must have the same length.
   down. `range(a, b, step?)` is the same.
 - **Indexing starts at 1**: `v[1]` is the first element, `v[len(v)]` the
   last. There is no index 0 and no negative index.
-- A nested list is indexed one level at a time: `m[2][1]`.
+- A nested list is indexed one level at a time, `m[2][1]`, or as a matrix,
+  `m[2, 1]`. A lone `:` takes every row or column: `m[2, :]` is row 2,
+  `m[:, 1]` column 1.
 - Strings cannot be indexed.
 
 ## Choosing a value
@@ -109,7 +116,8 @@ Example: `if(1249.99 * 3 > 3000, "free shipping", "pay shipping")` gives `free s
 | `2**10` | `2^10` | power is `^`; `**` is refused |
 | `20% * price` or `price * 20%` | `price * 0.2` or `price * 20 / 100` | `%` is modulo, not percent |
 | `v[0]` | `v[1]` | indexing starts at 1 |
-| `[1, 2] * [3, 4]` | `[1, 2] .* [3, 4]` | `*` between lists is refused |
+| `[1, 2] * [3, 4]` | `[1, 2] .* [3, 4]` or `dot([1, 2], [3, 4])` | `*` between two vectors is refused |
+| `'text'` | `"text"` | strings use double quotes; `'` is the transpose |
 | `1 / v`, `v ^ 2` | `1 ./ v`, `v .^ 2` | the element-wise forms |
 | `if(x = 1, …)` | `if(x == 1, …)` | `=` assigns, `==` compares |
 | `2x`, `3(x + 1)` | `2*x`, `3*(x + 1)` | there is no implicit multiplication |

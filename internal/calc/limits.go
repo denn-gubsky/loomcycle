@@ -60,4 +60,23 @@ const (
 	maxKeyBytes = 16 << 20
 	// maxRoundPlaces bounds the n of round(x, n) and friends.
 	maxRoundPlaces = 1000
+	// MaxMatrixElems bounds a matrix a matrix function reads or builds:
+	// 500 × 500.
+	MaxMatrixElems = 250_000
+	// MaxMatrixWork bounds a matrix product, solve, inverse or
+	// decomposition by rows × columns × the inner (or smaller) dimension:
+	// the work of one 500 × 500 matrix. It is checked from the shapes
+	// before any work, because a gonum routine cannot be interrupted: once
+	// it starts, neither the step count nor the clock stops it, so this cap
+	// is what bounds its time. Measured CPU time at 500 × 500 on an M-series
+	// laptop: det 22 ms, inv 71 ms, the product 90 ms, qr 135 ms, the
+	// symmetric eigen decomposition 300 ms, svd with its factors 570 ms.
+	MaxMatrixWork = 500 * 500 * 500
+	// matrixWorkPerStep charges one step per this many multiply-adds of a
+	// matrix routine, before it runs.
+	matrixWorkPerStep = 1000
+	// gateElems and gateWork: a matrix operation reading more elements, or
+	// doing more work, takes a slot of Request.Gate first.
+	gateElems = 10_000
+	gateWork  = 1_000_000
 )

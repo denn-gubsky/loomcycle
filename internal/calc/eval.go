@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 type evaluator struct {
@@ -27,6 +29,9 @@ type evaluator struct {
 	nowAt time.Time
 	// zones caches tz()'s time.LoadLocation, which reads a file per call.
 	zones map[string]*time.Location
+	// gate bounds how many heavy matrix operations run at once across the
+	// process (Request.Gate); nil means no gating.
+	gate *semaphore.Weighted
 }
 
 // listKey identifies a list value. Lists are never mutated once built, so
@@ -113,8 +118,7 @@ func ctxErr(err error, pos int) *Error {
 var aliases = map[string]string{
 	"ln": "log", "arcsin": "asin", "arccos": "acos", "arctan": "atan",
 	"choose": "binomial", "nCr": "binomial", "comb": "binomial", "fact": "factorial",
-	"length": "len", "size": "len",
-	"ptp": "spread", "average": "mean", "avg": "mean",
+	"length": "len", "ptp": "spread", "average": "mean", "avg": "mean",
 	"std": "stdev", "stddev": "stdev",
 }
 
@@ -161,6 +165,15 @@ func (e *evaluator) evalNode(n node, sc *scope) (val, *Error) {
 		return e.evalCall(n, sc)
 	case *indexN:
 		return e.evalIndex(n, sc)
+	case *transN:
+		x, err := e.eval(n.x, sc)
+		if err != nil {
+			return nil, err
+		}
+		return e.callBuiltin(e.funcs["transpose"], []val{x}, n.p)
+	case *allN:
+		return nil, errf(codeSyntax, n.p, "a lone `:` means every row or column, and only inside brackets").
+			withHint("A[i, :] is row i, A[:, j] is column j")
 	case *listN:
 		items := make([]val, 0, len(n.items))
 		for _, it := range n.items {
@@ -504,7 +517,7 @@ func (e *evaluator) evalIndex(n *indexN, sc *scope) (val, *Error) {
 	if err != nil {
 		return nil, err
 	}
-	idx, err := e.eval(n.idx, sc)
+	rows, rowAll, err := e.evalSelector(n.idx, sc)
 	if err != nil {
 		return nil, err
 	}
@@ -512,21 +525,76 @@ func (e *evaluator) evalIndex(n *indexN, sc *scope) (val, *Error) {
 	if !ok {
 		return nil, errf(codeType, n.p, "only a list can be indexed, got a %s", typeName(x))
 	}
-	if il, ok := idx.([]val); ok {
-		if err := e.charge(len(il), n.p); err != nil {
+	picked, many, err := e.pickSel(l, rows, rowAll, n.p)
+	if err != nil || n.col == nil {
+		return picked, err
+	}
+	cols, colAll, err := e.evalSelector(n.col, sc)
+	if err != nil {
+		return nil, err
+	}
+	if !many {
+		return e.pickRow(picked, cols, colAll, n.p)
+	}
+	in := picked.([]val)
+	out := make([]val, len(in))
+	for i, r := range in {
+		v, err := e.pickRow(r, cols, colAll, n.p)
+		if err != nil {
 			return nil, err
 		}
-		out := make([]val, 0, len(il))
-		for _, iv := range il {
-			v, err := pick(l, iv, n.p)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, v)
-		}
-		return out, nil
+		out[i] = v
 	}
-	return pick(l, idx, n.p)
+	return out, nil
+}
+
+// evalSelector evaluates one index; all reports a lone `:`.
+func (e *evaluator) evalSelector(n node, sc *scope) (v val, all bool, err *Error) {
+	if _, ok := n.(*allN); ok {
+		return nil, true, nil
+	}
+	v, err = e.eval(n, sc)
+	return v, false, err
+}
+
+// pickRow applies the column index of A[i, j] to one row.
+func (e *evaluator) pickRow(row val, cols val, all bool, pos int) (val, *Error) {
+	l, ok := row.([]val)
+	if !ok {
+		return nil, errf(codeType, pos, "A[i, j] needs a list of lists (a matrix); a row here is a %s", typeName(row)).
+			withHint("index a plain list with one index, v[i]")
+	}
+	v, _, err := e.pickSel(l, cols, all, pos)
+	return v, err
+}
+
+// pickSel applies one index to l: a number picks an element, a list of
+// numbers picks several, and `:` takes them all. many reports a list of
+// picks rather than one element.
+func (e *evaluator) pickSel(l []val, idx val, all bool, pos int) (v val, many bool, err *Error) {
+	if all {
+		if err := e.charge(len(l), pos); err != nil {
+			return nil, false, err
+		}
+		return l, true, nil
+	}
+	il, ok := idx.([]val)
+	if !ok {
+		v, err := pick(l, idx, pos)
+		return v, false, err
+	}
+	if err := e.charge(len(il), pos); err != nil {
+		return nil, false, err
+	}
+	out := make([]val, 0, len(il))
+	for _, iv := range il {
+		v, err := pick(l, iv, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, v)
+	}
+	return out, true, nil
 }
 
 func pick(l []val, idx val, pos int) (val, *Error) {

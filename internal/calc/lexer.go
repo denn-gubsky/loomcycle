@@ -28,6 +28,10 @@ var ops = [...]string{
 	"->", "==", "!=", "<=", ">=", ".*", "./", ".^",
 	"+", "-", "*", "/", "^", "%", "!", "<", ">", "=",
 	"(", ")", "[", "]", ",", ":",
+	// The postfix transpose, A'. Strings use double quotes, so a single
+	// quote has no other meaning; a model's 'text' is refused by the parser
+	// with a hint.
+	"'",
 }
 
 func isLetter(c byte) bool {
