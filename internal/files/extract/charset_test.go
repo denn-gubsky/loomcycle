@@ -129,3 +129,22 @@ func TestText_RussianDOSTextWithAFrameIsCP866(t *testing.T) {
 		t.Errorf("notes %q", rep.Notes)
 	}
 }
+
+// The charset was found in a lower-cased copy of the content attribute and
+// then sliced out of the original, but lower-casing can change a string's
+// byte length: "İ" (2 bytes) becomes "i̇" (3), the Kelvin sign (3 bytes)
+// becomes "k" (1). A longer copy sliced past the end and panicked (found
+// by the extractor fuzz job); a shorter one read the wrong bytes.
+func TestHTMLMetaCharset_LengthChangingCaseFoldIsSafe(t *testing.T) {
+	for _, tc := range []struct{ content, want string }{
+		{strings.Repeat("İ", 20) + " charset=windows-1251", "windows-1251"},
+		{strings.Repeat("K", 20) + "; charset=koi8-r", "koi8-r"},
+		{"text/html; CHARSET=Windows-1251", "windows-1251"},
+		{strings.Repeat("İ", 20) + "charset=", ""},
+	} {
+		page := `<html><head><meta http-equiv="Content-Type" content="` + tc.content + `"></head></html>`
+		if got := htmlMetaCharset([]byte(page)); got != tc.want {
+			t.Errorf("content %q: got %q, want %q", tc.content, got, tc.want)
+		}
+	}
+}
