@@ -94,7 +94,7 @@ func TestReadRejectsParentTraversal(t *testing.T) {
 	if !res.IsError {
 		t.Errorf("path outside root should error; got Text=%q", res.Text)
 	}
-	if !strings.Contains(res.Text, "escapes sandbox") && !strings.Contains(res.Text, "no such file") {
+	if !strings.Contains(res.Text, "escapes the volume") && !strings.Contains(res.Text, "does not exist") {
 		// The error may be either the explicit sandbox rejection or a
 		// non-existence error from EvalSymlinks (if probe doesn't exist) —
 		// both are correct refusals, neither leaks anything.

@@ -181,7 +181,8 @@ var tenantConfinableTools = map[string]bool{
 	// workspace: a workspace opened here is the session principal's own,
 	// keyed on its tenant and subject (RFC GW D35); the connector refuses a
 	// principal with neither and takes the scope that creates a run
-	// (toolScope).
+	// (toolScope). A member needs an operator's grant on top
+	// (operatorGrantedTools).
 	"workspace": true,
 
 	// Per-run / per-user — tenant inherited; the underlying tool applies its
@@ -657,8 +658,23 @@ func principalMayCallTool(ctx context.Context, toolName string) bool {
 	if auth.IsIsolated(p, ok) {
 		return userSelfServiceTools[toolName]
 	}
+	if operatorGrantedTools[toolName] && !auth.HasScope(p.Scopes, auth.ScopeTenant) {
+		// A member holds it only by an operator's explicit grant: an allow
+		// rule, never the compat fallback that answers an unmatched question
+		// with the scope gate's.
+		s := authz.MCPToolSurface(toolName)
+		if !authz.Grants(ctx, p.Effective, s.Action, s.Resource(p.TenantID)) {
+			return false
+		}
+	}
 	return tenantConfinableTools[toolName]
 }
+
+// operatorGrantedTools are tenant-confinable tools a tenant operator reaches
+// by its scope and a member only through an access-control list that allows
+// it `invoke mcp-tool:<name>`. workspace runs commands on a workspace worker
+// (RFC GW P9, D-P9-13 as ruled by the owner on 2026-11-23).
+var operatorGrantedTools = map[string]bool{"workspace": true}
 
 // scopeNeededFor names the scope a refused principal lacks for toolName, for
 // the refusal's text: the tool's own required scope when that is what failed,
