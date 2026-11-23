@@ -93,6 +93,14 @@ describe("CodeEditor", () => {
     expect(values).toEqual(expect.arrayContaining(["parse", "line one"]));
   });
 
+  it("highlights Markdown in the markdown language, wrapped", async () => {
+    await mount({ value: "# Title\n\nSome **bold** text", onChange: () => {}, language: "markdown" });
+    await vi.waitFor(() => expect(host!.querySelector(".tok-heading")).not.toBeNull());
+    const strong = [...host!.querySelectorAll(".tok-strong")].map((e) => e.textContent).join("");
+    expect(strong).toContain("bold");
+    expect(host!.querySelector(".cm-lineWrapping")).not.toBeNull();
+  });
+
   it("marks a diagnostic in the text", async () => {
     await mount({ value: "abc def", onChange: () => {}, diagnostics: [{ from: 4, to: 7, severity: "error", message: "bad" }] });
     await vi.waitFor(() => expect(host!.querySelector(".cm-lintRange-error")).not.toBeNull());
