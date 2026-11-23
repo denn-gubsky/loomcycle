@@ -166,6 +166,18 @@ OCR and speech-to-text of a workspace's file are split between the worker and th
 
 So a workspace worker that should OCR scans and transcribe recordings needs poppler and ffmpeg on its `PATH` (and DjVuLibre to read DjVu at all); the loomcycle-worker image carries them. Without one, the call is refused with `conversion_helper_missing`, naming it.
 
+### The workspace session image
+
+`denngubsky/loomcycle-workspace` (and `ghcr.io/denn-gubsky/loomcycle-workspace`), built from `Dockerfile.workspace`, is the image a workspace's commands run in when the worker runs the `container` engine (`LOOMCYCLE_WORKSPACE_ENGINE=container`, RFC GW P3): one container of it per workspace, with a read-only root, no capabilities, no network and the workspace at `/workspace`. It is not the worker's own image: it holds no loomcycle binary, and the worker's conversions still run in the worker's conversion child above, not in it. It is published at each minor release, for amd64 and arm64.
+
+It carries what a general workspace needs without a download (RFC GW §4.4):
+
+- Python 3 with `pip` and `venv`; Node.js with `npm`; `git`.
+- poppler-utils, ffmpeg, DjVuLibre and Typst (with Noto Sans, Noto Sans Mono and Noto Serif), for a script that works on documents and media.
+- The fixed library set. Python: numpy, pandas, matplotlib (drawing without a display, `MPLBACKEND=Agg`), openpyxl, python-docx, pypdf, Pillow, lxml, PyYAML. Node: express (a web server) and esbuild (a bundler).
+
+Every package comes from Debian's archive (trixie), so building the image downloads nothing from PyPI or npm. Anything else an agent needs it installs into its workspace (a virtual environment, `node_modules`), never into the image. The image is about 1.3 GB unpacked; an operator who needs less builds a slimmer one and names it in the worker's settings.
+
 ## Versions
 
 A runtime refuses a worker that speaks another worker protocol and logs a warning for a worker of another build. Upgrade the runtime and the workers together; a worker that is refused exits with a message naming both versions.
