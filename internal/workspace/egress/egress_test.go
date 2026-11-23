@@ -588,3 +588,44 @@ func TestProxy_DropsTheSessionsOwnCredentialOnARouteWithNone(t *testing.T) {
 		}
 	}
 }
+
+// An upstream may read a path differently from the proxy's check: a matrix
+// parameter after ";" is stripped by Tomcat and Spring, an over-long UTF-8
+// encoding of "." is decoded by some servers, a double encoding by others.
+// Each must be refused, so the segment the check passed is the segment the
+// upstream reads.
+func TestProxy_RefusesAPathAnUpstreamCouldReadAsAnotherPath(t *testing.T) {
+	up := newUpstream(t, nil)
+	p, _ := newTestProxy(t, nil, nil)
+	g := grantOf(Route{Name: "api", URL: up.routeURL("v2/")})
+	for _, path := range []string{
+		"..;x", "a/..;/admin", "..;/admin", "a;b", "..%3bx", "a%3Bb",
+		"%2e%2e", "%2e%2e/admin", "%252e%252e/admin", "a%2fb", "a%2F..",
+		"%c0%ae%c0%ae/admin", "%c0%ae", "%e0%80%ae", "%ff", "a%80b",
+		"a\\b", "a%5cb", "%00", "a%0ab", "a%7fb",
+		"a b", "a\"b", "a<b", "a>b", "a^b", "a`b", "a{b", "a|b", "a}b", "a[b", "a]b",
+	} {
+		_, err := do(t, p, g, Request{Route: "api", Path: path})
+		if err == nil {
+			t.Errorf("path %q: no refusal", path)
+			continue
+		}
+		wantRefusal(t, err, http.StatusForbidden)
+	}
+	if up.hits.Load() != 0 {
+		t.Fatalf("upstream was called %d times", up.hits.Load())
+	}
+	// What registries and APIs send still passes: unreserved characters,
+	// the vetted sub-delims, ":" and "@", and a UTF-8 percent-encoding.
+	for _, path := range []string{
+		"simple/numpy/", "packages/ab/cd/numpy-2.1.0-cp312-manylinux_2_17_x86_64.whl",
+		"@types/node", "a:b", "a~b_c.d-e", "x!$&'()*+,=y", "caf%C3%A9", "a%20b",
+	} {
+		resp, err := do(t, p, g, Request{Route: "api", Path: path})
+		if err != nil {
+			t.Errorf("path %q: %v", path, err)
+			continue
+		}
+		_ = readAll(t, resp)
+	}
+}

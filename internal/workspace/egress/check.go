@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // routeName is the syntax of a route's name: the first path segment of the
@@ -168,11 +169,9 @@ func methodAllowed(rt Route, method string) bool {
 
 // joinPath joins a session's path, with its query, under a route's URL. It
 // refuses anything that could make the request leave the route's URL, or be
-// read two ways by the upstream: a dot segment, written plainly or encoded; an
-// encoded slash or backslash; a percent-encoding that decodes to another one;
-// an empty segment; a leading slash; a backslash, a fragment, a space or a
-// control character. The joined URL is checked once more to be under the
-// route's URL on the route's host.
+// read two ways by the upstream (checkSegment); an empty segment; a leading
+// slash; a backslash, a fragment, a space or a control character. The joined
+// URL is checked once more to be under the route's URL on the route's host.
 func joinPath(base *url.URL, p string) (*url.URL, error) {
 	if len(p) > 8192 {
 		return nil, errors.New("the path is longer than 8192 characters")
@@ -195,19 +194,8 @@ func joinPath(base *url.URL, p string) (*url.URL, error) {
 				}
 				return nil, errors.New("the path may not have an empty segment")
 			}
-			lower := strings.ToLower(seg)
-			if strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
-				return nil, errors.New("the path may not hold an encoded slash or backslash")
-			}
-			dec, err := url.PathUnescape(seg)
-			if err != nil {
-				return nil, errors.New("the path has a malformed percent-encoding")
-			}
-			if dec == "." || dec == ".." {
-				return nil, errors.New("the path may not have a . or .. segment")
-			}
-			if strings.Contains(dec, "%") {
-				return nil, errors.New("the path may not hold a percent-encoded percent sign")
+			if err := checkSegment(seg); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -224,6 +212,51 @@ func joinPath(base *url.URL, p string) (*url.URL, error) {
 		return nil, errors.New("the path leaves the route's URL")
 	}
 	return u, nil
+}
+
+// segmentChars are the characters a path segment may carry as written: RFC
+// 3986's unreserved characters, the sub-delims but ";", ":" and "@" (npm's
+// scoped names), and "%" to start a percent-encoding. ";" is left out
+// because Tomcat and Spring cut a segment at it ("..;x" reaches them as
+// ".."), and the rest of what a URL may hold is left out because some server
+// somewhere reads it as something else.
+const segmentChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~!$&'()*+,=:@%"
+
+// checkSegment refuses a path segment an upstream could read as another path
+// than the one checked here (a parser differential): a character outside
+// segmentChars; a percent-encoding that is malformed, or decodes to anything
+// but valid UTF-8 (an over-long "%c0%ae" is "." to some servers), to a slash,
+// a backslash, a ";", a control byte, or another "%" (a double encoding); and
+// a segment that is "." or ".." once decoded.
+func checkSegment(seg string) error {
+	for i := 0; i < len(seg); i++ {
+		if strings.IndexByte(segmentChars, seg[i]) < 0 {
+			return fmt.Errorf("the path holds %q, which a route's path may not carry", seg[i:i+1])
+		}
+	}
+	dec, err := url.PathUnescape(seg)
+	if err != nil {
+		return errors.New("the path has a malformed percent-encoding")
+	}
+	if !utf8.ValidString(dec) {
+		return errors.New("the path has a percent-encoding that is not valid UTF-8")
+	}
+	for _, c := range dec {
+		switch {
+		case c == '/' || c == '\\':
+			return errors.New("the path may not hold an encoded slash or backslash")
+		case c == ';':
+			return errors.New("the path may not hold a ; (some servers cut a segment at it)")
+		case c == '%':
+			return errors.New("the path may not hold a percent-encoded percent sign")
+		case c < 0x20 || c == 0x7f || (c >= 0x80 && c < 0xa0):
+			return errors.New("the path may not hold an encoded control character")
+		}
+	}
+	if dec == "." || dec == ".." {
+		return errors.New("the path may not have a . or .. segment")
+	}
+	return nil
 }
 
 // pathOnly is a session's path without its query, bounded, for an audit line.
