@@ -62,7 +62,9 @@ type Response struct {
 	// are arrays, a function is its signature. Nil when Truncated cut the
 	// result's text.
 	Result any `json:"result"`
-	// Type is number, string, boolean, list, function, date or datetime.
+	// Type is number, complex, string, boolean, list, function, date or
+	// datetime. A complex renders as "3+2i" in Text and as {"re", "im"} in
+	// Result.
 	// A date renders as "2026-11-20", a datetime as RFC 3339 in UTC (or in
 	// the zone tz() gave it).
 	Type string `json:"type"`
@@ -294,7 +296,9 @@ func numericString(s string) (num, bool) {
 		return num{}, false
 	}
 	tok, err := lexNumber(t, 0)
-	if err != nil || len(tok.s) != len(t) {
+	// An imaginary literal ("2i") stays a string, as it was before complex
+	// numbers: a var string is a number only when it is a real one.
+	if err != nil || len(tok.s) != len(t) || tok.imag {
 		return num{}, false
 	}
 	n := tok.num

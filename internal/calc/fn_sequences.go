@@ -197,6 +197,12 @@ func fnSort(e *evaluator, a args) (val, *Error) {
 		allDate = allDate && isDate
 		allTime = allTime && isTime
 	}
+	for _, k := range keys {
+		if isComplex(k) {
+			return nil, errf(codeType, a.pos, "sort: complex numbers have no order").
+				withHint("sort by a real key, e.g. sort(v, z -> abs(z)) or sort(v, z -> re(z))")
+		}
+	}
 	if !allNum && !allStr && !allDate && !allTime {
 		return nil, errf(codeType, a.pos, "sort needs all numbers, all strings, all dates or all datetimes").
 			withHint("to sort lists or by a field, pass a key, e.g. sort(v, p -> p[2])")
@@ -277,6 +283,8 @@ func (e *evaluator) valueKey(k *keyBuf, v val, a args) *Error {
 			return err
 		}
 		return k.write("n"+r.RatString(), a)
+	case cnum:
+		return k.write(complexKey(complex128(v)), a)
 	case string:
 		q := strconv.Quote(v)
 		if err := e.charge(1+ceilDiv(len(q), bitStepCost), a.pos); err != nil {
@@ -435,7 +443,7 @@ func fold(op string, unit int64) func(*evaluator, args) (val, *Error) {
 				return nil, err
 			}
 			if i == 0 {
-				if _, ok := x.(num); !ok {
+				if _, ok := asComplex(x); !ok {
 					if _, ok := x.([]val); !ok {
 						return nil, errf(codeType, a.pos, "%s needs numbers, got a %s", a.name, typeName(x))
 					}

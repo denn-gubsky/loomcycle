@@ -409,6 +409,15 @@ func (e *evaluator) symmetricOf(a args) (*mat.SymDense, *mat.Dense, *Error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	if i, j, ok := asymmetry(m, n); ok {
+		return nil, nil, errf(codeDomain, a.pos, "%s needs a symmetric matrix; element [%d, %d] differs from [%d, %d]", a.name, i+1, j+1, j+1, i+1)
+	}
+	return mat.NewSymDense(n, m.RawMatrix().Data), m, nil
+}
+
+// asymmetry returns the first element [i, j] that differs from [j, i] by
+// more than symTol relative to the largest element, if there is one.
+func asymmetry(m *mat.Dense, n int) (i, j int, found bool) {
 	big := 0.0
 	for i := range n {
 		for j := range n {
@@ -418,11 +427,11 @@ func (e *evaluator) symmetricOf(a args) (*mat.SymDense, *mat.Dense, *Error) {
 	for i := range n {
 		for j := i + 1; j < n; j++ {
 			if math.Abs(m.At(i, j)-m.At(j, i)) > symTol*big {
-				return nil, nil, errf(codeDomain, a.pos, "%s needs a symmetric matrix; element [%d, %d] differs from [%d, %d]", a.name, i+1, j+1, j+1, i+1)
+				return i, j, true
 			}
 		}
 	}
-	return mat.NewSymDense(n, m.RawMatrix().Data), m, nil
+	return 0, 0, false
 }
 
 func fnCholesky(e *evaluator, a args) (val, *Error) {
@@ -447,15 +456,18 @@ func fnCholesky(e *evaluator, a args) (val, *Error) {
 	return e.valOfDense(&l, "the Cholesky factor", a.pos)
 }
 
+// fnEig takes the symmetric path (real eigenvalues, ascending) when the
+// matrix is symmetric to within symTol, and the general one (eigGeneral,
+// complex where needed) otherwise.
 func fnEig(e *evaluator, a args) (val, *Error) {
-	sym, m, err := e.symmetricOf(a)
+	m, n, err := e.squareOf(a, 0)
 	if err != nil {
-		if err.Code == string(codeDomain) {
-			err.Hint = "eigenvalues of a non-symmetric matrix can be complex, which comes in a later version; for a symmetric matrix (A + A')/2 is the symmetric part"
-		}
 		return nil, err
 	}
-	n := sym.SymmetricDim()
+	if _, _, asym := asymmetry(m, n); asym {
+		return e.eigGeneral(m, n, a)
+	}
+	sym := mat.NewSymDense(n, m.RawMatrix().Data)
 	var vals []float64
 	var vecs mat.Dense
 	err = e.run(m, cubicWork(n, n), a, func() *Error {
