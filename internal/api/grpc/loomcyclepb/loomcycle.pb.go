@@ -11212,14 +11212,15 @@ type RuleStatementsRequest struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Tenant string                 `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
 	Scope  string                 `protobuf:"bytes,2,opt,name=scope,proto3" json:"scope,omitempty"`
-	// accept or reject.
+	// accept, reject or demote (live asserted statements back to proposed;
+	// an operator only).
 	Action string `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"`
 	// The statements by id, or by filter (has_filter selects the filter, so
 	// an empty filter — the whole queue — can be named).
 	Ids       []string           `protobuf:"bytes,4,rep,name=ids,proto3" json:"ids,omitempty"`
 	Filter    *ReviewQueueFilter `protobuf:"bytes,5,opt,name=filter,proto3" json:"filter,omitempty"`
 	HasFilter bool               `protobuf:"varint,6,opt,name=has_filter,json=hasFilter,proto3" json:"has_filter,omitempty"`
-	// Required for reject.
+	// Required for reject and demote.
 	Reason string `protobuf:"bytes,7,opt,name=reason,proto3" json:"reason,omitempty"`
 	// Unset = a dry run.
 	DryRun *bool `protobuf:"varint,8,opt,name=dry_run,json=dryRun,proto3,oneof" json:"dry_run,omitempty"`
