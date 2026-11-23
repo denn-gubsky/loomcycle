@@ -38,6 +38,7 @@ var errorCases = map[errCode]Request{
 	codeDimension:      {Expr: `convert(1, "kg", "m")`},
 	codeNoConvergence:  {Expr: "integrate(x -> 1/x, 0, 1)"},
 	codeColumn:         {Expr: `t = csv("a,b\n1,2"); t.c`},
+	codeBadData:        {Expr: "t", Data: map[string]Data{"t": {Bytes: []byte("{"), Format: FormatJSON}}},
 	// time_limit and canceled need a context; see their own tests.
 }
 

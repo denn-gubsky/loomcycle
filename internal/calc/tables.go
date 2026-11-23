@@ -72,15 +72,17 @@ func isCell(v val) bool {
 }
 
 // makeTable validates a table's shape and builds it: at least one column,
-// unique names, columns of one length, at most MaxTableCells cells (see
-// cellCount), the size checked before any name is looked at. code is the
-// error code for a name problem (bad_var for vars, column in a function).
-func makeTable(names []string, cols [][]val, code errCode, pos int) (*tableVal, *Error) {
+// unique names, columns of one length, at most limit cells (see cellCount;
+// MaxTableCells, or MaxRefCells for a table read by reference), the size
+// checked before any name is looked at. code is the error code for a name
+// problem (bad_var for vars, bad_data for data read by reference, column in
+// a function).
+func makeTable(names []string, cols [][]val, code errCode, pos, limit int) (*tableVal, *Error) {
 	if len(names) == 0 {
 		return nil, errf(code, pos, "a table needs at least one column")
 	}
-	if n := cellCount(names, cols); n > MaxTableCells {
-		return nil, errf(codeListTooLong, pos, "the table has %d rows of %d columns, %d cells; the limit is %d", len(cols[0]), len(names), n, MaxTableCells).
+	if n := cellCount(names, cols); n > limit {
+		return nil, errf(codeListTooLong, pos, "the table has %d rows of %d columns, %d cells; the limit is %d", len(cols[0]), len(names), n, limit).
 			withHint("select fewer columns or filter rows first, or split the work into several calls")
 	}
 	index := make(map[string]int, len(names))
@@ -106,7 +108,7 @@ func (e *evaluator) newTable(names []string, cols [][]val, pos int) (*tableVal, 
 			return nil, err
 		}
 	}
-	return makeTable(names, cols, codeColumn, pos)
+	return makeTable(names, cols, codeColumn, pos, MaxTableCells)
 }
 
 // unknownColumn is the refusal for a column name the table does not have.
@@ -215,7 +217,8 @@ func rowIndex(t *tableVal, idx val, pos int) (int, *Error) {
 	if !ok {
 		return 0, errf(codeType, pos, "a table index is a row number or a column name, got a %s", typeName(idx))
 	}
-	i, ok := smallInt(n, int64(MaxTableCells)+1)
+	// A table read by reference may hold MaxRefCells cells, so as many rows.
+	i, ok := smallInt(n, int64(MaxRefCells)+1)
 	switch {
 	case !ok:
 		return 0, errf(codeIndex, pos, "row %s is not a whole number in range", fmtArg(n))
@@ -331,16 +334,17 @@ func decodeJSONVar(raw json.RawMessage) (any, error) {
 	return v, nil
 }
 
-// tableFromObject reads {"columns": [...], "rows": [[...], ...]}.
-func tableFromObject(name string, o jsonObj) (val, *Error) {
+// tableFromObject reads {"columns": [...], "rows": [[...], ...]} of at most
+// limit cells.
+func tableFromObject(name string, o jsonObj, limit int) (val, *Error) {
 	cols, okC := o.m["columns"].([]any)
 	rows, okR := o.m["rows"].([]any)
 	if len(o.keys) != 2 || !okC || !okR {
 		return nil, errf(codeBadVar, -1, "var %s is a JSON object, which has no meaning here", name).
 			withHint(`a table is {"columns": ["a", "b"], "rows": [[1, 2], ...]} or an array of objects; otherwise pass a number, string, boolean or list`)
 	}
-	if len(cols)*max(len(rows), 1) > MaxTableCells {
-		return nil, errf(codeListTooLong, -1, "var %s has %d rows of %d columns; the limit is %d cells", name, len(rows), len(cols), MaxTableCells)
+	if len(cols)*max(len(rows), 1) > limit {
+		return nil, errf(codeListTooLong, -1, "var %s has %d rows of %d columns; the limit is %d cells", name, len(rows), len(cols), limit)
 	}
 	names := make([]string, len(cols))
 	for j, c := range cols {
@@ -367,7 +371,7 @@ func tableFromObject(name string, o jsonObj) (val, *Error) {
 			data[j][i] = v
 		}
 	}
-	t, err := makeTable(names, data, codeBadVar, -1)
+	t, err := makeTable(names, data, codeBadVar, -1, limit)
 	if err != nil {
 		err.Detail = "var " + name + ": " + err.Detail
 		return nil, err
@@ -377,7 +381,8 @@ func tableFromObject(name string, o jsonObj) (val, *Error) {
 
 // tableFromRecords reads an array of objects: the columns are the keys in
 // the order they first appear, and a row missing a key has an empty cell.
-func tableFromRecords(name string, recs []any) (val, *Error) {
+// At most limit cells.
+func tableFromRecords(name string, recs []any, limit int) (val, *Error) {
 	var names []string
 	index := map[string]int{}
 	for _, r := range recs {
@@ -388,8 +393,8 @@ func tableFromRecords(name string, recs []any) (val, *Error) {
 			}
 		}
 	}
-	if len(names)*len(recs) > MaxTableCells {
-		return nil, errf(codeListTooLong, -1, "var %s has %d rows of %d columns; the limit is %d cells", name, len(recs), len(names), MaxTableCells)
+	if len(names)*len(recs) > limit {
+		return nil, errf(codeListTooLong, -1, "var %s has %d rows of %d columns; the limit is %d cells", name, len(recs), len(names), limit)
 	}
 	data := make([][]val, len(names))
 	for j := range data {
@@ -408,7 +413,7 @@ func tableFromRecords(name string, recs []any) (val, *Error) {
 			data[index[k]][i] = v
 		}
 	}
-	t, err := makeTable(names, data, codeBadVar, -1)
+	t, err := makeTable(names, data, codeBadVar, -1, limit)
 	if err != nil {
 		err.Detail = "var " + name + ": " + err.Detail
 		return nil, err

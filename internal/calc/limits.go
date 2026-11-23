@@ -81,4 +81,14 @@ const (
 	// doing more work, takes a slot of Request.Gate first.
 	gateElems = 10_000
 	gateWork  = 1_000_000
+	// MaxRefCells bounds the cells (or values) of all the data one call
+	// reads by reference (Request.Data). Only such a table may pass
+	// MaxTableCells; a table the expression builds from it is held to
+	// MaxTableCells again.
+	MaxRefCells = 1_000_000
+	// MaxRefBytes bounds the bytes one call reads by reference, all sources
+	// together, and the bytes it writes (Request.Write).
+	MaxRefBytes = 16 << 20
+	// MaxRefSources bounds how many sources one call reads.
+	MaxRefSources = 16
 )
