@@ -111,12 +111,12 @@ async def test_calc_sends_the_input_as_json_and_returns_the_decoded_result():
     fake, captured = _async_returning(pb.CalcResponse(result_json=json.dumps(result).encode()))
     client._stub.Calc = fake  # type: ignore[attr-defined]
 
-    out = await client.calc("x / 3", vars={"x": "1"}, digits=5, seed=7)
+    out = await client.calc("x / 3", vars={"x": "1"}, digits=5, seed=7, format="csv")
 
     assert out == result
     req = captured["req"]
     assert isinstance(req, pb.CalcRequest)
-    assert json.loads(req.input_json) == {"expr": "x / 3", "vars": {"x": "1"}, "digits": 5, "seed": 7}
+    assert json.loads(req.input_json) == {"expr": "x / 3", "vars": {"x": "1"}, "digits": 5, "seed": 7, "format": "csv"}
     assert ("authorization", "Bearer tok") in list(captured["metadata"])
 
 
