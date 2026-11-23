@@ -477,7 +477,9 @@ export async function raiseFromCalcResponse(resp: Response): Promise<never> {
   }
   const body = bodyObject(bodyText);
   const category = calcCategory(body?.errorCategory);
-  if (body !== undefined && category !== undefined) {
+  // The status as well as the category: only these three carry the tool's
+  // refusal (internal/api/http/calc_api.go calcRefusalStatus).
+  if (body !== undefined && category !== undefined && CALC_REFUSAL_STATUSES.has(resp.status)) {
     const detail = stringField(body.detail) ?? stringField(body.error);
     throw new CalcError(detail ?? `${resp.status} ${stockStatusPhrase(resp.status)}`, {
       status: resp.status,
@@ -495,6 +497,8 @@ export async function raiseFromCalcResponse(resp: Response): Promise<never> {
     new Response(bodyText, { status: resp.status, statusText: resp.statusText, headers: resp.headers }),
   );
 }
+
+const CALC_REFUSAL_STATUSES: ReadonlySet<number> = new Set([400, 422, 503]);
 
 function calcCategory(v: unknown): CalcErrorCategory | undefined {
   return v === "validation" || v === "business" || v === "transient" ? v : undefined;

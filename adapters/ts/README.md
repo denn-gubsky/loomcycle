@@ -839,7 +839,7 @@ A refusal of the expression throws `CalcError` whatever its status, with the too
 try {
   await client.calc({ expr: "2 ** 3" });
 } catch (e) {
-  if (e instanceof CalcError) console.error(e.code, e.hint, e.pos); // syntax "power is `^`, e.g. 2^10" 2
+  if (e instanceof CalcError) console.error(e.code, e.hint, e.pos); // syntax "power is `^`, e.g. `2^10`" 2
   else throw e;
 }
 ```

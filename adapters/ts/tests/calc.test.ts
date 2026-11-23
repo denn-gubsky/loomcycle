@@ -58,11 +58,11 @@ describe("calc", () => {
           code: "syntax",
           error: "`**` is not an operator",
           detail: "`**` is not an operator",
-          hint: "power is `^`, e.g. 2^10",
+          hint: "power is `^`, e.g. `2^10`",
           pos: 2,
           errorCategory: category,
           isRetryable: false,
-          description: "power is `^`, e.g. 2^10",
+          description: "power is `^`, e.g. `2^10`",
         },
         400,
       ),
@@ -78,7 +78,7 @@ describe("calc", () => {
     expect(e.code).toBe("syntax");
     expect(e.message).toBe("`**` is not an operator");
     expect(e.detail).toBe("`**` is not an operator");
-    expect(e.hint).toBe("power is `^`, e.g. 2^10");
+    expect(e.hint).toBe("power is `^`, e.g. `2^10`");
     expect(e.pos).toBe(2);
     expect(e.category).toBe("validation");
     expect(e.retryable).toBe(false);
@@ -147,10 +147,12 @@ describe("calc", () => {
     expect((e as InvalidArgumentError).code).toBe("bad_request");
   });
 
-  it("raises a spent run rate (429) as RateLimitedError with Retry-After", async () => {
+  // The category alone does not make a CalcError: a 429 carrying one (as the
+  // gRPC rate refusal's ErrorInfo does) is still the shared rate refusal.
+  it("raises a spent run rate (429) as RateLimitedError with Retry-After, even with a category", async () => {
     const { client } = makeClient([
       () =>
-        new Response(JSON.stringify({ code: "rate_limited", error: "run rate exceeded" }), {
+        new Response(JSON.stringify({ code: "rate_limited", error: "run rate exceeded", errorCategory: "transient", isRetryable: true }), {
           status: 429,
           headers: { "Content-Type": "application/json", "Retry-After": "3" },
         }),
