@@ -80,7 +80,8 @@ func Read(ctx context.Context, root, fence string, req ReadRequest) (string, err
 	if req.Lines != nil {
 		w := *req.Lines
 		w.MaxBytes = maxBytes
-		return ReadLines(ctx, f, w)
+		text, err := ReadLines(ctx, f, w)
+		return text, withPath(err, rel)
 	}
 
 	// io.ReadAll over a LimitReader handles a short read (a single
@@ -89,7 +90,7 @@ func Read(ctx context.Context, root, fence string, req ReadRequest) (string, err
 	// A file larger than maxBytes is bounded to exactly maxBytes.
 	data, err := io.ReadAll(io.LimitReader(f, maxBytes))
 	if err != nil {
-		return "", err
+		return "", withPath(err, rel)
 	}
 	return string(data), nil
 }
@@ -202,7 +203,7 @@ func Edit(ctx context.Context, root, fence string, req EditRequest) (string, err
 	}
 	body, err := readCapped(f, maxBytes)
 	if err != nil {
-		return "", err
+		return "", withPath(err, rel)
 	}
 	replaced, count, err := Replace(string(body), req.OldString, req.NewString, req.ReplaceAll)
 	if err != nil {
@@ -266,10 +267,10 @@ func ReplaceFile(ctx context.Context, dir *os.Root, name, tempPrefix, content st
 
 	if _, err := tmp.WriteString(content); err != nil {
 		tmp.Close()
-		return fmt.Errorf("write tempfile: %w", err)
+		return fmt.Errorf("write tempfile: %w", withPath(err, tmpName))
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close tempfile: %w", err)
+		return fmt.Errorf("close tempfile: %w", withPath(err, tmpName))
 	}
 	// Honour cancellation BEFORE the visible rename so a cancelled call
 	// leaves no trace at the target.

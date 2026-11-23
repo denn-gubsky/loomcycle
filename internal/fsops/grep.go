@@ -93,7 +93,7 @@ func Grep(root, fence string, req GrepRequest) (string, int, error) {
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(root, target)
 		}
-		resolved, rerr := resolveUnder(rootResolved, target)
+		resolved, rerr := resolveUnderShown(rootResolved, target, req.Path)
 		if rerr == nil {
 			rerr = OutsideFence(fence, resolved)
 		}
