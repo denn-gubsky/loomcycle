@@ -166,7 +166,17 @@ func TestCalcHelp_EntrySignaturesMatchTheTable(t *testing.T) {
 // the form an expected result is written: the text, or "error <code>".
 func runCalcExample(t *testing.T, input json.RawMessage) string {
 	t.Helper()
-	res, err := (&Calc{}).Execute(context.Background(), input)
+	ctx := context.Background()
+	// An example reading or writing data by reference runs inside a run with
+	// Read and Write and a default volume holding the sales.csv Calc/data
+	// describes.
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(input, &fields) == nil && (fields["from"] != nil || fields["to"] != nil) {
+		dir := t.TempDir()
+		writeFile(t, dir, "sales.csv", calcSales)
+		ctx = calcRefCtx(calcBase(), dir, "Read", "Write")
+	}
+	res, err := (&Calc{}).Execute(ctx, input)
 	if err != nil {
 		return "go error " + err.Error()
 	}

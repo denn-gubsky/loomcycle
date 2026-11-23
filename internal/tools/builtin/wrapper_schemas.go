@@ -45,9 +45,10 @@ var mcpWrapperSchemas = map[string]string{
 	"history":           historyInputSchema,
 	"identity":          identityInputSchema,
 	"decision":          decisionInputSchema,
-	// Calc builds its schema in InputSchema (its digits bound is a constant of
-	// internal/calc), so the entry is that method's output, not a const.
-	"calc": string((&Calc{}).InputSchema()),
+	// Calc builds its schema in code (its digits bound is a constant of
+	// internal/calc). The MCP `calc` tool has no run, so its schema leaves
+	// out `from` and `to`, which it refuses.
+	"calc": string(CalcOffRunSchema()),
 }
 
 // MCPWrapperInputSchema returns the canonical input schema for the
