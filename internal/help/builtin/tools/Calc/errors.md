@@ -101,9 +101,18 @@ numbers that are not coprime, a sample `variance` of one value, a day the
 month lacks (`date(2026, 2, 30)`), an unknown `datediff` unit or `yearfrac`
 basis, an `irr`, `rate` or `xirr` with no rate that solves the flows, a singular
 matrix to `inv` or `solve` (use `pinv` or `lstsq`), `eig` of a non-symmetric
-matrix, `cholesky` of one that is not positive definite. There are no
+matrix, `cholesky` of one that is not positive definite, a distribution
+parameter out of range (`normcdf(x, 0, 0)`, `norminv(1)`), a `root` bracket
+whose ends have the same sign, `interp` outside its table. There are no
 complex numbers. Check the inputs; for the finance functions, check
 the signs.
+
+### no_convergence
+A numeric method did not settle within its evaluations of the function:
+`integrate` over a singularity it cannot integrate (`1/x` from 0), `deriv`
+at a jump or a kink it cannot resolve, `root` or `minimize` on a function too
+rough to close in on. Split the interval at the trouble point, narrow it, or
+check that the answer exists.
 
 ### division_by_zero
 A division, `%`, `mod` or `rem` by zero, or zero to a negative power. Guard

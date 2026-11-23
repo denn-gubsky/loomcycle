@@ -32,19 +32,21 @@ import (
 // calcSectionArticle maps each calc table section to the one article that
 // documents its functions.
 var calcSectionArticle = map[string]string{
-	calc.SecControl:    "Calc/language",
-	calc.SecElementary: "Calc/elementary",
-	calc.SecTrig:       "Calc/elementary",
-	calc.SecSpecial:    "Calc/elementary",
-	calc.SecIntegers:   "Calc/integers",
-	calc.SecBits:       "Calc/integers",
-	calc.SecSequences:  "Calc/sequences",
-	calc.SecRandom:     "Calc/sequences",
-	calc.SecDates:      "Calc/dates",
-	calc.SecUnits:      "Calc/units",
-	calc.SecStatistics: "Calc/statistics",
-	calc.SecMatrices:   "Calc/matrices",
-	calc.SecFinance:    "Calc/finance",
+	calc.SecControl:       "Calc/language",
+	calc.SecElementary:    "Calc/elementary",
+	calc.SecTrig:          "Calc/elementary",
+	calc.SecSpecial:       "Calc/elementary",
+	calc.SecIntegers:      "Calc/integers",
+	calc.SecBits:          "Calc/integers",
+	calc.SecSequences:     "Calc/sequences",
+	calc.SecRandom:        "Calc/sequences",
+	calc.SecDates:         "Calc/dates",
+	calc.SecUnits:         "Calc/units",
+	calc.SecStatistics:    "Calc/statistics",
+	calc.SecDistributions: "Calc/distributions",
+	calc.SecCalculus:      "Calc/calculus",
+	calc.SecMatrices:      "Calc/matrices",
+	calc.SecFinance:       "Calc/finance",
 }
 
 // calcEntryHeading is a `### ` heading that presents a function: a lower-case
