@@ -29,6 +29,9 @@ and a 30-digit integer keeps all 30 digits.
 - `seed` — an integer that makes the random functions repeatable.
 - `format` — `json` (default), `markdown` or `csv`: how a table or matrix
   result is written in `text`.
+- `from`, `to` — read named tables from a volume file, a Memory key or a
+  Document chunk, and write the result to one instead of returning it
+  (`Calc/data`).
 
 No other argument is accepted, and there is no `op`.
 
@@ -122,6 +125,7 @@ topic=Calc/<section>`:
   compound growth, percentages; the sign convention.
 - `Calc/tables` — tables from `vars` or CSV, columns `t.price`, empty
   cells, `where`, `groupby`, `pivot`, `join`, `describe`.
+- `Calc/data` — `from` and `to`: reading and writing stored tables.
 - `Calc/dates` — dates and datetimes, day arithmetic, months, working days,
   day-count bases, `xnpv`/`xirr`, time zones, formatting.
 - `Calc/errors` — every error code and what to change.

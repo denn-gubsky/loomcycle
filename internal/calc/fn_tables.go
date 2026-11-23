@@ -120,14 +120,33 @@ func fnCSV(e *evaluator, a args) (val, *Error) {
 		}
 		sep = r
 	}
-	r := csv.NewReader(strings.NewReader(text))
+	names, cols, cerr := readCSV(strings.NewReader(text), sep, MaxTableCells, "csv", a.pos, nil)
+	if cerr != nil {
+		return nil, cerr
+	}
+	return e.newTable(names, cols, a.pos)
+}
+
+// readCSV reads delimited text into columns: the first record names them,
+// each field is a csvCell, and more than limit cells are refused as the
+// reading passes them. what names the source in an error (csv for csv(),
+// "from <name>" for data read by reference). tick, when set, is charged the
+// cells of each record as it is read; csv() leaves it nil and is charged by
+// newTable instead.
+func readCSV(src io.Reader, sep rune, limit int, what string, pos int, tick func(int) *Error) ([]string, [][]val, *Error) {
+	r := csv.NewReader(src)
 	r.Comma = sep
 	header, rerr := r.Read()
 	if rerr == io.EOF {
-		return nil, errf(codeDomain, a.pos, "csv: the text is empty").withHint("the first line names the columns")
+		return nil, nil, errf(codeDomain, pos, "%s: the text is empty", what).withHint("the first line names the columns")
 	}
 	if rerr != nil {
-		return nil, csvErr(rerr, a)
+		return nil, nil, csvErr(rerr, what, pos)
+	}
+	// A header alone counts as one row (cellCount), so a header wider than
+	// the limit is refused before the columns are allocated for it.
+	if len(header) > limit {
+		return nil, nil, errf(codeListTooLong, pos, "%s: the table has more than %d cells", what, limit)
 	}
 	names := make([]string, len(header))
 	for j, h := range header {
@@ -140,13 +159,18 @@ func fnCSV(e *evaluator, a args) (val, *Error) {
 			break
 		}
 		if rerr != nil {
-			return nil, csvErr(rerr, a)
+			return nil, nil, csvErr(rerr, what, pos)
 		}
-		if (len(cols[0])+1)*len(names) > MaxTableCells {
-			return nil, errf(codeListTooLong, a.pos, "csv: the table has more than %d cells", MaxTableCells)
+		if (len(cols[0])+1)*len(names) > limit {
+			return nil, nil, errf(codeListTooLong, pos, "%s: the table has more than %d cells", what, limit)
 		}
 		for j, f := range rec {
 			cols[j] = append(cols[j], csvCell(f))
+		}
+		if tick != nil {
+			if err := tick(len(names)); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 	for j := range cols {
@@ -154,7 +178,7 @@ func fnCSV(e *evaluator, a args) (val, *Error) {
 			cols[j] = []val{}
 		}
 	}
-	return e.newTable(names, cols, a.pos)
+	return names, cols, nil
 }
 
 // csvCell reads one field: blank is an empty cell, a number written as a
@@ -171,17 +195,17 @@ func csvCell(f string) val {
 	return s
 }
 
-func csvErr(err error, a args) *Error {
+func csvErr(err error, what string, pos int) *Error {
 	var pe *csv.ParseError
 	if errors.As(err, &pe) {
 		if errors.Is(pe.Err, csv.ErrFieldCount) {
-			return errf(codeShape, a.pos, "csv: line %d has a different number of fields than the header", pe.Line).
+			return errf(codeShape, pos, "%s: line %d has a different number of fields than the header", what, pe.Line).
 				withHint("every line needs one field per column; quote a field that contains the separator")
 		}
-		return errf(codeSyntax, a.pos, "csv: line %d: %v", pe.Line, pe.Err).
+		return errf(codeSyntax, pos, "%s: line %d: %v", what, pe.Line, pe.Err).
 			withHint(`a quoted field starts and ends with ", and a quote inside one is written ""`)
 	}
-	return errf(codeSyntax, a.pos, "csv: %v", err)
+	return errf(codeSyntax, pos, "%s: %v", what, err)
 }
 
 func fnSelect(e *evaluator, a args) (val, *Error) {
