@@ -271,6 +271,20 @@ func TestCalc_FromRefusesDataOverTheByteCap(t *testing.T) {
 	}
 }
 
+// A Memory tool with no store (no store backend configured) refuses a memory
+// reference, as the Memory tool itself refuses every call, rather than
+// reaching a backend that is not there.
+func TestCalc_AMemoryReferenceWithNoStoreIsRefused(t *testing.T) {
+	ctx := tools.UpdateRunPolicy(calcRefCtx(calcBase(), t.TempDir(), "Memory"), func(rp *tools.RunPolicy) {
+		rp.Memory = tools.MemoryPolicyValue{AllowedScopes: []string{"user"}}
+	})
+	for _, body := range []string{`{"expr":"t","from":{"t":"memory:user/k"}}`, `{"expr":"1","to":"memory:user/k"}`} {
+		if _, res := calcExec(t, &Calc{Memory: &Memory{}}, ctx, body); !res.IsError || res.Error.Category != tools.CategoryBusiness {
+			t.Errorf("%s with no store = %+v, want a business refusal", body, res)
+		}
+	}
+}
+
 // Memory references go through Memory's scope grant and the caller's own
 // identity: another user's or another tenant's key is not reachable.
 func TestCalc_MemoryReferencesStayInTheCallersScope(t *testing.T) {

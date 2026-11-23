@@ -263,7 +263,7 @@ func (c refStores) readRef(ctx context.Context, r dataRef, max int) ([]byte, too
 
 	case refMemory:
 		m := c.Memory
-		if m == nil {
+		if m == nil || m.Store == nil { // as Memory.Execute: no store, no Memory
 			return nil, errBusiness("memory references are not available here", ""), false
 		}
 		scope, scopeID, err := m.resolveScope(ctx, r.scope)
@@ -376,7 +376,7 @@ func (c refStores) writeRef(ctx context.Context, r dataRef, data []byte, tmpPref
 
 	case refMemory:
 		m := c.Memory
-		if m == nil {
+		if m == nil || m.Store == nil { // as Memory.Execute: no store, no Memory
 			return errBusiness("memory references are not available here", ""), false
 		}
 		// A chunk body lives in Memory under this prefix; writing it here would
