@@ -339,24 +339,32 @@
 .loomcycle-explorer .paths-toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
+/* The scope as a segmented control, matching the tree | stars switch. */
 .loomcycle-explorer .paths-scope {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--lc-text-sm);
-  color: var(--fg-soft);
-}
-.loomcycle-explorer .paths-scope select {
-  background: var(--bg);
-  color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 4px 6px;
+  overflow: hidden;
+}
+.loomcycle-explorer .paths-scope button {
+  padding: 3px 8px;
+  border: none;
+  background: var(--bg);
+  color: var(--fg-soft);
+  cursor: pointer;
+}
+.loomcycle-explorer .paths-scope button + button {
+  border-left: 1px solid var(--border);
+}
+.loomcycle-explorer .paths-scope button.active {
+  background: var(--bg-soft);
+  color: var(--fg);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 .loomcycle-explorer .paths-toolbar-actions {
   display: flex;
@@ -386,7 +394,7 @@
   overflow: hidden;
 }
 .loomcycle-explorer .paths-nav-switch button {
-  padding: 4px 10px;
+  padding: 3px 8px;
   border: none;
   background: var(--bg);
   color: var(--fg-soft);
@@ -407,13 +415,6 @@
   display: flex;
   flex-direction: column;
 }
-.loomcycle-explorer .paths-context {
-  margin: 0;
-  padding: 6px 12px;
-  font-size: var(--lc-text-xs);
-  color: var(--fg-soft);
-  border-bottom: 1px solid var(--border);
-}
 .loomcycle-explorer .paths-err {
   margin: 0;
   padding: 8px 12px;
@@ -421,6 +422,43 @@
   font-size: var(--lc-text-sm);
   border-bottom: 1px solid var(--border);
 }
+/* RFC GZ — the Path header's one "+" menu (components/CreateMenu). */
+.loomcycle-explorer .paths-create-menu {
+  position: relative;
+}
+.loomcycle-explorer .paths-create-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 140px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+.loomcycle-explorer .paths-toolbar-actions .paths-create-list button {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  white-space: nowrap;
+}
+.loomcycle-explorer .paths-toolbar-actions .paths-create-list button:hover,
+.loomcycle-explorer .paths-toolbar-actions .paths-create-list button:focus {
+  background: var(--bg-soft);
+  color: var(--accent);
+  outline: none;
+}
+.loomcycle-explorer .paths-toolbar-actions .paths-create-menu > button.active {
+  border-color: var(--accent);
+}
+
 /* RFC GZ — the explorer's tree row, shared by the Path tree and the chunk
    outline (components/TreeRow). It has its own classes, not the agent-run
    tree's .tree / .node .row, so neither tree can restyle the other. One line,

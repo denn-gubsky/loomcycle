@@ -48,6 +48,7 @@ import type { TransferRequest } from "./lib/transfer";
 import Splitter from "./components/Splitter";
 import DocumentViewerBody from "./components/DocumentViewerBody";
 import PathTree, { buildLazyTree, isAnnotationEntry, type PathNode } from "./components/PathTree";
+import CreateMenu from "./components/CreateMenu";
 
 // PathExplorer is the embeddable Path VFS console (RFC AL): the unified dirent
 // tree with directory + document CRUD, and an inline DocumentViewer for document
@@ -63,6 +64,8 @@ import PathTree, { buildLazyTree, isAnnotationEntry, type PathNode } from "./com
 // `import "@loomcycle/explorer/styles.css"`.
 
 const NAME_RE = /^[A-Za-z0-9._-]+$/;
+
+const SCOPES: PathScope[] = ["user", "agent", "tenant"];
 
 // joinPath appends a leaf segment to a canonical parent dir ("" = root).
 function joinPath(dir: string, name: string): string {
@@ -754,14 +757,23 @@ function PathExplorerBody({
       >
         <div className="left">
           <div className="paths-toolbar">
-            <label className="paths-scope">
-              <span>scope</span>
-              <select value={scope} onChange={(e) => setScope(e.target.value as PathScope)}>
-                <option value="user">user</option>
-                <option value="agent">agent</option>
-                <option value="tenant">tenant</option>
-              </select>
-            </label>
+            {/* One line (RFC GZ): scope, tree/stars, one "+" menu, reload. The
+                subject is the topbar's, and the folder a new item goes into is
+                named by the create dialog. */}
+            <div className="paths-scope" role="group" aria-label="Scope">
+              {SCOPES.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  aria-pressed={scope === s}
+                  className={scope === s ? "active" : undefined}
+                  onClick={() => setScope(s)}
+                  title={`Browse the ${s} scope`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
             {renderNavigator && (
               <div className="paths-nav-switch" role="group" aria-label="Navigator">
                 <button
@@ -785,44 +797,12 @@ function PathExplorerBody({
               </div>
             )}
             <div className="paths-toolbar-actions">
-              {!starsOn && (
-                <>
-                  <button
-                    type="button"
-                    onClick={newFolder}
-                    title={`New folder in ${currentDirLabel}`}
-                  >
-                    + folder
-                  </button>
-                  <button
-                    type="button"
-                    onClick={newDocument}
-                    title={`New document in ${currentDirLabel}`}
-                  >
-                    + document
-                  </button>
-                </>
-              )}
-              <button type="button" onClick={() => void refresh()} title="Reload the tree">
+              {!starsOn && <CreateMenu dir={currentDirLabel} onNewFolder={newFolder} onNewDocument={newDocument} />}
+              <button type="button" onClick={() => void refresh()} title="Reload the tree" aria-label="Reload the tree">
                 ↻
               </button>
             </div>
           </div>
-          {!starsOn && (
-            <p className="paths-context">
-              new items → <code>{currentDirLabel}</code>
-              {browse?.scopeId && (
-                <>
-                  {" · "}subject <code>{browse.scopeId}</code>
-                </>
-              )}
-              {browse?.tenant && (
-                <>
-                  {" · "}tenant <code>{browse.tenant}</code>
-                </>
-              )}
-            </p>
-          )}
           {(err || rootErr) && <div className="paths-err">{err || rootErr}</div>}
           {starsOn && renderNavigator ? (
             <div className="paths-navigator">{renderNavigator(navigatorCtx)}</div>
