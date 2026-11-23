@@ -211,6 +211,9 @@ func (f *File) checkout(ctx context.Context, in fileInput) (tools.Result, error)
 	if err != nil || to.kind != refWorkspace {
 		return errValidation(op+": to must be a folder of a workspace, workspace:<name>:<folder>/", ""), nil
 	}
+	if res, ok := refuseSharedCheckout(op, to); !ok {
+		return res, nil
+	}
 	scope, res, ok := checkoutScope(op, in.Scope)
 	if !ok {
 		return res, nil
@@ -431,6 +434,9 @@ func (f *File) commit(ctx context.Context, in fileInput, raw json.RawMessage) (t
 	from, err := fileRef(in.From)
 	if err != nil || from.kind != refWorkspace {
 		return errValidation(op+": from must be the folder of a checkout in a workspace, workspace:<name>:<folder>/", ""), nil
+	}
+	if res, ok := refuseSharedCheckout(op, from); !ok {
+		return res, nil
 	}
 	if res, ok := needDocumentTool(ctx, op); !ok {
 		return res, nil
@@ -904,4 +910,16 @@ func commitAnswer(l *workspaceLoc, man checkoutManifest, items []commitItem, dry
 	}
 	return map[string]any{"from": l.Ref(), "checkout_id": man.CheckoutID, "scope": man.Scope, "root": man.Root,
 		"dry_run": dryRun, "counts": counts, "files": items}
+}
+
+// refuseSharedCheckout refuses a shared workspace's name (<name>@<agent id>,
+// RFC GW P8). The checkout record is kept for the workspace's owner, and a
+// share hands over file reads and writes only, as it never hands over exec:
+// checking out into, or committing from, another run's workspace is its
+// owner's to do.
+func refuseSharedCheckout(op string, r dataRef) (tools.Result, bool) {
+	if _, _, shared := lifecycle.SplitShared(r.workspace); shared {
+		return errValidation(op+": works only in a workspace this run owns, not one shared with it", "Copy the files into a workspace of your own with File op=copy, or ask the owner to check out."), false
+	}
+	return tools.Result{}, true
 }

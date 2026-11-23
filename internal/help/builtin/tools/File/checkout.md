@@ -52,6 +52,8 @@ checkout, before anything is written.
 
 - `… already exists; nothing was written`: check out into a new folder.
 - `pass exactly one of under_path and documents`.
+- `works only in a workspace this run owns`: a shared workspace
+  (`<name>@<agent id>`) is refused; copy its files into your own first.
 - `refused by a Document hook` / `refused by a Workspace hook`: nothing was
   written.
 

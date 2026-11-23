@@ -68,6 +68,8 @@ with the reason.
 ## Errors
 
 - `no checkout manifest at …`: pass the folder a checkout wrote.
+- `works only in a workspace this run owns`: a shared workspace
+  (`<name>@<agent id>`) is refused; copy its files into your own first.
 - `… is not a checkout manifest this runtime wrote`, `… no longer matches
   the runtime's record`, `this runtime holds no record of checkout …`:
   nothing was written; check out again.

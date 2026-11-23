@@ -659,3 +659,23 @@ func TestStripLoomMetadata_DropsMetadataOutsideFencesOnly(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// A checkout's record is kept for the run that owns the workspace, and a
+// share never hands over more than reading and writing files, so checkout
+// and commit refuse a shared workspace's name (RFC GW P8) up front rather
+// than writing a folder whose record the owner's lookup cannot find.
+func TestFileCheckoutCommit_ASharedWorkspacesNameIsRefused(t *testing.T) {
+	f, _, _ := coSetup(t, lifecycle.Limits{})
+	for _, call := range []map[string]any{
+		{"op": "checkout", "under_path": "/kb", "to": "workspace:w@ag_owner:docs/"},
+		{"op": "commit", "from": "workspace:w@ag_owner:docs/"},
+	} {
+		_, res := f.exec(t, f.ctx, call)
+		if !res.IsError || !strings.Contains(res.Text, "a workspace this run owns") {
+			t.Errorf("%s on a shared name = %+v", call["op"], res)
+		}
+	}
+	if f.wsHas(t, "w", "docs") {
+		t.Fatal("a refused checkout wrote docs/")
+	}
+}
