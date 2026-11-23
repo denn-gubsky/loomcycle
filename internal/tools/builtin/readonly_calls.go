@@ -67,7 +67,7 @@ var documentReadOnlyOps = map[string]func(documentReadOnlyCall) bool{
 	"resolve_anchor": func(in documentReadOnlyCall) bool { return !in.CreatePlaceholder },
 	// find_duplicates files a proposal per pair when propose is true.
 	"find_duplicates": func(in documentReadOnlyCall) bool { return !in.Propose },
-	// node_stats stores what it computes with mode compute, and modes misfits and
+	// node_stats stores what it computes with mode compute, and modes misfits, assign and
 	// split with propose file proposals; without propose they write nothing.
 	"node_stats": func(in documentReadOnlyCall) bool { return in.Mode != "compute" && !in.Propose },
 	"measure":    nil,

@@ -289,7 +289,7 @@ func ontologyGuardExemption(op string) string {
 	case "find_duplicates":
 		return "files its proposals through propose_statement, which passes every gate itself"
 	case "node_stats":
-		return "writes the node_stats table beside the documents (mode compute), never a chunk; mode misfits files its proposals through propose_statement and mode split through propose_entity, each passing every gate itself"
+		return "writes the node_stats and node_definitions tables beside the documents (mode compute), never a chunk; modes misfits and assign file their proposals through propose_statement and mode split through propose_entity, each passing every gate itself"
 	}
 	return ""
 }

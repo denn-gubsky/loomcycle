@@ -1,6 +1,6 @@
 ---
 name: Document/node_stats
-description: "Document op=node_stats — report which taxonomy nodes (concepts and document classes) have stale statistics, or recompute them: member counts, and where the store keeps vectors, spread, exemplars, nearest siblings and distinctive terms; or list the misfits (documents nearer a sibling concept) and propose their placements; or rank concepts by recent growth and list quiet nodes; or list the groups that recur when a concept's members or a scheme's unplaced things are clustered again, and sibling concepts to merge, and propose them. An operator's or a granted pass."
+description: "Document op=node_stats — report which taxonomy nodes (concepts and document classes) have stale statistics, or recompute them: member counts, and where the store keeps vectors, spread, exemplars, nearest siblings and distinctive terms; or list the misfits (documents nearer a sibling concept) and propose their placements; or rank concepts by recent growth and list quiet nodes; or list the groups that recur when a concept's members or a scheme's unplaced things are clustered again, and sibling concepts to merge, and propose them; or compare each document with each level's centroids and report the margin and its agreement with the live placements, and propose placements. An operator's or a granted pass."
 ---
 `node_stats` keeps statistics for each node of the tenant's taxonomy: every
 concept of every scheme, and every document class. `describe_ontology` with
@@ -51,14 +51,23 @@ tenant scope.
   members (below), writing nothing unless `propose`. `growth`: growth, quiet
   nodes and unplaced periods from the stored series (below), writing nothing.
   `split`: split, unplaced-grouping and merge candidates (below), writing
-  nothing unless `propose`.
+  nothing unless `propose`. `assign`: each document against each level's
+  centroids (below), writing nothing unless `propose`.
 - `scheme` — only this scheme's concepts (by name). Without it, every concept
   and every document class; only then are rows of removed nodes reported and
   removed.
 - `propose` — mode `misfits`: file a placement proposal per misfit. Mode
-  `split`: file each candidate as a proposal.
-- `limit` — with `propose`: the most proposals this call files (mode
-  `misfits`: default 20, at most 100; mode `split`: default 10, at most 50).
+  `split`: file each candidate as a proposal. Mode `assign`: file a placement
+  proposal per eligible ranking.
+- `limit` — with `propose`: the most proposals this call files (modes
+  `misfits` and `assign`: default 20, at most 100; mode `split`: default 10, at
+  most 50). Mode `assign` without `propose`: the documents per page (default
+  50, at most 200).
+- `margins` — mode `assign` only: the threshold per level, keyed by the level
+  as a string, at most 1; a negative one turns the level off. Default
+  `{"2": 0.03}`.
+- `after`, `created_after` — mode `assign`: the page cursor, and the held-out
+  bound (unix nanoseconds).
 - `quiet_periods` — mode `growth` only: how many periods count as recent
   (default 6, at most 120).
 
@@ -203,10 +212,62 @@ into_members, fixed?, proposal_id?, skipped?, detail?}`. `skipped` says why
 nothing was filed: `exists` (an open proposal of that name under that parent),
 `rejected`, `duplicate`, `fixed`, `cap` or `refused:<code>`.
 
+## Assign
+
+With `mode: assign` the call compares each document a scheme arranges (of the
+classes its `@projects` names, or every document class) with the centroids of
+one level's concepts at a time, and reads off the **nearest**, the **second**
+and the **margin** between them (nearest less second). The unit is the whole
+document: its document-level annotation vector. Level 1 compares the scheme's
+top concepts. A lower level compares the children of a concept the document is
+placed under live, or of the nearest concept one level up when that ranking
+cleared its threshold. A comparison needs at least two concepts with a
+centroid (three members with a vector each). A document that is a member of a
+concept is compared with that concept's centroid without itself, so its own
+pull does not make it agree. It needs the vector stage, as misfits does.
+
+Without `propose` it writes nothing and answers a **report**: a page of
+documents (`limit`, default 50, at most 200; continue with `after` set to
+`next_cursor`), each with its live placements (the most specific concepts it
+is placed under) and its rankings; and per level, over every document
+compared, how often the nearest agrees with a live placement, in margin
+buckets of 0.01 (`buckets`) and at or above each bucket's lower bound
+(`at_least`). A ranking is judged (`agrees` present) only when the document is
+placed under one of the compared concepts. `created_after` keeps only the
+documents created after that instant: a held-out set, to check a threshold on
+documents placed after it was chosen.
+
+A level's **threshold** is set by `margins`, keyed by the level as a string:
+the default is `{"2": 0.03}`, so level 1 has none. A ranking is `eligible`
+when its margin is at least its level's threshold and the document is not
+already placed under the nearest concept. With `propose: true` each eligible
+ranking, largest margin first, is filed as a `subject` proposal to the nearest
+concept, method `rule:centroid`, confidence the margin, the document's title as
+evidence, at most `limit` per call (default 20, at most 100), never one any
+reviewer rejected nor one already proposed or live. Who may file is as for
+misfits. Every filing lands `proposed`: nothing here makes a placement live. A
+tenant that has checked the margin may write a Review rule such as
+`accept kind:subject method:rule:centroid when confidence>=0.03`, and only such
+a rule rules on these proposals when they are filed.
+
+It returns `{mode, scheme?, vectors, note?, embed_model?, min_members,
+margins, propose, cap?, created_after?, documents, without_vector, levels,
+page?, next_cursor?, proposals?, proposed?, skipped?, truncated?,
+members_skipped?, issues?}`. `documents` counts the documents compared;
+`without_vector` those arranged by a scheme with no annotation vector. A level
+is `{level, threshold?, rankings, placed, agree, eligible, buckets, at_least}`,
+each bucket `{from, to?, rankings, placed, agree, agreement?}`. A page entry
+is `{document_id, title, placements, rankings}`; a ranking `{scheme, level,
+parent?, compared, nearest, second, margin, agrees?, threshold?, eligible?}`,
+`nearest` and `second` each `{node_id, node, tag, similarity}`. With `propose`,
+`proposals` lists the eligible rankings (at most 200) with `document_id`,
+`title` and the outcome: `statement_id` and `status`, or `skipped`
+(`rejected`, `exists`, `cap`, `duplicate` or `refused:<code>`).
+
 ## Returns
 
 `{mode, scheme?, vectors, note?, embed_model?, min_members, nodes, orphans?,
-fresh, stale, missing, computed, removed, series}`:
+fresh, stale, missing, computed, removed, series, definitions?}`:
 
 - `vectors` — whether the vector stage runs here; `note` says why it does not.
 - `nodes` — `{node_id, kind (concept | class), name, tag?, members,
@@ -225,13 +286,22 @@ fresh, stale, missing, computed, removed, series}`:
   empty row. `points` lists the stale and missing ones (at most 200),
   `{measure, node_id, period, label, status, reason}`. `shift` says why shift
   is not kept here. Rows of a node no longer in force are kept.
+- `definitions` — `compute` where the vector stage runs: each concept's
+  definition (its place in the scheme, name, meaning line and alternative
+  labels) is embedded and kept, never returned, so `classify` can ask a large
+  vocabulary's nearest concepts in one request. Only a definition whose text
+  or embed model changed is embedded again. `{fresh, embedded, pending?,
+  removed?, error?}`: `pending` counts the ones left for the next pass (past
+  1000 a pass, or after an embedder `error`).
 
 ## Errors
 
-- `node_stats: mode "<x>" is not report, compute, misfits, growth or split`.
-- `node_stats: propose is taken only with mode misfits or split`.
-- `node_stats: method_not_granted: …` — mode `misfits` or `split` with `propose`
-  from a run not granted `rule`.
+- `node_stats: mode "<x>" is not report, compute, misfits, growth, split or assign`.
+- `node_stats: propose is taken only with mode misfits, split or assign`.
+- `node_stats: method_not_granted: …` — mode `misfits`, `split` or `assign`
+  with `propose` from a run not granted `rule`.
+- `node_stats: margins is taken only with mode assign`; `margins: "<x>" is not
+  a level from 1 to 8`; `margins: level <n>'s margin must be at most 1`.
 - `node_stats: quiet_periods is taken only with mode growth`; `quiet_periods must be 1 to 120`.
 - `node_stats: permission: …` — the caller is not an operator or a granted
   agent, lacks the tenant scope, or may not read every document of it.
@@ -283,4 +353,15 @@ List the split and merge candidates of one scheme, writing nothing:
 
 ```json result
 {"mode": "split", "scheme": "topics", "vectors": true, "embed_model": "ollama/bge-m3", "min_members": 20, "runs": 5, "recur_min": 5, "jaccard": 0.75, "far_similarity": 0.5, "merge_similarity": 0.95, "model_check": "not run: node_stats makes no model call. A group is meant to be proposed only when a model grouping of the things' subtopic labels finds it too; each group lists the documents that step reads", "propose": false, "splits": [{"node_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "name": "reporting", "tag": "topics/reporting", "scheme": "topics", "members": 24, "direct": 24, "clustered": 24, "spread": 0.41, "k": 2, "groups": [{"key": "3f2a1b0c9d8e7f6a", "name": "xbrl template taxonomy", "terms": ["xbrl", "template", "taxonomy"], "members": 12, "recurrence": 5, "runs": 5, "parent_id": "7a2e3d4c5b6f4071829304a5b6c7d8e9", "parent": "topics/reporting", "exemplars": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "XBRL filing templates", "similarity": 0.99}], "documents": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "XBRL filing templates", "brief": "The XBRL templates for the annual filing.", "similarity": 0.99}]}], "not_recurring": 0}], "unplaced": [], "merges": [{"node_id": "8b3f4e5d6c7a4182930415b6c7d8e9f0", "name": "auditing", "tag": "topics/auditing", "into_id": "9c4a5f6e7d8b4293a41526c7d8e9f0a1", "into": "audit", "into_tag": "topics/audit", "similarity": 0.97, "members": 3, "into_members": 4}]}
+```
+
+
+Check the level-2 margin on documents created since a date, writing nothing:
+
+```json
+{"op": "node_stats", "mode": "assign", "scheme": "topics", "created_after": 1795000000000000000, "limit": 1}
+```
+
+```json result
+{"mode": "assign", "scheme": "topics", "vectors": true, "embed_model": "ollama/bge-m3", "min_members": 3, "margins": {"2": 0.03}, "propose": false, "created_after": 1795000000000000000, "documents": 2, "without_vector": 0, "levels": [{"level": 2, "threshold": 0.03, "rankings": 2, "placed": 2, "agree": 2, "eligible": 0, "buckets": [{"from": 0, "to": 0.01, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.01, "to": 0.02, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.02, "to": 0.03, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.03, "to": 0.04, "rankings": 1, "placed": 1, "agree": 1, "agreement": 1}, {"from": 0.04, "to": 0.05, "rankings": 1, "placed": 1, "agree": 1, "agreement": 1}, {"from": 0.05, "to": 0.06, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.06, "to": 0.07, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.07, "to": 0.08, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.08, "to": 0.09, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.09, "rankings": 0, "placed": 0, "agree": 0}], "at_least": [{"from": 0, "rankings": 2, "placed": 2, "agree": 2, "agreement": 1}, {"from": 0.01, "rankings": 2, "placed": 2, "agree": 2, "agreement": 1}, {"from": 0.02, "rankings": 2, "placed": 2, "agree": 2, "agreement": 1}, {"from": 0.03, "rankings": 2, "placed": 2, "agree": 2, "agreement": 1}, {"from": 0.04, "rankings": 1, "placed": 1, "agree": 1, "agreement": 1}, {"from": 0.05, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.06, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.07, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.08, "rankings": 0, "placed": 0, "agree": 0}, {"from": 0.09, "rankings": 0, "placed": 0, "agree": 0}]}], "page": [{"document_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "title": "Vendor exit plan", "placements": [{"node_id": "4d5e6f708192a3b4c5d6e7f8091a2b3c", "node": "outsourcing", "tag": "topics/risk-management/outsourcing"}], "rankings": [{"scheme": "topics", "level": 2, "parent": "topics/risk-management", "compared": 3, "nearest": {"node_id": "4d5e6f708192a3b4c5d6e7f8091a2b3c", "node": "outsourcing", "tag": "topics/risk-management/outsourcing", "similarity": 0.82}, "second": {"node_id": "5e6f708192a3b4c5d6e7f8091a2b3c4d", "node": "operational risk", "tag": "topics/risk-management/operational-risk", "similarity": 0.785}, "margin": 0.035, "agrees": true, "threshold": 0.03}]}], "next_cursor": "0a1b2c3d4e5f60718293a4b5c6d7e8f9"}
 ```

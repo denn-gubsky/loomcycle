@@ -331,7 +331,7 @@ func TestGrowth_InputAndAccessAreChecked(t *testing.T) {
 		`{"op":"node_stats","quiet_periods":3}`:                   "quiet_periods is taken only with mode growth",
 		`{"op":"node_stats","mode":"growth","quiet_periods":-1}`:  "quiet_periods must be 1 to 120",
 		`{"op":"node_stats","mode":"growth","quiet_periods":121}`: "quiet_periods must be 1 to 120",
-		`{"op":"node_stats","mode":"nope"}`:                       "is not report, compute, misfits, growth or split",
+		`{"op":"node_stats","mode":"nope"}`:                       "is not report, compute, misfits, growth, split or assign",
 	} {
 		_, res := docExec(t, d, k.f.operator, body)
 		if !res.IsError || !strings.Contains(res.Text, want) {
@@ -349,7 +349,9 @@ func TestNodeStats_AnswerIsUnchangedWithoutGrowthOptions(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	k := newMeasureCorpus(t, d, base, conceptOntologyMD)
 	growthCorpus(t, k)
+	// Only an explicit mode compute reports the concept definitions it refreshed (RFC GM P3.3).
 	want := "computed,embed_model,fresh,min_members,missing,mode,nodes,removed,series,stale,vectors"
+	wantCompute := "computed,definitions,embed_model,fresh,min_members,missing,mode,nodes,removed,series,stale,vectors"
 	for _, body := range []string{`{"op":"node_stats"}`, computeAll} {
 		_, res := docExec(t, d, k.f.operator, body)
 		if res.IsError {
@@ -364,8 +366,12 @@ func TestNodeStats_AnswerIsUnchangedWithoutGrowthOptions(t *testing.T) {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
-		if got := strings.Join(keys, ","); got != want {
-			t.Errorf("%s: fields %s, want %s", body, got, want)
+		w := want
+		if body == computeAll {
+			w = wantCompute
+		}
+		if got := strings.Join(keys, ","); got != w {
+			t.Errorf("%s: fields %s, want %s", body, got, w)
 		}
 	}
 }

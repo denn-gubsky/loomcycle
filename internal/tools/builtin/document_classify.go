@@ -100,6 +100,9 @@ type classifyStep struct {
 	Chosen     string              `json:"chosen,omitempty"`
 	Neighbours int                 `json:"neighbours,omitempty"`
 	Reason     string              `json:"reason,omitempty"`
+	// Nearest: the concepts the model step was asked, chosen by vector (RFC GM P3.3,
+	// document_concept_candidates.go); absent when the concept tree was walked.
+	Nearest []conceptCandidate `json:"nearest,omitempty"`
 }
 
 type classifyConcept struct {
@@ -143,6 +146,9 @@ type classifyDoc struct {
 	record                                   *classification
 	sectionIDs, sectionTitles                []string
 	text                                     string // title + section titles + first bodies
+	// nearest: the concept candidates the concept step asks instead of walking the
+	// tree (document_concept_candidates.go); nil walks the tree.
+	nearest []conceptCandidate
 }
 
 func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, in docInput) (tools.Result, error) {
@@ -185,6 +191,16 @@ func (d *Document) classify(ctx context.Context, key sqlmem.ScopeKey, mscope sto
 	// or class (RFC GQ P2.1). Classes are dropped after the seed layering, so a retired
 	// class keeps a seed class of its name out.
 	read = forNewWrites(read)
+	// A vocabulary too large for one request: ask the concepts nearest the document
+	// by vector instead of walking the tree, where they can be compared (tenant
+	// scope, where annotations and node statistics are kept).
+	if tenantScope && d.Classifier != nil && len(inForceConcepts(read)) > memrank.ClassifyMaxConcepts {
+		near, nerr := d.conceptCandidates(ctx, key, read, cd.rootID)
+		if nerr != nil {
+			out.Warnings = append(out.Warnings, "concept candidates could not be read ("+nerr.Error()+"); the concept tree is walked instead")
+		}
+		cd.nearest = near
+	}
 	classes := map[string]memrank.OntologyTerm{}
 	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
 		if c.IsDocumentClass && c.EntryStatus == "" {

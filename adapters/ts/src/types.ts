@@ -4789,7 +4789,10 @@ export type DocumentToolInput = {
    *  default) only reports. node_stats mode misfits: true files a `subject`
    *  proposal (method rule:centroid) per misfit, at most `limit` per call.
    *  node_stats mode split: true files each recurring group as a proposed
-   *  concept and each merge as a retire proposal, at most `limit` per call. */
+   *  concept and each merge as a retire proposal, at most `limit` per call.
+   *  node_stats mode assign: true files a `subject` proposal (method
+   *  rule:centroid, confidence the margin) per ranking that clears its level's
+   *  margin, at most `limit` per call; nothing is made live. */
   propose?: boolean;
   /** search / related: never chunks of these documents (e.g. the document under
    *  review, so its own text is not found as evidence for itself). */
@@ -4910,8 +4913,16 @@ export type DocumentToolInput = {
    *  scheme's unplaced periods rising first, writing nothing; "split" lists
    *  the groups of a concept's members, and of a scheme's unplaced things, that
    *  recur when clustered again (candidate new concepts) and sibling concepts to
-   *  merge, filing proposals only with `propose`. */
-  mode?: "report" | "compute" | "misfits" | "growth" | "split";
+   *  merge, filing proposals only with `propose`; "assign" compares each
+   *  document a scheme arranges with one level's centroids at a time (nearest,
+   *  second, margin) and reports a page of documents with their live placements
+   *  and the agreement by margin bucket per level, filing `subject` proposals
+   *  only with `propose`. */
+  mode?: "report" | "compute" | "misfits" | "growth" | "split" | "assign";
+  /** node_stats mode assign: the margin (at most 1) a ranking needs per level,
+   *  keyed by the level as a string; a negative margin turns a level off.
+   *  Default `{"2": 0.03}`: level 1 has none. */
+  margins?: Record<string, number>;
   /** node_stats mode growth: the periods counted as recent (default 6, at most
    *  120); a node with members but none in them is quiet. */
   quiet_periods?: number;
