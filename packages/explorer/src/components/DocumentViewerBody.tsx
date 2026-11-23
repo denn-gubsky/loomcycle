@@ -1056,6 +1056,7 @@ export default function DocumentViewerBody({
             disabled={!rootDetail}
             title="Edit the document's title, type, status and opening text"
           >
+            <BarIcon kind="edit" />
             edit
           </button>
           <MoreMenu groups={menuGroups} busy={downloading} label="Document actions" />
@@ -1371,6 +1372,7 @@ const ChunkSection = memo(function ChunkSection({
           <BarIcon kind="copy" />
         </button>
         <button type="button" className="doc-chunk-edit" onClick={() => detail && onEdit(detail)} disabled={!detail}>
+          <BarIcon kind="edit" />
           edit
         </button>
       </div>
@@ -1381,7 +1383,7 @@ const ChunkSection = memo(function ChunkSection({
 });
 
 // The chunk bar's icons, drawn like the tree icons so they follow the theme.
-function BarIcon({ kind }: { kind: "source" | "history" | "copy" }) {
+function BarIcon({ kind }: { kind: "source" | "history" | "copy" | "edit" }) {
   return (
     <svg
       width="14"
@@ -1402,6 +1404,7 @@ function BarIcon({ kind }: { kind: "source" | "history" | "copy" }) {
           <path d="M8 5v3.25l2 1.25" />
         </>
       )}
+      {kind === "edit" && <path d="M10.75 2.75l2.5 2.5L5.5 13H3v-2.5zM9.25 4.25l2.5 2.5" />}
       {kind === "copy" && (
         <>
           <rect x="5.25" y="5.25" width="8" height="8" rx="1" />
