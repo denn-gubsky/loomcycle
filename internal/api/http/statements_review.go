@@ -135,7 +135,7 @@ func (s *Server) handleStatementRule(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, statementRuleBodyMax)).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_body",
-			`expected {"action": "accept|reject", "ids": [...] | "filter": {...}, "reason", "dry_run", "expect_count", "max"}`)
+			`expected {"action": "accept|reject|demote", "ids": [...] | "filter": {...}, "reason", "dry_run", "expect_count", "max"}`)
 		return
 	}
 	req := body.RuleStatementsRequest

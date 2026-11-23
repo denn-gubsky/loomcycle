@@ -20,6 +20,8 @@ const reviewToolDescription = "Review proposed document relations (statements) i
 	"To rule, call again with dry_run false and expect_count equal to the dry run's matched; if the queue changed in between it is refused (queue_changed) and nothing is ruled. " +
 	"reason is required to reject. Each statement is ruled as accept_statement / reject_statement would rule it, with a result per statement; one failure does not stop the rest. " +
 	"Returns {ruling_id, matched, selected, skipped, to_rule, ruled, failed, items, breakdown}; statements you may not rule on are skipped and only counted. " +
+	"action demote takes live asserted statements back to proposed (filter.status is asserted, and may be nothing else), by the same filter or ids, with the same dry run and expect_count; reason is required and is recorded on each as maintain_statement demote records it. " +
+	"A statement a person wrote or an operator ruled on is left and reported (statement_manual, statement_operator_ruled), one not live and asserted is reported not_asserted. An admin or a tenant operator only, never a member holding review. A demote is not reverted: accept its statements again. " +
 	"op=revert {ruling_id} returns each statement of that ruling to its status before, if nothing changed it since (no new evidence, no maintenance, no later ruling); a rejected one is no longer refused when proposed again. Changed ones are listed and left; returns revert_id. It also undoes a review policy's ruling (the ruling_id an apply_policy call or a statement's get_edge names). " +
 	"op=rulings lists the scope's bulk rulings and reverts, newest first (limit default 20, at most 100; after = next_cursor): id, action, ruled_by, actor, reason, selector (filter, or ids_count), counts, created_at, and reverted / reverted_by. An operator sees them all, a member only its own. Use it to find a ruling_id to revert. " +
 	"For an admin or a tenant operator (holding write on each statement's from-document), or a member holding the access-control action review on the from-document's path. The tenant is your own unless you are an admin and pass another. " +
@@ -36,7 +38,7 @@ const reviewToolSchema = `{
 	"type": "object",
 	"required": ["op"],
 	"properties": {
-		"op":     {"type": "string", "enum": ["queue", "rule", "revert", "rulings", "apply_policy"], "description": "queue (list or summarize), rule (accept or reject in bulk), revert (undo a ruling), rulings (list past rulings), apply_policy (run the review policy over the queue)."},
+		"op":     {"type": "string", "enum": ["queue", "rule", "revert", "rulings", "apply_policy"], "description": "queue (list or summarize), rule (accept, reject or demote in bulk), revert (undo a ruling), rulings (list past rulings), apply_policy (run the review policy over the queue)."},
 		"scope":  {"type": "string", "enum": ["tenant", "user"], "description": "The document scope: tenant (default) or a user scope (your own, or scope_id's)."},
 		"scope_id": {"type": "string", "description": "With scope user: whose user documents. An operator may name another subject of its tenant; a member only itself."},
 		"tenant": {"type": "string", "description": "Admin only: whose documents. Ignored for anyone else, who always reviews their own tenant."},
@@ -68,9 +70,9 @@ const reviewToolSchema = `{
 		"limit":        {"type": "integer", "description": "queue: page size (default 500, at most 5000). rulings: default 20, at most 100."},
 		"after":        {"type": "string", "description": "queue / rulings: the next_cursor of the previous page."},
 		"order":        {"type": "string", "enum": ["created", "verified"], "description": "queue: created (default, newest first) or verified (least recently verified first)."},
-		"action":       {"type": "string", "enum": ["accept", "reject"], "description": "rule: accept or reject."},
+		"action":       {"type": "string", "enum": ["accept", "reject", "demote"], "description": "rule: accept or reject proposals, or demote live asserted statements back to proposed (an operator only)."},
 		"ids":          {"type": "array", "items": {"type": "string"}, "description": "rule: the statement ids, instead of a filter."},
-		"reason":       {"type": "string", "description": "rule: why; required to reject."},
+		"reason":       {"type": "string", "description": "rule: why; required to reject and to demote."},
 		"dry_run":      {"type": "boolean", "description": "rule / apply_policy: default true. Pass false, with expect_count, to rule."},
 		"expect_count": {"type": "integer", "description": "rule / apply_policy: the dry run's matched count; required when dry_run is false."},
 		"max":          {"type": "integer", "description": "rule / apply_policy: at most this many statements ruled (default and ceiling 1000)."},
