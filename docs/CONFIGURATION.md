@@ -4583,6 +4583,11 @@ workspace:
     limits:
       rate_per_minute: 600 # requests a minute, per workspace and route
       max_bytes: 4294967296 # request and response body bytes, per workspace and route (4 GiB)
+  mcp:                     # the `workspace` tool of loomcycle's MCP server (RFC GW D35)
+    enabled: false         # off unless set
+    ops: [read, write]     # what a session may do: read, write, exec (exec only when listed)
+    idle_release_s: 3600   # released after this long without an op; 1 to 2592000
+    max_lifetime_s: 86400  # released this long after it opened; 1 to 2592000
 ```
 
 **Egress routes** (RFC GW P4). A workspace has no network of its own; it reaches only the routes its agent's `workspace.egress` names, each an upstream URL and optionally a credential the core adds on the way out. A route name is a lowercase letter then up to 62 lowercase letters, digits or `-`. Its `url` is `https`, with no user, query, fragment, percent-encoding, backslash or `.`/`..` segment, written in canonical form (lowercase host, no `:443`, no doubled slash) and ending in `/`. `methods` come from `GET HEAD POST PUT PATCH DELETE OPTIONS`, each once. `credential` is a `"$cred:<name>"` reference, resolved for the run; `auth` needs one, and `header` names the header with `auth: header` (not a hop-by-hop header, `Host`, `Cookie`, `Forwarded`, `X-Forwarded-*`, `Proxy-*` or `Content-Length`). The credential must carry `allowed_urls` covering the route's URL; credentials live in the store, so that is checked when the route is used, not at load. `tenant_hosts` lists bare host names and needs `tenant_routes: true`. The embedded `workspace` preset (`LOOMCYCLE_PRESETS=…,workspace`) declares `pypi`, `pypi-files` and `npm`, read-only and without a credential, and turns nothing else on. An agent naming a route that is no operator route while `tenant_routes` is off is warned about at startup.

@@ -64,6 +64,9 @@ type WorkspaceConfig struct {
 	// Egress is the named routes a workspace reaches the network through
 	// (RFC GW §6.3).
 	Egress WorkspaceEgressConfig `yaml:"egress,omitempty"`
+	// MCP configures Workspace on loomcycle's MCP server (RFC GW D35): off
+	// unless enabled.
+	MCP WorkspaceMCPConfig `yaml:"mcp,omitempty"`
 	// Checkpoint bounds a workspace's checkpoints (RFC GW §5.4).
 	Checkpoint WorkspaceCheckpointConfig `yaml:"checkpoint,omitempty"`
 }
@@ -74,6 +77,29 @@ type WorkspaceCheckpointConfig struct {
 	// MaxPerWorkspace is the checkpoints one workspace may hold. Default 8.
 	MaxPerWorkspace int `yaml:"max_per_workspace,omitempty"`
 }
+
+// WorkspaceMCPConfig is `workspace.mcp`: the `workspace` tool of loomcycle's
+// MCP server, whose workspaces belong to the session's token identity
+// (tenant and subject), not to a run (RFC GW D35).
+type WorkspaceMCPConfig struct {
+	// Enabled offers the tool. Off by default.
+	Enabled bool `yaml:"enabled,omitempty"`
+	// Ops are what a session may do in its workspaces: read, write, exec.
+	// Empty is read and write; exec only when listed. Opening is implied.
+	Ops []string `yaml:"ops,omitempty"`
+	// IdleReleaseS releases a workspace no op reached for this long.
+	IdleReleaseS int `yaml:"idle_release_s,omitempty"`
+	// MaxLifetimeS releases a workspace this long after it opened, however
+	// busy.
+	MaxLifetimeS int `yaml:"max_lifetime_s,omitempty"`
+}
+
+// The workspace.mcp defaults, and the bounds its two times may be set to.
+const (
+	DefaultWorkspaceMCPIdleReleaseS = 3600
+	DefaultWorkspaceMCPMaxLifetimeS = 86400
+	maxWorkspaceMCPSeconds          = 30 * 86400
+)
 
 // WorkspaceKernelConfig is `workspace.kernel`.
 type WorkspaceKernelConfig struct {
@@ -204,6 +230,15 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 		w.Checkpoint.MaxPerWorkspace = DefaultWorkspaceCheckpoints
 	}
 	w.Egress = w.Egress.Resolved()
+	if len(w.MCP.Ops) == 0 {
+		w.MCP.Ops = []string{WorkspaceOpRead, WorkspaceOpWrite}
+	}
+	if w.MCP.IdleReleaseS == 0 {
+		w.MCP.IdleReleaseS = DefaultWorkspaceMCPIdleReleaseS
+	}
+	if w.MCP.MaxLifetimeS == 0 {
+		w.MCP.MaxLifetimeS = DefaultWorkspaceMCPMaxLifetimeS
+	}
 	return w
 }
 
@@ -315,6 +350,19 @@ func validateWorkspace(c *Config) error {
 	if c := w.Checkpoint.MaxPerWorkspace; c < 0 || c > maxWorkspaceCheckpoints {
 		return fmt.Errorf("workspace.checkpoint.max_per_workspace: %d is out of range (1 to %d)", c, maxWorkspaceCheckpoints)
 	}
+	for _, op := range w.MCP.Ops {
+		switch op {
+		case WorkspaceOpRead, WorkspaceOpWrite, WorkspaceOpExec:
+		default:
+			return fmt.Errorf("workspace.mcp.ops: %q is not read, write or exec", op)
+		}
+	}
+	if v := w.MCP.IdleReleaseS; v < 0 || v > maxWorkspaceMCPSeconds {
+		return fmt.Errorf("workspace.mcp.idle_release_s: %d is out of range (1 to %d)", v, maxWorkspaceMCPSeconds)
+	}
+	if v := w.MCP.MaxLifetimeS; v < 0 || v > maxWorkspaceMCPSeconds {
+		return fmt.Errorf("workspace.mcp.max_lifetime_s: %d is out of range (1 to %d)", v, maxWorkspaceMCPSeconds)
+	}
 	if err := validateWorkspaceEgress(w.Egress); err != nil {
 		return err
 	}
@@ -360,6 +408,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "checkpoint"), "workspace.checkpoint", nil, reflect.TypeOf(WorkspaceCheckpointConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "mcp"), "workspace.mcp", nil, reflect.TypeOf(WorkspaceMCPConfig{})); err != nil {
 		return err
 	}
 	type plain WorkspaceConfig

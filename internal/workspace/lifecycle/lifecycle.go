@@ -12,6 +12,7 @@ package lifecycle
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -118,12 +119,51 @@ func New(d *dispatch.Dispatcher, st Store, l Limits, log *slog.Logger) *Manager 
 	return &Manager{disp: d, store: st, limits: l, log: log.With("component", "workspaces"), now: time.Now}
 }
 
-// Owner is the run asking: who a workspace is for and who may use it.
+// Owner is who is asking: who a workspace is for and who may use it. A run
+// (the usual), or the principal of a session of loomcycle's MCP server
+// (PrincipalOwner, RFC GW D35).
 type Owner struct {
 	TenantID, UserID string
-	RunID            string // the pin
+	RunID            string // the pin: the run's id, or a principal's pin key
 	AgentID          string
 	RootRunID        string
+	// Kind is store.WorkspaceOwnerPrincipal for a principal; empty (or
+	// store.WorkspaceOwnerRun) for a run.
+	Kind string
+	// TokenDefID is the token definition a principal signed in with: the
+	// workspaces it opens are released when that token ends.
+	TokenDefID string
+}
+
+// IsPrincipal reports whether the owner is an MCP session's principal.
+func (o Owner) IsPrincipal() bool { return o.Kind == store.WorkspaceOwnerPrincipal }
+
+// principalPinPrefix starts a principal's pin key. A run id starts "run_",
+// so the two never meet in owner_run_id.
+const principalPinPrefix = "principal:"
+
+// PrincipalOwner is the owner of the workspaces a session of loomcycle's MCP
+// server opens (RFC GW D35): the token identity, its tenant and subject, and
+// no run. The pin key is a hash of the two, so every session and token of
+// one subject reaches the same workspaces and no other subject's. tokenDefID
+// is the token the session signed in with. Both tenant and subject are
+// required: an empty one returns an owner with no pin, which every lookup
+// refuses.
+func PrincipalOwner(tenantID, subject, tokenDefID string) Owner {
+	if tenantID == "" || subject == "" {
+		return Owner{Kind: store.WorkspaceOwnerPrincipal}
+	}
+	sum := sha256.Sum256([]byte(tenantID + "\x00" + subject))
+	return Owner{TenantID: tenantID, UserID: subject, RunID: principalPinPrefix + hex.EncodeToString(sum[:]),
+		Kind: store.WorkspaceOwnerPrincipal, TokenDefID: tokenDefID}
+}
+
+// kind is the owner kind a row of o is written with.
+func (o Owner) kind() string {
+	if o.IsPrincipal() {
+		return store.WorkspaceOwnerPrincipal
+	}
+	return store.WorkspaceOwnerRun
 }
 
 // The errors the manager answers with; the tool turns each into a class.
@@ -239,6 +279,7 @@ func (m *Manager) makeOn(ctx context.Context, o Owner, name, workerID, engine st
 	row, err := m.store.WorkspaceCreate(ctx, store.WorkspaceRow{
 		ID: id, TenantID: o.TenantID, UserID: o.UserID, Name: name, WorkerID: workerID, Engine: engine,
 		OwnerRunID: o.RunID, OwnerAgentID: o.AgentID, RootRunID: o.RootRunID, State: store.WorkspaceOpening,
+		OwnerKind: o.kind(), OpenedToken: o.TokenDefID,
 	})
 	if err != nil {
 		var conflict *store.ErrConflict
@@ -317,9 +358,20 @@ func (m *Manager) Get(ctx context.Context, o Owner, name string) (store.Workspac
 		return store.WorkspaceRow{}, err
 	}
 	// The query asks for both already; this keeps a store that ever got it
-	// wrong from widening the pin.
-	if r.OwnerRunID != o.RunID || r.TenantID != o.TenantID {
+	// wrong from widening the pin. A run never reaches a principal's row,
+	// nor a principal a run's, whatever their keys.
+	if r.OwnerRunID != o.RunID || r.TenantID != o.TenantID || r.OwnerKind != o.kind() {
 		return store.WorkspaceRow{}, ErrNotFound
+	}
+	if o.IsPrincipal() {
+		// The idle release counts from here (D-P9-1). A failed stamp is
+		// logged, not fatal: at worst the workspace is released early.
+		now := m.now().UTC()
+		if err := m.store.WorkspaceTouchUsed(ctx, r.TenantID, r.ID, now); err != nil {
+			m.log.Warn("cannot record a workspace's use", "workspace_id", r.ID, "err", err)
+		} else {
+			r.LastUsedAt = now
+		}
 	}
 	return r, nil
 }
@@ -329,7 +381,17 @@ func (m *Manager) List(ctx context.Context, o Owner) ([]store.WorkspaceRow, erro
 	if o.RunID == "" {
 		return []store.WorkspaceRow{}, nil
 	}
-	return m.store.WorkspaceListByOwnerRun(ctx, o.TenantID, o.RunID)
+	rows, err := m.store.WorkspaceListByOwnerRun(ctx, o.TenantID, o.RunID)
+	if err != nil {
+		return nil, err
+	}
+	out := rows[:0]
+	for _, r := range rows {
+		if r.OwnerKind == o.kind() {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // Do runs one op in a ready workspace of the run.

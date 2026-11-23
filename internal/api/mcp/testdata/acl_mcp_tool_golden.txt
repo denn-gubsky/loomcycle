@@ -69,3 +69,4 @@ telemetry	substrate:tenant	false
 unregister_agent	-	false
 volumedef	-	false
 webhookdef	-	false
+workspace	runs:create	false

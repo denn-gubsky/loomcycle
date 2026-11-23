@@ -4,7 +4,7 @@ import { describe, it, expect } from "vitest";
 import type { DirListing } from "../lib/lazyPathTree";
 import type { PathEntry } from "../types";
 import type { DocSummary } from "../lib/colorScheme";
-import PathTree, { buildLazyTree, nodeBrief, type PathTreeProps } from "./PathTree";
+import PathTree, { buildLazyTree, folderDocuments, nodeBrief, nodeCard, type PathTreeProps } from "./PathTree";
 
 const dir = (full_path: string): PathEntry => ({
   name: full_path.slice(full_path.lastIndexOf("/") + 1),
@@ -148,11 +148,20 @@ describe("PathTree", () => {
       ["gf", sum("gf")],
     ]);
     const html = render(dirs, ["/rfcs"], summaries);
-    // The folder's tooltip carries its _annotation's brief, a document's its
-    // own; neither is a second line any more.
-    expect(html).toContain('title="/rfcs\nDesign records for the runtime."');
-    expect(html).toContain('title="/rfcs/ge\nAnnotations at every level."');
-    expect(html).toContain('title="/rfcs/gf"');
+    // The folder's card carries its _annotation's brief, a document's its own;
+    // neither is a second line, nor a native tooltip beside the card.
+    const tree = buildLazyTree(dirs);
+    const rfcs = tree.find((n) => n.name === "rfcs")!;
+    expect(nodeCard(rfcs, summaries)).toMatchObject({
+      title: "rfcs",
+      type: "folder",
+      brief: "Design records for the runtime.",
+    });
+    const ge = rfcs.children.find((n) => n.name === "ge")!;
+    expect(nodeCard(ge, summaries)).toMatchObject({ title: "ge", path: "/rfcs/ge", brief: "Annotations at every level." });
+    const gf = rfcs.children.find((n) => n.name === "gf")!;
+    expect(nodeCard(gf, summaries).brief).toBeUndefined();
+    expect(html).not.toContain("title=");
     expect(html).not.toContain("path-brief");
   });
 
@@ -172,7 +181,7 @@ describe("PathTree", () => {
     expect(html).not.toContain(">_annotation<");
     expect(html).not.toContain("etree-svg-annotation");
     expect(html).toContain(">ge<");
-    expect(html).toContain('title="/rfcs\nDesign records."');
+    expect(nodeCard(tree[0], summaries).brief).toBe("Design records.");
   });
 
   it("says a folder holding only its _annotation is empty", () => {
@@ -183,15 +192,35 @@ describe("PathTree", () => {
     expect(render(dirs, ["/rfcs"])).toContain(">empty<");
   });
 
-  it("draws type as a named tag and status as a dot, with the full labels in their titles", () => {
+  it("draws type as a named tag and status as a dot, with the full labels in the row's card", () => {
     const dirs = new Map([["", listing([{ ...doc("/plan"), resource_ref: { document_id: "p" } }])]]);
     const summaries = new Map([
       ["p", { document_id: "p", title: "p", color_enabled: false, type: "Research", status: "draft" } as DocSummary],
     ]);
     const html = render(dirs, [], summaries);
-    expect(html).toContain('title="type: Research"');
     expect(html).toContain(">Research</span>");
-    expect(html).toContain('title="status: draft"');
+    expect(html).toContain('aria-label="status draft"');
+    // No native tooltip on the marks: the card names them in full.
+    expect(html).not.toContain('title="type: Research"');
+    expect(nodeCard(buildLazyTree(dirs)[0], summaries)).toMatchObject({ type: "Research", status: "draft" });
     expect(html).not.toContain("chunk-badge");
+  });
+
+  it("TestPathTree_FolderCountSlotIsEmptyWithoutServerData", () => {
+    const dirs = new Map([["", listing([dir("/rfcs"), doc("/readme")])]]);
+    const html = render(dirs, []);
+    // One slot, on the folder row only, and nothing in it: a count worked out
+    // from the opened folders would be wrong, so none is shown.
+    expect(html.match(/class="etree-count"/g)?.length).toBe(1);
+    expect(html).toContain('<span class="etree-count"></span>');
+  });
+
+  it("TestPathTree_FolderCountSlotShowsTheRuntimesCount", () => {
+    // RFC HA: a listing entry that carries `documents` fills the slot.
+    const counted = { ...dir("/rfcs"), documents: 12 } as PathEntry;
+    expect(folderDocuments(counted)).toBe(12);
+    expect(folderDocuments({ ...doc("/x"), documents: 3 } as PathEntry)).toBeUndefined();
+    const html = render(new Map([["", listing([counted])]]), []);
+    expect(html).toContain('aria-label="12 documents">12</span>');
   });
 });

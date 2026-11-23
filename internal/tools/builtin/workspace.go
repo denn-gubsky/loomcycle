@@ -125,6 +125,20 @@ var workspaceOpArgs = map[string][]string{
 	"unshare": {"name", "with"},
 }
 
+// WorkspaceMCPOps are the ops the Workspace tool takes over loomcycle's MCP
+// server, where the owner is the session's principal (RFC GW D35, P9 plan
+// §3.5): the lifecycle, commands and the file ops. Sharing, interpreters and
+// servers are a run's.
+var WorkspaceMCPOps = []string{"open", "release", "list", "status", "exec", "read", "write", "edit", "glob", "grep"}
+
+var workspaceMCPOps = func() map[string]bool {
+	m := map[string]bool{}
+	for _, op := range WorkspaceMCPOps {
+		m[op] = true
+	}
+	return m
+}()
+
 // workspaceSharedOps are the ops that take a workspace shared with the run
 // (<name>@<agent id>): reading and, through a read_write share, writing
 // files. Never a command, a status, a release or a share of it (RFC GW D20).
@@ -230,7 +244,19 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	ident := tools.RunIdentity(ctx)
 	owner := lifecycle.Owner{TenantID: ident.TenantID, UserID: ident.UserID, RunID: tools.RunID(ctx), AgentID: ident.AgentID, RootRunID: ident.RootRunID}
 	if owner.RunID == "" {
-		return workspaceRefusal("no_run", "a workspace belongs to a run, and this call has none"), nil
+		// Outside a run, only the MCP server's twin names an owner: the
+		// session's principal (RFC GW D35).
+		po, ok := lifecycle.PrincipalOwnerFrom(ctx)
+		if !ok {
+			return workspaceRefusal("no_run", "a workspace belongs to a run, and this call has none"), nil
+		}
+		owner = po
+		if !workspaceMCPOps[in.Op] {
+			return workspaceRefusal("not_over_mcp", fmt.Sprintf("%s is done inside a run; over the MCP server the workspace tool takes %s", in.Op, strings.Join(WorkspaceMCPOps, ", "))), nil
+		}
+		if _, _, shared := lifecycle.SplitShared(in.Name); shared {
+			return workspaceRefusal("not_over_mcp", "shared workspaces are reached inside a run; over the MCP server only your own"), nil
+		}
 	}
 	switch in.Op {
 	case "open":

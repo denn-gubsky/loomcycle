@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useState } from "react";
 import type { ChunkRow } from "../types";
 import { chunkRowTint, effectiveScheme, statusDotColor, type ColorScheme } from "../lib/colorScheme";
 import { TreeIcon, TreeItem, TreeMarks, treeKeyDown, type TreeIconKind } from "./TreeRow";
+import { CardScopeContext, chunkCard } from "./AnnotationCard";
 
 // DocumentChunkTree renders a document's chunk hierarchy (RFC AK), built from
 // the flat query_chunks list by parent_id + position. A single expand Map owned
@@ -210,6 +211,7 @@ function ChunkTreeNode({
   const icon = isRoot ? "document" : typeIcon(node.row.type);
   const type = node.row.type !== documentType ? node.row.type : undefined;
   const status = node.row.status !== documentStatus ? node.row.status : undefined;
+  const cardScope = useContext(CardScopeContext);
   return (
     <TreeItem
       className="chunk-node"
@@ -222,15 +224,16 @@ function ChunkTreeNode({
       tabbable={node.row.id === tabStop}
       icon={icon ? <TreeIcon kind={icon} /> : undefined}
       name={node.row.title || "(untitled)"}
-      title={node.row.title}
+      card={chunkCard(node.row, cardScope)}
       marks={
         <TreeMarks
+          bare
           type={type}
           status={status}
           statusColor={statusDotColor(status, tintScheme ?? undefined)}
           extra={
             linkedIds?.has(node.row.id) ? (
-              <span className="etree-mark etree-mark-link" role="img" title="Has cross-reference links" aria-label="linked">
+              <span className="etree-mark etree-mark-link" role="img" aria-label="linked">
                 <TreeIcon kind="link" />
               </span>
             ) : undefined

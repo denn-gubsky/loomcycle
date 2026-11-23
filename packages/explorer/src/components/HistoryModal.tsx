@@ -28,13 +28,35 @@ function formatTs(createdAt: number): string {
   return new Date(ms).toLocaleString();
 }
 
-export default function HistoryModal({
+export default function HistoryModal({ chunkId, chunkTitle, scope, browse, onClose }: HistoryModalProps) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal history-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header sticky-top">
+          <h3>History{chunkTitle ? ` — ${chunkTitle}` : ""}</h3>
+          <div className="modal-buttons modal-buttons-top">
+            <button type="button" onClick={onClose}>
+              close
+            </button>
+          </div>
+        </div>
+        <HistoryView chunkId={chunkId} scope={scope} browse={browse} />
+      </div>
+    </div>
+  );
+}
+
+// HistoryView is the history itself — the revisions, one version, a diff —
+// shown in the modal above and in the document's history side panel.
+export function HistoryView({
   chunkId,
-  chunkTitle,
   scope,
   browse,
-  onClose,
-}: HistoryModalProps) {
+}: {
+  chunkId: string;
+  scope: DocScope;
+  browse?: BrowseScope;
+}) {
   const data = useExplorerData();
   const [revisions, setRevisions] = useState<ChunkRevision[]>([]);
   const [loading, setLoading] = useState(true);
@@ -105,97 +127,87 @@ export default function HistoryModal({
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal history-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header sticky-top">
-          <h3>History{chunkTitle ? ` — ${chunkTitle}` : ""}</h3>
-          <div className="modal-buttons modal-buttons-top">
-            <button type="button" onClick={onClose}>
-              close
-            </button>
+    <>
+      {err && <div className="modal-err">{err}</div>}
+
+      {loading ? (
+        <p className="doc-empty-body">loading…</p>
+      ) : revisions.length === 0 ? (
+        <p className="doc-empty-body">No history recorded for this chunk.</p>
+      ) : (
+        <>
+          <div className="doc-hist-revs">
+            {revisions.map((rev) => (
+              <button
+                key={rev.revision}
+                type="button"
+                className={
+                  "doc-hist-rev" +
+                  (mode === "version" && selectedRev === rev.revision ? " active" : "")
+                }
+                onClick={() => void viewVersion(rev.revision)}
+              >
+                <span className="doc-hist-rev-num">rev {rev.revision}</span>
+                <span className="doc-hist-rev-time">{formatTs(rev.created_at)}</span>
+                <span className="doc-hist-rev-actor">{rev.actor || "unknown"}</span>
+              </button>
+            ))}
           </div>
-        </div>
-        {err && <div className="modal-err">{err}</div>}
 
-        {loading ? (
-          <p className="doc-empty-body">loading…</p>
-        ) : revisions.length === 0 ? (
-          <p className="doc-empty-body">No history recorded for this chunk.</p>
-        ) : (
-          <>
-            <div className="doc-hist-revs">
-              {revisions.map((rev) => (
-                <button
-                  key={rev.revision}
-                  type="button"
-                  className={
-                    "doc-hist-rev" +
-                    (mode === "version" && selectedRev === rev.revision ? " active" : "")
-                  }
-                  onClick={() => void viewVersion(rev.revision)}
-                >
-                  <span className="doc-hist-rev-num">rev {rev.revision}</span>
-                  <span className="doc-hist-rev-time">{formatTs(rev.created_at)}</span>
-                  <span className="doc-hist-rev-actor">{rev.actor || "unknown"}</span>
-                </button>
-              ))}
+          {revisions.length >= 2 && (
+            <div className="doc-hist-diffbar">
+              <span>Compare</span>
+              <select
+                value={fromRev ?? ""}
+                onChange={(e) => setFromRev(e.target.value === "" ? null : Number(e.target.value))}
+                aria-label="diff from revision"
+              >
+                {revisions.map((r) => (
+                  <option key={r.revision} value={r.revision}>
+                    rev {r.revision}
+                  </option>
+                ))}
+              </select>
+              <span aria-hidden>→</span>
+              <select
+                value={toRev ?? ""}
+                onChange={(e) => setToRev(e.target.value === "" ? null : Number(e.target.value))}
+                aria-label="diff to revision"
+              >
+                {revisions.map((r) => (
+                  <option key={r.revision} value={r.revision}>
+                    rev {r.revision}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => void runDiff()}
+                disabled={busy || fromRev === null || toRev === null}
+              >
+                diff
+              </button>
             </div>
+          )}
 
-            {revisions.length >= 2 && (
-              <div className="doc-hist-diffbar">
-                <span>Compare</span>
-                <select
-                  value={fromRev ?? ""}
-                  onChange={(e) => setFromRev(e.target.value === "" ? null : Number(e.target.value))}
-                  aria-label="diff from revision"
-                >
-                  {revisions.map((r) => (
-                    <option key={r.revision} value={r.revision}>
-                      rev {r.revision}
-                    </option>
-                  ))}
-                </select>
-                <span aria-hidden>→</span>
-                <select
-                  value={toRev ?? ""}
-                  onChange={(e) => setToRev(e.target.value === "" ? null : Number(e.target.value))}
-                  aria-label="diff to revision"
-                >
-                  {revisions.map((r) => (
-                    <option key={r.revision} value={r.revision}>
-                      rev {r.revision}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => void runDiff()}
-                  disabled={busy || fromRev === null || toRev === null}
-                >
-                  diff
-                </button>
-              </div>
+          <div className="doc-hist-output">
+            {busy ? (
+              <p className="doc-empty-body">loading…</p>
+            ) : mode === "diff" ? (
+              <DiffView text={diff} />
+            ) : mode === "version" ? (
+              <pre className="md-pre doc-hist-version">
+                <code>{body || "(empty)"}</code>
+              </pre>
+            ) : (
+              <p className="doc-empty-body">
+                Select a revision to view it, or compare two.
+              </p>
             )}
-
-            <div className="doc-hist-output">
-              {busy ? (
-                <p className="doc-empty-body">loading…</p>
-              ) : mode === "diff" ? (
-                <DiffView text={diff} />
-              ) : mode === "version" ? (
-                <pre className="md-pre doc-hist-version">
-                  <code>{body || "(empty)"}</code>
-                </pre>
-              ) : (
-                <p className="doc-empty-body">
-                  Select a revision to view it, or compare two.
-                </p>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+          </div>
+        </>
+      )}
+    </>
   );
 }
 
