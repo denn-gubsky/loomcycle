@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -9,7 +10,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 )
 
-// childResults is the tool results of the run of agent name, in order.
+// childResults is the text of each tool result of the run of agent, in order.
 func (f *wsRunFixture) childResults(t *testing.T, agent string) []string {
 	t.Helper()
 	runs, _, err := f.st.ListRunsByUser(context.Background(), "acme", "bob", nil, 10, "")
@@ -31,9 +32,18 @@ func (f *wsRunFixture) childResults(t *testing.T, agent string) []string {
 	}
 	var out []string
 	for _, ev := range evs {
-		if ev.Type == "tool_result" {
-			out = append(out, string(ev.Payload))
+		if ev.Type != "tool_result" {
+			continue
 		}
+		// The stored event carries the result as its text field; read that,
+		// so the JSON a tool answered is compared unescaped.
+		var pe struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(ev.Payload, &pe); err != nil {
+			t.Fatalf("tool_result payload %s: %v", ev.Payload, err)
+		}
+		out = append(out, pe.Text)
 	}
 	return out
 }
