@@ -1,4 +1,5 @@
 import type { CSSProperties, KeyboardEvent, ReactNode } from "react";
+import { useAnnotationCard, type CardSpec } from "./AnnotationCard";
 
 // The one row design both explorer trees share (RFC GZ): the Path tree and the
 // document's chunk outline. A row is a single 28px line on a fixed grid —
@@ -91,24 +92,27 @@ const ICON_PATHS: Record<TreeIconKind, ReactNode> = {
 
 // TreeMarks are a row's type tag and status dot at its right edge. The tag
 // shows the type's name, cut by the stylesheet to a fixed width; the full
-// label is in its title.
+// label is in its title — or, on a tree row (`bare`), in the row's card, so
+// two tooltips never show at once.
 export function TreeMarks({
   type,
   status,
   statusColor,
   extra,
+  bare,
 }: {
   type?: string;
   status?: string;
   statusColor?: string;
   extra?: ReactNode;
+  bare?: boolean;
 }) {
   if (!type && !status && !extra) return null;
   return (
     <span className="etree-marks">
       {extra}
       {type && (
-        <span className="etree-mark etree-mark-type" title={`type: ${type}`}>
+        <span className="etree-mark etree-mark-type" title={bare ? undefined : `type: ${type}`}>
           {type}
         </span>
       )}
@@ -116,7 +120,7 @@ export function TreeMarks({
         <span
           className="etree-mark etree-mark-status"
           role="img"
-          title={`status: ${status}`}
+          title={bare ? undefined : `status: ${status}`}
           aria-label={`status ${status}`}
           style={statusColor ? ({ "--etree-dot": statusColor } as CSSProperties) : undefined}
         />
@@ -141,6 +145,13 @@ export interface TreeItemProps {
   name: ReactNode;
   title?: string;
   marks?: ReactNode;
+  // count: the slot at the row's right edge for a number (a folder's
+  // documents, RFC HA). Omitted → no slot.
+  count?: ReactNode;
+  // card: the row's annotation card, opened by a hover or the keyboard focus.
+  card?: CardSpec;
+  // rowClassName marks the row itself (a search hit).
+  rowClassName?: string;
   // style carries the row's tint (rowTint / chunkRowTint) — a custom property
   // only, never a background.
   style?: CSSProperties;
@@ -162,11 +173,15 @@ export function TreeItem({
   name,
   title,
   marks,
+  count,
+  card,
+  rowClassName,
   style,
   className,
   children,
 }: TreeItemProps) {
   const isOpen = expandable && expanded;
+  const c = useAnnotationCard(card);
   return (
     <li
       className={`etree-node${className ? ` ${className}` : ""}${selected ? " selected" : ""}`}
@@ -175,12 +190,16 @@ export function TreeItem({
       aria-selected={selected}
       aria-expanded={expandable ? isOpen : undefined}
       tabIndex={tabbable ? 0 : -1}
+      {...c.focus}
     >
       <div
-        className="etree-row"
+        ref={c.anchorRef}
+        className={`etree-row${rowClassName ? ` ${rowClassName}` : ""}`}
         style={{ ...style, "--etree-depth": depth } as CSSProperties}
         title={title}
         onClick={onSelect}
+        onMouseEnter={c.hover.onMouseEnter}
+        onMouseLeave={c.hover.onMouseLeave}
       >
         <button
           type="button"
@@ -204,7 +223,9 @@ export function TreeItem({
         <span className="etree-icon">{icon}</span>
         <span className="etree-name">{name}</span>
         {marks}
+        {count}
       </div>
+      {c.card}
       {isOpen && children !== undefined && (
         <ul className="etree-children" role="group">
           {children}
