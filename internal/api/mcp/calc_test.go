@@ -23,6 +23,10 @@ type calcCapturingConnector struct {
 	err    error
 }
 
+func (c *calcCapturingConnector) Workspace(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
+
 func (c *calcCapturingConnector) Calc(_ context.Context, in json.RawMessage) (connector.ToolResult, error) {
 	c.calls++
 	c.input = string(in)

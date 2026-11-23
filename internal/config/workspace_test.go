@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -16,8 +17,9 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 	want := WorkspaceConfig{Mode: WorkspaceModeOff, MaxPerRun: 4, Exec: WorkspaceExecConfig{DefaultTimeoutS: 120, MaxTimeoutS: 900}, LostAfterS: 300,
 		DiskQuotaMB: 2048, Copy: WorkspaceCopyConfig{MaxFiles: 2000, MaxBytes: 1 << 30},
 		Checkout: WorkspaceCheckoutConfig{MaxDocuments: 500, MaxBytes: 256 << 20}, Convert: WorkspaceConvertConfig{MemoryLimitMB: 1024},
-		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 5}}
-	if got != want {
+		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 5},
+		MCP:    WorkspaceMCPConfig{Ops: []string{"read", "write"}, IdleReleaseS: 3600, MaxLifetimeS: 86400}}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
 	if got.RemoteWorkers() || got.LocalWorker() || got.Serves() {
@@ -29,15 +31,16 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 	cfg, err := loadConversion(t, "conversion:\n  mode: inprocess\nworker_endpoint:\n  listen: 127.0.0.1:7788\n"+
 		"workspace:\n  mode: remote\n  max_per_run: 2\n  max_per_tenant: 10\n  exec:\n    default_timeout_s: 30\n    max_timeout_s: 60\n  lost_after_s: 90\n"+
 		"  disk_quota_mb: 16777216\n  copy:\n    max_files: 50\n    max_bytes: 4096\n  checkout:\n    max_documents: 20\n    max_bytes: 9000\n  convert:\n    memory_limit_mb: 512\n"+
-		"  kernel:\n    interrupt_grace_seconds: 12\n")
+		"  kernel:\n    interrupt_grace_seconds: 12\n  mcp:\n    enabled: true\n    ops: [read, exec]\n    idle_release_s: 600\n    max_lifetime_s: 7200\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := WorkspaceConfig{Mode: WorkspaceModeRemote, MaxPerRun: 2, MaxPerTenant: 10, Exec: WorkspaceExecConfig{DefaultTimeoutS: 30, MaxTimeoutS: 60}, LostAfterS: 90,
 		DiskQuotaMB: 16 << 20, Copy: WorkspaceCopyConfig{MaxFiles: 50, MaxBytes: 4096},
 		Checkout: WorkspaceCheckoutConfig{MaxDocuments: 20, MaxBytes: 9000}, Convert: WorkspaceConvertConfig{MemoryLimitMB: 512},
-		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 12}}
-	if got := cfg.Workspace.Resolved(); got != want {
+		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 12},
+		MCP:    WorkspaceMCPConfig{Enabled: true, Ops: []string{"read", "exec"}, IdleReleaseS: 600, MaxLifetimeS: 7200}}
+	if got := cfg.Workspace.Resolved(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
 	}
 }
@@ -77,6 +80,10 @@ func TestWorkspaceConfig_RefusesWhatItCannotServe(t *testing.T) {
 		{"workspace:\n  checkout:\n    max_bytes: -1\n", "workspace.checkout.max_bytes: -1 is out of range"},
 		{"workspace:\n  kernel:\n    interrupt_grace_seconds: 301\n", "workspace.kernel.interrupt_grace_seconds: 301 is out of range"},
 		{"workspace:\n  kernel:\n    grace: 5\n", `unknown key "grace"`},
+		{"workspace:\n  mcp:\n    ops: [read, open]\n", `workspace.mcp.ops: "open" is not read, write or exec`},
+		{"workspace:\n  mcp:\n    idle_release_s: -1\n", "workspace.mcp.idle_release_s: -1 is out of range"},
+		{"workspace:\n  mcp:\n    max_lifetime_s: 2592001\n", "workspace.mcp.max_lifetime_s: 2592001 is out of range"},
+		{"workspace:\n  mcp:\n    share: true\n", `unknown key "share"`},
 		{"workspace:\n  convert:\n    memory_mb: 512\n", "memory_mb"},
 		{"workspace:\n  copy:\n    files: 5\n", `unknown key "files"`},
 		// The endpoint is checked as for conversion.
