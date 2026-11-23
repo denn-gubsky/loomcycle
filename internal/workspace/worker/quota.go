@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -38,9 +39,14 @@ type usage struct {
 	// holds it from its check to its last write, so the count is exact
 	// between them. A channel, so a waiting op gives up with its context.
 	lock chan struct{}
+	// id is the workspace's.
+	id string
 	// The fields below are read and written holding lock.
-	limit    int64
-	used     int64
+	limit int64
+	used  int64
+	// held is what the workspace's checkpoints count (RFC GW P6): their
+	// recorded sizes, against the same limit as used.
+	held     int64
 	measured bool
 	estimate bool
 	// full is set when a measurement finds the workspace over its quota (a
@@ -62,7 +68,7 @@ func (q *quotas) get(id string, limit func() int64) *usage {
 	}
 	u := q.m[id]
 	if u == nil {
-		u = &usage{lock: make(chan struct{}, 1), limit: limit()}
+		u = &usage{id: id, lock: make(chan struct{}, 1), limit: limit()}
 		q.m[id] = u
 	}
 	return u
@@ -95,7 +101,7 @@ func (w *worker) setLimit(id string, limit int64) error {
 	if u := w.quotas.peek(id); u != nil {
 		u.lock <- struct{}{}
 		u.limit = limit
-		u.full.Store(u.measured && u.used > limit)
+		u.full.Store(u.measured && u.over())
 		<-u.lock
 	}
 	return nil
@@ -150,7 +156,10 @@ func (w *worker) measureLocked(ctx context.Context, u *usage, v *fsops.VolumeFS)
 	}
 	n, complete := treeSize(ctx, v, ".", time.Now().Add(budget))
 	u.used, u.estimate, u.measured = n, !complete, true
-	u.full.Store(u.used > u.limit)
+	// The checkpoints are read from their records each time: they are
+	// written by this worker only, and a few small files.
+	u.held = w.checkpointBytes(u.id)
+	u.full.Store(u.over())
 }
 
 // settleLocked sets full from the count after a change; a count that is an
@@ -161,11 +170,15 @@ func (w *worker) settleLocked(ctx context.Context, u *usage, v *fsops.VolumeFS) 
 		w.measureLocked(ctx, u, v)
 		return
 	}
-	u.full.Store(u.used > u.limit)
+	u.full.Store(u.over())
 }
 
+// over reports whether the files and the checkpoints together pass the
+// quota. The caller holds the lock.
+func (u *usage) over() bool { return u.used+u.held > u.limit }
+
 func (u *usage) snapshot() workspace.Usage {
-	return workspace.Usage{UsedBytes: u.used, QuotaBytes: u.limit, Estimate: u.estimate}
+	return workspace.Usage{UsedBytes: u.used, QuotaBytes: u.limit, Estimate: u.estimate, CheckpointBytes: u.held}
 }
 
 // admit refuses a write of need more bytes that the quota cannot hold, and
@@ -175,11 +188,15 @@ func (u *usage) admit(need int64) *answer {
 	if u.estimate {
 		about = " (at least: the count is an estimate)"
 	}
-	if u.full.Load() {
-		return refusal(workspace.ClassOverQuota, "the workspace holds %d bytes%s, over its quota of %d; remove files to go on", u.used, about, u.limit)
+	held := ""
+	if u.held > 0 {
+		held = fmt.Sprintf(" and its checkpoints %d", u.held)
 	}
-	if need > u.limit-u.used {
-		return refusal(workspace.ClassOverQuota, "the workspace's quota is %d bytes and it holds %d%s; this write needs %d more", u.limit, u.used, about, need)
+	if u.full.Load() {
+		return refusal(workspace.ClassOverQuota, "the workspace holds %d bytes%s%s, over its quota of %d; remove files or checkpoints to go on", u.used, about, held, u.limit)
+	}
+	if need > u.limit-u.used-u.held {
+		return refusal(workspace.ClassOverQuota, "the workspace's quota is %d bytes and it holds %d%s%s; this write needs %d more", u.limit, u.used, about, held, need)
 	}
 	return nil
 }
@@ -268,7 +285,7 @@ func (w *worker) cleanWork() {
 		return
 	}
 	keep := map[string]bool{}
-	defer func() { w.kernels.Clean(keep) }()
+	defer func() { w.kernels.Clean(keep); w.cleanCheckpoints(keep) }()
 	for _, id := range held {
 		keep[id] = true
 		r, err := os.OpenRoot(filepath.Join(w.opt.Root, id))
