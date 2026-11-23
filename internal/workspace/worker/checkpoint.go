@@ -38,6 +38,9 @@ const checkpointTmp = ".tmp"
 
 const checkpointPrefix = "ck_"
 
+// probePrefix names the folder the mechanism is probed in, in the root.
+const probePrefix = ".loomcycle-probe-"
+
 func (w *worker) checkpointsRoot() string { return filepath.Join(w.opt.Root, checkpointsDir) }
 
 // checkpointsOf is workspace id's folder of checkpoints; id is a ValidID.
@@ -534,11 +537,16 @@ func (w *worker) logger() *slog.Logger {
 // probeMechanism picks the cheapest checkpoint mechanism the root's disk
 // offers (RFC GW §15 spike F): a whole-folder clone, a reflink per file, or
 // a copy. Never hard links.
+//
+// It probes in a folder of its own in the root (the file system the
+// checkpoints will be on) and removes it, so the root holds nothing new until
+// a first checkpoint is taken.
 func probeMechanism(root string) string {
-	dir := filepath.Join(root, checkpointsDir, checkpointTmp)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	dir, err := os.MkdirTemp(root, probePrefix)
+	if err != nil {
 		return workspace.MechanismCopy
 	}
+	defer os.RemoveAll(dir)
 	switch {
 	case cloneDirSupported(dir):
 		return workspace.MechanismClone
@@ -553,6 +561,13 @@ func probeMechanism(root string) string {
 // workspace's folder a checkpoint without its record or a record without
 // its checkpoint. Run at start, before any op.
 func (w *worker) cleanCheckpoints(keep map[string]bool) {
+	if ents, err := os.ReadDir(w.opt.Root); err == nil {
+		for _, e := range ents {
+			if strings.HasPrefix(e.Name(), probePrefix) {
+				_ = removeDir(filepath.Join(w.opt.Root, e.Name()))
+			}
+		}
+	}
 	root := w.checkpointsRoot()
 	if err := removeDir(filepath.Join(root, checkpointTmp)); err != nil {
 		w.logger().Warn("cannot clear the checkpoints' work folder", "err", err)

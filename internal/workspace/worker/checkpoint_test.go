@@ -442,9 +442,14 @@ func TestCheckpoint_LeavesOutTheWorkFolder(t *testing.T) {
 }
 
 // Checkpoints are kept beside the workspaces, never inside one, where a
-// session or a file op could reach them.
+// session or a file op could reach them; probing the mechanism leaves the
+// root as it was.
 func TestCheckpoint_IsKeptOutsideTheWorkspace(t *testing.T) {
 	w, root := newTestWorker(t)
+	before := listRoot(t, root)
+	if m := probeMechanism(root); m == "" || listRoot(t, root) != before {
+		t.Errorf("probing (%q) changed the root: %q, was %q", m, listRoot(t, root), before)
+	}
 	writeFile(t, filepath.Join(root, "ws1", "a"), 1)
 	ck := checkpoint(t, w, "ws1", workspace.CheckpointArgs{})
 	dir := filepath.Join(w.checkpointsOf("ws1"), ck.ID)
@@ -501,6 +506,7 @@ func TestCleanWork_RemovesUnfinishedCheckpoints(t *testing.T) {
 	ck := checkpoint(t, w, "ws1", workspace.CheckpointArgs{})
 	dir := w.checkpointsOf("ws1")
 	writeFile(t, filepath.Join(w.checkpointsRoot(), checkpointTmp, "fork-1", "x"), 1)
+	writeFile(t, filepath.Join(root, probePrefix+"123", "f"), 1)
 	writeFile(t, filepath.Join(dir, "ck_0000000000000001", "x"), 1)
 	_ = os.WriteFile(filepath.Join(dir, "ck_0000000000000002.json"), []byte(`{"id":"ck_0000000000000002","bytes":1}`), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, ck.ID+".json.tmp"), []byte(`{}`), 0o600)
@@ -515,6 +521,9 @@ func TestCleanWork_RemovesUnfinishedCheckpoints(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(w.checkpointsRoot(), checkpointTmp, "fork-1")); err == nil {
 		t.Error("work in progress survived the start")
+	}
+	if _, err := os.Lstat(filepath.Join(root, probePrefix+"123")); err == nil {
+		t.Error("a probe's folder survived the start")
 	}
 }
 
