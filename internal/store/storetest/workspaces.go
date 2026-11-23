@@ -26,6 +26,7 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"TouchKeepsAWorkersRowsFromGoingStale":  testWorkspaceTouchKeepsAWorkersRowsFromGoingStale,
 		"SetSharesIsACompareAndSet":             testWorkspaceSetSharesIsACompareAndSet,
 		"ListByOwnerAgentAndSharedWith":         testWorkspaceListByOwnerAgentAndSharedWith,
+		"PrincipalOwnedRowsAreNeverSwept":       testWorkspacePrincipalOwnedRowsAreNeverSwept,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)
@@ -449,5 +450,59 @@ func testWorkspaceListByOwnerAgentAndSharedWith(t *testing.T, s store.Store) {
 	}
 	if rows, err := s.WorkspaceListSharedWith(ctx, "beta", "r_1%"); err != nil || len(rows) != 0 {
 		t.Errorf("shared with, another tenant = %v, %v; want none", workspaceIDs(rows), err)
+	}
+}
+
+// testWorkspacePrincipalOwnedRowsAreNeverSwept: a workspace opened over the
+// MCP server (RFC GW D35) has no run, so its pin key matches no run row. The
+// run sweeper, which takes a row whose run is gone as ended, must never list
+// it; the principal pass lists it with its owner kind, opening token and
+// last use, and a touch moves only that row's last use.
+func testWorkspacePrincipalOwnedRowsAreNeverSwept(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	p := mkWorkspace("ws_p", "acme", "principal:abc", "mine", "w1")
+	p.OwnerKind, p.OpenedToken, p.OwnerAgentID = store.WorkspaceOwnerPrincipal, "otd_1", ""
+	got := createWorkspace(t, s, p)
+	if got.OwnerKind != store.WorkspaceOwnerPrincipal || got.OpenedToken != "otd_1" || got.LastUsedAt.IsZero() {
+		t.Fatalf("read back %+v, want the principal kind, its token and a last use", got)
+	}
+	// A run's row whose run is gone: swept, as before.
+	r := createWorkspace(t, s, mkWorkspace("ws_r", "acme", "run_gone", "theirs", "w1"))
+	if r.OwnerKind != store.WorkspaceOwnerRun {
+		t.Errorf("a row written with no kind reads back %q, want run", r.OwnerKind)
+	}
+	cands, err := s.WorkspaceSweepCandidates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := workspaceIDs(cands); !sameIDs(ids, []string{"ws_r"}) {
+		t.Errorf("sweep candidates = %v, want only the run's row", ids)
+	}
+	own, err := s.WorkspaceListPrincipalOwned(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := workspaceIDs(own); !sameIDs(ids, []string{"ws_p"}) {
+		t.Errorf("principal owned = %v, want only ws_p", ids)
+	}
+	at := got.LastUsedAt.Add(time.Hour)
+	if err := s.WorkspaceTouchUsed(ctx, "acme", "ws_p", at); err != nil {
+		t.Fatal(err)
+	}
+	// Another tenant's touch reaches nothing.
+	if err := s.WorkspaceTouchUsed(ctx, "other", "ws_p", at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	back, err := s.WorkspaceGet(ctx, "acme", "ws_p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !back.LastUsedAt.Equal(at.UTC().Truncate(time.Microsecond)) && !back.LastUsedAt.Equal(at.UTC()) {
+		t.Errorf("last used = %v, want %v", back.LastUsedAt, at)
+	}
+	bad := mkWorkspace("ws_x", "acme", "run_x", "x", "w1")
+	bad.OwnerKind = "agent"
+	if _, err := s.WorkspaceCreate(ctx, bad); err == nil {
+		t.Error("an unknown owner kind was written")
 	}
 }
