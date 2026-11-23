@@ -342,6 +342,9 @@ func columnsSection2() schemaPlan {
 		// 0134.
 		`ALTER TABLE tenant_telemetry_policies ADD COLUMN content_capture TEXT NOT NULL DEFAULT 'off'`,
 		`ALTER TABLE tenant_telemetry_policies ADD COLUMN content_max_chars INTEGER NOT NULL DEFAULT 0`,
+		// A workspace's shares (RFC GW P8); none for every row before.
+		// Mirrors postgres 0136.
+		`ALTER TABLE workspaces ADD COLUMN shares TEXT NOT NULL DEFAULT '[]'`,
 	}}
 }
 
