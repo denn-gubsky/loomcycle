@@ -136,7 +136,7 @@ func TestStatistics_RefusesEmptyMismatchedAndDegenerateInput(t *testing.T) {
 		mustFail(t, expr, codeShape)
 	}
 	for _, expr := range []string{
-		`mean(["a"])`, "mean([[1, 2]])", "cumsum(5)", `variance([1, 2], 0)`, `median(1, "x")`,
+		`mean(["a"])`, "mean([1, [2]])", "cumsum(5)", `variance([1, 2], 0)`, `median(1, "x")`,
 	} {
 		mustFail(t, expr, codeType)
 	}
