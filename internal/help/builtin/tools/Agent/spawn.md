@@ -36,6 +36,12 @@ conversation — so put all it needs in it.
   and 1 MiB of text per child, counted after a reference is filled in.
 - `def_id` — run a specific version of that agent (from `AgentDef`). The
   version's name must match `name`.
+- `workspaces` — your workspaces to share with the child before its first
+  turn, each `{name, access}` with `access` `read` or `read_write` (see
+  Workspace/share). The child names one `<name>@<your agent id>`; a share
+  never lets it run commands. Needs the grant to share and the operations the
+  access hands over; a workspace you do not hold fails the child before it
+  starts.
 - `result` — how the child's outcome comes back. `text` (default): its final
   answer as text, for you to read. `object`: a JSON object, for a program —
   see Returns. Not with `mode: "poll"`.

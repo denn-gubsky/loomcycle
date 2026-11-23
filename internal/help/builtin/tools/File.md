@@ -49,7 +49,9 @@ When a file could not be kept, the line says why instead
 A path is a reference: `volume:inbox:<path>`, `volume:<name>:<path>` for a
 volume you are bound to, `volume:<path>` for your default volume, or
 `workspace:<name>:<path>` for a file or folder in a workspace this run opened
-(`workspace:<name>:` is its root). A bare path, with no `volume:` or
+(`workspace:<name>:` is its root), or `workspace:<name>@<agent id>:<path>` for
+one another run of your user shared with you (see Workspace/share: a `read`
+share lets you read and copy out, `read_write` also write in). A bare path, with no `volume:` or
 `workspace:`, names a file in the inbox.
 
 The inbox needs nothing but this tool. Another volume is reached with your own
