@@ -1840,6 +1840,7 @@ type Store interface {
 	HookDefStore
 	MCPServerDefStore
 	VolumeDefStore
+	EgressRouteDefStore
 	CredentialDefStore
 	AclStore
 	DirentStore
@@ -4195,6 +4196,23 @@ type VolumeDefStore interface {
 	// It NEVER touches the on-disk directory — that is the tool's `purge`
 	// op, which deletes the row AND the files behind a four-way fence.
 	VolumeDefDelete(ctx context.Context, tenantID, name string) (bool, error)
+}
+
+// EgressRouteDefStore persists the egress routes a tenant writes (RFC GW
+// P4, §6.3): flat (tenant_id, name) rows like VolumeDef, with no version and
+// no content hash. A route only names where a workspace may send requests and
+// which stored credential the core adds; it never holds a secret.
+type EgressRouteDefStore interface {
+	// EgressRouteDefCreate inserts a route. A name the tenant already holds
+	// is *ErrConflict: a route is replaced by delete then create, so a write
+	// never silently moves an existing name to another URL.
+	EgressRouteDefCreate(ctx context.Context, row EgressRouteDefRow) (EgressRouteDefRow, error)
+	// EgressRouteDefGet returns *ErrNotFound on a miss.
+	EgressRouteDefGet(ctx context.Context, tenantID, name string) (EgressRouteDefRow, error)
+	// EgressRouteDefList returns the tenant's routes ordered by name.
+	EgressRouteDefList(ctx context.Context, tenantID string) ([]EgressRouteDefRow, error)
+	// EgressRouteDefDelete removes the row; found=false when none existed.
+	EgressRouteDefDelete(ctx context.Context, tenantID, name string) (bool, error)
 }
 
 // CredentialDefStore persists encrypted per-tenant CredentialDefs.
@@ -6627,6 +6645,24 @@ type VolumeDefRow struct {
 	Definition json.RawMessage `json:"definition"`
 	CreatedAt  time.Time       `json:"created_at"`
 	UpdatedAt  time.Time       `json:"updated_at"`
+}
+
+// EgressRouteDefRow is one tenant-written egress route (RFC GW P4). The
+// fields are config.EgressRoute's, checked by the EgressRouteDef tool before
+// they reach the store; Credential is a "$cred:<name>" reference, never a
+// secret.
+type EgressRouteDefRow struct {
+	// TenantID is set from the authoritative principal, never the wire.
+	TenantID   string    `json:"tenant_id,omitempty"`
+	Name       string    `json:"name"`
+	URL        string    `json:"url"`
+	Methods    []string  `json:"methods"`
+	Credential string    `json:"credential,omitempty"`
+	Auth       string    `json:"auth,omitempty"`
+	Header     string    `json:"header,omitempty"`
+	CreatedBy  string    `json:"created_by,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 // DirentRow is one entry in the RFC AL Path tree: it names a backing resource
