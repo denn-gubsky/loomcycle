@@ -183,6 +183,10 @@ func Run(ctx context.Context, opt Options) error {
 		defer cancel()
 		safego.Go(ctx, "workspace.worker.parent", func() { workerlink.WatchParent(ctx, opt.ParentPID, cancel) })
 	}
+	// The session network's requests reach this worker's egress handler
+	// (RFC GW §6.3); self is set below, before any session can start.
+	var self *worker
+	wireEgress(&opt, &self)
 	eng, err := newEngine(ctx, &opt, log)
 	if err != nil {
 		return err
@@ -206,6 +210,7 @@ func Run(ctx context.Context, opt Options) error {
 	opt.Labels = append(opt.Labels, workspace.CheckpointLabelPrefix+mech)
 	log.Info("checkpoints are recorded by this mechanism", "mechanism", mech)
 	w := &worker{opt: opt, log: log, engine: eng, mech: mech}
+	self = w
 	// The kernels die with the worker; the next cell after it comes back
 	// says kernel_restarted (RFC GW §5.7). A host worker writes the drivers
 	// it carries into its root; a session image carries its own copies

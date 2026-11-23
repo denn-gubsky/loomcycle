@@ -150,6 +150,9 @@ The worker refuses to start with this engine as root (its sessions would run as 
 | `LOOMCYCLE_WORKSPACE_CONTAINER_PIDS` | 512 | A session's processes, 16 and up. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_TMP_MB` | 256 | The size of a session's `/tmp`, counted in its memory. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT` | the root | `LOOMCYCLE_WORKSPACE_ROOT` as the daemon sees it, when the worker itself runs in a container and drives the host's daemon through its socket. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR` | unset | Gives each session a way out through the worker (RFC GW P4): a short absolute directory where the worker keeps one Unix socket per workspace. Unset, a session has no network. Each session then joins a Docker network of its own (`--internal`, no host address on its bridge) shared only with a gateway container that answers as `egress` and forwards to that workspace's socket; no other name resolves. Needs a Linux daemon: Docker Desktop on macOS cannot connect a container to a host socket. Until the core's egress link lands, every request is answered 503. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_HOST_DIR` | the directory | The egress directory as the daemon sees it, for a worker that runs in a container itself. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_IMAGE` | the session image | The gateway's image; it needs `python3`. |
 
 The disk quota (`workspace.disk_quota_mb`) is kept as on `host`: the worker measures a workspace after each command and refuses further writes and commands while it is over. A container gives no cheap hard limit on a mounted directory (`--storage-opt size` limits a container's own layer, and only on xfs with project quotas), so a single command can still pass the quota while it runs. A workspace's files are still converted by the worker's conversion child (D34), not in the session; the session image carries the same helpers for an agent to run itself.
 

@@ -420,6 +420,21 @@ jobs:
           grep -q -- '--- PASS: TestContainerKernel_' kernel.log
           ! grep -q -- '--- SKIP' kernel.log
 
+      # A session's egress (RFC GW P4, plan O12): each session on a network
+      # of its own with no route out, shared only with a gateway that
+      # forwards to the worker over a Unix socket. The gateway needs python3,
+      # so the tests run with the session image built above. A skip fails,
+      # and so does a run in which no egress test passed.
+      - name: Route a session's egress
+        env:
+          LOOMCYCLE_REQUIRE_DOCKER: "1"
+          LOOMCYCLE_TEST_EGRESS_IMAGE: ci-loomcycle-workspace
+        run: |
+          set -o pipefail
+          go test -count=1 -timeout 20m -run '^TestContainerEgress_' -v ./internal/workspace/engine/ | tee egress.log
+          grep -q -- '--- PASS: TestContainerEgress_' egress.log
+          ! grep -q -- '--- SKIP' egress.log
+
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core
     # runner it took ~15 min, set by internal/api/http and

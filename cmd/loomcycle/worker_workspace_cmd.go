@@ -138,10 +138,23 @@ func workspaceContainerOptions() (engine.ContainerOptions, error) {
 	if hostRoot != "" && !filepath.IsAbs(hostRoot) {
 		return engine.ContainerOptions{}, fmt.Errorf("LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT: %q is not an absolute path", hostRoot)
 	}
+	// Egress (RFC GW P4): a session gets a way out through the worker only
+	// when the operator names where its sockets live; unset, it has no
+	// network, as in P3.
+	var eg *engine.ContainerEgress
+	if dir := env("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR"); dir != "" {
+		hostDir := env("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_HOST_DIR")
+		if !filepath.IsAbs(dir) || (hostDir != "" && !filepath.IsAbs(hostDir)) {
+			return engine.ContainerOptions{}, fmt.Errorf("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR %q and _EGRESS_HOST_DIR %q must be absolute paths", dir, hostDir)
+		}
+		eg = &engine.ContainerEgress{Dir: dir, HostDir: hostDir, Image: env("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_IMAGE")}
+	} else if env("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_HOST_DIR") != "" || env("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_IMAGE") != "" {
+		return engine.ContainerOptions{}, errors.New("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_HOST_DIR and _EGRESS_IMAGE need LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR")
+	}
 	return engine.ContainerOptions{
 		CLI: env("LOOMCYCLE_WORKSPACE_CONTAINER_CLI"), Image: env("LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE"),
 		Runtime: env("LOOMCYCLE_WORKSPACE_CONTAINER_RUNTIME"), HostRoot: hostRoot,
-		MemoryMB: int64(mem), CPUs: cpus, Pids: int64(pids), TmpMB: int64(tmp),
+		MemoryMB: int64(mem), CPUs: cpus, Pids: int64(pids), TmpMB: int64(tmp), Egress: eg,
 	}, nil
 }
 

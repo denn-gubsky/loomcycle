@@ -219,3 +219,27 @@ func egressText(rw http.ResponseWriter, code int, reason string) {
 	rw.WriteHeader(code)
 	_, _ = fmt.Fprintln(rw, reason)
 }
+
+// wireEgress points a container worker's session network (RFC GW §6.3) at
+// the worker's own egress handler. The engine is built before the worker, so
+// the handler reads *self when a session starts, not now; until it is set a
+// session gets the engine's placeholder, which answers 503. A copy of the
+// egress options is made so the caller's are not changed under it.
+func wireEgress(opt *Options, self **worker) {
+	eg := opt.Container.Egress
+	if eg == nil {
+		return
+	}
+	c := *eg
+	c.Handler = func(workspaceID string) http.Handler {
+		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+			w := *self
+			if w == nil {
+				egressText(rw, http.StatusServiceUnavailable, "the workspace worker is not ready to send requests out")
+				return
+			}
+			w.serveEgress(rw, r, workspaceID)
+		})
+	}
+	opt.Container.Egress = &c
+}

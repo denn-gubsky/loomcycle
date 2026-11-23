@@ -4616,6 +4616,9 @@ The workspace worker reads these variables, beside `LOOMCYCLE_WORKER_DISPATCHER`
 | `LOOMCYCLE_WORKSPACE_CONTAINER_PIDS` | 512 | A session's processes, at least 16. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_TMP_MB` | 256 | A session's `/tmp`, a tmpfs counted in its memory. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT` | the root | `LOOMCYCLE_WORKSPACE_ROOT` as the container daemon sees it, for a worker that runs in a container itself. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR` | unset | A short absolute directory for the worker's per-workspace egress sockets; set, each session gets a network of its own whose only other member is a gateway answering as `egress` (RFC GW P4). Unset, sessions have no network. Linux daemons only. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_HOST_DIR` | the directory | The egress directory as the container daemon sees it. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_IMAGE` | the session image | The egress gateway's image (needs `python3`). |
 | `LOOMCYCLE_WORKSPACE_CAPACITY` | 8 | The workspaces this worker holds at most, 1–10000. An open past it is refused, and the runtime places the workspace on another worker. |
 | `LOOMCYCLE_WORKSPACE_IDLE_STREAMS` | 16 | The idle op streams the worker keeps open for the runtime, 1–32. The runtime asks for more when it runs low. |
 | `LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` | 1024 | The memory limit (GOMEMLIMIT, MiB, 64–1048576) of the conversion child the worker starts to convert its workspaces' files (RFC GW D34). The runtime's local worker gets `workspace.convert.memory_limit_mb`. The child is this binary run as a conversion worker, with the `LOOMCYCLE_WORKER_*_COMMAND` helper settings and `LOOMCYCLE_HELPER_WRAPPER` of the worker's environment (the local worker gets the runtime's own helper settings); [WORKERS.md](WORKERS.md) has what it converts. |

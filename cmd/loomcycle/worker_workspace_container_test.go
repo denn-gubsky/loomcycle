@@ -33,3 +33,25 @@ func TestWorkspaceContainerOptions_ReadsTheSettingsAndRefusesMalformedOnes(t *te
 		})
 	}
 }
+
+func TestWorkspaceContainerOptions_EgressNeedsItsDirectory(t *testing.T) {
+	t.Setenv("LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE", "img:1")
+	o, err := workspaceContainerOptions()
+	if err != nil || o.Egress != nil {
+		t.Fatalf("without a directory: egress %+v, err %v", o.Egress, err)
+	}
+	t.Setenv("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR", "/run/lce")
+	t.Setenv("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_HOST_DIR", "/host/lce")
+	o, err = workspaceContainerOptions()
+	if err != nil || o.Egress == nil || o.Egress.Dir != "/run/lce" || o.Egress.HostDir != "/host/lce" {
+		t.Fatalf("egress %+v, err %v", o.Egress, err)
+	}
+	t.Setenv("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR", "relative")
+	if _, err := workspaceContainerOptions(); err == nil {
+		t.Error("a relative egress directory accepted")
+	}
+	t.Setenv("LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR", "")
+	if _, err := workspaceContainerOptions(); err == nil {
+		t.Error("an egress host directory without the directory accepted")
+	}
+}
