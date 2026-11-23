@@ -311,3 +311,103 @@ H3 and H4 are tested on token F1 and do not depend on it, and the report gives i
 agreement with EM beside its ratings.
 
 Nothing else changes.
+
+## Amendment 2 — 2026-11-23 07:00 UTC, Study D, before any scored run
+
+Study D only; it runs in parallel with Study C on the same deployment (1.165.0 @
+`f74bba4ec`), tenant `loomcycle-dev`, harness `bench/docs/kbrag/docs/` (its README has the
+commands). Before this commit the only arm runs were an unscored smoke: two questions
+(`p7-q03`, `k01`), one run per arm, under their own idempotency-key prefix; both questions
+stay in the study and no prompt or setting was changed after the smoke.
+
+**1. Question sets and gold.** Three sets, scored and reported separately, never pooled. No
+gold file was found on this machine at first; the operator then pointed to the existing gold
+in a separate internal repo, which is used as is (read-only; only hashes are recorded here).
+- **`p7` (primary).** The 24 questions of `scripts/measure/walker/questions.yaml` (13
+  `overview`, 7 `area`, 4 `changed` as the file stands; its README's 12/6/6 is out of date)
+  with the gold `gm-p7/p7_gold.yaml` (sha256 `1ce00b292fd4d90f6c741877f0e52d28909f52f10420ac0126f0ccae4f00dcac`), drafted 2026-11-20 by an
+  agent from read-only store listings and briefs, and approved by the owner before the RFC GM
+  P7 walker measurement. 21 questions carry document gold, 3 (`q18`, `q20`, `q22`) topic gold.
+  One `q21` gold document no longer exists in the tenant; it stays in the gold (it lowers
+  every arm's recall alike). Caveats: the gold was built from the same annotation layer
+  (briefs) the `kb` arm reads, a bias towards `kb`; and the set was used once, on 2026-11-20,
+  to compare two `kb/walker` prompts, after which the walker kept only its "what changed"
+  move (#2818). It was not used to tune `kb/ask`, `kb/survey`, `kb/screen` or `kb/search`.
+- **`waves` (secondary).** The operator's 12 question waves (`doc-internal/kb-walker-questions-
+  loomcycle-dev*.md` with their keys), normalised to 261 questions (133 overview, 44 specific
+  fact, 36 known item, 18 general, 30 no-answer; sha256 of the normalised file `e7143979eb6d1682d0d853be0e9c8d1c18df8b7dc0d4464c1e10974ae498b7d1`):
+  a question's `core` documents are `gold`, its borderline `(?)` documents `also`. **These
+  waves were used to develop the kb agents**: the results files record that wave 1 tuned the
+  walker prompt and classifier wording, and each of waves 3–12 measured a code change and
+  decided the next one; wave 2 states that nothing was tuned on it but it served as the
+  routing design's acceptance gate. They therefore favour `kb` and are a labelled secondary.
+  Some keys are time- or state-dependent (listings by date or status as of 2026-11-17/18) and
+  have drifted. A question with no core document (the 30 no-answer and 5 others) has no
+  citation score and is rated by the judge only.
+- **`known` (secondary, mechanical).** 30 known-item questions, gold = one document: 30
+  documents drawn with `random.Random(20261123)`, one 600+-character section each, a question
+  written by Haiku from that section's text alone, then checked by a second, separate Haiku
+  call that saw only the question and the section (all 30 passed; the check is lenient). No
+  annotation, brief or taxonomy entered this set. sha256 `88dd522a69547c69a4f2416165165e9e0bbd05a5f020e7ac79d31b932c3cc080`.
+
+**2. Hypotheses.** H1 and H2 as pre-registered, tested on the `p7` set's 21 document-gold
+questions: paired bootstrap over questions on cited-document F1, 10,000 resamples, seed 1,
+98.75% CI; a question's score is the mean of its runs. Reported per kind as well. The same
+paired comparison on `waves` and `known` is reported, labelled secondary, and enters no
+decision. With 21 questions the test can only detect a large difference; a result that does
+not hold is "not shown". Topic questions are scored on topics named (walker README rules).
+
+**3. Runs.** `p7`: 3 runs per question per arm (216 runs). `waves`: 1 run per arm (783 runs).
+`known`: 1 run per arm (90 runs). Arms per (question, run) in a seeded rotated order,
+run-major, 4 workers, `p7` first, then `waves` and `known`. If the cap or time runs short,
+`known` is cut first, then `waves` (a seeded half), never `p7` or an arm.
+
+**4. Corpus.** All 409 documents of the tenant scope less the operational types and the two
+untyped system documents (deployment context, tenant ontology): 23 excluded. Not only
+`/loomcycle`: the gold names documents filed elsewhere. `rag-lc` searches the tenant with
+these 23 excluded by id (`exclude_document_ids`, applied inside every leg); `rag-ext` indexes
+the same 409 (one has no readable text). `kb/ask` cannot be restricted: a citation outside
+the corpus counts as wrong for precision; precision over in-corpus citations is reported
+beside it. `kb/ask`'s chunk citations count for their document; documents-only is reported
+beside. Sections are chunks as `export_md` renders them (heading path, body).
+
+**5. Arms.** k = 20. `rag-lc`: helper `kbrag/search-rr` (code-js, `Document` read only,
+`memory_rerank` on at the shipped defaults: the deployment's decision-kind reranker, pool 20),
+search `limit: 40` so that 20 distinct readable sections remain. `rag-ext`: Amendment 0 §3's
+listwise Haiku rerank in place of the cross-encoder, 3 Haiku rewrites, RRF k 60, parent
+expansion; 11,421 chunks embedded by the deployment's `bge-m3`. Reader: one Haiku call, the
+question and 20 sections (each cut at 8,000 characters; 165 of 7,326 readable sections are
+longer), answering in prose and ending `SOURCES:` with `loom:doc/<id>` links. No condense
+step (Study D scores citations, not answer spans). `kb`: `kb/ask` at depth `standard`.
+
+**6. Haiku routing and its side effect.** In this tenant `kb/classify`, `kb/search` and
+`kb/screen` already had active tenant overlays (2026-11-13/14/16, model `haiku` =
+`anthropic/claude-haiku-5-5`; kb/search's prompt equals the bundle's; kb/classify's differs by
+one character and lacks the `-Calc` tool denial; kb/screen lacks `-Calc`). They are run as
+they are, untouched. Only `kb/walker` was forked (`def_6d0b431adb12fb12`, provider+model only,
+checked against the static definition) and promoted at 06:51:13 UTC; it shadows the bundle
+walker for every run in the tenant until it is retired right after the last scored run
+(`forks.py --restore`, then `--check`). `kb/annotate` is not forked. `kb/ask`'s Decision call
+stays on `ollama-local`/`nimble`. Every run is sent with `user_tier: free`. A call served by
+anything but Haiku, an `ollama-local` model, code-js or the embedder stops the runner.
+
+**7. Judge.** Haiku (operator approval; Amendment 1's caveat stands: a model grading text it
+wrote may be lenient, alike for all arms). Blind to arm, arms shuffled with a seeded RNG per
+(question, run), trailers and links removed. It sees the question and the gold described:
+each gold document's title and brief (the annotation layer — another lean towards `kb`), or
+the topic names, plus the expected answer text where the key has one. Ratings `COMPLETE` /
+`PARTIAL` / `WRONG`. Secondary only.
+
+**8. Instrument check 2 fails at the start.** `list_annotations summarize` at 06:50 UTC:
+document annotations 404 for 409 corpus documents (98.8%, bar 99%), 10 of 404 stale (2.5%,
+bar 1%; the server checked 2,000 annotations for staleness). Nothing is re-annotated (this
+study writes nothing to the tenant's documents). As pre-registered, H1 and H2 are therefore
+**void**; they are still computed and reported as descriptive results, marked void.
+
+**9. Cost.** Cap $20; the runner stops at a $19 increase of the tenant ledger over the
+baseline taken at 06:34 UTC ($36.7924). The smoke cost $0.085 by the ledger. Projection from
+the smoke: a `kb` survey run about $0.05 and 145 s, a `kb` search run $0.006, a RAG run
+$0.002–0.006; about $16 for all runs and the judge. Other users' runs in the tenant would
+also raise the ledger; the per-row token estimate is kept beside it.
+
+Nothing else changes.
