@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/coord"
 	"github.com/denn-gubsky/loomcycle/internal/help"
 	"github.com/denn-gubsky/loomcycle/internal/lanegate"
@@ -15,6 +17,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/pause"
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 	"github.com/denn-gubsky/loomcycle/internal/scheduler"
+	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
@@ -608,18 +611,27 @@ func (b *boot) startVolumeAndAgentSweepers() {
 	// the workspaces of a worker no replica has seen for lost_after_s.
 	// Cluster-gated: one replica per tick.
 	if wsm := b.workspaces; wsm != nil {
+		rule := workspacePrincipalRule(cfg.Workspace.Resolved().MCP, storeIface)
 		goAdvisoryGatedSweeper(bgCtx, workspaceSweepInterval, advisoryLock, coord.LockKeyWorkspaceSweeper, "workspaces",
-			func(ctx context.Context) { sweepWorkspaces(ctx, wsm) })
+			func(ctx context.Context) { sweepWorkspaces(ctx, wsm, rule) })
 		slog.Info("workspaces: sweeper enabled", "interval", workspaceSweepInterval)
 	}
 }
 
 // sweepWorkspaces is one tick of the workspace sweeper.
-func sweepWorkspaces(ctx context.Context, m *lifecycle.Manager) {
+func sweepWorkspaces(ctx context.Context, m *lifecycle.Manager, rule lifecycle.PrincipalRule) {
 	if n, err := m.Sweep(ctx); err != nil {
 		slog.Error("workspaces sweep: list candidates failed", "err", err)
 	} else if n > 0 {
 		slog.Info("workspaces sweep: released workspaces of ended runs", "count", n)
+	}
+	// The workspaces opened over the MCP server have no run: their own
+	// release rule (RFC GW D35, P9 plan D-P9-1). Run whether or not the
+	// tool is on now, so turning it off still ends what it opened.
+	if n, err := m.SweepPrincipals(ctx, rule); err != nil {
+		slog.Error("workspaces sweep: list MCP workspaces failed", "err", err)
+	} else if n > 0 {
+		slog.Info("workspaces sweep: released workspaces opened over MCP", "count", n)
 	}
 	if _, err := m.MarkLost(ctx); err != nil {
 		slog.Error("workspaces sweep: lost check failed", "err", err)
@@ -633,4 +645,36 @@ func resumeOrphanedPausedRuns(ctx context.Context, paused func() bool, resume fu
 	if !paused() {
 		resume(ctx)
 	}
+}
+
+// workspacePrincipalRule is the release rule of the workspaces opened over
+// the MCP server: the operator's idle and lifetime bounds, and the end of the
+// token that opened each (a token definition gone, retired or expired).
+func workspacePrincipalRule(c config.WorkspaceMCPConfig, st store.Store) lifecycle.PrincipalRule {
+	rule := lifecycle.PrincipalRule{
+		Idle:        time.Duration(c.IdleReleaseS) * time.Second,
+		MaxLifetime: time.Duration(c.MaxLifetimeS) * time.Second,
+	}
+	if st == nil {
+		return rule
+	}
+	rule.TokenValid = func(ctx context.Context, id string) (bool, error) {
+		// A principal declared in config (principals:) carries "cfg:<name>",
+		// no token definition: it lives as long as the config does, and only
+		// the two times end its workspaces. Read as a definition it would be
+		// "gone", and released on the next tick.
+		if strings.HasPrefix(id, "cfg:") {
+			return true, nil
+		}
+		row, err := st.OperatorTokenDefGet(ctx, id)
+		var nf *store.ErrNotFound
+		if errors.As(err, &nf) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return row.ValidAt(time.Now()), nil
+	}
+	return rule
 }

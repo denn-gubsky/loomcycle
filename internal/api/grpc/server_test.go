@@ -1041,6 +1041,9 @@ func (m *mockConnector) DecisionModels(context.Context) (connector.DecisionModel
 func (m *mockConnector) Calc(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) Workspace(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 
 // v0.9.x Channel CRUD stubs.
 func (m *mockConnector) PublishChannel(context.Context, connector.ChannelPublishRequest) (connector.ChannelPublishResult, error) {

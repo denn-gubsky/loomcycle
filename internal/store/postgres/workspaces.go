@@ -70,3 +70,11 @@ func (s *Store) WorkspaceListByOwnerAgent(ctx context.Context, tenantID, ownerAg
 func (s *Store) WorkspaceListSharedWith(ctx context.Context, tenantID, runID string) ([]store.WorkspaceRow, error) {
 	return sqlshared.WorkspaceListSharedWith(ctx, s.shared(), tenantID, runID)
 }
+
+func (s *Store) WorkspaceListPrincipalOwned(ctx context.Context) ([]store.WorkspaceRow, error) {
+	return sqlshared.WorkspaceListPrincipalOwned(ctx, s.shared())
+}
+
+func (s *Store) WorkspaceTouchUsed(ctx context.Context, tenantID, id string, at time.Time) error {
+	return sqlshared.WorkspaceTouchUsed(ctx, s.shared(), tenantID, id, at)
+}

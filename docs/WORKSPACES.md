@@ -382,6 +382,17 @@ A set of Documents can be checked out into a workspace as Markdown files, change
 - **Only in a workspace the run owns.** checkout and commit refuse a shared workspace's name (`<name>@<agent id>`): the record is the owner's, and a share hands over file reads and writes only.
 - **Grants.** checkout: the Document tool and the scope's read grants, the `workspace` grant `write`. commit: the Document tool and the scope's write grants (tenant scope: `tenant` in both `memory_scopes` and `sql_scopes`), the `workspace` grant `read`, and `write` for a real commit, which updates the manifest. The `Document` hooks judge every Document call either op makes (the exports, the lookups, each import, its tags), the `Workspace` hooks each file, all before anything is written: one refusal refuses the whole call.
 
+## Workspaces over the MCP server
+
+A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so the `workspace` meta-tool gives it workspaces of its own (RFC GW D35). A workspace opened there **belongs to the token identity the session signed in with: its tenant and subject**, not to a run.
+
+- **Off unless the operator turns it on.** `workspace.mcp.enabled: true`, with `workspace.mode` serving workspaces. Every call needs a principal with a tenant and a subject (open mode and the shared `LOOMCYCLE_AUTH_TOKEN` have none and are refused `no_principal`) and the `runs:create` scope. Each call takes one unit of the token's run rate.
+- **What it may do** is the operator's `workspace.mcp.ops`: `read` and `write` by default; `exec` only when listed. Opening is implied. The ops are `open`, `release`, `list`, `status`, `exec`, `read`, `write`, `edit`, `glob` and `grep`; sharing, interpreters and servers are a run's (`not_over_mcp`).
+- **Who reaches it.** Every session and token of the same tenant and subject reaches the same workspaces by name; another subject of the tenant, the same subject in another tenant, an admin and every run get `not_found`, as for a name nobody uses. A workspace opened over MCP cannot be shared, and reaches no share.
+- **When it is released.** At the first of: `release`; no op on it for `workspace.mcp.idle_release_s` (default 3600); `workspace.mcp.max_lifetime_s` after it opened, however busy (default 86400); the token definition that opened it retired, expired or deleted. The workspace sweeper applies the last three on every tick, whether or not the tool is on now, so turning the tool off still ends what it opened. A token that cannot be read (a store outage) keeps the workspace until the next tick. A principal declared in config (`principals:`) has no token definition, so only the two times end its workspaces.
+- **Limits.** `workspace.max_per_run` bounds the workspaces one subject holds over MCP; `workspace.max_per_tenant` counts them with the tenant's runs'.
+- **A lost worker.** A workspace opened over MCP whose worker comes back after it was marked `lost` is put back in service, and the release rule above decides when it ends.
+
 ## Limits
 
 | Setting | Default | What it bounds |
@@ -390,6 +401,8 @@ A set of Documents can be checked out into a workspace as Markdown files, change
 | `workspace.max_per_tenant` | 0 (unlimited) | A tenant's workspaces across its runs. |
 | `workspace.exec.default_timeout_s` | 120 | A command that names no `timeout_s`. |
 | `workspace.exec.max_timeout_s` | 900 | The longest `timeout_s` a command may ask for. |
+| `workspace.mcp.idle_release_s` | 3600 | How long a workspace opened over the MCP server may go without an op before it is released (1 to 2592000). |
+| `workspace.mcp.max_lifetime_s` | 86400 | How long after it opened a workspace opened over the MCP server is released, however busy (1 to 2592000). |
 | `workspace.kernel.interrupt_grace_seconds` | 5 | How long a cell interrupted at its timeout has to stop before its interpreter is killed (1 to 300). |
 | `workspace.lost_after_s` | 300 | How long a worker may be away before its workspaces are marked `lost`. |
 | `workspace.disk_quota_mb` | 2048 | What one workspace may hold on its worker's disk (1 MiB to 16 TiB); see "The disk quota". |
