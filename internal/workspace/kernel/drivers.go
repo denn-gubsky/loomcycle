@@ -33,6 +33,10 @@ var pythonDriver []byte
 //go:embed drivers/node_driver.js
 var nodeDriver []byte
 
+// ImageDriversDir is where the workspace session image (Dockerfile.workspace)
+// carries the two drivers: the paths a container engine's session sees.
+const ImageDriversDir = "/opt/loomcycle/drivers"
+
 // Drivers are the paths of the two driver files, as the engine's programs
 // see them.
 type Drivers struct {

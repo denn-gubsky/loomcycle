@@ -46,6 +46,8 @@ type Options struct {
 type Request struct {
 	Kind string
 	Code string
+	// Workspace is the workspace's id, for the engine's session.
+	Workspace string
 	// Dir is the workspace's directory, where the kernel starts.
 	Dir     string
 	Timeout time.Duration
@@ -155,7 +157,8 @@ func (m *Manager) Run(ctx context.Context, id string, req Request) (Result, erro
 		}
 		s.k, s.n = nil, 0
 		restarted := m.marked(id, req.Kind)
-		k, err := m.startKernel(ctx, req)
+		req.Workspace = id
+	k, err := m.startKernel(ctx, req)
 		if err != nil {
 			return Result{}, err
 		}
@@ -348,10 +351,11 @@ func (m *Manager) startKernel(ctx context.Context, req Request) (*proc, error) {
 	var sr engine.StartRequest
 	switch req.Kind {
 	case Python:
-		sr = engine.StartRequest{Dir: req.Dir, Argv: []string{pythonFor(req.Dir), "-I", d.Python}, Env: []string{"MPLBACKEND=Agg"}}
+		sr = engine.StartRequest{Argv: []string{pythonFor(req.Dir), "-I", d.Python}, Env: []string{"MPLBACKEND=Agg"}}
 	case Node:
-		sr = engine.StartRequest{Dir: req.Dir, Argv: []string{"node", d.Node}}
+		sr = engine.StartRequest{Argv: []string{"node", d.Node}}
 	}
+	sr.Workspace, sr.Root, sr.Dir = req.Workspace, req.Dir, req.Dir
 	k, err := start(ctx, m.opt.Engine, sr, m.opt.StartWait)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -362,13 +366,19 @@ func (m *Manager) startKernel(ctx context.Context, req Request) (*proc, error) {
 	return k, nil
 }
 
+// venvPython is the workspace's own interpreter, relative to the workspace:
+// the kernel starts in the workspace's root, so the same path reads on the
+// host and in a session, where the workspace is mounted elsewhere.
+const venvPython = "./.venv/bin/python"
+
 // pythonFor is the interpreter a Python kernel runs: the workspace's own
 // virtual environment when it has one, so what the agent installed there is
-// importable (RFC GW §4.4), else python3 from PATH.
+// importable (RFC GW §4.4), else python3 from PATH. Lstat, not Stat: a venv
+// made in a session links to the session's python3, a path the worker's own
+// disk may not have.
 func pythonFor(dir string) string {
-	venv := filepath.Join(dir, ".venv", "bin", "python")
-	if _, err := os.Stat(venv); err == nil {
-		return venv
+	if _, err := os.Lstat(filepath.Join(dir, ".venv", "bin", "python")); err == nil {
+		return venvPython
 	}
 	return "python3"
 }
