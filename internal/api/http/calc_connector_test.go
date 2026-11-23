@@ -70,6 +70,10 @@ func TestServerCalc_RefusesDataByReferenceOutsideARun(t *testing.T) {
 	for _, in := range []string{
 		`{"expr":"sum(t)","from":{"t":"volume:data.csv"}}`,
 		`{"expr":"1 + 1","to":"memory:user/out"}`,
+		// encoding/json matches a struct field whatever the key's case, so a
+		// check that compared the exact key would let these reach the tool.
+		`{"expr":"sum(t)","FROM":{"t":"volume:data.csv"}}`,
+		`{"expr":"1 + 1","To":"memory:user/out"}`,
 	} {
 		res, err := s.Calc(ctx, []byte(in))
 		if err != nil || !res.IsError {
