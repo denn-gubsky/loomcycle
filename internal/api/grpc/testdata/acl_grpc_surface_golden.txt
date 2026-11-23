@@ -29,6 +29,7 @@ DirectoryTenants	substrate:admin	false	read runtime:tenants
 DirectoryUsers	substrate:tenant	false	read principal:user:*
 Document	substrate:tenant	false	read document:*
 DocumentSourceDef	substrate:tenant	false	read def:documentsource/*
+EgressRouteDef	substrate:tenant	false	read def:egressroute/*
 EndMyAppSignIn	any	false	-
 EndUserAppSignIn	substrate:tenant	false	read principal:user:*
 ErasureExecute	substrate:tenant	false	manage runtime:erasure

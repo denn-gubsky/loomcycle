@@ -465,6 +465,7 @@ POST /v1/_document/describe_images	substrate:tenant	false	write document:*
 POST /v1/_document/project	substrate:admin	false	write document:*
 POST /v1/_document/reindex	substrate:tenant	false	write document:*
 POST /v1/_documentsourcedef	substrate:tenant	false	read def:documentsource/*
+POST /v1/_egressroutedef	substrate:tenant	false	read def:egressroute/*
 POST /v1/_erasure	substrate:tenant	false	manage runtime:erasure
 POST /v1/_evaluation	runs:read	false	read evaluation:*
 POST /v1/_groups	substrate:tenant	false	read principal:group:*

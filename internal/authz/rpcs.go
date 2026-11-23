@@ -162,6 +162,7 @@ var grpcRPCs = map[string]RPC{
 	"DocumentSourceDef": rpc(ScopeTenant, false, q("read", "def", "documentsource/*")),
 	"ClientDef":         rpc(ScopeTenant, false, q("read", "def", "client/*")),
 	"VolumeDef":         rpc(ScopeTenant, false, q("read", "def", "volume/*")),
+	"EgressRouteDef":    rpc(ScopeTenant, false, q("read", "def", "egressroute/*")),
 	"TeamDef":           rpc(ScopeTenant, false, q("read", "def", "team/*")),
 	"HookDef":           rpc(ScopeTenant, false, q("read", "def", "hook/*")),
 	// Token minting, as POST /v1/_operatortokendef: a tenant operator only
@@ -292,4 +293,7 @@ var mcpToolRows = map[string]MCPTool{
 	"aclbinding":         {ScopeTenant, false},
 	"clientdef":          {ScopeTenant, false},
 	"operatortokendef":   {ScopeTenant, false},
+	// Where a tenant's workspaces may send data (RFC GW §6.3): its
+	// operators', never a member's.
+	"egressroutedef": {ScopeTenant, false},
 }

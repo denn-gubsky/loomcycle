@@ -350,6 +350,7 @@ var httpRoutes = []Route{
 	row("POST /v1/_document/reindex", ScopeTenant, false, q("write", "document", "*")),
 	row("POST /v1/_documentsourcedef", ScopeTenant, false, q("read", "def", "documentsource/*")),
 	row("GET /v1/_documentsourcedef/names", ScopeTenant, false, q("read", "def", "documentsource/*")),
+	row("POST /v1/_egressroutedef", ScopeTenant, false, q("read", "def", "egressroute/*")),
 	row("GET /v1/_env_template", ScopeAdmin, false, q("read", "runtime", "config")),
 	row("GET /v1/_erasure", ScopeTenant, false, q("read", "runtime", "erasure")),
 	row("POST /v1/_erasure", ScopeTenant, false, q("manage", "runtime", "erasure")),

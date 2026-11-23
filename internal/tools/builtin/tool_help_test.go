@@ -22,7 +22,7 @@ import (
 func builtinToolCensus() []tools.Tool {
 	return []tools.Tool{
 		&A2AAgentDef{}, &A2AServerCardDef{}, &AgentDef{}, &AgentTool{}, &Bash{}, &Bashbox{}, &Calc{},
-		&Channel{}, &Context{}, &CredentialDef{}, &Crypto{}, &Decision{}, &Document{}, &DocumentSourceDef{}, &Edit{},
+		&Channel{}, &Context{}, &CredentialDef{}, &Crypto{}, &Decision{}, &Document{}, &DocumentSourceDef{}, &Edit{}, &EgressRouteDef{},
 		&Evaluation{}, &File{}, &Git{}, &Glob{}, &Grep{}, &HTTP{}, &History{}, &HookDef{}, &Identity{}, &Interruption{}, &MCPServerDef{},
 		&Memory{}, &MemoryBackendDef{}, &NotebookEdit{}, &OperatorTokenDef{}, &Path{}, &Read{},
 		&Recall{}, &ScheduleDef{}, &SkillDef{}, &SkillTool{}, &TeamDef{}, &VolumeDef{},

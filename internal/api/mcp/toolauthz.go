@@ -153,6 +153,11 @@ var tenantConfinableTools = map[string]bool{
 	// also needs substrate:tenant by name (toolScope), as its HTTP
 	// route keeps members out.
 	"clientdef": true,
+	// egressroutedef (RFC GW P4): the tool stamps the tenant from the
+	// principal and opaque-404s another tenant's route. It needs
+	// substrate:tenant by name (toolScope): a route says where a tenant's
+	// workspaces may send data, which is its operators' call, not a member's.
+	"egressroutedef": true,
 
 	// Per-(scope, scope_id, tenant) data tools.
 	"memory":     true,
@@ -520,6 +525,7 @@ var mcpToolTwins = map[string]mcpToolTwin{
 	"documentsourcedef": {Method: "POST", Path: "/v1/_documentsourcedef"},
 	"volumedef":         {Method: "POST", Path: "/v1/_volumedef"},
 	"clientdef":         {Method: "POST", Path: "/v1/_clientdef"},
+	"egressroutedef":    {Method: "POST", Path: "/v1/_egressroutedef"},
 	"operatortokendef":  {Method: "POST", Path: "/v1/_operatortokendef"},
 	"credentialdef":     {Method: "POST", Path: "/v1/_credentialdef"},
 	"crypto":            {Method: "POST", Path: "/v1/_crypto"},
@@ -596,6 +602,7 @@ var mcpOpsInBody = map[string]string{
 	"documentsourcedef": defFamilyOps,
 	"volumedef":         defFamilyOps,
 	"clientdef":         defFamilyOps,
+	"egressroutedef":    defFamilyOps,
 }
 
 const defFamilyOps = "one route; the definition operation asks author, retire or read of the definition each op names"

@@ -37,6 +37,7 @@ var mcpWrapperSchemas = map[string]string{
 	"documentsourcedef": documentSourceDefInputSchema,
 	"operatortokendef":  operatorTokenDefInputSchema,
 	"volumedef":         volumeDefInputSchema,
+	"egressroutedef":    egressRouteDefInputSchema,
 	"credentialdef":     credentialDefInputSchema,
 	"evaluation":        evaluationInputSchema,
 	"context":           contextInputSchema,

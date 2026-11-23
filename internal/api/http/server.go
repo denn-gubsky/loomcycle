@@ -636,6 +636,13 @@ type Server struct {
 	// SetHookDefTool.
 	hookDefTool tools.Tool
 
+	// egressRouteDefTool is the EgressRouteDef tool (RFC GW P4, a tenant's
+	// egress routes). Dedicated slot, NOT in s.tools — no agent may write a
+	// route. Reached via Connector.EgressRouteDef + POST /v1/_egressroutedef +
+	// the MCP meta-tool `egressroutedef` + the gRPC EgressRouteDef RPC. Nil =
+	// those surfaces return "not configured". Set via SetEgressRouteDefTool.
+	egressRouteDefTool tools.Tool
+
 	// a2aServerCardDefTool + a2aAgentDefTool are the v1.x RFC G A2A
 	// substrate tools. Same operator-admin-only posture as
 	// scheduleDefTool — NOT in s.tools, reached via Connector +
@@ -1322,6 +1329,13 @@ func (s *Server) SetScheduleDefTool(t tools.Tool) {
 // refuse with "not configured".
 func (s *Server) SetHookDefTool(t tools.Tool) {
 	s.hookDefTool = t
+}
+
+// SetEgressRouteDefTool wires the EgressRouteDef tool. Without this call,
+// Connector.EgressRouteDef + POST /v1/_egressroutedef + the gRPC RPC + the MCP
+// meta-tool all refuse with "not configured".
+func (s *Server) SetEgressRouteDefTool(t tools.Tool) {
+	s.egressRouteDefTool = t
 }
 
 // SetTeamDefTool wires the RFC AP TeamDef substrate tool. Without this call,
@@ -3884,6 +3898,9 @@ func (s *Server) routes() *http.ServeMux {
 	// confined (ScopeTenant in the route table) — the tool stamps
 	// the caller's authoritative tenant + opaque-404s cross-tenant reads.
 	mux.Handle("POST /v1/_volumedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateVolumeDef))))
+	// RFC GW P4 — the egress routes a tenant writes. Tenant operators only
+	// (ScopeTenant in the route table); the tool stamps the caller's tenant.
+	mux.Handle("POST /v1/_egressroutedef", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateEgressRouteDef))))
 	// RFC AL Path VFS + RFC AK Document — the two scope-aware primitives lifted
 	// to the wire (Plan 3 / RFC AK Phase 2). Bearer-authed; tenant-confined
 	// (ScopeTenant in the route table) — the tools resolve scope from

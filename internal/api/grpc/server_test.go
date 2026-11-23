@@ -999,6 +999,9 @@ func (m *mockConnector) OperatorTokenDef(context.Context, json.RawMessage) (conn
 func (m *mockConnector) VolumeDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }
+func (m *mockConnector) EgressRouteDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
+	return connector.ToolResult{}, nil
+}
 func (m *mockConnector) CredentialDef(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }

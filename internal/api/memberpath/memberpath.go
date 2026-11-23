@@ -89,6 +89,10 @@ func CarvedOut(method, path string) bool {
 	// operator's to register, never a member's.
 	case path == "/v1/_clientdef" || path == "/v1/_clientdef/names":
 		return true
+	// RFC GW P4: an egress route decides where a tenant's workspaces may send
+	// data, with which of its credentials — the operator's, never a member's.
+	case path == "/v1/_egressroutedef":
+		return true
 	// Switching storage back on for a no-trace agent is the operator's call:
 	// a member who could do it could read what its colleagues' runs said.
 	// Reading the list stays operator-only too; it names what is being

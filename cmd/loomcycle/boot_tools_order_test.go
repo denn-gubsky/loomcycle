@@ -56,3 +56,16 @@ func TestBuildTools_StepsRunInCatalogOrder(t *testing.T) {
 		t.Error("Document/Crypto cross-wiring missing")
 	}
 }
+
+// RFC GW §6.3 "Who may not write one": an agent. EgressRouteDef is wired on
+// the operator surfaces only (wireSubstrateTools); in the agent catalog a
+// model could name a route of its own and widen its way out of a workspace.
+func TestBuildTools_EgressRouteDefIsNotAnAgentTool(t *testing.T) {
+	b := &boot{cfg: &config.Config{Conversion: config.ConversionConfig{Mode: config.ConversionInProcess}}, pr: &providerResolver{}, secrets: &secretSink{}}
+	b.buildTools()
+	for _, tool := range b.allTools {
+		if tool.Name() == "EgressRouteDef" {
+			t.Fatal("EgressRouteDef is in the agent tool catalog; an agent could write its own egress route")
+		}
+	}
+}
