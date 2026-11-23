@@ -34,6 +34,9 @@ brackets (see `Calc/errors`), except the output bound, which cuts the result.
   with no rows counts as one row. A `join` or `pivot` is refused from its
   size before it is built, and every table built costs a step per cell. A
   table inside a list counts its cells toward the list bound.
+- **Data by reference** (`from`, `to`): 16 sources, 16 MB read and 16 MB
+  written, and 1,000,000 cells read per call; a table read may pass 100,000
+  cells, a table built from it may not (`Calc/data`).
 - **Matrices: 250,000 elements** (`too_large`) in a matrix a function reads
   or builds, 500 × 500 at most for a square one. The matrix product, the
   solvers and the decompositions are refused before any work when they would
