@@ -38,7 +38,6 @@ import {
   findDocumentPath,
   followReference,
   jumpTo,
-  labelOf,
   type DocLocation,
   type Trail,
 } from "./lib/docTrail";
@@ -824,33 +823,6 @@ function PathExplorerBody({
           {view ? (
             <div className="paths-doc">
               <DocTrail trail={trail} onJump={jumpToCrumb} />
-              <div className="paths-doc-head">
-                {view.path ? (
-                  <code className="paths-doc-path">{view.path}</code>
-                ) : (
-                  <span
-                    className="paths-doc-path paths-doc-unfiled"
-                    title="Opened by id — no entry for this document was found in the Path tree"
-                  >
-                    {labelOf(view)} <em>· opened by id, not in the tree</em>
-                  </span>
-                )}
-                {viewIsSelected && (
-                  <div className="paths-detail-actions">
-                    <button type="button" onClick={renameSelected}>
-                      rename / move
-                    </button>
-                    {canTransfer && (
-                      <button type="button" onClick={transferSelected} title="Copy or move to another scope">
-                        copy / move to…
-                      </button>
-                    )}
-                    <button type="button" className="danger" onClick={deleteSelected}>
-                      delete
-                    </button>
-                  </div>
-                )}
-              </div>
               {/* Keyed on the trail depth: every step along the trail changes it,
                   so the viewer remounts and lands on that step's chunk. A plain
                   tree selection (depth 0) keeps the viewer mounted, as before. */}
@@ -870,6 +842,29 @@ function PathExplorerBody({
                 onRegenerateAnnotation={onRegenerateAnnotation}
                 canEditAnnotations={canEditAnnotations}
                 onAnnotationChanged={() => void refresh()}
+                pathLabel={
+                  view.path ? (
+                    <code className="paths-doc-path" title={view.path}>
+                      {view.path}
+                    </code>
+                  ) : (
+                    <span
+                      className="paths-doc-path paths-doc-unfiled"
+                      title="Opened by id — no entry for this document was found in the Path tree"
+                    >
+                      <em>not in the tree</em>
+                    </span>
+                  )
+                }
+                documentActions={
+                  viewIsSelected
+                    ? {
+                        rename: renameSelected,
+                        transfer: canTransfer ? transferSelected : undefined,
+                        delete: deleteSelected,
+                      }
+                    : undefined
+                }
               />
             </div>
           ) : selected ? (
