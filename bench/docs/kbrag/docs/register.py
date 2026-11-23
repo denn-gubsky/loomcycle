@@ -54,12 +54,23 @@ def main():
         print(json.dumps(dlc.agentdef("list", name=s["name"]), indent=1)[:3000])
         return
     if a.cmd == "create":
-        op = "fork" if live(s["name"]) else "create"
-        r = dlc.agentdef(op, name=s["name"], overlay=s["overlay"], description=s["description"], promote=True)
-        st["log"].append({"at": now(), "op": op, "def_id": r.get("def_id"), "excluded": len(exclude)})
-        print(op, r.get("def_id"), "excluding", len(exclude), "documents")
+        rows = dlc.agentdef("list", name=s["name"]).get("versions") or []
+        same = [d for d in rows if (d.get("definition") or {}).get("code_body") == s["overlay"]["code_body"]]
+        if same:
+            # A second window reuses the def this harness made (identical body): un-retire, promote.
+            did = same[-1]["def_id"]
+            dlc.agentdef("retire", def_id=did, retired=False)
+            dlc.agentdef("promote", def_id=did)
+            op = "reactivate"
+        else:
+            op = "fork" if rows else "create"
+            kw = {"parent_def_id": rows[-1]["def_id"]} if rows else {}
+            did = dlc.agentdef(op, name=s["name"], overlay=s["overlay"], description=s["description"], promote=True,
+                               **kw).get("def_id")
+        st["log"].append({"at": now(), "op": op, "def_id": did, "excluded": len(exclude)})
+        print(op, did, "excluding", len(exclude), "documents", "active:", active(s["name"]))
     else:
-        mine = {e["def_id"] for e in st["log"] if e["op"] in ("create", "fork")}
+        mine = {e["def_id"] for e in st["log"] if e["op"] in ("create", "fork", "reactivate")}
         for d in live(s["name"]):
             if d.get("def_id") in mine:
                 dlc.agentdef("retire", def_id=d["def_id"], retired=True)
