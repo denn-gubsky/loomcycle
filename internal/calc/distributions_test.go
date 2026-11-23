@@ -1,8 +1,10 @@
 package calc
 
 import (
+	"context"
 	"math/big"
 	"testing"
+	"time"
 )
 
 // The reference values are the worked examples of the Excel function docs
@@ -117,6 +119,43 @@ func TestDistributions_BinomialIsTheCorrectlyRoundedExactValue(t *testing.T) {
 		{"binomcdf(2, 50, 0.02) == sum(map(0:2, i -> binomial(50, i) * 0.02^i * 0.98^(50 - i))) + sin(0)", "true"},
 		{"binomcdf(12, 40, 0.35) == sum(map(0:12, i -> binomial(40, i) * 0.35^i * 0.65^(40 - i))) + sin(0)", "true"},
 	})
+}
+
+// A huge n never reaches the exact sum: n · bits(d) is checked without
+// overflowing int64, so 2^53 trials at p = 1/2^1024 (2^63 + 2^53 bits,
+// which wraps negative in int64) takes the float path instead of building
+// (2^1024)^(2^53) — a number no machine can hold. Counts over 2^53 are
+// refused outright. Each call must answer at once; the bound is generous
+// for -race on a loaded machine, and a regression shows as a timeout or an
+// out-of-memory crash, not a slow pass.
+func TestDistributions_HugeTrialCountsAnswerAtOnce(t *testing.T) {
+	cases := []struct {
+		expr string
+		code errCode // "" when a float answer is expected
+	}{
+		{"binompdf(1, 2^53, 1 / 2^1024)", ""},
+		{"binomcdf(3, 2^53, 1 / 2^1024)", ""},
+		{"binompdf(2^52, 2^53, 1/3)", ""},
+		{"binompdf(1, 4611686018427387904, 1/3)", codeDomain},
+		{"binomcdf(10^18, 10^18, 0.5)", codeDomain},
+		{"poisscdf(2^53, 10^15)", ""},
+		{"poisspdf(2^53, 3)", ""},
+	}
+	for _, c := range cases {
+		start := time.Now()
+		r, err := evalWithin(context.Background(), Request{Expr: c.expr}, time.Minute)
+		if took := time.Since(start); took > 10*time.Second {
+			t.Errorf("%s took %v", c.expr, took)
+		}
+		switch {
+		case c.code == "" && err != nil:
+			t.Errorf("%s: %v, want a float answer", c.expr, err)
+		case c.code == "" && r.Exact:
+			t.Errorf("%s = %s exact, want a float", c.expr, r.Text)
+		case c.code != "" && (err == nil || err.Code != string(c.code)):
+			t.Errorf("%s: err = %v, want %s", c.expr, err, c.code)
+		}
+	}
 }
 
 // The exact sum charges at least a step per term.

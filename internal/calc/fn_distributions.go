@@ -300,7 +300,9 @@ func exactBinomial(e *evaluator, a args, k, n int64, cumulative bool) (v val, ok
 		return nil, false, nil
 	}
 	d := pn.r.Denom()
-	if n*int64(d.BitLen()) > MaxExactBits {
+	// n first: n reaches 2^53 and bits(d) 2^14, so n · bits(d) could wrap
+	// int64 negative and pass. With n <= MaxExactBits the product is small.
+	if n > MaxExactBits || n*int64(d.BitLen()) > MaxExactBits {
 		return nil, false, nil
 	}
 	an := pn.r.Num()
@@ -309,8 +311,14 @@ func exactBinomial(e *evaluator, a args, k, n int64, cumulative bool) (v val, ok
 	if cumulative {
 		lo = 0
 	}
-	// Each term is a few products of numbers up to n·bits(d) bits.
-	if err := e.charge(int(k-lo+1)*(1+int(n)*d.BitLen()/bitStepCost), a.pos); err != nil {
+	// Each term is a few products of numbers up to n·bits(d) bits. Under
+	// the bound above this is at most 16,385 × 33 steps; the check keeps a
+	// later change to the bound from wrapping the charge.
+	cost := (k - lo + 1) * (1 + n*int64(d.BitLen())/bitStepCost)
+	if cost <= 0 || cost > MaxSteps {
+		return nil, true, errf(codeStepLimit, a.pos, "%s: the exact sum would take more than %d steps", a.name, MaxSteps)
+	}
+	if err := e.charge(int(cost), a.pos); err != nil {
 		return nil, true, err
 	}
 	// From i = k down to lo, so (d-a)^(n-i) grows by one factor per term
