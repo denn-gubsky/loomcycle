@@ -86,3 +86,44 @@ func TestRefs_MemoryReferenceToAnACLDeniedDocumentRowReadsAsMissing(t *testing.T
 		}
 	}
 }
+
+// A memory: `to` writes as Memory op=set does: a scope the run may read but
+// not write (the user's access rules made it read-only) is refused, and the
+// writable one is written.
+func TestRefs_MemoryReferenceWriteHonoursReadOnlyScopes(t *testing.T) {
+	for _, tool := range []string{CryptoToolName, "Calc"} {
+		m, _, ctx, _ := docRowsFixture(t, []string{"agent", "user", "tenant"})
+		ctx = tools.UpdateRunPolicy(refTools(ctx, tool), func(rp *tools.RunPolicy) {
+			rp.Memory.ReadOnlyScopes = []string{"tenant"}
+			rp.Crypto = tools.CryptoPolicyValue{Scopes: []string{"run"}}
+		})
+		ctx = tools.WithRunIdentity(ctx, func() tools.RunIdentityValue {
+			id := tools.RunIdentity(ctx)
+			id.UserCredentials = map[string]string{"k": "0123456789abcdef0123456789abcdef-a-secret"}
+			return id
+		}())
+		write := func(target string) tools.Result {
+			var res tools.Result
+			var err error
+			if tool == CryptoToolName {
+				res, err = (&Crypto{Memory: m}).Execute(ctx, json.RawMessage(`{"op":"encrypt","run":"k","key_type":"aes-256-gcm","derive":true,"plaintext":"x","to":"`+target+`"}`))
+			} else {
+				res, err = (&Calc{Memory: m}).Execute(ctx, json.RawMessage(`{"expr":"[1, 2]","to":"`+target+`"}`))
+			}
+			if err != nil {
+				t.Fatalf("%s: hard error %v", tool, err)
+			}
+			return res
+		}
+		res := write("memory:tenant/notes/out")
+		if !res.IsError || res.Error.Category != tools.CategoryPermission || !strings.Contains(res.Text, "read-only") {
+			t.Errorf("%s: a write to a read-only scope = %+v", tool, res)
+		}
+		if r := memRun(t, m, ctx, `{"op":"get","scope":"tenant","key":"notes/out"}`); !strings.Contains(r.Text, `"value":null`) {
+			t.Errorf("%s: the read-only scope was written: %s", tool, r.Text)
+		}
+		if res := write("memory:user/notes/out"); res.IsError {
+			t.Errorf("%s: a write to a writable scope = %s", tool, res.Text)
+		}
+	}
+}

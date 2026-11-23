@@ -645,6 +645,23 @@ func clampField(v string) string {
 	return v
 }
 
+// memoryReadOnlyScope refuses a write op to a scope the run may read but not
+// write (the access rules of the user who started it). Every write into
+// Memory asks it — the tool's own ops and a data reference's `to` (Crypto,
+// Calc) — before the scope is resolved.
+func memoryReadOnlyScope(ctx context.Context, op, scope string) (tools.Result, bool) {
+	pol := tools.PolicyOf(ctx)
+	readOnly := pol.Memory.ReadOnlyScopes
+	if strings.HasPrefix(op, "sql_") {
+		readOnly = pol.SqlMem.ReadOnlyScopes
+	}
+	if contains(readOnly, scope) {
+		return errPermission(fmt.Sprintf("Memory tool: scope %q is read-only for this run — the access rules of the user who started it do not allow writing it, so op %s is refused", scope, op),
+			"Read from this scope only, or write to a scope this run may write; an operator can change the user's access rules."), true
+	}
+	return tools.Result{}, false
+}
+
 // Name implements tools.Tool.
 func (m *Memory) Name() string { return "Memory" }
 
@@ -678,14 +695,8 @@ func (m *Memory) Execute(ctx context.Context, raw json.RawMessage) (tools.Result
 	// — which is gated on memory_scopes and rejects `run`. Dispatch them
 	// before the k/v scope resolution so a SQL op never trips the k/v gate.
 	if memoryWriteOps[in.Op] {
-		pol := tools.PolicyOf(ctx)
-		readOnly := pol.Memory.ReadOnlyScopes
-		if strings.HasPrefix(in.Op, "sql_") {
-			readOnly = pol.SqlMem.ReadOnlyScopes
-		}
-		if contains(readOnly, in.Scope) {
-			return errPermission(fmt.Sprintf("Memory tool: scope %q is read-only for this run — the access rules of the user who started it do not allow writing it, so op %s is refused", in.Scope, in.Op),
-				"Read from this scope only, or write to a scope this run may write; an operator can change the user's access rules."), nil
+		if res, refused := memoryReadOnlyScope(ctx, in.Op, in.Scope); refused {
+			return res, nil
 		}
 	}
 	switch in.Op {

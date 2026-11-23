@@ -384,6 +384,10 @@ func (c refStores) writeRef(ctx context.Context, r dataRef, data []byte, tmpPref
 		if strings.HasPrefix(r.key, chunkBodyKeyPrefix) {
 			return errValidation(fmt.Sprintf("%s is a document chunk's body", r.raw), "Use document:<scope>/<chunk_id>."), false
 		}
+		// As Memory op=set: a scope this run may only read is not written.
+		if res, refused := memoryReadOnlyScope(ctx, "set", r.scope); refused {
+			return res, false
+		}
 		scope, scopeID, err := m.resolveScope(ctx, r.scope)
 		if err != nil {
 			return errPermission(err.Error(), "Use a scope in this agent's memory_scopes."), false
