@@ -35,6 +35,7 @@ import {
   patchJSON,
   postJSON,
   putJSON,
+  raiseFromCalcResponse,
   raiseFromResponse,
 } from "./fetch-helpers.js";
 import { parseSSE } from "./stream.js";
@@ -70,6 +71,8 @@ import type {
   DecideRequest,
   DecideResponse,
   DecisionModelsResponse,
+  CalcInput,
+  CalcResult,
   SpeechOptions,
   SpeechResult,
   TranscribeOptions,
@@ -1793,6 +1796,33 @@ export class LoomcycleClient {
     signal?: AbortSignal;
   }): Promise<DecisionModelsResponse> {
     return jsonFetch<DecisionModelsResponse>(this.ctx, "/v1/_decide/models", opts);
+  }
+
+  /** Evaluate math exactly with the Calc tool, outside a run (RFC GY):
+   *  arithmetic, rounding, powers, logarithms, trigonometry, combinatorics,
+   *  lists, units, statistics, matrices, finance and dates. A pure function
+   *  of its input: it reads and writes no stored data. Any token may call it
+   *  except one held to the run plane (403); each call takes one from the
+   *  token's run rate (429, {@link RateLimitedError}). Mirrors
+   *  `POST /v1/_calc`.
+   *
+   *  `"0.1 + 0.2"` is exactly `0.3` (`exact: true`). Read `text` for the
+   *  exact digits: `result` has been through `JSON.parse`, which rounds an
+   *  integer past 2^53.
+   *
+   *  A refusal of the expression throws {@link CalcError} with the tool's
+   *  code on `e.code`, plus `e.hint`, `e.pos` and `e.category`. */
+  async calc(input: CalcInput, opts?: { signal?: AbortSignal }): Promise<CalcResult> {
+    const resp = await this.ctx.fetchImpl(`${this.ctx.baseUrl}/v1/_calc`, {
+      method: "POST",
+      headers: { ...authHeaders(this.ctx), "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      signal: opts?.signal,
+    });
+    if (!resp.ok) {
+      await raiseFromCalcResponse(resp);
+    }
+    return (await resp.json()) as CalcResult;
   }
 
   /** Read `input` aloud: Markdown or plain text in, audio out, whole. The

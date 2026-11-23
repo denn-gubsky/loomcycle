@@ -58,3 +58,15 @@ func (s *Store) WorkspaceTouchByWorker(ctx context.Context, workerID string) (in
 func (s *Store) WorkspaceListStale(ctx context.Context, before time.Time) ([]store.WorkspaceRow, error) {
 	return sqlshared.WorkspaceListStale(ctx, s.shared(), before)
 }
+
+func (s *Store) WorkspaceSetShares(ctx context.Context, tenantID, id string, from, to []store.WorkspaceShare) (bool, error) {
+	return sqlshared.WorkspaceSetShares(ctx, s.shared(), tenantID, id, from, to)
+}
+
+func (s *Store) WorkspaceListByOwnerAgent(ctx context.Context, tenantID, ownerAgentID, name string) ([]store.WorkspaceRow, error) {
+	return sqlshared.WorkspaceListByOwnerAgent(ctx, s.shared(), tenantID, ownerAgentID, name)
+}
+
+func (s *Store) WorkspaceListSharedWith(ctx context.Context, tenantID, runID string) ([]store.WorkspaceRow, error) {
+	return sqlshared.WorkspaceListSharedWith(ctx, s.shared(), tenantID, runID)
+}

@@ -110,8 +110,8 @@ func TestAgentDefTool_RefusesAnInvalidWorkspace(t *testing.T) {
 	wantRefused(t, res, "an unknown operation", "workspace.ops[0]", `"run"`)
 	res, _ = tool.Execute(op, json.RawMessage(`{"op":"create","name":"coder","overlay":{"workspace":{"ops":["read"],"engine":"vm"}}}`))
 	wantRefused(t, res, "an unknown engine", "workspace.engine", `"vm"`)
-	res, _ = tool.Execute(op, json.RawMessage(`{"op":"create","name":"coder","overlay":{"workspace":{"ops":["read"],"share":true}}}`))
-	wantRefused(t, res, "a later phase's key", "workspace", "share")
+	res, _ = tool.Execute(op, json.RawMessage(`{"op":"create","name":"coder","overlay":{"workspace":{"ops":["read"],"connect":true}}}`))
+	wantRefused(t, res, "a later phase's key", "workspace", "connect")
 }
 
 // The ceiling (RFC GW): an in-run author may store only the operations and
@@ -139,6 +139,13 @@ func TestAgentDefCreate_WorkspaceCeiling(t *testing.T) {
 		"write by an author that cannot write", "workspace.ops", `"write"`)
 	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/o1", `{"history_scope":["user"],"workspace":{"ops":["read"],"open":true,"engine":"container"}}`),
 		"open by an author that cannot open", "workspace.open")
+	// RFC GW P8: share is held to the author's own, as open is.
+	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/s1", `{"history_scope":["user"],"workspace":{"ops":["read"],"share":true,"engine":"container"}}`),
+		"share by an author that cannot share", "workspace.share")
+	sharer := tools.UpdateRunPolicy(reader, func(rp *tools.RunPolicy) { rp.Workspace.Share = true })
+	if res := agentDefOp(t, tool, sharer, "create", "sdlc/s2", `{"history_scope":["user"],"workspace":{"ops":["read"],"share":true,"engine":"container"}}`); res.IsError {
+		t.Fatalf("share within the author's own grant refused: %s", res.Text)
+	}
 	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/e1", `{"history_scope":["user"],"workspace":{"ops":["read"],"engine":"host"}}`),
 		"a weaker engine than the author's", "workspace.engine", `"host"`)
 	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/e2", `{"history_scope":["user"],"workspace":{"ops":["read"]}}`),

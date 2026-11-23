@@ -94,11 +94,11 @@ type ConvertRequest struct {
 // (and one tenant), so a conversion of a file in from can write into to
 // there.
 func (m *Manager) SameWorker(ctx context.Context, o Owner, from, to string) (bool, error) {
-	a, err := m.ready(ctx, o, from)
+	a, err := m.ready(ctx, o, from, false)
 	if err != nil {
 		return false, err
 	}
-	b, err := m.ready(ctx, o, to)
+	b, err := m.ready(ctx, o, to, false)
 	if err != nil {
 		return false, err
 	}
@@ -111,7 +111,7 @@ func (m *Manager) SameWorker(ctx context.Context, o Owner, from, to string) (boo
 // Into a workspace (req.To), the answer is decoded into into; streamed, the
 // output goes to out and into is not used.
 func (m *Manager) Convert(ctx context.Context, o Owner, req ConvertRequest, out io.Writer, into any) error {
-	src, err := m.ready(ctx, o, req.Source)
+	src, err := m.ready(ctx, o, req.Source, false)
 	if err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ func (m *Manager) Convert(ctx context.Context, o Owner, req ConvertRequest, out 
 	t := req.Args.Target()
 	t.Workspace = ""
 	if req.To != "" {
-		to, err := m.ready(ctx, o, req.To)
+		to, err := m.ready(ctx, o, req.To, true)
 		if err != nil {
 			return err
 		}
@@ -168,7 +168,7 @@ var ErrSpliceTooLarge = fmt.Errorf("the OCR text is over the %d MiB one splice c
 // worker; the Markdown never leaves it.
 func (m *Manager) SpliceMarkdown(ctx context.Context, o Owner, name string, args workspace.MDSpliceArgs, in workspace.MDSpliceInput) (workspace.MDSpliceAnswer, error) {
 	var out workspace.MDSpliceAnswer
-	r, err := m.ready(ctx, o, name)
+	r, err := m.ready(ctx, o, name, true)
 	if err != nil {
 		return out, err
 	}

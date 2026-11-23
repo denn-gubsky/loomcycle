@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/tools/inbox"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
 )
 
 // File's transfers with a workspace (RFC GW P2 §3.2–§3.4): import reads
@@ -143,7 +143,9 @@ func workspaceDownloadTarget(ctx context.Context, l *workspaceLoc, to dataRef) (
 // Workspace hook on that final path before a byte of the body is read (a
 // file target was judged before the request). The put declares the body's
 // length, so the workspace's quota refuses it before anything is sent and
-// nothing is left.
+// nothing is left. A response that gives no length is put with an unknown
+// size bounded by the download's limit, which the quota must hold ahead;
+// it is never spooled on the core.
 func (f *File) downloadToWorkspace(ctx context.Context, l *workspaceLoc, judged bool, to dataRef, name string, overwrite bool, body io.Reader, resp *http.Response, shown string, limit int64) (tools.Result, error) {
 	fileName := inbox.SanitizeName(name)
 	if fileName == "" {
@@ -155,52 +157,42 @@ func (f *File) downloadToWorkspace(ctx context.Context, l *workspaceLoc, judged 
 			return res, nil
 		}
 	}
-	size := resp.ContentLength
-	if size < 0 {
-		// A put declares its size, and this response does not say it. The
-		// body is spooled to the core's scratch disk first, bounded by the
-		// download's limit and removed when the call ends; a response that
-		// gives its length (most do) streams straight into the put.
-		spool, n, res, ok := f.spoolBody(body, shown)
-		if !ok {
-			return res, nil
-		}
-		defer func() { spool.Close(); _ = os.Remove(spool.Name()) }()
-		body, size = spool, n
-	}
-	if size > limit {
-		return errValidation(fmt.Sprintf("download: %s is %d bytes, over the limit of %d", shown, size, limit), ""), nil
-	}
 	head := &headWriter{max: 512}
-	w, res, ok := l.Create(ctx, size, io.TeeReader(body, head), overwrite)
-	if !ok {
-		return prefixed("download", res), nil
+	src := io.TeeReader(body, head)
+	var w locWritten
+	if size := resp.ContentLength; size >= 0 {
+		if size > limit {
+			return errValidation(fmt.Sprintf("download: %s is %d bytes, over the limit of %d", shown, size, limit), ""), nil
+		}
+		var res tools.Result
+		var ok bool
+		if w, res, ok = l.Create(ctx, size, src, overwrite); !ok {
+			return prefixed("download", res), nil
+		}
+	} else {
+		var err error
+		if w, err = l.createUnsized(ctx, limit, src, overwrite); err != nil {
+			return unsizedDownloadError(err, shown, limit), nil
+		}
 	}
 	return okJSON(map[string]any{"url": shown, "status": resp.StatusCode, "ref": w.Ref, "size": w.Size,
 		"sha256": w.SHA256, "media_type": inbox.Sniff(resp.Header.Get("Content-Type"), head.b, path.Base(l.path))})
 }
 
-// spoolBody writes a body of unknown length to a temporary file in the
-// tool's scratch directory and rewinds it. The body is already bounded by
-// the download's limit (overLimitReader).
-func (f *File) spoolBody(body io.Reader, shown string) (*os.File, int64, tools.Result, bool) {
-	tmp, err := os.CreateTemp(f.ScratchDir, "loomcycle-download-*")
-	if err != nil {
-		return nil, 0, errTransient("download: "+err.Error(), "Try again."), false
+// unsizedDownloadError words a failed put of a body of unknown length: past
+// the limit it is over the limit (the core's check, or the worker's), and a
+// quota refusal says the room needed is the limit's, since the size was not
+// known ahead.
+func unsizedDownloadError(err error, shown string, limit int64) tools.Result {
+	switch dispatch.ClassOf(err) {
+	case workspace.ClassSizeMismatch:
+		return errValidation(fmt.Sprintf("download: %s is over the limit of %d bytes", shown, limit), "")
+	case workspace.ClassOverQuota:
+		res := prefixed("download", copyReadError(err))
+		res.Text += fmt.Sprintf(" (the response gave no size, so the download needs room for its limit of %d bytes ahead)", limit)
+		return res
 	}
-	fail := func(res tools.Result) (*os.File, int64, tools.Result, bool) {
-		tmp.Close()
-		_ = os.Remove(tmp.Name())
-		return nil, 0, res, false
-	}
-	n, err := io.Copy(tmp, body)
-	if err != nil {
-		return fail(errBusiness(fmt.Sprintf("download: %s: %s", shown, transferError(err)), ""))
-	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return fail(errTransient("download: "+err.Error(), "Try again."))
-	}
-	return tmp, n, tools.Result{}, true
+	return prefixed("download", copyReadError(err))
 }
 
 // ---- import from a workspace ----

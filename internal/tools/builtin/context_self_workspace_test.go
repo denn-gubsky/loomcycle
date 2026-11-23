@@ -10,19 +10,21 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
-// RFC GW: op=self reports the run's workspace grant, present (ops [] and
-// open false) when the run has none.
+// RFC GW: op=self reports the run's workspace grant, present (ops [], open
+// and share false) when the run has none.
 func TestContextSelf_ReportsTheEffectiveWorkspace(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		policy tools.WorkspacePolicyValue
 		want   map[string]any
 	}{
-		{"none", tools.WorkspacePolicyValue{}, map[string]any{"ops": []any{}, "open": false, "engine": ""}},
+		{"none", tools.WorkspacePolicyValue{}, map[string]any{"ops": []any{}, "open": false, "share": false, "engine": ""}},
 		{"read and exec in containers", tools.WorkspacePolicyValue{Read: true, Exec: true, Engine: "container"},
-			map[string]any{"ops": []any{"read", "exec"}, "open": false, "engine": "container"}},
+			map[string]any{"ops": []any{"read", "exec"}, "open": false, "share": false, "engine": "container"}},
 		{"open", tools.WorkspacePolicyValue{Write: true, Open: true},
-			map[string]any{"ops": []any{"write"}, "open": true, "engine": ""}},
+			map[string]any{"ops": []any{"write"}, "open": true, "share": false, "engine": ""}},
+		{"share", tools.WorkspacePolicyValue{Read: true, Share: true},
+			map[string]any{"ops": []any{"read"}, "open": false, "share": true, "engine": ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Workspace: tc.policy})

@@ -29,6 +29,10 @@ func TestRunPolicy_WorkspaceNarrowsForAChild(t *testing.T) {
 		{"the parent's engine requirement holds", allContainer, readHost, WorkspacePolicyValue{Read: true, Engine: "container"}},
 		{"the child's engine requirement holds", readHost, allContainer, WorkspacePolicyValue{Read: true, Engine: "container"}},
 		{"no shared op leaves nothing, engine and all", WorkspacePolicyValue{Exec: true, Engine: "host"}, read, none},
+		// RFC GW P8: share passes down only when both may.
+		{"share needs both sides", WorkspacePolicyValue{Read: true, Share: true}, WorkspacePolicyValue{Read: true}, read},
+		{"a sharing parent and child keep share", WorkspacePolicyValue{Read: true, Share: true}, WorkspacePolicyValue{Read: true, Write: true, Share: true}, WorkspacePolicyValue{Read: true, Share: true}},
+		{"a child cannot share past its parent", read, WorkspacePolicyValue{Read: true, Share: true}, read},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := RunPolicy{Workspace: c.parent}.Inherit(ChildGrant{Own: RunPolicy{Workspace: c.own}}).Workspace
@@ -55,6 +59,9 @@ func TestWorkspaceFor_ReadsTheBlockAndGrantRoundTrips(t *testing.T) {
 		{"exec and read", &config.AgentWorkspace{Ops: []string{"exec", "read"}, Engine: "host"},
 			WorkspacePolicyValue{Read: true, Exec: true, Engine: "host"}, []string{"read", "exec"}},
 		{"open only", &config.AgentWorkspace{Open: true}, WorkspacePolicyValue{Open: true}, []string{}},
+		{"read and share", &config.AgentWorkspace{Ops: []string{"read"}, Share: true}, WorkspacePolicyValue{Read: true, Share: true}, []string{"read"}},
+		// share hands over only ops the agent holds: with none it grants nothing.
+		{"share alone", &config.AgentWorkspace{Share: true}, WorkspacePolicyValue{}, []string{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := WorkspaceFor(c.in)

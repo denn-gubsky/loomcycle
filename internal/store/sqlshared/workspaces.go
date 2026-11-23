@@ -2,6 +2,7 @@ package sqlshared
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -14,7 +15,7 @@ import (
 
 // workspaceColNames is the column order scanWorkspace reads.
 var workspaceColNames = []string{"id", "tenant_id", "user_id", "name", "worker_id", "kind", "lifetime", "engine",
-	"owner_run_id", "owner_agent_id", "root_run_id", "state", "created_at", "updated_at"}
+	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "created_at", "updated_at"}
 
 var workspaceCols = workspaceColList("")
 
@@ -30,15 +31,21 @@ func workspaceColList(alias string) string {
 
 func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 	var (
-		r     store.WorkspaceRow
-		state string
+		r      store.WorkspaceRow
+		state  string
+		shares string
 	)
 	if err := sc.Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.WorkerID, &r.Kind, &r.Lifetime, &r.Engine,
-		&r.OwnerRunID, &r.OwnerAgentID, &r.RootRunID, &state,
+		&r.OwnerRunID, &r.OwnerAgentID, &r.RootRunID, &state, &shares,
 		d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
 		return store.WorkspaceRow{}, err
 	}
 	r.State = store.WorkspaceState(state)
+	// A column that does not decode gives no shares: closed, never a share
+	// read wider than it was written.
+	if err := json.Unmarshal([]byte(shares), &r.Shares); err != nil || r.Shares == nil {
+		r.Shares = []store.WorkspaceShare{}
+	}
 	r.CreatedAt, r.UpdatedAt = r.CreatedAt.UTC(), r.UpdatedAt.UTC()
 	return r, nil
 }
@@ -79,7 +86,7 @@ func WorkspaceCreate(ctx context.Context, q Querier, row store.WorkspaceRow) (st
 	_, err := q.Exec(ctx, `INSERT INTO workspaces (`+workspaceCols+`)
 		VALUES (`+Placeholders(len(workspaceColNames))+`)`,
 		row.ID, row.TenantID, row.UserID, row.Name, row.WorkerID, row.Kind, row.Lifetime, row.Engine,
-		row.OwnerRunID, row.OwnerAgentID, row.RootRunID, string(row.State), d.TimeArg(now), d.TimeArg(now))
+		row.OwnerRunID, row.OwnerAgentID, row.RootRunID, string(row.State), encodeShares(row.Shares), d.TimeArg(now), d.TimeArg(now))
 	if IsUniqueViolation(err) {
 		return store.WorkspaceRow{}, &store.ErrConflict{Kind: "workspace", ID: row.Name}
 	}
@@ -232,6 +239,89 @@ func WorkspaceListStale(ctx context.Context, q Querier, before time.Time) ([]sto
 		return nil, fmt.Errorf("workspace list stale: %w", err)
 	}
 	return collectWorkspaces(d, rows)
+}
+
+// encodeShares is the shares column's text. A nil or empty list is "[]", the
+// column's default, so a row never written to compares equal to an empty
+// list read back.
+func encodeShares(shares []store.WorkspaceShare) string {
+	if len(shares) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(shares)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// WorkspaceSetShares is a compare-and-set on the shares column: the WHERE
+// names the list the caller read, so a share made meanwhile by another call
+// is not overwritten. Times are stored in UTC so a list read back encodes to
+// the same text it was written as.
+func WorkspaceSetShares(ctx context.Context, q Querier, tenantID, id string, from, to []store.WorkspaceShare) (bool, error) {
+	d := q.Dialect()
+	for i := range to {
+		to[i].CreatedAt = to[i].CreatedAt.UTC()
+	}
+	n, err := q.Exec(ctx,
+		`UPDATE workspaces SET shares = ?, updated_at = ? WHERE tenant_id = ? AND id = ? AND shares = ?`,
+		encodeShares(to), d.TimeArg(time.Now().UTC()), tenantID, id, encodeShares(from))
+	if err != nil {
+		return false, fmt.Errorf("workspace set shares: %w", err)
+	}
+	return n > 0, nil
+}
+
+func WorkspaceListByOwnerAgent(ctx context.Context, q Querier, tenantID, ownerAgentID, name string) ([]store.WorkspaceRow, error) {
+	if ownerAgentID == "" {
+		return []store.WorkspaceRow{}, nil
+	}
+	d := q.Dialect()
+	rows, err := q.Query(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE tenant_id = ? AND owner_agent_id = ? AND name = ? ORDER BY created_at, id`,
+		tenantID, ownerAgentID, name)
+	if err != nil {
+		return nil, fmt.Errorf("workspace list by owner agent: %w", err)
+	}
+	return collectWorkspaces(d, rows)
+}
+
+// WorkspaceListSharedWith narrows by a LIKE on the shares text and then keeps
+// only rows whose decoded shares name the run exactly: the LIKE only has to
+// over-match, never under-match, so its escaping is belt and braces.
+func WorkspaceListSharedWith(ctx context.Context, q Querier, tenantID, runID string) ([]store.WorkspaceRow, error) {
+	if runID == "" {
+		return []store.WorkspaceRow{}, nil
+	}
+	d := q.Dialect()
+	needle, _ := json.Marshal(runID)
+	pattern := "%" + likeEscape(`"run_id":`+string(needle)) + "%"
+	rows, err := q.Query(ctx,
+		`SELECT `+workspaceCols+` FROM workspaces WHERE tenant_id = ? AND shares LIKE ? ESCAPE '!' ORDER BY name, id`,
+		tenantID, pattern)
+	if err != nil {
+		return nil, fmt.Errorf("workspace list shared with: %w", err)
+	}
+	all, err := collectWorkspaces(d, rows)
+	if err != nil {
+		return nil, err
+	}
+	out := []store.WorkspaceRow{}
+	for _, r := range all {
+		for _, sh := range r.Shares {
+			if sh.RunID == runID {
+				out = append(out, r)
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// likeEscape escapes LIKE's wildcards and the escape character '!'.
+func likeEscape(s string) string {
+	return strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(s)
 }
 
 func stateArgs(states []store.WorkspaceState) []any {

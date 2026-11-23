@@ -61,14 +61,14 @@ A worker is known by its token's grant and its name (`--id`, by default the host
 
 ## The container engine
 
-With `LOOMCYCLE_WORKSPACE_ENGINE=container` a worker runs each workspace's commands in a container of its own, the workspace's **session** (phase 3). The worker drives a container daemon through its command line (`docker`, or `podman`); the session image is the operator's (`LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE`, required).
+With `LOOMCYCLE_WORKSPACE_ENGINE=container` a worker runs each workspace's commands in a container of its own, the workspace's **session** (phase 3). The worker drives a container daemon through its command line (`docker`, or `podman`); its session image is `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` (required). The published one, `denngubsky/loomcycle-workspace:<version>` (each minor release after v1.165.0), carries Python 3 with pip and venv, Node.js with npm, git, the document and media helpers, and a fixed set of data, document and chart libraries ([WORKERS.md](WORKERS.md#the-workspace-session-image) lists them); use the tag of the runtime's own version.
 
 ```sh
 LOOMCYCLE_WORKER_DISPATCHER=runtime.internal:7788 \
 LOOMCYCLE_WORKER_TOKEN=<the workers:attach token> \
 LOOMCYCLE_WORKSPACE_ROOT=/var/lib/loomcycle/workspaces \
 LOOMCYCLE_WORKSPACE_ENGINE=container \
-LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE=<the session image> \
+LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE=denngubsky/loomcycle-workspace:<version> \
 loomcycle worker --role workspace
 ```
 
@@ -87,7 +87,7 @@ A session starts at a workspace's first command and stays for the next ones, so 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` | — (required) | The session image; it needs `/bin/sh`. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` | — (required) | The session image: `denngubsky/loomcycle-workspace:<version>`, or any image with `/bin/sh`. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_RUNTIME` | the daemon's | `runc`, `runsc` (gVisor) or a Kata runtime: gVisor and Kata put a kernel boundary under each session. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_CLI` | `docker` | The container command. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_MEMORY_MB` | 2048 | A session's memory. |
@@ -252,6 +252,48 @@ No op the runtime sends a worker names the provider or the model in its argument
 
 **Quarantine.** A file that crashed the conversion child is refused, by its sha256, in that workspace for `conversion.quarantine_ttl_s`, with a message saying it crashed the converter; other files and other workspaces are unaffected. The worker checks the file still hashes to what the runtime checked before it converts it, and never follows a link.
 
+## Sharing a workspace
+
+A workspace belongs to the run that opened it. Its owner can share it with another run of the same user, so a reviewer or a tester can read what a builder made, or a helper can write results into it, without copying the files first.
+
+```yaml
+agents:
+  builder:
+    tools: [Workspace, Agent]
+    workspace:
+      ops: [read, write, exec]
+      open: true
+      share: true                # may share a workspace it owns
+  reviewer:
+    tools: [Workspace, File]
+    workspace:
+      ops: [read]                # reads what it is given; opens nothing
+```
+
+**Making a share.** `Workspace op=share {name, with, access}`: `with` is the other run's agent id (a parent, a child, a sibling, or a run of another tree of the same user); `access` is `read` or `read_write`. `op=unshare {name, with}` ends it. `Agent op=spawn` and each entry of `op=parallel_spawn` take `workspaces: [{name, access}]`, shared with the child before its first turn:
+
+```json
+{"op": "spawn", "name": "reviewer", "prompt": "Review the change in build.",
+ "workspaces": [{"name": "build", "access": "read"}]}
+```
+
+**Using one.** The peer names the workspace `<name>@<owner agent id>`; its `Workspace op=list` shows it under `shared_with_me`. With `read` it may use `Workspace read`, `glob` and `grep` on it, and `File` ops that read from `workspace:<name>@<agent id>:<path>` (copy out, stat, ls, extract, import). `read_write` adds `File` writes into it and `Workspace write` and `edit`.
+
+**What a share never allows:** `exec`, a release, a status, and sharing it on. Commands in a workspace are its owner's alone, so two agents never race in one session.
+
+**Who may share with whom.**
+
+- The owner needs `workspace.share` and the operations it hands over: `read` for a read share, `read` and `write` for `read_write`.
+- The peer needs the `workspace` operation each use asks for, in its own grant: a share never gives an agent more than its definition does.
+- The peer is a live run of the same user, in the same tenant. A run of another user, an ended run and an unknown agent id are refused alike; a run with no user id neither shares nor is shared with.
+- A workspace is shared with at most 16 runs.
+
+**How long it lasts.** A share is stored on the workspace's row, so every replica honours it and it survives a pause and a resume of either run. It ends with `unshare`, with the workspace's release, or when either run ends.
+
+**Audit.** Each share, unshare and each tool call through a share writes an audit event (`workspace_share`, `workspace_unshare`, `workspace_share_use`) naming the workspace, both runs and the access.
+
+Not yet: `connect` (a share's reach to a workspace's exposed ports) arrives with servers; a share asking for it is refused.
+
 ## Documents as a working tree
 
 A set of Documents can be checked out into a workspace as Markdown files, changed there by a script or by hand, and committed back as new editions (RFC GW P7). A bulk edit of a knowledge base becomes a script and a dry run.
@@ -275,6 +317,7 @@ A set of Documents can be checked out into a workspace as Markdown files, change
 - **The text is a script's.** Its `<!-- loom -->` metadata and relations block are dropped (ids, types and relations come from the store), the rest is neutralised as every import is, and pictures are attached only as `data:` URLs. Each edition's provenance names the workspace, the run and the checkout, and the Document is tagged `source/workspace` and `untrusted`.
 - **The manifest chooses nothing.** It is in the workspace, where a command can rewrite it, so a commit goes by the runtime's own record of the checkout. A manifest whose scope, root or files no longer match that record is refused whole. The record is kept in the process that took the checkout: a commit asked on another replica, or after the runtime restarted, finds none and is refused whole, nothing written; check the documents out again.
 - **After a real commit** the record and the manifest are updated for what was committed, so the next commit finds those files unchanged.
+- **Only in a workspace the run owns.** checkout and commit refuse a shared workspace's name (`<name>@<agent id>`): the record is the owner's, and a share hands over file reads and writes only.
 - **Grants.** checkout: the Document tool and the scope's read grants, the `workspace` grant `write`. commit: the Document tool and the scope's write grants (tenant scope: `tenant` in both `memory_scopes` and `sql_scopes`), the `workspace` grant `read`, and `write` for a real commit, which updates the manifest. The `Document` hooks judge every Document call either op makes (the exports, the lookups, each import, its tags), the `Workspace` hooks each file, all before anything is written: one refusal refuses the whole call.
 
 ## Limits

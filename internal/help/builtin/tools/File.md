@@ -1,6 +1,6 @@
 ---
 name: File
-description: "File tool — the files a run's tools returned, kept in the run's inbox volume: inspect them, list them, copy files and folders between the inbox, your volumes and your workspaces, remove them; download a URL into it and upload a file to a URL."
+description: "File tool — the files a run's tools returned, kept in the run's inbox volume: inspect them, list them, copy files and folders between the inbox, your volumes and your workspaces, remove them; convert files in workspaces (extract, render, unpack, transcribe); download a URL into it and upload a file to a URL."
 ---
 A tool call is text, so a file cannot reach you as one: base64 is too long to
 hold, too easy to corrupt, and unreadable anyway. When a tool returns a file —
@@ -51,7 +51,9 @@ When a file could not be kept, the line says why instead
 A path is a reference: `volume:inbox:<path>`, `volume:<name>:<path>` for a
 volume you are bound to, `volume:<path>` for your default volume, or
 `workspace:<name>:<path>` for a file or folder in a workspace this run opened
-(`workspace:<name>:` is its root). A bare path, with no `volume:` or
+(`workspace:<name>:` is its root), or `workspace:<name>@<agent id>:<path>` for
+one another run of your user shared with you (see Workspace/share: a `read`
+share lets you read and copy out, `read_write` also write in). A bare path, with no `volume:` or
 `workspace:`, names a file in the inbox.
 
 The inbox needs nothing but this tool. Another volume is reached with your own
@@ -89,6 +91,10 @@ File/checkout, File/commit).
   call from outside a run, gets "not found" or a refusal.
 - `rm` and `clear` never remove the workspace's root: release the workspace
   with `Workspace op=release`.
+- A `download` into a workspace whose response does not give its size needs
+  room in the workspace's quota for its whole limit (`max_bytes`, else the
+  per-file limit) before it starts; pass a smaller `max_bytes` when the
+  workspace is nearly full.
 
 Do not use this tool to read a file's text: Read a text file, and do not ask
 for a file's base64.

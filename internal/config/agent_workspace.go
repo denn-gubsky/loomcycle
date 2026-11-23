@@ -22,14 +22,19 @@ import (
 // and is held to the stricter engine requirement. Not per-run overridable.
 // Authority, not content: not part of content_sha256.
 //
-// Only the keys of RFC GW P1 exist. The keys later phases add (share,
-// expose, connect, templates, egress) are refused as unknown, in yaml and in
-// JSON, so no stored grant can name something that does nothing yet.
+// Only the keys built so far exist (P1's, and P8's share). The keys later
+// phases add (expose, connect, templates, egress) are refused as unknown, in
+// yaml and in JSON, so no stored grant can name something that does nothing
+// yet.
 type AgentWorkspace struct {
 	// Ops is a subset of read, write and exec.
 	Ops []string `json:"ops,omitempty" yaml:"ops,omitempty"`
 	// Open lets the agent open workspaces of its own.
 	Open bool `json:"open,omitempty" yaml:"open,omitempty"`
+	// Share lets the agent share a workspace it owns with another run of
+	// the same user (RFC GW §5.2). It hands over only operations the agent
+	// holds itself, and never commands.
+	Share bool `json:"share,omitempty" yaml:"share,omitempty"`
 	// Engine is the least isolating engine the agent accepts: "" (any),
 	// "host" or "container".
 	Engine string `json:"engine,omitempty" yaml:"engine,omitempty"`

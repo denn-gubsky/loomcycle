@@ -218,7 +218,7 @@ func TestRegisterAgent_WorkspaceRoundTrip(t *testing.T) {
 	// The JSON a transport decodes is strict: a key a later phase adds is
 	// refused before the request is built.
 	var req connector.RegisterAgentRequest
-	if err := json.Unmarshal([]byte(`{"name":"x","workspace":{"ops":["read"],"share":true}}`), &req); err == nil {
-		t.Error("a register_agent body with workspace.share decoded")
+	if err := json.Unmarshal([]byte(`{"name":"x","workspace":{"ops":["read"],"connect":true}}`), &req); err == nil {
+		t.Error("a register_agent body with workspace.connect decoded")
 	}
 }

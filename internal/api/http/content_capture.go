@@ -6,6 +6,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	lcotel "github.com/denn-gubsky/loomcycle/internal/otel"
+	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/redact"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -105,6 +106,40 @@ func storedNotCaptured(payload []byte) bool {
 		NotCaptured bool `json:"content_not_captured"`
 	}
 	return json.Unmarshal(payload, &m) == nil && m.NotCaptured
+}
+
+// toolImagesKey is the key a stored tool_result carries its pictures under
+// (providers.Event.ToolImages, which is never serialised on the live wire).
+const toolImagesKey = "tool_images"
+
+// withToolImages is payload, a stored event's JSON object, with the tool's
+// pictures beside it. A payload that is not an object is returned as it is.
+func withToolImages(payload []byte, images []providers.ImagePart) []byte {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(payload, &obj) != nil || obj == nil {
+		return payload
+	}
+	b, err := json.Marshal(images)
+	if err != nil {
+		return payload
+	}
+	obj[toolImagesKey] = b
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
+// storedToolImages is the pictures a stored tool_result carries, or nil.
+func storedToolImages(payload []byte) []providers.ImagePart {
+	var m struct {
+		Images []providers.ImagePart `json:"tool_images"`
+	}
+	if json.Unmarshal(payload, &m) != nil {
+		return nil
+	}
+	return m.Images
 }
 
 // withResumedNeverAncestry gives a resumed sub-run the never its live run

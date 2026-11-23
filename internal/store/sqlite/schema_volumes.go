@@ -96,12 +96,16 @@ func volumesSection() schemaPlan {
 			owner_agent_id TEXT NOT NULL DEFAULT '',
 			root_run_id    TEXT NOT NULL DEFAULT '',
 			state          TEXT NOT NULL,
+			shares         TEXT NOT NULL DEFAULT '[]',
 			created_at     INTEGER NOT NULL,
 			updated_at     INTEGER NOT NULL,
 			UNIQUE (owner_run_id, name)
 		)`,
 		`CREATE INDEX IF NOT EXISTS workspaces_by_worker ON workspaces (worker_id, state)`,
 		`CREATE INDEX IF NOT EXISTS workspaces_by_tenant ON workspaces (tenant_id, state)`,
+		// RFC GW P8: how a peer names a shared workspace, <name>@<agent_id>.
+		// Mirrors postgres migration 0136.
+		`CREATE INDEX IF NOT EXISTS workspaces_by_owner_agent ON workspaces (tenant_id, owner_agent_id, name)`,
 		// RFC L OSS multi-tenant authorization — bearer tokens bound to
 		// an authoritative principal (tenant_id + subject + allowed_scopes).
 		// NOT versioned/forkable: no version, no active pointer, no parent.

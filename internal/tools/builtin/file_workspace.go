@@ -77,6 +77,18 @@ func resolveWorkspaceLoc(ctx context.Context, m *lifecycle.Manager, r dataRef, w
 	}
 	ident := tools.RunIdentity(ctx)
 	o := lifecycle.Owner{TenantID: ident.TenantID, UserID: ident.UserID, RunID: tools.RunID(ctx), AgentID: ident.AgentID, RootRunID: ident.RootRunID}
+	// A workspace another run shared with this one (RFC GW P8): the share
+	// must cover the use, and the use is recorded once here; every op the
+	// call then makes is checked again in the manager.
+	if _, _, shared := lifecycle.SplitShared(r.workspace); shared {
+		op := wsHookRead
+		if write {
+			op = wsHookWrite
+		}
+		if err := m.UseShared(ctx, o, r.workspace, write, op, via); err != nil {
+			return nil, workspaceRefError(err, r.workspace), false
+		}
+	}
 	return &workspaceLoc{m: m, o: o, name: r.workspace, path: wsClean(r.path), via: via}, tools.Result{}, true
 }
 
@@ -195,6 +207,19 @@ func (l *workspaceLoc) Create(ctx context.Context, size int64, r io.Reader, over
 	return locWritten{Ref: l.Ref(), Size: ans.Size, SHA256: ans.SHA256}, tools.Result{}, true
 }
 
+// createUnsized writes r, whose length is not known ahead, as the file at
+// the place: at most maxBytes of it, which the worker admits against the
+// workspace's quota before the core reads a byte of r. Nothing of r is
+// held or spooled on the core, and a failed put leaves nothing. The error
+// is the put's, for the caller to word.
+func (l *workspaceLoc) createUnsized(ctx context.Context, maxBytes int64, r io.Reader, overwrite bool) (locWritten, error) {
+	ans, err := l.m.PutFile(ctx, l.o, l.name, workspace.PutArgs{Path: l.path, Size: workspace.PutSizeUnknown, MaxBytes: maxBytes, Overwrite: overwrite}, r)
+	if err != nil {
+		return locWritten{}, err
+	}
+	return locWritten{Ref: l.Ref(), Size: ans.Size, SHA256: ans.SHA256}, nil
+}
+
 // CreateFolder builds the folder in a staging folder of the workspace and
 // commits it in one rename; on any failure the stage is discarded, so
 // nothing of the copy is left, a quota refusal included.
@@ -279,7 +304,13 @@ func workspaceFileError(err error) (tools.Result, bool) {
 // only that it failed (its text may name tables or hosts).
 func workspaceRefError(err error, name string) tools.Result {
 	if errors.Is(err, lifecycle.ErrNotFound) {
+		if _, _, shared := lifecycle.SplitShared(name); shared {
+			return errNotFound(fmt.Sprintf("no workspace %q is shared with this run", name), "Workspace op=list shows the workspaces shared with you.")
+		}
 		return errNotFound(fmt.Sprintf("this run has no workspace named %q", name), "Open it with Workspace op=open; Workspace op=list shows yours.")
+	}
+	if errors.Is(err, lifecycle.ErrShareReadOnly) {
+		return errPermission(fmt.Sprintf("%s: %v", name, err), "Copy what you need out of it, or ask its owner for a read_write share.")
 	}
 	if res, ok := workspaceFileError(err); ok {
 		return res

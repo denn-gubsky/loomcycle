@@ -440,6 +440,13 @@ type ContentBlock struct {
 	MediaType string `json:"media_type,omitempty"`
 	Data      string `json:"data,omitempty"`
 
+	// Images are the pictures a tool returned with a tool_result (RFC GW
+	// §5.8). Only on a tool_result block. Each driver sends them the way its
+	// provider takes a picture in answer to a tool call; the loop has already
+	// checked, scaled and bounded them, and refused them for a model that
+	// cannot see images.
+	Images []ImagePart `json:"images,omitempty"`
+
 	// NotRetained marks a tool_result whose text is a no-trace run's content
 	// (Event.ContentNotRetained): the model reads it, and nothing the run
 	// keeps — its transcript, a harvest into memory — holds it. Never sent.
@@ -461,6 +468,14 @@ type ContentBlock struct {
 	Dialogue bool `json:"-"`
 }
 
+// ImagePart is one picture inside a tool_result block. MediaType is one of
+// the RFC AT whitelist (image/png|jpeg|gif|webp); Data is the raw base64 of the
+// bytes with no "data:" prefix, as on an image block.
+type ImagePart struct {
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
 // DialogueText is a text block marked as something said in the conversation
 // (see ContentBlock.Dialogue).
 func DialogueText(text string) ContentBlock {
@@ -475,12 +490,41 @@ func DialogueText(text string) ContentBlock {
 func RequestHasImage(req Request) bool {
 	for _, m := range req.Messages {
 		for _, c := range m.Content {
-			if c.Type == "image" {
+			if c.Type == "image" || len(c.Images) > 0 {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// ToolPicturesLead is the text a driver puts before a tool result's pictures
+// when its provider cannot carry them inside the tool result itself, so the
+// model can tell which call they answer.
+func ToolPicturesLead(c ContentBlock) string {
+	if c.ToolName == "" {
+		return "Pictures returned by tool call " + c.ToolUseID + ":"
+	}
+	return "Pictures returned by tool call " + c.ToolUseID + " (" + c.ToolName + "):"
+}
+
+// VisionModelChecker is implemented by a driver whose image support varies by
+// model (a legacy text-only model on an otherwise vision-capable provider).
+// The loop asks it before it puts a tool's picture into the conversation.
+type VisionModelChecker interface {
+	SupportsVisionFor(model string) bool
+}
+
+// SeesImages reports whether (p, model) takes image input: the Capabilities
+// bit, refined by the driver's per-model answer when it has one.
+func SeesImages(p Provider, model string) bool {
+	if p == nil || !p.Capabilities().SupportsVision {
+		return false
+	}
+	if c, ok := As[VisionModelChecker](p); ok {
+		return c.SupportsVisionFor(model)
+	}
+	return true
 }
 
 // ToolSpec describes one tool to the model.
@@ -972,6 +1016,11 @@ type Event struct {
 	// persist+replay round-trip matters because a continuation that lost
 	// the flag would re-feed the model a successful-looking result.
 	IsError bool `json:"is_error,omitempty"`
+	// ToolImages are the pictures a tool_result carries to the model (RFC GW
+	// §5.8). Never on the live wire: the event's text names each picture, and
+	// the recording emitter stores them beside the event (tool_images) so a
+	// rebuilt conversation sends the model the same pictures.
+	ToolImages []ImagePart `json:"-"`
 	// Retry carries the retry telemetry on EventRetry. Nil otherwise.
 	Retry *RetryInfo `json:"retry,omitempty"`
 
@@ -1401,6 +1450,13 @@ func withoutImageBytes(blocks []ContentBlock) []ContentBlock {
 	for i := range out {
 		if out[i].Type == "image" {
 			out[i].Data = ""
+		}
+		if len(out[i].Images) > 0 {
+			imgs := make([]ImagePart, len(out[i].Images))
+			for j, im := range out[i].Images {
+				imgs[j] = ImagePart{MediaType: im.MediaType}
+			}
+			out[i].Images = imgs
 		}
 	}
 	return out

@@ -174,6 +174,16 @@ curl -s -X POST "$LOOMCYCLE/v1/_calc" -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -d '{"expr": "0.1 + 0.2"}'
 ```
 
+The client libraries wrap both: `calc(input)` on the TypeScript client
+(`@loomcycle/client`, over HTTP) and `calc(expr, vars=..., digits=...,
+seed=...)` on the Python client (over gRPC). Each returns the tool's result
+and raises `CalcError` for a refusal, with the tool's code, hint, position
+and category. A number in `result` has been through the language's JSON
+decoder, so read `text` for the exact digits of a long decimal (and, in
+TypeScript, of an integer past 2^53). See
+[the TypeScript README](../adapters/ts/README.md#calc) and
+[the Python README](../adapters/python/README.md#calc).
+
 ## Removing Calc from an agent
 
 Calc is added to every agent when a run resolves its tools; it is never

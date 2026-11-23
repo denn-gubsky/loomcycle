@@ -76,7 +76,15 @@ type Request struct {
 	// InputSize is, for Stream, the exact number of bytes its reader
 	// carries. Stream sends no more, and ends the op without InputEnd when
 	// the reader holds fewer or more, so the worker keeps nothing of it.
+	// workspace.PutSizeUnknown is a reader of unknown length, bounded by
+	// MaxInput.
 	InputSize int64
+	// MaxInput bounds a Stream input of unknown length, and is required
+	// with it: Stream reads nothing of the reader until the worker has
+	// admitted the op (an empty output chunk; a refusal ends it first),
+	// then sends to the reader's end, and fails the op with size_mismatch,
+	// ending it without InputEnd, past MaxInput bytes.
+	MaxInput int64
 }
 
 // Result is a finished op's answer.

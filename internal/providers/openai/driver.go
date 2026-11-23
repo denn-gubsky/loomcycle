@@ -552,6 +552,7 @@ func flattenMessage(m providers.Message) []wireMessage {
 	var out []wireMessage
 	var userText strings.Builder
 	var parts []wireContentPart
+	var toolPictures []wireContentPart
 	hasImage := false
 	for _, c := range m.Content {
 		switch c.Type {
@@ -561,6 +562,7 @@ func flattenMessage(m providers.Message) []wireMessage {
 				ToolCallID: c.ToolUseID,
 				Content:    c.Text,
 			})
+			toolPictures = append(toolPictures, toolPictureParts(c)...)
 		case "text":
 			if userText.Len() > 0 {
 				userText.WriteString("\n")
@@ -582,7 +584,31 @@ func flattenMessage(m providers.Message) []wireMessage {
 	case userText.Len() > 0:
 		out = append([]wireMessage{{Role: "user", Content: userText.String()}}, out...)
 	}
+	// A tool message cannot carry an image (RFC GW §5.8): the pictures the
+	// tools returned follow every tool message of the turn in one user
+	// message — tool messages must come straight after the assistant turn
+	// that called them.
+	if len(toolPictures) > 0 {
+		out = append(out, wireMessage{Role: "user", Content: toolPictures})
+	}
 	return out
+}
+
+// toolPictureParts is a tool result's pictures as user content parts: a text
+// part naming the call they answer, then an image_url data-URI per picture.
+// Nil for a result without pictures.
+func toolPictureParts(c providers.ContentBlock) []wireContentPart {
+	if len(c.Images) == 0 {
+		return nil
+	}
+	parts := []wireContentPart{{Type: "text", Text: providers.ToolPicturesLead(c)}}
+	for _, im := range c.Images {
+		parts = append(parts, wireContentPart{
+			Type:     "image_url",
+			ImageURL: &wireImageURL{URL: "data:" + im.MediaType + ";base64," + im.Data},
+		})
+	}
+	return parts
 }
 
 // openaiIsReasoningModel reports whether the named model is an OpenAI reasoning
@@ -620,6 +646,12 @@ func openaiSupportsVision(model string) bool {
 		return false
 	}
 	return !openaiTextOnlyModels[m]
+}
+
+// SupportsVisionFor implements providers.VisionModelChecker with the same
+// per-model rule the call-time refusal uses.
+func (d *Driver) SupportsVisionFor(model string) bool {
+	return openaiSupportsVision(model)
 }
 
 // EnforcesStructuredOutput implements providers.ModelStructuredOutputEnforcer.
