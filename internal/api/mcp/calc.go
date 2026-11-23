@@ -36,6 +36,10 @@ func calcToolDescriptor() loommcp.ToolDescriptor {
 // is not.
 func calcDescription() string {
 	desc := (&builtin.Calc{}).Description()
+	// from and to need a run; this transport refuses them, so it does not
+	// offer them. TestCalcMCP_DescriptionOffersNoDataByReference fails if the
+	// builtin's sentence moves and this no longer removes it.
+	desc = strings.Replace(desc, ", "+builtin.CalcDataByReference, "", 1)
 	desc = strings.Replace(desc, calcHelpInRun, "call the `context` tool with {\"op\": \"help\", \"topic\": \"Calc\"}", 1)
 	return desc + " A refusal names its error code, where in expr it went wrong and what to write instead; its category is in the structured error." +
 		" Each call takes one unit of your token's run rate; past it the call is refused with when to retry." +

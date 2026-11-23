@@ -52,7 +52,7 @@ func TestBuildTools_StepsRunInCatalogOrder(t *testing.T) {
 	if b.teamDefTool.Board != b.documentTool || b.teamDefTool.AskHuman == nil {
 		t.Errorf("TeamDef board/escalation not wired: board=%v askHuman=%v", b.teamDefTool.Board, b.teamDefTool.AskHuman != nil)
 	}
-	if b.cryptoTool.Docs != b.documentTool || b.fileTool.Docs != b.documentTool || b.memoryTool.DocumentFilters != b.documentTool || b.gitTool.Crypto != b.cryptoTool {
+	if b.cryptoTool.Docs != b.documentTool || b.calcTool.Docs != b.documentTool || b.calcTool.Memory != b.memoryTool || b.fileTool.Docs != b.documentTool || b.memoryTool.DocumentFilters != b.documentTool || b.gitTool.Crypto != b.cryptoTool {
 		t.Error("Document/Crypto cross-wiring missing")
 	}
 }
