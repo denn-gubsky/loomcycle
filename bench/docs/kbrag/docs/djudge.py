@@ -55,7 +55,10 @@ def main():
     base = json.load(open(os.path.join(dconfig.WORK, "baseline.json")))["tenant_spend_usd"]
     qs = questions.load([s for s in a.sets.split(",") if s])
     inv = {d["id"]: d for d in json.load(open(dconfig.INVENTORY))["documents"]}
-    by_arm = {arm: {k: r for k, r in passes.latest_ok_runs(arm, os.path.join(a.out, "runs")).items() if k[0] in qs}
+    # A question whose key names neither documents, topics nor an answer (one wave-1 overview
+    # names only areas in prose) has nothing to judge against: it is left unjudged.
+    judgeable = {k for k, q in qs.items() if q["gold"] or q["gold_topics"] or q.get("expected_answer")}
+    by_arm = {arm: {k: r for k, r in passes.latest_ok_runs(arm, os.path.join(a.out, "runs")).items() if k[0] in judgeable}
               for arm in dconfig.ARMS}
     items, order = items_and_order(by_arm)
 

@@ -198,10 +198,42 @@ def judge_table(out_root, qs):
         for r in common.latest(rows, key=lambda r: (r["qid"], r["rep"])).values():
             if r["status"] != "ok" or r["qid"] not in qs:
                 continue
-            s = qs[r["qid"]]["set"]
-            d = t.setdefault(s, {}).setdefault(a, {"COMPLETE": 0, "PARTIAL": 0, "WRONG": 0})
-            d[r["verdict"]] += 1
+            q = qs[r["qid"]]
+            for key in (q["set"], "%s/%s" % (q["set"], q["kind"])):
+                d = t.setdefault(key, {}).setdefault(a, {"COMPLETE": 0, "PARTIAL": 0, "WRONG": 0})
+                d[r["verdict"]] += 1
     return t
+
+
+def markdown(S):
+    """The tables the results README quotes: counts and scores only (no ids, no titles)."""
+    L = []
+    f = lambda v: "—" if v is None else ("%.3f" % v if isinstance(v, float) else str(v))  # noqa: E731
+    for s, e in S["sets"].items():
+        L += ["", "## set `%s` — %d questions (%d document gold, %d topic gold)" % (
+            s, e["questions"], e["doc_gold_questions"], e["topic_gold_questions"]), ""]
+        L += ["| kind | arm | q | runs | F1 | P | R | F1 docs-only | P in-corpus | topic R | read-doc R | cited/run | outside/run | USD/run | in tok/run | out tok/run | calls/run | s/run |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        for kind, tab in [("all", e["arms"])] + sorted(e["by_kind"].items()):
+            for a, m in tab.items():
+                L.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+                    kind, a, m["questions"], m["runs"], f(m["F1"]), f(m["P"]), f(m["R"]), f(m["F1_docs_only"]),
+                    f(m["P_in_corpus"]), f(m["topic_recall"]), f(m["read_doc_recall"]), f(m["n_cited"]),
+                    f(m["n_cited_outside_corpus"]), f(m["usd_per_run"]), f(m["in_tok_per_run"]), f(m["out_tok_per_run"]),
+                    f(m["calls_per_run"]), f(m["wall_s_per_run"])))
+        L += ["", "| test (F1, paired over questions) | n | mean diff | 98.75% CI | wins/losses/ties |", "|---|---|---|---|---|"]
+        for name, t in [("all: " + k, v) for k, v in e["tests"].items()] + [
+                ("%s: %s" % (kind, k), v) for kind, tt in sorted(e["tests_by_kind"].items()) for k, v in tt.items()]:
+            if "ci_98.75" in t:
+                L.append("| %s | %d | %+.3f | [%+.3f, %+.3f] | %d/%d/%d |" % (name, t["n"], t["diff"], t["ci_98.75"][0],
+                                                                            t["ci_98.75"][1], t["wins"], t["losses"], t["ties"]))
+        L += ["", "kb routes: `%s`" % json.dumps(e["routes"], sort_keys=True)]
+    L += ["", "## judge", ""]
+    for key, arms in sorted(S["judge"].items()):
+        L.append("- %s: %s" % (key, ", ".join("%s C/P/W %d/%d/%d" % (a, d["COMPLETE"], d["PARTIAL"], d["WRONG"])
+                                             for a, d in sorted(arms.items()))))
+    L += ["", "## checks", ""] + ["- %s: %s" % (k, json.dumps(v, sort_keys=True)) for k, v in S["checks"].items()]
+    return "\n".join(L) + "\n"
 
 
 def main():
@@ -235,7 +267,10 @@ def main():
         S["sets"][s] = e
     with open(os.path.join(a.out, "summary.json"), "w") as f:
         json.dump(S, f, indent=1, default=list)
-    print(json.dumps(S, indent=1, default=list)[:20000])
+    md = markdown(S)
+    with open(os.path.join(a.out, "summary.md"), "w") as f:
+        f.write(md)
+    print(md)
 
 
 if __name__ == "__main__":
