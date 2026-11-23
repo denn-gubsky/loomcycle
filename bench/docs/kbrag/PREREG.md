@@ -465,3 +465,17 @@ as attempt 1 (check 8 is read on the resumed rows).
 is unchanged: a $19 increase over the 06:34 baseline ($36.792425); about $0.75 is spent.
 
 Nothing else changes.
+
+## Amendment 4 — 2026-11-23 08:10 UTC, Study D, a guard stop and a third window
+
+The driver of Amendment 3 ran its second window 07:21:01 → 08:03:47 (`kb/walker` fork
+`def_0b15fc81bf130f52`; helper `def_915664b3d21f0619` reactivated). `p7` completed: 72 ok rows per
+arm (3 runs × 24 questions), no failure. At the start of `waves`, one rag-lc search failed
+because the deployment's embedder host did not resolve for a moment (`lookup … server
+misbehaving`); the rag-lc guard stops on any failure among an invocation's first five rag-lc
+rows, so the runner stopped (exit 3) as designed. The driver stopped the runner, restored and
+verified the tenant (08:03:52), judged the rows so far and analysed. No row is quarantined: the
+failed row stays as attempt 1 and the retry pass reruns it; the embedder answered again at
+08:09. The same driver is started again for `waves`, `known` and the retry passes (a third
+window, same precautions; `p7` is already complete and is not rerun). Tenant spend increase
+so far $2.68. Nothing else changes.
