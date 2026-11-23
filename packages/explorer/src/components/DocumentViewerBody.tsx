@@ -152,6 +152,9 @@ const OUTLINE_KEY = "loomcycle.explorer.collapsed.outline";
 // Below this width the outline folds to its rail and a side panel overlays
 // the body instead of pushing it.
 const NARROW_PX = 640;
+// Below this width an open side panel lies over the body: pushing it would
+// leave the outline and the text too little room to read.
+const OVERLAY_PX = 960;
 
 export default function DocumentViewerBody({
   documentId,
@@ -231,6 +234,7 @@ export default function DocumentViewerBody({
   // then it takes the width until a chunk is picked.
   const viewerRef = useRef<HTMLDivElement>(null);
   const narrow = useNarrow(viewerRef, NARROW_PX);
+  const overlay = useNarrow(viewerRef, OVERLAY_PX);
   const [narrowOutline, setNarrowOutline] = useState(false);
   const outlineHidden = narrow ? !narrowOutline : outlineCollapsed;
   const setOutlineHidden = useCallback(
@@ -1097,7 +1101,7 @@ export default function DocumentViewerBody({
 
   return (
     <CardScopeContext.Provider value={cardScope}>
-      <div className={`doc-viewer${narrow ? " narrow" : ""}`} ref={viewerRef}>
+      <div className={`doc-viewer${narrow ? " narrow" : ""}${overlay ? " panel-over" : ""}`} ref={viewerRef}>
         <input
           ref={fileInputRef}
           type="file"
