@@ -143,6 +143,9 @@ Example: `unifinv(0.25, 2, 6)` gives `3`.
 ### binompdf(k, n, p)
 The probability of exactly `k` successes in `n` independent trials, each
 succeeding with probability `p`. `k` and `n` are whole numbers, `0 <= k <= n`.
+With an exact `p` (and `n` up to a few thousand) it is computed exactly and
+rounded once, so it is the nearest float to the true probability; so is
+`binomcdf`.
 
 Example: `binompdf(6, 10, 0.5)` gives `0.205078125`.
 

@@ -1,6 +1,9 @@
 package calc
 
-import "testing"
+import (
+	"math/big"
+	"testing"
+)
 
 // The reference values are the worked examples of the Excel function docs
 // (NORM.DIST, NORM.INV, NORM.S.DIST, T.DIST, T.INV, CHISQ.DIST,
@@ -97,4 +100,33 @@ func TestDistributions_RefuseParametersOutOfRange(t *testing.T) {
 	}
 	mustFail(t, `normcdf("a")`, codeType)
 	mustFail(t, "normcdf(10^400)", codeOverflow)
+}
+
+// With an exact p the binomial is summed in exact arithmetic and rounded
+// once, so the answer is the float nearest the true value on every
+// platform: gonum's lgamma and exp path gave 0.205078125000001 for
+// binompdf(6, 10, 0.5) on linux/amd64 and 0.205078125 on darwin/arm64.
+// `exact + sin(0)` is the exact value rounded to the nearest float (decimals
+// such as 1.0 are exact, so `* 1.0` would not make a float).
+func TestDistributions_BinomialIsTheCorrectlyRoundedExactValue(t *testing.T) {
+	checkTexts(t, []textCase{
+		{"binompdf(6, 10, 0.5) == 210/1024", "true"},
+		{"binomcdf(6, 10, 0.5) == 848/1024", "true"},
+		{"binompdf(3, 10, 0.3) == binomial(10, 3) * 0.3^3 * 0.7^7 + sin(0)", "true"},
+		{"binompdf(7, 30, 1/3) == binomial(30, 7) * (1/3)^7 * (2/3)^23 + sin(0)", "true"},
+		{"binomcdf(2, 50, 0.02) == sum(map(0:2, i -> binomial(50, i) * 0.02^i * 0.98^(50 - i))) + sin(0)", "true"},
+		{"binomcdf(12, 40, 0.35) == sum(map(0:12, i -> binomial(40, i) * 0.35^i * 0.65^(40 - i))) + sin(0)", "true"},
+	})
+}
+
+// The exact sum charges at least a step per term.
+func TestDistributions_ExactBinomialChargesEachTerm(t *testing.T) {
+	e := newTestEvaluator()
+	half := exactNum(big.NewRat(1, 2))
+	if _, err := binomial(true)(e, args{v: []val{exactInt64(500), exactInt64(1000), half}, name: "binomcdf"}); err != nil {
+		t.Fatal(err)
+	}
+	if e.steps < 501 {
+		t.Errorf("binomcdf over 501 terms charged %d steps, want at least 501", e.steps)
+	}
 }

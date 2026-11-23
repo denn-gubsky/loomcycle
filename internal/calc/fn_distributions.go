@@ -2,6 +2,7 @@ package calc
 
 import (
 	"math"
+	"math/big"
 
 	"gonum.org/v1/gonum/stat/distuv"
 )
@@ -247,7 +248,7 @@ func (a args) probability(i int) (float64, *Error) {
 }
 
 func binomial(cumulative bool) func(*evaluator, args) (val, *Error) {
-	return func(_ *evaluator, a args) (val, *Error) {
+	return func(e *evaluator, a args) (val, *Error) {
 		k, err := a.countArg(0, "k")
 		if err != nil {
 			return nil, err
@@ -262,6 +263,9 @@ func binomial(cumulative bool) func(*evaluator, args) (val, *Error) {
 		}
 		if k > n {
 			return nil, errf(codeDomain, a.pos, "%s: k = %s is more than the n = %s trials", a.name, fmtFloat(k), fmtFloat(n))
+		}
+		if v, ok, err := exactBinomial(e, a, int64(k), int64(n), cumulative); ok {
+			return v, err
 		}
 		// gonum computes 0 · log(0) at p = 0 or 1, which is NaN; the
 		// distribution there is a single point, so answer directly.
@@ -282,6 +286,61 @@ func binomial(cumulative bool) func(*evaluator, args) (val, *Error) {
 		}
 		return checkFloat(d.Prob(k), a.pos, a.name)
 	}
+}
+
+// exactBinomial computes the binomial probability in exact arithmetic when
+// p is an exact fraction a/d and d^n fits the exact-number cap: the sum over
+// i = k (pdf) or i = 0..k (cdf) of C(n, i) a^i (d-a)^(n-i), over d^n, then
+// rounded once to a float. The answer is then the same to the last digit
+// on every platform, which gonum's lgamma and exp path is not (an ulp apart
+// between amd64 and arm64). ok is false when the exact path does not apply.
+func exactBinomial(e *evaluator, a args, k, n int64, cumulative bool) (v val, ok bool, err *Error) {
+	pn, isNum := a.v[2].(num)
+	if !isNum || !pn.exact() {
+		return nil, false, nil
+	}
+	d := pn.r.Denom()
+	if n*int64(d.BitLen()) > MaxExactBits {
+		return nil, false, nil
+	}
+	an := pn.r.Num()
+	bn := new(big.Int).Sub(d, an)
+	lo := k
+	if cumulative {
+		lo = 0
+	}
+	// Each term is a few products of numbers up to n·bits(d) bits.
+	if err := e.charge(int(k-lo+1)*(1+int(n)*d.BitLen()/bitStepCost), a.pos); err != nil {
+		return nil, true, err
+	}
+	// From i = k down to lo, so (d-a)^(n-i) grows by one factor per term
+	// and a^i shrinks by an exact division.
+	c := new(big.Int).Binomial(n, k)
+	ap := new(big.Int).Exp(an, big.NewInt(k), nil)
+	bp := new(big.Int).Exp(bn, big.NewInt(n-k), nil)
+	sum, t := new(big.Int), new(big.Int)
+	for i := k; ; i-- {
+		t.Mul(c, ap)
+		sum.Add(sum, t.Mul(t, bp))
+		if i == lo {
+			break
+		}
+		c.Mul(c, big.NewInt(i))
+		c.Quo(c, big.NewInt(n-i+1))
+		bp.Mul(bp, bn)
+		if an.Sign() != 0 {
+			ap.Quo(ap, an)
+		} else if i == 1 {
+			ap.SetInt64(1) // 0^0
+		}
+	}
+	// The float nearest the exact value: big.Rat rounds correctly, so this
+	// is the same on every platform. Not the exact value itself: a decimal p
+	// makes it a terminating decimal of hundreds of digits (binomcdf(2, 50,
+	// 0.02) has 100), which renders in full.
+	f, _ := new(big.Rat).SetFrac(sum, new(big.Int).Exp(d, big.NewInt(n), nil)).Float64()
+	v, err = checkFloat(f, a.pos, a.name)
+	return v, true, err
 }
 
 func poisson(cumulative bool) func(*evaluator, args) (val, *Error) {

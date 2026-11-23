@@ -27,14 +27,14 @@ The bounds are finite; `b` below `a` gives the negative. The ends are never
 evaluated, so an integrable singularity there (`1 / sqrt(x)` from 0) works;
 one inside the interval should be split at: integrate each side.
 
-Example: `integrate(x -> x^2, 0, 3)` gives `9`.
+Example: `round(integrate(x -> x^2, 0, 3), 10)` gives `9`.
 
 ### deriv(f, x)
 The derivative of `f` at `x`, from central differences refined by Richardson
 extrapolation. `f` must be defined on both sides of `x`. At a kink it gives
 the mean of the two slopes (`deriv(abs, 0)` is 0); at a jump it is refused.
 
-Example: `deriv(x -> x^3, 2)` gives `12`.
+Example: `round(deriv(x -> x^3, 2), 9)` gives `12`.
 
 ### root(f, a, b)
 An `x` between `a` and `b` where `f(x)` is 0, by Brent's method. `f(a)` and
@@ -42,7 +42,7 @@ An `x` between `a` and `b` where `f(x)` is 0, by Brent's method. `f(a)` and
 root; otherwise `domain`. With several roots inside, one of them. To solve
 `g(x) = c`, find the root of `x -> g(x) - c`.
 
-Example: `root(x -> x^2 - 2, 0, 2)` gives `1.41421356237309`.
+Example: `round(root(x -> x^2 - 2, 0, 2), 10)` gives `1.4142135624`.
 
 ### minimize(f, a, b)
 The `x` between `a` and `b` where `f` is smallest, by Brent's method (MATLAB's
@@ -51,7 +51,7 @@ interval around the one you want. A minimum at an end is returned exactly.
 For the smallest value itself, take `f(minimize(f, a, b))`; for a maximum,
 minimize `x -> -f(x)`.
 
-Example: `minimize(x -> (x - 2)^2 + 1, 0, 5)` gives `2`.
+Example: `round(minimize(x -> (x - 2)^2 + 1, 0, 5), 6)` gives `2`.
 
 ## Polynomials and tables
 

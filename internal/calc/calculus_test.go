@@ -9,50 +9,55 @@ import (
 // The integrals, derivatives, roots and minima have closed forms (any
 // calculus text; the Gaussian integral sqrt(pi) and the Dottie number
 // 0.739085133215161, the root of cos(x) = x, as tabulated in Abramowitz
-// and Stegun and OEIS A003957). Each is compared at the digits the method
-// promises.
+// and Stegun and OEIS A003957). Each float is compared after round(x, k)
+// at the digits the method promises, never at its last digit: Go fuses
+// multiply-adds on arm64 and not on amd64, so the last digit differs
+// between platforms. Only results that are exact by construction (an
+// empty interval, an end of the interval, a kink's two equal slopes) are
+// compared unrounded.
 func TestCalculus_IntegralsMatchClosedForms(t *testing.T) {
 	checkExact(t, false, []textCase{
-		{"integrate(x -> x^2, 0, 3)", "9"},
-		{"integrate(sin, 0, pi)", "2"},
-		{"integrate(x -> 4 / (1 + x^2), 0, 1)", "3.14159265358979"},
-		{"integrate(x -> x, 1, 0)", "-0.5"}, // reversed bounds change the sign
+		{"round(integrate(x -> x^2, 0, 3), 10)", "9"},
+		{"round(integrate(sin, 0, pi), 10)", "2"},
+		{"round(integrate(x -> 4 / (1 + x^2), 0, 1), 10)", "3.1415926536"},
+		{"round(integrate(x -> x, 1, 0), 10)", "-0.5"}, // reversed bounds change the sign
 		{"integrate(x -> x, 2, 2)", "0"},
-		{"integrate(sin, -1, 1)", "0"},                       // cancels: the floor relative to |f| converges
-		{"round(integrate(x -> 1 / sqrt(x), 0, 1), 8)", "2"}, // integrable singularity at an end
-		{"integrate(x -> x^2 * exp(-x), 0, 50)", "2"},        // gamma(3)
-		{"round(integrate(x -> sin(100 * x)^2, 0, pi), 10)", "1.5707963268"},
-		{"f(t) = t^3 - t; integrate(f, 0, 2)", "2"},
-		{"g = x -> 1; integrate(g, 0, 5)", "5"},
+		{"round(integrate(sin, -1, 1), 10)", "0"},                // cancels: the floor relative to |f| converges
+		{"round(integrate(x -> 1 / sqrt(x), 0, 1), 8)", "2"},     // integrable singularity at an end
+		{"round(integrate(x -> x^2 * exp(-x), 0, 50), 10)", "2"}, // gamma(3)
+		{"round(integrate(x -> sin(100 * x)^2, 0, pi), 9)", "1.570796327"},
+		{"f(t) = t^3 - t; round(integrate(f, 0, 2), 10)", "2"},
+		{"g = x -> 1; round(integrate(g, 0, 5), 10)", "5"},
 	})
 	checkTexts(t, []textCase{
-		{"round(integrate(x -> exp(-x^2), -10, 10), 12) == round(sqrt(pi), 12)", "true"},
+		{"round(integrate(x -> exp(-x^2), -10, 10), 10) == round(sqrt(pi), 10)", "true"},
 	})
 }
 
 func TestCalculus_DerivativesMatchClosedForms(t *testing.T) {
 	checkExact(t, false, []textCase{
-		{"deriv(x -> x^3, 2)", "12"},
-		{"deriv(sin, 0)", "1"},
-		{"round(deriv(log, 10), 12)", "0.1"},
-		{"round(deriv(sqrt, 0.001), 9)", "15.811388301"}, // 1 / (2 sqrt(0.001)); the step scales with x
-		{"deriv(x -> x^2, 1e6)", "2000000"},
+		{"round(deriv(x -> x^3, 2), 9)", "12"},
+		{"round(deriv(sin, 0), 9)", "1"},
+		{"round(deriv(log, 10), 9)", "0.1"},
+		{"round(deriv(sqrt, 0.001), 7)", "15.8113883"}, // 1 / (2 sqrt(0.001)); the step scales with x
+		{"round(deriv(x -> x^2, 1e6), 3)", "2000000"},
 		{"deriv(abs, 0)", "0"}, // the symmetric derivative: at a kink, the mean of the two slopes
 	})
 	checkTexts(t, []textCase{
-		{"round(deriv(exp, 1), 12) == round(e, 12)", "true"},
+		{"round(deriv(exp, 1), 9) == round(e, 9)", "true"},
 	})
 }
 
 func TestCalculus_RootsAndMinimaMatchClosedForms(t *testing.T) {
 	checkExact(t, false, []textCase{
-		{"root(x -> x^2 - 2, 0, 2)", "1.41421356237309"},
-		{"root(cos, 0, 3)", "1.5707963267949"},
-		{"root(x -> cos(x) - x, 0, 1)", "0.739085133215161"},
-		{"round(root(x -> exp(x) - 10^6, 0, 100), 12)", "13.815510557964"}, // ln(10^6)
-		{"root(x -> x - 1, 1, 3)", "1"},                                    // a root at an end
-		{"minimize(x -> (x - 2)^2 + 1, 0, 5)", "2"},
-		{"minimize(cos, 0, 2 * pi)", "3.14159265358979"},
+		{"round(root(x -> x^2 - 2, 0, 2), 10)", "1.4142135624"},
+		{"round(root(cos, 0, 3), 10)", "1.5707963268"},
+		{"round(root(x -> cos(x) - x, 0, 1), 10)", "0.7390851332"},
+		{"round(root(x -> exp(x) - 10^6, 0, 100), 10)", "13.815510558"}, // ln(10^6)
+		{"root(x -> x - 1, 1, 3)", "1"},                                 // a root at an end
+		// A minimum's position is good to about 8 digits.
+		{"round(minimize(x -> (x - 2)^2 + 1, 0, 5), 6)", "2"},
+		{"round(minimize(cos, 0, 2 * pi), 6)", "3.141593"},
 		{"round(minimize(x -> 1 / x + x, 0, 5), 6)", "1"}, // the end where f is undefined is never evaluated
 		{"round(minimize(x -> x^4 - 3 * x^3 + 2, 0, 4), 6)", "2.25"},
 		{"minimize(x -> x, 0, 1)", "0"}, // a minimum at an end is returned exactly
