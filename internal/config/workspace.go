@@ -61,6 +61,15 @@ type WorkspaceConfig struct {
 	Convert WorkspaceConvertConfig `yaml:"convert,omitempty"`
 	// Kernel configures the persistent interpreters (RFC GW §5.7).
 	Kernel WorkspaceKernelConfig `yaml:"kernel,omitempty"`
+	// Checkpoint bounds a workspace's checkpoints (RFC GW §5.4).
+	Checkpoint WorkspaceCheckpointConfig `yaml:"checkpoint,omitempty"`
+}
+
+// WorkspaceCheckpointConfig is `workspace.checkpoint`. A checkpoint's size
+// counts against its workspace's disk quota; this bounds their number.
+type WorkspaceCheckpointConfig struct {
+	// MaxPerWorkspace is the checkpoints one workspace may hold. Default 8.
+	MaxPerWorkspace int `yaml:"max_per_workspace,omitempty"`
 }
 
 // WorkspaceKernelConfig is `workspace.kernel`.
@@ -131,6 +140,9 @@ const (
 	DefaultWorkspaceCheckoutDocs   = 500
 	DefaultWorkspaceCheckoutBytes  = 256 << 20
 	DefaultWorkspaceKernelGraceS   = 5
+	DefaultWorkspaceCheckpoints    = 8
+	// maxWorkspaceCheckpoints bounds workspace.checkpoint.max_per_workspace.
+	maxWorkspaceCheckpoints = 100
 	// maxWorkspaceKernelGraceS bounds workspace.kernel.interrupt_grace_seconds.
 	maxWorkspaceKernelGraceS = 300
 	// The bounds of workspace.convert.memory_limit_mb.
@@ -184,6 +196,9 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Kernel.InterruptGraceSeconds == 0 {
 		w.Kernel.InterruptGraceSeconds = DefaultWorkspaceKernelGraceS
+	}
+	if w.Checkpoint.MaxPerWorkspace == 0 {
+		w.Checkpoint.MaxPerWorkspace = DefaultWorkspaceCheckpoints
 	}
 	return w
 }
@@ -293,6 +308,9 @@ func validateWorkspace(c *Config) error {
 	if g := w.Kernel.InterruptGraceSeconds; g < 0 || g > maxWorkspaceKernelGraceS {
 		return fmt.Errorf("workspace.kernel.interrupt_grace_seconds: %d is out of range (1 to %d)", g, maxWorkspaceKernelGraceS)
 	}
+	if c := w.Checkpoint.MaxPerWorkspace; c < 0 || c > maxWorkspaceCheckpoints {
+		return fmt.Errorf("workspace.checkpoint.max_per_workspace: %d is out of range (1 to %d)", c, maxWorkspaceCheckpoints)
+	}
 	r := w.Resolved()
 	if r.Exec.DefaultTimeoutS > r.Exec.MaxTimeoutS {
 		return fmt.Errorf("workspace.exec.default_timeout_s (%d) is over max_timeout_s (%d)", r.Exec.DefaultTimeoutS, r.Exec.MaxTimeoutS)
@@ -332,6 +350,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "kernel"), "workspace.kernel", nil, reflect.TypeOf(WorkspaceKernelConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "checkpoint"), "workspace.checkpoint", nil, reflect.TypeOf(WorkspaceCheckpointConfig{})); err != nil {
 		return err
 	}
 	type plain WorkspaceConfig

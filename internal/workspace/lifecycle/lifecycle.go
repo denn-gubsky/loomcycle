@@ -54,6 +54,10 @@ type Limits struct {
 	// DefaultCheckoutMaxDocuments and DefaultCheckoutMaxBytes.
 	CheckoutMaxDocuments int
 	CheckoutMaxBytes     int64
+	// MaxCheckpoints bounds a workspace's checkpoints
+	// (workspace.checkpoint.max_per_workspace); zero is the worker's
+	// default, workspace.DefaultMaxCheckpoints.
+	MaxCheckpoints int
 	// ConvertQuarantine is how long a file that crashed a worker's
 	// conversion child is refused for its workspace
 	// (conversion.quarantine_ttl_s); zero is DefaultConvertQuarantine.
@@ -220,6 +224,14 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 // other's row, so neither passes a bound both together would break (both may
 // be refused, never both admitted).
 func (m *Manager) openOn(ctx context.Context, o Owner, name, workerID, engine string) (store.WorkspaceRow, error) {
+	return m.makeOn(ctx, o, name, workerID, engine, func(id string) error {
+		return m.disp.OpenWith(ctx, o.TenantID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes})
+	})
+}
+
+// makeOn makes a workspace on one worker: its row, the bounds, then place,
+// which makes its directory there (an open, or a fork), then the row ready.
+func (m *Manager) makeOn(ctx context.Context, o Owner, name, workerID, engine string, place func(id string) error) (store.WorkspaceRow, error) {
 	id, err := newID()
 	if err != nil {
 		return store.WorkspaceRow{}, fmt.Errorf("workspace id: %w", err)
@@ -240,7 +252,7 @@ func (m *Manager) openOn(ctx context.Context, o Owner, name, workerID, engine st
 		undo()
 		return store.WorkspaceRow{}, err
 	}
-	if err := m.disp.OpenWith(ctx, o.TenantID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes}); err != nil {
+	if err := place(id); err != nil {
 		// The directory may have been made before the error (a worker lost
 		// mid-op): remove it if the worker is still here; if not, its next
 		// attach finds a directory no row knows and removes it.

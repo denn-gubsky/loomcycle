@@ -48,6 +48,7 @@ func (w *Workspace) Description() string {
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write) and unshare (`name`, `with`). " +
+		"checkpoint (`name`, optional `label`) records the workspace's files and answers an id; checkpoints lists them; restore (`name`, `checkpoint`) puts the files back and stops its interpreters and commands; delete_checkpoint frees one; fork (`name`, `as`, optional `checkpoint`) opens a second workspace of yours as a copy. Checkpoints count against the workspace's disk quota. " +
 		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, glob and grep on it, and write and edit with read_write; never exec or run_cell. " +
 		"A workspace belongs to the run that opened it and is deleted when that run ends; copy out what you need to keep with read. " +
 		"Commands run on the worker's host engine as the worker's user with no isolation: it is not a sandbox, and has no network guarantees either way. " +
@@ -59,7 +60,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","checkpoint","checkpoints","restore","delete_checkpoint","fork"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
@@ -69,6 +70,9 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"timeout_s":        {"type": "integer", "minimum": 1, "description": "exec: seconds before the command and everything it started are killed; run_cell: seconds before the cell is interrupted. Default and ceiling are the operator's."},
 			"code":             {"type": "string", "description": "run_cell: the code to run, up to 1 MiB. The last expression's value is returned."},
 			"kernel":           {"type": "string", "enum": ["python","node"], "description": "run_cell, reset_kernel: the interpreter (default python)."},
+			"label":            {"type": "string", "description": "checkpoint: a note to tell it by, up to 200 characters."},
+			"checkpoint":       {"type": "string", "description": "restore, delete_checkpoint: the checkpoint's id (checkpoints lists them); fork: the checkpoint to start from (default the present files)."},
+			"as":               {"type": "string", "description": "fork: the new workspace's name."},
 			"path":             {"type": "string", "description": "read/write/edit: the file; glob/grep: the directory to search. Relative to the workspace."},
 			"content":          {"type": "string", "description": "write: the whole new file, up to 1 MiB."},
 			"old_string":       {"type": "string", "description": "edit: the exact text to replace; unique unless replace_all."},
@@ -107,6 +111,12 @@ var workspaceOpArgs = map[string][]string{
 	"grep":         {"name", "pattern", "path", "glob", "output_mode", "case_insensitive", "multiline", "head_limit", "-A", "-B", "-C"},
 	"run_cell":     {"name", "code", "kernel", "timeout_s"},
 	"reset_kernel": {"name", "kernel"},
+	// RFC GW §5.4: checkpoints of the run's own workspace, and a fork of it.
+	"checkpoint":        {"name", "label"},
+	"checkpoints":       {"name"},
+	"restore":           {"name", "checkpoint"},
+	"delete_checkpoint": {"name", "checkpoint"},
+	"fork":              {"name", "as", "checkpoint"},
 	// connect is taken only to be refused by name: it arrives with servers
 	// (RFC GW P9).
 	"share":   {"name", "with", "access", "connect"},
@@ -130,6 +140,10 @@ var workspaceOpGrant = map[string]string{
 	"run_cell": config.WorkspaceOpExec, "reset_kernel": config.WorkspaceOpExec,
 	// share needs the share grant and what it hands over: checked in share.
 	"share": "share", "unshare": "share",
+	// A checkpoint and a restore change what the workspace holds; a fork
+	// opens a workspace (RFC GW §5.4).
+	"checkpoint": config.WorkspaceOpWrite, "restore": config.WorkspaceOpWrite, "delete_checkpoint": config.WorkspaceOpWrite,
+	"checkpoints": config.WorkspaceOpRead, "fork": "open",
 }
 
 type workspaceInput struct {
@@ -161,6 +175,9 @@ type workspaceInput struct {
 	With            string `json:"with"`
 	Access          string `json:"access"`
 	Connect         *bool  `json:"connect"`
+	Label           string `json:"label"`
+	Checkpoint      string `json:"checkpoint"`
+	As              string `json:"as"`
 }
 
 // workspaceRefusal is a failure the model sees: a class and a detail.
@@ -253,6 +270,10 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return w.runCell(ctx, row, in), nil
 	case "reset_kernel":
 		return w.resetKernel(ctx, row, in), nil
+	case "checkpoint", "checkpoints", "restore", "delete_checkpoint":
+		return w.checkpointOp(ctx, row, in), nil
+	case "fork":
+		return w.fork(ctx, owner, pol, row, in), nil
 	}
 	return w.fileOp(ctx, row, in), nil
 }
@@ -309,6 +330,8 @@ func workspaceError(err error, name string) tools.Result {
 		return workspaceRefusal("limit", err.Error())
 	case errors.Is(err, lifecycle.ErrShareBusy):
 		return workspaceRefusal("busy", err.Error())
+	case errors.Is(err, lifecycle.ErrNameTaken):
+		return workspaceRefusal("exists", err.Error()+"; fork as another name, or release that one first")
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return workspaceRefusal("cancelled", "the call was cancelled before the worker answered")
 	}
