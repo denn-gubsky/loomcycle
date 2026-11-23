@@ -110,8 +110,8 @@ func TestAgentDefTool_RefusesAnInvalidWorkspace(t *testing.T) {
 	wantRefused(t, res, "an unknown operation", "workspace.ops[0]", `"run"`)
 	res, _ = tool.Execute(op, json.RawMessage(`{"op":"create","name":"coder","overlay":{"workspace":{"ops":["read"],"engine":"vm"}}}`))
 	wantRefused(t, res, "an unknown engine", "workspace.engine", `"vm"`)
-	res, _ = tool.Execute(op, json.RawMessage(`{"op":"create","name":"coder","overlay":{"workspace":{"ops":["read"],"share":true}}}`))
-	wantRefused(t, res, "a later phase's key", "workspace", "share")
+	res, _ = tool.Execute(op, json.RawMessage(`{"op":"create","name":"coder","overlay":{"workspace":{"ops":["read"],"connect":true}}}`))
+	wantRefused(t, res, "a later phase's key", "workspace", "connect")
 }
 
 // The ceiling (RFC GW): an in-run author may store only the operations and

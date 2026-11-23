@@ -81,7 +81,7 @@ func TestWorkspaceShare_ReadShareCopiesOutAndRefusesAWriteAndACommand(t *testing
 	if res := f.wsCall(t, f.peer, `{"op":"grep","name":"w@a_alice","pattern":"hel"}`); res.IsError {
 		t.Errorf("Workspace grep through a read share: %s", res.Text)
 	}
-	wantShareRefusal(t, "copy in", f.copyAs(t, f.peer, "volume:inbox:out.txt", "workspace:w@a_alice:in.txt"), "read-only")
+	wantShareRefusal(t, "copy in", f.copyAs(t, f.peer, "workspace:w@a_alice:notes.txt", "workspace:w@a_alice:in.txt"), "read-only")
 	wantShareRefusal(t, "Workspace write", f.wsCall(t, f.peer, `{"op":"write","name":"w@a_alice","path":"x.txt","content":"x"}`), "read_only_share")
 	wantShareRefusal(t, "File rm", func() tools.Result {
 		_, r := f.exec(t, f.peer, map[string]any{"op": "rm", "path": "workspace:w@a_alice:notes.txt"})
