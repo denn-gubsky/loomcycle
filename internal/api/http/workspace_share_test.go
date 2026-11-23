@@ -38,13 +38,6 @@ func (f *wsRunFixture) childResults(t *testing.T, agent string) []string {
 	return out
 }
 
-func agentCall(id, input string) []providers.Event {
-	return []providers.Event{
-		{Type: providers.EventToolCall, ToolUse: &providers.ToolUse{ID: id, Name: "Agent", Input: []byte(input)}},
-		{Type: providers.EventDone, StopReason: "tool_use", Usage: &providers.Usage{}},
-	}
-}
-
 // RFC GW §5.2 "At spawn": Agent op=spawn workspaces shares the parent's
 // workspace with the child before its first turn. The child reads it by
 // <name>@<parent agent id>, is refused a write through the read share and a
