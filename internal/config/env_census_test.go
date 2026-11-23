@@ -33,6 +33,9 @@ var envCensusExempt = map[string]string{
 	"LOOMCYCLE_NOTION_API_KEY":     "importer's advisory ${} allowlist, not read",
 	"LOOMCYCLE_TAVILY_API_KEY":     "importer's advisory ${} allowlist, not read",
 	"LOOMCYCLE_BRAVE_API_KEY":      "importer's advisory ${} allowlist, not read",
+	// The container engine's tests share a helper outside _test.go files
+	// (internal/workspace/workspacetest); CI sets it so a skip there fails.
+	"LOOMCYCLE_REQUIRE_DOCKER": "test harness switch, not a runtime setting",
 }
 
 // envNameLiteral is a whole string literal that is a LOOMCYCLE_* name. A name
