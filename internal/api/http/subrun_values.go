@@ -347,6 +347,9 @@ func clearSpawnerStamps(subRunCtx context.Context, subIdentity store.RunIdentity
 	// A spawn's untrusted inputs are this run's alone: without the clear, a
 	// child this run spawns with none of its own would be handed them again.
 	subRunCtx = tools.WithSpawnUntrusted(subRunCtx, nil)
+	// Likewise a spawn's workspace shares (RFC GW P8): made once, by the
+	// sub-run they were asked for, never again for a child it spawns.
+	subRunCtx = tools.WithSpawnWorkspaces(subRunCtx, nil)
 	// Likewise where this run reports its outcome (a spawn with result
 	// "object"): a run it spawns must not write over it.
 	subRunCtx = tools.WithChildOutcome(subRunCtx, nil)

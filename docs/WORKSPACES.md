@@ -252,6 +252,48 @@ No op the runtime sends a worker names the provider or the model in its argument
 
 **Quarantine.** A file that crashed the conversion child is refused, by its sha256, in that workspace for `conversion.quarantine_ttl_s`, with a message saying it crashed the converter; other files and other workspaces are unaffected. The worker checks the file still hashes to what the runtime checked before it converts it, and never follows a link.
 
+## Sharing a workspace
+
+A workspace belongs to the run that opened it. Its owner can share it with another run of the same user, so a reviewer or a tester can read what a builder made, or a helper can write results into it, without copying the files first.
+
+```yaml
+agents:
+  builder:
+    tools: [Workspace, Agent]
+    workspace:
+      ops: [read, write, exec]
+      open: true
+      share: true                # may share a workspace it owns
+  reviewer:
+    tools: [Workspace, File]
+    workspace:
+      ops: [read]                # reads what it is given; opens nothing
+```
+
+**Making a share.** `Workspace op=share {name, with, access}`: `with` is the other run's agent id (a parent, a child, a sibling, or a run of another tree of the same user); `access` is `read` or `read_write`. `op=unshare {name, with}` ends it. `Agent op=spawn` and each entry of `op=parallel_spawn` take `workspaces: [{name, access}]`, shared with the child before its first turn:
+
+```json
+{"op": "spawn", "name": "reviewer", "prompt": "Review the change in build.",
+ "workspaces": [{"name": "build", "access": "read"}]}
+```
+
+**Using one.** The peer names the workspace `<name>@<owner agent id>`; its `Workspace op=list` shows it under `shared_with_me`. With `read` it may use `Workspace read`, `glob` and `grep` on it, and `File` ops that read from `workspace:<name>@<agent id>:<path>` (copy out, stat, ls, extract, import). `read_write` adds `File` writes into it and `Workspace write` and `edit`.
+
+**What a share never allows:** `exec`, a release, a status, and sharing it on. Commands in a workspace are its owner's alone, so two agents never race in one session.
+
+**Who may share with whom.**
+
+- The owner needs `workspace.share` and the operations it hands over: `read` for a read share, `read` and `write` for `read_write`.
+- The peer needs the `workspace` operation each use asks for, in its own grant: a share never gives an agent more than its definition does.
+- The peer is a live run of the same user, in the same tenant. A run of another user, an ended run and an unknown agent id are refused alike; a run with no user id neither shares nor is shared with.
+- A workspace is shared with at most 16 runs.
+
+**How long it lasts.** A share is stored on the workspace's row, so every replica honours it and it survives a pause and a resume of either run. It ends with `unshare`, with the workspace's release, or when either run ends.
+
+**Audit.** Each share, unshare and each tool call through a share writes an audit event (`workspace_share`, `workspace_unshare`, `workspace_share_use`) naming the workspace, both runs and the access.
+
+Not yet: `connect` (a share's reach to a workspace's exposed ports) arrives with servers; a share asking for it is refused.
+
 ## Limits
 
 | Setting | Default | What it bounds |

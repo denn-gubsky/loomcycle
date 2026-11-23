@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -23,6 +24,8 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"AnotherTenantSeesNothing":              testWorkspaceAnotherTenantSeesNothing,
 		"SweepCandidatesAreEndedOwnersOnly":     testWorkspaceSweepCandidatesAreEndedOwnersOnly,
 		"TouchKeepsAWorkersRowsFromGoingStale":  testWorkspaceTouchKeepsAWorkersRowsFromGoingStale,
+		"SetSharesIsACompareAndSet":             testWorkspaceSetSharesIsACompareAndSet,
+		"ListByOwnerAgentAndSharedWith":         testWorkspaceListByOwnerAgentAndSharedWith,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)
@@ -77,15 +80,16 @@ func testWorkspaceCreateFillsDefaultsAndReadsBack(t *testing.T, s store.Store) {
 	}
 	want := mkWorkspace("ws_1", "acme", "run-1", "work", "w1")
 	want.State, want.Kind, want.Lifetime, want.CreatedAt, want.UpdatedAt = got.State, got.Kind, got.Lifetime, got.CreatedAt, got.UpdatedAt
-	if got != want {
+	want.Shares = []store.WorkspaceShare{} // read back as empty, never nil
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("create returned %+v, want %+v", got, want)
 	}
 	byID, err := s.WorkspaceGet(ctx, "acme", "ws_1")
-	if err != nil || byID != got {
+	if err != nil || !reflect.DeepEqual(byID, got) {
 		t.Errorf("get = %+v, %v; want %+v", byID, err, got)
 	}
 	byName, err := s.WorkspaceGetByName(ctx, "acme", "run-1", "work")
-	if err != nil || byName != got {
+	if err != nil || !reflect.DeepEqual(byName, got) {
 		t.Errorf("get by name = %+v, %v; want %+v", byName, err, got)
 	}
 	createWorkspace(t, s, mkWorkspace("ws_2", "acme", "run-1", "alpha", "w1"))
@@ -374,5 +378,76 @@ func testWorkspaceTouchKeepsAWorkersRowsFromGoingStale(t *testing.T, s store.Sto
 	}
 	if r, err := s.WorkspaceGet(ctx, "acme", "ws_4"); err != nil || r.State != store.WorkspaceReleasing || !r.UpdatedAt.Before(mid) {
 		t.Errorf("a releasing row = %+v, %v; want it untouched", r, err)
+	}
+}
+
+// RFC GW P8: shares round-trip, and a write naming shares that moved since
+// it read them changes nothing.
+func testWorkspaceSetSharesIsACompareAndSet(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	row := createWorkspace(t, s, mkWorkspace("ws_1", "acme", "run-1", "work", "w1"))
+	at := time.Date(2026, 11, 22, 1, 2, 3, 456789000, time.FixedZone("x", 3600))
+	one := []store.WorkspaceShare{{RunID: "run-2", AgentID: "ag_2", Access: store.WorkspaceShareRead, CreatedAt: at}}
+	if ok, err := s.WorkspaceSetShares(ctx, "acme", row.ID, row.Shares, one); err != nil || !ok {
+		t.Fatalf("set shares = %v, %v; want true", ok, err)
+	}
+	got, err := s.WorkspaceGet(ctx, "acme", row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Shares) != 1 || got.Shares[0].RunID != "run-2" || got.Shares[0].AgentID != "ag_2" ||
+		got.Shares[0].Access != store.WorkspaceShareRead || !got.Shares[0].CreatedAt.Equal(at) {
+		t.Fatalf("shares read back = %+v", got.Shares)
+	}
+	// A writer that read the row before the share is refused.
+	two := []store.WorkspaceShare{{RunID: "run-3", AgentID: "ag_3", Access: store.WorkspaceShareReadWrite, CreatedAt: at}}
+	if ok, err := s.WorkspaceSetShares(ctx, "acme", row.ID, row.Shares, two); err != nil || ok {
+		t.Errorf("stale set = %v, %v; want false", ok, err)
+	}
+	// One that read it back succeeds, from exactly what it read.
+	if ok, err := s.WorkspaceSetShares(ctx, "acme", row.ID, got.Shares, nil); err != nil || !ok {
+		t.Errorf("set from read-back shares = %v, %v; want true", ok, err)
+	}
+	if again, _ := s.WorkspaceGet(ctx, "acme", row.ID); again.Shares == nil || len(again.Shares) != 0 {
+		t.Errorf("cleared shares = %#v, want empty", again.Shares)
+	}
+	// Another tenant cannot write them.
+	if ok, err := s.WorkspaceSetShares(ctx, "other", row.ID, nil, one); err != nil || ok {
+		t.Errorf("other tenant's set = %v, %v; want false", ok, err)
+	}
+}
+
+// RFC GW P8: a peer finds a shared workspace by its owner's agent id and
+// name, and lists those shared with it, in its own tenant only.
+func testWorkspaceListByOwnerAgentAndSharedWith(t *testing.T, s store.Store) {
+	ctx := context.Background()
+	a := createWorkspace(t, s, mkWorkspace("ws_a", "acme", "run-1", "work", "w1"))
+	createWorkspace(t, s, mkWorkspace("ws_b", "acme", "run-1", "other", "w1"))
+	createWorkspace(t, s, mkWorkspace("ws_c", "beta", "run-9", "work", "w1"))
+	rows, err := s.WorkspaceListByOwnerAgent(ctx, "acme", "ag_run-1", "work")
+	if err != nil || !sameIDs(workspaceIDs(rows), []string{"ws_a"}) {
+		t.Errorf("by owner agent = %v, %v; want [ws_a]", workspaceIDs(rows), err)
+	}
+	if rows, err := s.WorkspaceListByOwnerAgent(ctx, "beta", "ag_run-1", "work"); err != nil || len(rows) != 0 {
+		t.Errorf("by owner agent in another tenant = %v, %v; want none", workspaceIDs(rows), err)
+	}
+	if rows, err := s.WorkspaceListByOwnerAgent(ctx, "acme", "", "work"); err != nil || len(rows) != 0 {
+		t.Errorf("by an empty owner agent = %v, %v; want none", workspaceIDs(rows), err)
+	}
+	// A run id holding LIKE's wildcards matches only itself.
+	sh := []store.WorkspaceShare{{RunID: "r_1%", AgentID: "ag", Access: store.WorkspaceShareRead, CreatedAt: time.Now()}}
+	if ok, err := s.WorkspaceSetShares(ctx, "acme", a.ID, a.Shares, sh); err != nil || !ok {
+		t.Fatalf("set shares = %v, %v", ok, err)
+	}
+	if rows, err := s.WorkspaceListSharedWith(ctx, "acme", "r_1%"); err != nil || !sameIDs(workspaceIDs(rows), []string{"ws_a"}) {
+		t.Errorf("shared with r_1%% = %v, %v; want [ws_a]", workspaceIDs(rows), err)
+	}
+	for _, other := range []string{"r_1", "r_10", "r_1x", "r__1%", ""} {
+		if rows, err := s.WorkspaceListSharedWith(ctx, "acme", other); err != nil || len(rows) != 0 {
+			t.Errorf("shared with %q = %v, %v; want none", other, workspaceIDs(rows), err)
+		}
+	}
+	if rows, err := s.WorkspaceListSharedWith(ctx, "beta", "r_1%"); err != nil || len(rows) != 0 {
+		t.Errorf("shared with, another tenant = %v, %v; want none", workspaceIDs(rows), err)
 	}
 }

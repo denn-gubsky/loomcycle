@@ -6616,6 +6616,9 @@ export interface AgentWorkspaceGrant {
   ops?: Array<'read' | 'write' | 'exec'>;
   /** Whether the agent may open workspaces of its own. */
   open?: boolean;
+  /** Whether the agent may share a workspace it owns with another run of
+   *  the same user (RFC GW P8). It hands over only operations it holds. */
+  share?: boolean;
   /** The least isolating engine the agent accepts. Unset = any. */
   engine?: '' | 'host' | 'container';
 }

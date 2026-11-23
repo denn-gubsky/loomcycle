@@ -77,6 +77,18 @@ func resolveWorkspaceLoc(ctx context.Context, m *lifecycle.Manager, r dataRef, w
 	}
 	ident := tools.RunIdentity(ctx)
 	o := lifecycle.Owner{TenantID: ident.TenantID, UserID: ident.UserID, RunID: tools.RunID(ctx), AgentID: ident.AgentID, RootRunID: ident.RootRunID}
+	// A workspace another run shared with this one (RFC GW P8): the share
+	// must cover the use, and the use is recorded once here; every op the
+	// call then makes is checked again in the manager.
+	if _, _, shared := lifecycle.SplitShared(r.workspace); shared {
+		op := wsHookRead
+		if write {
+			op = wsHookWrite
+		}
+		if err := m.UseShared(ctx, o, r.workspace, write, op, via); err != nil {
+			return nil, workspaceRefError(err, r.workspace), false
+		}
+	}
 	return &workspaceLoc{m: m, o: o, name: r.workspace, path: wsClean(r.path), via: via}, tools.Result{}, true
 }
 
@@ -292,7 +304,13 @@ func workspaceFileError(err error) (tools.Result, bool) {
 // only that it failed (its text may name tables or hosts).
 func workspaceRefError(err error, name string) tools.Result {
 	if errors.Is(err, lifecycle.ErrNotFound) {
+		if _, _, shared := lifecycle.SplitShared(name); shared {
+			return errNotFound(fmt.Sprintf("no workspace %q is shared with this run", name), "Workspace op=list shows the workspaces shared with you.")
+		}
 		return errNotFound(fmt.Sprintf("this run has no workspace named %q", name), "Open it with Workspace op=open; Workspace op=list shows yours.")
+	}
+	if errors.Is(err, lifecycle.ErrShareReadOnly) {
+		return errPermission(fmt.Sprintf("%s: %v", name, err), "Copy what you need out of it, or ask its owner for a read_write share.")
 	}
 	if res, ok := workspaceFileError(err); ok {
 		return res

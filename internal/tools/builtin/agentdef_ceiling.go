@@ -498,8 +498,8 @@ func ceilGitRemote(ctx context.Context, def mergedDef, base *mergedDef, held str
 // ---- workspace ----
 
 // ceilWorkspace holds workspace to the author's own run's grant (RFC GW). A
-// block that grants nothing is within every ceiling. Otherwise each operation
-// and open must be held by the author's run (already narrowed by its parent,
+// block that grants nothing is within every ceiling. Otherwise each operation,
+// open and share must be held by the author's run (already narrowed by its parent,
 // for a sub-agent) or by the forked version, and the engine requirement may
 // be no weaker than the weakest of theirs. The ceiling is that union, as for
 // git_remote; a side that grants nothing adds nothing to it, so a forked
@@ -519,6 +519,10 @@ func ceilWorkspace(ctx context.Context, def mergedDef, base *mergedDef, held str
 		return fmt.Errorf("workspace.open: true is not within %s workspace grant, which may not open workspaces. "+
 			"A new agent can only be granted authority its author holds: remove it, or ask an operator to author this agent", held)
 	}
+	if def.Workspace.Share && !ceiling.Share {
+		return fmt.Errorf("workspace.share: true is not within %s workspace grant, which may not share workspaces. "+
+			"A new agent can only be granted authority its author holds: remove it, or ask an operator to author this agent", held)
+	}
 	if !ceiling.Grants() || !ceiling.AcceptsEngineRequirement(def.Workspace.Engine) {
 		return fmt.Errorf("workspace.engine: %q accepts a less isolating engine than %s workspace.engine %q. "+
 			"A new agent can only be granted authority its author holds: require that engine or a stricter one, or ask an operator to author this agent",
@@ -528,7 +532,7 @@ func ceilWorkspace(ctx context.Context, def mergedDef, base *mergedDef, held str
 }
 
 // unionWorkspace is the wider of two grants, for a ceiling: the operations
-// and open either holds, and the weaker engine requirement — of the sides
+// open and share either holds, and the weaker engine requirement — of the sides
 // that grant anything, since a side granting nothing names no requirement.
 func unionWorkspace(a, b tools.WorkspacePolicyValue) tools.WorkspacePolicyValue {
 	switch {
@@ -539,7 +543,7 @@ func unionWorkspace(a, b tools.WorkspacePolicyValue) tools.WorkspacePolicyValue 
 	}
 	out := tools.WorkspacePolicyValue{
 		Read: a.Read || b.Read, Write: a.Write || b.Write, Exec: a.Exec || b.Exec,
-		Open: a.Open || b.Open, Engine: b.Engine,
+		Open: a.Open || b.Open, Share: a.Share || b.Share, Engine: b.Engine,
 	}
 	if a.AcceptsEngineRequirement(b.Engine) {
 		out.Engine = a.Engine

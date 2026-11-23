@@ -544,6 +544,8 @@ func TestParseDataRef_WorkspaceForms(t *testing.T) {
 		"workspace:build.1:":   {kind: refWorkspace, workspace: "build.1", path: ""},
 		"workspace:w:dir/x:y":  {kind: refWorkspace, workspace: "w", path: "dir/x:y"},
 		"workspace:w_2:./out/": {kind: refWorkspace, workspace: "w_2", path: "./out/"},
+		// RFC GW P8: a workspace another agent shared, by its agent id.
+		"workspace:w@a_bob-1:x.txt": {kind: refWorkspace, workspace: "w@a_bob-1", path: "x.txt"},
 	} {
 		got, err := parseDataRef(in)
 		got.raw = ""
@@ -551,7 +553,7 @@ func TestParseDataRef_WorkspaceForms(t *testing.T) {
 			t.Errorf("parseDataRef(%q) = %+v %v, want %+v", in, got, err, want)
 		}
 	}
-	for _, bad := range []string{"workspace:", "workspace:w", "workspace:-w:a", "workspace:w@agent:a", "workspace:w:/etc/passwd", "workspace:w:a/../../b", "workspace:a b:c"} {
+	for _, bad := range []string{"workspace:", "workspace:w", "workspace:-w:a", "workspace:w@:a", "workspace:w@a b:c", "workspace:-w@agent:a", "workspace:w@a@b:c", "workspace:w:/etc/passwd", "workspace:w:a/../../b", "workspace:a b:c"} {
 		if _, err := parseDataRef(bad); err == nil {
 			t.Errorf("parseDataRef(%q) accepted", bad)
 		}

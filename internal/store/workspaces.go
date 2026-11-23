@@ -69,8 +69,27 @@ type WorkspaceRow struct {
 	// decides nothing.
 	RootRunID string
 	State     WorkspaceState
+	// Shares are the runs the owner shared the workspace with (RFC GW §5.2),
+	// in the order they were made. Never nil on a row read back.
+	Shares    []WorkspaceShare
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// The accesses a share gives (RFC GW §5.2, D20).
+const (
+	WorkspaceShareRead      = "read"
+	WorkspaceShareReadWrite = "read_write"
+)
+
+// WorkspaceShare is one share of a workspace: the run it is with, by its run
+// id (which no later run reuses, so a share ends with that run) and the agent
+// id it was named by, and what it may do.
+type WorkspaceShare struct {
+	RunID     string    `json:"run_id"`
+	AgentID   string    `json:"agent_id"`
+	Access    string    `json:"access"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // WorkspaceStore persists workspace rows (RFC GW). Every read a request path
@@ -124,4 +143,17 @@ type WorkspaceStore interface {
 	// WorkspaceActiveStates whose updated_at is before the given time, oldest
 	// first: those of a worker no replica has seen since then.
 	WorkspaceListStale(ctx context.Context, before time.Time) ([]WorkspaceRow, error)
+	// WorkspaceSetShares replaces the tenant's row's shares with to, when
+	// they are still from (compared as stored), and bumps updated_at. It
+	// reports false, and changes nothing, when the row is absent or its
+	// shares moved since the caller read them, so of two writers one wins.
+	WorkspaceSetShares(ctx context.Context, tenantID, id string, from, to []WorkspaceShare) (bool, error)
+	// WorkspaceListByOwnerAgent returns the tenant's rows of this name whose
+	// owner run carried ownerAgentID, every state, oldest first: how a
+	// share's peer names a workspace (name@agent_id). Several when runs
+	// reused one agent id.
+	WorkspaceListByOwnerAgent(ctx context.Context, tenantID, ownerAgentID, name string) ([]WorkspaceRow, error)
+	// WorkspaceListSharedWith returns the tenant's rows whose shares name
+	// the run, every state, ordered by name.
+	WorkspaceListSharedWith(ctx context.Context, tenantID, runID string) ([]WorkspaceRow, error)
 }
