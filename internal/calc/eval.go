@@ -16,6 +16,10 @@ type evaluator struct {
 	ctx       context.Context
 	steps     int
 	nextCheck int
+	// loadSteps is one step per cell read by reference: the load is charged,
+	// and bounded by MaxRefCells, on top of MaxSteps, so it never takes the
+	// expression's own budget.
+	loadSteps int
 	funcs     map[string]*builtin
 	global    *scope
 	assigned  []string
@@ -86,7 +90,7 @@ func (e *evaluator) checkSize(v val, pos int) *Error {
 // deadline or a cancel stops evaluation promptly.
 func (e *evaluator) charge(n int, pos int) *Error {
 	e.steps += n
-	if e.steps > MaxSteps {
+	if e.steps > MaxSteps+e.loadSteps {
 		return errf(codeStepLimit, pos, "evaluation took more than %d steps", MaxSteps).
 			withHint("shrink the ranges or lists, or split the work into several calls")
 	}

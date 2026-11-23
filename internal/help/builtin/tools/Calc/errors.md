@@ -77,6 +77,12 @@ function would make two columns of one name (a `pivot` value equal to the row
 column's name, `addcol` is fine: it replaces), a column has no name, or a
 table has no columns. Check the spelling against the table's `columns`.
 
+### bad_data
+A source named in `from` is not a table or value in its format: invalid JSON,
+broken CSV quoting, no Markdown table in a chunk, two columns of one name, or
+text that is not UTF-8. Fix the source, or name one in the format you meant
+(`Calc/data`).
+
 ### unknown_unit
 A unit string `convert` or `convertdelta` cannot read: a name not in the
 table, a wrong case (`Km`, `mb` — units are case-sensitive), a prefix on a

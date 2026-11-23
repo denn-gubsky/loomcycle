@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/fsops"
-	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
 
@@ -197,9 +196,24 @@ func (r dataRef) hookInput(write bool, via string) json.RawMessage {
 	return b
 }
 
+// refStores reaches the stores a volume:, memory: or document: reference
+// names, through each store's own checks: the run's volume bindings and fence,
+// Memory's scope check and set, and the Document tool itself. Every tool that
+// takes data by reference (Crypto, Calc) reads and writes through it, after
+// checkRefGrant has judged the reference. A nil Memory or Docs refuses that
+// kind of reference.
+type refStores struct {
+	Memory *Memory
+	Docs   *Document
+}
+
+// stores is the Crypto tool's view of refStores, read at call time because
+// its Memory and Docs are bound after construction.
+func (c *Crypto) stores() refStores { return refStores{Memory: c.Memory, Docs: c.Docs} }
+
 // readRef reads at most max bytes from r; more than max is refused, never
-// truncated.
-func (c *Crypto) readRef(ctx context.Context, r dataRef, max int) ([]byte, tools.Result, bool) {
+// truncated. A volume file's size is checked before it is read.
+func (c refStores) readRef(ctx context.Context, r dataRef, max int) ([]byte, tools.Result, bool) {
 	tooBig := func() tools.Result {
 		return errValidation(fmt.Sprintf("%s holds more than %d bytes", r.raw, max), "Split the data.")
 	}
@@ -249,20 +263,21 @@ func (c *Crypto) readRef(ctx context.Context, r dataRef, max int) ([]byte, tools
 
 	case refMemory:
 		m := c.Memory
-		if m == nil {
+		if m == nil || m.Store == nil { // as Memory.Execute: no store, no Memory
 			return nil, errBusiness("memory references are not available here", ""), false
 		}
 		scope, scopeID, err := m.resolveScope(ctx, r.scope)
 		if err != nil {
 			return nil, errPermission(err.Error(), "Use a scope in this agent's memory_scopes."), false
 		}
-		entry, err := m.backend(ctx).Get(ctx, scope, scopeID, r.key)
-		if err != nil {
-			var nf *store.ErrNotFound
-			if errors.As(err, &nf) {
-				return nil, errNotFound(fmt.Sprintf("%s is not set", r.raw), ""), false
-			}
-			return nil, errFrom(fmt.Sprintf("reading %s failed", r.raw), err), false
+		// Memory's own get, with its document read rules: a row the caller
+		// may not read is refused, or reads as missing, as op=get answers.
+		entry, found, res, ok := m.gatedGet(ctx, scope, scopeID, r.key)
+		if !ok {
+			return nil, res, false
+		}
+		if !found {
+			return nil, errNotFound(fmt.Sprintf("%s is not set", r.raw), ""), false
 		}
 		// A JSON string is its text; any other JSON value is read as written.
 		b := []byte(entry.Value)
@@ -298,6 +313,16 @@ func (c *Crypto) writeRef(ctx context.Context, r dataRef, data []byte) (tools.Re
 		return errValidation(fmt.Sprintf("%s holds text, and this is binary data", r.raw),
 			"Write it to a volume instead, or decrypt without to and ask for output_encoding base64."), false
 	}
+	return c.stores().writeRef(ctx, r, data, ".loomcycle-crypto-")
+}
+
+// writeRef writes data to a volume, memory or document reference; the temp
+// file of a volume write is named with tmpPrefix. Text stores refuse bytes
+// that are not valid UTF-8.
+func (c refStores) writeRef(ctx context.Context, r dataRef, data []byte, tmpPrefix string) (tools.Result, bool) {
+	if r.kind != refVolume && !utf8.Valid(data) {
+		return errValidation(fmt.Sprintf("%s holds text, and this is binary data", r.raw), "Write it to a volume instead."), false
+	}
 	switch r.kind {
 	case refVolume:
 		root, fence, err := effectiveRoot(ctx, r.volume, true)
@@ -329,7 +354,7 @@ func (c *Crypto) writeRef(ctx context.Context, r dataRef, data []byte) (tools.Re
 			return errTransient(fmt.Sprintf("writing %s failed", r.raw), "Try again."), false
 		}
 		defer dir.Close()
-		tmp, tmpName, err := fsops.CreateTemp(dir, ".loomcycle-crypto-")
+		tmp, tmpName, err := fsops.CreateTemp(dir, tmpPrefix)
 		if err != nil {
 			return errTransient(fmt.Sprintf("writing %s failed", r.raw), "Try again."), false
 		}
@@ -351,13 +376,17 @@ func (c *Crypto) writeRef(ctx context.Context, r dataRef, data []byte) (tools.Re
 
 	case refMemory:
 		m := c.Memory
-		if m == nil {
+		if m == nil || m.Store == nil { // as Memory.Execute: no store, no Memory
 			return errBusiness("memory references are not available here", ""), false
 		}
 		// A chunk body lives in Memory under this prefix; writing it here would
 		// replace a Document chunk without its revision check.
 		if strings.HasPrefix(r.key, chunkBodyKeyPrefix) {
 			return errValidation(fmt.Sprintf("%s is a document chunk's body", r.raw), "Use document:<scope>/<chunk_id>."), false
+		}
+		// As Memory op=set: a scope this run may only read is not written.
+		if res, refused := memoryReadOnlyScope(ctx, "set", r.scope); refused {
+			return res, false
 		}
 		scope, scopeID, err := m.resolveScope(ctx, r.scope)
 		if err != nil {
@@ -397,7 +426,7 @@ func (c *Crypto) writeRef(ctx context.Context, r dataRef, data []byte) (tools.Re
 
 // readChunk reads a chunk's body and revision through the Document tool, so
 // its scope checks apply; an unknown chunk is not-found, never an empty body.
-func (c *Crypto) readChunk(ctx context.Context, r dataRef) (string, int, tools.Result, bool) {
+func (c refStores) readChunk(ctx context.Context, r dataRef) (string, int, tools.Result, bool) {
 	if c.Docs == nil {
 		return "", 0, errBusiness("document references are not available here", ""), false
 	}
@@ -480,7 +509,7 @@ func (c *Crypto) readFrom(ctx context.Context, in cryptoInput) (cryptoInput, too
 		// The workspace grant and hook are judged here (RFC GW P2 §3.4).
 		b, res, ok = c.readWorkspaceRef(ctx, r, limit)
 	} else {
-		b, res, ok = c.readRef(ctx, r, limit)
+		b, res, ok = c.stores().readRef(ctx, r, limit)
 	}
 	if !ok {
 		return in, res, false
