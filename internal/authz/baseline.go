@@ -97,7 +97,7 @@ var memberMCPTools = []string{
 	"memorybackenddef", "documentsourcedef", "volumedef", "credentialdef", "authz",
 	"memory", "channel", "channeldef", "path", "document", "history", "decision",
 	"evaluation", "context", "interruption_resolve", "publish_channel", "subscribe_channel",
-	"peek_channel", "ack_channel", "stream_user_run_states", "identity", "file", "calc", "workspace",
+	"peek_channel", "ack_channel", "stream_user_run_states", "identity", "file", "calc",
 	// review: reaching the tool is not ruling; each statement asks the
 	// member's `review` grant, which no member baseline holds.
 	"review",
@@ -107,7 +107,12 @@ var memberMCPTools = []string{
 // tenant-confinable tool, the token tool among them (its own tenant's scrape
 // tokens only). The runtime-global ones (snapshots, pause and resume, the
 // resolver probe, the all-channel list) stay the admin's.
-var tenantMCPTools = append([]string{"retention_override", "telemetry", "crypto", "groupdef", "acldef", "aclbinding", "clientdef", "ontology", "erasure", "operatortokendef"}, memberMCPTools...)
+//
+// workspace is here and not on the member list: it runs commands on a
+// workspace worker, so a member reaches it only when an operator grants it
+// `invoke mcp-tool:workspace` through an access-control list (RFC GW P9,
+// D-P9-13 as ruled by the owner on 2026-11-23).
+var tenantMCPTools = append([]string{"retention_override", "telemetry", "crypto", "groupdef", "acldef", "aclbinding", "clientdef", "ontology", "erasure", "operatortokendef", "workspace"}, memberMCPTools...)
 
 // selfTokenRule is every user's say over its own credentials (RFC FA P5):
 // approving a device login, which mints a token for the approver themselves
