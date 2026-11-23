@@ -237,7 +237,7 @@ func TestPolyroots_MatchesNumPyRoots(t *testing.T) {
 		{"round(polyroots([3.2, 2, 1]), 8)", "[-0.3125-0.46351241i, -0.3125+0.46351241i]"},
 		{"round(polyroots([1, -3, 2]), 12)", "[1, 2]"},
 		{"round(polyroots([1, -6, 11, -6]), 10)", "[1, 2, 3]"},
-		{"polyroots([1, 0, 1])", "[-1i, 1i]"},
+		{"round(polyroots([1, 0, 1]), 12)", "[-1i, 1i]"},
 		{"polyroots([1, 0, 0])", "[0, 0]"},
 		{"round(polyroots([1, -1, 0]), 12)", "[0, 1]"},
 		{"round(polyroots([0, 0, 1, -1]), 12)", "[1]"},
@@ -263,7 +263,7 @@ func TestEig_NonSymmetricMatrixMatchesNumPy(t *testing.T) {
 		{"round(eig([[1, -1], [1, 1]])[1], 12)", "[1-1i, 1+1i]"},
 		{"round(eig([[1, -1], [1, 1]])[2], 8)", "[[0.70710678, 0.70710678], [0.70710678i, -0.70710678i]]"},
 		{"round(eig([[1, 2], [3, 4]])[1], 12)", "[-0.372281323269, 5.372281323269]"},
-		{"eig([[0, -1], [1, 0]])[1]", "[-1i, 1i]"},
+		{"round(eig([[0, -1], [1, 0]])[1], 12)", "[-1i, 1i]"},
 	})
 	r := mustEval(t, "eig([[1, 2], [3, 4]])")
 	if r.Type != "list" || strings.Contains(r.Text, "i") {
