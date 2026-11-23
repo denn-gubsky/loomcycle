@@ -24,7 +24,7 @@ func TestWorkspacePrincipalRule_TokenEndReleasesAndAConfigPrincipalDoesNot(t *te
 	ctx := context.Background()
 	mint := func(name string) string {
 		t.Helper()
-		row, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{Name: name, TenantID: "acme", Subject: "alice", TokenHash: "h-" + name, AllowedScopes: []string{"runs:create"}})
+		row, err := st.OperatorTokenDefCreate(ctx, store.OperatorTokenDefRow{DefID: "otd_" + name, Name: name, TenantID: "acme", Subject: "alice", TokenHash: "h-" + name, AllowedScopes: []string{"runs:create"}})
 		if err != nil {
 			t.Fatal(err)
 		}

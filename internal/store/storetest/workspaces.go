@@ -82,6 +82,13 @@ func testWorkspaceCreateFillsDefaultsAndReadsBack(t *testing.T, s store.Store) {
 	want := mkWorkspace("ws_1", "acme", "run-1", "work", "w1")
 	want.State, want.Kind, want.Lifetime, want.CreatedAt, want.UpdatedAt = got.State, got.Kind, got.Lifetime, got.CreatedAt, got.UpdatedAt
 	want.Shares = []store.WorkspaceShare{} // read back as empty, never nil
+	// A row written with no owner kind is a run's; the open stamps its last
+	// use (RFC GW D35).
+	want.OwnerKind, want.LastUsedAt = store.WorkspaceOwnerRun, got.CreatedAt
+	if !got.LastUsedAt.Equal(got.CreatedAt) {
+		t.Errorf("last used = %v, want the create time %v", got.LastUsedAt, got.CreatedAt)
+	}
+	want.LastUsedAt = got.LastUsedAt
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("create returned %+v, want %+v", got, want)
 	}
