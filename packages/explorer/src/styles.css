@@ -782,12 +782,24 @@
   opacity: 0.5;
   cursor: default;
 }
-.loomcycle-explorer .doc-header-actions button.doc-edit {
-  border-color: var(--border);
-  color: var(--fg);
+/* Edit is the one primary action, so it stays highlighted: a fixed light
+   amber fill with dark text, readable in both themes. */
+.loomcycle-explorer .doc-header-actions button.doc-edit,
+.loomcycle-explorer .doc-chunk-bar button.doc-chunk-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #f8c58c;
+  border-color: #eeac62;
+  color: #3d2408;
+  font-weight: 600;
 }
-.loomcycle-explorer .doc-header-actions button.doc-edit:hover:not(:disabled) {
-  border-color: var(--accent);
+.loomcycle-explorer .doc-chunk-bar button.doc-chunk-edit {
+  padding: 0 8px;
+}
+.loomcycle-explorer .doc-header-actions button.doc-edit:hover:not(:disabled),
+.loomcycle-explorer .doc-chunk-bar button.doc-chunk-edit:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 .loomcycle-explorer .doc-panel-count {
   min-width: 16px;
@@ -1045,14 +1057,6 @@
 .loomcycle-explorer .doc-chunk-bar button:disabled {
   opacity: 0.4;
   cursor: default;
-}
-.loomcycle-explorer .doc-chunk-bar button.doc-chunk-edit {
-  padding: 0 8px;
-  border-color: var(--border);
-  color: var(--fg);
-}
-.loomcycle-explorer .doc-chunk-bar button.doc-chunk-edit:hover:not(:disabled) {
-  border-color: var(--accent);
 }
 .loomcycle-explorer .doc-chunk-bar button:focus-visible {
   outline: 2px solid var(--accent);
