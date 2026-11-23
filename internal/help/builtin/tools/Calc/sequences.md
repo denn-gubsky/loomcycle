@@ -17,7 +17,8 @@ be negative or a fraction. Same as `a:b` and `a:step:b`.
 Example: `range(10, 1, -3)` gives `[10, 7, 4, 1]`.
 
 ### len(v)
-The number of elements of a list, or of characters of a string.
+The number of elements of a list, of characters of a string, or of rows of a
+table.
 
 Example: `len([4, 8, 15, 16, 23, 42])` gives `6`.
 
@@ -65,9 +66,11 @@ when `init` is omitted.
 
 Example: `reduce([2, 3, 4], (acc, x) -> acc * 10 + x)` gives `234`.
 
-### sort(v, key?)
+### sort(v, key?) or sort(t, column, order?)
 `v` ascending: all numbers or all strings. With `key`, sorts by `key(x)`, so
-lists sort by a field and `x -> -x` sorts descending. Stable.
+lists sort by a field and `x -> -x` sorts descending. Stable. A table sorts
+by one column, `"asc"` (the default) or `"desc"`, empty cells last
+(`Calc/tables`).
 
 Example: `sort([[3, "c"], [1, "a"]], p -> p[1])` gives `[[1, "a"], [3, "c"]]`.
 
@@ -79,8 +82,9 @@ Example: `unique([3, 1, 3, 2, 1])` gives `[3, 1, 2]`.
 ## Counting and testing
 
 ### count(v, pred_or_value?)
-The number of elements; with a function, of elements where it holds; with a
-value, of elements equal to it.
+The number of elements, not counting empty table cells; with a function, of
+elements where it holds; with a value, of elements equal to it. Of a table:
+its rows, or with a function, the rows `r` where it holds.
 
 Example: `count([1, 2, 2, 3, 2], 2)` gives `3`.
 
