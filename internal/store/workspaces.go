@@ -71,7 +71,11 @@ type WorkspaceRow struct {
 	State     WorkspaceState
 	// Shares are the runs the owner shared the workspace with (RFC GW §5.2),
 	// in the order they were made. Never nil on a row read back.
-	Shares    []WorkspaceShare
+	Shares []WorkspaceShare
+	// Egress are the names of the routes the workspace may send requests
+	// out through (RFC GW §6.3), fixed at open. Never nil on a row read
+	// back: none is an empty list, and an empty list is no way out.
+	Egress    []string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
