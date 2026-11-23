@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.165) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.166) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,14 +212,16 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.165.0) gives every agent `Calc`, exact arithmetic with
-units, dates, statistics and finance, lets the File tool copy, convert, OCR and
-unpack files inside a workspace on its worker, and reads legacy-encoded text.
-Read the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.166.0) turns `Calc` into a numerical toolkit
+(matrices, distributions and calculus, complex numbers, tables, and data read
+and written by reference in a run, also over HTTP, gRPC and both clients), and
+gives workspaces a container engine, interpreters, sharing, checkpoints,
+servers, Document checkout and controlled egress. Read the upgrade notes in
+[`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.164.0 stopped an in-run fork that changes an agent's code from
-keeping grants its author lacks, planned every directive change of an ontology
-entry in use, and gave workspace workers streamed file transfer and a quota.
+Before it, v1.165.0 gave every agent `Calc`, exact arithmetic with units,
+dates, statistics and finance, let the File tool copy, convert, OCR and unpack
+files inside a workspace on its worker, and read legacy-encoded text.
 
 Before that, v1.155.0 rendered a Document back into a file: `File op=render`
 writes Markdown, HTML, Word or PDF (typeset by Typst in the conversion

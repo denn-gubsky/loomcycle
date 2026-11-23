@@ -8,6 +8,64 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.166.0
+
+*Calc grows from arithmetic into a numerical toolkit: matrices and linear algebra, probability distributions and numeric calculus, complex numbers, tables, and reading and writing data by reference inside a run, plus `POST /v1/_calc`, a gRPC `Calc` RPC and `calc()` on both clients (RFC GY P2–P4). Workspaces get a container engine, persistent Python and Node interpreters, sharing, checkpoints, servers, Document checkout and commit, pictures for the model, an MCP surface and controlled egress (RFC GW P3–P10). Security: Crypto's `memory:` references now apply Memory's document read rules, and volume refusals no longer name host paths.*
+
+The v1.166 line: #2831 to #2876.
+- `@loomcycle/client` 1.166.0: `calc()`, `egressRouteDef()` and the Calc types (`complex`, `table`, `format`). The Python adapter moves to 1.166.0 (`python-v1.166.0`): `calc()` and `egress_route_def()` over gRPC.
+- Postgres migrations 0136 (workspace shares), 0137 (`egress_route_defs`), 0139 (workspace owner kind) and 0140 (workspace egress); 0138 is unused. SQLite builds the same schema itself.
+- New Go dependency `gonum.org/v1/gonum` v0.17.0 (Calc's matrices and distributions; about 2.3 MiB of binary).
+- `proto/loomcycle.proto` gains the `Calc` RPC and the EgressRouteDef messages. The core-to-worker protocol is now **version 2**.
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **Upgrade workspace workers together with the core (#2870).** The worker protocol is version 2 (the egress stream and `open {egress}`); a version-1 worker and a version-2 core do not pair.
+- **Container egress is opt-in (#2869).** Set `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_DIR` (a Linux Docker daemon is needed) to give each container session a network of its own whose only way out is the egress routes; without it, container sessions behave as before.
+- **The `workspace` MCP tool is an operator's grant (#2867, #2875).** It stays off unless `workspace.mcp.enabled` is set, and a member token does not get it from the baseline.
+- **Crypto `memory:` references apply Memory's read rules (#2860).** A `from: memory:<scope>/<key>` naming a tenant document row needs the tenant document read grant, a row of a document the caller's access rules deny reads as missing, a `to:` into a read-only scope is refused, and a reference with no Memory store is refused instead of failing. This was already Memory's own behaviour; Crypto (and now Calc) skipped it since #2809/#2814.
+- **Volume refusals name the path the caller wrote (#2873).** File-tool refusals ("escapes the volume", "goes through a symbolic link that leads outside the volume", "does not exist") no longer carry the volume's host directory or a resolved host path. Anything that matched the old "escapes sandbox" wording must match the new text.
+- **Calc behaviour changes from v1.165 (#2844):** `size(x)` returns the shape (`[r, c]` or `[n]`) where it was an alias of `len`; a matrix plus a vector is refused (`shape`) where it added row by row; the matrix rank is `matrank` (`rank` stays the statistics ranking).
+- The Calc tool's description and schema grew (the new sections, `format`, `from`, `to`), so an agent that keeps Calc sends somewhat more tool-definition tokens per model call (cached where the provider caches tools); `-Calc` still removes it.
+
+### Calc (RFC GY P2–P4: #2843, #2844, #2848, #2850, #2853, #2856, #2860, #2862, #2874, #2876)
+
+- **Matrices (#2844):** a list of rows is a matrix; `*` is the matrix product, `'` the transpose, `A[i, j]` indexing; `solve`, `lstsq`, `inv`, `pinv`, `det`, `lu`, `qr`, `cholesky`, `eig`, `svd` and the rest, sized from the shapes before any work, with a process-wide gate for heavy operations.
+- **Distributions and calculus (#2848):** density, cumulative and inverse for the normal, t, chi-squared, F, exponential and uniform distributions, binomial and Poisson; `integrate`, `deriv`, `root`, `minimize`, `polyfit`, `polyval`, `interp`; a method that does not settle is refused `no_convergence`.
+- **Complex numbers (#2853):** `2i`, `complex(a, b)`, `re`, `im`, `conj`, `arg`, `polyroots`, and `eig` of any square matrix; the name `i` stays an ordinary variable.
+- **Tables (#2856):** from `vars` or `csv()`; `select`, `where`, `addcol`, `groupby`, `pivot`, `join`, `describe` …; a `format` field writes a table or matrix as JSON, Markdown or CSV. New error code `column`.
+- **Data by reference (#2860):** inside a run, `from` loads a volume file, Memory value or Document chunk into a variable and `to` writes the result there, through the agent's own Read/Write/Memory/Document grants and their pre-hooks; the result reports place, shape and size, never the content. New error code `bad_data`. Off-run transports refuse both.
+- **Everywhere (#2843, #2850):** `POST /v1/_calc` and the gRPC `Calc` RPC take any authenticated token except one limited to certain agents, charged to its run rate; `calc()` on the TypeScript and Python clients.
+- **Help (#2862, #2874):** the Calc guide covers every section; the top-level help lists the most-used signatures and the names models bring from other tools (`ln`, `powmod`, `correl`, `seq`, `**` …), which the refusals now also name. A help measurement on 62 tasks: Haiku 5.5 answered 62/62.
+
+### Workspaces (RFC GW P3–P10: #2832, #2836, #2841, #2842, #2845, #2846, #2847, #2849, #2851, #2861, #2863–#2867, #2869–#2872, #2875)
+
+- **Container engine (#2841, #2851):** one locked-down container per workspace; the default session image is published as `denngubsky/loomcycle-workspace:<version>` (#2836).
+- **Interpreters (#2842):** persistent Python and Node kernels (`run_cell`, `reset_kernel`), on the host and in containers.
+- **Sharing (#2845):** share a workspace read-only or read-write with another run of the same user.
+- **Checkpoints (#2866):** checkpoint, restore and fork a workspace, counted against its disk quota.
+- **Documents (#2849):** `File op=checkout` and `op=commit` check Documents out as Markdown and commit them back as new editions.
+- **Servers (#2864):** `start`, `stop` and `logs` for a server inside a workspace.
+- **Pictures (#2847, #2863):** a tool can return pictures to the model, in each provider's own form (a model that cannot see images is refused); `Workspace op=view` shows one from a workspace.
+- **MCP (#2867, #2875):** Workspace over the MCP server, owned by the token's identity and released when idle, at its lifetime or when the token ends.
+- **Egress (#2861, #2865, #2869–#2872):** the core's egress proxy, routes in config (the `workspace` preset: pypi, pypi-files, npm) and the agent's `workspace.egress` grant; `EgressRouteDef`, routes a tenant writes, over HTTP, gRPC, MCP and both clients (port 443 only); npm `@scope%2fname` passes through.
+- A download with no `Content-Length` streams straight into a workspace (#2846); the P2 data pass is tested end to end with a workspaces guide (#2832).
+
+### Knowledge base and documents (#2834, #2835, #2837, #2838, #2839, #2840, #2852, #2858)
+
+- `kb/taxonomist` aligns concepts across its runs with a checked model call (#2834); `kb/survey`'s relation hop counts accepted relations only (#2838).
+- `node_stats mode=assign` and concept candidates (#2852); files are assigned under `rule:assign`, skipping documents already placed by a sibling (#2858); a bulk demote ruling takes live placements back to proposed (#2837).
+- `export_md` leaves out expired and refuted statements (#2839); rewriting a fact keeps its source-gone mark (#2840).
+
+### Explorer (RFC GZ phases 1–3: #2854, #2859, #2868)
+
+- One borderless single-line row for both trees; a reading-first document view; collapsible panes, side panels, an annotation card, a breadcrumb and tree search.
+
+### Files (#2833, #2855)
+
+- A DOS box-drawing line is no longer taken for Cyrillic; such text is read as CP437 (#2833). An HTML page's meta charset is found without lower-casing its text, fixing a fuzz-found panic (#2855).
+
 ## What's in v1.165.0
 
 *Every agent gets `Calc`, exact arithmetic with units, dates, statistics and finance (RFC GY P1). Workspace files can be copied, imported, converted, OCR'd, transcribed and unpacked on their own worker (RFC GW P2). `kb/taxonomist` keeps only the concepts that recur across its runs, and `kb/walker` keeps only the "what changed" taxonomy move (RFC GM follow-ups). Legacy-encoded text and HTML are read.*
