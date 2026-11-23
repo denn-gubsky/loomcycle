@@ -5,7 +5,7 @@
 -- credential ("$cred:<name>") the core adds on the way out; it never holds a
 -- secret. methods is a JSON list as text, read whole.
 
-CREATE TABLE egress_route_defs (
+CREATE TABLE IF NOT EXISTS egress_route_defs (
     tenant_id   TEXT        NOT NULL DEFAULT '',
     name        TEXT        NOT NULL,
     url         TEXT        NOT NULL,
