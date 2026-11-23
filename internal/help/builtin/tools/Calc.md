@@ -1,6 +1,6 @@
 ---
 name: Calc
-description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, finance and dates; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
+description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, matrices and linear algebra, finance and dates; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
 ---
 The `Calc` tool evaluates a math expression and returns the answer, exactly
 where it can be exact. Decimals are exact fractions, so `0.1 + 0.2` is `0.3`
@@ -68,7 +68,10 @@ lists every code.
 - **Indexing starts at 1**: `v[1]` is the first element.
 - On lists, `+` and `-` work element by element and a number applies to
   every element; `v * 2` and `v / 2` scale a list. Between two lists, and for
-  `1 / v` or `v ^ 2`, write `.*`, `./`, `.^`; `*` between lists is refused.
+  `1 / v` or `v ^ 2`, write `.*`, `./`, `.^`. `*` between two matrices is
+  the matrix product; between two vectors it is refused.
+- A matrix is a list of rows: `[[1, 2], [3, 4]]`. `A'` is its transpose,
+  `A[i, j]` an element.
 - `if(cond, a, b)` chooses a value.
 - `#` starts a comment.
 
@@ -102,6 +105,9 @@ topic=Calc/<section>`:
   temperature, volume, energy, data size and more; prefixes and compounds.
 - `Calc/statistics` — mean, median, mode, variance and standard deviation
   (sample or population), quantiles, ranks, correlation, regression.
+- `Calc/matrices` — the matrix product, transpose, building matrices,
+  determinant, inverse, solving linear systems, least squares, the LU, QR,
+  Cholesky, eigen and singular value decompositions.
 - `Calc/finance` — loan payments, future and present value, NPV, IRR,
   compound growth, percentages; the sign convention.
 - `Calc/dates` — dates and datetimes, day arithmetic, months, working days,

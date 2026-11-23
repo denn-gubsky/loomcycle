@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/calc"
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/config"
 	"github.com/denn-gubsky/loomcycle/internal/files/extract"
@@ -239,7 +240,9 @@ func (b *boot) buildToolsCore(httpTool *builtin.HTTP) {
 	b.allTools = append(b.allTools, skillTool)
 	// Calc is pure: no state, no I/O, no grant beyond the agent's tools list.
 	// Not added to agents by default; an agent opts in with tools: [Calc].
-	calcTool := &builtin.Calc{}
+	// Its one gate bounds heavy matrix operations across every run and the
+	// MCP `calc` tool, which reaches this same instance through the server.
+	calcTool := &builtin.Calc{Gate: calc.NewGate()}
 	b.allTools = append(b.allTools, calcTool)
 	b.calcTool = calcTool
 	b.searchRegistry = searchRegistry

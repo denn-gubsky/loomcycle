@@ -553,6 +553,18 @@ func (d *Document) selectForRuling(ctx context.Context, key sqlmem.ScopeKey, req
 	if none {
 		return 0, nil, nil, nil
 	}
+	if req.Action == rulingActionDemote {
+		// A demote by filter counts and selects only what it may demote. Left to
+		// demoteRefusal, the person's and the operator's statements — most of a
+		// tenant's asserted rows — would fill each call's max and stay asserted,
+		// so every later call would select the same rows and never progress.
+		// This is demoteRefusal in SQL, failing closed on sync: whether a synced
+		// statement is a person's lives in its attributes, so none is selected
+		// here (name one by id to demote it).
+		where = append(where, "e.expired_at IS NULL", "e.operator_ruled_at IS NULL",
+			"NOT (e.method = ? AND COALESCE(e.run_id, '') = '')", "e.method <> ?")
+		args = append(args, edgeMethodManual, edgeMethodSync)
+	}
 	cond := strings.Join(where, " AND ")
 	res, err := d.query(ctx, key, `SELECT COUNT(*) FROM chunk_edges e LEFT JOIN chunks cf ON cf.id = e.from_id LEFT JOIN chunks ct ON ct.id = e.to_id WHERE `+cond, args...)
 	if err != nil {
@@ -588,17 +600,41 @@ func (a *docACL) readableOrAll(ctx context.Context, docID string) (bool, error) 
 // scope is tenant or user; as is the authority the connector decided.
 func (d *Document) RuleStatements(ctx context.Context, scope string, req connector.RuleStatementsRequest, as RulingAuthority) (connector.RuleStatementsResult, error) {
 	out := connector.RuleStatementsResult{Scope: scope, Action: req.Action, DryRun: req.DryRun == nil || *req.DryRun, Breakdown: []connector.RulingBreakdown{}}
-	var accept bool
+	var accept, demote bool
 	switch req.Action {
 	case "accept":
 		accept = true
 	case "reject":
+	case rulingActionDemote:
+		demote = true
 	default:
-		return out, reviewInvalid(`action must be "accept" or "reject"`)
+		return out, reviewInvalid(`action must be "accept", "reject" or "demote"`)
 	}
 	reason := strings.TrimSpace(req.Reason)
-	if !accept && reason == "" {
+	switch {
+	case demote && reason == "":
+		return out, reviewInvalid("reason is required to demote: say why the statements go back to review; the reviewer reads it on each")
+	case !accept && reason == "":
 		return out, reviewInvalid("reason is required to reject: say why, so the proposer never re-proposes it and a later reader knows")
+	}
+	if demote {
+		// Taking what is live out of force is the operator's decision about the
+		// tenant's graph (RFC GM D17), never a reviewer's: a review grant is a
+		// grant to rule on proposals.
+		if as != RuleAsOperator {
+			return out, reviewForbidden("a bulk demote is for an admin or a tenant operator; a reviewer rules on proposals")
+		}
+		if req.Filter != nil {
+			f := *req.Filter
+			switch f.Status {
+			case "":
+				f.Status = edgeStatusAsserted
+			case edgeStatusAsserted:
+			default:
+				return out, reviewInvalid("a demote selects live asserted statements: filter.status may only be asserted")
+			}
+			req.Filter = &f
+		}
 	}
 	max := req.Max
 	switch {
@@ -640,9 +676,16 @@ func (d *Document) RuleStatements(ctx context.Context, scope string, req connect
 		if err != nil {
 			return out, err
 		}
+		var code, msg string
+		if demote {
+			code, msg = demoteRefusal(&c.s)
+		}
 		switch {
 		case !ok:
 			out.Skipped++
+		case code != "":
+			// Refused here, as below, so the dry run reports what the real call does.
+			refused = append(refused, connector.RulingItem{ID: c.s.ID, Error: code, Message: msg})
 		case accept && len(req.IDs) > 0 && c.s.Status == edgeStatusRejected:
 			// Ids are re-read by the real call, so a rejection made after the
 			// dry run is read here as the selection: an accept by ids never
@@ -714,7 +757,13 @@ func (d *Document) applyBulkRuling(ctx context.Context, key sqlmem.ScopeKey, msc
 	out.Failed += len(refused)
 	var ruled []reviewCandidate
 	for _, c := range toRule {
-		item, ok := d.ruleOne(ctx, key, mscope, op, rulingID, ruledBy, accept, reason, c)
+		var item connector.RulingItem
+		var ok bool
+		if req.Action == rulingActionDemote {
+			item, ok = d.demoteOne(ctx, key, mscope, rulingID, reason, c)
+		} else {
+			item, ok = d.ruleOne(ctx, key, mscope, op, rulingID, ruledBy, accept, reason, c)
+		}
 		out.Items = append(out.Items, item)
 		if ok {
 			ruled = append(ruled, c)
@@ -767,6 +816,65 @@ func (d *Document) ruleOne(ctx context.Context, key sqlmem.ScopeKey, mscope stor
 		item.Message = "ruled, but not recorded for undo"
 		logStatementReviewFault(ctx, "statement ruling fingerprint not recorded", rulingID, err)
 	}
+	return item, true
+}
+
+const (
+	// rulingActionDemote is a bulk demote's action: live asserted statements
+	// back to proposed (RFC GM D17, reversible in bulk).
+	rulingActionDemote = "demote"
+	// rulingNotAsserted refuses a demote of a statement that is not live and
+	// asserted.
+	rulingNotAsserted = "not_asserted"
+)
+
+// demoteRefusal is why a bulk demote leaves s, or "": the rules
+// maintain_statement demote holds a statement to. A statement a person wrote,
+// or one an operator ruled on, is a human decision a bulk pass never undoes;
+// demote it one at a time with maintain_statement if it must go.
+func demoteRefusal(s *statementRow) (code, msg string) {
+	switch {
+	case s.Status != edgeStatusAsserted || s.ExpiredAt != nil:
+		return rulingNotAsserted, "not_asserted: the statement is not a live asserted statement, so there is nothing to demote"
+	case madeByAPerson(s):
+		return "statement_manual", "statement_manual: a person wrote this statement, so a bulk demote leaves it"
+	case s.OperatorRuledAt != nil:
+		return "statement_operator_ruled", "statement_operator_ruled: an operator ruled on this statement, so a bulk demote leaves it"
+	}
+	return "", ""
+}
+
+// demoteOne demotes one statement of a bulk demote: its record first (its
+// prior fields, the audit of what the ruling took out of force), then the
+// write maintain_statement demote makes — status proposed and the reason on
+// judged_at / judge_reason / judged_by — compare-and-set on the statement
+// still being live, asserted and not ruled on by an operator. A failure is
+// the item's alone.
+func (d *Document) demoteOne(ctx context.Context, key sqlmem.ScopeKey, mscope store.MemoryScope, rulingID, reason string, c reviewCandidate) (connector.RulingItem, bool) {
+	item := connector.RulingItem{ID: c.s.ID}
+	if err := d.exec(ctx, key, `INSERT INTO statement_ruling_items (ruling_id, edge_id, prior, fingerprint) VALUES (?, ?, ?, '')`,
+		rulingID, c.s.ID, rulingPriorOf(&c.s, nil)); err != nil {
+		item.Error, item.Message = "failed", "the ruling could not be recorded, so the statement was not demoted: "+err.Error()
+		return item, false
+	}
+	// The operator's ruling is checked again at the write: one made after the
+	// selection is a human decision this demote must not undo.
+	n, err := d.execCount(ctx, key, `UPDATE chunk_edges SET status = ?, judged_at = ?, judge_reason = ?, judged_by = ? WHERE `+statementLiveCAS+` AND operator_ruled_at IS NULL`,
+		edgeStatusProposed, time.Now().UnixNano(), reason, judgedByForVerdict(ctx), c.s.ID, edgeStatusAsserted)
+	if err != nil || n == 0 {
+		if derr := d.exec(ctx, key, `DELETE FROM statement_ruling_items WHERE ruling_id = ? AND edge_id = ?`, rulingID, c.s.ID); derr != nil {
+			logStatementReviewFault(ctx, "statement ruling item not removed", rulingID, derr)
+		}
+		if err != nil {
+			item.Error, item.Message = "failed", err.Error()
+		} else {
+			item.Error, item.Message = rulingChanged, rulingChanged+": the statement was changed or retired since it was selected"
+		}
+		return item, false
+	}
+	// The change event is maintain_statement's, whose demote this is.
+	d.publishEdgeChange(ctx, key, mscope, maintainOp, c.s.ID, c.s.FromID, c.s.ToID, c.s.Kind, edgeStatusProposed)
+	item.Status = edgeStatusProposed
 	return item, true
 }
 
@@ -879,6 +987,12 @@ func (d *Document) RevertRuling(ctx context.Context, scope string, req connector
 	out.Action = asStr(res.Rows[0][0])
 	if out.Action == rulingActionRevert {
 		return out, reviewInvalid("ruling " + req.RulingID + " is a revert, which is not undone: rule on its statements again")
+	}
+	if out.Action == rulingActionDemote {
+		// Putting a statement back in force must pass the checks an acceptance
+		// makes (a functional kind's second target, a retired entry), which a
+		// restore of the prior status would skip.
+		return out, reviewInvalid("ruling " + req.RulingID + " is a demote, which is undone by accepting its statements again: rule action accept on them, now proposals")
 	}
 	// A bulk ruling's statements record bulk:<id>; a review policy's record
 	// the rule that ruled each (policy:<rule>@<version>), which revertOne

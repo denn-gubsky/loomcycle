@@ -259,7 +259,9 @@ type Connector interface {
 	// and samples; the real call needs ExpectCount equal to the current match
 	// count, rules each statement as accept_statement / reject_statement would,
 	// records the ruling (ruled_by bulk:<ruling id>) and is audited. One failure
-	// does not stop the rest.
+	// does not stop the rest. Action demote takes live asserted statements
+	// back to proposed instead (RFC GM D17), an operator's alone, leaving a
+	// statement a person wrote or an operator ruled on; it is not reverted.
 	//
 	// Who may rule: an admin or a tenant operator (holding write on each
 	// statement's from-document), or a member holding the ACL `review` grant on

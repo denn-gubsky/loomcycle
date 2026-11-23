@@ -1,7 +1,7 @@
 ---
 name: Calc/limits
 kind: section
-description: "Calc limits — the fixed bounds on one call (expression and vars size, steps, time, exact-number size, list size, nesting, digits, output) and what to do when you reach each."
+description: "Calc limits — the fixed bounds on one call (expression and vars size, steps, time, exact-number size, list size, matrix size, nesting, digits, output) and what to do when you reach each."
 ---
 Every call is bounded, so one expression cannot run away. The bounds are
 fixed; no setting raises them. Reaching one refuses the call with the code in
@@ -30,6 +30,13 @@ brackets (see `Calc/errors`), except the output bound, which cuts the result.
 - **Lists: 1,000,000 elements** (`list_too_long`) — and that is the **total**
   for one value: a list of 1,000 lists of 1,001 elements is over it. A range
   longer than the limit is refused before it is built.
+- **Matrices: 250,000 elements** (`too_large`) in a matrix a function reads
+  or builds, 500 × 500 at most for a square one. The matrix product, the
+  solvers and the decompositions are refused before any work when they would
+  cost more than a 500 × 500 matrix (rows × columns × the smaller of the two,
+  125,000,000). Reading or writing a matrix costs a step per element. Large
+  matrix operations from every caller share a pool of one slot per processor
+  core; waiting for a slot counts against the 2 seconds (`time_limit`).
 - **Nesting: 200 levels** of brackets, lists and lambdas, and **64 levels**
   of one function calling another (`too_deep`). Name the intermediate values.
 - **Digits: 1 to 1,000** (`bad_request`). A float shows at most about 17
@@ -40,11 +47,12 @@ brackets (see `Calc/errors`), except the output bound, which cuts the result.
 
 ## List operators that are refused
 
-`*` and `/` between two lists are refused (`type`), and so are a number
-divided by a list (`1 / v`) and a power with a list on either side (`v ^ 2`,
-`2 ^ v`): write `.*`, `./` and `.^` for element by element. Element-wise
-operands must have the same length (`shape`). `+` and `-`, and `*` or `/` by a
-number, work on lists directly.
+`/` between two lists is refused (`type`), and so are `*` between two plain
+vectors, a number divided by a list (`1 / v`) and a power with a list on
+either side (`v ^ 2`, `2 ^ v`): write `.*`, `./` and `.^` for element by
+element. Element-wise operands must have the same length, or the same shape
+for matrices (`shape`). `+` and `-`, and `*` or `/` by a number, work on lists
+directly; `*` between two matrices is the matrix product (`Calc/matrices`).
 
 ## Examples
 

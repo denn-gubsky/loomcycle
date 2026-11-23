@@ -40,9 +40,19 @@ type (
 		fn   node
 		args []node
 	}
+	// indexN is x[idx] or x[idx, col]; col is nil for one index.
 	indexN struct {
-		p      int
-		x, idx node
+		p           int
+		x, idx, col node
+	}
+	// allN is a lone `:` inside brackets: every row or every column.
+	allN struct {
+		p int
+	}
+	// transN is the postfix transpose x'.
+	transN struct {
+		p int
+		x node
 	}
 	listN struct {
 		p     int
@@ -79,6 +89,8 @@ func (n *binaryN) position() int { return n.p }
 func (n *factN) position() int   { return n.p }
 func (n *callN) position() int   { return n.p }
 func (n *indexN) position() int  { return n.p }
+func (n *allN) position() int    { return n.p }
+func (n *transN) position() int  { return n.p }
 func (n *listN) position() int   { return n.p }
 func (n *rangeN) position() int  { return n.p }
 func (n *lambdaN) position() int { return n.p }
@@ -170,6 +182,8 @@ func (p *parser) unexpected(t token, want string) *Error {
 		e.Hint = "use `==` to compare; `=` assigns and only at the start of a statement"
 	case t.kind == tNum || t.kind == tIdent || t.kind == tStr || t.kind == tOp && t.s == "(":
 		e.Hint = "no implicit multiplication: write `*` between factors"
+	case t.kind == tOp && t.s == "'":
+		e.Hint = "strings use double quotes, \"text\"; `'` after a matrix is its transpose, A'"
 	}
 	return e
 }
@@ -329,6 +343,9 @@ func walk(n node, visit func(node) bool) {
 	case *indexN:
 		walk(n.x, visit)
 		walk(n.idx, visit)
+		walk(n.col, visit)
+	case *transN:
+		walk(n.x, visit)
 	case *listN:
 		for _, a := range n.items {
 			walk(a, visit)
@@ -543,21 +560,51 @@ func (p *parser) postfix() (node, *Error) {
 			x = &callN{p: t.pos, fn: x, args: args}
 		case t.kind == tOp && t.s == "[":
 			p.next()
-			idx, err := p.expr()
+			ix, err := p.index(t.pos, x)
 			if err != nil {
 				return nil, err
 			}
-			if _, err := p.expect("]", "`]`"); err != nil {
-				return nil, err
-			}
-			x = &indexN{p: t.pos, x: x, idx: idx}
+			x = ix
 		case t.kind == tOp && t.s == "!":
 			p.next()
 			x = &factN{p: t.pos, x: x}
+		case t.kind == tOp && t.s == "'":
+			p.next()
+			x = &transN{p: t.pos, x: x}
 		default:
 			return x, nil
 		}
 	}
+}
+
+// index parses the rest of x[i] or x[i, j] after the `[`.
+func (p *parser) index(pos int, x node) (node, *Error) {
+	idx, err := p.indexPart()
+	if err != nil {
+		return nil, err
+	}
+	var col node
+	if p.isOp(",") {
+		p.next()
+		if col, err = p.indexPart(); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := p.expect("]", "`]`"); err != nil {
+		return nil, err
+	}
+	return &indexN{p: pos, x: x, idx: idx, col: col}, nil
+}
+
+// indexPart is one index: an expression, or a lone `:` for all of them.
+func (p *parser) indexPart() (node, *Error) {
+	if t := p.peek(); t.kind == tOp && t.s == ":" {
+		if n := p.peekAt(1); n.kind == tOp && (n.s == "," || n.s == "]") {
+			p.next()
+			return &allN{p: t.pos}, nil
+		}
+	}
+	return p.expr()
 }
 
 // list parses comma-separated expressions up to close; a trailing comma is
