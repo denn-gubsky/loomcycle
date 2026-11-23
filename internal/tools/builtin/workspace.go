@@ -129,7 +129,7 @@ var workspaceSharedOps = map[string]bool{"read": true, "glob": true, "grep": tru
 var workspaceOpGrant = map[string]string{
 	"open": "open", "release": "any", "list": config.WorkspaceOpRead, "status": config.WorkspaceOpRead,
 	"exec": config.WorkspaceOpExec, "read": config.WorkspaceOpRead, "glob": config.WorkspaceOpRead, "grep": config.WorkspaceOpRead,
-	"view": config.WorkspaceOpRead,
+	"view":  config.WorkspaceOpRead,
 	"write": config.WorkspaceOpWrite, "edit": config.WorkspaceOpWrite,
 	// A cell runs code as a command does (RFC GW §5.7: grants exec).
 	"run_cell": config.WorkspaceOpExec, "reset_kernel": config.WorkspaceOpExec,
