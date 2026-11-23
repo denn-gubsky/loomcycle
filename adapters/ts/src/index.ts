@@ -134,6 +134,9 @@
  *     listVolumes(): Promise<PersistentVolumesResponse>
  *     listEphemeralVolumes(): Promise<EphemeralVolumesResponse>
  *
+ *     // Workspace egress routes (RFC GW P4; tenant operators only)
+ *     egressRouteDef(input): Promise<SubstrateToolResponse>       // create/get/list/delete
+ *
  *     // App clients (RFC FL ClientDef; tenant operator or admin)
  *     clientDef(input): Promise<unknown>                          // POST /v1/_clientdef
  *     createClientDef / updateClientDef(name, client, opts?): Promise<ClientDefRecord>
@@ -862,6 +865,9 @@ export type {
   AppClientConfig,
   ClientDefInput,
   ClientDefRecord,
+  EgressRouteDefInput,
+  EgressRouteMethod,
+  EgressRouteView,
   ConfigAppClient,
   AppClientEntry,
   ClientDefListResponse,

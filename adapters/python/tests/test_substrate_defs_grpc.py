@@ -51,6 +51,8 @@ _CASES = [
     # RFC FL — the apps that sign people in through this server's gates.
     ("client_def", "ClientDef"),
     ("volume_def", "VolumeDef"),
+    # RFC GW P4 — a tenant's workspace egress routes.
+    ("egress_route_def", "EgressRouteDef"),
     ("team_def", "TeamDef"),
     ("hook_def", "HookDef"),
     # RFC BE History — not a versioned def, but shares the op-discriminated
