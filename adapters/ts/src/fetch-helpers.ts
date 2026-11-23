@@ -10,7 +10,7 @@
  * the boring fetch + error-translation machinery lives here.
  */
 
-import type { AuthzReason, TokenProvider } from "./types.js";
+import type { AuthzReason, CalcErrorCategory, TokenProvider } from "./types.js";
 import {
   AclDeniedError,
   AgentIDInUseError,
@@ -18,6 +18,7 @@ import {
   AlreadyPausingError,
   AuthError,
   BackpressureError,
+  CalcError,
   ChannelCursorRegressionError,
   InsufficientScopeError,
   InvalidArgumentError,
@@ -458,6 +459,45 @@ export async function raiseFromResponse(resp: Response): Promise<never> {
     default:
       throw new LoomcycleError(msg, opts);
   }
+}
+
+/** raiseFromCalcResponse maps a failed `POST /v1/_calc` (RFC GY). A refusal
+ *  the Calc tool made carries its category (`errorCategory`) beside the
+ *  tool's code and raises CalcError, whatever its status (400, 422 or 503):
+ *  the status table would make a 422 a SnapshotVersionError. Anything else —
+ *  an empty body, a body over the size cap, a spent run rate, a run-plane
+ *  token — was refused before the tool ran and goes through
+ *  raiseFromResponse like every other route. */
+export async function raiseFromCalcResponse(resp: Response): Promise<never> {
+  let bodyText = "";
+  try {
+    bodyText = await resp.text();
+  } catch {
+    // network-level body read failure — fall through with empty body
+  }
+  const body = bodyObject(bodyText);
+  const category = calcCategory(body?.errorCategory);
+  if (body !== undefined && category !== undefined) {
+    const detail = stringField(body.detail) ?? stringField(body.error);
+    throw new CalcError(detail ?? `${resp.status} ${stockStatusPhrase(resp.status)}`, {
+      status: resp.status,
+      bodyText: bodyText.slice(0, 1024),
+      code: stringField(body.code),
+      detail,
+      hint: stringField(body.hint),
+      pos: numberField(body.pos),
+      category,
+      retryable: body.isRetryable === true,
+    });
+  }
+  // The body was consumed above; hand the shared dispatch an identical copy.
+  return raiseFromResponse(
+    new Response(bodyText, { status: resp.status, statusText: resp.statusText, headers: resp.headers }),
+  );
+}
+
+function calcCategory(v: unknown): CalcErrorCategory | undefined {
+  return v === "validation" || v === "business" || v === "transient" ? v : undefined;
 }
 
 /** The 409 codes of the access-control management routes: a group an

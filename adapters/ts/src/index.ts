@@ -205,7 +205,8 @@
  *     (NOT a BackpressureError: a hard budget, not retryable),
  *     SnapshotVersionError, SubstrateToolRefusedError (v0.8.22),
  *     AclDeniedError (a 403 an access-control rule decided; action,
- *     resource, reasons).
+ *     resource, reasons), CalcError (calc() refused the expression; the
+ *     tool's code, hint, pos, category).
  *     Every one carries `retryable` (true only for a refusal that clears
  *     on its own).
  *
@@ -789,6 +790,11 @@ export type {
   DecisionScoreAnswer,
   DecisionModel,
   DecisionModelsResponse,
+  // Calc outside a run (RFC GY)
+  CalcInput,
+  CalcResult,
+  CalcValueType,
+  CalcErrorCategory,
   // Speech: read-aloud and transcription outside a run (RFC FK P3)
   SpeechFormat,
   SpeechOptions,
@@ -874,6 +880,7 @@ export {
   AgentNotFoundError,
   AlreadyPausingError,
   AuthError,
+  CalcError,
   BackpressureError,
   DeviceLoginError,
   NotFoundError,
