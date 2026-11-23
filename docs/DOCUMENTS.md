@@ -1053,7 +1053,7 @@ curl -sS "localhost:8080/v1/_statements/review?summarize=true" -H "Authorization
  "summary": [{"kind": "cites", "method": "rule:citation", "from_path_prefix": "/board/regulatory-external", "judge_verdict": "", "count": 1118}, …]}
 ```
 
-**A bulk ruling.** `POST /v1/_statements/rule` takes `{action: accept | reject, ids: [...] | filter: {...the queue's filters...}, reason, dry_run, expect_count, max}`. Name the statements by `ids` or by `filter`, not both; an empty filter is the whole queue (proposals, unless `filter.status` names another status).
+**A bulk ruling.** `POST /v1/_statements/rule` takes `{action: accept | reject | demote, ids: [...] | filter: {...the queue's filters...}, reason, dry_run, expect_count, max}`. Name the statements by `ids` or by `filter`, not both; an empty filter is the whole queue (proposals, unless `filter.status` names another status).
 
 - **Dry run by default.** It returns `matched` (what the selection matches that you may read), `selected` (the part this call considers: at most `max`, default and ceiling 1000, the first in the queue's order, newest first), `skipped` (of those, the ones you may not rule on: counted, never named), `to_rule`, a `sample` of 20 as the queue renders them, and the `breakdown` by kind and method. A statement the real call will refuse — a rejected one named in a bulk accept by `ids` — is left out of `to_rule`, the sample and the breakdown and reported as the real call reports it, in `items` (`not_a_proposal`) and `failed`; `matched` still counts it. Nothing changes.
 - **The real call** is `dry_run: false` with `expect_count` equal to the dry run's `matched`. If the queue changed in between it is refused with `queue_changed` (409) and nothing is ruled: run the dry run again. Over 1000 matches, each call rules the next 1000.
@@ -1069,6 +1069,8 @@ curl -sS -X POST localhost:8080/v1/_statements/rule -H "Authorization: Bearer $T
   -d '{"action":"accept","filter":{"method":"rule:citation","kind":"cites"},"dry_run":false,"expect_count":1118}'
 # {"ruling_id": "6f2c…", "ruled": 1000, "failed": 0, "items": [...], ...}
 ```
+
+**A bulk demote.** `action: demote` takes live asserted statements back to `proposed`, so a whole set a rule or a policy put in force — every placement of one method under one path, say — goes back to review together. It takes the same `ids` or `filter` (whose `status` is `asserted`, and may be nothing else; an empty `status` reads as `asserted`), the same dry run, `expect_count` and `max` (1000), and needs `reason`, which is recorded on each statement as `maintain_statement` `demote` records it (`judge_reason`, `judged_at`, `judged_by: operator`). A statement a person wrote is left and reported `statement_manual`, one an operator ruled on `statement_operator_ruled`, and one that is not live and asserted `not_asserted`. It is an admin's or a tenant operator's alone (`forbidden` for a member, even holding `review`) and is audited like any ruling (`statement_ruling`, action `demote`). A demote is not reverted: to undo it, accept its statements again.
 
 **Undo.** `POST /v1/_statements/revert {ruling_id}` (a bulk ruling's, or a [review policy's](#review-policies)) returns each statement that ruling ruled to the status it had before (a proposal goes back to `proposed`, with its earlier ruling fields), but only while nothing has changed it since: no new or moved evidence, no maintenance (`maintain_statement`), no judge, no later ruling. A rejected statement's tombstone goes with it, so the relation can be proposed again. An accepted correction that retired its original brings the original back with it, in one write, only while the original is still exactly as the acceptance left it; otherwise neither changes and the correction is reported `changed`. Statements that changed are listed with `error: changed` and left as they are. Each revert writes a `statement_ruling_revert` audit record. An unknown ruling is `ruling_not_found` (404).
 
@@ -1809,7 +1811,7 @@ Once documents are placed under concepts, an agent can move through the taxonomy
 
 **What is withheld.** Every count in these moves is over documents the caller may read. In `place`, an id you may not read is answered exactly as a missing one, in `not_found`. Classes above a document's own type, concept chains, taxonomies and node ids are the ontology's text: a caller who may not read the ontology document gets the own type alone and an issue saying why. Node briefs need the `tenant` scope, and a node hit or brief is shown only where `get_annotation` would show it.
 
-The knowledge-base bundle's `kb/walker` uses all of these where the ontology declares topics: up a hit's chain, to a topic's members, `place` for where hits sit together, baselines for what the matches are about, and `measure` `compare` for "what changed in X".
+The knowledge-base bundle's `kb/walker` uses only `measure` with `compare`, for "what changed in X": a measurement (2026-11-20) found its topic, `place` and baseline moves lowered overview recall while most documents were still unplaced, so they were taken out of its prompt. The ops themselves stay for any agent to call.
 
 ### Proposing a taxonomy from the corpus — `kb/taxonomist`
 

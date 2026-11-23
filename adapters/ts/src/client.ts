@@ -1191,6 +1191,13 @@ export class LoomcycleClient {
    * with a result per statement, and records `ruled_by: bulk:<ruling_id>`.
    * Mirrors POST /v1/_statements/rule.
    *
+   * `demote` takes live asserted statements back to proposed instead (the
+   * filter's `status` is `asserted`), with the same dry run; `reason` is
+   * required and recorded on each. It leaves a statement a person wrote or
+   * an operator ruled on (`statement_manual`, `statement_operator_ruled`),
+   * is an admin's or a tenant operator's alone, and is not reverted: accept
+   * its statements again.
+   *
    * For an admin or a tenant operator (write on each from-document), or a
    * member holding the access-control action `review` on the from-document's
    * path; what the caller may not rule on is skipped and counted. A refusal
@@ -1198,7 +1205,7 @@ export class LoomcycleClient {
    * `queue_changed`, `unavailable`.
    */
   async ruleStatements(
-    action: "accept" | "reject",
+    action: "accept" | "reject" | "demote",
     select: { ids: string[] } | { filter: ReviewQueueFilter },
     opts?: {
       reason?: string;
