@@ -1,16 +1,16 @@
 # Workspaces
 
-A **workspace** is a directory on a *workspace worker*, a process apart from the runtime, where an agent runs shell commands and works on files through the `Workspace` tool. It is for work that needs a real shell and real toolchains (Python, Node): run a script, build something, test it, read the result. The `File` tool moves files in and out of a workspace and converts them there, by reference, so a file's bytes never pass through the model. This guide covers what workspaces are in this release (RFC GW, phases 1 and 2), how to run a worker, the agent grant, the tool, moving and converting files, its limits, and what its refusals mean.
+A **workspace** is a directory on a *workspace worker*, a process apart from the runtime, where an agent runs shell commands and works on files through the `Workspace` tool. It is for work that needs a real shell and real toolchains (Python, Node): run a script, build something, test it, read the result. The `File` tool moves files in and out of a workspace and converts them there, by reference, so a file's bytes never pass through the model. This guide covers what workspaces are in this release (RFC GW, phases 1 to 3), how to run a worker, the `container` engine that isolates a workspace's commands, the agent grant, the tool, moving and converting files, its limits, and what its refusals mean.
 
 ## What a workspace is, and what it is not
 
 **What it is.** An agent granted `workspace` opens a workspace by name, runs commands in it (`exec`), reads and changes its files (`read`, `write`, `edit`, `glob`, `grep`) and may `release` it. With the `File` tool it copies files and folders in and out of it, converts files inside it, imports a Markdown file from it as a Document and renders a Document into it (see "Moving files" and "Converting files in a workspace"). A workspace belongs to the **run that opened it**: no other run sees it, not a sub-agent of that run, not a sibling of the same tree, not another run of the same user. It is deleted, files and all, when that run ends, however it ends (completed, failed, cancelled). A run that is paused or parked waiting for input keeps it. If the runtime dies mid-run, a sweeper and the worker's next attach remove what is left.
 
-**What it is not, yet.** Phases 1 and 2 have the `host` engine only, and leave several things to later phases:
+**What it is not, yet.** Several things are left to later phases:
 
-- **No isolation.** On the `host` engine a command runs as the worker's own OS user. It can read and write anything that user can, including the worker's token, and in `local` mode the runtime's data directory, config and secrets files and environment. It is not a sandbox. The `container` engine, which isolates, is phase 3.
-- **No managed network.** No network is granted or routed for a workspace. On the `host` engine nothing blocks it either: a command has whatever network the worker's machine has. Do not rely on either.
-- **No hard disk limit under a command.** The disk quota stops what `File` and the `Workspace` tool write before a byte is written, but a command's own writes are only measured after it ends (see "The disk quota"). One command can pass the quota while it runs; the next step is stopped. The `container` engine (phase 3) can put a file-system limit under it.
+- **No isolation on the `host` engine.** On `host` (the default, and the only engine of `local` mode) a command runs as the worker's own OS user. It can read and write anything that user can, including the worker's token, and in `local` mode the runtime's data directory, config and secrets files and environment. It is not a sandbox. The `container` engine isolates: see "The container engine".
+- **No network routes.** On the `container` engine a session has no network at all; on `host` nothing blocks it, and a command has whatever network the worker's machine has. Package downloads through routes the operator declares come with egress, phase 4; until then, on the `container` engine, `pip install` and `npm install` of anything outside the image fail at once.
+- **No hard disk limit under a command.** The disk quota stops what `File` and the `Workspace` tool write before a byte is written, but a command's own writes are only measured after it ends (see "The disk quota"), on either engine. One command can pass the quota while it runs; the next step is stopped.
 - **No durable, git or shared workspaces.** Every workspace is ephemeral, empty when opened and gone when its run ends, and owned by one run. A reference into another agent's workspace (`workspace:<name>@<agent_id>:<path>`) comes with sharing, phase 8; checking a Document out into a workspace and committing it back, phase 7.
 - **Not on loomcycle's MCP server.** A workspace is pinned to a run, and an MCP session has none: the MCP `file` tool refuses a workspace reference.
 
@@ -33,7 +33,7 @@ Mint the worker a token whose **only** scope is `workers:attach`, bound to the t
 loomcycle operator-token create --name ws-acme --tenant acme --subject ws-acme --scopes workers:attach
 ```
 
-The runtime refuses the legacy `LOOMCYCLE_AUTH_TOKEN`, any `substrate:admin` token, a token with other scopes and a person's sign-in credential. A worker serves only its token's tenant. An admin can mint a **shared** token (`--worker-shared`) that serves every tenant, but a shared worker must run an isolating engine, and on the `host` engine it is refused at attach: until the container engine arrives, run one tenant-bound worker per tenant.
+The runtime refuses the legacy `LOOMCYCLE_AUTH_TOKEN`, any `substrate:admin` token, a token with other scopes and a person's sign-in credential. A worker serves only its token's tenant. An admin can mint a **shared** token (`--worker-shared`) that serves every tenant; a shared worker must run the `container` engine, and on the `host` engine it is refused at attach.
 
 On the worker's machine:
 
@@ -51,13 +51,52 @@ The worker reads:
 | `LOOMCYCLE_WORKER_DISPATCHER` | — | The runtime's worker endpoint (`host:port`, `unix:///path`, `dns:///name:port`); or `--dispatcher`. |
 | `LOOMCYCLE_WORKER_TOKEN` | — | The `workers:attach` token. |
 | `LOOMCYCLE_WORKSPACE_ROOT` | — (required) | Where it makes its workspaces, one directory each, mode 0700. |
-| `LOOMCYCLE_WORKSPACE_ENGINE` | `host` | The only engine in this release. |
+| `LOOMCYCLE_WORKSPACE_ENGINE` | `host` | `host`, or `container` (next section). |
 | `LOOMCYCLE_WORKSPACE_CAPACITY` | 8 | The workspaces it holds at most. |
 | `LOOMCYCLE_WORKSPACE_IDLE_STREAMS` | 16 | Idle op streams it keeps open, 1–32. |
 | `LOOMCYCLE_WORKSPACE_COMMANDS` | any | Comma-separated programs a command may start with, e.g. `python3,node`; a listed interpreter still runs any code. |
 | `LOOMCYCLE_WORKER_TLS_CA`, `_CERT`, `_KEY`, `_SERVER_NAME`, `LOOMCYCLE_WORKER_INSECURE` | — | TLS to the endpoint, as for conversion workers. |
 
-A worker is known by its token's grant and its name (`--id`, by default the host name): `tenant:<tenant>/<name>`. Keep the name the same across restarts, or the runtime will read every workspace on its disk as unknown and remove it. The worker reports `python` and `node` when it finds them on its `PATH`; a workspace opened without a `toolchain` goes only to a worker with both. [WORKERS.md](WORKERS.md#workspace-workers) and [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace) have the full settings.
+A worker is known by its token's grant and its name (`--id`, by default the host name): `tenant:<tenant>/<name>` or `shared/<name>`. Keep the name the same across restarts, or the runtime will read every workspace on its disk as unknown and remove it. On `host` the worker reports `python` and `node` when it finds them on its `PATH`, on `container` when its session image has them; a workspace opened without a `toolchain` goes only to a worker with both. [WORKERS.md](WORKERS.md#workspace-workers) and [CONFIGURATION.md](CONFIGURATION.md#workspace-workers-workspace) have the full settings.
+
+## The container engine
+
+With `LOOMCYCLE_WORKSPACE_ENGINE=container` a worker runs each workspace's commands in a container of its own, the workspace's **session** (phase 3). The worker drives a container daemon through its command line (`docker`, or `podman`); the session image is the operator's (`LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE`, required).
+
+```sh
+LOOMCYCLE_WORKER_DISPATCHER=runtime.internal:7788 \
+LOOMCYCLE_WORKER_TOKEN=<the workers:attach token> \
+LOOMCYCLE_WORKSPACE_ROOT=/var/lib/loomcycle/workspaces \
+LOOMCYCLE_WORKSPACE_ENGINE=container \
+LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE=<the session image> \
+loomcycle worker --role workspace
+```
+
+**What a session is.**
+
+- The workspace is mounted at **`/workspace`**, always the same path, and nothing else of the worker's disk: a command cannot see another workspace. A Python environment made in `/workspace` keeps working when the workspace is forked or restored later.
+- **No network.** A session has no route anywhere: a connection or a name lookup fails at once, not after a timeout.
+- **A read-only root.** A command writes into `/workspace` and the session's own `/tmp` (a size-capped tmpfs) only; what is in `/tmp` ends with the session.
+- **No privilege.** Every capability dropped, `no-new-privileges`, and the worker's own uid, never root.
+- **Limits** on memory (no swap past it), CPUs and processes.
+- **Its own environment**: `HOME=/workspace`, the pip and npm caches under it, `TMPDIR=/tmp`. Nothing of the worker's environment, its token included, reaches a command.
+
+A session starts at a workspace's first command and stays for the next ones, so what a command installs into the workspace (a virtual environment, `node_modules`) is there for the next. A session that is gone is started again at the next command: the files are kept, a running server and `/tmp` are not. A command past its timeout, or one the runtime stopped waiting for, is killed inside the session with everything it started; a process that leaves its process group lives until the workspace is released, which removes the session.
+
+**Running it.** The worker will not run this engine as root: run it as a user that may use the container daemon (the `docker` group, or a rootless daemon), on a machine or VM given to it, since starting containers is close to root on the host. The sessions have no such right. At start the worker runs one throwaway session to check the daemon, the runtime and the image, reports the image's `python3` and `node` as its toolchains, and removes the sessions a previous run left. A worker that itself runs in a container and drives the host's daemon sets `LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT` to its root as the host sees it.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` | — (required) | The session image; it needs `/bin/sh`. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_RUNTIME` | the daemon's | `runc`, `runsc` (gVisor) or a Kata runtime: gVisor and Kata put a kernel boundary under each session. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_CLI` | `docker` | The container command. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_MEMORY_MB` | 2048 | A session's memory. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_CPUS` | 2 | A session's CPUs. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_PIDS` | 512 | A session's processes. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_TMP_MB` | 256 | A session's `/tmp`, counted in its memory. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT` | the root | The root as the daemon sees it. |
+
+An agent that must only ever run on this engine sets `engine: container` in its grant; a shared worker must run it. The disk quota works as on `host` (measured after each command), and a workspace's files are still converted by the worker's conversion child, not in the session.
 
 ## Local mode
 

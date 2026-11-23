@@ -4575,7 +4575,15 @@ The workspace worker reads these variables, beside `LOOMCYCLE_WORKER_DISPATCHER`
 | Variable | Default | Meaning |
 |---|---|---|
 | `LOOMCYCLE_WORKSPACE_ROOT` | — (required) | The directory the worker makes its workspaces in, one directory per workspace, named by its id. Made with mode 0700 when missing. |
-| `LOOMCYCLE_WORKSPACE_ENGINE` | `host` | How commands run. Only `host` exists in this release: a command runs as the worker's own user, with no isolation, so use it only on a trusted machine. |
+| `LOOMCYCLE_WORKSPACE_ENGINE` | `host` | How commands run. `host`: as the worker's own user, with no isolation, so only on a trusted machine. `container`: in a container per workspace with no network, a read-only root, no capabilities and the workspace at `/workspace` (RFC GW P3); a shared worker must use it. [WORKERS.md](WORKERS.md#the-container-engine) has what it confines. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_IMAGE` | — | The session image; required with the `container` engine. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_RUNTIME` | the daemon's | The OCI runtime of a session (`runc`, `runsc`, a Kata runtime). |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_CLI` | `docker` | The container command (`docker` or `podman`). |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_MEMORY_MB` | 2048 | A session's memory, 64–1048576 MiB, with no swap beyond it. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_CPUS` | 2 | A session's CPUs, 0.01–1024. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_PIDS` | 512 | A session's processes, at least 16. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_TMP_MB` | 256 | A session's `/tmp`, a tmpfs counted in its memory. |
+| `LOOMCYCLE_WORKSPACE_CONTAINER_HOST_ROOT` | the root | `LOOMCYCLE_WORKSPACE_ROOT` as the container daemon sees it, for a worker that runs in a container itself. |
 | `LOOMCYCLE_WORKSPACE_CAPACITY` | 8 | The workspaces this worker holds at most, 1–10000. An open past it is refused, and the runtime places the workspace on another worker. |
 | `LOOMCYCLE_WORKSPACE_IDLE_STREAMS` | 16 | The idle op streams the worker keeps open for the runtime, 1–32. The runtime asks for more when it runs low. |
 | `LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` | 1024 | The memory limit (GOMEMLIMIT, MiB, 64–1048576) of the conversion child the worker starts to convert its workspaces' files (RFC GW D34). The runtime's local worker gets `workspace.convert.memory_limit_mb`. The child is this binary run as a conversion worker, with the `LOOMCYCLE_WORKER_*_COMMAND` helper settings and `LOOMCYCLE_HELPER_WRAPPER` of the worker's environment (the local worker gets the runtime's own helper settings); [WORKERS.md](WORKERS.md) has what it converts. |

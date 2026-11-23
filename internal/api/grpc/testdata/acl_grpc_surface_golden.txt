@@ -9,6 +9,7 @@ Authz	any	false	-
 AwaitChannels	substrate:tenant	false	await channel:*
 BindSubjectPrincipal	substrate:tenant	false	write document:*
 BroadcastChannels	substrate:tenant	false	broadcast channel:*
+Calc	any	false	-
 CancelAgent	runs:create	true	cancel run:*
 CancelTurn	runs:create	true	cancel run:*
 ClientDef	substrate:tenant	false	read def:client/*

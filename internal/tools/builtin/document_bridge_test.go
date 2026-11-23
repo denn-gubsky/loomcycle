@@ -171,6 +171,60 @@ func TestDeleteDocument_FactKeepsItsQuoteWhenTheSourceGoes(t *testing.T) {
 	})
 }
 
+// The source-gone mark outlives a rewrite of the fact: the place it came from is
+// still gone. Only a write that names a new, live source clears it.
+func TestUpsertChunk_KeepsSourceGoneUntilANewSource(t *testing.T) {
+	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
+		passage, facts, passageDoc := bridgeDoc(t, d, ctx)
+		out, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"memory/leave","title":"25 days","body":"Staff get 25 days.",
+			"source_chunk_id":%q,"char_start":13,"char_end":41}`, facts, passage))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		fact := out["id"].(string)
+		key, _, _ := d.resolveScope(ctx, "user")
+		sourceGone := func(label string) int {
+			t.Helper()
+			res, err := d.query(ctx, key, `SELECT source_gone FROM chunk_memory_meta WHERE chunk_id = ?`, fact)
+			if err != nil || len(res.Rows) != 1 {
+				t.Fatalf("%s: fact meta: %v %v", label, res, err)
+			}
+			return asInt(res.Rows[0][0])
+		}
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"delete_document","scope":"user","id":%q}`, passageDoc)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		if got := sourceGone("after the source is deleted"); got != 1 {
+			t.Fatalf("fixture: source_gone = %d after the source was deleted, want 1", got)
+		}
+
+		// New wording, no new source: the fact still has no live source.
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"memory/leave","title":"25 days","body":"Staff get 25 days of leave."}`, facts)); r.IsError {
+			t.Fatal(r.Text)
+		}
+		if got := sourceGone("after a re-upsert with no source"); got != 1 {
+			t.Errorf("a re-upsert with no new source reset source_gone to %d, want 1", got)
+		}
+
+		// A new live source gives the fact a source again.
+		src, r := docExec(t, d, ctx, `{"op":"create_document","scope":"user","title":"Policy v2"}`)
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		p, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"create_chunk","scope":"user","document_id":%q,"title":"Leave","body":"Staff accrue 25 days of annual leave each year."}`, src["document_id"]))
+		if r.IsError {
+			t.Fatal(r.Text)
+		}
+		if _, r := docExec(t, d, ctx, fmt.Sprintf(`{"op":"upsert_chunk","scope":"user","document_id":%q,"natural_key":"memory/leave","title":"25 days","body":"Staff get 25 days of leave.",
+			"source_chunk_id":%q,"char_start":13,"char_end":41}`, facts, p["id"])); r.IsError {
+			t.Fatal(r.Text)
+		}
+		if got := sourceGone("after a re-upsert with a new source"); got != 0 {
+			t.Errorf("a re-upsert naming a new live source left source_gone = %d, want 0", got)
+		}
+	})
+}
+
 // A fact with no document source is not affected by any of this.
 func TestUpsertChunk_NoSourceIsUnchanged(t *testing.T) {
 	d, ctx, _ := documentFixture(t)

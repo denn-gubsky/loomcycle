@@ -4,8 +4,9 @@ kind: section
 description: "Calc list functions — range, len, sum and product, map, filter and reduce (list and function in either order), sort, unique, count, any and all, zip and reverse, and the random functions with seed."
 ---
 Functions on lists. A function argument is a lambda (`x -> x^2`) or the name
-of a function you defined (see `Calc/language`). `length` and `size` are not
-names here: write `len`.
+of a function you defined (see `Calc/language`). `length` is not a name
+here: write `len`. `size` gives a shape, `[rows, columns]` (see
+`Calc/matrices`).
 
 ## Building and measuring
 

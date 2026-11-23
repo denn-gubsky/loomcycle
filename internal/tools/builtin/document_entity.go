@@ -76,6 +76,7 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	if src != nil && in.SourceQuote == "" {
 		in.SourceQuote = src.quote
 	}
+	in.newSource = src != nil
 
 	existing, err := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey)
 	if err != nil {
@@ -292,12 +293,16 @@ type chunkMetaRow struct {
 	// different state from a count of zero.
 	AccessCount    *int64
 	LastAccessedAt *int64
+	// SourceGone is set once the chunk this fact was derived from was deleted
+	// (snapshotDerivedQuotes). Its quote stays on the fact; this says where it came
+	// from is gone.
+	SourceGone bool
 }
 
 // readChunkMeta returns the chunk's sidecar row, or found=false when it has none.
 func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunkID string) (row chunkMetaRow, found bool, err error) {
 	res, err := d.query(ctx, key,
-		`SELECT valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, coalesce(source_quote, ''), coalesce(subject, ''), judged_at, coalesce(judge_reason, ''), coalesce(judged_by, ''), observed_at, access_count, last_accessed_at
+		`SELECT valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, coalesce(source_quote, ''), coalesce(subject, ''), judged_at, coalesce(judge_reason, ''), coalesce(judged_by, ''), observed_at, access_count, last_accessed_at, source_gone
 		   FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID)
 	if err != nil || len(res.Rows) == 0 {
 		return chunkMetaRow{}, false, err
@@ -312,6 +317,7 @@ func (d *Document) readChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chunk
 		JudgedAt: asInt64Ptr(r[13]), JudgeReason: asStr(r[14]), JudgedBy: asStr(r[15]),
 		ObservedAt:  asInt64Ptr(r[16]),
 		AccessCount: asInt64Ptr(r[17]), LastAccessedAt: asInt64Ptr(r[18]),
+		SourceGone: asInt(r[19]) != 0,
 	}, true, nil
 }
 
@@ -762,14 +768,23 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 	judgedAt := int64Arg(prev.JudgedAt)
 	judgeReason := prev.JudgeReason
 	judgedBy := prev.JudgedBy
+	// PRESERVED, except when this write names a new source. The column came by ALTER
+	// with DEFAULT 0, so leaving it out of the insert below silently cleared it: a
+	// rewording made a fact whose source was deleted look sourced again. A write that
+	// supplies a source_chunk_id checked live (checkFactSource) gives the fact a
+	// source again, so that one write clears it.
+	sourceGone := 0
+	if prev.SourceGone && !in.newSource {
+		sourceGone = 1
+	}
 
 	if err := d.exec(ctx, key, `DELETE FROM chunk_memory_meta WHERE chunk_id = ?`, chunkID); err != nil {
 		return err
 	}
 	return d.exec(ctx, key,
 		`INSERT INTO chunk_memory_meta
-		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject, judged_at, judge_reason, judged_by, observed_at, access_count, last_accessed_at, ontology_version)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   (chunk_id, valid_at, invalid_at, created_at, expired_at, class, origin, confidence, session_id, run_id, event_seq, natural_key, source_quote, subject, judged_at, judge_reason, judged_by, observed_at, access_count, last_accessed_at, ontology_version, source_gone)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		chunkID, int64Arg(validAt), invalidAt, createdAt, expiredAt, class,
 		originForEntityWriteWith(ctx, in), confidence,
 		// session_id has no writer yet: it is not on the run ctx, only the run id is.
@@ -785,7 +800,8 @@ func (d *Document) writeChunkMeta(ctx context.Context, key sqlmem.ScopeKey, chun
 		int64Arg(prev.AccessCount), int64Arg(prev.LastAccessedAt),
 		// STAMPED, never preserved: the vocabulary a fact is "written under" is the one
 		// in force at its latest write (RFC FO §3.6).
-		d.ontologyVersionArg(ctx))
+		d.ontologyVersionArg(ctx),
+		sourceGone)
 }
 
 // int64Arg / float64Arg turn a nullable read back into a bind arg that round-trips

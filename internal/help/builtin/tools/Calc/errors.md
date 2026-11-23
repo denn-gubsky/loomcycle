@@ -33,8 +33,9 @@ The function got the wrong number of arguments. `hint` shows its signature.
 ### type
 A value of the wrong kind: a string in arithmetic, a number where a list or
 a function is needed, a float where an exact integer is needed (`factor`,
-`gcd`, `binomial` …), `*` or `/` between two lists, a number divided by a
-list, or a power of a list; a date meeting a datetime, or a date in `*`. For
+`gcd`, `binomial` …), `*` between two plain vectors, `/` between two lists, a
+number divided by a list, or a power of a list, a vector where a matrix is
+needed; a date meeting a datetime, or a date in `*`. For
 lists use `.*`, `./`, `.^`; for an integer argument compute it exactly; for
 dates convert with `date(dt)` or `datetime(d)`.
 
@@ -43,8 +44,11 @@ An index that does not exist: `v[0]`, a negative index, past `len(v)`, or not
 a whole number. Indexing starts at 1.
 
 ### shape
-Two lists combined element by element have different lengths. Make them the
-same length, or index the part you need.
+Two lists combined element by element have different lengths, or two
+matrices different shapes; a matrix product whose inner sizes differ; a
+matrix with rows of different lengths; a function needing a square matrix
+given another. `detail` names both shapes. Make them match, transpose one side
+with `'`, or index the part you need.
 
 ### reserved_name
 You used a constant (`pi`, `e`, `tau`, `phi`) or a keyword (`if`, `and` …) as
@@ -95,8 +99,10 @@ The function is not defined there: `sqrt` or `log` of a negative number, a
 fractional power of a negative number, `asin(2)`, `min([])`, `modinv` of
 numbers that are not coprime, a sample `variance` of one value, a day the
 month lacks (`date(2026, 2, 30)`), an unknown `datediff` unit or `yearfrac`
-basis, an `irr`, `rate` or `xirr` with no rate that solves the flows. There
-are no complex numbers. Check the inputs; for the finance functions, check
+basis, an `irr`, `rate` or `xirr` with no rate that solves the flows, a singular
+matrix to `inv` or `solve` (use `pinv` or `lstsq`), `eig` of a non-symmetric
+matrix, `cholesky` of one that is not positive definite. There are no
+complex numbers. Check the inputs; for the finance functions, check
 the signs.
 
 ### division_by_zero
@@ -111,7 +117,8 @@ result outside the years 1 to 9999.
 ### too_large
 An exact number would pass 16,384 bits, or an argument is over a function's
 cap (`isprime` and `nextprime` near 2^1024, `factor` and `divisors` at 2^64,
-`modpow` at 4,096 bits). Use a float on purpose (`2.0^x` is still exact;
+`modpow` at 4,096 bits), or a matrix over 250,000 elements or a matrix
+operation over the work of a 500 × 500 matrix. Use a float on purpose (`2.0^x` is still exact;
 `exp(x * log(2))` is not) or a smaller problem.
 
 ## Make the work smaller
@@ -126,7 +133,8 @@ is `n*(n+1)/2`), smaller ranges, or several calls.
 
 ### time_limit
 The evaluation ran past 2 seconds. Same remedies as `step_limit`; huge exact
-numbers are the usual cause.
+numbers are the usual cause. A large matrix operation may also have waited
+for a free slot while other calls ran theirs: resend it.
 
 ### too_deep
 Brackets nest more than 200 levels deep, or functions call each other more

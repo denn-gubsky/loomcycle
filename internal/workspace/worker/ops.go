@@ -169,6 +169,9 @@ func (w *worker) run(ctx context.Context, start *workspacepb.OpStart, input []by
 	case workspace.OpRemove:
 		// Its kernels first: a kernel is a process working in the folder.
 		w.kernels.Drop(id)
+		if err := w.engine.Forget(ctx, id); err != nil {
+			return refuse(workspace.ClassFailed, "ending the workspace's session: %v", err)
+		}
 		if err := os.RemoveAll(dir); err != nil {
 			return refuse(workspace.ClassFailed, "removing the workspace: %v", err)
 		}

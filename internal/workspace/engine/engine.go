@@ -1,6 +1,7 @@
 // Package engine runs a workspace's commands (RFC GW §4.3). An Engine is what
-// a workspace worker hands an exec op to; P1 has one, Host. The container
-// engine (P3) is the one that isolates.
+// a workspace worker hands an exec op to: Host runs it as a child of the
+// worker, with no isolation; Container runs it in a container of its own per
+// workspace, the engine that isolates (P3).
 package engine
 
 import (
@@ -15,6 +16,10 @@ const DefaultMaxOutput = 1 << 20
 
 // ExecRequest is one command in one workspace.
 type ExecRequest struct {
+	// Workspace is the workspace's id (workspace.ValidID).
+	Workspace string
+	// Root is the workspace's directory on the worker's disk, symlink-free.
+	Root string
 	// Dir is the directory the command starts in: the workspace's directory
 	// or one inside it, already confined and symlink-free.
 	Dir string
@@ -49,12 +54,18 @@ type Engine interface {
 	// on the program's stdin and stdout. The program outlives ctx; it ends
 	// when its stdin closes, or with Process.Kill.
 	Start(ctx context.Context, req StartRequest) (Process, error)
+	// Forget ends what the engine keeps for a workspace that is being
+	// removed: its session and everything still running in it.
+	Forget(ctx context.Context, workspace string) error
 	// Close releases what the engine holds.
 	Close() error
 }
 
 // StartRequest is one long-lived program in one workspace.
 type StartRequest struct {
+	// Workspace and Root are as ExecRequest's.
+	Workspace string
+	Root      string
 	// Dir is the directory it starts in, as ExecRequest.Dir.
 	Dir string
 	// Argv is the program and its arguments; no shell reads it.

@@ -15,9 +15,9 @@ import (
 // charges one step per element and every sort charges n log n, on top of
 // what numOp charges for big exact numbers.
 var statisticsFuncs = []builtin{
-	{name: "mean", sig: "mean(v) or mean(a, b, ...)", section: SecStatistics, min: 1, max: -1, fn: fnMean,
+	{name: "mean", sig: "mean(v) or mean(a, b, ...)", section: SecStatistics, min: 1, max: -1, fn: byColumn(fnMean),
 		summary: "arithmetic mean; exact on exact input"},
-	{name: "median", sig: "median(v) or median(a, b, ...)", section: SecStatistics, min: 1, max: -1, fn: fnMedian,
+	{name: "median", sig: "median(v) or median(a, b, ...)", section: SecStatistics, min: 1, max: -1, fn: byColumn(fnMedian),
 		summary: "middle value, or the mean of the two middle values"},
 	{name: "mode", sig: "mode(v) or mode(a, b, ...)", section: SecStatistics, min: 1, max: -1, fn: fnMode,
 		summary: "most frequent value; the smallest of tied ones"},
@@ -29,9 +29,9 @@ var statisticsFuncs = []builtin{
 		summary: "harmonic mean of positive values; exact on exact input"},
 	{name: "wmean", sig: "wmean(v, w)", section: SecStatistics, min: 2, max: 2, fn: fnWmean,
 		summary: "mean of v weighted by w"},
-	{name: "variance", sig: "variance(v, kind?)", section: SecStatistics, min: 1, max: 2, fn: fnVariance,
+	{name: "variance", sig: "variance(v, kind?)", section: SecStatistics, min: 1, max: 2, fn: byColumn(fnVariance),
 		summary: `sample variance, or "population"; exact on exact input`},
-	{name: "stdev", sig: "stdev(v, kind?)", section: SecStatistics, min: 1, max: 2, fn: fnStdev,
+	{name: "stdev", sig: "stdev(v, kind?)", section: SecStatistics, min: 1, max: 2, fn: byColumn(fnStdev),
 		summary: `sample standard deviation, or "population"`},
 	{name: "zscore", sig: "zscore(v, kind?)", section: SecStatistics, min: 1, max: 2, fn: fnZscore,
 		summary: "each value's distance from the mean in standard deviations"},
@@ -53,6 +53,40 @@ var statisticsFuncs = []builtin{
 		summary: "Pearson correlation coefficient, from -1 to 1"},
 	{name: "linreg", sig: "linreg(x, y)", section: SecStatistics, min: 2, max: 2, fn: fnLinreg,
 		summary: "least-squares line y = slope*x + intercept, as [slope, intercept]"},
+}
+
+// byColumn applies f to each column of a matrix first argument, the other
+// arguments held, so mean(A) is the list of column means, as in NumPy and
+// MATLAB. Any other first argument reaches f unchanged.
+func byColumn(f func(*evaluator, args) (val, *Error)) func(*evaluator, args) (val, *Error) {
+	return func(e *evaluator, a args) (val, *Error) {
+		if !isMatrix(a.v[0]) {
+			return f(e, a)
+		}
+		r, c, err := matDims(a.v[0], a.name, a.pos)
+		if err != nil {
+			return nil, err
+		}
+		if err := e.charge(r*c, a.pos); err != nil {
+			return nil, err
+		}
+		rows := a.v[0].([]val)
+		out := make([]val, c)
+		for j := range c {
+			col := make([]val, r)
+			for i := range r {
+				col[i] = rows[i].([]val)[j]
+			}
+			sub := a
+			sub.v = append([]val{col}, a.v[1:]...)
+			v, err := f(e, sub)
+			if err != nil {
+				return nil, err
+			}
+			out[j] = v
+		}
+		return out, nil
+	}
 }
 
 // chain chains numOp calls and keeps the first error, so a formula reads as
@@ -483,6 +517,10 @@ func fnQuantile(percent bool) func(*evaluator, args) (val, *Error) {
 // share the mean of the ranks they span (scipy's rankdata "average", Excel's
 // RANK.AVG with order 1).
 func fnRank(e *evaluator, a args) (val, *Error) {
+	if isMatrix(a.v[0]) {
+		return nil, errf(codeType, a.pos, "rank ranks the values of a list; this is a matrix").
+			withHint("the rank of a matrix is matrank(A)")
+	}
 	xs, err := numList(a, 0)
 	if err != nil {
 		return nil, err

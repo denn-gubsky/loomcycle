@@ -17,9 +17,12 @@ import (
 	"encoding/json"
 	"math/big"
 	"math/rand/v2"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 // Request is one evaluation.
@@ -39,6 +42,17 @@ type Request struct {
 	// Now is the clock today() and now() read; nil means time.Now. A test
 	// pins it; a caller wanting a repeatable answer passes the date in vars.
 	Now func() time.Time `json:"-"`
+	// Gate is the process-wide bound on heavy matrix operations (see
+	// NewGate): one built at boot and shared by every call, so a burst of
+	// large solves cannot take every core. Nil means no gating.
+	Gate *semaphore.Weighted `json:"-"`
+}
+
+// NewGate returns the gate for Request.Gate: one slot per core the Go
+// scheduler uses, so heavy operations at most fill the machine and
+// everything else still gets scheduled between them.
+func NewGate() *semaphore.Weighted {
+	return semaphore.NewWeighted(int64(runtime.GOMAXPROCS(0)))
 }
 
 // Response is a successful evaluation.
@@ -113,6 +127,7 @@ func evalWithin(ctx context.Context, req Request, wall time.Duration) (Response,
 		rng:    newRNG(req.Seed),
 		sizes:  map[listKey]int{},
 		now:    req.Now,
+		gate:   req.Gate,
 	}
 	if e.now == nil {
 		e.now = time.Now

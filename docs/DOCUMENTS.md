@@ -41,7 +41,7 @@ One tool, `Document`, gated by per-agent `tools: [Document]`. 15 ops:
 | Edges | `link_chunks`, `unlink_chunks` |
 | Query | `query_chunks` |
 | Types | `define_type`, `list_types` |
-| Markdown | `export_md` (render to Markdown; `include_metadata:false` for clean human MD, default `true` embeds round-trippable metadata + edges as HTML comments), `import_md` (build a document from export_md-shaped Markdown — omit `document_id` for a new document; pass `document_id`/`parent_id` to import under an existing chunk) |
+| Markdown | `export_md` (render to Markdown; `include_metadata:false` for clean human MD, default `true` embeds round-trippable metadata + the statements still in force (proposed ones too; never expired, judge-refuted or rejected ones) as HTML comments), `import_md` (build a document from export_md-shaped Markdown — omit `document_id` for a new document; pass `document_id`/`parent_id` to import under an existing chunk) |
 
 `scope` is `agent` (this agent) or `user` (this end-user, the default — needs a
 `user_id` on the run). **Tenant scope exists too** (`scope:tenant`, shared by

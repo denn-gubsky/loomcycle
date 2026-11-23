@@ -173,7 +173,7 @@ func hidePaths(a answer, inOutput bool, dirs ...string) answer {
 	return a
 }
 
-func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
+func (w *worker) exec(ctx context.Context, id, root string, raw []byte) answer {
 	var in workspace.ExecArgs
 	if a := decodeArgs(raw, &in); a.class != "" {
 		return a
@@ -192,7 +192,7 @@ func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
 		}
 		dir = d
 	}
-	res, err := w.engine.Exec(ctx, engine.ExecRequest{Dir: dir, Command: in.Command, Timeout: time.Duration(in.TimeoutMS) * time.Millisecond})
+	res, err := w.engine.Exec(ctx, engine.ExecRequest{Workspace: id, Root: root, Dir: dir, Command: in.Command, Timeout: time.Duration(in.TimeoutMS) * time.Millisecond})
 	switch {
 	case errors.Is(err, engine.ErrRefused):
 		return refuse(workspace.ClassRefused, "%v", err)
@@ -209,7 +209,7 @@ func (w *worker) exec(ctx context.Context, root string, raw []byte) answer {
 // past the quota while it runs, and the next write or command is refused
 // until a measurement finds it back under.
 func (w *worker) execInQuota(ctx context.Context, id, real string, raw []byte) answer {
-	return w.commandInQuota(ctx, id, real, func() answer { return w.exec(ctx, real, raw) })
+	return w.commandInQuota(ctx, id, real, func() answer { return w.exec(ctx, id, real, raw) })
 }
 
 // commandInQuota runs run, a command or a kernel's cell, as execInQuota
