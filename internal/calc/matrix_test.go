@@ -141,6 +141,9 @@ func TestMatrix_SolversAndDecompositionsSatisfyTheirIdentities(t *testing.T) {
 		g + "b = [1, 2, 3]; norm(G * solve(G, b) - b)",
 		g + "B = [[1, 0], [0, 1], [1, 1]]; norm(G * solve(G, B) - B)",
 		g + "r = lu(G); norm(r[1] * r[2] - r[3] * G)",
+		// Pivoting here is a 3-cycle, not its own inverse, so P versus P'
+		// is told apart.
+		"C = [[1, 2, 3], [4, 5, 6], [7, 8, 10]]; r = lu(C); norm(r[1] * r[2] - r[3] * C)",
 		g + "r = lu(G); norm(r[1] - [[1, 0, 0], [r[1][2, 1], 1, 0], [r[1][3, 1], r[1][3, 2], 1]])",
 		tall + "r = qr(T); norm(r[1] * r[2] - T)",
 		tall + "r = qr(T); norm(r[1]' * r[1] - identity(4))",
