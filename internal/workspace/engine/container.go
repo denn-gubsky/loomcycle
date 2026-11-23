@@ -119,6 +119,8 @@ type Container struct {
 	mu  sync.Mutex
 	// locks serialises starting and removing one workspace's session.
 	locks map[string]*sync.Mutex
+	// egress is the sessions' way out; nil when they have no network.
+	egress *egress
 }
 
 // NewContainer checks opt and fills its defaults. It runs nothing: Probe
@@ -163,7 +165,15 @@ func NewContainer(opt ContainerOptions) (*Container, error) {
 	if opt.MaxOutput <= 0 {
 		opt.MaxOutput = DefaultMaxOutput
 	}
-	return &Container{opt: opt, locks: map[string]*sync.Mutex{}}, nil
+	c := &Container{opt: opt, locks: map[string]*sync.Mutex{}}
+	if opt.Egress != nil {
+		eg, err := newEgress(*opt.Egress, opt.Image, opt.WorkerKey)
+		if err != nil {
+			return nil, err
+		}
+		c.egress = eg
+	}
+	return c, nil
 }
 
 // plainName is a name the CLI can only read as a value: letters, digits and
@@ -199,8 +209,10 @@ func (c *Container) session(workspace string) string {
 
 // hardening is the part of a session's run arguments that confines it. The
 // probe runs under it too, so what the worker reports is what a session has.
-func (c *Container) hardening() []string {
-	a := []string{"--init", "--network", "none", "--read-only",
+//
+// network is the session's network: "none", or its own egress network.
+func (c *Container) hardening(network string) []string {
+	a := []string{"--init", "--network", network, "--read-only",
 		"--tmpfs", fmt.Sprintf("/tmp:rw,size=%dm,mode=1777,nosuid,nodev,exec", c.opt.TmpMB),
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
@@ -225,6 +237,9 @@ func (c *Container) hardening() []string {
 	} {
 		a = append(a, "--env", kv)
 	}
+	if network != "none" {
+		a = append(a, egressSessionArgs()...)
+	}
 	return a
 }
 
@@ -234,7 +249,7 @@ func (c *Container) runArgs(workspace, hostDir string) []string {
 		"--label", labelWorker + "=" + c.opt.WorkerKey,
 		"--label", "loomcycle.workspace=" + workspace,
 	}
-	a = append(a, c.hardening()...)
+	a = append(a, c.hardening(c.sessionNetwork(workspace))...)
 	a = append(a, "-v", hostDir+":"+WorkspaceMount+":rw", "--workdir", WorkspaceMount, c.opt.Image, "sleep", "infinity")
 	return a
 }
@@ -254,7 +269,7 @@ const killScript = `p=$(cat /tmp/.loom-exec-$1) && kill -9 -$p`
 func (c *Container) Probe(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	args := append([]string{"run", "--rm"}, c.hardening()...)
+	args := append([]string{"run", "--rm"}, c.hardening("none")...)
 	args = append(args, c.opt.Image, "/bin/sh", "-c",
 		`command -v python3 >/dev/null 2>&1 && echo python; command -v node >/dev/null 2>&1 && echo node; true`)
 	out, err := c.cli(ctx, args...)
@@ -282,14 +297,12 @@ func (c *Container) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("container engine: listing this worker's sessions: %w", err)
 	}
-	ids := strings.Fields(string(out))
-	if len(ids) == 0 {
-		return nil
+	if ids := strings.Fields(string(out)); len(ids) > 0 {
+		if _, err := c.cli(ctx, append([]string{"rm", "-f"}, ids...)...); err != nil {
+			return fmt.Errorf("container engine: removing this worker's sessions: %w", err)
+		}
 	}
-	if _, err := c.cli(ctx, append([]string{"rm", "-f"}, ids...)...); err != nil {
-		return fmt.Errorf("container engine: removing this worker's sessions: %w", err)
-	}
-	return nil
+	return c.egressReconcile(ctx)
 }
 
 func (c *Container) lock(workspace string) *sync.Mutex {
@@ -328,6 +341,9 @@ func (c *Container) ensure(ctx context.Context, workspace, root string) error {
 	if strings.ContainsAny(hostDir, ":,") {
 		return fmt.Errorf("the workspace's path %q holds a ':' or ','", hostDir)
 	}
+	if err := c.egressUp(ctx, workspace); err != nil {
+		return err
+	}
 	if _, err := c.cli(ctx, c.runArgs(workspace, hostDir)...); err != nil {
 		return fmt.Errorf("starting the session: %w", err)
 	}
@@ -340,6 +356,9 @@ func (c *Container) Forget(ctx context.Context, workspace string) error {
 	l.Lock()
 	defer l.Unlock()
 	err := c.remove(ctx, c.session(workspace))
+	if eerr := c.egressDown(ctx, workspace); err == nil {
+		err = eerr
+	}
 	c.mu.Lock()
 	delete(c.locks, workspace)
 	c.mu.Unlock()
