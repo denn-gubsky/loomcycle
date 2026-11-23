@@ -8698,13 +8698,32 @@ func workspaceWarnings(name string, a AgentDef, mode string) []string {
 	return nil
 }
 
+// workspaceEgressWarnings advises on route names an agent's workspace grant
+// lists that are no operator route while tenant routes are off: no route can
+// ever have that name, so the name reaches nothing. Never fatal: the
+// operator may add the route later. With tenant routes on, a tenant may
+// write the route, so nothing is said.
+func workspaceEgressWarnings(name string, a AgentDef, eg WorkspaceEgressConfig) []string {
+	if a.Workspace == nil || eg.TenantRoutes {
+		return nil
+	}
+	var out []string
+	for _, r := range a.Workspace.Egress {
+		if _, ok := eg.Routes[r]; !ok {
+			out = append(out, fmt.Sprintf("agent %q: workspace.egress names %q, which is no route in workspace.egress.routes, and workspace.egress.tenant_routes is off, so it reaches nothing", name, r))
+		}
+	}
+	return out
+}
+
 // workspaceFromDiscovered converts a Markdown agent's workspace grant (the
 // agents package cannot import config, so it keeps its own copy of the shape).
 func workspaceFromDiscovered(w *agents.AgentWorkspace) *AgentWorkspace {
 	if w == nil {
 		return nil
 	}
-	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Share: w.Share, Engine: w.Engine}
+	return &AgentWorkspace{Ops: append([]string(nil), w.Ops...), Open: w.Open, Share: w.Share,
+		Egress: append([]string(nil), w.Egress...), Engine: w.Engine}
 }
 
 // NetPolicy is the operator's private-address policy (netguard.Policy), the

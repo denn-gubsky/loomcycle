@@ -321,7 +321,7 @@ export const agentDefRegistry: DefRegistry = {
     // JSON, as an object: three keys of different shapes, and any other key
     // is refused by the server.
     { key: "workspace", label: "Workspace", group: "Capabilities", type: "json",
-      hint: "The agent's workspace grant, as a JSON object: ops (a list of read, write, exec), open (true lets it open workspaces of its own), share (true lets it share a workspace it owns with another run of its user) and engine (host or container: the least isolating engine it accepts). A sub-agent holds only what its parent also holds.",
+      hint: "The agent's workspace grant, as a JSON object: ops (a list of read, write, exec), open (true lets it open workspaces of its own), share (true lets it share a workspace it owns with another run of its user), egress (the names of the egress routes a workspace it opens may reach the network through, e.g. [pypi, pypi-files]) and engine (host or container: the least isolating engine it accepts). A sub-agent holds only what its parent also holds.",
       placeholder: '{"ops": ["read", "write", "exec"], "open": true}', unsetMeans: "no workspace access" },
     { key: "statement_methods", label: "Statement methods", group: "Capabilities", type: "string-list",
       hint: "What the agent's runs may do with document statements: rule (its code found the relation), extractor (a model it drives found it) and judge are for a code-js agent only; link asserts its tenant link_chunks instead of filing them for review; remember lets it call Document remember. A sub-agent holds only its own definition's methods.",

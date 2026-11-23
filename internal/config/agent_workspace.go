@@ -22,10 +22,10 @@ import (
 // and is held to the stricter engine requirement. Not per-run overridable.
 // Authority, not content: not part of content_sha256.
 //
-// Only the keys built so far exist (P1's, and P8's share). The keys later
-// phases add (expose, connect, templates, egress) are refused as unknown, in
-// yaml and in JSON, so no stored grant can name something that does nothing
-// yet.
+// Only the keys built so far exist (P1's, P8's share and P4's egress). The
+// keys later phases add (expose, connect, templates) are refused as unknown,
+// in yaml and in JSON, so no stored grant can name something that does
+// nothing yet.
 type AgentWorkspace struct {
 	// Ops is a subset of read, write and exec.
 	Ops []string `json:"ops,omitempty" yaml:"ops,omitempty"`
@@ -35,6 +35,11 @@ type AgentWorkspace struct {
 	// the same user (RFC GW §5.2). It hands over only operations the agent
 	// holds itself, and never commands.
 	Share bool `json:"share,omitempty" yaml:"share,omitempty"`
+	// Egress names the routes (workspace.egress.routes, or a tenant's) a
+	// workspace this agent opens may reach the network through (RFC GW
+	// §6.3). A sub-agent holds only the names both it and its parent list.
+	// Alone it grants nothing: it bounds workspaces the agent opens.
+	Egress []string `json:"egress,omitempty" yaml:"egress,omitempty"`
 	// Engine is the least isolating engine the agent accepts: "" (any),
 	// "host" or "container".
 	Engine string `json:"engine,omitempty" yaml:"engine,omitempty"`
@@ -68,11 +73,17 @@ func (w *AgentWorkspace) Clone() *AgentWorkspace {
 	if w.Ops != nil {
 		out.Ops = append([]string{}, w.Ops...)
 	}
+	if w.Egress != nil {
+		out.Egress = append([]string{}, w.Egress...)
+	}
 	return &out
 }
 
 // ValidateAgentWorkspace refuses a workspace grant holding an unknown or
-// repeated operation or an unknown engine. One function for every place a
+// repeated operation, an unknown engine, or an egress entry that is not a
+// route name or is repeated. Whether a name is a route is not checked: a
+// tenant's routes live in the store and come and go (workspaceEgressWarnings
+// advises on the operator's at load). One function for every place a
 // definition is authored — operator yaml, Markdown agents, the AgentDef
 // overlay, register_agent — so a value refused at boot is not quietly kept by
 // a runtime write.
@@ -91,6 +102,16 @@ func ValidateAgentWorkspace(w *AgentWorkspace) error {
 			return fmt.Errorf("workspace.ops[%d]: %q is listed twice", i, op)
 		}
 		seen[op] = true
+	}
+	seenRoute := map[string]bool{}
+	for i, name := range w.Egress {
+		if !ValidEgressRouteName(name) {
+			return fmt.Errorf("workspace.egress[%d]: %q is not a route name (a lowercase letter, then up to 62 lowercase letters, digits or -)", i, name)
+		}
+		if seenRoute[name] {
+			return fmt.Errorf("workspace.egress[%d]: %q is listed twice", i, name)
+		}
+		seenRoute[name] = true
 	}
 	switch w.Engine {
 	case "", WorkspaceEngineHost, WorkspaceEngineContainer:
