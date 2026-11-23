@@ -1159,13 +1159,39 @@ func (s *Server) Identity(ctx context.Context, input json.RawMessage) (connector
 // is pure, so nothing about the caller reaches it; the caller's principal
 // only pays: one unit of the token's run rate per call, as Crypto takes, so
 // a client in a loop is bounded the same way on every run-less tool.
+//
+// Every transport (MCP, HTTP, gRPC) comes through here, so the one rule that
+// differs from a run is held here too: data by reference (`from`, `to`) is
+// refused, as there is no agent whose stores it would read or write.
 func (s *Server) Calc(ctx context.Context, input json.RawMessage) (connector.ToolResult, error) {
+	if res, refused := calcRefuseDataByReference(input); refused {
+		return res, nil
+	}
 	if p, ok := auth.PrincipalFromContext(ctx); ok {
 		if err := s.AdmitRunRate(ctx, p); err != nil {
 			return connector.ToolResult{}, err
 		}
 	}
 	return s.dispatchBuiltin(ctx, "Calc", input)
+}
+
+// calcRefuseDataByReference refuses a Calc input naming `from` or `to`, in the
+// tool's own refusal shape (code bad_request, a validation error). Input that
+// is not a JSON object passes through: the tool reports it in its own words.
+func calcRefuseDataByReference(input json.RawMessage) (connector.ToolResult, bool) {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(input, &fields) != nil {
+		return connector.ToolResult{}, false
+	}
+	_, from := fields["from"]
+	_, to := fields["to"]
+	if !from && !to {
+		return connector.ToolResult{}, false
+	}
+	const hint = "pass the data inline in `vars`, or call Calc from inside a run, where `from` and `to` reach the agent's stores"
+	body, _ := json.Marshal(map[string]any{"error": "bad_request", "detail": "data by reference needs a run: `from` and `to` are refused outside one", "hint": hint})
+	return connector.ToolResult{Text: string(body), IsError: true,
+		ErrorInfo: &tools.ErrorInfo{Category: tools.CategoryValidation, Description: hint}}, true
 }
 
 // MCPServerDef dispatches to the v0.9.x dynamic MCP-server-registration
