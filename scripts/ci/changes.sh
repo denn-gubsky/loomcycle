@@ -41,8 +41,10 @@ fi
 has() { grep -qE "$1" <<<"$changed" && echo true || echo false; }
 
 go=false
-# scripts/release/ holds the license-bundle script the go job runs.
-if grep -qE '^(go\.mod|go\.sum|Makefile|scripts/release/.*)$' <<<"$changed"; then
+# scripts/release/ holds the license-bundle script the go job runs. The
+# worker and workspace images are built and smoke-tested in a go job
+# (render-office), and no Go package reads their Dockerfiles.
+if grep -qE '^(go\.mod|go\.sum|Makefile|scripts/release/.*|Dockerfile\.(worker|workspace))$' <<<"$changed"; then
   go=true
 else
   bin="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/loomcycle-affected"

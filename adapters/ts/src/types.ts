@@ -2499,7 +2499,7 @@ export interface RulingItem {
 export interface RuleStatementsResult {
   tenant: string;
   scope: string;
-  action: "accept" | "reject";
+  action: "accept" | "reject" | "demote";
   dry_run: boolean;
   ruling_id?: string;
   matched: number;

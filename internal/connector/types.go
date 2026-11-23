@@ -1719,7 +1719,9 @@ func (r ListReviewQueueResult) MarshalJSON() ([]byte, error) {
 // the Matched count of the dry run it follows. Max bounds how many one call
 // rules (default and ceiling 1000); a match larger than Max rules the first
 // Max in the queue's order (newest first), and the rest stay for the next call.
-// Reason is required for reject.
+// Reason is required for reject and demote. Action is accept, reject or
+// demote: a demote selects live asserted statements (a filter's status may
+// only be asserted, "" reads as it) and takes them back to proposed.
 type RuleStatementsRequest struct {
 	Tenant      string             `json:"tenant,omitempty"`
 	Scope       string             `json:"scope,omitempty"`
@@ -1742,7 +1744,8 @@ type RulingBreakdown struct {
 
 // RulingItem is one statement's outcome: the status it was ruled to, or the
 // refusal's code (not_found, not_a_proposal, statement_changed,
-// characteristic_violation, failed) and message. Statements the caller may not rule on never appear.
+// characteristic_violation, failed; for a demote not_asserted,
+// statement_manual, statement_operator_ruled) and message. Statements the caller may not rule on never appear.
 type RulingItem struct {
 	ID      string `json:"id"`
 	Status  string `json:"status,omitempty"`
