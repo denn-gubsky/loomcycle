@@ -63,7 +63,7 @@ func OpenVolumeFS(root, fence string) (*VolumeFS, error) {
 func openResolved(dir, fence string) (*VolumeFS, error) {
 	r, err := os.OpenRoot(dir)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox root: %w", err)
+		return nil, rootError(err)
 	}
 	v := &VolumeFS{root: r, dir: dir}
 	if fence != "" {
@@ -91,23 +91,37 @@ func (v *VolumeFS) Root() *os.Root { return v.root }
 func (v *VolumeFS) Fence() os.FileInfo { return v.fence }
 
 // Rel turns a path ResolveInsideRoot (or ResolveParentInsideRoot) returned
-// into one relative to the root.
+// into one relative to the root. Both paths are host paths, so a refusal
+// names neither.
 func (v *VolumeFS) Rel(resolved string) (string, error) {
-	rel, err := filepath.Rel(v.dir, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("path %q escapes sandbox %q", resolved, v.dir)
+	if !inside(v.dir, resolved) {
+		return "", ErrOutsideVolume
 	}
-	return rel, nil
+	return filepath.Rel(v.dir, resolved)
 }
 
-// PathErr gives an error from a root-relative operation the absolute path,
-// so the model sees the same "open /abs/path: …" text os.Open produced.
+// PathErr gives an error from a root-relative operation the path relative to
+// the root, never the root's host path: the model reads this text. It stays
+// an *fs.PathError, so errors.Is and errors.As hold.
 func (v *VolumeFS) PathErr(op, rel string, err error) error {
 	var pe *fs.PathError
 	if errors.As(err, &pe) {
 		err = pe.Err
 	}
-	return &fs.PathError{Op: op, Path: filepath.Join(v.dir, rel), Err: err}
+	return &fs.PathError{Op: op, Path: filepath.ToSlash(rel), Err: err}
+}
+
+// withPath renames the path an *fs.PathError names to rel, keeping its op and
+// errno; any other error (nil included) is returned as it is. A file opened
+// through an os.Root is named by its host path, so an error reading,
+// writing or closing it ("read /srv/vol/dir: is a directory") would carry
+// that path to the model.
+func withPath(err error, rel string) error {
+	var pe *fs.PathError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	return &fs.PathError{Op: pe.Op, Path: filepath.ToSlash(rel), Err: pe.Err}
 }
 
 // OpenDir opens the directory rel names (a symlink-free path relative to the

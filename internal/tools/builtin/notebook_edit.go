@@ -133,12 +133,11 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	// Resolve path — file must exist for replace+delete; for insert we
 	// also require an existing notebook (the tool creates cells, not
 	// notebooks). Use fsops.ResolveInsideRoot which requires the path to
-	// exist, matching Edit's posture.
-	target := args.FilePath
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(root, target)
-	}
-	resolved, rerr := fsops.ResolveInsideRoot(root, target)
+	// exist, matching Edit's posture. The path goes in as the caller wrote
+	// it (a relative one is anchored under the root there, as Edit's is),
+	// so a refusal names it rather than a path joined to the root's host
+	// path.
+	resolved, rerr := fsops.ResolveInsideRoot(root, args.FilePath)
 	if rerr == nil {
 		rerr = fsops.OutsideFence(fence, resolved)
 	}
@@ -178,7 +177,7 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	st, err := f.Stat()
 	if err != nil {
 		f.Close()
-		return errResult("stat: " + err.Error()), nil
+		return errResult("stat: " + vfs.PathErr("stat", rel, err).Error()), nil
 	}
 	if st.Size() > maxBytes {
 		f.Close()
@@ -187,7 +186,9 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	raw, err := io.ReadAll(f)
 	f.Close()
 	if err != nil {
-		return errResult("read: " + err.Error()), nil
+		// f was opened through the volume's os.Root, so its own errors name
+		// the host path ("read /srv/vol/x: is a directory").
+		return errResult("read: " + vfs.PathErr("read", rel, err).Error()), nil
 	}
 
 	var nb notebook
@@ -280,10 +281,10 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 	defer dir.Remove(tmpName)
 	if _, err := tmp.Write(out); err != nil {
 		tmp.Close()
-		return errResult("write tempfile: " + err.Error()), nil
+		return errResult("write tempfile: " + vfs.PathErr("write", tmpName, err).Error()), nil
 	}
 	if err := tmp.Close(); err != nil {
-		return errResult("close tempfile: " + err.Error()), nil
+		return errResult("close tempfile: " + vfs.PathErr("close", tmpName, err).Error()), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return errResult(err.Error()), nil
