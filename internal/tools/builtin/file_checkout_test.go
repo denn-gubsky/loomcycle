@@ -458,6 +458,32 @@ func TestFileCommit_ATamperedManifestIsRefusedAndNothingIsWritten(t *testing.T) 
 	}
 }
 
+// The runtime's record of a checkout lives in its process. A commit asked
+// of a runtime that does not hold it — another replica, or this one after a
+// restart, here a fresh manager over the same store and worker — fails
+// closed: refused whole, nothing written, never the manifest trusted instead.
+func TestFileCommit_WithoutTheRuntimesRecordIsRefusedAndNothingIsWritten(t *testing.T) {
+	f, d, ids := coSetup(t, lifecycle.Limits{})
+	f.checkoutKB(t, f.ctx)
+	f.coEdit(t, "sub0/doc0.md", "Alpha text of Doc 0.", "Alpha changed.")
+	f.wsPut(t, "w", "docs/sub0/fresh.md", "# Fresh\n\nText.\n")
+	before := coChunkIDs(t, d, f.ctx, ids[0])
+	count := coDocCount(t, d, f.ctx)
+	f.file.Workspaces = lifecycle.New(f.ws.h.D, f.ws.st, lifecycle.Limits{}, nil)
+	for _, dry := range []bool{true, false} {
+		_, res := f.exec(t, f.ctx, map[string]any{"op": "commit", "from": "workspace:w:docs/", "dry_run": dry})
+		if !res.IsError || !strings.Contains(res.Text, "holds no record of checkout") {
+			t.Errorf("dry_run %v: commit = %+v", dry, res)
+		}
+	}
+	if got := coChunkIDs(t, d, f.ctx, ids[0]); fmt.Sprint(got) != fmt.Sprint(before) {
+		t.Error("doc0 was written")
+	}
+	if coDocCount(t, d, f.ctx) != count {
+		t.Error("a document was made")
+	}
+}
+
 // A document renamed in the store after the checkout is a conflict: the file
 // is committed only onto the document named at its path.
 func TestFileCommit_ADocumentRenamedInTheStoreIsAConflict(t *testing.T) {

@@ -333,6 +333,9 @@ func (m *Manager) Status(ctx context.Context, r store.WorkspaceRow) (bool, error
 // the row releasing, and the worker's next attach removes the directory and
 // the row (dispatch's reconciliation).
 func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
+	// Its checkouts go with it, whatever the release's outcome: no commit
+	// can be asked of a workspace being released.
+	m.checkouts.forget(r.ID)
 	if r.State != store.WorkspaceReleasing {
 		ok, err := m.store.WorkspaceSetState(ctx, r.TenantID, r.ID, r.State, store.WorkspaceReleasing)
 		if err != nil {
