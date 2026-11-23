@@ -49,7 +49,7 @@ export function searchListed(tree: PathNode[], base: string, query: string): Pat
       const inside = base === "" || n.fullPath.startsWith(`${base}/`);
       if (inside && fold(n.name).includes(q)) out.push(n);
       // Only a branch that leads to (or lies under) the base is walked.
-      if (inside || base.startsWith(`${n.fullPath}/`)) walk(n.children);
+      if (inside || n.fullPath === base || base.startsWith(`${n.fullPath}/`)) walk(n.children);
     }
   };
   walk(tree);
