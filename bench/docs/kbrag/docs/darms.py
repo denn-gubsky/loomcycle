@@ -19,7 +19,7 @@ Resumable: an (arm, qid, rep) whose latest row is ok is skipped; --retry-failed 
 failed one once (PREREG check 8). Idempotency keys are prefixed by the root's name, so a
 smoke root never hands its runs to the study root.
 """
-import argparse, datetime, json, os, random, sys, threading, time
+import argparse, datetime, json, os, random, re, sys, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -103,7 +103,9 @@ def tree(lc, run_id, usage, row):
 
 
 def key(ctx, arm, q, rep, attempt):
-    return "%s:%s:%s:%d" % (ctx["prefix"], arm, q["id"], rep) + (":a%d" % attempt if attempt > 1 else "")
+    # The server takes [A-Za-z0-9:._-] only; wave 12's twin ids carry an apostrophe (T1').
+    qid = re.sub(r"[^A-Za-z0-9:._-]", "p", q["id"])
+    return "%s:%s:%s:%d" % (ctx["prefix"], arm, qid, rep) + (":a%d" % attempt if attempt > 1 else "")
 
 
 def arm_kb(lc, corpus, q, rep, attempt, usage, row, ctx):
