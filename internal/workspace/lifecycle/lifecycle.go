@@ -77,6 +77,8 @@ type Manager struct {
 	now    func() time.Time
 	// quarantine is the files that crashed a workspace's conversion child.
 	quarantine quarantine
+	// checkouts are the records of File op=checkout (checkouts.go).
+	checkouts checkouts
 }
 
 // New builds a manager. A zero MaxPerRun is 1: a run that may open

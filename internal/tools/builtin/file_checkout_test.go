@@ -404,40 +404,168 @@ func TestFileCommit_EditedLoomCommentsChooseNoIDsAndNoRelations(t *testing.T) {
 	}
 }
 
-// A manifest entry rewritten to name a document that is not named at its
-// file's path is a conflict: the manifest does not choose the target.
-func TestFileCommit_AManifestPointedAtAnotherDocumentIsAConflict(t *testing.T) {
+// The manifest is in the workspace, where a command can rewrite it; the
+// runtime keeps its own record of the checkout and trusts only that. A
+// manifest whose entry now names another document, whose root or scope
+// changed, or whose checkout the runtime holds no record of, is refused
+// whole, and nothing is written.
+func TestFileCommit_ATamperedManifestIsRefusedAndNothingIsWritten(t *testing.T) {
 	f, d, ids := coSetup(t, lifecycle.Limits{})
 	victim := coDoc(t, d, f.ctx, "/elsewhere/victim", "Victim")
 	f.checkoutKB(t, f.ctx)
-	// The entry is rewritten whole: the victim's id and its current
-	// revision, so only the path check can stop it.
+	raw, _ := f.wsGet(t, "w", "docs/.loom/checkout.json")
+	f.coEdit(t, "sub0/doc0.md", "Alpha text of Doc 0.", "Overwritten.")
+	f.wsPut(t, "w", "docs/planted.md", "# Planted\n\nText.\n")
 	_, victimRev, _, res, ok := f.file.checkoutExportOf(f.ctx, "test", "user", victim)
 	if !ok {
 		t.Fatal(res.Text)
 	}
-	var m checkoutManifest
-	raw, _ := f.wsGet(t, "w", "docs/.loom/checkout.json")
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		t.Fatal(err)
+	tamper := map[string]func(m *checkoutManifest){
+		// The entry rewritten whole: another document and its current revision.
+		"entry": func(m *checkoutManifest) {
+			for i := range m.Files {
+				if m.Files[i].DocumentID == ids[0] {
+					m.Files[i].DocumentID, m.Files[i].Revision = victim, victimRev
+				}
+			}
+		},
+		"root":        func(m *checkoutManifest) { m.Root = "/elsewhere" },
+		"scope":       func(m *checkoutManifest) { m.Scope = "agent" },
+		"checkout_id": func(m *checkoutManifest) { m.CheckoutID = "0000000000000000" },
 	}
-	for i := range m.Files {
-		if m.Files[i].DocumentID == ids[0] {
-			m.Files[i].DocumentID, m.Files[i].Revision = victim, victimRev
+	count := coDocCount(t, d, f.ctx)
+	before := coChunkIDs(t, d, f.ctx, ids[0])
+	for name, change := range tamper {
+		var m checkoutManifest
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatal(err)
+		}
+		change(&m)
+		mb, _ := json.Marshal(m)
+		f.wsPutOver(t, "docs/.loom/checkout.json", string(mb))
+		if _, res := f.exec(t, f.ctx, map[string]any{"op": "commit", "from": "workspace:w:docs/", "dry_run": false}); !res.IsError {
+			t.Errorf("%s: a tampered manifest was committed: %s", name, res.Text)
+		}
+		if _, b, _ := importedChunk(t, d, f.ctx, victim, "Alpha"); b != "Alpha text of Victim." {
+			t.Fatalf("%s: the victim was written: %q", name, b)
+		}
+		if got := coChunkIDs(t, d, f.ctx, ids[0]); fmt.Sprint(got) != fmt.Sprint(before) {
+			t.Fatalf("%s: doc0 was written", name)
+		}
+		if coDocCount(t, d, f.ctx) != count {
+			t.Fatalf("%s: a document was made", name)
 		}
 	}
-	mb, _ := json.Marshal(m)
-	f.wsPutOver(t, "docs/.loom/checkout.json", string(mb))
+}
+
+// A document renamed in the store after the checkout is a conflict: the file
+// is committed only onto the document named at its path.
+func TestFileCommit_ADocumentRenamedInTheStoreIsAConflict(t *testing.T) {
+	f, d, ids := coSetup(t, lifecycle.Limits{})
+	f.checkoutKB(t, f.ctx)
+	mv, _ := json.Marshal(map[string]any{"op": "set_path", "scope": "user", "id": ids[0], "path": "/moved/doc0"})
+	if _, r := docExec(t, d, f.ctx, string(mv)); r.IsError {
+		t.Fatal(r.Text)
+	}
+	rm, _ := json.Marshal(map[string]any{"op": "rm", "scope": "user", "path": "/kb/sub0/doc0"})
+	pt := &Path{Store: d.Store}
+	if res, err := pt.Execute(f.ctx, rm); err != nil || res.IsError {
+		t.Fatalf("rm: %v %s", err, res.Text)
+	}
 	f.coEdit(t, "sub0/doc0.md", "Alpha text of Doc 0.", "Overwritten.")
 	out, res := f.exec(t, f.ctx, map[string]any{"op": "commit", "from": "workspace:w:docs/", "dry_run": false})
 	if res.IsError {
 		t.Fatal(res.Text)
 	}
-	if it := coFiles(out)["sub0/doc0.md"]; it["status"] != "conflict" {
+	if it := coFiles(out)["sub0/doc0.md"]; it["status"] != "conflict" || !strings.Contains(asStr(it["reason"]), "no longer named") {
 		t.Errorf("doc0 = %v", it)
 	}
-	if _, b, _ := importedChunk(t, d, f.ctx, victim, "Alpha"); b != "Alpha text of Victim." {
-		t.Errorf("the victim was written: %q", b)
+}
+
+// A checkout of named documents takes no new file: with no under_path there
+// is no folder a new document belongs in, and a new file must not name a
+// document anywhere in the scope.
+func TestFileCommit_ANamedDocumentsCheckoutTakesNoNewFile(t *testing.T) {
+	f, d, ids := coSetup(t, lifecycle.Limits{})
+	if _, res := f.exec(t, f.ctx, map[string]any{"op": "checkout", "documents": []string{ids[0], ids[1]}, "to": "workspace:w:docs/"}); res.IsError {
+		t.Fatal(res.Text)
+	}
+	f.wsPut(t, "w", "docs/anywhere/planted.md", "# Planted\n\nText.\n")
+	count := coDocCount(t, d, f.ctx)
+	out, res := f.exec(t, f.ctx, map[string]any{"op": "commit", "from": "workspace:w:docs/", "dry_run": false})
+	if res.IsError {
+		t.Fatal(res.Text)
+	}
+	if it := coFiles(out)["anywhere/planted.md"]; it["status"] != "ignored" {
+		t.Errorf("planted = %v", it)
+	}
+	if coDocCount(t, d, f.ctx) != count {
+		t.Error("a checkout of named documents made a new one")
+	}
+}
+
+// Every Document call a commit makes — the comparison's exports and path
+// lookup, each import, its tags and its re-export — goes through the
+// Document hooks, and every write is judged before the first one: a hook
+// refusing any of them leaves the store as it was.
+func TestFileCommit_EveryDocumentCallIsJudgedBeforeTheFirstWrite(t *testing.T) {
+	f, d, ids := coSetup(t, lifecycle.Limits{})
+	f.checkoutKB(t, f.ctx)
+	f.coEdit(t, "sub0/doc0.md", "Alpha text of Doc 0.", "Alpha changed.")
+	f.wsPut(t, "w", "docs/sub0/fresh.md", "# Fresh\n\nText.\n")
+	before := coChunkIDs(t, d, f.ctx, ids[0])
+	count := coDocCount(t, d, f.ctx)
+	for _, refused := range []string{"export_md", "query_documents", "import_md", "add_tags"} {
+		var seen []string
+		ctx := tools.WithHookPreCheck(f.ctx, func(_ context.Context, name string, input json.RawMessage) (tools.Result, bool) {
+			var in map[string]any
+			_ = json.Unmarshal(input, &in)
+			if name != "Document" {
+				return tools.Result{}, true
+			}
+			seen = append(seen, asStr(in["op"]))
+			if asStr(in["op"]) == refused {
+				return tools.Result{Text: "no", IsError: true}, false
+			}
+			return tools.Result{}, true
+		})
+		if _, res := f.exec(t, ctx, map[string]any{"op": "commit", "from": "workspace:w:docs/", "dry_run": false}); !res.IsError || !strings.Contains(res.Text, "refused by a Document hook") {
+			t.Errorf("%s refused: commit = %+v (hooks saw %v)", refused, res, seen)
+		}
+		if got := coChunkIDs(t, d, f.ctx, ids[0]); fmt.Sprint(got) != fmt.Sprint(before) {
+			t.Fatalf("%s refused: doc0 was written", refused)
+		}
+		if coDocCount(t, d, f.ctx) != count {
+			t.Fatalf("%s refused: a document was made", refused)
+		}
+	}
+}
+
+// A new file's loom metadata chooses nothing either: a type in its comment
+// and a relation between its own parts are dropped.
+func TestFileCommit_ANewFilesLoomMetadataIsDropped(t *testing.T) {
+	f, d, _ := coSetup(t, lifecycle.Limits{})
+	f.checkoutKB(t, f.ctx)
+	f.wsPut(t, "w", "docs/fresh.md", "# Fresh\n\n## A\n<!-- loom: {\"id\":\"aaaa\",\"type\":\"rule\",\"status\":\"confirmed\"} -->\n\nText A.\n\n"+
+		"## B\n<!-- loom: {\"id\":\"bbbb\"} -->\n\nText B.\n\n<!-- loom-edges:\naaaa -> bbbb cites\n-->\n")
+	if _, res := f.exec(t, f.ctx, map[string]any{"op": "commit", "from": "workspace:w:docs/", "dry_run": false}); res.IsError {
+		t.Fatal(res.Text)
+	}
+	got, r := docExec(t, d, f.ctx, `{"op":"get_document","scope":"user","path":"/kb/fresh"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	docID := asStr(got["document_id"])
+	c, _, _ := importedChunk(t, d, f.ctx, docID, "A")
+	if c["type"] == "rule" || c["status"] == "confirmed" {
+		t.Errorf("the file's comment typed the part: %v", c)
+	}
+	edges, r := docExec(t, d, f.ctx, `{"op":"get_edges","scope":"user","document_id":"`+docID+`"}`)
+	if r.IsError {
+		t.Fatal(r.Text)
+	}
+	if strings.Contains(fmt.Sprint(edges), "cites") {
+		t.Errorf("the file's relation was made: %v", edges)
 	}
 }
 

@@ -26,12 +26,15 @@ import (
 // changed there by a script or by hand, and committed back as new editions.
 //
 // The manifest a checkout writes (.loom/checkout.json) is in the workspace,
-// where a command can rewrite it, so it never chooses what a commit writes
-// onto: a file is committed onto the document the store names at the file's
-// mapped path, which must be the one the manifest says, and a new file only
-// to a path no document is named at. What a commit reads back is a script's
-// text: its loom metadata is dropped and the rest neutralised, as every
-// import is.
+// where a command can rewrite it, so it chooses nothing: the runtime keeps
+// its own record of the checkout (lifecycle.Manager.RememberCheckout), a
+// commit trusts only that, and a manifest that no longer matches it is
+// refused whole. A file is committed onto the document the store names at
+// the file's mapped path, which must be the recorded one, and a new file
+// only to a free path under the checkout's under_path. What a commit reads
+// back is a script's text: its loom metadata is dropped and the rest
+// neutralised, as every import is. Every Document call either op makes
+// passes the run's Document hooks, all of them before the first write.
 
 const (
 	// checkoutManifestRel is the manifest's path in the checkout's folder.
@@ -51,7 +54,10 @@ type checkoutManifest struct {
 	Scope      string `json:"scope"`
 	// Root is the Path folder the files are laid out from: the checkout's
 	// under_path, or "/" for a checkout of named documents.
-	Root      string         `json:"root"`
+	Root string `json:"root"`
+	// UnderPath is the checkout's under_path; "" for named documents, which
+	// take no new file on commit.
+	UnderPath string         `json:"under_path,omitempty"`
 	Workspace string         `json:"workspace"`
 	RunID     string         `json:"run_id"`
 	TakenAt   string         `json:"taken_at"`
@@ -278,7 +284,7 @@ func (f *File) checkout(ctx context.Context, in fileInput) (tools.Result, error)
 	if res, ok := l.Judge(ctx, checkoutManifestRel, true); !ok {
 		return prefixed(op, res), nil
 	}
-	return f.writeCheckout(ctx, l, scope, root, planned, leftOut, maxBytes)
+	return f.writeCheckout(ctx, l, scope, root, in.UnderPath != "", planned, leftOut, maxBytes)
 }
 
 // checkoutPlan lays the listed documents out from root, in path order, and
@@ -315,7 +321,7 @@ func checkoutPlan(listed map[string]any, root string) ([]checkoutPlanned, []chec
 // writeCheckout exports each planned document into a stage of the
 // workspace, then the manifest, and commits the stage as the folder in one
 // step: a failure leaves nothing.
-func (f *File) writeCheckout(ctx context.Context, l *workspaceLoc, scope, root string, planned []checkoutPlanned, leftOut []checkoutLeftOut, maxBytes int64) (tools.Result, error) {
+func (f *File) writeCheckout(ctx context.Context, l *workspaceLoc, scope, root string, underPath bool, planned []checkoutPlanned, leftOut []checkoutLeftOut, maxBytes int64) (tools.Result, error) {
 	const op = "checkout"
 	stage, err := l.m.Stage(ctx, l.o, l.name)
 	if err != nil {
@@ -331,6 +337,9 @@ func (f *File) writeCheckout(ctx context.Context, l *workspaceLoc, scope, root s
 	}()
 	man := checkoutManifest{Version: checkoutVersion, CheckoutID: newCheckoutID(), Scope: scope, Root: root,
 		Workspace: l.name, RunID: l.o.RunID, TakenAt: time.Now().UTC().Format(time.RFC3339), Files: []checkoutFile{}}
+	if underPath {
+		man.UnderPath = root
+	}
 	var total int64
 	for _, p := range planned {
 		md, rev, _, res, ok := f.checkoutExportOf(ctx, op, scope, p.id)
@@ -358,6 +367,11 @@ func (f *File) writeCheckout(ctx context.Context, l *workspaceLoc, scope, root s
 	mb, _ := json.MarshalIndent(man, "", "  ")
 	if _, err := l.m.PutFile(ctx, l.o, l.name, workspace.PutArgs{Path: checkoutManifestRel, Size: int64(len(mb)), Stage: stage}, bytes.NewReader(mb)); err != nil {
 		return prefixed(op, copyReadError(err)), nil
+	}
+	// The record a commit trusts, kept before the folder appears: a
+	// checkout the runtime holds no record of is never committed.
+	if err := l.m.RememberCheckout(ctx, l.o, l.name, man.CheckoutID, mb); err != nil {
+		return prefixed(op, workspaceRefError(err, l.name)), nil
 	}
 	if _, err := l.m.Commit(ctx, l.o, l.name, workspace.CommitArgs{Stage: stage, Path: l.path}); err != nil {
 		return prefixed(op, workspaceRefError(err, l.name)), nil
@@ -439,7 +453,11 @@ func (f *File) commit(ctx context.Context, in fileInput, raw json.RawMessage) (t
 			return prefixed(op, res), nil
 		}
 	}
-	man, res, ok := readCheckoutManifest(ctx, ml)
+	given, res, ok := readCheckoutManifest(ctx, ml)
+	if !ok {
+		return prefixed(op, res), nil
+	}
+	man, res, ok := recordedCheckout(ctx, l, given)
 	if !ok {
 		return prefixed(op, res), nil
 	}
@@ -450,14 +468,27 @@ func (f *File) commit(ctx context.Context, in fileInput, raw json.RawMessage) (t
 	if dryRun {
 		return okJSON(commitAnswer(l, man, items, true))
 	}
-	// Every import is judged before the first one: a hook that refuses one
-	// refuses the commit with nothing written.
+	// Every write is judged before the first one: each import, its tags and
+	// the export that records it. A hook that refuses one refuses the commit
+	// with nothing written.
 	for _, it := range items {
 		if it.action == "" {
 			continue
 		}
-		if res, ok := documentHook(ctx, op, commitImportCall(man.Scope, it, "")); !ok {
-			return res, nil
+		target := map[string]any{"document_id": it.DocumentID}
+		if it.action == commitNew {
+			target = map[string]any{"path": it.Path}
+		}
+		for _, call := range []map[string]any{commitImportCall(man.Scope, it, ""), {"op": "add_tags"}, {"op": "export_md"}} {
+			if call["op"] != "import_md" {
+				call["scope"] = man.Scope
+				for k, v := range target {
+					call[k] = v
+				}
+			}
+			if res, ok := documentHook(ctx, op, call); !ok {
+				return res, nil
+			}
 		}
 	}
 	committed := 0
@@ -471,7 +502,9 @@ func (f *File) commit(ctx context.Context, in fileInput, raw json.RawMessage) (t
 	out := commitAnswer(l, man, items, false)
 	if committed > 0 {
 		mb, _ := json.MarshalIndent(man, "", "  ")
-		if _, res, ok := ml.Create(ctx, int64(len(mb)), bytes.NewReader(mb), true); !ok {
+		if err := l.m.RememberCheckout(ctx, l.o, l.name, man.CheckoutID, mb); err != nil {
+			out["manifest_error"] = "the runtime could not record the commit; check the documents out again"
+		} else if _, res, ok := ml.Create(ctx, int64(len(mb)), bytes.NewReader(mb), true); !ok {
 			out["manifest_error"] = res.Text
 		}
 	}
@@ -528,6 +561,35 @@ func readCheckoutManifest(ctx context.Context, ml *workspaceLoc) (checkoutManife
 	return man, tools.Result{}, true
 }
 
+// recordedCheckout is the runtime's record of the checkout the manifest
+// names, which a commit trusts in its place. A manifest whose scope, root,
+// under_path or files (path to document) differ from the record was
+// changed in the workspace, and the whole commit is refused: the record is
+// the checkout, and a rewritten manifest is a sign something else wrote
+// there.
+func recordedCheckout(ctx context.Context, l *workspaceLoc, given checkoutManifest) (checkoutManifest, tools.Result, bool) {
+	var man checkoutManifest
+	again := "Check the documents out again into a new folder."
+	raw, ok, err := l.m.Checkout(ctx, l.o, l.name, given.CheckoutID)
+	if err != nil {
+		return man, workspaceRefError(err, l.name), false
+	}
+	if !ok {
+		return man, errBusiness(fmt.Sprintf("this runtime holds no record of checkout %q in workspace %q (it was taken before a restart, in another workspace, or the manifest was changed); nothing was written", given.CheckoutID, l.name), again), false
+	}
+	if err := json.Unmarshal(raw, &man); err != nil {
+		return man, errTransient("the checkout's record could not be read", again), false
+	}
+	same := man.Scope == given.Scope && man.Root == given.Root && man.UnderPath == given.UnderPath && len(man.Files) == len(given.Files)
+	for i := 0; same && i < len(man.Files); i++ {
+		same = man.Files[i].Path == given.Files[i].Path && man.Files[i].DocumentID == given.Files[i].DocumentID
+	}
+	if !same {
+		return man, errBusiness(fmt.Sprintf("%s no longer matches the runtime's record of checkout %s (its scope, root or files were changed); nothing was written", l.child(checkoutManifestRel).Ref(), man.CheckoutID), again), false
+	}
+	return man, tools.Result{}, true
+}
+
 // compareCheckout compares the folder's files with the manifest and the
 // store, reading nothing a Workspace hook refuses: every file it may read
 // is judged before the first is read.
@@ -565,6 +627,8 @@ func (f *File) compareCheckout(ctx context.Context, l *workspaceLoc, man checkou
 		switch {
 		case e.Type != workspace.EntryFile:
 			it.Status, it.Reason = commitIgnored, "not a regular file"
+		case man.UnderPath == "":
+			it.Status, it.Reason = commitIgnored, "a checkout of named documents takes no new file; check out a folder with under_path to add documents"
 		case !ok:
 			it.Status, it.Reason = commitIgnored, "not a .md file whose name maps to a Path name (segments of letters, digits, '.', '-', '_')"
 		default:
@@ -583,6 +647,9 @@ func (f *File) compareCheckout(ctx context.Context, l *workspaceLoc, man checkou
 	}
 	named := map[string]bool{}
 	if len(fresh) > 0 {
+		if res, ok := documentHook(ctx, "commit", map[string]any{"op": "query_documents", "scope": man.Scope, "paths": fresh}); !ok {
+			return nil, res, false
+		}
 		out, res, ok := f.docAnswer(ctx, "commit", docInput{Op: "query_documents", Scope: man.Scope, checkoutList: &checkoutListRequest{paths: fresh}})
 		if !ok {
 			return nil, res, false
@@ -626,6 +693,9 @@ func (f *File) compareTaken(ctx context.Context, l *workspaceLoc, man checkoutMa
 	}
 	mapped, _ := checkoutDocPath(man.Root, it.File)
 	it.Path = mapped
+	if res, ok := documentHook(ctx, "commit", map[string]any{"op": "export_md", "scope": man.Scope, "document_id": fe.DocumentID}); !ok {
+		return res, false
+	}
 	md, rev, paths, res, ok := f.checkoutExportOf(ctx, "commit", man.Scope, fe.DocumentID)
 	switch {
 	case !ok:
