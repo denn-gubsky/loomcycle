@@ -132,6 +132,11 @@ var aliases = map[string]string{
 	"std": "stdev", "stddev": "stdev",
 	"real": "re", "imag": "im", "conjugate": "conj", "angle": "arg", "phase": "arg",
 	"roots": "polyroots",
+	// Names a model brought from other tools in the Calc help measurement.
+	"powmod": "modpow", "correl": "correlation", "corr": "correlation",
+	"pearson": "correlation", "seq": "range",
+	// Spreadsheet date functions under their Excel names.
+	"networkdays": "workdays", "workday": "addworkdays", "edate": "addmonths",
 }
 
 // eval evaluates n and refuses a list result over the size bound. Every

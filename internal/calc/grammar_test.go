@@ -216,6 +216,15 @@ func TestGrammar_CommonSlipsGetTeachingHints(t *testing.T) {
 		{"1 = 2", codeSyntax, "use `==`"},
 		{"sqr(4)", codeUnknownFunc, "sqrt"},
 		{"ln(2)", codeUnknownFunc, "use log"},
+		// Names a model brought from other tools in the Calc help measurement.
+		{"powmod(3, 2, 7)", codeUnknownFunc, "use modpow"},
+		{"correl([1, 2], [2, 4])", codeUnknownFunc, "use correlation"},
+		{"corr([1, 2], [2, 4])", codeUnknownFunc, "use correlation"},
+		{"pearson([1, 2], [2, 4])", codeUnknownFunc, "use correlation"},
+		{"seq(1, 3)", codeUnknownFunc, "use range"},
+		{"networkdays(1, 2)", codeUnknownFunc, "use workdays"},
+		{"workday(1, 2)", codeUnknownFunc, "use addworkdays"},
+		{"edate(1, 2)", codeUnknownFunc, "use addmonths"},
 		{"sqrt(1, 2)", codeArity, "sqrt(x)"},
 		{"1 < 2 < 3", codeSyntax, "and"},
 		{"if(1, 2, 3)", codeType, "compare"},
@@ -226,6 +235,23 @@ func TestGrammar_CommonSlipsGetTeachingHints(t *testing.T) {
 		e := mustFail(t, c.expr, c.code)
 		if !strings.Contains(e.Hint, c.hint) {
 			t.Errorf("%q: hint %q does not contain %q", c.expr, e.Hint, c.hint)
+		}
+	}
+}
+
+// An alias hint must name a function that exists, and an alias must not be
+// a function itself (it would never be reached, and its hint would lie).
+func TestGrammar_AliasHintsNameARealFunction(t *testing.T) {
+	fns := map[string]bool{}
+	for _, f := range Functions() {
+		fns[f.Name] = true
+	}
+	for from, to := range aliases {
+		if !fns[to] {
+			t.Errorf("alias %s points at %s, which is not a function", from, to)
+		}
+		if fns[from] {
+			t.Errorf("alias %s is itself a function", from)
 		}
 	}
 }

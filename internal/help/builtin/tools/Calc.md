@@ -8,11 +8,10 @@ and a 30-digit integer keeps all 30 digits.
 
 ## When to use it — and when not
 
-- **Use it for every number you compute**: totals, tax, discounts,
-  percentages, averages, interest, unit prices, unit conversions,
-  counting and probability, primes. Do not work a number out in
-  your head and do not estimate: a model's mental arithmetic is wrong often
-  enough to matter, and this call is cheap.
+- **Use it for every number you compute**: totals, tax, percentages,
+  averages, interest, unit conversions, dates, probability, primes.
+  Do not work a number out in your head and do not estimate: a model's
+  mental arithmetic is wrong often enough to matter, and this call is cheap.
 - **Use it to check** a figure you were given before you rely on it.
 - **Not for algebra.** It evaluates numbers; it does not solve equations or
   simplify formulas.
@@ -24,14 +23,13 @@ and a 30-digit integer keeps all 30 digits.
 - `vars` — names bound before evaluation: numbers, strings, booleans,
   lists or tables (`Calc/tables`). A JSON number is exact (`0.1` is 1/10). A string holding a number
   (`"19.99"`, `"1_000"`) is that number; any other string stays a string.
-- `digits` — significant digits for an approximate result or a fraction that
-  does not terminate; 1 to 1000, default 15.
+- `digits` — significant digits for an approximate or non-terminating
+  result; 1 to 1000, default 15.
 - `seed` — an integer that makes the random functions repeatable.
 - `format` — `json` (default), `markdown` or `csv`: how a table or matrix
   result is written in `text`.
-- `from`, `to` — read named tables from a volume file, a Memory key or a
-  Document chunk, and write the result to one instead of returning it
-  (`Calc/data`).
+- `from`, `to` — read named tables from, or write the result to, a volume
+  file, a Memory key or a Document chunk (`Calc/data`).
 
 No other argument is accepted, and there is no `op`.
 
@@ -49,11 +47,9 @@ No other argument is accepted, and there is no `op`.
   `date`, `datetime`, `table`, `row` or `empty`. A complex result is
   `{"re", "im"}`, a table `{"columns", "rows"}`.
 - `exact` — `true` when every number in the result is exact.
-- `fraction` — for an exact result whose decimals do not end, the exact
-  value: `"1/3"`.
-- `assigned` — every name the expression assigned or defined.
-- `shape` — for a list: `[n]`, or `[n, m]` for n lists of m; for a table
-  `[rows, columns]`.
+- `fraction` — the exact value of a decimal that does not end: `"1/3"`.
+- `assigned` — every name assigned or defined.
+- `shape` — `[n]` or `[n, m]` for a list, `[rows, columns]` for a table.
 - `truncated` — `true` when the output passed 64 KB and was cut.
 
 A refused call returns `{"error", "detail", "hint", "pos"}`; `Calc/errors`
@@ -77,12 +73,38 @@ lists every code.
   every element; `v * 2` and `v / 2` scale a list. Between two lists, and for
   `1 / v` or `v ^ 2`, write `.*`, `./`, `.^`. `*` between two matrices is
   the matrix product; between two vectors it is refused.
-- A matrix is a list of rows: `[[1, 2], [3, 4]]`. `A'` is its transpose,
-  `A[i, j]` an element.
+- A matrix is a list of rows, `[[1, 2], [3, 4]]`; `A'` transposes it,
+  `A[i, j]` is an element.
 - `if(cond, a, b)` chooses a value.
 - `#` starts a comment.
 
 `Calc/language` has the full grammar and a list of common mistakes.
+
+## Most-used functions
+
+Every argument is required unless marked `?`. A date is a value: wrap a
+string, `date("2026-11-23")`.
+
+- `datediff(a, b, unit)` — whole `"days"`, `"weeks"`, `"months"` or
+  `"years"` from `a` to `b`; negative when `a` is after `b`.
+- `addmonths(d, n)` — `n` months after `d`, clamped to the month's end.
+- `workdays(a, b, holidays?)` — Monday-to-Friday days, both ends included.
+- `addworkdays(d, n, holidays?)` — the date `n` working days after `d`.
+- `isoweek(d)` — the ISO week number; `weekday(d)` is 1 (Monday) to 7.
+- `datefmt(d, pattern)` — tokens `YYYY` `YY` `MMMM` `MMM` `MM` `M` `DD` `D`
+  `dddd` `ddd` `HH` `mm` `ss`; anything else is copied as is.
+- `convert(value, from, to)` — case-sensitive unit symbols: `"kg"` `"lb"`
+  `"oz"` `"gal"` (US) `"L"` `"GiB"` `"MB"` `"d"` `"s"`. Never type a
+  conversion factor yourself.
+- `log(x, base?)` (natural by default), `modpow(b, e, m)`,
+  `correlation(x, y)`, `range(a, b, step?)`.
+
+## Names from other tools
+
+`ln` → `log`, `powmod` → `modpow`, `correl` → `correlation`, `seq` →
+`range`, `networkdays` → `workdays`, `workday` → `addworkdays`, `edate` →
+`addmonths`, `**` → `^`, `^` on a list → `.^`. `datefmt` has no `%A`, `%V`
+or `EEEE`: the weekday name is `dddd`, the week number `isoweek(d)`.
 
 ## Exact or approximate
 
@@ -90,44 +112,32 @@ Literals, `+ - * /`, integer powers, rounding and the integer functions keep
 a result exact. `sqrt` (unless the root is exact), fractional powers, `exp`,
 `log`, trigonometry, the constants and the random functions give a 64-bit
 float, about 16 significant digits, and everything computed from one stays
-approximate. `exact` in the result tells you which you got. For money, keep
-it exact and round once with `round(x, 2)`. Details in `Calc/numbers`.
+approximate, and `exact` says so. For money, keep it exact and round once
+with `round(x, 2)`. Details in `Calc/numbers`.
 
 ## Sections
 
-Read the section for the functions you need, as `Context op=help
-topic=Calc/<section>`:
+Read one as `Context op=help topic=Calc/<section>`:
 
-- `Calc/language` — statements, operators and precedence, functions and
-  lambdas, ranges, indexing, `if`, common mistakes.
-- `Calc/numbers` — exact and approximate numbers, `digits`, `fraction`,
-  rounding, money.
-- `Calc/elementary` — rounding, `abs`, `min`/`max`, roots, powers,
-  logarithms, trigonometry (radians), gamma, erf, Bessel.
-- `Calc/integers` — factorial, binomial, Fibonacci, gcd/lcm, primes,
-  factoring, modular arithmetic, bits and number bases.
+- `Calc/language` — grammar, operators, functions, ranges, common mistakes.
+- `Calc/numbers` — exact and approximate, `digits`, rounding, money.
+- `Calc/elementary` — rounding, roots, powers, logarithms, trigonometry
+  (radians).
+- `Calc/integers` — factorials, gcd, primes, modular arithmetic, bits.
 - `Calc/sequences` — `range`, `sum`, `map`/`filter`/`reduce`, `sort`,
-  `unique`, `count`, `zip`, and the random functions with `seed`.
-- `Calc/units` — `convert` between units of length, mass, time,
-  temperature, volume, energy, data size and more; prefixes and compounds.
-- `Calc/statistics` — mean, median, mode, variance and standard deviation
-  (sample or population), quantiles, ranks, correlation, regression.
-- `Calc/distributions` — normal, t, chi-squared, F, exponential, uniform,
-  binomial and Poisson: densities, probabilities, quantiles.
-- `Calc/calculus` — integrals, derivatives, roots, minima, polynomial fits,
-  `polyval`, linear interpolation.
-- `Calc/matrices` — the matrix product, transpose, building matrices,
-  determinant, inverse, solving linear systems, least squares, the LU, QR,
-  Cholesky, eigen and singular value decompositions.
-- `Calc/complex` — complex numbers (`2i`), their parts, modulus and angle,
-  complex arithmetic and functions, the roots of a polynomial.
-- `Calc/finance` — loan payments, future and present value, NPV, IRR,
-  compound growth, percentages; the sign convention.
-- `Calc/tables` — tables from `vars` or CSV, columns `t.price`, empty
-  cells, `where`, `groupby`, `pivot`, `join`, `describe`.
-- `Calc/data` — `from` and `to`: reading and writing stored tables.
-- `Calc/dates` — dates and datetimes, day arithmetic, months, working days,
-  day-count bases, `xnpv`/`xirr`, time zones, formatting.
+  random with `seed`.
+- `Calc/units` — `convert`: units, prefixes, compounds.
+- `Calc/statistics` — mean, median, deviation, quantiles, correlation,
+  regression.
+- `Calc/distributions` — normal, t, chi-squared, binomial, Poisson and more.
+- `Calc/calculus` — integrals, derivatives, roots, minima, fits.
+- `Calc/matrices` — products, inverse, linear systems, decompositions.
+- `Calc/complex` — complex numbers (`2i`), polynomial roots.
+- `Calc/finance` — loans, present and future value, NPV, IRR, growth.
+- `Calc/tables` — tables from `vars` or CSV, `where`, `groupby`, `join`.
+- `Calc/data` — `from` and `to`: stored tables.
+- `Calc/dates` — dates, months, working days, day counts, time zones,
+  `datefmt`.
 - `Calc/errors` — every error code and what to change.
 - `Calc/limits` — the bounds on one call.
 
@@ -160,18 +170,26 @@ A percentage change:
 
 Result: 15.5
 
-A fraction that does not terminate, with more digits:
+Days until a date (earlier date first):
 
 ```json
-{"expr": "1/7", "digits": 30}
+{"expr": "datediff(date(\"2026-11-23\"), date(\"2026-12-25\"), \"days\")"}
 ```
 
-Result: 0.142857142857142857142857142857
+Result: 32
 
-Exact integers of any size:
+A deadline 10 working days out, and its ISO week:
 
 ```json
-{"expr": "2^100"}
+{"expr": "due = addworkdays(date(\"2026-11-23\"), 10); [due, isoweek(due)]"}
 ```
 
-Result: 1267650600228229401496703205376
+Result: [2026-12-07, 50]
+
+A unit conversion:
+
+```json
+{"expr": "round(convert(500, \"g\", \"oz\"), 2)"}
+```
+
+Result: 17.64
