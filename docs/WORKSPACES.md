@@ -151,6 +151,8 @@ One tool, `Workspace`, with an `op`:
 | `status` | its state, and whether its directory is on the worker | `name` |
 | `release` | delete it now | `name` |
 | `exec` | run a shell command in it (`/bin/sh -c`) | `name`, `command`, `cwd`, `timeout_s` |
+| `run_cell` | run code in an interpreter that keeps its variables between calls | `name`, `code`, `kernel` (`python` or `node`), `timeout_s` |
+| `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
 | `read`, `write`, `edit`, `glob`, `grep` | the file tools' operations, relative to the workspace | as the Read, Write, Edit, Glob and Grep tools, without `volume` |
 
 `..`, an absolute path elsewhere and a symlink out of the workspace are refused, on the worker. An argument an op does not take is refused.
@@ -178,6 +180,26 @@ A worked example: an agent writes a script, runs it and reads what it wrote.
 ```
 
 The read returns `144`. When the run ends, the workspace is deleted. A command that exits non-zero, or times out (`"timed_out": true`), is returned as a failed call with its output, as the Bash tool does.
+
+## The interpreter
+
+`run_cell` runs code in an interpreter that stays alive in the workspace and keeps its variables between calls, as a notebook does (RFC GW §5.7). A workspace has one Python and one Node interpreter, apart from each other; `kernel` picks one (default `python`). It needs the `exec` grant, as a command does.
+
+```json
+{"op": "run_cell", "name": "py", "code": "import csv\nrows = list(csv.DictReader(open('sales.csv')))\nlen(rows)"}
+```
+```json
+{"kernel": "python", "execution_count": 1, "output": "", "value": "1204"}
+```
+
+- **The answer.** `output` is what the cell printed, stdout and stderr in the order written (in Python a subprocess's output too); `value` the last expression's value as text; `error` the traceback of an exception. A Python figure left open (matplotlib, on the `Agg` backend) is saved as `.loom/cells/cell-<n>-<i>.png` in the workspace and named in `pictures`. Output, value and error together are kept up to 1 MiB (`truncated`). A cell that raised, timed out or lost its interpreter is a failed call with the same fields.
+- **Stopping a cell.** At its timeout (`timeout_s`, bounded as `exec`'s) the cell is interrupted with SIGINT and the variables are kept (`timed_out`, `interrupted`). A call inside native code may ignore the interrupt: after `workspace.kernel.interrupt_grace_seconds` (default 5) the interpreter and its process group are killed (`kernel_killed`).
+- **Not durable.** The interpreter dies with a kill, a crash, its workspace and a worker restart. The next cell runs in a clean one and says `kernel_restarted: true`, so the agent reloads its data rather than trusting variables that are gone; files stay. `reset_kernel` stops it on purpose and is not reported as a restart.
+- **Python** runs the workspace's `.venv/bin/python` when there is one, so what was installed there is importable, else `python3`. `input()` fails at once.
+- **Node** runs cells through the V8 inspector's REPL mode: `let`, `const` and top-level `await` persist across cells, and `require` resolves from the workspace. `await import()` does not work in that mode; `await loomImport("pkg")` does.
+- **One cell at a time** per interpreter: a second call waits for the first.
+- **The quota.** A cell is a command: it is refused with `workspace_over_quota` while the workspace is marked full, and the workspace is measured after it.
+- **How it runs.** Each interpreter is a small driver of ours (one Python file, one Node file, carried in the binary and written into the worker's root for the `host` engine) that the worker starts through its engine and speaks JSON lines with. A cell runs inside the driver's process and can write to that stream itself; the worker reads it with a bounded reader and takes a frame only as the current cell's own output, under a fresh id per cell, so a forged frame changes nothing but that cell's result.
 
 ## Moving files
 
@@ -302,6 +324,7 @@ Not yet: `connect` (a share's reach to a workspace's exposed ports) arrives with
 | `workspace.max_per_tenant` | 0 (unlimited) | A tenant's workspaces across its runs. |
 | `workspace.exec.default_timeout_s` | 120 | A command that names no `timeout_s`. |
 | `workspace.exec.max_timeout_s` | 900 | The longest `timeout_s` a command may ask for. |
+| `workspace.kernel.interrupt_grace_seconds` | 5 | How long a cell interrupted at its timeout has to stop before its interpreter is killed (1 to 300). |
 | `workspace.lost_after_s` | 300 | How long a worker may be away before its workspaces are marked `lost`. |
 | `workspace.disk_quota_mb` | 2048 | What one workspace may hold on its worker's disk (1 MiB to 16 TiB); see "The disk quota". |
 | `workspace.copy.max_files` | 2000 | The files one folder copy may move. |
@@ -326,6 +349,7 @@ A command and everything it started is killed at its timeout. Its output is kept
 | `not_ready` | The workspace is opening, being released, or `lost`. | See `lost` below. |
 | `lost` | The workspace's directory is no longer on its worker. | Open a new one. |
 | `refused` | The worker will not run the command (`LOOMCYCLE_WORKSPACE_COMMANDS`). | Use a listed program, or widen the list. |
+| `kernel_unavailable` | The worker cannot start the interpreter `run_cell` asked for: no `python3` or `node` on its `PATH`. | Install it on the worker, or use the other kernel. |
 | `workspace_over_quota` | The write would pass the workspace's disk quota, or the workspace is marked full after a command. | Remove files (`rm`, `clear`, or a command), then go on; or raise `workspace.disk_quota_mb`. |
 | `invalid_argument` | The runtime refused the call: an unknown op, an argument the op does not take, a missing one, a bad timeout. | Fix the call. |
 | `invalid`, `failed` | The worker refused the arguments (a path or `cwd` out of the workspace, a malformed argument) or a file system operation failed. | Read the detail. |

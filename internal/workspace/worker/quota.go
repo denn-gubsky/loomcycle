@@ -268,6 +268,7 @@ func (w *worker) cleanWork() {
 		return
 	}
 	keep := map[string]bool{}
+	defer func() { w.kernels.Clean(keep) }()
 	for _, id := range held {
 		keep[id] = true
 		r, err := os.OpenRoot(filepath.Join(w.opt.Root, id))

@@ -4558,6 +4558,8 @@ workspace:
     max_bytes: 1073741824  # the bytes a folder copy may move (1 GiB)
   convert:
     memory_limit_mb: 1024  # the local worker's conversion child; 64 to 1048576
+  kernel:
+    interrupt_grace_seconds: 5 # a cell interrupted at its timeout, then its interpreter killed; 1 to 300
 ```
 
 Policy and tuning, so yaml only; unknown keys are refused. `remote` needs `worker_endpoint.listen` and opens the endpoint whatever `conversion.mode` is, so the "nothing listens" warning for an unused endpoint is not given then. An agent granted `workspace:` while `workspace.mode` is off is warned about at startup: every `Workspace` call would be refused.

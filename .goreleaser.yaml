@@ -447,6 +447,9 @@ dockers:
       - "denngubsky/loomcycle-workspace:latest-amd64"
       - "ghcr.io/denn-gubsky/loomcycle-workspace:latest-amd64"
     dockerfile: Dockerfile.workspace
+    extra_files:
+      - internal/workspace/kernel/drivers/python_driver.py
+      - internal/workspace/kernel/drivers/node_driver.js
     use: buildx
     build_flag_templates:
       - "--platform=linux/amd64"
@@ -467,6 +470,9 @@ dockers:
       - "denngubsky/loomcycle-workspace:latest-arm64"
       - "ghcr.io/denn-gubsky/loomcycle-workspace:latest-arm64"
     dockerfile: Dockerfile.workspace
+    extra_files:
+      - internal/workspace/kernel/drivers/python_driver.py
+      - internal/workspace/kernel/drivers/node_driver.js
     use: buildx
     build_flag_templates:
       - "--platform=linux/arm64"

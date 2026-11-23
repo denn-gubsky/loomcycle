@@ -56,6 +56,16 @@ type WorkspaceConfig struct {
 	Copy WorkspaceCopyConfig `yaml:"copy,omitempty"`
 	// Convert configures the conversion child of the local worker.
 	Convert WorkspaceConvertConfig `yaml:"convert,omitempty"`
+	// Kernel configures the persistent interpreters (RFC GW §5.7).
+	Kernel WorkspaceKernelConfig `yaml:"kernel,omitempty"`
+}
+
+// WorkspaceKernelConfig is `workspace.kernel`.
+type WorkspaceKernelConfig struct {
+	// InterruptGraceSeconds is how long a cell interrupted at its timeout
+	// has to stop before its kernel is killed and its variables lost: an
+	// interrupt does not reach a long call in native code. Default 5.
+	InterruptGraceSeconds int `yaml:"interrupt_grace_seconds,omitempty"`
 }
 
 // WorkspaceConvertConfig is `workspace.convert`: the conversion child a
@@ -105,6 +115,9 @@ const (
 	DefaultWorkspaceCopyMaxFiles   = 2000
 	DefaultWorkspaceCopyMaxBytes   = 1 << 30
 	DefaultWorkspaceConvertMemMB   = 1024
+	DefaultWorkspaceKernelGraceS   = 5
+	// maxWorkspaceKernelGraceS bounds workspace.kernel.interrupt_grace_seconds.
+	maxWorkspaceKernelGraceS = 300
 	// The bounds of workspace.convert.memory_limit_mb.
 	minWorkspaceConvertMemMB = 64
 	maxWorkspaceConvertMemMB = 1 << 20
@@ -144,6 +157,9 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	}
 	if w.Convert.MemoryLimitMB == 0 {
 		w.Convert.MemoryLimitMB = DefaultWorkspaceConvertMemMB
+	}
+	if w.Kernel.InterruptGraceSeconds == 0 {
+		w.Kernel.InterruptGraceSeconds = DefaultWorkspaceKernelGraceS
 	}
 	return w
 }
@@ -244,6 +260,9 @@ func validateWorkspace(c *Config) error {
 	if m := w.Convert.MemoryLimitMB; m != 0 && (m < minWorkspaceConvertMemMB || m > maxWorkspaceConvertMemMB) {
 		return fmt.Errorf("workspace.convert.memory_limit_mb: %d is out of range (%d to %d)", m, minWorkspaceConvertMemMB, maxWorkspaceConvertMemMB)
 	}
+	if g := w.Kernel.InterruptGraceSeconds; g < 0 || g > maxWorkspaceKernelGraceS {
+		return fmt.Errorf("workspace.kernel.interrupt_grace_seconds: %d is out of range (1 to %d)", g, maxWorkspaceKernelGraceS)
+	}
 	r := w.Resolved()
 	if r.Exec.DefaultTimeoutS > r.Exec.MaxTimeoutS {
 		return fmt.Errorf("workspace.exec.default_timeout_s (%d) is over max_timeout_s (%d)", r.Exec.DefaultTimeoutS, r.Exec.MaxTimeoutS)
@@ -280,6 +299,9 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	if err := strictKeys(valueOf(n, "convert"), "workspace.convert", nil, reflect.TypeOf(WorkspaceConvertConfig{})); err != nil {
+		return err
+	}
+	if err := strictKeys(valueOf(n, "kernel"), "workspace.kernel", nil, reflect.TypeOf(WorkspaceKernelConfig{})); err != nil {
 		return err
 	}
 	type plain WorkspaceConfig

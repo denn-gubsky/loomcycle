@@ -66,6 +66,15 @@ RUN set -eux; \
         --shell /bin/sh nonroot; \
     install -d -m 0755 /workspace
 
+# The persistent interpreter's drivers (RFC GW §5.7): one Python file and
+# one Node file the worker starts with `exec -i` in a session to run
+# Workspace op=run_cell. Root-owned and read-only like the rest of the
+# image; the worker names them at this path (kernel.ImageDriversDir). The
+# folder is made first: COPY --chmod gives the folders it makes the files'
+# mode, and a 0644 folder cannot be entered by the session's user.
+RUN install -d -m 0755 /opt/loomcycle /opt/loomcycle/drivers
+COPY --chmod=0644 internal/workspace/kernel/drivers/python_driver.py internal/workspace/kernel/drivers/node_driver.js /opt/loomcycle/drivers/
+
 # matplotlib draws without a display, and its config and font cache go to
 # the workspace: the root is read-only in a session, and HOME is /workspace.
 ENV MPLBACKEND=Agg \
