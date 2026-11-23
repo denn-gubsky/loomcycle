@@ -121,10 +121,13 @@ export default function PathTree(props: PathTreeProps) {
     );
   }
   const top = visibleChildren(tree);
+  // One tab stop: the selected row while it is drawn, else the first row.
+  const tabStop =
+    props.selectedPath && isDrawn(top, props.expanded, props.selectedPath) ? props.selectedPath : top[0]?.fullPath;
   return (
     <ul className="etree path-tree" role="tree" aria-label="Path tree" onKeyDown={treeKeyDown}>
-      {top.map((n, i) => (
-        <PathTreeNode key={n.fullPath} node={n} depth={0} first={i === 0} {...props} />
+      {top.map((n) => (
+        <PathTreeNode key={n.fullPath} node={n} depth={0} tabStop={tabStop} {...props} />
       ))}
       <ListingRows dir="" listing={root} {...props} />
     </ul>
@@ -203,8 +206,19 @@ function visibleChildren(nodes: PathNode[]): PathNode[] {
   return nodes.filter((n) => !isAnnotationEntry(n));
 }
 
-function PathTreeNode(props: { node: PathNode; depth: number; first?: boolean } & PathTreeProps) {
-  const { node, depth, first, expanded, onToggle, selectedPath, onSelect, summaries } = props;
+// isDrawn: whether the row for `path` is rendered — it exists, is not a hidden
+// `_annotation` entry, and every directory above it is open.
+function isDrawn(nodes: PathNode[], expanded: ReadonlySet<string>, path: string): boolean {
+  for (const n of visibleChildren(nodes)) {
+    if (n.fullPath === path) return true;
+    const open = (n.kind === "directory" || n.hasChildren === true) && expanded.has(n.fullPath);
+    if (open && path.startsWith(`${n.fullPath}/`) && isDrawn(n.children, expanded, path)) return true;
+  }
+  return false;
+}
+
+function PathTreeNode(props: { node: PathNode; depth: number; tabStop?: string } & PathTreeProps) {
+  const { node, depth, tabStop, expanded, onToggle, selectedPath, onSelect, summaries } = props;
   // A directory opens, and so does a document with names beneath it (RFC GC):
   // its caret lists them while the row still opens the document. Children are
   // unknown until listed, so the caret is live even before then.
@@ -224,7 +238,7 @@ function PathTreeNode(props: { node: PathNode; depth: number; first?: boolean } 
       onToggle={() => onToggle(node.fullPath)}
       selected={isSelected}
       onSelect={() => onSelect(node)}
-      tabbable={isSelected || first === true}
+      tabbable={node.fullPath === tabStop}
       icon={<TreeIcon kind={isAnnotationEntry(node) ? "annotation" : (KIND_ICON[node.kind] ?? "document")} />}
       name={node.name}
       title={brief ? `${node.fullPath}\n${brief}` : node.fullPath}
@@ -240,7 +254,7 @@ function PathTreeNode(props: { node: PathNode; depth: number; first?: boolean } 
       {isOpen ? (
         <>
           {visibleChildren(node.children).map((c) => (
-            <PathTreeNode key={c.fullPath} {...props} node={c} depth={depth + 1} first={false} />
+            <PathTreeNode key={c.fullPath} {...props} node={c} depth={depth + 1} />
           ))}
           <ListingRows {...props} dir={node.fullPath} listing={node.listing} />
         </>

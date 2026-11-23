@@ -89,14 +89,9 @@ const ICON_PATHS: Record<TreeIconKind, ReactNode> = {
   ),
 };
 
-// shortType is a type's compact mark: its first four letters, lowercase. The
-// full type is in the mark's title and accessible name.
-export function shortType(type: string): string {
-  return type.trim().slice(0, 4).toLowerCase();
-}
-
-// TreeMarks are a row's compact type tag and status dot at its right edge.
-// Each carries the full label as its title and accessible name.
+// TreeMarks are a row's type tag and status dot at its right edge. The tag
+// shows the type's name, cut by the stylesheet to a fixed width; the full
+// label is in its title.
 export function TreeMarks({
   type,
   status,
@@ -113,9 +108,9 @@ export function TreeMarks({
     <span className="etree-marks">
       {extra}
       {type && (
-        <abbr className="etree-mark etree-mark-type" title={`type: ${type}`} aria-label={`type ${type}`}>
-          {shortType(type)}
-        </abbr>
+        <span className="etree-mark etree-mark-type" title={`type: ${type}`}>
+          {type}
+        </span>
       )}
       {status && (
         <span
@@ -139,8 +134,8 @@ export interface TreeItemProps {
   onToggle: () => void;
   selected: boolean;
   onSelect: () => void;
-  // tabbable: this row is the tree's tab stop (the selected row, and the first
-  // row so a tree with no visible selection can still be entered).
+  // tabbable: this row is the tree's one tab stop — the selected row while it
+  // is drawn, else the first row.
   tabbable: boolean;
   icon?: ReactNode;
   name: ReactNode;
@@ -236,11 +231,9 @@ export function treeKeyDown(e: KeyboardEvent<HTMLElement>) {
   const row = item.querySelector<HTMLElement>(":scope > .etree-row");
   const caret = row?.querySelector<HTMLButtonElement>(":scope > .etree-caret");
   const expanded = item.getAttribute("aria-expanded");
-  const move = (to: HTMLElement | undefined | null) => {
-    if (!to) return;
-    items.forEach((el) => (el.tabIndex = el === to ? 0 : -1));
-    to.focus();
-  };
+  // Focus only: the tab stop stays the one the tree rendered (the selected
+  // row), so writing tabIndex here would leave the DOM out of step with React.
+  const move = (to: HTMLElement | undefined | null) => to?.focus();
   switch (e.key) {
     case "ArrowDown":
       move(items[at + 1]);

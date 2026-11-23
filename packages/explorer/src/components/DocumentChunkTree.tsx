@@ -114,14 +114,24 @@ export default function DocumentChunkTree({
       </div>
     );
   }
+  // One tab stop: the selected row while it is drawn (every chunk above it
+  // open), else the first row.
+  const selectedDrawn =
+    !!selectedId &&
+    (tree.some((n) => n.row.id === selectedId) ||
+      (() => {
+        const parents = ancestorIds(tree, selectedId);
+        return parents.length > 0 && parents.every((id) => expanded.get(id) !== false);
+      })());
+  const tabStop = selectedDrawn ? selectedId : tree[0].row.id;
   return (
     <ul className="etree chunk-tree" role="tree" aria-label="Chunk outline" onKeyDown={treeKeyDown}>
-      {tree.map((n, i) => (
+      {tree.map((n) => (
         <ChunkTreeNode
           key={n.row.id}
           node={n}
           depth={0}
-          first={i === 0}
+          tabStop={tabStop}
           expanded={expanded}
           toggle={toggle}
           selectedId={selectedId}
@@ -164,7 +174,8 @@ interface NodeProps {
   isRoot?: boolean;
   linkedIds?: Set<string>;
   depth: number;
-  first?: boolean;
+  // The id of the tree's one tab stop.
+  tabStop?: string;
 }
 
 function ChunkTreeNode({
@@ -178,7 +189,7 @@ function ChunkTreeNode({
   isRoot = false,
   linkedIds,
   depth,
-  first,
+  tabStop,
 }: NodeProps) {
   const hasChildren = node.children.length > 0;
   const isOpen = expanded.get(node.row.id) !== false; // default-expanded
@@ -193,7 +204,7 @@ function ChunkTreeNode({
       onToggle={() => toggle(node.row.id)}
       selected={isSelected}
       onSelect={() => onSelect(node)}
-      tabbable={isSelected || first === true}
+      tabbable={node.row.id === tabStop}
       icon={icon ? <TreeIcon kind={icon} /> : undefined}
       name={node.row.title || "(untitled)"}
       title={node.row.title}
@@ -226,6 +237,7 @@ function ChunkTreeNode({
               documentColor={documentColor}
               linkedIds={linkedIds}
               depth={depth + 1}
+              tabStop={tabStop}
             />
           ))
         : undefined}

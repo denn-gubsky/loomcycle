@@ -5708,7 +5708,12 @@ a.login-btn {
 .etree-mark-type {
   font-size: var(--lc-text-xs, 12px);
   color: var(--fg-soft);
-  text-decoration: none;
+  /* The type's name, cut to a fixed width so a long one cannot crowd the row's
+     name out; the full label is in its title. */
+  max-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .etree-mark-status {
   --etree-dot: var(--fg-muted);

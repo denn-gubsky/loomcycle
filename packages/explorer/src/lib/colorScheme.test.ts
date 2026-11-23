@@ -30,7 +30,7 @@ describe("tree row tint", () => {
 
   it("TestRowTint_SetsOnlyTheTintProperty", () => {
     expect(rowTint("#2f6fd6")).toEqual({ "--etree-tint": "rgba(47, 111, 214, 0.3)" });
-    expect(rowTint("#2f6fd6", true)).toEqual({ "--etree-tint": "rgba(47, 111, 214, 0.15)" });
+    expect(rowTint("#2f6fd6", true)).toEqual({ "--etree-tint": "rgba(47, 111, 214, 0.22)" });
     expect(rowTint("not-a-colour")).toBeUndefined();
     expect(rowTint(undefined)).toBeUndefined();
   });

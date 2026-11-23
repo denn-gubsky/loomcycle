@@ -211,6 +211,9 @@ function chunkRowColor(opts: ChunkRowColorOpts): { color: string; wash: boolean 
 // A tree row's colour is a gradient that fades out to the right, so it starts
 // stronger than the flat tile wash to read as clearly at the row's left edge.
 const ROW_TINT_ALPHA = 0.3;
+// The wash a chunk inherits from its document. Half the full tint faded out to
+// nothing in the outline, so it sits closer to it.
+const ROW_WASH_ALPHA = 0.22;
 
 // rowTint is the inline style for a coloured explorer tree row (the shared
 // .etree-row). It sets only the --etree-tint custom property: the stylesheet
@@ -219,7 +222,7 @@ const ROW_TINT_ALPHA = 0.3;
 // chunk inherits from its document.
 export function rowTint(color: string | undefined, wash = false): CSSProperties | undefined {
   if (!color) return undefined;
-  const tint = hexToTint(color, wash ? ROW_TINT_ALPHA / 2 : ROW_TINT_ALPHA);
+  const tint = hexToTint(color, wash ? ROW_WASH_ALPHA : ROW_TINT_ALPHA);
   return tint ? ({ "--etree-tint": tint } as CSSProperties) : undefined;
 }
 

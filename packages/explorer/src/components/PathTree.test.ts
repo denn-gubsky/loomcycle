@@ -183,14 +183,14 @@ describe("PathTree", () => {
     expect(render(dirs, ["/rfcs"])).toContain(">empty<");
   });
 
-  it("draws type and status as compact marks with the full labels in their titles", () => {
+  it("draws type as a named tag and status as a dot, with the full labels in their titles", () => {
     const dirs = new Map([["", listing([{ ...doc("/plan"), resource_ref: { document_id: "p" } }])]]);
     const summaries = new Map([
       ["p", { document_id: "p", title: "p", color_enabled: false, type: "Research", status: "draft" } as DocSummary],
     ]);
     const html = render(dirs, [], summaries);
     expect(html).toContain('title="type: Research"');
-    expect(html).toContain(">rese</abbr>");
+    expect(html).toContain(">Research</span>");
     expect(html).toContain('title="status: draft"');
     expect(html).not.toContain("chunk-badge");
   });

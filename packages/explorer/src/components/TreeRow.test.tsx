@@ -103,6 +103,26 @@ describe("explorer tree rows", () => {
     expect(itemOf(el, "rfcs").getAttribute("aria-selected")).toBe("false");
   });
 
+  it("keeps one tab stop: the selected row while drawn, else the first row", () => {
+    const stops = (el: HTMLElement) =>
+      Array.from(el.querySelectorAll<HTMLElement>('[role="treeitem"]'))
+        .filter((li) => li.tabIndex === 0)
+        .map((li) => li.querySelector(":scope > .etree-row > .etree-name")?.textContent);
+    // Nothing selected: the first row.
+    expect(stops(mount(pathTree({ dirs })))).toEqual(["rfcs"]);
+    // The selected row is drawn: only it, also after arrow keys moved the focus.
+    const el = mount(pathTree({ dirs, selectedPath: "/plan" }));
+    expect(stops(el)).toEqual(["plan"]);
+    const rfcs = itemOf(el, "rfcs");
+    act(() => {
+      rfcs.focus();
+      rfcs.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    });
+    expect(stops(el)).toEqual(["plan"]);
+    // The selected row sits in a closed folder: back to the first row.
+    expect(stops(mount(pathTree({ dirs, selectedPath: "/rfcs/ge" })))).toEqual(["rfcs"]);
+  });
+
   it("indents each level by its depth and exposes it as aria-level", () => {
     const el = mount(pathTree({ dirs, expanded: new Set(["/rfcs"]) }));
     expect(el.querySelector('[role="tree"]')).not.toBeNull();
