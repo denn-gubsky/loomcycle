@@ -94,6 +94,7 @@ type bgEntry struct {
 	name, prompt, defID string
 	compaction          *config.Compaction
 	untrusted           []tools.UntrustedInput // references already resolved
+	workspaces          []tools.SpawnWorkspaceShare
 	timeoutMs           int
 	index               int // -1 for a spawn
 }
@@ -234,7 +235,7 @@ func (a *AgentTool) runBackgroundChild(cctx context.Context, bg *tools.Backgroun
 	}
 	defer func() { <-sem }()
 
-	childCtx := tools.WithSpawnUntrusted(tools.WithChildRunID(cctx, runID), e.untrusted)
+	childCtx := tools.WithSpawnWorkspaces(tools.WithSpawnUntrusted(tools.WithChildRunID(cctx, runID), e.untrusted), e.workspaces)
 	childCtx, mark = tools.WithContentMark(childCtx)
 	if !e.compaction.IsZero() {
 		childCtx = tools.UpdateRunPolicy(childCtx, func(p *tools.RunPolicy) { p.CompactionOverride = e.compaction })

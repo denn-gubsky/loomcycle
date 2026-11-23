@@ -1,6 +1,10 @@
 package tools
 
-import "github.com/denn-gubsky/loomcycle/internal/config"
+import (
+	"context"
+
+	"github.com/denn-gubsky/loomcycle/internal/config"
+)
 
 // WorkspacePolicyValue is what a run may do with workspaces (RFC GW): the
 // operations it may perform in one, whether it may open its own, and the
@@ -141,4 +145,28 @@ func (v WorkspacePolicyValue) Grant() *config.AgentWorkspace {
 // false is the answer "no workspace access".
 func (v WorkspacePolicyValue) Report() map[string]any {
 	return map[string]any{"ops": v.Ops(), "open": v.Open, "share": v.Share, "engine": v.Engine}
+}
+
+// SpawnWorkspaceShare is one of a spawn's `workspaces` (RFC GW §5.2): a
+// workspace of the parent run to share with the child before its first turn.
+type SpawnWorkspaceShare struct {
+	Name   string
+	Access string
+}
+
+type ctxKeySpawnWorkspaces struct{}
+
+// WithSpawnWorkspaces carries a spawn's workspace shares from the Agent tool
+// to the sub-run that makes them. It ALWAYS sets the value, an empty one
+// too, and the sub-run clears it: the sub-run's ctx is the root of
+// everything its child does, so a value left in place would be shared again
+// with a grandchild the child spawns.
+func WithSpawnWorkspaces(ctx context.Context, in []SpawnWorkspaceShare) context.Context {
+	return context.WithValue(ctx, ctxKeySpawnWorkspaces{}, in)
+}
+
+// SpawnWorkspaces returns the workspace shares of the spawn ctx belongs to.
+func SpawnWorkspaces(ctx context.Context) []SpawnWorkspaceShare {
+	in, _ := ctx.Value(ctxKeySpawnWorkspaces{}).([]SpawnWorkspaceShare)
+	return in
 }
