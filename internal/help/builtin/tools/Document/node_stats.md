@@ -241,16 +241,20 @@ documents placed after it was chosen.
 
 A level's **threshold** is set by `margins`, keyed by the level as a string:
 the default is `{"2": 0.03}`, so level 1 has none. A ranking is `eligible`
-when its margin is at least its level's threshold and the document is not
-already placed under the nearest concept. With `propose: true` each eligible
-ranking, largest margin first, is filed (only the most specific one when a
-document is eligible at two levels of a scheme, since a placement rolls up) as a `subject` proposal to the nearest
-concept, method `rule:centroid`, confidence the margin, the document's title as
+when its margin is at least its level's threshold and the document is placed
+under none of the concepts compared at that level. A document placed under a
+sibling of the nearest is not eligible however large the margin: a second,
+contradicting placement is what mode `misfits` weighs. With `propose: true`
+each eligible ranking, largest margin first, is filed (only the most specific
+one when a document is eligible at two levels of a scheme, since a placement
+rolls up) as a `subject` proposal to the nearest concept, method
+`rule:assign` (its own, so a rule written for misfits' `rule:centroid` never
+rules on it), confidence the margin, the document's title as
 evidence, at most `limit` per call (default 20, at most 100), never one any
 reviewer rejected nor one already proposed or live. Who may file is as for
 misfits. Every filing lands `proposed`: nothing here makes a placement live. A
 tenant that has checked the margin may write a Review rule such as
-`accept kind:subject method:rule:centroid when confidence>=0.03`, and only such
+`accept kind:subject method:rule:assign when confidence>=0.03`, and only such
 a rule rules on these proposals when they are filed.
 
 It returns `{mode, scheme?, vectors, note?, embed_model?, min_members,

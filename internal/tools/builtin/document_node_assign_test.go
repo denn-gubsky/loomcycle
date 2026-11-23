@@ -99,9 +99,26 @@ func (d assignDoc) at(t *testing.T, level int) assignRanking {
 	return assignRanking{}
 }
 
-// assignedStatements is every rule:centroid statement filed, by from → to.
+// assignedStatements is every rule:assign statement filed, by from → to.
 func assignedStatements(t *testing.T, d *Document, ctx context.Context) map[string]statementRow {
-	return centroidProposals(t, d, ctx)
+	t.Helper()
+	key, _, err := d.ontologyTenantKey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := d.query(ctx, key, `SELECT id FROM chunk_edges WHERE method = ?`, assignMethod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]statementRow{}
+	for _, r := range res.Rows {
+		s, err := d.statementByID(ctx, key, asStr(r[0]))
+		if err != nil || s == nil {
+			t.Fatalf("statement %v: %v", r[0], err)
+		}
+		out[s.FromID+"->"+s.ToID] = *s
+	}
+	return out
 }
 
 // TestAssign_ReportRanksEachLevelAndWritesNothing — the report form compares a
@@ -149,7 +166,7 @@ func TestAssign_ReportRanksEachLevelAndWritesNothing(t *testing.T) {
 
 // TestAssign_NoReviewRuleMeansEveryPlacementIsAProposal — with propose and no
 // review rule (subject even declared @auto_assert, which asserts other rule: proposals
-// with chunk evidence), every rule:centroid placement filed is proposed, with the
+// with chunk evidence), every rule:assign placement filed is proposed, with the
 // margin as its confidence.
 func TestAssign_NoReviewRuleMeansEveryPlacementIsAProposal(t *testing.T) {
 	d, base, _ := documentFixture(t)
@@ -166,19 +183,19 @@ func TestAssign_NoReviewRuleMeansEveryPlacementIsAProposal(t *testing.T) {
 	}
 	got := assignedStatements(t, d, a.f.operator)
 	s, ok := got[a.docs[p1]+"->"+a.one]
-	if !ok || s.Status != edgeStatusProposed || s.Method != misfitMethod || s.Kind != "subject" || s.Confidence == nil || math.Abs(*s.Confidence-pr.Margin) > 1e-6 {
-		t.Errorf("filed = %+v; want a proposed rule:centroid subject statement with the margin as confidence", got)
+	if !ok || s.Status != edgeStatusProposed || s.Method != assignMethod || s.Kind != "subject" || s.Confidence == nil || math.Abs(*s.Confidence-pr.Margin) > 1e-6 {
+		t.Errorf("filed = %+v; want a proposed rule:assign subject statement with the margin as confidence", got)
 	}
 }
 
 // TestAssign_RuleOnMethodAndConfidencePutsItLive — the mechanism D17 reserves for
-// the tenant: a Review rule accepting subject statements of method rule:centroid
+// the tenant: a Review rule accepting subject statements of method rule:assign
 // above a confidence makes such a placement live through the existing review
 // policy, at filing; one below the bound stays a proposal. Nothing in the pass
 // adds the rule.
 func TestAssign_RuleOnMethodAndConfidencePutsItLive(t *testing.T) {
 	d, base, _ := documentFixture(t)
-	md := assignOntologyMD + "\n## Review\n@section review\n- accept kind:subject method:rule:centroid when confidence>=0.3\n- human *\n"
+	md := assignOntologyMD + "\n## Review\n@section review\n- accept kind:subject method:rule:assign when confidence>=0.3\n- human *\n"
 	a := newAssignCorpus(t, d, base, md)
 	far := a.doc(t, "/kb/far", []float32{1, 0.02, 0, 0}, a.alpha)  // a large margin within Alpha
 	near := a.doc(t, "/kb/near", []float32{1, 0.8, 0, 0}, a.alpha) // a small one
@@ -472,7 +489,7 @@ func TestNodeStats_AnswersAreUnchangedWithoutAssign(t *testing.T) {
 
 // TestOntologySchemes_AssignProposalsOnBothTiers — the propose form on both SQL
 // Memory tiers (postgres where LOOMCYCLE_TEST_SQLMEM_PG_DSN is set): filed proposed,
-// stamped rule:centroid, a rejected placement never filed again.
+// stamped rule:assign, a rejected placement never filed again.
 func TestOntologySchemes_AssignProposalsOnBothTiers(t *testing.T) {
 	statementsBothTiers(t, func(t *testing.T, d *Document, ctx context.Context) {
 		a := newAssignCorpus(t, d, ctx, assignOntologyMD)
@@ -486,7 +503,7 @@ func TestOntologySchemes_AssignProposalsOnBothTiers(t *testing.T) {
 			t.Errorf("again = %+v", again.Skipped)
 		}
 		for _, s := range assignedStatements(t, d, a.f.operator) {
-			if s.Method != misfitMethod || s.Kind != "subject" {
+			if s.Method != assignMethod || s.Kind != "subject" {
 				t.Errorf("statement %s: method %s kind %s", s.ID, s.Method, s.Kind)
 			}
 		}
