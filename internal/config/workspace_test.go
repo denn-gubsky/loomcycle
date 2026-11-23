@@ -18,6 +18,7 @@ func TestWorkspaceConfig_AbsentIsOffAtTheDefaults(t *testing.T) {
 		DiskQuotaMB: 2048, Copy: WorkspaceCopyConfig{MaxFiles: 2000, MaxBytes: 1 << 30},
 		Checkout: WorkspaceCheckoutConfig{MaxDocuments: 500, MaxBytes: 256 << 20}, Convert: WorkspaceConvertConfig{MemoryLimitMB: 1024},
 		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 5},
+		Egress: WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
 		MCP:    WorkspaceMCPConfig{Ops: []string{"read", "write"}, IdleReleaseS: 3600, MaxLifetimeS: 86400}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)
@@ -39,6 +40,7 @@ func TestWorkspaceConfig_RemoteKeepsWhatIsWritten(t *testing.T) {
 		DiskQuotaMB: 16 << 20, Copy: WorkspaceCopyConfig{MaxFiles: 50, MaxBytes: 4096},
 		Checkout: WorkspaceCheckoutConfig{MaxDocuments: 20, MaxBytes: 9000}, Convert: WorkspaceConvertConfig{MemoryLimitMB: 512},
 		Kernel: WorkspaceKernelConfig{InterruptGraceSeconds: 12},
+		Egress: WorkspaceEgressConfig{Limits: WorkspaceEgressLimits{RatePerMinute: 600, MaxBytes: 4 << 30}},
 		MCP:    WorkspaceMCPConfig{Enabled: true, Ops: []string{"read", "exec"}, IdleReleaseS: 600, MaxLifetimeS: 7200}}
 	if got := cfg.Workspace.Resolved(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("resolved = %+v, want %+v", got, want)

@@ -1,0 +1,32 @@
+# RFC GW embedded preset: workspace
+#
+# Declares the public, read-only package-registry routes a workspace may reach: pypi, pypi-files and npm.
+#
+# Select it with LOOMCYCLE_PRESETS=…,workspace (or `presets: [workspace]`). It
+# declares routes and nothing else: it does not turn workspaces on
+# (workspace.mode), lets no tenant write routes of its own
+# (workspace.egress.tenant_routes) and grants no agent anything. A route is
+# reached only by a workspace whose agent lists its name under
+# `workspace.egress`, e.g.
+#
+#   agents:
+#     data:
+#       tools: [Workspace]
+#       workspace: {ops: [read, write, exec], open: true, egress: [pypi, pypi-files]}
+#
+# Every route here is GET and HEAD only, with no credential. pip needs both
+# pypi (the index) and pypi-files (the files the index links to; the core
+# rewrites those links to the route). Routes for Go and cargo are yours to add:
+#
+#   workspace:
+#     egress:
+#       routes:
+#         goproxy: { url: "https://proxy.golang.org/" }
+#         gosum:   { url: "https://sum.golang.org/" }
+
+workspace:
+  egress:
+    routes:
+      pypi:       { url: "https://pypi.org/" }
+      pypi-files: { url: "https://files.pythonhosted.org/" }
+      npm:        { url: "https://registry.npmjs.org/" }

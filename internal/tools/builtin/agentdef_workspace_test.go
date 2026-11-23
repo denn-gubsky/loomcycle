@@ -146,6 +146,19 @@ func TestAgentDefCreate_WorkspaceCeiling(t *testing.T) {
 	if res := agentDefOp(t, tool, sharer, "create", "sdlc/s2", `{"history_scope":["user"],"workspace":{"ops":["read"],"share":true,"engine":"container"}}`); res.IsError {
 		t.Fatalf("share within the author's own grant refused: %s", res.Text)
 	}
+	// RFC GW P4: egress is held to the author's own routes, a subset.
+	router := tools.UpdateRunPolicy(reader, func(rp *tools.RunPolicy) { rp.Workspace.Egress = []string{"pypi", "npm"} })
+	if res := agentDefOp(t, tool, router, "create", "sdlc/g1", `{"history_scope":["user"],"workspace":{"ops":["read"],"egress":["npm"],"engine":"container"}}`); res.IsError {
+		t.Fatalf("a route within the author's own refused: %s", res.Text)
+	}
+	wantRefused(t, agentDefOp(t, tool, router, "create", "sdlc/g2", `{"history_scope":["user"],"workspace":{"ops":["read"],"egress":["npm","crm"],"engine":"container"}}`),
+		"a route the author lacks", "workspace.egress", `"crm"`)
+	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/g3", `{"history_scope":["user"],"workspace":{"ops":["read"],"egress":["pypi"],"engine":"container"}}`),
+		"a route by an author with none", "workspace.egress", `"pypi"`)
+	// Alone it grants nothing, but it is still held: a later fork adding ops
+	// must not find a route its first author never held already stored.
+	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/g4", `{"history_scope":["user"],"workspace":{"egress":["crm"]}}`),
+		"a route alone, by an author without it", "workspace.egress", `"crm"`)
 	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/e1", `{"history_scope":["user"],"workspace":{"ops":["read"],"engine":"host"}}`),
 		"a weaker engine than the author's", "workspace.engine", `"host"`)
 	wantRefused(t, agentDefOp(t, tool, reader, "create", "sdlc/e2", `{"history_scope":["user"],"workspace":{"ops":["read"]}}`),

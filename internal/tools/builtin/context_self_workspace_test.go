@@ -18,13 +18,16 @@ func TestContextSelf_ReportsTheEffectiveWorkspace(t *testing.T) {
 		policy tools.WorkspacePolicyValue
 		want   map[string]any
 	}{
-		{"none", tools.WorkspacePolicyValue{}, map[string]any{"ops": []any{}, "open": false, "share": false, "engine": ""}},
+		{"none", tools.WorkspacePolicyValue{}, map[string]any{"ops": []any{}, "open": false, "share": false, "egress": []any{}, "engine": ""}},
 		{"read and exec in containers", tools.WorkspacePolicyValue{Read: true, Exec: true, Engine: "container"},
-			map[string]any{"ops": []any{"read", "exec"}, "open": false, "share": false, "engine": "container"}},
+			map[string]any{"ops": []any{"read", "exec"}, "open": false, "share": false, "egress": []any{}, "engine": "container"}},
 		{"open", tools.WorkspacePolicyValue{Write: true, Open: true},
-			map[string]any{"ops": []any{"write"}, "open": true, "share": false, "engine": ""}},
+			map[string]any{"ops": []any{"write"}, "open": true, "share": false, "egress": []any{}, "engine": ""}},
 		{"share", tools.WorkspacePolicyValue{Read: true, Share: true},
-			map[string]any{"ops": []any{"read"}, "open": false, "share": true, "engine": ""}},
+			map[string]any{"ops": []any{"read"}, "open": false, "share": true, "egress": []any{}, "engine": ""}},
+		// RFC GW P4: the routes a workspace the run opens may reach.
+		{"egress", tools.WorkspacePolicyValue{Read: true, Open: true, Egress: []string{"pypi", "npm"}},
+			map[string]any{"ops": []any{"read"}, "open": true, "share": false, "egress": []any{"pypi", "npm"}, "engine": ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Workspace: tc.policy})

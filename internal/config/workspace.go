@@ -61,6 +61,9 @@ type WorkspaceConfig struct {
 	Convert WorkspaceConvertConfig `yaml:"convert,omitempty"`
 	// Kernel configures the persistent interpreters (RFC GW §5.7).
 	Kernel WorkspaceKernelConfig `yaml:"kernel,omitempty"`
+	// Egress is the named routes a workspace reaches the network through
+	// (RFC GW §6.3).
+	Egress WorkspaceEgressConfig `yaml:"egress,omitempty"`
 	// MCP configures Workspace on loomcycle's MCP server (RFC GW D35): off
 	// unless enabled.
 	MCP WorkspaceMCPConfig `yaml:"mcp,omitempty"`
@@ -211,6 +214,7 @@ func (w WorkspaceConfig) Resolved() WorkspaceConfig {
 	if w.Kernel.InterruptGraceSeconds == 0 {
 		w.Kernel.InterruptGraceSeconds = DefaultWorkspaceKernelGraceS
 	}
+	w.Egress = w.Egress.Resolved()
 	if len(w.MCP.Ops) == 0 {
 		w.MCP.Ops = []string{WorkspaceOpRead, WorkspaceOpWrite}
 	}
@@ -340,6 +344,9 @@ func validateWorkspace(c *Config) error {
 	}
 	if v := w.MCP.MaxLifetimeS; v < 0 || v > maxWorkspaceMCPSeconds {
 		return fmt.Errorf("workspace.mcp.max_lifetime_s: %d is out of range (1 to %d)", v, maxWorkspaceMCPSeconds)
+	}
+	if err := validateWorkspaceEgress(w.Egress); err != nil {
+		return err
 	}
 	r := w.Resolved()
 	if r.Exec.DefaultTimeoutS > r.Exec.MaxTimeoutS {
