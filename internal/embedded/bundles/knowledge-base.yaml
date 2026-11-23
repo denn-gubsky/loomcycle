@@ -8936,13 +8936,18 @@ agents:
         return arr;
       }
 
-      // edges adds 1 to each other end of the relations of the EDGE_FROM
-      // highest-weighted candidates.
+      // edges adds 1 to each other end of the accepted relations of the
+      // EDGE_FROM highest-weighted candidates.
       function edges(set, from) {
         var top = ranked(from).slice(0, D.edgeFrom);
         for (var n = 0; n < top.length; n++) {
-          var es = doc({ op: "get_edges", document_id: top[n], limit: 100 }).edges || [];
+          // Only accepted (asserted) relations count: a proposal nobody
+          // reviewed must not weigh as much as an accepted relation (owner
+          // ruling 2026-11-23). get_edges returns proposals unless told not
+          // to, and the status check holds even if that default moves.
+          var es = doc({ op: "get_edges", document_id: top[n], limit: 100, include_proposed: false }).edges || [];
           for (var i = 0; i < es.length; i++) {
+            if (es[i].status !== "asserted") { continue; }
             var ends = [es[i].from_document_id, es[i].to_document_id];
             for (var j = 0; j < 2; j++) {
               var id = ends[j];
