@@ -2,10 +2,11 @@ package calc
 
 import (
 	"bytes"
-	"encoding/csv"
+
 	"encoding/json"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // The output formats of Request.Format. They change only how a table or a
@@ -63,17 +64,44 @@ func gridOf(v val) (names []string, rows func(i int) []val, ok bool) {
 	return nil, nil, false
 }
 
-// cellText is a cell as plain text: a string bare, an empty cell as "".
-func cellText(v val, digits int) string {
+// The writers below put out one cell at a time and cut each cell to the
+// room left before escaping or quoting it, so a row or a cell far larger
+// than MaxOutputBytes costs about the cap to render, not its own size.
+
+// cellText is a cell as plain text, at most room+1 bytes (one past the
+// room, so writing it still marks the writer over): a string bare, an
+// empty cell as "".
+func cellText(v val, digits, room int) string {
 	if s, ok := v.(string); ok {
-		return s
+		return fit(s, room)
 	}
 	if isEmpty(v) {
 		return ""
 	}
-	w := &capWriter{limit: MaxOutputBytes}
+	w := &capWriter{limit: max(room, 0) + 1}
 	renderText(w, v, digits, true)
 	return w.b.String()
+}
+
+// fit cuts s to at most room+1 bytes on a rune boundary.
+func fit(s string, room int) string {
+	limit := max(room, 0) + 1
+	if len(s) <= limit {
+		return s
+	}
+	for limit > 0 && !utf8.RuneStart(s[limit]) {
+		limit--
+	}
+	return s[:limit]
+}
+
+func (w *capWriter) room() int { return w.limit - w.b.Len() }
+
+// writeQuoted writes s as a JSON string, cut to the room first: quoting
+// only lengthens it, so a cut string still overflows and marks w over.
+func writeQuoted(w *capWriter, s string) {
+	q, _ := json.Marshal(fit(s, w.room())) // a string always marshals
+	w.write(string(q))
 }
 
 var mdEscaper = strings.NewReplacer("|", `\|`, "\r\n", " ", "\n", " ", "\r", " ")
@@ -81,77 +109,74 @@ var mdEscaper = strings.NewReplacer("|", `\|`, "\r\n", " ", "\n", " ", "\r", " "
 // renderMarkdown writes a pipe table. A matrix's header numbers its
 // columns from 1, since Markdown requires a header row.
 func renderMarkdown(w *capWriter, names []string, rows func(int) []val, digits int) {
-	first := rows(0)
 	if names == nil {
-		names = make([]string, len(first))
+		names = make([]string, len(rows(0)))
 		for j := range names {
 			names[j] = strconv.Itoa(j + 1)
 		}
 	}
-	line := func(cells []string) {
-		w.write("| " + strings.Join(cells, " | ") + " |\n")
+	line := func(n int, cell func(j int) string) {
+		w.write("|")
+		for j := 0; j < n && !w.over; j++ {
+			w.write(" ")
+			w.write(mdEscaper.Replace(cell(j)))
+			w.write(" |")
+		}
+		w.write("\n")
 	}
-	hdr := make([]string, len(names))
-	for j, n := range names {
-		hdr[j] = mdEscaper.Replace(n)
-	}
-	line(hdr)
-	sep := make([]string, len(names))
-	for j := range sep {
-		sep[j] = "---"
-	}
-	line(sep)
+	line(len(names), func(j int) string { return fit(names[j], w.room()) })
+	line(len(names), func(int) string { return "---" })
 	for i := 0; !w.over; i++ {
 		r := rows(i)
 		if r == nil {
 			break
 		}
-		cells := make([]string, len(r))
-		for j, c := range r {
-			cells[j] = mdEscaper.Replace(cellText(c, digits))
-		}
-		line(cells)
+		line(len(r), func(j int) string { return cellText(r[j], digits, w.room()) })
 	}
 }
 
-// renderCSV writes RFC 4180 CSV: a header row for a table, none for a
-// matrix.
+// renderCSV writes RFC 4180 CSV, as encoding/csv would: a header row for a
+// table, none for a matrix.
 func renderCSV(w *capWriter, names []string, rows func(int) []val, digits int) {
-	var b bytes.Buffer
-	cw := csv.NewWriter(&b)
-	flush := func() {
-		cw.Flush()
-		w.write(b.String())
-		b.Reset()
+	line := func(n int, cell func(j int) string) {
+		for j := 0; j < n && !w.over; j++ {
+			if j > 0 {
+				w.write(",")
+			}
+			w.write(csvField(cell(j)))
+		}
+		w.write("\n")
 	}
 	if names != nil {
-		_ = cw.Write(names) // a bytes.Buffer never fails
-		flush()
+		line(len(names), func(j int) string { return fit(names[j], w.room()) })
 	}
 	for i := 0; !w.over; i++ {
 		r := rows(i)
 		if r == nil {
 			break
 		}
-		cells := make([]string, len(r))
-		for j, c := range r {
-			cells[j] = cellText(c, digits)
-		}
-		_ = cw.Write(cells)
-		flush()
+		line(len(r), func(j int) string { return cellText(r[j], digits, w.room()) })
 	}
+}
+
+// csvField quotes a field when encoding/csv would: it holds a comma, a
+// quote or a line break, starts with a space or a tab, or is `\.`.
+func csvField(f string) string {
+	if f == `\.` || strings.ContainsAny(f, ",\"\r\n") || f != "" && (f[0] == ' ' || f[0] == '\t') {
+		return `"` + strings.ReplaceAll(f, `"`, `""`) + `"`
+	}
+	return f
 }
 
 // renderTableJSON writes a table as JSON text, spaced like a list:
 // {"columns": ["a", "b"], "rows": [[1, "x"], [2, null]]}.
 func renderTableJSON(w *capWriter, t *tableVal, digits int) {
 	w.write(`{"columns": [`)
-	for j, n := range t.names {
+	for j := 0; j < len(t.names) && !w.over; j++ {
 		if j > 0 {
 			w.write(", ")
 		}
-		q, _ := json.Marshal(n)
-		w.write(string(q))
+		writeQuoted(w, t.names[j])
 	}
 	w.write(`], "rows": [`)
 	for i := 0; i < t.rows() && !w.over; i++ {
@@ -159,7 +184,7 @@ func renderTableJSON(w *capWriter, t *tableVal, digits int) {
 			w.write(", ")
 		}
 		w.write("[")
-		for j := range t.cols {
+		for j := 0; j < len(t.cols) && !w.over; j++ {
 			if j > 0 {
 				w.write(", ")
 			}
@@ -173,12 +198,12 @@ func renderTableJSON(w *capWriter, t *tableVal, digits int) {
 // renderRowJSON writes a row as a JSON object in column order.
 func renderRowJSON(w *capWriter, r rowVal, digits int) {
 	w.write("{")
-	for j, n := range r.t.names {
+	for j := 0; j < len(r.t.names) && !w.over; j++ {
 		if j > 0 {
 			w.write(", ")
 		}
-		q, _ := json.Marshal(n)
-		w.write(string(q) + ": ")
+		writeQuoted(w, r.t.names[j])
+		w.write(": ")
 		renderText(w, r.cell(j), digits, false)
 	}
 	w.write("}")

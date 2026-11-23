@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // MaxTableCells bounds one table: rows times columns. A table is built
@@ -18,6 +19,10 @@ const MaxTableCells = 100_000
 type tableVal struct {
 	names []string
 	cols  [][]val // cols[j][i] is row i of column j
+	// index maps each name to its column, built once by makeTable, so a
+	// rule reading r.qty on every row costs one lookup, not a scan of a
+	// table that may be 100,000 columns wide.
+	index map[string]int
 }
 
 func (t *tableVal) rows() int  { return len(t.cols[0]) }
@@ -25,12 +30,17 @@ func (t *tableVal) cells() int { return len(t.names) * t.rows() }
 
 // col returns the index of the column named name, or -1.
 func (t *tableVal) col(name string) int {
-	for j, n := range t.names {
-		if n == name {
-			return j
-		}
+	if j, ok := t.index[name]; ok {
+		return j
 	}
 	return -1
+}
+
+// cellCount is what a table of these columns counts against
+// MaxTableCells: a table with no rows still holds its column names, so it
+// counts as one row.
+func cellCount(names []string, cols [][]val) int {
+	return len(names) * max(len(cols[0]), 1)
 }
 
 // rowVal is row i of a table: what t[i] gives and what a table rule
@@ -61,51 +71,70 @@ func isCell(v val) bool {
 	return false
 }
 
-// checkTable validates a table's shape: at least one column, unique
-// names, columns of one length, at most MaxTableCells cells. code is the
+// makeTable validates a table's shape and builds it: at least one column,
+// unique names, columns of one length, at most MaxTableCells cells (see
+// cellCount), the size checked before any name is looked at. code is the
 // error code for a name problem (bad_var for vars, column in a function).
-func checkTable(names []string, cols [][]val, code errCode, pos int) *Error {
+func makeTable(names []string, cols [][]val, code errCode, pos int) (*tableVal, *Error) {
 	if len(names) == 0 {
-		return errf(code, pos, "a table needs at least one column")
+		return nil, errf(code, pos, "a table needs at least one column")
 	}
-	seen := make(map[string]bool, len(names))
-	for j, n := range names {
-		if n == "" {
-			return errf(code, pos, "column %d has no name", j+1)
-		}
-		if seen[n] {
-			return errf(code, pos, "column %q appears twice", n).withHint("every column of a table needs its own name")
-		}
-		seen[n] = true
-		if len(cols[j]) != len(cols[0]) {
-			return errf(codeShape, pos, "column %q has %d rows, column %q has %d", n, len(cols[j]), names[0], len(cols[0]))
-		}
-	}
-	if len(names)*len(cols[0]) > MaxTableCells {
-		return errf(codeListTooLong, pos, "the table has %d rows of %d columns, %d cells; the limit is %d", len(cols[0]), len(names), len(names)*len(cols[0]), MaxTableCells).
+	if n := cellCount(names, cols); n > MaxTableCells {
+		return nil, errf(codeListTooLong, pos, "the table has %d rows of %d columns, %d cells; the limit is %d", len(cols[0]), len(names), n, MaxTableCells).
 			withHint("select fewer columns or filter rows first, or split the work into several calls")
 	}
-	return nil
+	index := make(map[string]int, len(names))
+	for j, n := range names {
+		if n == "" {
+			return nil, errf(code, pos, "column %d has no name", j+1)
+		}
+		if _, dup := index[n]; dup {
+			return nil, errf(code, pos, "column %q appears twice", n).withHint("every column of a table needs its own name")
+		}
+		index[n] = j
+		if len(cols[j]) != len(cols[0]) {
+			return nil, errf(codeShape, pos, "column %q has %d rows, column %q has %d", n, len(cols[j]), names[0], len(cols[0]))
+		}
+	}
+	return &tableVal{names: names, cols: cols, index: index}, nil
 }
 
-// newTable builds a table, charging one step per cell.
+// newTable builds a table, charging one step per cell (see cellCount).
 func (e *evaluator) newTable(names []string, cols [][]val, pos int) (*tableVal, *Error) {
-	if err := checkTable(names, cols, codeColumn, pos); err != nil {
-		return nil, err
+	if len(names) > 0 {
+		if err := e.charge(min(cellCount(names, cols), MaxTableCells+1), pos); err != nil {
+			return nil, err
+		}
 	}
-	if err := e.charge(len(names)*len(cols[0]), pos); err != nil {
-		return nil, err
-	}
-	return &tableVal{names: names, cols: cols}, nil
+	return makeTable(names, cols, codeColumn, pos)
 }
 
 // unknownColumn is the refusal for a column name the table does not have.
 func unknownColumn(name string, names []string, pos int) *Error {
-	err := errf(codeColumn, pos, "the table has no column %q", name)
-	if s := suggest(name, names); len(s) > 0 {
-		return err.withHint("did you mean " + strings.Join(s, ", ") + "?")
+	err := errf(codeColumn, pos, "the table has no column %q", clip(name))
+	// suggest costs an edit distance per name; past maxSuggestColumns the
+	// hint lists the first names instead, so a wide table cannot make a
+	// refusal expensive.
+	if len(names) <= maxSuggestColumns {
+		if s := suggest(name, names); len(s) > 0 {
+			return err.withHint("did you mean " + strings.Join(quoteAll(s, 3), ", ") + "?")
+		}
 	}
 	return err.withHint("its columns are " + strings.Join(quoteAll(names, 10), ", "))
+}
+
+const maxSuggestColumns = 1000
+
+// clip shortens a column name for an error message.
+func clip(s string) string {
+	if len(s) <= 64 {
+		return s
+	}
+	cut := 64
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 func quoteAll(names []string, limit int) []string {
@@ -115,7 +144,7 @@ func quoteAll(names []string, limit int) []string {
 			out = append(out, "...")
 			break
 		}
-		out = append(out, strconv.Quote(n))
+		out = append(out, strconv.Quote(clip(n)))
 	}
 	return out
 }
@@ -200,7 +229,8 @@ func rowIndex(t *tableVal, idx val, pos int) (int, *Error) {
 
 // takeRows builds the table of t's rows in order (indexes may repeat).
 func (e *evaluator) takeRows(t *tableVal, order []int, pos int) (*tableVal, *Error) {
-	if err := e.charge(len(order)*len(t.names), pos); err != nil {
+	// The size is t's own (already within the cap) for no rows.
+	if err := e.charge(max(len(order), 1)*len(t.names), pos); err != nil {
 		return nil, err
 	}
 	if len(order)*len(t.names) > MaxTableCells {
@@ -214,7 +244,7 @@ func (e *evaluator) takeRows(t *tableVal, order []int, pos int) (*tableVal, *Err
 		}
 		cols[j] = nc
 	}
-	return &tableVal{names: t.names, cols: cols}, nil
+	return &tableVal{names: t.names, cols: cols, index: t.index}, nil
 }
 
 // --- vars ---
@@ -337,11 +367,12 @@ func tableFromObject(name string, o jsonObj) (val, *Error) {
 			data[j][i] = v
 		}
 	}
-	if err := checkTable(names, data, codeBadVar, -1); err != nil {
+	t, err := makeTable(names, data, codeBadVar, -1)
+	if err != nil {
 		err.Detail = "var " + name + ": " + err.Detail
 		return nil, err
 	}
-	return &tableVal{names: names, cols: data}, nil
+	return t, nil
 }
 
 // tableFromRecords reads an array of objects: the columns are the keys in
@@ -377,11 +408,12 @@ func tableFromRecords(name string, recs []any) (val, *Error) {
 			data[index[k]][i] = v
 		}
 	}
-	if err := checkTable(names, data, codeBadVar, -1); err != nil {
+	t, err := makeTable(names, data, codeBadVar, -1)
+	if err != nil {
 		err.Detail = "var " + name + ": " + err.Detail
 		return nil, err
 	}
-	return &tableVal{names: names, cols: data}, nil
+	return t, nil
 }
 
 // cellFromJSON reads one table cell: a number (a numeric string is one, as

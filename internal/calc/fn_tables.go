@@ -62,7 +62,7 @@ func (a args) table(i int) (*tableVal, *Error) {
 
 // columnsArg reads argument i as one column name or a list of them, each
 // a column of t, and returns their indexes.
-func (a args) columnsArg(t *tableVal, i int) ([]int, []string, *Error) {
+func (e *evaluator) columnsArg(a args, t *tableVal, i int) ([]int, []string, *Error) {
 	var names []string
 	switch v := a.v[i].(type) {
 	case string:
@@ -80,6 +80,9 @@ func (a args) columnsArg(t *tableVal, i int) ([]int, []string, *Error) {
 		}
 	default:
 		return nil, nil, errf(codeType, a.pos, "%s: argument %d must be a column name or a list of names, got a %s", a.name, i+1, typeName(a.v[i]))
+	}
+	if err := e.charge(len(names), a.pos); err != nil {
+		return nil, nil, err
 	}
 	idx := make([]int, len(names))
 	for k, n := range names {
@@ -189,7 +192,7 @@ func fnSelect(e *evaluator, a args) (val, *Error) {
 	var names []string
 	var cols [][]val
 	for i := 1; i < len(a.v); i++ {
-		idx, ns, err := a.columnsArg(t, i)
+		idx, ns, err := e.columnsArg(a, t, i)
 		if err != nil {
 			return nil, err
 		}
@@ -346,7 +349,7 @@ func fnGroupby(e *evaluator, a args) (val, *Error) {
 	if err != nil {
 		return nil, err
 	}
-	keys, keyNames, err := a.columnsArg(t, 1)
+	keys, keyNames, err := e.columnsArg(a, t, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -408,11 +411,11 @@ func fnPivot(e *evaluator, a args) (val, *Error) {
 	if err != nil {
 		return nil, err
 	}
-	rk, rn, err := a.columnsArg(t, 1)
+	rk, rn, err := e.columnsArg(a, t, 1)
 	if err != nil {
 		return nil, err
 	}
-	ck, _, err := a.columnsArg(t, 2)
+	ck, _, err := e.columnsArg(a, t, 2)
 	if err != nil {
 		return nil, err
 	}
@@ -486,7 +489,7 @@ func pivotName(v val) string {
 	if isEmpty(v) {
 		return "(empty)"
 	}
-	return cellText(v, DefaultDigits)
+	return cellText(v, DefaultDigits, MaxVarsBytes) // a name is never cut: every string here came in under the vars or expr bound
 }
 
 // joinFn joins a and b on key columns of the same name in both. Rows come
@@ -502,13 +505,13 @@ func joinFn(left bool) func(*evaluator, args) (val, *Error) {
 		if err != nil {
 			return nil, err
 		}
-		ka, keyNames, err := a.columnsArg(ta, 2)
+		ka, keyNames, err := e.columnsArg(a, ta, 2)
 		if err != nil {
 			return nil, err
 		}
 		b := a
 		b.v = []val{tb, tb, a.v[2]}
-		kb, _, err := b.columnsArg(tb, 2)
+		kb, _, err := e.columnsArg(b, tb, 2)
 		if err != nil {
 			err.Detail = a.name + ": the second table: " + err.Detail
 			return nil, err
@@ -563,15 +566,33 @@ func joinFn(left bool) func(*evaluator, args) (val, *Error) {
 				break
 			}
 		}
+		// Sets, not scans: both tables may be thousands of columns wide.
+		if err := e.charge(len(ta.names)+len(tb.names), a.pos); err != nil {
+			return nil, err
+		}
+		isKey := make(map[string]bool, len(keyNames))
+		for _, n := range keyNames {
+			isKey[n] = true
+		}
 		names := append([]string(nil), ta.names...)
+		used := make(map[string]bool, len(ta.names)+len(tb.names))
+		for _, n := range ta.names {
+			used[n] = true
+		}
 		var bcols []int
 		for j, n := range tb.names {
-			if contains(keyNames, n) {
+			if isKey[n] {
 				continue
 			}
-			for s := 2; contains(names, n); s++ {
+			// A clash takes the first free suffix; every try is charged,
+			// since a may already hold x_2, x_3, ...
+			for s := 2; used[n]; s++ {
+				if err := e.charge(1, a.pos); err != nil {
+					return nil, err
+				}
 				n = tb.names[j] + "_" + strconv.Itoa(s)
 			}
+			used[n] = true
 			names = append(names, n)
 			bcols = append(bcols, j)
 		}
@@ -744,7 +765,7 @@ func fnIsEmpty(_ *evaluator, a args) (val, *Error) {
 // "desc", stable, empty cells last either way.
 func sortTable(e *evaluator, a args) (val, *Error) {
 	t := a.v[0].(*tableVal)
-	idx, _, err := a.columnsArg(t, 1)
+	idx, _, err := e.columnsArg(a, t, 1)
 	if err != nil {
 		return nil, err
 	}

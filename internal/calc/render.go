@@ -177,8 +177,7 @@ func renderText(w *capWriter, v val, digits int, top bool) {
 			w.write(v)
 			return
 		}
-		q, _ := json.Marshal(v)
-		w.write(string(q))
+		writeQuoted(w, v)
 	case bool:
 		w.write(strconv.FormatBool(v))
 	case []val:
