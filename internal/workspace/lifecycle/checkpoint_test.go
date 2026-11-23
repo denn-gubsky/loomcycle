@@ -33,3 +33,27 @@ func TestFork_RefusesASourceRowTheCallerDoesNotOwn(t *testing.T) {
 		t.Errorf("the owner's fork = %+v, %v", fork, err)
 	}
 }
+
+// A workspace opened over the MCP server belongs to a token principal (RFC GW
+// D35), not to a run. Its fork is the principal's too, carrying the owner kind
+// and the opening token, so the run sweeper never reads it as a run whose row
+// is gone. A run owner whose pin key happens to equal the principal's is a
+// different owner and finds nothing.
+func TestFork_APrincipalsForkIsThePrincipalsAndKindsDoNotMix(t *testing.T) {
+	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
+	ctx := context.Background()
+	p := PrincipalOwner("acme", "alice", "tok-1")
+	src := f.open(t, p, "pw")
+	fork, _, err := f.m.Fork(ctx, p, src, "pw-b", "")
+	if err != nil {
+		t.Fatalf("the principal's fork: %v", err)
+	}
+	if fork.OwnerKind != src.OwnerKind || fork.OwnerRunID != p.RunID || fork.OpenedToken != "tok-1" {
+		t.Errorf("the fork = kind %q pin %q token %q, want the principal's", fork.OwnerKind, fork.OwnerRunID, fork.OpenedToken)
+	}
+	forged := f.run(t, "alice")
+	forged.RunID = p.RunID
+	if _, _, err := f.m.Fork(ctx, forged, src, "stolen", ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a run owner with the principal's pin key forking = %v, want ErrNotFound", err)
+	}
+}

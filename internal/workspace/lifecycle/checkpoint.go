@@ -82,9 +82,11 @@ func (m *Manager) Fork(ctx context.Context, o Owner, src store.WorkspaceRow, as,
 	if !ValidName(as) {
 		return store.WorkspaceRow{}, out, fmt.Errorf("%w: as: 1 to %d letters, digits, '.', '-' or '_', starting with a letter or digit", ErrInvalidName, MaxNameLen)
 	}
-	// The source must be the run's own: the caller found it by the pin, and
-	// this keeps a row of another run or tenant from ever being forked.
-	if src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || o.RunID == "" {
+	// The source must be the caller's own: the caller found it by the pin, and
+	// this keeps a row of another run, tenant or owner kind (a principal's
+	// workspace over MCP, RFC GW D35) from ever being forked. makeOn writes
+	// the fork with the caller's kind and opening token.
+	if src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || src.OwnerKind != o.kind() || o.RunID == "" {
 		return store.WorkspaceRow{}, out, ErrNotFound
 	}
 	if src.State != store.WorkspaceReady {
