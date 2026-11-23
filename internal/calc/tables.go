@@ -261,11 +261,18 @@ type jsonObj struct {
 
 // readJSON decodes one JSON value as decodeVars needs it: numbers as
 // json.Number, objects as jsonObj (ordered), arrays as []any. Nesting
-// past maxVarDepth is refused here, before the value is built.
-func readJSON(dec *json.Decoder, depth int) (any, error) {
+// past maxVarDepth is refused here, before the value is built. left, when
+// not nil, is how many more values (scalars, arrays and objects alike) may
+// be read; past it the read stops with errTooMany, before the rest is built.
+func readJSON(dec *json.Decoder, depth int, left *int) (any, error) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
+	}
+	if left != nil {
+		if *left--; *left < 0 {
+			return nil, errTooMany
+		}
 	}
 	d, ok := tok.(json.Delim)
 	if !ok {
@@ -278,7 +285,7 @@ func readJSON(dec *json.Decoder, depth int) (any, error) {
 	case '[':
 		out := []any{}
 		for dec.More() {
-			v, err := readJSON(dec, depth+1)
+			v, err := readJSON(dec, depth+1, left)
 			if err != nil {
 				return nil, err
 			}
@@ -294,7 +301,7 @@ func readJSON(dec *json.Decoder, depth int) (any, error) {
 				return nil, err
 			}
 			k := kt.(string) // the decoder only yields a string key here
-			v, err := readJSON(dec, depth+1)
+			v, err := readJSON(dec, depth+1, left)
 			if err != nil {
 				return nil, err
 			}
@@ -316,12 +323,21 @@ func (e jsonErr) Error() string { return string(e) }
 const (
 	errTooDeep  = jsonErr("nests too deep")
 	errBadDelim = jsonErr("unexpected delimiter")
+	errTooMany  = jsonErr("holds too many values")
 )
 
-func decodeJSONVar(raw json.RawMessage) (any, error) {
+func decodeJSONVar(raw json.RawMessage) (any, error) { return decodeJSON(raw, -1) }
+
+// decodeJSON is decodeJSONVar holding the value count to maxValues while it
+// reads (no bound when negative).
+func decodeJSON(raw json.RawMessage, maxValues int) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	v, err := readJSON(dec, 0)
+	var left *int
+	if maxValues >= 0 {
+		left = &maxValues
+	}
+	v, err := readJSON(dec, 0, left)
 	if err != nil {
 		return nil, err
 	}

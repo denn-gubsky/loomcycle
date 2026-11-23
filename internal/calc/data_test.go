@@ -255,6 +255,22 @@ func TestData_WriteRefusesAResultPastTheByteCap(t *testing.T) {
 	}
 }
 
+// The cell budget is enforced while the data is read, not counted after it
+// is all built: each input is over the budget and then malformed, so a reader
+// that checks only afterwards reaches the malformed part (bad_data, syntax or
+// shape), having allocated everything before it.
+func TestData_TheCellBudgetStopsTheReadBeforeTheRest(t *testing.T) {
+	for name, d := range map[string]Data{
+		"json values": {Bytes: []byte("[" + strings.Repeat("0,", 3*MaxRefCells+64) + "}"), Format: FormatJSON},
+		"csv header":  csvData(strings.Repeat("a,", MaxRefCells) + "a\n\"x\"y\n"),
+		"md header":   {Bytes: []byte(strings.Repeat("| a ", MaxRefCells+1) + "|\n|---|\n"), Format: FormatMarkdown},
+	} {
+		if _, err := evalData(t, "1", map[string]Data{"t": d}); err == nil || err.Code != string(codeListTooLong) {
+			t.Errorf("%s: %v, want list_too_long before the rest is read", name, err)
+		}
+	}
+}
+
 func TestSniffFormat_GuessesFromTheFirstBytes(t *testing.T) {
 	for in, want := range map[string]string{
 		"  [1,2]":               FormatJSON,

@@ -143,6 +143,11 @@ func readCSV(src io.Reader, sep rune, limit int, what string, pos int, tick func
 	if rerr != nil {
 		return nil, nil, csvErr(rerr, what, pos)
 	}
+	// A header alone counts as one row (cellCount), so a header wider than
+	// the limit is refused before the columns are allocated for it.
+	if len(header) > limit {
+		return nil, nil, errf(codeListTooLong, pos, "%s: the table has more than %d cells", what, limit)
+	}
 	names := make([]string, len(header))
 	for j, h := range header {
 		names[j] = strings.TrimSpace(h)

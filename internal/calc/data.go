@@ -147,8 +147,15 @@ func (e *evaluator) loadOne(name string, d Data, budget int) (val, int, *Error) 
 // with the by-reference cell limit and the bad_data code.
 func (e *evaluator) loadJSON(name string, b []byte, budget int, tick func(int) *Error) (val, int, *Error) {
 	what := "from " + name
-	raw, jerr := decodeJSONVar(b)
+	// The budget holds while decoding: every value read counts, arrays and
+	// objects too. A table of n cells reads at most 3n+3 values (its column
+	// names, its rows and its cells, or its records and their values), a list
+	// or a matrix fewer, so reading stops once the budget is passed for any
+	// shape; the exact count is checked below, on what was read.
+	raw, jerr := decodeJSON(b, 3*budget+3)
 	switch {
+	case jerr == errTooMany:
+		return nil, 0, errf(codeListTooLong, -1, "%s holds more than %d values; the limit is %d", what, budget, budget)
 	case jerr == errTooDeep:
 		return nil, 0, errf(codeBadData, -1, "%s nests deeper than %d levels", what, maxVarDepth)
 	case jerr != nil:
@@ -225,6 +232,11 @@ func readMarkdownTable(md string, limit int, what string, tick func(int) *Error)
 			withHint("a Markdown table is a header row, a row of --- cells, then the rows, each cell between | characters")
 	}
 	names := markdownCells(lines[start])
+	// A header alone counts as one row (cellCount), so a header wider than
+	// the budget is refused before anything is built for it.
+	if len(names) > limit {
+		return nil, nil, errf(codeListTooLong, -1, "%s: the table has more than %d cells", what, limit)
+	}
 	for j := range names {
 		names[j] = strings.TrimSpace(names[j])
 	}
