@@ -103,6 +103,7 @@ func (w *worker) readCheckpoint(id, ck string) (workspace.CheckpointInfo, bool) 
 	if !validCheckpointID(ck) {
 		return workspace.CheckpointInfo{}, false
 	}
+	// #nosec G304 -- id and ck are each checked by ValidID (no separator, no dot), so the path stays in the checkpoints folder
 	b, err := os.ReadFile(filepath.Join(w.checkpointsOf(id), ck+".json"))
 	if err != nil {
 		return workspace.CheckpointInfo{}, false

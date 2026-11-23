@@ -63,6 +63,7 @@ func cloneTree(ctx context.Context, src, dst string, budget int64) (copyResult, 
 	}
 	// The top folder of a clone keeps its source's mode; the worker must
 	// own it whole.
+	// #nosec G302 -- a folder: the owner must be able to list and enter it
 	if err := os.Chmod(dst, 0o700); err != nil {
 		return copyResult{}, err
 	}
@@ -255,6 +256,7 @@ func removeDir(dir string) error {
 	}
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
+			// #nosec G302 -- a folder of the worker's own, made enterable so it can be removed
 			_ = os.Chmod(p, 0o700)
 		}
 		return nil
