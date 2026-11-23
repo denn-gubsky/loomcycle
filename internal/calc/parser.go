@@ -6,8 +6,9 @@ type node interface{ position() int }
 
 type (
 	numLit struct {
-		p int
-		v num
+		p    int
+		v    num
+		imag bool // v times i (see token.imag)
 	}
 	strLit struct {
 		p int
@@ -634,7 +635,7 @@ func (p *parser) primary() (node, *Error) {
 	switch t.kind {
 	case tNum:
 		p.next()
-		return &numLit{p: t.pos, v: t.num}, nil
+		return &numLit{p: t.pos, v: t.num, imag: t.imag}, nil
 	case tStr:
 		p.next()
 		return &strLit{p: t.pos, s: t.s}, nil

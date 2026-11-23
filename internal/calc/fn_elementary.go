@@ -81,7 +81,7 @@ func fnSqrt(_ *evaluator, a args) (val, *Error) {
 	}
 	if x.sign() < 0 {
 		return nil, errf(codeDomain, a.pos, "sqrt(%s) is not a real number", fmtArg(x)).
-			withHint("there are no complex numbers in this version")
+			withHint(realArgHint("sqrt", x))
 	}
 	if x.exact() {
 		n, nok := exactSqrt(x.r.Num())
@@ -106,7 +106,7 @@ func positive(a args, x num) *Error {
 		if x.sign() == 0 {
 			e.Hint = "the logarithm of 0 is minus infinity"
 		} else {
-			e.Hint = "the logarithm needs a positive number; there are no complex numbers in this version"
+			e.Hint = "the logarithm of a negative number is not real; " + realArgHint(a.name, x)
 		}
 		return e
 	}

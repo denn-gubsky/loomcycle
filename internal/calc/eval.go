@@ -120,6 +120,8 @@ var aliases = map[string]string{
 	"choose": "binomial", "nCr": "binomial", "comb": "binomial", "fact": "factorial",
 	"length": "len", "ptp": "spread", "average": "mean", "avg": "mean",
 	"std": "stdev", "stddev": "stdev",
+	"real": "re", "imag": "im", "conjugate": "conj", "angle": "arg", "phase": "arg",
+	"roots": "polyroots",
 }
 
 // eval evaluates n and refuses a list result over the size bound. Every
@@ -144,6 +146,9 @@ func (e *evaluator) evalNode(n node, sc *scope) (val, *Error) {
 	}
 	switch n := n.(type) {
 	case *numLit:
+		if n.imag {
+			return cnum(complex(0, n.v.float())), nil
+		}
 		return n.v, nil
 	case *strLit:
 		return n.s, nil
@@ -274,7 +279,8 @@ func (e *evaluator) evalUnary(n *unaryN, sc *scope) (val, *Error) {
 		return !b, nil
 	}
 	if n.op == "+" {
-		if _, ok := x.(num); ok {
+		switch x.(type) {
+		case num, cnum:
 			return x, nil
 		}
 		if _, ok := x.([]val); ok {
@@ -490,7 +496,14 @@ func (e *evaluator) callBuiltin(b *builtin, argv []val, pos int) (val, *Error) {
 			return out, nil
 		}
 	}
-	return b.fn(e, args{v: argv, pos: pos, name: b.name})
+	v, handled, err := e.complexCall(b, argv, pos)
+	if !handled {
+		v, err = b.fn(e, args{v: argv, pos: pos, name: b.name})
+	}
+	if err != nil {
+		complexHint(err)
+	}
+	return v, err
 }
 
 func arityText(b *builtin) string {

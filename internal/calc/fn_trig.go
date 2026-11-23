@@ -42,7 +42,8 @@ func inRange(f func(float64) float64, lo, hi float64, closed bool) func(*evaluat
 			if !closed {
 				open, shut = "(", ")"
 			}
-			return nil, errf(codeDomain, a.pos, "%s(%s) is undefined: x must be in %s%g, %g%s", a.name, fmtArg(x), open, lo, hi, shut)
+			return nil, errf(codeDomain, a.pos, "%s(%s) is undefined: x must be in %s%g, %g%s", a.name, fmtArg(x), open, lo, hi, shut).
+				withHint(realArgHint(a.name, x))
 		}
 		return checkFloat(f(v), a.pos, a.name)
 	}

@@ -170,6 +170,8 @@ func renderText(w *capWriter, v val, digits int, top bool) {
 	case num:
 		s, _ := formatNum(v, digits)
 		w.write(s)
+	case cnum:
+		w.write(formatComplex(complex128(v), digits))
 	case string:
 		if top {
 			w.write(v)
@@ -215,6 +217,8 @@ func toJSON(v val, digits int) any {
 	case num:
 		s, _ := formatNum(v, digits)
 		return json.Number(s)
+	case cnum:
+		return toComplexJSON(complex128(v), digits)
 	case string, bool:
 		return v
 	case []val:
@@ -234,7 +238,7 @@ func toJSON(v val, digits int) any {
 }
 
 // allExact reports whether v holds at least one number or date and every
-// number in it is exact. A date or datetime counts as exact: it is held to
+// number in it is exact; a complex number never is. A date or datetime counts as exact: it is held to
 // the day or the nanosecond, never rounded.
 func allExact(v val) bool {
 	seen, ok := exactWalk(v)
@@ -245,6 +249,8 @@ func exactWalk(v val) (seen, ok bool) {
 	switch v := v.(type) {
 	case num:
 		return true, v.exact()
+	case cnum:
+		return true, false
 	case dateVal, timeVal:
 		return true, true
 	case []val:

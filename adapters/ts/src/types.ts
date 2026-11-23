@@ -8577,6 +8577,7 @@ export interface CalcInput {
  *  open to other strings. */
 export type CalcValueType =
   | "number"
+  | "complex"
   | "string"
   | "boolean"
   | "list"
@@ -8588,7 +8589,7 @@ export type CalcValueType =
 /** A successful {@link LoomcycleClient.calc}: the tool's own result. */
 export interface CalcResult {
   /** The value as JSON: numbers, strings, booleans, arrays for lists, a
-   *  function's signature. A number here has passed through `JSON.parse`,
+   *  complex number as `{re, im}`, a function's signature. A number here has passed through `JSON.parse`,
    *  so an integer past 2^53 or a decimal past 17 significant digits is
    *  rounded; read `text` (and `fraction`) for the exact digits. `null` when
    *  `truncated` cut it. */

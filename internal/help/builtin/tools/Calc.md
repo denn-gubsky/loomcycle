@@ -1,6 +1,6 @@
 ---
 name: Calc
-description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, probability distributions, numeric calculus, matrices and linear algebra, finance and dates; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
+description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, probability distributions, numeric calculus, matrices and linear algebra, complex numbers, finance and dates; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
 ---
 The `Calc` tool evaluates a math expression and returns the answer, exactly
 where it can be exact. Decimals are exact fractions, so `0.1 + 0.2` is `0.3`
@@ -40,8 +40,8 @@ No other argument is accepted, and there is no `op`.
 
 - `result` — the value as JSON; `text` — the same, written for reading.
   Quote `text` when you report the number.
-- `type` — `number`, `string`, `boolean`, `list`, `function`, `date` or
-  `datetime`.
+- `type` — `number`, `complex`, `string`, `boolean`, `list`, `function`,
+  `date` or `datetime`. A complex result is `{"re", "im"}`.
 - `exact` — `true` when every number in the result is exact.
 - `fraction` — for an exact result whose decimals do not end, the exact
   value: `"1/3"`.
@@ -112,6 +112,8 @@ topic=Calc/<section>`:
 - `Calc/matrices` — the matrix product, transpose, building matrices,
   determinant, inverse, solving linear systems, least squares, the LU, QR,
   Cholesky, eigen and singular value decompositions.
+- `Calc/complex` — complex numbers (`2i`), their parts, modulus and angle,
+  complex arithmetic and functions, the roots of a polynomial.
 - `Calc/finance` — loan payments, future and present value, NPV, IRR,
   compound growth, percentages; the sign convention.
 - `Calc/dates` — dates and datetimes, day arithmetic, months, working days,

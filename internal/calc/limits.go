@@ -70,7 +70,9 @@ const (
 	// it starts, neither the step count nor the clock stops it, so this cap
 	// is what bounds its time. Measured CPU time at 500 × 500 on an M-series
 	// laptop: det 22 ms, inv 71 ms, the product 90 ms, qr 135 ms, the
-	// symmetric eigen decomposition 300 ms, svd with its factors 570 ms.
+	// symmetric eigen decomposition 300 ms, svd with its factors 570 ms;
+	// the general (non-symmetric) eigen decomposition with its vectors,
+	// eig's and polyroots' path, 390 ms.
 	MaxMatrixWork = 500 * 500 * 500
 	// matrixWorkPerStep charges one step per this many multiply-adds of a
 	// matrix routine, before it runs.

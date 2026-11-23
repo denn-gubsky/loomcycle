@@ -186,16 +186,12 @@ func TestMatrix_SingularAndUnsuitableMatricesAreRefused(t *testing.T) {
 	} {
 		mustFail(t, expr, codeDomain)
 	}
-	e := mustFail(t, "eig([[1, 2], [3, 4]])", codeDomain)
-	if !strings.Contains(e.Hint, "complex") {
-		t.Errorf("eig of a non-symmetric matrix: hint %q should say complex values come later", e.Hint)
-	}
 	// The pseudo-inverse and least squares do take a singular matrix.
 	checkTexts(t, []textCase{{"pinv([[1, 2], [2, 4]])", "[[0.04, 0.08], [0.08, 0.16]]"}})
 	for _, expr := range []string{"inv([[1, 2, 3]])", "solve([[1, 2], [3, 4]], [1, 2, 3])", "qr([[1, 2, 3]])", "lu([[1, 2]])"} {
 		mustFail(t, expr, codeShape)
 	}
-	e = mustFail(t, "rank([[1, 2], [2, 4]])", codeType)
+	e := mustFail(t, "rank([[1, 2], [2, 4]])", codeType)
 	if !strings.Contains(e.Hint, "matrank") {
 		t.Errorf("rank of a matrix: hint %q should name matrank", e.Hint)
 	}

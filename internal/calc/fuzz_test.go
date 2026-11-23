@@ -46,6 +46,10 @@ var fuzzSeeds = []string{
 	"[integrate(x -> x^2, 0, 1), integrate(sin, 1, 0), deriv(exp, 1), root(x -> x^2 - 2, 0, 2), minimize(cos, 0, 6)]",
 	"f(x) = 1 / x; [integrate(f, 0, 1), deriv(x -> if(x > 0, 1, 0), 0), root(f, 1, 2), minimize(x -> x, 1, 1)]",
 	"p = polyfit([0, 1, 2, 3], [1, 2, 5, 10], 2); [p, polyval(p, [4, 5]), interp([1.5, 2], [1, 2, 3], [1, 4, 9])]",
+	"z = 3 + 2i; [z * conj(z), z / 1.5i, z^3, z^0.5, -z, abs(z), arg(z), re(z), im(z), complex(1, -1), 2i == 2i, 1e3i]",
+	"[sqrt(-1 + 0i), exp(pi * 1i), log(-1 + 0i, 2), sin(1i), acosh(0.5 + 0i), round(1.25 - 2.5i, 1), pow(1i, 1i), 0i^0]",
+	"i = 4; [2*i, 2i, 2in, 2pi, .5i, 2.i, 0x1i, 2e3i, [1i, 2] .* [2, 3i], sum([1i, 2]), unique([1i, 1i])]",
+	"[polyroots([1, 0, 1]), polyroots([3.2, 2, 1]), eig([[1, -1], [1, 1]]), eig([[0, 1], [0, 0]]), 1i < 2, sort([1i])]",
 }
 
 func FuzzParse(f *testing.F) {
