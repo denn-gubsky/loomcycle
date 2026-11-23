@@ -797,10 +797,21 @@ func flattenMessage(m providers.Message) []wireMessage {
 	var out []wireMessage
 	var userText strings.Builder
 	var images []string
+	// A tool's pictures (RFC GW §5.8) follow the turn's tool messages in one
+	// user message: whether a model's template shows images on a tool turn
+	// varies, and a user turn's images it always takes.
+	var pictureText []string
+	var pictures []string
 	for _, c := range m.Content {
 		switch c.Type {
 		case "tool_result":
 			out = append(out, wireMessage{Role: "tool", Content: c.Text})
+			if len(c.Images) > 0 {
+				pictureText = append(pictureText, providers.ToolPicturesLead(c))
+				for _, im := range c.Images {
+					pictures = append(pictures, im.Data)
+				}
+			}
 		case "text":
 			if userText.Len() > 0 {
 				userText.WriteString("\n")
@@ -812,6 +823,9 @@ func flattenMessage(m providers.Message) []wireMessage {
 	}
 	if userText.Len() > 0 || len(images) > 0 {
 		out = append([]wireMessage{{Role: "user", Content: userText.String(), Images: images}}, out...)
+	}
+	if len(pictures) > 0 {
+		out = append(out, wireMessage{Role: "user", Content: strings.Join(pictureText, "\n"), Images: pictures})
 	}
 	return out
 }

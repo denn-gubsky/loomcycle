@@ -57,6 +57,7 @@ var ifaceKinds = map[string]ifaceKind{
 	"ThinkingDowngrader":            optional,
 	"ModelToolChoiceEnforcer":       optional,
 	"ModelStructuredOutputEnforcer": optional,
+	"VisionModelChecker":            optional,
 	"ModelIdentifier":               optional,
 	"RunEnder":                      optional,
 	// AudioTranscriber is reached past the lane wrapper: the provider lanes

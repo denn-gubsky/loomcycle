@@ -318,15 +318,18 @@ type wireMessage struct {
 }
 
 type wireContentBlock struct {
-	Type      string           `json:"type"`
-	Text      string           `json:"text,omitempty"`
-	ID        string           `json:"id,omitempty"`
-	Name      string           `json:"name,omitempty"`
-	Input     json.RawMessage  `json:"input,omitempty"`
-	ToolUseID string           `json:"tool_use_id,omitempty"`
-	Content   string           `json:"content,omitempty"`
-	IsError   bool             `json:"is_error,omitempty"`
-	Source    *wireImageSource `json:"source,omitempty"` // type == "image" (RFC AT) or "document" (out-of-band PDF)
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	// Content is a tool_result's answer: a string, or — when the tool
+	// returned pictures (RFC GW §5.8) — a []wireContentBlock of text and
+	// image blocks. Nil (omitted) for an empty text answer, as before.
+	Content any              `json:"content,omitempty"`
+	IsError bool             `json:"is_error,omitempty"`
+	Source  *wireImageSource `json:"source,omitempty"` // type == "image" (RFC AT) or "document" (out-of-band PDF)
 	// Thinking + Signature carry an extended-thinking block replayed on a
 	// tool-use continuation (type == "thinking"). Anthropic verifies Signature
 	// against Thinking and 400s on a mismatch or a missing block, so both are
@@ -582,7 +585,7 @@ func toWireBlock(c providers.ContentBlock) wireContentBlock {
 		return wireContentBlock{
 			Type:      "tool_result",
 			ToolUseID: c.ToolUseID,
-			Content:   c.Text,
+			Content:   toolResultContent(c),
 			IsError:   c.IsError,
 		}
 	case "image":
@@ -594,6 +597,29 @@ func toWireBlock(c providers.ContentBlock) wireContentBlock {
 	default: // "text"
 		return wireContentBlock{Type: "text", Text: c.Text}
 	}
+}
+
+// toolResultContent is a tool_result's content: its text as a string, as it
+// always was, or — when the tool returned pictures — an array of a text block
+// and one image block per picture, the form Anthropic takes images in a tool
+// result. An empty text gets no block: Anthropic refuses an empty text block.
+func toolResultContent(c providers.ContentBlock) any {
+	if len(c.Images) == 0 {
+		if c.Text == "" {
+			return nil
+		}
+		return c.Text
+	}
+	blocks := make([]wireContentBlock, 0, len(c.Images)+1)
+	if c.Text != "" {
+		blocks = append(blocks, wireContentBlock{Type: "text", Text: c.Text})
+	}
+	for _, im := range c.Images {
+		blocks = append(blocks, wireContentBlock{Type: "image", Source: &wireImageSource{
+			Type: "base64", MediaType: im.MediaType, Data: im.Data,
+		}})
+	}
+	return blocks
 }
 
 // anthropicSupportsVision reports whether the named Claude model accepts image
@@ -610,6 +636,12 @@ func anthropicSupportsVision(model string) bool {
 	default:
 		return true
 	}
+}
+
+// SupportsVisionFor implements providers.VisionModelChecker with the same
+// per-model rule the call-time refusal uses.
+func (d *Driver) SupportsVisionFor(model string) bool {
+	return anthropicSupportsVision(model)
 }
 
 // --- SSE parsing ---

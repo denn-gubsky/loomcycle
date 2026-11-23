@@ -81,6 +81,12 @@ type Result struct {
 	// "the query ran and matched nothing" from "the query did not run" — and a
 	// plain int could not tell that apart from a tool that never set it.
 	Count *int
+
+	// Images are pictures for the model to see (RFC GW §5.8). The dispatcher
+	// checks, scales and bounds them after the tool returns (images.go); the
+	// loop sends them with the tool_result, or refuses them for a model that
+	// cannot see images.
+	Images []Image
 }
 
 // ErrRunCredentialUnavailable reports that a call needed a PER-RUN credential
@@ -157,6 +163,11 @@ type Dispatcher struct {
 	classify func(error) (ErrorInfo, bool)
 	// panics counts the calls recovered from a panic (SetPanicCounter).
 	panics *PanicCounter
+
+	// images scales a tool's picture that is over MaxImageEdge
+	// (SetImageReencoder). Nil: such a picture is refused, never sent
+	// unscaled.
+	images ImageReencoder
 	// modes narrows tools to some of their operations (SetToolModes,
 	// toolmode.go). nil: every tool is held whole.
 	modes map[string]string
@@ -2035,6 +2046,7 @@ func (d *Dispatcher) execute(ctx context.Context, name string, input json.RawMes
 	} else {
 		return toolNotFound(name), nil
 	}
+	res = d.checkImages(ctx, res)
 	d.recordResult(ctx, name, input, res)
 	d.noteResult(name, input, res)
 	d.noteHelpRead(name, input, res)
