@@ -84,7 +84,7 @@ Example: `pow(2/3, 3)` gives `0.296296296296296`.
 
 ### sqrt(x)
 The square root. Exact when `x` is the square of a fraction; refused for a
-negative `x`.
+negative `x`, whose complex root is `sqrt(x + 0i)` (`Calc/complex`).
 
 Example: `sqrt(16/9)` gives `1.33333333333333`.
 
@@ -110,7 +110,8 @@ Example: `exp(0)` gives `1`.
 Example: `expm1(1e-10)` gives `1.00000000005e-10`.
 
 ### log(x, base?)
-The natural logarithm, or the logarithm to `base`. `x` must be positive.
+The natural logarithm, or the logarithm to `base`. `x` must be positive; a
+complex argument gives the complex logarithm (`Calc/complex`).
 `ln` is not a name here: write `log`.
 
 Example: `log(1024, 2)` gives `10`.

@@ -27,6 +27,8 @@ or `[ ]` does not end a statement, so a long list can span lines.
 - **Numbers.** `42`, `-3`, `0.1`, `2.5e-3`, `1_000_000` (`_` separates
   digits), `0xff`, `0b1010`, `0o17`. Every literal is exact: `0.1` is the
   fraction 1/10, not a binary float. See `Calc/numbers`.
+- **Complex numbers.** An `i` suffix on a number: `2i`, `3 - 1.5i`. A bare
+  `i` is an ordinary name. Never exact; see `Calc/complex`.
 - **Constants.** `pi`, `e`, `tau` (2·pi) and `phi` (the golden ratio). They
   are approximate.
 - **Booleans.** `true`, `false`.

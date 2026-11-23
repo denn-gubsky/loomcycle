@@ -180,12 +180,16 @@ Example: `r = qr([[3, 4], [4, 3]]); round(r[1] * r[2], 9)` gives `[[3, 4], [4, 3
 Example: `cholesky([[4, 2], [2, 2]])` gives `[[2, 0], [1, 1]]`.
 
 ### eig(A)
-`[values, vectors]` of a symmetric matrix: the eigenvalues ascending, and the
-eigenvectors as the columns of a matrix, so `A*v = λ*v` for column `v`. A
-non-symmetric matrix can have complex eigenvalues, which come in a later
-version; it is refused (`domain`).
+`[values, vectors]`: the eigenvalues, and the eigenvectors as the columns of
+a matrix, so `A*v = λ*v` for column `v`, each of length 1. A symmetric matrix
+has real eigenvalues, listed ascending. Any other square matrix may have
+complex ones (`Calc/complex`), in conjugate pairs: a value whose imaginary
+part is 0 is a real number, and the values are listed by real part, then
+imaginary part, each column of vectors following its value.
 
 Example: `eig([[2, 1], [1, 2]])[1]` gives `[1, 3]`.
+
+Example: `round(eig([[0, -1], [1, 0]])[1], 12)` gives `[-1i, 1i]`.
 
 ### svd(A)
 `[U, s, V]` with `A = U*diag(s)*V'`: the singular values `s` largest first,
