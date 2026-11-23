@@ -333,8 +333,10 @@ func (w *worker) restoreOp(ctx context.Context, id, dir, real string, raw []byte
 		return refuse(workspace.ClassFailed, "copying the checkpoint: %v", err)
 	}
 	// Nothing may still run in the folder being replaced: a container
-	// session holds it mounted, and would go on writing into the old one.
+	// session holds it mounted, and would go on writing into the old one;
+	// a server (RFC GW P9) would go on serving it.
 	kernels := w.kernels.Drop(id)
+	w.servers.Drop(id)
 	if err := w.engine.Forget(ctx, id); err != nil {
 		_ = removeDir(tmp)
 		return refuse(workspace.ClassFailed, "stopping the workspace's session: %v", err)

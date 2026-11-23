@@ -299,3 +299,20 @@ func TestRing_KeepsTheLatestBytes(t *testing.T) {
 		t.Errorf("tail(3) = %q %v", b, dropped)
 	}
 }
+
+// A restore replaces the workspace's folder, so nothing may keep running in
+// the old one: a server (RFC GW P9) ends with the interpreters and the
+// session (RFC GW P6), and nothing keeps serving files the restore removed.
+func TestServers_RestoreEndsTheWorkspacesServers(t *testing.T) {
+	requirePython(t)
+	w, root := newTestWorker(t)
+	writeFile(t, filepath.Join(root, "ws1", "keep.txt"), 3)
+	ck := checkpoint(t, w, "ws1", workspace.CheckpointArgs{})
+	port, pid := startChildServer(t, w, root)
+	mustOK(t, fop(t, w, "ws1", workspace.OpRestore, workspace.CheckpointRef{Checkpoint: ck.ID}), "restore")
+	waitFor(t, "the server to stop listening", func() bool { return !listening(port) })
+	waitFor(t, "the server's process to end", func() bool { return processGone(pid) })
+	if got := w.servers.list("ws1"); len(got) != 0 {
+		t.Errorf("servers after the restore = %d, want none", len(got))
+	}
+}
