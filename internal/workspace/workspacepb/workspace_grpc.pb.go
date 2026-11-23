@@ -36,6 +36,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	WorkspaceService_Attach_FullMethodName = "/loomcycle.workspace.v1.WorkspaceService/Attach"
 	WorkspaceService_Op_FullMethodName     = "/loomcycle.workspace.v1.WorkspaceService/Op"
+	WorkspaceService_Egress_FullMethodName = "/loomcycle.workspace.v1.WorkspaceService/Egress"
 )
 
 // WorkspaceServiceClient is the client API for WorkspaceService service.
@@ -49,6 +50,13 @@ type WorkspaceServiceClient interface {
 	// Op is one idle stream of an attached worker: the first frame is Ready,
 	// and the stream waits until the core sends an OpStart.
 	Op(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[OpFromWorker, OpToWorker], error)
+	// Egress is one HTTP round trip a workspace's session sends out (RFC GW
+	// §6.1, §6.3), opened by the worker: EgressStart, the request body in
+	// chunks, InputEnd; the core answers EgressHead, the response body in
+	// chunks, EgressDone. The core accepts it only from the principal that
+	// attached the worker id it names, for a ready workspace on that worker,
+	// and decides from the workspace's row which routes it may use.
+	Egress(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[EgressFromWorker, EgressToWorker], error)
 }
 
 type workspaceServiceClient struct {
@@ -85,6 +93,19 @@ func (c *workspaceServiceClient) Op(ctx context.Context, opts ...grpc.CallOption
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WorkspaceService_OpClient = grpc.BidiStreamingClient[OpFromWorker, OpToWorker]
 
+func (c *workspaceServiceClient) Egress(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[EgressFromWorker, EgressToWorker], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WorkspaceService_ServiceDesc.Streams[2], WorkspaceService_Egress_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[EgressFromWorker, EgressToWorker]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkspaceService_EgressClient = grpc.BidiStreamingClient[EgressFromWorker, EgressToWorker]
+
 // WorkspaceServiceServer is the server API for WorkspaceService service.
 // All implementations must embed UnimplementedWorkspaceServiceServer
 // for forward compatibility.
@@ -96,6 +117,13 @@ type WorkspaceServiceServer interface {
 	// Op is one idle stream of an attached worker: the first frame is Ready,
 	// and the stream waits until the core sends an OpStart.
 	Op(grpc.BidiStreamingServer[OpFromWorker, OpToWorker]) error
+	// Egress is one HTTP round trip a workspace's session sends out (RFC GW
+	// §6.1, §6.3), opened by the worker: EgressStart, the request body in
+	// chunks, InputEnd; the core answers EgressHead, the response body in
+	// chunks, EgressDone. The core accepts it only from the principal that
+	// attached the worker id it names, for a ready workspace on that worker,
+	// and decides from the workspace's row which routes it may use.
+	Egress(grpc.BidiStreamingServer[EgressFromWorker, EgressToWorker]) error
 	mustEmbedUnimplementedWorkspaceServiceServer()
 }
 
@@ -111,6 +139,9 @@ func (UnimplementedWorkspaceServiceServer) Attach(grpc.BidiStreamingServer[Worke
 }
 func (UnimplementedWorkspaceServiceServer) Op(grpc.BidiStreamingServer[OpFromWorker, OpToWorker]) error {
 	return status.Error(codes.Unimplemented, "method Op not implemented")
+}
+func (UnimplementedWorkspaceServiceServer) Egress(grpc.BidiStreamingServer[EgressFromWorker, EgressToWorker]) error {
+	return status.Error(codes.Unimplemented, "method Egress not implemented")
 }
 func (UnimplementedWorkspaceServiceServer) mustEmbedUnimplementedWorkspaceServiceServer() {}
 func (UnimplementedWorkspaceServiceServer) testEmbeddedByValue()                          {}
@@ -147,6 +178,13 @@ func _WorkspaceService_Op_Handler(srv interface{}, stream grpc.ServerStream) err
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WorkspaceService_OpServer = grpc.BidiStreamingServer[OpFromWorker, OpToWorker]
 
+func _WorkspaceService_Egress_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WorkspaceServiceServer).Egress(&grpc.GenericServerStream[EgressFromWorker, EgressToWorker]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WorkspaceService_EgressServer = grpc.BidiStreamingServer[EgressFromWorker, EgressToWorker]
+
 // WorkspaceService_ServiceDesc is the grpc.ServiceDesc for WorkspaceService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -164,6 +202,12 @@ var WorkspaceService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Op",
 			Handler:       _WorkspaceService_Op_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "Egress",
+			Handler:       _WorkspaceService_Egress_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

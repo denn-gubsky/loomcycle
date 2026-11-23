@@ -26,6 +26,13 @@ service WorkspaceService {
   // Op is one idle stream of an attached worker: the first frame is Ready,
   // and the stream waits until the core sends an OpStart.
   rpc Op(stream OpFromWorker) returns (stream OpToWorker);
+  // Egress is one HTTP round trip a workspace's session sends out (RFC GW
+  // §6.1, §6.3), opened by the worker: EgressStart, the request body in
+  // chunks, InputEnd; the core answers EgressHead, the response body in
+  // chunks, EgressDone. The core accepts it only from the principal that
+  // attached the worker id it names, for a ready workspace on that worker,
+  // and decides from the workspace's row which routes it may use.
+  rpc Egress(stream EgressFromWorker) returns (stream EgressToWorker);
 }
 
 // ---- Attach ----
@@ -146,3 +153,64 @@ message OpStart {
 }
 
 message InputEnd {}
+
+// ---- Egress ----
+
+// What a worker sends on an Egress stream: EgressStart, then, when it has a
+// body, the body's chunks and InputEnd.
+message EgressFromWorker {
+  oneof msg {
+    EgressStart start = 1;
+    // At most 64 KB of the request body.
+    Chunk body = 2;
+    InputEnd body_end = 3;
+  }
+}
+
+// EgressStart describes the session's request. It names no URL and no
+// credential: the core maps route and path onto the route's URL itself.
+message EgressStart {
+  string worker_id = 1;
+  string workspace_id = 2;
+  // The route's name: the first path segment of http://egress/<route>/….
+  string route = 3;
+  string method = 4;
+  // The rest of the session's request target after "/<route>/", as sent
+  // (still escaped), with its query.
+  string path = 5;
+  repeated Header headers = 6;
+  // Whether body chunks follow; InputEnd ends them.
+  bool has_body = 7;
+  // The body's length, -1 when unknown.
+  int64 content_length = 8;
+}
+
+message Header {
+  string name = 1;
+  string value = 2;
+}
+
+// What the core sends on an Egress stream: EgressHead, the response body's
+// chunks, then EgressDone.
+message EgressToWorker {
+  oneof msg {
+    EgressHead head = 1;
+    // At most 64 KB of the response body.
+    Chunk body = 2;
+    EgressDone done = 3;
+  }
+}
+
+// EgressHead is the answer's status and headers. A request the core refuses
+// is answered here too, as an HTTP answer with a one-line reason as body.
+message EgressHead {
+  int32 status = 1;
+  repeated Header headers = 2;
+}
+
+// EgressDone ends the answer. error is empty when the body was passed whole;
+// otherwise a short reason the body was cut (the byte budget, the upstream
+// failing midway), never a URL or a credential.
+message EgressDone {
+  string error = 1;
+}
