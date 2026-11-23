@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -144,28 +145,67 @@ func TestServers_StartedServerOutlivesTheOpAndStopEndsIt(t *testing.T) {
 	}
 }
 
-// A server and what it started end when its workspace is removed, as at a
-// release or a reconciliation: nothing keeps serving a workspace that is
-// gone.
+// processGone reports whether pid has exited (a zombie counts as gone:
+// kill(pid, 0) still succeeds on one).
+func processGone(pid int) bool {
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	st := strings.TrimSpace(string(out))
+	return err != nil || st == "" || strings.HasPrefix(st, "Z")
+}
+
+// startChildServer starts, in ws1, a server that is a child of the shell
+// the command line runs (so ending only the shell would leave it), and
+// returns its port and the child's pid.
+func startChildServer(t *testing.T, w *worker, root string) (port, pid int) {
+	t.Helper()
+	port = freePort(t)
+	startedServer(t, w, workspace.ServerStartArgs{Command: fmt.Sprintf("python3 -m http.server %d --bind 127.0.0.1 & echo $! > child.pid; wait", port)})
+	waitFor(t, "the server to listen", func() bool { return listening(port) })
+	b, err := os.ReadFile(filepath.Join(root, "ws1", "child.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err = strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Never leave a server behind a failed test.
+		if !processGone(pid) {
+			_ = exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+		}
+	})
+	return port, pid
+}
+
+// A server and what it started end when its workspace is removed (the op a
+// release and the run-end release send): nothing keeps serving, or runs,
+// for a workspace that is gone.
 func TestServers_RemovingTheWorkspaceEndsItsServersAndTheirChildren(t *testing.T) {
 	requirePython(t)
 	w, root := newTestWorker(t)
-	if err := os.WriteFile(filepath.Join(root, "ws1", "hello.txt"), []byte("hi from the workspace"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	port := freePort(t)
-	// The server is a child of the shell the command line starts, so the
-	// removal must end the group, not only the shell.
-	startedServer(t, w, workspace.ServerStartArgs{Command: fmt.Sprintf("python3 -m http.server %d --bind 127.0.0.1 & wait", port)})
-	t.Cleanup(func() { w.servers.Close() })
-	waitFor(t, "the server to answer", func() bool { return answers(port) })
+	port, pid := startChildServer(t, w, root)
 	if a := w.run(context.Background(), &workspacepb.OpStart{WorkspaceId: "ws1", Op: workspace.OpRemove}, nil); a.class != "" {
 		t.Fatalf("remove refused: %s: %s", a.class, a.detail)
 	}
 	waitFor(t, "the server to stop listening", func() bool { return !listening(port) })
+	waitFor(t, "the server's process to end", func() bool { return processGone(pid) })
 	if got := w.servers.list("ws1"); len(got) != 0 {
 		t.Errorf("servers after removal = %d, want none", len(got))
 	}
+}
+
+// The workspaces a worker removes at attach (released or lost while it was
+// away, then reconciled) take their servers with them.
+func TestServers_ReconciledRemovalEndsItsServers(t *testing.T) {
+	requirePython(t)
+	w, root := newTestWorker(t)
+	port, pid := startChildServer(t, w, root)
+	if gone := w.removeAll([]string{"ws1"}, slog.Default()); len(gone) != 1 {
+		t.Fatalf("removeAll = %v", gone)
+	}
+	waitFor(t, "the server to stop listening", func() bool { return !listening(port) })
+	waitFor(t, "the server's process to end", func() bool { return processGone(pid) })
 }
 
 // The worker's stop ends every server.
@@ -175,11 +215,10 @@ func TestServers_CloseEndsEveryServer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "ws1", "hello.txt"), []byte("hi from the workspace"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	port := freePort(t)
-	startedServer(t, w, workspace.ServerStartArgs{Command: fmt.Sprintf("python3 -m http.server %d --bind 127.0.0.1", port)})
-	waitFor(t, "the server to answer", func() bool { return answers(port) })
+	port, pid := startChildServer(t, w, root)
 	w.servers.Close()
 	waitFor(t, "the server to stop listening", func() bool { return !listening(port) })
+	waitFor(t, "the server's process to end", func() bool { return processGone(pid) })
 }
 
 // A workspace runs at most MaxServers at once; an ended one does not count.

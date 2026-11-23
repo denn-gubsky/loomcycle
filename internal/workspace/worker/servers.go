@@ -120,9 +120,21 @@ func (s *servers) Drop(id string) {
 	delete(s.by, id)
 	delete(s.next, id)
 	s.mu.Unlock()
-	for _, o := range gone {
-		_ = o
+	stopAll(gone)
+}
+
+// stopAll stops every server of m at once and returns when each is reaped
+// or its wait ran out: a removal waits for the slowest server, not the sum.
+func stopAll(m map[string]*server) {
+	var wg sync.WaitGroup
+	for _, o := range m {
+		wg.Add(1)
+		safego.Go(context.Background(), "workspace.worker.server-stop", func() {
+			defer wg.Done()
+			o.stop()
+		})
 	}
+	wg.Wait()
 }
 
 // Close kills every server: the worker is stopping.
@@ -132,9 +144,7 @@ func (s *servers) Close() {
 	s.by, s.next = nil, nil
 	s.mu.Unlock()
 	for _, m := range all {
-		for _, o := range m {
-			o.stop()
-		}
+		stopAll(m)
 	}
 }
 
