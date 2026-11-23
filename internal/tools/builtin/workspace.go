@@ -41,7 +41,9 @@ func (w *Workspace) Name() string { return "Workspace" }
 func (w *Workspace) Description() string {
 	return "Open a workspace — a directory on a workspace worker, away from the runtime — and run shell commands and file operations in it. " +
 		"Pick the operation with `op`: open (`name`, optional `toolchain`), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
-		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`). " +
+		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
+		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write) and unshare (`name`, `with`). " +
+		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, glob and grep on it, and write and edit with read_write; never exec. " +
 		"A workspace belongs to the run that opened it and is deleted when that run ends; copy out what you need to keep with read. " +
 		"Commands run on the worker's host engine as the worker's user with no isolation: it is not a sandbox, and has no network guarantees either way. " +
 		"Use this for work that needs a real shell and toolchains (python, node); use Read/Write/Edit on your volumes for files you keep. " +
@@ -52,8 +54,10 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep"]},
-			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it."},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare"]},
+			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
+			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
+			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
 			"toolchain":        {"type": "string", "enum": ["python","node"], "description": "open: the toolchain the worker must have. Omit for a general workspace, on a worker with both."},
 			"command":          {"type": "string", "description": "exec: a shell command line, run with /bin/sh -c."},
 			"cwd":              {"type": "string", "description": "exec: the directory to start in, relative to the workspace (default its root)."},
@@ -94,7 +98,16 @@ var workspaceOpArgs = map[string][]string{
 	"edit":    {"name", "path", "old_string", "new_string", "replace_all"},
 	"glob":    {"name", "pattern", "path"},
 	"grep":    {"name", "pattern", "path", "glob", "output_mode", "case_insensitive", "multiline", "head_limit", "-A", "-B", "-C"},
+	// connect is taken only to be refused by name: it arrives with servers
+	// (RFC GW P9).
+	"share":   {"name", "with", "access", "connect"},
+	"unshare": {"name", "with"},
 }
+
+// workspaceSharedOps are the ops that take a workspace shared with the run
+// (<name>@<agent id>): reading and, through a read_write share, writing
+// files. Never a command, a status, a release or a share of it (RFC GW D20).
+var workspaceSharedOps = map[string]bool{"read": true, "glob": true, "grep": true, "write": true, "edit": true}
 
 // workspaceOpGrant is the grant each op needs: an operation of the run's
 // workspace.ops, "open" for workspace.open, or "any" for any grant at all
@@ -104,6 +117,8 @@ var workspaceOpGrant = map[string]string{
 	"open": "open", "release": "any", "list": config.WorkspaceOpRead, "status": config.WorkspaceOpRead,
 	"exec": config.WorkspaceOpExec, "read": config.WorkspaceOpRead, "glob": config.WorkspaceOpRead, "grep": config.WorkspaceOpRead,
 	"write": config.WorkspaceOpWrite, "edit": config.WorkspaceOpWrite,
+	// share needs the share grant and what it hands over: checked in share.
+	"share": "share", "unshare": "share",
 }
 
 type workspaceInput struct {
@@ -130,6 +145,9 @@ type workspaceInput struct {
 	After           int    `json:"-A"`
 	Before          int    `json:"-B"`
 	Context         int    `json:"-C"`
+	With            string `json:"with"`
+	Access          string `json:"access"`
+	Connect         *bool  `json:"connect"`
 }
 
 // workspaceRefusal is a failure the model sees: a class and a detail.
@@ -163,6 +181,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		granted = pol.Open
 	case "any":
 		granted = pol.Grants()
+	case "share":
+		granted = pol.Share
 	default:
 		granted = pol.Allows(need)
 	}
@@ -182,6 +202,15 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return w.open(ctx, owner, pol, in), nil
 	case "list":
 		return w.list(ctx, owner), nil
+	}
+	if _, _, shared := lifecycle.SplitShared(in.Name); shared {
+		return w.sharedOp(ctx, owner, in), nil
+	}
+	switch in.Op {
+	case "share":
+		return w.share(ctx, owner, pol, in), nil
+	case "unshare":
+		return w.unshare(ctx, owner, in), nil
 	}
 	// 2. The pin: the calling run's own workspace, or not found.
 	row, err := w.Manager.Get(ctx, owner, in.Name)
@@ -255,6 +284,14 @@ func workspaceError(err error, name string) tools.Result {
 		return workspaceRefusal("limit", err.Error())
 	case errors.Is(err, lifecycle.ErrNotReady):
 		return workspaceRefusal("not_ready", err.Error())
+	case errors.Is(err, lifecycle.ErrShareReadOnly):
+		return workspaceRefusal("read_only_share", err.Error()+"; ask its owner for a read_write share")
+	case errors.Is(err, lifecycle.ErrShareTarget), errors.Is(err, lifecycle.ErrShareNoUser):
+		return workspaceRefusal("invalid_share_target", err.Error())
+	case errors.Is(err, lifecycle.ErrShareLimit):
+		return workspaceRefusal("limit", err.Error())
+	case errors.Is(err, lifecycle.ErrShareBusy):
+		return workspaceRefusal("busy", err.Error())
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return workspaceRefusal("cancelled", "the call was cancelled before the worker answered")
 	}
@@ -299,10 +336,31 @@ func (w *Workspace) list(ctx context.Context, o lifecycle.Owner) tools.Result {
 	}
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, map[string]any{"name": r.Name, "state": string(r.State), "engine": r.Engine, "created_at": r.CreatedAt.Format(time.RFC3339)})
+		e := map[string]any{"name": r.Name, "state": string(r.State), "engine": r.Engine, "created_at": r.CreatedAt.Format(time.RFC3339)}
+		if len(r.Shares) > 0 {
+			shares := make([]map[string]string, 0, len(r.Shares))
+			for _, sh := range r.Shares {
+				shares = append(shares, map[string]string{"with": sh.AgentID, "access": sh.Access})
+			}
+			e["shared_with"] = shares
+		}
+		out = append(out, e)
 	}
 	n := len(out)
-	res := workspaceOK(map[string]any{"workspaces": out})
+	body := map[string]any{"workspaces": out}
+	// What other runs shared with this one, by the name to use.
+	shared, err := w.Manager.SharedWith(ctx, o)
+	if err != nil {
+		return workspaceError(err, "")
+	}
+	if len(shared) > 0 {
+		sw := make([]map[string]any, 0, len(shared))
+		for _, s := range shared {
+			sw = append(sw, map[string]any{"name": lifecycle.SharedName(s.Row.Name, s.Row.OwnerAgentID), "owner": s.Row.OwnerAgentID, "access": s.Share.Access, "engine": s.Row.Engine})
+		}
+		body["shared_with_me"] = sw
+	}
+	res := workspaceOK(body)
 	res.Count = &n
 	return res
 }
@@ -339,6 +397,76 @@ func (w *Workspace) exec(ctx context.Context, row store.WorkspaceRow, in workspa
 	// model sees it failed, as the Bash tool does.
 	out.IsError = ea.ExitCode != 0 || ea.TimedOut
 	return out
+}
+
+// share shares the run's own workspace with another run of its user (RFC GW
+// §5.2). The run must hold share and what the access hands over: a share
+// never gives a peer more than its owner may do (D-P8-3).
+func (w *Workspace) share(ctx context.Context, o lifecycle.Owner, pol tools.WorkspacePolicyValue, in workspaceInput) tools.Result {
+	if in.Connect != nil && *in.Connect {
+		return workspaceRefusal("not_yet", "connect (reaching a workspace's exposed ports) arrives with servers; share without it")
+	}
+	if !lifecycle.ValidShareAccess(in.Access) {
+		return workspaceRefusal("invalid_argument", fmt.Sprintf("access %q: want read or read_write", in.Access))
+	}
+	if !pol.Read || (in.Access == store.WorkspaceShareReadWrite && !pol.Write) {
+		return workspaceRefusal("not_granted", fmt.Sprintf("a %s share hands over operations this agent's workspace grant does not hold", in.Access))
+	}
+	if in.With == "" {
+		return workspaceRefusal("invalid_argument", "share needs with: the agent id of the run to share with")
+	}
+	peer, err := w.Manager.ResolvePeer(ctx, o, in.With)
+	if err != nil {
+		return workspaceError(err, in.Name)
+	}
+	row, err := w.Manager.Share(ctx, o, in.Name, peer, in.Access)
+	if err != nil {
+		return workspaceError(err, in.Name)
+	}
+	return workspaceOK(map[string]any{"name": row.Name, "shared_with": peer.AgentID, "access": in.Access,
+		"their_name": lifecycle.SharedName(row.Name, o.AgentID)})
+}
+
+func (w *Workspace) unshare(ctx context.Context, o lifecycle.Owner, in workspaceInput) tools.Result {
+	if in.With == "" {
+		return workspaceRefusal("invalid_argument", "unshare needs with: the agent id the workspace was shared with")
+	}
+	removed, err := w.Manager.Unshare(ctx, o, in.Name, in.With)
+	if err != nil {
+		return workspaceError(err, in.Name)
+	}
+	return workspaceOK(map[string]any{"name": in.Name, "with": in.With, "unshared": removed})
+}
+
+// sharedOp is an op on a workspace another run shared with this one: only
+// the file ops of workspaceSharedOps, a write only through a read_write
+// share, and the run's own grant applies on top (checked in Execute).
+func (w *Workspace) sharedOp(ctx context.Context, o lifecycle.Owner, in workspaceInput) tools.Result {
+	if !workspaceSharedOps[in.Op] {
+		return workspaceRefusal("not_shared_op", fmt.Sprintf("%s is not done on a workspace shared with you: a share allows read, glob, grep, and write and edit with read_write; never commands", in.Op))
+	}
+	write := in.Op == workspace.OpWrite || in.Op == workspace.OpEdit
+	hookOp := wsHookRead
+	if write {
+		hookOp = wsHookWrite
+	}
+	if err := w.Manager.UseShared(ctx, o, in.Name, write, hookOp, "Workspace"); err != nil {
+		return workspaceSharedError(err, in.Name)
+	}
+	row, err := w.Manager.Resolve(ctx, o, in.Name, write)
+	if err != nil {
+		return workspaceSharedError(err, in.Name)
+	}
+	return w.fileOp(ctx, row, in)
+}
+
+// workspaceSharedError is workspaceError for a shared name: not found says
+// so without telling a missing share from a missing workspace.
+func workspaceSharedError(err error, name string) tools.Result {
+	if errors.Is(err, lifecycle.ErrNotFound) {
+		return workspaceRefusal("not_found", fmt.Sprintf("no workspace %q is shared with this run (list shows those that are)", name))
+	}
+	return workspaceError(err, name)
 }
 
 func (w *Workspace) fileOp(ctx context.Context, row store.WorkspaceRow, in workspaceInput) tools.Result {
