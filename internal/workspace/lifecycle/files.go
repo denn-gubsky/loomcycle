@@ -14,9 +14,10 @@ import (
 )
 
 // The raw-byte file ops (RFC GW P2), one method each. Every one names the
-// workspace by the run's Owner and the workspace's name and goes through Get
-// first, so it reaches only a workspace the run itself opened (the pin), and
-// only a ready one. A worker's refusal comes back as a *dispatch.OpError of
+// workspace by the run's Owner and the workspace's name and goes through
+// ready first, so it reaches only a workspace the run itself opened (the
+// pin) or one shared with it ("<name>@<agent id>", RFC GW P8) whose share
+// covers the op — a write needs a read_write share — and only a ready one. A worker's refusal comes back as a *dispatch.OpError of
 // its class (workspace.Class*: path_not_found, exists, workspace_over_quota,
 // size_mismatch, copy_limit, invalid, ...); the manager's own errors are
 // ErrNotFound, ErrNotReady and ErrNotSameWorker.
@@ -29,9 +30,18 @@ var ErrNotSameWorker = errors.New("the two workspaces are on different workers")
 // entries fits well within it.
 const maxAnswer = 8 << 20
 
-// ready is the run's ready workspace of this name.
-func (m *Manager) ready(ctx context.Context, o Owner, name string) (store.WorkspaceRow, error) {
-	r, err := m.Get(ctx, o, name)
+// ready is the run's ready workspace of this name: its own, or one shared
+// with it, through a share that covers a write when write.
+func (m *Manager) ready(ctx context.Context, o Owner, name string, write bool) (store.WorkspaceRow, error) {
+	var (
+		r   store.WorkspaceRow
+		err error
+	)
+	if _, _, shared := SplitShared(name); shared {
+		r, _, err = m.resolveShared(ctx, o, name, write)
+	} else {
+		r, err = m.Get(ctx, o, name)
+	}
 	if err != nil {
 		return store.WorkspaceRow{}, err
 	}
@@ -41,10 +51,16 @@ func (m *Manager) ready(ctx context.Context, o Owner, name string) (store.Worksp
 	return r, nil
 }
 
+// Resolve is ready for the Workspace tool's own ops on a shared name: the
+// workspace, when the run may reach it for a write (write) or a read.
+func (m *Manager) Resolve(ctx context.Context, o Owner, name string, write bool) (store.WorkspaceRow, error) {
+	return m.ready(ctx, o, name, write)
+}
+
 // call runs one JSON op in the run's workspace name and decodes its answer
-// into into (nil: none expected).
-func (m *Manager) call(ctx context.Context, o Owner, name, op string, args, into any) error {
-	r, err := m.ready(ctx, o, name)
+// into into (nil: none expected). write says the op changes the workspace.
+func (m *Manager) call(ctx context.Context, o Owner, name, op string, write bool, args, into any) error {
+	r, err := m.ready(ctx, o, name, write)
 	if err != nil {
 		return err
 	}
@@ -77,14 +93,14 @@ func decodeAnswer(op string, out []byte, into any) error {
 // with its sha256 when args.SHA256.
 func (m *Manager) Stat(ctx context.Context, o Owner, name string, args workspace.FStatArgs) (workspace.FileInfo, error) {
 	var out workspace.FileInfo
-	err := m.call(ctx, o, name, workspace.OpFStat, args, &out)
+	err := m.call(ctx, o, name, workspace.OpFStat, false, args, &out)
 	return out, err
 }
 
 // ListFiles lists a folder, one level or all of it, within args.Limit.
 func (m *Manager) ListFiles(ctx context.Context, o Owner, name string, args workspace.FListArgs) (workspace.FListAnswer, error) {
 	var out workspace.FListAnswer
-	err := m.call(ctx, o, name, workspace.OpFList, args, &out)
+	err := m.call(ctx, o, name, workspace.OpFList, false, args, &out)
 	return out, err
 }
 
@@ -94,7 +110,7 @@ func (m *Manager) ListFiles(ctx context.Context, o Owner, name string, args work
 // read is bounded by its length. Nothing is held whole in memory. On an
 // error out may already hold part of the file: the caller discards it.
 func (m *Manager) GetFile(ctx context.Context, o Owner, name string, args workspace.GetArgs, out io.Writer, maxBytes int64) (int64, error) {
-	r, err := m.ready(ctx, o, name)
+	r, err := m.ready(ctx, o, name, false)
 	if err != nil {
 		return 0, err
 	}
@@ -117,7 +133,7 @@ func (m *Manager) GetFile(ctx context.Context, o Owner, name string, args worksp
 // left. The quota is checked for args.Size before a byte is sent.
 func (m *Manager) PutFile(ctx context.Context, o Owner, name string, args workspace.PutArgs, in io.Reader) (workspace.PutAnswer, error) {
 	var out workspace.PutAnswer
-	r, err := m.ready(ctx, o, name)
+	r, err := m.ready(ctx, o, name, true)
 	if err != nil {
 		return out, err
 	}
@@ -137,14 +153,14 @@ func (m *Manager) PutFile(ctx context.Context, o Owner, name string, args worksp
 // Mkdir makes a folder and its missing parents (in a stage, with
 // args.Stage); one already there is success.
 func (m *Manager) Mkdir(ctx context.Context, o Owner, name string, args workspace.MkdirArgs) error {
-	return m.call(ctx, o, name, workspace.OpMkdir, args, nil)
+	return m.call(ctx, o, name, workspace.OpMkdir, true, args, nil)
 }
 
 // RemoveFile removes a file, a link or a folder with what it holds; never
 // the workspace's root (Release removes a workspace).
 func (m *Manager) RemoveFile(ctx context.Context, o Owner, name, path string) (workspace.FRemoveAnswer, error) {
 	var out workspace.FRemoveAnswer
-	err := m.call(ctx, o, name, workspace.OpFRemove, workspace.FRemoveArgs{Path: path}, &out)
+	err := m.call(ctx, o, name, workspace.OpFRemove, true, workspace.FRemoveArgs{Path: path}, &out)
 	return out, err
 }
 
@@ -152,7 +168,7 @@ func (m *Manager) RemoveFile(ctx context.Context, o Owner, name, path string) (w
 // for PutFile and Mkdir to build a folder in and Commit to place.
 func (m *Manager) Stage(ctx context.Context, o Owner, name string) (string, error) {
 	var out workspace.StageAnswer
-	err := m.call(ctx, o, name, workspace.OpStage, struct{}{}, &out)
+	err := m.call(ctx, o, name, workspace.OpStage, true, struct{}{}, &out)
 	return out.Stage, err
 }
 
@@ -160,13 +176,13 @@ func (m *Manager) Stage(ctx context.Context, o Owner, name string) (string, erro
 // with args.Overwrite, merges it file by file).
 func (m *Manager) Commit(ctx context.Context, o Owner, name string, args workspace.CommitArgs) (workspace.Usage, error) {
 	var out workspace.Usage
-	err := m.call(ctx, o, name, workspace.OpCommit, args, &out)
+	err := m.call(ctx, o, name, workspace.OpCommit, true, args, &out)
 	return out, err
 }
 
 // Discard drops a stage; one already gone is success.
 func (m *Manager) Discard(ctx context.Context, o Owner, name, stage string) error {
-	return m.call(ctx, o, name, workspace.OpDiscard, workspace.DiscardArgs{Stage: stage}, nil)
+	return m.call(ctx, o, name, workspace.OpDiscard, true, workspace.DiscardArgs{Stage: stage}, nil)
 }
 
 // CopyLimits are the operator's folder-copy bounds (workspace.copy), which
@@ -194,11 +210,11 @@ type CopyLocalRequest struct {
 // Workspaces on different workers answer ErrNotSameWorker.
 func (m *Manager) CopyLocal(ctx context.Context, o Owner, req CopyLocalRequest) (workspace.CopyAnswer, error) {
 	var out workspace.CopyAnswer
-	from, err := m.ready(ctx, o, req.From)
+	from, err := m.ready(ctx, o, req.From, false)
 	if err != nil {
 		return out, err
 	}
-	to, err := m.ready(ctx, o, req.To)
+	to, err := m.ready(ctx, o, req.To, true)
 	if err != nil {
 		return out, err
 	}
