@@ -47,8 +47,9 @@ func (w *Workspace) Description() string {
 		"Pick the operation with `op`: open (`name`, optional `toolchain`), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
+		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
 		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write) and unshare (`name`, `with`). " +
-		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, glob and grep on it, and write and edit with read_write; never exec or run_cell. " +
+		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, view, glob and grep on it, and write and edit with read_write; never exec or run_cell. " +
 		"A workspace belongs to the run that opened it and is deleted when that run ends; copy out what you need to keep with read. " +
 		"Commands run on the worker's host engine as the worker's user with no isolation: it is not a sandbox, and has no network guarantees either way. " +
 		"Use this for work that needs a real shell and toolchains (python, node); use Read/Write/Edit on your volumes for files you keep. " +
@@ -59,7 +60,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
-			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel"]},
+			"op":               {"type": "string", "enum": ["open","release","list","status","exec","read","write","edit","glob","grep","share","unshare","run_cell","reset_kernel","view"]},
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
@@ -107,6 +108,7 @@ var workspaceOpArgs = map[string][]string{
 	"grep":         {"name", "pattern", "path", "glob", "output_mode", "case_insensitive", "multiline", "head_limit", "-A", "-B", "-C"},
 	"run_cell":     {"name", "code", "kernel", "timeout_s"},
 	"reset_kernel": {"name", "kernel"},
+	"view":         {"name", "path"},
 	// connect is taken only to be refused by name: it arrives with servers
 	// (RFC GW P9).
 	"share":   {"name", "with", "access", "connect"},
@@ -116,7 +118,9 @@ var workspaceOpArgs = map[string][]string{
 // workspaceSharedOps are the ops that take a workspace shared with the run
 // (<name>@<agent id>): reading and, through a read_write share, writing
 // files. Never a command, a status, a release or a share of it (RFC GW D20).
-var workspaceSharedOps = map[string]bool{"read": true, "glob": true, "grep": true, "write": true, "edit": true}
+//
+// view is a read (RFC GW §5.8: grant read): a read share allows it.
+var workspaceSharedOps = map[string]bool{"read": true, "glob": true, "grep": true, "write": true, "edit": true, "view": true}
 
 // workspaceOpGrant is the grant each op needs: an operation of the run's
 // workspace.ops, "open" for workspace.open, or "any" for any grant at all
@@ -125,6 +129,7 @@ var workspaceSharedOps = map[string]bool{"read": true, "glob": true, "grep": tru
 var workspaceOpGrant = map[string]string{
 	"open": "open", "release": "any", "list": config.WorkspaceOpRead, "status": config.WorkspaceOpRead,
 	"exec": config.WorkspaceOpExec, "read": config.WorkspaceOpRead, "glob": config.WorkspaceOpRead, "grep": config.WorkspaceOpRead,
+	"view": config.WorkspaceOpRead,
 	"write": config.WorkspaceOpWrite, "edit": config.WorkspaceOpWrite,
 	// A cell runs code as a command does (RFC GW §5.7: grants exec).
 	"run_cell": config.WorkspaceOpExec, "reset_kernel": config.WorkspaceOpExec,
@@ -253,6 +258,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return w.runCell(ctx, row, in), nil
 	case "reset_kernel":
 		return w.resetKernel(ctx, row, in), nil
+	case "view":
+		return w.view(ctx, owner, in), nil
 	}
 	return w.fileOp(ctx, row, in), nil
 }
@@ -480,6 +487,9 @@ func (w *Workspace) sharedOp(ctx context.Context, o lifecycle.Owner, in workspac
 	}
 	if err := w.Manager.UseShared(ctx, o, in.Name, write, hookOp, "Workspace"); err != nil {
 		return workspaceSharedError(err, in.Name)
+	}
+	if in.Op == "view" {
+		return w.view(ctx, o, in)
 	}
 	row, err := w.Manager.Resolve(ctx, o, in.Name, write)
 	if err != nil {
