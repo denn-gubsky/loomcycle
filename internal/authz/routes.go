@@ -308,6 +308,9 @@ var httpRoutes = []Route{
 	rowOpen("POST /v1/_authz/evaluations", "", false),
 	rowOpen("POST /v1/_authz/explain", "", false),
 	rowOpen("POST /v1/_authz/simulate", "", false),
+	// The Calc tool outside a run: a pure function of its arguments that
+	// reaches no stored data, so any principal; off the run plane.
+	rowOpen("POST /v1/_calc", "", false),
 	// The channel admin family, tenant-confined by its handlers.
 	row("GET /v1/_channels", ScopeTenant, false, q("subscribe", "channel", "*")),
 	row("POST /v1/_channels", ScopeTenant, false, q("manage", "channel", "*")),

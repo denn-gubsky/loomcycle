@@ -8,10 +8,10 @@ import (
 // elementwise maps the dotted operators to their scalar meaning.
 var elementwise = map[string]string{".*": "*", "./": "/", ".^": "^"}
 
-// arith applies an arithmetic operator, broadcasting over lists. `*`, `/`
-// and `^` with a list operand are refused where they would mean a matrix
-// operation (list*list, scalar/list, list^x): those are reserved for the
-// matrix functions, and the dotted forms say element-wise explicitly.
+// arith applies an arithmetic operator, broadcasting over lists. `*`
+// between two lists is the matrix product (see matMul); `/` by a list and
+// `^` with a list operand are refused, and the dotted forms say
+// element-wise explicitly.
 func (e *evaluator) arith(op string, l, r val, pos int) (val, *Error) {
 	ln, lok := l.(num)
 	rn, rok := r.(num)
@@ -34,8 +34,7 @@ func (e *evaluator) arith(op string, l, r val, pos int) (val, *Error) {
 	switch op {
 	case "*":
 		if lList && rList {
-			return nil, errf(codeType, pos, "`*` of two lists is matrix multiplication, which is not available yet").
-				withHint("use `.*` to multiply element by element")
+			return e.matMul(l, r, pos)
 		}
 	case "/":
 		if rList {
@@ -46,6 +45,13 @@ func (e *evaluator) arith(op string, l, r val, pos int) (val, *Error) {
 	}
 	switch {
 	case lList && rList:
+		if isMatrix(l) || isMatrix(r) {
+			// Name both shapes here, at the top: the element-wise recursion
+			// below would only see the lengths of one pair of rows.
+			if ls, rs := shape(l), shape(r); !equalInts(ls, rs) {
+				return nil, errf(codeShape, pos, "%s needs the same shape on both sides, got %s and %s", op, shapeText(l), shapeText(r))
+			}
+		}
 		if len(ll) != len(rl) {
 			return nil, errf(codeShape, pos, "%s needs lists of the same length, got %d and %d", op, len(ll), len(rl))
 		}

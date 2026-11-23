@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"golang.org/x/sync/semaphore"
+
 	"github.com/denn-gubsky/loomcycle/internal/calc"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 )
@@ -17,6 +19,10 @@ import (
 // state, no I/O, no network — so it needs no grant beyond being in the
 // agent's tools, and every refusal is about the expression, never the caller.
 type Calc struct {
+	// Gate bounds how many heavy matrix operations run at once across every
+	// caller of this tool (calc.NewGate, built once at boot); nil means no
+	// gating, as in tests.
+	Gate  *semaphore.Weighted
 	stats calcStats
 }
 
@@ -28,7 +34,7 @@ func (c *Calc) Name() string { return "Calc" }
 // words as they land.
 func (c *Calc) Description() string {
 	return strings.TrimSpace(`
-Evaluate math exactly: arithmetic, rounding, powers and roots, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, finance and dates. Use it for every calculation instead of working it out yourself. ` + "`expr`" + ` is one or more statements; the last one is the result. Pass data in ` + "`vars`" + `. Power is ` + "`^`" + `, ` + "`%`" + ` is modulo, indexing starts at 1, ` + "`.*`" + ` multiplies lists element by element. For the functions, read ` + "`Context op=help topic=Calc`" + ` first.`)
+Evaluate math exactly: arithmetic, rounding, powers and roots, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, matrices, finance and dates. Use it for every calculation instead of working it out yourself. ` + "`expr`" + ` is one or more statements; the last one is the result. Pass data in ` + "`vars`" + `. Power is ` + "`^`" + `, ` + "`%`" + ` is modulo, indexing starts at 1, ` + "`.*`" + ` multiplies lists element by element. For the functions, read ` + "`Context op=help topic=Calc`" + ` first.`)
 }
 
 const calcExprDescription = "Statements separated by `;` or newlines; the last one's value is the result. Example: `subtotal = 1249.99 * 3; tax = round(subtotal * 0.2, 2); subtotal + tax`."
@@ -72,7 +78,7 @@ func (c *Calc) Execute(ctx context.Context, input json.RawMessage) (tools.Result
 		return calcRefusal(&calc.Error{Code: "bad_request", Detail: "expr is required", Pos: -1,
 			Hint: "pass the expression as `expr`, e.g. {\"expr\": \"2 + 2\"}"}), nil
 	}
-	resp, cerr := calc.Eval(ctx, calc.Request{Expr: *in.Expr, Vars: in.Vars, Digits: in.Digits, Seed: in.Seed})
+	resp, cerr := calc.Eval(ctx, calc.Request{Expr: *in.Expr, Vars: in.Vars, Digits: in.Digits, Seed: in.Seed, Gate: c.Gate})
 	if cerr != nil {
 		c.stats.count(cerr.Code)
 		// A canceled evaluation is the run ending, not a refusal of the

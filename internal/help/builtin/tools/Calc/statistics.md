@@ -10,6 +10,9 @@ not come out exact (`stdev`, `correlation`, `zscore`) and `geomean` give a
 float. An empty list is refused (`domain`); two lists of different lengths
 are refused (`shape`).
 
+Of a matrix, `mean`, `median`, `variance` and `stdev` work column by column
+and return one value per column (see `Calc/matrices`).
+
 `range` is the list builder (`range(1, 5)`), not the statistical range: the
 gap between the largest and smallest value is `spread`.
 
@@ -96,7 +99,8 @@ Example: `percentile([1, 2, 3, 4], 30)` gives `1.9`.
 ### rank(v)
 Each value's rank, **1 for the smallest**, in the order of `v`. Tied values
 share the average of the ranks they span (Excel's `RANK.AVG` ascending,
-SciPy's `rankdata`). For 1 as the largest, rank `-v`.
+SciPy's `rankdata`). For 1 as the largest, rank `-v`. The rank of a matrix
+is `matrank` (`Calc/matrices`).
 
 Example: `rank([10, 20, 10, 30])` gives `[1.5, 3, 1.5, 4]`.
 
