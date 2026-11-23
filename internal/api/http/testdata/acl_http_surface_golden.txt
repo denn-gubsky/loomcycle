@@ -413,6 +413,7 @@ POST /v1/_authz/evaluation	any	false	-
 POST /v1/_authz/evaluations	any	false	-
 POST /v1/_authz/explain	any	false	-
 POST /v1/_authz/simulate	any	false	-
+POST /v1/_calc	any	false	-
 POST /v1/_channels	substrate:tenant	false	manage channel:*
 POST /v1/_channels/_await	substrate:tenant	false	await channel:*
 POST /v1/_channels/_await/x	substrate:tenant	false	await channel:*

@@ -3902,8 +3902,7 @@ func (s *Server) routes() *http.ServeMux {
 	// RFC EP P1b — the Crypto tool's operations outside a run. substrate:tenant,
 	// closed to members; keys and tenant come from the principal (s.Crypto).
 	mux.Handle("POST /v1/_crypto", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleSubstrateCrypto))))
-	// RFC GY P4a — the Calc tool outside a run: any token but one held to the
-	// run plane; one unit of the token's run rate per call (s.Calc).
+	// RFC GY P4a — Calc outside a run (any token off the run plane; s.Calc).
 	mux.Handle("POST /v1/_calc", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleCalc))))
 	// RFC AH Phase 4 (Web UI) — two ADDITIVE read-only views of the volume
 	// universe. Tenant-confined (ScopeTenant in the route table):
