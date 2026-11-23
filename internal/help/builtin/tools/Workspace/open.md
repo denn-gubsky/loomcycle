@@ -12,13 +12,20 @@ workspace unchanged.
   `.`, `-` or `_`, starting with a letter or digit.
 - `toolchain` — `python` or `node`: the worker must have it. Omit for a
   general workspace, which goes on a worker with both.
+- `egress` — the routes the workspace may reach the network through, from
+  those your grant names (Context op=self shows them). Omit for all of them;
+  `[]` for none. A command reaches a route at `http://egress/<route>/…`;
+  nothing else on the network. The routes are fixed when the workspace is
+  opened: opening the same name again returns it with the routes it has.
 
 ## Returns
 
-`{name, state, engine}`; `state` is `ready`.
+`{name, state, engine, egress?}`; `state` is `ready`; `egress` lists the
+routes when it has any.
 
 ## Errors
 
+- `not_granted` — `egress` names a route your grant does not.
 - `limit` — your run (or your tenant) holds as many workspaces as allowed:
   `release` one first.
 - `no_worker` — no attached worker serves you with that toolchain.

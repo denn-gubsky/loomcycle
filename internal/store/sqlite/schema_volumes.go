@@ -116,6 +116,7 @@ func volumesSection() schemaPlan {
 			owner_kind     TEXT NOT NULL DEFAULT 'run',
 			opened_token   TEXT NOT NULL DEFAULT '',
 			last_used_at   INTEGER NOT NULL DEFAULT 0,
+			egress         TEXT NOT NULL DEFAULT '[]',
 			created_at     INTEGER NOT NULL,
 			updated_at     INTEGER NOT NULL,
 			UNIQUE (owner_run_id, name)

@@ -91,7 +91,11 @@ func classify(action string) eventClass {
 		return classAnonymous
 	case "auth_link_refused",
 		"acl_denied", "acl_unavailable", "acl_shadow_diverged", "acl_resolution_failed",
-		"identity_lookup", "crypto_op", "git_clone", "git_fetch", "git_ls_remote", "git_submodule_update":
+		"identity_lookup", "crypto_op", "git_clone", "git_fetch", "git_ls_remote", "git_submodule_update",
+		// One per request a workspace's script sends through a credentialed
+		// or tenant route (RFC GW P4): per request, so queued like a fetch,
+		// and never held against the answer being passed back.
+		"workspace_egress":
 		return classObserved
 	}
 	return classSync

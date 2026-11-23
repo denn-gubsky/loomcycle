@@ -15,7 +15,7 @@ import (
 
 // workspaceColNames is the column order scanWorkspace reads.
 var workspaceColNames = []string{"id", "tenant_id", "user_id", "name", "worker_id", "kind", "lifetime", "engine",
-	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "owner_kind", "opened_token", "last_used_at", "created_at", "updated_at"}
+	"owner_run_id", "owner_agent_id", "root_run_id", "state", "shares", "owner_kind", "opened_token", "last_used_at", "egress", "created_at", "updated_at"}
 
 var workspaceCols = workspaceColList("")
 
@@ -34,10 +34,11 @@ func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 		r      store.WorkspaceRow
 		state  string
 		shares string
+		egress string
 	)
 	if err := sc.Scan(&r.ID, &r.TenantID, &r.UserID, &r.Name, &r.WorkerID, &r.Kind, &r.Lifetime, &r.Engine,
 		&r.OwnerRunID, &r.OwnerAgentID, &r.RootRunID, &state, &shares, &r.OwnerKind, &r.OpenedToken,
-		d.TimeDest(&r.LastUsedAt), d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
+		d.TimeDest(&r.LastUsedAt), &egress, d.TimeDest(&r.CreatedAt), d.TimeDest(&r.UpdatedAt)); err != nil {
 		return store.WorkspaceRow{}, err
 	}
 	r.State = store.WorkspaceState(state)
@@ -45,6 +46,11 @@ func scanWorkspace(d Dialect, sc Row) (store.WorkspaceRow, error) {
 	// read wider than it was written.
 	if err := json.Unmarshal([]byte(shares), &r.Shares); err != nil || r.Shares == nil {
 		r.Shares = []store.WorkspaceShare{}
+	}
+	// Likewise a column that does not decode gives no route: no way out,
+	// never a wider one.
+	if err := json.Unmarshal([]byte(egress), &r.Egress); err != nil || r.Egress == nil {
+		r.Egress = []string{}
 	}
 	r.CreatedAt, r.UpdatedAt, r.LastUsedAt = r.CreatedAt.UTC(), r.UpdatedAt.UTC(), r.LastUsedAt.UTC()
 	return r, nil
@@ -93,7 +99,7 @@ func WorkspaceCreate(ctx context.Context, q Querier, row store.WorkspaceRow) (st
 		VALUES (`+Placeholders(len(workspaceColNames))+`)`,
 		row.ID, row.TenantID, row.UserID, row.Name, row.WorkerID, row.Kind, row.Lifetime, row.Engine,
 		row.OwnerRunID, row.OwnerAgentID, row.RootRunID, string(row.State), encodeShares(row.Shares),
-		row.OwnerKind, row.OpenedToken, d.TimeArg(now), d.TimeArg(now), d.TimeArg(now))
+		row.OwnerKind, row.OpenedToken, d.TimeArg(now), encodeEgress(row.Egress), d.TimeArg(now), d.TimeArg(now))
 	if IsUniqueViolation(err) {
 		return store.WorkspaceRow{}, &store.ErrConflict{Kind: "workspace", ID: row.Name}
 	}
@@ -257,6 +263,19 @@ func encodeShares(shares []store.WorkspaceShare) string {
 		return "[]"
 	}
 	b, err := json.Marshal(shares)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+// encodeEgress is the egress column's text: "[]", the column's default, for
+// none.
+func encodeEgress(names []string) string {
+	if len(names) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(names)
 	if err != nil {
 		return "[]"
 	}

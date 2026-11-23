@@ -20,6 +20,7 @@ import (
 	toolsa2a "github.com/denn-gubsky/loomcycle/internal/tools/a2a"
 	"github.com/denn-gubsky/loomcycle/internal/tools/builtin"
 	"github.com/denn-gubsky/loomcycle/internal/wiring"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/egress"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
 
@@ -315,12 +316,42 @@ func (b *boot) bindStoreToTools() {
 			ConvertQuarantine: time.Duration(b.cfg.Conversion.Resolved().QuarantineTTLS) * time.Second,
 		}, slog.Default())
 		b.workspaceTool.Manager = b.workspaces
+		b.wireWorkspaceEgress()
 		// File reaches workspaces by reference (RFC GW P2) through the same
 		// bookkeeping, so the same pin and grant hold.
 		b.fileTool.Workspaces = b.workspaces
 		// Crypto's from and to take workspace references too (RFC GW P2
 		// §3.4), under the same pin, grant and hooks.
 		b.cryptoTool.Workspaces = b.workspaces
+	}
+}
+
+// wireWorkspaceEgress gives the workspaces their way out (RFC GW §6.3, P4):
+// one proxy for the runtime, the credentials resolved for each request's
+// run, the dial guard with the operator's private-host allowlist, the
+// limits of workspace.egress.limits, and the audit line through the
+// bookkeeping's sink (set later, read at call time). The dispatcher answers
+// each worker's Egress stream through the bookkeeping's gate.
+func (b *boot) wireWorkspaceEgress() {
+	eg := b.cfg.Workspace.Resolved().Egress
+	opt := egress.Options{
+		PrivateHostAllowlist: b.cfg.Env.HTTPPrivateHostAllowlist,
+		Audit:                b.workspaces.RecordEgress,
+		Limits:               egress.Limits{RatePerMinute: eg.Limits.RatePerMinute, MaxBytes: eg.Limits.MaxBytes},
+	}
+	// A nil *credential.Engine in the interface would not read as nil; leave
+	// it unset instead, so a credentialed route is refused.
+	if b.credEngine != nil {
+		opt.Credentials = b.credEngine
+	}
+	proxy, err := egress.New(opt)
+	if err != nil {
+		fatal("workspace: cannot build the egress proxy", "err", err)
+	}
+	b.workspaces.SetEgress(proxy, lifecycle.OperatorRoutes(eg.Routes))
+	b.workspace.SetEgress(b.workspaces.Egress)
+	if n := len(eg.Routes); n > 0 {
+		slog.Info("workspace: egress routes", "routes", n)
 	}
 }
 

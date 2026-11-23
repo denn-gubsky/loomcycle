@@ -300,6 +300,9 @@ type worker struct {
 	quotas quotas
 	// extra counts the one-op streams OpenStreams opened and still open.
 	extra atomic.Int32
+	// links are the attached connections a session's request out is sent
+	// to the core on (egress_client.go).
+	links egressLinks
 	// mech is the checkpoint mechanism probed at start (RFC GW §5.4);
 	// empty copies.
 	mech string
@@ -367,6 +370,8 @@ func (w *worker) session(parent context.Context, conn *grpc.ClientConn, log *slo
 		log.Warn("the dispatcher runs another build", "dispatcher_build", b, "build", w.opt.BuildVersion)
 	}
 	log.Info("attached to the dispatcher", "engine", w.opt.Engine, "capacity", w.opt.Capacity, "toolchains", w.opt.Toolchains, "held", len(held))
+	// While attached, this connection can carry the sessions' requests out.
+	defer w.links.add(client)()
 
 	var wg sync.WaitGroup
 	defer wg.Wait()

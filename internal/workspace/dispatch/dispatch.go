@@ -120,6 +120,8 @@ type Dispatcher struct {
 	log *slog.Logger
 	// deps are the store and the token resolver, set by Activate.
 	deps atomic.Pointer[deps]
+	// egress answers the Egress streams (SetEgress); nil refuses them.
+	egress atomic.Pointer[EgressFunc]
 
 	mu      sync.Mutex
 	srv     *grpc.Server
@@ -250,6 +252,17 @@ func (l localService) Attach(s workspacepb.WorkspaceService_AttachServer) error 
 func (l localService) Op(s workspacepb.WorkspaceService_OpServer) error {
 	return l.d.Op(localOp{s, context.WithValue(s.Context(), localKey{}, true)})
 }
+
+func (l localService) Egress(s workspacepb.WorkspaceService_EgressServer) error {
+	return l.d.Egress(localEgress{s, context.WithValue(s.Context(), localKey{}, true)})
+}
+
+type localEgress struct {
+	workspacepb.WorkspaceService_EgressServer
+	ctx context.Context
+}
+
+func (s localEgress) Context() context.Context { return s.ctx }
 
 type localAttach struct {
 	workspacepb.WorkspaceService_AttachServer

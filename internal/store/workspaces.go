@@ -83,8 +83,12 @@ type WorkspaceRow struct {
 	// LastUsedAt is when an op last reached a principal's workspace (its
 	// idle release); the open stamps it. Not kept for a run's.
 	LastUsedAt time.Time
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	// Egress are the names of the routes the workspace may send requests
+	// out through (RFC GW §6.3), fixed at open. Never nil on a row read
+	// back: none is an empty list, and an empty list is no way out.
+	Egress    []string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // The owner kinds of a workspace (RFC GW D35).

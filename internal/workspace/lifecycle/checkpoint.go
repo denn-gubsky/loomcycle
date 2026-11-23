@@ -101,7 +101,9 @@ func (m *Manager) Fork(ctx context.Context, o Owner, src store.WorkspaceRow, as,
 	if err != nil {
 		return store.WorkspaceRow{}, out, err
 	}
-	row, err := m.makeOn(ctx, o, as, src.WorkerID, src.Engine, func(id string) error {
+	// A fork may send requests out through the routes its source may: the
+	// same owner opened the source within its grant (RFC GW §6.3).
+	row, err := m.makeOn(ctx, o, as, src.Egress, src.WorkerID, src.Engine, func(id string) error {
 		res, err := m.disp.Do(ctx, src.WorkerID, dispatch.Request{TenantID: o.TenantID, WorkspaceID: id, Op: workspace.OpFork, Args: args, MaxOutput: maxCheckpointAnswer})
 		if err != nil {
 			return err

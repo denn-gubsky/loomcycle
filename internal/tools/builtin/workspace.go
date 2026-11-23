@@ -44,7 +44,7 @@ func (w *Workspace) Name() string { return "Workspace" }
 
 func (w *Workspace) Description() string {
 	return "Open a workspace — a directory on a workspace worker, away from the runtime — and run shell commands and file operations in it. " +
-		"Pick the operation with `op`: open (`name`, optional `toolchain`), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
+		"Pick the operation with `op`: open (`name`, optional `toolchain`, optional `egress`: the routes it may reach the network through, default all your grant names), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
 		"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`); " +
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
@@ -67,6 +67,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
 			"toolchain":        {"type": "string", "enum": ["python","node"], "description": "open: the toolchain the worker must have. Omit for a general workspace, on a worker with both."},
+			"egress":           {"type": "array", "items": {"type": "string"}, "description": "open: the egress routes the workspace may send requests out through, at http://egress/<route>/…, from those your grant names. Omit for all of them; [] for none."},
 			"command":          {"type": "string", "description": "exec, start: a shell command line, run with /bin/sh -c."},
 			"cwd":              {"type": "string", "description": "exec, start: the directory to start in, relative to the workspace (default its root)."},
 			"port":             {"type": "integer", "minimum": 1, "maximum": 65535, "description": "start: the port the server listens on, recorded with it."},
@@ -104,7 +105,7 @@ func (w *Workspace) InputSchema() json.RawMessage {
 // another op takes is refused, as a misspelt one is: silently dropping it
 // would do something the caller did not ask for.
 var workspaceOpArgs = map[string][]string{
-	"open":         {"name", "toolchain"},
+	"open":         {"name", "toolchain", "egress"},
 	"release":      {"name"},
 	"list":         {},
 	"status":       {"name"},
@@ -204,12 +205,15 @@ type workspaceInput struct {
 	With            string `json:"with"`
 	Access          string `json:"access"`
 	Connect         *bool  `json:"connect"`
-	Label           string `json:"label"`
-	Checkpoint      string `json:"checkpoint"`
-	As              string `json:"as"`
-	Port            int    `json:"port"`
-	Server          string `json:"server"`
-	TailBytes       int    `json:"tail_bytes"`
+	// Egress is open's routes: nil when absent (the whole grant), empty
+	// for none.
+	Egress     *[]string `json:"egress"`
+	Label      string    `json:"label"`
+	Checkpoint string    `json:"checkpoint"`
+	As         string    `json:"as"`
+	Port       int       `json:"port"`
+	Server     string    `json:"server"`
+	TailBytes  int       `json:"tail_bytes"`
 }
 
 // workspaceRefusal is a failure the model sees: a class and a detail.
@@ -300,6 +304,7 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		return workspaceOK(map[string]any{"name": row.Name, "released": true}), nil
 	case "status":
 		out := map[string]any{"name": row.Name, "state": string(row.State), "engine": row.Engine}
+		withEgress(out, row.Egress)
 		if row.State == store.WorkspaceReady {
 			exists, err := w.Manager.Status(ctx, row)
 			if err != nil {
@@ -400,7 +405,11 @@ func workspaceError(err error, name string) tools.Result {
 }
 
 func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.WorkspacePolicyValue, in workspaceInput) tools.Result {
-	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine}
+	routes, refusal, ok := openEgress(pol, in.Egress)
+	if !ok {
+		return refusal
+	}
+	req := lifecycle.OpenRequest{Name: in.Name, Engine: pol.Engine, Egress: routes}
 	switch in.Toolchain {
 	case "":
 		// A general workspace (RFC GW §4.4) is placed where both are.
@@ -414,7 +423,39 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 	if err != nil {
 		return workspaceError(err, in.Name)
 	}
-	return workspaceOK(map[string]any{"name": row.Name, "state": string(row.State), "engine": row.Engine})
+	out := map[string]any{"name": row.Name, "state": string(row.State), "engine": row.Engine}
+	withEgress(out, row.Egress)
+	return workspaceOK(out)
+}
+
+// openEgress is the routes an open records (RFC GW §6.3, O4 of the P4 plan):
+// absent, every route of the run's grant; a list, that subset, each name
+// checked against the grant, duplicates dropped. A name the grant does not
+// hold is refused: an agent names routes, it never widens them.
+func openEgress(pol tools.WorkspacePolicyValue, asked *[]string) ([]string, tools.Result, bool) {
+	if asked == nil {
+		return append([]string{}, pol.Egress...), tools.Result{}, true
+	}
+	out := []string{}
+	for _, name := range *asked {
+		if !config.ValidEgressRouteName(name) {
+			return nil, workspaceRefusal("invalid_argument", fmt.Sprintf("egress: %q is not a route name (lower-case letters, digits and '-', starting with a letter)", name)), false
+		}
+		if !slices.Contains(pol.Egress, name) {
+			return nil, workspaceRefusal("not_granted", fmt.Sprintf("this agent's workspace grant does not name the egress route %q", name)), false
+		}
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out, tools.Result{}, true
+}
+
+// withEgress names a workspace's routes in an answer, when it has any.
+func withEgress(out map[string]any, routes []string) {
+	if len(routes) > 0 {
+		out["egress"] = routes
+	}
 }
 
 func (w *Workspace) list(ctx context.Context, o lifecycle.Owner) tools.Result {
@@ -425,6 +466,7 @@ func (w *Workspace) list(ctx context.Context, o lifecycle.Owner) tools.Result {
 	out := make([]map[string]any, 0, len(rows))
 	for _, r := range rows {
 		e := map[string]any{"name": r.Name, "state": string(r.State), "engine": r.Engine, "created_at": r.CreatedAt.Format(time.RFC3339)}
+		withEgress(e, r.Egress)
 		if len(r.Shares) > 0 {
 			shares := make([]map[string]string, 0, len(r.Shares))
 			for _, sh := range r.Shares {

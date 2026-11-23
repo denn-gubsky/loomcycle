@@ -24,6 +24,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/dispatch"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/egress"
 )
 
 // Store is what the manager reads and writes: the workspaces table, and runs
@@ -90,6 +91,10 @@ type Manager struct {
 	// audit records shares and uses through them (SetAudit); nil records
 	// nothing.
 	audit audit.Sink
+	// proxy and routes are the way out and the operator's routes by name
+	// (SetEgress); a nil proxy refuses every request out.
+	proxy  *egress.Proxy
+	routes map[string]egress.Route
 }
 
 // New builds a manager. A zero MaxPerRun is 1: a run that may open
@@ -218,6 +223,10 @@ type OpenRequest struct {
 	Toolchains []string
 	// Engine is the least isolating engine accepted; "" accepts any.
 	Engine string
+	// Egress are the routes the workspace may send requests out through,
+	// recorded on its row (RFC GW §6.3). The caller has checked them
+	// against the run's grant; none is no way out.
+	Egress []string
 }
 
 // Open opens a workspace named req.Name for the run. A ready workspace of
@@ -247,7 +256,7 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 	}
 	var lastErr error
 	for _, workerID := range cands {
-		row, err := m.openOn(ctx, o, req.Name, workerID, engines[workerID])
+		row, err := m.openOn(ctx, o, req, workerID, engines[workerID])
 		if err == nil {
 			return row, nil
 		}
@@ -263,15 +272,16 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 // row is written, counting it: two opens racing on two replicas each see the
 // other's row, so neither passes a bound both together would break (both may
 // be refused, never both admitted).
-func (m *Manager) openOn(ctx context.Context, o Owner, name, workerID, engine string) (store.WorkspaceRow, error) {
-	return m.makeOn(ctx, o, name, workerID, engine, func(id string) error {
+func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID, engine string) (store.WorkspaceRow, error) {
+	return m.makeOn(ctx, o, req.Name, req.Egress, workerID, engine, func(id string) error {
 		return m.disp.OpenWith(ctx, o.TenantID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes})
 	})
 }
 
-// makeOn makes a workspace on one worker: its row, the bounds, then place,
-// which makes its directory there (an open, or a fork), then the row ready.
-func (m *Manager) makeOn(ctx context.Context, o Owner, name, workerID, engine string, place func(id string) error) (store.WorkspaceRow, error) {
+// makeOn makes a workspace on one worker: its row (with the egress routes it
+// may use, RFC GW §6.3), the bounds, then place, which makes its directory
+// there (an open, or a fork), then the row ready.
+func (m *Manager) makeOn(ctx context.Context, o Owner, name string, egress []string, workerID, engine string, place func(id string) error) (store.WorkspaceRow, error) {
 	id, err := newID()
 	if err != nil {
 		return store.WorkspaceRow{}, fmt.Errorf("workspace id: %w", err)
@@ -280,6 +290,7 @@ func (m *Manager) makeOn(ctx context.Context, o Owner, name, workerID, engine st
 		ID: id, TenantID: o.TenantID, UserID: o.UserID, Name: name, WorkerID: workerID, Engine: engine,
 		OwnerRunID: o.RunID, OwnerAgentID: o.AgentID, RootRunID: o.RootRunID, State: store.WorkspaceOpening,
 		OwnerKind: o.kind(), OpenedToken: o.TokenDefID,
+		Egress: append([]string{}, egress...),
 	})
 	if err != nil {
 		var conflict *store.ErrConflict
@@ -416,6 +427,8 @@ func (m *Manager) Release(ctx context.Context, r store.WorkspaceRow) error {
 	// Its checkouts go with it, whatever the release's outcome: no commit
 	// can be asked of a workspace being released.
 	m.checkouts.forget(r.ID)
+	// So are the proxy's counts for it: an id is never reused.
+	m.forgetEgress(r.ID)
 	if r.State != store.WorkspaceReleasing {
 		ok, err := m.store.WorkspaceSetState(ctx, r.TenantID, r.ID, r.State, store.WorkspaceReleasing)
 		if err != nil {

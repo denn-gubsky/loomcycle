@@ -351,6 +351,9 @@ func columnsSection2() schemaPlan {
 		`ALTER TABLE workspaces ADD COLUMN owner_kind TEXT NOT NULL DEFAULT 'run'`,
 		`ALTER TABLE workspaces ADD COLUMN opened_token TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE workspaces ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0`,
+		// The routes a workspace may send requests out through (RFC GW
+		// P4); none for every row before. Mirrors postgres 0140.
+		`ALTER TABLE workspaces ADD COLUMN egress TEXT NOT NULL DEFAULT '[]'`,
 	}}
 }
 
