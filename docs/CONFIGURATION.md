@@ -4563,6 +4563,11 @@ workspace:
     memory_limit_mb: 1024  # the local worker's conversion child; 64 to 1048576
   kernel:
     interrupt_grace_seconds: 5 # a cell interrupted at its timeout, then its interpreter killed; 1 to 300
+  mcp:                     # the `workspace` tool of loomcycle's MCP server (RFC GW D35)
+    enabled: false         # off unless set
+    ops: [read, write]     # what a session may do: read, write, exec (exec only when listed)
+    idle_release_s: 3600   # released after this long without an op; 1 to 2592000
+    max_lifetime_s: 86400  # released this long after it opened; 1 to 2592000
 ```
 
 Policy and tuning, so yaml only; unknown keys are refused. `remote` needs `worker_endpoint.listen` and opens the endpoint whatever `conversion.mode` is, so the "nothing listens" warning for an unused endpoint is not given then. An agent granted `workspace:` while `workspace.mode` is off is warned about at startup: every `Workspace` call would be refused.
