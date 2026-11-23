@@ -83,6 +83,12 @@ jobs:
         working-directory: packages/explorer
         run: npm run build:lib
 
+      # The explorer's tests compile @loomcycle/code-editor from its SOURCE (the
+      # chunk editor), so that package's own deps must be installed for them.
+      - name: Install @loomcycle/code-editor deps
+        working-directory: packages/code-editor
+        run: npm ci
+
       - name: Test
         working-directory: packages/explorer
         run: npm test
