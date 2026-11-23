@@ -1,6 +1,6 @@
 ---
 name: Calc
-description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, matrices and linear algebra, finance and dates; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
+description: "Calc tool — evaluate math exactly: arithmetic, rounding, powers, logarithms, trigonometry, combinatorics, primes, lists, unit conversion, statistics, probability distributions, matrices and linear algebra, finance and dates; the call, the language in brief, exact versus approximate results, and where each group of functions is documented."
 ---
 The `Calc` tool evaluates a math expression and returns the answer, exactly
 where it can be exact. Decimals are exact fractions, so `0.1 + 0.2` is `0.3`
@@ -105,6 +105,8 @@ topic=Calc/<section>`:
   temperature, volume, energy, data size and more; prefixes and compounds.
 - `Calc/statistics` — mean, median, mode, variance and standard deviation
   (sample or population), quantiles, ranks, correlation, regression.
+- `Calc/distributions` — normal, t, chi-squared, F, exponential, uniform,
+  binomial and Poisson: densities, probabilities, quantiles.
 - `Calc/matrices` — the matrix product, transpose, building matrices,
   determinant, inverse, solving linear systems, least squares, the LU, QR,
   Cholesky, eigen and singular value decompositions.
