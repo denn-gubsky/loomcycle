@@ -138,7 +138,7 @@ agents:
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec` needs `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop` and `logs` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## The tool
 
@@ -153,7 +153,11 @@ One tool, `Workspace`, with an `op`:
 | `exec` | run a shell command in it (`/bin/sh -c`) | `name`, `command`, `cwd`, `timeout_s` |
 | `run_cell` | run code in an interpreter that keeps its variables between calls | `name`, `code`, `kernel` (`python` or `node`), `timeout_s` |
 | `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
+| `checkpoint`, `checkpoints`, `restore`, `delete_checkpoint`, `fork` | record the files, put them back, open a copy; see "Checkpoints and forks" | `name`, `label`, `checkpoint`, `as` |
 | `view` | return a picture in it to the model as an image | `name`, `path` |
+| `start` | run a command that keeps running after the call, a server (see Servers) | `name`, `command`, `cwd`, `port` |
+| `stop` | end a server and what it started | `name`, `server` |
+| `logs` | a server's latest output, or the list of servers | `name`, `server`, `tail_bytes` |
 | `read`, `write`, `edit`, `glob`, `grep` | the file tools' operations, relative to the workspace | as the Read, Write, Edit, Glob and Grep tools, without `volume` |
 
 `..`, an absolute path elsewhere and a symlink out of the workspace are refused, on the worker. An argument an op does not take is refused.
@@ -201,6 +205,54 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **One cell at a time** per interpreter: a second call waits for the first.
 - **The quota.** A cell is a command: it is refused with `workspace_over_quota` while the workspace is marked full, and the workspace is measured after it.
 - **How it runs.** Each interpreter is a small driver of ours (one Python file, one Node file, carried in the binary and written into the worker's root for the `host` engine) that the worker starts through its engine and speaks JSON lines with. A cell runs inside the driver's process and can write to that stream itself; the worker reads it with a bounded reader and takes a frame only as the current cell's own output, under a fresh id per cell, so a forged frame changes nothing but that cell's result.
+
+## Checkpoints and forks
+
+`checkpoint` records a workspace's files on its worker, installed packages included, and answers an id; `restore` puts them back; `fork` opens a second workspace from a checkpoint or from the present files (RFC GW §5.4, P6).
+
+```json
+{"op": "checkpoint", "name": "py", "label": "packages installed"}
+```
+```json
+{"id": "ck_3f9a1c0e5b7d2a64", "label": "packages installed", "bytes": 48213, "files": 37, "mechanism": "clone", "usage": {"used_bytes": 48213, "quota_bytes": 2147483648, "checkpoint_bytes": 48213}}
+```
+```json
+{"op": "fork", "name": "py", "as": "py-b", "checkpoint": "ck_3f9a1c0e5b7d2a64"}
+```
+
+| op | What it does | Grant | Arguments |
+|---|---|---|---|
+| `checkpoint` | record the workspace's files | `write` | `name`, `label` |
+| `checkpoints` | its checkpoints, newest first | `read` | `name` |
+| `restore` | put the files back to a checkpoint | `write` | `name`, `checkpoint` |
+| `delete_checkpoint` | remove a checkpoint and free its room | `write` | `name`, `checkpoint` |
+| `fork` | open a new workspace of the run as a copy | `open` | `name`, `as`, `checkpoint` |
+
+- **Files only.** An interpreter's variables and a running command are not in a checkpoint. `checkpoint` leaves them running; a command still writing may leave a file half written in the checkpoint. `restore` stops the workspace's interpreters and its session first (a server, a background command), and the next cell or command starts them new; the checkpoint stays, to restore again.
+- **The quota.** A checkpoint counts its full size against the workspace's `disk_quota_mb`, beside the workspace's files, whatever the mechanism shares on disk: a clone or a reflink stops sharing as soon as either side is rewritten, so a checkpoint is never a way round the quota. A checkpoint that does not fit, and a restore whose files do not fit beside the checkpoints held, are refused with `workspace_over_quota`; `delete_checkpoint` makes room. A workspace holds at most `workspace.checkpoint.max_per_workspace` checkpoints (default 8; past it `checkpoint_limit`).
+- **A fork is a workspace like any other:** the caller's own, on the original's worker (refused with `at_capacity` when that worker is full), with its own session and the operator's disk quota (a source that does not fit is refused, nothing made), counted against `max_per_run` and `max_per_tenant`. It starts with no checkpoints, no shares, no interpreter, and no record of Documents checked out into the original: check them out again to commit from the fork. A workspace shared with the run cannot be forked; an agent whose `workspace.engine` is stronger than the original's engine cannot fork it.
+- **How the worker records one.** It probes its disk at start and picks the first mechanism that works, reported as the label `checkpoint:<mechanism>` and in every answer: `clone` (a whole-folder clone on APFS, macOS), `reflink` (each file shares its blocks: xfs with reflink, btrfs, bcachefs), else `copy` (each file copied; a checkpoint or a fork then takes its full size on disk and seconds for a large tree). Never hard links. A worker that serves fan-outs wants a disk with reflinks. Links are copied as links, never followed; a pipe, a socket or a device is left out and named in `skipped`.
+- **Where checkpoints live.** In the worker's root, beside the workspaces (`.loomcycle-checkpoints/<workspace id>/`), never inside one: no command or file op reaches them. They go with their workspace, and a worker's start removes what an interrupted checkpoint left.
+- **The `host` engine has no fixed path.** A fork's Python environment would still name the original's folder, so its `pip` would install into the original. On `host` the worker rewrites the paths in each environment's `pyvenv.cfg` and the text files of its `bin/`, and names them in the answer's `rewritten`. The `container` engine mounts every workspace at `/workspace`, so nothing needs it.
+
+## Servers
+
+`start` runs a command that keeps running after the call: a web server, a file watcher, anything that does not end by itself (RFC GW §5.3). `exec` stays what it is, one command and one result. Servers need the `exec` grant, as commands do; a share never reaches them.
+
+```json
+{"op": "start", "name": "site", "command": "python3 -m http.server 8000", "port": 8000}
+```
+```json
+{"server": "srv-1", "command": "python3 -m http.server 8000", "port": 8000, "running": true, "started_at": "2026-11-23T20:00:00Z"}
+```
+
+- **The answer.** `server` is the id `stop` and `logs` take (`srv-1`, `srv-2`, ...). The call waits half a second: a server that ended in that time (a typo, a port in use) is a failed call carrying its output.
+- **`stop {name, server}`** kills the server and every process it started (its process group); `stopped` is false when it had ended by itself.
+- **`logs {name, server?, tail_bytes?}`** returns a server's latest output, standard output and standard error in the order written (default 64 KiB, at most 256 KiB), or, without `server`, lists the workspace's servers with their state.
+- **Limits.** At most 4 servers run in one workspace at once; the latest 256 KiB of each one's output is kept. A server is a command for the quota: `start` is refused with `workspace_over_quota` while the workspace is marked full.
+- **The command list.** A worker whose operator lists its commands (`LOOMCYCLE_WORKSPACE_COMMANDS`) holds `start` to the list exactly as `exec`: a command that `exec` refuses, `start` refuses.
+- **When it ends.** With `stop`, with the workspace's release, when the owning run ends, when the worker removes the workspace at attach (released or marked lost while it was away), and when the worker stops. Nothing of a server survives a worker restart or a snapshot.
+- **Who reaches its port.** In a `container` session no one but the session: the session has no network, and a server listens on its own loopback. Pages served to a user, and requests from an agent, come with exposure (RFC GW P9, later PRs). On the `host` engine every process of the worker shares one loopback, so a port is not isolated from the worker's other workspaces; the host engine is for a trusted single-tenant install.
 
 ## Looking at a picture
 
@@ -365,6 +417,7 @@ A set of Documents can be checked out into a workspace as Markdown files, change
 A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so the `workspace` meta-tool gives it workspaces of its own (RFC GW D35). A workspace opened there **belongs to the token identity the session signed in with: its tenant and subject**, not to a run.
 
 - **Off unless the operator turns it on.** `workspace.mcp.enabled: true`, with `workspace.mode` serving workspaces. Every call needs a principal with a tenant and a subject (open mode and the shared `LOOMCYCLE_AUTH_TOKEN` have none and are refused `no_principal`) and the `runs:create` scope. Each call takes one unit of the token's run rate.
+- **An operator's grant.** An admin and a tenant operator (`substrate:tenant`) reach the tool. A member does not by default: a tenant operator grants it to a member, a group or the whole tenant with an access-control list that allows `invoke` on `mcp-tool:workspace` (see [CONFIGURATION.md](CONFIGURATION.md#managing-groups-acl-lists-and-bindings)). The grant does not lift the switch or the scope above.
 - **What it may do** is the operator's `workspace.mcp.ops`: `read` and `write` by default; `exec` only when listed. Opening is implied. The ops are `open`, `release`, `list`, `status`, `exec`, `read`, `write`, `edit`, `glob` and `grep`; sharing, interpreters and servers are a run's (`not_over_mcp`).
 - **Who reaches it.** Every session and token of the same tenant and subject reaches the same workspaces by name; another subject of the tenant, the same subject in another tenant, an admin and every run get `not_found`, as for a name nobody uses. A workspace opened over MCP cannot be shared, and reaches no share.
 - **When it is released.** At the first of: `release`; no op on it for `workspace.mcp.idle_release_s` (default 3600); `workspace.mcp.max_lifetime_s` after it opened, however busy (default 86400); the token definition that opened it retired, expired or deleted. The workspace sweeper applies the last three on every tick, whether or not the tool is on now, so turning the tool off still ends what it opened. A token that cannot be read (a store outage) keeps the workspace until the next tick. A principal declared in config (`principals:`) has no token definition, so only the two times end its workspaces.
@@ -388,6 +441,7 @@ A session of loomcycle's MCP server (`loomcycle mcp`, `/v1/_mcp`) has no run, so
 | `workspace.copy.max_bytes` | 1 GiB | The bytes one folder copy may move. |
 | `workspace.checkout.max_documents` | 500 | The documents one `File op=checkout` writes. |
 | `workspace.checkout.max_bytes` | 256 MiB | The bytes one checkout writes. |
+| `workspace.checkpoint.max_per_workspace` | 8 | The checkpoints one workspace holds (1 to 100); each also counts against its disk quota. |
 | `workspace.convert.memory_limit_mb` | 1024 | The local worker's conversion child (`LOOMCYCLE_WORKSPACE_CONVERT_MEMORY_LIMIT_MB` on a remote worker). |
 | worker capacity | 8 | Workspaces a worker holds (`LOOMCYCLE_WORKSPACE_CAPACITY`). |
 
@@ -409,7 +463,10 @@ A command and everything it started is killed at its timeout. Its output is kept
 | `lost` | The workspace's directory is no longer on its worker. | Open a new one. |
 | `refused` | The worker will not run the command (`LOOMCYCLE_WORKSPACE_COMMANDS`). | Use a listed program, or widen the list. |
 | `kernel_unavailable` | The worker cannot start the interpreter `run_cell` asked for: no `python3` or `node` on its `PATH`. | Install it on the worker, or use the other kernel. |
-| `workspace_over_quota` | The write would pass the workspace's disk quota, or the workspace is marked full after a command. | Remove files (`rm`, `clear`, or a command), then go on; or raise `workspace.disk_quota_mb`. |
+| `workspace_over_quota` | The write, checkpoint, restore or fork would pass a disk quota (checkpoints count against their workspace's), or the workspace is marked full after a command. | Remove files (`rm`, `clear`, or a command) or checkpoints (`delete_checkpoint`), then go on; or raise `workspace.disk_quota_mb`. |
+| `checkpoint_limit` | The workspace holds as many checkpoints as `workspace.checkpoint.max_per_workspace` allows. | `delete_checkpoint` one. |
+| `checkpoint_not_found` | The workspace has no checkpoint of that id. | `checkpoints` lists them. |
+| `exists` | A `fork`'s `as` names a workspace the run already holds. | Fork as another name. |
 | `invalid_argument` | The runtime refused the call: an unknown op, an argument the op does not take, a missing one, a bad timeout. | Fix the call. |
 | `invalid`, `failed` | The worker refused the arguments (a path or `cwd` out of the workspace, a malformed argument) or a file system operation failed. | Read the detail. |
 | `busy`, `output_too_large` | The worker had no free stream in time; the op sent more output than its bound. | Retry; narrow the op. |

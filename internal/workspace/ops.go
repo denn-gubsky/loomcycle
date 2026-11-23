@@ -223,6 +223,9 @@ type Usage struct {
 	UsedBytes  int64 `json:"used_bytes"`
 	QuotaBytes int64 `json:"quota_bytes"`
 	Estimate   bool  `json:"estimate,omitempty"`
+	// CheckpointBytes is what the workspace's checkpoints hold, counted
+	// against the same quota beside UsedBytes (RFC GW P6).
+	CheckpointBytes int64 `json:"checkpoint_bytes,omitempty"`
 }
 
 // MkdirArgs are a mkdir op's arguments. Missing parents are made too; a
@@ -617,4 +620,133 @@ type ResetKernelArgs struct {
 type ResetKernelAnswer struct {
 	Kernel  string `json:"kernel"`
 	Stopped bool   `json:"stopped"`
+}
+
+// The checkpoint ops (RFC GW §5.4, P6): a workspace's files recorded on its
+// worker, outside the workspace, put back, listed and removed; and a second
+// workspace opened from a checkpoint or from the present files. A
+// checkpoint holds files only: never a kernel's variables or a running
+// server. Each counts against its workspace's disk quota by its full size.
+const (
+	OpCheckpoint       = "checkpoint"
+	OpRestore          = "restore"
+	OpCheckpoints      = "checkpoints"
+	OpDeleteCheckpoint = "delete_checkpoint"
+	// OpFork is sent for the NEW workspace's id: its directory is made as a
+	// copy of ForkArgs.From (or of one of its checkpoints) on this worker.
+	OpFork = "fork"
+)
+
+// The mechanisms a worker records a checkpoint with, the cheapest its disk
+// offers (RFC GW §15 spike F). Never hard links: a copy made of them shares
+// its files with the original, and an append or a chmod changes both.
+const (
+	// MechanismClone is a whole-directory clone (APFS clonefile).
+	MechanismClone = "clone"
+	// MechanismReflink copies each file by sharing its blocks (FICLONE).
+	MechanismReflink = "reflink"
+	// MechanismCopy copies each file's bytes.
+	MechanismCopy = "copy"
+)
+
+// CheckpointLabelPrefix is the worker label naming its mechanism:
+// "checkpoint:<mechanism>".
+const CheckpointLabelPrefix = "checkpoint:"
+
+// DefaultMaxCheckpoints bounds a workspace's checkpoints when the core names
+// no bound: config workspace.checkpoint.max_per_workspace's default.
+const DefaultMaxCheckpoints = 8
+
+// MaxCheckpointLabel bounds a checkpoint's label, in characters.
+const MaxCheckpointLabel = 200
+
+// The classes the checkpoint ops add.
+const (
+	// ClassCheckpointLimit: the workspace holds as many checkpoints as it
+	// may.
+	ClassCheckpointLimit = "checkpoint_limit"
+	// ClassCheckpointNotFound: the workspace has no checkpoint of that id.
+	ClassCheckpointNotFound = "checkpoint_not_found"
+)
+
+// CheckpointArgs are a checkpoint op's arguments.
+type CheckpointArgs struct {
+	Label string `json:"label,omitempty"`
+	// Max is the checkpoints the workspace may hold; zero is
+	// DefaultMaxCheckpoints.
+	Max int `json:"max,omitempty"`
+}
+
+// CheckpointRef names one checkpoint of the op's workspace: restore's and
+// delete_checkpoint's arguments.
+type CheckpointRef struct {
+	Checkpoint string `json:"checkpoint"`
+}
+
+// CheckpointInfo is one checkpoint as the worker records it.
+type CheckpointInfo struct {
+	ID        string    `json:"id"`
+	Label     string    `json:"label,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	// Bytes is what it counts against the quota: its files' full size,
+	// whatever the mechanism shares with the workspace now.
+	Bytes     int64  `json:"bytes"`
+	Files     int    `json:"files"`
+	Mechanism string `json:"mechanism"`
+	// Skipped names what was not copied (a FIFO, a socket, a device), at
+	// most MaxSkippedNamed.
+	Skipped []string `json:"skipped,omitempty"`
+}
+
+// CheckpointAnswer is a checkpoint op's output.
+type CheckpointAnswer struct {
+	CheckpointInfo
+	Usage Usage `json:"usage"`
+}
+
+// CheckpointsAnswer is a checkpoints op's output, newest first.
+type CheckpointsAnswer struct {
+	Checkpoints []CheckpointInfo `json:"checkpoints"`
+	Usage       Usage            `json:"usage"`
+}
+
+// RestoreAnswer is a restore op's output. KernelsStopped and SessionStopped
+// say what the restore ended: a restore puts back files, never a process.
+type RestoreAnswer struct {
+	Checkpoint     string `json:"checkpoint"`
+	KernelsStopped bool   `json:"kernels_stopped,omitempty"`
+	SessionStopped bool   `json:"session_stopped"`
+	Usage          Usage  `json:"usage"`
+}
+
+// DeleteCheckpointAnswer is a delete_checkpoint op's output; Deleted is
+// false when no such checkpoint was there.
+type DeleteCheckpointAnswer struct {
+	Deleted bool  `json:"deleted"`
+	Usage   Usage `json:"usage"`
+}
+
+// ForkArgs are a fork op's arguments, sent for the new workspace's id.
+type ForkArgs struct {
+	// From is the id of the workspace forked, on this worker.
+	From string `json:"from"`
+	// Checkpoint, when set, is the checkpoint of From to start from;
+	// empty is From's present files.
+	Checkpoint string `json:"checkpoint,omitempty"`
+	// DiskQuotaBytes is the new workspace's quota, as open's; zero is the
+	// worker's default. The copy must fit it.
+	DiskQuotaBytes int64 `json:"disk_quota_bytes,omitempty"`
+}
+
+// ForkAnswer is a fork op's output. Rewritten names the files of a Python
+// environment whose absolute paths were moved to the fork's directory (the
+// host engine only: a container session mounts every workspace at one
+// path, so nothing needs it).
+type ForkAnswer struct {
+	Bytes     int64    `json:"bytes"`
+	Files     int      `json:"files"`
+	Mechanism string   `json:"mechanism"`
+	Skipped   []string `json:"skipped,omitempty"`
+	Rewritten []string `json:"rewritten,omitempty"`
+	Usage     Usage    `json:"usage"`
 }

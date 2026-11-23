@@ -30,10 +30,63 @@
 package fsops
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 )
+
+// ErrOutsideVolume is a path that resolves outside the root. The refusals
+// that carry it name the path as the caller wrote it.
+var ErrOutsideVolume = errors.New("the path is outside the volume")
+
+// pathError is a refusal whose text names only what the caller wrote: never
+// the root's host path, a symlink's host target or the fence. The model reads
+// this text, and so does anyone reading the run's transcript, so a host path
+// in it would tell them where the volume lives on the server. err is what
+// callers test with errors.Is: the errno (fs.ErrNotExist still matches
+// ENOENT) or ErrOutsideVolume, never the *fs.PathError that named the host
+// path.
+type pathError struct {
+	msg string
+	err error
+}
+
+func (e *pathError) Error() string { return e.msg }
+func (e *pathError) Unwrap() error { return e.err }
+
+// osCause is the errno an os call failed with, without the *fs.PathError or
+// *os.LinkError around it that names a host path.
+func osCause(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		return le.Err
+	}
+	return err
+}
+
+// unresolved is the refusal for a path whose symlinks could not be
+// evaluated: "does not exist" for the common case, the errno's own words
+// otherwise.
+func unresolved(shown string, cause error) error {
+	if errors.Is(cause, fs.ErrNotExist) {
+		return &pathError{msg: fmt.Sprintf("path %q does not exist", shown), err: cause}
+	}
+	return &pathError{msg: fmt.Sprintf("path %q: %v", shown, cause), err: cause}
+}
+
+// rootError is a root that cannot be resolved or opened. The root is
+// operator configuration, so its host path is not the caller's to see.
+func rootError(err error) error {
+	cause := osCause(err)
+	return &pathError{msg: fmt.Sprintf("the volume's directory cannot be used: %v", cause), err: cause}
+}
 
 // ResolveInsideRoot resolves target (absolute, or relative to root) and
 // returns its symlink-free absolute path, or an error when the target does not
@@ -67,7 +120,7 @@ func ResolveParentInsideRoot(root, target string) (string, error) {
 func resolveRoot(root string) (string, error) {
 	rootResolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", fmt.Errorf("sandbox root: %w", err)
+		return "", rootError(err)
 	}
 	return rootResolved, nil
 }
@@ -76,12 +129,19 @@ func resolveRoot(root string) (string, error) {
 // matters: both the root and the target are symlink-free before the Rel
 // check, which is what refuses a target that is a symlink out of the root.
 func resolveUnder(rootResolved, target string) (string, error) {
+	return resolveUnderShown(rootResolved, target, target)
+}
+
+// resolveUnderShown is resolveUnder for a target the caller wrote as shown:
+// Glob and Grep anchor a relative path to the root themselves before
+// resolving it, and the refusal must name what the caller wrote.
+func resolveUnderShown(rootResolved, target, shown string) (string, error) {
 	abs := absUnderRoot(rootResolved, target)
 	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		return "", err
+		return "", unresolved(shown, osCause(err))
 	}
-	if err := RelInsideRoot(rootResolved, abs, resolved); err != nil {
+	if err := refuseOutside(rootResolved, shown, abs, resolved); err != nil {
 		return "", err
 	}
 	return resolved, nil
@@ -93,14 +153,14 @@ func resolveParentUnder(rootResolved, target string) (string, error) {
 	abs := absUnderRoot(rootResolved, target)
 	parentResolved, err := filepath.EvalSymlinks(filepath.Dir(abs))
 	if err != nil {
-		return "", fmt.Errorf("parent dir: %w", err)
+		cause := osCause(err)
+		if errors.Is(cause, fs.ErrNotExist) {
+			return "", &pathError{msg: fmt.Sprintf("the folder that would hold %q does not exist", target), err: cause}
+		}
+		return "", &pathError{msg: fmt.Sprintf("the folder that would hold %q: %v", target, cause), err: cause}
 	}
-	// Pass abs as both requested AND the resolved-equivalent so the error
-	// message matches the resolveUnder shape: when the user path didn't
-	// redirect via symlinks (parent itself was inside root, or wholly
-	// outside), the message stays single-path.
 	parentEquivalent := filepath.Join(parentResolved, filepath.Base(abs))
-	if err := RelInsideRoot(rootResolved, abs, parentEquivalent); err != nil {
+	if err := refuseOutside(rootResolved, target, abs, parentEquivalent); err != nil {
 		return "", err
 	}
 	return parentEquivalent, nil
@@ -128,34 +188,45 @@ func absUnderRoot(rootResolved, target string) string {
 	return filepath.Join(rootResolved, target)
 }
 
-// RelInsideRoot returns nil if resolved is inside root (or is root). requested
-// is the caller-supplied path (pre-symlink-resolution); resolved is what was
-// actually checked. When the two differ (a symlink redirected the target),
-// the error names both so the model learns its input was rerouted. The
-// HasPrefix form uses the OS-specific separator so `..\foo` on Windows is
-// caught alongside `../foo` on POSIX.
+// RelInsideRoot returns nil if resolved is inside root (or is root), and an
+// error wrapping ErrOutsideVolume otherwise. requested is the path before its
+// symlinks were evaluated, and the refusal names it and nothing else: neither
+// root nor resolved, which are host paths. When requested is inside root and
+// resolved is not, a symlink led it out, and the refusal says so.
 func RelInsideRoot(root, requested, resolved string) error {
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		if requested == resolved {
-			return fmt.Errorf("path %q escapes sandbox %q", requested, root)
-		}
-		return fmt.Errorf("path %q (resolved to %q) escapes sandbox %q", requested, resolved, root)
+	return refuseOutside(root, requested, requested, resolved)
+}
+
+// refuseOutside is RelInsideRoot with the refusal naming shown, the path as
+// the caller wrote it. abs is that path made absolute, before its symlinks
+// were evaluated: inside root, it was a symlink that led out; outside, the
+// path itself climbed out (`..`, or an absolute path elsewhere).
+func refuseOutside(root, shown, abs, resolved string) error {
+	if inside(root, resolved) {
+		return nil
 	}
-	return nil
+	if inside(root, abs) {
+		return &pathError{msg: fmt.Sprintf("path %q goes through a symbolic link that leads outside the volume", shown), err: ErrOutsideVolume}
+	}
+	return &pathError{msg: fmt.Sprintf("path %q escapes the volume", shown), err: ErrOutsideVolume}
+}
+
+// inside reports whether p is dir or under it. The HasPrefix form uses the
+// OS-specific separator so `..\foo` on Windows is caught alongside `../foo`
+// on POSIX.
+func inside(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // OutsideFence refuses a resolved path that is the fence or under it. The
 // fence is a real path (operator configuration) and resolved has had its
 // symlinks evaluated, so a symlink inside the volume that points into the
-// fence is refused as well. An empty fence refuses nothing.
+// fence is refused as well. An empty fence refuses nothing. The refusal is
+// ErrInFence, which names no path: both fence and resolved are host paths.
 func OutsideFence(fence, resolved string) error {
-	if fence == "" {
+	if fence == "" || !inside(fence, resolved) {
 		return nil
 	}
-	rel, err := filepath.Rel(fence, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return nil
-	}
-	return fmt.Errorf("path %q is inside the directory that holds dynamic and ephemeral volumes; name that volume in the \"volume\" argument instead", resolved)
+	return ErrInFence
 }

@@ -56,6 +56,10 @@ type Limits struct {
 	// DefaultCheckoutMaxDocuments and DefaultCheckoutMaxBytes.
 	CheckoutMaxDocuments int
 	CheckoutMaxBytes     int64
+	// MaxCheckpoints bounds a workspace's checkpoints
+	// (workspace.checkpoint.max_per_workspace); zero is the worker's
+	// default, workspace.DefaultMaxCheckpoints.
+	MaxCheckpoints int
 	// ConvertQuarantine is how long a file that crashed a worker's
 	// conversion child is refused for its workspace
 	// (conversion.quarantine_ttl_s); zero is DefaultConvertQuarantine.
@@ -269,7 +273,15 @@ func (m *Manager) Open(ctx context.Context, o Owner, req OpenRequest) (store.Wor
 // other's row, so neither passes a bound both together would break (both may
 // be refused, never both admitted).
 func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID, engine string) (store.WorkspaceRow, error) {
-	name := req.Name
+	return m.makeOn(ctx, o, req.Name, req.Egress, workerID, engine, func(id string) error {
+		return m.disp.OpenWith(ctx, o.TenantID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes})
+	})
+}
+
+// makeOn makes a workspace on one worker: its row (with the egress routes it
+// may use, RFC GW §6.3), the bounds, then place, which makes its directory
+// there (an open, or a fork), then the row ready.
+func (m *Manager) makeOn(ctx context.Context, o Owner, name string, egress []string, workerID, engine string, place func(id string) error) (store.WorkspaceRow, error) {
 	id, err := newID()
 	if err != nil {
 		return store.WorkspaceRow{}, fmt.Errorf("workspace id: %w", err)
@@ -278,7 +290,7 @@ func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID
 		ID: id, TenantID: o.TenantID, UserID: o.UserID, Name: name, WorkerID: workerID, Engine: engine,
 		OwnerRunID: o.RunID, OwnerAgentID: o.AgentID, RootRunID: o.RootRunID, State: store.WorkspaceOpening,
 		OwnerKind: o.kind(), OpenedToken: o.TokenDefID,
-		Egress: append([]string{}, req.Egress...),
+		Egress: append([]string{}, egress...),
 	})
 	if err != nil {
 		var conflict *store.ErrConflict
@@ -292,7 +304,7 @@ func (m *Manager) openOn(ctx context.Context, o Owner, req OpenRequest, workerID
 		undo()
 		return store.WorkspaceRow{}, err
 	}
-	if err := m.disp.OpenWith(ctx, o.TenantID, workerID, id, workspace.OpenArgs{DiskQuotaBytes: m.limits.DiskQuotaBytes}); err != nil {
+	if err := place(id); err != nil {
 		// The directory may have been made before the error (a worker lost
 		// mid-op): remove it if the worker is still here; if not, its next
 		// attach finds a directory no row knows and removes it.

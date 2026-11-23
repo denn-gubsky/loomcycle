@@ -27,15 +27,17 @@ const interruptScript = `p=$(cat /tmp/.loom-exec-$1) && kill -INT $p`
 // stopScript kills the recorded program's group and drops the record.
 const stopScript = `p=$(cat /tmp/.loom-exec-$1) && kill -9 -$p; rm -f /tmp/.loom-exec-$1`
 
-// Start starts req.Argv in its workspace's session with stdin and stdout
+// Start starts req.Argv (or req.Command, a server's command line checked
+// against the operator's list) in its workspace's session with stdin and stdout
 // attached (`exec -i`), under the session's environment plus req.Env. It
 // runs inside the same confinement as every command: the session's user,
 // limits, read-only root and no network. Interrupt and Kill go through the
 // engine (an exec into the session), since ending the CLI client would leave
 // the program running in the session.
 func (c *Container) Start(ctx context.Context, req StartRequest) (Process, error) {
-	if len(req.Argv) == 0 {
-		return nil, fmt.Errorf("%w: an empty program", ErrRefused)
+	argv, err := startArgv(c.opt.Commands, req)
+	if err != nil {
+		return nil, err
 	}
 	rel, err := filepath.Rel(req.Root, req.Dir)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
@@ -60,7 +62,7 @@ func (c *Container) Start(ctx context.Context, req StartRequest) (Process, error
 		args = append(args, "--env", kv)
 	}
 	args = append(args, name, "/bin/sh", "-c", startWrapper, "sh", token)
-	args = append(args, req.Argv...)
+	args = append(args, argv...)
 	// Not CommandContext: the program outlives the call that started it.
 	// #nosec G204 -- the CLI is the operator's setting, run without a shell; the program is one the worker carries, started inside the session
 	cmd := exec.Command(c.opt.CLI, args...)

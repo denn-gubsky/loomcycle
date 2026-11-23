@@ -266,11 +266,12 @@ func (m *Manager) Reset(ctx context.Context, id, kind string) (bool, error) {
 }
 
 // Drop kills workspace id's kernels and forgets them: the workspace is
-// being removed. A cell running in one ends as killed. Drop, Close and
+// being removed, or put back to a checkpoint (RFC GW P6). A cell running in
+// one ends as killed. It reports whether a kernel was alive. Drop, Close and
 // Clean do nothing on a nil Manager, a worker that runs no kernels.
-func (m *Manager) Drop(id string) {
+func (m *Manager) Drop(id string) bool {
 	if m == nil {
-		return
+		return false
 	}
 	m.mu.Lock()
 	var gone []*slot
@@ -281,14 +282,17 @@ func (m *Manager) Drop(id string) {
 		}
 	}
 	m.mu.Unlock()
+	alive := false
 	for _, s := range gone {
 		if k := s.k; k != nil {
+			alive = alive || k.alive()
 			k.kill()
 		}
 	}
 	for _, kind := range []string{Python, Node} {
 		m.unmark(id, kind)
 	}
+	return alive
 }
 
 // Close kills every kernel; the worker is stopping. The markers stay, so

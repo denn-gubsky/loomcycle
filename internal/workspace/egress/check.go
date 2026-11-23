@@ -194,6 +194,12 @@ func joinPath(base *url.URL, p string) (*url.URL, error) {
 				}
 				return nil, errors.New("the path may not have an empty segment")
 			}
+			if i == 0 && strings.HasPrefix(seg, "@") {
+				if err := checkScopedName(seg); err != nil {
+					return nil, err
+				}
+				continue
+			}
 			if err := checkSegment(seg); err != nil {
 				return nil, err
 			}
@@ -257,6 +263,32 @@ func checkSegment(seg string) error {
 		return errors.New("the path may not have a . or .. segment")
 	}
 	return nil
+}
+
+// checkScopedName checks a first segment that starts with "@": npm asks for a
+// scoped package as @scope%2fname in one segment. Ruled by the owner (P4
+// plan O15, 2026-11-23): that exact form passes, one encoded slash between a
+// scope and a name that each pass checkSegment once split, so neither is "."
+// or "..", empty, or encoded twice. It reaches the upstream as written, never
+// decoded to a slash. A first segment with no encoded slash is an ordinary
+// segment; every other encoded slash is refused by checkSegment.
+func checkScopedName(seg string) error {
+	lower := strings.ToLower(seg)
+	i := strings.Index(lower, "%2f")
+	if i < 0 {
+		return checkSegment(seg)
+	}
+	scope, name := seg[:i], seg[i+3:]
+	if scope == "@" || name == "" {
+		return errors.New("the path's scoped name needs a scope and a name around its encoded slash")
+	}
+	if err := checkSegment(scope); err != nil {
+		return err
+	}
+	if err := checkSegment(scope[1:]); err != nil {
+		return err
+	}
+	return checkSegment(name)
 }
 
 // pathOnly is a session's path without its query, bounded, for an audit line.
