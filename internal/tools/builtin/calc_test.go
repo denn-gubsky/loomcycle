@@ -75,9 +75,31 @@ func TestCalc_RefusalIsClassifiedJSONWithTheHint(t *testing.T) {
 	if out["error"] != "bad_request" || res.Error.Category != tools.CategoryValidation {
 		t.Errorf("missing expr: %s", res.Text)
 	}
-	res, out = execCalc(t, &Calc{}, `{"expr":"1","format":"x"}`)
-	if out["error"] != "bad_request" || !strings.Contains(out["detail"].(string), "format") {
+	res, out = execCalc(t, &Calc{}, `{"expr":"1","precision":4}`)
+	if out["error"] != "bad_request" || !strings.Contains(out["detail"].(string), "precision") {
 		t.Errorf("unknown argument straight to Execute: %s", res.Text)
+	}
+	res, out = execCalc(t, &Calc{}, `{"expr":"1","format":"xml"}`)
+	if out["error"] != "bad_request" || !strings.Contains(out["detail"].(string), "markdown") {
+		t.Errorf("unknown format: %s", res.Text)
+	}
+}
+
+// format reaches the evaluator: a table comes back as Markdown in `text`,
+// with the same JSON `result` and its [rows, columns] shape.
+func TestCalc_FormatWritesATableResultAsMarkdown(t *testing.T) {
+	in := `{"expr":"where(t, r -> r.qty > 0)","format":"markdown",` +
+		`"vars":{"t":[{"sku":"a","qty":2},{"sku":"b","qty":0}]}}`
+	res, out := execCalc(t, &Calc{}, in)
+	if res.IsError {
+		t.Fatalf("refused: %s", res.Text)
+	}
+	if out["text"] != "| sku | qty |\n| --- | --- |\n| a | 2 |\n" || out["type"] != "table" {
+		t.Errorf("text = %q, type %v", out["text"], out["type"])
+	}
+	if !strings.Contains(res.Text, `"result":{"columns":["sku","qty"],"rows":[["a",2]]}`) ||
+		!strings.Contains(res.Text, `"shape":[1,2]`) {
+		t.Errorf("result = %s", res.Text)
 	}
 }
 

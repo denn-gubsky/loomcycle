@@ -402,6 +402,24 @@ jobs:
           LOOMCYCLE_REQUIRE_DOCKER: "1"
         run: ./test/runtime/workspace/container.sh
 
+      # The persistent interpreter (RFC GW P5) in a real session: the image
+      # built from Dockerfile.workspace carries the drivers, and the kernel
+      # is started, interrupted and killed through the container engine.
+      # A skip fails (LOOMCYCLE_REQUIRE_DOCKER), and so does a run in which
+      # no kernel test passed, since -run matching nothing is silent.
+      - name: Build the workspace session image
+        run: docker buildx build --load --platform linux/amd64 -f Dockerfile.workspace -t ci-loomcycle-workspace .
+
+      - name: Run kernels in a session
+        env:
+          LOOMCYCLE_REQUIRE_DOCKER: "1"
+          LOOMCYCLE_TEST_KERNEL_IMAGE: ci-loomcycle-workspace
+        run: |
+          set -o pipefail
+          go test -count=1 -timeout 20m -run '^TestContainerKernel_' -v ./internal/workspace/kernel/ | tee kernel.log
+          grep -q -- '--- PASS: TestContainerKernel_' kernel.log
+          ! grep -q -- '--- SKIP' kernel.log
+
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core
     # runner it took ~15 min, set by internal/api/http and

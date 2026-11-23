@@ -702,6 +702,7 @@ class LoomcycleClient:
         vars: Optional[Mapping[str, Any]] = None,  # noqa: A002 - the tool's field name
         digits: Optional[int] = None,
         seed: Optional[int] = None,
+        format: Optional[str] = None,  # noqa: A002 - the tool's field name
     ) -> Mapping[str, Any]:
         """Evaluate math exactly with the Calc tool, outside a run (RFC GY):
         arithmetic, rounding, powers, logarithms, trigonometry, combinatorics,
@@ -712,9 +713,12 @@ class LoomcycleClient:
         ``expr`` is one or more statements separated by ``;`` or newlines; the
         last one's value is the result. ``vars`` binds names before
         evaluation: a number, a numeric string (exact — a ``Decimal`` is sent
-        as one), a string, a boolean or a list. ``digits`` sets the
+        as one), a string, a boolean, a list, or a table (``{"columns": [...],
+        "rows": [[...]]}`` or a list of dicts). ``digits`` sets the
         significant digits of an approximate or non-terminating result
-        (default 15); ``seed`` makes the random functions repeatable. The
+        (default 15); ``seed`` makes the random functions repeatable;
+        ``format`` (``"json"``, ``"markdown"`` or ``"csv"``) is how a table
+        or matrix result is written in ``text``. The
         tool's ``from`` / ``to`` need a run and are refused outside one.
 
         Returns the tool's result: ``{"result", "type", "exact", "text"}``
@@ -737,6 +741,8 @@ class LoomcycleClient:
             body["digits"] = digits
         if seed is not None:
             body["seed"] = seed
+        if format is not None:
+            body["format"] = format
         try:
             data = json.dumps(body, allow_nan=False, default=_calc_json_default).encode("utf-8")
         except (TypeError, ValueError) as e:

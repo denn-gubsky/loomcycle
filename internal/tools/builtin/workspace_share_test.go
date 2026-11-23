@@ -112,6 +112,10 @@ func TestWorkspaceShare_ReadWriteCopiesInAndStillRefusesACommand(t *testing.T) {
 		t.Errorf("by-peer.txt = %q", got)
 	}
 	wantShareRefusal(t, "exec", f.wsCall(t, f.peer, `{"op":"exec","name":"w@a_alice","command":"touch pwned"}`), "not_shared_op")
+	// An interpreter cell runs code as exec does (RFC GW P5), so a share
+	// never reaches it either.
+	wantShareRefusal(t, "run_cell", f.wsCall(t, f.peer, `{"op":"run_cell","name":"w@a_alice","code":"open('pwned','w')"}`), "not_shared_op")
+	wantShareRefusal(t, "reset_kernel", f.wsCall(t, f.peer, `{"op":"reset_kernel","name":"w@a_alice"}`), "not_shared_op")
 	if f.wsHas(t, "w", "pwned") {
 		t.Error("the peer's command ran")
 	}

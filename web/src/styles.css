@@ -5477,7 +5477,7 @@ a.login-btn {
   overflow: hidden;
   flex: 1;
 }
-.paths-view .left > .tree,
+.paths-view .left > .etree,
 .paths-view .left > .empty {
   flex: 1;
   overflow: auto;
@@ -5487,24 +5487,32 @@ a.login-btn {
 .paths-toolbar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
+/* The scope as a segmented control, matching the tree | stars switch. */
 .paths-scope {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--lc-text-sm, 13px);
-  color: var(--fg-soft);
-}
-.paths-scope select {
-  background: var(--bg);
-  color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 4px 6px;
+  overflow: hidden;
+}
+.paths-scope button {
+  padding: 3px 8px;
+  border: none;
+  background: var(--bg);
+  color: var(--fg-soft);
+  cursor: pointer;
+}
+.paths-scope button + button {
+  border-left: 1px solid var(--border);
+}
+.paths-scope button.active {
+  background: var(--bg-soft);
+  color: var(--fg);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 .paths-toolbar-actions {
   display: flex;
@@ -5534,7 +5542,7 @@ a.login-btn {
   overflow: hidden;
 }
 .paths-nav-switch button {
-  padding: 4px 10px;
+  padding: 3px 8px;
   border: none;
   background: var(--bg);
   color: var(--fg-soft);
@@ -5555,13 +5563,6 @@ a.login-btn {
   display: flex;
   flex-direction: column;
 }
-.paths-context {
-  margin: 0;
-  padding: 6px 12px;
-  font-size: var(--lc-text-xs, 12px);
-  color: var(--fg-soft);
-  border-bottom: 1px solid var(--border);
-}
 .paths-err {
   margin: 0;
   padding: 8px 12px;
@@ -5569,40 +5570,167 @@ a.login-btn {
   font-size: var(--lc-text-sm, 13px);
   border-bottom: 1px solid var(--border);
 }
-
-/* Override the agents-tree 6-column grid for path rows — a path row is a
- * caret + a single name affordance, not status/model/replica/time columns. */
-.paths-view .node .row {
-  display: flex;
-  grid-template-columns: none;
-  gap: 8px;
-  align-items: center;
+/* RFC GZ — the Path header's one "+" menu (components/CreateMenu). */
+.paths-create-menu {
+  position: relative;
 }
-.path-link {
+.paths-create-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 140px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
+}
+.paths-toolbar-actions .paths-create-list button {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  white-space: nowrap;
+}
+.paths-toolbar-actions .paths-create-list button:hover,
+.paths-toolbar-actions .paths-create-list button:focus {
+  background: var(--bg-soft);
+  color: var(--accent);
+  outline: none;
+}
+.paths-toolbar-actions .paths-create-menu > button.active {
+  border-color: var(--accent);
+}
+
+/* RFC GZ — the explorer's tree row, shared by the Path tree and the chunk
+   outline (components/TreeRow). It has its own classes, not the agent-run
+   tree's .tree / .node .row, so neither tree can restyle the other. One line,
+   one height, on a fixed grid: indent x depth | caret | icon | name | marks.
+   Kept in step with packages/explorer/src/styles.css. */
+.etree {
+  --etree-indent: 16px;
+}
+.etree,
+.etree-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.etree-node {
+  margin: 0;
+  outline: none;
+}
+.etree-row {
+  /* Defaults; a row sets its own depth and tint inline. */
+  --etree-depth: 0;
+  --etree-tint: transparent;
+  display: grid;
+  grid-template-columns: 16px 16px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 calc(4px + var(--etree-depth) * var(--etree-indent));
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: var(--lc-text-sm, 13px);
+  cursor: pointer;
+  user-select: none;
+  /* A coloured row's wash: --etree-tint is the only thing its inline style
+     sets, so the hover and selected layers below always show. */
+  background-image: linear-gradient(to right, var(--etree-tint), transparent 75%);
+}
+.etree-row:hover {
+  background-color: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+/* Selected is its own layer above the tint and the hover, and does not depend
+   on the tree having focus. */
+.etree-node[aria-selected="true"] > .etree-row {
+  background-color: color-mix(in srgb, var(--accent) 24%, transparent);
+  font-weight: 600;
+}
+.etree-node:focus-visible > .etree-row {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.etree-caret {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  background: transparent;
-  border: none;
-  color: var(--fg);
-  cursor: pointer;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   padding: 0;
-  font: inherit;
-  text-align: left;
-  min-width: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-soft);
+  cursor: pointer;
 }
-.path-link:hover .path-name {
+.etree-caret svg {
+  transition: transform 0.1s ease;
+}
+.etree-caret[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.etree-caret:disabled {
+  cursor: inherit;
+}
+.etree-caret:hover:not(:disabled) {
   color: var(--accent);
 }
-.path-kind-icon {
-  font-size: 14px;
-  line-height: 1;
+.etree-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-soft);
 }
-.path-name {
+.etree-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Type and status as compact marks at the right edge; the full labels are in
+   each mark's title. */
+.etree-marks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  font-weight: 400;
+}
+.etree-mark-type {
+  font-size: var(--lc-text-xs, 12px);
+  color: var(--fg-soft);
+  /* The type's name, cut to a fixed width so a long one cannot crowd the row's
+     name out; the full label is in its title. */
+  max-width: 10ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.etree-mark-status {
+  --etree-dot: var(--fg-muted);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--etree-dot);
+}
+.etree-mark-link {
+  display: inline-flex;
+  color: var(--fg-soft);
+}
+.etree-mark-link svg {
+  width: 12px;
+  height: 12px;
+}
+
 .path-implicit {
   font-size: var(--lc-text-xs, 11px);
   color: var(--fg-soft);
@@ -5611,7 +5739,8 @@ a.login-btn {
 }
 /* A directory's trailing status / "load more" row (the tree lists lazily). */
 .path-status {
-  padding: 2px 8px;
+  --etree-depth: 0;
+  padding: 2px 8px 2px calc(26px + var(--etree-depth) * var(--etree-indent, 16px));
   font-size: var(--lc-text-xs, 11px);
 }
 .path-err {
@@ -5629,9 +5758,6 @@ a.login-btn {
 .path-more:hover:not(:disabled) {
   color: var(--accent);
   border-color: var(--accent);
-}
-.path-node.kind-document > .row .path-kind-icon {
-  filter: none;
 }
 
 /* Detail (right) pane. */
@@ -8168,11 +8294,6 @@ a.login-btn {
 /* ============================================================
    RFC BN P4 — cross-reference links + relationship graph (explorer)
    ============================================================ */
-.chunk-link-badge {
-  font-size: 0.85em;
-  line-height: 1;
-  opacity: 0.85;
-}
 .doc-refs {
   margin-top: 14px;
   padding-top: 12px;
@@ -8501,11 +8622,6 @@ button.doc-ref-target.external {
 /* ============================================================
    RFC BO — image & diagram chunks (explorer, dogfooded)
    ============================================================ */
-.chunk-type-icon {
-  font-size: 0.9em;
-  line-height: 1;
-  margin-right: 2px;
-}
 .doc-image {
   margin: 0;
   text-align: center;
@@ -9400,19 +9516,4 @@ button.doc-ref-target.external {
 .annotation-err {
   color: var(--failed);
   font-size: var(--lc-text-xs);
-}
-/* A Path row with a brief wraps it onto a second line inside the row box,
-   indented past the caret. */
-.path-row:has(.path-brief) {
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
-.path-brief {
-  flex-basis: 100%;
-  padding-left: 22px;
-  color: var(--fg-muted);
-  font-size: var(--lc-text-xs);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }

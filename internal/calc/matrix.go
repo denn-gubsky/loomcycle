@@ -88,7 +88,7 @@ func (e *evaluator) denseOf(v val, what string, pos int) (*mat.Dense, *Error) {
 		for _, x := range row.([]val) {
 			n, ok := x.(num)
 			if !ok {
-				return nil, errf(codeType, pos, "%s needs a matrix of numbers, got a %s element", what, typeName(x))
+				return nil, realElementErr(what, "a matrix", x, pos)
 			}
 			f := n.float()
 			if math.IsInf(f, 0) {
@@ -98,6 +98,16 @@ func (e *evaluator) denseOf(v val, what string, pos int) (*mat.Dense, *Error) {
 		}
 	}
 	return mat.NewDense(r, c, data), nil
+}
+
+// realElementErr refuses an element that is not a real number; a complex
+// one says that the routines are real (complexWiseHint).
+func realElementErr(what, kind string, x val, pos int) *Error {
+	err := errf(codeType, pos, "%s needs %s of numbers, got a %s element", what, kind, typeName(x))
+	if isComplex(x) {
+		err.Hint = complexWiseHint
+	}
+	return err
 }
 
 // vectorOf reads a list of numbers as floats, charging one step per element.
@@ -116,7 +126,7 @@ func (e *evaluator) vectorOf(v val, what string, pos int) ([]float64, *Error) {
 	for i, x := range l {
 		n, ok := x.(num)
 		if !ok {
-			return nil, errf(codeType, pos, "%s needs a vector of numbers, got a %s element", what, typeName(x))
+			return nil, realElementErr(what, "a vector", x, pos)
 		}
 		out[i] = n.float()
 		if math.IsInf(out[i], 0) {

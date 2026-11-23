@@ -5,8 +5,8 @@ import (
 	"math/big"
 )
 
-// A value is one of: num, string, bool, []val (a list), *fnVal, dateVal,
-// timeVal (see datetime.go). Lists are
+// A value is one of: num, cnum (a complex number, see complex.go), string,
+// bool, []val (a list), *fnVal, dateVal, timeVal (see datetime.go). Lists are
 // never mutated after they are built; every operation returns a new one.
 type val any
 
@@ -72,7 +72,7 @@ func (n num) rat() *big.Rat {
 // checkFloat refuses NaN and ±Inf: the evaluator never hands either back.
 func checkFloat(f float64, pos int, what string) (num, *Error) {
 	if math.IsNaN(f) {
-		return num{}, errf(codeDomain, pos, "%s is undefined (not a real number)", what).withHint("there are no complex numbers in this version")
+		return num{}, errf(codeDomain, pos, "%s is undefined (not a real number)", what).withHint(complexArgHint)
 	}
 	if math.IsInf(f, 0) {
 		return num{}, errf(codeOverflow, pos, "%s overflows a 64-bit float", what)
@@ -148,6 +148,8 @@ func typeName(v val) string {
 	switch v.(type) {
 	case num:
 		return "number"
+	case cnum:
+		return "complex"
 	case string:
 		return "string"
 	case bool:
@@ -160,6 +162,12 @@ func typeName(v val) string {
 		return "date"
 	case timeVal:
 		return "datetime"
+	case *tableVal:
+		return "table"
+	case rowVal:
+		return "row"
+	case emptyVal:
+		return "empty"
 	}
 	return "unknown"
 }

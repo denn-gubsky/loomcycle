@@ -38,6 +38,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/workerlink"
 	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/kernel"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/workspacepb"
 )
 
@@ -200,6 +201,16 @@ func Run(ctx context.Context, opt Options) error {
 		opt.Labels = nil
 	}
 	w := &worker{opt: opt, log: log, engine: eng}
+	// The kernels die with the worker; the next cell after it comes back
+	// says kernel_restarted (RFC GW §5.7). A host worker writes the drivers
+	// it carries into its root; a session image carries its own copies
+	// (Dockerfile.workspace), at a path only the session sees.
+	kopt := kernel.Options{Engine: eng, DriverDir: filepath.Join(root, driversDir), MarkDir: root, Logger: log}
+	if opt.Engine == workspace.EngineContainer {
+		kopt.Drivers = &kernel.Drivers{Python: kernel.ImageDriversDir + "/python_driver.py", Node: kernel.ImageDriversDir + "/node_driver.js"}
+	}
+	w.kernels = kernel.NewManager(kopt)
+	defer w.kernels.Close()
 	w.cleanWork()
 	return workerlink.Serve(ctx, targets, workerlink.Options{
 		TLS: opt.TLS, Insecure: opt.Insecure, Resolve: opt.Resolve, ResolveEvery: opt.ResolveEvery,
@@ -272,6 +283,8 @@ type worker struct {
 	opt    Options
 	log    *slog.Logger
 	engine engine.Engine
+	// kernels are the workspaces' interpreters; nil runs none.
+	kernels *kernel.Manager
 	// mu serialises open's capacity check with the directory it makes.
 	mu sync.Mutex
 	// quotas is each workspace's disk count and write lock.
@@ -437,6 +450,7 @@ func (w *worker) removeAll(ids []string, log *slog.Logger) []string {
 		if !workspace.ValidID(id) {
 			continue
 		}
+		w.kernels.Drop(id)
 		// The session first, so nothing still running writes into the
 		// directory while it is removed.
 		if err := w.engine.Forget(context.Background(), id); err != nil {

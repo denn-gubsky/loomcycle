@@ -372,6 +372,8 @@ func TestFunctions_TableIsCompleteAndConsistent(t *testing.T) {
 		SecCalculus:      "integrate deriv root minimize polyfit polyval interp",
 		SecDistributions: "normpdf normcdf norminv tpdf tcdf tinv chi2pdf chi2cdf chi2inv fpdf fcdf finv exppdf expcdf expinv unifpdf unifcdf unifinv binompdf binomcdf poisspdf poisscdf",
 		SecMatrices:      "zeros ones identity diag reshape hstack vstack linspace transpose size dot cross kron trace det matrank norm cond inv pinv solve lstsq lu qr cholesky eig svd",
+		SecComplex:       "complex re im conj arg polyroots",
+		SecTables:        "csv select where addcol head tail groupby pivot join leftjoin totals describe isempty",
 	}
 	got := map[string][]string{}
 	for _, f := range fs {

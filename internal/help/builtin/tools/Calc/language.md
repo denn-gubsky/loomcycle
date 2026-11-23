@@ -27,6 +27,8 @@ or `[ ]` does not end a statement, so a long list can span lines.
 - **Numbers.** `42`, `-3`, `0.1`, `2.5e-3`, `1_000_000` (`_` separates
   digits), `0xff`, `0b1010`, `0o17`. Every literal is exact: `0.1` is the
   fraction 1/10, not a binary float. See `Calc/numbers`.
+- **Complex numbers.** An `i` suffix on a number: `2i`, `3 - 1.5i`. A bare
+  `i` is an ordinary name. Never exact; see `Calc/complex`.
 - **Constants.** `pi`, `e`, `tau` (2·pi) and `phi` (the golden ratio). They
   are approximate.
 - **Booleans.** `true`, `false`.
@@ -48,7 +50,7 @@ or `[ ]` does not end a statement, so a long list can span lines.
 | 7 | `*` `/` `%` `.*` `./` | `%` is modulo, the sign of the right side |
 | 8 | unary `-` `+` | `-2^2` is `-4`, as on paper |
 | 9 | `^` `.^` | power, right-associative: `2^3^2` is `2^9` |
-| 10 | `f(x)`, `v[i]`, `A[i, j]`, `n!`, `A'` | call, index, factorial, transpose |
+| 10 | `f(x)`, `v[i]`, `A[i, j]`, `t.name`, `n!`, `A'` | call, index, a table's column, factorial, transpose |
 
 Parentheses group as usual. A range binds looser than arithmetic, so `1:n+1`
 is `1` to `n+1`.
@@ -98,6 +100,8 @@ transpose: `A'`. See `Calc/matrices`.
   `m[2, 1]`. A lone `:` takes every row or column: `m[2, :]` is row 2,
   `m[:, 1]` column 1.
 - Strings cannot be indexed.
+- A table's column is `t.price` (or `t["unit price"]`), its row `t[2]`, a
+  cell `t[2].price`; see `Calc/tables`.
 
 ## Choosing a value
 

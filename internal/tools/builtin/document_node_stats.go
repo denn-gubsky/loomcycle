@@ -568,6 +568,9 @@ type NodeStatsReport struct {
 	Removed  int      `json:"removed"`
 	// Series is the series stage's part (RFC GM 6A, document_measure.go).
 	Series *SeriesReport `json:"series,omitempty"`
+	// Definitions is the definitions stage's part (compute, where the vector stage
+	// runs and a concept is in force: document_node_definitions.go).
+	Definitions *NodeDefinitionsReport `json:"definitions,omitempty"`
 }
 
 // nodeStats is Document op=node_stats: report what is stale and why, or compute
@@ -577,13 +580,20 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if mode == "" {
 		mode = nodeStatsModeReport
 	}
-	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute && mode != nodeStatsModeMisfits && mode != nodeStatsModeGrowth && mode != nodeStatsModeSplit {
-		return errValidation(fmt.Sprintf("%s: mode %q is not report, compute, misfits, growth or split", nodeStatsOp, mode),
-			"Pass mode: report to see what is stale, compute to recompute it, misfits to list the misplaced members, growth to rank growth and list quiet nodes, split to list split, unplaced-grouping and merge candidates."), nil
+	if mode != nodeStatsModeReport && mode != nodeStatsModeCompute && mode != nodeStatsModeMisfits && mode != nodeStatsModeGrowth && mode != nodeStatsModeSplit && mode != nodeStatsModeAssign {
+		return errValidation(fmt.Sprintf("%s: mode %q is not report, compute, misfits, growth, split or assign", nodeStatsOp, mode),
+			"Pass mode: report to see what is stale, compute to recompute it, misfits to list the misplaced members, growth to rank growth and list quiet nodes, split to list split, unplaced-grouping and merge candidates, assign to compare documents with the centroids."), nil
 	}
-	if in.Propose && mode != nodeStatsModeMisfits && mode != nodeStatsModeSplit {
-		return errValidation(nodeStatsOp+": propose is taken only with mode misfits or split",
-			"Pass mode: misfits or split with propose to file proposals, or omit propose."), nil
+	if in.Propose && mode != nodeStatsModeMisfits && mode != nodeStatsModeSplit && mode != nodeStatsModeAssign {
+		return errValidation(nodeStatsOp+": propose is taken only with mode misfits, split or assign",
+			"Pass mode: misfits, split or assign with propose to file proposals, or omit propose."), nil
+	}
+	if in.Margins != nil && mode != nodeStatsModeAssign {
+		return errValidation(nodeStatsOp+": margins is taken only with mode assign",
+			"Pass mode: assign with margins, or omit margins."), nil
+	}
+	if _, why := assignMargins(in.Margins); why != "" {
+		return errValidation(nodeStatsOp+": "+why, "Name each level as a string key (\"2\") with a margin of at most 1, or a negative one to turn the level off."), nil
 	}
 	if in.QuietPeriods != 0 && mode != nodeStatsModeGrowth {
 		return errValidation(nodeStatsOp+": quiet_periods is taken only with mode growth",
@@ -608,6 +618,10 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 	if in.Propose && mode == nodeStatsModeSplit && !misfitMayPropose(ctx, key) {
 		return errPermission(nodeStatsOp+": method_not_granted: filing split, unplaced-grouping and merge proposals is an operator's, or a run's granted rule in statement_methods, as filing misfit proposals is",
 			"Omit propose to read the candidates, or ask an operator to file them or to grant this agent rule in statement_methods."), nil
+	}
+	if in.Propose && mode == nodeStatsModeAssign && !misfitMayPropose(ctx, key) {
+		return errPermission(nodeStatsOp+": method_not_granted: filing assignment proposals stamps "+misfitMethod+", and this agent may not stamp rule: statements",
+			"Omit propose to read the report, or ask an operator to file them or to grant this agent rule in statement_methods."), nil
 	}
 	if in.Propose && !misfitMayPropose(ctx, key) {
 		return errPermission(nodeStatsOp+": method_not_granted: filing misfit proposals stamps "+misfitMethod+", and this agent may not stamp rule: statements",
@@ -646,6 +660,13 @@ func (d *Document) nodeStats(ctx context.Context, in docInput) (tools.Result, er
 			return errFrom(nodeStatsOp+": "+err.Error(), err), nil
 		}
 		return jsonResult(sp)
+	}
+	if mode == nodeStatsModeAssign {
+		as, err := d.NodeAssign(ctx, key, read, in)
+		if err != nil {
+			return errFrom(nodeStatsOp+": "+err.Error(), err), nil
+		}
+		return jsonResult(as)
 	}
 	if mode == nodeStatsModeMisfits {
 		mis, err := d.NodeMisfits(ctx, key, read, in.Scheme, in.Propose, in.Limit)
@@ -743,6 +764,17 @@ func (d *Document) NodeStatsPass(ctx context.Context, key sqlmem.ScopeKey, tenan
 	}
 	series, points := sp.seriesDiff(storedPoints)
 	ans.Series = &series
+	// The definitions stage (RFC GM P3.3, document_node_definitions.go): only where
+	// the vector stage runs, after every read above and before any other write.
+	if compute && p.model != "" {
+		defs, err := d.refreshNodeDefinitions(ctx, key, read, scheme, p.model)
+		if err != nil {
+			return ans, err
+		}
+		if *defs != (NodeDefinitionsReport{}) {
+			ans.Definitions = defs
+		}
+	}
 	nodesDue := len(stale) > 0 || len(ans.Orphans) > 0
 	if !compute || (!nodesDue && len(points) == 0) {
 		return ans, nil

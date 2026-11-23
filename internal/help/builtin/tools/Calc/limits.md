@@ -1,7 +1,7 @@
 ---
 name: Calc/limits
 kind: section
-description: "Calc limits — the fixed bounds on one call (expression and vars size, steps, time, exact-number size, list size, matrix size, nesting, digits, output) and what to do when you reach each."
+description: "Calc limits — the fixed bounds on one call (expression and vars size, steps, time, exact-number size, list size, matrix size, table size, nesting, digits, output) and what to do when you reach each."
 ---
 Every call is bounded, so one expression cannot run away. The bounds are
 fixed; no setting raises them. Reaching one refuses the call with the code in
@@ -30,6 +30,10 @@ brackets (see `Calc/errors`), except the output bound, which cuts the result.
 - **Lists: 1,000,000 elements** (`list_too_long`) — and that is the **total**
   for one value: a list of 1,000 lists of 1,001 elements is over it. A range
   longer than the limit is refused before it is built.
+- **Tables: 100,000 cells** (`list_too_long`), rows times columns; a table
+  with no rows counts as one row. A `join` or `pivot` is refused from its
+  size before it is built, and every table built costs a step per cell. A
+  table inside a list counts its cells toward the list bound.
 - **Matrices: 250,000 elements** (`too_large`) in a matrix a function reads
   or builds, 500 × 500 at most for a square one. The matrix product, the
   solvers and the decompositions are refused before any work when they would

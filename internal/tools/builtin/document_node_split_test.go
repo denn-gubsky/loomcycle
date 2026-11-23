@@ -642,8 +642,8 @@ func TestSplit_InputAndAccessAreChecked(t *testing.T) {
 	d, base, _ := documentFixture(t)
 	k := newSplitCorpus(t, d, base, conceptOntologyMD)
 	for body, want := range map[string]string{
-		`{"op":"node_stats","mode":"nope"}`:                    "is not report, compute, misfits, growth or split",
-		`{"op":"node_stats","mode":"growth","propose":true}`:   "propose is taken only with mode misfits or split",
+		`{"op":"node_stats","mode":"nope"}`:                    "is not report, compute, misfits, growth, split or assign",
+		`{"op":"node_stats","mode":"growth","propose":true}`:   "propose is taken only with mode misfits, split or assign",
 		`{"op":"node_stats","mode":"split","quiet_periods":2}`: "quiet_periods is taken only with mode growth",
 		`{"op":"node_stats","mode":"split","scheme":"nope"}`:   `no scheme "nope" is in force`,
 	} {

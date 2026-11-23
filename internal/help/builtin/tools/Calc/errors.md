@@ -35,13 +35,16 @@ A value of the wrong kind: a string in arithmetic, a number where a list or
 a function is needed, a float where an exact integer is needed (`factor`,
 `gcd`, `binomial` …), `*` between two plain vectors, `/` between two lists, a
 number divided by a list, or a power of a list, a vector where a matrix is
-needed; a date meeting a datetime, or a date in `*`. For
+needed; a date meeting a datetime, or a date in `*`; a complex number
+ordered (`<`, `sort`, `min`, statistics) or given to a matrix function. For
 lists use `.*`, `./`, `.^`; for an integer argument compute it exactly; for
-dates convert with `date(dt)` or `datetime(d)`.
+dates convert with `date(dt)` or `datetime(d)`; for a complex number take
+`abs(z)` or `re(z)`.
 
 ### index
 An index that does not exist: `v[0]`, a negative index, past `len(v)`, or not
-a whole number. Indexing starts at 1.
+a whole number; a table row likewise, or two indexes on a table (write
+`t[i].name`). Indexing starts at 1.
 
 ### shape
 Two lists combined element by element have different lengths, or two
@@ -62,9 +65,17 @@ A function calls itself. Use a closed form (`n!`, `fib(n)`), or `reduce` /
 `product` over a range.
 
 ### bad_var
-A var cannot be used: its name is not a valid name, or its value is `null`
-or an object. Pass numbers, strings, booleans or lists; send each field of an
-object as its own var.
+A var cannot be used: its name is not a valid name, its value is `null`, or
+it is an object that is not a table, or a table with a short row, a repeated
+or non-string column name, or a list or object in a cell. Pass numbers,
+strings, booleans, lists, or a table (`Calc/tables`); send each field of any
+other object as its own var.
+
+### column
+A table has no column of that name (`hint` lists close names), a table
+function would make two columns of one name (a `pivot` value equal to the row
+column's name, `addcol` is fine: it replaces), a column has no name, or a
+table has no columns. Check the spelling against the table's `columns`.
 
 ### unknown_unit
 A unit string `convert` or `convertdelta` cannot read: a name not in the
@@ -100,12 +111,12 @@ fractional power of a negative number, `asin(2)`, `min([])`, `modinv` of
 numbers that are not coprime, a sample `variance` of one value, a day the
 month lacks (`date(2026, 2, 30)`), an unknown `datediff` unit or `yearfrac`
 basis, an `irr`, `rate` or `xirr` with no rate that solves the flows, a singular
-matrix to `inv` or `solve` (use `pinv` or `lstsq`), `eig` of a non-symmetric
-matrix, `cholesky` of one that is not positive definite, a distribution
+matrix to `inv` or `solve` (use `pinv` or `lstsq`), `cholesky` of one that is not positive definite, a distribution
 parameter out of range (`normcdf(x, 0, 0)`, `norminv(1)`), a `root` bracket
-whose ends have the same sign, `interp` outside its table. There are no
-complex numbers. Check the inputs; for the finance functions, check
-the signs.
+whose ends have the same sign, `interp` outside its table. A real argument
+never gives a complex answer: write `sqrt(-1 + 0i)` for one
+(`Calc/complex`). Check the inputs; for the finance functions, check the
+signs.
 
 ### no_convergence
 A numeric method did not settle within its evaluations of the function:
@@ -134,7 +145,9 @@ operation over the work of a 500 × 500 matrix. Use a float on purpose (`2.0^x` 
 
 ### list_too_long
 A list, or all the lists nested in one value, would hold more than 1,000,000
-elements. Shrink the range or split the work.
+elements, or a table more than 100,000 cells (a `join` or `pivot` is checked
+before it is built). Shrink the range, `select` fewer columns, filter rows
+first, or split the work.
 
 ### step_limit
 The evaluation needed more than 1,000,000 steps. Use a closed form (`sum(1:n)`

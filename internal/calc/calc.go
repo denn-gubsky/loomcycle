@@ -10,7 +10,6 @@
 package calc
 
 import (
-	"bytes"
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
@@ -39,6 +38,10 @@ type Request struct {
 	Digits int `json:"digits,omitempty"`
 	// Seed makes random functions reproducible.
 	Seed *int64 `json:"seed,omitempty"`
+	// Format is how a table or matrix result is written in Response.Text:
+	// json (the default, also ""), markdown or csv. Other results and
+	// Response.Result are the same in every format.
+	Format string `json:"format,omitempty"`
 	// Now is the clock today() and now() read; nil means time.Now. A test
 	// pins it; a caller wanting a repeatable answer passes the date in vars.
 	Now func() time.Time `json:"-"`
@@ -62,7 +65,11 @@ type Response struct {
 	// are arrays, a function is its signature. Nil when Truncated cut the
 	// result's text.
 	Result any `json:"result"`
-	// Type is number, string, boolean, list, function, date or datetime.
+	// Type is number, complex, string, boolean, list, function, date,
+	// datetime, table, row or empty (an empty table cell, null in Result).
+	// A table is {"columns": [...], "rows": [[...], ...]} in Result; a row
+	// is an object in column order. A complex renders as "3+2i" in Text and as {"re", "im"} in
+	// Result.
 	// A date renders as "2026-11-20", a datetime as RFC 3339 in UTC (or in
 	// the zone tz() gave it).
 	Type string `json:"type"`
@@ -77,7 +84,7 @@ type Response struct {
 	// Text is the result rendered for reading.
 	Text string `json:"text"`
 	// Shape is the dimensions of a list result: [n], or [n, m] for n lists
-	// of m.
+	// of m; a table's is [rows, columns].
 	Shape []int `json:"shape,omitempty"`
 	// Truncated is set when the rendered output passed MaxOutputBytes: Text
 	// is cut there and the values that did not fit are null.
@@ -111,6 +118,9 @@ func evalWithin(ctx context.Context, req Request, wall time.Duration) (Response,
 	if digits < 1 || digits > MaxDigits {
 		return Response{}, errf(codeBadRequest, -1, "digits must be between 1 and %d, got %d", MaxDigits, req.Digits)
 	}
+	if !validFormat(req.Format) {
+		return Response{}, errf(codeBadRequest, -1, "format %q is not json, markdown or csv", req.Format)
+	}
 	ctx, cancel := context.WithTimeout(ctx, wall)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
@@ -143,7 +153,7 @@ func evalWithin(ctx context.Context, req Request, wall time.Duration) (Response,
 		}
 		last = v
 	}
-	return e.respond(last, digits), nil
+	return e.respond(last, digits, req.Format), nil
 }
 
 func newRNG(seed *int64) *rand.Rand {
@@ -160,9 +170,9 @@ func newRNG(seed *int64) *rand.Rand {
 
 // respond renders the result and the assigned names under one shared
 // MaxOutputBytes budget.
-func (e *evaluator) respond(last val, digits int) Response {
+func (e *evaluator) respond(last val, digits int, format string) Response {
 	w := &capWriter{limit: MaxOutputBytes}
-	renderText(w, last, digits, true)
+	renderResult(w, last, digits, format)
 	resp := Response{
 		Type:      typeName(last),
 		Exact:     allExact(last),
@@ -212,14 +222,14 @@ func decodeVars(vars map[string]json.RawMessage, dst map[string]val) *Error {
 		if err := checkName(name, -1); err != nil {
 			return err
 		}
-		dec := json.NewDecoder(bytes.NewReader(vars[name]))
-		dec.UseNumber()
-		var raw any
-		if err := dec.Decode(&raw); err != nil {
-			return errf(codeBadVar, -1, "var %s is not valid JSON: %v", name, err)
-		}
-		if dec.More() {
+		raw, jerr := decodeJSONVar(vars[name])
+		switch {
+		case jerr == errTooDeep:
+			return errf(codeBadVar, -1, "var %s nests deeper than %d levels", name, maxVarDepth)
+		case jerr != nil && jerr.Error() == "more than one JSON value":
 			return errf(codeBadVar, -1, "var %s holds more than one JSON value", name)
+		case jerr != nil:
+			return errf(codeBadVar, -1, "var %s is not valid JSON: %v", name, jerr)
 		}
 		v, err := fromJSON(name, raw, 0)
 		if err != nil {
@@ -261,7 +271,14 @@ func fromJSON(name string, x any, depth int) (val, *Error) {
 		return x, nil
 	case bool:
 		return x, nil
+	case jsonObj:
+		if depth == 0 {
+			return tableFromObject(name, x)
+		}
 	case []any:
+		if depth == 0 && allRecords(x) {
+			return tableFromRecords(name, x)
+		}
 		if len(x) > MaxListLen {
 			return nil, errf(codeListTooLong, -1, "var %s has %d elements; the limit is %d", name, len(x), MaxListLen)
 		}
@@ -277,8 +294,8 @@ func fromJSON(name string, x any, depth int) (val, *Error) {
 	case nil:
 		return nil, errf(codeBadVar, -1, "var %s is null", name).withHint("pass a number, string, boolean or list")
 	}
-	return nil, errf(codeBadVar, -1, "var %s is a JSON object, which has no meaning here", name).
-		withHint("pass a number, string, boolean or list; send each field as its own var")
+	return nil, errf(codeBadVar, -1, "var %s holds a JSON object inside a list, which has no meaning here", name).
+		withHint(`pass a number, string, boolean or list; a table is {"columns": [...], "rows": [...]} or an array of objects`)
 }
 
 // numericString reads a var string as a number when the whole string is a
@@ -294,7 +311,9 @@ func numericString(s string) (num, bool) {
 		return num{}, false
 	}
 	tok, err := lexNumber(t, 0)
-	if err != nil || len(tok.s) != len(t) {
+	// An imaginary literal ("2i") stays a string, as it was before complex
+	// numbers: a var string is a number only when it is a real one.
+	if err != nil || len(tok.s) != len(t) || tok.imag {
 		return num{}, false
 	}
 	n := tok.num

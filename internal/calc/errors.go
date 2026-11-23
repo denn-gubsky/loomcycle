@@ -57,6 +57,7 @@ const (
 	codeUnknownUnit    errCode = "unknown_unit"
 	codeDimension      errCode = "dimension"
 	codeNoConvergence  errCode = "no_convergence"
+	codeColumn         errCode = "column"
 )
 
 var allCodes = [...]errCode{
@@ -66,7 +67,7 @@ var allCodes = [...]errCode{
 	codeExprTooLong, codeVarsTooLarge, codeStepLimit, codeTimeLimit,
 	codeCanceled, codeListTooLong, codeTooDeep, codeEmptyStatement,
 	codeBadDate,
-	codeUnknownUnit, codeDimension, codeNoConvergence,
+	codeUnknownUnit, codeDimension, codeNoConvergence, codeColumn,
 }
 
 // ErrorCodes returns every code an Error may carry, sorted.

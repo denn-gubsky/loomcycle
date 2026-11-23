@@ -1,6 +1,6 @@
 ---
 name: calculations
-description: "Calculation recipes by task, each a Calc call with its result — percent change, tax and discounts, splitting an amount into exact shares, weighted averages, loan payments and interest, growth rates, days and working days to a deadline, checking a table's totals, comparing quantities in different units, mean and standard deviation, temperatures, and a loan balance with fv and pv."
+description: "Calculation recipes by task, each a Calc call with its result — percent change, tax and discounts, splitting an amount into exact shares, weighted averages, loan payments and interest, growth rates, days and working days to a deadline, checking a table's totals, comparing quantities in different units, mean and standard deviation, temperatures, a loan balance with fv and pv, and totals by group from a table of rows."
 aliases: [math, calculator, arithmetic]
 ---
 Recipes for the numbers a task asks for, one `Calc` call each. Put every
@@ -168,3 +168,15 @@ year is the present value of those payments:
 ```
 
 Result: 18792.09
+
+### Totals by group from rows of data
+
+Pass the rows as an array of objects and let `groupby` add each group; the
+sums stay exact. `format: "markdown"` would return the same table as a
+Markdown table to show a person (`Calc/tables`).
+
+```json tool=Calc
+{"expr": "groupby(t, \"region\", \"total\", g -> sum(g.amount))", "vars": {"t": [{"region": "EU", "amount": 120.10}, {"region": "US", "amount": 300}, {"region": "EU", "amount": 79.95}]}}
+```
+
+Result: {"columns": ["region", "total"], "rows": [["EU", 200.05], ["US", 300]]}

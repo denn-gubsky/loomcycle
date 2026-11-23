@@ -4789,7 +4789,10 @@ export type DocumentToolInput = {
    *  default) only reports. node_stats mode misfits: true files a `subject`
    *  proposal (method rule:centroid) per misfit, at most `limit` per call.
    *  node_stats mode split: true files each recurring group as a proposed
-   *  concept and each merge as a retire proposal, at most `limit` per call. */
+   *  concept and each merge as a retire proposal, at most `limit` per call.
+   *  node_stats mode assign: true files a `subject` proposal (method
+   *  rule:centroid, confidence the margin) per ranking that clears its level's
+   *  margin, at most `limit` per call; nothing is made live. */
   propose?: boolean;
   /** search / related: never chunks of these documents (e.g. the document under
    *  review, so its own text is not found as evidence for itself). */
@@ -4910,8 +4913,16 @@ export type DocumentToolInput = {
    *  scheme's unplaced periods rising first, writing nothing; "split" lists
    *  the groups of a concept's members, and of a scheme's unplaced things, that
    *  recur when clustered again (candidate new concepts) and sibling concepts to
-   *  merge, filing proposals only with `propose`. */
-  mode?: "report" | "compute" | "misfits" | "growth" | "split";
+   *  merge, filing proposals only with `propose`; "assign" compares each
+   *  document a scheme arranges with one level's centroids at a time (nearest,
+   *  second, margin) and reports a page of documents with their live placements
+   *  and the agreement by margin bucket per level, filing `subject` proposals
+   *  only with `propose`. */
+  mode?: "report" | "compute" | "misfits" | "growth" | "split" | "assign";
+  /** node_stats mode assign: the margin (at most 1) a ranking needs per level,
+   *  keyed by the level as a string; a negative margin turns a level off.
+   *  Default `{"2": 0.03}`: level 1 has none. */
+  margins?: Record<string, number>;
   /** node_stats mode growth: the periods counted as recent (default 6, at most
    *  120); a node with members but none in them is quiet. */
   quiet_periods?: number;
@@ -8564,31 +8575,39 @@ export interface CalcInput {
    *  value is the result, e.g. `"subtotal = 1249.99 * 3; round(subtotal * 1.2, 2)"`. */
   expr: string;
   /** Names bound before evaluation: a number, a numeric string (kept exact,
-   *  e.g. `"0.1"`), a string, a boolean or a list. */
+   *  e.g. `"0.1"`), a string, a boolean, a list, or a table
+   *  (`{columns: [...], rows: [[...]]}` or an array of objects). */
   vars?: Record<string, unknown>;
   /** Significant digits for an approximate or non-terminating result
    *  (default 15). */
   digits?: number;
   /** Makes the random functions repeatable. */
   seed?: number;
+  /** How a table or matrix result is written in `text`: `json` (the
+   *  default), `markdown` or `csv`. `result` is the same in every format. */
+  format?: "json" | "markdown" | "csv";
 }
 
 /** What a Calc result is. Later evaluator phases add kinds, so the type stays
  *  open to other strings. */
 export type CalcValueType =
   | "number"
+  | "complex"
   | "string"
   | "boolean"
   | "list"
   | "function"
   | "date"
   | "datetime"
+  | "table"
+  | "row"
+  | "empty"
   | (string & {});
 
 /** A successful {@link LoomcycleClient.calc}: the tool's own result. */
 export interface CalcResult {
   /** The value as JSON: numbers, strings, booleans, arrays for lists, a
-   *  function's signature. A number here has passed through `JSON.parse`,
+   *  complex number as `{re, im}`, a table as `{columns, rows}`, a function's signature. A number here has passed through `JSON.parse`,
    *  so an integer past 2^53 or a decimal past 17 significant digits is
    *  rounded; read `text` (and `fraction`) for the exact digits. `null` when
    *  `truncated` cut it. */
@@ -8604,7 +8623,8 @@ export interface CalcResult {
   assigned?: Record<string, unknown>;
   /** The result rendered for reading, with every exact digit. */
   text: string;
-  /** The dimensions of a list result: `[n]`, or `[n, m]`. */
+  /** The dimensions of a list result: `[n]`, or `[n, m]`; a table's is
+   *  `[rows, columns]`. */
   shape?: number[];
   /** Set when the rendered output passed the size limit: `text` is cut and
    *  the values that did not fit are `null`. */

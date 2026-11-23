@@ -21,13 +21,22 @@ func (e *evaluator) arith(op string, l, r val, pos int) (val, *Error) {
 		}
 		return e.numOp(op, ln, rn, pos)
 	}
+	if complexPair(l, r) {
+		return e.complexOp(op, l, r, pos)
+	}
 	ll, lList := l.([]val)
 	rl, rList := r.([]val)
+	// An empty table cell stays empty, so t.price .* t.qty keeps its rows
+	// aligned and sum() then skips the gap.
+	if !lList && !rList && (isEmpty(l) || isEmpty(r)) {
+		return empty, nil
+	}
 	if !lList && !rList && (isTime(l) || isTime(r)) {
 		return e.timeArith(op, l, r, pos)
 	}
 	// A list of dates broadcasts like a list of numbers: d + [0, 7, 14].
-	lok, rok = lok || isTime(l), rok || isTime(r)
+	// A list of complex numbers broadcasts the same way.
+	lok, rok = lok || isTime(l) || isComplex(l) || isEmpty(l), rok || isTime(r) || isComplex(r) || isEmpty(r)
 	if !(lList || lok) || !(rList || rok) {
 		return nil, errf(codeType, pos, "cannot apply %s to a %s and a %s", op, typeName(l), typeName(r))
 	}
@@ -240,6 +249,15 @@ func (e *evaluator) compare(op string, l, r val, pos int) (val, *Error) {
 		}
 		return eq == (op == "=="), nil
 	}
+	if isEmpty(l) || isEmpty(r) {
+		// An empty cell is neither above nor below anything, so a rule like
+		// r -> r.qty > 0 drops the row; test for it with isempty().
+		return false, nil
+	}
+	if isComplex(l) || isComplex(r) {
+		return nil, errf(codeType, pos, "complex numbers cannot be ordered with %s", op).
+			withHint("only == and != compare complex numbers; compare abs(z), re(z) or im(z) instead")
+	}
 	var c int
 	switch lv := l.(type) {
 	case num:
@@ -288,6 +306,9 @@ func (e *evaluator) equal(l, r val, pos int) (bool, *Error) {
 	if err := e.charge(1, pos); err != nil {
 		return false, err
 	}
+	if isComplex(l) || isComplex(r) {
+		return complexEqual(l, r), nil
+	}
 	switch lv := l.(type) {
 	case num:
 		rv, ok := r.(num)
@@ -298,6 +319,25 @@ func (e *evaluator) equal(l, r val, pos int) (bool, *Error) {
 	case bool:
 		rv, ok := r.(bool)
 		return ok && lv == rv, nil
+	case emptyVal:
+		return isEmpty(r), nil
+	case *tableVal:
+		rv, ok := r.(*tableVal)
+		if !ok || !equalStrings(lv.names, rv.names) || lv.rows() != rv.rows() {
+			return false, nil
+		}
+		for j := range lv.cols {
+			if eq, err := e.equal(lv.cols[j], rv.cols[j], pos); err != nil || !eq {
+				return false, err
+			}
+		}
+		return true, nil
+	case rowVal:
+		rv, ok := r.(rowVal)
+		if !ok || !equalStrings(lv.t.names, rv.t.names) {
+			return false, nil
+		}
+		return e.equal(lv.t.cellsOf(lv.i), rv.t.cellsOf(rv.i), pos)
 	case dateVal, timeVal:
 		if !isTime(r) {
 			return false, nil
@@ -390,4 +430,16 @@ func (e *evaluator) makeRange(start, step, end num, pos int) (val, *Error) {
 		out[i] = v
 	}
 	return out, nil
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

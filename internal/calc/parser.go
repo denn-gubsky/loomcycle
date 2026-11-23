@@ -6,8 +6,9 @@ type node interface{ position() int }
 
 type (
 	numLit struct {
-		p int
-		v num
+		p    int
+		v    num
+		imag bool // v times i (see token.imag)
 	}
 	strLit struct {
 		p int
@@ -48,6 +49,12 @@ type (
 	// allN is a lone `:` inside brackets: every row or every column.
 	allN struct {
 		p int
+	}
+	// memberN is x.name: a table's column or a row's cell.
+	memberN struct {
+		p    int
+		x    node
+		name string
 	}
 	// transN is the postfix transpose x'.
 	transN struct {
@@ -91,6 +98,7 @@ func (n *callN) position() int   { return n.p }
 func (n *indexN) position() int  { return n.p }
 func (n *allN) position() int    { return n.p }
 func (n *transN) position() int  { return n.p }
+func (n *memberN) position() int { return n.p }
 func (n *listN) position() int   { return n.p }
 func (n *rangeN) position() int  { return n.p }
 func (n *lambdaN) position() int { return n.p }
@@ -346,6 +354,8 @@ func walk(n node, visit func(node) bool) {
 		walk(n.col, visit)
 	case *transN:
 		walk(n.x, visit)
+	case *memberN:
+		walk(n.x, visit)
 	case *listN:
 		for _, a := range n.items {
 			walk(a, visit)
@@ -571,6 +581,15 @@ func (p *parser) postfix() (node, *Error) {
 		case t.kind == tOp && t.s == "'":
 			p.next()
 			x = &transN{p: t.pos, x: x}
+		case t.kind == tOp && t.s == ".":
+			p.next()
+			name := p.peek()
+			if name.kind != tIdent {
+				return nil, errf(codeSyntax, name.pos, "expected a column name after `.`, found %s", describeTok(name)).
+					withHint("t.price is a column; for a name that is not a plain word write t[\"unit price\"]")
+			}
+			p.next()
+			x = &memberN{p: t.pos, x: x, name: name.s}
 		default:
 			return x, nil
 		}
@@ -634,7 +653,7 @@ func (p *parser) primary() (node, *Error) {
 	switch t.kind {
 	case tNum:
 		p.next()
-		return &numLit{p: t.pos, v: t.num}, nil
+		return &numLit{p: t.pos, v: t.num, imag: t.imag}, nil
 	case tStr:
 		p.next()
 		return &strLit{p: t.pos, s: t.s}, nil

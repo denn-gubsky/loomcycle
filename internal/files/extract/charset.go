@@ -239,7 +239,11 @@ func htmlMetaCharset(data []byte) string {
 				}
 			}
 			if charset == "" {
-				if i := strings.Index(strings.ToLower(content), "charset="); i >= 0 {
+				// Search the original bytes, ASCII case-insensitively: a
+				// lower-cased copy can differ in byte length from content
+				// ("İ" grows, the Kelvin sign shrinks), so its index would
+				// slice content at the wrong place or past its end.
+				if i := indexFoldASCII(content, "charset="); i >= 0 {
 					charset = content[i+len("charset="):]
 					if j := strings.IndexAny(charset, "; "); j >= 0 {
 						charset = charset[:j]
@@ -251,4 +255,27 @@ func htmlMetaCharset(data []byte) string {
 			}
 		}
 	}
+}
+
+// indexFoldASCII is strings.Index with ASCII letters matched without regard
+// to case. The index is into s itself, so it is safe to slice s with.
+// needle must be lower-case ASCII.
+func indexFoldASCII(s, needle string) int {
+	for i := 0; i+len(needle) <= len(s); i++ {
+		match := true
+		for j := 0; j < len(needle); j++ {
+			c := s[i+j]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != needle[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }

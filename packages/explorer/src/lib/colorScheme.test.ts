@@ -1,5 +1,47 @@
 import { describe, expect, it } from "vitest";
-import { chunkColor, chunkInheritsDocColor, chunkRowStyle, docColor, effectiveScheme, tintStyle, washStyle } from "./colorScheme";
+import {
+  chunkColor,
+  chunkInheritsDocColor,
+  chunkRowStyle,
+  chunkRowTint,
+  docColor,
+  effectiveScheme,
+  rowTint,
+  statusDotColor,
+  tintStyle,
+  washStyle,
+} from "./colorScheme";
+
+// RFC GZ: a tree row wears its colour as a gradient set through one custom
+// property, from the same decision as the flat tile.
+describe("tree row tint", () => {
+  const LAW_ = { "doc.Law": "#2f6fd6" };
+  const PASSPORT_ = { "doc.Passport": "#3aa06a", "chunk.pass": "#2fa84f", "chunk.fail": "#d64545" };
+  it("TestChunkRowTint_ColoursTheSameRowsAsChunkRowStyle", () => {
+    const scheme = effectiveScheme(PASSPORT_);
+    const docHex = "#3aa06a";
+    expect(chunkRowTint({ status: "fail", isRoot: false, documentColor: docHex, scheme })).toEqual(rowTint("#d64545"));
+    expect(chunkRowTint({ status: undefined, isRoot: false, documentColor: docHex, scheme })).toEqual(rowTint(docHex, true));
+    expect(chunkRowTint({ status: "pass", isRoot: true, documentColor: docHex, scheme })).toEqual(rowTint(docHex));
+    expect(chunkRowTint({ status: "fail", isRoot: false, documentColor: docHex, scheme: null })).toBeUndefined();
+    const off = { ...LAW_, "chunk.inherit": "off" };
+    expect(chunkRowTint({ status: undefined, isRoot: false, documentColor: "#2f6fd6", scheme: off })).toBeUndefined();
+  });
+
+  it("TestRowTint_SetsOnlyTheTintProperty", () => {
+    expect(rowTint("#2f6fd6")).toEqual({ "--etree-tint": "rgba(47, 111, 214, 0.3)" });
+    expect(rowTint("#2f6fd6", true)).toEqual({ "--etree-tint": "rgba(47, 111, 214, 0.22)" });
+    expect(rowTint("not-a-colour")).toBeUndefined();
+    expect(rowTint(undefined)).toBeUndefined();
+  });
+
+  it("TestStatusDotColor_FallsBackToTheDefaultPalette", () => {
+    expect(statusDotColor("draft")).toBe("#c99a3a");
+    expect(statusDotColor("draft", { "chunk.draft": "#111111" })).toBe("#111111");
+    expect(statusDotColor("unheard-of")).toBeUndefined();
+    expect(statusDotColor(undefined)).toBeUndefined();
+  });
+});
 
 // A chunk without a status colour of its own takes a lighter wash of its
 // document's colour (a corpus of documents coloured by kind, whose thousands of

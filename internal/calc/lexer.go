@@ -1,6 +1,7 @@
 package calc
 
 import (
+	"math"
 	"math/big"
 	"strings"
 )
@@ -20,6 +21,9 @@ type token struct {
 	kind tokKind
 	s    string
 	num  num // tNum only
+	// imag marks an imaginary literal, 2i: the number times i. Only a
+	// numeric suffix makes one; the name i stays an ordinary variable.
+	imag bool
 	pos  int
 }
 
@@ -28,6 +32,9 @@ var ops = [...]string{
 	"->", "==", "!=", "<=", ">=", ".*", "./", ".^",
 	"+", "-", "*", "/", "^", "%", "!", "<", ">", "=",
 	"(", ")", "[", "]", ",", ":",
+	// Member access, t.price: a column of a table or a cell of a row. After
+	// the dotted operators above, so `.*` is still one token.
+	".",
 	// The postfix transpose, A'. Strings use double quotes, so a single
 	// quote has no other meaning; a model's 'text' is refused by the parser
 	// with a hint.
@@ -183,6 +190,17 @@ func lexNumber(src string, start int) (token, *Error) {
 		}
 	}
 	text := src[start:i]
+	if !radix && isImagSuffix(src, i) {
+		n, err := parseNumberLiteral(text, false)
+		if err != nil {
+			err.Pos = start
+			return token{}, err
+		}
+		if math.IsInf(n.float(), 0) {
+			return token{}, errf(codeOverflow, start, "the imaginary part of %.20s overflows a 64-bit float", src[start:i+1])
+		}
+		return token{kind: tNum, s: src[start : i+1], num: n, imag: true, pos: start}, nil
+	}
 	if i < len(src) && (isLetter(src[i]) || src[i] == '"') {
 		j := i
 		for j < len(src) && (isLetter(src[j]) || isDigit(src[j])) {
@@ -197,6 +215,17 @@ func lexNumber(src string, start int) (token, *Error) {
 		return token{}, err
 	}
 	return token{kind: tNum, s: text, num: n, pos: start}, nil
+}
+
+// isImagSuffix reports a lone `i` at src[i] ending a decimal literal: 2i,
+// 1.5i, 3e2i. A longer word stays the implicit-multiplication refusal, so
+// 2in, 2if and 2pi read as before.
+func isImagSuffix(src string, i int) bool {
+	if i >= len(src) || src[i] != 'i' {
+		return false
+	}
+	j := i + 1
+	return j >= len(src) || !(isLetter(src[j]) || isDigit(src[j]) || src[j] == '"')
 }
 
 // parseNumberLiteral turns a literal into an exact number. The size is

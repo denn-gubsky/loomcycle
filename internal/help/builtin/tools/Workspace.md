@@ -4,17 +4,18 @@ description: "Workspace tool — open a directory on a workspace worker, run she
 ---
 The `Workspace` tool gives you a **workspace**: a directory on a workspace
 worker, a machine apart from the runtime, where you can run shell commands
-(`exec`) and read and change files (`read`, `write`, `edit`, `glob`, `grep`).
+(`exec`), run code in an interpreter that keeps its variables (`run_cell`),
+and read and change files (`read`, `write`, `edit`, `glob`, `grep`).
 Use it for work that needs a real shell and toolchains such as Python and
 Node. For files you keep, use your volumes and the Read, Write and Edit tools.
 
 ## What you may do
 
 Your agent's grant decides which operations work: `open` needs the grant to
-open workspaces; `exec` needs `exec`; `write` and `edit` need `write`;
-`read`, `glob`, `grep`, `list` and `status` need `read`; `share` and
-`unshare` need the grant to share. Anything else is refused with
-`not_granted`. Context op=self shows your grant.
+open workspaces; `exec`, `run_cell` and `reset_kernel` need `exec`; `write`
+and `edit` need `write`; `read`, `glob`, `grep`, `list` and `status` need
+`read`; `share` and `unshare` need the grant to share. Anything else is
+refused with `not_granted`. Context op=self shows your grant.
 
 ## Lifetime
 
@@ -41,6 +42,8 @@ up to 1 MiB.
 | `status` | its state, and whether its directory is on the worker | `name` |
 | `release` | delete it now | `name` |
 | `exec` | run a shell command in it | `name`, `command`, `cwd`, `timeout_s` |
+| `run_cell` | run Python or Node code in an interpreter that keeps its variables | `name`, `code`, `kernel`, `timeout_s` |
+| `reset_kernel` | stop the interpreter; the next cell starts clean | `name`, `kernel` |
 | `read` | a file's text | `name`, `path`, `offset`, `limit`, `line_numbers` |
 | `write` | create or replace a file whole | `name`, `path`, `content` |
 | `edit` | replace exact text in a file | `name`, `path`, `old_string`, `new_string`, `replace_all` |
