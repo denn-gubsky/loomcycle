@@ -14,7 +14,10 @@ PROFILES = {
 }
 DEFAULT_PROFILE = "haiku"
 # The judge is free and differs from the reader in both profiles (PREREG: never the reader).
-JUDGE = ("ollama-local", "ornith-1.5:35b")
+# Amendment 1: the operator moved the judge to the reader model for wall-clock (the local
+# judge needed ~13 h on a shared GPU). Every arm's answer is Haiku-written, so a
+# same-model preference would act on all arms alike.
+JUDGE = ("anthropic", "claude-haiku-5-5")
 
 # Serving pairs the study may use; "*" = any model of that provider. The embedder is not a
 # chat call and is checked by its own path (lc.embed), so it is not listed here.

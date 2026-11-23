@@ -4,7 +4,7 @@
 
 -> <work>/judge/<arm>.jsonl {arm, qid, rep, attempt, verdict, judge_text, order, ...}
 
-The judge (config.JUDGE, never the reader) sees the question, the gold answers and ONE
+The judge (config.JUDGE; the reader model since Amendment 1) sees the question, the gold answers and ONE
 answer with the accounting lines, links and reader scaffold removed (common.strip_for_judge),
 so its text does not say which arm wrote it. Per (question, rep) the arms are judged in an
 order shuffled by a seeded RNG, so the order carries no arm signal either.

@@ -291,3 +291,23 @@ finish after the other measures are reported; a report without it says so.
 
 Nothing else changes: arms, metrics, hypotheses H3 and H4, α, the bootstrap and the
 instrument checks stand as written above.
+
+## Amendment 1 — 2026-11-23 05:40 UTC, before any judge call on a study row
+
+**What happened.** The judge of Amendment 0 (`ollama-local` / `ornith-1.5:35b`) takes
+about 12 s a call, one at a time, on a GPU it shares: about 13 hours for the study. The
+operator asked for the judge to run on Haiku for this benchmark. No judge call has been
+made on a study row; the judge has only seen the unscored smoke and pilot rows.
+
+**Change.** The judge is `anthropic` / `claude-haiku-5-5`, the reader model, with the same
+prompt, the same shuffled order and the same inputs. The design's "never the reader
+model" is given up.
+
+**What that costs.** A model grading text it wrote may favour it. Here every arm's answer
+is written by Haiku (the reader in `rag-lc`, `rag-ext` and the oracle; the bundle's forked
+agents in `kb`), so such a preference would act on all arms alike and should not favour
+one. It can still make the ratings lenient overall. The judge stays a secondary measure:
+H3 and H4 are tested on token F1 and do not depend on it, and the report gives its
+agreement with EM beside its ratings.
+
+Nothing else changes.
