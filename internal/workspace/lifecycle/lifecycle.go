@@ -46,6 +46,11 @@ type Limits struct {
 	// DefaultCopyMaxBytes.
 	CopyMaxFiles int
 	CopyMaxBytes int64
+	// CheckoutMaxDocuments and CheckoutMaxBytes bound File op=checkout of
+	// Documents into a workspace (workspace.checkout); zero is
+	// DefaultCheckoutMaxDocuments and DefaultCheckoutMaxBytes.
+	CheckoutMaxDocuments int
+	CheckoutMaxBytes     int64
 	// ConvertQuarantine is how long a file that crashed a worker's
 	// conversion child is refused for its workspace
 	// (conversion.quarantine_ttl_s); zero is DefaultConvertQuarantine.
@@ -57,6 +62,10 @@ type Limits struct {
 const (
 	DefaultCopyMaxFiles = 2000
 	DefaultCopyMaxBytes = 1 << 30
+	// The checkout bounds of a Limits that names none: config
+	// workspace.checkout's defaults.
+	DefaultCheckoutMaxDocuments = 500
+	DefaultCheckoutMaxBytes     = 256 << 20
 )
 
 // Manager is the core's workspace bookkeeping over one dispatcher.
@@ -81,6 +90,12 @@ func New(d *dispatch.Dispatcher, st Store, l Limits, log *slog.Logger) *Manager 
 	}
 	if l.CopyMaxBytes <= 0 {
 		l.CopyMaxBytes = DefaultCopyMaxBytes
+	}
+	if l.CheckoutMaxDocuments <= 0 {
+		l.CheckoutMaxDocuments = DefaultCheckoutMaxDocuments
+	}
+	if l.CheckoutMaxBytes <= 0 {
+		l.CheckoutMaxBytes = DefaultCheckoutMaxBytes
 	}
 	if l.ConvertQuarantine <= 0 {
 		l.ConvertQuarantine = DefaultConvertQuarantine

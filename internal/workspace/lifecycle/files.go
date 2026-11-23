@@ -176,6 +176,12 @@ func (m *Manager) CopyLimits() (maxFiles int, maxBytes int64) {
 	return m.limits.CopyMaxFiles, m.limits.CopyMaxBytes
 }
 
+// CheckoutLimits are the operator's bounds on one File op=checkout of
+// Documents into a workspace (workspace.checkout).
+func (m *Manager) CheckoutLimits() (maxDocuments int, maxBytes int64) {
+	return m.limits.CheckoutMaxDocuments, m.limits.CheckoutMaxBytes
+}
+
 // CopyLocalRequest is a copy between two of the run's workspaces.
 type CopyLocalRequest struct {
 	From, FromPath string
