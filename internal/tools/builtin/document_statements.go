@@ -1292,6 +1292,13 @@ var edgeLiveClause = func() string {
 	return c
 }()
 
+// edgeExportClause is the export_md trailer's visibility: edgeLiveClause plus the
+// proposed statements, whose status the trailer's envelope carries.
+var edgeExportClause = func() string {
+	c, _ := statementVisibility{includeProposed: true}.clause()
+	return c
+}()
+
 // edgeCursor is get_edges' paging position: the last row's (kind, created_at, id).
 type edgeCursor struct {
 	Kind      string `json:"k"`
@@ -2398,12 +2405,14 @@ type mdEdgeEnvelope struct {
 // exportEdgeLines renders the trailer: the statements leaving this document's
 // chunks, then the ones arriving from outside it whose source carries a natural
 // key — written as `@<natural_key>` so an import can reconnect them, which is what
-// keeps an inbound citation through an export round trip. Rejected statements are
-// a tombstone for this scope and are not carried.
+// keeps an inbound citation through an export round trip. Only statements still in
+// force are carried: a rejected one is a tombstone for this scope, and an expired or
+// judge-refuted one has no field in the envelope, so import_md would write it back
+// as a fresh, live statement. A proposed one is carried, its status in the envelope.
 func (d *Document) exportEdgeLines(ctx context.Context, key sqlmem.ScopeKey, docID string) ([]string, error) {
 	res, err := d.query(ctx, key, `SELECT `+statementCols+`, '' AS nk FROM chunk_edges e
-		WHERE e.from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND e.status <> ?
-		ORDER BY e.from_id, e.to_id, e.kind, e.id`, docID, edgeStatusRejected)
+		WHERE e.from_id IN (SELECT id FROM chunks WHERE document_id = ?) AND `+edgeExportClause+`
+		ORDER BY e.from_id, e.to_id, e.kind, e.id`, docID)
 	if err != nil {
 		return nil, err
 	}
@@ -2411,8 +2420,8 @@ func (d *Document) exportEdgeLines(ctx context.Context, key sqlmem.ScopeKey, doc
 		JOIN chunk_memory_meta m ON m.chunk_id = e.from_id
 		WHERE e.to_id IN (SELECT id FROM chunks WHERE document_id = ?)
 		  AND e.from_id NOT IN (SELECT id FROM chunks WHERE document_id = ?)
-		  AND m.natural_key IS NOT NULL AND m.natural_key <> '' AND e.status <> ?
-		ORDER BY m.natural_key, e.to_id, e.kind, e.id`, docID, docID, edgeStatusRejected)
+		  AND m.natural_key IS NOT NULL AND m.natural_key <> '' AND `+edgeExportClause+`
+		ORDER BY m.natural_key, e.to_id, e.kind, e.id`, docID, docID)
 	if err != nil {
 		return nil, err
 	}
