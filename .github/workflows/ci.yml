@@ -368,13 +368,15 @@ jobs:
           session 'python3 -m venv /workspace/venv && /workspace/venv/bin/python -c "print(1)"'
 
   workspace-container:
-    # The container engine's isolation tests (RFC GW P3) run real sessions.
-    # They skip where no container daemon answers; this job sets
-    # LOOMCYCLE_REQUIRE_DOCKER so a skip here is a failure, and the runner's
-    # Docker runs them.
+    # The container engine's isolation tests (RFC GW P3) run real sessions,
+    # and test/runtime/workspace/container.sh runs the data pass on a remote
+    # container-engine worker with the session image built from
+    # Dockerfile.workspace. Both skip where no container daemon answers; this
+    # job sets LOOMCYCLE_REQUIRE_DOCKER so a skip here is a failure, and the
+    # runner's Docker runs them.
     name: Workspace container engine
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: needs.changes.outputs.runtime == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -389,6 +391,16 @@ jobs:
         env:
           LOOMCYCLE_REQUIRE_DOCKER: "1"
         run: go test -count=1 -timeout 30m -run '^(TestContainer_|TestAttach_ASharedContainerWorker)' -v ./internal/workspace/engine/ ./internal/workspace/dispatch/
+
+      - name: Ensure sqlite3 + python3
+        run: |
+          command -v python3 >/dev/null || { echo "python3 missing"; exit 1; }
+          command -v sqlite3  >/dev/null || { sudo apt-get update && sudo apt-get install -y sqlite3; }
+
+      - name: The data pass on a container-engine worker
+        env:
+          LOOMCYCLE_REQUIRE_DOCKER: "1"
+        run: ./test/runtime/workspace/container.sh
 
   go-race:
     # The race suite, split across runners (RFC EX Phase 1). On one 4-core

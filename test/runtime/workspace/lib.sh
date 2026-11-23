@@ -65,7 +65,17 @@ open(sys.argv[1], "wb").write(out)
 PY
   # copy into a volume needs the target folder to exist.
   mkdir -p "$VOL/kept"
-  post_run "$TEST_DIR/data.sse" wsdata "$fmt"
+  if [[ "${WS_ENGINE:-host}" == container ]]; then
+    # The session's working directory is /workspace, whatever the id: record
+    # the directories on the worker's disk while the run holds them.
+    ( while :; do workspaces >> "$TEST_DIR/seen-ws"; sleep 0.1; done ) &
+    local watcher=$!
+    post_run "$TEST_DIR/data.sse" wsdata "$fmt"
+    kill "$watcher" 2>/dev/null || true
+    wait "$watcher" 2>/dev/null || true
+  else
+    post_run "$TEST_DIR/data.sse" wsdata "$fmt"
+  fi
   local R; R=$(sse_text "$TEST_DIR/data.sse")
   echo "      $R"
   grep -q '^event: error$' "$TEST_DIR/data.sse" && fail "an EventError appeared on the data-pass stream: $(cat "$TEST_DIR/data.sse")"
@@ -82,7 +92,12 @@ PY
   ws_dir=$(echo "$R" | sed -n 's/.*ws_dir=\([^ ]*\).*/\1/p')
   ws_id=$(echo "$R" | sed -n 's/.*workspace_id=\([^ ]*\).*/\1/p')
   run_id=$(echo "$R" | sed -n 's/.*run_id=\([^ ]*\).*/\1/p')
-  [[ "$ws_id" == ws_* && "$ws_id" == "$ws_dir" ]] || fail "provenance workspace_id '$ws_id' is not the workspace's id '$ws_dir'"
+  if [[ "${WS_ENGINE:-host}" == container ]]; then
+    [[ "$ws_dir" == workspace ]] || fail "the command ran in '$ws_dir', not the fixed /workspace"
+    [[ "$ws_id" == ws_* ]] && grep -q "/$ws_id\$" "$TEST_DIR/seen-ws" || fail "provenance workspace_id '$ws_id' is not a workspace the worker held: $(sort -u "$TEST_DIR/seen-ws" | tr '\n' ' ')"
+  else
+    [[ "$ws_id" == ws_* && "$ws_id" == "$ws_dir" ]] || fail "provenance workspace_id '$ws_id' is not the workspace's id '$ws_dir'"
+  fi
   want_run=$(sqlite3 "$DATA/loomcycle.db" "SELECT id FROM runs ORDER BY started_at DESC LIMIT 1;")
   [[ -n "$run_id" && "$run_id" == "$want_run" ]] || fail "provenance run_id '$run_id' is not the run's id '$want_run'"
   local size; size=$(echo "$R" | sed -n 's/.*extracted_size=\([0-9]*\).*/\1/p')
