@@ -1956,6 +1956,13 @@ type AgentDef struct {
 	// carries it (a run could only narrow it, and none needs to yet).
 	Telemetry *AgentTelemetry `yaml:"telemetry,omitempty"`
 
+	// HistoryPreload is the per-agent `history_preload:` block (RFC HE F3):
+	// present (even empty) means the first run of a NEW top-level session
+	// starts with the same user's latest chats with this agent, and the
+	// session is recapped when a top-level run of it ends. Merged per field.
+	// Content-identifying. A run may only switch it off.
+	HistoryPreload *HistoryPreload `yaml:"history_preload,omitempty"`
+
 	// Volumes is the RFC AH Phase 1 filesystem-volume binding list — the
 	// names of top-level `volumes:` entries the agent's file/exec tools
 	// (Read/Write/Edit/Glob/Grep/Bash/NotebookEdit) may resolve paths
@@ -6696,6 +6703,9 @@ func mergeAgentDef(base, override AgentDef) AgentDef {
 	}
 	if !override.Telemetry.IsZero() {
 		out.Telemetry = MergeAgentTelemetry(out.Telemetry, override.Telemetry)
+	}
+	if override.HistoryPreload != nil {
+		out.HistoryPreload = MergeHistoryPreload(out.HistoryPreload, override.HistoryPreload)
 	}
 	if override.Providers != nil {
 		out.Providers = override.Providers

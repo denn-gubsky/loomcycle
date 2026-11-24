@@ -369,6 +369,9 @@ type SubstrateAgentDef struct {
 	// Telemetry: the per-agent `telemetry:` block (mirrors config.AgentTelemetry
 	// / mergedDef; RFC GG P3).
 	Telemetry *config.AgentTelemetry `json:"telemetry,omitempty"`
+	// HistoryPreload: the per-agent `history_preload:` block (mirrors
+	// config.HistoryPreload / mergedDef; RFC HE F3).
+	HistoryPreload *config.HistoryPreload `json:"history_preload,omitempty"`
 	// Context: per-agent layered-context / retention block (mirrors config.Context
 	// / mergedDef; RFC CR).
 	Context          *config.Context `json:"context,omitempty"`
@@ -533,6 +536,7 @@ func SubstrateAgentDefFromConfig(def config.AgentDef) SubstrateAgentDef {
 		Transcription:          def.Transcription.Clone(),
 		Speech:                 def.Speech.Clone(),
 		Telemetry:              def.Telemetry.Clone(),
+		HistoryPreload:         def.HistoryPreload.Clone(),
 		Context:                def.Context,
 		MaxTokens:              def.MaxTokens,
 		MaxContextTokens:       def.MaxContextTokens,
@@ -606,6 +610,7 @@ func (s SubstrateAgentDef) ToConfigDef() config.AgentDef {
 		Transcription:         s.Transcription.Clone(),
 		Speech:                s.Speech.Clone(),
 		Telemetry:             s.Telemetry.Clone(),
+		HistoryPreload:        s.HistoryPreload.Clone(),
 		Context:               s.Context,
 		MaxTokens:             s.MaxTokens,
 		MaxContextTokens:      s.MaxContextTokens,

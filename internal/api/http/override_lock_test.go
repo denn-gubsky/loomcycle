@@ -26,7 +26,8 @@ var overrideSamples = map[string]string{
 	"memory_inject_max_tokens": `10`, "memory_index_max_bytes": `10`, "inject_tool_guide": `false`,
 	"interactive": `true`, "review": `true`, "review_ttl_seconds": `60`,
 	"interruption": `{"enabled":false}`, "hooks": `{"run_end":["some-hook"]}`,
-	"tool_hooks": `{"Bash":{"pre":["some-hook"]}}`,
+	"tool_hooks":      `{"Bash":{"pre":["some-hook"]}}`,
+	"history_preload": `"off"`,
 }
 
 func runBodyWith(agent, field, value string) string {

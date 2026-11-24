@@ -131,6 +131,41 @@ func (a *runAdmission) buildPrompt() {
 			}},
 		}}, a.segments...)
 	}
+	a.preloadHistory()
+}
+
+// preloadHistory adds the user's recent chats with this agent to the first run
+// of a NEW session of an agent with history_preload (RFC HE F3). It goes into
+// what the model receives, not into the persisted user input: like the run
+// metadata it is the runtime's framing of the turn, and History and later
+// recaps must not read another chat's text back as this one's.
+func (a *runAdmission) preloadHistory() {
+	hp := historyPreloadFor(a.agentDef, a.in, a.isContinuation, a.effectiveUserID)
+	if hp == nil {
+		return
+	}
+	seg, ok := a.s.recentHistorySegment(a.ctx, *hp, a.effectiveTenantID, a.effectiveUserID,
+		a.effectiveAgentName, a.ownSessionID(), time.Now())
+	if !ok {
+		return
+	}
+	a.segments = withPreloadSegment(a.segments, seg)
+}
+
+// ownSessionID is the new run's session when it already exists before its run
+// row starts: one that queued for its slot, or one restarted from the queue.
+// A started draft's session holds a configured run, which ListSessions leaves
+// out by itself. "" when the session is created only by createRows.
+func (a *runAdmission) ownSessionID() string {
+	if a.queued != nil {
+		return a.queued.sessionID
+	}
+	if a.restarting && a.s.store != nil {
+		if r, err := a.s.store.GetRun(a.ctx, a.in.QueuedRunID); err == nil {
+			return r.SessionID
+		}
+	}
+	return ""
 }
 
 // mergeRunConfig merges the run's configuration once, for the loop and the
@@ -164,6 +199,7 @@ func (a *runAdmission) mergeRunConfig() {
 		ReviewTTLSeconds:  positiveOrZero(a.in.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: a.in.Hooks, ToolHooks: a.in.ToolHooks}),
 		Interruption:      a.in.Interruption,          // the run's own block, so a resume re-narrows from it
+		HistoryPreload:    a.in.HistoryPreload,        // the run's own "off", for the effective-config report
 		AgentVersion:      agentVersionOf(a.agentDef), // the version it resumes on
 		TeamScope:         teamScopeRecordOf(a.ctx),   // a continued team session's; nil for a fresh run
 		IterationLimit:    s.startIterationLimit(a.agentDef, a.provider, a.in.Interactive),
@@ -284,6 +320,11 @@ func (a *runAdmission) wireRun() error {
 		// volume tree purge at completion. RootRunID is its own id.
 		IsTopLevel: true,
 		RootRunID:  a.runID,
+		// RFC HE F3: the chat is recapped when this run ends, so the next new
+		// chat has a summary to list. A run that switched its own preload off
+		// is still recapped: the switch is about what THIS chat starts with.
+		SessionID:         a.sessionID,
+		RecapSessionOnEnd: a.agentDef.HistoryPreload != nil,
 	}
 	// Stash the run span on the meta so finishRun* can close it with
 	// final attrs (usage totals + stop_reason + error status).

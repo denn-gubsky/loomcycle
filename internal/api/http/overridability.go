@@ -89,6 +89,11 @@ var agentDefOverridability = map[string]overridability{
 	// may only shrink. So a run may switch it off, drop kinds and lower
 	// max_pending — interruptionPolicyForRun — and nothing else.
 	"Interruption": runMayNarrow,
+	// The history preload (RFC HE F3) reads the run's own user's earlier
+	// chats into a new session. A run may switch it OFF (`history_preload:
+	// "off"`), never on or wider: turning it on for an agent whose operator
+	// did not would read chats into a prompt nobody asked to receive them.
+	"HistoryPreload": runMayNarrow,
 
 	// --- narrowing-only: a run may give up reach it was granted, never take
 	// more. Restoring these on resume makes a resumed run no WIDER than the

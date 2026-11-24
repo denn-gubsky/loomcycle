@@ -969,6 +969,31 @@ Reading the outcome: the `context_compaction` transcript event gains a `memory_b
 
 Once consolidated, a fact records where it came from. `Memory op=get` with `include_provenance: true` returns `origin: compaction` plus the originating run/session and an `origin_available` flag — `false` once retention has deleted that chat. The fact itself is never pruned for having a dead origin; see [§ retention](#9b-multi-tenant-authentication-rfc-l) for the chat clocks.
 
+### `history_preload:` — a new chat starts with recent history
+
+An agent people talk to again and again (a bridge's chat agent, the `/run` terminal) can start each **new** chat knowing the same person's latest chats with it:
+
+```yaml
+agents:
+  assistant:
+    history_preload:
+      sessions: 3            # this user's latest chats with this agent, newest first (default 3, at most 20)
+      within: 14d            # how recent a chat's last activity must be (default 14d)
+      include: summary       # summary (default) | summary+tail
+      tail_turns: 4          # summary+tail: the newest chat's last turns (default 4, at most 20)
+      max_tokens: 1500       # cap on the whole block (default 1500, at most 8000)
+```
+
+`history_preload: {}` turns it on with every default; leaving the block out turns it off. Out-of-range values are refused at load (and at AgentDef create/fork) with the field named.
+
+- **When.** Only the first run of a **new** top-level session. A continuation (`session_id` on the run) is never preloaded, and neither is a sub-agent.
+- **What.** One `untrusted-block` of kind `recent_history`, placed after the system prompt, listing each chat's `session_id`, title, last activity and stored summary (a chat with no summary is listed by title). With `summary+tail` it adds the newest chat's last `tail_turns` turns — the user's and the agent's own words, never an untrusted block that chat received. The block is cut at `max_tokens` (four characters a token): later chats are dropped whole, then the oldest tail turns. It is what the model is sent, not part of the stored transcript, so History and later recaps do not read it back as this chat's text.
+- **Whose.** The run's own user, resolved from the run identity, and the agent **by name** (its forks and versions count as one), in the run's tenant. Never another user's or another agent's chats; archived chats are left out. A run with no `user_id` gets nothing.
+- **Summaries.** When a top-level run of the chat ends — completed, failed, cancelled or ended idle — the chat is recapped in the background with History's recap (the agent's `compaction.model` when set) and stored as its summary. The run's completion never waits for it; at most four recaps run at once per replica, one per chat, each bounded to three minutes, and a failure is logged and leaves the chat listed by title. A chat whose summary is already newer than its last run, and a no-trace chat, are not recapped.
+- **Per run.** `POST /v1/runs` (and the MCP `spawn_run` / `spawn_runs` tools) take `"history_preload": "off"` to start one new chat without it (the bridges' `/new clean`). A run may only switch it off, never on; a token whose overrides are locked cannot send it.
+
+The block is content-identifying: a fork that sets it mints a distinct hash.
+
 ### `context:` — reasoning-recap retention (a lighter-weight alternative to compaction)
 
 Compaction summarizes the *whole* span it drops — including tool results — into one prose blob at a threshold. On a **long-horizon** run against a **weak or local** model that is exactly where quality suffers: a bloated append-only history poisons the model, and a lossy prose summary throws away the structured facts (which value, which file, which result) the next step needs. The `context:` block offers a different retention strategy tuned for that regime — it keeps the recent structured turns *verbatim* and distils only the older, verbose reasoning into a running note:
@@ -1945,6 +1970,7 @@ Rules worth knowing:
 | How much it may spend | `max_tokens`, `max_iterations`, `unbounded_iterations`, `max_concurrent_children`, `run_timeout_seconds` |
 | How it is asked | `sampling`, `compaction`, `context`, `max_context_tokens`, `tool_choice`, `output_format`, `web_search_filter`, `retry_attempts`, `memory_inject_max_tokens`, `memory_index_max_bytes`, `inject_tool_guide` |
 | How the run is driven | `interactive`, `review`, `review_ttl_seconds`, `interruption`, `hooks`, `tool_hooks` |
+| What a new chat starts with | `history_preload` |
 
 Rules worth knowing:
 

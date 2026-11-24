@@ -71,6 +71,16 @@ func ValidAdmission(v string) bool {
 	return v == "" || v == AdmissionWait || v == AdmissionReject
 }
 
+// HistoryPreloadOff is the one value of RunInput.HistoryPreload (wire field
+// `history_preload`): this run starts without the agent's history preload.
+const HistoryPreloadOff = "off"
+
+// ValidHistoryPreload reports whether v is an accepted `history_preload`
+// value ("" keeps the agent's).
+func ValidHistoryPreload(v string) bool {
+	return v == "" || v == HistoryPreloadOff
+}
+
 // Sentinel errors exported for wire-layer error-code mapping.
 var (
 	// ErrUnknownAgent — agent name not in the operator yaml.
@@ -359,6 +369,13 @@ type RunInput struct {
 	// blocks and waits for a person — so the exposure is liveness, which
 	// RunTimeoutSeconds and the interruption's own timeout bound.
 	Interruption *config.AgentInterruptionACL
+
+	// HistoryPreload is the run's answer to the agent's history_preload block
+	// (RFC HE F3): "" keeps it, HistoryPreloadOff switches it off for this
+	// run. Narrow-only — no value turns it on — but a lockable override like
+	// Interruption: a token or agent that allows no overrides runs the
+	// definition as written. Read only at a new session's first run.
+	HistoryPreload string
 
 	// Sampling is an optional per-RUN LLM sampling-param override (temperature,
 	// top_p, …). Merged PER FIELD over the agent's own Sampling (per-run field

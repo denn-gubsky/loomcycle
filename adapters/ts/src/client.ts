@@ -401,6 +401,7 @@ function runBody(opts: RunOptions): Record<string, unknown> {
     body.allowed_hosts = opts.allowedHosts;
   }
   if (opts.webSearchFilter !== undefined) body.web_search_filter = opts.webSearchFilter;
+  if (opts.historyPreload !== undefined) body.history_preload = opts.historyPreload;
   if (opts.sessionId !== undefined) body.session_id = opts.sessionId;
   if (opts.tenantId !== undefined) body.tenant_id = opts.tenantId;
   if (opts.userId !== undefined) body.user_id = opts.userId;

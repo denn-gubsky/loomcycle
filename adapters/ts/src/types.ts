@@ -1246,6 +1246,10 @@ export interface RunOptions extends RunOverrideOptions {
    *    downstream.
    *  Ignored when `allowedHosts` is unset. */
   webSearchFilter?: "drop" | "keep";
+  /** `"off"` starts this new session without the agent's `history_preload`
+   *  (RFC HE F3). The only value: a run may switch the preload off, never on.
+   *  Ignored on a continuation, which is never preloaded. */
+  historyPreload?: "off";
   /** Continue an existing session. When set, the run is a continuation,
    *  exactly as {@link LoomcycleClient.continueSession} starts one: the
    *  session's transcript is replayed to the model, and the run uses the
@@ -1847,6 +1851,8 @@ export interface RunSpec {
   /** Whether the run is held for review when it finishes (current, after any retune). */
   review?: boolean;
   interruption?: Record<string, unknown>;
+  /** `"off"` when the run started without its agent's history preload. */
+  history_preload?: "off";
   /** The caller's host narrowing. */
   hosts?: Record<string, unknown>;
   /** The caller's `tools` narrowing, kept so a resume narrows by it again.
@@ -6561,6 +6567,24 @@ export interface AgentTelemetry {
   content_capture?: "never";
 }
 
+/** An agent's `history_preload` block (RFC HE F3). Present — even `{}` —
+ *  means the first run of a NEW session starts with the same user's latest
+ *  chats with this agent, as one fenced `recent_history` block, and each chat
+ *  is recapped when a run of it ends. A run may switch it off with
+ *  {@link RunOptions.historyPreload}. */
+export interface AgentHistoryPreload {
+  /** Earlier chats to list, newest first. Default 3, at most 20. */
+  sessions?: number;
+  /** How recent a chat's last activity must be, e.g. `14d`. Default 14d. */
+  within?: string;
+  /** `summary+tail` also adds the newest chat's last turns. Default `summary`. */
+  include?: "summary" | "summary+tail";
+  /** Turns of the newest chat `summary+tail` adds. Default 4, at most 20. */
+  tail_turns?: number;
+  /** Cap on the whole block, in estimated tokens. Default 1500, at most 8000. */
+  max_tokens?: number;
+}
+
 /** The `context` block of an {@link AgentDefOverlay}: {@link ContextOptions}
  *  in its wire spelling — see there for what each field does. A fork merges it
  *  per field, and the spawn tree inherits it. */
@@ -6805,6 +6829,8 @@ export interface AgentDefOverlay {
   speech?: AgentSpeech;
   /** Telemetry settings: opt the agent out of content capture. */
   telemetry?: AgentTelemetry;
+  /** Start each new chat with the user's recent chats, merged per field. */
+  history_preload?: AgentHistoryPreload;
   /** How history is distilled, merged per field. */
   context?: AgentContext;
   /** Volumes the file and exec tools may resolve paths against. None declared
