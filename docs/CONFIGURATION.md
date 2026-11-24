@@ -2711,7 +2711,7 @@ volumes:
 
 Unbound agents then bind to it. (There is no auto-synthesis from the old env vars — a single root can't reproduce three distinct ones, and a `READ_ROOT`-only "writes disabled" deploy must not silently gain write access — so the operator declares the replacement volume once, explicitly.)
 
-**Introspection.** `Context op=self` reports the bound volumes (`volumes.bindings`: name / path / mode / default), so an agent knows precisely which roots it may touch and which verb each allows. An agent with no volume bound reports `filesystem: "none — no volume bound"`.
+**Introspection.** `Context op=self` reports the bound volumes (`volumes.bindings`: name / mode / default — never the host directory), so an agent knows precisely which volumes it may touch and which verb each allows. An agent with no volume bound reports `filesystem: "none — no volume bound"`.
 
 ### 9d.1 Dynamic volumes — the `VolumeDef` substrate (RFC AH Phase 2a)
 

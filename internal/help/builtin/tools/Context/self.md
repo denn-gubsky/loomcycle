@@ -23,9 +23,11 @@ Always present:
 - `provider`, `model` — the model you are running on right now.
 - `operator_authored` — `true` when a person wrote your definition, `false`
   when an agent wrote it at runtime.
-- `volumes` (with `bindings: [{name, path, mode, default}]` and a
+- `volumes` (with `bindings: [{name, mode, default}]` and a
   `path_convention`) — or `filesystem: "none ..."` when no volume is bound, in
-  which case Read/Write/Edit/Glob/Grep/Bash will refuse.
+  which case Read/Write/Edit/Glob/Grep/Bash will refuse. A volume is named,
+  never located: pass paths relative to it (`src/main.go`) and pick it with
+  the `volume` argument.
 
 Present when they apply:
 

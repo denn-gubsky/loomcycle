@@ -10,8 +10,8 @@ import (
 
 // op=self lists the run's ephemeral volumes from the record as well as from
 // this process's set: one a run of the tree made on another replica is
-// listed, and one whose files are not on this server says so instead of
-// giving a path.
+// listed, and one whose files are not on this server says so. No entry
+// gives the volume's host directory.
 func TestContextSelf_ListsEphemeralVolumesTheRecordHas(t *testing.T) {
 	set := tools.NewEphemeralVolumeSet()
 	set.Add("local", tools.EphemeralVolumeRef{Root: "/vol/local"})
@@ -42,7 +42,7 @@ func TestContextSelf_ListsEphemeralVolumesTheRecordHas(t *testing.T) {
 	if len(out.Eph.Volumes) != 3 {
 		t.Fatalf("listed %v, want local, shared and remote once each", out.Eph.Volumes)
 	}
-	if v := got["shared"]; v["path"] != "/vol/shared" || v["mode"] != "ro" {
+	if v := got["shared"]; v["path"] != nil || v["mode"] != "ro" {
 		t.Errorf("shared = %v", v)
 	}
 	if v := got["remote"]; v["path"] != nil || v["note"] == nil {
