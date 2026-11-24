@@ -200,6 +200,54 @@ func TestCalcHelp_MostUsedSignaturesMatchTheTable(t *testing.T) {
 	}
 }
 
+// calcIdentToken is a bare lower-case name inside a backticked span.
+var calcIdentToken = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// calcCallArguments are the Calc call's own arguments, which the Sections
+// list names beside functions (`digits`, `seed`, `from` and `to`).
+var calcCallArguments = map[string]bool{"expr": true, "vars": true, "digits": true, "seed": true, "format": true, "from": true, "to": true}
+
+// The second help measurement found models read almost only the Calc tool
+// article and guess the rest from other libraries, so the article's
+// Sections list names each section's main functions. Every bare name in a
+// backticked span there must be a Calc function (or a call argument), and
+// every `name(…)` the article shows anywhere must call a real function: a
+// renamed or misspelled function would teach the wrong name.
+func TestCalcHelp_ToolArticleNamesOnlyRealFunctions(t *testing.T) {
+	fns := map[string]bool{}
+	for _, f := range calc.Functions() {
+		fns[f.Name] = true
+	}
+	art, _ := bundledHelp(t).ToolArticle("Calc")
+	_, block, ok := strings.Cut(art.Content, "## Sections\n")
+	if !ok {
+		t.Fatal("the Calc article has no \"Sections\" block")
+	}
+	if i := strings.Index(block, "\n## "); i >= 0 {
+		block = block[:i]
+	}
+	n := 0
+	for _, m := range regexp.MustCompile("`([^`]+)`").FindAllStringSubmatch(block, -1) {
+		for _, tok := range strings.Fields(m[1]) {
+			if !calcIdentToken.MatchString(tok) {
+				continue
+			}
+			n++
+			if !fns[tok] && !calcCallArguments[tok] {
+				t.Errorf("Sections names %q, which is not a Calc function", tok)
+			}
+		}
+	}
+	if n < 50 {
+		t.Errorf("only %d names found in the Sections list; want the per-section name map", n)
+	}
+	for _, m := range calcSignatureSpan.FindAllStringSubmatch(art.Content, -1) {
+		if !fns[m[1]] {
+			t.Errorf("the Calc article shows %s, but %s is not a Calc function", m[0], m[1])
+		}
+	}
+}
+
 // runCalcExample runs one call through the tool and returns what it gave, in
 // the form an expected result is written: the text, or "error <code>".
 func runCalcExample(t *testing.T, input json.RawMessage) string {

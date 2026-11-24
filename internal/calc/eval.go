@@ -137,7 +137,30 @@ var aliases = map[string]string{
 	"pearson": "correlation", "seq": "range",
 	// Spreadsheet date functions under their Excel names.
 	"networkdays": "workdays", "workday": "addworkdays", "edate": "addmonths",
+	// Names from R, SciPy, Excel and NumPy in the second help measurement.
+	"normal_cdf": "normcdf", "normalcdf": "normcdf", "norm_cdf": "normcdf", "pnorm": "normcdf",
+	"normal_inv": "norminv", "norm_ppf": "norminv", "qnorm": "norminv",
+	"normal_pdf": "normpdf", "dnorm": "normpdf",
+	"poisson_cdf": "poisscdf", "ppois": "poisscdf", "poisson_pdf": "poisspdf", "dpois": "poisspdf",
+	"binom_cdf": "binomcdf", "pbinom": "binomcdf",
+	"invT": "tinv", "t_inv": "tinv", "qt": "tinv", "tppf": "tinv",
+	"invchisq": "chi2inv", "chi2_inv": "chi2inv", "qchisq": "chi2inv",
+	"inverse": "inv", "tr": "trace", "size_of": "len", "factors": "factor",
+	"days_between": "datediff", "daysbetween": "datediff",
 }
+
+// aliasHints are names from other languages whose Calc form is not a bare
+// function name, so the hint is written out in full.
+var aliasHints = map[string]string{
+	"pvariance": `use variance(x, "population")`,
+	"pstdev":    `use stdev(x, "population")`,
+	"list":      "a list is written in brackets: [1, 2, 3]",
+}
+
+// imaginaryHint answers a bare i or j: Calc has no constant for the
+// imaginary unit (i is too common a loop name to reserve), and Python
+// writes it 1j.
+const imaginaryHint = "for the imaginary unit write 1i (or 2i, 0.5i); `i` is an ordinary name"
 
 // eval evaluates n and refuses a list result over the size bound. Every
 // value reaches a later walk through here: arguments, function bodies,
@@ -262,6 +285,9 @@ func (e *evaluator) lookup(name string, pos int, sc *scope) (val, *Error) {
 		return &fnVal{name: name, builtin: b}, nil
 	}
 	err := errf(codeUnknownName, pos, "unknown name %s", name)
+	if name == "i" || name == "j" {
+		return nil, err.withHint(imaginaryHint)
+	}
 	if s := suggest(name, e.knownNames(sc)); len(s) > 0 {
 		err.Hint = "did you mean " + strings.Join(s, ", ") + "?"
 	} else {
@@ -397,6 +423,9 @@ func (e *evaluator) unknownFunc(name string, pos int, sc *scope) *Error {
 	err := errf(codeUnknownFunc, pos, "unknown function %s", name)
 	if a, ok := aliases[name]; ok {
 		return err.withHint("use " + a)
+	}
+	if h, ok := aliasHints[name]; ok {
+		return err.withHint(h)
 	}
 	var names []string
 	for k := range e.funcs {

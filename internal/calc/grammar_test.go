@@ -1,6 +1,7 @@
 package calc
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -225,6 +226,46 @@ func TestGrammar_CommonSlipsGetTeachingHints(t *testing.T) {
 		{"networkdays(1, 2)", codeUnknownFunc, "use workdays"},
 		{"workday(1, 2)", codeUnknownFunc, "use addworkdays"},
 		{"edate(1, 2)", codeUnknownFunc, "use addmonths"},
+		// Names from R, SciPy, Excel and NumPy seen in the second measurement.
+		{"normal_cdf(1)", codeUnknownFunc, "use normcdf"},
+		{"normalcdf(1)", codeUnknownFunc, "use normcdf"},
+		{"norm_cdf(1)", codeUnknownFunc, "use normcdf"},
+		{"pnorm(1)", codeUnknownFunc, "use normcdf"},
+		{"normal_inv(0.9)", codeUnknownFunc, "use norminv"},
+		{"norm_ppf(0.9)", codeUnknownFunc, "use norminv"},
+		{"qnorm(0.9)", codeUnknownFunc, "use norminv"},
+		{"normal_pdf(1)", codeUnknownFunc, "use normpdf"},
+		{"dnorm(1)", codeUnknownFunc, "use normpdf"},
+		{"poisson_cdf(2, 3)", codeUnknownFunc, "use poisscdf"},
+		{"ppois(2, 3)", codeUnknownFunc, "use poisscdf"},
+		{"poisson_pdf(2, 3)", codeUnknownFunc, "use poisspdf"},
+		{"dpois(2, 3)", codeUnknownFunc, "use poisspdf"},
+		{"binom_cdf(2, 5, 0.5)", codeUnknownFunc, "use binomcdf"},
+		{"pbinom(2, 5, 0.5)", codeUnknownFunc, "use binomcdf"},
+		{"invT(0.9, 5)", codeUnknownFunc, "use tinv"},
+		{"t_inv(0.9, 5)", codeUnknownFunc, "use tinv"},
+		{"qt(0.9, 5)", codeUnknownFunc, "use tinv"},
+		{"tppf(0.9, 5)", codeUnknownFunc, "use tinv"},
+		{"invchisq(0.9, 5)", codeUnknownFunc, "use chi2inv"},
+		{"chi2_inv(0.9, 5)", codeUnknownFunc, "use chi2inv"},
+		{"qchisq(0.9, 5)", codeUnknownFunc, "use chi2inv"},
+		{"inverse([[1, 2], [3, 4]])", codeUnknownFunc, "use inv"},
+		{"tr([[1, 2], [3, 4]])", codeUnknownFunc, "use trace"},
+		{"rank([[1, 2], [3, 4]])", codeType, "matrank(A)"},
+		{"length([1, 2])", codeUnknownFunc, "use len"},
+		{"size_of([1, 2])", codeUnknownFunc, "use len"},
+		{"factors(12)", codeUnknownFunc, "use factor"},
+		{"days_between(1, 2)", codeUnknownFunc, "use datediff"},
+		{"daysbetween(1, 2)", codeUnknownFunc, "use datediff"},
+		{"pvariance([1, 2, 3])", codeUnknownFunc, `use variance(x, "population")`},
+		{"pstdev([1, 2, 3])", codeUnknownFunc, `use stdev(x, "population")`},
+		{"list(1, 2, 3)", codeUnknownFunc, "[1, 2, 3]"},
+		// A bare i or j is an ordinary name; the imaginary unit is 1i.
+		{"i", codeUnknownName, "write 1i"},
+		{"2 * i + 1", codeUnknownName, "write 1i"},
+		{"j", codeUnknownName, "write 1i"},
+		{"convert(100, \"F\", \"C\")", codeUnknownUnit, "degF"},
+		{"convert(100, \"degF\", \"C\")", codeUnknownUnit, "degC"},
 		{"sqrt(1, 2)", codeArity, "sqrt(x)"},
 		{"1 < 2 < 3", codeSyntax, "and"},
 		{"if(1, 2, 3)", codeType, "compare"},
@@ -252,6 +293,22 @@ func TestGrammar_AliasHintsNameARealFunction(t *testing.T) {
 		}
 		if fns[from] {
 			t.Errorf("alias %s is itself a function", from)
+		}
+	}
+	// A hint written as a call form must call a function that exists, and
+	// its name must not be a function or a plain alias.
+	callIn := regexp.MustCompile(`([a-z][a-z0-9_]*)\(`)
+	for from, hint := range aliasHints {
+		if fns[from] {
+			t.Errorf("alias %s is itself a function", from)
+		}
+		if _, dup := aliases[from]; dup {
+			t.Errorf("%s is in both aliases and aliasHints", from)
+		}
+		for _, m := range callIn.FindAllStringSubmatch(hint, -1) {
+			if !fns[m[1]] {
+				t.Errorf("alias %s: hint %q calls %s, which is not a function", from, hint, m[1])
+			}
 		}
 	}
 }

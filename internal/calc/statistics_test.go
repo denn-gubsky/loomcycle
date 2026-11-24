@@ -2,6 +2,7 @@ package calc
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -113,6 +114,36 @@ func TestStatistics_QuantileInterpolatesLinearly(t *testing.T) {
 	mustFail(t, "quantile([1, 2], 1.5)", codeDomain)
 	mustFail(t, "quantile([1, 2], -0.1)", codeDomain)
 	mustFail(t, "percentile([1, 2], 101)", codeDomain)
+}
+
+// percentile(v, 0.9) is the 0.9th percentile, not the 90th: in the Calc
+// help measurement models passed a 0–1 level to percentile and got a quiet
+// wrong answer. A level strictly between 0 and 1 is refused with the two
+// calls that do mean it; 0 and 1 stay valid (the minimum, and the 1st
+// percentile, a figure people do ask for). quantile above 1 names the
+// reverse slip.
+func TestStatistics_PercentileRefusesAZeroToOneLevel(t *testing.T) {
+	for _, expr := range []string{
+		"percentile([1, 2, 3], 0.9)", "percentile([1, 2, 3], 0.5)",
+		"percentile([1, 2, 3], 0.01)", "percentile([1, 2, 3], 1/3)",
+	} {
+		e := mustFail(t, expr, codeDomain)
+		for _, want := range []string{"percentile(v, 90)", "quantile(v, 0.9)"} {
+			if !strings.Contains(e.Hint, want) {
+				t.Errorf("%s: hint %q does not contain %q", expr, e.Hint, want)
+			}
+		}
+	}
+	e := mustFail(t, "quantile([1, 2, 3], 90)", codeDomain)
+	if !strings.Contains(e.Hint, "quantile(v, 0.9)") || !strings.Contains(e.Hint, "percentile(v, 90)") {
+		t.Errorf("quantile 90: hint %q does not name both calls", e.Hint)
+	}
+	checkExact(t, true, []textCase{
+		{"percentile([10, 20, 30, 40, 50], 0)", "10"},
+		{"percentile([10, 20, 30, 40, 50], 1)", "10.4"},
+		{"percentile([10, 20, 30, 40, 50], 1.5)", "10.6"},
+		{"percentile([10, 20, 30, 40, 50], 100)", "50"},
+	})
 }
 
 func TestStatistics_RefusesEmptyMismatchedAndDegenerateInput(t *testing.T) {

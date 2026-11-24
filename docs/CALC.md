@@ -105,13 +105,15 @@ and the random functions give a 64-bit float, about 16 significant digits, and
 everything computed from one stays approximate: `sqrt(2)^2 == 2` is `false`.
 
 The newer sections follow the same rule. Building and rearranging a matrix,
-`dot`, `cross`, `kron` and `trace` keep exact numbers exact, but the matrix
-product, the solvers and the decompositions work in floats, even on whole
-numbers. The distributions and the numeric calculus always give floats (the
-binomial probabilities are computed exactly on an exact `p` and rounded once,
-so they are the nearest float to the true value). A complex number is two
-floats and is never exact. Table cells holding numbers stay exact, so a
-column of prices sums to the cent.
+`dot`, `cross`, `kron`, `trace`, the matrix product `*` and the power `A^n`
+(`n` ≥ 1) keep exact numbers exact; the product and the power do so up to 50
+rows or columns a side and while the result stays within the exact-number
+cap, past which they are floats. The solvers and the decompositions work in
+floats, even on whole numbers. The distributions and the numeric calculus
+always give floats (the binomial probabilities are computed exactly on an
+exact `p` and rounded once, so they are the nearest float to the true
+value). A complex number is two floats and is never exact. Table cells
+holding numbers stay exact, so a column of prices sums to the cent.
 
 The `exact` field says which a result is. For money, keep it exact and round
 once at the end with `round(x, 2)`.
@@ -180,8 +182,11 @@ every function.
   `dot(a, b)`, or `.*` element by element. `A'` is the transpose. `+`, `-`
   and the dotted operators work element by element on two matrices of the
   same shape, and a number applies to every element; a matrix plus a vector
-  is refused (`shape`) rather than guessed at. There is no matrix power
-  `A^n`.
+  is refused (`shape`) rather than guessed at.
+- **Power.** `A^n` is the matrix power of a square matrix and an integer
+  `n`: `A^0` is the identity and `A^-2` is `inv(A)^2` (refused for a
+  singular `A`). There is no fractional matrix power; `.^` raises each
+  element. `[[1, 1], [1, 0]]^10` gives `[[89, 55], [55, 34]]`.
 - **Indexing.** `A[i, j]` is an element, `A[i, :]` a row, `A[:, j]` a column,
   from 1; a list of indexes picks several, `A[[1, 3], :]`.
 - **Building and properties.** `zeros`, `ones`, `identity`, `diag`,
@@ -201,14 +206,14 @@ every function.
 
 **Size and the shared pool.** A matrix a function reads or builds holds at
 most 250,000 elements (500 × 500 for a square one), and the product, the
-solvers and the decompositions are refused before any work when they would
-cost more than one 500 × 500 matrix. The check comes first because the
-linear-algebra routines cannot be interrupted once they start: the size cap
-is what bounds their time. A matrix operation over 10,000 elements, or over
-1,000,000 multiply-adds, also takes a slot of a pool shared by every caller,
-one slot per processor core. Waiting for a slot counts against the call's
-2 seconds; a call that runs out of time there is refused `time_limit`, and
-resending it is the remedy.
+power, the solvers and the decompositions are refused before any work when
+they would cost more than one 500 × 500 matrix (`A^n` counts each product it
+takes). The check comes first because the linear-algebra routines cannot be
+interrupted once they start: the size cap is what bounds their time. A
+matrix operation over 10,000 elements, or over 1,000,000 multiply-adds, also
+takes a slot of a pool shared by every caller, one slot per processor core.
+Waiting for a slot counts against the call's 2 seconds; a call that runs out
+of time there is refused `time_limit`, and resending it is the remedy.
 
 ## Distributions and numeric calculus
 
@@ -244,7 +249,8 @@ Split or narrow the interval and call again.
 A complex number is written with an `i` suffix on a number — `2i`, `1.5i`,
 `3e2i`, so `3 + 2i` — or built with `complex(a, b)`. The `1` in `1i` is
 needed: `i` on its own is an ordinary name, so `i = 4; 2*i` is still `8` and
-no expression written before complex numbers changed meaning.
+no expression written before complex numbers changed meaning. An unassigned
+`i` or `j` is refused with a hint to write `1i`.
 
 - A complex value is two 64-bit floats: `type` is `complex`, it is never
   exact, `text` writes it `3+2i` (the imaginary part always shown, `-1+0i`)
@@ -257,12 +263,16 @@ no expression written before complex numbers changed meaning.
   functions (principal values), `abs` (the modulus) and rounding (each part)
   take complex arguments; `re`, `im`, `conj` and `arg` take one apart.
   `polyroots(p)` gives the roots of a polynomial, highest power first:
-  `round(polyroots([1, 0, 1]), 12)` gives `[-1i, 1i]`.
+  `round(polyroots([1, 0, 1]), 12)` gives `[-1i, 1i]`; `polyval(p, x)` takes
+  complex coefficients or a complex `x`.
 - Complex numbers have no order: `<`, `>`, `min`, `max`, `median`, the
   statistics functions, `%` and a plain `sort` refuse one (`type`); compare
-  `abs(z)` or `re(z)`, or sort with a key, `sort(v, z -> abs(z))`. The matrix
-  product and the matrix functions work in real numbers and refuse a complex
-  element, but `eig` of a real matrix returns complex eigenvalues.
+  `abs(z)` or `re(z)`, or sort with a key, `sort(v, z -> abs(z))`.
+- The matrix product `*`, the power `A^n` (`n` ≥ 0) and `ctranspose(A)`, the
+  conjugate transpose, take complex elements. The other matrix functions
+  (`inv`, `solve`, `det`, the decompositions) and `A^-n` work in real numbers
+  and refuse a complex element, but `eig` of a real matrix returns complex
+  eigenvalues.
 
 `Calc/complex` has every function.
 
@@ -497,7 +507,10 @@ The help is in the runtime's help corpus, read with `Context op=help`. This
 guide names the functions only by group; the help is the full reference.
 
 - `Calc` — the call, the result, the language in brief, exact versus
-  approximate, and the list of sections.
+  approximate, and the list of sections with each one's main functions. A
+  measurement of how models use the help found they read almost only this
+  article, so it names the functions they need most and the names other
+  tools use for them.
 - `Calc/<section>` — one article per section: `Calc/elementary`,
   `Calc/integers`, `Calc/sequences`, `Calc/units`, `Calc/statistics`,
   `Calc/distributions`, `Calc/calculus`, `Calc/matrices`, `Calc/complex`,
@@ -513,4 +526,6 @@ guide names the functions only by group; the help is the full reference.
 
 A test runs every example in these articles through the tool and compares the
 result to the digit, so the help cannot drift from what Calc does. A refused
-call's error also names the help topic to read next.
+call's error also names the help topic to read next, and a name another tool
+uses (`pnorm`, `qnorm`, `pvariance`, `days_between`) is refused with a hint
+naming the Calc function.
