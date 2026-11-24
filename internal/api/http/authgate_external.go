@@ -244,13 +244,18 @@ func (s *Server) handleAuthRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 // endGateIdentity is what an external gate's revoke or sync does to a user it
-// no longer vouches for (RFC HD D1). A user who signs in some other way too
-// (another gate's identity, a password, a passkey) loses only this gate: the
-// gate speaks for its own identity, not for the person's other sign-ins, so
-// uninstalling a bot never locks its users out of the Web UI. A user this
-// gate is the only way in for is removed on the gate's removal policy.
+// no longer vouches for. By default a revoke says the person is gone, and the
+// user is removed on the gate's removal policy. A gate set on_revoke: unlink
+// (RFC HD) says only that the gate is gone — a bot uninstalled — so a user
+// another gate's identity still vouches for loses only this gate and stays
+// active. A password or a passkey does not count: one could be enrolled from
+// a session this very gate signed in, and would outlive the gate's word that
+// the person left.
 func (s *Server) endGateIdentity(ctx context.Context, g config.AuthGate, tenant, subject, reason string) error {
-	other, err := s.holdsOtherSignIn(ctx, tenant, subject, g.Name)
+	if g.External == nil || !g.External.UnlinkOnRevoke {
+		return s.removeThroughGate(ctx, g, tenant, subject, reason)
+	}
+	other, err := s.holdsOtherGateIdentity(ctx, tenant, subject, g.Name)
 	if err != nil {
 		return err
 	}
@@ -260,25 +265,16 @@ func (s *Server) endGateIdentity(ctx context.Context, g config.AuthGate, tenant,
 	return s.unlinkThroughGate(ctx, g, tenant, subject, reason)
 }
 
-// holdsOtherSignIn reports whether (tenant, subject) holds a sign-in other
-// than its identity at gate (signInKinds, that one identity left out).
-func (s *Server) holdsOtherSignIn(ctx context.Context, tenant, subject, gate string) (bool, error) {
-	for _, k := range signInKinds() {
-		if k.family == "Identity" {
-			ids, err := s.store.UserIdentityListSubject(ctx, tenant, subject)
-			if err != nil {
-				return false, err
-			}
-			for _, id := range ids {
-				if id.Gate != gate {
-					return true, nil
-				}
-			}
-			continue
-		}
-		held, err := k.holds(ctx, s.store, tenant, subject)
-		if err != nil || held {
-			return held, err
+// holdsOtherGateIdentity reports whether (tenant, subject) holds an identity
+// at a gate other than gate.
+func (s *Server) holdsOtherGateIdentity(ctx context.Context, tenant, subject, gate string) (bool, error) {
+	ids, err := s.store.UserIdentityListSubject(ctx, tenant, subject)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range ids {
+		if id.Gate != gate {
+			return true, nil
 		}
 	}
 	return false, nil

@@ -77,3 +77,34 @@ func TestResolveAuth_SameSubjectAsRefusesAPairingThatCouldJoinTwoPeople(t *testi
 		})
 	}
 }
+
+// RFC HD D1 (revised after review): unlinking on a revoke is the operator's
+// opt-in per external gate, never the default.
+func TestResolveAuth_OnRevokeUnlinkIsAnExternalGatesOptIn(t *testing.T) {
+	c := sameSubjectCfg(t, nil)
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range c.ResolvedAuth.Gates {
+		if g.Name == "teams" && g.External.UnlinkOnRevoke {
+			t.Fatal("unlink on revoke is on by default")
+		}
+	}
+	c = sameSubjectCfg(t, func(_, teams *AuthGateConfig) { teams.External.OnRevoke = "unlink" })
+	if err := resolveAuth(c); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range c.ResolvedAuth.Gates {
+		if g.Name == "teams" && !g.External.UnlinkOnRevoke {
+			t.Fatal("on_revoke: unlink did not load")
+		}
+	}
+	if err := resolveAuth(sameSubjectCfg(t, func(_, teams *AuthGateConfig) { teams.External.OnRevoke = "forget" })); err == nil ||
+		!strings.Contains(err.Error(), "on_revoke") {
+		t.Fatalf("a bad on_revoke: %v", err)
+	}
+	if err := resolveAuth(sameSubjectCfg(t, func(entra, _ *AuthGateConfig) { entra.External.OnRevoke = "unlink" })); err == nil ||
+		!strings.Contains(err.Error(), "on_revoke applies only to kind: external") {
+		t.Fatalf("on_revoke on an oidc gate: %v", err)
+	}
+}

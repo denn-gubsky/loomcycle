@@ -26,7 +26,7 @@ func sameSubjectGates(t *testing.T, teamsMap func(*config.AuthIdentityMap)) (ent
 	if teamsMap != nil {
 		teamsMap(&m)
 	}
-	teams = newExtGate(t, "teams", m, config.AuthExternalGate{})
+	teams = newExtGate(t, "teams", m, config.AuthExternalGate{UnlinkOnRevoke: true})
 	return entra, teams, extFixture(t, entra, teams)
 }
 
@@ -164,5 +164,43 @@ func TestExternalSync_ACompleteSyncUnlinksAUserWithAnotherSignIn(t *testing.T) {
 	}
 	if _, err := f.st.UserIdentityGet(ctx, "teams", "", "a"); err != nil {
 		t.Fatalf("a's teams identity went: %v", err)
+	}
+}
+
+// Without on_revoke: unlink a revoke says the person is gone: the user is
+// disabled even though another gate's identity vouches for them.
+func TestExternalRevoke_WithoutTheOptInRemovesTheUser(t *testing.T) {
+	entra, teams, f := sameSubjectGates(t, nil)
+	teams.cfg.External.UnlinkOnRevoke = false
+	f.srv.cfg().ResolvedAuth.Gates[len(f.srv.cfg().ResolvedAuth.Gates)-1] = teams.cfg
+	ctx := context.Background()
+	f.assert(t, "entra", entra.sign(t, "assert", nil, asSub("abc")))
+	f.assert(t, "teams", teams.sign(t, "assert", nil, asSub("abc")))
+	if code, _ := f.post(t, "/v1/_auth/revoke", map[string]string{"gate": "teams", "request": teams.sign(t, "revoke", nil, asSub("abc"))}); code != http.StatusNoContent {
+		t.Fatalf("revoke: %d", code)
+	}
+	if u, _ := f.st.UserGet(ctx, "acme", "entra:abc"); u.Status != "disabled" {
+		t.Fatalf("user status %q, want disabled", u.Status)
+	}
+}
+
+// With the opt-in, a password (or a passkey) is not another gate vouching:
+// one could have been enrolled from a session this gate signed in.
+func TestExternalRevoke_APasswordAloneDoesNotKeepTheUser(t *testing.T) {
+	_, tg, f := sameSubjectGates(t, func(m *config.AuthIdentityMap) {
+		m.Provision = config.ProvisionAuto
+		m.SameSubjectAs = ""
+	})
+	ctx := context.Background()
+	f.assert(t, "teams", tg.sign(t, "assert", nil, asSub("abc")))
+	if err := f.st.UserCredentialSet(ctx, store.UserCredentialRow{TenantID: "acme", Subject: "teams:abc",
+		Kind: store.CredentialKindPassword, PHC: "$argon2id$v=19$m=1,t=1,p=1$c2FsdA$aGFzaA"}); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := f.post(t, "/v1/_auth/revoke", map[string]string{"gate": "teams", "request": tg.sign(t, "revoke", nil, asSub("abc"))}); code != http.StatusNoContent {
+		t.Fatalf("revoke: %d", code)
+	}
+	if u, _ := f.st.UserGet(ctx, "acme", "teams:abc"); u.Status != "disabled" {
+		t.Fatalf("user status %q, want disabled", u.Status)
 	}
 }
