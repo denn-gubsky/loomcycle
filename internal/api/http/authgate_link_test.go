@@ -227,3 +227,45 @@ func TestIdentityRoutes_AreSelfServiceButNotOtherUsers(t *testing.T) {
 		t.Fatalf("other user's identities = %d", rec.Code)
 	}
 }
+
+// RFC HD: a user whose name is in a gate's own namespace ("idp:<value>")
+// links at that gate only the provider account its name is made from, since
+// same_subject_as reads the name's value as the person's id there. Linking
+// another person's account into it is refused; the matching one links.
+func TestLink_ASubjectInTheGatesNamespaceTakesOnlyTheAccountItNames(t *testing.T) {
+	for name, tc := range map[string]struct {
+		subject string
+		linked  bool
+	}{
+		"another person's account": {"idp:someone-else", false},
+		"the account it names":     {"idp:u-1", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newOIDCFixture(t, config.AuthIdentityMap{Tenant: "acme"}, nil)
+			f.s.cfg().ResolvedAuth.Gates = append(f.s.cfg().ResolvedAuth.Gates,
+				identityGateCfg("google", config.AuthIdentityMap{Tenant: "acme", Provision: config.ProvisionAuto}))
+			ctx := context.Background()
+			if err := f.st.UserCreate(ctx, store.UserRow{TenantID: "acme", Subject: tc.subject, AccessMode: "isolated",
+				Status: "active", CreatedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.st.UserIdentityCreate(ctx, store.UserIdentityRow{TenantID: "acme", Subject: tc.subject,
+				Gate: "google", Issuer: testIssuer, ExternalSubject: "902", CreatedAt: time.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			c, out := identityLoginSession(t, f.s, "902", time.Now())
+			if out.Subject != tc.subject {
+				t.Fatalf("signed in as %q, want %q", out.Subject, tc.subject)
+			}
+			rec, redirect := f.startLink(t, linkReq(c, tc.subject, `{"gate":"idp"}`))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("start link = %d %s", rec.Code, rec.Body.String())
+			}
+			f.complete(t, f.authorize(t, redirect), cookieNamed(rec, loginCookiePlain))
+			_, err := f.st.UserIdentityGet(ctx, "idp", f.p.Issuer, "u-1")
+			if linked := err == nil; linked != tc.linked {
+				t.Fatalf("linked = %v (%v), want %v", linked, err, tc.linked)
+			}
+		})
+	}
+}
