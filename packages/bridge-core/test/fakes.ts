@@ -63,24 +63,27 @@ export function fakeSpeech(over: Partial<FakeSpeech> = {}): FakeSpeech {
 /** A push-driven async iterable: the test feeds the events a run would stream. */
 export class EventChannel<T> implements AsyncIterable<T> {
   private items: T[] = [];
-  private waiters: Array<(r: IteratorResult<T>) => void> = [];
+  private waiters: Array<{ resolve: (r: IteratorResult<T>) => void; reject: (e: unknown) => void }> = [];
   private done = false;
   private error?: unknown;
 
   push(v: T): void {
     const w = this.waiters.shift();
-    if (w) w({ value: v, done: false });
+    if (w) w.resolve({ value: v, done: false });
     else this.items.push(v);
   }
 
   end(): void {
     this.done = true;
-    for (const w of this.waiters.splice(0)) w({ value: undefined as never, done: true });
+    for (const w of this.waiters.splice(0)) w.resolve({ value: undefined as never, done: true });
   }
 
+  /** fail breaks the stream with err: a reader already waiting gets it, as a
+   *  dropped connection reaches a run's live stream. */
   fail(err: unknown): void {
     this.error = err;
-    this.end();
+    this.done = true;
+    for (const w of this.waiters.splice(0)) w.reject(err);
   }
 
   [Symbol.asyncIterator](): AsyncIterator<T> {
@@ -89,7 +92,7 @@ export class EventChannel<T> implements AsyncIterable<T> {
         if (this.items.length) return Promise.resolve({ value: this.items.shift() as T, done: false });
         if (this.error) return Promise.reject(this.error);
         if (this.done) return Promise.resolve({ value: undefined as never, done: true });
-        return new Promise((resolve) => this.waiters.push(resolve));
+        return new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
       },
     };
   }
