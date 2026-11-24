@@ -235,12 +235,80 @@ func (s *Server) handleAuthRevoke(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "revoke_failed", "the revoke could not be applied; retry")
 		return
 	}
-	if err := s.removeThroughGate(r.Context(), g, row.TenantID, row.Subject, store.RemovalReasonRevoked); err != nil && !isNotFound(err) {
+	if err := s.endGateIdentity(r.Context(), g, row.TenantID, row.Subject, store.RemovalReasonRevoked); err != nil && !isNotFound(err) {
 		slog.Error("auth: external revoke failed", "gate", g.Name, "err", err)
 		writeJSONError(w, http.StatusInternalServerError, "revoke_failed", "the revoke could not be applied; retry")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// endGateIdentity is what an external gate's revoke or sync does to a user it
+// no longer vouches for (RFC HD D1). A user who signs in some other way too
+// (another gate's identity, a password, a passkey) loses only this gate: the
+// gate speaks for its own identity, not for the person's other sign-ins, so
+// uninstalling a bot never locks its users out of the Web UI. A user this
+// gate is the only way in for is removed on the gate's removal policy.
+func (s *Server) endGateIdentity(ctx context.Context, g config.AuthGate, tenant, subject, reason string) error {
+	other, err := s.holdsOtherSignIn(ctx, tenant, subject, g.Name)
+	if err != nil {
+		return err
+	}
+	if !other {
+		return s.removeThroughGate(ctx, g, tenant, subject, reason)
+	}
+	return s.unlinkThroughGate(ctx, g, tenant, subject, reason)
+}
+
+// holdsOtherSignIn reports whether (tenant, subject) holds a sign-in other
+// than its identity at gate (signInKinds, that one identity left out).
+func (s *Server) holdsOtherSignIn(ctx context.Context, tenant, subject, gate string) (bool, error) {
+	for _, k := range signInKinds() {
+		if k.family == "Identity" {
+			ids, err := s.store.UserIdentityListSubject(ctx, tenant, subject)
+			if err != nil {
+				return false, err
+			}
+			for _, id := range ids {
+				if id.Gate != gate {
+					return true, nil
+				}
+			}
+			continue
+		}
+		held, err := k.holds(ctx, s.store, tenant, subject)
+		if err != nil || held {
+			return held, err
+		}
+	}
+	return false, nil
+}
+
+// unlinkThroughGate ends what the gate gave the user and nothing else: the
+// tokens it issued, the memberships of its own groups, and the identity
+// (sessions made through it end on their next request, the identity binding
+// gone). Tokens go first and again last, so a token an assertion minted while
+// the unlink ran does not outlive it; the identity goes before the second
+// pass, so a retried revoke still finds it when an earlier step failed.
+func (s *Server) unlinkThroughGate(ctx context.Context, g config.AuthGate, tenant, subject, reason string) error {
+	if err := s.retireGateTokensBeyond(ctx, tenant, subject, g.Name, 0); err != nil {
+		return err
+	}
+	if _, _, err := s.syncGroups(ctx, g, tenant, subject, nil); err != nil {
+		return err
+	}
+	removed, err := s.store.UserIdentityDelete(ctx, tenant, subject, g.Name)
+	if err != nil {
+		return err
+	}
+	if err := s.retireGateTokensBeyond(ctx, tenant, subject, g.Name, 0); err != nil {
+		return err
+	}
+	if removed {
+		s.recordAuthEvent(audit.Event{Action: "auth_identity_unlinked", AuthGate: g.Name, TargetTenant: tenant,
+			TargetSubject: subject, ActorSubject: "gate:" + g.Name, AuthReason: reason})
+	}
+	return nil
 }
 
 // removeThroughGate starts a removal on the gate's own removal policy.
@@ -329,7 +397,7 @@ func (s *Server) handleAuthSync(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, id := range remove {
-		if err := s.removeThroughGate(ctx, g, id.TenantID, id.Subject, store.RemovalReasonSync); err != nil {
+		if err := s.endGateIdentity(ctx, g, id.TenantID, id.Subject, store.RemovalReasonSync); err != nil {
 			if isNotFound(err) {
 				continue
 			}
