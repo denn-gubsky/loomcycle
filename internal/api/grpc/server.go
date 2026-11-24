@@ -1083,6 +1083,21 @@ func rpcOnRunPlane(fullMethod string) bool {
 	return r.RunPlane
 }
 
+// rpcSurfaces names the grantable off-run surface an RPC belongs to (RFC GA,
+// auth.Restrictions.Surfaces): the gRPC counterpart of the HTTP layer's
+// offRunSurfacesOf. Only the file put has a gRPC twin so far; the audio
+// surfaces are HTTP only.
+var rpcSurfaces = map[string]string{
+	"PutInboxFile": auth.SurfaceInboxPut,
+}
+
+// rpcSurfaceGranted reports whether p was granted the off-run surface the RPC
+// belongs to.
+func rpcSurfaceGranted(p auth.Principal, fullMethod string) bool {
+	surface, ok := rpcSurfaces[strings.TrimPrefix(fullMethod, grpcMethodPrefix)]
+	return ok && p.Restrictions.SurfaceAllowed(surface)
+}
+
 // enforceScope rejects the call when a principal is stamped and lacks the
 // RPC's required scope. No principal (open mode / legacy-only test harness)
 // → skip, matching the HTTP middleware. PermissionDenied (not Unauthenticated)
@@ -1096,7 +1111,7 @@ func enforceScope(ctx context.Context, fullMethod string) error {
 	// A credential limited to certain agents is held to the run plane, however
 	// wide its scopes (auth.Restrictions.RunPlaneOnly). Default-deny: an RPC
 	// added later is refused to such a credential until it is listed.
-	if p.Restrictions.RunPlaneOnly() && !rpcOnRunPlane(fullMethod) {
+	if p.Restrictions.RunPlaneOnly() && !rpcOnRunPlane(fullMethod) && !rpcSurfaceGranted(p, fullMethod) {
 		return status.Error(codes.PermissionDenied, "this token is limited to starting and following runs of its allowed agents")
 	}
 	// RFC FA D16: a user-management credential reaches only the HTTP user

@@ -23,6 +23,7 @@ var memberRPCs = map[string]string{
 	"DeleteConfiguredRun": "configured-run gate: sessionOwnershipOK",
 	"ReplaySession":       "sessionOwnershipOK on the source session",
 	"RunInput":            "runForSteer: liveRunOwnershipOK",
+	"PutInboxFile":        "connector PutInboxFile: runOwnershipOK, then the run's owner or an admin",
 	"RetuneRun":           "runForSteer: liveRunOwnershipOK",
 	"CancelTurn":          "liveRunOwnershipOK / runOwnershipOK",
 	"ReviewRun":           "review gate: runOwnershipOK",

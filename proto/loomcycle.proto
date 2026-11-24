@@ -151,6 +151,19 @@ service Loomcycle {
   // steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
   rpc RunInput(RunInputRequest) returns (RunInputResponse);
 
+  // PutInboxFile keeps a file in the inbox of a run the caller owns (RFC HE
+  // F1): the twin of PUT /v1/runs/{run_id}/inbox/{name}. Client-streaming,
+  // so a file larger than one message fits: the first message names the run,
+  // the file and its media type and may carry the first bytes; every later
+  // message carries only data. Only the run's owner or an admin; a token
+  // limited to certain agents needs the inbox_put surface. Refusals:
+  // NotFound (no such run, or not the caller's), FailedPrecondition (the run
+  // has ended), ResourceExhausted (over the client put cap or the inbox
+  // quota; ErrorInfo.reason client_put_max_bytes / inbox_full), Unavailable
+  // (the run is served by another server, or the put could not be recorded),
+  // InvalidArgument (no run_id or name on the first message).
+  rpc PutInboxFile(stream PutInboxFileRequest) returns (PutInboxFileResponse);
+
   // RetuneRun changes a run's per-run overrides WITHOUT delivering a turn —
   // the gRPC twin of POST /v1/runs/{run_id}/retune.
   //
@@ -1652,6 +1665,29 @@ message RetuneRunResponse {
 message RunInputResponse {
   string run_id = 1;
   bool delivered = 2;
+}
+
+// PutInboxFileRequest is one message of a PutInboxFile stream. run_id, name
+// and media_type are read from the first message only.
+message PutInboxFileRequest {
+  string run_id = 1;
+  // The caller's name for the file. The runtime keeps a sanitised base name
+  // of it (de-duplicated with -2, -3) and never logs or audits it.
+  string name = 2;
+  // The file's media type; empty or generic is sniffed from the bytes.
+  string media_type = 3;
+  bytes data = 4;
+}
+
+// PutInboxFileResponse is what was kept.
+message PutInboxFileResponse {
+  // The reference the File tool takes, e.g. volume:inbox:documents/a.pdf.
+  string ref = 1;
+  // The kept file's sanitised name.
+  string name = 2;
+  int64 bytes = 3;
+  string sha256 = 4;
+  string media_type = 5;
 }
 
 // CancelTurnRequest stops the current turn of a live interactive run (RFC BH).

@@ -58,6 +58,7 @@ const (
 	Loomcycle_ErasureExecute_FullMethodName       = "/loomcycle.v1.Loomcycle/ErasureExecute"
 	Loomcycle_ReplaySession_FullMethodName        = "/loomcycle.v1.Loomcycle/ReplaySession"
 	Loomcycle_RunInput_FullMethodName             = "/loomcycle.v1.Loomcycle/RunInput"
+	Loomcycle_PutInboxFile_FullMethodName         = "/loomcycle.v1.Loomcycle/PutInboxFile"
 	Loomcycle_RetuneRun_FullMethodName            = "/loomcycle.v1.Loomcycle/RetuneRun"
 	Loomcycle_CancelTurn_FullMethodName           = "/loomcycle.v1.Loomcycle/CancelTurn"
 	Loomcycle_ReviewRun_FullMethodName            = "/loomcycle.v1.Loomcycle/ReviewRun"
@@ -250,6 +251,18 @@ type LoomcycleClient interface {
 	// (never wire-trusted). Cross-replica routing is inherited from the
 	// steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
 	RunInput(ctx context.Context, in *RunInputRequest, opts ...grpc.CallOption) (*RunInputResponse, error)
+	// PutInboxFile keeps a file in the inbox of a run the caller owns (RFC HE
+	// F1): the twin of PUT /v1/runs/{run_id}/inbox/{name}. Client-streaming,
+	// so a file larger than one message fits: the first message names the run,
+	// the file and its media type and may carry the first bytes; every later
+	// message carries only data. Only the run's owner or an admin; a token
+	// limited to certain agents needs the inbox_put surface. Refusals:
+	// NotFound (no such run, or not the caller's), FailedPrecondition (the run
+	// has ended), ResourceExhausted (over the client put cap or the inbox
+	// quota; ErrorInfo.reason client_put_max_bytes / inbox_full), Unavailable
+	// (the run is served by another server, or the put could not be recorded),
+	// InvalidArgument (no run_id or name on the first message).
+	PutInboxFile(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[PutInboxFileRequest, PutInboxFileResponse], error)
 	// RetuneRun changes a run's per-run overrides WITHOUT delivering a turn —
 	// the gRPC twin of POST /v1/runs/{run_id}/retune.
 	//
@@ -1087,6 +1100,19 @@ func (c *loomcycleClient) RunInput(ctx context.Context, in *RunInputRequest, opt
 	return out, nil
 }
 
+func (c *loomcycleClient) PutInboxFile(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[PutInboxFileRequest, PutInboxFileResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &Loomcycle_ServiceDesc.Streams[3], Loomcycle_PutInboxFile_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[PutInboxFileRequest, PutInboxFileResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Loomcycle_PutInboxFileClient = grpc.ClientStreamingClient[PutInboxFileRequest, PutInboxFileResponse]
+
 func (c *loomcycleClient) RetuneRun(ctx context.Context, in *RetuneRunRequest, opts ...grpc.CallOption) (*RetuneRunResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RetuneRunResponse)
@@ -1129,7 +1155,7 @@ func (c *loomcycleClient) ResolveInterrupt(ctx context.Context, in *ResolveInter
 
 func (c *loomcycleClient) StreamRun(ctx context.Context, in *StreamRunRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Loomcycle_ServiceDesc.Streams[3], Loomcycle_StreamRun_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Loomcycle_ServiceDesc.Streams[4], Loomcycle_StreamRun_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1758,7 +1784,7 @@ func (c *loomcycleClient) ListChannels(ctx context.Context, in *ListChannelsRequ
 
 func (c *loomcycleClient) StreamUserRunStates(ctx context.Context, in *StreamUserRunStatesRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RunStateEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &Loomcycle_ServiceDesc.Streams[4], Loomcycle_StreamUserRunStates_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &Loomcycle_ServiceDesc.Streams[5], Loomcycle_StreamUserRunStates_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1979,6 +2005,18 @@ type LoomcycleServer interface {
 	// (never wire-trusted). Cross-replica routing is inherited from the
 	// steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
 	RunInput(context.Context, *RunInputRequest) (*RunInputResponse, error)
+	// PutInboxFile keeps a file in the inbox of a run the caller owns (RFC HE
+	// F1): the twin of PUT /v1/runs/{run_id}/inbox/{name}. Client-streaming,
+	// so a file larger than one message fits: the first message names the run,
+	// the file and its media type and may carry the first bytes; every later
+	// message carries only data. Only the run's owner or an admin; a token
+	// limited to certain agents needs the inbox_put surface. Refusals:
+	// NotFound (no such run, or not the caller's), FailedPrecondition (the run
+	// has ended), ResourceExhausted (over the client put cap or the inbox
+	// quota; ErrorInfo.reason client_put_max_bytes / inbox_full), Unavailable
+	// (the run is served by another server, or the put could not be recorded),
+	// InvalidArgument (no run_id or name on the first message).
+	PutInboxFile(grpc.ClientStreamingServer[PutInboxFileRequest, PutInboxFileResponse]) error
 	// RetuneRun changes a run's per-run overrides WITHOUT delivering a turn —
 	// the gRPC twin of POST /v1/runs/{run_id}/retune.
 	//
@@ -2649,6 +2687,9 @@ func (UnimplementedLoomcycleServer) ReplaySession(context.Context, *ReplaySessio
 func (UnimplementedLoomcycleServer) RunInput(context.Context, *RunInputRequest) (*RunInputResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RunInput not implemented")
 }
+func (UnimplementedLoomcycleServer) PutInboxFile(grpc.ClientStreamingServer[PutInboxFileRequest, PutInboxFileResponse]) error {
+	return status.Error(codes.Unimplemented, "method PutInboxFile not implemented")
+}
 func (UnimplementedLoomcycleServer) RetuneRun(context.Context, *RetuneRunRequest) (*RetuneRunResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method RetuneRun not implemented")
 }
@@ -3236,6 +3277,13 @@ func _Loomcycle_RunInput_Handler(srv interface{}, ctx context.Context, dec func(
 	}
 	return interceptor(ctx, in, info, handler)
 }
+
+func _Loomcycle_PutInboxFile_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(LoomcycleServer).PutInboxFile(&grpc.GenericServerStream[PutInboxFileRequest, PutInboxFileResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type Loomcycle_PutInboxFileServer = grpc.ClientStreamingServer[PutInboxFileRequest, PutInboxFileResponse]
 
 func _Loomcycle_RetuneRun_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RetuneRunRequest)
@@ -4978,6 +5026,11 @@ var Loomcycle_ServiceDesc = grpc.ServiceDesc{
 			StreamName:    "StartConfiguredRun",
 			Handler:       _Loomcycle_StartConfiguredRun_Handler,
 			ServerStreams: true,
+		},
+		{
+			StreamName:    "PutInboxFile",
+			Handler:       _Loomcycle_PutInboxFile_Handler,
+			ClientStreams: true,
 		},
 		{
 			StreamName:    "StreamRun",
