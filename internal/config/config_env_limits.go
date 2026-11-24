@@ -51,6 +51,7 @@ func applyEnvToolLimits(cfg *Config) error {
 		{"LOOMCYCLE_FILE_MAX_BYTES", &cfg.Env.FileMaxBytes, FileMaxBytesDefault},
 		{"LOOMCYCLE_FILE_INBOX_MAX_BYTES", &cfg.Env.FileInboxMaxBytes, FileInboxMaxBytesDefault},
 		{"LOOMCYCLE_MCP_MAX_FRAME_BYTES", &cfg.Env.MCPMaxFrameBytes, MCPMaxFrameBytesDefault},
+		{"LOOMCYCLE_FILE_CLIENT_PUT_MAX_BYTES", &cfg.Env.FileClientPutMaxBytes, FileClientPutMaxBytesDefault},
 	} {
 		*c.dst = c.def
 		if v := strings.TrimSpace(os.Getenv(c.env)); v != "" {
@@ -61,6 +62,8 @@ func applyEnvToolLimits(cfg *Config) error {
 			*c.dst = n
 		}
 	}
+	// A client put is a kept file, so the per-file cap bounds it too.
+	cfg.Env.FileClientPutMaxBytes = min(cfg.Env.FileClientPutMaxBytes, cfg.Env.FileMaxBytes)
 	// Extraction concurrency (RFC FZ Part B). Unset or non-positive takes
 	// GOMAXPROCS; a value that does not parse is refused rather than
 	// defaulted, so a bound the operator meant to lower is never read as a

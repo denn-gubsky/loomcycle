@@ -886,6 +886,12 @@ questions:
             schema:
               type: string
               default: ""
+          - variable: LOOMCYCLE_FILE_CLIENT_PUT_MAX_BYTES
+            label: LOOMCYCLE_FILE_CLIENT_PUT_MAX_BYTES
+            description: '(example: 20971520)'
+            schema:
+              type: string
+              default: ""
           - variable: LOOMCYCLE_MCP_MAX_FRAME_BYTES
             label: LOOMCYCLE_MCP_MAX_FRAME_BYTES
             description: '(example: 16777216)'

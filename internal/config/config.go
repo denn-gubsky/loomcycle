@@ -4551,6 +4551,11 @@ type Env struct {
 	// LOOMCYCLE_FILE_INBOX_MAX_BYTES (default 1 GiB).
 	FileMaxBytes      int64
 	FileInboxMaxBytes int64
+	// FileClientPutMaxBytes caps one file a run's owner puts into its inbox
+	// (RFC HE F1, PUT /v1/runs/{run_id}/inbox/{name}). Sourced from
+	// LOOMCYCLE_FILE_CLIENT_PUT_MAX_BYTES (default 20 MiB) and never above
+	// FileMaxBytes: a person's upload is a kept file like any other.
+	FileClientPutMaxBytes int64
 	// ExtractConcurrency bounds the file extractions the process runs at once
 	// (File op=extract, op=import and the PDF page cuts OCR makes; RFC FZ
 	// Part B). Sourced from LOOMCYCLE_EXTRACT_CONCURRENCY; unset, zero or
@@ -6954,6 +6959,8 @@ const BashboxOverlayMaxBytesDefault = 64 << 20
 const (
 	FileMaxBytesDefault      = 64 << 20
 	FileInboxMaxBytesDefault = 1 << 30
+	// FileClientPutMaxBytesDefault is the cap on one client put (RFC HE F1).
+	FileClientPutMaxBytesDefault = 20 << 20
 )
 
 // MCPMaxFrameBytesDefault caps one MCP response. 16 MiB was the stdio line
