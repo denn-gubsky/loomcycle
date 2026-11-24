@@ -8,6 +8,7 @@ calls loomcycle, so an answer is never Calc's word for itself.
 """
 
 import calendar
+import cmath
 import contextlib
 import importlib.util
 import io
@@ -103,6 +104,182 @@ ORACLE = {
 }
 
 
+# --- the oracle for tasks2.yaml: linear algebra, distributions, calculus -----
+#
+# Exact where it can be (matrices over Fractions), closed form or a textbook
+# series where it cannot. Never NumPy (not in CI) and never Calc.
+
+def _frac_matrix(a):
+    return [[Fraction(x) for x in row] for row in a]
+
+
+def rref(a):
+    """The reduced row echelon form of a over Fractions, and its rank."""
+    m = _frac_matrix(a)
+    rows, cols, r = len(m), len(m[0]), 0
+    for c in range(cols):
+        p = next((i for i in range(r, rows) if m[i][c] != 0), None)
+        if p is None:
+            continue
+        m[r], m[p] = m[p], m[r]
+        m[r] = [x / m[r][c] for x in m[r]]
+        for i in range(rows):
+            if i != r and m[i][c] != 0:
+                m[i] = [x - m[i][c] * y for x, y in zip(m[i], m[r])]
+        r += 1
+        if r == rows:
+            break
+    return m, r
+
+
+def rank(a):
+    return rref(a)[1]
+
+
+def solve(a, b):
+    """x with a*x = b for a square, non-singular a, as Fractions."""
+    m, r = rref([list(row) + [bi] for row, bi in zip(a, b)])
+    if r < len(a) or any(m[i][i] != 1 for i in range(len(a))):
+        raise ValueError("singular")
+    return [row[-1] for row in m]
+
+
+def det(a):
+    """The determinant over Fractions, by elimination."""
+    m, n, d = _frac_matrix(a), len(a), Fraction(1)
+    for c in range(n):
+        p = next((i for i in range(c, n) if m[i][c] != 0), None)
+        if p is None:
+            return Fraction(0)
+        if p != c:
+            m[c], m[p] = m[p], m[c]
+            d = -d
+        d *= m[c][c]
+        for i in range(c + 1, n):
+            f = m[i][c] / m[c][c]
+            m[i] = [x - f * y for x, y in zip(m[i], m[c])]
+    return d
+
+
+def matmul(a, b):
+    return [[sum(Fraction(x) * Fraction(y) for x, y in zip(row, col)) for col in zip(*b)] for row in a]
+
+
+def inv(a):
+    n = len(a)
+    cols = [solve(a, [1 if i == j else 0 for i in range(n)]) for j in range(n)]
+    return [[cols[j][i] for j in range(n)] for i in range(n)]
+
+
+def lstsq(a, b):
+    """The least-squares x for a full-column-rank a: the normal equations
+    a'a x = a'b, solved exactly."""
+    at = [list(c) for c in zip(*a)]
+    return solve(matmul(at, a), [r[0] for r in matmul(at, [[y] for y in b])])
+
+
+def polyfit(xs, ys, deg):
+    """Least-squares coefficients, highest power first, as Fractions."""
+    return lstsq([[Fraction(x) ** k for k in range(deg, -1, -1)] for x in xs], ys)
+
+
+def eig2sym(a, b, c):
+    """The eigenvalues of the symmetric [[a, b], [b, c]] in closed form,
+    ascending."""
+    m, h = (a + c) / 2, math.sqrt(((a - c) / 2) ** 2 + b * b)
+    return (m - h, m + h)
+
+
+def normcdf(x, mu=0.0, sigma=1.0):
+    return 0.5 * (1 + math.erf((x - mu) / (sigma * math.sqrt(2))))
+
+
+def gammainc_lower(s, x):
+    """The regularized lower incomplete gamma P(s, x), by its power series
+    (converges for every x >= 0; the terms fall once k passes x)."""
+    if x <= 0:
+        return 0.0
+    term = total = 1.0 / s
+    k = 0
+    while abs(term) > 1e-17 * abs(total):
+        k += 1
+        term *= x / (s + k)
+        total += term
+    return total * math.exp(-x + s * math.log(x) - math.lgamma(s))
+
+
+def betainc(a, b, x):
+    """The regularized incomplete beta I_x(a, b), by its continued fraction
+    (Lentz), using the symmetry I_x(a, b) = 1 - I_{1-x}(b, a) where the
+    fraction converges slowly."""
+    if x <= 0:
+        return 0.0
+    if x >= 1:
+        return 1.0
+    if x > (a + 1) / (a + b + 2):
+        return 1.0 - betainc(b, a, 1 - x)
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+                     + a * math.log(x) + b * math.log(1 - x)) / a
+    tiny, f, c, d = 1e-300, 1.0, 1.0, 0.0
+    for i in range(400):
+        m = i // 2
+        if i == 0:
+            num = 1.0
+        elif i % 2 == 0:
+            num = m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m))
+        else:
+            num = -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1))
+        d = 1.0 + num * d
+        d = tiny if abs(d) < tiny else d
+        d = 1.0 / d
+        c = 1.0 + num / c
+        c = tiny if abs(c) < tiny else c
+        f *= c * d
+        if abs(1.0 - c * d) < 1e-16:
+            break
+    return front * (f - 1.0)
+
+
+def tcdf(t, df):
+    p = 0.5 * betainc(df / 2, 0.5, df / (df + t * t))
+    return 1 - p if t > 0 else p
+
+
+def chi2cdf(x, df):
+    return gammainc_lower(df / 2, x / 2)
+
+
+def bisect(f, lo, hi, n=200):
+    """A root of f in [lo, hi], where f(lo) and f(hi) differ in sign."""
+    flo = f(lo)
+    for _ in range(n):
+        mid = (lo + hi) / 2
+        fm = f(mid)
+        if (fm < 0) == (flo < 0):
+            lo, flo = mid, fm
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
+def quantile(cdf, p, lo, hi):
+    """The x in [lo, hi] with cdf(x) = p, by bisection."""
+    return bisect(lambda x: cdf(x) - p, lo, hi)
+
+
+def simpson(f, a, b, n=2000):
+    """Composite Simpson's rule over n (even) panels."""
+    h = (b - a) / n
+    return h / 3 * (f(a) + f(b) + 4 * sum(f(a + k * h) for k in range(1, n, 2))
+                    + 2 * sum(f(a + k * h) for k in range(2, n, 2)))
+
+
+ORACLE2 = dict(ORACLE, cmath=cmath, rank=rank, solve=solve, det=det, matmul=matmul, inv=inv,
+               lstsq=lstsq, polyfit=polyfit, eig2sym=eig2sym, normcdf=normcdf, tcdf=tcdf,
+               chi2cdf=chi2cdf, bisect=bisect, quantile=quantile, simpson=simpson,
+               min=min, max=max, zip=zip, sorted=sorted, comb=math.comb, complex=complex, float=float)
+
+
 def as_exact(v):
     """A task answer or a check value as something comparable exactly."""
     if isinstance(v, bool):
@@ -176,6 +353,66 @@ class TasksTest(unittest.TestCase):
                 f.write(base.replace('"exact"', '"about:1"'))
             with self.assertRaises(ValueError):
                 drive.load_tasks(p)
+
+
+class Tasks2Test(unittest.TestCase):
+    """tasks2.yaml: the sections RFC GY P2–P3 added, checked by ORACLE2."""
+
+    def setUp(self):
+        self.tasks = drive.load_tasks(os.path.join(_HERE, "tasks2.yaml"))
+
+    def test_every_answer_equals_its_independent_check(self):
+        for t in self.tasks:
+            with self.subTest(task=t["id"]):
+                # As in TasksTest: check comes from a reviewed file in this
+                # directory and runs with only the oracle's names.
+                value = eval(t["check"], dict(ORACLE2))
+                self.assertEqual(as_exact(t["answer"]), as_exact(value),
+                                 f"{t['id']}: answer {t['answer']!r}, check gives {value!r}")
+
+    def test_every_answer_scores_as_correct_against_itself(self):
+        for t in self.tasks:
+            with self.subTest(task=t["id"]):
+                self.assertTrue(drive.is_correct(t, raw_text(t["answer"])))
+
+    def test_the_set_spreads_over_the_new_sections(self):
+        per = {}
+        for t in self.tasks:
+            per[t["section"]] = per.get(t["section"], 0) + 1
+        self.assertEqual(set(per), {"matrices", "distributions", "calculus", "complex", "tables", "word"})
+        self.assertTrue(all(n >= 8 for s, n in per.items() if s != "word"), per)
+        self.assertGreaterEqual(per["word"], 3)
+        self.assertGreaterEqual(len(self.tasks), 40)
+
+    def test_no_id_collides_with_the_first_set(self):
+        first = {t["id"] for t in drive.load_tasks(os.path.join(_HERE, "tasks.yaml"))}
+        self.assertEqual(first & {t["id"] for t in self.tasks}, set())
+
+    def test_no_prompt_is_a_calc_expression(self):
+        for t in self.tasks:
+            for fn in ("solve(", "det(", "inv(", "eig(", "matrank(", "lstsq(", "normcdf(", "tinv(",
+                       "chi2inv(", "binompdf(", "poisscdf(", "expcdf(", "integrate(", "deriv(", "root(",
+                       "minimize(", "polyfit(", "polyval(", "interp(", "polyroots(", "complex(", "arg(",
+                       "csv(", "where(", "groupby(", "pivot(", "join(", "describe(", "round("):
+                self.assertNotIn(fn, t["prompt"], t["id"])
+
+    def test_the_oracle_helpers_agree_with_closed_forms(self):
+        # The series and fractions behind the checks, against values with a
+        # closed form: t with 1 df is Cauchy, chi-squared with 2 df is an
+        # exponential, a triangular matrix's determinant is its diagonal.
+        for x in (-3.0, -0.4, 0.7, 12.0):
+            self.assertAlmostEqual(tcdf(x, 1), 0.5 + math.atan(x) / math.pi, places=12)
+            self.assertAlmostEqual(chi2cdf(abs(x), 2), 1 - math.exp(-abs(x) / 2), places=12)
+        self.assertAlmostEqual(normcdf(1.959963984540054), 0.975, places=12)
+        self.assertAlmostEqual(quantile(lambda t: tcdf(t, 10), 0.975, 0, 50), 2.228138852, places=8)
+        self.assertEqual(det([[2, 7, 1], [0, 3, 5], [0, 0, Fraction(1, 2)]]), 3)
+        self.assertEqual(solve([[2, 1], [1, 3]], [3, 5]), [Fraction(4, 5), Fraction(7, 5)])
+        self.assertEqual(inv([[4, 7], [2, 6]]), [[Fraction(3, 5), Fraction(-7, 10)], [Fraction(-1, 5), Fraction(2, 5)]])
+        self.assertEqual(rank([[1, 2], [2, 4]]), 1)
+        self.assertEqual(polyfit([0, 1, 2, 3], [1, 3, 7, 13], 2), [1, 1, 1])
+        self.assertEqual(eig2sym(2, 1, 2), (1.0, 3.0))
+        self.assertAlmostEqual(simpson(math.exp, 0, 1), math.e - 1, places=12)
+        self.assertAlmostEqual(bisect(lambda x: x * x - 2, 0, 2), math.sqrt(2), places=14)
 
 
 class AnswerTest(unittest.TestCase):

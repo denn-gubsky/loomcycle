@@ -1,0 +1,310 @@
+# The SECOND Calc help measurement task set: the sections added in RFC GY
+# P2–P3 (Calc/matrices, Calc/distributions, Calc/calculus, Calc/complex,
+# Calc/tables) and word problems that mix them. Run it with
+# `drive.py --tasks tasks2.yaml`. Never edit a task after the first run; add a
+# new id instead. The ids never collide with tasks.yaml's.
+#
+# The format is tasks.yaml's: id, section, prompt (a question as a user would
+# put it, never a Calc expression), answer (one JSON scalar), tolerance
+# ("exact", "abs:<x>" or "rel:<x>") and check. A stated rounding is scored
+# exactly; an answer that is a whole number but comes out of a float routine
+# is scored within abs:1e-6. Every answer has one form: the prompt names which
+# root, which eigenvalue, which part of a complex number, which unit.
+#
+# check computes the answer INDEPENDENTLY of loomcycle: a Python expression
+# over tasks.yaml's oracle plus the helpers in test_drive.py's ORACLE2
+# (matrices over Fractions: solve, det, inv, matmul, rank, lstsq, polyfit; the
+# closed-form 2x2 symmetric eigenvalues eig2sym; normcdf by math.erf, tcdf by
+# the regularized incomplete beta, chi2cdf by the regularized lower incomplete
+# gamma, quantile and bisect by bisection, simpson for an integral with no
+# closed form; cmath). Every answer was also cross-checked with NumPy, outside
+# this file and never with Calc.
+tasks:
+  # --- matrices and linear algebra ---
+  - id: m01
+    section: matrices
+    prompt: "Solve the system 2x + 3y = 13 and 4x - y = 5. What is y?"
+    answer: 3
+    tolerance: "abs:1e-6"
+    check: "solve([[2, 3], [4, -1]], [13, 5])[1]"
+  - id: m02
+    section: matrices
+    prompt: "Solve the system 2x + y - z = 8, -3x - y + 2z = -11, -2x + y + 2z = -3. What is z?"
+    answer: -1
+    tolerance: "abs:1e-6"
+    check: "solve([[2, 1, -1], [-3, -1, 2], [-2, 1, 2]], [8, -11, -3])[2]"
+  - id: m03
+    section: matrices
+    prompt: "What is the determinant of the 3x3 matrix with rows (3, 1, 2), (0, 4, 1) and (5, 2, 6)?"
+    answer: 31
+    tolerance: "abs:1e-6"
+    check: "det([[3, 1, 2], [0, 4, 1], [5, 2, 6]])"
+  - id: m04
+    section: matrices
+    prompt: "Take the matrix with rows (1, 2, 3), (0, 1, 4) and (5, 6, 0). What is the element in row 2, column 1 of its inverse?"
+    answer: 20
+    tolerance: "abs:1e-6"
+    check: "inv([[1, 2, 3], [0, 1, 4], [5, 6, 0]])[1][0]"
+  - id: m05
+    section: matrices
+    prompt: "A is the 2x3 matrix with rows (1, 2, 3) and (4, 5, 6); B is the 3x2 matrix with rows (7, 8), (9, 10) and (11, 12). What is the element in row 2, column 1 of the product A times B?"
+    answer: 139
+    tolerance: "exact"
+    check: "matmul([[1, 2, 3], [4, 5, 6]], [[7, 8], [9, 10], [11, 12]])[1][0]"
+  - id: m06
+    section: matrices
+    prompt: "Fit a straight line y = a + b*x by least squares to the points (1, 2.1), (2, 3.9), (3, 6.2), (4, 7.8) and (5, 10.1). What is the intercept a, to 4 decimal places?"
+    answer: 0.05
+    tolerance: "exact"
+    check: "rhu(lstsq([[1, 1], [1, 2], [1, 3], [1, 4], [1, 5]], [F('2.1'), F('3.9'), F('6.2'), F('7.8'), F('10.1')])[0], 4)"
+  - id: m07
+    section: matrices
+    prompt: "What is the larger eigenvalue of the symmetric matrix with rows (4, 1) and (1, 2), to 6 decimal places?"
+    answer: 4.414214
+    tolerance: "exact"
+    check: "rhu(eig2sym(4, 1, 2)[1], 6)"
+  - id: m08
+    section: matrices
+    prompt: "What is the rank of the 3x3 matrix with rows (1, 2, 3), (2, 4, 6) and (1, 0, 1)?"
+    answer: 2
+    tolerance: "exact"
+    check: "rank([[1, 2, 3], [2, 4, 6], [1, 0, 1]])"
+  - id: m09
+    section: matrices
+    prompt: "A has rows (1, 2) and (3, 4); B has rows (0, 1) and (1, 0). What is the trace of the product A times B?"
+    answer: 5
+    tolerance: "exact"
+    check: "sum(matmul([[1, 2], [3, 4]], [[0, 1], [1, 0]])[k][k] for k in range(2))"
+  # --- probability distributions ---
+  - id: p01
+    section: distributions
+    prompt: "Adult heights are normally distributed with mean 170 cm and standard deviation 8 cm. What is the probability that a randomly chosen adult is taller than 185 cm? Give it to 4 decimal places."
+    answer: 0.0304
+    tolerance: "exact"
+    check: "rhu(1 - normcdf(185, 170, 8), 4)"
+  - id: p02
+    section: distributions
+    prompt: "What is the critical t value for a two-sided 95% confidence interval with 14 degrees of freedom (the upper one, positive)? Give it to 4 decimal places."
+    answer: 2.1448
+    tolerance: "exact"
+    check: "rhu(quantile(lambda t: tcdf(t, 14), 0.975, 0, 50), 4)"
+  - id: p03
+    section: distributions
+    prompt: "What is the 99th percentile of the chi-squared distribution with 5 degrees of freedom, to 4 decimal places?"
+    answer: 15.0863
+    tolerance: "exact"
+    check: "rhu(quantile(lambda x: chi2cdf(x, 5), 0.99, 0, 100), 4)"
+  - id: p04
+    section: distributions
+    prompt: "I flip a fair coin 8 times. What is the probability of exactly 3 heads, as an exact decimal?"
+    answer: 0.21875
+    tolerance: "exact"
+    check: "F(comb(8, 3), 2 ** 8)"
+  - id: p05
+    section: distributions
+    prompt: "A help desk gets on average 4 calls an hour, as a Poisson process. What is the probability of at most 2 calls in a given hour, to 6 decimal places?"
+    answer: 0.238103
+    tolerance: "exact"
+    check: "rhu(math.exp(-4) * (1 + 4 + 4 ** 2 / 2), 6)"
+  - id: p06
+    section: distributions
+    prompt: "Bulb lifetimes are exponentially distributed with a mean of 1000 hours. What is the probability that a bulb fails within its first 500 hours, to 6 decimal places?"
+    answer: 0.393469
+    tolerance: "exact"
+    check: "rhu(1 - math.exp(-500 / 1000), 6)"
+  - id: p07
+    section: distributions
+    prompt: "A bus arrives at a time uniformly distributed between 0 and 20 minutes from now. What is the probability that I wait at most 7 minutes?"
+    answer: 0.35
+    tolerance: "abs:1e-9"
+    check: "F(7, 20)"
+  - id: p08
+    section: distributions
+    prompt: "A t test gives a statistic of 2.3 with 12 degrees of freedom. What is the two-sided p-value, to 4 decimal places?"
+    answer: 0.0402
+    tolerance: "exact"
+    check: "rhu(2 * (1 - tcdf(2.3, 12)), 4)"
+  - id: p09
+    section: distributions
+    prompt: "Test scores are normally distributed with mean 500 and standard deviation 100. What score marks the 90th percentile, to 2 decimal places?"
+    answer: 628.16
+    tolerance: "exact"
+    check: "rhu(quantile(lambda x: normcdf(x, 500, 100), 0.9, 0, 1000), 2)"
+  # --- numeric calculus ---
+  - id: c01
+    section: calculus
+    prompt: "What is the integral of x squared times e to the minus x, from x = 0 to x = 2, to 6 decimal places?"
+    answer: 0.646647
+    tolerance: "exact"
+    check: "rhu(2 - 10 * math.exp(-2), 6)"
+  - id: c02
+    section: calculus
+    prompt: "What is the derivative of x squared times sin(x) at x = 1 (x in radians), to 6 decimal places?"
+    answer: 2.223244
+    tolerance: "exact"
+    check: "rhu(2 * math.sin(1) + math.cos(1), 6)"
+  - id: c03
+    section: calculus
+    prompt: "The equation x^3 - x - 2 = 0 has one real solution, between 1 and 2. What is it, to 6 decimal places?"
+    answer: 1.52138
+    tolerance: "exact"
+    check: "rhu(bisect(lambda x: x ** 3 - x - 2, 1, 2), 6)"
+  - id: c04
+    section: calculus
+    prompt: "On the interval from 0 to 2, at which x does x^4 - 3x^2 + x take its smallest value? Give x to 4 decimal places."
+    answer: 1.1309
+    tolerance: "exact"
+    check: "rhu(bisect(lambda x: 4 * x ** 3 - 6 * x + 1, 0.8, 2), 4)"
+  - id: c05
+    section: calculus
+    prompt: "Fit a quadratic y = a*x^2 + b*x + c by least squares to the points (0, 1.1), (1, 1.9), (2, 5.2), (3, 9.8) and (4, 17.1). What is a, the x^2 coefficient, to 4 decimal places?"
+    answer: 1.0214
+    tolerance: "exact"
+    check: "rhu(polyfit([0, 1, 2, 3, 4], [F('1.1'), F('1.9'), F('5.2'), F('9.8'), F('17.1')], 2)[0], 4)"
+  - id: c06
+    section: calculus
+    prompt: "What is the value of the polynomial 3x^3 - 2x + 7 at x = 1.5?"
+    answer: 14.125
+    tolerance: "exact"
+    check: "3 * F('1.5') ** 3 - 2 * F('1.5') + 7"
+  - id: c07
+    section: calculus
+    prompt: "Water's density is 999.84 kg/m3 at 0 °C, 999.70 at 10 °C, 998.21 at 20 °C and 995.65 at 30 °C. Interpolating linearly between these, what is the density at 23 °C, in kg/m3?"
+    answer: 997.442
+    tolerance: "abs:1e-6"
+    check: "F('998.21') + F(3, 10) * (F('995.65') - F('998.21'))"
+  - id: c08
+    section: calculus
+    prompt: "What is the integral of the square root of (1 + x^3), from x = 0 to x = 1, to 6 decimal places?"
+    answer: 1.111448
+    tolerance: "exact"
+    check: "rhu(simpson(lambda x: math.sqrt(1 + x ** 3), 0, 1), 6)"
+  - id: c09
+    section: calculus
+    prompt: "For which x between 0 and 1 is cos(x) equal to x (x in radians)? Give x to 6 decimal places."
+    answer: 0.739085
+    tolerance: "exact"
+    check: "rhu(bisect(lambda x: math.cos(x) - x, 0, 1), 6)"
+  # --- complex numbers ---
+  - id: x01
+    section: complex
+    prompt: "What is the modulus (absolute value) of the complex number 3 + 7i, to 6 decimal places?"
+    answer: 7.615773
+    tolerance: "exact"
+    check: "rhu(abs(complex(3, 7)), 6)"
+  - id: x02
+    section: complex
+    prompt: "What is the real part of the product (2 + 3i)(4 - 5i)?"
+    answer: 23
+    tolerance: "abs:1e-9"
+    check: "(complex(2, 3) * complex(4, -5)).real"
+  - id: x03
+    section: complex
+    prompt: "What is the imaginary part of (1 + 2i) divided by (3 - 4i)?"
+    answer: 0.4
+    tolerance: "abs:1e-9"
+    check: "F(2 * 3 - 1 * (-4), 3 ** 2 + 4 ** 2)"
+  - id: x04
+    section: complex
+    prompt: "The equation x^2 + 4x + 13 = 0 has two complex roots. What is the imaginary part of the root whose imaginary part is positive?"
+    answer: 3
+    tolerance: "abs:1e-9"
+    check: "((-4 + cmath.sqrt(4 ** 2 - 4 * 13)) / 2).imag"
+  - id: x05
+    section: complex
+    prompt: "The equation 2x^2 - 3x + 5 = 0 has two complex roots. What is the imaginary part of the root whose imaginary part is positive, to 6 decimal places?"
+    answer: 1.391941
+    tolerance: "exact"
+    check: "rhu(math.sqrt(4 * 2 * 5 - 3 ** 2) / (2 * 2), 6)"
+  - id: x06
+    section: complex
+    prompt: "What is the imaginary part of (1 + i) raised to the 10th power?"
+    answer: 32
+    tolerance: "abs:1e-9"
+    check: "(complex(1, 1) ** 10).imag"
+  - id: x07
+    section: complex
+    prompt: "What is the argument (angle) of the complex number -3 + 4i in degrees, measured from the positive real axis in the range -180 to 180, to 6 decimal places?"
+    answer: 126.869898
+    tolerance: "exact"
+    check: "rhu(math.degrees(math.atan2(4, -3)), 6)"
+  - id: x08
+    section: complex
+    prompt: "A 30 ohm resistor is in parallel with a capacitor whose impedance is -40i ohms. What is the magnitude of the combined impedance, in ohms?"
+    answer: 24
+    tolerance: "abs:1e-6"
+    check: "rhu(abs(30 * complex(0, -40) / (30 + complex(0, -40))), 9)"
+  # --- tables ---
+  - id: b01
+    section: tables
+    prompt: "Here are our orders as CSV:\nregion,product,units,price\nEU,widget,12,4.50\nUS,widget,30,4.25\nEU,gadget,5,19.99\nUS,gadget,8,18.50\nAPAC,widget,20,4.40\nEU,widget,7,4.50\nAPAC,gadget,3,21.00\nUS,widget,15,4.25\nWhat is the total revenue (units times price) of the EU orders?"
+    answer: 185.45
+    tolerance: "exact"
+    check: "sum(u * F(p) for r, _, u, p in [('EU', 'widget', 12, '4.50'), ('US', 'widget', 30, '4.25'), ('EU', 'gadget', 5, '19.99'), ('US', 'gadget', 8, '18.50'), ('APAC', 'widget', 20, '4.40'), ('EU', 'widget', 7, '4.50'), ('APAC', 'gadget', 3, '21.00'), ('US', 'widget', 15, '4.25')] if r == 'EU')"
+  - id: b02
+    section: tables
+    prompt: "Here are our orders as CSV:\nregion,product,units,price\nEU,widget,12,4.50\nUS,widget,30,4.25\nEU,gadget,5,19.99\nUS,gadget,8,18.50\nAPAC,widget,20,4.40\nEU,widget,7,4.50\nAPAC,gadget,3,21.00\nUS,widget,15,4.25\nWhat is the mean price over the widget rows (each row counted once)?"
+    answer: 4.38
+    tolerance: "exact"
+    check: "st.mean([F(p) for _, k, _, p in [('EU', 'widget', 12, '4.50'), ('US', 'widget', 30, '4.25'), ('EU', 'gadget', 5, '19.99'), ('US', 'gadget', 8, '18.50'), ('APAC', 'widget', 20, '4.40'), ('EU', 'widget', 7, '4.50'), ('APAC', 'gadget', 3, '21.00'), ('US', 'widget', 15, '4.25')] if k == 'widget'])"
+  - id: b03
+    section: tables
+    prompt: "Here are our orders as CSV:\nregion,product,units,price\nEU,widget,12,4.50\nUS,widget,30,4.25\nEU,gadget,5,19.99\nUS,gadget,8,18.50\nAPAC,widget,20,4.40\nEU,widget,7,4.50\nAPAC,gadget,3,21.00\nUS,widget,15,4.25\nGrouping by region, how many units in total did the US sell?"
+    answer: 53
+    tolerance: "exact"
+    check: "sum(u for r, _, u, _ in [('EU', 'widget', 12, '4.50'), ('US', 'widget', 30, '4.25'), ('EU', 'gadget', 5, '19.99'), ('US', 'gadget', 8, '18.50'), ('APAC', 'widget', 20, '4.40'), ('EU', 'widget', 7, '4.50'), ('APAC', 'gadget', 3, '21.00'), ('US', 'widget', 15, '4.25')] if r == 'US')"
+  - id: b04
+    section: tables
+    prompt: "Here are our orders as CSV:\nregion,product,units,price\nEU,widget,12,4.50\nUS,widget,30,4.25\nEU,gadget,5,19.99\nUS,gadget,8,18.50\nAPAC,widget,20,4.40\nEU,widget,7,4.50\nAPAC,gadget,3,21.00\nUS,widget,15,4.25\nHow many orders (rows) have at least 10 units?"
+    answer: 4
+    tolerance: "exact"
+    check: "len([u for _, _, u, _ in [('EU', 'widget', 12, '4.50'), ('US', 'widget', 30, '4.25'), ('EU', 'gadget', 5, '19.99'), ('US', 'gadget', 8, '18.50'), ('APAC', 'widget', 20, '4.40'), ('EU', 'widget', 7, '4.50'), ('APAC', 'gadget', 3, '21.00'), ('US', 'widget', 15, '4.25')] if u >= 10])"
+  - id: b05
+    section: tables
+    prompt: "Here are our orders as CSV:\nregion,product,units,price\nEU,widget,12,4.50\nUS,widget,30,4.25\nEU,gadget,5,19.99\nUS,gadget,8,18.50\nAPAC,widget,20,4.40\nEU,widget,7,4.50\nAPAC,gadget,3,21.00\nUS,widget,15,4.25\nIn a pivot table of revenue (units times price) with a row per region and a column per product, what is in the US row, widget column?"
+    answer: 191.25
+    tolerance: "exact"
+    check: "sum(u * F(p) for r, k, u, p in [('EU', 'widget', 12, '4.50'), ('US', 'widget', 30, '4.25'), ('EU', 'gadget', 5, '19.99'), ('US', 'gadget', 8, '18.50'), ('APAC', 'widget', 20, '4.40'), ('EU', 'widget', 7, '4.50'), ('APAC', 'gadget', 3, '21.00'), ('US', 'widget', 15, '4.25')] if (r, k) == ('US', 'widget'))"
+  - id: b06
+    section: tables
+    prompt: "Employees (CSV):\nid,name,dept_id,salary\n1,Ann,10,52000\n2,Bob,20,61000\n3,Carla,10,58000\n4,Dan,30,47000\n5,Eve,20,66000\n6,Finn,10,49500\nDepartments (CSV):\ndept_id,dept\n10,Research\n20,Sales\n30,Support\nWhat is the total salary of the employees in the Research department?"
+    answer: 159500
+    tolerance: "exact"
+    check: "sum(s for _, _, d, s in [(1, 'Ann', 10, 52000), (2, 'Bob', 20, 61000), (3, 'Carla', 10, 58000), (4, 'Dan', 30, 47000), (5, 'Eve', 20, 66000), (6, 'Finn', 10, 49500)] for d2, name in [(10, 'Research'), (20, 'Sales'), (30, 'Support')] if d == d2 and name == 'Research')"
+  - id: b07
+    section: tables
+    prompt: "Response times in milliseconds, as records: [{\"req\": 1, \"ms\": 12.5}, {\"req\": 2, \"ms\": 8.1}, {\"req\": 3, \"ms\": 15.0}, {\"req\": 4, \"ms\": 9.7}, {\"req\": 5, \"ms\": null}, {\"req\": 6, \"ms\": 11.2}, {\"req\": 7, \"ms\": 7.9}, {\"req\": 8, \"ms\": 13.4}, {\"req\": 9, \"ms\": 10.0}]. Request 5 has no time recorded. What is the median response time of the requests that have one?"
+    answer: 10.6
+    tolerance: "exact"
+    check: "st.median([F('12.5'), F('8.1'), F('15.0'), F('9.7'), F('11.2'), F('7.9'), F('13.4'), F('10.0')])"
+  - id: b08
+    section: tables
+    prompt: "Here are our orders as CSV:\nregion,product,units,price\nEU,widget,12,4.50\nUS,widget,30,4.25\nEU,gadget,5,19.99\nUS,gadget,8,18.50\nAPAC,widget,20,4.40\nEU,widget,7,4.50\nAPAC,gadget,3,21.00\nUS,widget,15,4.25\nWhich region has the highest average revenue per order (units times price, averaged over that region's rows)? Answer with the region code."
+    answer: "US"
+    tolerance: "exact"
+    check: "max((st.mean([u * F(p) for r2, _, u, p in [('EU', 'widget', 12, '4.50'), ('US', 'widget', 30, '4.25'), ('EU', 'gadget', 5, '19.99'), ('US', 'gadget', 8, '18.50'), ('APAC', 'widget', 20, '4.40'), ('EU', 'widget', 7, '4.50'), ('APAC', 'gadget', 3, '21.00'), ('US', 'widget', 15, '4.25')] if r2 == r]), r) for r in ('EU', 'US', 'APAC'))[1]"
+  # --- word problems that mix the sections ---
+  - id: w2_01
+    section: word
+    prompt: "Three production lines report (CSV):\nline,produced,defects\nA,400,6\nB,250,9\nC,350,5\nTake the overall defect rate (all defects over all parts produced) as the chance that any one part is defective, independently. In a random sample of 20 parts, what is the probability of at least 2 defective parts, to 4 decimal places?"
+    answer: 0.0599
+    tolerance: "exact"
+    check: "rhu(1 - sum(comb(20, k) * F(20, 1000) ** k * (1 - F(20, 1000)) ** (20 - k) for k in range(2)), 4)"
+  - id: w2_02
+    section: word
+    prompt: "A ball's height in metres was measured at times 0, 0.5, 1, 1.5 and 2 seconds: 1.5, 5.9, 8.0, 7.6 and 4.8. Fit a quadratic in time to these by least squares. At what time after launch (the positive time) does the fitted curve reach height 0? Give seconds to 3 decimal places."
+    answer: 2.468
+    tolerance: "exact"
+    check: "rhu((lambda p: max((-float(p[1]) + s * math.sqrt(float(p[1] ** 2 - 4 * p[0] * p[2]))) / (2 * float(p[0])) for s in (1, -1)))(polyfit([0, F('0.5'), 1, F('1.5'), 2], [F('1.5'), F('5.9'), F('8.0'), F('7.6'), F('4.8')], 2)), 3)"
+  - id: w2_03
+    section: word
+    prompt: "A series circuit has a 40 ohm resistor, a 0.2 H inductor and a 100 microfarad capacitor, driven by a 230 V (amplitude) source at 50 Hz. What is the amplitude of the current, in amperes, to 3 decimal places?"
+    answer: 4.545
+    tolerance: "exact"
+    check: "rhu(230 / abs(complex(40, 2 * math.pi * 50 * 0.2 - 1 / (2 * math.pi * 50 * 100e-6))), 3)"
+  - id: w2_04
+    section: word
+    prompt: "Eight measurements of a part's length in mm: 4.8, 5.1, 5.3, 4.9, 5.0, 5.4, 5.2, 4.7. Assuming they come from a normal distribution, what is the upper end of the two-sided 95% confidence interval for the mean (using the t distribution), in mm to 3 decimal places?"
+    answer: 5.255
+    tolerance: "exact"
+    check: "rhu(st.mean([4.8, 5.1, 5.3, 4.9, 5.0, 5.4, 5.2, 4.7]) + quantile(lambda t: tcdf(t, 7), 0.975, 0, 50) * st.stdev([4.8, 5.1, 5.3, 4.9, 5.0, 5.4, 5.2, 4.7]) / math.sqrt(8), 3)"
