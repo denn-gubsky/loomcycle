@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 const PACKAGES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** The arguments each router entry point takes when given its options. */
-const ARITY: Record<string, number> = { onMessage: 4, onVoice: 4, onCardAction: 4 };
+const ARITY: Record<string, number> = { onMessage: 4, onVoice: 4, onFile: 4, onCardAction: 4 };
 
 /** The marker that excuses a call: the platform gives no date there. */
 const NO_DATE = "census: no date";
@@ -88,7 +88,7 @@ function sites(platform: string): Site[] {
   for (const file of sources(path.join(PACKAGES, platform, "src"))) {
     const src = readFileSync(file, "utf8");
     const lines = src.split("\n");
-    for (const m of src.matchAll(/\brouter\.(onMessage|onVoice|onCardAction)\(/g)) {
+    for (const m of src.matchAll(/\brouter\.(onMessage|onVoice|onFile|onCardAction)\(/g)) {
       const open = m.index! + m[0].length - 1;
       const line = src.slice(0, m.index).split("\n").length;
       const here = lines[line - 1] ?? "";
