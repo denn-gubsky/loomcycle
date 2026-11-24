@@ -295,10 +295,11 @@ func TestFork_CarriesTheSourcesEgressRoutes(t *testing.T) {
 	}
 }
 
-// A host-engine workspace reaches its routes at a loopback port the core
-// does not know, so a redirect relayed to it points at the route relative to
-// the root; a container's session reaches them at http://egress/.
-func TestEgress_AHostEngineWorkspaceGetsRootRelativeRedirects(t *testing.T) {
+// A host-engine workspace reaches its routes at a loopback port and secret
+// the core does not know, so a redirect relayed to it points at the route
+// relative to the page asked; a container's session reaches them at
+// http://egress/.
+func TestEgress_AHostEngineWorkspaceGetsPageRelativeRedirects(t *testing.T) {
 	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
 	files := newCountingUpstream(t)
 	var target string
@@ -312,7 +313,7 @@ func TestEgress_AHostEngineWorkspaceGetsRootRelativeRedirects(t *testing.T) {
 		"files": {URL: files.URL + "/dl/"},
 	}))
 	for _, c := range []struct{ engine, want string }{
-		{"host", "/files/pkg.tgz"},
+		{"host", "../files/pkg.tgz"},
 		{"container", "http://egress/files/pkg.tgz"},
 	} {
 		row := store.WorkspaceRow{ID: "ws_" + c.engine, TenantID: "acme", UserID: "alice", OwnerRunID: "run-x", Engine: c.engine, State: store.WorkspaceReady, Egress: []string{"a", "files"}}

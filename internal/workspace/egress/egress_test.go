@@ -672,19 +672,21 @@ func TestProxy_PassesAnNpmScopedNameOnlyInItsOwnForm(t *testing.T) {
 	}
 }
 
-// A grant's Base is where its rewritten links and relayed redirects point:
-// a host-engine workspace reaches its routes at a loopback port of its own,
-// so the core answers it with links relative to the root, which resolve
-// against whatever address the session asked.
-func TestProxy_AGrantsBaseIsWhereRewrittenLinksAndRedirectsPoint(t *testing.T) {
+// A grant with RelativeBase gets its rewritten links and relayed redirects
+// relative to the page asked for: a host-engine workspace reaches its routes
+// at http://127.0.0.1:<port>/<secret>/, an address the core does not know,
+// so a link climbs from the page back to that base and down into the other
+// route. The climb counts the page's own segments under the base: the route
+// and each "/" of its path (an npm scope's %2f is no separator).
+func TestProxy_ARelativeBaseGrantGetsLinksAndRedirectsRelativeToThePage(t *testing.T) {
 	p, _ := pypiProxy(t)
 	g := grantOf(Route{Name: "pypi", URL: "https://pypi.org/"}, Route{Name: "pypi-files", URL: "https://files.pythonhosted.org/"})
-	g.Base = "/"
-	resp, err := do(t, p, g, Request{Route: "pypi", Path: "simple/pkg/"})
+	g.RelativeBase = true
+	resp, err := do(t, p, g, Request{Route: "pypi", Path: "simple/pkg/?format=json"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if body, want := readAll(t, resp), `<a href="/pypi-files/packages/ab/cd/pkg-1.0.tar.gz#sha256=0123">pkg-1.0.tar.gz</a>`; body != want {
+	if body, want := readAll(t, resp), `<a href="../../../pypi-files/packages/ab/cd/pkg-1.0.tar.gz#sha256=0123">pkg-1.0.tar.gz</a>`; body != want {
 		t.Fatalf("body = %q, want %q", body, want)
 	}
 
@@ -694,12 +696,18 @@ func TestProxy_AGrantsBaseIsWhereRewrittenLinksAndRedirectsPoint(t *testing.T) {
 	})
 	rp, _ := newTestProxy(t, nil, nil)
 	rg := grantOf(Route{Name: "a", URL: up.routeURL("")}, Route{Name: "files", URL: other.routeURL("dl/")})
-	rg.Base = "/"
-	resp, err = do(t, rp, rg, Request{Route: "a", Path: "x"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := resp.Header.Get("Location"); got != "/files/pkg.tgz?sig=1" {
-		t.Fatalf("Location = %q, want a root-relative one", got)
+	rg.RelativeBase = true
+	for path, want := range map[string]string{
+		"x":            "../files/pkg.tgz?sig=1",
+		"@scope%2fpkg": "../files/pkg.tgz?sig=1",
+		"a/b/c":        "../../../files/pkg.tgz?sig=1",
+	} {
+		resp, err = do(t, rp, rg, Request{Route: "a", Path: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := resp.Header.Get("Location"); got != want {
+			t.Errorf("from %s: Location = %q, want %q", path, got, want)
+		}
 	}
 }

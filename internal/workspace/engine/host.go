@@ -34,7 +34,8 @@ type Host struct {
 	Commands []string
 	// Egress, when set, serves each workspace's routes on a loopback port
 	// of its own, opened at its first command, closed by Forget, and named
-	// in its commands' environment (host_egress.go). Not a boundary.
+	// in its commands' environment with the port's secret (host_egress.go).
+	// Not a boundary.
 	Egress func(workspace string) http.Handler
 
 	egressMu sync.Mutex

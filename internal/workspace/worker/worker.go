@@ -83,8 +83,8 @@ type Options struct {
 	Container engine.ContainerOptions
 	// HostEgress gives each workspace of a host worker a loopback port its
 	// commands reach their routes at (LOOMCYCLE_WORKSPACE_HOST_EGRESS; RFC
-	// GW P4 plan O13). Not a boundary: every process on the host can reach
-	// the port (engine.Host).
+	// GW P4 plan O13). Not a boundary: the port takes a per-workspace
+	// secret, which this user's own processes can read (engine.Host).
 	HostEgress bool
 	// hostEgress is the handler a host workspace's port serves, set by
 	// wireEgress.

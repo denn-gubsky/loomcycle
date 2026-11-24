@@ -68,8 +68,8 @@ func runWorkspaceWorker(dispatcher, id string, parentPID int, stderr io.Writer) 
 		Root:         strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ROOT")),
 		Engine:       strings.TrimSpace(os.Getenv("LOOMCYCLE_WORKSPACE_ENGINE")),
 		Container:    container,
-		// Not a boundary (engine.Host): every process on the host reaches
-		// a workspace's port while the workspace is held here.
+		// Not a boundary (engine.Host): the port takes a per-workspace
+		// secret, which this user's own processes can read.
 		HostEgress:   os.Getenv("LOOMCYCLE_WORKSPACE_HOST_EGRESS") == "1",
 		Capacity:     capacity,
 		IdleStreams:  streams,

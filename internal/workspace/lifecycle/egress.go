@@ -83,10 +83,10 @@ func (m *Manager) Egress(ctx context.Context, row store.WorkspaceRow, req egress
 	}
 	if row.Engine == workspace.EngineHost {
 		// The host engine's session reaches its routes at a loopback port
-		// of its worker's choosing (engine.Host), which the core does not
-		// know: links it rewrites and redirects it relays point at the
-		// route relative to the root of whatever address the session asked.
-		g.Base = "/"
+		// and secret of its worker's making (engine.Host), which the core
+		// does not know: links it rewrites and redirects it relays point at
+		// the route relative to the page the session asked.
+		g.RelativeBase = true
 	}
 	return m.proxy.Do(ctx, g, req)
 }

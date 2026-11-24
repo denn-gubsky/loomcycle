@@ -2,32 +2,69 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/safego"
 )
 
-// A host workspace's egress (RFC GW §6.3; P4 plan O13).
+// A host workspace's egress (RFC GW §6.3; P4 plan O13, O31).
 //
 // The host engine is not a sandbox: its commands run with the host's own
 // network. The loopback port here is a convenience, so a script and the
-// package managers reach a workspace's routes the same way on both engines
-// (http://<base>/<route>/…), with the core adding a route's credential. It is
-// NOT a boundary: the port is open to every process on this host, of any
-// user, for as long as the workspace is held here, and a request to it is
-// sent as that workspace's (its routes, its rate and byte budget, its
-// credentials). It is served only when the operator turns it on
-// (LOOMCYCLE_WORKSPACE_HOST_EGRESS).
+// package managers reach a workspace's routes the same way on both engines,
+// with the core adding a route's credential. The port answers only a request
+// that names it as its Host (127.0.0.1:<port>, so a web page that a rebound
+// DNS name pointed here is refused) and whose path starts with a secret made
+// fresh each time the port opens, handed to the workspace's commands only in
+// their environment (LOOMCYCLE_EGRESS=http://127.0.0.1:<port>/<secret>/).
+// That keeps out a browser and another user's processes. It does not keep out
+// this user's own processes, which can read a command's environment: other
+// workspaces on the same host engine included. It is served only when the
+// operator turns it on (LOOMCYCLE_WORKSPACE_HOST_EGRESS).
 
 // hostEgress is one workspace's loopback listener.
 type hostEgress struct {
 	srv  *http.Server
 	base string
+}
+
+// egressSecretBytes is the size of a port's secret: 32 random bytes, 43
+// characters of base64url.
+const egressSecretBytes = 32
+
+// guardEgress serves next only a request for host (the listener's own
+// 127.0.0.1:<port>) whose path starts with /<secret>/, which it strips: next
+// sees /<route>/<path> as a container session's request reads. Anything else
+// is a bare 403 that names nothing, so it echoes no part of the secret.
+func guardEgress(host, secret string, next http.Handler) http.Handler {
+	want := []byte(secret)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		first, rest, ok := strings.Cut(strings.TrimPrefix(r.RequestURI, "/"), "/")
+		if r.Host != host || !strings.HasPrefix(r.RequestURI, "/") || !ok ||
+			subtle.ConstantTimeCompare([]byte(first), want) != 1 {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		r2 := r.Clone(r.Context())
+		r2.RequestURI = "/" + rest
+		u, err := url.ParseRequestURI(r2.RequestURI)
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		r2.URL = u
+		next.ServeHTTP(w, r2)
+	})
 }
 
 // egressEnv is what a workspace's commands get to reach its routes: its
@@ -63,14 +100,21 @@ func (h *Host) egressEnvFor(workspace string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening the workspace's egress port: %w", err)
 	}
+	raw := make([]byte, egressSecretBytes)
+	if _, err := rand.Read(raw); err != nil {
+		_ = l.Close()
+		return nil, fmt.Errorf("making the workspace's egress secret: %w", err)
+	}
+	secret := base64.RawURLEncoding.EncodeToString(raw)
+	addr := l.Addr().String()
 	srv := &http.Server{
-		Handler:           h.Egress(workspace),
+		Handler:           guardEgress(addr, secret, h.Egress(workspace)),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    64 << 10,
 		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelWarn),
 	}
-	e := &hostEgress{srv: srv, base: "http://" + l.Addr().String() + "/"}
+	e := &hostEgress{srv: srv, base: "http://" + addr + "/" + secret + "/"}
 	if h.egress == nil {
 		h.egress = map[string]*hostEgress{}
 	}

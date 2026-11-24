@@ -3,9 +3,11 @@ package engine
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -57,8 +59,8 @@ func TestHost_EachWorkspaceReachesItsRoutesAtALoopbackPortOfItsOwn(t *testing.T)
 	e1, e2 := envOf(t, h, "w1"), envOf(t, h, "w2")
 	base := e1["LOOMCYCLE_EGRESS"]
 	u, err := url.Parse(base)
-	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || u.Path != "/" {
-		t.Fatalf("LOOMCYCLE_EGRESS = %q, want http://127.0.0.1:<port>/", base)
+	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" || !strings.HasSuffix(u.Path, "/") {
+		t.Fatalf("LOOMCYCLE_EGRESS = %q, want http://127.0.0.1:<port>/<secret>/", base)
 	}
 	want := map[string]string{
 		"PIP_INDEX_URL":       base + "pypi/simple/",
@@ -130,5 +132,108 @@ func TestHost_WithoutEgressACommandGetsNoEgressEnvironment(t *testing.T) {
 		if v, ok := e[k]; ok {
 			t.Errorf("%s = %q, want unset", k, v)
 		}
+	}
+}
+
+// countingEcho is hostEcho that counts the requests that reached it: what
+// would have gone on to the core.
+func countingEcho(n *int32) func(string) http.Handler {
+	return func(ws string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(n, 1)
+			_, _ = io.WriteString(w, ws+" "+r.RequestURI)
+		})
+	}
+}
+
+// rawGet sends a GET to addr with the given Host header and request target.
+func rawGet(t *testing.T, addr, host, target string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = host
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+// The port's address carries a secret of the workspace's own after the
+// port: a request without it, or with another, is refused before anything
+// reaches the core, and the refusal does not echo it. A browser page that a
+// rebound name points at the port, or another process that guesses the
+// port, holds no secret.
+func TestHost_AnEgressRequestWithoutTheWorkspacesSecretIsRefused(t *testing.T) {
+	var n int32
+	h := &Host{Egress: countingEcho(&n)}
+	t.Cleanup(func() { _ = h.Close() })
+	base := envOf(t, h, "w1")["LOOMCYCLE_EGRESS"]
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := strings.Trim(u.Path, "/")
+	if len(secret) < 32 || strings.Contains(secret, "/") {
+		t.Fatalf("LOOMCYCLE_EGRESS = %q, want http://127.0.0.1:<port>/<secret>/ with a long secret", base)
+	}
+	for _, target := range []string{"/pypi/simple/", "/" + strings.Repeat("a", len(secret)) + "/pypi/simple/", "/" + secret[:len(secret)-1] + "/pypi/simple/", "/" + secret, "/" + secret + "x/pypi/"} {
+		code, body := rawGet(t, u.Host, u.Host, target)
+		if code != http.StatusForbidden {
+			t.Errorf("%s: status %d, want 403", target, code)
+		}
+		if strings.Contains(body, secret) {
+			t.Errorf("%s: the refusal echoes the secret", target)
+		}
+	}
+	if got := atomic.LoadInt32(&n); got != 0 {
+		t.Fatalf("%d requests without the secret reached the core", got)
+	}
+	code, body := rawGet(t, u.Host, u.Host, "/"+secret+"/pypi/simple/six/")
+	if code != http.StatusOK || body != "w1 /pypi/simple/six/" {
+		t.Fatalf("with the secret = %d %q, want the request passed on without it", code, body)
+	}
+}
+
+// A request whose Host is not the port's own address is refused: a page a
+// rebound DNS name sent here names its own host.
+func TestHost_AnEgressRequestForAnotherHostIsRefused(t *testing.T) {
+	var n int32
+	h := &Host{Egress: countingEcho(&n)}
+	t.Cleanup(func() { _ = h.Close() })
+	u, err := url.Parse(envOf(t, h, "w1")["LOOMCYCLE_EGRESS"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(u.Host)
+	for _, host := range []string{"evil.example", "evil.example:" + port, "localhost:" + port, "127.0.0.1", "127.0.0.1:1"} {
+		if code, _ := rawGet(t, u.Host, host, u.Path+"pypi/simple/"); code != http.StatusForbidden {
+			t.Errorf("Host %q: status %d, want 403", host, code)
+		}
+	}
+	if got := atomic.LoadInt32(&n); got != 0 {
+		t.Fatalf("%d requests for another host reached the core", got)
+	}
+}
+
+// Every workspace's secret is its own, and a port opened again gets a new
+// one.
+func TestHost_EachEgressPortHasASecretOfItsOwn(t *testing.T) {
+	h := &Host{Egress: hostEcho}
+	t.Cleanup(func() { _ = h.Close() })
+	seen := map[string]bool{}
+	for _, ws := range []string{"w1", "w2", "w3"} {
+		u, _ := url.Parse(envOf(t, h, ws)["LOOMCYCLE_EGRESS"])
+		seen[u.Path] = true
+	}
+	_ = h.Forget(context.Background(), "w1")
+	u, _ := url.Parse(envOf(t, h, "w1")["LOOMCYCLE_EGRESS"])
+	seen[u.Path] = true
+	if len(seen) != 4 {
+		t.Fatalf("%d distinct secrets for 4 ports", len(seen))
 	}
 }
