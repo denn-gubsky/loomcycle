@@ -137,7 +137,7 @@ jobs:
           # pre-create step below, which force-refetches and verifies.
           fetch-tags: true
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: "1.26"
           # The runner caches an older patch; take the newest so a stdlib fix lands.
@@ -452,7 +452,7 @@ jobs:
       # goreleaser docker stage. A patch's only artifact IS the image, so with
       # docker publishing off there is nothing more to do (the release page
       # above is still created).
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: vars.DOCKER_PUBLISH_ENABLED == 'true'
         with:
           go-version: "1.26"
