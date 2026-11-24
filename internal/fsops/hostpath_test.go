@@ -208,3 +208,36 @@ func TestVolumeFS_RelAndPathErrNameNoHostPath(t *testing.T) {
 		t.Errorf("%v does not match fs.ErrNotExist", err)
 	}
 }
+
+// The success lines Write and Edit return reach the model too: they name the
+// path as the caller wrote it, never the root's host path or the target a
+// symlinked root resolves to.
+func TestWriteAndEdit_ResultNamesThePathTheCallerWrote(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(base, "link")
+	if err := os.Symlink(real, root); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Write(ctx, root, "", "a.txt", "alpha", 0)
+	if err != nil || out != "wrote 5 bytes to a.txt" {
+		t.Errorf("Write = %q, %v; want %q", out, err, "wrote 5 bytes to a.txt")
+	}
+	out, err = Edit(ctx, root, "", EditRequest{Path: "./a.txt", OldString: "alpha", NewString: "beta"})
+	if err != nil || out != "edited ./a.txt (1 replacement)" {
+		t.Errorf("Edit = %q, %v; want %q", out, err, "edited ./a.txt (1 replacement)")
+	}
+	for _, h := range []string{root, real, resolved} {
+		if strings.Contains(out, h) {
+			t.Errorf("result %q names the host path %q", out, h)
+		}
+	}
+}
