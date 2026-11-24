@@ -27,7 +27,7 @@ import { parseCardAction, renderCard } from "./cards.js";
 import type { TeamsConfig } from "./config.js";
 import { groupsOf, identify, uninstalledSub } from "./identity.js";
 import { routeMessage, seenOf } from "./inbound.js";
-import { teamsVoicePort } from "./voice.js";
+import { teamsFilePort, teamsVoicePort } from "./voice.js";
 
 const ADAPTIVE_CARD = "application/vnd.microsoft.card.adaptive";
 
@@ -159,6 +159,9 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
       typing: (ref) => app.sendTo(ref, { type: "typing" }),
       log: opts.logger ?? consoleLogger,
     }),
+    // Attached files (RFC HE), from the same hosts as recordings. The core
+    // uses it only with BRIDGE_FILES=1.
+    files: teamsFilePort({ hosts: cfg.fileHosts, fetch: opts.fileFetch, log: opts.logger ?? consoleLogger }),
     async start(ctx) {
       app.on("message", async ({ activity, ref }) => {
         // Card submits from older clients arrive as messages with no text.
@@ -170,6 +173,7 @@ export function createTeamsBridge(cfg: TeamsConfig, opts: TeamsBridgeOptions = {
           text,
           activity,
           ctx.config.voice?.enabled === true,
+          ctx.config.files?.enabled === true,
         );
       });
       app.on("card.action", async ({ activity, ref }) => {

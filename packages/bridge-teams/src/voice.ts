@@ -1,5 +1,6 @@
 // Voice in for Teams (RFC GA §5.4, decision D12): an audio FILE a person
-// attaches in their 1:1 chat with the bot. Teams offers no voice-note button
+// attaches in their 1:1 chat with the bot. The same download carries any
+// other attached file to the run's inbox (RFC HE): filesOf, teamsFilePort. Teams offers no voice-note button
 // in a bot chat, and a channel's voice notes are reachable only through
 // tenant-wide Graph rights, so this is the most Teams allows a bot. Replies
 // stay text: the port has no sendVoice.
@@ -9,7 +10,7 @@
 // once, with no credential of ours, and only from the SharePoint hosts the
 // operator allows.
 
-import { downloadPinned, PinnedDownloadError, type Logger, type VoiceIn, type VoicePort } from "@loomcycle/bridge-core";
+import { downloadPinned, PinnedDownloadError, type FileIn, type FilePort, type Logger, type VoiceIn, type VoicePort } from "@loomcycle/bridge-core";
 
 export const FILE_DOWNLOAD_INFO = "application/vnd.microsoft.teams.file.download.info";
 
@@ -57,6 +58,28 @@ export function audioFileOf(attachments: readonly TeamsAttachment[] | undefined)
     return { kind: "audio_file", ref, mime };
   }
   return undefined;
+}
+
+/** What the file port downloads from: the link and the file's own name. */
+export type TeamsFileRef = TeamsAudioRef;
+
+/** filesOf is every attached file an activity carries for the file path
+ *  (RFC HE), in order. With voice on an audio file goes the voice path and
+ *  is left out here; with voice off it is an ordinary file, taken when its
+ *  type is in BRIDGE_FILES_TYPES (decision D4). Teams gives no size up
+ *  front, so the byte cap is applied while reading. */
+export function filesOf(attachments: readonly TeamsAttachment[] | undefined, voiceOn: boolean): FileIn[] {
+  const out: FileIn[] = [];
+  for (const a of attachments ?? []) {
+    if (a.contentType !== FILE_DOWNLOAD_INFO || !a.content || typeof a.content !== "object") continue;
+    const c = a.content as { downloadUrl?: unknown; fileType?: unknown };
+    if (typeof c.downloadUrl !== "string" || !c.downloadUrl) continue;
+    const fileType = typeof c.fileType === "string" ? c.fileType : undefined;
+    if (voiceOn && fileType && AUDIO_FILE_TYPES[fileType.trim().toLowerCase().replace(/^\./, "")]) continue;
+    const ref: TeamsFileRef = { url: c.downloadUrl, ...(a.name ? { name: a.name } : {}) };
+    out.push({ ref, ...(a.name ? { name: a.name } : {}), ...(fileType ? { type: fileType } : {}) });
+  }
+  return out;
 }
 
 /** hostAllowed says a URL is https on a host under one of the suffixes
@@ -109,6 +132,35 @@ export function teamsVoicePort<TRef>(opts: TeamsVoicePortOptions<TRef>): VoicePo
         throw err;
       }
       return { bytes, mime: v.mime ?? "application/octet-stream", ...(ref.name ? { name: ref.name } : {}) };
+    },
+  };
+}
+
+export interface TeamsFilePortOptions {
+  /** Allowed host suffixes (TEAMS_BRIDGE_FILE_HOSTS). */
+  hosts: readonly string[];
+  /** The fetch downloads go through (tests). */
+  fetch?: typeof fetch;
+  /** Where a refused download is logged, with its reason and host. */
+  log?: Logger;
+}
+
+/** teamsFilePort downloads an attached file (RFC HE) the way the voice port
+ *  downloads a recording: the pre-authorised link, no credential, only the
+ *  allowed hosts on every hop, a sign-in page refused, the cap while
+ *  reading. A body over the cap throws a TeamsFileError with reason
+ *  "size", which the core tells the person is too large. */
+export function teamsFilePort(opts: TeamsFilePortOptions): FilePort {
+  const doFetch = opts.fetch ?? fetch;
+  return {
+    async download(f, maxBytes, signal) {
+      const ref = f.ref as TeamsFileRef;
+      try {
+        return { bytes: await download(doFetch, ref.url, opts.hosts, maxBytes, signal) };
+      } catch (err) {
+        if (err instanceof TeamsFileError) opts.log?.warn("teams file download refused", { reason: err.reason, ...err.detail });
+        throw err;
+      }
     },
   };
 }
