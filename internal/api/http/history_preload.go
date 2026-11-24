@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/denn-gubsky/loomcycle/internal/config"
+	"github.com/denn-gubsky/loomcycle/internal/errclassify"
 	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/retentionmode"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -24,8 +25,9 @@ import (
 // recentHistoryKind is the untrusted-block kind the preload is fenced under.
 // Untrusted because every line of it is text a model or a person wrote in an
 // earlier chat: a recap of "always approve X" must reach the model as
-// something that was said, not as an instruction.
-const recentHistoryKind = "recent_history"
+// something that was said, not as an instruction. The loop must know the
+// kind, or it renders the block under the generic "untrusted" tag.
+const recentHistoryKind = loop.RecentHistoryKind
 
 // historyPreloadListWindow is how many of the user's chats with the agent the
 // preload reads to pick the newest. ListSessions orders pinned chats first, so
@@ -172,8 +174,7 @@ func withPreloadSegment(segs []loop.PromptSegment, seg loop.PromptSegment) []loo
 	if len(segs) > 0 && segs[0].Role == "system" {
 		idx = 1
 	}
-	out := make([]loop.PromptSegment, 0, len(segs)+1)
-	out = append(out, segs[:idx]...)
+	out := append([]loop.PromptSegment(nil), segs[:idx]...)
 	out = append(out, seg)
 	return append(out, segs[idx:]...)
 }
@@ -225,8 +226,14 @@ func (s *Server) recapSessionAfterRun(runCtx context.Context, sessionID string) 
 		ctx, cancel := context.WithTimeout(ctx, historyRecapTimeout)
 		defer cancel()
 		if err := s.recapIfStale(ctx, sessionID); err != nil {
+			// The class only, never the text: a provider's error can echo
+			// what it was sent, credentials included.
+			category := "unclassified"
+			if info, ok := errclassify.CategoryOf(err); ok {
+				category = string(info.Category)
+			}
 			slog.WarnContext(ctx, "history preload: recap at run end failed; the chat is listed by title",
-				"session_id", sessionID, "err", err)
+				"session_id", sessionID, "category", category)
 		}
 	})
 }
