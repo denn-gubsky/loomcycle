@@ -5,6 +5,7 @@
 // than run half-configured.
 
 import { trimTrailingSlashes } from "./text.js";
+import { DEFAULT_FILES_CONFIG, FILE_TYPES, normType, type FilesConfig } from "./files.js";
 import { DEFAULT_VOICE_CONFIG, languageHint, type VoiceConfig } from "./voice.js";
 
 export type AccessMode = "isolated" | "tenant";
@@ -54,6 +55,9 @@ export interface SharedConfig {
    *  config built by hand before voice existed still type-checks: absent is
    *  voice off. loadSharedConfig always sets it. */
   voice?: VoiceConfig;
+  /** Files a person attaches (RFC HE), off unless BRIDGE_FILES=1. Optional
+   *  like voice: absent is files off. loadSharedConfig always sets it. */
+  files?: FilesConfig;
 }
 
 export interface GateConfig {
@@ -200,6 +204,7 @@ export function loadSharedConfig(reader: EnvReader, defaults: { port: number; ga
     gateSyncHours,
     ...(reconcileMaxRevokes ? { reconcileMaxRevokes } : {}),
     voice: loadVoiceConfig(reader),
+    files: loadFilesConfig(reader),
   };
   const devProblem = devModeProblem(cfg);
   if (devProblem) reader.problems.push(devProblem);
@@ -226,6 +231,33 @@ export function loadVoiceConfig(reader: EnvReader): VoiceConfig {
     echo: reader.flagOr("BRIDGE_VOICE_ECHO", d.echo),
     label,
     ...(language ? { language } : {}),
+  };
+}
+
+/** The most BRIDGE_FILES_MAX_BYTES may be: loomcycle's default per-file cap
+ *  (LOOMCYCLE_FILE_MAX_BYTES), since the bridge holds the file in memory. */
+export const FILES_MAX_BYTES_CEILING = 64 * 1024 * 1024;
+
+/** loadFilesConfig reads BRIDGE_FILES and its BRIDGE_FILES_* settings. Like
+ *  voice, each setting is checked even with files off. A type the bridge
+ *  cannot check by its bytes is refused here rather than taken by name. */
+export function loadFilesConfig(reader: EnvReader): FilesConfig {
+  const d = DEFAULT_FILES_CONFIG;
+  let types = d.types;
+  if (reader.get("BRIDGE_FILES_TYPES") !== undefined) {
+    types = [...new Set(reader.list("BRIDGE_FILES_TYPES", { lower: true }).map(normType).filter(Boolean))];
+    if (types.length === 0) reader.problems.push("BRIDGE_FILES_TYPES lists no type");
+    for (const t of types) {
+      if (!Object.hasOwn(FILE_TYPES, t)) {
+        reader.problems.push(`BRIDGE_FILES_TYPES: "${t}" is not a type the bridge can check; it takes ${Object.keys(FILE_TYPES).join(", ")}`);
+      }
+    }
+  }
+  return {
+    enabled: reader.flag("BRIDGE_FILES"),
+    maxBytes: reader.int("BRIDGE_FILES_MAX_BYTES", d.maxBytes, 1024, FILES_MAX_BYTES_CEILING),
+    types,
+    maxCount: reader.int("BRIDGE_FILES_MAX_COUNT", d.maxCount, 1, 20),
   };
 }
 

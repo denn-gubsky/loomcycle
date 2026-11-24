@@ -1,6 +1,6 @@
 export { isButtonInput, isVerb, optionLabels, VERB } from "./cards.js";
 export type { CanonicalCard, CardAction, CardButton, CardInput, Verb } from "./cards.js";
-export { ConfigError, devModeProblem, EnvReader, isLoopback, loadSharedConfig, loadVoiceConfig } from "./config.js";
+export { ConfigError, devModeProblem, EnvReader, FILES_MAX_BYTES_CEILING, isLoopback, loadFilesConfig, loadSharedConfig, loadVoiceConfig } from "./config.js";
 export type { AccessMode, Env, SharedConfig } from "./config.js";
 export { Conversation, friendlyError, MAX_DEFERRED, resultCard, UNTRUSTED_KIND, UNTRUSTED_TYPED_ANSWER_TEXT } from "./conversation.js";
 export type { CardResult, ConversationDeps } from "./conversation.js";
@@ -12,13 +12,13 @@ export { sharedSubject } from "./identity.js";
 export type { Identified, RunAs, Scope, Speaker, Trust } from "./identity.js";
 export type { PlatformCapabilities, PlatformInfo } from "./platform.js";
 export { consoleLogger } from "./ports.js";
-export type { AdminClient, BridgePort, ClientFactory, Logger, OutboundActivity, RunClient, StreamLike } from "./ports.js";
+export type { AdminClient, BridgePort, ClientFactory, Logger, OutboundActivity, RunClient, StreamLike, TokenSurface } from "./ports.js";
 export { DEFAULT_MAX_MESSAGE_CHARS, DEFAULT_ROLLOVER_MS, MessageSink, StreamSink } from "./renderer.js";
 export type { MessageSinkOptions, StreamSinkOptions, TurnSink } from "./renderer.js";
 export { ConversationRouter, sentAtOf } from "./router.js";
 export { downloadPinned, PinnedDownloadError } from "./download.js";
 export type { PinnedDownloadOptions, PinnedRefusal } from "./download.js";
-export type { MessageOptions, RouterOptions, SeenMessage } from "./router.js";
+export type { FileMessageOptions, MessageOptions, RouterOptions, SeenMessage } from "./router.js";
 export { createBridge, runCli, voiceSurfaces } from "./start.js";
 export type { Bridge, BridgeAdapter, BridgeContext, BridgeOptions } from "./start.js";
 export { FileStore, MemoryStore, storeFromSpec } from "./store.js";
@@ -49,3 +49,20 @@ export {
   VoiceRefusedError,
 } from "./voice.js";
 export type { VoiceCapabilities, VoiceClient, VoiceConfig, VoiceIn, VoiceOut, VoicePort, VoiceReplyMode } from "./voice.js";
+export {
+  ATTACHED_FILE_LABEL,
+  ATTACHED_FILES_HEADER,
+  announceLine,
+  declaredType,
+  DEFAULT_FILES_CONFIG,
+  extensionOf,
+  FILE_TEXT,
+  FILE_TYPES,
+  fileLine,
+  hasFiles,
+  missingLine,
+  normType,
+  sniff,
+  zipNames,
+} from "./files.js";
+export type { FileClient, FileIn, FilePort, FileRefusal, FilesConfig, InboxPutResult } from "./files.js";

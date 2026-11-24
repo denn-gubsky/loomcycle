@@ -8,5 +8,5 @@ export { conversationSubject, groupsOf, identify, NOT_AVAILABLE_TEXT, personSub,
 export type { ActivityIdentityFields, RefGroupFields } from "./identity.js";
 export { routeMessage } from "./inbound.js";
 export type { MessageFields, MessageRouter } from "./inbound.js";
-export { AUDIO_FILE_TYPES, audioFileOf, DEFAULT_FILE_HOSTS, FILE_DOWNLOAD_INFO, hostAllowed, TeamsFileError, teamsVoicePort } from "./voice.js";
-export type { TeamsAttachment, TeamsAudioRef, TeamsVoicePortOptions } from "./voice.js";
+export { AUDIO_FILE_TYPES, audioFileOf, DEFAULT_FILE_HOSTS, FILE_DOWNLOAD_INFO, filesOf, hostAllowed, TeamsFileError, teamsFilePort, teamsVoicePort } from "./voice.js";
+export type { TeamsAttachment, TeamsAudioRef, TeamsFilePortOptions, TeamsFileRef, TeamsVoicePortOptions } from "./voice.js";

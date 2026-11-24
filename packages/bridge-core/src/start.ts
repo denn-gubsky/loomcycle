@@ -14,7 +14,7 @@ import type { ConversationDeps } from "./conversation.js";
 import { Health } from "./health.js";
 import { close, createBridgeServer, listen, type Route } from "./http.js";
 import type { PlatformCapabilities, PlatformInfo } from "./platform.js";
-import { consoleLogger, type BridgePort, type ClientFactory, type Logger } from "./ports.js";
+import { consoleLogger, type BridgePort, type ClientFactory, type Logger, type TokenSurface } from "./ports.js";
 import type { MessageSinkOptions, StreamSinkOptions } from "./renderer.js";
 import { ConversationRouter, type SeenMessage } from "./router.js";
 import { storeFromSpec, type ConversationStore } from "./store.js";
@@ -22,6 +22,7 @@ import { GateBroker, loadGateKey, type GateKey } from "./gate.js";
 import { retryDelayMs, revokeQueueFromSpec, type RevokeQueue } from "./revokes.js";
 import { statusOf, TokenBroker, type TokenSource } from "./tokens.js";
 import { DEFAULT_VOICE_CONFIG, VoiceInfoCache, type VoiceConfig, type VoicePort } from "./voice.js";
+import { DEFAULT_FILES_CONFIG, type FilePort } from "./files.js";
 
 export interface BridgeContext<TRef> {
   config: SharedConfig;
@@ -61,6 +62,9 @@ export interface BridgeAdapter<TRef> {
   /** Present on a platform that can take voice messages (RFC GA). Used only
    *  with BRIDGE_VOICE=1. */
   voice?: VoicePort<TRef>;
+  /** Present on a platform that can take attached files (RFC HE). Used only
+   *  with BRIDGE_FILES=1. */
+  files?: FilePort;
 }
 
 export interface BridgeOptions<TRef> {
@@ -95,10 +99,19 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
   const health = new Health(adapter.platform.name, opts.now);
   const voiceCfg = cfg.voice ?? DEFAULT_VOICE_CONFIG;
   const voice = voiceCfg.enabled && adapter.voice ? adapter.voice : undefined;
-  const surfaces = voiceSurfaces(voiceCfg, adapter.voice);
+  const spoken = voiceSurfaces(voiceCfg, adapter.voice);
   if (voiceCfg.enabled && !adapter.voice) {
     log.warn("BRIDGE_VOICE=1, but this platform's bridge does not take voice messages; ignoring it");
   }
+  const filesCfg = cfg.files ?? DEFAULT_FILES_CONFIG;
+  const files = filesCfg.enabled && adapter.files ? adapter.files : undefined;
+  if (filesCfg.enabled && !adapter.files) {
+    log.warn("BRIDGE_FILES=1, but this platform's bridge does not take files; ignoring it");
+  }
+  // inbox_put only with files on: a loomcycle older than 1.167 refuses a
+  // surface it does not know, and a bridge with files off must keep working
+  // against one. A gate's issued_token.surfaces ceiling still decides.
+  const surfaces: TokenSurface[] = files ? [...spoken, "inbox_put"] : spoken;
 
   // Every send goes through here, so /healthz knows when the platform last
   // took a message.
@@ -160,6 +173,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
     stream: opts.stream,
     message: opts.message,
     ...(voice ? { voice: { port: voice, config: voiceCfg, info: new VoiceInfoCache(opts.now) } } : {}),
+    ...(files ? { files: { port: files, config: filesCfg } } : {}),
   };
   const now = opts.now ?? Date.now;
   const gateName = cfg.gate?.name ?? "";
@@ -364,7 +378,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
         syncTimer = setInterval(() => void reconcile(), syncHours * 3_600_000);
         syncTimer.unref?.();
       }
-      log.info(`${name} listening`, { port: cfg.port, agent: cfg.agent, voice: voice ? surfaces.join(",") : "off" });
+      log.info(`${name} listening`, { port: cfg.port, agent: cfg.agent, voice: voice ? spoken.join(",") : "off", files: files ? "on" : "off" });
     },
     async stop() {
       if (sweeper) clearInterval(sweeper);

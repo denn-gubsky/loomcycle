@@ -140,6 +140,11 @@ type AuthIdentityMapConfig struct {
 	// user a bridge made before it was a gate: prefix + the subject value,
 	// ':' read as '-' ("42" → "telegram-42", "conv:ab" → "telegram-conv-ab").
 	LegacySubjectPrefix string `yaml:"legacy_subject_prefix,omitempty"`
+	// SameSubjectAs (external gates only, RFC HD) names another identity
+	// gate keyed by the same identifier: a first login for "<value>" links
+	// to the user "<same_subject_as>:<value>" when that user signed in
+	// through the named gate, so one person is one user across both.
+	SameSubjectAs string `yaml:"same_subject_as,omitempty"`
 }
 
 // AuthIdentityGroupsConfig is identity_map.groups.
@@ -187,6 +192,10 @@ type AuthIdentityMap struct {
 	AuthoritativeForUsers bool
 	// LegacySubjectPrefix: see AuthIdentityMapConfig.LegacySubjectPrefix.
 	LegacySubjectPrefix string
+	// SameSubjectAs: see AuthIdentityMapConfig.SameSubjectAs. Checked
+	// against the named gate in checkSameSubjectAs, once every gate is
+	// resolved.
+	SameSubjectAs string
 }
 
 // defaultLifecycle is the deployment floor when auth.lifecycle is absent.
@@ -433,6 +442,23 @@ func resolveIdentityMap(gate string, m *AuthIdentityMapConfig, floor AuthNewUser
 		}
 		out.LegacySubjectPrefix = p
 	}
+	if n := strings.TrimSpace(m.SameSubjectAs); n != "" {
+		if !authGateNameRE.MatchString(n) {
+			return nil, fmt.Errorf("%s.same_subject_as: %q is not a gate name", where, n)
+		}
+		if n == gate {
+			return nil, fmt.Errorf("%s.same_subject_as: names this gate itself", where)
+		}
+		if !trusted {
+			// It joins this gate's identities to users another gate made, so
+			// only a gate an admin marked trusted may.
+			return nil, fmt.Errorf("%s.same_subject_as: needs trusted: true on the gate", where)
+		}
+		if out.Tenant == "" {
+			return nil, fmt.Errorf("%s.same_subject_as: needs a single tenant (tenant:, not tenant_claim)", where)
+		}
+		out.SameSubjectAs = n
+	}
 	return out, nil
 }
 
@@ -512,4 +538,47 @@ func checkSubjectClaim(gate, kind, preset string, m *AuthIdentityMapConfig) erro
 func validIdentityTenant(t string) bool {
 	// "_shared" and other leading-underscore ids are reserved path segments.
 	return identityTenantRE.MatchString(t)
+}
+
+// checkSameSubjectAs checks each identity_map.same_subject_as against the
+// gate it names (RFC HD). The two gates must agree on what the value is, or a
+// first login would join two people:
+//   - the named gate is an identity gate that does not itself link by
+//     same_subject_as (no chains), in the same single tenant;
+//   - it keys on a claim other than sub, because a sub may be pairwise (one
+//     per application, as on Entra), so two gates never share it;
+//   - an OIDC gate pins one issuer: an Entra oid is unique only within one
+//     directory, and a gate admitting several could hand two people the same
+//     value.
+func checkSameSubjectAs(gates []AuthGate) error {
+	byName := make(map[string]AuthGate, len(gates))
+	for _, g := range gates {
+		byName[g.Name] = g
+	}
+	for _, g := range gates {
+		if g.Identity == nil || g.Identity.SameSubjectAs == "" {
+			continue
+		}
+		where := "auth.gates." + g.Name + ".identity_map.same_subject_as"
+		n := g.Identity.SameSubjectAs
+		named, ok := byName[n]
+		switch {
+		case !ok:
+			return fmt.Errorf("%s: no gate named %q", where, n)
+		case named.Identity == nil:
+			return fmt.Errorf("%s: gate %q has no identity_map, so it makes no users to link to", where, n)
+		case named.Identity.SameSubjectAs != "":
+			return fmt.Errorf("%s: gate %q links by same_subject_as itself; name the gate that makes the users", where, n)
+		case named.Identity.Tenant != g.Identity.Tenant:
+			return fmt.Errorf("%s: gate %q maps tenant %q, this gate %q; both must map the same single tenant",
+				where, n, named.Identity.Tenant, g.Identity.Tenant)
+		case named.Identity.SubjectClaim == defaultSubjectClaim:
+			return fmt.Errorf("%s: gate %q keys its users on sub, which may differ per application; "+
+				"set its identity_map.subject to the shared identifier (for Entra, subject: oid)", where, n)
+		case named.OIDC != nil && named.OIDC.IssuerTemplate:
+			return fmt.Errorf("%s: gate %q admits several issuers (allowed_tids lists more than one tenant); "+
+				"the value is unique only within one, so it must admit exactly one", where, n)
+		}
+	}
+	return nil
 }

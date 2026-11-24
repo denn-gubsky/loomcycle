@@ -10,9 +10,11 @@ import type {
   ContinueOptions,
   MintedUserToken,
   RunOptions,
+  TokenSurface as ClientTokenSurface,
 } from "@loomcycle/client";
 
 import type { CanonicalCard } from "./cards.js";
+import type { FileClient } from "./files.js";
 import type { VoiceClient } from "./voice.js";
 
 /** The run-plane calls a bridge makes with a user's own token. */
@@ -41,19 +43,25 @@ export interface AdminClient {
       name?: string;
       maxActive?: number;
       agents?: string[];
-      /** Off-run surfaces beside agents: "speech", "transcription" (RFC GA).
-       *  loomcycle 1.141 and later; an older server refuses the key. */
-      surfaces?: Array<"speech" | "transcription">;
+      /** Off-run surfaces beside agents: "speech", "transcription" (RFC GA,
+       *  loomcycle 1.141 and later), "inbox_put" (RFC HE, 1.167 and later).
+       *  An older server refuses a surface it does not know. Typed as the
+       *  installed client types it, so any LoomcycleClient still fits. */
+      surfaces?: ClientTokenSurface[];
       overrides?: "none" | string[];
       rate?: { perMinute: number; burst?: number };
     },
   ): Promise<MintedUserToken>;
 }
 
+/** An off-run surface a user token may be granted beside its agent. */
+export type TokenSurface = "speech" | "transcription" | "inbox_put";
+
 /** Builds a loomcycle client authenticated with the given bearer. The speech
- *  calls are optional so a client double written before voice still fits;
- *  `LoomcycleClient` has them all, and a bridge with voice on needs them. */
-export type ClientFactory = (token: string) => RunClient & AdminClient & Partial<VoiceClient>;
+ *  calls and the inbox put are optional so a client double written before
+ *  them still fits, and so does a published client older than the inbox put
+ *  (1.167.0): a bridge with voice or files on needs them, and says so. */
+export type ClientFactory = (token: string) => RunClient & AdminClient & Partial<VoiceClient> & Partial<FileClient>;
 
 /** What a bridge sends to the platform: plain text, a typing indicator, or a
  *  card. The platform's port renders the card in its own format. */

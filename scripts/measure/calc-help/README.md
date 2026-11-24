@@ -25,6 +25,46 @@ Python expression that computed the answer with `fractions`, `decimal`,
 was read off Calc. `test_drive.py` evaluates every `check` and fails if an
 answer differs from it.
 
+### The second set: `tasks2.yaml`
+
+47 questions on the sections RFC GY P2–P3 added — 9 `matrices` (solving 2×2
+and 3×3 systems, a determinant, an inverse element, a product element, a
+least-squares intercept, an eigenvalue, rank, trace), 9 `distributions`
+(normal tail and percentile, t and chi-squared quantiles, a t p-value,
+binomial, Poisson, exponential, uniform), 9 `calculus` (integrals, a
+derivative, roots on a bracket, a minimum's position, a quadratic fit,
+polynomial value, linear interpolation), 8 `complex` (modulus, product,
+quotient, roots of a quadratic with a negative discriminant, a power, the
+argument in degrees, a parallel impedance), 8 `tables` (a filtered sum and
+mean, a group total, a row count, a pivot cell, a join, a median past an empty
+cell, the best group by average — the data is in the prompt, as CSV or
+records) and 4 `word` problems mixing them. The ids (`m…`, `p…`, `c…`, `x…`,
+`b…`, `w2_…`) never collide with `tasks.yaml`'s. Each answer has one form:
+the prompt names which root, eigenvalue or part of a complex number, the
+unit and the rounding.
+
+Its checks use `test_drive.py`'s `ORACLE2`: matrices over `Fraction` (solve,
+determinant, inverse, rank, least squares, polynomial fit), the closed-form
+eigenvalues of a symmetric 2×2, the normal cdf from `math.erf`, the t and
+chi-squared cdfs from the regularized incomplete beta and gamma (series and a
+continued fraction on `math.lgamma`), quantiles and roots by bisection,
+Simpson's rule for an integral with no closed form, and `cmath`. Standard
+library only, so CI needs no NumPy. Every answer was also cross-checked with
+NumPy 1.26 (linear algebra, `np.roots`, `np.polyfit`, `np.interp`, and the
+distributions integrated from their densities), never with Calc.
+
+Run it like the first set, adding `--tasks`:
+
+```sh
+python3 -I scripts/measure/calc-help/drive.py --tasks scripts/measure/calc-help/tasks2.yaml --plan
+python3 -I scripts/measure/calc-help/drive.py --tasks scripts/measure/calc-help/tasks2.yaml \
+  --provider anthropic --model claude-haiku-5-5 --max-usd 2 --out "$OUT/haiku-2"
+```
+
+Keep its `--out` apart from the first set's: `--summarize` reads one results
+file, and the sections differ. 47 tasks cost about $0.12 on Haiku at the
+estimate below (ceiling $0.94).
+
 ## The arms
 
 One agent, `calc-measure` in `loomcycle.yaml`, holds only `Calc` and `Context`

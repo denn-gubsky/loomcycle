@@ -272,6 +272,17 @@ func (s *Server) completeLink(w http.ResponseWriter, r *http.Request, cfg config
 		refuse("no usable subject")
 		return
 	}
+	// A subject in this gate's own namespace ("<gate>:<value>") holds at the
+	// gate only the identity that names it. same_subject_as (RFC HD) reads
+	// the subject's value as the person's identifier at this gate, so a
+	// user an operator named "<gate>:X" must not take on person Y's account
+	// here: a login for X through a linked gate would land in Y's account.
+	if strings.HasPrefix(row.LinkSubject, cfg.Name+":") {
+		if want, err := identity.Subject(cfg.Name, cfg.Identity, a); err != nil || want != row.LinkSubject {
+			refuse("the provider account is not the one this user's name is made from")
+			return
+		}
+	}
 	err = s.store.UserIdentityCreate(ctx, store.UserIdentityRow{TenantID: row.LinkTenant, Subject: row.LinkSubject, Gate: cfg.Name,
 		Issuer: a.Issuer, ExternalSubject: ext, Email: a.Email, EmailVerified: a.EmailVerified, CreatedAt: time.Now().UTC()})
 	var conflict *store.ErrConflict
