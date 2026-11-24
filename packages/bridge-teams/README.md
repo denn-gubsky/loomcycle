@@ -141,7 +141,7 @@ A person can attach two kinds of file in their 1:1 chat with the bot, each turne
 
 ### Documents
 
-With `BRIDGE_FILES=1`, a person attaches a document (a passport `.docx`, a `.pdf`) and writes what they want, such as "check this". The bridge downloads the file, checks it, and puts it into the agent's run inbox with the person's own loomcycle token; the agent reads it with its File tool. Needs loomcycle 1.167 or later and `@loomcycle/client` 1.167 or later (the release that ships `putInboxFile`).
+With `BRIDGE_FILES=1`, a person attaches a document (a passport `.docx`, a `.pdf`) and writes what they want, such as "check this". The bridge downloads the file, checks it, and puts it into the agent's run inbox with the person's own loomcycle token; the agent reads it with its File tool. Needs loomcycle 1.168 or later and `@loomcycle/client` 1.168 or later (the release that ships `putInboxFile`).
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -156,14 +156,14 @@ With `BRIDGE_FILES=1`, a person attaches a document (a passport `.docx`, a `.pdf
 - **1:1 chats only.** A file in a group chat or a channel gets "I can only take files in a 1:1 chat with me." (Teams usually does not deliver files to a bot there at all.)
 - **Checked twice.** The type Teams declares and the file name must agree and be in `BRIDGE_FILES_TYPES`, and the first bytes must match it: an `.exe` renamed `.docx` is refused.
 - **Refused in plain words,** one message per reason: too large, not a type taken, could not download, not available here (the token lacks `inbox_put`, or the client is too old). Five files at most per message; the rest get one message saying how many were skipped.
-- **What the agent sees:** the person's text, then a fixed line saying the files are the person's material and not verified data, then one line per file with what loomcycle answered the put with:
+- **What the agent sees:** the person's text, then one untrusted block of kind `attached_file` per file, holding what loomcycle answered the put with:
 
   ```
-  attached_file: {"name":"Pasport.docx","ref":"volume:inbox:documents/Pasport.docx","media_type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","bytes":48213}
+  {"name":"Pasport.docx","ref":"volume:inbox:documents/Pasport.docx","media_type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","bytes":48213}
   ```
 
-  Never the bytes, never the download link.
-- **Two turns when no run is live.** A run's inbox exists only once the run does. After an idle end, `/new` or a restart, the bridge first starts the run with the person's text and a line saying files follow, then puts the files and sends their lines as the next message. The agent may begin to answer before the files arrive.
+  Never the bytes, never the download link. (A loomcycle that takes no input blocks gets the same as text lines under a fixed "not verified data" header; see `@loomcycle/bridge-core`'s README.)
+- **Two turns when no run is live.** A run's inbox exists only once the run does. After an idle end, `/new` or a restart, the bridge first starts the run with the person's text and a line saying files follow, then puts the files and sends their `attached_file` blocks as the next message. The agent may begin to answer before the files arrive.
 - **A file lives as long as the run.** After the idle end (`BRIDGE_IDLE_MINUTES`) or `/new` the conversation continues in a new run, which does not see earlier files: the person sends the file again. (loomcycle's session inbox will lift this.)
 - **Logs** say the reason, the declared type, sizes and statuses, never the file's name or link.
 
