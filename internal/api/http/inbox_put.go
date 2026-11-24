@@ -11,12 +11,11 @@ import (
 	"strings"
 	"sync"
 
-	"golang.org/x/text/unicode/norm"
-
 	"github.com/denn-gubsky/loomcycle/internal/audit"
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/dynvol"
+	"github.com/denn-gubsky/loomcycle/internal/files/filenames"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
@@ -36,9 +35,6 @@ import (
 
 // inboxPutOrigin is the origin a client put records.
 const inboxPutOrigin = "client"
-
-// inboxPutFallbackName names a file whose name sanitises to nothing.
-const inboxPutFallbackName = "upload"
 
 // inboxPutRoutes registers the run owner's file put beside the inbox's GET.
 func (s *Server) inboxPutRoutes(mux *http.ServeMux) *http.ServeMux {
@@ -106,8 +102,13 @@ func (s *Server) PutInboxFile(ctx context.Context, req connector.InboxPutRequest
 	if !validIdent(req.RunID) {
 		return connector.InboxPutResult{}, inboxPutRefused(connector.InboxPutNotFound, "not_found", fileTwinNotFound(req.RunID).Text)
 	}
-	if strings.TrimSpace(req.Name) == "" {
-		return connector.InboxPutResult{}, inboxPutRefused(connector.InboxPutBadRequest, "bad_request", "the file needs a name: PUT /v1/runs/{run_id}/inbox/{name}")
+	// The person's own name, in its own script (RFC HE ruling 2026-11-24),
+	// refused rather than repaired when it names a path or could hide what
+	// it says. Checked before the run is read: the answer says nothing
+	// about a run.
+	name, nerr := filenames.SanitizeClientName(req.Name)
+	if nerr != nil {
+		return connector.InboxPutResult{}, inboxPutRefused(connector.InboxPutBadRequest, "bad_name", "the file's name: "+nerr.Error())
 	}
 	run, res, ok, err := s.fileTwinReadableRun(ctx, req.RunID)
 	if err != nil {
@@ -170,11 +171,9 @@ func (s *Server) PutInboxFile(ctx context.Context, req connector.InboxPutRequest
 		captured = append(captured, ev)
 		mu.Unlock()
 	})
-	// NFC first: a name sent decomposed (и + combining breve) is the same
-	// name as its composed form, and the sanitiser maps letters by code point.
 	kept := inbox.CaptureReader(pctx, inbox.Item{
-		Name:       norm.NFC.String(req.Name),
-		Fallback:   inboxPutFallbackName,
+		Name:       name,
+		KeepName:   true,
 		MediaType:  req.MediaType,
 		Origin:     inboxPutOrigin,
 		UploadedBy: uploader,

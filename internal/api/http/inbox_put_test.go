@@ -7,10 +7,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/authz"
@@ -173,37 +175,64 @@ func TestInboxPut_OverTheInboxQuotaIsRefused(t *testing.T) {
 	}
 }
 
-// The name is reduced to a base name with no separators, dots-up or control
-// characters, Cyrillic transliterated (whether composed or not), the
-// extension kept; a second file of the same name gets -2.
-func TestInboxPut_NameIsSanitisedAndAClashSuffixed(t *testing.T) {
+// A person's file keeps its own name, in its own script (owner ruling
+// 2026-11-24): NFC, a second file of the same name gets -2, and the File
+// tool reads it by that name.
+func TestInboxPut_UnicodeNameIsKeptAndAClashSuffixed(t *testing.T) {
 	f := newFileTwinFixture(t)
 	runID := f.liveRun(t, "acme", "alice")
+	breve := string(rune(0x0306))
 	for _, c := range []struct{ name, want string }{
-		{"../../etc/Паспорт.docx", "documents/Pasport.docx"},
-		{"..\\..\\Паспорт.docx", "documents/Pasport-2.docx"},
-		// й decomposed (и + combining breve) reads as й, and the bell and
-		// newline are one dash.
-		{"Мій\x07\nфаи" + string(rune(0x0306)) + ".docx", "documents/Miy-fay.docx"},
+		{"Паспорт.docx", "documents/Паспорт.docx"},
+		{"Паспорт.docx", "documents/Паспорт-2.docx"},
+		// и + combining breve is kept as the composed й.
+		{"Мии" + breve + " рішення (v2).docx", "documents/Мий рішення (v2).docx"},
 	} {
 		res, err := f.put(t, twinOwner, runID, c.name, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", docxHead, -1)
 		if err != nil {
 			t.Fatalf("%q: %v", c.name, err)
 		}
-		if res.Ref != "volume:inbox:"+c.want {
-			t.Errorf("%q: ref %s, want volume:inbox:%s", c.name, res.Ref, c.want)
+		if res.Ref != "volume:inbox:"+c.want || "documents/"+res.Name != c.want {
+			t.Errorf("%q: ref %s name %s, want volume:inbox:%s", c.name, res.Ref, res.Name, c.want)
 		}
 	}
-	long := strings.Repeat("я", 200) + ".pdf"
-	res, err := f.put(t, twinOwner, runID, long, "application/pdf", []byte("%PDF-1.7"), -1)
+	out, text, isErr := f.call(t, twinOwner, map[string]any{"run_id": runID, "op": "stat", "path": "volume:inbox:documents/Паспорт.docx"})
+	if isErr || out["origin"] != "client" || out["path"] != "documents/Паспорт.docx" {
+		t.Fatalf("stat = %v %s", out, text)
+	}
+}
+
+// A name that names a path or could hide what it says is refused, and
+// nothing is kept: a bidi override makes "fdp.exe" read as "exe.pdf".
+func TestInboxPut_PathOrBidiOverrideNameIsRefused(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.liveRun(t, "acme", "alice")
+	for _, name := range []string{
+		"../../etc/Паспорт.docx", `..\Паспорт.docx`, "..", ".hidden.pdf",
+		"invoice" + string(rune(0x202E)) + "fdp.exe", "a" + string(rune(0x2067)) + "b.pdf", "a\x07b.pdf",
+	} {
+		_, err := f.put(t, twinOwner, runID, name, "application/pdf", []byte("%PDF-1.7"), -1)
+		var perr *connector.InboxPutError
+		if !errors.As(err, &perr) || perr.Kind != connector.InboxPutBadRequest || perr.Code != "bad_name" {
+			t.Errorf("%q: err = %v, want bad_name", name, err)
+		}
+	}
+	if got := f.inboxFiles(t, runID); len(got) != 0 {
+		t.Fatalf("a refused name left files: %v", got)
+	}
+}
+
+// A long multibyte name is cut to 120 bytes on a rune boundary, keeping its
+// extension.
+func TestInboxPut_LongMultibyteNameIsCutOnARuneBoundary(t *testing.T) {
+	f := newFileTwinFixture(t)
+	runID := f.liveRun(t, "acme", "alice")
+	res, err := f.put(t, twinOwner, runID, strings.Repeat("я", 200)+".pdf", "application/pdf", []byte("%PDF-1.7"), -1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Name) > 120 || !strings.HasSuffix(res.Name, ".pdf") {
+	if len(res.Name) > 120 || !utf8.ValidString(res.Name) || !strings.HasSuffix(res.Name, ".pdf") || !strings.HasPrefix(res.Name, "яя") {
 		t.Errorf("long name kept as %q (%d bytes)", res.Name, len(res.Name))
-	}
-	if strings.ContainsAny(res.Name, "/\\") {
-		t.Errorf("name %q has a separator", res.Name)
 	}
 }
 
@@ -345,5 +374,12 @@ func TestInboxPut_RestrictedTokenNeedsTheInboxPutSurface(t *testing.T) {
 	}
 	if code, body := put(freeBearer, "a.pdf"); code != http.StatusCreated || !strings.Contains(body, "documents/a-2.pdf") {
 		t.Fatalf("member owner: %d %s", code, body)
+	}
+	// A Unicode name goes over the wire escaped and is served back by it.
+	if code, body := put(freeBearer, neturl.PathEscape("Паспорт.pdf")); code != http.StatusCreated || !strings.Contains(body, `"name":"Паспорт.pdf"`) {
+		t.Fatalf("unicode name: %d %s", code, body)
+	}
+	if code, body := bearerCall(t, httptestServerAt(url), freeBearer, "GET", "/v1/runs/"+run.ID+"/inbox/documents/"+neturl.PathEscape("Паспорт.pdf"), ""); code != http.StatusOK || body != "%PDF-1.7 passport" {
+		t.Fatalf("GET the unicode name: %d %q", code, body)
 	}
 }

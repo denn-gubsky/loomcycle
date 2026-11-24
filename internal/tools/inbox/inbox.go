@@ -199,6 +199,9 @@ type Item struct {
 	// MaxBytes, when positive and below the service's per-file cap, caps this
 	// one file (a client put's own cap).
 	MaxBytes int64
+	// KeepName keeps Name as given: the caller sanitised it already
+	// (filenames.SanitizeClientName, a person's own name in its own script).
+	KeepName bool
 }
 
 // Result is what a capture produced: the stub the model sees and, when the
@@ -341,7 +344,10 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 		return Record{}, fmt.Errorf("could not read the file: %v", err)
 	}
 	head = head[:n]
-	name := SanitizeName(it.Name)
+	name := it.Name
+	if !it.KeepName {
+		name = SanitizeName(it.Name)
+	}
 	if name == "" {
 		name = SanitizeName(it.Fallback)
 	}
