@@ -22,7 +22,7 @@
 
 ---
 
-> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.167) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+> 🌳 **Stable and in production.** loomcycle is past v1.0 (currently v1.168) — feature-complete, hardened, and distribution-ready (Homebrew, multi-arch Docker, a Claude Code plugin, TS + Python adapters, a TrueNAS app). **Validated by two months of continuous production operation at JobEmber.ai** under real user load, with multi-replica HA on Postgres. Development since v1.0 has been new primitives plus hardening — see [`REVISIONS.md`](REVISIONS.md) for recent releases and [the releases page](https://github.com/denn-gubsky/loomcycle/releases) for the full history. Apache-2.0. We welcome bug reports, security disclosures, feature contributions, downstream consumers, and forks. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -212,16 +212,17 @@ been primitives plus hardening: memory, documents, teams, sandboxing, retention
 and erasure. The agentic-memory subsystem and the document surfaces built on it
 remain the main direction.
 
-The most recent line (v1.167.0) lets an external sign-in gate sign a person in
-as the user another gate already made (`same_subject_as`), makes Calc's
-`datefmt` refuse tokens it does not know, and keeps host paths out of the file
-tools' success lines. Read the upgrade notes in [`REVISIONS.md`](REVISIONS.md).
+The most recent line (v1.168.0) lets a person's own file reach the agent: the
+run's owner puts it into the run inbox, under its own name, and a chat bridge
+hands it to a live run as an untrusted block. A new chat can start with the
+person's recent chats with the same agent (`history_preload`), and Calc gains
+matrix powers and exact matrix products. Read the upgrade notes in
+[`REVISIONS.md`](REVISIONS.md).
 
-Before it, v1.166.0 turned `Calc` into a numerical toolkit
-(matrices, distributions and calculus, complex numbers, tables, and data read
-and written by reference in a run, also over HTTP, gRPC and both clients), and
-gave workspaces a container engine, interpreters, sharing, checkpoints,
-servers, Document checkout and controlled egress.
+Before it, v1.167.0 let an external sign-in gate sign a person in as the user
+another gate already made (`same_subject_as`), made Calc's `datefmt` refuse
+tokens it does not know, and kept host paths out of the file tools' success
+lines.
 
 Before that, v1.155.0 rendered a Document back into a file: `File op=render`
 writes Markdown, HTML, Word or PDF (typeset by Typst in the conversion
