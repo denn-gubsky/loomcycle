@@ -40,6 +40,12 @@ const inboxPutOrigin = "client"
 // inboxPutFallbackName names a file whose name sanitises to nothing.
 const inboxPutFallbackName = "upload"
 
+// inboxPutRoutes registers the run owner's file put beside the inbox's GET.
+func (s *Server) inboxPutRoutes(mux *http.ServeMux) *http.ServeMux {
+	mux.Handle("PUT /v1/runs/{run_id}/inbox/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInboxPut))))
+	return mux
+}
+
 // handleRunInboxPut serves PUT /v1/runs/{run_id}/inbox/{name}.
 func (s *Server) handleRunInboxPut(w http.ResponseWriter, r *http.Request) {
 	res, err := s.PutInboxFile(r.Context(), connector.InboxPutRequest{

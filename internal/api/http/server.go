@@ -4166,7 +4166,6 @@ func (s *Server) routes() *http.ServeMux {
 	// answers HEAD.
 	mux.Handle("POST /v1/runs/{run_id}/file", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunFile))))
 	mux.Handle("GET /v1/runs/{run_id}/inbox/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInboxFile))))
-	mux.Handle("PUT /v1/runs/{run_id}/inbox/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInboxPut))))
 	// Read one run by its run id — GET /v1/agents/{agent_id}'s shape. The
 	// agent route cannot address a team walk (`team:<name>`) nor tell one walk
 	// of a team from another.
@@ -4301,7 +4300,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux)))
+	return s.inboxPutRoutes(s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux))))
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount
