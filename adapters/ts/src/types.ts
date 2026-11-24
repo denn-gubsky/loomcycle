@@ -1128,6 +1128,10 @@ export type PromptContent =
   // before the call.
   | { type: "image"; media_type: ImageMediaType; data: string };
 
+/** A block of a turn sent into a live run (`sendRunInput` with blocks, RFC
+ *  HE): the person's words, or text from elsewhere fenced as untrusted. */
+export type RunInputContent = Exclude<PromptContent, { type: "image" }>;
+
 /** Whitelisted image media types accepted on an `image` content block (RFC AT). */
 export type ImageMediaType =
   | "image/png"

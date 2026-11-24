@@ -2809,8 +2809,9 @@ class LoomcycleClient:
     async def run_input(
         self,
         run_id: str,
-        text: str,
+        text: str = "",
         *,
+        content: Optional[Iterable[Mapping[str, Any]]] = None,
         model: str = "",
         provider: str = "",
         tier: str = "",
@@ -2849,7 +2850,15 @@ class LoomcycleClient:
         to change a parked run's settings WITHOUT putting a message in its
         transcript. They select within what the agent's definition already
         allows and cannot widen it; one it forbids is refused here rather
-        than stored and discovered on the next turn."""
+        than stored and discovered on the next turn.
+
+        ``content`` sends the turn as content blocks instead of ``text``
+        (RFC HE): ``{"type": "trusted-text", "text": ...}`` for the person's
+        words and ``{"type": "untrusted-block", "kind": ..., "text": ...}``
+        for text from elsewhere (a file the person attached, as kind
+        ``attached_file``), each untrusted-block fenced as one in a run's
+        prompt is. Exclusive with ``text``; an image block is refused
+        (InvalidArgument)."""
         req = pb.RunInputRequest(
             run_id=run_id,
             text=text,
@@ -2873,6 +2882,8 @@ class LoomcycleClient:
         if interruption is not None:
             req.interruption.CopyFrom(_build_interruption(interruption))
         _set_retuned_shape(req, tool_choice, output_format, routing)
+        if content is not None:
+            req.content.extend(_segments_to_proto([{"role": "user", "content": list(content)}])[0].content)
         try:
             resp = await self._stub.RunInput(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:

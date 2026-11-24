@@ -143,3 +143,25 @@ async def test_stream_run_carries_the_children_wait_payloads():
     assert events[1].children_note is not None
     assert events[1].children_note.text == "Background child r_1 finished: completed."
     assert events[1].children_note.child_run_ids == ("r_1",)
+
+
+@pytest.mark.asyncio
+async def test_run_input_sends_content_blocks_instead_of_text():
+    client = _make_client()
+    fake, captured = _async_returning(pb.RunInputResponse(run_id="r_abc", delivered=True))
+    client._stub.RunInput = fake  # type: ignore[attr-defined]
+
+    await client.run_input(
+        "r_abc",
+        content=[
+            {"type": "trusted-text", "text": "check this"},
+            {"type": "untrusted-block", "kind": "attached_file", "text": '{"ref":"volume:inbox:documents/a.pdf"}'},
+        ],
+    )
+
+    req = captured["req"]
+    assert req.text == ""
+    assert [(b.type, b.kind, b.text) for b in req.content] == [
+        ("trusted-text", "", "check this"),
+        ("untrusted-block", "attached_file", '{"ref":"volume:inbox:documents/a.pdf"}'),
+    ]

@@ -107,6 +107,7 @@ import type {
   RunFileInput,
   RunInboxDownload,
   InboxPutResult,
+  RunInputContent,
   DocumentExport,
   DocumentExportFormat,
   DocumentExportOptions,
@@ -587,13 +588,20 @@ export class LoomcycleClient {
    *  ({@link NotFoundError}, 404) rather than accepted and never read.
    *
    *  Raises {@link UnavailableError} (503, steering off / no run),
-   *  {@link AuthError} (401). A full steer queue surfaces as a 429. */
+   *  {@link AuthError} (401). A full steer queue surfaces as a 429.
+   *
+   *  `text` may instead be the turn as content blocks (RFC HE):
+   *  `trusted-text` and `untrusted-block`, each untrusted-block fenced as one
+   *  in a run's prompt is — e.g. a file the person attached, as kind
+   *  `attached_file`. Sent as `content`; a server from before RFC HE ignores the
+   *  field and refuses the turn as having no text (422). An `image` block is
+   *  refused (422). */
   async sendRunInput(
     runId: string,
-    text: string,
+    text: string | RunInputContent[],
     opts?: { signal?: AbortSignal; overrides?: RunOverrideOptions },
   ): Promise<{ run_id: string; delivered: boolean }> {
-    const body: Record<string, unknown> = { text };
+    const body: Record<string, unknown> = typeof text === "string" ? { text } : { content: text };
     if (opts?.overrides) {
       // The wire nests these under `overrides` on THIS endpoint (unlike the flat
       // fields on /v1/runs), because the request's other job is sending a turn
