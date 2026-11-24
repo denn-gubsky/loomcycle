@@ -6,7 +6,8 @@ A Microsoft Teams bot for a [loomcycle](https://github.com/denn-gubsky/loomcycle
 - **Steering:** a message sent while the agent is working reaches it mid-turn.
 - **Questions and reviews** from the agent arrive as cards with buttons.
 - **Commands:** `/new` (start over), `/stop` (stop the current answer), `/help`.
-- **Recordings** (since 0.4, with `BRIDGE_VOICE=1`): an audio file attached in a 1:1 chat is transcribed and answered in text. See [Voice messages](#voice-messages).
+- **Documents** (since 0.6, with `BRIDGE_FILES=1`): a file attached in a 1:1 chat is put into the agent's run inbox for it to read. See [Files and recordings](#files-and-recordings).
+- **Recordings** (since 0.4, with `BRIDGE_VOICE=1`): an audio file attached in a 1:1 chat is transcribed and answered in text. See [Recordings](#recordings).
 - **Restarts lose nothing:** the next message continues the conversation, with the agent's full history.
 
 Built on [`@loomcycle/bridge-core`](../bridge-core), the core every loomcycle bridge shares (Slack, Telegram, Discord). Design and decisions: RFC EN (`/loomcycle/rfcs/rfc-en-teams-bridge`) and RFC EQ (`/loomcycle/rfcs/bridges`) in the loomcycle document store.
@@ -75,7 +76,8 @@ Configuration is by environment:
 | `BRIDGE_IDLE_MINUTES` | End a conversation's run after this long without a message; the next message continues it | `1440` |
 | `BRIDGE_STORE` | `memory`, or `file:<path>` to survive restarts on one instance | `memory` |
 | `BRIDGE_DEV` | `1` accepts unauthenticated requests, for local testing only: the listener then binds 127.0.0.1 only. From `@loomcycle/bridge-core` 0.4.0 it is refused on a gate | unset |
-| `BRIDGE_VOICE` | `1` transcribes audio files attached in a 1:1 chat ([Voice messages](#voice-messages)) | unset (off) |
+| `BRIDGE_FILES` | `1` puts documents attached in a 1:1 chat into the agent's run inbox ([Documents](#documents)); `BRIDGE_FILES_*` there | unset (off) |
+| `BRIDGE_VOICE` | `1` transcribes audio files attached in a 1:1 chat ([Recordings](#recordings)) | unset (off) |
 | `TEAMS_BRIDGE_FILE_HOSTS` | Comma list of host suffixes an attached file may be downloaded from | `.sharepoint.com` |
 
 With `BRIDGE_STORE=memory`, a restart forgets which loomcycle session each Teams conversation was in, and the next message starts a fresh one. Use `file:<path>` (one instance) or your own `ConversationStore` (several).
@@ -131,7 +133,49 @@ As a gate the bridge also tells loomcycle about groups and leavers. Every person
 - The person who started the conversation answers the agent's question and review cards, and only they can `/new` or `/stop`.
 - Teams sends the bot channel messages only when it is @mentioned.
 
-## Voice messages
+## Files and recordings
+
+A person can attach two kinds of file in their 1:1 chat with the bot, each turned on separately: documents for the agent to read (`BRIDGE_FILES=1`), and recordings to transcribe (`BRIDGE_VOICE=1`). Both are off by default; with both off an attachment is ignored, as before.
+
+### Documents
+
+With `BRIDGE_FILES=1`, a person attaches a document (a passport `.docx`, a `.pdf`) and writes what they want, such as "check this". The bridge downloads the file, checks it, and puts it into the agent's run inbox with the person's own loomcycle token; the agent reads it with its File tool. Needs loomcycle 1.167 or later and `@loomcycle/client` 1.167 or later (the release that ships `putInboxFile`).
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `BRIDGE_FILES` | `1` takes attached documents | unset (off) |
+| `BRIDGE_FILES_MAX_BYTES` | Largest file taken | `20971520` (20 MiB) |
+| `BRIDGE_FILES_TYPES` | Types taken, by extension (the full list the bridge can check is in `@loomcycle/bridge-core`'s README) | `docx,pdf,odt,doc,xlsx,md,txt` |
+| `BRIDGE_FILES_MAX_COUNT` | Most files taken from one message | `5` |
+| `TEAMS_BRIDGE_FILE_HOSTS` | Where a file's download link may point (below) | `.sharepoint.com` |
+
+**What happens.**
+
+- **1:1 chats only.** A file in a group chat or a channel gets "I can only take files in a 1:1 chat with me." (Teams usually does not deliver files to a bot there at all.)
+- **Checked twice.** The type Teams declares and the file name must agree and be in `BRIDGE_FILES_TYPES`, and the first bytes must match it: an `.exe` renamed `.docx` is refused.
+- **Refused in plain words,** one message per reason: too large, not a type taken, could not download, not available here (the token lacks `inbox_put`, or the client is too old). Five files at most per message; the rest get one message saying how many were skipped.
+- **What the agent sees:** the person's text, then a fixed line saying the files are the person's material and not verified data, then one line per file with what loomcycle answered the put with:
+
+  ```
+  attached_file: {"name":"Pasport.docx","ref":"volume:inbox:documents/Pasport.docx","media_type":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","bytes":48213}
+  ```
+
+  Never the bytes, never the download link.
+- **Two turns when no run is live.** A run's inbox exists only once the run does. After an idle end, `/new` or a restart, the bridge first starts the run with the person's text and a line saying files follow, then puts the files and sends their lines as the next message. The agent may begin to answer before the files arrive.
+- **A file lives as long as the run.** After the idle end (`BRIDGE_IDLE_MINUTES`) or `/new` the conversation continues in a new run, which does not see earlier files: the person sends the file again. (loomcycle's session inbox will lift this.)
+- **Logs** say the reason, the declared type, sizes and statuses, never the file's name or link.
+
+**What loomcycle needs.** Each user token needs the `inbox_put` surface. A bridge with a loomcycle token asks for it when it mints. For a gate bridge, add it to the gate's `issued_token`:
+
+```yaml
+issued_token: { ttl: 12h, agents: [chat], overrides: [interactive], surfaces: [inbox_put] }   # add transcription too with voice on
+```
+
+Without it loomcycle refuses the put, and the person hears "I can't take files here." loomcycle's own caps apply as well: `LOOMCYCLE_FILE_CLIENT_PUT_MAX_BYTES` per file and the run's inbox quota ("There's no room for more files in this conversation.").
+
+With voice off, an audio file is a document like any other: taken when its type is in `BRIDGE_FILES_TYPES` (decision D4 of RFC HE), not transcribed. With voice on it is a recording (below).
+
+### Recordings
 
 With `BRIDGE_VOICE=1`, a person can send the bot a **recording as an audio file in their 1:1 chat**. The bridge transcribes it through loomcycle with the person's own token and gives the agent the text, marked `(voice message)`. The agent answers in text. The rest of the voice machinery (length and size caps, `BRIDGE_VOICE_*` settings, what the agent sees) is `@loomcycle/bridge-core`'s; see its README.
 
@@ -143,7 +187,7 @@ With `BRIDGE_VOICE=1`, a person can send the bot a **recording as an audio file 
 
 **How to send a recording.** Record it with any app (the phone's voice recorder, for example), then attach the file in the 1:1 chat with the bot: the paperclip on desktop, the **+** and file picker on mobile. You can type a message with it, such as "answer in French"; the bridge passes that on after the recording. The file stays in your OneDrive (Microsoft Teams Chat Files); the bridge reads it once and keeps nothing.
 
-Formats taken: `m4a`, `mp4`, `mp3`, `wav`, `ogg`, `webm` and `flac`, the ones loomcycle transcribes without a converter. Any other file is treated as it was before.
+Formats taken: `m4a`, `mp4`, `mp3`, `wav`, `ogg`, `webm` and `flac`, the ones loomcycle transcribes without a converter. Any other file is a document (above) with `BRIDGE_FILES=1`, and ignored without it.
 
 **What loomcycle needs:**
 
@@ -151,23 +195,25 @@ Formats taken: `m4a`, `mp4`, `mp3`, `wav`, `ogg`, `webm` and `flac`, the ones lo
 - The transcription grant on each user's token. A bridge with a loomcycle token asks for it when it mints. For a gate bridge, add `surfaces: [transcription]` to the gate's `issued_token` in loomcycle (beside `agents` and `overrides`); without it the gate grants none, and a recording gets "I can only read text for now."
 - `BRIDGE_RATE_PER_MINUTE`: each recording costs one extra start (the transcription), so raise it a little when voice is on.
 
-**Downloads.** Teams gives the bot a pre-authorised link to the file that works for only a few minutes, so the bridge fetches it at once:
+### Downloads
+
+Teams gives the bot a pre-authorised link to each attached file that works for only a few minutes, so the bridge fetches it at once, the same way for documents and recordings:
 
 - **No credential is sent:** no bot token and no header of the bridge's own.
 - **Only from SharePoint hosts:** the link, and every redirect it takes, must be `https` on a host ending in one of `TEAMS_BRIDGE_FILE_HOSTS` (default `.sharepoint.com`, which covers OneDrive's `<tenant>-my.sharepoint.com`). Add a sovereign cloud's suffix (`.sharepoint.us`, `.sharepoint.de`, `.sharepoint.cn`) if your tenant uses one. Anything else is refused.
-- **Capped while reading:** Teams states no size up front, so the download stops once it passes `BRIDGE_VOICE_MAX_BYTES` (default 8 MB). `BRIDGE_VOICE_MAX_SECONDS` cannot apply, since Teams gives no length either; loomcycle's own limit on the minutes one transcription may take still does.
+- **Capped while reading:** Teams states no size up front, so the download stops once it passes `BRIDGE_FILES_MAX_BYTES` for a document (default 20 MiB) or `BRIDGE_VOICE_MAX_BYTES` for a recording (default 8 MB). `BRIDGE_VOICE_MAX_SECONDS` cannot apply, since Teams gives no length either; loomcycle's own limit on the minutes one transcription may take still does.
 - A sign-in page or an error status instead of the file is refused.
 
-When a download is refused, the person hears "I couldn't download that voice message. Please try again or type it." and the bridge logs `teams file download refused` with the reason (`host`, `redirect`, `status`, `type` or `size`), the host or HTTP status where there is one, and never the link.
+When a download is refused, the person hears "I couldn't download that file. Please send it again." (for a recording, "I couldn't download that voice message. Please try again or type it.") and the bridge logs `teams file download refused` with the reason (`host`, `redirect`, `status`, `type` or `size`), the host or HTTP status where there is one, and never the link.
 
-Not yet checked against a live tenant (RFC GA P0): the exact host Teams' `downloadUrl` uses, whether it redirects, and how long it lives. If recordings are refused with reason `host` or `redirect`, the logged host tells you what to add to `TEAMS_BRIDGE_FILE_HOSTS`.
+Not yet checked against a live tenant (RFC GA P0): the exact host Teams' `downloadUrl` uses, whether it redirects, and how long it lives. If files are refused with reason `host` or `redirect`, the logged host tells you what to add to `TEAMS_BRIDGE_FILE_HOSTS`.
 
 ## Security
 
 - **Inbound:** the Teams SDK validates the Bot Connector's signature on every request. The bridge always sets the SDK's unauthenticated mode explicitly from `BRIDGE_DEV`, so a stray `DANGEROUSLY_ALLOW_UNAUTHENTICATED_REQUESTS` cannot turn validation off.
 - **Tenant fence:** activities from Entra tenants not in `TEAMS_BRIDGE_ALLOWED_TENANTS` get one refusal and never reach loomcycle.
 - **Least privilege:** the bridge's own token never runs agents. A user's token is limited to one agent, every per-run override except `interactive` is locked, it is rate-limited, and it expires.
-- **Attached files** (voice on): fetched with no credential, from `TEAMS_BRIDGE_FILE_HOSTS` only, redirects included, and held in memory for one request.
+- **Attached files** (files or voice on): fetched with no credential, from `TEAMS_BRIDGE_FILE_HOSTS` only, redirects included, and held in memory for one request. A document is put into the person's own run with the person's own token; the agent gets its inbox ref, never its bytes or link.
 - **Nothing at rest:** tokens are kept in memory. Logs carry conversation and run ids, never tokens, message text or agent output.
 - **Output:** tool inputs and outputs are never sent to Teams; while the agent works, Teams sees the tool's name only.
 
