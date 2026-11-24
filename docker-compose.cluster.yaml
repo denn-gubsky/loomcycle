@@ -27,7 +27,7 @@ services:
     # is not a tag bump: its image refuses a volume at /var/lib/postgresql/data
     # (it keeps data under /var/lib/postgresql/18/docker), and an existing 16
     # data directory needs pg_upgrade or a dump and restore.
-    image: postgres:16@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
+    image: postgres:16@sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f
     container_name: loomcycle-cluster-pg
     restart: unless-stopped
     environment:
