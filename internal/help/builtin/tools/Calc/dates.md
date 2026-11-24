@@ -210,8 +210,13 @@ Example: `second(datetime("2026-11-20T14:30:05.25Z"))` gives `5.25`.
 ### datefmt(d, pattern)
 `d` written with these tokens: `YYYY` `YY` year, `MMMM` `MMM` month name,
 `MM` `M` month number, `DD` `D` day, `dddd` `ddd` weekday name, `HH` `mm`
-`ss` time. Names are English. Text in `[brackets]` is copied as is, and so is
-any other character, so bracket words with those letters.
+`ss` time. Names are English. Text in `[brackets]` is copied as is, and so
+are digits, spaces and punctuation outside them. Any other letter, and `%`,
+is refused (`bad_date`): a letter run must be a whole token, so `DDD` or
+`MMMMM` is refused too. The `hint` names the one to write: `%A` or `EEEE` is
+`dddd`, `%Y` or `yyyy` is `YYYY`, `%d` or `dd` is `DD`, the week number is
+`isoweek(d)`, the day of the year `dayofyear(d)`. Write `[Week of] D MMM`,
+not `Week of D MMM`, and a literal percent as `[%]`.
 
 Example: `datefmt(date("2026-11-05"), "dddd, D MMMM YYYY")` gives `Thursday, 5 November 2026`.
 

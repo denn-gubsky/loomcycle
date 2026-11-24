@@ -92,7 +92,8 @@ string, `date("2026-11-23")`.
 - `addworkdays(d, n, holidays?)` — the date `n` working days after `d`.
 - `isoweek(d)` — the ISO week number; `weekday(d)` is 1 (Monday) to 7.
 - `datefmt(d, pattern)` — tokens `YYYY` `YY` `MMMM` `MMM` `MM` `M` `DD` `D`
-  `dddd` `ddd` `HH` `mm` `ss`; anything else is copied as is.
+  `dddd` `ddd` `HH` `mm` `ss`; text goes in `[brackets]`, other letters are
+  refused.
 - `convert(value, from, to)` — case-sensitive unit symbols: `"kg"` `"lb"`
   `"oz"` `"gal"` (US) `"L"` `"GiB"` `"MB"` `"d"` `"s"`. Never type a
   conversion factor yourself.
@@ -103,8 +104,8 @@ string, `date("2026-11-23")`.
 
 `ln` → `log`, `powmod` → `modpow`, `correl` → `correlation`, `seq` →
 `range`, `networkdays` → `workdays`, `workday` → `addworkdays`, `edate` →
-`addmonths`, `**` → `^`, `^` on a list → `.^`. `datefmt` has no `%A`, `%V`
-or `EEEE`: the weekday name is `dddd`, the week number `isoweek(d)`.
+`addmonths`, `**` → `^`, `^` on a list → `.^`. `datefmt` refuses `%A`, `%V`
+and `EEEE`: the weekday name is `dddd`, the week number `isoweek(d)`.
 
 ## Exact or approximate
 
