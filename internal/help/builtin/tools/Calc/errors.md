@@ -106,8 +106,10 @@ The arguments are not the documented shape: `expr` missing or not a string,
 ### bad_date
 A date, time or zone the tool cannot read: anything but ISO 8601
 (`"2026-11-20"`, `"2026-11-20T14:30:00Z"`), an ambiguous `11/12/2026`, an
-unknown zone name (use an IANA name such as `"Europe/Kyiv"`), or an unclosed `[`
-in a `datefmt` pattern. `hint` shows the form to write. See `Calc/dates`.
+unknown zone name (use an IANA name such as `"Europe/Kyiv"`), or in a `datefmt`
+pattern an unclosed `[` or a token it does not have (`%A`, `EEEE`, `yyyy`; a
+letter meant as text goes in `[brackets]`). `hint` shows the form to write. See
+`Calc/dates`.
 
 ## Fix the mathematics
 

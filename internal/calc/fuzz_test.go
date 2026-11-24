@@ -2,6 +2,7 @@ package calc
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -32,7 +33,8 @@ var fuzzSeeds = []string{
 	"9^9^9", "2x", "2 ** 3", "if(x = 1, 2, 3)", "f(x) = f(x)", "[1][0]", "sqrt(-1)", "1/0",
 	"[convert(5, \"mi\", \"km\"), convertdelta(1, \"degC/s\", \"K/min\"), units(), units(\"angle\")]",
 	"factorial(10^6)", "((((1))))", "x -> y -> x + y", "# comment\n1",
-	`d = date("2026-01-31"); [addmonths(d, 1), eomonth(d, 1), d + 30, date(2026, 3, 1) - d, weekday(d), datefmt(d, "D MMM YYYY")]`,
+	`d = date("2026-01-31"); [addmonths(d, 1), eomonth(d, 1), d + 30, date(2026, 3, 1) - d, weekday(d), datefmt(d, "D MMM YYYY"), datefmt(d, "[Week] YYYY")]`,
+	`datefmt(date("2026-01-31"), "%A %V")`,
 	`t = tz(datetime("2026-03-29T00:30:00Z"), "Europe/Kyiv"); [t + 3600, hour(t), datediff(date(t), date("2027-01-01"), "months")]`,
 	`[workdays(date("2026-11-01"), date("2026-11-30")), addworkdays(date("2026-11-20"), 5), yearfrac(date("2026-01-01"), date("2026-07-01"), "act/act")]`,
 	"A = [[2, 1], [1, 3]]; [A * A', A[1, :], A[:, 2], A * [1, 2], [1, 2] * A, A .* A, size(A)]",
@@ -100,6 +102,45 @@ func FuzzEval(f *testing.F) {
 		}
 		if r.Type == "" {
 			t.Fatalf("Eval(%q): empty type", src)
+		}
+	})
+}
+
+// FuzzDateFmtPattern checks datefmt's pattern rule from outside: a pattern
+// it accepts has, outside [brackets], no % and no letter that no token is
+// made of; a pattern it refuses is refused as bad_date (or domain, over
+// the length bound), never with a panic or a stray code.
+func FuzzDateFmtPattern(f *testing.F) {
+	for _, s := range []string{"YYYY-MM-DD", "dddd, D MMMM YYYY", "[Week of] D MMM", "%A %V", "EEEE yyyy-MM-dd",
+		"DDD", "YYYYMMDDHHmmss", "D[%]", "[open", "Q x !", "D.MM.YYYY г.", "MMMMM", "]["} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, pat string) {
+		e := &evaluator{ctx: context.Background(), nextCheck: ctxCheckEvery}
+		out, err := fnDateFmt(e, args{v: []val{dateVal{}, pat}, name: "datefmt"})
+		if err != nil {
+			if err.Code != string(codeBadDate) && err.Code != string(codeDomain) {
+				t.Fatalf("datefmt(%q): code %s", pat, err.Code)
+			}
+			return
+		}
+		if _, ok := out.(string); !ok {
+			t.Fatalf("datefmt(%q) = %T, want a string", pat, out)
+		}
+		outside := []byte{}
+		for i := 0; i < len(pat); i++ {
+			if pat[i] == '[' {
+				for i < len(pat) && pat[i] != ']' {
+					i++
+				}
+				continue
+			}
+			outside = append(outside, pat[i])
+		}
+		for _, c := range outside {
+			if c == '%' || (c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z') && !strings.ContainsRune("YMDdHms", rune(c)) {
+				t.Fatalf("datefmt(%q) accepted %q outside brackets", pat, c)
+			}
 		}
 	})
 }
