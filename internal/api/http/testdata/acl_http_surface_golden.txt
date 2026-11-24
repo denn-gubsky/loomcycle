@@ -179,6 +179,10 @@ GET /v1/openapi.json	any	false	-
 GET /v1/openapi.yaml	any	false	-
 GET /v1/runs	runs:read	true	read run:*
 GET /v1/runs/r	runs:read	true	read run:*
+GET /v1/runs/r/inbox/a.pdf	runs:read	true	read run:*
+GET /v1/runs/r/inbox/a.pdf/x	runs:read	true	read run:*
+GET /v1/runs/r/inbox/a.pdf/x/y	runs:read	true	read run:*
+GET /v1/runs/r/inbox/a.pdf/x/y/z	runs:read	true	read run:*
 GET /v1/runs/r/stream	runs:read	true	read run:*
 GET /v1/runs/tree	runs:read	true	read run:*
 GET /v1/runs/tree/breakpoints	runs:read	true	read run:*
@@ -338,6 +342,10 @@ HEAD /v1/openapi.json	any	false	-
 HEAD /v1/openapi.yaml	any	false	-
 HEAD /v1/runs	runs:read	true	read run:*
 HEAD /v1/runs/r	runs:read	true	read run:*
+HEAD /v1/runs/r/inbox/a.pdf	runs:read	true	read run:*
+HEAD /v1/runs/r/inbox/a.pdf/x	runs:read	true	read run:*
+HEAD /v1/runs/r/inbox/a.pdf/x/y	runs:read	true	read run:*
+HEAD /v1/runs/r/inbox/a.pdf/x/y/z	runs:read	true	read run:*
 HEAD /v1/runs/r/stream	runs:read	true	read run:*
 HEAD /v1/runs/tree	runs:read	true	read run:*
 HEAD /v1/runs/tree/breakpoints	runs:read	true	read run:*
@@ -583,5 +591,7 @@ PUT /v1/_memory/scopes/x/x/keys	substrate:tenant	false	write memory:*
 PUT /v1/_memory/scopes/x/x/keys/x	substrate:tenant	false	write memory:*
 PUT /v1/_retention/overrides	substrate:tenant	false	manage runtime:retention
 PUT /v1/_telemetry	substrate:tenant	false	manage runtime:telemetry
+PUT /v1/runs/r/inbox/a.pdf	runs:create	false	use gateway:inbox_put
 PUT /v1/runs/tree/breakpoints	runs:create	true	steer run:*
 PUT /v1/runs/x/breakpoints	runs:create	true	steer run:*
+PUT /v1/runs/x/inbox/x	runs:create	false	use gateway:inbox_put
