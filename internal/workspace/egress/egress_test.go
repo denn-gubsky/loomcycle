@@ -671,3 +671,35 @@ func TestProxy_PassesAnNpmScopedNameOnlyInItsOwnForm(t *testing.T) {
 		t.Fatalf("a refused path reached upstream")
 	}
 }
+
+// A grant's Base is where its rewritten links and relayed redirects point:
+// a host-engine workspace reaches its routes at a loopback port of its own,
+// so the core answers it with links relative to the root, which resolve
+// against whatever address the session asked.
+func TestProxy_AGrantsBaseIsWhereRewrittenLinksAndRedirectsPoint(t *testing.T) {
+	p, _ := pypiProxy(t)
+	g := grantOf(Route{Name: "pypi", URL: "https://pypi.org/"}, Route{Name: "pypi-files", URL: "https://files.pythonhosted.org/"})
+	g.Base = "/"
+	resp, err := do(t, p, g, Request{Route: "pypi", Path: "simple/pkg/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body, want := readAll(t, resp), `<a href="/pypi-files/packages/ab/cd/pkg-1.0.tar.gz#sha256=0123">pkg-1.0.tar.gz</a>`; body != want {
+		t.Fatalf("body = %q, want %q", body, want)
+	}
+
+	other := newUpstream(t, nil)
+	up := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.routeURL("dl/pkg.tgz?sig=1"), http.StatusFound)
+	})
+	rp, _ := newTestProxy(t, nil, nil)
+	rg := grantOf(Route{Name: "a", URL: up.routeURL("")}, Route{Name: "files", URL: other.routeURL("dl/")})
+	rg.Base = "/"
+	resp, err = do(t, rp, rg, Request{Route: "a", Path: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Header.Get("Location"); got != "/files/pkg.tgz?sig=1" {
+		t.Fatalf("Location = %q, want a root-relative one", got)
+	}
+}

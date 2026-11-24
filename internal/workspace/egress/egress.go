@@ -75,6 +75,12 @@ type Grant struct {
 	RunID       string
 	WorkspaceID string
 	Routes      []Route
+	// Base, when set, is where this workspace reaches its routes, in place
+	// of the proxy's: rewritten links and relayed redirects point under it.
+	// "/" makes them relative to the root of whatever address the session
+	// asked, for an address the core does not know (the host engine's
+	// loopback port).
+	Base string
 }
 
 // Request is the request the worker described, after the route's name.
@@ -387,6 +393,15 @@ func transportError(rt Route, err error) error {
 	return fmt.Errorf("egress: route %q: upstream request failed: %s", rt.Name, msg)
 }
 
+// baseFor is where g's workspace reaches its routes: the grant's own base,
+// else the proxy's.
+func (p *Proxy) baseFor(g Grant) string {
+	if g.Base != "" {
+		return g.Base
+	}
+	return p.base
+}
+
 func findRoute(routes []Route, name string) (Route, bool) {
 	for _, r := range routes {
 		if r.Name == name {
@@ -424,7 +439,7 @@ func (p *Proxy) redirect(g Grant, from *url.URL, loc string) (string, bool) {
 		if _, err := joinPath(base, rest); err != nil {
 			continue
 		}
-		out := p.base + rt.Name + "/" + rest
+		out := p.baseFor(g) + rt.Name + "/" + rest
 		if to.RawQuery != "" {
 			out += "?" + to.RawQuery
 		}

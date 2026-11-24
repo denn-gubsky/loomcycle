@@ -42,7 +42,7 @@ func (p *Proxy) rewriteFor(g Grant, rt Route) *pypiRewrite {
 		if _, err := checkRoute(f); err != nil {
 			continue
 		}
-		return &pypiRewrite{from: []byte(pypiFilesURL), to: []byte(p.base + f.Name + "/")}
+		return &pypiRewrite{from: []byte(pypiFilesURL), to: []byte(p.baseFor(g) + f.Name + "/")}
 	}
 	return nil
 }
