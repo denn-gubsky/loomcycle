@@ -278,3 +278,26 @@ func TestExecute_NoPointerWhereItWouldNotHelp(t *testing.T) {
 type pointerHelp struct{ stubHelp *stubHelp }
 
 func newPointerHelp(topics ...string) *pointerHelp { return &pointerHelp{newHelp(topics...)} }
+
+// The off-run copy loses only the help call: the example and the valid
+// operations are what such a caller can act on. The original is not written
+// through, because it is the same value a run renders.
+func TestOffRunCallFormat_DropsOnlyTheReference(t *testing.T) {
+	in := &CallFormat{
+		Tool: "Path", Op: "mv", Example: json.RawMessage(`{"op":"mv"}`), Operations: []string{"ls", "mv"},
+		Reference: &CallRef{Tool: "Context", Input: json.RawMessage(`{"op":"help","topic":"Path/mv"}`)},
+	}
+	out := OffRunCallFormat(in)
+	if out.Reference != nil {
+		t.Errorf("reference = %+v; want none off-run", out.Reference)
+	}
+	if out.Tool != "Path" || out.Op != "mv" || string(out.Example) != `{"op":"mv"}` || len(out.Operations) != 2 {
+		t.Errorf("off-run format = %+v; want everything but the reference", out)
+	}
+	if in.Reference == nil || in.Reference.Tool != "Context" {
+		t.Errorf("the original was written through: %+v", in.Reference)
+	}
+	if OffRunCallFormat(nil) != nil {
+		t.Error("nil produced a format")
+	}
+}

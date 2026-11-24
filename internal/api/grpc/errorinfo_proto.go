@@ -42,3 +42,16 @@ func errorInfoToProto(info *tools.ErrorInfo) *loomcyclepb.ErrorInfo {
 	}
 	return ei
 }
+
+// offRunErrorInfo is info as an off-run caller (a substrate RPC) receives it:
+// its call format without the reference to the run's help tool, which this
+// caller cannot call. A copy. A run's stream event keeps the reference, because
+// the model that made the call can follow it.
+func offRunErrorInfo(info *tools.ErrorInfo) *tools.ErrorInfo {
+	if info == nil || info.CallFormat == nil || info.CallFormat.Reference == nil {
+		return info
+	}
+	out := *info
+	out.CallFormat = tools.OffRunCallFormat(info.CallFormat)
+	return &out
+}

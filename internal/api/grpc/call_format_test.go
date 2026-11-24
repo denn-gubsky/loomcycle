@@ -87,3 +87,30 @@ func TestDispatchSubstrateRPC_ARefusalCarriesItsErrorInfo(t *testing.T) {
 		t.Errorf("a success carries error_info: %+v, %v", ok, err)
 	}
 }
+
+// A substrate RPC is called from outside a run: its caller has no Context tool
+// and gRPC serves no help, so the call format names no help call. The example
+// stays, and the tool's own value is not written through — a run's stream
+// event keeps the reference (TestEventToProto_AToolResultCarriesTheCallFormat).
+func TestDispatchSubstrateRPC_TheCallFormatNamesNoHelpCall(t *testing.T) {
+	s := &Server{connector: &mockConnector{}}
+	info := &tools.ErrorInfo{Category: tools.CategoryValidation, CallFormat: sampleCallFormat()}
+	resp, err := s.dispatchSubstrateRPC(context.Background(), "Document",
+		&loomcyclepb.SubstrateRequest{InputJson: []byte(`{"op":"create_chunk"}`)},
+		func(context.Context, json.RawMessage) (connector.ToolResult, error) {
+			return connector.ToolResult{Text: `Document: unknown argument "text"`, IsError: true, ErrorInfo: info}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cf := resp.GetErrorInfo().GetCallFormat()
+	if cf == nil || cf.GetTool() != "Document" || cf.GetOp() != "create_chunk" || len(cf.GetExampleJson()) == 0 {
+		t.Fatalf("call_format = %+v; want the create_chunk example", cf)
+	}
+	if cf.GetReference() != nil {
+		t.Errorf("reference = %+v; an off-run caller cannot call it", cf.GetReference())
+	}
+	if info.CallFormat.Reference == nil {
+		t.Error("the tool's own call format was written through")
+	}
+}

@@ -84,6 +84,43 @@ func TestConnectorBuiltin_ARefusalCarriesItsStructureOverHTTP(t *testing.T) {
 	}
 }
 
+// An off-run caller has no Context tool and no route serves help, so the call
+// format it gets names no help call to make — but keeps the example and the
+// valid operations, which it can act on. The dispatcher's own value, and so a
+// run's output, keeps the reference
+// (TestExecute_FailedCallCarriesACorrectCallForTheOperation).
+func TestConnectorBuiltin_AnOffRunCallFormatNamesNoHelpCallOverHTTP(t *testing.T) {
+	set, err := help.LoadSet("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Concurrency: config.Concurrency{MaxConcurrentRuns: 1, MaxQueueDepth: 1}}
+	cfg.Env.AuthToken = "test-token"
+	srv := New(cfg, &stubResolver{}, []tools.Tool{&builtin.Document{}, &builtin.Context{Help: set}},
+		concurrency.New(1, 1, time.Second), nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Without SQL Memory every Document op but a shape failure is refused as
+	// business before the op is read, so an unknown op gets no call format
+	// here; the operations list's survival is pinned in
+	// TestOffRunCallFormat_DropsOnlyTheReference.
+	resp := postAdmin(t, ts, "/v1/_document", `{"op":"create_chunk","document_id":"d1","title":"T","text":"hello"}`)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	var env map[string]any
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("decode: %v (%s)", err, raw)
+	}
+	cf, ok := env["correctCallFormat"].(map[string]any)
+	if !ok || cf["tool"] != "Document" || cf["op"] != "create_chunk" || cf["example"] == nil {
+		t.Fatalf("correctCallFormat = %v; want the create_chunk example; body=%s", env["correctCallFormat"], raw)
+	}
+	if ref, has := cf["reference"]; has {
+		t.Errorf("correctCallFormat.reference = %v; an off-run caller cannot call it", ref)
+	}
+}
+
 // The crossing for help hints: the dispatcher the SERVER builds for a run, the
 // real Context, and the real help corpus. A run that skipped Document's help
 // gets the create_chunk article with its first shape failure — here the
