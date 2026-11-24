@@ -293,7 +293,7 @@ func (n *NotebookEdit) Execute(ctx context.Context, input json.RawMessage) (tool
 		return errResult("rename: " + err.Error()), nil
 	}
 
-	return tools.Result{Text: fmt.Sprintf("notebook %s: %s (%d cells)", mode, resolved, len(nb.Cells))}, nil
+	return tools.Result{Text: fmt.Sprintf("notebook %s: %s (%d cells)", mode, args.FilePath, len(nb.Cells))}, nil
 }
 
 func findCellIndex(cells []notebookCell, id string) int {

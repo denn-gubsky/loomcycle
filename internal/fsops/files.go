@@ -99,7 +99,9 @@ func Read(ctx context.Context, root, fence string, req ReadRequest) (string, err
 // content, at most maxBytes bytes (0 means DefaultWriteMaxBytes). Only the
 // parent directory has to exist. The write is atomic (ReplaceFile): on any
 // failure the target is unchanged and no temporary file is left. Returns the
-// result line the Write tool reports.
+// result line the Write tool reports, which names path as the caller wrote it:
+// the line reaches the model and the run's transcript, and the resolved path
+// would say where the volume lives on the server.
 func Write(ctx context.Context, root, fence, path, content string, maxBytes int64) (string, error) {
 	if path == "" {
 		return "", ErrPathRequired
@@ -139,7 +141,7 @@ func Write(ctx context.Context, root, fence, path, content string, maxBytes int6
 	if err := ReplaceFile(ctx, dir, filepath.Base(rel), ".loomcycle-write-", content); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("wrote %d bytes to %s", len(content), target), nil
+	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 }
 
 // EditRequest is one edit. MaxBytes 0 means DefaultEditMaxBytes.
@@ -154,7 +156,7 @@ type EditRequest struct {
 // Edit replaces text in the existing file req.Path names under root, with
 // Replace's semantics, and writes the result back atomically (ReplaceFile). A
 // file larger than MaxBytes is refused unread. Returns the result line the
-// Edit tool reports.
+// Edit tool reports, which names req.Path as the caller wrote it (see Write).
 func Edit(ctx context.Context, root, fence string, req EditRequest) (string, error) {
 	if req.Path == "" {
 		return "", ErrPathRequired
@@ -212,7 +214,7 @@ func Edit(ctx context.Context, root, fence string, req EditRequest) (string, err
 	if err := ReplaceFile(ctx, dir, base, ".loomcycle-edit-", replaced); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("edited %s (%d replacement%s)", resolved, count, plural(count)), nil
+	return fmt.Sprintf("edited %s (%d replacement%s)", req.Path, count, plural(count)), nil
 }
 
 // readCapped reads f whole and closes it, refusing a file whose size is over
