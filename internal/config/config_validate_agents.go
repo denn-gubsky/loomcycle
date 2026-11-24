@@ -85,6 +85,9 @@ func validateAgentRouting(c *Config, name string, agent AgentDef, known, enabled
 	if err := agent.Context.Validate(); err != nil {
 		return fmt.Errorf("agent %q: %w", name, err)
 	}
+	if err := agent.HistoryPreload.Validate(); err != nil {
+		return fmt.Errorf("agent %q: %w", name, err)
+	}
 	if hasTier && !validTierNames[agent.Tier] {
 		return fmt.Errorf("agent %q: invalid tier %q (want one of low/middle/high)", name, agent.Tier)
 	}

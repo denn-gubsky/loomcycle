@@ -306,6 +306,16 @@ type Telemetry struct {
 	ContentCapture string `json:"content_capture,omitempty"`
 }
 
+// HistoryPreload mirrors config.HistoryPreload locally (the agents package
+// stays config-free). json: tags are LOAD-BEARING for content_sha256.
+type HistoryPreload struct {
+	Sessions  int    `json:"sessions,omitempty"`
+	Within    string `json:"within,omitempty"`
+	Include   string `json:"include,omitempty"`
+	TailTurns int    `json:"tail_turns,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
 // Compaction mirrors config.Compaction locally (the agents package stays
 // config-free). json: tags mirror the persisted snake_case and are LOAD-BEARING
 // for content_sha256. Pointers so an unset field omits.
