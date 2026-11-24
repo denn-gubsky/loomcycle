@@ -73,3 +73,28 @@ type ServerStopAnswer struct {
 type ServerLogsAnswer struct {
 	Servers []ServerInfo `json:"servers"`
 }
+
+// OpTunnel is a byte stream to a port a server of the workspace serves (RFC
+// GW §5.3, P9 plan §3.2): the op's input is written to the port as it comes
+// and what the port answers is the op's output, both at once. The worker
+// admits it (an empty output chunk) once the port is reached; its input is
+// of unknown length.
+const OpTunnel = "tunnel"
+
+// TunnelArgs are a tunnel op's arguments.
+type TunnelArgs struct {
+	Port int `json:"port"`
+}
+
+// ClassPortNotServed: no running server of the workspace declared the port
+// (or, on the host engine, a server of another workspace on the worker
+// declares it too).
+const ClassPortNotServed = "port_not_served"
+
+// ClassPortUnreachable: a server declared the port but nothing answers on
+// it in the workspace.
+const ClassPortUnreachable = "port_unreachable"
+
+// MaxRequestBody bounds a request op's body each way: what is sent, and
+// what of the answer's body is returned (RFC GW P9 plan §3.2).
+const MaxRequestBody = 1 << 20

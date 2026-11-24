@@ -55,6 +55,12 @@ type Engine interface {
 	// on the program's stdin and stdout. The program outlives ctx; it ends
 	// when its stdin closes, or with Process.Kill.
 	Start(ctx context.Context, req StartRequest) (Process, error)
+	// Dial opens a byte stream to a port on the workspace's own loopback
+	// (RFC GW §5.3, P9 plan §3.2): the host engine dials 127.0.0.1; the
+	// container engine starts a relay inside the session, so the session
+	// keeps the network it has and the worker never dials into it. It
+	// reaches no other address. ErrUnreachable is a port nothing answers on.
+	Dial(ctx context.Context, req DialRequest) (Conn, error)
 	// Forget ends what the engine keeps for a workspace that is being
 	// removed: its session and everything still running in it.
 	Forget(ctx context.Context, workspace string) error
@@ -127,3 +133,34 @@ type Process interface {
 // ErrRefused is a command the engine will not run, such as one whose program
 // the operator did not list.
 var ErrRefused = errors.New("command refused")
+
+// DialRequest is a port to reach in one workspace.
+type DialRequest struct {
+	// Workspace and Root are as ExecRequest's.
+	Workspace string
+	Root      string
+	// Port is the port on the workspace's own loopback, 1 to 65535.
+	Port int
+}
+
+// Conn is a byte stream Dial opened.
+type Conn interface {
+	io.ReadWriteCloser
+	// CloseWrite ends what is sent; what the port answers can still be
+	// read.
+	CloseWrite() error
+}
+
+// ErrUnreachable is a port nothing in the workspace answers on.
+var ErrUnreachable = errors.New("nothing answers on the port")
+
+// dialTimeout bounds reaching a port: a loopback connect answers at once,
+// and the relay's own start is what takes time.
+const dialTimeout = 30 * time.Second
+
+func validPort(port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("dial: port %d is not from 1 to 65535", port)
+	}
+	return nil
+}

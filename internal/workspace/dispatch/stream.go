@@ -20,6 +20,11 @@ type streamIO struct {
 	// sends the empty output chunk that admits the op.
 	admitted     chan struct{}
 	admittedOnce sync.Once
+	// duplex is a tunnel's input (Tunnel): each read is sent as it comes, and
+	// stopInput, called once the worker has answered, unblocks a read
+	// still waiting on the caller.
+	duplex    bool
+	stopInput func()
 }
 
 func (s *streamIO) admit() {
@@ -94,7 +99,7 @@ func (d *Dispatcher) serveStream(ctx context.Context, stream workspacepb.Workspa
 	}()
 	resc := make(chan result, 1)
 	safego.Go(ctx, "workspace.dispatch.stream-recv", func() {
-		resc <- d.receiveOutput(stream, o, func(data []byte) error {
+		r := d.receiveOutput(stream, o, func(data []byte) error {
 			mu.Lock()
 			defer mu.Unlock()
 			if closed {
@@ -103,10 +108,17 @@ func (d *Dispatcher) serveStream(ctx context.Context, stream workspacepb.Workspa
 			_, err := sio.out.Write(data)
 			return err
 		})
+		resc <- r
+		if sio.stopInput != nil {
+			sio.stopInput()
+		}
 	})
 	if sio.in != nil {
 		send := sendSized
-		if sio.admitted != nil {
+		switch {
+		case sio.duplex:
+			send = sendDuplex
+		case sio.admitted != nil:
 			send = sendUnsized
 		}
 		if r, ok := send(stream, o, resc); !ok {
