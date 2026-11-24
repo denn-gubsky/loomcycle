@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { isButtonInput, VERB, type CanonicalCard, type CardInput } from "../src/cards.js";
-import { UNTRUSTED_KIND, UNTRUSTED_TYPED_ANSWER_TEXT } from "../src/conversation.js";
+import { LOST_RUN_TEXT, UNTRUSTED_KIND, UNTRUSTED_TYPED_ANSWER_TEXT } from "../src/conversation.js";
 import { gateSharedSubject, sharedSubject, type Identified, type Scope, type Trust } from "../src/identity.js";
 import type { PlatformCapabilities, PlatformInfo } from "../src/platform.js";
 import { ConversationRouter } from "../src/router.js";
@@ -196,6 +196,58 @@ describe("bridge conversation", () => {
     expect(lc.runs).toHaveLength(1);
     expect(lc.runs[0].kind).toBe("continue");
     expect(lc.runs[0].opts).toMatchObject({ sessionId: "sess-old" });
+  });
+
+  // loomcycle restarted under a parked run: the bridge's stream broke with no
+  // HTTP answer, and loomcycle resumed the run, which still holds the session.
+  // A plain continueSession would be refused with session_busy until the run
+  // ended on its own (MTB, 1.168.0).
+  it("after loomcycle restarts under a live run, the next message ends that run and continues its session", async () => {
+    await say("first");
+    lc.runs[0].events.push({ type: "awaiting_input" });
+    await settle();
+    lc.runs[0].events.fail(new TypeError("fetch failed"));
+    await settle();
+    const shown = [...platform.messages(), ...platform.streams.map((x) => x.text + x.updates.join(""))].join("\n");
+    expect(shown).toContain(LOST_RUN_TEXT);
+
+    await say("hello again");
+
+    expect(lc.callsTo("cancelAgent").map((c) => c.args[0])).toEqual(["agent-run-1"]);
+    expect(lc.runs).toHaveLength(2);
+    expect(lc.runs[1].kind).toBe("continue");
+    expect(lc.runs[1].opts).toMatchObject({ sessionId: "sess-1", interactive: true });
+    expect(lc.runs[1].opts.segments).toEqual([{ role: "user", content: [{ type: "trusted-text", text: "hello again" }] }]);
+  });
+
+  it("starts the run again while loomcycle says the session is busy, then delivers the message", async () => {
+    await say("first");
+    lc.runs[0].events.end();
+    await settle();
+    lc.startError = Object.assign(httpError(409), { name: "SessionBusyError", code: "session_busy" });
+    const before = platform.messages().length;
+
+    await router.onMessage(ident("alice", "Alice"), refFor(), "again");
+    await waitFor(() => lc.runs.length === 3, "the run started again");
+    announce(lc.runs[2], "run-3");
+    await settle();
+
+    expect(lc.runs[1].kind).toBe("continue");
+    expect(lc.runs[2].kind).toBe("continue");
+    expect(lc.runs[2].opts).toMatchObject({ sessionId: "sess-1" });
+    expect(platform.messages().slice(before).join("\n")).not.toContain("busy");
+  });
+
+  it("does not retry another 409, and says the agent is busy in plain words", async () => {
+    await say("first");
+    lc.runs[0].events.end();
+    await settle();
+    lc.startError = httpError(409);
+
+    await router.onMessage(ident("alice", "Alice"), refFor(), "again");
+    await waitFor(() => platform.messages().some((m) => m.includes("still busy")), "busy message");
+    await new Promise((r) => setTimeout(r, 700));
+    expect(lc.runs).toHaveLength(2);
   });
 
   // A bridge that ran with a loomcycle token and is switched to a gate finds

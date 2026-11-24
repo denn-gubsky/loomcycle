@@ -142,9 +142,28 @@ export function friendlyError(status: number | undefined): string {
       return "The agent isn't available to you. Ask your administrator to check the bot's configuration.";
     case 401:
       return "I couldn't sign you in to the agent. Please try again.";
+    case 409:
+      return "The agent is still busy with an earlier request. Please send your message again in a moment.";
     default:
       return "I couldn't reach the agent. Please try again in a moment.";
   }
+}
+
+/** LOST_RUN_TEXT is said when a run's stream breaks with no answer from
+ *  loomcycle (it restarted, or the connection dropped). The run may still be
+ *  alive; the next message ends it and continues the conversation. */
+export const LOST_RUN_TEXT =
+  "The connection to the agent was interrupted (it may have been restarted). Send your message again and the conversation continues.";
+
+/** SESSION_BUSY_RETRY_MS: how long to wait before each new try when loomcycle
+ *  says the session is still held by another run. A run this bridge just
+ *  cancelled can hold it for a moment before it lets go. */
+export const SESSION_BUSY_RETRY_MS = [500, 1000, 2000];
+
+/** isSessionBusy reports loomcycle's 409 session_busy, not any other 409. */
+export function isSessionBusy(err: unknown): boolean {
+  const e = err as { name?: unknown; code?: unknown } | null;
+  return statusOf(err) === 409 && (e?.name === "SessionBusyError" || e?.code === "session_busy");
 }
 
 export function resultCard(message: string): CanonicalCard {
@@ -452,15 +471,50 @@ export class Conversation<TRef> {
     this.live = live;
     this.limitShown = false;
     this.turnText = "";
-    const events = this.rec.sessionId
-      ? client.continueSession({ sessionId: this.rec.sessionId, segments, interactive: true, signal: abort.signal })
-      : client.runStreaming({ agent: this.deps.agent, segments, interactive: true, signal: abort.signal });
-    void this.pump(events, live);
+    const open = () =>
+      this.rec.sessionId
+        ? client.continueSession({ sessionId: this.rec.sessionId, segments, interactive: true, signal: abort.signal })
+        : client.runStreaming({ agent: this.deps.agent, segments, interactive: true, signal: abort.signal });
+    void this.pump(this.openWhenFree(open, abort.signal), live);
     // Later messages must see the run id, so wait for the run to announce it.
     await started;
   }
 
+  /** openWhenFree starts the run, starting it again while loomcycle answers
+   *  session_busy: after loomcycle restarts and resumes a parked run, or just
+   *  after this bridge cancelled one, the session is held for a moment. Any
+   *  other error, or the last busy answer, reaches pump as before. */
+  private async *openWhenFree(open: () => AsyncIterable<AgentEvent>, signal: AbortSignal): AsyncIterable<AgentEvent> {
+    for (let attempt = 0; ; attempt++) {
+      const it = open()[Symbol.asyncIterator]();
+      let first: IteratorResult<AgentEvent>;
+      try {
+        first = await it.next();
+      } catch (err) {
+        const wait = SESSION_BUSY_RETRY_MS[attempt];
+        if (!isSessionBusy(err) || wait === undefined || signal.aborted) throw err;
+        this.deps.log.info("session busy, starting the run again", { conversation: this.rec.conversationId, attempt: attempt + 1 });
+        await new Promise((r) => setTimeout(r, wait));
+        if (signal.aborted) throw err;
+        continue;
+      }
+      if (first.done) return;
+      yield first.value;
+      for (;;) {
+        const next = await it.next();
+        if (next.done) return;
+        yield next.value;
+      }
+    }
+  }
+
   private async pump(events: AsyncIterable<AgentEvent>, live: Live): Promise<void> {
+    // lost: the stream broke with no answer from loomcycle (no HTTP status):
+    // it restarted, or the connection dropped. The run may still be alive and
+    // still hold the session, so its ids are kept: the next message's
+    // startRun cancels it and continues the session, instead of being
+    // refused with session_busy until the run ends on its own.
+    let lost = false;
     try {
       for await (const ev of events) {
         if (this.live !== live) break;
@@ -477,7 +531,8 @@ export class Conversation<TRef> {
           error: (err as Error)?.name,
         });
         if (statusOf(err) === 401) this.deps.broker.forget(this.rec.runSubject);
-        await this.finishTurn(friendlyError(statusOf(err)), true).catch(() => undefined);
+        lost = statusOf(err) === undefined && !!live.runId;
+        await this.finishTurn(lost ? LOST_RUN_TEXT : friendlyError(statusOf(err)), true).catch(() => undefined);
       }
     } finally {
       live.markStarted();
@@ -488,8 +543,13 @@ export class Conversation<TRef> {
         await this.finishTurn().catch(() => undefined);
         // A run that ended rather than parked: its last turn is spoken too.
         if (!live.abort.signal.aborted) this.speakTurn();
-        this.rec.runId = undefined;
-        this.rec.agentId = undefined;
+        if (lost) {
+          this.rec.runId = live.runId;
+          this.rec.agentId = live.agentId;
+        } else {
+          this.rec.runId = undefined;
+          this.rec.agentId = undefined;
+        }
         await this.save().catch(() => undefined);
         if (this.deferred.length > 0) void this.flushDeferred().catch(() => undefined);
       }
