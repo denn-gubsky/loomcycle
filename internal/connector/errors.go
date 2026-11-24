@@ -173,6 +173,11 @@ var (
 	// ResourceExhausted / HTTP 429.
 	ErrSteerQueueFull = errors.New("connector: run input queue full")
 
+	// ErrSteerContentInvalid is a steered turn given as content blocks that
+	// is not one: no block, an unknown or image type, an empty text, or text
+	// beside content. Transports: InvalidArgument / 400.
+	ErrSteerContentInvalid = errors.New("connector: invalid run input content")
+
 	// --- RFC BH turn-cancel (stop the current turn, keep the session) ---
 
 	// ErrTurnCancelUnavailable is returned by CancelTurn when the server has no

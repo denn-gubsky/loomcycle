@@ -34,7 +34,11 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 	if runID == "" {
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
-	if strings.TrimSpace(req.GetText()) == "" {
+	content := req.GetContent()
+	switch {
+	case len(content) > 0 && strings.TrimSpace(req.GetText()) != "":
+		return nil, status.Error(codes.InvalidArgument, "send text or content, not both")
+	case len(content) == 0 && strings.TrimSpace(req.GetText()) == "":
 		return nil, status.Error(codes.InvalidArgument, "text is required")
 	}
 	// Apply the retune BEFORE delivering the text: the loop re-reads the run's
@@ -57,8 +61,17 @@ func (s *Server) RunInput(ctx context.Context, req *loomcyclepb.RunInputRequest)
 			return nil, retuneErrStatus(err)
 		}
 	}
-	delivered, err := s.connector.SteerRun(ctx, runID, req.GetText(), store.InterruptResolvedByAPI)
+	var delivered bool
+	var err error
+	if len(content) > 0 {
+		seg := segmentsFromProto([]*loomcyclepb.PromptSegment{{Role: "user", Content: content}})
+		delivered, err = s.connector.SteerRunContent(ctx, runID, seg[0].Content, store.InterruptResolvedByAPI)
+	} else {
+		delivered, err = s.connector.SteerRun(ctx, runID, req.GetText(), store.InterruptResolvedByAPI)
+	}
 	switch {
+	case errors.Is(err, connector.ErrSteerContentInvalid):
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	case errors.Is(err, runner.ErrRateLimited):
 		// A message that starts a parked run's next turn is a run start.
 		return nil, mapRunnerErr(err)

@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/directory"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 	loommcp "github.com/denn-gubsky/loomcycle/internal/tools/mcp"
@@ -266,6 +267,9 @@ func (m *httpMockConnector) Decision(context.Context, json.RawMessage) (connecto
 }
 func (m *httpMockConnector) DecisionModels(context.Context) (connector.DecisionModelList, bool) {
 	return connector.DecisionModelList{}, false
+}
+func (m *httpMockConnector) SteerRunContent(context.Context, string, []loop.PromptContentBlock, string) (bool, error) {
+	return false, nil
 }
 func (m *httpMockConnector) PutInboxFile(context.Context, connector.InboxPutRequest) (connector.InboxPutResult, error) {
 	return connector.InboxPutResult{}, nil

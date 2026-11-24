@@ -10,6 +10,7 @@ import (
 
 	"github.com/denn-gubsky/loomcycle/internal/channels"
 	"github.com/denn-gubsky/loomcycle/internal/connector"
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/steer"
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -38,6 +39,47 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 		// defensive floor so an empty turn never reaches the loop.
 		return false, connector.ErrRunNotInFlight
 	}
+	return s.steerRun(ctx, runID, steer.Message{Text: text, Source: source})
+}
+
+// SteerRunContent is SteerRun for a turn given as content blocks: checked,
+// the caller's runtime-only kinds demoted as every intake does, and pushed
+// with the fenced text beside the blocks (steer.Message.Content).
+func (s *Server) SteerRunContent(ctx context.Context, runID string, content []loop.PromptContentBlock, source string) (bool, error) {
+	if s.steerReg == nil {
+		return false, connector.ErrSteeringUnavailable
+	}
+	blocks, err := steerBlocks(content)
+	if err != nil {
+		return false, err
+	}
+	return s.steerRun(ctx, runID, steer.Message{Text: loop.SteerTurnText(blocks), Content: blocks, Source: source})
+}
+
+// steerBlocks checks a turn given as content blocks: at least one, each
+// trusted-text (or untyped) or untrusted-block with non-blank text.
+func steerBlocks(content []loop.PromptContentBlock) ([]steer.Block, error) {
+	if len(content) == 0 {
+		return nil, fmt.Errorf("%w: content has no block", connector.ErrSteerContentInvalid)
+	}
+	segs := loop.DemoteRuntimeKinds([]loop.PromptSegment{{Role: "user", Content: content}})
+	out := make([]steer.Block, 0, len(content))
+	for i, c := range segs[0].Content {
+		switch c.Type {
+		case "", "trusted-text", "untrusted-block":
+		default:
+			return nil, fmt.Errorf("%w: content[%d]: type %q is not taken here (trusted-text or untrusted-block)", connector.ErrSteerContentInvalid, i, c.Type)
+		}
+		if strings.TrimSpace(c.Text) == "" {
+			return nil, fmt.Errorf("%w: content[%d]: text is empty", connector.ErrSteerContentInvalid, i)
+		}
+		out = append(out, steer.Block{Type: c.Type, Kind: c.Kind, Text: c.Text})
+	}
+	return out, nil
+}
+
+// steerRun is SteerRun's gates and push, for a checked message.
+func (s *Server) steerRun(ctx context.Context, runID string, m steer.Message) (bool, error) {
 	// A caller whose own runs are no-trace does not get its words stored by
 	// writing them into somebody's ordinary run. Before the run is looked at:
 	// the answer is the same whatever the run is, so it tells the caller
@@ -86,9 +128,8 @@ func (s *Server) SteerRun(ctx context.Context, runID, text, source string) (bool
 	if err := s.withholdForOtherSender(ctx, runID); err != nil {
 		return false, err
 	}
-	delivered, err := s.steerReg.Push(ctx, runID, steer.Message{
-		Text: text, Source: source, EnqueuedAt: time.Now(),
-	})
+	m.EnqueuedAt = time.Now()
+	delivered, err := s.steerReg.Push(ctx, runID, m)
 	switch {
 	case errors.Is(err, steer.ErrQueueFull):
 		return false, connector.ErrSteerQueueFull

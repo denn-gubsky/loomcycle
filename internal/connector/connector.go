@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
@@ -736,6 +737,17 @@ type Connector interface {
 	//   ErrRunNotInFlight      — no live run for run_id (or cross-tenant). NotFound.
 	//   ErrSteerQueueFull      — the run's buffer is full. ResourceExhausted.
 	SteerRun(ctx context.Context, runID, text, source string) (delivered bool, err error)
+
+	// SteerRunContent is SteerRun for a turn given as content blocks
+	// (trusted-text and untrusted-block, RFC HE owner ruling 2026-11-24): each
+	// untrusted-block reaches the model fenced exactly as one in a run's
+	// prompt, so a client can hand a live run what a person attached without
+	// it reading as the person's instructions. The same gates and typed errors
+	// as SteerRun, plus a *SteerContentError for a turn that is not one
+	// (InvalidArgument / 400). An image block is refused: images go in a run's
+	// prompt. Reachable via POST /v1/runs/{run_id}/input with `content` and
+	// the gRPC RunInput RPC's `content`.
+	SteerRunContent(ctx context.Context, runID string, content []loop.PromptContentBlock, source string) (delivered bool, err error)
 
 	// RetuneRun changes a LIVE run's per-run overrides WITHOUT delivering a turn
 	// — the canonical half of POST /v1/runs/{run_id}/retune and the RetuneRun

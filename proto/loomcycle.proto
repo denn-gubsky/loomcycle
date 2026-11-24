@@ -1619,6 +1619,10 @@ message RunInputRequest {
   // empty message turns queue-aware routing off. Read at the run's next call
   // boundary.
   RunRouting routing = 21;
+  // The turn as content blocks instead of text (RFC HE): trusted-text and
+  // untrusted-block, each untrusted-block fenced as one in a run's prompt is.
+  // Exclusive with text; an image block is refused (InvalidArgument).
+  repeated PromptContentBlock content = 22;
 }
 
 // RetuneRunRequest changes a run's settings and delivers no turn. The override
