@@ -1851,6 +1851,8 @@ export interface RunSpec {
   /** Whether the run is held for review when it finishes (current, after any retune). */
   review?: boolean;
   interruption?: Record<string, unknown>;
+  /** `"off"` when the run started without its agent's history preload. */
+  history_preload?: "off";
   /** The caller's host narrowing. */
   hosts?: Record<string, unknown>;
   /** The caller's `tools` narrowing, kept so a resume narrows by it again.
