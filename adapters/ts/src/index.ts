@@ -711,6 +711,7 @@ export type {
   RunFileExtractStructure,
   RunFileImportHeading,
   RunInboxDownload,
+  InboxPutResult,
   EffectiveConfigSource,
   EffectiveValue,
   InertContextSetting,

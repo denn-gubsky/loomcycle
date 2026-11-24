@@ -106,6 +106,7 @@ import type {
   EffectiveConfigResponse,
   RunFileInput,
   RunInboxDownload,
+  InboxPutResult,
   DocumentExport,
   DocumentExportFormat,
   DocumentExportOptions,
@@ -816,6 +817,39 @@ export class LoomcycleClient {
       origin: resp.headers.get("X-Loomcycle-Origin") ?? "",
       headers: resp.headers,
     };
+  }
+
+  /** Put a file into the inbox of a run you own (RFC HE F1). Mirrors
+   *  `PUT /v1/runs/{run_id}/inbox/{name}`: the raw bytes as the body, the
+   *  type as Content-Type. The agent then reads it with the File tool by the
+   *  returned `ref`, as it reads a file a tool returned; its record says
+   *  `origin: "client"` and who put it.
+   *
+   *  Only the run's owner or an admin, and only while the run is live:
+   *  another user's run is a {@link NotFoundError}, an ended run a 409
+   *  (`run_not_live`), a run served by another server a 503
+   *  (`run_elsewhere`). Over the client put cap (`client_put_max_bytes`) or
+   *  the inbox quota (`inbox_full`) is a 413, and nothing is kept. A token
+   *  limited to certain agents needs the `inbox_put` surface (a 403
+   *  `restricted_token` otherwise). */
+  async putInboxFile(
+    runId: string,
+    name: string,
+    data: Blob | Uint8Array | ArrayBuffer,
+    opts?: { contentType?: string; signal?: AbortSignal },
+  ): Promise<InboxPutResult> {
+    const type = opts?.contentType ?? (data instanceof Blob ? data.type : "");
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (type) headers["Content-Type"] = type;
+    if (this.ctx.authToken) headers.Authorization = `Bearer ${this.ctx.authToken}`;
+    const resp = await this.ctx.fetchImpl(
+      `${this.ctx.baseUrl}/v1/runs/${encodeURIComponent(runId)}/inbox/${encodeURIComponent(name)}`,
+      { method: "PUT", headers, body: data as BodyInit, signal: opts?.signal },
+    );
+    if (!resp.ok) {
+      await raiseFromResponse(resp);
+    }
+    return (await resp.json()) as InboxPutResult;
   }
 
   /** Which per-run overrides a run of `name` may set, for this caller — what a

@@ -138,6 +138,11 @@ class LoomcycleStub:
                 request_serializer=loomcycle__pb2.RunInputRequest.SerializeToString,
                 response_deserializer=loomcycle__pb2.RunInputResponse.FromString,
                 _registered_method=True)
+        self.PutInboxFile = channel.stream_unary(
+                '/loomcycle.v1.Loomcycle/PutInboxFile',
+                request_serializer=loomcycle__pb2.PutInboxFileRequest.SerializeToString,
+                response_deserializer=loomcycle__pb2.PutInboxFileResponse.FromString,
+                _registered_method=True)
         self.RetuneRun = channel.unary_unary(
                 '/loomcycle.v1.Loomcycle/RetuneRun',
                 request_serializer=loomcycle__pb2.RetuneRunRequest.SerializeToString,
@@ -732,6 +737,23 @@ class LoomcycleServicer:
         the run's steer queue is full. The injected `source` is server-stamped
         (never wire-trusted). Cross-replica routing is inherited from the
         steer registry. Mirrors POST /v1/runs/{run_id}/input. (RFC AI)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PutInboxFile(self, request_iterator, context):
+        """PutInboxFile keeps a file in the inbox of a run the caller owns (RFC HE
+        F1): the twin of PUT /v1/runs/{run_id}/inbox/{name}. Client-streaming,
+        so a file larger than one message fits: the first message names the run,
+        the file and its media type and may carry the first bytes; every later
+        message carries only data. Only the run's owner or an admin; a token
+        limited to certain agents needs the inbox_put surface. Refusals:
+        NotFound (no such run, or not the caller's), FailedPrecondition (the run
+        has ended), ResourceExhausted (over the client put cap or the inbox
+        quota; ErrorInfo.reason client_put_max_bytes / inbox_full), Unavailable
+        (the run is served by another server, or the put could not be recorded),
+        InvalidArgument (no run_id or name on the first message).
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1846,6 +1868,11 @@ def add_LoomcycleServicer_to_server(servicer, server):
                     request_deserializer=loomcycle__pb2.RunInputRequest.FromString,
                     response_serializer=loomcycle__pb2.RunInputResponse.SerializeToString,
             ),
+            'PutInboxFile': grpc.stream_unary_rpc_method_handler(
+                    servicer.PutInboxFile,
+                    request_deserializer=loomcycle__pb2.PutInboxFileRequest.FromString,
+                    response_serializer=loomcycle__pb2.PutInboxFileResponse.SerializeToString,
+            ),
             'RetuneRun': grpc.unary_unary_rpc_method_handler(
                     servicer.RetuneRun,
                     request_deserializer=loomcycle__pb2.RetuneRunRequest.FromString,
@@ -2771,6 +2798,33 @@ class Loomcycle:
             '/loomcycle.v1.Loomcycle/RunInput',
             loomcycle__pb2.RunInputRequest.SerializeToString,
             loomcycle__pb2.RunInputResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PutInboxFile(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_unary(
+            request_iterator,
+            target,
+            '/loomcycle.v1.Loomcycle/PutInboxFile',
+            loomcycle__pb2.PutInboxFileRequest.SerializeToString,
+            loomcycle__pb2.PutInboxFileResponse.FromString,
             options,
             channel_credentials,
             insecure,

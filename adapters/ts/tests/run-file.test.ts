@@ -99,3 +99,50 @@ describe("downloadRunInboxFile", () => {
     await expect(client.downloadRunInboxFile("run_x", "documents/a.pdf")).rejects.toBeInstanceOf(NotFoundError);
   });
 });
+
+describe("putInboxFile", () => {
+  it("PUTs the raw bytes to the run's inbox under the encoded name, typed", async () => {
+    const kept = {
+      ref: "volume:inbox:documents/Pasport.docx",
+      name: "Pasport.docx",
+      bytes: 4,
+      sha256: "ab",
+      media_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    };
+    const { client, fetchMock } = makeClient([jsonResponse(kept, 201)]);
+    const bytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04]);
+    const res = await client.putInboxFile("run_1", "Паспорт рішення.docx", bytes, {
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    expect(res).toEqual(kept);
+    const call = fetchMock.mock.calls[0]!;
+    expect(call[0]).toBe(
+      `http://test-loomcycle:8787/v1/runs/run_1/inbox/${encodeURIComponent("Паспорт рішення.docx")}`,
+    );
+    expect(call[1]!.method).toBe("PUT");
+    expect((call[1]!.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    expect(call[1]!.body).toBe(bytes);
+  });
+
+  it("encodes a slash in the name, so the name stays one path segment", async () => {
+    const { client, fetchMock } = makeClient([
+      jsonResponse({ ref: "r", name: "n", bytes: 1, sha256: "s", media_type: "t" }, 201),
+    ]);
+    await client.putInboxFile("run_1", "../a.pdf", new Uint8Array([1]));
+    expect(fetchMock.mock.calls[0]![0]).toBe("http://test-loomcycle:8787/v1/runs/run_1/inbox/..%2Fa.pdf");
+  });
+
+  it("raises with the status and code of a refusal", async () => {
+    const { client } = makeClient([
+      errorResponse(413, '{"code":"client_put_max_bytes","error":"file not kept: over the per-file limit"}'),
+      errorResponse(404, '{"code":"not_found","error":"file: run run_x not found"}'),
+    ]);
+    await expect(client.putInboxFile("run_1", "a.pdf", new Uint8Array([1]))).rejects.toMatchObject({
+      status: 413,
+      code: "client_put_max_bytes",
+    });
+    await expect(client.putInboxFile("run_x", "a.pdf", new Uint8Array([1]))).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
