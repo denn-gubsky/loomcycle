@@ -32,7 +32,7 @@ require (
 	github.com/pdfcpu/pdfcpu v0.16.4
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/sergi/go-diff v1.4.0
+	github.com/sergi/go-diff v1.4.5
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.47.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.47.0 // indirect
