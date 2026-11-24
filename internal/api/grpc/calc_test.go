@@ -140,3 +140,23 @@ func TestGrpcCalc_PastTheTokensRunRateIsResourceExhausted(t *testing.T) {
 		t.Errorf("second call = %v / %q retry %v %v (%v), want ResourceExhausted rate_limited with RetryInfo", v.code, v.reason, v.hasRetry, v.retryIn, err)
 	}
 }
+
+// A refusal carries no pointer at the in-run Context tool, which a gRPC
+// caller does not have: the status holds the detail, the code, the hint and
+// the position, never the run's next-step sentence.
+func TestGrpcCalc_ARefusalNamesNoInRunHelpCall(t *testing.T) {
+	adapter := calcAdapter(t)
+	ctx := auth.WithPrincipal(context.Background(), auth.Principal{TenantID: "acme", Subject: "bob"})
+	_, err := adapter.Calc(ctx, calcReq(`{"expr":"1/0"}`))
+	code, ei := calcErrorInfo(t, err)
+	if code != codes.FailedPrecondition || ei.GetReason() != "division_by_zero" {
+		t.Fatalf("1/0 = %v / %+v, want FailedPrecondition division_by_zero", code, ei)
+	}
+	all := status.Convert(err).Message()
+	for k, v := range ei.GetMetadata() {
+		all += " " + k + "=" + v
+	}
+	if strings.Contains(all, "Context op=help") {
+		t.Errorf("the refusal %q points at the in-run Context tool", all)
+	}
+}

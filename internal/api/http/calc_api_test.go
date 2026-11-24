@@ -133,3 +133,27 @@ func TestCalcAPI_PastTheTokensRunRateIs429WithRetryAfter(t *testing.T) {
 		t.Errorf("Retry-After = %q, want whole seconds in (0, 60]", rec.Header().Get("Retry-After"))
 	}
 }
+
+// A refusal with no hint of its own names the help as its next step. In a run
+// that is a call to Context, which a caller of this route does not have, so
+// over HTTP it names the help topic and the guide instead. The in-run tool's
+// own text is unchanged, which also pins calcRefusalHelpInRun to its wording.
+func TestCalcAPI_ARefusalPointsAtHelpACallerCanRead(t *testing.T) {
+	in := json.RawMessage(`{"expr":"1/0"}`)
+	r, _ := (&builtin.Calc{}).Execute(context.Background(), in)
+	if r.Error == nil || !strings.Contains(r.Error.Description, calcRefusalHelpInRun) {
+		t.Fatalf("the in-run refusal of 1/0 no longer names %q (got %+v); update calcRefusalHelpInRun", calcRefusalHelpInRun, r.Error)
+	}
+
+	h := calcAPIHandler(t)
+	rec, out := postCalc(t, h, "lct_calc_member", string(in))
+	if rec.Code != http.StatusUnprocessableEntity || out["code"] != "division_by_zero" {
+		t.Fatalf("1/0: %d %s, want 422 division_by_zero", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "Context op=help") {
+		t.Errorf("body %s points at the in-run Context tool", rec.Body)
+	}
+	if desc, _ := out["description"].(string); !strings.Contains(desc, "help topic Calc/errors") || !strings.Contains(desc, "docs/CALC.md#when-a-call-is-refused") {
+		t.Errorf("description = %q, want the help topic and the guide", desc)
+	}
+}

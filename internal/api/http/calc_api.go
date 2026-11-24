@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/denn-gubsky/loomcycle/internal/connector"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
@@ -86,6 +87,30 @@ func calcRefusalBody(res connector.ToolResult) map[string]any {
 			env["pos"] = *refusal.Pos
 		}
 	}
-	addErrorInfo(env, res.Text, res.ErrorInfo)
+	addErrorInfo(env, res.Text, calcRefusalInfoForHTTP(res.ErrorInfo))
 	return env
+}
+
+// calcRefusalHelpInRun is the next step a Calc refusal names when the error
+// carries no hint of its own: a call to the in-run Context tool, which a
+// caller of this route does not have and which no route serves. The MCP
+// transport rewrites the same sentence (calcRefusalForMCP);
+// TestCalcAPI_ARefusalPointsAtHelpACallerCanRead fails if the builtin's
+// wording moves and this no longer matches.
+const calcRefusalHelpInRun = "Read Context op=help topic=Calc/errors"
+
+// calcRefusalHelpOffRun names the same article by its topic, and the guide
+// that carries the same table, for a caller with no run.
+const calcRefusalHelpOffRun = "See the help topic Calc/errors (also docs/CALC.md#when-a-call-is-refused)"
+
+// calcRefusalInfoForHTTP rewrites a refusal's help pointer for this route. A
+// copy: the tool's own value, and so the run's text, is never written through.
+// The gRPC twin carries no description, so it has no pointer to rewrite.
+func calcRefusalInfoForHTTP(info *tools.ErrorInfo) *tools.ErrorInfo {
+	if info == nil || !strings.Contains(info.Description, calcRefusalHelpInRun) {
+		return info
+	}
+	out := *info
+	out.Description = strings.Replace(out.Description, calcRefusalHelpInRun, calcRefusalHelpOffRun, 1)
+	return &out
 }
