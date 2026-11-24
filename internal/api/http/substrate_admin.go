@@ -484,7 +484,7 @@ func addErrorInfo(env map[string]any, text string, info *tools.ErrorInfo) {
 		env["description"] = info.Description
 	}
 	if info.CallFormat != nil {
-		env["correctCallFormat"] = info.CallFormat
+		env["correctCallFormat"] = tools.OffRunCallFormat(info.CallFormat)
 	}
 }
 

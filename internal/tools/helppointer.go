@@ -222,6 +222,22 @@ func (d *Dispatcher) withHelpPointer(name string, input json.RawMessage, res Res
 	return res
 }
 
+// OffRunCallFormat is cf as a caller with no run receives it: the same example,
+// op and operations, without Reference. Reference is a call to the run's help
+// tool, and an HTTP or gRPC caller of an off-run tool route has no such tool and
+// no route that serves help, so the pointer would send it nowhere. A copy: the
+// dispatcher's value, and so a run's own output, is never written through. MCP
+// does not use this — it exposes the help tool as the `context` meta-tool, so it
+// renames the reference instead (mcpCallFormat in internal/api/mcp).
+func OffRunCallFormat(cf *CallFormat) *CallFormat {
+	if cf == nil || cf.Reference == nil {
+		return cf
+	}
+	out := *cf
+	out.Reference = nil
+	return &out
+}
+
 func contains(xs []string, x string) bool {
 	for _, v := range xs {
 		if v == x {

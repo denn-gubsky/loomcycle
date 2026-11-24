@@ -3350,7 +3350,7 @@ components:
             correctCallFormat:
               type: object
               additionalProperties: true
-              description: The correct shape of the call, when the shape may be the cause.
+              description: "The correct shape of the call, when the shape may be the cause: `tool`, `op`, an `example` argument object, and `operations` when the op was missing or unknown. Off-run routes leave out `reference` (the help call a run makes), since no route serves help."
     TokenLimitError:
       description: The refusal run admission gives a caller at a hard token budget.
       type: object

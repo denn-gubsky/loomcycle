@@ -663,7 +663,7 @@ func (s *Server) dispatchSubstrateRPCCtx(
 	}
 	// The failure's structure, which the connector result used to drop here.
 	if res.IsError {
-		resp.ErrorInfo = errorInfoToProto(res.ErrorInfo)
+		resp.ErrorInfo = errorInfoToProto(offRunErrorInfo(res.ErrorInfo))
 	}
 	return resp, nil
 }
