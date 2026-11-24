@@ -68,6 +68,9 @@ export class FakeLoomcycle {
   /** Set to give the client the speech calls (RFC GA): what whoami reports
    *  and what a transcription returns. */
   speech?: { transcription: boolean; transcript: string };
+  /** Set to give the client the inbox put (RFC HE): each put is kept, and
+   *  the name is kept the way loomcycle sanitises one. */
+  inbox?: Array<{ runId: string; name: string; bytes: Uint8Array; contentType?: string }>;
   ttlMs = 12 * 3600 * 1000;
   now = () => Date.now();
   private tokenSeq = 0;
@@ -116,8 +119,21 @@ export class FakeLoomcycle {
           },
         }
       : {};
+    const inbox = this.inbox;
+    const inboxCalls = inbox
+      ? {
+          putInboxFile: async (runId: string, name: string, data: Blob | Uint8Array | ArrayBuffer, opts?: { contentType?: string }) => {
+            rec("putInboxFile", [runId, name, opts?.contentType]);
+            const bytes = new Uint8Array(data instanceof Blob ? await data.arrayBuffer() : data);
+            inbox.push({ runId, name, bytes, contentType: opts?.contentType });
+            const kept = name.replace(/[^A-Za-z0-9._-]/g, "_");
+            return { ref: `volume:inbox:documents/${kept}`, name: kept, bytes: bytes.byteLength, sha256: "0".repeat(64), media_type: opts?.contentType ?? "" };
+          },
+        }
+      : {};
     return {
       ...speechCalls,
+      ...inboxCalls,
       runStreaming: (opts) => start("start", opts),
       continueSession: (opts) => start("continue", opts),
       sendRunInput: async (runId, text) => {

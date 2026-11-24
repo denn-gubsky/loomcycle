@@ -1,10 +1,11 @@
-// Where an inbound Teams message goes: the router's text path, or, for an
-// audio file attached in a 1:1 chat with voice on, its voice path (RFC GA
-// §5.4). Kept apart from the SDK so it is tested without one.
+// Where an inbound Teams message goes: the router's text path; for an audio
+// file attached in a 1:1 chat with voice on, its voice path (RFC GA §5.4);
+// for other attached files with files on, its file path (RFC HE). Kept
+// apart from the SDK so it is tested without one.
 
 import { sentAtOf, type ConversationRouter, type Identified, type MessageOptions } from "@loomcycle/bridge-core";
 
-import { audioFileOf, type TeamsAttachment } from "./voice.js";
+import { audioFileOf, filesOf, type TeamsAttachment } from "./voice.js";
 
 /** The subset of a message activity this module reads. */
 export interface MessageFields {
@@ -21,7 +22,7 @@ export function seenOf(activity: { timestamp?: Date | string }): MessageOptions 
   return { sentAt: sentAtOf(t instanceof Date ? t.getTime() : typeof t === "string" ? Date.parse(t) : undefined) };
 }
 
-export type MessageRouter<TRef> = Pick<ConversationRouter<TRef>, "onMessage" | "onVoice">;
+export type MessageRouter<TRef> = Pick<ConversationRouter<TRef>, "onMessage" | "onVoice" | "onFile">;
 
 /** routeMessage hands one message to the router. `id` comes from identify,
  *  so the tenant fence and the user checks have already run, and a refused
@@ -31,7 +32,14 @@ export type MessageRouter<TRef> = Pick<ConversationRouter<TRef>, "onMessage" | "
  *  a bot anywhere else) and only with BRIDGE_VOICE=1: with voice off the
  *  message goes the text path exactly as before. Text typed with the file
  *  follows the voice message as a message of its own, so a caption ("answer
- *  in French") is not lost; the conversation takes the two in order. */
+ *  in French") is not lost; the conversation takes the two in order.
+ *
+ *  Any other attached file goes the file path with BRIDGE_FILES=1 (RFC
+ *  HE), and so does an audio file with voice off (decision D4), with the
+ *  text typed beside it, so the agent gets both in one message. Files from
+ *  a group chat or a channel go there too: the core takes files only in a
+ *  1:1 chat, and says so in plain words rather than drop them unseen. With
+ *  files off nothing changes. */
 export async function routeMessage<TRef>(
   router: MessageRouter<TRef>,
   id: Identified,
@@ -39,13 +47,19 @@ export async function routeMessage<TRef>(
   text: string,
   activity: MessageFields,
   voiceOn: boolean,
+  filesOn = false,
 ): Promise<void> {
   const audio = voiceOn && id.ok && id.scope === "personal" ? audioFileOf(activity.attachments) : undefined;
+  const files = filesOn && id.ok ? filesOf(activity.attachments, voiceOn) : [];
   const seen = seenOf(activity);
+  if (audio) await router.onVoice(id, ref, audio, seen);
+  if (files.length > 0) {
+    await router.onFile(id, ref, files, { ...seen, text });
+    return;
+  }
   if (!audio) {
     await router.onMessage(id, ref, text, seen);
     return;
   }
-  await router.onVoice(id, ref, audio, seen);
   if (text.trim()) await router.onMessage(id, ref, text, seen);
 }

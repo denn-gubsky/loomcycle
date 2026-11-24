@@ -23,6 +23,27 @@ import type { ConversationRecord, ConversationStore } from "./store.js";
 import { HELP_TEXT, parseCommand, VOICE_HELP_TEXT, type Command } from "./text.js";
 import { statusOf, type TokenSource } from "./tokens.js";
 import {
+  announceLine,
+  ATTACHED_FILES_HEADER,
+  declaredType,
+  extensionOf,
+  FILE_TEXT,
+  FILE_TYPES,
+  fileLine,
+  hasFiles,
+  logType,
+  missingLine,
+  putResultOf,
+  refusalText,
+  sniff,
+  type FileClient,
+  type FileIn,
+  type FilePort,
+  type FileRefusal,
+  type FilesConfig,
+  type InboxPutResult,
+} from "./files.js";
+import {
   echoLine,
   pickFormat,
   spokenPart,
@@ -51,10 +72,23 @@ export interface ConversationDeps<TRef> {
   message?: MessageSinkOptions;
   /** Set when the bridge takes voice messages (RFC GA). */
   voice?: { port: VoicePort<TRef>; config: VoiceConfig; info: VoiceInfoCache };
+  /** Set when the bridge takes attached files (RFC HE). */
+  files?: { port: FilePort; config: FilesConfig };
 }
 
 /** How long a recording's download may take. */
 const VOICE_DOWNLOAD_MS = 60_000;
+
+/** How long one attached file's download may take. */
+const FILE_DOWNLOAD_MS = 60_000;
+
+/** A file that passed its checks, held in memory until it is put. */
+interface CheckedFile {
+  name: string;
+  type: string;
+  mime: string;
+  bytes: Uint8Array;
+}
 
 /** What came in with the message that began the current turn. */
 interface TurnInput {
@@ -183,6 +217,12 @@ export class Conversation<TRef> {
     return this.serial(() => this.handleVoice(speaker, voice));
   }
 
+  /** onFile takes the files one message carries, with what was typed beside
+   *  them (RFC HE). */
+  onFile(speaker: Speaker, files: readonly FileIn[], text: string): Promise<void> {
+    return this.serial(() => this.handleFiles(speaker, files, text));
+  }
+
   onCardAction(speaker: Speaker, input: CardInput): Promise<CardResult> {
     return this.serial(() => this.handleCardAction(speaker, input));
   }
@@ -219,7 +259,7 @@ export class Conversation<TRef> {
 
   /** runClient is loomcycle as the conversation's run identity: the person in
    *  a 1:1 chat, the conversation itself in a shared one. */
-  private async runClient(): Promise<RunClient & Partial<VoiceClient>> {
+  private async runClient(): Promise<RunClient & Partial<VoiceClient> & Partial<FileClient>> {
     const token = await this.deps.broker.tokenFor(this.rec.runSubject, this.rec.runName, this.rec.ref);
     this.deps.health?.loomcycle();
     return this.deps.clients(token);
@@ -863,6 +903,207 @@ export class Conversation<TRef> {
     );
   }
 
+  // ---- files (RFC HE) ----
+
+  /** handleFiles takes the files one message carries. Each is checked
+   *  (type, size, bytes), downloaded into memory, put into the live run's
+   *  inbox with the conversation's own token, and the agent is told the text
+   *  and the files' inbox refs in one message. Nothing about a file but what
+   *  loomcycle answered the put with reaches the agent; neither its bytes
+   *  nor its link, and the logs never carry its name or link.
+   *
+   *  A run's inbox exists only once the run does, so with no live run the
+   *  run is started first, with the text and a line saying files follow, and
+   *  the files go in as the next message: two turns, not the RFC's one. */
+  private async handleFiles(speaker: Speaker, files: readonly FileIn[], raw: string): Promise<void> {
+    const fc = this.deps.files;
+    // Files off: the text alone, exactly as a message without attachments.
+    if (!fc) {
+      await this.handleMessage(speaker, raw);
+      return;
+    }
+    let text = raw.trim();
+    // A command typed beside files is a command, taken first.
+    if (text && parseCommand(text)) {
+      await this.handleMessage(speaker, text);
+      text = "";
+    }
+    if (files.length === 0) {
+      if (text) await this.handleMessage(speaker, text);
+      return;
+    }
+    this.rec.lastActivityAt = this.now();
+    await this.claimOwner(speaker);
+    const conversation = this.rec.conversationId;
+    const refuseAll = async (line: string, reason: string, deliverText: boolean) => {
+      this.deps.log.info("files: refused", { conversation, reason, count: files.length });
+      await this.say(line);
+      if (deliverText && text) await this.deliver(speaker, text, undefined);
+    };
+    // Personal scope only: in a shared chat the run is the conversation's,
+    // not the person's, and its inbox would be everyone's.
+    if (this.rec.scope !== "personal") return refuseAll(FILE_TEXT.personalOnly, "shared", true);
+    // An untrusted speaker's text reaches the agent only as an untrusted
+    // block, which a live run's input cannot carry; neither can its files.
+    if (speaker.trust === "untrusted") return refuseAll(FILE_TEXT.unavailable, "untrusted", true);
+    // The text would answer the open question; the person sends both again.
+    if (this.pending && this.pending.runId === this.live?.runId) return refuseAll(FILE_TEXT.answerFirst, "question_open", false);
+
+    const client = await this.runClient();
+    if (!hasFiles(client)) {
+      this.deps.log.warn("files: the loomcycle client has no putInboxFile; files need @loomcycle/client 1.167.0 or later", { conversation });
+      return refuseAll(FILE_TEXT.unavailable, "client", true);
+    }
+    const cfg = fc.config;
+    const refused = new Map<FileRefusal, number>();
+    const refuse = (reason: FileRefusal, detail: Record<string, unknown>) => {
+      refused.set(reason, (refused.get(reason) ?? 0) + 1);
+      this.deps.log.warn("files: refused", { conversation, reason, ...detail });
+    };
+    const taken = files.slice(0, cfg.maxCount);
+    const skipped = files.length - taken.length;
+    const checked: CheckedFile[] = [];
+    for (const f of taken) {
+      const c = await this.checkFile(f, fc, refuse);
+      if (c) checked.push(c);
+    }
+    if (skipped > 0) {
+      this.deps.log.info("files: refused", { conversation, reason: "count", count: skipped });
+      await this.say(FILE_TEXT.count(skipped, cfg.maxCount));
+    }
+    await this.sayRefusals(refused, cfg);
+    if (checked.length === 0) {
+      if (text) await this.deliver(speaker, text, undefined);
+      return;
+    }
+    await this.putFiles(speaker, client, checked, text, refuse);
+    await this.sayRefusals(refused, cfg);
+  }
+
+  /** checkFile downloads a file and checks it, or refuses it and says why in
+   *  the log: the reason, the declared type when it is one the bridge knows,
+   *  the size, the download's own reason. Never the name or the link. */
+  private async checkFile(
+    f: FileIn,
+    fc: NonNullable<ConversationDeps<TRef>["files"]>,
+    refuse: (reason: FileRefusal, detail: Record<string, unknown>) => void,
+  ): Promise<CheckedFile | undefined> {
+    const cfg = fc.config;
+    const type = declaredType(f);
+    if (!type || !cfg.types.includes(type)) {
+      refuse("type", { type: logType(type), cause: type ? "not_taken" : "unknown" });
+      return undefined;
+    }
+    if (f.bytes !== undefined && f.bytes > cfg.maxBytes) {
+      refuse("too_big", { type, bytes: f.bytes, cause: "declared" });
+      return undefined;
+    }
+    let bytes: Uint8Array;
+    try {
+      ({ bytes } = await fc.port.download(f, cfg.maxBytes, AbortSignal.timeout(FILE_DOWNLOAD_MS)));
+    } catch (err) {
+      const cause = (err as { reason?: unknown } | null)?.reason;
+      refuse(cause === "size" ? "too_big" : "download", {
+        type,
+        error: (err as Error)?.name,
+        ...(typeof cause === "string" ? { cause } : {}),
+      });
+      return undefined;
+    }
+    // A port that read past the cap is a port bug; the cap still holds.
+    if (bytes.byteLength > cfg.maxBytes) {
+      refuse("too_big", { type, bytes: bytes.byteLength, cause: "read" });
+      return undefined;
+    }
+    if (!sniff(type, bytes)) {
+      refuse("type", { type, bytes: bytes.byteLength, cause: "content" });
+      return undefined;
+    }
+    return { name: putName(f.name, type), type, mime: FILE_TYPES[type]!.mime, bytes };
+  }
+
+  /** putFiles puts the checked files into the live run's inbox, starting the
+   *  run first when none is live, and tells the agent. */
+  private async putFiles(
+    speaker: Speaker,
+    client: RunClient & FileClient,
+    files: CheckedFile[],
+    text: string,
+    refuse: (reason: FileRefusal, detail: Record<string, unknown>) => void,
+  ): Promise<void> {
+    const conversation = this.rec.conversationId;
+    // announced: the text and a line saying files follow started the run.
+    let announced = false;
+    const startForFiles = async () => {
+      await this.startRun({ type: "trusted-text", text: joinLines(text, announceLine(files.length)) });
+      announced = true;
+    };
+    if (!this.live?.runId) await startForFiles();
+    let results: InboxPutResult[] = [];
+    let fails: Array<[FileRefusal, Record<string, unknown>]> = [];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // No run id: the run did not start, and startRun's stream said why.
+      const runId = this.live?.runId;
+      if (!runId) return;
+      results = [];
+      fails = [];
+      let ended = false;
+      for (const f of files) {
+        try {
+          const r = putResultOf(await client.putInboxFile(runId, f.name, f.bytes, { contentType: f.mime, signal: AbortSignal.timeout(FILE_DOWNLOAD_MS) }));
+          if (r) results.push(r);
+          else fails.push(["failed", { type: f.type, cause: "answer" }]);
+        } catch (err) {
+          const status = statusOf(err);
+          // The run ended between its last event and this message: its
+          // inbox is gone with it. Start a new run and put them there.
+          if ((status === 404 || status === 409) && !announced) {
+            ended = true;
+            break;
+          }
+          const code = codeOf(err);
+          if (status === 403) this.deps.log.warn("files: loomcycle refused the put; grant the bridge's tokens the inbox_put surface (a gate's issued_token.surfaces)", { conversation, code });
+          if (status === 401) this.deps.broker.forget(this.rec.runSubject);
+          fails.push([putRefusal(status, code), { type: f.type, bytes: f.bytes.byteLength, status, ...(code ? { code } : {}) }]);
+        }
+      }
+      if (!ended) break;
+      this.dropLive();
+      await startForFiles();
+    }
+    for (const [reason, detail] of fails) refuse(reason, detail);
+
+    const lines: string[] = [];
+    if (!announced && text) lines.push(text);
+    if (results.length > 0) lines.push(ATTACHED_FILES_HEADER, ...results.map(fileLine));
+    if (announced && results.length < files.length) lines.push(missingLine(files.length - results.length));
+    const live = this.live;
+    if (lines.length === 0 || !live?.runId) return;
+    try {
+      await client.sendRunInput(live.runId, lines.join("\n"));
+    } catch (err) {
+      const s = statusOf(err);
+      if (s !== 404 && s !== 409) throw err;
+      // The run ended after the put, and its inbox with it.
+      this.dropLive();
+      this.deps.log.warn("files: the run ended before the agent was told", { conversation, status: s, count: results.length });
+      if (results.length > 0) await this.say(FILE_TEXT.failed(results.length));
+      if (!announced && text) await this.deliver(speaker, text, undefined);
+      return;
+    }
+    this.deps.log.info("files: delivered", { conversation, run: live.runId, count: results.length, turns: announced ? 2 : 1 });
+    this.turnInput = { voice: false };
+    if (live.parked) this.turnText = "";
+    live.parked = false;
+    await this.save();
+  }
+
+  /** sayRefusals says each reason once, counting its files, and forgets them. */
+  private async sayRefusals(refused: Map<FileRefusal, number>, cfg: FilesConfig): Promise<void> {
+    for (const [reason, n] of refused) await this.say(refusalText(reason, n, cfg));
+    refused.clear();
+  }
+
   private dropLive(): void {
     this.live?.abort.abort();
     this.live = undefined;
@@ -893,6 +1134,31 @@ function isVoiceSetting(c: Command | undefined): boolean {
  *  written before voice does not). */
 function hasVoice(c: Partial<VoiceClient>): c is VoiceClient {
   return typeof c.transcribe === "function" && typeof c.speech === "function" && typeof c.speechInfo === "function" && typeof c.whoami === "function";
+}
+
+/** joinLines is text, a blank line and line; line alone when text is empty. */
+function joinLines(text: string, line: string): string {
+  return text ? `${text}\n\n${line}` : line;
+}
+
+/** The longest name the bridge hands loomcycle; loomcycle cuts it further. */
+const PUT_NAME_MAX = 200;
+
+/** putName is the name a file is put under: the platform's base name, with
+ *  the checked type as its extension so loomcycle files it by what the bytes
+ *  are. loomcycle sanitises it again and answers with what it kept. */
+export function putName(name: string | undefined, type: string): string {
+  let base = (name ?? "").split(/[\\/]/).pop()?.trim() ?? "";
+  if (extensionOf(base) !== type) base = base ? `${base}.${type}` : `file.${type}`;
+  if (base.length > PUT_NAME_MAX) base = `${base.slice(0, PUT_NAME_MAX - type.length - 1)}.${type}`;
+  return base;
+}
+
+/** putRefusal is why a put loomcycle refused is refused to the person. */
+function putRefusal(status: number | undefined, code: string | undefined): FileRefusal {
+  if (status === 413) return code === "inbox_full" ? "full" : "too_big";
+  if (status === 403) return "unavailable";
+  return "failed";
 }
 
 /** codeOf is an error's loomcycle error code, when it carries one. */

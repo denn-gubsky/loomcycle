@@ -4,7 +4,37 @@ import type { AgentEvent, ContinueOptions, MintedUserToken, RunOptions, SpeechIn
 
 import type { CanonicalCard } from "../src/cards.js";
 import type { AdminClient, BridgePort, Logger, OutboundActivity, RunClient, StreamLike } from "../src/ports.js";
+import type { FileClient, FileIn, FilePort } from "../src/files.js";
 import type { VoiceCapabilities, VoiceClient, VoiceIn, VoiceOut, VoicePort } from "../src/voice.js";
+
+/** What the fake loomcycle's inbox put records and fails with. */
+export interface FakeInbox {
+  puts: Array<{ runId: string; name: string; bytes: number; contentType?: string }>;
+  /** Fail put calls with these, in order, then succeed. */
+  errors: unknown[];
+}
+
+export function fakeInbox(): FakeInbox {
+  return { puts: [], errors: [] };
+}
+
+/** A platform's file side: answers each download from `files` by the
+ *  FileIn's ref (a string here), or throws what `errors` holds for it. */
+export class FakeFilePort implements FilePort {
+  readonly downloads: FileIn[] = [];
+  readonly files = new Map<string, Uint8Array>();
+  readonly errors = new Map<string, unknown>();
+
+  async download(f: FileIn, maxBytes: number): Promise<{ bytes: Uint8Array }> {
+    this.downloads.push(f);
+    const key = String(f.ref);
+    const err = this.errors.get(key);
+    if (err) throw err;
+    const bytes = this.files.get(key) ?? new Uint8Array();
+    if (bytes.byteLength > maxBytes) throw Object.assign(new Error("too big"), { reason: "size" });
+    return { bytes };
+  }
+}
 
 /** What the fake loomcycle's speech side answers, when a test turns it on. */
 export interface FakeSpeech {
@@ -99,7 +129,11 @@ export class FakeLoomcycle {
   /** Set to give the client the speech calls (RFC GA). */
   speech?: FakeSpeech;
 
-  client = (token: string): RunClient & AdminClient & Partial<VoiceClient> => {
+  /** Set to give the client the inbox put (RFC HE). The fake keeps a name
+   *  the way loomcycle sanitises one, to [A-Za-z0-9._-]. */
+  inbox?: FakeInbox;
+
+  client = (token: string): RunClient & AdminClient & Partial<VoiceClient> & Partial<FileClient> => {
     const rec = (method: string, args: unknown[]) => {
       this.calls.push({ method, token, args });
       const f = this.failNext[method];
@@ -141,8 +175,23 @@ export class FakeLoomcycle {
           },
         }
       : {};
+    const inbox = this.inbox;
+    const files: Partial<FileClient> = inbox
+      ? {
+          putInboxFile: async (runId, name, data, opts) => {
+            rec("putInboxFile", [runId, name, opts?.contentType]);
+            const e = inbox.errors.shift();
+            if (e) throw e;
+            const bytes = data instanceof Blob ? data.size : data.byteLength;
+            const kept = name.replace(/[^A-Za-z0-9._-]/g, "_");
+            inbox.puts.push({ runId, name, bytes, contentType: opts?.contentType });
+            return { ref: `volume:inbox:documents/${kept}`, name: kept, bytes, sha256: "0".repeat(64), media_type: opts?.contentType ?? "application/octet-stream" };
+          },
+        }
+      : {};
     return {
       ...voice,
+      ...files,
       runStreaming: (opts) => start("start", opts),
       continueSession: (opts) => start("continue", opts),
       sendRunInput: async (runId, text) => {
