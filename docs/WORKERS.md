@@ -154,6 +154,12 @@ The worker refuses to start with this engine as root (its sessions would run as 
 | `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_HOST_DIR` | the directory | The egress directory as the daemon sees it, for a worker that runs in a container itself. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_IMAGE` | the session image | The gateway's image; it needs `python3`. |
 
+On the `host` engine:
+
+| Variable | Default | |
+|---|---|---|
+| `LOOMCYCLE_WORKSPACE_HOST_EGRESS` | unset | `1` gives each workspace of a host-engine worker a loopback port, `http://127.0.0.1:<port>/<route>/`, through which its commands reach the egress routes the workspace holds (RFC GW P4), with `LOOMCYCLE_EGRESS` and pip and npm pointed at it, as a container session's are at `http://egress/`. **Not a boundary:** the host engine's commands have the host's own network anyway, and the port is open to every process on the host, of any user, while the workspace is held there; a request to it goes out as that workspace's, through its routes, including a route that sends a credential. Turn it on only on a machine whose users you trust. Ignored by a container worker. A local worker (`workspace.mode: local`) takes it from the runtime's environment. |
+
 The disk quota (`workspace.disk_quota_mb`) is kept as on `host`: the worker measures a workspace after each command and refuses further writes and commands while it is over. A container gives no cheap hard limit on a mounted directory (`--storage-opt size` limits a container's own layer, and only on xfs with project quotas), so a single command can still pass the quota while it runs. A workspace's files are still converted by the worker's conversion child (D34), not in the session; the session image carries the same helpers for an agent to run itself.
 
 When a worker attaches it lists the workspaces on its disk, and the runtime tells it which to delete: those released while it was away, those the runtime does not know, and those marked lost whose run has ended. A lost workspace whose run is still going is put back in service. `/metrics` reports `loomcycle_workspace_workers`, `loomcycle_workspace_ops_total{op,outcome}` and `loomcycle_workspace_worker_deaths_total`.

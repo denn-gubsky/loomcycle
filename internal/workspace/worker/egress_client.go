@@ -220,18 +220,14 @@ func egressText(rw http.ResponseWriter, code int, reason string) {
 	_, _ = fmt.Fprintln(rw, reason)
 }
 
-// wireEgress points a container worker's session network (RFC GW §6.3) at
-// the worker's own egress handler. The engine is built before the worker, so
-// the handler reads *self when a session starts, not now; until it is set a
-// session gets the engine's placeholder, which answers 503. A copy of the
+// wireEgress points a worker's egress (RFC GW §6.3) at the worker's own
+// egress handler: a container worker's session network, or a host worker's
+// loopback ports when the operator turned them on. The engine is built before
+// the worker, so the handler reads *self when a request arrives, not now;
+// until it is set the request is answered 503. A copy of the container's
 // egress options is made so the caller's are not changed under it.
 func wireEgress(opt *Options, self **worker) {
-	eg := opt.Container.Egress
-	if eg == nil {
-		return
-	}
-	c := *eg
-	c.Handler = func(workspaceID string) http.Handler {
+	handler := func(workspaceID string) http.Handler {
 		return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			w := *self
 			if w == nil {
@@ -241,5 +237,14 @@ func wireEgress(opt *Options, self **worker) {
 			w.serveEgress(rw, r, workspaceID)
 		})
 	}
+	if opt.Engine == workspace.EngineHost && opt.HostEgress {
+		opt.hostEgress = handler
+	}
+	eg := opt.Container.Egress
+	if eg == nil {
+		return
+	}
+	c := *eg
+	c.Handler = handler
 	opt.Container.Egress = &c
 }

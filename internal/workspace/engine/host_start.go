@@ -27,11 +27,15 @@ func (h *Host) Start(ctx context.Context, req StartRequest) (Process, error) {
 	if err != nil {
 		return nil, err
 	}
+	extra, err := h.egressEnvFor(req.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("start: %w", err)
+	}
 	// Not CommandContext: the program outlives the call that started it.
 	// #nosec G204 -- the worker names the program (a kernel driver it carries and the workspace's interpreter, or /bin/sh for a server's command, checked against the operator's list as exec's is)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = req.Dir
-	cmd.Env = append(hostenv.Scrubbed(nil), req.Env...)
+	cmd.Env = append(append(hostenv.Scrubbed(nil), extra...), req.Env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err

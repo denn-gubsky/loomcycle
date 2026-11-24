@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -31,6 +32,13 @@ type Host struct {
 	// would otherwise run other. It names programs, not what they do: an
 	// allowed interpreter runs any code it is given.
 	Commands []string
+	// Egress, when set, serves each workspace's routes on a loopback port
+	// of its own, opened at its first command, closed by Forget, and named
+	// in its commands' environment (host_egress.go). Not a boundary.
+	Egress func(workspace string) http.Handler
+
+	egressMu sync.Mutex
+	egress   map[string]*hostEgress
 }
 
 func (h *Host) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
@@ -47,13 +55,17 @@ func (h *Host) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
 	if maxOut <= 0 {
 		maxOut = DefaultMaxOutput
 	}
+	extra, err := h.egressEnvFor(req.Workspace)
+	if err != nil {
+		return ExecResult{}, fmt.Errorf("exec: %w", err)
+	}
 	runCtx, cancel := context.WithTimeout(ctx, req.Timeout)
 	defer cancel()
 	// #nosec G204 -- running the agent's command is this engine's purpose; the worker is opt-in, the command starts in the confined workspace directory with a scrubbed env, bounded output and a timeout that kills its process group
 	cmd := exec.CommandContext(runCtx, "/bin/sh", "-c", req.Command)
 	cmd.Dir = req.Dir
 	procgroup.Bind(cmd)
-	cmd.Env = hostenv.Scrubbed(nil)
+	cmd.Env = append(hostenv.Scrubbed(nil), extra...)
 	out := &capped{max: maxOut}
 	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Start(); err != nil {
@@ -85,10 +97,17 @@ func (h *Host) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
 	return res, nil
 }
 
-// Forget has nothing to end: a host command does not outlive its exec.
-func (h *Host) Forget(context.Context, string) error { return nil }
+// Forget closes the workspace's egress port; nothing else is left: a host
+// command does not outlive its exec.
+func (h *Host) Forget(_ context.Context, workspace string) error {
+	h.forgetEgress(workspace)
+	return nil
+}
 
-func (h *Host) Close() error { return nil }
+func (h *Host) Close() error {
+	h.closeEgress()
+	return nil
+}
 
 // capped keeps the first max bytes written to it and counts the rest. Both
 // stdout and stderr write to it, from exec's copying goroutines.

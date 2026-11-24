@@ -1,10 +1,13 @@
 package worker
 
 import (
+	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/denn-gubsky/loomcycle/internal/workspace"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/engine"
 )
 
@@ -41,5 +44,39 @@ func TestWireEgress_NoEgressWiresNothing(t *testing.T) {
 	wireEgress(&opt, &self)
 	if opt.Container.Egress != nil {
 		t.Errorf("egress = %+v, want none", opt.Container.Egress)
+	}
+}
+
+// A host worker the operator gave egress (LOOMCYCLE_WORKSPACE_HOST_EGRESS)
+// serves each workspace's loopback port with the worker's own egress
+// handler; without it, its engine opens no port.
+func TestNewEngine_AHostWorkerWithEgressServesTheWorkersHandler(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		opt := Options{Engine: workspace.EngineHost, HostEgress: on, Toolchains: []string{}}
+		var self *worker
+		wireEgress(&opt, &self)
+		eng, err := newEngine(context.Background(), &opt, slog.Default())
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, ok := eng.(*engine.Host)
+		if !ok {
+			t.Fatalf("engine = %T, want *engine.Host", eng)
+		}
+		if !on {
+			if h.Egress != nil {
+				t.Error("a host worker without HostEgress opens egress ports")
+			}
+			continue
+		}
+		if h.Egress == nil {
+			t.Fatal("a host worker with HostEgress serves no egress port")
+		}
+		self = &worker{}
+		rec := httptest.NewRecorder()
+		h.Egress("ws1").ServeHTTP(rec, httptest.NewRequest(http.MethodConnect, "http://127.0.0.1/", nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("a proxy request through the host port = %d, want the worker's own 400", rec.Code)
+		}
 	}
 }
