@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math/rand/v2"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -383,7 +384,7 @@ func TestDates_NamedZonesFollowDaylightSavingChanges(t *testing.T) {
 	}
 }
 
-func TestDates_DatefmtWritesTokensAndCopiesTheRest(t *testing.T) {
+func TestDates_DatefmtWritesTokensAndCopiesPunctuation(t *testing.T) {
 	checkTexts(t, []textCase{
 		{`datefmt(date("2026-11-05"), "YYYY-MM-DD")`, "2026-11-05"},
 		{`datefmt(date("2026-11-05"), "D MMMM YYYY")`, "5 November 2026"},
@@ -392,10 +393,67 @@ func TestDates_DatefmtWritesTokensAndCopiesTheRest(t *testing.T) {
 		{`datefmt(date("2026-11-05"), "[Due:] DD.MM.YYYY")`, "Due: 05.11.2026"},
 		{`datefmt(date("2026-11-05"), "HH:mm:ss")`, "00:00:00"},
 		{`datefmt(datetime("2026-11-05T07:08:09Z"), "YYYY-MM-DD HH:mm:ss")`, "2026-11-05 07:08:09"},
-		{`datefmt(date("2026-11-05"), "Q x !")`, "Q x !"},
+		{`datefmt(date("2026-11-05"), "YYYYMMDD")`, "20261105"},
+		{`datefmt(date("2026-11-05"), "(D) 1 - 2 ! # _ , ; @")`, "(5) 1 - 2 ! # _ , ; @"},
+		{`datefmt(date("2026-11-05"), "D.MM.YYYY г.")`, "5.11.2026 г."},
 	})
 	mustFail(t, `datefmt(date("2026-11-05"), "[open")`, codeBadDate)
 	mustFail(t, `datefmt(date("2026-11-05"), "`+strings.Repeat("Y", 101)+`")`, codeDomain)
+}
+
+func TestDates_DatefmtBracketsKeepLettersAsText(t *testing.T) {
+	checkTexts(t, []textCase{
+		{`datefmt(date("2026-11-05"), "[Week of] D MMM")`, "Week of 5 Nov"},
+		{`datefmt(date("2026-11-05"), "[Q x] !")`, "Q x !"},
+		{`datefmt(date("2026-11-05"), "D[%]")`, "5%"},
+		{`datefmt(date("2026-11-05"), "[YYYY] YYYY")`, "YYYY 2026"},
+		{`datefmt(date("2026-11-05"), "[]D")`, "5"},
+	})
+}
+
+// A letter that is not a token used to be copied through, so "%V" or
+// "EEEE" came back as the literal text: a wrong answer that looked
+// right. Each is refused now, and the hint names what to write.
+func TestDates_DatefmtRefusesForeignTokensWithTheRightOne(t *testing.T) {
+	for _, c := range []struct{ pat, found, hint string }{
+		{"%A", "%A", "dddd"},
+		{"EEEE", "EEEE", "dddd"},
+		{"%a", "%a", "ddd"},
+		{"EEE", "EEE", "ddd"},
+		{"%Y-%m-%d", "%Y", "YYYY"},
+		{"yyyy-MM-dd", "yyyy", "YYYY"},
+		{"%y", "%y", "YY"},
+		{"%m", "%m", "MM"},
+		{"%d", "%d", "DD"},
+		{"MM/dd", "dd", "DD"},
+		{"%H", "%H", "HH"},
+		{"%M", "%M", "mm"},
+		{"%S", "%S", "ss"},
+		{"%B", "%B", "MMMM"},
+		{"%b", "%b", "MMM"},
+		{"%V", "%V", "isoweek(d)"},
+		{"%W", "%W", "isoweek(d)"},
+		{"[Week] ww", "ww", "isoweek(d)"},
+		{"%j", "%j", "dayofyear(d)"},
+		{"DDD", "DDD", "dayofyear(d)"},
+		{"Q", "Q", "quarter(d)"},
+		{"h:mm a", "h", "HH"},
+		{"HH:mm A", "A", "HH"},
+		{"Do MMM", "o", "YYYY YY MMMM MMM MM M DD D dddd ddd HH mm ss"},
+		{"YYYYY", "YYYYY", "YYYY"},
+		{"MMMMM", "MMMMM", "MMMM"},
+		{"Week YYYY", "W", "isoweek(d)"},
+		{"50%", "%", "[%]"},
+	} {
+		in, _ := json.Marshal(c.pat)
+		err := mustFail(t, `datefmt(date("2026-11-05"), `+string(in)+`)`, codeBadDate)
+		if want := strconv.Quote(c.found); !strings.Contains(err.Detail, want) {
+			t.Errorf("datefmt %q: detail %q does not name %s", c.pat, err.Detail, want)
+		}
+		if !strings.Contains(err.Hint, c.hint) || !strings.Contains(err.Hint, "[brackets]") {
+			t.Errorf("datefmt %q: hint %q, want one naming %q and [brackets]", c.pat, err.Hint, c.hint)
+		}
+	}
 }
 
 // today() and now() read Request.Now, so a test pins the clock and two

@@ -803,8 +803,14 @@ func fnIsLeap(_ *evaluator, a args) (val, *Error) {
 
 // --- formatting ---
 
-// dateTokens, longest first so MMMM wins over MM and M.
-var dateTokens = []string{"YYYY", "MMMM", "dddd", "MMM", "ddd", "YY", "MM", "DD", "HH", "mm", "ss", "M", "D"}
+// dateTokens are the pattern tokens. A pattern is read in runs of one
+// ASCII letter, and each run must be one of these whole: "MMMMM" or "DDD"
+// is refused, not read as MMMM+M or DD+D.
+var dateTokens = map[string]bool{"YYYY": true, "YY": true, "MMMM": true, "MMM": true, "MM": true, "M": true,
+	"DD": true, "D": true, "dddd": true, "ddd": true, "HH": true, "mm": true, "ss": true}
+
+// tokenList is how a hint names the tokens when no single one fits.
+const tokenList = "the tokens are YYYY YY MMMM MMM MM M DD D dddd ddd HH mm ss"
 
 // maxPattern bounds a datefmt pattern; each output byte past it is charged.
 const maxPattern = 100
@@ -832,25 +838,121 @@ func fnDateFmt(e *evaluator, a args) (val, *Error) {
 			i += end + 1
 			continue
 		}
-		tok := ""
-		for _, k := range dateTokens {
-			if strings.HasPrefix(pat[i:], k) {
-				tok = k
-				break
+		// A stray letter or a strftime % used to be copied through, so
+		// "%V" or "EEEE" came back as that text: a wrong answer that read
+		// as right. Letters and % are tokens or refused; other bytes
+		// (digits, punctuation, spaces, non-ASCII text) are copied.
+		if pat[i] == '%' {
+			found := "%"
+			if i+1 < len(pat) && isASCIILetter(pat[i+1]) {
+				found = pat[i : i+2]
 			}
+			return nil, foreignToken(a.pos, found)
 		}
-		if tok == "" {
+		if !isASCIILetter(pat[i]) {
 			b.WriteByte(pat[i])
 			i++
 			continue
 		}
+		j := i + 1
+		for j < len(pat) && pat[j] == pat[i] {
+			j++
+		}
+		tok := pat[i:j]
+		if !dateTokens[tok] {
+			return nil, foreignToken(a.pos, tok)
+		}
 		b.WriteString(formatToken(t, tok))
-		i += len(tok)
+		i = j
 	}
 	if err := e.charge(ceilDiv(b.Len(), 64), a.pos); err != nil {
 		return nil, err
 	}
 	return b.String(), nil
+}
+
+func isASCIILetter(c byte) bool { return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' }
+
+// foreignToken refuses a pattern token datefmt does not have, naming the
+// one to write. found is a run of one letter, or % with the letter after it.
+func foreignToken(pos int, found string) *Error {
+	return errf(codeBadDate, pos, "datefmt: %q in the pattern is not a token", found).
+		withHint(tokenAdvice(found) + "; text in [brackets] is copied as is")
+}
+
+// tokenAdvice maps the strftime (%A), Java/ICU (EEEE, yyyy, dd) and Moment
+// (DDD, Q, w) forms models write to this pattern's token or function.
+func tokenAdvice(found string) string {
+	switch found {
+	case "%A":
+		return "write dddd for the weekday name"
+	case "%a":
+		return "write ddd for the short weekday name"
+	case "%Y", "%G":
+		return "write YYYY for the year"
+	case "%y":
+		return "write YY for the two-digit year"
+	case "%B":
+		return "write MMMM for the month name"
+	case "%b", "%h":
+		return "write MMM for the short month name"
+	case "%m":
+		return "write MM for the month number"
+	case "%d":
+		return "write DD for the day of the month"
+	case "%e":
+		return "write D for the day of the month"
+	case "%H", "%I":
+		return "write HH for the hour, 00 to 23"
+	case "%M":
+		return "write mm for the minute"
+	case "%S":
+		return "write ss for the second"
+	case "%V", "%W", "%U":
+		return "use isoweek(d) for the week number"
+	case "%j":
+		return "use dayofyear(d) for the day of the year"
+	case "%u", "%w":
+		return "use weekday(d) for the weekday number, 1 (Monday) to 7"
+	case "%p":
+		return "there is no AM/PM: HH is 00 to 23"
+	case "%":
+		return "a literal % goes in brackets: [%]"
+	}
+	if found[0] == '%' {
+		return tokenList
+	}
+	switch found[0] {
+	case 'E':
+		if len(found) >= 4 {
+			return "write dddd for the weekday name"
+		}
+		return "write ddd for the short weekday name"
+	case 'y', 'Y':
+		if len(found) == 2 {
+			return "write YY for the two-digit year"
+		}
+		return "write YYYY for the year"
+	case 'M':
+		return "write MMMM for the month name"
+	case 'd':
+		return "write DD for the day of the month"
+	case 'D':
+		return "use dayofyear(d) for the day of the year"
+	case 'w', 'W':
+		return "use isoweek(d) for the week number"
+	case 'Q':
+		return "use quarter(d) for the quarter"
+	case 'H', 'h', 'k':
+		return "write HH for the hour, 00 to 23"
+	case 'a', 'A':
+		return "there is no AM/PM: HH is 00 to 23"
+	case 'm':
+		return "write mm for the minute"
+	case 's':
+		return "write ss for the second"
+	}
+	return tokenList
 }
 
 func formatToken(t time.Time, tok string) string {
