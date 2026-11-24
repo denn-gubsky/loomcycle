@@ -53,9 +53,12 @@ var (
 	cryptoScopes     = []string{"tenant", "user", "agent"}
 	evaluationScopes = []string{"self", "siblings", "descendants", "any"}
 	runScopes        = []string{"own", "tenant"}
-	gatewayKinds     = []string{"chat", "embeddings", "decide", "speech", "transcription"}
-	principalKinds   = []string{"user", "group", "token", "scim"}
-	runtimeAreas     = []string{"pause", "snapshot", "limits", "retention", "erasure", "usage", "routing", "events", "audit", "config", "tenants", "metrics", "telemetry"}
+	// inbox_put is not a model call: it is the run owner's file put (RFC HE
+	// F1), named here because an off-run surface a confined token may be
+	// granted is modelled as a gateway kind (RunPlaneGranting).
+	gatewayKinds   = []string{"chat", "embeddings", "decide", "speech", "transcription", "inbox_put"}
+	principalKinds = []string{"user", "group", "token", "scim"}
+	runtimeAreas   = []string{"pause", "snapshot", "limits", "retention", "erasure", "usage", "routing", "events", "audit", "config", "tenants", "metrics", "telemetry"}
 	// defFamilies are the definition families a rule may name under `def:`.
 	// `acl` and `group` are the RFC EY families themselves, so authoring an
 	// ACL is an ACL decision like any other.

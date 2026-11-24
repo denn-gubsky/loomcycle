@@ -115,6 +115,17 @@ type Event struct {
 	ExportScope  string `json:"export_scope,omitempty"`
 	ExportBytes  int64  `json:"export_bytes,omitempty"`
 
+	// --- Run inbox put (Action = "run_inbox_put") ---
+	//
+	// A run's owner (or an admin) put a file into the run's inbox (RFC HE
+	// F1). The caller travels in the Actor fields, the run's tenant in
+	// TargetTenant. Never the file's name, which is often personal data, and
+	// never its content.
+	InboxRunID     string `json:"inbox_run_id,omitempty"`
+	InboxBytes     int64  `json:"inbox_bytes,omitempty"`
+	InboxMediaType string `json:"inbox_media_type,omitempty"`
+	InboxSHA256    string `json:"inbox_sha256,omitempty"`
+
 	// --- Crypto (Action = "crypto_op" | "crypto_key_generate" |
 	// "crypto_key_create" | "crypto_key_rotate" | "crypto_key_min_version" |
 	// "crypto_key_delete_version" | "crypto_key_delete" | "crypto_key_export" |

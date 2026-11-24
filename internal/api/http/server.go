@@ -4166,6 +4166,7 @@ func (s *Server) routes() *http.ServeMux {
 	// answers HEAD.
 	mux.Handle("POST /v1/runs/{run_id}/file", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunFile))))
 	mux.Handle("GET /v1/runs/{run_id}/inbox/{path...}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInboxFile))))
+	mux.Handle("PUT /v1/runs/{run_id}/inbox/{name}", recoveryMiddleware(s.authMiddleware(http.HandlerFunc(s.handleRunInboxPut))))
 	// Read one run by its run id — GET /v1/agents/{agent_id}'s shape. The
 	// agent route cannot address a team walk (`team:<name>`) nor tell one walk
 	// of a team from another.

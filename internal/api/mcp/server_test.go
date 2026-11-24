@@ -411,6 +411,9 @@ func (m *mockConnector) Decision(context.Context, json.RawMessage) (connector.To
 func (m *mockConnector) DecisionModels(context.Context) (connector.DecisionModelList, bool) {
 	return connector.DecisionModelList{}, false
 }
+func (m *mockConnector) PutInboxFile(context.Context, connector.InboxPutRequest) (connector.InboxPutResult, error) {
+	return connector.InboxPutResult{}, nil
+}
 func (m *mockConnector) Calc(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, nil
 }

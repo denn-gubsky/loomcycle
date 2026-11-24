@@ -316,8 +316,18 @@ func offRunSurfacesOf(method, path string) []string {
 		return []string{auth.SurfaceTranscription}
 	case method == http.MethodGet && path == speechInfoPath:
 		return []string{auth.SurfaceSpeech, auth.SurfaceTranscription}
+	case method == http.MethodPut && isInboxPutPath(path):
+		return []string{auth.SurfaceInboxPut}
 	}
 	return nil
+}
+
+// isInboxPutPath reports whether path is PUT /v1/runs/{run_id}/inbox/{name}'s:
+// exactly five segments, so a deeper path (which the mux does not route here)
+// opens nothing.
+func isInboxPutPath(path string) bool {
+	seg := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	return len(seg) == 5 && seg[0] == "v1" && seg[1] == "runs" && seg[2] != "" && seg[3] == "inbox" && seg[4] != ""
 }
 
 // tokenInvalidateTopic is the backplane channel for cross-replica auth

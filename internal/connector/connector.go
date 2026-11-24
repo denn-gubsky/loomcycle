@@ -462,6 +462,15 @@ type Connector interface {
 	// Reachable via the LoomCycle MCP meta-tool `calc`.
 	Calc(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// PutInboxFile keeps a file the caller sends in the inbox of a run it
+	// owns (RFC HE F1): only the run's owner or an admin, only while the run
+	// is live and in this process, under the client put cap and the tree's
+	// inbox quota, with nothing partial kept. The kept file's record says
+	// origin client and who put it; the put is audited (run_inbox_put)
+	// without the file's name. A refusal is an *InboxPutError. Reachable via
+	// PUT /v1/runs/{run_id}/inbox/{name} and the gRPC PutInboxFile RPC.
+	PutInboxFile(ctx context.Context, req InboxPutRequest) (InboxPutResult, error)
+
 	// Workspace runs the in-run `Workspace` tool for a caller outside any
 	// run, with its input and output (RFC GW D35). The workspaces belong to
 	// the calling principal's token identity, its tenant and subject, not to

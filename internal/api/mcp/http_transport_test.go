@@ -267,6 +267,9 @@ func (m *httpMockConnector) Decision(context.Context, json.RawMessage) (connecto
 func (m *httpMockConnector) DecisionModels(context.Context) (connector.DecisionModelList, bool) {
 	return connector.DecisionModelList{}, false
 }
+func (m *httpMockConnector) PutInboxFile(context.Context, connector.InboxPutRequest) (connector.InboxPutResult, error) {
+	return connector.InboxPutResult{}, nil
+}
 func (m *httpMockConnector) Calc(context.Context, json.RawMessage) (connector.ToolResult, error) {
 	return connector.ToolResult{}, errors.New("not implemented")
 }

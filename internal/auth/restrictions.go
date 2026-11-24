@@ -121,10 +121,11 @@ func (r RateLimit) Validate() error {
 const (
 	SurfaceSpeech        = "speech"        // read a text aloud
 	SurfaceTranscription = "transcription" // turn a recording into text
+	SurfaceInboxPut      = "inbox_put"     // put a file into one's own run's inbox (RFC HE F1)
 )
 
 // KnownSurfaces is every surface a credential may be granted.
-var KnownSurfaces = []string{SurfaceSpeech, SurfaceTranscription}
+var KnownSurfaces = []string{SurfaceSpeech, SurfaceTranscription, SurfaceInboxPut}
 
 // LockableOverrides is every per-run override a policy locks, by wire name:
 // the fields of a run request that change which model answers, how it is
