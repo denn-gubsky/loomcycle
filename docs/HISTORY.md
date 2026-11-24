@@ -110,6 +110,15 @@ resolved tier model — and carries the chat's RFC AX operator-key restriction
 operator key. A recap of an already-compacted chat summarizes its **current
 effective** (post-compaction) view.
 
+### Recap at run end and history preload (RFC HE F3)
+
+An agent with a `history_preload:` block gets its chats recapped **automatically**:
+when a top-level run of a chat ends, the server runs the same `RecapSession` in the
+background and stores the summary, so the next new chat with that agent can list
+it. The first run of a new chat then starts with one `recent_history` block holding
+the user's latest chats with the agent. See
+[CONFIGURATION § history_preload](CONFIGURATION.md#history_preload--a-new-chat-starts-with-recent-history).
+
 ## Related — semantic "similar chats"
 
 `related` finds chats close in meaning to a source, using the **same vector
