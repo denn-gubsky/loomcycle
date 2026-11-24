@@ -48,6 +48,10 @@ const (
 	// actionLinkLegacy: actionLink to the user a bridge made before it was
 	// a gate (identity_map.legacy_subject_prefix).
 	actionLinkLegacy
+	// actionLinkSameSubject: actionLink to the user the gate's
+	// identity_map.same_subject_as gate made from the same identifier
+	// (RFC HD).
+	actionLinkSameSubject
 	// actionCreate: neither exists and the gate provisions (auto).
 	actionCreate
 )
@@ -120,6 +124,11 @@ func (s *Server) resolveAssertion(ctx context.Context, g config.AuthGate, a auth
 	if m.Provision == config.ProvisionNever {
 		return identity.Target{}, 0, refused("unknown identity (provision: never)")
 	}
+	if same, ok, err := s.sameSubjectUser(ctx, g, fresh); err != nil {
+		return identity.Target{}, 0, err
+	} else if ok {
+		return same, actionLinkSameSubject, nil
+	}
 	_, err = s.store.UserGet(ctx, fresh.TenantID, fresh.Subject)
 	switch {
 	case err == nil:
@@ -136,6 +145,38 @@ func (s *Server) resolveAssertion(ctx context.Context, g config.AuthGate, a auth
 		return identity.Target{}, 0, refused("unknown user (provision: known)")
 	}
 	return fresh, actionCreate, nil
+}
+
+// sameSubjectUser finds the user the gate's same_subject_as gate made from
+// the same identifier (RFC HD). It qualifies only when it signed in through
+// that gate (it holds an identity there): a user an operator created under
+// that name, never signed in, says nothing about who the value belongs to. A
+// disabled user is returned, so the login is refused rather than falling
+// through to a user of this gate's own; an erased one is nobody's to link.
+func (s *Server) sameSubjectUser(ctx context.Context, g config.AuthGate, fresh identity.Target) (identity.Target, bool, error) {
+	subject, ok := identity.SameSubject(g.Name, g.Identity, fresh.Subject)
+	if !ok {
+		return identity.Target{}, false, nil
+	}
+	u, err := s.store.UserGet(ctx, fresh.TenantID, subject)
+	switch {
+	case isNotFound(err):
+		return identity.Target{}, false, nil
+	case err != nil:
+		return identity.Target{}, false, err
+	case !u.ErasedAt.IsZero():
+		return identity.Target{}, false, nil
+	}
+	ids, err := s.store.UserIdentityListSubject(ctx, fresh.TenantID, subject)
+	if err != nil {
+		return identity.Target{}, false, err
+	}
+	for _, id := range ids {
+		if id.Gate == g.Identity.SameSubjectAs {
+			return identity.Target{TenantID: fresh.TenantID, Subject: subject}, true, nil
+		}
+	}
+	return identity.Target{}, false, nil
 }
 
 // legacyUser finds the user a bridge made for this identity before it was a
@@ -282,9 +323,13 @@ func (s *Server) provision(ctx context.Context, g config.AuthGate, a authgate.As
 			return out, err
 		}
 	}
-	if action == actionLinkLegacy {
+	switch action {
+	case actionLinkLegacy:
 		s.recordAuthEvent(audit.Event{Action: "auth_identity_linked", AuthGate: g.Name, TargetTenant: tgt.TenantID,
 			TargetSubject: tgt.Subject, AuthReason: "legacy subject"})
+	case actionLinkSameSubject:
+		s.recordAuthEvent(audit.Event{Action: "auth_identity_linked", AuthGate: g.Name, TargetTenant: tgt.TenantID,
+			TargetSubject: tgt.Subject, AuthReason: "same subject"})
 	}
 	if out.Created {
 		s.joinFloorGroups(ctx, g, tgt, m.NewUser.Groups)

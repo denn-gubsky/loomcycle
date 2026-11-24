@@ -163,6 +163,20 @@ func LegacySubject(gate string, m *config.AuthIdentityMap, subject string) (stri
 	return m.LegacySubjectPrefix + strings.ReplaceAll(v, ":", "-"), true
 }
 
+// SameSubject is the subject the map's same_subject_as gate gave the same
+// identifier (RFC HD): "<same_subject_as>:<value>" for this gate's subject
+// "<gate>:<value>". ok is false when the map names no such gate.
+func SameSubject(gate string, m *config.AuthIdentityMap, subject string) (string, bool) {
+	if m == nil || m.SameSubjectAs == "" {
+		return "", false
+	}
+	v, found := strings.CutPrefix(subject, gate+":")
+	if !found || v == "" {
+		return "", false
+	}
+	return m.SameSubjectAs + ":" + v, true
+}
+
 // Resolve maps an assertion to the (tenant, subject) a NEW identity would get.
 // An identity already linked keeps the subject its user_identities row names;
 // the caller still checks the tenant against Tenant.
