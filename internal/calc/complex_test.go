@@ -379,3 +379,19 @@ func TestComplex_LongBroadcastReachesTheStepLimit(t *testing.T) {
 		t.Fatalf("err = %v, want step_limit", err)
 	}
 }
+
+// Horner in complex arithmetic: 2z² - 3z + 1 at z = 1+2i is -8+2i exactly
+// (z² = -3+4i), and z² + 1 at i is 0.
+func TestPolyval_ComplexPointsAndCoefficients(t *testing.T) {
+	checkTexts(t, []textCase{
+		{"polyval([2, -3, 1], 1 + 2i)", "-8+2i"},
+		{"polyval([1, 0, 1], 1i)", "0i"},
+		{"polyval([1, 2], [1i, 2])", "[2+1i, 4+0i]"},
+		{"polyval([1i, 1], 2)", "1+2i"},
+		// Real coefficients at a real point stay exact and real.
+		{"polyval([1, 0, 1], 2)", "5"},
+	})
+	mustFail(t, `polyval([1i], ["a"])`, codeType)
+	mustFail(t, `polyval([1i, "a"], 2)`, codeType)
+	mustFail(t, "polyval([1e308 + 1i, 0, 0], 1e308)", codeOverflow)
+}

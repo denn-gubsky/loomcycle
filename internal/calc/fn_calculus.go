@@ -580,6 +580,9 @@ func eachPoint(a args, i int, f func(num) (val, *Error)) (val, *Error) {
 // fnPolyval is Horner's rule in the evaluator's own arithmetic, so exact
 // coefficients at an exact x give an exact value.
 func fnPolyval(e *evaluator, a args) (val, *Error) {
+	if polyHasComplex(a) {
+		return polyvalComplex(e, a)
+	}
 	coef, err := numList(a, 0)
 	if err != nil {
 		return nil, err

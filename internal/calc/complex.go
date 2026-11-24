@@ -330,6 +330,78 @@ func fnArg(_ *evaluator, a args) (val, *Error) {
 	return exactInt64(0), nil
 }
 
+// polyHasComplex reports a complex coefficient or point in polyval's
+// arguments: the call polyvalComplex takes.
+func polyHasComplex(a args) bool {
+	for _, v := range a.v[:2] {
+		if isComplex(v) {
+			return true
+		}
+		if l, ok := v.([]val); ok && anyComplex([][]val{l}) {
+			return true
+		}
+	}
+	return false
+}
+
+// polyvalComplex is polyval with a complex coefficient or point: Horner's
+// rule in complex128, so every value is complex, even at a real point.
+func polyvalComplex(e *evaluator, a args) (val, *Error) {
+	l, err := a.list(0)
+	if err != nil {
+		return nil, err
+	}
+	if len(l) == 0 {
+		return nil, errf(codeDomain, a.pos, "polyval needs at least one coefficient").
+			withHint("[2, 0, -1] is 2x^2 - 1: highest power first")
+	}
+	coef := make([]complex128, len(l))
+	for i, x := range l {
+		z, ok := asComplex(x)
+		if !ok {
+			return nil, errf(codeType, a.pos, "polyval needs a list of numbers, got a %s element", typeName(x))
+		}
+		coef[i] = z
+	}
+	at := func(x val) (val, *Error) {
+		z, ok := asComplex(x)
+		if !ok {
+			return nil, errf(codeType, a.pos, "polyval: the points must be numbers, got a %s", typeName(x))
+		}
+		if err := e.charge(len(coef), a.pos); err != nil {
+			return nil, err
+		}
+		y := coef[0]
+		for _, c := range coef[1:] {
+			y = y*z + c
+		}
+		if !finiteComplex(y) {
+			// Inf times a zero part gives NaN: either way it overflowed.
+			return nil, errf(codeOverflow, a.pos, "polyval overflows a 64-bit float")
+		}
+		return checkComplex(y, a.pos, "polyval")
+	}
+	xs, ok := a.v[1].([]val)
+	if !ok {
+		return at(a.v[1])
+	}
+	out := make([]val, len(xs))
+	for i, x := range xs {
+		v, err := at(x)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+// finiteComplex reports both parts of z finite.
+func finiteComplex(z complex128) bool {
+	re, im := real(z), imag(z)
+	return !math.IsNaN(re) && !math.IsNaN(im) && !math.IsInf(re, 0) && !math.IsInf(im, 0)
+}
+
 // complexOrReal is a computed eigenvalue or root as a value: a real number
 // when its imaginary part is exactly 0, which is how LAPACK reports a real
 // eigenvalue, else a complex one.

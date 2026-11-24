@@ -38,6 +38,7 @@ complex value, even when its imaginary part comes out 0: `1i * 1i` is
 - The matrix product `*` and the power `A^n` (`n` ≥ 0) of matrices with
   complex elements, and `ctranspose(A)`, the conjugate transpose (`'` does
   not conjugate). See `Calc/matrices`.
+- `polyval(p, x)` with complex coefficients or a complex `x`.
 
 ## What refuses them
 
