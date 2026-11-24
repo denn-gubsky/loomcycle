@@ -111,6 +111,9 @@ type steerEventPayload struct {
 	Kind      string `json:"kind,omitempty"`
 	KeepN     int    `json:"keep_n,omitempty"`
 	KeepFirst bool   `json:"keep_first,omitempty"`
+	// Content is a turn given as content blocks; without it an untrusted
+	// block steered into a run owned elsewhere would arrive as trusted text.
+	Content []steer.Block `json:"content,omitempty"`
 }
 
 type steerAckPayload struct {
@@ -183,6 +186,7 @@ func (c *SteerCoordinator) PushRemote(ctx context.Context, runID string, m steer
 		Kind:        m.Kind,
 		KeepN:       m.KeepN,
 		KeepFirst:   m.KeepFirst,
+		Content:     m.Content,
 	})
 	if err := c.bp.Publish(ctx, topicSteer, payload); err != nil {
 		return false, false, fmt.Errorf("publish steer: %w", err)
@@ -225,7 +229,7 @@ func (c *SteerCoordinator) RunSteerSubscriber(ctx context.Context, reg *steer.Re
 			continue
 		}
 		delivered, found, closed := reg.PushLocal(p.RunID, steer.Message{
-			Text: p.Text, Source: p.Source, Kind: p.Kind, KeepN: p.KeepN, KeepFirst: p.KeepFirst,
+			Text: p.Text, Source: p.Source, Kind: p.Kind, KeepN: p.KeepN, KeepFirst: p.KeepFirst, Content: p.Content,
 			// The owner's clock: the loop compares it with when its park began.
 			EnqueuedAt: time.Now(),
 		})

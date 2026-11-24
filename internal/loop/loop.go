@@ -1532,7 +1532,7 @@ func parkForOperatorTurn(ctx context.Context, opts *RunOptions, messages []provi
 		}
 		messages = append(messages, providers.Message{
 			Role:    "user",
-			Content: []providers.ContentBlock{providers.DialogueText(m.Text)}, // an operator's turn: dialogue, like the prompt
+			Content: steerTurnContent(m), // an operator's turn: dialogue, like the prompt
 		})
 		if opts.OnSteer != nil {
 			opts.OnSteer(m)
@@ -2318,7 +2318,7 @@ func drainSteer(q <-chan steer.Message, messages []providers.Message, onSteer fu
 			}
 			messages = append(messages, providers.Message{
 				Role:    "user",
-				Content: []providers.ContentBlock{providers.DialogueText(m.Text)}, // an operator's turn: dialogue, like the prompt
+				Content: steerTurnContent(m), // an operator's turn: dialogue, like the prompt
 			})
 			if onSteer != nil {
 				onSteer(m)
@@ -2402,6 +2402,32 @@ func drainSteerUnanswerable(q <-chan steer.Message, messages []providers.Message
 			return messages, compacted
 		}
 	}
+}
+
+// steerTurnContent is the user turn an operator message becomes. Plain text is
+// dialogue, like the prompt. A turn given as blocks (steer.Message.Content)
+// is built the way a run's prompt is: trusted text is dialogue, and an
+// untrusted-block is fenced by flattenContent, so a file the person attached
+// reaches the model under the same fence it would at a run's start.
+func steerTurnContent(m steer.Message) []providers.ContentBlock {
+	if len(m.Content) == 0 {
+		return []providers.ContentBlock{providers.DialogueText(m.Text)}
+	}
+	out := make([]providers.ContentBlock, 0, len(m.Content))
+	for _, b := range m.Content {
+		out = append(out, flattenContent(PromptContentBlock{Type: b.Type, Kind: b.Kind, Text: b.Text}))
+	}
+	return out
+}
+
+// SteerTurnText is the text a turn given as blocks reads as once fenced:
+// steer.Message.Text for such a turn.
+func SteerTurnText(blocks []steer.Block) string {
+	parts := make([]string, 0, len(blocks))
+	for _, c := range steerTurnContent(steer.Message{Content: blocks}) {
+		parts = append(parts, c.Text)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // clipRunes shortens s to at most n runes, marking the cut.
@@ -5720,6 +5746,7 @@ var allowedUntrustedKinds = map[string]bool{
 	"search_result": true,
 	"run_metadata":  true, // non-secret metadata projected from an external trigger body
 	"file_content":  true, // text extracted from a file a tool returned (File op=extract)
+	"attached_file": true, // a file a person attached in a chat, named by its inbox ref (RFC HE)
 	fence.CodeKind:  true, // kept exactly as written, under a boundary derived from the text
 }
 

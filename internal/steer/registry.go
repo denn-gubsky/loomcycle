@@ -72,6 +72,21 @@ type Message struct {
 	// the server (snapped to a clean boundary) so the loop applies them verbatim.
 	KeepN     int
 	KeepFirst bool
+	// Content, when set, is an operator turn given as content blocks
+	// (trusted-text and untrusted-block) instead of Text alone: the loop
+	// fences each untrusted-block exactly as one in a run's prompt (RFC HE,
+	// owner ruling 2026-11-24). Text then holds the turn as the model reads
+	// it, fences included, for whatever reads only Text (a stateful
+	// provider, an error naming the turn).
+	Content []Block
+}
+
+// Block is one content block of an operator turn: Type is "trusted-text" (or
+// "") or "untrusted-block"; Kind labels an untrusted-block's source.
+type Block struct {
+	Type string `json:"type"`
+	Kind string `json:"kind,omitempty"`
+	Text string `json:"text"`
 }
 
 // Entry is the live handle for one run's steering queue.

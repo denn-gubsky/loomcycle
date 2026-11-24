@@ -201,6 +201,38 @@ func TestSteerCoordinator_CarriesTheMessageKind(t *testing.T) {
 	}
 }
 
+// A turn given as blocks crosses replicas with its blocks (RFC HE): without
+// them an untrusted-block steered into a run owned elsewhere would reach its
+// loop as the fenced text alone, read as the person's words.
+func TestSteerCoordinator_CarriesTheContentBlocks(t *testing.T) {
+	bp := newMemBackplane()
+	const owner = "replica-B"
+	runs := map[string]store.Run{"run-1": {ID: "run-1", Status: store.RunRunning, ReplicaID: owner}}
+	a := newSteerCoord(t, bp, "replica-A", runs, true)
+	b := newSteerCoord(t, bp, owner, runs, true)
+	ownerReg := steer.NewRegistry(4)
+	q, dereg := ownerReg.Register(steer.Entry{RunID: "run-1"})
+	defer dereg()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go b.RunSteerSubscriber(ctx, ownerReg)
+	go a.RunSteerAckSubscriber(ctx)
+	time.Sleep(30 * time.Millisecond)
+
+	blocks := []steer.Block{{Type: "trusted-text", Text: "check this"}, {Type: "untrusted-block", Kind: "attached_file", Text: "{}"}}
+	if delivered, found, err := a.PushRemote(context.Background(), "run-1", steer.Message{Text: "fenced", Content: blocks}); err != nil || !found || !delivered {
+		t.Fatalf("PushRemote = (%v, %v, %v)", delivered, found, err)
+	}
+	select {
+	case m := <-q:
+		if len(m.Content) != 2 || m.Content[0] != blocks[0] || m.Content[1] != blocks[1] || m.Text != "fenced" {
+			t.Errorf("owner got %+v", m)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("owner registry never received the message")
+	}
+}
+
 // A run that is finishing on its owner has closed its queue. The owner says so
 // in its ack, and the sender answers not-in-flight at once — what it answers
 // for a run that has ended — instead of waiting out the ack timeout and
