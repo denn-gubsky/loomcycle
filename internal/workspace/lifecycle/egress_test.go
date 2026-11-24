@@ -132,8 +132,8 @@ func TestOpen_RecordsTheEgressOnTheRow(t *testing.T) {
 
 // A route the operator configured but the workspace's row does not name is
 // refused before any network call; one the row names goes out. A name on
-// the row that is no operator route (a tenant's, not resolved yet) is
-// refused the same way.
+// the row that is no operator route (and tenant routes are off) is refused
+// the same way.
 func TestEgress_ARouteNotOnTheRowIsRefusedBeforeAnyNetworkCall(t *testing.T) {
 	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
 	up := newCountingUpstream(t)

@@ -349,6 +349,11 @@ func (b *boot) wireWorkspaceEgress() {
 		fatal("workspace: cannot build the egress proxy", "err", err)
 	}
 	b.workspaces.SetEgress(proxy, lifecycle.OperatorRoutes(eg.Routes))
+	if eg.TenantRoutes {
+		// A tenant's routes are read at each request, from its own rows
+		// only, and held again to tenant_hosts and port 443.
+		b.workspaces.SetTenantRoutes(b.storeIface, eg.TenantHosts)
+	}
 	b.workspace.SetEgress(b.workspaces.Egress)
 	if n := len(eg.Routes); n > 0 {
 		slog.Info("workspace: egress routes", "routes", n)
