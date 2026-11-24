@@ -101,7 +101,7 @@ func TestGlobGrep_WalkAVolumeWhoseRootIsASymlink(t *testing.T) {
 		}
 
 		// An absolute pattern under the root as the volume names it (the
-		// path Context op=self reports) still matches.
+		// path the operator configured) still matches.
 		abs := runOnVolume(t, &Glob{}, root, real, map[string]any{"pattern": root + "/src/*.txt"})
 		if abs.IsError || strings.TrimSpace(abs.Text) != "src/main.txt" {
 			t.Errorf("root %s: Glob with an absolute pattern under the root = %q (error=%v), want src/main.txt", root, abs.Text, abs.IsError)
