@@ -8,6 +8,57 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.168.0
+
+*A person's own files can reach the agent: the run's owner puts a file into the run inbox (`PUT /v1/runs/{run_id}/inbox/{name}`, a new `inbox_put` token surface), under its own Unicode name. A live run takes untrusted blocks as input, so a chat bridge hands over an attached file as an `attached_file` block, never as trusted text (RFC HE P1/P3). A new chat can start with the person's recent chats with the same agent (`history_preload`, RFC HE P6). Calc gains matrix powers, exact matrix products and complex matrix products. `Context op=self` no longer shows a volume's host directory.*
+
+The v1.168 line: #2892, #2902 to #2908.
+- `@loomcycle/client` 1.168.0: `putInboxFile()`, `sendRunInput(runId, string | RunInputContent[])`, `RunOptions.historyPreload`, and `inbox_put` in `TokenSurface`. The Python adapter moves to 1.168.0 (`python-v1.168.0`): `put_inbox_file()` and `run_input(run_id, content=[...])` over gRPC.
+- Proto: the client-streaming RPC `PutInboxFile` and `RunInputRequest.content` (field 22). No numbered migration.
+- Code-js ABI unchanged (1.4.0).
+- `@loomcycle/bridge-core` 0.7.0 (with #2908) and `@loomcycle/bridge-teams` 0.6.0 publish on their own tags.
+
+### Upgrade notes
+
+- **`Context op=self` drops the volume `path` (#2904).** `volumes.bindings[].path` and `ephemeral_volumes.volumes[].path` are removed (not renamed), so an agent no longer learns the server's directory layout. Address a volume file by a relative path and the `volume` argument.
+- **Client puts are off unless granted (#2903).** A restricted (agent-confined) token, such as one an external gate issues, needs `inbox_put` in its `surfaces` (`issued_token.surfaces` on a gate) to put a file. Without it the route answers `403 restricted_token`. The run's owner with an unrestricted member token, an admin, or a tenant operator for its own tenant's runs may put without it. New env `LOOMCYCLE_FILE_CLIENT_PUT_MAX_BYTES` (default 20 MiB, clamped to `LOOMCYCLE_FILE_MAX_BYTES`).
+- **`history_preload` is off until an agent sets it (#2902).** An agent with the block also gets its chats recapped in the background when a top-level run ends, which is one model call per ended run (the agent's compaction model when it has one). `history_preload: off` on a run is a lockable override: a token or agent that allows no overrides refuses it with 403.
+- **Calc matrix products can be exact (#2905).** `*` and `A^n` on matrices whose every element is exact now return exact results within the size and work limits; before, every matrix product was float.
+
+### Files: a person's upload (RFC HE P1: #2903)
+
+- `PUT /v1/runs/{run_id}/inbox/{name}` keeps the raw body in the run tree's inbox and answers `201 {ref, name, bytes, sha256, media_type}`. It is the run's owner or an admin only, while the run is live (`409 run_not_live`) and on the server that runs it (`503 run_elsewhere`). It is held to `LOOMCYCLE_FILE_CLIENT_PUT_MAX_BYTES` and the inbox quota (`413`, nothing partial kept).
+- The name keeps its own script: NFC, letters, marks, digits, spaces and `. _ - ( )`, at most 120 bytes with the extension kept, `-2`, `-3` on a clash. A `/`, `\`, `..`, a leading dot, a control or bidi character, or invalid UTF-8 is `400 bad_name`. Files tools capture keep the ASCII sanitiser.
+- The record carries `origin: client` and `uploaded_by` / `uploaded_at`, which `File op=stat` shows. The File help says such a file is the person's upload, not verified data. The audit action `run_inbox_put` never carries the name.
+- gRPC `PutInboxFile` (client-streaming), TS `putInboxFile`, Python `put_inbox_file`.
+- `POST /v1/runs/{run_id}/input` takes `{"content": [...]}` with `trusted-text` and `untrusted-block` blocks, fenced and escaped exactly as in a run's prompt, and kept so a resumed run fences them again. The plain-text form is unchanged. The same goes for the gRPC `RunInput` (`content`), TS `sendRunInput` and Python `run_input`.
+
+### Bridges (RFC HE P3: #2908)
+
+- bridge-core gives a live run the person's text plus one `attached_file` untrusted block per file in one input call. With no live run, it starts the run, puts the files and then sends the blocks. Against a server without block input (`400`/`422`), it falls back to the earlier trusted lines and logs a warning. Needs loomcycle 1.168 for `putInboxFile`.
+
+### History (RFC HE P6: #2902)
+
+- AgentDef `history_preload: {sessions, within, include: summary|summary+tail, tail_turns, max_tokens}`. At the first run of a new top-level session it gives the agent one `recent_history` untrusted block: the same user's chats with the same agent name (forks and versions count as one), newest first, within the window, cut to `max_tokens`. It is never used on a continuation or a sub-agent run, and never for another user's or another agent's chats.
+- `recent_history` is a runtime-only kind: a caller-sent block of that kind is relabelled, so nobody can pass text off as earlier chats.
+- Recap at run end for agents with the block, in the background (at most 4 at a time per replica), skipping chats whose summary is newer than their last run.
+- `history_preload: off` per run (HTTP, MCP `spawn_run`/`spawn_runs`, TS `historyPreload`). gRPC and Python follow later.
+
+### Calc (#2905, #2907)
+
+- `A^n` for a square matrix and an integer `n` (`A^0` is the identity, a negative `n` inverts first).
+- Exact matrix products when every element is exact, within a 50-per-side, 16,384-bit and step budget.
+- Complex matrix products, and `polyval` with complex coefficients or points.
+- Off-run refusals (`POST /v1/_calc`) point at the help topic and `docs/CALC.md`, not at the in-run `Context op=help` call.
+
+### Context (#2904)
+
+- `op=self` lists volumes without their host directory (see the upgrade notes).
+
+### Dependencies (#2892)
+
+- Web: `recharts`.
+
 ## What's in v1.167.0
 
 *One user per person across two sign-in gates: an external gate can sign a person in as the user another gate already made (RFC HD `same_subject_as`), and a bot uninstall can end only that gate's link (`on_revoke: unlink`). Calc's `datefmt` refuses a pattern token it does not know instead of printing it. Write, Edit and NotebookEdit name the path the caller wrote, never a host path. Bridges can take a person's attached files into the run inbox (off by default). Dependency updates.*
