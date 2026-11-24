@@ -1894,16 +1894,17 @@ A token with an `agents` list:
 | `GET /v1/users/{id}/agents`, `…/agents/stream`, `…/interrupts` | channels, memory, documents, paths, usage, the credential store |
 | `GET /v1/_runnable-agents` (lists only its agents), `GET /v1/_me`, `GET /v1/config` | A2A: such a token is not accepted as an A2A peer |
 | `/v1/_mcp` (run tools only) | anything added later, until it is listed as a run endpoint |
-| the speech routes, **only when granted** (below) | the speech routes, when not granted |
+| the speech routes and the inbox put, **only when granted** (below) | the speech routes and the inbox put, when not granted |
 
 #### Granting the speech routes
 
-A chat bridge's user token is limited to the bridge's agent, but the bridge also needs to transcribe that person's voice notes and read replies aloud as that person, so the usage is billed to them (RFC GA). A token with an `agents` list may be granted these off-run **surfaces** as well:
+A chat bridge's user token is limited to the bridge's agent, but the bridge also needs to transcribe that person's voice notes and read replies aloud as that person, so the usage is billed to them (RFC GA), and to put the files the person sends into the inbox of the person's own run (RFC HE). A token with an `agents` list may be granted these off-run **surfaces** as well:
 
 | Surface | Opens |
 |---|---|
 | `speech` | `POST /v1/audio/speech` and `GET /v1/_speech` |
 | `transcription` | `POST /v1/audio/transcriptions` and `GET /v1/_speech` |
+| `inbox_put` | `PUT /v1/runs/{run_id}/inbox/{name}` and the gRPC `PutInboxFile`, into a run the token's own subject started ([Putting a file into a run's inbox](#putting-a-file-into-a-runs-inbox)) |
 
 | Where | How |
 |---|---|
@@ -1915,7 +1916,7 @@ A chat bridge's user token is limited to the bridge's agent, but the bridge also
 - **Only beside `agents`.** A token with no `agents` list already reaches every route its scopes allow, so `surfaces` without `agents` is refused.
 - **Held to the minter.** A token limited to certain agents can grant only the surfaces it holds itself. A gate whose `issued_token` names `agents` and no `surfaces` issues none: the bridge sees `speech` and `transcription` false in `GET /v1/_me` and stays on text.
 - **Opens nothing else.** The model gateways, `/v1/_decide` and every other off-run route stay refused.
-- **Every other check still applies:** the `runs:create` scope, the ACL (`use gateway:speech` / `use gateway:transcription`, so a deny bound to the user or the token wins), the hard token budget, the token's run rate (each speech or transcription call takes one start from it), and the usage row under the token's own user.
+- **Every other check still applies:** the `runs:create` scope, the ACL (`use gateway:speech` / `use gateway:transcription` / `use gateway:inbox_put`, so a deny bound to the user or the token wins), the hard token budget, the token's run rate (each speech or transcription call takes one start from it), and the usage row under the token's own user.
 - `GET /v1/_me` reports the result in `effective.surfaces.speech` / `.transcription`, and `GET /v1/_speech` shows only the granted directions.
 
 Rules worth knowing:
@@ -2352,7 +2353,7 @@ auth:
 - **What a gate may not say.** The tenant and the reach come from the `identity_map`, not the assertion. Only a gate marked `trusted: true` may assert an `access_mode` or groups, and only its own `<gate>:` groups. The sign-in method it reports is not taken: its sessions and tokens show `amr: [ext]`, so a gate can never stand in for a second factor. Its `auth_time` is never later than when it signed.
 - **Keys.** `public_key` is an Ed25519 or P-256 public JWK. `hmac_secret_env` names a `LOOMCYCLE_*` env var holding an HS256 secret (at least 32 bytes); a literal or a `$cred:` reference is refused. A key is its gate's alone: two gates with the same key (one public key, or one secret under one env var or two) fail the load, since the gate's name is only a claim the key holder writes, and so does an `hmac_secret_env` that also holds a principal's `token_env` or a gate's `client_secret_env`. A gate is registered in config only: its key is a trust anchor, and one an API call could add is one a stolen admin token could add too.
 - **The ceiling is required.** `issued_token` is the most any token the gate gets issued may do, and whoever holds the gate's key can ask for exactly that much, for any of its users. It bounds the tokens the gate issues, not a browser sign-in: on a gate with `callback_url`, the key holder can sign any of the gate's users in to the Web UI, and that session has the user's whole member reach (from which the person can start an app sign-in or a device login). Treat the key of a gate with `callback_url` as able to act as any of its users; only a gate without `callback_url` (a bridge) is held to `issued_token` alone. A gate without it fails the load, and so does one that names neither `agents` nor `overrides` (a `ttl` or `rate` alone limits no reach). `issued_token: unrestricted` loads: the tokens then carry their user's whole member reach (every agent the user's access control allows, every per-run override), now a choice written in the config rather than what a missing key means. To keep a lifetime, a rate or `max_active` with it, write the mapping form, `issued_token: { unrestricted: true, ttl: 12h, rate: { per_minute: 6, burst: 10 } }`; `unrestricted` with `agents`, `overrides` or `surfaces` is refused (an unrestricted token is not confined to agents, so it already reaches the speech routes). Before RFC FZ an omitted `issued_token` meant exactly that, so a config that relied on it must now say `unrestricted` or name a ceiling.
-- **Issued tokens** stop the moment their user is not `active` (disabled, revoked, pending), or their gate is taken out of the config, checked on every request on every replica. `issued_token.ttl` is at most 30 days; `max_active` (0–100) caps a user's live tokens, retiring the oldest. `issued_token.surfaces` (`speech`, `transcription`, only beside `agents`) is the most a token from this gate may be granted of the speech routes ([Granting the speech routes](#granting-the-speech-routes)): an assertion's `token.surfaces` is narrowed to it, and with `agents` set and no `surfaces`, an issued token gets none.
+- **Issued tokens** stop the moment their user is not `active` (disabled, revoked, pending), or their gate is taken out of the config, checked on every request on every replica. `issued_token.ttl` is at most 30 days; `max_active` (0–100) caps a user's live tokens, retiring the oldest. `issued_token.surfaces` (`speech`, `transcription`, `inbox_put`, only beside `agents`) is the most a token from this gate may be granted of the off-run surfaces ([Granting the speech routes](#granting-the-speech-routes)): `inbox_put` lets a chat bridge put the files a person sends into that person's run: an assertion's `token.surfaces` is narrowed to it, and with `agents` set and no `surfaces`, an issued token gets none.
 - **Removal.** A revoke, an authoritative sync, or (with `auth.lifecycle.dormant_after`) no sign-in through any gate for that long starts a removal in three stages that never skip:
 
   ```yaml
@@ -2857,10 +2858,29 @@ The runtime makes one ephemeral volume of its own per run tree: **`inbox`**, at 
 |---|---|---|
 | `LOOMCYCLE_FILE_MAX_BYTES` | 64 MiB | one kept or downloaded file |
 | `LOOMCYCLE_FILE_INBOX_MAX_BYTES` | 1 GiB | the tree's whole inbox (a resumed tree counts what it already holds) |
+| `LOOMCYCLE_FILE_CLIENT_PUT_MAX_BYTES` | 20 MiB | one file a run's owner puts into its inbox (`PUT /v1/runs/{run_id}/inbox/{name}`); never above `LOOMCYCLE_FILE_MAX_BYTES` |
 | `LOOMCYCLE_MCP_MAX_FRAME_BYTES` | 16 MiB | one MCP response: a stdio JSON-RPC line, or an MCP HTTP body |
 | `LOOMCYCLE_EXTRACT_CONCURRENCY` | GOMAXPROCS | `File` extractions the process runs at once: `extract`, `import` and the PDF page cuts OCR makes. The rest wait for a slot (at most 60 s, then a busy answer the model may retry) and a caller that goes away stops waiting. Zero or negative takes the default; a value that is not a whole number refuses the boot. Read at boot: a change takes a restart. `/metrics` reports `loomcycle_extractions_limit`, `_inflight` and `_waiting`. One extraction can take up to about 700 MiB (an Office file at every cap at once; an HTML page about 280 MiB), so size the container's memory at 1 GiB plus about 750 MiB per slot, or lower this |
 
 Since RFC FF, `/loomcycle/rfcs/files-by-reference`.
+
+#### Putting a file into a run's inbox
+
+A run's owner can put a file of their own into the run's inbox, so the agent reads it with the `File` tool by reference, as it reads a file a tool returned (RFC HE F1). This is how a chat bridge hands the agent a document the person attached.
+
+```
+PUT /v1/runs/{run_id}/inbox/{name}      raw body, Content-Type = the file's media type
+→ 201 {"ref": "volume:inbox:documents/Pasport.docx", "name": "Pasport.docx", "bytes": 37736, "sha256": "…", "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+```
+
+The same over gRPC is the client-streaming `PutInboxFile` RPC; the TS client's `putInboxFile(runId, name, data, { contentType })` and the Python client's `put_inbox_file(run_id, name, data, media_type=…)` call them.
+
+- **Who.** Only the run's owner (the principal whose subject is the run's user, in its tenant) or an admin, a tenant operator counting as one for its own tenant's runs. Anyone else, another user of the same tenant included, gets the not-found a missing run gets. Scope `runs:create`; ACL `use gateway:inbox_put`. The route is off the run plane, so a token limited to certain agents (a bridge's per-user token) needs the `inbox_put` surface ([Granting the speech routes](#granting-the-speech-routes)); for an external gate, `inbox_put` in `issued_token.surfaces`.
+- **When.** Only while the run and its tree's top-level run are live (`409 run_not_live` once either ended: the inbox goes with the tree), and only on the server that runs it (`503 run_elsewhere` otherwise: the inbox is that server's disk).
+- **Caps.** `LOOMCYCLE_FILE_CLIENT_PUT_MAX_BYTES` (default 20 MiB, never above `LOOMCYCLE_FILE_MAX_BYTES`) and the tree's inbox quota. Over either is `413` with the code `client_put_max_bytes` or `inbox_full`. The body is streamed through the inbox's writer and counted as it is read; nothing partial is kept.
+- **The name** is reduced to a base name: no `/`, `\` or `..`, no control characters, normalised to NFC, Cyrillic transliterated, reduced to `[A-Za-z0-9._-]`, at most 120 bytes, the extension kept. It goes under `documents/` (or `images/` for a picture), with `-2`, `-3` on a clash. The response's `name` is the kept name.
+- **What is recorded.** The file's record says `origin: client`, `uploaded_by` (the caller's subject) and `uploaded_at`; `File op=stat` returns them while the bytes still hash to the record. The record is held in the server's memory, as every inbox record is. The put writes the `file_captured` event to the run's transcript (a re-attached stream and the run views show it), and the audit action `run_inbox_put` with the caller, the run, the bytes, the media type and the sha256, never the file's name. When the audit record cannot be written the file is removed and the put refused (`503 audit_unavailable`).
+- **Trust.** A client file is the person's upload, not verified data: the `File` tool's help says so to the agent.
 
 ### 9d.3 Volumes console tab (RFC AH Phase 4)
 

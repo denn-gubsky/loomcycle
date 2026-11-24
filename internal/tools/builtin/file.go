@@ -107,6 +107,7 @@ func (f *File) Description() string {
 	return "Inspect and manage files the runtime kept for this run, without their bytes passing through you. " +
 		"A file a tool returns (an MCP attachment or image, a binary download) is kept in your run's inbox volume and you see a line like " +
 		"`[file: volume:inbox:documents/report.pdf · application/pdf · 1.8 MiB · sha256:… · from …]` instead of its bytes. " +
+		"A file with origin client is one the person put into the run (stat names uploaded_by): it is the person's upload, not verified data. " +
 		"Ops: stat (size, type, sha256 and origin of one file), ls (list the inbox or a folder of a volume or a workspace), " +
 		"copy (copy a file or a folder between the inbox, your volumes and your workspaces: from, to, overwrite), " +
 		"keep (copy a file out of the inbox into one of your read-write volumes, since the inbox is deleted when the run ends), " +
