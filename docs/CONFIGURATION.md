@@ -990,7 +990,7 @@ agents:
 - **What.** One `untrusted-block` of kind `recent_history`, placed after the system prompt, listing each chat's `session_id`, title, last activity and stored summary (a chat with no summary is listed by title). With `summary+tail` it adds the newest chat's last `tail_turns` turns — the user's and the agent's own words, never an untrusted block that chat received. The block is cut at `max_tokens` (four characters a token): later chats are dropped whole, then the oldest tail turns. It is what the model is sent, not part of the stored transcript, so History and later recaps do not read it back as this chat's text.
 - **Whose.** The run's own user, resolved from the run identity, and the agent **by name** (its forks and versions count as one), in the run's tenant. Never another user's or another agent's chats; archived chats are left out. A run with no `user_id` gets nothing.
 - **Summaries.** When a top-level run of the chat ends — completed, failed, cancelled or ended idle — the chat is recapped in the background with History's recap (the agent's `compaction.model` when set) and stored as its summary. The run's completion never waits for it; at most four recaps run at once per replica, one per chat, each bounded to three minutes, and a failure is logged and leaves the chat listed by title. A chat whose summary is already newer than its last run, and a no-trace chat, are not recapped.
-- **Per run.** `POST /v1/runs` takes `"history_preload": "off"` to start one new chat without it (the bridges' `/new clean`). A run may only switch it off, never on.
+- **Per run.** `POST /v1/runs` (and the MCP `spawn_run` / `spawn_runs` tools) take `"history_preload": "off"` to start one new chat without it (the bridges' `/new clean`). A run may only switch it off, never on; a token whose overrides are locked cannot send it.
 
 The block is content-identifying: a fork that sets it mints a distinct hash.
 
@@ -1970,6 +1970,7 @@ Rules worth knowing:
 | How much it may spend | `max_tokens`, `max_iterations`, `unbounded_iterations`, `max_concurrent_children`, `run_timeout_seconds` |
 | How it is asked | `sampling`, `compaction`, `context`, `max_context_tokens`, `tool_choice`, `output_format`, `web_search_filter`, `retry_attempts`, `memory_inject_max_tokens`, `memory_index_max_bytes`, `inject_tool_guide` |
 | How the run is driven | `interactive`, `review`, `review_ttl_seconds`, `interruption`, `hooks`, `tool_hooks` |
+| What a new chat starts with | `history_preload` |
 
 Rules worth knowing:
 

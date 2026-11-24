@@ -128,6 +128,11 @@ var runFieldReaders = map[string]func(runConfigRecord) (any, bool){
 	"Interruption": func(r runConfigRecord) (any, bool) {
 		return pick(r.Interruption != nil, func() any { return r.Interruption })
 	},
+	// The run's only possible value is "off"; unset, the definition's block
+	// (or its absence) is what the run started with.
+	"HistoryPreload": func(r runConfigRecord) (any, bool) {
+		return pick(r.HistoryPreload != "", func() any { return r.HistoryPreload })
+	},
 
 	// Tools is narrowing-only and lives on the run's identity rather than its
 	// config record, so the run never reports it here; the definition does.

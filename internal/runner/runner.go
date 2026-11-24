@@ -372,8 +372,9 @@ type RunInput struct {
 
 	// HistoryPreload is the run's answer to the agent's history_preload block
 	// (RFC HE F3): "" keeps it, HistoryPreloadOff switches it off for this
-	// run. Narrow-only — no value turns it on — so it is not an override a
-	// token is locked out of. Read only at a new session's first run.
+	// run. Narrow-only — no value turns it on — but a lockable override like
+	// Interruption: a token or agent that allows no overrides runs the
+	// definition as written. Read only at a new session's first run.
 	HistoryPreload string
 
 	// Sampling is an optional per-RUN LLM sampling-param override (temperature,

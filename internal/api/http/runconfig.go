@@ -118,6 +118,11 @@ type runConfigRecord struct {
 	// run_timeout_seconds and the interruption's own timeout already bound.
 	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
 
+	// HistoryPreload is the run's own "off" for the agent's history preload
+	// (RFC HE F3). The preload happens once, at start; it is recorded so the
+	// effective-config report can say this run switched it off.
+	HistoryPreload string `json:"history_preload,omitempty"`
+
 	// Hosts is the caller-authoritative host narrowing. Restoring it makes a
 	// resumed run no WIDER than the original: without it the run came back on
 	// the bare operator floor, the one case where losing an override weakened

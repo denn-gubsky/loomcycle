@@ -199,6 +199,7 @@ func (a *runAdmission) mergeRunConfig() {
 		ReviewTTLSeconds:  positiveOrZero(a.in.ReviewTTLSeconds),
 		Hooks:             additionsRecord(hooks.Additions{Hooks: a.in.Hooks, ToolHooks: a.in.ToolHooks}),
 		Interruption:      a.in.Interruption,          // the run's own block, so a resume re-narrows from it
+		HistoryPreload:    a.in.HistoryPreload,        // the run's own "off", for the effective-config report
 		AgentVersion:      agentVersionOf(a.agentDef), // the version it resumes on
 		TeamScope:         teamScopeRecordOf(a.ctx),   // a continued team session's; nil for a fresh run
 		IterationLimit:    s.startIterationLimit(a.agentDef, a.provider, a.in.Interactive),

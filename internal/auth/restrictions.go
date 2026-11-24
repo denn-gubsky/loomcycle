@@ -148,6 +148,8 @@ var LockableOverrides = []string{
 	"retry_attempts", "memory_inject_max_tokens", "memory_index_max_bytes", "inject_tool_guide",
 	// behaviour: how the run is driven and what watches it
 	"interactive", "review", "review_ttl_seconds", "interruption", "hooks", "tool_hooks",
+	// context: what a new session starts with (RFC HE F3; only "off")
+	"history_preload",
 }
 
 // OverridePolicy locks the per-run overrides except those it allows. On the

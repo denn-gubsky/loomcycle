@@ -31,6 +31,7 @@ var lockableOverrideFields = map[string]string{
 	"inject_tool_guide": "InjectToolGuide",
 	"interactive":       "Interactive", "review": "Review", "review_ttl_seconds": "ReviewTTLSeconds",
 	"interruption": "Interruption", "hooks": "Hooks", "tool_hooks": "ToolHooks",
+	"history_preload": "HistoryPreload",
 }
 
 // overridesSetIn returns the lockable overrides a request sets, by wire name,
