@@ -13,8 +13,9 @@ tool refuses: you have no disk access.**
 ## Seeing your volumes
 
 Call `Context op=self`. When you're bound to volumes it reports a
-`volumes.bindings` list — each entry's `name`, `path`, `mode` (`ro`/`rw`),
-and whether it's the `default`. If you're bound to no volume it reports
+`volumes.bindings` list — each entry's `name`, `mode` (`ro`/`rw`), and
+whether it's the `default`. It does not say where a volume lives on the
+server; you never need that, since paths are relative to the volume. If you're bound to no volume it reports
 `filesystem: "none — no volume bound"` — ask the operator to bind one
 (file/exec tools will refuse until then).
 

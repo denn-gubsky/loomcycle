@@ -281,7 +281,7 @@ func TestRead_UnboundVolumeErrorsListsBound(t *testing.T) {
 	}
 }
 
-// Context op=self reports the bound-volume list (name/path/mode/default) when
+// Context op=self reports the bound-volume list (name/mode/default) when
 // a VolumePolicy is on ctx — so a bound agent can introspect exactly which
 // volumes it may touch and which verb each allows.
 func TestContextSelf_ReportsBoundVolumes(t *testing.T) {

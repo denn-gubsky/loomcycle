@@ -53,7 +53,8 @@ func SpawnRequestToRunInput(req SpawnRunRequest) runner.RunInput {
 		// approves the held answer or rejects it.
 		Review:           req.Review != nil && *req.Review,
 		ReviewTTLSeconds: req.ReviewTTLSeconds,
-		Interruption:     req.Interruption, // per-run "may this agent ask a human"
+		Interruption:     req.Interruption,   // per-run "may this agent ask a human"
+		HistoryPreload:   req.HistoryPreload, // RFC HE F3: "off" only narrows
 		Hooks:            req.Hooks,
 		ToolHooks:        req.ToolHooks,
 	}

@@ -335,6 +335,12 @@ type Server struct {
 	// test about to close its database) knows they no longer touch it.
 	detached sync.WaitGroup
 
+	// historyRecapSlots bounds the end-of-run recaps of RFC HE F3 running at
+	// once (recapSessionAfterRun); historyRecapsInFlight holds the session
+	// ids being recapped so one chat is never summarised twice at once.
+	historyRecapSlots     chan struct{}
+	historyRecapsInFlight sync.Map
+
 	// sessionLocks tracks per-session mutexes used by continuation
 	// requests (handleMessages, or handleRuns with a non-empty
 	// SessionID). A concurrent request to the same session fast-fails
@@ -824,6 +830,8 @@ func New(cfg *config.Config, pr ProviderResolver, builtinTools []tools.Tool, sem
 		cancelReg:     cancel.NewRegistry(),
 		turnCancelReg: turncancel.NewRegistry(),
 		sessionLocks:  runner.NewSessionLockMap(),
+
+		historyRecapSlots: make(chan struct{}, maxConcurrentHistoryRecaps),
 
 		imageReencoder: &convert.InProcess{Images: vision.NewReencoder()},
 
@@ -4830,6 +4838,12 @@ type runRequest struct {
 	// usable only while the block says enabled:true; kinds intersect with the
 	// definition's; max_pending takes the smaller. nil = the definition's.
 	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
+
+	// HistoryPreload "off" starts this new session without the agent's
+	// history_preload block (RFC HE F3) — the bridges' `/new clean`. The only
+	// value: a run may switch the preload off, never on. Ignored on a
+	// continuation, which is never preloaded.
+	HistoryPreload string `json:"history_preload,omitempty"`
 }
 
 // pickRunTimeout resolves the effective code-js wall-clock budget override:
@@ -5027,6 +5041,9 @@ func (s *Server) runsShapeError(req runRequest, own string) (string, bool) {
 	}
 	if !runner.ValidAdmission(req.Admission) {
 		return fmt.Sprintf("admission must be %q or %q", runner.AdmissionWait, runner.AdmissionReject), false
+	}
+	if !runner.ValidHistoryPreload(req.HistoryPreload) {
+		return fmt.Sprintf("history_preload must be %q or absent", runner.HistoryPreloadOff), false
 	}
 	return "", true
 }
@@ -8720,6 +8737,12 @@ type runStateMeta struct {
 	// by finishRun to derive the ephemeral subtree to purge (RFC AH Phase 2b).
 	// Set to the run's own id at every top-level site.
 	RootRunID string
+	// SessionID is the run's session, and RecapSessionOnEnd asks finishRun to
+	// recap it in the background once the run has ended (RFC HE F3, D2a): set
+	// for a top-level run of an agent with history_preload. A zero meta never
+	// recaps.
+	SessionID         string
+	RecapSessionOnEnd bool
 	// ParentContext is the run's opaque tracking lineage, echoed on the
 	// published RunStateEvent (v0.12.x).
 	ParentContext *store.ParentContext
@@ -8824,6 +8847,13 @@ func (s *Server) makeHeartbeat(runID string) func() {
 // only by finishRun for its store write — passing both keeps the
 // background-write fallback in finishRun reusable for both code paths.
 func (s *Server) finishRunWithCancel(ctx context.Context, runCtx context.Context, runID string, res loop.RunResult, runErr error, meta runStateMeta) {
+	// RFC HE F3: deferred FIRST so it runs LAST, after the terminal write
+	// below, and starts the recap in the background — the run's completion
+	// never waits on a summarisation call. Every ending counts (completed,
+	// failed, cancelled, an idle end): each is a run end of the chat.
+	if meta.IsTopLevel && meta.RecapSessionOnEnd {
+		defer s.recapSessionAfterRun(runCtx, meta.SessionID)
+	}
 	// RFC AH Phase 2b: tear down this run tree's ephemeral volumes at
 	// terminal — but ONLY for a TOP-LEVEL run (a sub-agent completing must
 	// not purge the tree its parent + siblings still use). Deferred so it

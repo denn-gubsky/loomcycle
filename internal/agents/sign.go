@@ -154,6 +154,13 @@ type AgentContent struct {
 	// pre-feature rows. Tag "history_scope" sorts between evaluation_scopes and
 	// inherit_core_blocks (declaration order = JSON emit order = hash input).
 	HistoryScope []string `json:"history_scope,omitempty"`
+	// HistoryPreload is the per-agent history_preload block (mirrors
+	// config.HistoryPreload; RFC HE F3). Content-identifying: an agent whose
+	// new chats start knowing the user's recent ones is not the same agent.
+	// Pointer + omitempty so an agent without it hashes byte-identical to
+	// pre-feature rows. Unlike the sibling blocks an EMPTY block is NOT
+	// collapsed: `history_preload: {}` turns the preload on.
+	HistoryPreload *HistoryPreload `json:"history_preload,omitempty"`
 	// Hooks / ToolHooks are the agent's hooks — content: two agents gated
 	// differently are not the same agent.
 	Hooks     hooks.EventHooks `json:"hooks,omitempty"`

@@ -209,6 +209,16 @@ export const agentDefRegistry: DefRegistry = {
         { key: "model", label: "Summary model", group: "Context & compaction", type: "text", hint: "A cheaper same-provider model to write the summary." },
         { key: "memory_flush", label: "Memory flush", group: "Context & compaction", type: "bool", hint: "Bank the discarded span for the consolidator instead of dropping it." },
       ] },
+    { key: "history_preload", label: "History preload", group: "Context & compaction", type: "object",
+      hint: "A new chat starts with the same user's latest chats with this agent, as one fenced block. Each chat is recapped when a run of it ends. A run may switch it off.",
+      unsetMeans: "a new chat starts with no history",
+      fields: [
+        { key: "sessions", label: "Chats", group: "Context & compaction", type: "int", min: 1, max: 20, hint: "How many earlier chats to list, newest first. Default 3." },
+        { key: "within", label: "Within", group: "Context & compaction", type: "text", placeholder: "14d", hint: "How recent a chat's last activity must be. Default 14d." },
+        { key: "include", label: "Include", group: "Context & compaction", type: "enum", options: ["summary", "summary+tail"], hint: "summary+tail also adds the newest chat's last turns. Default summary." },
+        { key: "tail_turns", label: "Tail turns", group: "Context & compaction", type: "int", min: 1, max: 20, hint: "Turns of the newest chat summary+tail adds. Default 4." },
+        { key: "max_tokens", label: "Max tokens", group: "Context & compaction", type: "int", min: 1, max: 8000, hint: "Cap on the whole block. Default 1500." },
+      ] },
 
     // ---- Memory ----
     { key: "memory_scopes", label: "Memory scopes", group: "Memory", type: "string-list",

@@ -175,6 +175,9 @@ func (a *runAdmission) validate() error {
 	if !runner.ValidAdmission(a.in.Admission) {
 		return fmt.Errorf("%w: admission must be %q or %q", runner.ErrInvalidArgument, runner.AdmissionWait, runner.AdmissionReject)
 	}
+	if !runner.ValidHistoryPreload(a.in.HistoryPreload) {
+		return fmt.Errorf("%w: history_preload must be %q or absent", runner.ErrInvalidArgument, runner.HistoryPreloadOff)
+	}
 	// The one seam gRPC Run / Continue, the spawn tools, a started draft and
 	// the triggers share: a block type nobody knows is the caller's mistake,
 	// reported as one, and never run as trusted text.

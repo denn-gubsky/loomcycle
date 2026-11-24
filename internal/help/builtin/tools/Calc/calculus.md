@@ -66,9 +66,12 @@ Example: `round(polyfit([0, 1, 2, 3], [1, 3, 7, 13], 2), 10)` gives `[1, 1, 1]`.
 
 ### polyval(p, x)
 The polynomial with coefficients `p` at `x`, or at each element of a list
-`x`. Exact on exact input.
+`x`. Exact on exact input. A complex coefficient or `x` gives a complex
+value (`Calc/complex`).
 
 Example: `polyval([2, 0, -1], 3)` gives `17`.
+
+Example: `polyval([2, -3, 1], 1 + 2i)` gives `-8+2i`.
 
 ### interp(x, xs, ys)
 Linear interpolation: the value at `x` on the broken line through the points

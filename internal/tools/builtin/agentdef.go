@@ -1336,6 +1336,9 @@ func decodeAgentOverlay(overlay json.RawMessage) (mergedDef, error) {
 	if err := ov.Telemetry.Validate(); err != nil {
 		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
 	}
+	if err := ov.HistoryPreload.Validate(); err != nil {
+		return mergedDef{}, fmt.Errorf("AgentDef tool: %w", err)
+	}
 	// Only the overlay is judged: on a fork, applyOverlay lets a pin
 	// replace the parent's tier and a tier replace the parent's pin, so
 	// the one ambiguous request is naming both at once.
@@ -1581,6 +1584,10 @@ type mergedDef struct {
 	// content_capture: never, only takes capture away, so a fork may add it
 	// and no overlay can remove it.
 	Telemetry *config.AgentTelemetry `json:"telemetry,omitempty"`
+	// HistoryPreload: the per-agent `history_preload:` block (RFC HE F3).
+	// PER-FIELD overlay + content-identifying, like Telemetry — except that an
+	// empty block is set, not absent: `{}` turns the preload on.
+	HistoryPreload *config.HistoryPreload `json:"history_preload,omitempty"`
 	// Context: per-agent layered-context / retention block (RFC CR). Same
 	// PER-FIELD overlay + content-identifying treatment as Compaction; also
 	// inherited down the spawn tree.
@@ -1818,6 +1825,9 @@ func (d *mergedDef) applyOverlay(ov mergedDef) {
 	// Telemetry merges PER FIELD, same as Speech.
 	if !ov.Telemetry.IsZero() {
 		d.Telemetry = config.MergeAgentTelemetry(d.Telemetry, ov.Telemetry)
+	}
+	if ov.HistoryPreload != nil {
+		d.HistoryPreload = config.MergeHistoryPreload(d.HistoryPreload, ov.HistoryPreload)
 	}
 	// Context merges PER FIELD, same as Compaction.
 	if !ov.Context.IsZero() {
@@ -2115,6 +2125,7 @@ func staticToMergedDef(s config.AgentDef) mergedDef {
 		Transcription:         s.Transcription.Clone(),
 		Speech:                s.Speech.Clone(),
 		Telemetry:             s.Telemetry.Clone(),
+		HistoryPreload:        s.HistoryPreload.Clone(),
 		Context:               s.Context.Clone(),
 		MaxTokens:             s.MaxTokens,
 		MaxContextTokens:      s.MaxContextTokens,
@@ -2381,6 +2392,11 @@ func signFromMergedDef(name string, def mergedDef) string {
 	// Telemetry is content-identifying, same as Speech (RFC GG P3).
 	if tl := def.Telemetry; !tl.IsZero() {
 		c.Telemetry = &agents.Telemetry{ContentCapture: tl.ContentCapture}
+	}
+	// HistoryPreload is content-identifying (RFC HE F3); present means on.
+	if hp := def.HistoryPreload; hp != nil {
+		c.HistoryPreload = &agents.HistoryPreload{Sessions: hp.Sessions, Within: hp.Within,
+			Include: hp.Include, TailTurns: hp.TailTurns, MaxTokens: hp.MaxTokens}
 	}
 	// Context is content-identifying, same as Compaction (RFC CR).
 	if cx := def.Context; !cx.IsZero() {

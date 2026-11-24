@@ -613,6 +613,7 @@ export type {
   AgentTranscription,
   AgentSpeech,
   AgentTelemetry,
+  AgentHistoryPreload,
   AgentContext,
   TierCandidate,
   CoreBlock,

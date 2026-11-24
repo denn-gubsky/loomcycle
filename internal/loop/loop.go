@@ -5737,23 +5737,32 @@ func untrustedKind(kind string) string {
 // declare. Anything else is normalised to "untrusted" so a caller can't
 // inject a tag that the model treats as a trusted boundary (e.g. "system").
 var allowedUntrustedKinds = map[string]bool{
-	"untrusted":     true,
-	"web_content":   true,
-	"uploaded_cv":   true,
-	"qa_question":   true,
-	"user_input":    true,
-	"tool_output":   true,
-	"search_result": true,
-	"run_metadata":  true, // non-secret metadata projected from an external trigger body
-	"file_content":  true, // text extracted from a file a tool returned (File op=extract)
-	"attached_file": true, // a file a person attached in a chat, named by its inbox ref (RFC HE)
-	fence.CodeKind:  true, // kept exactly as written, under a boundary derived from the text
+	"untrusted":       true,
+	"web_content":     true,
+	"uploaded_cv":     true,
+	"qa_question":     true,
+	"user_input":      true,
+	"tool_output":     true,
+	"search_result":   true,
+	"run_metadata":    true, // non-secret metadata projected from an external trigger body
+	"file_content":    true, // text extracted from a file a tool returned (File op=extract)
+	"attached_file":   true, // a file a person attached in a chat, named by its inbox ref (RFC HE)
+	RecentHistoryKind: true, // the user's earlier chats, preloaded into a new one (RFC HE F3)
+	fence.CodeKind:    true, // kept exactly as written, under a boundary derived from the text
 }
 
 // RuntimeOnlyKind is the untrusted kind only the runtime may write: it marks
 // what an external trigger's body sent (injectMetadataSegments). A caller's
 // block under it would tell the model the trigger sent text it did not.
 const RuntimeOnlyKind = "run_metadata"
+
+// RecentHistoryKind marks the user's earlier chats the runtime preloads into
+// the first run of a new session (RFC HE F3). Runtime-only too: a caller's
+// block under it would tell the model the user had said what they did not.
+const RecentHistoryKind = "recent_history"
+
+// runtimeOnlyKinds are the kinds DemoteRuntimeKinds takes from a caller.
+var runtimeOnlyKinds = map[string]bool{RuntimeOnlyKind: true, RecentHistoryKind: true}
 
 // DemoteRuntimeKinds returns segs with every untrusted-block a caller labelled
 // with a runtime-only kind relabelled "untrusted". Every intake applies it to
@@ -5763,7 +5772,7 @@ func DemoteRuntimeKinds(segs []PromptSegment) []PromptSegment {
 	var out []PromptSegment
 	for i, s := range segs {
 		for j, c := range s.Content {
-			if c.Type != "untrusted-block" || c.Kind != RuntimeOnlyKind {
+			if c.Type != "untrusted-block" || !runtimeOnlyKinds[c.Kind] {
 				continue
 			}
 			if out == nil {

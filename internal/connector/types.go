@@ -225,6 +225,10 @@ type SpawnRunRequest struct {
 	// enabled:false switches it off); it never grants the Interruption tool to
 	// an agent whose definition does not hold it. nil = the definition's.
 	Interruption *config.AgentInterruptionACL `json:"interruption,omitempty"`
+
+	// HistoryPreload "off" starts this new session without the agent's
+	// history_preload (RFC HE F3). Narrow-only; "" keeps the agent's.
+	HistoryPreload string `json:"history_preload,omitempty"`
 }
 
 // SpawnRunResult is the final outcome of a SpawnRun call (returned

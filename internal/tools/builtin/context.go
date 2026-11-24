@@ -456,12 +456,16 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 		out["context_distill_declined"] = decl
 	}
 	// volumes: the filesystem volumes (RFC AH) the file/exec tools enforce for
-	// this run. Each entry names a root + mode (ro/rw) + whether it's the
+	// this run. Each entry names the volume + mode (ro/rw) + whether it's the
 	// default for an omitted `volume` arg. Paths passed to Read/Write/Edit/
 	// Glob/Grep and Bash commands resolve RELATIVE to a volume's root (~ is
-	// not expanded; an absolute path must resolve inside the root). Surfaced
-	// so a bound agent knows precisely which volumes it may touch and which
-	// verb each allows, instead of guessing host paths.
+	// not expanded). Surfaced so a bound agent knows precisely which volumes
+	// it may touch and which verb each allows, instead of guessing host paths.
+	//
+	// No entry carries the volume's host directory (owner ruling): the agent
+	// addresses files by volume name and relative path, so the directory
+	// gives it nothing it needs and puts where the server keeps its files
+	// into the model's context and the run's transcript.
 	//
 	// Active volume policy → report the binding list (an active-but-empty
 	// policy reports an empty bindings list = confined to no volume).
@@ -477,14 +481,13 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			}
 			vols = append(vols, map[string]any{
 				"name":    b.Name,
-				"path":    b.Root,
 				"mode":    mode,
 				"default": b.Default,
 			})
 		}
 		out["volumes"] = map[string]any{
 			"bindings":        vols,
-			"path_convention": "Pass paths RELATIVE to a volume root (e.g. \"src/main.go\"); ~ is not expanded and an absolute path must resolve inside the root. Set the \"volume\" tool argument to target a non-default volume; omit it to use the one marked default.",
+			"path_convention": "Pass paths RELATIVE to a volume root (e.g. \"src/main.go\"); ~ is not expanded. Set the \"volume\" tool argument to target a non-default volume; omit it to use the one marked default.",
 		}
 	} else {
 		out["filesystem"] = "none — no volume bound; Read/Write/Edit/Glob/Grep/Bash refuse. Bind a volume via the agent's `volumes:` list (operator declares the universe in the top-level `volumes:` config)."
@@ -539,7 +542,7 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			if ref.ReadOnly || recordedRO[name] || !tools.PolicyOf(ctx).EphemeralWritable {
 				mode = "ro"
 			}
-			list = append(list, map[string]any{"name": name, "path": ref.Root, "mode": mode})
+			list = append(list, map[string]any{"name": name, "mode": mode})
 		}
 		for _, r := range recs {
 			if eph.Has(r.Name) {
@@ -552,8 +555,6 @@ func (c *Context) execSelf(ctx context.Context) (tools.Result, error) {
 			entry := map[string]any{"name": r.Name, "mode": mode}
 			if r.Elsewhere {
 				entry["note"] = "created on another server; its files are not on this one"
-			} else {
-				entry["path"] = r.Root
 			}
 			list = append(list, entry)
 		}

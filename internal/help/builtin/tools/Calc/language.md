@@ -58,14 +58,14 @@ is `1` to `n+1`.
 **Lists.** `+` and `-` work element by element, and a number on either side
 is applied to every element: `[1, 2, 3] + 1` is `[2, 3, 4]`. `*` multiplies a
 list by a number and `/` divides it by one. For anything else — `/` between
-two lists, a number divided by a list, a power with a list in it — write the
+two lists, a number divided by a list, a power with a vector in it — write the
 element-wise operator: `.*`, `./`, `.^`. Two lists combined element by
 element must have the same length, two matrices the same shape.
 
 **Matrices.** A list of rows of the same length is a matrix. `*` between two
 matrices, or a matrix and a vector, is the matrix product; between two plain
-vectors it is refused (write `dot(a, b)` or `.*`). The postfix `'` is the
-transpose: `A'`. See `Calc/matrices`.
+vectors it is refused (write `dot(a, b)` or `.*`). `A^n` is the matrix
+power. The postfix `'` is the transpose: `A'`. See `Calc/matrices`.
 
 ## Names, assignment and your own functions
 
