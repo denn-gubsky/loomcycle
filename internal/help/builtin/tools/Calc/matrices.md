@@ -17,6 +17,10 @@ so the result is not exact even for whole numbers; round it for display.
 - `A * B` is the matrix product. A vector on the right is a column and the
   result a vector; a vector on the left is a row. `*` between two vectors is
   refused: write `dot(a, b)`, or `.*` for element by element.
+- `A^n` is the matrix power of a square matrix and an integer `n`: `A^0`
+  is the identity, `A^-2` is `inv(A)^2` (refused for a singular `A`). There
+  is no fractional power; `.^` raises each element, and a vector takes only
+  `.^`.
 - `A'` is the transpose (also `transpose(A)`). A vector `v'` is the one-row
   matrix `[v]`.
 - `+`, `-`, `.*`, `./`, `.^` work element by element on two matrices of the
@@ -209,7 +213,8 @@ multiply its rows, which is also per column. Of a vector they work as in
 A matrix a function reads or builds holds at most 250,000 elements
 (`too_large`). The product, the solvers and the decompositions are refused,
 before any work, when they would cost more than a 500 × 500 matrix: rows ×
-columns × the smaller of the two, at most 125,000,000. Reading and writing a
+columns × the smaller of the two, at most 125,000,000; `A^n` counts each of
+its products, about two per doubling of `n`. Reading and writing a
 matrix costs a step per element, so one call handles a few matrices of that
 size at most. See `Calc/limits`.
 
@@ -238,6 +243,14 @@ Column means of a table of measurements:
 ```
 
 Result: [2, 30]
+
+Fibonacci numbers from a matrix power:
+
+```json
+{"expr": "[[1, 1], [1, 0]]^10"}
+```
+
+Result: [[89, 55], [55, 34]]
 
 `*` between two vectors is refused:
 

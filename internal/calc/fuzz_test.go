@@ -41,6 +41,7 @@ var fuzzSeeds = []string{
 	"A = [[4, 1], [1, 3]]; [inv(A), det(A), solve(A, [1, 2]), lstsq(A, [1, 2]), pinv(A), matrank(A), cond(A), norm(A, 2)]",
 	"A = [[4, 1], [1, 3]]; [lu(A), qr(A), cholesky(A), eig(A), svd(A), trace(A), kron(A, A)]",
 	"[zeros(2, 2), ones(2), identity(2), diag([1, 2]), reshape(1:4, 2, 2), hstack([1], [2]), vstack([1], [2]), linspace(0, 1, 3)]",
+	"A = [[1, 1], [1, 0]]; [A^10, A^0, A^-2, A^2.0, A^0.5, A^(2^60), [1, 2]^2, 2^A, A^A, [[1, 2, 3]]^2, [[1e200]]^2]",
 	"[dot([1, 2], [3, 4]), cross([1, 0, 0], [0, 1, 0]), mean([[1, 2], [3, 4]]), [1, 2]']",
 	"[normpdf(1), normcdf(1, 0, 2), norminv(0.9), tpdf(1, 3), tcdf(1, 3), tinv(0.9, 3), chi2pdf(1, 2), chi2cdf(1, 2), chi2inv(0.5, 2)]",
 	"[fpdf(1, 2, 3), fcdf(1, 2, 3), finv(0.5, 2, 3), exppdf(1, 2), expcdf(1, 2), expinv(0.5, 2), unifpdf(1, 0, 2), unifcdf(1, 0, 2), unifinv(0.5, 0, 2)]",
