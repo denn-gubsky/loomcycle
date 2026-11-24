@@ -92,9 +92,12 @@ type 7. `quantile(v, 0.5)` is the median.
 Example: `quantile([1, 2, 3, 4], 0.25)` gives `1.75`.
 
 ### percentile(v, p)
-`quantile(v, p / 100)`: `p` from 0 to 100, the same method.
+`quantile(v, p / 100)`: `p` from 0 to 100, the same method. A `p`
+strictly between 0 and 1 is refused, because it is almost always a 0–1 level
+meant for `quantile`; `percentile(v, 1)` is the 1st percentile.
 
 Example: `percentile([1, 2, 3, 4], 30)` gives `1.9`.
+Example: `percentile([1, 2, 3, 4], 0.9)` gives `error domain`.
 
 ### rank(v)
 Each value's rank, **1 for the smallest**, in the order of `v`. Tied values

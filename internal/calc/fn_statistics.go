@@ -481,8 +481,22 @@ func fnQuantile(percent bool) func(*evaluator, args) (val, *Error) {
 		if percent {
 			top = exactInt64(100)
 		}
+		// The two scales are a common slip: percentile(v, 0.9) would quietly
+		// be the 0.9th percentile. A percentile level strictly between 0 and
+		// 1 is refused as a 0–1 level passed to the wrong function; 0 and 1
+		// stay valid (the minimum, and the 1st percentile, which people do
+		// ask for). A sub-1 percentile is still reachable as quantile(v, p/100).
+		const scales = "percentile takes 0–100: write percentile(v, 90), or quantile(v, 0.9) for a 0–1 level"
+		if percent && p.sign() > 0 && cmpNum(p, exactInt64(1)) < 0 {
+			return nil, errf(codeDomain, a.pos, "%s: p is a percent from 0 to 100, got %s", a.name, fmtArg(p)).
+				withHint(scales)
+		}
 		if p.sign() < 0 || cmpNum(p, top) > 0 {
-			return nil, errf(codeDomain, a.pos, "%s: p must be from 0 to %s, got %s", a.name, fmtArg(top), fmtArg(p))
+			err := errf(codeDomain, a.pos, "%s: p must be from 0 to %s, got %s", a.name, fmtArg(top), fmtArg(p))
+			if !percent && cmpNum(p, top) > 0 && cmpNum(p, exactInt64(100)) <= 0 {
+				err = err.withHint("quantile takes 0–1: write quantile(v, 0.9), or percentile(v, 90) for a percent")
+			}
+			return nil, err
 		}
 		s, err := e.sortedNums(xs, a.pos)
 		if err != nil {
