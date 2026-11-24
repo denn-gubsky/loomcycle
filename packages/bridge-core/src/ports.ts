@@ -44,7 +44,7 @@ export interface AdminClient {
       maxActive?: number;
       agents?: string[];
       /** Off-run surfaces beside agents: "speech", "transcription" (RFC GA,
-       *  loomcycle 1.141 and later), "inbox_put" (RFC HE, 1.167 and later).
+       *  loomcycle 1.141 and later), "inbox_put" (RFC HE, 1.168 and later).
        *  An older server refuses a surface it does not know. Typed as the
        *  installed client types it, so any LoomcycleClient still fits. */
       surfaces?: ClientTokenSurface[];
@@ -60,7 +60,7 @@ export type TokenSurface = "speech" | "transcription" | "inbox_put";
 /** Builds a loomcycle client authenticated with the given bearer. The speech
  *  calls and the inbox put are optional so a client double written before
  *  them still fits, and so does a published client older than the inbox put
- *  (1.167.0): a bridge with voice or files on needs them, and says so. */
+ *  (1.168.0): a bridge with voice or files on needs them, and says so. */
 export type ClientFactory = (token: string) => RunClient & AdminClient & Partial<VoiceClient> & Partial<FileClient>;
 
 /** What a bridge sends to the platform: plain text, a typing indicator, or a

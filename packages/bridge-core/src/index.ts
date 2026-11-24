@@ -50,6 +50,7 @@ export {
 } from "./voice.js";
 export type { VoiceCapabilities, VoiceClient, VoiceConfig, VoiceIn, VoiceOut, VoicePort, VoiceReplyMode } from "./voice.js";
 export {
+  ATTACHED_FILE_KIND,
   ATTACHED_FILE_LABEL,
   ATTACHED_FILES_HEADER,
   announceLine,
@@ -58,6 +59,7 @@ export {
   extensionOf,
   FILE_TEXT,
   FILE_TYPES,
+  fileBlock,
   fileLine,
   hasFiles,
   missingLine,
@@ -65,4 +67,4 @@ export {
   sniff,
   zipNames,
 } from "./files.js";
-export type { FileClient, FileIn, FilePort, FileRefusal, FilesConfig, InboxPutResult } from "./files.js";
+export type { BlockInputClient, FileClient, FileIn, FilePort, FileRefusal, FilesConfig, InboxPutResult, InputBlock } from "./files.js";

@@ -29,6 +29,7 @@ import {
   extensionOf,
   FILE_TEXT,
   FILE_TYPES,
+  fileBlock,
   fileLine,
   hasFiles,
   logType,
@@ -36,12 +37,14 @@ import {
   putResultOf,
   refusalText,
   sniff,
+  type BlockInputClient,
   type FileClient,
   type FileIn,
   type FilePort,
   type FileRefusal,
   type FilesConfig,
   type InboxPutResult,
+  type InputBlock,
 } from "./files.js";
 import {
   echoLine,
@@ -951,7 +954,7 @@ export class Conversation<TRef> {
 
     const client = await this.runClient();
     if (!hasFiles(client)) {
-      this.deps.log.warn("files: the loomcycle client has no putInboxFile; files need @loomcycle/client 1.167.0 or later", { conversation });
+      this.deps.log.warn("files: the loomcycle client has no putInboxFile; files need @loomcycle/client 1.168.0 or later", { conversation });
       return refuseAll(FILE_TEXT.unavailable, "client", true);
     }
     const cfg = fc.config;
@@ -1073,14 +1076,15 @@ export class Conversation<TRef> {
     }
     for (const [reason, detail] of fails) refuse(reason, detail);
 
-    const lines: string[] = [];
-    if (!announced && text) lines.push(text);
-    if (results.length > 0) lines.push(ATTACHED_FILES_HEADER, ...results.map(fileLine));
-    if (announced && results.length < files.length) lines.push(missingLine(files.length - results.length));
+    // What the person typed (unless it already started the run), then each
+    // file as an untrusted block, then the bridge's own note of files that
+    // were announced but not put.
+    const said = !announced && text ? text : "";
+    const missing = announced && results.length < files.length ? missingLine(files.length - results.length) : "";
     const live = this.live;
-    if (lines.length === 0 || !live?.runId) return;
+    if ((!said && !missing && results.length === 0) || !live?.runId) return;
     try {
-      await client.sendRunInput(live.runId, lines.join("\n"));
+      await this.sendFiles(client, live.runId, said, results, missing);
     } catch (err) {
       const s = statusOf(err);
       if (s !== 404 && s !== 409) throw err;
@@ -1096,6 +1100,36 @@ export class Conversation<TRef> {
     if (live.parked) this.turnText = "";
     live.parked = false;
     await this.save();
+  }
+
+  /** sendFiles tells the agent in one input call: the text as trusted text
+   *  and each file as an untrusted block of kind attached_file. A loomcycle
+   *  older than 1.168 takes text only and refuses a turn without it (400 or
+   *  422); for that server alone the files go as trusted lines under a fixed
+   *  header that says their contents are unverified. */
+  private async sendFiles(client: RunClient, runId: string, said: string, results: InboxPutResult[], missing: string): Promise<void> {
+    if (results.length > 0) {
+      const blocks: InputBlock[] = [
+        ...(said ? [{ type: "trusted-text" as const, text: said }] : []),
+        ...results.map(fileBlock),
+        ...(missing ? [{ type: "trusted-text" as const, text: missing }] : []),
+      ];
+      try {
+        // The client with putInboxFile (checked by hasFiles) is the release
+        // whose sendRunInput takes blocks.
+        await (client as unknown as BlockInputClient).sendRunInput(runId, blocks);
+        return;
+      } catch (err) {
+        const s = statusOf(err);
+        if (s !== 400 && s !== 422) throw err;
+        this.deps.log.warn("files: loomcycle took no input blocks; told the agent in lines instead (needs loomcycle 1.168)", {
+          conversation: this.rec.conversationId,
+          status: s,
+        });
+      }
+    }
+    const lines = [said, ...(results.length > 0 ? [ATTACHED_FILES_HEADER, ...results.map(fileLine)] : []), missing].filter(Boolean);
+    await client.sendRunInput(runId, lines.join("\n"));
   }
 
   /** sayRefusals says each reason once, counting its files, and forgets them. */

@@ -45,7 +45,7 @@ export interface InboxPutResult {
 
 /** The inbox put a bridge makes with a conversation's token.
  *  `LoomcycleClient` satisfies it structurally from the release that ships
- *  putInboxFile (1.167.0); an older client has no such call, and files are
+ *  putInboxFile (1.168.0); an older client has no such call, and files are
  *  then refused. */
 export interface FileClient {
   putInboxFile(
@@ -172,6 +172,26 @@ export function missingLine(n: number): string {
  *  named reaches the agent unescaped. */
 export function fileLine(r: InboxPutResult): string {
   return `${ATTACHED_FILE_LABEL} ${JSON.stringify({ name: r.name, ref: r.ref, media_type: r.media_type, bytes: r.bytes })}`;
+}
+
+/** The untrusted-block kind each attached file reaches the agent as. */
+export const ATTACHED_FILE_KIND = "attached_file";
+
+/** One block of a run input turn (POST /v1/runs/{run_id}/input `content`,
+ *  loomcycle 1.168 and later). */
+export type InputBlock = { type: "trusted-text"; text: string } | { type: "untrusted-block"; kind: string; text: string };
+
+/** The block input a client takes from the same release as putInboxFile:
+ *  its sendRunInput accepts blocks as well as text. Not part of FileClient,
+ *  so a client double that takes text only still fits RunClient. */
+export interface BlockInputClient {
+  sendRunInput(runId: string, content: InputBlock[]): Promise<{ delivered: boolean }>;
+}
+
+/** fileBlock is one file as the agent reads it: an untrusted block holding
+ *  only what loomcycle answered the put with, as compact JSON. */
+export function fileBlock(r: InboxPutResult): InputBlock {
+  return { type: "untrusted-block", kind: ATTACHED_FILE_KIND, text: JSON.stringify({ name: r.name, ref: r.ref, media_type: r.media_type, bytes: r.bytes }) };
 }
 
 /** putResultOf checks an answer has the shape the agent is told about. */

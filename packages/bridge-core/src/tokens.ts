@@ -99,7 +99,7 @@ export class TokenBroker implements TokenSource {
       // the stream an older process may still be draining.
       maxActive: 2,
       agents: [this.opts.agent],
-      // A client older than 1.167 types surfaces without "inbox_put" but
+      // A client older than 1.168 types surfaces without "inbox_put" but
       // sends what it is given; the bridge asks for it only with files on.
       ...(this.opts.surfaces?.length ? { surfaces: this.opts.surfaces as Parameters<AdminClient["mintUserToken"]>[1]["surfaces"] } : {}),
       // `interactive` is itself a lockable override, and the bridge must set

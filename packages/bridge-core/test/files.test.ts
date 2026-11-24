@@ -4,6 +4,7 @@ import { EnvReader, loadFilesConfig, loadSharedConfig } from "../src/config.js";
 import { putName } from "../src/conversation.js";
 import { PinnedDownloadError } from "../src/download.js";
 import {
+  ATTACHED_FILE_KIND,
   ATTACHED_FILE_LABEL,
   ATTACHED_FILES_HEADER,
   announceLine,
@@ -14,6 +15,7 @@ import {
   zipNames,
   type FileIn,
   type FilesConfig,
+  type InputBlock,
 } from "../src/files.js";
 import { sharedSubject, type Identified, type Scope, type Trust } from "../src/identity.js";
 import type { Logger } from "../src/ports.js";
@@ -282,35 +284,64 @@ describe("attached files (RFC HE)", () => {
     await settle();
   }
 
-  function sentInputs(): string[] {
-    return lc.callsTo("sendRunInput").map((c) => String(c.args[1]));
+  /** What each sendRunInput call sent: text, or input blocks. */
+  function sentInputs(): Array<string | InputBlock[]> {
+    return lc.callsTo("sendRunInput").map((c) => c.args[1] as string | InputBlock[]);
   }
 
-  it("puts a file into the live run's inbox and tells the agent its ref, never its bytes or link", async () => {
+  const DOCX_SEEN = {
+    name: "_______________.docx",
+    ref: "volume:inbox:documents/_______________.docx",
+    media_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    bytes: DOCX.byteLength,
+  };
+
+  it("tells a live run the text as trusted text and each file as an attached_file untrusted block, in one call", async () => {
     await parkedRun();
     await attach([passport()], "перевір");
     expect(lc.inbox!.puts).toEqual([
       { runId: "run-1", name: FILE_NAME, bytes: DOCX.byteLength, contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
     ]);
-    const [input] = sentInputs();
-    expect(input).toBeDefined();
-    const lines = input!.split("\n");
-    expect(lines[0]).toBe("перевір");
-    expect(lines[1]).toBe(ATTACHED_FILES_HEADER);
-    expect(lines[2]!.startsWith(`${ATTACHED_FILE_LABEL} `)).toBe(true);
+    const inputs = sentInputs();
+    expect(inputs).toHaveLength(1);
+    const blocks = inputs[0] as InputBlock[];
+    expect(blocks).toEqual([
+      { type: "trusted-text", text: "перевір" },
+      { type: "untrusted-block", kind: ATTACHED_FILE_KIND, text: expect.any(String) },
+    ]);
     // Only what loomcycle answered the put with: its sanitised name and ref.
-    expect(JSON.parse(lines[2]!.slice(ATTACHED_FILE_LABEL.length + 1))).toEqual({
-      name: "_______________.docx",
-      ref: "volume:inbox:documents/_______________.docx",
-      media_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      bytes: DOCX.byteLength,
-    });
-    expect(input).not.toContain("sharepoint");
-    expect(input).not.toContain("SECRETTOKEN");
-    expect(input).not.toContain("word/document.xml");
+    expect(JSON.parse(blocks[1]!.text)).toEqual(DOCX_SEEN);
+    const all = JSON.stringify(blocks);
+    expect(all).not.toContain("sharepoint");
+    expect(all).not.toContain("SECRETTOKEN");
+    expect(all).not.toContain("word/document.xml");
+    expect(all).not.toContain(ATTACHED_FILES_HEADER);
     // One turn: no new run was started for the file.
     expect(lc.runs).toHaveLength(1);
     expect(platform.messages()).toEqual([]);
+  });
+
+  it("falls back to trusted lines when loomcycle refuses input blocks with 422", async () => {
+    await parkedRun();
+    lc.failNext.sendRunInput = httpError(422);
+    await attach([passport()], "перевір");
+    const inputs = sentInputs();
+    expect(inputs).toHaveLength(2);
+    expect(Array.isArray(inputs[0])).toBe(true);
+    const lines = String(inputs[1]).split("\n");
+    expect(lines[0]).toBe("перевір");
+    expect(lines[1]).toBe(ATTACHED_FILES_HEADER);
+    expect(JSON.parse(lines[2]!.slice(ATTACHED_FILE_LABEL.length + 1))).toEqual(DOCX_SEEN);
+    expect(String(inputs[1])).not.toContain("SECRETTOKEN");
+    expect(logs.text()).toContain("no input blocks");
+  });
+
+  it("does not fall back to lines on another refusal", async () => {
+    await parkedRun();
+    lc.failNext.sendRunInput = httpError(500);
+    await attach([passport()], "перевір");
+    expect(sentInputs()).toHaveLength(1);
+    expect(platform.messages()).toEqual(["Something went wrong. Please try again."]);
   });
 
   it("starts the run with the text and a line saying files follow, then puts them into it", async () => {
@@ -325,11 +356,12 @@ describe("attached files (RFC HE)", () => {
     const first = lc.runs[0]!.opts.segments![0]!.content[0]!;
     expect(first).toEqual({ type: "trusted-text", text: `check these\n\n${announceLine(2)}` });
     expect(lc.inbox!.puts.map((p) => p.runId)).toEqual(["run-1"]);
+    // The second turn carries the file as an untrusted block, then the
+    // bridge's note of the one that did not arrive.
     const [input] = sentInputs();
-    expect(input!.split("\n")).toEqual([
-      ATTACHED_FILES_HEADER,
-      expect.stringMatching(/^attached_file: \{"name":"_+\.docx","ref":"volume:inbox:documents\/_+\.docx"/),
-      "[One attached file could not be delivered.]",
+    expect(input).toEqual([
+      { type: "untrusted-block", kind: ATTACHED_FILE_KIND, text: JSON.stringify(DOCX_SEEN) },
+      { type: "trusted-text", text: "[One attached file could not be delivered.]" },
     ]);
     expect(platform.messages()).toEqual([FILE_TEXT.type(1, DEFAULT_FILES_CONFIG.types), FILE_TEXT.failed(1)]);
   });
@@ -387,7 +419,7 @@ describe("attached files (RFC HE)", () => {
     expect(lc.inbox!.puts).toHaveLength(2);
     expect(filePort.downloads).toHaveLength(2);
     expect(platform.messages()).toEqual([FILE_TEXT.count(3, 2)]);
-    expect(sentInputs()[0]!.split("\n").filter((l) => l.startsWith(ATTACHED_FILE_LABEL))).toHaveLength(2);
+    expect((sentInputs()[0] as InputBlock[]).filter((b) => b.type === "untrusted-block")).toHaveLength(2);
   });
 
   it("refuses files in plain words when the loomcycle client has no inbox put", async () => {
