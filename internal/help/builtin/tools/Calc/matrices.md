@@ -7,10 +7,12 @@ A matrix is a list of rows of the same length, `[[1, 2], [3, 4]]`; a list of
 numbers is a vector. There is no separate matrix type: a matrix function or
 operator reads the list it is given.
 
-Building, rearranging and the exact products (`zeros` to `size`, `dot`,
-`cross`, `kron`, `trace`) keep exact numbers exact. Everything else — the
-matrix product, solving, the decompositions — is computed in 64-bit floats,
-so the result is not exact even for whole numbers; round it for display.
+Building, rearranging and the products (`zeros` to `size`, `dot`, `cross`,
+`kron`, `trace`, `*` and `A^n` for `n` ≥ 1) keep exact numbers exact; `*` and
+`A^n` only up to 50 per side and while the result stays within the exact
+cap, past which they are floats. Solving and the decompositions are
+computed in 64-bit floats, so the result is not exact even for whole
+numbers; round it for display.
 
 ## Operators and indexing
 
@@ -244,13 +246,13 @@ Column means of a table of measurements:
 
 Result: [2, 30]
 
-Fibonacci numbers from a matrix power:
+Fibonacci numbers from a matrix power, exact past 2^53:
 
 ```json
-{"expr": "[[1, 1], [1, 0]]^10"}
+{"expr": "([[1, 1], [1, 0]]^99)[1, 1]"}
 ```
 
-Result: [[89, 55], [55, 34]]
+Result: 354224848179261915075
 
 `*` between two vectors is refused:
 

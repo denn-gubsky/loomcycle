@@ -51,9 +51,10 @@ func TestMatrixPower_RefusesWhatHasNoMatrixPower(t *testing.T) {
 	mustFail(t, "[[1, 2], [3]]^2", codeShape)
 	// An exponent past 2^53 is not an integer a float can tell apart.
 	mustFail(t, "[[1, 0], [0, 1]]^(2^60)", codeTooLarge)
-	// The float path overflows loudly, never returns Inf or NaN.
-	mustFail(t, "[[1e200, 1e200], [1e200, 1e200]]^2", codeOverflow)
-	mustFail(t, "[[1e10, 1], [1, 0.5]]^200", codeOverflow)
+	// The float path overflows loudly, never returns Inf or NaN (sqrt keeps
+	// it off the exact path).
+	mustFail(t, "[[1e200 * sqrt(2), 1e200], [1e200, 1e200]]^2", codeOverflow)
+	mustFail(t, "[[1e10 * sqrt(2), 1], [1, 0.5]]^200", codeOverflow)
 }
 
 // The work is ~log2(n) products of n³ each, checked from the shape and the
