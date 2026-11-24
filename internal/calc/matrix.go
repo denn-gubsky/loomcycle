@@ -228,7 +228,8 @@ func shapeText(v val) string {
 // matMul is `*` between two lists: matrix × matrix, matrix × vector (the
 // vector a column, the result a vector) or vector × matrix (the vector a
 // row). Two plain vectors are refused: whether a dot product or an outer
-// product was meant cannot be told. Exact operands within the caps of
+// product was meant cannot be told. A complex element anywhere makes it
+// the complex product (complexMatMul); exact operands within the caps of
 // exactMatMul give an exact product; anything else is computed in floats.
 func (e *evaluator) matMul(l, r val, pos int) (val, *Error) {
 	lm, rm := isMatrix(l), isMatrix(r)
@@ -236,7 +237,11 @@ func (e *evaluator) matMul(l, r val, pos int) (val, *Error) {
 		return nil, errf(codeType, pos, "`*` of two vectors is ambiguous").
 			withHint("use dot(a, b) for the dot product, `.*` to multiply element by element")
 	}
-	if v, ok, err := e.exactMatMul(productRows(l, lm, true), productRows(r, rm, false), !lm || !rm, pos); ok || err != nil {
+	lr, rr := productRows(l, lm, true), productRows(r, rm, false)
+	if anyComplex(lr) || anyComplex(rr) {
+		return e.complexMatMul(l, r, lr, rr, !lm || !rm, pos)
+	}
+	if v, ok, err := e.exactMatMul(lr, rr, !lm || !rm, pos); ok || err != nil {
 		return v, err
 	}
 	a, err := e.operand(l, lm, true, pos)

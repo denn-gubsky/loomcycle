@@ -33,7 +33,7 @@ const complexRealOnlyHint = "complex numbers have no order and this function tak
 
 // complexWiseHint is the hint for a complex element reaching a matrix
 // routine: the gonum routines are real.
-const complexWiseHint = "the matrix functions and the matrix product take real numbers; + - .* ./ .^ work element by element on complex values"
+const complexWiseHint = "the matrix functions take real numbers; * and A^n (n >= 0) multiply complex matrices, and + - .* ./ .^ work element by element on complex values"
 
 var complexFuncs = []builtin{
 	{name: "complex", sig: "complex(a, b)", section: SecComplex, min: 2, max: 2, fn: fnComplex,

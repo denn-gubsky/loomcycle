@@ -4,8 +4,7 @@ kind: section
 description: "Calc matrices and linear algebra — a matrix as a list of rows, the matrix product, transpose A', indexing A[i, j], building matrices, dot and cross products, determinant, rank, norms, inverse, solving and least squares, the LU, QR, Cholesky, eigen and singular value decompositions, and statistics by column."
 ---
 A matrix is a list of rows of the same length, `[[1, 2], [3, 4]]`; a list of
-numbers is a vector. There is no separate matrix type: a matrix function or
-operator reads the list it is given.
+numbers is a vector. There is no separate matrix type.
 
 Building, rearranging and the products (`zeros` to `size`, `dot`, `cross`,
 `kron`, `trace`, `*` and `A^n` for `n` ≥ 1) keep exact numbers exact; `*` and
@@ -23,8 +22,10 @@ numbers; round it for display.
   is the identity, `A^-2` is `inv(A)^2` (refused for a singular `A`). There
   is no fractional power; `.^` raises each element, and a vector takes only
   `.^`.
-- `A'` is the transpose (also `transpose(A)`). A vector `v'` is the one-row
-  matrix `[v]`.
+- `A'` is the transpose (also `transpose(A)`), never conjugating; a
+  vector `v'` is the one-row matrix `[v]`. `ctranspose(A)` conjugates too.
+- With a complex element, `*` and `A^n` (`n` ≥ 0) compute in complex
+  numbers; the other matrix functions refuse one (`Calc/complex`).
 - `+`, `-`, `.*`, `./`, `.^` work element by element on two matrices of the
   same shape, and a number applies to every element: `2 * A`, `A + 1`. A
   matrix plus a vector is refused (`shape`).
@@ -81,6 +82,12 @@ Example: `linspace(0, 1, 5)` gives `[0, 0.25, 0.5, 0.75, 1]`.
 Rows become columns; the same as `A'`.
 
 Example: `transpose([[1, 2, 3], [4, 5, 6]])` gives `[[1, 4], [2, 5], [3, 6]]`.
+
+### ctranspose(A)
+The conjugate transpose: `A'` with each complex element conjugated. On a
+real matrix it is `A'`.
+
+Example: `ctranspose([[1 + 2i, 3]])` gives `[[1-2i], [3]]`.
 
 ### size(x)
 The shape: `[rows, columns]` of a matrix, `[n]` of a list.
@@ -141,7 +148,7 @@ Example: `cond([[1, 0], [0, 4]])` gives `4`.
 ### inv(A)
 The inverse of a square matrix. A singular matrix, or one so close to
 singular that the answer would be noise (condition number over 1e16), is
-refused (`domain`). To solve `A*x = b`, `solve` is faster and more accurate.
+refused (`domain`). For `A*x = b`, `solve` is more accurate.
 
 Example: `inv([[4, 7], [2, 6]])` gives `[[0.6, -0.7], [-0.2, 0.4]]`.
 

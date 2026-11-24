@@ -202,7 +202,9 @@ func TestComplex_ListsAndMatricesWorkElementByElement(t *testing.T) {
 		{"unique([1i, 2i, 1i, 2, 2 + 0i])", "[1i, 2i, 2]"},
 		{"count([1i, 1i, 2], 1i)", "2"},
 	})
-	for _, expr := range []string{"[[1i, 2], [3, 4]] * [[1, 0], [0, 1]]", "det([[1i, 2], [3, 4]])", "inv([[1i]])", "eig([[1i]])"} {
+	// The matrix product of complex matrices is TestComplexMatrixProduct_*;
+	// the other matrix routines are real.
+	for _, expr := range []string{"det([[1i, 2], [3, 4]])", "inv([[1i]])", "eig([[1i]])"} {
 		e := mustFail(t, expr, codeType)
 		if !strings.Contains(e.Hint, "element by element") {
 			t.Errorf("%s: hint %q should say complex values work element by element", expr, e.Hint)

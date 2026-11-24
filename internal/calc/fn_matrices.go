@@ -23,6 +23,8 @@ var matrixFuncs = []builtin{
 		summary: "n evenly spaced numbers from a to b, both included; exact on exact input"},
 	{name: "transpose", sig: "transpose(A)", section: SecMatrices, min: 1, max: 1, fn: fnTranspose,
 		summary: "rows become columns, the same as A'; a vector becomes a one-row matrix"},
+	{name: "ctranspose", sig: "ctranspose(A)", section: SecMatrices, min: 1, max: 1, fn: fnCtranspose,
+		summary: "the conjugate transpose: A' with each complex element conjugated"},
 	{name: "size", sig: "size(x)", section: SecMatrices, min: 1, max: 1, fn: fnSize,
 		summary: "the shape: [rows, columns] of a matrix, [n] of a list"},
 	{name: "dot", sig: "dot(a, b)", section: SecMatrices, min: 2, max: 2, fn: fnDot,

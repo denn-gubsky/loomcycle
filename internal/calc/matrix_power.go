@@ -47,7 +47,8 @@ func powBySquaring[T any](base T, k uint64, mul func(T, T) (T, *Error)) (T, *Err
 // matPow is A^n, `^` with a matrix on the left: a square matrix and an
 // integer n. n = 0 is the identity, n > 0 repeated squaring, n < 0 the
 // inverse raised to |n|. An exact matrix to n > 0 is computed exactly within
-// the caps of exactMatPow; a negative power goes through the float inverse.
+// the caps of exactMatPow; a matrix holding a complex element in complex
+// arithmetic; a negative power goes through the float inverse.
 // The float work (the products, and the inverse) is admitted before any of
 // it runs, as one routine of heavy.
 func (e *evaluator) matPow(l, r val, pos int) (val, *Error) {
@@ -63,8 +64,12 @@ func (e *evaluator) matPow(l, r val, pos int) (val, *Error) {
 		return nil, errf(codeShape, pos, "the matrix power needs a square matrix, got %d × %d", rows, cols).
 			withHint("use .^ to raise element by element")
 	}
+	rs := productRows(l, true, false)
+	if anyComplex(rs) {
+		return e.complexMatPowOf(rs, k, pos)
+	}
 	if k > 0 {
-		if v, ok, err := e.exactMatPow(productRows(l, true, false), uint64(k), pos); ok || err != nil {
+		if v, ok, err := e.exactMatPow(rs, uint64(k), pos); ok || err != nil {
 			return v, err
 		}
 	}
