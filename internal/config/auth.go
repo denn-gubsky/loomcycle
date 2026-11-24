@@ -561,6 +561,11 @@ func resolveAuth(c *Config) error {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
 				"(a bearer names its own tenant and subject; a password gate's users come from invites)", name, kind)
 		}
+		if kind != AuthGateKindExternal && g.IdentityMap != nil && strings.TrimSpace(g.IdentityMap.SameSubjectAs) != "" {
+			// A bridge asserts an identifier another gate already keys on; a
+			// sign-in provider makes its own users.
+			return fmt.Errorf("auth.gates.%s.identity_map.same_subject_as applies only to kind: external", name)
+		}
 		edge := kind == AuthGateKindHeader || kind == AuthGateKindAWSIAM
 		if edge && hasOIDCOnlyKeys(g) {
 			return fmt.Errorf("auth.gates.%s: client_secret_env, client_secret, discovery_url, allowed_domains, allowed_tids, "+
@@ -707,6 +712,9 @@ func resolveAuth(c *Config) error {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: device, got %d", deviceGates)
 	}
 	if err := checkExternalGateKeysExclusive(c, p.Gates); err != nil {
+		return err
+	}
+	if err := checkSameSubjectAs(p.Gates); err != nil {
 		return err
 	}
 	if err := checkHeaderGatesShareProxies(p.Gates); err != nil {
