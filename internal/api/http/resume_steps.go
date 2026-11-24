@@ -612,6 +612,9 @@ func (r *resumeAttempt) openRunContext() {
 		// them down under a parent and siblings still using them.
 		IsTopLevel: rootRunID == run.ID,
 		RootRunID:  rootRunID,
+		// RFC HE F3: a resumed top-level run's end is a run end of its chat.
+		SessionID:         run.SessionID,
+		RecapSessionOnEnd: agentDef.HistoryPreload != nil,
 	}
 	r.runCtx, r.cancelFn, r.rootRunID, r.runSpan, r.meta = runCtx, cancelFn, rootRunID, runSpan, meta
 }
