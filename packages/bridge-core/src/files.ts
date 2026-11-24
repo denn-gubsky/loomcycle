@@ -188,6 +188,7 @@ export function putResultOf(v: unknown): InboxPutResult | undefined {
 export type FileRefusal = "too_big" | "type" | "download" | "unavailable" | "full" | "failed";
 
 function mb(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   const m = bytes / (1024 * 1024);
   return Number.isInteger(m) ? `${m} MB` : `${m.toFixed(1)} MB`;
 }
