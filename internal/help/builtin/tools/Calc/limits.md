@@ -41,7 +41,9 @@ brackets (see `Calc/errors`), except the output bound, which cuts the result.
   or builds, 500 × 500 at most for a square one. The matrix product, the
   solvers and the decompositions are refused before any work when they would
   cost more than a 500 × 500 matrix (rows × columns × the smaller of the two,
-  125,000,000). Reading or writing a matrix costs a step per element. Large
+  125,000,000; `A^n` counts all its products). An exact product or power
+  is exact only up to 50 per side, else computed in floats. Reading or
+  writing a matrix costs a step per element. Large
   matrix operations from every caller share a pool of one slot per processor
   core; waiting for a slot counts against the 2 seconds (`time_limit`).
 - **Numeric methods** (`no_convergence`): `integrate` evaluates its function
