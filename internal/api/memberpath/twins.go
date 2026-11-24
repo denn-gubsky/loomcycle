@@ -33,6 +33,7 @@ var twins = map[string][]Twin{
 	"DeleteConfiguredRun": {{Method: http.MethodDelete, Path: "/v1/runs/r"}},
 	"ReplaySession":       {{Method: http.MethodPost, Path: "/v1/sessions/s/replay"}},
 	"RunInput":            {{Method: http.MethodPost, Path: "/v1/runs/r/input"}},
+	"PutInboxFile":        {{Method: http.MethodPut, Path: "/v1/runs/r/inbox/a.pdf"}},
 	"RetuneRun":           {{Method: http.MethodPost, Path: "/v1/runs/r/retune"}},
 	"CancelTurn":          {{Method: http.MethodPost, Path: "/v1/runs/r/cancel"}},
 	"ReviewRun":           {{Method: http.MethodPost, Path: "/v1/runs/r/review"}},

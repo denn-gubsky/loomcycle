@@ -452,6 +452,7 @@ var memberRunRoutes = map[string]memberRoute{
 	"POST /v1/users/{user_id}/channels/{name}/publish":         {class: "hidden", body: censusUserChannelBody},
 	"POST /v1/users/{user_id}/channels/{name}/subscribe":       {class: "hidden", body: censusUserChannelBody},
 	"PUT /v1/runs/{run_id}/breakpoints":                        {class: "hidden"},
+	"PUT /v1/runs/{run_id}/inbox/{name}":                       {class: "hidden"},
 	// Channels: a user-scoped channel's messages are each user's own.
 	"GET /v1/_channels/{name}/peek":                    {class: "shared"}, // the channel's global layer, never a user's
 	"POST /v1/_channels/{name}/ack":                    {class: "shared"}, // the channel's global layer, never a user's

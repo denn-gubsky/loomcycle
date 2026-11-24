@@ -2809,8 +2809,9 @@ class LoomcycleClient:
     async def run_input(
         self,
         run_id: str,
-        text: str,
+        text: str = "",
         *,
+        content: Optional[Iterable[Mapping[str, Any]]] = None,
         model: str = "",
         provider: str = "",
         tier: str = "",
@@ -2849,7 +2850,15 @@ class LoomcycleClient:
         to change a parked run's settings WITHOUT putting a message in its
         transcript. They select within what the agent's definition already
         allows and cannot widen it; one it forbids is refused here rather
-        than stored and discovered on the next turn."""
+        than stored and discovered on the next turn.
+
+        ``content`` sends the turn as content blocks instead of ``text``
+        (RFC HE): ``{"type": "trusted-text", "text": ...}`` for the person's
+        words and ``{"type": "untrusted-block", "kind": ..., "text": ...}``
+        for text from elsewhere (a file the person attached, as kind
+        ``attached_file``), each untrusted-block fenced as one in a run's
+        prompt is. Exclusive with ``text``; an image block is refused
+        (InvalidArgument)."""
         req = pb.RunInputRequest(
             run_id=run_id,
             text=text,
@@ -2873,11 +2882,62 @@ class LoomcycleClient:
         if interruption is not None:
             req.interruption.CopyFrom(_build_interruption(interruption))
         _set_retuned_shape(req, tool_choice, output_format, routing)
+        if content is not None:
+            req.content.extend(_segments_to_proto([{"role": "user", "content": list(content)}])[0].content)
         try:
             resp = await self._stub.RunInput(req, metadata=self._auth_metadata())
         except grpc.aio.AioRpcError as e:
             _raise_from_grpc(e)
         return {"run_id": resp.run_id, "delivered": resp.delivered}
+
+    async def put_inbox_file(
+        self,
+        run_id: str,
+        name: str,
+        data: bytes,
+        *,
+        media_type: str = "",
+        chunk_size: int = 1 << 20,
+    ) -> Mapping[str, Any]:
+        """Put a file into the inbox of a run you own (RFC HE F1; mirror of
+        ``PUT /v1/runs/{run_id}/inbox/{name}``, over the client-streaming
+        ``PutInboxFile`` RPC). The bytes go in ``chunk_size`` pieces, so a
+        file larger than one gRPC message fits. The agent then reads it with
+        the File tool by the returned ``ref``; its record says
+        ``origin: "client"`` and who put it.
+
+        Returns ``{ref, name, bytes, sha256, media_type}``: ``name`` is the
+        sent name sanitised to a base name (``-2``, ``-3`` on a clash).
+
+        Only the run's owner or an admin, and only while the run is live:
+        another user's run is NotFound, an ended run FailedPrecondition
+        (``run_not_live``), a run served by another server Unavailable
+        (``run_elsewhere``). Over the client put cap or the inbox quota is
+        ResourceExhausted (``client_put_max_bytes`` / ``inbox_full``) and
+        nothing is kept. A token limited to certain agents needs the
+        ``inbox_put`` surface (PermissionDenied otherwise)."""
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        payload = bytes(data)
+
+        def requests():
+            yield pb.PutInboxFileRequest(
+                run_id=run_id, name=name, media_type=media_type, data=payload[:chunk_size]
+            )
+            for off in range(chunk_size, len(payload), chunk_size):
+                yield pb.PutInboxFileRequest(data=payload[off : off + chunk_size])
+
+        try:
+            resp = await self._stub.PutInboxFile(requests(), metadata=self._auth_metadata())
+        except grpc.aio.AioRpcError as e:
+            _raise_from_grpc(e)
+        return {
+            "ref": resp.ref,
+            "name": resp.name,
+            "bytes": resp.bytes,
+            "sha256": resp.sha256,
+            "media_type": resp.media_type,
+        }
 
     async def retune_run(
         self,

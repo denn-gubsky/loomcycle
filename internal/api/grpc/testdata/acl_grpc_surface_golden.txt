@@ -68,6 +68,7 @@ PeekChannel	channel:read	false	subscribe channel:*
 PeekTeamChannel	substrate:tenant	false	subscribe channel:*
 PlanOntology	substrate:tenant	false	read document:*
 PublishChannel	channel:publish	false	publish channel:*
+PutInboxFile	runs:create	false	use gateway:inbox_put
 ReleaseTeamChannel	substrate:tenant	false	manage channel:*
 ReplaySession	runs:create	true	run agent:*
 ResolveInterrupt	runs:create	true	steer run:*

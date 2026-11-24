@@ -34,6 +34,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"time"
 
+	"github.com/denn-gubsky/loomcycle/internal/loop"
 	"github.com/denn-gubsky/loomcycle/internal/providers"
 	"github.com/denn-gubsky/loomcycle/internal/runner"
 )
@@ -462,6 +463,15 @@ type Connector interface {
 	// Reachable via the LoomCycle MCP meta-tool `calc`.
 	Calc(ctx context.Context, input json.RawMessage) (ToolResult, error)
 
+	// PutInboxFile keeps a file the caller sends in the inbox of a run it
+	// owns (RFC HE F1): only the run's owner or an admin, only while the run
+	// is live and in this process, under the client put cap and the tree's
+	// inbox quota, with nothing partial kept. The kept file's record says
+	// origin client and who put it; the put is audited (run_inbox_put)
+	// without the file's name. A refusal is an *InboxPutError. Reachable via
+	// PUT /v1/runs/{run_id}/inbox/{name} and the gRPC PutInboxFile RPC.
+	PutInboxFile(ctx context.Context, req InboxPutRequest) (InboxPutResult, error)
+
 	// Workspace runs the in-run `Workspace` tool for a caller outside any
 	// run, with its input and output (RFC GW D35). The workspaces belong to
 	// the calling principal's token identity, its tenant and subject, not to
@@ -727,6 +737,17 @@ type Connector interface {
 	//   ErrRunNotInFlight      — no live run for run_id (or cross-tenant). NotFound.
 	//   ErrSteerQueueFull      — the run's buffer is full. ResourceExhausted.
 	SteerRun(ctx context.Context, runID, text, source string) (delivered bool, err error)
+
+	// SteerRunContent is SteerRun for a turn given as content blocks
+	// (trusted-text and untrusted-block, RFC HE owner ruling 2026-11-24): each
+	// untrusted-block reaches the model fenced exactly as one in a run's
+	// prompt, so a client can hand a live run what a person attached without
+	// it reading as the person's instructions. The same gates and typed errors
+	// as SteerRun, plus a *SteerContentError for a turn that is not one
+	// (InvalidArgument / 400). An image block is refused: images go in a run's
+	// prompt. Reachable via POST /v1/runs/{run_id}/input with `content` and
+	// the gRPC RunInput RPC's `content`.
+	SteerRunContent(ctx context.Context, runID string, content []loop.PromptContentBlock, source string) (delivered bool, err error)
 
 	// RetuneRun changes a LIVE run's per-run overrides WITHOUT delivering a turn
 	// — the canonical half of POST /v1/runs/{run_id}/retune and the RetuneRun

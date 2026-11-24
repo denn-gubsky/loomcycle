@@ -78,6 +78,10 @@ var grpcRPCs = map[string]RPC{
 	"CancelAgent":         rpc(ScopeRunsCreate, true, typeLevel("cancel", "run")),
 	"ReviewRun":           rpc(ScopeRunsCreate, true, typeLevel("review", "run")),
 	"CompactRun":          rpc(ScopeRunsCreate, true, typeLevel("compact", "run")),
+	// A run owner's file put (RFC HE F1), as PUT /v1/runs/{run_id}/inbox/
+	// {name}: off the run plane, so a token limited to certain agents needs
+	// the inbox_put surface granted.
+	"PutInboxFile": rpc(ScopeRunsCreate, false, q("use", "gateway", "inbox_put")),
 	// Deleting a run tree removes stored records: a scope of its own, as on
 	// HTTP, and off the run plane; the connector also requires read access
 	// to the root.

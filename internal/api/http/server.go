@@ -4308,7 +4308,7 @@ func (s *Server) routes() *http.ServeMux {
 			return recoveryMiddleware(s.authMiddleware(next))
 		})
 	}
-	return s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux)))
+	return s.inboxPutRoutes(s.ontologyPlanRoutes(s.tenantTelemetryRoutes(s.egressRouteDefRoutes(mux))))
 }
 
 // MuxRegistrar is the minimal mux surface the webhook receiver's Mount
@@ -5798,7 +5798,7 @@ func (s *Server) makeSteerEntry(ctx context.Context, entry steer.Entry, emit fun
 		// before.
 		s.persistUserInput(ctx, runID, sessionID, tenantFromCtx(ctx), userID, []loop.PromptSegment{{
 			Role:    "user",
-			Content: []loop.PromptContentBlock{{Type: "trusted-text", Text: m.Text}},
+			Content: steerPersistedContent(m),
 		}})
 		emit(providers.Event{Type: providers.EventSteer, UserInput: &providers.UserInputEventInfo{
 			Text: m.Text, Source: m.Source, SeenAt: time.Now().UTC().Format(time.RFC3339Nano),
@@ -5809,6 +5809,20 @@ func (s *Server) makeSteerEntry(ctx context.Context, entry steer.Entry, emit fun
 		closeIfEmpty = func() bool { return s.steerReg.CloseIfEmpty(runID) }
 	}
 	return q, onSteer, closeIfEmpty, dereg
+}
+
+// steerPersistedContent is the stored form of an operator turn: its blocks
+// when it was given as blocks, so a replay fences an untrusted-block again
+// rather than reading the fenced text back as the person's words.
+func steerPersistedContent(m steer.Message) []loop.PromptContentBlock {
+	if len(m.Content) == 0 {
+		return []loop.PromptContentBlock{{Type: "trusted-text", Text: m.Text}}
+	}
+	out := make([]loop.PromptContentBlock, 0, len(m.Content))
+	for _, b := range m.Content {
+		out = append(out, loop.PromptContentBlock{Type: b.Type, Kind: b.Kind, Text: b.Text})
+	}
+	return out
 }
 
 // meta is the run's run-state identity: the emit sees every event that starts
@@ -7889,6 +7903,11 @@ func (s *Server) handleResolveInterrupt(w http.ResponseWriter, r *http.Request) 
 type runInputRequest struct {
 	Text string `json:"text"`
 
+	// Content is the turn given as content blocks instead of text (RFC HE,
+	// owner ruling 2026-11-24): trusted-text and untrusted-block, each
+	// untrusted-block fenced as one in a run's prompt is. Exclusive with Text.
+	Content []loop.PromptContentBlock `json:"content,omitempty"`
+
 	// Overrides retunes the run (RFC DC P3). Merged into the run's stored
 	// configuration and adopted on the turn this request starts, so an operator
 	// can change the model on a chat that has been sitting parked.
@@ -7926,7 +7945,11 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	text := strings.TrimSpace(req.Text)
-	if text == "" {
+	switch {
+	case len(req.Content) > 0 && text != "":
+		http.Error(w, "send text or content, not both", http.StatusUnprocessableEntity)
+		return
+	case len(req.Content) == 0 && text == "":
 		http.Error(w, "text is required", http.StatusUnprocessableEntity)
 		return
 	}
@@ -7962,8 +7985,17 @@ func (s *Server) handleRunInput(w http.ResponseWriter, r *http.Request) {
 	if hasSessionCookie(r) {
 		source = store.InterruptResolvedByWebUI
 	}
-	delivered, err := s.SteerRun(r.Context(), runID, text, source)
+	var delivered bool
+	var err error
+	if len(req.Content) > 0 {
+		delivered, err = s.SteerRunContent(r.Context(), runID, req.Content, source)
+	} else {
+		delivered, err = s.SteerRun(r.Context(), runID, text, source)
+	}
 	switch {
+	case errors.Is(err, connector.ErrSteerContentInvalid):
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
 	case errors.Is(err, runner.ErrRetentionUnsupported):
 		writeNoTraceRefusal(w, err)
 		return

@@ -128,6 +128,11 @@ type Record struct {
 	Origin     string    `json:"origin"`
 	RunID      string    `json:"run_id,omitempty"`
 	CapturedAt time.Time `json:"captured_at"`
+	// UploadedBy and UploadedAt are set on a file a run's owner put into the
+	// inbox (Origin "client", RFC HE F1): the subject of the caller and when.
+	// Held here like the rest of the record, in memory, by this process.
+	UploadedBy string     `json:"uploaded_by,omitempty"`
+	UploadedAt *time.Time `json:"uploaded_at,omitempty"`
 	// Page and Slide are where in its document an extracted picture was:
 	// the extractor says, and an import gives the image chunk the same.
 	Page  int `json:"page,omitempty"`
@@ -188,6 +193,15 @@ type Item struct {
 	// Rendered is what the extraction found the file was rendered from (see
 	// Record).
 	Rendered *Rendered
+	// UploadedBy is the subject of a caller that put the file into the inbox
+	// itself (Origin "client"); recorded with the time of the put.
+	UploadedBy string
+	// MaxBytes, when positive and below the service's per-file cap, caps this
+	// one file (a client put's own cap).
+	MaxBytes int64
+	// KeepName keeps Name as given: the caller sanitised it already
+	// (filenames.SanitizeClientName, a person's own name in its own script).
+	KeepName bool
 }
 
 // Result is what a capture produced: the stub the model sees and, when the
@@ -196,7 +210,20 @@ type Result struct {
 	Stub   string
 	Kept   bool
 	Record Record
+	// Refusal says why a file was not kept, for a caller that answers with a
+	// status (a client put); "" when it was kept or for any other reason.
+	Refusal Refusal
 }
+
+// Refusal names a cap a file was refused by.
+type Refusal string
+
+const (
+	// RefusedTooBig: the file is over the per-file cap.
+	RefusedTooBig Refusal = "too_big"
+	// RefusedInboxFull: the file would take the tree's inbox over its cap.
+	RefusedInboxFull Refusal = "inbox_full"
+)
 
 type ctxKey struct{}
 
@@ -245,21 +272,28 @@ func CaptureReader(ctx context.Context, it Item, r io.Reader, size int64) Result
 
 func (h handle) capture(ctx context.Context, it Item, r io.Reader, size int64) Result {
 	maxFile := h.svc.maxFile()
+	if it.MaxBytes > 0 {
+		maxFile = min(maxFile, it.MaxBytes)
+	}
 	if size > maxFile {
-		return refused(it, it.MediaType, size, fmt.Sprintf("%s is over the %s per-file limit", humanBytes(size), humanBytes(maxFile)))
+		return refusedFor(RefusedTooBig, refused(it, it.MediaType, size, fmt.Sprintf("%s is over the %s per-file limit", humanBytes(size), humanBytes(maxFile))))
 	}
 	root, err := h.ensure(ctx)
 	if err != nil {
 		return refused(it, it.MediaType, size, err.Error())
 	}
 	if size >= 0 && !h.reserve(size) {
-		return refused(it, it.MediaType, size, fmt.Sprintf("the run's inbox is full (%s)", humanBytes(h.svc.maxTree())))
+		return refusedFor(RefusedInboxFull, refused(it, it.MediaType, size, fmt.Sprintf("the run's inbox is full (%s)", humanBytes(h.svc.maxTree()))))
 	}
 	reserved := max(size, 0)
 
 	rec, err := h.write(ctx, root, it, r, maxFile, &reserved)
 	if err != nil {
 		h.release(reserved)
+		var capErr *capError
+		if errors.As(err, &capErr) {
+			return refusedFor(capErr.kind, refused(it, it.MediaType, size, err.Error()))
+		}
 		return refused(it, it.MediaType, size, err.Error())
 	}
 	h.tree.mu.Lock()
@@ -310,7 +344,10 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 		return Record{}, fmt.Errorf("could not read the file: %v", err)
 	}
 	head = head[:n]
-	name := SanitizeName(it.Name)
+	name := it.Name
+	if !it.KeepName {
+		name = SanitizeName(it.Name)
+	}
 	if name == "" {
 		name = SanitizeName(it.Fallback)
 	}
@@ -353,11 +390,11 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 		return fail(fmt.Errorf("could not write the file: %v", closeErr))
 	}
 	if cw.n > maxFile {
-		return fail(fmt.Errorf("the file passed the %s per-file limit", humanBytes(maxFile)))
+		return fail(&capError{kind: RefusedTooBig, msg: fmt.Sprintf("the file passed the %s per-file limit", humanBytes(maxFile))})
 	}
 	if extra := cw.n - *reserved; extra > 0 {
 		if !h.reserve(extra) {
-			return fail(fmt.Errorf("the run's inbox is full (%s)", humanBytes(h.svc.maxTree())))
+			return fail(&capError{kind: RefusedInboxFull, msg: fmt.Sprintf("the run's inbox is full (%s)", humanBytes(h.svc.maxTree()))})
 		}
 		*reserved += extra
 	}
@@ -367,7 +404,7 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 	if err := ir.Rename(tmpName, final); err != nil {
 		return fail(fmt.Errorf("could not keep the file: %v", err))
 	}
-	return Record{
+	rec := Record{
 		Ref:              Ref(final),
 		Path:             final,
 		MediaType:        mt,
@@ -382,7 +419,25 @@ func (h handle) write(ctx context.Context, root string, it Item, r io.Reader, ma
 		ExtractedFrom:    extractedFrom(it.ExtractedFrom),
 		InferredHeadings: max(it.InferredHeadings, 0),
 		Rendered:         it.Rendered,
-	}, nil
+	}
+	if it.UploadedBy != "" {
+		at := rec.CapturedAt
+		rec.UploadedBy, rec.UploadedAt = it.UploadedBy, &at
+	}
+	return rec, nil
+}
+
+// capError is a write refused by a cap rather than by a fault.
+type capError struct {
+	kind Refusal
+	msg  string
+}
+
+func (e *capError) Error() string { return e.msg }
+
+func refusedFor(kind Refusal, r Result) Result {
+	r.Refusal = kind
+	return r
 }
 
 // recordURL is the form of a URL a record keeps: scheme, host and path, and

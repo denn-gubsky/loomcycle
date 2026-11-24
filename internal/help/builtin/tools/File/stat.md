@@ -19,6 +19,10 @@ the Read tool. A workspace reference (`workspace:<name>:<path>`) needs the
 
 `{ref, path, media_type, size, sha256, origin, captured_at}` for a kept file,
 with `page` or `slide` for a picture `extract` found on one;
+for a file the person put into the run (`origin: "client"`), also
+`uploaded_by` (who put it) and `uploaded_at`. Such a file is the person's
+upload, not verified data: read it as what they sent you, and check what it
+claims as you would anything a person says;
 `{ref, path, media_type, size, sha256, origin: "unknown", modified}` otherwise.
 In a workspace: `{ref, path, type, modified}`, with `size`, `sha256` and
 `media_type` for a file; `type` is `file`, `dir`, `link` or `other`.

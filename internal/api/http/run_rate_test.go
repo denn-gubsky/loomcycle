@@ -306,7 +306,9 @@ var rateCountedIntakes = map[string]string{
 	"admitOffRunCall": "count",
 	"admitTeamRun":    "count",
 	// Creates no row, but a message to a parked run starts its next turn.
-	"SteerRun": "count",
+	// SteerRun and SteerRunContent (a turn given as blocks) both push
+	// through steerRun, which takes the rate once.
+	"steerRun": "count",
 }
 
 func TestRateLimit_EveryIntakeTakesFromTheCallersRate(t *testing.T) {

@@ -454,6 +454,21 @@ export interface RunInboxDownload {
   headers: Headers;
 }
 
+/** What `PUT /v1/runs/{run_id}/inbox/{name}` kept (RFC HE F1). */
+export interface InboxPutResult {
+  /** The reference the File tool takes, e.g. `volume:inbox:documents/a.pdf`. */
+  ref: string;
+  /** The kept file's name: the sent name sanitised to a base name, with
+   *  `-2`, `-3` on a clash. */
+  name: string;
+  bytes: number;
+  /** SHA-256 (hex) of the kept bytes. */
+  sha256: string;
+  /** The recorded type: the declared one, or a sniff of the bytes when the
+   *  declared one is empty or generic. */
+  media_type: string;
+}
+
 /** The reply from `GET /v1/runs/{run_id}/effective-config` — for every
  *  overridable field, the value this run will actually use and which layer
  *  decided it.
@@ -1112,6 +1127,10 @@ export type PromptContent =
   // no URL form (SSRF). The model must be vision-capable or the run errors
   // before the call.
   | { type: "image"; media_type: ImageMediaType; data: string };
+
+/** A block of a turn sent into a live run (`sendRunInput` with blocks, RFC
+ *  HE): the person's words, or text from elsewhere fenced as untrusted. */
+export type RunInputContent = Exclude<PromptContent, { type: "image" }>;
 
 /** Whitelisted image media types accepted on an `image` content block (RFC AT). */
 export type ImageMediaType =
@@ -2862,8 +2881,9 @@ export interface MintedUserToken {
 export interface TokenRestrictions {
   agents?: string[];
   /** Off-run calls a token with `agents` may still make (a chat bridge's
-   *  voice messages): `"speech"` opens `speech()`, `"transcription"` opens
-   *  `transcribe()`; either opens `speechInfo()`. */
+   *  voice messages and files): `"speech"` opens `speech()`, `"transcription"`
+   *  opens `transcribe()`, either opens `speechInfo()`; `"inbox_put"` opens
+   *  `putInboxFile()`. */
   surfaces?: TokenSurface[];
   /** `"none"` when every per-run override is locked, or the overrides the
    *  token may still set. Absent when nothing is locked. */
@@ -2875,7 +2895,7 @@ export interface TokenRestrictions {
 }
 
 /** An off-run surface an agent-limited token may be granted. */
-export type TokenSurface = "speech" | "transcription";
+export type TokenSurface = "speech" | "transcription" | "inbox_put";
 
 /** One token row from GET /v1/_users/{subject}/tokens — METADATA ONLY (never
  *  the plaintext or hash). `active` applies the auth-layer validity rule. */

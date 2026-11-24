@@ -34,6 +34,16 @@ describe("sendRunInput", () => {
     expect(call[1]!.method).toBe("POST");
     expect(JSON.parse(call[1]!.body as string)).toEqual({ text: "focus on the failing test" });
   });
+
+  it("sends blocks as content, with no text, so an attached file is fenced as untrusted", async () => {
+    const { client, fetchMock } = makeClient([jsonResponse({ run_id: "r_abc", delivered: true })]);
+    const content = [
+      { type: "trusted-text" as const, text: "check this" },
+      { type: "untrusted-block" as const, kind: "attached_file", text: '{"ref":"volume:inbox:documents/a.pdf"}' },
+    ];
+    await client.sendRunInput("r_abc", content);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ content });
+  });
 });
 
 describe("streamRunByID re-attach", () => {

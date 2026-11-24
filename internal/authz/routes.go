@@ -547,6 +547,10 @@ var httpRoutes = []Route{
 	row("GET /v1/runs/{run_id}/effective-config", ScopeRunsRead, true, q("read", "run", "*")),
 	row("POST /v1/runs/{run_id}/file", ScopeRunsRead, true, q("read", "run", "*")),
 	row("GET /v1/runs/{run_id}/inbox/{path...}", ScopeRunsRead, true, q("read", "run", "*")),
+	// A run owner's file put (RFC HE F1): off the run plane, so a token
+	// limited to certain agents needs the inbox_put surface granted; asked as
+	// that surface's gateway kind, as the audio surfaces are.
+	row("PUT /v1/runs/{run_id}/inbox/{name}", ScopeRunsCreate, false, q("use", "gateway", "inbox_put")),
 	row("POST /v1/runs/{run_id}/input", ScopeRunsCreate, true, q("steer", "run", "*")),
 	row("GET /v1/runs/{run_id}/interrupts", ScopeRunsRead, true, q("read", "run", "*")),
 	row("POST /v1/runs/{run_id}/interrupts/{interrupt_id}/resolve", ScopeRunsCreate, true, q("steer", "run", "*")),
