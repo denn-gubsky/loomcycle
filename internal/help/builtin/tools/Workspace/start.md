@@ -16,8 +16,8 @@ why at once.
 - `command` (required) — a shell command line, run with `/bin/sh -c`, its
   standard error joined to its standard output.
 - `cwd` — the directory to start in, relative to the workspace.
-- `port` — the port the server listens on. It is recorded with the server
-  and shown by `logs`.
+- `port` — the port the server listens on. It is recorded with the server,
+  shown by `logs`, and the only port `request` reaches.
 
 ## Returns
 
@@ -30,7 +30,8 @@ why at once.
 - The latest 256 KiB of a server's output is kept.
 - A server ends with `stop`, when the workspace is released, when your run
   ends, and when its worker stops. It is never in a snapshot.
-- Nothing outside the workspace reaches a server's port.
+- Nothing outside the workspace reaches a server's port but `request` from
+  your own run, and only to the port declared here.
 
 ## Errors
 
