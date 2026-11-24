@@ -60,6 +60,10 @@ type AuthExternalGateConfig struct {
 	MaxSyncCreates int                    `yaml:"max_sync_creates,omitempty"`
 	IssuedToken    *AuthIssuedTokenConfig `yaml:"issued_token,omitempty"`
 	OnRemoved      *AuthOnRemovedConfig   `yaml:"on_removed,omitempty"`
+	// OnRevoke (kind: external only, RFC HD) is what a revoke or an
+	// authoritative sync does to a user who also holds an identity at
+	// another gate: remove (the default) or unlink.
+	OnRevoke string `yaml:"on_revoke,omitempty"`
 }
 
 // AuthIssuedTokenConfig is the ceiling of the tokens a gate gets issued.
@@ -134,6 +138,10 @@ type AuthExternalGate struct {
 	// Removal is the gate's removal policy: the deployment's, with the
 	// gate's on_removed over it.
 	Removal AuthRemovalPolicy
+	// UnlinkOnRevoke (on_revoke: unlink): a revoke or an authoritative
+	// sync of a user who holds an identity at another gate ends only this
+	// gate's link. Off by default: a revoke then says the person is gone.
+	UnlinkOnRevoke bool
 }
 
 // Default complete-sync removal ceiling: 10% of the gate's linked users,
@@ -160,7 +168,7 @@ const maxIssuedTokenTTL = 30 * 24 * time.Hour
 func hasExternalKeys(g AuthGateConfig) bool {
 	e := g.External
 	return e.PublicKey != nil || e.HMACSecret != "" || e.HMACSecretEnv != "" || e.CallbackURL != "" || e.ProbeURL != "" ||
-		e.IssuedToken != nil || e.OnRemoved != nil
+		e.IssuedToken != nil || e.OnRemoved != nil || e.OnRevoke != ""
 }
 
 func gateURL(where, v string) (string, error) {
@@ -296,6 +304,13 @@ func resolveExternalGate(c *Config, name string, g AuthGateConfig, deployment Au
 	}
 	if out.Removal, err = gateRemovalPolicy(c, where, e.OnRemoved, deployment); err != nil {
 		return nil, err
+	}
+	switch v := strings.TrimSpace(e.OnRevoke); v {
+	case "", "remove":
+	case "unlink":
+		out.UnlinkOnRevoke = true
+	default:
+		return nil, fmt.Errorf("%s.on_revoke: %q (want remove or unlink)", where, v)
 	}
 	return out, nil
 }

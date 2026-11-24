@@ -5,6 +5,7 @@
 import type { CardInput } from "./cards.js";
 import { Conversation, type CardResult, type ConversationDeps } from "./conversation.js";
 import type { Identified, Scope } from "./identity.js";
+import type { FileIn } from "./files.js";
 import type { VoiceIn } from "./voice.js";
 
 /** What a message says about who is present: who spoke, where, and when the
@@ -30,6 +31,11 @@ export interface MessageOptions {
    *  undefined when the platform gives no date of its own: a date the bridge
    *  made up (its own clock) cannot tell a redelivery from a new message. */
   sentAt?: number;
+}
+
+export interface FileMessageOptions extends MessageOptions {
+  /** What the person typed beside the files, if anything. */
+  text?: string;
 }
 
 /** sentAtOf is a platform's date for MessageOptions: epoch ms when it is a
@@ -87,6 +93,28 @@ export class ConversationRouter<TRef> {
     conv.adoptGateSubjects(id.runAs, id.speaker);
     conv.onVoice(id.speaker, voice).catch((err: unknown) => {
       this.deps.log.error("voice message failed", { conversation: id.conversationId, error: (err as Error)?.name });
+      this.deps.port
+        .send(ref, { type: "message", text: "Something went wrong. Please try again." })
+        .catch(() => undefined);
+    });
+  }
+
+  /** onFile routes the files one message carries (RFC HE), with the text
+   *  typed beside them: the conversation checks and puts each file into the
+   *  run's inbox and hands the agent the text and the files together. With
+   *  files off the text alone goes on, as a message without attachments. */
+  async onFile(id: Identified, ref: TRef, files: readonly FileIn[], opts: FileMessageOptions = {}): Promise<void> {
+    this.deps.health?.inbound();
+    if (!id.ok) {
+      await this.refuse(id, ref);
+      return;
+    }
+    this.seen(id, opts);
+    const conv = await this.conversation(id, ref);
+    conv.updateRef(ref);
+    conv.adoptGateSubjects(id.runAs, id.speaker);
+    conv.onFile(id.speaker, files, opts.text ?? "").catch((err: unknown) => {
+      this.deps.log.error("file message failed", { conversation: id.conversationId, error: (err as Error)?.name });
       this.deps.port
         .send(ref, { type: "message", text: "Something went wrong. Please try again." })
         .catch(() => undefined);

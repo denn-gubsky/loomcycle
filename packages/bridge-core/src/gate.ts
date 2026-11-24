@@ -17,6 +17,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 
 import { trimTrailingSlashes } from "./text.js";
+import type { TokenSurface } from "./ports.js";
 import type { TokenSource } from "./tokens.js";
 
 /** The JWS algorithms a gate key signs with; loomcycle derives the same one
@@ -134,9 +135,9 @@ export interface GateIdentity {
 /** What the issued token is held to; loomcycle can only narrow it further. */
 export interface TokenRequest {
   agents?: string[];
-  /** Off-run surfaces beside agents (RFC GA), held to the gate's
+  /** Off-run surfaces beside agents (RFC GA, RFC HE), held to the gate's
    *  issued_token.surfaces ceiling in loomcycle. */
-  surfaces?: Array<"speech" | "transcription">;
+  surfaces?: TokenSurface[];
   overrides?: string[];
   ratePerMinute?: number;
   rateBurst?: number;

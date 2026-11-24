@@ -561,6 +561,9 @@ func resolveAuth(c *Config) error {
 			return fmt.Errorf("auth.gates.%s: identity_map does not apply to kind: %s "+
 				"(a bearer names its own tenant and subject; a password gate's users come from invites)", name, kind)
 		}
+		if err := checkExternalOnlyLinkKeys(name, kind, g); err != nil {
+			return err
+		}
 		edge := kind == AuthGateKindHeader || kind == AuthGateKindAWSIAM
 		if edge && hasOIDCOnlyKeys(g) {
 			return fmt.Errorf("auth.gates.%s: client_secret_env, client_secret, discovery_url, allowed_domains, allowed_tids, "+
@@ -612,10 +615,6 @@ func resolveAuth(c *Config) error {
 			}
 		}
 		var ext *AuthExternalGate
-		if kind != AuthGateKindExternal && g.IdentityMap != nil && strings.TrimSpace(g.IdentityMap.LegacySubjectPrefix) != "" {
-			// It links a bridge's pre-gate users; a sign-in provider has none.
-			return fmt.Errorf("auth.gates.%s.identity_map.legacy_subject_prefix applies only to kind: external", name)
-		}
 		if kind != AuthGateKindSCIM && g.External.MaxSyncCreates != 0 {
 			return fmt.Errorf("auth.gates.%s.max_sync_creates applies only to kind: scim", name)
 		}
@@ -707,6 +706,9 @@ func resolveAuth(c *Config) error {
 		return fmt.Errorf("auth.gates: at most one gate may be kind: device, got %d", deviceGates)
 	}
 	if err := checkExternalGateKeysExclusive(c, p.Gates); err != nil {
+		return err
+	}
+	if err := checkSameSubjectAs(p.Gates); err != nil {
 		return err
 	}
 	if err := checkHeaderGatesShareProxies(p.Gates); err != nil {
@@ -887,6 +889,28 @@ func applyAuthLoginOrigins(cfg *Config) error {
 			return fmt.Errorf("auth.login_origins: entry %d holds a comma or a space; write one origin per list item", i+1)
 		}
 		origins[i] = o
+	}
+	return nil
+}
+
+// checkExternalOnlyLinkKeys refuses the keys that link or unlink a bridge's
+// users (legacy_subject_prefix, same_subject_as, on_revoke) on a gate that is
+// not kind: external, before any identity map is resolved.
+func checkExternalOnlyLinkKeys(name, kind string, g AuthGateConfig) error {
+	if kind == AuthGateKindExternal {
+		return nil
+	}
+	if g.IdentityMap != nil && strings.TrimSpace(g.IdentityMap.LegacySubjectPrefix) != "" {
+		// It links a bridge's pre-gate users; a sign-in provider has none.
+		return fmt.Errorf("auth.gates.%s.identity_map.legacy_subject_prefix applies only to kind: external", name)
+	}
+	if g.IdentityMap != nil && strings.TrimSpace(g.IdentityMap.SameSubjectAs) != "" {
+		// A bridge asserts an identifier another gate already keys on; a
+		// sign-in provider makes its own users.
+		return fmt.Errorf("auth.gates.%s.identity_map.same_subject_as applies only to kind: external", name)
+	}
+	if g.External.OnRevoke != "" {
+		return fmt.Errorf("auth.gates.%s.on_revoke applies only to kind: external", name)
 	}
 	return nil
 }

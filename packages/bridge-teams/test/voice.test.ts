@@ -7,7 +7,7 @@ import net from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { DEFAULT_VOICE_CONFIG, MemoryStore, VOICE_PREFIX, voiceSurfaces, type Identified, type VoiceIn } from "@loomcycle/bridge-core";
+import { DEFAULT_VOICE_CONFIG, MemoryStore, VOICE_PREFIX, voiceSurfaces, type FileIn, type Identified, type VoiceIn } from "@loomcycle/bridge-core";
 
 import { createTeamsBridge, type ConversationRef, type TeamsBridge } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
@@ -81,7 +81,10 @@ describe("audioFileOf", () => {
 });
 
 describe("routeMessage", () => {
-  type Call = { kind: "message"; text: string; sentAt?: number } | { kind: "voice"; voice: VoiceIn; ref: ConversationRef; sentAt?: number };
+  type Call =
+    | { kind: "message"; text: string; sentAt?: number }
+    | { kind: "voice"; voice: VoiceIn; ref: ConversationRef; sentAt?: number }
+    | { kind: "file"; files: readonly FileIn[]; text?: string };
   let calls: Call[];
   let router: MessageRouter<ConversationRef>;
   const TENANTS = new Set([TENANT]);
@@ -95,11 +98,14 @@ describe("routeMessage", () => {
       onVoice: async (_id: Identified, r: ConversationRef, voice: VoiceIn) => {
         calls.push({ kind: "voice", voice, ref: r });
       },
+      onFile: async (_id: Identified, _r: ConversationRef, files: readonly FileIn[], opts?: { text?: string }) => {
+        calls.push({ kind: "file", files, text: opts?.text });
+      },
     };
   });
 
-  const route = (type: ConvType, attachments: TeamsAttachment[], text = "", voiceOn = true, tenants = TENANTS) =>
-    routeMessage(router, identify(activity(type), tenants), ref(type), text, { attachments }, voiceOn);
+  const route = (type: ConvType, attachments: TeamsAttachment[], text = "", voiceOn = true, tenants = TENANTS, filesOn = false) =>
+    routeMessage(router, identify(activity(type), tenants), ref(type), text, { attachments }, voiceOn, filesOn);
 
   it("routes an audio file in a 1:1 chat to the voice path", async () => {
     await route("personal", [fileAttachment("m4a")]);
@@ -121,6 +127,7 @@ describe("routeMessage", () => {
     const r: MessageRouter<ConversationRef> = {
       onMessage: async (_id, _ref, _text, opts) => void dated.push(opts?.sentAt),
       onVoice: async (_id, _ref, _voice, opts) => void dated.push(opts?.sentAt),
+      onFile: async (_id, _ref, _files, opts) => void dated.push(opts?.sentAt),
     };
     const at = "2026-11-09T10:00:00.000Z";
     await routeMessage(r, identify(activity("personal"), TENANTS), ref(), "caption", { attachments: [fileAttachment("m4a")], timestamp: at }, true);

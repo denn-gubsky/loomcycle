@@ -8,7 +8,7 @@
 // retires the old.
 
 import type { AccessMode } from "./config.js";
-import type { AdminClient } from "./ports.js";
+import type { AdminClient, TokenSurface } from "./ports.js";
 
 export interface TokenBrokerOptions {
   agent: string;
@@ -21,8 +21,8 @@ export interface TokenBrokerOptions {
   rateBurst: number;
   accessMode: AccessMode;
   /** Off-run surfaces each token is granted beside the agent (RFC GA), for
-   *  a bridge that exchanges voice messages. */
-  surfaces?: Array<"speech" | "transcription">;
+   *  a bridge that exchanges voice messages or takes files (RFC HE). */
+  surfaces?: TokenSurface[];
   /** Re-mint this long before a token expires. */
   renewBeforeMs?: number;
   now?: () => number;
@@ -99,7 +99,9 @@ export class TokenBroker implements TokenSource {
       // the stream an older process may still be draining.
       maxActive: 2,
       agents: [this.opts.agent],
-      ...(this.opts.surfaces?.length ? { surfaces: this.opts.surfaces } : {}),
+      // A client older than 1.167 types surfaces without "inbox_put" but
+      // sends what it is given; the bridge asks for it only with files on.
+      ...(this.opts.surfaces?.length ? { surfaces: this.opts.surfaces as Parameters<AdminClient["mintUserToken"]>[1]["surfaces"] } : {}),
       // `interactive` is itself a lockable override, and the bridge must set
       // it; every other per-run setting stays the agent definition's.
       overrides: ["interactive"],

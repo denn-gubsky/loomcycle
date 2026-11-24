@@ -8,6 +8,48 @@ Each entry is the release's tag annotation, so the tag and this file cannot disa
 
 For the **public roadmap**, see [`docs/PLAN.md`](docs/PLAN.md).
 
+## What's in v1.167.0
+
+*One user per person across two sign-in gates: an external gate can sign a person in as the user another gate already made (RFC HD `same_subject_as`), and a bot uninstall can end only that gate's link (`on_revoke: unlink`). Calc's `datefmt` refuses a pattern token it does not know instead of printing it. Write, Edit and NotebookEdit name the path the caller wrote, never a host path. Bridges can take a person's attached files into the run inbox (off by default). Dependency updates.*
+
+The v1.167 line: #2878 to #2901.
+- `@loomcycle/client` 1.167.0: no API change (version kept in lockstep with the tag). The Python adapter is unchanged and stays 1.166.0.
+- No numbered migration, no proto change. Go dependency bumps only (`golang.org/x/net` v0.63.0, `go.opentelemetry.io/proto/otlp` v1.11.1, the AWS SDK v2 config/sts, `sergi/go-diff`).
+- Code-js ABI unchanged (1.4.0).
+
+### Upgrade notes
+
+- **`datefmt` refuses unknown pattern tokens (#2897).** Every run of letters in a pattern must be a whole token (`YYYY YY MMMM MMM MM M DD D dddd ddd HH mm ss`) and `%` is refused; such a pattern ends `bad_date` with a hint naming the right token or function (`%A`/`EEEE` → `dddd`, `%V`/`ww` → `isoweek(d)`, `%j` → `dayofyear(d)`, `Q` → `quarter(d)` …). They used to be copied into the output as text. Write literal words in brackets: `"[Week of] D MMM"`, `"D[%]"`. A longer run such as `DDD` or `MMMMM`, read before as two tokens, is refused too.
+- **File-tool success lines name the caller's path (#2898).** `Write`, `Edit` and `NotebookEdit` report `wrote N bytes to <path as written>` / `edited <path> …` / `notebook <mode>: <path> …` instead of the resolved host path. Anything that parsed the old text must match the new.
+- **Same subject across gates is opt-in (#2899).** Nothing changes until an external gate sets `identity_map.same_subject_as: <gate>` (trusted, single tenant, naming a gate keyed on a claim other than `sub`) or `on_revoke: unlink`; the config refuses to load a pairing that could join two people. A person a gate linked before the setting keeps their user. See `docs/CONFIGURATION.md` "External gate".
+- **Bridge file intake is off by default (#2901).** `@loomcycle/bridge-core` 0.7.0 and `@loomcycle/bridge-teams` 0.6.0 take a person's attached documents in a 1:1 chat into the run inbox with `BRIDGE_FILES=1`; until a client with `putInboxFile` ships, every file is refused in words. The bridge packages publish on their own `bridge-*-v*` tags, not this one.
+
+### Sign-in (RFC HD: #2899)
+
+- `identity_map.same_subject_as: <gate>` on an external gate: a first login whose own identity row misses signs in as `<gate>:<value>` when that user has signed in through the named gate. Load-time checks refuse any pairing that could join two people.
+- `on_revoke: remove | unlink` (default `remove`, unchanged): with `unlink`, a revoke or an authoritative complete sync ends only this gate's link (tokens, groups, identity) for a user who holds an identity at another gate.
+- The account page links a user named `<gate>:<v>` at that gate only to the provider account whose value is `<v>`.
+
+### Calc (#2897)
+
+- `datefmt` refuses unknown tokens and `%` with `bad_date` and a hint naming the right token or function; literal text goes in `[brackets]`. Help updated (`Calc`, `Calc/dates`, `Calc/errors`).
+
+### Files (#2898)
+
+- `Write`, `Edit` and `NotebookEdit` success lines name the path the caller wrote; with v1.166.0's refusal fix (#2873), no file-tool message shows a volume's host directory.
+
+### Bridges (#2901)
+
+- `onFile` in the bridge core with a platform `FilePort`; type checked by the file's bytes before it is put; 1:1 chats and trusted speakers only; size, type and count limits (`BRIDGE_FILES_MAX_BYTES`, `BRIDGE_FILES_TYPES`, `BRIDGE_FILES_MAX_COUNT`); the agent gets the inbox ref, never the bytes. Teams maps `file.download.info` attachments.
+
+### Measurement (#2900)
+
+- A second Calc help task set (`scripts/measure/calc-help/tasks2.yaml`, 47 tasks: matrices, distributions, calculus, complex numbers, tables) with a stdlib oracle; `drive.py --tasks tasks2.yaml`.
+
+### Dependencies (#2878–#2896)
+
+- Go: `golang.org/x/net`, `go.opentelemetry.io/proto/otlp`, AWS SDK v2 `config`/`sts`, `sergi/go-diff`. Web: `react-router-dom`, `lucide-react`. TS adapter tests: `vitest`. Images: `golang`, `distroless/static`, `postgres` 16, `cloudflared`, the builder's `docker` and `podman`. GitHub Actions minor/patch group.
+
 ## What's in v1.166.0
 
 *Calc grows from arithmetic into a numerical toolkit: matrices and linear algebra, probability distributions and numeric calculus, complex numbers, tables, and reading and writing data by reference inside a run, plus `POST /v1/_calc`, a gRPC `Calc` RPC and `calc()` on both clients (RFC GY P2–P4). Workspaces get a container engine, persistent Python and Node interpreters, sharing, checkpoints, servers, Document checkout and commit, pictures for the model, an MCP surface and controlled egress (RFC GW P3–P10). Security: Crypto's `memory:` references now apply Memory's document read rules, and volume refusals no longer name host paths.*
