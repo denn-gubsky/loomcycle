@@ -35,15 +35,19 @@ complex value, even when its imaginary part comes out 0: `1i * 1i` is
 - `==` and `!=` compare values: `2 + 0i == 2` is `true`.
 - `sum`, `product`, `unique`, `count`, indexing, transpose `'`, and lists or
   matrices combined element by element.
+- The matrix product `*` and the power `A^n` (`n` ≥ 0) of matrices with
+  complex elements, and `ctranspose(A)`, the conjugate transpose (`'` does
+  not conjugate). See `Calc/matrices`.
+- `polyval(p, x)` with complex coefficients or a complex `x`.
 
 ## What refuses them
 
 Complex numbers have **no order**: `<`, `>`, `sort`, `min`, `max`,
 `median` and every statistics function refuse one (`type`); compare
 `abs(z)` or `re(z)`, or sort with a key: `sort(v, z -> abs(z))`. `%` refuses
-one too. The matrix functions and the matrix product `*` work in real
-numbers and refuse a complex element; combine complex matrices element by
-element. `eig` of a real matrix does return complex eigenvalues
+one too. The other matrix functions (`inv`, `solve`, `det`, the
+decompositions) and a negative power `A^-n` work in real numbers and refuse
+a complex element. `eig` of a real matrix does return complex eigenvalues
 (`Calc/matrices`).
 
 ## Functions
@@ -107,6 +111,14 @@ Euler's identity, rounded:
 ```
 
 Result: 0i
+
+A matrix power in complex numbers:
+
+```json
+{"expr": "R = [[1i, 0], [0, -1i]]; R^2 * [1, 2]"}
+```
+
+Result: [-1+0i, -2+0i]
 
 An impedance in ohms, 50 Ω with an inductor of 0.1 H at 60 Hz, as modulus and
 phase in degrees:

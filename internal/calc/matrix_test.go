@@ -24,8 +24,11 @@ func TestMatrix_ProductOrientsVectorsAsColumnsOrRows(t *testing.T) {
 		{"2 * [[1, 2], [3, 4]]", "[[2, 4], [6, 8]]"},
 		{"[[1, 2], [3, 4]] / 2", "[[0.5, 1], [1.5, 2]]"},
 	})
-	if r := mustEval(t, "[[1, 2], [3, 4]] * [[5, 6], [7, 8]]"); r.Exact {
-		t.Error("a matrix product is computed in floats and must not report exact")
+	if r := mustEval(t, "[[1, 2], [3, 4]] * [[5, 6], [7, 8]]"); !r.Exact {
+		t.Error("a matrix product of exact operands must be exact")
+	}
+	if r := mustEval(t, "[[1, 2], [3, sqrt(2)]] * [[5, 6], [7, 8]]"); r.Exact {
+		t.Error("a matrix product with a float operand is computed in floats and must not report exact")
 	}
 	e := mustFail(t, "[1, 2] * [3, 4]", codeType)
 	if !strings.Contains(e.Hint, "dot(a, b)") {

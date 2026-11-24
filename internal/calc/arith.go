@@ -9,9 +9,10 @@ import (
 var elementwise = map[string]string{".*": "*", "./": "/", ".^": "^"}
 
 // arith applies an arithmetic operator, broadcasting over lists. `*`
-// between two lists is the matrix product (see matMul); `/` by a list and
-// `^` with a list operand are refused, and the dotted forms say
-// element-wise explicitly.
+// between two lists is the matrix product (see matMul) and a matrix to a
+// number is the matrix power (matPow); `/` by a list and any other `^` with
+// a list operand are refused, and the dotted forms say element-wise
+// explicitly.
 func (e *evaluator) arith(op string, l, r val, pos int) (val, *Error) {
 	ln, lok := l.(num)
 	rn, rok := r.(num)
@@ -50,6 +51,9 @@ func (e *evaluator) arith(op string, l, r val, pos int) (val, *Error) {
 			return nil, errf(codeType, pos, "`/` by a list is not defined").withHint("use `./` to divide element by element")
 		}
 	case "^":
+		if lList && !rList && isMatrix(l) {
+			return e.matPow(l, r, pos)
+		}
 		return nil, errf(codeType, pos, "`^` on a list is not defined").withHint("use `.^` to raise element by element")
 	}
 	switch {

@@ -34,7 +34,7 @@ The function got the wrong number of arguments. `hint` shows its signature.
 A value of the wrong kind: a string in arithmetic, a number where a list or
 a function is needed, a float where an exact integer is needed (`factor`,
 `gcd`, `binomial` …), `*` between two plain vectors, `/` between two lists, a
-number divided by a list, or a power of a list, a vector where a matrix is
+number divided by a list, or a power with a vector in it, a vector where a matrix is
 needed; a date meeting a datetime, or a date in `*`; a complex number
 ordered (`<`, `sort`, `min`, statistics) or given to a matrix function. For
 lists use `.*`, `./`, `.^`; for an integer argument compute it exactly; for
@@ -119,7 +119,7 @@ fractional power of a negative number, `asin(2)`, `min([])`, `modinv` of
 numbers that are not coprime, a sample `variance` of one value, a day the
 month lacks (`date(2026, 2, 30)`), an unknown `datediff` unit or `yearfrac`
 basis, an `irr`, `rate` or `xirr` with no rate that solves the flows, a singular
-matrix to `inv` or `solve` (use `pinv` or `lstsq`), `cholesky` of one that is not positive definite, a distribution
+matrix to `inv`, `solve` or a negative power `A^-n` (use `pinv` or `lstsq`), a fractional matrix power `A^0.5`, `cholesky` of one that is not positive definite, a distribution
 parameter out of range (`normcdf(x, 0, 0)`, `norminv(1)`), a `root` bracket
 whose ends have the same sign, `interp` outside its table. A real argument
 never gives a complex answer: write `sqrt(-1 + 0i)` for one

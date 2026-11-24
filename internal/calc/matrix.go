@@ -12,9 +12,10 @@ import (
 // numbers is a matrix wherever a matrix operation meets it, and a list of
 // numbers is a vector. The construction and rearranging functions (zeros,
 // diag, reshape, hstack, transpose, ...) keep the values they are given, so
-// exact numbers stay exact; everything computed through gonum (the matrix
-// product, solving, the decompositions) is float64, so its result is never
-// exact.
+// exact numbers stay exact; the matrix product and power are exact on
+// exact operands within the caps of matrix_exact.go; everything computed
+// through gonum (solving, the decompositions, a product past those caps) is
+// float64, so its result is never exact.
 
 // isMatrix is the cheap structural test the operators dispatch on: a
 // non-empty list whose elements are all lists. denseOf checks the rest.
@@ -227,12 +228,21 @@ func shapeText(v val) string {
 // matMul is `*` between two lists: matrix × matrix, matrix × vector (the
 // vector a column, the result a vector) or vector × matrix (the vector a
 // row). Two plain vectors are refused: whether a dot product or an outer
-// product was meant cannot be told.
+// product was meant cannot be told. A complex element anywhere makes it
+// the complex product (complexMatMul); exact operands within the caps of
+// exactMatMul give an exact product; anything else is computed in floats.
 func (e *evaluator) matMul(l, r val, pos int) (val, *Error) {
 	lm, rm := isMatrix(l), isMatrix(r)
 	if !lm && !rm {
 		return nil, errf(codeType, pos, "`*` of two vectors is ambiguous").
 			withHint("use dot(a, b) for the dot product, `.*` to multiply element by element")
+	}
+	lr, rr := productRows(l, lm, true), productRows(r, rm, false)
+	if anyComplex(lr) || anyComplex(rr) {
+		return e.complexMatMul(l, r, lr, rr, !lm || !rm, pos)
+	}
+	if v, ok, err := e.exactMatMul(lr, rr, !lm || !rm, pos); ok || err != nil {
+		return v, err
 	}
 	a, err := e.operand(l, lm, true, pos)
 	if err != nil {
