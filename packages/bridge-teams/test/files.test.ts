@@ -7,7 +7,7 @@ import net from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { ATTACHED_FILE_LABEL, FILE_TEXT, MemoryStore, type FileIn, type Identified } from "@loomcycle/bridge-core";
+import { ATTACHED_FILE_KIND, FILE_TEXT, MemoryStore, type FileIn, type Identified } from "@loomcycle/bridge-core";
 
 import { createTeamsBridge, type ConversationRef, type TeamsBridge } from "../src/bridge.js";
 import { loadConfig } from "../src/config.js";
@@ -265,8 +265,16 @@ describe("teams bridge with files on", () => {
     expect(put!.token).toMatch(new RegExp(`^tok-teams-${ALICE}-`));
     expect(put!.args).toEqual(["run-1", "Паспорт.pdf", "application/pdf"]);
     expect(lc.inbox![0]!.bytes).toEqual(PDF);
-    const input = String(lc.callsTo("sendRunInput")[0]!.args[1]);
-    expect(input).toContain(`${ATTACHED_FILE_LABEL} {"name":"_______.pdf","ref":"volume:inbox:documents/_______.pdf","media_type":"application/pdf","bytes":${PDF.byteLength}}`);
+    // The run started with the text; the file follows as an untrusted block.
+    const blocks = lc.callsTo("sendRunInput")[0]!.args[1];
+    expect(blocks).toEqual([
+      {
+        type: "untrusted-block",
+        kind: ATTACHED_FILE_KIND,
+        text: `{"name":"_______.pdf","ref":"volume:inbox:documents/_______.pdf","media_type":"application/pdf","bytes":${PDF.byteLength}}`,
+      },
+    ]);
+    const input = JSON.stringify(blocks);
     expect(input).not.toContain("sharepoint");
     expect(input).not.toContain("tempauth");
     expect(said).toEqual([]);

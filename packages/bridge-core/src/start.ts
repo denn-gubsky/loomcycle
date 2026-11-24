@@ -108,7 +108,7 @@ export function createBridge<TRef>(cfg: SharedConfig, adapter: BridgeAdapter<TRe
   if (filesCfg.enabled && !adapter.files) {
     log.warn("BRIDGE_FILES=1, but this platform's bridge does not take files; ignoring it");
   }
-  // inbox_put only with files on: a loomcycle older than 1.167 refuses a
+  // inbox_put only with files on: a loomcycle older than 1.168 refuses a
   // surface it does not know, and a bridge with files off must keep working
   // against one. A gate's issued_token.surfaces ceiling still decides.
   const surfaces: TokenSurface[] = files ? [...spoken, "inbox_put"] : spoken;
