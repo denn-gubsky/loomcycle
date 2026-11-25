@@ -27,7 +27,7 @@ type pypiRewrite struct {
 // operator's route on pypi.org, and only when the workspace also holds an
 // operator's route on the file host: a tenant's route is never rewritten,
 // whatever its URL, and a link is never pointed at a route a tenant wrote.
-func (p *Proxy) rewriteFor(g Grant, rt Route) *pypiRewrite {
+func (p *Proxy) rewriteFor(g Grant, rt Route, base string) *pypiRewrite {
 	if rt.Tenant {
 		return nil
 	}
@@ -42,7 +42,7 @@ func (p *Proxy) rewriteFor(g Grant, rt Route) *pypiRewrite {
 		if _, err := checkRoute(f); err != nil {
 			continue
 		}
-		return &pypiRewrite{from: []byte(pypiFilesURL), to: []byte(p.base + f.Name + "/")}
+		return &pypiRewrite{from: []byte(pypiFilesURL), to: []byte(base + f.Name + "/")}
 	}
 	return nil
 }

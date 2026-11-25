@@ -98,6 +98,15 @@ type Manager struct {
 	// principalEgress is workspace.mcp.egress (SetPrincipalEgress): the
 	// routes a workspace opened over the MCP server may use.
 	principalEgress []string
+	// tenantRoutes reads the tenants' own routes (SetTenantRoutes); nil
+	// when tenant routes are off. tenantHosts is
+	// workspace.egress.tenant_hosts.
+	tenantRoutes TenantRouteStore
+	tenantHosts  []string
+	// tenantTestPort is the one port other than 443 a tenant route may
+	// name: set only by this package's tests, whose upstreams cannot listen
+	// on 443.
+	tenantTestPort string
 }
 
 // New builds a manager. A zero MaxPerRun is 1: a run that may open

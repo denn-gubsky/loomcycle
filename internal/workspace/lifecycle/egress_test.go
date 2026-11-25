@@ -132,8 +132,8 @@ func TestOpen_RecordsTheEgressOnTheRow(t *testing.T) {
 
 // A route the operator configured but the workspace's row does not name is
 // refused before any network call; one the row names goes out. A name on
-// the row that is no operator route (a tenant's, not resolved yet) is
-// refused the same way.
+// the row that is no operator route (and tenant routes are off) is refused
+// the same way.
 func TestEgress_ARouteNotOnTheRowIsRefusedBeforeAnyNetworkCall(t *testing.T) {
 	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
 	up := newCountingUpstream(t)
@@ -383,4 +383,37 @@ func (c *principalCreds) ResolveFor(_ context.Context, tenant, agentName, user, 
 		return credential.Resolved{}, false, credential.ErrURLNotAllowed
 	}
 	return credential.Resolved{Value: egressToken, AllowedURLs: &c.allowed}, true, nil
+}
+
+// A host-engine workspace reaches its routes at a loopback port and secret
+// the core does not know, so a redirect relayed to it points at the route
+// relative to the page asked; a container's session reaches them at
+// http://egress/.
+func TestEgress_AHostEngineWorkspaceGetsPageRelativeRedirects(t *testing.T) {
+	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
+	files := newCountingUpstream(t)
+	var target string
+	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target, http.StatusFound)
+	}))
+	t.Cleanup(up.Close)
+	target = files.URL + "/dl/pkg.tgz"
+	f.m.SetEgress(testProxy(t, f.m, nil, egress.Limits{}), OperatorRoutes(map[string]config.EgressRoute{
+		"a":     {URL: up.URL + "/"},
+		"files": {URL: files.URL + "/dl/"},
+	}))
+	for _, c := range []struct{ engine, want string }{
+		{"host", "../files/pkg.tgz"},
+		{"container", "http://egress/files/pkg.tgz"},
+	} {
+		row := store.WorkspaceRow{ID: "ws_" + c.engine, TenantID: "acme", UserID: "alice", OwnerRunID: "run-x", Engine: c.engine, State: store.WorkspaceReady, Egress: []string{"a", "files"}}
+		resp, err := f.m.Egress(context.Background(), row, egress.Request{Route: "a", Method: http.MethodGet, Path: "x"})
+		if err != nil {
+			t.Fatalf("%s: %v", c.engine, err)
+		}
+		_ = resp.Body.Close()
+		if got := resp.Header.Get("Location"); got != c.want {
+			t.Errorf("%s: Location = %q, want %q", c.engine, got, c.want)
+		}
+	}
 }

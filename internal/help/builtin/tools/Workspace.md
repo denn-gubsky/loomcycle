@@ -13,8 +13,8 @@ Node. For files you keep, use your volumes and the Read, Write and Edit tools.
 ## What you may do
 
 Your agent's grant decides which operations work: `open` needs the grant to
-open workspaces; `exec`, `run_cell`, `reset_kernel`, `start`, `stop` and
-`logs` need `exec`; `write`
+open workspaces; `exec`, `run_cell`, `reset_kernel`, `start`, `stop`,
+`logs` and `request` need `exec`; `write`
 and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need
 `read`; `share` and `unshare` need the grant to share; `checkpoint`,
 `restore` and `delete_checkpoint` need `write`, `checkpoints` needs `read`,
@@ -61,6 +61,7 @@ reason.
 | `start` | run a command that keeps running after the call (a server); returns its id | `name`, `command`, `cwd`, `port` |
 | `stop` | end a server and what it started | `name`, `server` |
 | `logs` | a server's latest output, or the list of servers | `name`, `server`, `tail_bytes` |
+| `request` | send one HTTP request to a port your running server declared; returns status, headers, body | `name`, `port`, `method`, `path`, `headers`, `body` |
 | `read` | a file's text | `name`, `path`, `offset`, `limit`, `line_numbers` |
 | `view` | look at a picture (PNG, JPEG, GIF, WebP) | `name`, `path` |
 | `write` | create or replace a file whole | `name`, `path`, `content` |

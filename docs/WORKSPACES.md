@@ -138,7 +138,7 @@ agents:
       engine: host               # least isolating engine it accepts; unset = any
 ```
 
-`exec`, `run_cell`, `reset_kernel`, `start`, `stop` and `logs` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
+`exec`, `run_cell`, `reset_kernel`, `start`, `stop`, `logs` and `request` need `exec`; `write` and `edit` need `write`; `read`, `view`, `glob`, `grep`, `list` and `status` need `read`; `open` needs `open: true`. A sub-agent holds only what both it and its parent hold, before and after a resume. The grant is not per-run overridable, and an agent a tenant member authors may not set it. A grant on an agent without the tool, or while `workspace.mode` is off, does nothing; the boot log and `loomcycle doctor` name such agents.
 
 ## The tool
 
@@ -158,6 +158,7 @@ One tool, `Workspace`, with an `op`:
 | `start` | run a command that keeps running after the call, a server (see Servers) | `name`, `command`, `cwd`, `port` |
 | `stop` | end a server and what it started | `name`, `server` |
 | `logs` | a server's latest output, or the list of servers | `name`, `server`, `tail_bytes` |
+| `request` | send one HTTP request to a port a running server declared (see Sending a request to a server) | `name`, `port`, `method`, `path`, `headers`, `body` |
 | `read`, `write`, `edit`, `glob`, `grep` | the file tools' operations, relative to the workspace | as the Read, Write, Edit, Glob and Grep tools, without `volume` |
 
 `..`, an absolute path elsewhere and a symlink out of the workspace are refused, on the worker. An argument an op does not take is refused.
@@ -252,7 +253,24 @@ The read returns `144`. When the run ends, the workspace is deleted. A command t
 - **Limits.** At most 4 servers run in one workspace at once; the latest 256 KiB of each one's output is kept. A server is a command for the quota: `start` is refused with `workspace_over_quota` while the workspace is marked full.
 - **The command list.** A worker whose operator lists its commands (`LOOMCYCLE_WORKSPACE_COMMANDS`) holds `start` to the list exactly as `exec`: a command that `exec` refuses, `start` refuses.
 - **When it ends.** With `stop`, with the workspace's release, when the owning run ends, when the worker removes the workspace at attach (released or marked lost while it was away), and when the worker stops. Nothing of a server survives a worker restart or a snapshot.
-- **Who reaches its port.** In a `container` session no one but the session: the session has no network, and a server listens on its own loopback. Pages served to a user, and requests from an agent, come with exposure (RFC GW P9, later PRs). On the `host` engine every process of the worker shares one loopback, so a port is not isolated from the worker's other workspaces; the host engine is for a trusted single-tenant install.
+- **Who reaches its port.** In a `container` session no one but the session: the session has no network, and a server listens on its own loopback. The owning run reaches it with `request` (below); pages served to a user come with exposure (RFC GW P9, later PRs). On the `host` engine every process of the worker shares one loopback, so a port is not isolated from the worker's other workspaces; the host engine is for a trusted single-tenant install.
+
+## Sending a request to a server
+
+`request` sends one HTTP request to a port a running server of the workspace declared at `start`, and returns the answer: a quick way for the agent to try the API or page it built (RFC GW §5.3, D26). It is one request and one answer; nothing stays open. It needs the `exec` grant, as servers do, and a share never carries it.
+
+```json
+{"op": "request", "name": "api", "port": 3000, "method": "POST", "path": "/items", "headers": {"Content-Type": "application/json"}, "body": "{\"title\": \"milk\"}"}
+```
+```json
+{"status": 201, "headers": {"Content-Type": "application/json"}, "body": "{\"id\": 1, \"title\": \"milk\"}"}
+```
+
+- **Which port.** Only a port a running server of this workspace declared with `start ... port`; anything else is `port_not_served`, and nothing is dialled. A server stopped, restored away or not yet started in a fork serves no port. `port_unreachable` is a declared port nothing listens on yet: read the server's `logs`.
+- **What is sent.** The method, the request target (`path`, starting with `/`, with its query), the headers given and a body of up to 1 MiB. `Host` is `localhost:<port>` unless set; `Connection: close` is the runtime's, and so are `Content-Length`, `Transfer-Encoding` and the other framing headers, which are refused as arguments. No credential of the run or its user is added.
+- **What comes back.** `status`, `headers` (several values joined by `, `), and `body` when it is text, otherwise `body_base64`; a body over 1 MiB is cut there with `truncated: true`. A redirect is returned, not followed. The answer is untrusted tool output.
+- **Time.** The call waits as long as a command does by default (`workspace.exec.default_timeout_s`), then answers `timeout`.
+- **How it travels.** The core opens a tunnel down one of the worker's idle op streams, carrying bytes both ways at once. On the `container` engine the worker starts a small relay inside the session (`python3`, which the session image must have) that connects to `127.0.0.1:<port>` there: the session keeps the network it had (none, unless egress gave it its own) and the worker never dials into it. On the `host` engine the worker dials `127.0.0.1:<port>` itself, which is a check, not isolation: every workspace of a host worker shares one loopback, so a port two workspaces' servers both declare is refused.
 
 ## Looking at a picture
 

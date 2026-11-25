@@ -154,6 +154,12 @@ The worker refuses to start with this engine as root (its sessions would run as 
 | `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_HOST_DIR` | the directory | The egress directory as the daemon sees it, for a worker that runs in a container itself. |
 | `LOOMCYCLE_WORKSPACE_CONTAINER_EGRESS_IMAGE` | the session image | The gateway's image; it needs `python3`. |
 
+On the `host` engine:
+
+| Variable | Default | |
+|---|---|---|
+| `LOOMCYCLE_WORKSPACE_HOST_EGRESS` | unset | `1` gives each workspace of a host-engine worker a loopback port through which its commands reach the egress routes the workspace holds (RFC GW P4): `LOOMCYCLE_EGRESS=http://127.0.0.1:<port>/<secret>/`, with pip and npm pointed at it, as a container session's are at `http://egress/`. The port answers only a request whose `Host` is its own `127.0.0.1:<port>` and whose path starts with the secret, a random value made each time the port opens and given to the workspace's commands only in their environment; anything else gets a bare 403. That keeps out a web page reaching the port through DNS rebinding and other users' processes. **It is not a boundary:** the host engine's commands have the host's own network anyway, and every process of the worker's own user can read a command's environment, the other workspaces on that worker included, and so send requests as the workspace, through its routes, including one that sends a credential. Turn it on only on a machine where the agents are trusted. Ignored by a container worker. A local worker (`workspace.mode: local`) takes it from the runtime's environment. |
+
 The disk quota (`workspace.disk_quota_mb`) is kept as on `host`: the worker measures a workspace after each command and refuses further writes and commands while it is over. A container gives no cheap hard limit on a mounted directory (`--storage-opt size` limits a container's own layer, and only on xfs with project quotas), so a single command can still pass the quota while it runs. A workspace's files are still converted by the worker's conversion child (D34), not in the session; the session image carries the same helpers for an agent to run itself.
 
 When a worker attaches it lists the workspaces on its disk, and the runtime tells it which to delete: those released while it was away, those the runtime does not know, and those marked lost whose run has ended. A lost workspace whose run is still going is put back in service. `/metrics` reports `loomcycle_workspace_workers`, `loomcycle_workspace_ops_total{op,outcome}` and `loomcycle_workspace_worker_deaths_total`.
