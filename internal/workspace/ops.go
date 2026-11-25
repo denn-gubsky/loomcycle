@@ -810,3 +810,8 @@ func ValidTemplateDigest(d string) bool {
 	}
 	return true
 }
+
+// OpPark ends what runs in a workspace (its servers, its interpreters, its
+// session) and keeps its directory: a durable workspace no run holds (RFC
+// GW P12 plan §3.3). It takes no arguments and is idempotent.
+const OpPark = "park"
