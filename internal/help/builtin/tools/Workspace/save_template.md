@@ -10,7 +10,8 @@ its toolchains.
 
 - `scope: user` — open to your own runs (runs of your user).
 - `scope: tenant` — open to every user of your tenant. Needs the tenant
-  value in your agent's memory_scopes.
+  value in your agent's memory_scopes (over the MCP server, a
+  tenant-operator token).
 
 A template is never overwritten: save under another name, or delete the
 old one first. It holds files a model wrote; it never leaves your tenant.
@@ -30,7 +31,8 @@ old one first. It holds files a model wrote; it never leaves your tenant.
 ## Errors
 
 - `not_granted` — saving needs the grant to keep templates; a tenant
-  template also the tenant value in memory_scopes.
+  template also the tenant value in memory_scopes (over the MCP server, a
+  tenant-operator token).
 - `exists` — a template of that name is already in that scope.
 - `template_limit` — your tenant holds as many templates as allowed (20
   unless the operator says otherwise): delete one first.
