@@ -56,6 +56,12 @@ func (m *Manager) SetEgress(p *egress.Proxy, routes []egress.Route) {
 	}
 }
 
+// SetPrincipalEgress sets workspace.mcp.egress, the operator routes a
+// workspace opened over the MCP server may use.
+func (m *Manager) SetPrincipalEgress(routes []string) {
+	m.principalEgress = slices.Clone(routes)
+}
+
 // TenantRouteStore reads the routes a tenant wrote (EgressRouteDef).
 // store.Store satisfies it.
 type TenantRouteStore interface {
@@ -78,23 +84,27 @@ func (m *Manager) SetTenantRoutes(st TenantRouteStore, hosts []string) {
 // name a tenant also took), else, with tenant routes on, the workspace's
 // own tenant's route of that name, checked again here as at its creation.
 // A name that is neither is left out, so the proxy refuses it as a route the
-// workspace does not hold.
+// workspace does not hold. A workspace opened over the MCP server uses only
+// operator routes on workspace.mcp.egress.
 func (m *Manager) Egress(ctx context.Context, row store.WorkspaceRow, req egress.Request) (*egress.Response, error) {
 	if m.proxy == nil {
 		return nil, &egress.Refusal{Status: http.StatusForbidden, Reason: "this runtime sends no workspace request out (no egress is configured)"}
 	}
-	if row.OwnerKind == store.WorkspaceOwnerPrincipal {
-		// A workspace opened over the MCP server (RFC GW D35) is granted no
-		// route at open; refused here too, so a row that somehow names one
-		// still sends nothing.
-		return nil, &egress.Refusal{Status: http.StatusForbidden, Reason: "a workspace opened over the MCP server has no egress routes"}
-	}
 	g := egress.Grant{TenantID: row.TenantID, UserID: row.UserID, RunID: row.OwnerRunID, WorkspaceID: row.ID}
+	principal := row.OwnerKind == store.WorkspaceOwnerPrincipal
 	var tenantNames []string
 	for _, name := range row.Egress {
+		// A workspace opened over the MCP server (RFC GW D35) uses only the
+		// routes of workspace.mcp.egress as the operator has it now (P4
+		// plan O28), whatever its row was opened with.
+		if principal && !slices.Contains(m.principalEgress, name) {
+			continue
+		}
 		if rt, ok := m.routes[name]; ok {
 			g.Routes = append(g.Routes, rt)
-		} else {
+		} else if !principal {
+			// Tenant routes are a run's: a session's workspace uses only
+			// the operator's (P4 plan O28).
 			tenantNames = append(tenantNames, name)
 		}
 	}
@@ -109,7 +119,9 @@ func (m *Manager) Egress(ctx context.Context, row store.WorkspaceRow, req egress
 	for _, rt := range g.Routes {
 		credentialed = credentialed || rt.Credential != ""
 	}
-	if credentialed {
+	// A principal has no run and no agent: its credential resolves for its
+	// tenant and subject, and an agent-scope credential never applies.
+	if credentialed && !principal {
 		// An agent-scoped credential is the agent's: the owner run's agent
 		// name decides it. One that cannot be read refuses the request
 		// rather than resolving without it, which could fall back to

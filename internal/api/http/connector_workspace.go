@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"slices"
 
 	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/config"
@@ -41,10 +42,11 @@ func (s *Server) Workspace(ctx context.Context, input json.RawMessage) (connecto
 	return s.dispatchBuiltin(ctx, "Workspace", input)
 }
 
-// workspaceMCPGrant is the grant a session holds: open, and the operator's
-// ops. Never share, never an engine floor beyond the worker's own.
+// workspaceMCPGrant is the grant a session holds: open, the operator's ops,
+// and the operator's routes of workspace.mcp.egress, which open may narrow
+// (P4 plan O28). Never share, never an engine floor beyond the worker's own.
 func workspaceMCPGrant(c config.WorkspaceMCPConfig) tools.WorkspacePolicyValue {
-	g := tools.WorkspacePolicyValue{Open: true}
+	g := tools.WorkspacePolicyValue{Open: true, Egress: slices.Clone(c.Egress)}
 	for _, op := range c.Ops {
 		switch op {
 		case config.WorkspaceOpRead:
