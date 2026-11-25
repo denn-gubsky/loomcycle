@@ -12,6 +12,11 @@ Only a port a **running** server of this workspace declared with
 listens on, is reached. Start the server first, with `port` set to the port
 it binds.
 
+Through a workspace shared with you (`<name>@<its agent id>`) with
+`connect`, `request` reaches only a port its owner **exposed** with
+`expose`, and needs your `workspace.connect` grant instead of `exec`. The
+same checks then apply to the port.
+
 ## Arguments
 
 - `name` (required) — the workspace.
@@ -44,7 +49,10 @@ otherwise `body_base64` carries it. A body over 1 MiB is cut there and
 
 ## Errors
 
-- `not_granted` — `request` needs the `exec` grant, as servers do.
+- `not_granted` — `request` needs the `exec` grant, as servers do; through a
+  share, your `workspace.connect` grant and a share made with `connect`.
+- `not_exposed` — through a share: its owner has not exposed that port, or
+  the page closed (unexposed, idle, or the operator turned pages off).
 - `port_not_served` — no running server of this workspace declared that
   port, or the server that declared it does not listen on it itself
   (something else on the worker does, or the server moved out of its
@@ -52,7 +60,6 @@ otherwise `body_base64` carries it. A body over 1 MiB is cut there and
 - `port_unreachable` — a server declared the port but nothing listens on it
   yet; it may still be starting, or it failed: read its `logs`.
 - `bad_response` — what came back was not HTTP.
-- `not_shared_op` — a workspace shared with you takes no `request`.
 
 ## Examples
 

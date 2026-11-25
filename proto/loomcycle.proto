@@ -1900,6 +1900,12 @@ message Event {
   // recorded in. Empty when tracing is off or the trace is not sampled, and
   // on every other event type.
   string trace_id = 25;
+
+  // surface carries the payload on type=surface frames (a page the run
+  // exposed from its workspace, RFC GW D24) and type=surface_closed frames
+  // (it went: unexposed, released or idle). SERVER-generated, on the run's
+  // own stream only. Nil on every other event type.
+  SurfaceInfo surface = 26;
 }
 
 // OverrideInfo is the type=override payload (RFC DC). Mirrors
@@ -2070,6 +2076,18 @@ message FileCapturedInfo {
   string sha256 = 4;       // hex
   string origin = 5;       // mcp:<server>/<tool> | http | webfetch | download:<host>
   string run_id = 6;       // the run whose tool call returned it
+}
+
+// SurfaceInfo is the payload on type=surface and type=surface_closed frames.
+// Mirrors providers.SurfaceInfo: never a bearer, a ticket or a host path.
+message SurfaceInfo {
+  string exposure_id = 1;
+  string workspace = 2;                     // surface: the workspace's name in its run
+  string title = 3;
+  string kind = 4;                          // page | panel
+  string base_path = 5;                     // the exposure route's prefix
+  google.protobuf.Timestamp expires_at = 6; // the idle deadline when told; moves with use
+  string reason = 7;                        // surface_closed: unexposed | released | idle
 }
 
 // TranscriptionInfo is the payload on type=transcription frames. Mirrors

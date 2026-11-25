@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/denn-gubsky/loomcycle/internal/auth"
 	"github.com/denn-gubsky/loomcycle/internal/store"
 	"github.com/denn-gubsky/loomcycle/internal/tools"
 	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
@@ -15,15 +16,50 @@ import (
 // memory_scopes, as other tenant-wide writes do. Opening from one needs
 // open (Workspace.open). The tenant is always the run's own (D-P6-24).
 
-// tenantTemplatesAllowed reports whether the run may write tenant-wide: the
-// tenant value in its memory_scopes, and not an isolated member.
+// templateCaller is the user a user template is the caller's under: the
+// run's user, or for a session of the MCP server its principal's subject
+// (ruled 2026-11-25).
+func templateCaller(ctx context.Context) string {
+	if tools.RunID(ctx) == "" {
+		if o, ok := lifecycle.PrincipalOwnerFrom(ctx); ok {
+			return o.UserID
+		}
+		return ""
+	}
+	return tools.RunIdentity(ctx).UserID
+}
+
+// tenantTemplatesAllowed reports whether the caller may write tenant-wide.
+// A run: the tenant value in its memory_scopes, and not an isolated member.
+// A session of the MCP server (no run): a tenant-operator token,
+// substrate:tenant or substrate:admin; a member token never (D-P6-43).
 func tenantTemplatesAllowed(ctx context.Context) bool {
+	if tools.RunID(ctx) == "" {
+		return templateOperator(ctx)
+	}
 	return contains(tools.PolicyOf(ctx).Memory.AllowedScopes, string(store.MemoryScopeTenant)) &&
 		tools.ConfineIsolatedScope(ctx, store.MemoryScopeTenant) == nil
 }
 
+// templateOperator reports a tenant operator's session of the MCP server:
+// no run, a principal-owned workspace context, and a substrate:tenant or
+// substrate:admin token. Never a run, whatever bearer started it (RFC ES
+// #15: the model is not the operator), and never an isolated member. It
+// gates tenant-template writes there (D-P6-43) and the listing and deleting
+// of other users' templates (D-P6-48, D-P6-52).
+func templateOperator(ctx context.Context) bool {
+	if tools.RunID(ctx) != "" {
+		return false
+	}
+	if _, ok := lifecycle.PrincipalOwnerFrom(ctx); !ok {
+		return false
+	}
+	p, ok := auth.PrincipalFromContext(ctx)
+	return ok && !auth.IsIsolated(p, ok) && (auth.HasScope(p.Scopes, auth.ScopeTenant) || auth.HasScope(p.Scopes, auth.ScopeAdmin))
+}
+
 // errTenantTemplateScope is a tenant template the run may not write.
-var errTenantTemplateScope = errors.New("a tenant template needs the tenant value in this agent's memory_scopes")
+var errTenantTemplateScope = errors.New("a tenant template needs the tenant value in this agent's memory_scopes (over the MCP server, a tenant-operator token)")
 
 // templateScopeGranted is the grant check of a template scope the run names:
 // the one checkTemplateScope applies and ScopeGrants reports.
@@ -32,7 +68,7 @@ func templateScopeGranted(ctx context.Context, op, scope string) error {
 	switch {
 	case !tools.PolicyOf(ctx).Workspace.Templates:
 		return fmt.Errorf("this agent's workspace grant does not allow %s", op)
-	case scope == store.WorkspaceTemplateUser && tools.RunIdentity(ctx).UserID == "":
+	case scope == store.WorkspaceTemplateUser && templateCaller(ctx) == "":
 		return errors.New("a user template belongs to a user, and this run has none")
 	case scope == store.WorkspaceTemplateTenant && !tenantTemplatesAllowed(ctx):
 		return errTenantTemplateScope
@@ -89,39 +125,62 @@ func (w *Workspace) deleteTemplate(ctx context.Context, o lifecycle.Owner, in wo
 	if in.Template == "" {
 		return workspaceRefusal("invalid_argument", "delete_template needs template, the template's name")
 	}
+	other := in.Owner != "" && in.Owner != templateCaller(ctx)
+	if other && in.Scope != store.WorkspaceTemplateUser {
+		return workspaceRefusal("invalid_argument", "owner names the user of a user template; a tenant template has none")
+	}
 	if r, ok := checkTemplateScope(ctx, in.Op, in.Scope); !ok {
 		return r
 	}
-	t, err := w.Manager.GetTemplate(ctx, o, in.Scope, in.Template)
+	var (
+		t   store.WorkspaceTemplateRow
+		err error
+	)
+	if other {
+		// Another user's template: a tenant operator's cleanup (D-P6-48).
+		if !templateOperator(ctx) {
+			return workspaceRefusal("not_granted", "deleting another user's template needs a tenant operator's session of the MCP server")
+		}
+		t, err = w.Manager.UserTemplateOf(ctx, o, in.Owner, in.Template)
+	} else {
+		t, err = w.Manager.GetTemplate(ctx, o, in.Scope, in.Template)
+	}
 	if err != nil {
 		return templateError(err)
 	}
 	if err := w.Manager.DeleteTemplate(ctx, o, t); err != nil {
 		return templateError(err)
 	}
-	return workspaceOK(map[string]any{"template": t.Name, "scope": t.Scope, "deleted": true})
+	out := map[string]any{"template": t.Name, "scope": t.Scope, "deleted": true}
+	if in.Owner != "" {
+		out["owner"] = in.Owner
+	}
+	return workspaceOK(out)
 }
 
 // templates lists the templates the run may open (D-P6-28).
-func (w *Workspace) templates(ctx context.Context, o lifecycle.Owner) tools.Result {
+// With all_users, a tenant operator's session lists every user's too, each
+// with its owner (D-P6-48).
+func (w *Workspace) templates(ctx context.Context, o lifecycle.Owner, in workspaceInput) tools.Result {
 	list, err := w.Manager.Templates(ctx, o)
+	if in.AllUsers {
+		if !templateOperator(ctx) {
+			return workspaceRefusal("not_granted", "every user's templates are listed only for a tenant operator's session of the MCP server")
+		}
+		list, err = w.Manager.TenantTemplates(ctx, o)
+	}
 	if err != nil {
 		return templateError(err)
 	}
 	out := make([]map[string]any, 0, len(list))
 	for _, t := range list {
-		if templateReachable(ctx, t) {
-			out = append(out, templateView(t))
+		v := templateView(t)
+		if in.AllUsers && t.Scope == store.WorkspaceTemplateUser {
+			v["owner"] = t.ScopeID
 		}
+		out = append(out, v)
 	}
 	return workspaceOK(map[string]any{"templates": out})
-}
-
-// templateReachable reports whether the run may use t: an isolated member
-// (substrate:user) reaches no tenant-shared data, so no tenant template
-// (D-P6-39).
-func templateReachable(ctx context.Context, t store.WorkspaceTemplateRow) bool {
-	return t.Scope != store.WorkspaceTemplateTenant || tools.ConfineIsolatedScope(ctx, store.MemoryScopeTenant) == nil
 }
 
 // templateView is a template as the model sees it: never its id, digest,

@@ -90,6 +90,25 @@ func WorkspaceTemplateList(ctx context.Context, q Querier, tenantID, scope, scop
 	return out, rows.Err()
 }
 
+// WorkspaceTemplateListTenant returns every template of the tenant.
+func WorkspaceTemplateListTenant(ctx context.Context, q Querier, tenantID string) ([]store.WorkspaceTemplateRow, error) {
+	d := q.Dialect()
+	rows, err := q.Query(ctx, `SELECT `+workspaceTemplateCols+` FROM workspace_templates WHERE tenant_id = ? ORDER BY scope, scope_id, name`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.WorkspaceTemplateRow
+	for rows.Next() {
+		r, err := scanWorkspaceTemplate(d, rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // WorkspaceTemplateCount counts the tenant's templates.
 func WorkspaceTemplateCount(ctx context.Context, q Querier, tenantID string) (int, error) {
 	var n int

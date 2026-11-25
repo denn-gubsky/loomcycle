@@ -78,9 +78,14 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 	}
 	in.newSource = src != nil
 
-	existing, err := d.chunkIDByNaturalKey(ctx, key, in.NaturalKey)
+	existing, held, err := d.chunkByNaturalKey(ctx, key, in.NaturalKey)
 	if err != nil {
 		return errFrom("upsert_chunk: lookup: "+err.Error(), err), nil
+	}
+	if existing != "" && held != in.NaturalKey {
+		// Reached through a renamed class's alias: the subject keeps the key it holds,
+		// which the metadata write below would otherwise put back to the old one.
+		in.NaturalKey = held
 	}
 	// Backstop for the op gate (RFC FY P2): a key naming the root of a reserved
 	// document would rewrite that root in place.
@@ -196,14 +201,37 @@ func (d *Document) upsertChunk(ctx context.Context, key sqlmem.ScopeKey, mscope 
 // absent. The lookup is an indexed point read on chunk_memory_meta — the reason
 // the key lives in SQL rather than in the chunk's `fields` blob.
 func (d *Document) chunkIDByNaturalKey(ctx context.Context, key sqlmem.ScopeKey, naturalKey string) (string, error) {
-	res, err := d.query(ctx, key, `SELECT chunk_id FROM chunk_memory_meta WHERE natural_key = ?`, naturalKey)
+	id, _, err := d.chunkByNaturalKey(ctx, key, naturalKey)
+	return id, err
+}
+
+// chunkByNaturalKey is chunkIDByNaturalKey with the key the chunk holds: naturalKey
+// itself, or — for a subject key a class rename rewrote (subject_key_aliases, RFC GQ
+// ruling Q1) — the key it became, so a writer still deriving the old key reaches the
+// same subject instead of minting a second one. A key held directly always wins over an
+// alias. One round trip: the alias lookup rides in the same statement.
+func (d *Document) chunkByNaturalKey(ctx context.Context, key sqlmem.ScopeKey, naturalKey string) (string, string, error) {
+	res, err := d.query(ctx, key, `SELECT chunk_id, natural_key, 0 FROM chunk_memory_meta WHERE natural_key = ?
+		UNION ALL SELECT m.chunk_id, m.natural_key, 1 FROM subject_key_aliases a
+		  JOIN chunk_memory_meta m ON m.natural_key = a.to_key WHERE a.from_key = ?`, naturalKey, naturalKey)
+	if schemaMissing(err) {
+		// A scope read without provisioning (a plan's read) may predate the alias
+		// table; it holds no alias then.
+		res, err = d.query(ctx, key, `SELECT chunk_id, natural_key, 0 FROM chunk_memory_meta WHERE natural_key = ?`, naturalKey)
+	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	if len(res.Rows) == 0 {
-		return "", nil
+	id, held, best := "", "", 2
+	for _, r := range res.Rows {
+		if len(r) < 3 {
+			continue
+		}
+		if p := asInt(r[2]); p < best {
+			id, held, best = asStr(r[0]), asStr(r[1]), p
+		}
 	}
-	return asStr(res.Rows[0][0]), nil
+	return id, held, nil
 }
 
 // updateChunkForUpsert applies the supplied fields to an existing chunk without a

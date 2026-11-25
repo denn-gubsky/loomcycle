@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
@@ -108,6 +109,19 @@ func testWorkspaceTemplateScopesAndTenantsAreDisjoint(t *testing.T, s store.Stor
 	}
 	if n, _ := s.WorkspaceTemplateCount(ctx, "acme"); n != 3 {
 		t.Errorf("acme count = %d, want 3", n)
+	}
+	// A tenant operator's listing: every user's and the tenant's, of this
+	// tenant only.
+	all, err := s.WorkspaceTemplateListTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, r := range all {
+		ids = append(ids, r.ID)
+	}
+	if got := strings.Join(ids, ","); got != "tpl_t,tpl_a,tpl_b" {
+		t.Errorf("acme's whole listing = %s, want tpl_t,tpl_a,tpl_b (tenant, then each user's)", got)
 	}
 }
 

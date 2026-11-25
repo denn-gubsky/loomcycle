@@ -1250,7 +1250,7 @@ func (s *Server) SetWorkspaceStats(f func() workspace.Stats) { s.workspaceStats 
 type workspaceReleaser interface {
 	ReleaseRun(ctx context.Context, runID string) error
 	// Share makes a spawn's workspace shares with its child (RFC GW P8).
-	Share(ctx context.Context, o lifecycle.Owner, name string, p lifecycle.Peer, access string) (store.WorkspaceRow, error)
+	Share(ctx context.Context, o lifecycle.Owner, name string, p lifecycle.Peer, access string, connect bool) (store.WorkspaceRow, error)
 	// ForkForChild makes a spawn's workspace forks for its child (RFC GW P6).
 	ForkForChild(ctx context.Context, parent lifecycle.Owner, f lifecycle.ChildFork) (store.WorkspaceRow, error)
 }

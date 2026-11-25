@@ -40,6 +40,7 @@ type wsRunFixture struct {
 	srv *Server
 	st  store.Store
 	h   *workspacetest.Harness
+	mgr *lifecycle.Manager
 	mu  sync.Mutex
 	res []providers.Event
 }
@@ -63,7 +64,7 @@ func newWSRunFixture(t *testing.T, agents map[string]config.AgentDef, prov provi
 	srv.SetSteerRegistry(steer.NewRegistry(8))
 	srv.SetWorkspaces(mgr)
 	stopDetachedOnCleanup(t, srv)
-	return &wsRunFixture{srv: srv, st: st, h: h}
+	return &wsRunFixture{srv: srv, st: st, h: h, mgr: mgr}
 }
 
 func (f *wsRunFixture) input(agent string) runner.RunInput {

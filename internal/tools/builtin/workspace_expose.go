@@ -38,6 +38,7 @@ func (w *Workspace) exposeOp(ctx context.Context, o lifecycle.Owner, in workspac
 	case err != nil:
 		return workspaceError(err, in.Name)
 	}
+	tools.EventEmitter(ctx)(surfaceOpened(in.Name, e.ID, e.Title, e.Kind, w.Manager.ExposeIdleTimeout()))
 	return workspaceOK(map[string]any{"name": in.Name, "exposure_id": e.ID, "port": e.Port, "title": e.Title,
 		"kind": e.Kind, "base_path": lifecycle.ExposurePrefix(e.ID)})
 }

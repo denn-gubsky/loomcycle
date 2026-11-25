@@ -45,8 +45,9 @@ var (
 // DefaultTemplateMaxBytes and DefaultMaxTemplates are config
 // workspace.template's defaults, for a Limits that names none.
 const (
-	DefaultTemplateMaxBytes = 1 << 30
-	DefaultMaxTemplates     = 20
+	DefaultTemplateMaxBytes    = 1 << 30
+	DefaultMaxTemplates        = 20
+	DefaultMaxTemplatesPerUser = 5
 )
 
 const templateIDPrefix = "tpl_"
@@ -98,6 +99,25 @@ func (m *Manager) templateMaxBytes() int64 {
 	return DefaultTemplateMaxBytes
 }
 
+func (m *Manager) maxTemplatesPerUser() int {
+	if m.limits.MaxTemplatesPerUser > 0 {
+		return m.limits.MaxTemplatesPerUser
+	}
+	return DefaultMaxTemplatesPerUser
+}
+
+// userTemplateCount counts a user's user templates: a run and a session of
+// the MCP server of one subject share them (D-P6-45), and so share the
+// per-user bound that keeps one member from filling the tenant's.
+func (m *Manager) userTemplateCount(ctx context.Context, tenantID, user string) (int, error) {
+	rows, err := m.store.WorkspaceTemplateList(ctx, tenantID, store.WorkspaceTemplateUser, user)
+	return len(rows), err
+}
+
+func (m *Manager) userTemplateLimit(n int) error {
+	return fmt.Errorf("%w: you hold %d user templates (workspace.template.max_per_user); delete one first", ErrTemplateLimit, n)
+}
+
 func (m *Manager) maxTemplates() int {
 	if m.limits.MaxTemplates > 0 {
 		return m.limits.MaxTemplates
@@ -127,7 +147,7 @@ func templateScopeID(o Owner, scope string) (string, error) {
 // A name already held in that scope is ErrTemplateExists: a template is never
 // overwritten.
 func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.WorkspaceRow, checkpoint, as, scope string) (store.WorkspaceTemplateRow, error) {
-	if o.IsPrincipal() || o.RunID == "" || src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || src.OwnerKind != o.kind() {
+	if o.RunID == "" || src.OwnerRunID != o.RunID || src.TenantID != o.TenantID || src.OwnerKind != o.kind() {
 		return store.WorkspaceTemplateRow{}, ErrNotFound
 	}
 	if !ValidName(as) {
@@ -144,6 +164,13 @@ func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.Workspace
 		return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: a %s template %q", ErrTemplateExists, scope, as)
 	} else if !isNotFound(err) {
 		return store.WorkspaceTemplateRow{}, err
+	}
+	if scope == store.WorkspaceTemplateUser {
+		if n, err := m.userTemplateCount(ctx, o.TenantID, scopeID); err != nil {
+			return store.WorkspaceTemplateRow{}, err
+		} else if n >= m.maxTemplatesPerUser() {
+			return store.WorkspaceTemplateRow{}, m.userTemplateLimit(n)
+		}
 	}
 	if n, err := m.store.WorkspaceTemplateCount(ctx, o.TenantID); err != nil {
 		return store.WorkspaceTemplateRow{}, err
@@ -176,6 +203,15 @@ func (m *Manager) SaveTemplate(ctx context.Context, o Owner, src store.Workspace
 	}
 	// Counted again with the row written: two saves racing each see the
 	// other's row, so neither passes the bound both together would break.
+	if scope == store.WorkspaceTemplateUser {
+		if n, err := m.userTemplateCount(ctx, o.TenantID, scopeID); err != nil || n > m.maxTemplatesPerUser() {
+			m.removeTemplate(out)
+			if err != nil {
+				return store.WorkspaceTemplateRow{}, err
+			}
+			return store.WorkspaceTemplateRow{}, m.userTemplateLimit(n - 1)
+		}
+	}
 	if n, err := m.store.WorkspaceTemplateCount(ctx, o.TenantID); err != nil || n > m.maxTemplates() {
 		m.removeTemplate(out)
 		if err != nil {
@@ -267,9 +303,10 @@ func (m *Manager) workerToolchains(workerID string) []string {
 
 // FindTemplate is the template name the caller may open (D-P6-24, D-P6-25):
 // its user's own first, then its tenant's; never another tenant's, never
-// another user's. A principal (a session of the MCP server) finds none.
+// another user's. A principal (a session of the MCP server) is its token's
+// tenant and subject, the subject in the user's place (ruled 2026-11-25).
 func (m *Manager) FindTemplate(ctx context.Context, o Owner, name string) (store.WorkspaceTemplateRow, error) {
-	if o.IsPrincipal() || o.RunID == "" || !ValidName(name) {
+	if o.RunID == "" || !ValidName(name) {
 		return store.WorkspaceTemplateRow{}, ErrTemplateNotFound
 	}
 	if o.UserID != "" {
@@ -291,7 +328,7 @@ func (m *Manager) FindTemplate(ctx context.Context, o Owner, name string) (store
 // GetTemplate is the template of that scope and name the caller may
 // delete: a user template only its own user's.
 func (m *Manager) GetTemplate(ctx context.Context, o Owner, scope, name string) (store.WorkspaceTemplateRow, error) {
-	if o.IsPrincipal() || o.RunID == "" {
+	if o.RunID == "" {
 		return store.WorkspaceTemplateRow{}, ErrTemplateNotFound
 	}
 	scopeID, err := templateScopeID(o, scope)
@@ -309,7 +346,7 @@ func (m *Manager) GetTemplate(ctx context.Context, o Owner, scope, name string) 
 // tenant's.
 func (m *Manager) Templates(ctx context.Context, o Owner) ([]store.WorkspaceTemplateRow, error) {
 	out := []store.WorkspaceTemplateRow{}
-	if o.IsPrincipal() || o.RunID == "" {
+	if o.RunID == "" {
 		return out, nil
 	}
 	if o.UserID != "" {
@@ -324,6 +361,34 @@ func (m *Manager) Templates(ctx context.Context, o Owner) ([]store.WorkspaceTemp
 		return nil, err
 	}
 	return append(out, theirs...), nil
+}
+
+// TenantTemplates lists every template of the caller's tenant, every
+// user's included: a tenant operator's listing (D-P6-48). The caller's
+// authority is the tool's to check.
+func (m *Manager) TenantTemplates(ctx context.Context, o Owner) ([]store.WorkspaceTemplateRow, error) {
+	if o.RunID == "" || o.TenantID == "" {
+		return []store.WorkspaceTemplateRow{}, nil
+	}
+	out, err := m.store.WorkspaceTemplateListTenant(ctx, o.TenantID)
+	if out == nil {
+		out = []store.WorkspaceTemplateRow{}
+	}
+	return out, err
+}
+
+// UserTemplateOf is user owner's template name in the caller's tenant: what
+// a tenant operator deletes for another user (D-P6-48). Never another
+// tenant's: the tenant is the caller's.
+func (m *Manager) UserTemplateOf(ctx context.Context, o Owner, owner, name string) (store.WorkspaceTemplateRow, error) {
+	if o.RunID == "" || owner == "" {
+		return store.WorkspaceTemplateRow{}, ErrTemplateNotFound
+	}
+	r, err := m.store.WorkspaceTemplateGet(ctx, o.TenantID, store.WorkspaceTemplateUser, owner, name)
+	if isNotFound(err) {
+		return store.WorkspaceTemplateRow{}, fmt.Errorf("%w: %q of %q", ErrTemplateNotFound, name, owner)
+	}
+	return r, err
 }
 
 // DeleteTemplate removes a template the caller found with GetTemplate: its
@@ -413,6 +478,16 @@ func (m *Manager) sendTemplate(ctx context.Context, o Owner, t store.WorkspaceTe
 	return err
 }
 
+// templateOwner is the user a template belongs to, for its audit line: a
+// user template's user, none for a tenant one. With an operator's delete
+// the line so names both the operator (the actor) and the owner.
+func templateOwner(t store.WorkspaceTemplateRow) string {
+	if t.Scope == store.WorkspaceTemplateUser {
+		return t.ScopeID
+	}
+	return ""
+}
+
 // recordTemplate writes the audit line of a template saved or deleted
 // (D-P6-35): the tenant, scope, name, digest and size, the run, and for a
 // save the workspace it was made from. Never a file's content.
@@ -422,7 +497,7 @@ func (m *Manager) recordTemplate(o Owner, t store.WorkspaceTemplateRow, action, 
 	}
 	_ = m.audit.Record(audit.Event{
 		Action: action, ActorTenant: o.TenantID, ActorSubject: o.UserID,
-		TargetTenant: t.TenantID, TargetName: "workspace_template:" + t.Name,
+		TargetTenant: t.TenantID, TargetName: "workspace_template:" + t.Name, TargetSubject: templateOwner(t),
 		WorkspaceID: fromWorkspace, WorkspaceOwnerRunID: o.RunID, WorkspaceOwnerAgentID: o.AgentID,
 		WorkspaceTemplateID: t.ID, WorkspaceTemplateScope: t.Scope, WorkspaceTemplateDigest: t.Digest, WorkspaceTemplateBytes: t.Bytes,
 	}) // best effort, as for shares

@@ -17,8 +17,9 @@ import (
 // /v1/_document, a tenant operator's retire of a class something rests on, without a
 // plan's fingerprint, answers 409 plan_required carrying the fingerprint POST
 // /v1/_ontology/plan reports; a wrong one answers 409 plan_stale; the plan's own
-// fingerprint applies it. Renaming that class is refused rename_job_pending (the RFC GQ
-// ruling of 2026-11-20), with the plan's fingerprint too.
+// fingerprint applies it. Renaming that class while a user scope holds a row of it,
+// which the rename job does not reach yet (RFC GQ P5.3), is refused rename_job_pending
+// (the RFC GQ ruling of 2026-11-20), with the plan's fingerprint too.
 func TestOntologyEdit_PlanRefusalIs409WithTheFingerprint(t *testing.T) {
 	s, mi := tierFixture(t)
 	replaceOntologyWithSections(t, s, mi, []ontologyTestChunk{
@@ -39,6 +40,7 @@ func TestOntologyEdit_PlanRefusalIs409WithTheFingerprint(t *testing.T) {
 		return out
 	}
 	exec(map[string]any{"op": "create_document", "scope": "tenant", "title": "A memo", "type": "Memo"})
+	exec(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
 	memo := s.getOntology(t, mi.Tenant).ClassChunks["Memo"]
 	op := tierOperator(mi.Tenant, "op")
 

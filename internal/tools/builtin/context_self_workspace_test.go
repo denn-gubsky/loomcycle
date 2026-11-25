@@ -18,19 +18,19 @@ func TestContextSelf_ReportsTheEffectiveWorkspace(t *testing.T) {
 		policy tools.WorkspacePolicyValue
 		want   map[string]any
 	}{
-		{"none", tools.WorkspacePolicyValue{}, map[string]any{"ops": []any{}, "open": false, "share": false, "expose": false, "templates": false, "egress": []any{}, "engine": ""}},
+		{"none", tools.WorkspacePolicyValue{}, map[string]any{"ops": []any{}, "open": false, "share": false, "expose": false, "connect": false, "templates": false, "egress": []any{}, "engine": ""}},
 		{"read and exec in containers", tools.WorkspacePolicyValue{Read: true, Exec: true, Engine: "container"},
-			map[string]any{"ops": []any{"read", "exec"}, "open": false, "share": false, "expose": false, "templates": false, "egress": []any{}, "engine": "container"}},
+			map[string]any{"ops": []any{"read", "exec"}, "open": false, "share": false, "expose": false, "connect": false, "templates": false, "egress": []any{}, "engine": "container"}},
 		{"open", tools.WorkspacePolicyValue{Write: true, Open: true},
-			map[string]any{"ops": []any{"write"}, "open": true, "share": false, "expose": false, "templates": false, "egress": []any{}, "engine": ""}},
+			map[string]any{"ops": []any{"write"}, "open": true, "share": false, "expose": false, "connect": false, "templates": false, "egress": []any{}, "engine": ""}},
 		{"share", tools.WorkspacePolicyValue{Read: true, Share: true},
-			map[string]any{"ops": []any{"read"}, "open": false, "share": true, "expose": false, "templates": false, "egress": []any{}, "engine": ""}},
+			map[string]any{"ops": []any{"read"}, "open": false, "share": true, "expose": false, "connect": false, "templates": false, "egress": []any{}, "engine": ""}},
 		// RFC GW P4: the routes a workspace the run opens may reach.
 		{"egress", tools.WorkspacePolicyValue{Read: true, Open: true, Egress: []string{"pypi", "npm"}},
-			map[string]any{"ops": []any{"read"}, "open": true, "share": false, "expose": false, "templates": false, "egress": []any{"pypi", "npm"}, "engine": ""}},
+			map[string]any{"ops": []any{"read"}, "open": true, "share": false, "expose": false, "connect": false, "templates": false, "egress": []any{"pypi", "npm"}, "engine": ""}},
 		// RFC GW P9: may it publish a port to its user.
 		{"expose", tools.WorkspacePolicyValue{Exec: true, Expose: true},
-			map[string]any{"ops": []any{"exec"}, "open": false, "share": false, "expose": true, "templates": false, "egress": []any{}, "engine": ""}},
+			map[string]any{"ops": []any{"exec"}, "open": false, "share": false, "expose": true, "connect": false, "templates": false, "egress": []any{}, "engine": ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := tools.WithRunPolicy(context.Background(), tools.RunPolicy{Workspace: tc.policy})

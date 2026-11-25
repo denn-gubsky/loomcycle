@@ -1572,6 +1572,62 @@ type OntologyPlannedChange struct {
 	// Proposal is the proposal's chunk id when the change is one accepting it
 	// makes (op proposal); absent for a direct change.
 	Proposal string `json:"proposal,omitempty"`
+	// Job is what the class-rename job would do for a rename of a class
+	// something rests on (RFC GQ P5); absent for every other change.
+	Job *OntologyRenameJobPlan `json:"job,omitempty"`
+}
+
+// OntologyRenameJobPlan is the class-rename job a rename would start: the rows
+// each step rewrites, whether it can run now, and the stored keys that would
+// collide under the new name. Blocked says why the rename is refused
+// (rename_job_pending); Collisions refuse it too (rename_identity_collision).
+type OntologyRenameJobPlan struct {
+	Steps      []OntologyRenameJobStep   `json:"steps"`
+	Runnable   bool                      `json:"runnable"`
+	Blocked    []string                  `json:"blocked,omitempty"`
+	Collisions []OntologyRenameCollision `json:"collisions,omitempty"`
+	// CollisionsTotal counts every collision; Collisions lists the first five.
+	CollisionsTotal int `json:"collisions_total"`
+	// ScopesNotCounted is the user and agent scopes the plan could not count.
+	ScopesNotCounted int `json:"scopes_not_counted"`
+	// Running is the unfinished rename job of the tenant, when one exists: a
+	// second rename waits for it.
+	Running *OntologyJobStatus `json:"running,omitempty"`
+	Notes   []string           `json:"notes,omitempty"`
+}
+
+// OntologyRenameJobStep is one step of the rename job: the stored rows under
+// the old name, in the tenant scope and in user and agent scopes.
+type OntologyRenameJobStep struct {
+	Name        string `json:"name"`
+	TenantScope int    `json:"tenant_scope"`
+	OtherScopes int    `json:"other_scopes,omitempty"`
+}
+
+// OntologyRenameCollision is a stored key that the rename would turn into a
+// key another row already holds: Column is identity_key or natural_key, Key
+// the key as stored, Into the key it would become, Holder the row holding it.
+type OntologyRenameCollision struct {
+	Column string `json:"column"`
+	Key    string `json:"key"`
+	Into   string `json:"into"`
+	Holder string `json:"holder"`
+}
+
+// OntologyJobStatus is a job carrying an ontology change through stored rows:
+// its state (running, done, blocked, abandoned), the step it is at, and the
+// rows each step has rewritten.
+type OntologyJobStatus struct {
+	ID     string         `json:"id"`
+	Kind   string         `json:"kind"`
+	Entry  string         `json:"entry"`
+	From   []string       `json:"from"`
+	To     string         `json:"to"`
+	State  string         `json:"state"`
+	Step   string         `json:"step,omitempty"`
+	Done   map[string]int `json:"done,omitempty"`
+	Error  string         `json:"error,omitempty"`
+	Remain int            `json:"remaining"`
 }
 
 // PlanOntologyResult is a plan. It wrote nothing. Fingerprint identifies the

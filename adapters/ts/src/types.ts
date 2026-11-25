@@ -64,6 +64,11 @@ export type EventType =
   // the source, the engine, the units and tokens spent and the cost, never the
   // text. The payload rides `AgentEvent.transcription`.
   | "transcription"
+  // A page the run exposed from its workspace (RFC GW D24), and its close
+  // (unexposed, released or idle). On the run's own stream only. The payload
+  // rides `AgentEvent.surface`.
+  | "surface"
+  | "surface_closed"
   // RFC DC per-run overrides. `override` = a server-generated notice that the
   // RUN's own configuration changed while it was running, because an operator
   // retuned it. Distinct from a provider fallback on purpose: a fallback means
@@ -761,6 +766,24 @@ export interface FileCapturedInfo {
   run_id?: string;
 }
 
+/** Payload on `event: surface` / `event: surface_closed` (RFC GW D24): a page
+ *  the run exposed from its workspace. Never a bearer, a ticket or a host path;
+ *  open it with the caller's own credential under `base_path`. */
+export interface SurfaceInfo {
+  exposure_id: string;
+  /** On `surface`: the workspace's name in its run. */
+  workspace?: string;
+  title?: string;
+  /** `page` or `panel`: how the chat shows it. */
+  kind?: string;
+  /** The exposure route's prefix the page is served under. */
+  base_path?: string;
+  /** The idle deadline when told (RFC 3339); every use moves it on. */
+  expires_at?: string;
+  /** On `surface_closed`: `unexposed`, `released` or `idle`. */
+  reason?: string;
+}
+
 /** Payload on `event: transcription`: one OCR or speech-to-text pass a File
  *  tool call made over an inbox file. Never the transcribed text. */
 export interface TranscriptionInfo {
@@ -1039,6 +1062,9 @@ export interface AgentEvent {
   /** Payload on `event: transcription` — one OCR or speech-to-text pass a
    *  File tool call made. Nil on all other event types. */
   transcription?: TranscriptionInfo;
+  /** Payload on `event: surface` / `event: surface_closed` — a page the run
+   *  exposed from its workspace. Nil on all other event types. */
+  surface?: SurfaceInfo;
   /** Payload on `event: queued` (why the run waits, and its place) and
    *  `event: admitted` (how long it waited), and on `event: call_queued` /
    *  `event: call_admitted` (the same for one model call, with its provider
@@ -4643,9 +4669,10 @@ export type DocumentToolInput = {
    *  rests on: the fingerprint of a plan of the change (`planOntology`). A rename,
    *  retire, move under another parent or change of any directive without it is
    *  refused 409 `plan_required`; with one that is not current, 409 `plan_stale`.
-   *  Each refusal carries the current `fingerprint` (RFC GQ P2.4). A class something
-   *  rests on is not renamed at all until the rename job exists: 422, with
-   *  `rename_job_pending` in the error, whatever the fingerprint. */
+   *  Each refusal carries the current `fingerprint` (RFC GQ P2.4). Renaming a class
+   *  something rests on starts the rename job (RFC GQ P5.3); where the job cannot
+   *  carry it yet the rename is refused 422 with `rename_job_pending` in the error,
+   *  whatever the fingerprint. */
   plan_fingerprint?: string;
   type?: string;
   body?: string;
