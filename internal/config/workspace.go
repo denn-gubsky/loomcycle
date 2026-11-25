@@ -71,6 +71,10 @@ type WorkspaceConfig struct {
 	// Expose is `workspace.expose`: serving a workspace's port to its user
 	// through the API (RFC GW §5.3). Off unless enabled.
 	Expose WorkspaceExposeConfig `yaml:"expose,omitempty"`
+	// PersonalWorkers lets a user's own machine attach as a worker of that
+	// user's runs (RFC GW §4.5, D29). Off by default; on only for a local
+	// deployment: the worker endpoint must listen on loopback (D32).
+	PersonalWorkers bool `yaml:"personal_workers,omitempty"`
 	// Checkpoint bounds a workspace's checkpoints (RFC GW §5.4).
 	Checkpoint WorkspaceCheckpointConfig `yaml:"checkpoint,omitempty"`
 	// Template bounds workspace templates (RFC GW §5.5).
@@ -434,6 +438,9 @@ func validateWorkspace(c *Config) error {
 	if w.RemoteWorkers() && c.ResolvedWorkerEndpoint().Listen == "" {
 		return fmt.Errorf("worker_endpoint.listen: workspace mode %s needs the host:port workers attach to", w.Mode)
 	}
+	if err := validatePersonalWorkers(c); err != nil {
+		return err
+	}
 	if w.MaxPerRun < 0 || w.MaxPerTenant < 0 || w.LostAfterS < 0 || w.Exec.DefaultTimeoutS < 0 || w.Exec.MaxTimeoutS < 0 {
 		return errors.New("workspace: max_per_run, max_per_tenant, lost_after_s and the exec timeouts may not be negative")
 	}
@@ -561,6 +568,26 @@ func (w *WorkspaceConfig) UnmarshalYAML(n *yaml.Node) error {
 
 // validateWorkspaceExpose refuses a workspace.expose bound out of range. Zero
 // is the default.
+// validatePersonalWorkers holds workspace.personal_workers to a local
+// deployment (RFC GW §4.5, D29, D32): a personal worker attaches over the
+// worker endpoint, so the mode must accept workers there, and the endpoint
+// must listen on loopback, so the worker and the core are one machine. It is
+// checked, not assumed: a configuration that breaks it does not start.
+func validatePersonalWorkers(c *Config) error {
+	w := c.Workspace
+	if !w.PersonalWorkers {
+		return nil
+	}
+	if !w.RemoteWorkers() {
+		return fmt.Errorf("workspace.personal_workers: a personal worker attaches over the worker endpoint, so workspace.mode must be %s or %s (it is %q)",
+			WorkspaceModeRemote, WorkspaceModeLocalRemote, w.Mode)
+	}
+	if l := c.ResolvedWorkerEndpoint().Listen; !IsLoopbackListenAddr(l) {
+		return fmt.Errorf("workspace.personal_workers: worker_endpoint.listen %q must be a loopback address (127.0.0.1, ::1 or localhost): a personal worker is for a local deployment only", l)
+	}
+	return nil
+}
+
 func validateWorkspaceExpose(e WorkspaceExposeConfig) error {
 	for _, b := range []struct {
 		name   string
