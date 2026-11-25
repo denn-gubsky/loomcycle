@@ -147,8 +147,11 @@ func (f *retiredFixture) planNotes(ch connector.OntologyChange) string {
 // TestOntologyRename_DirectClassRenameInUseIsRefused: renaming a class something rests
 // on, by its title or by its body's heading, is refused with rename_job_pending for the
 // operator and an admin, with or without a fingerprint; the plan says so in its notes.
+// Here the rename job cannot carry it (RFC GQ P5.3): a row in a user scope carries the
+// class, and the job rewrites the tenant scope only so far.
 func TestOntologyRename_DirectClassRenameInUseIsRefused(t *testing.T) {
 	f := newFingerprintFixture(t)
+	f.must(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
 	memo := f.chunk("Memo")
 	for name, ctx := range map[string]context.Context{"operator": f.ctx, "admin": adminCtx(f.ctx)} {
 		wantRenameJobPending(t, name+" rename without a fingerprint", f.change(ctx, "update_chunk", memo, map[string]any{"title": "Memorandum"}), "Memo")
@@ -235,6 +238,8 @@ func TestOntologyPlan_DirectiveAndRenameRulingsOnPostgres(t *testing.T) {
 	d, base := pgDocumentOrSkip(t)
 	f := &retiredFixture{t: t, d: d, ctx: operatorCtx(installTenantOntology(t, d, base, retiredOntologyMD, memrank.OntologyConfirmedStatus))}
 	seedFingerprintDependents(f)
+	// A user-scope row the rename job cannot reach yet (RFC GQ P5.3).
+	f.must(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
 	memo, reporting := f.chunk("Memo"), f.chunk("Reporting")
 	fp := f.planFingerprint(memo)
 	wantPlanRefusal(t, "@alt on Reporting", f.change(f.ctx, "update_chunk", reporting, map[string]any{"body": "@alt disclosure"}), planRequiredCode, fp)

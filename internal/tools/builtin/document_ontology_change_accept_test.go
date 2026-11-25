@@ -297,11 +297,12 @@ func TestAcceptChange_ConcurrentEditOfTargetIsRefused(t *testing.T) {
 	}
 }
 
-// TestAcceptChange_ClassRenameWithDependentsIsRefusedUntilTheRenameJob (RFC GQ Q4): a
-// class something rests on is not renamed, fingerprint or not; a class nothing rests
-// on is.
-func TestAcceptChange_ClassRenameWithDependentsIsRefusedUntilTheRenameJob(t *testing.T) {
+// TestAcceptChange_ClassRenameTheJobCannotCarryIsRefused (RFC GQ Q4, P5.3): a class
+// something rests on in a user scope, which the rename job does not reach yet, is not
+// renamed, fingerprint or not; a class nothing rests on is.
+func TestAcceptChange_ClassRenameTheJobCannotCarryIsRefused(t *testing.T) {
 	f := newAcceptFixture(t)
+	f.must(map[string]any{"op": "create_document", "scope": "user", "title": "My memo", "type": "Memo"})
 	memo := f.chunk("Memo")
 	id := f.file(map[string]any{"change": "edit", "entry": memo, "name": "Memorandum"})
 	if _, err := f.accept(id, f.fingerprintNow()); !errors.Is(err, ErrChangeRenameJobPending) {
@@ -316,7 +317,33 @@ func TestAcceptChange_ClassRenameWithDependentsIsRefusedUntilTheRenameJob(t *tes
 	}
 }
 
-// TestAcceptChange_MeaningCannotAddOrRemoveFields: a class's field bullets are its own
+// TestAcceptChange_ClassRenameIsCarriedByTheRenameJob (RFC GQ P5.3): accepting the
+// rename of a class whose rows are all in the tenant scope renames it, and the rename job
+// moves its stored type with it.
+func TestAcceptChange_ClassRenameIsCarriedByTheRenameJob(t *testing.T) {
+	f := newAcceptFixture(t)
+	memo := f.chunk("Memo")
+	id := f.file(map[string]any{"change": "edit", "entry": memo, "name": "Memorandum"})
+	rep, err := f.accept(id, f.fingerprintNow())
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if !containsString(rep.Applied, "rename") {
+		t.Errorf("applied = %v, want rename", rep.Applied)
+	}
+	count := func(typ string) string {
+		res, err := f.d.query(f.ctx, mustTenantKey(t, f.d, f.ctx), `SELECT count(*) FROM documents WHERE type = ?`, typ)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return asStr(res.Rows[0][0])
+	}
+	if old, now := count("Memo"), count("Memorandum"); old != "0" || now != "1" {
+		t.Errorf("documents typed Memo %s, Memorandum %s; want 0 and 1", old, now)
+	}
+}
+
+// TestAcceptChange_MeaningCannotAddOrRemoveFields:a class's field bullets are its own
 // whatever the proposal's meaning says — a field-shaped line in the meaning is quoted
 // text, and a meaning without the entry's bullets does not drop them.
 func TestAcceptChange_MeaningCannotAddOrRemoveFields(t *testing.T) {
