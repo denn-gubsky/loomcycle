@@ -4551,6 +4551,9 @@ export type DocumentToolInput = {
     | "list_annotations"
     | "delete_annotation"
     | "describe_ontology"
+    // What the corpus uses and the ontology does not declare (RFC GQ P6.1); an
+    // operator's read.
+    | "ontology_signals"
     // Node statistics of the taxonomy's nodes (RFC GM P2.1).
     | "node_stats"
     // The taxonomy's built-in series (RFC GM P2.2).

@@ -3050,6 +3050,7 @@ components:
             - list_annotations
             - delete_annotation
             - describe_ontology
+            - ontology_signals
             - node_stats
             - measure
             - effective_policy
