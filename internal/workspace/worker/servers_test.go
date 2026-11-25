@@ -316,3 +316,15 @@ func TestServers_RestoreEndsTheWorkspacesServers(t *testing.T) {
 		t.Errorf("servers after the restore = %d, want none", len(got))
 	}
 }
+
+// The runtime's own ports, as the worker knows them (a loopback dispatcher
+// it attaches to), are never a tunnel's on the host engine, whatever a
+// server declares.
+func TestRuntimePort_NamesLoopbackDispatcherPortsOnly(t *testing.T) {
+	w := &worker{opt: Options{Target: "127.0.0.1:7443, dns:///localhost:7444,[::1]:7445,core.internal:7446,0.0.0.0:7447"}}
+	for port, want := range map[int]bool{7443: true, 7444: true, 7445: true, 7446: false, 7447: true, 8080: false} {
+		if got := w.runtimePort(port); got != want {
+			t.Errorf("runtimePort(%d) = %v, want %v", port, got, want)
+		}
+	}
+}
