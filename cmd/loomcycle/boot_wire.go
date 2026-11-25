@@ -349,6 +349,7 @@ func (b *boot) wireWorkspaceEgress() {
 		fatal("workspace: cannot build the egress proxy", "err", err)
 	}
 	b.workspaces.SetEgress(proxy, lifecycle.OperatorRoutes(eg.Routes))
+	b.workspaces.SetPrincipalEgress(b.cfg.Workspace.Resolved().MCP.Egress)
 	if eg.TenantRoutes {
 		// A tenant's routes are read at each request, from its own rows
 		// only, and held again to tenant_hosts and port 443.

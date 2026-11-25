@@ -29,7 +29,7 @@ func workspaceToolDescriptor() loommcp.ToolDescriptor {
 // step with builtin.WorkspaceMCPOps: TestWorkspaceMCP_DescriptionListsEveryOp
 // checks it.
 const workspaceMCPDescription = "Open a workspace — a directory on a workspace worker, away from the runtime — and run shell commands and file operations in it, from outside any run. " +
-	"Ops: open (`name`, optional `toolchain`), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
+	"Ops: open (`name`, optional `toolchain`, optional `egress`: a subset of the routes the operator lists in workspace.mcp.egress; none unless it lists some), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
 	"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`), paths relative to the workspace. " +
 	"A workspace opened here belongs to the token you signed in with — its tenant and subject — not to a run: every session of that subject reaches it, nobody else does, and no run sees it. " +
 	"It is deleted when you release it, after an hour without an op, a day after it opened, or when the token that opened it is retired or expires (the operator sets the two times): copy out what you need to keep with read. " +

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 
 	"gopkg.in/yaml.v3"
@@ -92,6 +93,9 @@ type WorkspaceMCPConfig struct {
 	// MaxLifetimeS releases a workspace this long after it opened, however
 	// busy.
 	MaxLifetimeS int `yaml:"max_lifetime_s,omitempty"`
+	// Egress are the operator routes (workspace.egress.routes) a session's
+	// workspace may use; open may name a subset. Empty, none (P4 plan O28).
+	Egress []string `yaml:"egress,omitempty"`
 }
 
 // The workspace.mcp defaults, and the bounds its two times may be set to.
@@ -365,6 +369,19 @@ func validateWorkspace(c *Config) error {
 	}
 	if err := validateWorkspaceEgress(w.Egress); err != nil {
 		return err
+	}
+	// Only the operator's own routes: a session's workspace has no run, so
+	// no tenant route is resolved for it (P4 plan O28).
+	for i, name := range w.MCP.Egress {
+		switch {
+		case !ValidEgressRouteName(name):
+			return fmt.Errorf("workspace.mcp.egress[%d]: %q is not a route name", i, name)
+		case slices.Contains(w.MCP.Egress[:i], name):
+			return fmt.Errorf("workspace.mcp.egress[%d]: %q is listed twice", i, name)
+		}
+		if _, ok := w.Egress.Routes[name]; !ok {
+			return fmt.Errorf("workspace.mcp.egress[%d]: %q is not an operator route (workspace.egress.routes)", i, name)
+		}
 	}
 	r := w.Resolved()
 	if r.Exec.DefaultTimeoutS > r.Exec.MaxTimeoutS {
