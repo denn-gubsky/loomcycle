@@ -209,6 +209,9 @@ never change what a document says.
   annotation at or above the row's chunk. Read the briefs to choose what to
   open; read an abstract instead of opening a whole document when the
   question is about what it covers rather than its exact words.
+- `query_chunks` with `with_summary: true` labels a document's outline: each
+  chunk carries its OWN brief as `summary`, never one from a section above,
+  and never the abstract.
 - `stale: true` means the text changed after the annotation was written. It
   is still the best summary there is; quote the text, never the abstract.
 - An annotation is not evidence. Cite the chunk, never the summary.
