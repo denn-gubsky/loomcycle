@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os/exec"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -150,12 +153,15 @@ func TestWorkspaceRequest_AnotherWorkspaceCannotReachItsServer(t *testing.T) {
 	}
 }
 
-// A request names only a port a running server of the workspace declared:
-// a listener on the worker's loopback that no server declared is not
-// reached, nor is a port whose server was stopped. A server declaring it is
-// what lets the same request through (the host engine's check is a check,
-// not isolation: D-P9-9).
-func TestWorkspaceRequest_ReachesOnlyAPortItsRunningServerDeclared(t *testing.T) {
+// A request names only a port a running server of the workspace declared
+// and that server's own process group listens on: declaring a port is not
+// binding it. A listener on the worker's loopback that no server declared,
+// a port whose server was stopped, and a port a dummy server declares while
+// something else holds it (a service in another process, as the core's API
+// or a database would be, and one in the worker's own process) are all
+// refused, and none of those listeners accepts a connection.
+func TestWorkspaceRequest_ReachesOnlyAPortItsRunningServerListensOn(t *testing.T) {
+	needProgram(t, "python3")
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -176,33 +182,58 @@ func TestWorkspaceRequest_ReachesOnlyAPortItsRunningServerDeclared(t *testing.T)
 			_ = c.Close()
 		}
 	}()
-	port := l.Addr().(*net.TCPAddr).Port
+	inProcess := l.Addr().(*net.TCPAddr).Port
+	// A service of the host in a process of its own: it prints "accepted"
+	// for each connection it takes.
+	other := freeLoopbackPort(t)
+	svc := exec.Command("python3", "-c", `import socket,sys
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(8)
+print("ready", flush=True)
+while True:
+    c,_=s.accept(); print("accepted", flush=True); c.close()`, strconv.Itoa(other))
+	svcOut := &syncBuffer{}
+	svc.Stdout = svcOut
+	if err := svc.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = svc.Process.Kill(); _ = svc.Wait() }()
+	eventually(t, "the host service to listen", func() bool { return portListening(other) })
+	// The readiness probe's own connections are the baseline.
+	eventually(t, "the host service to log the probe", func() bool { return strings.Contains(svcOut.String(), "accepted") })
+	probed := strings.Count(svcOut.String(), "accepted")
+
 	f := newWSFixture(t, lifecycle.Limits{})
 	ctx := f.runCtx(t, "alice", "", wsFull)
 	f.mustOK(t, ctx, `{"op":"open","name":"web"}`)
-	req := fmt.Sprintf(`{"op":"request","name":"web","port":%d,"method":"GET","path":"/"}`, port)
-
-	if c := refusalClass(f.call(t, ctx, req)); c != workspace.ClassPortNotServed {
+	req := func(port int) string {
+		return fmt.Sprintf(`{"op":"request","name":"web","port":%d,"method":"GET","path":"/"}`, port)
+	}
+	if c := refusalClass(f.call(t, ctx, req(inProcess))); c != workspace.ClassPortNotServed {
 		t.Errorf("an undeclared port = %q, want %s", c, workspace.ClassPortNotServed)
 	}
-	f.mustOK(t, ctx, fmt.Sprintf(`{"op":"start","name":"web","command":"sleep 600","port":%d}`, port+1))
-	if c := refusalClass(f.call(t, ctx, req)); c != workspace.ClassPortNotServed {
+	f.mustOK(t, ctx, fmt.Sprintf(`{"op":"start","name":"web","command":"sleep 600","port":%d}`, inProcess+1))
+	if c := refusalClass(f.call(t, ctx, req(inProcess))); c != workspace.ClassPortNotServed {
 		t.Errorf("a port another server of the workspace did not declare = %q", c)
 	}
-	f.mustOK(t, ctx, fmt.Sprintf(`{"op":"start","name":"web","command":"sleep 600","port":%d}`, port))
+	f.mustOK(t, ctx, fmt.Sprintf(`{"op":"start","name":"web","command":"sleep 600","port":%d}`, inProcess))
 	f.mustOK(t, ctx, `{"op":"stop","name":"web","server":"srv-2"}`)
-	if c := refusalClass(f.call(t, ctx, req)); c != workspace.ClassPortNotServed {
+	if c := refusalClass(f.call(t, ctx, req(inProcess))); c != workspace.ClassPortNotServed {
 		t.Errorf("a port whose server was stopped = %q", c)
 	}
+	// Dummy servers that declare ports they do not listen on.
+	f.mustOK(t, ctx, fmt.Sprintf(`{"op":"start","name":"web","command":"sleep 600","port":%d}`, inProcess))
+	f.mustOK(t, ctx, fmt.Sprintf(`{"op":"start","name":"web","command":"sleep 600","port":%d}`, other))
+	if c := refusalClass(f.call(t, ctx, req(inProcess))); c != workspace.ClassPortNotServed {
+		t.Errorf("a declared port the worker's own process holds = %q, want %s", c, workspace.ClassPortNotServed)
+	}
+	if c := refusalClass(f.call(t, ctx, req(other))); c != workspace.ClassPortNotServed {
+		t.Errorf("a declared port another host process holds = %q, want %s", c, workspace.ClassPortNotServed)
+	}
 	if n := accepted.Load(); n != 0 {
-		t.Fatalf("the listener accepted %d connections from refused requests", n)
+		t.Errorf("the in-process listener accepted %d connections from refused requests", n)
 	}
-	f.mustOK(t, ctx, fmt.Sprintf(`{"op":"start","name":"web","command":"sleep 600","port":%d}`, port))
-	if a := mustRequest(t, f, ctx, req); a.Status != 204 {
-		t.Errorf("a declared port = %+v", a)
-	}
-	if accepted.Load() != 1 {
-		t.Errorf("accepted = %d, want 1", accepted.Load())
+	if n := strings.Count(svcOut.String(), "accepted"); n != probed {
+		t.Errorf("the host service accepted %d connections from refused requests", n-probed)
 	}
 }
 
@@ -266,42 +297,36 @@ func TestWorkspaceRequest_StrictArguments(t *testing.T) {
 	}
 }
 
+// tcpEchoServer echoes each connection's bytes back until it closes.
+const tcpEchoServer = `import socket, sys, threading
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(16)
+def serve(c):
+    while True:
+        b = c.recv(65536)
+        if not b:
+            break
+        c.sendall(b)
+    c.close()
+while True:
+    c, _ = s.accept()
+    threading.Thread(target=serve, args=(c,), daemon=True).start()
+`
+
 // The tunnel carries bytes both ways at once (P9 plan §3.2): what is
 // written reaches the port before the input ends, and the port's answer is
 // read while the input is still open. CloseWrite ends the input and the
 // port's close ends the output; Close of a tunnel nobody reads returns.
 func TestWorkspaceTunnel_CarriesBytesBothWaysBeforeEitherSideEnds(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	go func() {
-		for {
-			c, err := l.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				buf := make([]byte, 1024)
-				for {
-					n, err := c.Read(buf)
-					if n > 0 {
-						_, _ = c.Write(buf[:n])
-					}
-					if err != nil {
-						return
-					}
-				}
-			}()
-		}
-	}()
-	port := l.Addr().(*net.TCPAddr).Port
+	needProgram(t, "python3")
 	f := newWSFixture(t, lifecycle.Limits{})
 	ctx := f.runCtx(t, "alice", "", wsFull)
 	f.mustOK(t, ctx, `{"op":"open","name":"web"}`)
-	f.mustOK(t, ctx, fmt.Sprintf(`{"op":"start","name":"web","command":"sleep 600","port":%d}`, port))
+	src, _ := json.Marshal(tcpEchoServer)
+	f.mustOK(t, ctx, `{"op":"write","name":"web","path":"echo.py","content":`+string(src)+`}`)
+	port := freeLoopbackPort(t)
+	f.mustOK(t, ctx, fmt.Sprintf(`{"op":"start","name":"web","command":"python3 echo.py %d","port":%d}`, port, port))
+	eventually(t, "the echo server to listen", func() bool { return portListening(port) })
 	ident := tools.RunIdentity(ctx)
 	row, err := f.tool.Manager.Get(ctx, lifecycle.Owner{TenantID: "acme", UserID: "alice", RunID: tools.RunID(ctx), AgentID: ident.AgentID, RootRunID: ident.RootRunID}, "web")
 	if err != nil {
@@ -374,4 +399,23 @@ func TestWorkspaceRequest_NoServerAfterARestoreOrInAFork(t *testing.T) {
 	if c := refusalClass(f.call(t, ctx, req("web"))); c != workspace.ClassPortNotServed {
 		t.Errorf("after a restore = %q, want %s", c, workspace.ClassPortNotServed)
 	}
+}
+
+// syncBuffer is a buffer a child's output goroutine writes while the test
+// reads it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

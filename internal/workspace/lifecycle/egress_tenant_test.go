@@ -211,7 +211,8 @@ func (faultyRoutes) EgressRouteDefList(context.Context, string) ([]store.EgressR
 }
 
 // A workspace owned by a principal (opened over the MCP server, RFC GW D35)
-// sends nothing out, even with a route on its row.
+// sends nothing out while workspace.mcp.egress is empty, even with a route
+// on its row.
 func TestEgress_APrincipalOwnedWorkspaceSendsNothingOut(t *testing.T) {
 	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
 	up := newCountingUpstream(t)
@@ -329,5 +330,21 @@ func TestEgress_ATenantRouteNeverSendsAnotherTenantsCredential(t *testing.T) {
 	}
 	if up.hits.Load() != 0 {
 		t.Fatal("the upstream was reached with another tenant's credential")
+	}
+}
+
+// A workspace opened over the MCP server never uses a tenant's route, even
+// one its list and row name (P4 plan O28: operator routes only).
+func TestEgress_APrincipalsWorkspaceNeverUsesATenantRoute(t *testing.T) {
+	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
+	up := newCountingUpstream(t)
+	tenantEgress(t, f, up, nil, nil, nil)
+	tenantRoute(t, f, "acme", "crm", up.URL+"/acme/", "")
+	f.m.SetPrincipalEgress([]string{"crm"})
+	if _, _, err := send(t, f.m, principalRow("acme", "crm"), "crm"); refusalStatus(err) != http.StatusForbidden {
+		t.Fatalf("%v, want a 403 refusal", err)
+	}
+	if up.hits.Load() != 0 {
+		t.Fatal("a principal's workspace reached a tenant route")
 	}
 }

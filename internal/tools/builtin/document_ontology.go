@@ -511,6 +511,9 @@ func (d *Document) ontologyForKey(ctx context.Context, key sqlmem.ScopeKey, msco
 		}
 	}
 	issues = append(append(issues, retiredIssues(kids, rootID, sectionOf, entityName, out, relations, instances, review)...), lockedHeaderIssues(kids, rootID, sectionOf, bodyOf)...)
+	// Against the classes the document WOULD put in force, seed included, as the
+	// scheme references are checked: a draft is told before it is confirmed.
+	issues = append(issues, memrank.FormerClassNameIssues(memrank.EffectiveClasses(out, true))...)
 	return OntologyRead{
 		Terms: out, Confirmed: confirmed, DepthCapped: depthCapped,
 		Proposals: withChangeMarks(proposals, chunkOf), DocumentID: docID, RootChunkID: rootID,
@@ -548,6 +551,12 @@ func checkedSchemes(schemes []memrank.OntologyScheme, terms []memrank.OntologyTe
 //
 // ONLY WHEN CONFIRMED. A draft ontology is inert everywhere else, and retrieval must
 // not be the one surface where an unconfirmed edit quietly changes answers.
+//
+// A FORMER NAME IS THE CLASS (RFC GQ P5.1). Rows written before a class was renamed
+// keep its old name until the rename job rewrites them, so the filter matches both
+// spellings: asking for a former name asks for its class, and every class in the
+// expansion brings the name it declares with @renamed_from. With no such directive
+// the expansion is exactly what it was.
 func (d *Document) expandTypeFilter(ctx context.Context, typ string) []string {
 	typ = strings.TrimSpace(typ)
 	if typ == "" || d.Store == nil || d.SqlMem == nil {
@@ -569,6 +578,18 @@ func (d *Document) expandTypeFilter(ctx context.Context, typ string) []string {
 	// cannot cycle, but this runs inside a query path and a cycle here would hang the
 	// request rather than return a wrong row.
 	frontier := []string{typ}
+	aliases := memrank.TenantClassAliases(terms, true)
+	if class := aliases.Resolve(typ); class != typ {
+		// A former name: its class's rows and subclasses are what was asked for. The
+		// directive's own spelling is added too, for a filter typed in another case.
+		seen[class] = true
+		out = append(out, class)
+		frontier = []string{class}
+	}
+	if former := aliases.Former(frontier[0]); former != "" && !seen[former] {
+		seen[former] = true
+		out = append(out, former)
+	}
 	for depth := 0; depth < memrank.OntologyMaxDepth && len(frontier) > 0; depth++ {
 		var next []string
 		for _, name := range frontier {
@@ -579,6 +600,10 @@ func (d *Document) expandTypeFilter(ctx context.Context, typ string) []string {
 				seen[kid] = true
 				out = append(out, kid)
 				next = append(next, kid)
+				if former := aliases.Former(kid); former != "" && !seen[former] {
+					seen[former] = true
+					out = append(out, former)
+				}
 			}
 		}
 		frontier = next

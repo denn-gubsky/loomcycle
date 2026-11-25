@@ -95,6 +95,9 @@ type Manager struct {
 	// (SetEgress); a nil proxy refuses every request out.
 	proxy  *egress.Proxy
 	routes map[string]egress.Route
+	// principalEgress is workspace.mcp.egress (SetPrincipalEgress): the
+	// routes a workspace opened over the MCP server may use.
+	principalEgress []string
 	// tenantRoutes reads the tenants' own routes (SetTenantRoutes); nil
 	// when tenant routes are off. tenantHosts is
 	// workspace.egress.tenant_hosts.

@@ -70,8 +70,15 @@ func (d *Document) relationView(ctx context.Context) relationView {
 		v.byName[r.Name] = r
 		v.parentOf[r.Name] = r.Parent
 	}
+	aliases := memrank.TenantClassAliases(read.Terms, true)
 	for _, c := range memrank.EffectiveClasses(read.Terms, true) {
 		v.classParent[strings.ToLower(c.Name)] = strings.ToLower(c.Parent)
+		// An end still typed with the class's former name is of the class (RFC GQ
+		// P5.1): the former name steps to the class itself, so a domain or range
+		// naming the class, or one above it, admits the end.
+		if former := aliases.Former(c.Name); former != "" {
+			v.classParent[strings.ToLower(former)] = strings.ToLower(c.Name)
+		}
 	}
 	v.conceptChunks = map[string]bool{}
 	for _, s := range read.Schemes {

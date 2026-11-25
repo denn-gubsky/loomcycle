@@ -341,6 +341,9 @@ func (d *Document) buildSeriesPlan(ctx context.Context, key sqlmem.ScopeKey, rea
 		sp.shiftOff = "shift needs the vector stage, which does not run here: " + p.note
 	}
 	classes := describeOntologyRead(read).Classes
+	// A document still typed with a class's former name is of the class, as
+	// with_counts' unplaced counts it (foldFormerTypes).
+	aliases := memrank.TenantClassAliases(read.Terms, read.Confirmed)
 	var schemes []*seriesScheme
 	if read.Confirmed {
 		for _, s := range read.Schemes {
@@ -350,7 +353,7 @@ func (d *Document) buildSeriesPlan(ctx context.Context, key sqlmem.ScopeKey, rea
 			ss := &seriesScheme{s: s, period: schemePeriod(s), projected: map[string]bool{}}
 			proj := projectedClasses(s.Projects, classes)
 			for id, sd := range docs {
-				if proj[sd.typ] && id != read.DocumentID && p.unrestricted.readable(id) {
+				if proj[aliases.Resolve(sd.typ)] && id != read.DocumentID && p.unrestricted.readable(id) {
 					ss.projected[id] = true
 				}
 			}

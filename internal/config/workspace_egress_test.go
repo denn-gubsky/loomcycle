@@ -162,3 +162,38 @@ func TestWorkspaceEgress_RouteURLIsCoveredByAnAllowedURLsEntryOfItself(t *testin
 		}
 	}
 }
+
+// workspace.mcp.egress lists the operator routes a workspace opened over the
+// MCP server may use (RFC GW D35; P4 plan O28 as ruled 2026-11-25). Absent,
+// none: such a workspace has no egress.
+func TestWorkspaceMCPEgress_LoadsTheOperatorRoutesItNames(t *testing.T) {
+	cfg, err := loadConversion(t, "workspace:\n  egress:\n    routes:\n      pypi: {url: \"https://pypi.org/\"}\n      npm: {url: \"https://registry.npmjs.org/\"}\n"+
+		"  mcp:\n    enabled: true\n    egress: [pypi, npm]\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Workspace.Resolved().MCP.Egress; !reflect.DeepEqual(got, []string{"pypi", "npm"}) {
+		t.Fatalf("mcp.egress = %v", got)
+	}
+	cfg, err = loadConversion(t, "workspace:\n  mcp:\n    enabled: true\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Workspace.Resolved().MCP.Egress; len(got) != 0 {
+		t.Fatalf("absent mcp.egress = %v, want none", got)
+	}
+}
+
+func TestWorkspaceMCPEgress_RefusesANameThatIsNoOperatorRoute(t *testing.T) {
+	routes := "workspace:\n  egress:\n    routes:\n      pypi: {url: \"https://pypi.org/\"}\n  mcp:\n"
+	for _, c := range []struct{ block, want string }{
+		{routes + "    egress: [PyPI]\n", `workspace.mcp.egress[0]: "PyPI" is not a route name`},
+		{routes + "    egress: [pypi, pypi]\n", `workspace.mcp.egress[1]: "pypi" is listed twice`},
+		{routes + "    egress: [crm]\n", `workspace.mcp.egress[0]: "crm" is not an operator route (workspace.egress.routes)`},
+		{routes + "    egress: {pypi: true}\n", "cannot unmarshal"},
+	} {
+		if _, err := loadConversion(t, c.block); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%q: err = %v, want one saying %q", c.block, err, c.want)
+		}
+	}
+}
