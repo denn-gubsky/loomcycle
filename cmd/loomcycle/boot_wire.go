@@ -315,7 +315,7 @@ func (b *boot) bindStoreToTools() {
 			MaxPerRun: ws.MaxPerRun, MaxPerTenant: ws.MaxPerTenant, LostAfter: time.Duration(ws.LostAfterS) * time.Second,
 			DiskQuotaBytes: ws.DiskQuotaMB << 20, CopyMaxFiles: ws.Copy.MaxFiles, CopyMaxBytes: ws.Copy.MaxBytes,
 			CheckoutMaxDocuments: ws.Checkout.MaxDocuments, CheckoutMaxBytes: ws.Checkout.MaxBytes, MaxCheckpoints: ws.Checkpoint.MaxPerWorkspace,
-			TemplateMaxBytes: ws.Template.MaxMB << 20, MaxTemplates: ws.Template.MaxPerTenant,
+			TemplateMaxBytes: ws.Template.MaxMB << 20, MaxTemplates: ws.Template.MaxPerTenant, MaxTemplatesPerUser: ws.Template.MaxPerUser,
 			ConvertQuarantine: time.Duration(b.cfg.Conversion.Resolved().QuarantineTTLS) * time.Second,
 		}, slog.Default())
 		// RFC GW §5.5: template archives rest under the data directory.

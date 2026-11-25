@@ -49,9 +49,9 @@ func (w *Workspace) Description() string {
 		"run_cell (`code`, optional `kernel` python|node, `timeout_s`) runs code in an interpreter that keeps its variables between cells, reset_kernel starts it clean. " +
 		"view (`path`) shows you a PNG, JPEG, GIF or WebP from the workspace as a picture, e.g. a chart you drew. " +
 		"start (`command`, optional `cwd`, `port`) runs a command that keeps running after the call, a server, and returns its id; stop (`server`) ends it; logs (`server`) reads its latest output, or without server lists the servers; request (`port`, `method`, `path`, optional `headers`, `body`) sends one HTTP request to a port a running server of the workspace declared and returns its status, headers and body (cut at 1 MiB); expose (`port`, optional `title`, `kind` page|panel) publishes that port to your user as a page in their chat and returns its base_path, unexpose (`port`) withdraws it; await (optional `timeout_s`) returns the next update your application posted to the address its servers find in LOOMCYCLE_UPDATE_URL (what the person did in the page), or timed_out. " +
-		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write) and unshare (`name`, `with`). " +
+		"share (`name`, `with`: another run of your user by its agent id, `access`: read or read_write, optional `connect`: also its exposed pages) and unshare (`name`, `with`). " +
 		"checkpoint (`name`, optional `label`) records the workspace's files and answers an id; checkpoints lists them; restore (`name`, `checkpoint`) puts the files back and stops its interpreters and commands; delete_checkpoint frees one; fork (`name`, `as`, optional `checkpoint`) opens a second workspace of yours as a copy. Checkpoints count against the workspace's disk quota. " +
-		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, view, glob and grep on it, and write and edit with read_write; never exec or run_cell. " +
+		"A workspace another agent shared with you is named `<name>@<its agent id>` (list shows them): read, view, glob and grep on it, write and edit with read_write, and request to a port its owner exposed when shared with connect; never exec or run_cell. " +
 		"A workspace belongs to the run that opened it and is deleted when that run ends; copy out what you need to keep with read. " +
 		"Commands run on the worker's host engine as the worker's user with no isolation: it is not a sandbox, and has no network guarantees either way. " +
 		"Use this for work that needs a real shell and toolchains (python, node); use Read/Write/Edit on your volumes for files you keep. " +
@@ -66,11 +66,12 @@ func (w *Workspace) InputSchema() json.RawMessage {
 			"name":             {"type": "string", "description": "The workspace's name, your label for it within this run: 1-64 letters, digits, '.', '-', '_'. Every op but list takes it. A workspace shared with you: <name>@<owner agent id> (read, write, edit, glob, grep only)."},
 			"with":             {"type": "string", "description": "share/unshare: the agent id of the run to share with: your parent, a child, a sibling or another run of your user."},
 			"access":           {"type": "string", "enum": ["read","read_write"], "description": "share: read (read, glob, grep and copying files out) or read_write (also writing files in). Never commands."},
+			"connect":          {"type": "boolean", "description": "share: also let the peer send requests to the ports you exposed (needs your workspace.connect grant; default false)."},
 			"toolchain":        {"type": "string", "enum": ["python","node"], "description": "open: the toolchain the worker must have. Omit for a general workspace, on a worker with both."},
 			"egress":           {"type": "array", "items": {"type": "string"}, "description": "open: the egress routes the workspace may send requests out through, at http://egress/<route>/…, from those your grant names. Omit for all of them; [] for none."},
 			"command":          {"type": "string", "description": "exec, start: a shell command line, run with /bin/sh -c."},
 			"cwd":              {"type": "string", "description": "exec, start: the directory to start in, relative to the workspace (default its root)."},
-			"port":             {"type": "integer", "minimum": 1, "maximum": 65535, "description": "start: the port the server listens on, recorded with it; request: the port to send to, one a running server of this workspace declared at start; expose, unexpose: the port to publish to your user or withdraw."},
+			"port":             {"type": "integer", "minimum": 1, "maximum": 65535, "description": "start: the port the server listens on, recorded with it; request: the port to send to, one a running server of this workspace declared at start (through a share: one its owner exposed); expose, unexpose: the port to publish to your user or withdraw."},
 			"method":           {"type": "string", "description": "request: the HTTP method, upper case (GET, POST, ...)."},
 			"headers":          {"type": "object", "additionalProperties": {"type": "string"}, "description": "request: headers to send, name to value. Content-Length, Transfer-Encoding and Connection are the runtime's."},
 			"body":             {"type": "string", "description": "request: the body to send, up to 1 MiB."},
@@ -147,17 +148,19 @@ var workspaceOpArgs = map[string][]string{
 	// RFC GW §5.3: publish a port to the run's user, and withdraw it.
 	"expose":   {"name", "port", "title", "kind"},
 	"unexpose": {"name", "port"},
-	// connect is taken only to be refused by name: it arrives with servers
-	// (RFC GW P9).
-	"share":   {"name", "with", "access", "connect"},
-	"unshare": {"name", "with"},
+	"share":    {"name", "with", "access", "connect"},
+	"unshare":  {"name", "with"},
 }
 
 // WorkspaceMCPOps are the ops the Workspace tool takes over loomcycle's MCP
 // server, where the owner is the session's principal (RFC GW D35, P9 plan
 // §3.5): the lifecycle, commands and the file ops. Sharing, interpreters and
 // servers are a run's.
-var WorkspaceMCPOps = []string{"open", "release", "list", "status", "exec", "read", "write", "edit", "glob", "grep"}
+var WorkspaceMCPOps = []string{"open", "release", "list", "status", "exec", "read", "write", "edit", "glob", "grep",
+	// RFC GW P6, D-P6-24 (ruled 2026-11-25): templates, as the principal;
+	// and the checkpoints a template is saved from (D-P6-14: they act on the
+	// pinned row and need nothing of its owner).
+	"checkpoint", "checkpoints", "delete_checkpoint", "save_template", "templates", "delete_template"}
 
 var workspaceMCPOps = func() map[string]bool {
 	m := map[string]bool{}
@@ -191,7 +194,8 @@ var workspaceOpGrant = map[string]string{
 	// What a server's application posted is a server's output (exec).
 	"await": config.WorkspaceOpExec,
 	// A request reaches what a command in the workspace could reach (curl to
-	// the same port), so it is exec's too until connect arrives (P9 PR 7).
+	// the same port), so it is exec's for the owner (P9 plan D-P9-20); a
+	// request through a share is connect's instead (see Execute).
 	"request": config.WorkspaceOpExec,
 	// expose puts model-written active content in front of a person: its
 	// own grant (RFC GW §7). Withdrawing it needs the same.
@@ -280,7 +284,13 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	// 1. The grant.
 	pol := tools.PolicyOf(ctx).Workspace
 	granted := false
-	switch need := workspaceOpGrant[in.Op]; need {
+	need := workspaceOpGrant[in.Op]
+	if _, _, shared := lifecycle.SplitShared(in.Name); shared && in.Op == "request" {
+		// A peer's request reaches only exposed ports, never a command's
+		// reach: its own connect grant, not exec (RFC GW D20, §7).
+		need = "connect"
+	}
+	switch need {
 	case "open":
 		granted = pol.Open
 	case "any":
@@ -289,6 +299,8 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 		granted = pol.Share
 	case "expose":
 		granted = pol.Expose
+	case "connect":
+		granted = pol.Connect
 	case "templates":
 		granted = pol.Templates
 	case "open_or_templates":
@@ -321,9 +333,6 @@ func (w *Workspace) Execute(ctx context.Context, input json.RawMessage) (tools.R
 	}
 	switch in.Op {
 	case "open":
-		if in.Template != "" && owner.IsPrincipal() {
-			return workspaceRefusal("not_over_mcp", "a workspace is opened from a template inside a run; over the MCP server open takes no template"), nil
-		}
 		return w.open(ctx, owner, pol, in), nil
 	case "list":
 		return w.list(ctx, owner), nil
@@ -434,6 +443,10 @@ func workspaceError(err error, name string) tools.Result {
 		return workspaceRefusal("limit", err.Error())
 	case errors.Is(err, lifecycle.ErrNotReady):
 		return workspaceRefusal("not_ready", err.Error())
+	case errors.Is(err, lifecycle.ErrShareNoConnect):
+		return workspaceRefusal("not_granted", err.Error()+"; ask its owner to share it with connect")
+	case errors.Is(err, lifecycle.ErrNotExposed):
+		return workspaceRefusal("not_exposed", err.Error())
 	case errors.Is(err, lifecycle.ErrShareReadOnly):
 		return workspaceRefusal("read_only_share", err.Error()+"; ask its owner for a read_write share")
 	case errors.Is(err, lifecycle.ErrShareTarget), errors.Is(err, lifecycle.ErrShareNoUser):
@@ -476,9 +489,6 @@ func (w *Workspace) open(ctx context.Context, o lifecycle.Owner, pol tools.Works
 		t, err := w.Manager.FindTemplate(ctx, o, in.Template)
 		if err != nil {
 			return templateError(err)
-		}
-		if !templateReachable(ctx, t) {
-			return templateError(lifecycle.ErrTemplateNotFound)
 		}
 		req.Template = &t
 		return w.finishOpen(ctx, o, req)
@@ -551,9 +561,13 @@ func (w *Workspace) list(ctx context.Context, o lifecycle.Owner) tools.Result {
 		e := map[string]any{"name": r.Name, "state": string(r.State), "engine": r.Engine, "created_at": r.CreatedAt.Format(time.RFC3339)}
 		withEgress(e, r.Egress)
 		if len(r.Shares) > 0 {
-			shares := make([]map[string]string, 0, len(r.Shares))
+			shares := make([]map[string]any, 0, len(r.Shares))
 			for _, sh := range r.Shares {
-				shares = append(shares, map[string]string{"with": sh.AgentID, "access": sh.Access})
+				e := map[string]any{"with": sh.AgentID, "access": sh.Access}
+				if sh.Connect {
+					e["connect"] = true
+				}
+				shares = append(shares, e)
 			}
 			e["shared_with"] = shares
 		}
@@ -569,7 +583,11 @@ func (w *Workspace) list(ctx context.Context, o lifecycle.Owner) tools.Result {
 	if len(shared) > 0 {
 		sw := make([]map[string]any, 0, len(shared))
 		for _, s := range shared {
-			sw = append(sw, map[string]any{"name": lifecycle.SharedName(s.Row.Name, s.Row.OwnerAgentID), "owner": s.Row.OwnerAgentID, "access": s.Share.Access, "engine": s.Row.Engine})
+			e := map[string]any{"name": lifecycle.SharedName(s.Row.Name, s.Row.OwnerAgentID), "owner": s.Row.OwnerAgentID, "access": s.Share.Access, "engine": s.Row.Engine}
+			if s.Share.Connect {
+				e["connect"] = true
+			}
+			sw = append(sw, e)
 		}
 		body["shared_with_me"] = sw
 	}
@@ -627,14 +645,15 @@ func (w *Workspace) exec(ctx context.Context, row store.WorkspaceRow, in workspa
 // §5.2). The run must hold share and what the access hands over: a share
 // never gives a peer more than its owner may do (D-P8-3).
 func (w *Workspace) share(ctx context.Context, o lifecycle.Owner, pol tools.WorkspacePolicyValue, in workspaceInput) tools.Result {
-	if in.Connect != nil && *in.Connect {
-		return workspaceRefusal("not_yet", "connect (reaching a workspace's exposed ports) arrives with servers; share without it")
-	}
+	connect := in.Connect != nil && *in.Connect
 	if !lifecycle.ValidShareAccess(in.Access) {
 		return workspaceRefusal("invalid_argument", fmt.Sprintf("access %q: want read or read_write", in.Access))
 	}
 	if !pol.Read || (in.Access == store.WorkspaceShareReadWrite && !pol.Write) {
 		return workspaceRefusal("not_granted", fmt.Sprintf("a %s share hands over operations this agent's workspace grant does not hold", in.Access))
+	}
+	if connect && !pol.Connect {
+		return workspaceRefusal("not_granted", "a share with connect hands over requests to your exposed ports, which this agent's workspace grant (workspace.connect) does not allow")
 	}
 	if in.With == "" {
 		return workspaceRefusal("invalid_argument", "share needs with: the agent id of the run to share with")
@@ -643,11 +662,11 @@ func (w *Workspace) share(ctx context.Context, o lifecycle.Owner, pol tools.Work
 	if err != nil {
 		return workspaceError(err, in.Name)
 	}
-	row, err := w.Manager.Share(ctx, o, in.Name, peer, in.Access)
+	row, err := w.Manager.Share(ctx, o, in.Name, peer, in.Access, connect)
 	if err != nil {
 		return workspaceError(err, in.Name)
 	}
-	return workspaceOK(map[string]any{"name": row.Name, "shared_with": peer.AgentID, "access": in.Access,
+	return workspaceOK(map[string]any{"name": row.Name, "shared_with": peer.AgentID, "access": in.Access, "connect": connect,
 		"their_name": lifecycle.SharedName(row.Name, o.AgentID)})
 }
 
@@ -666,6 +685,15 @@ func (w *Workspace) unshare(ctx context.Context, o lifecycle.Owner, in workspace
 // the file ops of workspaceSharedOps, a write only through a read_write
 // share, and the run's own grant applies on top (checked in Execute).
 func (w *Workspace) sharedOp(ctx context.Context, o lifecycle.Owner, in workspaceInput) tools.Result {
+	if in.Op == "request" {
+		// Through a share with connect, to a port the owner exposed; the
+		// tunnel then checks the port at the dial as for the owner.
+		row, err := w.Manager.ConnectShared(ctx, o, in.Name, in.Port)
+		if err != nil {
+			return workspaceSharedError(err, in.Name)
+		}
+		return w.request(ctx, row, in)
+	}
 	if !workspaceSharedOps[in.Op] {
 		return workspaceRefusal("not_shared_op", fmt.Sprintf("%s is not done on a workspace shared with you: a share allows read, glob, grep, and write and edit with read_write; never commands", in.Op))
 	}

@@ -86,7 +86,7 @@ func TestPrincipalOwner_CannotShare(t *testing.T) {
 	alice := PrincipalOwner("acme", "alice", "otd_1")
 	f.open(t, alice, "work")
 	peer := f.run(t, "alice")
-	if _, err := f.m.Share(ctx, alice, "work", Peer{RunID: peer.RunID, AgentID: peer.AgentID}, store.WorkspaceShareRead); !errors.Is(err, ErrPrincipalOwner) {
+	if _, err := f.m.Share(ctx, alice, "work", Peer{RunID: peer.RunID, AgentID: peer.AgentID}, store.WorkspaceShareRead, false); !errors.Is(err, ErrPrincipalOwner) {
 		t.Errorf("share: err = %v, want ErrPrincipalOwner", err)
 	}
 	if got, err := f.m.SharedWith(ctx, alice); err != nil || len(got) != 0 {

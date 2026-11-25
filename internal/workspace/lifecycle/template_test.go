@@ -129,9 +129,9 @@ func TestTemplate_OpensOnAWorkerThatNeverHeldIt(t *testing.T) {
 	}
 }
 
-// D-P6-24: a user template is found only for its author's runs, a tenant
-// one for every run of the tenant, neither in another tenant nor by a
-// principal; the delete lookup is held to the same, and a row of another
+// D-P6-24: a user template is found only for its author's runs (or its
+// subject's principal), a tenant one for every run of the tenant, never in
+// another tenant; the delete lookup is held to the same, and a row of another
 // tenant cannot be deleted.
 func TestTemplate_NeverCrossesATenantOrAnotherUser(t *testing.T) {
 	f := newTemplateFixture(t, Limits{MaxPerRun: 4})
@@ -169,9 +169,17 @@ func TestTemplate_NeverCrossesATenantOrAnotherUser(t *testing.T) {
 	if err := f.m.DeleteTemplate(ctx, globex, mine); !errors.Is(err, ErrTemplateNotFound) {
 		t.Errorf("another tenant deleting the row = %v, want ErrTemplateNotFound", err)
 	}
-	p := PrincipalOwner("acme", "alice", "tok")
-	if _, err := f.m.FindTemplate(ctx, p, "shared"); !errors.Is(err, ErrTemplateNotFound) {
-		t.Errorf("a principal finding a template = %v, want ErrTemplateNotFound", err)
+	// A principal (ruled 2026-11-25) is its token's tenant and subject: it
+	// finds the tenant's templates and its subject's own, never another's.
+	p := PrincipalOwner("acme", "bob", "tok")
+	if _, err := f.m.FindTemplate(ctx, p, "mine"); !errors.Is(err, ErrTemplateNotFound) {
+		t.Errorf("another subject's principal finding alice's template = %v, want ErrTemplateNotFound", err)
+	}
+	if got, err := f.m.FindTemplate(ctx, p, "shared"); err != nil || got.Scope != store.WorkspaceTemplateTenant {
+		t.Errorf("a principal finding its tenant's template = %+v, %v", got, err)
+	}
+	if _, err := f.m.FindTemplate(ctx, PrincipalOwner("globex", "alice", "tok"), "shared"); !errors.Is(err, ErrTemplateNotFound) {
+		t.Errorf("another tenant's principal finding the template = %v, want ErrTemplateNotFound", err)
 	}
 	noUser := f.run(t, "")
 	if _, err := f.m.FindTemplate(ctx, noUser, "mine"); !errors.Is(err, ErrTemplateNotFound) {
@@ -261,5 +269,54 @@ func TestTemplate_DeleteRemovesRowAndArchiveAndBothAreAudited(t *testing.T) {
 	}
 	if del.WorkspaceOwnerRunID != bob.RunID || del.WorkspaceTemplateID != r.ID {
 		t.Errorf("delete line = %+v", del)
+	}
+}
+
+// A user holds at most MaxTemplatesPerUser user templates, so one member
+// cannot fill the tenant's bound; a principal and a run of one subject share
+// the count; another user can still save; the tenant bound still holds.
+func TestTemplate_AUserHoldsAtMostItsOwnShare(t *testing.T) {
+	f := newTemplateFixture(t, Limits{MaxPerRun: 4, MaxTemplates: 4, MaxTemplatesPerUser: 2})
+	ctx := context.Background()
+	if _, err := f.m.SaveTemplate(ctx, f.alice, f.src, f.ck, "a1", store.WorkspaceTemplateUser); err != nil {
+		t.Fatal(err)
+	}
+	// The same subject over the MCP server: its own workspace and checkpoint.
+	p := PrincipalOwner("acme", "alice", "tok")
+	psrc := f.open(t, p, "pw")
+	pck, err := f.m.Checkpoint(ctx, psrc, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.SaveTemplate(ctx, p, psrc, pck.ID, "a2", store.WorkspaceTemplateUser); err != nil {
+		t.Fatal(err)
+	}
+	for _, try := range []struct {
+		who string
+		o   Owner
+		src store.WorkspaceRow
+		ck  string
+	}{{"the run", f.alice, f.src, f.ck}, {"the principal", p, psrc, pck.ID}} {
+		_, err := f.m.SaveTemplate(ctx, try.o, try.src, try.ck, "a3", store.WorkspaceTemplateUser)
+		if !errors.Is(err, ErrTemplateLimit) || !strings.Contains(err.Error(), "max_per_user") {
+			t.Errorf("a third user template by %s = %v, want ErrTemplateLimit naming max_per_user", try.who, err)
+		}
+	}
+	// Tenant templates are not a user's share.
+	if _, err := f.m.SaveTemplate(ctx, f.alice, f.src, f.ck, "t1", store.WorkspaceTemplateTenant); err != nil {
+		t.Errorf("a tenant template past alice's user share: %v", err)
+	}
+	bob := f.run(t, "bob")
+	bsrc := f.open(t, bob, "work")
+	bck, err := f.m.Checkpoint(ctx, bsrc, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.m.SaveTemplate(ctx, bob, bsrc, bck.ID, "b1", store.WorkspaceTemplateUser); err != nil {
+		t.Errorf("another user's save: %v", err)
+	}
+	// Four held: the tenant bound refuses bob's second.
+	if _, err := f.m.SaveTemplate(ctx, bob, bsrc, bck.ID, "b2", store.WorkspaceTemplateUser); !errors.Is(err, ErrTemplateLimit) || !strings.Contains(err.Error(), "max_per_tenant") {
+		t.Errorf("past the tenant bound = %v, want ErrTemplateLimit naming max_per_tenant", err)
 	}
 }

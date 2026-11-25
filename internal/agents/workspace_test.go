@@ -13,8 +13,8 @@ func TestParseAgent_WorkspaceReachesTheAgent(t *testing.T) {
 		want        *AgentWorkspace
 	}{
 		{"absent", "", nil},
-		{"full", "workspace:\n  ops: [read, exec]\n  open: true\n  share: true\n  templates: true\n  egress: [pypi, npm]\n  engine: host\n",
-			&AgentWorkspace{Ops: []string{"read", "exec"}, Open: true, Share: true, Templates: true, Egress: []string{"pypi", "npm"}, Engine: "host"}},
+		{"full", "workspace:\n  ops: [read, exec]\n  open: true\n  share: true\n  connect: true\n  templates: true\n  egress: [pypi, npm]\n  engine: host\n",
+			&AgentWorkspace{Ops: []string{"read", "exec"}, Open: true, Share: true, Connect: true, Templates: true, Egress: []string{"pypi", "npm"}, Engine: "host"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a, err := parseAgent([]byte("---\nname: coder\ndescription: d\n" + tc.lines + "---\nbody\n"))
@@ -28,11 +28,11 @@ func TestParseAgent_WorkspaceReachesTheAgent(t *testing.T) {
 	}
 }
 
-// A key a later phase adds is refused in the frontmatter too, rather than
-// dropped on the way to config.
+// An unknown key is refused in the frontmatter too, rather than dropped on
+// the way to config.
 func TestParseAgent_WorkspaceRefusesAnUnknownKey(t *testing.T) {
-	_, err := parseAgent([]byte("---\nname: coder\ndescription: d\nworkspace:\n  ops: [read]\n  connect: true\n---\nbody\n"))
-	if err == nil || !strings.Contains(err.Error(), `unknown key "connect"`) {
+	_, err := parseAgent([]byte("---\nname: coder\ndescription: d\nworkspace:\n  ops: [read]\n  listen: true\n---\nbody\n"))
+	if err == nil || !strings.Contains(err.Error(), `unknown key "listen"`) {
 		t.Fatalf("err = %v, want an unknown key refusal", err)
 	}
 }

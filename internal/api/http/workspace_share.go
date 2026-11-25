@@ -40,7 +40,7 @@ func (s *Server) spawnWorkspaces(ctx, childCtx context.Context, childRunID, chil
 			}
 			continue
 		}
-		if _, err := s.workspaces.Share(ctx, owner, w.Name, peer, w.Access); err != nil {
+		if _, err := s.workspaces.Share(ctx, owner, w.Name, peer, w.Access, w.Connect); err != nil {
 			return fmt.Errorf("workspaces: cannot share %q with the child: %w", w.Name, err)
 		}
 	}

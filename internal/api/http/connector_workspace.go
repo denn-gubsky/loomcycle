@@ -44,9 +44,13 @@ func (s *Server) Workspace(ctx context.Context, input json.RawMessage) (connecto
 
 // workspaceMCPGrant is the grant a session holds: open, the operator's ops,
 // and the operator's routes of workspace.mcp.egress, which open may narrow
-// (P4 plan O28). Never share, never an engine floor beyond the worker's own.
+// (P4 plan O28), and templates. Never share, never an engine floor beyond the
+// worker's own.
 func workspaceMCPGrant(c config.WorkspaceMCPConfig) tools.WorkspacePolicyValue {
-	g := tools.WorkspacePolicyValue{Open: true, Egress: slices.Clone(c.Egress)}
+	// Templates (RFC GW D-P6-24, ruled 2026-11-25): the session saves and
+	// deletes its own user templates; a tenant one needs a tenant-operator
+	// token, checked by the tool.
+	g := tools.WorkspacePolicyValue{Open: true, Templates: true, Egress: slices.Clone(c.Egress)}
 	for _, op := range c.Ops {
 		switch op {
 		case config.WorkspaceOpRead:

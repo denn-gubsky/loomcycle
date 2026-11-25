@@ -31,10 +31,12 @@ func workspaceToolDescriptor() loommcp.ToolDescriptor {
 const workspaceMCPDescription = "Open a workspace — a directory on a workspace worker, away from the runtime — and run shell commands and file operations in it, from outside any run. " +
 	"Ops: open (`name`, optional `toolchain`, optional `egress`: a subset of the routes the operator lists in workspace.mcp.egress; none unless it lists some), list, status, release; exec (`command`, optional `cwd`, `timeout_s`); " +
 	"read, write, edit, glob, grep with the same arguments as the Read, Write, Edit, Glob and Grep tools (no `volume`), paths relative to the workspace. " +
+	"checkpoint (`name`, optional `label`) records a workspace's files, checkpoints lists them, delete_checkpoint (`checkpoint`) removes one. " +
+	"Templates: save_template (`name`, `checkpoint`, `as`, `scope`: user — yours — or tenant, which needs a tenant-operator token) keeps a checkpoint as a starting state; templates lists the ones you may open (yours, then your tenant's); open with `template` starts a workspace from one; delete_template (`template`, `scope`) deletes one. " +
 	"A workspace opened here belongs to the token you signed in with — its tenant and subject — not to a run: every session of that subject reaches it, nobody else does, and no run sees it. " +
 	"It is deleted when you release it, after an hour without an op, a day after it opened, or when the token that opened it is retired or expires (the operator sets the two times): copy out what you need to keep with read. " +
 	"Off unless the operator enables it (workspace.mcp); which of read, write and exec you may use is the operator's; you need the runs:create scope, and each call takes one unit of your token's run rate. " +
-	"Sharing, interpreters and servers are done inside a run. " +
+	"Sharing, restore, fork, interpreters and servers are done inside a run. " +
 	"Do NOT use it as storage: it is a scratch directory that goes away."
 
 // handleWorkspace forwards to connector.Workspace under the session's

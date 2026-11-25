@@ -107,9 +107,12 @@ const (
 // id (which no later run reuses, so a share ends with that run) and the agent
 // id it was named by, and what it may do.
 type WorkspaceShare struct {
-	RunID     string    `json:"run_id"`
-	AgentID   string    `json:"agent_id"`
-	Access    string    `json:"access"`
+	RunID   string `json:"run_id"`
+	AgentID string `json:"agent_id"`
+	Access  string `json:"access"`
+	// Connect lets the peer send HTTP requests to the ports the owner
+	// exposed (RFC GW §5.2, D20). Absent on a share stored before it: none.
+	Connect   bool      `json:"connect,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
