@@ -64,6 +64,10 @@ func (s *Server) erasureService() *erasure.Service {
 			return s.endSubjectCredentials(ctx, tenant, subject, credDelegatedTokens)
 		},
 	}
+	// The subject's user workspace templates' archives (RFC GW D-P6-38).
+	if c := s.cfg(); c != nil {
+		svc.TemplateDir = c.WorkspaceTemplateDir()
+	}
 	s.wireErasureSubjects(svc)
 	return svc
 }
