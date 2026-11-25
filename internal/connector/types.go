@@ -1598,6 +1598,127 @@ type PlanOntologyResult struct {
 	ContentVersion string `json:"content_version"`
 }
 
+// OntologyRelease is the header of one complete release of the tenant
+// ontology (RFC GQ P3): a copy taken when it was confirmed (confirm), when an
+// accepted change was applied (apply) or rolled back (rollback), or before
+// either when the ontology had moved without one (catch_up).
+type OntologyRelease struct {
+	Seq int64 `json:"seq"`
+	// ContentVersion is what the ontology declared then, as stamped on the rows
+	// written under it; Fingerprint the plan fingerprint it had.
+	ContentVersion string `json:"content_version"`
+	Fingerprint    string `json:"fingerprint"`
+	Reason         string `json:"reason"`
+	// Actor is the user who took it, "" when none was known.
+	Actor     string `json:"actor,omitempty"`
+	CreatedAt int64  `json:"created_at"` // unix nanoseconds
+	// Entries is how many chunks of the ontology document it copied.
+	Entries int `json:"entries"`
+}
+
+// ListOntologyReleasesRequest lists a tenant's releases. Tenant: only an admin
+// may name one; for anyone else it is the caller's own tenant.
+type ListOntologyReleasesRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+}
+
+// ListOntologyReleasesResult is every complete release kept (the newest 50),
+// newest first.
+type ListOntologyReleasesResult struct {
+	Tenant   string            `json:"tenant"`
+	Releases []OntologyRelease `json:"releases"`
+}
+
+// GetOntologyReleaseRequest reads one release by its sequence number.
+type GetOntologyReleaseRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+	Seq    int64  `json:"seq"`
+}
+
+// GetOntologyReleaseResult is one release: its header, the plan summary of the
+// change it applied (an apply release; absent otherwise) and the ontology it
+// copied, rendered as Markdown.
+type GetOntologyReleaseResult struct {
+	Tenant      string          `json:"tenant"`
+	Release     OntologyRelease `json:"release"`
+	PlanSummary json.RawMessage `json:"plan_summary,omitempty"`
+	ExportMD    string          `json:"export_md"`
+}
+
+// DiffOntologyReleasesRequest compares two releases, or a release with the
+// ontology in force: From is a release's sequence number, To another's, or 0
+// for the ontology as it stands now.
+type DiffOntologyReleasesRequest struct {
+	Tenant string `json:"tenant,omitempty"`
+	From   int64  `json:"from"`
+	To     int64  `json:"to,omitempty"`
+}
+
+// One entry's change in a diff (OntologyEntryDiff.Change).
+const (
+	OntologyDiffAdded   = "added"
+	OntologyDiffRemoved = "removed"
+	OntologyDiffChanged = "changed"
+)
+
+// What changed about an entry present on both sides (OntologyEntryDiff.Changed).
+const (
+	OntologyDiffRenamed    = "renamed"
+	OntologyDiffMoved      = "moved"
+	OntologyDiffKind       = "kind"
+	OntologyDiffStatus     = "status"
+	OntologyDiffMeaning    = "meaning"
+	OntologyDiffDirectives = "directives"
+)
+
+// OntologyDiffSide names one side of a diff: a release, or the ontology in
+// force (Current).
+type OntologyDiffSide struct {
+	Seq            int64  `json:"seq,omitempty"`
+	Current        bool   `json:"current,omitempty"`
+	ContentVersion string `json:"content_version"`
+}
+
+// OntologyEntryState is an entry as one side declares it. Parent is the chunk
+// of the entry it sits under (its superclass, parent kind, broader concept or
+// scheme, parent instance; a grammar's class), "" at the top of its section;
+// ParentName that entry's name. Directives is the entry's parsed declaration
+// without its name, status, meaning and parent, as JSON.
+type OntologyEntryState struct {
+	Name       string          `json:"name"`
+	Parent     string          `json:"parent,omitempty"`
+	ParentName string          `json:"parent_name,omitempty"`
+	Status     string          `json:"status,omitempty"`
+	Meaning    string          `json:"meaning,omitempty"`
+	Directives json.RawMessage `json:"directives"`
+}
+
+// OntologyEntryDiff is one entry that differs between the two sides, by its
+// chunk id: a rename keeps the chunk, so it is one changed entry, never an add
+// and a remove. Kind is class, relation, scheme, concept, instance or grammar
+// (on the To side when present). Before is absent for an added entry, After for
+// a removed one; Changed lists what differs on a changed one.
+type OntologyEntryDiff struct {
+	ChunkID string              `json:"chunk_id"`
+	Kind    string              `json:"kind"`
+	Change  string              `json:"change"`
+	Changed []string            `json:"changed,omitempty"`
+	Before  *OntologyEntryState `json:"before,omitempty"`
+	After   *OntologyEntryState `json:"after,omitempty"`
+}
+
+// DiffOntologyReleasesResult is every in-force entry that differs between From
+// and To, ordered by kind, then name, then chunk id. Proposals, the Review
+// section, section headers and sibling order are not compared, as the content
+// version does not count them. Issues notes what a side could not read.
+type DiffOntologyReleasesResult struct {
+	Tenant  string              `json:"tenant"`
+	From    OntologyDiffSide    `json:"from"`
+	To      OntologyDiffSide    `json:"to"`
+	Changes []OntologyEntryDiff `json:"changes"`
+	Issues  []string            `json:"issues"`
+}
+
 // ReviewQueueFilter narrows the review queue (ListReviewQueue) and selects
 // what a bulk ruling rules (RuleStatementsRequest.Filter). Every field is
 // optional and they combine with AND; the zero value is every proposal of the
