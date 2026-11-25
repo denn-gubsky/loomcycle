@@ -1,0 +1,15 @@
+-- 0144_workspace_durable.up.sql — RFC GW P12: durable workspaces.
+--
+-- A durable workspace is kept under its tenant, its user and its name past
+-- the run that opened it (RFC GW §4.2), so the name is one per (tenant,
+-- user) among durable rows. Two opens racing on two replicas: one insert
+-- wins. The lifetime column has existed since 0135 ('ephemeral'); durable
+-- adds a value, not a column.
+--
+-- A durable row no run holds is parked: owner_kind 'parked' and
+-- owner_run_id 'parked:<id>', which no run id can be, so the existing
+-- UNIQUE (owner_run_id, name) and every run-keyed read stay as they are.
+-- owner_kind is free text since 0139; nothing to add for it.
+--
+-- 0143 is P11's (the row's git column). Mirrors the SQLite volumes section.
+CREATE UNIQUE INDEX IF NOT EXISTS workspaces_durable_name ON workspaces (tenant_id, user_id, name) WHERE lifetime = 'durable';
