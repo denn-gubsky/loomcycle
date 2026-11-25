@@ -175,6 +175,11 @@ type Options struct {
 	// are rewritten to it whether the workspace holds it or not, so a
 	// workspace without it is refused naming the route (P4 plan O34).
 	PyPIFilesRoute string
+	// CratesDLRoute is the operator's route to the crates download host
+	// (CratesDLRoute of the operator's routes), "" for none: the crates
+	// index's config.json is pointed at it whether the workspace holds it or
+	// not, as PyPIFilesRoute (RFC GW P11).
+	CratesDLRoute string
 	// ResponseHeaderTimeout bounds the wait for the upstream's answer.
 	// Default 60 s. The body has no time bound: the caller's context
 	// ends it.
@@ -193,8 +198,9 @@ type Proxy struct {
 	audit  func(Line)
 	limits Limits
 	base   string
-	// filesRoute is Options.PyPIFilesRoute.
+	// filesRoute is Options.PyPIFilesRoute, dlRoute Options.CratesDLRoute.
 	filesRoute string
+	dlRoute    string
 	now        func() time.Time
 
 	mu    sync.Mutex
@@ -254,6 +260,7 @@ func New(o Options) (*Proxy, error) {
 		// Checked as a route name, so it cannot write anything but a
 		// route's first segment into a link.
 		filesRoute: validFilesRoute(o.PyPIFilesRoute),
+		dlRoute:    validFilesRoute(o.CratesDLRoute),
 		now:        now,
 		usage:      map[usageKey]*usage{},
 	}, nil
@@ -317,7 +324,7 @@ func (p *Proxy) do(ctx context.Context, g Grant, rt Route, r Request, a *auditor
 	}
 	req.Header = requestHeader(r.Header, rt)
 	base := p.baseFor(g, r.Path)
-	rewrite := p.rewriteFor(g, rt, base)
+	rewrite := p.rewriteFor(g, rt, base, r.Path)
 	if rewrite != nil {
 		// Let the transport ask for and undo compression, so the body
 		// the rewrite reads is plain text.
@@ -342,7 +349,7 @@ func (p *Proxy) do(ctx context.Context, g Grant, rt Route, r Request, a *auditor
 	a.status = resp.StatusCode
 	h := responseHeader(resp.Header, rt)
 	var out io.ReadCloser = &countingBody{rc: resp.Body, u: u, a: a}
-	if rewrite != nil && rewritable(resp) {
+	if rewrite != nil && rewrite.applies(resp) {
 		rewritten, err := rewrite.apply(out)
 		if err != nil {
 			return nil, err

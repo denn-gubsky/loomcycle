@@ -250,6 +250,9 @@ func (c *Container) runArgs(workspace, hostDir string) []string {
 		"--label", "loomcycle.workspace=" + workspace,
 	}
 	a = append(a, c.hardening(c.sessionNetwork(workspace))...)
+	if c.egress != nil {
+		a = append(a, "-v", filepath.Join(c.egress.hostDir, cargoConfigFile)+":"+cargoConfigMount+":ro")
+	}
 	a = append(a, "-v", hostDir+":"+WorkspaceMount+":rw", "--workdir", WorkspaceMount, c.opt.Image, "sleep", "infinity")
 	return a
 }
