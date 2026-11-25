@@ -77,8 +77,8 @@ create and fork agents — but **you still can't escalate**:
   tool makes by its own means: Memory set with a path adds a Path-tree
   name, Document held whole adds its own Path-tree names, and Write,
   Edit, Bash or Git change files.
-- `statement_methods` (`rule`, `extractor`, `judge` and `annotate` for a
-  `provider: code-js` agent; `link` and `remember` for any agent) is stricter:
+- `statement_methods` (`rule`, `extractor`, `judge`, `annotate` and
+  `ontology` for a `provider: code-js` agent; `link` and `remember` for any agent) is stricter:
   a new agent may list only what you may stamp, and a fork only what
   the version it forks already has — never more, even when you hold
   it. Any other provider is refused the field.
