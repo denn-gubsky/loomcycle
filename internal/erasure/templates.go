@@ -7,12 +7,11 @@ import (
 	"os"
 
 	"github.com/denn-gubsky/loomcycle/internal/store"
-	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
 
 // Workspace templates (RFC GW §5.5, D-P6-38 ruled 2026-11-25). A subject's
 // USER templates are theirs: an erasure deletes each row and its archive
-// under TemplateDir. A TENANT template the subject saved is the tenant's
+// (TemplateArchive). A TENANT template the subject saved is the tenant's
 // content, open to every user of it, and stays; it is counted and named as
 // retained, never deleted by a subject's erasure.
 
@@ -60,7 +59,7 @@ func (s *Service) eraseTemplates(ctx context.Context, tenant, subject string, dr
 		res.Deleted[templatesPlane] = len(rows)
 		return
 	}
-	if s.TemplateDir == "" && len(rows) > 0 {
+	if s.TemplateArchive == nil && len(rows) > 0 {
 		res.Retained["workspace_template_archives"] = "this transport was given no template folder, so the archives of the deleted templates were not removed"
 	}
 	for _, r := range rows {
@@ -72,10 +71,10 @@ func (s *Service) eraseTemplates(ctx context.Context, tenant, subject string, dr
 		if ok {
 			res.Deleted[templatesPlane]++
 		}
-		if s.TemplateDir == "" {
+		if s.TemplateArchive == nil {
 			continue
 		}
-		path, err := lifecycle.TemplateArchivePath(s.TemplateDir, r.ID)
+		path, err := s.TemplateArchive(r.ID)
 		if err != nil {
 			fail(templatesPlane, err)
 			continue

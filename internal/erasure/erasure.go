@@ -99,11 +99,12 @@ type Service struct {
 	BoundSubjects      func(ctx context.Context, tenant, subject string) ([]BoundSubject, error)
 	ClearBoundSubjects func(ctx context.Context, tenant, subject string) ([]BoundSubject, error)
 	AnnounceErased     func(ctx context.Context, tenant string, subjects []BoundSubject) string
-	// TemplateDir is where workspace template archives are kept
-	// (config WorkspaceTemplateDir, RFC GW §5.5). Empty: the rows of the
-	// subject's user templates are still deleted, their archives are not
-	// examined, and the result says so.
-	TemplateDir string
+	// TemplateArchive returns where the archive of workspace template id is
+	// kept (RFC GW §5.5). The transport owns it: the archive folder and its
+	// naming are the workspace layer's, above this one. nil: the rows of the
+	// subject's user templates are still deleted, their archives are not,
+	// and the result says so.
+	TemplateArchive func(id string) (string, error)
 }
 
 // BoundSubject is one tenant subject bound to the erased principal. An erasure

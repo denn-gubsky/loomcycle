@@ -53,7 +53,7 @@ func archives(t *testing.T, dir string) []string {
 func TestService_ErasesTheSubjectsUserTemplates(t *testing.T) {
 	s := newSvc(t)
 	dir := t.TempDir()
-	s.TemplateDir = dir
+	s.TemplateArchive = func(id string) (string, error) { return filepath.Join(dir, id+".tar.gz"), nil }
 	seedTemplates(t, s, dir)
 	ctx := context.Background()
 

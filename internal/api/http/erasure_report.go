@@ -16,6 +16,7 @@ import (
 	"github.com/denn-gubsky/loomcycle/internal/authz"
 	"github.com/denn-gubsky/loomcycle/internal/erasure"
 	"github.com/denn-gubsky/loomcycle/internal/store"
+	"github.com/denn-gubsky/loomcycle/internal/workspace/lifecycle"
 )
 
 // erasureService builds the shared service from this server's stores. Every
@@ -66,7 +67,8 @@ func (s *Server) erasureService() *erasure.Service {
 	}
 	// The subject's user workspace templates' archives (RFC GW D-P6-38).
 	if c := s.cfg(); c != nil {
-		svc.TemplateDir = c.WorkspaceTemplateDir()
+		dir := c.WorkspaceTemplateDir()
+		svc.TemplateArchive = func(id string) (string, error) { return lifecycle.TemplateArchivePath(dir, id) }
 	}
 	s.wireErasureSubjects(svc)
 	return svc
