@@ -294,3 +294,93 @@ func TestFork_CarriesTheSourcesEgressRoutes(t *testing.T) {
 		t.Fatalf("the fork's egress = %v, want the source's", fork.Egress)
 	}
 }
+
+// principalRow is a workspace opened over the MCP server (RFC GW D35).
+func principalRow(tenant string, routes ...string) store.WorkspaceRow {
+	o := PrincipalOwner(tenant, "alice", "otd_1")
+	return store.WorkspaceRow{ID: "ws_p_" + tenant, TenantID: tenant, UserID: o.UserID, OwnerRunID: o.RunID,
+		OwnerKind: store.WorkspaceOwnerPrincipal, State: store.WorkspaceReady, Egress: routes}
+}
+
+// A principal's workspace may use the routes of workspace.mcp.egress that it
+// was opened with (P4 plan O28 as ruled 2026-11-25): none with an empty
+// list, and never one off the list, even if its row names it.
+func TestEgress_APrincipalsWorkspaceUsesOnlyTheOperatorsMCPList(t *testing.T) {
+	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
+	up := newCountingUpstream(t)
+	f.m.SetEgress(testProxy(t, f.m, nil, egress.Limits{}), OperatorRoutes(map[string]config.EgressRoute{
+		"pypi": {URL: up.URL + "/pypi/"},
+		"npm":  {URL: up.URL + "/npm/"},
+	}))
+	row := principalRow("acme", "pypi", "npm")
+	for _, route := range []string{"pypi", "npm"} {
+		if _, _, err := send(t, f.m, row, route); refusalStatus(err) != http.StatusForbidden {
+			t.Errorf("empty list, route %s: %v, want a 403 refusal", route, err)
+		}
+	}
+	f.m.SetPrincipalEgress([]string{"pypi"})
+	if status, body, err := send(t, f.m, row, "pypi"); err != nil || status != http.StatusOK || body != "upstream:/pypi/x" {
+		t.Fatalf("a route on the list = %d %q, %v", status, body, err)
+	}
+	if _, _, err := send(t, f.m, row, "npm"); refusalStatus(err) != http.StatusForbidden {
+		t.Errorf("a route off the list: %v, want a 403 refusal", err)
+	}
+	if _, _, err := send(t, f.m, principalRow("acme", "npm"), "pypi"); refusalStatus(err) != http.StatusForbidden {
+		t.Errorf("a listed route the workspace was not opened with: %v, want a 403 refusal", err)
+	}
+	if n := up.hits.Load(); n != 1 {
+		t.Fatalf("upstream hits = %d, want 1", n)
+	}
+}
+
+// A principal's credentialed route resolves for its tenant and subject: its
+// user-scope credential is sent, another tenant's never is, and no
+// agent-scope credential applies (a principal has no agent).
+func TestEgress_APrincipalsCredentialResolvesInItsOwnTenantOnly(t *testing.T) {
+	f := newFixture(t, Limits{MaxPerRun: 4}, worker.Options{})
+	up := newCountingUpstream(t)
+	creds := &principalCreds{allowed: []string{up.URL + "/api"}}
+	f.m.SetEgress(testProxy(t, f.m, creds, egress.Limits{}), OperatorRoutes(map[string]config.EgressRoute{
+		"crm": {URL: up.URL + "/api/", Credential: "$cred:crm"},
+	}))
+	f.m.SetPrincipalEgress([]string{"crm"})
+	// The credential exists for alice in "other" only.
+	creds.owner = [2]string{"other", "alice"}
+	if _, _, err := send(t, f.m, principalRow("acme", "crm"), "crm"); refusalStatus(err) != http.StatusForbidden {
+		t.Fatalf("another tenant's credential: %v, want a 403 refusal", err)
+	}
+	if up.hits.Load() != 0 {
+		t.Fatal("the upstream was reached with another tenant's credential")
+	}
+	creds.owner = [2]string{"acme", "alice"}
+	if status, _, err := send(t, f.m, principalRow("acme", "crm"), "crm"); err != nil || status != http.StatusOK || up.auth[0] != "Bearer "+egressToken {
+		t.Fatalf("its own credential = %d, %v; upstream saw %q", status, err, up.auth)
+	}
+	for _, a := range creds.agents {
+		if a != "" {
+			t.Errorf("resolved with agent name %q, want none", a)
+		}
+	}
+}
+
+// principalCreds holds one user-scope credential "crm" for owner
+// (tenant, user), and records the agent names it was asked with.
+type principalCreds struct {
+	owner   [2]string
+	allowed []string
+	mu      sync.Mutex
+	agents  []string
+}
+
+func (c *principalCreds) ResolveFor(_ context.Context, tenant, agentName, user, name, target string) (credential.Resolved, bool, error) {
+	c.mu.Lock()
+	c.agents = append(c.agents, agentName)
+	c.mu.Unlock()
+	if name != "crm" || tenant != c.owner[0] || user != c.owner[1] {
+		return credential.Resolved{}, false, nil
+	}
+	if !credential.URLAllowed(&c.allowed, target) {
+		return credential.Resolved{}, false, credential.ErrURLNotAllowed
+	}
+	return credential.Resolved{Value: egressToken, AllowedURLs: &c.allowed}, true, nil
+}

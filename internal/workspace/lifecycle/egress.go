@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"net/http"
+	"slices"
 	"sort"
 
 	"github.com/denn-gubsky/loomcycle/internal/audit"
@@ -51,6 +52,12 @@ func (m *Manager) SetEgress(p *egress.Proxy, routes []egress.Route) {
 	}
 }
 
+// SetPrincipalEgress sets workspace.mcp.egress, the operator routes a
+// workspace opened over the MCP server may use.
+func (m *Manager) SetPrincipalEgress(routes []string) {
+	m.principalEgress = slices.Clone(routes)
+}
+
 // Egress answers one request a ready workspace's session sent out: the
 // dispatcher's EgressFunc. The grant is the workspace's own: its tenant,
 // user and owner run for the credential, and of the operator's routes only
@@ -62,14 +69,23 @@ func (m *Manager) Egress(ctx context.Context, row store.WorkspaceRow, req egress
 		return nil, &egress.Refusal{Status: http.StatusForbidden, Reason: "this runtime sends no workspace request out (no egress is configured)"}
 	}
 	g := egress.Grant{TenantID: row.TenantID, UserID: row.UserID, RunID: row.OwnerRunID, WorkspaceID: row.ID}
+	principal := row.OwnerKind == store.WorkspaceOwnerPrincipal
 	credentialed := false
 	for _, name := range row.Egress {
+		// A workspace opened over the MCP server (RFC GW D35) uses only the
+		// routes of workspace.mcp.egress as the operator has it now (P4
+		// plan O28), whatever its row was opened with.
+		if principal && !slices.Contains(m.principalEgress, name) {
+			continue
+		}
 		if rt, ok := m.routes[name]; ok {
 			g.Routes = append(g.Routes, rt)
 			credentialed = credentialed || rt.Credential != ""
 		}
 	}
-	if credentialed {
+	// A principal has no run and no agent: its credential resolves for its
+	// tenant and subject, and an agent-scope credential never applies.
+	if credentialed && !principal {
 		// An agent-scoped credential is the agent's: the owner run's agent
 		// name decides it. One that cannot be read refuses the request
 		// rather than resolving without it, which could fall back to

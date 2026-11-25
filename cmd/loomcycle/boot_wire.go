@@ -349,6 +349,7 @@ func (b *boot) wireWorkspaceEgress() {
 		fatal("workspace: cannot build the egress proxy", "err", err)
 	}
 	b.workspaces.SetEgress(proxy, lifecycle.OperatorRoutes(eg.Routes))
+	b.workspaces.SetPrincipalEgress(b.cfg.Workspace.Resolved().MCP.Egress)
 	b.workspace.SetEgress(b.workspaces.Egress)
 	if n := len(eg.Routes); n > 0 {
 		slog.Info("workspace: egress routes", "routes", n)
