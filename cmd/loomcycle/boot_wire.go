@@ -322,6 +322,8 @@ func (b *boot) bindStoreToTools() {
 		b.workspaces.SetTemplateDir(b.cfg.WorkspaceTemplateDir())
 		b.workspaces.SetExpose(lifecycle.ExposeLimits{Enabled: ws.Expose.Enabled, MaxPerWorkspace: ws.Expose.MaxPerWorkspace,
 			IdleTimeout: time.Duration(ws.Expose.IdleTimeoutS) * time.Second})
+		// A run is told when one of its pages goes (RFC GW D24).
+		b.workspaces.SetSurfaceNotifier(builtin.SurfaceNotifier(storeIface))
 		b.workspaceTool.Manager = b.workspaces
 		b.wireWorkspaceEgress()
 		// File reaches workspaces by reference (RFC GW P2) through the same

@@ -15,6 +15,7 @@ from loomcycle.events import (
     LimitInfo,
     AdmissionInfo,
     FileCapturedInfo,
+    SurfaceInfo,
     TranscriptionInfo,
 )
 from loomcycle._generated import loomcycle_pb2 as pb
@@ -113,6 +114,44 @@ def test_limit_event_unwraps_budget_payload():
     assert ev.limit.used == 1200
     assert ev.limit.limit == 1000
     assert ev.limit.message == "tenant acme soft budget reached"
+
+
+def test_surface_events_unwrap_the_page():
+    # A page the run exposed from its workspace, and its close (RFC GW D24).
+    from google.protobuf.timestamp_pb2 import Timestamp
+
+    at = Timestamp()
+    at.FromJsonString("2026-11-25T12:00:00Z")
+    ev = AgentEvent._from_proto(
+        pb.Event(
+            type="surface",
+            surface=pb.SurfaceInfo(
+                exposure_id="x1",
+                workspace="web",
+                title="Chart",
+                kind="panel",
+                base_path="/v1/workspaces/exposures/x1/",
+                expires_at=at,
+            ),
+        )
+    )
+    assert ev.type == "surface"
+    assert ev.surface == SurfaceInfo(
+        exposure_id="x1",
+        workspace="web",
+        title="Chart",
+        kind="panel",
+        base_path="/v1/workspaces/exposures/x1/",
+        expires_at="2026-11-25T12:00:00Z",
+    )
+    closed = AgentEvent._from_proto(
+        pb.Event(
+            type="surface_closed",
+            surface=pb.SurfaceInfo(exposure_id="x1", reason="idle"),
+        )
+    )
+    assert closed.surface == SurfaceInfo(exposure_id="x1", reason="idle")
+    assert AgentEvent._from_proto(pb.Event(type="text", text="hi")).surface is None
 
 
 def test_file_captured_event_unwraps_the_record():
