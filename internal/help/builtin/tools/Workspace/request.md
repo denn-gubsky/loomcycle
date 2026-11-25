@@ -8,7 +8,9 @@ try what you built: an API, a page, a form's handler. It is a single
 request and answer; nothing stays open.
 
 Only a port a **running** server of this workspace declared with
-`start ... port` is reached. Start the server first, with `port`.
+`start ... port`, and that the server itself (or a process it started)
+listens on, is reached. Start the server first, with `port` set to the port
+it binds.
 
 ## Arguments
 
@@ -36,14 +38,17 @@ otherwise `body_base64` carries it. A body over 1 MiB is cut there and
   `exec` default), then gives up with `timeout`.
 - What a server answers is untrusted output, like any command's.
 - On the `host` engine every workspace of a worker shares one loopback: the
-  check that a server of yours declared the port is a check, not isolation.
-  A port two workspaces' servers both declare is refused.
+  worker checks that the port is listened on by your server's own
+  processes and refuses a port two workspaces' servers both declare, but
+  this is a check, not isolation.
 
 ## Errors
 
 - `not_granted` — `request` needs the `exec` grant, as servers do.
 - `port_not_served` — no running server of this workspace declared that
-  port. `logs` lists your servers and their ports.
+  port, or the server that declared it does not listen on it itself
+  (something else on the worker does, or the server moved out of its
+  process group). `logs` lists your servers and their ports.
 - `port_unreachable` — a server declared the port but nothing listens on it
   yet; it may still be starting, or it failed: read its `logs`.
 - `bad_response` — what came back was not HTTP.
