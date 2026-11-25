@@ -28,6 +28,8 @@ func RunWorkspaces(t *testing.T, factory Factory) {
 		"ListByOwnerAgentAndSharedWith":         testWorkspaceListByOwnerAgentAndSharedWith,
 		"PrincipalOwnedRowsAreNeverSwept":       testWorkspacePrincipalOwnedRowsAreNeverSwept,
 		"EgressIsKeptOnEveryRead":               testWorkspaceEgressIsKeptOnEveryRead,
+		"ExposuresAreBoundedAndTenantScoped":    testWorkspaceExposuresAreBoundedAndTenantScoped,
+		"ExposuresGoWithTheirWorkspace":         testWorkspaceExposuresGoWithTheirWorkspace,
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, cleanup := factory(t)
