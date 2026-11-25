@@ -110,6 +110,12 @@ func newExposureFixture(t *testing.T) *exposureFixture {
 			h.Set("Content-Type", "text/plain")
 			_, _ = io.WriteString(w, "after the hints")
 			return
+		case "/backslash":
+			// Browsers read "/\\" as "//": off-site, not a path of the
+			// application's own.
+			w.Header().Set("Location", `/\evil.example/x`)
+			w.WriteHeader(http.StatusFound)
+			return
 		case "/away":
 			w.Header().Set("Location", "https://example.com/elsewhere")
 			w.WriteHeader(http.StatusFound)
@@ -428,5 +434,65 @@ func TestExposureRoute_DropsAnInformationalAnswerAndKeepsThePolicy(t *testing.T)
 		resp.Header.Get("Link") != "" || resp.Header.Get("Clear-Site-Data") != "" {
 		t.Errorf("the final answer over a connection: CSP %q nosniff %q Link %q Clear-Site-Data %q", csp,
 			resp.Header.Get("X-Content-Type-Options"), resp.Header.Get("Link"), resp.Header.Get("Clear-Site-Data"))
+	}
+}
+
+// underPrefix moves a redirect under the prefix only when it is a path of
+// the application's own: "/x". A redirect whose second character is "/" or
+// "\\" (which browsers read as "//"), or that holds a control character
+// (stripped by browsers, so "/\t/evil" is "//evil"), is off-site, and is
+// left as it is, never put under the prefix (CodeQL go/bad-redirect-check).
+func TestExposureRoute_UnderPrefixMovesOnlyTheApplicationsOwnPaths(t *testing.T) {
+	const prefix = exposurePrefix + testExposureID
+	for loc, want := range map[string]string{
+		"/x":                       prefix + "/x",
+		"/a/b?q=1":                 prefix + "/a/b?q=1",
+		"/":                        prefix + "/",
+		"//evil.example/x":         "//evil.example/x",
+		`/\evil.example/x`:         `/\evil.example/x`,
+		"/\t/evil.example":         "/\t/evil.example",
+		"https://example.com/else": "https://example.com/else",
+		"relative/path":            "relative/path",
+	} {
+		if got := underPrefix(loc, prefix); got != want {
+			t.Errorf("underPrefix(%q) = %q, want %q", loc, got, want)
+		}
+	}
+	f := newExposureFixture(t)
+	w := f.as(alice, "GET", prefix+"/backslash", nil)
+	if got := w.Header().Get("Location"); got != `/\evil.example/x` {
+		t.Errorf("a redirect to /\\evil.example = %q, want it left as it is, not under the prefix", got)
+	}
+}
+
+// Every answer of the route, whoever made it, is sandboxed without
+// allow-same-origin and carries nosniff: a page is model-written active
+// content served from the API's origin, and the sandbox gives it an opaque
+// origin instead. This is the guard CodeQL go/reflected-xss alerts 422 and
+// 423 were dismissed on: it fails if allow-same-origin is added to the
+// policy or sandbox is dropped.
+func TestExposure_EveryAnswerIsSandboxedWithoutSameOrigin(t *testing.T) {
+	f := newExposureFixture(t)
+	cookie := func() *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", pagePath, nil)
+		r = r.WithContext(withUIAuth(auth.WithPrincipal(r.Context(), *alice), uiAuth{}))
+		w := httptest.NewRecorder()
+		f.mux.ServeHTTP(w, r)
+		return w
+	}
+	for name, w := range map[string]*httptest.ResponseRecorder{
+		"a 200 page":            f.as(alice, "GET", pagePath, nil),
+		"the core's 404":        f.as(alice, "GET", exposurePrefix+"ffffffffffffffffffffffff/x", nil),
+		"the core's refusal":    cookie(),
+		"a redirect":            f.as(alice, "GET", exposurePrefix+testExposureID+"/redirect", nil),
+		"an answer after a 1xx": f.as(alice, "GET", exposurePrefix+testExposureID+"/early-hints", nil),
+	} {
+		csp := w.Header().Get("Content-Security-Policy")
+		if !strings.Contains(csp, "sandbox") || strings.Contains(csp, "allow-same-origin") {
+			t.Errorf("%s: Content-Security-Policy = %q, want a sandbox without allow-same-origin", name, csp)
+		}
+		if w.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s: no X-Content-Type-Options: nosniff", name)
+		}
 	}
 }
